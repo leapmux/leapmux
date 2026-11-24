@@ -86,7 +86,7 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		_, err := store.ExecContext(t.Context(), statement)
 		require.NoError(t, err)
 	}
-	_, err = store.ExecContext(t.Context(), "INSERT INTO agent_background_tasks (owner_agent_id,output_generation,row_key,seq,kind,role,child_agent_id,status) VALUES ('enum-owner',0,'enum-task',1,?,?,'enum-child',?)",
+	_, err = store.ExecContext(t.Context(), "INSERT INTO agent_background_tasks (owner_agent_id,row_key,seq,kind,role,child_agent_id,status) VALUES ('enum-owner','enum-task',1,?,?,'enum-child',?)",
 		leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME, leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
 	require.NoError(t, err)
 

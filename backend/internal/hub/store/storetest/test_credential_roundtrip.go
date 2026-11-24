@@ -43,49 +43,18 @@ func (s *Suite) testCredentialRoundTrip(t *testing.T) {
 		worker := SeedWorker(t, st, user.ID)
 
 		expires := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-		refreshExpires := expires.Add(time.Hour)
 		params := store.CreateDelegationTokenParams{
-			ID:               id.Generate(),
-			UserID:           userid.MustNew(user.ID),
-			WorkerID:         worker.ID,
-			GrantedScopes:    "workspace:read workspace:write worker:read",
-			SecretHash:       []byte("secret-hash-roundtrip"),
-			RefreshHash:      []byte("refresh-hash-roundtrip"),
-			ExpiresAt:        expires,
-			RefreshExpiresAt: &refreshExpires,
+			ID:            id.Generate(),
+			UserID:        userid.MustNew(user.ID),
+			WorkerID:      worker.ID,
+			GrantedScopes: "workspace:read workspace:write worker:read",
+			SecretHash:    []byte("secret-hash-roundtrip"),
+			ExpiresAt:     expires,
 		}
 		requireEveryFieldSet(t, params)
 		require.NoError(t, st.DelegationTokens().Create(ctx, params))
 
 		row, err := st.DelegationTokens().GetByID(ctx, params.ID)
-		require.NoError(t, err)
-		assertSharedFieldsSurvived(t, params, *row)
-	})
-
-	t.Run("device authorization", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "roundtrip-device")
-
-		tokenID := id.Generate()
-		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			Issuance: store.APITokenIssuanceAuthorizationCode,
-			ID:       tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID,
-			InstallationName: "laptop", GrantedScopes: "workspace:read", SecretHash: []byte("hash"),
-		}))
-
-		params := store.CreateDeviceAuthorizationParams{
-			DeviceCodeHash:  FixtureSecretHash(id.Generate()),
-			UserCode:        "ABC-DEF",
-			DeviceName:      "roundtrip-laptop",
-			ClientID:        oauthapp.ControlCLIClientID,
-			RequestedScopes: "workspace:read file:read",
-			ExpiresAt:       time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second),
-			ElevateTokenID:  tokenID,
-		}
-		requireEveryFieldSet(t, params)
-		require.NoError(t, st.DeviceAuthorizations().Create(ctx, params))
-
-		row, err := st.DeviceAuthorizations().Get(ctx, params.DeviceCodeHash)
 		require.NoError(t, err)
 		assertSharedFieldsSurvived(t, params, *row)
 	})

@@ -19,18 +19,16 @@ var _ store.DelegationTokenStore = (*delegationTokenStore)(nil)
 
 func fromDBDelegationToken(t gendb.DelegationToken) store.DelegationToken {
 	return store.DelegationToken{
-		ID:               t.ID,
-		UserID:           t.UserID,
-		WorkerID:         t.WorkerID,
-		GrantedScopes:    t.GrantedScopes,
-		SecretHash:       t.SecretHash,
-		RefreshHash:      t.RefreshHash,
-		CreatedAt:        t.CreatedAt.Time,
-		AuthGeneration:   t.AuthGeneration,
-		LastUsedAt:       t.LastUsedAt.Ptr(),
-		ExpiresAt:        t.ExpiresAt.Time,
-		RefreshExpiresAt: t.RefreshExpiresAt.Ptr(),
-		RevokedAt:        t.RevokedAt.Ptr(),
+		ID:             t.ID,
+		UserID:         t.UserID,
+		WorkerID:       t.WorkerID,
+		GrantedScopes:  t.GrantedScopes,
+		SecretHash:     t.SecretHash,
+		CreatedAt:      t.CreatedAt.Time,
+		AuthGeneration: t.AuthGeneration,
+		LastUsedAt:     t.LastUsedAt.Ptr(),
+		ExpiresAt:      t.ExpiresAt.Time,
+		RevokedAt:      t.RevokedAt.Ptr(),
 	}
 }
 
@@ -38,14 +36,12 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 	return (&mysqlStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		conn := tx.(*mysqlStore).conn
 		return conn.queryError(conn.q.CreateDelegationToken(ctx, gendb.CreateDelegationTokenParams{
-			ID:               p.ID,
-			UserID:           p.UserID.String(),
-			WorkerID:         p.WorkerID,
-			GrantedScopes:    p.GrantedScopes,
-			SecretHash:       p.SecretHash,
-			RefreshHash:      p.RefreshHash,
-			ExpiresAt:        sqltime.NewMySQLTime(p.ExpiresAt),
-			RefreshExpiresAt: sqltime.NewMySQLNullTime(p.RefreshExpiresAt),
+			ID:            p.ID,
+			UserID:        p.UserID.String(),
+			WorkerID:      p.WorkerID,
+			GrantedScopes: p.GrantedScopes,
+			SecretHash:    p.SecretHash,
+			ExpiresAt:     sqltime.NewMySQLTime(p.ExpiresAt),
 		}))
 	})
 }

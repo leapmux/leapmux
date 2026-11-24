@@ -29,11 +29,11 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	// Two pending requests so we can verify both get cancelled.
-	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1", Payload: []byte(`{"a":1}`),
 	})
-	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
-		AgentID: "agent-1", RequestID: "req-2", Payload: []byte(`{"b":2}`),
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
+		AgentID: "agent-1", RequestID: "req-2", Payload: []byte(`{"b":2}`), NonBlocking: true,
 	})
 
 	// Register a watcher so broadcasts have somewhere to go.
@@ -41,10 +41,10 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 
 	svc.Output.ClearAgentRuntimeState("agent-1")
 
-	// DB rows are gone.
-	remaining, err := svc.Queries.ListControlRequestsByAgentID(ctx, "agent-1")
+	// Pending requests are gone from both memory and SQLite.
+	remaining, err := svc.Output.ListControlRequests(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Empty(t, remaining, "expected all control_requests rows to be deleted")
+	assert.Empty(t, remaining, "expected all control requests to be deleted")
 
 	// One controlCancel broadcast per previously pending row.
 	cancels := collectBroadcastCancelIDs(t, w)

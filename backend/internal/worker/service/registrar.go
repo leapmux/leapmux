@@ -395,6 +395,10 @@ func registerTerminalForRestartGuarded(
 ) {
 	scope := o.r.declared(procedure).scope
 	o.Register(procedure, decodeInto[leapmuxv1.RestartTerminalRequest, *leapmuxv1.RestartTerminalRequest](func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
+		if o.r.svc.QuakeTerminals.Has(decoded.GetTerminalId()) {
+			sendFailedPrecondition(sender, "a quake terminal does not restart; open the panel again for a fresh shell")
+			return
+		}
 		row, ok := o.r.svc.requireTerminalForRestart(sender, decoded.GetTerminalId())
 		if !ok {
 			return

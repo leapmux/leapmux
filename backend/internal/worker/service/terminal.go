@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -158,18 +157,6 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 
 			if svc.refuseIfShuttingDown(sender) {
-				return
-			}
-			// A QUAKE terminal has no restart contract: its shell exiting ends
-			// it, and the next open of the panel spawns a fresh one. Refused
-			// here rather than only in the browser, so the rule holds for the
-			// Control CLI and for a second device too. Asked BEFORE the
-			// liveness checks, because "does this terminal restart at all?" is
-			// prior to "is it running right now". Without it a respawn
-			// resurrects a row the exit path already closed, and the unique
-			// index then refuses every replacement.
-			if dbTerm.IsQuake {
-				sendFailedPrecondition(sender, "a quake terminal does not restart; open the panel again for a fresh shell")
 				return
 			}
 			// Reject overlapping restarts: a previous startup hasn't broadcast
@@ -367,8 +354,9 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 
 			svc.Terminals.UpdateTitle(terminalID, title)
-			// Update only the title. A concurrent close owns closed_at.
-			if err := svc.Queries.UpdateTerminalTitle(bgCtx(), db.UpdateTerminalTitleParams{
+			if svc.QuakeTerminals.Has(terminalID) {
+				svc.QuakeTerminals.UpdateTitle(terminalID, title)
+			} else if err := svc.Queries.UpdateTerminalTitle(bgCtx(), db.UpdateTerminalTitleParams{
 				ID: dbTerm.ID, Title: title,
 			}); err != nil {
 				slog.Error("failed to update terminal title", "terminal_id", terminalID, "error", err)
@@ -449,12 +437,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// quake terminal resolved straight from its DB row would hand the
 		// client a stale screen for a shell that is still running.
 		if len(quakeWorkingDirs) > 0 {
-			quakeRows, quakeErr := svc.Queries.ListOpenQuakeTerminalsByWorkingDirs(ctx, quakeWorkingDirs)
-			if quakeErr != nil {
-				slog.Error("failed to list quake terminals from DB", "working_dirs", quakeWorkingDirs, "error", quakeErr)
-				sendInternalError(sender, "failed to list terminals")
-				return
-			}
+			quakeRows := svc.QuakeTerminals.ListByWorkingDirs(quakeWorkingDirs)
 			widened := slices.Clone(tabIDs)
 			known := make(map[string]struct{}, len(widened))
 			for _, tabID := range widened {
@@ -464,15 +447,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				if _, dup := known[row.ID]; dup {
 					continue
 				}
-				// The SAME liveness rule adoptExistingQuakeTerminal applies,
-				// and it has to be here too: the browser LISTS before it opens,
-				// so a row this fold hands back is adopted without ever
-				// reaching the open path that would have reaped it. A dead row
-				// there gives the user a panel that paints nothing and swallows
-				// every keystroke, and it never recovers -- a quake terminal
-				// refuses the Enter that restarts a terminal tab.
 				if !svc.quakeShellIsLive(row.ID) {
-					svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", row.ID)
+					svc.closeQuakeTerminal(row.ID)
 					continue
 				}
 				known[row.ID] = struct{}{}
@@ -485,13 +461,6 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return
 		}
 
-		// The DB pass is the ONE source of every terminal's is_quake flag and
-		// persisted startup_error, and it runs first so both passes below can
-		// read from it. The manager holds the live ring but neither fact, so a
-		// map built beside it needed a third loop afterwards to stamp the
-		// entries it had already produced -- three writers for one derived
-		// fact.
-		//
 		// A DB read failure has to fail the WHOLE call. Falling through to
 		// the verdict pass would leave `seen` holding only the ids the
 		// in-memory manager happens to hold, so every other requested id
@@ -505,6 +474,21 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			slog.Error("failed to list terminals from DB", "tab_ids", tabIDs, "error", err)
 			sendInternalError(sender, "failed to list terminals")
 			return
+		}
+		dbByID := make(map[string]struct{}, len(dbTerminals))
+		for i := range dbTerminals {
+			dbByID[dbTerminals[i].ID] = struct{}{}
+		}
+		quakeIDs := make(map[string]bool)
+		for _, id := range tabIDs {
+			if _, exists := dbByID[id]; exists {
+				continue
+			}
+			if q, ok := svc.QuakeTerminals.Get(id); ok {
+				quakeIDs[id] = true
+				dbByID[id] = struct{}{}
+				dbTerminals = append(dbTerminals, q.toDBTerminal())
+			}
 		}
 		rowsByID := make(map[string]*db.Terminal, len(dbTerminals))
 		for i := range dbTerminals {
@@ -528,21 +512,6 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 		// Collect from the in-memory manager and DB-only rows. This is the read of
 		// the runtime state: see the note above the call to git.
-		//
-		// Both passes take the status from deriveTerminalStatus, the one
-		// statement of the rule, which also feeds the WatchEvents replay. It
-		// reads the registry first and the Manager last, so a startup that ends
-		// in between reads READY and running, and never READY and exited. A
-		// terminal can register in the Manager after the read of ListByIDs, and
-		// the DB-only pass covers it the same way.
-		//
-		// The manager pass does not read the Exited flag of its entry, because
-		// that flag can disagree with the Manager when the status is read.
-		// ListByIDs took the flag BEFORE the registry read. A restart that ends
-		// in between pairs the flag of the old, exited shell with a registry that
-		// no longer holds the startup, so the reply would say EXITED over a shell
-		// that runs. A shell that exits in between disagrees the other way.
-		// IsRunning, read last, states the terminal closest to the reply.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
@@ -550,10 +519,6 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			seen[e.ID] = true
 			row := rowsByID[e.ID]
 			if row == nil {
-				// The Manager can hold a terminal that the DB read did not
-				// return, such as one whose close is in progress: the query
-				// returns no closed row. The reply then has no persisted
-				// startup_error or is_quake flag to read for it.
 				row = &db.Terminal{ID: e.ID}
 			}
 			status, startupError, startupMessage := svc.deriveTerminalStatus(row)
@@ -569,7 +534,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Status:          status,
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
-				Quake:           row.IsQuake,
+				Quake:           quakeIDs[e.ID],
 				GitStatus:       gitStatuses[e.ID],
 			}
 			terminals = append(terminals, ti)
@@ -581,12 +546,6 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 			seen[ts.ID] = true
 			status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)
-			// DB-persisted screen is just the bytes; the backend has no
-			// live ring for this terminal (PTY exited or worker
-			// restarted), so the "end offset" equals the screen
-			// length. The client's after_offset will be the same
-			// value, and WatchEvents will return nothing for a dead
-			// terminal — correct, since there are no new bytes.
 			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:      ts.ID,
 				Cols:            uint32(ts.Cols),
@@ -599,7 +558,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Status:          status,
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
-				Quake:           ts.IsQuake,
+				Quake:           quakeIDs[ts.ID],
 				GitStatus:       gitStatuses[ts.ID],
 			}
 			terminals = append(terminals, ti)
@@ -758,15 +717,17 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		svc.failTerminalStartup(terminalID, gm, gmErr, h)
 		return
 	}
-	// Link the tab to its worktree unless a CloseTab already landed during
-	// startup and decided the worktree's fate itself (see
-	// registerTabForWorktreeAfterClose). Symmetric with the agent startup guard.
-	terminalClosedDuringStartup := false
-	if latest, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID); fetchErr == nil {
-		terminalClosedDuringStartup = latest.ClosedAt.Valid
+	// Link the tab to its worktree unless it is a quake terminal (quake
+	// terminals never enter SQLite or worktree_tabs) or a CloseTab already
+	// landed during startup.
+	if !spawnInfo.IsQuake {
+		terminalClosedDuringStartup := false
+		if latest, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID); fetchErr == nil {
+			terminalClosedDuringStartup = latest.ClosedAt.Valid
+		}
+		svc.linkWorktreeAfterPhase0(&svc.TerminalStartup.startupCore, h, gm.WorktreeID,
+			leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, terminalClosedDuringStartup)
 	}
-	svc.linkWorktreeAfterPhase0(&svc.TerminalStartup.startupCore, h, gm.WorktreeID,
-		leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, terminalClosedDuringStartup)
 	if gm.WorkingDir != "" {
 		opts.WorkingDir = gm.WorkingDir
 	}
@@ -792,14 +753,26 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 
 	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
 
-	// Post-spawn fetch: closed_at detects a CloseTab that landed
-	// during the PTY spawn (must neither broadcast READY nor leave a
-	// running PTY behind), and title absorbs the value the frontend may
-	// have persisted between OpenTerminal returning and StartTerminal
-	// registering in-memory metadata. Single narrow query — avoids
-	// re-reading the screen BLOB the handler entry already fetched.
-	postSpawn, postSpawnErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
-	switch svc.TerminalStartup.interruptionOf(h, postSpawnErr == nil && postSpawn.ClosedAt.Valid, postSpawnErr == nil && postSpawn.WorkspaceArchived) {
+	var (
+		closedDuringSpawn   bool
+		archivedDuringSpawn bool
+		postSpawnTitle      string
+	)
+	if spawnInfo.IsQuake {
+		q, ok := svc.QuakeTerminals.Get(terminalID)
+		closedDuringSpawn = !ok
+		if ok {
+			postSpawnTitle = q.Title
+		}
+	} else {
+		postSpawn, postSpawnErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
+		if postSpawnErr == nil {
+			closedDuringSpawn = postSpawn.ClosedAt.Valid
+			archivedDuringSpawn = postSpawn.WorkspaceArchived
+			postSpawnTitle = postSpawn.Title
+		}
+	}
+	switch svc.TerminalStartup.interruptionOf(h, closedDuringSpawn, archivedDuringSpawn) {
 	case interruptionClosed:
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
@@ -826,8 +799,8 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		return
 	}
 
-	if postSpawnErr == nil && postSpawn.Title != "" {
-		svc.Terminals.UpdateTitle(terminalID, postSpawn.Title)
+	if postSpawnTitle != "" {
+		svc.Terminals.UpdateTitle(terminalID, postSpawnTitle)
 	}
 
 	// Apply any ResizeTerminal that arrived after the pre-spawn wait
@@ -993,6 +966,10 @@ func (svc *Service) failTerminalStartup(terminalID string, gm gitModeResult, cau
 // terminals.startup_error column so the startup panel survives a worker
 // restart that wipes the in-memory registry.
 func (svc *Service) persistTerminalStartupError(terminalID, errMsg string) {
+	if svc.QuakeTerminals.Has(terminalID) {
+		svc.QuakeTerminals.SetStartupError(terminalID, errMsg)
+		return
+	}
 	if err := svc.Queries.SetTerminalStartupError(bgCtx(), db.SetTerminalStartupErrorParams{
 		StartupError: errMsg,
 		ID:           terminalID,
@@ -1372,7 +1349,7 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 		if notices := svc.shutdownNotifiedTerminals.Load(); notices != nil {
 			if _, notified := (*notices)[tid]; notified && svc.Terminals.HangUpRequested(tid) {
 				if snapshot, ok := svc.captureTerminalExit(tid); ok {
-					svc.saveTerminalExit(tid, exitCodeUnknown, snapshot)
+					svc.saveTerminalExit(tid, snapshot)
 				}
 				svc.clearTerminalBellCoalesce(tid)
 				return
@@ -1400,58 +1377,26 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 // there is no pane to leave behind, and the panel retracts -- so its exit IS
 // its end.
 //
-// Without this the row would stay open with a dead PTY, and the unique index
-// over live quake rows would then refuse a new one: the next toggle would adopt
-// the corpse instead of starting a shell. It also stops the reconciler having to
-// reap a row nothing will ever use.
-//
 // On its own goroutine, because the caller is the terminal's own reader: the
-// shared teardown calls RemoveTerminal, which stops the terminal this handler is
+// teardown calls RemoveTerminal, which stops the terminal this handler is
 // running inside.
-//
-// The read is NARROW for the reason GetTerminalExitCode gives: GetTerminal
-// answers the same question and reads the 100KB screen blob, and this runs on
-// every terminal exit rather than on a quake terminal's alone.
 func (svc *Service) closeQuakeTerminalOnShellExit(terminalID string) {
-	row, err := svc.Queries.GetTerminalQuakeAndClosed(bgCtx(), terminalID)
-	if err != nil {
-		// A failure here is NOT "this is not a quake terminal". It leaves the
-		// row open with a dead PTY, which the unique index then reads as the
-		// directory's live shell and which no later pass reclaims while a tab
-		// still works there -- so it must be visible rather than silent. The
-		// worker boot sweep is the backstop that eventually closes it.
-		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Error("failed to read terminal is_quake on shell exit", "terminal_id", terminalID, "error", err)
-		}
+	if !svc.QuakeTerminals.Has(terminalID) {
 		return
 	}
-	if !row.IsQuake || row.ClosedAt.Valid {
-		return
-	}
-	// Counted as service cleanup, so Shutdown joins the close before the
-	// database closes. A shutdown that already began admits nothing: the row
-	// stays open here,
-	// and the boot sweep (CloseOrphanedQuakeTerminals) closes it.
+	// Counted as service cleanup, so Shutdown joins the close before tearing
+	// down the service.
 	if !svc.beginCleanup() {
 		return
 	}
 	go func() {
 		defer svc.Cleanup.Done()
-		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)
+		svc.closeQuakeTerminal(terminalID)
 	}()
 }
 
-// quakeShellIsLive answers whether a QUAKE row still has a shell that this
+// quakeShellIsLive answers whether a QUAKE terminal still has a shell that this
 // process hosts.
-//
-// A quake row is valid only while its PTY lives here, and three states break
-// that link with the row left open. The worker restarted and lost every PTY.
-// The shell exited and the close is still on its goroutine. The spawn failed,
-// which persists a startup error and never stamps closed_at. A row in any of
-// them is dead, and handing one back gives the user a panel that paints nothing
-// and swallows every keystroke: a quake terminal refuses the Enter that restarts
-// a terminal TAB, so there is no way out but to close every tab in the
-// directory.
 func (svc *Service) quakeShellIsLive(terminalID string) bool {
 	return svc.shellIsLive(terminalID, func() bool { return svc.Terminals.IsRunning(terminalID) })
 }
@@ -1477,26 +1422,17 @@ func (svc *Service) shellIsLive(terminalID string, shellRuns func() bool) bool {
 // quake terminal when that terminal still has a live shell, and reports whether
 // it answered.
 //
-// Shared by OpenTerminal's pre-mint check and its lost-race retry, so the two
-// cannot answer with different fields.
-//
-// A row whose shell is gone is CLOSED here rather than handed back. The unique
-// partial index counts it as the directory's one live quake terminal, so
-// leaving it in place refuses every replacement for as long as a tab works
-// there.
+// A stale entry whose shell is gone is removed here rather than handed back.
 func (svc *Service) adoptExistingQuakeTerminal(sender channel.ResponseWriter, isQuake bool, workingDir string) bool {
 	if !isQuake {
 		return false
 	}
-	existing, err := svc.Queries.GetOpenQuakeTerminalByWorkingDir(bgCtx(), workingDir)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Error("failed to look up the existing quake terminal", "working_dir", workingDir, "error", err)
-		}
+	existing, ok := svc.QuakeTerminals.GetByWorkingDir(workingDir)
+	if !ok {
 		return false
 	}
 	if !svc.quakeShellIsLive(existing.ID) {
-		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", existing.ID)
+		svc.closeQuakeTerminal(existing.ID)
 		return false
 	}
 	sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
@@ -1504,29 +1440,6 @@ func (svc *Service) adoptExistingQuakeTerminal(sender channel.ResponseWriter, is
 		Title:      existing.Title,
 	})
 	return true
-}
-
-// CloseOrphanedQuakeTerminals closes every open QUAKE row whose shell this
-// process does not host. The worker runs it once at boot.
-//
-// A quake terminal is valid only while this process hosts its PTY, and a
-// restart breaks that link with the row still open. No other pass reclaims one:
-// the orphan reconciler measures a quake terminal by whether any open tab still
-// works in its DIRECTORY, so one live tab there keeps the dead row open for as
-// long as it exists. The next open would then adopt a terminal with no PTY.
-func (svc *Service) CloseOrphanedQuakeTerminals(ctx context.Context) {
-	ids, err := svc.Queries.ListOpenQuakeTerminalIDs(ctx)
-	if err != nil {
-		slog.Warn("failed to list quake terminals at startup", "error", err)
-		return
-	}
-	for _, terminalID := range ids {
-		if svc.quakeShellIsLive(terminalID) {
-			continue
-		}
-		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)
-		slog.Info("closed a quake terminal that did not survive the restart", "terminal_id", terminalID)
-	}
 }
 
 // clearTerminalBellCoalesce drops the per-terminal bell timer so closed

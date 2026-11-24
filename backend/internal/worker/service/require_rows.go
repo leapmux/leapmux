@@ -24,6 +24,11 @@ func (svc *Service) requireAgent(sender channel.ResponseWriter, agentID string) 
 
 // requireTerminal is requireAgent's terminal mirror.
 func (svc *Service) requireTerminal(sender channel.ResponseWriter, terminalID string) (db.Terminal, bool) {
+	if terminalID != "" {
+		if q, ok := svc.QuakeTerminals.Get(terminalID); ok {
+			return q.toDBTerminal(), true
+		}
+	}
 	return requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminal)
 }
 
@@ -53,6 +58,9 @@ func (svc *Service) requireAgentID(sender channel.ResponseWriter, agentID string
 // requireTerminalID is the terminal mirror of requireAgentID: a narrow lookup
 // that skips the screen BLOB a full GetTerminal would read.
 func (svc *Service) requireTerminalID(sender channel.ResponseWriter, terminalID string) (archived, ok bool) {
+	if terminalID != "" && svc.QuakeTerminals.Has(terminalID) {
+		return false, true
+	}
 	row, ok := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalID)
 	return row.WorkspaceArchived, ok
 }

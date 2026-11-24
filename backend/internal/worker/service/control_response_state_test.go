@@ -31,7 +31,7 @@ func TestControlResponseReportsDeliveryState(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			svc, dispatcher, writer := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
 			})
@@ -105,20 +105,20 @@ func TestControlRequestReplayRetainsResponseState(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
 			payload := []byte(` {"id":9007199254740993,"method":"item/commandExecution/requestApproval"} `)
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", Payload: payload,
 			})
 			err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: state.stored,
 			})
 			require.NoError(t, err)
-			replayed, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			replayed, err := buildAgentControlRequest(svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "claim")
 			require.NoError(t, err)
 			require.Equal(t, payload, replayed.Payload)
 			// Stored delivery states map to public response states.
 			require.Equal(t, state.wire, replayed.ResponseState)
-			newRequest, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			newRequest, err := buildAgentControlRequest(svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "replacement-claim")
 			require.NoError(t, err)
 			require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, newRequest.ResponseState)
@@ -160,7 +160,7 @@ func TestControlResponseReplayRecoversADeletedRequest(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
 			payload := []byte(` {"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}} `)
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "old", Payload: payload, SourceSeq: 23,
 			})
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
@@ -172,7 +172,7 @@ func TestControlResponseReplayRecoversADeletedRequest(t *testing.T) {
 			require.Error(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: []byte(`{"id":"request","result":{"decision":"accept"}}`), ClaimToken: "old"}))
 			svc.Output.ClearPendingControlRequests("agent-1")
 			if replaced {
-				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+				createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 					AgentID: "agent-1", RequestID: "request", ClaimToken: "new", SourceSeq: 99,
 					Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"date"}}`),
 				})
@@ -206,8 +206,7 @@ func TestControlResponseReplayRecoversADeletedRequest(t *testing.T) {
 			require.Equal(t, "old", cancellations[0].ClaimToken)
 			require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, cancellations[0].ResponseState)
 			if replaced {
-				remaining, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
-				require.NoError(t, err)
+				remaining := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "request")
 				require.Equal(t, "new", remaining.ClaimToken)
 			}
 		})
@@ -221,10 +220,10 @@ func TestControlRequestReplayCarriesNonBlocking(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 	payload := []byte(` {"id":"question","method":"item/tool/requestUserInput"} `)
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1", Payload: payload, NonBlocking: true,
 	})
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "approval-1", ClaimToken: "claim-2",
 		Payload: []byte(` {"id":"approval","method":"item/commandExecution/requestApproval"} `),
 	})
@@ -291,7 +290,7 @@ func TestBroadcastControlResponseStateCarriesNonBlocking(t *testing.T) {
 			require.NoError(t, err)
 			payload := []byte(` {"id":"question","method":"item/tool/requestUserInput"} `)
 			if branch == "request row" {
-				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+				createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 					AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1", Payload: payload, NonBlocking: true,
 				})
 			} else {

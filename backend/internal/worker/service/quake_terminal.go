@@ -16,8 +16,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"log/slog"
 	"strconv"
 
@@ -142,22 +140,14 @@ func (svc *Service) closeQuakeTerminalIfUnused(userID, workingDir string, closin
 	if workingDir == "" {
 		return
 	}
-	quake, err := svc.Queries.GetOpenQuakeTerminalByWorkingDir(bgCtx(), workingDir)
-	if err != nil {
-		// sql.ErrNoRows is the ordinary "this directory has no quake terminal"
-		// answer and stays silent. Every other failure would leave a live PTY
-		// behind with its last tab gone, and only the orphan reconciler's next
-		// pass reclaims it -- so it is logged rather than swallowed, the way
-		// every other DB failure on the close paths is.
-		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Error("failed to look up the quake terminal for a tab close", "working_dir", workingDir, "error", err)
-		}
+	quake, ok := svc.QuakeTerminals.GetByWorkingDir(workingDir)
+	if !ok {
 		return
 	}
 	if svc.workingDirStillHasTab(workingDir, tabRefKey(closingKind, closingTabID)) {
 		return
 	}
-	svc.closeTerminalTabCommon(userID, quake.ID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, linkPolicy)
+	svc.closeQuakeTerminal(quake.ID)
 }
 
 // workingDirStillHasTab reports whether any LIVE tab other than the one
@@ -179,18 +169,11 @@ func (svc *Service) workingDirStillHasTab(workingDir, excludeKey string) bool {
 
 // unusedQuakeTerminals returns every open quake terminal whose directory has no
 // live tab left, and the tabs of each quake directory that it read on the way.
-//
-// THE sweep, in one function, for the same reason dirHasLiveTab is THE
-// predicate: the archive path and the orphan reconciler both ask this, and two
-// spellings of "which shells have nobody left?" is how they would come to reap
-// different rows. Each caller keeps only what genuinely differs -- the archive
-// path filters by what its request changed and closes at once, the reconciler
-// waits out a grace window first.
-func unusedQuakeTerminals(ctx context.Context, q *db.Queries) (rows []db.ListOpenQuakeTerminalsRow, byDir map[string][]dirTabRef, err error) {
-	all, err := q.ListOpenQuakeTerminals(ctx)
-	if err != nil {
-		return nil, nil, err
+func unusedQuakeTerminals(ctx context.Context, q *db.Queries, listOpenQuake func() []QuakeTerminal) (rows []QuakeTerminal, byDir map[string][]dirTabRef, err error) {
+	if listOpenQuake == nil {
+		return nil, nil, nil
 	}
+	all := listOpenQuake()
 	if len(all) == 0 {
 		return nil, nil, nil
 	}
@@ -214,7 +197,7 @@ func unusedQuakeTerminals(ctx context.Context, q *db.Queries) (rows []db.ListOpe
 	for _, tab := range tabs {
 		byDir[tab.WorkingDir] = append(byDir[tab.WorkingDir], tab)
 	}
-	unused := make([]db.ListOpenQuakeTerminalsRow, 0, len(all))
+	unused := make([]QuakeTerminal, 0, len(all))
 	for _, row := range all {
 		if dirHasLiveTab(byDir[row.WorkingDir], "") {
 			continue
@@ -226,15 +209,6 @@ func unusedQuakeTerminals(ctx context.Context, q *db.Queries) (rows []db.ListOpe
 
 // closeUnusedQuakeTerminals closes the quake terminal of every directory that
 // `changed` emptied of live tabs.
-//
-// The sweep the ARCHIVE path runs. `changed` holds the tabs whose archive flag
-// actually MOVED, and a row is closed only when one of them worked in its
-// directory: an archive changes which tabs count as references, so a directory
-// this request did not touch cannot have become unused because of it. Sweeping
-// every open quake row instead closed a shell in an unrelated directory --
-// immediately, ahead of the grace window that reconcileQuakeTerminals gives the
-// same row, because a tab close and its quake reap arrive as two separate
-// writes.
 func (svc *Service) closeUnusedQuakeTerminals(ctx context.Context, changed archiveTabSet) {
 	touched := make(map[string]struct{}, len(changed.agents)+len(changed.terminals)+len(changed.payloads))
 	for _, id := range changed.agents {
@@ -253,7 +227,7 @@ func (svc *Service) closeUnusedQuakeTerminals(ctx context.Context, changed archi
 	if len(touched) == 0 {
 		return
 	}
-	rows, byDir, err := unusedQuakeTerminals(ctx, svc.Queries)
+	rows, byDir, err := unusedQuakeTerminals(ctx, svc.Queries, svc.QuakeTerminals.ListOpen)
 	if err != nil {
 		slog.Warn("failed to list the quake terminals for the unused sweep", "error", err)
 		return
@@ -265,7 +239,7 @@ func (svc *Service) closeUnusedQuakeTerminals(ctx context.Context, changed archi
 		if !anyTabIn(byDir[row.WorkingDir], touched) {
 			continue
 		}
-		svc.closeTerminalTabCommon("", row.ID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
+		svc.closeQuakeTerminal(row.ID)
 	}
 }
 

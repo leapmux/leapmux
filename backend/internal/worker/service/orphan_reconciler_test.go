@@ -64,12 +64,16 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.NewTextHandler(testWriter{t: t}, &slog.HandlerOptions{Level: slog.LevelError}))
 	}
-	teardown := &recordingTeardown{q: q, files: files}
+	quakes := service.NewQuakeTerminalStore()
+	teardown := &recordingTeardown{q: q, files: files, quakes: quakes}
 	if opts.BeginTabReconciliation == nil {
 		opts.BeginTabReconciliation = fixedReconciliationPassWithArchive(teardown.closeTab, applyArchive)
 	}
 	if opts.ResumeAgents == nil {
 		opts.ResumeAgents = func([]string) {}
+	}
+	if opts.ListOpenQuakeTerminals == nil {
+		opts.ListOpenQuakeTerminals = quakes.ListOpen
 	}
 	// These tests assert WHAT a reap does, not WHEN it is due, and they drive
 	// single passes on a real clock. Disable the grace so each one still reaps
@@ -200,8 +204,9 @@ func TestOrphanReconciler_Terminal_MissingOnHub_Closed(t *testing.T) {
 // the one shared teardown an online close runs, so there is no separate stopper
 // to fake.
 type recordingTeardown struct {
-	q     *db.Queries
-	files *service.TabPayloadStore
+	q      *db.Queries
+	files  *service.TabPayloadStore
+	quakes *service.QuakeTerminalStore
 
 	agents    []string
 	terminals []string
@@ -228,6 +233,10 @@ func (r *recordingTeardown) closeTab(tabType leapmuxv1.TabType, userID, tabID st
 		_, _ = r.q.CloseAgent(ctx, tabID)
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		r.terminals = append(r.terminals, tabID)
+		if r.quakes != nil && r.quakes.Has(tabID) {
+			r.quakes.Delete(tabID)
+			return
+		}
 		_, _ = r.q.CloseTerminal(ctx, tabID)
 	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
 		r.fileTabs = append(r.fileTabs, tabID)
@@ -326,9 +335,8 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testin
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "live-agent", WorkingDir: "/repo", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
-	}))
+	_, created := teardown.quakes.RegisterOrAdopt(service.QuakeTerminal{ID: "quake", WorkingDir: "/repo"})
+	require.True(t, created)
 	// The hub lists the agent tab and knows nothing of the quake terminal,
 	// which is the steady state for every quake panel the user ever opened.
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
@@ -337,9 +345,7 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testin
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	term, err := q.GetTerminal(ctx, "quake")
-	require.NoError(t, err)
-	assert.False(t, term.ClosedAt.Valid, "a directory with a live tab keeps its shell")
+	assert.True(t, teardown.quakes.Has("quake"), "a directory with a live tab keeps its shell")
 	assert.Empty(t, teardown.terminals, "a live quake terminal must NOT be handed to the teardown")
 }
 
@@ -356,16 +362,13 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryHasNoTabsLeft_Closed(t *testing
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "ghost-agent", WorkingDir: "/repo", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
-	}))
+	_, created := teardown.quakes.RegisterOrAdopt(service.QuakeTerminal{ID: "quake", WorkingDir: "/repo"})
+	require.True(t, created)
 	setFake("user-1", nil, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	term, err := q.GetTerminal(ctx, "quake")
-	require.NoError(t, err)
-	assert.True(t, term.ClosedAt.Valid, "a directory with no tabs left loses its shell")
+	assert.False(t, teardown.quakes.Has("quake"), "a directory with no tabs left loses its shell")
 	assert.Contains(t, teardown.terminals, "quake")
 }
 
@@ -381,19 +384,32 @@ func TestOrphanReconciler_QuakeTerminal_ATabInAnotherDirectoryIsNoReference(t *t
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "elsewhere", WorkingDir: "/other", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
-	}))
+	_, created := teardown.quakes.RegisterOrAdopt(service.QuakeTerminal{ID: "quake", WorkingDir: "/repo"})
+	require.True(t, created)
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
 		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "elsewhere"}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	term, err := q.GetTerminal(ctx, "quake")
-	require.NoError(t, err)
-	assert.True(t, term.ClosedAt.Valid, "/other does not keep /repo's shell alive")
+	assert.False(t, teardown.quakes.Has("quake"), "/other does not keep /repo's shell alive")
 	assert.Contains(t, teardown.terminals, "quake")
+}
+
+func TestOrphanReconciler_ReapsQuakeWhenSQLiteTablesEmpty(t *testing.T) {
+	t.Parallel()
+
+	_, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
+	ctx := context.Background()
+
+	_, created := teardown.quakes.RegisterOrAdopt(service.QuakeTerminal{ID: "orphan-quake", WorkingDir: "/empty-worker"})
+	require.True(t, created)
+	setFake("user-1", nil, nil)
+
+	require.True(t, runOnce(ctx, rec), "the pass must run and converge even when SQLite tables are empty")
+
+	assert.False(t, teardown.quakes.Has("orphan-quake"), "an orphaned quake terminal must be reaped when SQLite has zero rows")
+	assert.Contains(t, teardown.terminals, "orphan-quake")
 }
 
 func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {

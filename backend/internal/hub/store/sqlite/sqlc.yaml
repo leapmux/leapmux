@@ -55,14 +55,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "AppRegistrationSource"
-          - column: "oauth_states.purpose"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "OAuthStatePurpose"
-          - column: "webauthn_sessions.kind"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "WebAuthnSessionKind"
           - column: "oauth_providers.provider_type"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -71,10 +63,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "WorkspaceLifecycleOp"
-          - column: "device_authorizations.state"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "DeviceAuthorizationState"
           - column: "api_tokens.issuance"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

@@ -17,18 +17,21 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usersettings"
+	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
-	store     store.Store
-	cfg       *config.Config
-	set       *settings.Manager
-	lifecycle *auth.CredentialLifecycleEffects
-	mail      mail.Sender
-	renderer  mail.Renderer
-	keystore  *keystore.Keystore
+	store            store.Store
+	cfg              *config.Config
+	set              *settings.Manager
+	lifecycle        *auth.CredentialLifecycleEffects
+	mail             mail.Sender
+	renderer         mail.Renderer
+	keystore         *keystore.Keystore
+	webauthnSessions *hubwebauthn.SessionStore
+	deviceAuths      DeviceAuthorizationStore
 	// The clock every instant on the elevation path comes from: the grant,
 	// the predicate, the slide, and the first-credential freshness rule.
 	clockSeam
@@ -38,11 +41,27 @@ type UserService struct {
 // public URL used to build absolute deep-links in the verification
 // emails sent on email-change and resend. ks encrypts passkey material;
 // pass nil only in tests that do not exercise passkey RPCs.
-func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, sender mail.Sender, renderer mail.Renderer, ks *keystore.Keystore) *UserService {
+func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, sender mail.Sender, renderer mail.Renderer, ks *keystore.Keystore, webauthnSessions *hubwebauthn.SessionStore, deviceAuths DeviceAuthorizationStore) *UserService {
 	if lifecycle == nil {
 		panic("user service requires credential lifecycle effects")
 	}
-	return &UserService{store: st, cfg: cfg, set: set, lifecycle: lifecycle, mail: sender, renderer: renderer, keystore: ks}
+	if webauthnSessions == nil {
+		webauthnSessions = hubwebauthn.NewSessionStore()
+	}
+	if deviceAuths == nil {
+		deviceAuths = NewMemoryDeviceAuthorizationStore()
+	}
+	return &UserService{
+		store:            st,
+		cfg:              cfg,
+		set:              set,
+		lifecycle:        lifecycle,
+		mail:             sender,
+		renderer:         renderer,
+		keystore:         ks,
+		webauthnSessions: webauthnSessions,
+		deviceAuths:      deviceAuths,
+	}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *leapmuxv1.UpdateProfileRequest) (*leapmuxv1.UpdateProfileResponse, error) {

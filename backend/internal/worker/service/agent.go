@@ -1237,13 +1237,13 @@ func (svc *Service) replayAgentCatchUp(
 
 	// Replay pending control requests.
 	replayedControls := make(map[controlRequestInstance]struct{})
-	controlReqs, err := svc.Queries.ListControlRequestsByAgentID(bgCtx(), agentID)
+	controlReqs, err := svc.Output.ListControlRequests(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("failed to list control requests for replay", "agent_id", agentID, "error", err)
 	} else {
 		for _, cr := range controlReqs {
 			replayedControls[controlRequestInstance{RequestID: cr.RequestID, ClaimToken: cr.ClaimToken}] = struct{}{}
-			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID, NonBlocking: cr.NonBlocking}, cr.ClaimToken)
+			request, stateErr := buildAgentControlRequest(svc.Output, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID, NonBlocking: cr.NonBlocking}, cr.ClaimToken)
 			if stateErr != nil {
 				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", cr.RequestID, "error", stateErr)
 			}
@@ -1267,7 +1267,7 @@ func (svc *Service) replayAgentCatchUp(
 			if _, exists := replayedControls[controlRequestInstance{RequestID: answer.RequestID, ClaimToken: answer.ClaimToken}]; exists {
 				continue
 			}
-			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, answer.AgentProvider, agent.ControlRequest{
+			request, stateErr := buildAgentControlRequest(svc.Output, agentID, answer.AgentProvider, agent.ControlRequest{
 				RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID, NonBlocking: answer.NonBlocking,
 			}, answer.ClaimToken)
 			if stateErr != nil {
@@ -4189,8 +4189,8 @@ func broadcastReplayAgentEvent(sink *replaySink, replayAgentID string, event *le
 	})
 }
 
-func buildAgentControlRequest(queries *db.Queries, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) (*leapmuxv1.AgentControlRequest, error) {
-	state, err := controlResponseState(queries, agentID, request.RequestID, claimToken)
+func buildAgentControlRequest(output *OutputHandler, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) (*leapmuxv1.AgentControlRequest, error) {
+	state, err := controlResponseState(output, agentID, request.RequestID, claimToken)
 	return &leapmuxv1.AgentControlRequest{
 		ResponseState:  state,
 		AgentSessionId: request.AgentSessionID,

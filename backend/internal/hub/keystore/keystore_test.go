@@ -366,16 +366,6 @@ func TestPasskeyPublicKeyAAD(t *testing.T) {
 	assert.Equal(t, []byte("passkey_public_key:cred-row-1"), aad)
 }
 
-func TestWebAuthnPayloadAAD(t *testing.T) {
-	aad := WebAuthnPayloadAAD("session-1")
-	assert.Equal(t, []byte("webauthn_payload:session-1"), aad)
-}
-
-func TestWebAuthnSessionDataAAD(t *testing.T) {
-	aad := WebAuthnSessionDataAAD("session-1")
-	assert.Equal(t, []byte("webauthn_session:session-1"), aad)
-}
-
 func TestPasskeyAADBindingRejectsSwap(t *testing.T) {
 	ks := newTestKeystore(t)
 	ct, err := ks.Encrypt([]byte("cose-key"), PasskeyPublicKeyAAD("row-a"))

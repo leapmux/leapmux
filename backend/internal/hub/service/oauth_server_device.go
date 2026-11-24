@@ -80,7 +80,7 @@ func (h *OAuthServerHandler) handleDeviceAuthorization(w http.ResponseWriter, r 
 	if !ok {
 		return
 	}
-	grant, err := h.createDeviceGrant(r.Context(), store.CreateDeviceAuthorizationParams{
+	grant, err := h.createDeviceGrant(r.Context(), CreateDeviceAuthorizationParams{
 		DeviceName:      normalizeInstallationName(r.FormValue("installation_name")),
 		ClientID:        app.ClientID,
 		RequestedScopes: stored,
@@ -122,7 +122,7 @@ const DeviceGrantDrawLimit = 4
 // ONE helper for the two insert sites -- an app login and a credential step-up
 // -- because they share the row. A redraw that only one of them performed
 // would leave the other answering 500 for the same collision.
-func (h *OAuthServerHandler) createDeviceGrant(ctx context.Context, p store.CreateDeviceAuthorizationParams) (deviceGrant, error) {
+func (h *OAuthServerHandler) createDeviceGrant(ctx context.Context, p CreateDeviceAuthorizationParams) (deviceGrant, error) {
 	var err error
 	for range DeviceGrantDrawLimit {
 		deviceCode := id.Generate()
@@ -132,7 +132,7 @@ func (h *OAuthServerHandler) createDeviceGrant(ctx context.Context, p store.Crea
 		// verifycode.Format adds the display form (XXX-XXX) when the response
 		// builds verification_uri_complete.
 		p.UserCode = verifycode.Generate()
-		if err = h.store.DeviceAuthorizations().Create(ctx, p); err == nil {
+		if err = h.deviceAuths.Create(ctx, p); err == nil {
 			return deviceGrant{DeviceCode: deviceCode, UserCode: p.UserCode}, nil
 		}
 		if !errors.Is(err, store.ErrConflict) {
@@ -260,7 +260,7 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 			http.Error(w, errDeviceGrantNotApprovable.Error(), http.StatusBadRequest)
 			return
 		}
-		rows, err := h.store.DeviceAuthorizations().DenyByUserCode(r.Context(), normalized)
+		rows, err := h.deviceAuths.DenyByUserCode(r.Context(), normalized)
 		if err != nil {
 			writeInternalError(w, "device authorization denial failed", err)
 			return
@@ -337,10 +337,11 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 	if elevating {
 		elevateTokenID = grant.ElevateTokenID
 	}
-	err = h.approveGrant(r.Context(), store.ApproveDeviceAuthorizationByUserCodeParams{
-		UserCode:      normalized,
-		UserID:        user.ID,
-		GrantedScopes: granted,
+	err = h.approveGrant(r.Context(), ApproveDeviceAuthorizationParams{
+		UserCode:       normalized,
+		UserID:         user.ID,
+		GrantedScopes:  granted,
+		AuthGeneration: user.UserAuthGeneration,
 	}, elevateTokenID)
 	switch {
 	case err == nil:
@@ -382,47 +383,55 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 var errDeviceGrantNotApprovable = errors.New(
 	"that code cannot be authorized: it is unknown, expired, or already answered")
 
-// approveGrant commits the approval and, for a step-up, the elevation that
-// approval grants -- in ONE transaction.
-//
-// The two writes used to be independent, and nothing reverted the approval
-// when the elevation failed. The row then stayed approved, with a live
-// elevate_token_id and no window: the poll reported "verified", the client
-// retried the restricted command, and the hub refused it again, with no error
-// the user could act on. One transaction is what makes "approved" and
-// "elevated" the same fact.
+// approveGrant commits the approval and, for a step-up, reserves the in-memory
+// approval while elevating the durable credential so a failed elevation reverts
+// cleanly to pending with no approver recorded.
 //
 // The instant comes from h.now(), never from time.Now(): the handler's seam is
 // the one clock every instant it mints or compares comes from, so a test that
 // advances the fake clock past the grant TTL sees the expiry it set up.
 func (h *OAuthServerHandler) approveGrant(
 	ctx context.Context,
-	p store.ApproveDeviceAuthorizationByUserCodeParams,
+	p ApproveDeviceAuthorizationParams,
 	elevateTokenID string,
 ) error {
-	return h.store.RunInTransaction(ctx, func(tx store.Store) error {
-		rows, err := tx.DeviceAuthorizations().ApproveByUserCode(ctx, p, h.now().UTC())
+	now := h.now().UTC()
+	if elevateTokenID == "" {
+		rows, err := h.deviceAuths.ApproveByUserCode(ctx, p, now)
 		if err != nil {
 			return fmt.Errorf("approve device authorization: %w", err)
 		}
 		if rows == 0 {
 			return errDeviceGrantNotApprovable
 		}
-		if elevateTokenID == "" {
-			return nil
+		return nil
+	}
+	res, ok := h.deviceAuths.ReserveApproveByUserCode(p.UserCode, p.UserID, now)
+	if !ok {
+		return errDeviceGrantNotApprovable
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			h.deviceAuths.ReleaseApproveByUserCode(res)
 		}
-		return h.elevateGrantedToken(ctx, tx, elevateTokenID, p.UserID)
-	})
+	}()
+	if err := h.elevateGrantedToken(ctx, h.store, elevateTokenID, p.UserID); err != nil {
+		return err
+	}
+	h.deviceAuths.CommitApproveByUserCode(res, p)
+	committed = true
+	return nil
 }
 
 // isElevationGrant reports whether approving this grant VERIFIES an app
 // credential the account already holds, rather than issuing a new one. A nil
-// row is neither: the code identifies no live grant.
+// grant is neither: the code identifies no live grant.
 //
 // One predicate for the three places that ask -- the activation page, the
-// approval, and the token exchange -- because a raw test of the column at each
+// approval, and the token exchange -- because a raw test of the field at each
 // site is the same rule written three times.
-func isElevationGrant(row *store.DeviceAuthorization) bool {
+func isElevationGrant(row *DeviceAuthorization) bool {
 	return row != nil && row.ElevateTokenID != ""
 }
 
@@ -431,8 +440,8 @@ func isElevationGrant(row *store.DeviceAuthorization) bool {
 //
 // ONE lookup for the three questions the activation page asks -- which app
 // asked, what it asked for, and what approving it would DO -- because they must
-// answer from the same row. Read separately, a page could identify the app from
-// a live grant and decide its verb from a missing one.
+// answer from the same grant. Read separately, a page could identify the app
+// from a live grant and decide its verb from a missing one.
 //
 // A MISS is nil with no error, and it tells a caller nothing it could not
 // already learn: reaching this stage needs a signed-in and elevated session, and
@@ -444,12 +453,12 @@ func isElevationGrant(row *store.DeviceAuthorization) bool {
 // transient read failure rendered the issuance page for a step-up grant, and
 // the POST then approved that grant while it skipped the elevation the approval
 // exists to write.
-func (h *OAuthServerHandler) liveGrantByUserCode(ctx context.Context, rawUserCode string) (*store.DeviceAuthorization, error) {
+func (h *OAuthServerHandler) liveGrantByUserCode(ctx context.Context, rawUserCode string) (*DeviceAuthorization, error) {
 	normalized := verifycode.Normalize(rawUserCode)
 	if normalized == "" {
 		return nil, nil
 	}
-	row, err := h.store.DeviceAuthorizations().GetByUserCode(ctx, normalized)
+	row, err := h.deviceAuths.GetByUserCode(ctx, normalized)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, nil

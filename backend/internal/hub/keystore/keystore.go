@@ -40,16 +40,6 @@ func ProviderAAD(providerID string) []byte {
 	return []byte("oauth_provider:" + providerID)
 }
 
-// AccessTokenAAD returns the AAD for a user's OAuth access token.
-func AccessTokenAAD(userID, providerID string) []byte {
-	return []byte("access_token:" + userID + ":" + providerID)
-}
-
-// RefreshTokenAAD returns the AAD for a user's OAuth refresh token.
-func RefreshTokenAAD(userID, providerID string) []byte {
-	return []byte("refresh_token:" + userID + ":" + providerID)
-}
-
 // SettingsSecretAAD returns the AAD for a hub_settings row's secret half.
 // The key name is bound into the AAD because rows are keyed by setting
 // name: pasting one key's ciphertext into another key's secret column must
@@ -63,19 +53,6 @@ func SettingsSecretAAD(key string) []byte {
 // moved across rows.
 func PasskeyPublicKeyAAD(credentialRowID string) []byte {
 	return []byte("passkey_public_key:" + credentialRowID)
-}
-
-// WebAuthnSessionDataAAD returns the AAD for encrypted WebAuthn ceremony
-// state stored in webauthn_sessions.session_data.
-func WebAuthnSessionDataAAD(sessionID string) []byte {
-	return []byte("webauthn_session:" + sessionID)
-}
-
-// WebAuthnPayloadAAD returns the AAD for an encrypted signup draft stored
-// in webauthn_sessions.payload_json. The session id is bound so ciphertext
-// cannot be swapped between ceremony rows.
-func WebAuthnPayloadAAD(sessionID string) []byte {
-	return []byte("webauthn_payload:" + sessionID)
 }
 
 // Keystore manages a versioned key ring for XChaCha20-Poly1305 envelope

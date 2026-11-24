@@ -158,7 +158,7 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 			Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: filePath}},
 		},
 	}))
-	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
 		AgentID: agentID, RequestID: "control-1", Payload: []byte("pending"), ClaimToken: "claim-1",
 	})
 	require.NoError(t, svc.InputQueue.ScheduleAutoRetry(ctx, agentID, agent.AutoRetrySchedule{
@@ -196,7 +196,7 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	payload, err := svc.TabPayloads.Get(ctx, "user-1", "archive-file")
 	require.NoError(t, err)
 	assert.Equal(t, filePath, payload.GetFile().GetFilePath())
-	controls, err := svc.Queries.ListControlRequestsByAgentID(ctx, agentID)
+	controls, err := svc.Output.ListControlRequests(ctx, agentID)
 	require.NoError(t, err)
 	assert.Empty(t, controls)
 	// The archive removes the agent's scheduled retry, and unarchiving cannot
@@ -1069,4 +1069,51 @@ func TestArchiveWatchUsesNotifyInterest(t *testing.T) {
 	writer := watchAgent(t, dispatcher, id)
 	waitAgentWatchCount(t, svc, id, 1)
 	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, svc.Watchers.AgentModesForChannel(writer.ChannelID())[id])
+}
+
+func TestWorkspaceArchive_TerminalClosedBroadcastUsesLiveExitCode(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	svc, dispatcher, _ := setupTestService(t)
+	const terminalID = "archive-exited-terminal"
+	terminalDir := t.TempDir()
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: terminalID, WorkingDir: terminalDir,
+		Shell: testutil.TestShell(), Cols: 200, Rows: 24, Screen: []byte{},
+	}))
+	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
+		ID: terminalID, Shell: testutil.TestShell(), WorkingDir: terminalDir, Cols: 200, Rows: 24,
+	}, svc.makeTerminalOutputFn(terminalID), svc.makeTerminalExitFn()))
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
+
+	exitTerminalAndWait(t, svc, dispatcher, terminalID, " 23")
+	wantCode, ok := svc.Terminals.ExitCode(terminalID)
+	require.True(t, ok)
+
+	wWatch := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		UpdateId:  1,
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID, Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+	}, wWatch)
+	waitWatchUpdateAck(t, wWatch)
+
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		&leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID})
+
+	var closed *leapmuxv1.TerminalClosed
+	require.Eventually(t, func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			if ev := resp.GetTerminalEvent(); ev != nil && ev.GetTerminalId() == terminalID && ev.GetClosed() != nil {
+				closed = ev.GetClosed()
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond, "archiving an exited terminal must broadcast TerminalClosed")
+	assert.Equal(t, int32(wantCode), closed.GetExitCode())
 }

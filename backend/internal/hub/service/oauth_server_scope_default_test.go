@@ -100,7 +100,7 @@ func TestOmittedScopeDefaultsBelowTheAdminFamily(t *testing.T) {
 		defer func() { _ = approve.Body.Close() }()
 		require.Equal(t, http.StatusOK, approve.StatusCode)
 
-		row, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
+		row, err := env.deviceAuths.Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
 		require.NoError(t, err)
 		assertNoAdminScope(t, row.GrantedScopes)
 	})
@@ -127,7 +127,7 @@ func TestOmittedScopeDefaultsBelowTheAdminFamily(t *testing.T) {
 		defer func() { _ = approve.Body.Close() }()
 		require.Equal(t, http.StatusOK, approve.StatusCode)
 
-		row, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
+		row, err := env.deviceAuths.Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
 		require.NoError(t, err)
 		assert.Equal(t, "admin:read", row.GrantedScopes)
 

@@ -2169,7 +2169,7 @@ func TestManagerAdvanceRespectsLoginRecovery(t *testing.T) {
 
 		_, err := store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY)
 		require.NoError(t, err)
-		_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+		_, _, err = store.TurnStarted(t.Context(), "agent-1", true)
 		require.NoError(t, err)
 		_, err = store.Enqueue(t.Context(), NewItem{ID: "q1", AgentID: "agent-1", Text: "yes", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER})
 		require.NoError(t, err)

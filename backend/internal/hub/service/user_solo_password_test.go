@@ -58,6 +58,8 @@ func soloUserService(t *testing.T) (*service.UserService, store.Store, *auth.Sol
 		nil,
 		mail.Renderer{},
 		nil,
+		nil,
+		nil,
 	)
 
 	soloUser, err := auth.LoadSoloUser(context.Background(), st)
@@ -145,6 +147,8 @@ func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 		auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		nil,
 		mail.Renderer{},
+		nil,
+		nil,
 		nil,
 	)
 

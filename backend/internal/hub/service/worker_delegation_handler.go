@@ -77,11 +77,9 @@ type mintRequest struct {
 }
 
 type mintResponse struct {
-	AccessToken      string `json:"access_token"`
-	RefreshToken     string `json:"refresh_token"`
-	ExpiresIn        int64  `json:"expires_in"`
-	RefreshExpiresIn int64  `json:"refresh_expires_in"`
-	TokenID          string `json:"token_id"`
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int64  `json:"expires_in"`
+	TokenID     string `json:"token_id"`
 }
 
 func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +161,11 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 		ttl = auth.DelegationTokenTTL
 	}
 	tokenID := id.Generate()
-	pair := h.validator.MintBearerPair(auth.BearerKindDelegation, tokenID, time.Now(), ttl, auth.RefreshTokenTTL)
+	minted, err := h.validator.MintAccessBearer(auth.BearerKindDelegation, tokenID, time.Now(), ttl)
+	if err != nil {
+		http.Error(w, "mint token failed", http.StatusInternalServerError)
+		return
+	}
 	// The grant is the ceiling itself, stated through CeilingFor rather than a
 	// local literal: the set this mint writes and the set loadBearer narrows
 	// by at every validation are then one constant, so a scope added to the
@@ -174,24 +176,20 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := h.store.DelegationTokens().Create(r.Context(), store.CreateDelegationTokenParams{
-		GrantedScopes:    delegationGrant,
-		ID:               tokenID,
-		UserID:           uid,
-		WorkerID:         worker.ID,
-		SecretHash:       pair.AccessHash,
-		RefreshHash:      pair.RefreshHash,
-		ExpiresAt:        pair.AccessExpiresAt,
-		RefreshExpiresAt: &pair.RefreshExpiresAt,
+		GrantedScopes: delegationGrant,
+		ID:            tokenID,
+		UserID:        uid,
+		WorkerID:      worker.ID,
+		SecretHash:    minted.AccessHash,
+		ExpiresAt:     minted.AccessExpiresAt,
 	}); err != nil {
 		http.Error(w, "create token failed", http.StatusInternalServerError)
 		return
 	}
 	resp := mintResponse{
-		AccessToken:      pair.AccessBearer,
-		RefreshToken:     pair.RefreshBearer,
-		ExpiresIn:        int64(ttl / time.Second),
-		RefreshExpiresIn: int64(auth.RefreshTokenTTL / time.Second),
-		TokenID:          tokenID,
+		AccessToken: minted.AccessBearer,
+		ExpiresIn:   int64(ttl / time.Second),
+		TokenID:     tokenID,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

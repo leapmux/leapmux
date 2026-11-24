@@ -84,10 +84,9 @@ var unguardedOwnerFilterQueries = map[string]string{
 	// userid.OwnerFilter/userid.New spellings, not the IsZero check on an
 	// already-typed value, so they are registered here with that reason
 	// rather than contorting the guard into a re-mint round trip.
-	"RevokeUserAPITokensForOAuthClient":                "per-user disconnect cascade; its wrapper refuses a zero typed userid.UserID before binding",
-	"ListUserAPITokenIDsForOAuthClient":                "the per-user read pairing RevokeUserAPITokensForOAuthClient; same zero-id refusal",
-	"ConsumeActiveAuthorizationCodesForUserClient":     "the disconnect's outstanding-code spend; same typed-id, zero refused in the wrapper",
-	"ConsumeApprovedDeviceAuthorizationsForUserClient": "the disconnect's outstanding-grant spend; same typed-id, zero refused in the wrapper",
+	"RevokeUserAPITokensForOAuthClient":            "per-user disconnect cascade; its wrapper refuses a zero typed userid.UserID before binding",
+	"ListUserAPITokenIDsForOAuthClient":            "the per-user read pairing RevokeUserAPITokensForOAuthClient; same zero-id refusal",
+	"ConsumeActiveAuthorizationCodesForUserClient": "the disconnect's outstanding-code spend; same typed-id, zero refused in the wrapper",
 }
 
 // unscopedOwnerKeyedQueries are the queries that touch an owner-keyed table --
@@ -118,17 +117,9 @@ var unscopedOwnerKeyedQueries = map[string]string{
 	// Each of these exists to walk EVERY owner's rows; naming the owner column
 	// would not narrow a mistake, it would break the feature.
 
-	// Encryption-key rotation re-encrypts every stored OAuth token, and the
-	// admin driving it is not the owner of any of them.
-	"ListOAuthTokensByKeyVersion":  "key rotation re-encrypts every owner's tokens; scoping it to one owner would leave the rest at the old key version",
-	"CountOAuthTokensByKeyVersion": "the progress counter for the rotation above; it must count what that query will rewrite",
-	// Background refresh, driven by a timer rather than by a caller.
-	"ListExpiringOAuthTokens": "the refresh sweep is server-initiated and has no caller identity; it must see every owner's expiring tokens or those users silently lose their provider session",
 	// Provider teardown: deleting an oauth_providers row must take every
-	// user's link and token with it, which is what the FK cascade would do
-	// anyway.
-	"DeleteOAuthTokensByProvider":    "deleting a provider must revoke every owner's tokens for it; the users(id) FK cascades the other axis identically",
-	"DeleteOAuthUserLinksByProvider": "deleting a provider must drop every owner's link to it; see DeleteOAuthTokensByProvider",
+	// user's link with it, which is what the FK cascade would do anyway.
+	"DeleteOAuthUserLinksByProvider": "deleting a provider must drop every owner's link to it; the users(id) FK cascades the other axis identically",
 	// (DeleteUserOpBatchesBeforePhysical, the CRDT op-batch retention sweep, used
 	// to sit here. It now NAMES user_id -- correlating each batch to its own
 	// owner's compaction watermark so it cannot delete a tail that user's

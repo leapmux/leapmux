@@ -47,24 +47,24 @@ func passkeyRPConfig(ctx context.Context, set *settings.Manager, cfg *config.Con
 // newWebAuthnService builds the per-request WebAuthn service shared by the
 // auth and user services. Call it when a CEREMONY runs; a caller that only
 // needs the relying-party answer takes passkeyRPConfig above.
-func newWebAuthnService(ctx context.Context, set *settings.Manager, cfg *config.Config, ks *keystore.Keystore, st store.Store) (*hubwebauthn.Service, error) {
+func newWebAuthnService(ctx context.Context, set *settings.Manager, cfg *config.Config, ks *keystore.Keystore, st store.Store, sessions *hubwebauthn.SessionStore) (*hubwebauthn.Service, error) {
 	rp, err := passkeyRPConfig(ctx, set, cfg, ks)
 	if err != nil {
 		return nil, err
 	}
-	return hubwebauthn.NewService(rp, st, ks)
+	return hubwebauthn.NewService(rp, st, ks, sessions)
 }
 
 func (s *UserService) webauthnService(ctx context.Context) (*hubwebauthn.Service, error) {
-	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, s.store)
+	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, s.store, s.webauthnSessions)
 }
 
 func (s *UserService) webauthnServiceWithStore(ctx context.Context, st store.Store) (*hubwebauthn.Service, error) {
-	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, st)
+	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, st, s.webauthnSessions)
 }
 
 func (s *AuthService) webauthnService(ctx context.Context) (*hubwebauthn.Service, error) {
-	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, s.store)
+	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, s.store, s.webauthnSessions)
 }
 
 // passkeysRunnableForOrigin reports whether passkey ceremonies can run for a

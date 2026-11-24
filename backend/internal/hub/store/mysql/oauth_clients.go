@@ -264,9 +264,6 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 			}
 			return conn.queryError(err)
 		}
-		if _, err := q.DeleteEphemeralGrantsForOAuthClient(ctx, p.ClientID); err != nil {
-			return conn.queryError(err)
-		}
 		if _, err := q.DeleteAuthorizationCodesForOAuthClient(ctx, p.ClientID); err != nil {
 			return conn.queryError(err)
 		}

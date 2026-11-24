@@ -75,7 +75,7 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		}
 	}()
 	var seq int64
-	var removed db.ControlRequest
+	var removedRequestID string
 	apply := func(tx *sql.Tx) error {
 		queries := svc.Queries.WithTx(tx)
 		completed, err := completeControlDelivery(queries, answer.DeliveryID)
@@ -91,13 +91,20 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 				return err
 			}
 		}
-		removed, err = queries.DeleteControlRequestInstance(ctx, db.DeleteControlRequestInstanceParams{
+		if !answer.NonBlocking {
+			return nil
+		}
+		removed, err := queries.DeleteControlRequestInstance(ctx, db.DeleteControlRequestInstanceParams{
 			AgentID: agentID, RequestID: answer.RequestID, ClaimToken: answer.ClaimToken,
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		removedRequestID = removed.RequestID
+		return nil
 	}
 	if answer.FollowUpKind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED {
 		_, err = svc.InputQueue.EnqueueWithMutation(ctx, inputqueue.NewItem{
@@ -120,7 +127,12 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 	if err != nil {
 		return err
 	}
-	if removed.RequestID != "" {
+	if !answer.NonBlocking {
+		if removed, ok := svc.Output.deleteBlockingControl(agentID, answer.RequestID, answer.ClaimToken); ok {
+			removedRequestID = removed.RequestID
+		}
+	}
+	if removedRequestID != "" {
 		if plan.resolution.SelfDisplayed && plan.requestMeta.ToolUseID != "" {
 			if sink := svc.Output.sinkForAgent(agentID); sink != nil {
 				sink.SetSpanType(plan.requestMeta.ToolUseID, plan.requestMeta.ToolName)

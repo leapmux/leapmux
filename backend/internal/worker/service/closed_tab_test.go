@@ -817,7 +817,8 @@ func TestShutdown_BroadcastsDisconnectNoticeToLiveWatchers(t *testing.T) {
 			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
 		}},
 	}, wWatch)
-	waitWatchUpdateAck(t, wWatch)
+	ack := waitWatchUpdateAck(t, wWatch)
+	require.Empty(t, ack.GetRejectedTerminals(), "WatchEvents must attach cleanly before shutdown")
 	waitTerminalWatchCount(t, svc, terminalID, 1)
 
 	svc.Shutdown()
@@ -886,7 +887,8 @@ func TestShutdown_BroadcastsDisconnectNoticeBeforeDraining(t *testing.T) {
 			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
 		}},
 	}, wWatch)
-	waitWatchUpdateAck(t, wWatch)
+	ack := waitWatchUpdateAck(t, wWatch)
+	require.Empty(t, ack.GetRejectedTerminals(), "WatchEvents must attach cleanly before shutdown")
 	waitTerminalWatchCount(t, svc, terminalID, 1)
 
 	// An agent startup that never finishes on its own: this is what Shutdown's
@@ -999,10 +1001,9 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 }
 
 // TestShutdown_PreservesNaturalExitCode pins the contract that
-// `Shutdown` does not clobber a previously-persisted exit code for a
+// `Shutdown` does not clobber a previously-persisted exit notice for a
 // terminal that already exited naturally. Without the IsExited skip in
-// Shutdown the exit_code column would be overwritten with
-// exitCodeUnknown (-1) on every shutdown.
+// Shutdown, a disconnect notice would be written over the natural exit.
 func TestShutdown_PreservesNaturalExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -1029,15 +1030,20 @@ func TestShutdown_PreservesNaturalExitCode(t *testing.T) {
 	exitTerminalAndWait(t, svc, d, terminalID, " 42")
 	testutil.AssertEventually(t, func() bool {
 		row, err := svc.Queries.GetTerminal(ctx, terminalID)
-		return err == nil && row.ExitCode == 42
-	}, "exit handler must persist exit_code=42")
+		return err == nil && strings.Contains(string(row.Screen), "[Terminal process exited (42) - Press Enter to restart]")
+	}, "exit handler must persist exit notice with exit code 42")
+	code, ok := svc.Terminals.ExitCode(terminalID)
+	require.True(t, ok)
+	assert.Equal(t, 42, code)
 
 	svc.Shutdown()
 
 	dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(42), dbTerm.ExitCode,
-		"Shutdown must not clobber the natural exit code of an already-exited terminal")
+	assert.Contains(t, string(dbTerm.Screen), "[Terminal process exited (42) - Press Enter to restart]",
+		"Shutdown must not clobber the natural exit notice of an already-exited terminal")
+	assert.NotContains(t, string(dbTerm.Screen), "Worker disconnected",
+		"Shutdown must not append a disconnect notice to an already-exited terminal")
 }
 
 func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
@@ -1064,10 +1070,9 @@ func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
 	// never satisfied". The disconnect notice is the behavior under test;
 	// the echoed-command check is an indirect sanity probe that the PTY
 	// actually processed input.
-	testutil.AssertEventually(t, func() bool {
-		dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
-		return err == nil && dbTerm.ExitCode == 0
-	}, "expected clean exit (exit_code=0) to be persisted")
+	code, ok := svc.Terminals.ExitCode(terminalID)
+	require.True(t, ok, "expected clean exit (exit code 0) to be recorded in memory")
+	assert.Equal(t, 0, code)
 
 	testutil.AssertEventually(t, func() bool {
 		dbTerm, err := svc.Queries.GetTerminal(ctx, terminalID)
@@ -1341,7 +1346,7 @@ func TestPersistTerminalOnExit_PreservesClosedAt(t *testing.T) {
 	_, closeErr := svc.Queries.CloseTerminal(ctx, terminalID)
 	require.NoError(t, closeErr)
 
-	require.True(t, svc.persistTerminalOnExit(terminalID, exitCodeUnknown))
+	require.True(t, svc.persistTerminalOnExit(terminalID, 0))
 
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
@@ -1402,7 +1407,7 @@ func TestShutdown_ClearsPendingControlRequestsBeforeItReturns(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1",
 		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"EnterPlanMode","tool_use_id":"toolu-enter"}}`),
 	})
@@ -1433,9 +1438,7 @@ func TestShutdown_ClearsPendingControlRequestsBeforeItReturns(t *testing.T) {
 
 	svc.Shutdown()
 
-	_, err = svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "req-1"})
-	require.ErrorIs(t, err, sql.ErrNoRows,
-		"the handler must have cleared the pending row before Shutdown returned")
+	requireNoControlRequest(t, t.Context(), svc.Output, "agent-1", "req-1")
 }
 
 // A crash exit that lands after the input queue stopped must not log its
@@ -1641,7 +1644,7 @@ func TestShutdownRetainsOutputWrittenAfterDisconnectNotice(t *testing.T) {
 	row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
 	require.NoError(t, err)
 	assert.Contains(t, string(row.Screen), marker, "shutdown must persist the screen after its reader drains")
-	assert.Equal(t, int64(exitCodeUnknown), row.ExitCode)
+	assert.Contains(t, string(row.Screen), "Worker disconnected - Press Enter to restart")
 	assert.Equal(t, 1, bytes.Count(row.Screen, []byte("Press Enter to restart")))
 }
 
@@ -1669,6 +1672,16 @@ func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
 		exitFn(id, exitCode)
 	}))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
+	wWatch := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		UpdateId: 1,
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: terminalID,
+			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	}, wWatch)
+	ack := waitWatchUpdateAck(t, wWatch)
+	require.Empty(t, ack.GetRejectedTerminals())
 	shutdownStarted := false
 	t.Cleanup(func() {
 		releaseExit()
@@ -1695,8 +1708,8 @@ func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
 	}
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	require.Equal(t, int64(exitCodeUnknown), row.ExitCode)
-	wantCode, command := int64(42), "exit 42"
+	require.Contains(t, string(row.Screen), "Worker disconnected - Press Enter to restart")
+	wantCode, command := 42, "exit 42"
 	if runtime.GOOS == "windows" {
 		wantCode, command = 0, "exit"
 	}
@@ -1715,15 +1728,35 @@ func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("shutdown did not join the released natural exit")
 	}
+	code, ok := svc.Terminals.ExitCode(terminalID)
+	require.True(t, ok)
+	assert.Equal(t, wantCode, code, "the manager must retain the natural exit code observed before hang-up")
+
+	var sawClosed bool
+	var closedCode int32
+	for _, s := range wWatch.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		if closed := resp.GetTerminalEvent().GetClosed(); closed != nil {
+			sawClosed = true
+			closedCode = closed.GetExitCode()
+		}
+	}
+	assert.True(t, sawClosed, "natural exit observed before hang-up must publish TerminalClosed")
+	assert.Equal(t, int32(wantCode), closedCode)
+
 	row, err = svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, wantCode, row.ExitCode, "a shutdown notice must not replace an observed natural exit code")
+	assert.Contains(t, string(row.Screen), "Terminal process exited",
+		"natural exit observed before hang-up must persist the exit notice to row.Screen")
 }
 
 // A hung-up terminal whose shell answers the hang-up signal with its own exit
 // must keep the disconnect row the sweep stamped: the shell's trap exit code
 // is the shell's answer to the shutdown, not a terminal the user watched end,
-// so the row keeps the sentinel, the screen keeps exactly one notice, and no
+// so the screen keeps the disconnect notice and exactly one notice, and no
 // TerminalClosed reaches a watcher that is watching a worker go away.
 func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -1735,8 +1768,7 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 	// The trap turns the hang-up into exit 7: without the stamped-set guard,
-	// the exit handler would persist that code over the sweep's sentinel and
-	// publish TerminalClosed.
+	// the exit handler would append an exited notice and publish TerminalClosed.
 	const marker = "LMX_EXIT_TRAP_READY"
 	emit, err := testutil.TestShellOutputCommand(marker)
 	require.NoError(t, err)
@@ -1753,15 +1785,18 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
 		}},
 	}, wWatch)
-	waitWatchUpdateAck(t, wWatch)
+	ack := waitWatchUpdateAck(t, wWatch)
+	require.Empty(t, ack.GetRejectedTerminals(), "WatchEvents must attach cleanly before shutdown")
 
 	svc.Shutdown()
 
 	assert.Eventually(t, func() bool {
 		row, err := svc.Queries.GetTerminal(ctx, terminalID)
-		return err == nil && row.ExitCode == exitCodeUnknown
+		return err == nil &&
+			bytes.Contains(row.Screen, []byte("Worker disconnected - Press Enter to restart")) &&
+			!bytes.Contains(row.Screen, []byte("Terminal process exited"))
 	}, 5*time.Second, 10*time.Millisecond,
-		"the sweep's sentinel must stay the row's exit code")
+		"the sweep's disconnect notice must stay without a natural exit notice")
 	screen, _ := svc.Terminals.SnapshotTerminal(terminalID)
 	assert.Equal(t, 1, bytes.Count(screen.Screen, []byte("Press Enter to restart")),
 		"the sweep's notice must stay the only one on the screen")
@@ -1792,8 +1827,8 @@ func TestTerminalExitPersistsARowThatTheSweepSkipped(t *testing.T) {
 
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(7), row.ExitCode,
-		"an exit the sweep skipped must persist its real exit code")
+	assert.Contains(t, string(row.Screen), "[Terminal process exited (7) - Press Enter to restart]",
+		"an exit the sweep skipped must persist its real exit notice")
 	screen, _ := svc.Terminals.SnapshotTerminal(terminalID)
 	assert.Equal(t, 1, bytes.Count(screen.Screen, []byte("Press Enter to restart")),
 		"an exit the sweep skipped must persist its own notice")

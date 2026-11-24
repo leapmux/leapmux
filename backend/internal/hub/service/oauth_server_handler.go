@@ -136,6 +136,9 @@ type OAuthServerDeps struct {
 	// Nil uses oauthapp.IssuesSession. Tests may inject a mutable resolver to
 	// prove that redemption follows the consented code row.
 	IssuesSession func(clientID string) bool
+	// DeviceAuthorizations holds short-lived RFC 8628 device grants in memory.
+	// Nil defaults to a fresh MemoryDeviceAuthorizationStore.
+	DeviceAuthorizations DeviceAuthorizationStore
 }
 
 // OAuthServerHandler implements /oauth/* and the two metadata documents. It
@@ -157,6 +160,7 @@ type OAuthServerHandler struct {
 	limiter       *ratelimit.Manager
 	refreshFlight singleflight.Group
 	issuesSession func(clientID string) bool
+	deviceAuths   DeviceAuthorizationStore
 
 	// The clock every instant the handler mints or compares comes from:
 	// grant expiry, the device-code slow_down throttle, token lifetimes,
@@ -182,6 +186,10 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 	if issuesSession == nil {
 		issuesSession = oauthapp.IssuesSession
 	}
+	deviceAuths := deps.DeviceAuthorizations
+	if deviceAuths == nil {
+		deviceAuths = NewMemoryDeviceAuthorizationStore()
+	}
 	return &OAuthServerHandler{
 		sessionHasher: deps.SessionHasher,
 		store:         deps.Store,
@@ -194,6 +202,7 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 		set:           deps.Settings,
 		limiter:       deps.Limiter,
 		issuesSession: issuesSession,
+		deviceAuths:   deviceAuths,
 		servingCtx:    deps.ServingCtx,
 	}
 }

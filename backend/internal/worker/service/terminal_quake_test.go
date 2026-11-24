@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
 // A QUAKE terminal is the shell behind the quake panel, and it belongs to a
@@ -58,10 +59,11 @@ func TestOpenTerminal_RecordsTheQuakeFlag(t *testing.T) {
 
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
 
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.IsQuake)
-	assert.Equal(t, dir, row.WorkingDir, "the directory is the address, so it must be stored verbatim")
+	quake, ok := svc.QuakeTerminals.Get(terminalID)
+	require.True(t, ok, "quake terminal must live in QuakeTerminals")
+	assert.Equal(t, dir, quake.WorkingDir, "the directory is the address, so it must be stored verbatim")
+	_, err := svc.Queries.GetTerminal(context.Background(), terminalID)
+	assert.ErrorIs(t, err, sql.ErrNoRows, "a quake terminal must write no SQLite row")
 }
 
 func TestOpenTerminal_WithoutQuakeIsUnchanged(t *testing.T) {
@@ -72,9 +74,9 @@ func TestOpenTerminal_WithoutQuakeIsUnchanged(t *testing.T) {
 
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
+	_, err := svc.Queries.GetTerminal(context.Background(), terminalID)
 	require.NoError(t, err)
-	assert.False(t, row.IsQuake, "an ordinary terminal tab is not a quake terminal")
+	assert.False(t, svc.QuakeTerminals.Has(terminalID), "an ordinary terminal tab is not a quake terminal")
 }
 
 // The second toggle, and the second DEVICE. Both must land on one PTY.
@@ -93,10 +95,7 @@ func TestOpenTerminal_SecondOpenForOneDirectoryReturnsTheSameTerminal(t *testing
 
 	assert.Equal(t, first, second, "one directory has at most one live quake terminal")
 	assert.Equal(t, firstTitle, secondTitle, "the second caller reads the stored title")
-
-	rows, err := svc.Queries.ListOpenQuakeTerminals(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, rows, 1, "the duplicate open must create no second row")
+	assert.Len(t, svc.QuakeTerminals.ListOpen(), 1, "the duplicate open must create no second entry")
 }
 
 // The headline property of the directory-keyed model: two AGENT TABS that work
@@ -118,9 +117,7 @@ func TestOpenTerminal_TwoAgentsInOneDirectoryShareOneQuakeTerminal(t *testing.T)
 	second, _ := openQuakeTerminal(t, svc, d, dir)
 
 	assert.Equal(t, first, second, "one directory, one shell, however many tabs work there")
-	rows, err := svc.Queries.ListOpenQuakeTerminals(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, rows, 1)
+	assert.Len(t, svc.QuakeTerminals.ListOpen(), 1)
 }
 
 // The other half of the rule: two DIRECTORIES are two shells, even when the
@@ -142,14 +139,11 @@ func TestOpenTerminal_TwoDirectoriesGetTwoQuakeTerminals(t *testing.T) {
 	quakeB, _ := openQuakeTerminal(t, svc, d, dirB)
 
 	assert.NotEqual(t, quakeA, quakeB, "the directory is the address, so two of them are two shells")
-	rows, err := svc.Queries.ListOpenQuakeTerminals(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, rows, 2)
+	assert.Len(t, svc.QuakeTerminals.ListOpen(), 2)
 }
 
-// Two devices toggling at the same instant. The lookup-then-insert has a
-// window, and the unique partial index is what closes it: one insert wins, the
-// loser re-reads and answers with the winner's id.
+// Two devices toggling at the same instant. RegisterOrAdopt serializes
+// per-directory ownership: one caller wins and the losers adopt the winner's id.
 func TestOpenTerminal_ConcurrentOpensForOneDirectoryYieldOneTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -178,13 +172,10 @@ func TestOpenTerminal_ConcurrentOpensForOneDirectoryYieldOneTerminal(t *testing.
 	for _, id := range ids {
 		assert.Equal(t, ids[0], id, "every caller must attach to one shell")
 	}
-	rows, err := svc.Queries.ListOpenQuakeTerminals(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, rows, 1, "the unique index must leave exactly one live quake terminal")
+	assert.Len(t, svc.QuakeTerminals.ListOpen(), 1, "RegisterOrAdopt must leave exactly one live quake terminal")
 }
 
-// The index is scoped to OPEN rows, so a shell the user exited does not block
-// the next one.
+// Deleting a closed quake entry frees its directory so the next open starts fresh.
 func TestOpenTerminal_AfterAQuakeTerminalClosesANewOneCanOpen(t *testing.T) {
 	t.Parallel()
 
@@ -194,8 +185,7 @@ func TestOpenTerminal_AfterAQuakeTerminalClosesANewOneCanOpen(t *testing.T) {
 	createAgentForPath(t, svc, "agent-1", dir)
 
 	first, _ := openQuakeTerminal(t, svc, d, dir)
-	_, err := svc.Queries.CloseTerminal(context.Background(), first)
-	require.NoError(t, err)
+	svc.closeQuakeTerminal(first)
 
 	second, _ := openQuakeTerminal(t, svc, d, dir)
 
@@ -203,9 +193,7 @@ func TestOpenTerminal_AfterAQuakeTerminalClosesANewOneCanOpen(t *testing.T) {
 }
 
 // A terminal TAB survives its shell -- the row stays open and Enter respawns it.
-// A quake terminal has no such contract, so its exit closes the row. Without
-// this the unique index would refuse the next one and the next toggle would
-// adopt a dead PTY.
+// A quake terminal has no such contract, so its exit removes it from QuakeTerminals.
 func TestQuakeTerminal_ShellExitClosesTheRow(t *testing.T) {
 	t.Parallel()
 
@@ -216,16 +204,11 @@ func TestQuakeTerminal_ShellExitClosesTheRow(t *testing.T) {
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
 	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
-	// NOT through exitTerminalAndWait: that waits for the manager to report the
-	// terminal EXITED, and closing a quake terminal REMOVES it from the
-	// manager. The row is the thing to wait on, and it is also the thing under
-	// test.
 	sendShellLine(t, d, terminalID, []byte("exit 0"+testutil.TestShellEnter()))
 
 	testutil.AssertEventually(t, func() bool {
-		row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-		return err == nil && row.ClosedAt.Valid
-	}, "the quake row closes on exit")
+		return !svc.QuakeTerminals.Has(terminalID)
+	}, "the quake entry is deleted on exit")
 	assert.False(t, svc.Terminals.HasTerminal(terminalID), "the quake terminal leaves the manager too")
 }
 
@@ -359,9 +342,7 @@ func TestCloseAgent_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *testing.
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
 
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid, "the last tab in the directory takes the shell with it")
+	assert.False(t, svc.QuakeTerminals.Has(terminalID), "the last tab in the directory takes the shell with it")
 	assert.False(t, svc.Terminals.HasTerminal(terminalID), "the PTY must be reaped, not merely marked")
 }
 
@@ -383,17 +364,13 @@ func TestCloseAgent_KeepsTheQuakeTerminalWhileAnotherTabWorksInTheDirectory(t *t
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
 
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-	require.NoError(t, err)
-	assert.False(t, row.ClosedAt.Valid, "agent-2 still works here, so the shell stays")
+	assert.True(t, svc.QuakeTerminals.Has(terminalID), "agent-2 still works here, so the shell stays")
 	assert.True(t, svc.Terminals.HasTerminal(terminalID), "and its PTY stays with it")
 }
 
 // A TERMINAL TAB is a reference to its directory too, so closing the last agent
 // while one is open keeps the shell -- and closing that terminal tab afterwards
-// is what finally ends it. Both halves run through closeTerminalTabCommon,
-// which is also what closes the quake terminal itself: the is_quake guard there
-// is what stops that recursing.
+// is what finally ends it.
 func TestCloseTerminalTab_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -409,17 +386,13 @@ func TestCloseTerminalTab_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *te
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, closeAgent)
 	require.Empty(t, closeAgent.errors)
 
-	kept, err := svc.Queries.GetTerminal(context.Background(), quakeID)
-	require.NoError(t, err)
-	require.False(t, kept.ClosedAt.Valid, "the terminal tab still references the directory")
+	require.True(t, svc.QuakeTerminals.Has(quakeID), "the terminal tab still references the directory")
 
 	closeTab := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: terminalTabIdent(tabID)}, closeTab)
 	require.Empty(t, closeTab.errors)
 
-	row, err := svc.Queries.GetTerminal(context.Background(), quakeID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid, "the last reference is gone, so the shell goes")
+	assert.False(t, svc.QuakeTerminals.Has(quakeID), "the last reference is gone, so the shell goes")
 }
 
 // The convergence path, which is what a reconciler reap and a deleted workspace
@@ -437,9 +410,7 @@ func TestCloseAgentForConvergence_ClosesTheQuakeTerminal(t *testing.T) {
 
 	svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_AGENT, "", "agent-1")
 
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid, "an offline close must reap the shell too")
+	assert.False(t, svc.QuakeTerminals.Has(terminalID), "an offline close must reap the shell too")
 }
 
 // A subagent transcript owns no process and no tab of its own. Its close is
@@ -463,15 +434,11 @@ func TestCloseChildAgent_LeavesTheQuakeTerminalAlone(t *testing.T) {
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("child-1")}, w)
 	require.Empty(t, w.errors)
 
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-	require.NoError(t, err)
-	assert.False(t, row.ClosedAt.Valid, "a subagent close must not end the directory's shell")
+	assert.True(t, svc.QuakeTerminals.Has(terminalID), "a subagent close must not end the directory's shell")
 }
 
 // A quake terminal is addressed by the directory it is IN, so a git mode that
-// would move that directory is refused at the one write point of is_quake.
-// Without it the row would store the worktree path and the panel that asked for
-// the shell could never find it again.
+// would move that directory is refused.
 func TestOpenTerminal_RefusesAQuakeTerminalWithAGitMode(t *testing.T) {
 	t.Parallel()
 
@@ -488,17 +455,11 @@ func TestOpenTerminal_RefusesAQuakeTerminalWithAGitMode(t *testing.T) {
 	}, w)
 
 	require.Len(t, w.errors, 1, "a quake terminal must not create a worktree")
-	rows, err := svc.Queries.ListOpenQuakeTerminals(context.Background())
-	require.NoError(t, err)
-	assert.Empty(t, rows, "the refusal must create no row and no shell")
+	assert.Empty(t, svc.QuakeTerminals.ListOpen(), "the refusal must create no entry and no shell")
 }
 
-// A worker RESTART leaves a quake row open with no PTY behind it. Adopting that
-// row hands the user a panel that paints nothing and swallows every keystroke,
-// and a quake terminal refuses the Enter that restarts a terminal TAB -- so the
-// panel would stay dead for as long as a tab works in that directory, across
-// reloads. The reconciler cannot reap it either: it measures a quake terminal by
-// whether any open tab still works there, and one does.
+// Adopting an in-memory quake entry whose shell is gone hands the user a dead
+// panel; OpenTerminal replaces it with a fresh shell instead.
 func TestOpenTerminal_DoesNotAdoptAQuakeTerminalWhoseShellIsGone(t *testing.T) {
 	t.Parallel()
 
@@ -507,91 +468,41 @@ func TestOpenTerminal_DoesNotAdoptAQuakeTerminalWhoseShellIsGone(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 
-	// The shape a restart leaves behind: an open row this process never hosted.
-	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
+	_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
 		ID:         "stale-quake",
 		WorkingDir: dir,
 		Shell:      testutil.TestShell(),
 		Title:      "Terminal Ghost",
-		Screen:     []byte{},
-		IsQuake:    true,
-	}))
+	})
+	require.True(t, created)
 
 	fresh, _ := openQuakeTerminal(t, svc, d, dir)
 
-	assert.NotEqual(t, "stale-quake", fresh, "a row with no live shell must not be adopted")
-	stale, err := svc.Queries.GetTerminal(context.Background(), "stale-quake")
-	require.NoError(t, err)
-	assert.True(t, stale.ClosedAt.Valid,
-		"the corpse must be closed, or the unique index refuses every replacement")
+	assert.NotEqual(t, "stale-quake", fresh, "an entry with no live shell must not be adopted")
+	assert.False(t, svc.QuakeTerminals.Has("stale-quake"), "the dead entry must be removed")
+	assert.True(t, svc.QuakeTerminals.Has(fresh))
 }
 
-// The boot sweep is what makes the property above hold WITHOUT waiting for a
-// user to toggle the panel: a quake row is valid only while this process hosts
-// its PTY.
-func TestCloseOrphanedQuakeTerminals_ClosesARowWithNoLiveShell(t *testing.T) {
-	t.Parallel()
-
-	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
-	defer drainAllInFlight(svc)
-	root := t.TempDir()
-	orphanDir := filepath.Join(root, "orphan")
-	liveDir := filepath.Join(root, "live")
-	require.NoError(t, os.MkdirAll(orphanDir, 0o755))
-	require.NoError(t, os.MkdirAll(liveDir, 0o755))
-	createAgentForPath(t, svc, "agent-1", orphanDir)
-	createAgentForPath(t, svc, "agent-2", liveDir)
-
-	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
-		ID:         "orphan-quake",
-		WorkingDir: orphanDir,
-		Shell:      testutil.TestShell(),
-		Screen:     []byte{},
-		IsQuake:    true,
-	}))
-	live, _ := openQuakeTerminal(t, svc, d, liveDir)
-	waitForTerminalSpawn(t, svc, live, "spawn")
-	plainTab := openTerminalViaRPC(t, svc, d, newTestWriter(), liveDir)
-
-	svc.CloseOrphanedQuakeTerminals(context.Background())
-
-	orphan, err := svc.Queries.GetTerminal(context.Background(), "orphan-quake")
-	require.NoError(t, err)
-	assert.True(t, orphan.ClosedAt.Valid, "a quake terminal this process does not host must close")
-
-	liveRow, err := svc.Queries.GetTerminal(context.Background(), live)
-	require.NoError(t, err)
-	assert.False(t, liveRow.ClosedAt.Valid, "a quake terminal whose shell is running must survive")
-
-	tabRow, err := svc.Queries.GetTerminal(context.Background(), plainTab)
-	require.NoError(t, err)
-	assert.False(t, tabRow.ClosedAt.Valid, "an ordinary terminal tab is not a quake terminal and is untouched")
-}
-
-// A quake terminal has no restart contract, and the worker is where that rule
-// has to live: a respawn would resurrect a row the exit path already closed, and
-// the unique index would then refuse every replacement.
+// A quake terminal has no restart contract, and the worker refuses RestartTerminal
+// with FailedPrecondition.
 func TestRestartTerminal_RefusesAQuakeTerminal(t *testing.T) {
 	t.Parallel()
 
 	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
 	dir := t.TempDir()
-	// A row with no live shell, which is the only state a restart could ever
-	// reach: the quake terminal's own exit closes the row a moment later, and
-	// this is the window in between.
-	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
+	_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
 		ID:         "exited-quake",
 		WorkingDir: dir,
 		Shell:      testutil.TestShell(),
-		Screen:     []byte{},
-		IsQuake:    true,
-	}))
+	})
+	require.True(t, created)
 
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{TerminalId: "exited-quake"}, w)
 
 	require.Len(t, w.errors, 1, "a quake terminal must refuse a restart")
+	assert.Equal(t, codeFailedPrecondition, w.errors[0].code)
 	assert.Contains(t, w.errors[0].message, "quake terminal")
 	assert.False(t, svc.Terminals.HasTerminal("exited-quake"), "the refusal must spawn nothing")
 }
@@ -611,17 +522,29 @@ func TestQuakeTerminal_ShellExitPaintsNoRestartNotice(t *testing.T) {
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
 	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
+	watchWriter := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, watchWriter)
+	ack := waitWatchUpdateAck(t, watchWriter)
+	require.Empty(t, ack.GetRejectedTerminals(), "WatchEvents must attach cleanly to the quake terminal")
+
 	sendShellLine(t, d, terminalID, []byte("exit 0"+testutil.TestShellEnter()))
 
 	testutil.AssertEventually(t, func() bool {
-		row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-		return err == nil && row.ClosedAt.Valid
-	}, "the quake row closes on exit")
+		return !svc.QuakeTerminals.Has(terminalID)
+	}, "the quake entry is deleted on exit")
 
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-	require.NoError(t, err)
-	assert.NotContains(t, string(row.Screen), "Press Enter to restart",
-		"a quake terminal refuses that Enter, so it must not offer it")
+	for _, s := range watchWriter.streamsSnapshot() {
+		var ev leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &ev); err != nil {
+			continue
+		}
+		if out := ev.GetTerminalEvent().GetData(); out != nil {
+			assert.NotContains(t, string(out.GetData()), "Press Enter to restart",
+				"a quake terminal refuses that Enter, so it must not offer it")
+		}
+	}
 }
 
 // A quake terminal takes NO archive flag. It is not a tab, so the Hub never
@@ -646,9 +569,7 @@ func TestApplyTabArchiveState_ClosesTheQuakeTerminalOfAnArchivedDirectory(t *tes
 	)
 	require.NoError(t, err)
 
-	row, err := svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid,
+	assert.False(t, svc.QuakeTerminals.Has(terminalID),
 		"nobody can reach the panel of a directory whose every tab is archived")
 	assert.False(t, svc.Terminals.HasTerminal(terminalID), "the PTY goes with it")
 }
@@ -677,9 +598,7 @@ func TestApplyTabArchiveState_KeepsTheQuakeTerminalWhileALiveTabRemains(t *testi
 	)
 	require.NoError(t, err)
 
-	row, err := svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	assert.False(t, row.ClosedAt.Valid,
+	assert.True(t, svc.QuakeTerminals.Has(terminalID),
 		"agent-2 is still live in this directory, so its shell must survive")
 
 	// Archive the second one too, and the directory loses its last reference.
@@ -690,9 +609,7 @@ func TestApplyTabArchiveState_KeepsTheQuakeTerminalWhileALiveTabRemains(t *testi
 	)
 	require.NoError(t, err)
 
-	row, err = svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid,
+	assert.False(t, svc.QuakeTerminals.Has(terminalID),
 		"the last live tab in the directory took the shell with it")
 }
 
@@ -794,9 +711,7 @@ func TestCloseAgent_KeepsTheQuakeTerminalWhileAFileTabWorksInTheDirectory(t *tes
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
 
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
-	require.NoError(t, err)
-	assert.False(t, row.ClosedAt.Valid, "the file tab still works here, so the shell stays")
+	assert.True(t, svc.QuakeTerminals.Has(terminalID), "the file tab still works here, so the shell stays")
 	assert.True(t, svc.Terminals.HasTerminal(terminalID), "and its PTY stays with it")
 }
 
@@ -808,7 +723,6 @@ func TestCloseTab_FileTabClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *tes
 
 	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
-	ctx := context.Background()
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	createFileTabForPath(t, svc, "user-1", "file-1", dir, "open.txt")
@@ -818,17 +732,13 @@ func TestCloseTab_FileTabClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *tes
 	closeAgent := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, closeAgent)
 	require.Empty(t, closeAgent.errors)
-	kept, err := svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	require.False(t, kept.ClosedAt.Valid, "the file tab still references the directory")
+	require.True(t, svc.QuakeTerminals.Has(terminalID), "the file tab still references the directory")
 
 	revoke := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: fileTabIdent("file-1")}, revoke)
 	require.Empty(t, revoke.errors)
 
-	row, err := svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid, "the last reference is gone, so the shell goes")
+	assert.False(t, svc.QuakeTerminals.Has(terminalID), "the last reference is gone, so the shell goes")
 	assert.False(t, svc.Terminals.HasTerminal(terminalID), "the PTY is reaped, not merely marked")
 }
 
@@ -866,9 +776,7 @@ func TestApplyTabArchiveState_AnArchivedFileTabStopsHoldingTheQuakeTerminal(t *t
 	require.NoError(t, err)
 	assert.True(t, payload.WorkspaceArchived, "the flag is what makes the viewer stop counting")
 
-	row, err := svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid, "every tab in the directory is archived, so the shell ends")
+	assert.False(t, svc.QuakeTerminals.Has(terminalID), "every tab in the directory is archived, so the shell ends")
 }
 
 // A payload-backed tab id is unique only within one account, so the archive
@@ -916,9 +824,7 @@ func TestApplyTabArchiveState_LeavesAQuakeTerminalInAnUnrelatedDirectory(t *test
 	)
 	require.NoError(t, err)
 
-	row, err := svc.Queries.GetTerminal(ctx, otherQuake)
-	require.NoError(t, err)
-	assert.False(t, row.ClosedAt.Valid,
+	assert.True(t, svc.QuakeTerminals.Has(otherQuake),
 		"this request said nothing about that directory, so it must not reap its shell")
 }
 
@@ -943,9 +849,7 @@ func TestApplyTabArchiveState_NoFlagChangeSweepsNothing(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	row, err := svc.Queries.GetTerminal(ctx, quakeID)
-	require.NoError(t, err)
-	assert.False(t, row.ClosedAt.Valid, "nothing changed, so nothing is reaped")
+	assert.True(t, svc.QuakeTerminals.Has(quakeID), "nothing changed, so nothing is reaped")
 }
 
 // working_dir is the ADDRESS of a quake terminal, not a field with a sensible
@@ -1085,7 +989,6 @@ func TestPayloadTabWorkingDir_RefusesAnUnmintableOwner(t *testing.T) {
 func TestQuakeCloseIsJoinedByServiceCleanup(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
 	dir := t.TempDir()
@@ -1097,26 +1000,21 @@ func TestQuakeCloseIsJoinedByServiceCleanup(t *testing.T) {
 	svc.Output.SetShuttingDown()
 	<-svc.Cleanup.DoneChan()
 
-	row, err := svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid,
-		"the joined close must have closed the row before the service cleanup join returned")
+	assert.False(t, svc.QuakeTerminals.Has(terminalID),
+		"the joined close must have removed the quake entry before the service cleanup join returned")
 }
 
-// A shutdown that already began admits no close: the row stays open, and the
-// boot sweep closes it.
-func TestCloseQuakeTerminalLeavesTheRowAfterShutdownBegins(t *testing.T) {
+// A shutdown that already began admits no async quake close; the in-memory entry
+// disappears automatically when a fresh Service starts on the same database.
+func TestCloseQuakeTerminalLeavesEntryAfterShutdownBeginsAndRestartStartsClean(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
 	waitForTerminalSpawn(t, svc, terminalID, "spawn")
-	// Begin shutdown before stopping the shell. Its exit handler must leave
-	// the row open for the next Worker to reconcile.
 	svc.lifecycleMu.Lock()
 	svc.shuttingDown.Store(true)
 	svc.lifecycleMu.Unlock()
@@ -1126,23 +1024,21 @@ func TestCloseQuakeTerminalLeavesTheRowAfterShutdownBegins(t *testing.T) {
 	require.True(t, svc.Terminals.IsExited(terminalID))
 	<-svc.Cleanup.DoneChan()
 
-	row, err := svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	assert.False(t, row.ClosedAt.Valid, "a refused close leaves the row open")
+	assert.True(t, svc.QuakeTerminals.Has(terminalID), "a refused close leaves the in-memory entry in the dying process")
 
-	svc.CloseOrphanedQuakeTerminals(ctx)
-	row, err = svc.Queries.GetTerminal(ctx, terminalID)
-	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid, "the boot sweep closes what the shutdown refused")
+	restarted := New(svc.Config)
+	t.Cleanup(restarted.InputQueue.StopAndWait)
+	assert.Empty(t, restarted.QuakeTerminals.ListOpen(), "a restarted Worker starts with zero quake terminals")
 }
 
 func TestQuakeCleanupAdmissionAndShutdownJoin(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		const terminalID = "held-quake-cleanup"
-		require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
-			ID: terminalID, WorkingDir: t.TempDir(), Cols: 80, Rows: 24, Screen: []byte{}, IsQuake: true,
-		}))
+		_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+			ID: terminalID, WorkingDir: t.TempDir(), Cols: 80, Rows: 24,
+		})
+		require.True(t, created)
 		entered, release := make(chan struct{}), make(chan struct{})
 		finish := sync.OnceFunc(func() { close(release) })
 		defer finish()
@@ -1162,12 +1058,113 @@ func TestQuakeCleanupAdmissionAndShutdownJoin(t *testing.T) {
 			t.Fatal("shutdown returned before admitted cleanup finished")
 		default:
 		}
-		_, err := svc.Queries.GetTerminal(t.Context(), terminalID)
-		require.NoError(t, err, "database must remain open during cleanup")
+		assert.True(t, svc.QuakeTerminals.Has(terminalID), "in-memory entry stays until cleanup completes")
 		finish()
 		<-done
-		row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
-		require.NoError(t, err)
-		assert.True(t, row.ClosedAt.Valid)
+		assert.False(t, svc.QuakeTerminals.Has(terminalID))
 	})
+}
+
+func TestQuakeTerminal_ZeroSQLiteRowsAndCleanRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+
+	// Gate spawn so we can exercise RenameTerminal and ListTerminals while STARTING.
+	spawnStarted := make(chan struct{})
+	releaseSpawn := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(releaseSpawn) })
+	defer releaseOnce()
+	svc.startTerminalFn = func(startCtx context.Context, opts terminal.Options, onOutput terminal.OutputHandler, onExit terminal.ExitHandler) error {
+		close(spawnStarted)
+		<-releaseSpawn
+		return svc.Terminals.StartTerminal(startCtx, opts, onOutput, onExit)
+	}
+
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	<-spawnStarted
+
+	// Rename while starting and verify ListTerminals reports STARTING + renamed title.
+	wRename := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{
+		TerminalId: terminalID,
+		Title:      "Quake Renamed",
+	}, wRename)
+	require.Empty(t, wRename.errors)
+
+	wListStarting := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
+		QuakeWorkingDirs: []string{dir},
+	}, wListStarting)
+	require.Empty(t, wListStarting.errors)
+	require.Len(t, wListStarting.responses, 1)
+	var startingResp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(wListStarting.responses[0].GetPayload(), &startingResp))
+	require.Len(t, startingResp.GetTerminals(), 1)
+	assert.Equal(t, terminalID, startingResp.GetTerminals()[0].GetTerminalId())
+	assert.True(t, startingResp.GetTerminals()[0].GetQuake())
+	assert.Equal(t, "Quake Renamed", startingResp.GetTerminals()[0].GetTitle())
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, startingResp.GetTerminals()[0].GetStatus())
+
+	releaseOnce()
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
+
+	// WatchEvents attaches cleanly to the in-memory quake terminal.
+	wWatch := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		UpdateId:  1,
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, wWatch)
+	ack := waitWatchUpdateAck(t, wWatch)
+	require.Empty(t, ack.GetRejectedTerminals(), "WatchEvents must attach cleanly to the in-memory quake terminal")
+	assert.Equal(t, uint64(1), ack.GetUpdateId())
+	require.Empty(t, wWatch.errors)
+
+	// ListTerminals returns Quake: true with the renamed title after startup finishes.
+	wList := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
+		QuakeWorkingDirs: []string{dir},
+	}, wList)
+	require.Empty(t, wList.errors)
+	require.Len(t, wList.responses, 1)
+	var listResp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(wList.responses[0].GetPayload(), &listResp))
+	require.Len(t, listResp.GetTerminals(), 1)
+	assert.True(t, listResp.GetTerminals()[0].GetQuake())
+	assert.Equal(t, "Quake Renamed", listResp.GetTerminals()[0].GetTitle())
+
+	// RestartTerminal returns FailedPrecondition for quake terminals.
+	wRestart := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+		TerminalId: terminalID,
+	}, wRestart)
+	require.Len(t, wRestart.errors, 1)
+	assert.Equal(t, codeFailedPrecondition, wRestart.errors[0].code)
+
+	// Zero rows in terminals and worktree_tabs throughout the quake lifecycle.
+	var termCount, wtTabCount int
+	require.NoError(t, svc.DB.QueryRowContext(ctx, "SELECT count(*) FROM terminals").Scan(&termCount))
+	require.NoError(t, svc.DB.QueryRowContext(ctx, "SELECT count(*) FROM worktree_tabs").Scan(&wtTabCount))
+	assert.Zero(t, termCount, "quake terminals must never write to SQLite terminals")
+	assert.Zero(t, wtTabCount, "quake terminals must never write to SQLite worktree_tabs")
+
+	// A fresh Service over the same DB sees zero quake terminals.
+	restarted := New(svc.Config)
+	t.Cleanup(restarted.InputQueue.StopAndWait)
+	assert.Empty(t, restarted.QuakeTerminals.ListOpen())
+
+	// Closing via CloseTab removes the quake terminal cleanly and leaves zero SQLite rows.
+	wClose := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: terminalTabIdent(terminalID),
+	}, wClose)
+	require.Empty(t, wClose.errors)
+	assert.False(t, svc.QuakeTerminals.Has(terminalID))
+	assert.False(t, svc.Terminals.HasTerminal(terminalID))
+	require.NoError(t, svc.DB.QueryRowContext(ctx, "SELECT count(*) FROM terminals").Scan(&termCount))
+	assert.Zero(t, termCount)
 }

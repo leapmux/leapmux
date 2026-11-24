@@ -30,18 +30,13 @@ type Store interface {
 	WorkspaceSections() WorkspaceSectionStore
 	WorkspaceSectionItems() WorkspaceSectionItemStore
 	OAuthProviders() OAuthProviderStore
-	OAuthStates() OAuthStateStore
-	OAuthTokens() OAuthTokenStore
 	OAuthUserLinks() OAuthUserLinkStore
-	PendingOAuthSignups() PendingOAuthSignupStore
 	PasskeyCredentials() PasskeyCredentialStore
-	WebAuthnSessions() WebAuthnSessionStore
 	Settings() SettingsStore
 	AltchaSalts() AltchaSaltsStore
 	APITokens() APITokenStore
 	DelegationTokens() DelegationTokenStore
 	RevocationEvents() RevocationEventStore
-	DeviceAuthorizations() DeviceAuthorizationStore
 	OAuthAuthorizationCodes() OAuthAuthorizationCodeStore
 	OAuthClients() OAuthClientStore
 	Cleanup() CleanupStore
@@ -728,28 +723,6 @@ type RevocationEventStore interface {
 	SessionWasRevoked(ctx context.Context, sessionID string) (bool, error)
 }
 
-// DeviceAuthorizationStore manages RFC 8628 device-code grants.
-type DeviceAuthorizationStore interface {
-	Create(ctx context.Context, p CreateDeviceAuthorizationParams) error
-	Get(ctx context.Context, deviceCodeHash []byte) (*DeviceAuthorization, error)
-	GetByUserCode(ctx context.Context, userCode string) (*DeviceAuthorization, error)
-	Approve(ctx context.Context, p ApproveDeviceAuthorizationParams, now time.Time) (int64, error)
-	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationByUserCodeParams, now time.Time) (int64, error)
-	// DenyByUserCode is the deny the BROWSER runs: the activation page holds
-	// the user code and never the device code. It matches a pending row only,
-	// so an answered grant keeps its answer.
-	DenyByUserCode(ctx context.Context, userCode string) (int64, error)
-	Consume(ctx context.Context, deviceCodeHash []byte, now time.Time) (int64, error)
-	// ConsumeApprovedForUserClient spends the approved-but-unpolled grants of
-	// one account's authorization of an app -- the DISCONNECT path, which ends
-	// the authorization and must not leave a redeemable grant behind.
-	ConsumeApprovedForUserClient(ctx context.Context, clientID string, user userid.UserID, now time.Time) (int64, error)
-	// TouchPoll records a poll with the HUB's clock: the slow_down throttle
-	// compares the value it writes against the same clock, and a database
-	// clock that drifts ahead of the hub's would stall the flow.
-	TouchPoll(ctx context.Context, deviceCodeHash []byte, now time.Time) error
-}
-
 // OAuthAuthorizationCodeStore manages RFC 6749 section 4.1 one-shot codes.
 type OAuthAuthorizationCodeStore interface {
 	Create(ctx context.Context, p CreateOAuthAuthorizationCodeParams) error
@@ -894,31 +867,6 @@ type OAuthProviderStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
-type OAuthStateStore interface {
-	Create(ctx context.Context, p CreateOAuthStateParams) error
-	Get(ctx context.Context, state string) (*OAuthState, error)
-	// Delete removes one state row and reports how many rows it removed.
-	//
-	// The count IS the single use of the flow, so the caller must read it
-	// and refuse a 0. Two callbacks that carry the same state and the same
-	// browser nonce both pass every earlier check and both arrive here;
-	// exactly one of them deletes a row. Without the count, "a state is
-	// spent once" rested on the identity provider rejecting the second use
-	// of its authorization code, which this hub does not control.
-	Delete(ctx context.Context, state string) (int64, error)
-}
-
-type OAuthTokenStore interface {
-	Upsert(ctx context.Context, p UpsertOAuthTokensParams) error
-	Get(ctx context.Context, p GetOAuthTokensParams) (*OAuthToken, error)
-	ListExpiring(ctx context.Context, refreshDueAt time.Time) ([]OAuthToken, error)
-	ListByKeyVersion(ctx context.Context, keyVersion int64) ([]OAuthToken, error)
-	CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error)
-	DeleteByProvider(ctx context.Context, providerID string) error
-	DeleteByUser(ctx context.Context, userID userid.UserID) error
-	DeleteByUserAndProvider(ctx context.Context, p DeleteOAuthTokensByUserAndProviderParams) error
-}
-
 type OAuthUserLinkStore interface {
 	Create(ctx context.Context, p CreateOAuthUserLinkParams) error
 	Get(ctx context.Context, p GetOAuthUserLinkParams) (*OAuthUserLink, error)
@@ -930,12 +878,6 @@ type OAuthUserLinkStore interface {
 	// link to any other provider. Removing the provider row cascades every
 	// link away, so each of these accounts loses its last way in.
 	CountUsersOrphanedByProvider(ctx context.Context, providerID string) (int64, error)
-}
-
-type PendingOAuthSignupStore interface {
-	Create(ctx context.Context, p CreatePendingOAuthSignupParams) error
-	Get(ctx context.Context, token string) (*PendingOAuthSignup, error)
-	Delete(ctx context.Context, token string) error
 }
 
 type PasskeyCredentialStore interface {
@@ -951,19 +893,6 @@ type PasskeyCredentialStore interface {
 	DeleteAllByUser(ctx context.Context, userID string) error
 	ListByKeyVersion(ctx context.Context, keyVersion int64) ([]PasskeyCredential, error)
 	CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error)
-}
-
-type WebAuthnSessionStore interface {
-	Create(ctx context.Context, p CreateWebAuthnSessionParams) error
-	Get(ctx context.Context, id string) (*WebAuthnSession, error)
-	Delete(ctx context.Context, id string) error
-	// ConsumeCeremony deletes one unexpired ceremony row of the given kind.
-	// Returns rows affected (0 when missing, wrong kind, expired, or already consumed).
-	ConsumeCeremony(ctx context.Context, id string, kind leapmuxv1.WebAuthnSessionKind, now time.Time) (int64, error)
-	DeleteAllByUser(ctx context.Context, userID string) error
-	// DeleteByUserAndKind removes open ceremony rows for one user and kind
-	// (for example, replacing a prior elevation Begin).
-	DeleteByUserAndKind(ctx context.Context, userID string, kind leapmuxv1.WebAuthnSessionKind) error
 }
 
 // SettingsStore manages the hub_settings table: one row per setting key,
@@ -1058,10 +987,6 @@ type CleanupStore interface {
 	// pending_email_expires_at is older than cutoff. Frees up index slots
 	// and ensures stale codes don't leak into future lookups.
 	ClearStalePendingEmails(ctx context.Context, cutoff time.Time) (int64, error)
-	DeleteExpiredOAuthStates(ctx context.Context, now time.Time) (int64, error)
-	DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error)
-	DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error)
-	DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error)
 	DeleteExpiredOAuthAuthorizationCodes(ctx context.Context, now time.Time) (int64, error)
 	// DeleteExpiredAPITokensBefore hard-deletes a live api_tokens row only
 	// when BOTH of its deadlines closed before cutoff: the access expiry AND

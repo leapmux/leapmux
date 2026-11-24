@@ -48,6 +48,10 @@ type CredentialLifecycleEffects struct {
 	// eviction. Set at construction only (see WithUserInfoObserver), so the
 	// slice needs no lock.
 	userInfoObservers []func(userID string)
+	// userRevokedObservers run on every UserRevoked, after the cache and
+	// channel teardown. Set at construction only (see WithUserRevokedObserver),
+	// so the slice needs no lock.
+	userRevokedObservers []func(userID string, userAuthGeneration int64)
 }
 
 // LifecycleOption configures CredentialLifecycleEffects at construction.
@@ -63,6 +67,18 @@ func WithUserInfoObserver(observe func(userID string)) LifecycleOption {
 	return func(e *CredentialLifecycleEffects) {
 		if observe != nil {
 			e.userInfoObservers = append(e.userInfoObservers, observe)
+		}
+	}
+}
+
+// WithUserRevokedObserver adds observe to the functions UserRevoked calls.
+// In-memory per-user ceremony state -- such as open WebAuthn ceremonies and
+// approved device grants -- follows user-wide revocations (including replays
+// from the revocation watcher) through it.
+func WithUserRevokedObserver(observe func(userID string, userAuthGeneration int64)) LifecycleOption {
+	return func(e *CredentialLifecycleEffects) {
+		if observe != nil {
+			e.userRevokedObservers = append(e.userRevokedObservers, observe)
 		}
 	}
 }
@@ -259,6 +275,9 @@ func (e *CredentialLifecycleEffects) UserRevoked(userID string, userAuthGenerati
 	}
 	if e.channels != nil {
 		e.channels.CloseChannelsByUserRevocation(userID, userAuthGeneration)
+	}
+	for _, observe := range e.userRevokedObservers {
+		observe(userID, userAuthGeneration)
 	}
 }
 

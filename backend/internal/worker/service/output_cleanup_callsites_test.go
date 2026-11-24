@@ -36,7 +36,7 @@ func seedPendingControlRequest(t *testing.T, ctx context.Context, svc *Service, 
 	}))
 
 	requestID := "req-" + agentID
-	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
 		AgentID:   agentID,
 		RequestID: requestID,
 		Payload:   []byte(`{"jsonrpc":"2.0","id":1,"method":"tool/permission"}`),
@@ -49,9 +49,9 @@ func seedPendingControlRequest(t *testing.T, ctx context.Context, svc *Service, 
 func assertControlRequestsCleared(t *testing.T, ctx context.Context, svc *Service, w *testResponseWriter, agentID, expectedRequestID string) {
 	t.Helper()
 
-	rows, err := svc.Queries.ListControlRequestsByAgentID(ctx, agentID)
+	rows, err := svc.Output.ListControlRequests(ctx, agentID)
 	require.NoError(t, err)
-	assert.Empty(t, rows, "control_requests rows should be deleted")
+	assert.Empty(t, rows, "pending control requests should be deleted")
 
 	cancels := collectBroadcastCancelIDs(t, w)
 	assert.Contains(t, cancels, expectedRequestID, "expected a controlCancel broadcast for the cleared request")

@@ -184,14 +184,15 @@ func TestBgTask_UpsertIdenticalReplaySkipsBroadcast(t *testing.T) {
 func TestBgTask_UpdateStatusTransitions(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupBgTaskTest(t)
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "x", Status: bgtask.StatusRunning,
 	}))
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
-	rows := listRows()
-	require.Len(t, rows, 1)
-	assert.Equal(t, "running Bash", rows[0].ActiveForm)
+	items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "running Bash", items[0].ActiveForm)
 }
 
 // TestBgTask_UpdateStatusFinalStampsEndedAt verifies that a final status
@@ -1053,7 +1054,7 @@ func TestBgTask_CleanupDropsCache(t *testing.T) {
 func TestUpsertBackgroundTaskKeepsTheRowKeyVerbatim(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupBgTaskTest(t)
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	const key = "call-abc\nfc-def"
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: key,
@@ -1073,7 +1074,10 @@ func TestUpsertBackgroundTaskKeepsTheRowKeyVerbatim(t *testing.T) {
 	rows = listRows()
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), rows[0].Status)
-	assert.Equal(t, "working", rows[0].ActiveForm)
+	items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "working", items[0].ActiveForm)
 }
 
 // The regression this rule exists for, end to end. Two providers' keys that a
@@ -1126,7 +1130,7 @@ func TestUpsertBackgroundTaskRefusesToMergeTwoKeys(t *testing.T) {
 func TestUpsertBackgroundTaskDerivesAKeyForAnUnusableOne(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupBgTaskTest(t)
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "good-key",
 		Kind:   bgtask.KindShell,
@@ -1159,8 +1163,12 @@ func TestUpsertBackgroundTaskDerivesAKeyForAnUnusableOne(t *testing.T) {
 
 			row := findRow(t, listRows(), stored)
 			assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), row.Status, "the close must find the row the upsert opened")
-			assert.Equal(t, "working", row.ActiveForm)
 			assert.Equal(t, "derived "+tc.name, row.Title)
+			items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+			require.NoError(t, err)
+			idx := slices.IndexFunc(items, func(i bgtask.Item) bool { return i.RowKey == stored })
+			require.GreaterOrEqual(t, idx, 0)
+			assert.Equal(t, "working", items[idx].ActiveForm)
 		})
 	}
 
@@ -1569,7 +1577,10 @@ func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
 
 	row := storedRow(t, svc, ownerID, "task-1")
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusFailed), row.Status)
-	assert.Equal(t, "late failure detail", row.ActiveForm)
+	assert.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the finished retained row stays outside the display list when active rows fill the cap")
+	assert.Empty(t, svc.Output.bgTaskEphemeral(ownerID).activeFormOf("task-1"),
+		"ephemeral active_form is capped by the display window")
 }
 
 // Active rows stay displayed past MaxTasks and closing one records its outcome
@@ -1754,12 +1765,11 @@ func TestBgTask_AReviveThatMatchesNothingAdoptsTheStoredRow(t *testing.T) {
 	// The cache says finished; the ROW is active. Only the DB moves, so the
 	// revive's UPDATE (which filters on a final status) matches nothing.
 	_, err := svc.Queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
-		OutputGeneration: storedRow(t, svc, ownerID, "task-1").OutputGeneration,
-		Status:           leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
-		MinFinalStatus:   leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
-		UpdatedAt:        sqltime.NewSQLiteTime(nowMillis()),
-		OwnerAgentID:     ownerID,
-		RowKey:           "task-1",
+		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		UpdatedAt:      sqltime.NewSQLiteTime(nowMillis()),
+		OwnerAgentID:   ownerID,
+		RowKey:         "task-1",
 	})
 	require.NoError(t, err)
 
@@ -1818,12 +1828,11 @@ func TestBgTask_AReviveThatMatchesNothingSparesTheDisplayListForARetainedRow(t *
 	// Flip the retained row back to Running directly in SQLite so the revive's
 	// UPDATE (which filters on a final status) matches nothing.
 	_, err = svc.Queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
-		OutputGeneration: storedRow(t, svc, ownerID, "task-1").OutputGeneration,
-		Status:           leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
-		MinFinalStatus:   leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
-		UpdatedAt:        sqltime.NewSQLiteTime(nowMillis()),
-		OwnerAgentID:     ownerID,
-		RowKey:           "task-1",
+		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		UpdatedAt:      sqltime.NewSQLiteTime(nowMillis()),
+		OwnerAgentID:   ownerID,
+		RowKey:         "task-1",
 	})
 	require.NoError(t, err)
 	beforeRows := len(listRows())
@@ -2012,4 +2021,148 @@ func TestBgTask_NotifyBackgroundWorkChangedFiresOnlyOnWorkOrLinkageChanges(t *te
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 5, notifications, "EnsureChildAgent creating a linked running row must notify")
+}
+
+func TestBgTask_ActiveFormOnlyTickSkipsSQLiteWrite(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		tick func(sink agent.ProviderServices) error
+	}{
+		{
+			name: "UpdateBackgroundTaskStatus",
+			tick: func(sink agent.ProviderServices) error {
+				return sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running tests")
+			},
+		},
+		{
+			name: "UpsertBackgroundTask",
+			tick: func(sink agent.ProviderServices) error {
+				return sink.UpsertBackgroundTask(bgtask.Upsert{
+					RowKey:     "task-1",
+					Kind:       bgtask.KindSubagent,
+					Title:      "worker",
+					Status:     bgtask.StatusRunning,
+					ActiveForm: "running tests",
+				})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey:     "task-1",
+				Kind:       bgtask.KindSubagent,
+				Title:      "worker",
+				Status:     bgtask.StatusRunning,
+				ActiveForm: "starting",
+			}))
+			var sawBroadcast bool
+			writer := &turnAdmissionWatchingWriter{
+				testResponseWriter: &testResponseWriter{channelID: "active-form-watcher"},
+				onEvent: func(event *leapmuxv1.AgentEvent) {
+					changed := event.GetBackgroundTasksChanged()
+					if changed == nil {
+						return
+					}
+					for _, task := range changed.GetTasks() {
+						if task.GetId() == "task-1" && task.GetActiveForm() == "running tests" {
+							sawBroadcast = true
+						}
+					}
+				},
+			}
+			registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+
+			_, err := svc.DB.ExecContext(t.Context(), `
+				CREATE TRIGGER forbid_bgtask_update
+				BEFORE UPDATE ON agent_background_tasks
+				BEGIN
+					SELECT RAISE(ABORT, 'unexpected update');
+				END`)
+			require.NoError(t, err)
+
+			require.NoError(t, tc.tick(sink))
+
+			items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+			require.NoError(t, err)
+			require.Len(t, items, 1)
+			assert.Equal(t, "running tests", items[0].ActiveForm)
+			assert.True(t, sawBroadcast, "ActiveForm-only tick must broadcast BackgroundTasksChanged with new ActiveForm")
+		})
+	}
+}
+
+func TestBgTask_DisplayEvictionDropsActiveFormButPreservesRowGenFencing(t *testing.T) {
+	t.Parallel()
+	const ownerID = "display-eviction-fencing"
+	svc, sink1 := setupRootSink(t, ownerID)
+	sink2 := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	gen2 := requireRootOutputSink(t, svc.Output, ownerID).outputGeneration
+
+	_, err := sink2.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "span-old",
+		ProviderChildKey: "old",
+		Title:            "Old child",
+	})
+	require.NoError(t, err)
+	require.NoError(t, sink2.UpdateBackgroundTaskStatus("old", bgtask.StatusRunning, "working"))
+	require.NoError(t, sink2.CloseBackgroundTask("old", bgtask.StatusSucceeded))
+	require.Equal(t, "working", svc.Output.bgTaskEphemeral(ownerID).activeFormOf("old"))
+
+	// Fill the display cap to evict "old" from display while retaining its child-linked row in SQLite.
+	fillSubagentDisplayCap(t, sink2, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "old")
+
+	meta := svc.Output.bgTaskEphemeral(ownerID)
+	assert.Empty(t, meta.activeFormOf("old"), "display eviction must drop activeForm")
+	assert.Equal(t, gen2, meta.rowGeneration("old"), "display eviction must preserve rowGen fencing")
+
+	// Stale write from sink1 (G1 < G2) on the evicted retained row must be fenced.
+	before := storedRow(t, svc, ownerID, "old")
+	require.NoError(t, sink1.UpdateBackgroundTaskStatus("old", bgtask.StatusFailed, "stale failure"))
+	assert.Equal(t, before, storedRow(t, svc, ownerID, "old"))
+	assert.Empty(t, meta.activeFormOf("old"))
+}
+
+func TestBgTask_UpsertActiveFormOnFinishedRowWithNullEndedAtStampsEndedAt(t *testing.T) {
+	t.Parallel()
+	const ownerID = "finished-null-ended-at"
+	svc, sink := setupRootSink(t, ownerID)
+	ctx := t.Context()
+
+	// Seed a finished row whose ended_at is NULL in SQLite, then warm the display cache.
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		OwnerAgentID:  ownerID,
+		ParentAgentID: ownerID,
+		RowKey:        "done-null",
+		Seq:           1,
+		Kind:          leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
+		Role:          leapmuxv1.BackgroundTaskRole(bgtask.RoleTaskOutcome),
+		Title:         "Done task",
+		Status:        leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
+	})
+	loaded, err := svc.Output.LoadBackgroundTasks(ctx, ownerID)
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.True(t, loaded[0].EndedAt.IsZero())
+
+	// An upsert that supplies only a new ActiveForm on an already-displayed finished row
+	// whose ended_at is NULL must still stamp ended_at in SQLite and in the display cache.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     "done-null",
+		Kind:       bgtask.KindSubagent,
+		Status:     bgtask.StatusSucceeded,
+		ActiveForm: "finalizing",
+	}))
+
+	row := storedRow(t, svc, ownerID, "done-null")
+	assert.True(t, row.EndedAt.Valid, "finished row with NULL ended_at must be stamped in SQLite")
+	items, err := svc.Output.LoadBackgroundTasks(ctx, ownerID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.False(t, items[0].EndedAt.IsZero(), "display cache must reflect stamped EndedAt")
+	assert.Equal(t, "finalizing", items[0].ActiveForm)
 }

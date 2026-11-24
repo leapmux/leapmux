@@ -2,7 +2,7 @@ package inputqueue
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -39,11 +39,9 @@ func queueRestartTestModes() []queueRestartTestMode {
 	}
 }
 
-func readQueueRestarting(t *testing.T, database *sql.DB) bool {
+func readQueueRestarting(t *testing.T, store *Store) bool {
 	t.Helper()
-	var restarting bool
-	require.NoError(t, database.QueryRowContext(t.Context(), "SELECT restarting FROM agent_input_queue_state WHERE agent_id = 'agent-1'").Scan(&restarting))
-	return restarting
+	return store.isRestartingForTest("agent-1")
 }
 
 func seedFailedRestartInput(t *testing.T, store *Store) {
@@ -57,14 +55,17 @@ func seedFailedRestartInput(t *testing.T, store *Store) {
 	require.NoError(t, err)
 }
 
-func rejectRestartFinalization(t *testing.T, database *sql.DB) func() {
+func rejectRestartFinalization(t *testing.T, store *Store) func() {
 	t.Helper()
-	_, err := database.ExecContext(t.Context(), `CREATE TRIGGER fail_restart_finish BEFORE UPDATE OF restarting ON agent_input_queue_state
-WHEN OLD.restarting = 1 AND NEW.restarting = 0 BEGIN SELECT RAISE(ABORT, 'restart finalization failed'); END`)
-	require.NoError(t, err)
+	store.ephemeralMu.Lock()
+	store.beforeCommit = func() error {
+		return errors.New("restart finalization failed")
+	}
+	store.ephemeralMu.Unlock()
 	restore := func() {
-		_, err := database.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS fail_restart_finish")
-		assert.NoError(t, err)
+		store.ephemeralMu.Lock()
+		store.beforeCommit = nil
+		store.ephemeralMu.Unlock()
 	}
 	t.Cleanup(restore)
 	return restore
@@ -75,7 +76,7 @@ func TestManagerRejectsOverlappingRestartGuards(t *testing.T) {
 		for _, secondMode := range queueRestartTestModes() {
 			t.Run(firstMode.name+" then "+secondMode.name, func(t *testing.T) {
 				t.Parallel()
-				database, store := newStoreFixture(t)
+				_, store := newStoreFixture(t)
 				manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
 				t.Cleanup(manager.StopAndWait)
 				first, err := firstMode.begin(t.Context(), manager)
@@ -83,7 +84,7 @@ func TestManagerRejectsOverlappingRestartGuards(t *testing.T) {
 				t.Cleanup(func() { _ = firstMode.finish(context.Background(), first) })
 				before, err := manager.Snapshot(t.Context(), "agent-1")
 				require.NoError(t, err)
-				require.True(t, readQueueRestarting(t, database))
+				require.True(t, readQueueRestarting(t, store))
 				second, err := secondMode.begin(t.Context(), manager)
 				if second != nil {
 					t.Cleanup(func() { _ = secondMode.finish(context.Background(), second) })
@@ -93,12 +94,12 @@ func TestManagerRejectsOverlappingRestartGuards(t *testing.T) {
 				during, err := manager.Snapshot(t.Context(), "agent-1")
 				require.NoError(t, err)
 				assert.Equal(t, before, during, "a refused restart cannot change the first guard's pause or revision")
-				assert.True(t, readQueueRestarting(t, database))
+				assert.True(t, readQueueRestarting(t, store))
 				require.NoError(t, firstMode.finish(t.Context(), first))
 				after, err := manager.Snapshot(t.Context(), "agent-1")
 				require.NoError(t, err)
 				assert.False(t, after.Paused)
-				assert.False(t, readQueueRestarting(t, database))
+				assert.False(t, readQueueRestarting(t, store))
 			})
 		}
 	}
@@ -108,7 +109,7 @@ func TestManagerResumeRepairsACompletedRestartMarkerAfterFinishFailure(t *testin
 	for _, mode := range queueRestartTestModes() {
 		t.Run(mode.name, func(t *testing.T) {
 			t.Parallel()
-			database, store := newStoreFixture(t)
+			_, store := newStoreFixture(t)
 			dispatcher := &recordingDispatcher{}
 			manager := NewManager(store, dispatcher, &recordingObserver{})
 			t.Cleanup(manager.StopAndWait)
@@ -116,10 +117,10 @@ func TestManagerResumeRepairsACompletedRestartMarkerAfterFinishFailure(t *testin
 			restart, err := mode.begin(t.Context(), manager)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = mode.finish(context.Background(), restart) })
-			restore := rejectRestartFinalization(t, database)
+			restore := rejectRestartFinalization(t, store)
 			err = mode.finish(t.Context(), restart)
 			require.ErrorContains(t, err, "restart finalization failed")
-			require.True(t, readQueueRestarting(t, database), "the failed transaction keeps the durable restart marker")
+			require.True(t, readQueueRestarting(t, store), "the failed transaction keeps the restart marker")
 			coordinator := manager.coordinator("agent-1")
 			coordinator.mu.Lock()
 			activeRestarts := coordinator.plannedRestarts
@@ -128,10 +129,10 @@ func TestManagerResumeRepairsACompletedRestartMarkerAfterFinishFailure(t *testin
 			restore()
 			_, err = store.SetPaused(t.Context(), "agent-1", false, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED)
 			require.NoError(t, err)
-			assert.True(t, readQueueRestarting(t, database), "the raw store cannot judge whether a restart still runs")
+			assert.True(t, readQueueRestarting(t, store), "the raw store cannot judge whether a restart still runs")
 			resumed, err := manager.SetPaused(t.Context(), "agent-1", false)
 			require.NoError(t, err)
-			assert.False(t, readQueueRestarting(t, database), "explicit resume clears a marker that no active guard owns")
+			assert.False(t, readQueueRestarting(t, store), "explicit resume clears a marker that no active guard owns")
 			require.Len(t, resumed.Items, 1)
 			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED, resumed.Items[0].State, "resume never replays failed input")
 			_, err = manager.Retry(t.Context(), "agent-1", "failed", false)
@@ -147,7 +148,7 @@ func TestManagerResumePreservesAnActiveRestartMarker(t *testing.T) {
 	for _, mode := range queueRestartTestModes() {
 		t.Run(mode.name, func(t *testing.T) {
 			t.Parallel()
-			database, store := newStoreFixture(t)
+			_, store := newStoreFixture(t)
 			manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
 			t.Cleanup(manager.StopAndWait)
 			seedFailedRestartInput(t, store)
@@ -156,11 +157,11 @@ func TestManagerResumePreservesAnActiveRestartMarker(t *testing.T) {
 			t.Cleanup(func() { _ = mode.finish(context.Background(), restart) })
 			_, err = manager.SetPaused(t.Context(), "agent-1", false)
 			require.NoError(t, err)
-			assert.True(t, readQueueRestarting(t, database), "resume cannot remove an active guard's delivery barrier")
+			assert.True(t, readQueueRestarting(t, store), "resume cannot remove an active guard's delivery barrier")
 			_, err = manager.Retry(t.Context(), "agent-1", "failed", false)
 			require.ErrorIs(t, err, ErrPlannedRestart)
 			require.NoError(t, mode.finish(t.Context(), restart))
-			assert.False(t, readQueueRestarting(t, database))
+			assert.False(t, readQueueRestarting(t, store))
 		})
 	}
 }
@@ -177,11 +178,11 @@ func TestManagerInputRecoveryAdoptsAnOrphanedRestartMarker(t *testing.T) {
 				first, err := firstMode.begin(t.Context(), manager)
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = firstMode.finish(context.Background(), first) })
-				restore := rejectRestartFinalization(t, database)
+				restore := rejectRestartFinalization(t, store)
 				require.ErrorContains(t, firstMode.finish(t.Context(), first), "restart finalization failed")
 				orphan := readQueuePauseState(t, database)
 				require.Equal(t, pauseOwnerPlannedRestart, orphan.owner)
-				require.True(t, readQueueRestarting(t, database))
+				require.True(t, readQueueRestarting(t, store))
 				restore()
 				second, err := manager.BeginInputRecovery(t.Context(), "agent-1")
 				require.NoError(t, err, "a later recovery approval must adopt a marker that has no active guard")
@@ -201,7 +202,7 @@ func TestManagerInputRecoveryAdoptsAnOrphanedRestartMarker(t *testing.T) {
 					assert.Equal(t, pauseOwnerAgentStopped, after.owner, "a refused recovery cannot restore authority to a guard that already ended")
 					assert.Equal(t, orphan.reason, after.reason)
 				}
-				assert.False(t, readQueueRestarting(t, database))
+				assert.False(t, readQueueRestarting(t, store))
 			})
 		}
 	}

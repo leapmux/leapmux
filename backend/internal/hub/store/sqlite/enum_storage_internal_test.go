@@ -3,13 +3,11 @@ package sqlite
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
@@ -46,19 +44,6 @@ func TestEnumColumnsRefuseValuesOutsideTheirOrdinals(t *testing.T) {
 					`INSERT INTO workspace_tab_owned (user_id, workspace_id, tab_type, tab_id, worker_id, tile_id, position, rendered)
 					 VALUES (?, ?, ?, ?, 'worker', 'tile', 'a', 0)`,
 					user.ID, workspaceID, value, id.Generate())
-				return err
-			},
-		},
-		{
-			column: "device_authorizations.state",
-			valid:  int32(leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING),
-			last:   int32(leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED),
-			insert: func(value any) error {
-				_, err := db.ExecContext(ctx,
-					`INSERT INTO device_authorizations (device_code_hash, user_code, client_id, state, expires_at)
-					 VALUES (?, ?, ?, ?, ?)`,
-					storetest.FixtureSecretHash(id.Generate()), id.Generate(), oauthapp.ControlCLIClientID, value,
-					time.Now().Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z"))
 				return err
 			},
 		},

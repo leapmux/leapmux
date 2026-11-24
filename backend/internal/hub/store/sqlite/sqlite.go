@@ -110,19 +110,11 @@ func (s *sqliteStore) WorkspaceSectionItems() store.WorkspaceSectionItemStore {
 func (s *sqliteStore) OAuthProviders() store.OAuthProviderStore {
 	return &oauthProviderStore{conn: s.conn}
 }
-func (s *sqliteStore) OAuthStates() store.OAuthStateStore { return &oauthStateStore{conn: s.conn} }
-func (s *sqliteStore) OAuthTokens() store.OAuthTokenStore { return &oauthTokenStore{conn: s.conn} }
 func (s *sqliteStore) OAuthUserLinks() store.OAuthUserLinkStore {
 	return &oauthUserLinkStore{conn: s.conn}
 }
-func (s *sqliteStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
-	return &pendingOAuthSignupStore{conn: s.conn}
-}
 func (s *sqliteStore) PasskeyCredentials() store.PasskeyCredentialStore {
 	return &passkeyCredentialStore{conn: s.conn}
-}
-func (s *sqliteStore) WebAuthnSessions() store.WebAuthnSessionStore {
-	return &webAuthnSessionStore{conn: s.conn}
 }
 func (s *sqliteStore) Settings() store.SettingsStore {
 	return &settingsStore{conn: s.conn}
@@ -136,9 +128,6 @@ func (s *sqliteStore) DelegationTokens() store.DelegationTokenStore {
 }
 func (s *sqliteStore) RevocationEvents() store.RevocationEventStore {
 	return newRevocationEventStore(s.conn)
-}
-func (s *sqliteStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
-	return &deviceAuthorizationStore{conn: s.conn}
 }
 func (s *sqliteStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
 	return &oauthAuthorizationCodeStore{conn: s.conn}

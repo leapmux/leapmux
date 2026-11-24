@@ -6,16 +6,14 @@
 -- name: CreateDelegationToken :exec
 INSERT INTO delegation_tokens (
     id, user_id, worker_id, granted_scopes, secret_hash,
-    refresh_hash, expires_at, refresh_expires_at, auth_generation
+    expires_at, auth_generation
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(user_id),
     sqlc.arg(worker_id),
     sqlc.arg(granted_scopes),
     sqlc.arg(secret_hash),
-    sqlc.arg(refresh_hash),
     sqlc.arg(expires_at),
-    sqlc.arg(refresh_expires_at),
     (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))
 );
 

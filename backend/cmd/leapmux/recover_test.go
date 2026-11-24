@@ -316,59 +316,6 @@ func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 	assert.Equal(t, "secret", string(plain))
 }
 
-func TestCLI_ReencryptSecrets_MigratesOAuthTokens(t *testing.T) {
-	dir := setupTestDataDir(t)
-	ctx := context.Background()
-	keyPath := filepath.Join(dir, "encryption.key")
-
-	ks, err := keystore.LoadFromFile(keyPath)
-	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	user := storetest.SeedUser(t, st, "tokuser")
-	prov := storetest.SeedOAuthProvider(t, st, "tokprov")
-	encSecret, err := ks.Encrypt([]byte("secret-tokprov"), keystore.ProviderAAD(prov.ID))
-	require.NoError(t, err)
-	require.NoError(t, st.OAuthProviders().UpdateClientSecret(ctx, prov.ID, encSecret))
-	access, err := ks.Encrypt([]byte("access-plain"), keystore.AccessTokenAAD(user.ID, prov.ID))
-	require.NoError(t, err)
-	refresh, err := ks.Encrypt([]byte("refresh-plain"), keystore.RefreshTokenAAD(user.ID, prov.ID))
-	require.NoError(t, err)
-	require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-		UserID:       userid.MustNew(user.ID),
-		ProviderID:   prov.ID,
-		AccessToken:  access,
-		RefreshToken: refresh,
-		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Hour),
-		KeyVersion:   int64(ks.ActiveVersion()),
-	}))
-	require.NoError(t, st.Close())
-
-	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
-	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
-
-	ks2, err := keystore.LoadFromFile(keyPath)
-	require.NoError(t, err)
-	assert.Equal(t, uint32(2), ks2.ActiveVersion())
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
-	tokens, err := st.OAuthTokens().ListByKeyVersion(ctx, 2)
-	require.NoError(t, err)
-	require.Len(t, tokens, 1)
-	assert.Equal(t, int64(2), tokens[0].KeyVersion)
-	plainAccess, err := ks2.Decrypt(tokens[0].AccessToken, keystore.AccessTokenAAD(user.ID, prov.ID))
-	require.NoError(t, err)
-	assert.Equal(t, "access-plain", string(plainAccess))
-	plainRefresh, err := ks2.Decrypt(tokens[0].RefreshToken, keystore.RefreshTokenAAD(user.ID, prov.ID))
-	require.NoError(t, err)
-	assert.Equal(t, "refresh-plain", string(plainRefresh))
-	old, err := st.OAuthTokens().ListByKeyVersion(ctx, 1)
-	require.NoError(t, err)
-	assert.Empty(t, old)
-}
-
 func TestCLI_RemoveEncryptionKey_RefusesWhenReferenced(t *testing.T) {
 	dir := setupTestDataDir(t)
 
@@ -391,36 +338,6 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenReferenced(t *testing.T) {
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
 	assert.Len(t, ks.Versions(), 1)
-}
-
-func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
-	dir := setupTestDataDir(t)
-	ctx := context.Background()
-
-	// Seed an OAuth token encrypted under key version 1.
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	user := storetest.SeedUser(t, st, "tokuser")
-	prov := storetest.SeedOAuthProvider(t, st, "tokprov")
-	require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-		UserID:       userid.MustNew(user.ID),
-		ProviderID:   prov.ID,
-		AccessToken:  []byte("a"),
-		RefreshToken: []byte("r"),
-		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Hour),
-		KeyVersion:   1,
-	}))
-	require.NoError(t, st.Close())
-
-	// Rotate to version 2; the OAuth token is still on version 1.
-	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
-
-	// Removing v1 must be refused — an OAuth token still refers to it. This
-	// exercises the guard's CountByKeyVersion (oauth_tokens) branch.
-	err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "OAuth token")
 }
 
 func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T) {

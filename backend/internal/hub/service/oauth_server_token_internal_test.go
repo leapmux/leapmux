@@ -7,8 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
@@ -36,37 +34,37 @@ func TestPostTouchPollOAuthError_ApprovalWithNoUserIsNotUsable(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct {
-		row      store.DeviceAuthorization
+		row      DeviceAuthorization
 		wantCode string
 		wantStop bool
 	}{
 		"pending": {
-			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, UserID: ""},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStatePending, UserID: ""},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"denied": {
-			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED, UserID: "user-1"},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStateDenied, UserID: "user-1"},
 			wantCode: "access_denied",
 			wantStop: true,
 		},
 		"approved but with no user": {
-			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, UserID: ""},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStateApproved, UserID: ""},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"unspecified": {
-			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_UNSPECIFIED, UserID: "user-1"},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStateUnspecified, UserID: "user-1"},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"an ordinal past the last declared state": {
-			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState(99), UserID: "user-1"},
+			row:      DeviceAuthorization{State: DeviceAuthorizationState(99), UserID: "user-1"},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"approved by a real user": {
-			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, UserID: "user-1"},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStateApproved, UserID: "user-1"},
 			wantCode: "",
 			wantStop: false,
 		},

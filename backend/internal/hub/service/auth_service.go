@@ -23,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
+	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
@@ -76,21 +77,29 @@ type AuthServiceDeps struct {
 	// credentials, and whether the single account holds a password. Nil
 	// outside solo mode.
 	SoloGate *auth.SoloGate
+	// PendingOAuthSignups holds short-lived inbound OAuth signup hand-offs
+	// shared with IdPHandler. Nil defaults to a fresh in-memory store.
+	PendingOAuthSignups *PendingOAuthSignupStore
+	// WebAuthnSessions holds in-flight WebAuthn ceremonies shared across
+	// AuthService and UserService. Nil defaults to a fresh in-memory store.
+	WebAuthnSessions *hubwebauthn.SessionStore
 }
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
-	sessionHasher auth.SecretHasher
-	store         store.Store
-	cfg           *config.Config
-	set           *settings.Manager
-	lifecycle     *auth.CredentialLifecycleEffects
-	keystore      *keystore.Keystore
-	mail          mail.Sender
-	renderer      mail.Renderer
-	captcha       CaptchaService
-	listen        ListenReporter
-	soloGate      *auth.SoloGate
+	sessionHasher    auth.SecretHasher
+	store            store.Store
+	cfg              *config.Config
+	set              *settings.Manager
+	lifecycle        *auth.CredentialLifecycleEffects
+	keystore         *keystore.Keystore
+	mail             mail.Sender
+	renderer         mail.Renderer
+	captcha          CaptchaService
+	listen           ListenReporter
+	soloGate         *auth.SoloGate
+	pendingSignups   *PendingOAuthSignupStore
+	webauthnSessions *hubwebauthn.SessionStore
 	// The lease owner initializes presence before serving. Last-administrator
 	// protection keeps populated state permanent. A claim publishes no presence.
 	accountState atomic.Uint32
@@ -122,7 +131,29 @@ func NewAuthService(deps AuthServiceDeps) *AuthService {
 	if listen == nil {
 		listen = configuredListenFrom(deps.Config)
 	}
-	return &AuthService{sessionHasher: deps.SessionHasher, store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc, listen: listen, soloGate: deps.SoloGate}
+	pendingSignups := deps.PendingOAuthSignups
+	if pendingSignups == nil {
+		pendingSignups = NewPendingOAuthSignupStore()
+	}
+	webauthnSessions := deps.WebAuthnSessions
+	if webauthnSessions == nil {
+		webauthnSessions = hubwebauthn.NewSessionStore()
+	}
+	return &AuthService{
+		sessionHasher:    deps.SessionHasher,
+		store:            deps.Store,
+		cfg:              deps.Config,
+		set:              deps.Settings,
+		lifecycle:        deps.Lifecycle,
+		keystore:         deps.Keystore,
+		mail:             deps.Mail,
+		renderer:         deps.Renderer,
+		captcha:          captchaSvc,
+		listen:           listen,
+		soloGate:         deps.SoloGate,
+		pendingSignups:   pendingSignups,
+		webauthnSessions: webauthnSessions,
+	}
 }
 
 // snap resolves the current settings snapshot for the settings-backed
@@ -615,11 +646,11 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *leapmuxv1.GetO
 //
 // now is a parameter so both callers pass the service's clock seam rather
 // than this function reading a second wall clock beside it.
-func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string, now time.Time) (*store.PendingOAuthSignup, error) {
+func loadPendingOAuthSignup(ctx context.Context, pendingSignups *PendingOAuthSignupStore, token string, now time.Time) (*PendingOAuthSignup, error) {
 	if token == "" {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "signup_token is required")
 	}
-	pending, err := st.PendingOAuthSignups().Get(ctx, token)
+	pending, err := pendingSignups.Get(ctx, token)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired signup token")
@@ -627,7 +658,7 @@ func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string, n
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if auth.IsExpired(now, pending.ExpiresAt) {
-		_ = st.PendingOAuthSignups().Delete(ctx, token)
+		_, _ = pendingSignups.Delete(ctx, token)
 		return nil, connect.Errorf(connect.CodeNotFound, "signup token expired")
 	}
 	return pending, nil
@@ -650,7 +681,7 @@ func errSignupStartedElsewhere() error {
 }
 
 // assertSignupBrowser checks the pending signup's browser binding.
-func (s *AuthService) assertSignupBrowser(ctx context.Context, header *connect.Header, pending *store.PendingOAuthSignup) error {
+func (s *AuthService) assertSignupBrowser(ctx context.Context, header *connect.Header, pending *PendingOAuthSignup) error {
 	presented := auth.OAuthSignupNonceFromHeader(header.Get("Cookie"), pending.Token, s.secureCookies(ctx))
 	if !browserSecretMatches(pending.NonceHash, presented) {
 		return errSignupStartedElsewhere()
@@ -660,7 +691,7 @@ func (s *AuthService) assertSignupBrowser(ctx context.Context, header *connect.H
 
 func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *leapmuxv1.GetPendingOAuthSignupRequest) (*leapmuxv1.GetPendingOAuthSignupResponse, error) {
 	info := serverCallInfo(ctx)
-	pending, err := loadPendingOAuthSignup(ctx, s.store, req.GetSignupToken(), s.now().UTC())
+	pending, err := loadPendingOAuthSignup(ctx, s.pendingSignups, req.GetSignupToken(), s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -688,7 +719,7 @@ func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *leapmuxv1.
 func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.CompleteOAuthSignupRequest) (*leapmuxv1.CompleteOAuthSignupResponse, error) {
 	info := serverCallInfo(ctx)
 	signupToken := req.GetSignupToken()
-	pending, err := loadPendingOAuthSignup(ctx, s.store, signupToken, s.now().UTC())
+	pending, err := loadPendingOAuthSignup(ctx, s.pendingSignups, signupToken, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -725,7 +756,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		ProviderSubject: pending.ProviderSubject,
 	})
 	if err == nil {
-		_ = s.store.PendingOAuthSignups().Delete(ctx, signupToken)
+		_, _ = s.pendingSignups.Delete(ctx, signupToken)
 		return nil, connect.Errorf(connect.CodeAlreadyExists, "this identity is already linked to an account")
 	}
 	if !errors.Is(err, store.ErrNotFound) {
@@ -830,14 +861,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		nextResend = &next
 	}
 
-	// Decrypt and re-store OAuth tokens with the real user ID as AAD.
-	if s.keystore != nil {
-		if err := reencryptPendingTokens(ctx, s.keystore, s.store, pending, signupToken, user.ID); err != nil {
-			slog.Error("oauth: re-encrypt tokens for new user", "error", err, "user_id", user.ID)
-		}
-	}
-
-	_ = s.store.PendingOAuthSignups().Delete(ctx, signupToken)
+	_, _ = s.pendingSignups.Delete(ctx, signupToken)
 
 	finalUser := user
 	finalUID, mintErr := mintRowUserID(finalUser.ID)
@@ -864,38 +888,6 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		info.ResponseHeader().Add("Set-Cookie", c.String())
 	}
 	return resp, nil
-}
-
-// reencryptPendingTokens decrypts tokens from a pending signup (keyed by signupToken)
-// and re-encrypts them with the real userID as AAD.
-func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store.Store, pending *store.PendingOAuthSignup, signupToken, userID string) error {
-	accessPlain, err := ks.Decrypt(pending.AccessToken, keystore.AccessTokenAAD(signupToken, pending.ProviderID))
-	if err != nil {
-		return fmt.Errorf("decrypt access token: %w", err)
-	}
-	refreshPlain, err := ks.Decrypt(pending.RefreshToken, keystore.RefreshTokenAAD(signupToken, pending.ProviderID))
-	if err != nil {
-		return fmt.Errorf("decrypt refresh token: %w", err)
-	}
-
-	encAccess, encRefresh, err := encryptTokenPair(ks, string(accessPlain), string(refreshPlain), userID, pending.ProviderID)
-	if err != nil {
-		return err
-	}
-
-	tokUID, mintErr := mintRowUserID(userID)
-	if mintErr != nil {
-		return mintErr
-	}
-	return st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-		UserID:       tokUID,
-		ProviderID:   pending.ProviderID,
-		AccessToken:  encAccess,
-		RefreshToken: encRefresh,
-		TokenType:    pending.TokenType,
-		ExpiresAt:    pending.TokenExpiresAt,
-		KeyVersion:   int64(ks.ActiveVersion()),
-	})
 }
 
 // mapSignupCommitError maps an account-creation failure onto a connect

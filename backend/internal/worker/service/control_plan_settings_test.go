@@ -24,7 +24,7 @@ func TestPlanApprovalSettingsPersistOutsideTheNativeResponse(t *testing.T) {
 				ID: "agent-1", WorkingDir: t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			}))
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim",
 				Payload: []byte(`{"type":"control_request","request_id":"plan","request":{"tool_name":"ExitPlanMode","input":{"plan":"# Keep this plan"}}}`),
 			})
@@ -75,7 +75,7 @@ func TestPlanSettingsRequireAMatchingApprovalBeforeReservation(t *testing.T) {
 				ID: "agent-1", WorkingDir: t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			}))
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 				Payload: []byte(fmt.Sprintf(`{"request":{"tool_name":%q}}`, tc.tool)),
 			})

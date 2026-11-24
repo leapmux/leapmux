@@ -194,7 +194,7 @@ func TestStoreHoldForEchoKeepsTheItemAndWritesNoRow(t *testing.T) {
 	t.Parallel()
 	database, store := newStoreFixture(t)
 	holdEchoSteer(t, store, "steer")
-	item, attachments, found, err := getItem(t.Context(), database, "agent-1", "steer", true)
+	item, attachments, found, err := store.getItem(t.Context(), database, "agent-1", "steer", true)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, item.State)
@@ -268,7 +268,7 @@ func TestStoreRequeueUnechoedSteersPutsThemAtTheHead(t *testing.T) {
 	database, store := newStoreFixture(t)
 	holdEchoSteer(t, store, "first")
 	holdEchoSteer(t, store, "second")
-	original, originalAttachments, found, err := getItem(t.Context(), database, "agent-1", "first", true)
+	original, originalAttachments, found, err := store.getItem(t.Context(), database, "agent-1", "first", true)
 	require.NoError(t, err)
 	require.True(t, found)
 	_, err = store.Enqueue(t.Context(), NewItem{ID: "last", AgentID: "agent-1", Text: "last", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
@@ -280,7 +280,7 @@ func TestStoreRequeueUnechoedSteersPutsThemAtTheHead(t *testing.T) {
 	assert.Equal(t, 1, snapshot.HeadIndex())
 	assert.True(t, snapshot.Items[1].CanSteer)
 	assert.False(t, snapshot.Items[0].CanSteer)
-	returned, attachments, found, err := getItem(t.Context(), database, "agent-1", "first", true)
+	returned, attachments, found, err := store.getItem(t.Context(), database, "agent-1", "first", true)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, original.Text, returned.Text)
@@ -450,12 +450,27 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 		"agent_input_queue_state",
 		"agent_input_queue_items",
 		"agent_input_queue_attachments",
-		"idx_agent_input_queue_one_edit",
 	} {
 		var count int
 		require.NoError(t, database.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, object).Scan(&count))
 		assert.Equal(t, 1, count, object)
+	}
+	var editIndexCount int
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_agent_input_queue_one_edit'`).Scan(&editIndexCount))
+	assert.Zero(t, editIndexCount, "edit locks live in memory only")
+	for _, col := range []string{"restarting", "active_turn_steerable", "active_input_id", "bypass_background_work_input_id"} {
+		var count int
+		require.NoError(t, database.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_state') WHERE name = ?`, col).Scan(&count))
+		assert.Zero(t, count, "ephemeral state column %s must not exist in SQLite", col)
+	}
+	for _, col := range []string{"edit_owner", "reserved_seq"} {
+		var count int
+		require.NoError(t, database.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_items') WHERE name = ?`, col).Scan(&count))
+		assert.Zero(t, count, "ephemeral item column %s must not exist in SQLite", col)
 	}
 	var deliveryErrorColumns, legacyInputFingerprintColumns, legacyDedupKeyColumns, idempotencyKeyColumns, providerColumns int
 	require.NoError(t, database.QueryRowContext(ctx,
@@ -478,10 +493,6 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 		`SELECT sql FROM sqlite_master WHERE name = 'idx_messages_idempotency_key'`).Scan(&idempotencyIndexSQL))
 	assert.Contains(t, idempotencyIndexSQL,
 		"ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> ''")
-	var editIndexSQL string
-	require.NoError(t, database.QueryRowContext(ctx,
-		`SELECT sql FROM sqlite_master WHERE name = 'idx_agent_input_queue_one_edit'`).Scan(&editIndexSQL))
-	assert.Contains(t, editIndexSQL, "WHERE edit_owner <> ''")
 	var pauseOwnerColumns, archiveMarkerColumns, pausedColumns int
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_state') WHERE name = 'pause_owner'`).Scan(&pauseOwnerColumns))
@@ -1176,7 +1187,7 @@ func TestStoreAcceptRollsBackWhenItsContextIsCanceled(t *testing.T) {
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
-	storedPrepared, preparedAttachments, found, err := getItem(t.Context(), database, "agent-1", "one", true)
+	storedPrepared, preparedAttachments, found, err := store.getItem(t.Context(), database, "agent-1", "one", true)
 	require.NoError(t, err)
 	require.True(t, found)
 	store.beforeAcceptWrite = cancel
@@ -1192,7 +1203,7 @@ func TestStoreAcceptRollsBackWhenItsContextIsCanceled(t *testing.T) {
 	var count int
 	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages WHERE id = ?`, "one").Scan(&count))
 	assert.Zero(t, count)
-	item, attachments, found, err := getItem(t.Context(), database, "agent-1", "one", true)
+	item, attachments, found, err := store.getItem(t.Context(), database, "agent-1", "one", true)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, storedPrepared, item)
@@ -1260,7 +1271,7 @@ func TestStorePreparationReturnsTheCommittedItem(t *testing.T) {
 			_, err = database.ExecContext(ctx, "UPDATE agent_input_queue_items SET updated_at = ? WHERE agent_id = ? AND id = ?",
 				oldTimestamp, input.AgentID, input.ID)
 			require.NoError(t, err)
-			queued, _, found, err := getItem(ctx, database, input.AgentID, input.ID, true)
+			queued, _, found, err := store.getItem(ctx, database, input.AgentID, input.ID, true)
 			require.NoError(t, err)
 			require.True(t, found)
 			require.Equal(t, "native input is not ready", queued.Error)
@@ -1277,7 +1288,7 @@ func TestStorePreparationReturnsTheCommittedItem(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.NotNil(t, prepared)
-			stored, attachments, found, err := getItem(ctx, database, input.AgentID, input.ID, true)
+			stored, attachments, found, err := store.getItem(ctx, database, input.AgentID, input.ID, true)
 			require.NoError(t, err)
 			require.True(t, found)
 			assert.Equal(t, stored, prepared.Item.StoredItem, "the returned reservation must describe its actual committed row")
@@ -1319,7 +1330,7 @@ END`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING))
 	prepared, snapshot, err := store.PrepareDispatch(ctx, input.AgentID, false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
-	stored, attachments, found, err := getItem(ctx, database, input.AgentID, input.ID, true)
+	stored, attachments, found, err := store.getItem(ctx, database, input.AgentID, input.ID, true)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, "2030-01-02T03:04:05Z", stored.UpdatedAt)
@@ -1352,7 +1363,7 @@ END`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING))
 	after, snapshotErr := store.Snapshot(ctx, input.AgentID)
 	require.NoError(t, snapshotErr)
 	assert.Equal(t, before, after, "an absent prepared item must roll back every queue and reservation field")
-	stored, _, found, readErr := getItem(ctx, database, input.AgentID, input.ID, true)
+	stored, _, found, readErr := store.getItem(ctx, database, input.AgentID, input.ID, true)
 	require.NoError(t, readErr)
 	require.True(t, found)
 	assert.Equal(t, input.Text, stored.Text)
@@ -1414,14 +1425,15 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	_, err = store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
 	require.NoError(t, err)
 	before := readQueuePauseState(t, database)
-	snapshots, err := NewStore(database, nil).Recover(ctx)
+	recovered := NewStore(database, nil)
+	snapshots, err := recovered.Recover(ctx)
 	require.NoError(t, err)
 	require.Len(t, snapshots, 1)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshots[0].Items[0].State)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, snapshots[0].PauseReason)
 	assert.Equal(t, pauseOwnerRecovery, readQueuePauseState(t, database).owner)
 	assert.EqualValues(t, before.revision+1, snapshots[0].Revision)
-	assertQueueTurnEnded(t, database)
+	assertQueueTurnEnded(t, database, recovered)
 
 	database, store = newStoreFixture(t)
 	_, err = store.Enqueue(ctx, NewItem{ID: "two", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
@@ -1433,12 +1445,13 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	_, err = store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
 	require.NoError(t, err)
 	before = readQueuePauseState(t, database)
-	snapshots, err = NewStore(database, nil).Recover(ctx)
+	recovered = NewStore(database, nil)
+	snapshots, err = recovered.Recover(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshots[0].PauseReason)
 	assert.Equal(t, pauseOwnerRecovery, readQueuePauseState(t, database).owner)
 	assert.EqualValues(t, before.revision+1, snapshots[0].Revision)
-	assertQueueTurnEnded(t, database)
+	assertQueueTurnEnded(t, database, recovered)
 }
 
 func TestStoreFailDispatchReplacesThePauseAndClearsAllTurnState(t *testing.T) {
@@ -1472,7 +1485,7 @@ func TestStoreFailDispatchReplacesThePauseAndClearsAllTurnState(t *testing.T) {
 				assert.Equal(t, assert.AnError.Error(), snapshot.Items[0].Error)
 				assert.Equal(t, pauseOwnerDelivery, readQueuePauseState(t, database).owner)
 				assert.EqualValues(t, before.revision+1, snapshot.Revision)
-				assertQueueTurnEnded(t, database)
+				assertQueueTurnEnded(t, database, store)
 			})
 		}
 	}
@@ -1489,14 +1502,14 @@ func TestStoreRecoveryKeepsAnIdlePauseAndRevision(t *testing.T) {
 	assert.Equal(t, before, readQueuePauseState(t, database))
 }
 
-func assertQueueTurnEnded(t *testing.T, database *sql.DB) {
+func assertQueueTurnEnded(t *testing.T, database *sql.DB, store *Store) {
 	t.Helper()
-	var active, steerable bool
-	var inputID string
-	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT active_turn, active_turn_steerable, active_input_id FROM agent_input_queue_state WHERE agent_id = 'agent-1'`).Scan(&active, &steerable, &inputID))
+	var active bool
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT active_turn FROM agent_input_queue_state WHERE agent_id = 'agent-1'`).Scan(&active))
+	ephem := store.ephemeralForTest("agent-1")
 	assert.False(t, active)
-	assert.False(t, steerable)
-	assert.Empty(t, inputID)
+	assert.False(t, ephem.activeTurnSteerable)
+	assert.Empty(t, ephem.activeInputID)
 }
 
 func TestStoreRecoveryIgnoresClosedAgents(t *testing.T) {
@@ -1762,11 +1775,24 @@ func TestStoreRecoveryReleasesAnAbandonedEditLock(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, blocked, "an edited head blocks dispatch")
 
-	_, err = NewStore(database, nil).Recover(ctx)
+	// In-place recovery drops the abandoned edit lock on the current store.
+	_, err = store.Recover(ctx)
 	require.NoError(t, err)
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	assert.NotNil(t, prepared, "recovery released the lock, so the head dispatches")
+
+	// A simulated restart (fresh Store) starts with no edit lock either.
+	_, err = store.RequeuePending(ctx, "agent-1", "one")
+	require.NoError(t, err)
+	_, _, _, err = store.BeginEdit(ctx, "agent-1", "one", "client-gone-2", false)
+	require.NoError(t, err)
+	restarted := NewStore(database, nil)
+	_, err = restarted.Recover(ctx)
+	require.NoError(t, err)
+	preparedAfterRestart, _, err := restarted.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	assert.NotNil(t, preparedAfterRestart, "a restarted store holds no abandoned edit lock")
 }
 
 // The store answers the steering precondition, so a client never offers a
@@ -2081,9 +2107,8 @@ func TestStoreSnapshotRefusesToPreemptWhatTheDrainWouldRefuse(t *testing.T) {
 		{
 			// A head another tab is editing is not this reader's to send.
 			name: "a head under an edit owner",
-			seed: func(t *testing.T, database *sql.DB, _ *Store) {
-				_, err := database.ExecContext(t.Context(),
-					`UPDATE agent_input_queue_items SET edit_owner = 'other-tab' WHERE id = 'head'`)
+			seed: func(t *testing.T, _ *sql.DB, store *Store) {
+				_, _, _, err := store.BeginEdit(t.Context(), "agent-1", "head", "other-tab", false)
 				require.NoError(t, err)
 			},
 			want: false,
@@ -2091,10 +2116,8 @@ func TestStoreSnapshotRefusesToPreemptWhatTheDrainWouldRefuse(t *testing.T) {
 		{
 			// A planned restart stops the old process, so a write reaches a closed pipe.
 			name: "a planned restart in flight",
-			seed: func(t *testing.T, database *sql.DB, _ *Store) {
-				_, err := database.ExecContext(t.Context(),
-					`UPDATE agent_input_queue_state SET restarting = 1 WHERE agent_id = 'agent-1'`)
-				require.NoError(t, err)
+			seed: func(_ *testing.T, _ *sql.DB, store *Store) {
+				store.setRestartingForTest("agent-1", true)
 			},
 			want: true,
 		},
@@ -2178,7 +2201,7 @@ func TestStoreSnapshotRefusesToPreemptAnApprovalThatIsNotRecorded(t *testing.T) 
 func TestStoreSnapshotRefusesToSteerDuringAPlannedRestart(t *testing.T) {
 	t.Parallel()
 
-	database, store := newStoreFixture(t)
+	_, store := newStoreFixture(t)
 	_, err := store.Enqueue(t.Context(), NewItem{
 		ID: "head", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "next",
 	})
@@ -2190,8 +2213,7 @@ func TestStoreSnapshotRefusesToSteerDuringAPlannedRestart(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, snapshot.Items[0].CanSteer, "a steerable turn offers a steer")
 
-	_, err = database.ExecContext(t.Context(), `UPDATE agent_input_queue_state SET restarting = 1 WHERE agent_id = 'agent-1'`)
-	require.NoError(t, err)
+	store.setRestartingForTest("agent-1", true)
 
 	snapshot, err = store.Snapshot(t.Context(), "agent-1")
 	require.NoError(t, err)
@@ -2221,7 +2243,7 @@ func TestStoreUncertainSteersSelectOnlyTheOldestAndKeepAttachments(t *testing.T)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, snapshot.Items[0].State)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[1].State)
 	assert.True(t, snapshot.Paused)
-	item, attachments, found, err := getItem(t.Context(), database, "agent-1", "first", true)
+	item, attachments, found, err := store.getItem(t.Context(), database, "agent-1", "first", true)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, "first", item.Text)
@@ -2353,16 +2375,17 @@ func readQueuePauseState(t *testing.T, database *sql.DB) queuePauseState {
 
 // pauseAgentAndEndTurn runs pauseAndEndTurn for agent-1 in its own
 // transaction and returns the number of rows it changed.
-func pauseAgentAndEndTurn(t *testing.T, database *sql.DB, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner) int64 {
+func pauseAgentAndEndTurn(t *testing.T, store *Store, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner) int64 {
 	t.Helper()
-	tx, err := database.BeginTx(t.Context(), nil)
+	tx, err := store.db.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
-	result, err := pauseAndEndTurn(t.Context(), tx, "agent-1", reason, owner)
+	staged := store.cloneEphemeral("agent-1")
+	result, err := pauseAndEndTurn(t.Context(), tx, "agent-1", reason, owner, &staged)
 	require.NoError(t, err)
 	rows, err := result.RowsAffected()
 	require.NoError(t, err)
-	require.NoError(t, tx.Commit())
+	require.NoError(t, store.commitEphemeral(tx, "agent-1", staged))
 	return rows
 }
 
@@ -2381,7 +2404,7 @@ func TestPauseAndEndTurnKeepsTheEarlierPause(t *testing.T) {
 		_, err = database.ExecContext(t.Context(), `UPDATE agent_input_queue_state SET active_turn = 1 WHERE agent_id = 'agent-1'`)
 		require.NoError(t, err)
 
-		changed := pauseAgentAndEndTurn(t, database,
+		changed := pauseAgentAndEndTurn(t, store,
 			leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped)
 		assert.Equal(t, int64(1), changed, "the active turn ends")
 		after := readQueuePauseState(t, database)
@@ -2391,7 +2414,7 @@ func TestPauseAndEndTurnKeepsTheEarlierPause(t *testing.T) {
 
 		// No turn is active and the pause is not a planned restart's, so the
 		// WHERE clause matches nothing.
-		changed = pauseAgentAndEndTurn(t, database,
+		changed = pauseAgentAndEndTurn(t, store,
 			leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped)
 		assert.Zero(t, changed)
 		assert.Equal(t, after, readQueuePauseState(t, database), "a call that matches nothing changes nothing")
@@ -2407,7 +2430,7 @@ func TestPauseAndEndTurnKeepsTheEarlierPause(t *testing.T) {
 		require.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, before.reason)
 		require.Equal(t, pauseOwnerPlannedRestart, before.owner)
 
-		changed := pauseAgentAndEndTurn(t, database,
+		changed := pauseAgentAndEndTurn(t, store,
 			leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerArchive)
 		assert.Equal(t, int64(1), changed)
 		after := readQueuePauseState(t, database)
@@ -2429,8 +2452,8 @@ func insertBackgroundTaskRow(t *testing.T, database *sql.DB, ownerID, rowKey str
 	t.Helper()
 	_, err := database.ExecContext(t.Context(), `
 		INSERT INTO agent_background_tasks
-		(owner_agent_id, output_generation, row_key, seq, kind, role, child_agent_id, parent_agent_id, status)
-		VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+		(owner_agent_id, row_key, seq, kind, role, child_agent_id, parent_agent_id, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		ownerID, rowKey, seq, kind, role, childAgentID, parentAgentID, status)
 	require.NoError(t, err)
 }
@@ -2824,13 +2847,12 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 
 		t.Run("BeginEdit and Update", func(t *testing.T) {
 			t.Parallel()
-			database, store := setupWithBypass(t)
+			_, store := setupWithBypass(t)
 			_, _, _, err := store.BeginEdit(ctx, "agent-1", "in-1", "c1", false)
 			require.NoError(t, err)
 			assertCleared(t, store)
 			// Re-set bypass directly to test Update also clears it.
-			_, err = database.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = 'in-1' WHERE agent_id = 'agent-1'`)
-			require.NoError(t, err)
+			store.setBypassForTest("agent-1", "in-1")
 			_, err = store.Update(ctx, UpdateRequest{
 				AgentID: "agent-1", InputID: "in-1", ClientID: "c1", ExpectedVersion: 1, Text: "edited",
 			})
@@ -2897,27 +2919,26 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 		t.Run("pauseAndEndTurn and replacePauseAndEndTurn", func(t *testing.T) {
 			t.Parallel()
 			database, store := setupWithBypass(t)
-			pauseAgentAndEndTurn(t, database, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped)
+			pauseAgentAndEndTurn(t, store, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped)
 			assertCleared(t, store)
 
-			_, err := database.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = 'in-1' WHERE agent_id = 'agent-1'`)
-			require.NoError(t, err)
+			store.setBypassForTest("agent-1", "in-1")
 			tx, err := database.BeginTx(ctx, nil)
 			require.NoError(t, err)
-			require.NoError(t, replacePauseAndEndTurn(ctx, tx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED, pauseOwnerDelivery))
-			require.NoError(t, tx.Commit())
+			staged := store.cloneEphemeral("agent-1")
+			require.NoError(t, replacePauseAndEndTurn(ctx, tx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED, pauseOwnerDelivery, &staged))
+			require.NoError(t, store.commitEphemeral(tx, "agent-1", staged))
 			assertCleared(t, store)
 		})
 
 		t.Run("pauseForPlannedRestart and finishPlannedRestart", func(t *testing.T) {
 			t.Parallel()
-			database, store := setupWithBypass(t)
+			_, store := setupWithBypass(t)
 			_, _, err := store.pauseForPlannedRestart(ctx, "agent-1")
 			require.NoError(t, err)
 			assertCleared(t, store)
 
-			_, err = database.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = 'in-1' WHERE agent_id = 'agent-1'`)
-			require.NoError(t, err)
+			store.setBypassForTest("agent-1", "in-1")
 			_, _, err = store.finishPlannedRestart(ctx, "agent-1", false, false)
 			require.NoError(t, err)
 			assertCleared(t, store)
@@ -2925,13 +2946,12 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 
 		t.Run("pauseForInputRecovery and finishInputRecovery", func(t *testing.T) {
 			t.Parallel()
-			database, store := setupWithBypass(t)
+			_, store := setupWithBypass(t)
 			_, prev, err := store.pauseForInputRecovery(ctx, "agent-1")
 			require.NoError(t, err)
 			assertCleared(t, store)
 
-			_, err = database.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = 'in-1' WHERE agent_id = 'agent-1'`)
-			require.NoError(t, err)
+			store.setBypassForTest("agent-1", "in-1")
 			_, _, err = store.finishInputRecovery(ctx, "agent-1", prev, true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED)
 			require.NoError(t, err)
 			assertCleared(t, store)
@@ -3173,4 +3193,228 @@ func TestStoreBackgroundWorkQueriesUseCoveringIndexes(t *testing.T) {
 		SELECT EXISTS (SELECT 1 FROM descendants WHERE status IN (?, ?))`,
 		"child-1", bgtask.StatusPending, bgtask.StatusRunning)
 	assert.Contains(t, childPlan, "COVERING INDEX idx_agent_background_tasks_parent_child_status")
+}
+
+func (s *Store) ephemeralForTest(agentID string) agentEphemeralState {
+	return s.cloneEphemeral(agentID)
+}
+
+func (s *Store) isRestartingForTest(agentID string) bool {
+	return s.cloneEphemeral(agentID).restarting
+}
+
+func (s *Store) setRestartingForTest(agentID string, restarting bool) {
+	s.ephemeralMu.Lock()
+	defer s.ephemeralMu.Unlock()
+	state := s.ephemeral[agentID].clone()
+	state.restarting = restarting
+	if state.isZero() {
+		delete(s.ephemeral, agentID)
+	} else {
+		s.ephemeral[agentID] = state
+	}
+}
+
+func (s *Store) setBypassForTest(agentID, inputID string) {
+	s.ephemeralMu.Lock()
+	defer s.ephemeralMu.Unlock()
+	state := s.ephemeral[agentID].clone()
+	state.bypassBackgroundWorkInputID = inputID
+	if state.isZero() {
+		delete(s.ephemeral, agentID)
+	} else {
+		s.ephemeral[agentID] = state
+	}
+}
+
+func TestStoreRecoverClearsStaleTurnMetadataWhenTurnAlreadyInactive(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+
+	_, err := store.SetPaused(ctx, "agent-1", false, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED)
+	require.NoError(t, err)
+
+	store.ephemeralMu.Lock()
+	store.ephemeral["agent-1"] = agentEphemeralState{
+		activeTurnSteerable: true,
+		activeInputID:       "stale-in",
+	}
+	store.ephemeralMu.Unlock()
+
+	_, err = store.Recover(ctx)
+	require.NoError(t, err)
+
+	ephem := store.ephemeralForTest("agent-1")
+	assert.False(t, ephem.activeTurnSteerable)
+	assert.Empty(t, ephem.activeInputID)
+}
+
+func TestStoreFailDispatchClearsReservedSeq(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "item-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello",
+	})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	require.Positive(t, store.ephemeralForTest("agent-1").reservedSeqs["item-1"])
+
+	snapshot, err := store.FailDispatch(ctx, "agent-1", "item-1", errors.New("boom"), false)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED, snapshot.Items[0].State)
+	assert.Zero(t, store.ephemeralForTest("agent-1").reservedSeqs["item-1"])
+}
+
+func TestStoreFinishPlannedRestartClearsStaleTurnFieldsWhenPauseUnchanged(t *testing.T) {
+	t.Parallel()
+
+	t.Run("inactive turn with unchanged pause clears stale metadata", func(t *testing.T) {
+		t.Parallel()
+		_, store := newStoreFixture(t)
+		ctx := t.Context()
+
+		_, err := store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+		require.NoError(t, err)
+		_, created, err := store.pauseForPlannedRestart(ctx, "agent-1")
+		require.NoError(t, err)
+		require.False(t, created)
+
+		store.ephemeralMu.Lock()
+		state := store.ephemeral["agent-1"].clone()
+		state.activeTurnSteerable = true
+		state.activeInputID = "stale-in"
+		store.ephemeral["agent-1"] = state
+		store.ephemeralMu.Unlock()
+
+		snapshot, changed, err := store.finishPlannedRestart(ctx, "agent-1", true, true)
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.True(t, snapshot.Paused)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, snapshot.PauseReason)
+		ephem := store.ephemeralForTest("agent-1")
+		assert.False(t, ephem.restarting)
+		assert.False(t, ephem.activeTurnSteerable)
+		assert.Empty(t, ephem.activeInputID)
+	})
+
+	t.Run("active turn that continues preserves live metadata", func(t *testing.T) {
+		t.Parallel()
+		_, store := newStoreFixture(t)
+		ctx := t.Context()
+
+		_, _, err := store.TurnStarted(ctx, "agent-1", true)
+		require.NoError(t, err)
+		store.ephemeralMu.Lock()
+		state := store.ephemeral["agent-1"].clone()
+		state.activeInputID = "live-in"
+		store.ephemeral["agent-1"] = state
+		store.ephemeralMu.Unlock()
+
+		_, _, err = store.pauseForPlannedRestart(ctx, "agent-1")
+		require.NoError(t, err)
+		snapshot, _, err := store.finishPlannedRestart(ctx, "agent-1", false, false)
+		require.NoError(t, err)
+		assert.True(t, snapshot.ActiveTurn)
+		ephem := store.ephemeralForTest("agent-1")
+		assert.False(t, ephem.restarting)
+		assert.True(t, ephem.activeTurnSteerable)
+		assert.Equal(t, "live-in", ephem.activeInputID)
+	})
+}
+
+func TestStoreCancelAutoRetriesClearsEditLockOnDeletedItem(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+
+	retrySnap, err := store.scheduleAutoRetry(ctx, "agent-1", agent.AutoRetrySchedule{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	})
+	require.NoError(t, err)
+	require.Len(t, retrySnap.Items, 1)
+	retryID := retrySnap.Items[0].ID
+
+	_, err = store.Enqueue(ctx, NewItem{
+		ID: "ordinary-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "ordinary",
+	})
+	require.NoError(t, err)
+
+	_, _, _, err = store.BeginEdit(ctx, "agent-1", retryID, "client-1", false)
+	require.NoError(t, err)
+
+	_, deleted, err := store.cancelAutoRetries(ctx, "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+	require.NoError(t, err)
+	require.True(t, deleted)
+
+	_, _, _, err = store.BeginEdit(ctx, "agent-1", "ordinary-1", "client-2", false)
+	require.NoError(t, err, "deleting the edited auto-retry item must release the edit lock")
+}
+
+func TestStoreClearEphemeralStateOnRetireAgent(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "in-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello",
+	})
+	require.NoError(t, err)
+	_, _, _, err = store.BeginEdit(ctx, "agent-1", "in-1", "client-1", false)
+	require.NoError(t, err)
+	store.setRestartingForTest("agent-1", true)
+	store.setBypassForTest("agent-1", "in-1")
+	store.ephemeralMu.Lock()
+	state := store.ephemeral["agent-1"].clone()
+	state.setReservedSeq("in-1", 7)
+	store.ephemeral["agent-1"] = state
+	store.ephemeralMu.Unlock()
+
+	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+	require.NoError(t, manager.RetireAgent(ctx, "agent-1"))
+
+	assert.True(t, store.ephemeralForTest("agent-1").isZero())
+	store.ephemeralMu.RLock()
+	_, exists := store.ephemeral["agent-1"]
+	store.ephemeralMu.RUnlock()
+	assert.False(t, exists)
+}
+
+func TestStoreFreshInstanceAfterRestartStartsWithCleanEphemeralState(t *testing.T) {
+	t.Parallel()
+	database, store1 := newStoreFixture(t)
+	ctx := t.Context()
+
+	_, err := store1.Enqueue(ctx, NewItem{
+		ID: "in-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "queued",
+	})
+	require.NoError(t, err)
+	_, _, err = store1.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+	_, _, _, err = store1.BeginEdit(ctx, "agent-1", "in-1", "client-1", false)
+	require.NoError(t, err)
+	store1.setRestartingForTest("agent-1", true)
+	store1.setBypassForTest("agent-1", "in-1")
+
+	store2 := NewStore(database, nil)
+	snapshots, err := store2.Recover(ctx)
+	require.NoError(t, err)
+	require.Len(t, snapshots, 1)
+	assert.True(t, snapshots[0].Paused)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshots[0].PauseReason)
+	ephem := store2.ephemeralForTest("agent-1")
+	assert.False(t, ephem.restarting)
+	assert.Empty(t, ephem.editItemID)
+	assert.Empty(t, ephem.bypassBackgroundWorkInputID)
+	assert.Empty(t, ephem.reservedSeqs)
 }

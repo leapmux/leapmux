@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/quartz"
@@ -29,6 +31,74 @@ import (
 
 const inputIdempotencyKeyPrefix = "input:"
 
+type agentEphemeralState struct {
+	restarting                  bool
+	activeTurnSteerable         bool
+	activeInputID               string
+	bypassBackgroundWorkInputID string
+	editItemID                  string
+	editOwner                   string
+	reservedSeqs                map[string]int64
+}
+
+func (e agentEphemeralState) isZero() bool {
+	return !e.restarting && !e.activeTurnSteerable && e.activeInputID == "" &&
+		e.bypassBackgroundWorkInputID == "" && e.editItemID == "" && e.editOwner == "" &&
+		len(e.reservedSeqs) == 0
+}
+
+func (e agentEphemeralState) clone() agentEphemeralState {
+	cloned := e
+	if len(e.reservedSeqs) > 0 {
+		cloned.reservedSeqs = maps.Clone(e.reservedSeqs)
+	} else {
+		cloned.reservedSeqs = nil
+	}
+	return cloned
+}
+
+func (e *agentEphemeralState) editOwnerOf(itemID string) string {
+	if e != nil && e.editItemID == itemID {
+		return e.editOwner
+	}
+	return ""
+}
+
+func (e *agentEphemeralState) reservedSeqOf(itemID string) int64 {
+	if e != nil {
+		return e.reservedSeqs[itemID]
+	}
+	return 0
+}
+
+func (e *agentEphemeralState) setReservedSeq(itemID string, seq int64) {
+	if seq <= 0 {
+		if e.reservedSeqs != nil {
+			delete(e.reservedSeqs, itemID)
+			if len(e.reservedSeqs) == 0 {
+				e.reservedSeqs = nil
+			}
+		}
+		return
+	}
+	if e.reservedSeqs == nil {
+		e.reservedSeqs = make(map[string]int64)
+	}
+	e.reservedSeqs[itemID] = seq
+}
+
+func (e *agentEphemeralState) clearEditIf(itemID string) {
+	if e.editItemID == itemID {
+		e.editItemID = ""
+		e.editOwner = ""
+	}
+}
+
+func (e *agentEphemeralState) clearItem(itemID string) {
+	e.clearEditIf(itemID)
+	e.setReservedSeq(itemID, 0)
+}
+
 type Store struct {
 	db         *sql.DB
 	classifier CommandClassifier
@@ -37,10 +107,18 @@ type Store struct {
 	// into order_index -- so a future item joins the immediate group the
 	// moment its deadline passes.
 	clock quartz.Clock
+	// ephemeralMu protects ephemeral and serializes commits with read snapshots.
+	// Global lock order places ephemeralMu strictly after SQLite's write lock:
+	// never acquire ephemeralMu before BeginTx.
+	ephemeralMu sync.RWMutex
+	ephemeral   map[string]agentEphemeralState
 	// beforeAcceptWrite runs inside Accept, after every read and before the first
 	// write. TESTS ONLY, and nil everywhere else: a second connection tries to
 	// write here to prove Accept already owns write intent.
 	beforeAcceptWrite func()
+	// beforeCommit runs inside commitEphemeral right before tx.Commit().
+	// TESTS ONLY, and nil everywhere else.
+	beforeCommit func() error
 }
 
 // NewStore builds a queue store over db. A nil clock installs the real one.
@@ -48,7 +126,47 @@ func NewStore(db *sql.DB, clock quartz.Clock) *Store {
 	if clock == nil {
 		clock = quartz.NewReal()
 	}
-	return &Store{db: db, classifier: ExactCommandClassifier{}, clock: clock}
+	return &Store{
+		db:         db,
+		classifier: ExactCommandClassifier{},
+		clock:      clock,
+		ephemeral:  make(map[string]agentEphemeralState),
+	}
+}
+
+func (s *Store) cloneEphemeral(agentID string) agentEphemeralState {
+	s.ephemeralMu.RLock()
+	defer s.ephemeralMu.RUnlock()
+	return s.ephemeral[agentID].clone()
+}
+
+// ClearEphemeralState drops all in-memory ephemeral queue state for agentID.
+func (s *Store) ClearEphemeralState(agentID string) {
+	s.ephemeralMu.Lock()
+	delete(s.ephemeral, agentID)
+	s.ephemeralMu.Unlock()
+}
+
+func (s *Store) commitEphemeral(tx *sql.Tx, agentID string, staged agentEphemeralState) error {
+	s.ephemeralMu.RLock()
+	beforeCommit := s.beforeCommit
+	s.ephemeralMu.RUnlock()
+	if beforeCommit != nil {
+		if err := beforeCommit(); err != nil {
+			return err
+		}
+	}
+	s.ephemeralMu.Lock()
+	defer s.ephemeralMu.Unlock()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if staged.isZero() {
+		delete(s.ephemeral, agentID)
+	} else {
+		s.ephemeral[agentID] = staged.clone()
+	}
+	return nil
 }
 
 // now reads the instant for one store operation. An operation reads it once,
@@ -191,6 +309,7 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(input.AgentID)
 	now := s.now()
 	commit := func() (Snapshot, error) {
 		if apply != nil {
@@ -198,13 +317,13 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 				return Snapshot{}, err
 			}
 		}
-		return commitSnapshot(ctx, tx, input.AgentID, now)
+		return s.commitSnapshot(ctx, tx, input.AgentID, now, staged)
 	}
 	if err := ensureState(ctx, tx, input.AgentID); err != nil {
 		return Snapshot{}, false, err
 	}
 
-	existing, existingAttachments, found, err := getItem(ctx, tx, input.AgentID, input.ID, true)
+	existing, existingAttachments, found, err := getItemWithEphemeral(ctx, tx, input.AgentID, input.ID, true, &staged)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
@@ -240,7 +359,7 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		return Snapshot{}, false, err
 	}
 	if controlReplyKind(input.Kind) {
-		if err := placeControlReply(ctx, tx, input.AgentID, input.ID); err != nil {
+		if err := placeControlReply(ctx, tx, input.AgentID, input.ID, &staged); err != nil {
 			return Snapshot{}, false, err
 		}
 	}
@@ -260,7 +379,23 @@ func (s *Store) Snapshot(ctx context.Context, agentID string) (Snapshot, error) 
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	// Hold ephemeralMu.RLock across the initial SELECT so SQLite's WAL read
+	// snapshot and the copied ephemeral state match the exact same commit point.
+	s.ephemeralMu.RLock()
+	stateRow, found, err := readQueueStateRow(ctx, tx, agentID)
+	ephem := s.ephemeral[agentID].clone()
+	s.ephemeralMu.RUnlock()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot, err := snapshotTxWithState(ctx, tx, agentID, s.now(), &ephem, stateRow, found)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func (s *Store) BeginEdit(ctx context.Context, agentID, inputID, clientID string, takeover bool) (Snapshot, string, []Attachment, error) {
@@ -272,7 +407,8 @@ func (s *Store) BeginEdit(ctx context.Context, agentID, inputID, clientID string
 		return Snapshot{}, "", nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	item, attachments, found, err := getItem(ctx, tx, agentID, inputID, true)
+	staged := s.cloneEphemeral(agentID)
+	item, attachments, found, err := getItemWithEphemeral(ctx, tx, agentID, inputID, true, &staged)
 	if err != nil {
 		return Snapshot{}, "", nil, err
 	}
@@ -285,26 +421,16 @@ func (s *Store) BeginEdit(ctx context.Context, agentID, inputID, clientID string
 	if item.EditOwner != "" && item.EditOwner != clientID && !takeover {
 		return Snapshot{}, "", nil, ErrEditOwned
 	}
-	var otherEditedID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND edit_owner <> '' AND id <> ? LIMIT 1`, agentID, inputID).Scan(&otherEditedID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return Snapshot{}, "", nil, err
-	}
-	if otherEditedID != "" && !takeover {
+	if staged.editItemID != "" && staged.editItemID != inputID && !takeover {
 		return Snapshot{}, "", nil, ErrEditOwned
 	}
-	if takeover {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND id <> ? AND edit_owner <> ''`, nowText(), agentID, inputID); err != nil {
-			return Snapshot{}, "", nil, err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = ?, updated_at = ? WHERE agent_id = ? AND id = ?`, clientID, nowText(), agentID, inputID); err != nil {
-		return Snapshot{}, "", nil, normalizeConstraintError(err)
-	}
-	if err := bumpRevisionAndClearBypass(ctx, tx, agentID); err != nil {
+	staged.editItemID = inputID
+	staged.editOwner = clientID
+	staged.bypassBackgroundWorkInputID = ""
+	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, "", nil, err
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	if err != nil {
 		return Snapshot{}, "", nil, err
 	}
@@ -317,7 +443,8 @@ func (s *Store) Update(ctx context.Context, request UpdateRequest) (Snapshot, er
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	item, _, found, err := getItem(ctx, tx, request.AgentID, request.InputID, false)
+	staged := s.cloneEphemeral(request.AgentID)
+	item, _, found, err := getItemWithEphemeral(ctx, tx, request.AgentID, request.InputID, false, &staged)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -349,12 +476,12 @@ func (s *Store) Update(ctx context.Context, request UpdateRequest) (Snapshot, er
 
 	// A save of a failed or uncertain retry returns it to QUEUED, beside the
 	// newer retry of its kind that a report may have queued meanwhile.
-	if err := dropQueuedAutoRetry(ctx, tx, request.AgentID, request.InputID, kind); err != nil {
+	if err := dropQueuedAutoRetry(ctx, tx, request.AgentID, request.InputID, kind, &staged); err != nil {
 		return Snapshot{}, err
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_items
-		SET kind = ?, text = ?, scheduled_at = CASE WHEN ? THEN ? ELSE scheduled_at END, state = ?, reserved_seq = 0, error = '', edit_owner = '', version = version + 1, updated_at = ?
+		SET kind = ?, text = ?, scheduled_at = CASE WHEN ? THEN ? ELSE scheduled_at END, state = ?, error = '', version = version + 1, updated_at = ?
 		WHERE agent_id = ? AND id = ? AND version = ?`,
 		kind, request.Text, request.Schedule.Replace, sqltime.NewSQLiteNullTime(request.Schedule.At), leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), request.AgentID, request.InputID, request.ExpectedVersion)
 	if err != nil {
@@ -366,23 +493,22 @@ func (s *Store) Update(ctx context.Context, request UpdateRequest) (Snapshot, er
 	if err := replaceAttachments(ctx, tx, request.InputID, request.Attachments); err != nil {
 		return Snapshot{}, err
 	}
-	if err := bumpRevisionAndClearBypass(ctx, tx, request.AgentID); err != nil {
+	staged.clearItem(request.InputID)
+	staged.bypassBackgroundWorkInputID = ""
+	if err := bumpRevision(ctx, tx, request.AgentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, request.AgentID, s.now())
+	return s.commitSnapshot(ctx, tx, request.AgentID, s.now(), staged)
 }
 
 func (s *Store) CancelEdit(ctx context.Context, agentID, inputID, clientID string) (Snapshot, error) {
-	return s.changeOwnedEdit(ctx, agentID, inputID, clientID, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND id = ?`)
-}
-
-func (s *Store) changeOwnedEdit(ctx context.Context, agentID, inputID, clientID, statement string) (Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	item, _, found, err := getItem(ctx, tx, agentID, inputID, false)
+	staged := s.cloneEphemeral(agentID)
+	item, _, found, err := getItemWithEphemeral(ctx, tx, agentID, inputID, false, &staged)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -392,13 +518,11 @@ func (s *Store) changeOwnedEdit(ctx context.Context, agentID, inputID, clientID,
 	if item.EditOwner != clientID || clientID == "" {
 		return Snapshot{}, ErrEditOwnerMismatch
 	}
-	if _, err := tx.ExecContext(ctx, statement, nowText(), agentID, inputID); err != nil {
-		return Snapshot{}, err
-	}
+	staged.clearEditIf(inputID)
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, error) {
@@ -407,7 +531,8 @@ func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, 
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	item, _, found, err := getItem(ctx, tx, agentID, inputID, false)
+	staged := s.cloneEphemeral(agentID)
+	item, _, found, err := getItemWithEphemeral(ctx, tx, agentID, inputID, false, &staged)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -438,10 +563,12 @@ func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, 
 	if err := compactOrder(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	if err := bumpRevisionAndClearBypass(ctx, tx, agentID); err != nil {
+	staged.clearItem(inputID)
+	staged.bypassBackgroundWorkInputID = ""
+	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // Move reorders one item inside its reorder group. The destination must share
@@ -459,8 +586,9 @@ func (s *Store) Move(ctx context.Context, agentID, inputID, beforeInputID string
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	now := s.now()
-	items, err := readOrderingRows(ctx, tx, agentID)
+	items, err := readOrderingRows(ctx, tx, agentID, &staged)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -473,7 +601,7 @@ func (s *Store) Move(ctx context.Context, agentID, inputID, beforeInputID string
 		return Snapshot{}, ErrConflict
 	}
 	if beforeInputID == inputID {
-		return commitSnapshot(ctx, tx, agentID, now)
+		return s.commitSnapshot(ctx, tx, agentID, now, staged)
 	}
 	group := reorderGroup(items[from], now)
 	// The source's segment: the run of items that a move may traverse. The
@@ -521,10 +649,11 @@ func (s *Store) Move(ctx context.Context, agentID, inputID, beforeInputID string
 	if err := writeOrderSlots(ctx, tx, agentID, order, slots); err != nil {
 		return Snapshot{}, err
 	}
-	if err := bumpRevisionAndClearBypass(ctx, tx, agentID); err != nil {
+	staged.bypassBackgroundWorkInputID = ""
+	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, now)
+	return s.commitSnapshot(ctx, tx, agentID, now, staged)
 }
 
 func indexOfItem[T priorityItem](items []T, id string) int {
@@ -537,6 +666,7 @@ func (s *Store) SetPaused(ctx context.Context, agentID string, paused bool, reas
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
@@ -548,11 +678,12 @@ func (s *Store) SetPaused(ctx context.Context, agentID string, paused bool, reas
 	owner := pauseOwnerNone
 	if paused {
 		owner = pauseOwnerManual
+		staged.bypassBackgroundWorkInputID = ""
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET pause_reason = ?, pause_owner = ?, bypass_background_work_input_id = CASE WHEN ? THEN '' ELSE bypass_background_work_input_id END, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, workerdb.OptionalStorageEnum(reason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(owner)), paused, nowText(), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, workerdb.OptionalStorageEnum(reason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(owner)), nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // resumeWithNoRestart clears the pause and any marker a failed finish left.
@@ -564,15 +695,17 @@ func (s *Store) resumeWithNoRestart(ctx context.Context, agentID string) (Snapsh
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
+	staged.restarting = false
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state
-SET pause_reason = NULL, pause_owner = NULL, restarting = 0, revision = revision + 1, updated_at = ?
+SET pause_reason = NULL, pause_owner = NULL, revision = revision + 1, updated_at = ?
 WHERE agent_id = ?`, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // PauseForArchive stops the active turn and records an archive-created pause.
@@ -583,11 +716,12 @@ func (s *Store) PauseForArchive(ctx context.Context, agentID string) (Snapshot, 
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
 	result, err := pauseAndEndTurn(ctx, tx, agentID,
-		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerArchive)
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerArchive, &staged)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
@@ -595,7 +729,7 @@ func (s *Store) PauseForArchive(ctx context.Context, agentID string) (Snapshot, 
 	if err != nil {
 		return Snapshot{}, false, err
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	return snapshot, changed == 1, err
 }
 
@@ -605,6 +739,7 @@ func (s *Store) pauseForPlannedRestart(ctx context.Context, agentID string) (Sna
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
@@ -624,10 +759,9 @@ func (s *Store) pauseForPlannedRestart(ctx context.Context, agentID string) (Sna
 	if err != nil {
 		return Snapshot{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 1, bypass_background_work_input_id = '', updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
-		return Snapshot{}, false, err
-	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	staged.restarting = true
+	staged.bypassBackgroundWorkInputID = ""
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	return snapshot, changed == 1, err
 }
 
@@ -645,6 +779,7 @@ func (s *Store) pauseForInputRecovery(ctx context.Context, agentID string) (Snap
 		return Snapshot{}, inputRecoveryPause{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, inputRecoveryPause{}, err
 	}
@@ -658,17 +793,24 @@ func (s *Store) pauseForInputRecovery(ctx context.Context, agentID string) (Snap
 		previous.owner = pauseOwnerAgentStopped
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state
-SET pause_reason = ?, pause_owner = ?
-WHERE agent_id = ? AND (pause_reason IS NULL OR (pause_owner IN (?, ?) AND pause_reason IN (?, ?)))`,
-		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY, pauseOwnerPlannedRestart, agentID,
-		pauseOwnerAgentStopped, pauseOwnerPlannedRestart, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY,
-		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {
+SET pause_reason = CASE WHEN pause_reason IS NULL OR (pause_owner IN (?, ?) AND pause_reason IN (?, ?)) THEN ? ELSE pause_reason END,
+    pause_owner = CASE WHEN pause_reason IS NULL OR (pause_owner IN (?, ?) AND pause_reason IN (?, ?)) THEN ? ELSE pause_owner END,
+    revision = revision + 1, updated_at = ?
+WHERE agent_id = ?`,
+		pauseOwnerAgentStopped, pauseOwnerPlannedRestart,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY,
+		pauseOwnerAgentStopped, pauseOwnerPlannedRestart,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED,
+		pauseOwnerPlannedRestart,
+		nowText(), agentID); err != nil {
 		return Snapshot{}, inputRecoveryPause{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 1, bypass_background_work_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
-		return Snapshot{}, inputRecoveryPause{}, err
-	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	staged.restarting = true
+	staged.bypassBackgroundWorkInputID = ""
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	return snapshot, previous, err
 }
 
@@ -681,6 +823,7 @@ func (s *Store) finishInputRecovery(ctx context.Context, agentID string, previou
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
@@ -692,8 +835,14 @@ func (s *Store) finishInputRecovery(ctx context.Context, agentID string, previou
 			owner = pauseOwnerNone
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET pause_reason = ?, pause_owner = ? WHERE agent_id = ? AND pause_owner = ?`,
-		workerdb.OptionalStorageEnum(reason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(owner)), agentID, pauseOwnerPlannedRestart); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state
+SET pause_reason = CASE WHEN pause_owner = ? THEN ? ELSE pause_reason END,
+    pause_owner = CASE WHEN pause_owner = ? THEN ? ELSE pause_owner END,
+    revision = revision + 1, updated_at = ?
+WHERE agent_id = ?`,
+		pauseOwnerPlannedRestart, workerdb.OptionalStorageEnum(reason),
+		pauseOwnerPlannedRestart, workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(owner)),
+		nowText(), agentID); err != nil {
 		return Snapshot{}, false, err
 	}
 	if oldProcessEnded && failureReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
@@ -702,10 +851,9 @@ func (s *Store) finishInputRecovery(ctx context.Context, agentID string, previou
 			return Snapshot{}, false, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 0, bypass_background_work_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
-		return Snapshot{}, false, err
-	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	staged.restarting = false
+	staged.bypassBackgroundWorkInputID = ""
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	return snapshot, true, err
 }
 
@@ -715,6 +863,7 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTur
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
@@ -746,23 +895,24 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTur
 	if oldTurnEnded {
 		nextActive = false
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 0, bypass_background_work_input_id = '', updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
-		return Snapshot{}, false, err
+	staged.restarting = false
+	staged.bypassBackgroundWorkInputID = ""
+	if !nextActive {
+		staged.activeTurnSteerable = false
+		staged.activeInputID = ""
 	}
 	changed := nextReason != reason || nextOwner != owner || nextActive != active
 	if changed {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE agent_input_queue_state
 			SET pause_reason = ?, pause_owner = ?, active_turn = ?,
-				active_turn_steerable = CASE WHEN ? THEN active_turn_steerable ELSE 0 END,
-				active_input_id = CASE WHEN ? THEN active_input_id ELSE '' END,
 				revision = revision + 1, updated_at = ?
 			WHERE agent_id = ?`,
-			workerdb.OptionalStorageEnum(nextReason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(nextOwner)), nextActive, nextActive, nextActive, nowText(), agentID); err != nil {
+			workerdb.OptionalStorageEnum(nextReason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(nextOwner)), nextActive, nowText(), agentID); err != nil {
 			return Snapshot{}, false, err
 		}
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	return snapshot, changed, err
 }
 
@@ -818,11 +968,12 @@ func (s *Store) RecordPreemptBypass(ctx context.Context, agentID, inputID string
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
 	now := s.now()
-	gate, item, _, err := readDispatchGate(ctx, tx, agentID, now)
+	gate, item, _, err := readDispatchGate(ctx, tx, agentID, now, &staged)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -832,12 +983,11 @@ func (s *Store) RecordPreemptBypass(ctx context.Context, agentID, inputID string
 	if !gate.ActiveTurn {
 		return Snapshot{}, ErrPreemptionState
 	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE agent_input_queue_state SET bypass_background_work_input_id = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`,
-		inputID, nowText(), agentID); err != nil {
+	staged.bypassBackgroundWorkInputID = inputID
+	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, now)
+	return s.commitSnapshot(ctx, tx, agentID, now, staged)
 }
 
 // ClearPreemptBypass clears a recorded preemption bypass when its interrupt
@@ -848,17 +998,17 @@ func (s *Store) ClearPreemptBypass(ctx context.Context, agentID, inputID string)
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	if inputID != "" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE agent_input_queue_state SET bypass_background_work_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND bypass_background_work_input_id = ?`,
-			nowText(), agentID, inputID); err != nil {
+	if inputID != "" && staged.bypassBackgroundWorkInputID == inputID {
+		staged.bypassBackgroundWorkInputID = ""
+		if err := bumpRevision(ctx, tx, agentID); err != nil {
 			return Snapshot{}, err
 		}
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // RefreshForBackgroundWork bumps the queue revision when the agent has queued
@@ -873,6 +1023,7 @@ func (s *Store) RefreshForBackgroundWork(ctx context.Context, agentID string) (S
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	var hasItems bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM agent_input_queue_items WHERE agent_id = ?)`, agentID).Scan(&hasItems); err != nil {
@@ -880,13 +1031,13 @@ func (s *Store) RefreshForBackgroundWork(ctx context.Context, agentID string) (S
 	}
 	now := s.now()
 	if !hasItems {
-		snapshot, err := snapshotTx(ctx, tx, agentID, now)
+		snapshot, err := snapshotTx(ctx, tx, agentID, now, &staged)
 		return snapshot, false, err
 	}
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, now)
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, now, staged)
 	return snapshot, err == nil, err
 }
 
@@ -1042,8 +1193,8 @@ type queueOrdering struct {
 	effective []OrderingMetadata
 }
 
-func readQueueOrdering(ctx context.Context, tx db.DBTX, agentID string, now time.Time) (queueOrdering, error) {
-	raw, err := readOrderingRows(ctx, tx, agentID)
+func readQueueOrdering(ctx context.Context, tx db.DBTX, agentID string, now time.Time, ephem *agentEphemeralState) (queueOrdering, error) {
+	raw, err := readOrderingRows(ctx, tx, agentID, ephem)
 	if err != nil {
 		return queueOrdering{}, err
 	}
@@ -1058,16 +1209,16 @@ func readQueueOrdering(ctx context.Context, tx db.DBTX, agentID string, now time
 // uses and loads its full row, because the dispatch path hands that row to the
 // provider. snapshotTx already holds its sorted head and asks readDispatchGateFor
 // directly.
-func readDispatchGate(ctx context.Context, tx db.DBTX, agentID string, now time.Time) (dispatchGate, StoredItem, queueOrdering, error) {
-	ordering, err := readQueueOrdering(ctx, tx, agentID, now)
+func readDispatchGate(ctx context.Context, tx db.DBTX, agentID string, now time.Time, ephem *agentEphemeralState) (dispatchGate, StoredItem, queueOrdering, error) {
+	ordering, err := readQueueOrdering(ctx, tx, agentID, now, ephem)
 	if err != nil {
 		return dispatchGate{}, StoredItem{}, queueOrdering{}, err
 	}
-	head, found, err := headItemFromOrdering(ctx, tx, agentID, ordering)
+	head, found, err := headItemFromOrdering(ctx, tx, agentID, ordering, ephem)
 	if err != nil {
 		return dispatchGate{}, StoredItem{}, queueOrdering{}, err
 	}
-	gate, err := readDispatchGateFor(ctx, tx, agentID, now, head.OrderingMetadata, found)
+	gate, err := readDispatchGateFor(ctx, tx, agentID, now, head.OrderingMetadata, found, ephem)
 	return gate, head, ordering, err
 }
 
@@ -1115,18 +1266,22 @@ func readActiveBackgroundWork(ctx context.Context, tx db.DBTX, agentID string) (
 
 // readDispatchGateFor reads the queue state and the approval rows of a head
 // that the caller already selected.
-func readDispatchGateFor(ctx context.Context, tx db.DBTX, agentID string, now time.Time, head OrderingMetadata, headFound bool) (dispatchGate, error) {
+func readDispatchGateFor(ctx context.Context, tx db.DBTX, agentID string, now time.Time, head OrderingMetadata, headFound bool, ephem *agentEphemeralState) (dispatchGate, error) {
 	gate := dispatchGate{Now: now, ApprovalsComplete: true}
 	var isChild bool
-	if err := tx.QueryRowContext(ctx, `SELECT pause_reason IS NOT NULL, restarting, active_turn, active_turn_steerable,
-		bypass_background_work_input_id,
+	if err := tx.QueryRowContext(ctx, `SELECT pause_reason IS NOT NULL, active_turn,
 		(SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND state = ?),
 		COALESCE((SELECT closed_at IS NOT NULL FROM agents WHERE id = ?), 1),
 		COALESCE((SELECT parent_agent_id IS NOT NULL FROM agents WHERE id = ?), 0),
 		COALESCE(pause_reason, 0)
 		FROM agent_input_queue_state WHERE agent_id = ?`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, agentID, agentID, agentID).
-		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable, &gate.BypassBackgroundWorkInputID, &gate.AwaitingEcho, &gate.Closed, &isChild, &gate.PauseReason); err != nil {
+		Scan(&gate.Paused, &gate.ActiveTurn, &gate.AwaitingEcho, &gate.Closed, &isChild, &gate.PauseReason); err != nil {
 		return dispatchGate{}, err
+	}
+	if ephem != nil {
+		gate.Restarting = ephem.restarting
+		gate.TurnSteerable = ephem.activeTurnSteerable
+		gate.BypassBackgroundWorkInputID = ephem.bypassBackgroundWorkInputID
 	}
 	activeBackgroundWork, err := hasActiveBackgroundWork(ctx, tx, agentID, isChild)
 	if err != nil {
@@ -1183,11 +1338,12 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 		return nil, Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return nil, Snapshot{}, err
 	}
 	now := s.now()
-	gate, item, ordering, err := readDispatchGate(ctx, tx, agentID, now)
+	gate, item, ordering, err := readDispatchGate(ctx, tx, agentID, now, &staged)
 	if err != nil {
 		return nil, Snapshot{}, err
 	}
@@ -1234,7 +1390,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 			}
 			return nil, Snapshot{}, ErrPreemptionState
 		case dispatchAutomatic, dispatchRetry:
-			snapshot, err := commitSnapshot(ctx, tx, agentID, now)
+			snapshot, err := s.commitSnapshot(ctx, tx, agentID, now, staged)
 			return nil, snapshot, err
 		}
 	case dispatchAdmitted:
@@ -1253,17 +1409,15 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 	// echo -- the answer text, not the provider's repetition of it, is the
 	// row -- so a control reply reserves like any ordinary dispatch.
 	if !rowAtEcho || !requireActive || controlReplyKind(item.Kind) {
-		if item.ReservedSeq > 0 {
-			reservedSeq = item.ReservedSeq
-		} else if reservedSeq, err = reserveMessageSeq(ctx, tx, agentID); err != nil {
+		if reservedSeq, err = reserveMessageSeq(ctx, tx, agentID); err != nil {
 			return nil, Snapshot{}, err
 		}
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_items
-		SET state = ?, reserved_seq = ?, error = '', updated_at = ?
+		SET state = ?, error = '', updated_at = ?
 		WHERE agent_id = ? AND id = ? AND state = ?`,
-		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, reservedSeq, nowText(), agentID, item.ID,
+		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, nowText(), agentID, item.ID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED)
 	if err != nil {
 		return nil, Snapshot{}, err
@@ -1271,21 +1425,22 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 	if n, _ := result.RowsAffected(); n != 1 {
 		return nil, Snapshot{}, ErrConflict
 	}
+	staged.setReservedSeq(item.ID, reservedSeq)
 	if err := placeDispatchedItem(ctx, tx, agentID, item.ID, ordering); err != nil {
 		return nil, Snapshot{}, err
 	}
 	stateUpdate := `UPDATE agent_input_queue_state SET revision = revision + 1, updated_at = ? WHERE agent_id = ?`
-	stateArgs := []any{nowText(), agentID}
 	if !requireActive {
-		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = 0, active_input_id = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`
-		stateArgs = []any{item.ID, nowText(), agentID}
+		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, revision = revision + 1, updated_at = ? WHERE agent_id = ?`
+		staged.activeTurnSteerable = false
+		staged.activeInputID = item.ID
 	}
-	if _, err := tx.ExecContext(ctx, stateUpdate, stateArgs...); err != nil {
+	if _, err := tx.ExecContext(ctx, stateUpdate, nowText(), agentID); err != nil {
 		return nil, Snapshot{}, err
 	}
 	item.State = leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING
 	item.ReservedSeq = reservedSeq
-	snapshot, err := snapshotTx(ctx, tx, agentID, now)
+	snapshot, err := snapshotTx(ctx, tx, agentID, now, &staged)
 	if err != nil {
 		return nil, Snapshot{}, err
 	}
@@ -1304,7 +1459,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 	if !found {
 		return nil, Snapshot{}, ErrConflict
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitEphemeral(tx, agentID, staged); err != nil {
 		return nil, Snapshot{}, err
 	}
 	return &PreparedDispatch{
@@ -1358,10 +1513,11 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, di
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := absorbQueuedAutoRetry(ctx, tx, agentID, inputID); err != nil {
+	staged := s.cloneEphemeral(agentID)
+	if _, err := absorbQueuedAutoRetry(ctx, tx, agentID, inputID, &staged); err != nil {
 		return Snapshot{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {
@@ -1370,25 +1526,33 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, di
 	if n, _ := result.RowsAffected(); n != 1 {
 		return Snapshot{}, ErrConflict
 	}
-	if disposition == requeueNativeTurn {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn_steerable = ?, active_input_id = '', updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, activeTurnSteerable, nowText(), agentID, inputID); err != nil {
+	staged.setReservedSeq(inputID, 0)
+	switch disposition {
+	case requeueNativeTurn:
+		if staged.activeInputID == inputID {
+			staged.activeTurnSteerable = activeTurnSteerable
+			staged.activeInputID = ""
+		}
+		staged.bypassBackgroundWorkInputID = ""
+		if err := bumpRevision(ctx, tx, agentID); err != nil {
 			return Snapshot{}, err
 		}
-		if err := bumpRevisionAndClearBypass(ctx, tx, agentID); err != nil {
+	case requeuePendingInput:
+		if staged.activeInputID == inputID {
+			staged.activeTurnSteerable = false
+			staged.activeInputID = ""
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
+				return Snapshot{}, err
+			}
+		} else if err := bumpRevision(ctx, tx, agentID); err != nil {
 			return Snapshot{}, err
 		}
-		return commitSnapshot(ctx, tx, agentID, s.now())
-	}
-	if disposition == requeuePendingInput {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, nowText(), agentID, inputID); err != nil {
+	default:
+		if err := bumpRevision(ctx, tx, agentID); err != nil {
 			return Snapshot{}, err
 		}
 	}
-
-	if err := bumpRevision(ctx, tx, agentID); err != nil {
-		return Snapshot{}, err
-	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // RequeueAndPause returns a prepared item to the queue and pauses the queue.
@@ -1404,13 +1568,14 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := absorbQueuedAutoRetry(ctx, tx, agentID, inputID); err != nil {
+	if _, err := absorbQueuedAutoRetry(ctx, tx, agentID, inputID, &staged); err != nil {
 		return Snapshot{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, errText, nowText(), agentID, inputID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {
@@ -1423,20 +1588,24 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 	if changed != 1 {
 		return Snapshot{}, ErrConflict
 	}
+	staged.setReservedSeq(inputID, 0)
+	ownsTurn := staged.activeInputID == inputID
+	if ownsTurn {
+		staged.activeTurnSteerable = false
+		staged.activeInputID = ""
+	}
+	staged.bypassBackgroundWorkInputID = ""
 	// Release this dispatch's provisional turn, but keep any turn the provider
 	// published independently. A refusal of input does not end native work.
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state
-SET active_turn = CASE WHEN active_input_id = ? THEN 0 ELSE active_turn END,
-    active_turn_steerable = CASE WHEN active_input_id = ? THEN 0 ELSE active_turn_steerable END,
-    active_input_id = CASE WHEN active_input_id = ? THEN '' ELSE active_input_id END,
-    bypass_background_work_input_id = '',
+SET active_turn = CASE WHEN ? THEN 0 ELSE active_turn END,
     pause_reason = CASE WHEN pause_reason IS NOT NULL THEN pause_reason ELSE ? END,
     pause_owner = CASE WHEN pause_reason IS NULL OR pause_owner = ? THEN ? ELSE pause_owner END,
     revision = revision + 1, updated_at = ?
-WHERE agent_id = ?`, inputID, inputID, inputID, reason, pauseOwnerPlannedRestart, pauseOwnerAgentStopped, nowText(), agentID); err != nil {
+WHERE agent_id = ?`, ownsTurn, reason, pauseOwnerPlannedRestart, pauseOwnerAgentStopped, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // RefreshSnapshot publishes metadata that changed outside the queue store.
@@ -1446,13 +1615,14 @@ func (s *Store) RefreshSnapshot(ctx context.Context, agentID string) (Snapshot, 
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // Accept records the transcript for a dispatch that reached the agent.
@@ -1468,7 +1638,8 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	item, attachments, found, err := getItem(ctx, tx, prepared.Item.AgentID, prepared.Item.ID, true)
+	staged := s.cloneEphemeral(prepared.Item.AgentID)
+	item, attachments, found, err := getItemWithEphemeral(ctx, tx, prepared.Item.AgentID, prepared.Item.ID, true, &staged)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
@@ -1488,8 +1659,8 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	if err := compactOrder(ctx, tx, item.AgentID); err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	stateUpdate := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', bypass_background_work_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`
-	stateArgs := []any{nowText(), item.AgentID, item.ID}
+	staged.clearItem(item.ID)
+	staged.bypassBackgroundWorkInputID = ""
 	if result.StartsTurn && !result.Steering {
 		// The turn is asserted only while the state still holds THIS dispatch.
 		// PrepareDispatch opened the turn and recorded the input id before the
@@ -1498,28 +1669,28 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 		// A write of the turn here would restore one that no envelope ever ends
 		// again, and the queue would then hold every later message for the life
 		// of the process.
-		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = ?, active_input_id = ?, bypass_background_work_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`
-		stateArgs = []any{result.TurnSteerable, item.ID, nowText(), item.AgentID, item.ID}
-	} else if result.Steering {
-		stateUpdate = `UPDATE agent_input_queue_state SET bypass_background_work_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`
-		stateArgs = []any{nowText(), item.AgentID}
-	}
-	stateResult, err := tx.ExecContext(ctx, stateUpdate, stateArgs...)
-	if err != nil {
-		return AcceptedTranscript{}, Snapshot{}, err
-	}
-	// The guarded statement above is the one that can match no row. The item
-	// still left the queue, so the snapshot still moves and owes every watcher
-	// a revision it can order against. Clear any preemption bypass here too so
-	// Accept clears it unconditionally even when active_input_id already changed.
-	if rows, err := stateResult.RowsAffected(); err != nil {
-		return AcceptedTranscript{}, Snapshot{}, err
-	} else if rows == 0 {
-		if err := bumpRevisionAndClearBypass(ctx, tx, item.AgentID); err != nil {
+		if staged.activeInputID == item.ID {
+			staged.activeTurnSteerable = result.TurnSteerable
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 1, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), item.AgentID); err != nil {
+				return AcceptedTranscript{}, Snapshot{}, err
+			}
+		} else if err := bumpRevision(ctx, tx, item.AgentID); err != nil {
 			return AcceptedTranscript{}, Snapshot{}, err
 		}
+	} else if result.Steering {
+		if err := bumpRevision(ctx, tx, item.AgentID); err != nil {
+			return AcceptedTranscript{}, Snapshot{}, err
+		}
+	} else if staged.activeInputID == item.ID {
+		staged.activeTurnSteerable = false
+		staged.activeInputID = ""
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), item.AgentID); err != nil {
+			return AcceptedTranscript{}, Snapshot{}, err
+		}
+	} else if err := bumpRevision(ctx, tx, item.AgentID); err != nil {
+		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	snapshot, err := commitSnapshot(ctx, tx, item.AgentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, item.AgentID, s.now(), staged)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
@@ -1595,8 +1766,12 @@ func (s *Store) HoldForEcho(ctx context.Context, prepared PreparedDispatch) (Sna
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(prepared.Item.AgentID)
+	if staged.reservedSeqOf(prepared.Item.ID) != 0 {
+		return Snapshot{}, ErrConflict
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, updated_at = ?
-		WHERE agent_id = ? AND id = ? AND state = ? AND reserved_seq = 0`,
+		WHERE agent_id = ? AND id = ? AND state = ?`,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, nowText(), prepared.Item.AgentID, prepared.Item.ID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {
@@ -1612,7 +1787,7 @@ func (s *Store) HoldForEcho(ctx context.Context, prepared PreparedDispatch) (Sna
 	if err := bumpRevision(ctx, tx, prepared.Item.AgentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, prepared.Item.AgentID, s.now())
+	return s.commitSnapshot(ctx, tx, prepared.Item.AgentID, s.now(), staged)
 }
 
 // awaitingEchoIDs reads the oldest pending steers. A negative limit reads all of them.
@@ -1635,7 +1810,7 @@ func awaitingEchoIDs(ctx context.Context, tx db.DBTX, agentID string, count int)
 }
 
 // pendingSteerIDs selects waiting echoes first and the current dispatch last.
-func pendingSteerIDs(ctx context.Context, tx db.DBTX, agentID string, count int, inFlightID string) ([]string, bool, error) {
+func pendingSteerIDs(ctx context.Context, tx db.DBTX, agentID string, count int, inFlightID string, ephem *agentEphemeralState) ([]string, bool, error) {
 	ids, err := awaitingEchoIDs(ctx, tx, agentID, count)
 	if err != nil {
 		return nil, false, err
@@ -1643,7 +1818,7 @@ func pendingSteerIDs(ctx context.Context, tx db.DBTX, agentID string, count int,
 	if (count >= 0 && len(ids) >= count) || inFlightID == "" {
 		return ids, false, nil
 	}
-	item, _, found, err := getItem(ctx, tx, agentID, inFlightID, false)
+	item, _, found, err := getItemWithEphemeral(ctx, tx, agentID, inFlightID, false, ephem)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1661,20 +1836,21 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 		return nil, false, Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return nil, false, Snapshot{}, err
 	}
 	if count <= 0 {
-		snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+		snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 		return nil, false, snapshot, err
 	}
-	ids, acceptedInFlight, err := pendingSteerIDs(ctx, tx, agentID, count, inFlightID)
+	ids, acceptedInFlight, err := pendingSteerIDs(ctx, tx, agentID, count, inFlightID, &staged)
 	if err != nil {
 		return nil, false, Snapshot{}, err
 	}
 	var accepted []AcceptedTranscript
 	for _, id := range ids {
-		item, attachments, found, err := getItem(ctx, tx, agentID, id, true)
+		item, attachments, found, err := getItemWithEphemeral(ctx, tx, agentID, id, true, &staged)
 		if err != nil {
 			return nil, false, Snapshot{}, err
 		}
@@ -1692,6 +1868,7 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, id); err != nil {
 			return nil, false, Snapshot{}, err
 		}
+		staged.clearItem(id)
 		accepted = append(accepted, row)
 	}
 	if len(accepted) > 0 {
@@ -1702,7 +1879,7 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 			return nil, false, Snapshot{}, err
 		}
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	if err != nil {
 		return nil, false, Snapshot{}, err
 	}
@@ -1713,24 +1890,25 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 // The caller owns the transaction and its revision update. Two steers of one
 // retry kind merge into one row (absorbQueuedAutoRetry), and the count
 // includes both, because the provider dropped both.
-func requeueUnechoedSteers(ctx context.Context, tx db.DBTX, agentID string, count int) (int, error) {
+func requeueUnechoedSteers(ctx context.Context, tx db.DBTX, agentID string, count int, staged *agentEphemeralState) (int, error) {
 	ids, err := awaitingEchoIDs(ctx, tx, agentID, count)
 	if err != nil || len(ids) == 0 {
 		return 0, err
 	}
 	absorbed := make(map[string]bool)
 	for _, id := range ids {
-		peerID, err := absorbQueuedAutoRetry(ctx, tx, agentID, id)
+		peerID, err := absorbQueuedAutoRetry(ctx, tx, agentID, id, staged)
 		if err != nil {
 			return 0, err
 		}
 		if peerID != "" {
 			absorbed[peerID] = true
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', reserved_seq = 0, updated_at = ? WHERE agent_id = ? AND id = ?`,
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', updated_at = ? WHERE agent_id = ? AND id = ?`,
 			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, id); err != nil {
 			return 0, err
 		}
+		staged.setReservedSeq(id, 0)
 	}
 	remaining := slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return absorbed[id] })
 	if err := placeResolvedSteers(ctx, tx, agentID, remaining); err != nil {
@@ -1780,10 +1958,11 @@ func (s *Store) RequeueUnechoedSteers(ctx context.Context, agentID string, count
 		return Snapshot{}, 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, 0, err
 	}
-	requeued, err := requeueUnechoedSteers(ctx, tx, agentID, count)
+	requeued, err := requeueUnechoedSteers(ctx, tx, agentID, count, &staged)
 	if err != nil {
 		return Snapshot{}, 0, err
 	}
@@ -1792,7 +1971,7 @@ func (s *Store) RequeueUnechoedSteers(ctx context.Context, agentID string, count
 			return Snapshot{}, 0, err
 		}
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	if err != nil {
 		return Snapshot{}, 0, err
 	}
@@ -1807,10 +1986,11 @@ func (s *Store) ResolveUnechoedSteers(ctx context.Context, agentID string, count
 		return Snapshot{}, 0, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, 0, false, err
 	}
-	ids, inFlight, err := pendingSteerIDs(ctx, tx, agentID, count, inFlightID)
+	ids, inFlight, err := pendingSteerIDs(ctx, tx, agentID, count, inFlightID, &staged)
 	if err != nil {
 		return Snapshot{}, 0, false, err
 	}
@@ -1821,12 +2001,13 @@ func (s *Store) ResolveUnechoedSteers(ctx context.Context, agentID string, count
 		if err != nil {
 			return Snapshot{}, 0, false, err
 		}
+		staged.setReservedSeq(id, 0)
 	}
 	if len(ids) > 0 {
 		if err := placeResolvedSteers(ctx, tx, agentID, ids); err != nil {
 			return Snapshot{}, 0, false, err
 		}
-		paused, err := pauseAndEndTurn(ctx, tx, agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerDelivery)
+		paused, err := pauseAndEndTurn(ctx, tx, agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerDelivery, &staged)
 		if err != nil {
 			return Snapshot{}, 0, false, err
 		}
@@ -1840,7 +2021,7 @@ func (s *Store) ResolveUnechoedSteers(ctx context.Context, agentID string, count
 			}
 		}
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	if err != nil {
 		return Snapshot{}, 0, false, err
 	}
@@ -1863,6 +2044,7 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
 		state, errText, nowText(), agentID, inputID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {
@@ -1875,16 +2057,22 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 	if changed != 1 {
 		return Snapshot{}, ErrConflict
 	}
-	if err := replacePauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerDelivery); err != nil {
+	staged.setReservedSeq(inputID, 0)
+	if err := replacePauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerDelivery, &staged); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // replacePauseAndEndTurn replaces any existing pause and clears its turn.
 // The caller owns the transaction and any item-state validation.
-func replacePauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner) error {
-	_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', bypass_background_work_input_id = '', pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, owner, nowText(), agentID)
+func replacePauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner, staged *agentEphemeralState) error {
+	if staged != nil {
+		staged.activeTurnSteerable = false
+		staged.activeInputID = ""
+		staged.bypassBackgroundWorkInputID = ""
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, owner, nowText(), agentID)
 	return err
 }
 
@@ -1927,47 +2115,65 @@ func (s *Store) TurnStarted(ctx context.Context, agentID string, steerable bool)
 // dispatch just started. A turn a provider reported carries no input id, and it
 // is exactly the one a boundary must clear.
 func (s *Store) AbandonUnownedTurn(ctx context.Context, agentID string) (Snapshot, bool, error) {
-	return s.execTurnState(ctx, agentID,
-		`UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = '' AND (active_turn = 1 OR active_turn_steerable <> 0)`,
-		[]any{nowText(), agentID}, false)
+	return s.execTurnState(ctx, agentID, false, func(staged *agentEphemeralState) (string, []any, bool) {
+		if staged.activeInputID != "" {
+			return "", nil, true
+		}
+		ephemChanged := staged.activeTurnSteerable
+		staged.activeTurnSteerable = false
+		return `UPDATE agent_input_queue_state SET active_turn = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 1 OR ?)`,
+			[]any{nowText(), agentID, ephemChanged}, false
+	})
 }
 
 // setTurnState records the provider's turn state and clears provisional dispatch ownership.
 // Accept then keeps this report instead of replacing it with the dispatch result.
 // After ownership clears, a repeated report leaves the revision unchanged.
 func (s *Store) setTurnState(ctx context.Context, agentID string, active, steerable, requeueUnechoed bool) (Snapshot, bool, error) {
-	statement := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 1 OR active_turn_steerable <> 0 OR active_input_id <> '')`
-	args := []any{nowText(), agentID}
-	if active {
-		statement = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 0 OR active_turn_steerable <> ? OR active_input_id <> '')`
-		args = []any{steerable, nowText(), agentID, steerable}
-	}
-	return s.execTurnState(ctx, agentID, statement, args, !active && requeueUnechoed)
+	return s.execTurnState(ctx, agentID, !active && requeueUnechoed, func(staged *agentEphemeralState) (string, []any, bool) {
+		if active {
+			ephemChanged := staged.activeTurnSteerable != steerable || staged.activeInputID != ""
+			staged.activeTurnSteerable = steerable
+			staged.activeInputID = ""
+			return `UPDATE agent_input_queue_state SET active_turn = 1, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 0 OR ?)`,
+				[]any{nowText(), agentID, ephemChanged}, false
+		}
+		ephemChanged := staged.activeTurnSteerable || staged.activeInputID != ""
+		staged.activeTurnSteerable = false
+		staged.activeInputID = ""
+		return `UPDATE agent_input_queue_state SET active_turn = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 1 OR ?)`,
+			[]any{nowText(), agentID, ephemChanged}, false
+	})
 }
 
 // execTurnState runs one guarded write against the turn columns and reports
 // whether it moved a row. Every turn write shares this shape: the state row must
 // exist, the guard decides whether anything changes, and the caller needs the
 // committed snapshot either way.
-func (s *Store) execTurnState(ctx context.Context, agentID, statement string, args []any, requeueUnechoed bool) (Snapshot, bool, error) {
+func (s *Store) execTurnState(ctx context.Context, agentID string, requeueUnechoed bool, prepare func(*agentEphemeralState) (string, []any, bool)) (Snapshot, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
-	result, err := tx.ExecContext(ctx, statement, args...)
-	if err != nil {
-		return Snapshot{}, false, err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return Snapshot{}, false, err
+	var rows int64
+	statement, args, skip := prepare(&staged)
+	if !skip {
+		result, err := tx.ExecContext(ctx, statement, args...)
+		if err != nil {
+			return Snapshot{}, false, err
+		}
+		rows, err = result.RowsAffected()
+		if err != nil {
+			return Snapshot{}, false, err
+		}
 	}
 	if requeueUnechoed {
-		count, err := requeueUnechoedSteers(ctx, tx, agentID, -1)
+		count, err := requeueUnechoedSteers(ctx, tx, agentID, -1, &staged)
 		if err != nil {
 			return Snapshot{}, false, err
 		}
@@ -1978,7 +2184,7 @@ func (s *Store) execTurnState(ctx context.Context, agentID, statement string, ar
 			rows = 1
 		}
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
@@ -1996,13 +2202,14 @@ func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.Agen
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := pauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerAgentStopped); err != nil {
+	if _, err := pauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerAgentStopped, &staged); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	return s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 }
 
 // pauseAndEndTurn pauses the queue and ends the active turn in one statement.
@@ -2016,15 +2223,22 @@ func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.Agen
 // failure had stopped.
 //
 // The result reports whether the row changed.
-func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner) (sql.Result, error) {
+func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner, staged *agentEphemeralState) (sql.Result, error) {
+	hadBypass := false
+	if staged != nil {
+		hadBypass = staged.bypassBackgroundWorkInputID != ""
+		staged.activeTurnSteerable = false
+		staged.activeInputID = ""
+		staged.bypassBackgroundWorkInputID = ""
+	}
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
-		SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', bypass_background_work_input_id = '',
+		SET active_turn = 0,
 			pause_reason = CASE WHEN pause_reason IS NULL OR pause_owner = ? THEN ? ELSE pause_reason END,
 			pause_owner = CASE WHEN pause_reason IS NULL OR pause_owner = ? THEN ? ELSE pause_owner END,
 			revision = revision + 1, updated_at = ?
-		WHERE agent_id = ? AND (active_turn = 1 OR pause_reason IS NULL OR pause_owner = ? OR bypass_background_work_input_id <> '')`,
-		pauseOwnerPlannedRestart, reason, pauseOwnerPlannedRestart, owner, nowText(), agentID, pauseOwnerPlannedRestart)
+		WHERE agent_id = ? AND (active_turn = 1 OR pause_reason IS NULL OR pause_owner = ? OR ?)`,
+		pauseOwnerPlannedRestart, reason, pauseOwnerPlannedRestart, owner, nowText(), agentID, pauseOwnerPlannedRestart, hadBypass)
 }
 
 // resumeOwnedPause lifts a pause only when the given cause still owns it.
@@ -2045,6 +2259,7 @@ func (s *Store) ResumeAfterArchive(ctx context.Context, agentID string) (Snapsho
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
@@ -2056,7 +2271,7 @@ func (s *Store) ResumeAfterArchive(ctx context.Context, agentID string) (Snapsho
 	if err != nil {
 		return Snapshot{}, false, err
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
 	return snapshot, changed == 1, err
 }
 
@@ -2066,8 +2281,9 @@ func (s *Store) Retry(ctx context.Context, agentID, inputID string, confirmUncer
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	now := s.now()
-	item, found, err := headItem(ctx, tx, agentID, now)
+	item, found, err := headItem(ctx, tx, agentID, now, &staged)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -2083,25 +2299,25 @@ func (s *Store) Retry(ctx context.Context, agentID, inputID string, confirmUncer
 	if item.State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN && !confirmUncertain {
 		return Snapshot{}, ErrUncertainConfirmation
 	}
-	var restarting bool
-	if err := tx.QueryRowContext(ctx, `SELECT restarting FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&restarting); err != nil {
-		return Snapshot{}, err
-	}
-	if restarting {
+	if staged.restarting {
 		return Snapshot{}, ErrPlannedRestart
 	}
 	// The user's Retry of a failed automatic retry returns it to QUEUED,
 	// beside the newer retry of its kind that a report may have queued.
-	if err := dropQueuedAutoRetry(ctx, tx, agentID, inputID, item.Kind); err != nil {
+	if err := dropQueuedAutoRetry(ctx, tx, agentID, inputID, item.Kind, &staged); err != nil {
 		return Snapshot{}, err
 	}
 	// The item returns to QUEUED, so it releases its reservation. A stale
 	// reservation makes the retried message sort before an agent message that
 	// the transcript took after the failure.
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ?`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', updated_at = ? WHERE agent_id = ? AND id = ?`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', bypass_background_work_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
+	staged.setReservedSeq(inputID, 0)
+	staged.activeTurnSteerable = false
+	staged.activeInputID = ""
+	staged.bypassBackgroundWorkInputID = ""
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	// Lift the pause that the failure created, so the items behind the retried
@@ -2110,7 +2326,7 @@ func (s *Store) Retry(ctx context.Context, agentID, inputID string, confirmUncer
 	if _, err := resumeOwnedPause(ctx, tx, agentID, pauseOwnerDelivery); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, now)
+	return s.commitSnapshot(ctx, tx, agentID, now, staged)
 }
 
 // MatureScheduled records that one armed deadline arrived: every item that
@@ -2126,8 +2342,9 @@ func (s *Store) MatureScheduled(ctx context.Context, agentID string, expected ti
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	now := s.now()
-	items, err := readOrderingRows(ctx, tx, agentID)
+	items, err := readOrderingRows(ctx, tx, agentID, &staged)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
@@ -2139,7 +2356,7 @@ func (s *Store) MatureScheduled(ctx context.Context, agentID string, expected ti
 			return Snapshot{}, false, err
 		}
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, now)
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, now, staged)
 	return snapshot, due, err
 }
 
@@ -2164,6 +2381,7 @@ func (s *Store) scheduleAutoRetry(ctx context.Context, agentID string, schedule 
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	staged := s.cloneEphemeral(agentID)
 	now := s.now()
 	// A closed or archived agent never gains a retry: late provider output
 	// must not resurrect a schedule that lifecycle cleanup removed. The check
@@ -2216,7 +2434,7 @@ func (s *Store) scheduleAutoRetry(ctx context.Context, agentID string, schedule 
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, now)
+	return s.commitSnapshot(ctx, tx, agentID, now, staged)
 }
 
 // cancelAutoRetries deletes the pending queue item of each given retry kind,
@@ -2261,21 +2479,33 @@ func (s *Store) cancelAutoRetries(ctx context.Context, agentID string, kinds ...
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND state = ? AND kind IN (`+kindList+`)`,
+	staged := s.cloneEphemeral(agentID)
+	rows, err := tx.QueryContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND state = ? AND kind IN (`+kindList+`) RETURNING id`,
 		append([]any{agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}, kindArgs...)...)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
+	var deletedIDs []string
+	for rows.Next() {
+		var deletedID string
+		if err := rows.Scan(&deletedID); err != nil {
+			_ = rows.Close()
+			return Snapshot{}, false, err
+		}
+		deletedIDs = append(deletedIDs, deletedID)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return Snapshot{}, false, err
+	}
+	for _, deletedID := range deletedIDs {
+		staged.clearItem(deletedID)
 	}
 	if resetBackoff {
 		if _, err := resetServerErrorDelay(ctx, tx, agentID); err != nil {
 			return Snapshot{}, false, err
 		}
 	}
-	if deleted > 0 {
+	if len(deletedIDs) > 0 {
 		if err := compactOrder(ctx, tx, agentID); err != nil {
 			return Snapshot{}, false, err
 		}
@@ -2283,8 +2513,8 @@ func (s *Store) cancelAutoRetries(ctx context.Context, agentID string, kinds ...
 			return Snapshot{}, false, err
 		}
 	}
-	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
-	return snapshot, deleted > 0, err
+	snapshot, err := s.commitSnapshot(ctx, tx, agentID, s.now(), staged)
+	return snapshot, len(deletedIDs) > 0, err
 }
 
 // readServerErrorDelay reads the durable server-error backoff. The caller
@@ -2358,7 +2588,7 @@ func queuedAutoRetryID(ctx context.Context, tx db.DBTX, agentID string, kind lea
 // row the earlier deadline, but then both deadlines passed and the retry is
 // immediate either way. It returns the ID of the row that left the queue, or
 // "".
-func absorbQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID string) (string, error) {
+func absorbQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID string, staged *agentEphemeralState) (string, error) {
 	var kind leapmuxv1.AgentInputKind
 	var scheduled sqltime.SQLiteNullTime
 	err := tx.QueryRowContext(ctx, `SELECT kind, scheduled_at FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, inputID).Scan(&kind, &scheduled)
@@ -2388,7 +2618,7 @@ func absorbQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID str
 			return "", err
 		}
 	}
-	if err := deleteQueuedAutoRetryPeer(ctx, tx, agentID, peerID); err != nil {
+	if err := deleteQueuedAutoRetryPeer(ctx, tx, agentID, peerID, staged); err != nil {
 		return "", err
 	}
 	return peerID, nil
@@ -2398,7 +2628,7 @@ func absorbQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID str
 // which the user returns to QUEUED. kind is the kind that the returning row
 // takes, which an edit can reclassify. The caller already validated the item,
 // and an ordinary input needs no additional read.
-func dropQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID string, kind leapmuxv1.AgentInputKind) error {
+func dropQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID string, kind leapmuxv1.AgentInputKind, staged *agentEphemeralState) error {
 	if !IsAutoRetryKind(kind) {
 		return nil
 	}
@@ -2406,12 +2636,15 @@ func dropQueuedAutoRetry(ctx context.Context, tx db.DBTX, agentID, inputID strin
 	if err != nil || peerID == "" || peerID == inputID {
 		return err
 	}
-	return deleteQueuedAutoRetryPeer(ctx, tx, agentID, peerID)
+	return deleteQueuedAutoRetryPeer(ctx, tx, agentID, peerID, staged)
 }
 
-func deleteQueuedAutoRetryPeer(ctx context.Context, tx db.DBTX, agentID, peerID string) error {
+func deleteQueuedAutoRetryPeer(ctx context.Context, tx db.DBTX, agentID, peerID string, staged *agentEphemeralState) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, peerID); err != nil {
 		return err
+	}
+	if staged != nil {
+		staged.clearItem(peerID)
 	}
 	return compactOrder(ctx, tx, agentID)
 }
@@ -2488,22 +2721,10 @@ func (s *Store) Recover(ctx context.Context, interruptedBackgroundAgents ...stri
 		if err != nil {
 			return nil, err
 		}
-		// A Worker restart invalidates every client session, so no edit lock
-		// can still have an owner. A lock left behind refuses the head in
-		// prepare forever, and the queue then stops with no pause and no
-		// stated reason.
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND edit_owner <> ''`, nowText(), agentID); err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
-		// A Worker restart ends every agent restart it had in flight and drops
-		// any recorded preemption bypass. A marker left behind would refuse
-		// every retry for the life of the queue or bypass background work after
-		// restart.
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 0, bypass_background_work_input_id = '', updated_at = ? WHERE agent_id = ? AND (restarting = 1 OR bypass_background_work_input_id <> '')`, nowText(), agentID); err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
+		// Recovery resets all in-memory ephemeral state for this agent: edit locks,
+		// restarting markers, preemption bypasses, reserved sequences, and turn
+		// metadata cannot survive a Worker restart.
+		staged := agentEphemeralState{}
 		var unconfirmed int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND state IN (?, ?)`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO).Scan(&unconfirmed); err != nil {
 			_ = tx.Rollback()
@@ -2515,7 +2736,7 @@ func (s *Store) Recover(ctx context.Context, interruptedBackgroundAgents ...stri
 			return nil, err
 		}
 		now := s.now()
-		recoveredItems, err := readOrderingRows(ctx, tx, agentID)
+		recoveredItems, err := readOrderingRows(ctx, tx, agentID, &staged)
 		if err != nil {
 			_ = tx.Rollback()
 			return nil, err
@@ -2541,7 +2762,7 @@ func (s *Store) Recover(ctx context.Context, interruptedBackgroundAgents ...stri
 			reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN
 		}
 		if unconfirmed > 0 || active || activeBackgroundWork {
-			if err := replacePauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerRecovery); err != nil {
+			if err := replacePauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerRecovery, &staged); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
@@ -2559,7 +2780,7 @@ func (s *Store) Recover(ctx context.Context, interruptedBackgroundAgents ...stri
 				return nil, err
 			}
 		}
-		snapshot, err := commitSnapshot(ctx, tx, agentID, now)
+		snapshot, err := s.commitSnapshot(ctx, tx, agentID, now, staged)
 		if err != nil {
 			_ = tx.Rollback()
 			return nil, err
@@ -2583,11 +2804,6 @@ func reserveMessageSeq(ctx context.Context, tx *sql.Tx, agentID string) (int64, 
 
 func bumpRevision(ctx context.Context, tx db.DBTX, agentID string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID)
-	return err
-}
-
-func bumpRevisionAndClearBypass(ctx context.Context, tx db.DBTX, agentID string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID)
 	return err
 }
 
@@ -2615,18 +2831,23 @@ func attachmentsEqual(a, b []Attachment) bool {
 	return true
 }
 
-func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
+func (s *Store) getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttachments bool) (StoredItem, []Attachment, bool, error) {
+	ephem := s.cloneEphemeral(agentID)
+	return getItemWithEphemeral(ctx, tx, agentID, inputID, loadAttachments, &ephem)
+}
+
+func getItemWithEphemeral(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttachments bool, ephem *agentEphemeralState) (StoredItem, []Attachment, bool, error) {
 	var item StoredItem
 	var kind, state int32
 	var version int64
 	var scheduled sqltime.SQLiteNullTime
 	err := tx.QueryRowContext(ctx, `
 		SELECT id, agent_id, kind, text, target_mode, prepare_context, reclassify_on_edit, order_index,
-			scheduled_at, source_payload, state, error, edit_owner, version, reserved_seq, created_at, updated_at
+			scheduled_at, source_payload, state, error, version, created_at, updated_at
 		FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, inputID).Scan(
 		&item.ID, &item.AgentID, &kind, &item.Text, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order,
 		&scheduled, &item.SourcePayload, &state, &item.Error,
-		&item.EditOwner, &version, &item.ReservedSeq, &item.CreatedAt, &item.UpdatedAt)
+		&version, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StoredItem{}, nil, false, nil
 	}
@@ -2637,6 +2858,8 @@ func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttac
 	item.State = leapmuxv1.AgentInputState(state)
 	item.Version = uint64(version)
 	item.ScheduledAt = scheduled.Ptr()
+	item.EditOwner = ephem.editOwnerOf(item.ID)
+	item.ReservedSeq = ephem.reservedSeqOf(item.ID)
 	if len(item.SourcePayload) == 0 {
 		// nil states "no source"; the driver scans an empty BLOB as an empty
 		// slice, which would make two equal rows compare unequal.
@@ -2652,9 +2875,9 @@ func getItem(ctx context.Context, tx db.DBTX, agentID, inputID string, loadAttac
 // readOrderingRows reads every item's ordering metadata -- no text, no source
 // payload, no attachment data -- which is all the priority comparator and the
 // reorder-group rules read.
-func readOrderingRows(ctx context.Context, tx db.DBTX, agentID string) ([]OrderingMetadata, error) {
+func readOrderingRows(ctx context.Context, tx db.DBTX, agentID string, ephem *agentEphemeralState) ([]OrderingMetadata, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, agent_id, kind, order_index, scheduled_at, state, edit_owner, prepare_context
+		SELECT id, agent_id, kind, order_index, scheduled_at, state, prepare_context
 		FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
 	if err != nil {
 		return nil, err
@@ -2665,12 +2888,13 @@ func readOrderingRows(ctx context.Context, tx db.DBTX, agentID string) ([]Orderi
 		var item OrderingMetadata
 		var kind, state int32
 		var scheduled sqltime.SQLiteNullTime
-		if err := rows.Scan(&item.ID, &item.AgentID, &kind, &item.Order, &scheduled, &state, &item.EditOwner, &item.PrepareContext); err != nil {
+		if err := rows.Scan(&item.ID, &item.AgentID, &kind, &item.Order, &scheduled, &state, &item.PrepareContext); err != nil {
 			return nil, err
 		}
 		item.Kind = leapmuxv1.AgentInputKind(kind)
 		item.State = leapmuxv1.AgentInputState(state)
 		item.ScheduledAt = scheduled.Ptr()
+		item.EditOwner = ephem.editOwnerOf(item.ID)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -2679,20 +2903,20 @@ func readOrderingRows(ctx context.Context, tx db.DBTX, agentID string) ([]Orderi
 // headItem reads the full row of the prioritized first item that does not
 // await an echo. It is the one definition of the head for every reader that
 // does not already hold a sorted snapshot.
-func headItem(ctx context.Context, tx db.DBTX, agentID string, now time.Time) (StoredItem, bool, error) {
-	ordering, err := readQueueOrdering(ctx, tx, agentID, now)
+func headItem(ctx context.Context, tx db.DBTX, agentID string, now time.Time, ephem *agentEphemeralState) (StoredItem, bool, error) {
+	ordering, err := readQueueOrdering(ctx, tx, agentID, now, ephem)
 	if err != nil {
 		return StoredItem{}, false, err
 	}
-	return headItemFromOrdering(ctx, tx, agentID, ordering)
+	return headItemFromOrdering(ctx, tx, agentID, ordering, ephem)
 }
 
-func headItemFromOrdering(ctx context.Context, tx db.DBTX, agentID string, ordering queueOrdering) (StoredItem, bool, error) {
+func headItemFromOrdering(ctx context.Context, tx db.DBTX, agentID string, ordering queueOrdering, ephem *agentEphemeralState) (StoredItem, bool, error) {
 	for _, head := range ordering.effective {
 		if head.State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO {
 			continue
 		}
-		item, _, found, err := getItem(ctx, tx, agentID, head.ID, false)
+		item, _, found, err := getItemWithEphemeral(ctx, tx, agentID, head.ID, false, ephem)
 		if err != nil {
 			return StoredItem{}, false, err
 		}
@@ -2732,27 +2956,55 @@ func snapshotWithActiveBackgroundWork(ctx context.Context, tx db.DBTX, snapshot 
 	return snapshot, nil
 }
 
+type queueStateRow struct {
+	revision   int64
+	paused     bool
+	reason     *leapmuxv1.AgentInputQueuePauseReason
+	activeTurn bool
+}
+
+func readQueueStateRow(ctx context.Context, tx db.DBTX, agentID string) (queueStateRow, bool, error) {
+	var row queueStateRow
+	err := tx.QueryRowContext(ctx, `SELECT revision, pause_reason IS NOT NULL, pause_reason, active_turn FROM agent_input_queue_state WHERE agent_id = ?`, agentID).
+		Scan(&row.revision, &row.paused, &row.reason, &row.activeTurn)
+	if errors.Is(err, sql.ErrNoRows) {
+		return queueStateRow{}, false, nil
+	}
+	if err != nil {
+		return queueStateRow{}, false, err
+	}
+	return row, true, nil
+}
+
 // snapshotTx reads one agent's queue in effective order at the instant now.
 // The items carry a text preview and no source payload: no client reads the
 // payload, and a row can hold megabytes of it. The dispatch path reads the
-// full row through getItem.
-func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) (Snapshot, error) {
-	snapshot := Snapshot{AgentID: agentID}
-	var revision int64
-	var reason *leapmuxv1.AgentInputQueuePauseReason
-	err := tx.QueryRowContext(ctx, `SELECT revision, pause_reason IS NOT NULL, pause_reason, active_turn, active_turn_steerable, bypass_background_work_input_id FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&revision, &snapshot.Paused, &reason, &snapshot.ActiveTurn, &snapshot.ActiveTurnSteerable, &snapshot.BypassBackgroundWorkInputID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return snapshotWithActiveBackgroundWork(ctx, tx, snapshot)
-	}
+// full row through getItemWithEphemeral.
+func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time, ephem *agentEphemeralState) (Snapshot, error) {
+	stateRow, found, err := readQueueStateRow(ctx, tx, agentID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.Revision = uint64(revision)
-	snapshot.PauseReason = workerdb.StorageEnumValue(reason)
+	return snapshotTxWithState(ctx, tx, agentID, now, ephem, stateRow, found)
+}
+
+func snapshotTxWithState(ctx context.Context, tx db.DBTX, agentID string, now time.Time, ephem *agentEphemeralState, stateRow queueStateRow, found bool) (Snapshot, error) {
+	snapshot := Snapshot{AgentID: agentID}
+	if !found {
+		return snapshotWithActiveBackgroundWork(ctx, tx, snapshot)
+	}
+	snapshot.Revision = uint64(stateRow.revision)
+	snapshot.Paused = stateRow.paused
+	snapshot.PauseReason = workerdb.StorageEnumValue(stateRow.reason)
+	snapshot.ActiveTurn = stateRow.activeTurn
+	if ephem != nil {
+		snapshot.ActiveTurnSteerable = ephem.activeTurnSteerable
+		snapshot.BypassBackgroundWorkInputID = ephem.bypassBackgroundWorkInputID
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, kind,
 			CASE WHEN length(text) > ? THEN substr(text, 1, ?) || '…' ELSE text END,
-			target_mode, prepare_context, reclassify_on_edit, order_index, scheduled_at, state, error, edit_owner, version, reserved_seq, created_at, updated_at
+			target_mode, prepare_context, reclassify_on_edit, order_index, scheduled_at, state, error, version, created_at, updated_at
 		FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`,
 		snapshotTextPreviewCharacters, snapshotTextPreviewCharacters, agentID)
 	if err != nil {
@@ -2765,7 +3017,7 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 		var version int64
 		var scheduled sqltime.SQLiteNullTime
 		item.AgentID = agentID
-		if err := rows.Scan(&item.ID, &kind, &item.TextPreview, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order, &scheduled, &state, &item.Error, &item.EditOwner, &version, &item.ReservedSeq, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &kind, &item.TextPreview, &item.TargetMode, &item.PrepareContext, &item.ReclassifyOnEdit, &item.Order, &scheduled, &state, &item.Error, &version, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			_ = rows.Close()
 			return Snapshot{}, err
 		}
@@ -2773,6 +3025,8 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 		item.State = leapmuxv1.AgentInputState(state)
 		item.Version = uint64(version)
 		item.ScheduledAt = scheduled.Ptr()
+		item.EditOwner = ephem.editOwnerOf(item.ID)
+		item.ReservedSeq = ephem.reservedSeqOf(item.ID)
 		items = append(items, item)
 	}
 	if err := rows.Close(); err != nil {
@@ -2808,7 +3062,7 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 	}
 	// Only the head can be steered or preempted, so only the head asks the
 	// gate. The snapshot already sorted it, so the gate reads no rows again.
-	gate, err := readDispatchGateFor(ctx, tx, agentID, now, snapshot.Items[head].OrderingMetadata, true)
+	gate, err := readDispatchGateFor(ctx, tx, agentID, now, snapshot.Items[head].OrderingMetadata, true, ephem)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -2866,12 +3120,12 @@ func loadQueueAttachmentMetadata(ctx context.Context, tx db.DBTX, agentID string
 	return byItem, rows.Err()
 }
 
-func commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string, now time.Time) (Snapshot, error) {
-	snapshot, err := snapshotTx(ctx, tx, agentID, now)
+func (s *Store) commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string, now time.Time, staged agentEphemeralState) (Snapshot, error) {
+	snapshot, err := snapshotTx(ctx, tx, agentID, now, &staged)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitEphemeral(tx, agentID, staged); err != nil {
 		return Snapshot{}, err
 	}
 	return snapshot, nil
@@ -2879,9 +3133,9 @@ func commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string, now time.Ti
 
 // placeControlReply keeps the current request's reply before future queued work.
 // Existing replies and a dispatch or failure at the front retain their order.
-func placeControlReply(ctx context.Context, tx *sql.Tx, agentID, inputID string) error {
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = '', updated_at = ? WHERE agent_id = ? AND bypass_background_work_input_id <> ''`, nowText(), agentID); err != nil {
-		return err
+func placeControlReply(ctx context.Context, tx *sql.Tx, agentID, inputID string, staged *agentEphemeralState) error {
+	if staged != nil {
+		staged.bypassBackgroundWorkInputID = ""
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind, state FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
 	if err != nil {

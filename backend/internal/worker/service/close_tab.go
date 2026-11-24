@@ -729,20 +729,15 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 // leaves the manager's terminals/meta/exitDone entries behind, which the
 // reconciler used to do and which leaked one entry per reaped terminal.
 func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResponse {
+	if svc.QuakeTerminals.Has(terminalID) {
+		return svc.closeQuakeTerminal(terminalID)
+	}
 	// Read BEFORE the teardown, because the reap below needs the row's
 	// working_dir and closeTabCommon stamps closed_at on the way out. A failed
-	// read leaves both zero, which the reap treats as "no directory", and the
-	// orphan reconciler picks it up on its next pass.
-	//
-	// is_quake is what stops this recursing: a quake terminal must not ask
-	// whether its own directory still needs a quake terminal, because the
-	// answer would be itself.
-	dbTerm, termErr := svc.Queries.GetTerminalQuakeAndWorkingDir(bgCtx(), terminalID)
+	// read leaves workingDir empty, which the reap treats as "no directory",
+	// and the orphan reconciler picks it up on its next pass.
+	workingDir, termErr := svc.Queries.GetTerminalWorkingDir(bgCtx(), terminalID)
 	if termErr != nil && !errors.Is(termErr, sql.ErrNoRows) {
-		// Logged rather than swallowed, the way every other DB failure in this
-		// file is. A failure here skips the reap, so the shell outlives its last
-		// tab until the reconciler's next pass -- which is an hour by default,
-		// and impossible to explain from a silent log.
 		slog.Error("failed to read the terminal row for a tab close; skipping the quake reap",
 			"terminal_id", terminalID, "error", termErr)
 	}
@@ -752,12 +747,25 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 		userID,
 		action,
 		linkPolicy,
-		func() { svc.stopTerminalTabForClose(userID, terminalID, dbTerm, termErr == nil, action, linkPolicy) },
+		func() {
+			svc.stopTerminalTabForClose(userID, terminalID, workingDir, termErr == nil, action, linkPolicy)
+		},
 		func() (bool, error) {
 			retirement, err := svc.retireTabResource(bgCtx(), svc.Queries, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID))
 			return retirement.RetiredLiveRow, err
 		},
 	)
+}
+
+// closeQuakeTerminal tears down an in-memory quake terminal without touching
+// SQLite or recursing into closeQuakeTerminalIfUnused.
+func (svc *Service) closeQuakeTerminal(terminalID string) *leapmuxv1.CloseTabResponse {
+	svc.TerminalStartup.cancelAndClear(terminalID, keepWorktreeOnClose)
+	svc.Terminals.RemoveTerminal(terminalID)
+	svc.clearTerminalBellCoalesce(terminalID)
+	svc.terminalCleanups.closeTab(terminalID)
+	svc.QuakeTerminals.Delete(terminalID)
+	return &leapmuxv1.CloseTabResponse{}
 }
 
 // closeTabForConvergence is the single entry point for a close nobody is waiting
@@ -862,11 +870,11 @@ func (svc *Service) stopRootAgentTabForClose(ctx context.Context, userID, agentI
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, true)
 }
 
-func (svc *Service) stopTerminalTabForClose(userID, terminalID string, dbTerm db.GetTerminalQuakeAndWorkingDirRow, known bool, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) {
-	if known && !dbTerm.IsQuake {
-		svc.closeQuakeTerminalIfUnused(userID, dbTerm.WorkingDir, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, linkPolicy)
+func (svc *Service) stopTerminalTabForClose(userID, terminalID, workingDir string, known bool, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) {
+	if known {
+		svc.closeQuakeTerminalIfUnused(userID, workingDir, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, linkPolicy)
 	}
-	effectiveAction := svc.startupCloseAction(action, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID), dbTerm.WorkingDir, &svc.TerminalStartup.startupCore)
+	effectiveAction := svc.startupCloseAction(action, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID), workingDir, &svc.TerminalStartup.startupCore)
 	svc.TerminalStartup.cancelAndClear(terminalID, closeWorktreeDispositionFor(effectiveAction, linkPolicy))
 	svc.Terminals.RemoveTerminal(terminalID)
 	svc.clearTerminalBellCoalesce(terminalID)

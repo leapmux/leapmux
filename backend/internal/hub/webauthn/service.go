@@ -12,10 +12,10 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 const (
@@ -28,39 +28,28 @@ const (
 	CeremonyTTL = 5 * time.Minute
 )
 
-// The service stores SignupDraft in webauthn_sessions.payload_json during
-// passkey signup. BeginSignUp allocates UserID and reuses it as the WebAuthn
-// user handle and the users row primary key, so assertion userHandle matches
-// on later logins.
+// SignupDraft holds pending account fields during a passkey signup ceremony.
+// BeginSignUp allocates UserID and reuses it as the WebAuthn user handle and
+// the users row primary key, so assertion userHandle matches on later logins.
 type SignupDraft struct {
-	UserID      string `json:"userId"`
-	Username    string `json:"username"`
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName"`
+	UserID      string
+	Username    string
+	Email       string
+	DisplayName string
 }
 
-// The service stores ceremonyMeta in webauthn_sessions.payload_json for the
-// login, register, elevation, and recovery kinds. TokenHash is set only on
-// recovery: Finish must present the same token Begin charged, so a reminted
-// link cannot spend a ceremony minted under the previous token.
-//
-// It carries no RP ID. The hub has exactly one, so there is nothing for
-// Finish to restore -- see RPConfig.AllowsOrigin for why every allowed
-// origin resolves to it.
-type ceremonyMeta struct {
-	TokenHash string `json:"tokenHash,omitempty"`
-}
-
-// Service orchestrates WebAuthn ceremonies with encrypted session and credential storage.
+// Service orchestrates WebAuthn ceremonies with in-memory session storage and
+// encrypted durable credential storage.
 type Service struct {
-	w     *gowebauthn.WebAuthn
-	rp    RPConfig
-	store store.Store
-	ks    *keystore.Keystore
+	w        *gowebauthn.WebAuthn
+	rp       RPConfig
+	store    store.Store
+	ks       *keystore.Keystore
+	sessions *SessionStore
 }
 
 // NewService constructs a WebAuthn service from RP config and collaborators.
-func NewService(rp RPConfig, st store.Store, ks *keystore.Keystore) (*Service, error) {
+func NewService(rp RPConfig, st store.Store, ks *keystore.Keystore, sessions *SessionStore) (*Service, error) {
 	if ks == nil {
 		return nil, fmt.Errorf("webauthn service requires keystore")
 	}
@@ -68,7 +57,10 @@ func NewService(rp RPConfig, st store.Store, ks *keystore.Keystore) (*Service, e
 	if err != nil {
 		return nil, fmt.Errorf("create webauthn: %w", err)
 	}
-	return &Service{w: w, rp: rp, store: st, ks: ks}, nil
+	if sessions == nil {
+		sessions = NewSessionStore()
+	}
+	return &Service{w: w, rp: rp, store: st, ks: ks, sessions: sessions}, nil
 }
 
 // newGoWebAuthn builds the hub's one go-webauthn instance from RPConfig, so
@@ -98,7 +90,7 @@ func newGoWebAuthn(rp RPConfig) (*gowebauthn.WebAuthn, error) {
 
 // BeginSignUp starts a passkey-only signup ceremony. origin is the browser
 // origin of the request; it must be one the hub allows.
-func (s *Service) BeginSignUp(ctx context.Context, draft SignupDraft, origin string) (sessionID string, optionsJSON string, err error) {
+func (s *Service) BeginSignUp(_ context.Context, draft SignupDraft, origin string) (sessionID string, optionsJSON string, err error) {
 	// BeginSignUp allocates the user id HERE, and discards a value the caller
 	// put in the draft. It becomes the WebAuthn user handle and then, at Finish,
 	// the users row primary key -- so a caller-chosen value chooses a new
@@ -109,10 +101,6 @@ func (s *Service) BeginSignUp(ctx context.Context, draft SignupDraft, origin str
 	if err = s.CheckOrigin(origin); err != nil {
 		return "", "", err
 	}
-	payload, err := json.Marshal(draft)
-	if err != nil {
-		return "", "", fmt.Errorf("marshal signup draft: %w", err)
-	}
 	waUser := &user{
 		id:          userIDBytes(draft.UserID),
 		name:        draft.Username,
@@ -122,7 +110,7 @@ func (s *Service) BeginSignUp(ctx context.Context, draft SignupDraft, origin str
 	if err != nil {
 		return "", "", fmt.Errorf("begin registration: %w", err)
 	}
-	sessionID, optionsJSON, err = s.persistSession(ctx, KindSignup, "", string(payload), session, creation)
+	sessionID, optionsJSON, err = s.persistSession(KindSignup, "", 0, draft, "", session, creation)
 	return sessionID, optionsJSON, err
 }
 
@@ -139,10 +127,10 @@ func (s *Service) FinishLogin(ctx context.Context, sessionID, credentialJSON str
 
 // beginAssertion runs the shared begin flow for login and elevation: refuse
 // an origin the hub does not serve, refuse an account with no passkeys, mint
-// assertion options, and persist the per-user ceremony session
-// (persistSession replaces any prior open row of the same kind, so repeated
-// Begin calls cannot accumulate ceremony rows until TTL cleanup).
-func (s *Service) beginAssertion(ctx context.Context, kind leapmuxv1.WebAuthnSessionKind, userID, origin string) (sessionID string, optionsJSON string, err error) {
+// assertion options, and store the per-user ceremony session (persistSession
+// replaces any prior open session of the same kind, so repeated Begin calls
+// cannot accumulate entries until TTL sweep).
+func (s *Service) beginAssertion(ctx context.Context, kind Kind, userID, origin string) (sessionID string, optionsJSON string, err error) {
 	if err = s.CheckOrigin(origin); err != nil {
 		return "", "", err
 	}
@@ -157,7 +145,7 @@ func (s *Service) beginAssertion(ctx context.Context, kind leapmuxv1.WebAuthnSes
 	if err != nil {
 		return "", "", fmt.Errorf("begin assertion: %w", err)
 	}
-	sessionID, optionsJSON, err = s.persistSession(ctx, kind, userID, ceremonyPayload(""), session, assertion)
+	sessionID, optionsJSON, err = s.persistSession(kind, userID, waUser.source.AuthGeneration, SignupDraft{}, "", session, assertion)
 	return sessionID, optionsJSON, err
 }
 
@@ -187,18 +175,19 @@ func (s *Service) CheckOrigin(origin string) error {
 // rather than an assertion, so both of its paths -- FinishSignUp, which also
 // carries the signup draft, and VerifyRegistration -- run verifyAttestation
 // instead.
-func (s *Service) validateAssertion(ctx context.Context, sessionID string, wantKind leapmuxv1.WebAuthnSessionKind, expectedUserID, credentialJSON string) (*store.User, VerifiedCredentialIdentity, error) {
-	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind, "")
+func (s *Service) validateAssertion(ctx context.Context, sessionID string, wantKind Kind, expectedUserID, credentialJSON string) (*store.User, VerifiedCredentialIdentity, error) {
+	sess, sessionData, err := s.consumeCeremonySession(sessionID, wantKind, "")
 	if err != nil {
 		return nil, VerifiedCredentialIdentity{}, err
 	}
+	sessUserID := sess.UserID.String()
 	userID := expectedUserID
 	if userID == "" {
-		if row.UserID == "" {
+		if sessUserID == "" {
 			return nil, VerifiedCredentialIdentity{}, fmt.Errorf("%w: missing user", ErrCeremonyInvalid)
 		}
-		userID = row.UserID
-	} else if row.UserID != expectedUserID {
+		userID = sessUserID
+	} else if sessUserID != expectedUserID {
 		return nil, VerifiedCredentialIdentity{}, fmt.Errorf("%w: session owner mismatch", ErrCeremonyInvalid)
 	}
 	if !bytes.Equal(sessionData.UserID, userIDBytes(userID)) {
@@ -242,20 +231,13 @@ type FinishedSignUpCredential struct {
 }
 
 // FinishSignUp validates attestation and returns the signup draft plus credential data.
-func (s *Service) FinishSignUp(ctx context.Context, sessionID, credentialJSON string) (SignupDraft, FinishedSignUpCredential, error) {
+func (s *Service) FinishSignUp(_ context.Context, sessionID, credentialJSON string) (SignupDraft, FinishedSignUpCredential, error) {
 	var zero FinishedSignUpCredential
-	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, KindSignup, "")
+	sess, sessionData, err := s.consumeCeremonySession(sessionID, KindSignup, "")
 	if err != nil {
 		return SignupDraft{}, zero, err
 	}
-	plain, err := s.decryptPayloadJSON(sessionID, row.PayloadJSON)
-	if err != nil {
-		return SignupDraft{}, zero, err
-	}
-	draft, err := ParseSignupDraft(plain)
-	if err != nil {
-		return SignupDraft{}, zero, fmt.Errorf("parse signup draft: %w", err)
-	}
+	draft := sess.SignupDraft
 	if draft.UserID == "" {
 		return SignupDraft{}, zero, fmt.Errorf("signup draft missing user id")
 	}
@@ -334,7 +316,7 @@ func (s *Service) VerifyRecoveryRegistration(ctx context.Context, sessionID, cre
 // beginRegistration is the shared begin path for KindRegister and
 // KindRecovery. excludeExisting loads the credential list and sends
 // WebAuthn exclusions; recovery omits both.
-func (s *Service) beginRegistration(ctx context.Context, kind leapmuxv1.WebAuthnSessionKind, userID, origin string, excludeExisting bool, tokenHash string) (sessionID, optionsJSON string, err error) {
+func (s *Service) beginRegistration(ctx context.Context, kind Kind, userID, origin string, excludeExisting bool, tokenHash string) (sessionID, optionsJSON string, err error) {
 	if err = s.CheckOrigin(origin); err != nil {
 		return "", "", err
 	}
@@ -355,26 +337,27 @@ func (s *Service) beginRegistration(ctx context.Context, kind leapmuxv1.WebAuthn
 	if err != nil {
 		return "", "", fmt.Errorf("begin registration: %w", err)
 	}
-	sessionID, optionsJSON, err = s.persistSession(ctx, kind, userID, ceremonyPayload(tokenHash), session, creation)
+	sessionID, optionsJSON, err = s.persistSession(kind, userID, waUser.source.AuthGeneration, SignupDraft{}, tokenHash, session, creation)
 	return sessionID, optionsJSON, err
 }
 
 // verifyRegistration consumes a registration ceremony and validates the
 // attestation against an identity-only user (CreateCredential compares
 // only WebAuthnID). An empty expectedUserID derives the owner from the
-// session row. expectedTokenHash is the recovery bind; empty skips it.
-func (s *Service) verifyRegistration(ctx context.Context, sessionID string, wantKind leapmuxv1.WebAuthnSessionKind, expectedUserID, expectedTokenHash, credentialJSON string) (string, FinishedSignUpCredential, error) {
-	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind, expectedTokenHash)
+// ceremony session. expectedTokenHash is the recovery bind; empty skips it.
+func (s *Service) verifyRegistration(ctx context.Context, sessionID string, wantKind Kind, expectedUserID, expectedTokenHash, credentialJSON string) (string, FinishedSignUpCredential, error) {
+	sess, sessionData, err := s.consumeCeremonySession(sessionID, wantKind, expectedTokenHash)
 	if err != nil {
 		return "", FinishedSignUpCredential{}, err
 	}
+	sessUserID := sess.UserID.String()
 	userID := expectedUserID
 	if userID == "" {
-		if row.UserID == "" {
+		if sessUserID == "" {
 			return "", FinishedSignUpCredential{}, fmt.Errorf("%w: missing user", ErrCeremonyInvalid)
 		}
-		userID = row.UserID
-	} else if row.UserID != expectedUserID {
+		userID = sessUserID
+	} else if sessUserID != expectedUserID {
 		return "", FinishedSignUpCredential{}, fmt.Errorf("%w: owner mismatch", ErrCeremonyInvalid)
 	}
 	waUser, err := s.loadUserIdentity(ctx, userID)
@@ -484,61 +467,33 @@ func verifyAttestation(w *gowebauthn.WebAuthn, waUser *user, sessionData gowebau
 	}, nil
 }
 
-func (s *Service) persistSession(ctx context.Context, kind leapmuxv1.WebAuthnSessionKind, userID, payload string, session *gowebauthn.SessionData, options any) (sessionID, optionsJSON string, err error) {
-	// Every PER-USER ceremony replaces any prior open row of the same kind,
-	// so repeated Begin calls cannot accumulate encrypted sessions until TTL
-	// cleanup. This comment gives the rule as the property rather than as a
-	// list of today's kinds: a list is easy to forget when somebody adds the
-	// next per-user kind, and the accumulation that follows is invisible until
-	// the table grows.
-	//
-	// Delete-then-Create is two statements. The unique index on (user_id,
-	// kind) for a non-NULL user_id is the invariant that two concurrent
-	// Begins cannot both insert. When Create returns ErrConflict, one retry
-	// deletes the other Begin's row and inserts ours -- the later Begin
-	// replaces the earlier one, the same as two sequential Begins.
-	//
-	// Signup is the one kind that cannot replace by user, because the account
-	// does not exist yet and there is no users FK to key on; captcha on
-	// BeginSignUp limits anonymous accumulation instead. A blank userID is
-	// the same condition seen from the caller's side. Those rows store
-	// NULL user_id, so they sit outside the unique index.
+func (s *Service) persistSession(kind Kind, userID string, userAuthGeneration int64, draft SignupDraft, tokenHash string, session *gowebauthn.SessionData, options any) (sessionID, optionsJSON string, err error) {
+	// Every PER-USER ceremony replaces any prior open session of the same kind
+	// atomically inside SessionStore.Create, so repeated Begin calls cannot
+	// accumulate entries until TTL sweep. Signup is the one kind with no user
+	// yet, so it stores a zero UserID and allows concurrent anonymous entries.
 	sessionID = id.Generate()
-	enc, err := s.encryptSessionData(sessionID, session)
-	if err != nil {
-		return "", "", err
-	}
-	payloadJSON := payload
-	if kind == KindSignup {
-		encPayload, encErr := s.encryptPayloadJSON(sessionID, payload)
-		if encErr != nil {
-			return "", "", encErr
+	var uid userid.UserID
+	if userID != "" {
+		var ok bool
+		uid, ok = userid.New(userID)
+		if !ok {
+			return "", "", fmt.Errorf("store session: invalid user id")
 		}
-		payloadJSON = encPayload
 	}
 	now := time.Now().UTC()
-	params := store.CreateWebAuthnSessionParams{
-		ID:          sessionID,
-		Kind:        kind,
-		UserID:      userID,
-		PayloadJSON: payloadJSON,
-		SessionData: enc,
-		ExpiresAt:   now.Add(CeremonyTTL),
-		CreatedAt:   now,
-	}
-	for attempt := 0; attempt < 2; attempt++ {
-		if userID != "" && kind != KindSignup {
-			if err := s.store.WebAuthnSessions().DeleteByUserAndKind(ctx, userID, kind); err != nil {
-				return "", "", fmt.Errorf("clear prior %s ceremony: %w", kind, err)
-			}
-		}
-		err = s.store.WebAuthnSessions().Create(ctx, params)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, store.ErrConflict) || attempt == 1 {
-			return "", "", fmt.Errorf("store session: %w", err)
-		}
+	if err := s.sessions.Create(CeremonySession{
+		ID:                 sessionID,
+		Kind:               kind,
+		UserID:             uid,
+		UserAuthGeneration: userAuthGeneration,
+		SessionData:        session,
+		SignupDraft:        draft,
+		TokenHash:          tokenHash,
+		ExpiresAt:          now.Add(CeremonyTTL),
+		CreatedAt:          now,
+	}); err != nil {
+		return "", "", fmt.Errorf("store session: %w", err)
 	}
 	optionsJSON, err = marshalOptions(options)
 	if err != nil {
@@ -555,54 +510,14 @@ func marshalOptions(v any) (string, error) {
 	return string(b), nil
 }
 
-func ceremonyPayload(tokenHash string) string {
-	b, err := json.Marshal(ceremonyMeta{TokenHash: tokenHash})
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
-
-func ceremonyTokenHash(payload string) string {
-	var meta ceremonyMeta
-	if err := json.Unmarshal([]byte(payload), &meta); err != nil {
-		return ""
-	}
-	return meta.TokenHash
-}
-
-// consumeCeremonySession loads a ceremony row then atomically deletes it so a
-// second Finish call cannot reuse the same assertion/attestation. The kind
-// and expiry rules live in the consume SQL; Go does not re-check them.
-func (s *Service) consumeCeremonySession(ctx context.Context, sessionID string, wantKind leapmuxv1.WebAuthnSessionKind, expectedTokenHash string) (*store.WebAuthnSession, *gowebauthn.SessionData, error) {
-	row, err := s.store.WebAuthnSessions().Get(ctx, sessionID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, nil, fmt.Errorf("%w", ErrCeremonyInvalid)
-		}
-		return nil, nil, fmt.Errorf("load session: %w", err)
-	}
-	if row.Kind != wantKind {
-		return nil, nil, fmt.Errorf("%w: wrong kind", ErrCeremonyInvalid)
-	}
-	if expectedTokenHash != "" {
-		stored := ceremonyTokenHash(row.PayloadJSON)
-		if stored == "" || stored != expectedTokenHash {
-			return nil, nil, fmt.Errorf("%w: recovery token mismatch", ErrCeremonyInvalid)
-		}
-	}
-	data, err := s.decryptSessionData(sessionID, row.SessionData)
+// consumeCeremonySession atomically validates and deletes a ceremony session so
+// a second Finish call cannot reuse the same assertion or attestation.
+func (s *Service) consumeCeremonySession(sessionID string, wantKind Kind, expectedTokenHash string) (*CeremonySession, *gowebauthn.SessionData, error) {
+	sess, err := s.sessions.Consume(sessionID, wantKind, expectedTokenHash, time.Now().UTC())
 	if err != nil {
 		return nil, nil, err
 	}
-	n, err := s.store.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, wantKind, time.Now().UTC())
-	if err != nil {
-		return nil, nil, fmt.Errorf("consume ceremony session: %w", err)
-	}
-	if n == 0 {
-		return nil, nil, fmt.Errorf("%w", ErrCeremonyInvalid)
-	}
-	return row, data, nil
+	return sess, sess.SessionData, nil
 }
 
 // RPID returns the default relying-party ID for this hub.
@@ -692,11 +607,6 @@ func (s *Service) EncryptPublicKey(credentialRowID string, publicKey []byte) ([]
 	return s.encryptPublicKey(credentialRowID, publicKey)
 }
 
-// DecryptPayloadJSON exposes signup-draft decrypt for tests.
-func (s *Service) DecryptPayloadJSON(sessionID, stored string) (string, error) {
-	return s.decryptPayloadJSON(sessionID, stored)
-}
-
 // ErrCloneDetected reports an authenticator sign count that indicates a
 // possible cloned credential (WebAuthn CloneWarning).
 var ErrCloneDetected = errors.New("authenticator sign count indicates a possible clone")
@@ -769,22 +679,4 @@ func (s *Service) applySignCountUpdate(ctx context.Context, credentialID []byte,
 		return ErrCloneDetected
 	}
 	return fmt.Errorf("update sign count: row did not advance (stored %d, assertion %d)", fresh.SignCount, newSignCount)
-}
-
-// RoundTripSessionData is a test helper for session encrypt/decrypt.
-func (s *Service) RoundTripSessionData(sessionID string, data *gowebauthn.SessionData) (*gowebauthn.SessionData, error) {
-	enc, err := s.encryptSessionData(sessionID, data)
-	if err != nil {
-		return nil, err
-	}
-	return s.decryptSessionData(sessionID, enc)
-}
-
-// ParseSignupDraft decodes a signup payload_json blob.
-func ParseSignupDraft(payload string) (SignupDraft, error) {
-	var draft SignupDraft
-	if err := json.Unmarshal([]byte(payload), &draft); err != nil {
-		return SignupDraft{}, err
-	}
-	return draft, nil
 }

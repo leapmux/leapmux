@@ -397,10 +397,9 @@ func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 		if ids, err := queries.ListAllOpenRootAgentIDs(ctx); err == nil && len(ids) > 0 {
 			return ids[0], true
 		}
-		// Quake terminals are excluded for exactly the reason child agents
-		// are: they have no CRDT tab, so the hub refuses their id with a 403
-		// and the mint backoff loops to a permanent failure.
-		if ids, err := queries.ListAllOpenTabTerminalIDs(ctx); err == nil && len(ids) > 0 {
+		// Quake terminals live strictly in memory, so every open row in
+		// terminals is a real tab that the Hub tracks.
+		if ids, err := queries.ListAllOpenTerminalIDs(ctx); err == nil && len(ids) > 0 {
 			return ids[0], true
 		}
 		return "", false
@@ -433,22 +432,6 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 		return inventory, nil
 	}
 
-	// Close the QUAKE terminals the previous worker process left behind.
-	//
-	// A quake terminal is the shell behind a quake panel, it belongs to a
-	// working DIRECTORY, and it is valid only while this process hosts its PTY.
-	// A restart breaks that link with the row still open, and no other pass
-	// reclaims one: the orphan reconciler measures a quake terminal by whether
-	// any open tab still works in its directory, so one live tab there keeps
-	// the dead row open for as long as it exists. The next panel open would
-	// then adopt a terminal with no PTY, and a quake terminal refuses the Enter
-	// that restarts a terminal TAB -- so the panel would stay dead for as long
-	// as a tab works in that directory, across reloads.
-	//
-	// Before the resumer and the reconciler, and synchronous, because it must
-	// land before a client can ask for a quake terminal.
-	svc.CloseOrphanedQuakeTerminals(p.Ctx)
-
 	// Respawn the agent processes the previous worker process left behind. It
 	// runs once, in the background, and only after the reconciler reports a
 	// CONVERGED pass -- see the OnConverged hook below for the reason.
@@ -466,6 +449,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 			// Clean dead tab links. Preserve every Git directory and branch.
 			CleanupWorktreeLinks:   svc.CleanupOrphanWorktreeLinks,
 			BeginTabReconciliation: svc.BeginTabReconciliation,
+			ListOpenQuakeTerminals: svc.QuakeTerminals.ListOpen,
 
 			ResumeAgents: func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
 			// The resume sweep's start signal, and the reason it is this and not

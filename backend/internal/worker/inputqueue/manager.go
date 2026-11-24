@@ -1624,6 +1624,7 @@ func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
 	c.pauseEvents++
 	stopMaturityLocked(c)
 	snapshot, changed, err := m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
+	m.store.ClearEphemeralState(agentID)
 	if err == nil && changed {
 		m.enqueueSnapshotLocked(c, snapshot)
 	}

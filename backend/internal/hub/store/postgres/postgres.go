@@ -166,19 +166,11 @@ func (s *pgStore) WorkspaceSectionItems() store.WorkspaceSectionItemStore {
 	return &workspaceSectionItemStore{conn: s.conn}
 }
 func (s *pgStore) OAuthProviders() store.OAuthProviderStore { return &oauthProviderStore{conn: s.conn} }
-func (s *pgStore) OAuthStates() store.OAuthStateStore       { return &oauthStateStore{conn: s.conn} }
-func (s *pgStore) OAuthTokens() store.OAuthTokenStore       { return &oauthTokenStore{conn: s.conn} }
 func (s *pgStore) OAuthUserLinks() store.OAuthUserLinkStore {
 	return &oauthUserLinkStore{conn: s.conn}
 }
-func (s *pgStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
-	return &pendingOAuthSignupStore{conn: s.conn}
-}
 func (s *pgStore) PasskeyCredentials() store.PasskeyCredentialStore {
 	return &passkeyCredentialStore{conn: s.conn}
-}
-func (s *pgStore) WebAuthnSessions() store.WebAuthnSessionStore {
-	return &webAuthnSessionStore{conn: s.conn}
 }
 func (s *pgStore) Settings() store.SettingsStore {
 	return &settingsStore{conn: s.conn}
@@ -192,9 +184,6 @@ func (s *pgStore) DelegationTokens() store.DelegationTokenStore {
 }
 func (s *pgStore) RevocationEvents() store.RevocationEventStore {
 	return newRevocationEventStore(s.conn)
-}
-func (s *pgStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
-	return &deviceAuthorizationStore{conn: s.conn}
 }
 func (s *pgStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
 	return &oauthAuthorizationCodeStore{conn: s.conn}

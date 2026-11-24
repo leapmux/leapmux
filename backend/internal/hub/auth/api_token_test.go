@@ -1087,14 +1087,12 @@ func TestVerifyBearerSecret_DelegationToken(t *testing.T) {
 
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
-	refreshSecret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
 		GrantedScopes: "workspace:read workspace:write worker:read",
 		ID:            tokenID,
 		UserID:        userid.MustNew(userID),
 		WorkerID:      workerID,
 		SecretHash:    v.HashSecret(secret),
-		RefreshHash:   v.HashSecret(refreshSecret),
 		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
@@ -1103,16 +1101,36 @@ func TestVerifyBearerSecret_DelegationToken(t *testing.T) {
 	assert.Equal(t, auth.BearerKindDelegation, gotKind)
 	assert.Equal(t, tokenID, gotID)
 
-	// The refresh secret is also an entitled bearer: lookupRowSecretHashes
-	// returns both the access and refresh hashes for a delegation row, so
-	// presenting the refresh secret verifies too.
-	gotKind, gotID, err = v.VerifyBearerSecret(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, refreshSecret))
-	require.NoError(t, err)
-	assert.Equal(t, auth.BearerKindDelegation, gotKind)
-	assert.Equal(t, tokenID, gotID)
-
 	_, _, err = v.VerifyBearerSecret(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, "wrong"))
 	assert.ErrorIs(t, err, auth.ErrInvalidToken)
+}
+
+func TestTokenValidator_MintAccessBearer(t *testing.T) {
+	st := newTestStore(t)
+	v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	ttl := 15 * time.Minute
+	minted, err := v.MintAccessBearer(auth.BearerKindDelegation, "tok-123", now, ttl)
+	require.NoError(t, err)
+
+	kind, tokenID, secret, err := auth.ParseBearer(minted.AccessBearer)
+	require.NoError(t, err)
+	assert.Equal(t, auth.BearerKindDelegation, kind)
+	assert.Equal(t, "tok-123", tokenID)
+	assert.Len(t, minted.AccessHash, 32)
+	assert.Equal(t, v.HashSecret(secret), minted.AccessHash)
+	assert.Equal(t, now.Add(ttl), minted.AccessExpiresAt)
+
+	_, err = v.MintAccessBearer(auth.BearerKind(99), "tok-123", now, ttl)
+	require.Error(t, err)
+	_, err = v.MintAccessBearer(auth.BearerKindDelegation, "", now, ttl)
+	require.Error(t, err)
+	_, err = v.MintAccessBearer(auth.BearerKindDelegation, "tok-123", now, 0)
+	require.Error(t, err)
+	_, err = v.MintAccessBearer(auth.BearerKindDelegation, "tok-123", now, -time.Second)
+	require.Error(t, err)
 }
 
 func TestSeedWorkerAndWorkspacePersistsGeneratedIdentities(t *testing.T) {

@@ -430,44 +430,6 @@ type UpsertSettingParams struct {
 	Secret []byte
 }
 
-// OAuthState represents a short-lived CSRF + PKCE state during auth flow.
-type OAuthState struct {
-	State        string
-	ProviderID   string
-	PkceVerifier string
-	// NonceHash is the SHA-256 hex of the nonce held in the browser's
-	// short-lived OAuth cookie. It binds this flow to the browser that
-	// started it, so an attacker cannot complete a (code, state) pair they
-	// captured in somebody else's browser. Empty means the hub minted no
-	// browser cookie for this row.
-	NonceHash   string
-	RedirectURI string
-	// Purpose is one of the three explicit OAuthStatePurpose values. The
-	// callback branches on it: a reauth row elevates SessionID and must never
-	// create a session or link an identity, while consent login records the
-	// fresh provider proof requested at the start.
-	Purpose leapmuxv1.OAuthStatePurpose
-	// SessionID is the session a reauth row elevates. Empty for login rows.
-	SessionID string
-	ExpiresAt time.Time
-	CreatedAt time.Time
-}
-
-// OAuth state purposes. oauth_states.purpose stores these ordinals, and the
-// column's CHECK refuses the UNSPECIFIED zero -- so a row that never stated its
-// purpose fails the insert rather than defaulting into the login branch, which
-// is the one that may create a session.
-const (
-	// OAuthStatePurposeLogin starts a sign-in and may create a session.
-	OAuthStatePurposeLogin = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_LOGIN
-	// OAuthStatePurposeReauth proves the identity again for a session that is
-	// ALREADY signed in, to elevate it.
-	OAuthStatePurposeReauth = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_REAUTH
-	// OAuthStatePurposeConsentLogin starts a sign-in that forced fresh provider
-	// authentication because it returns to an OAuth consent route.
-	OAuthStatePurposeConsentLogin = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_CONSENT_LOGIN
-)
-
 // PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
 // keystore-encrypted at the service layer before persistence.
 type PasskeyCredential struct {
@@ -486,58 +448,11 @@ type PasskeyCredential struct {
 	LastUsedAt     *time.Time
 }
 
-// WebAuthnSession holds ephemeral ceremony state. SessionData is
-// keystore-encrypted at the service layer before persistence.
-type WebAuthnSession struct {
-	ID          string
-	Kind        leapmuxv1.WebAuthnSessionKind
-	UserID      string
-	PayloadJSON string
-	SessionData []byte
-	ExpiresAt   time.Time
-	CreatedAt   time.Time
-}
-
-// OAuthToken stores encrypted OAuth tokens for a user+provider pair.
-type OAuthToken struct {
-	UserID       string
-	ProviderID   string
-	AccessToken  []byte
-	RefreshToken []byte
-	TokenType    string
-	ExpiresAt    time.Time
-	KeyVersion   int64
-	UpdatedAt    time.Time
-}
-
 // OAuthUserLink represents a link between a local user and an OAuth identity.
 type OAuthUserLink struct {
 	UserID          string
 	ProviderID      string
 	ProviderSubject string
-	CreatedAt       time.Time
-}
-
-// PendingOAuthSignup represents a new user in the middle of OAuth signup.
-type PendingOAuthSignup struct {
-	Token      string
-	ProviderID string
-	// NonceHash is the SHA-256 hex of the nonce in the browser's
-	// pending-signup cookie. It carries the OAuth flow's browser binding
-	// ACROSS the hand-off from the callback to CompleteOAuthSignup, which
-	// would otherwise create the account for whoever presents the token.
-	// Empty means the hub minted no browser cookie for this row.
-	NonceHash       string
-	ProviderSubject string
-	Email           string
-	DisplayName     string
-	AccessToken     []byte
-	RefreshToken    []byte
-	TokenType       string
-	TokenExpiresAt  time.Time
-	KeyVersion      int64
-	RedirectURI     string
-	ExpiresAt       time.Time
 	CreatedAt       time.Time
 }
 
@@ -1313,37 +1228,6 @@ type ConsumeAltchaSaltParams struct {
 	ExpiresAt time.Time
 }
 
-type CreateOAuthStateParams struct {
-	State        string
-	ProviderID   string
-	PkceVerifier string
-	NonceHash    string
-	RedirectURI  string
-	Purpose      leapmuxv1.OAuthStatePurpose
-	SessionID    string
-	ExpiresAt    time.Time
-}
-
-type UpsertOAuthTokensParams struct {
-	UserID       userid.UserID
-	ProviderID   string
-	AccessToken  []byte
-	RefreshToken []byte
-	TokenType    string
-	ExpiresAt    time.Time
-	KeyVersion   int64
-}
-
-type GetOAuthTokensParams struct {
-	UserID     userid.UserID
-	ProviderID string
-}
-
-type DeleteOAuthTokensByUserAndProviderParams struct {
-	UserID     userid.UserID
-	ProviderID string
-}
-
 type CreateOAuthUserLinkParams struct {
 	UserID          userid.UserID
 	ProviderID      string
@@ -1388,16 +1272,6 @@ type UpdatePasskeyPublicKeyParams struct {
 	UserID     string
 	PublicKey  []byte
 	KeyVersion int64
-}
-
-type CreateWebAuthnSessionParams struct {
-	ID          string
-	Kind        leapmuxv1.WebAuthnSessionKind
-	UserID      string
-	PayloadJSON string
-	SessionData []byte
-	ExpiresAt   time.Time
-	CreatedAt   time.Time
 }
 
 type SetPendingRecoveryParams struct {
@@ -1545,15 +1419,13 @@ type DelegationToken struct {
 	// GrantedScopes is what the minting worker delegated, already narrowed to
 	// auth.CeilingFor(BearerKindDelegation) at the mint -- and narrowed again
 	// when the row is READ, so a hand-edited row cannot widen it.
-	GrantedScopes    string
-	SecretHash       []byte
-	RefreshHash      []byte
-	CreatedAt        time.Time
-	AuthGeneration   int64
-	LastUsedAt       *time.Time
-	ExpiresAt        time.Time
-	RefreshExpiresAt *time.Time
-	RevokedAt        *time.Time
+	GrantedScopes  string
+	SecretHash     []byte
+	CreatedAt      time.Time
+	AuthGeneration int64
+	LastUsedAt     *time.Time
+	ExpiresAt      time.Time
+	RevokedAt      *time.Time
 }
 
 // DelegationTokenWithOwner augments DelegationToken with the owner's username
@@ -1568,36 +1440,6 @@ type DelegationTokenWithOwner struct {
 // PageCursor returns the keyset position for the admin delegation-token listing
 // (ListAllDelegationTokens), which orders by (created_at DESC, id DESC).
 func (t DelegationTokenWithOwner) PageCursor() (time.Time, string) { return t.CreatedAt, t.ID }
-
-// DeviceAuthorization is an in-flight RFC 8628 device-code grant.
-type DeviceAuthorization struct {
-	DeviceCodeHash []byte
-	UserCode       string
-	DeviceName     string
-	UserID         string
-	State          leapmuxv1.DeviceAuthorizationState
-	LastPolledAt   *time.Time
-	// ClientID is the app that started the flow.
-	ClientID string
-	// RequestedScopes is what the APP asked for, written at creation.
-	// GrantedScopes is what the APPROVAL bound, written by the browser stage
-	// and read back by the token stage. The two are separate columns because the
-	// request and the consent happen on different machines: taken from the
-	// activation form instead, whoever types the code could widen the ask.
-	RequestedScopes string
-	GrantedScopes   string
-	CreatedAt       time.Time
-	ExpiresAt       time.Time
-	ConsumedAt      *time.Time
-	// ElevateTokenID identifies the command-line credential this grant ELEVATES,
-	// when it elevates one rather than minting one. Empty for a login.
-	//
-	// The two flows share the row, and with it the TTL, the poll throttle,
-	// the expiry sweep and the activation page -- they differ only in what
-	// the approval DOES. A second table is a second copy of every one of
-	// those rules.
-	ElevateTokenID string
-}
 
 // OAuthClient is one registered app: everything that may ask an account for
 // access, including the two LeapMux ships with.
@@ -2150,37 +1992,9 @@ type CreateDelegationTokenParams struct {
 	// with authscope.ScopeSet.Storable, which accepts an empty grant and refuses
 	// the unscoped grant. The adapters bind an omitted Go field as the empty
 	// grant. The non-NULL column has no SQL default and cannot detect that omission.
-	GrantedScopes    string
-	SecretHash       []byte
-	RefreshHash      []byte
-	ExpiresAt        time.Time
-	RefreshExpiresAt *time.Time
-}
-
-type CreateDeviceAuthorizationParams struct {
-	DeviceCodeHash  []byte
-	UserCode        string
-	DeviceName      string
-	ClientID        string
-	RequestedScopes string
-	ExpiresAt       time.Time
-	// ElevateTokenID makes this an ELEVATION grant for that api_tokens row
-	// rather than a login. Empty mints a credential, as it always did.
-	ElevateTokenID string
-}
-
-type ApproveDeviceAuthorizationParams struct {
-	DeviceCodeHash []byte
-	UserID         userid.UserID
-	// GrantedScopes is what the browser consented to, canonical form.
 	GrantedScopes string
-}
-
-type ApproveDeviceAuthorizationByUserCodeParams struct {
-	UserCode string
-	UserID   userid.UserID
-	// GrantedScopes is what the browser consented to, canonical form.
-	GrantedScopes string
+	SecretHash    []byte
+	ExpiresAt     time.Time
 }
 
 type CreateOAuthAuthorizationCodeParams struct {
@@ -2201,22 +2015,6 @@ type CreateOAuthAuthorizationCodeParams struct {
 	// page showed. RedemptionKindNone means a step-up code; the row's tie
 	// CHECK holds it exactly when StepUp identifies a credential.
 	Redemption RedemptionKind
-}
-
-type CreatePendingOAuthSignupParams struct {
-	Token           string
-	ProviderID      string
-	NonceHash       string
-	ProviderSubject string
-	Email           string
-	DisplayName     string
-	AccessToken     []byte
-	RefreshToken    []byte
-	TokenType       string
-	TokenExpiresAt  time.Time
-	KeyVersion      int64
-	RedirectURI     string
-	ExpiresAt       time.Time
 }
 
 // GetWorkerOwnedTabStateParams scopes a point read to one owner's hosting Worker.

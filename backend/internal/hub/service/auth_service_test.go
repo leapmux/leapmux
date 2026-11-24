@@ -26,7 +26,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
-
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
@@ -35,6 +34,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
+	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -78,7 +78,7 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 		service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(), Renderer: mail.Renderer{}})
 	})
 	assert.Panics(t, func() {
-		service.NewUserService(nil, nil, nil, nil, nil, mail.Renderer{}, nil)
+		service.NewUserService(nil, nil, nil, nil, nil, mail.Renderer{}, nil, nil, nil)
 	})
 	assert.Panics(t, func() {
 		service.NewWorkerDelegationHandler(nil, nil, nil)
@@ -761,7 +761,7 @@ func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -979,7 +979,7 @@ func setupEmailVerificationTestServer(t *testing.T, emailVerificationRequired bo
 	// and the fixture would refuse a call the hub admits.
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, nil, nil)
 
-	userSvc := service.NewUserService(st, testConfig(), set, lifecycle, mail.NewStubSender(), mail.Renderer{}, nil)
+	userSvc := service.NewUserService(st, testConfig(), set, lifecycle, mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 
@@ -1483,12 +1483,12 @@ func TestSignUpReportsTheSignInWindow(t *testing.T) {
 func TestCompleteOAuthSignupReportsNoElevationDeadline(t *testing.T) {
 	t.Parallel()
 
-	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, st, ks)
+	env := setupOAuthTestEnvWithAuthService(t)
+	providerID := createTestProvider(t, env.store, env.ks)
 	signupToken := id.Generate()
-	insertPendingSignup(t, st, ks, providerID, signupToken, "bob@example.com", "Bob", "sub-bob", time.Now().Add(5*time.Minute).UTC())
+	insertPendingSignup(t, env.pendingSignups, providerID, signupToken, "bob@example.com", "Bob", "sub-bob", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := env.client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "bobuser",
 		DisplayName: "Bob User",
@@ -2481,10 +2481,11 @@ func TestAuthService_LogoutRequiresTheVictimsSessionSecret(t *testing.T) {
 // setupStateAuthEnv keeps the store, settings and encryption key shared while
 // newClient creates a separate AuthService instance for restart comparisons.
 type setupStateAuthEnv struct {
-	store    store.Store
-	settings *settings.Manager
-	keystore *keystore.Keystore
-	client   authTestClient
+	store            store.Store
+	settings         *settings.Manager
+	keystore         *keystore.Keystore
+	webauthnSessions *hubwebauthn.SessionStore
+	client           authTestClient
 }
 
 func newSetupStateAuthEnv(t *testing.T, st store.Store, signupEnabled bool) *setupStateAuthEnv {
@@ -2496,7 +2497,7 @@ func newSetupStateAuthEnv(t *testing.T, st store.Store, signupEnabled bool) *set
 	set := servicetest.NewSettingsManager(t, st, ks)
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, passkeyTestOrigin))
 	require.NoError(t, settings.KeySignupEnabled.Set(context.Background(), set, signupEnabled))
-	env := &setupStateAuthEnv{store: st, settings: set, keystore: ks}
+	env := &setupStateAuthEnv{store: st, settings: set, keystore: ks, webauthnSessions: hubwebauthn.NewSessionStore()}
 	env.client = env.newClient(t)
 	return env
 }
@@ -2517,6 +2518,7 @@ func (e *setupStateAuthEnv) newClientWithInitialization(t *testing.T) (authTestC
 	deps := servicetest.AuthServiceDeps(e.store, testConfig(), e.settings,
 		auth.NewCredentialLifecycleEffects(contexts, nil, nil))
 	deps.Keystore = e.keystore
+	deps.WebAuthnSessions = e.webauthnSessions
 	authSvc := service.NewAuthService(deps)
 	initializationErr := authSvc.InitializeAccountState(t.Context())
 	server := connect.NewServer(interceptor)

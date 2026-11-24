@@ -32,9 +32,7 @@ func TestNewRootSinkRefusalPreservesThePhysicalSource(t *testing.T) {
 	childOwner := child.CaptureMessage(agent.MessageContent{Original: []byte(`{"content":"Child source"}`)}, agent.SpanInfo{}).Publication.Owner().(*transcriptOwner)
 	before, err := svc.Queries.GetAgentByID(t.Context(), "root-generation")
 	require.NoError(t, err)
-	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_output_source BEFORE UPDATE OF output_generation ON agents
-WHEN NEW.id = 'root-generation' BEGIN SELECT RAISE(ABORT, 'output source refused'); END`)
-	require.NoError(t, err)
+	svc.Output.queries = db.New(&failedOutputSourceStore{DBTX: svc.DB, agentID: "root-generation", errMsg: "output source refused"})
 	services, err := svc.Output.NewRootSink("root-generation", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.ErrorContains(t, err, "output source refused")
 	assert.Nil(t, services)
@@ -74,9 +72,9 @@ func TestNewRootSinkRejectsVirtualChildrenAndChildrenInheritTheirParent(t *testi
 	assert.Same(t, root, svc.Output.sinkForAgent("root-generation"))
 	assert.Same(t, childOwner.sink, svc.Output.sinkForAgent(childID))
 	for _, id := range []string{childID, grandchildID} {
-		row, err := svc.Queries.GetAgentByID(t.Context(), id)
+		_, err := svc.Queries.GetAgentByID(t.Context(), id)
 		require.NoError(t, err)
-		assert.Zero(t, row.OutputGeneration, "virtual child rows allocate no physical writer")
+		assert.Zero(t, svc.Output.currentOutputGeneration(id), "virtual child rows allocate no physical writer")
 	}
 }
 
@@ -91,7 +89,7 @@ func (store *outputAllocationProbe) QueryRowContext(ctx context.Context, query s
 	if strings.HasPrefix(query, "-- name: GetAgentByID :one") {
 		store.setupReads.Add(1)
 	}
-	if strings.HasPrefix(query, "-- name: AllocateAgentOutputGeneration :one") {
+	if strings.HasPrefix(query, "-- name: GetRootAgentSessionID :one") {
 		store.allocationCalls.Add(1)
 		if store.beforeAllocation != nil {
 			store.beforeAllocation()
@@ -112,10 +110,8 @@ func TestNewRootSinkUsesTheSessionReturnedWithItsGeneration(t *testing.T) {
 	root := requireRootOutputSink(t, svc.Output, "coherent-output-source")
 	assert.Equal(t, "allocated-native-session", root.currentMessageSessionID())
 	assert.Equal(t, int64(1), probe.allocationCalls.Load())
-	assert.Zero(t, probe.setupReads.Load(), "the checked RETURNING source replaces an unchecked restoration read")
-	row, err := svc.Queries.GetAgentByID(t.Context(), "coherent-output-source")
-	require.NoError(t, err)
-	assert.Equal(t, row.OutputGeneration, root.outputGeneration)
+	assert.Zero(t, probe.setupReads.Load(), "the checked root session lookup replaces an unchecked restoration read")
+	assert.Equal(t, root.outputGeneration, svc.Output.currentOutputGeneration("coherent-output-source"))
 }
 
 func TestConcurrentNewRootSinkPublicationFollowsAllocationOrder(t *testing.T) {
@@ -157,10 +153,8 @@ func TestConcurrentNewRootSinkPublicationFollowsAllocationOrder(t *testing.T) {
 		}
 	}
 	current := requireRootOutputSink(t, svc.Output, "ordered-output-source")
-	row, err := svc.Queries.GetAgentByID(t.Context(), "ordered-output-source")
-	require.NoError(t, err)
-	assert.Equal(t, int64(3), row.OutputGeneration)
-	assert.Equal(t, row.OutputGeneration, current.outputGeneration)
+	assert.Equal(t, int64(3), current.outputGeneration)
+	assert.Equal(t, current.outputGeneration, svc.Output.currentOutputGeneration("ordered-output-source"))
 	assert.Zero(t, mutation.writerAdmissions.Load())
 }
 
@@ -266,14 +260,13 @@ func TestRootSourceAllocationFailureNeverReachesAnyNativeLaunch(t *testing.T) {
 			svc, _ := setupRootSink(t, "allocation-launch-source", withClock(clock))
 			row, err := svc.Queries.GetAgentByID(t.Context(), "allocation-launch-source")
 			require.NoError(t, err)
+			beforeGen := svc.Output.currentOutputGeneration(row.ID)
 			var launches atomic.Int64
 			svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
 				launches.Add(1)
 				return map[string]string{}, nil
 			}
-			_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_launch_source BEFORE UPDATE OF output_generation ON agents
-WHEN NEW.id = 'allocation-launch-source' BEGIN SELECT RAISE(ABORT, 'launch source refused'); END`)
-			require.NoError(t, err)
+			svc.Output.queries = db.New(&failedOutputSourceStore{DBTX: svc.DB, agentID: "allocation-launch-source", errMsg: "launch source refused"})
 			switch operation {
 			case "open":
 				handle := svc.AgentStartup.begin(row.ID, func() {})
@@ -299,9 +292,80 @@ WHEN NEW.id = 'allocation-launch-source' BEGIN SELECT RAISE(ABORT, 'launch sourc
 				require.ErrorContains(t, err, "launch source refused")
 			}
 			assert.Zero(t, launches.Load(), "allocation failure is before the native starter in every production path")
-			current, err := svc.Queries.GetAgentByID(t.Context(), row.ID)
-			require.NoError(t, err)
-			assert.Equal(t, row.OutputGeneration, current.OutputGeneration)
+			assert.Equal(t, beforeGen, svc.Output.currentOutputGeneration(row.ID))
 		})
 	}
+}
+
+func TestNewRootSinkConcurrentAllocationsAreDistinct(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	roots := []string{"concurrent-root-0", "concurrent-root-1", "concurrent-root-2", "concurrent-root-3"}
+	for _, rootID := range roots {
+		err := svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+			ID:            rootID,
+			WorkingDir:    t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		})
+		require.NoError(t, err)
+	}
+
+	const total = 16
+	gens := make([]int64, total)
+	var wg sync.WaitGroup
+	wg.Add(total)
+	for i := range total {
+		go func(idx int) {
+			defer wg.Done()
+			rootID := roots[idx%len(roots)]
+			services, err := svc.Output.NewRootSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			require.NoError(t, err)
+			owner := services.CaptureMessage(agent.MessageContent{Original: []byte(`{"content":"probe"}`)}, agent.SpanInfo{}).Publication.Owner().(*transcriptOwner)
+			gens[idx] = owner.sink.outputGeneration
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[int64]struct{}, total)
+	for _, gen := range gens {
+		assert.Positive(t, gen)
+		_, dup := seen[gen]
+		assert.False(t, dup, "generation %d must be unique across concurrent NewRootSink calls", gen)
+		seen[gen] = struct{}{}
+	}
+	assert.Len(t, seen, total)
+}
+
+func TestNewRootSinkAfterCleanupAgentKeepsGenerationMonotonicAndPreservesRowFencing(t *testing.T) {
+	t.Parallel()
+	const rootID = "cleanup-preserves-fencing"
+	svc, sink1 := setupRootSink(t, rootID)
+	require.NoError(t, sink1.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     "t1",
+		Kind:       bgtask.KindSubagent,
+		Title:      "Task 1",
+		Status:     bgtask.StatusRunning,
+		ActiveForm: "step 1",
+	}))
+	sink2 := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	gen2 := requireRootOutputSink(t, svc.Output, rootID).outputGeneration
+	require.NoError(t, sink2.UpdateBackgroundTaskStatus("t1", bgtask.StatusRunning, "step 2"))
+	beforeCleanup := storedRow(t, svc, rootID, "t1")
+
+	// Simulate transient cleanup on an open agent (/clear, plan restart, or archive).
+	svc.Output.CleanupAgent(rootID)
+
+	// Late write from sink1 must still be fenced by preserved meta.rowGen.
+	require.NoError(t, sink1.UpdateBackgroundTaskStatus("t1", bgtask.StatusFailed, "stale failure"))
+	assert.Equal(t, beforeCleanup, storedRow(t, svc, rootID, "t1"))
+
+	// Allocating a third sink must stay strictly monotonic above gen2.
+	newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	gen3 := requireRootOutputSink(t, svc.Output, rootID).outputGeneration
+	assert.Greater(t, gen3, gen2)
+
+	// Permanent closure removes the agent from all OutputHandler tracking maps.
+	svc.Output.CleanupAgent(rootID)
+	svc.Output.ForgetAgentGenerationState(rootID)
+	assert.NotContains(t, svc.Output.TrackedAgentIDs(), rootID)
 }

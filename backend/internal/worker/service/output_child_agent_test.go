@@ -1745,7 +1745,6 @@ func TestReviveBackgroundTask_ReturnsAFinishedRowToRunning(t *testing.T) {
 	stored := registryRow(t, svc)
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning), stored.Status)
 	assert.False(t, stored.EndedAt.Valid, "ended_at is cleared to NULL, not left stamped")
-	assert.Empty(t, stored.ActiveForm)
 	assert.Empty(t, stored.Description)
 }
 

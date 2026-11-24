@@ -143,7 +143,7 @@ BEGIN SELECT RAISE(ABORT, 'queue uncertainty state refused'); END`,
 			snapshot, err := store.Snapshot(ctx, "agent-1")
 			require.NoError(t, err)
 			require.Len(t, snapshot.Items, 1)
-			storedItem, attachments, found, err := getItem(ctx, database, "agent-1", "queued-log-input", true)
+			storedItem, attachments, found, err := store.getItem(ctx, database, "agent-1", "queued-log-input", true)
 			require.NoError(t, err)
 			require.True(t, found)
 			assert.Equal(t, "original queued input", storedItem.Text)

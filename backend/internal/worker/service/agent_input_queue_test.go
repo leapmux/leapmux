@@ -715,9 +715,9 @@ func TestAgentProcessExitPausesRootAndChildQueues(t *testing.T) {
 	for _, agentID := range []string{"root-1", "child-1"} {
 		_, err := svc.InputQueue.SetPaused(ctx, agentID, false)
 		require.NoError(t, err)
+		_, err = svc.InputQueue.TurnStarted(ctx, agentID, true)
+		require.NoError(t, err)
 	}
-	_, err := svc.DB.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_steerable = 1`)
-	require.NoError(t, err)
 
 	newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: "root-1", Err: assert.AnError, Stopped: false, Output: requireRootOutputSink(t, svc.Output, "root-1")})
@@ -1548,7 +1548,7 @@ func startMockAgentWrappingSink(
 func requireInterruptReachedAgent(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		rows, err := svc.Queries.ListControlRequestsByAgentID(context.Background(), agentID)
+		rows, err := svc.Output.ListControlRequests(context.Background(), agentID)
 		if err != nil {
 			return false
 		}
@@ -1744,10 +1744,7 @@ func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
 	}, writer)
 	assert.Empty(t, writer.rejections())
 
-	_, err := svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
-		AgentID: "agent-1", RequestID: "request-1",
-	})
-	assert.Error(t, err, "the question belonged to the turn the stop ended")
+	requireNoControlRequest(t, t.Context(), svc.Output, "agent-1", "request-1")
 }
 
 // TestRawInterruptFrameRunsWhenTheQueuePauseFails is the same rule on the

@@ -2,7 +2,6 @@ package service
 
 import (
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -70,14 +69,11 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 			return errors.New("the control request belongs to a different provider process")
 		}
 	}
-	pending, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: agentID, RequestID: plan.requestMeta.RequestID})
-	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New("the control request is no longer pending")
-	}
+	pending, found, err := svc.Output.LookupControlRequest(bgCtx(), agentID, plan.requestMeta.RequestID)
 	if err != nil {
 		return fmt.Errorf("recheck the pending control request before delivery: %w", err)
 	}
-	if pending.ClaimToken != plan.requestMeta.ClaimToken || pending.AgentSessionID != plan.requestMeta.AgentSessionID {
+	if !found || pending.ClaimToken != plan.requestMeta.ClaimToken || pending.AgentSessionID != plan.requestMeta.AgentSessionID {
 		return errors.New("the control request is no longer pending")
 	}
 	if mode := plan.settings.GetPermissionMode(); mode != "" {

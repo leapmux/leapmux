@@ -98,7 +98,7 @@ Generate a new key version and make it active. It does **not** re-encrypt existi
 
 ### `encryption-key reencrypt`
 
-Re-encrypts every secret not already under the active key version — OAuth provider client secrets, OAuth access/refresh tokens, hub-settings secret halves, and passkey public keys. Run after `rotate` and a hub restart.
+Re-encrypts every secret not already under the active key version — OAuth provider client secrets, hub-settings secret halves, and passkey public keys. Run after `rotate` and a hub restart.
 
 ### `encryption-key remove`
 

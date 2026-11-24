@@ -126,12 +126,8 @@ func TestOIDC_Exchange_Success(t *testing.T) {
 	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
 	require.NoError(t, err)
 
-	tokenSet, claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
 	require.NoError(t, err)
-
-	assert.Equal(t, "mock-access-token", tokenSet.AccessToken)
-	assert.Equal(t, "mock-refresh-token", tokenSet.RefreshToken)
-	assert.Equal(t, "Bearer", tokenSet.TokenType)
 
 	assert.Equal(t, "oidc-user-123", claims.Subject)
 	assert.Equal(t, "user@example.com", claims.Email)
@@ -192,7 +188,7 @@ func TestOIDC_Exchange_UnverifiedEmail(t *testing.T) {
 	// Override the token endpoint to point to our unverified server.
 	p.oauth2Config.Endpoint.TokenURL = unverifiedSrv.URL + "/token"
 
-	_, claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
 	require.NoError(t, err)
 
 	assert.Empty(t, claims.Email, "unverified email must not be returned")
@@ -243,7 +239,7 @@ func TestOIDC_Exchange_MissingEmailVerified(t *testing.T) {
 	require.NoError(t, err)
 	p.oauth2Config.Endpoint.TokenURL = noVerifiedSrv.URL + "/token"
 
-	_, claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
 	require.NoError(t, err)
 
 	assert.Empty(t, claims.Email, "email must not be returned when email_verified is missing")
@@ -255,7 +251,7 @@ func TestOIDC_Exchange_InvalidCode(t *testing.T) {
 	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
 	require.NoError(t, err)
 
-	_, _, err = p.Exchange(context.Background(), "invalid-code", "test-verifier")
+	_, err = p.Exchange(context.Background(), "invalid-code", "test-verifier")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "oidc exchange")
 }
@@ -381,7 +377,7 @@ func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
 	// failing case is a hang, and a guard reports that directly.
 	exchanged := make(chan error, 1)
 	go func() {
-		_, _, exErr := p.Exchange(ctx, "any-code", "any-verifier")
+		_, exErr := p.Exchange(ctx, "any-code", "any-verifier")
 		exchanged <- exErr
 	}()
 	select {

@@ -73,10 +73,6 @@ func run(ctx context.Context, st store.Store) {
 	step("expired registration keys", func() (int64, error) { return cs.HardDeleteExpiredRegistrationKeysBefore(ctx, cutoff) })
 	step("stale pending emails", func() (int64, error) { return cs.ClearStalePendingEmails(ctx, cutoff) })
 	step("users", func() (int64, error) { return cs.HardDeleteUsersBefore(ctx, cutoff) })
-	step("expired oauth states", func() (int64, error) { return cs.DeleteExpiredOAuthStates(ctx, now) })
-	step("expired pending signups", func() (int64, error) { return cs.DeleteExpiredPendingOAuthSignups(ctx, now) })
-	step("expired webauthn sessions", func() (int64, error) { return cs.DeleteExpiredWebAuthnSessions(ctx, now) })
-	step("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, now) })
 	step("expired OAuth authorization codes", func() (int64, error) {
 		return cs.DeleteExpiredOAuthAuthorizationCodes(ctx, now)
 	})

@@ -11,8 +11,8 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func controlResponseState(queries *db.Queries, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
-	answer, err := queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
+func controlResponseState(output *OutputHandler, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
+	answer, err := output.queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
 		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
 	})
 	if err == nil {
@@ -21,12 +21,12 @@ func controlResponseState(queries *db.Queries, agentID, requestID, claimToken st
 	if !errors.Is(err, sql.ErrNoRows) {
 		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, err
 	}
-	request, err := queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: agentID, RequestID: requestID})
-	if errors.Is(err, sql.ErrNoRows) || err == nil && request.ClaimToken != claimToken {
-		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, nil
-	}
+	request, found, err := output.LookupControlRequest(bgCtx(), agentID, requestID)
 	if err != nil {
 		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, err
+	}
+	if !found || request.ClaimToken != claimToken {
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, nil
 	}
 	return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY, nil
 }
@@ -58,7 +58,7 @@ func (svc *Service) respondToControlRequest(currentAgent db.Agent, request *leap
 	} else {
 		operationErr = svc.processControlResponse(currentAgent, request)
 	}
-	state, stateErr := controlResponseState(svc.Queries, currentAgent.ID, requestID, request.GetClaimToken())
+	state, stateErr := controlResponseState(svc.Output, currentAgent.ID, requestID, request.GetClaimToken())
 	response := &leapmuxv1.SendControlResponseResponse{State: state}
 	if err := errors.Join(operationErr, stateErr); err != nil {
 		response.Error = err.Error()
@@ -69,13 +69,13 @@ func (svc *Service) respondToControlRequest(currentAgent db.Agent, request *leap
 
 // Publish current evidence only for the matching pending request instance.
 func (svc *Service) broadcastControlResponseState(currentAgent db.Agent, requestID, claimToken string) {
-	request, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: currentAgent.ID, RequestID: requestID})
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	request, found, err := svc.Output.LookupControlRequest(bgCtx(), currentAgent.ID, requestID)
+	if err != nil {
 		slog.Error("could not load the control request for its state update", "agent_id", currentAgent.ID, "request_id", requestID, "error", err)
 		return
 	}
 	provider := currentAgent.AgentProvider
-	if errors.Is(err, sql.ErrNoRows) || request.ClaimToken != claimToken {
+	if !found || request.ClaimToken != claimToken {
 		answer, answerErr := svc.Queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
 			AgentID: currentAgent.ID, RequestID: requestID, ClaimToken: claimToken,
 		})
@@ -89,10 +89,10 @@ func (svc *Service) broadcastControlResponseState(currentAgent db.Agent, request
 		if answer.State != storedStateDelivered {
 			return
 		}
-		request = db.ControlRequest{RequestID: requestID, ClaimToken: claimToken, Payload: answer.RequestPayload, AgentSessionID: answer.AgentSessionID, SourceSeq: answer.SourceSeq, NonBlocking: answer.NonBlocking}
+		request = storedControlRequest{RequestID: requestID, ClaimToken: claimToken, Payload: answer.RequestPayload, AgentSessionID: answer.AgentSessionID, SourceSeq: answer.SourceSeq, NonBlocking: answer.NonBlocking}
 		provider = answer.AgentProvider
 	}
-	event, stateErr := buildAgentControlRequest(svc.Queries, currentAgent.ID, provider, agent.ControlRequest{
+	event, stateErr := buildAgentControlRequest(svc.Output, currentAgent.ID, provider, agent.ControlRequest{
 		RequestID: requestID, Payload: request.Payload, SourceSeq: request.SourceSeq, AgentSessionID: request.AgentSessionID, NonBlocking: request.NonBlocking,
 	}, claimToken)
 	if stateErr != nil {

@@ -120,6 +120,9 @@ type registryOps[T any, K comparable] struct {
 	countsWorking func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
 	deleteByKey func(ctx context.Context, q *db.Queries, ownerID string, key K) error
+	// onDisplayRemove runs after a row leaves the display list (either evicted or deleted).
+	// deletedFromStore reports whether the persisted row was also deleted from SQLite.
+	onDisplayRemove func(ownerID string, key K, deletedFromStore bool)
 	// retention makes some rows outlive the display cap in the store. Optional:
 	// nil means the cap is a storage bound too, and every evicted row is deleted.
 	retention *registryRetention[T, K]
@@ -444,12 +447,16 @@ func (v registryView[T, K]) deleteRowLocked(ctx context.Context, key K, supersed
 	if !found {
 		return false, nil
 	}
-	if err := v.dropStoredRowLocked(ctx, row, superseded); err != nil {
+	deletedFromStore, err := v.dropStoredRowLocked(ctx, row, superseded)
+	if err != nil {
 		return false, fmt.Errorf("delete %s: %w", c.ops.label, err)
 	}
 	c.forgetEvictedActiveLocked(key)
 	if !superseded {
 		c.rememberEvictedActiveLocked(row)
+	}
+	if c.ops.onDisplayRemove != nil {
+		c.ops.onDisplayRemove(v.ownerID, key, deletedFromStore)
 	}
 	if idx < 0 {
 		return false, nil
@@ -528,11 +535,15 @@ func (v registryView[T, K]) evictFirstMatchLocked(ctx context.Context, match fun
 func (v registryView[T, K]) evictAtLocked(ctx context.Context, evictIdx int) (T, bool, error) {
 	c := v.cache
 	evicted := c.Rows[evictIdx]
-	if err := v.dropStoredRowLocked(ctx, evicted, false); err != nil {
+	deletedFromStore, err := v.dropStoredRowLocked(ctx, evicted, false)
+	if err != nil {
 		var zero T
 		return zero, false, fmt.Errorf("evict %s: %w", c.ops.label, err)
 	}
 	c.Rows = slices.Delete(c.Rows, evictIdx, evictIdx+1)
+	if c.ops.onDisplayRemove != nil {
+		c.ops.onDisplayRemove(v.ownerID, c.ops.keyOf(evicted), deletedFromStore)
+	}
 	// Remember an ACTIVE row that survives in the store. It is still running, and
 	// the display list can no longer say so. A row retention did NOT keep is gone
 	// from the table too, so nothing can report it and nothing should try.
@@ -599,15 +610,21 @@ func (c *registryCache[T, K]) EvictedActiveCount() int32 {
 // row would be kept for, so keeping it stores a permanent duplicate instead of
 // an only copy. See deleteRowLocked for why the caller decides this.
 // Caller must hold cache.Mu.
-func (v registryView[T, K]) dropStoredRowLocked(ctx context.Context, row T, superseded bool) error {
+func (v registryView[T, K]) dropStoredRowLocked(ctx context.Context, row T, superseded bool) (bool, error) {
 	c := v.cache
 	if !superseded && c.ops.retention != nil && c.ops.retention.keep(row) {
-		return nil
+		return false, nil
 	}
 	if v.deleteByKeyOverride != nil {
-		return v.deleteByKeyOverride(ctx, v.queries, v.ownerID, c.ops.keyOf(row))
+		if err := v.deleteByKeyOverride(ctx, v.queries, v.ownerID, c.ops.keyOf(row)); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	return c.ops.deleteByKey(ctx, v.queries, v.ownerID, c.ops.keyOf(row))
+	if err := c.ops.deleteByKey(ctx, v.queries, v.ownerID, c.ops.keyOf(row)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // dropRowLocked removes the cached row at key WITHOUT touching the DB, for a

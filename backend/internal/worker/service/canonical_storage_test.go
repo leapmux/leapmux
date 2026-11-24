@@ -163,12 +163,13 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ID:               "agent-1",
 	}))
 	// control_requests.created_at via the column DEFAULT on StoreControlRequest.
-	createTestControlRequest(t, ctx, queries, gendb.StoreControlRequestParams{
+	_, err = queries.StoreControlRequest(ctx, gendb.StoreControlRequestParams{
 		AgentID:    "agent-1",
 		RequestID:  "req-1",
 		Payload:    []byte("{}"),
 		ClaimToken: "claim-1",
 	})
+	require.NoError(t, err)
 
 	// worker_tab_payloads.created_at via the column DEFAULT on UpsertWorkerTabPayload.
 	require.NoError(t, queries.UpsertWorkerTabPayload(ctx, gendb.UpsertWorkerTabPayloadParams{

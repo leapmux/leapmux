@@ -422,6 +422,14 @@ func (s *watchSession) resolveTerminals(terminals []*leapmuxv1.WatchTerminalEntr
 	for _, row := range rows {
 		byID[row.ID] = row
 	}
+	for _, id := range requestedIDs {
+		if _, exists := byID[id]; exists {
+			continue
+		}
+		if q, ok := s.svc.QuakeTerminals.Get(id); ok {
+			byID[id] = q.toDBTerminal()
+		}
+	}
 
 	var (
 		outEntries []watchEntry

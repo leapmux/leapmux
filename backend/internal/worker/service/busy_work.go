@@ -114,13 +114,18 @@ func (svc *Service) InspectBusyWork(ctx context.Context) busywork.Snapshot {
 						if snapshot.Terminals[i].Title != "" {
 							continue
 						}
-						if state, ok := exitStates[snapshot.Terminals[i].TabID]; ok {
+						tabID := snapshot.Terminals[i].TabID
+						if q, ok := svc.QuakeTerminals.Get(tabID); ok {
+							if cleaned := validate.CleanName(q.Title); cleaned != "" {
+								snapshot.Terminals[i].Title = cleaned
+							} else {
+								snapshot.Terminals[i].Title = "Quake Terminal"
+							}
+							continue
+						}
+						if state, ok := exitStates[tabID]; ok {
 							if cleaned := validate.CleanName(state.Title); cleaned != "" {
 								snapshot.Terminals[i].Title = cleaned
-								continue
-							}
-							if state.IsQuake {
-								snapshot.Terminals[i].Title = "Quake Terminal"
 								continue
 							}
 						}

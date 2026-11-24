@@ -201,6 +201,20 @@ type OutputHandler struct {
 	// through to its root's cache. Mirrors `todos`.
 	bgtasks sync.Map // rootAgentID -> *bgTaskCache
 
+	// Process-wide monotonic physical output generation counter and per-root
+	// ephemeral state (current generation, per-row fencing generations, and
+	// live active_form text). Never persisted to SQLite.
+	outputGenSeq     atomic.Int64
+	currentOutputGen sync.Map // rootAgentID -> int64
+	bgTaskMeta       sync.Map // rootAgentID -> *bgTaskEphemeral
+
+	// Pending blocking control requests, kept strictly in memory because a
+	// blocking prompt belongs only to the live subprocess that asked it.
+	// Mutated only while holding lockControlMutation; blockingControlsMu
+	// serializes map access for concurrent readers.
+	blockingControlsMu sync.RWMutex
+	blockingControls   map[string]map[string]blockingControlRecord // agentID -> requestID -> record
+
 	// Per-agent derived activity ("is this agent busy") plus the last value
 	// published for it. Keyed by AGENT id, children included. See
 	// output_activity.go for the derivation and the edge-trigger rule.
@@ -543,6 +557,10 @@ func (h *OutputHandler) SetSteerEchoFuncs(echoed func(agentID string, count int,
 // CleanupAgent removes all per-agent state from the handler's maps.
 // Call this when an agent is permanently closed.
 func (h *OutputHandler) CleanupAgent(agentID string) {
+	h.cleanupAgent(agentID, true)
+}
+
+func (h *OutputHandler) cleanupAgent(agentID string, clearBlockingControls bool) {
 	target := h.sinkForAgent(agentID)
 	rootID := h.resolveRoot(agentID, "")
 	if target != nil {
@@ -556,11 +574,21 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 			mutation.Unlock()
 			return
 		}
-		if !h.cleanupChildMapsLocked(agentID, removal) {
+		if !h.cleanupChildMapsLocked(agentID, removal, clearBlockingControls) {
 			mutation.Unlock()
 			continue
 		}
-		h.bgtasks.Delete(agentID)
+		if v, ok := h.bgTaskMeta.Load(agentID); ok {
+			meta := v.(*bgTaskEphemeral)
+			meta.opMu.Lock()
+			h.bgtasks.Delete(agentID)
+			meta.mu.Lock()
+			clear(meta.activeForm)
+			meta.mu.Unlock()
+			meta.opMu.Unlock()
+		} else {
+			h.bgtasks.Delete(agentID)
+		}
 		h.goalMu.Delete(agentID)
 		var retiredIDs []string
 		unlockRootSinks := h.lockRootSinkMutation()
@@ -615,7 +643,7 @@ func (h *OutputHandler) cleanupChildMaps(childID string) {
 			mutation.Unlock()
 			return
 		}
-		if !h.cleanupChildMapsLocked(childID, removal) {
+		if !h.cleanupChildMapsLocked(childID, removal, true) {
 			mutation.Unlock()
 			continue
 		}
@@ -629,9 +657,12 @@ func (h *OutputHandler) cleanupChildMaps(childID string) {
 }
 
 // cleanupChildMapsLocked removes data before the current child's sink detaches.
-func (h *OutputHandler) cleanupChildMapsLocked(childID string, removal *activityRemoval) bool {
+func (h *OutputHandler) cleanupChildMapsLocked(childID string, removal *activityRemoval, clearBlockingControls bool) bool {
 	if !h.removeActivityLocked(removal) {
 		return false
+	}
+	if clearBlockingControls {
+		h.deleteAgentBlockingControls(childID)
 	}
 	h.notifMu.Delete(childID)
 	h.lastNotifThread.Delete(childID)
@@ -665,9 +696,237 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 	h.drainProgressClears(retiredIDs)
 }
 
+// blockingControlRecord stores a live blocking control request in memory.
+type blockingControlRecord struct {
+	AgentID        string
+	AgentSessionID string
+	RequestID      string
+	Payload        []byte
+	SourceSeq      int64
+	ClaimToken     string
+	CreatedAt      time.Time
+}
+
+// storedControlRequest unifies in-memory blocking control requests and SQLite
+// non-blocking control requests behind one read shape.
+type storedControlRequest struct {
+	AgentID        string
+	AgentSessionID string
+	RequestID      string
+	Payload        []byte
+	SourceSeq      int64
+	ClaimToken     string
+	NonBlocking    bool
+	CreatedAt      time.Time
+}
+
+func cloneBlockingControlRecord(rec blockingControlRecord) blockingControlRecord {
+	rec.Payload = slices.Clone(rec.Payload)
+	return rec
+}
+
+func (h *OutputHandler) getBlockingControl(agentID, requestID string) (blockingControlRecord, bool) {
+	h.blockingControlsMu.RLock()
+	defer h.blockingControlsMu.RUnlock()
+	byReq := h.blockingControls[agentID]
+	if byReq == nil {
+		return blockingControlRecord{}, false
+	}
+	rec, ok := byReq[requestID]
+	if !ok {
+		return blockingControlRecord{}, false
+	}
+	return cloneBlockingControlRecord(rec), true
+}
+
+func (h *OutputHandler) hasBlockingControlInstance(agentID, requestID, claimToken string) bool {
+	h.blockingControlsMu.RLock()
+	defer h.blockingControlsMu.RUnlock()
+	byReq := h.blockingControls[agentID]
+	if byReq == nil {
+		return false
+	}
+	rec, ok := byReq[requestID]
+	return ok && rec.ClaimToken == claimToken
+}
+
+func (h *OutputHandler) upsertBlockingControl(rec blockingControlRecord) blockingControlRecord {
+	h.blockingControlsMu.Lock()
+	defer h.blockingControlsMu.Unlock()
+	if h.blockingControls == nil {
+		h.blockingControls = make(map[string]map[string]blockingControlRecord)
+	}
+	byReq := h.blockingControls[rec.AgentID]
+	if byReq == nil {
+		byReq = make(map[string]blockingControlRecord)
+		h.blockingControls[rec.AgentID] = byReq
+	}
+	rec = cloneBlockingControlRecord(rec)
+	if existing, ok := byReq[rec.RequestID]; ok {
+		if existing.ClaimToken == rec.ClaimToken && bytes.Equal(existing.Payload, rec.Payload) && existing.AgentSessionID == rec.AgentSessionID && existing.SourceSeq > 0 {
+			rec.SourceSeq = existing.SourceSeq
+		}
+		if !existing.CreatedAt.IsZero() {
+			rec.CreatedAt = existing.CreatedAt
+		}
+	}
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = nowMillis()
+	}
+	byReq[rec.RequestID] = rec
+	return cloneBlockingControlRecord(rec)
+}
+
+func (h *OutputHandler) deleteBlockingControl(agentID, requestID, claimToken string) (blockingControlRecord, bool) {
+	h.blockingControlsMu.Lock()
+	defer h.blockingControlsMu.Unlock()
+	byReq := h.blockingControls[agentID]
+	if byReq == nil {
+		return blockingControlRecord{}, false
+	}
+	rec, ok := byReq[requestID]
+	if !ok {
+		return blockingControlRecord{}, false
+	}
+	if claimToken != "" && rec.ClaimToken != claimToken {
+		return blockingControlRecord{}, false
+	}
+	delete(byReq, requestID)
+	if len(byReq) == 0 {
+		delete(h.blockingControls, agentID)
+	}
+	return cloneBlockingControlRecord(rec), true
+}
+
+func (h *OutputHandler) drainBlockingControls(agentID string) []blockingControlRecord {
+	h.blockingControlsMu.Lock()
+	byReq := h.blockingControls[agentID]
+	delete(h.blockingControls, agentID)
+	h.blockingControlsMu.Unlock()
+	if len(byReq) == 0 {
+		return nil
+	}
+	out := make([]blockingControlRecord, 0, len(byReq))
+	for _, rec := range byReq {
+		out = append(out, cloneBlockingControlRecord(rec))
+	}
+	slices.SortFunc(out, func(a, b blockingControlRecord) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.RequestID, b.RequestID))
+	})
+	return out
+}
+
+func (h *OutputHandler) deleteAgentBlockingControls(agentID string) {
+	h.blockingControlsMu.Lock()
+	delete(h.blockingControls, agentID)
+	h.blockingControlsMu.Unlock()
+}
+
+// LookupControlRequest resolves a pending control request from memory (blocking)
+// or SQLite (non-blocking).
+func (h *OutputHandler) LookupControlRequest(ctx context.Context, agentID, requestID string) (storedControlRequest, bool, error) {
+	if rec, ok := h.getBlockingControl(agentID, requestID); ok {
+		return storedControlRequest{
+			AgentID:        rec.AgentID,
+			AgentSessionID: rec.AgentSessionID,
+			RequestID:      rec.RequestID,
+			Payload:        rec.Payload,
+			SourceSeq:      rec.SourceSeq,
+			ClaimToken:     rec.ClaimToken,
+			NonBlocking:    false,
+			CreatedAt:      rec.CreatedAt,
+		}, true, nil
+	}
+	row, err := h.queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: agentID, RequestID: requestID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return storedControlRequest{}, false, nil
+	}
+	if err != nil {
+		return storedControlRequest{}, false, err
+	}
+	return storedControlRequest{
+		AgentID:        row.AgentID,
+		AgentSessionID: row.AgentSessionID,
+		RequestID:      row.RequestID,
+		Payload:        row.Payload,
+		SourceSeq:      row.SourceSeq,
+		ClaimToken:     row.ClaimToken,
+		NonBlocking:    true,
+		CreatedAt:      row.CreatedAt.Time,
+	}, true, nil
+}
+
+// ListControlRequests returns all pending control requests for an agent across
+// in-memory blocking requests and SQLite non-blocking requests, ordered by
+// creation time ascending.
+func (h *OutputHandler) ListControlRequests(ctx context.Context, agentID string) ([]storedControlRequest, error) {
+	rows, err := h.queries.ListControlRequestsByAgentID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	h.blockingControlsMu.RLock()
+	byReq := h.blockingControls[agentID]
+	out := make([]storedControlRequest, 0, len(rows)+len(byReq))
+	for _, rec := range byReq {
+		cloned := cloneBlockingControlRecord(rec)
+		out = append(out, storedControlRequest{
+			AgentID:        cloned.AgentID,
+			AgentSessionID: cloned.AgentSessionID,
+			RequestID:      cloned.RequestID,
+			Payload:        cloned.Payload,
+			SourceSeq:      cloned.SourceSeq,
+			ClaimToken:     cloned.ClaimToken,
+			NonBlocking:    false,
+			CreatedAt:      cloned.CreatedAt,
+		})
+	}
+	h.blockingControlsMu.RUnlock()
+	for _, row := range rows {
+		out = append(out, storedControlRequest{
+			AgentID:        row.AgentID,
+			AgentSessionID: row.AgentSessionID,
+			RequestID:      row.RequestID,
+			Payload:        row.Payload,
+			SourceSeq:      row.SourceSeq,
+			ClaimToken:     row.ClaimToken,
+			NonBlocking:    true,
+			CreatedAt:      row.CreatedAt.Time,
+		})
+	}
+	slices.SortFunc(out, func(a, b storedControlRequest) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.RequestID, b.RequestID))
+	})
+	return out, nil
+}
+
 // claimControlResponseAnswer reserves one request instance before delivery.
 // A database failure must prevent delivery because the worker cannot establish ownership.
 func (h *OutputHandler) claimControlResponseAnswer(params db.StoreControlResponseAnswerParams) (string, error) {
+	_, _, release := h.lockControlMutation(params.AgentID, "")
+	defer release()
+	if !params.NonBlocking {
+		if !h.hasBlockingControlInstance(params.AgentID, params.RequestID, params.ClaimToken) {
+			return "", nil
+		}
+		return reserveControlDelivery(h.db, controlDeliveryIdentity{
+			agentID: params.AgentID, kind: leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_CONTROL_RESPONSE,
+			operationID: params.RequestID, instanceID: params.ClaimToken,
+		}, func(queries *db.Queries, deliveryID string) (int64, error) {
+			return queries.StoreBlockingControlResponseAnswer(bgCtx(), db.StoreBlockingControlResponseAnswerParams{
+				DeliveryID:           deliveryID,
+				RequestPayload:       params.RequestPayload,
+				ResponseContent:      params.ResponseContent,
+				ResolvedContent:      params.ResolvedContent,
+				PlanApprovalSettings: params.PlanApprovalSettings,
+				SourceSeq:            params.SourceSeq,
+				FollowUp:             params.FollowUp,
+				FollowUpKind:         params.FollowUpKind,
+				NonBlocking:          false,
+				AgentSessionID:       params.AgentSessionID,
+				InputID:              params.InputID,
+			})
+		})
+	}
 	return reserveControlDelivery(h.db, controlDeliveryIdentity{
 		agentID: params.AgentID, kind: leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_CONTROL_RESPONSE,
 		operationID: params.RequestID, instanceID: params.ClaimToken,
@@ -675,6 +934,22 @@ func (h *OutputHandler) claimControlResponseAnswer(params db.StoreControlRespons
 		params.DeliveryID = deliveryID
 		return queries.StoreControlResponseAnswer(bgCtx(), params)
 	})
+}
+
+// ForgetAgentGenerationState drops the per-root output-generation and
+// background-task fencing state for a permanently closed or deleted agent.
+// Transient restarts (CleanupAgent) preserve this state so stale writers stay
+// fenced across context clears and workspace archives.
+func (h *OutputHandler) ForgetAgentGenerationState(agentID string) {
+	h.bgTaskMeta.Delete(agentID)
+	h.currentOutputGen.Delete(agentID)
+}
+
+func (h *OutputHandler) currentOutputGeneration(agentID string) int64 {
+	if v, ok := h.currentOutputGen.Load(agentID); ok {
+		return v.(int64)
+	}
+	return 0
 }
 
 // TrackedAgentIDs returns the set of agent ids that currently hold any in-memory
@@ -699,7 +974,7 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 	// caller that knows only an agent id can still find the feeding process. So
 	// a ListAgents reply alone can leave an entry for an agent this worker never
 	// tore down, and only the sweep reclaims it.
-	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.rootSinks, &h.goalMu, &h.activity} {
+	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.bgTaskMeta, &h.currentOutputGen, &h.rootSinks, &h.goalMu, &h.activity} {
 		m.Range(func(key, _ any) bool {
 			if id, ok := key.(string); ok {
 				seen[id] = struct{}{}
@@ -713,6 +988,11 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 		seen[id] = struct{}{}
 		return true
 	})
+	h.blockingControlsMu.RLock()
+	for id := range h.blockingControls {
+		seen[id] = struct{}{}
+	}
+	h.blockingControlsMu.RUnlock()
 	ids := make([]string, 0, len(seen))
 	for id := range seen {
 		ids = append(ids, id)
@@ -746,7 +1026,7 @@ func (publication *controlPublication) enqueueCancellation(handler *OutputHandle
 // enqueueControlCancel records and queues one exact cancellation without watcher delivery or logging.
 func (h *OutputHandler) enqueueControlCancel(agentID, requestID, claimToken string) (bool, error) {
 	changed := h.recordControlRequestsRemoved(agentID, "", controlRequestInstance{RequestID: requestID, ClaimToken: claimToken})
-	state, err := controlResponseState(h.queries, agentID, requestID, claimToken)
+	state, err := controlResponseState(h, agentID, requestID, claimToken)
 	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ControlCancel{
@@ -830,9 +1110,14 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 }
 
 func (h *OutputHandler) clearPendingControlRequests(agentID string) error {
-	return h.clearControlRequests(agentID, "clear pending control requests: delete rows", false, func(ctx context.Context) ([]db.ControlRequest, error) {
-		return h.queries.DeleteBlockingControlRequestsByAgentID(ctx, agentID)
-	})
+	_, _, release := h.lockControlMutation(agentID, "")
+	publication := controlPublication{}
+	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
+	for _, request := range h.drainBlockingControls(agentID) {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+	return nil
 }
 
 // RetireNonBlockingControlRequestsOutsideSession removes the questions that belong
@@ -847,7 +1132,8 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 }
 
 // ClearAgentRuntimeState tears down the state tied to a dying SUBPROCESS: pending
-// control_requests in the DB plus the in-memory trackers cleared by CleanupAgent.
+// blocking control requests in memory, pending non-blocking control_requests in
+// the DB, plus the in-memory trackers cleared by CleanupAgent.
 // It leaves the durable control-response answer claims intact, so a duplicate answer
 // straddling a transient restart stays deduped.
 //
@@ -856,10 +1142,23 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
 func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
-	_ = h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(ctx context.Context) ([]db.ControlRequest, error) {
-		return h.queries.DeleteControlRequestsByAgentID(ctx, agentID)
-	})
-	h.CleanupAgent(agentID)
+	_, _, release := h.lockControlMutation(agentID, "")
+	publication := controlPublication{}
+	for _, request := range h.drainBlockingControls(agentID) {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	deleted, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
+	if err != nil {
+		publication.recordFailure("clear agent runtime state: delete control requests", "agent_id", agentID, "error", err)
+	}
+	for _, request := range deleted {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+	h.finishControlPublication(agentID, "", publication, release)
+	// Blocking controls were already drained under lockControlMutation above,
+	// so do not clear them again after finishControlPublication releases the lock.
+	h.cleanupAgent(agentID, false)
 }
 
 // rootTracker returns the SpanTracker for a ROOT main agent, creating one if
@@ -911,16 +1210,18 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 	}
 	mutation := h.transcriptMutationMutex(agentID)
 	mutation.Lock()
-	source, err := h.queries.AllocateAgentOutputGeneration(h.bgTaskCtx(), agentID)
+	sessionID, err := h.queries.GetRootAgentSessionID(h.bgTaskCtx(), agentID)
 	if err != nil {
 		mutation.Unlock()
 		return nil, fmt.Errorf("allocate the root output source for %s: %w", agentID, err)
 	}
+	gen := h.outputGenSeq.Add(1)
+	h.currentOutputGen.Store(agentID, gen)
 	s := &agentOutputSink{
 		h: h, agentID: agentID, rootAgentID: agentID,
 		agentProvider: agentProvider, plugin: h.agents.Registry().Plugin(agentProvider),
-		outputGeneration: source.OutputGeneration,
-		messageSession:   &nativeSessionFact{id: source.AgentSessionID},
+		outputGeneration: gen,
+		messageSession:   &nativeSessionFact{id: sessionID},
 	}
 	s.spanTracker.Store(h.trackers.replace(agentID, spanTrackerRoot))
 	s.progress = newGenerationProgressPublisher(&h.progressPublishers, func(info map[string]interface{}) {
@@ -1522,58 +1823,48 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			}
 		}
 	}
-	// The database owns persisted values. The live scope owns the request association.
-	// An unknown association starts a new instance, even when the persisted payload agrees.
-	// The SQLite generator omits a parameter used only in an ON CONFLICT predicate.
-	// Select the claim token before the store, which replaces the row in one statement.
-	current, err := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("read the pending control request: %w", err)
-	}
-	if !s.ownsControlPublisher() {
-		return nil
-	}
-	claimToken := request.InstanceID
-	if claimToken == "" {
-		claimToken = id.Generate()
-	}
-	reusable := request.InstanceID == "" && err == nil && previous.claimToken == current.ClaimToken &&
-		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID
-	if request.NonBlocking {
-		// A non-blocking request outlives its scope, so its claim reuse reads no
-		// scope: only the stored row decides.
-		if err == nil && request.InstanceID == "" && current.NonBlocking &&
-			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+	var storedClaimToken string
+	var storedSourceSeq int64
+	var storedSessionID string
+	if !request.NonBlocking {
+		if !s.ownsControlPublisher() {
+			return nil
+		}
+		// Keep (agentID, requestID) unique across both stores: delete any stale
+		// SQLite non-blocking row with this requestID before touching memory.
+		_, err := s.h.queries.CancelControlRequest(bgCtx(), db.CancelControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("clear non-blocking control request before blocking publish: %w", err)
+		}
+		if !s.ownsControlPublisher() {
+			return nil
+		}
+		current, hasCurrent := s.h.getBlockingControl(s.agentID, requestID)
+		claimToken := request.InstanceID
+		if claimToken == "" {
+			claimToken = id.Generate()
+		}
+		reusable := request.InstanceID == "" && hasCurrent && previous.claimToken == current.ClaimToken &&
+			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID
+		if reusable && known && previous.scope == scope {
 			claimToken = current.ClaimToken
 		}
-	} else if reusable && known && previous.scope == scope {
-		claimToken = current.ClaimToken
-	}
-	stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
-		AgentID:        s.agentID,
-		AgentSessionID: request.AgentSessionID,
-		RequestID:      requestID,
-		Payload:        payload,
-		ClaimToken:     claimToken,
-		SourceSeq:      request.SourceSeq,
-		NonBlocking:    request.NonBlocking,
-	})
-	if err != nil {
-		return fmt.Errorf("store control request: %w", err)
-	}
-	if !s.ownsControlPublisher() {
-		_, retireErr := s.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{
-			AgentID: s.agentID, RequestID: requestID, ClaimToken: stored.ClaimToken,
+		stored := s.h.upsertBlockingControl(blockingControlRecord{
+			AgentID:        s.agentID,
+			AgentSessionID: request.AgentSessionID,
+			RequestID:      requestID,
+			Payload:        payload,
+			ClaimToken:     claimToken,
+			SourceSeq:      request.SourceSeq,
+			CreatedAt:      nowMillis(),
 		})
-		if retireErr != nil && !errors.Is(retireErr, sql.ErrNoRows) {
-			return fmt.Errorf("retire the obsolete control instance: %w", retireErr)
+		if !s.ownsControlPublisher() {
+			s.h.deleteBlockingControl(s.agentID, requestID, stored.ClaimToken)
+			return nil
 		}
-		return nil
-	}
-	// A non-blocking request never enters pendingControl: the map is what an
-	// interrupt consults (NoteAgentStopRequested, Delivered), and a question
-	// survives both.
-	if !request.NonBlocking {
+		storedClaimToken = stored.ClaimToken
+		storedSourceSeq = stored.SourceSeq
+		storedSessionID = stored.AgentSessionID
 		st.mu.Lock()
 		if st.pendingControl == nil {
 			st.pendingControl = make(map[string]ownedControlRequest)
@@ -1581,10 +1872,58 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
 		st.mu.Unlock()
 		publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
+	} else {
+		// The database owns persisted non-blocking values. A non-blocking request
+		// outlives its scope, so its claim reuse reads only the stored row.
+		current, err := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read the pending control request: %w", err)
+		}
+		if !s.ownsControlPublisher() {
+			return nil
+		}
+		claimToken := request.InstanceID
+		if claimToken == "" {
+			claimToken = id.Generate()
+		}
+		if err == nil && request.InstanceID == "" &&
+			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+			claimToken = current.ClaimToken
+		}
+		stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
+			AgentID:        s.agentID,
+			AgentSessionID: request.AgentSessionID,
+			RequestID:      requestID,
+			Payload:        payload,
+			ClaimToken:     claimToken,
+			SourceSeq:      request.SourceSeq,
+		})
+		if err != nil {
+			return fmt.Errorf("store control request: %w", err)
+		}
+		if !s.ownsControlPublisher() {
+			_, retireErr := s.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{
+				AgentID: s.agentID, RequestID: requestID, ClaimToken: stored.ClaimToken,
+			})
+			if retireErr != nil && !errors.Is(retireErr, sql.ErrNoRows) {
+				return fmt.Errorf("retire the obsolete control instance: %w", retireErr)
+			}
+			return nil
+		}
+		// Only after the durable write commits and publisher ownership still holds,
+		// drop any same-requestID blocking entry from memory to keep (agentID, requestID) unique.
+		if removedBlocking, ok := s.h.deleteBlockingControl(s.agentID, requestID, ""); ok {
+			publication.activityChanged = s.h.recordControlRequestsRemoved(s.agentID, s.rootAgentID, controlRequestInstance{
+				RequestID: removedBlocking.RequestID, ClaimToken: removedBlocking.ClaimToken,
+			}) || publication.activityChanged
+		}
+		storedClaimToken = stored.ClaimToken
+		storedSourceSeq = stored.SourceSeq
+		storedSessionID = stored.AgentSessionID
 	}
-	request.SourceSeq = stored.SourceSeq
-	request.AgentSessionID = stored.AgentSessionID
-	prepared, stateErr := buildAgentControlRequest(s.h.queries, s.agentID, s.agentProvider, request, stored.ClaimToken)
+	request.SourceSeq = storedSourceSeq
+	request.AgentSessionID = storedSessionID
+	prepared, stateErr := buildAgentControlRequest(s.h, s.agentID, s.agentProvider, request, storedClaimToken)
 	if stateErr != nil {
 		publication.recordFailure("could not read the control response state", "agent_id", s.agentID, "request_id", requestID, "error", stateErr)
 	}
@@ -1614,6 +1953,10 @@ func (s *agentOutputSink) cancelControlRequest(requestID, instanceID string) {
 	publication := controlPublication{}
 	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
 	if !s.ownsControlPublisher() {
+		return
+	}
+	if removed, ok := s.h.deleteBlockingControl(s.agentID, requestID, instanceID); ok {
+		publication.enqueueCancellation(s.h, s.agentID, removed.RequestID, removed.ClaimToken)
 		return
 	}
 	var request db.ControlRequest

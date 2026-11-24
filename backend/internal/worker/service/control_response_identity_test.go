@@ -7,7 +7,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,8 +20,7 @@ func TestControlResponsePreservesNativeIDsThroughStorageAndClaims(t *testing.T) 
 			require.True(t, valid)
 			sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 			require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: request}))
-			stored, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: requestID})
-			require.NoError(t, err)
+			stored := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", requestID)
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 			response := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%q,"result":{"decision":"accept"}}`, requestID))
@@ -50,7 +48,7 @@ func TestControlResponseKeepsConcurrentNumericAndStringRequestsSeparate(t *testi
 		request := []byte(fmt.Sprintf(`{"id":%s,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`, nativeID))
 		require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: request}))
 	}
-	requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+	requests, err := svc.Output.ListControlRequests(t.Context(), "agent-1")
 	require.NoError(t, err)
 	require.Len(t, requests, 2)
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
@@ -65,7 +63,7 @@ func TestControlResponseKeepsConcurrentNumericAndStringRequestsSeparate(t *testi
 		require.NoError(t, json.Unmarshal(content, &restored))
 		require.Equal(t, original["id"], restored["id"])
 		require.JSONEq(t, `{"decision":"accept","count":0,"enabled":false}`, string(restored["result"]))
-		remaining, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+		remaining, err := svc.Output.ListControlRequests(t.Context(), "agent-1")
 		require.NoError(t, err)
 		require.Len(t, remaining, len(requests)-index-1)
 	}

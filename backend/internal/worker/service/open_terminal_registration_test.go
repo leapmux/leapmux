@@ -1,9 +1,6 @@
 package service
 
 import (
-	"context"
-	"database/sql"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -13,42 +10,13 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// execObserver runs afterExec with the text of each statement that completed
-// without an error. The other three methods pass through unchanged.
-type execObserver struct {
-	inner     db.DBTX
-	afterExec func(query string)
-}
-
-func (o execObserver) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	result, err := o.inner.ExecContext(ctx, query, args...)
-	if err == nil {
-		o.afterExec(query)
-	}
-	return result, err
-}
-
-func (o execObserver) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
-	return o.inner.PrepareContext(ctx, query)
-}
-
-func (o execObserver) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return o.inner.QueryContext(ctx, query, args...)
-}
-
-func (o execObserver) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	return o.inner.QueryRowContext(ctx, query, args...)
-}
-
-// A quake terminal is found by its directory, so a second device finds the row of
-// a first open before that open has any other trace. quakeShellIsLive answers for
-// a row from the PTY or from the startup registry. With neither, it reports a dead
-// shell, and adoptExistingQuakeTerminal closes the row of a shell that is about to
-// start. The second device then opens a second terminal, or fails with "failed to
-// persist terminal" when it loses the unique index.
+// A quake terminal is found by its directory, so a second device finds the entry
+// of a first open before that open has any other trace. quakeShellIsLive answers
+// for an entry from the PTY or from the startup registry. With neither, it reports
+// a dead shell, and adoptExistingQuakeTerminal deletes the entry of a shell that
+// is about to start.
 func TestOpenTerminal_QuakeStartupIsRegisteredBeforeTheRowIsVisible(t *testing.T) {
 	t.Parallel()
 
@@ -58,27 +26,23 @@ func TestOpenTerminal_QuakeStartupIsRegisteredBeforeTheRowIsVisible(t *testing.T
 	createAgentForPath(t, svc, "agent-1", dir)
 
 	// The second device opens the quake terminal of the same directory at the
-	// instant that the row of the first open becomes visible.
+	// instant that the entry of the first open becomes visible.
 	var secondID string
 	opened := false
-	svc.Queries = db.New(execObserver{inner: svc.DB, afterExec: func(query string) {
-		if opened || !strings.Contains(query, "-- name: UpsertTerminal") {
+	svc.QuakeTerminals.afterRegister = func(string) {
+		if opened {
 			return
 		}
 		opened = true
 		secondID, _ = openQuakeTerminal(t, svc, d, dir)
-	}})
+	}
 
 	firstID, _ := openQuakeTerminal(t, svc, d, dir)
 
-	require.True(t, opened, "the observer must see the row of the first open")
+	require.True(t, opened, "the hook must see the registration of the first open")
 	assert.Equal(t, firstID, secondID, "the second device must adopt the terminal that is starting")
-	row, err := svc.Queries.GetTerminal(context.Background(), firstID)
-	require.NoError(t, err)
-	assert.False(t, row.ClosedAt.Valid, "the second device must not close the terminal that is starting")
-	rows, err := svc.Queries.ListOpenQuakeTerminals(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, rows, 1, "one directory has one live quake terminal")
+	assert.True(t, svc.QuakeTerminals.Has(firstID), "the second device must not delete the terminal that is starting")
+	assert.Len(t, svc.QuakeTerminals.ListOpen(), 1, "one directory has one live quake terminal")
 }
 
 // A row that was never written owns no startup. The registry holds the startup
@@ -107,27 +71,26 @@ func TestOpenTerminal_ReleasesTheStartupWhenTheRowCannotBeCreated(t *testing.T) 
 	assert.Zero(t, pending, "a failed creation transaction leaves no pending operation")
 }
 
-// A quake open that loses the unique index adopts the winner and starts nothing.
-// It registered a startup before its insert, so it must give that startup back
-// when it adopts the winner, or its id reports STARTING for ever.
+// A quake open that loses the registration race adopts the winner and starts
+// nothing. It registered a startup before calling RegisterOrAdopt, so it must
+// give that startup back when it adopts the winner, or its id reports STARTING
+// for ever.
 func TestOpenTerminal_ReleasesTheStartupOfAQuakeOpenThatLosesTheRace(t *testing.T) {
 	t.Parallel()
 
-	// The lookup by directory of the loser runs before the winner's insert and
-	// misses it. The unique index then refuses the loser's insert.
-	var hideWinner atomic.Bool
-	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}), withQueryRewrite(func(query string) string {
-		if strings.Contains(query, "-- name: GetOpenQuakeTerminalByWorkingDir") && hideWinner.CompareAndSwap(true, false) {
-			return strings.Replace(query, "WHERE", "WHERE 1 = 0 AND", 1)
-		}
-		return query
-	}))
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	winner, _ := openQuakeTerminal(t, svc, d, dir)
 	waitForTerminalSpawn(t, svc, winner, "spawn")
 
+	// Force the loser's initial GetByWorkingDir lookup to miss so it enters the
+	// RegisterOrAdopt race and adopts the winner there.
+	var hideWinner atomic.Bool
 	hideWinner.Store(true)
+	svc.QuakeTerminals.hideLookupOnce = func(workingDir string) bool {
+		return workingDir == dir && hideWinner.CompareAndSwap(true, false)
+	}
 	loser, _ := openQuakeTerminal(t, svc, d, dir)
 
 	assert.False(t, hideWinner.Load(), "the loser must have run its lookup by directory")
@@ -135,9 +98,7 @@ func TestOpenTerminal_ReleasesTheStartupOfAQuakeOpenThatLosesTheRace(t *testing.
 	// The winner's startup goroutine is the only one that runs. The check waits
 	// for it, and fails the test when the loser's startup is still counted.
 	requireStartupsReleased(t, &svc.TerminalStartup.startupCore)
-	rows, err := svc.Queries.ListOpenQuakeTerminals(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, rows, 1)
+	assert.Len(t, svc.QuakeTerminals.ListOpen(), 1)
 	drainAllInFlight(svc)
 }
 

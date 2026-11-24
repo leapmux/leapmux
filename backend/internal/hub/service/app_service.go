@@ -46,8 +46,9 @@ type AppService struct {
 	// lifecycle applies each revoked credential's effects after the cascade
 	// commits. Effects ACCUMULATE, so they must not run inside a transaction
 	// the store may retry.
-	lifecycle *auth.CredentialLifecycleEffects
-	now       func() time.Time
+	lifecycle   *auth.CredentialLifecycleEffects
+	deviceAuths DeviceAuthorizationStore
+	now         func() time.Time
 }
 
 var _ leapmuxv1connect.AppServiceHandler = (*AppService)(nil)
@@ -58,13 +59,18 @@ func NewAppService(
 	setMgr *settings.Manager,
 	validator *auth.TokenValidator,
 	lifecycle *auth.CredentialLifecycleEffects,
+	deviceAuths DeviceAuthorizationStore,
 ) *AppService {
+	if deviceAuths == nil {
+		deviceAuths = NewMemoryDeviceAuthorizationStore()
+	}
 	return &AppService{
-		store:     st,
-		settings:  setMgr,
-		validator: validator,
-		lifecycle: lifecycle,
-		now:       time.Now,
+		store:       st,
+		settings:    setMgr,
+		validator:   validator,
+		lifecycle:   lifecycle,
+		deviceAuths: deviceAuths,
+		now:         time.Now,
 	}
 }
 
@@ -618,6 +624,14 @@ func (s *AppService) RevokeApp(
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
 	}
 
+	inv := s.deviceAuths.BeginInvalidateForClient(app.ClientID)
+	committed := false
+	defer func() {
+		if !committed {
+			s.deviceAuths.AbortInvalidate(inv)
+		}
+	}()
+
 	var revoked int64
 	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
 		rows, err := tx.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
@@ -637,6 +651,8 @@ func (s *AppService) RevokeApp(
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("revoke app: %w", err))
 	}
+	s.deviceAuths.CommitInvalidate(inv, s.now().UTC())
+	committed = true
 
 	// AFTER the commit, so a retried transaction cannot apply these twice.
 	// ONE batched eviction for the whole set, with the channel sweep per row
@@ -692,6 +708,13 @@ func (s *AppService) DeleteApp(
 		return nil, connect.Errorf(connect.CodeFailedPrecondition,
 			"this app holds %d credential(s), %d of them live; revoke it instead of deleting it", held, live)
 	}
+	inv := s.deviceAuths.BeginDeleteForClient(app.ClientID)
+	committed := false
+	defer func() {
+		if !committed {
+			s.deviceAuths.AbortInvalidate(inv)
+		}
+	}()
 	rows, err := s.store.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
 		ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
 	})
@@ -701,6 +724,8 @@ func (s *AppService) DeleteApp(
 	if rows == 0 {
 		return nil, connect.NewError(connect.CodeNotFound, "no such app")
 	}
+	s.deviceAuths.CommitInvalidate(inv, s.now().UTC())
+	committed = true
 	return &leapmuxv1.DeleteAppResponse{}, nil
 }
 

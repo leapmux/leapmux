@@ -1,12 +1,8 @@
 package service
 
 import (
-	"database/sql"
-	"errors"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 // activityScope owns one turn between changed turn publications or process changes.
@@ -210,14 +206,8 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 			continue
 		}
 		seen[control] = struct{}{}
-		request, err := r.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{
-			AgentID: r.agentID, RequestID: control.RequestID, ClaimToken: control.ClaimToken,
-		})
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			publication.recordFailure("cancel the stopped turn's control request", "agent_id", r.agentID, "request_id", control.RequestID, "error", err)
+		request, ok := r.h.deleteBlockingControl(r.agentID, control.RequestID, control.ClaimToken)
+		if !ok {
 			continue
 		}
 		publication.enqueueCancellation(r.h, r.agentID, request.RequestID, request.ClaimToken)

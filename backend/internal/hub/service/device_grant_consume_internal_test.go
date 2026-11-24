@@ -6,22 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-type deviceGrantConsumeStore struct {
-	store.Store
-	devices *deviceGrantConsumeRecorder
-}
-
-func (s deviceGrantConsumeStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
-	return s.devices
-}
-
 type deviceGrantConsumeRecorder struct {
-	store.DeviceAuthorizationStore
+	DeviceAuthorizationStore
 	rows   int64
 	err    error
 	calls  int
@@ -47,10 +37,9 @@ func TestSpendDeviceGrantPreservesStoreTimeAndResult(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := &deviceGrantConsumeRecorder{rows: tc.rows, err: tc.err}
-			selected := deviceGrantConsumeStore{devices: recorder}
 			digest := []byte{0, 1, 255}
 			now := time.Date(2026, time.November, 13, 4, 5, 6, 7, time.UTC)
-			err := spendDeviceGrant(t.Context(), selected, digest, now)
+			err := spendDeviceGrant(t.Context(), recorder, digest, now)
 			if tc.want == nil {
 				require.NoError(t, err)
 			} else {

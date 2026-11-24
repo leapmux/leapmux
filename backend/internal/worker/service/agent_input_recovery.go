@@ -218,7 +218,7 @@ func (svc *Service) recoverAgentInputProcess(agentID string, approved *leapmuxv1
 		if err != nil {
 			return err
 		}
-		if row.ParentAgentID.Valid || row.AgentProvider != approved.AgentProvider || storedSessionID(row) != approved.AgentSessionId || row.OutputGeneration != approved.OutputGeneration {
+		if row.ParentAgentID.Valid || row.AgentProvider != approved.AgentProvider || storedSessionID(row) != approved.AgentSessionId || svc.Output.currentOutputGeneration(agentID) != approved.OutputGeneration {
 			return fmt.Errorf("%w: the stored recovery target changed; reopen Recover login", inputqueue.ErrConflict)
 		}
 		restart, err = svc.InputQueue.BeginInputRecovery(bgCtx(), agentID)
@@ -235,12 +235,12 @@ func (svc *Service) recoverAgentInputProcess(agentID string, approved *leapmuxv1
 			}
 		}
 		changed, err := svc.Queries.MarkAgentResumedForInputRecovery(bgCtx(), db.MarkAgentResumedForInputRecoveryParams{
-			AgentID: agentID, AgentSessionID: approved.AgentSessionId, OutputGeneration: approved.OutputGeneration,
+			AgentID: agentID, AgentSessionID: approved.AgentSessionId,
 		})
 		if err != nil {
 			return fmt.Errorf("record the input recovery resume intent: %w", err)
 		}
-		if changed != 1 || !target.IsCurrent() {
+		if changed != 1 || !target.IsCurrent() || svc.Output.currentOutputGeneration(agentID) != approved.OutputGeneration {
 			return fmt.Errorf("%w: the recovery target changed before replacement", inputqueue.ErrConflict)
 		}
 		svc.Agents.StopAndWaitAgent(agentID)

@@ -72,18 +72,18 @@ func TestInputRecoveryPreservesConversationQuestionsAndRetiresBlockingControls(t
 	require.NoError(t, err)
 	for _, owner := range []string{root, parent} {
 		for _, nonblocking := range []bool{false, true} {
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{AgentID: owner, RequestID: fmt.Sprintf("control-%t", nonblocking), Payload: []byte(`{}`), NonBlocking: nonblocking})
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{AgentID: owner, RequestID: fmt.Sprintf("control-%t", nonblocking), Payload: []byte(`{}`), NonBlocking: nonblocking})
 		}
 	}
 	for _, owner := range []string{root, parent} {
-		controls, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), owner)
+		controls, err := svc.Output.ListControlRequests(t.Context(), owner)
 		require.NoError(t, err)
 		require.Len(t, controls, 2, "approval has not stopped their process")
 	}
 	assert.False(t, starts.fake(0).wasStopped())
 	approveRecoveryInput(t, svc, root)
 	for _, owner := range []string{root, parent} {
-		controls, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), owner)
+		controls, err := svc.Output.ListControlRequests(t.Context(), owner)
 		require.NoError(t, err)
 		require.Len(t, controls, 1)
 		assert.True(t, controls[0].NonBlocking, "the same conversation retains its question")

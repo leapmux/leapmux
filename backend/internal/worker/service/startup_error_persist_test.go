@@ -387,6 +387,8 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 	require.Len(t, ids, 1)
 	terminalID := ids[0]
 	waitForStartupFailure(t, svc, terminalID)
+	// Wait for runTerminalStartup's deferred finishEntry before replacing the registry.
+	svc.TerminalStartup.WaitForInFlight()
 
 	// Simulate worker restart.
 	svc.TerminalStartup = newTerminalStartupRegistry(testutil.NewQuartzMock(t))

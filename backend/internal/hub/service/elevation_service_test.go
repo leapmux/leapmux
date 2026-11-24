@@ -110,7 +110,7 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil),
-		auth.NewCredentialLifecycleEffects(contexts, recorder, nil), mail.NewStubSender(), mail.Renderer{}, nil)
+		auth.NewCredentialLifecycleEffects(contexts, recorder, nil), mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
 
 	mux := http.NewServeMux()
 	// The elevation response interceptor is production wiring: the marker and

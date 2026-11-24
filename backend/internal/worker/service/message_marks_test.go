@@ -297,7 +297,7 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 	}))
-	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
 		AgentID:    "agent-1",
 		RequestID:  "request-1",
 		Payload:    []byte(`{"type":"permission","id":"request-1"}`),

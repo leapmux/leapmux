@@ -289,25 +289,22 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 	return resp, nil
 }
 
-// RevokePasskeyAuthState removes every passkey artifact a user owns: the
-// credential rows, their in-flight ceremony sessions, and any pending
-// account recovery. The credential-rotation teardown paths (self-service
+// RevokePasskeyAuthState removes every durable passkey artifact a user owns:
+// the credential rows and any pending account recovery. In-flight in-memory
+// WebAuthn ceremonies are evicted post-commit via lifecycle.UserRevoked. The
+// credential-rotation teardown paths (self-service
 // CompleteAccountRecoveryPassword, admin ResetPassword, admin DeleteUser, the
 // offline recover CLI, and signup rollback) share it, so the next
 // credential type needs one registration here instead of one at each
 // rotation site.
 //
-// There is no separate step-up artifact to sweep. The single-use reauth
-// proof this replaced had its own webauthn_sessions kind; a session
-// ELEVATION is a pair of columns on user_sessions instead, and every caller
-// here deletes the account's session rows in the same transaction, so the
-// window dies with the row that carried it.
+// There is no separate step-up artifact to sweep. A session ELEVATION is a
+// pair of columns on user_sessions, and every caller here deletes the
+// account's session rows in the same transaction, so the window dies with the
+// row that carried it.
 func RevokePasskeyAuthState(ctx context.Context, tx store.Store, userID string) error {
 	if err := tx.PasskeyCredentials().DeleteAllByUser(ctx, userID); err != nil {
 		return fmt.Errorf("delete passkeys: %w", err)
-	}
-	if err := tx.WebAuthnSessions().DeleteAllByUser(ctx, userID); err != nil {
-		return fmt.Errorf("delete webauthn sessions: %w", err)
 	}
 	if err := tx.Users().ClearPendingRecovery(ctx, store.ClearPendingRecoveryParams{
 		ID: userID,

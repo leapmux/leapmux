@@ -118,7 +118,7 @@ func (h *OAuthServerHandler) handleStepUpAuthorization(w http.ResponseWriter, r 
 	if !ok {
 		return
 	}
-	grant, err := h.createDeviceGrant(r.Context(), store.CreateDeviceAuthorizationParams{
+	grant, err := h.createDeviceGrant(r.Context(), CreateDeviceAuthorizationParams{
 		DeviceName: normalizeInstallationName(r.FormValue("installation_name")),
 		ClientID:   row.ClientID,
 		// A step-up asks for NOTHING. It widens no grant; it only proves that

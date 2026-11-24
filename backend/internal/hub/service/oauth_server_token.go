@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -550,13 +549,19 @@ type consentedGrant struct {
 	// exchange passes DEVICE_CODE.
 	issuance store.APITokenIssuance
 	// authGeneration is the account credential epoch at browser approval.
-	// Device grants use their own approval lifecycle and ignore this field.
+	// Both authorization-code and device-code grants enforce that the user's
+	// current auth_generation still matches before minting a token.
 	authGeneration int64
+	// deviceCodeHash identifies an in-memory device grant when non-empty.
+	// issueAPIToken reserves it before RunInUserAuthTransaction, checks
+	// IsInvalidated inside the transaction, and commits or releases it after.
+	deviceCodeHash []byte
 	// invalidGrantMsg answers a single-use grant that is already gone
 	// (errAuthorizationGrantUnavailable); internalMsg answers anything else.
 	invalidGrantMsg string
 	internalMsg     string
-	// consume spends the grant inside the mint's transaction.
+	// consume spends an authorization-code grant inside the mint's transaction.
+	// Device grants use two-phase reservation via deviceCodeHash and leave this nil.
 	consume func(tx store.Store) error
 	// recordMint links the credential inside the transaction that consumes the grant.
 	// Device grants need no replay link and leave this callback nil.
@@ -598,7 +603,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 		return
 	}
 	deviceCodeHash := h.validator.HashSecret(deviceCode)
-	row, err := h.store.DeviceAuthorizations().Get(r.Context(), deviceCodeHash)
+	row, err := h.deviceAuths.Get(r.Context(), deviceCodeHash)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "unknown device_code")
@@ -617,8 +622,8 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 	// touches immediately -- before, and outside, the issuance transaction --
 	// so last_polled_at advances (keeping the slow_down throttle honest) even
 	// when a transient token-insert failure rolls the transaction back. The
-	// grant stays retryable because only Consume, which remains inside the
-	// transaction, is single-use.
+	// grant stays retryable because only CommitConsume marks it spent after
+	// the transaction commits.
 	if body, ok := h.preTouchPollOAuthError(row, h.now()); ok {
 		writeOAuthErrorBody(w, http.StatusBadRequest, body)
 		return
@@ -669,26 +674,18 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 		installationName: row.DeviceName,
 		scopes:           scopes,
 		issuance:         store.APITokenIssuanceDeviceCode,
+		authGeneration:   row.AuthGeneration,
+		deviceCodeHash:   deviceCodeHash,
 		invalidGrantMsg:  "device_code expired or already consumed",
 		internalMsg:      "device authorization token issuance failed",
-		consume: func(tx store.Store) error {
-			// Consume is the single-use consumption that must stay atomic with
-			// token creation, so it -- and only it -- remains in the
-			// transaction.
-			err := spendDeviceGrant(r.Context(), tx, deviceCodeHash, h.now().UTC())
-			if err != nil && !errors.Is(err, errAuthorizationGrantUnavailable) {
-				return fmt.Errorf("consume device authorization: %w", err)
-			}
-			return err
-		},
 	})
 }
 
 // answerElevationPoll finishes a step-up poll: it reports the window the
 // approval stamped, and spends the grant.
-func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.Request, row *store.DeviceAuthorization, deviceCodeHash []byte) {
+func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.Request, row *DeviceAuthorization, deviceCodeHash []byte) {
 	// The APPROVED state is not the answer, so this reads the credential itself.
-	// An approval whose elevation never committed leaves the row approved with
+	// An approval whose elevation never committed leaves the grant approved with
 	// no window; answering "elevated" there tells the client to retry a command
 	// the hub refuses again, with no error the user can act on. The check runs
 	// before Consume, so a grant that cannot report success is not spent
@@ -706,7 +703,7 @@ func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.
 			"that app credential is not verified; start the verification again")
 		return
 	}
-	if err := spendDeviceGrant(r.Context(), h.store, deviceCodeHash, h.now().UTC()); err != nil {
+	if err := spendDeviceGrant(r.Context(), h.deviceAuths, deviceCodeHash, h.now().UTC()); err != nil {
 		if errors.Is(err, errAuthorizationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device_code expired or already consumed")
 			return
@@ -717,12 +714,11 @@ func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"elevated": true})
 }
 
-// spendDeviceGrant consumes one device grant through the selected store. The
-// consent caller supplies its transaction; an elevation poll supplies the base
-// store. Store errors pass through unchanged, and any row count other than one
-// reports errAuthorizationGrantUnavailable. Each caller samples its clock at use.
-func spendDeviceGrant(ctx context.Context, st store.Store, deviceCodeHash []byte, now time.Time) error {
-	affected, err := st.DeviceAuthorizations().Consume(ctx, deviceCodeHash, now)
+// spendDeviceGrant consumes one elevation device grant through the device
+// authorization store. Store errors pass through unchanged, and any affected
+// count other than one reports errAuthorizationGrantUnavailable.
+func spendDeviceGrant(ctx context.Context, ds DeviceAuthorizationStore, deviceCodeHash []byte, now time.Time) error {
+	affected, err := ds.Consume(ctx, deviceCodeHash, now)
 	if err != nil {
 		return err
 	}
@@ -735,7 +731,7 @@ func spendDeviceGrant(ctx context.Context, st store.Store, deviceCodeHash []byte
 // preTouchPollOAuthError returns the OAuth-error code + description for the
 // state guards that must short-circuit BEFORE TouchPoll runs: already-consumed,
 // expired, or rapid-poll throttle.
-func (h *OAuthServerHandler) preTouchPollOAuthError(row *store.DeviceAuthorization, now time.Time) (oauthErrorResponse, bool) {
+func (h *OAuthServerHandler) preTouchPollOAuthError(row *DeviceAuthorization, now time.Time) (oauthErrorResponse, bool) {
 	if row.ConsumedAt != nil {
 		return oauthErrorBody("invalid_grant", "device_code already used"), true
 	}
@@ -755,24 +751,24 @@ func (h *OAuthServerHandler) preTouchPollOAuthError(row *store.DeviceAuthorizati
 // A BODY, not a (code, description) pair: the two are adjacent same-typed
 // strings that a call site can transpose in silence, which is the exact smell
 // consentedGrant above exists to remove.
-func (h *OAuthServerHandler) postTouchPollOAuthError(row *store.DeviceAuthorization) (oauthErrorResponse, bool) {
+func (h *OAuthServerHandler) postTouchPollOAuthError(row *DeviceAuthorization) (oauthErrorResponse, bool) {
 	switch row.State {
-	case leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING:
+	case DeviceAuthorizationStatePending:
 		return oauthErrorBody("authorization_pending", ""), true
-	case leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED:
+	case DeviceAuthorizationStateDenied:
 		return oauthErrorBody("access_denied", ""), true
-	case leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED:
+	case DeviceAuthorizationStateApproved:
 		if row.UserID == "" {
 			// An approval that records no approver is corrupt data. A blank
 			// user_id would mint a token that authenticates as nobody.
 			return oauthErrorBody("authorization_pending", ""), true
 		}
 		return oauthErrorResponse{}, false
-	case leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_UNSPECIFIED:
+	case DeviceAuthorizationStateUnspecified:
 		// Handled below, with an unknown ordinal.
 	}
-	// UNSPECIFIED, or an ordinal past the last declared state. The column's
-	// CHECK refuses both, so the row is corrupt, and "pending" issues nothing.
+	// UNSPECIFIED, or an ordinal past the last declared state. "pending" issues
+	// nothing.
 	return oauthErrorBody("authorization_pending", ""), true
 }
 
@@ -782,14 +778,14 @@ func (h *OAuthServerHandler) postTouchPollOAuthError(row *store.DeviceAuthorizat
 // last_polled_at first, so the two spellings share one helper rather than
 // restating the statement and its error answer.
 func (h *OAuthServerHandler) touchPoll(w http.ResponseWriter, r *http.Request, deviceCodeHash []byte) bool {
-	if err := h.store.DeviceAuthorizations().TouchPoll(r.Context(), deviceCodeHash, h.now().UTC()); err != nil {
+	if err := h.deviceAuths.TouchPoll(r.Context(), deviceCodeHash, h.now().UTC()); err != nil {
 		writeInternalError(w, "device authorization poll update failed", err)
 		return false
 	}
 	return true
 }
 
-func (h *OAuthServerHandler) shouldThrottle(row *store.DeviceAuthorization, now time.Time) bool {
+func (h *OAuthServerHandler) shouldThrottle(row *DeviceAuthorization, now time.Time) bool {
 	if row.LastPolledAt == nil {
 		return false
 	}
@@ -953,19 +949,54 @@ func (h *OAuthServerHandler) issueAPIToken(
 	if err != nil {
 		return nil, nil, authscope.ScopeSet{}, err
 	}
+	var (
+		res       DeviceGrantReservation
+		reserved  bool
+		committed bool
+	)
+	if len(grant.deviceCodeHash) > 0 {
+		var ok bool
+		res, ok = h.deviceAuths.ReserveConsume(grant.deviceCodeHash, now.UTC())
+		if !ok {
+			return nil, nil, authscope.ScopeSet{}, errAuthorizationGrantUnavailable
+		}
+		reserved = true
+		defer func() {
+			if reserved && !committed {
+				h.deviceAuths.ReleaseConsume(res)
+			}
+		}()
+	}
 	var user *store.User
 	err = h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
 		var err error
 		user, err = tx.Users().GetByID(ctx, userID.String())
 		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errAuthorizationGrantUnavailable
+			}
 			return fmt.Errorf("query token user: %w", err)
 		}
-		if grant.issuance == store.APITokenIssuanceAuthorizationCode &&
-			user.AuthGeneration != grant.authGeneration {
+		if user.AuthGeneration != grant.authGeneration {
 			return errAuthorizationGrantUnavailable
 		}
-		if err := grant.consume(tx); err != nil {
-			return err
+		client, err := tx.OAuthClients().Get(ctx, grant.app.ClientID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errAuthorizationGrantUnavailable
+			}
+			return fmt.Errorf("query token client: %w", err)
+		}
+		if client.RevokedAt != nil {
+			return errAuthorizationGrantUnavailable
+		}
+		if reserved && h.deviceAuths.IsInvalidated(res) {
+			return errAuthorizationGrantUnavailable
+		}
+		if grant.consume != nil {
+			if err := grant.consume(tx); err != nil {
+				return err
+			}
 		}
 		if err := tx.APITokens().Create(ctx, minted.Params); err != nil {
 			return fmt.Errorf("create api token: %w", err)
@@ -978,7 +1009,16 @@ func (h *OAuthServerHandler) issueAPIToken(
 		return nil
 	})
 	if err != nil {
+		// LockUserAuthState inside RunInUserAuthTransaction returns store.ErrNotFound
+		// when the user row was deleted before the transaction started.
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil, authscope.ScopeSet{}, errAuthorizationGrantUnavailable
+		}
 		return nil, nil, authscope.ScopeSet{}, err
+	}
+	if reserved {
+		h.deviceAuths.CommitConsume(res, h.now().UTC())
+		committed = true
 	}
 	return &apiTokenResponse{
 		AccessToken:      minted.Pair.AccessBearer,

@@ -289,19 +289,11 @@ func (s *mysqlStore) WorkspaceSectionItems() store.WorkspaceSectionItemStore {
 func (s *mysqlStore) OAuthProviders() store.OAuthProviderStore {
 	return &oauthProviderStore{conn: s.conn}
 }
-func (s *mysqlStore) OAuthStates() store.OAuthStateStore { return &oauthStateStore{conn: s.conn} }
-func (s *mysqlStore) OAuthTokens() store.OAuthTokenStore { return &oauthTokenStore{conn: s.conn} }
 func (s *mysqlStore) OAuthUserLinks() store.OAuthUserLinkStore {
 	return &oauthUserLinkStore{conn: s.conn}
 }
-func (s *mysqlStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
-	return &pendingOAuthSignupStore{conn: s.conn}
-}
 func (s *mysqlStore) PasskeyCredentials() store.PasskeyCredentialStore {
 	return &passkeyCredentialStore{conn: s.conn}
-}
-func (s *mysqlStore) WebAuthnSessions() store.WebAuthnSessionStore {
-	return &webAuthnSessionStore{conn: s.conn}
 }
 func (s *mysqlStore) Settings() store.SettingsStore {
 	return &settingsStore{conn: s.conn}
@@ -315,9 +307,6 @@ func (s *mysqlStore) DelegationTokens() store.DelegationTokenStore {
 }
 func (s *mysqlStore) RevocationEvents() store.RevocationEventStore {
 	return newRevocationEventStore(s.conn)
-}
-func (s *mysqlStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
-	return &deviceAuthorizationStore{conn: s.conn}
 }
 func (s *mysqlStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
 	return &oauthAuthorizationCodeStore{conn: s.conn}

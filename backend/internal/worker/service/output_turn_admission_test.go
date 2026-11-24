@@ -94,7 +94,7 @@ type rootSessionReadSignal struct {
 
 func (store *rootSessionReadSignal) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	row := store.DBTX.QueryRowContext(ctx, query, args...)
-	if strings.Contains(query, "-- name: AllocateAgentOutputGeneration :one") && store.reads.Add(1) == 1 {
+	if strings.Contains(query, "-- name: GetRootAgentSessionID :one") && store.reads.Add(1) == 1 {
 		close(store.entered)
 	}
 	return row

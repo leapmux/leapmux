@@ -86,11 +86,9 @@ func TestGitHub_Exchange_Success(t *testing.T) {
 	}
 
 	p.baseURL = apiSrv.URL
-	tokenSet, claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
 	require.NoError(t, err)
 
-	assert.Equal(t, "gh-access-token", tokenSet.AccessToken)
-	assert.Equal(t, "bearer", tokenSet.TokenType)
 	assert.Equal(t, "42", claims.Subject)
 	assert.Equal(t, "octocat", claims.Name)
 	assert.Equal(t, "The Octocat", claims.DisplayName)
@@ -124,7 +122,7 @@ func TestGitHub_Exchange_UnverifiedEmail(t *testing.T) {
 	}
 
 	p.baseURL = apiSrv.URL
-	_, claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
 	require.NoError(t, err)
 	assert.Empty(t, claims.Email, "unverified email must not be returned")
 }
@@ -154,7 +152,7 @@ func TestGitHub_Exchange_NoEmails(t *testing.T) {
 	}
 
 	p.baseURL = apiSrv.URL
-	_, claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "verifier")
 	require.NoError(t, err)
 	assert.Empty(t, claims.Email)
 }
@@ -174,7 +172,7 @@ func TestGitHub_Exchange_InvalidCode(t *testing.T) {
 		},
 	}
 
-	_, _, err := p.Exchange(context.Background(), "invalid-code", "")
+	_, err := p.Exchange(context.Background(), "invalid-code", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github exchange")
 }
@@ -230,16 +228,14 @@ func TestGitHub_Exchange_PKCE(t *testing.T) {
 			}))
 			defer apiSrv.Close()
 			p := &GitHubProvider{baseURL: apiSrv.URL, oauth2Config: &oauth2.Config{ClientID: "cid", ClientSecret: "secret", Endpoint: oauth2.Endpoint{TokenURL: tokenSrv.URL}}}
-			tokens, claims, err := p.Exchange(t.Context(), "code", verifier)
+			claims, err := p.Exchange(t.Context(), "code", verifier)
 			if verifier != originalVerifier {
 				require.Error(t, err)
-				assert.Nil(t, tokens)
 				assert.Nil(t, claims)
 				assert.Zero(t, claimsRequests)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, "access", tokens.AccessToken)
 			assert.Equal(t, "42", claims.Subject)
 			assert.Equal(t, "verified@example.com", claims.Email)
 			assert.Equal(t, 2, claimsRequests)

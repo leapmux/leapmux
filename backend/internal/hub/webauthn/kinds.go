@@ -1,13 +1,11 @@
 package webauthn
 
-import (
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-)
+import "fmt"
 
-// Ceremony session kinds. webauthn_sessions.kind stores these ordinals, and its
-// CHECK refuses the UNSPECIFIED zero -- so a ceremony that never stated its
-// kind fails the insert rather than becoming a row that the wrong Finish call
-// can consume.
+// Kind identifies which WebAuthn ceremony a session belongs to. SessionStore
+// rejects KindUnspecified so a ceremony that never stated its kind fails at
+// creation rather than becoming a session that the wrong Finish call can
+// consume.
 //
 // KindElevation is the step-up assertion: proving a passkey to elevate an
 // already signed-in session. It mints no artefact of its own -- the session
@@ -20,10 +18,36 @@ import (
 // per-user, but unlike it the existing passkeys are about to be revoked, so
 // the options carry no credential exclusions -- their descriptors would be
 // handed to whoever holds the link.
+type Kind int
+
 const (
-	KindSignup    = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_SIGNUP
-	KindLogin     = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN
-	KindRegister  = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_REGISTER
-	KindElevation = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_ELEVATION
-	KindRecovery  = leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_RECOVERY
+	KindUnspecified Kind = 0
+	KindSignup      Kind = 1
+	KindLogin       Kind = 2
+	KindRegister    Kind = 3
+	KindElevation   Kind = 4
+	KindRecovery    Kind = 5
 )
+
+// IsValid reports whether k is one of the defined non-zero ceremony kinds.
+func (k Kind) IsValid() bool {
+	return k >= KindSignup && k <= KindRecovery
+}
+
+// String returns a human-readable label for logging and errors.
+func (k Kind) String() string {
+	switch k {
+	case KindSignup:
+		return "signup"
+	case KindLogin:
+		return "login"
+	case KindRegister:
+		return "register"
+	case KindElevation:
+		return "elevation"
+	case KindRecovery:
+		return "recovery"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(k))
+	}
+}

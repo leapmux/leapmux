@@ -597,12 +597,10 @@ CREATE TABLE delegation_tokens (
     -- ceiling. No DEFAULT, as on api_tokens.
     granted_scopes                TEXT NOT NULL,
     secret_hash                   VARBINARY(64) NOT NULL,
-    refresh_hash                  VARBINARY(64),
     created_at                    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  DATETIME(3),
     expires_at                    DATETIME(3) NOT NULL,
-    refresh_expires_at            DATETIME(3),
     revoked_at                    DATETIME(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
@@ -622,43 +620,6 @@ CREATE INDEX idx_delegation_tokens_user_created ON delegation_tokens(user_id, cr
 -- live token. Plain (no partial indexes in MySQL); revoked_at IS NULL is a
 -- residual filter.
 CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at);
-
-CREATE TABLE device_authorizations (
-    device_code_hash VARBINARY(32) PRIMARY KEY CHECK (OCTET_LENGTH(device_code_hash) = 32),
-    user_code             VARCHAR(64) NOT NULL UNIQUE,
-    device_name           VARCHAR(255) NOT NULL DEFAULT '',
-    -- Which app started the flow; see the sqlite migration.
-    client_id             VARCHAR(255) NOT NULL,
-    -- What the app asked for; the row is the only carrier across the two
-    -- machines this flow spans.
-    requested_scopes      TEXT NOT NULL,
-    -- What the approval granted. It binds at the consent.
-    granted_scopes        TEXT NOT NULL,
-    user_id               VARCHAR(255),
-    -- Where the authorization stands: a DeviceAuthorizationState ordinal
-    -- (proto/leapmux/v1/storage.proto), 1 pending, 2 approved, 3 denied.
-    -- No DEFAULT: the create binds PENDING, so an unstated state fails the
-    -- INSERT. TestEnumColumnChecksMatchTheirProtoRanges checks the range.
-    state                 INT NOT NULL CHECK (state BETWEEN 1 AND 3),
-    last_polled_at        DATETIME(3),
-    created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    expires_at            DATETIME(3) NOT NULL,
-    consumed_at           DATETIME(3),
-    -- The app credential this grant ELEVATES, when it elevates one
-    -- rather than minting one. NULL for a login: those two flows differ only
-    -- in what the approval does, so they share the row, the TTL, the poll
-    -- throttle, the expiry sweep and the activation page.
-    --
-    -- No foreign key, deliberately: the row outlives nothing here, and a
-    -- revoked or deleted credential must make the approval a no-op rather
-    -- than fail the insert. The approval re-reads api_tokens under the
-    -- approving user's own id, so a grant that specifies a row somebody else
-    -- owns elevates nothing.
-    elevate_token_id      VARCHAR(255),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
-) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
 
 -- One-shot RFC 6749 section 4.1 authorization codes; see the sqlite migration.
 CREATE TABLE oauth_authorization_codes (
@@ -723,72 +684,6 @@ CREATE TABLE oauth_user_links (
 ) COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX idx_oauth_user_links_provider_subject ON oauth_user_links(provider_id, provider_subject);
 
--- Encrypted OAuth tokens per user per provider
-CREATE TABLE oauth_tokens (
-    user_id         VARCHAR(255) NOT NULL,
-    provider_id     VARCHAR(255) NOT NULL,
-    access_token    BLOB NOT NULL,
-    refresh_token   BLOB NOT NULL,
-    token_type      VARCHAR(255) NOT NULL DEFAULT 'Bearer',
-    expires_at      DATETIME(3) NOT NULL,
-    key_version     BIGINT NOT NULL DEFAULT 1,
-    updated_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (user_id, provider_id),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (provider_id) REFERENCES oauth_providers(id) ON DELETE CASCADE
-) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_oauth_tokens_provider_id ON oauth_tokens(provider_id);
-CREATE INDEX idx_oauth_tokens_expires_at ON oauth_tokens(expires_at);
-CREATE INDEX idx_oauth_tokens_key_version ON oauth_tokens(key_version);
-
--- Short-lived OAuth state for CSRF + PKCE during auth flow
-CREATE TABLE oauth_states (
-    state           VARCHAR(255) PRIMARY KEY,
-    provider_id     VARCHAR(255) NOT NULL,
-    pkce_verifier   TEXT NOT NULL,
-    nonce_hash      VARCHAR(255) NOT NULL DEFAULT '',
-    redirect_uri    TEXT NOT NULL,
-    -- LOGIN starts a sign-in. REAUTH proves the identity again for an ALREADY
-    -- signed-in session, to elevate it. The callback branches on this: a
-    -- reauth state must never create a session or link an identity.
-    --
-    -- An OAuthStatePurpose ordinal. The CHECK is the enforcement, not the
-    -- DEFAULT: Go's zero value for the column is 0 (UNSPECIFIED), which the
-    -- CHECK refuses, so an insert that forgot the purpose FAILS instead of
-    -- reaching the DEFAULT. That matters because the callback treats every
-    -- callback dispatches only the three explicit purposes and refuses every
-    -- other value before it can create a session or link an identity.
-    purpose         SMALLINT NOT NULL DEFAULT 1 CHECK (purpose BETWEEN 1 AND 3),
-    -- The session a REAUTH state elevates on success. Empty for login states.
-    session_id      VARCHAR(255) NOT NULL DEFAULT '',
-    expires_at      DATETIME(3) NOT NULL,
-    created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    -- A REAUTH (2) state carries the session it elevates, and a LOGIN state
-    -- login states carry none. TestOAuthStatePurposeReauthNumbering pins 2,
-    -- which a constraint cannot take as a parameter.
-    CHECK ((purpose = 2) = (session_id <> '')),
-    FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)
-) COLLATE=utf8mb4_bin;
-
--- Pending OAuth signups (new users choosing their username)
-CREATE TABLE pending_oauth_signups (
-    token            VARCHAR(255) PRIMARY KEY,
-    provider_id      VARCHAR(255) NOT NULL,
-    provider_subject VARCHAR(255) NOT NULL,
-    nonce_hash       VARCHAR(255) NOT NULL DEFAULT '',
-    email            TEXT NOT NULL,
-    display_name     TEXT NOT NULL,
-    access_token     BLOB NOT NULL,
-    refresh_token    BLOB NOT NULL,
-    token_type       VARCHAR(255) NOT NULL DEFAULT 'Bearer',
-    token_expires_at DATETIME(3) NOT NULL,
-    key_version      BIGINT NOT NULL DEFAULT 1,
-    redirect_uri     TEXT NOT NULL,
-    expires_at       DATETIME(3) NOT NULL,
-    created_at       DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)
-) COLLATE=utf8mb4_bin;
-
 -- Passkey (WebAuthn) credentials for email-local accounts
 CREATE TABLE passkey_credentials (
     id              VARCHAR(255) PRIMARY KEY,
@@ -809,29 +704,6 @@ CREATE TABLE passkey_credentials (
 CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials(credential_id);
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
-
--- Ephemeral WebAuthn ceremony state (signup, login, register, elevation, recovery)
-CREATE TABLE webauthn_sessions (
-    id           VARCHAR(255) PRIMARY KEY,
-    -- A WebAuthnSessionKind ordinal.
-    kind         SMALLINT NOT NULL,
-    user_id      VARCHAR(255),
-    payload_json TEXT NOT NULL,              -- '{}' or keystore-encrypted signup draft (base64), AAD: 'webauthn_payload:' || id
-    session_data BLOB NOT NULL,              -- keystore-encrypted ceremony state, AAD: 'webauthn_session:' || id
-    expires_at   DATETIME(3) NOT NULL,
-    created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    CHECK (kind BETWEEN 1 AND 5)
-) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_webauthn_sessions_expires_at ON webauthn_sessions(expires_at);
-
--- One live ceremony per (user_id, kind) for per-user kinds. MySQL has no
--- partial unique indexes; UNIQUE on a nullable user_id is the equivalent
--- because InnoDB treats each NULL as distinct, so signup rows (NULL
--- user_id) coexist. persistSession deletes then inserts; this unique
--- index is what stops two concurrent Begins from leaving two encrypted
--- rows, and it also serves the delete-by-user-and-kind lookup.
-CREATE UNIQUE INDEX idx_webauthn_sessions_user_kind ON webauthn_sessions(user_id, kind);
 
 -- Instance-level hub settings: one row per setting key. `value` is a JSON
 -- document whose shape is defined by the owning package's typed key handle
@@ -877,20 +749,15 @@ CREATE INDEX idx_worker_tab_publications_worker ON worker_tab_publications(worke
 -- +goose Down
 DROP TABLE IF EXISTS worker_tab_publications;
 DROP TABLE IF EXISTS oauth_authorization_codes;
-DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;
 DROP TABLE IF EXISTS api_tokens;
 DROP TABLE IF EXISTS oauth_clients;
 DROP TABLE IF EXISTS hub_runtime_lease;
 DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;
-DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS altcha_used_salts;
-DROP TABLE IF EXISTS webauthn_sessions;
 DROP TABLE IF EXISTS passkey_credentials;
 DROP TABLE IF EXISTS hub_settings;
-DROP TABLE IF EXISTS oauth_states;
-DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;
 DROP TABLE IF EXISTS oauth_providers;
 DROP TABLE IF EXISTS lifecycle_outbox;

@@ -20,7 +20,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
@@ -295,10 +294,11 @@ func stepUpHandlerOn(t *testing.T, env *apiAuthEnv, st store.Store) *http.ServeM
 	t.Helper()
 	mux := http.NewServeMux()
 	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
-		Store:     st,
-		Validator: env.validator,
-		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
-		HubURL:    func() string { return env.server.URL },
+		Store:                st,
+		Validator:            env.validator,
+		Lifecycle:            auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
+		DeviceAuthorizations: env.deviceAuths,
+		HubURL:               func() string { return env.server.URL },
 	})
 	h.Now = env.now
 	h.RegisterRoutes(mux)
@@ -360,9 +360,9 @@ func TestCLIStepUp_AFailedElevationRollsBackTheApproval(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.NotContains(t, rec.Body.String(), forcedErr.Error(), "the refusal must not leak the store error")
 
-	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
+	row, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State, "a failed elevation must roll the approval back")
+	assert.Equal(t, service.DeviceAuthorizationStatePending, row.State, "a failed elevation must roll the approval back")
 	assert.Empty(t, row.UserID, "a rolled-back approval identifies nobody")
 
 	token, err := env.store.APITokens().GetByID(ctx, tokenID)
@@ -386,7 +386,7 @@ func TestCLIStepUp_ThePollReadsTheCredentialNotTheApprovalFlag(t *testing.T) {
 	grant := decodeStepUpGrant(t, startStepUp(t, env, bearer, "operator-laptop"))
 
 	// Approve the grant through the store alone, so nothing stamps a window.
-	rows, err := env.store.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
+	rows, err := env.deviceAuths.ApproveByUserCode(ctx, service.ApproveDeviceAuthorizationParams{
 		UserCode: verifycode.Normalize(grant.UserCode),
 		UserID:   userid.MustNew(env.userID),
 	}, env.now().UTC())
@@ -399,7 +399,7 @@ func TestCLIStepUp_ThePollReadsTheCredentialNotTheApprovalFlag(t *testing.T) {
 	assert.Equal(t, "invalid_grant", body["error"])
 	assert.NotContains(t, body, "elevated")
 
-	after, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
+	after, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
 	require.NoError(t, err)
 	assert.Nil(t, after.ConsumedAt, "a refusal must not spend the grant")
 
@@ -487,7 +487,7 @@ func TestCLIStepUp_TheIssuancePageNamesTheAppAndNotTheRequestersLabel(t *testing
 	// The label survives where it belongs, normalized. Without this half, the
 	// endpoint could stop recording it and the assertions above would still
 	// pass.
-	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(grant["device_code"].(string)))
+	row, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(grant["device_code"].(string)))
 	require.NoError(t, err)
 	assert.Equal(t, "Owner\u0027s MacBook Pro", row.DeviceName,
 		"normalizeInstallationName still cleans the stored label")
@@ -531,11 +531,11 @@ func TestCLIStepUp_BothGrantLegsAnswerTheSameShape(t *testing.T) {
 	// The ask itself still differs, where it is now recorded. Without this the
 	// assertions above would pass with the scope dropped entirely.
 	ctx := context.Background()
-	loginRow, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(login["device_code"].(string)))
+	loginRow, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(login["device_code"].(string)))
 	require.NoError(t, err)
 	assert.Equal(t, "admin:read", loginRow.RequestedScopes)
 
-	stepUpRow, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(stepUp["device_code"].(string)))
+	stepUpRow, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(stepUp["device_code"].(string)))
 	require.NoError(t, err)
 	assert.Empty(t, stepUpRow.RequestedScopes, "a step-up widens nothing, so it asks for nothing")
 }

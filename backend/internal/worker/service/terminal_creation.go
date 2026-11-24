@@ -169,68 +169,92 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 	// column enforces one rule and none of them fails the RPC over a
 	// title the user can neither see nor correct.
 	terminalTitle := validate.CleanName(r.GetTitle())
-	// Empty title means "you pick one" -- the client sent none, or
-	// cleaning removed every character of the one it sent. Default to
-	// a random "Terminal <Name>" from the shared pool so every spawn
-	// path (UI, CLI, ChangeBranchDialog) gets a name from one pool,
-	// picked one place. The response echoes whatever lands here, so a
-	// client that sent a title renders the STORED form, not its input.
 	if terminalTitle == "" {
 		terminalTitle = pickTerminalTitle()
 	}
-	params := db.UpsertTerminalParams{
-		ID:            terminalID,
-		WorkingDir:    plan.PlannedWorkingDir,
-		ShellStartDir: shellStartDir,
-		Shell:         shell,
-		Title:         terminalTitle,
-		Cols:          int64(cols),
-		Rows:          int64(rows),
-		Screen:        []byte{},
-		IsQuake:       isQuake,
-	}
 	runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: plan}, Options: terminal.Options{ID: terminalID, Shell: shell, WorkingDir: plan.PlannedWorkingDir, ShellStartDir: shellStartDir, Cols: uint16(cols), Rows: uint16(rows)}, Title: terminalTitle}
-	var persistErr error
-	if op == nil {
-		persistErr = svc.Queries.UpsertTerminal(bgCtx(), params)
+	if isQuake {
+		// Quake terminals live strictly in memory; beginTerminalStartup ran
+		// above so any concurrent opener that adopts this entry observes a live
+		// startup immediately.
+		existing, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+			ID:            terminalID,
+			WorkingDir:    plan.PlannedWorkingDir,
+			ShellStartDir: shellStartDir,
+			Shell:         shell,
+			Title:         terminalTitle,
+			Cols:          int64(cols),
+			Rows:          int64(rows),
+			CreatedAt:     nowMillis(),
+		})
+		if !created {
+			svc.TerminalStartup.abandon(startupHandle)
+			if svc.quakeShellIsLive(existing.ID) {
+				sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
+					TerminalId: existing.ID,
+					Title:      existing.Title,
+				})
+				return
+			}
+			svc.closeQuakeTerminal(existing.ID)
+			// Retry once after reaping a dead concurrent winner.
+			startupCtx, startupHandle = svc.beginTerminalStartup(terminalID, shell)
+			if startupHandle == nil {
+				svc.sendStartupRefused(sender, "a startup for this terminal is already in progress")
+				return
+			}
+			existing, created = svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+				ID:            terminalID,
+				WorkingDir:    plan.PlannedWorkingDir,
+				ShellStartDir: shellStartDir,
+				Shell:         shell,
+				Title:         terminalTitle,
+				Cols:          int64(cols),
+				Rows:          int64(rows),
+				CreatedAt:     nowMillis(),
+			})
+			if !created {
+				svc.TerminalStartup.abandon(startupHandle)
+				if svc.adoptExistingQuakeTerminal(sender, true, workingDir) {
+					return
+				}
+				sendInternalError(sender, "failed to register quake terminal")
+				return
+			}
+		}
 	} else {
-		intent, intentErr := svc.prepareCreationStartup(ctx, plan)
-		if intentErr != nil {
+		params := db.UpsertTerminalParams{
+			ID:            terminalID,
+			WorkingDir:    plan.PlannedWorkingDir,
+			ShellStartDir: shellStartDir,
+			Shell:         shell,
+			Title:         terminalTitle,
+			Cols:          int64(cols),
+			Rows:          int64(rows),
+			Screen:        []byte{},
+		}
+		var persistErr error
+		if op == nil {
+			persistErr = svc.Queries.UpsertTerminal(bgCtx(), params)
+		} else {
+			intent, intentErr := svc.prepareCreationStartup(ctx, plan)
+			if intentErr != nil {
+				sendFailedPrecondition(sender, intentErr.Error())
+				return
+			}
+			runtime.Startup = intent
+			persistErr = op.persist(runtime, func(ctx context.Context, q *db.Queries) error {
+				return q.CreateTerminal(ctx, db.CreateTerminalParams(params))
+			})
+		}
+		if persistErr != nil {
 			if op == nil {
 				svc.TerminalStartup.abandon(startupHandle)
 			}
-			sendFailedPrecondition(sender, intentErr.Error())
+			slog.Error("failed to persist terminal record", "terminal_id", terminalID, "error", persistErr)
+			sendInternalError(sender, "failed to persist terminal")
 			return
 		}
-		runtime.Startup = intent
-		persistErr = op.persist(runtime, func(ctx context.Context, q *db.Queries) error {
-			return q.CreateTerminal(ctx, db.CreateTerminalParams(params))
-		})
-	}
-	if upsertErr := persistErr; upsertErr != nil {
-		// The row does not exist, so no startup will ever run for it.
-		if op == nil {
-			svc.TerminalStartup.abandon(startupHandle)
-		}
-		// Losing the quake race lands here: the check above found no
-		// quake terminal for this directory, another client inserted
-		// one in the window, and the unique partial index refused this
-		// row. Re-read and answer with the winner's terminal, so both
-		// callers attach to one PTY. The index is what makes this
-		// decidable at all -- without it both inserts would succeed and
-		// the two clients would type into different shells.
-		//
-		// A lookup that still finds nothing means the failure was not
-		// the race, so report it. Deliberately not keyed on a SQLite
-		// error code: the question "does a quake terminal exist for
-		// this directory now?" is the one that decides what to do, and
-		// it answers itself.
-		if svc.adoptExistingQuakeTerminal(sender, isQuake, workingDir) {
-			return
-		}
-		slog.Error("failed to persist terminal record", "terminal_id", terminalID, "error", upsertErr)
-		sendInternalError(sender, "failed to persist terminal")
-		return
 	}
 	// Same window as the agent path: the row is durable and reapable, but
 	// its cleanup is only registered once spawnControlIPC runs. See

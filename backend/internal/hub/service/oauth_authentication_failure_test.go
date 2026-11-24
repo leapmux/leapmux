@@ -42,9 +42,6 @@ func (s oauthAuthenticationStore) Sessions() store.SessionStore {
 func (s oauthAuthenticationStore) APITokens() store.APITokenStore {
 	return oauthAuthenticationTokens{s.Store.APITokens(), s.faults}
 }
-func (s oauthAuthenticationStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
-	return oauthAuthenticationDevices{s.Store.DeviceAuthorizations(), s.faults}
-}
 func (s oauthAuthenticationStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
 	return oauthAuthenticationCodes{s.Store.OAuthAuthorizationCodes(), s.faults}
 }
@@ -80,11 +77,11 @@ func (s oauthAuthenticationTokens) Create(ctx context.Context, p store.CreateAPI
 }
 
 type oauthAuthenticationDevices struct {
-	store.DeviceAuthorizationStore
+	service.DeviceAuthorizationStore
 	faults *oauthAuthenticationFaults
 }
 
-func (s oauthAuthenticationDevices) Create(ctx context.Context, p store.CreateDeviceAuthorizationParams) error {
+func (s oauthAuthenticationDevices) Create(ctx context.Context, p service.CreateDeviceAuthorizationParams) error {
 	s.faults.grantWrites.Add(1)
 	return s.DeviceAuthorizationStore.Create(ctx, p)
 }
@@ -107,7 +104,8 @@ func oauthAuthenticationServer(t *testing.T, env *apiAuthEnv, faults *oauthAuthe
 	h := newOAuthServerHandler(service.OAuthServerDeps{
 		SessionHasher: hubtestutil.TestSecretHasher(), Store: st, Validator: validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil), Settings: env.set,
-		HubURL: func() string { return env.server.URL },
+		DeviceAuthorizations: oauthAuthenticationDevices{env.deviceAuths, faults},
+		HubURL:               func() string { return env.server.URL },
 	})
 	h.Now = env.now
 	mux := http.NewServeMux()
@@ -329,12 +327,12 @@ func TestOAuthAppStepUp_BrowserIssuedCredentialRefused(t *testing.T) {
 func TestOAuthAppStepUp_OtherIssuancesAllowed(t *testing.T) {
 	t.Parallel()
 
-	checkGrant := func(t *testing.T, st store.Store, validator *auth.TokenValidator, bearer string, resp *http.Response) {
+	checkGrant := func(t *testing.T, deviceAuths service.DeviceAuthorizationStore, validator *auth.TokenValidator, bearer string, resp *http.Response) {
 		t.Helper()
 		grant := decodeStepUpGrant(t, resp)
-		row, err := st.DeviceAuthorizations().Get(t.Context(), validator.HashSecret(grant.DeviceCode))
+		row, err := deviceAuths.Get(t.Context(), validator.HashSecret(grant.DeviceCode))
 		require.NoError(t, err, "the response's device code must locate the pending grant")
-		assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State)
+		assert.Equal(t, service.DeviceAuthorizationStatePending, row.State)
 		assert.Equal(t, verifycode.Format(row.UserCode), grant.UserCode)
 		user, err := validator.ValidateBearer(t.Context(), bearer)
 		require.NoError(t, err)
@@ -365,7 +363,7 @@ func TestOAuthAppStepUp_OtherIssuancesAllowed(t *testing.T) {
 		require.NotEmpty(t, token.AccessToken)
 
 		stepUp := startStepUp(t, env, token.AccessToken, "device-issued")
-		checkGrant(t, env.store, env.validator, token.AccessToken, stepUp)
+		checkGrant(t, env.deviceAuths, env.validator, token.AccessToken, stepUp)
 	})
 
 	t.Run("admin RPC", func(t *testing.T) {
@@ -378,17 +376,19 @@ func TestOAuthAppStepUp_OtherIssuancesAllowed(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, issued.GetAccessToken())
 
+		deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 		mux := http.NewServeMux()
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
 		newOAuthServerHandler(service.OAuthServerDeps{
 			Store: admin.st, Validator: admin.validator, SessionHasher: hubtestutil.TestSecretHasher(),
-			Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
-			HubURL:    func() string { return server.URL },
+			Lifecycle:            auth.NewCredentialLifecycleEffects(nil, nil, nil),
+			DeviceAuthorizations: deviceAuths,
+			HubURL:               func() string { return server.URL },
 		}).RegisterRoutes(mux)
 
 		stepUp := startStepUpAt(t, server, issued.GetAccessToken(), "admin-issued")
-		checkGrant(t, admin.st, admin.validator, issued.GetAccessToken(), stepUp)
+		checkGrant(t, deviceAuths, admin.validator, issued.GetAccessToken(), stepUp)
 	})
 }
 

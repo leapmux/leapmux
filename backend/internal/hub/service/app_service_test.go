@@ -2,9 +2,12 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strings"
 	"testing"
@@ -52,6 +55,7 @@ type appEnv struct {
 	admin       string
 	userID      string
 	user        string
+	deviceAuths *service.MemoryDeviceAuthorizationStore
 }
 
 func setupAppService(t *testing.T) *appEnv {
@@ -92,9 +96,10 @@ func setupAppService(t *testing.T) *appEnv {
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	closer := &recordingCredentialCloser{}
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, closer, nil)
+	deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAppServiceHandler(connectServer,
-		service.NewAppService(st, servicetest.NewSettingsManager(t, st, nil), tv, lifecycle))
+		service.NewAppService(st, servicetest.NewSettingsManager(t, st, nil), tv, lifecycle, deviceAuths))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
@@ -113,6 +118,7 @@ func setupAppService(t *testing.T) *appEnv {
 		admin:       adminSession,
 		userID:      userID,
 		user:        userSession,
+		deviceAuths: deviceAuths,
 	}
 }
 
@@ -1398,4 +1404,150 @@ func TestSecretFieldPaths(t *testing.T) {
 			assert.Equal(t, tc.paths, secretFieldPaths(tc.msg.ProtoReflect(), secret))
 		})
 	}
+}
+
+func TestAppService_DeleteAppClearsOrPreservesDeviceGrants(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+
+	app := env.registerApp(t, env.user, "delete-grant-app", nil)
+	clientID := app.GetApp().GetClientId()
+
+	deviceCode := id.Generate()
+	deviceHash := env.validator.HashSecret(deviceCode)
+	require.NoError(t, env.deviceAuths.Create(ctx, service.CreateDeviceAuthorizationParams{
+		DeviceCodeHash: deviceHash,
+		UserCode:       "DEL001",
+		ClientID:       clientID,
+		ExpiresAt:      time.Now().Add(10 * time.Minute),
+	}))
+
+	tokenID := id.Generate()
+	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceDeviceCode,
+		ID:               tokenID,
+		UserID:           userid.MustNew(env.userID),
+		ClientID:         clientID,
+		InstallationName: "laptop",
+		GrantedScopes:    "workspace:read",
+		SecretHash:       []byte("hash"),
+	}))
+
+	// Refused delete must preserve the pending device grant.
+	_, err := env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{ClientId: clientID}, env.user))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	_, err = env.deviceAuths.Get(ctx, deviceHash)
+	require.NoError(t, err, "a refused DeleteApp must preserve in-memory device grants")
+
+	// An app with no credentials deletes cleanly and clears its pending device grants,
+	// without disturbing another app's grants.
+	cleanApp := env.registerApp(t, env.user, "delete-grant-clean-app", func(m *leapmuxv1.RegisterAppRequest) {
+		m.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"}
+	})
+	cleanClientID := cleanApp.GetApp().GetClientId()
+	cleanDeviceHash := hubtestutil.TestSecretHasher().Hash("delete-clean-app-device-code")
+	require.NoError(t, env.deviceAuths.Create(ctx, service.CreateDeviceAuthorizationParams{
+		DeviceCodeHash: cleanDeviceHash,
+		UserCode:       "DEL002",
+		ClientID:       cleanClientID,
+		ExpiresAt:      time.Now().Add(10 * time.Minute),
+	}))
+
+	_, err = env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{ClientId: cleanClientID}, env.user))
+	require.NoError(t, err)
+	_, err = env.deviceAuths.Get(ctx, cleanDeviceHash)
+	assert.ErrorIs(t, err, store.ErrNotFound, "a committed DeleteApp must delete in-memory device grants")
+	_, err = env.deviceAuths.Get(ctx, deviceHash)
+	require.NoError(t, err, "deleting one app must not delete another app's device grants")
+}
+
+type txFailAppStore struct {
+	store.Store
+	err error
+}
+
+func (s txFailAppStore) RunInTransaction(context.Context, func(store.Store) error) error {
+	return s.err
+}
+
+func TestAppService_RevokeAppInvalidatesOrPreservesDeviceGrants(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+
+	app := env.registerApp(t, env.admin, "revoke-grant-app", func(m *leapmuxv1.RegisterAppRequest) {
+		m.Visibility = leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE
+		m.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"}
+	})
+	clientID := app.GetApp().GetClientId()
+
+	deviceCode := id.Generate()
+	deviceHash := env.validator.HashSecret(deviceCode)
+	require.NoError(t, env.deviceAuths.Create(ctx, service.CreateDeviceAuthorizationParams{
+		DeviceCodeHash: deviceHash,
+		UserCode:       "REV001",
+		ClientID:       clientID,
+		ExpiresAt:      time.Now().Add(10 * time.Minute),
+	}))
+	n, err := env.deviceAuths.ApproveByUserCode(ctx, service.ApproveDeviceAuthorizationParams{
+		UserCode:      "REV001",
+		UserID:        userid.MustNew(env.adminID),
+		GrantedScopes: "workspace:read",
+	}, time.Now().UTC())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	// Failing DB transaction must abort invalidation and preserve the grant.
+	failingSvc := service.NewAppService(
+		txFailAppStore{Store: env.store, err: errors.New("forced tx failure")},
+		servicetest.NewSettingsManager(t, env.store, nil),
+		env.validator,
+		auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		env.deviceAuths,
+	)
+	adminCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(env.adminID), Username: "admin", IsAdmin: true})
+	_, err = failingSvc.RevokeApp(adminCtx, &leapmuxv1.RevokeAppRequest{ClientId: clientID})
+	require.Error(t, err)
+
+	preserved, err := env.deviceAuths.Get(ctx, deviceHash)
+	require.NoError(t, err)
+	assert.Nil(t, preserved.ConsumedAt, "a rolled-back RevokeApp must leave the grant unconsumed")
+
+	// Succeeding RevokeApp commits invalidation and rejects token exchange.
+	_, err = env.client.RevokeApp(authedReq(ctx, &leapmuxv1.RevokeAppRequest{ClientId: clientID}, env.admin))
+	require.NoError(t, err)
+
+	invalidated, err := env.deviceAuths.Get(ctx, deviceHash)
+	require.NoError(t, err)
+	assert.NotNil(t, invalidated.ConsumedAt, "a committed RevokeApp must mark the grant consumed")
+	_, reserved := env.deviceAuths.ReserveConsume(deviceHash, time.Now().UTC())
+	assert.False(t, reserved, "an invalidated device grant must refuse consumption")
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	newOAuthServerHandler(service.OAuthServerDeps{
+		SessionHasher:        hubtestutil.TestSecretHasher(),
+		Store:                env.store,
+		Validator:            env.validator,
+		Lifecycle:            auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		DeviceAuthorizations: env.deviceAuths,
+		HubURL:               func() string { return srv.URL },
+	}).RegisterRoutes(mux)
+
+	resp, err := srv.Client().PostForm(srv.URL+"/oauth/token", url.Values{
+		"grant_type":  {service.GrantTypeDeviceCode},
+		"client_id":   {clientID},
+		"device_code": {deviceCode},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "invalid_client", body["error"])
 }
