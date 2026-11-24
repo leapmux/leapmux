@@ -492,7 +492,7 @@ func TestIdleInterruptRotatesScopeSoLaterPromptAndSpanWork(t *testing.T) {
 		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
 
 	publishStopControl(t, sink, "later-control")
-	requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+	requests, err := svc.Output.ListControlRequests(t.Context(), "agent-1")
 	require.NoError(t, err)
 	require.Len(t, requests, 1)
 	assert.Equal(t, "later-control", requests[0].RequestID)
@@ -521,7 +521,7 @@ func TestIdleInterruptPreservesSpansOnPreserveOpenSpansOrIgnoredStop(t *testing.
 			svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
 			"rotating st.scope must restore WORKING for spared spans")
 		publishStopControl(t, sink, "after-preserved-stop")
-		requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+		requests, err := svc.Output.ListControlRequests(t.Context(), "agent-1")
 		require.NoError(t, err)
 		require.Len(t, requests, 1, "rotated scope must allow later blocking prompts")
 	})
@@ -745,7 +745,7 @@ func TestIdleRawInterruptClearsDanglingRootSpanAndRotatesScope(t *testing.T) {
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
 		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
 	publishStopControl(t, sink, "after-raw-control")
-	requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+	requests, err := svc.Output.ListControlRequests(t.Context(), "agent-1")
 	require.NoError(t, err)
 	require.Len(t, requests, 1)
 	assert.Equal(t, "after-raw-control", requests[0].RequestID)
@@ -801,7 +801,7 @@ func TestIdleMultiTurnChildInterruptRotatesScopeAndHandlesSpans(t *testing.T) {
 			"idle multi-turn child interrupt must clear child permission checks")
 
 		publishStopControl(t, childSink, "later-child-control")
-		requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), childID)
+		requests, err := svc.Output.ListControlRequests(t.Context(), childID)
 		require.NoError(t, err)
 		require.Len(t, requests, 1, "rotated child scope must admit later idle blocking control prompts")
 		assert.Equal(t, "later-child-control", requests[0].RequestID)
@@ -837,7 +837,7 @@ func TestIdleMultiTurnChildInterruptRotatesScopeAndHandlesSpans(t *testing.T) {
 			"PreserveOpenSpans must spare child progress tails")
 
 		publishStopControl(t, childSink, "after-preserved-child-stop")
-		requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), childID)
+		requests, err := svc.Output.ListControlRequests(t.Context(), childID)
 		require.NoError(t, err)
 		require.Len(t, requests, 1, "rotated child scope must admit later idle blocking control prompts")
 		assert.Equal(t, "after-preserved-child-stop", requests[0].RequestID)
@@ -917,7 +917,7 @@ func TestRegistryOnlyChildInterruptKeepsControlsStoppedAndSpans(t *testing.T) {
 	assert.True(t, stopped, "registry-only child must keep controlsStopped true after InterruptChild")
 
 	publishStopControl(t, childSink, "suppressed-registry-child-control")
-	requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), childID)
+	requests, err := svc.Output.ListControlRequests(t.Context(), childID)
 	require.NoError(t, err)
 	assert.Empty(t, requests, "registry-only child must keep suppressing blocking controls on the stopped scope")
 }

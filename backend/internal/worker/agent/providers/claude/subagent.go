@@ -771,6 +771,7 @@ func (a *Agent) persistClaudeTaskOutputFile(taskID string, kind bgtask.Kind, sta
 		Status:      status,
 	}))
 }
+
 // workflowGroup derives the (group_key, group_label) for a workflow task from
 // its workflow_name. Non-workflow tasks return ("", "").
 func (a *Agent) workflowGroup(ev *claudeTaskEnvelope) (string, string) {
