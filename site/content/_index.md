@@ -3,10 +3,11 @@ title: LeapMux
 layout: hextra-home
 ---
 
-<div class="hx:mt-6 hx:mb-6">
+<div class="hx:mt-6 hx:mb-6 hero-headline-with-ticker">
 {{< hextra/hero-headline >}}
   A workspace for a fleet&nbsp;<br class="hx:sm:block hx:hidden" />of coding agents
 {{< /hextra/hero-headline >}}
+{{< agent-ticker >}}
 </div>
 
 <div class="hx:mb-8">

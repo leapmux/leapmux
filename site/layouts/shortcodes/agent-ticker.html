@@ -1,0 +1,82 @@
+{{- /*
+  agent-ticker renders a continuous single-row marquee of every coding-agent
+  provider from data/feature_matrix/checklist.json. The viewport limits the
+  visible strip to at most nine icons with faded, softly blurred edges, and
+  shuffles both loop tracks identically before first paint.
+
+  Monochrome and two-tone SVGs automatically receive a dark-mode variant
+  generated from the source icon using the app's dark palette tokens
+  (--lm-icon-monochrome #bebbb7, --lm-opencode-inner #4B4646,
+  --lm-opencode-outer #F1ECEC) so every icon stays crisp on dark tiles without
+  hard-coding provider IDs.
+*/ -}}
+{{- $checklist := index hugo.Data "feature_matrix" "checklist" -}}
+{{- $items := slice -}}
+{{- range $group := $checklist.providerGroups -}}
+  {{- range $provider := $group -}}
+    {{- $darkIcon := "" -}}
+    {{- $assetPath := strings.TrimPrefix "/" $provider.icon -}}
+    {{- with resources.Get $assetPath -}}
+      {{- $svg := .Content -}}
+      {{- $darkSvg := $svg -}}
+      {{- $darkSvg = replace $darkSvg `fill="#24292f"` `fill="#bebbb7"` -}}
+      {{- $darkSvg = replace $darkSvg `fill="#24292e"` `fill="#bebbb7"` -}}
+      {{- $darkSvg = replace $darkSvg `stroke="#24292e"` `stroke="#bebbb7"` -}}
+      {{- $darkSvg = replace $darkSvg `fill="#000"` `fill="#bebbb7"` -}}
+      {{- $darkSvg = replace $darkSvg `fill="#000000"` `fill="#bebbb7"` -}}
+      {{- $darkSvg = replace $darkSvg `fill="currentColor"` `fill="#bebbb7"` -}}
+      {{- $darkSvg = replace $darkSvg `stroke="currentColor"` `stroke="#bebbb7"` -}}
+      {{- if and (strings.Contains $darkSvg `fill="#CFCECD"`) (strings.Contains $darkSvg `fill="#656363"`) -}}
+        {{- $darkSvg = replace $darkSvg `fill="#CFCECD"` `fill="#4B4646"` -}}
+        {{- $darkSvg = replace $darkSvg `fill="#656363"` `fill="#F1ECEC"` -}}
+      {{- end -}}
+      {{- if ne $darkSvg $svg -}}
+        {{- $darkRes := resources.FromString (printf "icons/agents/dark/%s.svg" $provider.id) $darkSvg -}}
+        {{- $darkIcon = $darkRes.RelPermalink -}}
+      {{- end -}}
+    {{- end -}}
+    {{- $items = $items | append (dict "provider" $provider "darkIcon" $darkIcon) -}}
+  {{- end -}}
+{{- end -}}
+{{- if gt (len $items) 0 -}}
+<div class="agent-ticker" role="region" aria-label="Supported coding agents" style="{{ printf "--agent-ticker-count: %d;" (len $items) | safeCSS }}">
+  <div class="agent-ticker-viewport">
+    <div class="agent-ticker-track">
+      {{- /* list-style none makes Safari drop the implicit list role, so the role is explicit. */ -}}
+      <ul class="agent-ticker-list" role="list">
+        {{- range $item := $items -}}
+          {{- $provider := $item.provider -}}
+          <li class="agent-ticker-item">
+            <a class="agent-ticker-link" href="{{ $provider.url }}" title="{{ $provider.label }}">
+              {{- if $item.darkIcon -}}
+                <img class="agent-ticker-icon-light" src="{{ $provider.icon }}" width="24" height="24" alt="{{ $provider.label }}" decoding="async">
+                <img class="agent-ticker-icon-dark" src="{{ $item.darkIcon }}" width="24" height="24" alt="{{ $provider.label }}" decoding="async">
+              {{- else -}}
+                <img src="{{ $provider.icon }}" width="24" height="24" alt="{{ $provider.label }}" decoding="async">
+              {{- end -}}
+            </a>
+          </li>
+        {{- end -}}
+      </ul>
+      <ul class="agent-ticker-list" role="list" aria-hidden="true">
+        {{- range $item := $items -}}
+          {{- $provider := $item.provider -}}
+          <li class="agent-ticker-item">
+            <a class="agent-ticker-link" href="{{ $provider.url }}" tabindex="-1" title="{{ $provider.label }}">
+              {{- if $item.darkIcon -}}
+                <img class="agent-ticker-icon-light" src="{{ $provider.icon }}" width="24" height="24" alt="" decoding="async">
+                <img class="agent-ticker-icon-dark" src="{{ $item.darkIcon }}" width="24" height="24" alt="" decoding="async">
+              {{- else -}}
+                <img src="{{ $provider.icon }}" width="24" height="24" alt="" decoding="async">
+              {{- end -}}
+            </a>
+          </li>
+        {{- end -}}
+      </ul>
+    </div>
+  </div>
+  <span class="agent-ticker-edge agent-ticker-edge--left" aria-hidden="true"></span>
+  <span class="agent-ticker-edge agent-ticker-edge--right" aria-hidden="true"></span>
+  <script>(function(){var t=document.currentScript&&document.currentScript.parentElement;if(!t||!t.classList.contains("agent-ticker"))return;var l=t.querySelectorAll(".agent-ticker-list");if(l.length!==2)return;var a=Array.from(l[0].children),b=Array.from(l[1].children),n=a.length;if(n<2||b.length!==n)return;var o=new Array(n);for(var i=0;i<n;i++)o[i]=i;for(var j=n-1;j>0;j--){var k=Math.floor(Math.random()*(j+1)),x=o[j];o[j]=o[k];o[k]=x;}var f0=document.createDocumentFragment(),f1=document.createDocumentFragment();for(var m=0;m<n;m++){f0.appendChild(a[o[m]]);f1.appendChild(b[o[m]]);}l[0].appendChild(f0);l[1].appendChild(f1);})();</script>
+</div>
+{{- end -}}

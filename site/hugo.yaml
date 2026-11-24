@@ -72,6 +72,8 @@ module:
       target: static
     - source: ../icons/agents
       target: static/icons/agents
+    - source: ../icons/agents
+      target: assets/icons/agents
     - source: ../skills
       target: static/skills
     - source: ../frontend/tests/e2e/feature-matrix

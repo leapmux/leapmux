@@ -21,7 +21,7 @@
 {{- $body = replaceRE `\{\{[<%]\s*copy-prompt\b[^>]*[%>]\}\}\s*` "\n\n**Prompt for your coding agent**\n\n```text\n" $body -}}
 {{- $body = replaceRE `\s*\{\{[<%]\s*/copy-prompt\s*[%>]\}\}` "\n```\n\n" $body -}}
 {{- /* Strip remaining Hextra layout shortcode wrappers so plain Markdown stays clean. */ -}}
-{{- $body = replaceRE `\{\{[<%]\s*/?(?:callout|cards|steps|tabs|tab|details|agent-logos|screenshot)[^>]*[%>]\}\}` "" $body -}}
+{{- $body = replaceRE `\{\{[<%]\s*/?(?:callout|cards|steps|tabs|tab|details|agent-logos|agent-ticker|screenshot)[^>]*[%>]\}\}` "" $body -}}
 {{- $body = replaceRE `\{\{[<%]\s*card\s+[^>]*link="([^"]+)"[^>]*title="([^"]+)"[^>]*[%>]\}\}` "- [$2]($1)" $body -}}
 {{- $body = replaceRE `\{\{[<%]\s*card\s+[^>]*title="([^"]+)"[^>]*link="([^"]+)"[^>]*[%>]\}\}` "- [$1]($2)" $body -}}
 {{- $body = replaceRE `\n{3,}` "\n\n" $body -}}

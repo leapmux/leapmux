@@ -72,6 +72,70 @@ export function verifyCodingAgentProviderCount(html, checklist) {
   }
 }
 
+/** Check that the landing page ticker renders every provider dynamically in both seamless-loop tracks. */
+export function verifyCodingAgentTicker(html, checklist) {
+  const dom = new JSDOM(html)
+  try {
+    const document = dom.window.document
+    const providers = checklist.providerGroups.flat()
+    const ticker = document.querySelector('.agent-ticker')
+    if (!ticker)
+      return ['the page contains no coding-agent ticker']
+    const errors = []
+    const countVar = ticker.style.getPropertyValue('--agent-ticker-count').trim()
+    if (countVar !== String(providers.length))
+      errors.push(`ticker count property is ${JSON.stringify(countVar)}, expected ${JSON.stringify(String(providers.length))}`)
+    const lists = Array.from(ticker.querySelectorAll('.agent-ticker-list'))
+    if (lists.length !== 2) {
+      errors.push(`ticker has ${lists.length} tracks, expected 2`)
+      return errors
+    }
+    const [primary, duplicate] = lists
+    if (primary.getAttribute('role') !== 'list')
+      errors.push('primary ticker track must have the list role')
+    if (primary.getAttribute('aria-hidden') === 'true')
+      errors.push('primary ticker track must not be hidden from assistive technology')
+    if (duplicate.getAttribute('aria-hidden') !== 'true')
+      errors.push('duplicate ticker track must be hidden from assistive technology')
+
+    const primaryLinks = Array.from(primary.querySelectorAll('.agent-ticker-link'))
+    if (primaryLinks.length !== providers.length)
+      errors.push(`primary ticker track has ${primaryLinks.length} providers, expected ${providers.length}`)
+    for (const [index, provider] of providers.entries()) {
+      const link = primaryLinks[index]
+      const lightImage = link?.querySelector('img.agent-ticker-icon-light') ?? link?.querySelector('img')
+      const darkImage = link?.querySelector('img.agent-ticker-icon-dark')
+      if (link?.getAttribute('href') !== provider.url)
+        errors.push(`ticker provider ${index + 1} has the wrong URL`)
+      if (lightImage?.getAttribute('src') !== provider.icon || lightImage?.getAttribute('alt') !== provider.label)
+        errors.push(`ticker provider ${index + 1} differs from ${provider.id}`)
+      if (darkImage && (darkImage.getAttribute('src') !== `/icons/agents/dark/${provider.id}.svg` || darkImage.getAttribute('alt') !== provider.label))
+        errors.push(`ticker provider ${index + 1} has a mismatched dark icon`)
+    }
+
+    const duplicateLinks = Array.from(duplicate.querySelectorAll('.agent-ticker-link'))
+    if (duplicateLinks.length !== providers.length)
+      errors.push(`duplicate ticker track has ${duplicateLinks.length} providers, expected ${providers.length}`)
+    for (const [index, provider] of providers.entries()) {
+      const link = duplicateLinks[index]
+      const lightImage = link?.querySelector('img.agent-ticker-icon-light') ?? link?.querySelector('img')
+      const darkImage = link?.querySelector('img.agent-ticker-icon-dark')
+      if (link?.getAttribute('tabindex') !== '-1')
+        errors.push(`duplicate ticker provider ${index + 1} must not be keyboard focusable`)
+      if (lightImage?.getAttribute('src') !== provider.icon)
+        errors.push(`duplicate ticker provider ${index + 1} has the wrong icon`)
+      if (lightImage?.getAttribute('alt') !== '')
+        errors.push(`duplicate ticker provider ${index + 1} must have an empty alt`)
+      if (darkImage && (darkImage.getAttribute('src') !== `/icons/agents/dark/${provider.id}.svg` || darkImage.getAttribute('alt') !== ''))
+        errors.push(`duplicate ticker provider ${index + 1} has an invalid dark icon`)
+    }
+    return errors
+  }
+  finally {
+    dom.window.close()
+  }
+}
+
 /** Check the legend: one entry for each support state, with its symbol hidden from screen readers. */
 function legendErrors(document, states) {
   const legend = document.querySelector('.feature-matrix-legend')
@@ -379,6 +443,8 @@ if (import.meta.main) {
     const pageHTML = readFileSync(resolve(ROOT, `site/public/docs/${page}/index.html`), 'utf8')
     errors.push(...verifyCodingAgentProviderCount(pageHTML, checklist).map(error => `${page}: ${error}`))
   }
+  const homeHTML = readFileSync(resolve(ROOT, 'site/public/index.html'), 'utf8')
+  errors.push(...verifyCodingAgentTicker(homeHTML, checklist).map(error => `home: ${error}`))
   for (const error of errors)
     console.error(error)
   if (errors.length) {

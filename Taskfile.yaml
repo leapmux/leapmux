@@ -1876,6 +1876,7 @@ tasks:
       - site/layouts/**/*
       - site/assets/**/*
       - site/i18n/**/*
+      - icons/agents/**/*
       - skills/**/*
       - frontend/tests/e2e/feature-matrix/**/*
       - contracts/providers.json

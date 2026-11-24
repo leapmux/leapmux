@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { codingAgentMatrixDimensions, verifyCodingAgentProviderCount, verifyCodingAgentSite } from './verify-coding-agent-site.mjs'
+import { codingAgentMatrixDimensions, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker } from './verify-coding-agent-site.mjs'
 
 const SUPPORT_STATES = [
   { id: 'supported', symbol: '✅', label: 'Supported' },
@@ -540,5 +540,69 @@ describe('verifyCodingAgentProviderCount', () => {
   it('rejects a page without the generated count', () => {
     expect(verifyCodingAgentProviderCount('<p>Three providers.</p>', checklist))
       .toContain('the page contains no generated provider count')
+  })
+})
+
+describe('verifyCodingAgentTicker', () => {
+  const tickerHtml = `
+    <div class="agent-ticker" role="region" aria-label="Supported coding agents" style="--agent-ticker-count: 1;">
+      <div class="agent-ticker-viewport">
+        <div class="agent-ticker-track">
+          <ul class="agent-ticker-list" role="list">
+            <li class="agent-ticker-item">
+              <a class="agent-ticker-link" href="https://pi.dev/" title="Pi">
+                <img src="/icons/agents/pi.svg" width="24" height="24" alt="Pi">
+              </a>
+            </li>
+          </ul>
+          <ul class="agent-ticker-list" role="list" aria-hidden="true">
+            <li class="agent-ticker-item">
+              <a class="agent-ticker-link" href="https://pi.dev/" tabindex="-1" title="Pi">
+                <img src="/icons/agents/pi.svg" width="24" height="24" alt="">
+              </a>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  `
+
+  it('accepts a dynamic ticker matching every source provider', () => {
+    expect(verifyCodingAgentTicker(tickerHtml, checklist)).toEqual([])
+  })
+
+  it('rejects a page without a ticker', () => {
+    expect(verifyCodingAgentTicker('<h1>Hello</h1>', checklist))
+      .toContain('the page contains no coding-agent ticker')
+  })
+
+  it('rejects a ticker with a mismatched count CSS variable', () => {
+    expect(verifyCodingAgentTicker(tickerHtml.replace('--agent-ticker-count: 1;', '--agent-ticker-count: 99;'), checklist))
+      .toContain('ticker count property is "99", expected "1"')
+  })
+
+  it('rejects a ticker with a missing or mismatched provider', () => {
+    expect(verifyCodingAgentTicker(tickerHtml.replace('src="/icons/agents/pi.svg" width="24" height="24" alt="Pi"', 'src="/icons/agents/other.svg" width="24" height="24" alt="Pi"'), checklist))
+      .toContain('ticker provider 1 differs from pi')
+    expect(verifyCodingAgentTicker(tickerHtml.replace('href="https://pi.dev/" title="Pi"', 'href="https://example.com/" title="Pi"'), checklist))
+      .toContain('ticker provider 1 has the wrong URL')
+  })
+
+  it('accepts a dynamic ticker with light/dark icon pairs', () => {
+    const themedHtml = tickerHtml
+      .replace('<img src="/icons/agents/pi.svg" width="24" height="24" alt="Pi">', '<img class="agent-ticker-icon-light" src="/icons/agents/pi.svg" width="24" height="24" alt="Pi"><img class="agent-ticker-icon-dark" src="/icons/agents/dark/pi.svg" width="24" height="24" alt="Pi">')
+      .replace('<img src="/icons/agents/pi.svg" width="24" height="24" alt="">', '<img class="agent-ticker-icon-light" src="/icons/agents/pi.svg" width="24" height="24" alt=""><img class="agent-ticker-icon-dark" src="/icons/agents/dark/pi.svg" width="24" height="24" alt="">')
+    expect(verifyCodingAgentTicker(themedHtml, checklist)).toEqual([])
+    expect(verifyCodingAgentTicker(themedHtml.replace('/icons/agents/dark/pi.svg', '/icons/agents/dark/wrong.svg'), checklist))
+      .toContain('ticker provider 1 has a mismatched dark icon')
+  })
+
+  it('rejects an accessible or focusable duplicate loop track', () => {
+    expect(verifyCodingAgentTicker(tickerHtml.replace('aria-hidden="true"', ''), checklist))
+      .toContain('duplicate ticker track must be hidden from assistive technology')
+    expect(verifyCodingAgentTicker(tickerHtml.replace('tabindex="-1"', ''), checklist))
+      .toContain('duplicate ticker provider 1 must not be keyboard focusable')
+    expect(verifyCodingAgentTicker(tickerHtml.replace('alt=""', 'alt="Pi"'), checklist))
+      .toContain('duplicate ticker provider 1 must have an empty alt')
   })
 })
