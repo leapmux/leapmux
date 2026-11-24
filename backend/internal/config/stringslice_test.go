@@ -91,3 +91,10 @@ func TestSplitListValue_KeepsEmptyPiecesSoATypoFailsRatherThanBindsTheDefaults(t
 	assert.Equal(t, []string{"", ":8080"}, SplitListValue(" , :8080"))
 	assert.Equal(t, []string{"", "", ""}, SplitListValue(" , , "))
 }
+
+// Type is pflag's own name for a repeatable string, so the help marks the
+// flag repeatable.
+func TestStringSliceFlag_TypeMarksItRepeatable(t *testing.T) {
+	var target []string
+	assert.Equal(t, "stringArray", NewStringSliceFlag(&target, nil).Type())
+}

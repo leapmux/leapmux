@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
@@ -39,8 +40,8 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 				row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 				require.NoError(t, err)
 				var sent [][]byte
-				svc.sendControlResponseFn = func(_ string, content []byte) error {
-					sent = append(sent, append([]byte(nil), content...))
+				svc.sendControlResponseFn = func(_ string, answer agent.RawInput) error {
+					sent = append(sent, append([]byte(nil), answer.Data...))
 					return nil
 				}
 				response, err := json.Marshal(map[string]any{"response": map[string]any{
@@ -53,7 +54,7 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 				}
 				_, err = svc.DB.ExecContext(t.Context(), fmt.Sprintf("CREATE TRIGGER fail_feedback_commit BEFORE INSERT ON %s BEGIN SELECT RAISE(ABORT, 'feedback storage failed'); END", failedTable))
 				require.NoError(t, err)
-				require.ErrorContains(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim-1"}), "feedback storage failed")
+				require.ErrorContains(t, svc.processControlAnswer(row, workerAnswer{content: response, claimToken: "claim-1"}), "feedback storage failed")
 				pending := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "request-1")
 				assert.Equal(t, "claim-1", pending.ClaimToken)
 				failedQueue, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
@@ -64,7 +65,7 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 				assert.Empty(t, messages)
 				_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_feedback_commit")
 				require.NoError(t, err)
-				require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim-1"}))
+				require.NoError(t, svc.processControlAnswer(row, workerAnswer{content: response, claimToken: "claim-1"}))
 				require.Len(t, sent, 1)
 				var reply struct {
 					Result struct {
@@ -78,7 +79,7 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 				require.Len(t, queue.Items, 1, "the native mapper cannot carry rejection feedback")
 				assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, queue.Items[0].Kind)
 				assert.Equal(t, feedback, queue.Items[0].TextPreview)
-				require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim-1"}))
+				require.NoError(t, svc.processControlAnswer(row, workerAnswer{content: response, claimToken: "claim-1"}))
 				assert.Len(t, sent, 1)
 				again, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
 				require.NoError(t, err)

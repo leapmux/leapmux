@@ -1,5 +1,5 @@
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createSignal } from 'solid-js'
+import { createSignal, untrack } from 'solid-js'
 import { getOrCreate } from '~/lib/getOrCreate'
 
 /**
@@ -13,6 +13,16 @@ import { getOrCreate } from '~/lib/getOrCreate'
  * Auto/Approve/Smart Approve/Chat), so a single global map let one provider's labels
  * collide with another's last-writer-wins. Two agents of the SAME provider share an
  * identical label space, so per-provider keying is both correct and minimal.
+ *
+ * The labels often arrive after a reader used them: a tab draws its saved rows
+ * before the agent's settings reach the browser. Two rules keep each reader current:
+ *
+ *   - Every read of the catalog (a label, a group label, the revision of a set of
+ *     groups) reads one revision signal, so a Solid computation that reads a label
+ *     runs again when the catalog changes.
+ *   - A cache of text that a label words keeps the groups that its read consulted and
+ *     their revision ({@link SettingsLabelRead}), and reuses the text only while that
+ *     revision holds ({@link refreshSettingsLabelRead}).
  */
 
 /**
@@ -64,12 +74,60 @@ export function collectSettingsLabelDependencies<T>(read: () => T): { value: T, 
   }
 }
 
-/** Build the current revision key for an exact set of label groups. */
+/**
+ * Build the current revision key for an exact set of label groups.
+ *
+ * It reads the revision signal, so a computation that checks a cached value with it
+ * runs again when the catalog changes, also for an empty set.
+ */
 export function settingsLabelDependencyRevision(dependencies: readonly SettingsLabelDependency[]): string {
+  settingsLabelRevision()
   return [...dependencies]
     .sort((left, right) => left.provider - right.provider || left.groupId.localeCompare(right.groupId))
     .map(({ provider, groupId }) => `${provider}:${groupId}:${optionGroupCache.get(provider)?.get(groupId)?.revision ?? 0}`)
     .join('|')
+}
+
+/**
+ * A value that one read derived through this cache, with the label groups that the read
+ * consulted and their revision when it ran. A cache of text that a label words stores
+ * this, so that it can tell when the text is stale.
+ */
+export interface SettingsLabelRead<T> {
+  readonly value: T
+  readonly dependencies: readonly SettingsLabelDependency[]
+  /** The revision of `dependencies` when the read ran (see settingsLabelDependencyRevision). */
+  readonly revision: string
+}
+
+/**
+ * Whether each label group that `read` consulted still holds the labels that it read.
+ * It tracks the catalog, as settingsLabelDependencyRevision does.
+ */
+export function isSettingsLabelReadCurrent(read: SettingsLabelRead<unknown>): boolean {
+  return settingsLabelDependencyRevision(read.dependencies) === read.revision
+}
+
+/**
+ * Reuse `cached` while it is current, or else run `read` and return its new result.
+ *
+ * Both paths track the catalog, so a computation that calls this runs again when the
+ * catalog changes. A reuse also reports the groups of `cached` to each active collector,
+ * as a run of `read` would: a cache whose read reuses another cache's value still learns
+ * every group that its value depends on.
+ */
+export function refreshSettingsLabelRead<T>(cached: SettingsLabelRead<T> | undefined, read: () => T): SettingsLabelRead<T> {
+  if (cached !== undefined && isSettingsLabelReadCurrent(cached)) {
+    for (const { provider, groupId } of cached.dependencies)
+      recordDependency(provider, groupId)
+    return cached
+  }
+  const collected = collectSettingsLabelDependencies(read)
+  return {
+    value: collected.value,
+    dependencies: collected.dependencies,
+    revision: settingsLabelDependencyRevision(collected.dependencies),
+  }
 }
 
 // Upper bound on retained option labels per (provider, group) BEYOND the options of the current
@@ -127,7 +185,9 @@ export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?:
   const groupCap = pushCap(MAX_GROUPS_PER_PROVIDER, new Set(optionGroups.map(group => group.id)).size)
   const seenInPush = new Set<string>()
   let changed = false
-  const nextRevision = settingsLabelRevision() + 1
+  // A write is not a read: untracked, so a computation that pushes a catalog does not run
+  // again for its own write and for each later push.
+  const nextRevision = untrack(settingsLabelRevision) + 1
   for (const group of optionGroups) {
     // A catalog carries one group per id (the backend dedups before broadcast). Defend against a
     // malformed catalog with two same-id groups by taking the FIRST and skipping later ones, so the
@@ -187,6 +247,17 @@ export function clearSettingsLabelCache(): void {
 }
 
 /**
+ * Read the cache entry of one group, and record the read: into each active collector,
+ * and as a read of the revision signal, so a computation that reads a label runs again
+ * when the catalog changes.
+ */
+function readGroup(provider: AgentProvider, key: string): GroupLabelEntry | undefined {
+  recordDependency(provider, key)
+  settingsLabelRevision()
+  return optionGroupCache.get(provider)?.get(key)
+}
+
+/**
  * Look up a cached display name for an option value within a group (by group id), scoped
  * to the agent's provider. Returns undefined when the provider is unknown (then the caller
  * falls back to the raw id) so a notification without provider context degrades gracefully.
@@ -194,13 +265,11 @@ export function clearSettingsLabelCache(): void {
 export function getCachedSettingsLabel(provider: AgentProvider | undefined, key: string, id: string): string | undefined {
   if (provider === undefined)
     return undefined
-  recordDependency(provider, key)
-  return optionGroupCache.get(provider)?.get(key)?.options.get(id)
+  return readGroup(provider, key)?.options.get(id)
 }
 
 export function getCachedSettingsGroupLabel(provider: AgentProvider | undefined, key: string): string | undefined {
   if (provider === undefined)
     return undefined
-  recordDependency(provider, key)
-  return optionGroupCache.get(provider)?.get(key)?.label
+  return readGroup(provider, key)?.label
 }

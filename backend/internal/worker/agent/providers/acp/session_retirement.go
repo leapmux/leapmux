@@ -159,12 +159,15 @@ func controlRequestSessionID(params json.RawMessage) string {
 func (b *Base) refuseControlRequest(line *providerkit.ParsedLine, sessionID string, cancelAnswer any) {
 	slog.Info("acp refused a control request of a session that it does not serve",
 		"provider", b.ProviderName(), "agent_id", b.AgentID(), "method", line.Method, "session_id", sessionID)
+	b.replyToRefusedControlRequest(line, cancelAnswer, fmt.Sprintf("session %s is no longer active in this client", sessionID))
+}
+
+func (b *Base) replyToRefusedControlRequest(line *providerkit.ParsedLine, cancelAnswer any, reason string) {
 	if !line.HasID() {
 		return
 	}
 	if cancelAnswer == nil {
-		b.SendErrorResponseDetached(line.ID, acpStaleSessionRequestError,
-			fmt.Sprintf("session %s is no longer active in this client", sessionID), "refuse "+line.Method)
+		b.SendErrorResponseDetached(line.ID, acpStaleSessionRequestError, reason, "refuse "+line.Method)
 		return
 	}
 	b.SendResponseDetached(line.ID, cancelAnswer, "refuse "+line.Method)
@@ -182,10 +185,10 @@ func (b *Base) withdrawTurnControls() {
 	b.urlElicitations = nil
 	b.Mu.Unlock()
 	if b.hooks.AnswerlessControlsOutliveTurns {
-		b.AnswerOutstandingControlRequests(b.sink)
+		b.AnswerOutstandingControlRequests()
 		return
 	}
-	b.WithdrawAllControlRequests(b.sink)
+	b.WithdrawAllControlRequests()
 }
 
 // releaseOutgoingSession ends what the outgoing session of a context clear

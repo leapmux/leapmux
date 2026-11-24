@@ -5,6 +5,8 @@ import type { MarkdownRenderContext } from './renderContext'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { ResolvedMessageContent, ToolSpanContext } from './rowExtractionTypes'
 import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { SettingsLabelRead } from '~/lib/settingsLabelCache'
+import { refreshSettingsLabelRead } from '~/lib/settingsLabelCache'
 import { fixedCacheKey } from './messageRenderCache'
 import { extractChatRow, extractedRow } from './rowExtraction'
 import { prepareMessage } from './rowPreparation'
@@ -29,8 +31,17 @@ function rowSpanContext(context: RowExtractionContext | undefined): ToolSpanCont
   }
 }
 
+/**
+ * One row's extraction, with the label groups that it read.
+ *
+ * An extraction can word a value by its settings label, such as the permission mode of a
+ * plan approval or the model of a Codex spawn. The labels often arrive after the row
+ * draws, and nothing else about the row changes then, so the extraction is reused only
+ * while those labels are unchanged. The entry cache cannot carry these groups: it
+ * classifies a row, and only the extraction reads them.
+ */
 interface CachedRowEntry {
-  extraction: ChatRowExtraction
+  extraction: SettingsLabelRead<ChatRowExtraction>
   dependencies: RowModelDependencies
 }
 
@@ -58,10 +69,10 @@ function sameDependencies(left: RowModelDependencies, right: RowModelDependencie
 
 const ROW_CACHE_KEY = fixedCacheKey<CachedRowEntry>('model.row')
 const noRequest = {}
-const resultExtractions = new WeakMap<ResolvedMessageContent, WeakMap<object, Map<string, ChatRowExtraction>>>()
+const resultExtractions = new WeakMap<ResolvedMessageContent, WeakMap<object, Map<string, SettingsLabelRead<ChatRowExtraction>>>>()
 
 /** A request header and a result body can consume exactly the same extracted tool. */
-function resultCache(deps: RowModelDependencies): Map<string, ChatRowExtraction> {
+function resultCache(deps: RowModelDependencies): Map<string, SettingsLabelRead<ChatRowExtraction>> {
   let byRequest = resultExtractions.get(deps.resolved)
   if (byRequest === undefined) {
     byRequest = new WeakMap()
@@ -76,6 +87,15 @@ function resultCache(deps: RowModelDependencies): Map<string, ChatRowExtraction>
   return entries
 }
 
+/**
+ * The row model of one message, read through the shared extraction and kept in the row's
+ * render cache.
+ *
+ * The cached row serves while its inputs and the labels that it read are unchanged (see
+ * CachedRowEntry). The check reads the label catalog, so a computation that draws the row
+ * runs again when the labels change, and draws a new row only when the row read one of
+ * them.
+ */
 export function cachedChatRow(
   context: RowExtractionContext | undefined,
   agentProvider: AgentProvider | undefined,
@@ -95,22 +115,10 @@ export function cachedChatRow(
     span,
   }
   const cached = cache?.get(ROW_CACHE_KEY)
-  if (cached && sameDependencies(cached.dependencies, dependencies))
-    return cached.extraction
-  const shared = span.role === 'result' && (category.kind === 'tool_use' || category.kind === 'tool_result')
-    ? resultCache(dependencies)
+  const own = cached !== undefined && sameDependencies(cached.dependencies, dependencies)
+    ? cached.extraction
     : undefined
-  const sharedKey = shared === undefined
-    ? ''
-    : JSON.stringify([
-        agentProvider,
-        category.kind,
-        completion,
-        dependencies.spanId,
-        dependencies.spanType,
-        span.visibleRows.request,
-      ])
-  const extraction = shared?.get(sharedKey) ?? extractChatRow(agentProvider, resolved, category, {
+  const extract = (): ChatRowExtraction => extractChatRow(agentProvider, resolved, category, {
     span,
     ...(completion !== undefined
       ? { completion }
@@ -122,13 +130,33 @@ export function cachedChatRow(
       ? { spanId: context.spanId }
       : {}),
   })
-  shared?.set(sharedKey, extraction)
-  cache?.set(ROW_CACHE_KEY, { extraction, dependencies })
-  return extraction
+  const extraction = refreshSettingsLabelRead(own, () => {
+    if (span.role !== 'result' || (category.kind !== 'tool_use' && category.kind !== 'tool_result'))
+      return extract()
+    const shared = resultCache(dependencies)
+    const sharedKey = JSON.stringify([
+      agentProvider,
+      category.kind,
+      completion,
+      dependencies.spanId,
+      dependencies.spanType,
+      span.visibleRows.request,
+    ])
+    // The shared extraction reports its label groups to this read, also when it is reused.
+    const sharedExtraction = refreshSettingsLabelRead(shared.get(sharedKey), extract)
+    shared.set(sharedKey, sharedExtraction)
+    return sharedExtraction.value
+  })
+  if (extraction !== own)
+    cache?.set(ROW_CACHE_KEY, { extraction, dependencies })
+  return extraction.value
 }
 
-/** The header calls extracted so far, by the result and then by the request of a span. */
-const headerCalls = new WeakMap<ResolvedMessage, WeakMap<ResolvedMessageContent, { call: ToolCall | undefined }>>()
+/**
+ * The header calls extracted so far, by the result and then by the request of a span,
+ * each with the label groups that its extraction read (see CachedRowEntry).
+ */
+const headerCalls = new WeakMap<ResolvedMessage, WeakMap<ResolvedMessageContent, SettingsLabelRead<ToolCall | undefined>>>()
 
 /**
  * The call that heads the request row of a span (see ToolMessage's `header`): the call
@@ -137,10 +165,10 @@ const headerCalls = new WeakMap<ResolvedMessage, WeakMap<ResolvedMessageContent,
  *
  * Every copy of every row that draws no result asks for it: the listed row, its hidden
  * copy, and an update row. The resolver hands the same object for one revision of a side,
- * so this extracts the result once for each pair of revisions, not once for each copy,
- * and a row that scrolls back in finds the call at once. The result row's classification
- * takes no child-transcript context: that context decides only how a user message reads,
- * never how a tool result does.
+ * so this extracts the result once for each pair of revisions and each revision of the
+ * labels that the call read, not once for each copy, and a row that scrolls back in finds
+ * the call at once. The result row's classification takes no child-transcript context:
+ * that context decides only how a user message reads, never how a tool result does.
  */
 export function cachedSpanHeaderCall(result: ResolvedMessage, request: ResolvedMessageContent): ToolCall | undefined {
   let byRequest = headerCalls.get(result)
@@ -149,24 +177,25 @@ export function cachedSpanHeaderCall(result: ResolvedMessage, request: ResolvedM
     headerCalls.set(result, byRequest)
   }
   const cached = byRequest.get(request)
-  if (cached !== undefined)
-    return cached.call
-  const prepared = prepareMessage(result.message, {
-    original: result.original,
-    resolved: result.resolved,
+  const header = refreshSettingsLabelRead(cached, () => {
+    const prepared = prepareMessage(result.message, {
+      original: result.original,
+      resolved: result.resolved,
+    })
+    const row = extractedRow(cachedChatRow({
+      spanId: result.message.spanId,
+      spanType: result.message.spanType,
+      sources: {
+        request: () => request,
+        role: () => 'result',
+        visibleRows: () => ({ request: true }),
+      },
+    }, result.message.agentProvider, prepared.resolved, prepared.category, result.message.completion))
+    return row?.kind === 'tool' && row.role === 'result'
+      ? row.call
+      : undefined
   })
-  const header = extractedRow(cachedChatRow({
-    spanId: result.message.spanId,
-    spanType: result.message.spanType,
-    sources: {
-      request: () => request,
-      role: () => 'result',
-      visibleRows: () => ({ request: true }),
-    },
-  }, result.message.agentProvider, prepared.resolved, prepared.category, result.message.completion))
-  const call = header?.kind === 'tool' && header.role === 'result'
-    ? header.call
-    : undefined
-  byRequest.set(request, { call })
-  return call
+  if (header !== cached)
+    byRequest.set(request, header)
+  return header.value
 }

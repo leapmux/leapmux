@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
@@ -135,9 +137,25 @@ func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, cfg *w
 		AgentStartupConcurrency: cfg.AgentStartupConcurrency,
 		EncryptionMode:          cfg.EncryptionModeProto(),
 		UseLoginShell:           cfg.UseLoginShell,
+		ControlCLI:              controlCLIExecutable(),
 		OnDeregister:            func() error { return clearDeletedWorkerState(cfg) },
 	})
 	return reregistrationAdvice(err)
+}
+
+// controlCLIExecutable returns this binary, which serves `leapmux control`, so
+// the Worker that it runs links it for the processes that the Worker spawns
+// (see worker.RunConfig.ControlCLI). Under `go run`, the binary is the build
+// that `go run` made, which is the code that the Worker runs, and the Worker
+// removes its link at shutdown. It returns "" when the system cannot state the
+// executable, and the spawns then get no CLI.
+func controlCLIExecutable() string {
+	executable, err := os.Executable()
+	if err != nil {
+		slog.Warn("the executable of this process is unknown, so spawned processes get no control CLI", "error", err)
+		return ""
+	}
+	return executable
 }
 
 // runSoloForeground runs the combined instance under the started

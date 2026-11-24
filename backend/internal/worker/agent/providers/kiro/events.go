@@ -12,7 +12,8 @@ import (
 )
 
 // Kiro's own notifications that LeapMux reads. Its two requests are in the
-// contract, because the browser draws them too.
+// contract, and the browser reads the user-input request's method to display a
+// saved answer.
 const (
 	// kiroToolContentChunkMethod carries one piece of a running command's
 	// output.

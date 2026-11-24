@@ -60,6 +60,11 @@ type Agent struct {
 	sink                        agent.ProviderServices
 	workingDir                  string
 	workspace                   zcodeWorkspace
+	// pendingInputRetirements holds replaced inputs until their state publishes.
+	// Mu protects the list.
+	pendingInputRetirements []agent.NativeInputReceipt
+	// seenInputTurns retains the native starts already admitted in this session.
+	seenInputTurns zcodeSeenInputTurns
 	// homeDir is the finalized home directory used at startup. The refresh owner
 	// reloads account files from it.
 	homeDir string
@@ -167,9 +172,6 @@ type Agent struct {
 	// commandRevision is the newest session revision that a command
 	// acknowledgement stated. A compare-and-set command starts from it.
 	commandRevision int64
-	// steerLedger reports accepted steers to the queue in send order: the
-	// queue holds each steer's row until ZCode states what happened to it.
-	steerLedger providerkit.SteerLedger
 	// A native compaction runs outside the prompt turn. Keep its session until a
 	// state.updated result ends it, so the input queue stays busy meanwhile.
 	compactionSessionID    string
@@ -329,7 +331,13 @@ type zcodeTurnState struct {
 	// anchorMessageID is the turn.started messageId, and inputID its inputId.
 	anchorMessageID string
 	inputID         string
-	lastEventSeq    int64
+	inputConfirmed  bool
+	inputSessionID  string
+	replyUnproved   bool
+	// Shared reply rows follow the steer rows in this turn's transcript.
+	steerReceipts      []agent.NativeInputReceipt
+	steerReplyUnproved bool
+	lastEventSeq       int64
 	// contentByScope retains the text and reasoning delivered for this turn,
 	// keyed by generation-buffer scope, so it survives buffer persistence for a
 	// later reconciliation.
@@ -415,6 +423,7 @@ type zcodeInputAdmission struct {
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.ContextCompactor = (*Agent)(nil)
+var _ agent.InputReceiptSender = (*Agent)(nil)
 
 // zcodeSendRetryWindow limits how long SendInput retries a native busy refusal.
 // A recently ended turn can hold the prompt lock briefly. SendInput still
@@ -430,6 +439,13 @@ const (
 // for the turn -- the Agent.SendInput contract. A refusal because a turn is already
 // running is retried briefly, because it is transient by construction.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.SendInputWithReceipt(content, attachments)
+	return err
+}
+
+// SendInputWithReceipt returns the identity ZCode used for the acknowledged
+// input. A native turn start carries the same input ID.
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInputForSession(nil, content, attachments)
 }
 
@@ -527,48 +543,48 @@ func (a *Agent) finishZCodeCompactionGeneration(sessionID string, generation uin
 // watchZCodeTurn starts immediately so a turn that never reports a start is
 // still reconciled. A receipt whose session was replaced while the send was in
 // flight folds no revision and creates no owner on the replacement.
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	if a.zcodeCurrentModelUnavailableLocked() {
 		a.Mu.Unlock()
-		return errZCodeModelSelectionRequired
+		return agent.NativeInputReceipt{}, errZCodeModelSelectionRequired
 	}
 	identity := a.captureZCodeObservationIdentityLocked()
 	if !a.zcodeSessionLifetimeCurrentLocked(identity) {
 		a.Mu.Unlock()
-		return agent.ErrInputSessionChanged
+		return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 	}
 	sessionID, model, turnActive := a.sessionID, a.model, a.turnActive || a.compactionSessionID != ""
 	a.Mu.Unlock()
 	if sessionID == "" {
-		return fmt.Errorf("agent has no ZCode session")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent has no ZCode session")
 	}
 	if turnActive {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 
 	text, wire, err := a.buildZCodeInput(content, attachments, model)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 
 	inputID := id.Short()
 	a.Mu.Lock()
 	if !a.zcodeSessionLifetimeCurrentLocked(identity) {
 		a.Mu.Unlock()
-		return agent.ErrInputSessionChanged
+		return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 	}
 	if a.zcodeCurrentModelUnavailableLocked() {
 		a.Mu.Unlock()
-		return errZCodeModelSelectionRequired
+		return agent.NativeInputReceipt{}, errZCodeModelSelectionRequired
 	}
 	if a.inputAdmissions == nil {
 		a.inputAdmissions = make(map[string]*zcodeInputAdmission)
@@ -598,7 +614,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		unavailable := a.zcodeCurrentModelUnavailableLocked()
 		a.Mu.Unlock()
 		if unavailable {
-			return errZCodeModelSelectionRequired
+			return agent.NativeInputReceipt{}, errZCodeModelSelectionRequired
 		}
 		raw, err := a.sendZCodeSessionRequest(a.Context(), identity, MethodSessionSend, params, a.APITimeout(), func(raw json.RawMessage) {
 			if receipt, err := decodeZCodeSendReceipt(raw, sessionID); err == nil {
@@ -606,11 +622,20 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 			}
 		})
 		if err == nil {
-			_, err := decodeZCodeSendReceipt(raw, sessionID)
-			return err
+			if _, err := decodeZCodeSendReceipt(raw, sessionID); err != nil {
+				return agent.NativeInputReceipt{}, err
+			}
+			receipt := agent.NativeInputReceipt{SessionID: sessionID, InputID: inputID}
+			a.Mu.Lock()
+			current := a.zcodeSessionLifetimeCurrentLocked(identity)
+			a.Mu.Unlock()
+			if !current {
+				a.retireObservedInput(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+			}
+			return receipt, nil
 		}
 		if !zcodeIsPromptRunning(err) || !a.Clock().Now().Before(deadline) {
-			return classifyZCodeDeliveryError(MethodSessionSend, err)
+			return agent.NativeInputReceipt{}, classifyZCodeDeliveryError(MethodSessionSend, err)
 		}
 		timer := a.Clock().NewTimer(zcodeSendRetryInterval, zcodeSendRetryTimerTag)
 		select {
@@ -618,10 +643,10 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 			timer.Stop()
 		case <-a.ProcessDone():
 			timer.Stop()
-			return a.ProcessExitError()
+			return agent.NativeInputReceipt{}, a.ProcessExitError()
 		case <-a.Context().Done():
 			timer.Stop()
-			return a.Context().Err()
+			return agent.NativeInputReceipt{}, a.Context().Err()
 		}
 	}
 }
@@ -714,5 +739,6 @@ func classifyZCodeDeliveryError(method string, err error) error {
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
+	_, err := a.sendInputForSession(&sessionID, content, attachments)
+	return err
 }

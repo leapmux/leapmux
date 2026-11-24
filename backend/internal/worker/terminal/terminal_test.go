@@ -16,6 +16,7 @@ import (
 
 	pty "github.com/aymanbagabas/go-pty"
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -42,7 +43,9 @@ func TestHangUpAllKeepsJoinBudgetForImmediateAndLargeGrace(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				m := NewManager()
 				exited := make(chan struct{})
-				m.draining[&terminalRegistration{id: "draining", done: exited}] = struct{}{}
+				reader := make(chan struct{})
+				close(reader)
+				m.draining[&terminalRegistration{id: "draining", done: exited, terminal: &Terminal{readDoneCh: reader}}] = struct{}{}
 				release := sync.OnceFunc(func() { close(exited) })
 				defer release()
 				joined := make(chan []string, 1)
@@ -64,6 +67,30 @@ func TestHangUpAllKeepsJoinBudgetForImmediateAndLargeGrace(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestHangUpAllJoinsAReaderAfterItsExitHandlerReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewManager()
+		exitDone := make(chan struct{})
+		close(exitDone)
+		readDone := make(chan struct{})
+		release := sync.OnceFunc(func() { close(readDone) })
+		defer release()
+		m.draining[&terminalRegistration{
+			id: "draining", done: exitDone, terminal: &Terminal{readDoneCh: readDone},
+		}] = struct{}{}
+		joined := make(chan []string, 1)
+		go func() { joined <- m.HangUpAll(0) }()
+		synctest.Wait()
+		select {
+		case <-joined:
+			t.Fatal("shutdown finished before the reader returned")
+		default:
+		}
+		release()
+		assert.Empty(t, <-joined)
+	})
 }
 
 func (p *writeCountingPTY) Write([]byte) (int, error) {
@@ -98,7 +125,7 @@ func TestStartRejectsNilClock(t *testing.T) {
 			WorkingDir: t.TempDir(),
 			Cols:       80,
 			Rows:       24,
-		}, nil, func([]byte, int64, []Signal) {})
+		}, nil, func(Output) {})
 	})
 }
 
@@ -218,7 +245,12 @@ func TestTerminal_StartAndStop(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, quartz.NewReal(), func(data []byte, _ int64, _ []Signal) {
+	}, quartz.NewReal(), func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -271,7 +303,12 @@ func TestTerminal_AppImage_ScrubsEnv(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, quartz.NewReal(), func(data []byte, _ int64, _ []Signal) {
+	}, quartz.NewReal(), func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+
 		mu.Lock()
 		defer mu.Unlock()
 		output = append(output, data...)
@@ -335,7 +372,7 @@ func TestTerminal_Resize(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func(Output) {})
 	require.NoError(t, err, "Start")
 	defer func() {
 		term.Stop()
@@ -350,7 +387,7 @@ func TestTerminal_SendInputAfterStop(t *testing.T) {
 		ID:         "test-stopped",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func(Output) {})
 	require.NoError(t, err, "Start")
 
 	term.Stop()
@@ -372,7 +409,7 @@ func TestTerminal_StopAfterANaturalExitIsSafe(t *testing.T) {
 		ID:         "test-natural-exit-stop",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func(Output) {})
 	require.NoError(t, err, "Start")
 	t.Cleanup(term.Stop)
 
@@ -427,7 +464,7 @@ func TestTerminal_ResizeRacingANaturalExitIsSafe(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func(Output) {})
 	require.NoError(t, err, "Start")
 	t.Cleanup(term.Stop)
 
@@ -470,7 +507,7 @@ func TestTerminal_IsExited(t *testing.T) {
 		ID:         "test-exited",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func(Output) {})
 	require.NoError(t, err, "Start")
 
 	assert.False(t, term.IsExited(), "expected IsExited = false before stop")
@@ -488,7 +525,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 		ID:         "tm-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64, []Signal) {}, nil)
+	}, func(Output) {}, nil)
 	require.NoError(t, err, "StartTerminal")
 
 	assert.True(t, m.HasTerminal("tm-1"), "expected HasTerminal = true")
@@ -498,7 +535,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 		ID:         "tm-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64, []Signal) {}, nil)
+	}, func(Output) {}, nil)
 	assert.Error(t, err, "expected error for duplicate terminal")
 
 	// StopTerminal keeps it in the map (exited but not removed).
@@ -522,7 +559,7 @@ func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
 		ID:         "tm-exit",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64, []Signal) {}, nil)
+	}, func(Output) {}, nil)
 	require.NoError(t, err, "StartTerminal")
 
 	// Stop and wait for exit.
@@ -532,7 +569,7 @@ func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
 	}, "expected terminal to exit")
 
 	// Input should fail on exited terminal.
-	assert.Error(t, m.SendInput("tm-exit", []byte("test")), "expected error sending input to exited terminal")
+	assert.Error(t, m.SendInput("tm-exit", terminput.Input{Data: []byte("test")}), "expected error sending input to exited terminal")
 
 	// Resize should also fail.
 	assert.Error(t, m.Resize("tm-exit", 80, 24), "expected error resizing exited terminal")
@@ -550,7 +587,7 @@ func TestManager_ExitNotification(t *testing.T) {
 		ID:         "tm-notify",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64, []Signal) {}, func(id string, code int) {
+	}, func(Output) {}, func(id string, code int) {
 		gotID = id
 		gotCode = code
 		close(exitCh)
@@ -818,7 +855,7 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       200,
 		Rows:       24,
-	}, func([]byte, int64, []Signal) {}, func(tid string, code int) {
+	}, func(Output) {}, func(tid string, code int) {
 		// Snapshot the way the service's exit handler does: this is the only
 		// persist a natural exit performs, so what is on the screen HERE is
 		// what the tab keeps.
@@ -831,7 +868,7 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	// finishes its init scripts before the exit command arrives.
 	command, err := testutil.TestShellOutputCommand(marker)
 	require.NoError(t, err)
-	require.NoError(t, m.SendInput(id, []byte(command+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte(command + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
 		screen, _, _ := m.ScreenSnapshotSince(id, 0)
 		return bytes.Contains(screen, []byte(marker))
@@ -853,8 +890,8 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	// command separator (`;` against cmd.exe's `&`) gets in the way.
 	lastCommand, err := testutil.TestShellOutputCommand(lastMarker)
 	require.NoError(t, err)
-	require.NoError(t, m.SendInput(id, []byte(lastCommand+testutil.TestShellEnter())))
-	require.NoError(t, m.SendInput(id, []byte("exit"+exitArg+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte(lastCommand + testutil.TestShellEnter())}))
+	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte("exit" + exitArg + testutil.TestShellEnter())}))
 
 	var got exitReport
 	select {
@@ -888,7 +925,7 @@ func TestManager_StopAll(t *testing.T) {
 			ID:         id,
 			Shell:      testutil.TestShell(),
 			WorkingDir: t.TempDir(),
-		}, func([]byte, int64, []Signal) {}, nil)
+		}, func(Output) {}, nil)
 		require.NoError(t, err, "StartTerminal(%s)", id)
 	}
 
@@ -913,7 +950,7 @@ func TestManager_StopUnknown(t *testing.T) {
 
 func TestManager_SendInput_UnknownTerminal(t *testing.T) {
 	m := NewManager()
-	err := m.SendInput("nonexistent", []byte("hello"))
+	err := m.SendInput("nonexistent", terminput.Input{Data: []byte("hello")})
 	assert.Error(t, err, "expected error for unknown terminal")
 	assert.ErrorIs(t, err, ErrTerminalNotFound, "error should wrap ErrTerminalNotFound")
 }
@@ -933,7 +970,7 @@ func TestManager_Resize_SameDimensions(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte, int64, []Signal) {}, nil)
+	}, func(Output) {}, nil)
 	require.NoError(t, err)
 	defer m.HangUpAll(0)
 
@@ -958,7 +995,12 @@ func TestManager_ScreenSnapshotSince(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64, _ []Signal) {
+	}, func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -967,7 +1009,7 @@ func TestManager_ScreenSnapshotSince(t *testing.T) {
 	require.True(t, m.AppendOutput("tm-snap", []byte(conPTYStyleModeBytes)))
 
 	// Send a command to produce output.
-	require.NoError(t, m.SendInput("tm-snap", []byte("echo snapshot_test"+testutil.TestShellEnter())), "SendInput")
+	require.NoError(t, m.SendInput("tm-snap", terminput.Input{Data: []byte("echo snapshot_test" + testutil.TestShellEnter())}), "SendInput")
 
 	// Wait for the output to arrive.
 	testutil.AssertEventually(t, func() bool {
@@ -1027,14 +1069,19 @@ func TestManager_SnapshotAfterExit(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64, _ []Signal) {
+	}, func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
 	}, nil)
 	require.NoError(t, err)
 
-	require.NoError(t, m.SendInput("tm-exit", []byte("echo before_exit"+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput("tm-exit", terminput.Input{Data: []byte("echo before_exit" + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1097,7 +1144,7 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64, _ []Signal) {}, nil)
+	}, func(Output) {}, nil)
 	require.NoError(t, err)
 	testutil.RegisterTerminalCleanup(t, m, "tm-append")
 
@@ -1196,7 +1243,7 @@ func newTestManagerWithTerminal(t *testing.T, opts Options) *Manager {
 	t.Helper()
 	id := opts.ID
 	m := NewManager()
-	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64, _ []Signal) {}, nil)
+	err := m.StartTerminal(context.Background(), opts, func(Output) {}, nil)
 	require.NoError(t, err)
 	testutil.RegisterTerminalCleanup(t, m, id)
 	return m
@@ -1235,7 +1282,13 @@ func TestTerminal_AppendOutputCannotOvertakeLiveOutput(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, quartz.NewReal(), func(data []byte, endOffset int64, _ []Signal) {
+	}, quartz.NewReal(), func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+		endOffset := observation.EndOffset
+
 		mu.Lock()
 		defer mu.Unlock()
 		if !bytes.Equal(data, notice) {
@@ -1340,14 +1393,19 @@ func TestSnapshotTerminal(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64, _ []Signal) {
+	}, func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
 	}, nil)
 	require.NoError(t, err, "StartTerminal")
 
-	require.NoError(t, m.SendInput(termID, []byte("echo snapshot_single"+testutil.TestShellEnter())), "SendInput")
+	require.NoError(t, m.SendInput(termID, terminput.Input{Data: []byte("echo snapshot_single" + testutil.TestShellEnter())}), "SendInput")
 	testutil.AssertEventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1409,7 +1467,7 @@ func TestUpdateTitle(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte, int64, []Signal) {}, nil)
+	}, func(Output) {}, nil)
 	require.NoError(t, err)
 
 	// Initially empty title via ListByIDs.
@@ -1583,9 +1641,9 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 		Rows:       24,
 	}
 
-	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64, []Signal) {}, nil), "StartTerminal")
+	require.NoError(t, m.StartTerminal(context.Background(), opts, func(Output) {}, nil), "StartTerminal")
 
-	require.NoError(t, m.SendInput(id, []byte("echo first"+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte("echo first" + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
 		s, _ := m.SnapshotTerminal(id)
 		return strings.Contains(string(s.Screen), "first")
@@ -1600,7 +1658,7 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 	_, preTotal, _ := m.ScreenSnapshotSince(id, 0)
 	require.Greater(t, preTotal, int64(0), "should have written some bytes pre-restart")
 
-	require.NoError(t, m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64, []Signal) {}, nil), "RestartTerminal")
+	require.NoError(t, m.RestartTerminal(context.Background(), opts, 0, func(Output) {}, nil), "RestartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
 	newTerm, _ := m.currentTerminalLocked(id)
@@ -1639,7 +1697,7 @@ func TestRestart_NewBufferWithFallbackOffset(t *testing.T) {
 		Rows:       24,
 	}
 
-	require.NoError(t, m.RestartTerminal(context.Background(), opts, fallback, func([]byte, int64, []Signal) {}, nil), "RestartTerminal")
+	require.NoError(t, m.RestartTerminal(context.Background(), opts, fallback, func(Output) {}, nil), "RestartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
 	newTerm, _ := m.currentTerminalLocked(id)
@@ -1662,11 +1720,11 @@ func TestRestart_FailsIfStillRunning(t *testing.T) {
 		Cols:       80,
 		Rows:       24,
 	}
-	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64, []Signal) {}, nil), "StartTerminal")
+	require.NoError(t, m.StartTerminal(context.Background(), opts, func(Output) {}, nil), "StartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
 	original, _ := m.currentTerminalLocked(id)
-	err := m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64, []Signal) {}, nil)
+	err := m.RestartTerminal(context.Background(), opts, 0, func(Output) {}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still running")
 	assert.Same(t, original, m.current[id].terminal, "failed restart must not swap out the live *Terminal")
@@ -1885,7 +1943,7 @@ func TestTerminalAndManagerExitCode(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       200,
 		Rows:       24,
-	}, func([]byte, int64, []Signal) {}, nil))
+	}, func(Output) {}, nil))
 	t.Cleanup(func() { mgr.RemoveTerminal(id) })
 
 	mgr.mu.RLock()
@@ -1907,7 +1965,7 @@ func TestTerminalAndManagerExitCode(t *testing.T) {
 		wantCode = 0
 		exitCmd = "exit"
 	}
-	require.NoError(t, mgr.SendInput(id, []byte(exitCmd+testutil.TestShellEnter())))
+	require.NoError(t, mgr.SendInput(id, terminput.Input{Data: []byte(exitCmd + testutil.TestShellEnter())}))
 	require.NoError(t, mgr.WaitForExitContext(testutil.DeadlineContext(t), id))
 
 	code, ok = term.ExitCode()

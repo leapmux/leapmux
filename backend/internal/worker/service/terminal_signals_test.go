@@ -44,6 +44,53 @@ func registerTerminalNotifyWatch(t *testing.T, svc *Service, terminalID string) 
 	return w
 }
 
+func TestTerminalResizePublishesAndReplaysTheObservedGeometry(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const id = "term-screen-geometry"
+	startTerminalWithOutputFn(t, svc, id)
+	require.NoError(t, svc.Terminals.Resize(id, 6, 2))
+	initial, ok := svc.Terminals.ScreenReplaySince(id, "", 0, 0)
+	require.True(t, ok)
+	require.NotEmpty(t, initial.Timeline.Changes)
+	previous := initial.Timeline.Changes[len(initial.Timeline.Changes)-1]
+	assert.Equal(t, uint16(6), previous.Cols)
+
+	watcher := newTestWriter()
+	svc.Watchers.terminals.setWatches("geometry", []watchEntry{{
+		id: id, mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, geometry: true,
+	}}, watcher)
+	require.NoError(t, svc.Terminals.Resize(id, 12, 2))
+	const text = "geometry-widened"
+	require.True(t, svc.Terminals.AppendOutput(id, []byte(text)))
+
+	var resize *leapmuxv1.TerminalScreenGeometry
+	var output *leapmuxv1.TerminalData
+	for _, frame := range watcher.streamsSnapshot() {
+		var message leapmuxv1.WatchEventsResponse
+		require.NoError(t, proto.Unmarshal(frame.GetPayload(), &message))
+		if change := message.GetTerminalEvent().GetScreenGeometry(); change != nil {
+			resize = change
+		}
+		if data := message.GetTerminalEvent().GetData(); string(data.GetData()) == text {
+			require.NotNil(t, resize, "geometry arrives before the output that uses it")
+			output = data
+		}
+	}
+	require.NotNil(t, resize)
+	require.NotNil(t, output)
+	assert.Equal(t, uint32(12), resize.GetCols())
+	assert.Equal(t, previous.Revision+1, resize.GetRevision())
+	assert.Equal(t, resize.GetEpoch(), output.GetScreenEpoch())
+	assert.Equal(t, resize.GetRevision(), output.GetGeometryRevision())
+	replay, ok := svc.Terminals.ScreenReplaySince(id, previous.Epoch, initial.EndOffset, previous.Revision)
+	require.True(t, ok)
+	assert.False(t, replay.Snapshot)
+	require.Len(t, replay.Timeline.Changes, 1)
+	assert.Equal(t, resize.GetOffset(), replay.Timeline.Changes[0].Offset)
+	assert.Contains(t, string(replay.Data), text)
+}
+
 func countTerminalEvents(w *testResponseWriter, terminalID string, pick func(*leapmuxv1.TerminalEvent) bool) int {
 	n := 0
 	for _, s := range w.streamsSnapshot() {
@@ -90,7 +137,7 @@ func TestTerminalOutput_SnapshotReplayNeverBroadcastsBell(t *testing.T) {
 	sink := newReplaySink(w, 0, nil, nil)
 	row, err := svc.terminalCatalog().get(context.Background(), terminalID)
 	require.NoError(t, err)
-	svc.replayTerminalCatchUp(sink, terminalID, 0, row)
+	svc.replayTerminalCatchUp(sink, &leapmuxv1.WatchTerminalEntry{TerminalId: terminalID}, row)
 
 	data, _, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
 	require.NotEmpty(t, data, "snapshot must include the BEL byte in terminal data")

@@ -218,7 +218,13 @@ func (s *ChannelService) OpenChannel(
 						// refuses an empty list outright, so a hub that stopped
 						// sending this opens no channel at all rather than
 						// silently promoting a narrow app to full authority.
-						GrantedScopes:    authscope.ScopesToWire(user.Scopes),
+						GrantedScopes: authscope.ScopesToWire(user.Scopes),
+						// Only a Worker mints a delegation bearer, and it opens a
+						// channel with one to relay the calls of its tabs. The
+						// minter rides the handshake on the same terms as the
+						// identity, so the target trusts the call source that
+						// such a channel states and refuses it on any other.
+						RelayWorkerId:    user.Credential.WorkerScopeID(),
 						HandshakePayload: req.GetHandshakePayload(),
 						MaxMessageSize:   uint64(s.channelMgr.MaxMessageSize()),
 					},

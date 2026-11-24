@@ -110,6 +110,7 @@ type Transcript struct {
 	retireWaiters    []func()
 
 	agent.ProviderServices
+	direct        agent.ProviderServices
 	queue         *agent.OutputQueue
 	orderedWriter agent.TranscriptServices
 	ctx           context.Context
@@ -252,7 +253,7 @@ const toolSupplementFinalReadBudget = time.Second
 
 // New decorates the exact provider services with a source. The agent context controls the interim worker lifetime.
 func New(ctx context.Context, services agent.ProviderServices, source Source) *Transcript {
-	s := &Transcript{ProviderServices: services, ctx: ctx, source: source, pending: make(map[string]pendingToolRow)}
+	s := &Transcript{ProviderServices: services, direct: agent.DirectProviderServices(services), ctx: ctx, source: source, pending: make(map[string]pendingToolRow)}
 	s.queue = agent.OutputQueueFor(services)
 	if s.queue == nil {
 		s.queue = &agent.OutputQueue{}
@@ -261,6 +262,67 @@ func New(ctx context.Context, services agent.ProviderServices, source Source) *T
 	s.work = sync.NewCond(&s.mu)
 	s.idle = sync.NewCond(&s.mu)
 	return s
+}
+
+type directTranscript struct {
+	agent.ProviderServices
+	transcript *Transcript
+}
+
+func (d directTranscript) OutputQueue() *agent.OutputQueue { return d.transcript.queue }
+func (d directTranscript) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	return d.transcript.PersistMessage(source, content, span)
+}
+func (d directTranscript) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	return d.transcript.PersistNotification(source, content)
+}
+func (d directTranscript) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
+	return d.transcript.PersistWorkerNotification(content)
+}
+func (d directTranscript) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	return d.transcript.PersistTurnEnd(content, span)
+}
+func (d directTranscript) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	return d.transcript.CaptureMessage(content, span)
+}
+func (d directTranscript) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
+	return d.transcript.ReserveTranscriptOutput(queue, writes...)
+}
+func (d directTranscript) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
+	return d.transcript.ValidateTranscriptOutput(ticket)
+}
+func (d directTranscript) UpdateSessionID(sessionID string) {
+	d.transcript.UpdateSessionID(sessionID)
+}
+func (d directTranscript) BindChildSessionID(sessionID string) error {
+	return d.transcript.BindChildSessionID(sessionID)
+}
+func (d directTranscript) AdoptNativeSession(sessionID string) {
+	d.transcript.AdoptNativeSession(sessionID)
+}
+func (d directTranscript) ChildSink(childID string) agent.ProviderServices {
+	return d.transcript.ChildSink(childID)
+}
+func (d directTranscript) AcquireChildSink(childID string) agent.ChildSinkLease {
+	return d.transcript.AcquireChildSink(childID)
+}
+func (d directTranscript) CleanupChildAgent(childID string) {
+	d.transcript.CleanupChildAgent(childID)
+}
+func (d directTranscript) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
+	return d.transcript.PersistChildMessage(childAgentID, source, content, span)
+}
+func (d directTranscript) PersistChildTurnEnd(childAgentID string, content agent.MessageContent, span agent.SpanInfo) error {
+	return d.transcript.PersistChildTurnEnd(childAgentID, content, span)
+}
+
+// DirectProviderServicesForQueue exposes the direct effect services below s so an
+// outer ordered wrapper on the same OutputQueue never re-enters an inner queue wrapper.
+func (s *Transcript) DirectProviderServicesForQueue(queue *agent.OutputQueue) (agent.ProviderServices, bool) {
+	if queue != nil && queue != s.queue {
+		return s, false
+	}
+	return directTranscript{ProviderServices: s.direct, transcript: s}, true
 }
 
 // toolTranscriptWriter preserves observation overrides in retained queue writes.
@@ -559,6 +621,14 @@ func (s *Transcript) PendingSpanIDsForTest() []string {
 func (s *Transcript) UpdateSessionID(sessionID string) {
 	s.ProviderServices.UpdateSessionID(sessionID)
 	s.adoptMessageSession()
+}
+
+func (s *Transcript) BindChildSessionID(sessionID string) error {
+	if err := s.ProviderServices.BindChildSessionID(sessionID); err != nil {
+		return err
+	}
+	s.adoptMessageSession()
+	return nil
 }
 
 func (s *Transcript) AdoptNativeSession(sessionID string) {

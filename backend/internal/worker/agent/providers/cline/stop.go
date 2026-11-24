@@ -229,6 +229,7 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion, message string)
 		status = bgtask.StatusInterrupted
 	}
 	a.closeTeamRuns(status)
+	a.resetSteerProofs()
 	providerkit.ResetSpansAndProgress(a.sink)
 	a.PublishTurnActive()
 }

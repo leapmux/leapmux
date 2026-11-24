@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -125,6 +126,17 @@ func (svc *Service) writeArchiveFlagsAndTearDown(
 
 	if err := observation.accept(requested.lockKeys()); err != nil {
 		return archiveTabSet{}, err
+	}
+	for _, id := range requested.agents {
+		rootID, err := svc.Queries.GetRootAgentID(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return archiveTabSet{}, fmt.Errorf("read agent %s archive root: %w", id, err)
+		}
+		finish := svc.semanticEvents.agentMutations.begin(rootID)
+		defer finish()
 	}
 	changed, err := svc.persistArchiveFlags(ctx, flag, requested)
 	if err != nil {
@@ -403,18 +415,22 @@ func (svc *Service) stopArchivedTabs(changed archiveTabSet) {
 			}
 			continue
 		}
-		exitCode, _ := svc.Terminals.ExitCode(terminalID)
+		exitCode, hasExitCode := svc.Terminals.ExitCode(terminalID)
 		// Broadcast even though a PTY that was RUNNING already broadcast the
 		// same event from makeTerminalExitFn: a terminal that never spawned, or
 		// that exited before the archive, fires no exit handler, and the client
 		// has to learn that its shell is gone from something. WaitForExit above
 		// returns only after the exit handler finished, so ExitCode reads the
-		// final code for a PTY that ran in this process and 0 otherwise.
-		svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
+		// final code for a PTY that ran in this process and reports false
+		// otherwise. A terminal with no recorded exit states no code rather
+		// than a 0 that no shell returned.
+		closed := &leapmuxv1.TerminalClosed{}
+		if hasExitCode {
+			closed.ExitCode = ptrconv.Ptr(int32(exitCode))
+		}
+		svc.Watchers.PublishTerminalStatusSnapshot(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
-			Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{
-				ExitCode: int32(exitCode),
-			}},
+			Event:      &leapmuxv1.TerminalEvent_Closed{Closed: closed},
 		})
 	}
 }

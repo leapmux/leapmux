@@ -51,11 +51,12 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 			return nil, err
 		}
 		out[i] = store.LifecycleOutboxRow{
-			ID:         r.ID,
-			UserID:     r.UserID,
-			OpType:     r.OpType,
-			Payload:    payload,
-			ConsumedAt: r.ConsumedAt.Ptr(),
+			ID:                r.ID,
+			UserID:            r.UserID,
+			OpType:            r.OpType,
+			Payload:           payload,
+			LayoutFactWritten: r.LayoutFactWritten,
+			ConsumedAt:        r.ConsumedAt.Ptr(),
 		}
 	}
 	return out, nil

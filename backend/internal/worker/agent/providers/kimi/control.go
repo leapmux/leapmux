@@ -8,10 +8,11 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -22,12 +23,13 @@ import (
 // The server announces each through an unsequenced `interaction` frame and
 // parks the tool call until a REST answer resolves it. The worker publishes
 // the complete native frame as the control
-// request, under the server's own interaction ID, and the browser reads
-// it through the Kimi plugin. The answer comes back through
-// SendControlResponse: ResolveControlResponse (control_response.go) turns the
-// browser's decision into the server's own body, and deliverControlResponse
-// posts it. A subscription
-// re-emits the current pending live frames after its acknowledgement.
+// request, under the server's own interaction ID. ReadControlRequest reads it
+// into the prompt, and the browser's Kimi plugin reads it to display a saved
+// answer. The answer comes back through AnswerControl: AnswerControlRequest
+// builds the neutral envelope from the decision, ResolveControlResponse
+// (control_response.go) turns it into the server's own body, and
+// deliverControlResponse posts it. A subscription re-emits the current
+// pending live frames after its acknowledgement.
 //
 // The server resolves a request by itself when the turn ends (an abort, a
 // failure) and states that with an `interaction` frame whose status is `ended`. The worker then withdraws the request, so no banner waits on an
@@ -43,10 +45,14 @@ const (
 
 // kimiPendingControl is one published control request.
 type kimiPendingControl struct {
-	kind       kimiControlKind
-	sessionID  string
-	agentID    string
-	toolCallID string
+	instanceID           string
+	kind                 kimiControlKind
+	sessionID            string
+	agentID              string
+	toolCallID           string
+	proofToolCallID      string
+	toolIdentityConflict bool
+	nativeInputs         atomic.Pointer[agent.NativeControlInputs]
 	// answered is set once LeapMux delivered an answer, so the server's
 	// resolution that follows does not withdraw a request the user answered.
 	answered        bool
@@ -178,16 +184,32 @@ func (a *Agent) publishControl(interaction kimiInteraction, kind kimiControlKind
 	if a.controls == nil {
 		a.controls = make(map[string]*kimiPendingControl)
 	}
-	if _, repeat := a.controls[requestID]; repeat {
+	if existing := a.controls[requestID]; existing != nil {
+		if existing.sessionID == interaction.SessionID && existing.agentID == interaction.agent() && existing.kind == kind {
+			if existing.proofToolCallID == "" {
+				existing.proofToolCallID = interaction.ToolCallID
+			} else if interaction.ToolCallID != "" && interaction.ToolCallID != existing.proofToolCallID {
+				existing.toolIdentityConflict = true
+			}
+		} else {
+			existing.toolIdentityConflict = true
+		}
+		root := existing.agentID == kimiMainAgentID
 		a.Mu.Unlock()
+		if root {
+			a.refreshExactControls(a.run(kimiMainAgentID))
+		}
 		return
 	}
 	bypass := bypassable && a.settings.permissionOption() == contracts.KimiModeAuto && !a.StoppedLocked()
-	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, bypassable: bypassable,
-		agentID: interaction.agent(), toolCallID: interaction.ToolCallID,
+	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, bypassable: bypassable, instanceID: id.Generate(),
+		agentID: interaction.agent(), toolCallID: interaction.ToolCallID, proofToolCallID: interaction.ToolCallID,
 		payload: append([]byte(nil), interaction.Raw...), ready: bypass, publicationDone: make(chan struct{})}
 	a.controls[requestID] = pending
 	a.Mu.Unlock()
+	if pending.agentID == kimiMainAgentID {
+		a.refreshExactControls(a.run(kimiMainAgentID))
+	}
 	afterText := a.flushAgentText(pending.agentID)
 	if bypass {
 		a.queuePermissionApprovals()
@@ -218,7 +240,7 @@ func (a *Agent) publishRegisteredControl(requestID string, pending *kimiPendingC
 	}
 	a.Mu.Unlock()
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
-		RequestID: requestID, Payload: pending.payload, AgentSessionID: pending.sessionID,
+		RequestID: requestID, Payload: pending.payload, AgentSessionID: pending.sessionID, InstanceID: pending.instanceID,
 	})
 	a.Mu.Lock()
 	pending.ready, pending.published = true, err == nil
@@ -231,9 +253,12 @@ func (a *Agent) publishRegisteredControl(requestID string, pending *kimiPendingC
 	a.Mu.Unlock()
 	if err == nil {
 		if !current {
-			a.sink.CancelControlRequest(requestID)
-		} else if bypass {
-			a.queuePermissionApprovals()
+			a.sink.CancelControlRequestInstance(requestID, pending.instanceID)
+		} else {
+			a.retainExactControlInputs(pending)
+			if bypass {
+				a.queuePermissionApprovals()
+			}
 		}
 		return
 	}
@@ -389,8 +414,8 @@ func (a *Agent) withdrawAllControls() {
 }
 
 // kimiControlEnvelope is the control-response envelope the service forwards:
-// the browser's own, with its inner response already turned into the server's
-// body by ResolveControlResponse.
+// the neutral envelope that AnswerControlRequest built, with its inner response
+// already turned into the server's body by ResolveControlResponse.
 type kimiControlEnvelope struct {
 	Response struct {
 		RequestID string          `json:"request_id"`

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 
@@ -75,25 +74,17 @@ func TestRunGitRead_SendsTheLimitAndEmitsTheTotalSize(t *testing.T) {
 			}}
 			startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 
-			var runErr error
-			out := withCapturedStdout(t, func() {
-				runErr = RunGitRead(fakeCmdCtx{}, append([]string{
-					"--path", "/repo/tracked.txt", "--worker-id", "worker-A", "--ref", "staged",
-				}, tc.flags...))
-			})
-			require.NoError(t, runErr, "stdout: %s", out)
-
-			var env struct {
-				Data map[string]any `json:"data"`
-			}
-			require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
+			o := runControl(t, append([]string{
+				"git", "read", "/repo/tracked.txt", "--worker", "worker-A", "--ref", "staged",
+			}, tc.flags...)...)
+			require.Len(t, o.lines(), 1, "exactly one envelope: %s", o.Stdout)
 			assert.Equal(t, map[string]any{
 				"ref":        "staged",
 				"path":       "/repo/tracked.txt",
 				"exists":     true,
 				"content":    "0123",
 				"total_size": float64(11),
-			}, env.Data)
+			}, o.Data(t))
 
 			requests := disp.received()
 			require.Len(t, requests, 1)
@@ -113,21 +104,13 @@ func TestRunGitRead_EmitsWhetherTheFileExistsAtTheRef(t *testing.T) {
 	}}
 	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 
-	var runErr error
-	out := withCapturedStdout(t, func() {
-		runErr = RunGitRead(fakeCmdCtx{}, []string{"--path", "/repo/untracked.txt", "--worker-id", "worker-A"})
-	})
-	require.NoError(t, runErr, "stdout: %s", out)
-
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
+	o := runControl(t, "git", "read", "/repo/untracked.txt", "--worker", "worker-A")
+	require.Len(t, o.lines(), 1, "exactly one envelope: %s", o.Stdout)
 	assert.Equal(t, map[string]any{
 		"ref":        "head",
 		"path":       "/repo/untracked.txt",
 		"exists":     false,
 		"content":    "",
 		"total_size": float64(0),
-	}, env.Data)
+	}, o.Data(t))
 }

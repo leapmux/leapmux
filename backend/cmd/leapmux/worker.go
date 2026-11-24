@@ -9,9 +9,9 @@ import (
 )
 
 // reregistrationSteps states the one remedy for a Worker whose registration
-// must be replaced. `leapmux worker deregister` removes the saved credentials
+// must be replaced. `leapmux daemon worker deregister` removes the saved credentials
 // once the Hub confirms the deletion, so the remedy deletes no file by hand.
-const reregistrationSteps = "run `leapmux worker deregister`, then `leapmux worker register` with a new registration key"
+const reregistrationSteps = "run `leapmux daemon worker deregister`, then `leapmux daemon worker register` with a new registration key"
 
 // reregistrationAdvice adds the re-registration steps to an error that no
 // reconnect can fix: the Hub refused this worker's keys, or its saved keypair
@@ -26,13 +26,13 @@ func reregistrationAdvice(err error) error {
 	return err
 }
 
-// alreadyRegisteredError refuses `leapmux worker register` on a worker that
+// alreadyRegisteredError refuses `leapmux daemon worker register` on a worker that
 // already has credentials. Wiping the state alone would leave the old row
 // ACTIVE: it keeps counting against max_workers_per_user, stays in the owner's
 // list as an offline Worker, and keeps its token valid for any copy of the old
 // state.json.
 func alreadyRegisteredError(state *config.State) error {
-	return fmt.Errorf("this worker is already registered with %s; start it with `leapmux worker start` or `leapmux worker run`, or, to register it again, %s",
+	return fmt.Errorf("this worker is already registered with %s; start it with `leapmux daemon worker start` or `leapmux daemon worker run`, or, to register it again, %s",
 		state.HubURL, reregistrationSteps)
 }
 

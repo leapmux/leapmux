@@ -1,14 +1,21 @@
+import type { NotificationToastContent } from '~/components/common/Toast'
 import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { NotificationDestination } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
+import type { Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabStatusStore } from '~/stores/tabStatus.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, onCleanup } from 'solid-js'
+import { dismissNotificationToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { storageAccountUserId } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt'
 import { sameKeys } from '~/lib/sameKeys'
+import { showUserNotification } from '~/lib/userNotification'
 import { openWorkerPrivateEventStream } from '~/lib/workerPrivateEvents'
+import { tabDisplayLabel } from '~/stores/tab.helpers'
 import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
 /**
@@ -41,6 +48,12 @@ import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
  * position bump on an unrelated tab doesn't tear down and reopen every stream.
  * Worker membership controls stream changes within an account. An account
  * generation change closes and replaces every stream.
+ *
+ * The stream also carries what the Control CLI asks of every open window: a
+ * notification (`leapmux control notify`), a reveal (`tab reveal`), and the
+ * status of a tab (`tab status`). The statuses are the one part with state: a
+ * stream's close drops its Worker's statuses, and a new stream drops them
+ * again before its bootstrap replays the ones that are still set.
  */
 export interface UseWorkerPrivateStreamsOpts {
   acceptsEarlyMetadata: (tabId: string, type: TabType, workerId: string) => boolean
@@ -48,6 +61,27 @@ export interface UseWorkerPrivateStreamsOpts {
   view: TabView
   metadata: TabMetadataStore
   quakeStore: QuakeTerminalStore
+  tabStatuses: TabStatusStore
+  /**
+   * Show one tab: switch to its workspace, and activate its tile and the tab,
+   * as a click on the tab in the sidebar does.
+   */
+  revealTab: (tab: Tab) => void
+  revealWorkspace: (workspaceId: string) => void
+}
+
+/**
+ * The placed tab `tabId` that `workerId` hosts, or undefined when this client
+ * does not know it.
+ *
+ * The events give a tab id alone, with no type, so this scans the joined tabs
+ * rather than asking `getById` once per type. It runs once per notification
+ * or reveal, which a person or a script sends by hand. A tab on ANOTHER worker
+ * with the same id is not the one the event means: a FILE tab id is unique only
+ * within a user.
+ */
+function placedTabOnWorker(view: TabView, workerId: string, tabId: string): Tab | undefined {
+  return view.all().find(tab => tab.id === tabId && tab.workerId === workerId)
 }
 
 export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void {
@@ -132,8 +166,101 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
           && (!record.workerId || record.workerId.value === workerId)
           : opts.acceptsEarlyMetadata(tabId, type, workerId)
       }
+      // A status of a tab that this worker hosts, or of one this client does
+      // not know yet: a script that opens a tab and sets its status at once can
+      // beat the CRDT operation that adds the tab. A closed tab, or a tab of
+      // another worker, takes none.
+      const acceptsStatus = (tabId: string) => {
+        if (!isCurrent())
+          return false
+        const record = opts.state()!.tabs[tabId]
+        return !record
+          || (hlcIsZero(record.tombstoneAt) && (!record.workerId || record.workerId.value === workerId))
+      }
+      const notificationAction = (destination: NotificationDestination | undefined): NotificationToastContent['destination'] => {
+        const target = destination?.target
+        if (target?.case === 'tab') {
+          const findTab = () => {
+            const tab = placedTabOnWorker(opts.view, workerId, target.value.tabId)
+            return tab?.type === target.value.tabType
+              ? tab
+              : undefined
+          }
+          const tab = findTab()
+          return {
+            label: tab
+              ? `Open ${tabDisplayLabel(tab)}`
+              : 'Open tab',
+            open: () => {
+              if (!isCurrent())
+                return
+              const current = findTab()
+              if (current)
+                opts.revealTab(current)
+            },
+          }
+        }
+        if (target?.case === 'workspaceId') {
+          return {
+            label: 'Open workspace',
+            open: () => {
+              if (!isCurrent())
+                return
+              if (opts.state()?.workspaces[target.value])
+                opts.revealWorkspace(target.value)
+            },
+          }
+        }
+        return undefined
+      }
       const close = openWorkerPrivateEventStream({
         workerId,
+        onSubscribed: () => {
+          if (isCurrent())
+            opts.tabStatuses.forgetWorker(workerId)
+        },
+        onTabStatusChanged: (evt) => {
+          // A clear applies to any tab: dropping a status is never wrong.
+          if (evt.status === undefined) {
+            if (isCurrent())
+              opts.tabStatuses.apply(workerId, evt.tabId, undefined)
+            return
+          }
+          if (acceptsStatus(evt.tabId))
+            opts.tabStatuses.apply(workerId, evt.tabId, evt.status)
+        },
+        onUserNotification: (evt) => {
+          if (!isCurrent())
+            return
+          // A source that this client does not know yet still shows the
+          // notification, without the tab's title.
+          const source = evt.sourceTabId
+            ? placedTabOnWorker(opts.view, workerId, evt.sourceTabId)
+            : undefined
+          showUserNotification({
+            id: evt.id,
+            title: evt.title,
+            body: evt.body,
+            destination: notificationAction(evt.destination),
+            sourceTabTitle: source === undefined
+              ? undefined
+              : tabDisplayLabel(source),
+          })
+        },
+        onUserNotificationCleared: (id) => {
+          if (isCurrent())
+            dismissNotificationToast(id)
+        },
+        onTabRevealCommand: (evt) => {
+          if (!isCurrent())
+            return
+          // A tab this client does not know is not an error: the command
+          // reaches every window of the account, and this one may not have
+          // received the tab yet.
+          const tab = placedTabOnWorker(opts.view, workerId, evt.tabId)
+          if (tab)
+            opts.revealTab(tab)
+        },
         onTabRenamed: (evt) => {
           if (!acceptsMetadata(evt.tabId, evt.tabType))
             return
@@ -206,6 +333,10 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
       privateStreamCleanups.set(workerId, () => {
         active = false
         close()
+        // Nothing reports this worker's statuses any more, so none of them
+        // can stay on screen. An account switch closes every stream, which
+        // drops every status through here.
+        opts.tabStatuses.forgetWorker(workerId)
       })
     }
   })

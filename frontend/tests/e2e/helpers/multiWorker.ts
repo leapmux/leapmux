@@ -79,11 +79,12 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
 
   return cleanupOnFailure(async () => {
     const hubProc = spawnTestProcess(binaryPath, [
+      'daemon',
       'hub',
       'run',
-      '-listen',
+      '--listen',
       '127.0.0.1:0',
-      '-data-dir',
+      '--data-dir',
       hubDataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],

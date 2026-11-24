@@ -9,8 +9,10 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// PrivateEventsBus is the worker-local pub/sub for E2EE-only tab events
-// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked). It mirrors the
+// PrivateEventsBus is the worker-local pub/sub for the E2EE-only events of
+// WorkerPrivateEvent: the tab facts (TabRenamed, TabPayloadRegistered,
+// TabPayloadRevoked, TabStatusChanged) and the commands to the frontends
+// (QuakePanelCommand, UserNotification, TabRevealCommand). It mirrors the
 // hub-side WorkspaceEventBus shape but lives on the worker so titles and
 // paths never leave E2EE.
 //
@@ -168,6 +170,42 @@ func (b *PrivateEventsBus) PublishQuakePanelCommand(owner userid.UserID, working
 	})
 }
 
+// PublishTabRevealCommand broadcasts a TabRevealCommand for the tab tabID of
+// kind tabType to owner's subscribers. Like a QuakePanelCommand it is
+// live-only: which tab a client shows is client-local state, and a replay on
+// reconnect would move the user to a tab that they left.
+func (b *PrivateEventsBus) PublishTabRevealCommand(owner userid.UserID, tabType leapmuxv1.TabType, tabID string) {
+	b.publish(owner, &leapmuxv1.WorkerPrivateEvent{
+		Event: &leapmuxv1.WorkerPrivateEvent_TabRevealCommand{
+			TabRevealCommand: &leapmuxv1.TabRevealCommand{TabId: tabID, TabType: tabType},
+		},
+	})
+}
+
+// PublishTabStatusChanged broadcasts a TabStatusChanged for the tab tabID of
+// kind tabType to owner's subscribers. A nil status reports that the status
+// was cleared.
+//
+// TabStatusStore is the only publisher, and it publishes under its own lock,
+// so the events of one tab leave in the order the store applied them.
+func (b *PrivateEventsBus) PublishTabStatusChanged(owner userid.UserID, tabType leapmuxv1.TabType, tabID string, status *leapmuxv1.TabStatus) {
+	b.publish(owner, tabStatusChangedEvent(tabType, tabID, status))
+}
+
+// tabStatusChangedEvent builds the TabStatusChanged event of one tab, for the
+// live publish and for the bootstrap replay alike.
+func tabStatusChangedEvent(tabType leapmuxv1.TabType, tabID string, status *leapmuxv1.TabStatus) *leapmuxv1.WorkerPrivateEvent {
+	return &leapmuxv1.WorkerPrivateEvent{
+		Event: &leapmuxv1.WorkerPrivateEvent_TabStatusChanged{
+			TabStatusChanged: &leapmuxv1.TabStatusChanged{
+				TabId:   tabID,
+				TabType: tabType,
+				Status:  status,
+			},
+		},
+	}
+}
+
 // SnapshotAndSubscribe registers the subscriber under the bus mutex, takes the
 // snapshot after releasing it, then streams that snapshot before any live event.
 // This is the bootstrap-replay pattern the CRDT plan requires for
@@ -181,11 +219,10 @@ func (b *PrivateEventsBus) PublishQuakePanelCommand(owner userid.UserID, working
 // snapshot and the live stream, which is harmless because the client's applies
 // are keyed by tab id and idempotent.
 //
-// QuakePanelCommand is deliberately NOT part of any snapshot. It is a transient
-// command rather than state the worker holds, so replaying it would reopen a
-// panel on every reconnect -- overwriting client-local state the user set. The
-// bootstrap replay is for facts, and this bus carries one case that is not a
-// fact.
+// Quake commands, notification events and tab reveals belong to the live
+// stream. Replaying them would change the client view on every reconnect.
+// TabStatusChanged describes current state, which is why the
+// production snapshotFn replays each status that is set.
 //
 // snapshotFn receives the owner and returns the events that should be
 // sent before the live stream. It runs with the bus mutex RELEASED -- the

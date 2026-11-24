@@ -48,7 +48,7 @@ func answerCopilotFolderTrust(t *testing.T, a *Agent, requestID, decision string
 		"response": map[string]string{contracts.WorkspaceTrustFieldDecision: decision},
 	}})
 	require.NoError(t, err)
-	return a.SendRawInput(raw, agent.StopContext{})
+	return a.SendRawInput(agent.RawInput{Data: raw})
 }
 
 // copilotFolderTrustRequestID identifies the question of the session `session-1`.
@@ -66,6 +66,7 @@ func TestFolderTrustAsksCopilotAboutTheWorkingDirectory(t *testing.T) {
 	published := sink.LastPublishedControl()
 	assert.Equal(t, copilotFolderTrustRequestID, published.RequestID)
 	assert.JSONEq(t, `{"type":"leapmux_workspace_trust","path":"/work/project","configuration":["MCP servers"]}`, string(published.Payload))
+	agenttest.AssertPublishedControlKeys(t, copilotProvider{}, sink)
 }
 
 // A trusted folder, a refused check and an answer without a verdict ask nothing.
@@ -189,7 +190,7 @@ func TestFolderTrustIsNotABypassedPermission(t *testing.T) {
 	assert.Empty(t, sink.CanceledControls())
 }
 
-// The plugin turns the browser's neutral decision into the saved answer that the
+// The plugin turns the neutral allow or deny into the saved answer that the
 // agent reads.
 func TestFolderTrustResolvesTheNeutralDecision(t *testing.T) {
 	t.Parallel()
@@ -197,16 +198,14 @@ func TestFolderTrustResolvesTheNeutralDecision(t *testing.T) {
 	h.agent.checkFolderTrust()
 	request := sink.LastPublishedControl()
 	for behavior, want := range map[string]string{
-		agent.ControlBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
-		agent.ControlBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
+		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
+		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
 	} {
 		content, err := json.Marshal(map[string]any{"response": map[string]any{
 			"request_id": request.RequestID, "response": map[string]any{"behavior": behavior},
 		}})
 		require.NoError(t, err)
-		resolution := Registration().Plugin.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID: request.RequestID, RequestPayload: request.Payload, ResponseContent: content,
-		})
+		resolution := agenttest.ResolveAnswerInSession(Registration().Plugin, request.Payload, request.AgentSessionID, request.RequestID, agent.ControlAnswer{Content: content})
 		require.False(t, resolution.Withhold, behavior)
 		var stored struct {
 			Response struct {

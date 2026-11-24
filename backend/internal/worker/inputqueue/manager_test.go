@@ -36,12 +36,14 @@ type recordingDispatcher struct {
 	prepared        []string
 	onPrepare       func(string)
 	policy          agent.SteerPolicy
-	onSteer         func()
+	policyErr       error
+	onSteer         func(DispatchItem)
 	fail            error
 	steering        bool
 	steerStarted    chan struct{}
 	steerRelease    <-chan struct{}
 	steerFail       error
+	steerReceipt    agent.NativeInputReceipt
 	interrupted     []string
 	interruptFail   error
 	preemption      bool
@@ -66,9 +68,10 @@ func (d *recordingDispatcher) Steer(item DispatchItem) (DispatchResult, error) {
 	d.steered = append(d.steered, item.ID)
 	started, release, steerFail := d.steerStarted, d.steerRelease, d.steerFail
 	onSteer := d.onSteer
+	receipt := d.steerReceipt
 	d.mu.Unlock()
 	if onSteer != nil {
-		onSteer()
+		onSteer(item)
 	}
 	if started != nil {
 		close(started)
@@ -76,12 +79,38 @@ func (d *recordingDispatcher) Steer(item DispatchItem) (DispatchResult, error) {
 	if release != nil {
 		<-release
 	}
-	return DispatchResult{StartsTurn: true}, steerFail
+	return DispatchResult{StartsTurn: true, NativeReceipt: receipt}, steerFail
 }
 
 func (d *recordingDispatcher) SupportsSteering(string) bool { return d.steering }
 
-func (d *recordingDispatcher) SteerPolicy(string) agent.SteerPolicy { return d.policy }
+func (d *recordingDispatcher) SteerPolicy(string) (agent.SteerPolicy, error) {
+	return d.policy, d.policyErr
+}
+
+func TestManagerSteerLeavesInputQueuedWhenItsPolicyCannotBeRead(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	policyErr := errors.New("the child route is unavailable")
+	dispatcher := &recordingDispatcher{steering: true, policyErr: policyErr}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+	_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = store.Enqueue(t.Context(), NewItem{
+		ID: "steer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Change the answer.",
+	})
+	require.NoError(t, err)
+
+	_, err = manager.Steer(t.Context(), "agent-1", "steer")
+	require.ErrorIs(t, err, policyErr)
+	snapshot, err := store.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	assert.Empty(t, dispatcher.prepared)
+	assert.Empty(t, dispatcher.steered)
+}
 
 // A steer of a future head answers with the schedule while the turn runs, and
 // steers nothing.
@@ -115,7 +144,7 @@ func TestManagerSteerOfASurvivorIsNotRequeuedWhenTheTurnEndsDuringTheCall(t *tes
 		require.NoError(t, err)
 		_, err = store.Enqueue(t.Context(), NewItem{ID: "steer", AgentID: "agent-1", Text: "read this once", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
 		require.NoError(t, err)
-		dispatcher.onSteer = func() {
+		dispatcher.onSteer = func(DispatchItem) {
 			_, err := manager.TurnEnded(t.Context(), "agent-1")
 			require.NoError(t, err)
 		}
@@ -128,6 +157,36 @@ func TestManagerSteerOfASurvivorIsNotRequeuedWhenTheTurnEndsDuringTheCall(t *tes
 			assert.Empty(t, snapshot.Items)
 		}
 	}
+}
+
+func TestManagerSteerRetainsANativeAdmissionWhenTheTurnEndsDuringTheCall(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	native := agent.NativeInputReceipt{SessionID: "ses_demo", InputID: "receipt", TurnID: "receipt"}
+	dispatcher := &recordingDispatcher{steering: true, steerReceipt: native}
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	_, err := manager.SetPaused(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = store.Enqueue(t.Context(), NewItem{ID: "steer", AgentID: "agent-1", Text: "read this once", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+	require.NoError(t, err)
+	dispatcher.onSteer = func(DispatchItem) {
+		_, err := manager.TurnEnded(t.Context(), "agent-1")
+		require.NoError(t, err)
+	}
+	snapshot, err := manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+	assert.False(t, snapshot.ActiveTurn)
+	var sessionID, inputID, turnID string
+	require.NoError(t, store.db.QueryRowContext(t.Context(), `
+		SELECT m.agent_session_id, m.native_input_id, binding.native_turn_id
+		FROM messages m JOIN native_agent_inputs binding USING (agent_id, agent_session_id, native_input_id)
+		WHERE m.id = 'steer'`).Scan(&sessionID, &inputID, &turnID))
+	assert.Equal(t, native, agent.NativeInputReceipt{SessionID: sessionID, InputID: inputID, TurnID: turnID})
 }
 
 func (d *recordingDispatcher) PrepareSteer(agentID string) {
@@ -285,7 +344,7 @@ func TestManagerEchoDuringTheSteerCallWritesTheRowOnce(t *testing.T) {
 		f := newEchoQueueFixture(t, true)
 		f.enqueue(t, "steer")
 		f.dispatcher.steerFail = lateError
-		f.dispatcher.onSteer = func() {
+		f.dispatcher.onSteer = func(DispatchItem) {
 			_, err := f.manager.AcceptEchoedSteers(t.Context(), "agent-1", 1, "[]")
 			require.NoError(t, err)
 		}
@@ -318,7 +377,7 @@ func TestManagerDropDuringTheSteerCallRequeuesTheInput(t *testing.T) {
 	t.Parallel()
 	f := newEchoQueueFixture(t, true)
 	f.enqueue(t, "steer")
-	f.dispatcher.onSteer = func() {
+	f.dispatcher.onSteer = func(DispatchItem) {
 		_, err := f.manager.RequeueDroppedSteers(t.Context(), "agent-1", 1)
 		require.NoError(t, err)
 	}
@@ -337,7 +396,7 @@ func TestManagerAnEarlyEchoKeepsItsReceiptWhenTheNextSteerStarts(t *testing.T) {
 	f.enqueue(t, "first")
 	f.enqueue(t, "second")
 	calls := 0
-	f.dispatcher.onSteer = func() {
+	f.dispatcher.onSteer = func(DispatchItem) {
 		calls++
 		if calls != 1 {
 			return
@@ -522,8 +581,8 @@ func TestManagerEnqueueReportingAddedReportsNothingForARefusal(t *testing.T) {
 
 	for i := 1; i <= MaxItems; i++ {
 		_, err := database.ExecContext(ctx, `
-			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text)
-			VALUES (?, 'agent-1', ?, 1, 'queued')`, fmt.Sprintf("input-%d", i), i)
+			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, idempotency_key)
+			VALUES (?, 'agent-1', ?, 1, 'queued', ?)`, fmt.Sprintf("input-%d", i), i, fmt.Sprintf("key-%d", i))
 		require.NoError(t, err)
 	}
 	_, added, err = manager.EnqueueReportingAdded(ctx, NewItem{
@@ -1776,7 +1835,7 @@ func TestManagerUncertaintyDuringTheSteerCallKeepsTheInput(t *testing.T) {
 		t.Run(fmt.Sprint(providerErr), func(t *testing.T) {
 			f := newEchoQueueFixture(t, true)
 			f.enqueue(t, "steer")
-			f.dispatcher.onSteer = func() {
+			f.dispatcher.onSteer = func(DispatchItem) {
 				_, err := f.manager.ResolveUnechoedSteers(t.Context(), "agent-1", 1)
 				require.NoError(t, err)
 			}
@@ -1999,6 +2058,32 @@ func TestManagerAdvanceSteersAndResumesPausedQueue(t *testing.T) {
 	assert.Equal(t, []string{"h1"}, dispatcher.steered)
 }
 
+func TestManagerAdvancePreservesThePauseWhenSteerPolicyCannotBeRead(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	policyErr := errors.New("the child route is unavailable")
+	dispatcher := &recordingDispatcher{steering: true, policyErr: policyErr}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+
+	_, err := store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+	require.NoError(t, err)
+	_, _, err = store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = store.Enqueue(t.Context(), NewItem{ID: "h1", AgentID: "agent-1", Text: "Steer the child.", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+	require.NoError(t, err)
+	before, err := store.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+
+	_, err = manager.Advance(t.Context(), "agent-1", nil)
+	require.ErrorIs(t, err, policyErr)
+	after, err := store.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.Empty(t, dispatcher.prepared)
+	assert.Empty(t, dispatcher.steered)
+}
+
 func TestManagerAdvanceResumesAndDrainsAfterCleanTurnEndRequeue(t *testing.T) {
 	t.Parallel()
 	_, store := newStoreFixture(t)
@@ -2012,7 +2097,7 @@ func TestManagerAdvanceResumesAndDrainsAfterCleanTurnEndRequeue(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.Enqueue(t.Context(), NewItem{ID: "h1", AgentID: "agent-1", Text: "follow up", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
 	require.NoError(t, err)
-	dispatcher.onSteer = func() {
+	dispatcher.onSteer = func(DispatchItem) {
 		_, err := manager.TurnEnded(t.Context(), "agent-1")
 		require.NoError(t, err)
 	}
@@ -2050,7 +2135,7 @@ func TestManagerAdvanceDoesNotResumeAfterCrashUnderManualPause(t *testing.T) {
 			require.NoError(t, err)
 			_, err = store.Enqueue(t.Context(), NewItem{ID: "h2", AgentID: "agent-1", Text: "later", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
 			require.NoError(t, err)
-			dispatcher.onSteer = func() {
+			dispatcher.onSteer = func(DispatchItem) {
 				_, err := manager.Pause(t.Context(), "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
 				require.NoError(t, err)
 			}
@@ -2072,7 +2157,7 @@ func TestManagerAdvanceDoesNotResumeWhenEarlierEchoTurnsUncertainUnderManualPaus
 	_, err := f.manager.Steer(t.Context(), "agent-1", "e0")
 	require.NoError(t, err)
 
-	f.dispatcher.onSteer = func() {
+	f.dispatcher.onSteer = func(DispatchItem) {
 		_, err := f.manager.ResolveUnechoedSteers(t.Context(), "agent-1", 1)
 		require.NoError(t, err)
 	}
@@ -2170,6 +2255,7 @@ func TestManagerAdvanceRespectsLoginRecovery(t *testing.T) {
 
 		_, err := store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY)
 		require.NoError(t, err)
+		// Set the active turn without waking the background drain. This test drives Advance itself.
 		_, _, err = store.TurnStarted(t.Context(), "agent-1", true)
 		require.NoError(t, err)
 		_, err = store.Enqueue(t.Context(), NewItem{ID: "q1", AgentID: "agent-1", Text: "yes", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER})
@@ -2190,7 +2276,7 @@ func TestManagerAdvanceRespectsLoginRecovery(t *testing.T) {
 		var recovery atomic.Bool
 		dispatcher := &recordingDispatcher{
 			steering: true,
-			onSteer:  func() { recovery.Store(true) },
+			onSteer:  func(DispatchItem) { recovery.Store(true) },
 		}
 		manager := NewManager(store, dispatcher, &recordingObserver{})
 		t.Cleanup(manager.StopAndWait)
@@ -2686,7 +2772,7 @@ func TestManagerBackgroundWorkBypassSteerPreemptAdvance(t *testing.T) {
 			_, snapErr := manager.Snapshot(ctx, agentID)
 			require.NoError(t, snapErr)
 		}
-		dispatcher.onSteer = func() {
+		dispatcher.onSteer = func(DispatchItem) {
 			_, turnErr := manager.TurnEnded(ctx, "agent-1")
 			require.NoError(t, turnErr)
 		}
@@ -2759,7 +2845,7 @@ func TestManagerBackgroundWorkBypassSteerPreemptAdvance(t *testing.T) {
 		_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
 		require.NoError(t, err)
 
-		dispatcher.onSteer = func() {
+		dispatcher.onSteer = func(DispatchItem) {
 			_, turnErr := manager.TurnEnded(ctx, "agent-1")
 			require.NoError(t, turnErr)
 		}
@@ -2803,7 +2889,7 @@ func TestManagerBackgroundWorkBypassSteerPreemptAdvance(t *testing.T) {
 			_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
 			require.NoError(t, err)
 
-			dispatcher.onSteer = func() {
+			dispatcher.onSteer = func(DispatchItem) {
 				_, turnErr := manager.TurnEnded(ctx, "agent-1")
 				require.NoError(t, turnErr)
 			}
@@ -2841,7 +2927,7 @@ func TestManagerBackgroundWorkBypassSteerPreemptAdvance(t *testing.T) {
 			_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
 			require.NoError(t, err)
 
-			dispatcher.onSteer = func() {
+			dispatcher.onSteer = func(DispatchItem) {
 				_, turnErr := manager.TurnEnded(ctx, "agent-1")
 				require.NoError(t, turnErr)
 			}

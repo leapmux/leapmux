@@ -1,6 +1,8 @@
+import type { ControlDecision, ControlPrompt } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import type { AgentChatMessage, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { create } from '@bufbuild/protobuf'
+import { create, toJson } from '@bufbuild/protobuf'
 import { MESSAGE_METADATA_FIELD, NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
+import { ControlDecisionSchema, ControlPromptSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /** Encode a JSON object as raw message content bytes (no wrapper). */
@@ -28,11 +30,21 @@ export function makeMessage(overrides: Partial<Omit<AgentChatMessage, '$typeName
   })
 }
 
-/** Keep native response and request fixtures separate from the worker's control identity. */
+/** What the Worker records beside a saved answer: the prompt that the request showed and the decision that answered it. */
+export interface RecordedControlAnswer {
+  prompt?: ControlPrompt
+  decision?: ControlDecision
+}
+
+/**
+ * Keep native response and request fixtures separate from the worker's control identity,
+ * and from the prompt and the decision that the Worker records in its metadata.
+ */
 export function makeControlResponseMessage(
   provider: AgentProvider,
   response: unknown,
   request?: unknown,
+  recorded: RecordedControlAnswer = {},
 ): AgentChatMessage {
   return makeMessage({
     agentProvider: provider,
@@ -44,6 +56,16 @@ export function makeControlResponseMessage(
       metadata: {
         [MESSAGE_METADATA_FIELD.ControlRequestID]: 'request-1',
         [MESSAGE_METADATA_FIELD.ControlRequestClaimToken]: 'claim-1',
+        ...(recorded.prompt
+          ? {
+              [MESSAGE_METADATA_FIELD.ControlPrompt]: toJson(ControlPromptSchema, recorded.prompt),
+            }
+          : {}),
+        ...(recorded.decision
+          ? {
+              [MESSAGE_METADATA_FIELD.ControlDecision]: toJson(ControlDecisionSchema, recorded.decision),
+            }
+          : {}),
       },
     }),
   })

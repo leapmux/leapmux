@@ -103,9 +103,9 @@ async function setupServerWithProvider(
     ])
     await waitForSystemInfoProvider(server.hubUrl, provider)
 
-    // `captcha show` reports the switch and never the secret. It answers
+    // `captcha get` reports the switch and never the secret. It answers
     // with one entry per captcha settings key.
-    const shown = await runCLI(cfg, ['admin', 'captcha', 'show']) as Record<string, { effective_json?: unknown }>
+    const shown = await runCLI(cfg, ['admin', 'captcha', 'get']) as Record<string, { effective_json?: unknown }>
     expect(shown['captcha.selected']?.effective_json).toBe(provider)
     expect(JSON.stringify(shown)).not.toContain(secret)
   }, use)

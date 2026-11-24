@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"

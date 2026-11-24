@@ -1,0 +1,257 @@
+package droid
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+)
+
+func deliverDroidReplyNotification(t *testing.T, a *Agent, payload map[string]any) {
+	t.Helper()
+	frame, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "type": droidTypeNotification, "method": droidMethodSessionNotif,
+		"params": map[string]any{"sessionId": a.mainSessionID(), "notification": payload},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(frame)
+}
+
+func deliverDroidReplyMessage(t *testing.T, a *Agent, requestID, id, parentID, role string, blocks ...map[string]any) {
+	t.Helper()
+	deliverDroidReplyNotification(t, a, map[string]any{
+		"type": contracts.DroidNotificationCreateMessage, "requestId": requestID,
+		"message": map[string]any{"id": id, "parentId": parentID, "role": role, "content": blocks},
+	})
+}
+
+func deliverDroidReplyEnd(t *testing.T, a *Agent, turnID string) {
+	t.Helper()
+	deliverDroidReplyNotification(t, a, map[string]any{
+		"type": contracts.DroidNotificationAgentTurnCompleted, "turnId": turnID,
+		"reason": contracts.DroidTurnEndReasonCompleted,
+	})
+}
+
+func TestDroidReplyFollowsToolResultsBeforeTheInputResponse(t *testing.T) {
+	t.Parallel()
+	for _, refusedResponse := range []bool{false, true} {
+		name := "successful response"
+		if refusedResponse {
+			name = "error after committed echo"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newSteerAgent(t)
+			stdin.respond = func(request droidEnvelope) {
+				if request.Method != droidMethodAddUserMessage {
+					return
+				}
+				var input addUserMessageParams
+				require.NoError(t, json.Unmarshal(request.Params, &input))
+				deliverDroidReplyMessage(t, a, request.ID, input.MessageID, "root", "user",
+					map[string]any{"type": "text", "text": input.Text})
+				deliverDroidReplyMessage(t, a, "", "first", input.MessageID, "assistant",
+					map[string]any{"type": "text", "text": "The first part."},
+					map[string]any{"type": "tool_use", "id": "call"})
+				deliverDroidReplyNotification(t, a, map[string]any{
+					"type": contracts.DroidToolNotificationToolResult, "messageId": "result", "toolUseId": "call",
+				})
+				deliverDroidReplyMessage(t, a, "", "second", "result", "assistant",
+					map[string]any{"type": "text", "text": "The second part."})
+				deliverDroidReplyEnd(t, a, input.MessageID)
+				answerDroidInput(t, a, request.ID, refusedResponse)
+			}
+
+			receipt, err := a.SendInputWithReceipt("Check the reply.", nil)
+			require.NoError(t, err)
+			require.NotEmpty(t, receipt.InputID)
+			assert.Equal(t, receipt.InputID, receipt.TurnID)
+			assert.Equal(t, "main-session", receipt.SessionID)
+			firstKey := droidMessageWriteKey("first", 0)
+			secondKey := droidMessageWriteKey("second", 0)
+			assert.Equal(t, []agent.NativeReplyTurn{{
+				SessionID: "main-session", TurnID: receipt.TurnID,
+				Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+				Inputs:  []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: 1}},
+				Items: []agent.NativeReplyItem{
+					{Ordinal: 2, MessageKey: firstKey},
+					{Ordinal: 3, MessageKey: secondKey},
+				},
+			}}, sink.NativeReplyTurns())
+			textByKey := make(map[string]string)
+			for _, row := range sink.Messages() {
+				if row.IdempotencyKey == firstKey || row.IdempotencyKey == secondKey {
+					text, ok := agent.ReplyText(droidProvider{}, agent.MessageContent{Original: row.Content})
+					require.True(t, ok)
+					textByKey[row.IdempotencyKey] = text
+				}
+			}
+			assert.Equal(t, map[string]string{firstKey: "The first part.", secondKey: "The second part."}, textByKey)
+			assert.Empty(t, a.nativeReplies)
+		})
+	}
+}
+
+func TestDroidReplyLeavesANewerTurnActiveWhenAnOlderTurnEnds(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	first, err := a.SendInputWithReceipt("Begin the first input.", nil)
+	require.NoError(t, err)
+	deliverDroidReplyMessage(t, a, "", first.InputID, "root", "user")
+	deliverDroidReplyMessage(t, a, "", "first-reply", first.InputID, "assistant",
+		map[string]any{"type": "text", "text": "The first result."},
+		map[string]any{"type": "tool_use", "id": "first-tool"})
+	deliverDroidReplyNotification(t, a, map[string]any{
+		"type": contracts.DroidNotificationWorkingStateChanged, "newState": contracts.DroidWorkingStateIdle,
+	})
+
+	second, err := a.SendInputWithReceipt("Begin the second input.", nil)
+	require.NoError(t, err)
+	deliverDroidReplyMessage(t, a, "", second.InputID, "first-reply", "user")
+	deliverDroidReplyMessage(t, a, "", "second-reply", second.InputID, "assistant",
+		map[string]any{"type": "tool_use", "id": "second-tool"})
+	assert.Equal(t, second.TurnID, a.droidReplyTurnForTools([]string{"second-tool"}))
+	assert.Empty(t, a.droidReplyTurnForTools([]string{"first-tool", "second-tool"}))
+
+	deliverDroidReplyEnd(t, a, first.TurnID)
+	turns := sink.NativeReplyTurns()
+	require.Len(t, turns, 1)
+	assert.Equal(t, first.TurnID, turns[0].TurnID)
+	assert.True(t, a.PublishTurnActive().Active)
+	assert.Contains(t, a.nativeReplies, second.TurnID)
+}
+
+func beginDroidTestReply(t *testing.T, a *Agent, requests <-chan droidEnvelope) agent.NativeInputReceipt {
+	t.Helper()
+	leadDone := make(chan agent.NativeInputReceipt, 1)
+	go func() {
+		receipt, err := a.SendInputWithReceipt("Begin the native turn.", nil)
+		assert.NoError(t, err)
+		leadDone <- receipt
+	}()
+	leadRequest := receiveDroidInput(t, requests)
+	answerDroidInput(t, a, leadRequest.ID, false)
+	lead := <-leadDone
+	require.NotEmpty(t, lead.InputID)
+	deliverDroidReplyMessage(t, a, leadRequest.ID, lead.InputID, "root", "user")
+	return lead
+}
+
+func TestDroidReplyStartsTheSteerAfterCommittedText(t *testing.T) {
+	t.Parallel()
+	a, sink, requests, _ := newDroidInputHarness(t)
+	lead := beginDroidTestReply(t, a, requests)
+	deliverDroidReplyMessage(t, a, "", "first", lead.InputID, "assistant",
+		map[string]any{"type": "text", "text": "The lead reply."},
+		map[string]any{"type": "tool_use", "id": "call"})
+	deliverDroidReplyNotification(t, a, map[string]any{
+		"type": contracts.DroidToolNotificationToolResult, "messageId": "tool-result", "toolUseId": "call",
+	})
+
+	steerDone := make(chan error, 1)
+	go func() { steerDone <- a.SteerInput(testDroidSteer(1, "Check a different result.")) }()
+	steerRequest := receiveDroidInput(t, requests)
+	steer := testDroidSteerEcho(t, steerRequest, 1)
+	steer.Receipt.TurnID = lead.TurnID
+	deliverDroidReplyMessage(t, a, steerRequest.ID, steer.Receipt.InputID, "tool-result", "user")
+	answerDroidInput(t, a, steerRequest.ID, true)
+	require.NoError(t, <-steerDone, "the committed echo proves delivery before the RPC answer")
+	assert.Equal(t, []agent.SteerResolution{steer}, sink.SteerResolutions())
+
+	deliverDroidReplyMessage(t, a, "", "second", steer.Receipt.InputID, "assistant",
+		map[string]any{"type": "text", "text": "The steered reply."},
+		map[string]any{"type": "tool_use", "id": "steer-call"})
+	assert.Equal(t, lead.TurnID, a.droidReplyTurnForTools([]string{"steer-call"}))
+	deliverDroidReplyEnd(t, a, lead.TurnID)
+	assert.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: lead.SessionID, TurnID: lead.TurnID,
+		Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs: []agent.NativeReplyBoundary{
+			{InputID: lead.InputID, AfterOrdinal: 1},
+			{InputID: steer.Receipt.InputID, AfterOrdinal: 2},
+		},
+		Items: []agent.NativeReplyItem{
+			{Ordinal: 2, MessageKey: droidMessageWriteKey("first", 0)},
+			{Ordinal: 3, MessageKey: droidMessageWriteKey("second", 0)},
+		},
+	}}, sink.NativeReplyTurns())
+}
+
+func TestDroidSteerWithUnknownParentLeavesTheReplyUnproved(t *testing.T) {
+	t.Parallel()
+	a, sink, requests, _ := newDroidInputHarness(t)
+	lead := beginDroidTestReply(t, a, requests)
+	steerDone := make(chan error, 1)
+	go func() { steerDone <- a.SteerInput(testDroidSteer(1, "Check the revised result.")) }()
+	request := receiveDroidInput(t, requests)
+	steer := testDroidSteerEcho(t, request, 1)
+	steer.Receipt.TurnID = ""
+	deliverDroidReplyMessage(t, a, request.ID, steer.Receipt.InputID, "unknown-parent", "user")
+	answerDroidInput(t, a, request.ID, false)
+	require.NoError(t, <-steerDone)
+	assert.Equal(t, []agent.SteerResolution{steer}, sink.SteerResolutions())
+
+	deliverDroidReplyMessage(t, a, "", "reply", steer.Receipt.InputID, "assistant",
+		map[string]any{"type": "text", "text": "The revised result."})
+	deliverDroidReplyEnd(t, a, lead.TurnID)
+	assert.Empty(t, sink.NativeReplyTurns())
+	assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+		lead:          leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+		steer.Receipt: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+	}, sink.NativeReplyRetirements())
+}
+
+func TestDroidReplyRejectsAnAssistantMessageWithUnknownAncestry(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	receipt, err := a.SendInputWithReceipt("Begin the input.", nil)
+	require.NoError(t, err)
+	deliverDroidReplyMessage(t, a, "", receipt.InputID, "root", "user")
+	deliverDroidReplyMessage(t, a, "", "first-reply", receipt.InputID, "assistant",
+		map[string]any{"type": "text", "text": "A partial result."})
+	deliverDroidReplyMessage(t, a, "", "unknown-reply", "unknown-parent", "assistant",
+		map[string]any{"type": "text", "text": "Another result."})
+	deliverDroidReplyEnd(t, a, receipt.TurnID)
+
+	assert.Empty(t, sink.NativeReplyTurns())
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
+}
+
+func TestDroidReplyCompletesWhenTheNativeTurnHasNoVisibleReply(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	receipt, err := a.SendInputWithReceipt("Begin the input.", nil)
+	require.NoError(t, err)
+	deliverDroidReplyMessage(t, a, "", receipt.InputID, "root", "user")
+	deliverDroidReplyEnd(t, a, receipt.TurnID)
+
+	turns := sink.NativeReplyTurns()
+	require.Len(t, turns, 1)
+	assert.Equal(t, receipt.TurnID, turns[0].TurnID)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, turns[0].Outcome)
+	assert.Empty(t, turns[0].Items)
+}
+
+func TestDroidReplyKeepsAProvisionalTurnThroughAnOlderIdle(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newSteerAgent(t)
+	receipt, err := a.SendInputWithReceipt("Begin the input.", nil)
+	require.NoError(t, err)
+
+	deliverDroidReplyNotification(t, a, map[string]any{
+		"type": contracts.DroidNotificationWorkingStateChanged, "newState": contracts.DroidWorkingStateIdle,
+	})
+	require.True(t, a.PublishTurnActive().Active)
+	_, err = a.SendInputWithReceipt("Another input.", nil)
+	require.ErrorIs(t, err, agent.ErrAgentBusy)
+
+	deliverDroidReplyMessage(t, a, "", receipt.InputID, "root", "user")
+	deliverDroidReplyEnd(t, a, receipt.TurnID)
+	assert.False(t, a.PublishTurnActive().Active)
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hubrpc"
@@ -93,9 +95,10 @@ func fetchMaterialized(ctx context.Context, c *control.Client, workspaceIDs []st
 // (stop=true, _) to terminate the
 // loop after the current event (e.g. once the initial frame lands)
 // or (_, err) to propagate an error. The stream is closed when
-// streamWatchUserLocal returns. Its one caller is runEventsLocal, which
-// `events watch` runs on a local-IPC client and which stays open until ctx
-// cancellation; the bootstrap path uses the unary GetMaterialized instead.
+// streamWatchUserLocal returns. Its callers stay open until ctx
+// cancellation: runLayoutWatchLocal, which `layout watch` runs on a local-IPC
+// client, and hubUserEvents, the hub source of `events`. The bootstrap path
+// uses the unary GetMaterialized instead.
 func streamWatchUserLocal(
 	ctx context.Context,
 	c *control.Client,
@@ -192,81 +195,68 @@ func crdtSubmitBatch(
 }
 
 // crdtCall bundles every value a CRDT-mutation subcommand needs after
-// the standard preamble: a deadlined context, the resolved hub client,
-// the workspace's bootstrap snapshot (epoch + initial state), and the
-// workspace id used for transport routing.
-//
-// Callers must invoke `close()` to release the deadline cancel.
+// the standard preamble: the session's context and client, the workspace's
+// bootstrap snapshot (epoch + initial state), and the workspace id used for
+// transport routing.
 type crdtCall struct {
 	ctx         context.Context
-	cancel      context.CancelFunc
 	c           *control.Client
 	bs          *CRDTBootstrap
 	workspaceID string
 }
 
-// openCRDTCall runs the standard CRDT-mutation preamble: requireClient
-// → rpcDeadline → crdtBootstrap. Errors are wrapped into the matching
-// `control.EmitError*` envelope so callers can `return err` directly
-// without re-classifying. Tenancy is the authenticated session, so no
-// user-id resolution is needed.
+// openCRDT bootstraps the CRDT for a mutation. Include other affected
+// workspaces when an operation crosses workspace boundaries.
 //
 // This preamble does NOT validate workspaceID, and the bootstrap does not
 // double as a check. GetMaterialized resolves through
 // `auth.WorkspacesReadableByUser`, which silently skips an id with no row
-// rather than erroring, so an unknown --workspace-id bootstraps
-// "successfully" against an empty projection and every subsequent op is
-// emitted into nothing. Any command that must REJECT a bogus workspace id
-// has to check existence itself, before or after this call.
-func openCRDTCall(hub, workspaceID string) (*crdtCall, error) {
-	c, err := requireClient(hub)
+// rather than erroring, so an unknown workspace bootstraps "successfully"
+// against an empty projection and every subsequent op is emitted into
+// nothing. Any command that must REJECT a bogus workspace id has to check
+// existence itself, before or after this call.
+func (s *session) openCRDT(workspaceID string, otherWorkspaceIDs ...string) (*crdtCall, error) {
+	return openCRDTCallOn(s.ctx, s.c, workspaceID, otherWorkspaceIDs...)
+}
+
+// openCRDTCallOn is openCRDT for a caller that holds a client and a context
+// without a session.
+func openCRDTCallOn(ctx context.Context, c *control.Client, workspaceID string, otherWorkspaceIDs ...string) (*crdtCall, error) {
+	workspaceIDs := []string{workspaceID}
+	for _, otherWorkspaceID := range otherWorkspaceIDs {
+		if otherWorkspaceID != "" && !slices.Contains(workspaceIDs, otherWorkspaceID) {
+			workspaceIDs = append(workspaceIDs, otherWorkspaceID)
+		}
+	}
+	bs, err := crdtBootstrap(ctx, c, workspaceIDs)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := rpcDeadline(context.Background())
-	return finishOpenCRDTCall(ctx, cancel, c, workspaceID)
-}
-
-func finishOpenCRDTCall(ctx context.Context, cancel context.CancelFunc, c *control.Client, workspaceID string) (*crdtCall, error) {
-	bs, err := crdtBootstrap(ctx, c, []string{workspaceID})
-	if err != nil {
-		cancel()
-		return nil, control.EmitErrorWith("crdt_bootstrap_failed", err)
-	}
-	return &crdtCall{ctx: ctx, cancel: cancel, c: c, bs: bs, workspaceID: workspaceID}, nil
-}
-
-// close releases the deadlined context. Safe on a nil receiver so
-// callers can `defer cc.close()` immediately after openCRDTCall even
-// when error handling rebinds `cc`.
-func (cc *crdtCall) close() {
-	if cc != nil && cc.cancel != nil {
-		cc.cancel()
-	}
+	return &crdtCall{ctx: ctx, c: c, bs: bs, workspaceID: workspaceID}, nil
 }
 
 // submitOps wraps ops in a fresh OpBatch, submits via the appropriate
-// transport, and unwraps the per-batch rejection into an EmitError*
-// envelope. Returns nil on commit.
+// transport, and reports a rejected batch as a conflict. Returns nil on
+// commit.
 func (cc *crdtCall) submitOps(ops []*leapmuxv1.CrdtOp) error {
 	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, cc.workspaceID, crdtNewBatch(ops))
 	if err != nil {
-		return control.EmitErrorWith("rpc_failed", err)
+		return err
 	}
 	if err := crdtBatchError(res); err != nil {
-		return control.EmitErrorWith("batch_rejected", err)
+		return cli.Wrap(cli.CodeConflict, err, "")
 	}
 	return nil
 }
 
-// trySubmitOps is the non-emitting variant of submitOps. Returns
+// trySubmitOps is the variant of submitOps that reports the reason. Returns
 // (committed, rejection-reason, err). When committed=true, reason is
 // UNSPECIFIED and err is nil. When committed=false, err is non-nil
 // and reason carries the hub's BatchRejectionReason (or UNSPECIFIED
 // for transport-level errors). Callers that want to branch on the
 // rejection reason -- e.g. `layout set` retrying TAB_PLACEMENT_INVALID
 // after re-bootstrapping the snapshot -- use this instead of
-// submitOps so the envelope isn't emitted prematurely.
+// submitOps.
 func (cc *crdtCall) trySubmitOps(ops []*leapmuxv1.CrdtOp) (bool, leapmuxv1.BatchRejectionReason, error) {
 	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, cc.workspaceID, crdtNewBatch(ops))
 	if err != nil {

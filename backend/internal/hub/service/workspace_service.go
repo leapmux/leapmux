@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -27,6 +28,8 @@ type WorkspaceService struct {
 	store           store.Store
 	registry        *crdt.Registry
 	reconcileNudger workspaceReconcileNudger
+	layoutDrainsMu  sync.Mutex
+	layoutDrains    map[string]*layoutLifecycleDrain
 }
 
 type workspaceReconcileNudger interface {

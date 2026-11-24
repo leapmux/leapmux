@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	_ agent.ChildSteerer     = (*Agent)(nil)
+	_ agent.ChildEchoSteerer = (*Agent)(nil)
 	_ agent.ChildInterrupter = (*Agent)(nil)
 )
 
@@ -36,60 +36,92 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	child := a.childForKeyLocked(childKey)
-	active := child != nil && child.conv != nil && !child.conv.runStartedAt.IsZero()
+	active := child != nil && child.conv != nil && child.conv.childLoopActive()
 	return agent.TurnState{Active: active, Steerable: active}
 }
 
 // SendChildInput starts a child round, or requires an explicit steer during a running round.
 func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
-	return agent.ChildInputResult{StartsTurn: true}, a.sendChildInput(childKey, input.Content, input.Attachments, false)
+	receipt, err := a.sendChildInput(childKey, agent.SteerRequest{
+		InputID: input.InputID, Content: input.Content, Attachments: input.Attachments,
+	}, false)
+	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 
 // SteerChildInput delivers input to the child's current native round.
 func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChildInput(childKey, content, attachments, true)
+	return a.SteerChildInputAtEcho(childKey, agent.SteerRequest{Content: content, Attachments: attachments})
 }
 
-func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+func (a *Agent) SteerChildInputAtEcho(childKey string, request agent.SteerRequest) error {
+	_, err := a.sendChildInput(childKey, request, true)
+	return err
+}
+
+// ChildSteerSurvivesTurnEnd keeps the steer pending when native admission races a yield.
+func (*Agent) ChildSteerSurvivesTurnEnd() bool { return true }
+
+func (a *Agent) sendChildInput(childKey string, request agent.SteerRequest, steer bool) (agent.NativeInputReceipt, error) {
+	var receipt agent.NativeInputReceipt
 	// Native child input carries a message string only, unlike the root prompt's image array.
-	for _, attachment := range agent.ClassifyAttachments(attachments) {
+	for _, attachment := range agent.ClassifyAttachments(request.Attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText {
-			return fmt.Errorf("the Oh My Pi child message supports text attachments only")
+			return receipt, fmt.Errorf("the Oh My Pi child message supports text attachments only")
 		}
 	}
-	payload := promptPayload(content, attachments)
-	if strings.TrimSpace(payload["message"].(string)) == "" {
-		return fmt.Errorf("the child message must not be empty")
+	payload := promptPayload(request.Content, request.Attachments)
+	message := payload["message"].(string)
+	if strings.TrimSpace(message) == "" {
+		return receipt, fmt.Errorf("the child message must not be empty")
 	}
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
 	a.Mu.Lock()
 	child := a.childForKeyLocked(childKey)
-	if child == nil {
+	if child == nil || child.conv == nil {
 		a.Mu.Unlock()
-		return agent.ErrChildRouteNotReady
+		return receipt, agent.ErrChildRouteNotReady
 	}
 	id := child.id
-	active := child.conv != nil && !child.conv.runStartedAt.IsZero()
-	a.Mu.Unlock()
+	active := child.conv.childLoopActive()
 	if active && !steer {
-		return agent.ErrAgentBusy
+		a.Mu.Unlock()
+		return receipt, agent.ErrAgentBusy
 	}
 	if !active && steer {
-		return agent.ErrNoActiveTurn
+		a.Mu.Unlock()
+		return receipt, agent.ErrNoActiveTurn
 	}
+	steerAtEcho := steer && request.InputID != "" && request.AttemptID != ""
+	if request.InputID != "" && (!steer || steerAtEcho) &&
+		a.steerBridgeReady && child.conv.sessionFile != "" && !strings.HasPrefix(strings.TrimSpace(message), "/") {
+		receipt = a.registerOMPChildInputLocked(child.conv, request, steerAtEcho)
+		payload["message"] = a.steerBridge.ChildPrefix + receipt.InputID + "\n" + message
+	}
+	a.Mu.Unlock()
 	payload["subagentId"] = id
 	wait, err := a.beginCommand(CommandSteerSubagent, payload)
 	if err != nil {
-		return err
+		a.forgetOMPChildInput(child.conv, receipt.InputID)
+		return agent.NativeInputReceipt{}, err
 	}
 	_, err = wait(a.APITimeout())
 	var refused *commandError
 	if err != nil && !errors.As(err, &refused) {
 		// A lost acknowledgement cannot establish whether native input was accepted.
-		return fmt.Errorf("%w: send the Oh My Pi child message: %w", agent.ErrDeliveryUncertain, err)
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: send the Oh My Pi child message: %w", agent.ErrDeliveryUncertain, err)
 	}
-	return err
+	if err != nil {
+		a.forgetOMPChildInput(child.conv, receipt.InputID)
+		return agent.NativeInputReceipt{}, err
+	}
+	if steerAtEcho && receipt.InputID == "" {
+		// The unmarked path records native admission, without an exact receipt.
+		a.reportOMPSteerTo(child.conv.sink, agent.SteerResolution{
+			InputID: request.InputID, AttemptID: request.AttemptID, Outcome: agent.SteerOutcomeEchoed,
+		})
+	}
+	return receipt, nil
 }
 
 // InterruptChild cancels one owned child. Native lifecycle events close its transcript.
@@ -230,6 +262,7 @@ type subagentLifecycle struct {
 	Status           string `json:"status"`
 	Description      string `json:"description"`
 	Index            int    `json:"index"`
+	SessionFile      string `json:"sessionFile"`
 }
 
 // handleSubagentLifecycle starts or ends one subagent.
@@ -309,6 +342,7 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 		RegistryRole:     bgtask.RoleChildTask,
 		SpawnSpanID:      payload.ParentToolCallID,
 		ProviderChildKey: rowKey,
+		AgentSessionID:   payload.SessionFile,
 		Title:            title,
 	})
 	if err != nil {
@@ -324,6 +358,7 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 	state := &subagentState{id: payload.ID, rowKey: rowKey, childID: childID, title: title, description: description}
 	if childID != "" {
 		state.conv = newConversation(a.sink.ChildSink(childID), childID)
+		state.conv.sessionFile = payload.SessionFile
 	}
 	row := state.rowUpsert()
 	a.Mu.Lock()
@@ -357,6 +392,7 @@ func (a *Agent) endSubagent(id string, status bgtask.Status) {
 // final status, then releases its child state.
 func (a *Agent) finishSubagent(state *subagentState, status bgtask.Status) {
 	if state.conv != nil {
+		a.retireOMPChildInputs(state.conv)
 		a.persistIncompleteTools(state.conv, completionForStatus(status))
 		providerkit.ResetSpansAndProgress(state.conv.sink)
 	}
@@ -534,8 +570,14 @@ func (a *Agent) handleSubagentEvent(raw []byte) {
 		a.startChildRun(state.conv)
 	case contracts.OhMyPiEventAgentEnd:
 		a.endChildRun(state.conv, event)
+	case "agent_pause":
+		a.pauseChildRun(state.conv, event)
 	case contracts.OhMyPiEventMessageEnd:
 		a.handleMessageEnd(state.conv, event)
+	case contracts.OhMyPiEventMessageStart:
+		a.observeOMPAssistantBoundary(state.conv, event, false)
+	case contracts.OhMyPiEventTurnEnd:
+		a.observeOMPAssistantBoundary(state.conv, event, true)
 	case contracts.OhMyPiEventToolExecutionStart:
 		a.handleToolStart(state.conv, event)
 	case contracts.OhMyPiEventToolExecutionUpdate:
@@ -560,8 +602,7 @@ func (a *Agent) handleSubagentEvent(raw []byte) {
 	case contracts.OhMyPiEventAutoRetryStart, contracts.OhMyPiEventAutoRetryEnd,
 		contracts.OhMyPiEventNotice, contracts.OhMyPiEventExtensionError, contracts.OhMyPiEventCommandOutput:
 		a.persistConversationNotification(state.conv, event)
-	case contracts.OhMyPiEventMessageUpdate, contracts.OhMyPiEventMessageStart,
-		contracts.OhMyPiEventTurnStart, contracts.OhMyPiEventTurnEnd,
+	case contracts.OhMyPiEventMessageUpdate, contracts.OhMyPiEventTurnStart,
 		contracts.OhMyPiEventToolStreamUpdate, contracts.OhMyPiEventQueueUpdate,
 		contracts.OhMyPiEventSessionSettled, contracts.OhMyPiEventCacheWarmingStart,
 		contracts.OhMyPiEventCacheWarmingEnd, contracts.OhMyPiEventAdvisorCostChanged:
@@ -579,8 +620,27 @@ func (a *Agent) startChildRun(c *conversation) {
 	a.Mu.Lock()
 	c.ttsrPending = false
 	c.runStartedAt = now
+	c.awaitingWake = false
 	c.toolUses = 0
+	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
+	providerkit.PublishSteerableTurnActiveTo(c.sink, true, seq)
+}
+
+func (a *Agent) pauseChildRun(c *conversation, raw []byte) {
+	var env agentEndEnvelope
+	if json.Unmarshal(raw, &env) != nil {
+		return
+	}
+	a.finishOMPChildReplyAtYield(c, env, false)
+	if env.Yielded == nil || !*env.Yielded || !env.Awaiting {
+		return
+	}
+	a.Mu.Lock()
+	c.awaitingWake = true
+	seq := a.NextTurnSeq()
+	a.Mu.Unlock()
+	providerkit.PublishSteerableTurnActiveTo(c.sink, false, seq)
 }
 
 // endChildRun persists a subagent's turn-end row. A subagent that a message from
@@ -591,13 +651,16 @@ func (a *Agent) endChildRun(c *conversation, raw []byte) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		slog.Warn("omp subagent agent_end decode failed", "agent_id", a.AgentID(), "error", err)
 	}
+	a.finishOMPChildReplyAtYield(c, env, true)
 	endedAt := a.Clock().Now()
 	a.Mu.Lock()
 	c.ttsrPending = false
 	startedAt := c.runStartedAt
 	c.runStartedAt = time.Time{}
+	c.awaitingWake = false
 	toolUses := c.toolUses
 	c.toolUses = 0
+	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	interrupted := env.statesAborted()
 	if interrupted {
@@ -610,6 +673,7 @@ func (a *Agent) endChildRun(c *conversation, raw []byte) {
 	if interrupted {
 		providerkit.ResetSpansAndProgress(c.sink)
 	}
+	providerkit.PublishSteerableTurnActiveTo(c.sink, false, seq)
 }
 
 // persistChildPrompt opens a child transcript with the prompt its parent gave the

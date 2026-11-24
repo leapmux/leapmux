@@ -1,10 +1,7 @@
 import type { Schema } from '@cfworker/json-schema'
 import type { ElicitationFieldRule, ElicitationRequest } from '../model/controlPrompt'
-import type { McpElicitationAction } from '~/generated/contracts/mcp-elicitation'
 import { Validator } from '@cfworker/json-schema'
-import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { isObject, pickString } from '~/lib/jsonPick'
-import { buildControlResponseEnvelope } from '~/utils/controlResponse'
 
 export interface ElicitationOption {
   value: string
@@ -234,21 +231,16 @@ export function elicitationURL(value: string | undefined): string | undefined {
 }
 
 /** The worker restores the provider's original response identifier. */
-export function buildElicitationResponse(requestId: string, action: McpElicitationAction, content?: Record<string, unknown>, metadata?: Record<string, unknown>): Record<string, unknown> {
-  return buildControlResponseEnvelope(requestId, {
-    action,
-    ...(action === MCP_ELICITATION_ACTION.Accept && content
-      ? { content }
-      : {}),
-    ...(action === MCP_ELICITATION_ACTION.Accept && metadata
-      ? { _meta: metadata }
-      : {}),
-  })
-}
-
 export const ELICITATION_ACCEPT_CHOICE = 'elicitation-accept-choice'
 
-/** Apply only an approval choice that this request offers. */
-export function elicitationAcceptMetadata(request: ElicitationRequest, choices: Record<string, string>): Record<string, unknown> | undefined {
-  return request.acceptChoices?.find(choice => choice.key === choices[ELICITATION_ACCEPT_CHOICE])?.metadata
+/**
+ * The key of the accept choice that an accept sends: the one the reader picked when the
+ * request offers it, else the first that the request offers, else "" for a plain accept.
+ * The pill group draws the same key as selected, so the accept sends what the reader
+ * sees. The Worker's provider reads the choice's metadata by its key.
+ */
+export function elicitationAcceptChoiceKey(request: ElicitationRequest, choices: Record<string, string>): string {
+  const offered = request.acceptChoices ?? []
+  const picked = choices[ELICITATION_ACCEPT_CHOICE]
+  return offered.find(choice => choice.key === picked)?.key ?? offered[0]?.key ?? ''
 }

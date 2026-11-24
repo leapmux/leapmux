@@ -156,7 +156,8 @@ func (a *Agent) approvePendingPermissions() {
 }
 
 func manualControlPublication(state *sessionState, sessionID, nativeID string, control controlState) *controlRecord {
-	return &controlRecord{kind: controlPublish, state: state, sessionID: sessionID, nativeID: nativeID, key: control.key,
+	turnID := providerkit.StringField(providerkit.ParseLine(control.raw).Params, "turnId")
+	return &controlRecord{kind: controlPublish, state: state, sessionID: sessionID, turnID: turnID, nativeID: nativeID, key: control.key,
 		fingerprint: control.fingerprint, raw: slices.Clone(control.raw), automaticReply: control.automaticReply,
 		forceManual: true, publicationReady: make(chan struct{})}
 }

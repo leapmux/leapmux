@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { codexExtractControl } from '../../../src/components/chat/providers/codex/extractControl'
 import { codexTest } from '../codex-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexEscalatedCommandToolCall } from '../helpers/providerToolCalls'
@@ -20,7 +19,6 @@ codexTest('classifies an actual native permission and confirms the absent editor
   const command = `printf 'NATIVECONTROL%s\\n' "$((40 + 2))" > ${quotePosixShellArgument(file)}; cat ${quotePosixShellArgument(file)}`
   await exerciseUnsupportedControlThroughPermission(native, {
     purpose: 'editor',
-    classify: codexExtractControl,
     operation: {
       toolCall: codexEscalatedCommandToolCall(callId, command),
       beforeDecision: () => expect(existsSync(file)).toBe(false),

@@ -542,7 +542,7 @@ func TestClineSteerReplyRecordsAnUnlistedSteer(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.feedTurn(t)
-	require.NoError(t, r.agent.SteerInput("Use the second answer.", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "Use the second answer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The cut answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)
@@ -558,7 +558,7 @@ func TestClineSteerReplyAfterSubmissionDoesNotInterruptTheNextAnswer(t *testing.
 		r.feed(t, eventPendingPromptSubmitted, map[string]any{"prompt": map[string]any{"delivery": "steer"}})
 		return fakeReply{Payload: map[string]any{"queued": true}}
 	})
-	require.NoError(t, r.agent.SteerInput("Use the second answer.", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "Use the second answer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The next answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)
@@ -631,7 +631,7 @@ func TestClineSteerReplyCannotChangeTheReplacementTurn(t *testing.T) {
 		r.agent.beginInputTurn()
 		return fakeReply{Payload: map[string]any{"queued": true}}
 	})
-	require.NoError(t, r.agent.SteerInput("The old steer.", nil))
+	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "The old steer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The replacement answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)

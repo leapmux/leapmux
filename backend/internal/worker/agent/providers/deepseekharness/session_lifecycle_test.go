@@ -159,7 +159,7 @@ func TestCommandDuringARunningNativeTurnKeepsThatTurnActive(t *testing.T) {
 	a := newOfflineAgent(t, sink)
 	a.active = true
 	serveCommands(t, a, func(string) {})
-	require.NoError(t, a.SteerInput("/plan", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "/plan"}))
 	assert.Equal(t, []string{"turn_active:true"}, sink.TurnLifecycle(), "the native turn still runs")
 }
 

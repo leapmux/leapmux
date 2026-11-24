@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -36,6 +35,7 @@ type Agent struct {
 	settings               optionmap.Map
 	models                 []*agent.ModelInfo
 	sessions               map[string]*sessionState
+	steerLedger            providerkit.SteerLedger
 	uncertainInput         *museUncertainInput           // sendMu protects the pending native command identity.
 	uncertainChildCommands map[string]museUncertainInput // sendMu protects child command identities.
 }
@@ -85,6 +85,7 @@ type sessionState struct {
 	acceptedViewCursor   *string
 	projection           *childProjection
 	openingPrompt        *childOpeningPrompt
+	childInputCommands   map[string]museChildInputCommand
 	nativeTurn           childNativeTurnState
 	nativeHead           *childNativeHead
 	settledChildControls map[string]*childControlSettlement
@@ -210,17 +211,30 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 }
 
 func (a *Agent) SendInput(text string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, text, attachments, false)
+	_, err := a.SendInputWithReceipt(text, attachments)
+	return err
 }
+
+func (a *Agent) SendInputWithReceipt(text string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, text, attachments, nil)
+}
+
 func (a *Agent) SendInputForSession(id, text string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&id, text, attachments, false)
+	_, err := a.sendInput(&id, text, attachments, nil)
+	return err
 }
-func (a *Agent) SteerInput(text string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, text, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	_, err := a.sendInput(nil, request.Content, request.Attachments, &request)
+	return err
 }
 func (a *Agent) SupportsSteering() bool { return true }
 
-func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv1.Attachment, steer bool) error {
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd keeps an admitted input pending until Muse reports the turn that reads it.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
+
+func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv1.Attachment, steerRequest *agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.stateMu.Lock()
@@ -232,20 +246,21 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 	}
 	a.stateMu.Unlock()
 	if err := providerkit.CheckInputSession(expected, id); err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.IsStopped() {
-		return fmt.Errorf("the Muse agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Muse agent is stopped")
 	}
+	steer := steerRequest != nil
 	if steer && turn == "" {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if !steer && turn != "" {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	parts, err := inputParts(text, attachments)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	params := map[string]any{"sessionId": id, "input": parts}
 	method := methodTurnStart
@@ -255,18 +270,32 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 	}
 	encoded, err := json.Marshal(params)
 	if err != nil {
-		return fmt.Errorf("encode the Muse input: %w", err)
+		return agent.NativeInputReceipt{}, fmt.Errorf("encode the Muse input: %w", err)
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
 	payload, commandID, err := commandParams(params)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if prior := a.uncertainInput; !steer && prior != nil && prior.sessionID == id && prior.digest == digest {
 		commandID = prior.commandID
 	}
+	var steerTicket providerkit.SteerTicket
+	// A control response already has a transcript row, so it supplies no dispatch attempt.
+	if steer && steerRequest.AttemptID != "" {
+		a.stateMu.Lock()
+		if !a.currentSessionState(id, state) || state.turnID != turn {
+			a.stateMu.Unlock()
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
+		}
+		steerTicket = a.steerLedger.AddIdentified(agent.SteerResolution{
+			InputID: steerRequest.InputID, AttemptID: steerRequest.AttemptID,
+			Receipt: agent.NativeInputReceipt{SessionID: id, InputID: commandID},
+		})
+		a.stateMu.Unlock()
+	}
 	a.uncertainInput = nil
-	_, err = a.commandWithID(method, payload, commandID, a.APITimeout(), func(raw json.RawMessage, err error) {
+	rawResult, err := a.commandWithID(method, payload, commandID, a.APITimeout(), func(raw json.RawMessage, err error) {
 		if err != nil {
 			return
 		}
@@ -278,14 +307,26 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 			a.startTurn(id, reply.TurnID)
 		}
 	})
+	var receipt agent.NativeInputReceipt
+	if err == nil && !steer {
+		var reply turnResult
+		if json.Unmarshal(rawResult, &reply) != nil || reply.TurnID == "" {
+			err = fmt.Errorf("%w: Muse did not identify the turn for the input", agent.ErrDeliveryUncertain)
+		} else {
+			receipt = agent.NativeInputReceipt{SessionID: id, InputID: commandID, TurnID: reply.TurnID}
+		}
+	}
 	if err != nil {
+		if steerTicket != 0 {
+			a.steerLedger.Forget(steerTicket)
+		}
 		err = providerkit.ClassifyJSONRPCDeliveryError(method, err)
 		if !steer && errors.Is(err, agent.ErrDeliveryUncertain) {
 			a.uncertainInput = &museUncertainInput{sessionID: id, digest: digest, commandID: commandID}
 		}
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return nil
+	return receipt, nil
 }
 
 func (a *Agent) HandleOutput(raw []byte) { a.handleOutput(providerkit.ParseLine(raw)) }

@@ -32,7 +32,7 @@ func (s *AuthService) InitializeAccountState(ctx context.Context) error {
 	state := accountStateEmpty
 	if present {
 		if _, err := s.store.Users().GetFirstAdmin(ctx); errors.Is(err, store.ErrNotFound) {
-			return errors.New("the Hub has users but no administrator; stop the Hub and run leapmux recover bootstrap create-admin")
+			return errors.New("the Hub has users but no administrator; stop the Hub and run leapmux recover create-admin")
 		} else if err != nil {
 			return fmt.Errorf("check the initial administrator: %w", err)
 		}

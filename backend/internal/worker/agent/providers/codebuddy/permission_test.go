@@ -73,7 +73,7 @@ func TestCodebuddyFailedAutomaticWritePublishesOutsideTheWriteLock(t *testing.T)
 	writer := &agenttest.Stdin{}
 	a.SetStdinForTest(writer)
 	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"approval","response":{"allowed":true}}}`)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	assert.Contains(t, writer.String(), `"allowed":true`)
 }
 
@@ -120,7 +120,7 @@ func TestCodebuddyChildPermissionKeepsAManualAnswerUnderBypass(t *testing.T) {
 	frames := stdinFrames(t, stdin)
 	require.Len(t, frames, 1)
 	assert.Equal(t, frameTypeControlRequest, frames[0]["type"])
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"child","response":{"allowed":true}}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"child","response":{"allowed":true}}}`)}))
 }
 
 func TestCodebuddyRetiredTurnCannotApproveDuringPublication(t *testing.T) {

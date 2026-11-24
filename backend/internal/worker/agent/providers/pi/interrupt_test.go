@@ -147,7 +147,7 @@ func TestPiAgent_Interrupt_LeavesADialogThatPiNoLongerWaitsOn(t *testing.T) {
 	for name, settle := range map[string]func(t *testing.T, a *Agent, sink *agenttest.ControlSink, clock *quartz.Mock){
 		"the reader answered it": func(t *testing.T, a *Agent, _ *agenttest.ControlSink, _ *quartz.Mock) {
 			a.handlePiExtensionUIRequest(piOpenSelect("dialog-1"))
-			require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"dialog-1","value":"A"}`), agent.StopContext{}))
+			require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"dialog-1","value":"A"}`)}))
 		},
 		"its deadline passed": func(t *testing.T, a *Agent, sink *agenttest.ControlSink, clock *quartz.Mock) {
 			a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"dialog-1","method":"confirm","title":"Proceed?","timeout":1000}`))

@@ -1,10 +1,18 @@
 package service
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+func (handler *OutputHandler) waitForAgentOutput(ctx context.Context, agentID string) bool {
+	handler.outputQueueMu.Lock()
+	queue := handler.outputQueues[agentID]
+	handler.outputQueueMu.Unlock()
+	return queue == nil || queue.WaitForAdmittedWrites(ctx) == nil
+}
 
 // OutputQueue keeps the transcript's pending writes across provider replacements.
 // Each captured write still uses its original sink and native session.
@@ -34,22 +42,27 @@ func (handler *OutputHandler) outputQueue(agentID string) *agent.OutputQueue {
 
 // StopOutputRetries joins retries before shutdown drains their publication effects.
 // A final attempt can still use the open database. It cannot start another retry timer.
-func (handler *OutputHandler) StopOutputRetries() {
+func (handler *OutputHandler) StopOutputRetries() bool {
 	handler.outputQueueMu.Lock()
-	if handler.outputRetriesStopped {
-		handler.outputQueueMu.Unlock()
-		return
-	}
+	alreadyStopped := handler.outputRetriesStopped
 	handler.outputRetriesStopped = true
 	queues := make(map[string]*agent.OutputQueue, len(handler.outputQueues))
 	for id, queue := range handler.outputQueues {
 		queues[id] = queue
 	}
 	handler.outputQueueMu.Unlock()
+	complete := true
 	for id, queue := range queues {
-		queue.StopRetries()
-		if err := queue.Flush(); err != nil {
-			slog.Error("persist final queued output", "agent_id", id, "error", err)
+		if !alreadyStopped {
+			queue.StopRetries()
+			if err := queue.Flush(); err != nil {
+				slog.Error("persist final queued output", "agent_id", id, "error", err)
+				complete = false
+			}
+		}
+		if queue.HasPending() {
+			complete = false
 		}
 	}
+	return complete
 }

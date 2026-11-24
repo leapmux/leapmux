@@ -5,33 +5,63 @@ import (
 	"errors"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/tunnel"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 // callInnerRPC selects the transport for an inner remote procedure call (RPC).
 // Hub clients open a new channel with end-to-end encryption (E2EE) to the resolved worker.
 // Clients that use local interprocess communication (IPC) call CallInner on the agent's socket.
 //
-// Hub clients require workerID. resolveWorker derives it from --workspace-id and the tab ID when necessary.
-// The JSON error envelope sends failures to stdout.
+// Hub clients require workerID. The caller resolves it from the target first.
 func callInnerRPC(ctx context.Context, c *control.Client, workerID, method string, in proto.Message, out proto.Message) error {
-	if err := callInnerRPCBest(ctx, c, workerID, method, in, out); err != nil {
-		return emitInnerRPCError(err)
-	}
-	return nil
+	return callInnerRPCBest(ctx, c, workerID, method, in, out)
 }
 
-// codedRPCError preserves the error code for each call.
-// Commands that combine operation results can emit one envelope with the original error code.
+// codedRPCError records which stage of an inner call failed: the channel
+// open, the marshaling, or the call itself. isWorkerUnreachable reads the
+// stage to decide whether `tab close` may fall back to a CRDT-only close,
+// and CLIError maps the stage to the code of the error envelope.
 // Error returns the code when the cause is nil.
 type codedRPCError struct {
 	Code  string
 	Cause error
+}
+
+// CLIError reports the failure in the error envelope. A channel that does
+// not open means the Worker is offline, unless the hub refused the caller.
+// A refusal that the Worker answered keeps the Worker's code.
+func (e *codedRPCError) CLIError() *cli.Error {
+	switch e.Code {
+	case "channel_open_failed":
+		var refusal *connect.Error
+		if errors.As(e.Cause, &refusal) {
+			switch refusal.Code() {
+			case connect.CodeUnavailable, connect.CodeDeadlineExceeded:
+				// The channel could not reach the requested Worker.
+			default:
+				return cli.FromError(e.Cause)
+			}
+		}
+		return cli.Wrap(cli.CodeWorkerOffline, e, "the worker cannot be reached").
+			WithHint(`run "leapmux worker list" to see which workers are online`)
+	case "invalid_request":
+		return cli.Wrap(cli.CodeUsage, e, "")
+	case "marshal_failed", "unmarshal_failed":
+		return cli.Wrap(cli.CodeInternal, e, "")
+	}
+	if e.Cause == nil {
+		return cli.Newf(cli.CodeInternal, "%s", e.Code)
+	}
+	return cli.FromError(e.Cause)
 }
 
 func (e *codedRPCError) Error() string {
@@ -74,6 +104,36 @@ type workerCall struct {
 
 // Call invokes method and returns errors with their original codes for callers that combine operation results.
 func (w workerCall) Call(ctx context.Context, method string, in, out proto.Message) error {
+	return w.withVersion(ctx, method, w.call(ctx, method, in, out))
+}
+
+func (w workerCall) withVersion(ctx context.Context, method string, err error) error {
+	if !needsVersionDiagnostic(err) {
+		return err
+	}
+	peer := "Worker"
+	if w.workerID != "" {
+		peer += " " + w.workerID
+	}
+	var ipcError *codedRPCError
+	if w.c.IsWorkerIPC() && errors.As(err, &ipcError) && ipcError.Code == "rpc_failed" {
+		// An IPC refusal before dispatch came from the local socket.
+		peer = "Worker IPC"
+		w.workerID = ""
+	}
+	if method == leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure {
+		return withPeerVersion(ctx, err, peer, nil)
+	}
+	return withPeerVersion(ctx, err, peer, func(ctx context.Context) string {
+		var response leapmuxv1.GetWorkerSystemInfoResponse
+		if err := w.call(ctx, leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &response); err != nil {
+			return ""
+		}
+		return version.FormatBuild(response.GetBuild())
+	})
+}
+
+func (w workerCall) call(ctx context.Context, method string, in, out proto.Message) error {
 	if w.ch == nil && w.perCallChannel {
 		return callInnerRPCBest(ctx, w.c, w.workerID, method, in, out)
 	}
@@ -116,15 +176,6 @@ func channelRPCError(err error) *codedRPCError {
 	return &codedRPCError{Code: "rpc_failed", Cause: err}
 }
 
-// CallEmit invokes Call and emits the same JSON error envelope as callInnerRPC.
-// Sharing a channel across multiple calls preserves the emitted error codes.
-func (w workerCall) CallEmit(ctx context.Context, method string, in, out proto.Message) error {
-	if err := w.Call(ctx, method, in, out); err != nil {
-		return emitInnerRPCError(err)
-	}
-	return nil
-}
-
 // withWorkerChannel opens one E2EE channel to workerID and gives body a workerCall bound to that channel.
 // It closes the channel when body returns. Calls within body share one Noise_NK handshake.
 // Local IPC clients use the agent's socket without opening a channel.
@@ -140,7 +191,7 @@ func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, 
 	}
 	ch, err := c.OpenE2EEChannel(ctx, context.WithoutCancel(ctx), workerID)
 	if err != nil {
-		return &codedRPCError{Code: "channel_open_failed", Cause: err}
+		return withHubVersion(ctx, c, &codedRPCError{Code: "channel_open_failed", Cause: err})
 	}
 	defer ch.Close()
 	return body(workerCall{c: c, workerID: workerID, ch: ch})
@@ -166,16 +217,6 @@ func withBestEffortWorkerChannel(ctx context.Context, c *control.Client, workerI
 	}
 	defer ch.Close()
 	return body(workerCall{c: c, workerID: workerID, ch: ch})
-}
-
-// emitInnerRPCError converts an inner RPC error into the JSON error envelope and preserves its code.
-// callInnerRPC and callers that share a channel use this error handler.
-func emitInnerRPCError(err error) error {
-	var coded *codedRPCError
-	if errors.As(err, &coded) {
-		return control.EmitErrorWith(coded.Code, coded)
-	}
-	return control.EmitErrorWith("rpc_failed", err)
 }
 
 // localIPCCallInnerBest routes a call in the worker namespace through the agent's socket.

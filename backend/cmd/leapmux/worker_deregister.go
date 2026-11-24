@@ -4,17 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/signal"
-	"syscall"
 
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
-// runWorkerDeregister removes this worker's registration. The remote
+// deregisterWorker removes this worker's registration. The remote
 // deletion completes BEFORE the local credentials go, and the worker
 // must be stopped: a running process would keep dialing a hub that no
 // longer knows it, and the local teardown it performs mid-run is not
@@ -22,26 +21,12 @@ import (
 //
 // The worker database is preserved: deregistration removes the
 // registration, not the machine's sessions and local state.
-func runWorkerDeregister(args []string) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-	return runWorkerDeregisterWithFiles(ctx, args, configuredWorkerRegistrationFiles)
-}
-
-func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor func(*config.Config) workerRegistrationFiles) error {
-	cfg, commandOptions, err := loadWorkerDeregisterCommand(args)
-	if handleVersionQuery(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
+func deregisterWorker(ctx context.Context, cfg *config.Config, commandOptions workerCredentialOptions, files workerRegistrationFiles) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	printModeBanner("worker")
 	logging.Setup()
-	files := filesFor(cfg)
 	ctx, cancel := context.WithTimeout(ctx, commandOptions.timeout)
 	defer cancel()
 
@@ -60,7 +45,7 @@ func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor f
 		return probeErr
 	}
 	if held {
-		return fmt.Errorf("the worker is running; stop it with `leapmux worker stop` before deregistering")
+		return fmt.Errorf("the worker is running; stop it with `leapmux daemon worker stop` before deregistering")
 	}
 
 	lease, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
@@ -88,7 +73,7 @@ func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor f
 			return pendingErr
 		}
 		if pending != nil {
-			return fmt.Errorf("the pending registration in %s may already be committed; complete `leapmux worker register` with the same Hub and key before deregistering", cfg.PendingPath())
+			return fmt.Errorf("the pending registration in %s may already be committed; complete `leapmux daemon worker register` with the same Hub and key before deregistering", cfg.PendingPath())
 		}
 		// A previous confirmed deletion may have removed state.json before
 		// temporary-copy cleanup failed. Finish both cleanup operations.
@@ -109,19 +94,25 @@ func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor f
 	// row accepts a repeat call, so a retry completes rather than wedges.
 	defer endpoint.CloseIdleConnections()
 	if err := hub.Deregister(ctx, endpoint, state.AuthToken); err != nil {
-		return err
+		failure := cli.FromError(err)
+		if failure.Code == cli.CodeNotLoggedIn {
+			// The Hub refused the saved token, so it cannot delete this
+			// Worker on the Worker's own request.
+			failure = failure.WithHint("remove this Worker in the Worker list of the Hub, then delete %s", cfg.StatePath())
+		}
+		return failure
 	}
 
 	// The Hub confirmed deletion. Remove every local credential copy and
 	// preserve the worker database.
 	if err := config.ClearRegistration(files); err != nil {
-		return fmt.Errorf("the hub removed this worker, but its registration at %s and %s could not be cleared: %w; rerun `leapmux worker deregister` to finish",
+		return fmt.Errorf("the hub removed this worker, but its registration at %s and %s could not be cleared: %w; rerun `leapmux daemon worker deregister` to finish",
 			cfg.StatePath(), cfg.PendingPath(), err)
 	}
 
 	fmt.Println("Worker deregistered.")
 	fmt.Printf("Credentials removed from %s; the worker database is preserved\n", cfg.StatePath())
-	fmt.Println("To register this worker again, run `leapmux worker register` with a new registration key.")
+	fmt.Println("To register this worker again, run `leapmux daemon worker register` with a new registration key.")
 	printWorkerNextCommands(cfg, commandOptions.configFile, nil, []string{"disable"})
 	return nil
 }

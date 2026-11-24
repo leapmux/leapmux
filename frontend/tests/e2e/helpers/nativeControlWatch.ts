@@ -1,12 +1,16 @@
+import type { ControlPrompt } from '../../../src/components/chat/model/controlPrompt'
 import type { AgentControlRequest } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import type { AgentWatchServer } from './agentEventWatch'
+import { controlPromptFromWire } from '../../../src/components/chat/model/controlPromptWire'
 import { isObject } from '../../../src/lib/jsonPick'
 import { watchAgentEvents } from './agentEventWatch'
 
 export interface NativeControlFrame {
   requestId: string
   payload: Record<string, unknown>
+  /** What the Worker read from the payload, or undefined for a cancellation. */
+  prompt?: ControlPrompt
   canceled?: boolean
   responseState: AgentControlRequest['responseState']
   claimToken?: string
@@ -46,6 +50,7 @@ export function nativeControlFrame(event: AgentEvent): NativeControlFrame | unde
     return {
       requestId: inner.value.requestId,
       payload: parsed,
+      prompt: controlPromptFromWire(inner.value.prompt),
       responseState: inner.value.responseState,
       ...(inner.value.claimToken
         ? { claimToken: inner.value.claimToken }
@@ -55,6 +60,22 @@ export function nativeControlFrame(event: AgentEvent): NativeControlFrame | unde
   catch (error) {
     throw new Error('The Worker sent an invalid native control frame.', { cause: error })
   }
+}
+
+/**
+ * Whether the Worker read a permission of the provider's own from this frame: a
+ * permission that states what it asks about.
+ *
+ * The prompt for a payload that the provider does not recognize
+ * (`agent.GenericPermissionPrompt` in Go) is a permission too, but it states nothing
+ * beyond LeapMux's own Allow and Deny. A frame that reaches only that prompt proves no
+ * native permission, so it does not count.
+ */
+export function readsProviderPermission(frame: NativeControlFrame): boolean {
+  if (frame.prompt?.kind !== 'permission')
+    return false
+  const { title, reason, text, command, input } = frame.prompt.permission
+  return Boolean(title || reason || text || command) || input !== undefined
 }
 
 /** Capture real provider controls before a native operation starts. */

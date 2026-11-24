@@ -106,7 +106,11 @@ type Agent struct {
 	turn             turnState
 	// deliveries holds the waiter of each session.send_input that waits for its
 	// run.started event, by request id.
-	deliveries map[string]chan error
+	deliveries  map[string]chan error
+	steerProofs steerProofs
+	// detachedReply retains the prior command's proof while Cline runs a
+	// prompt that it already drained from its native queue.
+	detachedReply *inputReply
 	// controls holds every approval and question that LeapMux published and
 	// nothing resolved yet, by request id. See control.go.
 	controls map[string]*pendingControl
@@ -135,8 +139,12 @@ type Agent struct {
 // Manager.SupportsSteering returns false when a provider no longer implements InputSteerer.
 // This assertion makes that regression a compile error.
 var (
-	_ agent.Agent        = (*Agent)(nil)
-	_ agent.InputSteerer = (*Agent)(nil)
+	_ agent.Agent              = (*Agent)(nil)
+	_ agent.InputSteerer       = (*Agent)(nil)
+	_ agent.InputReceiptSender = (*Agent)(nil)
+	_ agent.SteerReceiptSender = (*Agent)(nil)
+	_ agent.SteerEchoReporter  = (*Agent)(nil)
+	_ agent.SteerSurvivor      = (*Agent)(nil)
 )
 
 // turnState is the turn the agent owes the user a reply for. Guarded by Mu.
@@ -148,7 +156,10 @@ type turnState struct {
 	steerReports  uint64
 	// requestID is the session.send_input that started the turn, or "" for a
 	// turn that Cline started by itself.
-	requestID string
+	requestID      string
+	inputReply     *inputReply
+	leadDoneReason string
+	leadIdle       bool
 	// steerable is true while the turn takes a steer: a turn that LeapMux
 	// started. A turn that Cline started by itself -- a team run that resumed
 	// the lead -- takes the next message as a turn of its own.
@@ -169,8 +180,8 @@ type turnState struct {
 	// row carries.
 	toolUses int
 	// actModeApproved records that the model called switch_to_act_mode in this
-	// turn and the worker answered it, so the session rebuilds in Act mode when
-	// the turn ends.
+	// turn and the worker answered it. A turn that starts before the rebuild
+	// also carries the approval of a completed predecessor.
 	actModeApproved bool
 	// settling marks the turn that holds the input queue while a mode change
 	// applies: one that waited for the previous turn (afterTurn), or one
@@ -199,13 +210,20 @@ var errNoSession = errors.New("agent has no Cline session")
 
 // SendInput starts a turn with one user message.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments)
+	return a.sendInput(nil, content, attachments, nil)
+}
+
+// SendInputWithReceipt starts a turn and returns the native command identity.
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	reply := &inputReply{}
+	err := a.sendInput(nil, content, attachments, reply)
+	return reply.receipt, err
 }
 
 // SendInputForSession starts a turn with one user message, when the session it
 // states is still the current one.
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&sessionID, content, attachments)
+	return a.sendInput(&sessionID, content, attachments, nil)
 }
 
 // sendInput starts a turn.
@@ -216,7 +234,7 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 //
 // The send returns when the daemon publishes run.started with the command's request ID.
 // The daemon sends the command reply only when the turn ends.
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, reply *inputReply) error {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 
@@ -242,7 +260,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		return err
 	}
 	a.beginInputTurn()
-	if err := a.deliver(sessionID, input.payload(sessionID, mode, "")); err != nil {
+	if err := a.deliver(sessionID, input.payload(sessionID, mode, ""), reply); err != nil {
 		if !errors.Is(err, agent.ErrDeliveryUncertain) {
 			a.releaseInputTurn()
 		}
@@ -254,7 +272,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 // deliver sends one session.send_input and waits for its run.started. The turn
 // request's reply arrives when the turn ends; a refusal before that fails the
 // delivery.
-func (a *Agent) deliver(sessionID string, payload map[string]any) error {
+func (a *Agent) deliver(sessionID string, payload map[string]any, reply *inputReply) error {
 	ctx, cancel := context.WithTimeout(a.ctx, a.sendWait)
 	defer cancel()
 	started := make(chan error, 1)
@@ -264,6 +282,10 @@ func (a *Agent) deliver(sessionID string, payload map[string]any) error {
 		a.Mu.Lock()
 		if a.turn.active && a.turn.requestID == "" {
 			a.turn.requestID = requestID
+			if reply != nil {
+				reply.receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: requestID, TurnID: requestID}
+				a.turn.inputReply = reply
+			}
 		}
 		if a.deliveries == nil {
 			a.deliveries = make(map[string]chan error)
@@ -307,6 +329,11 @@ func (a *Agent) watchTurnReply(sessionID, requestID string, replies <-chan hubRe
 	}
 	if ok && reply.OK {
 		a.settleDelivery(requestID, nil)
+		var payload struct {
+			Result json.RawMessage `json:"result"`
+		}
+		_ = json.Unmarshal(reply.Payload, &payload)
+		a.recordInputResult(sessionID, requestID, readInputResult(payload.Result))
 		return
 	}
 	// A connection that failed after the command left says nothing about
@@ -319,13 +346,15 @@ func (a *Agent) watchTurnReply(sessionID, requestID string, replies <-chan hubRe
 		}
 		failure = refused
 	}
-	if a.settleDelivery(requestID, failure) {
+	waited := a.settleDelivery(requestID, failure)
+	ended := a.recordInputResult(sessionID, requestID, inputResult{})
+	if waited {
 		// The delivery failed, and the sender releases the turn.
 		return
 	}
-	if !ok {
-		// A lost connection says nothing about the turn: the reconnect replays
-		// the events it missed, and the run's end event ends the turn.
+	if ended || !ok {
+		// A reconnect replays a missed native end. A native end that already
+		// settled the turn needs no synthetic replacement.
 		return
 	}
 	a.dispatchMu.Lock()
@@ -358,7 +387,18 @@ func (a *Agent) SupportsSteering() bool { return true }
 // SteerInput adds a message to the running turn.
 // Cline stops the running model request as soon as it accepts the steer.
 // The cut answer keeps an interrupted completion. The next model request receives the steer.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	_, err := a.SteerInputWithReceipt(request)
+	return err
+}
+
+// SteerRowAtEcho records a steer when Cline submits its native queue entry.
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd preserves a native queue entry across a run end.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
+
+func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()
@@ -366,25 +406,66 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	sequence, reports := a.turn.sequence, a.turn.steerReports
 	a.Mu.Unlock()
 	if stopped {
-		return errAgentStopped
+		return agent.NativeInputReceipt{}, errAgentStopped
 	}
 	if !active {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if !steerable {
-		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
+		return agent.NativeInputReceipt{}, &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
 	}
-	input, err := a.buildInput(content, attachments)
+	input, err := a.buildInput(request.Content, request.Attachments)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, a.sendWait)
 	defer cancel()
-	if _, err := a.hub.command(ctx, commandSessionSendInput, sessionID, input.payload(sessionID, mode, deliverySteer)); err != nil {
-		if _, refused := hubErrorCode(err); refused {
-			return err
+	var tracked *steerDispatch
+	admissionDone := make(chan struct{})
+	requestID, replies, err := a.hub.send(ctx, commandSessionSendInput, sessionID, input.payload(sessionID, mode, deliverySteer), func(requestID string) {
+		if request.InputID == "" || request.AttemptID == "" {
+			return
 		}
-		return fmt.Errorf("%w: Cline did not confirm the steer: %v", agent.ErrDeliveryUncertain, err)
+		tracked = &steerDispatch{
+			input: input, admissionDone: admissionDone,
+			resolution: agent.SteerResolution{
+				InputID: request.InputID, AttemptID: request.AttemptID,
+				Receipt: agent.NativeInputReceipt{SessionID: sessionID, InputID: requestID},
+			},
+		}
+		a.Mu.Lock()
+		a.steerProofs.register(tracked)
+		a.Mu.Unlock()
+	})
+	if err == nil {
+		defer a.hub.forget(requestID)
+		_, err = a.hub.await(ctx, commandSessionSendInput, replies)
+	}
+	if tracked != nil && err == nil {
+		// Hub replies and events have separate readers. The paired queue
+		// event, or its uncertainty verdict, can arrive here after the reply.
+		select {
+		case <-admissionDone:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	}
+	var receipt agent.NativeInputReceipt
+	if tracked != nil {
+		a.Mu.Lock()
+		if err == nil || tracked.admitted {
+			receipt = tracked.resolution.Receipt
+			err = nil
+		} else {
+			a.steerProofs.forget(tracked)
+		}
+		a.Mu.Unlock()
+	}
+	if err != nil {
+		if _, refused := hubErrorCode(err); refused {
+			return agent.NativeInputReceipt{}, err
+		}
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: Cline did not confirm the steer: %v", agent.ErrDeliveryUncertain, err)
 	}
 	a.Mu.Lock()
 	// Native reports take precedence, including a submission that arrives before this reply.
@@ -392,7 +473,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		a.turn.steersPending++
 	}
 	a.Mu.Unlock()
-	return nil
+	return receipt, nil
 }
 
 // beginInputTurn marks a new turn active and publishes it.
@@ -431,7 +512,7 @@ func (a *Agent) ensureTurn() {
 // takes a steer.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	state := agent.TurnState{Active: a.turn.active, Steerable: a.turn.active && a.turn.steerable}
+	state := agent.TurnState{Active: a.turn.active, Steerable: a.turn.active && a.turn.steerable, TurnSequence: a.turn.sequence}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	return providerkit.PublishTurnStateTo(a.sink, state, seq)

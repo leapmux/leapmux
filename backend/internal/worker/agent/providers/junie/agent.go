@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -23,7 +22,9 @@ type Agent struct {
 	// workingDir links a native session summary to this agent's project.
 	workingDir string
 	// clock drives reads of the native child snapshots while a child runs.
-	clock quartz.Clock
+	clock           quartz.Clock
+	steerDispatchMu sync.Mutex
+	steerReplies    junieSteerReplies
 	// childTailMu guards childTails, openChildren, and finishedChildren keyed
 	// by their ACP child session IDs.
 	childTailMu      sync.Mutex
@@ -50,6 +51,7 @@ var _ agent.Agent = (*Agent)(nil)
 // false, with no build error, for a provider that stops satisfying
 // InputSteerer, so this assertion makes that regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerReceiptSender = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
 
 // junieSteerMethod is Junie's own steering method: it injects into the running
@@ -75,38 +77,7 @@ func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessag
 // Junie's own, which the provider tracks as an agent turn so its end still
 // closes the turn state. A refused request answers ErrNoActiveTurn, so the
 // queue keeps the input for the next turn.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	if content == "" {
-		return nil
-	}
-	if !a.PromptActive() {
-		return agent.ErrNoActiveTurn
-	}
-	result, err := a.SendSessionRPCObserved(junieSteerMethod, map[string]interface{}{
-		"prompt": acp.BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
-	}, func(response json.RawMessage, replyErr error) {
-		if replyErr != nil {
-			return
-		}
-		var reply struct {
-			Outcome string `json:"outcome"`
-		}
-		if json.Unmarshal(response, &reply) != nil {
-			return
-		}
-		// A steer that started a new turn of Junie's own runs outside the
-		// prompt of LeapMux: track it as an agent turn so the turn state and
-		// the reader follow it to its own end.
-		if reply.Outcome == "startedNewTurn" {
-			a.BeginAgentTurn()
-		}
-	})
-	if err != nil {
-		if providerkit.HasJSONRPCErrorCode(err, -32600, -32602) {
-			return agent.ErrNoActiveTurn
-		}
-		return providerkit.ClassifyJSONRPCDeliveryError(junieSteerMethod, err)
-	}
-	_ = result
-	return nil
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	_, err := a.SteerInputWithReceipt(request)
+	return err
 }

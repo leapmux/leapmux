@@ -16,10 +16,11 @@ import (
 )
 
 type claudePendingControl struct {
-	instanceID string
-	sessionID  string
-	agentID    string
-	toolUseID  string
+	instanceID   string
+	sessionID    string
+	nativeTurnID string
+	agentID      string
+	toolUseID    string
 	// elicitationServer and elicitationID identify one server's elicitation.
 	// A completion must match both values. Each MCP server assigns its own IDs.
 	elicitationServer string
@@ -81,6 +82,9 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	a.Mu.Lock()
 	record.sessionID = a.sessionID
+	if valid && record.agentID == "" {
+		record.nativeTurnID = a.claudeReplyTurnLocked(record.sessionID).InputID
+	}
 	if a.incomingControls == nil {
 		a.incomingControls = make(map[string]*claudePendingControl)
 	}
@@ -116,7 +120,9 @@ func (a *Agent) canBypassControlLocked(record *claudePendingControl) bool {
 }
 
 func (a *Agent) publishRegisteredControl(requestID string, record *claudePendingControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, InstanceID: record.instanceID, AgentSessionID: record.sessionID, Payload: record.payload})
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: requestID, InstanceID: record.instanceID, AgentSessionID: record.sessionID, NativeTurnID: record.nativeTurnID, Payload: record.payload,
+	})
 	a.Mu.Lock()
 	current := a.incomingControls[requestID] == record
 	if err == nil && !record.answered {
@@ -198,7 +204,8 @@ func (a *Agent) approvePendingPermissions() {
 }
 
 // SendRawInput claims control answers and preserves every other native frame.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	var frame struct {
 		Type     string `json:"type"`
 		Response struct {
@@ -208,11 +215,18 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if json.Unmarshal(data, &frame) != nil || frame.Type != claudeMsgTypeControlResponse {
 		return a.Process.SendRawInput(data, stop)
 	}
+	// Claude Code can ask again under a waiting request ID with another request,
+	// which replaces the answered instance (claudeCodeHandleControlRequest). It
+	// applies an answer to the request that the ID names now, so the answer goes
+	// only to the instance that it states (agent.RawInput.ControlInstanceID).
 	a.Mu.Lock()
 	record := a.incomingControls[frame.Response.RequestID]
 	a.Mu.Unlock()
 	if record == nil {
 		return fmt.Errorf("the Claude Code control request is no longer pending")
+	}
+	if err := agent.ControlInstanceRefusal(record.instanceID, input.ControlInstanceID); err != nil {
+		return err
 	}
 	ctx := a.Context()
 	if ctx == nil {

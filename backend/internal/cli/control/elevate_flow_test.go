@@ -310,34 +310,36 @@ func (b *syncBuffer) Bytes() []byte {
 	return append([]byte(nil), b.buf.Bytes()...)
 }
 
-// captureStreams swaps Out and Err for buffers and returns both.
-func captureStreams(t *testing.T) (out, errOut *syncBuffer) {
+// captureErr swaps Err for a buffer and returns it. Nothing in this package
+// writes to stdout (TestPackageNeverWritesStdout), so Err is the one stream
+// that the prose of a ceremony reaches.
+func captureErr(t *testing.T) *syncBuffer {
 	t.Helper()
-	out, errOut = &syncBuffer{}, &syncBuffer{}
-	prevOut, prevErr := Out, Err
-	Out, Err = out, errOut
-	t.Cleanup(func() { Out, Err = prevOut, prevErr })
-	return out, errOut
+	errOut := &syncBuffer{}
+	prev := Err
+	Err = errOut
+	t.Cleanup(func() { Err = prev })
+	return errOut
 }
 
-// TestElevate_PrintsThePromptToErrAndNothingToOut is the JSON contract.
+// TestElevate_PrintsThePromptToErr is the JSON contract.
 //
-// Out carries the envelope of whichever verb opened the step-up -- the
-// interceptor runs under ANY unary call -- so four lines of prose there stop
-// `leapmux control admin settings set … | jq` from parsing on the first run
-// after the window lapses.
-func TestElevate_PrintsThePromptToErrAndNothingToOut(t *testing.T) {
+// Stdout carries the envelope of whichever verb opened the step-up -- the
+// interceptor runs under ANY unary call -- so four lines of prose there would
+// stop `leapmux control admin settings set … --json | jq` from parsing on the
+// first run after the window lapses. The prompt therefore goes to Err, and
+// TestPackageNeverWritesStdout keeps every other write off stdout.
+func TestElevate_PrintsThePromptToErr(t *testing.T) {
 	hub := newElevationHub(t)
 	// A grant that is already expired: the prompt is printed, and the poll
 	// loop ends at once. The test then costs no waiting.
 	hub.grant["expires_in"] = 0
 
 	c := elevatableClient(t, hub.server.URL)
-	out, errOut := captureStreams(t)
+	errOut := captureErr(t)
 
 	require.Error(t, c.Elevate(context.Background()))
 
-	assert.Empty(t, out.String(), "the JSON envelope stream must carry no prose")
 	prompt := errOut.String()
 	assert.Contains(t, prompt, "verify your identity")
 	assert.Contains(t, prompt, "https://hub.example/oauth/device")
@@ -355,14 +357,13 @@ func TestElevate_RefusesWhenNobodyCanAnswerThePrompt(t *testing.T) {
 	hub := newElevationHub(t)
 	c := elevatableClient(t, hub.server.URL)
 	c.promptAllowed = false
-	out, errOut := captureStreams(t)
+	errOut := captureErr(t)
 
 	require.ErrorIs(t, c.Elevate(context.Background()), ErrElevationNeedsAPerson)
 
 	starts, polls := hub.counts()
 	assert.Zero(t, starts, "a ceremony nobody can finish must never be opened")
 	assert.Zero(t, polls)
-	assert.Empty(t, out.String())
 	assert.Empty(t, errOut.String(), "a prompt nobody can read must not be printed")
 }
 
@@ -404,7 +405,7 @@ func TestNewClient_RefusesToPromptWithoutATerminal(t *testing.T) {
 func TestElevate_CollapsesConcurrentCeremonies(t *testing.T) {
 	hub := newElevationHub(t)
 	c := elevatableClient(t, hub.server.URL)
-	captureStreams(t)
+	captureErr(t)
 
 	var wg sync.WaitGroup
 	errs := make([]error, 4)
@@ -439,7 +440,7 @@ func TestElevate_ReportsATransportFailureRatherThanAnEmptyOAuthError(t *testing.
 		_, _ = w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
 	}
 	c := elevatableClient(t, hub.server.URL)
-	captureStreams(t)
+	captureErr(t)
 
 	err := c.Elevate(context.Background())
 	require.Error(t, err)
@@ -463,7 +464,7 @@ func TestElevate_KeepsPollingWhileTheHubSaysPending(t *testing.T) {
 		}
 	}
 	c := elevatableClient(t, hub.server.URL)
-	captureStreams(t)
+	captureErr(t)
 
 	require.NoError(t, c.Elevate(context.Background()))
 	_, polls := hub.counts()
@@ -477,10 +478,9 @@ func TestElevate_ReportsACredentialTheHubWillNotElevate(t *testing.T) {
 	hub := newElevationHub(t)
 	hub.startStatus = http.StatusBadRequest
 	c := elevatableClient(t, hub.server.URL)
-	out, errOut := captureStreams(t)
+	errOut := captureErr(t)
 
 	assert.ErrorIs(t, c.Elevate(context.Background()), ErrElevationUnsupported)
-	assert.Empty(t, out.String())
 	assert.Empty(t, errOut.String(), "no prompt for a credential that cannot be elevated")
 }
 
@@ -491,7 +491,7 @@ func TestElevate_PresentsTheCredentialItAsksFor(t *testing.T) {
 	hub.grant["expires_in"] = 0
 
 	c := elevatableClient(t, hub.server.URL)
-	captureStreams(t)
+	captureErr(t)
 	require.Error(t, c.Elevate(context.Background()))
 
 	assert.Equal(t, "Bearer lmx_a_access_0", hub.presentedCredential())
@@ -538,7 +538,7 @@ func TestElevate_KeepsOneCeremonyForEachCredential(t *testing.T) {
 		return c
 	}
 	a, b := client(first.server.URL), client(second.server.URL)
-	captureStreams(t)
+	captureErr(t)
 
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- a.Elevate(context.Background()) }()
@@ -575,45 +575,12 @@ func TestElevate_RecordsTheLabelALoginRecords(t *testing.T) {
 	hub.grant["expires_in"] = 0
 
 	c := elevatableClient(t, hub.server.URL)
-	captureStreams(t)
+	captureErr(t)
 	require.Error(t, c.Elevate(context.Background()))
 
 	assert.Equal(t, DefaultDeviceName(), hub.presentedDeviceName())
 	assert.Contains(t, hub.presentedDeviceName(), "alice@",
 		"the step-up records the label a login records, not a bare hostname")
-}
-
-// TestElevate_LeavesStdoutParseableForTheVerbThatOpenedIt closes the JSON
-// contract at the point where the two writers meet.
-//
-// The step-up interrupts an ORDINARY verb -- any restricted unary call
-// opens it, from the interceptor -- and that verb prints its envelope to Out
-// in the same invocation. Four lines of prose in that stream stop
-// `leapmux control admin settings set ... | jq` from parsing on the first
-// run after the window lapses, so Out must hold the envelope and nothing
-// else.
-func TestElevate_LeavesStdoutParseableForTheVerbThatOpenedIt(t *testing.T) {
-	hub := newRepairHub(t, 3600, elevationRequired())
-	seedCredentials(t, hub.server.URL, time.Now().Add(time.Hour))
-	out, errOut := captureStreams(t)
-
-	c, err := NewClient(hub.server.URL)
-	require.NoError(t, err)
-	c.promptAllowed = true
-
-	require.NoError(t, hub.call(c))
-	// The verb that made the call prints its envelope, which is all that
-	// Out may ever hold.
-	require.NoError(t, EmitData(map[string]any{"channel_id": "ch-1"}))
-
-	var envelope struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out.Bytes(), &envelope),
-		"stdout must decode as the envelope alone")
-	assert.Equal(t, "ch-1", envelope.Data["channel_id"])
-	assert.Contains(t, errOut.String(), "verify your identity",
-		"the prose the person must read still reaches them, on the other stream")
 }
 
 // TestElevate_FallsBackToTheLoopbackCeremonyWhenTheHubDemandsABrowser is the
@@ -626,7 +593,7 @@ func TestElevate_FallsBackToTheLoopbackCeremonyWhenTheHubDemandsABrowser(t *test
 	hub.startBody = browserStepUpRefusal
 	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
 	stub := stubBrowser(t, approve)
-	captureStreams(t)
+	captureErr(t)
 
 	require.NoError(t, c.Elevate(context.Background()))
 
@@ -655,7 +622,7 @@ func TestElevate_RunsTheDeviceCeremonyWhenTheHubGrantsIt(t *testing.T) {
 	hub := newElevationHub(t)
 	c := elevatableClient(t, hub.server.URL)
 	stub := stubBrowser(t, approve)
-	captureStreams(t)
+	captureErr(t)
 
 	require.NoError(t, c.Elevate(context.Background()))
 
@@ -682,7 +649,7 @@ func TestElevateViaLoopback_WithoutATokenIDTellsTheUserToSignInAgain(t *testing.
 	err := c.elevateViaLoopback(context.Background(), start)
 
 	assert.ErrorIs(t, err, errStepUpNeedsSignIn)
-	assert.ErrorContains(t, err, "sign in again with `leapmux control auth login`")
+	assert.ErrorContains(t, err, "sign in again with `leapmux auth login`")
 	assert.Zero(t, starts, "the loopback flow must start only after identifying the target")
 }
 
@@ -712,7 +679,7 @@ func TestElevate_RefreshesTheExpiredBearerOnlyAfterApproval(t *testing.T) {
 				c.setBearer(creds.AccessToken, creds.ExpiresAt)
 				return tc.callback(state)
 			})
-			captureStreams(t)
+			captureErr(t)
 
 			err := c.Elevate(context.Background())
 
@@ -751,7 +718,7 @@ func TestElevate_RepairsTheBearerAndPostsAgainAfterA401(t *testing.T) {
 	}
 	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
 	stub := stubBrowser(t, approve)
-	captureStreams(t)
+	captureErr(t)
 
 	require.NoError(t, c.Elevate(context.Background()))
 
@@ -778,7 +745,7 @@ func TestElevate_ReportsTheHubsRefusalOfTheCode(t *testing.T) {
 	}
 	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
 	stub := stubBrowser(t, approve)
-	captureStreams(t)
+	captureErr(t)
 
 	err := c.Elevate(context.Background())
 	require.Error(t, err)
@@ -800,7 +767,7 @@ func TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 		err := c.elevateViaLoopback(context.Background(), loopbackauth.Start)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "sign in again with `leapmux control auth login`")
+		assert.Contains(t, err.Error(), "sign in again with `leapmux auth login`")
 	})
 
 	t.Run("a corrupt credential file surfaces the parse error", func(t *testing.T) {

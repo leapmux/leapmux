@@ -232,8 +232,19 @@ export interface PlanRenderContext extends ToolLayoutContext {
   onReply?: ((quotedText: string) => void) | undefined
 }
 
+/** Markdown, and the tab titles that a message from another agent states its sender by. */
+export interface UserMessageRenderContext extends MarkdownRenderContext {
+  /**
+   * The title of the tab with this id, or undefined when the browser holds no such
+   * tab or the tab has no title. Absent outside a host that holds tabs. Carries
+   * `| undefined` because a mounted row context resolves its getter to undefined
+   * while the host is absent.
+   */
+  tabTitle?: ((tabId: string) => string | undefined) | undefined
+}
+
 /** The capability union that the exhaustive row renderer dispatches. */
-export interface RowRenderContext extends ToolResultRenderContext {
+export interface RowRenderContext extends ToolResultRenderContext, UserMessageRenderContext {
   expandUiKey?: MessageUiKey
   reviews?: ReviewActions | undefined
   /**

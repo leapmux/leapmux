@@ -73,13 +73,15 @@ Submit with the **"Create"** button; cancel with **"Cancel"**. The Create button
 You can create a terminal from a script or another agent with the [Control CLI](/docs/using/control-cli/):
 
 ```bash
-leapmux control tab open --type terminal \
-  --worker-id <worker> \
-  --working-dir /home/me/project \
+leapmux terminal open \
+  --worker <worker> \
+  --dir /home/me/project \
   --shell /bin/zsh
 ```
 
-`--shell` is optional — leaving it empty uses the Worker's default shell. `--shell-start-dir` defaults to the working directory. See [Control CLI](/docs/using/control-cli/) for the full flag set, entity-ID resolution, and placement flags.
+`--shell` is optional — leaving it empty uses the Worker's default shell. `--start-dir` defaults to the working directory. See [`terminal open`](/docs/reference/control-commands/#leapmux-terminal-open) for the full flag set, including the placement flags.
+
+The original interactive shell evaluates `--command` after its startup files run. For example, use `leapmux terminal open --dir /home/me/project --command 'make test'`. The Worker releases the command when the shell reaches its startup hook. The shell retains variables and definitions from the command, and a restart does not run it again. See [Control CLI terminal commands](/docs/using/control-cli/#terminals) for the supported shells and startup errors.
 
 {{< callout type="info" >}}
 Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
@@ -94,9 +96,9 @@ The shell list is per-Worker. Switching workspace while staying on the same Work
 ### How the Worker builds the list
 
 1. The Worker resolves its **default shell** (see below) and places it **first** in the list.
-2. It then probes a fixed set of well-known shells — `sh`, `bash`, `zsh`, `fish`, `pwsh`, `powershell` — resolving each against `PATH`. Any that are installed are added, skipping the one that is already the default.
+2. It searches `PATH` for `sh`, `bash`, `zsh`, `fish`, `nu` (Nushell), `elvish`, `pwsh`, and `powershell`. For Nushell, it uses `nushell` when it finds no `nu`.
 
-Two names that resolve to the same binary (for example `sh` and `bash` on many systems) are kept as **separate** entries, because invoking a shell as `sh` activates its POSIX mode — the distinction is intentional.
+Shells with different invocation modes get separate entries even when they share a binary. For example, invoking Bash as `sh` activates POSIX mode.
 
 ### Default shell resolution
 
@@ -224,25 +226,24 @@ What the panel does get is enough to identify **itself**:
 | `LEAPMUX_CONTROL_WORKING_DIR` | the directory that addresses the panel |
 | `LEAPMUX_CONTROL_WORKER_ID` | the host Worker |
 
-So these work with no flags:
+So these work with no other argument:
 
 ```bash
-leapmux control terminal quake toggle   # hides the panel you typed it into
-leapmux control terminal quake close
-leapmux control terminal get            # this shell's own geometry, shell, dir
-leapmux control terminal send --data 'ls\n'
-leapmux control git status              # worker + working dir are enough
+leapmux terminal quake toggle   # hides the panel you typed it into
+leapmux terminal quake close
+leapmux terminal get            # this shell's own geometry, shell, dir
+leapmux terminal send self $'ls\n'
+leapmux git status              # worker + working dir are enough
 ```
 
-And anything that acts on a **tab** asks you which one:
+And anything that acts on a **tab** takes the tab as an argument:
 
 ```bash
-leapmux control agent send --tab-id "$AGENT" --message "done"
-leapmux control tab list --workspace-id "$WS"
+leapmux agent send "$AGENT" "done"
 ```
 
-Run without `--tab-id`, those report a missing id rather than guessing. Use
-`leapmux control tab list` to find the one you mean.
+`self` on a `tab` or `agent` command fails inside the panel, because the panel
+has no tab. Use `leapmux tab list` to find the one you mean.
 
 ### What it belongs to
 
@@ -291,15 +292,15 @@ animating, whatever the duration says.
 
 ### Driving the panel from the CLI
 
-`leapmux control terminal quake open`, `close`, and `toggle` do the same thing
+`leapmux terminal quake open`, `close`, and `toggle` do the same thing
 the shortcut does, in every browser and desktop window you have open:
 
 ```bash
-leapmux control terminal quake toggle --working-dir <path>
+leapmux terminal quake toggle --dir <path>
 ```
 
-`--working-dir` defaults to `$LEAPMUX_CONTROL_WORKING_DIR`, which every LeapMux
-shell exports — so the bare `leapmux control terminal quake toggle` works from
+`--dir` defaults to `$LEAPMUX_CONTROL_WORKING_DIR`, which every LeapMux
+shell exports — so the bare `leapmux terminal quake toggle` works from
 an agent's own terminal, from a terminal tab, and from inside the Quake terminal
 itself, where it hides the panel you typed it into.
 
@@ -346,6 +347,8 @@ Restored output is replayed byte-for-byte, so full-screen apps redraw correctly.
 
 When the shell process exits, the Worker writes a notice into the screen so you can see it and so it persists. The notice reports that the terminal process exited, gives its exit code, and tells you that Enter restarts the shell.
 
+The Worker keeps the exit code, so `leapmux terminal wait <terminal> --exit` prints it even after the shell ended, and `terminal get` reports it as `exit_code`. A Worker that was killed while the shell ran never saw it end, so it reports no exit code for that shell.
+
 If the Worker was disconnected or forcibly shut down, the exit code is unknown. The notice then reports the disconnected Worker instead of an exit code, and it offers the same restart.
 
 On an exited terminal, **Enter** is the only key that does anything — it restarts the shell. All other input is ignored. A restart reuses the terminal's saved working directory, shell, and start directory, mints fresh remote-control credentials, and preserves the existing screen so the new prompt appears below the exit notice. If a restart can't proceed, LeapMux reports the failure (for example, the Worker reports the terminal is still running).
@@ -356,7 +359,7 @@ On an exited terminal, **Enter** is the only key that does anything — it resta
 There is no "remote-enabled" checkbox or toggle in the New terminal dialog, the CLI, or anywhere else. **Every** terminal LeapMux spawns is remote-enabled automatically (as long as the Worker has remote control configured). This is a frequent point of confusion — there is nothing to turn on.
 {{< /callout >}}
 
-When the Worker spawns your shell, it injects a set of `LEAPMUX_CONTROL_*` environment variables that let any script or program running inside the terminal drive LeapMux through the [`leapmux control`](/docs/using/control-cli/) CLI — without needing to log in separately. The CLI detects these variables and routes its calls over a local socket the Worker provides, scoped to the terminal's own identity.
+When the Worker spawns your shell, it injects a set of `LEAPMUX_CONTROL_*` environment variables that let any script or program running inside the terminal drive LeapMux through the [`leapmux`](/docs/using/control-cli/) CLI — without needing to log in separately. The CLI detects these variables and routes its calls over a local socket the Worker provides, scoped to the terminal's own identity.
 
 The variables injected into a terminal are:
 
@@ -371,14 +374,14 @@ The variables injected into a terminal are:
 | `LEAPMUX_CONTROL_TERMINAL_ID` | Always | The terminal you are running inside. The same id as `TAB_ID` here; it differs only in a Quake panel. |
 | `LEAPMUX_CONTROL_WORKING_DIR` | When known | The working directory at spawn |
 
-Because these are set, `leapmux control` commands run inside the terminal default their entity IDs from the environment. For example, this works with no flags from inside the terminal:
+Because these are set, `self` selects this terminal, and the commands that open a tab place it beside this one. For example, these work with no flags from inside the terminal:
 
 ```bash
 # Who am I, and where?
-leapmux control whoami
+leapmux whoami
 
 # Open a sibling terminal next to this one
-leapmux control tab open --type terminal --last
+leapmux terminal open --last
 ```
 
 {{< callout type="info" >}}
@@ -389,31 +392,36 @@ Any pre-existing `LEAPMUX_CONTROL_*` values are stripped before the Worker re-in
 
 ### Controlling a terminal from outside
 
-The reverse also works: from any authenticated `leapmux control` session (or from another agent), you can write to and inspect a terminal:
+The reverse also works: from any authenticated `leapmux` session (or from another agent), you can write to and inspect a terminal:
 
 ```bash
-# Type a command into a terminal's PTY (note the trailing newline to run it)
-leapmux control terminal send --tab-id <tab> --data $'ls -la\n'
+# Run a command: paste the command line and press Enter in one request
+leapmux terminal run <tab> 'ls -la'
 
-# Pipe binary or escape sequences in via stdin
-printf '\x03' | leapmux control terminal send --tab-id <tab> --stdin
+# Press keys, such as Ctrl-C to stop the running command
+leapmux terminal send <tab> --key ctrl-c
 
-# Inspect a terminal's metadata, or dump its current screen with ANSI intact
-leapmux control terminal get --tab-id <tab>
-leapmux control terminal get --tab-id <tab> --screen
+# Pipe binary or escape sequences in through standard input
+printf '\x1b[A' | leapmux terminal send <tab> -
+
+# Inspect a terminal's metadata, print the last lines that it shows,
+# or print the bytes that it retains with their escape sequences
+leapmux terminal get <tab>
+leapmux terminal read <tab> --lines 20
+leapmux terminal read <tab> --raw | less -R
 
 # List a worker's available shells (and its default)
-leapmux control terminal shells --worker-id <worker>
+leapmux terminal shells --worker <worker>
 ```
 
-See [Control CLI](/docs/using/control-cli/) for the complete terminal subcommand reference, authentication, and the JSON output contract.
+See [Control CLI](/docs/using/control-cli/) for authentication and the output, and the [Control Command Reference](/docs/reference/control-commands/#leapmux-terminal) for every terminal command.
 
 ## Renaming a terminal
 
 A terminal's title updates automatically when a program sets the terminal window title (the standard OSC title escape sequence) — for example, many shells set it to the current directory or running command. You can also rename a terminal tab through its tab menu, or from a script:
 
 ```bash
-leapmux control tab rename --tab-id <tab> --title "Build watcher"
+leapmux tab rename <tab> "Build watcher"
 ```
 
 ## Closing a terminal
@@ -431,6 +439,6 @@ The terminal and tab shortcuts (opening, closing, scrollback paging, the Quake-m
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, floating, and moving terminal tabs.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — git options, worktree creation, and the close-last-tab flow.
 - [Coding Agents](/docs/using/coding-agents/) — agents share the same tab, Worker, and git-options model.
-- [Control CLI](/docs/using/control-cli/) — the full `leapmux control terminal` (including `terminal quake`), `tab`, and `agent` command surface.
+- [Control CLI](/docs/using/control-cli/) — the full `leapmux terminal` (including `terminal quake`), `tab`, and `agent` command surface.
 - [Settings & Preferences](/docs/using/settings/) — terminal theme, fonts, and the four Quake-mode terminal settings.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — remap any of the shortcuts above.

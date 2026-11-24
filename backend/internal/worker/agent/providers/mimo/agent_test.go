@@ -51,7 +51,7 @@ func TestAudioInputRequiresTheExactRequestModelBeforeAnyHTTPWrite(t *testing.T) 
 			attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255}}}
 			deliver := func() error {
 				if steer {
-					return a.SteerInput("Listen to the recording.", attachments)
+					return a.SteerInput(agent.SteerRequest{Content: "Listen to the recording.", Attachments: attachments})
 				}
 				return a.SendInputForSession(testSessionID, "Listen to the recording.", attachments)
 			}
@@ -141,11 +141,11 @@ func TestSteerInput(t *testing.T) {
 	a, server := newTestAgent(t, nil)
 	assert.True(t, a.SupportsSteering())
 
-	assert.ErrorIs(t, a.SteerInput("nothing runs", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "nothing runs"}), agent.ErrNoActiveTurn)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
-	require.NoError(t, a.SteerInput("also check the tests", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "also check the tests"}))
 	requests := server.requestsTo("POST /session/ses_test/prompt_async")
 	require.Len(t, requests, 1, "a prompt that reaches a running loop joins it")
 	assert.Equal(t, "also check the tests", decodeBody(t, requests[0])["parts"].([]any)[0].(map[string]any)["text"])
@@ -177,7 +177,7 @@ func TestSendInputOnAStoppedAgent(t *testing.T) {
 	a.SetStoppedForTest(true)
 
 	assert.ErrorContains(t, a.SendInput("hello", nil), "stopped")
-	assert.ErrorContains(t, a.SendRawInput([]byte(`{}`), agent.StopContext{}), "stopped")
+	assert.ErrorContains(t, a.SendRawInput(agent.RawInput{Data: []byte(`{}`)}), "stopped")
 	assert.Empty(t, server.allRequests())
 }
 
@@ -224,7 +224,7 @@ func TestSendInputStatesMiMosRateLimit(t *testing.T) {
 	steerAgent, steerServer := newTestAgent(t, nil)
 	steerServer.respond("POST /session/ses_test/prompt_async", http.StatusTooManyRequests, `{"error":"Too many requests"}`)
 	feed(steerAgent, statusEvent(t, contracts.MiMoStatusTypeBusy))
-	assert.ErrorIs(t, steerAgent.SteerInput("also this", nil), errPromptRateLimited, "a steer uses the same route")
+	assert.ErrorIs(t, steerAgent.SteerInput(agent.SteerRequest{Content: "also this"}), errPromptRateLimited, "a steer uses the same route")
 }
 
 // A connection that closes after the server read the request leaves the
@@ -328,7 +328,7 @@ func TestConcurrentCallsAndEvents(t *testing.T) {
 	wg.Go(func() {
 		for range rounds {
 			_ = a.SendInput("hello", nil)
-			_ = a.SteerInput("also this", nil)
+			_ = a.SteerInput(agent.SteerRequest{Content: "also this"})
 		}
 	})
 	wg.Go(func() {
@@ -364,6 +364,6 @@ func TestConcurrentCallsAndEvents(t *testing.T) {
 func TestSendRawInputRefusesAnUnknownRequest(t *testing.T) {
 	t.Parallel()
 	a, server := newTestAgent(t, nil)
-	assert.ErrorContains(t, a.SendRawInput(allowEnvelope("mimo-permission:per_9"), agent.StopContext{}), "no pending request")
+	assert.ErrorContains(t, a.SendRawInput(agent.RawInput{Data: allowEnvelope("mimo-permission:per_9")}), "no pending request")
 	assert.Empty(t, server.allRequests())
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -26,9 +27,8 @@ import (
 // the thread goes on in the next process (`amp threads continue`). The LeapMux
 // agent ends only when Stop runs.
 //
-// It starts no conversation process until the first message. Amp creates its server thread
-// when the process starts, so an agent that sends nothing leaves nothing in the
-// user's account, and a mode change before the first message needs no restart.
+// It creates no thread or conversation process until the first message.
+// A mode change before the first message needs no restart.
 type Agent struct {
 	agentID string
 	sink    agent.ProviderServices
@@ -62,6 +62,8 @@ type Agent struct {
 	// shell commands. Production leaves it nil, which calls
 	// procutil.InspectLiveProcess; tests inject a deterministic probe.
 	inspectProcessFn func(int) procutil.LiveProcessInfo
+	// createThreadFn supplies the new native thread in tests.
+	createThreadFn func(context.Context, threadConfiguration) (string, error)
 
 	// userEnvMu guards the three fields below. The first process start that
 	// reads the user's shell settles them.
@@ -84,9 +86,10 @@ type Agent struct {
 
 	// proc is the running `amp` process, or nil between processes.
 	proc *ampProcess
-	// threadID is Amp's thread, the resume handle. Empty until the first
-	// process states it in its init line.
-	threadID         string
+	// threadID is Amp's thread, the resume handle.
+	threadID string
+	// awaitThreadInit holds steering until the new executor reports its init.
+	awaitThreadInit  bool
 	nativeSteers     []*ampSteerSubmission
 	reconciling      bool
 	importedMessages map[string]bool
@@ -126,8 +129,9 @@ type Agent struct {
 // that stops satisfying InputSteerer, so the assertion makes that regression a
 // compile error.
 var (
-	_ agent.Agent        = (*Agent)(nil)
-	_ agent.InputSteerer = (*Agent)(nil)
+	_ agent.Agent              = (*Agent)(nil)
+	_ agent.InputSteerer       = (*Agent)(nil)
+	_ agent.InputReceiptSender = (*Agent)(nil)
 )
 
 // turnState is the turn the agent owes the user a reply for. Guarded by mu.
@@ -138,6 +142,7 @@ var (
 type turnState struct {
 	active    bool
 	startedAt time.Time
+	reply     *ampInputReply
 	// interruptRequested records that the user stopped the turn, so the exit
 	// that the interrupt causes reads as an interruption and not as an error. A
 	// `result` that states a failure of Amp's own outranks it (see
@@ -219,13 +224,19 @@ func (a *Agent) HandleOutput(content []byte) {
 
 // SendInput starts a turn with one user message.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, false)
+	_, err := a.sendInput(nil, content, attachments, nil, "")
+	return err
+}
+
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, content, attachments, nil, id.Generate())
 }
 
 // SendInputForSession starts a turn with one user message, when the thread it
 // states is still the current one.
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&sessionID, content, attachments, false)
+	_, err := a.sendInput(&sessionID, content, attachments, nil, "")
+	return err
 }
 
 // SupportsSteering reports true: Amp takes a steering line during any turn.
@@ -238,12 +249,22 @@ func (*Agent) SteerRowAtEcho() bool { return true }
 func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 var _ agent.SteerEchoReporter = (*Agent)(nil)
+var _ agent.SteerReceiptSender = (*Agent)(nil)
 var _ agent.SteerSurvivor = (*Agent)(nil)
 
 // SteerInput adds a message to the running turn. Amp queues it on its server
 // and inserts it at the turn's next interruption point, after the running tool.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	_, err := a.SteerInputWithReceipt(request)
+	return err
+}
+
+func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	requestID := ""
+	if request.InputID != "" && request.AttemptID != "" {
+		requestID = id.Generate()
+	}
+	return a.sendInput(nil, request.Content, request.Attachments, &request, requestID)
 }
 
 // sendInput writes one user line.
@@ -257,10 +278,10 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // thread yet, else `amp threads continue`. The agent arms the turn BEFORE the
 // write, so the queue holds the next message behind this one from the moment
 // it leaves.
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
-	line, texts, err := buildUserLine(content, attachments, steer)
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer *agent.SteerRequest, requestID string) (agent.NativeInputReceipt, error) {
+	line, texts, err := buildUserLine(content, attachments, steer != nil, requestID)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 
 	a.sendMu.Lock()
@@ -269,52 +290,60 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	a.mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.threadID); err != nil {
 		a.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.stopped {
 		a.mu.Unlock()
-		return errAgentStopped
+		return agent.NativeInputReceipt{}, errAgentStopped
 	}
-	active := a.turn.active
-	proc := a.proc
+	active, awaitThreadInit := a.turn.active, a.awaitThreadInit
+	proc, threadID := a.proc, a.threadID
 	a.mu.Unlock()
 
-	if steer {
+	if steer != nil {
 		if !active || proc == nil || proc.ending() {
-			return agent.ErrNoActiveTurn
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 		}
-		baseline, err := a.steerBaseline()
+		if awaitThreadInit || threadID == "" {
+			return agent.NativeInputReceipt{}, agent.ErrSteeringUnsupported
+		}
+		var resolution agent.SteerResolution
+		var baseline *ampThreadExport
+		if requestID == "" {
+			baseline, err = a.steerBaseline()
+			if err != nil {
+				return agent.NativeInputReceipt{}, err
+			}
+		} else {
+			resolution = agent.SteerResolution{
+				InputID: steer.InputID, AttemptID: steer.AttemptID,
+				Receipt: agent.NativeInputReceipt{SessionID: threadID, InputID: ampNativeInputID(requestID)},
+			}
+		}
+		submission, err := a.rememberSteer(proc, threadID, ampEchoKey(texts), baseline, resolution)
 		if err != nil {
-			return err
+			return agent.NativeInputReceipt{}, err
 		}
-		key := ampEchoKey(texts)
-		ticket, err := a.rememberSteer(proc, key, baseline)
-		if err != nil {
-			return err
+		if err := proc.writeLine(line); err != nil && a.forgetUnconsumedSteer(submission) {
+			return agent.NativeInputReceipt{}, err
 		}
-		if err := proc.writeLine(line); err != nil {
-			a.steers.Forget(ticket)
-			a.forgetSteer(ticket)
-			a.steers.Settle(a.sink)
-			return err
-		}
-		return nil
+		return resolution.Receipt, nil
 	}
 	if active {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 
-	proc, err = a.processForTurn(proc)
+	proc, err = a.processForTurn(proc, requestID != "")
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	a.armTurn()
+	receipt := a.armTurn(requestID)
 	if err := proc.writeLine(line); err != nil {
 		a.disarmTurn()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	a.lockMode(proc)
-	return nil
+	return receipt, nil
 }
 
 // processForTurn returns the process a new turn writes to, starting one when
@@ -324,7 +353,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 // is on its way out, and Amp's server refuses a second executor on the same
 // thread ("already open and active in another Amp"). So the new process starts
 // only once the old one is gone.
-func (a *Agent) processForTurn(proc *ampProcess) (*ampProcess, error) {
+func (a *Agent) processForTurn(proc *ampProcess, trackReply bool) (*ampProcess, error) {
 	if proc != nil && !proc.ending() {
 		// A new turn in a running process: start checks the workspace for a
 		// new process, and this checks it for the turn.
@@ -344,6 +373,13 @@ func (a *Agent) processForTurn(proc *ampProcess) (*ampProcess, error) {
 	a.mu.Unlock()
 	if active {
 		return nil, agent.ErrAgentBusy
+	}
+	if threadID == "" && trackReply {
+		var err error
+		threadID, err = a.createReplyThread(config)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return a.start(threadID, config)
 }
@@ -389,13 +425,19 @@ func (a *Agent) awaitExit(proc *ampProcess) error {
 }
 
 // armTurn marks a new turn active and publishes it.
-func (a *Agent) armTurn() {
+func (a *Agent) armTurn(requestID string) agent.NativeInputReceipt {
 	now := a.now()
 	a.mu.Lock()
 	a.turn = turnState{active: true, startedAt: now}
+	var receipt agent.NativeInputReceipt
+	if requestID != "" && a.threadID != "" {
+		receipt = agent.NativeInputReceipt{SessionID: a.threadID, InputID: ampNativeInputID(requestID)}
+		a.turn.reply = &ampInputReply{receipt: receipt}
+	}
 	a.mu.Unlock()
 	a.sink.ReportProgress(agent.ResetModelProgress())
 	a.PublishTurnActive()
+	return receipt
 }
 
 // disarmTurn releases a turn whose line never reached Amp.
@@ -435,7 +477,7 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.mu.Lock()
 	state := agent.TurnState{
 		Active:    a.turn.active || a.reconciling,
-		Steerable: a.turn.active && !a.reconciling && a.threadID != "" && a.proc != nil && !a.proc.ending(),
+		Steerable: a.turn.active && !a.reconciling && !a.awaitThreadInit && a.threadID != "" && a.proc != nil && !a.proc.ending(),
 	}
 	seq := a.NextTurnSeq()
 	a.mu.Unlock()
@@ -578,6 +620,7 @@ func (a *Agent) stop() {
 	}
 	a.drainAndResetOpenTools(completion)
 	a.outputMu.Unlock()
+	a.retireStoppedTrackedSteers()
 	a.closeAllShellRows(shellStatus)
 	providerkit.RemoveAgentDir("amp", a.agentID, a.dir)
 	close(a.done)

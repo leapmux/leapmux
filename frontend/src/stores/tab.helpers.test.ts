@@ -16,7 +16,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, keepLiveTerminalStatus, LIVE_CATALOG_FIELDS, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, TERMINAL_LIVE_STATUS_FIELDS, terminalDisplayStatus, terminalMetadata, terminalProgressBarProps, withoutClientHeldTerminalFields, withoutLiveCatalogFields, withoutLiveStatusFields } from './tab.helpers'
+import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, keepLiveTerminalStatus, LIVE_CATALOG_FIELDS, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, TERMINAL_LIVE_STATUS_FIELDS, terminalDisplayStatus, terminalMetadata, terminalProgressView, withoutClientHeldTerminalFields, withoutLiveCatalogFields, withoutLiveStatusFields } from './tab.helpers'
 import { TERMINAL_DISCONNECTED } from './tab.types'
 import { createTabMetadataStore } from './tabMetadata.store'
 
@@ -1051,23 +1051,25 @@ describe('openedTerminalMetadata', () => {
   })
 })
 
-describe('terminalProgressBarProps', () => {
-  it('clamps percent into 0..100 and formats the CSS var', () => {
-    expect(terminalProgressBarProps(terminal({ progressPercent: 150, progressState: TerminalProgress_State.NORMAL }))).toEqual({
-      style: { '--progress-percent': '100%' },
-      title: '100%',
+describe('terminalProgressView', () => {
+  it('clamps the percent into 0..100 and states it in words', () => {
+    expect(terminalProgressView(terminal({ progressPercent: 150, progressState: TerminalProgress_State.NORMAL }))).toEqual({
+      percent: 100,
+      indeterminate: false,
+      label: '100%',
     })
-    expect(terminalProgressBarProps(terminal({ progressPercent: -5, progressState: TerminalProgress_State.NORMAL }))).toEqual({
-      style: { '--progress-percent': '0%' },
-      title: '0%',
+    expect(terminalProgressView(terminal({ progressPercent: -5, progressState: TerminalProgress_State.NORMAL }))).toEqual({
+      percent: 0,
+      indeterminate: false,
+      label: '0%',
     })
   })
 
-  it('uses an indeterminate title when progress is indeterminate', () => {
-    expect(terminalProgressBarProps(terminal({
+  it('states work of no known percent as in progress', () => {
+    expect(terminalProgressView(terminal({
       progressPercent: 40,
       progressState: TerminalProgress_State.INDETERMINATE,
-    })).title).toBe('In progress')
+    }))).toEqual({ percent: 40, indeterminate: true, label: 'In progress' })
   })
 })
 

@@ -1168,7 +1168,7 @@ describe('exerciseRememberedAllow', () => {
     const { context: remembered, queued } = scriptedContext(() => ({}), [4, 5])
     await exerciseRememberedAllow(remembered, {
       scopeGroup: 'Allow as',
-      scope: 'Command rule',
+      scope: 'Session',
       answerStep: 'same-step',
       firstCall,
       secondCall,
@@ -1195,7 +1195,7 @@ describe('exerciseRememberedAllow', () => {
       'steps:5',
       'banner',
       'radiogroup:Allow as',
-      'radio:Command rule:exact',
+      'radio:Session:exact',
       'click',
       'answer:allow',
       'steps:5',

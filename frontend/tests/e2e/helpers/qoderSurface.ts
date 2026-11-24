@@ -4,6 +4,9 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
 import { createScenarioQuota } from './scenarioQuota'
 
+/** The public API hosts that Qoder can use before endpoint election finishes. */
+export const QODER_BOOTSTRAP_HOSTS = ['openapi.qoder.sh', 'api2.qoder.sh'] as const
+
 export interface QoderSurfaceOptions {
   origin: () => string
   identityToken: string

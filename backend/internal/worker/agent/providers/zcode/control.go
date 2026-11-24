@@ -25,25 +25,26 @@ import (
 //
 // The stored payload is a HYBRID: ZCode's own params verbatim, plus the
 // Claude-shaped `{request:{tool_name, tool_use_id, input}}` header. The header is
-// what the SHARED control surfaces read -- the service resolves the tool name from
-// it, and the shared AskUserQuestion control reads `request.input.questions` -- so
-// ZCode reuses those surfaces instead of duplicating them.
+// what the SHARED readers read -- the service resolves the tool name from it
+// (agent.ControlToolName), and the question answer keeps its input with the
+// answers beside it (providerkit.AskUserQuestionAnswers) -- so ZCode reuses those
+// readers instead of duplicating them.
 
 // zcodeControlPlanApproval is the tool name recorded for a plan approval. It is not
 // a ZCode tool: the app-server asks for plan approval through
 // interaction/requestUserInput with a `plan_approval` schema, and LeapMux's plan
-// machinery keys on a tool name. Spelled like ZCode's own plan tool so the frontend
-// renders the plan-approval surface for it.
+// machinery keys on a tool name. Spelled like ZCode's own plan tool so
+// ReadControlRequest reads it as the plan approval.
 const zcodeControlPlanApproval = contracts.ZCodeToolNameExitPlanMode
 
-// zcodeControlAskUserQuestion is the tool name recorded for a question, matching the
-// name every provider's shared AskUserQuestion control recognizes.
+// zcodeControlAskUserQuestion is the tool name recorded for a question, which
+// ReadControlRequest reads as a question.
 const zcodeControlAskUserQuestion = contracts.ZCodeToolNameAskUserQuestion
 
 // zcodeControlMCPElicitation is the tool name recorded for an MCP server's input
 // form: ZCode's own name for the interaction (`toolName` of the request). It keeps
-// the form off the question surface, because the browser draws it as a typed MCP
-// form instead. See zcodeMCPElicitationResult.
+// the form off the question surface, because ReadControlRequest reads it as a
+// typed MCP form instead. See zcodeMCPElicitationResult.
 const zcodeControlMCPElicitation = "McpElicitation"
 
 // zcodePermissionRequest is the interaction/requestPermission params.
@@ -93,7 +94,7 @@ func (a *Agent) handlePreparedPermissionRequest(id, params json.RawMessage, req 
 		defer a.finishZCodeControlWork(req.RequestID, record)
 	}
 	if !a.isCurrentZCodeSession(req.SessionID) {
-		a.replyZCodePermission(id, req.Options, agent.ControlBehaviorDeny, "The session is no longer active.")
+		a.replyZCodePermission(id, req.Options, contracts.ControlAnswerBehaviorDeny, "The session is no longer active.")
 		slog.Debug("zcode declined a retired session permission request", "session_id", req.SessionID)
 		return
 	}
@@ -103,7 +104,7 @@ func (a *Agent) handlePreparedPermissionRequest(id, params json.RawMessage, req 
 		// would stall the turn for good. Denying is the safe direction: it lets the
 		// model report the refusal and continue.
 		slog.Warn("zcode permission request carried no request id", "agent_id", a.AgentID(), "tool", req.ToolName)
-		a.replyZCodePermission(id, req.Options, agent.ControlBehaviorDeny, "leapmux could not route this permission request")
+		a.replyZCodePermission(id, req.Options, contracts.ControlAnswerBehaviorDeny, "leapmux could not route this permission request")
 		return
 	}
 	if record == nil {
@@ -141,7 +142,7 @@ func (a *Agent) handlePreparedPermissionRequest(id, params json.RawMessage, req 
 		return
 	}
 
-	a.completeZCodeControlRequest(requestID, record, payload)
+	a.completeZCodeControlRequest(requestID, req.TurnID, record, payload)
 }
 
 // zcodeUserInputRequest is the interaction/requestUserInput params.
@@ -152,7 +153,6 @@ type zcodeUserInputRequest struct {
 	SessionID  string             `json:"sessionId"`
 	ToolCallID string             `json:"toolCallId"`
 	ToolName   string             `json:"toolName"`
-	Prompt     string             `json:"prompt"`
 	Input      json.RawMessage    `json:"input"`
 	Schema     struct {
 		Interaction string               `json:"interaction"`
@@ -197,7 +197,15 @@ func (r zcodeUserInputRequest) isMCPElicitation() bool {
 	return r.Schema.Interaction == contracts.ZCodeInteractionMcpElicitation
 }
 
-// planText reads the native tool input first, then context, then the prompt fallback.
+// planText reads the plan of a plan approval: the native tool input's plan
+// first, then the context's. It is the one rule for the canonical plan, the
+// tool input that the transcript row shows, and the plan that
+// ReadControlRequest shows. It returns "" when both are blank, because a blank
+// plan states nothing to approve.
+//
+// The request's prompt is no source of the plan. ZCode states the permission
+// reason there ("Tool ExitPlanMode requires user interaction"), so a fallback
+// to it would show that sentence as the plan and run it as the canonical plan.
 func (r zcodeUserInputRequest) planText() string {
 	for _, data := range []json.RawMessage{r.Input, r.Context} {
 		var content struct {
@@ -207,12 +215,12 @@ func (r zcodeUserInputRequest) planText() string {
 			return content.Plan
 		}
 	}
-	return r.Prompt
+	return ""
 }
 
-// toolInput adds a missing plan field from the native context or prompt.
+// toolInput adds a missing plan field from the native context.
 func (r zcodeUserInputRequest) toolInput() (json.RawMessage, error) {
-	if !r.isPlanApproval() || strings.TrimSpace(r.planText()) == "" {
+	if !r.isPlanApproval() || r.planText() == "" {
 		return r.Input, nil
 	}
 	var fields map[string]json.RawMessage
@@ -252,7 +260,7 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 		defer a.finishZCodeControlWork(req.RequestID, record)
 	}
 	if !a.isCurrentZCodeSession(req.SessionID) {
-		a.replyZCodeUserInput(id, agent.ControlBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
+		a.replyZCodeUserInput(id, contracts.ControlAnswerBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
 		slog.Debug("zcode declined a retired session input request", "session_id", req.SessionID)
 		return
 	}
@@ -260,7 +268,7 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 		// Without an id the answer cannot be routed back, and an unanswerable prompt
 		// would stall the turn. LeapMux denies it, so the turn continues.
 		slog.Warn("leapmux denied a zcode user-input request with no request id", "agent_id", a.AgentID())
-		a.replyZCodeUserInput(id, agent.ControlBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
+		a.replyZCodeUserInput(id, contracts.ControlAnswerBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
 		return
 	}
 	if record == nil {
@@ -290,7 +298,9 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 	// The transcript confirms no row that carries this plan, so this call writes one.
 	// A read that FAILED confirms nothing either, and it is treated as "the row is
 	// there": a second plan row over one already in the transcript draws it twice.
-	if req.isPlanApproval() && !carriesInput && sourceErr == nil {
+	// A request that states no plan gets no row, because the row exists to carry
+	// the plan.
+	if req.isPlanApproval() && req.planText() != "" && !carriesInput && sourceErr == nil {
 		if len(original) == 0 {
 			a.replyZCodeControlFailure(id, "The original plan request is unavailable.")
 			return
@@ -312,14 +322,13 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 	if !a.zcodeControlRequestCurrent(req.RequestID, record) {
 		return
 	}
-	planText := req.planText()
 	toolName := zcodeControlAskUserQuestion
 	if req.isMCPElicitation() {
 		toolName = zcodeControlMCPElicitation
 	}
 	if req.isPlanApproval() {
 		toolName = zcodeControlPlanApproval
-		if strings.TrimSpace(planText) != "" {
+		if planText := req.planText(); planText != "" {
 			// A context-clear approval reads this canonical copy after it replaces the native session.
 			writer, err := a.sink.PlanWriterFor(record.captured)
 			if err == nil {
@@ -335,15 +344,15 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 		}
 	}
 
-	// The questions are re-encoded in the shape the SHARED AskUserQuestion control
-	// reads -- {question, header, multiSelect, options:[{value,label}]} -- so the
-	// answer it builds is keyed by question text, which is exactly what the
-	// app-server's `content.answers` map expects. `plan` carries the plan text of a plan
-	// approval, which the synthesized question cannot hold (see planText).
+	// The questions are re-encoded in the shared Claude question shape --
+	// {question, header, multiSelect, options:[{value,label}]} -- so the answer
+	// that providerkit.AskUserQuestionAnswers builds is keyed by question text,
+	// which is exactly what the app-server's `content.answers` map expects. The
+	// header holds nothing else. Every other reader reads ZCode's own request
+	// (`params`): ReadControlRequest reads the plan of a plan approval and the
+	// form of an MCP server there.
 	input, err := json.Marshal(map[string]any{
 		"questions": zcodeSharedQuestions(req),
-		"prompt":    req.Prompt,
-		"plan":      planText,
 	})
 	if err != nil {
 		slog.Error("zcode marshal user input questions", "agent_id", a.AgentID(), "error", err)
@@ -369,26 +378,16 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 		return
 	}
 
-	a.completeZCodeControlRequest(req.RequestID, record, payload)
+	a.completeZCodeControlRequest(req.RequestID, req.TurnID, record, payload)
 }
 
-// zcodeSharedQuestions projects ZCode's questions into the shared control's shape.
+// zcodeSharedQuestions projects ZCode's questions into the shared Claude
+// question shape.
 //
-// A plan approval carries no questions of its own, so one is synthesized: the
-// shared surface needs a question to key the answer by, and the app-server reads
-// that key back out of `content.answers`.
+// A plan approval needs no question: ReadControlRequest reads it as a plan,
+// and zcodeUserInputResult answers it with `content.answer` alone.
 func zcodeSharedQuestions(req zcodeUserInputRequest) []map[string]any {
 	questions := req.questions()
-	if len(questions) == 0 && req.isPlanApproval() {
-		return []map[string]any{{
-			"question":    contracts.ZCodePlanControlQuestion,
-			"header":      "Plan",
-			"multiSelect": false,
-			"options": []map[string]any{
-				{"value": contracts.ZCodePlanControlApprove, "label": contracts.ZCodePlanControlApprove},
-			},
-		}}
-	}
 	out := make([]map[string]any, 0, len(questions))
 	for _, q := range questions {
 		options := make([]map[string]any, 0, len(q.Options))
@@ -415,10 +414,10 @@ func zcodeSharedQuestions(req zcodeUserInputRequest) []map[string]any {
 
 // zcodeControlRequestPayload is the stored control-request payload.
 //
-// It is the ONE place ZCode's request and the shared control surfaces meet, so it
+// It is the ONE place ZCode's request and the shared readers meet, so it
 // carries both spellings deliberately:
-//   - `request` is the Claude-shaped header the service and the shared frontend
-//     controls read (tool name, tool-use id, tool input / questions).
+//   - `request` is the Claude-shaped header that the service and the shared Go
+//     readers read (tool name, tool-use id, tool input / questions).
 //   - `params` is ZCode's own request verbatim, which the answer path reads the
 //     option list off.
 //   - `id` is the WIRE id of the app-server's request, which the reply must echo.
@@ -789,7 +788,7 @@ func (a *Agent) answerCredentialCipher(id, params json.RawMessage) {
 // first option whose response carries it.
 func zcodePermissionResult(options []zcodePermissionOption, behavior, reason, choice string) (json.RawMessage, error) {
 	want := contracts.ZCodeDecisionAllow
-	if behavior != agent.ControlBehaviorAllow {
+	if behavior != contracts.ControlAnswerBehaviorAllow {
 		want = contracts.ZCodeDecisionDeny
 	}
 	if choice != "" {
@@ -914,7 +913,7 @@ type zcodeUserInputReply struct {
 // Rejection always uses decline. The native mapper discards rejection reasons.
 // Plan answer text cannot carry rejection safely because the approval sentinel would approve the plan.
 func zcodeUserInputResult(behavior string, reply zcodeUserInputReply) map[string]any {
-	if behavior != agent.ControlBehaviorAllow {
+	if behavior != contracts.ControlAnswerBehaviorAllow {
 		return map[string]any{contracts.ZCodeReplyFieldAction: contracts.ZCodeActionDecline}
 	}
 
@@ -1106,7 +1105,7 @@ func (a *Agent) zcodeControlRequestCurrent(requestID string, record *pendingCont
 	return record != nil && a.pendingControls[requestID] == record && a.zcodeControlLifetimeCurrentLocked(record)
 }
 
-func (a *Agent) completeZCodeControlRequest(requestID string, record *pendingControl, payload json.RawMessage) bool {
+func (a *Agent) completeZCodeControlRequest(requestID, turnID string, record *pendingControl, payload json.RawMessage) bool {
 	prepared := newPendingControl(payload)
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -1118,6 +1117,7 @@ func (a *Agent) completeZCodeControlRequest(requestID string, record *pendingCon
 	}
 	record.payload = prepared.payload
 	record.automaticReply = prepared.automaticReply
+	record.nativeTurnID = turnID
 	record.prepared = true
 	return true
 }
@@ -1168,7 +1168,10 @@ func (a *Agent) publishZCodeControlInstanceToSink(requestID string, record *pend
 	if !current {
 		return
 	}
-	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.ownerSessionID, RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload})
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: record.ownerSessionID, NativeTurnID: record.nativeTurnID,
+		RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload,
+	})
 	a.Mu.Lock()
 	current = a.pendingControls[requestID] == record && a.zcodeControlLifetimeCurrentLocked(record)
 	if err == nil && !record.answered {
@@ -1269,8 +1272,8 @@ func zcodeStoredQuestionTexts(input json.RawMessage) []string {
 	return out
 }
 
-// zcodeAnswersFromResponse reads the AskUserQuestion answers the shared control
-// attached to its allow envelope: `response.response.updatedInput.answers`, a map of
+// zcodeAnswersFromResponse reads the AskUserQuestion answers that
+// providerkit.AskUserQuestionAnswers attached to its allow envelope: `response.response.updatedInput.answers`, a map of
 // question text to the joined labels the user picked.
 func zcodeAnswersFromResponse(content []byte) map[string]string {
 	var env struct {
@@ -1290,17 +1293,13 @@ func zcodeAnswersFromResponse(content []byte) map[string]string {
 
 // --- MCP input forms ---
 
-// zcodeResolveMCPElicitation answers an MCP server's input form with the browser's
-// MCP form answer. ZCode states the form as a user-input request, so the reply is
+// zcodeResolveMCPElicitation answers an MCP server's input form with the
+// neutral MCP form answer (agent.AnswerElicitation). ZCode states the form as a user-input request, so the reply is
 // the user-input reply that ZCode turns back into the form's content.
 func zcodeResolveMCPElicitation(stored zcodeControlRequestPayload, responseContent []byte, res agent.ControlResponseResolution) agent.ControlResponseResolution {
 	var response providerkit.MCPElicitationControlResponse
 	if json.Unmarshal(responseContent, &response) != nil {
 		res.Refuse(agent.RefusalUnreadableAnswer)
-		return res
-	}
-	if response.Response.RequestID != stored.RequestID {
-		res.Refuse(agent.RefusalOtherRequest)
 		return res
 	}
 	if len(stored.WireID) == 0 {

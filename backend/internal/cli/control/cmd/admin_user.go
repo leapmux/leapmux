@@ -2,718 +2,593 @@ package cmd
 
 import (
 	"context"
-	"flag"
-	"strings"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/hub/service"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Flag names, defaults, and validation messages carry over verbatim from
-// the old offline admin verbs; --data-dir/--config are gone (these are
-// RPC calls now) and output uses the control JSON envelope.
-
-func adminUserJSON(u *leapmuxv1.AdminUser) map[string]any {
-	out := map[string]any{
-		"id":             u.GetId(),
-		"username":       u.GetUsername(),
-		"display_name":   u.GetDisplayName(),
-		"email":          u.GetEmail(),
-		"email_verified": u.GetEmailVerified(),
-		"pending_email":  u.GetPendingEmail(),
-		"password_set":   u.GetPasswordSet(),
-		"is_admin":       u.GetIsAdmin(),
-	}
-	putTime(out, "created_at", u.GetCreatedAt())
-	putTime(out, "updated_at", u.GetUpdatedAt())
-	return out
+type adminUserRow struct {
+	ID            string `json:"id" table:"ID,short"`
+	Username      string `json:"username" table:"USERNAME"`
+	DisplayName   string `json:"display_name" table:"DISPLAY NAME"`
+	Email         string `json:"email" table:"EMAIL"`
+	EmailVerified bool   `json:"email_verified"`
+	PendingEmail  string `json:"pending_email"`
+	PasswordSet   bool   `json:"password_set"`
+	IsAdmin       bool   `json:"is_admin" table:"ADMIN"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
 }
 
-// RunAdminUserList implements `control admin user list`.
-func RunAdminUserList(rawCtx any, args []string) error {
+func (r adminUserRow) QuietLines() []string { return []string{r.ID} }
+
+func adminUserRowOf(u *leapmuxv1.AdminUser) adminUserRow {
+	return adminUserRow{
+		ID:            u.GetId(),
+		Username:      u.GetUsername(),
+		DisplayName:   u.GetDisplayName(),
+		Email:         u.GetEmail(),
+		EmailVerified: u.GetEmailVerified(),
+		PendingEmail:  u.GetPendingEmail(),
+		PasswordSet:   u.GetPasswordSet(),
+		IsAdmin:       u.GetIsAdmin(),
+		CreatedAt:     formatTime(u.GetCreatedAt()),
+		UpdatedAt:     formatTime(u.GetUpdatedAt()),
+	}
+}
+
+// newAdminUserList builds `admin user list`.
+func newAdminUserList() *cobra.Command {
 	var page adminPageFlags
 	var query string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Page: &page,
-		Flags: func(fs *flag.FlagSet) {
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List users",
+		Examples: []cli.Example{
+			{Command: "leapmux admin user list"},
+			{Comment: "Search by name or email.", Command: "leapmux admin user list --query alice"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			page.bind(fs)
 			fs.StringVar(&query, "query", "", "search query (empty = list all)")
 		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListUsers(context.Background(), &leapmuxv1.ListUsersRequest{
+		Run: func(inv *cli.Invocation) (any, error) {
+			if err := page.validate(); err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AdminUserService().ListUsers(inv.Context, &leapmuxv1.ListUsersRequest{
 				Page: page.request(), Query: query,
 			})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			users := make([]map[string]any, 0, len(resp.GetUsers()))
+			users := make([]adminUserRow, 0, len(resp.GetUsers()))
 			for _, u := range resp.GetUsers() {
-				users = append(users, adminUserJSON(u))
+				users = append(users, adminUserRowOf(u))
 			}
-			return control.EmitData(map[string]any{"users": users, "next_cursor": resp.GetPage().GetNextCursor()})
+			return adminUserListResult{Users: users, NextCursor: resp.GetPage().GetNextCursor()}, nil
 		},
 	})
 }
 
-// userSelectorFlags binds the (id | username) pair that every verb
-// addressing ONE user takes, and refuses an empty or ambiguous selector
-// before the dial.
-//
-// The hub holds the same rule (service.ResolveUserSelector), but it can
-// only answer over a connection the operator did not need — which is
-// exactly what adminVerbSpec.BeforeDial exists to avoid. Declaring the
-// pair through this type keeps the binding and its check inseparable, the
-// way adminPageFlags and rateLimitTarget already do in this package.
-//
-// The id flag NAME is a parameter, because `session revoke-user` spells it
-// `--user-id`. The token LISTINGS must NOT use this type: there an empty
-// selector means "every user", not a missing argument.
-type userSelectorFlags struct {
-	ID       string
-	Username string
-	idFlag   string
-	// Selector is the UserSelector that the hub reads. resolve fills it, so
-	// Run reads it and an ambiguous pair never reaches a request.
-	Selector *leapmuxv1.UserSelector
+type adminUserListResult struct {
+	Users      []adminUserRow `json:"users"`
+	NextCursor string         `json:"next_cursor"`
 }
 
-// bind declares the pair. usage overrides the username flag's help for the
-// one verb that reads it as a lookup key rather than a subject.
-func (s *userSelectorFlags) bind(fs *flag.FlagSet, idFlag, usernameUsage string) {
-	s.idFlag = idFlag
-	fs.StringVar(&s.ID, idFlag, "", "user ID")
-	fs.StringVar(&s.Username, "username", "", usernameUsage)
-}
-
-// resolve refuses an empty or ambiguous pair and fills Selector. It matches
-// adminVerbSpec.BeforeDial, so a verb assigns it directly.
-func (s *userSelectorFlags) resolve(adminArgs) error {
-	if s.ID == "" && s.Username == "" {
-		return control.EmitError("invalid_request", "--"+s.idFlag+" or --username is required")
+func (r adminUserListResult) QuietLines() []string {
+	out := make([]string, 0, len(r.Users))
+	for _, u := range r.Users {
+		out = append(out, u.ID)
 	}
-	sel, err := service.SelectUserFromPair(s.ID, s.Username)
-	if err != nil {
-		return control.EmitError("invalid_request", "--"+s.idFlag+" and --username are mutually exclusive")
-	}
-	s.Selector = sel
-	return nil
+	return out
 }
 
-// userFilterFlags binds the OPTIONAL (--user-id | --username) owner filter of
-// a listing, where neither flag means "every user". It refuses both flags
-// before the dial: the hub's selector holds one of the two, so a pair cannot
-// even be sent.
+// userFilterFlags binds the optional --user owner filter of an admin listing,
+// where an absent flag means "every user".
 type userFilterFlags struct {
-	ID       string
-	Username string
-	// selector is the UserSelector that resolve built; see Selector.
+	User     string
 	selector *leapmuxv1.UserSelector
 	resolved bool
 }
 
-// Selector returns the optional UserSelector of the listing: nil when neither
-// flag is set, which the hub reads as every user. It panics when resolve did not
-// run, because that nil would widen a listing that a flag narrowed.
 func (f *userFilterFlags) Selector() *leapmuxv1.UserSelector {
 	if !f.resolved {
-		panic("userFilterFlags.Selector called before resolve: set BeforeDial on the verb")
+		panic("userFilterFlags.Selector called before resolve")
 	}
 	return f.selector
 }
 
-// bind declares the pair. Every listing that takes the filter resolves it
-// through the same hub rule, so the help text is one string here.
-func (f *userFilterFlags) bind(fs *flag.FlagSet) {
-	fs.StringVar(&f.ID, "user-id", "", "filter by user ID (soft-deleted users included; empty = all users)")
-	fs.StringVar(&f.Username, "username", "", "filter by username")
+func (f *userFilterFlags) bind(fs *pflag.FlagSet) {
+	fs.StringVar(&f.User, "user", "", `filter by user: a username, "id:<id>", or "username:<name>" (empty = all users)`)
 }
 
-// resolve refuses an ambiguous pair and builds the selector that Selector
-// returns. It matches adminVerbSpec.BeforeDial, so a verb assigns it directly.
-func (f *userFilterFlags) resolve(adminArgs) error {
-	sel, err := service.SelectUserFromPair(f.ID, f.Username)
+func (f *userFilterFlags) resolve(inv *cli.Invocation) error {
+	if !inv.Changed("user") {
+		f.selector, f.resolved = nil, true
+		return nil
+	}
+	sel, _, _, err := parseAdminUserSelectorDirect(f.User)
 	if err != nil {
-		return control.EmitError("invalid_request", "--user-id and --username are mutually exclusive")
+		return err
 	}
 	f.selector, f.resolved = sel, true
 	return nil
 }
 
-// RunAdminUserGet implements `control admin user get`.
-func RunAdminUserGet(rawCtx any, args []string) error {
-	var sel userSelectorFlags
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags:      func(fs *flag.FlagSet) { sel.bind(fs, "id", "username") },
-		BeforeDial: sel.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().GetUser(context.Background(), &leapmuxv1.GetUserRequest{
-				User: sel.Selector,
+// newAdminUserGet builds `admin user get`.
+func newAdminUserGet() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:   "get <user>",
+		Short: "Show a user",
+		Examples: []cli.Example{
+			{Command: "leapmux admin user get alice"},
+			{Comment: "Select a user by id.", Command: "leapmux admin user get id:Ab3dE9"},
+		},
+		Complete: completeAdminUsers,
+		Run: func(inv *cli.Invocation) (any, error) {
+			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.GetUserResponse, error) {
+				return c.AdminUserService().GetUser(inv.Context, &leapmuxv1.GetUserRequest{User: sel})
 			})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminUserJSON(resp.GetUser()))
+			return adminUserRowOf(resp.GetUser()), nil
 		},
 	})
 }
 
-// RunAdminUserCreate implements `control admin user create`.
-func RunAdminUserCreate(rawCtx any, args []string) error {
-	var username, password, displayName, email string
+// newAdminUserCreate builds `admin user create`.
+func newAdminUserCreate() *cobra.Command {
+	var password, displayName, email string
 	var emailVerified, admin bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&username, "username", "", "username (required)")
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "create <username>",
+		Short:   "Create a user",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin user create alice --email alice@example.com"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
 			fs.StringVar(&password, "password", "", "password (prompted for when omitted, so it stays out of the shell history)")
 			fs.StringVar(&displayName, "display-name", "", "display name")
 			fs.StringVar(&email, "email", "", "email address")
 			fs.BoolVar(&emailVerified, "email-verified", false, "mark email as verified")
 			fs.BoolVar(&admin, "admin", false, "grant admin privileges")
 		},
-		// Prompt LOCALLY before this code builds the request. The RPC cannot
-		// prompt, but the CLI can: a password on the command line lands in
-		// the shell history and in the process table of every user on the
-		// host.
-		BeforeDial: func(a adminArgs) error {
-			// The username check runs BEFORE the prompt. An operator must
-			// not type a secret for a request that cannot succeed, and the
-			// hub answers "username is required" only after the dial.
-			if err := requireFlag(&username, "username")(a); err != nil {
-				return err
-			}
-			entered, err := control.RequirePassword(password, "Password: ")
+		Run: func(inv *cli.Invocation) (any, error) {
+			username, err := requireNonEmptyArg(inv, "username")
 			if err != nil {
-				return control.EmitErrorWith("invalid_request", err)
+				return nil, err
 			}
-			password = entered
-			return nil
-		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().CreateUser(context.Background(), &leapmuxv1.CreateUserRequest{
-				Username: username, Password: password, DisplayName: displayName,
+			entered, err := control.RequirePassword(inv.Context, password, "Password: ")
+			if err != nil {
+				return nil, cli.Wrap(cli.CodeUsage, err, "")
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AdminUserService().CreateUser(inv.Context, &leapmuxv1.CreateUserRequest{
+				Username: username, Password: entered, DisplayName: displayName,
 				Email: email, EmailVerified: emailVerified, IsAdmin: admin,
 			})
 			if err != nil {
-				return control.EmitErrorWith("create_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminUserJSON(resp.GetUser()))
+			return adminUserRowOf(resp.GetUser()), nil
 		},
 	})
 }
 
-// RunAdminUserUpdate implements `control admin user update`.
-func RunAdminUserUpdate(rawCtx any, args []string) error {
-	var sel userSelectorFlags
+// newAdminUserUpdate builds `admin user update`.
+func newAdminUserUpdate() *cobra.Command {
 	var displayName, email, emailVerified string
 	var clearPendingEmail bool
-	var req *leapmuxv1.UpdateUserRequest
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			sel.bind(fs, "id", "username (for lookup)")
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "update <user>",
+		Short:   "Change a user's name, email or verification",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: `leapmux admin user update alice --display-name "Alice Kim"`},
+		},
+		Flags: func(fs *pflag.FlagSet) {
 			fs.StringVar(&displayName, "display-name", "", "new display name")
 			fs.StringVar(&email, "email", "", "new email address")
-			fs.StringVar(&emailVerified, "email-verified", "", "mark email as verified (true/false)")
+			fs.StringVar(&emailVerified, "email-verified", "", "mark email as verified")
+			cli.SetEnum(fs, "email-verified", "true", "false")
 			fs.BoolVar(&clearPendingEmail, "clear-pending-email", false, "clear any in-flight email verification (token + attempt counter)")
 		},
-		BeforeDial: func(a adminArgs) error {
-			// Flag PRESENCE, not a non-empty value. `--email ""` clears the
-			// address and `--display-name ""` resets the name to the
-			// username; a `!= ""` test made both indistinguishable from an
-			// absent flag, so the only way to clear an email became
-			// unreachable from the CLI.
-			req = &leapmuxv1.UpdateUserRequest{ClearPendingEmail: clearPendingEmail}
-			if a.Passed("display-name") {
+		Complete: completeAdminUsers,
+		Run: func(inv *cli.Invocation) (any, error) {
+			req := &leapmuxv1.UpdateUserRequest{ClearPendingEmail: clearPendingEmail}
+			if inv.Changed("display-name") {
 				req.DisplayName = &displayName
 			}
-			if a.Passed("email") {
+			if inv.Changed("email") {
 				req.Email = &email
 			}
-			if a.Passed("email-verified") {
+			if inv.Changed("email-verified") {
 				b, err := parseBoolFlag(emailVerified, "email-verified")
 				if err != nil {
-					return control.EmitErrorWith("invalid_request", err)
+					return nil, cli.Wrap(cli.CodeUsage, err, "")
 				}
 				req.EmailVerified = &b
 			}
 			if req.DisplayName == nil && req.Email == nil && req.EmailVerified == nil && !clearPendingEmail {
-				return control.EmitError("invalid_request", "no fields to update (use --display-name, --email, --email-verified, or --clear-pending-email)")
+				return nil, cli.Usagef("no fields to update (use --display-name, --email, --email-verified, or --clear-pending-email)")
 			}
-			// The selector check runs LAST here. "Nothing to update" is the
-			// more specific complaint, and an operator who typed no flags at
-			// all is better served by it than by a missing-selector notice.
-			if err := sel.resolve(a); err != nil {
-				return err
+			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+				return nil, err
 			}
-			req.User = sel.Selector
-			return nil
-		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().UpdateUser(context.Background(), req)
+			c, err := requireAdminClient(inv)
 			if err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminUserJSON(resp.GetUser()))
+			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.UpdateUserResponse, error) {
+				req.User = sel
+				return c.AdminUserService().UpdateUser(inv.Context, req)
+			})
+			if err != nil {
+				return nil, err
+			}
+			return adminUserRowOf(resp.GetUser()), nil
 		},
 	})
 }
 
-// RunAdminUserDelete implements `control admin user delete`.
-func RunAdminUserDelete(rawCtx any, args []string) error {
-	var sel userSelectorFlags
+// newAdminUserDelete builds `admin user delete`.
+func newAdminUserDelete() *cobra.Command {
 	var force bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			sel.bind(fs, "id", "username")
+	return cli.NewLeaf(cli.Leaf{
+		Use:              "delete <user>",
+		Aliases:          []string{"rm"},
+		Short:            "Delete a user",
+		Mutates:          true,
+		Destructive:      true,
+		QuietUnsupported: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin user delete alice"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
 			fs.BoolVar(&force, "force", false, "required to delete an admin user")
 		},
-		BeforeDial: sel.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminUserService().DeleteUser(context.Background(), &leapmuxv1.DeleteUserRequest{
-				User: sel.Selector, Force: force,
-			}); err != nil {
-				return control.EmitErrorWith("delete_failed", err)
+		Complete: completeAdminUsers,
+		Run: func(inv *cli.Invocation) (any, error) {
+			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+				return nil, err
 			}
-			return control.EmitData(map[string]any{"deleted": true})
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.DeleteUserResponse, error) {
+				return c.AdminUserService().DeleteUser(inv.Context, &leapmuxv1.DeleteUserRequest{
+					User: sel, Force: force,
+				})
+			}); err != nil {
+				return nil, err
+			}
+			return struct {
+				Deleted bool `json:"deleted"`
+			}{Deleted: true}, nil
 		},
 	})
 }
 
-// RunAdminUserSetAdmin implements `control admin user grant-admin` and
-// `revoke-admin`.
-func RunAdminUserSetAdmin(rawCtx any, args []string, admin bool) error {
-	var sel userSelectorFlags
+// newAdminUserSetAdmin builds `admin user grant-admin` and `revoke-admin`.
+func newAdminUserSetAdmin(admin bool, use, short string, examples []cli.Example) *cobra.Command {
 	var force bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			sel.bind(fs, "id", "username")
-			// The hub refuses a caller that removes its OWN administrator
-			// access without this. The reduction fences the caller's tokens
-			// at once and the admin gate then denies the account every
-			// Admin* procedure, so recovery needs the offline verb.
+	return cli.NewLeaf(cli.Leaf{
+		Use:         use,
+		Short:       short,
+		Examples:    examples,
+		Mutates:     true,
+		Destructive: !admin,
+		Flags: func(fs *pflag.FlagSet) {
+			if admin {
+				return
+			}
 			fs.BoolVar(&force, "force", false, "required to remove your own administrator access")
 		},
-		BeforeDial: sel.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().SetUserAdmin(context.Background(), &leapmuxv1.SetUserAdminRequest{
-				User: sel.Selector, IsAdmin: admin, Force: force,
+		Complete: completeAdminUsers,
+		Run: func(inv *cli.Invocation) (any, error) {
+			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.SetUserAdminResponse, error) {
+				return c.AdminUserService().SetUserAdmin(inv.Context, &leapmuxv1.SetUserAdminRequest{
+					User: sel, IsAdmin: admin, Force: force,
+				})
 			})
 			if err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminUserJSON(resp.GetUser()))
+			return adminUserRowOf(resp.GetUser()), nil
 		},
 	})
 }
 
-// RunAdminUserResetPassword implements `control admin user reset-password`.
-//
-// The offline break-glass twin is `leapmux recover password reset`, which
-// works with the hub stopped. This one needs a running hub and an
-// administrator login, and it is the one to reach for while the hub serves.
-func RunAdminUserResetPassword(rawCtx any, args []string) error {
-	var sel userSelectorFlags
+type adminResetPasswordResult struct {
+	UserID                  string `json:"user_id"`
+	Username                string `json:"username"`
+	APITokensRevoked        int64  `json:"api_tokens_revoked"`
+	DelegationTokensRevoked int64  `json:"delegation_tokens_revoked"`
+}
+
+func (r adminResetPasswordResult) QuietLines() []string { return []string{r.UserID} }
+
+// newAdminUserResetPassword builds `admin user reset-password`.
+func newAdminUserResetPassword() *cobra.Command {
 	var pw string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			sel.bind(fs, "id", "username")
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "reset-password <user>",
+		Short:       "Set a user's password and revoke every credential they hold",
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Comment: "Prompt for the new password.", Command: "leapmux admin user reset-password alice"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
 			fs.StringVar(&pw, "password", "", "new password (prompted for when omitted, so it stays out of the shell history)")
 		},
-		// Prompt LOCALLY before this code builds the request, the way `user create`
-		// does. The RPC cannot prompt, but the CLI can: a password on the
-		// command line lands in the shell history and in the process table of
-		// every user on the host.
-		BeforeDial: func(a adminArgs) error {
-			// The selector check runs BEFORE the prompt. An operator must not
-			// type a secret for a request that cannot succeed.
-			if err := sel.resolve(a); err != nil {
-				return err
+		Complete: completeAdminUsers,
+		Run: func(inv *cli.Invocation) (any, error) {
+			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+				return nil, err
 			}
-			entered, err := control.RequirePassword(pw, "New password: ")
+			entered, err := control.RequirePassword(inv.Context, pw, "New password: ")
 			if err != nil {
-				return control.EmitErrorWith("invalid_request", err)
+				return nil, cli.Wrap(cli.CodeUsage, err, "")
 			}
-			pw = entered
-			return nil
-		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ResetPassword(context.Background(), &leapmuxv1.ResetPasswordRequest{
-				User: sel.Selector, Password: pw,
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ResetPasswordResponse, error) {
+				return c.AdminUserService().ResetPassword(inv.Context, &leapmuxv1.ResetPasswordRequest{
+					User: sel, Password: entered,
+				})
 			})
 			if err != nil {
-				return control.EmitErrorWith("reset_failed", err)
+				return nil, err
 			}
-			// The subject comes back from the hub, so the envelope carries
-			// both handles whichever one the operator addressed the user by.
-			return control.EmitData(map[string]any{
-				"user_id":                   resp.GetUserId(),
-				"username":                  resp.GetUsername(),
-				"api_tokens_revoked":        resp.GetApiTokensRevoked(),
-				"delegation_tokens_revoked": resp.GetDelegationTokensRevoked(),
-			})
+			return adminResetPasswordResult{
+				UserID: resp.GetUserId(), Username: resp.GetUsername(),
+				APITokensRevoked: resp.GetApiTokensRevoked(), DelegationTokensRevoked: resp.GetDelegationTokensRevoked(),
+			}, nil
 		},
 	})
 }
 
-// RunAdminUserListSessions implements `control admin user list-sessions`.
-func RunAdminUserListSessions(rawCtx any, args []string) error {
-	var page adminPageFlags
-	var sel userSelectorFlags
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Page:       &page,
-		Flags:      func(fs *flag.FlagSet) { sel.bind(fs, "id", "username") },
-		BeforeDial: sel.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListUserSessions(context.Background(), &leapmuxv1.ListUserSessionsRequest{
-				Page: page.request(), User: sel.Selector,
-			})
-			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
-			}
-			return control.EmitData(map[string]any{
-				"sessions":    adminSessionsJSON(resp.GetSessions()),
-				"next_cursor": resp.GetPage().GetNextCursor(),
-			})
-		},
+type adminSessionPage struct {
+	Sessions   []adminSessionRow `json:"sessions"`
+	NextCursor string            `json:"next_cursor"`
+}
+
+func (p adminSessionPage) QuietLines() []string {
+	out := make([]string, 0, len(p.Sessions))
+	for _, s := range p.Sessions {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+func resolveAdminSessionID(ctx context.Context, c *control.Client, raw string) (string, error) {
+	return resolveAdminIDPrefix(ctx, raw, "session", func(ctx context.Context) ([]cli.Candidate, error) {
+		sessions, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminSession, *leapmuxv1.PageResponse, error) {
+			resp, err := c.AdminUserService().ListSessions(ctx, &leapmuxv1.ListSessionsRequest{Page: page})
+			return resp.GetSessions(), resp.GetPage(), err
+		}, (*leapmuxv1.AdminSession).GetId)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]cli.Candidate, 0, len(sessions))
+		for _, s := range sessions {
+			out = append(out, cli.Candidate{ID: s.GetId(), Kind: "session", Title: s.GetUsername()})
+		}
+		return out, nil
 	})
 }
 
-// tokenLifecycleJSON renders the fields every bearer-token row shares:
-// its identity, its owner, and the three lifecycle stamps.
-//
-// The two token verbs differ only in the two fields their own kind adds,
-// so the shared half lives here beside the other row mappers. Building it
-// inline twice already cost a field: `owner_deleted` reached both
-// rows on the wire and neither loop printed it, so an operator
-// enumerating a soft-deleted account's outstanding tokens — which is what
-// the user-id filter exists for — could not see that the owner was gone.
-func tokenLifecycleJSON(
-	id, userID, username string,
-	ownerDeleted bool,
-	createdAt, lastUsedAt, expiresAt, revokedAt *timestamppb.Timestamp,
-) map[string]any {
-	row := map[string]any{
-		"id":            id,
-		"user_id":       userID,
-		"username":      username,
-		"owner_deleted": ownerDeleted,
+type adminSessionRow struct {
+	ID           string `json:"id" table:"ID,short"`
+	UserID       string `json:"user_id"`
+	Username     string `json:"username" table:"USERNAME"`
+	UserDeleted  bool   `json:"user_deleted"`
+	IPAddress    string `json:"ip_address" table:"IP"`
+	UserAgent    string `json:"user_agent"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	LastActiveAt string `json:"last_active_at,omitempty"`
+	ExpiresAt    string `json:"expires_at,omitempty" table:"EXPIRES"`
+}
+
+func adminSessionRowOf(s *leapmuxv1.AdminSession) adminSessionRow {
+	return adminSessionRow{
+		ID:           s.GetId(),
+		UserID:       s.GetUserId(),
+		Username:     s.GetUsername(),
+		UserDeleted:  s.GetUserDeleted(),
+		IPAddress:    s.GetIpAddress(),
+		UserAgent:    s.GetUserAgent(),
+		CreatedAt:    formatTime(s.GetCreatedAt()),
+		LastActiveAt: formatTime(s.GetLastActiveAt()),
+		ExpiresAt:    formatTime(s.GetExpiresAt()),
 	}
-	// EVERY stamp goes through putTime, which omits an absent one instead
-	// of printing the epoch. A lifecycle stamp is absent until it happens;
-	// a stamp the hub always sets reads no differently here, and a hub that
-	// somehow omits one must not answer with a 1970 event.
-	putTime(row, "created_at", createdAt)
-	putTime(row, "last_used_at", lastUsedAt)
-	putTime(row, "expires_at", expiresAt)
-	putTime(row, "revoked_at", revokedAt)
-	return row
 }
 
-// adminAPITokenJSON renders one API-token row.
-func adminAPITokenJSON(t *leapmuxv1.AdminAPIToken) map[string]any {
-	row := tokenLifecycleJSON(t.GetId(), t.GetUserId(), t.GetUsername(), t.GetOwnerDeleted(),
-		t.GetCreatedAt(), t.GetLastUsedAt(), t.GetExpiresAt(), t.GetRevokedAt())
-	row["client_id"] = t.GetClientId()
-	row["client_name"] = t.GetClientName()
-	row["installation_name"] = t.GetInstallationName()
-	// This field always appears, including when it is empty: "what can this
-	// credential do" is the question the listing exists to answer, and an
-	// omitted key reads as "unknown" rather than "nothing". An audit of "which
-	// credentials administer the hub" reads it for an "admin:" prefix.
-	row["granted_scopes"] = t.GetGrantedScopes()
-	return row
-}
-
-// adminDelegationTokenJSON renders one delegation-token row.
-func adminDelegationTokenJSON(t *leapmuxv1.AdminDelegationToken) map[string]any {
-	row := tokenLifecycleJSON(t.GetId(), t.GetUserId(), t.GetUsername(), t.GetOwnerDeleted(),
-		t.GetCreatedAt(), t.GetLastUsedAt(), t.GetExpiresAt(), t.GetRevokedAt())
-	row["worker_id"] = t.GetWorkerId()
-	return row
-}
-
-// adminSessionJSON renders one session row. Its stamps go through putTime
-// for the reason tokenLifecycleJSON states.
-func adminSessionJSON(s *leapmuxv1.AdminSession) map[string]any {
-	row := map[string]any{
-		"id":           s.GetId(),
-		"user_id":      s.GetUserId(),
-		"username":     s.GetUsername(),
-		"user_deleted": s.GetUserDeleted(),
-		"ip_address":   s.GetIpAddress(),
-		"user_agent":   s.GetUserAgent(),
-	}
-	putTime(row, "created_at", s.GetCreatedAt())
-	putTime(row, "last_active_at", s.GetLastActiveAt())
-	putTime(row, "expires_at", s.GetExpiresAt())
-	return row
-}
-
-func adminSessionsJSON(sessions []*leapmuxv1.AdminSession) []map[string]any {
-	rows := make([]map[string]any, 0, len(sessions))
+func adminSessionRowsOf(sessions []*leapmuxv1.AdminSession) []adminSessionRow {
+	rows := make([]adminSessionRow, 0, len(sessions))
 	for _, s := range sessions {
-		rows = append(rows, adminSessionJSON(s))
+		rows = append(rows, adminSessionRowOf(s))
 	}
 	return rows
 }
 
-// RunAdminSessionList implements `control admin session list`.
-func RunAdminSessionList(rawCtx any, args []string) error {
+// newAdminSessionList builds `admin session list`.
+func newAdminSessionList() *cobra.Command {
 	var page adminPageFlags
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Page: &page,
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListSessions(context.Background(), &leapmuxv1.ListSessionsRequest{
+	var owner userFilterFlags
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List active sessions, optionally filtered to one user",
+		Examples: []cli.Example{
+			{Command: "leapmux admin session list"},
+			{Comment: "List one user's active sessions.", Command: "leapmux admin session list --user alice"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			page.bind(fs)
+			owner.bind(fs)
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			if err := page.validate(); err != nil {
+				return nil, err
+			}
+			if err := owner.resolve(inv); err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			if owner.Selector() != nil {
+				resp, err := callWithAdminUserSelector(inv.Context, c, owner.User, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ListUserSessionsResponse, error) {
+					return c.AdminUserService().ListUserSessions(inv.Context, &leapmuxv1.ListUserSessionsRequest{
+						Page: page.request(), User: sel,
+					})
+				})
+				if err != nil {
+					return nil, err
+				}
+				return adminSessionPage{
+					Sessions: adminSessionRowsOf(resp.GetSessions()), NextCursor: resp.GetPage().GetNextCursor(),
+				}, nil
+			}
+			resp, err := c.AdminUserService().ListSessions(inv.Context, &leapmuxv1.ListSessionsRequest{
 				Page: page.request(),
 			})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			return control.EmitData(map[string]any{
-				"sessions":    adminSessionsJSON(resp.GetSessions()),
-				"next_cursor": resp.GetPage().GetNextCursor(),
-			})
+			return adminSessionPage{
+				Sessions: adminSessionRowsOf(resp.GetSessions()), NextCursor: resp.GetPage().GetNextCursor(),
+			}, nil
 		},
 	})
 }
 
-// RunAdminSessionRevoke implements `control admin session revoke`.
-func RunAdminSessionRevoke(rawCtx any, args []string) error {
-	var id string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&id, "id", "", "session ID (required)")
+// newAdminSessionRevoke builds `admin session revoke`.
+func newAdminSessionRevoke() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "revoke <session>",
+		Short:       "Revoke a session",
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin session revoke 4f1aC2"},
 		},
-		BeforeDial: requireFlag(&id, "id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminUserService().RevokeSession(context.Background(), &leapmuxv1.RevokeSessionRequest{Id: id}); err != nil {
-				return control.EmitErrorWith("revoke_failed", err)
+		Complete: completeAdminSessions,
+		Run: func(inv *cli.Invocation) (any, error) {
+			id, err := requireNonEmptyArg(inv, "session")
+			if err != nil {
+				return nil, err
 			}
-			return control.EmitData(map[string]any{"revoked": id})
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminSessionID(inv.Context, c, id)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := c.AdminUserService().RevokeSession(inv.Context, &leapmuxv1.RevokeSessionRequest{Id: resolved}); err != nil {
+				return nil, err
+			}
+			return adminRevocationResult{Revoked: resolved}, nil
 		},
 	})
 }
 
-// RunAdminSessionRevokeUser implements `control admin session revoke-user`.
-func RunAdminSessionRevokeUser(rawCtx any, args []string) error {
-	var sel userSelectorFlags
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags:      func(fs *flag.FlagSet) { sel.bind(fs, "user-id", "username") },
-		BeforeDial: sel.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().RevokeUserSessions(context.Background(), &leapmuxv1.RevokeUserSessionsRequest{
-				User: sel.Selector,
+// newAdminSessionRevokeUser builds `admin session revoke-user`.
+func newAdminSessionRevokeUser() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:              "revoke-user <user>",
+		Short:            "Revoke every session of a user",
+		Mutates:          true,
+		Destructive:      true,
+		QuietUnsupported: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin session revoke-user alice"},
+		},
+		Complete: completeAdminUsers,
+		Run: func(inv *cli.Invocation) (any, error) {
+			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.RevokeUserSessionsResponse, error) {
+				return c.AdminUserService().RevokeUserSessions(inv.Context, &leapmuxv1.RevokeUserSessionsRequest{
+					User: sel,
+				})
 			})
 			if err != nil {
-				return control.EmitErrorWith("revoke_failed", err)
+				return nil, err
 			}
-			return control.EmitData(map[string]any{
-				"api_tokens_revoked":        resp.GetApiTokensRevoked(),
-				"delegation_tokens_revoked": resp.GetDelegationTokensRevoked(),
-			})
+			return struct {
+				APITokensRevoked        int64 `json:"api_tokens_revoked"`
+				DelegationTokensRevoked int64 `json:"delegation_tokens_revoked"`
+			}{
+				APITokensRevoked: resp.GetApiTokensRevoked(), DelegationTokensRevoked: resp.GetDelegationTokensRevoked(),
+			}, nil
 		},
 	})
 }
 
-// RunAdminSessionPurgeExpired implements `control admin session purge-expired`.
-func RunAdminSessionPurgeExpired(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().PurgeExpiredSessions(context.Background(), &leapmuxv1.PurgeExpiredSessionsRequest{})
+// newAdminSessionPurgeExpired builds `admin session purge-expired`.
+func newAdminSessionPurgeExpired() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:              "purge-expired",
+		Short:            "Delete every expired session",
+		Mutates:          true,
+		Destructive:      true,
+		QuietUnsupported: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin session purge-expired"},
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			c, err := requireAdminClient(inv)
 			if err != nil {
-				return control.EmitErrorWith("purge_failed", err)
+				return nil, err
 			}
-			return control.EmitData(map[string]any{"purged": resp.GetPurged()})
-		},
-	})
-}
-
-// RunAdminAPITokenList implements `control admin api-token list`.
-func RunAdminAPITokenList(rawCtx any, args []string) error {
-	var page adminPageFlags
-	var owner userFilterFlags
-	var clientID string
-	var includeRevoked bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Page: &page,
-		Flags: func(fs *flag.FlagSet) {
-			owner.bind(fs)
-			fs.StringVar(&clientID, "client-id", "", "filter by app (empty = all apps)")
-			fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
-		},
-		BeforeDial: owner.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListAPITokens(context.Background(), &leapmuxv1.ListAPITokensRequest{
-				User: owner.Selector(), ClientId: clientID,
-				IncludeRevoked: includeRevoked, Page: page.request(),
-			})
+			resp, err := c.AdminUserService().PurgeExpiredSessions(inv.Context, &leapmuxv1.PurgeExpiredSessionsRequest{})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetTokens()))
-			for _, t := range resp.GetTokens() {
-				rows = append(rows, adminAPITokenJSON(t))
-			}
-			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.GetPage().GetNextCursor()})
+			return adminPurgeResult{Purged: resp.GetPurged()}, nil
 		},
 	})
-}
-
-// RunAdminAPITokenIssue implements `control admin api-token issue`. The
-// secrets cross the envelope exactly once; they cannot be retrieved.
-func RunAdminAPITokenIssue(rawCtx any, args []string) error {
-	var sel userSelectorFlags
-	var clientID, installationName, scopeFlag string
-	var ttlSeconds int64
-	var scopeList []string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			// The SAME selector the six sibling verbs take, spelled
-			// --user-id here to match the filter on `api-token list` and to
-			// stay clear of --id, which addresses the TOKEN on `revoke`.
-			// The verb that MINTS a credential is the last one on which
-			// specifying the wrong account should be easy.
-			sel.bind(fs, "user-id", "username of the token owner")
-			fs.StringVar(&clientID, "client-id", "",
-				"the app this credential belongs to (empty = the built-in service-account registration)")
-			fs.StringVar(&installationName, "installation-name", "",
-				"human-visible name for this installation, e.g. ci-runner-3 (required)")
-			// The flag picks WHICH KIND of credential, and the help says so:
-			// zero mints the renewing one, and a positive value mints a
-			// fixed-lifetime service credential with no refresh token. The
-			// two do not combine -- a long TTL plus a refresh token loses the
-			// TTL on the first rotation, because the row records an expiry
-			// and never the lifetime it was minted from.
-			fs.Int64Var(&ttlSeconds, "ttl", 0,
-				"fixed lifetime in seconds, with no refresh token (0 = the renewing credential: 1h access + refresh)")
-			// EMPTY grants everything except the admin scopes, which is
-			// the same default a `leapmux control auth login` takes: a service
-			// account that only needs to drive workspaces must not come out of
-			// this verb able to administer the hub.
-			fs.StringVar(&scopeFlag, "scope", "",
-				"space- or comma-separated permissions, e.g. \"file:read git:read\" (empty = everything except admin:*)")
-		},
-		BeforeDial: func(a adminArgs) error {
-			if err := sel.resolve(a); err != nil {
-				return err
-			}
-			if installationName == "" {
-				return control.EmitError("invalid_request", "--installation-name is required")
-			}
-			var scopeErr error
-			scopeList, scopeErr = splitScopeFlag(scopeFlag)
-			if scopeErr != nil {
-				return scopeErr
-			}
-			return nil
-		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().IssueAPIToken(context.Background(), &leapmuxv1.IssueAPITokenRequest{
-				User: sel.Selector, ClientId: clientID,
-				InstallationName: installationName,
-				TtlSeconds:       ttlSeconds, Scopes: scopeList,
-			})
-			if err != nil {
-				return control.EmitErrorWith("issue_failed", err)
-			}
-			return control.EmitData(map[string]any{
-				"token_id":       resp.GetTokenId(),
-				"access_token":   resp.GetAccessToken(),
-				"refresh_token":  resp.GetRefreshToken(),
-				"client_id":      resp.GetClientId(),
-				"granted_scopes": resp.GetGrantedScopes(),
-				"note":           "capture the tokens now; they cannot be retrieved later",
-			})
-		},
-	})
-}
-
-// RunAdminAPITokenRevoke implements `control admin api-token revoke`.
-func RunAdminAPITokenRevoke(rawCtx any, args []string) error {
-	var id string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&id, "id", "", "token id (required)")
-		},
-		BeforeDial: requireFlag(&id, "id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminUserService().RevokeAPIToken(context.Background(), &leapmuxv1.RevokeAPITokenRequest{Id: id}); err != nil {
-				return control.EmitErrorWith("revoke_failed", err)
-			}
-			return control.EmitData(map[string]any{"revoked": id})
-		},
-	})
-}
-
-// RunAdminDelegationTokenList implements `control admin delegation-token list`.
-func RunAdminDelegationTokenList(rawCtx any, args []string) error {
-	var page adminPageFlags
-	var owner userFilterFlags
-	var includeRevoked bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Page: &page,
-		Flags: func(fs *flag.FlagSet) {
-			owner.bind(fs)
-			fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
-		},
-		BeforeDial: owner.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListDelegationTokens(context.Background(), &leapmuxv1.ListDelegationTokensRequest{
-				User: owner.Selector(), IncludeRevoked: includeRevoked, Page: page.request(),
-			})
-			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
-			}
-			rows := make([]map[string]any, 0, len(resp.GetTokens()))
-			for _, t := range resp.GetTokens() {
-				rows = append(rows, adminDelegationTokenJSON(t))
-			}
-			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.GetPage().GetNextCursor()})
-		},
-	})
-}
-
-// RunAdminDelegationTokenRevoke implements `control admin delegation-token revoke`.
-func RunAdminDelegationTokenRevoke(rawCtx any, args []string) error {
-	var id string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&id, "id", "", "token id (required)")
-		},
-		BeforeDial: requireFlag(&id, "id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminUserService().RevokeDelegationToken(context.Background(), &leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: id}); err != nil {
-				return control.EmitErrorWith("revoke_failed", err)
-			}
-			return control.EmitData(map[string]any{"revoked": id})
-		},
-	})
-}
-
-// splitScopeFlag reads a --scope value.
-//
-// It accepts BOTH separators. The wire format is space-delimited (RFC 6749
-// section 3.3), which a shell needs quoted; a comma-separated list is what
-// somebody types without thinking about quoting. Accepting both costs one
-// FieldsFunc and removes a failure whose only symptom is a scope named
-// "file:read,git:read", which the hub then refuses as unknown.
-//
-// An empty value yields nil, which every caller reads as "the default grant"
-// rather than as "no permissions at all".
-// splitScopeFlag splits a --scope value into its tokens. An EMPTY value is
-// the documented "take the default" and returns no tokens; a value that is
-// NOT empty but yields no tokens -- a stray comma, a shell-mangled
-// "${A},${B}" with empty variables -- is a REFUSAL rather than silence,
-// because every caller's hub reads an absent list as "unspecified" and
-// answers the widest default grant. Losing the operator's constraint that
-// way is the one outcome this parser exists to prevent.
-func splitScopeFlag(raw string) ([]string, error) {
-	tokens := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ' ' || r == '\t' || r == '\n'
-	})
-	if raw != "" && len(tokens) == 0 {
-		return nil, control.EmitError("invalid_request",
-			"--scope carried no permission names; pass real tokens or omit the flag for the default")
-	}
-	return tokens, nil
 }

@@ -33,7 +33,7 @@ func approvalAnswer(id string) []byte {
 func TestMuseApprovalStageZeroKeepsItsExactNativeGuard(t *testing.T) {
 	t.Parallel()
 	id := testApprovalKey("session", "approval", 0)
-	result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: approvalRequest("session", 0), ResponseContent: approvalAnswer(id)})
+	result := agenttest.ResolveAnswer(museProvider{}, approvalRequest("session", 0), id, agent.ControlAnswer{Content: approvalAnswer(id)})
 	require.False(t, result.Withhold)
 	var frame struct {
 		Params struct {
@@ -49,15 +49,43 @@ func TestMuseApprovalStageZeroKeepsItsExactNativeGuard(t *testing.T) {
 	assert.Equal(t, "approval", frame.Params.Requirement.ID)
 	assert.Zero(t, frame.Params.Requirement.Index)
 }
-func TestMuseApprovalRejectsAKeyFromAnotherStageOrSession(t *testing.T) {
+
+// The key of a stored request is the identity of its approval stage or of its
+// user input in its session (controlID), so a payload of another stage,
+// session or question gives another key, and the Worker refuses the row before
+// Muse reads it (agent.StoredControlRequestAgrees).
+func TestMuseControlRequestKeyIsTheIdentityOfTheRequest(t *testing.T) {
 	t.Parallel()
-	for label, request := range map[string]json.RawMessage{"later stage": approvalRequest("session", 1), "replaced session": approvalRequest("replacement", 0)} {
-		t.Run(label, func(t *testing.T) {
-			id := testApprovalKey("session", "approval", 0)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: approvalAnswer(id)})
-			require.True(t, result.Withhold)
-			require.Error(t, result.Refusal())
-		})
+	key := testApprovalKey("session", "approval", 0)
+	for label, tc := range map[string]struct {
+		request json.RawMessage
+		same    bool
+	}{
+		"the stage itself":   {approvalRequest("session", 0), true},
+		"a later stage":      {approvalRequest("session", 1), false},
+		"a replaced session": {approvalRequest("replacement", 0), false},
+	} {
+		got, ok := museProvider{}.ControlRequestKey(tc.request, "")
+		require.True(t, ok, label)
+		assert.Equal(t, tc.same, got == key, label)
+	}
+	id, request := questionRequest(t, []any{})
+	got, ok := museProvider{}.ControlRequestKey(request, "")
+	require.True(t, ok)
+	assert.Equal(t, id, got)
+	other, err := controlID(controlParams{SessionID: "session", UserInputID: "other"})
+	require.NoError(t, err)
+	assert.NotEqual(t, other, got, "another question gives another key")
+
+	for _, payload := range []string{
+		`{"method":"approval/requested","params":{"sessionId":"session","approvalId":"approval"}}`,
+		`{"method":"userInput/requested","params":{"userInputId":"question"}}`,
+		`{"method":"approval/requested","params":[]}`,
+		`{}`,
+	} {
+		key, ok := museProvider{}.ControlRequestKey([]byte(payload), "")
+		assert.False(t, ok, payload)
+		assert.Empty(t, key, payload)
 	}
 }
 
@@ -95,7 +123,7 @@ func TestMuseQuestionAnswersValidateTheExactNativeForms(t *testing.T) {
 		t.Run(tc.label, func(t *testing.T) {
 			answer, err := json.Marshal(map[string]any{"id": id, "result": map[string]any{"answers": []any{tc.answer}}})
 			require.NoError(t, err)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			assert.Equal(t, !tc.valid, result.Withhold)
 		})
 	}
@@ -112,7 +140,7 @@ func TestMuseMultipleAnswersValidateCountsAndUniqueChoices(t *testing.T) {
 	} {
 		answer, err := json.Marshal(map[string]any{"id": id, "result": map[string]any{"answers": []any{map[string]any{"questionId": "multi", "selectedLabels": tc.labels}}}})
 		require.NoError(t, err)
-		result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+		result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 		assert.Equal(t, !tc.valid, result.Withhold, "%v", tc.labels)
 	}
 }
@@ -136,7 +164,7 @@ func TestMuseApprovalRejectsAnInvalidNativeChoiceBeforeItBuildsAReply(t *testing
 					"availableChoices": choices,
 				}})
 				answer := approvalAnswer(id)
-				result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+				result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 				require.True(t, result.Withhold)
 				assert.Error(t, result.Refusal())
 			})
@@ -154,7 +182,7 @@ func TestMuseApprovalRejectsDuplicateNativeChoiceIdentities(t *testing.T) {
 		},
 	}})
 	answer := approvalAnswer(id)
-	result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+	result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 	require.True(t, result.Withhold)
 	assert.Error(t, result.Refusal())
 }
@@ -208,7 +236,7 @@ func TestMuseApprovalRejectsMissingEmptyAndBlankNativeChoiceFields(t *testing.T)
 				id, request := museApprovalRequest(t, []any{museApprovalChoice("allow", contracts.MuseApprovalDecisionApproved, contracts.MuseChoiceScopeOnce), invalid})
 				original := slices.Clone(request)
 				answer := approvalAnswer(id)
-				result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+				result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 				require.True(t, result.Withhold)
 				assert.Error(t, result.Refusal())
 				assert.Equal(t, original, request)
@@ -241,7 +269,7 @@ func TestMuseApprovalRejectsUnreadableListsAndUnknownNativeVocabulary(t *testing
 			}
 			original := slices.Clone(request)
 			answer := approvalAnswer(id)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			if tc.label == "unknown decision" || tc.label == "unknown scope" {
 				require.False(t, result.Withhold)
 				var frame struct {
@@ -274,7 +302,7 @@ func TestMuseApprovalKeepsEveryExplicitNativeDecisionAndScope(t *testing.T) {
 				t.Parallel()
 				id, request := museApprovalRequest(t, []any{museApprovalChoice("native-explicit-choice", decision, scope)})
 				original := slices.Clone(request)
-				result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museApprovalReply(t, id, "native-explicit-choice", "")})
+				result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museApprovalReply(t, id, "native-explicit-choice", "")})
 				require.False(t, result.Withhold)
 				var frame struct {
 					Method string `json:"method"`
@@ -310,7 +338,7 @@ func TestMuseApprovalKeepsNativeFeedbackPermission(t *testing.T) {
 					choice["acceptsFeedback"] = tc.allowed
 				}
 				id, request := museApprovalRequest(t, []any{choice})
-				result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museApprovalReply(t, id, "deny", feedback)})
+				result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museApprovalReply(t, id, "deny", feedback)})
 				if feedback != "" && !tc.allowed {
 					require.True(t, result.Withhold)
 					assert.ErrorContains(t, result.Refusal(), "does not accept feedback")
@@ -341,7 +369,7 @@ func TestMuseApprovalRequiresAnExplicitChoiceForNativePersistence(t *testing.T) 
 				}
 				id, request := museApprovalRequest(t, []any{museApprovalChoice("native-choice", decision, scope)})
 				answer := mustMuseChoiceJSON(t, map[string]any{"response": map[string]any{"request_id": id, "response": map[string]any{"behavior": behavior}}})
-				result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+				result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 				assert.Equal(t, scope != contracts.MuseChoiceScopeOnce, result.Withhold)
 				if scope != contracts.MuseChoiceScopeOnce {
 					assert.Error(t, result.Refusal())
@@ -363,7 +391,7 @@ func TestMuseApprovalRejectsARequestWithAnotherNativeMethod(t *testing.T) {
 			envelope["method"] = method
 			request = mustMuseChoiceJSON(t, envelope)
 			answer := approvalAnswer(id)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			require.True(t, result.Withhold)
 			assert.Error(t, result.Refusal())
 			assert.Equal(t, []byte(answer), result.Content)
@@ -381,12 +409,14 @@ func TestMuseApprovalKeepsEachCurrentNativeRequestMethod(t *testing.T) {
 			require.NoError(t, json.Unmarshal(request, &envelope))
 			envelope["method"] = method
 			request = mustMuseChoiceJSON(t, envelope)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museApprovalReply(t, id, "allow", "")})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museApprovalReply(t, id, "allow", "")})
 			require.False(t, result.Withhold)
 		})
 	}
 }
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does.
 func TestMuseApprovalRejectsUnreadableAndMixedReplyEnvelopes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -399,10 +429,6 @@ func TestMuseApprovalRejectsUnreadableAndMixedReplyEnvelopes(t *testing.T) {
 		{label: "empty choice", build: func(id string) any { return map[string]any{"id": id, "result": map[string]any{"choiceId": ""}} }},
 		{label: "null choice", build: func(id string) any { return map[string]any{"id": id, "result": map[string]any{"choiceId": nil}} }},
 		{label: "numeric choice", build: func(id string) any { return map[string]any{"id": id, "result": map[string]any{"choiceId": 0}} }},
-		{label: "wrong request", build: func(string) any {
-			return map[string]any{"id": "foreign", "result": map[string]any{"choiceId": "allow"}}
-		}},
-		{label: "numeric request", build: func(string) any { return map[string]any{"id": 0, "result": map[string]any{"choiceId": "allow"}} }},
 		{label: "numeric feedback", build: func(id string) any {
 			return map[string]any{"id": id, "result": map[string]any{"choiceId": "allow", "feedback": 0}}
 		}},
@@ -421,7 +447,7 @@ func TestMuseApprovalRejectsUnreadableAndMixedReplyEnvelopes(t *testing.T) {
 			id, request := museApprovalRequest(t, []any{museApprovalChoice("allow", contracts.MuseApprovalDecisionApproved, contracts.MuseChoiceScopeOnce), museApprovalChoice("deny", contracts.MuseApprovalDecisionDenied, contracts.MuseChoiceScopeOnce)})
 			answer := mustMuseChoiceJSON(t, tc.build(id))
 			original := slices.Clone(answer)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			require.True(t, result.Withhold)
 			assert.Error(t, result.Refusal())
 			assert.Equal(t, original, answer)
@@ -430,7 +456,10 @@ func TestMuseApprovalRejectsUnreadableAndMixedReplyEnvelopes(t *testing.T) {
 	}
 }
 
-func TestMuseApprovalRejectsAnInvalidNativeRequirementIdentity(t *testing.T) {
+// An approval whose requirement identity is invalid gives no key, so the
+// Worker refuses every answer to it before Muse reads it
+// (agent.StoredControlRequestAgrees).
+func TestMuseApprovalOfAnInvalidNativeRequirementIdentityGivesNoKey(t *testing.T) {
 	t.Parallel()
 	for _, requirement := range []any{
 		nil, map[string]any{}, map[string]any{"approvalId": "approval"},
@@ -442,14 +471,14 @@ func TestMuseApprovalRejectsAnInvalidNativeRequirementIdentity(t *testing.T) {
 	} {
 		t.Run(string(mustMuseChoiceJSON(t, requirement)), func(t *testing.T) {
 			t.Parallel()
-			id := testApprovalKey("session", "approval", 0)
 			request := mustMuseChoiceJSON(t, map[string]any{"method": contracts.MuseMethodApprovalRequested, "params": map[string]any{
 				"sessionId": "session", "approvalId": "approval", "currentRequirementId": requirement,
 				"availableChoices": []any{museApprovalChoice("allow", contracts.MuseApprovalDecisionApproved, contracts.MuseChoiceScopeOnce)},
 			}})
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museApprovalReply(t, id, "allow", "")})
-			require.True(t, result.Withhold)
-			assert.Error(t, result.Refusal())
+			key, ok := museProvider{}.ControlRequestKey(request, "session")
+			assert.False(t, ok)
+			assert.Empty(t, key)
+			assert.False(t, agent.StoredControlRequestAgrees(museProvider{}, testApprovalKey("session", "approval", 0), request, "session"))
 		})
 	}
 }
@@ -462,7 +491,7 @@ func TestMuseApprovalKeepsLargeNativeStageIndicesAndExactChoiceIDs(t *testing.T)
 		"sessionId": "session", "approvalId": "approval", "currentRequirementId": map[string]any{"approvalId": "approval", "sourceIndex": stage},
 		"availableChoices": []any{museApprovalChoice(" native choice 界 ", contracts.MuseApprovalDecisionApproved, contracts.MuseChoiceScopeOnce)},
 	}})
-	result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museApprovalReply(t, id, " native choice 界 ", "")})
+	result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museApprovalReply(t, id, " native choice 界 ", "")})
 	require.False(t, result.Withhold)
 	var frame struct {
 		Params struct {
@@ -491,7 +520,7 @@ func TestMuseApprovalReadsALargeImmutableNativeChoiceListConcurrently(t *testing
 	var callers sync.WaitGroup
 	for range 16 {
 		callers.Go(func() {
-			results <- (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			results <- agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 		})
 	}
 	callers.Wait()
@@ -582,7 +611,7 @@ func TestMuseApprovalRetainsPendingNativeBytesForUnreadableChoices(t *testing.T)
 			a.HandleOutput(request)
 			assert.Len(t, sink.requests, 1)
 			assert.Equal(t, original, request)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museApprovalReply(t, id, "choice", "")})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museApprovalReply(t, id, "choice", "")})
 			if tc.label == "unknown decision" || tc.label == "unknown scope" {
 				require.False(t, result.Withhold)
 				var frame struct {
@@ -686,7 +715,7 @@ func TestMuseQuestionRetainsPendingBytesForAnUnreadableNativeList(t *testing.T) 
 			assert.Equal(t, id, a.sessions["session"].controls["question"].key)
 			a.HandleOutput(request)
 			assert.Len(t, sink.requests, 1)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museQuestionReply(t, id, true, nil)})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museQuestionReply(t, id, true, nil)})
 			require.False(t, result.Withhold)
 			assert.Equal(t, id, a.sessions["session"].controls["question"].key)
 			assert.Equal(t, original, request)
@@ -764,7 +793,7 @@ func TestMuseQuestionSeparatesUnreadableAnswersFromNativeCancellation(t *testing
 				id, request := questionRequest(t, tc.questions)
 				answer := museQuestionReply(t, id, cancelled, []any{map[string]any{"questionId": "native", "freeText": ""}})
 				original := slices.Clone(request)
-				result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+				result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 				if cancelled {
 					require.False(t, result.Withhold)
 				} else {
@@ -778,6 +807,8 @@ func TestMuseQuestionSeparatesUnreadableAnswersFromNativeCancellation(t *testing
 	}
 }
 
+// Each answer addresses the stored request, as every answer that the Worker
+// resolves does, so a foreign cancellation is one of another request's method.
 func TestMuseQuestionRejectsAnUnreadableOrForeignCancellation(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -785,7 +816,6 @@ func TestMuseQuestionRejectsAnUnreadableOrForeignCancellation(t *testing.T) {
 		method string
 		build  func(string) any
 	}{
-		{label: "wrong response ID", method: contracts.MuseMethodUserInputRequested, build: func(string) any { return map[string]any{"id": "foreign", "result": map[string]any{"cancelled": true}} }},
 		{label: "unknown request method", method: "future/request", build: func(id string) any { return map[string]any{"id": id, "result": map[string]any{"cancelled": true}} }},
 		{label: "approval request method", method: contracts.MuseMethodApprovalRequested, build: func(id string) any { return map[string]any{"id": id, "result": map[string]any{"cancelled": true}} }},
 		{label: "mixed envelopes", method: contracts.MuseMethodUserInputRequested, build: func(id string) any {
@@ -809,7 +839,7 @@ func TestMuseQuestionRejectsAnUnreadableOrForeignCancellation(t *testing.T) {
 			envelope["method"] = tc.method
 			request = mustMuseChoiceJSON(t, envelope)
 			answer := mustMuseChoiceJSON(t, tc.build(id))
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			require.True(t, result.Withhold)
 			assert.Error(t, result.Refusal())
 			assert.Equal(t, []byte(answer), result.Content)
@@ -827,7 +857,7 @@ func TestMuseQuestionKeepsAnEmptyHeaderAndExplicitNativeCancellation(t *testing.
 			question["futureField"] = map[string]any{"bytes": "\u0000\n界"}
 			id, request := questionRequest(t, []any{question})
 			original := slices.Clone(request)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museQuestionReply(t, id, true, nil)})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museQuestionReply(t, id, true, nil)})
 			require.False(t, result.Withhold)
 			var frame struct {
 				Method string `json:"method"`
@@ -842,12 +872,12 @@ func TestMuseQuestionKeepsAnEmptyHeaderAndExplicitNativeCancellation(t *testing.
 			assert.Equal(t, "question", frame.Params.InputID)
 			assert.Equal(t, original, request)
 			answer := museQuestionReply(t, id, false, []any{map[string]any{"questionId": " native 界 ", "freeText": ""}})
-			answered := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			answered := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			require.True(t, answered.Withhold)
 			assert.Error(t, answered.Refusal())
 			assert.Equal(t, []byte(answer), answered.Content)
 			answer = museQuestionReply(t, id, false, []any{map[string]any{"questionId": " native 界 ", "freeText": "Native typed answer"}})
-			answered = (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			answered = agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			require.False(t, answered.Withhold)
 			require.NoError(t, json.Unmarshal(answered.Content, &frame))
 			assert.Equal(t, methodUserInputAnswer, frame.Method)
@@ -906,7 +936,7 @@ func TestMuseQuestionReadsALargeImmutableFormConcurrently(t *testing.T) {
 	var callers sync.WaitGroup
 	for range 16 {
 		callers.Go(func() {
-			results <- (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			results <- agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 		})
 	}
 	callers.Wait()
@@ -957,9 +987,9 @@ func TestMuseApprovalNeutralDenialUsesTheOfferedOnceAbort(t *testing.T) {
 			choice := museApprovalChoice("actual-native-reject", tc.decision, tc.scope)
 			choice["acceptsFeedback"] = tc.acceptsFeedback
 			id, request := museApprovalRequest(t, []any{museApprovalChoice("allow_once", contracts.MuseApprovalDecisionApproved, contracts.MuseChoiceScopeOnce), choice})
-			answer := mustMuseChoiceJSON(t, map[string]any{"response": map[string]any{"request_id": id, "response": map[string]any{"behavior": agent.ControlBehaviorDeny, "message": tc.feedback}}})
+			answer := mustMuseChoiceJSON(t, map[string]any{"response": map[string]any{"request_id": id, "response": map[string]any{"behavior": contracts.ControlAnswerBehaviorDeny, "message": tc.feedback}}})
 			originalRequest, originalAnswer := slices.Clone(request), slices.Clone(answer)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			assert.Equal(t, !tc.valid, result.Withhold)
 			if tc.valid {
 				require.NoError(t, result.Refusal())
@@ -1011,7 +1041,7 @@ func TestMuseQuestionCancellationAlwaysSuppliesTheNativeReason(t *testing.T) {
 			}
 			answer := mustMuseChoiceJSON(t, map[string]any{"id": id, "result": reply})
 			originalRequest, originalAnswer := slices.Clone(request), slices.Clone(answer)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			require.False(t, result.Withhold)
 			var frame struct {
 				Method string                     `json:"method"`
@@ -1040,7 +1070,7 @@ func TestMuseQuestionCancellationRejectsAnUnreadableReason(t *testing.T) {
 			id, request := questionRequest(t, []any{museNativeQuestion("native", "single")})
 			answer := mustMuseChoiceJSON(t, map[string]any{"id": id, "result": map[string]any{"cancelled": true, "reason": reason}})
 			originalRequest, originalAnswer := slices.Clone(request), slices.Clone(answer)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 			require.True(t, result.Withhold)
 			assert.Error(t, result.Refusal())
 			assert.Equal(t, []byte(answer), result.Content)
@@ -1084,7 +1114,7 @@ func TestMuseQuestionTypedAnswersKeepNativeValidationSeparateFromNotes(t *testin
 				}
 				answer := museQuestionReply(t, id, false, []any{fields})
 				originalRequest, originalAnswer := slices.Clone(request), slices.Clone(answer)
-				result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+				result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 				assert.Equal(t, !tc.valid, result.Withhold)
 				if tc.valid {
 					var frame struct {
@@ -1116,7 +1146,7 @@ func TestMuseApprovalForwardsFutureNativeVocabularyForAnExactChoice(t *testing.T
 			t.Parallel()
 			id, request := museApprovalRequest(t, []any{museApprovalChoice("exact-future-choice", vocabulary[0], vocabulary[1])})
 			original := slices.Clone(request)
-			result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: museApprovalReply(t, id, "exact-future-choice", "")})
+			result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: museApprovalReply(t, id, "exact-future-choice", "")})
 			require.False(t, result.Withhold)
 			var frame struct {
 				Method string `json:"method"`
@@ -1136,12 +1166,12 @@ func TestMuseApprovalForwardsFutureNativeVocabularyForAnExactChoice(t *testing.T
 
 func TestMuseApprovalNeutralFallbackDoesNotGuessFutureVocabulary(t *testing.T) {
 	t.Parallel()
-	for _, behavior := range []string{agent.ControlBehaviorAllow, agent.ControlBehaviorDeny} {
+	for _, behavior := range []string{contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny} {
 		for _, knownChoice := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/known=%t", behavior, knownChoice), func(t *testing.T) {
 				t.Parallel()
 				decision := contracts.MuseApprovalDecisionApproved
-				if behavior == agent.ControlBehaviorDeny {
+				if behavior == contracts.ControlAnswerBehaviorDeny {
 					decision = contracts.MuseApprovalDecisionDenied
 				}
 				choices := []any{museApprovalChoice("future-decision", "futureDecision", contracts.MuseChoiceScopeOnce), museApprovalChoice("future-scope", decision, "futureScope")}
@@ -1151,7 +1181,7 @@ func TestMuseApprovalNeutralFallbackDoesNotGuessFutureVocabulary(t *testing.T) {
 				id, request := museApprovalRequest(t, choices)
 				original := slices.Clone(request)
 				answer := mustMuseChoiceJSON(t, map[string]any{"response": map[string]any{"request_id": id, "response": map[string]any{"behavior": behavior}}})
-				result := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: id, RequestPayload: request, ResponseContent: answer})
+				result := agenttest.ResolveAnswer(museProvider{}, request, id, agent.ControlAnswer{Content: answer})
 				assert.Equal(t, !knownChoice, result.Withhold)
 				if knownChoice {
 					var frame struct {

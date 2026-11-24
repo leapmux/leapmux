@@ -84,7 +84,8 @@ func (a *Agent) preparePiQuestionDialog(id string, raw []byte) (*piQuestionSourc
 
 // SendRawInput converts one custom answer into rpiv's select-then-input exchange.
 // Ordinary responses and unrelated Pi commands retain their original bytes.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) (sendErr error) {
+func (a *Agent) SendRawInput(input agent.RawInput) (sendErr error) {
+	data, stop := input.Data, input.Stop
 	var response struct {
 		Type      string  `json:"type"`
 		ID        string  `json:"id"`

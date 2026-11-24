@@ -78,6 +78,7 @@ type pinResult struct {
 	StrippedPresent bool
 	EmptyPresent    bool
 	EmptyValue      string
+	Path            string
 }
 
 func readPinResult(t *testing.T, output []byte) pinResult {
@@ -100,7 +101,7 @@ func TestPinnedEnvironmentChild(t *testing.T) {
 	}
 	_, stripped := os.LookupEnv("LEAPMUX_TEST_STRIPPED")
 	emptyValue, emptyPresent := os.LookupEnv("LEAPMUX_TEST_EMPTY")
-	body, err := json.Marshal(pinResult{Value: os.Getenv("PRIVATE_TOKEN"), Transport: testPinVariableNames(), Args: os.Args[1:], StrippedPresent: stripped, EmptyPresent: emptyPresent, EmptyValue: emptyValue})
+	body, err := json.Marshal(pinResult{Value: os.Getenv("PRIVATE_TOKEN"), Transport: testPinVariableNames(), Args: os.Args[1:], StrippedPresent: stripped, EmptyPresent: emptyPresent, EmptyValue: emptyValue, Path: os.Getenv("PATH")})
 	if err != nil {
 		os.Exit(2)
 	}
@@ -135,7 +136,7 @@ func TestPinnedEnvironmentRunsInEveryInstalledShell(t *testing.T) {
 			const value = "pin-value-'quoted'\n$HOME $(printf injected)"
 			cmd, _, _ := wrapTestCommand(t, ctx, WrapSpec{Shell: shell, Launch: Spec{Program: binary}, BaseArgs: []string{"-test.run=^TestPinnedEnvironmentChild$"}, SetEnv: []string{"PRIVATE_TOKEN=" + value}})
 			home := t.TempDir()
-			cmd.Env = envutil.PinEnv(cmd.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"), "XDG_STATE_HOME="+filepath.Join(home, ".state"), "ZDOTDIR="+home, "LEAPMUX_PIN_TEST_HELPER=1", "POWERSHELL_TELEMETRY_OPTOUT=1", "DOTNET_CLI_TELEMETRY_OPTOUT=1")
+			cmd.Env = envutil.PinEnv(cmd.Environ(), append(homeEnv(home), "LEAPMUX_PIN_TEST_HELPER=1")...)
 			output, err := cmd.CombinedOutput()
 			require.NoError(t, err, "%s", output)
 			result := readPinResult(t, output)

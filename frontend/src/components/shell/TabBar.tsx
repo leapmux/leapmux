@@ -23,7 +23,9 @@ import { NewTabMenuItems } from '~/components/common/NewTabMenuItems'
 import { providerButton } from '~/components/common/NewTabMenuItems.css'
 import { NotificationDot } from '~/components/common/NotificationDot'
 import { TabContextMenu } from '~/components/common/TabContextMenu'
+import { TabStatusBadge } from '~/components/common/TabStatusBadge'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
+import { TerminalProgressBar } from '~/components/common/TerminalProgressBar'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
@@ -32,7 +34,7 @@ import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import { shortcutHint } from '~/lib/shortcuts/display'
-import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalDisplayStatus, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
+import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalDisplayStatus, terminalProgressVisible } from '~/stores/tab.helpers'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
@@ -480,15 +482,14 @@ export const TabBar: Component<TabBarProps> = (props) => {
         >
           <TabRenameInput tab={tab} />
         </Show>
+        <Show when={tab().tabStatus}>
+          {status => <TabStatusBadge status={status()} />}
+        </Show>
         <Show when={tab().hasNotification}>
           <NotificationDot testId="tab-notification" />
         </Show>
         <Show when={terminalProgressVisible(tab())}>
-          <span
-            class={styles.tabProgress}
-            data-testid="tab-progress"
-            {...terminalProgressBarProps(tab())}
-          />
+          <TerminalProgressBar tab={tab()} />
         </Show>
         <Show when={canCloseTab(props.archived)}>
           <IconButton

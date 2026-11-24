@@ -24,6 +24,7 @@ const (
 	qoderSubtypeCommandsChanged        = "commands_changed"
 	qoderSubtypeControlRequestProgress = "control_request_progress"
 	qoderSubtypeTaskProgress           = "task_progress"
+	qoderSubtypeMCPServerUpdated       = "query.mcp.server_updated"
 )
 
 // These task lifecycle subtypes update the background-task registry and carry
@@ -74,6 +75,7 @@ type MessageEnvelope struct {
 // UserInputMessage is written to stdin with --input-format stream-json.
 type UserInputMessage struct {
 	Type    string           `json:"type"`
+	UUID    string           `json:"uuid,omitempty"`
 	Message UserInputContent `json:"message"`
 }
 
@@ -115,6 +117,7 @@ type controlResponseEnvelope struct {
 
 // controlRequestEnvelope is a control_request in either direction.
 type controlRequestEnvelope struct {
+	SessionID string          `json:"session_id"`
 	RequestID string          `json:"request_id"`
 	Request   json.RawMessage `json:"request"`
 }
@@ -130,11 +133,14 @@ type systemInitMessage struct {
 type assistantMessage struct {
 	ParentToolUseID *string `json:"parent_tool_use_id"`
 	SessionID       string  `json:"session_id"`
+	Message         struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
 }
 
 // canUseToolAnswer is the object the Qoder control_response carries for a
-// can_use_tool decision. The browser sends the neutral behavior envelope; the
-// worker translates it here.
+// can_use_tool decision. AnswerControlRequest builds the neutral behavior
+// envelope; the worker translates it here.
 //
 // Qoder accepts an outcome or a behavior with its associated fields.
 // The native outcomes are:

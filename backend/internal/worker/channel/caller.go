@@ -1,6 +1,9 @@
 package channel
 
 import (
+	"errors"
+	"fmt"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -30,6 +33,69 @@ type Caller struct {
 	// Scopes is what the credential that opened this channel was granted, as
 	// the Hub announced it at the handshake.
 	Scopes authscope.ScopeSet
+	// SourceTabID is the tab whose process made the call: the agent or
+	// terminal tab that the local IPC control token was minted for, or the tab
+	// that a sibling Worker states for a call that it relays from one of its
+	// own tabs (see RelayWorkerID). The Worker reads it from its own token
+	// store or from that sibling, never from the client, so a caller cannot
+	// forge it, and a handler can stamp it as provenance. It is empty for a
+	// call that the browser or the CLI outside a tab makes over an E2EE
+	// channel, and for a quake terminal, which has no tab.
+	SourceTabID string
+	// SourceAgent is the agent of SourceTabID when a sibling Worker relayed
+	// the call and stated it, and the zero value otherwise. This Worker holds
+	// no row for an agent of another Worker, so it reads the agent from here;
+	// for a local call it reads its own row.
+	SourceAgent SourceAgent
+	// RelayWorkerID is the sibling Worker that opened this channel to relay
+	// the calls of the processes in its tabs, as the Hub announced it at the
+	// handshake (ChannelOpenRequest.relay_worker_id). It is empty for every
+	// other caller. Only such a caller may state a CallSource (see
+	// withSource).
+	RelayWorkerID string
+}
+
+// SourceAgent is the agent that made a relayed call: its provider and its
+// title when the call was made. The zero value states no agent.
+type SourceAgent struct {
+	Provider leapmuxv1.AgentProvider
+	Title    string
+}
+
+// IsZero reports whether a states no agent.
+func (a SourceAgent) IsZero() bool {
+	return a.Provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED
+}
+
+// withSource returns the caller of a request that states source, the tab of
+// a sibling Worker that made a relayed call. A request with no source keeps
+// the caller as it is.
+//
+// Only a caller with a RelayWorkerID may state a source, because the Hub
+// vouches for that relay alone. The browser, the CLI and a local process are
+// refused: a source that one of them could state would claim a tab, and so
+// an agent, of the caller's choosing.
+func (c Caller) withSource(source *leapmuxv1.CallSource) (Caller, error) {
+	if source == nil {
+		return c, nil
+	}
+	if c.RelayWorkerID == "" {
+		return Caller{}, errors.New("only a sibling Worker that relays a call may state its source")
+	}
+	if source.GetTabId() == "" {
+		return Caller{}, errors.New("the call source states no tab")
+	}
+	c.SourceTabID = source.GetTabId()
+	c.SourceAgent = SourceAgent{}
+	if agent := source.GetAgent(); agent != nil {
+		provider := agent.GetProvider()
+		if _, known := leapmuxv1.AgentProvider_name[int32(provider)]; !known ||
+			provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+			return Caller{}, fmt.Errorf("the agent of the call source states no known provider: %d", provider)
+		}
+		c.SourceAgent = SourceAgent{Provider: provider, Title: agent.GetTitle()}
+	}
+	return c, nil
 }
 
 // NewCaller pairs an identity with a grant.

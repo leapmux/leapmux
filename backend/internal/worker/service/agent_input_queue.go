@@ -2,12 +2,11 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -65,27 +64,60 @@ func parseQueueSchedule(value string) (*time.Time, error) {
 	return &at, nil
 }
 
+// queueAttachments copies the attachments of a request into the queue's form.
+//
+// Each attachment takes the media type that the classifier gives it, which is
+// the type that the provider receives at dispatch (NormalizeAttachments reads
+// the same classifier): a stated type in lower case, and for a type that is
+// absent or the generic application/octet-stream, the one that the classifier
+// infers from the name and the content. The queue's snapshot and the
+// transcript row then state that type too, so no client sees a type that the
+// provider does not read. The browser infers the type before it sends, and
+// the CLI leaves it to the Worker, so both clients store one answer. The
+// classification is a function of the request, so a repeated request still
+// matches the input that it repeats.
 func queueAttachments(attachments []*leapmuxv1.Attachment) []inputqueue.Attachment {
 	result := make([]inputqueue.Attachment, len(attachments))
-	for i := range attachments {
+	for i, attachment := range attachments {
+		mimeType := attachment.GetMimeType()
+		if classified := agent.ClassifyAttachments([]*leapmuxv1.Attachment{attachment}); len(classified) == 1 {
+			mimeType = classified[0].MIMEType
+		}
 		result[i] = inputqueue.Attachment{
-			Filename: attachments[i].GetFilename(),
-			MimeType: attachments[i].GetMimeType(),
-			Data:     append([]byte(nil), attachments[i].GetData()...),
+			Filename: attachment.GetFilename(),
+			MimeType: mimeType,
+			Data:     append([]byte(nil), attachment.GetData()...),
 		}
 	}
 	return result
 }
 
-// droppedInputID is the queue item id of the input that a provider dropped. It
-// derives from the drop, so a repeat of one drop gives the same item and the
-// queue adds nothing. The id also becomes the transcript message id, which is
-// unique across the Worker, so the agent id is part of the hash. The length
-// prefix keeps each pair of ids apart: no separator is safe, because a drop id
-// is the provider's own text.
-func droppedInputID(agentID, dropID string) string {
-	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s%s", len(agentID), agentID, dropID))
-	return "dropped-" + hex.EncodeToString(sum[:16])
+// refuseUnreadableAttachments applies the attachment policy of the agent's
+// provider to the attachments of a client's enqueue or edit. A file that the
+// provider cannot read then fails the request that sent it, and the refusal
+// states the file. The dispatch applies the same policy, through the same
+// NormalizeAttachments, but a refusal there fails the input in the queue, and
+// a failed first input holds every input behind it. The browser checks the
+// provider's capabilities before it sends, and the CLI cannot, because it
+// holds no provider code.
+//
+// A missing agent passes, because the queue refuses the request for it with
+// its own error.
+func (svc *Service) refuseUnreadableAttachments(agentID string, attachments []*leapmuxv1.Attachment) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, attachments); err != nil {
+		return fmt.Errorf("%w: %w", inputqueue.ErrInvalidInput, err)
+	}
+	return nil
 }
 
 func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attachment {
@@ -169,8 +201,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 	}
 
 	if dbAgent.ParentAgentID.Valid {
-		if item.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE &&
-			item.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
+		if !childInputKind(item.Kind) {
 			return inputqueue.DispatchResult{}, fmt.Errorf("subagent accepts only messages")
 		}
 		row, err := svc.queueChildRouteRow(item.AgentID)
@@ -180,14 +211,16 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if !svc.Agents.AgentAlive(row.OwnerAgentID) {
 			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
-		result, err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, agent.ChildInput{Content: text, Attachments: attachments, Ready: svc.childInputReady(item.AgentID)})
+		result, err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, agent.ChildInput{InputID: item.ID, Content: text, Attachments: attachments, Ready: svc.childInputReady(item.AgentID)})
 		if err != nil {
 			if errors.Is(err, agent.ErrChildOperationUnsupported) {
 				return inputqueue.DispatchResult{}, inputqueue.ErrSteeringUnsupported
 			}
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: result.StartsTurn, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
+		return inputqueue.DispatchResult{
+			StartsTurn: result.StartsTurn, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines, NativeReceipt: result.NativeReceipt,
+		}, nil
 	}
 
 	ensureRunning := func() error {
@@ -251,7 +284,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 				return inputqueue.DispatchResult{}, err
 			}
 		}
-		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
+		if _, err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: svc.Output.snapshotPassthroughSpanLines(item.AgentID)}, nil
@@ -259,12 +292,14 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
+		receipt, err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments)
+		if err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{
 			StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines,
 			SupplementalContent: resolvedInput.supplementalContent,
+			NativeReceipt:       receipt,
 		}, nil
 	}
 }
@@ -351,23 +386,26 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	if err != nil {
 		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 	}
-	text := resolvedInput.text
 	attachments, err := a.svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, providerAttachments(item.Attachments))
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
+	// The request states the item, so a provider that drops the steer can hand
+	// it back (see Service.requeueDroppedInput).
+	request := agent.SteerRequest{InputID: item.ID, AttemptID: item.SteerAttemptID, Content: resolvedInput.text, Attachments: attachments}
+	var receipt agent.NativeInputReceipt
 	if dbAgent.ParentAgentID.Valid {
 		row, rowErr := a.svc.queueChildRouteRow(item.AgentID)
 		if rowErr != nil {
 			return inputqueue.DispatchResult{}, rowErr
 		}
-		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
+		receipt, err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, request)
 	} else if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 		// A validated answer steers into an existing turn, so it must keep
 		// reaching the process whose question asked it, even while new prompts
 		// wait for recovery approval. An
 		// idle question ends its steer and returns through Dispatch readiness.
-		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, attachments)
+		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, request)
 	} else {
 		// A new prompt steered at the root is subject to the same readiness as
 		// a dispatched one: a process that requires recovery holds the prompt
@@ -375,12 +413,13 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		if err := a.svc.ensureAgentReadyForInput(item.AgentID); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueSteerError(err)
 		}
-		err = a.svc.Agents.SteerInput(item.AgentID, text, attachments)
+		receipt, err = a.svc.Agents.SteerInput(item.AgentID, request)
 	}
 	return inputqueue.DispatchResult{
 		StartsTurn:          true,
 		SpanLines:           a.svc.Output.snapshotPassthroughSpanLines(item.AgentID),
 		SupplementalContent: resolvedInput.supplementalContent,
+		NativeReceipt:       receipt,
 	}, classifyQueueSteerError(err)
 }
 
@@ -399,18 +438,36 @@ func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.Agen
 	if !dbAgent.ParentAgentID.Valid {
 		return true
 	}
-	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE {
+	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE || kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE {
 		return a.svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsMessages
 	}
 	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
+}
+
+// childInputKind selects the kinds that a child agent's route delivers: a
+// message, from the user or from another agent, and control feedback.
+func childInputKind(kind leapmuxv1.AgentInputKind) bool {
+	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE ||
+		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE ||
+		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
 }
 
 func (a *agentInputQueueAdapter) PrepareSteer(agentID string) {
 	a.svc.Agents.PrepareSteer(agentID)
 }
 
-func (a *agentInputQueueAdapter) SteerPolicy(agentID string) agent.SteerPolicy {
-	return a.svc.Agents.SteerPolicy(agentID)
+func (a *agentInputQueueAdapter) SteerPolicy(agentID string) (agent.SteerPolicy, error) {
+	if a.svc.Agents.HasAgent(agentID) {
+		return a.svc.Agents.SteerPolicy(agentID), nil
+	}
+	row, err := a.svc.queueChildRouteRow(agentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return agent.SteerPolicy{}, nil
+	}
+	if err != nil {
+		return agent.SteerPolicy{}, err
+	}
+	return a.svc.Agents.ChildSteerPolicy(row.OwnerAgentID), nil
 }
 
 func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
@@ -501,12 +558,17 @@ func (svc *Service) queueHeadDispatch(dbAgent *db.Agent, running bool) leapmuxv1
 }
 
 func (a *agentInputQueueAdapter) QueueChanged(snapshot inputqueue.Snapshot) {
-	a.svc.Watchers.BroadcastAgentEvent(snapshot.AgentID, &leapmuxv1.AgentEvent{
+	a.svc.Watchers.EnqueueAgentEvent(snapshot.AgentID, &leapmuxv1.AgentEvent{
 		AgentId: snapshot.AgentID,
 		Event: &leapmuxv1.AgentEvent_InputQueueChanged{
 			InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: a.svc.queueSnapshotProto(snapshot)},
 		},
 	})
+	a.svc.Watchers.EnqueueAgentEvent(snapshot.AgentID, &leapmuxv1.AgentEvent{
+		AgentId: snapshot.AgentID,
+		Event:   &leapmuxv1.AgentEvent_InputQueueRevision{InputQueueRevision: snapshot.Revision},
+	})
+	a.svc.Watchers.DrainAgentEvents(snapshot.AgentID)
 }
 
 func (a *agentInputQueueAdapter) InputAccepted(message inputqueue.AcceptedTranscript) {
@@ -524,7 +586,7 @@ func acceptedTranscriptProto(message inputqueue.AcceptedTranscript) *leapmuxv1.A
 		Id: message.ID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content: message.Content, ContentCompression: message.ContentCompression,
 		SupplementalContent: message.SupplementalContent, SupplementalContentCompression: message.SupplementalContentCompression,
-		Seq: message.Seq, AgentProvider: message.AgentProvider,
+		Seq: message.Seq, AgentProvider: message.AgentProvider, AgentSessionId: message.AgentSessionID,
 		MarkType: message.MarkType, SpanLines: message.SpanLines,
 		CreatedAt: message.CreatedAt,
 	}
@@ -557,10 +619,10 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 			}
 		}
 		result.Items[i] = &leapmuxv1.QueuedAgentInput{
-			Id: item.ID, Kind: item.Kind, Text: queuedInputTextPreview(item.TextPreview),
+			Id: item.ID, Kind: item.Kind, Sender: item.Sender.Proto(), Text: queuedInputTextPreview(item.TextPreview),
 			Attachments: attachments, Order: item.Position, State: item.State,
 			Error: item.Error, EditOwnerClientId: item.EditOwner, Version: item.Version,
-			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt,
+			CanSteer: item.CanSteer, CanPreempt: item.CanPreempt, EditRefusal: item.EditRefusal,
 			ScheduledAt: queueScheduleProto(item.ScheduledAt), ReorderSegment: item.ReorderSegment,
 			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		}
@@ -571,7 +633,7 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerAgentInputRecoveryHandlers(d, svc)
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, dispatchPlain,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
 			if r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 				sendQueueError(sender, fmt.Errorf("%w: the worker creates question-answer inputs", inputqueue.ErrInvalidInput))
 				return
@@ -581,16 +643,34 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendQueueError(sender, err)
 				return
 			}
-			snapshot, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
-				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Text: r.GetText(),
-				Attachments:      queueAttachments(r.GetAttachments()),
-				ReclassifyOnEdit: r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
-				ScheduledAt:      scheduledAt,
-			})
+			// The caller's tab, never the request, says which agent sent the
+			// input. The queue turns a user message from an agent into an
+			// agent message (see inputqueue.Store.admitNewItem).
+			from, err := svc.agentMessageSender(caller)
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
+			if sendQueueError(sender, svc.refuseUnreadableAttachments(r.GetAgentId(), r.GetAttachments())) {
+				return
+			}
+			snapshot, receipt, err := svc.InputQueue.EnqueueWithReceipt(bgCtx(), inputqueue.NewItem{
+				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Sender: from, Text: r.GetText(),
+				Attachments:           queueAttachments(r.GetAttachments()),
+				ReclassifyOnEdit:      r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+				ScheduledAt:           scheduledAt,
+				RequireFutureSchedule: r.GetRequireFutureSchedule(),
+				RequireExisting:       r.GetRequireExisting(),
+			})
+			if errors.Is(err, inputqueue.ErrInputNotRecorded) {
+				sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{ExistingInputMissing: true})
+				return
+			}
+			if sendQueueError(sender, err) {
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{
+				Snapshot: svc.queueSnapshotProto(snapshot), AcceptedSeq: receipt.AcceptedSeq,
+			})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, dispatchPlain,
@@ -599,7 +679,66 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.ListAgentInputQueueResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
+			response := &leapmuxv1.ListAgentInputQueueResponse{Snapshot: svc.queueSnapshotProto(snapshot)}
+			if inputID := r.GetReplyInputId(); inputID != "" {
+				state, err := svc.Queries.GetInputReplyState(ctx, db.GetInputReplyStateParams{
+					AgentID: r.GetAgentId(), InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+					InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
+				})
+				switch {
+				case err == nil:
+					outcome := leapmuxv1.AgentInputTurnOutcome(state.Outcome)
+					canonical, err := svc.Queries.GetCanonicalInputReplyOutcome(ctx, db.GetCanonicalInputReplyOutcomeParams{
+						AgentID: r.GetAgentId(), InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+						InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
+					})
+					switch {
+					case err == nil:
+						outcome = leapmuxv1.AgentInputTurnOutcome(canonical.Outcome)
+						if canonical.MissingItems {
+							outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
+						}
+					case !errors.Is(err, sql.ErrNoRows):
+						sendInternalError(sender, "failed to read the canonical input reply")
+						return
+					}
+					response.InputReply = &leapmuxv1.AgentInputTurnReply{
+						AcceptedSeq: state.AcceptedSeq, Outcome: outcome, WaitingForUser: outcome == 0 && svc.inputWaitingForUser(r.GetAgentId(), state),
+					}
+				case !errors.Is(err, sql.ErrNoRows):
+					sendQueueError(sender, err)
+					return
+				}
+			}
+			sendProtoResponse(sender, response)
+		})
+
+	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceGetQueuedAgentInputProcedure, dispatchPlain,
+		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.GetQueuedAgentInputRequest, sender channel.ResponseWriter) {
+			if strings.TrimSpace(r.GetInputId()) == "" {
+				sendInvalidArgument(sender, "input_id is required")
+				return
+			}
+			snapshot, fullText, err := svc.InputQueue.GetItem(ctx, r.GetAgentId(), r.GetInputId())
+			if sendQueueError(sender, err) {
+				return
+			}
+			protoSnap := svc.queueSnapshotProto(snapshot)
+			var matched *leapmuxv1.QueuedAgentInput
+			for _, it := range protoSnap.GetItems() {
+				if it.GetId() == r.GetInputId() {
+					matched = it
+					break
+				}
+			}
+			if matched == nil {
+				sendQueueError(sender, inputqueue.ErrNotFound)
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.GetQueuedAgentInputResponse{
+				Item: matched,
+				Text: fullText,
+			})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceBeginQueuedAgentInputEditProcedure, dispatchPlain,
@@ -623,6 +762,9 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 					return
 				}
 				schedule = inputqueue.ReplaceSchedule(scheduledAt)
+			}
+			if sendQueueError(sender, svc.refuseUnreadableAttachments(r.GetAgentId(), r.GetAttachments())) {
+				return
 			}
 			snapshot, err := svc.InputQueue.Update(bgCtx(), inputqueue.UpdateRequest{
 				AgentID:         r.GetAgentId(),
@@ -729,7 +871,8 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported),
 		errors.Is(err, inputqueue.ErrScheduled),
 		errors.Is(err, inputqueue.ErrPreemptionUnsupported), errors.Is(err, inputqueue.ErrPreemptionState),
-		errors.Is(err, inputqueue.ErrScheduleOrder), errors.Is(err, inputqueue.ErrManagerStopped):
+		errors.Is(err, inputqueue.ErrScheduleOrder), errors.Is(err, inputqueue.ErrManagerStopped),
+		errors.Is(err, inputqueue.ErrAgentMessageEdit):
 		sendFailedPrecondition(sender, err.Error())
 	case errors.Is(err, inputqueue.ErrInvalidInput), errors.Is(err, inputqueue.ErrQueueFull),
 		errors.Is(err, inputqueue.ErrItemTooLarge), errors.Is(err, inputqueue.ErrQueueAttachmentsLarge):

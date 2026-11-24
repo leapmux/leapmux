@@ -34,7 +34,7 @@ func (c *Config) UsableRegistration() (*State, error) {
 // keypair. It never reloads or writes saved credentials.
 func (s *State) UsableKeypair() (*noise.CompositeKeypair, error) {
 	if !s.Registered() {
-		return nil, fmt.Errorf("worker is unregistered: run `leapmux worker register` first")
+		return nil, fmt.Errorf("worker is unregistered: run `leapmux daemon worker register` first")
 	}
 	if !s.HasKeypair() {
 		return nil, fmt.Errorf("%w: the keypair is missing", ErrUnusableRegisteredKeypair)

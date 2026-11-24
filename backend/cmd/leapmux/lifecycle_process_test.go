@@ -26,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
@@ -95,7 +96,7 @@ func TestApplicationOwnershipConflictPreservesStoredDataInBothOrders(t *testing.
 							require.NoError(t, os.MkdirAll(firstRoot, 0o700))
 							require.NoError(t, atomicfile.WriteFileDurable(filepath.Join(firstRoot, "state.json"), state, 0o600))
 						}
-						arguments := []string{firstMode, "run", "--data-dir", firstRoot}
+						arguments := []string{"daemon", firstMode, "run", "--data-dir", firstRoot}
 						if firstMode != "worker" {
 							arguments = append(arguments, "--listen", locallistentest.UniqueListenURL(t, "lmx-conflict"))
 						}
@@ -197,7 +198,7 @@ func TestHelperProcessLifecycleCLI(t *testing.T) {
 	}
 	for index, arg := range os.Args {
 		if arg == "--" && index+2 < len(os.Args) {
-			os.Exit(runCLI(os.Args[index+1:], os.Stdout, os.Stderr, cliRunners{runMode: runModeCommand}))
+			os.Exit(runCLI(context.Background(), os.Args[index+1:], os.Stdin, os.Stdout, os.Stderr, defaultCLIRunners()))
 		}
 	}
 	os.Exit(2)
@@ -214,7 +215,7 @@ func invokeLifecycleCLI(t *testing.T, home string, args ...string) lifecycleCLIR
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, os.Args[0], append([]string{
-		"-test.run=^TestHelperProcessLifecycleCLI$", "--",
+		"-test.run=^TestHelperProcessLifecycleCLI$", "--", "daemon",
 	}, args...)...)
 	command.Env = lifecycleCLIEnvironment(home)
 	var stderr bytes.Buffer
@@ -262,7 +263,7 @@ func TestConcurrentForegroundProcessesHaveOneOwner(t *testing.T) {
 	for range 2 {
 		child := &contender{done: make(chan struct{})}
 		child.command = exec.CommandContext(ctx, os.Args[0],
-			"-test.run=^TestHelperProcessLifecycleCLI$", "--", "hub", "run", "--data-dir", root, "--listen", listen)
+			"-test.run=^TestHelperProcessLifecycleCLI$", "--", "daemon", "hub", "run", "--data-dir", root, "--listen", listen)
 		child.command.Env = append(lifecycleCLIEnvironment(t.TempDir()), lifecycleStartGateEnv+"="+gate.Addr().String())
 		child.command.Stdout, child.command.Stderr = &child.output, &child.output
 		require.NoError(t, child.command.Start())
@@ -337,7 +338,7 @@ func TestDevForegroundStatusAdvancesAfterAdministratorSetup(t *testing.T) {
 	dataDir := t.TempDir()
 	listen := locallistentest.UniqueListenURL(t, "lmx-dev-setup")
 	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperProcessLifecycleCLI$", "--",
-		"dev", "run", "--data-dir", dataDir, "--listen", listen)
+		"daemon", "dev", "run", "--data-dir", dataDir, "--listen", listen)
 	command.Env = lifecycleCLIEnvironment(t.TempDir())
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
@@ -391,13 +392,15 @@ func TestDevForegroundStatusAdvancesAfterAdministratorSetup(t *testing.T) {
 
 }
 
+// --version belongs to the root alone: `leapmux <mode> run --version` is a
+// usage error, and it starts no runtime.
 func TestForegroundVersionDoesNotStartRuntime(t *testing.T) {
 	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
 		t.Run(mode, func(t *testing.T) {
 			home := t.TempDir()
 			result := invokeLifecycleCLI(t, home, mode, "run", "--version")
-			assert.Equal(t, 0, result.exitCode, result.stderr)
-			assert.NotEmpty(t, result.stdout)
+			assert.Equal(t, cli.ExitUsage, result.exitCode, result.stderr)
+			assert.Contains(t, result.stderr, "unknown flag: --version")
 			assert.NotContains(t, result.stderr, "panic:")
 			assert.NoDirExists(t, filepath.Join(home, ".config", "leapmux", mode, ".lifecycle"))
 		})
@@ -411,12 +414,12 @@ func TestConfigurationMetadataAndInvalidFlagsDoNotMutate(t *testing.T) {
 				t.Run(mode+"/"+verb+"/"+argument, func(t *testing.T) {
 					root := filepath.Join(t.TempDir(), "absent")
 					result := invokeLifecycleCLI(t, t.TempDir(), mode, verb, argument, "--data-dir", root)
-					if argument == "--help" || argument == "--version" {
-						assert.Equal(t, 0, result.exitCode, result.stdout+result.stderr)
+					if argument == "--help" {
+						assert.Equal(t, cli.ExitOK, result.exitCode, result.stdout+result.stderr)
 						assert.NotEmpty(t, result.stdout+result.stderr)
 						assert.NotContains(t, result.stdout, "No startup configuration")
 					} else {
-						assert.Equal(t, 1, result.exitCode, result.stdout+result.stderr)
+						assert.Equal(t, cli.ExitUsage, result.exitCode, result.stdout+result.stderr)
 					}
 					assert.NoDirExists(t, root)
 				})
@@ -434,7 +437,7 @@ func TestWorkerRunRefusesRegistrationFlags(t *testing.T) {
 			require.NoError(t, os.Mkdir(filepath.Join(cfg.DataDir, "worker.db"), 0o700))
 			result := invokeLifecycleCLI(t, t.TempDir(), "worker", "run", "--data-dir", cfg.DataDir, flag, "registration-only")
 			require.Equal(t, 1, result.exitCode)
-			assert.Contains(t, result.stderr, "belongs to `leapmux worker register`")
+			assert.Contains(t, result.stderr, "belongs to `leapmux daemon worker register`")
 			assert.NoFileExists(t, lifecycle.PathsOf(mustCanonicalDir(t, cfg.DataDir)).RuntimeRecord)
 		})
 	}
@@ -442,9 +445,8 @@ func TestWorkerRunRefusesRegistrationFlags(t *testing.T) {
 
 func TestStoppedStatusPrintsJSON(t *testing.T) {
 	result := invokeLifecycleCLI(t, t.TempDir(), "worker", "status", "--json", "--data-dir", t.TempDir())
-	assert.Equal(t, 3, result.exitCode, result.stderr)
-	var status lifecycle.Status
-	require.NoError(t, json.Unmarshal([]byte(result.stdout), &status), result.stdout)
+	assert.Equal(t, cli.ExitStopped, result.exitCode, result.stderr)
+	status := statusFromJSON[lifecycle.Status](t, result.stdout)
 	assert.Equal(t, new("worker"), status.Mode)
 	assert.Equal(t, lifecycle.ProcessStopped, status.Process.State)
 	assert.Equal(t, lifecycle.RegistrationUnregistered, status.Registration.State)
@@ -461,8 +463,7 @@ func TestCombinedCLIStatusPreservesLiveRegistration(t *testing.T) {
 			runtime.SetReadiness(lifecycle.ReadinessReady)
 			result := invokeLifecycleCLI(t, t.TempDir(), mode.String(), "status", "--data-dir", runtime.Record().DataDir, "--json")
 			require.Equal(t, 0, result.exitCode, result.stdout+result.stderr)
-			var status lifecycle.Status
-			require.NoError(t, json.Unmarshal([]byte(result.stdout), &status))
+			status := statusFromJSON[lifecycle.Status](t, result.stdout)
 			assert.Equal(t, lifecycle.RegistrationRegistered, status.Registration.State)
 			assert.Equal(t, new("local-worker"), status.Registration.WorkerID)
 			assert.Equal(t, lifecycle.ConnectionConnected, status.Connection.State)
@@ -472,9 +473,8 @@ func TestCombinedCLIStatusPreservesLiveRegistration(t *testing.T) {
 
 func TestStoppedStatusUsesNullForUnavailableScalars(t *testing.T) {
 	result := invokeLifecycleCLI(t, t.TempDir(), "worker", "status", "--json", "--data-dir", t.TempDir())
-	require.Equal(t, 3, result.exitCode, result.stderr)
-	var status map[string]any
-	require.NoError(t, json.Unmarshal([]byte(result.stdout), &status))
+	require.Equal(t, cli.ExitStopped, result.exitCode, result.stderr)
+	status := statusFromJSON[map[string]any](t, result.stdout)
 	for _, key := range []string{"execution", "readiness", "startup"} {
 		require.Contains(t, status, key)
 		assert.Nil(t, status[key], key)
@@ -512,8 +512,7 @@ func TestForegroundFailureAppearsInAttemptLogAndStatus(t *testing.T) {
 	assert.Contains(t, string(log), "open worker db")
 	statusResult := invokeLifecycleCLI(t, home, "worker", "status", "--json", "--data-dir", cfg.DataDir)
 	require.Equal(t, 1, statusResult.exitCode, statusResult.stdout+statusResult.stderr)
-	var status lifecycle.Status
-	require.NoError(t, json.Unmarshal([]byte(statusResult.stdout), &status))
+	status := statusFromJSON[lifecycle.Status](t, statusResult.stdout)
 	assert.Equal(t, lifecycle.ProcessFailed, status.Process.State)
 	var found bool
 	for _, diagnostic := range status.Diagnostics {
@@ -633,7 +632,7 @@ func TestStopControlsForegroundProcess(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, atomicfile.WriteFileDurable(filepath.Join(dataDir, "state.json"), stateBytes, 0o600))
 
-	cmd := exec.Command(os.Args[0], "worker", "run", "--data-dir", dataDir, "--log-level", "info")
+	cmd := exec.Command(os.Args[0], "daemon", "worker", "run", "--data-dir", dataDir, "--log-level", "info")
 	cmd.Env = append(os.Environ(), runMainEnv+"=1")
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output

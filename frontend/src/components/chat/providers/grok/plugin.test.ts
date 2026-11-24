@@ -70,37 +70,6 @@ describe('grok provider', () => {
     })
   })
 
-  // Grok's reply carries the chosen options and the reader's notes for the same
-  // question, so the dialog keeps both.
-  it('keeps a typed note beside a chosen option', () => {
-    expect(plugin.controls?.preservesSelectionNotes).toBe(true)
-  })
-
-  it('reads its own MCP elicitation method', () => {
-    expect(plugin.controls?.elicitation?.({
-      method: '_x.ai/mcp/elicit',
-      params: {
-        serverName: 'docs',
-        message: 'Pick one',
-        mode: 'form',
-        requestedSchema: { type: 'object' },
-      },
-    })).toEqual({
-      mode: 'form',
-      message: 'Pick one',
-      server: 'docs',
-      schema: { type: 'object' },
-      url: '',
-      title: '',
-      description: '',
-    })
-  })
-
-  it('recognizes its question dialog', () => {
-    expect(plugin.controls?.askUserQuestion?.isRequest({ method: '_x.ai/ask_user_question' })).toBe(true)
-    expect(plugin.controls?.askUserQuestion?.isRequest({ method: 'session/request_permission' })).toBe(false)
-  })
-
   describe('the end of a turn Grok started', () => {
     it('draws a divider from the stop reason of turn_completed', () => {
       const parent = turnCompleted({ stop_reason: 'end_turn', prompt_id: 'p' })

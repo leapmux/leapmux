@@ -26,7 +26,7 @@ func TestForegroundConsumesPreparedConfigurationSnapshot(t *testing.T) {
 			}
 			path := filepath.Join(t.TempDir(), "configuration.yaml")
 			require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf("listen:\n  - %q\nlog_level: error\n", locallistentest.UniqueListenURL(t, "snapshot"))), 0o600))
-			configuration, err := loadLifecycleConfiguration(mode, "run", []string{"--config", path, "--data-dir", root}, nil, nil)
+			configuration, _, err := loadLifecycleCommand(mode, "run", []string{"--config", path, "--data-dir", root})
 			require.NoError(t, err)
 			replacement := []byte("[malformed after preparation")
 			require.NoError(t, os.WriteFile(path, replacement, 0o600))
@@ -57,14 +57,14 @@ func TestForegroundConsumesPreparedConfigurationSnapshot(t *testing.T) {
 
 func preparedWorkerConfig(t *testing.T, directory string) *workerconfig.Config {
 	t.Helper()
-	cfg, _, err := workerconfig.Load([]string{"--data-dir", directory})
+	cfg, err := workerconfig.Load([]string{"--data-dir", directory})
 	require.NoError(t, err)
 	return cfg
 }
 
 func preparedHubConfig(t *testing.T, args []string) *hubconfig.Config {
 	t.Helper()
-	cfg, _, err := hubconfig.Load(args)
+	cfg, err := hubconfig.Load(args)
 	require.NoError(t, err)
 	return cfg
 }
@@ -73,7 +73,7 @@ func runWorkerCommandForTest(t *testing.T, args []string) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	return runModeRunWithInvocation("worker", runInvocation{Context: ctx})(cmdCtx{}, args)
+	return runForeground("worker", runInvocation{Context: ctx}, args...)
 }
 
 func TestPreparedConfigurationPinsCanonicalDirectoryAfterAliasRetarget(t *testing.T) {
@@ -95,7 +95,7 @@ func TestPreparedConfigurationPinsCanonicalDirectoryAfterAliasRetarget(t *testin
 			if mode == "hub" {
 				args = append(args, "--listen", locallistentest.UniqueListenURL(t, "alias"))
 			}
-			configuration, err := loadLifecycleConfiguration(mode, "run", args, nil, nil)
+			configuration, _, err := loadLifecycleCommand(mode, "run", args)
 			require.NoError(t, err)
 			require.NoError(t, os.Remove(alias))
 			require.NoError(t, os.Symlink(second, alias))

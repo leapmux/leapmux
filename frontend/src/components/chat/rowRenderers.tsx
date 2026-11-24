@@ -123,6 +123,7 @@ export function renderRowContent(
         <UserContentMessage
           text={row.text}
           attachments={row.attachments}
+          sender={row.sender}
           {...(context !== undefined
             ? { context }
             : {})}

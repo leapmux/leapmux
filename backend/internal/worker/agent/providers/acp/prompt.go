@@ -10,8 +10,8 @@ import (
 	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -21,19 +21,26 @@ func (b *Base) SendInput(content string, attachments []*leapmuxv1.Attachment) er
 	return b.SendPreparedPrompt(content, attachments, nil)
 }
 
+var _ agent.InputReceiptSender = (*Base)(nil)
+
+func (b *Base) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return b.sendPreparedPromptForSession(nil, content, attachments, nil, id.Generate())
+}
+
 // SendPreparedPrompt keeps preparation and the prompt write in one session.
 func (b *Base) SendPreparedPrompt(content string, attachments []*leapmuxv1.Attachment, prepare func(string) error) error {
-	return b.sendPreparedPromptForSession(nil, content, attachments, prepare)
+	_, err := b.sendPreparedPromptForSession(nil, content, attachments, prepare, "")
+	return err
 }
 
 // The response wait runs separately and does not hold sessionMu.
-func (b *Base) sendPreparedPromptForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, prepare func(string) error) error {
+func (b *Base) sendPreparedPromptForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, prepare func(string) error, inputID string) (agent.NativeInputReceipt, error) {
 	if b.inputAdmissionClosed() {
-		return errors.New("agent is stopped")
+		return agent.NativeInputReceipt{}, errors.New("agent is stopped")
 	}
 	releaseOperation, operationErr := b.rootCallbacks.acquire()
 	if operationErr != nil {
-		return operationErr
+		return agent.NativeInputReceipt{}, operationErr
 	}
 	transferred := false
 	defer func() {
@@ -52,18 +59,22 @@ func (b *Base) sendPreparedPromptForSession(expected *string, content string, at
 	b.Mu.Unlock()
 	if err != nil {
 		b.turnMu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
+	}
+	var receipt agent.NativeInputReceipt
+	if inputID != "" {
+		receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: inputID, TurnID: inputID}
 	}
 	turn := b.takeUnownedOutputLocked()
 	b.preparePriorTextLocked(&turn)
-	target := b.openRootTranscriptLocked(sessionID, false, nil)
+	target := b.openRootTranscriptLocked(sessionID, false, nil, receipt)
 	b.rootTarget, b.promptTarget = target, target
 	b.turnMu.Unlock()
 	b.persistUnownedText(turn)
 	b.notePromptActive()
 	if err := target.prepare(); err != nil {
 		b.finishUnsentPrompt(sessionID)
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if b.hooks.PromptPrepared != nil {
 		b.hooks.PromptPrepared()
@@ -71,17 +82,16 @@ func (b *Base) sendPreparedPromptForSession(expected *string, content string, at
 	if prepare != nil {
 		if err := prepare(sessionID); err != nil {
 			b.finishUnsentPrompt(sessionID)
-			return err
+			return agent.NativeInputReceipt{}, err
 		}
 	}
 	err = b.sendOwnedPromptDetachedLocked(sessionID, target, content, attachments, releaseOperation)
 	if err != nil {
 		b.finishUnsentPrompt(sessionID)
+		return agent.NativeInputReceipt{}, err
 	}
-	if err == nil {
-		transferred = true
-	}
-	return err
+	transferred = true
+	return receipt, nil
 }
 
 // claimPromptLocked checks that a prompt can start in the current session, and
@@ -106,9 +116,9 @@ func (b *Base) claimPromptLocked(expected *string) (string, error) {
 
 func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, err error) {
 	b.turnMu.Lock()
-	target := b.promptTarget
+	target, request := b.promptTarget, b.rootPromptRequest
 	b.turnMu.Unlock()
-	b.finishOwnedPromptRequest(sessionID, target, response, err)
+	b.finishOwnedPromptRequest(sessionID, target, request, response, err)
 }
 
 func acpResponseStopReason(response json.RawMessage) string {
@@ -137,48 +147,41 @@ func (b *Base) isCancelledTurnEnd(frame json.RawMessage) bool {
 	return b.hooks.IsCancelledTurnEnd != nil && b.hooks.IsCancelledTurnEnd(frame)
 }
 
-func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, response json.RawMessage, err error) {
+func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, request *acpRootPromptRequest, response json.RawMessage, err error) {
 	// Flush registry closes queued by PromptEnded or incomplete-tool cleanup
 	// immediately after releasing sessionMu, because checkRegistryPublicationLocks
 	// defers flushes while sessionMu is held.
 	defer b.FlushRegistryObservations()
 	b.sessionMu.RLock()
 	defer b.sessionMu.RUnlock()
-	b.Mu.Lock()
-	current := b.sessionID == sessionID
-	b.Mu.Unlock()
-	if !current {
-		return
-	}
 	// The reader must finish accepting each tool before the callback detaches its state.
-	// Capture and archive recovery run after this lock releases.
+	// Capture and archive recovery run after these locks release.
 	b.sessionUpdates.mu.Lock()
 	b.turnMu.Lock()
-	b.Mu.Lock()
-	ownsPrompt := b.promptTarget == target && !b.promptOutputDrained
-	if !ownsPrompt {
-		b.Mu.Unlock()
+	if !b.ownsRootPromptEndLocked(sessionID, target, request) {
 		b.turnMu.Unlock()
 		b.sessionUpdates.mu.Unlock()
 		return
 	}
+	b.Mu.Lock()
 	stopped := b.StoppedLocked() || b.interruptRequested || b.isCancelledTurnEnd(response)
 	b.Mu.Unlock()
-	turn, _ := b.drainPromptTurnLocked(!stopped)
-	b.Mu.Lock()
-	b.captureRootSnapshotLocked(&turn, false)
-	b.Mu.Unlock()
+	turn := b.takeRootPromptLocked(!stopped)
 	b.turnMu.Unlock()
 	b.sessionUpdates.mu.Unlock()
 	var ending PromptEnding
 	if b.hooks.PromptEnded != nil {
 		ending = b.hooks.PromptEnded(err, stopped)
 	}
+	proof := proveACPInputReply(request, turn, response, err)
+	if proof.outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED {
+		stopped = true
+	}
 	switch {
 	case err == nil && response != nil:
 		textCompletion, incomplete := b.turnOutputCompletions(stopped)
 		b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agent.TranscriptServices, count int) {
-			b.persistPromptResponseTo(writer, response, count, sessionID, stopped)
+			b.persistPromptResponseTo(writer, proof.endRecord(response), count, sessionID, stopped)
 		})
 	case err == nil || stopped:
 		b.finishRootSnapshot(turn, agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted, RootTranscriptPromptEnded, nil)
@@ -188,6 +191,10 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 	default:
 		b.finishFailedRootSnapshot(turn, err, ending)
 	}
+	if proof.retirement != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+		b.retireInputReply(proof.receipt, proof.retirement)
+		b.retireSharedInputs(turn.endingAdmission, proof.retirement)
+	}
 	if stopped {
 		b.releaseAwaitedTerminals()
 	}
@@ -196,6 +203,15 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 
 // SendPromptDetached keeps validation and the write in the captured root session.
 func (b *Base) SendPromptDetached(sessionID, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
+	return b.SendPromptDetachedUsing(sessionID, content, attachments, func(params json.RawMessage) error {
+		return b.SendDetachedRequestObserved(MethodSessionPrompt, params, providerkit.DetachedRequestObservation{}, handle)
+	})
+}
+
+// SendPromptDetachedUsing prepares a root prompt for a caller-owned transport.
+// The sender receives the prepared parameters under the session lease. It
+// submits the prompt and returns before waiting for the turn to complete.
+func (b *Base) SendPromptDetachedUsing(sessionID, content string, attachments []*leapmuxv1.Attachment, send func(json.RawMessage) error) error {
 	if b.inputAdmissionClosed() {
 		return errors.New("agent is stopped")
 	}
@@ -211,13 +227,17 @@ func (b *Base) SendPromptDetached(sessionID, content string, attachments []*leap
 	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
-	return b.sendPromptDetachedLocked(sessionID, content, attachments, nil, handle)
-}
-
-func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments []*leapmuxv1.Attachment, target *acpTranscriptTarget, handle func(json.RawMessage, error)) error {
-	blocks, err := b.preparePromptBlocks(sessionID, content, attachments)
+	params, err := b.prepareDetachedPromptLocked(sessionID, content, attachments, nil)
 	if err != nil {
 		return err
+	}
+	return send(params)
+}
+
+func (b *Base) prepareDetachedPromptLocked(sessionID, content string, attachments []*leapmuxv1.Attachment, target *acpTranscriptTarget) (json.RawMessage, error) {
+	blocks, err := b.preparePromptBlocks(sessionID, content, attachments)
+	if err != nil {
+		return nil, err
 	}
 	fields := map[string]any{
 		"sessionId": sessionID,
@@ -228,7 +248,7 @@ func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments [
 	}
 	params, err := json.Marshal(fields)
 	if err != nil {
-		return fmt.Errorf("marshal ACP prompt params: %w", err)
+		return nil, fmt.Errorf("marshal ACP prompt params: %w", err)
 	}
 	if target != nil {
 		var sent struct {
@@ -236,28 +256,30 @@ func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments [
 			Prompt    json.RawMessage `json:"prompt"`
 		}
 		if err := json.Unmarshal(params, &sent); err != nil {
-			return err
+			return nil, err
 		}
 		if sent.SessionID != target.sessionID {
-			return errors.New("the prepared ACP prompt belongs to another session")
+			return nil, errors.New("the prepared ACP prompt belongs to another session")
 		}
 		trimmed := bytes.TrimSpace(sent.Prompt)
 		if len(trimmed) == 0 || trimmed[0] != '[' {
-			return errors.New("the prepared ACP prompt is not a block array")
+			return nil, errors.New("the prepared ACP prompt is not a block array")
 		}
-		var selected []json.RawMessage
-		if err := json.Unmarshal(trimmed, &selected); err != nil {
-			return err
-		}
-		// Unmarshal copies each raw value. The provider cannot mutate the packet.
-		if err := target.transcript.PrepareInput(selected); err != nil {
-			return err
+		if target.transcript != nil {
+			var selected []json.RawMessage
+			if err := json.Unmarshal(trimmed, &selected); err != nil {
+				return nil, err
+			}
+			// Unmarshal copies each raw value. The provider cannot mutate the packet.
+			if err := target.transcript.PrepareInput(selected); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := b.writeDeferredOptionsBeforePrompt(sessionID); err != nil {
-		return err
+		return nil, err
 	}
-	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+	return params, nil
 }
 
 // writeDeferredOptionsBeforePrompt runs under the prompt's exclusive session
@@ -293,6 +315,14 @@ func (b *Base) preparePromptBlocks(sessionID, content string, attachments []*lea
 // the answer when the turn ends. The provider's PromptParams hook does not
 // run: it states the settings of the main session.
 func (b *Base) SendChildPromptDetached(target ChildSessionTarget, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
+	return b.SendChildPromptDetachedUsing(target, content, attachments, func(params json.RawMessage) error {
+		return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+	})
+}
+
+// SendChildPromptDetachedUsing prepares the prompt under the captured child's
+// dispatch lease. The sender submits it without waiting for the turn to end.
+func (b *Base) SendChildPromptDetachedUsing(target ChildSessionTarget, content string, attachments []*leapmuxv1.Attachment, send func(json.RawMessage) error) error {
 	if !target.valid() || b.inputAdmissionClosed() {
 		return agent.ErrChildRouteNotReady
 	}
@@ -317,11 +347,12 @@ func (b *Base) SendChildPromptDetached(target ChildSessionTarget, content string
 	if err != nil {
 		return fmt.Errorf("marshal ACP prompt params: %w", err)
 	}
-	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+	return send(params)
 }
 
 func (a *Base) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendPreparedPromptForSession(&sessionID, content, attachments, nil)
+	_, err := a.sendPreparedPromptForSession(&sessionID, content, attachments, nil, "")
+	return err
 }
 
 // BuildPromptBlocks converts text + classified attachments into ACP prompt

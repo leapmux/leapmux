@@ -164,12 +164,12 @@ func TestSteerInput(t *testing.T) {
 	a, _ := newTestAgent(t, rt)
 	assert.True(t, a.SupportsSteering())
 
-	assert.ErrorIs(t, a.SteerInput("More.", nil), agent.ErrNoActiveTurn, "no turn runs")
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "More."}), agent.ErrNoActiveTurn, "no turn runs")
 	a.turnID = testTurnID
-	require.NoError(t, a.SteerInput("More.", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "More."}))
 	assert.Equal(t, map[string]any{"prompt": "More."}, rt.lastBody(t, http.MethodPost, steer))
 
-	err := a.SteerInput("Look.", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}})
+	err := a.SteerInput(agent.SteerRequest{Content: "Look.", Attachments: []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}}})
 	assert.ErrorContains(t, err, "cannot add an image")
 }
 
@@ -356,14 +356,14 @@ func TestSteerInputNeedsARunningAgent(t *testing.T) {
 	a, _ := newTestAgent(t, rt)
 	a.turnID = testTurnID
 	a.SetStoppedForTest(true)
-	assert.ErrorContains(t, a.SteerInput("More.", nil), "stopped")
+	assert.ErrorContains(t, a.SteerInput(agent.SteerRequest{Content: "More."}), "stopped")
 	assert.Empty(t, rt.requestsTo(http.MethodPost, turnPath(testThreadID, testTurnID, turnRouteSteer)))
 	assert.Zero(t, openSteers(a), "a refused steer leaves no ticket")
 
 	b, _ := newTestAgent(t, rt)
 	b.threadID = ""
 	b.turnID = testTurnID
-	assert.ErrorIs(t, b.SteerInput("More.", nil), agent.ErrNoActiveTurn, "an agent with no thread steers nothing")
+	assert.ErrorIs(t, b.SteerInput(agent.SteerRequest{Content: "More."}), agent.ErrNoActiveTurn, "an agent with no thread steers nothing")
 }
 
 func TestInterruptReportsWhatItCannotStop(t *testing.T) {

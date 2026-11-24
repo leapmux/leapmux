@@ -1378,3 +1378,10 @@ func (r *startupCore) waitForFinishedContext(ctx context.Context, entry *startup
 	}
 	return nil
 }
+
+func (r *startupCore) waitForTabStartup(ctx context.Context, tabID string) error {
+	r.mu.Lock()
+	entry := r.inflight[tabID]
+	r.mu.Unlock()
+	return r.waitForFinishedContext(ctx, entry)
+}

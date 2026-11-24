@@ -205,7 +205,7 @@ func TestACPFinishOwnedPromptRequestSerializesPromptEndedWithStoppedAndOwnership
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			b.finishOwnedPromptRequest("session-1", nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+			b.finishOwnedPromptRequest("session-1", nil, nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 		}()
 
 		// Wait until finishOwnedPromptRequest holds sessionMu.RLock and blocks on sessionUpdates.mu.
@@ -255,7 +255,7 @@ func TestACPFinishOwnedPromptRequestSerializesPromptEndedWithStoppedAndOwnership
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			b.finishOwnedPromptRequest("session-1", nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+			b.finishOwnedPromptRequest("session-1", nil, nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 		}()
 
 		// Wait until finishOwnedPromptRequest holds sessionMu.RLock and blocks on sessionUpdates.mu.

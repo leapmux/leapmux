@@ -1,19 +1,23 @@
+import type { ControlPrompt } from './model/controlPrompt'
 import type { ControlResponseSummary } from './model/controlResponse'
 import type { PersistedControlResponse } from './persistedControlResponse'
+import type { ControlDecision } from '~/generated/proto/leapmux/v1/agent_control_pb'
+import { create } from '@bufbuild/protobuf'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { ControlDecisionSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { renderControlResponseRow } from './messageRenderers'
-import { resolveControlResponseSummary } from './persistedControlResponse'
-// Register provider plugins so renderMessageContent can resolve a plugin's controlResponseDisplay.
+// Register provider plugins, as the transcript does, so a provider's own reader could
+// claim the row if the shared display did not.
 import '~/components/chat/providers'
 
-// The renderer takes the DISPLAY: layer 1 runs the provider's derivation and the
-// never-null chokepoint (~/components/chat/rowExtraction.ts), so the markup below is
-// all this function decides. The derivation and its three degradations are asserted
-// against `resolveControlResponseSummary` itself, in the describe after this one.
+// The renderer takes the DISPLAY: layer 1 resolves it from the prompt and the decision
+// that the Worker records (~/components/chat/rowExtraction.ts), so the markup below is
+// all this function decides. The display itself is asserted in
+// controlDecisionSummary.test.ts and persistedControlResponse.test.ts.
 function row(display: ControlResponseSummary) {
   return render(() => <>{renderControlResponseRow(display, undefined)}</>)
 }
@@ -47,61 +51,48 @@ describe('renderControlResponseRow', () => {
   })
 })
 
-describe('resolveControlResponseSummary', () => {
-  it('degrades to the neutral/generic fallback when the deriver returns null', () => {
-    // No plugin display + an unrecognized response -> the generic label.
-    expect(resolveControlResponseSummary(RESPONSE, () => null)).toEqual({ kind: 'label', text: 'Responded' })
-  })
-
-  it('degrades to the fallback when the deriver THROWS, never leaking raw JSON', () => {
-    // A derivation that throws on a malformed payload must NOT propagate to the
-    // extraction's own guard, which would report the row as one LeapMux could not
-    // render -- it degrades to the same neutral fallback as a null return.
-    const throwing = (): never => {
-      throw new Error('bad payload')
-    }
-    expect(resolveControlResponseSummary(RESPONSE, throwing)).toEqual({ kind: 'label', text: 'Responded' })
-  })
-
-  it('uses the coarse behavior envelope as the fallback when no deriver is given', () => {
-    const parsed = {
-      ...RESPONSE,
-      response: {
-        response: {
-          response: { behavior: 'allow' },
-        },
-      },
-    }
-    expect(resolveControlResponseSummary(parsed, undefined)).toEqual({ kind: 'label', text: 'Allow' })
-  })
-})
-
 describe('renderMessageContent control_response dispatch', () => {
   function renderRow(response: PersistedControlResponse, provider: AgentProvider) {
     return render(() => <>{renderMessageContent(response.response, undefined, { kind: 'control_response', response }, provider)}</>)
   }
 
-  it('renders a Codex decision through the provider plugin', () => {
+  const permission: ControlPrompt = {
+    kind: 'permission',
+    permission: {
+      title: 'Run',
+      options: [
+        { optionId: 'accept', kind: 'allow_once', name: 'Allow' },
+        { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+      ],
+    },
+  }
+
+  function decided(optionId: string, feedback = ''): ControlDecision {
+    return create(ControlDecisionSchema, {
+      kind: {
+        case: 'permission',
+        value: { optionId, feedback },
+      },
+    })
+  }
+
+  it('renders the words of the decision, not of the provider\'s answer', () => {
     const response = {
       ...RESPONSE,
-      request: { method: 'item/commandExecution/requestApproval' },
       response: {
         result: { decision: 'accept' },
       },
+      prompt: permission,
+      decision: decided('accept'),
     }
     expect(renderRow(response, AgentProvider.CODEX).container.textContent).toBe('Allow')
   })
 
-  it('renders Claude rejection feedback through the provider plugin', async () => {
+  it('renders the feedback of a refusal under its lead', async () => {
     const response = {
       ...RESPONSE,
-      response: {
-        type: 'control_response',
-        response: {
-          request_id: 'r',
-          response: { behavior: 'deny', message: 'add tests' },
-        },
-      },
+      prompt: permission,
+      decision: decided('deny', 'add tests'),
     }
     const { container } = renderRow(response, AgentProvider.CLAUDE_CODE)
     await settleWorkerReplies()

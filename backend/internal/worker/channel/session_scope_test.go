@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 )
@@ -72,6 +73,35 @@ func TestHandleOpen_ReadsScopeAllAsUnscoped(t *testing.T) {
 			t.Parallel()
 			_, ok := authscope.ScopesFromWire(wire)
 			assert.False(t, ok)
+		})
+	}
+}
+
+// relay_worker_id rides the handshake beside the grant, and the session hands
+// it to every caller, because it is the only reason a request may state a
+// CallSource. A channel that the Hub opened for any other credential states no
+// relay.
+func TestHandleOpen_GivesEveryCallerTheRelayWorker(t *testing.T) {
+	t.Parallel()
+	for name, relay := range map[string]string{"a sibling Worker": "worker-A", "any other credential": ""} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			mgr, ck, _ := setupTestManagerWith(t, 0, 0)
+			_, msg1, err := startTestHandshake(t, ck)
+			require.NoError(t, err)
+
+			resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
+				ChannelId:        "ch-relay",
+				UserId:           "user-1",
+				HandshakePayload: msg1,
+				MaxMessageSize:   uint64(contracts.MaxMessageSize),
+				GrantedScopes:    testChannelGrant,
+				RelayWorkerId:    relay,
+			})
+			require.Empty(t, resp.GetError())
+			sess, ok := mgr.getSession("ch-relay")
+			require.True(t, ok)
+			assert.Equal(t, relay, sess.Caller().RelayWorkerID)
 		})
 	}
 }

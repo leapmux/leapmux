@@ -563,32 +563,29 @@ func droidEarlySendArchive(t *testing.T, sends int) (*Agent, *agenttest.Sink, *q
 	return a, sink, clock, path
 }
 
-func TestDroidChildTailContinuesAfterEarlySend(t *testing.T) {
-	_, sink, clock, _ := droidEarlySendArchive(t, 1)
+func TestDroidChildTailStopsAtInitialOutcomeAfterBoundChildSend(t *testing.T) {
+	a, sink, clock, _ := droidEarlySendArchive(t, 1)
 	advanceDroidArchive(t, clock)
 	testutil.RequireEventually(t, func() bool {
-		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FOLLOWUP_1")
-	}, "the accepted follow-up survives the first unpolled outcome")
-}
-
-func TestDroidChildTailCountsEarlySends(t *testing.T) {
-	_, sink, clock, _ := droidEarlySendArchive(t, 2)
-	advanceDroidArchive(t, clock)
-	testutil.RequireEventually(t, func() bool {
-		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FOLLOWUP_2")
-	}, "both accepted follow-ups survive unpolled outcomes")
-	for _, marker := range []string{"ARCHIVE_FIRST_TURN", "ARCHIVE_FOLLOWUP_1", "ARCHIVE_FOLLOWUP_2"} {
-		count := 0
-		for _, row := range childArchiveRows(sink, archiveChildID) {
-			if strings.Contains(string(row.Content), marker) {
-				count++
-			}
+		a.tailMu.Lock()
+		tail := a.childTails[archiveChildID]
+		a.tailMu.Unlock()
+		if tail == nil {
+			return false
 		}
-		assert.Equal(t, 1, count, "each child message appears once")
-	}
+		tail.mu.Lock()
+		defer tail.mu.Unlock()
+		return tail.finished
+	}, "the archive reader stops after the initial background turn outcome")
+	assert.False(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FOLLOWUP_1"),
+		"the bound child stream owns follow-up rows so the archive never duplicates them")
+	row, ok := sink.BackgroundTask(archiveChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status,
+		"the delayed initial archive outcome must not close an active bound child turn")
 }
 
-func TestDroidChildTailStopWithPendingContinuation(t *testing.T) {
+func TestDroidChildTailStopWithActiveBoundChild(t *testing.T) {
 	a, sink, clock, _ := droidEarlySendArchive(t, 1)
 	a.childConnMu.Lock()
 	child := a.childConns[archiveChildID].agent
@@ -604,7 +601,7 @@ func TestDroidChildTailStopWithPendingContinuation(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("Stop did not finish with a pending child continuation")
+		t.Fatal("Stop did not finish with an active bound child")
 	}
 	advanceDroidArchive(t, clock)
 	assert.False(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_FOLLOWUP_1"),

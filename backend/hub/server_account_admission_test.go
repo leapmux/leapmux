@@ -26,7 +26,7 @@ func TestAccountInitializationRefusesUsersWithoutAnAdministratorAndReleasesLease
 	ctx := testutil.DeadlineContext(t)
 	err = srv.Serve(ctx)
 	require.ErrorContains(t, err, "users but no administrator")
-	assert.Contains(t, err.Error(), "leapmux recover bootstrap create-admin")
+	assert.Contains(t, err.Error(), "leapmux recover create-admin")
 	select {
 	case <-srv.Ready():
 		t.Fatal("invalid account state must not signal readiness")

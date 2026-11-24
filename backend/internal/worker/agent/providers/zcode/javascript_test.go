@@ -9,27 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestZCodeJSONStringify_PreservesNativeSeparatorEncoding(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct{ value, want string }{
-		{value: "a\u2028b", want: "\"a\u2028b\""},
-		{value: "a\u2029b", want: "\"a\u2029b\""},
-		{value: `\u2028`, want: `"\\u2028"`},
-		{value: `\u2029`, want: `"\\u2029"`},
-		{value: "\\\u2028", want: "\"\\\\\u2028\""},
-		{value: "\\\\\u2029", want: "\"\\\\\\\\\u2029\""},
-		{value: "\n\r\t", want: `"\n\r\t"`},
-		{value: `"\<>&`, want: `"\"\\<>&"`},
-	} {
-		t.Run(test.want, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, test.want, zcodeJSONStringify(test.value))
-		})
-	}
-	assert.Equal(t, "[\"\u2028\",\"\u2029\"]", zcodeJSONStringify([]string{"\u2028", "\u2029"}))
-	assert.Equal(t, "{\"\u2028\":\"\u2029\"}", zcodeJSONStringify(map[string]string{"\u2028": "\u2029"}))
-	assert.Panics(t, func() { zcodeJSONStringify(make(chan int)) })
-}
+// zcodeJSONProbe holds each character that encoding/json spells differently
+// from JavaScript's JSON.stringify: the HTML characters, which json.Marshal
+// escapes, and the line and paragraph separators, which encoding/json escapes
+// even with HTML escaping off. The backslash before a separator proves that an
+// escaped backslash stays one escape.
+const zcodeJSONProbe = "<a&b>\\\u2028\u2029"
+
+// zcodeJSONProbeJSON is zcodeJSONProbe as JSON.stringify writes it.
+const zcodeJSONProbeJSON = "\"<a&b>\\\\\u2028\u2029\""
 
 func TestZCodeJSNumber_UsesNativeStringGrammar(t *testing.T) {
 	t.Parallel()

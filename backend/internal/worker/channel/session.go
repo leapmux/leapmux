@@ -79,9 +79,14 @@ type channelSession struct {
 	// session: the Hub cannot renegotiate a channel it cannot read, so a
 	// narrowing of the grant CLOSES the channel instead (see
 	// auth.BearerRotated).
-	Scopes  authscope.ScopeSet
-	Session *noiseutil.Session
-	sender  *channelSender // shared sender for this channel (protects Encrypt+Send)
+	Scopes authscope.ScopeSet
+	// RelayWorkerID is the sibling Worker that opened this channel to relay
+	// the calls of its tabs, as the Hub announced it at the handshake; empty
+	// for every other channel. Like Scopes it is fixed for the life of the
+	// session, and it is the only reason a request may state a CallSource.
+	RelayWorkerID string
+	Session       *noiseutil.Session
+	sender        *channelSender // shared sender for this channel (protects Encrypt+Send)
 	// ctx is the session-scoped context handed to every inner-RPC
 	// handler dispatched on this channel. cancel fires on HandleClose
 	// (and CloseAll) so handlers that pass ctx to subprocesses /
@@ -419,10 +424,11 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		return rejectChannelReopen(req.GetChannelId())
 	}
 	sess := &channelSession{
-		ChannelID: req.GetChannelId(),
-		UserID:    uid,
-		Scopes:    scopes,
-		Session:   session,
+		ChannelID:     req.GetChannelId(),
+		UserID:        uid,
+		Scopes:        scopes,
+		RelayWorkerID: req.GetRelayWorkerId(),
+		Session:       session,
 		sender: &channelSender{
 			channelID:      req.GetChannelId(),
 			session:        session,
@@ -1271,5 +1277,7 @@ func (b *boundSender) BindStream(ctrl StreamController) (release func(), ok bool
 // inner-RPC handler receives. Building it here rather than at the dispatch site
 // keeps the two facts together from the handshake onwards.
 func (s *channelSession) Caller() Caller {
-	return NewCaller(s.UserID, s.Scopes)
+	caller := NewCaller(s.UserID, s.Scopes)
+	caller.RelayWorkerID = s.RelayWorkerID
+	return caller
 }

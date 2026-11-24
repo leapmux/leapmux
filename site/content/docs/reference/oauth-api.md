@@ -209,7 +209,7 @@ Some actions need a recently proven factor. A credential that lacks one is refus
 | The credential | The ceremony |
 |---|---|
 | An app credential issued through the device-code grant or by an administrator | Start the device-code ceremony with `POST /oauth/step-up`. |
-| An app credential issued through the authorization-code grant, such as with the default `leapmux control auth login` | Use the loopback ceremony. |
+| An app credential issued through the authorization-code grant, such as with the default `leapmux auth login` | Use the loopback ceremony. |
 | A LeapMux Desktop session | Use the loopback ceremony. |
 
 ### The device-code ceremony

@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	"github.com/coder/quartz"
-	"github.com/leapmux/leapmux/generated/contracts"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -56,6 +56,12 @@ var _ agent.Agent = (*Agent)(nil)
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
+var _ agent.SteerEchoReporter = (*Agent)(nil)
+
+// SteerRowAtEcho keeps a steered queue item until Qwen Code pulls it through
+// `craft/drainMidTurnQueue`, or until prompt end returns an undrained item to
+// the queue for an ordinary prompt.
+func (*Agent) SteerRowAtEcho() bool { return true }
 
 // Agent compacts through Qwen's own `/compress` turn.
 var _ agent.ContextCompactor = (*Agent)(nil)
@@ -64,6 +70,9 @@ var _ agent.ContextCompactor = (*Agent)(nil)
 type steerItem struct {
 	content     string
 	attachments []*leapmuxv1.Attachment
+	inputID     string
+	attemptID   string
+	sessionID   string
 }
 
 // steerQueue holds the steered messages that Qwen did not pull yet. Guarded
@@ -96,7 +105,8 @@ func (q *steerQueue) take(limit int) []steerItem {
 
 // SteerInput queues text for the running turn. Qwen reads it after the running
 // tool batch, or, when the turn ends first, as the next prompt.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	// Native drains run on the RPC reader, so they cannot query the model's
 	// audio modality. Leave audio in the worker queue for a validated prompt.
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
@@ -107,8 +117,15 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if !a.PromptActive() {
 		return agent.ErrNoActiveTurn
 	}
+	sessionID := a.CurrentSessionID()
 	a.stateMu.Lock()
-	a.steer.items = append(a.steer.items, steerItem{content: content, attachments: attachments})
+	a.steer.items = append(a.steer.items, steerItem{
+		content:     content,
+		attachments: attachments,
+		inputID:     request.InputID,
+		attemptID:   request.AttemptID,
+		sessionID:   sessionID,
+	})
 	a.stateMu.Unlock()
 	return nil
 }
@@ -132,6 +149,22 @@ func (a *Agent) followUpPrompt(sessionID string, stopped bool) (string, []*leapm
 		return "", nil, false
 	}
 	return joinSteerItems(items)
+}
+
+// takeTracked removes and returns every tracked queue steer from the buffer,
+// preserving any untracked legacy items in their original order.
+func (q *steerQueue) takeTracked() []steerItem {
+	var tracked []steerItem
+	remaining := q.items[:0]
+	for _, item := range q.items {
+		if item.inputID != "" && item.attemptID != "" {
+			tracked = append(tracked, item)
+		} else {
+			remaining = append(remaining, item)
+		}
+	}
+	q.items = append([]steerItem(nil), remaining...)
+	return tracked
 }
 
 // joinSteerItems folds the queued messages into one prompt, in order.

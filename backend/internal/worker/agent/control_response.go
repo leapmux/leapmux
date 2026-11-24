@@ -5,14 +5,21 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
-// ControlResponseContext is the pure provider input for interpreting a frontend
+// ControlResponseContext is the pure provider input for interpreting a
 // control response. The service loads the stored control request once, extracts the
 // shared metadata, and passes both payloads here; providers must not perform I/O.
 type ControlResponseContext struct {
+	// RequestID is the key of the stored request, and it is never empty. The
+	// Worker resolves only an answer that addresses this key
+	// (Provider.ControlResponseRequestID), so a provider does not check the
+	// answer's own id against it. The Worker also resolves only a stored
+	// payload that agrees with the key (StoredControlRequestAgrees), so a
+	// provider does not check that agreement either.
 	RequestID       string
 	RequestPayload  json.RawMessage
 	ResponseContent []byte
@@ -97,8 +104,9 @@ const ControlResponseRefusedText = "the agent provider could not read this contr
 // Reasons that several providers give for a refusal. Like every reason, each one
 // completes the browser's sentence "The response was not sent: ...".
 const (
-	// RefusalUnreadableRequest: the stored control request does not decode, or it
-	// lacks a field that the reply needs.
+	// RefusalUnreadableRequest: the stored control request does not decode, it
+	// lacks a field that the reply needs, or its payload gives no key or another
+	// key than the one that stores it (StoredControlRequestAgrees).
 	RefusalUnreadableRequest = "LeapMux cannot read the stored request that this answer is for"
 	// RefusalUnreadableAnswer: the answer does not decode into the fields that the
 	// reply needs.
@@ -106,9 +114,6 @@ const (
 	// RefusalNoDecision: the answer is not the neutral decision envelope, or its
 	// behavior is neither allow nor deny.
 	RefusalNoDecision = "the answer states neither allow nor deny"
-	// RefusalOtherRequest: the answer identifies a request other than the stored
-	// one.
-	RefusalOtherRequest = "the answer is for a different request"
 	// RefusalUnencodableReply: the reply to the agent cannot be encoded.
 	RefusalUnencodableReply = "LeapMux cannot encode the reply to the agent"
 	// RefusalAnswersDoNotFit: the answers of a question request do not match the
@@ -146,19 +151,19 @@ func DefaultControlResponseResolution(ctx ControlResponseContext) ControlRespons
 	return restoreControlResponseID(ctx)
 }
 
-// defaultControlResponseRequestID reads the stored-control-request lookup id from a raw frontend
+// defaultControlResponseRequestID reads the stored-control-request lookup id from a raw
 // control response. It tries the neutral approve/reject envelope first
-// (DecodeControlBehavior: {response:{request_id, ...}}, which every provider's frontend emits) and
+// (DecodeControlBehavior: {response:{request_id, ...}}, which ControlResponseEnvelope writes) and
 // falls back to a top-level JSON-RPC id (ExtractJSONRPCID, used by the ACP family and Codex). When
 // a payload carries BOTH -- a top-level id AND a nested response.request_id -- the nested envelope
 // id wins, because the pending control_request row is keyed by response.request_id. Returns "" when
 // neither shape yields a non-empty id. Shared by every provider's ControlResponseRequestID; no
 // provider narrows it, since narrowing to one shape would drop the other's real flows.
 //
-// The JSON-RPC branch returns the id TEXT, and it must not canonicalize it. The browser echoes
+// The JSON-RPC branch returns the id TEXT, and it must not canonicalize it. An answer carries
 // the worker's own request id -- the "jsonrpc:"-prefixed key PublishControlRequest stored the row
-// under -- as a JSON STRING in that field (buildJsonRpcResult), because a JSON number loses
-// precision there. So the text already IS the stored key, and running it through
+// under -- as a JSON STRING in that field (JSONRPCResult). So the text already IS the stored
+// key, and running it through
 // NewControlRequestIdentity would prefix it a second time and match nothing.
 func defaultControlResponseRequestID(content []byte) string {
 	if requestID, _, _, ok := DecodeControlBehavior(content); ok && requestID != "" {
@@ -188,10 +193,9 @@ type ControlBehaviorEnvelope struct {
 			Message  string `json:"message"`
 			// Choice is the id of one of the choices a control request offered
 			// beside its plain approve and reject: a plan's own approach, a
-			// refusal that also ends plan mode. Empty for a plain decision. The
-			// browser's plan control writes it (withControlChoice in
-			// frontend/src/utils/controlResponse.ts), and each provider maps the
-			// id onto its own wire answer.
+			// refusal that also ends plan mode. Empty for a plain decision.
+			// AnswerControlRequest writes it (WithControlChoice), and each
+			// provider maps the id onto its own wire answer.
 			Choice string `json:"choice"`
 		} `json:"response"`
 	} `json:"response"`
@@ -211,11 +215,11 @@ func DecodeControlChoice(content []byte) string {
 // DecodeControlUpdatedInput returns the modified tool input a control response
 // carries beside its behavior, or nil when it carries none.
 //
-// It is the reader for `buildAllowResponse`'s `updatedInput`
-// (frontend/src/utils/controlResponse.ts): the browser sends the whole tool
-// input back with the answer it changed -- an AskUserQuestion reply folds its
-// answers into that input -- and a provider that forwards a modified input to
-// its own CLI reads it here. DecodeControlBehavior leaves it alone, so its
+// It is the reader for the `updatedInput` that AllowResponse writes: an
+// answer sends the whole tool input back with its changes -- an
+// AskUserQuestion answer folds its answers into that input
+// (providerkit.AskUserQuestionAnswers) -- and a provider that forwards a
+// modified input to its own CLI reads it here. DecodeControlBehavior leaves it alone, so its
 // callers keep the shape they had.
 //
 // A present but non-object value reads as absent, because a tool input is an
@@ -238,10 +242,10 @@ func DecodeControlUpdatedInput(content []byte) map[string]any {
 	return updated
 }
 
-// DecodeControlBehavior decodes the frontend's neutral approve/reject control-response envelope
+// DecodeControlBehavior decodes the neutral approve/reject control-response envelope
 // (ControlBehaviorEnvelope), returning the trimmed request id, behavior, and rejection
 // message. ok is false only when the bytes don't parse as JSON. The message is the user's typed
-// rejection reason, with the ControlRejectedByUserMessage sentinel (an auto-filled placeholder,
+// rejection reason, with the contracts.ControlAnswerMessageRejectedByUser sentinel (an auto-filled placeholder,
 // not a real reason) collapsed to "". The SINGLE home for the sentinel rule, shared by the Codex
 // feedback path, the Cursor create-plan transform, and the shared control-response request-id
 // default (defaultControlResponseRequestID), so a sentinel change lands in exactly one place.
@@ -257,28 +261,14 @@ func DecodeControlBehavior(content []byte) (requestID, behavior, message string,
 }
 
 // NormalizeRejectionMessage trims a control-response reject reason and collapses the
-// ControlRejectedByUserMessage placeholder (the auto-filled "declined without a reason" text) to
+// contracts.ControlAnswerMessageRejectedByUser placeholder (the auto-filled "declined without a reason" text) to
 // "". The SINGLE home for the deny-feedback rule, shared by DecodeControlBehavior (which decodes
 // the raw wire bytes) and the service's controlResponsePlan.rejectionMessage accessor (which reads
 // the already-decoded plan), so a sentinel-value change lands in exactly one place instead of two.
 func NormalizeRejectionMessage(message string) string {
 	message = strings.TrimSpace(message)
-	if message == ControlRejectedByUserMessage {
+	if message == contracts.ControlAnswerMessageRejectedByUser {
 		return ""
 	}
 	return message
 }
-
-// Control response behavior values (shared protocol between frontend and backend).
-const (
-	ControlBehaviorAllow = "allow"
-	ControlBehaviorDeny  = "deny"
-)
-
-// ControlRejectedByUserMessage is the placeholder reject message the frontend emits when
-// the user declines a control request WITHOUT typing a reason (buildDenyResponse in
-// frontend utils/controlResponse.ts). The backend treats it as "no feedback" -- it is not
-// shown as the user's answer -- so every deny-with-feedback path compares against this one
-// constant instead of re-spelling the literal (which must stay in lockstep with the
-// frontend producer).
-const ControlRejectedByUserMessage = "Rejected by user."

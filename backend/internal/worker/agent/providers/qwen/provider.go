@@ -17,8 +17,8 @@ import (
 // and it adds what only Qwen knows: where its session store lives, and the
 // answer to its plan approval.
 //
-// A question needs no rewrite: the browser already sends Qwen's own reply,
-// with the answers beside the selected option.
+// A question needs no rewrite: AnswerControlRequest already builds Qwen's own
+// reply, with the answers beside the selected option.
 type qwenProvider struct {
 	acp.Provider
 }
@@ -70,26 +70,15 @@ func (qwenProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) strin
 }
 
 // ResolveControlResponse answers a plan approval that the shared approval
-// decided, and forwards every other answer through the shared ACP resolution
-// -- a selected option of the plan approval included, which is already Qwen's
-// own reply.
+// decided, and forwards every other answer through the shared ACP resolution.
+// isPlanApproval decides both this and the prompt that ReadControlRequest
+// reads, so a plan's answer is always the neutral allow or deny that
+// AnswerControlRequest builds for a plan.
 func (p qwenProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
-	if len(ctx.RequestPayload) > 0 && isPlanApproval(ctx.RequestPayload) && !isJSONRPCReply(ctx.ResponseContent) {
+	if len(ctx.RequestPayload) > 0 && isPlanApproval(ctx.RequestPayload) {
 		return resolvePlanApproval(ctx)
 	}
 	return p.Provider.ResolveControlResponse(ctx)
-}
-
-// isJSONRPCReply reports whether content is a JSON-RPC reply, rather than the
-// shared allow and deny envelope.
-func isJSONRPCReply(content []byte) bool {
-	var reply map[string]json.RawMessage
-	if json.Unmarshal(content, &reply) != nil {
-		return false
-	}
-	_, hasResult := reply["result"]
-	_, hasError := reply["error"]
-	return hasResult || hasError
 }
 
 // ChildCapabilities.AcceptsInterrupt is true: a subagent's tab can stop its running turn.

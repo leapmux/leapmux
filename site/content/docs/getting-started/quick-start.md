@@ -36,10 +36,10 @@ The app remembers your choice and reconnects to Solo on the next launch. To retu
 If you installed the `leapmux` binary (see [Installation](/docs/getting-started/installation/)), start solo mode from a terminal:
 
 ```bash
-leapmux solo start
+leapmux daemon solo start
 ```
 
-LeapMux runs in the background as a service, so it keeps running after you close the terminal. The first `start` asks whether LeapMux should start when you log in or when the computer starts. Later, `leapmux solo status` reports its state, and `leapmux solo stop` stops it. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
+LeapMux runs in the background as a service, so it keeps running after you close the terminal. The first `start` asks whether LeapMux should start when you log in or when the computer starts. Later, `leapmux daemon solo status` reports its state, and `leapmux daemon solo stop` stops it. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
 Solo mode runs a Hub and a Worker in one process, listening on loopback only at **`127.0.0.1:4327`**. When it is ready, `start` prints the URL to open in your browser:
 
@@ -53,13 +53,13 @@ A few useful flags (full reference in [Configuration](/docs/admin/configuration/
 
 | Flag | Purpose | Default |
 | --- | --- | --- |
-| `-listen` | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) | `127.0.0.1:4327` plus the platform's local IPC socket |
-| `-data-dir` | Data directory | `.` (resolves to `~/.config/leapmux/solo`) |
-| `-log-level` | `debug`, `info`, `warn`, `error` | `info` |
-| `-config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
+| `--listen` | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) | `127.0.0.1:4327` plus the platform's local IPC socket |
+| `--data-dir` | Data directory | `.` (resolves to `~/.config/leapmux/solo`) |
+| `--log-level` | `debug`, `info`, `warn`, `error` | `info` |
+| `--config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
 
 {{< callout type="warning" >}}
-If you change `-listen` to a non-loopback address before setup, the first TCP caller can claim the `solo` account by setting its password. Other protected RPCs stay closed. Set the password from a trusted connection and restrict the address with a firewall or tunnel. See [Security & Threat Model](/docs/admin/security/).
+If you change `--listen` to a non-loopback address before setup, the first TCP caller can claim the `solo` account by setting its password. Other protected RPCs stay closed. Set the password from a trusted connection and restrict the address with a firewall or tunnel. See [Security & Threat Model](/docs/admin/security/).
 {{< /callout >}}
 
 {{< callout >}}

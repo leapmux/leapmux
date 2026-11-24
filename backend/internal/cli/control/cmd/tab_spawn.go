@@ -6,6 +6,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionids"
@@ -24,11 +25,20 @@ type openAgentArgs struct {
 	Effort         string
 	Title          string
 	PermissionMode string
+	// Options overrides spawnOptions(Model, Effort, PermissionMode) when non-nil
+	// so `agent open --option key=value` passes provider-specific axes at launch.
+	Options        map[string]string
 	WorkingDir     string
-	InitialMessage string
+	InitialMessage *string
+	// SessionID resumes the agent's earlier session (`--resume`).
+	SessionID string
+	// GitSetup prepares the working directory; nil uses it as it is.
+	GitSetup *leapmuxv1.GitSetup
 	// Position spec captures the caller's --first / --last /
 	// --before / --after intent. The Hub resolves its committed rank.
 	Position positionSpec
+	// RequestID derives the tab ID so the Worker can recognize a retry.
+	RequestID string
 }
 
 // spawnOptions builds the OpenAgent initial option map from the CLI's --model / --effort /
@@ -54,16 +64,19 @@ func spawnOptions(model, effort, permissionMode string) map[string]string {
 
 // openAgentResult is what openAgentAndAddTab emits on success.
 type openAgentResult struct {
-	Agent          *leapmuxv1.AgentInfo
-	TileID         string
-	Position       string
-	InitialMsgWarn string
+	Agent    *leapmuxv1.AgentInfo
+	TileID   string
+	Position string
 }
 
 // resolveTabCreation captures placement before the Worker admits creation.
 // Only a reference without an explicit tile needs a bootstrap to find its tile.
 // The Hub validates the intent and calculates its canonical rank at commit.
-func resolveTabCreation(ctx context.Context, c *control.Client, workspaceID, tileID string, spec positionSpec) (*leapmuxv1.TabCreation, error) {
+//
+// tabID is the id of the new tab. The Worker takes a repeated creation of one
+// tab id as the same creation, so the caller chooses it: a fresh id, or one
+// that a request id derives.
+func resolveTabCreation(ctx context.Context, c *control.Client, tabID, workspaceID, tileID string, spec positionSpec) (*leapmuxv1.TabCreation, error) {
 	placement := &leapmuxv1.TabPlacement{WorkspaceId: workspaceID, RelativeTabId: spec.refID}
 	switch spec.kind {
 	case positionFirst:
@@ -72,7 +85,7 @@ func resolveTabCreation(ctx context.Context, c *control.Client, workspaceID, til
 		placement.Insertion = leapmuxv1.TabInsertion_TAB_INSERTION_LAST
 	case positionBefore, positionAfter:
 		if spec.refID == "" {
-			return nil, control.EmitError("invalid_request", flagLabelForPositionKind(spec.kind)+" requires a tab id")
+			return nil, cli.Usagef("%s needs a tab", flagLabelForPositionKind(spec.kind))
 		}
 		placement.Insertion = leapmuxv1.TabInsertion_TAB_INSERTION_BEFORE
 		if spec.kind == positionAfter {
@@ -81,7 +94,7 @@ func resolveTabCreation(ctx context.Context, c *control.Client, workspaceID, til
 		if tileID == "" {
 			bootstrap, err := crdtBootstrap(ctx, c, []string{workspaceID})
 			if err != nil {
-				return nil, control.EmitErrorWith("crdt_bootstrap_failed", err)
+				return nil, err
 			}
 			if err := preflightTab(bootstrap.State, workspaceID, spec.refID, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED); err != nil {
 				return nil, err
@@ -89,14 +102,14 @@ func resolveTabCreation(ctx context.Context, c *control.Client, workspaceID, til
 			tileID = bootstrap.State.GetTabs()[spec.refID].GetTileId().GetValue()
 		}
 	default:
-		return nil, control.EmitError("invalid_request", "unknown position kind")
+		return nil, cli.Usagef("unknown position kind")
 	}
 	if tileID == "" {
 		placement.Destination = &leapmuxv1.TabPlacement_FirstLeaf{FirstLeaf: &emptypb.Empty{}}
 	} else {
 		placement.Destination = &leapmuxv1.TabPlacement_TileId{TileId: tileID}
 	}
-	return &leapmuxv1.TabCreation{TabId: id.Generate(), Placement: placement}, nil
+	return &leapmuxv1.TabCreation{TabId: tabID, Placement: placement}, nil
 }
 
 // validateTabPublication checks the result before the CLI reports a usable tab.
@@ -111,34 +124,41 @@ func validateTabPublication(creation *leapmuxv1.TabCreation, kind leapmuxv1.TabT
 }
 
 // openAgentAndAddTab asks the Worker to create and publish an agent. A successful
-// reply supplies the committed placement. The optional initial input uses the
-// same channel and reports a warning if its separate enqueue fails.
+// reply supplies the committed placement. The Worker commits any initial message
+// with the agent, so a retry cannot change it or queue it twice.
 func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, args openAgentArgs) (*openAgentResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
-		return nil, control.EmitError("invalid_request", "workspace_id and worker_id are required for --type=agent")
+		return nil, cli.Usagef("an agent needs a workspace and a worker")
 	}
-	creation, err := resolveTabCreation(ctx, c, args.WorkspaceID, args.TileID, args.Position)
+	creation, err := resolveTabCreation(ctx, c, requestScopedID(args.RequestID, requestScopeAgentOpen, args.WorkerID), args.WorkspaceID, args.TileID, args.Position)
 	if err != nil {
 		return nil, err
 	}
-	request := &leapmuxv1.OpenAgentRequest{Creation: creation, AgentProvider: args.Provider, Options: spawnOptions(args.Model, args.Effort, args.PermissionMode), Title: args.Title, WorkingDir: args.WorkingDir}
+	opts := args.Options
+	if opts == nil {
+		opts = spawnOptions(args.Model, args.Effort, args.PermissionMode)
+	}
+	request := &leapmuxv1.OpenAgentRequest{
+		Creation:       creation,
+		AgentProvider:  args.Provider,
+		Options:        opts,
+		Title:          args.Title,
+		WorkingDir:     args.WorkingDir,
+		AgentSessionId: args.SessionID,
+		GitSetup:       args.GitSetup,
+		InitialMessage: args.InitialMessage,
+	}
 	var response leapmuxv1.OpenAgentResponse
-	if err := w.CallEmit(ctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, &response); err != nil {
+	if err := w.Call(ctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, &response); err != nil {
 		return nil, err
 	}
 	if err := validateTabPublication(creation, leapmuxv1.TabType_TAB_TYPE_AGENT, response.GetPublication()); err != nil {
-		return nil, control.EmitErrorWith("invalid_worker_response", err)
+		return nil, err
 	}
 	if response.GetAgent().GetId() != creation.GetTabId() || response.GetAgent().GetWorkerId() != args.WorkerID {
-		return nil, control.EmitError("invalid_worker_response", "the Worker returned a different agent identity")
+		return nil, cli.Newf(cli.CodeInternal, "the Worker returned a different agent identity")
 	}
-	result := &openAgentResult{Agent: response.GetAgent(), TileID: response.GetPublication().GetTileId(), Position: response.GetPublication().GetPosition()}
-	if args.InitialMessage != "" {
-		if err := w.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{AgentId: creation.GetTabId(), InputId: id.Generate(), Text: args.InitialMessage, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE}, nil); err != nil {
-			result.InitialMsgWarn = err.Error()
-		}
-	}
-	return result, nil
+	return &openAgentResult{Agent: response.GetAgent(), TileID: response.GetPublication().GetTileId(), Position: response.GetPublication().GetPosition()}, nil
 }
 
 // openTerminalArgs mirrors openAgentArgs for terminal spawns. Shell
@@ -157,18 +177,24 @@ type openTerminalArgs struct {
 	// a random `Terminal <Name>` from the shared pool, the same answer it gives
 	// the quick-open buttons. It reaches the same field OpenAgentRequest has, so
 	// `--title` means one thing for both tab types.
-	Title    string
-	Position positionSpec
+	Title string
+	// GitSetup prepares the working directory; nil uses it as it is.
+	GitSetup *leapmuxv1.GitSetup
+	// InitialCommand is the command line that the new shell runs once it is
+	// ready (`--command`). Empty runs nothing.
+	InitialCommand string
+	Position       positionSpec
 }
 
 // terminalOpenRequest carries one immutable ordinary-tab creation intent.
 // Dimensions remain zero so the Worker applies its default before attachment.
 func terminalOpenRequest(args openTerminalArgs, creation *leapmuxv1.TabCreation) *leapmuxv1.OpenTerminalRequest {
-	return &leapmuxv1.OpenTerminalRequest{WorkingDir: args.WorkingDir, Shell: args.Shell, ShellStartDir: args.ShellStartDir, Title: args.Title, Target: &leapmuxv1.OpenTerminalRequest_Creation{Creation: creation}}
+	return &leapmuxv1.OpenTerminalRequest{WorkingDir: args.WorkingDir, Shell: args.Shell, ShellStartDir: args.ShellStartDir, Title: args.Title, GitSetup: args.GitSetup, InitialCommand: args.InitialCommand, Target: &leapmuxv1.OpenTerminalRequest_Creation{Creation: creation}}
 }
 
 type openTerminalResult struct {
 	TerminalID string
+	Title      string
 	TileID     string
 	Position   string
 }
@@ -176,21 +202,21 @@ type openTerminalResult struct {
 // openTerminalAndAddTab returns the placement committed by the Worker operation.
 func openTerminalAndAddTab(ctx context.Context, c *control.Client, w workerCall, args openTerminalArgs) (*openTerminalResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
-		return nil, control.EmitError("invalid_request", "workspace_id and worker_id are required for --type=terminal")
+		return nil, cli.Usagef("a terminal needs a workspace and a worker")
 	}
-	creation, err := resolveTabCreation(ctx, c, args.WorkspaceID, args.TileID, args.Position)
+	creation, err := resolveTabCreation(ctx, c, id.Generate(), args.WorkspaceID, args.TileID, args.Position)
 	if err != nil {
 		return nil, err
 	}
 	var response leapmuxv1.OpenTerminalResponse
-	if err := w.CallEmit(ctx, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, terminalOpenRequest(args, creation), &response); err != nil {
+	if err := w.Call(ctx, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, terminalOpenRequest(args, creation), &response); err != nil {
 		return nil, err
 	}
 	if err := validateTabPublication(creation, leapmuxv1.TabType_TAB_TYPE_TERMINAL, response.GetPublication()); err != nil {
-		return nil, control.EmitErrorWith("invalid_worker_response", err)
+		return nil, err
 	}
 	if response.GetTerminalId() != creation.GetTabId() {
-		return nil, control.EmitError("invalid_worker_response", "the Worker returned a different terminal identity")
+		return nil, cli.Newf(cli.CodeInternal, "the Worker returned a different terminal identity")
 	}
-	return &openTerminalResult{TerminalID: response.GetTerminalId(), TileID: response.GetPublication().GetTileId(), Position: response.GetPublication().GetPosition()}, nil
+	return &openTerminalResult{TerminalID: response.GetTerminalId(), Title: response.GetTitle(), TileID: response.GetPublication().GetTileId(), Position: response.GetPublication().GetPosition()}, nil
 }

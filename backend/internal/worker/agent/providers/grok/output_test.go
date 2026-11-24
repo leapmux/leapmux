@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -126,6 +127,13 @@ func TestGrokAgentTurnAfterALeapMuxPromptWaitsForItsEnd(t *testing.T) {
 	// processed the response of LeapMux's prompt.
 	a.HandleOutput(queueChanged(t, grokTestSession, "subagent-completed-bg-1"))
 	assert.False(t, a.AgentTurnActive(), "the agent turn waits for the prompt's end")
+	promptID, turnID := a.grokSteerScope(grokTestSession)
+	assert.Equal(t, "subagent-completed-bg-1", promptID)
+	assert.Equal(t, promptID, turnID)
+	controlTurn, _ := a.grokSteerControlOwner(grokTestSession, nil)
+	assert.Equal(t, promptID, controlTurn)
+	foreignTurn, _ := a.grokSteerControlOwner("other-session", nil)
+	assert.Empty(t, foreignTurn)
 
 	a.FinishPromptRequestForTest(grokTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 	assert.True(t, a.AgentTurnActive(), "the prompt's end hands the busy state over")
@@ -134,6 +142,8 @@ func TestGrokAgentTurnAfterALeapMuxPromptWaitsForItsEnd(t *testing.T) {
 	a.HandleOutput(turnCompleted(t, "subagent-completed-bg-1"))
 	assert.False(t, a.PromptActive())
 	assert.Len(t, turnEnds(sink.Messages()), 2)
+	controlTurn, _ = a.grokSteerControlOwner(grokTestSession, nil)
+	assert.Empty(t, controlTurn, "an ended agent turn cannot own another control")
 }
 
 func TestGrokAdjustPromptParamsStatesAFreshID(t *testing.T) {
@@ -303,13 +313,35 @@ func TestGrokReportsARetryInProgressOnly(t *testing.T) {
 func TestGrokTurnCompletedWithNoPromptIDEndsTheAgentTurn(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+	receipts := &grokSteerRetirementSink{ControlSink: sink}
+	a.SetSinkForTest(agent.NewProviderServices(receipts))
 	a.HandleOutput(queueChanged(t, grokTestSession, "goal-1"))
 	require.True(t, a.AgentTurnActive())
+	a.steerReplies.active = &grokSteerReply{
+		sessionID: grokTestSession, promptID: "goal-1", turnID: "goal-1",
+		inputs: []grokSteerAdmission{{id: "the-steer"}},
+	}
 
 	a.HandleOutput(notification(t, grokTestSession, map[string]any{"sessionUpdate": "turn_completed", "stop_reason": "end_turn"}))
+	a.steerReplies.jobs.Wait()
 
 	assert.False(t, a.PromptActive())
 	assert.Len(t, turnEnds(sink.Messages()), 1)
+	assert.Nil(t, a.steerReplies.active)
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: grokTestSession, InputID: "the-steer"}, receipts.retired)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, receipts.outcome)
+}
+
+type grokSteerRetirementSink struct {
+	*agenttest.ControlSink
+	retired agent.NativeInputReceipt
+	outcome leapmuxv1.AgentInputTurnOutcome
+}
+
+func (s *grokSteerRetirementSink) RetireNativeInputTurn(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
+	s.retired = receipt
+	s.outcome = outcome
+	return nil
 }
 
 // A turn_completed with no agent turn open writes no turn-end row.

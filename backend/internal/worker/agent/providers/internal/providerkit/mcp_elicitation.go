@@ -8,12 +8,13 @@ import (
 )
 
 // MCPElicitationMetaRule decides whether an accepted elicitation answer may
-// carry the `_meta.persist` scope the frontend sent. requestPayload is the
+// carry the `_meta.persist` scope that the answer states. requestPayload is the
 // stored request, so a provider can check the scopes that request offered.
 type MCPElicitationMetaRule func(requestPayload json.RawMessage, persist string) bool
 
 // ResolveMCPElicitationResponse restores the request's exact JSON-RPC identifier.
-// The frontend uses the shared control envelope to keep wide IDs and string IDs intact.
+// agent.AnswerElicitation answers in the shared control envelope, which keeps wide IDs
+// and string IDs intact.
 //
 // method is the elicitation method the calling provider speaks: the resolution
 // answers a stored request of that method and passes on anything else. acceptMeta
@@ -29,16 +30,16 @@ func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method stri
 	result := agent.DefaultControlResponseResolution(ctx)
 	result.Withhold = true
 	var response MCPElicitationControlResponse
-	id, requestID, ok := agent.ExtractJSONRPCID(ctx.RequestPayload)
+	id, _, ok := agent.ExtractJSONRPCID(ctx.RequestPayload)
 	switch {
 	case !ok:
 		result.Refuse(agent.RefusalUnreadableRequest)
 		return result, true
 	case json.Unmarshal(ctx.ResponseContent, &response) != nil:
+		// The Worker resolves only JSON that addresses the request, so this
+		// fails only for a field of a type that the envelope does not take,
+		// such as a `_meta` value that is not a string.
 		result.Refuse(agent.RefusalUnreadableAnswer)
-		return result, true
-	case response.Response.RequestID != agent.StoredControlRequestID(ctx, requestID):
-		result.Refuse(agent.RefusalOtherRequest)
 		return result, true
 	}
 	answer := response.Response.Response
@@ -73,8 +74,8 @@ func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method stri
 	return result, true
 }
 
-// MCPElicitationControlResponse is the control envelope in which the frontend
-// answers an MCP elicitation. Pi reads the same envelope for its MCP approval.
+// MCPElicitationControlResponse is the control envelope in which
+// agent.AnswerElicitation answers an MCP elicitation. Pi reads the same envelope for its MCP approval.
 type MCPElicitationControlResponse struct {
 	Response struct {
 		RequestID string `json:"request_id"`

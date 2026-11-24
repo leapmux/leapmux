@@ -140,6 +140,11 @@ type spawnOutput struct {
 func (a *Agent) ensureLeadEventTurn(meta eventAgent) bool {
 	a.Mu.Lock()
 	active, teamBusy := a.turn.active, a.team.busy()
+	if reply := a.turn.inputReply; reply != nil && reply.end != nil {
+		// Output after the native end can belong to the next run while
+		// the previous command is still waiting for its reply.
+		reply.ambiguous = true
+	}
 	a.Mu.Unlock()
 	if !active {
 		if teamBusy || meta.Kind == agentKindTeammate || meta.TeamAgentID != "" {

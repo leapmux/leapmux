@@ -22,8 +22,8 @@ type kimiPendingQueueDispatcher struct {
 	attempts chan error
 }
 
-func (dispatcher *kimiPendingQueueDispatcher) SteerPolicy(string) agent.SteerPolicy {
-	return agent.SteerPolicy{}
+func (dispatcher *kimiPendingQueueDispatcher) SteerPolicy(string) (agent.SteerPolicy, error) {
+	return agent.SteerPolicy{}, nil
 }
 func (dispatcher *kimiPendingQueueDispatcher) Dispatch(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	result, err := dispatcher.provider.SendChildInput(dispatcher.key, agent.ChildInput{Content: item.Text, Ready: dispatcher.ready})

@@ -90,7 +90,7 @@ func (a *Agent) Wait() error {
 	a.stopPiGoalRefresh()
 	a.dialogDeadlines.StopAll()
 	a.finishPiProcessExit()
-	return err
+	return errors.Join(err, a.directory.Close())
 }
 
 // Interrupt writes the abort command for the active Pi turn.

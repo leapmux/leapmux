@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/stretchr/testify/assert"
@@ -31,12 +32,12 @@ func TestSetupPromptsRejectFailedOutputBeforeReadingConsent(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			answer := strings.NewReader("yes\n")
-			accepted, err := promptApply(output, answer)
+			accepted, err := promptApply(t.Context(), output, answer)
 			require.Error(t, err)
 			assert.False(t, accepted)
 			assert.Equal(t, 4, answer.Len(), "do not consume an answer to an undisplayed prompt")
 			choice := strings.NewReader("1\n")
-			_, err = promptStartupChoice(output, choice)
+			_, err = promptStartupChoice(t.Context(), output, choice)
 			require.Error(t, err)
 			assert.Equal(t, 2, choice.Len())
 			if output.cause != nil {
@@ -61,11 +62,7 @@ func TestNativeConfigurationRejectsUndisplayedPreview(t *testing.T) {
 			os.Stdout = output
 			defer func() { os.Stdout = original }()
 			args := []string{"--data-dir", root, "--startup=boot", "--yes"}
-			if verb == "enable" {
-				err = runModeEnableWithController("hub", factory)(cmdCtx{}, args)
-			} else {
-				err = executeNativeStartWithController("hub", verb, args, factory)
-			}
+			err = runLifecycleWithController("hub", verb, factory, args...)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, os.ErrClosed)
 			assert.Empty(t, manager.installs)
@@ -85,11 +82,40 @@ func (r interruptedPromptAnswer) Read(p []byte) (int, error) { return copy(p, r.
 func TestIncompletePromptAnswersNeverAuthorize(t *testing.T) {
 	for _, cause := range []error{io.EOF, context.Canceled, io.ErrUnexpectedEOF} {
 		t.Run(cause.Error(), func(t *testing.T) {
-			accepted, err := promptApply(&bytes.Buffer{}, interruptedPromptAnswer{"yes", cause})
+			accepted, err := promptApply(t.Context(), &bytes.Buffer{}, interruptedPromptAnswer{"yes", cause})
 			require.NoError(t, err)
 			assert.False(t, accepted, "a partial answer with an input failure cannot authorize setup")
-			_, err = promptStartupChoice(&bytes.Buffer{}, interruptedPromptAnswer{"1", cause})
+			_, err = promptStartupChoice(t.Context(), &bytes.Buffer{}, interruptedPromptAnswer{"1", cause})
 			require.Error(t, err)
+		})
+	}
+}
+
+// An interrupt ends a prompt that waits for a person. It is no answer: the
+// prompt returns the cause, so the command stops instead of reporting a
+// declined configuration.
+func TestPromptsEndOnAnInterrupt(t *testing.T) {
+	for name, prompt := range map[string]func(context.Context, io.Reader) error{
+		"apply": func(ctx context.Context, in io.Reader) error {
+			accepted, err := promptApply(ctx, &bytes.Buffer{}, in)
+			assert.False(t, accepted, "an interrupt never authorizes setup")
+			return err
+		},
+		"startup": func(ctx context.Context, in io.Reader) error {
+			choice, err := promptStartupChoice(ctx, &bytes.Buffer{}, in)
+			assert.Empty(t, choice)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reader, writer := io.Pipe()
+			t.Cleanup(func() { _ = writer.Close() })
+			ctx, cancel := context.WithCancelCause(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- prompt(ctx, reader) }()
+			cancel(cli.ErrInterrupted)
+			err := <-done
+			require.ErrorIs(t, err, cli.ErrInterrupted)
 		})
 	}
 }
@@ -114,11 +140,7 @@ func TestNoninteractiveSetupRefusesMissingFlagsWithoutPrompting(t *testing.T) {
 					done := make(chan struct{})
 					go func() {
 						defer close(done)
-						if verb == "enable" {
-							err = runModeEnableWithController("hub", factory)(cmdCtx{}, args)
-						} else {
-							err = executeNativeStartWithController("hub", verb, args, factory)
-						}
+						err = runLifecycleWithController("hub", verb, factory, args...)
 					}()
 					ctx := testutil.DeadlineContext(t)
 					select {
@@ -130,6 +152,7 @@ func TestNoninteractiveSetupRefusesMissingFlagsWithoutPrompting(t *testing.T) {
 					}
 				})
 				require.Error(t, err)
+				assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code, "a missing flag is a usage error")
 				assert.Contains(t, err.Error(), "--yes")
 				if !startup {
 					assert.Contains(t, err.Error(), "--startup")
@@ -150,33 +173,33 @@ func TestNoninteractiveSetupRefusesMissingFlagsWithoutPrompting(t *testing.T) {
 func TestConsentAndNoninteractiveSetup(t *testing.T) {
 	t.Run("y and yes accept, case-insensitively", func(t *testing.T) {
 		for _, answer := range []string{"y\n", "yes\n", "Y\n", "YES\n", "Yes\n"} {
-			accepted, err := promptApply(&bytes.Buffer{}, strings.NewReader(answer))
+			accepted, err := promptApply(t.Context(), &bytes.Buffer{}, strings.NewReader(answer))
 			require.NoError(t, err)
 			assert.True(t, accepted, "answer %q accepts", strings.TrimSpace(answer))
 		}
 	})
 
 	t.Run("empty input declines", func(t *testing.T) {
-		accepted, err := promptApply(&bytes.Buffer{}, strings.NewReader("\n"))
+		accepted, err := promptApply(t.Context(), &bytes.Buffer{}, strings.NewReader("\n"))
 		require.NoError(t, err)
 		assert.False(t, accepted)
 	})
 
 	t.Run("end of input declines", func(t *testing.T) {
-		accepted, err := promptApply(&bytes.Buffer{}, strings.NewReader(""))
+		accepted, err := promptApply(t.Context(), &bytes.Buffer{}, strings.NewReader(""))
 		require.NoError(t, err, "EOF declines rather than failing")
 		assert.False(t, accepted)
 	})
 
 	t.Run("anything else declines", func(t *testing.T) {
-		accepted, err := promptApply(&bytes.Buffer{}, strings.NewReader("no\n"))
+		accepted, err := promptApply(t.Context(), &bytes.Buffer{}, strings.NewReader("no\n"))
 		require.NoError(t, err)
 		assert.False(t, accepted)
 	})
 
 	t.Run("the startup choice defaults to login", func(t *testing.T) {
 		var out bytes.Buffer
-		choice, err := promptStartupChoice(&out, strings.NewReader("\n"))
+		choice, err := promptStartupChoice(t.Context(), &out, strings.NewReader("\n"))
 		require.NoError(t, err)
 		assert.Equal(t, "login", string(choice))
 		assert.Contains(t, out.String(), "When you log in")
@@ -184,19 +207,19 @@ func TestConsentAndNoninteractiveSetup(t *testing.T) {
 	})
 
 	t.Run("choice 2 selects boot", func(t *testing.T) {
-		choice, err := promptStartupChoice(&bytes.Buffer{}, strings.NewReader("2\n"))
+		choice, err := promptStartupChoice(t.Context(), &bytes.Buffer{}, strings.NewReader("2\n"))
 		require.NoError(t, err)
 		assert.Equal(t, "boot", string(choice))
 	})
 
 	t.Run("an unknown choice refuses", func(t *testing.T) {
-		_, err := promptStartupChoice(&bytes.Buffer{}, strings.NewReader("7\n"))
+		_, err := promptStartupChoice(t.Context(), &bytes.Buffer{}, strings.NewReader("7\n"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "1 or 2")
 	})
 
 	t.Run("end of input on the startup choice identifies the flags", func(t *testing.T) {
-		_, err := promptStartupChoice(&bytes.Buffer{}, strings.NewReader(""))
+		_, err := promptStartupChoice(t.Context(), &bytes.Buffer{}, strings.NewReader(""))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "--startup")
 	})

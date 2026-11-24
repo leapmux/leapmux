@@ -182,12 +182,14 @@ func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 	defer a.finishDispatch()
 	a.Mu.Lock()
 	runs := make([]*kimiRun, 0, len(a.runs))
+	sessionID := a.sessionID
 	for _, run := range a.runs {
 		runs = append(runs, run)
 	}
 	a.turnActive = false
 	a.turnSteerable = false
 	a.Mu.Unlock()
+	a.retireKimiSessionReplies(sessionID)
 
 	// Each run writes to its own transcript, so the order of the runs does not
 	// matter.

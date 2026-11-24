@@ -7,6 +7,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
 
@@ -160,20 +161,25 @@ func scrubSandboxData(env []string) []string {
 // process needs in one place: strips inherited agent-harness identity
 // vars (see agentIdentityEnvScrubKeys) so a worker launched from inside
 // another agent's session doesn't spawn a nested one, strips the data
-// variables of an inherited sandbox (see sandboxDataEnvScrubs), strips any
-// inherited `LEAPMUX_CONTROL_*` values so a worker spawned inside another
-// worker's session never inherits the parent's remote context (any
-// fresh values arrive via opts.ExtraEnv), strips an inherited
-// provider-helper variable, PINS the `LEAPMUX_WORKER=1`
+// variables of an inherited sandbox (see sandboxDataEnvScrubs), strips an
+// inherited provider-helper variable, PINS the `LEAPMUX_WORKER=1`
 // marker (downstream CLI/agent code keys off it to detect "running
-// inside a LeapMux worker") and git's optional-lock setting, and appends
-// `opts.ExtraEnv`.
+// inside a LeapMux worker") and git's optional-lock setting, and applies
+// `opts.ExtraEnv` through controlenv.Apply. That last step strips any
+// inherited `LEAPMUX_CONTROL_*` values, so a worker spawned inside another
+// worker's session never inherits the parent's remote context, appends the
+// fresh values, and puts the directory of the Worker's CLI first on PATH.
 //
 // Pins, not appends: a worker launched from inside a LeapMux terminal or
 // agent already carries both values, so appending would hand the child
 // two entries for each -- see envutil.PinEnv. opts.ExtraEnv still lands
 // last, after the pins, because that is where the caller's authoritative
 // values belong.
+//
+// An agent that its provider starts through a login shell gets the PATH entry
+// before the shell's profile runs, and the profile can move it or drop it. The
+// command that launch.Wrap builds puts it first again after the profile, from
+// the LEAPMUX_CONTROL_CLI that this function sets. See controlenv.Apply.
 //
 // It also declines git's OPTIONAL index lock for everything the agent runs --
 // see gitutil.GitOptionalLocksOff for why. The worker set that on its own git
@@ -187,12 +193,11 @@ func scrubSandboxData(env []string) []string {
 // etc.) go BEFORE this call so they survive both the identity scrub and
 // the LEAPMUX_CONTROL_* strip and stack with the marker.
 func FinalizeAgentEnv(env []string, opts agent.Options) []string {
-	// Both scrubs must run before the ExtraEnv append so opts.ExtraEnv's
-	// fresh LEAPMUX_CONTROL_* values aren't stripped. The sandbox scrub runs
-	// first, because it reads the sandbox marker that the identity scrub removes.
+	// Both scrubs must run before controlenv.Apply appends opts.ExtraEnv, so
+	// they cannot remove a fresh value. The sandbox scrub runs first, because it
+	// reads the sandbox marker that the identity scrub removes.
 	env = scrubSandboxData(env)
 	env = envutil.FilterEnv(env, agentIdentityEnvScrubKeys...)
-	env = envutil.StripByPrefix(env, "LEAPMUX_CONTROL_")
 	// The provider-helper variable is LeapMux's own (see agent.HelperFunc). An
 	// inherited copy points at ANOTHER agent's helper, so it never passes. A
 	// provider whose CLI starts a helper adds its own value after this call.
@@ -202,8 +207,5 @@ func FinalizeAgentEnv(env []string, opts agent.Options) []string {
 	// these -- so appending would layer a second entry rather than replace the
 	// inherited one. See envutil.PinEnv.
 	env = envutil.PinEnv(env, "LEAPMUX_WORKER=1", gitutil.GitOptionalLocksOff)
-	if len(opts.ExtraEnv) == 0 {
-		return env
-	}
-	return append(env, opts.ExtraEnv...)
+	return controlenv.Apply(env, opts.ExtraEnv)
 }

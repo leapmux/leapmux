@@ -2689,9 +2689,8 @@ func TestInspectWorktreeRemovalRPC_ReportsALock(t *testing.T) {
 	assert.Contains(t, resp.GetBlockedReason(), "held by the operator")
 }
 
-// An empty path must be refused by SanitizePath, not probed. Without that call
-// the handler would fork git against the caller's own working directory and
-// answer for a repository nobody asked about.
+// The handler must reject an empty path before it can run git in its own
+// working directory.
 func TestInspectWorktreeRemovalRPC_RejectsAnEmptyPath(t *testing.T) {
 	t.Parallel()
 

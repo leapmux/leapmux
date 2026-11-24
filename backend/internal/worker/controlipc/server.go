@@ -19,6 +19,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/locallisten"
 )
 
@@ -52,6 +53,8 @@ type Options struct {
 	// OwnerUsername answers Whoami's username; see Factory.OwnerUsername.
 	// nil reports "".
 	OwnerUsername func(userid.UserID) string
+	// HubURL is the Hub URL this Worker connects to; reported by Whoami when set.
+	HubURL string
 }
 
 // Listen starts a per-agent local-IPC server. Callers should call
@@ -69,7 +72,7 @@ func Listen(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("listen %s: %w", opts.SocketURL, err)
 	}
 	mux := http.NewServeMux()
-	svc := &handler{tokens: tokens, router: opts.Router, ownerUsername: opts.OwnerUsername}
+	svc := &handler{tokens: tokens, router: opts.Router, ownerUsername: opts.OwnerUsername, hubURL: opts.HubURL}
 	connectServer := connect.NewServer()
 	leapmuxv1connect.RegisterControlIPCServiceHandler(connectServer, svc)
 	connectMux := http.NewServeMux()
@@ -183,10 +186,14 @@ func shortPrefix(s string, n int) string {
 	return s[:n]
 }
 
+// runDirName is the directory of the data directory that holds what lives only
+// while the Worker runs: the control sockets and the CLI directory.
+const runDirName = "run"
+
 // SocketDir returns the preferred private directory for control sockets.
 // PrepareSocketDirectory selects a short private namespace when this path cannot fit.
 func SocketDir(dataDir string) string {
-	return filepath.Join(dataDir, "run", "control")
+	return filepath.Join(dataDir, runDirName, "control")
 }
 
 // SocketURL derives a socket URL from the directory and spawn identity.
@@ -235,6 +242,7 @@ type handler struct {
 	tokens        *TokenStore
 	router        *Router
 	ownerUsername func(userid.UserID) string
+	hubURL        string
 }
 
 func (h *handler) Whoami(ctx context.Context, req *leapmuxv1.WhoamiRequest) (*leapmuxv1.WhoamiResponse, error) {
@@ -247,6 +255,7 @@ func (h *handler) Whoami(ctx context.Context, req *leapmuxv1.WhoamiRequest) (*le
 		WorkerId: info.WorkerID,
 		TabId:    info.TabID,
 		TabType:  info.TabType,
+		HubUrl:   h.hubURL,
 	}
 	if h.ownerUsername != nil {
 		resp.Username = h.ownerUsername(info.UserID)
@@ -303,9 +312,9 @@ func tabTypeWireName(t leapmuxv1.TabType) string {
 }
 
 // EnvVars assembles the LEAPMUX_CONTROL_* env vars to inject into the
-// spawned process. The caller appends them to cmd.Env. Keeping this
-// here means the env-var schema lives next to the server and changes
-// to either side stay in sync.
+// spawned process. The spawn path applies them through controlenv.Apply.
+// controlenv declares each variable's name, which the CLI reads through the
+// same constants.
 //
 // Only the small set of values the CLI can't cheaply derive from the
 // tab id is injected. Every entity-ID variable carries an explicit
@@ -320,34 +329,41 @@ func tabTypeWireName(t leapmuxv1.TabType) string {
 //   - WORKING_DIR / AGENT_PROVIDER — set at spawn, immutable for the
 //     lifetime of the agent; saved here so the CLI doesn't have to
 //     round-trip the worker on every invocation.
+//   - CLI — cliExecutable, the absolute path of the Worker's link to the
+//     CLI that serves it (see CLIDirectory). controlenv.Apply puts its
+//     directory first on PATH. Absent when cliExecutable is "", because the
+//     Worker has no such link.
 //
 // Workspace id and tile id are deliberately NOT injected — they're
 // derivable from TAB_ID via a single hub LocateTab call, and deriving
 // avoids both the staleness window (tab moves) and any way for a
 // misbehaving client to inject a lying value.
-func EnvVars(socketURL, token string, info TokenInfo) []string {
+func EnvVars(socketURL, token string, info TokenInfo, cliExecutable string) []string {
 	envs := []string{
-		"LEAPMUX_CONTROL_SOCK=" + socketURL,
-		"LEAPMUX_CONTROL_TOKEN=" + token,
-		"LEAPMUX_CONTROL_USER_ID=" + info.UserID.String(),
-		"LEAPMUX_CONTROL_WORKER_ID=" + info.WorkerID,
+		controlenv.SocketVariable + "=" + socketURL,
+		controlenv.TokenVariable + "=" + token,
+		controlenv.UserIDVariable + "=" + info.UserID.String(),
+		controlenv.WorkerIDVariable + "=" + info.WorkerID,
 	}
 	if info.TabID != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_TAB_ID="+info.TabID)
+		envs = append(envs, controlenv.TabIDVariable+"="+info.TabID)
 	}
 	// A quake terminal has no advertised TabID. TerminalID still identifies
 	// the terminal that hosts the process. See TokenInfo.TerminalID.
 	if info.TerminalID != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_TERMINAL_ID="+info.TerminalID)
+		envs = append(envs, controlenv.TerminalIDVariable+"="+info.TerminalID)
 	}
 	if tt := tabTypeWireName(info.TabType); tt != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_TAB_TYPE="+tt)
+		envs = append(envs, controlenv.TabTypeVariable+"="+tt)
 	}
 	if info.WorkingDir != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_WORKING_DIR="+info.WorkingDir)
+		envs = append(envs, controlenv.WorkingDirVariable+"="+info.WorkingDir)
 	}
 	if info.AgentProvider != "" {
-		envs = append(envs, "LEAPMUX_CONTROL_AGENT_PROVIDER="+info.AgentProvider)
+		envs = append(envs, controlenv.AgentProviderVariable+"="+info.AgentProvider)
+	}
+	if cliExecutable != "" {
+		envs = append(envs, controlenv.CLIVariable+"="+cliExecutable)
 	}
 	return envs
 }

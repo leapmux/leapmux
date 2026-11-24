@@ -15,11 +15,25 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+// ControlRequestKey reads the key that the agent publishes a request under:
+// the `id` that omp's dialog states (publishRegisteredDialog), which the
+// bridge's question request repeats (routeAskDialog), exactly as omp states
+// it. It is no JSON-RPC id, so it takes no canonical form.
+func (ompProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var request struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(payload, &request) != nil || request.ID == "" {
+		return "", false
+	}
+	return request.ID, true
+}
+
 // dialogHeader takes the routing fields of an extension_ui_request frame.
 //
 // Every dialog blocks omp until the host answers it with an extension_ui_response
-// that echoes `id`. The whole frame is what the control request publishes, so the
-// browser can read every method-specific field.
+// that echoes `id`. The whole frame is what the control request publishes, so
+// ReadControlRequest can read every method-specific field.
 type dialogHeader struct {
 	ID       string   `json:"id"`
 	Method   string   `json:"method"`
@@ -34,6 +48,7 @@ type dialogHeader struct {
 type pendingDialog struct {
 	header          dialogHeader
 	raw             []byte
+	replyReceipt    agent.NativeInputReceipt
 	ready           bool
 	published       bool
 	answering       bool
@@ -137,6 +152,9 @@ func (a *Agent) publishDialog(head dialogHeader, raw []byte) {
 	}
 	bypass := a.approvalMode == contracts.OhMyPiApprovalModeYolo && head.isToolApproval()
 	pending := &pendingDialog{header: head, raw: append([]byte(nil), raw...), ready: bypass, publicationDone: make(chan struct{})}
+	if reply := a.replyOutputLocked(); reply != nil {
+		pending.replyReceipt = reply.receipt
+	}
 	a.openDialogs[head.ID] = pending
 	a.Mu.Unlock()
 	if bypass {
@@ -160,9 +178,11 @@ func (a *Agent) publishRegisteredDialog(pending *pendingDialog) {
 	a.Mu.Unlock()
 	a.dialogDeadlines.Arm(a.Clock(), head.ID, head.deadline(), func() { a.withdrawDialog(head.ID) })
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
-		RequestID: head.ID,
-		Payload:   pending.raw,
-		SourceSeq: a.approvalSourceSeq(head),
+		RequestID:      head.ID,
+		Payload:        pending.raw,
+		SourceSeq:      a.approvalSourceSeq(head),
+		AgentSessionID: pending.replyReceipt.SessionID,
+		NativeTurnID:   pending.replyReceipt.TurnID,
 	})
 	a.Mu.Lock()
 	pending.ready = true
@@ -353,8 +373,8 @@ func (a *Agent) withdrawDialog(targetID string) {
 // omp's approval dialog states the tool NAME in its title ("Allow tool: bash") and
 // no call id. omp sends it after the call's tool_execution_start, so the call is
 // one of the calls in progress: when exactly one call of that name runs, it is the
-// one, and the control request carries its row so the browser can show the call's
-// arguments. With two or more, no row is stated rather than a wrong one.
+// one, and the control request carries its row so the prompt can show the call's
+// arguments (approvalArgs). With two or more, no row is stated rather than a wrong one.
 func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
 	name := head.approvalTool()
 	if name == "" {
@@ -394,7 +414,8 @@ func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
 // turns it into the dialog chain omp waits on (see answerAsk). Every other frame
 // reaches omp unchanged, and a cancellation of the bridge's request also ends the
 // bridge's state for that call.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	var head struct {
 		Type      string `json:"type"`
 		ID        string `json:"id"`

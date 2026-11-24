@@ -12,4 +12,5 @@ func TestCursorControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.
 	sink := &agenttest.ControlSink{}
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, newCursorAgentWithSink(agent.NewProviderServices(sink)).HandleOutput,
 		contracts.CursorMethodAskQuestion)
+	agenttest.AssertPublishedControlKeys(t, cursorProvider{}, sink)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -290,7 +291,7 @@ func initialChildInputProof(log *nativeLog, target nativeParentInputTarget) (boo
 	return true, nil
 }
 
-// A nil match without a pending reason means positive initial or human ownership.
+// A nil match without a pending reason proves the initial child input.
 // Generic Ignored never authorizes a child input marker.
 func resolveChildInputMarker(parent *nativeLog, target nativeParentInputTarget, marker childInputMarker, initialRun string) (*nativeParentInputMatch, string, error) {
 	if marker.runStart && marker.runID == initialRun {
@@ -341,10 +342,8 @@ func resolveChildInputMarker(parent *nativeLog, target nativeParentInputTarget, 
 	}
 	match := matchNativeParentInput(parent, selected, target)
 	switch match.Status {
-	case nativeParentInputMatched:
+	case nativeParentInputMatched, nativeParentInputHuman:
 		return &match, "", nil
-	case nativeParentInputHuman:
-		return nil, "", nil
 	case nativeParentInputPending:
 		return nil, match.Reason, nil
 	case nativeParentInputIgnored:
@@ -421,7 +420,10 @@ func (a *Agent) proveChildInputMarker(ctx context.Context, id string, state *ses
 		match, pending, proofErr := resolveChildInputMarker(parent.log, target, marker, initialRun)
 		var needed *nativeSourceRange
 		if proofErr == nil && match != nil {
-			pending, needed = unfinishedChildTextBeforeInput(id, state, marker)
+			_, tracked := state.childInputCommands[match.Receipt.InputID]
+			if match.Status == nativeParentInputMatched || tracked {
+				pending, needed = unfinishedChildTextBeforeInput(id, state, marker)
+			}
 		}
 		childChanged := state.log.changed
 		parentChanged := parent.log.changed
@@ -440,6 +442,9 @@ func (a *Agent) proveChildInputMarker(ctx context.Context, id string, state *ses
 		if pending == "" {
 			if match == nil {
 				return nil
+			}
+			if match.Status == nativeParentInputHuman {
+				return a.retainProvedChildInput(id, state, match.Receipt)
 			}
 			supplement, err := json.Marshal(map[string]any{contracts.MuseSupplementFieldNativeRecords: match.Records})
 			if err != nil {
@@ -460,6 +465,55 @@ func (a *Agent) proveChildInputMarker(ctx context.Context, id string, state *ses
 		case <-parentChanged:
 		case <-childChanged:
 		case <-projectionChanged:
+		}
+	}
+}
+
+func (a *Agent) retainProvedChildInput(id string, state *sessionState, receipt agent.NativeInputReceipt) error {
+	a.stateMu.Lock()
+	tracked, found := state.childInputCommands[receipt.InputID]
+	current := a.currentSessionState(id, state)
+	a.stateMu.Unlock()
+	if !current {
+		return agent.ErrChildRouteNotReady
+	}
+	if !found {
+		return nil
+	}
+	var err error
+	if tracked.steerAttemptID != "" {
+		err = agent.RetainSteerResolution(state.sink, agent.SteerResolution{
+			InputID: tracked.inputID, AttemptID: tracked.steerAttemptID, Outcome: agent.SteerOutcomeEchoed, Receipt: receipt,
+		})
+	} else {
+		err = state.sink.BindNativeInputTurn(receipt, receipt.TurnID)
+	}
+	if !agent.OutputRetained(err) {
+		return err
+	}
+	a.stateMu.Lock()
+	if state.childInputCommands[receipt.InputID] == tracked {
+		delete(state.childInputCommands, receipt.InputID)
+	}
+	a.stateMu.Unlock()
+	return nil
+}
+
+func (a *Agent) retireChildInputCommands(id string, state *sessionState) {
+	a.stateMu.Lock()
+	pending := state.childInputCommands
+	state.childInputCommands = nil
+	a.stateMu.Unlock()
+	for commandID, input := range pending {
+		if input.steerAttemptID != "" {
+			retainMuseSteerResolution(state.sink, agent.SteerResolution{
+				InputID: input.inputID, AttemptID: input.steerAttemptID, Outcome: agent.SteerOutcomeUncertain,
+			})
+			continue
+		}
+		receipt := agent.NativeInputReceipt{SessionID: id, InputID: commandID}
+		if err := state.sink.RetireNativeInputTurn(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED); !agent.OutputRetained(err) {
+			slog.Warn("retain the unproved Muse child input", "command", commandID, "error", err)
 		}
 	}
 }

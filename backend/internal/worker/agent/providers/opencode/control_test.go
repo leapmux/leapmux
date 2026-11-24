@@ -13,7 +13,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,6 +58,10 @@ func TestOpenCodeControlsUseTheQualifiedToolSpan(t *testing.T) {
 	require.NoError(t, err)
 	published := sink.PublishedControls()
 	require.Len(t, published, 2)
+	// The Worker refuses each answer to a stored request whose payload gives
+	// another key than its publication, so a permission and a form must each
+	// give the key that register published them under.
+	agenttest.AssertPublishedControlKeys(t, opencodeProvider{}, sink)
 	for _, request := range published {
 		var payload struct {
 			Request struct {
@@ -438,7 +441,7 @@ func TestOpenCodeControlsRetryUncertainRepliesOnlyAfterNativeReconciliation(t *t
 				}
 				err = controls.answer(answer)
 				if settled {
-					require.ErrorIs(t, err, providerkit.ErrControlRequestNotPending)
+					require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
 					assert.EqualValues(t, 1, posts.Load())
 				} else {
 					require.NoError(t, err)
@@ -450,7 +453,7 @@ func TestOpenCodeControlsRetryUncertainRepliesOnlyAfterNativeReconciliation(t *t
 					expectedCancellations = append(expectedCancellations, requestID)
 				}
 				assert.Equal(t, expectedCancellations, sink.CanceledControls())
-				require.ErrorIs(t, controls.answer(answer), providerkit.ErrControlRequestNotPending)
+				require.ErrorIs(t, controls.answer(answer), agent.ErrControlRequestNotPending)
 			})
 		}
 	}
@@ -516,7 +519,7 @@ func TestOpenCodeControlsSnapshotCannotRecreateASettledRequest(t *testing.T) {
 	require.NoError(t, receiveOpenCodeControlTest(t, finished))
 	assert.Len(t, fixture.sink.PublishedControls(), 1)
 	assert.Len(t, fixture.sink.CanceledControls(), 1)
-	require.ErrorIs(t, fixture.controls.answer(fixture.answer), providerkit.ErrControlRequestNotPending)
+	require.ErrorIs(t, fixture.controls.answer(fixture.answer), agent.ErrControlRequestNotPending)
 	assert.EqualValues(t, 1, fixture.posts.Load())
 }
 
@@ -660,7 +663,7 @@ func TestOpenCodeControlsAutoApprovalRevalidatesItsBatch(t *testing.T) {
 				require.NoError(t, controls.answer(answer))
 				assert.Equal(t, "per_2", receiveOpenCodeControlTest(t, requests))
 			} else {
-				require.ErrorIs(t, controls.answer(answer), providerkit.ErrControlRequestNotPending)
+				require.ErrorIs(t, controls.answer(answer), agent.ErrControlRequestNotPending)
 			}
 		})
 	}

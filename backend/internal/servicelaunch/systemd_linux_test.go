@@ -91,7 +91,7 @@ func TestSystemdDefinitionArguments(t *testing.T) {
 	spec.RuntimeArguments = []string{"--name", "a worker's laptop"}
 
 	unit := string(newStubbedSystemd().definitionUnit(spec))
-	assert.Contains(t, unit, `ExecStart=/opt/homebrew/bin/leapmux worker run --data-dir "/home/trustin/My Data/worker"`)
+	assert.Contains(t, unit, `ExecStart=/opt/homebrew/bin/leapmux daemon worker run --data-dir "/home/trustin/My Data/worker"`)
 	assert.Contains(t, unit, `--service-spec "/home/trustin/My Data/worker/.lifecycle/service.yaml"`)
 	assert.NotContains(t, unit, "a worker's laptop")
 	assert.Contains(t, unit, "After=graphical-session.target", "login mode starts with the graphical session")

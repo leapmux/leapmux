@@ -180,6 +180,7 @@ func (a *Agent) onStreamConnected(ctx context.Context) {
 	defer cancel()
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	a.reconcileInputReplies(restateCtx)
 	a.reconcileTurnLocked(restateCtx)
 	a.reconcileActorsAndWorkflowsLocked(restateCtx)
 	a.restatePendingControls(restateCtx)
@@ -193,7 +194,7 @@ func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
 	sessionID := a.sessionID
 	var runningActorIDs []string
 	for actorID, actor := range a.actors {
-		if actor.running {
+		if actor.running && (actor.toolRunning || !a.hasOpenChildReceiptLocked(actor, sessionID)) {
 			runningActorIDs = append(runningActorIDs, actorID)
 		}
 	}
@@ -214,17 +215,40 @@ func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
 				}
 			}
 			for _, actorID := range runningActorIDs {
-				a.Mu.Lock()
-				stillRunning := a.sessionID == sessionID && a.actors[actorID] != nil && a.actors[actorID].running
-				a.Mu.Unlock()
-				if !stillRunning {
-					continue
-				}
 				snap, present := byID[actorID]
 				if present && snap.isRunning() {
 					continue
 				}
+				a.Mu.Lock()
+				actor := a.actors[actorID]
+				stillRunning := a.sessionID == sessionID && actor != nil && actor.running
+				fromTool := stillRunning && actor.toolRunning
+				inboxActive := stillRunning && a.hasOpenChildReceiptLocked(actor, sessionID)
+				if fromTool {
+					actor.toolRunning = false
+				}
+				a.Mu.Unlock()
+				if !stillRunning || (!fromTool && inboxActive) {
+					continue
+				}
 				a.retryForActor(actorID).Reset()
+				if inboxActive {
+					if present {
+						payload := mimoActorStatus{
+							SessionID:   sessionID,
+							ActorID:     actorID,
+							Status:      contracts.MiMoActorStatusIdle,
+							LastOutcome: snap.LastOutcome,
+							TurnCount:   snap.TurnCount,
+							Error:       cmp.Or(snap.Error, snap.LastError),
+						}
+						if payload.Error != "" {
+							a.retainActorFailure(payload, actor)
+						}
+						a.retainActorToolReport(actor, payload.TurnCount, payload.LastOutcome)
+					}
+					continue
+				}
 				if present {
 					a.endActorTurn(mimoActorStatus{
 						SessionID:   sessionID,
@@ -233,13 +257,13 @@ func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
 						LastOutcome: snap.LastOutcome,
 						TurnCount:   snap.TurnCount,
 						Error:       cmp.Or(snap.Error, snap.LastError),
-					})
+					}, fromTool)
 				} else {
 					a.endActorTurnWithOutcome(mimoActorStatus{
 						SessionID: sessionID,
 						ActorID:   actorID,
 						Status:    contracts.MiMoActorStatusIdle,
-					}, bgtask.StatusEndedWithUnknownOutcome, agent.MessageCompletionFinished)
+					}, bgtask.StatusEndedWithUnknownOutcome, agent.MessageCompletionFinished, fromTool)
 				}
 			}
 		}

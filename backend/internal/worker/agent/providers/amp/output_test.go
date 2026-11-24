@@ -497,7 +497,7 @@ func TestProbeSteerTranscript(t *testing.T) {
 	for _, line := range lines[7:10] {
 		h.feed(fp, line)
 	}
-	require.NoError(t, h.agent.SteerInput("Also append the word steered to your final reply.", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "Also append the word steered to your final reply."}))
 	for _, line := range lines[10:] {
 		h.feed(fp, line)
 	}

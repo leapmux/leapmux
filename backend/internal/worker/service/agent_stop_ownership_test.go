@@ -53,8 +53,8 @@ func (a *heldStopAgent) holdStop(input []byte, stop agent.StopContext) error {
 
 func (a *heldStopAgent) Interrupt(stop agent.StopContext) error { return a.holdStop(nil, stop) }
 
-func (a *heldStopAgent) SendRawInput(input []byte, stop agent.StopContext) error {
-	return a.holdStop(input, stop)
+func (a *heldStopAgent) SendRawInput(input agent.RawInput) error {
+	return a.holdStop(input.Data, input.Stop)
 }
 
 type heldChildStopAgent struct{ *heldStopAgent }
@@ -121,7 +121,7 @@ func publishStopControl(t *testing.T, sink agent.ProviderServices, requestID str
 	t.Helper()
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
 		RequestID: requestID,
-		Payload:   []byte(`{"request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"}}}`),
+		Payload:   []byte(fmt.Sprintf(`{"type":"control_request","request_id":%q,"request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"}}}`, requestID)),
 	}))
 }
 

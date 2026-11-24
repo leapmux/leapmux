@@ -3,9 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,15 +20,6 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
-
-type closeAgentWriteFaultDB struct{ *sql.DB }
-
-func (d closeAgentWriteFaultDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	if strings.Contains(query, "UPDATE agents SET closed_at") {
-		return nil, errors.New("the close write failed")
-	}
-	return d.DB.ExecContext(ctx, query, args...)
-}
 
 func TestCloseAgentBlocksNewStartBeforeTeardown(t *testing.T) {
 	t.Parallel()
@@ -440,11 +429,13 @@ func TestCloseAgentReleasesAdmissionAfterDatabaseFailure(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "agent-close-write-fault"
 	seedOpenAgent(t, svc, agentID, true)
-	original := svc.Queries
-	svc.Queries = db.New(closeAgentWriteFaultDB{DB: svc.DB})
+	_, err := svc.DB.ExecContext(ctx, `CREATE TRIGGER reject_agent_close BEFORE UPDATE OF closed_at ON agents
+		WHEN NEW.id = 'agent-close-write-fault' BEGIN SELECT RAISE(ABORT, 'the close write failed'); END`)
+	require.NoError(t, err)
 	result := svc.closeAgentTabCommon("", agentID,
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
-	svc.Queries = original
+	_, err = svc.DB.ExecContext(ctx, "DROP TRIGGER reject_agent_close")
+	require.NoError(t, err)
 	require.Contains(t, result.GetFailureDetail(), "the close write failed")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)

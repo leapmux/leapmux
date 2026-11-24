@@ -43,11 +43,15 @@ One account's live authorization of one **app**, across every machine that app r
 
 The page a Hub renders when an app asks for access. It states the app's name, warns when no administrator vouched for it, and lists every permission as a sentence a person can act on -- *Type into your terminals, which runs any command on your machine*, never `terminal:write`. Approving needs a recently proven factor. See [Connected Apps](/docs/using/connected-apps/#authorizing-an-app).
 
+### Control CLI
+
+`leapmux` (and its short alias `lmx`): a command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux auth login` or connect automatically to a local `solo`/`dev` Hub; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Control CLI](/docs/using/control-cli/).
+
 ## D
 
 ### Delegation token
 
-A short-lived credential a Worker mints for the agent or terminal running in one of its tabs, so it can call `leapmux control` with no login. It carries the Worker owner's identity, reaches only that owner's Workers, holds no elevation, and is revoked when the tab closes. See [What a delegation token can reach](/docs/admin/security/#what-a-delegation-token-can-reach).
+A short-lived credential a Worker mints for the agent or terminal running in one of its tabs, so it can call `leapmux` with no login. It carries the Worker owner's identity, reaches only that owner's Workers, holds no elevation, and is revoked when the tab closes. See [What a delegation token can reach](/docs/admin/security/#what-a-delegation-token-can-reach).
 
 ### Distributed mode
 
@@ -79,7 +83,7 @@ A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with
 
 ### Hub
 
-The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity**, and a browser trusts it for code. It cannot read content while it only relays ciphertext. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
+The central service (`leapmux daemon hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity**, and a browser trusts it for code. It cannot read content while it only relays ciphertext. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## I
 
@@ -129,11 +133,7 @@ A pseudo-terminal — the operating-system primitive behind a terminal tab. Each
 
 ### Registration key
 
-A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog, then pass it to `leapmux worker register --registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
-
-### Control CLI
-
-`leapmux control`: a JSON-emitting command-line surface for driving a running Hub from a script or from inside an agent — creating workspaces and tabs, sending agent and terminal input, mutating the tile layout, inspecting files and git, and watching events. External users authorize it with `leapmux control auth login`; agents are handed credentials automatically through `LEAPMUX_CONTROL_*` environment variables. See [Control CLI](/docs/using/control-cli/).
+A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog, then pass it to `leapmux daemon worker register --registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
 
 ## Q
 
@@ -149,11 +149,11 @@ The persistent state of a running coding agent — its conversation history and 
 
 ### Service
 
-An entry in the service manager of the operating system — launchd, systemd, or Task Scheduler and the Service Control Manager on Windows — that `leapmux <mode> start` or `enable` creates. It keeps LeapMux running in the background, and starts it when you log in or when the computer starts. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
+An entry in the service manager of the operating system — launchd, systemd, or Task Scheduler and the Service Control Manager on Windows — that `leapmux daemon <mode> start` or `enable` creates. It keeps LeapMux running in the background, and starts it when you log in or when the computer starts. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
 ### Solo mode
 
-The single-user mode (`leapmux solo`) that runs a Hub and a Worker in one process. Its account, `solo`, starts without a password. Local IPC uses the account without a credential. TCP exposes only first-password setup until one caller claims the account. After setup, every TCP address requires sign-in. Binding a passwordless solo hub to a non-loopback address triggers a warning. Contrast with **distributed mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+The single-user mode (`leapmux daemon solo`) that runs a Hub and a Worker in one process. Its account, `solo`, starts without a password. Local IPC uses the account without a credential. TCP exposes only first-password setup until one caller claims the account. After setup, every TCP address requires sign-in. Binding a passwordless solo hub to a non-loopback address triggers a warning. Contrast with **distributed mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Steering
 
@@ -188,7 +188,7 @@ The pinning scheme that protects Worker identity. On the first connection to a W
 
 ### Worker
 
-A long-running daemon (`leapmux worker`) that runs on a developer machine and hosts agents, terminals, and file access for a workspace. A Worker dials the Hub outbound (so it works behind NAT with no inbound ports), registers with a registration key, and keeps agent and terminal state in its own local database. Its online/offline status reflects whether it currently holds a live connection to the Hub. See [Managing Workers](/docs/admin/managing-workers/) and [Running LeapMux](/docs/admin/running-leapmux/).
+A long-running daemon (`leapmux daemon worker`) that runs on a developer machine and hosts agents, terminals, and file access for a workspace. A Worker dials the Hub outbound (so it works behind NAT with no inbound ports), registers with a registration key, and keeps agent and terminal state in its own local database. Its online/offline status reflects whether it currently holds a live connection to the Hub. See [Managing Workers](/docs/admin/managing-workers/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ### Workspace
 

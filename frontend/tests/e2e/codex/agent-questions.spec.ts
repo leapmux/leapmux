@@ -180,7 +180,7 @@ codexTest.describe('async agent questions for Codex', () => {
     await expectNoControlBanner(native.page)
     await expect(pendingQuestionsBanner(native.page)).toHaveCount(0)
     await expectTurnEndedAfter(native.modelScript, start + 2)
-    await expect(visibleOnly(native.page.getByText(`Skipped: ${ASYNC_QUESTION_TITLE}`)).first()).toBeVisible()
+    await expect(visibleOnly(native.page.getByText(`Dismissed: ${ASYNC_QUESTION_TITLE}`)).first()).toBeVisible()
   })
 
   codexTest('keeps an async question across a reload', async ({ native }) => {

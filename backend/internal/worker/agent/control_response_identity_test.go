@@ -19,20 +19,19 @@ func TestControlResponseIDReplacementPreservesEveryOtherByte(t *testing.T) {
 	require.Equal(t, expected, resolution.Content)
 }
 
-// The refusal states which half failed: a stored request with no readable id,
-// or an answer whose id is another request's.
-func TestControlResponseRejectsAnUnmatchedNativeRequestID(t *testing.T) {
-	for request, reason := range map[string]string{
-		`{"id":"another-request","method":"session/request_permission"}`: RefusalOtherRequest,
-		`{"id":null,"method":"session/request_permission"}`:              RefusalUnreadableRequest,
-		`{"method":"session/request_permission"}`:                        RefusalUnreadableRequest,
-		`{malformed`: RefusalUnreadableRequest,
+// A stored request with no readable id gives the reply no native id to
+// restore, so the answer is withheld.
+func TestControlResponseRefusesAStoredRequestWithNoReadableID(t *testing.T) {
+	for _, request := range []string{
+		`{"id":null,"method":"session/request_permission"}`,
+		`{"method":"session/request_permission"}`,
+		`{malformed`,
 	} {
 		resolution := restoreControlResponseID(ControlResponseContext{
-			RequestPayload: []byte(request), ResponseContent: []byte(`{"id":"request","result":false}`),
+			RequestID: "request", RequestPayload: []byte(request), ResponseContent: []byte(`{"id":"request","result":false}`),
 		})
 		require.True(t, resolution.Withhold, request)
-		require.EqualError(t, resolution.Refusal(), reason, request)
+		require.EqualError(t, resolution.Refusal(), RefusalUnreadableRequest, request)
 	}
 }
 

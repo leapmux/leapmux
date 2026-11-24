@@ -15,7 +15,9 @@ import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { NotificationDot } from '~/components/common/NotificationDot'
 import { TabContextMenu } from '~/components/common/TabContextMenu'
+import { TabStatusBadge } from '~/components/common/TabStatusBadge'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
+import { TerminalProgressBar } from '~/components/common/TerminalProgressBar'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WorkingTreeIcon, workingTreeKindLabel, WorkingTreeRows } from '~/components/common/WorkingTree'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
@@ -26,8 +28,7 @@ import { createGuardedDraggableRow } from '~/lib/dragRow'
 import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { diffStatsFromRepo } from '~/stores/repoGit'
-import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalDisplayStatus, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
-import * as tabBarStyles from '../shell/TabBar.css'
+import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalDisplayStatus, terminalProgressVisible } from '~/stores/tab.helpers'
 import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
@@ -203,15 +204,14 @@ const TabLeaf: Component<{
           </span>
         </Tooltip>
       </Show>
+      <Show when={props.tab.tabStatus}>
+        {status => <TabStatusBadge status={status()} />}
+      </Show>
       <Show when={props.tab.hasNotification}>
         <NotificationDot testId="sidebar-tab-notification" />
       </Show>
       <Show when={terminalProgressVisible(props.tab)}>
-        <span
-          class={tabBarStyles.tabProgress}
-          data-testid="tab-progress"
-          {...terminalProgressBarProps(props.tab)}
-        />
+        <TerminalProgressBar tab={props.tab} />
       </Show>
       <DragHandle activators={dragRow.gripActivators} testId="sidebar-tab-drag-handle" />
       <Show when={props.canClose}>

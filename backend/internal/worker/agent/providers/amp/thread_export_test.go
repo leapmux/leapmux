@@ -24,7 +24,7 @@ func TestSteerWithoutAnExportBaselineStaysUnsent(t *testing.T) {
 		calls++
 		return nil, assert.AnError
 	}
-	err := h.agent.SteerInput("do not send without a baseline", nil)
+	err := h.agent.SteerInput(agent.SteerRequest{Content: "do not send without a baseline"})
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Equal(t, 1, calls)
 	assert.Len(t, proc.stdin.lines(), 1)
@@ -41,7 +41,7 @@ func TestReconcileStoppedSteersPersistsTheHiddenReplyOnce(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) { return []byte(recoveryHistory), nil }
 	h.agent.reconcileStoppedSteers("T-1")
@@ -104,7 +104,7 @@ func TestReconcileStoppedSteersMarksFailedReadsUncertain(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	started := make(chan struct{})
 	h.agent.exportFn = func(ctx context.Context, _ string) ([]byte, error) {
@@ -138,7 +138,7 @@ func TestReconcileWaitsOnTheInjectedClock(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	calls := 0
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) {
@@ -180,7 +180,7 @@ func TestProcessForTurnRechecksAnUncertainServerDelivery(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	h.agent.mu.Lock()
 	submission := h.agent.nativeSteers[0]
 	submission.uncertain = true
@@ -207,11 +207,11 @@ func TestSteerRequiresTheNativeThreadIdentityBeforeItReadsHistory(t *testing.T) 
 		assert.Equal(t, "T-1", threadID)
 		return []byte(`{"id":"T-1","messages":[]}`), nil
 	}
-	require.ErrorIs(t, h.agent.SteerInput("second", nil), agent.ErrSteeringUnsupported)
+	require.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}), agent.ErrSteeringUnsupported)
 	assert.Zero(t, exports)
 	assert.Len(t, proc.stdin.lines(), 1)
 	h.feed(proc, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	assert.Equal(t, 1, exports)
 	assert.Len(t, proc.stdin.lines(), 2)
 }
@@ -224,7 +224,7 @@ func TestSteerRechecksTheTurnAfterReadingTheBaseline(t *testing.T) {
 		h.feed(proc, textLine("finished", stopReasonEndTurn))
 		return []byte(`{"id":"T-1","messages":[]}`), nil
 	}
-	require.ErrorIs(t, h.agent.SteerInput("second", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}), agent.ErrNoActiveTurn)
 	assert.Len(t, proc.stdin.lines(), 1)
 	assert.Empty(t, h.agent.nativeSteers)
 }
@@ -250,7 +250,7 @@ func TestReconcileStoppedSteersKeepsALivePrefixWithoutDuplicatingIt(t *testing.T
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	h.feed(proc, userEchoLine("second"))
 	h.feed(proc, textLine("Already visible.", "tool_use"))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
@@ -278,7 +278,7 @@ func TestReconcileStoppedSteersWaitsForAFinalNativeReply(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	exported, err := parseThreadExport([]byte(recoveryHistory), "T-1")
 	require.NoError(t, err)
@@ -315,7 +315,7 @@ func TestReconcileStoppedSteersRetainsRowsAndTheirSessionAfterAWriteFailure(t *t
 	h := newHarness(t, withResume("T-1"))
 	h.agent.sink = agent.NewModelProgressResetSink(h.agent.sink)
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	h.sink.PersistErr = assert.AnError
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) { return []byte(recoveryHistory), nil }
@@ -342,7 +342,7 @@ func TestRecoveredSteersRespectOutputDiscard(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	exported, err := parseThreadExport([]byte(recoveryHistory), "T-1")
 	require.NoError(t, err)
 	h.agent.DiscardOutput()
@@ -356,7 +356,7 @@ func TestReconcileStoppedSteersMarksAnAbsentReceiptUncertain(t *testing.T) {
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) { return []byte(recoveryHistory), nil }
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	trap := h.clock.Trap().NewTimer(AmpExportIntervalTag)
 	defer trap.Close()
@@ -381,7 +381,7 @@ func TestStopCancelsTheNativeRecoveryRead(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("first")
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	started := make(chan struct{})
 	h.agent.exportFn = func(ctx context.Context, _ string) ([]byte, error) {
 		close(started)

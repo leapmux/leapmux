@@ -57,6 +57,24 @@ func receiveDroidInput(t *testing.T, requests <-chan droidEnvelope) droidEnvelop
 	}
 }
 
+func testDroidSteer(index int, text string) agent.SteerRequest {
+	return agent.SteerRequest{InputID: fmt.Sprintf("input-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), Content: text}
+}
+
+func testDroidSteerReport(index int, outcome agent.SteerOutcome, receipt agent.NativeInputReceipt) agent.SteerResolution {
+	return agent.SteerResolution{InputID: fmt.Sprintf("input-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), Outcome: outcome, Receipt: receipt}
+}
+
+func testDroidSteerEcho(t *testing.T, request droidEnvelope, index int) agent.SteerResolution {
+	t.Helper()
+	var params addUserMessageParams
+	require.NoError(t, json.Unmarshal(request.Params, &params))
+	require.NotEmpty(t, params.MessageID)
+	return testDroidSteerReport(index, agent.SteerOutcomeEchoed, agent.NativeInputReceipt{
+		SessionID: params.SessionID, InputID: params.MessageID, TurnID: params.MessageID,
+	})
+}
+
 func TestAddUserMessageErrorReleasesTheTurn(t *testing.T) {
 	t.Parallel()
 	a, sink, requests, _ := newDroidInputHarness(t)
@@ -66,22 +84,25 @@ func TestAddUserMessageErrorReleasesTheTurn(t *testing.T) {
 	answerDroidInput(t, a, request.ID, true)
 	require.ErrorContains(t, <-done, "input refused")
 	assert.False(t, a.PublishTurnActive().Active)
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 }
 
 func TestQueuedMessagesDiscardedReportsPendingSteers(t *testing.T) {
 	t.Parallel()
 	a, sink, requests, _ := newDroidInputHarness(t)
 	a.startTurn()
-	for _, text := range []string{"first", "second"} {
+	for index, text := range []string{"first", "second"} {
 		done := make(chan error, 1)
-		go func() { done <- a.SteerInput(text, nil) }()
+		go func() { done <- a.SteerInput(testDroidSteer(index+1, text)) }()
 		request := receiveDroidInput(t, requests)
 		answerDroidInput(t, a, request.ID, false)
 		require.NoError(t, <-done)
 	}
 	a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"queued_messages_discarded","text":"first\nsecond"}`)))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 2}}, sink.SteerEchoReports())
+	assert.ElementsMatch(t, []agent.SteerResolution{
+		testDroidSteerReport(1, agent.SteerOutcomeDropped, agent.NativeInputReceipt{}),
+		testDroidSteerReport(2, agent.SteerOutcomeDropped, agent.NativeInputReceipt{}),
+	}, sink.SteerResolutions())
 	assert.Empty(t, sink.PersistedNotifications())
 	assert.Empty(t, sink.Messages())
 }
@@ -94,7 +115,7 @@ func TestQueueSnapshotDoesNotSettlePendingSteer(t *testing.T) {
 			a, sink, requests, _ := newDroidInputHarness(t)
 			a.startTurn()
 			done := make(chan error, 1)
-			go func() { done <- a.SteerInput("queued guidance", nil) }()
+			go func() { done <- a.SteerInput(testDroidSteer(1, "queued guidance")) }()
 			request := receiveDroidInput(t, requests)
 			answerDroidInput(t, a, request.ID, false)
 			require.NoError(t, <-done)
@@ -105,10 +126,10 @@ func TestQueueSnapshotDoesNotSettlePendingSteer(t *testing.T) {
 			a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"queued_messages_changed","messages":`+messages+`}`)))
 			assert.Empty(t, sink.Messages())
 			assert.Empty(t, sink.PersistedNotifications())
-			assert.Empty(t, sink.SteerEchoReports())
+			assert.Empty(t, sink.SteerResolutions())
 			assert.True(t, a.PublishTurnActive().Active)
 			a.HandleOutput(droidAuditNotification(t, "", droidInputEcho(t, request)))
-			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			assert.Equal(t, []agent.SteerResolution{testDroidSteerEcho(t, request, 1)}, sink.SteerResolutions())
 		})
 	}
 }
@@ -118,22 +139,30 @@ func TestDroidSteerEchoPrecedesTheReplyAndSurvivesTheTurnEnd(t *testing.T) {
 	a, sink, requests, _ := newDroidInputHarness(t)
 	a.startTurn()
 	done := make(chan error, 1)
-	go func() { done <- a.SteerInput("steer", nil) }()
+	go func() { done <- a.SteerInput(testDroidSteer(1, "steer")) }()
 	request := receiveDroidInput(t, requests)
 	a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"agent_turn_completed","reason":"completed"}`)))
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	var params addUserMessageParams
 	require.NoError(t, json.Unmarshal(request.Params, &params))
 	require.NotEmpty(t, params.MessageID)
 	echo := []byte(fmt.Sprintf(`{"type":"create_message","message":{"id":%q,"role":"user","content":[{"type":"text","text":"steer"}]}}`, params.MessageID))
 	a.HandleOutput(droidAuditNotification(t, "", echo))
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false", "turn_active:true", "steer-echoed:1"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false", "turn_active:true"}, sink.TurnLifecycle())
 	assert.True(t, a.PublishTurnActive().Active, "the echoed input starts work before the queue releases another input")
 	answerDroidInput(t, a, request.ID, true)
 	require.NoError(t, <-done, "the native echo proves delivery despite a later error")
 	a.HandleOutput(droidAuditNotification(t, "", echo))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	expected := testDroidSteerEcho(t, request, 1)
+	assert.Equal(t, []agent.SteerResolution{expected}, sink.SteerResolutions())
 	require.Len(t, sink.Messages(), 1, "only the earlier turn end is a native row")
+	deliverDroidReplyMessage(t, a, "", "steer-reply", expected.Receipt.InputID, "assistant",
+		map[string]any{"type": "text", "text": "Reply to the separate steer."})
+	deliverDroidReplyEnd(t, a, expected.Receipt.TurnID)
+	turns := sink.NativeReplyTurns()
+	require.Len(t, turns, 1)
+	assert.Equal(t, expected.Receipt.TurnID, turns[0].TurnID)
+	assert.Equal(t, []agent.NativeReplyItem{{Ordinal: 2, MessageKey: droidMessageWriteKey("steer-reply", 0)}}, turns[0].Items)
 }
 
 func TestDroidSteerRefusalDoesNotReportADrop(t *testing.T) {
@@ -141,12 +170,12 @@ func TestDroidSteerRefusalDoesNotReportADrop(t *testing.T) {
 	a, sink, requests, _ := newDroidInputHarness(t)
 	a.startTurn()
 	done := make(chan error, 1)
-	go func() { done <- a.SteerInput("refused", nil) }()
+	go func() { done <- a.SteerInput(testDroidSteer(1, "refused")) }()
 	request := receiveDroidInput(t, requests)
 	answerDroidInput(t, a, request.ID, true)
 	require.ErrorContains(t, <-done, "input refused")
 	a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"queued_messages_discarded","text":"external input"}`)))
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	require.Len(t, sink.PersistedNotifications(), 1)
 }
 
@@ -163,12 +192,12 @@ func TestDroidSteerDiscardBeforeReplyReportsOnce(t *testing.T) {
 	a, sink, requests, _ := newDroidInputHarness(t)
 	a.startTurn()
 	done := make(chan error, 1)
-	go func() { done <- a.SteerInput("discard", nil) }()
+	go func() { done <- a.SteerInput(testDroidSteer(1, "discard")) }()
 	request := receiveDroidInput(t, requests)
 	a.HandleOutput(droidAuditNotification(t, "", []byte(fmt.Sprintf(`{"type":"queued_messages_discarded","requestId":%q,"text":"discard"}`, request.ID))))
 	answerDroidInput(t, a, request.ID, true)
 	require.NoError(t, <-done)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testDroidSteerReport(1, agent.SteerOutcomeDropped, agent.NativeInputReceipt{})}, sink.SteerResolutions())
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, sink.PersistedNotifications())
 }
@@ -180,12 +209,12 @@ func TestDroidSteerEchoWaitsBehindAFailedWrite(t *testing.T) {
 	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(recorder))
 	a.startTurn()
 	done := make(chan error, 1)
-	go func() { done <- a.SteerInput("steer", nil) }()
+	go func() { done <- a.SteerInput(testDroidSteer(1, "steer")) }()
 	request := receiveDroidInput(t, requests)
 	a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"assistant_text_delta","messageId":"before","textDelta":"before the steer"}`)))
 	sink.PersistErr = assert.AnError
 	a.HandleOutput(droidAuditNotification(t, "", droidInputEcho(t, request)))
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	answerDroidInput(t, a, request.ID, true)
 	require.NoError(t, <-done, "a retained echo still proves delivery")
 	a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"create_message","message":{"id":"after","role":"assistant","content":[{"type":"text","text":"after the steer"}]}}`)))
@@ -201,7 +230,7 @@ func TestDroidSteerEchoWaitsBehindAFailedWrite(t *testing.T) {
 	assert.True(t, recorder.activeAtEcho, "the later turn end cannot release the queue before the retained echo")
 	active, _ := sink.LastTurnActive()
 	assert.False(t, active, "the queue releases after the retained turn end")
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testDroidSteerEcho(t, request, 1)}, sink.SteerResolutions())
 }
 
 type droidSteerCaptureSink struct {
@@ -210,8 +239,8 @@ type droidSteerCaptureSink struct {
 	activeAtEcho bool
 }
 
-func (sink *droidSteerCaptureSink) CaptureSteerReport(count int, outcome agent.SteerOutcome) func() error {
-	report := sink.Sink.CaptureSteerReport(count, outcome)
+func (sink *droidSteerCaptureSink) CaptureSteerResolution(resolution agent.SteerResolution) func() error {
+	report := sink.Sink.CaptureSteerResolution(resolution)
 	return func() error {
 		if err := report(); err != nil {
 			return err
@@ -243,15 +272,15 @@ func TestDroidInputWriteFailurePreservesDeliveryCertainty(t *testing.T) {
 				sink: agent.NewProviderServices(sink), sessionID: "main-session",
 			}
 			a.startTurn()
-			err := a.SteerInput("write failure", nil)
+			err := a.SteerInput(testDroidSteer(1, "write failure"))
 			require.ErrorIs(t, err, io.ErrClosedPipe)
 			if written == 0 {
 				assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 			} else {
 				assert.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 			}
-			assert.Empty(t, a.steers.Pending())
-			assert.Empty(t, sink.SteerEchoReports())
+			assert.Empty(t, a.pendingSteers)
+			assert.Empty(t, sink.SteerResolutions())
 		})
 	}
 }
@@ -263,11 +292,11 @@ func TestDroidInputExitBeforeReplyIsUncertain(t *testing.T) {
 	writer.respond = nil
 	a.startTurn()
 	done := make(chan error, 1)
-	go func() { done <- a.SteerInput("input", nil) }()
+	go func() { done <- a.SteerInput(testDroidSteer(1, "input")) }()
 	<-writer.written
 	close(processDone)
 	require.ErrorIs(t, <-done, agent.ErrDeliveryUncertain)
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 }
 
 func TestDroidSteerMatchesIdentityInsteadOfEqualText(t *testing.T) {
@@ -275,21 +304,24 @@ func TestDroidSteerMatchesIdentityInsteadOfEqualText(t *testing.T) {
 	a, sink, requests, _ := newDroidInputHarness(t)
 	a.startTurn()
 	var sent []droidEnvelope
-	for range 2 {
+	for index := range 2 {
 		done := make(chan error, 1)
-		go func() { done <- a.SteerInput("same", nil) }()
+		go func() { done <- a.SteerInput(testDroidSteer(index+1, "same")) }()
 		request := receiveDroidInput(t, requests)
 		sent = append(sent, request)
 		answerDroidInput(t, a, request.ID, false)
 		require.NoError(t, <-done)
 	}
 	a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"create_message","message":{"id":"ordinary","role":"user","content":[{"type":"text","text":"same"}]}}`)))
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	a.HandleOutput(droidAuditNotification(t, "", droidInputEcho(t, sent[1])))
-	assert.Empty(t, sink.SteerEchoReports(), "a later echo waits for the first steer")
-	a.HandleOutput(droidAuditNotification(t, "", droidInputEcho(t, sent[0])))
+	second := testDroidSteerEcho(t, sent[1], 2)
+	require.Equal(t, []agent.SteerResolution{second}, sink.SteerResolutions())
+	first := testDroidSteerEcho(t, sent[0], 1)
+	first.Receipt.TurnID = second.Receipt.TurnID
+	deliverDroidReplyMessage(t, a, sent[0].ID, first.Receipt.InputID, second.Receipt.InputID, "user")
 	a.HandleOutput(droidAuditNotification(t, "", droidInputEcho(t, sent[1])))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 2}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{second, first}, sink.SteerResolutions())
 	assert.Empty(t, sink.Messages(), "the queue already owns user transcript rows")
 }
 
@@ -300,11 +332,11 @@ func TestDroidSteerTimeoutKeepsDeliveryUncertain(t *testing.T) {
 	trap := clock.Trap().NewTimer(providerkit.AwaitResponseTimerTag, droidMethodAddUserMessage)
 	t.Cleanup(trap.Close)
 	done := make(chan error, 1)
-	go func() { done <- a.SteerInput("uncertain", nil) }()
+	go func() { done <- a.SteerInput(testDroidSteer(1, "uncertain")) }()
 	receiveDroidInput(t, requests)
 	testutil.WaitForTimer(t, testutil.DeadlineContext(t), trap)
 	clock.Advance(time.Minute).MustWait(testutil.DeadlineContext(t))
 	require.ErrorIs(t, <-done, agent.ErrDeliveryUncertain)
-	assert.Empty(t, sink.SteerEchoReports())
-	assert.Empty(t, a.steers.Pending())
+	assert.Empty(t, sink.SteerResolutions())
+	assert.Empty(t, a.pendingSteers)
 }

@@ -292,7 +292,7 @@ type Server struct {
 	webauthnSessions *hubwebauthn.SessionStore
 	deviceAuths      service.DeviceAuthorizationStore
 	server           *http.Server
-	// listeners owns every TCP socket, including the one -listen gave, and
+	// listeners owns every TCP socket, including the one --listen gave, and
 	// rebinds them when the extra_listen_addresses setting changes.
 	listeners *listenerSet
 	// listenerErrs carries a TCP listener that stopped without being asked
@@ -1195,7 +1195,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	if cfg.SoloMode {
 		extraAddrs, extraErr := settings.ExtraListenAddresses(startupSnap)
 		if extraErr != nil {
-			slog.Warn("the stored extra listen addresses could not be read; serving only the -listen address",
+			slog.Warn("the stored extra listen addresses could not be read; serving only the --listen address",
 				"error", extraErr)
 		} else {
 			listeners.ApplyBestEffort(extraAddrs)
@@ -1290,7 +1290,7 @@ func (s *Server) SettingsManager() *settings.Manager {
 }
 
 // PrimaryListenAddr is the TCP address a browser reaches this hub at, in the
-// form -listen carries, or "" when the hub binds no TCP address at all.
+// form --listen carries, or "" when the hub binds no TCP address at all.
 //
 // The launchers print it. They cannot read cfg.Listen for that any more: a
 // stored extra address can widen it (127.0.0.1:4327 merged into *:4327) or
@@ -1317,9 +1317,9 @@ func (s *Server) AccessURL() string {
 // machine can reach.
 //
 // The solo launcher asks, AFTER NewServer returns, so its exposure warning
-// reads the sockets the hub actually bound rather than the -listen string. A
+// reads the sockets the hub actually bound rather than the --listen string. A
 // stored extra address is bound by then, and that is the whole difference:
-// -listen alone cannot see the address a settings row published.
+// --listen alone cannot see the address a settings row published.
 func (s *Server) HasNonLoopbackAddress() bool {
 	return listenset.AnyNonLoopback(s.listeners.Bound())
 }

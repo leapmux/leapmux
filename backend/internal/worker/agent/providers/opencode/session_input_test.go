@@ -16,6 +16,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func openCodeTestSteerRequest(inputID, content string) agent.SteerRequest {
+	return agent.SteerRequest{InputID: inputID, AttemptID: "attempt-" + inputID, Content: content}
+}
+
+func steerOpenCodeTestInput(runtime *openCodeSessionRuntime, inputID, content string) error {
+	_, err := runtime.steerQueuedInput(nil, openCodeTestSteerRequest(inputID, content))
+	return err
+}
+
 func inputRuntime(t *testing.T, rpc openCodeRPC, sink *agenttest.Sink) *openCodeSessionRuntime {
 	t.Helper()
 	sink.UpdateSessionID("ses_1")
@@ -47,7 +56,7 @@ func TestOpenCodeInputDispatchesOrdinaryAndLiveInputsThroughNativeSteerReceipts(
 	runtime := inputRuntime(t, rpc, sink)
 	require.NoError(t, runtime.SendInputForSession("ses_1", "text", nil))
 	assert.ErrorIs(t, runtime.SendInput("text", nil), agent.ErrAgentBusy)
-	require.NoError(t, runtime.SteerInput("text", nil))
+	require.NoError(t, steerOpenCodeTestInput(runtime, "queue-input", "text"))
 	mu.Lock()
 	assert.Equal(t, []string{"steer", "steer"}, deliveries)
 	mu.Unlock()
@@ -61,9 +70,9 @@ func TestOpenCodeInputRejectsIdentityAndIdleSteeringBeforeHTTP(t *testing.T) {
 	runtime := inputRuntime(t, rpc, &agenttest.Sink{})
 	assert.Error(t, runtime.SendInputForSession("", "text", nil))
 	assert.Error(t, runtime.SendInputForSession("ses_other", "text", nil))
-	assert.ErrorIs(t, runtime.SteerInput("text", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, steerOpenCodeTestInput(runtime, "queue-input", "text"), agent.ErrNoActiveTurn)
 	runtime.setNativeActivity(true, true)
-	assert.ErrorIs(t, runtime.SteerInput("text", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, steerOpenCodeTestInput(runtime, "queue-input", "text"), agent.ErrNoActiveTurn)
 	assert.Zero(t, calls.Load())
 }
 
@@ -170,7 +179,7 @@ func TestOpenCodeSteerRefusalPreservesTheRunningTurn(t *testing.T) {
 	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusConflict) })
 	runtime := inputRuntime(t, rpc, &agenttest.Sink{})
 	runtime.setNativeActivity(true, false)
-	err := runtime.SteerInput("steer", nil)
+	err := steerOpenCodeTestInput(runtime, "queue-input", "steer")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, runtime.PublishTurnActive())
@@ -296,12 +305,13 @@ func TestOpenCodeInputSteerEchoCanPrecedeItsHTTPReceipt(t *testing.T) {
 	sink := &agenttest.Sink{}
 	runtime = inputRuntime(t, rpc, sink)
 	runtime.setNativeActivity(true, false)
-	require.NoError(t, runtime.SteerInput("steer", nil))
-	reports := sink.SteerEchoReports()
+	require.NoError(t, steerOpenCodeTestInput(runtime, "queue-input", "steer"))
+	reports := sink.SteerResolutions()
 	require.Len(t, reports, 1)
 	assert.Equal(t, agent.SteerOutcomeEchoed, reports[0].Outcome)
-	assert.Equal(t, 1, reports[0].Count)
-	assert.Empty(t, runtime.steers.Pending())
+	assert.Equal(t, "queue-input", reports[0].InputID)
+	assert.NotEmpty(t, reports[0].Receipt.InputID)
+	assert.Empty(t, runtime.steers)
 }
 
 func TestOpenCodeInputCancelledSteerIsDroppedByItsOwnID(t *testing.T) {
@@ -320,8 +330,8 @@ func TestOpenCodeInputCancelledSteerIsDroppedByItsOwnID(t *testing.T) {
 	sink := &agenttest.Sink{}
 	runtime := inputRuntime(t, rpc, sink)
 	runtime.setNativeActivity(true, false)
-	require.NoError(t, runtime.SteerInput("identical", nil))
-	require.NoError(t, runtime.SteerInput("identical", nil))
+	require.NoError(t, steerOpenCodeTestInput(runtime, "first", "identical"))
+	require.NoError(t, steerOpenCodeTestInput(runtime, "second", "identical"))
 	idsMu.Lock()
 	retainedIDs := append([]string(nil), ids...)
 	idsMu.Unlock()
@@ -329,13 +339,14 @@ func TestOpenCodeInputCancelledSteerIsDroppedByItsOwnID(t *testing.T) {
 	assert.NotEqual(t, retainedIDs[0], retainedIDs[1])
 	_, err := runtime.observeInbox(openCodeSessionEventForTest(t, "inbox.cancelled", `"inboxID":"`+retainedIDs[1]+`"`))
 	require.NoError(t, err)
-	assert.Empty(t, sink.SteerEchoReports())
+	dropped := agent.SteerResolution{InputID: "second", AttemptID: "attempt-second", Outcome: agent.SteerOutcomeDropped}
+	assert.Equal(t, []agent.SteerResolution{dropped}, sink.SteerResolutions())
 	_, err = runtime.observeInbox(openCodeSessionEventForTest(t, "inbox.delivered", `"inboxID":"`+retainedIDs[0]+`"`))
 	require.NoError(t, err)
-	reports := sink.SteerEchoReports()
-	require.Len(t, reports, 2)
-	assert.Equal(t, agent.SteerOutcomeEchoed, reports[0].Outcome)
-	assert.Equal(t, agent.SteerOutcomeDropped, reports[1].Outcome)
+	assert.Equal(t, []agent.SteerResolution{dropped, {
+		InputID: "first", AttemptID: "attempt-first", Outcome: agent.SteerOutcomeEchoed,
+		Receipt: agent.NativeInputReceipt{SessionID: "ses_1", InputID: retainedIDs[0]},
+	}}, sink.SteerResolutions())
 }
 
 func TestOpenCodeInputUnprovedSteersStayUncertainAtProcessExit(t *testing.T) {
@@ -349,10 +360,10 @@ func TestOpenCodeInputUnprovedSteersStayUncertainAtProcessExit(t *testing.T) {
 	sink := &agenttest.Sink{}
 	runtime := inputRuntime(t, rpc, sink)
 	runtime.setNativeActivity(true, false)
-	require.NoError(t, runtime.SteerInput("steer", nil))
+	require.NoError(t, steerOpenCodeTestInput(runtime, "queue-input", "steer"))
 	runtime.finishPendingSteers()
 	runtime.finishPendingSteers()
-	reports := sink.SteerEchoReports()
+	reports := sink.SteerResolutions()
 	require.Len(t, reports, 1)
 	assert.Equal(t, agent.SteerOutcomeUncertain, reports[0].Outcome)
 }
@@ -379,12 +390,12 @@ func TestOpenCodeInputSteerEchoWaitsForPrecedingTextPersistence(t *testing.T) {
 	require.NoError(t, err)
 	_, err = text.observe(openCodeSessionEventForTest(t, "step.ended", `"assistantMessageID":"msg_text"`))
 	require.ErrorIs(t, err, assert.AnError)
-	require.NoError(t, runtime.SteerInput("steer", nil))
-	assert.Empty(t, sink.SteerEchoReports())
+	require.NoError(t, steerOpenCodeTestInput(runtime, "queue-input", "steer"))
+	assert.Empty(t, sink.SteerResolutions())
 	assert.True(t, runtime.sink.OutputQueue().HasPending())
 	sink.PersistErr = nil
 	require.NoError(t, runtime.sink.OutputQueue().Flush())
-	reports := sink.SteerEchoReports()
+	reports := sink.SteerResolutions()
 	require.Len(t, reports, 1)
 	assert.Equal(t, agent.SteerOutcomeEchoed, reports[0].Outcome)
 	rows := sink.Messages()
@@ -412,7 +423,7 @@ func TestOpenCodeInputForeignInboxEventCannotResolveAnOwnedSteer(t *testing.T) {
 	sink := &agenttest.Sink{}
 	runtime := inputRuntime(t, rpc, sink)
 	runtime.setNativeActivity(true, false)
-	require.NoError(t, runtime.SteerInput("steer", nil))
+	require.NoError(t, steerOpenCodeTestInput(runtime, "queue-input", "steer"))
 	submittedMu.Lock()
 	inputID := submitted
 	submittedMu.Unlock()
@@ -420,8 +431,8 @@ func TestOpenCodeInputForeignInboxEventCannotResolveAnOwnedSteer(t *testing.T) {
 	event.sessionID = "ses_other"
 	_, err := runtime.observeInbox(event)
 	require.Error(t, err)
-	assert.Empty(t, sink.SteerEchoReports())
-	assert.Len(t, runtime.steers.Pending(), 1)
+	assert.Empty(t, sink.SteerResolutions())
+	assert.Len(t, runtime.steers, 1)
 }
 
 func TestOpenCodeInputReconcilesUnknownAdmissionWithoutAStreamReconnect(t *testing.T) {
@@ -504,10 +515,10 @@ func TestOpenCodeInputReconciledSteerRetainsItsEchoTicket(t *testing.T) {
 	sink := &agenttest.Sink{}
 	runtime := inputRuntime(t, rpc, sink)
 	runtime.setNativeActivity(true, false)
-	require.NoError(t, runtime.SteerInput("steer", nil))
+	require.NoError(t, steerOpenCodeTestInput(runtime, "queue-input", "steer"))
 	_, err := runtime.observeInbox(openCodeSessionEventForTest(t, "inbox.delivered", `"inboxID":"`+submitted+`"`))
 	require.NoError(t, err)
-	reports := sink.SteerEchoReports()
+	reports := sink.SteerResolutions()
 	require.Len(t, reports, 1)
 	assert.Equal(t, agent.SteerOutcomeEchoed, reports[0].Outcome)
 }

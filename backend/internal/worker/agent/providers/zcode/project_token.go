@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // A coding plan's model requests carry a short-lived project token, which the
@@ -90,10 +92,10 @@ type zcodeTeamProject struct {
 }
 
 func (t zcodeTeamProject) MarshalJSON() ([]byte, error) {
-	return []byte(zcodeJSONStringify(struct {
+	return providerkit.JSONStringify(struct {
 		OrganizationID string `json:"organizationId"`
 		ProjectID      string `json:"projectId"`
-	}{t.organizationID, t.projectID})), nil
+	}{t.organizationID, t.projectID})
 }
 
 // zcodeProjectTokenRequest asks for a coding plan's project token.
@@ -226,8 +228,8 @@ func (c *zcodeProjectTokenClient) resolve(ctx context.Context, credentials zcode
 	location := reference.location
 	// The login token is part of the scope, so a new sign-in never reuses a token
 	// that the previous one minted.
-	scope := zcodeJSONStringify([]any{origin, req.family, req.accountID, location.OrganizationID, location.ProjectID,
-		location.APIKeyID, zcodeProjectUsageCodingPlan, zcodeSHA256Hex(loginToken)})
+	scope := string(providerkit.JSONText([]any{origin, req.family, req.accountID, location.OrganizationID, location.ProjectID,
+		location.APIKeyID, zcodeProjectUsageCodingPlan, zcodeSHA256Hex(loginToken)}))
 	value, err := c.token(ctx, scope, req.rejectedFingerprint, func(ctx context.Context) (zcodeProjectTokenValue, error) {
 		value, err := c.mint(ctx, origin, loginToken, location, req.appVersion)
 		if errors.Is(err, errZCodeProjectNotFound) {
@@ -260,7 +262,7 @@ func (c *zcodeProjectTokenClient) location(ctx context.Context, credentials zcod
 		return reference, nil
 	}
 	c.mu.Unlock()
-	discoveryKey := zcodeJSONStringify([]string{key, zcodeSHA256Hex(loginToken)})
+	discoveryKey := string(providerkit.JSONText([]string{key, zcodeSHA256Hex(loginToken)}))
 	_, err := c.discoveries.do(ctx, discoveryKey, zcodeProjectTokenTimeout, func(ctx context.Context) (zcodeProjectLocation, error) {
 		c.mu.Lock()
 		entry := c.locationEntryLocked(key)

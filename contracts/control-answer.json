@@ -1,0 +1,14 @@
+{
+  "_readme": "LeapMux's own words in a control answer, which the Worker writes and reads. options holds the ids of LeapMux's own Allow and Deny: the Worker offers them for a request that its provider does not read into options of the runtime's own (agent.AllowDenyOptions, agent.GenericPermissionPrompt), and it reads a decision that chooses one of them as a plain allow or deny. A provider also adds the Deny to a runtime's list that offers no refusal (agent.WithRefusal). The leapmux: prefix keeps both apart from every option id that a runtime states. The browser's test support builds the same generic prompt as a fixture. messages holds the placeholder reason of a refusal that the user typed no reason for: agent.DenyResponse writes it, because a runtime such as Claude Code rejects an empty reason. The Worker treats it as no feedback (agent.NormalizeRejectionMessage). A saved answer's display reads the neutral decision, which never holds the placeholder, so a bare refusal reads as the words of its button, not as the placeholder. behaviors holds the behavior of the neutral answer envelope ({response:{request_id, response:{behavior, ...}}}): agent.AllowResponse and agent.DenyResponse write it, and each provider's resolution reads it.",
+  "behaviors": {
+    "Allow": "allow",
+    "Deny": "deny"
+  },
+  "options": {
+    "Allow": "leapmux:allow",
+    "Deny": "leapmux:deny"
+  },
+  "messages": {
+    "RejectedByUser": "Rejected by user."
+  }
+}

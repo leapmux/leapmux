@@ -58,6 +58,7 @@ test.describe('registration dialog CLI', () => {
       release.resolve()
       expect((await revoked).ok()).toBe(true)
       registration = spawnTestProcess(getGlobalState().binaryPath, [
+        'daemon',
         'worker',
         'register',
         '--hub',
@@ -75,7 +76,10 @@ test.describe('registration dialog CLI', () => {
         registration!.once('close', (code, signal) => resolve({ code, signal }))
       })
       output.capture(registration, 'revoked registration')
-      expect(await completion, output.since(0)).toEqual({ code: 1, signal: null })
+      // The Hub refused the credential of the call, the key: exit status 3, with the next step that fixes it.
+      expect(await completion, output.since(0)).toEqual({ code: 3, signal: null })
+      expect(output.since(0)).toContain('generate a new registration key in the Register worker dialog of the Hub')
+      expect(output.since(0)).not.toContain('auth login')
       expect(existsSync(join(directory, 'state.json'))).toBe(false)
       expect(existsSync(join(directory, 'worker.db'))).toBe(false)
       expect(new Set((await listWorkersViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)).map(worker => worker.id))).toEqual(previous)
@@ -114,7 +118,7 @@ test.describe('registration dialog CLI', () => {
     const copied = await captureClipboardText(page, () => page.getByTestId('copy-registration-command').click())
     expect(copied).toBe(await page.getByTestId('registration-command').textContent())
     const start = await captureClipboardText(page, () => page.getByTestId('copy-start-command').click())
-    expect(start).toBe('leapmux worker start')
+    expect(start).toBe('leapmux daemon worker start')
     const directory = createTestDirectory('copied-registration-')
     const binaryDirectory = createTestDirectory('copied-registration-bin-')
     const command = copied
@@ -199,9 +203,9 @@ test.describe('registration dialog CLI', () => {
     await page.getByTestId('sidebar-register-worker').click()
 
     const command = page.getByTestId('registration-command')
-    await expect(command).toContainText('leapmux worker register --hub')
+    await expect(command).toContainText('leapmux daemon worker register --hub')
     await expect(command).toContainText('--registration-key')
-    await expect(page.getByTestId('start-command')).toHaveText('leapmux worker start')
+    await expect(page.getByTestId('start-command')).toHaveText('leapmux daemon worker start')
 
     // Registration and startup stay separate: the register command
     // never starts the worker by itself.

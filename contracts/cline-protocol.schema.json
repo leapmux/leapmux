@@ -19,6 +19,7 @@
     "permissionModes",
     "questionAnswer",
     "declineReasons",
+    "promptReasons",
     "approvalReply",
     "capabilityReply",
     "structs"
@@ -170,6 +171,9 @@
       "$ref": "#/$defs/table"
     },
     "declineReasons": {
+      "$ref": "#/$defs/table"
+    },
+    "promptReasons": {
       "$ref": "#/$defs/table"
     },
     "approvalReply": {

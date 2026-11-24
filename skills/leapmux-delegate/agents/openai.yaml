@@ -1,0 +1,4 @@
+interface:
+  display_name: "LeapMux Delegate"
+  short_description: "Run parallel LeapMux coding agents in isolated git worktrees"
+  default_prompt: "Use the leapmux-delegate skill to split this task across isolated LeapMux worktree agents and verify their diffs."

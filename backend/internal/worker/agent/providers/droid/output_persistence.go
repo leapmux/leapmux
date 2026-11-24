@@ -26,7 +26,7 @@ func (a *Agent) orderedSink() agent.ProviderServices {
 
 // enqueueOutput gives each immutable row to the shared queue before another native event can run.
 // The target supplies its own sink and queue, including for a child transcript.
-func (a *Agent) enqueueOutput(target droidOutputTarget, content agent.MessageContent, span agent.SpanInfo, kind droidOutputKind) {
+func (a *Agent) enqueueOutput(target droidOutputTarget, content agent.MessageContent, span agent.SpanInfo, kind droidOutputKind) bool {
 	var err error
 	switch kind {
 	case droidOutputNotification:
@@ -39,6 +39,7 @@ func (a *Agent) enqueueOutput(target droidOutputTarget, content agent.MessageCon
 	if err != nil {
 		slog.Error("droid: persist transcript failed", "agent_id", a.AgentID(), "child_session_id", target.childSessionID, "error", err)
 	}
+	return agent.OutputRetained(err)
 }
 
 func (state *droidOutputState) hasPendingOutput() bool {
@@ -78,5 +79,8 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 		}
 		a.flushPendingOutput(target)
 		a.releaseEndedOutput(target)
+	}
+	for _, reply := range a.nativeReplies {
+		a.retireDroidReply(reply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 	}
 }

@@ -64,16 +64,17 @@ func TestACPAgent_Interrupt_AnswersAnOutstandingPermissionRequest(t *testing.T) 
 	assert.Contains(t, answer, `"outcome":"cancelled"`, "the reader gave no decision, and none is invented")
 }
 
-// A request the reader already answered is not answered twice: the response the
-// browser sent clears it, and the cancel then has nothing of its own to send.
+// A request the reader already answered is not answered twice: the reader's
+// answer clears it, and the cancel then has nothing of its own to send.
 func TestACPAgent_Interrupt_SkipsARequestTheReaderAlreadyAnswered(t *testing.T) {
 	t.Parallel()
 
 	a, requests := newGooseAgentForRPCWithResponder(t,
 		func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
-	a.SetSinkForTest(agentapi.NewProviderServices(&agenttest.Sink{}))
+	controls := &agenttest.ControlSink{}
+	a.SetSinkForTest(agentapi.NewProviderServices(controls))
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"session-1"}}`))
-	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`), agentapi.StopContext{}))
+	require.NoError(t, a.SendRawInput(controls.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`))))
 
 	require.NoError(t, a.Interrupt(agentapi.StopContext{}))
 

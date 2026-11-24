@@ -99,6 +99,7 @@ jobs:
           DIR="leapmux_${VERSION}_linux_${{ matrix.arch }}"
           mkdir -p "dist/${DIR}"
           cp leapmux LICENSE.md NOTICE.md "dist/${DIR}/"
+          ln -sf leapmux "dist/${DIR}/lmx"
           tar -czf "${DIR}.tar.gz" -C dist "${DIR}"
 
       - name: Upload release artifacts

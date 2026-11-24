@@ -82,6 +82,8 @@ type nativeItem struct {
 	ID                  string                 `json:"itemId"`
 	Kind                string                 `json:"kind"`
 	TurnID              *string                `json:"turnId"`
+	CommandID           string                 `json:"commandId"`
+	Retracted           bool                   `json:"retracted"`
 	Revision            int64                  `json:"revision"`
 	Status              string                 `json:"status"`
 	RecordedAt          string                 `json:"recordedAt"`

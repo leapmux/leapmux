@@ -10,12 +10,15 @@
 -- race a retraction recorded between them. A skipped insert returns no row,
 -- which the callers read as the immutable duplicate path. The receipt lookup is
 -- one row-value equality on its primary key, which spans all three columns.
-INSERT INTO messages (id, agent_id, seq, agent_session_id, source, content, content_compression, supplemental_content, supplemental_content_compression, idempotency_key, depth, span_id, parent_span_id, span_type, span_lines, span_color, mark_type, assembled_kind, completion, transcript_only, created_at)
+INSERT INTO messages (id, agent_id, seq, agent_session_id, native_input_id, native_turn_id, input_turn_outcome, source, content, content_compression, supplemental_content, supplemental_content_compression, idempotency_key, depth, span_id, parent_span_id, span_type, span_lines, span_color, mark_type, assembled_kind, completion, transcript_only, created_at)
 SELECT
   sqlc.arg(id),
   sqlc.arg(agent_id),
   (COALESCE((SELECT a.message_seq_hwm FROM agents a WHERE a.id = sqlc.arg(agent_id)), 0) + 1),
   sqlc.arg(agent_session_id),
+  sqlc.arg(native_input_id),
+  sqlc.arg(native_turn_id),
+  sqlc.narg(input_turn_outcome),
   sqlc.arg(source),
   sqlc.arg(content),
   sqlc.arg(content_compression),

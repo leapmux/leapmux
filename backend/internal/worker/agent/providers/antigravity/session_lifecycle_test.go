@@ -128,9 +128,9 @@ func TestAntigravitySteerPolicy(t *testing.T) {
 	rpc, requests := fakeAntigravityRPC(t)
 	a, _ := testAgent(t)
 	a.rpc = rpc
-	assert.ErrorIs(t, a.SteerInput("early", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "early"}), agent.ErrNoActiveTurn)
 	a.beginTurn(a.root)
-	require.NoError(t, a.SteerInput("steer", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "steer"}))
 	require.Len(t, requests("SendUserCascadeMessage"), 1)
 	assert.True(t, a.SteerSurvivesTurnEnd())
 	_, echo := any(a).(agent.SteerEchoReporter)
@@ -222,7 +222,7 @@ func TestAntigravitySteerPreservesUncertainDelivery(t *testing.T) {
 				err = a.SteerChildInput(child.id, "steer once", nil)
 			} else {
 				a.beginTurn(a.root)
-				err = a.SteerInput("steer once", nil)
+				err = a.SteerInput(agent.SteerRequest{Content: "steer once"})
 			}
 			assert.Equal(t, int32(1), accepted.Load())
 			assert.ErrorIs(t, err, agent.ErrDeliveryUncertain)
@@ -251,7 +251,7 @@ func TestAntigravitySendRefusesRetiredCascade(t *testing.T) {
 			a.generation++
 			a.installRoot("replacement", false)
 			a.Mu.Unlock()
-			err := a.sendToStateCommand(retired, "do not send", nil, false, "")
+			_, err := a.sendToStateCommand(retired, "do not send", nil, deliverPrompt, "")
 			if childInput {
 				assert.ErrorIs(t, err, agent.ErrChildRouteNotReady)
 			} else {
@@ -326,7 +326,7 @@ func TestAntigravityTurnSnapshotRequiresAnOpenObserverForSteering(t *testing.T) 
 func TestAntigravityClosedRootDoesNotReportAChildRouteFailure(t *testing.T) {
 	a, _ := testAgent(t)
 	a.root.closed = true
-	err := a.sendToStateCommand(a.root, "do not send", nil, false, "")
+	_, err := a.sendToStateCommand(a.root, "do not send", nil, deliverPrompt, "")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrChildRouteNotReady)
 	assert.Contains(t, err.Error(), "Antigravity")

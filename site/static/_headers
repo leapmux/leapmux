@@ -1,8 +1,15 @@
 # Cloudflare Workers Static Assets reads this file to set response headers.
 #
-# Serve llms.txt as UTF-8. Cloudflare serves .txt as "text/plain" with no
-# charset, and browsers then decode text/plain as Latin-1 -- turning the UTF-8
-# punctuation in the summaries (the truncation ellipsis "...", em-dashes, smart
-# quotes) into mojibake like "â€¦". An explicit charset fixes it.
+# Serve llms.txt and Markdown endpoints as UTF-8 so browsers and LLM clients
+# never decode UTF-8 punctuation as Latin-1.
 /llms.txt
   Content-Type: text/plain; charset=utf-8
+
+/*.md
+  Content-Type: text/markdown; charset=utf-8
+
+/docs/*
+  Vary: Accept
+
+/skills/*
+  Content-Type: text/markdown; charset=utf-8

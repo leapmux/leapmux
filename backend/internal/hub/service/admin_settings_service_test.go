@@ -474,7 +474,7 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 	assert.Equal(t, []string{
 		// `leapmux hub` and `leapmux dev` already bind every interface and
 		// already authenticate every caller, so extra addresses would only
-		// offer them a way to break a working deployment. -listen and a
+		// offer them a way to break a working deployment. --listen and a
 		// reverse proxy are how a multi-user hub is published.
 		"extra_listen_addresses",
 	}, soloOnly)

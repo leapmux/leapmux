@@ -1,8 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { FileAttachment } from './attachments'
-import type { ControlSurface } from './controls/controlSurface'
-import type { ControlAnswerSeed, ControlAnswerState, ControlResponseHandler, ControlResponseOptions, ControlResponseSender, EditorContentRef } from './controls/types'
-import type { MessageContextResolver } from './messageContextResolver'
+import type { ControlAnswer, ControlAnswerHandler, ControlAnswerSeed, ControlAnswerState, ControlDecisionSender, EditorContentRef } from './controls/types'
+import type { ControlPrompt } from './model/controlPrompt'
 import type { ControlQuestion } from './model/question'
 import type { ProviderSettingChangeHandler } from './providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -17,9 +16,9 @@ import { isObject } from '~/lib/jsonPick'
 import { activityInterruptsWork } from '~/stores/agentActivity.store'
 import { controlRequestProvider, pendingQuestionCount, requestInstanceId, shownControlRequest } from '~/stores/control.store'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
+import { composerDecision, questionDecision, typedWithOptions } from './controls/controlDecision'
 import { ReportedControlResponseError } from './controls/controlResponseError'
 import { canAnswerControlRequest, canSendControlResponse } from './controls/controlResponseState'
-import { controlSurface, createControlSurface } from './controls/controlSurface'
 import { decidePlanModeToggle } from './planModeToggle'
 import { pluginFor } from './providers/registry'
 import './providers'
@@ -35,11 +34,10 @@ export interface ControlResponseHandlingProps {
   /** Whether the reader opened this agent's non-blocking questions. */
   questionsOpen?: boolean | undefined
   onQuestionsOpenChange?: ((open: boolean) => void) | undefined
-  messageContext?: MessageContextResolver | undefined
-  onControlResponse?: ControlResponseHandler | undefined
+  /** Delivers ONE answer for a request instance. See `ControlAnswerHandler`. */
+  onControlAnswer?: ControlAnswerHandler | undefined
   onSettingChange?: ProviderSettingChangeHandler | undefined
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void | Promise<void>
-  onSendControlFeedback?: ((content: string) => void | Promise<void>) | undefined
   settingsLoading?: boolean | undefined
   /**
    * The activity level the Worker last published for this agent. `showInterrupt`
@@ -63,16 +61,13 @@ export interface ControlResponseHandlingResult {
   /** Restore the normal composer and let the questions wait again. */
   closeQuestions: () => void
   /**
-   * The provider whose plugin renders the active request, and which surface
-   * answers it.
+   * The provider of the active request, and the prompt that the Worker read from it.
    *
-   * Both halves of the banner take these as props rather than deriving them,
-   * so the composer and the banner cannot reach different answers for the same
-   * request, and one graph serves all three readers. See
-   * `createControlSurface`.
+   * Both halves of the banner take these as props, so the composer and the banner
+   * read one request through one prompt.
    */
   activeControlProvider: Accessor<AgentProvider | undefined>
-  activeControlSurface: Accessor<ControlSurface | undefined>
+  activeControlSurface: Accessor<ControlPrompt | undefined>
   isAskUserQuestion: Accessor<boolean>
   editorPlaceholder: Accessor<string | undefined>
   editorPurpose: Accessor<'answer' | 'feedback' | 'none' | undefined>
@@ -81,8 +76,8 @@ export interface ControlResponseHandlingResult {
   showInterrupt: Accessor<boolean>
   handleControlSend: (content: string) => boolean | void | Promise<boolean | void>
   handleSend: (content: string) => boolean | void | Promise<boolean | void>
-  /** Builds the responder that answers as ONE request instance. See `respondTo` below. */
-  respondTo: (request: ControlRequest) => ControlResponseSender
+  /** Builds the sender of decisions for ONE request instance. See `decideFor` below. */
+  decideFor: (request: ControlRequest) => ControlDecisionSender
   recordResponse: (request: ControlRequest) => Promise<void>
   togglePlanMode: () => void
 }
@@ -193,37 +188,15 @@ export function useControlResponseHandling(
   const questionCount = createMemo(() => pendingQuestionCount(props.controlRequests ?? []))
   const openQuestions = () => props.onQuestionsOpenChange?.(true)
   const closeQuestions = () => props.onQuestionsOpenChange?.(false)
-  // Which provider renders the active request, and which surface answers it.
-  // Derived ONCE here, for the composer and for both halves of the banner; see
-  // `createControlSurface`.
-  const { provider: activeProvider, surface: activeSurface } = createControlSurface(
-    activeControlRequest,
-    () => props.messageContext,
-    () => props.agent?.agentProvider,
-  )
+  // The provider of the active request, and the prompt that the Worker read from it.
+  // Derived ONCE here, for the composer and for both halves of the banner.
+  const activeProvider = createMemo(() => controlRequestProvider(activeControlRequest(), props.agent?.agentProvider))
+  const activeSurface = createMemo(() => activeControlRequest()?.prompt)
 
-  /**
-   * Which surface answers ONE request instance.
-   *
-   * The memo above answers for the ACTIVE instance, which it classified with
-   * that instance's loaded source message. A caller that holds an instance the
-   * store already replaced gets a fresh classification with no source, which is
-   * all that instance ever had. Either way `controlSurface` is the one
-   * classifier, so the composer and the banner cannot disagree about one
-   * request.
-   */
-  const surfaceFor = (request: ControlRequest): ControlSurface | undefined => {
-    const active = activeControlRequest()
-    if (active?.agentId === request.agentId && requestInstanceId(active) === requestInstanceId(request))
-      return activeSurface()
-    return controlSurface(request, controlRequestProvider(request, props.agent?.agentProvider), undefined)
-  }
-  const questionFor = (request: ControlRequest) => {
-    const surface = surfaceFor(request)
-    return surface?.kind === 'question'
-      ? surface.question
-      : undefined
-  }
+  /** The question prompt of ONE request instance, or undefined for another kind. */
+  const questionFor = (request: ControlRequest) => request.prompt.kind === 'question'
+    ? request.prompt
+    : undefined
 
   const isAskUserQuestion = createMemo(() => activeSurface()?.kind === 'question')
   const editorPurpose = createMemo(() => {
@@ -232,28 +205,26 @@ export function useControlResponseHandling(
       return undefined
     if (!canAnswerControlRequest(request))
       return 'none'
-    // A payload LeapMux could not read composes no answer, and a rejection reason is
-    // still an answer: it builds a DENY out of the option list the payload was carrying.
-    // The banner offers no decision for this request either, and the stop is the way out.
+    // A payload LeapMux could not read composes no answer, and the Worker states no
+    // editor for it. The banner offers no decision for this request either, and the
+    // stop is the way out.
     if (request.payloadFault)
       return 'none'
-    switch (activeSurface()?.kind) {
-      // The question form takes the typed answer.
-      case 'question':
-        return questionFor(request)?.questions[answerState.currentPage()]?.allowCustomText === false
-          ? 'none'
-          : 'answer'
-      // The elicitation form carries its own fields, so the editor adds nothing.
-      case 'elicitation':
-        return 'none'
-      default:
-        return pluginFor(activeProvider())?.controls?.controlEditorPurpose?.(request.payload) ?? 'feedback'
-    }
+    // The Worker states the purpose. A question page that takes its options only
+    // offers no editor, whatever the purpose of the prompt.
+    if (questionFor(request)?.questions[answerState.currentPage()]?.allowCustomText === false)
+      return 'none'
+    return request.editorRole
   })
-  const editorTextReplacesOptions = createMemo(() =>
-    editorPurpose() !== 'none'
-    && (!isAskUserQuestion() || !pluginFor(activeProvider())?.controls?.preservesSelectionNotes),
-  )
+  const editorTextReplacesOptions = createMemo(() => {
+    if (editorPurpose() === 'none')
+      return false
+    const request = activeControlRequest()
+    const question = request
+      ? questionFor(request)
+      : undefined
+    return !question || !typedWithOptions(question.questions[answerState.currentPage()], question.preservesSelectionNotes ?? false)
+  })
   const editorPlaceholder = createMemo(() => {
     switch (editorPurpose()) {
       case 'answer': return 'Type a custom answer...'
@@ -508,7 +479,7 @@ export function useControlResponseHandling(
    * up then: the drafts, the saved answers and the editor text all stay, so the
    * user can send again. A caller that clears the composer must read this.
    */
-  const submitResponse = async (request: ControlRequest, bytes: Uint8Array, options?: ControlResponseOptions): Promise<boolean> => {
+  const submitResponse = async (request: ControlRequest, answer: ControlAnswer): Promise<boolean> => {
     const key = JSON.stringify([request.agentId, request.requestId, request.claimToken ?? ''])
     if (pendingResponses.has(key))
       throw new ReportedControlResponseError(new Error('This request already has a pending response.'))
@@ -518,13 +489,11 @@ export function useControlResponseHandling(
       answerState.setResponseError('')
     }
     try {
-      if (!props.onControlResponse)
+      if (!props.onControlAnswer)
         throw new Error('The response handler is unavailable.')
-      if (!options?.recordOnly && !canSendControlResponse(request))
+      if (answer.kind === 'decision' && !canSendControlResponse(request))
         throw new Error('Check the saved response state before sending an answer.')
-      const completed = options
-        ? await props.onControlResponse(request, bytes, options)
-        : await props.onControlResponse(request, bytes)
+      const completed = await props.onControlAnswer(request, answer)
       if (completed === false)
         return false
       cleanupControlRequestDrafts(request)
@@ -549,18 +518,17 @@ export function useControlResponseHandling(
   }
 
   /**
-   * The sender that answers as ONE request instance.
+   * The sender of decisions for ONE request instance.
    *
-   * It DISCARDS the completion flag, because `ControlResponseSender` is what
-   * every provider's `ControlActions` takes and none of them acts on the flag.
-   * `handleControlSend` is the one caller that must act on it, and it builds its
-   * own sender over `submitResponse` below.
+   * It DISCARDS the completion flag, because the banner's actions take a
+   * `ControlDecisionSender` and none of them acts on the flag. `handleControlSend`
+   * is the one caller that must act on it, and it calls `submitResponse` itself.
    */
-  const respondTo = (request: ControlRequest): ControlResponseSender => async (bytes, options) => {
-    await submitResponse(request, bytes, options)
+  const decideFor = (request: ControlRequest): ControlDecisionSender => async (decision) => {
+    await submitResponse(request, { kind: 'decision', decision })
   }
   const recordResponse = async (request: ControlRequest): Promise<void> => {
-    await submitResponse(request, new Uint8Array(), { recordOnly: true })
+    await submitResponse(request, { kind: 'record' })
   }
 
   const handleControlSend = (content: string): boolean | void | Promise<boolean | void> => {
@@ -571,66 +539,38 @@ export function useControlResponseHandling(
       return
     if (!answerState.ready())
       return false
-    // Whether the worker COMPLETED the answer this send delivers.
-    //
-    // The editor clears the composer for a `true` and keeps the draft for
-    // anything else, so a response the worker only RECORDED does not discard
-    // text the user still has to send. The flag is a captured variable rather
-    // than a return value: a provider's own sender sits between this function
-    // and `submitResponse`, and `ControlResponseSender` carries nothing back.
-    // It starts `false`, so a path that never sends keeps the draft.
-    let completed = false
-    const respond: ControlResponseSender = async (bytes, options) => {
-      completed = await submitResponse(req, bytes, options)
-    }
-    // Resolve the agent's own provider plugin -- no Claude fallback. A live agent
-    // always carries a real provider, so a missing plugin means an UNSPECIFIED or
-    // unregistered provider (a bug, e.g. backend/frontend version skew). Refuse to
-    // encode a control response through the wrong provider's builder; surface a
-    // toast so the send is not a silent no-op, and keep the editor content.
-    const provider = controlRequestProvider(req, props.agent?.agentProvider)
-    const plugin = pluginFor(provider)
-    if (!plugin) {
-      showWarnToast(`Cannot send response: unsupported agent provider (${provider})`)
-      return false
-    }
-    // Classify the CAPTURED request, not whatever the store holds by now. The
-    // shared return type carries the capability, so a question with no capability
-    // to answer it cannot be represented here.
+    // Classify the CAPTURED request, not whatever the store holds by now. A question
+    // answers through its own form, which saves the editor text into the current
+    // page first; any other prompt maps the text to a decision by its kind.
     const question = questionFor(req)
     if (question) {
-      let sending: Promise<void> | undefined
-      const sendAskResponse = () => {
-        sending = Promise.resolve(question.capability.sendAnswer(req, respond, question.questions, answerState))
-      }
+      // trySubmitAskUserQuestion calls the submit only when every question has an
+      // answer, so the default never reaches the editor.
+      let sending: Promise<boolean> = Promise.resolve(false)
       const submitted = trySubmitAskUserQuestion(
         answerState,
         question.questions,
         content,
-        sendAskResponse,
+        () => {
+          sending = submitResponse(req, {
+            kind: 'decision',
+            decision: questionDecision(answerState, question),
+          })
+        },
         editorContentRefAccessor(),
-        Boolean(plugin.controls?.preservesSelectionNotes),
+        question.preservesSelectionNotes ?? false,
       )
       if (!submitted)
         return false
-      return Promise.resolve(sending).then(() => completed)
+      // The editor clears the composer for a `true` and keeps the draft for anything
+      // else, so a response the worker only RECORDED does not discard text the user
+      // still has to send.
+      return sending
     }
-    const response = plugin.controls?.buildControlResponse?.(req.payload, content, req.requestId)
-    if (!response)
+    const decision = composerDecision(req.prompt, content)
+    if (!decision)
       return false
-    const bytes = new TextEncoder().encode(JSON.stringify(response))
-    const sent = respond(bytes)
-    if (content.trim() && plugin.controls?.controlFeedbackAsFollowUpMessage?.(req.payload)) {
-      return sent.then(async () => {
-        // The follow-up message repeats the composer text, so it goes only once
-        // the request itself is answered. A recorded-but-open request keeps both.
-        if (!completed)
-          return false
-        await (props.onSendControlFeedback ?? props.onSendMessage)(content)
-        return true
-      })
-    }
-    return sent.then(() => completed)
+    return submitResponse(req, { kind: 'decision', decision })
   }
 
   const handleSend = (content: string): boolean | void | Promise<boolean | void> => {
@@ -686,7 +626,7 @@ export function useControlResponseHandling(
     editorPlaceholder,
     editorPurpose,
     editorTextReplacesOptions,
-    respondTo,
+    decideFor,
     recordResponse,
     showInterrupt,
     togglePlanMode,

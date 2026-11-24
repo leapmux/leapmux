@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -17,9 +19,12 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	"github.com/leapmux/leapmux/internal/worker/service"
+	"github.com/leapmux/leapmux/lifecycle"
 )
 
 // fakeDelegationLifecycle records every Acquire/Release call so the
@@ -417,6 +422,182 @@ func TestFactory_ConcurrentSpawnsRefcountCorrectly(t *testing.T) {
 	}
 	_, rel = lifecycle.snapshot()
 	assert.Len(t, rel, 4, "every cleanup must Release exactly once")
+}
+
+// workerCLI writes a program that stands for the Worker's CLI, and returns its
+// path. It prints marker, so a test that runs `leapmux` can tell which CLI ran.
+func workerCLI(t *testing.T, marker string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "leapmux-under-test")
+	testutil.WriteExecutable(t, path, "#!/bin/sh\necho '"+marker+"'\n")
+	return path
+}
+
+// spawnAll spawns an agent, a terminal tab and a quake terminal, and returns
+// the env of each by kind.
+func spawnAll(t *testing.T, f *controlipc.Factory) map[string][]string {
+	t.Helper()
+	user := userid.MustNew("user-1")
+	agentEnvs, agentCleanup, err := f.AgentSpawning(service.AgentSpawnInfo{UserID: user, WorkerID: "worker-A", TabID: "agent-1"})
+	require.NoError(t, err)
+	t.Cleanup(agentCleanup)
+	terminalEnvs, terminalCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{UserID: user, WorkerID: "worker-A", TabID: "term-1"})
+	require.NoError(t, err)
+	t.Cleanup(terminalCleanup)
+	quakeEnvs, quakeCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{UserID: user, WorkerID: "worker-A", TabID: "quake-1", IsQuake: true})
+	require.NoError(t, err)
+	t.Cleanup(quakeCleanup)
+	return map[string][]string{"agent": agentEnvs, "terminal": terminalEnvs, "quake terminal": quakeEnvs}
+}
+
+// Every spawn advertises the Worker's link to its CLI, whatever it spawns. The
+// link lives in a directory of this Worker process in the data directory.
+func TestFactory_SpawnAdvertisesTheControlCLI(t *testing.T) {
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+	t.Cleanup(func() { _ = f.Close() })
+	dataDir := t.TempDir()
+	require.NoError(t, f.PrepareCLIDirectory(dataDir, workerCLI(t, "worker-cli")))
+	canonical, err := lifecycle.CanonicalDir(dataDir)
+	require.NoError(t, err)
+
+	var link string
+	for kind, envs := range spawnAll(t, f) {
+		got := envValue(t, envs, controlenv.CLIVariable)
+		require.NotEmpty(t, got, "a %s spawn must advertise the CLI", kind)
+		if link == "" {
+			link = got
+		}
+		assert.Equal(t, link, got, "every %s spawn of one Worker advertises the same link", kind)
+	}
+	assert.True(t, strings.HasPrefix(link, filepath.Join(canonical, "run")+string(filepath.Separator)),
+		"the link lives in the run directory of the data directory: %s", link)
+	assert.FileExists(t, link)
+}
+
+// A factory that prepared no CLI directory, as in the desktop sidecar, whose
+// executable does not serve `leapmux control`, advertises no CLI. Its spawns
+// keep their remote control.
+func TestFactory_SpawnWithoutCLIDirectoryAdvertisesNone(t *testing.T) {
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+
+	for kind, envs := range spawnAll(t, f) {
+		for _, entry := range envs {
+			name, _, _ := strings.Cut(entry, "=")
+			assert.NotEqual(t, controlenv.CLIVariable, name, "a %s spawn must not advertise a CLI the Worker has not linked", kind)
+		}
+		assert.NotEmpty(t, envValue(t, envs, "LEAPMUX_CONTROL_SOCK"), "a %s spawn keeps its remote control", kind)
+	}
+}
+
+// A failed preparation leaves the factory without a CLI and does not refuse
+// a later spawn.
+func TestFactory_FailedCLIDirectoryKeepsRemoteControl(t *testing.T) {
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+
+	require.Error(t, f.PrepareCLIDirectory(t.TempDir(), filepath.Join(t.TempDir(), "missing")))
+
+	envs := spawnAll(t, f)["agent"]
+	assert.NotEmpty(t, envValue(t, envs, "LEAPMUX_CONTROL_SOCK"))
+	assert.Empty(t, envValue(t, envs, controlenv.CLIVariable))
+}
+
+// The directory is prepared once, before the first spawn. A second preparation
+// would remove the first one's directory as a leftover of an ended process,
+// and a spawn already handed out its link.
+func TestFactory_PrepareCLIDirectoryOnlyOnceBeforeSpawning(t *testing.T) {
+	t.Run("refuses a second preparation", func(t *testing.T) {
+		f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+		t.Cleanup(func() { _ = f.Close() })
+		dataDir := t.TempDir()
+		require.NoError(t, f.PrepareCLIDirectory(dataDir, workerCLI(t, "worker-cli")))
+		link := envValue(t, spawnAll(t, f)["agent"], controlenv.CLIVariable)
+
+		require.Error(t, f.PrepareCLIDirectory(dataDir, workerCLI(t, "worker-cli")))
+		assert.FileExists(t, link, "the refusal keeps the link that spawns already received")
+	})
+
+	t.Run("refuses a preparation after a spawn", func(t *testing.T) {
+		f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+		spawnAll(t, f)
+
+		require.Error(t, f.PrepareCLIDirectory(t.TempDir(), workerCLI(t, "worker-cli")))
+	})
+
+	t.Run("refuses a preparation after Close", func(t *testing.T) {
+		f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+		require.NoError(t, f.Close())
+
+		require.Error(t, f.PrepareCLIDirectory(t.TempDir(), workerCLI(t, "worker-cli")))
+	})
+}
+
+// Concurrent preparations of one factory prepare one directory. A second
+// preparation that ran beside the first would remove the first one's
+// directory as a leftover of an ended process, and the link that the factory
+// then advertises would be gone.
+func TestFactory_PrepareCLIDirectoryOnceUnderConcurrentCalls(t *testing.T) {
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+	t.Cleanup(func() { _ = f.Close() })
+	dataDir := t.TempDir()
+	target := workerCLI(t, "worker-cli")
+
+	const callers = 8
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	succeeded := 0
+	for range callers {
+		wg.Go(func() {
+			if f.PrepareCLIDirectory(dataDir, target) == nil {
+				mu.Lock()
+				succeeded++
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+
+	assert.Equal(t, 1, succeeded, "one preparation wins, and every other one is refused")
+	link := envValue(t, spawnAll(t, f)["agent"], controlenv.CLIVariable)
+	require.NotEmpty(t, link)
+	assert.FileExists(t, link, "no concurrent preparation removed the advertised link")
+}
+
+// Close removes the directory of this Worker process, and only the link: the
+// executable stays.
+func TestFactory_CloseRemovesTheCLIDirectory(t *testing.T) {
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+	target := workerCLI(t, "worker-cli")
+	require.NoError(t, f.PrepareCLIDirectory(t.TempDir(), target))
+	link := envValue(t, spawnAll(t, f)["agent"], controlenv.CLIVariable)
+
+	require.NoError(t, f.Close())
+
+	assert.NoDirExists(t, filepath.Dir(link))
+	assert.FileExists(t, target)
+}
+
+// The whole chain, as a process that the Worker spawns sees it: the factory's
+// link, applied to the environment by controlenv.Apply, makes a bare `leapmux`
+// run the Worker's CLI ahead of another `leapmux` on PATH.
+func TestFactory_SpawnedProcessRunsTheWorkerCLIByName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in CLI is a POSIX shell script")
+	}
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
+	t.Cleanup(func() { _ = f.Close() })
+	require.NoError(t, f.PrepareCLIDirectory(t.TempDir(), workerCLI(t, "worker-cli")))
+	installed := t.TempDir()
+	testutil.WriteExecutable(t, filepath.Join(installed, "leapmux"), "#!/bin/sh\necho 'installed-cli'\n")
+
+	for kind, envs := range spawnAll(t, f) {
+		env := controlenv.Apply([]string{"PATH=" + installed + ":/usr/bin:/bin"}, envs)
+		cmd := exec.Command("/bin/sh", "-c", `leapmux; "$LEAPMUX_CONTROL_CLI"`)
+		cmd.Env = env
+		out, err := cmd.Output()
+		require.NoError(t, err, kind)
+		assert.Equal(t, "worker-cli\nworker-cli\n", string(out),
+			"a %s finds the Worker's CLI by name and through LEAPMUX_CONTROL_CLI", kind)
+	}
 }
 
 // TestFactory_SpawnRefusesEmptyUserID pins the local-IPC minting boundary:

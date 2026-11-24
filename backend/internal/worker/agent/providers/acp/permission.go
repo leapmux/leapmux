@@ -2,6 +2,7 @@ package acp
 
 import (
 	"encoding/json"
+	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -27,7 +28,7 @@ func (b *Base) WithOptionValue(id, value string, claim func()) {
 
 func (b *Base) approvePendingPermissions() {
 	if b.hooks.WithBypassPermission != nil {
-		b.hooks.WithBypassPermission(func() { b.ApproveOutstandingControlRequests(b.sink, nil) })
+		b.hooks.WithBypassPermission(func() { b.ApproveOutstandingControlRequests(nil) })
 	}
 }
 
@@ -42,31 +43,65 @@ func (b *Base) PublishSessionControlRequest(line *providerkit.ParsedLine, cancel
 		b.refuseControlRequest(line, sessionID, cancelAnswer)
 		return
 	}
+	if line.Method == acpMethodSessionRequestPermission && b.hooks.ResolvePermissionSession != nil {
+		resolved, err := b.hooks.ResolvePermissionSession(sessionID, line)
+		if err != nil {
+			slog.Warn("resolve the native permission session", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
+			b.replyToRefusedControlRequest(line, cancelAnswer, err.Error())
+			return
+		}
+		if resolved != sessionID && !b.ServesSession(resolved) {
+			b.refuseControlRequest(line, resolved, cancelAnswer)
+			return
+		}
+		sessionID = resolved
+	}
+	var sink agent.ControlServices = b.sink
+	owner := providerkit.ControlRequestOwner{SessionID: b.agentSessionOfControlRequest(sessionID)}
+	if line.Method == acpMethodSessionRequestPermission && sessionID != "" && !b.IsCurrentSession(sessionID) && b.hooks.ChildPermissionOwner != nil {
+		child, err := b.hooks.ChildPermissionOwner(sessionID)
+		if err != nil {
+			slog.Warn("resolve the child permission owner", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
+		}
+		if err != nil || child == nil {
+			b.refuseControlRequest(line, sessionID, cancelAnswer)
+			return
+		}
+		sink = child
+		owner.SessionID = sessionID
+	}
+	if cancelAnswer != nil || !b.hooks.AnswerlessControlsOutliveTurns {
+		if resolve := b.hooks.NativeControlReplyOwner; resolve != nil {
+			owner.TurnID, owner.InputIDs = resolve(owner.SessionID, line)
+		}
+		if owner.TurnID == "" {
+			owner.TurnID = b.controlRequestTurnID(sessionID, line)
+		}
+	}
 	b.storeTextBeforeControlRequest(sessionID)
 	if b.hooks.ControlRequestObserver != nil {
-		b.hooks.ControlRequestObserver(line)
+		b.hooks.ControlRequestObserver(sessionID, line)
 	}
-	ownerSessionID := b.agentSessionOfControlRequest(sessionID)
 	var answer any
 	if line.Method == acpMethodSessionRequestPermission && b.hooks.WithBypassPermission != nil &&
 		b.hooks.PermissionAllowsBypass != nil && b.hooks.PermissionAllowsBypass(line) {
 		answer = permissionApprovalAnswer(line.Params)
 	}
 	if answer == nil {
-		publication := b.PublishSessionControlRequestWithApproval(b.sink, ownerSessionID, line.Raw, cancelAnswer, nil)
+		publication := b.PublishSessionControlRequestWithApproval(sink, owner, line.Raw, cancelAnswer, nil)
 		b.bindURLElicitation(line, publication)
 		return
 	}
 	queued := false
 	b.hooks.WithBypassPermission(func() {
-		queued = b.ApproveUnpublishedSessionControlRequest(b.sink, ownerSessionID, line.Raw, cancelAnswer, answer)
+		queued = b.ApproveUnpublishedSessionControlRequest(sink, owner, line.Raw, cancelAnswer, answer)
 	})
 	if queued {
 		return
 	}
-	publication := b.PublishSessionControlRequestWithApproval(b.sink, ownerSessionID, line.Raw, cancelAnswer, answer)
+	publication := b.PublishSessionControlRequestWithApproval(sink, owner, line.Raw, cancelAnswer, answer)
 	// A mode change can finish between the first check and request registration.
-	b.hooks.WithBypassPermission(func() { b.ApproveOutstandingControlRequest(b.sink, publication) })
+	b.hooks.WithBypassPermission(func() { b.ApproveOutstandingControlRequest(publication) })
 }
 
 // permissionApprovalAnswer selects one offered approval without granting a lasting rule.

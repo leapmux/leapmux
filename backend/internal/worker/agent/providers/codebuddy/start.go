@@ -11,8 +11,8 @@ import (
 
 	"github.com/coder/quartz"
 	"github.com/google/uuid"
-	"github.com/leapmux/leapmux/generated/contracts"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
@@ -112,6 +112,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--include-partial-messages",
+		"--replay-user-messages",
 		"--setting-sources", "user",
 		"--permission-mode", permissionModeFlag(opts.PermissionMode()),
 	}

@@ -105,33 +105,20 @@ func (a *Agent) handleMethod(line *providerkit.ParsedLine) {
 	}
 	switch line.Method {
 	case methodSteersDelivered:
-		count := envelope.Params.Count
-		if count <= 0 {
-			return
-		}
-		if len(a.steers.Pending()) == 0 {
-			slog.Warn("Command Code reported a steer with no pending input", "agent_id", a.AgentID(), "count", count)
-			return
-		}
-		a.flushPendingRunError()
-		if err := providerkit.FlushGeneration(&a.generation, a.sink, agent.MessageCompletionComplete, a.IsDiscardingOutput()); err != nil {
-			slog.Error("retain Command Code output before a steer", "agent_id", a.AgentID(), "error", err)
-		}
-		delivered := a.steers.EchoOldest(count)
-		if delivered < count {
-			slog.Warn("Command Code reported more steers than the Worker sent", "agent_id", a.AgentID(), "reported", count, "matched", delivered)
-		}
-		a.steers.Settle(a.sink)
+		a.deliverCommandCodeSteers(envelope.Params.TurnID, envelope.Params.Count)
 	case methodTurnStarted:
+		a.observeCommandCodeReplyStart(envelope.Params.TurnID)
 		a.startTurn(envelope.Params.TurnID)
 	case contracts.CommandCodeMethodTurnCompleted:
 		a.completeTurnWithTeardown(line.Raw, envelope.Params.TurnID, envelope.Params.StopReason, nil, false)
+		a.finishCommandCodeNativeReply(envelope.Params.TurnID, envelope.Params.StopReason)
 	}
 }
 
 func (a *Agent) handleEvent(raw []byte) {
 	var wrapper struct {
 		Type  string          `json:"type"`
+		Seq   json.RawMessage `json:"seq"`
 		Event json.RawMessage `json:"event"`
 	}
 	if json.Unmarshal(raw, &wrapper) != nil || wrapper.Type != contracts.CommandCodeFrameKindEvent {
@@ -165,7 +152,9 @@ func (a *Agent) handleEvent(raw []byte) {
 		a.generation.Discard("thinking")
 	case contracts.CommandCodeEventMessageEnd:
 		if nativeText(event.Content) != "" {
-			a.persist(raw, agent.SpanInfo{})
+			var seq uint64
+			_ = json.Unmarshal(wrapper.Seq, &seq)
+			a.persistCommandCodeReplyText(raw, seq)
 		}
 		a.generation.Discard("text")
 		a.generation.Discard("thinking")
@@ -331,7 +320,7 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	}
 	a.finishPendingRunError(raw)
 	a.retryResolution.Reset()
-	a.steers.Reset()
+	a.pendingSteers = nil
 	completion := agent.MessageCompletionComplete
 	if stopReason == "interrupted" {
 		completion = agent.MessageCompletionInterrupted
@@ -339,7 +328,7 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	if stopReason == "run_error" {
 		completion = agent.MessageCompletionError
 	}
-	if err := a.generation.PersistAllTo(completion, a.sink, agent.MessageContent{Completion: completion}, agent.SpanInfo{}); err != nil {
+	if err := a.persistCommandCodeGeneration(completion, false); err != nil {
 		slog.Warn("retain partial Command Code output", "agent_id", a.AgentID(), "error", err)
 	}
 	closeTools := completion == agent.MessageCompletionInterrupted || teardown
@@ -367,6 +356,9 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	content = agent.WithToolUseCount(content, uses)
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("persist the Command Code turn end", "agent_id", a.AgentID(), "error", err)
+		if reply := a.nativeReplies[turnID]; reply != nil && !agent.OutputRetained(err) {
+			reply.unproved = true
+		}
 	}
 	if closeTools {
 		providerkit.ResetSpansAndProgress(a.sink)
@@ -400,6 +392,7 @@ func (a *Agent) closeUnfinishedTools(completion agent.MessageCompletion) {
 func (a *Agent) finishStream() {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	a.replyStreamClosed = true
 	completion := a.ProcessExitCompletion()
 	if a.IsDiscardingOutput() {
 		a.closeUnfinishedTools(completion)
@@ -409,6 +402,7 @@ func (a *Agent) finishStream() {
 		}
 		return
 	}
+	defer a.retireCommandCodeRepliesAfterExit()
 	a.flushPendingRunError()
 	a.Mu.Lock()
 	turnID := a.turnID

@@ -19,7 +19,8 @@ func readWindowsAccountPath() ([]string, error) {
 	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE, &token); err != nil {
 		return nil, fmt.Errorf("open the Worker account token: %w", err)
 	}
-	defer token.Close()
+	// The token is read-only here, and a failed close leaves nothing to undo.
+	defer func() { _ = token.Close() }()
 
 	// Windows merges and expands the User and System values for this account.
 	env, err := token.Environ(false)

@@ -1,0 +1,4 @@
+interface:
+  display_name: "LeapMux Help"
+  short_description: "Answer LeapMux questions and diagnose Hub/Worker issues"
+  default_prompt: "Use the leapmux-help skill to consult live LeapMux docs and diagnose the user's question or issue safely."

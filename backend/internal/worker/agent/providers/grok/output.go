@@ -62,12 +62,20 @@ func (a *Agent) handleQueueChanged(params json.RawMessage) {
 	var queue struct {
 		SessionID       string `json:"sessionId"`
 		RunningPromptID string `json:"runningPromptId"`
+		RunningText     string `json:"runningText"`
+		RunningKind     string `json:"runningKind"`
 	}
 	if err := json.Unmarshal(params, &queue); err != nil {
 		slog.Warn("grok queue notification unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if queue.RunningPromptID == "" || !a.IsCurrentSession(queue.SessionID) {
+	if queue.RunningPromptID == "" {
+		return
+	}
+	if !a.IsCurrentSession(queue.SessionID) {
+		if rowKey := a.childRowForSession(queue.SessionID); rowKey != "" {
+			a.observeGrokChildPrompt(queue.SessionID, rowKey, queue.RunningPromptID)
+		}
 		return
 	}
 	a.stateMu.Lock()
@@ -82,15 +90,18 @@ func (a *Agent) handleQueueChanged(params json.RawMessage) {
 	a.stateMu.Unlock()
 	if own {
 		// A prompt of LeapMux's. Its own response ends the turn.
+		a.acceptGrokSteerSuccessor(queue.SessionID, queue.RunningPromptID, queue.RunningText, false)
 		return
 	}
 	// Begin outside the lock: it publishes the turn state, which broadcasts.
 	if !a.BeginAgentTurn() {
+		a.acceptGrokSteerSuccessor(queue.SessionID, queue.RunningPromptID, queue.RunningText, false)
 		return
 	}
 	a.stateMu.Lock()
 	a.turns.agentTurn = queue.RunningPromptID
 	a.stateMu.Unlock()
+	a.acceptGrokSteerSuccessor(queue.SessionID, queue.RunningPromptID, queue.RunningText, queue.RunningKind == "prompt")
 }
 
 // handleTurnCompleted reads the end of a turn. In the main session it ends a
@@ -99,7 +110,8 @@ func (a *Agent) handleQueueChanged(params json.RawMessage) {
 // its transcript.
 func (a *Agent) handleTurnCompleted(notification grokNotification, raw []byte, main bool) {
 	var completed struct {
-		PromptID string `json:"prompt_id"`
+		PromptID   string `json:"prompt_id"`
+		StopReason string `json:"stop_reason"`
 	}
 	if err := json.Unmarshal(notification.Update, &completed); err != nil {
 		slog.Warn("grok turn_completed unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -107,9 +119,15 @@ func (a *Agent) handleTurnCompleted(notification grokNotification, raw []byte, m
 	}
 	if !main {
 		if rowKey := a.childRowForSession(notification.SessionID); rowKey != "" {
+			a.clearPermissionChecks(notification.SessionID)
 			a.FinishChildTurn(rowKey)
+			a.finishGrokChildSteers(notification.SessionID, completed.PromptID, grokSteerTurnOutcome(completed.StopReason))
 		}
 		return
+	}
+	outcome := grokSteerTurnOutcome(completed.StopReason)
+	if completed.PromptID != "" {
+		a.finishGrokSteerReply(notification.SessionID, completed.PromptID, outcome)
 	}
 	a.stateMu.Lock()
 	delete(a.turns.own, completed.PromptID)
@@ -122,6 +140,9 @@ func (a *Agent) handleTurnCompleted(notification grokNotification, raw []byte, m
 	a.stateMu.Unlock()
 	if agentTurn == "" {
 		return
+	}
+	if completed.PromptID == "" {
+		a.finishGrokSteerReply(notification.SessionID, agentTurn, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED)
 	}
 	// The agent's own frame is the turn-end row. The browser plugin reads its
 	// stop reason into the divider, as it reads the prompt response of a turn
@@ -141,6 +162,19 @@ func grokIsCancelledTurnEnd(frame json.RawMessage) bool {
 		return false
 	}
 	return envelope.Params.Update.StopReason == "cancelled"
+}
+
+func grokSteerTurnOutcome(reason string) leapmuxv1.AgentInputTurnOutcome {
+	switch reason {
+	case contracts.ACPStopReasonEndTurn, "max_tokens", "max_turn_requests", "refusal":
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
+	case contracts.ACPStopReasonCancelled:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	case "error":
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
+	default:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
+	}
 }
 
 // handleResponseCompleted broadcasts the token counts of one model call. The

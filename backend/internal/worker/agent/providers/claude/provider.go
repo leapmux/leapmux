@@ -48,7 +48,7 @@ func (p claudeProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 	res.SelfDisplayed = p.IsSelfDisplayingControlTool(ctx.ToolName)
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
 	if !res.Withhold {
-		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == agent.ControlBehaviorAllow && agent.DecodeControlChoice(ctx.ResponseContent) == "session" {
+		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == contracts.ControlAnswerBehaviorAllow && agent.DecodeControlChoice(ctx.ResponseContent) == "session" {
 			content, err := applyClaudeSessionPermission(res.Content, ctx.ToolName)
 			if err != nil {
 				res.Refuse(agent.RefusalUnencodableReply)
@@ -58,7 +58,7 @@ func (p claudeProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 		}
 	}
 	if !res.Withhold && res.PlanModeControl == agent.PlanModeControlExit && ctx.PlanApproval.GetPermissionMode() != "" && !ctx.PlanApproval.GetClearContext() {
-		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == agent.ControlBehaviorAllow {
+		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == contracts.ControlAnswerBehaviorAllow {
 			content, err := applyClaudePlanPermission(res.Content, ctx.PlanApproval.GetPermissionMode())
 			if err != nil {
 				res.Refuse(agent.RefusalUnencodableReply)

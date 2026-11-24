@@ -93,7 +93,7 @@ func (a *Agent) publishKiroControlRequest(line *providerkit.ParsedLine) {
 
 // observeControlRequest records the tool call of one control request that
 // passed the session guard, for the base's publications as well as Kiro's own.
-func (a *Agent) observeControlRequest(line *providerkit.ParsedLine) {
+func (a *Agent) observeControlRequest(_ string, line *providerkit.ParsedLine) {
 	var params kiroRequestParams
 	if json.Unmarshal(line.Params, &params) != nil {
 		return
@@ -133,7 +133,7 @@ func (a *Agent) handleInteractionResolved(raw json.RawMessage) {
 	if !ok {
 		return
 	}
-	if a.WithdrawOutstandingControlRequest(a.Sink(), requestID) {
+	if a.WithdrawOutstandingControlRequest(requestID) {
 		slog.Info("kiro withdrew a control request", "agent_id", a.AgentID(), "tool_call_id", toolCallID, "outcome", resolved.InteractionResolved.Outcome, "request_id", requestID)
 	}
 }

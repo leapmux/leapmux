@@ -60,10 +60,13 @@ type ampSteerSubmission struct {
 	threadID     string
 	baseline     map[string]bool
 	nativeID     string
+	resolution   agent.SteerResolution
 	echoed       bool
 	finished     bool
 	uncertain    bool
 	liveMessages [][]ampBlock
+	liveFrames   []ampReplyFrame
+	liveUnproved bool
 }
 
 func parseThreadExport(raw []byte, threadID string) (*ampThreadExport, error) {
@@ -168,6 +171,13 @@ func associateSteers(submissions []*ampSteerSubmission, exported *ampThreadExpor
 			claimed[submission.nativeID] = true
 			continue
 		}
+		if id := submission.resolution.Receipt.InputID; id != "" {
+			if position, ok := positions[id]; ok && !claimed[id] && isAmpExportPrompt(exported.Messages[position]) {
+				submission.nativeID = id
+				claimed[id] = true
+			}
+			continue
+		}
 		groups[submission.key] = append(groups[submission.key], submission)
 	}
 	for key, group := range groups {
@@ -201,7 +211,7 @@ func associateSteers(submissions []*ampSteerSubmission, exported *ampThreadExpor
 	}
 	last := -1
 	for _, submission := range submissions {
-		if submission.threadID != exported.ID {
+		if submission.threadID != exported.ID || submission.resolution.Receipt.InputID != "" {
 			continue
 		}
 		id := submission.nativeID
@@ -278,26 +288,41 @@ func (a *Agent) steerBaseline() (*ampThreadExport, error) {
 	return exported, nil
 }
 
-func (a *Agent) rememberSteer(proc *ampProcess, key string, baseline *ampThreadExport) (providerkit.SteerTicket, error) {
+func (a *Agent) rememberSteer(proc *ampProcess, threadID, key string, baseline *ampThreadExport, resolution agent.SteerResolution) (*ampSteerSubmission, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.stopped || a.proc != proc || a.threadID != baseline.ID || !a.turn.active || proc.ending() {
-		return 0, agent.ErrNoActiveTurn
+	if a.stopped || a.proc != proc || a.threadID != threadID || !a.turn.active || proc.ending() {
+		return nil, agent.ErrNoActiveTurn
 	}
 	select {
 	case <-proc.ProcessDone():
-		return 0, agent.ErrNoActiveTurn
+		return nil, agent.ErrNoActiveTurn
 	default:
 	}
-	ticket := a.steers.Add(key)
-	a.nativeSteers = append(a.nativeSteers, &ampSteerSubmission{ticket: ticket, key: key, threadID: baseline.ID, baseline: baseline.identities()})
-	return ticket, nil
+	submission := &ampSteerSubmission{threadID: threadID, resolution: resolution}
+	if baseline != nil {
+		submission.ticket = a.steers.Add(key)
+		submission.key, submission.baseline = key, baseline.identities()
+	}
+	a.nativeSteers = append(a.nativeSteers, submission)
+	return submission, nil
 }
 
-func (a *Agent) forgetSteer(ticket providerkit.SteerTicket) {
+// forgetUnconsumedSteer removes a failed write unless native history already
+// proved that Amp took it.
+func (a *Agent) forgetUnconsumedSteer(target *ampSteerSubmission) bool {
 	a.mu.Lock()
-	a.nativeSteers = slices.DeleteFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool { return submission.ticket == ticket })
+	if target.echoed || (target.resolution.Receipt.InputID != "" && target.nativeID != "") {
+		a.mu.Unlock()
+		return false
+	}
+	a.nativeSteers = slices.DeleteFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool { return submission == target })
 	a.mu.Unlock()
+	if target.ticket != 0 {
+		a.steers.Forget(target.ticket)
+		a.steers.Settle(a.sink)
+	}
+	return true
 }
 
 func (a *Agent) hasUncertainSteer(threadID string) bool {
@@ -367,26 +392,47 @@ func visibleExportBlocks(content []json.RawMessage) ([]ampBlock, error) {
 	return visible, nil
 }
 
-func (a *Agent) noteLiveAssistant(message *ampMessage) {
+func (a *Agent) noteLiveAssistant(threadID string, message *ampMessage, reply *ampInputReply, frame ampReplyFrame, ended bool) {
 	blocks, err := visibleExportBlocks(message.Content)
-	if err != nil {
-		return
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var latestTracked string
+	if reply != nil {
+		if reply.startsWithSteer {
+			latestTracked = reply.receipt.InputID
+		}
+		if count := len(reply.steers); count > 0 {
+			latestTracked = reply.steers[count-1].InputID
+		}
+	}
 	for i := len(a.nativeSteers) - 1; i >= 0; i-- {
 		submission := a.nativeSteers[i]
+		if threadID != "" && submission.threadID != threadID {
+			continue
+		}
 		if submission.echoed && !submission.finished {
-			submission.liveMessages = append(submission.liveMessages, blocks)
+			if submission.resolution.Receipt.InputID != "" {
+				if latestTracked != "" && latestTracked != submission.nativeID {
+					continue
+				}
+				if reply != nil && !reply.unproved {
+					submission.liveFrames = append(submission.liveFrames, frame)
+				} else {
+					submission.liveUnproved = true
+				}
+			} else if err == nil {
+				submission.liveMessages = append(submission.liveMessages, blocks)
+			}
 			break
 		}
 	}
-	if message.StopReason != nil && *message.StopReason == stopReasonEndTurn {
+	if ended {
 		for _, submission := range a.nativeSteers {
-			if submission.echoed {
+			if submission.echoed && (threadID == "" || submission.threadID == threadID) {
 				submission.finished = true
 			}
 		}
+		a.pruneTrackedSteersLocked()
 	}
 }
 
@@ -449,7 +495,7 @@ func (a *Agent) reconcileStoppedSteers(threadID string) {
 	}
 	// An absent record is not proof of a native drop.
 	a.mu.Lock()
-	var uncertain []providerkit.SteerTicket
+	var uncertain []*ampSteerSubmission
 	knownUnfinished := false
 	for _, submission := range a.nativeSteers {
 		if submission.finished || submission.uncertain {
@@ -457,14 +503,22 @@ func (a *Agent) reconcileStoppedSteers(threadID string) {
 		}
 		if !submission.echoed && submission.nativeID == "" {
 			submission.uncertain = true
-			uncertain = append(uncertain, submission.ticket)
+			uncertain = append(uncertain, submission)
 		} else {
 			knownUnfinished = true
 		}
 	}
 	a.mu.Unlock()
-	for _, ticket := range uncertain {
-		a.steers.Uncertain(ticket)
+	for _, submission := range uncertain {
+		if submission.ticket != 0 {
+			a.steers.Uncertain(submission.ticket)
+		} else {
+			resolution := submission.resolution
+			resolution.Outcome, resolution.Receipt = agent.SteerOutcomeUncertain, agent.NativeInputReceipt{}
+			if err := agent.RetainSteerResolution(a.sink, resolution); !agent.OutputRetained(err) {
+				slog.Warn("retain the Amp steer uncertainty", "agent_id", a.agentID, "error", err)
+			}
+		}
 	}
 	a.steers.Settle(a.sink)
 	// Uncertainty pauses the queue. A confirmed reply still owns an active turn.
@@ -513,6 +567,9 @@ func (a *Agent) applyRecoveredSteers(exported *ampThreadExport) bool {
 	associateSteers(a.nativeSteers, exported)
 	submissions := slices.Clone(a.nativeSteers)
 	a.mu.Unlock()
+	if !a.recoverTrackedSteers(exported, submissions) {
+		return false
+	}
 	positions := make(map[string]int, len(exported.Messages))
 	for i, message := range exported.Messages {
 		positions[message.ID] = i
@@ -527,6 +584,9 @@ func (a *Agent) applyRecoveredSteers(exported *ampThreadExport) bool {
 		a.mu.Unlock()
 		if finished || uncertain {
 			continue
+		}
+		if submission.resolution.Receipt.InputID != "" {
+			return false
 		}
 		position, found := positions[nativeID]
 		if !found {
@@ -596,7 +656,8 @@ func (a *Agent) persistExportMessage(threadID string, message ampExportMessage, 
 		return false
 	}
 	a.mu.Lock()
-	if a.importedMessages[message.ID] {
+	importedKey := threadID + "\x00" + message.ID
+	if a.importedMessages[importedKey] {
 		a.mu.Unlock()
 		return true
 	}
@@ -621,7 +682,7 @@ func (a *Agent) persistExportMessage(threadID string, message ampExportMessage, 
 		}
 		rows = append(rows, agent.TranscriptMessage{
 			Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-			Content: agent.MessageContent{Original: raw, AgentSessionID: threadID, IdempotencyKey: fmt.Sprintf("amp-export:%s:%s:%d", threadID, message.ID, index)},
+			Content: agent.MessageContent{Original: raw, AgentSessionID: threadID, IdempotencyKey: exportMessageKey(threadID, message.ID, index)},
 		})
 	}
 	err := agent.PersistTranscriptBatch(a.sink, rows)
@@ -633,7 +694,11 @@ func (a *Agent) persistExportMessage(threadID string, message ampExportMessage, 
 	if a.importedMessages == nil {
 		a.importedMessages = make(map[string]bool)
 	}
-	a.importedMessages[message.ID] = true
+	a.importedMessages[importedKey] = true
 	a.mu.Unlock()
 	return true
+}
+
+func exportMessageKey(threadID, messageID string, index int) string {
+	return fmt.Sprintf("amp-export:%s:%s:%d", threadID, messageID, index)
 }

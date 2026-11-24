@@ -393,6 +393,7 @@ func (a *Agent) rebuildSession(settings clineSettings) error {
 	}
 	a.dispatchMu.Lock()
 	a.closeTeamRuns(bgtask.StatusStopped)
+	a.resetSteerProofs()
 	a.Mu.Lock()
 	a.team = teamState{}
 	a.Mu.Unlock()
@@ -498,7 +499,7 @@ func (a *Agent) applyModeChange(continuePlan bool) {
 		return
 	}
 	input := clineInput{prompt: actModeContinuationPrompt}
-	if err := a.deliver(sessionID, input.payload(sessionID, after.sessionMode(), "")); err != nil {
+	if err := a.deliver(sessionID, input.payload(sessionID, after.sessionMode(), ""), nil); err != nil {
 		slog.Warn("cline continue the approved plan", "agent_id", a.AgentID(), "error", err)
 		if !errors.Is(err, agent.ErrDeliveryUncertain) {
 			a.releaseInputTurn()
@@ -544,6 +545,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.dispatchMu.Lock()
 	a.Mu.Lock()
 	lead := a.out.lead
+	reply := a.turn.inputReply
 	a.Mu.Unlock()
 	a.withdrawAllControls()
 	a.leadRetry.Reset()
@@ -551,6 +553,8 @@ func (a *Agent) ClearContext() (string, error) {
 	a.settleSpawns(agent.MessageCompletionInterrupted)
 	a.flushPending(lead, oldSessionID, agent.MessageCompletionInterrupted)
 	a.closeOpenTools(lead, agent.MessageCompletionInterrupted)
+	a.retireInputReply(reply)
+	a.resetSteerProofs()
 	a.closeTeamRuns(bgtask.StatusStopped)
 	a.Mu.Lock()
 	a.sessionID = sessionID

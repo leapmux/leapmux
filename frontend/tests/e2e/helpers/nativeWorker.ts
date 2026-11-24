@@ -41,6 +41,7 @@ export function spawnWorkerProcess(options: WorkerProcessOptions): ChildProcess 
   // Runtime execution: the saved registration in the data directory is
   // the only credential source, so this process RUNS the worker.
   const proc = spawnTestProcess(getGlobalState().binaryPath, [
+    'daemon',
     'worker',
     'run',
     '--data-dir',
@@ -100,6 +101,7 @@ export async function spawnRegisteredWorker(hub: WorkerHub, options: RegisteredW
   try {
     const { onSpawn, onRegistrationSpawn, signal, extraArgs = [], ...processOptions } = options
     const registerProc = spawnTestProcess(getGlobalState().binaryPath, [
+      'daemon',
       'worker',
       'register',
       '--hub',

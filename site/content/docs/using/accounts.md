@@ -15,9 +15,9 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/admin/running-leapmux
 
 | Mode | Account needed? | What you see |
 | --- | --- | --- |
-| **Solo** (`leapmux solo`) | One fixed account | No signup screen. Local IPC uses `solo` without a credential. TCP asks the first caller to set its password. |
-| **Dev** (`leapmux dev`) | Yes | Real password authentication. The first admin is created through the `/setup` flow. |
-| **Hub** (`leapmux hub`) | Yes | Full authentication: signup, password login, sessions, OAuth, API tokens. |
+| **Solo** (`leapmux daemon solo`) | One fixed account | No signup screen. Local IPC uses `solo` without a credential. TCP asks the first caller to set its password. |
+| **Dev** (`leapmux daemon dev`) | Yes | Real password authentication. The first admin is created through the `/setup` flow. |
+| **Hub** (`leapmux daemon hub`) | Yes | Full authentication: signup, password login, sessions, OAuth, API tokens. |
 
 In **solo mode** there is nothing to sign up for. Local IPC opens the app without a credential. A passwordless TCP connection shows only the first-password setup screen. It cannot call another protected RPC. After setup, TCP shows the normal sign-in page. Solo mode also disables most account actions in every state: it refuses a change to your profile or your email, and it refuses to detach an OAuth provider. Each refusal identifies the action that solo mode does not support.
 
@@ -57,7 +57,7 @@ The `/setup` screen only appears while no users exist. Once the first admin is c
 
 ## Signing up
 
-After the first admin exists, new self-service accounts are only possible if the administrator enables the `signup_enabled` setting (`leapmux control admin settings set signup_enabled true`; it is **off by default**). See [Configuration](/docs/admin/configuration/).
+After the first admin exists, new self-service accounts are only possible if the administrator enables the `signup_enabled` setting (`leapmux admin settings set signup_enabled true`; it is **off by default**). See [Configuration](/docs/admin/configuration/).
 
 - **If signup is disabled**, visiting `/signup` shows a "not found" page titled **"Sign-up disabled"**, which states that new account registration is not available and offers a **"Go to login"** link.
 - **If signup is enabled**, you get the **"Sign Up"** page.
@@ -244,7 +244,7 @@ The link is **single-use** and **expires after one hour**, and it stays unspent 
 
 Completing recovery **clears every passkey** on the account, revokes other sessions, and revokes API/delegation tokens — the same break-glass posture as an admin password reset. Linked providers stay linked. Sign in with the factor you chose: the new password, or the passkey the recovery enrolled.
 
-An **unverified** email address gets no link. Verify it from **Preferences → Account** while you can still sign in; when you cannot sign in at all (for example, the first admin never verified the address), an administrator can set a password with `leapmux control admin user reset-password` or the offline `leapmux recover password reset` (see [Admin CLI](/docs/admin/admin-cli/) and [Recovery](/docs/admin/recover/)).
+An **unverified** email address gets no link. Verify it from **Preferences → Account** while you can still sign in; when you cannot sign in at all (for example, the first admin never verified the address), an administrator can set a password with `leapmux admin user reset-password` or the offline `leapmux recover reset-password` (see [Admin CLI](/docs/admin/admin-cli/) and [Recovery](/docs/admin/recover/)).
 
 ## Password requirements
 
@@ -326,7 +326,7 @@ This row sits one category over, in the dialog's **Apps** section, beside **App 
 
 **Disconnect**, on the app's line, ends your whole authorization of it — every machine at once. **Revoke**, on one row, ends that machine only and leaves the app working elsewhere. Either way the app must be authorized again to come back. Both are among the few account changes that need no verification, so you can act the moment you suspect an app is malicious.
 
-`leapmux control auth credentials` prints the same list from a terminal.
+`leapmux auth credentials` prints the same list from a terminal.
 
 See [Connected Apps](/docs/using/connected-apps/) for how to read a row and what registering your own app involves, and [App credentials](/docs/admin/security/#app-credentials) for what a credential can do, how long it lives, and the email notice you get when one is issued.
 

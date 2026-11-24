@@ -117,7 +117,7 @@ type listenerSet struct {
 	// It holds the ADDRESS and the SOURCE, not a string to parse back. Bound()
 	// used to re-parse the map key, with a silent `continue` on a parse error
 	// -- a branch that could only hide the failure the map exists to report --
-	// and it labelled every entry SourceExtra, so a -listen socket a rollback
+	// and it labelled every entry SourceExtra, so a --listen socket a rollback
 	// could not restore was reported to the operator as an "extra" they never
 	// configured and cannot remove.
 	failed map[string]failedAddress
@@ -189,7 +189,7 @@ func (s *listenerSet) setServer(server *http.Server) {
 // a wildcard bind as "[::]:4327" and the requested spelling is the identity
 // the merge and the live-listener map are keyed on.
 //
-// -listen may ask for port 0 (a test harness picking a free port), and after
+// --listen may ask for port 0 (a test harness picking a free port), and after
 // this the banner, the merge and the administration surface all name the port
 // a client can actually connect to.
 func resolvePort(addr listenset.Addr, ln net.Listener) listenset.Addr {
@@ -300,7 +300,7 @@ func (s *listenerSet) serveEnded(bl *boundListener, err error) bool {
 //
 // A failure rolls the whole call back: everything opened here is closed, and
 // everything closed here is bound again. The base is what that protects -- a
-// merge that closes the -listen socket and then fails to bind its replacement
+// merge that closes the --listen socket and then fails to bind its replacement
 // would otherwise leave the hub unreachable at the address its operator gave.
 func (s *listenerSet) Apply(extras []listenset.Addr) error {
 	want := listenset.Merge(s.bases, extras)
@@ -348,7 +348,7 @@ func (s *listenerSet) Apply(extras []listenset.Addr) error {
 	// those: an address the set now answers on, and an address this call no
 	// longer asks for. What it must not clear is an address the operator still
 	// wants and the hub still cannot bind -- rollbackLocked records exactly
-	// that, the -listen socket among them, and clearing the whole map here let
+	// that, the --listen socket among them, and clearing the whole map here let
 	// the next successful apply inside ApplyBestEffort erase it, so the panel
 	// reported no problems on a hub that had lost the address its operator
 	// gave on the command line.
@@ -402,7 +402,7 @@ func (s *listenerSet) servesLocked(addr listenset.Addr) bool {
 // A rollback that itself fails is reported, never swallowed. It is the case
 // where the hub loses an address it was serving a moment ago, and an operator
 // reading only "listen 192.168.1.24:8080 failed" would have no way to learn
-// that the -listen socket went with it.
+// that the --listen socket went with it.
 func (s *listenerSet) rollbackLocked(opened []string, closed []removedListener) error {
 	var errs []error
 	for _, key := range opened {
@@ -497,7 +497,7 @@ func (s *listenerSet) ApplyBestEffort(extras []listenset.Addr) {
 		}
 		if len(next) == len(remaining) {
 			// The address that failed is not one of the extras: it is the
-			// -listen socket a rollback could not restore. There is no entry
+			// --listen socket a rollback could not restore. There is no entry
 			// left to withhold, and withholding nothing would loop.
 			break
 		}
@@ -562,7 +562,7 @@ func (s *listenerSet) unserved(addrs []listenset.Addr) []listenset.Addr {
 //
 // It ADDS rather than replaces, so it keeps what rollbackLocked recorded. That map holds one thing the loop
 // above can never produce: an address the hub was serving a moment ago and
-// could not bind again -- the -listen socket among them -- and clearing it
+// could not bind again -- the --listen socket among them -- and clearing it
 // here reported a hub with no problems at the one address whose loss the
 // operator most needs to see. A key the loop also failed on wins, because its
 // reason is the newer one.
@@ -753,7 +753,7 @@ func (r listenReporter) PrimaryListenAddr() string {
 // write like any other, the key is hot, and local IPC can write it without a
 // credential. One command could then publish the first-password setup flow on
 // the LAN, where another caller could claim the account. Before this
-// feature the same exposure needed `-listen 0.0.0.0:4327` on the command line,
+// feature the same exposure needed `--listen 0.0.0.0:4327` on the command line,
 // which printed the startup warning.
 //
 // It runs on every settings write, which is what makes the panel and the CLI

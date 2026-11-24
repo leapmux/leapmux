@@ -79,6 +79,46 @@ func TestChildInputUsesTheOwnedNativeChild(t *testing.T) {
 	assert.Len(t, r.commandsOfType("steer_subagent"), 2)
 }
 
+func TestChildYieldsToOutsideWorkAndAcceptsOrdinaryInput(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
+	child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
+	key := subagentRowKey(r.agent.sessionID, "Probe")
+	active := agent.TurnState{Active: true, Steerable: true}
+	assert.Equal(t, active, r.agent.ActiveChildTurnState(key))
+	gotActive, published := child.LastTurnActive()
+	assert.True(t, published && gotActive, "the active loop reaches the child input queue")
+
+	r.emit(subagentEvent("Probe", `{"type":"agent_pause","yielded":false,"awaiting":true}`),
+		subagentEvent("Probe", `{"type":"agent_pause","yielded":true,"awaiting":false}`))
+	assert.Equal(t, active, r.agent.ActiveChildTurnState(key))
+	_, err := r.agent.SendChildInput(key, agent.ChildInput{Content: "Keep queued."})
+	require.ErrorIs(t, err, agent.ErrAgentBusy)
+	assert.Empty(t, r.commandsOfType(CommandSteerSubagent))
+
+	r.emit(subagentEvent("Probe", `{"type":"agent_pause","yielded":true,"awaiting":true}`))
+	assert.Equal(t, agent.TurnState{}, r.agent.ActiveChildTurnState(key))
+	gotActive, published = child.LastTurnActive()
+	assert.True(t, published)
+	assert.False(t, gotActive, "the ready child releases its queue")
+	assert.Equal(t, bgtask.StatusRunning, subagentRow(t, r, "Probe").Status)
+	require.ErrorIs(t, r.agent.SteerChildInput(key, "Use ordinary input.", nil), agent.ErrNoActiveTurn)
+	_, err = r.agent.SendChildInput(key, agent.ChildInput{Content: "Start a new loop."})
+	require.NoError(t, err)
+	assert.Len(t, r.commandsOfType(CommandSteerSubagent), 1)
+
+	r.emit(subagentEvent("Probe", `{"type":"agent_start"}`))
+	assert.Equal(t, active, r.agent.ActiveChildTurnState(key))
+	gotActive, published = child.LastTurnActive()
+	assert.True(t, published && gotActive)
+	r.emit(subagentEvent("Probe", `{"type":"agent_end","messages":[]}`))
+	assert.Equal(t, agent.TurnState{}, r.agent.ActiveChildTurnState(key))
+	gotActive, published = child.LastTurnActive()
+	assert.True(t, published)
+	assert.False(t, gotActive)
+}
+
 func TestChildInputRejectsInvalidPayloads(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

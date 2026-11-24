@@ -7,7 +7,6 @@ import (
 
 	"github.com/coder/quartz"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -36,6 +35,7 @@ type Agent struct {
 	// observer consumed (see observeDiracNotice).
 	claimedMu    sync.Mutex
 	claimedCards map[string]struct{}
+	steers       diracSteerState
 }
 
 func (a *Agent) archiveProfile() (root string, observed bool) {
@@ -66,7 +66,8 @@ var _ agent.SteerPreparer = (*Agent)(nil)
 // `queued` or `sent`. A steer that reaches an idle session is refused, because
 // the whisper carries no turn to land in and Dirac buffers only the whispers
 // that arrive while a session has a pending prompt.
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	if content == "" {
 		return nil
 	}
@@ -75,6 +76,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if err := providerkit.TextOnlySteer("Dirac", attachments); err != nil {
 		return err
 	}
+	var tracked *diracPendingSteer
 	err := a.WithActivePromptSession(func(sessionID string) error {
 		params, err := json.Marshal(map[string]any{
 			"sessionId": sessionID,
@@ -83,7 +85,9 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		if err != nil {
 			return fmt.Errorf("marshal the Dirac whisper: %w", err)
 		}
+		tracked = a.registerDiracSteer(sessionID, request)
 		if err := a.SendNotification(diracSteerMethod, params); err != nil {
+			a.cancelDiracSteer(tracked)
 			return providerkit.ClassifyJSONRPCDeliveryError(diracSteerMethod, err)
 		}
 		return nil
@@ -94,6 +98,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	// The turn can end while the whisper writes; a whisper into an ended turn
 	// reaches nothing.
 	if !a.PromptActive() {
+		a.cancelDiracSteer(tracked)
 		return agent.ErrNoActiveTurn
 	}
 	return nil

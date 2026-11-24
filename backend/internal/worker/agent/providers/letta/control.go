@@ -1,7 +1,6 @@
 package letta
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Letta Code has two control flows, and they differ in how the answer returns.
@@ -52,28 +52,22 @@ type lettaPermissionSuggestion struct {
 	Text string `json:"text"`
 }
 
-// lettaQuestionReceipt is the result of an accepted AskUserQuestion call.
-// The call returns it as JSON text in `tool_return`. The tags are pinned to the
-// `question` table of the contract.
-type lettaQuestionReceipt struct {
-	Type       string          `json:"type"`
-	Version    int             `json:"version"`
-	ToolCallID string          `json:"toolCallId"`
-	Questions  json.RawMessage `json:"questions"`
-}
+// The fields of a published control request that LeapMux chose, which the
+// Worker writes (onControlRequest, postQuestionRequest) and reads back
+// (readLettaControlPayload). The tool fields take the contract's names
+// instead, the ones that a stream_delta carries.
+const (
+	lettaControlFieldType      = "type"
+	lettaControlFieldRequestID = "requestId"
+)
 
-// lettaQuestionResponse answers a receipt. Letta Code reads it from the task
-// notification that carries it, and it accepts an `answered` response only when
-// `answers` holds a nonempty answer for each question, keyed by the text of the
-// question. The field order is the order that Letta Code writes. The tags are
-// pinned to the `question` table of the contract.
-type lettaQuestionResponse struct {
-	Type       string            `json:"type"`
-	Version    int               `json:"version"`
-	ToolCallID string            `json:"toolCallId"`
-	Questions  json.RawMessage   `json:"questions"`
-	Status     string            `json:"status"`
-	Answers    map[string]string `json:"answers,omitempty"`
+// ControlRequestKey reads the key that the agent publishes a Letta request
+// under: the `requestId` that it writes into the payload (onControlRequest,
+// postQuestionRequest).
+func (lettaProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	fields, _ := providerkit.RawObject(payload)
+	requestID, _ := providerkit.RawString(fields[lettaControlFieldRequestID])
+	return requestID, requestID != ""
 }
 
 // onControlRequest publishes one permission request. `body` is the frame's
@@ -106,12 +100,12 @@ func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
 		"agent_id", a.AgentID(), "request_id", requestID, "kind", kind, "tool", req.ToolName)
 
 	// The tool fields take the CONTRACT names (`tool_name`, `tool_call_id`,
-	// `tool_input`): the browser plugin reads them under those names, the same
+	// `tool_input`): ReadControlRequest reads them under those names, the same
 	// ones a stream_delta carries. A payload that spelled them differently drew
 	// a banner titled "Tool" with no command.
 	payloadBytes, err := json.Marshal(map[string]any{
-		"type":                              string(kind),
-		"requestId":                         requestID,
+		lettaControlFieldType:               string(kind),
+		lettaControlFieldRequestID:          requestID,
 		contracts.LettaDeltaFieldToolName:   req.ToolName,
 		contracts.LettaDeltaFieldToolCallID: req.ToolCallID,
 		contracts.LettaDeltaFieldToolInput:  req.Input,
@@ -120,7 +114,7 @@ func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
 	if err != nil {
 		return
 	}
-	a.registerPermission(requestID, payloadBytes, req.ToolName != "")
+	a.registerPermission(requestID, payloadBytes, req.ToolName != "", a.inputPermissionTurnID(line, req.ToolCallID))
 }
 
 // lettaQuestionRequestID is the request id of the question that one call posts.
@@ -148,14 +142,14 @@ func (a *Agent) postQuestionRequest(tool *lettaTool, delta *lettaDelta) {
 	if json.Unmarshal(output, &inner) == nil {
 		text = []byte(inner)
 	}
-	var receipt lettaQuestionReceipt
+	var receipt contracts.LettaQuestionReceipt
 	if json.Unmarshal(text, &receipt) != nil ||
-		receipt.Type != contracts.LettaQuestionReceiptType ||
-		receipt.Version != lettaQuestionVersion ||
-		receipt.ToolCallID != tool.id {
+		receipt.FieldType != contracts.LettaQuestionReceiptType ||
+		receipt.FieldVersion != lettaQuestionVersion ||
+		receipt.FieldToolCallID != tool.id {
 		return
 	}
-	if _, ok := lettaQuestionTexts(receipt.Questions); !ok {
+	if _, ok := lettaQuestionTexts(receipt.FieldQuestions); !ok {
 		slog.Warn("letta: question receipt holds no usable question", "agent_id", a.AgentID(), "tool_call_id", tool.id)
 		return
 	}
@@ -164,12 +158,12 @@ func (a *Agent) postQuestionRequest(tool *lettaTool, delta *lettaDelta) {
 	slog.Info("letta: question request",
 		"agent_id", a.AgentID(), "request_id", requestID, "tool", tool.name)
 	payloadBytes, err := json.Marshal(map[string]any{
-		"type":                              string(lettaControlAskUser),
-		"requestId":                         requestID,
+		lettaControlFieldType:               string(lettaControlAskUser),
+		lettaControlFieldRequestID:          requestID,
 		contracts.LettaDeltaFieldToolName:   tool.name,
 		contracts.LettaDeltaFieldToolCallID: tool.id,
 		contracts.LettaDeltaFieldToolInput: map[string]json.RawMessage{
-			contracts.LettaQuestionFieldQuestions: receipt.Questions,
+			contracts.LettaQuestionFieldQuestions: receipt.FieldQuestions,
 		},
 	})
 	if err != nil {
@@ -209,8 +203,8 @@ func lettaQuestionTexts(questions json.RawMessage) ([]string, bool) {
 	return texts, true
 }
 
-// lettaResolveControlResponse turns the browser's decision into the bytes that
-// the worker sends to Letta Code. An absent request leaves the response bytes
+// lettaResolveControlResponse turns the neutral answer of AnswerControlRequest
+// into the bytes that the worker sends to Letta Code. An absent request leaves the response bytes
 // alone, and a malformed request withholds the response: the two rules the
 // shared suites pin.
 //
@@ -220,13 +214,8 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	if len(ctx.RequestPayload) == 0 {
 		return agent.ControlResponseResolution{Content: ctx.ResponseContent}
 	}
-	var request struct {
-		Type       string          `json:"type"`
-		RequestID  string          `json:"requestId"`
-		ToolCallID string          `json:"tool_call_id"`
-		ToolInput  json.RawMessage `json:"tool_input"`
-	}
-	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil {
+	request, readable := readLettaControlPayload(ctx.RequestPayload)
+	if !readable {
 		resolution := agent.ControlResponseResolution{Content: ctx.ResponseContent}
 		resolution.Refuse(agent.RefusalUnreadableRequest)
 		return resolution
@@ -238,34 +227,27 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 		resolution.Refuse(agent.RefusalNoDecision)
 		return resolution
 	}
-	if request.Type == string(lettaControlAskUser) {
-		// Only a question request states its input as the question call's own object.
-		var input struct {
-			Questions json.RawMessage `json:"questions"`
-		}
-		if err := json.Unmarshal(request.ToolInput, &input); err != nil {
-			var resolution agent.ControlResponseResolution
-			resolution.Refuse(agent.RefusalUnreadableRequest)
-			return resolution
-		}
-		return lettaResolveQuestion(ctx, request.ToolCallID, input.Questions, behavior, message)
-	}
-
-	behaviorWord := "deny"
-	if behavior == agent.ControlBehaviorAllow {
-		behaviorWord = "allow"
-	}
-	decisionRaw, err := json.Marshal(decisionBody{Behavior: behaviorWord, Message: message})
-	if err != nil {
-		var resolution agent.ControlResponseResolution
-		resolution.Refuse(agent.RefusalUnencodableReply)
+	switch request.kind {
+	case string(lettaControlAskUser):
+		// Only a question request states its input as the question call's own
+		// object. An input that is no object reads as `{}`, which states no
+		// question, so lettaResolveQuestion withholds the answer.
+		questions := providerkit.RawFields(request.toolInput)[contracts.LettaQuestionFieldQuestions]
+		return lettaResolveQuestion(ctx, request.toolCallID, questions, behavior, message)
+	case string(lettaControlPermission):
+	default:
+		// The Worker publishes no other request, so Letta Code waits for no
+		// answer to this one.
+		resolution := agent.ControlResponseResolution{Content: ctx.ResponseContent}
+		resolution.Refuse(agent.RefusalUnreadableRequest)
 		return resolution
 	}
-	raw, err := json.Marshal(approvalResponsePayload{
-		Kind:      contracts.LettaReplyKindApprovalResponse,
-		RequestID: request.RequestID,
-		Decision:  decisionRaw,
-	})
+
+	lettaBehavior := contracts.LettaBehaviorDeny
+	if behavior == contracts.ControlAnswerBehaviorAllow {
+		lettaBehavior = contracts.LettaBehaviorAllow
+	}
+	raw, err := lettaApprovalResponse(request.requestID, lettaBehavior, message)
 	if err != nil {
 		var resolution agent.ControlResponseResolution
 		resolution.Refuse(agent.RefusalUnencodableReply)
@@ -274,7 +256,23 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	return agent.ControlResponseResolution{Content: raw}
 }
 
-// lettaResolveQuestion turns the browser's answer to a posted question into the
+// lettaApprovalResponse encodes the approval_response payload that answers the
+// permission `requestID` with a decision: `behavior` is
+// contracts.LettaBehaviorAllow or contracts.LettaBehaviorDeny, and `message` is
+// the reason that the model reads.
+func lettaApprovalResponse(requestID, behavior, message string) ([]byte, error) {
+	decision, err := json.Marshal(contracts.LettaApprovalDecision{Behavior: behavior, Message: message})
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(contracts.LettaApprovalResponse{
+		Kind:      contracts.LettaReplyKindApprovalResponse,
+		RequestID: requestID,
+		Decision:  decision,
+	})
+}
+
+// lettaResolveQuestion turns the neutral answer to a posted question into the
 // response of Letta Code. An allow answers each question, and any other
 // decision dismisses the questions. Letta Code reads a dismissal without a
 // reason, so a reason that the reader typed travels as the next user message.
@@ -285,26 +283,26 @@ func lettaResolveQuestion(ctx agent.ControlResponseContext, toolCallID string, q
 		resolution.Refuse(agent.RefusalUnreadableRequest)
 		return resolution
 	}
-	response := lettaQuestionResponse{
-		Type:       contracts.LettaQuestionResponseType,
-		Version:    lettaQuestionVersion,
-		ToolCallID: toolCallID,
-		Questions:  questions,
-		Status:     contracts.LettaQuestionStatusDismissed,
+	response := contracts.LettaQuestionResponse{
+		FieldType:       contracts.LettaQuestionResponseType,
+		FieldVersion:    lettaQuestionVersion,
+		FieldToolCallID: toolCallID,
+		FieldQuestions:  questions,
+		FieldStatus:     contracts.LettaQuestionStatusDismissed,
 	}
 	feedback := message
-	if behavior == agent.ControlBehaviorAllow {
+	if behavior == contracts.ControlAnswerBehaviorAllow {
 		answers, complete := lettaAnswersFor(texts, ctx.ResponseContent)
 		if !complete {
 			var resolution agent.ControlResponseResolution
 			resolution.Refuse(lettaRefusalIncompleteAnswers)
 			return resolution
 		}
-		response.Status = contracts.LettaQuestionStatusAnswered
-		response.Answers = answers
+		response.FieldStatus = contracts.LettaQuestionStatusAnswered
+		response.FieldAnswers = answers
 		feedback = ""
 	}
-	raw, err := encodeLettaJSON(response)
+	raw, err := providerkit.JSONStringify(response)
 	if err != nil {
 		var resolution agent.ControlResponseResolution
 		resolution.Refuse(agent.RefusalUnencodableReply)
@@ -313,14 +311,15 @@ func lettaResolveQuestion(ctx agent.ControlResponseContext, toolCallID string, q
 	return agent.ControlResponseResolution{Content: raw, FollowUp: agent.FeedbackFollowUp(feedback)}
 }
 
-// lettaEnvelopeAnswersField is the member of `updatedInput` in which the browser
-// folds the answers of a question form. It belongs to the neutral control response
-// that every provider receives (AskUserQuestionControl). It is not a field of the
-// Letta response, so the `question` table of the contract does not state it.
+// lettaEnvelopeAnswersField is the member of `updatedInput` in which
+// AnswerControlRequest folds the answers of a question form
+// (providerkit.AskUserQuestionAnswers). It belongs to the neutral control
+// response that several providers share. It is not a field of the Letta
+// response, so the `question` table of the contract does not state it.
 const lettaEnvelopeAnswersField = "answers"
 
-// lettaAnswersFor reads the answers that the browser folded into the input of the
-// question call. It reports false unless the answers hold exactly one nonempty
+// lettaAnswersFor reads the answers that AnswerControlRequest folded into the
+// input of the question call. It reports false unless the answers hold exactly one nonempty
 // text for each question.
 func lettaAnswersFor(texts []string, content []byte) (map[string]string, bool) {
 	given, _ := agent.DecodeControlUpdatedInput(content)[lettaEnvelopeAnswersField].(map[string]any)
@@ -338,18 +337,6 @@ func lettaAnswersFor(texts []string, content []byte) (map[string]string, bool) {
 	return answers, true
 }
 
-// encodeLettaJSON encodes value the way JavaScript does for the text of a task
-// notification: no HTML escape, and no trailing newline.
-func encodeLettaJSON(value any) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(buffer.Bytes(), "\n"), nil
-}
-
 // lettaQuestionNotification returns the text of the user message that answers a
 // posted question. It is the text that `prepareAskUserQuestionNotif` of Letta
 // Code writes for the same response: the call ID and the response, each escaped
@@ -358,40 +345,40 @@ func encodeLettaJSON(value any) ([]byte, error) {
 // come back from the service and a response that Letta Code would refuse must
 // not reach the server.
 func lettaQuestionNotification(data []byte) (string, error) {
-	var response lettaQuestionResponse
+	var response contracts.LettaQuestionResponse
 	if err := json.Unmarshal(data, &response); err != nil {
 		return "", fmt.Errorf("the Letta question response is not JSON: %w", err)
 	}
-	texts, ok := lettaQuestionTexts(response.Questions)
-	if response.Type != contracts.LettaQuestionResponseType || response.Version != lettaQuestionVersion ||
-		response.ToolCallID == "" || !ok {
+	texts, ok := lettaQuestionTexts(response.FieldQuestions)
+	if response.FieldType != contracts.LettaQuestionResponseType || response.FieldVersion != lettaQuestionVersion ||
+		response.FieldToolCallID == "" || !ok {
 		return "", errors.New("the Letta question response does not state a posted question")
 	}
-	switch response.Status {
+	switch response.FieldStatus {
 	case contracts.LettaQuestionStatusAnswered:
-		if len(response.Answers) != len(texts) {
+		if len(response.FieldAnswers) != len(texts) {
 			return "", errors.New("the Letta question response does not answer every question")
 		}
 		for _, text := range texts {
-			if strings.TrimSpace(response.Answers[text]) == "" {
+			if strings.TrimSpace(response.FieldAnswers[text]) == "" {
 				return "", errors.New("the Letta question response does not answer every question")
 			}
 		}
 	case contracts.LettaQuestionStatusDismissed:
-		if response.Answers != nil {
+		if response.FieldAnswers != nil {
 			return "", errors.New("a dismissed Letta question response holds answers")
 		}
 	default:
-		return "", fmt.Errorf("the Letta question response has the unknown status %q", response.Status)
+		return "", fmt.Errorf("the Letta question response has the unknown status %q", response.FieldStatus)
 	}
-	encoded, err := encodeLettaJSON(response)
+	encoded, err := providerkit.JSONStringify(response)
 	if err != nil {
 		return "", err
 	}
 	escape := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace
 	return lettaNotificationOpen + "\n" +
-		"<task-id>" + escape(response.ToolCallID) + "</task-id>\n" +
-		"<summary>User " + response.Status + " your questions.</summary>\n" +
+		"<task-id>" + escape(response.FieldToolCallID) + "</task-id>\n" +
+		"<summary>User " + response.FieldStatus + " your questions.</summary>\n" +
 		lettaQuestionResponseOpen + escape(string(encoded)) + "</ask-user-question-response>\n" +
 		"</task-notification>", nil
 }
@@ -419,30 +406,33 @@ func (a *Agent) lettaSession() string {
 //     for a permission resolves the approval that the running turn waits for.
 //   - The question response becomes a task notification in a `create_message`
 //     input. A running turn queues it, and an idle conversation starts a turn.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data := input.Data
 	if a.IsStopped() {
 		return errAgentStopped
 	}
-	var head struct {
-		Kind string `json:"kind"`
-		Type string `json:"type"`
+	// SendRawInput reads each field by its exact name, as Letta Code does. Go's
+	// decoder matches a struct tag in any letter case, and the Worker forwards a
+	// permission answer to Letta Code without a change.
+	fields, ok := providerkit.RawObject(data)
+	if !ok {
+		return errors.New("the Letta control answer is not a JSON object")
 	}
-	if err := json.Unmarshal(data, &head); err != nil {
-		return fmt.Errorf("the Letta control answer is not JSON: %w", err)
-	}
+	kind, _ := providerkit.RawString(fields[contracts.LettaReplyKind])
+	answerType, _ := providerkit.RawString(fields[contracts.LettaQuestionFieldType])
 	scope := a.runtime()
 	if scope.AgentID == "" || scope.ConversationID == "" {
 		return errors.New("the Letta runtime identity is not known yet; the answer cannot be addressed")
 	}
 	switch {
-	case head.Kind == contracts.LettaReplyKindApprovalResponse:
+	case kind == contracts.LettaReplyKindApprovalResponse:
 		return a.answerPermission(data, scope)
-	case head.Type == contracts.LettaQuestionResponseType:
+	case answerType == contracts.LettaQuestionResponseType:
 		notification, err := lettaQuestionNotification(data)
 		if err != nil {
 			return err
 		}
-		messages, err := buildUserMessages(notification, nil)
+		messages, _, err := buildUserMessages(notification, nil)
 		if err != nil {
 			return err
 		}

@@ -761,7 +761,8 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 			Recovery: &leapmuxv1.AgentInputProcessRecovery{OutputGeneration: 1, AgentSessionId: "saved-session", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, ProcessInstanceId: "process-instance"},
 		}},
 		{leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{AgentId: agentID, Content: "{}"}},
-		{leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{AgentId: agentID, RequestId: "req-1", Content: []byte("{}")}},
+		{leapmuxv1connect.WorkerAgentServiceRecordControlResponseProcedure, &leapmuxv1.RecordControlResponseRequest{AgentId: agentID, RequestId: "req-1", ClaimToken: "claim-1"}},
+		{leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure, &leapmuxv1.AnswerControlRequest{AgentId: agentID, RequestId: "req-1", ClaimToken: "claim-1"}},
 		{leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure, &leapmuxv1.UpdateAgentGoalRequest{AgentId: agentID, Action: leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET, Objective: "after"}},
 		{leapmuxv1connect.WorkerAgentServiceApproveAutoReviewDenialProcedure, &leapmuxv1.ApproveAutoReviewDenialRequest{AgentId: agentID, MessageId: "message-1", ReviewId: "review-1"}},
 		{leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, &leapmuxv1.RetryAgentTurnRequest{AgentId: agentID, TurnId: "turn-1", Model: "gpt-6-luna"}},
@@ -796,14 +797,16 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 	for _, tc := range refused {
 		listed[tc.method] = struct{}{}
 	}
-	// A method that OPENS a tab, or that addresses the workspace rather than one
-	// tab, carries no existing tab id -- so no archive state reaches its handler and
-	// there is nothing here to assert. These three register through
-	// registerOwnerGuarded for that reason, not through the agent/terminal guards.
+	// A method that OPENS a tab, addresses the workspace rather than one tab, or
+	// configures Worker-wide state carries no existing tab id -- so no archive
+	// state reaches its handler and there is nothing here to assert. These
+	// methods register through registerOwnerGuarded for that reason, not through
+	// the agent/terminal guards.
 	unguarded := map[string]string{
-		leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:       "creates a tab, so it addresses no archived one",
-		leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure: "creates a tab, so it addresses no archived one",
-		leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure: "addresses the workspace, not one tab",
+		leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:           "creates a tab, so it addresses no archived one",
+		leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure:     "creates a tab, so it addresses no archived one",
+		leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure:     "addresses the workspace, not one tab",
+		leapmuxv1connect.WorkerSystemServiceUpdateWorkerSkillsProcedure: "configures Worker-wide agent skills, not a tab or workspace",
 	}
 	gates := registerAllWithGuards(channel.NewDispatcher(), svc)
 	for method := range gates {

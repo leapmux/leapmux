@@ -321,6 +321,18 @@ func TestZCodeCredentials_UsesNativeWhitespace(t *testing.T) {
 	}
 }
 
+// Each part of the key, the team project included, is spelled as
+// JSON.stringify spells it, so the key matches the desktop's entry.
+func TestZCodeProjectLocationKey_SpellsEachPartAsJavaScriptDoes(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t,
+		"project-key-location:v1:"+zcodeEncodeURIComponent(`["https://api.z.ai","zai",`+zcodeJSONProbeJSON+`,{"organizationId":`+zcodeJSONProbeJSON+`,"projectId":"&"},1,null]`),
+		zcodeProjectLocationKey("https://api.z.ai", "zai", zcodeJSONProbe, &zcodeTeamProject{organizationID: zcodeJSONProbe, projectID: "&", productID: "<not in the key>"}))
+	assert.Equal(t,
+		"project-key-location:v1:"+zcodeEncodeURIComponent(`["https://api.z.ai","zai",`+zcodeJSONProbeJSON+`,null,1,"non-team"]`),
+		zcodeProjectLocationKey("https://api.z.ai", "zai", zcodeJSONProbe, nil))
+}
+
 func TestZCodeProjectLocationKey_UsesNativeUnicodeEncoding(t *testing.T) {
 	t.Parallel()
 	team := &zcodeTeamProject{organizationID: "org\u2028one", projectID: "project\u2029two"}

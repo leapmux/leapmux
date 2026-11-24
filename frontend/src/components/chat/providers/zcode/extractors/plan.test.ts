@@ -31,9 +31,25 @@ describe('zcode control plan source', () => {
     }))).toBe('Context plan')
   })
 
-  it('keeps the prompt fallback and handles absent fields', () => {
-    expect(zcodeControlPlanText(request({ prompt: 'Plan from prompt' }))).toBe('Plan from prompt')
-    expect(zcodeControlPlanText(request({}))).toBe('')
+  // ZCode states the permission reason as the prompt, so the prompt is no plan.
+  it('takes no plan from the prompt', () => {
+    expect(zcodeControlPlanText(request({ prompt: 'Tool ExitPlanMode requires user interaction' }))).toBeNull()
+  })
+
+  // The Worker reads the same rule (Go `planText`): a blank plan states nothing
+  // to approve, and the Worker writes no row for it.
+  it.each([
+    {},
+    {
+      input: { plan: ' \n' },
+      context: { plan: '\t' },
+    },
+    {
+      input: { plan: 7 },
+      context: 'not an object',
+    },
+  ])('answers null for a plan approval that states no plan', (params) => {
+    expect(zcodeControlPlanText(request(params))).toBeNull()
   })
 
   it.each([

@@ -96,7 +96,7 @@ func TestAskHTMLKeepsNativeLabelsSeparateFromQuestionMetadata(t *testing.T) {
 	assert.Equal(t, "Alpha Fast const x = 1; x", request.Questions[0].Options[0]["label"], "keep the exact native protocol label")
 	assert.Contains(t, request.Questions[0].Options[0]["markup"], "<strong>Alpha</strong>")
 	assert.Contains(t, request.Questions[0].Options[0]["markup"], "const x = 1;")
-	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "rich-first", contracts.OhMyPiAskQuestionAnswer{ID: "style", Selected: []string{"0"}}), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: askAnswer(t, "rich-first", contracts.OhMyPiAskQuestionAnswer{ID: "style", Selected: []string{"0"}})}))
 	answers := r.waitForDialogAnswers(1)
 	assert.Equal(t, "Alpha Fast const x = 1; x", answers[0]["value"], "the native response uses the complete dialog label")
 }
@@ -118,7 +118,7 @@ func TestAskHTMLCanClearAPreselectedOptionalChoice(t *testing.T) {
 	require.Len(t, request.Questions, 1)
 	assert.Equal(t, []any{"0"}, request.Questions[0]["initialSelections"])
 	assert.Equal(t, true, request.Questions[0]["allowEmpty"])
-	require.NoError(t, r.agent.SendRawInput(askAnswer(t, "checked-first", contracts.OhMyPiAskQuestionAnswer{ID: "langs"}), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: askAnswer(t, "checked-first", contracts.OhMyPiAskQuestionAnswer{ID: "langs"})}))
 	assert.Equal(t, "Go", r.waitForDialogAnswers(1)[0]["value"], "clear the native default before finishing")
 	r.emit(`{"type":"extension_ui_request","id":"checked-next","method":"select","title":"Languages","options":["Go","Rust","Other (type your own)","✔ Done selecting"]}`)
 	assert.Equal(t, "✔ Done selecting", r.waitForDialogAnswers(2)[1]["value"])

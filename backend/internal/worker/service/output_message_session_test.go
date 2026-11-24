@@ -127,3 +127,43 @@ func TestChildMessageSessionIDIsNotInheritedFromItsParent(t *testing.T) {
 	assert.Empty(t, rows[0].AgentSessionID, "the rows of the empty session carry no session")
 	assert.Equal(t, "sess-child", rows[1].AgentSessionID, "each row carries the session the child sink reported when it wrote")
 }
+
+func TestBindChildSessionIDRecordsTheFirstNativeSession(t *testing.T) {
+	t.Parallel()
+	svc, root := setupRootSink(t, "root-1")
+	root.UpdateSessionID("native-root")
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask, SpawnSpanID: "spawn", Title: "Child",
+	})
+	require.NoError(t, err)
+	child := root.ChildSink(childID)
+
+	require.ErrorIs(t, root.BindChildSessionID("native-child"), agent.ErrChildIdentityRefused)
+	require.ErrorIs(t, child.BindChildSessionID(""), agent.ErrChildIdentityRefused)
+	require.NoError(t, child.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		agent.MessageContent{Original: []byte(`{"content":"The provisional child prompt"}`)}, agent.SpanInfo{}))
+	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_child_session BEFORE UPDATE OF agent_session_id ON agents
+WHEN NEW.agent_session_id = 'native-child' BEGIN SELECT RAISE(ABORT, 'child session write refused'); END`)
+	require.NoError(t, err)
+	require.ErrorContains(t, child.BindChildSessionID("native-child"), "child session write refused")
+	assert.Empty(t, child.MessageSessionID())
+	_, err = svc.DB.ExecContext(t.Context(), `DROP TRIGGER refuse_child_session`)
+	require.NoError(t, err)
+
+	require.NoError(t, child.BindChildSessionID("native-child"))
+	require.NoError(t, child.BindChildSessionID("native-child"))
+	require.ErrorIs(t, child.BindChildSessionID("other-child"), agent.ErrChildIdentityRefused)
+	assert.Equal(t, "native-child", child.MessageSessionID())
+	assert.Equal(t, "native-root", root.MessageSessionID())
+	stored, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, "native-child", stored.AgentSessionID)
+	assert.Zero(t, stored.SessionStartSeq, "learning this session's ID preserves the original session boundary")
+	require.NoError(t, child.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)}, agent.SpanInfo{}))
+	rows, err := svc.Queries.ListMessagesByAgentID(t.Context(), db.ListMessagesByAgentIDParams{AgentID: childID, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Empty(t, rows[0].AgentSessionID)
+	assert.Equal(t, "native-child", rows[1].AgentSessionID)
+}

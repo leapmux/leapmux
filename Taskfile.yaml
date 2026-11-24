@@ -739,6 +739,8 @@ tasks:
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
+      - &control_guide_source backend/internal/cli/control/cmd/guide/*.md
+      - &shell_completion_source backend/cmd/leapmux/*.{elv,nu}
       - exclude: backend/**/*_test.go
     vars:
       GO_CONTEXT:
@@ -751,6 +753,7 @@ tasks:
     cmds:
       - *forget_artifacts
       - cd backend && go build -ldflags {{.VERSION_LDFLAGS | shellQuote}} -o ../leapmux{{if eq OS "windows"}}.exe{{end}} ./cmd/leapmux
+      - '{{if ne OS "windows"}}ln -sf leapmux lmx{{end}}'
       - *record_artifacts
 
   build-backend-docker:
@@ -773,6 +776,8 @@ tasks:
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
+      - *control_guide_source
+      - *shell_completion_source
       - exclude: backend/**/*_test.go
     vars:
       GO_CONTEXT:
@@ -962,6 +967,7 @@ tasks:
       - mkdir -p dist/{{.DIR}}
       - cp {{.BIN}} LICENSE.md NOTICE.md dist/{{.DIR}}/
       - chmod 0755 dist/{{.DIR}}/{{.BIN}}
+      - ln -sf {{.BIN}} dist/{{.DIR}}/lmx
       - tar -czf {{.TARBALL}} -C dist {{.DIR}}
 
   build-desktop-linux:
@@ -1528,6 +1534,8 @@ tasks:
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.go
+      - *control_guide_source
+      - *shell_completion_source
     vars:
       GO_CONTEXT:
         sh: *go_context_command
@@ -1868,6 +1876,7 @@ tasks:
       - site/layouts/**/*
       - site/assets/**/*
       - site/i18n/**/*
+      - skills/**/*
       - frontend/tests/e2e/feature-matrix/**/*
       - contracts/providers.json
       - scripts/validate-json.mjs
@@ -1924,7 +1933,7 @@ tasks:
   clean-backend:
     desc: Remove backend build artifacts
     cmds:
-      - rm -f  leapmux leapmux.exe
+      - rm -f  leapmux leapmux.exe lmx lmx.exe
       - rm -f  backend/leapmux backend/leapmux.exe
       - rm -rf backend/generated/
       - rm -rf backend/*/generated/

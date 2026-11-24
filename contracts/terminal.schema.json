@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "terminal.schema.json",
+  "title": "cross-language terminal rendering contract",
+  "description": "The scrollback that the browser's terminal and the CLI's rendered read keep.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "scrollbackLines"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "scrollbackLines": { "type": "integer", "minimum": 0 }
+  }
+}

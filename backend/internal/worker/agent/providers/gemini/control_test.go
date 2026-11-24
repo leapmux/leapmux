@@ -46,20 +46,23 @@ func geminiPlanRequest(t *testing.T, path string) []byte {
 	return data
 }
 
+// An approval carries its plan settings and a refusal carries none, as the
+// plan answer of AnswerControlRequest states them.
 func TestGeminiPlanResponseKeepsTheNativeIdentityAndOptions(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		behavior string
+		decision *leapmuxv1.PlanDecision
 		option   string
 		kind     agent.PlanModeControlKind
 		feedback string
 	}{
-		{agent.ControlBehaviorAllow, "proceed_once", agent.PlanModeControlExit, ""},
-		{agent.ControlBehaviorDeny, "cancel", agent.PlanModeControlNone, "Split the second step."},
+		{&leapmuxv1.PlanDecision{Approve: true, PermissionMode: contracts.GeminiModeYolo}, "proceed_once", agent.PlanModeControlExit, ""},
+		{&leapmuxv1.PlanDecision{Feedback: "Split the second step."}, "cancel", agent.PlanModeControlNone, "Split the second step."},
 	} {
-		response, err := json.Marshal(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": "jsonrpc:4", "response": map[string]string{"behavior": test.behavior, "message": test.feedback}}})
+		payload := geminiPlanRequest(t, "/private/native/plan.md")
+		answer, err := agenttest.AnswerControl(geminiProvider{}, payload, "jsonrpc:4", agenttest.PlanDecision(test.decision))
 		require.NoError(t, err)
-		result := geminiProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestID: "jsonrpc:4", RequestPayload: geminiPlanRequest(t, "/private/native/plan.md"), ResponseContent: response, PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.GeminiModeYolo}})
+		result := agenttest.ResolveAnswer(geminiProvider{}, payload, "jsonrpc:4", answer)
 		require.False(t, result.Withhold)
 		assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"result":{"outcome":{"outcome":"selected","optionId":"`+test.option+`"}}}`, string(result.Content))
 		assert.Equal(t, test.kind, result.PlanModeControl)
@@ -67,16 +70,28 @@ func TestGeminiPlanResponseKeepsTheNativeIdentityAndOptions(t *testing.T) {
 	}
 }
 
+// The Worker resolves only an answer that addresses the stored request, so the
+// answers here differ from a valid one in their decision or in the request.
 func TestGeminiPlanResponseRejectsAnInvalidDecisionOrUnadvertisedOption(t *testing.T) {
 	t.Parallel()
 	valid := `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:4","response":{"behavior":"allow"}}}`
 	request := geminiPlanRequest(t, "/private/native/plan.md")
-	for _, response := range []string{"null", "{", `{}`, strings.ReplaceAll(valid, "jsonrpc:4", "jsonrpc:other"), strings.ReplaceAll(valid, `"allow"`, `"unknown"`)} {
-		result := geminiProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestID: "jsonrpc:4", RequestPayload: request, ResponseContent: []byte(response)})
-		assert.True(t, result.Withhold)
+	for _, response := range []string{strings.ReplaceAll(valid, `"allow"`, `"unknown"`), strings.ReplaceAll(valid, `"behavior":"allow"`, `"decision":"allow"`)} {
+		result := agenttest.ResolveAnswer(geminiProvider{}, request, "jsonrpc:4", agent.ControlAnswer{Content: []byte(response)})
+		assert.True(t, result.Withhold, response)
+		assert.EqualError(t, result.Refusal(), agent.RefusalNoDecision, response)
 	}
-	result := geminiProvider{}.ResolveControlResponse(agent.ControlResponseContext{RequestID: "jsonrpc:4", RequestPayload: []byte(strings.ReplaceAll(string(request), "proceed_once", "different-option")), ResponseContent: []byte(valid)})
+	result := agenttest.ResolveAnswer(geminiProvider{}, []byte(strings.ReplaceAll(string(request), "proceed_once", "different-option")), "jsonrpc:4", agent.ControlAnswer{Content: []byte(valid)})
 	assert.True(t, result.Withhold)
+
+	// A stored request that states no id gives the reply no id to answer. It
+	// gives no key either, so the Worker refuses it before Gemini reads it
+	// (agent.StoredControlRequestAgrees), and this pins Gemini's own guard.
+	noID := strings.Replace(string(request), `"id":4,`, "", 1)
+	require.NotEqual(t, string(request), noID)
+	result = agenttest.ResolveAnswerPastTheKeyCheck(geminiProvider{}, []byte(noID), "jsonrpc:4", agent.ControlAnswer{Content: []byte(valid)})
+	assert.True(t, result.Withhold)
+	assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest)
 }
 
 type geminiPlanCapture struct {

@@ -59,8 +59,9 @@ func TestRunArgumentsInvokeRunNotStart(t *testing.T) {
 
 	args := launch.RunArguments()
 	require.NotEmpty(t, args)
-	assert.Equal(t, "worker", args[0])
-	assert.Equal(t, "run", args[1], "native definitions invoke run, never start")
+	assert.Equal(t, "daemon", args[0])
+	assert.Equal(t, "worker", args[1])
+	assert.Equal(t, "run", args[2], "native definitions invoke run, never start")
 	assert.NotContains(t, args, spec.ConfigFile)
 	assert.NotContains(t, args, "--log-level")
 	assert.Contains(t, args, "--service-spec")

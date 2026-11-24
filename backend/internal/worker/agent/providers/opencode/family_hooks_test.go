@@ -16,7 +16,9 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func TestFamilyHooksReportEachTurnEnd(t *testing.T) {
@@ -34,6 +36,65 @@ func TestFamilyHooksReportEachTurnEnd(t *testing.T) {
 	quiet := &FamilyBase{}
 	quiet.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
 	assert.NotPanics(t, func() { FamilyHooks(quiet).PromptEnded(nil, false) }, "a member without the hook")
+}
+
+type questionFamilySink struct {
+	*agenttest.ControlSink
+	child agent.ProviderServices
+}
+
+func (s *questionFamilySink) ChildSink(string) agent.ProviderServices { return s.child }
+
+func TestFamilyQuestionsKeepTheChildOwnerThroughWithdrawal(t *testing.T) {
+	t.Parallel()
+	child := &agenttest.ControlSink{}
+	parent := &questionFamilySink{ControlSink: &agenttest.ControlSink{}, child: agent.NewProviderServices(child)}
+	services := agent.NewProviderServices(parent)
+	family := &FamilyBase{}
+	family.SetSinkForTest(services)
+	family.SetSessionIDForTest("parent-session")
+	family.QuestionTurnID = func(_ context.Context, sessionID, messageID string) string {
+		assert.Equal(t, "child-session", sessionID)
+		assert.Equal(t, "child-assistant", messageID)
+		return "child-turn"
+	}
+	family.configureQuestions(services)
+	family.ApplySubagentObservation(&acp.SubagentObservation{
+		RowKey: "child-row", ChildAgentKey: "child-row", Status: bgtask.StatusRunning,
+	})
+	require.True(t, family.AttachChildSession(acp.ChildSessionTarget{
+		RootSessionID: "parent-session", SessionID: "child-session", RowKey: "child-row",
+	}))
+	properties := []byte(`{"id":"que-child","sessionID":"child-session","tool":{"messageID":"child-assistant"}}`)
+	requestID := family.Questions.publish(t.Context(), properties)
+	require.Equal(t, "opencode-question:que-child", requestID)
+	assert.Empty(t, parent.PublishedControls())
+	controls := child.PublishedControls()
+	require.Len(t, controls, 1)
+	assert.Equal(t, "child-session", controls[0].AgentSessionID)
+	assert.Equal(t, "child-turn", controls[0].NativeTurnID)
+	assert.Equal(t, "child-session", child.LastSessionID())
+
+	family.SetSessionIDForTest("next-parent-session")
+	assert.Equal(t, requestID, family.Questions.publish(t.Context(), properties))
+	assert.Len(t, child.PublishedControls(), 1)
+	family.Questions.withdraw([]byte(`{"requestID":"que-child"}`))
+	assert.Equal(t, []string{requestID}, child.CanceledControls())
+	assert.Empty(t, parent.CanceledControls())
+}
+
+func TestFamilyQuestionsLeaveAnUnservedSessionAlone(t *testing.T) {
+	t.Parallel()
+	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	sink := &agenttest.ControlSink{}
+	family := &FamilyBase{}
+	family.SetSessionIDForTest("parent-session")
+	family.configureQuestions(agent.NewProviderServices(sink))
+	family.Questions.baseURL = daemon.Server.URL
+
+	assert.Empty(t, family.Questions.publish(t.Context(), []byte(opencodetest.FakeQuestion)))
+	assert.Empty(t, sink.PublishedControls())
+	assert.Empty(t, daemon.Answers())
 }
 
 func TestDaemonReadyRunsOnceTheAddressIsKnown(t *testing.T) {
@@ -95,7 +156,9 @@ func TestAfterWaitCleanupJoinsTheQuestionBridge(t *testing.T) {
 		// The pending question is what cancelAll answers for, so it is in place
 		// before the bridge can reach its deferred cancelAll.
 		f.Questions.mu.Lock()
-		f.Questions.pending = map[string]string{"req-1": "daemon-1"}
+		f.Questions.pending = map[string]*openCodePendingQuestion{
+			"req-1": {requestID: "req-1", nativeID: "daemon-1", owner: f.Questions.sink},
+		}
 		f.Questions.mu.Unlock()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

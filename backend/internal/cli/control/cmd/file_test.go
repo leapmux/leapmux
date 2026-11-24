@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"flag"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,19 +16,14 @@ import (
 // reads. The contract keeps the default a whole number of KiB.
 func TestReadCommands_HelpStatesTheDefaultReadLimit(t *testing.T) {
 	require.Zero(t, contracts.FileReadLimitBytes%1024, "the contract default is a whole number of KiB")
-	want := fmt.Sprintf("max bytes (0 = default %d KiB)", contracts.FileReadLimitBytes/1024)
+	want := fmt.Sprintf("the default of %d KiB", contracts.FileReadLimitBytes/1024)
 
-	for name, run := range map[string]func(any, []string) error{
-		"file read": RunFileRead,
-		"git read":  RunGitRead,
-	} {
-		t.Run(name, func(t *testing.T) {
-			out := captureOSStdout(t, func() {
-				require.ErrorIs(t, run(fakeCmdCtx{}, []string{"--help"}), flag.ErrHelp)
-			})
-
-			assert.Contains(t, out, "-limit int")
-			assert.Contains(t, out, want)
+	for _, path := range [][]string{{"file", "read"}, {"git", "read"}} {
+		t.Run(strings.Join(path, " "), func(t *testing.T) {
+			o := runControlText(t, append(path, "--help")...)
+			require.Equal(t, 0, o.Code)
+			assert.Contains(t, o.Stdout, "--limit int")
+			assert.Contains(t, o.Stdout, want)
 		})
 	}
 }

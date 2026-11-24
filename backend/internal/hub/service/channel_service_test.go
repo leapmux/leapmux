@@ -567,6 +567,8 @@ func TestOpenChannel_WithMockWorker(t *testing.T) {
 	}, sent)
 	assert.Equal(t, uint64(contracts.MaxMessageSize), sentMsg.GetChannelOpen().GetMaxMessageSize(),
 		"hub must announce its resolved max_message_size on ChannelOpenRequest")
+	assert.Empty(t, sentMsg.GetChannelOpen().GetRelayWorkerId(),
+		"a credential that no Worker minted states no relay, so its requests cannot state a call source")
 }
 
 func captureChannelOpenFrames() (<-chan *leapmuxv1.ConnectResponse, func(*leapmuxv1.ConnectResponse) error) {

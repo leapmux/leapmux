@@ -14,7 +14,7 @@ func createWorktreeSetup(branch, baseBranch string) *leapmuxv1.GitSetup {
 }
 
 func useWorktreePathSetup(path string) *leapmuxv1.GitSetup {
-	return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_UseWorktreePath{UseWorktreePath: path}}
+	return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_UseWorktree{UseWorktree: &leapmuxv1.GitWorktreeSelector{Selector: &leapmuxv1.GitWorktreeSelector_Path{Path: path}}}}
 }
 
 func checkoutBranchSetup(branch string) *leapmuxv1.GitSetup {

@@ -234,6 +234,15 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 	finished := item.Item.Status != contracts.MuseItemStatusInProgress
 	modelTool := open && item.Item.Kind == contracts.MuseItemKindToolCall && current
 	a.stateMu.Unlock()
+	if current && item.Item.Kind == contracts.MuseItemKindUserMessage && item.Item.Status == contracts.MuseItemStatusCompleted &&
+		!item.Item.Retracted && item.Item.TurnID != nil {
+		report, matched := a.steerLedger.TakeIdentifiedEcho(agent.NativeInputReceipt{
+			SessionID: item.SessionID, InputID: item.Item.CommandID, TurnID: *item.Item.TurnID,
+		})
+		if matched {
+			retainMuseSteerResolution(state.sink, report)
+		}
+	}
 	if modelTool && a.flushRetryNotices(state) {
 		state.retry.Resolve(state.sink)
 	}
@@ -319,6 +328,12 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 	}
 }
 
+func retainMuseSteerResolution(sink agent.ProviderServices, report agent.SteerResolution) {
+	if err := agent.RetainSteerResolution(sink, report); !agent.OutputRetained(err) {
+		slog.Warn("retain the Muse steer outcome", "input_id", report.InputID, "error", err)
+	}
+}
+
 // endSessionCompactions withdraws live state when the session retires.
 func (a *Agent) endSessionCompactions(state *sessionState) {
 	if state == nil {
@@ -398,6 +413,9 @@ func museItemCompletion(status string) agent.MessageCompletion {
 // The caller supplies an owned copy of raw.
 func museItemMessageContent(raw []byte, params itemParams) agent.MessageContent {
 	content := agent.MessageContent{Original: raw, AgentSessionID: params.SessionID, IdempotencyKey: nativeItemKey(params.Item.ID, params.Item.Revision)}
+	if params.Item.TurnID != nil {
+		content.NativeTurnID = *params.Item.TurnID
+	}
 	if params.Item.Kind == contracts.MuseItemKindAgentMessage || params.Item.Kind == contracts.MuseItemKindReasoning {
 		content.Completion = museItemCompletion(params.Item.Status)
 	}
@@ -520,7 +538,7 @@ func (a *Agent) finishTurn(raw []byte, id, turnID string) {
 	a.stateMu.Unlock()
 	state.retry.Reset()
 	ended := completion(frame.Params.Outcome)
-	if a.captureFinalization(state, id, turnID, raw, ended, ended == agent.MessageCompletionInterrupted) == nil {
+	if a.captureFinalization(state, id, turnID, raw, ended, ended == agent.MessageCompletionInterrupted, museInputTurnOutcome(frame.Params.Outcome)) == nil {
 		return
 	}
 	a.retryFinalizations(state)

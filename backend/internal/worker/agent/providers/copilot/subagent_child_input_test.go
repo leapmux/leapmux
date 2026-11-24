@@ -110,7 +110,7 @@ func TestCopilotSteerChildInputSendsTheTaskMessage(t *testing.T) {
 	startCopilotSubagent(t, h.agent, h.sink, copilotExecutionBackground)
 	require.NoError(t, h.agent.SteerChildInput("agent-1", "Also check the tests.", nil))
 	assert.Equal(t, []string{"session.tasks.list", "session.tasks.sendMessage"}, h.methods())
-	assert.Equal(t, map[string]any{"sessionId": "session-1", "id": "worker-task", "message": "Also check the tests."}, h.lastParams(t))
+	assert.Equal(t, map[string]any{"sessionId": "session-1", "id": "worker-task", "message": "Also check the tests.", "fromAgentId": ""}, h.lastParams(t))
 }
 
 // A message wakes an idle background subagent, which reads it in its next turn.
@@ -121,7 +121,7 @@ func TestCopilotSendChildInputWakesAnIdleBackgroundSubagent(t *testing.T) {
 	pauseCopilotSubagent(t, h.agent)
 	require.NoError(t, agenttest.SendChildInput(h.agent, "agent-1", agent.ChildInput{Content: "Now check the docs."}))
 	assert.Equal(t, []string{"session.tasks.list", "session.tasks.sendMessage"}, h.methods())
-	assert.Equal(t, map[string]any{"sessionId": "session-1", "id": "worker-task", "message": "Now check the docs."}, h.lastParams(t))
+	assert.Equal(t, map[string]any{"sessionId": "session-1", "id": "worker-task", "message": "Now check the docs.", "fromAgentId": ""}, h.lastParams(t))
 }
 
 // Each failure of the task message reaches the caller, so the queue keeps the

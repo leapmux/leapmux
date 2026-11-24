@@ -1,20 +1,30 @@
 package main
 
 import (
-	"context"
-	"flag"
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
-func runRotateEncryptionKey(cmd cmdCtx, args []string) error {
-	return withRecoverConfig(cmd, args, nil, func(cfg *config.Config) error {
+func newEncryptionKeyRotateCommand() *cobra.Command {
+	return recoverConfigLeaf(recoverSpec{Leaf: cli.Leaf{
+		Use:     "rotate",
+		Short:   "Generate and add a new encryption key version",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: "leapmux recover encryption-key rotate"},
+		},
+	}}, func(inv *cli.Invocation, cfg *config.Config) error {
 		path := cfg.EncryptionKeyFilePath()
 
 		if _, err := loadExistingKeystore(path); err != nil {
@@ -26,22 +36,33 @@ func runRotateEncryptionKey(cmd cmdCtx, args []string) error {
 			return err
 		}
 
-		fmt.Printf("Added encryption key version %d.\n", newVersion)
-		fmt.Printf("Restart the hub, then run: leapmux recover encryption-key reencrypt\n")
-		return nil
+		_, err = fmt.Fprintf(inv.Printer.Out, "Added encryption key version %d.\nRestart the hub, then run: leapmux recover encryption-key reencrypt\n", newVersion)
+		return err
 	})
 }
 
-func runRemoveEncryptionKey(cmd cmdCtx, args []string) error {
-	var version *uint
-	return withRecoverExistingStore(cmd, args, func(fs *flag.FlagSet) {
-		version = fs.Uint("version", 0, "key version to remove")
-	}, func(ctx context.Context, cfg *config.Config, st store.Store, ks *keystore.Keystore) error {
-		if *version == 0 || *version > math.MaxUint32 {
-			return fmt.Errorf("--version must be between 1 and %d", uint64(math.MaxUint32))
-		}
+// keyVersionHelp describes the <version> argument of `encryption-key remove`.
+var keyVersionHelp = fmt.Sprintf("The key version to remove, from 1 to %d. The active version cannot be removed.", uint64(math.MaxUint32))
 
-		v := uint32(*version)
+func newEncryptionKeyRemoveCommand() *cobra.Command {
+	var v uint32
+	return recoverExistingStoreLeaf(recoverSpec{
+		Leaf: cli.Leaf{
+			Use:     "remove <version>",
+			Aliases: []string{"rm"},
+			Short:   "Remove an old encryption key version",
+			Mutates: true,
+			Args:    map[string]string{"version": keyVersionHelp},
+			Examples: []cli.Example{
+				{Comment: "Remove version 1 after reencrypt moved every encrypted row to a later version.", Command: "leapmux recover encryption-key remove 1"},
+			},
+		},
+		BeforeOpen: func(inv *cli.Invocation) (err error) {
+			v, err = parseKeyVersion(inv.Arg("version"))
+			return err
+		},
+	}, func(inv *cli.Invocation, cfg *config.Config, st store.Store, ks *keystore.Keystore) error {
+		ctx := inv.Context
 		if v == ks.ActiveVersion() {
 			return fmt.Errorf("cannot remove active key version %d", v)
 		}
@@ -73,10 +94,20 @@ func runRemoveEncryptionKey(cmd cmdCtx, args []string) error {
 			return err
 		}
 
-		fmt.Printf("Removed encryption key version %d.\n", v)
-		fmt.Printf("Restart the hub to apply.\n")
-		return nil
+		_, err = fmt.Fprintf(inv.Printer.Out, "Removed encryption key version %d.\nRestart the hub to apply.\n", v)
+		return err
 	})
+}
+
+// parseKeyVersion reads the <version> argument of `encryption-key remove`: a
+// key version from 1 to the largest uint32.
+func parseKeyVersion(raw string) (uint32, error) {
+	v, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 32)
+	if err != nil || v == 0 {
+		return 0, cli.Usagef("<version> %q is not a key version", raw).
+			WithHint("give a whole number from 1 to %d", uint64(math.MaxUint32))
+	}
+	return uint32(v), nil
 }
 
 // pepperRotationEffects is shared by confirmation and completion output.
@@ -85,45 +116,63 @@ const pepperRotationEffects = "- Signs out every session.\n" +
 	"- Invalidates API and delegation tokens and confidential app secrets.\n" +
 	"- Invalidates live registration keys, pending device codes, and pending OAuth authorization codes.\n"
 
-// runRotatePepper replaces the HMAC pepper for the credential classes listed
-// in pepperRotationEffects.
-// The resulting invalidations require --yes. The encryption key ring stays intact.
-func runRotatePepper(cmd cmdCtx, args []string) error {
+// newEncryptionKeyRotatePepperCommand builds `leapmux recover encryption-key
+// rotate-pepper`. It replaces the HMAC pepper for the credential classes
+// listed in pepperRotationEffects. The resulting invalidations require --yes.
+// The encryption key ring stays intact.
+func newEncryptionKeyRotatePepperCommand() *cobra.Command {
 	var yes bool
-	return withRecoverConfig(cmd, args, func(fs *flag.FlagSet) {
-		fs.BoolVar(&yes, "yes", false, "confirm these effects after the Hub restarts:\n"+pepperRotationEffects)
-	}, func(cfg *config.Config) error {
+	return recoverConfigLeaf(recoverSpec{Leaf: cli.Leaf{
+		Use:     "rotate-pepper",
+		Short:   "Rotate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app secrets, registration keys, device codes, and authorization codes",
+		Long:    "Rotate the token pepper. After the Hub restarts, the rotation has these effects:\n\n" + pepperRotationEffects + "\nThe encryption key ring stays unchanged.",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: "leapmux recover encryption-key rotate-pepper --yes"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			fs.BoolVar(&yes, "yes", false, "confirm the effects of the rotation, which the command help lists")
+		},
+	}}, func(inv *cli.Invocation, cfg *config.Config) error {
 		path := cfg.EncryptionKeyFilePath()
 		if _, err := loadExistingKeystore(path); err != nil {
 			return err
 		}
 		if !yes {
-			return fmt.Errorf("rotating the token pepper causes these effects after the Hub restarts:\n%sRe-run with --yes to proceed", pepperRotationEffects)
+			return cli.Usagef("rotating the token pepper requires --yes, because it has these effects after the Hub restarts:\n%s", strings.TrimSuffix(pepperRotationEffects, "\n")).
+				WithHint("run the command again with --yes to proceed")
 		}
 		if err := keystore.RegeneratePepper(path); err != nil {
 			return err
 		}
-		fmt.Println("Regenerated the token pepper.")
-		fmt.Print(pepperRotationEffects)
-		fmt.Println("Restart the Hub to apply the new pepper.")
-		fmt.Println("Solo mode and the desktop app reissue their own Worker's token.")
-		fmt.Println("For each standalone Worker:")
-		fmt.Println("1. Remove the Worker in the Hub's Worker list.")
-		fmt.Println("2. Stop the Worker.")
-		fmt.Println("3. Delete its state.json.")
-		fmt.Println("4. Register it with a new registration key. It receives a new Worker ID.")
-		fmt.Println("Re-issue API tokens with: leapmux control admin api-token issue --hub <url>")
-		return nil
+		_, err := fmt.Fprint(inv.Printer.Out, "Regenerated the token pepper.\n"+
+			pepperRotationEffects+
+			"Restart the Hub to apply the new pepper.\n"+
+			"Solo mode and the desktop app reissue their own Worker's token.\n"+
+			"For each standalone Worker:\n"+
+			"1. Remove the Worker in the Hub's Worker list.\n"+
+			"2. Stop the Worker.\n"+
+			"3. Delete its state.json.\n"+
+			"4. Register it with a new registration key. It receives a new Worker ID.\n"+
+			"Re-issue API tokens with: leapmux admin api-token issue <user> --installation-name <name> --hub <url>\n")
+		return err
 	})
 }
 
-func runReencryptSecrets(cmd cmdCtx, args []string) error {
-	return withRecoverExistingStore(cmd, args, nil, func(ctx context.Context, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
-		res, err := st.KeyMaintenance().ReencryptAll(ctx)
+func newEncryptionKeyReencryptCommand() *cobra.Command {
+	return recoverExistingStoreLeaf(recoverSpec{Leaf: cli.Leaf{
+		Use:     "reencrypt",
+		Short:   "Re-encrypt all encrypted rows with the active key",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Comment: "Run it after rotate and a restart of the Hub.", Command: "leapmux recover encryption-key reencrypt"},
+		},
+	}}, func(inv *cli.Invocation, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
+		res, err := st.KeyMaintenance().ReencryptAll(inv.Context)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Re-encrypted %d encrypted rows to key version %d.\n", res.RowsUpdated, res.ActiveVersion)
-		return nil
+		_, err = fmt.Fprintf(inv.Printer.Out, "Re-encrypted %d encrypted rows to key version %d.\n", res.RowsUpdated, res.ActiveVersion)
+		return err
 	})
 }

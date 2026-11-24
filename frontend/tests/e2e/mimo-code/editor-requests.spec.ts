@@ -1,4 +1,3 @@
-import { mimoExtractControl } from '../../../src/components/chat/providers/mimo/extractControl'
 import { MIMO_OPTION, MIMO_PERMISSION_POLICY } from '../../../src/generated/contracts/mimo-protocol'
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { exerciseUnsupportedControlThroughPermission } from '../helpers/unsupportedNativeControl'
@@ -12,7 +11,6 @@ mimoTest('classifies real native controls and proves the missing editor-requests
   await waitForSettingsIdle(native.page)
   await exerciseUnsupportedControlThroughPermission(native, {
     purpose: 'editor',
-    classify: mimoExtractControl,
     operation: await createMiMoControlDeletion(native, 'editor'),
   })
 })

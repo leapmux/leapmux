@@ -201,7 +201,7 @@ func (a *Agent) queueChildCleanup(run *kimiRun) {
 	a.Mu.Lock()
 	active := a.inputStateLocked(run.agentID).Active
 	a.Mu.Unlock()
-	if active || len(run.readyPromptSubmissions) != 0 {
+	if active || len(run.readyPromptSubmissions) != 0 || run.conversation != nil && run.conversation.replyPublications != 0 {
 		return
 	}
 	// A native turn can finish while an unrelated input still awaits admission.

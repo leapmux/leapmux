@@ -64,6 +64,7 @@ const (
 
 var (
 	ErrNotFound              = errors.New("queued agent input not found")
+	ErrInputNotRecorded      = errors.New("no recorded request for this input")
 	ErrConflict              = errors.New("queued agent input conflicts with existing data")
 	ErrEditOwned             = errors.New("queued agent input is edited by another client")
 	ErrEditOwnerMismatch     = errors.New("queued agent input edit owner does not match")
@@ -95,6 +96,14 @@ var (
 	// nor followed a turn that ended.
 	ErrPreemptionState = errors.New("queue state does not permit preemption")
 	ErrManagerStopped  = errors.New("agent input queue is stopped")
+	// ErrAgentMessageEdit refuses an edit of an agent message. Its text is what
+	// the sending agent wrote, and the recipient reads it under that agent's
+	// name, so an edit would put the user's words in the agent's mouth. The
+	// user deletes the message and sends one of their own instead. A browser
+	// shows this text as the reason that a queue row offers no edit (see
+	// editRefusal), and an agent can send a message to itself, so the text
+	// claims no other agent.
+	ErrAgentMessageEdit = errors.New("an agent wrote this message, so it cannot be edited; delete it and send your own")
 	// ErrPlannedRestart refuses an explicit dispatch while the Worker replaces
 	// the agent process. The durable pause_owner records the restart, so the
 	// refusal survives a Worker restart that leaves the marker behind.
@@ -155,6 +164,29 @@ type Attachment struct {
 	Data     []byte
 }
 
+// AgentSender is the agent tab that sent an AGENT_MESSAGE. The Worker reads it
+// from the control token of the caller's tab, or from the sender that a
+// sibling Worker states for a call that it relays, never from the request, so
+// no caller can forge it.
+//
+// The input keeps copies of the sender's provider and title, because the
+// sender's row can be purged while the message waits, and the row of a sender
+// on a sibling Worker is never here. The title is the one that the sender had
+// when it sent the message; the header that the recipient reads states it.
+type AgentSender struct {
+	TabID    string
+	Provider leapmuxv1.AgentProvider
+	Title    string
+}
+
+// Proto returns the sender as the wire states it, or nil for no sender.
+func (s *AgentSender) Proto() *leapmuxv1.AgentMessageSender {
+	if s == nil {
+		return nil
+	}
+	return &leapmuxv1.AgentMessageSender{TabId: s.TabID, Provider: s.Provider}
+}
+
 type AttachmentMetadata struct {
 	Filename string
 	MimeType string
@@ -191,6 +223,10 @@ func (item OrderingMetadata) requiresContextReplacement() bool {
 // ItemMetadata adds the complete row metadata to its ordering projection.
 type ItemMetadata struct {
 	OrderingMetadata
+	// Sender is the agent tab that sent an AGENT_MESSAGE, and nil for every
+	// other kind. The schema ties the two, so a stored item cannot hold one
+	// without the other.
+	Sender           *AgentSender
 	TargetMode       string
 	ReclassifyOnEdit bool
 	Error            string
@@ -205,11 +241,17 @@ type StoredItem struct {
 	ItemMetadata
 	Text          string
 	SourcePayload []byte
+	// idempotencyKey is the key of the request that queued the input
+	// (inputIdempotencyKey). No change of the input rewrites it, and the
+	// transcript row of the accepted input takes it over.
+	idempotencyKey string
 }
 
 type DispatchItem struct {
 	StoredItem
 	Attachments []Attachment
+	// SteerAttemptID identifies a dispatch whose row waits for a native echo.
+	SteerAttemptID string
 }
 
 // SnapshotItem contains a preview, never dispatchable stored content.
@@ -241,6 +283,22 @@ type SnapshotItem struct {
 	// It excludes the one head that REPLACES the turn, because the store already
 	// dispatches that one through the running turn.
 	CanPreempt bool
+	// EditRefusal is the text of the error that refuses every edit of this
+	// item (see editRefusal), or "" when the item allows an edit. It states a
+	// rule of the item, never a state that passes, such as a dispatch.
+	EditRefusal string
+}
+
+// editRefusal returns the error that refuses every edit of an item of kind,
+// or nil when the kind allows one. It is the one statement of the rule:
+// BeginEdit applies it, and the snapshot states its text in
+// SnapshotItem.EditRefusal, so a client never offers an edit that the Worker
+// refuses, and needs no rule of its own to say why.
+func editRefusal(kind leapmuxv1.AgentInputKind) error {
+	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE {
+		return ErrAgentMessageEdit
+	}
+	return nil
 }
 
 type Snapshot struct {
@@ -299,9 +357,14 @@ type UpdateRequest struct {
 }
 
 type NewItem struct {
-	ID               string
-	AgentID          string
-	Kind             leapmuxv1.AgentInputKind
+	ID      string
+	AgentID string
+	Kind    leapmuxv1.AgentInputKind
+	// Sender is the agent tab whose control token enqueued the input, or nil
+	// when no agent did: the browser, a terminal tab, the CLI outside a tab,
+	// and every input that the Worker creates itself. A user message from a
+	// sender becomes an agent message (see admitNewItem).
+	Sender           *AgentSender
 	Text             string
 	TargetMode       string
 	PrepareContext   bool
@@ -309,9 +372,22 @@ type NewItem struct {
 	Attachments      []Attachment
 	// ScheduledAt schedules the item; nil means immediate.
 	ScheduledAt *time.Time
+	// RequireFutureSchedule refuses a due schedule when inserting an item.
+	// A retry of an existing input keeps the original admission decision.
+	RequireFutureSchedule bool
+	// RequireExisting matches an input that the Worker already recorded.
+	// The store refuses to insert an input when no record matches the ID.
+	RequireExisting bool
 	// SourcePayload is the provider source an automatic retry carries into the
 	// accepted transcript's supplemental content. Empty for ordinary input.
 	SourcePayload []byte
+}
+
+// EnqueueReceipt reports whether an enqueue added an input or matched an
+// accepted input. AcceptedSeq is zero until there is an accepted row.
+type EnqueueReceipt struct {
+	Added       bool
+	AcceptedSeq int64
 }
 
 type PreparedDispatch struct {
@@ -324,6 +400,7 @@ type PreparedDispatch struct {
 type AcceptedTranscript struct {
 	ID                             string
 	AgentID                        string
+	AgentSessionID                 string
 	Seq                            int64
 	Content                        []byte
 	ContentCompression             leapmuxv1.ContentCompression
@@ -343,6 +420,7 @@ type DispatchResult struct {
 	TurnSteerable bool
 	SpanLines     string
 	Steering      bool
+	NativeReceipt agent.NativeInputReceipt
 	// SupplementalContent stores the original provider source for frontend extraction.
 	SupplementalContent []byte
 	AfterAccept         func()
@@ -395,7 +473,7 @@ type Dispatcher interface {
 	Dispatch(item DispatchItem) (DispatchResult, error)
 	Steer(item DispatchItem) (DispatchResult, error)
 	PrepareSteer(agentID string)
-	SteerPolicy(agentID string) agent.SteerPolicy
+	SteerPolicy(agentID string) (agent.SteerPolicy, error)
 	SupportsSteering(agentID string) bool
 	// Interrupt cancels the agent's active turn without any of the stop-side
 	// bookkeeping the InterruptAgent RPC applies (queue pause, control

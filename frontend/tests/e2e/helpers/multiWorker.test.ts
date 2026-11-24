@@ -64,7 +64,7 @@ beforeEach(() => {
   vi.mocked(spawnTestProcess).mockReset().mockImplementation((_command, args) => {
     // The registration command is a silent, untracked child: it exits
     // on its own before the worker it registers for is spawned.
-    if (args[0] === 'worker' && args[1] === 'register') {
+    if (args[0] === 'daemon' && args[1] === 'worker' && args[2] === 'register') {
       const registerStub = createProcessStub({ pid: 900 + children.length })
       queueMicrotask(() => {
         registerStub.emitter.exitCode = 0
@@ -80,14 +80,14 @@ beforeEach(() => {
     Object.assign(stub.emitter, io)
     children.push(stub)
     streams.push(io)
-    if (args[0] === 'hub' && args.includes('127.0.0.1:0')) {
+    if (args[0] === 'daemon' && args[1] === 'hub' && args.includes('127.0.0.1:0')) {
       const port = 24680 + hubCount++
       nativeHubURLs.add(`http://127.0.0.1:${port}`)
       states.set(stub.emitter.pid ?? -1, JSON.stringify({
         listen: [`127.0.0.1:${port}`],
       }))
     }
-    if (args[0] === 'worker')
+    if (args[0] === 'daemon' && args[1] === 'worker')
       workerIDs.push(`worker-${stub.emitter.pid}`)
     stub.emitter.kill.mockImplementation(() => {
       workerIDs = workerIDs.filter(id => id !== `worker-${stub.emitter.pid}`)
@@ -189,7 +189,7 @@ describe('multi-worker lifetime', () => {
     try {
       // The register call is tracked too; the RUN call is the one the
       // worker's own flags reach.
-      const runCall = vi.mocked(spawnTestProcess).mock.calls.find(([, args]) => args[0] === 'worker' && args[1] === 'run')
+      const runCall = vi.mocked(spawnTestProcess).mock.calls.find(([, args]) => args[0] === 'daemon' && args[1] === 'worker' && args[2] === 'run')
       expect(runCall?.[1]).toEqual(expect.arrayContaining([
         '--encryption-mode',
         'post-quantum',
@@ -305,11 +305,12 @@ describe('multi-worker port ownership', () => {
       expect(harness.hubUrl).toBe('http://localhost:24680')
       expect(findFreePort).not.toHaveBeenCalled()
       expect(spawnTestProcess).toHaveBeenNthCalledWith(1, 'leapmux', [
+        'daemon',
         'hub',
         'run',
-        '-listen',
+        '--listen',
         '127.0.0.1:0',
-        '-data-dir',
+        '--data-dir',
         harness.hubDataDir,
       ], expect.any(Object))
       expect(waitForHubStart).toHaveBeenCalledWith(join(harness.hubDataDir, 'state.json'), harness.hubProc)

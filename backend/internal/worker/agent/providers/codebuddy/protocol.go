@@ -58,7 +58,8 @@ type UserInputMessage struct {
 	Type    MessageType      `json:"type"`
 	Message UserInputContent `json:"message"`
 	// Priority is CodeBuddy's own field. Omitted for a normal prompt.
-	Priority string `json:"priority,omitempty"`
+	Priority string     `json:"priority,omitempty"`
+	Meta     *inputMeta `json:"_meta,omitempty"`
 }
 
 // UserInputContent is the nested message content for stream-json input.
@@ -131,14 +132,19 @@ type systemInitMessage struct {
 
 // resultMessage is the part of a result line the worker reads.
 type resultMessage struct {
+	Subtype   string          `json:"subtype"`
 	RequestID json.RawMessage `json:"_requestId"`
 	Result    json.RawMessage `json:"result"`
-	IsError   bool            `json:"is_error"`
+	IsError   *bool           `json:"is_error"`
 	Errors    []string        `json:"errors"`
 	codebuddyUsageSnapshot
 	// AbortReason is set by CodeBuddy 2.158.0 and later on the `result` of an
 	// aborted turn, and on no other `result`.
 	AbortReason string `json:"terminal_reason"`
+}
+
+func (result resultMessage) failed() bool {
+	return result.IsError != nil && *result.IsError
 }
 
 // codebuddyUsageSnapshot is the usage shared by result and system frames.

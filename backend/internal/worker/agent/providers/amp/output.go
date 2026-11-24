@@ -161,16 +161,16 @@ func (a *Agent) handleSystemLine(proc *ampProcess, raw []byte) {
 	a.mu.Lock()
 	previous := a.threadID
 	a.threadID = line.SessionID
-	steerBecameAvailable := previous == "" && a.turn.active
+	steerBecameAvailable := (previous == "" || a.awaitThreadInit) && a.turn.active
+	a.awaitThreadInit = false
 	a.mu.Unlock()
-	if previous == line.SessionID {
-		return
+	if previous != line.SessionID {
+		if previous != "" {
+			slog.Warn("amp reported a different thread", "agent_id", a.agentID, "expected", previous, "thread_id", line.SessionID)
+		}
+		a.sink.UpdateSessionID(line.SessionID)
+		a.sink.BroadcastStatusActive(line.SessionID)
 	}
-	if previous != "" {
-		slog.Warn("amp reported a different thread", "agent_id", a.agentID, "expected", previous, "thread_id", line.SessionID)
-	}
-	a.sink.UpdateSessionID(line.SessionID)
-	a.sink.BroadcastStatusActive(line.SessionID)
 	if steerBecameAvailable {
 		a.PublishTurnActive()
 	}
@@ -204,6 +204,10 @@ func (a *Agent) handleAssistantLine(raw []byte) {
 		return
 	}
 	usageMetadata := a.recordUsage(line.Message.Usage)
+	reply, frameIndex := a.captureReplyFrame(line.SessionID)
+	var frame ampReplyFrame
+	var replyBlocks []ampBlock
+	replyWriteFailed := false
 	lastKept := -1
 	for i, row := range rows {
 		if assistantBlockKept(row.block) {
@@ -215,6 +219,14 @@ func (a *Agent) handleAssistantLine(raw []byte) {
 			continue
 		}
 		content := agent.MessageContent{Original: row.line}
+		if reply != nil {
+			replyBlocks = append(replyBlocks, row.block)
+			if row.block.Type == contracts.AmpBlockTypeText {
+				content.AgentSessionID = reply.receipt.SessionID
+				content.IdempotencyKey = replyTextMessageKey(reply.receipt, frameIndex, i)
+				frame.textKeys = append(frame.textKeys, content.IdempotencyKey)
+			}
+		}
 		if i == lastKept {
 			content.Metadata = usageMetadata
 		}
@@ -225,10 +237,15 @@ func (a *Agent) handleAssistantLine(raw []byte) {
 			if row.block.Type == contracts.AmpBlockTypeText {
 				a.noteAssistantText(row.block.Text)
 			}
-			if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
+			if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); !agent.OutputRetained(err) {
+				replyWriteFailed = true
 				slog.Error("amp persist assistant row", "agent_id", a.agentID, "error", err)
 			}
 		}
+	}
+	if reply != nil {
+		frame.digest, err = ampReplyFrameDigest(replyBlocks)
+		a.retainReplyFrame(reply, frame, replyWriteFailed || err != nil)
 	}
 
 	a.mu.Lock()
@@ -236,8 +253,10 @@ func (a *Agent) handleAssistantLine(raw []byte) {
 		a.turn.assistantMessages++
 	}
 	a.mu.Unlock()
-	a.noteLiveAssistant(line.Message)
-	if line.Message.StopReason != nil && *line.Message.StopReason == stopReasonEndTurn {
+	ended := line.Message.StopReason != nil && *line.Message.StopReason == stopReasonEndTurn &&
+		a.nativeSteeredTurnEnd(line.SessionID, reply)
+	a.noteLiveAssistant(line.SessionID, line.Message, reply, frame, ended)
+	if ended {
 		a.finishTurn(agent.MessageCompletionComplete, nil)
 	}
 }
@@ -319,6 +338,14 @@ func (a *Agent) handleUserLine(raw []byte) {
 			hasPrompt = true
 		default:
 			valid = false
+		}
+	}
+	if valid && (hasPrompt || len(rows) == 0) {
+		var echo struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal(raw, &echo) == nil {
+			a.observeSteeredInput(echo.SessionID)
 		}
 	}
 	if !valid || !hasPrompt {
@@ -527,6 +554,7 @@ func (a *Agent) endTurn(closeOnTeardown bool, decide func(turn turnState) (agent
 		providerkit.ResetSpansAndProgress(a.sink)
 	}
 	a.PublishTurnActive()
+	a.completeInputReply(turn.reply, completion)
 }
 
 // drainAndResetOpenTools closes every remaining open tool call with completion

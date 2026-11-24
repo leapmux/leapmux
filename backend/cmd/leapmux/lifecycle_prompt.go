@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
@@ -32,7 +33,7 @@ func writeSetupText(out io.Writer, text string) error {
 
 // promptStartupChoice shows the startup choice. Login startup is the
 // default for a new configuration.
-func promptStartupChoice(out io.Writer, in io.Reader) (lifecycle.StartupKind, error) {
+func promptStartupChoice(ctx context.Context, out io.Writer, in io.Reader) (lifecycle.StartupKind, error) {
 	if err := writeSetupText(out, "\nWhen should LeapMux start automatically?\n\n"+
 		"  1. When you log in\n"+
 		"     Runs as your account.\n"+
@@ -43,7 +44,10 @@ func promptStartupChoice(out io.Writer, in io.Reader) (lifecycle.StartupKind, er
 		return "", err
 	}
 
-	line, err := readTrimmedLine(in)
+	line, err := readTrimmedLine(ctx, in)
+	if ctx.Err() != nil {
+		return "", context.Cause(ctx)
+	}
 	if err != nil {
 		// End of input declines: a noninteractive caller must pass
 		// --startup and --yes instead of reading a closed stdin.
@@ -60,11 +64,15 @@ func promptStartupChoice(out io.Writer, in io.Reader) (lifecycle.StartupKind, er
 }
 
 // promptApply asks for the y/N consent after the preview.
-func promptApply(out io.Writer, in io.Reader) (bool, error) {
+func promptApply(ctx context.Context, out io.Writer, in io.Reader) (bool, error) {
 	if err := writeSetupText(out, "\nApply this configuration? [y/N]: "); err != nil {
 		return false, err
 	}
-	line, err := readTrimmedLine(in)
+	line, err := readTrimmedLine(ctx, in)
+	if ctx.Err() != nil {
+		// An interrupt ends the command; it is no answer.
+		return false, context.Cause(ctx)
+	}
 	if err != nil {
 		// End of input declines the configuration.
 		return false, nil
@@ -78,10 +86,10 @@ func promptApply(out io.Writer, in io.Reader) (bool, error) {
 	}
 }
 
-// readTrimmedLine reads one trimmed line.
-func readTrimmedLine(in io.Reader) (string, error) {
-	reader := bufio.NewReader(in)
-	line, err := reader.ReadString('\n')
+// readTrimmedLine reads one line and trims its spaces. A line that the input
+// ends before its line ending is no answer, so it returns only the error.
+func readTrimmedLine(ctx context.Context, in io.Reader) (string, error) {
+	line, err := cli.ReadLine(ctx, in)
 	if err != nil {
 		return "", err
 	}
@@ -93,5 +101,5 @@ func requireInteractiveInput(missingOptions ...string) error {
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil
 	}
-	return fmt.Errorf("noninteractive setup requires %s", strings.Join(missingOptions, " and "))
+	return cli.Usagef("noninteractive setup requires %s", strings.Join(missingOptions, " and "))
 }

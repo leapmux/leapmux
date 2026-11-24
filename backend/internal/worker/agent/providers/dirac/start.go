@@ -93,8 +93,15 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		PromptParams:           diracPromptParams,
 		ExtraMethod:            a.handleExtraMethod,
 		SessionMetadataHandler: a.observeDiracNotice,
-		ClearProviderState:     a.clearChildState,
-		BeforeWaitCleanup:      a.beforeWaitCleanup,
+		PromptEnded:            a.handleDiracPromptEnded,
+		ClearProviderState: func() {
+			a.resolvePendingDiracSteers(agent.SteerOutcomeUncertain)
+			a.clearChildState()
+		},
+		BeforeWaitCleanup: func() {
+			a.resolvePendingDiracSteers(agent.SteerOutcomeUncertain)
+			a.beforeWaitCleanup()
+		},
 		// Decode the effective profile the launch observed before opening a
 		// native session, so the pre-stop checkpoint reads the root Dirac
 		// actually used rather than the Worker's assumed one.

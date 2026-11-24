@@ -75,7 +75,7 @@ func TestEnvVars_NoSessionCookieLeak(t *testing.T) {
 		WorkerID: "worker-A",
 		TabID:    "agent-1",
 		TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
-	})
+	}, "/data/run/cli-1/leapmux")
 	for _, e := range envs {
 		// The plan's threat model explicitly forbids leaking session
 		// cookies into spawned-agent env vars. Defensive assertion.

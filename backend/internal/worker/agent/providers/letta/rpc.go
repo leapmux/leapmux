@@ -240,7 +240,11 @@ func (a *Agent) handleFrame(line []byte) {
 	case contracts.LettaMessageUpdateSubagentState:
 		a.onSubagentState(head.Subagents, head.Runtime)
 	case contracts.LettaMessageUpdateLoopStatus:
-		a.onLoopStatus(head.LoopStatus)
+		scope := head.Runtime
+		if head.SubagentID != "" {
+			scope = nil
+		}
+		a.onLoopStatus(head.LoopStatus, scope)
 	case contracts.LettaMessageControlRequest:
 		a.onControlRequest(line, head.Request, head.RequestID)
 	case "runtime_start_response":
@@ -252,6 +256,7 @@ func (a *Agent) handleFrame(line []byte) {
 	case "sync_response":
 		a.handleSettingsSyncResponse(line)
 	case contracts.LettaMessageInputAccepted:
+		a.observeInputAcceptance(head.Runtime, head.RequestID, line)
 		a.handlePermissionReceipt(line, head.RequestID)
 	case contracts.LettaMessageAbortMessageResponse:
 		// The native turn events report the result of an interrupt.

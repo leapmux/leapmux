@@ -1,9 +1,10 @@
 import type { Accessor, Component } from 'solid-js'
-import type { ActionsProps, ControlResponseSender } from './types'
+import type { ActionsProps } from './types'
 import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 
 import { createMemo } from 'solid-js'
 import { isAllowPermissionKind, isRejectPermissionKind } from '~/components/chat/model/controlPrompt'
+import { permissionDecision } from './controlDecision'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 import { permissionOptionLabel } from './permissionOptionLabels'
 import {
@@ -15,27 +16,19 @@ import {
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from './permissionPresets'
 import { CONTROL_ALLOW_CHOICE_ID, createControlChoice } from './types'
 
-/** Sends ONE chosen option as this provider's permission reply, in its own envelope. */
-export type SendPermissionOption = (
-  onRespond: ControlResponseSender,
-  requestId: string,
-  optionId: string,
-) => Promise<void>
-
 /**
- * The shared decision row for a permission request whose runtime states its own
- * answers: scope pills (Once / Always / Session / Project), the permission pill
- * group (Unchanged / Smart / Bypass), Deny / Allow, and one extra button per option
- * no slot or group consumed.
+ * The decision row of a permission prompt: scope pills (Once / Always / Session /
+ * Project), the permission pill group (Unchanged / Smart / Bypass), Deny / Allow, and
+ * one extra button per option no slot or group consumed.
  *
- * The options arrive from the control model, which each provider's `extractControl`
- * filled -- so no wire shape is read here. The provider states `send` beside them,
- * because the envelope that carries one id back is its own.
+ * The options arrive in the prompt that the Worker read, and every permission prompt
+ * states them: a runtime's own answers, or LeapMux's allow and deny. A choice is sent
+ * as a decision that names the option, and the Worker's provider builds the runtime's
+ * own answer from it.
  */
 export const PermissionDecisionActions: Component<ActionsProps & {
   options: Accessor<PermissionOption[]>
   independentOptions?: boolean
-  send: SendPermissionOption
 }> = (props) => {
   const layout = createMemo(() => layoutPermissionOptions(props.options()))
   const permissionChoice = createSessionPermissionPresetChoice(props)
@@ -74,13 +67,13 @@ export const PermissionDecisionActions: Component<ActionsProps & {
       return
     if (!props.independentOptions && isAllowPermissionKind(option.kind)) {
       await respondThenApplyPermissionPreset(
-        props.send(props.onRespond, props.request.requestId, option.optionId),
+        props.onDecide(permissionDecision(option.optionId)),
         props.presets,
         permissionChoice.choice(),
       )
       return
     }
-    await props.send(props.onRespond, props.request.requestId, option.optionId)
+    await props.onDecide(permissionDecision(option.optionId))
   }
 
   const handleDecision = (polarity: 'allow' | 'reject') =>
@@ -118,7 +111,9 @@ export const PermissionDecisionActions: Component<ActionsProps & {
       {...(!props.independentOptions && layout().negative
         ? {
             negativeAction: {
-              label: decisionLabel(layout(), 'reject'),
+              // The label follows the selected pill, because the pill decides
+              // which refusal Deny sends.
+              label: decisionLabel(layout(), 'reject', selectedScope()),
               testId: 'control-deny-btn',
               onSelect: () => handleDecision('reject'),
             },

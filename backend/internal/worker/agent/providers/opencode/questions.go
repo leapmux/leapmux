@@ -161,13 +161,20 @@ func (q *openCodeQuestions) readMessagePage(ctx context.Context, sessionID, befo
 // readRoute GETs one route of the daemon. It returns the body and the headers
 // of the answer, which must be 200 OK and at most openCodeQuestionMaxEvent bytes.
 func (q *openCodeQuestions) readRoute(ctx context.Context, route string) ([]byte, http.Header, error) {
+	return q.requestRoute(ctx, http.MethodGet, route, nil)
+}
+
+func (q *openCodeQuestions) requestRoute(ctx context.Context, method, route string, body json.RawMessage) ([]byte, http.Header, error) {
 	base := q.base()
 	if base == "" {
 		return nil, nil, fmt.Errorf("the OpenCode daemon address is unavailable")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+route, nil)
+	request, err := http.NewRequestWithContext(ctx, method, base+route, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, err
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := q.client.Do(request)
 	if err != nil {
@@ -296,6 +303,21 @@ const (
 // the same agent registers.
 func openCodeQuestionControlID(questionID string) string {
 	return "opencode-question:" + questionID
+}
+
+// ControlRequestKey reads the key of a stored request of the family's
+// transport. A question that the question bridge publishes is keyed by the
+// daemon's own question id (openCodeQuestionControlID). Any other request is
+// a request of the Agent Client Protocol, which the base keys.
+func (p FamilyProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
+	if providerkit.IsOpenCodeQuestionEvent(payload) {
+		id, ok := providerkit.OpenCodeQuestionID(payload)
+		if !ok {
+			return "", false
+		}
+		return openCodeQuestionControlID(id), true
+	}
+	return p.Provider.ControlRequestKey(payload, agentSessionID)
 }
 
 // ACPArgs builds the daemon's arguments with its own server enabled.
@@ -478,13 +500,14 @@ type openCodeQuestions struct {
 	observe func(json.RawMessage)
 	// ready runs once the daemon address is known, before the event stream
 	// opens, with the context of the bridge. It may be nil.
-	ready func(context.Context)
+	ready          func(context.Context)
+	questionTurnID func(context.Context, string, string) string
+	questionOwner  func(string) (agent.ControlServices, error)
 
-	// mu guards baseURL and pending. pending maps the LeapMux request id to the
-	// daemon's own question id: the reader answers with the first, and the daemon
-	// needs the second. baseURL is written once, by the discovery goroutine.
+	// mu guards baseURL and pending. Each pending question retains its daemon ID
+	// and the transcript that published it. Discovery writes baseURL once.
 	mu      sync.Mutex
-	pending map[string]string
+	pending map[string]*openCodePendingQuestion
 
 	// stopped closes when the goroutine that Begin or beginAt started has
 	// fully returned -- past the run loop and past its deferred cancelAll,
@@ -494,6 +517,17 @@ type openCodeQuestions struct {
 	// methods starts the goroutine, and nil for ever when a Begin found no
 	// sink.
 	stopped chan struct{}
+}
+
+type openCodePendingQuestion struct {
+	requestID string
+	nativeID  string
+	sessionID string
+	owner     agent.ControlServices
+}
+
+func (question *openCodePendingQuestion) cancel() {
+	question.owner.CancelControlRequest(question.requestID)
 }
 
 // Configure records the sink. It runs before the process starts, so it opens no
@@ -665,8 +699,7 @@ func (q *openCodeQuestions) handleEvent(ctx context.Context, data []byte) {
 // holds. The list is AUTHORITATIVE: a question on it gets a card, and a card for a
 // question that is not on it is retired.
 //
-// PublishControlRequest keeps the claim token of a request it already carries, so a
-// question that is on the reader's screen is announced again without disturbing it.
+// A question that already has a card retains its owner and claim token.
 //
 // Both halves are needed, and the second one was missing. A question answered in
 // ANOTHER client while the event stream was down raises its `question.replied` on a
@@ -718,19 +751,17 @@ func (q *openCodeQuestions) publishPending(ctx context.Context) {
 // sweep. The answer path can still remove one, which leaves nothing to retire.
 func (q *openCodeQuestions) retireUnheld(held map[string]struct{}) {
 	q.mu.Lock()
-	var stale []string
-	for requestID := range q.pending {
+	var stale []*openCodePendingQuestion
+	for requestID, question := range q.pending {
 		if _, still := held[requestID]; still {
 			continue
 		}
-		stale = append(stale, requestID)
-	}
-	for _, requestID := range stale {
+		stale = append(stale, question)
 		delete(q.pending, requestID)
 	}
 	q.mu.Unlock()
-	for _, requestID := range stale {
-		q.sink.CancelControlRequest(requestID)
+	for _, question := range stale {
+		question.cancel()
 	}
 }
 
@@ -750,9 +781,35 @@ func (q *openCodeQuestions) publish(ctx context.Context, properties json.RawMess
 	var question struct {
 		ID        string `json:"id"`
 		SessionID string `json:"sessionID"`
+		Tool      struct {
+			MessageID string `json:"messageID"`
+		} `json:"tool"`
 	}
 	if err := json.Unmarshal(properties, &question); err != nil || question.ID == "" {
 		slog.Warn("Read an OpenCode question", "agent_id", q.agentID, "error", err)
+		return ""
+	}
+	requestID := openCodeQuestionControlID(question.ID)
+	q.mu.Lock()
+	previous := q.pending[requestID]
+	q.mu.Unlock()
+	if previous != nil {
+		if previous.sessionID != question.SessionID {
+			slog.Warn("Ignore a question whose native session changed", "agent_id", q.agentID, "request_id", requestID)
+		}
+		return requestID
+	}
+	owner := q.sink
+	if q.questionOwner != nil {
+		var err error
+		owner, err = q.questionOwner(question.SessionID)
+		if err != nil {
+			q.rejectUnpublished(ctx, question.ID, requestID, err)
+			return ""
+		}
+	}
+	if owner == nil {
+		slog.Debug("Ignore a question outside the served sessions", "agent_id", q.agentID, "request_id", requestID)
 		return ""
 	}
 	payload, err := json.Marshal(struct {
@@ -763,31 +820,38 @@ func (q *openCodeQuestions) publish(ctx context.Context, properties json.RawMess
 		slog.Error("Build an OpenCode question payload", "agent_id", q.agentID, "error", err)
 		return ""
 	}
-	requestID := openCodeQuestionControlID(question.ID)
+	var nativeTurnID string
+	if q.questionTurnID != nil && question.SessionID != "" && question.Tool.MessageID != "" {
+		nativeTurnID = q.questionTurnID(ctx, question.SessionID, question.Tool.MessageID)
+	}
 	q.mu.Lock()
 	if q.pending == nil {
-		q.pending = make(map[string]string)
+		q.pending = make(map[string]*openCodePendingQuestion)
 	}
-	q.pending[requestID] = question.ID
+	q.pending[requestID] = &openCodePendingQuestion{
+		requestID: requestID, nativeID: question.ID, sessionID: question.SessionID, owner: owner,
+	}
 	q.mu.Unlock()
-	if err := q.sink.PublishControlRequest(agent.ControlRequest{
+	if err := owner.PublishControlRequest(agent.ControlRequest{
 		RequestID:      requestID,
 		Payload:        payload,
 		AgentSessionID: question.SessionID,
+		NativeTurnID:   nativeTurnID,
 	}); err != nil {
-		slog.Error("Publish an OpenCode question", "agent_id", q.agentID, "request_id", requestID, "error", err)
 		q.forget(requestID)
-		// The daemon blocks on this question. A reader who will never see it must not
-		// leave the turn waiting, so the question is rejected here and the agent
-		// carries on with the refusal.
-		if err := q.reject(ctx, question.ID); err != nil {
-			slog.Warn("Reject an OpenCode question LeapMux could not publish",
-				"agent_id", q.agentID, "request_id", requestID, "error", err)
-		}
-		// The record is gone, so the caller must not count this question as held.
+		q.rejectUnpublished(ctx, question.ID, requestID, err)
 		return ""
 	}
 	return requestID
+}
+
+// rejectUnpublished releases a question that has no answerable card in LeapMux.
+func (q *openCodeQuestions) rejectUnpublished(ctx context.Context, nativeID, requestID string, cause error) {
+	slog.Error("Publish an OpenCode question", "agent_id", q.agentID, "request_id", requestID, "error", cause)
+	if err := q.reject(ctx, nativeID); err != nil {
+		slog.Warn("Reject an OpenCode question LeapMux could not publish",
+			"agent_id", q.agentID, "request_id", requestID, "error", err)
+	}
 }
 
 // withdraw retires the card of a question the daemon reports as settled.
@@ -799,31 +863,27 @@ func (q *openCodeQuestions) withdraw(properties json.RawMessage) {
 		return
 	}
 	requestID := openCodeQuestionControlID(settled.RequestID)
-	if q.forget(requestID) {
-		q.sink.CancelControlRequest(requestID)
+	if question := q.forget(requestID); question != nil {
+		question.cancel()
 	}
 }
 
-// forget drops one record and reports whether it was there. The answer path and the
-// event path both retire a question, and only the one that took the record acts.
-func (q *openCodeQuestions) forget(requestID string) bool {
+// forget transfers ownership of one pending question to the caller.
+func (q *openCodeQuestions) forget(requestID string) *openCodePendingQuestion {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	_, existed := q.pending[requestID]
+	question := q.pending[requestID]
 	delete(q.pending, requestID)
-	return existed
+	return question
 }
 
 func (q *openCodeQuestions) cancelAll() {
 	q.mu.Lock()
-	requestIDs := make([]string, 0, len(q.pending))
-	for requestID := range q.pending {
-		requestIDs = append(requestIDs, requestID)
-	}
-	clear(q.pending)
+	pending := q.pending
+	q.pending = nil
 	q.mu.Unlock()
-	for _, requestID := range requestIDs {
-		q.sink.CancelControlRequest(requestID)
+	for _, question := range pending {
+		question.cancel()
 	}
 }
 
@@ -841,9 +901,9 @@ func (q *openCodeQuestions) answer(ctx context.Context, raw []byte) (bool, error
 		return false, nil
 	}
 	q.mu.Lock()
-	questionID, pending := q.pending[requestID]
+	question := q.pending[requestID]
 	q.mu.Unlock()
-	if !pending {
+	if question == nil {
 		return false, nil
 	}
 	var frame struct {
@@ -855,9 +915,9 @@ func (q *openCodeQuestions) answer(ctx context.Context, raw []byte) (bool, error
 	var err error
 	switch {
 	case frame.Result.Rejected:
-		err = q.reject(ctx, questionID)
+		err = q.reject(ctx, question.nativeID)
 	case frame.Result.Answers != nil:
-		err = q.reply(ctx, questionID, frame.Result.Answers)
+		err = q.reply(ctx, question.nativeID, frame.Result.Answers)
 	default:
 		return true, fmt.Errorf("the OpenCode question answer carries neither answers nor a rejection")
 	}
@@ -870,11 +930,12 @@ func (q *openCodeQuestions) answer(ctx context.Context, raw []byte) (bool, error
 	return true, nil
 }
 
-// openCodeAnswerResult is the answer envelope the BROWSER writes and this reads back.
+// openCodeAnswerResult is the answer envelope that providerkit.AnswerOpenCodeQuestions
+// writes and this reads back.
 //
 // A Go struct tag cannot hold a constant, so the two field names are literals here
 // and TestOpenCodeAnswerTagsMatchTheContract pins them to
-// contracts/opencode-protocol.json, which the browser reads the same names from. A
+// contracts/opencode-protocol.json, whose constants the writer spells them with. A
 // rename on one side alone used to leave `Answers` nil, so `reply` never ran and the
 // daemon's question tool blocked for the rest of the session with nothing logged.
 type openCodeAnswerResult struct {

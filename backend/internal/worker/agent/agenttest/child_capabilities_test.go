@@ -1,6 +1,7 @@
 package agenttest
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,8 +70,9 @@ func TestAssertChildCapabilitiesFailsWhenThePluginAndTheAgentDisagree(t *testing
 }
 
 // recordingTB records a failure instead of failing the test that runs it. The
-// suite and testify call only Helper, Name and Errorf, so the embedded TB stays
-// nil.
+// suites and testify call only Helper, Name, Errorf and FailNow, so the
+// embedded TB stays nil. FailNow ends the calling goroutine, as testing's own
+// does, so a suite that can call it runs in its own goroutine (failsUnder).
 type recordingTB struct {
 	testing.TB
 	failed bool
@@ -81,3 +83,21 @@ func (*recordingTB) Helper() {}
 func (*recordingTB) Name() string { return "probe" }
 
 func (r *recordingTB) Errorf(string, ...any) { r.failed = true }
+
+func (r *recordingTB) FailNow() {
+	r.failed = true
+	runtime.Goexit()
+}
+
+// failsUnder reports whether check fails the TB that it receives. It runs
+// check in its own goroutine, because a FailNow ends that goroutine.
+func failsUnder(check func(testing.TB)) bool {
+	probe := &recordingTB{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		check(probe)
+	}()
+	<-done
+	return probe.failed
+}

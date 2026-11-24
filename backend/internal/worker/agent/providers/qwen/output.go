@@ -165,7 +165,9 @@ func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	a.stateMu.Lock()
 	manual := a.compressPending != nil
 	a.compressPending = nil
+	undrained := a.steer.takeTracked()
 	a.stateMu.Unlock()
+	a.resolveQwenTrackedSteers(undrained, agent.SteerOutcomeDropped)
 	// A stopped or failed prompt can end compaction without a native completion frame.
 	providerkit.EndCompaction(a.Sink())
 	var responseError *providerkit.JSONRPCResponseError

@@ -129,5 +129,5 @@ func ProtectedIdentityVariables() []string {
 // definition NEVER invokes `start` -- a managed start that reached back
 // into the controller could recurse.
 func (s LaunchSpec) RunArguments() []string {
-	return []string{string(s.Mode), "run", "--data-dir", s.DataDirectory, "--service-spec", lifecycle.PathsOf(s.DataDirectory).ServiceSpec}
+	return []string{"daemon", string(s.Mode), "run", "--data-dir", s.DataDirectory, "--service-spec", lifecycle.PathsOf(s.DataDirectory).ServiceSpec}
 }

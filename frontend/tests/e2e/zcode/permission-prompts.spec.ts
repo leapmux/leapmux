@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { exerciseNativePermissionReason, exerciseRememberedAllow } from '../helpers/nativePermission'
+import { exerciseNativePermissionReason, exerciseRememberedAllow, expectSavedRefusalFeedback } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
@@ -38,7 +38,7 @@ zcodeTest('a project-scoped allow covers the same command in the next turn', asy
     beforeDecision: () => expect(existsSync(file)).toBe(true),
     firstProof: ran,
     secondProof: ran,
-    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow'),
+    viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Always allow in this project'),
   })
 })
 
@@ -52,8 +52,8 @@ zcodeTest('a typed refusal reason reaches the model with the denial', async ({ n
     route: 'native-reply',
     beforeDecision: banner => expect(banner).toContainText('zcode-reason.txt'),
     expectNotRun: () => expect(readFileSync(file, 'utf8')).toBe(content),
-    // The saved row states the decision, and the reason that the native reply carried on a line of its own.
-    viewProof: reason => expect(savedControlAnswer(native.page)).toHaveText(`Deny\n${reason}`),
+    // The reason reached ZCode in the native reply, so the saved answer states it as the feedback that it sent.
+    viewProof: reason => expectSavedRefusalFeedback(native.page, reason),
   })
 })
 

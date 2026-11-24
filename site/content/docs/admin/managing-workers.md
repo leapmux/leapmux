@@ -19,7 +19,7 @@ The Worker always **dials the Hub** — it opens a single outbound WebSocket and
 You give the Worker its Hub URL once, when you register it:
 
 ```bash
-leapmux worker register --hub https://hub.example.com --registration-key <key>
+leapmux daemon worker register --hub https://hub.example.com --registration-key <key>
 ```
 
 The `--hub` value accepts three URL forms:
@@ -32,7 +32,7 @@ The `--hub` value accepts three URL forms:
 
 The two local-IPC forms exist for co-located setups (notably the desktop app's local-only mode, where the Hub never opens a TCP port at all). On a remote Hub you will always use `http://` or `https://`.
 
-The Worker saves the URL with its credentials and connects to that URL from then on. Only the `--hub` flag of `worker register` sets it: the configuration file and the environment cannot, and the other Worker commands refuse the flag. To move a Worker to another Hub, [register it again](#register-a-worker-again).
+The Worker saves the URL with its credentials and connects to that URL from then on. Only the `--hub` flag of `daemon worker register` sets it: the configuration file and the environment cannot, and the other Worker commands refuse the flag. To move a Worker to another Hub, [register it again](#register-a-worker-again).
 
 ## Registration: the "approval" model
 
@@ -65,8 +65,8 @@ Registration takes three steps, one for each section below.
 
 1. In the sidebar, find the **Workers** section header and click the **+** button (titled *Register worker*).
 2. The **Register worker** dialog opens, generates a key at once, and shows two commands:
-   - The registration command: `leapmux worker register --hub https://hub.example.com --registration-key <key>`
-   - The start command, to run after the registration succeeds: `leapmux worker start`
+   - The registration command: `leapmux daemon worker register --hub https://hub.example.com --registration-key <key>`
+   - The start command, to run after the registration succeeds: `leapmux daemon worker start`
 
    The `--hub` value is the address your Hub advertises (falling back to your browser's origin).
 3. Under **Shell**, choose **POSIX** for a macOS or Linux shell, or **PowerShell** for Windows. The commands change to match that shell.
@@ -87,8 +87,8 @@ Worker registered.
 Credentials saved to /home/alice/.config/leapmux/worker/state.json
 
 Commands for this instance:
-  Start:  leapmux worker start --config /home/alice/.config/leapmux/worker/worker.yaml --data-dir /home/alice/.config/leapmux/worker
-  Status: leapmux worker status --config /home/alice/.config/leapmux/worker/worker.yaml --data-dir /home/alice/.config/leapmux/worker
+  Start:  leapmux daemon worker start --config /home/alice/.config/leapmux/worker/worker.yaml --data-dir /home/alice/.config/leapmux/worker
+  Status: leapmux daemon worker status --config /home/alice/.config/leapmux/worker/worker.yaml --data-dir /home/alice/.config/leapmux/worker
 ```
 
 The command does not start the Worker. It waits up to 5 minutes for the Hub; change the limit with `--timeout`. While the Hub is unreachable, it retries. When the Hub refuses the key, it fails at once.
@@ -98,7 +98,7 @@ The command does not start the Worker. It waits up to 5 minutes for the Hub; cha
 Start the Worker as a service, so it runs in the background and starts again at the next login or boot. Run the `start` command that the registration printed, or:
 
 ```bash
-leapmux worker start
+leapmux daemon worker start
 ```
 
 The first `start` asks when the Worker should start automatically. See [Starting and Stopping](/docs/admin/starting-and-stopping/). In a container, the image runs the Worker for you; see [Running a Worker container](/docs/admin/running-leapmux/#running-a-worker-container).
@@ -107,7 +107,7 @@ The Worker appears in the sidebar **Workers** section as soon as it connects.
 
 ### If registration fails or stops
 
-**If the command stops before it finishes**, for example after Ctrl+C or at the end of its timeout, run the same `worker register` command again, with the same `--hub`, `--registration-key`, and data directory. If the Hub accepted the first attempt, the command completes it: you get the same Worker, and the key is not used twice.
+**If the command stops before it finishes**, for example after Ctrl+C or at the end of its timeout, run the same `daemon worker register` command again, with the same `--hub`, `--registration-key`, and data directory. If the Hub accepted the first attempt, the command completes it: you get the same Worker, and the key is not used twice.
 
 Until registration succeeds, the data directory holds `pending-registration.json`. It holds the registration key and the Worker's private keys, so protect it like `state.json`. The command deletes it when the registration completes.
 
@@ -118,7 +118,7 @@ Until registration succeeds, the data directory holds `pending-registration.json
 | The key is invalid or already consumed. | The key was used by another machine, was revoked, or expired. Keys are single-use. | Generate a new key, then [abandon the refused attempt](#abandon-an-attempt). |
 | The account reached `max_workers_per_user`. | The account has its maximum number of Workers. | Deregister a Worker, or raise the limit (see [Configuration](/docs/admin/configuration/)). |
 | A pending registration for hub *URL* already exists. | An earlier attempt with another key or another Hub did not finish. | Run the earlier command again to complete it, or [abandon it](#abandon-an-attempt). |
-| This worker is already registered. | The data directory already holds credentials. | Start the Worker with `leapmux worker start`, or [register it again](#register-a-worker-again). |
+| This worker is already registered. | The data directory already holds credentials. | Start the Worker with `leapmux daemon worker start`, or [register it again](#register-a-worker-again). |
 
 #### Abandon an attempt
 
@@ -128,11 +128,11 @@ A new key or another Hub conflicts with an unfinished attempt, so the command re
 Deleting `pending-registration.json` deletes the only proof that this machine made the attempt. If the Hub accepted the attempt, the Hub keeps a Worker that no machine can use, and you must deregister it from the sidebar. Delete the file only when the attempt failed, or after you checked the **Workers** section of the sidebar.
 {{< /callout >}}
 
-To abandon the attempt, delete `<data-dir>/pending-registration.json`, then run `worker register` with the new key.
+To abandon the attempt, delete `<data-dir>/pending-registration.json`, then run `daemon worker register` with the new key.
 
 ### Auto-registered Workers (solo and dev)
 
-In **solo** and **dev** modes the launcher auto-registers a co-located Worker in-process, bypassing the key flow entirely. These Workers are flagged *auto-registered*. In dev mode, the bundled Worker registers after you complete `/setup`. The Hub refuses to deregister an auto-registered Worker while it is connected, from the UI and from `leapmux control admin worker deregister`, because the next launch would just register a fresh one. You can remove an offline one, such as the entry that a launch leaves behind when the app's Worker state file was lost: its context menu offers **Deregister...**, and an administrator can use that command. The app then registers a fresh Worker with a new Worker ID, and the old Worker's tabs do not move to it. See [Running LeapMux](/docs/admin/running-leapmux/).
+In **solo** and **dev** modes the launcher auto-registers a co-located Worker in-process, bypassing the key flow entirely. These Workers are flagged *auto-registered*. In dev mode, the bundled Worker registers after you complete `/setup`. The Hub refuses to deregister an auto-registered Worker while it is connected, from the UI and from `leapmux admin worker deregister`, because the next launch would just register a fresh one. You can remove an offline one, such as the entry that a launch leaves behind when the app's Worker state file was lost: its context menu offers **Deregister...**, and an administrator can use that command. The app then registers a fresh Worker with a new Worker ID, and the old Worker's tabs do not move to it. See [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Files in the Worker's data directory
 
@@ -153,10 +153,10 @@ A Worker belongs to one Hub. To move it to another Hub, or to give it a new iden
 When the Hub still knows the Worker, deregister it first, so that the Hub deletes the old entry:
 
 ```bash
-leapmux worker stop
-leapmux worker deregister
-leapmux worker register --hub https://hub.example.com --registration-key <new-key>
-leapmux worker start
+leapmux daemon worker stop
+leapmux daemon worker deregister
+leapmux daemon worker register --hub https://hub.example.com --registration-key <new-key>
+leapmux daemon worker start
 ```
 
 When the Hub no longer knows the Worker, `deregister` cannot complete. This happens when the Hub lost its data, or deleted the Worker more than 7 days ago. In that case, stop the Worker, delete its `state.json`, and register it again.
@@ -194,7 +194,7 @@ Key behaviors:
 
 Worker details are cached for about a minute, so reopening a dialog doesn't re-fetch worker details; click **Refresh workers** to force a re-list (for example, right after a new Worker comes online).
 
-To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux control tab open --worker-id <id> ...` — see [Control CLI](/docs/using/control-cli/).
+To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux agent open --worker <worker> ...` or `leapmux terminal open --worker <worker> ...` — see [Control CLI](/docs/using/control-cli/).
 
 ## Auto-reconnect
 
@@ -231,7 +231,7 @@ Deregistering tells the Hub to forget a Worker and tear down everything running 
 **From the control CLI** (administrators):
 
 ```bash
-leapmux control admin worker deregister --id <worker-id>
+leapmux admin worker deregister <worker-id>
 ```
 
 On deregistration a standalone Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. The Hub refuses this command for an auto-registered Worker while it is connected. An offline one leaves the Worker list at once. See [Control CLI](/docs/using/control-cli/) for the full administrator surface.
@@ -239,11 +239,11 @@ On deregistration a standalone Worker acknowledges the request, shuts down grace
 **From the Worker's machine:** stop the Worker, then deregister it:
 
 ```bash
-leapmux worker stop
-leapmux worker deregister
+leapmux daemon worker stop
+leapmux daemon worker deregister
 ```
 
-`deregister` uses the Worker's saved credentials to ask the Hub to delete the Worker. After the Hub confirms, it removes the credentials, and it keeps `worker.db` with the agent and terminal history. If the Hub cannot confirm, for example because it is unreachable, `deregister` keeps the credentials, so that you can run it again. Give it the same `--data-dir` or `--config` as the Worker. If the Worker runs as a service, `deregister` ends with the `leapmux worker disable` command that removes the service.
+`deregister` uses the Worker's saved credentials to ask the Hub to delete the Worker. After the Hub confirms, it removes the credentials, and it keeps `worker.db` with the agent and terminal history. If the Hub cannot confirm, for example because it is unreachable, `deregister` keeps the credentials, so that you can run it again. Give it the same `--data-dir` or `--config` as the Worker. If the Worker runs as a service, `deregister` ends with the `leapmux daemon worker disable` command that removes the service.
 
 ## Tunnels (desktop app)
 
@@ -332,8 +332,8 @@ browser pin workers independently, and neither sees the other's pins.
 | Client | Pin store | How to reset a pin |
 | --- | --- | --- |
 | **Your browser** (Frontend) | IndexedDB (strict database `leapmux-trust`, key `leapmux:u:<your-user-id>:key-pins`, kept about one year and refreshed on use) | Accept the in-app *Worker public key changed* dialog, or remove the pin under **Preferences → Advanced → Trusted worker keys**. |
-| **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux worker cross-worker-pins remove --target-worker-id=<id>` |
-| **The `leapmux control` CLI** | `<config-dir>/<hub-host>/pins.json` | `leapmux control worker pins remove --worker-id=<id>` |
+| **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux daemon worker cross-worker-pins remove <worker-id>` |
+| **The `leapmux` CLI** | `<config-dir>/<scheme>_<hub-host>/pins.json` | `leapmux worker pins remove <worker>` |
 
 ### What a mismatch looks like in the browser
 
@@ -350,14 +350,14 @@ Every key mismatch is a serious signal. Do not click **Accept** to make it work.
 For non-browser clients there is no dialog — agents and scripts can't answer interactive prompts — so a mismatch **aborts the connection** with an error of the form `worker <id> key mismatch: pinned <fingerprint>, presented <fingerprint> — <hint>`. The hint gives the exact command that clears the pin, so the next connect pins the presented key. Confirm the fingerprint before running it:
 
 ```bash
-# A leapmux control agent or script hit a pin mismatch:
-leapmux control worker pins remove --worker-id=<id>
+# A leapmux agent or script hit a pin mismatch:
+leapmux worker pins remove <worker>
 
 # One Worker connecting to a sibling Worker hit a pin mismatch:
-leapmux worker cross-worker-pins remove --target-worker-id=<id>
+leapmux daemon worker cross-worker-pins remove <worker-id>
 ```
 
-Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|show|remove` reference (and the required `--hub` flag), see [Control CLI](/docs/using/control-cli/).
+Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux worker pins list|get|remove` reference, see [Control CLI](/docs/using/control-cli/#worker-key-pins).
 
 {{< callout type="info" >}}
 Browser pins are managed under **Preferences → Advanced → Trusted worker keys**, which lists and removes pinned keys. For a deeper look at the handshake, fingerprints, and the full trust model, see [Security & Threat Model](/docs/admin/security/).
@@ -365,19 +365,19 @@ Browser pins are managed under **Preferences → Advanced → Trusted worker key
 
 ## Administrator reference: admin worker commands
 
-Administrators manage all Workers on a Hub (not just their own) with `leapmux control admin worker`. These are RPC calls to a **running** Hub, so the Hub must be up and you must be signed in as an administrator. Only `leapmux recover` opens the database directly. Highlights:
+Administrators manage all Workers on a Hub (not just their own) with `leapmux admin worker`. These are RPC calls to a **running** Hub, so the Hub must be up and you must be signed in as an administrator. Only `leapmux recover` opens the database directly. Highlights:
 
 | Command | Purpose |
 | --- | --- |
-| `leapmux control admin worker list` | List Workers. Filters: `--user-id`, `--username`, `--status` (`active`, `deregistering`, `deleted`, `all`; default `active`). |
-| `leapmux control admin worker get --id <id>` | Show one Worker's details (includes soft-deleted Workers for auditing). |
-| `leapmux control admin worker deregister --id <id>` | Force-deregister a Worker. |
-| `leapmux control admin worker reg-key list` | List live registration keys (`--include-expired` to include revoked/expired). |
-| `leapmux control admin worker reg-key revoke --id <id>` | Revoke a registration key. |
-| `leapmux control admin worker reg-key purge-expired` | Hard-delete all expired or revoked keys. |
+| `leapmux admin worker list` | List Workers. Filters: `--user` (username, `username:<name>`, `id:<id>`, or unique ID prefix), `--status` (`active`, `deregistering`, `deleted`, `all`; default `active`). |
+| `leapmux admin worker get <worker>` | Show one Worker's details (includes soft-deleted Workers for auditing). |
+| `leapmux admin worker deregister <worker>` | Force-deregister a Worker. |
+| `leapmux admin worker reg-key list` | List live registration keys (`--include-expired` to include revoked/expired). |
+| `leapmux admin worker reg-key revoke <reg-key>` | Revoke a registration key. |
+| `leapmux admin worker reg-key purge-expired` | Hard-delete all expired or revoked keys. |
 
 {{< callout type="info" >}}
-`control admin` deliberately has **no** `reg-key create` — registration keys are minted only by an authenticated user (via the **Register worker** dialog), which is itself the authorization step. `control admin` lists, revokes, and purges keys but does not issue them.
+`leapmux admin` deliberately has **no** `reg-key create` — registration keys are minted only by an authenticated user (via the **Register worker** dialog or `leapmux worker key create`), which is itself the authorization step. `leapmux admin` lists, revokes, and purges keys but does not issue them.
 {{< /callout >}}
 
 For the complete administrator surface — including sessions, API tokens, and delegation tokens — see [`admin` — hub administration over RPC](/docs/admin/admin-cli/). Encryption keys are offline work; see [Recovery](/docs/admin/recover/).
@@ -399,4 +399,4 @@ Leave this at the default unless you have a specific reason to change it; both e
 - [Starting and Stopping](/docs/admin/starting-and-stopping/) — keep a Worker running in the background at login or at boot.
 - [Configuration](/docs/admin/configuration/) — Worker flags, env vars, and config-file precedence.
 - [Security & Threat Model](/docs/admin/security/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
-- [Control CLI](/docs/using/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management, plus the full [`leapmux control admin worker`](/docs/admin/admin-cli/) and registration-key reference.
+- [Control CLI](/docs/using/control-cli/) — `leapmux worker` and `leapmux worker pins` for scripting and pin management, plus the full [`leapmux admin worker`](/docs/admin/admin-cli/) and registration-key reference.

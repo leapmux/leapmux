@@ -1,0 +1,321 @@
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"slices"
+	"strings"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
+)
+
+// runLayoutWatch subscribes to the user CRDT WatchUser stream and prints
+// each event as one stream event. The first event is always
+// UserMaterialized (the bootstrap snapshot); subsequent events are
+// canonical-HLC-tagged ops, presence updates, lifecycle events, or
+// entity-visibility transitions.
+//
+// The command runs until the process is interrupted or the stream closes.
+// The stream is scoped to the authenticated session's own user, so no user
+// id is resolved or sent; the workspace argument only narrows which
+// workspaces the stream carries.
+func runLayoutWatch(inv *cli.Invocation) (any, error) {
+	s, err := openStreamSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	var workspaceIDs []string
+	if inv.HasArg("workspace") {
+		bounded := s.bounded()
+		ws, err := bounded.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+		bounded.Close()
+		if err != nil {
+			return nil, err
+		}
+		workspaceIDs = []string{ws.ID}
+	}
+	if s.c.IsWorkerIPC() {
+		return nil, runLayoutWatchLocal(s.ctx, s.c, workspaceIDs, inv.Printer)
+	}
+	return nil, runLayoutWatchHub(s.ctx, s.c, workspaceIDs, inv.Printer)
+}
+
+func runLayoutWatchHub(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
+	stream, err := c.OpenUserEvents(ctx, workspaceIDs)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stream.Close() }()
+	for {
+		evt, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		if err := p.Event(layoutWatchEvent{data: eventToJSON(evt)}); err != nil {
+			return err
+		}
+	}
+}
+
+func runLayoutWatchLocal(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
+	err := streamWatchUserLocal(ctx, c, workspaceIDs, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
+		return false, p.Event(layoutWatchEvent{data: eventToJSON(evt)})
+	})
+	if err != nil && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
+		return err
+	}
+	return nil
+}
+
+// layoutWatchEvent wraps a WatchUserEvent JSON map so --json/--format ndjson
+// emits the exact structured payload while text mode prints one readable line.
+type layoutWatchEvent struct {
+	data map[string]any
+}
+
+func (e layoutWatchEvent) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.data)
+}
+
+func (e layoutWatchEvent) TextLine() string {
+	kind, _ := e.data["kind"].(string)
+	switch kind {
+	case "materialized":
+		workspaces, _ := e.data["workspaces"].([]string)
+		return fmt.Sprintf("materialized workspaces=%d epoch=%v", len(workspaces), e.data["current_epoch"])
+	case "batch":
+		ops, _ := e.data["ops"].([]map[string]any)
+		var types []string
+		for _, op := range ops {
+			if target, ok := op["target"].(map[string]any); ok {
+				if t, ok := target["type"].(string); ok {
+					types = append(types, t)
+				}
+			}
+		}
+		return fmt.Sprintf("batch %s (%d ops: %s)", cli.ShortID(fmt.Sprint(e.data["batch_id"])), len(ops), strings.Join(types, ", "))
+	case "entity_materialized", "entity_removed":
+		ent, _ := e.data["entity"].(map[string]any)
+		entType, _ := ent["type"].(string)
+		for _, key := range []string{"tab_id", "window_id", "node_id"} {
+			if id, ok := ent[key].(string); ok && id != "" {
+				return fmt.Sprintf("%s %s %s", kind, entType, cli.ShortID(id))
+			}
+		}
+		return fmt.Sprintf("%s %s", kind, entType)
+	case "workspace_created", "workspace_renamed":
+		return fmt.Sprintf("%s %s %q", kind, cli.ShortID(fmt.Sprint(e.data["workspace_id"])), fmt.Sprint(e.data["title"]))
+	case "workspace_deleted":
+		return fmt.Sprintf("%s %s", kind, cli.ShortID(fmt.Sprint(e.data["workspace_id"])))
+	case "presence":
+		return fmt.Sprintf("presence workspace=%s client=%s", cli.ShortID(fmt.Sprint(e.data["workspace_id"])), cli.ShortID(fmt.Sprint(e.data["active_client_id"])))
+	default:
+		return kind
+	}
+}
+
+// eventToJSON projects a WatchUserEvent into a JSON-friendly map. The
+// proto's oneof + nested registers don't json-marshal nicely as-is —
+// the protojson-equivalent shape would lose readability — so we emit a
+// hand-shaped envelope: `kind`, plus event-specific fields.
+func eventToJSON(evt *leapmuxv1.WatchUserEvent) map[string]any {
+	switch e := evt.GetEvent().(type) {
+	case *leapmuxv1.WatchUserEvent_Initial:
+		return map[string]any{
+			"kind":          "materialized",
+			"user_id":       e.Initial.GetUserId(),
+			"current_epoch": e.Initial.GetCurrentEpoch(),
+			"max_hlc":       hlcToJSON(e.Initial.GetMaxHlc()),
+			"workspaces":    workspaceMapKeys(e.Initial.GetWorkspaces()),
+		}
+	case *leapmuxv1.WatchUserEvent_Batch:
+		return map[string]any{
+			"kind":     "batch",
+			"batch_id": e.Batch.GetBatchId(),
+			"ops":      opsToJSON(e.Batch.GetOps()),
+		}
+	case *leapmuxv1.WatchUserEvent_EntityMaterialized:
+		return map[string]any{
+			"kind":   "entity_materialized",
+			"at_hlc": hlcToJSON(e.EntityMaterialized.GetAtHlc()),
+			"entity": entityKindSummary(e.EntityMaterialized),
+		}
+	case *leapmuxv1.WatchUserEvent_EntityRemoved:
+		return map[string]any{
+			"kind":   "entity_removed",
+			"at_hlc": hlcToJSON(e.EntityRemoved.GetAtHlc()),
+			"entity": removedEntitySummary(e.EntityRemoved),
+		}
+	case *leapmuxv1.WatchUserEvent_Delta:
+		// A ResumeDelta carries an ordered stream of the same WatchUserEvent
+		// frames live Send uses. The CLI currently connects with a nil cursor
+		// (always a full snapshot), but handle the arm so a future resume-aware
+		// `leapmux events` surfaces the frames instead of printing "unknown".
+		frames := make([]map[string]any, 0, len(e.Delta.GetFrames()))
+		for _, frame := range e.Delta.GetFrames() {
+			frames = append(frames, eventToJSON(frame))
+		}
+		return map[string]any{
+			"kind":          "resume_delta",
+			"current_epoch": e.Delta.GetCurrentEpoch(),
+			"max_hlc":       hlcToJSON(e.Delta.GetMaxHlc()),
+			"frames":        frames,
+		}
+	case *leapmuxv1.WatchUserEvent_BatchEnd:
+		// Emitted after EVERY committed batch on the live path, not just on
+		// resume, so leaving this unhandled put one {"kind":"unknown"} line in
+		// the stream per user edit. at_hlc is the batch boundary a resume-aware
+		// consumer advances its cursor on.
+		return map[string]any{
+			"kind":   "batch_end",
+			"at_hlc": hlcToJSON(e.BatchEnd.GetAtHlc()),
+		}
+	case *leapmuxv1.WatchUserEvent_Presence:
+		return map[string]any{
+			"kind":             "presence",
+			"workspace_id":     e.Presence.GetWorkspaceId(),
+			"active_client_id": e.Presence.GetActiveClientId(),
+		}
+	case *leapmuxv1.WatchUserEvent_Renamed:
+		return map[string]any{
+			"kind":         "workspace_renamed",
+			"workspace_id": e.Renamed.GetWorkspaceId(),
+			"title":        e.Renamed.GetTitle(),
+		}
+	case *leapmuxv1.WatchUserEvent_Created:
+		return map[string]any{
+			"kind":         "workspace_created",
+			"workspace_id": e.Created.GetWorkspaceId(),
+			"title":        e.Created.GetTitle(),
+			"root_node_id": e.Created.GetRootNodeId(),
+		}
+	case *leapmuxv1.WatchUserEvent_Deleted:
+		return map[string]any{
+			"kind":         "workspace_deleted",
+			"workspace_id": e.Deleted.GetWorkspaceId(),
+		}
+	case *leapmuxv1.WatchUserEvent_WorkersChanged:
+		return map[string]any{"kind": "workers_changed"}
+	}
+	return map[string]any{"kind": "unknown"}
+}
+
+func hlcToJSON(h *leapmuxv1.HLC) map[string]any {
+	if h == nil {
+		return nil
+	}
+	return map[string]any{
+		"physical":  h.GetPhysical(),
+		"logical":   h.GetLogical(),
+		"client_id": h.GetClientId(),
+	}
+}
+
+// workspaceMapKeys lists the workspace ids of m. Go randomizes the iteration
+// order of a map, so the keys are sorted: the JSONL line goes to a script that
+// compares two snapshots, and an unsorted list makes every account with two or
+// more workspaces report a difference that does not exist.
+func workspaceMapKeys(m map[string]*leapmuxv1.WorkspaceContentsRecord) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func opsToJSON(ops []*leapmuxv1.CrdtOp) []map[string]any {
+	out := make([]map[string]any, len(ops))
+	for i, op := range ops {
+		out[i] = map[string]any{
+			"op_id":         op.GetOpId(),
+			"canonical_hlc": hlcToJSON(op.GetCanonicalHlc()),
+			"target":        opTargetSummary(op),
+		}
+	}
+	return out
+}
+
+func opTargetSummary(op *leapmuxv1.CrdtOp) map[string]any {
+	target := crdt.OpTarget(op)
+	out := target.ToJSON()
+	if target.Kind == crdt.EntityKindTab {
+		// The token removedEntitySummary and entityKindSummary print, so one
+		// tab reads the same in every event of the stream.
+		out["tab_type"] = tabTypeName(target.TabType)
+	}
+	out["type"] = opKindName(op)
+	return out
+}
+
+// opKindName returns the snake-case proto-body discriminator emitted
+// alongside the entity identifiers in `layout watch` output.
+// Kept here (not on EntityRef) because the op shape, not the entity,
+// determines the label: a SetNodeRegister and a TombstoneNode target
+// the same EntityRef.
+func opKindName(op *leapmuxv1.CrdtOp) string {
+	switch op.GetBody().(type) {
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
+		return "set_node_register"
+	case *leapmuxv1.CrdtOp_TombstoneNode:
+		return "tombstone_node"
+	case *leapmuxv1.CrdtOp_SetTabRegister:
+		return "set_tab_register"
+	case *leapmuxv1.CrdtOp_TombstoneTab:
+		return "tombstone_tab"
+	case *leapmuxv1.CrdtOp_ReviveTab:
+		return "revive_tab"
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
+		return "set_floating_window_register"
+	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
+		return "tombstone_floating_window"
+	case *leapmuxv1.CrdtOp_CreateWorkspace:
+		return "create_workspace"
+	case *leapmuxv1.CrdtOp_TombstoneWorkspace:
+		return "tombstone_workspace"
+	}
+	return "unknown"
+}
+
+func entityKindSummary(em *leapmuxv1.EntityMaterialized) map[string]any {
+	switch e := em.GetEntity().(type) {
+	case *leapmuxv1.EntityMaterialized_Tab:
+		return map[string]any{
+			"type":     "tab",
+			"tab_id":   e.Tab.GetTabId(),
+			"tab_type": tabTypeName(e.Tab.GetTabType()),
+		}
+	case *leapmuxv1.EntityMaterialized_FloatingWindow:
+		return map[string]any{"type": "floating_window", "window_id": e.FloatingWindow.GetWindowId()}
+	case *leapmuxv1.EntityMaterialized_Node:
+		return map[string]any{"type": "node", "node_id": e.Node.GetNodeId()}
+	}
+	return map[string]any{"type": "unknown"}
+}
+
+func removedEntitySummary(em *leapmuxv1.EntityRemoved) map[string]any {
+	switch e := em.GetEntity().(type) {
+	case *leapmuxv1.EntityRemoved_Tab:
+		return map[string]any{
+			"type":     "tab",
+			"tab_id":   e.Tab.GetTabId(),
+			"tab_type": tabTypeName(e.Tab.GetTabType()),
+		}
+	case *leapmuxv1.EntityRemoved_WindowId:
+		return map[string]any{"type": "floating_window", "window_id": e.WindowId}
+	case *leapmuxv1.EntityRemoved_NodeId:
+		return map[string]any{"type": "node", "node_id": e.NodeId}
+	}
+	return map[string]any{"type": "unknown"}
+}

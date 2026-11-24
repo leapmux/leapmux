@@ -2,6 +2,7 @@ package streamevents
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -837,5 +838,142 @@ func TestTwoTransportsOnOneRouterKeepTheirStreams(t *testing.T) {
 	case <-second.Done():
 		t.Fatal("the second subscription ended")
 	default:
+	}
+}
+
+// endErrOf returns what the handle reports as the reason that its stream
+// ended. Both transports of this package report one.
+func endErrOf(t *testing.T, handle Handle) error {
+	t.Helper()
+	reporter, ok := handle.(endReporter)
+	require.True(t, ok, "a handle of this package reports why its stream ended")
+	return reporter.EndErr()
+}
+
+// The first error that ends a stream is its reason. A later failure, such as
+// the close of a channel after the Worker refused the watch, does not replace
+// it, and a nil error records nothing.
+func TestEndReason_KeepsTheFirstError(t *testing.T) {
+	var reason endReason
+	assert.NoError(t, reason.EndErr(), "a running stream has no end reason")
+	reason.record(nil)
+	assert.NoError(t, reason.EndErr(), "a nil error records nothing")
+
+	refused := errors.New("the worker refused the watch")
+	reason.record(refused)
+	reason.record(errors.New("the channel to the worker closed"))
+	reason.record(nil)
+	assert.Same(t, refused, reason.EndErr())
+}
+
+// waitDone fails the test when the handle's stream does not end.
+func waitDone(t *testing.T, handle Handle) {
+	t.Helper()
+	select {
+	case <-handle.Done():
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the subscription did not end")
+	}
+}
+
+// The channel transport reports the error that ended its stream, so a caller
+// can tell a refused watch from a dropped channel. An end without an error
+// and a cancel report none.
+func TestChannelTransport_EndErrReportsWhyTheStreamEnded(t *testing.T) {
+	open := func(t *testing.T, fc *fakeChannel) Handle {
+		t.Helper()
+		handle, err := NewChannelTransport(fc, slog.New(&capturingHandler{})).OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+		require.NoError(t, err)
+		return handle
+	}
+
+	t.Run("an error frame", func(t *testing.T) {
+		fc := &fakeChannel{ctx: context.Background()}
+		handle := open(t, fc)
+		assert.NoError(t, endErrOf(t, handle), "a running stream has no end reason")
+		fc.cb(&leapmuxv1.InnerStreamMessage{Error: &leapmuxv1.RpcError{Code: 7, Message: "only the owner can watch"}})
+		waitDone(t, handle)
+		var refusal *channelwire.RPCError
+		require.ErrorAs(t, endErrOf(t, handle), &refusal)
+		assert.EqualValues(t, 7, refusal.Code)
+		assert.Equal(t, "only the owner can watch", refusal.Message)
+	})
+	t.Run("an error response", func(t *testing.T) {
+		fc := &fakeChannel{ctx: context.Background()}
+		handle := open(t, fc)
+		fc.respCh <- channelwire.NewErrorResponse(14, "the worker is shutting down")
+		waitDone(t, handle)
+		var refusal *channelwire.RPCError
+		require.ErrorAs(t, endErrOf(t, handle), &refusal)
+		assert.EqualValues(t, 14, refusal.Code)
+	})
+	t.Run("a channel that closes", func(t *testing.T) {
+		chCtx, closeChannel := context.WithCancelCause(context.Background())
+		fc := &fakeChannel{ctx: chCtx}
+		handle := open(t, fc)
+		cause := errors.New("the hub dropped the relay")
+		closeChannel(cause)
+		waitDone(t, handle)
+		err := endErrOf(t, handle)
+		assert.ErrorIs(t, err, errChannelClosed)
+		assert.ErrorIs(t, err, cause, "the reason keeps the cause of the channel's end")
+	})
+	t.Run("a clean end", func(t *testing.T) {
+		fc := &fakeChannel{ctx: context.Background()}
+		handle := open(t, fc)
+		fc.respCh <- &leapmuxv1.InnerRpcResponse{}
+		waitDone(t, handle)
+		assert.NoError(t, endErrOf(t, handle))
+	})
+	t.Run("a cancel", func(t *testing.T) {
+		fc := &fakeChannel{ctx: context.Background()}
+		handle := open(t, fc)
+		handle.Cancel()
+		waitDone(t, handle)
+		assert.NoError(t, endErrOf(t, handle), "the caller's own cancel is no failure")
+	})
+}
+
+// The local-IPC transport reports the in-band error and the transport
+// failure that ended its stream, with their codes, and nothing for a cancel.
+func TestLocalIPCTransport_EndErrReportsWhyTheStreamEnded(t *testing.T) {
+	t.Run("an in-band error", func(t *testing.T) {
+		client := startIPCHandler(t, &inBandErrorIPCHandler{rpcErr: &leapmuxv1.RpcError{Code: 7, Message: "only the owner can watch"}})
+		handle, err := NewLocalIPCTransport(client, "worker", slog.New(&capturingHandler{})).OpenWatchEvents(t.Context(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+		require.NoError(t, err)
+		t.Cleanup(handle.Cancel)
+		waitDone(t, handle)
+		var refusal *channelwire.RPCError
+		require.ErrorAs(t, endErrOf(t, handle), &refusal)
+		assert.EqualValues(t, 7, refusal.Code)
+	})
+	for _, mode := range []string{"remote failure", "explicit cancellation"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := testutil.DeadlineContext(t)
+			handler := &endingIPCHandler{
+				finish: make(chan struct{}), cancelStarted: make(chan struct{}), cancelReply: make(chan struct{}),
+				result: connect.NewError(connect.CodeUnavailable, "worker disconnected"),
+			}
+			close(handler.cancelReply)
+			client := startIPCHandler(t, handler)
+			frame := make(chan struct{}, 1)
+			handle, err := NewLocalIPCTransport(client, "worker", slog.New(&capturingHandler{})).OpenWatchEvents(t.Context(), &leapmuxv1.WatchEventsRequest{},
+				func(*leapmuxv1.WatchEventsResponse) { frame <- struct{}{} })
+			require.NoError(t, err)
+			select {
+			case <-frame:
+			case <-ctx.Done():
+				t.Fatal("the stream never opened")
+			}
+			if mode == "remote failure" {
+				close(handler.finish)
+				waitDone(t, handle)
+				assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(endErrOf(t, handle)), "the reason keeps the code of the failure")
+				return
+			}
+			handle.Cancel()
+			waitDone(t, handle)
+			assert.NoError(t, endErrOf(t, handle), "the caller's own cancel is no failure")
+		})
 	}
 }

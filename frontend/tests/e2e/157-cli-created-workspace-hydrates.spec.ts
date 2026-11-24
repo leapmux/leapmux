@@ -34,10 +34,9 @@ test.describe('cli-created workspace hydrates', () => {
     const created = await runCLI(cli, [
       'workspace',
       'create',
-      '--title',
       `access-cli-${Date.now()}`,
-    ]) as { workspace_id?: string } | null
-    const second = created?.workspace_id
+    ]) as { id?: string } | null
+    const second = created?.id
     if (!second)
       throw new Error('The CLI reported no ID for the workspace that it created.')
     const agentId = await cliAgentOpen(cli, { workspaceId: second, workerId: leapmuxServer.workerId })

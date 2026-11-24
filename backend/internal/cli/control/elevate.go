@@ -125,7 +125,7 @@ var errBrowserStepUpRequired = errors.New("this credential must be verified in t
 // errStepUpNeedsSignIn reports a loopback step-up with nothing to verify: the
 // credential file holds no token id, so the ceremony has no step_up target
 // and the hub could not bind a code to this credential.
-var errStepUpNeedsSignIn = errors.New("no token id is recorded for this credential; sign in again with `leapmux control auth login`")
+var errStepUpNeedsSignIn = errors.New("no token id is recorded for this credential; sign in again with `leapmux auth login`")
 
 // elevateOnce runs the ceremony itself. Elevate wraps it in the flight.
 //

@@ -8,12 +8,6 @@
         ],
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
-      "Elicitation": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
       "ElicitationResponse": {
         "sides": [
           "go"

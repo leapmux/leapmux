@@ -533,6 +533,10 @@ func TestKimiPublicStepUsageUsesTheNewestOwnedMainRequest(t *testing.T) {
 	// Native end headers carry the request summaries even when their live updates
 	// were absent. Their aggregate describes the whole turn.
 	rig.conversationFrame(t, `{"type":"turn.ended","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","usage":{"input_other":31,"output":8,"input_cache_read":90,"input_cache_creation":2},"steps":[{"index":2,"outcome":"completed","started_at":"2026-11-18T00:00:00Z","usage":{"input_other":7,"output":3,"input_cache_read":90,"input_cache_creation":0}},{"index":6,"outcome":"completed","started_at":"2026-11-18T00:00:01Z","usage":{"input_other":24,"output":5,"input_cache_read":0,"input_cache_creation":2}}]}}`)
+	// The main turn's end asks for a read of the plan usage, which runs on its
+	// own goroutine and publishes the rate limits. Wait for it, so that its
+	// publication cannot land inside the count below.
+	waitFor(t, rig.agent.usageWork.Idle, "the plan usage read after the turn end finishes")
 	fields = readout()
 	assert.EqualValues(t, 24, fields[contracts.ContextUsageFieldInputTokens])
 	assert.EqualValues(t, 5, fields[contracts.ContextUsageFieldOutputTokens])

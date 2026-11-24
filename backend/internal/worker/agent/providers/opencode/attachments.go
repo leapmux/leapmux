@@ -32,7 +32,7 @@ func (b *FamilyBase) prepareAudioPrompt(sessionID string, attachments []agent.Cl
 		b.childSessionsMu.Lock()
 		for _, child := range b.childSessions {
 			if child.id == sessionID && child.loaded {
-				modelID = child.modelID
+				modelID = child.settings.ModelID
 				break
 			}
 		}

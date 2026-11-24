@@ -88,7 +88,7 @@ func TestSendInputCarriesPDFBytes(t *testing.T) {
 				err = a.SendInputForSession("main-session", text, attachments)
 			case "steering":
 				a.startTurn()
-				err = a.SteerInput(text, attachments)
+				err = a.SteerInput(agent.SteerRequest{Content: text, Attachments: attachments})
 			default:
 				err = a.SendInput(text, attachments)
 			}
@@ -268,7 +268,7 @@ func TestSteerInputWritesNativeSteeringPlacement(t *testing.T) {
 	a, _, stdin := newSteerAgent(t)
 	a.startTurn()
 
-	require.NoError(t, a.SteerInput("guide this turn", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "guide this turn"}))
 	params := lastRequest(t, stdin)
 	assert.Equal(t, "end_of_turn", params["queuePlacement"], "Droid processes this placement during a running turn")
 	assert.True(t, a.PublishTurnActive().Active)

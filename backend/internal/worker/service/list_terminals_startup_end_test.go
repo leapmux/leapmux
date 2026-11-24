@@ -71,7 +71,7 @@ func startTerminalProcess(ctx context.Context, t *testing.T, svc *Service, termi
 	t.Helper()
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
 		ID: terminalID, Shell: testutil.TestShell(), WorkingDir: workingDir, Cols: 80, Rows: 24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 }
 

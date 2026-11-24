@@ -1,0 +1,4 @@
+interface:
+  display_name: "LeapMux Council"
+  short_description: "Convene contrasting LeapMux agents for deep analysis and planning"
+  default_prompt: "Use the leapmux-council skill to convene contrasting read-only agents and reconcile their analyses against the codebase."

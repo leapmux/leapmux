@@ -512,7 +512,7 @@ func TestValidateExtraListenCapsTheCount(t *testing.T) {
 }
 
 // The key defaults to no extra addresses, so an untouched hub binds exactly
-// what -listen gave it.
+// what --listen gave it.
 func TestKeyExtraListenAddressesDefaultsToNothing(t *testing.T) {
 	def, ok := KeyExtraListenAddresses.Default().(ExtraListenValue)
 	require.True(t, ok)

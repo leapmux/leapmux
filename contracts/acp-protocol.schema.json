@@ -10,6 +10,7 @@
     "updates",
     "sessionStateUpdates",
     "roles",
+    "stopReasons",
     "supplementIdentity",
     "supplementRequest",
     "supplement",
@@ -134,6 +135,9 @@
       "$ref": "#/$defs/unread"
     },
     "updates": {
+      "$ref": "#/$defs/table"
+    },
+    "stopReasons": {
       "$ref": "#/$defs/table"
     },
     "sessionStateUpdates": {

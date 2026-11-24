@@ -82,6 +82,11 @@ message OpenTerminalRequest {
     QuakeTerminalTarget quake = 8;
     TabCreation creation = 9;
   }
+
+  // A command that the original interactive shell evaluates after its startup
+  // files run. The Worker requires an acknowledgement from that shell. A quake
+  // request that returns an existing terminal ignores it. Empty runs nothing.
+  string initial_command = 10;
 }
 
 message OpenTerminalResponse {
@@ -98,22 +103,48 @@ message OpenTerminalResponse {
   PublishedTab publication = 3;
 }
 
-// RestartTerminalRequest respawns the shell process for an exited
-// terminal in place, reusing the tab's working_dir / shell / shell_start_dir
-// and freshly minting LEAPMUX_CONTROL_* env vars. The screen buffer
-// (including the "[Terminal process exited (N) - Press Enter to restart]"
-// notice) is preserved so the new shell's prompt appears below it.
+// RestartTerminalRequest starts a new shell in the same tab with the same
+// working directory and retained screen. The Worker mints fresh control credentials.
 message RestartTerminalRequest {
   string terminal_id = 1;
   uint32 cols = 2;
   uint32 rows = 3;
+  // Without this ID, the Worker requires the previous shell to have exited.
+  // With it, the Worker stops only the live shell with this instance ID.
+  string replace_shell_instance_id = 4;
+  // The new shell evaluates this command once after its startup files.
+  string initial_command = 5;
 }
 
 message RestartTerminalResponse {}
 
+// SendInputRequest writes input to a terminal's PTY in one write: `data`
+// first, then each key of `keys` in order. Nothing from another request can
+// arrive between them. The Worker encodes the paste and the keys for the
+// modes that the program in the terminal enabled, as the browser's xterm.js
+// encodes a paste and a key press.
 message SendInputRequest {
   string terminal_id = 1;
+  // The bytes to write. Without `paste`, they reach the PTY as they are.
   bytes data = 2;
+  // Send `data` as a paste, as the browser sends one: each CRLF or LF
+  // becomes CR, and every bracketed-paste end marker (ESC [201~) is removed,
+  // so the text cannot end its own paste early. When the program enabled
+  // bracketed paste (DEC private mode 2004), the markers ESC [200~ and
+  // ESC [201~ surround the text. A `data` with nothing left after the end
+  // markers go sends no paste.
+  bool paste = 3;
+  // Key names to press after `data`, in order, such as "enter", "up" or
+  // "ctrl-c". The Go package `terminput` states the vocabulary; a name is
+  // case-insensitive. An unknown name fails the whole request with
+  // INVALID_ARGUMENT before the Worker writes anything. A cursor key
+  // follows the application cursor key mode (DECCKM, DEC private mode 1)
+  // when the program enabled it.
+  repeated string keys = 4;
+  // Optional idempotency key. Replaying the same request_id with identical
+  // terminal_id, data, paste, and keys succeeds without writing a second time;
+  // replaying it with different payload fails with FAILED_PRECONDITION.
+  string request_id = 5;
 }
 
 message SendInputResponse {}
@@ -178,6 +209,18 @@ message TerminalInfo {
   // False for an ordinary terminal tab. True for the quake terminal of
   // `working_dir` — see OpenTerminalRequest.quake.
   bool quake = 13;
+  // The exit code of a shell that has ended (status EXITED), as
+  // TerminalClosed.exit_code states it: -1 for a shell that a signal ended,
+  // or that the Worker ended when it shut down. A reader that subscribes
+  // after the exit can still learn the code. Unset while the shell runs, and
+  // when the Worker holds no record of the exit: the Worker was killed while
+  // the shell ran, so it never saw the shell end.
+  optional int32 exit_code = 14;
+  // Geometry of the retained real bytes in screen. Its mode prefix also
+  // appears at the start of screen.
+  TerminalScreenTimeline screen_timeline = 15;
+  // Identifies the current live shell. Each restart installs a different ID.
+  string shell_instance_id = 16;
 }
 
 message TerminalData {
@@ -187,15 +230,41 @@ message TerminalData {
   // client's after_offset is behind the backend's retention window, or
   // on a cold subscribe. Live-data chunks set this to false.
   bool is_snapshot = 2;
-  // Cumulative byte offset at the end of `data`. Monotonically
-  // increases within a single PTY session and resets when the PTY is
-  // recreated. Clients persist the highest value they have observed
-  // and echo it back as WatchTerminalEntry.after_offset on resubscribe.
+  // Cumulative PTY byte offset at the end of data. It increases within the
+  // screen epoch. A replacement screen can choose a different offset.
+  // Clients send the last applied value as WatchTerminalEntry.after_offset.
   int64 end_offset = 3;
+  // Geometry-aware catch-up carries only real PTY bytes in data and puts
+  // any synthesized mode bytes in the timeline.
+  TerminalScreenTimeline screen_timeline = 4;
+  // Live bytes carry the geometry in effect when the Worker observed them.
+  string screen_epoch = 5;
+  uint64 geometry_revision = 6;
+}
+
+message TerminalScreenGeometry {
+  string epoch = 1;
+  int64 offset = 2; // The size applies after this many bytes.
+  uint64 revision = 3;
+  uint32 cols = 4;
+  uint32 rows = 5;
+}
+
+message TerminalScreenTimeline {
+  // The size when this replay starts. Changes are in revision order.
+  TerminalScreenGeometry base = 1;
+  repeated TerminalScreenGeometry changes = 2;
+  int64 start_offset = 3;
+  bytes mode_prefix = 4;
+  // Resize eviction left some retained bytes without their original geometry.
+  bool history_truncated = 5;
 }
 
 message TerminalClosed {
-  int32 exit_code = 1;
+  // The exit code of the shell. Unset when the Worker holds no record of the
+  // exit, such as for a terminal that never started a shell, or whose shell
+  // ended while the Worker was not running.
+  optional int32 exit_code = 1;
 }
 
 // The four messages below all report escape sequences the WORKER interpreted.

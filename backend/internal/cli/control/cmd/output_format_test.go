@@ -1,0 +1,52 @@
+package cmd
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
+	"google.golang.org/protobuf/proto"
+)
+
+func TestControlRejectsConflictingOutputFormatsBeforeRequests(t *testing.T) {
+	for _, args := range [][]string{
+		{"--json", "--quiet", "worker", "list"},
+		{"worker", "list", "--quiet", "--json"},
+	} {
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{}}
+		startSpawnIPC(t, hub, nil)
+		out := runControlText(t, args...)
+		failure := out.requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, failure.Message, "--json and --quiet")
+		assert.Equal(t, cli.ExitUsage, out.Code)
+		assert.Empty(t, hub.called())
+	}
+}
+
+func TestControlHonorsTheLastExplicitOutputFlagValue(t *testing.T) {
+	jsonOutput := runControlText(t, "guide", "--quiet", "--quiet=false", "--json")
+	require.Equal(t, cli.ExitOK, jsonOutput.Code, jsonOutput.Stderr)
+	assert.Contains(t, jsonOutput.Data(t)["guide"], "Driving LeapMux")
+
+	quietOutput := runControlText(t, "guide", "--topics", "--json", "--json=false", "-q")
+	require.Equal(t, cli.ExitOK, quietOutput.Code, quietOutput.Stderr)
+	assert.Contains(t, quietOutput.Stdout, "targets\n")
+	assert.NotContains(t, quietOutput.Stdout, "{\"data\"")
+}
+
+func TestWorkspaceCreatePrintsItsMutationResultOnOneLine(t *testing.T) {
+	hub := &rpcHub{answers: map[string]proto.Message{
+		leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure: &leapmuxv1.CreateWorkspaceResponse{WorkspaceId: "created-workspace"},
+	}}
+	startRPCIPC(t, hub, nil)
+	out := runControlText(t, "workspace", "create", "Nightly\nreview")
+	require.Equal(t, cli.ExitOK, out.Code, out.Stderr)
+	require.Len(t, strings.Split(strings.TrimSuffix(out.Stdout, "\n"), "\n"), 1, out.Stdout)
+	assert.Contains(t, out.Stdout, "created-workspace")
+	assert.Contains(t, out.Stdout, `Nightly\nreview`)
+}

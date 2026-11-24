@@ -59,7 +59,10 @@ func (a *Agent) beginPiCommand(method string, payload map[string]any) (func(time
 
 func (a *Agent) beginPiCommandObserved(method string, payload map[string]any, observe func(json.RawMessage)) (func(time.Duration) (json.RawMessage, error), error) {
 	id := "leapmux-" + strconv.FormatInt(a.nextReqID.Add(1), 10)
+	return a.beginPiCommandWithID(id, method, payload, observe)
+}
 
+func (a *Agent) beginPiCommandWithID(id, method string, payload map[string]any, observe func(json.RawMessage)) (func(time.Duration) (json.RawMessage, error), error) {
 	envelope := make(map[string]any, len(payload)+2)
 	for k, v := range payload {
 		envelope[k] = v

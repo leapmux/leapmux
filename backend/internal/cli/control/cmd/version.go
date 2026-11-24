@@ -1,13 +1,22 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/version"
 )
@@ -17,69 +26,143 @@ import (
 // client identity.
 const hubVersionTimeout = 5 * time.Second
 
-// RunVersion prints the CLI's build identity, plus the hub's identity
-// when --hub (or LEAPMUX_HUB) is set. The hub probe is unauthenticated
-// (the /version endpoint exposes only the build banner) so the command
-// works whether or not credentials exist for the hub.
-//
-// Output shape (JSON envelope):
-//
-//	{
-//	  "data": {
-//	    "cli": {"version": "...", "commit": "...", "branch": "...", "build_time": "...", "formatted": "..."},
-//	    "hub": {"version": "...", "formatted": "...", ...}    // only when --hub is set and reachable
-//	  }
-//	}
-//
-// When --hub is set but the probe fails (network error, non-200
-// response, decode failure), the hub field is omitted and a
-// non-fatal "hub_error" key carries a one-line description so
-// scripts can surface the partial result without re-running.
-func RunVersion(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub string
-	fs := flagSet(cmd, &hub)
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
+func newVersionCommandWithOverride(override func() string) *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:              "version",
+		Short:            "Print the version of this CLI, and of the hub and worker when connected",
+		QuietUnsupported: true,
+		Examples: []cli.Example{
+			{Command: "leapmux version"},
+			{Command: "leapmux version --hub https://hub.example.com"},
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			return runVersionWithOverride(inv, override)
+		},
+	})
+}
+
+// RenderText prints a concise standalone version line when no Hub or Worker
+// is connected, or aligned cli/hub/worker lines when connected.
+func (r versionResult) RenderText(w io.Writer) error {
+	if r.Hub == nil && r.HubError == "" && r.Worker == nil && r.WorkerError == "" {
+		_, err := fmt.Fprintln(w, cli.SanitizeSingleLine(r.CLI.Formatted))
 		return err
 	}
-
-	out := map[string]any{
-		"cli": cliVersionFields(),
+	if _, err := fmt.Fprintf(w, "cli:    %s\n", cli.SanitizeSingleLine(r.CLI.Formatted)); err != nil {
+		return err
 	}
-	if hub != "" {
-		hubVer, err := fetchHubVersion(hub)
-		if err != nil {
-			out["hub_error"] = err.Error()
-		} else {
-			out["hub"] = hubVer
+	if r.Hub != nil {
+		if _, err := fmt.Fprintf(w, "hub:    %s\n", cli.SanitizeSingleLine(r.Hub.Formatted)); err != nil {
+			return err
+		}
+	} else if r.HubError != "" {
+		if _, err := fmt.Fprintf(w, "hub:    error (%s)\n", cli.SanitizeSingleLine(r.HubError)); err != nil {
+			return err
 		}
 	}
-	return control.EmitData(out)
+	if r.Worker != nil {
+		if _, err := fmt.Fprintf(w, "worker: %s\n", cli.SanitizeSingleLine(r.Worker.Formatted)); err != nil {
+			return err
+		}
+	} else if r.WorkerError != "" {
+		if _, err := fmt.Fprintf(w, "worker: error (%s)\n", cli.SanitizeSingleLine(r.WorkerError)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// cliVersionFields exposes the same fields the hub /version endpoint
-// returns, so the data shape is symmetric on both sides.
-func cliVersionFields() map[string]string {
-	return map[string]string{
-		"version":    version.Value,
-		"commit":     version.CommitHash,
-		"branch":     version.Branch,
-		"build_time": version.BuildTime,
-		"formatted":  version.Format(),
+// buildInfo is the build of a binary in a result. The CLI's and the hub's
+// use the same keys, so a script compares them field by field.
+type buildInfo struct {
+	Version    string `json:"version"`
+	Commit     string `json:"commit,omitempty"`
+	CommitTime string `json:"commit_time,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	BuildTime  string `json:"build_time,omitempty"`
+	Formatted  string `json:"formatted"`
+}
+
+// versionResult is the result of `version`.
+type versionResult struct {
+	CLI buildInfo  `json:"cli"`
+	Hub *buildInfo `json:"hub,omitempty"`
+	// HubError reports a hub that was selected but did not answer. The
+	// command still succeeds, because the CLI's own version is known.
+	HubError    string     `json:"hub_error,omitempty"`
+	Worker      *buildInfo `json:"worker,omitempty"`
+	WorkerError string     `json:"worker_error,omitempty"`
+}
+
+// runVersionWithOverride prints the CLI's build identity, plus the hub's (and
+// worker's when inside a tab) build identity.
+func runVersionWithOverride(inv *cli.Invocation, override func() string) (any, error) {
+	cliBuild := cliBuildInfo()
+	if override != nil {
+		if v := override(); v != "" && v != version.Format() {
+			cliBuild = buildInfo{Version: v, Formatted: v}
+		}
+	}
+	out := versionResult{CLI: cliBuild}
+	if explicitHub(inv.Command) == "" && os.Getenv(controlenv.SocketVariable) != "" {
+		c, err := control.NewClientFromEnv("")
+		if err != nil {
+			out.HubError = err.Error()
+			return out, nil
+		}
+		ctx, cancel := context.WithTimeout(inv.Context, hubVersionTimeout)
+		defer cancel()
+		var sysResp leapmuxv1.GetSystemInfoResponse
+		if err := hubCallLocalIPC(ctx, c, leapmuxv1connect.SystemServiceGetSystemInfoProcedure, &leapmuxv1.GetSystemInfoRequest{}, &sysResp); err != nil {
+			out.HubError = err.Error()
+		} else if sysResp.GetBuild() != nil {
+			b := buildInfoOf(sysResp.GetBuild())
+			out.Hub = &b
+		}
+		var workerResp leapmuxv1.GetWorkerSystemInfoResponse
+		if err := callInnerRPCBest(ctx, c, "", leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &workerResp); err != nil {
+			out.WorkerError = err.Error()
+		} else if workerResp.GetBuild() != nil {
+			b := buildInfoOf(workerResp.GetBuild())
+			out.Worker = &b
+		}
+		return out, nil
+	}
+	hub, err := hubURLFor(inv.Command)
+	if err != nil {
+		// No hub is selected, which is not a failure of this command.
+		return out, nil
+	}
+	hubBuild, err := fetchHubVersion(inv.Context, hub)
+	if err != nil {
+		out.HubError = err.Error()
+		return out, nil
+	}
+	out.Hub = &hubBuild
+	return out, nil
+}
+
+// cliBuildInfo is this binary's build.
+func cliBuildInfo() buildInfo {
+	return buildInfo{
+		Version:   version.Value,
+		Commit:    version.CommitHash,
+		Branch:    version.Branch,
+		BuildTime: version.BuildTime,
+		Formatted: version.Format(),
 	}
 }
 
-// buildInfoToMap renders a build that another binary reports, with the key
-// names of cliVersionFields. A nil build renders as empty values. The map also
-// holds commit_time, because the report carries it.
-func buildInfoToMap(b *leapmuxv1.BuildInfo) map[string]string {
-	return map[string]string{
-		"version":     b.GetVersion(),
-		"commit":      b.GetCommitHash(),
-		"commit_time": b.GetCommitTime(),
-		"branch":      b.GetBranch(),
-		"build_time":  b.GetBuildTime(),
-		"formatted":   version.FormatBuild(b),
+// buildInfoOf renders a build that another binary reports. A nil build
+// renders as empty values.
+func buildInfoOf(b *leapmuxv1.BuildInfo) buildInfo {
+	return buildInfo{
+		Version:    b.GetVersion(),
+		Commit:     b.GetCommitHash(),
+		CommitTime: b.GetCommitTime(),
+		Branch:     b.GetBranch(),
+		BuildTime:  b.GetBuildTime(),
+		Formatted:  version.FormatBuild(b),
 	}
 }
 
@@ -90,23 +173,27 @@ func buildInfoToMap(b *leapmuxv1.BuildInfo) map[string]string {
 // a hand-built client cannot dial a `unix:`/`npipe:` hub, so this command used
 // to answer "unsupported protocol scheme" against a hub reached over its IPC
 // listener.
-func fetchHubVersion(hubURL string) (map[string]string, error) {
+func fetchHubVersion(ctx context.Context, hubURL string) (buildInfo, error) {
 	endpoint, err := hubtransport.New(hubURL)
 	if err != nil {
-		return nil, err
+		return buildInfo{}, err
 	}
 	client := endpoint.UnaryClient(hubVersionTimeout)
-	resp, err := client.Get(locallisten.JoinPath(endpoint.BaseURL(), "/version"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, locallisten.JoinPath(endpoint.BaseURL(), "/version"), nil)
 	if err != nil {
-		return nil, err
+		return buildInfo{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return buildInfo{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, &hubVersionStatusError{status: resp.Status}
+		return buildInfo{}, &hubVersionStatusError{status: resp.Status}
 	}
-	var body map[string]string
+	var body buildInfo
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, err
+		return buildInfo{}, err
 	}
 	return body, nil
 }

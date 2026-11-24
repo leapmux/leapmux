@@ -209,7 +209,7 @@ func (s *AuthService) soloAccess(ctx context.Context, passwordSet bool) leapmuxv
 }
 
 // listenAddr is the TCP address a browser reaches this hub at, in the form
-// -listen carries.
+// --listen carries.
 //
 // The REPORTER owns the rule -- the live primary address, and the configured
 // one when nothing is bound -- so this is a plain read. Spelling the fallback

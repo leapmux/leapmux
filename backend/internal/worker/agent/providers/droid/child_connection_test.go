@@ -204,39 +204,25 @@ func TestChildSendLoadsItsOwnStreamSession(t *testing.T) {
 	assert.NotEqual(t, rootPID, childPID)
 }
 
-func TestChildProcessSinkLeavesChatRowsToTheArchive(t *testing.T) {
+func TestChildProcessSinkWritesDirectlyWithoutArchiveDrop(t *testing.T) {
 	t.Parallel()
 	recorder := &agenttest.Sink{}
-	recorder.OpenSpan("archive-tool", "")
-	recorder.SetSpanType("archive-tool", "Read")
-	recorder.ReportProgress(agent.ModelTextProgress("archive-scope", "archive thinking"))
-
-	sink := droidArchiveOnlySink{ProviderServices: agent.NewProviderServices(recorder)}
-	sink.UpdateSessionID(steerChildID)
-	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		agent.MessageContent{Original: []byte(`{"type":"assembled","text":"duplicate"}`)}, agent.SpanInfo{}))
-	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"agent_turn_completed"}`)}, agent.SpanInfo{}))
-	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"error","message":"duplicate"}`)})
+	root := agent.NewModelProgressResetSink(agent.NewProviderServices(recorder))
+	childSink := agent.NewModelProgressResetSink(root.ChildSink("child-1"))
+	childSink.UpdateSessionID(steerChildID)
+	childSink.OpenSpan("proc-tool", "")
+	childSink.SetSpanType("proc-tool", "Execute")
+	childSink.ReportProgress(agent.OutputTailProgress("proc-tool", "running", false))
+	require.NoError(t, childSink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"type":"assembled","text":"direct"}`), IdempotencyKey: droidMessageWriteKey("m1", 0)}, agent.SpanInfo{}))
+	require.NoError(t, childSink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"agent_turn_completed"}`)}, agent.SpanInfo{}))
+	_, err := childSink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"settings_updated"}`)})
 	require.NoError(t, err)
-	assert.False(t, broadcast)
-	broadcast, err = sink.PersistWorkerNotification(agent.MessageContent{Original: []byte(`{"type":"api_retry_resolved"}`)})
-	require.NoError(t, err)
-	assert.False(t, broadcast)
-
-	sink.OpenSpan("proc-tool", "")
-	sink.SetSpanType("proc-tool", "Execute")
-	sink.CloseSpan("archive-tool")
-	sink.ResetSpans()
-	assert.Zero(t, sink.ReserveSpanColor("proc-tool", ""))
-	sink.ReportProgress(agent.ResetProgress())
-
-	assert.Empty(t, recorder.Messages(), "the archive remains the only chat writer")
-	assert.Empty(t, recorder.PersistedNotifications(), "notifications from the bound process do not write into the child transcript")
-	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "archive-tool"}}, recorder.OpenSpans(), "bound process span calls must not mutate the archive-owned child spans")
-	assert.Empty(t, recorder.ClosedSpans(), "bound process CloseSpan must not close archive-owned child spans")
-	assert.Zero(t, recorder.ResetSpanCount(), "bound process ResetSpans must not reset archive-owned child spans")
-	assert.Positive(t, recorder.ProgressSnapshot().ThinkingTokens, "bound process ReportProgress must not wipe archive-owned child progress")
-	assert.Equal(t, steerChildID, recorder.LastSessionID())
+	assert.Len(t, recorder.Child("child-1").Messages(), 2, "the bound child writes its own chat rows and turn end directly")
+	assert.Len(t, recorder.Child("child-1").PersistedNotifications(), 1, "status notifications still reach the child")
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "proc-tool"}}, recorder.Child("child-1").OpenSpans(), "bound child spans reach the child sink directly")
+	assert.Empty(t, recorder.Child("child-1").ClosedSpans(), "non-interrupted turn end keeps open bound child spans alive")
+	assert.Equal(t, steerChildID, recorder.Child("child-1").LastSessionID())
 }
 
 func countDroidProcessCalls(calls []droidProcessCall, method string) int {

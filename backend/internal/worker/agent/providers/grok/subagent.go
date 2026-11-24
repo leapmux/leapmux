@@ -485,7 +485,12 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 		// a woken child revives its finished row before streaming Job 2.
 		openRow(revive)
 	}
-	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: rootSessionID, SessionID: childSession, RowKey: rowKey})
+	target := acp.ChildSessionTarget{RootSessionID: rootSessionID, SessionID: childSession, RowKey: rowKey}
+	if a.AttachChildSession(target) {
+		if err := a.BindAttachedChildSession(target); err != nil {
+			slog.Warn("bind the Grok child transcript session", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
+		}
+	}
 }
 
 // childRowForSession returns the registry row of the subagent that runs in a
@@ -536,8 +541,9 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 	status := grokSubagentStatus(finished.Status)
 
 	a.stateMu.Lock()
-	child, known := a.children.unlink(finished.SubagentID)
+	child, wasLinked := a.children.unlink(finished.SubagentID)
 	interrupted := a.children.takeInterrupted(finished.SubagentID)
+	known := wasLinked
 	rowKey := child.rowKey
 	if !known {
 		if bgRowKey, bgFound := a.children.backgroundSpawns[finished.SubagentID]; bgFound {
@@ -555,6 +561,10 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 		a.children.rememberFinishedRowKeyLocked(finished.SubagentID, rowKey)
 	}
 	a.stateMu.Unlock()
+	if wasLinked {
+		a.clearPermissionChecks(child.childSession)
+		a.abandonGrokChildSteers(child.childSession)
+	}
 	reportID := finished.SubagentID
 
 	// A cancel WE asked for is a user interrupt, not a plain stop: the row
@@ -599,6 +609,7 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 
 var _ agent.ChildInterrupter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
+var _ agent.ChildSteerReceiptSender = (*Agent)(nil)
 
 // ownedChild reads a child under the root held by WithSessionID. Opaque
 // addresses and child IDs never acquire a new root through context clear.
@@ -652,12 +663,40 @@ func validateGrokChildMessage(content string, attachments []*leapmuxv1.Attachmen
 // SteerChildInput sends one literal human message to the active native child.
 // The session lock keeps a context clear from replacing the address's owner.
 func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.steerGrokChild(childKey, content, attachments, false)
+	return err
+}
+
+func (a *Agent) SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.steerGrokChild(childKey, content, attachments, true)
+}
+
+func (a *Agent) steerGrokChild(childKey, content string, attachments []*leapmuxv1.Attachment, captureReply bool) (agent.NativeInputReceipt, error) {
 	if err := validateGrokChildMessage(content, attachments); err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return a.WithSessionID(func(sessionID string) error {
-		_, child, found := a.ownedChild(sessionID, childKey)
+	var sink agent.ProviderServices
+	var target linkedSubagent
+	if captureReply {
+		root := a.CurrentSessionID()
+		_, child, found := a.ownedChild(root, childKey)
 		if !found || child.agentAddress == "" {
+			return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
+		}
+		target = child
+		err := a.WithChildTranscript(acp.ChildSessionTarget{RootSessionID: root, SessionID: child.childSession, RowKey: child.rowKey},
+			func(services agent.ProviderServices) error {
+				sink = services
+				return nil
+			})
+		if err != nil {
+			return agent.NativeInputReceipt{}, err
+		}
+	}
+	var receipt agent.NativeInputReceipt
+	err := a.WithSessionID(func(sessionID string) error {
+		_, child, found := a.ownedChild(sessionID, childKey)
+		if !found || child.agentAddress == "" || captureReply && child != target {
 			return agent.ErrChildRouteNotReady
 		}
 		params, err := json.Marshal(map[string]any{
@@ -667,18 +706,46 @@ func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmux
 		if err != nil {
 			return fmt.Errorf("encode the Grok subagent message: %w", err)
 		}
-		response, err := a.SendRequest(grokSubagentMessageMethod, params, a.APITimeout())
+		var submission grokChildSteerSubmission
+		if captureReply {
+			submission = a.admitGrokChildSteer(child, sink, content)
+		}
+		var resultErr error
+		var tracked bool
+		_, err = a.SendRequestObserved(grokSubagentMessageMethod, params, a.APITimeout(), func(raw json.RawMessage, replyErr error) {
+			if replyErr != nil {
+				return
+			}
+			nativeID, err := grokChildMessageResult(raw)
+			resultErr = err
+			if err == nil && captureReply {
+				receipt = agent.NativeInputReceipt{SessionID: child.childSession, InputID: nativeID}
+				tracked = a.settleGrokChildSubmission(submission, nativeID)
+			}
+		})
 		if err != nil {
+			a.settleGrokChildSubmission(submission, "")
 			if providerkit.HasJSONRPCErrorCode(err, -32601) {
 				return agent.ErrChildOperationUnsupported
 			}
 			return providerkit.ClassifyJSONRPCDeliveryError("send the message to the Grok subagent", err)
 		}
-		return grokChildMessageResult(response)
+		if resultErr != nil {
+			a.settleGrokChildSubmission(submission, "")
+			return resultErr
+		}
+		if captureReply && !tracked {
+			a.retireGrokSteerFrom(sink, receipt)
+		}
+		return nil
 	})
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	return receipt, nil
 }
 
-func grokChildMessageResult(raw json.RawMessage) error {
+func grokChildMessageResult(raw json.RawMessage) (string, error) {
 	uncertain := func() error {
 		return fmt.Errorf("%w: Grok did not confirm the subagent message", agent.ErrDeliveryUncertain)
 	}
@@ -687,17 +754,17 @@ func grokChildMessageResult(raw json.RawMessage) error {
 		Error  json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
-		return uncertain()
+		return "", uncertain()
 	}
 	if providerkit.RawPresent(envelope.Error) && providerkit.RawKindOf(envelope.Error) != providerkit.RawNull {
 		if providerkit.RawPresent(envelope.Result) && providerkit.RawKindOf(envelope.Result) != providerkit.RawNull {
-			return uncertain()
+			return "", uncertain()
 		}
 		text, ok := providerkit.RawString(envelope.Error)
 		if !ok {
 			text = string(envelope.Error)
 		}
-		return fmt.Errorf("the Grok agent refused the subagent message: %s", text)
+		return "", fmt.Errorf("the Grok agent refused the subagent message: %s", text)
 	}
 	var result struct {
 		Kind          string `json:"kind"`
@@ -707,30 +774,30 @@ func grokChildMessageResult(raw json.RawMessage) error {
 		MaxInFlight   int64  `json:"maxInFlight"`
 	}
 	if json.Unmarshal(envelope.Result, &result) != nil {
-		return uncertain()
+		return "", uncertain()
 	}
 	switch result.Kind {
 	case "accepted":
 		if strings.TrimSpace(result.MessageID) == "" {
-			return uncertain()
+			return "", uncertain()
 		}
-		return nil
+		return result.MessageID, nil
 	case "not_active":
-		return agent.ErrNoActiveTurn
+		return "", agent.ErrNoActiveTurn
 	case "rejected":
-		return agent.ErrChildIdentityRefused
+		return "", agent.ErrChildIdentityRefused
 	case "unsupported_content":
-		return fmt.Errorf("the Grok agent refused the content of the subagent message")
+		return "", fmt.Errorf("the Grok agent refused the content of the subagent message")
 	case "limit":
-		return fmt.Errorf("the Grok agent refused the subagent message size: %d bytes; maximum %d bytes", result.ObservedBytes, result.MaxBytes)
+		return "", fmt.Errorf("the Grok agent refused the subagent message size: %d bytes; maximum %d bytes", result.ObservedBytes, result.MaxBytes)
 	case "not_accepted_before_deadline":
-		return fmt.Errorf("the Grok agent did not accept the subagent message before its deadline")
+		return "", fmt.Errorf("the Grok agent did not accept the subagent message before its deadline")
 	case "saturated":
-		return fmt.Errorf("the Grok agent is already processing its maximum of %d subagent messages", result.MaxInFlight)
+		return "", fmt.Errorf("the Grok agent is already processing its maximum of %d subagent messages", result.MaxInFlight)
 	case "channel_closed":
-		return fmt.Errorf("the Grok subagent message channel is closed")
+		return "", fmt.Errorf("the Grok subagent message channel is closed")
 	default:
-		return uncertain()
+		return "", uncertain()
 	}
 }
 
@@ -772,7 +839,7 @@ func grokCancelReplyOutcome(raw json.RawMessage) grokCancelOutcome {
 
 // InterruptChild stops one subagent. childKey is the registry row key.
 func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
-	var closeSessionID, closeRowKey string
+	var closeSessionID, closeRowKey, closedChildSession string
 	err := a.WithSessionID(func(rootSessionID string) error {
 		subagentID, child, ok := a.ownedChild(rootSessionID, childKey)
 		if !ok {
@@ -798,6 +865,7 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 				a.children.rememberFinishedRowKeyLocked(subagentID, child.rowKey)
 				closeSessionID = rootSessionID
 				closeRowKey = child.rowKey
+				closedChildSession = child.childSession
 			}
 			a.stateMu.Unlock()
 			return nil
@@ -816,6 +884,10 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	})
 	if err != nil {
 		return err
+	}
+	if closedChildSession != "" {
+		a.clearPermissionChecks(closedChildSession)
+		a.abandonGrokChildSteers(closedChildSession)
 	}
 	if closeRowKey != "" {
 		a.ApplySubagentObservationForSessionOffReader(closeSessionID, &acp.SubagentObservation{

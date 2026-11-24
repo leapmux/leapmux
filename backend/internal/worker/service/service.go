@@ -29,6 +29,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
@@ -72,6 +73,7 @@ type Service struct {
 
 	creations           *tabCreationCoordinator
 	archiveObservations archiveObservationTracker
+	semanticEvents      semanticEventCapture
 
 	Queries    *db.Queries
 	Watchers   *WatcherManager // Fan-out manager for event broadcasting
@@ -94,10 +96,16 @@ type Service struct {
 	// points, and only the background one takes a startup permit.
 	startBackgroundAgentFn func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error)
 	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
+	scanTerminalProcesses  func(context.Context, []string) ([]terminal.TerminalProcesses, error)
 	// beforeAgentCloseTeardownFn holds a close after admission closes in tests.
 	beforeAgentCloseTeardownFn func(string)
+	// beforeAgentRetirementFn holds a close before the subtree transaction in tests.
+	beforeAgentRetirementFn func(string)
 	// beforeWorktreeRemovalFn controls the final removal boundary in tests.
 	beforeWorktreeRemovalFn func()
+	// afterTabStatusSetFn runs between SetTabStatus's set and its second read
+	// of the tab in tests, so a test can close the tab inside that window.
+	afterTabStatusSetFn func()
 	// afterPayloadPersistenceFn pauses payload creation before Hub publication in tests.
 	afterPayloadPersistenceFn func(context.Context)
 	// afterWorktreeBranchProbeFn controls the branch-selection boundary in tests.
@@ -107,7 +115,7 @@ type Service struct {
 	beforeGitIndexLockFn  func(string)
 	createAgentRecordFn   func(context.Context, *db.Queries, db.CreateAgentParams) error
 	getAgentByIDFn        func(context.Context, string) (db.Agent, error)
-	sendControlResponseFn func(string, []byte) error
+	sendControlResponseFn func(agentID string, answer agent.RawInput) error
 	updateAgentSettingsFn func(string, OptionMap) agent.SettingsApplyResult
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
@@ -140,7 +148,8 @@ type Service struct {
 	//
 	// One pointer to an immutable workerOwner, rather than one atomic per field,
 	// so a reader never pairs one owner's id with another owner's username.
-	owner atomic.Pointer[workerOwner]
+	owner         atomic.Pointer[workerOwner]
+	ownerChangeMu sync.Mutex
 
 	// AgentStartup / TerminalStartup track in-flight startups — the
 	// window between OpenAgent/OpenTerminal returning and the subprocess
@@ -151,15 +160,22 @@ type Service struct {
 	// QuakeTerminals holds active quake terminals strictly in memory.
 	QuakeTerminals *QuakeTerminalStore
 
-	// PrivateEvents is the worker-local pub/sub for E2EE-only events
-	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked). Always
-	// non-nil after New.
+	// PrivateEvents is the worker-local pub/sub for the E2EE-only events of
+	// WorkerPrivateEvent (see PrivateEventsBus). Always non-nil after New.
 	PrivateEvents *PrivateEventsBus
+	notifications recentNotifications
+	// sendInputReceipts deduplicates keyed WorkerTerminalService/SendInput
+	// retries per (terminal_id, request_id) with payload-fingerprint checks.
+	sendInputReceipts terminalSendInputReceipts
 
 	// TabPayloads persists (user_id, tab_id) -> TabPayload for every
 	// payload-backed tab kind (FILE, IMAGE). Always non-nil after New.
 	// The hub never sees these rows; clients fetch payloads over E2EE.
 	TabPayloads *TabPayloadStore
+
+	// TabStatuses holds the status entries for each hosted tab in memory.
+	// Always non-nil after New.
+	TabStatuses *TabStatusStore
 
 	// Cleanup tracks in-flight close handlers so Shutdown() can wait for
 	// them to finish before DB/data-dir teardown. Close handlers must
@@ -293,6 +309,10 @@ type Service struct {
 	// ends in `git worktree remove`, so the inner acquisition happens there.
 	// Nothing may take a removal lock while holding an index lock.
 	gitIndexLocks sync.Map
+
+	// terminalTitleMu keeps the saved and live titles in order across startup,
+	// rename, and exit. Release it before sending events or waiting for a shell.
+	terminalTitleMu sync.Mutex
 
 	// terminalBellMu / lastBellAt coalesce TerminalBell broadcasts per terminal
 	// (programs can emit BEL per keystroke).
@@ -571,6 +591,8 @@ type Config struct {
 	// PublishTab and CancelTabPublication use this Worker's captured Hub credential.
 	PublishTab           func(context.Context, *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error)
 	CancelTabPublication func(context.Context, *leapmuxv1.TabPublication) error
+	// CheckNotificationWorkspace verifies a workspace under the Worker's owner.
+	CheckNotificationWorkspace func(context.Context, string) error
 
 	// Enforced: New panics if Channels, Send, or Agents is missing.
 	Channels *channel.Manager // E2EE channel manager (for session lookups)
@@ -678,12 +700,15 @@ func New(cfg Config) *Service {
 		PrivateEvents:   NewPrivateEventsBus(),
 		lastBellAt:      make(map[string]time.Time),
 	}
+	watchers.recordTerminalFact = svc.recordTerminalFact
+	watchers.recordAgentFact = svc.recordAgentFact
 	// The seed is config data, so it is minted here -- the one place the raw
 	// string exists -- rather than inside the setter.
 	if seed, ok := userid.New(cfg.SeedRegisteredBy); ok {
 		svc.SetRegisteredBy(seed)
 	}
 	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents, &svc.worktreeLifecycle)
+	svc.TabStatuses = NewTabStatusStore(svc.PrivateEvents)
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.creations = newTabCreationCoordinator(svc)
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB, cfg.Clock), queueAdapter, queueAdapter)
@@ -716,15 +741,14 @@ func New(cfg Config) *Service {
 				"agent_id", agentID, "error", err)
 		}
 	})
-	svc.Output.SetRequeueDroppedInputFunc(func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error) {
-		_, added, err := svc.InputQueue.EnqueueReportingAdded(bgCtx(), inputqueue.NewItem{
-			ID: droppedInputID(agentID, dropID), AgentID: agentID,
-			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: content,
-			Attachments:      queueAttachments(attachments),
-			ReclassifyOnEdit: true,
-		})
-		return added, err
-	})
+	svc.Output.SetRequeueDroppedInputFunc(svc.requeueDroppedInput)
+	svc.Output.resolveSteer = func(agentID string, resolution agent.SteerResolution, spanLines string) (bool, error) {
+		matched, err := svc.InputQueue.ResolveSteer(bgCtx(), agentID, resolution, spanLines)
+		if errors.Is(err, inputqueue.ErrManagerStopped) {
+			return false, nil
+		}
+		return matched, err
+	}
 	svc.Output.SetSteerEchoFuncs(func(agentID string, count int, spanLines string) error {
 		_, err := svc.InputQueue.AcceptEchoedSteers(bgCtx(), agentID, count, spanLines)
 		if errors.Is(err, inputqueue.ErrManagerStopped) {
@@ -746,11 +770,14 @@ func New(cfg Config) *Service {
 	})
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
-	svc.startTerminalFn = svc.Terminals.StartTerminal
+	// startTerminalProcess, not Terminals.StartTerminal: a creation that
+	// resumes a terminal whose stopped shell the manager still holds must
+	// restart it, and StartTerminal refuses an id that the manager holds.
+	svc.startTerminalFn = svc.startTerminalProcess
 	svc.createAgentRecordFn = func(ctx context.Context, q *db.Queries, p db.CreateAgentParams) error { return q.CreateAgent(ctx, p) }
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
-	svc.sendControlResponseFn = func(agentID string, content []byte) error {
-		return svc.Agents.SendRawInput(agentID, content, agent.StopContext{})
+	svc.sendControlResponseFn = func(agentID string, answer agent.RawInput) error {
+		return svc.Agents.SendRawInput(agentID, answer)
 	}
 	svc.updateAgentSettingsFn = svc.Agents.UpdateSettings
 	svc.batchGitStatusFn = gitutil.BatchGetGitStatus
@@ -798,6 +825,18 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 // startAgentWithTurnReset retires stopped-process controls and reconciles queue
 // activity around a process startup. The caller owns its lifecycle or startup.
 func (svc *Service) startAgentWithTurnReset(ctx context.Context, opts agent.Options, sink agent.ProviderServices, start agentLauncher) (map[string]string, error) {
+	finish := svc.semanticEvents.agentMutations.begin(opts.AgentID)
+	defer finish()
+	live, err := svc.Queries.CanWatchAgentHistory(ctx, opts.AgentID)
+	if err != nil {
+		return nil, fmt.Errorf("check the agent before starting its process: %w", err)
+	}
+	if !live || svc.AgentStartup.closing(opts.AgentID) {
+		return nil, errAgentClosedDuringLaunch
+	}
+	if err := svc.verifyTabWorktreeForLaunch(ctx, leapmuxv1.TabType_TAB_TYPE_AGENT, opts.AgentID, opts.WorkingDir); err != nil {
+		return nil, err
+	}
 	if err := svc.retireStoppedProcessControls(opts.AgentID); err != nil {
 		return nil, fmt.Errorf("%w: %w", errAgentProcessStartBlocked, notReadyStoreFault(err))
 	}
@@ -862,6 +901,9 @@ func (svc *Service) restartAgentLocked(ctx context.Context, opts agent.Options, 
 }
 
 func (svc *Service) startTerminal(ctx context.Context, opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
+	if err := svc.verifyTabWorktreeForLaunch(ctx, leapmuxv1.TabType_TAB_TYPE_TERMINAL, opts.ID, opts.WorkingDir); err != nil {
+		return err
+	}
 	if svc.startTerminalFn != nil {
 		return svc.startTerminalFn(ctx, opts, outputFn, exitFn)
 	}
@@ -966,7 +1008,13 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 // stale row to clear at startup.
 func (svc *Service) RestoreState() {
 	ctx := bgCtx()
-	// Record every open agent whose queued input was waiting on active
+	if err := svc.Queries.RetireNativeInputsAfterRestart(ctx, db.RetireNativeInputsAfterRestartParams{
+		UnprovedOutcome: workerdb.OptionalStorageEnum(leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED),
+		UserSource:      leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
+	}); err != nil {
+		slog.Warn("recover native input outcomes failed", "error", err)
+	}
 	// Sweep still-active background tasks and recover input queues inside one
 	// SQLite transaction so Store.Recover identifies agents held by active
 	// background work, marks those tasks interrupted, and snapshots the
@@ -1205,9 +1253,9 @@ func (svc *Service) shutdown() {
 
 	// Queue dispatch runs outside the RPC handler that created it. Join those
 	// goroutines before the startup drains and provider teardown below.
-	svc.ShutdownDeadline.Wait(inputQueueIdle,
+	inputQueueFinished := svc.ShutdownDeadline.Wait(inputQueueIdle,
 		"shutdown deadline passed while input queue dispatches still ran; abandoning them")
-	svc.ShutdownDeadline.Wait(svc.nativeTurnRestartsInFlight.DoneChan(),
+	nativeRestartsFinished := svc.ShutdownDeadline.Wait(svc.nativeTurnRestartsInFlight.DoneChan(),
 		"shutdown deadline passed while native turn restarts still ran; abandoning them")
 
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
@@ -1224,12 +1272,14 @@ func (svc *Service) shutdown() {
 	// cancelled startup records no startup failure (see cancelForShutdown).
 	svc.AgentStartup.closeClaims()
 	svc.TerminalStartup.closeClaims()
-	logShutdownStragglers("agent startup", svc.AgentStartup.drainForShutdown(svc.ShutdownDeadline))
-	logShutdownStragglers("terminal startup", svc.TerminalStartup.drainForShutdown(svc.ShutdownDeadline))
+	agentStartups := svc.AgentStartup.drainForShutdown(svc.ShutdownDeadline)
+	logShutdownStragglers("agent startup", agentStartups)
+	terminalStartups := svc.TerminalStartup.drainForShutdown(svc.ShutdownDeadline)
+	logShutdownStragglers("terminal startup", terminalStartups)
 	// Also drain in-flight close handlers. The frontend fires close RPCs
 	// as fire-and-forget, so a close can still be running on the
 	// dispatcher goroutine while the worker receives a deregister/SIGTERM.
-	svc.ShutdownDeadline.Wait(svc.Cleanup.DoneChan(),
+	closesFinished := svc.ShutdownDeadline.Wait(svc.Cleanup.DoneChan(),
 		"shutdown deadline passed while close handlers still ran; abandoning them")
 
 	// Re-run after the drains: a terminal whose startup was still in flight
@@ -1255,9 +1305,11 @@ func (svc *Service) shutdown() {
 	// stay ACTIVE for the next boot. StopAll joins exit handlers within its
 	// budget and reports stragglers before the caller closes the database.
 	var stops sync.WaitGroup
+	var agentExits []string
 	stops.Go(func() {
 		if svc.Agents != nil {
-			logShutdownStragglers("agent", svc.Agents.StopAll(svc.ShutdownDeadline.Cap(agentStopTimeout)))
+			agentExits = svc.Agents.StopAll(svc.ShutdownDeadline.Cap(agentStopTimeout))
+			logShutdownStragglers("agent", agentExits)
 		}
 	})
 	// PTYs outlive Service.Shutdown otherwise: in the sidecar's SwitchMode the
@@ -1271,8 +1323,10 @@ func (svc *Service) shutdown() {
 	// It does not cap the join after the escalation: that join is where each
 	// exit handler saves the final screen, a database write, so it keeps its
 	// own few seconds even after the deadline.
+	var terminalExits []string
 	stops.Go(func() {
-		logShutdownStragglers("terminal", svc.Terminals.HangUpAll(svc.ShutdownDeadline.Cap(terminalHangUpGrace)))
+		terminalExits = svc.Terminals.HangUpAll(svc.ShutdownDeadline.Cap(terminalHangUpGrace))
+		logShutdownStragglers("terminal", terminalExits)
 	})
 	stops.Wait()
 
@@ -1314,14 +1368,16 @@ func (svc *Service) shutdown() {
 	// SetShuttingDown latch at the top of this function makes holdSettleLocked
 	// refuse.
 	// Output retries can publish completion and start an activity refresh. Stop them before the final activity drain.
-	svc.Output.StopOutputRetries()
+	outputFinished := svc.Output.StopOutputRetries()
 	svc.Output.CancelHeldSettles()
 
 	// Then join the deferred activity refreshes the exits above spawned. Each
 	// one reads the registry and broadcasts, so both must finish while the
 	// context below is still live and before the caller closes the database.
 	// After StopAll, which is what produces the exits that spawn them.
-	svc.Output.waitActivityRefreshesUntil(svc.ShutdownDeadline)
+	activityFinished := svc.Output.waitActivityRefreshesUntil(svc.ShutdownDeadline)
+	svc.stopSemanticEventReaders(inputQueueFinished && nativeRestartsFinished && closesFinished && outputFinished && activityFinished &&
+		len(agentStartups) == 0 && len(terminalStartups) == 0 && len(agentExits) == 0 && len(terminalExits) == 0)
 
 	// Cancel the background-task write context last, AFTER every drain. Any
 	// in-flight bgtask write the drains did not cover now fails fast
@@ -1445,6 +1501,8 @@ type terminalExitSnapshot struct {
 }
 
 func (svc *Service) captureTerminalExit(tid string) (terminalExitSnapshot, bool) {
+	svc.terminalTitleMu.Lock()
+	defer svc.terminalTitleMu.Unlock()
 	storedTitle, err := svc.Queries.GetTerminalTitle(bgCtx(), tid)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -1551,6 +1609,8 @@ func (svc *Service) SetRegisteredBy(userID userid.UserID) {
 	if userID.IsZero() {
 		return
 	}
+	svc.ownerChangeMu.Lock()
+	defer svc.ownerChangeMu.Unlock()
 	svc.owner.Store(&workerOwner{id: userID})
 }
 
@@ -1613,6 +1673,7 @@ func (svc *Service) ApplyWorkerIdentity(identity *leapmuxv1.WorkerIdentity) Iden
 	}
 	next := &workerOwner{id: uid, username: identity.GetRegisteredByUsername()}
 	outcome := IdentityNewOwner
+	svc.ownerChangeMu.Lock()
 	if prev := svc.owner.Load(); prev != nil && !prev.id.IsZero() {
 		if prev.id.MatchesUser(uid) {
 			outcome = IdentitySameOwner
@@ -1625,6 +1686,8 @@ func (svc *Service) ApplyWorkerIdentity(identity *leapmuxv1.WorkerIdentity) Iden
 		}
 	}
 	svc.owner.Store(next)
+	svc.ownerChangeMu.Unlock()
+	svc.bindSemanticEvents()
 	return outcome
 }
 
@@ -1741,7 +1804,9 @@ func registerAllWithGuards(d *channel.Dispatcher, svc *Service) map[string]metho
 	registerTerminalHandlers(ownerOnly, svc)
 	registerAgentHandlers(ownerOnly, svc)
 	registerAgentSessionHandlers(ownerOnly, svc)
+	registerSemanticEventsHandler(ownerOnly, svc)
 	registerCloseTabHandler(ownerOnly, svc)
+	registerWorkerPrivateCommandHandlers(ownerOnly, svc)
 	registerCleanupHandlers(ownerOnly, svc)
 	registerSysInfoHandlers(ownerOnly, svc)
 	tunnels := registerTunnelHandlers(ownerOnly)
@@ -1959,9 +2024,9 @@ func sendUnavailable(sender channel.ResponseWriter, msg string) {
 }
 
 // sendValidationError routes a validation failure to the most accurate
-// gRPC code: context cancellation/timeout (client disconnect, hub-side
-// deadline) maps to Canceled / DeadlineExceeded; everything else is the
-// caller's bad input → InvalidArgument. Without the split, a client
+// gRPC code. A canceled or expired context gets its own status. A worktree
+// lookup preserves its refusal, missing result, or execution failure. Other
+// validation errors describe invalid arguments. Without the split, a client
 // disconnect during a slow `git worktree list` validation surfaced as
 // "invalid_argument: context canceled", which is misleading both for
 // the user-facing toast and for any client-side telemetry that filters
@@ -1972,6 +2037,14 @@ func sendValidationError(sender channel.ResponseWriter, err error) {
 		_ = sender.SendError(int32(codes.Canceled), err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		_ = sender.SendError(int32(codes.DeadlineExceeded), err.Error())
+	case errors.Is(err, errGitWorktreeReadScope):
+		sendPermissionDenied(sender, err.Error())
+	case errors.Is(err, errGitWorktreeNotFound):
+		sendNotFoundError(sender, err.Error())
+	case errors.Is(err, errGitWorktreeAmbiguous), errors.Is(err, errSelectedWorktreeChanged):
+		_ = sender.SendError(int32(codes.FailedPrecondition), err.Error())
+	case errors.Is(err, errGitWorktreeLookup):
+		sendInternalError(sender, err.Error())
 	default:
 		sendInvalidArgument(sender, err.Error())
 	}

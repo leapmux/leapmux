@@ -1,14 +1,24 @@
 import type { Mock } from 'vitest'
-import type { ControlAnswerState } from './types'
+import type { ControlQuestion } from '../model/question'
+import type { ControlAnswerState, ControlDecisionSender } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isObject } from '~/lib/jsonPick'
 import { ControlRequestActions } from '~/test-support/controlRequestBanner'
-import { AskUserQuestionActions, AskUserQuestionContent, buildAskAnswers, controlQuestion, submitBlockedReason, trySubmitAskUserQuestion } from './AskUserQuestionControl'
+import { testControlRequest } from '~/test-support/controlRequests'
+import { AskUserQuestionActions, AskUserQuestionContent, submitBlockedReason, trySubmitAskUserQuestion } from './AskUserQuestionControl'
 import { createControlAnswerState } from './types'
-import '../providers'
+
+/** A question request with these questions, as the Worker sends it. */
+function questionRequest(requestId: string, questions: ControlQuestion[], fields: Partial<ControlRequest> = {}): ControlRequest {
+  return testControlRequest({
+    requestId,
+    agentId: 'a1',
+    prompt: { kind: 'question', questions },
+    ...fields,
+  })
+}
 
 describe('AskUserQuestionContent', () => {
   it('shows form context separately from the question label', () => {
@@ -24,9 +34,10 @@ describe('AskUserQuestionContent', () => {
     ]
     render(() => (
       <AskUserQuestionContent
-        request={{ requestId: 'context-question', agentId: 'a1', payload: {} }}
+        request={questionRequest('context-question', questions)}
         answerState={createControlAnswerState()}
         questions={questions}
+        preservesSelectionNotes={false}
       />
     ))
     expect(screen.getByTestId('control-question-context').textContent).toBe(context)
@@ -147,12 +158,13 @@ describe('questions that accept selected options only', () => {
     ]
     render(() => (
       <AskUserQuestionActions
-        request={{ requestId: 'select-only', agentId: 'a', payload: {} }}
+        request={questionRequest('select-only', questions)}
         questions={questions}
+        preservesSelectionNotes={false}
         answerState={state}
         hasEditorContent={true}
         onTriggerSend={() => {}}
-        onRespond={vi.fn()}
+        onDecide={vi.fn()}
         onSubmitAnswers={send}
         onReject={vi.fn()}
         editorContentRef={() => ({
@@ -189,99 +201,6 @@ describe('questions that accept selected options only', () => {
     expect(screen.getByTestId('control-yolo-btn')).toBeDisabled()
     expect(screen.getByTestId('control-submit-btn')).toBeDisabled()
     expect(send).not.toHaveBeenCalled()
-  })
-})
-
-describe('buildAskAnswers', () => {
-  it('keys answers by question text as expected by Claude Code', () => {
-    const state = createControlAnswerState({
-      selections: {
-        0: ['Build'],
-      },
-      customTexts: { 0: 'typed answer' },
-    })
-    const result = buildAskAnswers(
-      state,
-      [
-        {
-          header: 'Task',
-          question: 'Pick a task',
-          options: [
-            { label: 'Build' },
-          ],
-        },
-      ],
-      { questions: [] },
-      'req-1',
-    )
-
-    expect(result).toMatchObject({
-      response: {
-        request_id: 'req-1',
-        response: {
-          updatedInput: {
-            answers: {
-              'Pick a task': 'Build',
-            },
-          },
-        },
-      },
-    })
-  })
-})
-
-describe('controlQuestion', () => {
-  const question = (): ControlRequest => ({
-    requestId: 'ask-1',
-    agentId: 'a1',
-    payload: {
-      request: {
-        tool_name: 'AskUserQuestion',
-        input: {
-          questions: [
-            {
-              question: 'Which database?',
-              options: [
-                { label: 'Postgres' },
-              ],
-            },
-          ],
-        },
-      },
-    },
-  })
-
-  it('returns the capability and the questions for a question payload', () => {
-    const found = controlQuestion(question(), AgentProvider.CLAUDE_CODE)
-    expect(found?.questions).toHaveLength(1)
-    expect(found?.questions[0]?.question).toBe('Which database?')
-    expect(found?.capability).toBeDefined()
-  })
-
-  it('returns nothing for a control request that is not a question', () => {
-    const plan: ControlRequest = {
-      requestId: 'plan-1',
-      agentId: 'a1',
-      payload: {
-        request: { tool_name: 'ExitPlanMode', input: {} },
-      },
-    }
-    expect(controlQuestion(plan, AgentProvider.CLAUDE_CODE)).toBeUndefined()
-  })
-
-  // The banner runs this inside a memo that a store removal can re-run, so an
-  // absent request has to be an answer rather than a dereference.
-  it('returns nothing for an absent request instead of throwing', () => {
-    expect(() => controlQuestion(null, AgentProvider.CLAUDE_CODE)).not.toThrow()
-    expect(controlQuestion(null, AgentProvider.CLAUDE_CODE)).toBeUndefined()
-    expect(controlQuestion(undefined, AgentProvider.CLAUDE_CODE)).toBeUndefined()
-  })
-
-  // An UNSPECIFIED or unregistered provider means backend/frontend version skew.
-  // Classifying through some other provider's parser would answer the wrong shape.
-  it('returns nothing when the provider has no plugin registered', () => {
-    expect(controlQuestion(question(), AgentProvider.UNSPECIFIED)).toBeUndefined()
-    expect(controlQuestion(question(), undefined)).toBeUndefined()
   })
 })
 
@@ -382,39 +301,28 @@ describe('submitBlockedReason', () => {
 describe('AskUserQuestionActions', () => {
   const YOLO_ANSWER = 'Go with the recommended option.'
 
-  const colorAndSize = (): ControlRequest => ({
-    requestId: 'ask-yolo',
-    agentId: 'a1',
-    payload: {
-      request: {
-        tool_name: 'AskUserQuestion',
-        input: {
-          questions: [
-            {
-              question: 'Pick a color',
-              header: 'Color',
-              options: [
-                { label: 'Red' },
-                { label: 'Blue' },
-              ],
-            },
-            {
-              question: 'Pick a size',
-              header: 'Size',
-              options: [
-                { label: 'Small' },
-                { label: 'Large' },
-              ],
-            },
-          ],
-        },
-      },
+  const colorAndSize = (): ControlRequest => questionRequest('ask-yolo', [
+    {
+      question: 'Pick a color',
+      header: 'Color',
+      options: [
+        { label: 'Red' },
+        { label: 'Blue' },
+      ],
     },
-  })
+    {
+      question: 'Pick a size',
+      header: 'Size',
+      options: [
+        { label: 'Small' },
+        { label: 'Large' },
+      ],
+    },
+  ])
 
-  /** Render the Claude question actions with an editor that holds `editorText` on the current page. */
-  function renderActions(state: ControlAnswerState, editorText: string): Mock {
-    const respond = vi.fn().mockResolvedValue(undefined)
+  /** Render the question actions with an editor that holds `editorText` on the current page. */
+  function renderActions(state: ControlAnswerState, editorText: string): Mock<ControlDecisionSender> {
+    const respond = vi.fn<ControlDecisionSender>().mockResolvedValue(undefined)
     const editor = {
       get: () => editorText,
       set: vi.fn(),
@@ -424,7 +332,7 @@ describe('AskUserQuestionActions', () => {
         request={colorAndSize()}
         answerState={state}
         agentProvider={AgentProvider.CLAUDE_CODE}
-        onRespond={respond}
+        onDecide={respond}
         hasEditorContent={editorText !== ''}
         onTriggerSend={() => {}}
         editorContentRef={() => editor}
@@ -433,26 +341,13 @@ describe('AskUserQuestionActions', () => {
     return respond
   }
 
-  /** Decode the answers map of the one control response that `respond` received. */
-  function sentAnswers(respond: Mock): unknown {
-    const bytes: unknown = respond.mock.calls[0]?.[0]
-    // A realm check (`instanceof Uint8Array`) is unreliable here: the encoder
-    // and the test environment can hold different Uint8Array constructors.
-    if (!ArrayBuffer.isView(bytes))
-      throw new TypeError(`The question actions sent no response bytes: ${String(bytes)}`)
-    const envelope: unknown = JSON.parse(new TextDecoder().decode(bytes))
-    const outer = isObject(envelope)
-      ? envelope.response
-      : undefined
-    const inner = isObject(outer)
-      ? outer.response
-      : undefined
-    const input = isObject(inner)
-      ? inner.updatedInput
-      : undefined
-    return isObject(input)
-      ? input.answers
-      : undefined
+  /** The answer to each question that the one decision `respond` received states. */
+  function sentAnswers(respond: Mock<ControlDecisionSender>): Array<{ selected: string[], customText: string }> {
+    const decision = respond.mock.calls[0]?.[0]
+    if (decision?.kind.case !== 'question')
+      throw new TypeError('The question actions sent no question decision.')
+    expect(decision.kind.value.cancelled).toBe(false)
+    return decision.kind.value.answers.map(({ selected, customText }) => ({ selected, customText }))
   }
 
   // An option click on the first page advances to the second, so YOLO runs
@@ -471,7 +366,13 @@ describe('AskUserQuestionActions', () => {
     fireEvent.click(screen.getByTestId('control-yolo-btn'))
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
-    expect(sentAnswers(respond)).toEqual({ 'Pick a color': 'Red', 'Pick a size': YOLO_ANSWER })
+    expect(sentAnswers(respond)).toEqual([
+      {
+        selected: ['Red'],
+        customText: '',
+      },
+      { selected: [], customText: YOLO_ANSWER },
+    ])
   })
 
   // The first page stays unanswered, so YOLO stays enabled. Unsaved editor text
@@ -483,7 +384,10 @@ describe('AskUserQuestionActions', () => {
     fireEvent.click(screen.getByTestId('control-yolo-btn'))
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
-    expect(sentAnswers(respond)).toEqual({ 'Pick a color': YOLO_ANSWER, 'Pick a size': 'Medium, please' })
+    expect(sentAnswers(respond)).toEqual([
+      { selected: [], customText: YOLO_ANSWER },
+      { selected: [], customText: 'Medium, please' },
+    ])
   })
 
   it('stays disabled when unsaved editor text answers the only open page', () => {
@@ -510,7 +414,13 @@ describe('AskUserQuestionActions', () => {
     fireEvent.click(screen.getByTestId('control-yolo-btn'))
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
-    expect(sentAnswers(respond)).toEqual({ 'Pick a color': 'Red', 'Pick a size': YOLO_ANSWER })
+    expect(sentAnswers(respond)).toEqual([
+      {
+        selected: ['Red'],
+        customText: '',
+      },
+      { selected: [], customText: YOLO_ANSWER },
+    ])
   })
 
   it('fills every page when no page has an answer', async () => {
@@ -520,7 +430,10 @@ describe('AskUserQuestionActions', () => {
     fireEvent.click(screen.getByTestId('control-yolo-btn'))
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
-    expect(sentAnswers(respond)).toEqual({ 'Pick a color': YOLO_ANSWER, 'Pick a size': YOLO_ANSWER })
+    expect(sentAnswers(respond)).toEqual([
+      { selected: [], customText: YOLO_ANSWER },
+      { selected: [], customText: YOLO_ANSWER },
+    ])
   })
 
   /** Render the question actions for one request and return the reject spy. */
@@ -538,7 +451,8 @@ describe('AskUserQuestionActions', () => {
             ],
           },
         ]}
-        onRespond={vi.fn()}
+        preservesSelectionNotes={false}
+        onDecide={vi.fn()}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
         onSubmitAnswers={vi.fn().mockResolvedValue(undefined)}
@@ -552,12 +466,11 @@ describe('AskUserQuestionActions', () => {
   // a skip: a decision to answer none of it, sent with no reason. Codex keeps
   // no pending question state, and the empty reason sends nothing on.
   it('reads Skip for a non-blocking question and rejects with no reason', async () => {
-    const onReject = renderStopActions({
+    const onReject = renderStopActions(testControlRequest({
       requestId: 'q1',
       agentId: 'a1',
-      payload: {},
       nonBlocking: true,
-    })
+    }))
 
     const skip = screen.getByTestId('control-skip-btn')
     expect(skip).toHaveTextContent('Skip')
@@ -569,7 +482,7 @@ describe('AskUserQuestionActions', () => {
   })
 
   it('reads Stop for a blocking request and rejects with the stop reason', async () => {
-    const onReject = renderStopActions({ requestId: 'b1', agentId: 'a1', payload: {} })
+    const onReject = renderStopActions(testControlRequest({ requestId: 'b1', agentId: 'a1' }))
 
     const stop = screen.getByTestId('control-stop-btn')
     expect(stop).toHaveTextContent('Stop')
@@ -783,12 +696,12 @@ describe('AskUserQuestionContent selection limits', () => {
         maximumSelections: 2,
       },
     ]
-    const request: ControlRequest = { requestId: 'limited-question', agentId: 'agent', payload: {} }
+    const request = questionRequest('limited-question', questions)
     const submit = vi.fn().mockResolvedValue(undefined)
     render(() => (
       <>
-        <AskUserQuestionContent request={request} answerState={state} questions={questions} agentProvider={AgentProvider.MUSE_CODE} />
-        <AskUserQuestionActions request={request} answerState={state} questions={questions} agentProvider={AgentProvider.MUSE_CODE} onRespond={vi.fn()} hasEditorContent={hasEditorContent} onTriggerSend={vi.fn()} onSubmitAnswers={submit} onReject={vi.fn()} />
+        <AskUserQuestionContent request={request} answerState={state} questions={questions} preservesSelectionNotes={false} />
+        <AskUserQuestionActions request={request} answerState={state} questions={questions} preservesSelectionNotes={false} agentProvider={AgentProvider.MUSE_CODE} onDecide={vi.fn()} hasEditorContent={hasEditorContent} onTriggerSend={vi.fn()} onSubmitAnswers={submit} onReject={vi.fn()} />
       </>
     ))
     return { state, submit }

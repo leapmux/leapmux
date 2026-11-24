@@ -720,11 +720,17 @@ func (ch *Channel) CloseDone() <-chan struct{} {
 // set ctx accordingly; a cancelled ctx no longer tears down the shared channel
 // mid-rekey (the Ack wait is bound to the channel lifetime + Ack timer).
 func (ch *Channel) CallRPC(ctx context.Context, method string, payload []byte) (*leapmuxv1.InnerRpcResponse, error) {
+	return ch.CallRequest(ctx, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload})
+}
+
+// CallRequest is CallRPC for a request that the caller built whole, such as a
+// call that a Worker relays with the CallSource of the tab that made it.
+func (ch *Channel) CallRequest(ctx context.Context, req *leapmuxv1.InnerRpcRequest) (*leapmuxv1.InnerRpcResponse, error) {
 	if ctx == nil {
 		return nil, errors.New("rpc operation context is required")
 	}
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := ch.SendRPCNoWait(ctx, method, payload, RPCHandlers{Response: respCh})
+	reqID, err := ch.SendRequestNoWait(ctx, req, RPCHandlers{Response: respCh})
 	if err != nil {
 		return nil, err
 	}
@@ -757,6 +763,15 @@ func (ch *Channel) CallRPC(ctx context.Context, method string, payload []byte) (
 
 // SendRPCNoWait sends an inner RPC after atomically installing all handlers.
 func (ch *Channel) SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers RPCHandlers) (uint64, error) {
+	return ch.SendRequestNoWait(ctx, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, handlers)
+}
+
+// SendRequestNoWait is SendRPCNoWait for a request that the caller built
+// whole. It sends req as it is; the caller must not change it afterwards.
+func (ch *Channel) SendRequestNoWait(ctx context.Context, req *leapmuxv1.InnerRpcRequest, handlers RPCHandlers) (uint64, error) {
+	if req == nil {
+		return 0, errors.New("rpc request is required")
+	}
 	if ctx == nil {
 		return 0, errors.New("rpc operation context is required")
 	}
@@ -805,12 +820,7 @@ func (ch *Channel) SendRPCNoWait(ctx context.Context, method string, payload []b
 	}
 	ch.mu.Unlock()
 	innerReq := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_Request{
-			Request: &leapmuxv1.InnerRpcRequest{
-				Method:  method,
-				Payload: payload,
-			},
-		},
+		Kind: &leapmuxv1.InnerMessage_Request{Request: req},
 	}
 
 	if err := ch.sendInnerContext(ctx, reqID, innerReq); err != nil {

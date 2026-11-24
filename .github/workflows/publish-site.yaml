@@ -15,6 +15,7 @@ on:
     paths:
       - "site/**"
       - "icons/agents/**"
+      - "skills/**"
       - "frontend/tests/e2e/feature-matrix/**"
       - "versions.env"
       - ".github/actions/load-versions/action.yaml"

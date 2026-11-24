@@ -5,7 +5,7 @@ type: docs
 weight: 2
 ---
 
-Start LeapMux with `leapmux <mode> start`, and stop it with `leapmux <mode> stop`. This is the recommended way to run every mode outside a container. `start` runs LeapMux in the background as a **service**, so it keeps running after you close the terminal or log out, and it starts again after a restart of the computer. A service is an entry in the service manager of your operating system:
+Start LeapMux with `leapmux daemon <mode> start` (or `leapmux up` for `solo`), and stop it with `leapmux daemon <mode> stop` (or `leapmux down`). This is the recommended way to run every mode outside a container. `start` runs LeapMux in the background as a **service**, so it keeps running after you close the terminal or log out, and it starts again after a restart of the computer. A service is an entry in the service manager of your operating system:
 
 - launchd on macOS
 - systemd on Linux
@@ -14,25 +14,26 @@ Start LeapMux with `leapmux <mode> start`, and stop it with `leapmux <mode> stop
 LeapMux creates and removes the service for you. This page applies to every mode: `solo`, `hub`, `worker`, and `dev`. The examples use `solo`. Register a standalone Worker before you start it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 
 {{< callout >}}
-In a container, the container is the service, so use `leapmux <mode> run` there. It runs LeapMux in the foreground, without a service, until the process stops. The LeapMux image runs it for you, and Docker restarts the container. Do not use `start` or `enable` inside a container. See [Running under Docker](/docs/admin/running-leapmux/#running-under-docker).
+In a container, the container is the service, so use `leapmux daemon <mode> run` there. It runs LeapMux in the foreground, without a service, until the process stops. The LeapMux image runs it for you, and Docker restarts the container. Do not use `start` or `enable` inside a container. See [Running under Docker](/docs/admin/running-leapmux/#running-under-docker).
 {{< /callout >}}
 
 ## The commands
 
 | Command | What it does |
 | --- | --- |
-| `leapmux <mode> start` | Creates the service when necessary, starts it, waits until LeapMux is ready, and prints the URL to open. |
-| `leapmux <mode> stop` | Stops the instance and waits until its shutdown completes. The service remains, so LeapMux starts again at the next login or boot. |
-| `leapmux <mode> restart` | Stops the instance, then starts it as a service. |
-| `leapmux <mode> status` | Reports whether the instance runs, whether it is ready, and why it failed. |
-| `leapmux <mode> enable` | Creates the service for automatic startup, but does not start LeapMux now. |
-| `leapmux <mode> disable` | Removes the service. The instance must be stopped. |
-| `leapmux <mode> run` | Runs in the foreground until the process stops, and never creates a service. Use it in a container. |
+| `leapmux daemon <mode> start` | Creates the service when necessary, starts it, waits until LeapMux is ready, and prints the URL to open. (`leapmux up` is a shortcut for `solo`.) |
+| `leapmux daemon <mode> stop` | Stops the instance and waits until its shutdown completes. The service remains, so LeapMux starts again at the next login or boot. (`leapmux down` is a shortcut for `solo`.) |
+| `leapmux daemon <mode> restart` | Stops the instance, then starts it as a service. |
+| `leapmux daemon <mode> status` | Reports whether the instance runs, whether it is ready, and why it failed. |
+| `leapmux daemon <mode> logs` | Prints or follows (`-f`, `-n`) the latest attempt log of the service. |
+| `leapmux daemon <mode> enable` | Creates the service for automatic startup, but does not start LeapMux now. |
+| `leapmux daemon <mode> disable` | Removes the service. The instance must be stopped. |
+| `leapmux daemon <mode> run` | Runs in the foreground until the process stops, and never creates a service. Use it in a container. |
 
 ## Start LeapMux
 
 ```bash
-leapmux solo start
+leapmux daemon solo start
 ```
 
 The first `start` asks when LeapMux should start automatically:
@@ -84,9 +85,9 @@ Solo started.
 Open http://localhost:4327 in your browser.
 
 Commands for this instance:
-  Status:  leapmux solo status --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
-  Stop:    leapmux solo stop --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
-  Disable: leapmux solo disable --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
+  Status:  leapmux daemon solo status --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
+  Stop:    leapmux daemon solo stop --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
+  Disable: leapmux daemon solo disable --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
 ```
 
 The URL is the `public_url` setting when you set one. Otherwise it is `http://localhost` with the port that LeapMux listens on. For a new `dev` instance, `start` asks you to create the first administrator at that URL. A Worker has no URL.
@@ -99,9 +100,9 @@ To create the service without starting LeapMux now, run `enable` instead of `sta
 Configured. Hub starts automatically at login.
 
 Commands for this instance:
-  Start:   leapmux hub start --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
-  Status:  leapmux hub status --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
-  Disable: leapmux hub disable --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
+  Start:   leapmux daemon hub start --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
+  Status:  leapmux daemon hub status --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
+  Disable: leapmux daemon hub disable --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
 ```
 
 A command that succeeds ends with such commands, except `run` and `status --json`. They fit what you just did: `stop` prints `start`, and `disable` when a service exists, and `disable` prints `start` and `enable`. Each command selects the instance by its configuration file and data directory, so it works from any directory. When a service exists, the commands use the configuration file of the service. The commands use the syntax of a POSIX shell such as bash or zsh, and of PowerShell on Windows. Use them instead of `systemctl`, `launchctl`, or the Windows service tools: `start` waits until LeapMux is ready, and `status` explains a failure. On Linux, LeapMux reloads systemd itself, so you never run `systemctl daemon-reload`.
@@ -128,7 +129,7 @@ On Linux, login startup follows the graphical desktop session. A session over SS
 
 On **Windows**, both kinds need your account password, because Windows starts LeapMux while you are not at the keyboard. LeapMux reads the password without showing it and does not save it. Windows stores it for the service. Windows can also ask for administrator rights to grant your account the right to run the task or the service.
 
-After you change your Windows password, the service cannot start. Run `leapmux <mode> enable` again, and type the new password when it asks.
+After you change your Windows password, the service cannot start. Run `leapmux daemon <mode> enable` again, and type the new password when it asks.
 
 ### Service names
 
@@ -140,12 +141,12 @@ Each service name ends with a 16-digit hexadecimal ID. LeapMux derives the ID fr
 | Linux | User unit `leapmux-<mode>-<id>.service`, in `~/.config/systemd/user/` | System unit `leapmux-<mode>-<id>.service`, in `/etc/systemd/system/` |
 | Windows | Scheduled task `leapmux-<mode>-<id>`, in the root folder of Task Scheduler | Windows service `leapmux-<mode>-<id>` |
 
-Use the name to find the service in the tools of your operating system, such as `launchctl`, `systemctl`, Task Scheduler, or Services. Manage the service with `leapmux <mode>` commands, though: they keep the saved settings and the service in step.
+Use the name to find the service in the tools of your operating system, such as `launchctl`, `systemctl`, Task Scheduler, or Services. Manage the service with `leapmux daemon <mode>` commands, though: they keep the saved settings and the service in step.
 
 ## Check the status
 
 ```bash
-leapmux solo status
+leapmux daemon solo status
 ```
 
 `status` reports these facts:
@@ -158,18 +159,18 @@ leapmux solo status
 - The latest start: when it began and ended, its exit code, and the reason it failed
 - The full path of the log of that start
 
-`status` exits with `0` when the instance runs, `3` when it is stopped, and `1` when the command fails or the instance does not answer. A Worker that runs but has no connection to its Hub exits with `0`. So does a `dev` instance that waits for `/setup`.
+`status` exits with `0` when the instance runs, `8` when it is stopped, `1` when the command fails or the instance does not answer, and `2` for invalid use, such as an unknown flag. A Worker that runs but has no connection to its Hub exits with `0`. So does a `dev` instance that waits for `/setup`.
 
-`status --json` prints the same report as one JSON object for scripts. The [CLI Reference](/docs/reference/cli-reference/#status---json) lists its fields.
+`status --json` prints the same report for scripts, as one line: `{"data": <report>}`, the form of every `--json` result. The [CLI Reference](/docs/reference/cli-reference/#status---json) lists its fields.
 
 Each start writes its own log under `<data-dir>/.lifecycle/logs/`, and LeapMux keeps the logs of the last ten starts. When `start` fails or times out, it prints the end of the log and the full path of the log.
 
 ## Stop, restart, and remove the service
 
 ```bash
-leapmux solo stop       # Stop now. The service starts LeapMux again at the next login or boot.
-leapmux solo restart    # Stop, then start again.
-leapmux solo disable    # Remove the service. Run stop first.
+leapmux daemon solo stop       # Stop now. The service starts LeapMux again at the next login or boot.
+leapmux daemon solo restart    # Stop, then start again.
+leapmux daemon solo disable    # Remove the service. Run stop first.
 ```
 
 `disable` keeps the data directory: the databases, the Worker credentials, and the logs.
@@ -192,7 +193,7 @@ The service saves these settings when `start`, `restart`, or `enable` creates or
 To change a setting, use the place that holds it:
 
 - **A setting in the configuration file:** edit the file, then run `restart`.
-- **A saved flag:** run `restart` with the new flag, such as `leapmux hub restart --listen :4400`. A flag that you give replaces its saved value, and the other saved flags remain. For a flag that you can repeat, such as `--listen`, the values that you give replace the whole saved list.
+- **A saved flag:** run `restart` with the new flag, such as `leapmux daemon hub restart --listen :4400`. A flag that you give replaces its saved value, and the other saved flags remain. For a flag that you can repeat, such as `--listen`, the values that you give replace the whole saved list.
 - **Login or boot startup:** run `restart --startup=boot` or `restart --startup=login`.
 
 When the configuration changes, `restart` shows the new configuration and asks for your consent again.
@@ -212,7 +213,7 @@ GIT_SSH_COMMAND: "ssh -i /home/alice/.ssh/leapmux"
 ```
 
 ```bash
-leapmux worker restart --environment-file /home/alice/.config/leapmux/worker/environment.yaml
+leapmux daemon worker restart --environment-file /home/alice/.config/leapmux/worker/environment.yaml
 ```
 
 The file holds one YAML map, and each key and each value is a string. These rules apply:
@@ -230,7 +231,7 @@ The service definition holds the path of the file, not its values. Protect the f
 A script cannot answer the prompts, so it passes the answers as flags:
 
 ```bash
-leapmux worker start --startup=boot --yes
+leapmux daemon worker start --startup=boot --yes
 ```
 
 `--yes` accepts the preview. It does not choose between login and boot startup, so a first `start` needs `--startup` as well. Without a terminal, `start` and `enable` do not prompt. They fail and state the flags that they need.
@@ -251,15 +252,15 @@ You can move a data directory, or restore it from a backup at another path. The 
 1. If the instance runs as a service at the old path on this machine, stop it and remove its service there:
 
    ```bash
-   leapmux hub stop --data-dir /srv/leapmux/old
-   leapmux hub disable --data-dir /srv/leapmux/old
+   leapmux daemon hub stop --data-dir /srv/leapmux/old
+   leapmux daemon hub disable --data-dir /srv/leapmux/old
    ```
 
 2. Move the directory, or restore the backup at the new path.
 3. Start the instance at the new path:
 
    ```bash
-   leapmux hub start --data-dir /srv/leapmux/new
+   leapmux daemon hub start --data-dir /srv/leapmux/new
    ```
 
 {{< callout type="warning" >}}
@@ -268,4 +269,4 @@ Move a Worker's data directory; do not copy it and run both copies. Both copies 
 
 ## When something goes wrong
 
-[Troubleshooting](/docs/reference/troubleshooting/#background-service) lists the common failures and their fixes. Start with `leapmux <mode> status`, which states the reason for the last failure and the path of its log.
+[Troubleshooting](/docs/reference/troubleshooting/#background-service) lists the common failures and their fixes. Start with `leapmux daemon <mode> status`, which states the reason for the last failure and the path of its log.

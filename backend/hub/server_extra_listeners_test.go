@@ -106,14 +106,14 @@ func TestServer_ASettingsWriteBindsAndUnbindsWhileServing(t *testing.T) {
 	// stop publishing an address, so it must not read as "leave things alone".
 	writeExtraListeners(t, srv)
 	requireStopsAnswering(t, extra)
-	// The -listen address is never dropped: Apply merges it back in every time,
+	// The --listen address is never dropped: Apply merges it back in every time,
 	// so an empty settings row cannot take the hub off the air.
 	requireAnswers(t, base)
 	assert.Equal(t, []string{base}, servingAddresses(srv))
 }
 
 // The requirement's own example, through the real server: an operator asks for
-// every interface on the port -listen already holds, and one socket serves
+// every interface on the port --listen already holds, and one socket serves
 // both.
 func TestServer_AWildcardMergesTheListenAddress(t *testing.T) {
 	port := freePorts(t, 1)[0]
@@ -130,13 +130,13 @@ func TestServer_AWildcardMergesTheListenAddress(t *testing.T) {
 	writeExtraListeners(t, srv, "*:"+strconv.Itoa(port))
 
 	assert.Equal(t, []string{"*:" + strconv.Itoa(port)}, servingAddresses(srv))
-	// Still answering where -listen pointed, from the wider socket.
+	// Still answering where --listen pointed, from the wider socket.
 	requireAnswers(t, base)
 
 	status := srv.listeners.Bound()
 	require.Len(t, status, 1)
 	assert.Equal(t, SourceMerged, status[0].Source,
-		"the panel must be able to say the -listen address is served by this one, not that it is gone")
+		"the panel must be able to say the --listen address is served by this one, not that it is gone")
 
 	// The hub reports the DIAL form of the merged address, because
 	// settings.browserHostForListen reads a wildcard as an empty host with a
@@ -303,7 +303,7 @@ func TestServer_AHubIgnoresASoloStoredAddress(t *testing.T) {
 
 	hub, _ := startTestServerIn(t, &config.Config{Listen: []string{base}, SoloMode: false}, dir, local)
 	assert.Equal(t, []string{base}, servingAddresses(hub),
-		"a hub must serve only what -listen gave it")
+		"a hub must serve only what --listen gave it")
 }
 
 // testHubLease acquires the hub-component lease of dataDir for a test

@@ -1,13 +1,17 @@
 package deepseekharness
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,6 +92,25 @@ func TestContinuableResultAttachesOnlyItsExactFirstSpawnSpan(t *testing.T) {
 	span, err = sink.ChildSpawnSpan(virtualID)
 	require.NoError(t, err)
 	assert.Equal(t, "spawn-first", span)
+}
+
+func TestContinuableResultMatchesNamedCatalogEntry(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	descriptor := nativeChildDescriptor{ID: "native-child", Parent: "native-root", Mode: "continuable", Label: "Native child", Name: "agent-1"}
+	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
+	require.NoError(t, err)
+	a.childCatalog[descriptor.ID] = descriptor
+	a.children[descriptor.ID] = &nativeChild{descriptor: descriptor, agentID: virtualID}
+	sink.SetSpanType("spawn-named", contracts.DeepseekHarnessToolSubagent)
+	raw := []byte(`{"turn":1,"message":{"toolCallId":"spawn-named","role":"tool","content":[{"type":"text","text":"started subagent agent-1"}],"isError":false}}`)
+	require.NoError(t, a.bindChildResult(a.streams["root"], "spawn-named", raw))
+	span, err := sink.ChildSpawnSpan(virtualID)
+	require.NoError(t, err)
+	assert.Equal(t, "spawn-named", span)
 }
 
 func TestChildTurnStatePreservesEachFinalOutcome(t *testing.T) {
@@ -341,7 +364,6 @@ func TestContinuableChildTurnStatePublishesMonotonicTransitions(t *testing.T) {
 		assert.Empty(t, sink.Child(virtualID).TurnStates(), "one-shot child must remain registry-only")
 	})
 }
-
 func TestWorkflowEndClosesRemainingChildren(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -486,4 +508,81 @@ func TestWorkflowEndClosesAllChildrenAndWorkflowRowBeforeDeletingRun(t *testing.
 	_, stillTracked := a.workflows["wf-err"]
 	a.Mu.Unlock()
 	assert.False(t, stillTracked)
+}
+
+func TestInterruptChildUsesUserRouteAndFallsBackOnNotFound(t *testing.T) {
+	t.Parallel()
+	t.Run("prefers subagents/interruptByUser", func(t *testing.T) {
+		t.Parallel()
+		var paths []string
+		var gotArgs map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			var req struct {
+				ID      string `json:"rpcId"`
+				Payload struct {
+					Args map[string]any `json:"args"`
+				} `json:"payload"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			gotArgs = req.Payload.Args
+			if r.URL.Path != "/api/subagents/interruptByUser" {
+				http.NotFound(w, r)
+				return
+			}
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"type": "server-response", "rpcId": req.ID,
+				"result": map[string]any{"ok": true, "value": map[string]any{"accepted": true}},
+			}))
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		a := newOfflineAgent(t, &agenttest.Sink{})
+		a.rpc = remoteRPC{endpoint: endpoint}
+		a.children["child-1"] = &nativeChild{descriptor: nativeChildDescriptor{ID: "child-1", Parent: "native-root", Mode: "continuable"}, active: true}
+
+		require.NoError(t, a.InterruptChild("child-1", agent.StopContext{}))
+		assert.Equal(t, []string{"/api/subagents/interruptByUser"}, paths)
+		assert.Equal(t, map[string]any{"childSessionId": "child-1"}, gotArgs)
+	})
+
+	t.Run("falls back to subagents/interruptByParent on 404", func(t *testing.T) {
+		t.Parallel()
+		var paths []string
+		var fallbackArgs map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			var req struct {
+				ID      string `json:"rpcId"`
+				Payload struct {
+					Args map[string]any `json:"args"`
+				} `json:"payload"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			if r.URL.Path == "/api/subagents/interruptByUser" {
+				http.NotFound(w, r)
+				return
+			}
+			fallbackArgs = req.Payload.Args
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"type": "server-response", "rpcId": req.ID,
+				"result": map[string]any{"ok": true, "value": map[string]any{"accepted": true}},
+			}))
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		a := newOfflineAgent(t, &agenttest.Sink{})
+		a.rpc = remoteRPC{endpoint: endpoint}
+		a.children["child-1"] = &nativeChild{descriptor: nativeChildDescriptor{ID: "child-1", Parent: "native-root", Mode: "continuable"}, active: true}
+
+		require.NoError(t, a.InterruptChild("child-1", agent.StopContext{}))
+		assert.Equal(t, []string{"/api/subagents/interruptByUser", "/api/subagents/interruptByParent"}, paths)
+		assert.Equal(t, map[string]any{"childSessionId": "child-1", "parentSessionId": "native-root", "mode": "continuable"}, fallbackArgs)
+	})
 }

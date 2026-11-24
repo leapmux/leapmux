@@ -299,6 +299,7 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 	if previousTurnID != "" && previousTurnID != turnID {
 		a.persistOpenCodexCompactionEnd(a.currentThreadID(), agent.MessageCompletionInterrupted)
 		a.flushCodexGeneration(agent.MessageCompletionInterrupted)
+		a.recordCodexReplyEnd(a.currentThreadID(), previousTurnID, false)
 	}
 	threadID := a.currentThreadID()
 	a.clearReasoningStateForThread(threadID)
@@ -307,31 +308,11 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 	a.mainTurn.finish()
 	a.mainTurn = codexMainTurn{id: turnID, model: a.model, ended: make(chan struct{})}
 	pending := a.pendingStart
-	matched := pending != nil && pending.threadID == threadID
-	publishSettings := false
-	settled := false
+	matched := pending != nil && pending.threadID == threadID &&
+		(pending.replyDone == nil || pending.replyTurnID == turnID)
+	var publishSettings, settled bool
 	if matched {
-		a.mainTurn.input = pending.input
-		if pending.settings.model != "" {
-			a.mainTurn.model = pending.settings.model
-		}
-		if pending.retry != nil {
-			if !pending.modelObserved && a.codexStartOwnsSettingLocked(pending, agent.OptionIDModel) {
-				a.model = pending.settings.model
-			}
-			if !pending.effortObserved && a.codexStartOwnsSettingLocked(pending, agent.OptionIDEffort) {
-				a.effort = pending.settings.effort
-			}
-			publishSettings = true
-		}
-		if a.permissionSettingsLocked() == pending.settings.permissions {
-			a.permissionsAcknowledged = true
-		}
-		if pending.cancelled || pending.retry != nil && pending.retry.cancelled {
-			pending.cancelDone = make(chan error, 1)
-			a.mainTurn.input = nil
-		}
-		settled = a.finishCodexTurnStartLocked(pending, turnID, nil)
+		publishSettings, settled = a.attachCodexTurnStartLocked(pending, turnID)
 	}
 	a.TurnToolUses = 0
 	a.turnSawPlan = false
@@ -343,13 +324,42 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 	a.PublishTurnActive()
 	a.sink.ReportProgress(agent.ResetModelProgress())
 	if matched {
-		if publishSettings {
-			a.publishSettings()
+		a.publishCodexTurnStart(pending, threadID, turnID, publishSettings, settled)
+	}
+}
+
+func (a *Agent) attachCodexTurnStartLocked(pending *codexPendingTurnStart, turnID string) (publishSettings, settled bool) {
+	a.mainTurn.input = pending.input
+	if pending.settings.model != "" {
+		a.mainTurn.model = pending.settings.model
+	}
+	if pending.retry != nil {
+		if !pending.modelObserved && a.codexStartOwnsSettingLocked(pending, agent.OptionIDModel) {
+			a.model = pending.settings.model
 		}
-		a.approveOutstandingForBypass()
-		if pending.cancelDone != nil {
-			go func() { pending.cancelDone <- a.interruptCancelledCodexStart(threadID, turnID) }()
+		if !pending.effortObserved && a.codexStartOwnsSettingLocked(pending, agent.OptionIDEffort) {
+			a.effort = pending.settings.effort
 		}
+		publishSettings = true
+	}
+	if a.permissionSettingsLocked() == pending.settings.permissions {
+		a.permissionsAcknowledged = true
+	}
+	if pending.cancelled || pending.retry != nil && pending.retry.cancelled {
+		pending.cancelDone = make(chan error, 1)
+		a.mainTurn.input = nil
+	}
+	settled = a.finishCodexTurnStartLocked(pending, turnID, nil)
+	return publishSettings, settled
+}
+
+func (a *Agent) publishCodexTurnStart(pending *codexPendingTurnStart, threadID, turnID string, settings, settled bool) {
+	if settings {
+		a.publishSettings()
+	}
+	a.approveOutstandingForBypass()
+	if pending.cancelDone != nil {
+		go func() { pending.cancelDone <- a.interruptCancelledCodexStart(threadID, turnID) }()
 	}
 	if settled {
 		close(pending.done)
@@ -443,8 +453,7 @@ func (a *Agent) handleItemStarted(raw []byte, params json.RawMessage) {
 	if event.itemType == contracts.CodexItemTypeUserMessage {
 		a.persistDroppedCodexResponse(event.threadID)
 		if a.isMainThreadID(event.threadID) {
-			a.steerLedger.EchoKey(providerkit.StringField(event.item, "clientId"))
-			a.steerLedger.Settle(a.sink)
+			a.recordCodexSteerEcho(event.threadID, event.turnID, providerkit.StringField(event.item, "clientId"))
 		}
 	}
 
@@ -601,7 +610,11 @@ func (a *Agent) handleCodexItemCompletedForSink(
 
 	switch event.itemType {
 	case contracts.CodexItemTypeAgentMessage:
-		persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
+		content := agent.MessageContent{Original: event.params}
+		if mainThread && event.threadID != "" && event.turnID != "" {
+			content.AgentSessionID, content.NativeTurnID = event.threadID, event.turnID
+		}
+		persistSharedItemCompleted(sink, content, event.itemType, event.itemID, agentID)
 		if mainThread {
 			a.publishAsyncQuestions(sink, event)
 		}
@@ -609,7 +622,7 @@ func (a *Agent) handleCodexItemCompletedForSink(
 		// The queue row and the steer ledger already state this input.
 	case contracts.CodexItemTypePlan:
 		if !mainThread {
-			persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
+			persistSharedItemCompleted(sink, agent.MessageContent{Original: event.params}, event.itemType, event.itemID, agentID)
 			return
 		}
 		a.Mu.Lock()
@@ -636,7 +649,7 @@ func (a *Agent) handleCodexItemCompletedForSink(
 			a.TurnToolUses++
 			a.Mu.Unlock()
 		}
-		if persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID) {
+		if persistSharedItemCompleted(sink, agent.MessageContent{Original: event.params}, event.itemType, event.itemID, agentID) {
 			a.observeCodexRawExecutionTool(event)
 		}
 	case contracts.CodexItemTypeCollabAgentToolCall:
@@ -716,11 +729,7 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	if completion == agent.MessageCompletionInterrupted {
 		incompleteToolUses = a.persistIncompleteCodexTools("", false, completion)
 		a.finishCodexRawExecutions(notif.ThreadID, completion)
-		a.steerLedger.DropAll()
-	} else {
-		a.steerLedger.EchoOldest(len(a.steerLedger.Pending()))
 	}
-	a.steerLedger.Settle(a.sink)
 
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
@@ -755,6 +764,13 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	// Ingress already retained process authentication evidence. Keep the
 	// current turn's classification here to exclude automatic server retries.
 	authenticationFailure := codexCompletedTurnAuthFailure(turnStatus, turnErrorMessage, turnErrorInfo)
+	if notif.ThreadID != "" && turnID != "" {
+		outcome := agent.SteerOutcomeUncertain
+		if completion == agent.MessageCompletionInterrupted {
+			outcome = agent.SteerOutcomeDropped
+		}
+		a.resolveCodexUnechoedSteers(notif.ThreadID, turnID, outcome)
+	}
 	// Clear provider turn state before the deferred publish below releases the
 	// Worker's input queue. This lets the next queued input start a new turn.
 	a.Mu.Lock()
@@ -777,9 +793,17 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	a.clearInterruptCallsForThread(notif.ThreadID)
 
 	// Persist as a result divider.
-	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(agent.MessageContent{Original: params}, numToolUses), agent.SpanInfo{}); err != nil {
-		slog.Error("codex persist turn/completed", "agent_id", a.AgentID(), "error", err)
+	content := agent.MessageContent{Original: params}
+	if notif.ThreadID != "" && turnID != "" {
+		if outcome := codexNativeReplyOutcome(turnStatus); outcome != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+			content.AgentSessionID, content.NativeTurnID, content.InputTurnOutcome = notif.ThreadID, turnID, outcome
+		}
 	}
+	persistErr := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, numToolUses), agent.SpanInfo{})
+	if persistErr != nil {
+		slog.Error("codex persist turn/completed", "agent_id", a.AgentID(), "error", persistErr)
+	}
+	a.recordCodexReplyEnd(notif.ThreadID, turnID, content.InputTurnOutcome != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED && agent.OutputRetained(persistErr))
 
 	// Only an interrupted turn resets spans and progress. Normal and
 	// non-interrupted error turns preserve open spans so cross-turn background
@@ -1237,8 +1261,9 @@ func (a *Agent) isRetiredCodexThread(threadID string) bool {
 
 // handleServerRequestResolved processes serverRequest/resolved notifications.
 // For user-initiated responses the control request is already deleted by the
-// SendControlResponse handler, but this also covers agent-initiated
-// resolutions (e.g. the agent moves on without waiting for user input).
+// answer path (the service's deliverControlAnswer), but this
+// also covers agent-initiated resolutions (e.g. the agent moves on without
+// waiting for user input).
 func (a *Agent) handleServerRequestResolved(params json.RawMessage) {
 	var notif struct {
 		RequestID json.RawMessage `json:"requestId"`
@@ -1252,7 +1277,7 @@ func (a *Agent) handleServerRequestResolved(params json.RawMessage) {
 	}
 	// Codex also emits this event after a client answer removes the registry record.
 	// The service owns finalization of that answer. Cancel only a request that still waits here.
-	a.WithdrawOutstandingControlRequest(a.sink, identity.Key)
+	a.WithdrawOutstandingControlRequest(identity.Key)
 }
 
 // handleErrorNotification processes error notifications.
@@ -1598,13 +1623,13 @@ func persistSharedItemStarted(sink providerkit.ToolSpanServices, event codexItem
 }
 
 // persistSharedItemCompleted applies item completions that need no agent state.
-func persistSharedItemCompleted(sink providerkit.ToolLifecycleServices, params json.RawMessage, itemType, itemID, agentID string) bool {
+func persistSharedItemCompleted(sink providerkit.ToolLifecycleServices, content agent.MessageContent, itemType, itemID, agentID string) bool {
 	sink.ReportProgress(agent.CompleteModelProgress(itemID))
 	sink.ReportProgress(agent.CompleteOutputProgress(itemID))
 	stored := false
 	switch itemType {
 	case contracts.CodexItemTypeAgentMessage, contracts.CodexItemTypePlan:
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: params}, agent.SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
 			SpanID: itemID, SpanType: itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage/plan", "agent_id", agentID, "error", err)
@@ -1612,7 +1637,7 @@ func persistSharedItemCompleted(sink providerkit.ToolLifecycleServices, params j
 			stored = true
 		}
 	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView:
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: params}, agent.SpanInfo{
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
 			SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {
 			slog.Error("codex persist item/completed", "agent_id", agentID, "type", itemType, "error", err)

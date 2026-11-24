@@ -29,9 +29,11 @@ import (
 // worker session.
 func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 	expected := []string{
+		leapmuxv1connect.SystemServiceGetSystemInfoProcedure,
 		// WorkspaceService surface.
 		leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 		leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
+		leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure,
 		leapmuxv1connect.WorkspaceServiceListTabsProcedure,
 		leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 		leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
@@ -44,6 +46,7 @@ func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 		leapmuxv1connect.UserCRDTGetMaterializedProcedure,
 		// WorkerManagementService surface.
 		leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
+		leapmuxv1connect.WorkerManagementServiceGetWorkerEnrollmentRevisionProcedure,
 		leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
 	}
 	for _, procedure := range expected {

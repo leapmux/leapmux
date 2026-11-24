@@ -60,25 +60,35 @@ type Agent struct {
 	exitCleaned     bool
 	retryResolution providerkit.RetryResolution
 	pendingSteers   []*pendingSteer
+	// dispatchMu serializes reply ownership with the Remote event stream.
+	replySubmissions map[string]*harnessReplySubmission
+	replyTurns       map[string]*harnessReplyTurn
 }
 
 // pendingSteer keeps the original input until native history proves its delivery or removal.
 // Mu protects its native identity and disposition.
 type pendingSteer struct {
-	requestID   string
-	itemID      string
-	content     string
-	attachments []*leapmuxv1.Attachment
-	delivered   bool
-	removed     bool
+	// requestID is the native prompt request, which native history states.
+	requestID string
+	// itemID is the native inbox item, known once native history states it.
+	itemID string
+	// request is the Worker's steer, which removePendingSteer hands back
+	// unchanged. Its attachments are copies, so a later change of the caller's
+	// slice does not reach the hand-back.
+	request   agent.SteerRequest
+	delivered bool
+	removed   bool
 }
 
 var _ agent.Agent = (*Agent)(nil)
+var _ agent.InputReceiptSender = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerEchoReporter = (*Agent)(nil)
 var _ agent.SteerSurvivor = (*Agent)(nil)
 var _ agent.ContextCompactor = (*Agent)(nil)
 var _ agent.GoalWriter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
+var _ agent.ChildEchoSteerer = (*Agent)(nil)
 var _ agent.ChildInterrupter = (*Agent)(nil)
 
 func newAgent(sink agent.ProviderServices, workingDir string) *Agent {
@@ -86,19 +96,29 @@ func newAgent(sink agent.ProviderServices, workingDir string) *Agent {
 }
 
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput("", content, attachments, "queue")
+	_, err := a.sendInput("", content, attachments, nil, false)
+	return err
+}
+
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput("", content, attachments, nil, true)
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
 	if sessionID == "" {
 		return agent.ErrInputSessionChanged
 	}
-	return a.sendInput(sessionID, content, attachments, "queue")
+	_, err := a.sendInput(sessionID, content, attachments, nil, false)
+	return err
 }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput("", content, attachments, "steer")
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	_, err := a.sendInput("", request.Content, request.Attachments, &request, request.AttemptID != "")
+	return err
 }
+
+// SteerRowAtEcho waits for the native event that identifies the consuming turn.
+func (*Agent) SteerRowAtEcho() bool { return true }
 
 // SteerSurvivesTurnEnd prevents the queue from resending an input that the native inbox retains.
 func (*Agent) SteerSurvivesTurnEnd() bool { return true }
@@ -109,7 +129,15 @@ func (a *Agent) SupportsSteering() bool {
 	return !a.StoppedLocked() && a.streamFailure == nil && a.sessionID != ""
 }
 
-func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Attachment, delivery string) error {
+// sendInput sends one prompt to the native Session. steer is the Worker's
+// request when the prompt steers the running turn, and nil when the prompt
+// starts a turn. content and attachments are the request's own for a steer.
+func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Attachment, steer *agent.SteerRequest, trackReply bool) (agent.NativeInputReceipt, error) {
+	var inputReceipt agent.NativeInputReceipt
+	delivery := "queue"
+	if steer != nil {
+		delivery = "steer"
+	}
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
 	if delivery == "steer" {
@@ -121,34 +149,47 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 	if a.streamFailure != nil {
 		failure := a.streamFailure
 		a.Mu.Unlock()
-		return fmt.Errorf("DeepSeek Harness lost its native Remote stream: %w", failure)
+		return inputReceipt, fmt.Errorf("DeepSeek Harness lost its native Remote stream: %w", failure)
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("DeepSeek Harness is stopped")
+		return inputReceipt, fmt.Errorf("DeepSeek Harness is stopped")
 	}
 	if sessionID == "" || expected != "" && expected != sessionID {
 		a.Mu.Unlock()
-		return agent.ErrInputSessionChanged
+		return inputReceipt, agent.ErrInputSessionChanged
 	}
 	if delivery == "queue" && a.active {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return inputReceipt, agent.ErrAgentBusy
 	}
 	if delivery == "steer" && !a.active {
 		a.Mu.Unlock()
-		return agent.ErrNoActiveTurn
+		return inputReceipt, agent.ErrNoActiveTurn
 	}
 	a.Mu.Unlock()
 	if len(attachments) == 0 {
 		handled, err := a.userCommand(sessionID, content)
 		if handled || err != nil {
-			return err
+			if err == nil && steer != nil && steer.AttemptID != "" {
+				// A local command can finish without submitting a native prompt.
+				err = a.reportSteerResolution(a.sink, *steer, agent.SteerOutcomeEchoed, inputReceipt)
+				if agent.OutputRetained(err) {
+					err = nil
+				}
+			}
+			return inputReceipt, err
 		}
 	}
 	parts, err := a.promptParts(sessionID, content, attachments)
 	if err != nil {
-		return err
+		return inputReceipt, err
+	}
+	requestID := uuid.NewString()
+	var submission *harnessReplySubmission
+	if trackReply {
+		inputReceipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: requestID}
+		submission = a.registerReplySubmission(a.sink, inputReceipt, steer)
 	}
 	if delivery == "queue" {
 		a.Mu.Lock()
@@ -160,15 +201,15 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 	var receipt struct {
 		Accepted bool `json:"accepted"`
 	}
-	requestID := uuid.NewString()
-	var steer *pendingSteer
-	if delivery == "steer" {
-		steer = &pendingSteer{requestID: requestID, content: content}
-		for _, attachment := range attachments {
-			steer.attachments = append(steer.attachments, proto.CloneOf(attachment))
+	var pending *pendingSteer
+	if steer != nil {
+		pending = &pendingSteer{requestID: requestID, request: *steer}
+		pending.request.Attachments = nil
+		for _, attachment := range steer.Attachments {
+			pending.request.Attachments = append(pending.request.Attachments, proto.CloneOf(attachment))
 		}
 		a.Mu.Lock()
-		a.pendingSteers = append(a.pendingSteers, steer)
+		a.pendingSteers = append(a.pendingSteers, pending)
 		a.Mu.Unlock()
 	}
 	err = a.rpc.request(a.Context(), "session/prompt", map[string]any{"requestId": requestID, "sessionId": sessionID, "mode": delivery, "content": parts}, &receipt)
@@ -176,15 +217,21 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 		err = fmt.Errorf("DeepSeek Harness did not accept the prompt")
 	}
 	if err == nil {
-		return nil
+		return inputReceipt, nil
 	}
-	if steer != nil {
+	if submission != nil {
+		if a.replySubmissionEchoed(submission) {
+			return inputReceipt, nil
+		}
+		inputReceipt = agent.NativeInputReceipt{}
+	}
+	if pending != nil {
 		a.Mu.Lock()
-		delivered := steer.delivered
-		a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(candidate *pendingSteer) bool { return candidate == steer })
+		delivered := pending.delivered
+		a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(candidate *pendingSteer) bool { return candidate == pending })
 		a.Mu.Unlock()
 		if delivered {
-			return nil
+			return inputReceipt, nil
 		}
 	}
 	var native *remoteFailure
@@ -192,9 +239,9 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 		if delivery == "queue" {
 			a.setTurnState(false)
 		}
-		return err
+		return inputReceipt, err
 	}
-	return fmt.Errorf("%w: DeepSeek Harness did not confirm the prompt: %w", agent.ErrDeliveryUncertain, err)
+	return inputReceipt, fmt.Errorf("%w: DeepSeek Harness did not confirm the prompt: %w", agent.ErrDeliveryUncertain, err)
 }
 
 func (a *Agent) PublishTurnActive() agent.TurnState {
@@ -282,8 +329,18 @@ func (a *Agent) removePendingSteer(sessionID string, steer *pendingSteer) error 
 		steer.removed = true
 		a.Mu.Unlock()
 	}
-	if err := a.sink.RequeueDroppedInput("dsh-steer:"+steer.requestID, steer.content, steer.attachments); err != nil {
-		return err
+	if steer.request.AttemptID != "" {
+		a.dispatchMu.Lock()
+		delete(a.replySubmissions, steer.requestID)
+		a.dispatchMu.Unlock()
+		err := a.reportSteerResolution(a.sink, steer.request, agent.SteerOutcomeDropped, agent.NativeInputReceipt{})
+		if !agent.OutputRetained(err) {
+			return err
+		}
+	} else {
+		if err := a.sink.RequeueDroppedInput(steer.request); err != nil {
+			return err
+		}
 	}
 	a.forgetPendingSteer(steer)
 	return nil
@@ -314,7 +371,7 @@ func (a *Agent) CompactContext() error {
 
 func (a *Agent) DiscardOutput() { a.discard.Store(true); a.Process.DiscardOutput() }
 
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error { return a.answerControl(raw) }
+func (a *Agent) SendRawInput(input agent.RawInput) error { return a.answerControl(input.Data) }
 
 // HandleOutput accepts one native mux frame for provider tests.
 func (a *Agent) HandleOutput(raw []byte) {
@@ -333,6 +390,9 @@ func (a *Agent) Stop() {
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopConnection()
+	a.dispatchMu.Lock()
+	a.retireUnfinishedReplies()
+	a.dispatchMu.Unlock()
 	a.Mu.Lock()
 	failure, stopDone := a.streamFailure, a.failureStopDone
 	a.Mu.Unlock()

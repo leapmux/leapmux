@@ -16,22 +16,27 @@ import { messageRowChromeClass } from '~/components/chat/messageRowLayout'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { MESSAGE_UI_KEY } from '~/components/chat/messageUiKeys'
 import { createRenderReadinessScope, READINESS_REQUEST_LIMIT_MS } from '~/components/chat/renderReadiness'
+import { OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
 import { toolBodyContent, toolHeaderTimestamp, toolUseHeader } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE } from '~/generated/contracts/copilot-protocol'
 import { MESSAGE_METADATA_FIELD, MESSAGE_SUPPLEMENT_FIELD, TOOL_OUTCOME } from '~/generated/contracts/worker-vocab'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ControlDecisionSchema, ControlPromptSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
+import { AgentProvider, AvailableOptionGroupSchema, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ReadFileResponseSchema } from '~/generated/proto/leapmux/v1/file_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { _resetLocalMarkdownImageCacheForTest } from '~/lib/localMarkdownImages'
+import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { deferred } from '~/test-support/async'
 import { classSelector } from '~/test-support/composedClass'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageContext } from '~/test-support/messageContext'
-import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
+import { makeControlResponseMessage, makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { toolFrame } from '~/test-support/mimoFixtures'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { expectReleasedAtRequestLimit } from '~/test-support/renderReadiness'
+import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 
 // The jsdom Worker fixture renders Markdown. Wait for its replies before reading it.
 
@@ -62,6 +67,55 @@ describe('MessageBubble category', () => {
     })
     const view = render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
     expect(view.getByTestId('message-bubble')).toHaveAttribute('data-category', 'user_content')
+  })
+})
+
+// The whole path of a message from another agent: the Worker's stored row with
+// the sender in its metadata, the shared extraction, and the line that states
+// the sender by the title that the host resolves.
+describe('MessageBubble a message from another agent', () => {
+  const fromAgent = (provider: AgentProvider) => makeMsg({
+    source: MessageSource.USER,
+    agentProvider: provider,
+    content: rawContent({ content: 'Run the tests' }),
+    supplementalContent: rawContent({
+      metadata: {
+        [MESSAGE_METADATA_FIELD.AgentMessageSender]: { tabId: 'sender-tab', provider: 'AGENT_PROVIDER_CLAUDE_CODE' },
+      },
+    }),
+  })
+
+  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.OPENCODE])('states the sender by the title that the host resolves, in a transcript of provider %s', async (provider) => {
+    const tabTitle = vi.fn((tabId: string) => (tabId === 'sender-tab'
+      ? 'Fix flaky spec'
+      : undefined))
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={fromAgent(provider)} host={{ tabTitle }} />
+      </PreferencesProvider>
+    ))
+    await settleWorkerReplies()
+    expect(screen.getByTestId('agent-message-sender')).toHaveTextContent('Message from Fix flaky spec (Claude Code)')
+    expect(screen.getByTestId('message-content')).toHaveTextContent('Run the tests')
+    expect(screen.getByTestId('message-bubble')).toHaveAttribute('data-role', 'user')
+    expect(tabTitle).toHaveBeenCalledWith('sender-tab')
+  })
+
+  it('states no sender on the user\'s own message', () => {
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble
+          message={makeMsg({
+            source: MessageSource.USER,
+            content: rawContent({ content: 'Run the tests' }),
+          })}
+          host={{
+            tabTitle: () => 'Fix flaky spec',
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.queryByTestId('agent-message-sender')).toBeNull()
   })
 })
 
@@ -3292,5 +3346,77 @@ describe('a file image in a row that comes near the view', () => {
 
     await waitFor(() => expect(fetchFileImage).toHaveBeenCalledOnce())
     await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
+  })
+})
+
+// A tab draws its saved rows before the agent's settings reach the browser, so the label of
+// the mode that a plan approval switched to arrives after the row draws. The row is the real
+// transcript's: the entry cache, and the render cache under the row's render key.
+describe('MessageBubble saved plan approval', () => {
+  afterEach(() => clearSettingsLabelCache())
+
+  const PLAN_PROMPT = create(ControlPromptSchema, {
+    kind: { case: 'plan', value: {} },
+  })
+
+  function approval(permissionMode: string) {
+    return create(ControlDecisionSchema, {
+      kind: {
+        case: 'plan',
+        value: { approve: true, permissionMode },
+      },
+    })
+  }
+
+  it.each([
+    {
+      provider: AgentProvider.DROID,
+      mode: 'auto-medium',
+      label: 'Auto (Medium)',
+      groups: [
+        create(AvailableOptionGroupSchema, {
+          id: OPTION_ID_PERMISSION_MODE,
+          options: [
+            { id: 'auto-high', name: 'Auto (High)' },
+            { id: 'auto-medium', name: 'Auto (Medium)' },
+          ],
+        }),
+      ],
+    },
+    {
+      // Copilot's catalog holds its session mode beside its permission mode.
+      provider: AgentProvider.GITHUB_COPILOT,
+      mode: COPILOT_PERMISSION_MODE.Assisted,
+      label: 'Assisted',
+      groups: [
+        create(AvailableOptionGroupSchema, {
+          id: COPILOT_OPTION.SessionMode,
+          options: [
+            { id: COPILOT_MODE.Interactive, name: 'Interactive' },
+            { id: COPILOT_MODE.Plan, name: 'Plan' },
+          ],
+        }),
+        create(AvailableOptionGroupSchema, {
+          id: OPTION_ID_PERMISSION_MODE,
+          options: [
+            { id: COPILOT_PERMISSION_MODE.Manual, name: 'Manual' },
+            { id: COPILOT_PERMISSION_MODE.Assisted, name: 'Assisted' },
+          ],
+        }),
+      ],
+    },
+  ])('draws the label of the mode that arrives after the row: $label', ({ provider, mode, label, groups }) => {
+    const message = makeControlResponseMessage(provider, { approved: true }, undefined, {
+      prompt: PLAN_PROMPT,
+      decision: approval(mode),
+    })
+    const scenario = createTranscriptScenario({
+      archive: [message],
+    })
+    const view = scenario.renderBubble(message.id)
+    expect(view.getByTestId('control-response-text')).toHaveTextContent(`Approve (${mode})`)
+
+    updateSettingsLabelCache(provider, groups)
+    expect(view.getByTestId('control-response-text')).toHaveTextContent(`Approve (${label})`)
   })
 })

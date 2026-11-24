@@ -55,9 +55,12 @@ type openCodeRun struct {
 
 var (
 	_ agent.Agent               = (*Agent)(nil)
+	_ agent.InputReceiptSender  = (*Agent)(nil)
 	_ agent.InputSteerer        = (*Agent)(nil)
+	_ agent.SteerReceiptSender  = (*Agent)(nil)
 	_ agent.SessionInputSteerer = (*Agent)(nil)
 	_ agent.ChildSteerer        = (*Agent)(nil)
+	_ agent.ChildEchoSteerer    = (*Agent)(nil)
 	_ agent.ChildInterrupter    = (*Agent)(nil)
 	_ agent.ContextCompactor    = (*Agent)(nil)
 	_ agent.SteerEchoReporter   = (*Agent)(nil)
@@ -87,6 +90,13 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 	}
 	return run.SendInput(content, attachments)
 }
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	run, err := a.rootRun()
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	return run.submitInput(content, attachments, openCodeInputOptions{trackReply: true})
+}
 func (a *Agent) SendInputForSession(id, content string, attachments []*leapmuxv1.Attachment) error {
 	run, err := a.rootRun()
 	if err != nil {
@@ -94,19 +104,24 @@ func (a *Agent) SendInputForSession(id, content string, attachments []*leapmuxv1
 	}
 	return run.SendInputForSession(id, content, attachments)
 }
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	run, err := a.rootRun()
-	if err != nil {
-		return err
-	}
-	return run.SteerInput(content, attachments)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	_, err := a.SteerInputWithReceipt(request)
+	return err
 }
-func (a *Agent) SteerInputForSession(id, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	run, err := a.rootRun()
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	return run.steerQueuedInput(nil, request)
+}
+func (a *Agent) SteerInputForSession(id string, request agent.SteerRequest) error {
 	run, err := a.rootRun()
 	if err != nil {
 		return err
 	}
-	return run.sendInput(&id, content, attachments, true)
+	_, err = run.steerQueuedInput(&id, request)
+	return err
 }
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	run, err := a.rootRun()
@@ -115,11 +130,11 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	}
 	return run.PublishTurnActive()
 }
-func (a *Agent) SendRawInput(raw []byte, _ agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
 	if a.controls == nil {
-		return providerkit.ErrControlRequestNotPending
+		return agent.ErrControlRequestNotPending
 	}
-	return a.controls.answer(raw)
+	return a.controls.answer(input.Data)
 }
 
 func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
@@ -226,7 +241,8 @@ func (a *Agent) SendChildInput(key string, input agent.ChildInput) (agent.ChildI
 	if run.parentID == "" {
 		return agent.ChildInputResult{StartsTurn: true}, errors.New("the native child key identifies the root conversation")
 	}
-	return agent.ChildInputResult{StartsTurn: true}, run.SendInput(input.Content, input.Attachments)
+	receipt, err := run.submitInput(input.Content, input.Attachments, openCodeInputOptions{trackReply: true})
+	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 func (a *Agent) SteerChildInput(key, content string, attachments []*leapmuxv1.Attachment) error {
 	run, err := a.ensureOwnedRun(a.Context(), key)
@@ -236,8 +252,21 @@ func (a *Agent) SteerChildInput(key, content string, attachments []*leapmuxv1.At
 	if run.parentID == "" {
 		return errors.New("the native child key identifies the root conversation")
 	}
-	return run.SteerInput(content, attachments)
+	_, err = run.submitInput(content, attachments, openCodeInputOptions{steer: true})
+	return err
 }
+func (a *Agent) SteerChildInputAtEcho(key string, request agent.SteerRequest) error {
+	run, err := a.ensureOwnedRun(a.Context(), key)
+	if err != nil {
+		return err
+	}
+	if run.parentID == "" {
+		return errors.New("the native child key identifies the root conversation")
+	}
+	_, err = run.steerQueuedInput(nil, request)
+	return err
+}
+func (*Agent) ChildSteerSurvivesTurnEnd() bool { return true }
 func (a *Agent) ActiveChildTurnState(key string) agent.TurnState {
 	a.Mu.Lock()
 	run := a.runs[key]

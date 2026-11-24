@@ -1419,7 +1419,7 @@ func TestZCodeRecoveryCoverage_UncertainResponsesSurviveTeardown(t *testing.T) {
 			case "expiry":
 				a.Mu.Lock()
 				owner := a.turns["turn"]
-				pending := &zcodePendingNativeSettlement{settlement: zcodeTurnSettlement{persistEnd: func(int, bool) {}}}
+				pending := &zcodePendingNativeSettlement{settlement: zcodeTurnSettlement{persistEnd: func(int, bool, agent.MessageCompletion) {}}}
 				owner.pendingNative = pending
 				state := owner.recovery
 				a.Mu.Unlock()
@@ -1580,7 +1580,7 @@ func TestZCodeRecoveryCoverage_UnprovenStreamIdentityCannotCoverAnotherResponse(
 	a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(`{"content":"Same","querySource":"main_turn","stopReason":"stop"}`)})
 	a.unlockZCodeDispatch()
 	a.Mu.Lock()
-	pending := &zcodePendingNativeSettlement{settlement: zcodeTurnSettlement{persistEnd: func(int, bool) {}}}
+	pending := &zcodePendingNativeSettlement{settlement: zcodeTurnSettlement{persistEnd: func(int, bool, agent.MessageCompletion) {}}}
 	owner.pendingNative = pending
 	state := owner.recovery
 	a.Mu.Unlock()

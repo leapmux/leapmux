@@ -176,7 +176,8 @@ var errStdinClosed = errors.New("agent stdin is closed")
 
 // stdinFrame is one outbound write waiting for the process's stdin.
 type stdinFrame struct {
-	data []byte
+	data        []byte
+	beforeWrite func()
 	// done carries the write error to a caller that waits.
 	// With nil done, the writer logs a failure because the caller does not wait.
 	done chan error
@@ -217,6 +218,9 @@ func (p *Process) runStdinWriter(queue chan stdinFrame, closed chan struct{}) {
 	for {
 		select {
 		case frame := <-queue:
+			if frame.beforeWrite != nil {
+				frame.beforeWrite()
+			}
 			deliver(frame, p.writeStdinNow(frame.data))
 		case <-closed:
 			// Answer each queued frame so that no caller waits for an absent result.
@@ -257,6 +261,18 @@ func (p *Process) writeStdinNow(data []byte) error {
 // It never acquires p.Mu, so a slow write does not block state operations or Stop.
 // Callers must check stopped when they need an error for a stopped process.
 func (p *Process) WriteStdin(data []byte) error {
+	return p.writeStdin(data, nil)
+}
+
+func (p *Process) writeStdin(data []byte, beforeWrite func()) error {
+	if beforeWrite != nil {
+		var admission sync.Once
+		observe := beforeWrite
+		beforeWrite = func() { admission.Do(observe) }
+		// Close can release the caller after the writer claimed the frame.
+		// Revoke an unstarted observer or let one in progress finish first.
+		defer admission.Do(func() {})
+	}
 	p.stdinMu.Lock()
 	queue, closed := p.stdinWriterLocked()
 	p.stdinMu.Unlock()
@@ -269,7 +285,7 @@ func (p *Process) WriteStdin(data []byte) error {
 	}
 	done := make(chan error, 1)
 	select {
-	case queue <- stdinFrame{data: data, done: done}:
+	case queue <- stdinFrame{data: data, beforeWrite: beforeWrite, done: done}:
 	case <-closed:
 		return p.writeStdinNow(data)
 	}

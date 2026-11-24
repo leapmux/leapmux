@@ -459,6 +459,7 @@ func (a *Agent) reportStreamFailure(err error) {
 	slog.Warn("DeepSeek Harness Remote stream failed", "agent_id", a.AgentID(), "error", err)
 	a.flushPendingErrors(err.Error())
 	a.persistAgentError(err.Error())
+	a.retireUnfinishedReplies()
 	a.setTurnState(false)
 	a.exitCleaned = true
 	// Stop can wait for the process. Keep the Remote reader free to finish during that wait.

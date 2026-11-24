@@ -3178,7 +3178,7 @@ func TestHandleOutput_AnElicitationAnsweredDuringItsPublishKeepsNoEntry(t *testi
 	a, stdin := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 	sink.answer = func(requestID string) error {
 		answer := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"action":"decline"}}}`, requestID)
-		return a.SendRawInput([]byte(answer), agent.StopContext{})
+		return a.SendRawInput(sink.Answer(requestID, []byte(answer)))
 	}
 
 	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
@@ -3231,6 +3231,7 @@ func TestHandleOutput_AControlRequestWithAMistypedOptionalFieldStillPublishes(t 
 			published := sink.PublishedControls()
 			require.Len(t, published, 1, "the request reaches the reader")
 			assert.Equal(t, "r1", published[0].RequestID)
+			agenttest.AssertPublishedControlKeys(t, claudeProvider{}, sink)
 			assert.Empty(t, stdin.String(), "a published request needs no failure answer")
 			assert.Empty(t, elicitationEntries(a), "a mistyped elicitation field records no entry")
 		})
@@ -3267,7 +3268,7 @@ func TestHandleOutput_AnsweredAndCancelledElicitationsForgetTheirRequest(t *test
 	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
 	assert.Equal(t, map[string]string{"e1": "r1"}, elicitationEntries(a),
 		"a published elicitation records its request id")
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("r1", []byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`))))
 	assert.Empty(t, elicitationEntries(a), "the answered request is forgotten")
 	answered := stdin.String()
 	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-1","session_id":"s-1"}`))
@@ -3291,7 +3292,7 @@ func TestSendRawInput_AFrameThatAnswersNothingKeepsTheElicitation(t *testing.T) 
 
 	// A frame that answers no request carries no request id, so it changes no
 	// bookkeeping and the pending card is still withdrawn at the completion.
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"user","message":{"role":"user","content":"hello"}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"user","message":{"role":"user","content":"hello"}}`)}))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-1","session_id":"s-1"}`))
 	assert.Equal(t, []string{"r1"}, sink.CanceledControls(), "the entry outlived the input")
 }
@@ -3304,7 +3305,7 @@ func TestSendRawInput_AnAnswerRetiresOnlyItsOwnElicitation(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
 	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r2","request":{"subtype":"elicitation","mcp_server_name":"gitlab","message":"Sign in","elicitation_id":"e2"}}`))
 
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("r1", []byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`))))
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"gitlab","elicitation_id":"e2","uuid":"u-1","session_id":"s-1"}`))
 	assert.Equal(t, []string{"r2"}, sink.CanceledControls(),

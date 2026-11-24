@@ -4,26 +4,10 @@ import type { ActionsProps, ContentProps } from './types'
 import { createMemo, Show, untrack } from 'solid-js'
 import * as styles from '../ControlRequestBanner.css'
 import { formatShortWait } from '../rendererUtils'
+import { dialogDecision } from './controlDecision'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 import { invokeControlAction } from './controlResponseError'
-import { createControlChoice, sendResponse } from './types'
-
-/**
- * How a provider answers an extension dialog. Each builder returns the provider's
- * own envelope for one answer, and the shared dialog actions send it.
- *
- * A provider whose `extractControl` returns a `dialog` states this beside it. A
- * dialog of a provider that states none reaches the banner's generic Allow/Deny
- * pair, which is a way out of the request rather than the right words for it.
- */
-export interface DialogResponder {
-  /** The answer to a `confirm`: the reader approved or denied. */
-  confirm: (requestId: string, confirmed: boolean) => unknown
-  /** The text that the reader sent for an `input` or an `editor`, the empty text included. */
-  value: (requestId: string, value: string) => unknown
-  /** The reader dismissed the dialog. */
-  cancel: (requestId: string) => unknown
-}
+import { createControlChoice } from './types'
 
 /** The answer state key the editor and the input share, so an edit survives a remount. */
 export const DIALOG_TEXT_CHOICE_ID = 'dialog-text'
@@ -101,12 +85,12 @@ export const DialogRequestContent: Component<ContentProps & { dialog: DialogProm
   )
 }
 
-/** The two buttons of one dialog variant, and what each one sends. */
+/** The two buttons of one dialog variant, and the decision that each one sends. */
 interface DialogButtons {
   negativeLabel: string
-  negative: () => unknown
+  negative: () => Promise<void>
   positiveLabel: string
-  positive: () => unknown
+  positive: () => Promise<void>
 }
 
 /**
@@ -119,25 +103,23 @@ interface DialogButtons {
  * (`DialogRequestContent`). Both halves read the text through the SAME answer-state
  * key, so what the reader typed reaches the send.
  */
-export const DialogRequestActions: Component<ActionsProps & { dialog: DialogPrompt, responder: DialogResponder }> = (props) => {
-  const requestId = () => props.request.requestId
+export const DialogRequestActions: Component<ActionsProps & { dialog: DialogPrompt }> = (props) => {
   const text = createDialogText(props, () => props.dialog.prefill)
   const value = () => text.choice() ?? ''
-  const send = (response: unknown) => sendResponse(props.onRespond, response)
-  const sendValue = () => send(props.responder.value(requestId(), value()))
+  const sendValue = () => props.onDecide(dialogDecision('submit', value()))
 
   const buttons = createMemo<DialogButtons>(() => props.dialog.variant === 'confirm'
     ? {
         negativeLabel: 'Deny',
-        negative: () => props.responder.confirm(requestId(), false),
+        negative: () => props.onDecide(dialogDecision('refuse')),
         positiveLabel: 'Approve',
-        positive: () => props.responder.confirm(requestId(), true),
+        positive: () => props.onDecide(dialogDecision('confirm')),
       }
     : {
         negativeLabel: 'Cancel',
-        negative: () => props.responder.cancel(requestId()),
+        negative: () => props.onDecide(dialogDecision('cancel')),
         positiveLabel: 'Send',
-        positive: () => props.responder.value(requestId(), value()),
+        positive: sendValue,
       })
 
   return (
@@ -147,12 +129,12 @@ export const DialogRequestActions: Component<ActionsProps & { dialog: DialogProm
       negativeAction={{
         label: buttons().negativeLabel,
         testId: 'control-deny-btn',
-        onSelect: () => send(buttons().negative()),
+        onSelect: () => buttons().negative(),
       }}
       positiveAction={{
         label: buttons().positiveLabel,
         testId: 'control-allow-btn',
-        onSelect: () => send(buttons().positive()),
+        onSelect: () => buttons().positive(),
       }}
       leading={(
         <Show when={props.dialog.variant === 'input'}>

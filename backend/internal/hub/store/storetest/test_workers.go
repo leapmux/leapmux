@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Suite) testWorkers(t *testing.T) {
+	t.Run("enrollment_revision", s.testWorkerEnrollmentRevision)
 	t.Run("auth token digest length is enforced", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "worker-digest-owner")

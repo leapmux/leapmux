@@ -1,22 +1,22 @@
 ---
 title: "Control CLI"
-description: "Drive LeapMux from a script, CI job, or another agent with leapmux control: open tabs, message agents, type into terminals, reshape layouts, and stream events."
+description: "Drive LeapMux from a script, a CI job, or another agent with leapmux: open tabs, message agents, type into terminals, arrange layouts, and stream events."
 type: docs
 weight: 8
 ---
 
-`leapmux control` is a JSON-emitting command-line surface for driving LeapMux from outside the browser. Use it from a script, a CI job, or another agent. It opens and closes tabs, sends messages to agents, types into terminals, reshapes the tile layout, inspects files and git state on a Worker, and streams live workspace events.
+`leapmux` drives a running LeapMux from outside the browser. Use it from a script, a CI job, or another agent. It opens and closes tabs, sends messages to agents, types into terminals, arranges the tile layout, reads files and git state on a Worker, and streams live workspace events.
 
-This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. The online administration groups (`leapmux control admin ...`) are documented in the companion [Admin CLI](/docs/admin/admin-cli/) chapter. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
+This chapter explains how the commands work together: how a command selects its target, what it prints, how it fails, and how it signs in. The [Control Command Reference](/docs/reference/control-commands/) lists every command with its arguments, flags and examples. For reusable multi-agent playbooks built on this CLI (`leapmux skill`), see [Agent Skills](/docs/using/agent-skills/). The online administration commands (`leapmux admin ...`) have their own chapter, [Admin CLI](/docs/admin/admin-cli/). For the offline break-glass tree (`create-admin`, `reset-password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
 
 ## Two callers, one CLI
 
-The same `leapmux control ...` invocation works in two contexts:
+The same `leapmux <group> <command>` works in two places (and is also available under the short `lmx` alias):
 
-1. **An external user on their own machine.** You authorize the CLI against a Hub with `leapmux control auth login --hub ...`, which persists a bearer token on disk. Every subsequent command attaches that token and talks to the Hub over HTTPS.
-2. **An agent or terminal spawned inside a Worker.** When a Worker spawns an agent process or a shell, it hands the process a private local-IPC socket and a per-process token through `LEAPMUX_CONTROL_*` environment variables. A script running inside that agent or shell can call `leapmux control` with no login and no flags — the env vars supply the credential and pre-fill the entity IDs of the spawning tab.
+1. **On your own machine.** You sign the CLI in to a Hub once with `leapmux auth login --hub ...`, which stores a credential on disk. Every later command presents that credential to the Hub.
+2. **Inside an agent or terminal that a Worker started.** The Worker gives the process a private local socket and a token through `LEAPMUX_CONTROL_*` environment variables. A command run there needs no login and no `--hub`. The word `self` selects the tab, tile, workspace or Worker that runs the command.
 
-The CLI decides which transport to use automatically (see [Authentication](#authentication)). Because both transports expose the same RPCs, a script you write to run inside an agent also works verbatim from your laptop once you point it at a Hub.
+Both transports reach the same RPCs, so a script written for one place also runs in the other.
 
 **The two transports converging on the Worker(s):**
 
@@ -25,8 +25,8 @@ The CLI decides which transport to use automatically (see [Authentication](#auth
   │  External CLI  │                  │  Worker-spawned    │
   │  (your laptop) │                  │  agent / terminal  │
   └───────┬────────┘                  └─────────┬──────────┘
-          │ LEAPMUX_HUB +                       │ LEAPMUX_CONTROL_SOCK
-          │ Bearer token                        │ + X-LeapMux-Token
+          │ --hub, LEAPMUX_HUB or               │ LEAPMUX_CONTROL_SOCK
+          │ the default hub + bearer            │ + X-LeapMux-Token
           ▼                                     ▼ (local IPC)
   ┌────────────────┐                  ┌────────────────────┐
   │      Hub       │                  │   Host Worker      │
@@ -41,146 +41,217 @@ The CLI decides which transport to use automatically (see [Authentication](#auth
   └────────────────┘                  └────────────────────┘
 ```
 
-{{< callout >}}
-Inside an agent or terminal, run `printenv | grep LEAPMUX_CONTROL_` to see exactly what context you were spawned with. Every entity-ID variable uses the `_ID` suffix.
-{{< /callout >}}
+## A first session
 
-## Output envelope and exit codes
+```text
+$ leapmux tab list
+ID        TYPE      TITLE           STATE    WORKER     WORKSPACE
+87a19d5f  agent     CLI Design      working  build-box  4f1ac2b0
+4cbb3f34  agent     Fix flaky spec  idle     build-box  4f1ac2b0
+9c02e7aa  terminal  zsh             ready    build-box  4f1ac2b0
 
-Every command prints a single JSON object to **stdout**:
+$ leapmux agent send 4cbb "Run the tests again"
+$ leapmux agent messages 4cbb --follow
+```
 
-- **Success:** `{"data": <value>}` — pretty-printed with 2-space indentation.
-- **Failure:** `{"error": {"code": "<code>", "message": "<message>"}}`.
+`4cbb` is a prefix of the tab id `4cbb3f34`; any unique prefix of four or more characters selects its tab. [Targets](#targets) lists every form.
 
-Both envelopes go to stdout, so `leapmux control ... | jq` works uniformly whether the command succeeded or failed. Failure is signaled by a **non-zero process exit code**, not by writing to a separate stream. Stderr is reserved for diagnostics and warnings outside the JSON contract.
+## Command shape
 
-A few commands deliberately break the envelope to emit raw bytes:
+Every command is `leapmux <group> <command>`, followed by its arguments and flags:
 
-- `terminal get --screen` prints the terminal's retained PTY window directly to stdout (ANSI escapes intact, no JSON).
-- `agent messages` (without `--follow`) prints a JSON array; with `--follow` it prints JSON-lines.
-- `events watch` prints JSON-lines (one event object per line).
+```text
+leapmux agent send 87a19d5f "Run the tests" --json
+        ^^^^^ ^^^^ ^^^^^^^^ ^^^^^^^^^^^^^^^ ^^^^^^
+        group  |   target   argument        flag
+            command
+```
+
+- **Flags stand anywhere** after the command name. A value that starts with a dash goes after `--`: `leapmux agent send 87a19d5f -- "-v is the verbose flag"`.
+- **A command name can be shortened** as far as it stays unambiguous: `leapmux ag se` runs `agent send`. A later release can add a command that makes a short form ambiguous, so a script spells every name in full.
+- **Every command prints its help** with `--help`: the usage line, what each argument accepts, every flag, and examples.
+- **An agent starts with `leapmux guide`**, which prints the guide bundled with the CLI. Use `leapmux guide --topics --json` to list topics or `leapmux guide targets` to read just the target selection section.
+- **A program reads the whole grammar** from `leapmux commands --json`: every command with its arguments, its flags, their types and accepted values, and its examples.
+- **Shell completion** completes commands, flags, and the IDs of your tabs, agents, workspaces, and Workers. Generate the script with `leapmux completion <shell>` for Bash, zsh, fish, PowerShell, Elvish, or Nushell. In Elvish, run `eval (leapmux completion elvish | slurp)` to load it into the current shell. In Nushell 0.116 or later, run `leapmux completion nushell | save ($nu.default-config-dir | path join leapmux-completion.nu)` and add `use leapmux-completion.nu *` to `config.nu`.
+
+## Targets
+
+The first argument of most commands selects the object it acts on. A target takes one of these forms:
+
+| Form | Example | Selects |
+| --- | --- | --- |
+| A full id | `Q0vNx01dbAo1BL3bTGB4uK6gGI3FmtgV6OlhMGB4YY6PRMhh` | That object. It needs no list to resolve the id. |
+| A unique id prefix of 4 or more characters | `87a1` | The one object whose id starts with it. |
+| `id:<id>` | `id:self` | The object with the literal id, even when the id is short or has the same spelling as `self`. |
+| `title:<title>` | `"title:Release 1.4"` | The tab or workspace with exactly that title. |
+| `name:<name>` | `name:build-box` | The Worker with exactly that name. |
+| `self` | `self` | The tab, tile, workspace or Worker of the LeapMux tab that runs the command. |
+
+A prefix lists visible objects of its kind. An exact id in that list takes precedence. Title and name searches can also read metadata from the Workers. A form that matches nothing fails with `not_found`. A form that matches more than one object fails with `ambiguous_target` and lists the candidates with their full ids and titles.
+
+A title or name search can return `unavailable` when missing Worker metadata leaves the match uncertain. Use a full id or a unique id prefix to choose the target in that case.
+
+```text
+$ leapmux tab get 87
+error: usage: "87" is too short for a tab id prefix; type at least 4 characters
+hint: use "id:<id>" to select a literal id
+hint: use "self" for your own tab, or "title:<title>"
+$ leapmux agent get title:Review
+error: ambiguous_target: 2 agents match the title "Review"
+candidates:
+  ID                                    KIND   TITLE
+  87a19d5f-4838-4e34-9f0f-56130f0a62b1  agent  Review
+  c41e09b2-1d7e-4c51-a0d2-8b6f2e3c9a11  agent  Review
+hint: type more characters of the id, or the full id
+```
+
+**A command that only reads defaults to `self`.** Inside an agent tab, `leapmux agent get` shows that agent. **A command that changes or removes an object needs an explicit target.** Use `leapmux tab close self --allow-self` to authorize closing the calling tab.
+
+`self` follows the kind of the command. `agent ...` commands see the calling tab only when it is an agent tab, and `terminal ...` commands only when it is a terminal. Inside a [Quake terminal](/docs/using/terminals/#quake-mode-terminal), `self` on a `terminal` command is the panel's terminal.
+
+The commands that open a tab (`agent open`, `terminal open`, `file open`) place it with `--workspace`, `--tile`, `--worker` and the position flags. Each placement flag defaults to the placement of the calling tab.
+
+## Output
+
+**Text is the default.** A list prints as a table and a record prints as aligned `key: value` lines. A mutation prints its result on one line. Commands that return content, such as `agent send --wait` and `rpc`, use their own text format. Tables can show a shortened ID (pass `-w` / `--wide` to disable truncation, `--no-header` to omit column headers, `--fields a,b` to project specific columns or JSON fields, and `--color auto|always|never` to control ANSI colors). A record prints the full ID.
+
+**`--format text|json|ndjson|tsv`** selects the output format (`--json` is equivalent to `--format json`, and `ndjson` emits one unwrapped compact JSON object per line for lists or events). **`--json` prints one JSON envelope per line** on stdout:
+
+- **Success:** `{"data": ...}`. `data` is always an object, and a list lives under its plural noun: `{"data": {"tabs": [...]}}`.
+- **Failure:** `{"error": {...}}`, described in [Errors and exit codes](#errors-and-exit-codes).
+
+**`-q` prints only the ids** of the result, one per line, for `$(...)`:
 
 ```bash
-# Pull just the tab id out of a successful tab open
-leapmux control tab open --type agent --worker-id "$W" --workspace-id "$WS" \
-  | jq -r '.data.tab_id'
-
-# Detect failure and read the error code
-if ! out=$(leapmux control agent get --tab-id "$T"); then
-  echo "$out" | jq -r '.error.code'
-fi
+A=$(leapmux agent open --provider claude --message "Run the tests" -q)
+leapmux agent get "$A" --json | jq -r .data.state
 ```
+
+Use either `--json` or `--quiet` in one invocation. The CLI refuses the combination before sending a request.
+
+**A stream prints one line per event**: `agent messages --follow` and `layout watch`. With `--json`, each line is a `{"data": ...}` envelope, so a consumer reads every line alike.
+
+Prose for a person, such as the login prompts, goes to stderr, so it never corrupts a result that a script parses.
+
+## Errors and exit codes
+
+A failure prints `error: <code>: <message>` on stderr, followed by one `hint:` line for each next step that can fix it. With `--json`, the envelope also reaches stdout:
+
+```json
+{"error":{"code":"self_target_refused","message":"refusing to close the calling tab 87a19d5f-4838-4e34-9f0f-56130f0a62b1","hints":["pass --allow-self to do it anyway"],"retryable":false}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `code` | One of the codes below. A script branches on it. |
+| `message` | What failed, for a person. |
+| `hints` | The next steps that can fix it, when the CLI knows them. |
+| `retryable` | `true` when the same command can succeed later without a change: the Hub or the Worker could not answer now. |
+| `candidates` | For `ambiguous_target`, every object that the target matched. |
+
+The exit status states the class of the failure, so a script can branch without reading the envelope:
+
+| Status | Codes | Meaning |
+| --- | --- | --- |
+| `0` | | Success |
+| `1` | `invalid_argument`, `conflict`, `internal`, `version_mismatch` | The Hub or the Worker refused the request, or the CLI failed |
+| `2` | `usage` | The command line cannot run: an unknown command or flag, a missing argument, or a value the CLI refuses before it sends anything |
+| `3` | `not_logged_in`, `permission_denied` | No usable credential, or a credential that does not allow the call |
+| `4` | `not_found`, `ambiguous_target` | The target does not exist, or matches more than one object |
+| `5` | `self_target_refused`, `tab_busy_refused`, `agent_waiting` | A [safety guard](#safety-guards) refused the command. `agent_waiting` means `agent send --wait` refused to enqueue a new input while the agent waits for permission. |
+| `6` | `timeout` | A wait ended before its condition held; see [Waiting for agents](#waiting-for-agents) |
+| `7` | `worker_offline`, `unavailable` | The Worker or the Hub cannot answer now; a retry can succeed |
+| `8` | | A local daemon reported `stopped` (`leapmux daemon <mode> status`) |
+| `130` | | You interrupted the command |
+
+`version_mismatch` (status `1`) means that the Hub or the Worker does not implement the call. The error reports the CLI build and the peer build when it can read it. Use `leapmux version` to inspect the Hub and `leapmux worker info` to inspect a Worker.
+
+## Choosing the Hub
+
+Each command reaches the first of these:
+
+1. The Hub that `--hub <url>` gives.
+2. Inside a LeapMux tab, the tab's own socket, `LEAPMUX_CONTROL_SOCK`.
+3. The Hub that `LEAPMUX_HUB` gives.
+4. The Hub saved in `context.json` (`leapmux context use --hub ...`) or the default Hub of the stored credentials (`leapmux auth use <hub>`, or the only stored credential).
+5. A live local `solo`, `dev`, or standalone Hub socket on this machine (auto-discovered after `leapmux up`).
+
+With none of them, the command fails with `not_logged_in` and states how to select a Hub. `--hub` accepts an http(s) URL, or a Hub's local socket (`unix:...` or `npipe:...`); see [Sockets and login](#sockets-and-login). Use `leapmux doctor` to verify local daemons, Hub connectivity, credentials, Worker pins, and online Workers in one command.
 
 ## Authentication
 
-### How the transport is chosen
+### `leapmux auth login`
 
-For each invocation, the CLI selects a transport in this order:
-
-| Condition | Transport |
-| --- | --- |
-| `LEAPMUX_CONTROL_SOCK` is set (Worker-spawned) | Local IPC over that socket, presenting `LEAPMUX_CONTROL_TOKEN` as the `X-LeapMux-Token` header |
-| `--hub <url>` flag or `LEAPMUX_HUB` env var is set | Hub client over HTTPS, presenting the stored bearer as `Authorization: Bearer <token>` |
-| Neither | Error `not_logged_in`: "no `--hub` flag or `LEAPMUX_HUB` / `LEAPMUX_CONTROL_SOCK` env var; run `leapmux control auth login --hub <url>` or invoke from inside an agent" |
-
-The default per-request HTTP timeout is 60 seconds.
-
-### `leapmux control auth login`
-
-Authorizes the CLI against a Hub and writes a credential file to disk. The `--hub` flag is required (or set `LEAPMUX_HUB`).
-
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `--hub <url>` | `$LEAPMUX_HUB` | Hub base URL (required) |
-| `--device-name <name>` | `$USER@$hostname` | Label for this copy of the CLI, shown in the account's connected-apps list |
-| `--device-code` | `false` | Force the RFC 8628 device-code flow (headless / SSH / container) |
-| `--scope <permissions>` | everything except `admin:*` | The permissions to ask for, space- or comma-separated |
+Signs the CLI in to a Hub and writes a credential file to disk. Give the Hub with `--hub`.
 
 The CLI is a registered app like any other, so a login is an ordinary OAuth 2.1 authorization. See [App Authorization](/docs/admin/app-authorization/) for how apps are registered and what they may ask for, and [OAuth API](/docs/reference/oauth-api/) for the wire contract.
 
 **You verify your identity in the browser, not in the terminal.** Authorizing a credential needs an elevated session, so the consent page sends you through a verification prompt (password, passkey, or your identity provider) before it hands anything back. That elevation lasts {{< duration elevation-window >}}, so a second login in the same sitting does not ask again. See [Session elevation](/docs/admin/security/#session-elevation).
 
-**Default flow (PKCE local redirect).** The CLI opens a loopback listener on `127.0.0.1`, prints the authorization URL with an instruction to open it in your browser, and tries to launch your browser automatically (`open` on macOS, `xdg-open` on Linux, the shell handler on Windows). You sign in on the Hub's web page; the Hub redirects back to the loopback listener to complete the exchange. The CLI waits up to **10 minutes** for the callback before failing with `{"error":{"code":"timeout",...}}`.
+**Default flow (PKCE local redirect).** The CLI opens a loopback listener on `127.0.0.1`, prints the authorization URL on stderr, and tries to open your browser (`open` on macOS, `xdg-open` on Linux, the shell handler on Windows). You sign in on the Hub's web page, and the Hub redirects back to the loopback listener to complete the exchange. The CLI waits up to **10 minutes** for the callback before it fails with `timeout`.
 
 ```bash
-leapmux control auth login --hub https://leapmux.example.com
+leapmux auth login --hub https://leapmux.example.com
 ```
 
-**Device-code flow (`--device-code`).** Use this on a headless box, over SSH, or inside a container where no browser is available. The CLI prints a verification URL and a short user code:
+**Device-code flow (`--device-code`).** Use this on a machine without a browser, over SSH, or inside a container. The CLI prints a verification URL and a short user code on stderr:
 
 ```bash
-leapmux control auth login --hub https://leapmux.example.com --device-code
+leapmux auth login --hub https://leapmux.example.com --device-code
 ```
 
-The output holds three things: the verification URL (`https://<hub>/oauth/device`), the user code, and a second link that carries the code in its query string.
+The user code is six characters from an alphabet with no look-alike characters (no `0`, `1`, `I`, `O` or `L`), shown as `XXX-XXX`. Open the verification URL on any device and enter the code. The CLI polls in the background and completes once you approve. A second link carries the code in its query string, so you can skip the typing.
 
-The user code is six characters from an ambiguity-free alphabet (no `0`/`1`/`I`/`O`/`L`), displayed as `XXX-XXX`. You open the verification URL on any device, enter the code, and the CLI (which polls in the background) completes once you approve. The second link pre-fills the code so you can skip the typing. On success, both flows persist a credential file and emit:
-
-```json
-{
-  "data": {
-    "hub_url": "https://leapmux.example.com",
-    "username": "alice",
-    "user_id": "usr_...",
-    "scope": "account:read account:write workspace:read workspace:write worker:read worker:admin agent:read agent:write terminal:read terminal:write file:read git:read git:write tunnel:open"
-  }
-}
-```
+`--device-name` labels the credential in the account's list of connected apps. It defaults to `<user>@<host>` of the machine that signs in.
 
 The flow you pick also decides how a later step-up runs. A credential from the default flow verifies through the loopback ceremony: a refused command opens a browser on the CLI's own machine, and the command runs once you prove the factor there. A credential from `--device-code` keeps the device-code ceremony, printing an address and a short code instead. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
 
 ### `--scope`: what the credential may do
 
-An omitted `--scope` asks for everything you can do **except** administer the hub. So a routine login leaves no hub-administration credential on disk, and `leapmux control admin ...` refuses it even when your account is an administrator.
+An omitted `--scope` asks for everything you can do **except** administer the Hub. A routine login therefore leaves no administration credential on disk, and `leapmux admin ...` refuses it even when your account is an administrator.
 
 Name the permissions to ask for less, or to ask for administration:
 
 ```bash
 # A credential that reads files and git state, and nothing else.
-leapmux control auth login --hub https://leapmux.example.com --scope "file:read git:read"
+leapmux auth login --hub https://leapmux.example.com --scope "file:read git:read"
 
-# A credential that administers the hub. Only an administrator may grant it.
-leapmux control auth login --hub https://leapmux.example.com --scope "admin:read admin:users admin:settings admin:workers admin:apps"
+# A credential that administers the Hub. Only an administrator may grant it.
+leapmux auth login --hub https://leapmux.example.com --scope "admin:read admin:users admin:settings admin:workers admin:apps"
 ```
 
 Both separators work. The wire format is space-delimited, so a shell needs quotes around it; a comma-separated list also works.
 
-The **browser** decides. The consent page states in sentences what the credential will be able to do, and you approve or refuse there. The permission list in the response is what you actually granted, which is what the CLI records — and it may be wider than you asked for, because some permissions imply others. `file:read` implies `worker:read`, since reading a file means reaching the machine that holds it.
+The **browser** decides. The consent page states in sentences what the credential will be able to do, and you approve or refuse there. The login result lists the permissions you actually granted, which is what the CLI records. That list can be wider than the request, because some permissions imply others: `file:read` implies `worker:read`, since reading a file means reaching the machine that holds it. It can also be narrower, and the result then carries a `warning` that lists each permission the Hub did not grant.
 
 The whole vocabulary is in [App Authorization](/docs/admin/app-authorization/#permissions).
 
 ### Renewal and lifetime
 
-The access token lives for {{< duration access-token >}}. The CLI renews it silently: before a call whose stored expiry is close, and once more if the hub refuses a call it expected to succeed. You do not run anything to renew.
+The access token lives for {{< duration access-token >}}. The CLI renews it silently: before a call whose stored expiry is close, and once more if the Hub refuses a call it expected to succeed. You run nothing to renew it.
 
-Each renewal moves the {{< duration refresh-token >}} refresh window forward, but never past **{{< duration absolute-cap >}}** from the day you authorized the credential. After that the device signs in again. `auth status` reports both deadlines.
+Each renewal moves the {{< duration refresh-token >}} refresh window forward, but never past **{{< duration absolute-cap >}}** from the day you authorized the credential. After that, the device signs in again. `auth status` reports both deadlines.
 
-Logging in again on the same machine **revokes the credential it replaces**, so a re-login leaves no live secret behind.
+Signing in again on the same machine **revokes the credential it replaces**, so a new login leaves no live secret behind.
 
-### `leapmux control auth status` / `list` / `credentials` / `logout`
+### The other `auth` commands
 
-| Command | Flags | Output |
-| --- | --- | --- |
-| `auth status` | `--hub` | `{hub_url, username, user_id, expires, expired, refresh_expires, scope, token_id, hub_checked, is_admin}` for the specified Hub. Error `not_logged_in` if there is no credential. `expires` is the hour-long access token, which renews itself; `refresh_expires` is when the device must sign in again. `hub_checked` says whether the Hub confirmed the credential (`is_admin` from the Hub when it did, a `warning` when it could not be reached). |
-| `auth list` | none | An array of `{hub_url, username, user_id, expires, scope}` for every Hub you have credentials for. |
-| `auth credentials` | `--hub` | An array of `{id, client_id, client_name, installation_name, created_at, last_used_at, refresh_expires, expires, granted_scopes, client_verified, current}` for every credential the account holds. `client_name` is the app and `installation_name` is which copy of it. `current` marks the one this command uses. Each credential carries exactly one deadline: a renewing credential reports `refresh_expires`, and one minted with `--ttl` (an [Admin CLI](/docs/admin/admin-cli/#api-tokens) issuance) reports `expires`. A row with neither never expires. |
-| `auth logout` | `--hub` | Best-effort revokes the token on the Hub, then deletes the local credential file. Emits `{hub_url}`. |
+| Command | What it does |
+| --- | --- |
+| `auth status` | Shows the user, the permissions and both deadlines of the credential for the Hub. One request to the Hub confirms them: `hub_checked` says whether it did, and a `warning` states what it could not confirm. `expires` is the access token, which renews itself; `refresh_expires` is when the device must sign in again. |
+| `auth list` | Lists the Hubs that this machine holds a credential for, and marks the default Hub. |
+| `auth use <hub>` | Makes `<hub>` the default Hub, for a machine that holds credentials for more than one. |
+| `auth credentials` | Lists every credential that can reach your account on the Hub, from any machine. `current` marks the one this command uses. |
+| `auth logout` | Revokes the credential on the Hub, then deletes the local file. A revoke that fails still deletes the file, and the result carries a `warning`. |
 
-**`list` and `credentials` answer different questions.** `list` reads this machine's credential files — which Hubs this box can reach. `credentials` asks the Hub what the whole account holds — what else can reach your account, from anywhere. It is the same list the browser shows under **Preferences → Apps → Connected apps**, where you can also disconnect. See [Connected Apps](/docs/using/connected-apps/).
-
-```bash
-leapmux control auth list
-leapmux control auth credentials --hub https://leapmux.example.com
-leapmux control auth status --hub https://leapmux.example.com
-leapmux control auth logout --hub https://leapmux.example.com
-```
+**`list` and `credentials` answer different questions.** `list` reads this machine's credential files: which Hubs this machine can reach. `credentials` asks the Hub what the whole account holds: what else can reach your account. It is the same list the browser shows under **Preferences → Apps → Connected apps**, where you can also disconnect a credential. See [Connected Apps](/docs/using/connected-apps/).
 
 ### Credential file location
 
-Credentials are written one file per Hub:
+The CLI writes one file per Hub:
 
-```
-<ConfigDir>/<hub-host>.json
+```text
+<ConfigDir>/<scheme>_<hub-host>.json
 ```
 
 `<ConfigDir>` resolves in this order:
@@ -189,442 +260,419 @@ Credentials are written one file per Hub:
 2. `$XDG_CONFIG_HOME/leapmux/control`
 3. `~/.config/leapmux/control`
 
-`<hub-host>` is the Hub's hostname, with `_<port>` appended when the URL carries a port (for example `leapmux.example.com_8443`). The file is written atomically with mode `0600`, in a directory created with mode `0700`. It contains the access token, the refresh token, both expiries, your user identity, the token id, and the permissions the credential holds.
+`<scheme>_<hub-host>` includes the URL scheme and host name, with `_<port>` appended when the URL carries an explicit port (for example `https_leapmux.example.com_8443.json` or `http_127.0.0.1_4327.json`), so `http://` and `https://` credentials never collide. The CLI writes the file atomically with mode `0600`, in a directory with mode `0700`. It holds the access token, the refresh token, both expiries, your user identity, the token id, and the permissions the credential holds. `auth use` records the default Hub in `<ConfigDir>/default-hub`, and `leapmux context use` saves persistent default hub, worker, workspace, and provider in `<ConfigDir>/context.json`.
 
 {{< callout >}}
-Point `LEAPMUX_CONTROL_CONFIG_DIR` at a per-job directory to keep CI credentials isolated and easy to discard.
+Point `LEAPMUX_CONTROL_CONFIG_DIR` at a directory for each CI job to keep its credentials isolated and easy to discard.
 {{< /callout >}}
 
-## Worker-spawned environment variables
+## Inside a LeapMux tab
 
-When a Worker spawns an agent or terminal (and remote control is enabled on that Worker), it injects this set of environment variables into the child process:
+When a Worker starts an agent or a terminal, it gives the process these environment variables:
 
 | Variable | When present | Meaning |
 | --- | --- | --- |
-| `LEAPMUX_CONTROL_SOCK` | always | Local-IPC socket URL the CLI talks to |
-| `LEAPMUX_CONTROL_TOKEN` | always | Per-process bearer token |
-| `LEAPMUX_CONTROL_USER_ID` | always | Authenticated user (informational; no flag reads it) |
-| `LEAPMUX_CONTROL_WORKER_ID` | always | The host Worker |
-| `LEAPMUX_CONTROL_TAB_ID` | when non-empty | The spawned tab's id |
+| `LEAPMUX_CONTROL_SOCK` | always | The local socket that the CLI talks to |
+| `LEAPMUX_CONTROL_TOKEN` | always | The token of this process |
+| `LEAPMUX_CONTROL_USER_ID` | always | The user the process acts for (informational) |
+| `LEAPMUX_CONTROL_WORKER_ID` | always | The host Worker: `self` for a Worker, and the default of `--worker` |
+| `LEAPMUX_CONTROL_TAB_ID` | when non-empty | The tab: `self` for a tab, an agent or a terminal |
 | `LEAPMUX_CONTROL_TAB_TYPE` | when non-empty | `agent` or `terminal` |
-| `LEAPMUX_CONTROL_TERMINAL_ID` | terminals only | The terminal you are running **inside**. Equals `TAB_ID` in a terminal tab; in a [Quake panel](/docs/using/terminals/#quake-mode-terminal) it is the only id you get, because a panel has no tab and therefore no `TAB_ID` / `TAB_TYPE` at all. |
-| `LEAPMUX_CONTROL_WORKING_DIR` | when non-empty | Working directory at spawn time |
-| `LEAPMUX_CONTROL_AGENT_PROVIDER` | agents only | The agent's provider |
+| `LEAPMUX_CONTROL_TERMINAL_ID` | terminals only | The terminal you run **inside**. It equals `TAB_ID` in a terminal tab. In a [Quake panel](/docs/using/terminals/#quake-mode-terminal) it is the only id, because a panel has no tab. |
+| `LEAPMUX_CONTROL_WORKING_DIR` | when non-empty | The working directory at start: the default of `--dir` |
+| `LEAPMUX_CONTROL_AGENT_PROVIDER` | agents only | The agent's provider: the default of `--provider` |
+| `LEAPMUX_CONTROL_CLI` | when the Worker has a CLI to link | The `leapmux` executable of the Worker that started the process. Its directory comes first on `PATH`, and `leapmux` hands each command to it. |
 
-These variables become the **defaults** for the matching entity flags, so a script running inside an agent can call `leapmux control agent send --message "hi"` with no IDs at all — the current tab is inferred from `LEAPMUX_CONTROL_TAB_ID`.
+The tab carries no workspace id and no tile id. A command finds both from the tab when it runs, so a script never acts on a tile that somebody moved the tab away from.
 
-Two IDs are deliberately **not** injected: the workspace id and the tile id. They are derived from the tab id at call time via the Hub's tab-locator RPC, so a script never targets a stale tile after somebody moves the tab.
+The Worker also puts one directory first on the `PATH` of each agent and terminal that it starts. The directory holds `leapmux` and its short alias `lmx` (`leapmux.exe` and `lmx.exe` on Windows), which link to the Worker's own CLI. A bare `leapmux` or `lmx` therefore runs a CLI of the same version as the Worker, even when you installed another version. `LEAPMUX_CONTROL_CLI` gives the full path of that executable. The desktop app links the CLI that it ships; an AppImage ships none, so it sets neither.
 
-{{< callout type="info" >}}
-There is no "remote-enabled" flag or checkbox. Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. Inherited `LEAPMUX_CONTROL_*` values are stripped before re-injection, so a Worker spawned from inside another agent gets a fresh context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side of this.
+A login shell runs its profile after it starts, and the profile can move the entry or remove it. macOS moves its system directories, such as `/usr/local/bin`, before it, and Debian's `/etc/profile` replaces `PATH` for bash and sh. Two mechanisms keep `leapmux` on the Worker's own CLI anyway:
+
+- **The shell of an agent puts the entry back.** The Worker starts each agent through your login shell. After your profile runs, the Worker puts the directory first on `PATH` again. This works in bash, zsh, sh, dash, ksh, fish, Nushell, Elvish, tcsh, csh, PowerShell and xonsh. In tcsh and csh, `PATH` then holds the directory twice, and the first entry wins. Elvish agent launches load `rc.elv` as a module without the interactive editor.
+- **`leapmux` hands each command to the Worker's CLI.** Inside a tab, a `leapmux` that is not the Worker's own runs `$LEAPMUX_CONTROL_CLI` with the same arguments. It does so for each control command and for shell completion. Local-only commands, such as `leapmux daemon ...`, `leapmux up`, `leapmux down`, `leapmux recover ...`, `leapmux --version`, or `leapmux commands`, stay with the `leapmux` that you ran. When `$LEAPMUX_CONTROL_CLI` does not exist or cannot run, `leapmux` prints a warning and runs the command itself.
+
+{{< callout type="warning" >}}
+The hand-off needs a `leapmux` that has it. An older `leapmux` that your profile put first runs the command itself, and it can fail with an error such as `unexpected argument`. To run the Worker's own CLI in every case, call it through the variable:
+
+```sh
+"$LEAPMUX_CONTROL_CLI" tab list
+"$LEAPMUX_CONTROL_CLI" commands --json
+```
 {{< /callout >}}
 
-## Universal entity-ID flags
-
-Almost every command needs to know which entity to act on. Rather than hand-roll flags per command, LeapMux exposes one uniform set, and a resolver derives the rest from whatever subset you provide.
-
-| Flag | Env default | Notes |
-| --- | --- | --- |
-| `--tab-id` | `$LEAPMUX_CONTROL_TAB_ID` | The agent/terminal/file tab. On `terminal ...` commands `$LEAPMUX_CONTROL_TERMINAL_ID` wins, so they address the terminal you are in rather than a neighbouring tab. |
-| `--tab-type` | (none) | `agent`, `terminal`, `file` or `image`; auto-detected when omitted. Not on `agent`/`terminal` commands, which pin the type; hidden on `tab list`, which reuses the flag as an output filter. |
-| `--tile-id` | (none) | Derivable from `--tab-id` |
-| `--workspace-id` | (none) | Derivable from `--tab-id` / `--tile-id` |
-| `--worker-id` | `$LEAPMUX_CONTROL_WORKER_ID` | The host Worker |
-
-There is no `--user-id` flag: the Hub takes the tenant from the authenticated session, so no command needs one.
-
-### Which IDs you can omit
-
-Supply the most specific ID you have and the Hub fills in the rest:
-
-- `--tab-id` gives the tab's matched type, workspace, tile, and Worker;
-- `--tile-id` gives its workspace.
-
-So `--tab-id` alone is usually enough. `--workspace-id` and `--worker-id` sit at the end of these chains — nothing is derived from them, so pass one only when you have nothing more specific.
-
-### Pinned tab type for agent and terminal commands
-
-Commands under `agent ...` and `terminal ...` pin the tab type for you. As a safety measure, the `--tab-id` env default only fires when `$LEAPMUX_CONTROL_TAB_TYPE` matches the command's pinned type. That means `agent send` run from inside a *terminal* won't silently auto-target the terminal you're sitting in — you'd have to pass `--tab-id` explicitly. The generic `tab` group has no such restriction.
-
-### Conflicts and missing IDs
-
-- An **explicit** flag you typed always wins over an env-derived value, silently shadowing a disagreeing env default.
-- Two **explicit** inputs that disagree on the same derived field are a hard error with the code `invalid_request`.
-- If the resolver still can't satisfy a required field, you get `invalid_request`, and the message identifies each missing ID and the flags that can derive it.
-
-Resolver-rejected input always uses code `invalid_request`; a transport/derivation failure (the RPC itself errored) surfaces as `resolve_failed`.
-
-## `whoami` and `version`
-
-```bash
-leapmux control whoami          # who am I, where am I?
-leapmux control version --hub https://leapmux.example.com
-```
-
-- `whoami` from inside an agent/terminal returns `{user_id, username, worker_id, tab_id, tab_type}`. From your laptop (Hub mode) it returns `{hub_url, user_id, username, is_admin}`.
-- `version` always emits the CLI's `{cli:{version, commit, branch, build_time, formatted}}`; when `--hub` is set it also probes the Hub's unauthenticated version endpoint and adds `hub:{...}` (or a non-fatal `hub_error`).
-
-## Workspace commands
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `workspace list` | (any entity flag, or none when authenticated) | Your workspaces |
-| `workspace get` | `--workspace-id` (or `--tab-id`/`--tile-id`) | One workspace |
-| `workspace create` | `--title` (required) | `{workspace_id}` |
-| `workspace rename` | `--workspace-id`, `--title` (required) | `{workspace_id}` |
-| `workspace delete` | `--workspace-id`, `--force` | Deletion + per-worker cleanup status |
-
-```bash
-leapmux control workspace create --title "Release 2.0"
-```
-
-`workspace list` returns the workspaces you own; workspace access is owner-only.
-
-`workspace delete` cascades a Hub delete and then fans out worktree cleanup to every Worker that hosted tabs in the workspace, emitting `{workspace_id, worker_ids, status, cleanup:[...]}` where `status` is `ok` or `partial`.
-
-If the *calling* tab lives in the workspace you're deleting, the [self-target guard](#self-target-guard) refuses unless you pass `--force`, which deletes the workspace even when the calling tab lives in it and therefore kills the caller's own PTY.
-
-## Tab commands
-
-The `tab` group is the generic open/close/list/rename surface across every tab type (agent, terminal, file, image). Use it for lifecycle operations; use the `agent` and `terminal` groups for type-specific actions.
-
-| Command | Key flags |
-| --- | --- |
-| `tab list` | `--workspace-id`, `--tab-type agent\|terminal\|file\|image` (output filter) |
-| `tab get` | `--tab-id` (type auto-detected) |
-| `tab open` | `--type agent\|terminal\|file` (required) + type-specific flags + [placement flags](#placement-flags) |
-| `tab close` | `--tab-id`, `--force`, `--worktree keep\|push\|discard` |
-| `tab rename` | `--tab-id`, `--title` (required) |
-| `tab move` | `--tab-id`, `--target-tile-id`, `--target-workspace-id` + [placement flags](#placement-flags) |
-
 {{< callout type="info" >}}
-On `tab list`, `--tab-type` is an **output filter**, not a resolver constraint. On `tab get`/`tab move`, omitting the type lets the resolver auto-detect it.
+Terminals and agents receive `LEAPMUX_CONTROL_*` automatically whenever the Worker has remote control enabled. The Worker removes inherited `LEAPMUX_CONTROL_*` values, and the `PATH` entry of a parent Worker, before it sets its own, so an agent started from inside another agent gets its own context rather than its parent's. See [Terminals](/docs/using/terminals/) for the terminal side.
 {{< /callout >}}
 
-### Opening a tab
+Run `printenv | grep LEAPMUX_CONTROL_` inside a tab to see the context that the tab received.
 
-`tab open` requires `--type`. The remaining flags depend on the type. Image tabs cannot be opened here: one addresses a single image inside a single chat message, which is a selection you make by clicking the picture in a transcript. `tab list` and `tab close` do name them.
+## Safety guards
 
-**Agent (`--type agent`):**
+Three guards refuse a command that would lose work the caller may not mean to lose. Each refusal states the flag that overrides it.
 
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `--worker-id` | `$LEAPMUX_CONTROL_WORKER_ID` (required) | Host Worker |
-| `--provider` | `$LEAPMUX_CONTROL_AGENT_PROVIDER` | Agent provider; if unset and the Worker has exactly one installed provider it is auto-picked. Zero → `no_providers_installed`; more than one → `ambiguous_provider`. |
-| `--model` | provider default | Initial model |
-| `--effort` | provider default | `low`/`medium`/`high`/`max` |
-| `--permission-mode` | provider default | Initial permission mode |
-| `--working-dir` | `$LEAPMUX_CONTROL_WORKING_DIR` | Where the agent runs |
-| `--title` | auto | Tab title |
-| `--initial-message` | (none) | First message to send |
+| Guard | Code | Override | Refuses |
+| --- | --- | --- | --- |
+| Self-target | `self_target_refused` | `--allow-self` | `workspace delete`, `tab close`, `tile close` and `tile remove-grid` when the calling tab is the target or sits inside it |
+| Busy tab | `tab_busy_refused` | `--allow-busy` | `tab close` of an agent in the middle of a turn, or of a terminal with a process running |
+| Last tab of a worktree | `usage` | `--worktree keep\|push\|discard` | `tab close` of the last tab of a git worktree or branch, until you say what happens to it |
 
-**Terminal (`--type terminal`):**
+The busy check also applies when a tile or grid removal closes its tabs. A failed check reports the Worker error. Use `--allow-busy` to close when you intend to proceed without a confirmed activity state. Closing the last tab of a worktree with running work can require both `--worktree` and `--allow-busy`.
 
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `--worker-id` | `$LEAPMUX_CONTROL_WORKER_ID` (required) | Host Worker |
-| `--shell` | Worker default | Shell to launch |
-| `--shell-start-dir` | working dir | Starting directory |
+`rpc` bypasses all three guards; see [Calling a procedure directly](#calling-a-procedure-directly).
 
-**File (`--type file`):**
+The self-target guard does not fire for `--with-tabs move`, because the tabs survive the move. It also does not fire inside a [Quake terminal](/docs/using/terminals/#quake-mode-terminal), which has no tab to protect. Closing the *last* tab in the panel's working directory still ends the panel's shell, including one you type the command into.
 
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `--path` | (required) | Absolute file path; registered Worker-side over the encrypted channel so the Hub never sees it |
-| `--display-mode` | `0` | File-tab display mode |
-| `--file-view-mode` | `0` | File view mode |
+## Worker key pins
 
-`tab open` emits `{tab_id, tab_type, workspace_id, worker_id, tile_id, position}` plus per-type extras such as `initial_message_warning` or `path`.
+LeapMux pins each Worker's key on the first verified connection (trust on first use). `leapmux worker pins` manages the pins of this machine:
 
-```bash
-# Spin up a Claude Code agent in a worker's repo and send it a task
-leapmux control tab open --type agent \
-  --worker-id "$W" --workspace-id "$WS" \
-  --provider "Claude Code" --working-dir /home/dev/project \
-  --initial-message "Run the test suite and summarize failures."
-```
-
-### Placement flags
-
-`tab open` and `tab move` accept the same four mutually-exclusive placement flags. The default is `--last`.
-
-| Flag | Effect |
+| Command | What it does |
 | --- | --- |
-| `--first` | Place as the first tab on the destination tile |
-| `--last` | Place as the last tab (default) |
-| `--before <tab-id>` | Place immediately before the referenced tab |
-| `--after <tab-id>` | Place immediately after the referenced tab |
+| `worker pins list` | Lists every pinned Worker of the Hub |
+| `worker pins get <worker>` | Shows one pin |
+| `worker pins remove <worker>` | Removes the pin. The next verified channel records a replacement. |
 
-`--before`/`--after` take a **tab id** (not a rank). For those two, the destination tile is taken from the referenced tab's tile; if you also pass `--tile-id`/`--target-tile-id`, the two must agree. The flags `--first`, `--last`, `--before`, and `--after` are mutually exclusive, so the command refuses more than one of them. It also refuses a `--before`/`--after` tab id that no tab uses.
+A key mismatch aborts the connection. Before you remove a pin, compare the presented fingerprint in the error with the Worker's `key_fingerprint` in its `worker initialized` startup log, through a trusted, independent channel. Remove the pin only after they match. The CLI records a replacement key after the channel completes an encrypted round trip. See [Managing Workers](/docs/admin/managing-workers/) for fingerprint verification.
 
-### Closing a tab
+Pins are stored at `<ConfigDir>/<scheme>_<hub-host>/pins.json` with mode `0644`, because they are not secrets.
 
-```bash
-leapmux control tab close --tab-id "$T" --worktree push
-```
+## What each group does
 
-| Flag | Purpose |
+The [Control Command Reference](/docs/reference/control-commands/) gives the flags of each command. This section explains the behavior that a flag table cannot.
+
+### Agents
+
+- `agent list` and `agent get` print each agent's state (`idle`, `working`, `waiting_for_user`), model, effort and git state. `agent get` also prints the provider's current settings. Add `--options` to see every option group and its choices in text. JSON includes the catalog automatically.
+- `agent send <agent> [text]` takes the text as an argument, `-` to read standard input, or `--file`. `--wait` waits for the reply; see [Waiting for agents](#waiting-for-agents). Three flags shape the message:
+  - `--attach <file>` attaches a file. Repeat it for more files. A message with an attachment needs no text. The CLI refuses a file that it cannot read, more than 100 files, and a message whose text and files hold more than 10 MiB together. The Worker infers the type of each file from its name and its content, and it refuses a file that the agent's provider cannot read with `invalid_argument`. The error states the file.
+  - `--at <time>` holds the message in the queue until a time: an RFC 3339 time with its offset, such as `2026-11-20T09:00:00+09:00` or `2026-11-20T00:00:00Z`, or `+` and a duration from now, such as `+10m` or `+1h30m`. The CLI assumes no time zone, so a time without an offset fails with `usage`, and so does a time that has passed. The result states the time in UTC as `scheduled_at`.
+  - `--request-id <id>` makes a retry safe; see [Safe retries](#safe-retries).
+- **A message that an agent sends states its sender.** A message that a process in an agent tab sends with `agent send` reaches the recipient as that agent's message, not as yours. The recipient reads it after one line that states the sending agent and that the message is not from its operator: `[Message from agent "Release captain" (Claude Code), not from your operator]`. The Worker reads the sender from the credentials of the tab, so no flag sets or hides it. A message from a terminal tab, or from outside LeapMux, reaches the agent as yours.
+  - An agent can send a message to itself, such as a reminder that `--at` holds. The message reaches the agent as its own, never as yours.
+  - From an agent tab, the Worker takes a message, a clear and a compaction. It refuses every other input kind with `invalid_argument`, through `leapmux rpc` too.
+  - A message to an agent on another Worker states its sender too: the sending Worker relays the call with its tab, and the Hub tells the other Worker which Worker relayed it.
+  - The header states the title that the sending tab had when it sent the message.
+- `agent sessions` lists the earlier sessions that `agent open --resume <session>` continues: the sessions of one provider in one directory, newest first. `--provider`, `--worker` and `--dir` default as they do for `agent open`, so the list is what the same `agent open` accepts. The list holds the sessions that LeapMux started and the sessions that the provider's own store holds, such as a session that you started in a terminal. It leaves out a session that an open agent runs, because two processes on one session damage it. `-q` prints the ids alone.
+- `agent clear <agent>` queues a clear. When the agent reads it, the Worker stops the agent's process and starts the provider again in a fresh session, in the same tab. The transcript keeps the earlier messages, and a clear also restarts an agent whose start failed. `agent compact <agent>` queues a compaction: the provider replaces the conversation so far with a summary, to free room in the context window. A provider without a compaction command of its own receives `/compact` as a message. Both wait in the input queue behind the inputs before them and for the end of the current turn, as a `/clear` or a `/compact` that you type in the browser does. A subagent refuses both with `invalid_argument`.
+- `agent wait <agent>...` waits until each agent reaches a state; see [Waiting for agents](#waiting-for-agents).
+- `agent requests`, `agent approve`, `agent deny` and `agent answer` list and answer the permission prompts, plans and questions that agents wait on; see [Answering prompts](#answering-prompts).
+- `agent messages` prints the most recent page by default (`--anchor latest`). `--anchor oldest` prints the first messages in history. `--anchor before --cursor-seq N` prints the page older than seq N, and `--anchor after --cursor-seq N` the page newer than it. Messages always come back in ascending seq. `--follow` prints the page and then each new message as it arrives, and reconnects after a transient drop. It accepts only `--anchor latest` and `--anchor after`. A message from another agent shows `from agent 87a19d5f (claude-code)` after its source. JSON includes `sender.tab_id` and `sender.provider`. The `provider` fields use the same identifiers that `--provider` accepts.
+- `agent set` changes the model, the effort, the permission mode, and any provider option with `--option key=value`. A provider that can apply a change to the running process applies it at once (Claude Code and Codex do for most settings). Another change restarts the agent. See [Coding Agents](/docs/using/coding-agents/) for the settings of each provider.
+
+### Waiting for agents
+
+`agent wait` and `agent send --wait` watch the agents through the Worker. They never poll, and they never read a screen.
+
+- **`agent wait <agent>... --until <state>`** ends once each agent reaches a requested state, including agents whose initial state already matches. Repeat `--until` to accept alternatives. Each agent can reach a different requested state. Choose `idle`, `working`, `waiting_for_user`, or the default `settled`, which matches `idle` or `waiting_for_user`. `--any` ends the wait as soon as one agent matches.
+  - An agent whose input queue holds a message that it will read is neither `idle` nor `settled` yet. So a wait right after `agent open --message` waits for the turn of that first message, although the starting agent reports `idle`. A message scheduled for later does not hold the wait.
+- **`agent send <agent> [text] --wait`** sends the message, waits until the agent settles after it, and prints the agent's last reply as the transcript shows it. `--all` prints every reply after the message. An agent that runs a background task settles when the task ends too.
+  - A new input behind a pending permission prompt fails with `agent_waiting` (status `5`). An exact `--request-id` retry can still match an input the Worker recorded. If the agent is still waiting, the retry reports delivery state and exits `6`. Use [Answering prompts](#answering-prompts) to resume the agent.
+  - A paused input queue keeps the message, and the command says so on stderr and keeps waiting. A planned restart pauses the queue too, and that pause ends by itself.
+  - For a tracked native input, JSON includes `turn_outcome` when the wait reaches an outcome. `completed` exits `0`. `interrupted`, `failed`, and `unproved` report the result and exit `6`. `state` describes the tab's current activity, which can belong to later work.
+  - For ordinary ZCode inputs, the Worker matches the native turn start to the submitted input. For ordinary Kimi inputs, it matches the consuming user item and reads the reply in the native turn's recorded order. For ordinary Codex inputs, it uses the native turn ID from the response to that input's start request.
+  - For ordinary Claude Code inputs, the Worker matches the UUID echoed by the native stream and reads the root reply through its result.
+- **Both print their result even when the condition did not hold, and exit `6`**: `--timeout` passed, an agent closed, or the agent stopped at a prompt after the message. The result states where things stand. For `agent wait`, `reached` marks each agent that reached the state. For `agent send --wait`, `message` is `queued` or `delivered`, and `state` is the agent's state, such as `waiting_for_user`.
+- **A wait refuses the calling agent** with `usage`, because an agent cannot settle while its own turn runs the wait.
+
+### Answering prompts
+
+An agent asks the user through a control request: a permission prompt, a plan to approve, one or more questions, an MCP elicitation form, or an extension's dialog. The browser shows it as a banner. The CLI answers the same request.
+
+- **`agent requests [agent]...`** lists the pending requests of the agents, or of every agent when you give none (`--workspace` narrows it). The text form prints each request in full, so you read a whole command before you approve it, and it numbers the options that `--option` takes. `--json` prints each prompt as data.
+- **Each request has a handle.** The three answer commands take the agent and the handle, or a unique prefix of the handle. A request that the agent replaces gets a new handle, so an answer never reaches a request that you did not read.
+- **`agent approve <agent> <request>`** approves:
+  - A permission prompt: its one-time approval
+  - A plan: the approval, with `--permission-mode` and `--clear-context`
+  - An MCP elicitation: the accept, with the default values of the fields that the form asks
+  - A confirm dialog: the confirmation
+- **`agent deny <agent> <request> [--message <text>]`** refuses a permission prompt, a plan or a question, with the message as the reason that the agent reads. It also declines an MCP elicitation and refuses or cancels a dialog.
+- **`agent answer <agent> <request>`** gives any answer that the request offers:
+  - `--option <n>` chooses an option of a question or a permission prompt, a choice of a plan, or an accept choice of an MCP elicitation. Use it for an approval for the whole session, for example.
+  - A text argument is a typed answer to a question, or the text of an input dialog.
+  - A multiple-choice question takes options and a text together: `--option 1 --option 3 "Metrics"` answers with both options and the text.
+  - With several questions, each value says which question it answers: `--option 2:1` and `"1:Use the cache"`.
+  - A question that no `--option` answers keeps the options that the agent selected for it, which `agent requests` shows as its `default`. With no value at all, the command sends those defaults.
+  - `--field <name>=<value>` fills an MCP form, once for each field. A field that `agent requests` lists with a `when` condition takes a value only while the condition holds; otherwise the form neither sends nor requires it. A field that the list leaves out is hidden, and it keeps its default.
+- **The Worker checks each answer against the prompt**, as it does for the browser, and fails a wrong one with `invalid_argument`. A request that the agent replaced or withdrew, or that another client answered first, fails with `conflict`. Run `agent requests` again for the new handle of a replaced request.
+- **A request that LeapMux cannot read takes no answer.** `agent requests` lists it as `unreadable` and states the reason. `--json` states the reason as `fault`:
+  - `malformed`: the agent sent bytes that are not JSON.
+  - `not_an_object`: the agent sent JSON that is not an object.
+  - `unrecognized`: the agent sent a kind of request that LeapMux does not recognize.
+
+  The answer commands fail with `conflict`. Stop the agent's turn with `agent interrupt` instead. The browser banner states the same reason and offers no answer buttons.
+- **LeapMux refuses an answer to a stored request that does not match its key.** The answer fails with "LeapMux cannot read the stored request that this answer is for", and the request stays pending.
+- **An agent cannot answer its own requests.** The command fails with `usage`: the user answers them.
+
+### The input queue
+
+Each agent has an input queue. A message that `agent send` sends, a clear and a compaction wait in it until the agent reads them. The browser shows the same queue above the composer.
+
+- **`agent queue list [agent]`** lists the inputs, first to last, with the kind, the state and the start of the text of each. `--json` adds the attachments, the error of a failed input, and the `reorder_segment` of each input. `-q` prints the ids alone. A message from another agent has the kind `agent_message`. The `FROM` column states its sender, and `--json` states it as `sender`. The browser offers no edit of such a message, because its text is the other agent's: remove it instead.
+
+| State | Meaning |
 | --- | --- |
-| `--force` | Self-target override: close even if the target is the calling tab |
-| `--worktree keep\|push\|discard` | Worktree disposition (`remove` is a synonym for `discard`) |
-
-`--worktree` is **required** when the close would remove the last tab for a worktree, or close the last tab on a non-worktree branch that has uncommitted or unpushed changes — omitting it then returns an `invalid_request` with the details. `--worktree push` runs `git push` and fails with `invalid_request` if the branch isn't pushable. `--worktree discard` fails with `invalid_request` when git refuses to remove the worktree — it is locked, or git no longer lists the path. The CLI runs this check before it tombstones the tab; the removal itself starts after the tab is gone.
-
-The command emits `{tab_id, tab_type, tombstoned, worktree?, worker_close_error?}`, plus `inspect_hint`, `closed_subagent_tab_ids`, or `subagent_close_error` when they apply. The CLI inspects every tab type, file tabs included: a file tab holds a worktree open and sits on a branch exactly as an agent or terminal tab does. See [Worktrees and Branches](/docs/using/worktrees-and-branches/) for the disposition rules.
-
-### Renaming and moving
-
-```bash
-leapmux control tab rename --tab-id "$T" --title "Reviewer"
-leapmux control tab move --tab-id "$T" --target-tile-id "$DEST"
-leapmux control tab move --tab-id "$T" --target-workspace-id "$OTHER_WS"
-```
-
-`tab move` needs one of `--target-tile-id`, `--target-workspace-id`, or a `--before`/`--after` placement. `--target-workspace-id` alone drops the tab onto that workspace's first live leaf. Cross-workspace moves happen as a single operation. There is no `tab focus` command — the active tab and focused tile are client-local UI state, not shared.
-
-## Tile and layout commands
-
-The `tile` group mutates the tile tree one operation at a time; the `layout` group reads or replaces the whole tree at once. See [Tabs and Layout](/docs/using/tabs-and-layout/) for the conceptual model of splits and grids.
-
-### `tile`
-
-| Command | Key flags | Notes |
-| --- | --- | --- |
-| `tile list` | `--workspace-id` | Projected tile tree (no tabs) |
-| `tile split` | `--tile-id`, `--direction vertical\|horizontal` | Default `vertical`; accepts `v`/`h`. Leaf → split with two children (50/50). |
-| `tile make-grid` | `--tile-id`, `--rows N`, `--cols M` | Both required, each `1..20`. Migrates tabs to cell `[0,0]`. No `--with-tabs`. |
-| `tile close` | `--tile-id`, `--with-tabs close\|move`, `--recursive`, `--force` | See policy below |
-| `tile remove-grid` | `--tile-id`, `--with-tabs close\|move`, `--force` | Target must be a grid |
-| `tile set-ratios` | `--tile-id`, `--ratios r1,r2[,...]` | Target must be a split |
-| `tile set-grid-ratios` | `--tile-id`, `--row-ratios ...`, `--col-ratios ...` | Target must be a grid; at least one required |
-
-**`tile close` policy.** The `--with-tabs` flag controls what happens to tabs living on the tile, and the structure of the tile decides what's allowed:
-
-- A **leaf with no tabs** closes plainly.
-- A **leaf with tabs** requires `--with-tabs close` (close the tabs) or `--with-tabs move` (migrate them to the nearest adjacent leaf).
-- A **split** requires `--recursive` (cascade the whole subtree).
-- A **grid** is rejected — use `tile remove-grid` instead, even with `--recursive`.
-- A **grid cell** is rejected (closing it would leave an unusable hole; close its tabs or remove the whole grid).
-
-`tile close` emits `{tile_id, tabs_closed, tabs_moved, heir_tile_id?}`.
-
-**Ratios.** `--ratios`, `--row-ratios`, and `--col-ratios` take comma-separated non-negative floats that are rescaled to sum to 1.0, so `1,3` is equivalent to `0.25,0.75`. The length must match the live child count (or rows/cols). Empty lists, malformed numbers, negatives, NaN/Inf, and all-zero lists are rejected.
-
-```bash
-# Split the current tile and give the right pane two-thirds of the width
-leapmux control tile split --tile-id "$TILE" --direction horizontal
-leapmux control tile set-ratios --tile-id "$SPLIT" --ratios 1,2
-```
-
-### `layout`
-
-```bash
-# layout set takes only the tree node, so extract `.data.tree` from the get envelope.
-leapmux control layout get --workspace-id "$WS" | jq '.data.tree' > layout.json
-# edit layout.json ...
-leapmux control layout set --workspace-id "$WS" --file layout.json
-```
-
-- `layout get` emits `{workspace_id, root_node_id, tree, tabs_by_tile}`.
-- `layout set` requires exactly one of `--file PATH` or `--stdin`, and it accepts **only the tree node** — the value of the `tree` field, *not* the full `layout get` envelope. Feeding back the whole `{workspace_id, root_node_id, tree, tabs_by_tile}` object fails validation with `root: unrecognized kind`, because the top-level keys it expects are `kind`/`direction`/`ratios`/`rows`/`cols`/`row_ratios`/`col_ratios`/`children`. Extract the `tree` field first (e.g. `jq '.data.tree'`).
-- `layout set` rewrites the entire tree in one batch and repoints every live tab onto the new tree's first leaf; the root node id never changes.
-
-The input tree's `kind` accepts `leaf`/`split`/`grid` (uppercase and `NODE_KIND_*` forms too). A `split` needs at least 2 children and a `direction`; a `grid` needs `rows`/`cols` in `1..20` and exactly `rows*cols` children. Validation errors are path-anchored, e.g. "root.children[1].children[0]: SPLIT requires at least 2 children (got 1)".
-
-If a tab races in during the rewrite, `layout set` retries once (it makes at most two attempts); persistent contention yields `{"error":{"code":"concurrent_modification",...}}`. The success envelope includes `attempts` (`1` normally, `2` after a retry).
-
-## Self-target guard
-
-Several destructive commands refuse to destroy the very tab you're calling from. The guard is anchored on `LEAPMUX_CONTROL_TAB_ID`, so it only matters when you call from inside an agent or terminal. It fires for:
-
-- `workspace delete` when the calling tab lives in the target workspace;
-- `tab close` when the target *is* the calling tab;
-- `tile close` / `tile remove-grid` with `--with-tabs=close` (or a no-tab close) when the calling tab is inside the doomed subtree.
-
-When triggered, the command returns code `self_target_refused` with a message ending "; pass `--force` to override". The guard is **skipped** for `--with-tabs=move` variants, because the tab and its PTY survive the migration. Pass `--force` on the relevant command to bypass it deliberately.
-
-It also does not fire inside a [Quake terminal](/docs/using/terminals/#quake-mode-terminal), which gets no `LEAPMUX_CONTROL_TAB_ID` to anchor on. There is no tab there for the guard to protect — but note that closing the *last* tab in the panel's working directory ends the panel's shell too, including one you are typing this command into.
-
-## Worker commands
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `worker list` | `--hub` | Accessible Workers |
-| `worker get` | `--worker-id` (or `--tab-id`) | Worker metadata |
-| `worker info` | `--worker-id` (or `--tab-id`) | What the Worker reports about itself: `{name, os, arch, home_dir, build}` |
-
-```bash
-leapmux control worker list --hub https://leapmux.example.com
-```
-
-The Hub answers `worker get`, so it also works while the Worker is offline. The Worker answers `worker info` itself, so that command needs an online Worker and otherwise fails with `channel_open_failed`.
-
-### Worker TOFU pins
-
-LeapMux pins each Worker's key on first connection (trust-on-first-use). The `worker pins` subgroup manages those pins from the CLI. All pins commands require `--hub` (or `$LEAPMUX_HUB`).
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `worker pins list` | `--hub` | Every pinned Worker (sorted by id) |
-| `worker pins show` | `--worker-id` (defaults to `$LEAPMUX_CONTROL_WORKER_ID`) | One recorded pin; `not_found` if none |
-| `worker pins remove` | `--worker-id` | Removes the pin. The next verified channel records a replacement. Emits `{removed_worker_id}` |
-
-A key mismatch aborts the CLI connection. Before removing a pin, compare the error's presented fingerprint with the Worker's `key_fingerprint` in its `worker initialized` startup log through a trusted, independent channel. Remove the pin only after they match. The replacement key is recorded only after the channel proves its session (an encrypted round trip), so a failed handshake never installs a pin. See [Managing Workers](/docs/admin/managing-workers/) for fingerprint verification.
-
-Pins are stored at `<ConfigDir>/<hub-host>/pins.json` with mode `0644` (they are not secrets). For the Worker registration and approval lifecycle, see [Managing Workers](/docs/admin/managing-workers/).
-
-## Agent commands
-
-The `agent` group is the type-specific surface for agent tabs — use `tab open`/`close`/`list`/`rename` for lifecycle. Every agent command pins the agent tab type and needs at least one entity input.
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `agent send` | `--tab-id`, `--message "..."` or `--stdin` | `{agent_id}` |
-| `agent interrupt` | `--tab-id`, `--reason "..."` | `{agent_id}` |
-| `agent get` | `--tab-id` | Full agent state (model, status, provider, option groups, git status, ...) |
-| `agent providers` | `--tab-id` / `--worker-id` | `[{name, aliases}]` for the Worker |
-| `agent messages` | `--tab-id`, `--anchor`, `--cursor-seq`, `--limit`, `--follow` | A message page, or a stream with `--follow` |
-| `agent set` | `--tab-id`, `--model`, `--effort`, `--permission-mode`, `--option key=value` | `{agent_id, applied:{...}}` |
-| `agent send-control-response` | `--tab-id`, `--content "..."` | `{agent_id}` |
-
-```bash
-# Send a message and then tail the agent's reply stream
-leapmux control agent send --tab-id "$T" --message "Refactor the auth module."
-leapmux control agent messages --tab-id "$T" --follow
-```
-
-Notes:
-
-- `agent send` requires one of `--message` or `--stdin`; passing neither is an `invalid_request`. If you pass both, `--message` wins and `--stdin` is ignored.
-- `agent messages` returns the most recent page by default (`--anchor latest`). Pick a different page with `--anchor oldest` (the first messages in history), `--anchor before --cursor-seq N` (the page older than seq N), or `--anchor after --cursor-seq N` (the page newer than seq N). `--cursor-seq` is required for `before`/`after` and rejected for `latest`/`oldest`. Messages always come back ascending by seq.
-- `agent messages --limit` defaults to 50, which is also the Hub's cap. Without `--follow` you get one page as a JSON array; with `--follow` you get the first page followed by new messages as JSON-lines, reconnecting automatically on transient drops. `--follow` exists **only** on `agent messages`, not on `events watch`. `--follow` cannot be combined with `--anchor oldest` or `--anchor before` (paging backward through history while tailing the live stream forward is contradictory); use `--anchor latest` (the default) or `--anchor after --cursor-seq N` with `--follow`.
-- `agent set` applies model/effort/permission-mode and repeatable `--option key=value` provider options. Most settings (model, effort, permission-mode) apply live on providers that support it (e.g. Claude Code, Codex); changes a provider can't apply to the running process trigger a restart (e.g. switching effort back to auto). See [Coding Agents](/docs/using/coding-agents/) for the per-provider settings.
-- `agent get`/`agent list` report every provider setting as one unified `option_groups` array (each entry `{id, label, current_value, options:[...], ...}`); `model`/`effort`/`permission_mode` stay as top-level convenience keys. There is no separate `extra_settings`/`available_models`/`available_option_groups` field -- read a provider option from `option_groups`, e.g. `leapmux control agent get --tab-id "$T" | jq '.data.option_groups[] | select(.id=="permission_profile") | .current_value'`.
-- `agent send-control-response` forwards a raw `control_response` JSON payload for Claude-Code-style agents — the scripting equivalent of clicking an approval button in the UI.
-
-## Terminal commands
-
-The `terminal` group is the type-specific surface for terminal tabs; use `tab open`/`close`/`rename` for lifecycle.
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `terminal send` | `--tab-id`, `--data "..."` or `--stdin` | `{tab_id, bytes_sent}` |
-| `terminal get` | `--tab-id`, `--screen` | Terminal metadata, or raw PTY bytes with `--screen` |
-| `terminal shells` | `--worker-id` | `{shells, default_shell}` |
-
-```bash
-# Type a command into a terminal (newline runs it), then grab the screen
-printf 'ls -la\n' | leapmux control terminal send --tab-id "$T" --stdin
-leapmux control terminal get --tab-id "$T" --screen
-```
-
-`terminal send` rejects an empty payload: pass `--data`, or `--stdin` with non-empty input. Use `--stdin` for binary, escape sequences, or pasted content. `terminal get` returns a metadata map by default (geometry, shell, working dir, git info, status); `--screen` prints the retained PTY window directly to stdout with ANSI intact. Terminals receive remote-control env vars automatically — see [Terminals](/docs/using/terminals/).
-
-### Quake terminal commands
-
-The `terminal quake` subgroup shows and hides a working directory's [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) in every frontend you have open.
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `terminal quake open` | `--working-dir`, `--worker-id` | `{working_dir, action:"open"}` |
-| `terminal quake close` | `--working-dir`, `--worker-id` | `{working_dir, action:"close"}` |
-| `terminal quake toggle` | `--working-dir`, `--worker-id` | `{working_dir, action:"toggle"}` |
-
-```bash
-# From inside any LeapMux shell, the directory and the Worker are both ambient
-leapmux control terminal quake toggle
-```
-
-Notes:
-
-- These commands store nothing. They ask your running frontends to act now, which is why they can move a panel although the active tab and the focused tile stay client-local. A frontend that does not run never hears the request; there is no state waiting for it when it starts.
-- They reach **every** frontend signed in to your account. `toggle` therefore leaves two windows in different states if they started in different ones — which is correct, because whether the panel is visible is per-device.
-- A Quake terminal is addressed by **(Worker, working directory)** rather than by a tab, which is why these live here rather than under `agent`. `--working-dir` defaults to `$LEAPMUX_CONTROL_WORKING_DIR` and the Worker to `$LEAPMUX_CONTROL_WORKER_ID`, both exported by every LeapMux shell — so you rarely pass either. Run inside the panel itself, `leapmux control terminal quake close` hides the panel you typed it into.
-- A frontend with no tab in that directory ignores the request: it has no workspace to open the panel in.
-- Opening a panel that has no shell yet creates one. Hiding it never ends the shell — only closing the last tab in the directory, or exiting the shell, does.
-
-## File and git inspection
-
-These groups inspect a Worker's filesystem and git state read-only. The Worker is resolved through the universal resolver, so `--tab-id <agent>` is enough to target the Worker hosting that agent.
-
-### `file`
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `file list` | `--path <dir>` (required), `--max-depth N`, `--dirs-only`, `--from-root <dir>` | `{listings}` |
-| `file read` | `--path <file>` (required), `--offset N`, `--limit N` | `{path, total_size, content}` |
-| `file stat` | `--path <path>` (required) | Stat info |
-| `file roots` | none beyond the entity selectors | `{roots}` |
-
-`file read` and `git read` read at most `--limit` bytes. `--limit 0`, the default, reads 256 KiB. The Worker caps a larger `--limit` at the message size of the channel (`max_message_size`, 16 MiB unless your administrator changed it). `total_size` gives the size of the whole file, so a `content` shorter than `total_size` shows where the read stopped. Read the rest of a large file with `file read --offset`; `git read` has no offset.
-
-`file list` answers a LIST of directory listings, one per entry, each
-`{path, entries, truncated, total_entries}`. Without `--from-root` that list
-holds exactly one entry, for `--path`. With `--from-root` it holds one entry
-per directory from that ancestor down to `--path`, outermost first, so a
-caller reads a whole branch in one request. `--from-root` must be `--path`
-itself or an ancestor of it. The Worker may answer with fewer entries than the
-depth implies, because the chain is capped by a listing count and by the
-message-size budget; both drop the deepest levels.
-
-`file roots` reports the Worker's own filesystem roots: `["/"]` on a POSIX
-host, and the drive roots that carry a volume (`"C:\\"`, `"D:\\"`) on
-Windows. A WSL or Docker Worker runs a Linux binary, so it reports `["/"]`
-like any other Linux host.
-
-### `git`
-
-| Command | Key flags | Output |
-| --- | --- | --- |
-| `git status` | `--path <dir>` (defaults to `$LEAPMUX_CONTROL_WORKING_DIR`) | `{info, files}` |
-| `git branches` | `--path <dir>` | Branch list |
-| `git worktrees` | `--path <dir>` | Worktree list |
-| `git read` | `--path <file>` (required), `--ref head\|staged`, `--limit N` | `{ref, path, exists, total_size, content}` |
-
-`git status`/`branches`/`worktrees` default `--path` to the spawn's working dir; `git read` keeps `--path` required (it is a file path) and defaults `--ref` to `head`.
-
-`git read --limit` caps the content as `file read --limit` does: see [`file`](#file). A negative `--limit` fails. `exists` is false when the file is absent at the ref, which tells it apart from an empty file.
-
-```bash
-leapmux control git status            # uses $LEAPMUX_CONTROL_WORKING_DIR inside an agent
-leapmux control git read --path src/main.go --ref staged
-```
-
-## Streaming events
-
-`events watch` subscribes to a workspace's live event stream and prints one JSON object per line. The resolver fills missing entity IDs from any entity flag you provide.
-
-```bash
-leapmux control events watch --workspace-id "$WS"
-```
-
-The first line is always the bootstrap snapshot (`{"kind":"materialized",...}`). Subsequent lines carry one of these `kind` values:
+| `queued` | The input waits for its turn. |
+| `dispatching` | The agent reads the input now. |
+| `awaiting_echo` | The agent took the input into its running turn, and LeapMux waits for the agent to confirm it. |
+| `failed` | The input did not reach the agent. `error` states why. |
+| `delivery_uncertain` | The input may not have reached the agent. |
+
+- **The queue holds** while it is paused, while its first input failed or may not have reached the agent, and while the browser has its first input open in an editor. The result states a pause with `paused` and `pause_reason` (`manual`, `interrupted`, `agent_stopped`, `delivery_failed`, `delivery_uncertain`, `store_fault` or `process_recovery`). `agent queue list` and `agent queue resume` state each other cause on stderr.
+- **`agent queue remove <agent> <input>`** takes an input out of the queue, so the agent never reads it. `<input>` is an id or a unique prefix of one.
+- **`agent queue move <agent> <input>`** moves an input, with `--before <input>`, `--first` or `--last`. An input moves only inside its reorder segment, as in the browser:
+  - The inputs that the agent reads as soon as it can form one segment, and the inputs that `--at` holds until one time form another.
+  - An input that the agent already reads (`dispatching` or `awaiting_echo`) is locked. It stays in its place, and the inputs on its two sides form two segments. A move or a removal of a locked input fails with `conflict`, and so does a move to another segment.
+  - `--first` and `--last` mean the first and the last place of the segment.
+- **`agent queue pause <agent>`** stops the agent from reading queued inputs after its current turn. New inputs still join the queue. **`agent queue resume <agent>`** resumes the queue, whatever paused it. LeapMux pauses a queue by itself too: when you interrupt the agent, when the agent stops, and when an input does not reach the agent. A failed input keeps its failure after a resume: remove it, or retry it in the browser.
+- A removal or a move does not wait for an edit in the browser. A removal of the input that a browser edits ends that edit.
+
+### Safe retries
+
+A script that loses the answer of `agent send` or `agent open`, for a timeout or a dropped connection, cannot tell whether the command took effect. `--request-id <id>` makes a second run safe:
+
+- **`agent send ... --request-id <id>`**: a second run with the same request id, the same agent and the same message queues nothing new, and it prints the result of the first run. With `--wait`, it waits for the message of the first run, or prints its reply when the agent answered already.
+- **`agent open ... --request-id <id>`**: the Worker saves the new agent and its `--message` input together. A retry with the same arguments prints the existing agent and keeps the original input. Changing or omitting its message under the same request ID returns `conflict`.
+- **A request id belongs to one request.** A run with the same request id and other arguments fails with `conflict`, and nothing changes. Give each request its own id, such as a job name and a date: `--request-id nightly-review-2026-11-19`. A request id of `agent send` belongs to one agent, and one of `agent open` to one Worker.
+- **An edit in the queue does not break a retry.** Someone can edit the queued message in the browser before a retry runs. The Worker compares the retry with the first run, not with what the queue holds now. So the retry still queues nothing and prints the result of the first run, and the queue keeps the edit. With `--wait`, the retry waits for the edited message, or prints the reply to it. A run that sends the edited text under the same request id is another request, and `agent send` fails with `conflict`.
+- **A scheduled retry repeats the original RFC 3339 timestamp.** It works after that time passes. A new schedule must still lie in the future. The CLI refuses `--at +10m` with `--request-id` because a relative time changes on each run.
+- **A removed message stays removed.** After someone removed the message from the queue, a retry with the same request id queues nothing for 7 days. Without `--wait` it prints the result of the first run. With `--wait` it fails with `not_found` and exits `6`, as a run does when someone removes its message while it waits. After 7 days the Worker no longer remembers the removed message. It treats the next attempt as a new request.
+
+### Terminals
+
+- `terminal send <terminal> [text]` types the text as it is, with no Enter added. `--file` sends the bytes of a file, such as escape sequences.
+- `--key <name>` presses a key after the text. Repeat it to press several keys in order: `leapmux terminal send 9c02 --key down --key enter`. The Worker encodes each key for the modes that the program in the terminal enabled, as the browser does, so `up` works in a shell and in a full-screen program alike.
+  - The names are `enter`, `tab`, `escape` (or `esc`), `backspace`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `insert`, `delete`, `pageup`, `pagedown`, `f1` to `f12`, and one printable character.
+  - Each name may follow any of `ctrl-`, `alt-` and `shift-`, such as `ctrl-c`, `alt-b`, `shift-tab` or `ctrl-left`. The names are case-insensitive.
+  - An unknown name, or a modifier that a terminal cannot send with the key, such as `ctrl-enter`, fails with `usage`, and nothing is sent.
+- `--paste` sends the text as the browser sends a paste. Each line ending becomes a carriage return. When the program enabled bracketed paste, the text arrives between the paste markers, so the program inserts it instead of running each line. A paste end marker inside the text is removed, so the text cannot end its own paste.
+- `terminal run <terminal> <command>` pastes the command line and presses Enter in one request, so no other input can arrive between them: `leapmux terminal run 9c02 'make test'`. It does not wait for the command to finish.
+- `terminal open --command <command>` opens an interactive shell that evaluates the command after its startup files run. Use Bash, zsh, fish, sh, Dash, BusyBox ash, posh, KornShell 93, mksh, csh, tcsh, Elvish, Nushell, Xonsh, or Yash on Unix. PowerShell also works. If Elvish has a startup file, the Worker creates a temporary link in that file's directory so relative imports resolve. The directory must allow the Worker to create the link. The Worker reports a startup failure if the shell cannot acknowledge the handoff. `--command -` reads the command from stdin. A restart does not run the command again. If the Worker stops after claiming the command, recovery reports an unverified outcome. Use `terminal wait --exit` to get the shell's exit code.
+  - With `--command`, macOS system Bash loads the standard login profiles from an interactive startup file.
+  - For sh, Dash, and BusyBox ash, the managed interactive startup file loads `/etc/profile`, `~/.profile`, and the resulting `ENV` file in that order. Profiles that inspect the login flag see an interactive non-login invocation.
+  - For posh, the system profile sees a private startup home. The shell restores your home before reading `~/.profile`. The shell uses its native login startup and leaves `ENV` alone.
+  - For KornShell 93, use `ksh` or `ksh93`. The shell loads the standard login files, its system interactive profile when enabled, and the file selected by `ENV`. Profiles that inspect the login flag see an interactive non-login invocation.
+  - For mksh, use `mksh` or a `ksh` alias that selects mksh. The shell loads the standard login files, then the literal path in `ENV`. If `ENV` is empty or unset, the startup hook uses the standard `~/.mkshrc` path. Profiles that inspect the login flag see an interactive non-login invocation.
+  - With csh and tcsh, system profiles run with a private startup home. The shell restores your home before reading your profiles. The command runs as a sourced C shell script, so `exit` ends the script. To end the terminal with a specific code, use a command such as `exec /bin/sh -c 'exit 19'`.
+- `terminal get` prints `exit_code` once the shell ended.
+- `terminal restart <terminal>` starts a new shell after the previous one exits. Use `--replace` to end a running shell and start a new one in the same tab. The Worker preserves the scrollback and refuses if the shell changed after the CLI looked it up.
+  - `--command <command>` runs a new command after the replacement shell's startup files. Use `--command -` to read the command from stdin.
+  - Replacing the calling terminal ends the CLI process that requested it. Pass `--allow-self` to do this deliberately.
+- `terminal wait <terminal>` waits until the shell ends or the terminal shows a text; see [Waiting for terminals](#waiting-for-terminals).
+- `terminal read [terminal]` prints what the terminal shows as plain text. It replays retained output and recorded resizes through the same terminal emulator as `terminal wait`.
+  - Each row loses its trailing blanks, and the empty rows at the end of the screen do not print.
+  - `--scrollback` adds the lines above the screen: at most 1000, and only those that the retained bytes still hold. A full-screen program on the alternate screen has none.
+  - `--lines N` keeps the last N lines.
+  - `--json` adds `cursor`, whose row and column count from 0 at the top left of the screen, and `alternate_screen`.
+  - `--raw` prints the retained bytes with their escape sequences, for `less -R`.
+- `terminal quake open|close|toggle` show and hide a working directory's [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal) in every browser you have open. They store nothing: a browser that is not open never hears the request. A browser with no tab in that directory ignores it, because it has no workspace to open the panel in. Opening a panel that has no shell yet creates one. Hiding it never ends the shell. `--dir` and `--worker` default to the calling tab's, so inside a panel, `leapmux terminal quake close` hides the panel you typed it into.
+
+### Waiting for terminals
+
+`terminal wait` watches the terminal through the Worker. It never polls. Give it one condition.
+
+- **`terminal wait <terminal> --exit`** waits until the shell ends, and prints its exit code alone, so `code=$(leapmux terminal wait "$T" --exit)` keeps it. A shell that a signal ended reports `-1`, and so does a shell that the Worker ended when it shut down.
+  - A shell that ended before the wait began ends the wait at once, and the command prints the exit code that the Worker kept. When the Worker holds no record of the code, because it was killed while the shell ran, the command prints no code, says so on stderr, and still exits `0`.
+  - `--exit` refuses the terminal that runs the command with `usage`, because its shell cannot end while the wait runs in it.
+- **`terminal wait <terminal> --text <text>`** and **`--regex <pattern>`** wait until a line of the terminal holds the text, or matches the RE2 pattern, and print that line.
+  - The CLI replays output and size changes in order. A reconnect resumes after the last received bytes and resize. If the Worker cannot reconstruct the needed history, the command returns `unavailable`.
+  - The match is per line. A line that the terminal wraps at its width counts as one line, and it loses its trailing blanks, so `^` and `$` match at its ends. When several lines match at once, the command prints the lowest one.
+  - The visible screen counts when the wait begins. Lines that appear later count even if they scroll off the screen. Pass `--scrollback` to include the retained history from before the wait.
+  - To wait for the output of a new command only, clear the screen first, or match a line that the echoed command line does not hold: after `terminal run "$T" 'make test; echo DONE'`, wait with `--regex '^DONE$'`.
+- **The command prints its result even when the condition did not hold, and exits `6`**: `--timeout` passed, the shell ended before the terminal showed the text, or the shell failed to start. `--json` prints `status`, `reached`, and `exit_code` once the shell ended. A terminal that closes during the wait fails with `not_found` and exits `6`.
+- `leapmux events --kind terminal` prints the exits, bells, titles, notifications and progress reports of every terminal as they happen.
+- `leapmux events --tab "$T" --kind terminal` watches one terminal. The stream follows the tab across workspaces unless `--workspace` limits it to one.
+
+### Telling the user
+
+These commands reach your open LeapMux windows through the Worker's encrypted event stream. A window hears a Worker while one of your tabs runs on that Worker.
+
+- `notify <title>` shows a toast in each window with the title, the `--body` text, and the tab that ran the command. While a window is hidden, it also shows a desktop notification when **Desktop notifications** is on in [Settings](/docs/using/settings/#desktop-notifications). `--body -` reads from standard input.
+  - Add `--tab <tab>` or `--workspace <workspace>` so the toast can open that destination. A tab destination selects its Worker. For a broadcast or a workspace destination, the command uses the calling tab's Worker. Outside a tab, pass `--worker`.
+  - The result includes the notification ID and Worker. Use `notification list --worker <worker>` to read its latest 100 notifications. Use `notification clear <id> --worker <worker>` to remove one and dismiss its LeapMux toast. The Worker keeps the list in memory and sends each toast as a live event.
+  - The Worker names the tab from the control token of the tab's socket, so a process cannot claim another tab. With `--worker`, the tab's own Worker relays the notification and states the tab. A notification sent from outside a tab names no tab.
+  - The Worker refuses an empty title, a title over 256 bytes and a body over 4096 bytes with `invalid_argument`.
+- `tab reveal <tab>` brings a tab into view in each window: the window switches to the tab's workspace, and the tab becomes the active tab of its tile, as a click on the tab in the sidebar does. Nothing stores the reveal, and a window that does not know the tab yet ignores it. A tab that its Worker does not host, such as a closed one, fails with `not_found`.
+- `tab status set <tab> <text>` shows a short status beside the tab's title, in the tab bar and in the sidebar. `--progress N` adds a ring that fills from 0 to 100. `--tone` accepts `neutral` (the default), `success`, `warning`, or `error`.
+  - Use `--key <key>` to report status for an independent task. A set replaces that key's previous status. Without `--key`, set and clear use the key `default`.
+  - `tab status list <tab>` lists every key with the visible status first. `tab status clear <tab> --key <key>` clears just that entry. The tab then shows the status of the most recently set key that remains.
+  - The Worker keeps up to 32 entries per tab in memory. Each key holds up to 64 bytes. The entries survive a window reconnect and expire when the tab closes or the Worker stops.
+  - The text holds at most 128 bytes; the Worker refuses a longer one with `invalid_argument`. The tab bar cuts a long text, and the tooltip shows the whole text and the progress.
+- A window shows a reveal and a status only to a credential that may read tabs of that kind. The same rule applies to `tab status list`. The credential needs `workspace:read` and the tab kind's read scope, such as `agent:read` or `terminal:read`.
+
+### Files and git
+
+- `file read` and `git read` read at most `--limit` bytes. `--limit 0`, the default, reads 256 KiB. The Worker caps a larger `--limit` at the message size of the channel (`max_message_size`, 16 MiB unless your administrator changed it). `total_size` gives the size of the whole file, so a `content` shorter than `total_size` shows where the read stopped. Read the rest of a large file with `file read --offset`; `git read` has no offset.
+- `file list` prints one listing per directory. With `--from-root <dir>`, it prints each directory from that ancestor down to the path, outermost first, so one request reads a whole branch. The Worker may answer with fewer levels than the depth implies, because a cap on the count of listings and the message size both drop the deepest levels.
+- `file roots` reports the Worker's filesystem roots: `/` on a POSIX host, and each drive that carries a volume (`C:\`, `D:\`) on Windows. A WSL or Docker Worker runs a Linux binary, so it reports `/`.
+- `git status`, `git branch list`, and `worktree list` take the directory with `--dir`, which defaults to the calling tab's working directory. `git read` prints a file as the last commit (`--ref head`) or the index (`--ref staged`) holds it; `exists` is `false` when the file is absent at that ref, which tells it apart from an empty file.
+
+`worktree get branch:<branch>` finds an exact attached branch in the repository selected by `--dir` on the chosen Worker. It accepts the short branch name or a full `refs/heads/` ref. `worktree get path:<path>` can take its repository from the path. `worktree get self` (or bare `worktree get`) finds the checkout that contains the calling local tab's working directory. A branch that exists without a checkout returns `not_found`. When several checkouts match, the CLI returns `ambiguous_target` and lists their `path:` selectors.
+
+Pass `--use-worktree branch:<branch>` to `agent open` or `terminal open` to start in that linked checkout. Select the repository with `--dir`. A command running in a local tab can use that tab's directory on the same Worker. Use `--use-worktree path:<path>` or a literal path to select the checkout directly. Workspace and tile flags still control tab placement. The Worker saves the selected checkout and checks it before launch. A branch selection also checks the attached branch.
+
+### Tiles and layouts
+
+- `tile split`, `tile close`, `tile make-grid` and `tile remove-grid` change one tile. `tile close` and `tile remove-grid` refuse a tile that holds tabs until `--with-tabs close` or `--with-tabs move` says what happens to them.
+- `layout get` prints the main tile tree of a workspace with its tabs. `layout set <workspace> [file]` replaces that tree from a JSON tree, moves main-tree tabs to the new first tile, leaves tabs in floating windows in place, and accepts the output of `layout get --json` as it is. A `split` needs at least two children and a `direction`; a `grid` needs `rows` and `cols` from 1 to 20 and exactly `rows * cols` children. An error identifies the node that fails, such as `root.children[1].children[0]`. If a tab arrives during the rewrite, `layout set` retries once; contention that persists fails with `conflict`.
+- `layout watch [workspace]` prints every change of your layouts as it happens, one event per line. The first event is the snapshot. Each event carries a `kind`:
 
 | `kind` | Meaning |
 | --- | --- |
-| `materialized` | Bootstrap snapshot (always first) |
-| `batch` | A batch of layout/tab operations |
-| `batch_end` | Boundary after a committed batch |
-| `resume_delta` | Resumed stream frames (reserved; not sent today) |
-| `entity_materialized` | An entity (tab, node, floating window) became visible |
+| `materialized` | The snapshot (always first) |
+| `batch` | A batch of layout and tab operations |
+| `batch_end` | The boundary after a committed batch |
+| `resume_delta` | Frames of a resumed stream |
+| `entity_materialized` | A tab, a tile or a floating window became visible |
 | `entity_removed` | An entity was removed |
-| `presence` | Active-client presence changed for a workspace |
+| `presence` | The clients that view a workspace changed |
 | `workspace_renamed` | A workspace title changed |
 | `workspace_created` | A workspace was created |
 | `workspace_deleted` | A workspace was deleted |
-| `workers_changed` | Your Worker list changed: a Worker registered, deregistered, came online, or went offline. It arrives whatever `--workspace-id` you pass, but only when your credential can list Workers (`worker:read`) |
-| `unknown` | An event the CLI doesn't project |
+| `workers_changed` | Your Worker list changed: a Worker registered, deregistered, came online, or went offline. It arrives for every workspace, but only when your credential can list Workers (`worker:read`). |
+| `unknown` | An event that this CLI does not know |
 
-The command runs until you interrupt it (SIGINT/SIGTERM) or the stream closes. Errors surface as `rpc_failed` or `stream_error`.
+To follow an agent's chat, use `agent messages --follow` instead.
 
-{{< callout type="info" >}}
-`events watch` streams **workspace/layout** events and Worker list changes only (the CRDT user event stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
-{{< /callout >}}
+### Watching events
+
+`events` prints what happens in your workspaces as it happens, one event per line. It merges the Hub's layout changes with a watch of each Worker that hosts a tab, so one command sees every agent and every terminal.
+
+- **Each line is one event**: the local time, the kind, the ids, and a summary.
+
+  ```text
+  2026-11-19T19:00:01.123+09:00 agent.activity workspace=9f3kQ2aB tab=87a19d5f worker=1a2b3c4d idle (3 tool calls)
+  ```
+
+  `--json` prints one `{"data": …}` envelope per line instead, with the full ids and a field for each fact.
+
+| Kind | Meaning |
+| --- | --- |
+| `workspace.created`, `workspace.renamed`, `workspace.deleted` | A workspace was created, renamed or deleted. |
+| `tab.opened`, `tab.closed`, `tab.moved` | A tab opened, closed, or moved to another workspace. |
+| `agent.activity` | An agent became `idle`, `working` or `waiting_for_user`. |
+| `agent.status` | The status of an agent's process changed. |
+| `agent.turn_end` | An agent ended a turn. |
+| `agent.request`, `agent.request_ended` | An agent asks for a permission or an answer, and the request ended. `request` is the handle that `agent approve`, `agent deny` and `agent answer` take. |
+| `agent.todos`, `agent.background_tasks` | An agent's to-do list or background tasks changed. |
+| `terminal.status`, `terminal.exit` | A terminal's shell changed its status, or exited with its exit code. |
+| `terminal.title`, `terminal.bell`, `terminal.notification`, `terminal.progress` | A program in a terminal set the title, rang the bell, asked for a desktop notification, or reported its progress. |
+| `stream.ready`, `stream.unavailable`, `stream.gap`, `stream.heartbeat` | The health of the stream itself. |
+| `stream.retired` | The Worker finished the checkpointed tab's event history. |
+
+- **`--kind` selects what prints**: a kind such as `agent.request`, or a family such as `agent`. Repeat it, or separate the values with commas. An unknown value fails with `usage` and lists the known ones.
+- **`--workspace` narrows the scope** to one workspace. Without it, the stream watches every workspace. A tab that opens while the stream runs joins it, and a tab that closes leaves it. The stream ends with status `0` when the watched workspace is deleted.
+- **Read the state after `stream.ready`.** A run without a checkpoint starts from the present. The ready event reports which sources can deliver. If a source drops afterward, `stream.gap` reports the possible loss when it reconnects.
+- **The stream survives drops.**
+  - When the Hub or a Worker cannot deliver, the stream prints `stream.unavailable` and retries. It watches an offline Worker again as soon as the Hub reports that a Worker came online.
+  - A Worker that refuses for good, such as for a missing permission, prints `retrying: false`, and the stream goes on without it.
+  - When a source delivers again, the stream prints `stream.gap` with the time that it stopped (`since`) and the kinds that it may have lost (`lost`). Then it prints each change of an agent's activity and status, and of the tabs and workspaces, that happened meanwhile, with `reconciled: true`.
+- **`--kind` never hides the health of the stream**: a `stream.*` event that `--kind` does not select prints on stderr.
+- **`--limit N`** ends the stream after N events, so `--limit 1` waits for the next one. **`--heartbeat 30s`** prints `stream.heartbeat` every 30 seconds, so a script can tell a quiet stream from a stuck one; `--limit` does not count it.
+- Ctrl-C ends the stream with status `0`.
+
+`layout watch` prints the raw changes of the layout instead, and `agent messages --follow` prints an agent's chat.
+
+#### Resume a tab's event stream
 
 ```bash
-# React to tab removals in a workspace
-leapmux control events watch --workspace-id "$WS" \
-  | jq -c 'select(.kind == "entity_removed")'
+leapmux events --tab "$T" --checkpoint terminal-events.json --kind terminal --json
+```
+
+The first run starts at the latest recorded event. Stop it and run the same
+command again to read the events that the Worker retained in the
+meantime. The checkpoint covers `terminal.status`, `terminal.exit`,
+`terminal.title`, `terminal.bell`, `terminal.notification`, and
+`terminal.progress`. The Worker checks access to the tab each time
+the CLI opens the stream.
+
+After the Worker retires an agent or terminal, pass its full ID and the same
+checkpoint to read its retained events. The command exits with status `0` after
+`stream.retired` confirms the final Worker position. Resuming at that
+position prints the confirmation again without repeating earlier events.
+Closing a subagent transcript keeps its history open. A terminal's shell can
+also exit and restart while its tab stays open.
+
+An agent tab also supports checkpoints. Its events cover activity, process
+status, turn ends, requests, to-do lists, and background tasks. For a
+request, `request_instance` correlates the request with its end. The
+Worker includes a `request` handle only if that instance still waits
+for an answer.
+
+Use the same tab and `--kind` selection when you resume. The checkpoint
+follows the tab across workspace moves. `--limit` counts the tab
+events that the CLI prints. A `stream.gap` reports the affected sequence
+interval and why the Worker could not replay it.
+If the Worker has discarded the entire stream identity, the checkpoint
+fails with `conflict`.
+
+The CLI saves its position after it writes the event. If the process stops
+between those steps, the next run can print the event again. Deduplicate by
+`journal_id`, `tab_stream_id`, and `sequence`. Records already committed
+when the stream opened carry `replayed: true`.
+
+#### Resume Hub layout events
+
+```bash
+leapmux events --workspace "$WS" --checkpoint workspace-events.json --kind workspace,tab --json
+```
+
+Omit `--workspace` to use the account's layout scope. Resume with the
+same scope and event kinds. The Hub retains workspace and tab changes,
+including tabs that opened, moved, or closed between runs. When retained
+history expires, the stream reports the lost interval and advances to
+the first available position. Pass the full workspace ID to resume a
+checkpoint after that workspace is deleted. The command replays
+through its final position and exits with status `0`.
+
+A workspace checkpoint follows the Hub's committed lifecycle events.
+Use an exact tab checkpoint or an account checkpoint for Worker events.
+
+#### Resume account events
+
+```bash
+leapmux events --checkpoint account-events.json --kind terminal,workspace,tab --json
+```
+
+An account checkpoint follows the selected event kinds across the
+account's Workers and the Hub. It saves a separate position for the Hub
+and for each selected event family on each Worker, including Workers
+with no tabs. Resume with the same event kinds.
+
+A Worker membership change can leave events unavailable. The stream
+reports the gap before saving the new inventory. A temporarily offline
+Worker can resume from its saved position when it reconnects. The CLI
+scans Workers in turns to share the Hub's connection limit. Records
+committed at their source's first admission in this run carry
+`replayed: true`. Use the
+Worker ID, tab type, journal ID, and sequence to deduplicate Worker
+records. The order of events from different sources can vary.
+
+### Calling a procedure directly
+
+`rpc <procedure> [request]` calls one procedure of the Hub or of a Worker by its name, for a call that no other command makes. It reads the request as protobuf JSON and prints the response the same way.
+
+```bash
+leapmux rpc leapmux.v1.WorkspaceService/ListTabs '{"workspace_ids": ["'"$WS"'"]}'
+leapmux rpc leapmux.v1.WorkerAgentService/ListAgents '{"tab_ids": ["'"$A"'"]}' --worker self --json
+```
+
+- The procedures are the methods of the services in `proto/leapmux/v1`. The `leapmux.v1.` prefix is optional. An unknown name fails with `usage` and suggests the closest names, and shell completion lists every procedure.
+- The request is the second argument, `-` for standard input, or `{}` when you give none. A field that the request type does not declare fails with `usage` before anything is sent. The response uses the field names of the `.proto` files, and a field that holds its default value does not print.
+- A Worker procedure needs `--worker`, the Worker that serves it. It never defaults to the Worker of the calling tab.
+- A procedure that streams, such as `WatchEvents`, fails with `usage`. Use `events` or `agent messages --follow`.
+- Inside a LeapMux tab, the socket of the tab relays a fixed set of Hub procedures, which `rpc --help` lists. Another Hub procedure fails with `usage`; pass `--hub <url>` to call it with your own login.
+- `rpc` sends the request directly. The Hub and Worker apply their own authorization and validation. Check the procedure before calling one that changes state.
+
+`WorkerAgentService/AnswerControl` accepts a native adapter response for an offered permission choice. Use `ListControlRequests` to get the request ID and its claim token. Send the adapter JSON bytes as Base64 in `native_response.content`. The Worker checks that the bytes match one offered choice for that request, then delivers the provider's answer. Use a typed `decision` for a plan, question, or form. The Worker refuses answers from the agent whose request is pending.
+
+```json
+{
+  "agent_id": "<agent-id>",
+  "request_id": "<request-id>",
+  "claim_token": "<claim-token>",
+  "native_response": { "content": "<base64 adapter response>" }
+}
 ```
 
 ## End-to-end examples
@@ -632,94 +680,165 @@ leapmux control events watch --workspace-id "$WS" \
 ### Drive an agent from your laptop
 
 ```bash
-export LEAPMUX_HUB=https://leapmux.example.com
-leapmux control auth login --hub "$LEAPMUX_HUB"
+leapmux auth login --hub https://leapmux.example.com
 
-WS=$(leapmux control workspace create --title "Bugfix" | jq -r '.data.workspace_id')
-W=$(leapmux control worker list | jq -r '.data[0].id')
+WS=$(leapmux workspace create "Bugfix" -q)
+A=$(leapmux agent open --workspace "$WS" --worker name:build-box \
+      --provider claude --dir ~/src/app \
+      --message "Find and fix the failing test in ./pkg/auth." -q)
 
-T=$(leapmux control tab open --type agent \
-      --worker-id "$W" --workspace-id "$WS" \
-      --provider "Claude Code" --working-dir /home/dev/project \
-      --initial-message "Find and fix the failing test in ./pkg/auth." \
-    | jq -r '.data.tab_id')
-
-leapmux control agent messages --tab-id "$T" --follow
+leapmux agent messages "$A" --follow
 ```
 
-### A script running inside an agent
+### Run two agents and collect their answers
 
-No login, no IDs — the spawn context supplies everything:
+```bash
+A=$(leapmux agent open --provider claude --message "Fix the flaky test in ./pkg/auth." -q)
+B=$(leapmux agent open --provider codex --message "Update CHANGELOG.md for the release." -q)
+
+# Wait until both agents settle, for half an hour at most.
+leapmux agent wait "$A" "$B" --timeout 30m
+
+# Ask one of them a follow-up question and keep the answer.
+summary=$(leapmux agent send "$A" "Summarize your change in one line." --wait)
+```
+
+### Approve an agent's prompts
+
+```bash
+# Wait until the agent stops at a prompt, then read what it asks.
+leapmux agent wait "$A" --until waiting_for_user
+leapmux agent requests "$A"
+
+# Approve the first request, or refuse it with a reason.
+R=$(leapmux agent requests "$A" -q | head -1)
+leapmux agent approve "$A" "$R"
+leapmux agent deny "$A" "$R" --message "Run the unit tests only."
+```
+
+### React to what agents do
+
+```bash
+# Ring the bell and show each prompt that an agent stops at.
+leapmux events --kind agent.request --json |
+  while read -r line; do
+    printf '\a'
+    jq -r '.data | "\(.tab_id): \(.summary)"' <<<"$line"
+  done
+
+# Wait for the next prompt of any agent, then read it in full.
+ev=$(leapmux events --kind agent.request --limit 1 --json)
+leapmux agent requests "$(jq -r .data.tab_id <<<"$ev")"
+```
+
+### Run a command in a terminal and wait for it
+
+```bash
+T=$(leapmux terminal open -q)
+leapmux terminal run "$T" 'make test; echo DONE'
+# The echoed command line holds "echo DONE"; only the output line matches.
+leapmux terminal wait "$T" --regex '^DONE$' --timeout 15m
+leapmux terminal read "$T" --lines 40
+
+# Or end the shell with the status of the command, and keep that status.
+leapmux terminal run "$T" 'make build; exit $?'
+code=$(leapmux terminal wait "$T" --exit)
+```
+
+### Retry a message safely
+
+```bash
+# Retry while the Worker is unreachable (status 7), with one request id.
+for attempt in 1 2 3; do
+  leapmux agent send "$A" "Run the release checklist" --request-id "release-$(date +%F)" && break
+  [ $? -eq 7 ] || exit 1
+  sleep 5
+done
+```
+
+### Report progress from a script
+
+```bash
+leapmux tab status set self "Running the tests" --progress 0
+if make test > test.log 2>&1; then
+  leapmux tab status set self "Tests passed" --tone success
+  leapmux notify "Tests passed"
+else
+  leapmux tab status set self "Tests failed" --tone error
+  tail -n 5 test.log | leapmux notify "Tests failed" --body -
+fi
+```
+
+### A script that runs inside an agent
+
+No login and no ids: the tab supplies them.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Inspect the repo we were spawned in
-leapmux control git status | jq '.data.info'
+# Inspect the repository that this agent works in.
+leapmux git status
 
-# Open a sibling terminal on the same worker and run the build
-TERM_TAB=$(leapmux control tab open --type terminal | jq -r '.data.tab_id')
-printf 'make build\n' | leapmux control terminal send --tab-id "$TERM_TAB" --stdin
+# Open a terminal beside this tab and run the build in it.
+T=$(leapmux terminal open -q)
+leapmux terminal run "$T" 'make build'
 ```
 
 ### Snapshot and restore a layout
 
 ```bash
-# layout set takes only the tree node, so extract `.data.tree` from the get envelope.
-leapmux control layout get --workspace-id "$WS" | jq '.data.tree' > before.json
-leapmux control tile split --tile-id "$TILE" --direction vertical
+leapmux layout get "$WS" --json > before.json
+leapmux tile split "$TILE" --direction vertical
 # ... experiment ...
-leapmux control layout set --workspace-id "$WS" --file before.json
+leapmux layout set "$WS" before.json
 ```
 
-## Sockets, `--hub unix:`/`npipe:`, and login
+### Branch on the result in a script
 
-A `--hub` value may be a hub IPC listener (`unix:$HOME/.config/leapmux/hub/hub.sock` on Unix, `npipe:...` on Windows) as well as an http(s) URL. A socket hub URL is still the HUB peer: the CLI presents the same `Authorization: Bearer` credential as over http(s) — only the worker-IPC transport uses the internal `X-LeapMux-Token` header.
+```bash
+if ! out=$(leapmux tab close "$T" --json 2>/dev/null); then
+  case $(jq -r .error.code <<<"$out") in
+    tab_busy_refused) echo "the tab is busy; try again later" ;;
+    not_found)        echo "the tab is already gone" ;;
+    *)                jq -r .error.message <<<"$out"; exit 1 ;;
+  esac
+fi
+```
+
+## Sockets and login
+
+A `--hub` value may be a Hub's local IPC listener (`unix:$HOME/.config/leapmux/hub/hub.sock` on Unix, `npipe:...` on Windows) as well as an http(s) URL. A socket URL still reaches the Hub: the CLI presents the same `Authorization: Bearer` credential as over http(s). Only the Worker's socket inside a tab uses the internal `X-LeapMux-Token` header.
 
 Login rules:
 
-- **Solo needs no login over its local socket.** That socket is reachable only from the machine that runs the Hub, so ordinary commands need no credential there. TCP never receives this exemption. Before the `solo` password exists, a TCP caller can only set the first password. Afterward, TCP requires a normal login. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model). Solo still **authorizes apps**: a login mints a scoped credential, and the Hub binds that credential's permissions rather than the solo account's. Both flows complete, because the consent pages accept the solo account. See [App Authorization](/docs/admin/app-authorization/#solo-mode).
-- A **non-solo hub over a socket** uses `--device-code`: `leapmux control auth login --hub unix:...hub.sock --device-code` dials the socket for the token exchange while you approve in a browser against the hub's **public** origin (which the hub derives itself from its settings — not from `--hub`). The PKCE local-redirect flow is refused for socket URLs with a message pointing at `--device-code`, because a browser cannot reach a socket hub origin.
+- **Solo needs no login over its local socket.** Only the machine that runs the Hub can reach that socket, so ordinary commands need no credential there. TCP never receives this exemption. Before the `solo` password exists, a TCP caller can only set the first password. After that, TCP requires a normal login. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model). Solo still **authorizes apps**: a login mints a scoped credential, and the Hub enforces that credential's permissions rather than the solo account's. Both flows complete, because the consent pages accept the solo account. See [App Authorization](/docs/admin/app-authorization/#solo-mode).
+- **A Hub that is not solo, over a socket,** uses `--device-code`. `leapmux auth login --hub unix:...hub.sock --device-code` dials the socket for the token exchange while you approve in a browser against the Hub's **public** origin, which the Hub derives from its own settings. The local-redirect flow refuses a socket URL and points at `--device-code`, because a browser cannot reach a socket.
 
 ```bash
-# With a Hub that runs on this machine (leapmux hub start):
-leapmux control auth login --hub unix:$HOME/.config/leapmux/hub/hub.sock --device-code
-leapmux control admin settings list --hub unix:$HOME/.config/leapmux/hub/hub.sock
+# With a Hub that runs on this machine (leapmux daemon hub start):
+leapmux auth login --hub unix:$HOME/.config/leapmux/hub/hub.sock --device-code
+leapmux admin settings list --hub unix:$HOME/.config/leapmux/hub/hub.sock
 ```
-
-## Error code reference
-
-| Code | Typical cause |
-| --- | --- |
-| `not_logged_in` | No usable credential (no `--hub`/`LEAPMUX_HUB`/`LEAPMUX_CONTROL_SOCK`, or no stored token) |
-| `invalid_request` | Bad/missing/conflicting flags; resolver could not satisfy a required ID |
-| `resolve_failed` | A derivation RPC failed while resolving entity IDs |
-| `not_found` | The referenced tab/Worker/pin/agent does not exist |
-| `channel_open_failed` | The Worker is offline or unreachable, so a command that the Worker must answer cannot run |
-| `self_target_refused` | The operation would destroy the calling tab (pass `--force`) |
-| `no_providers_installed` / `ambiguous_provider` | `tab open --type agent` with zero / more than one installed provider and no `--provider` |
-| `concurrent_modification` | `layout set` lost the retry race against a concurrent change |
-| `rpc_failed` / `stream_error` | `events watch` failed to open or the stream errored |
-| `rpc_error` | A Worker refused the request, or the CLI's encrypted channel rejected the Worker's response, for example because it was too large; the message starts with the error code, such as `not_found:` or `resource_exhausted:` |
-| `timeout` | `auth login` PKCE callback didn't arrive within 10 minutes |
 
 ## Security model
 
 The two transports carry different credentials and trust boundaries:
 
-- **External CLI.** Each Hub credential is a single bearer token (an `api_tokens` row, stored only as a peppered HMAC-SHA256 hash). End-to-end channels to Workers use the same Noise_NK handshake the browser uses, with each Worker's static key pinned per-hub on first use (see [Worker TOFU pins](#worker-tofu-pins)).
-- **Spawned agent or terminal.** The Worker hands the process a private local interprocess communication (IPC) endpoint and a per-process token scoped to the spawning user and tab. On Unix, the endpoint is a socket with mode `0600`. It lives in `<data-dir>/run/control` when the full socket path fits the platform limit. Otherwise, the Worker uses a private namespace under the canonical system `/tmp` directory. That namespace derives from the operating-system account and the canonical Worker data directory, independently of the Worker ID or session environment. Only that account can access the directory. The Worker holds its namespace lock until every control listener closes. On Windows, the endpoint is a named pipe with an explicit access-control list that grants access only to that account's security identifier (SID). When the agent or terminal closes, the endpoint closes and the token is invalidated.
-- **Cross-worker calls from a spawned agent.** Reaching a *sibling* Worker (an `agent`/`terminal`/`file`/`git` command with a different `--worker-id`) uses a Worker-minted delegation token: it carries your identity and is pinned to the machines it may reach. It is minted lazily on the first cross-worker call and revoked when the agent closes — so an agent that never reaches across Workers never holds one.
+- **External CLI.** Each Hub credential is a bearer token (an `api_tokens` row, stored only as a peppered HMAC-SHA256 hash). End-to-end channels to Workers use the same Noise_NK handshake the browser uses, with each Worker's static key pinned for each Hub on first use (see [Worker key pins](#worker-key-pins)).
+- **An agent or terminal that a Worker started.** The Worker hands the process a private local interprocess communication (IPC) endpoint and a token for that process, scoped to the user and the tab. On Unix, the endpoint is a socket with mode `0600`. It lives in `<data-dir>/run/control` when the full socket path fits the platform limit. Otherwise, the Worker uses a private namespace under the canonical system `/tmp` directory. That namespace derives from the operating-system account and the canonical Worker data directory, independently of the Worker ID or the session environment. Only that account can access the directory. The Worker holds its namespace lock until every control listener closes. On Windows, the endpoint is a named pipe with an explicit access-control list that grants access only to that account's security identifier (SID). When the agent or terminal closes, the endpoint closes and the token is invalidated.
+- **A call to a sibling Worker from inside a tab.** Reaching another Worker (an `agent`, `terminal`, `file` or `git` command whose target lives on another Worker) uses a delegation token that the host Worker mints: it carries your identity and lists the machines it may reach. The Worker mints it on the first such call and revokes it when the agent closes, so an agent that never reaches another Worker never holds one.
+- **Administration stays out of a tab.** `leapmux admin ...` refuses to run inside a LeapMux tab, even with `--hub`, so an agent cannot act as an administrator through your credential.
 
 For the full trust model, what the Hub can and cannot see, and the encryption primitives, see [Security & Threat Model](/docs/admin/security/).
 
 ## See also
 
+- [Control Command Reference](/docs/reference/control-commands/) — every command with its arguments, flags and examples.
 - [Coding Agents](/docs/using/coding-agents/) — providers, models, effort, control prompts, and resume that `agent` commands drive.
-- [Terminals](/docs/using/terminals/) — PTY sessions, shells, and the automatic `LEAPMUX_CONTROL_*` injection.
-- [Managing Workers](/docs/admin/managing-workers/) — Worker registration, approval, and TOFU pinning.
-- [Admin CLI](/docs/admin/admin-cli/) — the `control admin` surface for hub administration.
+- [Terminals](/docs/using/terminals/) — PTY sessions, shells, and the automatic `LEAPMUX_CONTROL_*` variables.
+- [Managing Workers](/docs/admin/managing-workers/) — Worker registration, approval, and key pinning.
+- [Admin CLI](/docs/admin/admin-cli/) — the `leapmux admin` commands for Hub administration.
 - [Recovery](/docs/admin/recover/) — the offline break-glass tree.
-- [Tabs and Layout](/docs/using/tabs-and-layout/) — the tile/split/grid model that `tile` and `layout` manipulate.
-- [Worktrees and Branches](/docs/using/worktrees-and-branches/) — the worktree dispositions used by `tab close --worktree`.
+- [Tabs and Layout](/docs/using/tabs-and-layout/) — the tile, split and grid model that `tile` and `layout` change.
+- [Worktrees and Branches](/docs/using/worktrees-and-branches/) — the worktree dispositions that `tab close --worktree` uses.

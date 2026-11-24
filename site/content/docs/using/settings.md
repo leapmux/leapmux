@@ -40,8 +40,8 @@ The user categories, in navigation order:
 | **Account** | Profile name, email, password, passkeys, linked accounts. The section the dialog opens on. Solo mode keeps **Password** alone and hides the other four rows. |
 | **Apps** | The apps feature in two rows: **Connected apps** (what your account authorized) and the app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. Both rows stay in solo mode, because a solo Hub authorizes apps like any other. See [App Authorization](/docs/admin/app-authorization/). |
 | **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
-| **Notifications** | Turn-end sound and volume, terminal OS notifications. |
-| **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
+| **Notifications** | Turn-end sound and volume, desktop notifications. |
+| **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar, Agent skills. |
 | **Terminal** | Terminal renderer, and the Quake terminal's position, size, animation and background opacity. |
 | **Desktop** | The tray (menu bar) icon, what closing and minimizing a window do, and the login launch. The desktop app only; in a browser the category disappears from the dialog. |
 | **Files & Applications** | Preferred application (desktop), reveal after download (desktop), hidden files in directory picker. |
@@ -143,9 +143,9 @@ Plays a notification sound when a coding agent finishes a turn: **None** or **Di
 
 A 0–100% slider (built-in default 100%), shown unless the sound is **None** on both this device and the account. A dual-tier setting.
 
-### Terminal OS notifications
+### Desktop notifications
 
-Whether terminal alerts raise OS-level notifications (browser-only; the browser asks for notification permission when you enable it). Off by default.
+Whether LeapMux raises desktop notifications: for terminal alerts (OSC 9 / 777 / 99), and, while LeapMux is hidden, for `leapmux notify`. It is browser-only; the browser asks for notification permission when you enable it. Off by default.
 
 ## Chat & Composer
 
@@ -156,6 +156,7 @@ Per-device toggles for the chat surface. The in-context controls — the tab-bar
 | **Expand agent thoughts** | On | Tab bar menu | Whether agent thinking/reasoning bubbles start expanded. |
 | **Show hidden messages** | Off | Tab bar menu | Developer view that reveals hidden chat messages. |
 | **Enter key behavior** | **Cmd/Ctrl+Enter sends** | Composer **[+]** menu (**Send with ⌘/Ctrl+⏎**) | Whether plain Enter sends a chat message or inserts a newline. The other choice is **Enter sends**. |
+| **Agent skills** | Off | `leapmux skill` CLI | Select which curated LeapMux `SKILL.md` playbooks are installed on each connected Worker, choose target directories (`~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.cursor/skills`), and optionally refresh unmodified skills automatically on Worker startup. See [Agent Skills](/docs/using/agent-skills/). |
 | **Composer status bar** | On | Composer **[+]** menu | Whether the branch/model/effort/mode chips show beneath the editor box. |
 
 ## Terminal
@@ -246,13 +247,13 @@ Every row here stays in solo mode. A solo Hub whose account holds a password sig
 
 This section appears in solo, hub, and dev modes. It contains two separate rows.
 
-**Network access** appears only in solo mode. It controls which addresses the Hub answers on beside the addresses `-listen` gives it.
+**Network access** appears only in solo mode. It controls which addresses the Hub answers on beside the addresses `--listen` gives it.
 
-**TCP listeners** lists the TCP addresses the Hub answers on right now, with the reason for each entry — from `-listen`, an address you added, or one socket serving both. **Local access** lists the local endpoints the Hub opened at startup (its Unix socket or Windows named pipe): a read-only inventory for local CLI tools, which the editor does not touch. **Additional addresses** is the editable TCP list: pick an interface (or **All interfaces**) and a port for each, then **Apply**. The Hub binds them at once and again on every later start.
+**TCP listeners** lists the TCP addresses the Hub answers on right now, with the reason for each entry — from `--listen`, an address you added, or one socket serving both. **Local access** lists the local endpoints the Hub opened at startup (its Unix socket or Windows named pipe): a read-only inventory for local CLI tools, which the editor does not touch. **Additional addresses** is the editable TCP list: pick an interface (or **All interfaces**) and a port for each, then **Apply**. The Hub binds them at once and again on every later start.
 
 Applying an address makes every TCP address require a sign-in as `solo`, including `127.0.0.1`. The panel stores the first password before it publishes a non-loopback address. The desktop app's local socket stays credential-free.
 
-Overlapping addresses merge: ask for every interface on the port `-listen` already uses and one socket serves both, which the "TCP listeners" list says. An address the Hub cannot bind stays configured and is reported with the operating system's own reason. See [Network access](/docs/admin/configuration/#network-access) and [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
+Overlapping addresses merge: ask for every interface on the port `--listen` already uses and one socket serves both, which the "TCP listeners" list says. An address the Hub cannot bind stays configured and is reported with the operating system's own reason. See [Network access](/docs/admin/configuration/#network-access) and [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
 
 **Trusted reverse proxies** appears in every Hub mode. Add an IP address, CIDR, inclusive range, short IPv4 range, or the `cloudflare` or `cloudfront` provider preset. Rows stay staged until **Apply**. **Cancel** restores the stored list, and backend validation errors leave the staged rows in place.
 
@@ -356,5 +357,5 @@ Device override (if set)  →  Account default  →  built-in default
 - [Accounts & Authentication](/docs/using/accounts/) — sign-up, login, OAuth, email verification, sessions.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — the shortcut system, default bindings, and customization.
 - [Configuration](/docs/admin/configuration/) — the hub instance settings the administration panels manage.
-- [`leapmux control admin`](/docs/using/control-cli/) — the CLI surface over the same hub settings.
+- [`leapmux admin`](/docs/admin/admin-cli/) — the CLI surface over the same hub settings.
 - [Running LeapMux](/docs/admin/running-leapmux/) — solo vs. distributed mode.

@@ -233,6 +233,7 @@ Add a file only when the provider owns that role.
 | `catalog.go` | Model and option catalog data, discovery and conversion when they need a separate file. |
 | `settings.go` | Live option methods, settings snapshots, and any shared axis table. |
 | `control.go` | Control requests and replies. |
+| `control_prompt.go` | `ReadControlRequest` and `AnswerControlRequest`: the neutral prompt of a control request, and the provider's answer to a neutral decision. |
 | `output.go` | Conversation output handlers and live output state. |
 | `events.go` | Protocol event decoding and dispatch when these form one unit. |
 | `rpc.go` | Request and reply transport, including response routing. |
@@ -246,6 +247,7 @@ Add a file only when the provider owns that role.
 | `family_base.go` | Base behavior shared by that family. |
 | `model_names.go` | Model ID normalization. |
 | `launch_env.go` | Launch environment detection. |
+| `reply_text.go` | `ReplyText`: the reply text of a stored row, as the browser's transcript shows it. |
 
 Keep the locator and static fallback groups in `Registration()`.
 The startup path reads that registration through `providerkit.ResolveLaunch`
@@ -284,8 +286,10 @@ A change that crosses a layer is almost always misplaced. Each layer's
    compile error. Layer 3 never imports `../providers/`, parses provider bytes,
    or branches on `AgentProvider`, a tool name or a wire token.
 
-Only three control surfaces in `providers/` draw: `codex/CodexControlActions.tsx`,
-`cursor/CursorControlActions.tsx`, `pi/PiPlanApprovalActions.tsx`.
+No module in `providers/` draws, control requests included: the Worker reads
+each request into a neutral prompt (`Provider.ReadControlRequest`), the shared
+controls in `components/chat/controls/` draw it, and the answer goes back as a
+neutral decision (`Provider.AnswerControlRequest`).
 
 Enforcement, from `eslint/chatPipelinePlugin.ts`:
 
@@ -300,7 +304,7 @@ Enforcement, from `eslint/chatPipelinePlugin.ts`:
   each hook.
 
 A `no-restricted-syntax` block in `eslint.config.ts` bans JSX under `providers/`
-outside those three surfaces and test files.
+outside test files and the two `testUtils.tsx` helpers.
 `src/test-support/chatLayerStructure.test.ts` guards the structure the rules
 assume; `src/test-support/restrictedSyntaxKeepsBaseRules.test.ts` runs the real
 linter over probe files so a scoped config block cannot silently un-guard a
@@ -309,6 +313,12 @@ tree.
 Extracting a preview, summary or plaintext is layer 1's job in the browser,
 never the Go backend's (the `frontend-owns-message-extraction` principle):
 layer 1 is where raw shapes are known.
+
+One exception: `Provider.ReplyText` reads the reply text of a stored agent row
+in Go, because `leapmux agent send --wait` prints it and a CLI cannot
+run the browser's plugins. `testdata/reply_text_conformance.json` pins each
+provider's reader to layer 1's extraction: the Worker's provider packages and
+`replyTextConformance.test.ts` replay the same cases.
 
 ### Tests
 
@@ -385,7 +395,7 @@ The default count is the smaller of four and the available CPU capacity.
 Use `task test-e2e -- --workers=N <files>` to select the count.
 Use `--workers=1` for serial execution.
 
-Each process owns one `leapmux dev` process and one mock model server.
+Each process owns one `leapmux daemon dev` process and one mock model server.
 Each process owns one browser context and a shared tab also.
 Thus each process retains `workers: 1` and `fullyParallel: false`.
 Every test uses the mock model server.

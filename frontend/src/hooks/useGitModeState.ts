@@ -265,7 +265,12 @@ export function setupForUseWorktree(
   intent: Extract<GitModeIntent, { mode: GitMode.UseWorktree }>,
 ): GitSetupInit {
   return {
-    mode: { case: 'useWorktreePath', value: intent.useWorktreePath },
+    mode: {
+      case: 'useWorktree',
+      value: {
+        selector: { case: 'path', value: intent.useWorktreePath },
+      },
+    },
   }
 }
 

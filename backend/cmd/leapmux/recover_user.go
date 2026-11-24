@@ -1,11 +1,15 @@
 package main
 
 import (
-	"context"
 	"errors"
-	"flag"
 	"fmt"
+	"strings"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
@@ -16,34 +20,48 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// runBootstrapCreateAdmin creates an administrator when no live administrator
+// newBootstrapCreateAdminCommand builds `leapmux recover bootstrap
+// create-admin`. It creates an administrator when no live administrator
 // exists — the one identity operation that cannot require an authenticated
 // admin to already exist. It refuses once any admin exists; every later
 // user (admin included) is created online through
 // `leapmux control admin user create`.
-func runBootstrapCreateAdmin(cmd cmdCtx, args []string) error {
-	var username *string
-	var pw *string
-	var displayName *string
-	return withRecoverStore(cmd, args, func(fs *flag.FlagSet) {
-		username = fs.String("username", "", "username (required)")
-		pw = fs.String("password", "", "password (prompted if omitted)")
-		displayName = fs.String("display-name", "", "display name")
-	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+func newBootstrapCreateAdminCommand() *cobra.Command {
+	var pw, displayName string
+	return recoverStoreLeaf(recoverSpec{
+		Leaf: cli.Leaf{
+			Use:     "create-admin <username>",
+			Short:   "Create the initial administrator (refuses once any admin exists)",
+			Mutates: true,
+			Args:    map[string]string{"username": "The username of the new administrator."},
+			Examples: []cli.Example{
+				{Comment: "Create the first administrator; the command prompts for the password.", Command: "leapmux recover create-admin alice"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.StringVar(&pw, "password", "", "password; a terminal prompt asks for it when this flag is absent")
+				fs.StringVar(&displayName, "display-name", "", "display name; the username when this flag is absent")
+			},
+		},
+		BeforeOpen: func(inv *cli.Invocation) error {
+			if strings.TrimSpace(inv.Arg("username")) == "" {
+				return cli.Usagef("<username> is empty")
+			}
+			return nil
+		},
+	}, func(inv *cli.Invocation, _ *config.Config, st store.Store) error {
+		ctx := inv.Context
 		if _, err := st.Users().GetFirstAdmin(ctx); err == nil {
-			return fmt.Errorf("an administrator already exists; use `leapmux control admin user create --admin` instead")
+			return cli.Newf(cli.CodeConflict, "an administrator already exists").
+				WithHint("create every later user online: leapmux admin user create --admin")
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return fmt.Errorf("look up existing admins: %w", err)
 		}
 
-		if *username == "" {
-			return fmt.Errorf("--username is required")
-		}
-		pwValue, err := control.RequirePassword(*pw, "Password: ")
+		pwValue, err := control.RequirePassword(ctx, pw, "Password: ")
 		if err != nil {
 			return err
 		}
-		slug, err := validate.SanitizeSlug("username", *username)
+		slug, err := validate.SanitizeSlug("username", inv.Arg("username"))
 		if err != nil {
 			return err
 		}
@@ -60,7 +78,7 @@ func runBootstrapCreateAdmin(cmd cmdCtx, args []string) error {
 		if err := validate.ValidatePassword(pwValue); err != nil {
 			return err
 		}
-		dispName, err := validate.SanitizeDisplayName(*displayName, slug)
+		dispName, err := validate.SanitizeDisplayName(displayName, slug)
 		if err != nil {
 			return fmt.Errorf("display name: %w", err)
 		}
@@ -85,13 +103,14 @@ func runBootstrapCreateAdmin(cmd cmdCtx, args []string) error {
 			}
 			return err
 		}
-		fmt.Printf("Created administrator %q (id: %s)\n", slug, user.ID)
-		return nil
+		_, err = fmt.Fprintf(inv.Printer.Out, "Created administrator %q (id: %s)\n", slug, user.ID)
+		return err
 	})
 }
 
-// runPasswordReset resets a user's password with the hub stopped — the
-// break-glass path for a hub whose only admin forgot their password.
+// newPasswordResetCommand builds `leapmux recover password reset`. It resets
+// a user's password with the hub stopped — the break-glass path for a hub
+// whose only admin forgot their password.
 //
 // `leapmux control admin user reset-password` is the online twin, and it is
 // the one to reach for while the hub serves: it goes through the
@@ -99,21 +118,35 @@ func runBootstrapCreateAdmin(cmd cmdCtx, args []string) error {
 // serving hub's process instead of leaving that to the revocation watcher's
 // next sweep. This verb is what remains when the hub cannot start. It opens
 // the database directly, which a running hub must not do.
-func runPasswordReset(cmd cmdCtx, args []string) error {
-	var userID *string
-	var username *string
-	var pw *string
-	return withRecoverExistingStore(cmd, args, func(fs *flag.FlagSet) {
-		userID = fs.String("id", "", "user ID")
-		username = fs.String("username", "", "username")
-		pw = fs.String("password", "", "new password (prompted if omitted)")
-	}, func(ctx context.Context, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
-		user, err := resolveUser(ctx, st, *userID, *username)
+func newPasswordResetCommand() *cobra.Command {
+	var pw string
+	var sel *leapmuxv1.UserSelector
+	return recoverExistingStoreLeaf(recoverSpec{
+		Leaf: cli.Leaf{
+			Use:     "reset-password <user>",
+			Short:   "Reset a user's password and revoke all their sessions",
+			Mutates: true,
+			Args:    map[string]string{"user": control.UserArgumentHelp},
+			Examples: []cli.Example{
+				{Comment: "Reset the password of alice; the command prompts for the new password.", Command: "leapmux recover reset-password alice"},
+				{Comment: "Select the user by id.", Command: "leapmux recover reset-password id:0193c0de-7a1b-7c2d-8e3f-4a5b6c7d8e9f"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.StringVar(&pw, "password", "", "new password; a terminal prompt asks for it when this flag is absent")
+			},
+		},
+		BeforeOpen: func(inv *cli.Invocation) (err error) {
+			sel, err = control.ParseUserArgument(inv.Arg("user"))
+			return err
+		},
+	}, func(inv *cli.Invocation, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
+		ctx := inv.Context
+		user, err := resolveUser(ctx, st, sel, inv.Arg("user"))
 		if err != nil {
 			return err
 		}
 
-		pwValue, err := control.RequirePassword(*pw, "New password: ")
+		pwValue, err := control.RequirePassword(ctx, pw, "New password: ")
 		if err != nil {
 			return err
 		}
@@ -164,7 +197,7 @@ func runPasswordReset(cmd cmdCtx, args []string) error {
 			return err
 		}
 
-		fmt.Printf("Password reset for user %q (id: %s). All sessions and passkeys revoked.\n", user.Username, user.ID)
-		return nil
+		_, err = fmt.Fprintf(inv.Printer.Out, "Password reset for user %q (id: %s). All sessions and passkeys revoked.\n", user.Username, user.ID)
+		return err
 	})
 }

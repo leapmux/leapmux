@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +19,7 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 // requireSettled fails the test unless c has settled its outcome. The deadline
@@ -244,4 +248,119 @@ func TestRelayError(t *testing.T) {
 func TestRelayError_PrintsTheCodeOnce(t *testing.T) {
 	relayed := relayError(connect.NewError(connect.CodeNotFound, "worker not found"))
 	assert.Equal(t, "not_found: worker not found", relayed.Error())
+}
+
+// A Worker broadcasts each event from its own goroutine, so several can reach
+// one stream at once. A connect stream takes one Send at a time, so the
+// collector must forward one frame at a time.
+func TestStreamCollector_ForwardsOneFrameAtATime(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var inFlight, overlaps atomic.Int32
+	c := newStreamCollector(ctx, "stream-1", func(*leapmuxv1.InnerStreamMessage) error {
+		if inFlight.Add(1) > 1 {
+			overlaps.Add(1)
+		}
+		runtime.Gosched()
+		inFlight.Add(-1)
+		return nil
+	})
+	var senders sync.WaitGroup
+	for range 8 {
+		senders.Go(func() {
+			for range 200 {
+				_ = c.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("x")})
+			}
+		})
+	}
+	senders.Wait()
+	assert.Zero(t, overlaps.Load(), "two frames reached the stream at once")
+}
+
+// A frame in flight holds the send lock for the whole of its send. close takes
+// the same lock, so it waits for that frame, and the HTTP handler never closes
+// a stream that a broadcaster still writes.
+func TestStreamCollector_HoldsTheSendLockWhileItForwardsAFrame(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	c := newStreamCollector(ctx, "stream-1", func(*leapmuxv1.InnerStreamMessage) error {
+		close(entered)
+		<-release
+		return nil
+	})
+	sent := make(chan error, 1)
+	go func() { sent <- c.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("late")}) }()
+	<-entered
+
+	locked := c.sendMu.TryLock()
+	if locked {
+		c.sendMu.Unlock()
+	}
+	assert.False(t, locked, "a frame in flight must hold the send lock")
+	close(release)
+	require.NoError(t, <-sent)
+}
+
+// retainingDispatcher ends the stream at once and keeps its writer, as a
+// broadcaster that still holds a subscriber's writer after the watch ended.
+type retainingDispatcher struct {
+	writers chan channel.ResponseWriter
+}
+
+func (d retainingDispatcher) DispatchWith(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	d.writers <- w
+	_ = w.SendStream(&leapmuxv1.InnerStreamMessage{End: true})
+}
+
+// The HTTP handler closes the stream once streamLocal returns, so streamLocal
+// closes its collector first. The stream's context ends only when StreamInner
+// returns, after that close, so the close is what refuses a broadcast in the
+// time between the end of the wait and the return. Once StreamInner returns,
+// the collector that a broadcaster holds is closed, and a late broadcast never
+// reaches the stream.
+func TestRouter_StreamLocalClosesTheCollectorBeforeItReturns(t *testing.T) {
+	d := retainingDispatcher{writers: make(chan channel.ResponseWriter, 1)}
+	r := &Router{LocalDispatcher: d, WorkerID: "A"}
+	var afterReturn atomic.Bool
+	var lateFrames atomic.Int32
+
+	require.NoError(t, r.StreamInner(context.Background(), TokenInfo{}, "worker.Watch", []byte("{}"), "A", "",
+		func(m *leapmuxv1.InnerStreamMessage) error {
+			if afterReturn.Load() {
+				lateFrames.Add(1)
+			}
+			return nil
+		}))
+	afterReturn.Store(true)
+
+	collector, ok := (<-d.writers).(*streamCollector)
+	require.True(t, ok, "the dispatcher writes to the stream's collector")
+	collector.sendMu.Lock()
+	closed := collector.closed
+	collector.sendMu.Unlock()
+	assert.True(t, closed, "streamLocal closes the collector before it returns")
+	require.Error(t, collector.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("late")}))
+	assert.Zero(t, lateFrames.Load(), "no frame reaches a stream after streamLocal returned")
+}
+
+// After close, no frame reaches the stream: a late broadcast fails, and a
+// final payload of SendResponse does too.
+func TestStreamCollector_RefusesEveryFrameAfterClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sent := 0
+	c := newStreamCollector(ctx, "stream-1", func(*leapmuxv1.InnerStreamMessage) error {
+		sent++
+		return nil
+	})
+	require.NoError(t, c.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("before")}))
+	c.close()
+
+	require.ErrorIs(t, c.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("after")}), errStreamClosed)
+	require.NoError(t, c.SendResponse(&leapmuxv1.InnerRpcResponse{Result: &leapmuxv1.InnerRpcResponse_Payload{Payload: []byte("final")}}))
+	requireSettled(t, c)
+	require.ErrorIs(t, c.outcome(), errStreamClosed, "a final payload that could not reach the stream is the outcome")
+	assert.Equal(t, 1, sent, "only the frame before close reached the stream")
 }

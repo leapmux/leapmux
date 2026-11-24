@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -153,18 +155,68 @@ func (a *Agent) answerDrain(line *providerkit.ParsedLine) {
 		items = a.steer.take(qwenMaxDrainItems)
 		a.stateMu.Unlock()
 	}
+	sessionID := params.SessionID
+	if sessionID == "" {
+		sessionID = a.CurrentSessionID()
+	}
 	reply := make([]qwenDrainItem, 0, len(items))
+	var echoed []steerItem
+	var dropped []steerItem
 	for _, item := range items {
 		blocks := acp.BuildPromptBlocks(item.content, agent.ClassifyAttachments(item.attachments))
 		if len(blocks) == 0 {
+			if item.inputID != "" && item.attemptID != "" {
+				dropped = append(dropped, item)
+			}
 			continue
 		}
 		reply = append(reply, qwenDrainItem{Content: blocks, DisplayText: item.content})
+		if item.inputID != "" && item.attemptID != "" {
+			echoed = append(echoed, item)
+		}
 	}
+	if len(echoed) > 0 {
+		a.FlushBufferedOutput(agent.MessageCompletionComplete)
+		for _, item := range echoed {
+			itemSession := item.sessionID
+			if itemSession == "" {
+				itemSession = sessionID
+			}
+			write := a.CaptureRootSteer(itemSession, uuid.NewString(), agent.SteerResolution{
+				InputID:   item.inputID,
+				AttemptID: item.attemptID,
+				Outcome:   agent.SteerOutcomeEchoed,
+			})
+			a.retainQwenSteerWrite(write)
+		}
+	}
+	a.resolveQwenTrackedSteers(dropped, agent.SteerOutcomeDropped)
 	// `hasQueuedPrompt` serves Qwen's experimental guard that holds a turn open
 	// for a queued prompt. LeapMux queues no prompt behind a steer, so it is
 	// always false.
 	a.SendResponseDetached(line.ID, map[string]any{"items": reply, "hasQueuedPrompt": false}, "qwen steer drain")
+}
+
+func (a *Agent) resolveQwenTrackedSteers(items []steerItem, outcome agent.SteerOutcome) {
+	for _, item := range items {
+		a.retainQwenSteerWrite(a.Sink().CaptureSteerResolution(agent.SteerResolution{
+			InputID:   item.inputID,
+			AttemptID: item.attemptID,
+			Outcome:   outcome,
+		}))
+	}
+}
+
+func (a *Agent) retainQwenSteerWrite(write func() error) {
+	publish, err := agent.ReserveTranscriptSequence(a.Sink(), "record Qwen steer outcome", func(agent.TranscriptSequence) error {
+		return write()
+	})
+	if err == nil {
+		err = publish()
+	}
+	if err != nil && !agent.OutputRetained(err) {
+		slog.Error("record Qwen steer outcome", "agent_id", a.AgentID(), "error", err)
+	}
 }
 
 // qwenTurnSession reads the session that one of Qwen's turn frames states, and

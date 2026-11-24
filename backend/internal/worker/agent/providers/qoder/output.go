@@ -56,6 +56,10 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 	if a.routeChildFrame(line.Raw) {
 		return
 	}
+	if line.Type == contracts.QoderFrameKindCommandLifecycle {
+		a.handleCommandLifecycle(line.Raw)
+		return
+	}
 	if qoderDropsFrame(line.Type, providerkit.StringField(line.Raw, "subtype")) {
 		return
 	}
@@ -73,6 +77,7 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 	case frameTypeControlCancelRequest:
 		a.handleControlCancellation(line.Raw)
 	case contracts.QoderFrameKindUser:
+		a.observeInputEcho(line.Raw)
 		a.handleWorkflowLaunch(line.Raw)
 		a.handleWorkflowReplayCompletion(line.Raw)
 		if qoderUserFrameHasToolResult(line.Raw) {
@@ -176,7 +181,9 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 		slog.Warn("qoder: malformed control_request", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: envelope.RequestID, Payload: raw}); err != nil {
+	control := agent.ControlRequest{RequestID: envelope.RequestID, Payload: raw}
+	a.scopeInputControl(&control, envelope)
+	if err := a.sink.PublishControlRequest(control); err != nil {
 		slog.Error("qoder: publish control request", "agent_id", a.AgentID(), "request_id", envelope.RequestID, "error", err)
 		response, marshalErr := json.Marshal(map[string]any{
 			"type":     frameTypeControlResponse,
@@ -186,7 +193,7 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 			slog.Error("qoder: encode control failure", "agent_id", a.AgentID(), "error", marshalErr)
 			return
 		}
-		if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
+		if err := a.SendRawInput(agent.RawInput{Data: response}); err != nil {
 			slog.Warn("qoder: send control failure", "agent_id", a.AgentID(), "error", err)
 		}
 	}
@@ -372,7 +379,9 @@ func qoderDropsFrame(frameType, subtype string) bool {
 		return true
 	case contracts.QoderFrameKindSystem:
 		switch subtype {
-		case qoderSubtypeHookStarted, qoderSubtypeHookProgress, qoderSubtypePermissionDenied, qoderSubtypeElicitationComplete, qoderSubtypeArtifactsUpdate, qoderSubtypeCommandsChanged, qoderSubtypeControlRequestProgress, qoderSubtypeTaskProgress:
+		case qoderSubtypeHookStarted, qoderSubtypeHookProgress, qoderSubtypePermissionDenied,
+			qoderSubtypeElicitationComplete, qoderSubtypeArtifactsUpdate, qoderSubtypeCommandsChanged,
+			qoderSubtypeControlRequestProgress, qoderSubtypeTaskProgress, qoderSubtypeMCPServerUpdated:
 			return true
 		}
 	}
@@ -435,17 +444,31 @@ func (a *Agent) handlePlanModeChanged(raw []byte) {
 func (a *Agent) handleAssistant(raw []byte) {
 	a.notificationState("").retry.Resolve(a.sink)
 	var msg assistantMessage
+	var reply *inputReply
 	if json.Unmarshal(raw, &msg) == nil {
 		a.mu.Lock()
 		if msg.SessionID != "" && a.sessionID == "" {
 			a.sessionID = msg.SessionID
+		}
+		root := msg.ParentToolUseID == nil || *msg.ParentToolUseID == ""
+		if current := a.inputReply; root && current.owns(msg.SessionID) && current.result == nil {
+			reply = current
+			reply.observeToolCalls(msg.Message.Content)
 		}
 		a.mu.Unlock()
 	}
 	a.markTurnActiveFromOutput()
 	stored, opened := a.persistNativeToolFrame(a.sink, "", raw)
 	if !stored {
-		a.persistRaw(raw)
+		content := qoderMessageContent(raw, a.nativeSessionID())
+		if reply != nil {
+			content.NativeTurnID = reply.receipt.TurnID
+		}
+		if retained := a.persistMessageTo(a.sink, content); reply != nil && !retained {
+			a.mu.Lock()
+			reply.incomplete = true
+			a.mu.Unlock()
+		}
 	}
 	// routeChildFrame takes every frame of a child agent before this handler,
 	// so each call counted here belongs to the root turn.
@@ -454,16 +477,50 @@ func (a *Agent) handleAssistant(raw []byte) {
 	a.Mu.Unlock()
 }
 
-// handleResult ends the turn and publishes the frame verbatim, with the
-// turn's tool count as worker metadata and the user's stop as its completion.
+// handleResult records the result at the native boundary. A receipt waits for
+// the matching command end before the Worker settles the turn.
 func (a *Agent) handleResult(raw []byte) {
+	var frame struct {
+		SessionID string `json:"session_id"`
+		IsError   *bool  `json:"is_error"`
+		Origin    struct {
+			Kind string `json:"kind"`
+		} `json:"origin"`
+	}
+	if json.Unmarshal(raw, &frame) != nil {
+		frame.IsError = nil
+	}
+	if current := a.nativeSessionID(); current != "" && frame.SessionID != "" && frame.SessionID != current {
+		return
+	}
+	// Qoder can use subtype "success" for a failed turn. The is_error flag
+	// also preserves a successful result when an interrupt arrives too late.
+	interrupted := a.takeInterruptRequest() && (frame.IsError == nil || *frame.IsError)
+	result := inputResult{raw: raw, isError: frame.IsError, interrupted: interrupted}
+	// A result triggered by a task notification or a peer cannot prove
+	// the outcome of an ordinary user input.
+	sessionID := frame.SessionID
+	if frame.Origin.Kind != "" && frame.Origin.Kind != "human" {
+		sessionID = ""
+	}
+	held, earlier := a.holdInputResult(sessionID, result)
+	if held {
+		return
+	}
+	a.finishUnprovedInput(earlier)
+	a.persistInputResult(result, agent.NativeInputReceipt{}, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED)
+	a.setTurnActive(false)
+}
+
+// persistInputResult writes the native result with the tool count and stop
+// outcome. A proved command can also attach its input identity and outcome.
+func (a *Agent) persistInputResult(result inputResult, receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) bool {
 	a.mu.Lock()
 	clear(a.rootStreamKinds)
 	a.mu.Unlock()
 	a.sink.ReportProgress(agent.ResetModelProgress())
-	interrupted := a.takeInterruptRequest() && !qoderResultSucceeded(raw)
-	a.finishNotifications(a.sink, "", interrupted)
-	if interrupted {
+	a.finishNotifications(a.sink, "", result.interrupted)
+	if result.interrupted {
 		a.closeOpenToolsForTarget(a.sink, "", agent.MessageCompletionInterrupted, false)
 	}
 	// Qoder's `result` carries no num_tool_uses field, so the Worker counts the
@@ -472,34 +529,27 @@ func (a *Agent) handleResult(raw []byte) {
 	toolUses := a.TurnToolUses
 	a.TurnToolUses = 0
 	a.Mu.Unlock()
-	content := agent.WithToolUseCount(agent.MessageContent{Original: raw, AgentSessionID: a.nativeSessionID()}, toolUses)
-	if interrupted {
+	sessionID := receipt.SessionID
+	if sessionID == "" {
+		sessionID = a.nativeSessionID()
+	}
+	content := agent.WithToolUseCount(agent.MessageContent{
+		Original: result.raw, AgentSessionID: sessionID, NativeTurnID: receipt.TurnID, InputTurnOutcome: outcome,
+	}, toolUses)
+	if result.interrupted {
 		content.Completion = agent.MessageCompletionInterrupted
 	}
-	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
+	err := a.sink.PersistTurnEnd(content, agent.SpanInfo{})
+	if err != nil {
 		slog.Error("Persist Qoder turn end", "agent_id", a.AgentID(), "error", err)
 	}
-	if interrupted {
+	if result.interrupted {
 		providerkit.ResetSpansAndProgress(a.sink)
 	}
-	a.setTurnActive(false)
-	a.broadcastContextUsage(raw)
+	a.broadcastContextUsage(result.raw)
 	// A turn spends credits, so the account quota is read again.
 	a.requestUsageRefresh()
-}
-
-// qoderResultSucceeded reports whether a `result` states a turn that finished.
-// A turn that finished before Qoder read an interrupt keeps its own outcome,
-// because the stop came too late to change it.
-//
-// The `is_error` flag decides, not the subtype: qodercli 1.1.65 also writes
-// `subtype: "success"` with `is_error: true` for a failed turn. A `result`
-// that does not state the flag does not state success.
-func qoderResultSucceeded(raw []byte) bool {
-	var result struct {
-		IsError *bool `json:"is_error"`
-	}
-	return json.Unmarshal(raw, &result) == nil && result.IsError != nil && !*result.IsError
+	return agent.OutputRetained(err)
 }
 
 // markTurnActiveFromOutput starts the turn when a frame arrives while idle.
@@ -518,10 +568,15 @@ func (a *Agent) persistRaw(raw []byte) {
 }
 
 func (a *Agent) persistRawTo(target agent.ProviderServices, raw []byte) {
-	content := qoderMessageContent(raw, a.nativeSessionID())
-	if err := target.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
+	a.persistMessageTo(target, qoderMessageContent(raw, a.nativeSessionID()))
+}
+
+func (a *Agent) persistMessageTo(target agent.ProviderServices, content agent.MessageContent) bool {
+	err := target.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	if err != nil {
 		slog.Error("qoder: persist message", "agent_id", a.AgentID(), "error", err)
 	}
+	return agent.OutputRetained(err)
 }
 
 // qoderMessageContent preserves the native flag on an aborted assistant frame.
@@ -759,6 +814,7 @@ func (a *Agent) finishStream() {
 			}
 			providerkit.ResetSpansAndProgress(a.sink)
 		}
+		a.retireQueuedSteers()
 		a.setTurnActive(false)
 	})
 }
@@ -796,7 +852,7 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 // sendControlFire sends a control request without waiting for its response.
 func (a *Agent) sendControlFire(requestBody string) error {
 	msg := `{"type":"control_request","request_id":"` + shortID() + `","request":` + requestBody + `}`
-	return a.SendRawInput([]byte(msg), agent.StopContext{})
+	return a.SendRawInput(agent.RawInput{Data: []byte(msg)})
 }
 
 const qoderSendFailureExitTag = "qoder-send-failure-exit"
@@ -810,7 +866,7 @@ func (a *Agent) sendControlAndWait(requestBody string, timeout time.Duration) (q
 	}
 	defer release()
 	msg := `{"type":"control_request","request_id":"` + requestID + `","request":` + requestBody + `}`
-	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
+	if err := a.SendRawInput(agent.RawInput{Data: []byte(msg)}); err != nil {
 		release()
 		// A failed stdin write can precede the process exit report.
 		timer := a.Clock().NewTimer(time.Second, qoderSendFailureExitTag)

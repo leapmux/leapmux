@@ -153,8 +153,7 @@ type openCodeReusedTaskCall struct {
 type openCodeChildSession struct {
 	id            string
 	rootSessionID string
-	// modelID is confirmed by this child's load response, independently of the root.
-	modelID string
+	settings      acp.ChildSessionSettings
 	// loaded is true once the agent loaded the session, so it streams the
 	// session's updates and takes a prompt for it.
 	loaded bool
@@ -228,7 +227,7 @@ func (b *FamilyBase) followChildSession(rootSessionID, rowKey, childSessionID st
 	b.childSessionsMu.Unlock()
 	// The daemon reader must not wait for the agent's answer.
 	go func() {
-		modelID, err := b.LoadChildSession(target)
+		settings, err := b.LoadChildSession(target)
 		if err != nil {
 			if errors.Is(err, agent.ErrChildRouteNotReady) {
 				b.childSessionsMu.Lock()
@@ -249,7 +248,7 @@ func (b *FamilyBase) followChildSession(rootSessionID, rowKey, childSessionID st
 			b.childSessionsMu.Lock()
 			child.loading = false
 			if currentRoot == rootSessionID && (b.childSessions[rowKey] == child || b.childSessions[childSessionID] == child) {
-				child.modelID = modelID
+				child.settings = settings
 				child.loaded = true
 			}
 			b.childSessionsMu.Unlock()
@@ -261,22 +260,22 @@ func (b *FamilyBase) followChildSession(rootSessionID, rowKey, childSessionID st
 // runningChildSession returns the session of the running subagent of the task
 // call childKey, and whether the agent loaded it yet.
 func (b *FamilyBase) runningChildSession(childKey string) (sessionID string, loaded, running bool) {
-	target, loaded, running := b.childSessionTarget(childKey)
-	return target.SessionID, loaded, running
+	child, running := b.childSession(childKey)
+	return child.id, child.loaded, running
 }
 
-func (b *FamilyBase) childSessionTarget(childKey string) (acp.ChildSessionTarget, bool, bool) {
+func (b *FamilyBase) childSession(childKey string) (openCodeChildSession, bool) {
 	rootSessionID := b.CurrentSessionID()
 	if rootSessionID == "" || b.IsStopped() {
-		return acp.ChildSessionTarget{}, false, false
+		return openCodeChildSession{}, false
 	}
 	b.childSessionsMu.Lock()
 	defer b.childSessionsMu.Unlock()
 	child, running := b.childSessions[childKey]
 	if !running || child.rootSessionID != rootSessionID {
-		return acp.ChildSessionTarget{}, false, false
+		return openCodeChildSession{}, false
 	}
-	return child.target(childKey), child.loaded, true
+	return *child, true
 }
 
 // SendChildInput refuses a message as the start of a turn. A running subagent
@@ -285,28 +284,32 @@ func (b *FamilyBase) SendChildInput(childKey string, input agent.ChildInput) (ag
 	if _, _, running := b.runningChildSession(childKey); !running {
 		return agent.ChildInputResult{StartsTurn: true}, errOpenCodeSubagentIdle
 	}
-	return agent.ChildInputResult{StartsTurn:
-
-	// SteerChildInput sends a message into the running turn of a subagent, as a
-	// second prompt on the subagent's own session. The daemon adds the message to
-	// the session and the subagent reads it at its next step, as the root's steer
-	// works. The prompt carries the subagent's own agent and model, which the
-	// agent restored when it loaded the session. The queue writes the message into
-	// the subagent's transcript, so this writes no row of its own.
-	true}, agent.ErrAgentBusy
+	return agent.ChildInputResult{StartsTurn: true}, agent.ErrAgentBusy
 }
 
-func (b *FamilyBase) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	target, loaded, running := b.childSessionTarget(childKey)
+// LoadedChildSteerTarget captures the running child's route and loaded settings.
+// Submission validates the route again under the dispatch lease.
+func (b *FamilyBase) LoadedChildSteerTarget(childKey string) (acp.ChildSessionTarget, acp.ChildSessionSettings, error) {
+	child, running := b.childSession(childKey)
 	if !running {
-		return agent.ErrNoActiveTurn
+		return acp.ChildSessionTarget{}, acp.ChildSessionSettings{}, agent.ErrNoActiveTurn
 	}
-	if !loaded {
-		return agent.ErrChildRouteNotReady
+	if !child.loaded {
+		return acp.ChildSessionTarget{}, acp.ChildSessionSettings{}, agent.ErrChildRouteNotReady
+	}
+	return child.target(childKey), child.settings, nil
+}
+
+// SteerChildInput sends a separate prompt to the loaded child session.
+// The queue writes the steer's user row to the child transcript.
+func (b *FamilyBase) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	target, _, err := b.LoadedChildSteerTarget(childKey)
+	if err != nil {
+		return err
 	}
 	owner, _ := b.SessionOwner(target.SessionID)
 	return b.SendChildPromptDetached(target, content, attachments, func(_ json.RawMessage, err error) {
-		b.reportChildSteerFailure(target, owner, err)
+		b.ReportChildSteerFailure(target, owner, err)
 	})
 }
 
@@ -317,9 +320,9 @@ func (b *FamilyBase) ActiveChildTurnState(childKey string) agent.TurnState {
 	return agent.TurnState{Active: running, Steerable: running && loaded}
 }
 
-// reportChildSteerFailure tells the reader, in the subagent's transcript, when
+// ReportChildSteerFailure tells the reader, in the subagent's transcript, when
 // the agent refused a steer. A stopped agent states nothing, as for the root.
-func (b *FamilyBase) reportChildSteerFailure(target acp.ChildSessionTarget, originalOwner agent.ProviderServices, err error) {
+func (b *FamilyBase) ReportChildSteerFailure(target acp.ChildSessionTarget, originalOwner agent.ProviderServices, err error) {
 	if err == nil || b.IsStopped() {
 		return
 	}
@@ -361,8 +364,8 @@ func (b *FamilyBase) InterruptChild(childKey string, _ agent.StopContext) error 
 		}
 		ctx, cancel := context.WithTimeout(b.Context(), openCodeQuestionTimeout)
 		defer cancel()
-		if target, _, running := b.childSessionTarget(childKey); running && target.SessionID != "" {
-			return b.stopChild(ctx, childKey, target.SessionID)
+		if child, running := b.childSession(childKey); running && child.id != "" {
+			return b.stopChild(ctx, childKey, child.id)
 		}
 		if b.hasActiveReusedTask(sessionID, childKey) {
 			return b.stopChild(ctx, childKey, childKey)

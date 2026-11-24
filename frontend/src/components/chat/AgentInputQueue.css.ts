@@ -69,6 +69,13 @@ export const metadata = style({
   color: 'var(--muted-foreground)',
   fontSize: compactTextSize,
 })
+/** The sender of a message from another agent: its provider's icon and its words. */
+export const sender = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  verticalAlign: 'middle',
+})
 export const error = style({ color: 'var(--danger)', fontSize: compactTextSize })
 /**
  * The row's action cluster.

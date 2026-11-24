@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/terminput"
 )
 
 // TerminalFreezer is the subset of terminal.Manager methods needed to stop a
@@ -75,7 +77,7 @@ func RegisterTerminalCleanup(t *testing.T, mgr TerminalCleaner, id string) {
 // TerminalJobRunner is the subset of terminal.Manager methods needed to send a
 // background job to a test shell and observe whether job-control setup failed.
 type TerminalJobRunner interface {
-	SendInput(id string, data []byte) error
+	SendInput(id string, input terminput.Input) error
 	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool)
 }
 
@@ -89,7 +91,7 @@ const jobGroupFailure = "child setpgid"
 // setpgid calls with EPERM under load).
 func SendShellJobUntil(t *testing.T, mgr TerminalJobRunner, id, line string, done func() bool, msgAndArgs ...any) bool {
 	t.Helper()
-	send := func() { assert.NoError(t, mgr.SendInput(id, []byte(line+TestShellEnter()))) }
+	send := func() { assert.NoError(t, mgr.SendInput(id, terminput.Input{Data: []byte(line + TestShellEnter())})) }
 	send()
 	sent := 1
 	return AssertEventually(t, func() bool {

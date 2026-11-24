@@ -2,93 +2,144 @@ package cmd
 
 import (
 	"context"
-	"flag"
 	"strings"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
-// `leapmux control admin app ...` -- the app REGISTRATION surface.
+// `leapmux admin app ...` -- the app REGISTRATION surface.
 //
 // "app" is the OUTBOUND direction: a program this hub grants access to. The
 // inbound direction -- an identity provider the hub signs users in WITH -- is
-// `control admin idp`. The two were one word for years and the confusion was
-// the reason to separate them.
-//
-// The verbs live under `admin` because registering an app is an operator's job
-// on a shared hub, but the RPCs themselves are not admin-only: a user
-// registering an app for themself uses the same ones through the preferences
-// dialog. See control.Client.AppService.
-
-// appScopeFlagUsage lists the whole grantable vocabulary in the flag's help, so
-// an operator does not have to find the documentation to learn what is sayable.
+// `admin idp`.
 var appScopeFlagUsage = "space-separated permissions this app may ask for, from: " +
 	strings.Join(authscope.EveryGrantableScope().SortedTokens(), ", ")
 
-func RunAdminAppList(rawCtx any, args []string) error {
+func newAdminAppList() *cobra.Command {
 	var page adminPageFlags
 	var includeRevoked bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Page: &page,
-		Flags: func(fs *flag.FlagSet) {
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List app registrations",
+		Examples: []cli.Example{
+			{Command: "leapmux admin app list"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			page.bind(fs)
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include retired apps")
 		},
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AppService().ListApps(context.Background(), &leapmuxv1.ListAppsRequest{
+		Run: func(inv *cli.Invocation) (any, error) {
+			if err := page.validate(); err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AppService().ListApps(inv.Context, &leapmuxv1.ListAppsRequest{
 				Page: page.request(), IncludeRevoked: includeRevoked,
 			})
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			rows := make([]map[string]any, 0, len(resp.GetApps()))
+			rows := make([]AppRegistrationRow, 0, len(resp.GetApps()))
 			for _, app := range resp.GetApps() {
-				rows = append(rows, adminAppJSON(app))
+				rows = append(rows, appRegistrationRowOf(app))
 			}
-			return control.EmitData(map[string]any{
-				"apps":                      rows,
-				"next_cursor":               resp.GetPage().GetNextCursor(),
-				"open_registration_enabled": resp.GetOpenRegistrationEnabled(),
-			})
+			return adminAppListResult{Apps: rows, NextCursor: resp.GetPage().GetNextCursor(), OpenRegistrationEnabled: resp.GetOpenRegistrationEnabled()}, nil
 		},
 	})
 }
 
-// adminAppJSON renders one registration.
-//
-// It carries no secret and no hash, because the App message holds neither: the
-// client secret crosses once, in the registration response, and the hub keeps
-// only its hash.
-func adminAppJSON(app *leapmuxv1.App) map[string]any {
-	row := map[string]any{
-		"client_id":             app.GetClientId(),
-		"client_name":           app.GetClientName(),
-		"client_uri":            app.GetClientUri(),
-		"visibility":            app.GetVisibility().String(),
-		"client_type":           app.GetClientType().String(),
-		"redirect_uris":         app.GetRedirectUris(),
-		"scopes":                scopeTokensOf(app.GetScopes()),
-		"grant_types":           app.GetGrantTypes(),
-		"elevation_allowed":     app.GetElevationAllowed(),
-		"registration_source":   app.GetRegistrationSource(),
-		"verified":              app.GetVerifiedAt() != nil,
-		"verified_by":           app.GetVerifiedByUsername(),
-		"has_icon":              app.GetHasIcon(),
-		"live_credential_count": app.GetLiveCredentialCount(),
-	}
-	putTime(row, "created_at", app.GetCreatedAt())
-	putTime(row, "updated_at", app.GetUpdatedAt())
-	putTime(row, "verified_at", app.GetVerifiedAt())
-	putTime(row, "revoked_at", app.GetRevokedAt())
-	return row
+type adminAppListResult struct {
+	Apps                    []AppRegistrationRow `json:"apps"`
+	NextCursor              string               `json:"next_cursor"`
+	OpenRegistrationEnabled bool                 `json:"open_registration_enabled"`
 }
 
-// scopeTokensOf renders a wire scope list as its RFC 6749 section 3.3 tokens.
-//
-// An unreadable value renders as NOTHING rather than as its enum name: the
-// listing is what an operator reads to decide, so a set they cannot interpret
-// must not appear as though it were one they can.
+func (r adminAppListResult) QuietLines() []string {
+	out := make([]string, 0, len(r.Apps))
+	for _, app := range r.Apps {
+		out = append(out, app.ClientID)
+	}
+	return out
+}
+
+func resolveAdminAppID(ctx context.Context, c *control.Client, raw string) (string, error) {
+	return resolveAdminIDPrefix(ctx, raw, "app", func(ctx context.Context) ([]cli.Candidate, error) {
+		apps, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.App, *leapmuxv1.PageResponse, error) {
+			resp, err := c.AppService().ListApps(ctx, &leapmuxv1.ListAppsRequest{
+				IncludeRevoked: true,
+				Page:           page,
+			})
+			return resp.GetApps(), resp.GetPage(), err
+		}, (*leapmuxv1.App).GetClientId)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]cli.Candidate, 0, len(apps))
+		for _, app := range apps {
+			out = append(out, cli.Candidate{ID: app.GetClientId(), Kind: "app", Title: app.GetClientName()})
+		}
+		return out, nil
+	})
+}
+
+// AppRegistrationRow contains the fields an admin can read repeatedly.
+// The Hub returns a client secret once at registration and stores its hash.
+type AppRegistrationRow struct {
+	ClientID            string   `json:"client_id" table:"CLIENT ID"`
+	ClientName          string   `json:"client_name" table:"NAME"`
+	ClientURI           string   `json:"client_uri"`
+	Visibility          string   `json:"visibility" table:"VISIBILITY"`
+	ClientType          string   `json:"client_type" table:"TYPE"`
+	RedirectURIs        []string `json:"redirect_uris"`
+	Scopes              []string `json:"scopes"`
+	GrantTypes          []string `json:"grant_types"`
+	ElevationAllowed    bool     `json:"elevation_allowed"`
+	RegistrationSource  string   `json:"registration_source"`
+	Verified            bool     `json:"verified" table:"VERIFIED"`
+	VerifiedBy          string   `json:"verified_by"`
+	HasIcon             bool     `json:"has_icon"`
+	LiveCredentialCount int64    `json:"live_credential_count" table:"CREDS"`
+	CreatedAt           string   `json:"created_at,omitempty"`
+	UpdatedAt           string   `json:"updated_at,omitempty"`
+	VerifiedAt          string   `json:"verified_at,omitempty"`
+	RevokedAt           string   `json:"revoked_at,omitempty"`
+}
+
+func (r AppRegistrationRow) QuietLines() []string { return []string{r.ClientID} }
+
+func appRegistrationRowOf(app *leapmuxv1.App) AppRegistrationRow {
+	return AppRegistrationRow{
+		ClientID:            app.GetClientId(),
+		ClientName:          app.GetClientName(),
+		ClientURI:           app.GetClientUri(),
+		Visibility:          enumToken(app.GetVisibility()),
+		ClientType:          enumToken(app.GetClientType()),
+		RedirectURIs:        app.GetRedirectUris(),
+		Scopes:              scopeTokensOf(app.GetScopes()),
+		GrantTypes:          app.GetGrantTypes(),
+		ElevationAllowed:    app.GetElevationAllowed(),
+		RegistrationSource:  app.GetRegistrationSource(),
+		Verified:            app.GetVerified(),
+		VerifiedBy:          app.GetVerifiedByUsername(),
+		HasIcon:             app.GetHasIcon(),
+		LiveCredentialCount: app.GetLiveCredentialCount(),
+		CreatedAt:           formatTime(app.GetCreatedAt()),
+		UpdatedAt:           formatTime(app.GetUpdatedAt()),
+		VerifiedAt:          formatTime(app.GetVerifiedAt()),
+		RevokedAt:           formatTime(app.GetRevokedAt()),
+	}
+}
+
 func scopeTokensOf(wire []leapmuxv1.Scope) []string {
 	set, ok := authscope.ScopesFromWire(wire)
 	if !ok {
@@ -97,40 +148,61 @@ func scopeTokensOf(wire []leapmuxv1.Scope) []string {
 	return set.SortedTokens()
 }
 
-func RunAdminAppRegister(rawCtx any, args []string) error {
-	var name, uri, redirect, scope, grants, kind, visibility string
+type adminAppRegisterResult struct {
+	AppRegistrationRow
+	ClientSecret     string `json:"client_secret,omitempty"`
+	ClientSecretNote string `json:"client_secret_note,omitempty"`
+}
+
+func newAdminAppRegister() *cobra.Command {
+	var uri, redirect, scope, grants, kind, visibility string
 	var elevation bool
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&name, "name", "", "app name shown on the consent screen (required)")
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "register <name>",
+		Short:   "Register an app; the hub shows its secret once",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: `leapmux admin app register "Release bot" --scope "workspace:read" --redirect-uri http://127.0.0.1/callback`},
+		},
+		Flags: func(fs *pflag.FlagSet) {
 			fs.StringVar(&uri, "uri", "", "the app's home page")
 			fs.StringVar(&redirect, "redirect-uri", "",
 				"comma-separated addresses the authorization may return to (required for the authorization_code grant)")
-			fs.StringVar(&scope, "scope", "", appScopeFlagUsage+" (required)")
+			fs.StringVar(&scope, "scope", "", appScopeFlagUsage)
+			cli.MarkRequired(fs, "scope")
 			fs.StringVar(&grants, "grant-type", "",
 				"comma-separated OAuth grant types; empty takes the RFC 7591 default of authorization_code and refresh_token")
 			fs.StringVar(&kind, "type", "public",
 				"public (a binary a user holds; PKCE protects it) or confidential (a server that can keep a secret)")
+			cli.SetEnum(fs, "type", "public", "confidential")
 			fs.StringVar(&visibility, "visibility", "hub-wide",
 				"hub-wide (every account may authorize it; administrators only) or private (yours alone)")
+			cli.SetEnum(fs, "visibility", "hub-wide", "private")
 			fs.BoolVar(&elevation, "allow-elevation", false,
 				"let this app run the step-up stage, which is what a sensitive change needs")
 		},
-		BeforeDial: requireFlag(&name, "name"),
-		Run: func(c *control.Client, _ adminArgs) error {
+		Run: func(inv *cli.Invocation) (any, error) {
+			name, err := requireNonEmptyArg(inv, "name")
+			if err != nil {
+				return nil, err
+			}
 			scopes, err := parseAppScopes(scope)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			clientType, err := parseAppClientType(kind)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			vis, err := parseAppVisibility(visibility)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			resp, err := c.AppService().RegisterApp(context.Background(), &leapmuxv1.RegisterAppRequest{
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AppService().RegisterApp(inv.Context, &leapmuxv1.RegisterAppRequest{
 				ClientName:       name,
 				ClientUri:        uri,
 				RedirectUris:     splitCommaList(redirect),
@@ -141,175 +213,235 @@ func RunAdminAppRegister(rawCtx any, args []string) error {
 				ElevationAllowed: elevation,
 			})
 			if err != nil {
-				return control.EmitErrorWith("register_failed", err)
+				return nil, err
 			}
-			out := adminAppJSON(resp.GetApp())
-			// The ONLY time the hub emits this, so the envelope carries it and
-			// says so. A public client has none at all.
+			out := adminAppRegisterResult{AppRegistrationRow: appRegistrationRowOf(resp.GetApp())}
 			if secret := resp.GetClientSecret(); secret != "" {
-				out["client_secret"] = secret
-				out["client_secret_note"] = "copy this now; the hub stores only its hash and cannot show it again"
+				out.ClientSecret = secret
+				out.ClientSecretNote = "Copy this now. The Hub stores only its hash and shows the secret once."
 			}
-			return control.EmitData(out)
+			return out, nil
 		},
 	})
 }
 
-func RunAdminAppUpdate(rawCtx any, args []string) error {
-	var clientID, name, uri, redirect, scope, grants string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to change (required)")
+func newAdminAppUpdate() *cobra.Command {
+	var name, uri, redirect, scope, grants string
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "update <app>",
+		Short:   "Change the editable fields of an app",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: `leapmux admin app update lmx_app_x1y2 --name "Release bot 2"`},
+		},
+		Flags: func(fs *pflag.FlagSet) {
 			fs.StringVar(&name, "name", "", "new app name")
 			fs.StringVar(&uri, "uri", "", "new home page")
 			fs.StringVar(&redirect, "redirect-uri", "", "replace the redirect list (comma-separated)")
 			fs.StringVar(&scope, "scope", "", "replace the permission ceiling; "+appScopeFlagUsage)
 			fs.StringVar(&grants, "grant-type", "", "replace the grant-type list (comma-separated)")
 		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, a adminArgs) error {
-			msg := &leapmuxv1.UpdateAppRequest{ClientId: clientID}
-			// An UNSET flag leaves the field alone, so a caller that changes a
-			// name does not send back a redirect list it read minutes ago and
-			// overwrite a concurrent edit with it. a.Passed reports what the
-			// operator actually typed (the scaffolding builds it from
-			// flag.Visit), which is the only way to tell an empty value from
-			// an absent one -- `--uri ""` CLEARS the field instead of being
-			// read as "leave it alone".
-			if a.Passed("name") {
+		Complete: completeAdminApps,
+		Run: func(inv *cli.Invocation) (any, error) {
+			clientID, err := requireNonEmptyArg(inv, "app")
+			if err != nil {
+				return nil, err
+			}
+			var parsedScopes []leapmuxv1.Scope
+			if inv.Changed("scope") {
+				parsedScopes, err = parseAppScopes(scope)
+				if err != nil {
+					return nil, err
+				}
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminAppID(inv.Context, c, clientID)
+			if err != nil {
+				return nil, err
+			}
+			msg := &leapmuxv1.UpdateAppRequest{ClientId: resolved}
+			if inv.Changed("name") {
 				msg.ClientName = &name
 			}
-			if a.Passed("uri") {
+			if inv.Changed("uri") {
 				msg.ClientUri = &uri
 			}
-			if a.Passed("redirect-uri") {
+			if inv.Changed("redirect-uri") {
 				msg.ReplaceRedirectUris = true
 				msg.RedirectUris = splitCommaList(redirect)
 			}
-			if a.Passed("scope") {
-				scopes, err := parseAppScopes(scope)
-				if err != nil {
-					return err
-				}
+			if inv.Changed("scope") {
 				msg.ReplaceScopes = true
-				msg.Scopes = scopes
+				msg.Scopes = parsedScopes
 			}
-			if a.Passed("grant-type") {
+			if inv.Changed("grant-type") {
 				msg.ReplaceGrantTypes = true
 				msg.GrantTypes = splitCommaList(grants)
 			}
-			resp, err := c.AppService().UpdateApp(context.Background(), msg)
+			resp, err := c.AppService().UpdateApp(inv.Context, msg)
 			if err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminAppJSON(resp.GetApp()))
+			return appRegistrationRowOf(resp.GetApp()), nil
 		},
 	})
 }
 
-// RunAdminAppSetElevation toggles the step-up stage.
-//
-// It is its own verb because it is the ONE field a built-in registration may
-// still change: an operator who does not want `leapmux control admin` to
-// elevate must be able to say so.
-func RunAdminAppSetElevation(rawCtx any, args []string, allowed bool) error {
-	var clientID string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to change (required)")
-		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AppService().SetAppElevationAllowed(context.Background(),
-				&leapmuxv1.SetAppElevationAllowedRequest{ClientId: clientID, Allowed: allowed})
+func newAdminAppSetElevation(allowed bool, use, short string, examples []cli.Example) *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:      use,
+		Short:    short,
+		Examples: examples,
+		Mutates:  true,
+		Complete: completeAdminApps,
+		Run: func(inv *cli.Invocation) (any, error) {
+			clientID, err := requireNonEmptyArg(inv, "app")
 			if err != nil {
-				return control.EmitErrorWith("update_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminAppJSON(resp.GetApp()))
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminAppID(inv.Context, c, clientID)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AppService().SetAppElevationAllowed(inv.Context,
+				&leapmuxv1.SetAppElevationAllowedRequest{ClientId: resolved, Allowed: allowed})
+			if err != nil {
+				return nil, err
+			}
+			return appRegistrationRowOf(resp.GetApp()), nil
 		},
 	})
 }
 
-func RunAdminAppSetVerified(rawCtx any, args []string, verified bool) error {
-	var clientID string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to vouch for (required)")
-		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AppService().VerifyApp(context.Background(),
-				&leapmuxv1.VerifyAppRequest{ClientId: clientID, Verified: verified})
+func newAdminAppSetVerified(verified bool, use, short string, examples []cli.Example) *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:      use,
+		Short:    short,
+		Examples: examples,
+		Mutates:  true,
+		Complete: completeAdminApps,
+		Run: func(inv *cli.Invocation) (any, error) {
+			clientID, err := requireNonEmptyArg(inv, "app")
 			if err != nil {
-				return control.EmitErrorWith("verify_failed", err)
+				return nil, err
 			}
-			return control.EmitData(adminAppJSON(resp.GetApp()))
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminAppID(inv.Context, c, clientID)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AppService().VerifyApp(inv.Context,
+				&leapmuxv1.VerifyAppRequest{ClientId: resolved, Verified: verified})
+			if err != nil {
+				return nil, err
+			}
+			return appRegistrationRowOf(resp.GetApp()), nil
 		},
 	})
 }
 
-func RunAdminAppRevoke(rawCtx any, args []string) error {
-	var clientID string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to retire (required)")
+type adminAppRevokeResult struct {
+	Revoked                string `json:"revoked"`
+	RevokedCredentialCount int64  `json:"revoked_credential_count"`
+}
+
+func (r adminAppRevokeResult) QuietLines() []string { return []string{r.Revoked} }
+
+func newAdminAppRevoke() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "revoke <app>",
+		Short:       "Retire an app and revoke every credential it holds",
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin app revoke lmx_app_x1y2"},
 		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AppService().RevokeApp(context.Background(),
-				&leapmuxv1.RevokeAppRequest{ClientId: clientID})
+		Complete: completeAdminApps,
+		Run: func(inv *cli.Invocation) (any, error) {
+			clientID, err := requireNonEmptyArg(inv, "app")
 			if err != nil {
-				return control.EmitErrorWith("revoke_failed", err)
+				return nil, err
 			}
-			return control.EmitData(map[string]any{
-				"revoked":                  clientID,
-				"revoked_credential_count": resp.GetRevokedCredentialCount(),
-			})
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminAppID(inv.Context, c, clientID)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.AppService().RevokeApp(inv.Context,
+				&leapmuxv1.RevokeAppRequest{ClientId: resolved})
+			if err != nil {
+				return nil, err
+			}
+			return adminAppRevokeResult{Revoked: resolved, RevokedCredentialCount: resp.GetRevokedCredentialCount()}, nil
 		},
 	})
 }
 
-func RunAdminAppDelete(rawCtx any, args []string) error {
-	var clientID string
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&clientID, "client-id", "", "the app to delete (required)")
+type adminAppDeleteResult struct {
+	Deleted string `json:"deleted"`
+}
+
+func (r adminAppDeleteResult) QuietLines() []string { return []string{r.Deleted} }
+
+func newAdminAppDelete() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "delete <app>",
+		Aliases:     []string{"rm"},
+		Short:       "Delete an app that never held a credential",
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin app delete lmx_app_x1y2"},
 		},
-		BeforeDial: requireFlag(&clientID, "client-id"),
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AppService().DeleteApp(context.Background(),
-				&leapmuxv1.DeleteAppRequest{ClientId: clientID}); err != nil {
-				return control.EmitErrorWith("delete_failed", err)
+		Complete: completeAdminApps,
+		Run: func(inv *cli.Invocation) (any, error) {
+			clientID, err := requireNonEmptyArg(inv, "app")
+			if err != nil {
+				return nil, err
 			}
-			return control.EmitData(map[string]any{"deleted": clientID})
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminAppID(inv.Context, c, clientID)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := c.AppService().DeleteApp(inv.Context,
+				&leapmuxv1.DeleteAppRequest{ClientId: resolved}); err != nil {
+				return nil, err
+			}
+			return adminAppDeleteResult{Deleted: resolved}, nil
 		},
 	})
 }
 
 // --- flag parsing ----------------------------------------------------------
 
-// parseAppScopes turns a --scope value into the wire list.
-//
-// It refuses the WHOLE value on an unknown token rather than dropping it, for
-// the reason every scope parser here does: a registration that silently lost
-// one permission would fail at the consent screen, in front of a user who
-// cannot fix it.
 func parseAppScopes(raw string) ([]leapmuxv1.Scope, error) {
 	if strings.TrimSpace(raw) == "" {
-		return nil, control.EmitError("invalid_request",
-			"--scope is required: an app must specify the permissions it may ask for")
+		return nil, cli.Usagef("--scope is required: an app must specify the permissions it may ask for")
 	}
-	// splitScopeFlag, the one splitter every --scope flag in this package
-	// uses: `file:read,git:read` succeeds here exactly as it does one verb
-	// over, rather than failing on the comma authscope.Parse alone would
-	// treat as part of a token.
 	tokens, err := splitScopeFlag(raw)
 	if err != nil {
 		return nil, err
 	}
 	set, err := authscope.Parse(strings.Join(tokens, " "))
 	if err != nil {
-		return nil, control.EmitErrorWith("invalid_request", err)
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
 	return authscope.ScopesToWire(set), nil
 }
@@ -321,7 +453,7 @@ func parseAppClientType(raw string) (leapmuxv1.AppClientType, error) {
 	case "confidential":
 		return leapmuxv1.AppClientType_APP_CLIENT_TYPE_CONFIDENTIAL, nil
 	}
-	return 0, control.EmitError("invalid_request", "unknown app type: "+raw+" (use: public, confidential)")
+	return 0, cli.Usagef("unknown app type %q", raw).WithHint("use public or confidential")
 }
 
 func parseAppVisibility(raw string) (leapmuxv1.AppVisibility, error) {
@@ -331,11 +463,9 @@ func parseAppVisibility(raw string) (leapmuxv1.AppVisibility, error) {
 	case "private":
 		return leapmuxv1.AppVisibility_APP_VISIBILITY_PRIVATE, nil
 	}
-	return 0, control.EmitError("invalid_request", "unknown visibility: "+raw+" (use: hub-wide, private)")
+	return 0, cli.Usagef("unknown visibility %q", raw).WithHint("use hub-wide or private")
 }
 
-// splitCommaList splits a comma-separated flag value, dropping empties so a
-// trailing comma is not an address.
 func splitCommaList(raw string) []string {
 	var out []string
 	for _, part := range strings.Split(raw, ",") {

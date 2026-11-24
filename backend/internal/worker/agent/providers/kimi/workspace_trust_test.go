@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +50,7 @@ func answerKimiWorkspaceTrust(t *testing.T, a *Agent, requestID, decision string
 		"response": map[string]string{contracts.WorkspaceTrustFieldDecision: decision},
 	}})
 	require.NoError(t, err)
-	return a.SendRawInput(raw, agent.StopContext{})
+	return a.SendRawInput(agent.RawInput{Data: raw})
 }
 
 // A workspace that Kimi Code does not trust gets one question, which names the
@@ -222,24 +223,25 @@ func TestKimiWorkspaceTrustRetiresWithTheSessionControls(t *testing.T) {
 	assert.Empty(t, rig.fake.requestsTo("POST "+kimiTrustRoute))
 }
 
-// The plugin turns the browser's neutral decision into the saved answer that the
+// The plugin turns the neutral allow or deny into the saved answer that the
 // agent reads.
 func TestKimiWorkspaceTrustResolvesTheNeutralDecision(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTrustRig(t, false)
 	rig.agent.checkWorkspaceTrust()
 	request := rig.sink.LastPublishedControl()
+	// The question states no key, so the session that the Worker stores with
+	// it gives the key that the agent published it under.
+	agenttest.AssertPublishedControlKeys(t, kimiProvider{}, rig.sink)
 	for behavior, want := range map[string]string{
-		agent.ControlBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
-		agent.ControlBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
+		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
+		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
 	} {
 		content, err := json.Marshal(map[string]any{"response": map[string]any{
 			"request_id": request.RequestID, "response": map[string]any{"behavior": behavior},
 		}})
 		require.NoError(t, err)
-		resolution := kimiProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-			RequestID: request.RequestID, RequestPayload: request.Payload, ResponseContent: content,
-		})
+		resolution := agenttest.ResolveAnswerInSession(kimiProvider{}, request.Payload, request.AgentSessionID, request.RequestID, agent.ControlAnswer{Content: content})
 		require.False(t, resolution.Withhold, behavior)
 		assert.Contains(t, string(resolution.Content), `"decision":"`+want+`"`, behavior)
 	}

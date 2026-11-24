@@ -9,13 +9,15 @@ import type { createAgentSessionStore, LiveGenerationProgress, LiveModelAPIRetry
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalProgress } from '~/stores/chatGoal'
 import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolProgress'
-import type { ControlPayloadFault, createControlStore } from '~/stores/control.store'
+import type { createControlStore } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab } from '~/stores/tab.types'
 import type { LiveWrite, TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { classifyAgentMessage } from '~/components/chat/messageClassifier'
+import { controlPayloadIsObject } from '~/components/chat/model/controlPrompt'
+import { controlEditorRoleFromWire, controlPayloadFaultFromWire, controlPromptFromWire } from '~/components/chat/model/controlPromptWire'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
@@ -827,29 +829,27 @@ export function handleControlRequest(
   // Retain an unreadable control request because the provider still waits for its answer.
   // The view must show these items:
   // - The request.
-  // - Its failure reason.
+  // - Its failure reason, which the Worker states in the prompt.
   // - The Stop control.
-  // Use an empty decoded payload and preserve the original bytes instead of inventing a provider shape.
+  // The decoded payload is the instance's fingerprint (`addRequest`) and the banner's raw
+  // copy. A payload that is no JSON object decodes to an empty object, and the original
+  // bytes stay. An unrecognized request is still a JSON object, so it decodes as it stands.
+  const payloadFault = controlPayloadFaultFromWire(cr.prompt)
   let payload: Record<string, unknown> = {}
-  let payloadFault: ControlPayloadFault | undefined
-  try {
-    const parsed = JSON.parse(TEXT_DECODER.decode(cr.payload)) as unknown
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      log.warn('Keeping a control request whose payload is not an object', { agentId, requestId: cr.requestId })
-      payloadFault = 'not-an-object'
+  if (controlPayloadIsObject(payloadFault)) {
+    try {
+      payload = JSON.parse(TEXT_DECODER.decode(cr.payload)) as Record<string, unknown>
     }
-    else {
-      payload = parsed as Record<string, unknown>
+    catch (err) {
+      log.warn('Keeping a control request whose payload the Worker read but the browser cannot decode', { agentId, requestId: cr.requestId, err })
     }
-  }
-  catch (err) {
-    log.warn('Keeping a control request whose payload is malformed', { agentId, requestId: cr.requestId, err })
-    payloadFault = 'malformed'
   }
   controlStore.addRequest(agentId, {
     requestId: cr.requestId,
     agentId,
     agentSessionId: cr.agentSessionId,
+    prompt: controlPromptFromWire(cr.prompt),
+    editorRole: controlEditorRoleFromWire(cr.prompt),
     payload,
     ...(payloadFault
       ? { payloadFault }

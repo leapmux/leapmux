@@ -598,6 +598,18 @@ func TestMuseCompactionOutlivesTheModelTurn(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{contracts.SessionInfoKeyCompaction: nil}, sink.LastSessionInfo())
 }
 
+func TestMuseHostExitWithoutNativeCompletionLeavesTheReplyUnproved(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	a.startTurn("session", "unfinished-turn")
+	a.retireHost(agent.MessageCompletionError)
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "session", rows[0].AgentSessionID)
+	assert.Equal(t, "unfinished-turn", rows[0].NativeTurnID)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, rows[0].InputTurnOutcome)
+}
+
 func TestMuseCompactionEndWithoutStartClearsLiveState(t *testing.T) {
 	a, sink := testAgent(t)
 	feed(t, a, contracts.MuseMethodItemCompleted, itemParams{SessionID: "session", Item: nativeItem{ID: "compact", Kind: "compaction", Revision: 1, Status: "completed", Outcome: "failed"}})

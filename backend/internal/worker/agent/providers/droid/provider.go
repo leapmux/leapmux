@@ -51,7 +51,7 @@ func (droidProvider) PlanModeControl(toolName string) agent.PlanModeControlKind 
 // leaves spec mode through its own tool, so no LeapMux mode change follows.
 func (droidProvider) PlanModePermissionMode(agent.PlanModeControlKind) string { return "" }
 
-// ResolveControlResponse turns the browser's decision into Droid's own answer.
+// ResolveControlResponse turns the neutral answer into Droid's own answer.
 func (droidProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	return droidResolveControlResponse(ctx)
 }

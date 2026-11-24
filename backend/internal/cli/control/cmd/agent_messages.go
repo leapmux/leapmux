@@ -1,13 +1,15 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,75 +18,133 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
 
-// RunAgentMessages prints messages for an agent. Without --follow it
+// runAgentMessages prints messages for an agent. Without --follow it
 // prints a single page; with --follow it streams new messages until
-// ctrl-C using the worker's `WatchEvents` RPC (Phase 1a of the
-// streaming-event migration). The streaming path replaces the
-// previous 2-second polling loop, so users see messages within
-// milliseconds of generation rather than every other second.
-func RunAgentMessages(rawCtx any, args []string) error {
-	var anchor string
-	var cursorSeq int64
-	var follow bool
-	var limit int
-	return withResolvedAgent(rawCtx, args, agentScaffoldOpts{
-		setup: func(fs *flag.FlagSet) {
-			// A single page anchor mirrors MessagePageAnchor: latest (default),
-			// oldest, before, or after. `before`/`after` page relative to
-			// --cursor-seq; `latest`/`oldest` ignore it. One selector instead of
-			// three mutually-exclusive flags -- you can't pick two pages at once.
-			fs.StringVar(&anchor, "anchor", "latest", "page to fetch: latest, oldest, before, or after")
-			fs.Int64Var(&cursorSeq, "cursor-seq", 0, "exclusive seq bound for --anchor before/after")
-			fs.IntVar(&limit, "limit", contracts.MessagePageLimit, fmt.Sprintf("max messages per page (worker caps at %d)", contracts.MessagePageLimit))
-			fs.BoolVar(&follow, "follow", false, "tail new messages indefinitely")
-		},
-		noDeadline: true,
-		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
-			req, err := listMessagesPageRequest(agentID, anchor, cursorSeq, limit)
-			if err != nil {
-				return err
-			}
-			if err := followSelectorError(follow, req.GetAnchor()); err != nil {
-				return err
-			}
+// ctrl-C using the worker's `WatchEvents` RPC, so a message prints within
+// milliseconds of its generation.
+func runAgentMessages(inv *cli.Invocation) (any, error) {
+	limit, err := inv.Command.Flags().GetInt("limit")
+	if err != nil {
+		return nil, err
+	}
+	cursorSeq, err := inv.Command.Flags().GetInt64("cursor-seq")
+	if err != nil {
+		return nil, err
+	}
+	follow := boolFlag(inv, "follow")
+	rawMode := boolFlag(inv, "raw")
+	fullMode := boolFlag(inv, "full")
+	markdownMode := boolFlag(inv, "markdown")
+	summaryMode := boolFlag(inv, "summary")
+	s, err := openStreamSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	bounded := s.bounded()
+	defer bounded.Close()
+	got, err := bounded.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
+	if err != nil {
+		return nil, err
+	}
+	req, err := listMessagesPageRequest(got.ID, stringFlag(inv, "anchor"), cursorSeq, limit)
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
+	if err := followSelectorError(follow, req.GetAnchor()); err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
 
-			// Page 1: history pulled via ListAgentMessages so the user sees
-			// prior context before the live tail starts. WatchEvents can replay the
-			// LATEST page too, but ListAgentMessages is shaped for paginated
-			// history, capped by contracts.MessagePageLimit. Keep it for the single-page
-			// show-history-first behaviour.
-			var resp leapmuxv1.ListAgentMessagesResponse
-			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
-				return err
+	// Page 1: history pulled via ListAgentMessages so the user sees
+	// prior context before the live tail starts. WatchEvents can replay the
+	// LATEST page too, but ListAgentMessages is shaped for paginated
+	// history, capped by contracts.MessagePageLimit. Keep it for the single-page
+	// show-history-first behaviour.
+	var resp leapmuxv1.ListAgentMessagesResponse
+	if err := callInnerRPC(bounded.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
+		return nil, err
+	}
+	renderMsg := func(m *leapmuxv1.AgentChatMessage) agentMessage {
+		msg := renderAgentMessage(m)
+		msg.rawText = rawMode
+		msg.fullText = fullMode
+		msg.markdown = markdownMode
+		return msg
+	}
+	if !follow {
+		rows := make([]agentMessage, 0, len(resp.GetMessages()))
+		for _, m := range resp.GetMessages() {
+			rows = append(rows, renderMsg(m))
+		}
+		var goal *agentGoalView
+		if snap := resp.GetGoal(); snap != nil && snap.GetGoal() != nil {
+			g := snap.GetGoal()
+			goal = &agentGoalView{
+				AgentID:      got.ID,
+				Objective:    g.GetObjective(),
+				Status:       enumToken(g.GetStatus()),
+				StatusDetail: g.GetStatusDetail(),
+				CreatedAt:    g.GetCreatedAt(),
+				UpdatedAt:    snap.GetGoalUpdatedAt(),
 			}
-			if !follow {
-				rendered := make([]map[string]any, 0, len(resp.GetMessages()))
-				for _, m := range resp.GetMessages() {
-					rendered = append(rendered, renderAgentMessage(m))
-				}
-				return control.EmitData(rendered)
-			}
+		}
+		var todos []agentTodoRow
+		for _, item := range resp.GetTodos().GetTodos() {
+			todos = append(todos, agentTodoRow{
+				ID:          item.GetId(),
+				Status:      enumToken(item.GetStatus()),
+				Content:     item.GetContent(),
+				ActiveForm:  item.GetActiveForm(),
+				Description: item.GetDescription(),
+			})
+		}
+		var tasks []agentTaskRow
+		for _, task := range resp.GetBackgroundTasks().GetTasks() {
+			tasks = append(tasks, agentTaskRow{
+				ID:            task.GetId(),
+				Kind:          enumToken(task.GetKind()),
+				Status:        enumToken(task.GetStatus()),
+				Title:         task.GetTitle(),
+				ChildAgentID:  task.GetChildAgentId(),
+				GroupLabel:    task.GetGroupLabel(),
+				ParentAgentID: task.GetParentAgentId(),
+				ActiveForm:    task.GetActiveForm(),
+				CreatedAt:     task.GetCreatedAt(),
+				EndedAt:       task.GetEndedAt(),
+			})
+		}
+		return agentMessageList{
+			Messages:        rows,
+			HasMore:         resp.GetHasMore(),
+			LatestSeq:       resp.LatestSeq,
+			Goal:            goal,
+			Todos:           todos,
+			BackgroundTasks: tasks,
+			markdown:        markdownMode,
+			showSummary:     summaryMode,
+		}, nil
+	}
 
-			// Follow mode: emit page-1 then stream live via WatchEvents. The
-			// lineEmitter serializes every JSON-line write under one mutex so the
-			// subscription callback and the reconnect-drain loop can't interleave.
-			em := &lineEmitter{enc: json.NewEncoder(control.Out)}
-			for _, m := range resp.GetMessages() {
-				if err := em.emit(renderAgentMessage(m)); err != nil {
-					return err
-				}
-			}
-			cursor := resumeCursorFor(req, resp.GetMessages(), resp.LatestSeq)
-
-			return tailAgentMessages(ctx, c, workerID, agentID, cursor, em)
-		},
-	})
+	// Follow mode: print page 1, then stream live via WatchEvents. The
+	// lineEmitter serializes every write under one mutex so the
+	// subscription callback and the reconnect-drain loop can't interleave.
+	em := &lineEmitter{printer: inv.Printer, rawText: rawMode, fullText: fullMode, markdown: markdownMode}
+	for _, m := range resp.GetMessages() {
+		if err := em.emit(renderMsg(m)); err != nil {
+			return nil, err
+		}
+	}
+	cursor := resumeCursorFor(req, resp.GetMessages(), resp.LatestSeq)
+	return nil, tailAgentMessages(s.ctx, s.c, got.WorkerID, got.ID, cursor, em)
 }
 
 // resumeCursorFor picks the seq the live WatchEvents stream resumes after, given
@@ -171,7 +231,8 @@ func listMessagesPageRequest(agentID, anchor string, cursorSeq int64, limit int)
 		// Clamp to the int32 wire range so a huge --limit can't wrap to a small
 		// positive that slips past the worker's cap. For example, int32(2^32+1) is 1.
 		// The worker applies the page-limit clamp. The CLI only guards the conversion.
-		Limit: clampInt32(limit),
+		Limit:            clampInt32(limit),
+		IncludeReplyText: true,
 	}
 	switch strings.ToLower(strings.TrimSpace(anchor)) {
 	case "", "latest":
@@ -201,88 +262,309 @@ func listMessagesPageRequest(agentID, anchor string, cursorSeq int64, limit int)
 	return req, nil
 }
 
-// renderAgentMessage flattens an AgentChatMessage into a JSON-friendly
-// map: the zstd-compressed `content` payload is decompressed and
-// parsed as JSON (or surfaced as a string when the payload isn't JSON),
-// and the `span_lines` proto field — which on the wire is a
-// JSON-encoded string — is parsed into structured JSON. The
-// `content_compression` field is dropped because it no longer
-// describes what's in `content` after decompression.
-//
-// Non-string fields with proto3 zero values are omitted so the
-// rendered output matches what `json.Encode` would produce for the
-// proto struct, minus the encoded-blob fields the helper rewrites.
-func renderAgentMessage(m *leapmuxv1.AgentChatMessage) map[string]any {
-	out := map[string]any{
-		"id":         m.GetId(),
-		"seq":        m.GetSeq(),
-		"created_at": m.GetCreatedAt(),
+// agentMessage is one message of an agent's transcript.
+type agentMessage struct {
+	ID        string `json:"id"`
+	Seq       int64  `json:"seq"`
+	CreatedAt string `json:"created_at,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	// Sender is the agent tab that sent the message, on the user row of a
+	// message from another agent.
+	Sender *messageSender `json:"sender,omitempty"`
+	// PreviousSeq marks a live reseq broadcast (notification-thread
+	// consolidation), which re-emits an already-seen id at a new higher
+	// seq. It is a MOVE from that older seq, so a --follow consumer can
+	// reconcile by id (update the row at previous_seq) instead of seeing an
+	// unexplained duplicate. Only the live broadcast sets it.
+	PreviousSeq  int64  `json:"previous_seq,omitempty"`
+	Depth        int32  `json:"depth,omitempty"`
+	ParentSpanID string `json:"parent_span_id,omitempty"`
+	SpanID       string `json:"span_id,omitempty"`
+	SpanType     string `json:"span_type,omitempty"`
+	SpanColor    int32  `json:"span_color,omitempty"`
+	// ReplyText is the Worker's extracted human-readable reply text when present.
+	ReplyText string `json:"reply_text,omitempty"`
+	// Content is the provider's own payload: parsed JSON, or a string when
+	// the payload is not JSON.
+	Content any `json:"content,omitempty"`
+	// ContentError and ContentRaw report a payload that did not
+	// decompress, with its raw bytes, so a caller can still recover it.
+	ContentError string `json:"content_error,omitempty"`
+	ContentRaw   []byte `json:"content_raw,omitempty"`
+	SpanLines    any    `json:"span_lines,omitempty"`
+
+	// Display options (not serialized to JSON).
+	rawText  bool
+	fullText bool
+	markdown bool
+}
+
+// TextLine prints the message as "#<seq> <source> [HH:MM:SS] [from <sender>]: <text>".
+// Unless rawText is set, it prefers Worker-extracted ReplyText or human text
+// extracted from the provider JSON before falling back to compact JSON.
+func (m agentMessage) TextLine() string {
+	var body string
+	if m.rawText {
+		body = contentSummaryOpts(m.Content, m.fullText)
+	} else if strings.TrimSpace(m.ReplyText) != "" {
+		body = formatMessageText(m.ReplyText, m.fullText)
+	} else {
+		body = readableMessageContent(m.Content, m.fullText)
 	}
-	if name := messageSourceName(m.GetSource()); name != "" {
-		out["source"] = name
+	header := fmt.Sprintf("#%d %s", m.Seq, m.Source)
+	if ts := formatMessageTime(m.CreatedAt); ts != "" {
+		header += " (" + ts + ")"
 	}
-	if name := agentProviderName(m.GetAgentProvider()); name != "" {
-		out["agent_provider"] = name
+	if m.Sender != nil {
+		header += " from " + m.Sender.TextValue()
 	}
-	// A live reseq broadcast (notification-thread consolidation) re-emits an
-	// already-seen id at a new higher seq. previous_seq marks it as a MOVE from that
-	// older seq, so a --follow consumer can reconcile by id (update the row at
-	// previous_seq) instead of seeing an unexplained duplicate. Only set on the live
-	// broadcast; a single-page / replayed row carries 0 and the field is omitted.
-	if ps := m.GetPreviousSeq(); ps != 0 {
-		out["previous_seq"] = ps
+	if m.markdown {
+		if m.rawText {
+			return fmt.Sprintf("### %s\n\n```json\n%s\n```", header, contentSummaryOpts(m.Content, true))
+		}
+		fullBody := strings.TrimSpace(m.ReplyText)
+		if fullBody == "" {
+			fullBody = readableMessageContentRaw(m.Content)
+		}
+		return fmt.Sprintf("### %s\n\n%s", header, fullBody)
 	}
-	if d := m.GetDepth(); d != 0 {
-		out["depth"] = d
+	return fmt.Sprintf("%s: %s", header, body)
+}
+
+func formatMessageTime(createdAt string) string {
+	if createdAt == "" {
+		return ""
 	}
-	if pid := m.GetParentSpanId(); pid != "" {
-		out["parent_span_id"] = pid
+	t, err := time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return ""
 	}
-	if sid := m.GetSpanId(); sid != "" {
-		out["span_id"] = sid
+	return t.Format("15:04:05")
+}
+
+// maxSummaryRunes caps the content of a message in its text line.
+const maxSummaryRunes = 200
+
+func formatMessageText(text string, full bool) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if full {
+		return text
 	}
-	if st := m.GetSpanType(); st != "" {
-		out["span_type"] = st
+	if runes := []rune(text); len(runes) > maxSummaryRunes {
+		return string(runes[:maxSummaryRunes-1]) + "…"
 	}
-	if sc := m.GetSpanColor(); sc != 0 {
-		out["span_color"] = sc
+	return text
+}
+
+// readableMessageContent extracts human-readable text from a message payload
+// before falling back to compact JSON.
+func readableMessageContent(content any, full bool) string {
+	if extracted := extractTextFromValue(content); extracted != "" {
+		return formatMessageText(extracted, full)
+	}
+	return contentSummaryOpts(content, full)
+}
+
+func readableMessageContentRaw(content any) string {
+	if extracted := extractTextFromValue(content); extracted != "" {
+		return strings.TrimSpace(extracted)
+	}
+	return contentSummaryOpts(content, true)
+}
+
+func extractTextFromValue(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case map[string]any:
+		for _, key := range []string{"text", "content", "summary", "result"} {
+			if val, ok := x[key]; ok {
+				if extracted := extractTextFromValue(val); extracted != "" {
+					return extracted
+				}
+			}
+		}
+		if msg, ok := x["message"]; ok {
+			if extracted := extractTextFromValue(msg); extracted != "" {
+				return extracted
+			}
+		}
+		return ""
+	case []any:
+		var parts []string
+		for _, elem := range x {
+			switch item := elem.(type) {
+			case string:
+				if strings.TrimSpace(item) != "" {
+					parts = append(parts, item)
+				}
+			case map[string]any:
+				if t, _ := item["type"].(string); t == "" || t == "text" || t == "output_text" || t == "input_text" {
+					if s, ok := item["text"].(string); ok && strings.TrimSpace(s) != "" {
+						parts = append(parts, s)
+					}
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
+// contentSummaryOpts compacts a message payload to one line of JSON (or plain text).
+func contentSummaryOpts(content any, full bool) string {
+	var text string
+	if s, ok := content.(string); ok {
+		text = s
+	} else {
+		raw, err := json.Marshal(content)
+		if err != nil {
+			return ""
+		}
+		text = string(raw)
+	}
+	return formatMessageText(text, full)
+}
+
+// agentMessageList is the result of `agent messages` without --follow.
+type agentMessageList struct {
+	Messages        []agentMessage `json:"messages"`
+	HasMore         bool           `json:"has_more,omitempty"`
+	LatestSeq       *int64         `json:"latest_seq,omitempty"`
+	Goal            *agentGoalView `json:"goal,omitempty"`
+	Todos           []agentTodoRow `json:"todos,omitempty"`
+	BackgroundTasks []agentTaskRow `json:"background_tasks,omitempty"`
+	markdown        bool
+	showSummary     bool
+}
+
+// QuietLines prints the sequence number of each returned message, one per line.
+func (l agentMessageList) QuietLines() []string {
+	out := make([]string, 0, len(l.Messages))
+	for _, m := range l.Messages {
+		out = append(out, strconv.FormatInt(m.Seq, 10))
+	}
+	return out
+}
+
+// RenderText prints one TextLine per message (or separated Markdown sections),
+// plus an optional goal/todos/tasks summary footer when --summary is set.
+func (l agentMessageList) RenderText(w io.Writer) error {
+	for i, m := range l.Messages {
+		if l.markdown && i > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(w, cli.SanitizeTerminalText(m.TextLine())); err != nil {
+			return err
+		}
+	}
+	if !l.showSummary {
+		return nil
+	}
+	var summary []string
+	if l.Goal != nil && l.Goal.Objective != "" {
+		line := "goal: " + cli.SanitizeSingleLine(l.Goal.Objective)
+		if l.Goal.Status != "" {
+			line += " [" + cli.SanitizeSingleLine(l.Goal.Status) + "]"
+		}
+		summary = append(summary, line)
+	}
+	if len(l.Todos) > 0 {
+		done := 0
+		for _, td := range l.Todos {
+			if td.Status == "completed" {
+				done++
+			}
+		}
+		summary = append(summary, fmt.Sprintf("todos: %d/%d completed", done, len(l.Todos)))
+	}
+	if len(l.BackgroundTasks) > 0 {
+		running := 0
+		for _, tk := range l.BackgroundTasks {
+			if tk.Status == "running" || tk.Status == "pending" {
+				running++
+			}
+		}
+		summary = append(summary, fmt.Sprintf("background tasks: %d active (%d total)", running, len(l.BackgroundTasks)))
+	}
+	if len(summary) > 0 {
+		if len(l.Messages) > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		for _, line := range summary {
+			if _, err := fmt.Fprintln(w, line); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// renderAgentMessage flattens an AgentChatMessage: the zstd-compressed
+// `content` payload is decompressed and parsed as JSON (or kept as a string
+// when the payload isn't JSON), and the `span_lines` proto field — which on
+// the wire is a JSON-encoded string — is parsed into structured JSON. The
+// `content_compression` field is dropped because it no longer describes
+// what's in `content` after decompression.
+func renderAgentMessage(m *leapmuxv1.AgentChatMessage) agentMessage {
+	out := agentMessage{
+		ID:           m.GetId(),
+		Seq:          m.GetSeq(),
+		CreatedAt:    m.GetCreatedAt(),
+		Source:       enumToken(m.GetSource()),
+		Provider:     agentlabels.CLIAlias(m.GetAgentProvider()),
+		Sender:       messageSenderOfRow(m),
+		PreviousSeq:  m.GetPreviousSeq(),
+		Depth:        m.GetDepth(),
+		ParentSpanID: m.GetParentSpanId(),
+		SpanID:       m.GetSpanId(),
+		SpanType:     m.GetSpanType(),
+		SpanColor:    m.GetSpanColor(),
+		ReplyText:    m.GetReplyText(),
 	}
 	if raw := m.GetContent(); len(raw) > 0 {
 		decoded, err := msgcodec.Decompress(raw, m.GetContentCompression())
 		if err != nil {
-			// Decompression failure surfaces as both an error
-			// indicator and the raw bytes so callers can still
-			// recover the payload manually.
-			out["content_error"] = err.Error()
-			out["content_raw"] = raw
+			out.ContentError = err.Error()
+			out.ContentRaw = raw
 		} else if parsed, ok := decodeJSON(decoded); ok {
-			out["content"] = parsed
+			out.Content = parsed
 		} else {
 			// Payload isn't JSON — fall back to a string so the
 			// caller still gets something legible. This covers
 			// providers that emit plain-text deltas or markers.
-			out["content"] = string(decoded)
+			out.Content = string(decoded)
 		}
 	}
 	if sl := m.GetSpanLines(); sl != "" {
 		if parsed, ok := decodeJSON([]byte(sl)); ok {
-			out["span_lines"] = parsed
+			out.SpanLines = parsed
 		} else {
 			// Worker shipped a non-JSON span_lines value (older
 			// snapshots, partial migration). Keep it as a string
 			// rather than dropping it on the floor.
-			out["span_lines"] = sl
+			out.SpanLines = sl
 		}
 	}
 	return out
 }
 
-// decodeJSON returns the parsed JSON value when data is well-formed
-// JSON, otherwise (nil, false). Centralised so the renderer's two
-// JSON-ish fields (content, span_lines) share fallback semantics.
+// decodeJSON parses one JSON value and preserves the original number tokens.
+// Content and span_lines fall back to the original text on a parse failure.
 func decodeJSON(data []byte) (any, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
+	if err := decoder.Decode(&v); err != nil {
+		return nil, false
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return nil, false
 	}
 	return v, true
@@ -394,7 +676,7 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 }
 
 // tailAgentMessages streams `WatchEvents` for a single agent and
-// emits each `AgentChatMessage` as a JSON line on stdout. On
+// prints each `AgentChatMessage` as one stream event. On
 // transport disconnect it reconnects with capped exponential backoff,
 // resuming from the latest `seq` it observed. Before each RECONNECT it
 // drains any backlog the capped replay would skip (see drainBacklog), so
@@ -413,16 +695,18 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 	// terminals cursor stays empty — we don't subscribe terminals here.
 	terminals := streamevents.NewTerminalCursor()
 
-	transport, err := newAgentMessagesTransport(ctx, c, workerID)
+	transport, err := newWorkerWatchTransport(ctx, c, workerID)
 	if err != nil {
-		return control.EmitErrorWith("subscribe_failed", err)
+		return err
 	}
 	defer transport.close()
 
 	// Render one message to stdout. The subscription callback and the reconnect-drain
 	// loop both emit; lineEmitter serializes them so lines can't interleave.
 	emitMsg := func(m *leapmuxv1.AgentChatMessage) error {
-		return em.emit(renderAgentMessage(m))
+		msg := renderAgentMessage(m)
+		msg.rawText, msg.fullText, msg.markdown = em.rawText, em.fullText, em.markdown
+		return em.emit(msg)
 	}
 
 	// Track whether this subscription delivered a record before reconnecting.
@@ -448,8 +732,9 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 	// worker treating an AFTER bound of 0 as "from the oldest message".
 	drainFetch := func(ctx context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
 		req := &leapmuxv1.ListAgentMessagesRequest{
-			AgentId: agentID,
-			Limit:   contracts.MessagePageLimit,
+			AgentId:          agentID,
+			Limit:            contracts.MessagePageLimit,
+			IncludeReplyText: true,
 		}
 		if streamevents.IsResumeCursor(afterSeq) {
 			req.Anchor = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER
@@ -523,9 +808,9 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 			if errors.Is(err, streamevents.ErrSubscriptionClosed) {
 				return nil
 			}
-			if emitErr := em.emitError(agentID, "subscribe_failed", err); emitErr != nil {
-				return emitErr
-			}
+			// A failed subscribe is retried below, so it is a notice on
+			// stderr rather than the command's failure.
+			em.printer.Notice("subscribing to agent %s failed, retrying: %v", agentID, err)
 		} else {
 			// Block until the subscription's transport ends
 			// (channel closed, RPC error, ctx cancelled).
@@ -557,16 +842,16 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 	}
 }
 
-// agentMessagesTransport packages the per-mode plumbing for
-// `agent messages --follow` so the reconnect loop above doesn't have
-// to know whether it's running over an E2EE channel or the local
-// IPC socket.
-type agentMessagesTransport struct {
+// workerWatchTransport packages the per-mode plumbing of a WatchEvents
+// stream to one Worker, so `agent messages --follow`, `agent wait` and
+// `agent send --wait` need not know whether they run over an E2EE channel
+// or the local IPC socket.
+type workerWatchTransport struct {
 	transport streamevents.Transport
 	close     func()
 }
 
-func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID string) (*agentMessagesTransport, error) {
+func newWorkerWatchTransport(ctx context.Context, c *control.Client, workerID string) (*workerWatchTransport, error) {
 	if c.IsWorkerIPC() {
 		// Local-IPC mode: route via ControlIPCService.StreamInner.
 		// workerID may be empty; the router resolves the spawning
@@ -579,7 +864,7 @@ func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID 
 		if err != nil {
 			return nil, err
 		}
-		return &agentMessagesTransport{
+		return &workerWatchTransport{
 			transport: streamevents.NewLocalIPCTransport(ipc, workerID, slog.Default()),
 			close:     func() {},
 		}, nil
@@ -591,7 +876,7 @@ func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID 
 	if err != nil {
 		return nil, err
 	}
-	return &agentMessagesTransport{
+	return &workerWatchTransport{
 		transport: streamevents.NewChannelTransport(ch, slog.Default()),
 		close: func() {
 			ch.Close()
@@ -599,35 +884,41 @@ func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID 
 	}, nil
 }
 
-// lineEmitter serializes JSON-line writes to one encoder under one mutex, so the
-// concurrent emitters in --follow mode (the subscription callback and the
-// reconnect-drain loop) can't interleave bytes mid-line. Bundling the encoder and
-// mutex together means a caller can't encode without holding the lock -- the locking
-// discipline stops being every call site's responsibility.
+// lineEmitter serializes stream writes under one mutex, so the concurrent
+// emitters in --follow mode (the subscription callback and the
+// reconnect-drain loop) can't interleave bytes mid-line. Bundling the
+// printer and the mutex together means a caller can't write without holding
+// the lock -- the locking discipline stops being every call site's
+// responsibility.
 type lineEmitter struct {
-	mu  sync.Mutex
-	enc *json.Encoder
-	err error
+	mu       sync.Mutex
+	printer  *cli.Printer
+	rawText  bool
+	fullText bool
+	markdown bool
+	err      error
 }
 
-// emit writes one JSON value as a line under the lock.
+// emit prints one stream event under the lock.
 func (e *lineEmitter) emit(v any) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.err != nil {
 		return e.err
 	}
-	if err := e.enc.Encode(v); err != nil {
+	if err := e.printer.Event(v); err != nil {
 		e.err = err
 		return err
 	}
 	return nil
 }
 
-// emitFollowEvent reports whether the event produces a JSON record.
+// emitFollowEvent reports whether the event produces a stream record.
 func (e *lineEmitter) emitFollowEvent(event *leapmuxv1.AgentEvent) (bool, error) {
 	if message := event.GetAgentMessage(); message != nil {
-		return true, e.emit(renderAgentMessage(message))
+		msg := renderAgentMessage(message)
+		msg.rawText, msg.fullText, msg.markdown = e.rawText, e.fullText, e.markdown
+		return true, e.emit(msg)
 	}
 	if removed := event.GetMessagesRetracted().GetSeqs(); len(removed) > 0 {
 		return true, e.emit(map[string]any{
@@ -642,16 +933,4 @@ func (e *lineEmitter) Err() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.err
-}
-
-// emitError writes a `{"source":"error",...}` line under the lock so it doesn't
-// interleave with concurrent event encodes. Panics on a nil err (a programmer error
-// -- a nil message would be indistinguishable from a successful frame downstream).
-func (e *lineEmitter) emitError(contextID, code string, err error) error {
-	return e.emit(map[string]any{
-		"source":  "error",
-		"context": contextID,
-		"code":    code,
-		"message": err.Error(),
-	})
 }

@@ -117,6 +117,10 @@ type conversation struct {
 	// childID is the child agent of a subagent's conversation, and empty for the
 	// session's own.
 	childID string
+	// A child's native session file and input ownership come from the child stream.
+	sessionFile string
+	childInputs map[string]ompChildInput
+	childReply  *ompReplyPrompt
 	// tools holds the tool calls that started and did not end, by call id.
 	tools       map[string]*toolState
 	closedSpans providerkit.ClosedSpanSet
@@ -129,6 +133,9 @@ type conversation struct {
 	// runStartedAt marks when a subagent's run began, for the duration of its
 	// turn-end row. The session's own turn keeps its mark in turnState.
 	runStartedAt time.Time
+	// awaitingWake marks a child whose model loop yielded while outside work
+	// can still resume its native run. The child can start a new loop now.
+	awaitingWake bool
 	// toolUses counts the tool calls of a subagent's run. The session's own count
 	// is Process.TurnToolUses.
 	toolUses int
@@ -140,6 +147,11 @@ func newConversation(sink agent.ProviderServices, childID string) *conversation 
 
 // isRoot reports whether the conversation is the session's own.
 func (c *conversation) isRoot() bool { return c.childID == "" }
+
+// Caller holds Mu.
+func (c *conversation) childLoopActive() bool {
+	return !c.runStartedAt.IsZero() && !c.awaitingWake
+}
 
 // toolState is one tool call that started and did not end.
 type toolState struct {
@@ -175,12 +187,13 @@ type messageEndEnvelope struct {
 		// StopReason is how an assistant message ended (OhMyPiStopReason*).
 		StopReason string `json:"stopReason"`
 		// Steering marks the user message of a steer that omp took into a run.
-		Steering    bool            `json:"steering"`
-		CustomType  string          `json:"customType"`
-		Display     *bool           `json:"display"`
-		Content     json.RawMessage `json:"content"`
-		Attribution string          `json:"attribution"`
-		Details     json.RawMessage `json:"details"`
+		Steering     bool            `json:"steering"`
+		SteerInputID string          `json:"leapmuxInputId"`
+		CustomType   string          `json:"customType"`
+		Display      *bool           `json:"display"`
+		Content      json.RawMessage `json:"content"`
+		Attribution  string          `json:"attribution"`
+		Details      json.RawMessage `json:"details"`
 	} `json:"message"`
 }
 
@@ -226,6 +239,8 @@ type agentEndEnvelope struct {
 		ErrorMessage string `json:"errorMessage"`
 	} `json:"messages"`
 	IsTerminal *bool `json:"isTerminal"`
+	Yielded    *bool `json:"yielded"`
+	Awaiting   bool  `json:"awaiting"`
 }
 
 // completion reads how the run ended from its last assistant message: an error
@@ -260,6 +275,7 @@ func (a *Agent) handleAgentStart() {
 	now := a.Clock().Now()
 	a.Mu.Lock()
 	a.rootConversationLocked().ttsrPending = false
+	a.startReplyOutputLocked()
 	firstRun := !a.turn.runStarted
 	a.turn.active = true
 	a.turn.runStarted = true
@@ -343,9 +359,12 @@ func (a *Agent) takePendingSteer() {
 // stays open for the run that the steer starts. See agentEndEnvelope.
 func (a *Agent) handleAgentEnd(raw []byte) {
 	var env agentEndEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		slog.Warn("omp agent_end decode failed", "agent_id", a.AgentID(), "error", err)
+	decodeErr := json.Unmarshal(raw, &env)
+	if decodeErr != nil {
+		slog.Warn("omp agent_end decode failed", "agent_id", a.AgentID(), "error", decodeErr)
 	}
+	yielded := decodeErr == nil && (env.Yielded != nil && *env.Yielded ||
+		env.Yielded == nil && (env.IsTerminal == nil || *env.IsTerminal))
 	endedAt := a.Clock().Now()
 	a.Mu.Lock()
 	a.rootConversationLocked().ttsrPending = false
@@ -354,6 +373,9 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 		a.Mu.Unlock()
 		// The run's own text is complete: its last message ended it.
 		a.flushGeneration(root, agent.MessageCompletionComplete)
+		if yielded {
+			a.yieldReplyOutput()
+		}
 		return
 	}
 	turn := a.turn
@@ -373,6 +395,9 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 		completion = agent.MessageCompletionInterrupted
 	}
 	a.flushGeneration(root, completion)
+	if yielded {
+		a.yieldReplyOutput()
+	}
 	if interrupted {
 		a.persistIncompleteTools(root, completion)
 		a.ResetCumulativeOutput()
@@ -543,6 +568,7 @@ func (a *Agent) flushCompactionState(c *conversation) {
 
 // flushGeneration persists the streamed text that no message_end completed.
 func (a *Agent) flushGeneration(c *conversation, completion agent.MessageCompletion) {
+	a.noteUncommittedReply(c)
 	if err := providerkit.FlushGeneration(&c.generation, c.sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("omp persist partial generation", "agent_id", a.AgentID(), "error", err)
 	}
@@ -591,13 +617,20 @@ func (a *Agent) handleMessageEnd(c *conversation, raw []byte) {
 		}
 		content.Completion = a.messageTextCompletion(c, message.StopReason, message.Content)
 		a.persistThinking(c, message.Content)
-		if err := c.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
+		if err := a.persistOMPReplyText(c, content); err != nil {
 			slog.Error("omp persist message_end", "agent_id", a.AgentID(), "error", err)
 		}
 		providerkit.DiscardGenerationScopes(&c.generation, c.sink, c.generation.ScopeIDs())
 	case contracts.OhMyPiRoleUser:
 		if !c.isRoot() {
-			a.persistChildPrompt(c, message.Content)
+			a.observeOMPChildUserMessage(c, message.SteerInputID)
+			if message.SteerInputID == "" {
+				a.persistChildPrompt(c, message.Content)
+			}
+			return
+		}
+		a.observeOMPUserMessage(message.SteerInputID)
+		if message.SteerInputID != "" {
 			return
 		}
 		if message.Steering {

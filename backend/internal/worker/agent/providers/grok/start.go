@@ -2,9 +2,14 @@ package grok
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
+	"runtime"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -30,6 +35,10 @@ const grokDisableAutoUpdaterEnv = "GROK_DISABLE_AUTOUPDATER=1"
 // Pin it before initialization so each advertised child send has native support.
 const grokActiveAgentMessagesEnv = "GROK_ACTIVE_AGENT_MESSAGES=1"
 
+var grokStoreProfile = envprobe.Request{
+	PathVariables: map[string]string{"GROK_HOME": "", "HOME": "", "USERPROFILE": ""},
+}
+
 // Start starts a Grok Build ACP agent process and performs the handshake.
 //
 // `--no-leader` keeps the process to itself. Without it, a user config.toml
@@ -38,10 +47,13 @@ const grokActiveAgentMessagesEnv = "GROK_ACTIVE_AGENT_MESSAGES=1"
 // that process, and it ignores the flags that this process states.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	return acp.Start(ctx, opts, sink, acp.StartSpec[Agent]{
-		Registration:  Registration(),
-		ProviderName:  "grok",
-		BaseArgs:      []string{"agent", "--no-leader", "stdio"},
-		PinnedEnv:     []string{grokDisableAutoUpdaterEnv, grokActiveAgentMessagesEnv},
+		Registration: Registration(),
+		ProviderName: "grok",
+		BaseArgs:     []string{"agent", "--no-leader", "stdio"},
+		PinnedEnv:    []string{grokDisableAutoUpdaterEnv, grokActiveAgentMessagesEnv},
+		ObserveEnvironment: &launch.ObservationRequest{
+			PathVariables: grokStoreProfile.PathVariables,
+		},
 		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
 		NewAgent:      func() *Agent { return &Agent{} },
 		Base:          func(a *Agent) *acp.Base { return &a.Base },
@@ -61,7 +73,11 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 	a.stateMu.Lock()
 	a.approval.current = initialApprovalMode(opts.Get(contracts.GrokOptionApprovalMode))
 	a.stateMu.Unlock()
+	a.steerReplies.home = grokHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir})
+	a.steerReplies.workingDir = opts.WorkingDir
 	return acp.Hooks{
+		// A dismissed question lets Grok resume its model loop.
+		CancelBeforeControlWithdrawal: true,
 		WithBypassPermission: func(claim func()) {
 			a.stateMu.Lock()
 			defer a.stateMu.Unlock()
@@ -82,14 +98,23 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		ClientCapabilityMeta: map[string]any{
 			grokFolderTrustCapability: map[string]any{"interactive": true},
 		},
-		InitializeResponse:     a.seedAvailableCommands,
-		SessionParams:          a.adjustSessionParams,
-		PromptParams:           a.adjustPromptParams,
-		ModelDecorator:         decorateModel,
-		LocalOptionGroups:      a.localOptionGroups,
-		ApplyLocalOption:       a.applyLocalOption,
-		ExtraMethod:            a.handleExtraMethod,
-		ControlRequestObserver: a.observeControlRequest,
+		InitializeResponse: func(response []byte) {
+			a.useGrokStoreProfile()
+			a.seedAvailableCommands(response)
+		},
+		SessionParams:     a.adjustSessionParams,
+		PromptParams:      a.adjustPromptParams,
+		ModelDecorator:    decorateModel,
+		LocalOptionGroups: a.localOptionGroups,
+		ApplyLocalOption:  a.applyLocalOption,
+		ExtraMethod:       a.handleExtraMethod,
+		ControlRequestObserver: func(sessionID string, line *providerkit.ParsedLine) {
+			a.observeControlRequest(sessionID, line)
+			a.observeGrokSteerControl(sessionID)
+		},
+		NativeControlReplyOwner:  a.grokSteerControlOwner,
+		ResolvePermissionSession: a.resolveGrokPermissionSession,
+		ChildPermissionOwner:     a.grokChildPermissionOwner,
 		// Folder trust is Grok's one request with no cancel answer, and it asks
 		// about the repository rather than the turn. See grokControlCancelAnswer.
 		AnswerlessControlsOutliveTurns: true,
@@ -100,12 +125,12 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		// A final tool update ends the call its badge watched.
 		ToolOutputComplete: a.completeToolOutput,
-		// A stopped turn clears every permission-check badge; normal and error
-		// turns keep badges for open spans alive until those calls finish.
-		// Every prompt end forgets a pending retry row.
+		// A stopped turn clears every permission-check badge for the current
+		// session; normal and error turns keep badges for open spans alive
+		// until those calls finish. Every prompt end forgets a pending retry row.
 		PromptEnded: func(_ error, stopped bool) acp.PromptEnding {
 			if stopped {
-				a.clearPermissionChecks()
+				a.clearPermissionChecks(a.CurrentSessionID())
 			}
 			a.retryResolution.Reset()
 			a.stateMu.Lock()
@@ -123,8 +148,38 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		// The first chunk of a new model request drops the text that the
 		// previous request left buffered, which a retry discarded (see
 		// observeNotificationMetadata).
-		SessionNotificationMetadata: a.observeNotificationMetadata,
-		ClearProviderState:          a.clearProviderState,
+		SessionNotificationMetadata: func(updateType string, metadata map[string]json.RawMessage) {
+			a.observeNotificationMetadata(updateType, metadata)
+			a.observeGrokReplyModel(updateType, metadata)
+		},
+		RootAssistantMessageID:     a.takeGrokAssistantStream,
+		AssistantTextKey:           a.grokAssistantTextKey,
+		ChildSessionUpdateIdentity: a.observeGrokChildUpdate,
+		ClearProviderState:         a.clearProviderState,
+		BeforeWaitCleanup:          a.finishGrokSteerJobs,
+	}
+}
+
+func (a *Agent) useGrokStoreProfile() {
+	snapshot, ok := grokStoreProfile.DecodeObservation(a.PreambleMetaValue(envprobe.ObservationKey))
+	if !ok {
+		return
+	}
+	home := snapshot.Paths["GROK_HOME"]
+	if home == "" {
+		homeVariable := "HOME"
+		if runtime.GOOS == "windows" {
+			homeVariable = "USERPROFILE"
+		}
+		if base := snapshot.Paths[homeVariable]; base != "" {
+			home = filepath.Join(base, ".grok")
+		}
+	}
+	if home != "" {
+		a.steerReplies.home = home
+	}
+	if snapshot.WorkingDir != "" {
+		a.steerReplies.workingDir = snapshot.WorkingDir
 	}
 }
 
@@ -132,6 +187,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 // clear replaces the session. The approval mode belongs to the process and
 // stays.
 func (a *Agent) clearProviderState() {
+	a.abandonGrokSteerReplies()
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	a.children.reset()

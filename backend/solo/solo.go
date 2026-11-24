@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/coder/quartz"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
@@ -232,17 +232,14 @@ type Config struct {
 	ConfigDir string
 	// ConfigFile overrides the default config file path.
 	ConfigFile string
-	// Args are additional CLI flag arguments (passed to hub config loader).
+	// Args are the flags of the launch, for Prepare and Start. A command that
+	// parses its own flags registers Flags(cfg) and calls PrepareParsed.
 	Args []string
 	// CLIFlags restricts which flags are registered (nil = all hub flags).
 	CLIFlags []string
 	// ExtraFlags registers additional koanf-backed flags; nil uses the
 	// desktop-oriented default (encryption-mode, use-login-shell).
 	ExtraFlags []hubconfig.ExtraFlagDef
-	// FlagSetName and Description head the help output. Empty values give
-	// "leapmux <mode>" and the description of the mode.
-	FlagSetName string
-	Description string
 	// DevMode runs in dev mode (binds to all interfaces, and bootstraps the
 	// first administrator through /setup).
 	DevMode bool
@@ -250,10 +247,10 @@ type Config struct {
 	// the local IPC socket (unix:<path> on Unix, npipe:<name> on Windows).
 	// This is used by the desktop app to avoid opening a TCP port.
 	NoTCP bool
-	// ConfigureFlags registers caller-owned command flags without adding runtime settings.
-	ConfigureFlags func(*flag.FlagSet)
-	// AfterFlagsParsed runs after valid flags and metadata, before configuration I/O.
-	AfterFlagsParsed func(*flag.FlagSet) error
+	// ControlCLI is the absolute path of the program that serves
+	// `leapmux control` for the Worker; see worker.RunConfig.ControlCLI. ""
+	// gives the Worker's spawns no CLI.
+	ControlCLI string
 }
 
 // Instance represents a running solo Hub+Worker pair.
@@ -753,17 +750,8 @@ func (i *Instance) failStartup(cause error) error {
 // was exposed.
 func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
 	modeName := "solo"
-	description := "Run Hub + Worker locally for single-user use."
 	if cfg.DevMode {
 		modeName = "dev"
-		description = "Run Hub + Worker together for development."
-	}
-	if cfg.Description != "" {
-		description = cfg.Description
-	}
-	flagSetName := "leapmux " + modeName
-	if cfg.FlagSetName != "" {
-		flagSetName = cfg.FlagSetName
 	}
 
 	defaultListen := cfg.Listen
@@ -797,13 +785,9 @@ func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
 		DefaultListen:     defaultListen,
 		DefaultConfigDir:  configDir,
 		DefaultConfigFile: configFile,
-		FlagSetName:       flagSetName,
-		Description:       description,
 		CLIFlags:          cliFlags,
 		ExtraFlags:        extraFlags,
 		SoloMode:          !cfg.DevMode,
-		ConfigureFlags:    cfg.ConfigureFlags,
-		AfterFlagsParsed:  cfg.AfterFlagsParsed,
 	}, modeName
 }
 
@@ -913,9 +897,9 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 
 	// AFTER NewServer, and reading the SOCKETS rather than the flag.
 	//
-	// -listen is no longer the whole answer: NewServer binds the stored
+	// --listen is no longer the whole answer: NewServer binds the stored
 	// extra_listen_addresses too, so `leapmux solo` with the default loopback
-	// -listen and a stored `*:4327` is reachable from other machines and said
+	// --listen and a stored `*:4327` is reachable from other machines and said
 	// nothing, and a desktop hub that gains its only TCP address from that
 	// setting was suppressed outright by the NoTCP test. This is the same
 	// predicate the password-setup screen reads, so the log line and the
@@ -926,7 +910,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 
 	// Resolved after the server exists so the URL reflects the public_url
 	// setting and the address the hub ACTUALLY answers on -- a stored extra
-	// address can widen what -listen asked for (127.0.0.1:4327 merged into
+	// address can widen what --listen asked for (127.0.0.1:4327 merged into
 	// *:4327), or supply the only TCP address there is on a desktop hub that
 	// starts with none. The server owns both facts; see hub.Server.AccessURL.
 	accessURL := server.AccessURL()
@@ -1042,6 +1026,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 			workerLease:      workerLease,
 			hubCfg:           hubCfg,
 			listenURL:        listenURL,
+			controlCLI:       cfg.ControlCLI,
 			runWorker:        d.runWorker,
 			onExit:           func(cause error) { inst.workerExited(workerCtx, cause) },
 			onStarting:       inst.markWorkerStarting,
@@ -1204,9 +1189,11 @@ type workerBringUp struct {
 	// TRANSFERS it into worker.Run when the worker goroutine launches;
 	// until then the Instance retains it, and the combined shutdown
 	// closes it. Paths derive from lease.Path().
-	workerLease     *lifecycle.DirectoryLease
-	hubCfg          *hubconfig.Config
-	listenURL       string
+	workerLease *lifecycle.DirectoryLease
+	hubCfg      *hubconfig.Config
+	listenURL   string
+	// controlCLI is Config.ControlCLI, which worker.Run receives unchanged.
+	controlCLI      string
 	runWorker       func(ctx context.Context, cfg worker.RunConfig) error
 	onExit          func(error)
 	onStarting      func(lifecycle.RegistrationStatus)
@@ -1304,6 +1291,7 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			AgentStartupConcurrency: parseInt(p.hubCfg.Extras["agent_startup_concurrency"], 0),
 			EncryptionMode:          workerconfig.ParseEncryptionMode(p.hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:           parseBool(p.hubCfg.Extras["use_login_shell"], true),
+			ControlCLI:              p.controlCLI,
 			RegisteredBy:            state.RegisteredBy,
 		})
 		if wErr == nil && ctx.Err() == nil {
@@ -1633,14 +1621,14 @@ func preserveDiscardedState(statePath string, data []byte) {
 // non-loopback security warning.
 //
 // It takes the hub's own answer about its LIVE listeners, so the warning
-// covers every address the hub bound and not only the one -listen gave. Dev
+// covers every address the hub bound and not only the one --listen gave. Dev
 // mode is exempt: it uses real password authentication from the start, so
 // there is no credential-free state to warn about.
 //
 // The NoTCP test is gone with the string. A desktop hub binds no TCP address
 // of its own, which used to make the whole question moot -- but it can gain
 // one from the extra_listen_addresses setting, and that address exposes the
-// hub exactly as much as a -listen one would.
+// hub exactly as much as a --listen one would.
 func shouldWarnNonLoopback(cfg Config, exposed bool) bool {
 	return !cfg.DevMode && exposed
 }
@@ -1659,10 +1647,10 @@ func shouldWarnNonLoopback(cfg Config, exposed bool) bool {
 // it as a hub flag -- it would be dead there.
 func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 	return []hubconfig.ExtraFlagDef{
-		{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
-		{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap each agent invocation in the user's login shell", StrDefault: "true"},
-		{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", Usage: "maximum in-flight chunked sequences per channel for the embedded worker (default 4)", StrDefault: "0", Category: "Timeout and limit options"},
-		{Name: "agent-startup-concurrency", KoanfKey: "agent_startup_concurrency", Usage: fmt.Sprintf("how many agents the embedded worker brings back at once after a restart (0 = %d, or the CPU count when that is lower)", workerconfig.DefaultMaxStartupConcurrency), StrDefault: "0", Category: "Timeout and limit options"},
+		hubconfig.StringExtraFlag("encryption-mode", "encryption_mode", "", "encryption mode (classic, post-quantum)", "post-quantum"),
+		hubconfig.BoolExtraFlag("use-login-shell", "use_login_shell", "", "wrap each agent invocation in the user's login shell", true),
+		hubconfig.IntExtraFlag("max-incomplete-chunked", "max_incomplete_chunked", "Timeout and limit options", fmt.Sprintf("maximum in-flight chunked sequences per channel for the embedded worker (0 = %d)", contracts.DefaultMaxIncompleteChunked), 0),
+		hubconfig.IntExtraFlag("agent-startup-concurrency", "agent_startup_concurrency", "Timeout and limit options", fmt.Sprintf("how many agents the embedded worker brings back at once after a restart (0 = %d, or the CPU count when that is lower)", workerconfig.DefaultMaxStartupConcurrency), 0),
 	}
 }
 

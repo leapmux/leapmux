@@ -40,7 +40,10 @@ func jsonObject(encoded []byte, description string) (map[string]json.RawMessage,
 	return fields, nil
 }
 
-// ValidateIncomingMessageMetadata rejects injection of the stored Worker journal.
+// ValidateIncomingMessageMetadata rejects injection of the stored Worker journal,
+// and of the sender of an agent message. The input queue alone states a sender,
+// from the control token of the sending tab, so a row that any other writer
+// produced must not claim one.
 func ValidateIncomingMessageMetadata(metadata []byte) error {
 	if len(metadata) == 0 {
 		return nil
@@ -49,7 +52,7 @@ func ValidateIncomingMessageMetadata(metadata []byte) error {
 	if err != nil {
 		return err
 	}
-	for _, reserved := range []string{NotificationJournalField, NotificationReductionField} {
+	for _, reserved := range []string{NotificationJournalField, NotificationReductionField, contracts.MessageMetadataFieldAgentMessageSender} {
 		if _, present := fields[reserved]; present {
 			return fmt.Errorf("the incoming Worker metadata contains the reserved %s field", reserved)
 		}

@@ -32,6 +32,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Base:         func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, sink agent.ProviderServices) acp.Hooks {
 			storeQuery := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
+			a.storeQuery = storeQuery
+			a.workingDir = opts.WorkingDir
 			transcript := newReasonixToolTranscript(ctx, sink, a.CurrentSessionID, storeQuery, opts.WorkingDir)
 			return acp.Hooks{
 				// A permission reply releases Reasonix's model loop immediately.
@@ -41,7 +43,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				},
 				PermissionAllowsBypass: permissionAllowsBypass,
 				Sink:                   transcript,
+				ChunkMessageID:         a.reasonixChunkMessageID,
+				AssistantTextKey:       a.reasonixAssistantTextKey,
+				AssistantTextPrepared:  a.reasonixAssistantTextPrepared,
+				CaptureReplyReconciliation: func() func() error {
+					return a.captureReasonixSteerCompletion(agent.DirectProviderServices(sink))
+				},
 				ClearProviderState: func() {
+					a.retireReasonixSteers(agent.DirectProviderServices(sink))
 					transcript.Reset()
 					a.resetPlanDraft()
 				},

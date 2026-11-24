@@ -53,9 +53,9 @@ func TestDefaultDeviceName_IsTheOnlySourceOfTheLabel(t *testing.T) {
 	t.Parallel()
 
 	// Every file that puts an installation_name on the wire must take the
-	// label from the one function. cmd/auth.go reaches it through its
+	// label from the one function. cmd/auth_login.go reaches it through its
 	// --device-name flag default, which is the same source with an override.
-	for _, path := range []string{"elevate.go", "cmd/auth.go"} {
+	for _, path := range []string{"elevate.go", "cmd/auth_login.go"} {
 		src, err := os.ReadFile(path)
 		require.NoError(t, err, "%s must be readable", path)
 		text := string(src)

@@ -2,6 +2,7 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "leapmux/v1/access.proto";
+import "leapmux/v1/agent_control.proto";
 import "leapmux/v1/common.proto";
 import "leapmux/v1/tab_creation.proto";
 import "leapmux/v1/git.proto";
@@ -22,7 +23,13 @@ service WorkerAgentService {
   rpc UpdateAgentSettings(UpdateAgentSettingsRequest) returns (UpdateAgentSettingsResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
   }
-  rpc SendControlResponse(SendControlResponseRequest) returns (SendControlResponseResponse) {
+  rpc RecordControlResponse(RecordControlResponseRequest) returns (RecordControlResponseResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc ListControlRequests(ListControlRequestsRequest) returns (ListControlRequestsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc AnswerControl(AnswerControlRequest) returns (AnswerControlResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
   }
   rpc InterruptAgent(InterruptAgentRequest) returns (InterruptAgentResponse) {
@@ -59,6 +66,12 @@ service WorkerAgentService {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
   }
   rpc ListAgentSessions(ListAgentSessionsRequest) returns (ListAgentSessionsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc GetAgentSessionInfo(GetAgentSessionInfoRequest) returns (GetAgentSessionInfoResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc SearchAgentMessages(SearchAgentMessagesRequest) returns (SearchAgentMessagesResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
   }
 }
@@ -101,6 +114,9 @@ service WorkerAgentInputService {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
   }
   rpc ListAgentInputQueue(ListAgentInputQueueRequest) returns (ListAgentInputQueueResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc GetQueuedAgentInput(GetQueuedAgentInputRequest) returns (GetQueuedAgentInputResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
   }
   rpc ListAgentInputRecoveries(ListAgentInputRecoveriesRequest) returns (ListAgentInputRecoveriesResponse) {
@@ -271,6 +287,8 @@ message OpenAgentRequest {
   // picked that one itself.
   bool title_auto_generated = 7;
   TabCreation creation = 8;
+  // If present, queue this message in the same transaction as the new agent.
+  optional string initial_message = 9;
 }
 
 message OpenAgentResponse {
@@ -280,6 +298,9 @@ message OpenAgentResponse {
 
 message ListAgentsRequest {
   repeated string tab_ids = 1;
+  // When true, include all descendant subagent rows (even those without an open
+  // workspace tab) rooted beneath the requested tab_ids.
+  bool include_descendants = 2;
 }
 
 message ListAgentsResponse {
@@ -518,6 +539,23 @@ enum AgentInputKind {
   // A retryable server error, retried automatically with exponential backoff.
   // Worker-created only; external enqueue refuses it.
   AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR = 8;
+  // A message that an agent sent through `leapmux control agent send`. The
+  // Worker assigns this kind, never a caller: a user message enqueued through
+  // the control token of an agent's tab, the recipient's own included, becomes
+  // this kind, with the sender stamped from the token, so no caller can forge
+  // or drop the provenance. A call that a sibling Worker relays carries the
+  // sender that the sibling stamped from its own token (see CallSource). The agent receives it with a header that names the sender and
+  // states that it is not the operator's instruction. External enqueue refuses
+  // it as a requested kind.
+  AGENT_INPUT_KIND_AGENT_MESSAGE = 9;
+}
+
+// AgentMessageSender identifies the agent tab that sent an AGENT_MESSAGE. The
+// title stays private to the Worker and the browser, so each reader looks it
+// up by the tab id.
+message AgentMessageSender {
+  string tab_id = 1;
+  AgentProvider provider = 2;
 }
 
 enum AgentInputState {
@@ -587,6 +625,15 @@ message QueuedAgentInput {
   // mean nothing outside one snapshot. Clients compare them and never
   // calculate them, because the Worker's clock decides the groups.
   uint32 reorder_segment = 15;
+  // The agent that sent an AGENT_MESSAGE, or unset for any other kind.
+  AgentMessageSender sender = 16;
+  // Why no client can ever edit this item, such as a message whose text
+  // another agent wrote; empty when the item allows an edit. The Worker
+  // computes it from the same rule that BeginQueuedAgentInputEdit applies,
+  // and that refusal states the same text, for the reason can_steer exists. A
+  // state that passes, such as a dispatch or another client's edit, is not
+  // stated here.
+  string edit_refusal = 17;
 }
 
 // One agent's input queue. The carrier identifies the agent: the request of an
@@ -638,12 +685,59 @@ message EnqueueAgentInputRequest {
   // Empty schedules immediate delivery. Otherwise a canonical UTC RFC3339
   // send-not-before timestamp; a value at or before now still means immediate.
   string scheduled_at = 6;
+  // Require a future scheduled_at when inserting a new input. An exact
+  // replay of a recorded request also succeeds once its schedule has passed.
+  bool require_future_schedule = 7;
+  // Match a previously recorded request without adding an input.
+  bool require_existing = 8;
 }
 
-message EnqueueAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+message EnqueueAgentInputResponse {
+  AgentInputQueueSnapshot snapshot = 1;
+  // The transcript sequence when this request matches an accepted input.
+  // Zero means that the input has no accepted transcript row.
+  int64 accepted_seq = 2;
+  // A require_existing request found no record. Snapshot and accepted_seq
+  // are unset in this case.
+  bool existing_input_missing = 3;
+}
 
-message ListAgentInputQueueRequest { string agent_id = 1; }
-message ListAgentInputQueueResponse { AgentInputQueueSnapshot snapshot = 1; }
+message ListAgentInputQueueRequest {
+  string agent_id = 1;
+  // Ask for the state of a previously submitted input's native turn.
+  string reply_input_id = 2;
+}
+message ListAgentInputQueueResponse {
+  AgentInputQueueSnapshot snapshot = 1;
+  // Present when the accepted input has a native receipt.
+  AgentInputTurnReply input_reply = 2;
+}
+
+message GetQueuedAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+}
+
+message GetQueuedAgentInputResponse {
+  QueuedAgentInput item = 1;
+  // Full un-truncated text of the queued input without acquiring an edit lease.
+  string text = 2;
+}
+
+enum AgentInputTurnOutcome {
+  AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED = 0;
+  AGENT_INPUT_TURN_OUTCOME_COMPLETED = 1;
+  AGENT_INPUT_TURN_OUTCOME_INTERRUPTED = 2;
+  AGENT_INPUT_TURN_OUTCOME_FAILED = 3;
+  // The provider stopped tracking the input before proving its outcome.
+  AGENT_INPUT_TURN_OUTCOME_UNPROVED = 4;
+}
+
+message AgentInputTurnReply {
+  int64 accepted_seq = 1;
+  AgentInputTurnOutcome outcome = 2;
+  bool waiting_for_user = 3;
+}
 
 message BeginQueuedAgentInputEditRequest {
   string agent_id = 1;
@@ -803,6 +897,14 @@ message AgentChatMessage {
   string agent_session_id = 21;
   // True when this transcript update must not change current live state.
   bool transcript_only = 22;
+  // The text of the agent's reply that this row holds, as the transcript's
+  // quote copies it: without the white space at either end. Set only on a
+  // ListAgentMessages page that asked for it with include_reply_text, and only
+  // on an agent row that holds a reply: a tool call, a reasoning block or a
+  // status row leaves it unset. The Worker reads it through the provider's own
+  // ReplyText, so a client needs no provider code;
+  // testdata/reply_text_conformance.json pins it to the browser's extraction.
+  optional string reply_text = 23;
 }
 
 // AgentStatusChange notifies of agent status transitions. AgentEvent.agent_id
@@ -854,6 +956,14 @@ message ListAgentMessagesRequest {
   MessagePageAnchor anchor = 2; // Which page to return; defaults to LATEST.
   int64 cursor_seq = 3;         // Exclusive seq bound for BEFORE/AFTER; ignored for LATEST/OLDEST.
   int32 limit = 4;              // Max messages to return (contracts.MessagePageLimit).
+  // Fill AgentChatMessage.reply_text on each agent row that holds a reply.
+  // The browser extracts the text itself and leaves this unset.
+  bool include_reply_text = 5;
+  // In an OLDEST page, select the accepted input's own native reply.
+  // Exact reply pages use native order and reply_cursor instead of cursor_seq.
+  string reply_input_id = 6;
+  // The exclusive position returned by the previous exact reply page.
+  int64 reply_cursor = 7;
 }
 
 message ListAgentMessagesResponse {
@@ -892,6 +1002,8 @@ message ListAgentMessagesResponse {
   // because the worker reads the row here and the browser applies the answer a
   // network round trip later.
   AgentGoalSnapshot goal = 6;
+  // The next position of an exact reply page. Zero means no more rows.
+  int64 next_reply_cursor = 7;
 }
 
 // GetAgentMessage fetches a SINGLE message by its per-agent seq. Used by the
@@ -1214,7 +1326,8 @@ message AgentControlRequest {
   AgentProvider agent_provider = 3; // Provider for this agent
   // claim_token identifies the request instance. An identical pending announcement keeps its token.
   // A new request after deletion, or a changed payload, receives a fresh token.
-  // The frontend echoes the token in SendControlResponseRequest to deduplicate answers per instance.
+  // A client echoes the token in AnswerControlRequest and RecordControlResponseRequest, so an
+  // answer and a recording act on this instance alone.
   string claim_token = 4;
   // Optional transcript source, outside the original provider payload. Zero means no source is available.
   int64 source_seq = 5;
@@ -1224,6 +1337,9 @@ message AgentControlRequest {
   // and the request waits until the user answers or skips it. A process exit and
   // an interrupt keep it. The browser shows it only when the user opens it.
   bool non_blocking = 8;
+  // What the request asks, as the provider's Worker package reads its payload.
+  // A client draws this and answers it with AnswerControl.
+  ControlPrompt prompt = 9;
 }
 
 // ControlResponseState describes the worker's evidence for one response instance.
@@ -1252,20 +1368,44 @@ message PlanApprovalSettings {
   bool clear_context = 2;
 }
 
-// SendControlResponseRequest sends a control response back to the agent.
-message SendControlResponseRequest {
+// RecordControlResponseRequest asks the Worker to finish recording the response that it
+// already delivered for one request instance, or only to report the state of that
+// instance. It never sends an answer to the agent: a client answers through AnswerControl,
+// where the Worker's provider builds the answer from a neutral decision.
+message RecordControlResponseRequest {
   string agent_id = 1;
-  bytes content = 2;  // The response that the provider adapter prepares for delivery.
-  // The request ID and claim token identify the exact request instance.
+  // The request ID and the claim token identify the exact request instance.
+  string request_id = 2;
   string claim_token = 3;
-  string request_id = 4;
-  // Check the saved state and complete confirmed delivery. Never send to the provider.
-  bool record_only = 5;
-  // LeapMux applies these settings with the plan decision. They are not provider JSON.
-  PlanApprovalSettings plan_approval = 6;
 }
 
-message SendControlResponseResponse {
+message RecordControlResponseResponse {
+  ControlResponseState state = 1;
+  string error = 2;
+}
+
+// ListControlRequestsRequest lists the requests that one agent waits on.
+message ListControlRequestsRequest { string agent_id = 1; }
+message ListControlRequestsResponse { repeated AgentControlRequest requests = 1; }
+
+// AnswerControlRequest answers one request instance. Supply exactly one form.
+// The Worker's provider package builds the native answer for a decision.
+message AnswerControlRequest {
+  string agent_id = 1;
+  // The request ID and the claim token identify the exact request instance.
+  string request_id = 2;
+  string claim_token = 3;
+  ControlDecision decision = 4;
+  NativeControlAnswer native_response = 5;
+}
+
+message NativeControlAnswer {
+  // The provider adapter's JSON response for an offered permission choice.
+  // The Worker validates the bytes before it attempts to deliver the answer.
+  bytes content = 1;
+}
+
+message AnswerControlResponse {
   ControlResponseState state = 1;
   string error = 2;
 }
@@ -1417,3 +1557,45 @@ message RespondAgentStartupPromptRequest {
 
 // Empty: the cleared prompt and next startup phase arrive through status events.
 message RespondAgentStartupPromptResponse {}
+
+// GetAgentSessionInfo returns the Worker's current ephemeral session info map
+// (cost, context usage, rate limits, running tool, goal progress, turn retry
+// offer) as JSON encoded with the keys in contracts/session-info.json.
+message GetAgentSessionInfoRequest {
+  string agent_id = 1;
+}
+
+message GetAgentSessionInfoResponse {
+  string session_info_json = 1;
+}
+
+// SearchAgentMessages searches transcripts stored locally on the Worker so
+// message plaintext never leaves the E2EE boundary.
+message SearchAgentMessagesRequest {
+  string query = 1;
+  repeated string agent_ids = 2;
+  AgentProvider provider = 3;
+  // Optional RFC3339 timestamp filter; only messages created at or after this instant match.
+  string since = 4;
+  // Maximum number of hits to return (default 50, capped at 200).
+  int32 limit = 5;
+  // When true, treat query as an RE2 regular expression instead of a literal substring.
+  bool regex = 6;
+  // When true, match case-sensitively; default is case-insensitive for both literal and regex queries.
+  bool case_sensitive = 7;
+}
+
+message AgentMessageSearchHit {
+  string agent_id = 1;
+  string agent_title = 2;
+  AgentProvider provider = 3;
+  int64 seq = 4;
+  MessageSource source = 5;
+  string snippet = 6;
+  string created_at = 7;
+}
+
+message SearchAgentMessagesResponse {
+  repeated AgentMessageSearchHit hits = 1;
+  bool truncated = 2;
+}

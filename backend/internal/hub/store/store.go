@@ -23,6 +23,7 @@ type Store interface {
 	RegistrationKeys() RegistrationKeyStore
 	Workspaces() WorkspaceStore
 	WorkspaceTabIndex() WorkspaceTabIndexStore
+	LayoutEvents() LayoutEventStore
 	UserOpBatches() UserOpBatchesStore
 	UserState() UserStateStore
 	UserRecentBatchIDs() UserRecentBatchIDStore
@@ -270,6 +271,8 @@ type WorkerStore interface {
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
 	// ListByUserID pages the user's ACTIVE workers only.
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)
+	// InventoryState reads the enrollment revision and active count together.
+	InventoryState(ctx context.Context, owner userid.UserID) (WorkerInventoryState, error)
 	ListAdmin(ctx context.Context, p ListWorkersAdminParams) (Page[WorkerWithOwner], error)
 	// GetAdmin is the single-row form of ListAdmin: the worker plus the
 	// owner projection, resolved by the SAME join. A caller that reads the

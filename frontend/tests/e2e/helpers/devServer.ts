@@ -76,11 +76,12 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
   const dataDir = createTestDirectory(`${opts.dataDirPrefix ?? 'leapmux-e2e-'}-`)
 
   const proc = spawnTestProcess(binaryPath, [
+    'daemon',
     'dev',
     'run',
-    '-listen',
+    '--listen',
     '127.0.0.1:0',
-    '-data-dir',
+    '--data-dir',
     dataDir,
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -166,14 +167,15 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
   const requestedListen = `${opts.listenHost ?? '127.0.0.1'}:0`
 
   const proc = spawnTestProcess(binaryPath, [
+    'daemon',
     'solo',
     'run',
-    '-listen',
+    '--listen',
     requestedListen,
     ...(opts.extraListen
-      ? ['-listen', opts.extraListen]
+      ? ['--listen', opts.extraListen]
       : []),
-    '-data-dir',
+    '--data-dir',
     dataDir,
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],

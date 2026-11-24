@@ -132,7 +132,7 @@ func TestCommandsSurviveALostStderrDuringShutdown(t *testing.T) {
 	t.Run("solo", func(t *testing.T) {
 		locallistentest.SandboxHome(t)
 		uniqueListenEnv(t)
-		p := startWithStderrPipe(t, "solo", "run")
+		p := startWithStderrPipe(t, "daemon", "solo", "run")
 		p.waitReadiness(t, "leapmux solo listening")
 		p.loseStderr(t)
 		p.signalThenRequireCleanExit(t, syscall.SIGTERM)
@@ -141,7 +141,7 @@ func TestCommandsSurviveALostStderrDuringShutdown(t *testing.T) {
 	t.Run("hub", func(t *testing.T) {
 		locallistentest.SandboxHome(t)
 		uniqueListenEnv(t)
-		p := startWithStderrPipe(t, "hub", "run")
+		p := startWithStderrPipe(t, "daemon", "hub", "run")
 		p.waitReadiness(t, "hub listening")
 		p.loseStderr(t)
 		p.signalThenRequireCleanExit(t, syscall.SIGTERM)
@@ -152,7 +152,7 @@ func TestCommandsSurviveALostStderrDuringShutdown(t *testing.T) {
 		// Worker reached its connection loop.
 		hubURL, connected := startReceivingHub(t)
 		cfg := writeRegisteredStateAgainst(t, hubURL)
-		p := startWithStderrPipe(t, "worker", "run", "--data-dir", cfg.DataDir, "--log-level", "info")
+		p := startWithStderrPipe(t, "daemon", "worker", "run", "--data-dir", cfg.DataDir, "--log-level", "info")
 		select {
 		case <-connected:
 		case err := <-p.exited:

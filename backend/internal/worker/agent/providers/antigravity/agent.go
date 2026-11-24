@@ -77,8 +77,10 @@ type cascadeState struct {
 	stored       bool
 	seenUpdate   bool
 	trajectoryID string
+	stepCount    int
 	steps        map[int]*stepState
 	turnSteps    map[int]struct{}
+	inputReplies map[string]*inputReply
 	childKeys    map[string]*childKey
 	background   map[string]backgroundTask
 	// Removed tasks stay owned until their close enters the Worker output queue.
@@ -87,6 +89,7 @@ type cascadeState struct {
 	planControl       *antigravityControl
 	turnPhase         cascadeTurnPhase
 	sendInFlight      bool
+	inputRequestSeq   uint64
 	heldErrorStep     json.RawMessage
 	interrupted       bool
 	interruptGen      uint64
@@ -121,6 +124,9 @@ type cascadeTurnStart struct {
 
 type stepState struct {
 	status             string
+	executionID        string
+	plannerResponse    bool
+	replyText          bool
 	consumed           bool
 	liveOutputAccepted bool
 	spanID             string
@@ -349,7 +355,14 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 	firstEver := !state.seenUpdate
 	state.seenUpdate = true
 	if update.TrajectoryID != "" {
+		if update.TrajectoryID != state.trajectoryID {
+			state.stepCount = 0
+		}
 		state.trajectoryID = update.TrajectoryID
+	}
+	patch := update.MainTrajectory.StepsUpdate
+	if patch.TotalLength > 0 {
+		state.stepCount = patch.TotalLength
 	}
 	for childID, child := range update.Subtrajectories {
 		record := state.childKeys[childID]
@@ -376,7 +389,6 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 		return err
 	}
 
-	patch := update.MainTrajectory.StepsUpdate
 	order := patch.orderedPositions()
 	for position := range min(len(patch.Indices), len(patch.Steps)) {
 		if order != nil {
@@ -609,6 +621,8 @@ func isInputNotRegistered(err error) bool {
 	return providerkit.IsHTTPStatus(err, 500) && strings.Contains(strings.ToLower(streamErrorText(err)), "input not registered")
 }
 
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
-	return a.executeControlReply(data)
+// SendRawInput delivers the Worker's answer to one control request instance
+// (executeControlReply). The language server takes no other raw frame.
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	return a.executeControlReply(input.Data, input.ControlInstanceID)
 }

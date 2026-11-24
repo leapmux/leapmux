@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -67,7 +68,7 @@ func (svc *Service) persistPayloadCreation(op *creationOperation, stored *leapmu
 	}
 	unlock := op.coordinator.lock(op.key())
 	defer unlock()
-	err = op.persistLocked(&payloadCreationRuntime{}, func(ctx context.Context, q *db.Queries) error {
+	err = op.persistLocked(&payloadCreationRuntime{}, func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 		if err := q.InsertWorkerTabPayload(ctx, db.InsertWorkerTabPayloadParams{UserID: op.key().owner, TabID: op.key().tabID, TabType: int64(op.publication.GetTabType()), Payload: blob, WorkingDir: stored.WorkingDir}); err != nil {
 			return err
 		}

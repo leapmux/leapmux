@@ -368,7 +368,7 @@ export async function expectSavedRefusalFeedback(page: Page, reason: string): Pr
 
 /** What {@link exerciseRememberedAllow} runs: one allow under a remembered scope, and a later call that the rule covers. */
 export interface RememberedAllow {
-  /** The radio group of the scope pills. The shared permission row draws `Allow scope`, and the Codex row draws `Allow as`. */
+  /** The radio group of the scope pills. A permission draws `Allow scope`, and an MCP tool approval draws `Allow as`. */
   scopeGroup?: 'Allow scope' | 'Allow as'
   /** The label of the scope pill that keeps the rule, such as `Session` or `Always`. */
   scope: string

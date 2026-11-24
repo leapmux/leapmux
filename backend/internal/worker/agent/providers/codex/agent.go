@@ -78,8 +78,11 @@ type Agent struct {
 	// outputMu protects notifications that follow the held turn end and their replay.
 	deferredSteerOutput  []*providerkit.ParsedLine
 	replayingSteerOutput bool
+	// outputMu protects echoed steers whose native turn has yet to end.
+	replySteers []agent.NativeInputReceipt
 	// pendingStart keeps delivery ownership after a caller stops waiting.
 	pendingStart     *codexPendingTurnStart
+	replyStarts      map[string]*codexPendingTurnStart
 	settingRevisions map[string]uint64
 	// A contextCompaction item can confirm a compact request before its JSON-RPC
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
@@ -470,7 +473,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		_, err := a.interruptMainTurn(threadID, turnID)
 		return err
 	}
-	a.AnswerOutstandingControlRequests(a.sink)
+	a.AnswerOutstandingControlRequests()
 	if threadID == "" {
 		return nil
 	}
@@ -583,7 +586,7 @@ func (a *Agent) interruptMainTurn(threadID, turnID string) (accepted bool, err e
 	// withdraws. Without this drain that answer can never be delivered: the
 	// elicitation stays blocked inside the CLI for the rest of the session, well
 	// past the point the user believes the turn ended.
-	a.AnswerOutstandingControlRequests(a.sink)
+	a.AnswerOutstandingControlRequests()
 	if threadID == "" || turnID == "" {
 		return false, nil
 	}
@@ -597,7 +600,7 @@ func (a *Agent) interruptMainTurn(threadID, turnID string) (accepted bool, err e
 	// answer it, no later SendRawInput could route one, and the thinking indicator
 	// never stopped.
 	if accepted {
-		a.WithdrawAllControlRequests(a.sink)
+		a.WithdrawAllControlRequests()
 	}
 	return accepted, err
 }
@@ -612,6 +615,7 @@ func (a *Agent) Stop() {
 	a.persistIncompleteCodexTools("", true, completion)
 	a.finishAllCodexRawExecutions(completion)
 	a.retireCodexInputAfterExit()
+	a.retireCodexInputReplies("")
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	providerkit.ResetSpansAndProgress(a.sink)
@@ -627,6 +631,7 @@ func (a *Agent) Wait() error {
 	a.persistIncompleteCodexTools("", true, completion)
 	a.finishAllCodexRawExecutions(completion)
 	a.retireCodexInputAfterExit()
+	a.retireCodexInputReplies("")
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	providerkit.ResetSpansAndProgress(a.sink)
@@ -670,26 +675,40 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 }
 
 func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.sendInputWithTracking(expected, content, attachments, false)
+	return err
+}
+
+var _ agent.InputReceiptSender = (*Agent)(nil)
+
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputWithTracking(nil, content, attachments, true)
+}
+
+func (a *Agent) sendInputWithTracking(expected *string, content string, attachments []*leapmuxv1.Attachment, tracked bool) (agent.NativeInputReceipt, error) {
 	// Refuse known busy state before waiting for a context transition.
 	// Dispatch checks again under its lock before it writes any bytes.
 	a.Mu.Lock()
 	err := a.checkCodexInputLocked(expected)
 	a.Mu.Unlock()
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	pending, err := a.dispatchInputForSession(expected, input)
+	pending, err := a.dispatchInputForSession(expected, input, tracked)
 	if pending != nil {
 		a.PublishTurnActive()
 	}
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return a.awaitCodexTurnStart(pending)
+	if err := a.awaitCodexTurnStart(pending); err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	return pending.receipt, nil
 }
 
 func (a *Agent) CompactContext() error {
@@ -771,19 +790,19 @@ var _ agent.SessionInputSteerer = (*Agent)(nil)
 // for any active turn, so the capability needs no handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
-func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.steerInput(nil, content, attachments, true)
+func (a *Agent) SteerInput(request agent.SteerRequest) error {
+	return a.steerInput(nil, request)
 }
 
 // SteerInputForSession delivers the answer to a LeapMux-owned question. The
 // queue owns that answer's row and accepts it at the steer, so this delivery
 // joins no steer ledger: the native echo that later repeats the answer is not
 // news the queue waits for.
-func (a *Agent) SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.steerInput(&sessionID, content, attachments, false)
+func (a *Agent) SteerInputForSession(sessionID string, request agent.SteerRequest) error {
+	return a.steerInput(&sessionID, request)
 }
 
-func (a *Agent) steerInput(expected *string, content string, attachments []*leapmuxv1.Attachment, trackEcho bool) error {
+func (a *Agent) steerInput(expected *string, request agent.SteerRequest) error {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.threadID); err != nil {
 		a.Mu.Unlock()
@@ -814,10 +833,10 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	// Retry acceptance must wait until every earlier steer resolves.
 	a.mainTurn.steers++
 	a.Mu.Unlock()
-	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	input, err := buildCodexInputBlocks(request.Content, agent.ClassifyAttachments(request.Attachments))
 	var ticket providerkit.SteerTicket
 	if err == nil {
-		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho, expected != nil)
+		ticket, err = a.sendTurnSteer(threadID, turnID, input, request, expected != nil)
 	}
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
@@ -849,7 +868,7 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	}
 	a.retryOfferMu.Unlock()
 	if err != nil || !stillActive {
-		a.forgetCodexSteer(ticket)
+		a.steerLedger.Forget(ticket)
 	}
 	a.finishDeferredCodexSteerOutput()
 	if err != nil {

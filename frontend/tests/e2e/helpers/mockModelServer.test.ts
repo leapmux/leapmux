@@ -2,11 +2,12 @@ import type { MockModelScenarioInput } from './mockModelScenario'
 import type { MockModelCredential, MockModelScenarioStatus } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
 import { Buffer } from 'node:buffer'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request as httpRequest, IncomingMessage, ServerResponse } from 'node:http'
 import { connect as connectHttp2 } from 'node:http2'
 import { connect as connectTcp, Socket } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
+import { connect as connectTls } from 'node:tls'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { isObject } from '../../../src/lib/jsonPick'
@@ -21,6 +22,8 @@ import { mockScenarioPrompt, readScenarioStatus } from './mockModelScenario'
 import { AMBIENT_SCENARIO_ID } from './mockModelScript'
 import { createMockModelServer, holdGate } from './mockModelServer'
 import { CLAUDE_SUBAGENT_HANDBACK_TOOL, claudeSubagentHandbackToolDefinition, cursorRequestContextToolCall } from './providerToolCalls'
+import { QODER_BOOTSTRAP_HOSTS } from './qoderSurface'
+import { startTlsProxy } from './tlsProxy'
 
 const servers: MockModelServer[] = []
 const credentialCases: { label: string, headers: Record<string, string>, credential: MockModelCredential }[] = [
@@ -3506,7 +3509,7 @@ describe('createMockModelServer', () => {
     })
   })
 
-  it('refuses every proxy tunnel, and records the host that it refused', async () => {
+  it('refuses proxy tunnels by default and records the host that it refused', async () => {
     // The mock is also the agents' proxy. A request that no setting of an agent
     // points at the mock then fails at once rather than leaving the machine.
     const server = await startServer()
@@ -3528,6 +3531,63 @@ describe('createMockModelServer', () => {
     expect(status).toBe(403)
     const log = await fetch(`${server.url}/__e2e/requests`).then(result => result.json())
     expect(log.http).toContainEqual({ method: 'CONNECT', path: 'app.kiro.dev:443', status: 403 })
+  })
+
+  it.each([
+    [
+      'account profile',
+      QODER_BOOTSTRAP_HOSTS[0],
+      '/api/v1/userinfo',
+      '"id":"leapmux-e2e"',
+    ],
+    [
+      'model catalog',
+      QODER_BOOTSTRAP_HOSTS[1],
+      '/algo/api/v2/model/list',
+      '"success":true',
+    ],
+  ])('serves the Qoder %s through the isolated TLS tunnel', async (_name, host, path, body) => {
+    const server = await startServer()
+    const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+    mkdirSync(scratch, { recursive: true })
+    const tls = await startTlsProxy(`${server.url}/healthz`, scratch, QODER_BOOTSTRAP_HOSTS)
+    try {
+      server.setQoderBootstrapPort(Number(new URL(tls.url).port))
+      const authority = `${host}:443`
+      const response = await new Promise<string>((resolve, reject) => {
+        const tunnel = httpRequest(server.url, { method: 'CONNECT', path: authority })
+        tunnel.once('error', reject)
+        tunnel.once('connect', (head, socket) => {
+          if (head.statusCode !== 200) {
+            socket.destroy()
+            reject(new Error(`The Qoder tunnel returned HTTP ${head.statusCode}.`))
+            return
+          }
+          const connection = connectTls({
+            socket,
+            servername: host,
+            ca: readFileSync(tls.certificatePath),
+          })
+          connection.once('error', reject)
+          connection.once('secureConnect', () => {
+            connection.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`)
+          })
+          let response = ''
+          connection.setEncoding('utf8')
+          connection.on('data', (chunk: string) => {
+            response += chunk
+          })
+          connection.once('end', () => resolve(response))
+        })
+        tunnel.end()
+      })
+      expect(response).toMatch(/^HTTP\/1\.1 200 /)
+      expect(response).toContain(body)
+      expect(server.refusedHosts().has(authority)).toBe(false)
+    }
+    finally {
+      await tls.close()
+    }
   })
 
   // A client that sends a plain-HTTP request through the proxy sends it in absolute

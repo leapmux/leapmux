@@ -57,6 +57,8 @@ func TestChildCapabilitiesUseTheStoredOptions(t *testing.T) {
 			assert.Equal(t, testCase.accepts, info.AcceptsInterrupt)
 			queue := agentInputQueueAdapter{svc: svc}
 			assert.Equal(t, testCase.accepts, queue.AcceptsKind(childID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE))
+			// A message from another agent takes the route of a user's message.
+			assert.Equal(t, testCase.accepts, queue.AcceptsKind(childID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AGENT_MESSAGE))
 			assert.True(t, queue.AcceptsKind(childID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK))
 		})
 	}

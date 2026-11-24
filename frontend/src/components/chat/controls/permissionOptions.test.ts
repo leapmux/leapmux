@@ -400,6 +400,95 @@ describe('resolvePermissionOption', () => {
     expect(layout.additional.map(o => o.optionId)).toEqual(['deny_project'])
   })
 
+  // A scope label tells two rules of one scope apart: Codex keeps a command rule and a
+  // host rule in the same user configuration. A refusal pairs with the pill of its own
+  // scope and label alone, so the Command rule pill never sends the host block.
+  it('pairs a remembered refusal only with the pill of its own scope and scope label', () => {
+    const layout = layoutPermissionOptions([
+      option('accept', 'allow_once', 'Allow'),
+      {
+        ...option('acceptForSession', 'allow_always', 'Allow for Session'),
+        scope: 'session',
+      },
+      {
+        ...option('rule', 'allow_always', 'Allow & Remember: git push'),
+        scope: 'user',
+        scopeLabel: 'Command rule',
+      },
+      {
+        ...option('host', 'allow_always', 'Allow Host & Remember: example.com'),
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+      {
+        ...option('block', 'reject_always', 'Block Host & Remember: example.com'),
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+      {
+        ...option('cancel', 'reject_once', 'Cancel'),
+        endsTurn: true,
+      },
+    ])
+
+    expect(layout.rememberRejects?.map(o => o.optionId)).toEqual(['block'])
+    expect(layout.additional).toEqual([])
+    expect(resolvePermissionOption(layout, 'reject', 'accept')?.optionId).toBe('cancel')
+    expect(resolvePermissionOption(layout, 'reject', 'acceptForSession')?.optionId).toBe('cancel')
+    expect(resolvePermissionOption(layout, 'reject', 'rule')?.optionId).toBe('cancel')
+    expect(resolvePermissionOption(layout, 'reject', 'host')?.optionId).toBe('block')
+  })
+
+  // Codex's host block once stated no scope, and a refusal that states no scope answers
+  // every remembered pill. It then sent a permanent block under the Session pill.
+  it('never sends a scoped block under the Session pill', () => {
+    const layout = layoutPermissionOptions([
+      option('accept', 'allow_once', 'Allow'),
+      {
+        ...option('acceptForSession', 'allow_always', 'Allow for Session'),
+        scope: 'session',
+      },
+      {
+        ...option('block', 'reject_always', 'Block Host & Remember: example.com'),
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+      {
+        ...option('cancel', 'reject_once', 'Cancel'),
+        endsTurn: true,
+      },
+    ])
+
+    expect(resolvePermissionOption(layout, 'reject', 'acceptForSession')?.optionId).toBe('cancel')
+    expect(layout.rememberRejects).toBeUndefined()
+    // No pill reaches the block, so it stays its own button.
+    expect(layout.additional.map(o => o.optionId)).toEqual(['block'])
+  })
+
+  // A label without a scope is a scope of its own. It is not the absent scope that
+  // answers every pill.
+  it('keeps a refusal that states only a scope label away from the other pills', () => {
+    const layout = layoutPermissionOptions([
+      option('once', 'allow_once'),
+      {
+        ...option('always', 'allow_always'),
+        scope: 'user',
+      },
+      {
+        ...option('ruled', 'allow_always'),
+        scopeLabel: 'Host rule',
+      },
+      option('reject', 'reject_once'),
+      {
+        ...option('block', 'reject_always'),
+        scopeLabel: 'Host rule',
+      },
+    ])
+
+    expect(resolvePermissionOption(layout, 'reject', 'always')?.optionId).toBe('reject')
+    expect(resolvePermissionOption(layout, 'reject', 'ruled')?.optionId).toBe('block')
+  })
+
   it('never upgrades a reject without a scope group', () => {
     const layout = layoutPermissionOptions([
       option('allow_once', 'allow_once'),
@@ -417,6 +506,26 @@ describe('decisionLabel', () => {
 
     expect(decisionLabel(layout, 'allow')).toBe('Allow')
     expect(decisionLabel(layout, 'reject')).toBe('Deny')
+  })
+
+  // Codex's cancel and the base protocol's cancelled outcome refuse the call and
+  // stop the turn. Deny would hide that the agent does nothing more.
+  it('names a refusal that ends the turn Cancel', () => {
+    const layout = layoutPermissionOptions([
+      option('accept', 'allow_once', 'Allow'),
+      {
+        ...option('cancel', 'reject_once', 'Cancel'),
+        endsTurn: true,
+      },
+    ])
+    expect(decisionLabel(layout, 'reject')).toBe('Cancel')
+    expect(decisionLabel(layout, 'allow')).toBe('Allow')
+
+    const declining = layoutPermissionOptions([
+      option('accept', 'allow_once', 'Allow'),
+      option('decline', 'reject_once', 'Decline'),
+    ])
+    expect(decisionLabel(declining, 'reject'), 'a refusal of the call alone keeps the shared word').toBe('Deny')
   })
 
   it('states the duration when a slot holds a remember option with no scope group', () => {
@@ -452,6 +561,54 @@ describe('decisionLabel', () => {
 
     expect(decisionLabel(layout, 'reject')).toBe('Always reject')
     expect(decisionLabel(layout, 'allow')).toBe('Allow')
+  })
+
+  // The selected pill decides what Deny sends. A remembered refusal that the pill
+  // reaches does not end the turn, so Deny must not read Cancel for it. The pill
+  // states its duration, so the button keeps the plain word.
+  it('names the refusal that the selected pill sends', () => {
+    const layout = layoutPermissionOptions([
+      option('accept', 'allow_once', 'Allow'),
+      {
+        ...option('acceptForSession', 'allow_always', 'Allow for Session'),
+        scope: 'session',
+      },
+      {
+        ...option('host', 'allow_always', 'Allow Host & Remember: example.com'),
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+      {
+        ...option('block', 'reject_always', 'Block Host & Remember: example.com'),
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+      {
+        ...option('cancel', 'reject_once', 'Cancel'),
+        endsTurn: true,
+      },
+    ])
+
+    expect(decisionLabel(layout, 'reject')).toBe('Cancel')
+    expect(decisionLabel(layout, 'reject', 'accept')).toBe('Cancel')
+    expect(decisionLabel(layout, 'reject', 'acceptForSession')).toBe('Cancel')
+    expect(decisionLabel(layout, 'reject', 'host')).toBe('Deny')
+    expect(decisionLabel(layout, 'allow', 'host')).toBe('Allow')
+  })
+
+  it('names Cancel for a remembered refusal that also ends the turn', () => {
+    const layout = layoutPermissionOptions([
+      option('once', 'allow_once'),
+      option('always', 'allow_always'),
+      option('reject', 'reject_once'),
+      {
+        ...option('never', 'reject_always'),
+        endsTurn: true,
+      },
+    ])
+
+    expect(decisionLabel(layout, 'reject', 'once')).toBe('Deny')
+    expect(decisionLabel(layout, 'reject', 'always')).toBe('Cancel')
   })
 })
 
@@ -502,6 +659,18 @@ describe('allowScopeLabel', () => {
 
   it('tolerates an option whose name is absent', () => {
     expect(allowScopeLabel({ optionId: 'always', kind: 'allow_always' })).toBe('Always')
+  })
+
+  it('prefers the scope label that the plugin states over the scope and the name', () => {
+    expect(allowScopeLabel({
+      ...option('rule', 'allow_always', 'Allow & Remember: git push --session'),
+      scope: 'user',
+      scopeLabel: 'Command rule',
+    })).toBe('Command rule')
+    expect(allowScopeLabel({
+      ...option('turn', 'allow_once', 'Allow'),
+      scopeLabel: 'This turn',
+    })).toBe('This turn')
   })
 })
 
@@ -580,6 +749,57 @@ describe('allowScopePillOptions', () => {
       { key: 'once', label: 'Once' },
       { key: 'session_a', label: 'Allow reads for this session' },
       { key: 'session_b', label: 'Allow writes for this session' },
+    ])
+  })
+
+  it('labels Codex\'s rules by the scope labels that the Worker states', () => {
+    expect(allowScopePillOptions([
+      option('accept', 'allow_once', 'Allow'),
+      {
+        ...option('acceptForSession', 'allow_always', 'Allow for Session'),
+        scope: 'session',
+      },
+      {
+        ...option('host', 'allow_always', 'Allow Host & Remember: example.com'),
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+    ])).toEqual([
+      { key: 'accept', label: 'Once' },
+      { key: 'acceptForSession', label: 'Session' },
+      { key: 'host', label: 'Host rule' },
+    ])
+    expect(allowScopePillOptions([
+      option('accept', 'allow_once', 'Allow'),
+      {
+        ...option('rule', 'allow_always', 'Allow & Remember: git push'),
+        scope: 'user',
+        scopeLabel: 'Command rule',
+      },
+    ])).toEqual([
+      { key: 'accept', label: 'Once' },
+      { key: 'rule', label: 'Command rule' },
+    ])
+  })
+
+  // Two host rules share one scope label, so each pill shows its own option name.
+  it('shows two rules of one scope label their own names', () => {
+    expect(allowScopePillOptions([
+      option('accept', 'allow_once', 'Allow'),
+      {
+        ...option('a', 'allow_always', 'Allow Host & Remember: a.example.com'),
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+      {
+        ...option('b', 'allow_always', 'Allow Host & Remember: b.example.com'),
+        scope: 'user',
+        scopeLabel: 'Host rule',
+      },
+    ])).toEqual([
+      { key: 'accept', label: 'Once' },
+      { key: 'a', label: 'Allow Host & Remember: a.example.com' },
+      { key: 'b', label: 'Allow Host & Remember: b.example.com' },
     ])
   })
 

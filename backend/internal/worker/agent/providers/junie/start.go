@@ -72,6 +72,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// `_meta.lastRequestComplete` chunk and holds no end frame of
 				// its own (see observeJunieTurnEnd).
 				SessionNotificationMetadata: a.observeJunieTurnEnd,
+				RootAssistantMessageID:      a.junieSteerAnswerID,
+				AssistantTextKey:            junieSteerAnswerKey,
+				NativeControlReplyOwner:     a.junieSteerControlOwner,
+				CaptureReplyReconciliation: func() func() error {
+					return a.captureJunieSteerCompletion(agent.DirectProviderServices(sink))
+				},
 				// Junie streams the output of a running command in rawOutput.
 				ToolOutput:  a.junieToolOutput,
 				PromptEnded: a.finishOpenChildren,

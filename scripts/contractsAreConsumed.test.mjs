@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { PROVIDER_PROTOCOLS, resolveProviderSubsetParent, tableReaders, unreadKeys } from './generate-contracts.mjs'
 
 /**
@@ -21,30 +21,93 @@ import { PROVIDER_PROTOCOLS, resolveProviderSubsetParent, tableReaders, unreadKe
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Whether a path is a test file of either language. */
-function isTestFile(path) {
-  return /(?:_test\.go|\.test\.tsx?)$/.test(path)
+/**
+ * Whether a Go package exists only for tests: `testutil`, or a name that ends in
+ * `test` (`agenttest`, `acptest`, `storetest`).
+ *
+ * This is the rule of `testutil.IsTestSupportPackage`
+ * (backend/internal/util/testutil/testsupport.go), which keeps these packages out of
+ * the shipped binary. JavaScript cannot call the Go function, so the
+ * `isGoTestSupportPackage` test replays the cases of the Go test that pins it.
+ */
+function isGoTestSupportPackage(name) {
+  return name === 'testutil' || name.endsWith('test')
+}
+
+/** The Go tool compiles no file under a directory with one of these names. */
+function isGoIgnoredDirectory(name) {
+  return name === 'testdata' || name.startsWith('.') || name.startsWith('_')
 }
 
 /**
- * Every source file of one tree, minus the generated output and minus the tests.
- *
- * A test is not a reader. A reflection test that pins a hand-written struct tag to a
- * generated constant mentions the constant, and counting that mention let two tables
- * pass with no production reader at all. A table whose Go reader IS such a test says
- * so with `goTagPin`, which this file then holds to the named file.
+ * The suffixes of a browser test, or of a test helper beside the module that it
+ * serves: a vitest file, a fixture, a test kit, a shared test double, and a
+ * compile-time type check. No bundle ships any of them.
  */
-function sourceFiles(dir, extensions, found = []) {
-  for (const entry of readdirSync(dir)) {
-    const path = join(dir, entry)
-    // `generated` holds the emitted Go and TS. A table citing itself proves nothing.
-    if (entry === 'generated' || entry === 'node_modules')
-      continue
-    if (statSync(path).isDirectory())
-      sourceFiles(path, extensions, found)
-    else if (extensions.some(extension => entry.endsWith(extension)) && !isTestFile(entry))
-      found.push(path)
+const TS_TEST_HELPER_SUFFIXES = [
+  '.test.ts',
+  '.test.tsx',
+  '.fixtures.ts',
+  '.testkit.ts',
+  '.test-support.ts',
+  '.typecheck.ts',
+]
+
+/** The file names of the helpers that the provider tests of the chat pipeline share. */
+const TS_TEST_HELPER_NAMES = new Set(['testUtils.ts', 'testUtils.tsx'])
+
+/**
+ * Whether one file of a source tree is production code. Only production code counts
+ * as a reader.
+ *
+ * A test is not a reader, and neither is the code that only a test runs. A reflection
+ * test that pins a hand-written struct tag to a generated constant mentions the
+ * constant, and counting that mention let two tables pass with no production reader
+ * at all. A shared test double did the same: `frontend/src/test-support/` imported the
+ * control-answer tables, and the browser passed as their reader although no module
+ * that ships reads them. A table whose Go reader IS a test says so with `goTagPin`,
+ * which this file then holds to the stated file.
+ *
+ * `path` is relative to its source tree (`GO_SOURCE_TREES`, `TS_SOURCE_TREE`).
+ *
+ * - Go: a `.go` file that the Go tool compiles into a non-test package. That excludes
+ *   a `_test.go` file, a file under a directory that the Go tool ignores
+ *   (`isGoIgnoredDirectory`), and a file of a test-support package
+ *   (`isGoTestSupportPackage`).
+ * - TS: a `.ts` or `.tsx` module of the browser, except a file under a `test-support`
+ *   directory and a test helper beside its subject (`TS_TEST_HELPER_SUFFIXES`,
+ *   `TS_TEST_HELPER_NAMES`).
+ */
+function isProductionSource(path) {
+  const segments = path.split(/[\\/]/)
+  const name = segments.at(-1)
+  const directories = segments.slice(0, -1)
+  if (name.endsWith('.go')) {
+    return !name.endsWith('_test.go')
+      && !directories.some(isGoIgnoredDirectory)
+      && !isGoTestSupportPackage(directories.at(-1) ?? '')
   }
+  return !directories.includes('test-support')
+    && !TS_TEST_HELPER_NAMES.has(name)
+    && !TS_TEST_HELPER_SUFFIXES.some(suffix => name.endsWith(suffix))
+}
+
+/** Every production source file of one tree, minus the generated output. */
+function sourceFiles(tree, extensions) {
+  const found = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir)) {
+      const path = join(dir, entry)
+      // `generated` holds the emitted Go and TS. A table citing itself proves nothing.
+      if (entry === 'generated' || entry === 'node_modules')
+        continue
+      if (statSync(path).isDirectory())
+        walk(path)
+      else if (extensions.some(extension => entry.endsWith(extension)) && isProductionSource(relative(tree, path)))
+        found.push(path)
+    }
+  }
+  walk(tree)
   return found
 }
 
@@ -103,8 +166,201 @@ function readAll(files) {
   }))
 }
 
-const goSources = readAll(sourceFiles(join(root, 'backend/internal'), ['.go']))
-const tsSources = readAll(sourceFiles(join(root, 'frontend/src'), ['.ts', '.tsx']))
+/**
+ * The trees that hold the production code of each side. Go imports the generated
+ * package from the backend module and from the module of the desktop sidecar. The
+ * browser is `frontend/src` alone: the E2E suite under `frontend/tests/` is a test,
+ * and the build and lint tooling elsewhere under `frontend/` ships in no bundle.
+ */
+const GO_SOURCE_TREES = ['backend', 'desktop/go']
+const TS_SOURCE_TREE = 'frontend/src'
+
+const goSources = readAll(GO_SOURCE_TREES.flatMap(tree => sourceFiles(join(root, tree), ['.go'])))
+const tsSources = readAll(sourceFiles(join(root, TS_SOURCE_TREE), ['.ts', '.tsx']))
+
+describe('sourceFiles', () => {
+  let checkout
+
+  /** The files that one tree of the fixture checkout yields, relative to that tree. */
+  function collected(tree, extensions) {
+    const base = join(checkout, tree)
+    return sourceFiles(base, extensions).map(path => relative(base, path).replaceAll('\\', '/')).sort()
+  }
+
+  beforeAll(() => {
+    const scratch = join(root, '.tmp')
+    mkdirSync(scratch, { recursive: true })
+    checkout = mkdtempSync(join(scratch, 'contracts-readers-'))
+    for (const path of [
+      'frontend/src/lib/reader.ts',
+      'frontend/src/lib/latest.ts',
+      'frontend/src/lib/agenttest/index.ts',
+      'frontend/src/components/View.tsx',
+      'frontend/src/lib/reader.test.ts',
+      'frontend/src/components/View.test.tsx',
+      'frontend/src/test-support/controlRequests.ts',
+      'frontend/src/test-support/lintFixtures/probe.ts',
+      'frontend/src/components/chat/providers/probe/toolResults.fixtures.ts',
+      'frontend/src/components/chat/providers/probe/testUtils.tsx',
+      'frontend/src/components/chat/providers/testUtils.ts',
+      'frontend/src/components/chat/useChatScroll.testkit.ts',
+      'frontend/src/lib/channel.test-support.ts',
+      'frontend/src/lib/messageSpan.typecheck.ts',
+      'frontend/src/generated/contracts/control-answer.ts',
+      'frontend/src/lib/notes.md',
+      'backend/main.go',
+      'backend/internal/worker/agent/agent.go',
+      'backend/internal/worker/agent/agent_test.go',
+      'backend/internal/worker/agent/testingx/helper.go',
+      'backend/internal/worker/agent/agenttest/fake.go',
+      'backend/internal/worker/agent/providers/acp/acptest/conformance.go',
+      'backend/internal/util/testutil/repo.go',
+      'backend/internal/worker/agent/testdata/sample.go',
+      'backend/internal/worker/agent/_scratch/draft.go',
+      'backend/internal/worker/agent/.hidden/draft.go',
+      'backend/generated/contracts/control-answer.go',
+    ]) {
+      mkdirSync(dirname(join(checkout, path)), { recursive: true })
+      writeFileSync(join(checkout, path), '')
+    }
+  })
+
+  afterAll(() => {
+    if (checkout !== undefined)
+      rmSync(checkout, { recursive: true, force: true })
+  })
+
+  it('collects only the production modules of the browser tree', () => {
+    expect(collected('frontend/src', ['.ts', '.tsx'])).toEqual([
+      'components/View.tsx',
+      'lib/agenttest/index.ts',
+      'lib/latest.ts',
+      'lib/reader.ts',
+    ])
+  })
+
+  it('collects only the production packages of a Go tree', () => {
+    expect(collected('backend', ['.go'])).toEqual([
+      'internal/worker/agent/agent.go',
+      'internal/worker/agent/testingx/helper.go',
+      'main.go',
+    ])
+  })
+})
+
+describe('isGoTestSupportPackage', () => {
+  // `TestIsTestSupport` in backend/cmd/leapmux/no_test_deps_test.go pins the Go rule
+  // with cases of the form `thisModule + "<package path>": <want>`. Replaying the same
+  // cases here fails this copy of the rule when the Go rule changes.
+  it('agrees with each module case of the Go test that pins the rule', () => {
+    const text = readFileSync(join(root, 'backend/cmd/leapmux/no_test_deps_test.go'), 'utf8')
+    const cases = Array.from(text.matchAll(/thisModule \+ "([^"]+)":\s*(true|false),/g), ([, packagePath, want]) => ({ packagePath, want: want === 'true' }))
+    expect(cases.some(({ want }) => want)).toBe(true)
+    expect(cases.some(({ want }) => !want)).toBe(true)
+    for (const { packagePath, want } of cases)
+      expect(isGoTestSupportPackage(packagePath.split('/').at(-1)), packagePath).toBe(want)
+  })
+})
+
+/** The browser packages that only a test imports. */
+const TS_TEST_TOOLING = /^(?:vitest(?:\/.+)?|@vitest\/.+|@solidjs\/testing-library|@testing-library\/.+|@playwright\/test)$/
+
+/** Every module specifier that a TS source imports, re-exports or loads. */
+function tsImportSpecifiers(text) {
+  return Array.from(text.matchAll(/\b(?:from|import)\s*(?:\(\s*)?['"]([^'"]+)['"]/g), match => match[1])
+}
+
+/** Whether a TS module specifier names test tooling or a module that is not production. */
+function isTsTestImport(specifier) {
+  return TS_TEST_TOOLING.test(specifier) || !isProductionSource(`${specifier.replace(/\.[cm]?[jt]sx?$/, '')}.ts`)
+}
+
+/** Every package path that a Go source imports, in a group or alone. */
+function goImportPaths(text) {
+  const grouped = Array.from(text.matchAll(/\bimport\s*\(([^)]*)\)/g), ([, block]) => Array.from(block.matchAll(/"([^"]+)"/g), match => match[1]))
+  const single = Array.from(text.matchAll(/\bimport\s+(?:[\w.]+\s+)?"([^"]+)"/g), match => match[1])
+  return [
+    ...grouped.flat(),
+    ...single,
+  ]
+}
+
+/** Whether a Go import path is the test framework, testify, or a LeapMux test-support package. */
+function isGoTestImport(importPath) {
+  return importPath === 'testing' || importPath.startsWith('testing/')
+    || importPath === 'github.com/stretchr/testify' || importPath.startsWith('github.com/stretchr/testify/')
+    || (importPath.startsWith('github.com/leapmux/') && isGoTestSupportPackage(importPath.split('/').at(-1)))
+}
+
+/**
+ * The reader rule reads NAMES, so a test helper with a new kind of name would count
+ * as a reader again. A helper that imports test tooling or another test helper is
+ * test code whatever its name, and production code imports neither, so each sweep
+ * below finds such a helper that the rule missed. A data fixture that imports neither
+ * still depends on its name alone.
+ */
+describe('a production source', () => {
+  it('finds each form of a browser test import', () => {
+    const text = [
+      'import { vi } from \'vitest\'',
+      'import type { Probe } from \'~/test-support/probe\'',
+      'export { probeRows } from \'./toolResults.fixtures\'',
+      'const view = await import(\'./View.test\')',
+      'import { render } from \'@solidjs/testing-library\'',
+      'import { renderProbe } from \'../testUtils\'',
+      'import { kit } from \'./useChatScroll.testkit.js\'',
+      'import \'./styles.css\'',
+      'import { latest } from \'~/lib/latest\'',
+    ].join('\n')
+    expect(tsImportSpecifiers(text).filter(isTsTestImport)).toEqual([
+      'vitest',
+      '~/test-support/probe',
+      './toolResults.fixtures',
+      './View.test',
+      '@solidjs/testing-library',
+      '../testUtils',
+      './useChatScroll.testkit.js',
+    ])
+  })
+
+  it('finds each form of a Go test import', () => {
+    const text = [
+      'package probe',
+      'import (',
+      '\t"fmt"',
+      '\t"testing"',
+      '\tassert "github.com/stretchr/testify/assert"',
+      '\t"github.com/leapmux/leapmux/internal/worker/agent/agenttest"',
+      '\t"github.com/leapmux/leapmux/internal/worker/agent"',
+      ')',
+      'import _ "testing/fstest"',
+      'import "github.com/leapmux/leapmux/internal/util/testutil"',
+    ].join('\n')
+    expect(goImportPaths(text).filter(isGoTestImport)).toEqual([
+      'testing',
+      'github.com/stretchr/testify/assert',
+      'github.com/leapmux/leapmux/internal/worker/agent/agenttest',
+      'testing/fstest',
+      'github.com/leapmux/leapmux/internal/util/testutil',
+    ])
+  })
+
+  it('imports no browser test tooling or test helper', () => {
+    expect(tsSources.length).toBeGreaterThan(500)
+    const offenders = tsSources.flatMap(source => tsImportSpecifiers(source.text)
+      .filter(isTsTestImport)
+      .map(specifier => `${source.path} imports ${specifier}`))
+    expect(offenders, 'a module that the scan counts as production imports test code: give a test helper a name that isProductionSource excludes, or stop importing test code from production').toEqual([])
+  })
+
+  it('imports no Go test framework or test-support package', () => {
+    expect(goSources.length).toBeGreaterThan(500)
+    const offenders = goSources.flatMap(source => goImportPaths(source.text)
+      .filter(isGoTestImport)
+      .map(importPath => `${source.path} imports ${importPath}`))
+    expect(offenders, 'a Go file that the scan counts as production imports test code: move it to a _test.go file or a test-support package').toEqual([])
+  })
+})
 
 /**
  * A whole-word search. `\b` treats `_` as a word character, so `ZCODE_STORED_PART`
@@ -182,8 +438,8 @@ function startupGroupReaders(spec, table, contract, key, side, sources) {
     if (side === 'go')
       return new RegExp(`range\\s+${symbol.replaceAll('.', '\\.')}\\b`).test(source.text)
     return tsLocalNames(source.text, symbol).some(local =>
-      new RegExp(`Object\\.values\\(\\s*${local}\\s*\\)`).test(source.text)
-        || groups.some(([group]) => wordPattern(`${local}.${group}`).test(source.text)))
+      tsIteratesEveryValue(source.text, local)
+      || groups.some(([group]) => wordPattern(`${local}.${group}`).test(source.text)))
   }).map(source => source.path)
 }
 
@@ -253,11 +509,39 @@ function tsLocalNames(text, symbol) {
   return [symbol, ...aliases]
 }
 
+/**
+ * Whether a TS source hands every value of a table to its caller, under the local name
+ * `local`: `Object.values(LOCAL)` or `Object.entries(LOCAL)`.
+ *
+ * Such a file reads EVERY key of the table. This is the browser's form of the ordered
+ * key slice that a Go `goSlice` table emits: `new Set(Object.values(...))` accepts
+ * each value of the table, so a key that the contract adds joins the set.
+ */
+function tsIteratesEveryValue(text, local) {
+  return new RegExp(`\\bObject\\.(?:values|entries)\\(\\s*${RegExp.escape(local)}\\s*\\)`).test(text)
+}
+
+describe('tsIteratesEveryValue', () => {
+  it('recognizes each form that hands over every value', () => {
+    expect(tsIteratesEveryValue('new Set<string>(Object.values(PROBE_STEP_TYPE))', 'PROBE_STEP_TYPE')).toBe(true)
+    expect(tsIteratesEveryValue('for (const [k, v] of Object.entries( PROBE_STEP_TYPE )) {}', 'PROBE_STEP_TYPE')).toBe(true)
+  })
+
+  it('rejects a key list, another table and a nested value', () => {
+    expect(tsIteratesEveryValue('Object.keys(PROBE_STEP_TYPE)', 'PROBE_STEP_TYPE')).toBe(false)
+    expect(tsIteratesEveryValue('Object.values(PROBE_STEP_TYPE_OTHER)', 'PROBE_STEP_TYPE')).toBe(false)
+    expect(tsIteratesEveryValue('Object.values(OTHER_PROBE_STEP_TYPE)', 'PROBE_STEP_TYPE')).toBe(false)
+    expect(tsIteratesEveryValue('Object.values(PROBE_STEP_TYPE.Nested)', 'PROBE_STEP_TYPE')).toBe(false)
+    expect(tsIteratesEveryValue('import { PROBE_STEP_TYPE } from \'generated\'', 'PROBE_STEP_TYPE')).toBe(false)
+  })
+})
+
 /** The TS files that read one key of one table. */
 function tsKeyReaders(spec, table, contract, key) {
   const symbol = `${spec.tsPrefix}_${table.tsTable}`
   const direct = tsSources
-    .filter(source => tsLocalNames(source.text, symbol).some(local => wordPattern(`${local}.${key}`).test(source.text)))
+    .filter(source => tsLocalNames(source.text, symbol).some(local =>
+      wordPattern(`${local}.${key}`).test(source.text) || tsIteratesEveryValue(source.text, local)))
     .map(source => source.path)
   return [
     ...direct,

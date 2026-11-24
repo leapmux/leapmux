@@ -255,15 +255,31 @@ func (h *OutputHandler) holdSettleLocked(st *agentActivity, agentID, rootAgentID
 	if st.settlePending {
 		return true
 	}
-	if !h.beginActivityRefresh() {
+	finish := h.beginActivityRefresh(rootAgentID)
+	if finish == nil {
 		return false
 	}
 	st.settleGen++
 	gen := st.settleGen
 	st.settlePending = true
-	st.settleTimer = h.afterSettleDelay(func() {
+	timer := h.afterSettleDelay(func() {
+		defer finish()
 		h.deliverHeldSettle(agentID, rootAgentID, gen)
 	})
+	st.settleTimer = &trackedSettleTimer{timer: timer, finish: finish}
+	return true
+}
+
+type trackedSettleTimer struct {
+	timer  settleStopper
+	finish func()
+}
+
+func (t *trackedSettleTimer) Stop() bool {
+	if !t.timer.Stop() {
+		return false
+	}
+	t.finish()
 	return true
 }
 
@@ -278,25 +294,21 @@ func (h *OutputHandler) holdSettleLocked(st *agentActivity, agentID, rootAgentID
 //
 // It leaves settlePending alone. Stopping the timer says nothing about whether a
 // client learned the work stopped; only a publish and voidHeldSettleLocked do.
-func (st *agentActivity) cancelSettleLocked(h *OutputHandler) {
+func (st *agentActivity) cancelSettleLocked() {
 	if st.settleTimer == nil {
 		return
 	}
 	st.settleGen++
-	if st.settleTimer.Stop() {
-		// The callback will never run, so its count is this caller's to release.
-		// A Stop that reports false leaves the callback to release its own.
-		h.activityRefreshes.Done()
-	}
+	st.settleTimer.Stop()
 	st.settleTimer = nil
 }
 
 // cancelSettle is cancelSettleLocked with the entry's lock. Caller must NOT hold
 // st.mu.
-func (st *agentActivity) cancelSettle(h *OutputHandler) {
+func (st *agentActivity) cancelSettle() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.cancelSettleLocked(h)
+	st.cancelSettleLocked()
 }
 
 // voidHeldSettleLocked drops a held settle because the work came back, and drops
@@ -311,11 +323,11 @@ func (st *agentActivity) cancelSettle(h *OutputHandler) {
 // It reads settlePending, not settleTimer. The handle is already nil on both
 // paths that reach here through settleImmediate, so testing it made this
 // function a no-op exactly when a resume raced the window's own delivery.
-func (st *agentActivity) voidHeldSettleLocked(h *OutputHandler) {
+func (st *agentActivity) voidHeldSettleLocked() {
 	if !st.settlePending {
 		return
 	}
-	st.cancelSettleLocked(h)
+	st.cancelSettleLocked()
 	st.settlePending = false
 	st.settledToolUses = nil
 }
@@ -332,7 +344,6 @@ func (st *agentActivity) voidHeldSettleLocked(h *OutputHandler) {
 // re-create the entry ForgetActivity just deleted, and publish for an agent that
 // no longer has a tab.
 func (h *OutputHandler) deliverHeldSettle(agentID, rootAgentID string, gen uint64) {
-	defer h.activityRefreshes.Done()
 	v, ok := h.activity.Load(agentID)
 	if !ok {
 		return
@@ -375,14 +386,15 @@ func (h *OutputHandler) publishStopMark(agentID, rootAgentID string) {
 	// The count this takes is the GOROUTINE's, which Shutdown joins. Without it the
 	// goroutine reads the registry and broadcasts after the caller closed the
 	// database. holdSettleLocked takes its count the same way.
-	if !h.beginActivityRefresh() {
+	rootAgentID = h.resolveRoot(agentID, rootAgentID)
+	finish := h.beginActivityRefresh(rootAgentID)
+	if finish == nil {
 		return
 	}
 	seq := h.activitySeq.Add(1)
 	go func() {
-		defer h.activityRefreshes.Done()
-		root := h.resolveRoot(agentID, rootAgentID)
-		h.refreshActivityFrom(agentID, root, h.backgroundTaskRows(root), seq, settleImmediate)
+		defer finish()
+		h.refreshActivityFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleImmediate)
 	}()
 }
 
@@ -405,12 +417,16 @@ func (h *OutputHandler) isTurnActiveFast(agentID string) bool {
 // invariant to hasOpenSpans, so the refresh is skipped; a concurrent
 // setTurnActive(false) still observes the span change under the tracker mutex.
 func (h *OutputHandler) publishSpanActivity(rootAgentID string, mode settleMode) {
-	if rootAgentID == "" || h.isTurnActiveFast(rootAgentID) || !h.beginActivityRefresh() {
+	if rootAgentID == "" || h.isTurnActiveFast(rootAgentID) {
+		return
+	}
+	finish := h.beginActivityRefresh(rootAgentID)
+	if finish == nil {
 		return
 	}
 	seq := h.activitySeq.Add(1)
 	go func() {
-		defer h.activityRefreshes.Done()
+		defer finish()
 		h.refreshActivityFrom(rootAgentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, mode)
 	}()
 }
@@ -430,7 +446,7 @@ func (h *OutputHandler) publishSpanActivity(rootAgentID string, mode settleMode)
 // entry per open tab.
 func (h *OutputHandler) CancelHeldSettles() {
 	h.activity.Range(func(_, v any) bool {
-		v.(*agentActivity).cancelSettle(h)
+		v.(*agentActivity).cancelSettle()
 		return true
 	})
 }
@@ -635,7 +651,7 @@ func (h *OutputHandler) removeActivityLocked(removal *activityRemoval) bool {
 		activity.mu.Unlock()
 		return false
 	}
-	activity.cancelSettleLocked(h)
+	activity.cancelSettleLocked()
 	activity.mu.Unlock()
 	if removal.deliver {
 		h.enqueueActivity(activity, removal.agentID, removal.rootAgentID, removal.inputs, removal.sequence, settleImmediate)
@@ -1099,7 +1115,7 @@ func (h *OutputHandler) enqueueActivity(st *agentActivity, agentID, rootAgentID 
 		// dead process. AFTER the ticket guard, never before -- an older refresh
 		// that cancels and then drops itself takes the settle with it, and the tab
 		// keeps a spinner for an agent whose process is gone.
-		st.cancelSettleLocked(h)
+		st.cancelSettleLocked()
 	}
 	if in.childID == "" && in.processAlive {
 		// Read open root spans under st.mu so this derivation stays atomic with
@@ -1114,7 +1130,7 @@ func (h *OutputHandler) enqueueActivity(st *agentActivity, agentID, rootAgentID 
 		// cancel that a wake, a subagent restart and a drained input queue all
 		// reach. The ticket guard above is what makes it safe: a stale reader
 		// cannot cancel a window a fresher one opened.
-		st.voidHeldSettleLocked(h)
+		st.voidHeldSettleLocked()
 		st.mu.Unlock()
 		return false
 	}
@@ -1161,7 +1177,7 @@ func (h *OutputHandler) enqueueActivity(st *agentActivity, agentID, rootAgentID 
 	// left behind is one the NEXT settle adopts without opening a window of its
 	// own. That settle then lands on somebody else's deadline, and setTurnActive
 	// drops the count it should have carried.
-	st.cancelSettleLocked(h)
+	st.cancelSettleLocked()
 	st.settlePending = false
 	// An activity publication retires no stop attempt. It does not confirm native delivery.
 	// A changed turn publication retires the previous scope in setTurnActive.
@@ -1339,21 +1355,23 @@ type turnActiveChange struct {
 func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) {
 	mutation := h.transcriptMutationMutex(rootAgentID)
 	mutation.Lock()
-	change := h.recordTurnActive(agentID, rootAgentID, active)
+	change := h.recordTurnActive(agentID, rootAgentID, agent.TurnState{Active: active})
 	mutation.Unlock()
 	h.finishTurnActive(change)
 }
 
 // recordTurnActive changes only activity inputs. The caller holds the root mutation lock.
-func (h *OutputHandler) recordTurnActive(agentID, rootAgentID string, active bool) turnActiveChange {
+func (h *OutputHandler) recordTurnActive(agentID, rootAgentID string, state agent.TurnState) turnActiveChange {
 	root := agentID == rootAgentID
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
-	changed := st.turnActive != active
+	active := state.Active
+	previous := h.scopeLocked(st, rootAgentID)
+	newSequence := active && state.TurnSequence != 0 && state.TurnSequence != previous.turnSequence
+	changed := st.turnActive != active || newSequence
 	stopped := st.stopRequestedLocked()
 	if changed {
-		previous := h.scopeLocked(st, rootAgentID)
-		st.scope = &activityScope{publisher: previous.publisher}
+		st.scope = &activityScope{publisher: previous.publisher, turnSequence: state.TurnSequence}
 		st.turnSteerable = false
 	}
 	scope := st.scope
@@ -1560,13 +1578,15 @@ func (h *OutputHandler) NoteAgentProcessExited(rootAgentID string, output agent.
 	clearedAgents := h.invalidateExitedProcessSessionInfo(rootAgentID, output)
 	h.resetAgentActivity(rootAgentID)
 	// Process exit can hold a lifecycle lock. Drain transport work outside that lock.
-	if len(clearedAgents) > 0 && h.beginActivityRefresh() {
-		go func() {
-			defer h.activityRefreshes.Done()
-			for _, agentID := range clearedAgents {
-				h.watcher.DrainAgentEvents(agentID)
-			}
-		}()
+	if len(clearedAgents) > 0 {
+		if finish := h.beginActivityRefresh(rootAgentID); finish != nil {
+			go func() {
+				defer finish()
+				for _, agentID := range clearedAgents {
+					h.watcher.DrainAgentEvents(agentID)
+				}
+			}()
+		}
 	}
 }
 
@@ -1668,29 +1688,34 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	// The field writes above run whatever the latch says, because
 	// AgentActivitySnapshot reads them and a process boundary must leave the
 	// entry truthful. Only the deferred refresh is refused: see publishStopMark.
-	if !h.beginActivityRefresh() {
+	finish := h.beginActivityRefresh(rootAgentID)
+	if finish == nil {
 		return
 	}
 	go func() {
-		defer h.activityRefreshes.Done()
+		defer finish()
 		h.refreshOwnedActivityTree(owner, settleImmediate)
 	}()
 }
 
-// beginActivityRefresh takes one count of the refresh group, and reports false
-// once shutdown began.
+// beginActivityRefresh tracks an admitted refresh until its finish function
+// runs. It returns nil after shutdown closes admission.
 //
 // The latch test and the Add share refreshLifecycleMu with SetShuttingDown, which
 // is what makes the Add happen-before the Wait that Shutdown runs afterwards. The
-// caller must pair a true answer with exactly one activityRefreshes.Done.
-func (h *OutputHandler) beginActivityRefresh() bool {
+// caller invokes the finish function exactly once.
+func (h *OutputHandler) beginActivityRefresh(rootAgentID string) func() {
 	h.refreshLifecycleMu.Lock()
 	defer h.refreshLifecycleMu.Unlock()
 	if h.shuttingDown.Load() {
-		return false
+		return nil
 	}
 	h.activityRefreshes.Add()
-	return true
+	finishRoot := h.activityByRoot.begin(rootAgentID)
+	return func() {
+		finishRoot()
+		h.activityRefreshes.Done()
+	}
 }
 
 // WaitActivityRefreshes joins the deferred tree refreshes resetAgentActivity
@@ -1705,7 +1730,7 @@ func (h *OutputHandler) WaitActivityRefreshes() {
 // the processes stop and before it cancels the background-task context, so no
 // refresh reads the registry or broadcasts after the caller closes the
 // database.
-func (h *OutputHandler) waitActivityRefreshesUntil(deadline *drain.Deadline) {
-	deadline.Wait(h.activityRefreshes.DoneChan(),
+func (h *OutputHandler) waitActivityRefreshesUntil(deadline *drain.Deadline) bool {
+	return deadline.Wait(h.activityRefreshes.DoneChan(),
 		"shutdown deadline passed while activity refreshes still ran; abandoning them")
 }

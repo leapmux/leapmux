@@ -31,6 +31,8 @@ type kimiConversationOutput struct {
 	activeTurnID  string
 	latestOrdinal int64
 	snapshotReady bool
+	// A child lifetime stays writable while a native reply needs history.
+	replyPublications int
 	// TODO(https://github.com/leapmux/leapmux/issues/699): Seed live span geometry in TranscriptScopeFor so Fast-Agent and Kimi keep cross-turn colors without shadow open-span slices.
 	openLiveSpans []kimiOpenLiveSpan
 }
@@ -59,17 +61,19 @@ func (output *kimiConversationOutput) removeOpenLiveSpan(spanID string) {
 }
 
 type kimiConversationTurnOutput struct {
-	writer     *kimiConversationRecordWriter
-	scope      agent.TranscriptScope
-	progress   agent.TranscriptPublication
-	requests   map[string]struct{}
-	results    map[string]struct{}
-	completed  bool
-	historical bool
-	steerable  bool
-	userTurn   bool
-	usageStep  int64
-	retries    map[int64]*kimiConversationRetryOutput
+	writer             *kimiConversationRecordWriter
+	scope              agent.TranscriptScope
+	progress           agent.TranscriptPublication
+	requests           map[string]struct{}
+	results            map[string]struct{}
+	completed          bool
+	historical         bool
+	steerable          bool
+	userTurn           bool
+	usageStep          int64
+	replyInputs        map[string]*kimiPromptSubmission
+	replyLookupStarted bool
+	retries            map[int64]*kimiConversationRetryOutput
 	// Native execution starts after model generation completes. Text from that
 	// step keeps its own completed outcome if a later tool is interrupted.
 	executionSteps map[int64]struct{}
@@ -203,10 +207,16 @@ func (a *Agent) applyConversationFrame(run *kimiRun, output *kimiConversationOut
 	if !changed && !conversationProjectionPending(output.document, frame) {
 		return nil
 	}
+	defer a.refreshExactControls(run)
 	a.closeWithdrawnConversationSpans(run, output, frame, previous)
 	switch frame.Type {
 	case "turns":
 		output.snapshotReady = true
+		for id, publication := range output.turns {
+			if output.document.turns[id] == nil {
+				a.retireExactReplyInputs(run, publication)
+			}
+		}
 		a.withdrawAbsentConversationInvocations(run, output.document)
 		turns := slices.Collect(maps.Values(output.document.turns))
 		slices.SortFunc(turns, func(left, right *kimiConversationTurnState) int {
@@ -285,6 +295,9 @@ func (a *Agent) applyConversationFrame(run *kimiRun, output *kimiConversationOut
 			if kimiConversationPromptRecordRole(run.agentID, *item) != "" {
 				itemState.projectionPending = !a.persistConversationItems(run, turn, publication, frame, kimiConversationSelection{items: []string{itemID}})
 			}
+			if !itemState.projectionPending && !turn.projectionPending {
+				a.scheduleExactReply(run, turn, publication)
+			}
 			return nil
 		}
 		if item.Type == contracts.KimiConversationItemKindToolCall || item.Status == contracts.KimiConversationStatusEnded {
@@ -302,6 +315,11 @@ func (a *Agent) applyConversationFrame(run *kimiRun, output *kimiConversationOut
 			itemState.projectionPending = !a.persistConversationItems(run, turn, publication, frame, selection)
 		}
 	case "turns.removed":
+		for _, turnID := range frame.TurnIDs {
+			if publication := output.turns[turnID]; publication != nil {
+				a.retireExactReplyInputs(run, publication)
+			}
+		}
 		a.withdrawAbsentConversationInvocations(run, output.document)
 		if output.activeTurnID != "" && slices.Contains(frame.TurnIDs, output.activeTurnID) {
 			a.finishWithdrawnConversationTurn(run, output.activeTurnID)
@@ -377,12 +395,16 @@ func (a *Agent) projectConversationTurn(run *kimiRun, turn *kimiConversationTurn
 	}
 	ended := turn.header.Status == contracts.KimiConversationStatusEnded
 	turn.projectionPending = !a.persistConversationItems(run, turn, publication, frame, kimiConversationSelection{items: turn.order, endTurn: ended, flushText: ended})
+	if !turn.projectionPending {
+		a.scheduleExactReply(run, turn, publication)
+	}
 }
 
 func (a *Agent) observeConversationPrompt(run *kimiRun, turn *kimiConversationTurnState, publication *kimiConversationTurnOutput, item kimiConversationItem) {
 	for _, promptID := range item.PromptIDs {
 		if submission := a.ownedPrompt(run, run.conversation.document.sessionID, promptID); submission != nil {
 			submission.observed = true
+			a.observeExactPrompt(run, turn, publication, submission, item)
 			a.releaseChildPromptSubmission(submission)
 		}
 	}

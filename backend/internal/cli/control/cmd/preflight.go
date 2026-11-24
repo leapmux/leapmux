@@ -9,6 +9,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
@@ -45,7 +46,7 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 	if extra != "" {
 		msg = msg + " " + extra
 	}
-	return control.EmitError("invalid_request", msg)
+	return cli.Usagef("%s", msg)
 }
 
 // maybePreflightWorker verifies that workerID identifies a worker the caller
@@ -69,8 +70,8 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 // not having it.
 //
 // That is not hypothetical. Every worker-spawned agent inherits
-// $LEAPMUX_CONTROL_WORKER_ID, which BindEntityFlags binds as the
-// --worker-id default -- so this preflight runs on essentially every
+// $LEAPMUX_CONTROL_WORKER_ID, which the session takes as the Worker of
+// the calling tab -- so this preflight runs on essentially every
 // `leapmux control` command an agent issues, over a delegation bearer
 // the hub limits with `auth.CeilingFor(BearerKindDelegation)`. That
 // ceiling admits worker:read, so GetWorker usually answers -- but the
@@ -83,8 +84,8 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 // failure to connect Internal and a CodePermissionDenied test could not fire on
 // the transport where the denial actually happens. That flattening is fixed
 // (see controlipc.relayError), so the check can be narrow again: a denial is
-// expected and tolerated, while a transport failure surfaces as
-// preflight_failed instead of silently downgrading the check to "unvalidated".
+// expected and tolerated, while a transport failure surfaces with its own
+// code instead of silently downgrading the check to "unvalidated".
 //
 // The error of the lookup is never emitted as it is: this function decides how
 // to report it, so the command prints one envelope.
@@ -98,13 +99,13 @@ func maybePreflightWorker(ctx context.Context, c *control.Client, workerID strin
 	case err == nil:
 		return nil
 	case connect.CodeOf(err) == connect.CodeNotFound:
-		return control.EmitError("not_found", "no such worker: "+workerID)
+		return cli.Newf(cli.CodeNotFound, "no such worker: %s", workerID)
 	case isPreflightDenied(err):
 		// The designed outcome for a delegation bearer: an advisory check
 		// this caller is not allowed to run must not fail the command.
 		return nil
 	default:
-		return control.EmitErrorWith("preflight_failed", err)
+		return err
 	}
 }
 
@@ -128,18 +129,18 @@ func isPreflightDenied(err error) bool {
 // the CRDT bootstrap — no extra round-trip.
 func preflightTile(state *leapmuxv1.UserMaterialized, workspaceID, tileID string) error {
 	if tileID == "" {
-		return control.EmitError("invalid_request", "--tile-id is required")
+		return cli.Usagef("no tile given")
 	}
 	rec, ok := state.GetNodes()[tileID]
 	if !ok || rec == nil {
-		return control.EmitError("not_found", "no such tile: "+tileID)
+		return cli.Newf(cli.CodeNotFound, "no such tile: %s", tileID)
 	}
 	if !crdt.HLCIsZero(rec.GetTombstoneAt()) {
-		return control.EmitError("not_found", "tile is tombstoned: "+tileID)
+		return cli.Newf(cli.CodeNotFound, "tile is tombstoned: %s", tileID)
 	}
 	if workspaceID != "" {
 		if ws := nodeWorkspaceFromState(state, tileID); ws != workspaceID {
-			return control.EmitError("not_found", fmt.Sprintf("tile %s does not belong to workspace %s", tileID, workspaceID))
+			return cli.Newf(cli.CodeNotFound, "tile %s does not belong to workspace %s", tileID, workspaceID)
 		}
 	}
 	return nil
@@ -150,29 +151,23 @@ func preflightTile(state *leapmuxv1.UserMaterialized, workspaceID, tileID string
 // placement check (callers that don't know the workspace pass "").
 func preflightTab(state *leapmuxv1.UserMaterialized, workspaceID, tabID string, tabType leapmuxv1.TabType) error {
 	if tabID == "" {
-		return control.EmitError("invalid_request", "--tab-id is required")
+		return cli.Usagef("no tab given")
 	}
 	rec, ok := state.GetTabs()[tabID]
 	if !ok || rec == nil {
-		return control.EmitError("not_found", "no such tab: "+tabID)
+		return cli.Newf(cli.CodeNotFound, "no such tab: %s", tabID)
 	}
 	if !crdt.HLCIsZero(rec.GetTombstoneAt()) {
-		return control.EmitError("not_found", "tab is tombstoned: "+tabID)
+		return cli.Newf(cli.CodeNotFound, "tab is tombstoned: %s", tabID)
 	}
 	if tabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED && rec.GetTabType() != tabType {
-		return control.EmitError(
-			"invalid_request",
-			fmt.Sprintf("tab %s has type %s; expected %s",
-				tabID, tabTypeName(rec.GetTabType()), tabTypeName(tabType)),
-		)
+		return cli.Usagef("tab %s has type %s; expected %s",
+			tabID, tabTypeName(rec.GetTabType()), tabTypeName(tabType))
 	}
 	if workspaceID != "" {
 		tileID := rec.GetTileId().GetValue()
 		if ws := nodeWorkspaceFromState(state, tileID); ws != workspaceID {
-			return control.EmitError(
-				"not_found",
-				fmt.Sprintf("tab %s does not belong to workspace %s", tabID, workspaceID),
-			)
+			return cli.Newf(cli.CodeNotFound, "tab %s does not belong to workspace %s", tabID, workspaceID)
 		}
 	}
 	return nil

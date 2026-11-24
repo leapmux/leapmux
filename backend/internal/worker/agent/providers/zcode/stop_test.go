@@ -47,7 +47,7 @@ func TestZCodeStop_ACancelledApprovalBeforeTheStopReplyEndsTheTurnAsInterrupted(
 			done := make(chan error, 1)
 			go func() {
 				if raw {
-					done <- a.SendRawInput([]byte(`{"id":31,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+					done <- a.SendRawInput(agent.RawInput{Data: []byte(`{"id":31,"method":"session/stop","params":{"sessionId":"sess-1"}}`)})
 				} else {
 					done <- a.Interrupt(agent.StopContext{})
 				}
@@ -186,7 +186,9 @@ func TestRawZCodeStopPreservesBytesAndSignedIntegerIDs(t *testing.T) {
 			raw := []byte(fmt.Sprintf(" \t{\"id\":%d,\"method\":\"session/stop\",\"params\":{\"sessionId\":\"sess-1\"},\"extra\":0} ", requestID))
 			var ignored atomic.Int32
 			done := make(chan error, 1)
-			go func() { done <- a.SendRawInput(raw, agent.NewStopContext(func() { ignored.Add(1) })) }()
+			go func() {
+				done <- a.SendRawInput(agent.RawInput{Data: raw, Stop: agent.NewStopContext(func() { ignored.Add(1) })})
+			}()
 			assert.Equal(t, append(bytes.Clone(raw), '\n'), receiveZCodeStopFrame(t, input))
 			replyZCodeStop(a, requestID, `{}`)
 			require.NoError(t, <-done)
@@ -213,7 +215,7 @@ func TestRawZCodeStopRejectsInvalidIDsAndSessionsBeforeWriting(t *testing.T) {
 		t.Run(raw, func(t *testing.T) {
 			t.Parallel()
 			a, input := newZCodeStopAgent(t)
-			require.Error(t, a.SendRawInput([]byte(raw), agent.StopContext{}))
+			require.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(raw)}))
 			assert.Empty(t, input.frames)
 			assert.False(t, a.stopWindow.armed())
 		})
@@ -226,7 +228,7 @@ func TestRawZCodeStopRejectsAnInFlightRequestID(t *testing.T) {
 	channel, release, err := a.Register(int64(0))
 	require.NoError(t, err)
 	defer release()
-	err = a.SendRawInput([]byte(`{"id":0,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+	err = a.SendRawInput(agent.RawInput{Data: []byte(`{"id":0,"method":"session/stop","params":{"sessionId":"sess-1"}}`)})
 	require.ErrorContains(t, err, "pending reply")
 	assert.Empty(t, input.frames)
 	require.True(t, a.Deliver(0, json.RawMessage(`{"id":0,"result":{}}`)))
@@ -243,7 +245,7 @@ func TestRawZCodeStopRetainsNativeRejectionAndWriteFailure(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			go func() {
-				done <- a.SendRawInput([]byte(`{"id":9,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+				done <- a.SendRawInput(agent.RawInput{Data: []byte(`{"id":9,"method":"session/stop","params":{"sessionId":"sess-1"}}`)})
 			}()
 			if failure == "native" {
 				receiveZCodeStopFrame(t, input)
@@ -272,7 +274,7 @@ func TestZCodeStopDoesNotOpenAWindowForAReplacementTurn(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				if raw {
-					done <- a.SendRawInput([]byte(`{"id":4,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+					done <- a.SendRawInput(agent.RawInput{Data: []byte(`{"id":4,"method":"session/stop","params":{"sessionId":"sess-1"}}`)})
 				} else {
 					done <- a.Interrupt(agent.StopContext{})
 				}
@@ -329,7 +331,7 @@ func TestRawZCodeStopRejectsAReplyWithoutAResultOrError(t *testing.T) {
 	a, input := newZCodeStopAgent(t)
 	done := make(chan error, 1)
 	go func() {
-		done <- a.SendRawInput([]byte(`{"id":12,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+		done <- a.SendRawInput(agent.RawInput{Data: []byte(`{"id":12,"method":"session/stop","params":{"sessionId":"sess-1"}}`)})
 	}()
 	receiveZCodeStopFrame(t, input)
 	a.HandleOutput([]byte(`{"id":12}`))
@@ -655,7 +657,7 @@ func TestZCodeStop_ReceiptTracksAProvisionalOwnerThroughNativeAdoption(t *testin
 			done := make(chan error, 1)
 			go func() {
 				if raw {
-					done <- a.SendRawInput([]byte(`{"id":-31,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+					done <- a.SendRawInput(agent.RawInput{Data: []byte(`{"id":-31,"method":"session/stop","params":{"sessionId":"sess-1"}}`)})
 				} else {
 					done <- a.Interrupt(agent.StopContext{})
 				}
@@ -687,7 +689,7 @@ func TestZCodeStop_OldCompactionReceiptCannotStopItsSuccessor(t *testing.T) {
 			stop := make(chan error, 1)
 			go func() {
 				if raw {
-					stop <- a.SendRawInput([]byte(`{"id":-31,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+					stop <- a.SendRawInput(agent.RawInput{Data: []byte(`{"id":-31,"method":"session/stop","params":{"sessionId":"sess-1"}}`)})
 				} else {
 					stop <- a.Interrupt(agent.StopContext{})
 				}

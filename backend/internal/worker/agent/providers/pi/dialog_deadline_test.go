@@ -40,6 +40,7 @@ func TestPiDialogIsWithdrawnWhenTheDeadlinePiStatedPasses(t *testing.T) {
 	a, sink, output, ctx, clock := newPiDeadlineFixture(t)
 	a.handlePiExtensionUIRequest([]byte(piTimedConfirm))
 	require.Len(t, sink.PublishedControls(), 1)
+	agenttest.AssertPublishedControlKeys(t, piProvider{}, sink)
 
 	clock.Advance(30*time.Second - time.Millisecond).MustWait(ctx)
 	assert.Empty(t, sink.CanceledControls(), "the deadline has not passed")
@@ -52,7 +53,7 @@ func TestPiAnsweredDialogIsNotWithdrawnAtItsDeadline(t *testing.T) {
 	t.Parallel()
 	a, sink, _, ctx, clock := newPiDeadlineFixture(t)
 	a.handlePiExtensionUIRequest([]byte(piTimedConfirm))
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`)}))
 
 	clock.Advance(time.Minute).MustWait(ctx)
 	assert.Empty(t, sink.CanceledControls())
@@ -100,7 +101,7 @@ func TestPiQuestionDialogThatTimedOutIsForgotten(t *testing.T) {
 	a.Mu.Unlock()
 	assert.False(t, remembered)
 	late := `{"type":"extension_ui_response","id":"select","value":"My custom answer"}`
-	require.NoError(t, a.SendRawInput([]byte(late), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(late)}))
 	assert.Equal(t, late+"\n", output.String(), "no custom-answer exchange starts for a dialog Pi no longer waits for")
 }
 

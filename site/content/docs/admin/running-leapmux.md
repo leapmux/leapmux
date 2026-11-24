@@ -9,7 +9,7 @@ Use the `leapmux` command to run a personal workspace, a shared Hub, or a Worker
 
 If you only want to try LeapMux on your own machine, the desktop app or solo mode is all you need. To set up a shared service for a team, run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends, see [Configuration](/docs/admin/configuration/).
 
-Start each mode with `leapmux <mode> start`, and stop it with `leapmux <mode> stop`. `start` runs LeapMux in the background as a service, which keeps running after you log out and starts again after a restart of the computer. [Starting and Stopping](/docs/admin/starting-and-stopping/) covers login and boot startup, status, logs, and removal. In a container, the image runs `leapmux <mode> run` instead, in the foreground; see [Running under Docker](#running-under-docker).
+Start each mode with `leapmux daemon <mode> start` (or `leapmux up` for `solo`), and stop it with `leapmux daemon <mode> stop` (or `leapmux down`). `start` runs LeapMux in the background as a service, which keeps running after you log out and starts again after a restart of the computer. [Starting and Stopping](/docs/admin/starting-and-stopping/) covers login and boot startup, status, logs, and removal. In a container, the image runs `leapmux daemon <mode> run` instead, in the foreground; see [Running under Docker](#running-under-docker).
 
 ## Run modes at a glance
 
@@ -45,7 +45,7 @@ A solo hub still has no sign-up, no passkeys, no account recovery and no email: 
 Solo mode runs a personal Hub and Worker with no required configuration. By default, only your own machine can connect. Set the first password when you open it in a browser. The desktop app connects without a sign-in.
 
 ```bash
-leapmux solo start
+leapmux daemon solo start
 # Then open http://127.0.0.1:4327
 ```
 
@@ -55,11 +55,11 @@ Use these flags to customize solo mode:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `127.0.0.1:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory |
-| `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
-| `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
-| `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
+| `--listen` | `127.0.0.1:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
+| `--config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
 For all supported flags and runtime settings, see [Configuration](/docs/admin/configuration/).
 
@@ -70,29 +70,29 @@ The desktop app runs solo mode without opening a network port by default. See [I
 Hub mode runs only the Hub: authentication, workspace management, Worker registration, and the encrypted relay between Frontends and Workers. It does **not** run a Worker — Workers connect separately (see [Running Workers](#running-workers)). The Hub binds `:4327` on all interfaces by default and requires real authentication.
 
 ```bash
-leapmux hub start
+leapmux daemon hub start
 ```
 
-A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and every path shows the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/admin/recover/), which refuses once any admin exists. Then log in as that administrator.
+A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and every path shows the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover create-admin`](/docs/admin/recover/), which refuses once any admin exists. Then log in as that administrator.
 
-Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
+Enable sign-up with `leapmux admin settings set signup_enabled true`, or create each account with `leapmux admin user create`. The most important Hub flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `:4327` plus a local socket address | A TCP address or local socket address. Repeat the flag to listen on multiple addresses. |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
-| `-storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
-| `-log-level` | `info` | Log level |
-| `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
+| `--listen` | `:4327` plus a local socket address | A TCP address or local socket address. Repeat the flag to listen on multiple addresses. |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
+| `--storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
+| `--log-level` | `info` | Log level |
+| `--config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 
-Set listening addresses and database connections at startup. Change account, email, session, timeout, and per-user limit settings on the running Hub with `leapmux control admin settings`:
+Set listening addresses and database connections at startup. Change account, email, session, timeout, and per-user limit settings on the running Hub with `leapmux admin settings`:
 
 ```bash
-leapmux control admin settings set signup_enabled true
-leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
+leapmux admin settings set signup_enabled true
+leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
 ```
 
-By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference is in [Configuration](/docs/admin/configuration/); the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter covers the settings table.
+By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `--storage-type` and the matching `*-dsn` flag. The full reference is in [Configuration](/docs/admin/configuration/); the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter covers the settings table.
 
 {{< callout type="info" >}}
 For HTTPS access, put a reverse proxy in front of the Hub. See [Reverse Proxy](/docs/admin/reverse-proxy/).
@@ -106,10 +106,10 @@ Register a Worker once, then start it:
 
 ```bash
 # 1. Register, with a key from the Register worker dialog of the Hub.
-leapmux worker register --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
+leapmux daemon worker register --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
 
 # 2. Start it as a background service.
-leapmux worker start
+leapmux daemon worker start
 ```
 
 The registration saves the Hub URL and the Worker's credentials in its data directory, and every later command reads them. So `start` takes no `--hub` and no `--registration-key`. [Register a Worker](/docs/admin/managing-workers/#register-a-worker) covers the key, the failures, and how to register a Worker again.
@@ -118,12 +118,12 @@ These flags customize a running Worker:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-name` | hostname | Worker display name |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
-| `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
-| `-use-login-shell` | `true` | Wrap agent invocation in your login shell |
-| `-log-level` | `info` | Log level |
-| `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
+| `--name` | hostname | Worker display name |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
+| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
+| `--use-login-shell` | `true` | Wrap agent invocation in your login shell |
+| `--log-level` | `info` | Log level |
+| `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 
 For approving Workers, verifying their identities, and choosing a Worker for a tab, see [Managing Workers](/docs/admin/managing-workers/).
 
@@ -132,7 +132,7 @@ For approving Workers, verifying their identities, and choosing a Worker for a t
 Use dev mode to run a Hub and Worker together with multiple user accounts. It listens on all interfaces and requires sign-in. Choose this mode when you want both services in one container.
 
 ```bash
-leapmux dev start
+leapmux daemon dev start
 ```
 
 Open the Hub in your browser and complete `/setup` to create the first administrator. The bundled Worker becomes available after setup.
@@ -141,13 +141,13 @@ Use these flags to customize dev mode:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
-| `-data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
-| `-log-level` | `info` | Log level |
-| `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
-| `-config` | `~/.config/leapmux/dev/dev.yaml` | Config file path |
+| `--listen` | `:4327` plus a local socket address | Listen address, repeatable: a TCP address or a local socket address (`unix:`, `npipe:`) |
+| `--data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
+| `--log-level` | `info` | Log level |
+| `--encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
+| `--config` | `~/.config/leapmux/dev/dev.yaml` | Config file path |
 
-Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/admin/configuration/)).
+Like solo, dev also accepts the SQLite tuning flags plus `--dev-frontend` (see [Configuration](/docs/admin/configuration/)).
 
 Dev mode enables sign-up by default unless you override the `signup_enabled` setting. For account and session settings, see [Configuration](/docs/admin/configuration/).
 
@@ -217,7 +217,7 @@ Register the Worker once in a temporary container, then run the Worker container
 # 1. Register. This container exits when the registration completes.
 docker run --rm --entrypoint /usr/local/bin/leapmux \
   -v leapmux-worker-data:/data ghcr.io/leapmux/leapmux:latest \
-  worker register --data-dir /data/worker \
+  daemon worker register --data-dir /data/worker \
   --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
 
 # 2. Run the Worker with the saved credentials.
@@ -226,7 +226,7 @@ docker run -d --name leapmux-worker --restart unless-stopped \
   ghcr.io/leapmux/leapmux:latest
 ```
 
-Keep the **Register worker** dialog open until the first command finishes. The Worker container runs `leapmux worker run` and reads the saved credentials from `/data/worker`, so it needs no registration key and no Hub URL. Docker restarts the container, so do not use `start` or `enable` inside it. See [Register a Worker](/docs/admin/managing-workers/#register-a-worker) for a registration that fails or stops.
+Keep the **Register worker** dialog open until the first command finishes. The Worker container runs `leapmux daemon worker run` and reads the saved credentials from `/data/worker`, so it needs no registration key and no Hub URL. Docker restarts the container, so do not use `start` or `enable` inside it. See [Register a Worker](/docs/admin/managing-workers/#register-a-worker) for a registration that fails or stops.
 
 ### Restart policy
 
@@ -243,7 +243,7 @@ For details about encryption and Worker identity verification, see [Security & T
 LeapMux runs database migrations automatically on startup, for both the Hub and each Worker, so there is no separate migration command to run during a routine upgrade.
 
 - **Docker:** Pull a newer image tag (a pinned `:<version>`, `:<major>`, or `:latest`) and recreate the container against the same `/data` volume. Migrations run on the next start.
-- **CLI binary:** Download the newer server tarball or zip from the [Releases page](https://github.com/leapmux/leapmux/releases). Replace the `leapmux` binary at the path that the service runs, then run `leapmux <mode> restart`.
+- **CLI binary:** Download the newer server tarball or zip from the [Releases page](https://github.com/leapmux/leapmux/releases). Replace the `leapmux` binary at the path that the service runs, then run `leapmux daemon <mode> restart`.
 - **Desktop app:** Download and install the newer artifact from the Releases page.
 
 {{< callout >}}

@@ -50,6 +50,23 @@ func zcodeAccountTestAgent(t *testing.T, configJSON string, store zcodeCredentia
 	return a, api
 }
 
+// The account scope hashes its parts as JSON.stringify writes them.
+// Missing team, token, and session revision fields each use null.
+func TestZCodeAccountScope_HashesItsPartsAsJavaScriptJSON(t *testing.T) {
+	t.Parallel()
+	var rule zcodeBuiltinProviderRule
+	rule.Config.Access.AccountType = "zai"
+	rule.Config.Access.Mode = "<plan>&"
+	binding := zcodeAccountBinding{rule: rule}
+	team := &zcodeTeamProject{organizationID: "org", projectID: zcodeJSONProbe, productID: "\u2028"}
+	assert.Equal(t,
+		zcodeSHA256Hex(`["zai","<plan>&",["org",`+zcodeJSONProbeJSON+`,"`+"\u2028"+`"],`+zcodeJSONProbeJSON+`,"jwt`+"\u2029"+`","revision-1"]`),
+		zcodeAccountScope(binding, team, zcodeAccountSession{accessToken: zcodeJSONProbe, zcodeJWT: "jwt\u2029", sessionRevision: "revision-1"}))
+	assert.Equal(t,
+		zcodeSHA256Hex(`["zai","<plan>&",null,`+zcodeJSONProbeJSON+`,null,null]`),
+		zcodeAccountScope(binding, nil, zcodeAccountSession{accessToken: zcodeJSONProbe}))
+}
+
 func TestZCodeAccountRequestAuth_MintsACodingPlanTokenFromTheSignIn(t *testing.T) {
 	t.Parallel()
 

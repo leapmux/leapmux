@@ -4,6 +4,7 @@ package leapmux.v1;
 import "google/protobuf/timestamp.proto";
 import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/storage.proto";
 
 // WorkspaceService manages workspace metadata + read-only tab views.
 // Layout / tab mutations live on UserCRDT (see user_ops.proto). The
@@ -70,6 +71,82 @@ service WorkspaceService {
   rpc LocateTile(LocateTileRequest) returns (LocateTileResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
   }
+  rpc ReadLayoutEvents(ReadLayoutEventsRequest) returns (ReadLayoutEventsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
+}
+
+// An empty workspace selects the authenticated account. A cursor belongs to
+// its original scope. A request without a cursor starts at the committed tail.
+message ReadLayoutEventsRequest {
+  string workspace_id = 1;
+  bytes after_cursor = 2;
+  uint32 wait_millis = 3;
+}
+
+message ReadLayoutEventsResponse {
+  string journal_id = 1;
+  int64 after_sequence = 2;
+  int64 high_water_sequence = 3;
+  bytes cursor = 4;
+  repeated LayoutEventRecord records = 5;
+  LayoutEventGap gap = 6;
+  int64 scanned_sequence = 7;
+  bytes scanned_cursor = 8;
+  LayoutEventEnd end = 9;
+}
+
+message LayoutEventEnd {
+  int64 final_sequence = 1;
+}
+
+message LayoutEventGap {
+  int64 resume_after_sequence = 1;
+  bytes cursor = 2;
+}
+
+message LayoutEventRecord {
+  int64 sequence = 1;
+  int64 observed_unix_millis = 2;
+  LayoutEventFact fact = 3;
+  bytes cursor = 4;
+}
+
+message LayoutEventFact {
+  oneof event {
+    LayoutTabChange tab = 1;
+    LayoutWorkspaceChange workspace = 2;
+    LayoutEventLoss loss = 3;
+  }
+}
+
+// An unreadable outbox row can affect any workspace in the account.
+message LayoutEventLoss {}
+
+enum LayoutTabChangeKind {
+  LAYOUT_TAB_CHANGE_KIND_UNSPECIFIED = 0;
+  LAYOUT_TAB_CHANGE_KIND_OPENED = 1;
+  LAYOUT_TAB_CHANGE_KIND_MOVED = 2;
+  LAYOUT_TAB_CHANGE_KIND_CLOSED = 3;
+}
+
+message LayoutTabChange {
+  TabIdent tab = 1;
+  LayoutTabChangeKind kind = 2;
+  LayoutTabPlacement before = 3;
+  LayoutTabPlacement after = 4;
+}
+
+message LayoutTabPlacement {
+  string workspace_id = 1;
+  string tile_id = 2;
+  string worker_id = 3;
+}
+
+message LayoutWorkspaceChange {
+  string workspace_id = 1;
+  WorkspaceLifecycleOp operation = 2;
+  string title = 3;
 }
 
 // --- Workspace CRUD ---

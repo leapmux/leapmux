@@ -14,18 +14,21 @@ import (
 
 func TestMCPElicitationApprovalScope(t *testing.T) {
 	request := json.RawMessage(`{"id":"001","method":"mcpServer/elicitation/request","params":{"_meta":{"codex_approval_kind":"mcp_tool_call","persist":["session"]}}}`)
+	// The Worker keys the request by its JSON-RPC id, and each answer addresses
+	// that key.
+	const requestID = `jsonrpc:"001"`
 	for _, scope := range []string{"session", "always", "unknown"} {
-		reply, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": "001", "response": map[string]any{"action": "accept", "content": map[string]any{}, "_meta": map[string]string{"persist": scope}}}})
+		reply, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": requestID, "response": map[string]any{"action": "accept", "content": map[string]any{}, "_meta": map[string]string{"persist": scope}}}})
 		require.NoError(t, err)
-		result, claimed := providerkit.ResolveMCPElicitationResponse(agent.ControlResponseContext{RequestPayload: request, ResponseContent: reply}, contracts.MCPElicitationMethodCodex, codexMCPElicitationMeta)
+		result, claimed := providerkit.ResolveMCPElicitationResponse(agenttest.ControlResponseContextOf(request, requestID, agent.ControlAnswer{Content: reply}), contracts.MCPElicitationMethodCodex, codexMCPElicitationMeta)
 		require.True(t, claimed)
 		assert.Equal(t, scope != "session", result.Withhold)
 		if !result.Withhold {
 			assert.Contains(t, string(result.Content), `"_meta":{"persist":"session"}`)
 		}
 	}
-	reply := []byte(`{"response":{"request_id":"001","response":{"action":"decline","content":{"private":"unused"},"_meta":{"persist":"always"}}}}`)
-	result, claimed := providerkit.ResolveMCPElicitationResponse(agent.ControlResponseContext{RequestPayload: request, ResponseContent: reply}, contracts.MCPElicitationMethodCodex, codexMCPElicitationMeta)
+	reply := []byte(`{"response":{"request_id":"jsonrpc:\"001\"","response":{"action":"decline","content":{"private":"unused"},"_meta":{"persist":"always"}}}}`)
+	result, claimed := providerkit.ResolveMCPElicitationResponse(agenttest.ControlResponseContextOf(request, requestID, agent.ControlAnswer{Content: reply}), contracts.MCPElicitationMethodCodex, codexMCPElicitationMeta)
 	require.True(t, claimed)
 	require.False(t, result.Withhold)
 	assert.NotContains(t, string(result.Content), "private")

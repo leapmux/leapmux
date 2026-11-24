@@ -32,9 +32,9 @@ func (p stopTargetProvider) InterruptChild(childKey string, stop agent.StopConte
 	return nil
 }
 
-func (p stopTargetProvider) SendRawInput(data []byte, stop agent.StopContext) error {
-	*p.inputs = append(*p.inputs, string(data))
-	stop.ReportIgnored()
+func (p stopTargetProvider) SendRawInput(input agent.RawInput) error {
+	*p.inputs = append(*p.inputs, string(input.Data))
+	input.Stop.ReportIgnored()
 	return nil
 }
 
@@ -90,7 +90,7 @@ func TestStopTargetKeepsANonComparableRegistration(t *testing.T) {
 	stop := agent.NewStopContext(func() { ignored++ })
 	require.NoError(t, target.Interrupt(stop))
 	require.NoError(t, target.InterruptChild("child", stop))
-	require.NoError(t, target.SendRawInput([]byte(" unchanged bytes \n"), stop))
+	require.NoError(t, target.SendRawInput(agent.RawInput{Data: []byte(" unchanged bytes \n"), Stop: stop}))
 	assert.Equal(t, 3, ignored)
 	m.PutAgentForTest("value", stopTargetProvider{inputs: &newInputs, values: []string{"replacement"}})
 	assert.False(t, target.IsCurrent())
@@ -109,7 +109,7 @@ func TestStopTargetRejectsAnAbsentRegistration(t *testing.T) {
 	assert.False(t, target.EscalationReady())
 	assert.ErrorIs(t, target.Interrupt(agent.StopContext{}), agent.ErrAgentNotFound)
 	assert.ErrorIs(t, target.InterruptChild("child", agent.StopContext{}), agent.ErrAgentNotFound)
-	assert.ErrorIs(t, target.SendRawInput(nil, agent.StopContext{}), agent.ErrAgentNotFound)
+	assert.ErrorIs(t, target.SendRawInput(agent.RawInput{}), agent.ErrAgentNotFound)
 	m.PutAgentForTest("no-child", agenttest.IdleAgent{})
 	target, err = m.CaptureStopTarget("no-child")
 	require.NoError(t, err)

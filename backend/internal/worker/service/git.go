@@ -224,7 +224,7 @@ func readBatchBlob(r io.Reader, limit int64) (gitBlob, error) {
 // registerGitHandlers registers handlers for git operations on the local filesystem.
 func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitInfoRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -287,7 +287,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitWorkingTreeStateRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -308,7 +308,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitFileStatusRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -403,7 +403,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ReadGitFileRequest, sender channel.ResponseWriter) {
-		absPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		absPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -480,7 +480,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListGitBranchesRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -509,7 +509,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListGitWorktreesRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -526,6 +526,34 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, &leapmuxv1.ListGitWorktreesResponse{
 			Worktrees: worktrees,
 		})
+	})
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitWorktreeRequest, sender channel.ResponseWriter) {
+		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		selector := r.GetSelector()
+		if target, ok := r.GetTarget().(*leapmuxv1.GetGitWorktreeRequest_Self); ok {
+			if !target.Self || r.GetRepoDir() != "" {
+				sendInvalidArgument(sender, "self takes its repository from the calling tab")
+				return
+			}
+			var err error
+			selector, err = svc.resolveCallingWorktree(ctx, caller)
+			if err != nil {
+				sendValidationError(sender, err)
+				return
+			}
+		}
+		info, worktree, err := svc.resolveGitWorktree(ctx, r.GetRepoDir(), selector)
+		if err != nil {
+			var ambiguity *worktreeAmbiguity
+			if errors.As(err, &ambiguity) {
+				sendProtoResponse(sender, &leapmuxv1.GetGitWorktreeResponse{AmbiguousPaths: ambiguity.paths})
+				return
+			}
+			sendValidationError(sender, err)
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.GetGitWorktreeResponse{Worktree: gitWorktreeProto(worktree), RepoRoot: info.RepoRoot})
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, dispatchTracked, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectLastTabCloseRequest, sender channel.ResponseWriter) {
@@ -609,7 +637,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectBranchDeletionProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectBranchDeletionRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -631,7 +659,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectWorktreeRemovalProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectWorktreeRemovalRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -651,7 +679,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectBranchChangeProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectBranchChangeRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -671,7 +699,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceCheckoutBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.CheckoutBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -701,7 +729,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceCreateBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.CreateBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -730,7 +758,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.DeleteBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -757,6 +785,8 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			})
 		})
 	})
+
+	registerGitOpsHandlers(d, svc)
 }
 
 type tabGitContext struct {
@@ -3238,8 +3268,11 @@ func listRepositoryWorktrees(ctx context.Context, repository gitutil.Repository)
 	}
 	worktrees := make([]*leapmuxv1.GitWorktreeEntry, 0, len(entries))
 	for _, entry := range entries {
-		worktrees = append(worktrees, &leapmuxv1.GitWorktreeEntry{Path: entry.Path, Branch: entry.Branch,
-			IsMain: entry.IsMain, Locked: entry.Locked, LockReason: entry.LockReason})
+		worktrees = append(worktrees, gitWorktreeProto(entry))
 	}
 	return worktrees, nil
+}
+
+func gitWorktreeProto(entry gitutil.WorktreeEntry) *leapmuxv1.GitWorktreeEntry {
+	return &leapmuxv1.GitWorktreeEntry{Path: entry.Path, Branch: entry.Branch, IsMain: entry.IsMain, Locked: entry.Locked, LockReason: entry.LockReason}
 }

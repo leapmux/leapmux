@@ -19,7 +19,7 @@ import (
 func TestSoloStopsInOrderOnAHangUp(t *testing.T) {
 	locallistentest.SandboxHome(t)
 	uniqueListenEnv(t)
-	p := startWithStderrPipe(t, "solo", "run")
+	p := startWithStderrPipe(t, "daemon", "solo", "run")
 	p.waitReadiness(t, "leapmux solo listening")
 
 	require.NoError(t, p.cmd.Process.Signal(syscall.SIGHUP))

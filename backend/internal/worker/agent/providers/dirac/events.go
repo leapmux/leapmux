@@ -43,7 +43,13 @@ func diracAdvertisedSteerMethod(response []byte) string {
 // does not answer.
 func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 	switch line.Method {
-	case "dev.dirac/steering_status", "dev.dirac/pinned_messages_update", "dev.dirac/client_annotation":
+	case "dev.dirac/steering_status":
+		if line.HasID() {
+			return false
+		}
+		a.handleSteeringStatus(line.Params)
+		return true
+	case "dev.dirac/pinned_messages_update", "dev.dirac/client_annotation":
 		if line.HasID() {
 			return false
 		}

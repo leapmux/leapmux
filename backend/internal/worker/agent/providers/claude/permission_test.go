@@ -81,13 +81,37 @@ func TestClaudeBypassApprovesPendingAndLaterToolsWithDeferredAcknowledgement(t *
 }
 
 func TestClaudeRefusesUnknownAndRepeatedPermissionAnswers(t *testing.T) {
-	a, _, peer := newPermissionAgent(t, false)
+	a, sink, peer := newPermissionAgent(t, false)
 	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"permission","response":{"behavior":"allow","updatedInput":{}}}}`)
-	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	assert.Error(t, a.SendRawInput(sink.Answer("permission", answer)))
 	assert.Empty(t, peer.String())
 	a.HandleOutput(nativeToolPermission("permission", "Bash"))
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
-	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer("permission", answer)))
+	assert.Error(t, a.SendRawInput(sink.Answer("permission", answer)))
+	assert.Equal(t, 1, strings.Count(peer.String(), `"request_id":"permission"`))
+}
+
+// Claude Code can ask again under a request ID that waits for an answer, with
+// another request (claudeCodeHandleControlRequest). The second request
+// replaces the first instance, and Claude Code applies an answer to the
+// request that its ID names now. So an answer reaches Claude Code only while
+// the instance that it answers is current, and an answer that states no
+// instance reaches nothing.
+func TestClaudeRefusesAnAnswerToAReplacedRequest(t *testing.T) {
+	a, sink, peer := newPermissionAgent(t, false)
+	a.HandleOutput(nativeToolPermission("permission", "Bash"))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	replaced := sink.LastPublishedControl()
+	a.HandleOutput(nativeToolPermission("permission", "Write"))
+	require.Equal(t, 2, sink.PublishedControlCount())
+	current := sink.LastPublishedControl()
+	require.NotEqual(t, replaced.InstanceID, current.InstanceID)
+
+	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"permission","response":{"behavior":"allow","updatedInput":{}}}}`)
+	assert.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: replaced.InstanceID}), agent.ErrControlInstanceReplaced)
+	assert.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlInstanceUnstated)
+	assert.Empty(t, peer.String(), "no answer reaches the request that replaced the answered one")
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: current.InstanceID}))
 	assert.Equal(t, 1, strings.Count(peer.String(), `"request_id":"permission"`))
 }
 

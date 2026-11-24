@@ -37,7 +37,7 @@ func TestListTerminals_AttachesTheGitStatusOfEachTerminalsOwnDirectory(t *testin
 	}))
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
 		ID: "live", Shell: testutil.TestShell(), WorkingDir: t.TempDir(), ShellStartDir: liveRepo, Cols: 80, Rows: 24,
-	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	}, func(terminal.Output) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, "live")
 
 	// A terminal with only a row, in another repo.

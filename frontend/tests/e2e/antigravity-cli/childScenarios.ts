@@ -10,7 +10,7 @@ import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCall
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
-import { chooseSettingsOption, messageContents, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, messageContents, toolCallRow, waitForSettingsIdle } from '../helpers/ui'
 import { antigravityNativeToolResult } from './toolResult'
 
 export interface AntigravityRunningChild extends RunningNativeChild {
@@ -18,6 +18,7 @@ export interface AntigravityRunningChild extends RunningNativeChild {
   progress: string
   thought: string
   fileMarker: string
+  readCallId: string
   finalReply: string
   nativeChildId: string
 }
@@ -33,6 +34,7 @@ export async function openAntigravityRunningChild(context: ManagedNativeScenario
   const progress = `GEMINICHILDPROGRESS${marker}`
   const thought = `GEMINICHILDTHOUGHT${marker}`
   const fileMarker = `GEMINICHILDFILE${marker}`
+  const readCallId = `antigravity-child-read-${marker}`
   const finalReply = `GEMINICHILDFINAL${marker}`
   const path = join(parent.workingDir, `antigravity-child-${index}.txt`)
   writeFileSync(path, `${fileMarker}\n`)
@@ -54,7 +56,7 @@ export async function openAntigravityRunningChild(context: ManagedNativeScenario
           reasoning: thought,
           text: progress,
           toolCalls: [
-            readToolCall(context.provider, `antigravity-child-read-${marker}`, path),
+            readToolCall(context.provider, readCallId, path),
           ],
         },
         once: true,
@@ -62,7 +64,7 @@ export async function openAntigravityRunningChild(context: ManagedNativeScenario
     ],
     allowExistingRows: index > 0,
   })
-  expect(antigravityNativeToolResult(await child.heldRequest(), `antigravity-child-read-${marker}`)).toContain(fileMarker)
+  expect(antigravityNativeToolResult(await child.heldRequest(), readCallId)).toContain(fileMarker)
   const info = await nativeAgentById(context, child.childId)
   if (!info || !info.providerChildKey)
     throw new Error('The native child has no durable provider UUID.')
@@ -81,6 +83,7 @@ export async function openAntigravityRunningChild(context: ManagedNativeScenario
     progress,
     thought,
     fileMarker,
+    readCallId,
     finalReply,
     nativeChildId: info.providerChildKey,
   }
@@ -89,11 +92,11 @@ export async function openAntigravityRunningChild(context: ManagedNativeScenario
 /** Inspect the child tab while its model call remains held. */
 export async function expectAntigravityLiveChild(context: ManagedNativeScenarioContext, child: AntigravityRunningChild): Promise<void> {
   await openChildTabFromRow(context.page, child.row)
+  await expect(toolCallRow(context.page, child.readCallId).getByText(child.fileMarker, { exact: true })).toBeVisible()
   for (const text of [
     child.prompt,
     child.progress,
     child.thought,
-    child.fileMarker,
   ])
     await expect(messageContents(context.page).filter({ hasText: text }).first()).toBeVisible()
   await expect(messageContents(context.page).filter({ hasText: child.prompt })).toHaveCount(1)
@@ -115,11 +118,11 @@ export async function finishAntigravityChildWithReload(
   await options.beforeReload?.()
   await context.page.reload()
   await expect(messageContents(context.page).filter({ hasText: child.prompt })).toHaveCount(1)
+  await expect(toolCallRow(context.page, child.readCallId).getByText(child.fileMarker, { exact: true })).toBeVisible()
   for (const text of [
     child.prompt,
     child.progress,
     child.thought,
-    child.fileMarker,
     child.finalReply,
   ])
     await expect(messageContents(context.page).filter({ hasText: text }).first()).toBeVisible()

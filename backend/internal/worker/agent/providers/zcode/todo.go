@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 

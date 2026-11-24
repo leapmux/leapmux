@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -16,6 +15,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -42,8 +42,8 @@ func TestRunWorkspaceCleanupFanout_AllSuccess(t *testing.T) {
 	assert.ElementsMatch(t, []string{"w1", "w2", "w3"}, called)
 	require.Len(t, entries, 3)
 	for i, wid := range []string{"w1", "w2", "w3"} {
-		assert.Equal(t, wid, entries[i]["worker_id"])
-		assert.Equal(t, "ok", entries[i]["status"])
+		assert.Equal(t, wid, entries[i].WorkerID)
+		assert.Equal(t, "ok", entries[i].Status)
 	}
 }
 
@@ -65,10 +65,10 @@ func TestRunWorkspaceCleanupFanout_PartialFailure(t *testing.T) {
 	assert.Equal(t, "partial", status, "any failure must downgrade overall status to 'partial'")
 	require.Len(t, entries, 3)
 
-	assert.Equal(t, "ok", entries[0]["status"])
-	assert.Equal(t, "failed", entries[1]["status"])
-	assert.Contains(t, entries[1]["error"], "network unreachable")
-	assert.Equal(t, "ok", entries[2]["status"], "siblings of a failed worker must still surface a result")
+	assert.Equal(t, "ok", entries[0].Status)
+	assert.Equal(t, "failed", entries[1].Status)
+	assert.Contains(t, entries[1].Error, "network unreachable")
+	assert.Equal(t, "ok", entries[2].Status, "siblings of a failed worker must still surface a result")
 }
 
 // TestRunWorkspaceCleanupFanout_AllFailure pins the all-failed case:
@@ -82,7 +82,7 @@ func TestRunWorkspaceCleanupFanout_AllFailure(t *testing.T) {
 	assert.Equal(t, "partial", status)
 	require.Len(t, entries, 2)
 	for _, e := range entries {
-		assert.Equal(t, "failed", e["status"])
+		assert.Equal(t, "failed", e.Status)
 	}
 }
 
@@ -111,7 +111,7 @@ func TestRunWorkspaceCleanupFanout_SuccessEntryHoldsOnlyTheWorkerAndStatus(t *te
 	}
 	_, entries := runWorkspaceCleanupFanout(context.Background(), workerTabsFor("w1"), caller)
 	require.Len(t, entries, 1)
-	assert.Equal(t, map[string]any{"worker_id": "w1", "status": "ok"}, entries[0])
+	assert.Equal(t, map[string]any{"worker_id": "w1", "status": "ok"}, jsonMap(t, entries[0]))
 }
 
 // cleanupDispatcher stands in for the worker's CleanupWorkspace handler and
@@ -148,7 +148,7 @@ func (d *cleanupDispatcher) DispatchWith(_ context.Context, _ channel.Caller, re
 func TestCliCleanupCaller_SendsTheTabIdentitiesToTheWorker(t *testing.T) {
 	disp := &cleanupDispatcher{}
 	startSpawnIPC(t, &recordingHub{}, disp)
-	c, err := requireClient("")
+	c, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
 
 	tabs := []*leapmuxv1.TabIdent{
@@ -175,7 +175,7 @@ func TestCliCleanupCaller_SendsTheTabIdentitiesToTheWorker(t *testing.T) {
 // that worker as failed instead of reading an empty success.
 func TestCliCleanupCaller_ReturnsTheWorkersRefusal(t *testing.T) {
 	startSpawnIPC(t, &recordingHub{}, inBandErrorDispatcher{code: codes.Unavailable, message: "worker is shutting down"})
-	c, err := requireClient("")
+	c, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
 
 	resp, err := cliCleanupCaller(c)(t.Context(), "worker-A", nil)
@@ -251,7 +251,7 @@ func TestRunWorkspaceCleanupFanout_EmptyTabGroupIsStillCalled(t *testing.T) {
 	assert.Equal(t, "ok", status)
 	assert.Equal(t, 1, called["w-empty"], "a worker with an empty tab group must still be called")
 	require.Len(t, entries, 1)
-	assert.Equal(t, "w-empty", entries[0]["worker_id"])
+	assert.Equal(t, "w-empty", entries[0].WorkerID)
 }
 
 // TestRunWorkspaceCleanupFanout_ContextPropagates verifies the
@@ -287,22 +287,18 @@ func TestRunWorkspaceList_InsideWorkerSpawn(t *testing.T) {
 	// controlipc.EnvVars).
 	t.Setenv("LEAPMUX_CONTROL_USER_ID", "u-spawn")
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkspaceList(fakeCmdCtx{}, nil))
-	})
-
-	var env struct {
-		Data  []map[string]any `json:"data"`
-		Error map[string]any   `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	require.Nil(t, env.Error, "workspace list must succeed inside a worker spawn")
-	require.Len(t, env.Data, 1)
-	// The whole row, so a field that the explicit map drops or renames fails
+	data := runControl(t, "workspace", "list").Data(t)
+	rows, ok := data["workspaces"].([]any)
+	require.True(t, ok, "a list lives under its plural noun: %v", data)
+	require.Len(t, rows, 1)
+	// The whole row, so a field that the struct drops or renames fails
 	// here. The stub sends no created_at, and an absent instant is omitted.
-	assert.Equal(t, map[string]any{"id": "ws-1", "created_by": "u-spawn", "title": "First"}, env.Data[0])
-	assert.Equal(t, []string{leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure}, hub.called(),
-		"a session-scoped list must cost exactly one hub call; no entity-id env var may add another")
+	assert.Equal(t, map[string]any{"id": "ws-1", "created_by": "u-spawn", "title": "First"}, rows[0])
+	assert.Equal(t, []string{
+		leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
+		leapmuxv1connect.SectionServiceListSectionsProcedure,
+	}, hub.called(),
+		"a session-scoped list reads workspaces and sections without resolving any entity-id env var")
 }
 
 // workerTabsFor builds the per-worker fan-out shape for tests that only care
@@ -318,11 +314,11 @@ func workerTabsFor(workerIDs ...string) []*leapmuxv1.WorkerTabs {
 // `workspace get` and `workspace list` print created_at as the same formatted
 // string every other listing verb prints, not as a protojson Timestamp object,
 // and omit it when the hub sends none.
-func TestWorkspaceToMap_PrintsCreatedAtAsAString(t *testing.T) {
+func TestWorkspaceRowOf_PrintsCreatedAtAsAString(t *testing.T) {
 	created := time.Date(2026, 10, 1, 12, 30, 0, 0, time.UTC)
-	row := workspaceToMap(&leapmuxv1.Workspace{
+	row := jsonMap(t, workspaceRowOf(&leapmuxv1.Workspace{
 		Id: "ws-1", CreatedBy: "u-1", Title: "First", CreatedAt: timestamppb.New(created),
-	})
+	}))
 	assert.Equal(t, map[string]any{
 		"id":         "ws-1",
 		"created_by": "u-1",
@@ -330,20 +326,20 @@ func TestWorkspaceToMap_PrintsCreatedAtAsAString(t *testing.T) {
 		"created_at": created.Format(timeFormat),
 	}, row)
 
-	row = workspaceToMap(&leapmuxv1.Workspace{Id: "ws-2"})
+	row = jsonMap(t, workspaceRowOf(&leapmuxv1.Workspace{Id: "ws-2"}))
 	assert.NotContains(t, row, "created_at", "an absent timestamp is omitted, not printed as the epoch")
 }
 
-// TestWorkspaceToMap_CarriesEveryFieldOfWorkspace is the tripwire for the
-// explicit map. A field that the Workspace message gains prints nowhere until
-// workspaceToMap prints it, and an operator's script then reads an absent
+// TestWorkspaceRowOf_CarriesEveryFieldOfWorkspace is the tripwire for the
+// explicit row. A field that the Workspace message gains prints nowhere until
+// workspaceRowOf prints it, and an operator's script then reads an absent
 // key, not an error.
-func TestWorkspaceToMap_CarriesEveryFieldOfWorkspace(t *testing.T) {
+func TestWorkspaceRowOf_CarriesEveryFieldOfWorkspace(t *testing.T) {
 	workspace := &leapmuxv1.Workspace{}
 	assertRowMapperCarriesEveryField(t, rowMapper{
-		name:   "workspaceToMap",
+		name:   "workspaceRowOf",
 		msg:    workspace,
-		render: func() map[string]any { return workspaceToMap(workspace) },
+		render: func() any { return workspaceRowOf(workspace) },
 		keys: map[string]string{
 			"id":         "id",
 			"created_by": "created_by",

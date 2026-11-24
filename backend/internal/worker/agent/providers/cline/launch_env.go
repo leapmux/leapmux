@@ -170,7 +170,7 @@ var (
 // `apiKey` and `baseUrl`. Cline checks the other settings fields too, and the
 // worker does not repeat those checks.
 func decodeProviderSettings(data []byte) (storedProviderSettings, error) {
-	envelope, ok := jsonObject(data)
+	envelope, ok := providerkit.RawObject(data)
 	if !ok {
 		return storedProviderSettings{}, errors.New("the file holds no JSON object")
 	}
@@ -188,7 +188,7 @@ func decodeProviderSettings(data []byte) (storedProviderSettings, error) {
 		stored.lastUsedProvider = provider
 	}
 	if raw, present := envelope["modes"]; present {
-		if _, ok := jsonObject(raw); !ok {
+		if _, ok := providerkit.RawObject(raw); !ok {
 			return storedProviderSettings{}, errors.New("`modes` is not an object")
 		}
 	}
@@ -196,7 +196,7 @@ func decodeProviderSettings(data []byte) (storedProviderSettings, error) {
 	if !present {
 		return storedProviderSettings{}, errors.New("`providers` is missing")
 	}
-	providers, ok := jsonObject(raw)
+	providers, ok := providerkit.RawObject(raw)
 	if !ok {
 		return storedProviderSettings{}, errors.New("`providers` is not an object")
 	}
@@ -215,7 +215,7 @@ func decodeProviderSettings(data []byte) (storedProviderSettings, error) {
 // decodeProviderEntry checks one entry of `providers` and returns the model of
 // its settings, or "" when they state none.
 func decodeProviderEntry(raw json.RawMessage) (string, error) {
-	entry, ok := jsonObject(raw)
+	entry, ok := providerkit.RawObject(raw)
 	if !ok {
 		return "", errors.New("it is not an object")
 	}
@@ -227,7 +227,7 @@ func decodeProviderEntry(raw json.RawMessage) (string, error) {
 			return "", errors.New("`tokenSource` is not manual, oauth or migration")
 		}
 	}
-	settings, ok := jsonObject(entry["settings"])
+	settings, ok := providerkit.RawObject(entry["settings"])
 	if !ok {
 		return "", errors.New("`settings` is not an object")
 	}
@@ -252,16 +252,6 @@ func decodeProviderEntry(raw json.RawMessage) (string, error) {
 		}
 	}
 	return fields["model"], nil
-}
-
-// jsonObject decodes raw as a JSON object. It reports false for anything else,
-// null included.
-func jsonObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
-	var object map[string]json.RawMessage
-	if len(raw) == 0 || json.Unmarshal(raw, &object) != nil || object == nil {
-		return nil, false
-	}
-	return object, true
 }
 
 // isClineDateTime reports whether value has the form of clineDateTime and states

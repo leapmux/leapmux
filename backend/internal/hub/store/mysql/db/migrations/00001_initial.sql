@@ -243,6 +243,13 @@ CREATE INDEX idx_workers_deregistering_at ON workers(deregistering_at);
 -- The store implements soft-delete by setting expires_at to a past instant.
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
 -- retention cutoff.
+-- The enrollment revision survives the removal of the Worker's row.
+CREATE TABLE worker_enrollment_revisions (
+    user_id VARCHAR(255) NOT NULL PRIMARY KEY,
+    revision BIGINT NOT NULL CHECK (revision > 0),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) COLLATE=utf8mb4_bin;
+
 CREATE TABLE worker_registration_keys (
     id          VARCHAR(255) PRIMARY KEY, -- public id; the key itself is never stored
     key_hash VARBINARY(32) NOT NULL UNIQUE CHECK (OCTET_LENGTH(key_hash) = 32),
@@ -357,6 +364,35 @@ CREATE TABLE user_op_batches (
 -- that exists only to prove nothing is left to delete.
 CREATE INDEX idx_user_op_batches_physical_ms ON user_op_batches(physical_ms);
 
+-- The layout journal retains facts independently of CRDT compaction.
+CREATE TABLE layout_event_heads (
+    user_id VARCHAR(255) PRIMARY KEY,
+    journal_id VARCHAR(255) NOT NULL CHECK (journal_id <> ''),
+    cursor_key VARBINARY(32) NOT NULL CHECK (octet_length(cursor_key) = 32),
+    high_sequence BIGINT NOT NULL DEFAULT 0 CHECK (high_sequence >= 0),
+    floor_sequence BIGINT NOT NULL DEFAULT 0,
+    CHECK (floor_sequence >= 0 AND floor_sequence <= high_sequence),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) COLLATE=utf8mb4_bin;
+
+CREATE TABLE layout_event_entries (
+    user_id VARCHAR(255) NOT NULL,
+    sequence BIGINT NOT NULL CHECK (sequence > 0),
+    observed_unix_millis BIGINT NOT NULL,
+    fact LONGBLOB NOT NULL CHECK (octet_length(fact) > 0),
+    PRIMARY KEY (user_id, sequence),
+    FOREIGN KEY (user_id) REFERENCES layout_event_heads(user_id) ON DELETE CASCADE
+) COLLATE=utf8mb4_bin;
+
+-- A scoped reader can finish after its deletion fact expires.
+CREATE TABLE layout_workspace_ends (
+    user_id VARCHAR(255) NOT NULL,
+    workspace_id VARCHAR(255) NOT NULL CHECK (workspace_id <> ''),
+    final_sequence BIGINT NOT NULL CHECK (final_sequence > 0),
+    PRIMARY KEY (user_id, workspace_id),
+    FOREIGN KEY (user_id) REFERENCES layout_event_heads(user_id) ON DELETE CASCADE
+) COLLATE=utf8mb4_bin;
+
 -- One materialized UserCrdtState blob per user. Only the compaction pass
 -- rewrites this row: when the compaction watermark advances, when the epoch
 -- rotates, and on the first persist of an epoch start that Bootstrap stamped.
@@ -433,6 +469,7 @@ CREATE TABLE lifecycle_outbox (
     -- that branch unreachable.
     op_type     SMALLINT NOT NULL CHECK (op_type BETWEEN 1 AND 3),
     payload     LONGBLOB NOT NULL,
+    layout_fact_written BOOLEAN NOT NULL DEFAULT FALSE,
     consumed_at DATETIME(6),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
@@ -762,11 +799,15 @@ DROP TABLE IF EXISTS lifecycle_outbox;
 DROP TABLE IF EXISTS user_recent_batch_ids;
 DROP TABLE IF EXISTS workspace_tab_owned;
 DROP TABLE IF EXISTS user_state;
+DROP TABLE IF EXISTS layout_workspace_ends;
+DROP TABLE IF EXISTS layout_event_entries;
+DROP TABLE IF EXISTS layout_event_heads;
 DROP TABLE IF EXISTS user_op_batches;
 DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
 DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS workers;
+DROP TABLE IF EXISTS worker_enrollment_revisions;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;

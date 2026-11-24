@@ -1,7 +1,7 @@
 import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
 import type { TabCreationCoordinator } from './useTabCreation'
-import type { ControlResponseHandler } from '~/components/chat/controls/types'
+import type { ControlAnswerHandler } from '~/components/chat/controls/types'
 import type { ProviderSettingChange } from '~/components/chat/providerSettings'
 import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -159,21 +159,31 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // answer cannot pair an id from one instance with a token from another. It
   // still carries all three after the request leaves the store, which is what a
   // double-submit or an answer-after-cancel race needs.
-  const handleControlResponse: ControlResponseHandler = async (request, content, options) => {
+  //
+  // A decision goes to AnswerControl, where the Worker's provider builds the
+  // runtime's own answer. A recording goes to RecordControlResponse, which saves
+  // the response that the Worker already holds, or reports its state. Neither
+  // RPC takes an answer that the browser wrote.
+  const handleControlAnswer: ControlAnswerHandler = async (request, answer) => {
     props.forceScrollToBottom?.()
     const { agentId, requestId } = request
     const workerId = getAgentWorkerId(agentId)
     // Use the captured request's token even if a new request reuses its ID.
+    const claimToken = request.claimToken ?? ''
     let response
     try {
-      response = await workerAgent.sendControlResponse(workerId, {
-        agentId,
-        requestId,
-        content,
-        recordOnly: options?.recordOnly ?? false,
-        planApproval: options?.planApproval,
-        claimToken: request.claimToken ?? '',
-      })
+      response = answer.kind === 'decision'
+        ? await workerAgent.answerControl(workerId, {
+            agentId,
+            requestId,
+            claimToken,
+            decision: answer.decision,
+          })
+        : await workerAgent.recordControlResponse(workerId, {
+            agentId,
+            requestId,
+            claimToken,
+          })
     }
     catch (error) {
       props.controlStore.setResponseState(request, ControlResponseState.UNSPECIFIED)
@@ -552,7 +562,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     providerStore,
     openAgentInWorkspace,
     handleOpenAgent,
-    handleControlResponse,
+    handleControlAnswer,
     handleInterrupt,
     updateGoal,
     handleGoalAction,

@@ -64,6 +64,8 @@ type fakeCrossWorker struct {
 	callTarget  string
 	callMethod  string
 	callPayload []byte
+	callSource  *leapmuxv1.CallSource
+	calls       int
 	resp        []byte
 	respErr     error
 	// bindCtrl, when set, is handed to the router's bindCtrl callback so
@@ -74,16 +76,22 @@ type fakeCrossWorker struct {
 	hold <-chan struct{}
 }
 
-func (f *fakeCrossWorker) CallInner(_ context.Context, target string, _ userid.UserID, method string, payload []byte) ([]byte, error) {
+func (f *fakeCrossWorker) CallInner(_ context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.callTarget, f.callMethod, f.callPayload = target, method, payload
+	f.record(target, req)
 	return f.resp, f.respErr
 }
 
-func (f *fakeCrossWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
+// record keeps the request of one call. The caller holds mu.
+func (f *fakeCrossWorker) record(target string, req *leapmuxv1.InnerRpcRequest) {
+	f.callTarget, f.callMethod, f.callPayload, f.callSource = target, req.GetMethod(), req.GetPayload(), req.GetSource()
+	f.calls++
+}
+
+func (f *fakeCrossWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	f.mu.Lock()
-	f.callTarget, f.callMethod, f.callPayload = target, method, payload
+	f.record(target, req)
 	hold := f.hold
 	ctrl := f.bindCtrl
 	resp := f.resp
@@ -985,7 +993,7 @@ func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 		TabType:       leapmuxv1.TabType_TAB_TYPE_AGENT,
 		WorkingDir:    "/work/dir",
 		AgentProvider: "claude-code",
-	})
+	}, "/data/run/cli-1/leapmux")
 	want := map[string]string{
 		"LEAPMUX_CONTROL_SOCK":           "unix:/tmp/sock",
 		"LEAPMUX_CONTROL_TOKEN":          "raw-token",
@@ -995,6 +1003,7 @@ func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 		"LEAPMUX_CONTROL_TAB_TYPE":       "agent",
 		"LEAPMUX_CONTROL_WORKING_DIR":    "/work/dir",
 		"LEAPMUX_CONTROL_AGENT_PROVIDER": "claude-code",
+		"LEAPMUX_CONTROL_CLI":            "/data/run/cli-1/leapmux",
 	}
 	got := map[string]string{}
 	for _, e := range envs {
@@ -1036,7 +1045,7 @@ func TestEnvVars_TerminalTabTypeIsTerminal(t *testing.T) {
 		WorkerID: "worker-A",
 		TabID:    "term-1",
 		TabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-	})
+	}, "")
 	got := map[string]string{}
 	for _, e := range envs {
 		k, v, ok := strings.Cut(e, "=")
@@ -1051,6 +1060,8 @@ func TestEnvVars_TerminalTabTypeIsTerminal(t *testing.T) {
 		_, present := got[k]
 		assert.False(t, present, "legacy %s must NOT be injected", k)
 	}
+	_, present := got["LEAPMUX_CONTROL_CLI"]
+	assert.False(t, present, "a Worker with no CLI link advertises none, not an empty value")
 }
 
 // --- Test fakes ---
@@ -1415,11 +1426,11 @@ type framesCrossWorker struct {
 	err    error
 }
 
-func (*framesCrossWorker) CallInner(context.Context, string, userid.UserID, string, []byte) ([]byte, error) {
+func (*framesCrossWorker) CallInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	return nil, errors.New("framesCrossWorker serves streams only")
 }
 
-func (f *framesCrossWorker) StreamInner(_ context.Context, _ string, _ userid.UserID, _ string, _ []byte, onMsg func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController)) error {
+func (f *framesCrossWorker) StreamInner(_ context.Context, _ string, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController)) error {
 	for _, frame := range f.frames {
 		onMsg(frame)
 	}
@@ -1459,7 +1470,9 @@ func TestRouter_StreamInner_CrossWorkerForwardsEachFrameUnchanged(t *testing.T) 
 // fakeHubStreamer plays the hub: it records the call and hands each payload to
 // the router.
 type fakeHubStreamer struct {
-	payloads     [][]byte
+	payloads [][]byte
+	// err ends the stream after the payloads.
+	err          error
 	gotUserID    userid.UserID
 	gotProcedure string
 	gotPayload   []byte
@@ -1472,7 +1485,7 @@ func (f *fakeHubStreamer) StreamHub(_ context.Context, userID userid.UserID, pro
 			return err
 		}
 	}
-	return nil
+	return f.err
 }
 
 // A hub stream carries only payloads. The router wraps each one in a stream
@@ -1516,6 +1529,33 @@ func TestRouter_StreamInner_HubNamespaceWrapsEachPayload(t *testing.T) {
 
 		require.ErrorIs(t, err, sendErr)
 		assert.Equal(t, 1, calls, "no payload follows a failed delivery")
+	})
+
+	// The hub stream relays a failure as the unary hub path does: a hub code
+	// stays, and a plain error becomes internal with its own message, never
+	// an unknown code with the message lost.
+	t.Run("a plain hub failure keeps its message", func(t *testing.T) {
+		failure := errors.New("dial the hub: connection refused")
+		hub := &fakeHubStreamer{err: failure}
+		r := &controlipc.Router{UserID: userid.MustNew("user-1"), HubStreams: hub}
+		err := r.StreamInner(context.Background(), controlipc.TokenInfo{}, "hub."+hubrpc.WatchUserStream, nil, "", "",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+		require.ErrorIs(t, err, failure)
+		assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+		var connectErr *connect.Error
+		require.ErrorAs(t, err, &connectErr)
+		assert.Equal(t, "dial the hub: connection refused", connectErr.Message())
+	})
+
+	t.Run("a hub code stays", func(t *testing.T) {
+		hub := &fakeHubStreamer{err: connect.NewError(connect.CodePermissionDenied, "no workspace access")}
+		r := &controlipc.Router{UserID: userid.MustNew("user-1"), HubStreams: hub}
+		err := r.StreamInner(context.Background(), controlipc.TokenInfo{}, "hub."+hubrpc.WatchUserStream, nil, "", "",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+		var connectErr *connect.Error
+		require.ErrorAs(t, err, &connectErr)
+		assert.Equal(t, "no workspace access", connectErr.Message(), "the relay does not repeat the code in the message")
 	})
 
 	t.Run("a router with no hub streamer refuses", func(t *testing.T) {

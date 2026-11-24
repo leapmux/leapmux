@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -147,6 +148,45 @@ func TestStdinWriteAfterStopStillReportsItsOwnError(t *testing.T) {
 	require.NoError(t, p.WriteStdin([]byte("after-stop\n")))
 	p.writeStdinDetached([]byte("detached-after-stop\n"), "probe")
 	assert.Equal(t, []string{"after-stop", "detached-after-stop"}, writer.Frames())
+}
+
+func TestStdinWriteCancellationRevokesItsObserver(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	stdin := newGatedStdin(0, nil)
+	t.Cleanup(func() { close(stdin.release) })
+	p := &Process{agentID: "agent", stdin: stdin}
+	p.writeStdinDetached([]byte("first\n"), "hold the writer")
+	select {
+	case <-stdin.entered:
+	case <-ctx.Done():
+		t.Fatal("the first write did not reach stdin")
+	}
+
+	p.stdinMu.Lock()
+	queue := p.stdinQueue
+	p.stdinMu.Unlock()
+	observed := false
+	result := make(chan error, 1)
+	go func() { result <- p.writeStdin([]byte("second\n"), func() { observed = true }) }()
+	var frame stdinFrame
+	select {
+	case frame = <-queue:
+	case <-ctx.Done():
+		t.Fatal("the observed write did not enter the stdin queue")
+	}
+	// The writer can claim a frame just before close and run its observer after
+	// the caller processes that close. Hold the claimed frame to fix the order.
+	p.closeStdin()
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, errStdinClosed)
+	case <-ctx.Done():
+		t.Fatal("stdin close did not release the waiting caller")
+	}
+	require.NotNil(t, frame.beforeWrite)
+	frame.beforeWrite()
+	assert.False(t, observed, "a finished write cannot admit new output ownership")
 }
 
 // A child that stops reading its stdin must not stall the goroutine that drains

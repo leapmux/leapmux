@@ -3,10 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"os/signal"
-	"syscall"
 
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/hub"
@@ -15,7 +14,7 @@ import (
 	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
-// runWorkerRegister registers the worker and exits. It never starts the
+// registerWorker registers the worker and exits. It never starts the
 // worker and never configures a service.
 //
 // The durable order is the whole design:
@@ -32,26 +31,12 @@ import (
 //  5. The registered state is durably published, and only then is the
 //     pending record removed. A failure in between leaves the pending
 //     record as the recovery material of the NEXT run.
-func runWorkerRegister(args []string) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-	return runWorkerRegisterWithFiles(ctx, args, configuredWorkerRegistrationFiles)
-}
-
-func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor func(*config.Config) workerRegistrationFiles) error {
-	cfg, commandOptions, err := loadWorkerRegisterCommand(args)
-	if handleVersionQuery(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
+func registerWorker(ctx context.Context, cfg *config.Config, commandOptions workerRegisterOptions, files workerRegistrationFiles) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	printModeBanner("worker")
 	logging.Setup()
-	files := filesFor(cfg)
 
 	// Parse the endpoint before anything is written. A pending record for a
 	// URL that the transport cannot use would block the corrected command as
@@ -175,7 +160,12 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 	opts.Deadline = commandOptions.timeout
 	result, err := hub.Register(ctx, endpoint, opts)
 	if err != nil {
-		return fmt.Errorf("registration: %w", err)
+		failure := cli.FromError(fmt.Errorf("registration: %w", err))
+		if failure.Code == cli.CodeNotLoggedIn {
+			// The registration key is the credential of this call.
+			failure = failure.WithHint("generate a new registration key in the Register worker dialog of the Hub, and run the command with it")
+		}
+		return failure
 	}
 
 	// Publish the complete registered state BEFORE removing the pending
@@ -194,7 +184,7 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 	}
 	if err := files.RemovePendingRegistration(); err != nil {
 		return fmt.Errorf(
-			"the worker registered and its credentials were saved, but the pending record %s could not be removed: %w; rerun `leapmux worker register` to finish the cleanup",
+			"the worker registered and its credentials were saved, but the pending record %s could not be removed: %w; rerun `leapmux daemon worker register` to finish the cleanup",
 			cfg.PendingPath(), err)
 	}
 

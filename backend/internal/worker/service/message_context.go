@@ -122,9 +122,21 @@ func storedMessage(kind string, row db.Message, err error) (*agent.StoredMessage
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", kind, err)
 	}
+	content, err := decodeStoredRow(row, kind)
+	if err != nil {
+		return nil, err
+	}
+	return &agent.StoredMessage{Content: content, Seq: row.Seq, Revision: row.SupplementalRevision}, nil
+}
+
+// decodeStoredRow decodes the content and the supplement of one message row.
+// A supplement that does not decode leaves the row with its content alone,
+// and a warning that identifies the row. what identifies the read in the
+// warning and the error.
+func decodeStoredRow(row db.Message, what string) (agent.MessageContent, error) {
 	original, err := msgcodec.Decompress(row.Content, row.ContentCompression)
 	if err != nil {
-		return nil, fmt.Errorf("decode %s: %w", kind, err)
+		return agent.MessageContent{}, fmt.Errorf("decode %s: %w", what, err)
 	}
 	content := agent.MessageContent{Original: original}
 	if len(row.SupplementalContent) > 0 {
@@ -133,11 +145,11 @@ func storedMessage(kind string, row db.Message, err error) (*agent.StoredMessage
 			content, decodeErr = agent.DecodeMessageSupplement(original, supplemental)
 		}
 		if decodeErr != nil {
-			slog.Warn("decode "+kind+" supplement", "agent_id", row.AgentID, "span_id", row.SpanID, "error", decodeErr)
+			slog.Warn("decode "+what+" supplement", "agent_id", row.AgentID, "seq", row.Seq, "span_id", row.SpanID, "error", decodeErr)
 		}
 	}
 	content.AgentSessionID = row.AgentSessionID
 	content.IdempotencyKey = row.IdempotencyKey
 	content.Completion = agent.MessageCompletionFromProto(workerdb.StorageEnumValue(row.Completion))
-	return &agent.StoredMessage{Content: content, Seq: row.Seq, Revision: row.SupplementalRevision}, nil
+	return content, nil
 }

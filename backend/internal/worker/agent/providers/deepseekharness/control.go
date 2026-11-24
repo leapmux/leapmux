@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -16,6 +17,7 @@ type nativeControl struct {
 	event           string
 	toolName        string
 	agentID         string
+	instanceID      string
 	request         json.RawMessage
 	sink            agent.ProviderServices
 	payload         []byte
@@ -25,6 +27,10 @@ type nativeControl struct {
 	automaticFailed bool
 	publicationDone chan struct{}
 	publicationOnce sync.Once
+	// Mu protects reply ownership as the native tool and request streams meet.
+	replyCallID   string
+	replyInputIDs []string
+	replyBound    bool
 }
 
 type nativeQuestion struct {
@@ -41,25 +47,34 @@ type nativeQuestion struct {
 	} `json:"intent"`
 }
 
+// ControlRequestKey reads the key that the agent publishes a waterfall control
+// under: its eventId (publishNativeControl).
+func (deepseekHarnessProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var event struct {
+		ID string `json:"eventId"`
+	}
+	if json.Unmarshal(payload, &event) != nil || event.ID == "" {
+		return "", false
+	}
+	return event.ID, true
+}
+
 // storedControlRefusal validates the stored request and the answer envelope.
-// An empty result means that both are valid.
+// An empty result means that both are valid. The Worker resolves only a
+// stored request whose eventId is its key (ControlRequestKey), so the key
+// needs no check here.
 func storedControlRefusal(ctx agent.ControlResponseContext) string {
 	var payload struct {
 		Type    string          `json:"type"`
 		Event   string          `json:"event"`
-		ID      string          `json:"eventId"`
 		AgentID string          `json:"agentId"`
 		Request json.RawMessage `json:"request"`
 	}
-	if json.Unmarshal(ctx.RequestPayload, &payload) != nil || payload.Type != "waterfall" || payload.ID == "" || payload.AgentID == "" || ctx.RequestID != "" && ctx.RequestID != payload.ID {
+	if json.Unmarshal(ctx.RequestPayload, &payload) != nil || payload.Type != "waterfall" || payload.AgentID == "" {
 		return agent.RefusalUnreadableRequest
 	}
-	requestID, _, _, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !ok {
+	if _, _, _, ok := agent.DecodeControlBehavior(ctx.ResponseContent); !ok {
 		return agent.RefusalNoDecision
-	}
-	if requestID != payload.ID {
-		return agent.RefusalOtherRequest
 	}
 	switch payload.Event {
 	case contracts.DeepseekHarnessControlEventApproval:
@@ -168,7 +183,16 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 		return err
 	}
 	toolName, _ := header["tool_name"].(string)
-	control := &nativeControl{event: event, toolName: toolName, agentID: sessionID, request: append([]byte(nil), request...), sink: sink, payload: content, publicationDone: make(chan struct{})}
+	callID, _ := header["tool_use_id"].(string)
+	if callID == "" && event == contracts.DeepseekHarnessControlEventUserQuestions {
+		wait, _ := header["wait"].(map[string]any)
+		callID, _ = wait["callId"].(string)
+	}
+	control := &nativeControl{
+		event: event, toolName: toolName, agentID: sessionID, instanceID: uuid.NewString(),
+		request: append([]byte(nil), request...), sink: sink, payload: content, publicationDone: make(chan struct{}),
+		replyCallID: callID, replyInputIDs: a.replyToolInputs(sessionID, callID),
+	}
 	a.Mu.Lock()
 	if a.controls[id] != nil {
 		a.Mu.Unlock()
@@ -193,7 +217,9 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 }
 
 func (a *Agent) publishRegisteredControl(id string, control *nativeControl) error {
-	err := control.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.agentID, RequestID: id, Payload: control.payload})
+	err := control.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: control.agentID, RequestID: id, InstanceID: control.instanceID, Payload: control.payload,
+	})
 	a.Mu.Lock()
 	current := a.controls[id] == control
 	control.published, control.ready = err == nil, true
@@ -201,8 +227,13 @@ func (a *Agent) publishRegisteredControl(id string, control *nativeControl) erro
 	if err != nil && current {
 		delete(a.controls, id)
 	}
+	var binding agent.NativeControlInputs
+	if current {
+		binding = control.takeReplyInputsLocked(id)
+	}
 	automatic := current && err == nil && a.canBypassControlLocked(control)
 	a.Mu.Unlock()
+	a.bindReplyControl(control.sink, binding)
 	if !current && err == nil {
 		control.sink.CancelControlRequest(id)
 	}
@@ -224,7 +255,7 @@ func (a *Agent) replyRemoteEvent(id string, outcome map[string]any) error {
 
 func (a *Agent) answerControl(raw []byte) error {
 	id, behavior, _, ok := agent.DecodeControlBehavior(raw)
-	if !ok || id == "" || behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny {
+	if !ok || id == "" || behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny {
 		return fmt.Errorf("DeepSeek Harness control response is invalid")
 	}
 	a.Mu.Lock()
@@ -243,7 +274,7 @@ func (a *Agent) answerControl(raw []byte) error {
 	var value any
 	if pending.event == contracts.DeepseekHarnessControlEventApproval {
 		value = "rejected"
-		if behavior == agent.ControlBehaviorAllow {
+		if behavior == contracts.ControlAnswerBehaviorAllow {
 			value = "allowed-once"
 		}
 	} else {
@@ -265,22 +296,13 @@ func (a *Agent) answerControl(raw []byte) error {
 		}
 		if len(questions.Questions) == 1 && questions.Questions[0].Intent != nil && questions.Questions[0].Intent.Kind == "plan-review" {
 			question := questions.Questions[0]
-			label := question.Intent.Approve
-			if behavior != agent.ControlBehaviorAllow {
-				label = ""
-				for _, option := range question.Options {
-					if option.Label != question.Intent.Approve {
-						label = option.Label
-						break
-					}
-				}
-			}
-			if label == "" {
-				return fmt.Errorf("DeepSeek Harness plan review has no requested choice")
+			label, err := planReviewLabel(question, behavior == contracts.ControlAnswerBehaviorAllow, agent.DecodeControlChoice(raw))
+			if err != nil {
+				return err
 			}
 			value = map[string]any{"answers": []map[string]any{{"id": question.ID, "selected": []string{label}}}}
 		} else {
-			if behavior != agent.ControlBehaviorAllow {
+			if behavior != contracts.ControlAnswerBehaviorAllow {
 				return a.sendControlOutcome(id, pending, map[string]any{"kind": "next"})
 			}
 			var answers []map[string]any
@@ -291,4 +313,31 @@ func (a *Agent) answerControl(raw []byte) error {
 		}
 	}
 	return a.sendControlOutcome(id, pending, map[string]any{"kind": "result", "value": value})
+}
+
+// planReviewLabel is the option of a plan review that an answer selects. An
+// approval selects the review's approve label. A refusal selects the
+// refusing option that the answer states as its choice, or the first one
+// when it states none: a review can offer several refusals, such as one that
+// also leaves plan mode, and the user chose one of them.
+func planReviewLabel(question nativeQuestion, approve bool, choice string) (string, error) {
+	approveLabel := question.Intent.Approve
+	if approve {
+		if choice != "" && choice != approveLabel {
+			return "", fmt.Errorf("DeepSeek Harness plan review approves with %q, not %q", approveLabel, choice)
+		}
+		if approveLabel == "" {
+			return "", fmt.Errorf("DeepSeek Harness plan review has no requested choice")
+		}
+		return approveLabel, nil
+	}
+	for _, option := range question.Options {
+		if option.Label != approveLabel && (choice == "" || option.Label == choice) {
+			return option.Label, nil
+		}
+	}
+	if choice != "" {
+		return "", fmt.Errorf("DeepSeek Harness plan review offers no refusal %q", choice)
+	}
+	return "", fmt.Errorf("DeepSeek Harness plan review has no requested choice")
 }

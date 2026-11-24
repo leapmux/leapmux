@@ -173,7 +173,7 @@ describe('fastAgentArchiveSource', () => {
     expect(JSON.stringify(raw)).toBe(original)
   })
 
-  it('keeps genuine ACP permissions, refusals, and dividers on the captured ACP plugin', () => {
+  it('keeps genuine ACP refusals and dividers on the captured ACP plugin', () => {
     const parsed = input({ stopReason: 'end_turn' }, undefined, AgentProvider.FAST_AGENT)
     expect(providerFor(AgentProvider.FAST_AGENT)?.transcript.classify(parsed).kind).toBe('result_divider')
     const call = providerToolCall(AgentProvider.FAST_AGENT, {
@@ -191,30 +191,5 @@ describe('fastAgentArchiveSource', () => {
       ],
     })
     expect(call).toMatchObject({ id: 'real-live', status: 'declined' })
-    const permission = providerFor(AgentProvider.FAST_AGENT)?.controls?.extractControl?.({
-      payload: {
-        method: 'session/request_permission',
-        params: {
-          toolCall: {
-            toolCallId: 'permission-call',
-            title: 'Execute',
-            kind: 'execute',
-            rawInput: { command: 'printf permission' },
-          },
-          options: [
-            { optionId: 'allow_once', kind: 'allow_once', name: 'Allow once' },
-          ],
-        },
-      },
-    })
-    expect(permission).toMatchObject({
-      kind: 'permission',
-      permission: {
-        command: 'printf permission',
-        options: [
-          { optionId: 'allow_once' },
-        ],
-      },
-    })
   })
 })

@@ -455,7 +455,7 @@ func TestPiManualCompactLeavesSimilarPromptsAndSteeringAlone(t *testing.T) {
 			})
 			var err error
 			if tc.steer {
-				err = rig.agent.SteerInput(tc.input, nil)
+				err = rig.agent.SteerInput(agent.SteerRequest{Content: tc.input})
 			} else {
 				err = rig.agent.SendInput(tc.input, nil)
 			}
@@ -499,7 +499,7 @@ func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
 		return nil, true, ""
 	})
 
-	require.NoError(t, rig.agent.SteerInput("steer this", nil))
+	require.NoError(t, rig.agent.SteerInput(agent.SteerRequest{Content: "steer this"}))
 
 	select {
 	case payload := <-gotPayload:

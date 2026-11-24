@@ -132,11 +132,12 @@ export async function stopHub(serverInfo: SeparateServerInfo): Promise<void> {
  */
 function spawnSeparateHub(listen: string, dataDir: string, output: ServerOutput): ChildProcess {
   const hubProc = spawnTestProcess(getGlobalState().binaryPath, [
+    'daemon',
     'hub',
     'run',
-    '-listen',
+    '--listen',
     listen,
-    '-data-dir',
+    '--data-dir',
     join(dataDir, 'hub'),
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],

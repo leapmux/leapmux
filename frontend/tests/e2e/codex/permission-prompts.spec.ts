@@ -151,7 +151,7 @@ codexTest.describe('codex permission requests', () => {
     await waitForSettingsHydrated(page, 'permissionMode')
     await expectSettingsOptionChosen(page, 'permissionMode-on-request')
     await exerciseRememberedAllow(native, {
-      scopeGroup: 'Allow as',
+      scopeGroup: 'Allow scope',
       scope: 'Command rule',
       firstCall: codexEscalatedCommandToolCall('rule-first', command),
       secondCall: codexEscalatedCommandToolCall('rule-second', command),
@@ -258,7 +258,7 @@ codexTest.describe('codex approval UI', () => {
     // and a second allow decision, and the CLI chooses that second decision. So the test checks the pills only when
     // the group renders. This spec exists for the approval round trip below, so a missing radio must not fail it.
     // The pills sit in the control actions of the composer, not in the banner.
-    const allowChoices = controlActions(page).getByRole('radiogroup', { name: 'Allow as' })
+    const allowChoices = controlActions(page).getByRole('radiogroup', { name: 'Allow scope' })
     if (await isMaybeVisible(allowChoices)) {
       const once = allowChoices.getByRole('radio', { name: 'Once' })
       await expect(once).toBeChecked()

@@ -9,12 +9,13 @@ import { MCP_ELICITATION_ACTION, MCP_ELICITATION_MODE } from '~/generated/contra
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import * as styles from '../ControlRequestBanner.css'
 import { MarkdownText } from '../MarkdownText'
+import { elicitationDecision } from './controlDecision'
 import { ControlDecisionFooter } from './ControlDecisionFooter'
 import { ControlJson } from './ControlJson'
 import { controlResponseErrorMessage, ReportedControlResponseError } from './controlResponseError'
-import { buildElicitationResponse, createElicitationForm, ELICITATION_ACCEPT_CHOICE, elicitationAcceptMetadata, elicitationFieldKey, elicitationURL } from './elicitationForm'
+import { createElicitationForm, ELICITATION_ACCEPT_CHOICE, elicitationAcceptChoiceKey, elicitationFieldKey, elicitationURL } from './elicitationForm'
 import { PermissionRequestContent } from './PermissionRequestContent'
-import { createControlChoice, sendResponse } from './types'
+import { createControlChoice } from './types'
 
 export const ElicitationContent: Component<ContentProps & { elicitation: ElicitationRequest }> = (props) => {
   const form = createMemo(() => createElicitationForm(props.elicitation.schema, props.elicitation.fieldRules))
@@ -160,7 +161,8 @@ export const ElicitationActions: Component<ActionsProps & { elicitation: Elicita
   const canAccept = () => props.elicitation.mode === MCP_ELICITATION_MODE.Form
     ? !!answer().content
     : props.elicitation.mode === MCP_ELICITATION_MODE.URL && !!elicitationURL(props.elicitation.url)
-  const choice = createControlChoice(() => props.answerState, ELICITATION_ACCEPT_CHOICE, 'once')
+  const choice = createControlChoice(() => props.answerState, ELICITATION_ACCEPT_CHOICE)
+  const acceptChoiceKey = () => elicitationAcceptChoiceKey(props.elicitation, props.answerState.choices())
   const choicePill = createMemo(() => {
     const options = props.elicitation.acceptChoices ?? []
     if (options.length < 2 || !isPillOptions(options))
@@ -168,9 +170,7 @@ export const ElicitationActions: Component<ActionsProps & { elicitation: Elicita
     return {
       label: 'Allow as',
       options,
-      selected: options.some(option => option.key === choice.choice())
-        ? choice.choice()!
-        : options[0].key,
+      selected: acceptChoiceKey(),
       onSelect: choice.setChoice,
     }
   })
@@ -182,9 +182,9 @@ export const ElicitationActions: Component<ActionsProps & { elicitation: Elicita
     setPending(true)
     setError('')
     try {
-      await sendResponse(props.onRespond, buildElicitationResponse(props.request.requestId, action, props.elicitation.mode === MCP_ELICITATION_MODE.Form
+      await props.onDecide(elicitationDecision(action, props.elicitation.mode === MCP_ELICITATION_MODE.Form
         ? answer().content
-        : undefined, elicitationAcceptMetadata(props.elicitation, props.answerState.choices())))
+        : undefined, acceptChoiceKey()))
     }
     catch (error) {
       if (!(error instanceof ReportedControlResponseError))

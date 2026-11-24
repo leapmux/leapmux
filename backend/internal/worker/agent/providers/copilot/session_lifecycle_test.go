@@ -163,13 +163,13 @@ func TestNativeCopilotSteerSendsImmediateMode(t *testing.T) {
 
 	// A steer owns no turn: with nothing running it must refuse rather than
 	// start one, the way every other provider's steer refuses.
-	require.ErrorIs(t, a.SteerInput("too early", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "too early"}), agent.ErrNoActiveTurn)
 
 	require.NoError(t, a.SendInput("first", nil))
 	state := a.PublishTurnActive()
 	require.True(t, state.Active)
 	require.True(t, state.Steerable, "an active Copilot turn must be published steerable")
-	require.NoError(t, a.SteerInput("steered", nil))
+	require.NoError(t, a.SteerInput(testCopilotSteerRequest("steered")))
 
 	file, err := os.Open(requestsPath)
 	require.NoError(t, err)

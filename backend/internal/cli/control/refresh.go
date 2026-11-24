@@ -53,7 +53,7 @@ const (
 // ErrCredentialRejected reports a credential the hub refused permanently:
 // revoked, reused, or past its absolute lifetime. doRefresh deletes the
 // stored file before this reaches a caller, so the next command reports
-// ErrNotLoggedIn, whose message already specifies the remedy.
+// ErrNotLoggedIn, whose envelope states the remedy.
 var ErrCredentialRejected = errors.New("this hub credential is no longer valid")
 
 // ErrCredentialsNotSaved reports a rotation that the hub COMMITTED and this
@@ -91,7 +91,7 @@ var credsMu sync.Mutex
 //   - A permanent rejection (ErrCredentialRejected) is fatal. The stored
 //     file is already deleted and the stale access token specifies the same
 //     revoked row, so the call that follows can only answer Unauthenticated
-//     -- and the message that specifies `leapmux control auth login` would be
+//     -- and the message that specifies `leapmux auth login` would be
 //     replaced by the hub's bare refusal.
 //   - EnsureFreshBearer swallows a transient failure with a token still
 //     INSIDE its lifetime. That token may well work, and turning a brief
@@ -354,8 +354,8 @@ type TokenResponseBody = refreshBody
 // or the credential reached its absolute lifetime. It reports
 // ErrCredentialRejected and touches NO local state; doRefresh deletes the
 // stored file, under the same lock that owns every other write to it, so the
-// next command answers ErrNotLoggedIn -- whose message specifies
-// `leapmux control auth login` -- instead of retrying a credential that can
+// next command answers ErrNotLoggedIn -- whose envelope states
+// `leapmux auth login` -- instead of retrying a credential that can
 // never work again.
 //
 // It reuses the client's OWN transport rather than building one. For a

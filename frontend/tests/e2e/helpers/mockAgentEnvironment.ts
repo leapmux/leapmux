@@ -316,9 +316,17 @@ export async function createMockAgentEnvironment(
   ])
     mkdirSync(directory, { recursive: true })
 
-  // macOS zsh's system login profile rebuilds PATH. Reapply the private shims
-  // after that profile, so Junie's `security` probe cannot reach the keychain.
-  const privatePath = `export PATH=${quotePosixShellArgument(cliShimsDir)}:"$PATH"\n`
+  // macOS zsh's system login profile rebuilds PATH: path_helper moves every
+  // system directory first. Reapply the private shims after that profile, so
+  // Junie's `security` probe cannot reach the keychain. Reapply the directory of
+  // the Worker's own CLI too: a `leapmux` that the developer installed in a
+  // system directory would otherwise run in an agent's tool instead of the
+  // binary under test.
+  const privatePath = [
+    `export PATH=${quotePosixShellArgument(cliShimsDir)}:"$PATH"`,
+    'if [[ -n $LEAPMUX_CONTROL_CLI ]]; then export PATH="$(dirname -- "$LEAPMUX_CONTROL_CLI"):$PATH"; fi',
+    '',
+  ].join('\n')
   for (const file of ['.zshrc', '.zlogin'])
     writeFileSync(join(homeDir, file), privatePath, { mode: 0o600 })
 
@@ -371,9 +379,9 @@ export async function createMockAgentEnvironment(
       NO_PROXY: LOOPBACK_NO_PROXY,
       no_proxy: LOOPBACK_NO_PROXY,
       // The mock is also the HTTPS proxy of the `leapmux dev` process, and so of
-      // the hub, the worker, the terminal shells and every agent. It refuses each
-      // tunnel, so a request to a real host fails at once instead of leaving the
-      // machine. Kiro needs this: its engine opens remote sessions on Kiro's own
+      // the hub, the worker, the terminal shells and every agent. It refuses
+      // tunnels except Qoder's two startup hosts, which it serves from the local TLS mock.
+      // Kiro needs this: its engine opens remote sessions on Kiro's own
       // host, and no setting moves that request.
       //
       // There is NO plain-HTTP proxy, and none may be added. The mock's own origin

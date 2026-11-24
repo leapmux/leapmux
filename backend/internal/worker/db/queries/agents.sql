@@ -107,6 +107,10 @@ UPDATE agents SET title = ?, title_auto_generated = 0 WHERE id = ?;
 -- name: UpdateAgentSessionID :exec
 UPDATE agents SET agent_session_id = ?, pending_resume_session_id = '', session_start_seq = (SELECT COALESCE(MAX(m.seq), 0) FROM messages m WHERE m.agent_id = agents.id) WHERE agents.id = ?;
 
+-- name: BindChildSessionID :execrows
+UPDATE agents SET agent_session_id = sqlc.arg(agent_session_id)
+WHERE agents.id = sqlc.arg(id) AND parent_agent_id IS NOT NULL AND agent_session_id = '' AND closed_at IS NULL;
+
 -- MarkAgentResumedForInputRecovery records the durable intent to resume the
 -- stored native session before an approved process replacement
 -- for input recovery. Conditional on the CURRENT

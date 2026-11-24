@@ -20,6 +20,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -44,21 +45,15 @@ func TestRunWorkerPinsRemoveUpdatesAnExistingHandle(t *testing.T) {
 	waitingCommit, err := pins.Resolve(t.Context(), "worker-to-remove", []byte{1}, []byte{2}, []byte{3})
 	require.NoError(t, err)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerPinsRemove(fakeCmdCtx{}, []string{"--hub=" + hub, "--worker-id=worker-to-remove"}))
-	})
-	var reply struct {
-		Data map[string]string `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &reply))
-	assert.Equal(t, map[string]string{"removed_worker_id": "worker-to-remove"}, reply.Data)
+	reply := runControl(t, "worker", "pins", "remove", "worker-to-remove", "--hub", hub).Data(t)
+	assert.Equal(t, map[string]any{"worker_id": "worker-to-remove", "removed": true}, reply)
 	require.ErrorContains(t, waitingCommit(t.Context()), "removal revision changed")
 	after, err := pins.List(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, before[:1], after)
 }
 
-func TestRunWorkerPinsListAndShowDistinguishReadErrorsFromMissingPins(t *testing.T) {
+func TestRunWorkerPinsListAndGetDistinguishReadErrorsFromMissingPins(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 	const hub = "http://127.0.0.1:4327"
@@ -69,36 +64,18 @@ func TestRunWorkerPinsListAndShowDistinguishReadErrorsFromMissingPins(t *testing
 	path := filepath.Join(dir, host, "pins.json")
 	require.NoError(t, os.WriteFile(path, []byte("{invalid"), 0o644))
 
-	assertPinFailure := func(handler func(any, []string) error, args []string, code, detail string) {
-		t.Helper()
-		out := withCapturedStdout(t, func() {
-			require.Error(t, handler(fakeCmdCtx{}, args))
-		})
-		var reply struct {
-			Data  json.RawMessage   `json:"data"`
-			Error map[string]string `json:"error"`
-		}
-		require.NoError(t, json.Unmarshal(out, &reply))
-		assert.Empty(t, reply.Data)
-		assert.Equal(t, code, reply.Error["code"])
-		assert.Contains(t, reply.Error["message"], detail)
+	list := func() cliOutcome {
+		return runControl(t, "worker", "pins", "list", "--hub", hub)
 	}
-
-	listArgs := []string{"--hub=" + hub}
-	showArgs := []string{"--hub=" + hub, "--worker-id=missing"}
-	assertPinFailure(RunWorkerPinsList, listArgs, "pins_list_failed", "parse pins")
-	assertPinFailure(RunWorkerPinsShow, showArgs, "pins_list_failed", "parse pins")
+	get := func() cliOutcome {
+		return runControl(t, "worker", "pins", "get", "missing", "--hub", hub)
+	}
+	assert.Contains(t, list().requireFailure(t, cli.CodeInternal).Message, "parse pins")
+	assert.Contains(t, get().requireFailure(t, cli.CodeInternal).Message, "parse pins")
 
 	require.NoError(t, os.WriteFile(path, []byte(`{"pins":{}}`), 0o644))
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerPinsList(fakeCmdCtx{}, listArgs))
-	})
-	var reply struct {
-		Data json.RawMessage `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &reply))
-	assert.JSONEq(t, "[]", string(reply.Data))
-	assertPinFailure(RunWorkerPinsShow, showArgs, "not_found", "no pin recorded")
+	assert.Equal(t, []any{}, list().Data(t)["pins"])
+	assert.Contains(t, get().requireFailure(t, cli.CodeNotFound).Message, "no worker key is pinned")
 }
 
 // TestRunWorkerListReadsEveryPage pins that `worker list` prints the workers
@@ -108,18 +85,18 @@ func TestRunWorkerListReadsEveryPage(t *testing.T) {
 	hub := &recordingHub{listWorkerPages: [][]string{{"worker-A"}, {"worker-B", "worker-C"}}}
 	startSpawnIPC(t, hub, nil)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerList(fakeCmdCtx{}, nil))
-	})
+	out := runControl(t, "worker", "list").ok(t)
 
 	var env struct {
-		Data  []map[string]any `json:"data"`
-		Error map[string]any   `json:"error"`
+		Data struct {
+			Workers []map[string]any `json:"workers"`
+		} `json:"data"`
+		Error map[string]any `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(out, &env))
 	require.Nil(t, env.Error)
-	ids := make([]any, 0, len(env.Data))
-	for _, row := range env.Data {
+	ids := make([]any, 0, len(env.Data.Workers))
+	for _, row := range env.Data.Workers {
 		ids = append(ids, row["id"])
 	}
 	assert.Equal(t, []any{"worker-A", "worker-B", "worker-C"}, ids)
@@ -136,9 +113,7 @@ func TestRunWorkerListPrintsAnEmptyListForNoWorkers(t *testing.T) {
 	hub := &recordingHub{listWorkerPages: [][]string{{}}}
 	startSpawnIPC(t, hub, nil)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerList(fakeCmdCtx{}, nil))
-	})
+	out := runControl(t, "worker", "list").ok(t)
 
 	var env struct {
 		Data  json.RawMessage `json:"data"`
@@ -146,27 +121,24 @@ func TestRunWorkerListPrintsAnEmptyListForNoWorkers(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(out, &env))
 	require.Nil(t, env.Error)
-	assert.JSONEq(t, "[]", string(env.Data))
+	assert.JSONEq(t, `{"workers":[]}`, string(env.Data))
 	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceListWorkersProcedure}, hub.called(), "an empty page with no cursor ends the listing")
 }
 
 // A hub that refuses the listing makes the verb print one error envelope and
-// no data. The hub reports a denial and an absence alike, so the code is
-// not_found.
+// no data, with the code of the hub's refusal.
 func TestRunWorkerListReportsARefusedListing(t *testing.T) {
 	hub := &recordingHub{}
 	startSpawnIPC(t, hub, nil)
 
-	out := withCapturedStdout(t, func() {
-		require.Error(t, RunWorkerList(fakeCmdCtx{}, nil))
-	})
+	out := runControl(t, "worker", "list").failed(t)
 
 	var env struct {
-		Data  json.RawMessage   `json:"data"`
-		Error map[string]string `json:"error"`
+		Data  json.RawMessage `json:"data"`
+		Error map[string]any  `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
-	assert.Equal(t, "not_found", env.Error["code"])
+	assert.Equal(t, "permission_denied", env.Error["code"])
 	assert.Contains(t, env.Error["message"], leapmuxv1connect.WorkerManagementServiceListWorkersProcedure)
 	assert.Empty(t, env.Data)
 }
@@ -178,38 +150,34 @@ func TestRunWorkerListReportsAListingTheHubDidNotEnd(t *testing.T) {
 	hub := &recordingHub{listWorkerPages: [][]string{{"worker-A"}, {"worker-B"}}, stallLastWorkerPage: true}
 	startSpawnIPC(t, hub, nil)
 
-	out := withCapturedStdout(t, func() {
-		require.Error(t, RunWorkerList(fakeCmdCtx{}, nil))
-	})
+	out := runControl(t, "worker", "list").failed(t)
 
 	var env struct {
-		Data  json.RawMessage   `json:"data"`
-		Error map[string]string `json:"error"`
+		Data  json.RawMessage `json:"data"`
+		Error map[string]any  `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
-	assert.Equal(t, "rpc_failed", env.Error["code"])
+	assert.Equal(t, "internal", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "the hub did not end the listing")
 	assert.Empty(t, env.Data)
 	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceListWorkersProcedure, leapmuxv1connect.WorkerManagementServiceListWorkersProcedure}, hub.called(),
 		"the loop stops at the first page whose cursor did not advance")
 }
 
-// `worker get` prints the worker through the same explicit map as `worker
-// list`. Each instant prints as a string in the CLI's one layout, where the
-// raw proto printed a protojson object.
+// `worker get` prints the worker through the same row as `worker list`. Each
+// instant prints as a string in the CLI's one layout, where the raw proto
+// printed a protojson object. A full id costs no list call.
 func TestRunWorkerGetPrintsTheWorkerRow(t *testing.T) {
 	created := time.Date(2026, 10, 31, 12, 30, 0, 0, time.UTC)
 	hub := &recordingHub{workers: []*leapmuxv1.Worker{{
-		Id:           "worker-A",
-		Online:       true,
+		Id:           fullTestID("worker-A"),
+		Online:       false,
 		CreatedAt:    timestamppb.New(created),
 		RegisteredBy: "u-1",
 	}}}
 	startSpawnIPC(t, hub, nil)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerGet(fakeCmdCtx{}, []string{"--worker-id", "worker-A"}))
-	})
+	out := runControl(t, "worker", "get", fullTestID("worker-A")).ok(t)
 
 	var env struct {
 		Data  map[string]any `json:"data"`
@@ -218,30 +186,32 @@ func TestRunWorkerGetPrintsTheWorkerRow(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out, &env))
 	require.Nil(t, env.Error)
 	assert.Equal(t, map[string]any{
-		"id":              "worker-A",
-		"online":          true,
+		"id":              fullTestID("worker-A"),
+		"online":          false,
 		"registered_by":   "u-1",
 		"auto_registered": false,
 		"created_at":      created.Format(timeFormat),
 	}, env.Data)
-	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called())
+	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called(),
+		"an offline worker is not asked for its name")
 }
 
-// TestWorkerToMapPrintsInstantsAsStrings pins the worker JSON shape. Each
+// TestWorkerRowOfPrintsInstantsAsStrings pins the worker JSON shape. Each
 // instant prints in the CLI's one time layout, and an unset instant (a worker
 // that never connected has no last-seen time) is omitted rather than printed
 // as an empty object or a zero time.
-func TestWorkerToMapPrintsInstantsAsStrings(t *testing.T) {
+func TestWorkerRowOfPrintsInstantsAsStrings(t *testing.T) {
 	created := time.Date(2026, 10, 31, 12, 30, 0, 0, time.UTC)
-	row := workerToMap(&leapmuxv1.Worker{
+	row := jsonMap(t, workerRowOf(&leapmuxv1.Worker{
 		Id:             "worker-A",
 		Online:         true,
 		CreatedAt:      timestamppb.New(created),
 		RegisteredBy:   "u-1",
 		AutoRegistered: true,
-	})
+	}, "build-box"))
 	assert.Equal(t, map[string]any{
 		"id":              "worker-A",
+		"name":            "build-box",
 		"online":          true,
 		"registered_by":   "u-1",
 		"auto_registered": true,
@@ -249,21 +219,22 @@ func TestWorkerToMapPrintsInstantsAsStrings(t *testing.T) {
 	}, row)
 
 	seen := created.Add(time.Minute)
-	row = workerToMap(&leapmuxv1.Worker{Id: "worker-B", CreatedAt: timestamppb.New(created), LastSeenAt: timestamppb.New(seen)})
+	row = jsonMap(t, workerRowOf(&leapmuxv1.Worker{Id: "worker-B", CreatedAt: timestamppb.New(created), LastSeenAt: timestamppb.New(seen)}, ""))
 	assert.Equal(t, seen.Format(timeFormat), row["last_seen_at"])
 	assert.Equal(t, false, row["online"], "an offline worker still prints its online flag")
+	assert.NotContains(t, row, "name", "a worker that reported no name prints none")
 }
 
-// TestWorkerToMap_CarriesEveryFieldOfWorker is the tripwire for the explicit
-// map. A field that the Worker message gains prints nowhere until workerToMap
+// TestWorkerRowOf_CarriesEveryFieldOfWorker is the tripwire for the explicit
+// row. A field that the Worker message gains prints nowhere until workerRowOf
 // prints it, and an operator's script then reads an absent key, not an error.
 // The two booleans also run one at a time, so a swap between them fails.
-func TestWorkerToMap_CarriesEveryFieldOfWorker(t *testing.T) {
+func TestWorkerRowOf_CarriesEveryFieldOfWorker(t *testing.T) {
 	worker := &leapmuxv1.Worker{}
 	assertRowMapperCarriesEveryField(t, rowMapper{
-		name:   "workerToMap",
+		name:   "workerRowOf",
 		msg:    worker,
-		render: func() map[string]any { return workerToMap(worker) },
+		render: func() any { return workerRowOf(worker, "") },
 		keys: map[string]string{
 			"id":              "id",
 			"online":          "online",
@@ -334,11 +305,10 @@ func TestRunWorkerInfoPrintsTheWorkerReport(t *testing.T) {
 	hub := &recordingHub{workers: workerRows("worker-A")}
 	startSpawnIPC(t, hub, disp)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerInfo(fakeCmdCtx{}, []string{"--worker-id", "worker-A"}))
-	})
+	out := runControl(t, "worker", "info", "worker-A").ok(t)
 
 	assert.Equal(t, map[string]any{
+		"id":       "worker-A",
 		"name":     "build-box",
 		"os":       "linux",
 		"arch":     "arm64",
@@ -353,27 +323,10 @@ func TestRunWorkerInfoPrintsTheWorkerReport(t *testing.T) {
 		},
 	}, envelopeData(t, out))
 	assert.Equal(t, []string{leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure}, disp.called())
-	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called(),
-		"the hub answers only the preflight: the report comes from the worker")
-}
-
-// --tab-id reaches the same report through the worker that hosts the tab, as
-// it does for `worker get`.
-func TestRunWorkerInfoResolvesTheWorkerFromATab(t *testing.T) {
-	disp := &systemInfoDispatcher{info: sampleWorkerSystemInfo()}
-	hub := &recordingHub{
-		workers:   workerRows("worker-A"),
-		locateTab: &leapmuxv1.WorkspaceTab{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "term-1"}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
-	}
-	startSpawnIPC(t, hub, disp)
-
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerInfo(fakeCmdCtx{}, []string{"--tab-id", "term-1"}))
-	})
-
-	assert.Equal(t, "/home/amy", envelopeData(t, out)["home_dir"])
-	assert.Contains(t, hub.called(), leapmuxv1connect.WorkspaceServiceLocateTabProcedure)
-	assert.Equal(t, []string{leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure}, disp.called())
+	assert.Equal(t, []string{
+		leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
+		leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
+	}, hub.called(), "the hub resolves the short id and answers the preflight: the report comes from the worker")
 }
 
 // A spawned process inherits the worker id, so `worker info` with no flag
@@ -383,9 +336,7 @@ func TestRunWorkerInfoDefaultsToTheSpawningWorker(t *testing.T) {
 	startSpawnIPC(t, &recordingHub{}, disp)
 	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerInfo(fakeCmdCtx{}, nil))
-	})
+	out := runControl(t, "worker", "info").ok(t)
 
 	assert.Equal(t, "build-box", envelopeData(t, out)["name"],
 		"the report must arrive although this bearer may not read GetWorker")
@@ -397,34 +348,29 @@ func TestRunWorkerInfoPrintsAnEmptyBuildForAnAbsentOne(t *testing.T) {
 	disp := &systemInfoDispatcher{info: &leapmuxv1.GetWorkerSystemInfoResponse{Name: "build-box"}}
 	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerInfo(fakeCmdCtx{}, []string{"--worker-id", "worker-A"}))
-	})
+	out := runControl(t, "worker", "info", "worker-A").ok(t)
 
 	assert.Equal(t, map[string]any{
+		"id":       "worker-A",
 		"name":     "build-box",
 		"os":       "",
 		"arch":     "",
 		"home_dir": "",
-		"build": map[string]any{
-			"version": "", "commit": "", "commit_time": "", "build_time": "", "branch": "", "formatted": "",
-		},
+		"build":    map[string]any{"version": "", "formatted": ""},
 	}, envelopeData(t, out))
 }
 
-// With no worker to ask, the verb refuses before it calls anything.
+// With no worker to ask (and no sole online worker on the hub), the verb
+// refuses before it contacts any worker.
 func TestRunWorkerInfoRequiresAWorker(t *testing.T) {
 	disp := &systemInfoDispatcher{info: sampleWorkerSystemInfo()}
 	hub := &recordingHub{}
 	startSpawnIPC(t, hub, disp)
 
-	out := withCapturedStdout(t, func() {
-		require.Error(t, RunWorkerInfo(fakeCmdCtx{}, nil))
-	})
+	out := runControl(t, "worker", "info").failed(t)
 
-	assert.Equal(t, "invalid_request", envelopeError(t, out)["code"])
+	assert.Equal(t, "usage", envelopeError(t, out)["code"])
 	assert.Empty(t, disp.called())
-	assert.Empty(t, hub.called())
 }
 
 // An id that the hub does not know answers not_found from the preflight, so
@@ -433,28 +379,25 @@ func TestRunWorkerInfoRefusesAnUnknownWorker(t *testing.T) {
 	disp := &systemInfoDispatcher{info: sampleWorkerSystemInfo()}
 	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 
-	out := withCapturedStdout(t, func() {
-		require.Error(t, RunWorkerInfo(fakeCmdCtx{}, []string{"--worker-id", "worker-ghost"}))
-	})
+	ghost := fullTestID("worker-ghost")
+	out := runControl(t, "worker", "info", ghost).failed(t)
 
 	got := envelopeError(t, out)
 	assert.Equal(t, "not_found", got["code"])
-	assert.Equal(t, "no such worker: worker-ghost", got["message"])
+	assert.Equal(t, "no such worker: "+ghost, got["message"])
 	assert.Empty(t, disp.called(), "a rejected worker id must not reach the worker")
 }
 
-// An in-band refusal from the worker prints one rpc_error envelope and no
-// report.
+// An in-band refusal from the worker prints one envelope with the worker's
+// code, and no report.
 func TestRunWorkerInfoReportsARefusalFromTheWorker(t *testing.T) {
 	disp := &systemInfoDispatcher{refusal: "this worker belongs to another account"}
 	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 
-	out := withCapturedStdout(t, func() {
-		require.Error(t, RunWorkerInfo(fakeCmdCtx{}, []string{"--worker-id", "worker-A"}))
-	})
+	out := runControl(t, "worker", "info", "worker-A").failed(t)
 
 	got := envelopeError(t, out)
-	assert.Equal(t, "rpc_error", got["code"])
+	assert.Equal(t, "permission_denied", got["code"])
 	assert.Contains(t, got["message"], "this worker belongs to another account")
 	assert.NotContains(t, string(out), `"home_dir"`)
 }
@@ -465,23 +408,21 @@ type unreachableSibling struct {
 	controlipc.CrossWorkerClient
 }
 
-func (unreachableSibling) CallInner(context.Context, string, userid.UserID, string, []byte) ([]byte, error) {
+func (unreachableSibling) CallInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	return nil, connect.NewError(connect.CodeUnavailable, "worker is offline")
 }
 
 // Over the local transport, an offline sibling worker answers one
-// channel_open_failed envelope, the code a script sees on the hub transport.
+// worker_offline envelope, the code a script sees on the hub transport.
 func TestRunWorkerInfoReportsAnOfflineWorkerOverLocalIPC(t *testing.T) {
 	disp := &systemInfoDispatcher{info: sampleWorkerSystemInfo()}
 	hub := &recordingHub{workers: workerRows("worker-A", "worker-B")}
 	startSpawnIPC(t, hub, disp, func(r *controlipc.Router) { r.CrossWorker = unreachableSibling{} })
 
-	out := withCapturedStdout(t, func() {
-		require.Error(t, RunWorkerInfo(fakeCmdCtx{}, []string{"--worker-id", "worker-B"}))
-	})
+	out := runControl(t, "worker", "info", "worker-B").failed(t)
 
 	got := envelopeError(t, out)
-	assert.Equal(t, "channel_open_failed", got["code"])
+	assert.Equal(t, "worker_offline", got["code"])
 	assert.Contains(t, got["message"], "worker is offline")
 	assert.Empty(t, disp.called(), "the local worker must not answer for its sibling")
 }
@@ -503,7 +444,7 @@ func (offlineWorkerHub) GetWorkerHandshakeParams(context.Context, *leapmuxv1.Get
 }
 
 // Over the hub transport, `worker info` needs a channel to the worker, so an
-// offline worker answers one channel_open_failed envelope. `worker get` keeps
+// offline worker answers one worker_offline envelope. `worker get` keeps
 // working in that state, because only the hub answers it.
 func TestRunWorkerInfoReportsAnOfflineWorkerOverTheHub(t *testing.T) {
 	isolateCLIEnv(t)
@@ -521,16 +462,13 @@ func TestRunWorkerInfoReportsAnOfflineWorkerOverTheHub(t *testing.T) {
 		HubURL: srv.URL, AccessToken: "lmx_a_at_1", ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
-	out := withCapturedStdout(t, func() {
-		require.Error(t, RunWorkerInfo(fakeCmdCtx{}, []string{"--hub", srv.URL, "--worker-id", "worker-B"}))
-	})
+	workerB := fullTestID("worker-B")
+	out := runControl(t, "worker", "info", "--hub", srv.URL, workerB).failed(t)
 
 	got := envelopeError(t, out)
-	assert.Equal(t, "channel_open_failed", got["code"])
+	assert.Equal(t, "worker_offline", got["code"])
 	assert.Contains(t, got["message"], "worker is offline")
 
-	out = withCapturedStdout(t, func() {
-		require.NoError(t, RunWorkerGet(fakeCmdCtx{}, []string{"--hub", srv.URL, "--worker-id", "worker-B"}))
-	})
-	assert.Equal(t, "worker-B", envelopeData(t, out)["id"])
+	out = runControl(t, "worker", "get", "--hub", srv.URL, workerB).ok(t)
+	assert.Equal(t, workerB, envelopeData(t, out)["id"])
 }

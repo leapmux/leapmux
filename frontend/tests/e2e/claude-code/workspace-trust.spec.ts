@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
-import { claudeExtractControl } from '../../../src/components/chat/providers/claude/extractControl'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -14,7 +13,6 @@ import { quotePosixShellArgument } from '../helpers/shellArguments'
 claudeTest('classifies an actual native permission and confirms the absent workspace-trust route', async ({ native }) => {
   await exerciseMissingWorkspaceTrustRoute(native, {
     askOption: 'permissionMode-default',
-    classify: claudeExtractControl,
     operation: () => outsideFileWriteOperation((callId, command) => bashToolCall(AgentProvider.CLAUDE_CODE, callId, command)),
   })
 })

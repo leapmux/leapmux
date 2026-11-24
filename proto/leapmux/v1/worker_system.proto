@@ -16,6 +16,12 @@ service WorkerSystemService {
   rpc GetWorkerSystemInfo(GetWorkerSystemInfoRequest) returns (GetWorkerSystemInfoResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
+  rpc GetWorkerSkills(GetWorkerSkillsRequest) returns (GetWorkerSkillsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+  rpc UpdateWorkerSkills(UpdateWorkerSkillsRequest) returns (UpdateWorkerSkillsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
 }
 
 message PingRequest {}
@@ -30,4 +36,43 @@ message GetWorkerSystemInfoResponse {
   string arch = 3;
   string home_dir = 4;
   BuildInfo build = 5; // the worker's build
+}
+
+message GetWorkerSkillsRequest {}
+
+message WorkerSkillStatus {
+  string name = 1;
+  string description = 2;
+  bool enabled = 3;
+  // On-disk state in the primary target directory: not_installed, up_to_date,
+  // outdated, modified, or unmanaged.
+  string state = 4;
+  string installed_version = 5;
+  string bundled_version = 6;
+  string path = 7;
+}
+
+message GetWorkerSkillsResponse {
+  bool auto_sync = 1;
+  repeated string targets = 2;
+  string primary_skills_dir = 3;
+  repeated WorkerSkillStatus skills = 4;
+}
+
+message UpdateWorkerSkillsRequest {
+  optional bool auto_sync = 1;
+  // When true, replace the enabled skill set with enabled_skills (installing
+  // newly enabled skills and removing newly disabled unmanaged-clean skills).
+  bool update_enabled_skills = 2;
+  repeated string enabled_skills = 3;
+  // When non-empty, replace the target list ("agents", "claude", "codex", "cursor", "gemini").
+  repeated string targets = 4;
+  // When true, immediately sync all enabled skills into the configured targets.
+  bool sync_now = 5;
+  // When true, overwrite locally modified or unmanaged skills during sync/removal.
+  bool force = 6;
+}
+
+message UpdateWorkerSkillsResponse {
+  GetWorkerSkillsResponse state = 1;
 }

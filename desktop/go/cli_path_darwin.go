@@ -20,58 +20,6 @@ import (
 // Intel and a no-op on a clean Apple Silicon machine (no Homebrew).
 const cliSymlinkDst = "/usr/local/bin/leapmux"
 
-// cliBinaryName is the basename of the CLI both inside the .app and on PATH.
-const cliBinaryName = "leapmux"
-
-func bundledCliPath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	return resolveBundledCli(exe)
-}
-
-// resolveBundledCli returns the path to the bundled leapmux CLI given the
-// running sidecar's executable path. Two layouts are supported:
-//
-//  1. Production .app: the desktop build's `cp leapmux …/Contents/MacOS/`
-//     step puts the CLI as a direct sibling of the sidecar inside the
-//     .app bundle. <exe-dir>/leapmux is the production path.
-//
-//  2. Dev (`task dev-desktop`): the sidecar runs from
-//     <repo>/desktop/go/bin/leapmux-desktop-service-<triple>, and the
-//     CLI is built into <repo>/leapmux by `task build-backend`. Climb
-//     four parents above the exe to reach the repo root and look there.
-//
-// The production check runs first, so a real .app install never accidentally
-// resolves to a stray `leapmux` file four levels up its parent chain.
-func resolveBundledCli(exe string) string {
-	if p := filepath.Join(filepath.Dir(exe), cliBinaryName); isRegularExecutable(p) {
-		return p
-	}
-	if root := parentN(exe, 4); root != "" {
-		if p := filepath.Join(root, cliBinaryName); isRegularExecutable(p) {
-			return p
-		}
-	}
-	return ""
-}
-
-// parentN returns the directory n levels above path, or "" if the chain
-// bottoms out at the filesystem root before n hops complete. filepath.Dir
-// is idempotent at "/" / drive roots, so the loop has to detect that
-// itself rather than trust a fixed N applications.
-func parentN(path string, n int) string {
-	for i := 0; i < n; i++ {
-		next := filepath.Dir(path)
-		if next == path {
-			return ""
-		}
-		path = next
-	}
-	return path
-}
-
 func lookupOnSystemPath() string {
 	return findOnPath(os.Getenv("PATH"))
 }
@@ -93,20 +41,6 @@ func findOnPath(pathEnv string) string {
 		}
 	}
 	return ""
-}
-
-// isRegularExecutable returns true when path is a regular file (after
-// following symlinks) with at least one exec bit set. Directories named
-// "leapmux" and unreadable entries are rejected.
-func isRegularExecutable(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	if !info.Mode().IsRegular() {
-		return false
-	}
-	return info.Mode().Perm()&0o111 != 0
 }
 
 // classify returns the PATH status comparing the bundled CLI against the

@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -208,6 +209,8 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 		script = buildNuCommand(shellSpec, prepared)
 	case shell == "fish":
 		script = buildFishCommand(shellSpec, prepared)
+	case shell == "elvish":
+		script = buildElvishCommand(shellSpec, prepared)
 	case shell == "xonsh":
 		script = buildXonshCommand(shellSpec, prepared)
 	case isCsh(shell):
@@ -310,10 +313,18 @@ func writeNuInvocation(path, name string, count int) error {
 func buildNuCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	// `^"<program>"` is Nushell's documented form for running an external
 	// command whose path contains a space.
-	return nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n" +
+	return nuLaunchEnvironment(spec) +
 		nuLaunchArguments(spec.WrapSpec, prepared.MetaPrefix) +
 		prepared.nuReadiness(spec.EnvGated == nil, "") +
 		"^" + nuQuote(spec.Launch.Program) + " ...$__lm_args\n"
+}
+
+// nuLaunchEnvironment is the head of both Nushell builders. It runs after the
+// profile: it puts the directory of the Worker's CLI first on PATH again (see
+// nuReprependControlCLI), then removes StripEnvKeys and sets the pins, so a
+// PATH that a provider pins wins.
+func nuLaunchEnvironment(spec shellLaunchSpec) string {
+	return nuReprependControlCLI + nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n"
 }
 
 // legacyNativeArgument quotes one token for the Windows native command-line
@@ -395,24 +406,30 @@ func cshClearEnv(keys []string) string {
 	return strings.Join(parts, "; ") + "; "
 }
 
+// nuClearEnv removes environment variables the Nushell way. The `%` sigil calls
+// the builtin even when the profile defines a command of the same name.
 func nuClearEnv(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
 	parts := make([]string, len(keys))
 	for i, key := range keys {
-		parts[i] = "hide-env -i " + key
+		parts[i] = "%hide-env -i " + key
 	}
 	return strings.Join(parts, "; ") + "; "
 }
 
+// pwshClearEnv removes environment variables the PowerShell way. PowerShell
+// runs a function or an alias before a cmdlet of the same name, and a profile
+// can define either, so the step calls the cmdlet by its module-qualified
+// name, as pwshSetEnv does.
 func pwshClearEnv(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
 	parts := make([]string, len(keys))
 	for i, key := range keys {
-		parts[i] = "Remove-Item Env:" + key + " -ErrorAction SilentlyContinue"
+		parts[i] = "Microsoft.PowerShell.Management\\Remove-Item -LiteralPath " + shellquote.PowerShell.Quote("Env:"+key) + " -ErrorAction SilentlyContinue"
 	}
 	return strings.Join(parts, "; ") + "; "
 }
@@ -464,12 +481,14 @@ func cshEnvSeed(vars []string) string {
 }
 
 // nuEnvCondition builds a Nushell conditional expression that checks
-// whether any of vars is set and non-empty.
-// e.g. `($env | get -o VAR1 | default "") != "" or ...`
+// whether any of vars is set and non-empty. The `%` sigil calls each builtin
+// even when the profile defines a command of the same name. For example:
+//
+//	($env | %get -o VAR1 | %default '') != '' or ...
 func nuEnvCondition(vars []string) string {
 	parts := make([]string, len(vars))
 	for i, v := range vars {
-		parts[i] = fmt.Sprintf("($env | get -o %s | default '') != ''", v)
+		parts[i] = fmt.Sprintf("($env | %%get -o %s | %%default '') != ''", v)
 	}
 	return strings.Join(parts, " or ")
 }

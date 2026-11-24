@@ -116,8 +116,11 @@ var newlyDelegationReachable = map[string]string{
 	// reach: verifyDelegationWorkerScope still refuses an OpenChannel aimed at
 	// any worker outside the token's DelegationWorkerScope, so enumerating the
 	// fleet does not make a second machine reachable.
-	leapmuxv1connect.WorkerManagementServiceListWorkersProcedure: "worker:read is the scope that opens a channel, which a delegation bearer must do; the listing shares it and no narrower scope splits them",
-	leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure:   "shares worker:read with OpenChannel; see ListWorkers above",
+	leapmuxv1connect.WorkerManagementServiceListWorkersProcedure:                 "worker:read is the scope that opens a channel, which a delegation bearer must do; the listing shares it and no narrower scope splits them",
+	leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure:                   "shares worker:read with OpenChannel; see ListWorkers above",
+	leapmuxv1connect.WorkerManagementServiceGetWorkerEnrollmentRevisionProcedure: "reads the version of the authenticated owner's ListWorkers inventory",
+
+	leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure: "reads only the authenticated owner's layout journal and validates the signed scope on every resume",
 
 	// The workspace and sidebar lifecycle. SubmitOps was already admitted, and
 	// it mutates the whole layout document -- closing tabs, moving them, and

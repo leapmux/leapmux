@@ -16,6 +16,7 @@
     "loopStatuses",
     "modes",
     "reply",
+    "behaviors",
     "question",
     "stopReasons",
     "toolOutput",
@@ -163,8 +164,14 @@
     "reply": {
       "$ref": "#/$defs/table"
     },
+    "behaviors": {
+      "$ref": "#/$defs/table"
+    },
     "question": {
       "$ref": "#/$defs/table"
+    },
+    "structs": {
+      "$ref": "#/$defs/structs"
     },
     "stopReasons": {
       "$ref": "#/$defs/table"

@@ -21,6 +21,7 @@ account, and connected apps.
   {{< card link="/docs/using/device-sync/" title="Device Sync" icon="users" subtitle="What syncs live across your devices." >}}
   {{< card link="/docs/using/file-browser/" title="File Browser" icon="folder" subtitle="Browse files with live git status and inline diffs." >}}
   {{< card link="/docs/using/control-cli/" title="Control CLI" icon="terminal" subtitle="Drive LeapMux from a script, CI job, or another agent." >}}
+  {{< card link="/docs/using/agent-skills/" title="Agent Skills" icon="sparkles" subtitle="Install and auto-sync curated multi-agent SKILL.md playbooks." >}}
   {{< card link="/docs/using/keyboard-shortcuts/" title="Keyboard Shortcuts" icon="adjustments" subtitle="The default keybindings, by context." >}}
   {{< card link="/docs/using/settings/" title="Settings & Preferences" icon="adjustments" subtitle="Appearance, fonts, sounds, and account settings." >}}
   {{< card link="/docs/using/accounts/" title="Accounts & Authentication" icon="user" subtitle="Sign up, sign in, and link OAuth providers." >}}

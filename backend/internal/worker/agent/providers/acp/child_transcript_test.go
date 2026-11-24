@@ -12,6 +12,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBindAttachedChildSessionRecordsTheCurrentTarget(t *testing.T) {
+	t.Parallel()
+	b, _ := newChildRouteBase(t)
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "native-key", ChildAgentKey: "native-key", Title: "Native child", Status: bgtask.StatusRunning})
+	target := ChildSessionTarget{RootSessionID: "session-1", SessionID: "native-child-session", RowKey: "native-key"}
+	var capturedSession string
+	capture := func(services agent.ProviderServices) error {
+		capturedSession = services.MessageSessionID()
+		return nil
+	}
+	require.ErrorIs(t, b.BindAttachedChildSession(target), agent.ErrChildRouteNotReady)
+	require.True(t, b.AttachChildSession(target))
+	foreign := target
+	foreign.RootSessionID = "previous-root"
+	require.ErrorIs(t, b.BindAttachedChildSession(foreign), agent.ErrChildRouteNotReady)
+	require.ErrorIs(t, b.WithChildTranscript(target, capture), agent.ErrChildRouteNotReady)
+	require.NoError(t, b.BindAttachedChildSession(target))
+	require.NoError(t, b.WithChildTranscript(target, capture))
+	assert.Equal(t, target.SessionID, capturedSession)
+}
+
+func TestChildSessionUpdateIdentityObservesOnlyTheAcceptedNativeRoute(t *testing.T) {
+	t.Parallel()
+	b, _ := newChildRouteBase(t)
+	target := ChildSessionTarget{RootSessionID: "session-1", SessionID: "native-child-session", RowKey: "native-key"}
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: target.RowKey, ChildAgentKey: target.RowKey, ChildAgentSessionID: target.SessionID, Title: "Native child", Status: bgtask.StatusRunning})
+	require.True(t, b.AttachChildSession(target))
+	var observed []string
+	b.hooks.ChildSessionUpdateIdentity = func(sessionID, rowKey, updateType string, metadata map[string]json.RawMessage) string {
+		observed = append(observed, sessionID, rowKey, updateType, string(metadata["stream"]))
+		return "native-message"
+	}
+	update := acpSessionUpdate{
+		SessionID: target.SessionID,
+		Update:    json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"child reply"}}`),
+		Meta:      map[string]json.RawMessage{"stream": json.RawMessage(`"native-stream"`)},
+	}
+	require.True(t, b.FeedChildUpdate(target.RowKey, update.Update))
+	assert.Empty(t, observed)
+	foreign := update
+	foreign.SessionID = "another-child-session"
+	require.False(t, b.feedChildUpdate(target.RowKey, foreign))
+	assert.Empty(t, observed)
+	require.True(t, b.feedChildUpdate(target.RowKey, update))
+	assert.Equal(t, []string{target.SessionID, target.RowKey, "agent_message_chunk", `"native-stream"`}, observed)
+}
+
 func TestReviveChildRowValidatesItsExactNativeRoute(t *testing.T) {
 	t.Parallel()
 	for _, changed := range []string{"valid", "root", "child", "row", "write refused"} {

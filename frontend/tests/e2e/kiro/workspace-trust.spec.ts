@@ -1,7 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { kiroExtractControl } from '../../../src/components/chat/providers/kiro/extractControl'
 import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contracts/kiro-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { writeMcpEchoServer } from '../helpers/mcpEchoServer'
@@ -15,7 +14,7 @@ import { kiroToolInputSchema } from './toolCatalog'
 import { kiroToolResult } from './toolResult'
 
 kiroTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
-  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'policyPreset-ask', classify: kiroExtractControl })
+  await exerciseMissingWorkspaceTrustRoute(native, { askOption: 'policyPreset-ask' })
 })
 
 kiroTest('loads project MCP configuration without a workspace trust decision', async ({ native }) => {

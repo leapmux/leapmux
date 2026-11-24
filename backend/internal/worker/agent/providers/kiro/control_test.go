@@ -53,6 +53,7 @@ func TestKiroControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T)
 	// session, so each dialog passes the session guard and reaches the reader.
 	a.SetSessionIDForTest("test-session")
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, a.HandleOutput, contracts.KiroMethodUserInput)
+	agenttest.AssertPublishedControlKeys(t, kiroProvider{}, sink)
 }
 
 func TestKiroInterruptCancelsBeforeReleasingPendingControls(t *testing.T) {
@@ -253,7 +254,7 @@ func TestKiroResolvedInteractionAfterTheAnswerCancelsNothing(t *testing.T) {
 		"result": map[string]any{"action": contracts.KiroUserInputActionAnswered, "answer": "Postgres"},
 	})
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(sink.Answer(requestID, answer)))
 	syncPeer(t, a)
 
 	// Kiro reports every resolution, the reader's own answer included.
@@ -358,11 +359,11 @@ func TestKiroWithdrawalAnswersEachOpenDialog(t *testing.T) {
 	a.HandleOutput(elicitationRequest(t, 22, "m_ask"))
 	require.Equal(t, 2, sink.PublishedControlCount())
 
-	a.WithdrawAllControlRequests(a.Sink())
+	a.WithdrawAllControlRequests()
 	syncPeer(t, a)
 
 	answers := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
-	assert.JSONEq(t, `{"action":"dismissed"}`, answers["21"], "Kiro reads a dismissed question as no answer")
+	assert.JSONEq(t, `{"action":"dismissed"}`, answers["21"], "the withdrawal dismisses the open question")
 	assert.JSONEq(t, `{"action":"cancel"}`, answers["22"])
 	assert.Len(t, sink.CanceledControls(), 2, "every card retires")
 }

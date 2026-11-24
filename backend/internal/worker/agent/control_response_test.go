@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 )
@@ -51,20 +52,20 @@ func TestDecodeControlBehavior(t *testing.T) {
 		`{"response":{"request_id":" req-1 ","response":{"behavior":" deny ","message":" not this way "}}}`))
 	assert.True(t, ok)
 	assert.Equal(t, "req-1", id)
-	assert.Equal(t, ControlBehaviorDeny, behavior)
+	assert.Equal(t, contracts.ControlAnswerBehaviorDeny, behavior)
 	assert.Equal(t, "not this way", message)
 
-	// The ControlRejectedByUserMessage placeholder is collapsed to "" -- a bare rejection carries
+	// The contracts.ControlAnswerMessageRejectedByUser placeholder is collapsed to "" -- a bare rejection carries
 	// no reason, so both the Codex feedback path and the Cursor transform treat it as empty.
 	_, _, message, ok = DecodeControlBehavior([]byte(
 		`{"response":{"request_id":"req-2","response":{"behavior":"deny","message":"Rejected by user."}}}`))
 	assert.True(t, ok)
-	assert.Empty(t, message, "the ControlRejectedByUserMessage placeholder collapses to \"\"")
+	assert.Empty(t, message, "the contracts.ControlAnswerMessageRejectedByUser placeholder collapses to \"\"")
 
 	// An allow with no message.
 	_, behavior, message, ok = DecodeControlBehavior([]byte(`{"response":{"request_id":"req-3","response":{"behavior":"allow"}}}`))
 	assert.True(t, ok)
-	assert.Equal(t, ControlBehaviorAllow, behavior)
+	assert.Equal(t, contracts.ControlAnswerBehaviorAllow, behavior)
 	assert.Empty(t, message)
 
 	// Malformed JSON: ok is false and every field is empty.
@@ -95,15 +96,15 @@ func TestNormalizeRejectionMessage(t *testing.T) {
 	// A typed reason surfaces trimmed.
 	assert.Equal(t, "not this way", NormalizeRejectionMessage("  not this way  "))
 	// The auto-filled placeholder collapses to "" (no real feedback), including when padded.
-	assert.Empty(t, NormalizeRejectionMessage(ControlRejectedByUserMessage))
-	assert.Empty(t, NormalizeRejectionMessage("  "+ControlRejectedByUserMessage+"  "))
+	assert.Empty(t, NormalizeRejectionMessage(contracts.ControlAnswerMessageRejectedByUser))
+	assert.Empty(t, NormalizeRejectionMessage("  "+contracts.ControlAnswerMessageRejectedByUser+"  "))
 	// A genuinely empty / whitespace reason is "".
 	assert.Empty(t, NormalizeRejectionMessage(""))
 	assert.Empty(t, NormalizeRejectionMessage("   \n "))
 	// DecodeControlBehavior and NormalizeRejectionMessage apply the SAME rule -- the sentinel
 	// collapse must not drift between the raw-bytes decoder and the shared helper.
 	_, _, decoded, ok := DecodeControlBehavior([]byte(
-		`{"response":{"request_id":"r","response":{"behavior":"deny","message":"  ` + ControlRejectedByUserMessage + `  "}}}`))
+		`{"response":{"request_id":"r","response":{"behavior":"deny","message":"  ` + contracts.ControlAnswerMessageRejectedByUser + `  "}}}`))
 	assert.True(t, ok)
-	assert.Equal(t, NormalizeRejectionMessage("  "+ControlRejectedByUserMessage+"  "), decoded)
+	assert.Equal(t, NormalizeRejectionMessage("  "+contracts.ControlAnswerMessageRejectedByUser+"  "), decoded)
 }

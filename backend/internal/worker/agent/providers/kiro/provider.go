@@ -21,9 +21,9 @@ const kiroPermissionMethod = "session/request_permission"
 // it adds what only Kiro knows: where its session store lives, its attachment
 // policy, its to-do list, and the replies of its own dialogs.
 //
-// The browser answers each dialog in the shared shape of its surface: an MCP
-// form with the neutral elicitation envelope, a question with Kiro's own
-// reply, and a permission with the selected option of the protocol's reply.
+// AnswerControlRequest answers each dialog in a shared shape: an MCP form with
+// the neutral elicitation envelope, a question with Kiro's own reply, and a
+// permission with the selected option of the protocol's reply.
 // This type rewrites the two that Kiro cannot read as they come: the form, and
 // a permission option that LeapMux states for a wider consent scope.
 type kiroProvider struct {
@@ -55,8 +55,8 @@ func (kiroProvider) Classify(content json.RawMessage) agent.NotificationClassifi
 }
 
 // ResolveControlResponse rewrites the answer of a dialog that Kiro cannot read
-// as the browser sends it, and forwards every other answer through the shared
-// ACP resolution.
+// as AnswerControlRequest builds it, and forwards every other answer through
+// the shared ACP resolution.
 func (p kiroProvider) ResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	var request struct {
 		Method string `json:"method"`
@@ -85,8 +85,8 @@ type kiroScopedOption struct {
 	scope    string
 }
 
-// kiroScopedOptions maps each consent-scoped option that the browser states
-// onto Kiro's own always option and its consent scope.
+// kiroScopedOptions maps each consent-scoped option that the prompt states
+// (kiroPermissionOptions) onto Kiro's own always option and its consent scope.
 var kiroScopedOptions = map[string]kiroScopedOption{
 	contracts.KiroScopedPermissionOptionAlwaysAcceptWorkspace: {optionID: contracts.KiroPermissionOptionAlwaysAccept, scope: contracts.KiroConsentScopeWorkspace},
 	contracts.KiroScopedPermissionOptionAlwaysAcceptUser:      {optionID: contracts.KiroPermissionOptionAlwaysAccept, scope: contracts.KiroConsentScopeUser},
@@ -106,8 +106,9 @@ type kiroSelectedOutcome struct {
 // Kiro offers one `always-accept` and one `always-reject`. Each keeps its rule
 // for the session, and each reads a wider scope from the reply's
 // `_meta.kiro.consent.scope`: the workspace, or every workspace of the user.
-// The browser states the wider scopes as options of their own, so the reader
-// picks one with the scope pills of the shared decision row. This turns such
+// The prompt states the wider scopes as options of their own
+// (kiroPermissionOptions), so the reader picks one with the scope pills of the
+// shared decision row. This turns such
 // an option back into Kiro's own option with its scope.
 //
 // Every other answer passes on as the shared resolution built it. These
@@ -118,7 +119,7 @@ type kiroSelectedOutcome struct {
 //     option. Kiro offers `always-accept` only for an implicit ask whose rule
 //     can persist, and `always-reject` only for an ask whose rule can persist.
 //   - The workspace scope for a request that states no workspace root in its
-//     consent. The browser offers that scope only with a root.
+//     consent. The prompt offers that scope only with a root.
 func resolveKiroPermission(ctx agent.ControlResponseContext, shared agent.ControlResponseResolution) agent.ControlResponseResolution {
 	if shared.Withhold || len(shared.Content) == 0 {
 		return shared

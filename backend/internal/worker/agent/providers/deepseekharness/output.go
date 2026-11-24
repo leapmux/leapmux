@@ -34,6 +34,7 @@ var silentSessionEvents = map[string]struct{}{
 }
 
 type assistantMessageEventData struct {
+	Turn    *int64 `json:"turn"`
 	Message struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -70,6 +71,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 	case contracts.DeepseekHarnessEventTurnStart:
 		stream.tools = 0
 		stream.startedAt = event.Time
+		a.beginReplyTurn(stream, event.Data)
 		if stream.childAgentID == "" {
 			a.setTurnState(true)
 		} else if stream.replay != nil {
@@ -111,29 +113,46 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			blockContent.IdempotencyKey += fmt.Sprintf(":block:%d", index)
 			blockContent.Supplemental = supplemental
 			blockContent.Completion = completion
+			var reply *harnessReplyTurn
+			if block.Type == contracts.DeepseekHarnessContentTypeText {
+				reply = a.replyTurnForText(stream.sessionID, data.Turn)
+			}
+			if reply != nil {
+				blockContent.NativeTurnID = reply.id
+			}
 			if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, blockContent, agent.SpanInfo{}); !agent.OutputRetained(err) {
 				return err
 			}
+			if reply != nil {
+				reply.recordText(blockContent.IdempotencyKey)
+			}
 		}
 	case contracts.DeepseekHarnessEventUserMessage:
-		if stream.childAgentID == "" {
-			var message struct {
-				Source struct {
-					RPCID string `json:"rpcId"`
-				} `json:"source"`
-			}
-			if err := json.Unmarshal(event.Data, &message); err != nil {
+		var message struct {
+			Source struct {
+				Kind  string `json:"kind"`
+				RPCID string `json:"rpcId"`
+			} `json:"source"`
+		}
+		if err := json.Unmarshal(event.Data, &message); err != nil {
+			if stream.childAgentID == "" {
 				return err
 			}
-			a.Mu.Lock()
-			a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(steer *pendingSteer) bool {
-				if steer.requestID != message.Source.RPCID {
-					return false
-				}
-				steer.delivered = true
-				return true
-			})
-			a.Mu.Unlock()
+		} else {
+			if stream.childAgentID == "" {
+				a.Mu.Lock()
+				a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(steer *pendingSteer) bool {
+					if steer.requestID != message.Source.RPCID {
+						return false
+					}
+					steer.delivered = true
+					return true
+				})
+				a.Mu.Unlock()
+			}
+			if message.Source.Kind == nativeUserSourceKind && message.Source.RPCID != "" {
+				a.bindReplyInput(stream, message.Source.RPCID)
+			}
 		}
 		if stream.childAgentID != "" && isUnstoredChildInput(event.Data) {
 			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
@@ -168,6 +187,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		var call struct {
 			ID   string `json:"callId"`
 			Name string `json:"name"`
+			Turn *int64 `json:"turn"`
 		}
 		if err := json.Unmarshal(event.Data, &call); err != nil || call.ID == "" || call.Name == "" {
 			return fmt.Errorf("DeepSeek Harness tool call has no identity")
@@ -181,6 +201,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: call.ID, SpanType: call.Name, SpanColor: sink.ReserveSpanColor(call.ID, "")}); !agent.OutputRetained(err) {
 			return err
 		}
+		a.recordReplyToolCall(stream.sessionID, call.ID, call.Turn)
 		stream.tools++
 		stream.pendingOrder = append(stream.pendingOrder, call.ID)
 		stream.pending[call.ID] = append([]byte(nil), raw...)
@@ -214,18 +235,20 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		sink.CloseSpan(id)
 	case contracts.DeepseekHarnessEventTurnEnd:
 		completion := nativeTurnCompletion(event.Data)
+		var end struct {
+			Turn   *int64 `json:"turn"`
+			Reason struct {
+				Kind  string `json:"kind"`
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"reason"`
+		}
+		if err := json.Unmarshal(event.Data, &end); err != nil && stream.childAgentID == "" {
+			return err
+		}
 		if stream.childAgentID == "" {
 			a.retryResolution.Reset()
-			var end struct {
-				Reason struct {
-					Error struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				} `json:"reason"`
-			}
-			if err := json.Unmarshal(event.Data, &end); err != nil {
-				return err
-			}
 			a.flushPendingErrors(end.Reason.Error.Message)
 			a.lastTurnError = end.Reason.Error.Message
 		}
@@ -247,6 +270,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		if completion == agent.MessageCompletionInterrupted {
 			providerkit.ResetSpansAndProgress(sink)
 		}
+		a.finishReplyTurn(stream.sessionID, end.Turn, end.Reason.Kind)
 		if stream.childAgentID == "" {
 			a.setTurnState(false)
 		} else if stream.replay != nil {

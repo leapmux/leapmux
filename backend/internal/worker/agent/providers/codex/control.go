@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -96,8 +95,9 @@ func (a *Agent) publishAsyncQuestions(sink agent.ProviderServices, event codexIt
 			slog.Error("codex marshal async question", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
 			continue
 		}
-		// The native identity remains the same after a restart or a repeated event.
-		identity, _ := json.Marshal([]any{event.threadID, event.itemID, index})
+		// An exact repeat keeps its claim across restart. A changed question
+		// requires a fresh claim, even when Codex keeps the same item ID.
+		identity, _ := json.Marshal([]any{event.threadID, event.itemID, index, json.RawMessage(payload)})
 		instanceID := fmt.Sprintf("%x", sha256.Sum256(identity))
 		if err := sink.PublishControlRequest(agent.ControlRequest{
 			AgentSessionID: event.threadID, RequestID: requestID, InstanceID: instanceID,
@@ -127,40 +127,11 @@ func codexAsyncQuestionOptions(options []string) []string {
 // encodeCodexQuestionItemID builds the identity that Codex's reply carries for
 // one question: the compact JSON the browser's own JSON.stringify produces.
 func encodeCodexQuestionItemID(itemID string, index int) (string, error) {
-	encoded, err := encodeCodexJSON([]any{codexAsyncQuestionTool, itemID, index})
+	encoded, err := providerkit.JSONStringify([]any{codexAsyncQuestionTool, itemID, index})
 	if err != nil {
 		return "", err
 	}
 	return string(encoded), nil
-}
-
-// encodeCodexJSON encodes like the browser's JSON.stringify. Go's encoder
-// escapes <, > and & by default, and the browser's does not.
-func encodeCodexJSON(value any) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return nil, err
-	}
-	encoded := bytes.TrimRight(buffer.Bytes(), "\n")
-	output := encoded[:0]
-	for index := 0; index < len(encoded); {
-		if encoded[index] != '\\' || index+1 == len(encoded) {
-			output = append(output, encoded[index])
-			index++
-			continue
-		}
-		// JSON.stringify retains these separators. Escaped backslashes stay unchanged.
-		if index+6 <= len(encoded) && bytes.Equal(encoded[index:index+5], []byte(`\u202`)) && (encoded[index+5] == '8' || encoded[index+5] == '9') {
-			output = append(output, 0xe2, 0x80, 0xa8+encoded[index+5]-'8')
-			index += 6
-			continue
-		}
-		output = append(output, encoded[index:index+2]...)
-		index += 2
-	}
-	return output, nil
 }
 
 // resolveCodexAsyncQuestionResponse reads the neutral answer to one async
@@ -181,14 +152,14 @@ func resolveCodexAsyncQuestionResponse(res agent.ControlResponseResolution, cont
 	}
 	answer := strings.TrimSpace(envelope.Response.Response.Answer)
 	switch strings.TrimSpace(envelope.Response.Response.Behavior) {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		if answer == "" {
 			res.Refuse(agent.RefusalUnreadableAnswer)
 			return res
 		}
 		res.LeapMuxOwned = true
 		res.FollowUp = agent.QuestionAnswerFollowUp(answer)
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		res.LeapMuxOwned = true
 	default:
 		res.Refuse(agent.RefusalUnreadableAnswer)
@@ -227,7 +198,7 @@ func (codexProvider) QuestionReply(requestPayload json.RawMessage, answer string
 		Question       string `json:"question"`
 		QuestionItemID string `json:"questionItemId"`
 	}{Answer: answer, Question: question, QuestionItemID: input.QuestionItemID}
-	encoded, err := encodeCodexJSON([]any{entry})
+	encoded, err := providerkit.JSONStringify([]any{entry})
 	if err != nil {
 		return "", fmt.Errorf("encode the question reply: %w", err)
 	}
@@ -254,8 +225,9 @@ func codexQuestionLine(title string) string {
 // question, a form that asks for data, and a decision request that offers no plain
 // approval.
 //
-// The browser's Allow sends the same shapes; testdata/codex_approval_answer_conformance.json
-// states both answers for each request kind, and both suites replay it.
+// The answer to the user's Allow sends the same shapes;
+// testdata/codex_approval_answer_conformance.json states both answers for each
+// request kind, and a test replays each half.
 func codexStandingApprovalAnswer(payload []byte) (answer any, ok bool) {
 	var request struct {
 		Method string          `json:"method"`
@@ -287,7 +259,7 @@ func codexStandingApprovalAnswer(payload []byte) (answer any, ok bool) {
 
 // codexStandingDecision returns the approval decision that a standing approval sends:
 // accept when Codex offers it, else acceptForSession. A request that lists no
-// decisions offers accept, as the browser also assumes.
+// decisions offers accept, as codexDecisionChoices also assumes.
 func codexStandingDecision(params json.RawMessage) (string, bool) {
 	var request struct {
 		AvailableDecisions []json.RawMessage `json:"availableDecisions"`
@@ -364,28 +336,29 @@ func codexIsToolCallApprovalElicitation(params json.RawMessage) bool {
 // approval is read AGAIN after the registration, so a switch to Bypass that ran
 // between the two reads still answers the request.
 func (a *Agent) publishApprovalRequest(line *providerkit.ParsedLine, cancelAnswer any) {
+	sink := a.codexReplyControlSink(line.Params)
 	answer, approvable := codexStandingApprovalAnswer(line.Raw)
 	if !approvable {
-		a.PublishControlRequest(a.sink, line.Raw, cancelAnswer)
+		a.PublishControlRequest(sink, line.Raw, cancelAnswer)
 		return
 	}
 	a.Mu.Lock()
-	queued := a.bypassActiveLocked() && a.ApproveUnpublishedControlRequest(a.sink, line.Raw, cancelAnswer, answer)
+	queued := a.bypassActiveLocked() && a.ApproveUnpublishedControlRequest(sink, line.Raw, cancelAnswer, answer)
 	a.Mu.Unlock()
 	if queued {
 		return
 	}
-	a.registerApprovalRequest(line.Raw, cancelAnswer, answer)
+	a.registerApprovalRequest(sink, line.Raw, cancelAnswer, answer)
 }
 
 // registerApprovalRequest publishes a permission request with its approval answer, then
 // reads the standing approval again. A switch to Bypass whose sweep ran before this
 // registration found no record, so this second read is what answers the request.
-func (a *Agent) registerApprovalRequest(raw []byte, cancelAnswer, answer any) {
-	publication := a.PublishControlRequestWithApproval(a.sink, raw, cancelAnswer, answer)
+func (a *Agent) registerApprovalRequest(sink agent.ControlServices, raw []byte, cancelAnswer, answer any) {
+	publication := a.PublishControlRequestWithApproval(sink, raw, cancelAnswer, answer)
 	a.Mu.Lock()
 	if publication.RequestID != "" && a.bypassActiveLocked() {
-		a.ApproveOutstandingControlRequest(a.sink, publication)
+		a.ApproveOutstandingControlRequest(publication)
 	}
 	a.Mu.Unlock()
 }
@@ -399,7 +372,7 @@ func (a *Agent) approveOutstandingForBypass() {
 	if !a.bypassActiveLocked() {
 		return
 	}
-	a.ApproveOutstandingControlRequests(a.sink, func(count int) {
+	a.ApproveOutstandingControlRequests(func(count int) {
 		if count == 0 {
 			return
 		}
@@ -415,8 +388,8 @@ func (a *Agent) approveOutstandingForBypass() {
 // Codex JSON-RPC control request registers in the outstanding registry, so an absent
 // record means that a reader answer, a withdrawal, or a standing approval already
 // closed the request, and a second answer must not reach Codex.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
-	return a.SendRawInputToOutstandingRequest(data, stop)
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	return a.SendRawInputToOutstandingRequest(input)
 }
 
 // codexAutoReviewNotification is the part of an item/autoApprovalReview/completed

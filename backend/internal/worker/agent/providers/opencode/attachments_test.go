@@ -188,7 +188,7 @@ func TestFamilyAudioSteerRefusalKeepsTheParentTurnActive(t *testing.T) {
 	a, requests, _ := newFamilyAudioAgent(t, familyAudioAgentConfig{status: http.StatusOK, catalog: familyAudioCatalog})
 	a.SetCurrentModel("private/text")
 	require.True(t, a.BeginAgentTurn())
-	require.ErrorContains(t, a.SteerInput("listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}), "does not accept audio attachments")
+	require.ErrorContains(t, a.SteerInput(agent.SteerRequest{Content: "listen", Attachments: []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}}), "does not accept audio attachments")
 	assert.Empty(t, audioPromptRequests(t, a, requests))
 	assert.True(t, a.PromptActive())
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
@@ -702,6 +703,16 @@ func TestCapturedNotificationKeepsItsOriginalNativeSession(t *testing.T) {
 func TestCapturedOldTurnCannotPublishCompletionForReplacementTurn(t *testing.T) {
 	t.Parallel()
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	svc.EnableSemanticEvents()
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
+	journal := svc.semanticEvents.journal.Load()
+	require.NotNil(t, journal)
+	tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: ownerID}
+	_, initial, err := journal.Open(t.Context(), tab, nil)
+	require.NoError(t, err)
 	writer := &testResponseWriter{channelID: "captured-old-completion"}
 	registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	sink.SetTurnState(agent.TurnState{Active: true}, 1)
@@ -716,6 +727,17 @@ func TestCapturedOldTurnCannotPublishCompletionForReplacementTurn(t *testing.T) 
 		}
 	}
 	assert.Zero(t, completions)
+	reader, start, err := journal.Open(t.Context(), tab, initial.GetCursor())
+	require.NoError(t, err)
+	page, _, err := reader.Read(t.Context(), start.GetAfterSequence())
+	require.NoError(t, err)
+	var retained int
+	for _, frame := range page {
+		if frame.GetRecord().GetFact().GetAgentTurnEnd() != nil {
+			retained++
+		}
+	}
+	assert.Equal(t, 1, retained, "the stored unkeyed completion remains a historical fact")
 	activity := svc.Output.activityFor(ownerID, ownerID)
 	activity.mu.Lock()
 	assert.Nil(t, activity.settledToolUses)

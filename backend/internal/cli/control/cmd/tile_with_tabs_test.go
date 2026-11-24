@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
@@ -36,19 +40,20 @@ func TestParseWithTabsPolicy(t *testing.T) {
 		_, err := parseWithTabsPolicy("delete")
 		return err
 	})
-	assert.Equal(t, "invalid_request", code)
+	assert.Equal(t, "usage", code)
 	assert.Contains(t, msg, "close")
 	assert.Contains(t, msg, "move")
 }
 
 // TestKindLabel covers the user-facing strings used in error
-// messages. UNSPECIFIED falls back to the proto's enum string so an
-// unknown future kind doesn't print as "" and erase context.
+// messages. UNSPECIFIED and a kind this build does not know print as
+// "unknown", so a message never loses the kind to an empty string.
 func TestKindLabel(t *testing.T) {
-	assert.Equal(t, "LEAF", kindLabel(leapmuxv1.NodeKind_NODE_KIND_LEAF))
-	assert.Equal(t, "SPLIT", kindLabel(leapmuxv1.NodeKind_NODE_KIND_SPLIT))
-	assert.Equal(t, "GRID", kindLabel(leapmuxv1.NodeKind_NODE_KIND_GRID))
-	assert.NotEmpty(t, kindLabel(leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED))
+	assert.Equal(t, "leaf", kindLabel(leapmuxv1.NodeKind_NODE_KIND_LEAF))
+	assert.Equal(t, "split", kindLabel(leapmuxv1.NodeKind_NODE_KIND_SPLIT))
+	assert.Equal(t, "grid", kindLabel(leapmuxv1.NodeKind_NODE_KIND_GRID))
+	assert.Equal(t, "unknown", kindLabel(leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED))
+	assert.Equal(t, "unknown", kindLabel(leapmuxv1.NodeKind(99)))
 }
 
 // TestFindHeirTileID_TwoLeafSplit covers the canonical case: a SPLIT
@@ -204,4 +209,43 @@ func TestLiveTabsInSubtree(t *testing.T) {
 	}
 	sort.Strings(ids)
 	assert.Equal(t, []string{"live-1", "live-2"}, ids)
+}
+
+func TestRunTileCloseRecursiveProtectsTheCallingTabInADescendant(t *testing.T) {
+	for _, override := range []bool{false, true} {
+		name := "refuses the close"
+		if override {
+			name = "allows the explicit override"
+		}
+		t.Run(name, func(t *testing.T) {
+			hub := &recordingHub{
+				onSubmitOps: func(context.Context) ([]byte, error) {
+					return proto.Marshal(&leapmuxv1.SubmitOpsResponse{Results: []*leapmuxv1.BatchResult{{}}})
+				},
+				materialized: newStateBuilder().
+					workspace("ws-1", "root").
+					splitNode("root", "", "m").
+					splitNode("inner", "root", "a").
+					leafNode("own-leaf", "inner", "a").
+					leafNode("other-leaf", "inner", "b").
+					leafNode("survivor", "root", "b").
+					tabOnWorker("agent-1", "own-leaf", "worker-A", leapmuxv1.TabType_TAB_TYPE_AGENT).
+					st,
+			}
+			startSpawnIPC(t, hub, &closeDispatcher{})
+			t.Setenv("LEAPMUX_CONTROL_TAB_ID", "agent-1")
+			args := []string{"tile", "close", "inner", "--recursive", "--with-tabs", "close"}
+			if override {
+				out := runControl(t, append(args, "--allow-self")...)
+				assert.Equal(t, float64(1), out.Data(t)["tabs_closed"])
+				assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+				return
+			}
+			out := runControl(t, args...)
+			assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+			failure := out.requireFailure(t, cli.CodeSelfTargetRefused)
+			assert.Contains(t, failure.Message, "inner")
+			assert.Contains(t, failure.Hints, "pass --allow-self to do it anyway")
+		})
+	}
 }

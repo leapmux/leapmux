@@ -2301,6 +2301,75 @@ describe('WorkspaceTabTree subagent nesting', () => {
   })
 })
 
+// The status a process reported (`leapmux control tab status set`), beside
+// the tab's title in the sidebar, as in the tab strip.
+describe('WorkspaceTabTree tab status', () => {
+  function renderTabs(tabs: () => Tab[]) {
+    renderTree(() => (
+      <WorkspaceTabTree
+        repoGitStore={repoGitStore}
+        tabs={tabs()}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
+        workspaceId="ws-status"
+      />
+    ))
+  }
+
+  it('shows the status of the tab that has one, and only there', () => {
+    renderTabs(() => [
+      {
+        ...makeTab(TabType.AGENT, 'a1', 'Builder'),
+        tabStatus: { text: 'Migrating rows', progressPercent: 0, tone: 'success' },
+      } as Tab,
+      makeTab(TabType.AGENT, 'a2', 'Quiet'),
+    ])
+
+    const [builder, quiet] = screen.getAllByTestId('tab-tree-leaf')
+    if (builder === undefined || quiet === undefined)
+      throw new Error('expected two leaf rows')
+    const status = within(builder).getByTestId('tab-status')
+    expect(status).toHaveAttribute('data-tone', 'success')
+    expect(within(status).getByTestId('tab-status-text')).toHaveTextContent('Migrating rows')
+    expect(within(status).getByRole('progressbar'), 'a progress of 0 is an empty ring').toHaveAttribute('aria-valuenow', '0')
+    expect(within(quiet).queryByTestId('tab-status')).toBeNull()
+  })
+
+  // A status changes without changing the tree's structure, so the row must
+  // follow it in place, the way it follows a title.
+  it('follows a status that is set and cleared on a live row', () => {
+    const [status, setStatus] = createSignal<Tab['tabStatus']>(undefined)
+    // Rendered here rather than through renderTabs: solid/reactivity rejects an
+    // accessor handed to a plain helper.
+    renderTree(() => (
+      <WorkspaceTabTree
+        repoGitStore={repoGitStore}
+        tabs={[
+          {
+            ...makeTab(TabType.AGENT, 'a1', 'Builder'),
+            tabStatus: status(),
+          } as Tab,
+        ]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
+        workspaceId="ws-status-live"
+      />
+    ))
+    const leaf = () => screen.getByTestId('tab-tree-leaf')
+    expect(within(leaf()).queryByTestId('tab-status')).toBeNull()
+
+    setStatus({ text: 'Waiting for review', progressPercent: undefined, tone: 'warning' })
+    expect(within(leaf()).getByTestId('tab-status-text')).toHaveTextContent('Waiting for review')
+
+    setStatus(undefined)
+    expect(within(leaf()).queryByTestId('tab-status')).toBeNull()
+  })
+})
+
 // The unseen-activity marker: on a tab row for its own notification, and on a
 // COLLAPSED group header for anything folded under it.
 describe('WorkspaceTabTree activity marker', () => {

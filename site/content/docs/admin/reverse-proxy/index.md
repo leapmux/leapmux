@@ -14,7 +14,7 @@ The Hub serves two kinds of traffic on one port:
 | Traffic | Path | How the proxy forwards it |
 |---|---|---|
 | The Worker's stream, web app live updates, and encrypted channels | `/ws/` | HTTP/1.1 WebSocket upgrades that stay open for hours |
-| The web app, its API calls, Worker registration, and `leapmux control` | Every other path | HTTP/1.1 or HTTP/2 |
+| The web app, its API calls, Worker registration, and `leapmux` | Every other path | HTTP/1.1 or HTTP/2 |
 
 The Hub pings each WebSocket, including the Worker's stream, every 10 seconds. Use an inactivity timeout of one minute or longer. Regular probes keep a healthy connection active through that timeout.
 
@@ -31,9 +31,9 @@ LeapMux does not support a sub-path such as `https://example.com/leapmux`, and t
 ## Configure the Hub
 
 1. Make the Hub listen on loopback only, so that clients can reach it only through the proxy. Set `listen: "127.0.0.1:4327"` in the Hub's configuration file; see [Configuration](/docs/admin/configuration/#production-hub-behind-a-reverse-proxy). In Docker, publish the port on loopback with `-p 127.0.0.1:4327:4327`.
-2. Set `public_url` to the external HTTPS URL: `leapmux control admin settings set public_url "https://hub.example.com"`.
-3. Enable secure cookies with `leapmux control admin settings set secure_cookies true`. This signs out current sessions, so configure it during initial setup.
-4. Trust the proxy's address with `leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'`. This example trusts a proxy on the same machine over IPv4 or IPv6. Use the actual address or range for a remote proxy. The Hub ignores the forwarding headers of a proxy that it does not trust.
+2. Set `public_url` to the external HTTPS URL: `leapmux admin settings set public_url "https://hub.example.com"`.
+3. Enable secure cookies with `leapmux admin settings set secure_cookies true`. This signs out current sessions, so configure it during initial setup.
+4. Trust the proxy's address with `leapmux admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'`. This example trusts a proxy on the same machine over IPv4 or IPv6. Use the actual address or range for a remote proxy. The Hub ignores the forwarding headers of a proxy that it does not trust.
 5. Register each Worker with `--hub` set to the same external `https://` address. A Worker keeps using the URL that it registered with. Workers always initiate outbound connections, so they need no inbound ports of their own.
 
 The Hub applies the three settings within about 30 seconds. No restart is needed. For the supported proxy address formats and forwarding headers, see [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
@@ -110,8 +110,8 @@ sudo systemctl reload apache2
 2. Register a Worker through the proxy, and start it. See [Managing Workers](/docs/admin/managing-workers/#register-a-worker).
 
    ```bash
-   leapmux worker register --hub https://hub.example.com --registration-key <key>
-   leapmux worker start
+   leapmux daemon worker register --hub https://hub.example.com --registration-key <key>
+   leapmux daemon worker start
    ```
 
    The registration prints `Worker registered.`, and the Worker appears in the sidebar **Workers** section.

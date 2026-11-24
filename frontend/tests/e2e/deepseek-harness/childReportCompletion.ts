@@ -1,3 +1,4 @@
+import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
@@ -9,6 +10,36 @@ import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeM
 import { nativeAgentById } from '../helpers/nativeScenario'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { deepseekHarnessChildReportRule } from './childReports'
+
+/**
+ * Resolve the identifier that DeepSeek Harness puts in `Background subagent <id> ...`.
+ * dsh 0.2.0-0.2.1 puts the child session ID; dsh 0.2.2+ puts the child's name (echoed by the parent's `subagent` tool result).
+ */
+export async function deepseekHarnessChildReportSubject(
+  context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
+  child: Pick<AgentInfo, 'agentSessionId' | 'spawnSpanId'>,
+  parentAgentId: string,
+): Promise<string> {
+  if (child.spawnSpanId) {
+    const snapshot = await readNativeMessageSnapshot(context, parentAgentId)
+    for (const row of snapshot.messages) {
+      const data = deepseekHarnessEventData(nativeMessageBody(row), DEEPSEEK_HARNESS_EVENT.ToolResult)
+      const message = pickObject(data, 'message')
+      if (message?.toolCallId !== child.spawnSpanId || !Array.isArray(message.content))
+        continue
+      const first = message.content[0]
+      const text = isObject(first) && typeof first.text === 'string'
+        ? first.text
+        : ''
+      if (text.startsWith('started subagent ')) {
+        const subject = text.slice('started subagent '.length).trim()
+        if (subject)
+          return subject
+      }
+    }
+  }
+  return child.agentSessionId
+}
 
 export async function finishDeepseekHarnessChild(finishChild: () => Promise<void>, waitForReport: () => Promise<void>): Promise<void> {
   await finishChild()
@@ -56,7 +87,8 @@ export async function waitForDeepseekHarnessChildReport(context: ManagedNativeSc
   ])
   if (!child?.agentSessionId || !parent?.agentSessionId || child.parentAgentId !== parentAgentId)
     throw new Error('The native child report has no exact stored parent and child Session owners.')
-  const rule = deepseekHarnessChildReportRule(child.agentSessionId)
+  const subject = await deepseekHarnessChildReportSubject(context, child, parentAgentId)
+  const rule = deepseekHarnessChildReportRule(subject)
   const server = context.leapmuxServer
   await retryUntilPass(async () => {
     const status = await context.modelScript.status()

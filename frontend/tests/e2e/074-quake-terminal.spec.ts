@@ -660,7 +660,7 @@ test.describe('Quake-mode terminal', () => {
    * `leapmux control terminal quake ...` sends a panel command to connected browsers.
    *
    * The command addresses a working directory.
-   * `--working-dir` defaults to $LEAPMUX_CONTROL_WORKING_DIR, so the bare command works inside the panel that it controls.
+   * `--dir` defaults to $LEAPMUX_CONTROL_WORKING_DIR, so the bare command works inside the panel that it controls.
    *
    * The Worker sends a transient event and stores no panel state.
    * Each browser keeps its own active tab and processes the event independently.
@@ -684,9 +684,9 @@ test.describe('Quake-mode terminal', () => {
         'terminal',
         'quake',
         'open',
-        '--worker-id',
+        '--worker',
         quakeServer.workerId,
-        '--working-dir',
+        '--dir',
         workingDir,
       ])
       await expect(panel(page)).toBeInViewport()
@@ -696,9 +696,9 @@ test.describe('Quake-mode terminal', () => {
         'terminal',
         'quake',
         'close',
-        '--worker-id',
+        '--worker',
         quakeServer.workerId,
-        '--working-dir',
+        '--dir',
         workingDir,
       ])
       await expect(panel(page)).not.toBeInViewport()
@@ -708,9 +708,9 @@ test.describe('Quake-mode terminal', () => {
         'terminal',
         'quake',
         'toggle',
-        '--worker-id',
+        '--worker',
         quakeServer.workerId,
-        '--working-dir',
+        '--dir',
         workingDir,
       ])
       await expect(panel(page)).toBeInViewport()

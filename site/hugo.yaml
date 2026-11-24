@@ -24,10 +24,25 @@ disableKinds: ["taxonomy", "term"]
 # CI must check out full history (fetch-depth: 0) for accurate per-file dates.
 enableGitInfo: true
 
-# Emit /llms.txt on the home page (Hextra's `llms` output format) alongside the
-# normal HTML + RSS, for AI crawlers. The template lives in the theme.
+# Emit /llms.txt on the home page (Hextra's `llms` output format) and a clean
+# Markdown companion (`/docs/.../index.md`) for every documentation page so
+# coding agents and LLM clients can read plain Markdown instead of HTML chrome.
+mediaTypes:
+  text/markdown:
+    suffixes:
+      - md
+
+outputFormats:
+  markdown:
+    mediaType: text/markdown
+    baseName: index
+    isPlainText: true
+    notAlternative: false
+
 outputs:
   home: [HTML, RSS, llms]
+  section: [HTML, RSS, markdown]
+  page: [HTML, markdown]
 
 # Import the Hextra theme as a Hugo module. All module dependencies are public
 # and mirrored by the Go module proxy, so we resolve through the proxy only --
@@ -52,6 +67,8 @@ module:
       target: static
     - source: ../icons/agents
       target: static/icons/agents
+    - source: ../skills
+      target: static/skills
     - source: ../frontend/tests/e2e/feature-matrix
       target: data/feature_matrix
 

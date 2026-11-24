@@ -54,8 +54,9 @@ func TestAToolApprovalIsPublishedWithItsCall(t *testing.T) {
 	controls := r.sink.PublishedControls()
 	require.Len(t, controls, 1)
 	assert.Equal(t, "158b2ba5001bfb93", controls[0].RequestID)
-	assert.JSONEq(t, frameApprovalDialog, string(controls[0].Payload), "the whole dialog reaches the browser")
+	assert.JSONEq(t, frameApprovalDialog, string(controls[0].Payload), "the whole dialog is the published request, which ReadControlRequest reads")
 	assert.Equal(t, int64(1), controls[0].SourceSeq, "the request points at the row of the call it asks about")
+	agenttest.AssertPublishedControlKeys(t, ompProvider{}, r.sink)
 }
 
 func TestAnApprovalStatesNoCallWhenTwoCallsOfTheToolRun(t *testing.T) {
@@ -236,7 +237,7 @@ func TestAnAnsweredDialogIsNotWithdrawnAtItsDeadline(t *testing.T) {
 	t.Parallel()
 	r, ctx, clock := newDeadlineRig(t)
 	r.emit(frameTimedConfirm)
-	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"c1","confirmed":true}`)}))
 	r.waitForCommand("extension_ui_response", 1)
 
 	clock.Advance(time.Minute).MustWait(ctx)
@@ -364,7 +365,7 @@ func TestAnInterruptWithNoTurnAnswersOnlyTheDialogsOmpWaitsOn(t *testing.T) {
 		`{"type":"extension_ui_request","id":"open-b","method":"input","title":"Branch name"}`,
 		`{"type":"extension_ui_request","id":"open-a","method":"editor","title":"Commit message"}`,
 	)
-	require.NoError(t, r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"answered","confirmed":true}`), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"answered","confirmed":true}`)}))
 	r.waitForCommand("extension_ui_response", 1)
 
 	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
@@ -462,10 +463,10 @@ func TestSendRawInputPassesADialogAnswerThrough(t *testing.T) {
 	r := newRig(t)
 	r.emit(frameApprovalDialog)
 	answer := `{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`
-	require.NoError(t, r.agent.SendRawInput([]byte(answer), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: []byte(answer)}))
 
 	answers := r.waitForCommand("extension_ui_response", 1)
-	assert.JSONEq(t, answer, string(answers[0].Raw), "omp reads the browser's answer unchanged")
+	assert.JSONEq(t, answer, string(answers[0].Raw), "omp reads the answer unchanged")
 }
 
 func TestFailedDialogAnswerKeepsTheRequest(t *testing.T) {
@@ -477,7 +478,7 @@ func TestFailedDialogAnswerKeepsTheRequest(t *testing.T) {
 	}
 	t.Cleanup(func() { close(done); a.Process.Stop() })
 	a.publishDialog(dialogHeader{ID: "request", Method: "confirm"}, []byte(`{"type":"extension_ui_request","id":"request","method":"confirm"}`))
-	require.Error(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"request","confirmed":true}`), agent.StopContext{}))
+	require.Error(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"request","confirmed":true}`)}))
 	a.Mu.Lock()
 	_, pending := a.openDialogs["request"]
 	a.Mu.Unlock()
@@ -530,10 +531,10 @@ func TestDialogAnswerRefusesUnknownAndRepeatedRequests(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	answer := []byte(`{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`)
-	require.Error(t, r.agent.SendRawInput(answer, agent.StopContext{}))
+	require.Error(t, r.agent.SendRawInput(agent.RawInput{Data: answer}))
 	r.emit(frameApprovalDialog)
-	require.NoError(t, r.agent.SendRawInput(answer, agent.StopContext{}))
-	require.Error(t, r.agent.SendRawInput(answer, agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: answer}))
+	require.Error(t, r.agent.SendRawInput(agent.RawInput{Data: answer}))
 }
 
 func TestSendRawInputFailsAfterExit(t *testing.T) {
@@ -548,7 +549,7 @@ func TestSendRawInputFailsAfterExit(t *testing.T) {
 			return false
 		}
 	})
-	err := r.agent.SendRawInput([]byte(`{"type":"extension_ui_response","id":"x","value":"Approve"}`), agent.StopContext{})
+	err := r.agent.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"x","value":"Approve"}`)})
 	assert.Error(t, err)
 }
 

@@ -1,74 +1,7 @@
 import type { ProviderControlCapability } from '../capabilities'
-import { CODEX_METHOD } from '~/generated/contracts/codex-protocol'
-import { pickObject, pickString } from '~/lib/jsonPick'
-
-import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
-import { withElicitationResponse } from '../../controls/elicitationResponse'
-import { buildJsonRpcResult, questionsFromWire } from '../../controls/types'
-import {
-  codexAsyncQuestions,
-  isCodexAsyncQuestion,
-  sendCodexAsyncAnswer,
-  sendCodexAsyncSkip,
-} from './asyncQuestion'
-import { CodexControlActions } from './CodexControlActions'
-import {
-  codexControlResponseSummary,
-  codexRequestedPermissions,
-  resolveCodexDecisions,
-  sendCodexUserInputRejectResponse,
-  sendCodexUserInputResponse,
-} from './controlResponse'
-import { codexElicitation } from './elicitation'
-import { codexExtractControl, isCodexPlanModePrompt } from './extractControl'
 import { codexPermissionPresets } from './permissionPresets'
 
-/** The complete Codex control channel, separate from provider registration. */
+/** The Codex control facts that the browser states, separate from provider registration. */
 export const codexControls: ProviderControlCapability = {
   permissionPresets: codexPermissionPresets,
-  preservesSelectionNotes: true,
-  controlResponseDisplay: withElicitationResponse(codexElicitation, codexControlResponseSummary),
-  askUserQuestion: {
-    isRequest: payload => isCodexAsyncQuestion(payload) || payload.method === CODEX_METHOD.ToolRequestUserInput,
-    extractQuestions: (payload, _source) => isCodexAsyncQuestion(payload)
-      ? codexAsyncQuestions(payload)
-      // Read every question element through the shared validator. A valid outer
-      // array does not make a null or string element a question.
-      : questionsFromWire(pickObject(payload, 'params')?.questions),
-    sendAnswer: (request, sendControlResponse, questions, answerState) => isCodexAsyncQuestion(request.payload)
-      ? sendCodexAsyncAnswer(request, sendControlResponse, answerState)
-      : sendCodexUserInputResponse(sendControlResponse, request.requestId, questions, answerState),
-    sendReject: (request, sendControlResponse, _message) => isCodexAsyncQuestion(request.payload)
-      ? sendCodexAsyncSkip(request, sendControlResponse)
-      : sendCodexUserInputRejectResponse(sendControlResponse, request.requestId),
-  },
-  elicitation: codexElicitation,
-  buildControlResponse(payload, content, requestId) {
-    const method = pickString(payload, 'method', '')
-    if (isCodexPlanModePrompt(payload)) {
-      return content
-        ? buildDenyResponse(requestId, content)
-        : buildAllowResponse(requestId, getToolInput(payload))
-    }
-    if (method === CODEX_METHOD.PermissionsRequestApproval) {
-      return buildJsonRpcResult(requestId, {
-        permissions: content
-          ? {}
-          : codexRequestedPermissions(payload),
-        scope: 'turn',
-      })
-    }
-    const decisions = resolveCodexDecisions(pickObject(payload, 'params')?.availableDecisions)
-    // This path must reply because the pending request blocks the agent.
-    // Use the canonical approval or rejection token when the wire offers no matching decision.
-    // The banner can omit an unavailable choice. This path cannot omit the reply.
-    const decision = content
-      ? decisions.negative ?? 'cancel'
-      : decisions.positive ?? 'accept'
-    return buildJsonRpcResult(requestId, { decision })
-  },
-  // The worker already forwards synthetic plan feedback as a user message.
-  controlFeedbackAsFollowUpMessage: payload => !isCodexPlanModePrompt(payload),
-  extractControl: codexExtractControl,
-  controlActionsFor: () => CodexControlActions,
 }

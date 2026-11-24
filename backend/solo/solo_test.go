@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
@@ -55,7 +56,6 @@ func TestSoloLoadOptionsDerivesEachModesDefaults(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:4327", solo.DefaultListen, "solo binds loopback only")
 	assert.Equal(t, "~/.config/leapmux/solo", solo.DefaultConfigDir)
 	assert.Equal(t, "~/.config/leapmux/solo/solo.yaml", solo.DefaultConfigFile)
-	assert.Equal(t, "leapmux solo", solo.FlagSetName)
 	assert.True(t, solo.SoloMode, "solo mode injects the soloUser; dev does not")
 
 	dev, devMode := soloLoadOptions(Config{DevMode: true})
@@ -86,14 +86,14 @@ func TestSoloLoadOptionsDerivesEachModesDefaults(t *testing.T) {
 }
 
 // The warning asks the HUB whether it is exposed, so it covers every address
-// the hub bound and not only the one -listen gave.
+// the hub bound and not only the one --listen gave.
 //
 // Which addresses count as exposed is listenset.Addr.IsLoopback's rule, and
 // TestIsLoopback pins it there; what this pins is the decision built on top of
 // it. The NoTCP case is the one that changed: a desktop hub binds no TCP
 // address of its own and used to be exempt outright, but it can gain one from
 // the extra_listen_addresses setting, and that address exposes the hub exactly
-// as much as a -listen one would.
+// as much as a --listen one would.
 func TestShouldWarnNonLoopback(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -305,14 +305,14 @@ func TestDefaultCLIFlagsCarryTheBindBootstrapFlags(t *testing.T) {
 // load-bearing case: it is NOT a hub setting (the Hub's chunk-count cap is
 // unreachable -- channelmgr admits one in-flight sequence per channel+direction),
 // so solo is the only place it can be tuned for the embedded worker. If it ever
-// drops out of this list again, `leapmux solo -max-incomplete-chunked=N` starts
-// failing with "flag provided but not defined" while the docs still advertise it.
+// drops out of this list again, `leapmux solo run --max-incomplete-chunked=N`
+// starts failing with "unknown flag" while the docs still advertise it.
 func TestDefaultExtraFlagsCarryWorkerScopedKnobs(t *testing.T) {
 	t.Parallel()
 
 	byName := map[string]hubconfig.ExtraFlagDef{}
 	for _, ef := range defaultExtraFlags() {
-		byName[ef.Name] = ef
+		byName[ef.Name()] = ef
 	}
 	for _, name := range []string{"encryption-mode", "use-login-shell", "max-incomplete-chunked", "agent-startup-concurrency"} {
 		require.Contains(t, byName, name, "solo must expose the worker-scoped %q flag", name)
@@ -323,22 +323,28 @@ func TestDefaultExtraFlagsCarryWorkerScopedKnobs(t *testing.T) {
 	// sweep, and the hub has no such pool. Solo is therefore the only place the
 	// desktop app can tune it.
 	startupConcurrency := byName["agent-startup-concurrency"]
-	assert.Equal(t, "agent_startup_concurrency", startupConcurrency.KoanfKey,
+	assert.Equal(t, "agent_startup_concurrency", startupConcurrency.KoanfKey(),
 		"the koanf key is what bringUpLocalWorker reads out of Extras")
-	assert.Equal(t, "0", startupConcurrency.StrDefault,
+	assert.Equal(t, 0, startupConcurrency.Default(),
 		"0 must be the default so the worker resolves the concurrency from this machine's core count")
-	assert.Equal(t, "Timeout and limit options", startupConcurrency.Category,
+	assert.Equal(t, "Timeout and limit options", startupConcurrency.Category(),
 		"it is a limit, not a server option -- the help output groups it accordingly")
-	assert.Contains(t, startupConcurrency.Usage, strconv.Itoa(workerconfig.DefaultMaxStartupConcurrency),
+	assert.Contains(t, startupConcurrency.Usage(), strconv.Itoa(workerconfig.DefaultMaxStartupConcurrency),
 		"the usage string must derive the default from the constant; a hand-written number makes -help lie the day it changes")
 
 	chunked := byName["max-incomplete-chunked"]
-	assert.Equal(t, "max_incomplete_chunked", chunked.KoanfKey,
+	assert.Equal(t, "max_incomplete_chunked", chunked.KoanfKey(),
 		"the koanf key is what bringUpLocalWorker reads out of Extras")
-	assert.Equal(t, "0", chunked.StrDefault,
+	assert.Equal(t, 0, chunked.Default(),
 		"0 must be the default so the worker applies contracts.DefaultMaxIncompleteChunked")
-	assert.Equal(t, "Timeout and limit options", chunked.Category,
+	assert.Contains(t, chunked.Usage(), "(0 = "+strconv.Itoa(contracts.DefaultMaxIncompleteChunked)+")",
+		"the usage string must derive the cap from the contract")
+	assert.Equal(t, "Timeout and limit options", chunked.Category(),
 		"it is a limit, not a server option -- the help output groups it accordingly")
+
+	// use-login-shell is a bool, as the same flag of `leapmux worker` is, so
+	// the bare flag works in both modes.
+	assert.Equal(t, true, byName["use-login-shell"].Default())
 
 	_, hasMaxMessageSizeExtra := byName["max-message-size"]
 	assert.False(t, hasMaxMessageSizeExtra,

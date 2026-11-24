@@ -101,7 +101,7 @@ Treat `encryption.key` as a top-grade secret. There is no master-password or HSM
 There is nothing to configure to turn encryption on. Running the Hub once is enough:
 
 ```bash
-leapmux hub start
+leapmux daemon hub start
 # On first start, the Hub generates ~/.config/leapmux/hub/encryption.key
 # and logs that it loaded the keystore, with the active version and the
 # number of retained versions.
@@ -115,19 +115,19 @@ Rotation generates a new active key version. Existing ciphertext stays readable 
 | --- | --- |
 | `leapmux recover encryption-key rotate` | Generate and add a new encryption key version |
 | `leapmux recover encryption-key reencrypt` | Re-encrypt all persistent encrypted columns with the active key |
-| `leapmux recover encryption-key remove --version <N>` | Remove an old encryption key version |
+| `leapmux recover encryption-key remove <N>` | Remove an old encryption key version |
 | `leapmux recover encryption-key rotate-pepper --yes` | Regenerate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app client secrets, registration keys, device codes, and OAuth authorization codes |
 
-These commands do **not** all take the same flags, because they touch different things:
+Every `recover encryption-key` command accepts `--data-dir` and `--config`, plus its own arguments or flags:
 
-| Command | Flags it accepts | What it operates on |
+| Command | Arguments and flags | What it operates on |
 | --- | --- | --- |
-| `rotate` | `--data-dir` only | The local `encryption.key` file |
-| `rotate-pepper` | `--data-dir`, `--yes` (required) | The local `encryption.key` file |
-| `remove` | `--data-dir`, `--config`, `--version` (required) | The local key file **and** the Hub database |
+| `rotate` | `--data-dir`, `--config` | The local `encryption.key` file |
+| `rotate-pepper` | `--data-dir`, `--config`, `--yes` (required) | The local `encryption.key` file |
+| `remove <version>` | positional `<version>` (`>= 1`), `--data-dir`, `--config` | The local key file **and** the Hub database |
 | `reencrypt` | `--data-dir`, `--config` | The local key file **and** the Hub database |
 
-`reencrypt` and `remove` open the database without running schema migrations, so both accept `--config` (point it at the same config file the Hub uses, so they target the same backend). All four commands require an existing `encryption.key` file and never create one. `remove` reads the database to check ciphertext headers across all 14 persistent encrypted tables before deleting a version (see the runbook warning below). `rotate` and `rotate-pepper` work purely on the local key file and accept `--data-dir` only — passing `--config` to either makes the command fail flag parsing. See [Recovery](/docs/admin/recover/) for the full flag reference.
+`reencrypt` and `remove` open the database without running schema migrations, so point `--config` at the same config file the Hub uses when running on PostgreSQL or MySQL. All four commands require an existing `encryption.key` file and never create one. `remove` reads the database to check ciphertext headers across all 14 persistent encrypted tables before deleting a version (see the runbook warning below). `rotate` and `rotate-pepper` work only on the local key file and open no database (with `--config`, they use its `data_dir` and `encryption_key_path`). See [Recovery](/docs/admin/recover/) for the full flag reference.
 
 ### Rotation runbook
 
@@ -162,7 +162,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 4. **(Optional) Remove the retired version** once nothing refers to it, then restart the Hub.
 
    ```bash
-   leapmux recover encryption-key remove --version 1
+   leapmux recover encryption-key remove 1
    # Removed encryption key version 1.
    # Restart the hub to apply.
    sudo systemctl restart leapmux-hub
@@ -171,7 +171,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 {{< callout type="warning" >}}
 `remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` inspects ciphertext headers across all 14 persistent encrypted tables and **refuses** to delete a version that still encrypts any persistent row — it lists each affected table and row count and tells you to run `reencrypt` first.
 
-It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`. The short-lived transient table (`oauth_authorization_codes`) is intentionally outside `reencrypt` and `remove`: its rows expire within minutes, so an in-flight authorization simply fails and the user retries.
+It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). The positional `<version>` argument is required and must be `>= 1`. The short-lived transient table (`oauth_authorization_codes`) is intentionally outside `reencrypt` and `remove`: its rows expire within minutes, so an in-flight authorization simply fails and the user retries.
 {{< /callout >}}
 
 ### Rotation and API tokens
@@ -204,7 +204,7 @@ The digests are one-way, so the existing credentials cannot be recovered with th
 3. Delete its `state.json`.
 4. Register it with a new registration key. It receives a new Worker ID.
 
-Re-issue API tokens online with `leapmux control admin api-token issue`. See the [Control CLI](/docs/using/control-cli/) for token management.
+Re-issue API tokens online with `leapmux admin api-token issue`. See the [Control CLI](/docs/using/control-cli/) for token management.
 
 ## Databases
 
@@ -237,7 +237,7 @@ Each Worker keeps its **own** separate SQLite database at `{data_dir}/worker.db`
 
 ## Migrations
 
-LeapMux uses **goose** for schema migrations, and migrations are applied **automatically at Hub startup** and during `leapmux recover bootstrap create-admin`. In normal operation you never have to run migrations by hand; starting the Hub brings the schema up to date.
+LeapMux uses **goose** for schema migrations, and migrations are applied **automatically at Hub startup** and during `leapmux recover create-admin`. In normal operation you never have to run migrations by hand; starting the Hub brings the schema up to date.
 
 Each backend embeds its own migrations. The current schema is a single initial migration, so the latest version is `1`.
 
@@ -245,13 +245,13 @@ The `leapmux recover db` commands let you inspect and (where supported) control 
 
 | Command | Summary | Notes |
 | --- | --- | --- |
-| `leapmux recover db path` | Print the database path | Always prints `{data_dir}/hub.db`. Because `db path` takes no `--config`, it cannot load the config file, so it never reflects a custom `storage.sqlite.path` and does **not** consult `storage.type` — it prints the default SQLite path even when a SQL backend is configured. |
+| `leapmux recover db path` | Print the database path | Prints the path of the SQLite database: `{data_dir}/hub.db`, or the `storage.sqlite.path` of `--config`. It does **not** consult `storage.type`, so it prints a SQLite path even when a SQL backend is configured. |
+| `leapmux recover db version` | Show current schema version | Opens the store without auto-migrating, then prints current and latest versions. |
+| `leapmux recover db migrate` | Run schema migrations | `--to <version>` selects a target; the latest version when omitted. |
 
 {{< callout type="info" >}}
-`db path` prints the default SQLite location only. Point `db version` or `db migrate` at a custom backend with `--config`.
+`db path` prints a SQLite location only. Point `db version` or `db migrate` at a SQL backend with `--config`.
 {{< /callout >}}
-| `leapmux recover db version` | Show current schema version | Opens the store without auto-migrating, then prints current and latest versions. |
-| `leapmux recover db migrate` | Run schema migrations | `--version <int64>` selects a target (default `-1` = latest). |
 
 Example:
 
@@ -266,14 +266,14 @@ leapmux recover db migrate
 # Already at latest version.
 ```
 
-Supplying an explicit `--version` lower than the current schema attempts a **down**-migration to that version (where the backend's migrations support it). Targeting a specific version reports the version it migrates to, and then the new current version.
+Supplying an explicit `--to` lower than the current schema attempts a **down**-migration to that version (where the backend's migrations support it). Targeting a specific version reports the version it migrates to, and then the new current version.
 
 ```bash
 # Target a specific version (down-migration support depends on the backend)
-leapmux recover db migrate --version 1
+leapmux recover db migrate --to 1
 ```
 
-Like `encryption-key reencrypt`, both `recover db version` and `recover db migrate` open the store, so both accept `--data-dir` and `--config`; pass `--config` so the command targets the same backend the Hub uses. `recover db path` does not open the store, so it accepts `--data-dir` only. See [Recovery](/docs/admin/recover/).
+Like `encryption-key reencrypt`, both `recover db version` and `recover db migrate` open the store; pass `--config` so the command targets the same backend the Hub uses. Every recover command accepts `--data-dir` and `--config`. See [Recovery](/docs/admin/recover/).
 
 ## Backup & restore
 
@@ -353,6 +353,6 @@ The handshake primitives, Worker identity pinning (TOFU), and the key-change dia
 
 - [Configuration](/docs/admin/configuration/) — config precedence, the full storage-key reference, data directories, and listen addresses.
 - [Security & Threat Model](/docs/admin/security/) — the E2EE protocol, the Hub-as-relay trust boundary, Worker TOFU pinning, and the solo-mode caveat.
-- [Recovery](/docs/admin/recover/) — the offline break-glass commands (`bootstrap`, `password`, `encryption-key`, `db`).
-- [Control CLI](/docs/using/control-cli/) — the online `control admin` reference, including token commands.
+- [Recovery](/docs/admin/recover/) — the offline break-glass commands (`create-admin`, `reset-password`, `encryption-key`, `db`).
+- [Admin CLI](/docs/admin/admin-cli/) — the online `leapmux admin` reference, including token commands.
 - [Managing Workers](/docs/admin/managing-workers/) — registering and approving Workers, registration keys, and key-pin handling.

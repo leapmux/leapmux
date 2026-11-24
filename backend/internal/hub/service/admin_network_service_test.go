@@ -84,14 +84,14 @@ func TestAdminNetworkService_ReportsTheLiveListeners(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"127.0.0.1:4327"}, resp.GetBaseTcpAddresses(),
-		"-listen is reported read-only: it is a command-line option, never a setting")
+		"--listen is reported read-only: it is a command-line option, never a setting")
 	assert.Equal(t, []string{"unix:/tmp/hub.sock"}, resp.GetLocalIpcAddresses(),
 		"the local endpoints are startup facts, reported beside the TCP bases")
 	assert.Equal(t, []string{"*:4327", "192.168.1.24:8080"}, resp.GetConfigured())
 
 	require.Len(t, resp.GetBound(), 2)
 	assert.Equal(t, "*:4327", resp.GetBound()[0].GetAddress())
-	// "merged" is what lets the panel say the -listen address is served by
+	// "merged" is what lets the panel say the --listen address is served by
 	// this one rather than gone.
 	assert.Equal(t, "merged", resp.GetBound()[0].GetSource())
 	assert.Empty(t, resp.GetBound()[0].GetError())
@@ -213,7 +213,7 @@ func TestAdminNetworkService_ToleratesNoListenerSet(t *testing.T) {
 // when the set lists none, and nothing at all for a local-only set.
 func TestAdminNetworkService_TheFallbackSplitsTheConfiguredBindSet(t *testing.T) {
 	t.Setenv("LEAPMUX_HUB_LISTEN", "")
-	launcherConfig, _, err := config.LoadWithOptions(nil, config.LoadOptions{
+	launcherConfig, err := config.LoadWithOptions(nil, config.LoadOptions{
 		DefaultConfigFile: filepath.Join(t.TempDir(), "hub.yaml"),
 		DefaultListen:     "127.0.0.1:44321",
 		SoloMode:          true,

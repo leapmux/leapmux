@@ -97,6 +97,11 @@ func FamilyHooks(f *FamilyBase) acp.Hooks {
 		// bridge's last writes ran unjoined past the caller's teardown.
 		AfterWaitCleanup:         f.Questions.wait,
 		SegmentText:              f.segmentText,
+		AssistantTextKey:         f.AssistantTextKey,
+		AssistantTextPrepared:    f.AssistantTextPrepared,
+		RootPromptTransport:      f.RootPromptTransport,
+		NativePermissionTurnID:   f.NativePermissionTurnID,
+		ChildPermissionOwner:     f.sessionControlOwner,
 		CaptureTurnOutputCleanup: f.captureDaemonCleanup,
 		PromptPrepared:           f.resetDaemonGeneration,
 		PreparePrompt:            f.prepareAudioPrompt,

@@ -31,7 +31,7 @@ func newACPFollowUpPrompt(sessionID, content string, attachments []*leapmuxv1.At
 func (b *Base) handoffQueuedAgentTurn(sessionID string) bool {
 	end, queued := b.takeQueuedAgentTurn(sessionID)
 	if queued && end != nil {
-		b.EndAgentTurn(end)
+		b.endAgentTurn(*end)
 	}
 	return queued
 }

@@ -17,6 +17,7 @@
     "planOutcomes",
     "trustOutcomes",
     "questionOutcomes",
+    "answerLabels",
     "replyFields",
     "configIds"
   ],
@@ -161,6 +162,9 @@
       "$ref": "#/$defs/table"
     },
     "questionOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "answerLabels": {
       "$ref": "#/$defs/table"
     },
     "replyFields": {

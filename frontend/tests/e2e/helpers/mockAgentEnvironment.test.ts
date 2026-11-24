@@ -73,6 +73,47 @@ afterEach(() => {
 })
 
 describe('createMockAgentEnvironment', () => {
+  // A login shell's profile rebuilds PATH (macOS path_helper moves every system
+  // directory first), so a `leapmux` that the developer installed in one of them
+  // would shadow the Worker's own CLI. The isolated profile puts the directory
+  // of $LEAPMUX_CONTROL_CLI first again, so an agent's tool runs the CLI of the
+  // binary under test.
+  it.runIf(existsSync('/bin/zsh'))('runs the Worker\'s own leapmux in an agent\'s login shell', async () => {
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const installed = join(directory, 'installed-bin')
+    const linked = join(directory, 'worker-cli')
+    for (const dir of [installed, linked]) {
+      mkdirSync(dir)
+      writeFileSync(join(dir, 'leapmux'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    }
+    const result = setupBoundary.execute('/bin/zsh', ['-lic', 'command -v leapmux'], {
+      env: {
+        ...env,
+        HOME: homeDir,
+        ZDOTDIR: homeDir,
+        PATH: `${installed}${delimiter}${linked}${delimiter}/usr/bin${delimiter}/bin`,
+        LEAPMUX_CONTROL_CLI: join(linked, 'leapmux'),
+      },
+      encoding: 'utf8',
+    })
+    expect(String(result).trim()).toBe(join(linked, 'leapmux'))
+  })
+
+  it.runIf(existsSync('/bin/zsh'))('leaves PATH alone in a login shell outside a LeapMux tab', async () => {
+    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const result = setupBoundary.execute('/bin/zsh', ['-lic', 'print -r -- $PATH'], {
+      env: {
+        ...env,
+        HOME: homeDir,
+        ZDOTDIR: homeDir,
+        PATH: `/usr/bin${delimiter}/bin`,
+        LEAPMUX_CONTROL_CLI: '',
+      },
+      encoding: 'utf8',
+    })
+    expect(String(result).trim().split(delimiter)[0]).toBe(join(directory, 'cli-shims'))
+  })
+
   it('isolates Deepseek Harness from inherited homes and model endpoints', async () => {
     const names = ['DSH_HOME', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL'] as const
     const previous = names.map(name => process.env[name])

@@ -121,6 +121,24 @@ func TestOpenTerminal_TwoAgentsInOneDirectoryShareOneQuakeTerminal(t *testing.T)
 	assert.Len(t, svc.QuakeTerminals.ListOpen(), 1)
 }
 
+func TestOpenTerminalIgnoresAnUnusedInitialCommandWhenAdoptingQuake(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	existing, _ := openQuakeTerminal(t, svc, dispatcher, dir)
+	writer := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		Shell: "unsupported-shell", WorkingDir: dir, InitialCommand: "invalid\x00command",
+		Target: &leapmuxv1.OpenTerminalRequest_Quake{Quake: &leapmuxv1.QuakeTerminalTarget{}},
+	}, writer)
+	require.Empty(t, writer.errors)
+	require.Len(t, writer.responses, 1)
+	var response leapmuxv1.OpenTerminalResponse
+	require.NoError(t, proto.Unmarshal(writer.responses[0].GetPayload(), &response))
+	assert.Equal(t, existing, response.GetTerminalId())
+}
+
 // The other half of the rule: two DIRECTORIES are two shells, even when the
 // same user opens both from the same workspace.
 func TestOpenTerminal_TwoDirectoriesGetTwoQuakeTerminals(t *testing.T) {

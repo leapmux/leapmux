@@ -500,7 +500,13 @@ func TestScreenBuffer_WriteAndDeliver_KeepsOneDeliveryOrder(t *testing.T) {
 		offsets   []int64
 		delivered []byte
 	)
-	deliver := func(data []byte, endOffset int64, _ []Signal) {
+	deliver := func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+		endOffset := observation.EndOffset
+
 		mu.Lock()
 		defer mu.Unlock()
 		offsets = append(offsets, endOffset)
@@ -517,7 +523,7 @@ func TestScreenBuffer_WriteAndDeliver_KeepsOneDeliveryOrder(t *testing.T) {
 			// the tracker at its default, so the snapshot has no prefix.
 			chunk := bytes.Repeat([]byte{byte('a' + w)}, 64)
 			for i := 0; i < perWriter; i++ {
-				sb.WriteAndDeliver(chunk, deliver)
+				sb.WriteAndDeliver(0, chunk, deliver)
 			}
 		}(w)
 	}

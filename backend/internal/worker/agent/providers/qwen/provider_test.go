@@ -14,8 +14,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-// The worker stores a JSON-RPC request under the key `jsonrpc:<id>`, and the
-// browser answers under that key.
+// The worker stores a JSON-RPC request under the key `jsonrpc:<id>`, and an
+// answer carries that key as its id.
 const qwenStoredRequestID = "jsonrpc:5"
 
 func TestQwenCompactionDoneIsABoundary(t *testing.T) {
@@ -54,7 +54,7 @@ const shellPermissionPayload = `{"jsonrpc":"2.0","id":5,"method":"session/reques
 	`"options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"},{"optionId":"cancel","name":"Reject","kind":"reject_once"}],` +
 	`"toolCall":{"toolCallId":"call_1","kind":"execute","rawInput":{"command":"touch x"},"_meta":{"toolName":"run_shell_command"}}}}`
 
-// decision is the browser's allow or deny envelope.
+// decision is the neutral allow or deny envelope.
 func decision(t *testing.T, requestID, behavior, message string) []byte {
 	t.Helper()
 	response := map[string]any{"behavior": behavior}
@@ -69,14 +69,12 @@ func decision(t *testing.T, requestID, behavior, message string) []byte {
 	return data
 }
 
+// resolveWith resolves response, with the plan settings of an approval, to
+// payload, stored as qwenStoredRequestID, as the Worker does. Only a plan
+// approval carries settings (agent.AnswerNeutralPlan).
 func resolveWith(t *testing.T, payload string, response []byte, settings *leapmuxv1.PlanApprovalSettings) agent.ControlResponseResolution {
 	t.Helper()
-	return qwenProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       qwenStoredRequestID,
-		RequestPayload:  json.RawMessage(payload),
-		ResponseContent: response,
-		PlanApproval:    settings,
-	})
+	return agenttest.ResolveAnswer(qwenProvider{}, []byte(payload), qwenStoredRequestID, agent.ControlAnswer{Content: response, PlanApproval: settings})
 }
 
 // selectedOptionOf reads the option a reply selects, and its native id.
@@ -106,19 +104,19 @@ func TestQwenPlanApprovalReplies(t *testing.T) {
 		exit     bool
 		feedback string
 	}{
-		{name: "approve", response: decision(t, qwenStoredRequestID, agent.ControlBehaviorAllow, ""), option: contracts.QwenPermissionOptionProceedOnce, exit: true},
+		{name: "approve", response: decision(t, qwenStoredRequestID, contracts.ControlAnswerBehaviorAllow, ""), option: contracts.QwenPermissionOptionProceedOnce, exit: true},
 		{
-			name: "approve into auto edit", response: decision(t, qwenStoredRequestID, agent.ControlBehaviorAllow, ""),
+			name: "approve into auto edit", response: decision(t, qwenStoredRequestID, contracts.ControlAnswerBehaviorAllow, ""),
 			settings: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.QwenModeAutoEdit},
 			option:   contracts.QwenPermissionOptionProceedAlways, exit: true,
 		},
 		{
-			name: "approve into yolo", response: decision(t, qwenStoredRequestID, agent.ControlBehaviorAllow, ""),
+			name: "approve into yolo", response: decision(t, qwenStoredRequestID, contracts.ControlAnswerBehaviorAllow, ""),
 			settings: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.QwenModeYolo},
 			option:   contracts.QwenPermissionOptionProceedOnce, exit: true,
 		},
-		{name: "reject with a reason", response: decision(t, qwenStoredRequestID, agent.ControlBehaviorDeny, "Split step 2."), option: contracts.QwenPermissionOptionCancel, feedback: "Split step 2."},
-		{name: "reject bare", response: decision(t, qwenStoredRequestID, agent.ControlBehaviorDeny, ""), option: contracts.QwenPermissionOptionCancel},
+		{name: "reject with a reason", response: decision(t, qwenStoredRequestID, contracts.ControlAnswerBehaviorDeny, "Split step 2."), option: contracts.QwenPermissionOptionCancel, feedback: "Split step 2."},
+		{name: "reject bare", response: decision(t, qwenStoredRequestID, contracts.ControlAnswerBehaviorDeny, ""), option: contracts.QwenPermissionOptionCancel},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -138,17 +136,23 @@ func TestQwenPlanApprovalReplies(t *testing.T) {
 }
 
 // Each refusal states the cause that the browser shows to the reader, so a
-// reason that moves to another branch fails here.
+// reason that moves to another branch fails here. Each answer addresses the
+// stored request, as every answer that the Worker resolves does.
 func TestQwenPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		response []byte
 		reason   string
 	}{
-		"another request":  {response: decision(t, "jsonrpc:6", agent.ControlBehaviorAllow, ""), reason: agent.RefusalOtherRequest},
-		"no request id":    {response: decision(t, "", agent.ControlBehaviorAllow, ""), reason: agent.RefusalNoDecision},
 		"unknown behavior": {response: decision(t, qwenStoredRequestID, "maybe", ""), reason: agent.RefusalNoDecision},
-		"not json":         {response: []byte(`{`), reason: agent.RefusalNoDecision},
+		"no behavior":      {response: decision(t, qwenStoredRequestID, "", ""), reason: agent.RefusalNoDecision},
+		// AnswerControlRequest answers a plan with the neutral allow or deny, so
+		// Qwen's own reply decides nothing about a plan, an error or a result.
+		"a JSON-RPC error": {response: []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","error":{"code":-32603,"message":"gone"}}`), reason: agent.RefusalNoDecision},
+		"a JSON-RPC result": {
+			response: []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","result":{"outcome":{"outcome":"selected","optionId":"restore_previous"}}}`),
+			reason:   agent.RefusalNoDecision,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -161,44 +165,18 @@ func TestQwenPlanApprovalWithholdsAnUnreadableAnswer(t *testing.T) {
 
 // A stored plan approval that states no id has no request that a reply could
 // answer, so the provider withholds the answer rather than send it with no id.
+// The stored request states no id, so it gives no key, and the Worker refuses
+// it before Qwen reads it (agent.StoredControlRequestAgrees). Qwen's own guard
+// still withholds the answer, because a reply needs the request's id.
 func TestQwenPlanApprovalWithNoStoredIDWithholdsTheAnswer(t *testing.T) {
 	t.Parallel()
 	payload := strings.Replace(planApprovalPayload, `"id":5,`, "", 1)
 	require.NotEqual(t, planApprovalPayload, payload)
 	require.True(t, isPlanApproval(json.RawMessage(payload)), "the request is still the plan approval")
-	for _, behavior := range []string{agent.ControlBehaviorAllow, agent.ControlBehaviorDeny} {
-		result := resolveWith(t, payload, decision(t, qwenStoredRequestID, behavior, ""), nil)
+	for _, behavior := range []string{contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny} {
+		result := agenttest.ResolveAnswerPastTheKeyCheck(qwenProvider{}, []byte(payload), qwenStoredRequestID, agent.ControlAnswer{Content: decision(t, qwenStoredRequestID, behavior, "")})
 		assert.True(t, result.Withhold, behavior)
 		assert.EqualError(t, result.Refusal(), agent.RefusalUnreadableRequest, behavior)
-	}
-}
-
-// A JSON-RPC error that the browser sends for the plan approval is Qwen's own
-// reply already, so the provider forwards it with the native id and does not
-// read it as an allow or a deny.
-func TestQwenForwardsAnErrorReplyOfThePlanApproval(t *testing.T) {
-	t.Parallel()
-	reply := []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","error":{"code":-32603,"message":"gone"}}`)
-	result := resolveWith(t, planApprovalPayload, reply, nil)
-	require.False(t, result.Withhold)
-	assert.Equal(t, agent.PlanModeControlNone, result.PlanModeControl, "an error reply decides no plan")
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":5,"error":{"code":-32603,"message":"gone"}}`, string(result.Content))
-}
-
-func TestQwenIsJSONRPCReply(t *testing.T) {
-	t.Parallel()
-	for content, want := range map[string]bool{
-		`{"jsonrpc":"2.0","id":1,"result":{}}`:        true,
-		`{"jsonrpc":"2.0","id":1,"result":null}`:      true,
-		`{"jsonrpc":"2.0","id":1,"error":{"code":1}}`: true,
-		`{"type":"control_response","response":{}}`:   false,
-		`{}`:              false,
-		`[{"result":{}}]`: false,
-		`"result"`:        false,
-		`not json`:        false,
-		``:                false,
-	} {
-		assert.Equal(t, want, isJSONRPCReply([]byte(content)), content)
 	}
 }
 
@@ -221,12 +199,25 @@ func TestQwenAttachmentPolicyRejectsGenericBinary(t *testing.T) {
 	require.Nil(t, normalized)
 }
 
-func TestQwenForwardsASelectedOptionOfThePlanApproval(t *testing.T) {
+// A request that Qwen marks as a question dialog reads as a question even when
+// its tool call names the plan tool, and AnswerControlRequest answers it with
+// Qwen's own reply. The resolution forwards that reply: read as a plan
+// decision, it would be refused.
+func TestQwenForwardsTheQuestionReplyOfARequestThatNamesThePlanTool(t *testing.T) {
 	t.Parallel()
-	reply := []byte(`{"jsonrpc":"2.0","id":"jsonrpc:5","result":{"outcome":{"outcome":"selected","optionId":"restore_previous"}}}`)
-	result := resolveWith(t, planApprovalPayload, reply, nil)
+	payload := questionNamingThePlanTool(t)
+	require.False(t, isPlanApproval(json.RawMessage(payload)), "the question marker decides the kind")
+	require.NotNil(t, agenttest.ControlPromptOf(qwenProvider{}, []byte(payload)).GetQuestion(), "the question marker decides the prompt")
+
+	answer, err := agenttest.AnswerControl(qwenProvider{}, []byte(payload), qwenStoredRequestID,
+		agenttest.QuestionDecision(qwenAnswer("", "Red"), qwenAnswer("", "Cache")))
+	require.NoError(t, err)
+	result := agenttest.ResolveAnswer(qwenProvider{}, []byte(payload), qwenStoredRequestID, answer)
+
 	require.False(t, result.Withhold)
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":5,"result":{"outcome":{"outcome":"selected","optionId":"restore_previous"}}}`, string(result.Content))
+	assert.Equal(t, agent.PlanModeControlNone, result.PlanModeControl, "a question's answer decides no plan")
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":5,"result":{"outcome":{"outcome":"selected","optionId":"restore_previous"},"answers":{"0":"Red","1":"Cache"}}}`,
+		string(result.Content), "the reply keeps its answers and takes the native id")
 }
 
 func TestQwenForwardsAnOrdinaryPermissionAndAQuestion(t *testing.T) {
@@ -238,9 +229,20 @@ func TestQwenForwardsAnOrdinaryPermissionAndAQuestion(t *testing.T) {
 		"the answers of a question survive the forward")
 }
 
+// questionNamingThePlanTool is the plan approval with Qwen's question marker
+// added: a question dialog whose tool call states `exit_plan_mode`.
+func questionNamingThePlanTool(t *testing.T) string {
+	t.Helper()
+	payload := strings.Replace(planApprovalPayload, `"_meta":{"toolName":"exit_plan_mode"}`,
+		`"_meta":{"toolName":"exit_plan_mode","qwenInteractionKind":"user_question","qwenQuestions":`+qwenQuestions+`}`, 1)
+	require.NotEqual(t, planApprovalPayload, payload)
+	return payload
+}
+
 func TestQwenIsPlanApproval(t *testing.T) {
 	t.Parallel()
 	assert.True(t, isPlanApproval(json.RawMessage(planApprovalPayload)))
+	assert.False(t, isPlanApproval(json.RawMessage(questionNamingThePlanTool(t))), "a question dialog is no plan approval")
 	assert.False(t, isPlanApproval(json.RawMessage(shellPermissionPayload)))
 	assert.False(t, isPlanApproval(json.RawMessage(`{"method":"session/request_permission"}`)))
 	assert.False(t, isPlanApproval(json.RawMessage(`{"method":"_x/other","params":{"toolCall":{"_meta":{"toolName":"exit_plan_mode"}}}}`)))
@@ -269,6 +271,7 @@ func TestQwenControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T)
 	a := &Agent{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	agenttest.AssertControlIdentitiesStaySeparate(t, sink, a.HandleOutput, "session/request_permission")
+	agenttest.AssertPublishedControlKeys(t, qwenProvider{}, sink)
 }
 
 func TestQwenRegistrationStatesTheSafeDefaults(t *testing.T) {

@@ -313,6 +313,20 @@ func (s *WorkerManagementService) ListWorkers(
 	}, nil
 }
 
+func (s *WorkerManagementService) GetWorkerEnrollmentRevision(ctx context.Context, _ *leapmuxv1.GetWorkerEnrollmentRevisionRequest) (*leapmuxv1.GetWorkerEnrollmentRevisionResponse, error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	inventory, err := s.store.Workers().InventoryState(ctx, user.ID)
+	if err != nil {
+		return nil, storeConnectError(err, "read Worker enrollment revision")
+	}
+	return &leapmuxv1.GetWorkerEnrollmentRevisionResponse{
+		OwnerUserId: user.ID.String(), Revision: inventory.Revision, ActiveWorkers: inventory.ActiveWorkers,
+	}, nil
+}
+
 // GetWorker returns one of the caller's workers. It follows ListWorkers: a
 // worker whose owner deregistered it is absent from the listing, so it reads as
 // NotFound here too. The Worker message carries no deregistering state, so

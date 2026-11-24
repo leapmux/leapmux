@@ -31,6 +31,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	var started *Agent
 	create := func() *Agent {
 		started = newAgent(swarm)
+		started.workingDir = opts.WorkingDir
 		return started
 	}
 	ag, err := opencode.StartFamily(ctx, opts, sink, Registration(), opencode.FamilySpec{

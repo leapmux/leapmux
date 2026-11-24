@@ -3,12 +3,13 @@ package commandcode
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -34,6 +35,7 @@ func testAgent(t *testing.T) (*Agent, *agenttest.Sink) {
 	a := &Agent{
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "command-code-test", ProviderName: "Command Code", Ctx: ctx, Cancel: cancel, Stdin: &agenttest.Stdin{}, ProcessDone: ended})},
 		sink:           agent.NewProviderServices(sink), clock: quartz.NewReal(), sessionID: "native-session", model: "native-model", permissionMode: "default", children: make(map[string]*childState),
+		replyProcessID: id.Generate(),
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 	t.Cleanup(func() { a.Stop(); cancel() })
@@ -41,9 +43,10 @@ func testAgent(t *testing.T) (*Agent, *agenttest.Sink) {
 }
 
 type rpcTestPeer struct {
-	t      *testing.T
-	a      *Agent
-	handle func(string, json.RawMessage) agenttest.RPCReply
+	t          *testing.T
+	a          *Agent
+	handle     func(string, json.RawMessage) agenttest.RPCReply
+	afterReply func(string)
 }
 
 func (p *rpcTestPeer) Write(data []byte) (int, error) {
@@ -57,17 +60,23 @@ func (p *rpcTestPeer) Write(data []byte) (int, error) {
 	}
 	reply := p.handle(request.Method, request.Params)
 	p.a.Deliver(request.ID, agenttest.JSONRPCResponse(request.ID, reply))
+	if p.afterReply != nil {
+		p.afterReply(request.Method)
+	}
 	return len(data), nil
 }
 
 func (p *rpcTestPeer) Close() error { return nil }
 
-func agentWithPeer(t *testing.T, handle func(string, json.RawMessage) agenttest.RPCReply) *Agent {
+func agentWithPeer(t *testing.T, handle func(string, json.RawMessage) agenttest.RPCReply, afterReply ...func(string)) *Agent {
 	t.Helper()
 	a, _ := testAgent(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	ended := make(chan struct{})
 	peer := &rpcTestPeer{t: t, a: a, handle: handle}
+	if len(afterReply) > 0 {
+		peer.afterReply = afterReply[0]
+	}
 	a.JSONRPCProcess = providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "peer-test", ProviderName: "Command Code", Ctx: ctx, Cancel: cancel, Stdin: peer, ProcessDone: ended})}
 	t.Cleanup(func() { close(ended); cancel() })
 	return a
@@ -96,7 +105,7 @@ func TestSteerInputConfirmsNativeDelivery(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{"turnId":"turn_1","queued":1}`)}
 	})
 	a.turnID = "turn_1"
-	require.NoError(t, a.SteerInput("native steer", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "native steer"}))
 }
 
 func TestSteerDeclaresRowAtEchoWithoutSurvival(t *testing.T) {
@@ -109,88 +118,142 @@ func TestSteerDeclaresRowAtEchoWithoutSurvival(t *testing.T) {
 	assert.False(t, survivor.SteerSurvivesTurnEnd())
 }
 
-func commandCodeSteerAgent(t *testing.T, reply func(string, json.RawMessage) agenttest.RPCReply) (*Agent, *agenttest.Sink) {
+func commandCodeSteerAgent(t *testing.T, reply func(string, json.RawMessage) agenttest.RPCReply, afterReply ...func(string)) (*Agent, *agenttest.Sink) {
 	t.Helper()
 	if reply == nil {
 		reply = func(string, json.RawMessage) agenttest.RPCReply {
 			return agenttest.RPCReply{Result: json.RawMessage(`{"turnId":"turn_1","queued":1}`)}
 		}
 	}
-	a := agentWithPeer(t, reply)
+	a := agentWithPeer(t, reply, afterReply...)
 	sink := &agenttest.Sink{}
 	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
-	a.startTurn("turn_1")
+	feedMethod(t, a, methodTurnStarted, map[string]any{"turnId": "turn_1"})
 	return a, sink
 }
 
-func TestSteersDeliveredReportsTheEchoCount(t *testing.T) {
-	a, sink := commandCodeSteerAgent(t, nil)
+func testCommandCodeSteer(index int, text string) agent.SteerRequest {
+	return agent.SteerRequest{InputID: fmt.Sprintf("input-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), Content: text}
+}
+
+func testCommandCodeSteerReport(a *Agent, index int, turnID string, outcome agent.SteerOutcome) agent.SteerResolution {
+	request := testCommandCodeSteer(index, "")
+	report := agent.SteerResolution{InputID: request.InputID, AttemptID: request.AttemptID, Outcome: outcome}
+	if outcome == agent.SteerOutcomeEchoed {
+		report.Receipt = agent.NativeInputReceipt{SessionID: "native-session", TurnID: a.commandCodeDurableTurnID(turnID), InputID: "steer:" + request.AttemptID}
+	}
+	return report
+}
+
+func TestSteerDrainResolvesBothAcknowledgedInputsInOrder(t *testing.T) {
+	queued := 0
+	a, sink := commandCodeSteerAgent(t, func(string, json.RawMessage) agenttest.RPCReply {
+		queued++
+		return agenttest.RPCReply{Result: json.RawMessage(fmt.Sprintf(`{"turnId":"turn_1","queued":%d}`, queued))}
+	})
 	feedEvent(t, a, map[string]any{"type": "text_delta", "delta": "before the steers"})
-	require.NoError(t, a.SteerInput("first", nil))
-	require.NoError(t, a.SteerInput("second", nil))
+	require.NoError(t, a.SteerInput(testCommandCodeSteer(1, "same steer")))
+	require.NoError(t, a.SteerInput(testCommandCodeSteer(2, "same steer")))
 	for _, count := range []int{0, -1} {
-		feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": count})
+		feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": count})
 	}
 	assert.Empty(t, sink.Messages())
-	assert.Empty(t, sink.SteerEchoReports())
-	// .tmp/probe/commandcode/run3 frame 48 reports the number of delivered steers.
-	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 2})
+	assert.Empty(t, sink.SteerResolutions())
+	feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": 2})
 	require.Len(t, sink.Messages(), 1)
 	_, text, completion, ok := agenttest.DecodeAssembledMessage(sink.Messages()[0].Content)
 	require.True(t, ok)
 	assert.Equal(t, "before the steers", text)
 	assert.Equal(t, agent.MessageCompletionComplete, completion)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 2}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{
+		testCommandCodeSteerReport(a, 1, "turn_1", agent.SteerOutcomeEchoed),
+		testCommandCodeSteerReport(a, 2, "turn_1", agent.SteerOutcomeEchoed),
+	}, sink.SteerResolutions())
 }
 
 func TestInterruptedTurnLeavesTheSteerToTheQueue(t *testing.T) {
-	a, sink := commandCodeSteerAgent(t, nil)
-	require.NoError(t, a.SteerInput("undelivered", nil))
+	turnID := "turn_1"
+	a, sink := commandCodeSteerAgent(t, func(string, json.RawMessage) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(fmt.Sprintf(`{"turnId":%q,"queued":1}`, turnID))}
+	})
+	require.NoError(t, a.SteerInput(testCommandCodeSteer(1, "undelivered")))
 	feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": "interrupted", "leftover": []string{"undelivered"}})
 	assert.Empty(t, sink.RequeuedInputs(), "the queue retains its original input instead of a copied input")
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	assert.False(t, a.PublishTurnActive().Active)
-	a.startTurn("turn_2")
-	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 1})
-	assert.Empty(t, sink.SteerEchoReports(), "the ended turn leaves no stale ledger entry")
-	require.NoError(t, a.SteerInput("new steer", nil))
-	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 99})
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	turnID = "turn_2"
+	feedMethod(t, a, methodTurnStarted, map[string]any{"turnId": turnID})
+	require.NoError(t, a.SteerInput(testCommandCodeSteer(2, "new steer")))
+	feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": 1})
+	assert.Empty(t, sink.SteerResolutions(), "the ended turn cannot resolve the next input")
+	feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": turnID, "count": 1})
+	assert.Equal(t, []agent.SteerResolution{testCommandCodeSteerReport(a, 2, turnID, agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 }
 
 func TestSteerRejectionForgetsTheUnacceptedInput(t *testing.T) {
 	a, sink := commandCodeSteerAgent(t, func(string, json.RawMessage) agenttest.RPCReply {
 		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32001,"message":"the turn ended"}`)}
 	})
-	require.ErrorIs(t, a.SteerInput("refused", nil), agent.ErrNoActiveTurn)
-	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 1})
-	assert.Empty(t, sink.SteerEchoReports())
+	require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "refused"}), agent.ErrNoActiveTurn)
+	assert.Empty(t, a.pendingSteers)
+	assert.Empty(t, sink.SteerResolutions())
 }
 
-func TestSteerEarlyEchoSurvivesAFailedWriteAndALaterRequestError(t *testing.T) {
+func TestSteerDrainBeforeTheCallerReturnsWaitsForPrecedingWrites(t *testing.T) {
 	var a *Agent
-	a, sink := commandCodeSteerAgent(t, func(string, json.RawMessage) agenttest.RPCReply {
-		feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 1})
-		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32001,"message":"the turn ended after delivery"}`)}
+	a, sink := commandCodeSteerAgent(t, nil, func(string) {
+		feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": 1})
 	})
 	feedEvent(t, a, map[string]any{"type": "thinking_delta", "delta": "reason before the steer"})
 	feedEvent(t, a, map[string]any{"type": "text_delta", "delta": "before the steer"})
 	sink.PersistErr = assert.AnError
 	defer func() { sink.PersistErr = nil }()
-	require.NoError(t, a.SteerInput("delivered", nil), "the native echo proves delivery")
-	assert.Empty(t, sink.SteerEchoReports(), "the report waits behind the failed text write")
+	require.NoError(t, a.SteerInput(testCommandCodeSteer(1, "delivered")))
+	assert.Empty(t, sink.SteerResolutions(), "the report waits behind the failed text write")
 	failed := len(sink.Messages())
 	sink.PersistErr = nil
 	require.NoError(t, agent.FlushPendingOutput(a.sink))
 	require.Len(t, sink.Messages()[failed:], 2)
 	assert.Contains(t, string(sink.Messages()[failed].Content), "reason before the steer")
 	assert.Contains(t, string(sink.Messages()[failed+1].Content), "before the steer")
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCommandCodeSteerReport(a, 1, "turn_1", agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
+}
+
+func TestCommandCodeRejectsAnInconsistentSteerAcknowledgment(t *testing.T) {
+	a, sink := commandCodeSteerAgent(t, func(string, json.RawMessage) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{"turnId":"turn_1","queued":2}`)}
+	})
+	require.ErrorIs(t, a.SteerInput(testCommandCodeSteer(1, "ambiguous")), agent.ErrDeliveryUncertain)
+	assert.False(t, a.PublishTurnActive().Steerable)
+	assert.Empty(t, sink.SteerResolutions())
+}
+
+func TestCommandCodeCannotAttributeAnInconsistentDrain(t *testing.T) {
+	a, sink := commandCodeSteerAgent(t, nil)
+	require.NoError(t, a.SteerInput(testCommandCodeSteer(1, "tracked")))
+	feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": 2})
+	assert.Equal(t, []agent.SteerResolution{testCommandCodeSteerReport(a, 1, "", agent.SteerOutcomeUncertain)}, sink.SteerResolutions())
+	assert.False(t, a.PublishTurnActive().Steerable)
+}
+
+func TestCommandCodeRawSteerInvalidatesTheTrackedQueue(t *testing.T) {
+	a, sink := commandCodeSteerAgent(t, nil)
+	require.NoError(t, a.SteerInput(testCommandCodeSteer(1, "tracked")))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":42,"method":"turn/steer","Method":"session/state","params":{"input":"untracked"}}`)}))
+	assert.Equal(t, []agent.SteerResolution{testCommandCodeSteerReport(a, 1, "", agent.SteerOutcomeUncertain)}, sink.SteerResolutions())
+	require.ErrorIs(t, a.SteerInput(testCommandCodeSteer(2, "later")), agent.ErrAgentBusy)
+	feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": 2})
+	assert.Len(t, sink.SteerResolutions(), 1)
+}
+
+func TestCommandCodeRawSteerReadsEachNativeLine(t *testing.T) {
+	assert.True(t, containsCommandCodeRawSteer([]byte("invalid\r\n{\"method\":\"turn/steer\"}\r\n")))
+	assert.False(t, containsCommandCodeRawSteer([]byte("invalid\n{\"Method\":\"turn/steer\"}\n{\"method\":\"session/state\"}\n")))
 }
 
 func TestSteerInputRejectsAnIdleNativeSession(t *testing.T) {
 	a, _ := testAgent(t)
-	assert.ErrorIs(t, a.SteerInput("native steer", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "native steer"}), agent.ErrNoActiveTurn)
 }
 
 func TestInputSessionRejectsEmptyAndReplacedHandles(t *testing.T) {

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
@@ -133,7 +134,12 @@ func TestHangUpIgnoringFixtureCleanupEndsTheProcess(t *testing.T) {
 		// A child subtest's canceled context must not supply the termination.
 		// Only its fixture cleanup closes the helper's control connection.
 		require.NoError(t, m.StartTerminal(context.Background(), hangUpIgnoringOptions(t, id),
-			func(data []byte, _ int64, _ []Signal) {
+			func(observation Output) {
+				if observation.Resize != nil {
+					return
+				}
+				data := observation.Data
+
 				_, _ = output.Write(data)
 				if strings.Contains(output.String(), hangUpReadyMarker) {
 					readyOnce.Do(func() { close(ready) })
@@ -211,7 +217,12 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 				t.Cleanup(newTimer.Close)
 				var output testutil.LogBuffer
 				var readOnce sync.Once
-				require.NoError(t, m.StartTerminal(t.Context(), hangUpIgnoringOptions(t, "blocked"), func(data []byte, _ int64, _ []Signal) {
+				require.NoError(t, m.StartTerminal(t.Context(), hangUpIgnoringOptions(t, "blocked"), func(observation Output) {
+					if observation.Resize != nil {
+						return
+					}
+					data := observation.Data
+
 					_, _ = output.Write(data)
 					if strings.Contains(output.String(), hangUpReadyMarker) {
 						readOnce.Do(func() {
@@ -250,7 +261,7 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 					go func() {
 						defer close(inputDone)
 						// Forced termination may fail this admitted write.
-						_ = m.SendInput("blocked", []byte("held input"))
+						_ = m.SendInput("blocked", terminput.Input{Data: []byte("held input")})
 					}()
 					select {
 					case <-ioEntered:
@@ -315,14 +326,20 @@ func startHangUpTerminal(t *testing.T, m *Manager, opts Options, handlerRan chan
 	if opts.WorkingDir == "" {
 		opts.WorkingDir = t.TempDir()
 	}
-	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64, _ []Signal) { _, _ = output.Write(data) }, func(terminalID string, _ int) {
+	err := m.StartTerminal(context.Background(), opts, func(observation Output) {
+		if observation.Resize != nil {
+			return
+		}
+		data := observation.Data
+		_, _ = output.Write(data)
+	}, func(terminalID string, _ int) {
 		if handlerRan != nil {
 			handlerRan <- terminalID
 		}
 	})
 	require.NoError(t, err, "StartTerminal(%s)", opts.ID)
 	if command != "" {
-		require.NoError(t, m.SendInput(opts.ID, []byte(command+testutil.TestShellEnter())), "SendInput(%s)", opts.ID)
+		require.NoError(t, m.SendInput(opts.ID, terminput.Input{Data: []byte(command + testutil.TestShellEnter())}), "SendInput(%s)", opts.ID)
 	}
 	return output
 }
@@ -560,7 +577,7 @@ func TestManager_HangUpAllReturnsAStraggler(t *testing.T) {
 		ID:         "straggler",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64, []Signal) {}, func(string, int) {
+	}, func(Output) {}, func(string, int) {
 		<-release
 	})
 	require.NoError(t, err)
@@ -592,7 +609,7 @@ func TestManager_HangUpAllJoinsARemovedTerminal(t *testing.T) {
 			ID:         "removed",
 			Shell:      testutil.TestShell(),
 			WorkingDir: t.TempDir(),
-		}, func([]byte, int64, []Signal) {}, func(string, int) {
+		}, func(Output) {}, func(string, int) {
 			close(entered)
 			<-release
 		})
@@ -638,7 +655,7 @@ func TestManager_HangUpAllJoinsAReplacedExitHandler(t *testing.T) {
 			ID:         "replaced",
 			Shell:      testutil.TestShell(),
 			WorkingDir: t.TempDir(),
-		}, func([]byte, int64, []Signal) {}, func(string, int) {
+		}, func(Output) {}, func(string, int) {
 			close(entered)
 			<-release
 		})
@@ -647,7 +664,7 @@ func TestManager_HangUpAllJoinsAReplacedExitHandler(t *testing.T) {
 		require.NotNil(t, oldTerm)
 		// The restart refuses a running terminal, and the old shell's exit is
 		// what runs its exit goroutine into the parked handler.
-		require.NoError(t, m.SendInput("replaced", []byte("exit"+testutil.TestShellEnter())))
+		require.NoError(t, m.SendInput("replaced", terminput.Input{Data: []byte("exit" + testutil.TestShellEnter())}))
 		<-entered
 		<-oldTerm.readDoneCh
 		<-oldTerm.childSideClosedCh
@@ -664,7 +681,7 @@ func TestManager_HangUpAllJoinsAReplacedExitHandler(t *testing.T) {
 			WorkingDir: t.TempDir(),
 			Cols:       80,
 			Rows:       24,
-		}, 0, func([]byte, int64, []Signal) {}, nil))
+		}, 0, func(Output) {}, nil))
 
 		replacement := hangUpTerminal(m, "replaced")
 		m.StopTerminal("replaced")

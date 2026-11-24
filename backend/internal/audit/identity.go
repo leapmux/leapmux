@@ -165,6 +165,9 @@ var identityComparisonSites = map[string]string{
 	// them only in how it encodes the refusal, so this is the single place that
 	// makes the decision.
 	"internal/worker/service.callerIsWorkerOwner": "TestOwnerGateRefusesEmptyIdentities",
+
+	// Cursor history uses the owner fixed when this journal generation starts.
+	"internal/worker/eventjournal.(*Journal).OwnedBy": "TestJournalOwnerRejectsZeroDifferentAndRevokedIdentities",
 	// Not a grant: it decides whether the Hub pushed a DIFFERENT owner than the
 	// one already recorded. A different owner is logged, and its outcome makes
 	// bootstrap's nudgeOnNewOwner start a reconcile pass, whose cost is a

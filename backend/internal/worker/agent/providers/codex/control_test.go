@@ -91,7 +91,8 @@ func stdinHasResponse(t *testing.T, a *Agent, stdin *agenttest.Stdin, id string)
 const codexCommandApprovalLine = `{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"item-1","command":"make clean","availableDecisions":["accept","acceptForSession","decline","cancel"]}}`
 
 // TestCodexApprovalAnswerConformance replays testdata/codex_approval_answer_conformance.json
-// against the standing approval. The browser replays the same file against its Allow.
+// against the standing approval. TestCodexApprovalAnswerConformanceAllow replays the same
+// file against the answer to the user's Allow.
 func TestCodexApprovalAnswerConformance(t *testing.T) {
 	t.Parallel()
 
@@ -299,23 +300,23 @@ func TestCodexBypassSweepWaitsForAcknowledgement(t *testing.T) {
 func TestCodexSendRawInputRefusesAnAnswerToAClosedRequest(t *testing.T) {
 	t.Parallel()
 
-	a, _, stdin := newCodexControlAgent(t)
+	a, sink, stdin := newCodexControlAgent(t)
 	handleCodexOutput(a, providerkit.ParseLine([]byte(codexCommandApprovalLine)))
 
-	answer := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
-	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	answer := sink.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`))
+	require.NoError(t, a.SendRawInput(answer))
 	assert.Equal(t, 1, strings.Count(stdin.String(), `"id":7`))
 
-	err := a.SendRawInput(answer, agent.StopContext{})
-	require.ErrorIs(t, err, providerkit.ErrControlRequestNotPending)
+	err := a.SendRawInput(answer)
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
 	assert.Equal(t, 1, strings.Count(stdin.String(), `"id":7`), "a second answer never reaches Codex")
 
-	err = a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":"unknown","result":{}}`), agent.StopContext{})
-	require.ErrorIs(t, err, providerkit.ErrControlRequestNotPending)
+	err = a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":"unknown","result":{}}`)})
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
 
 	// A request and a notification are not answers, so they pass.
-	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":3,"method":"turn/interrupt","params":{}}`), agent.StopContext{}))
-	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","method":"initialized"}`), agent.StopContext{}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":3,"method":"turn/interrupt","params":{}}`)}))
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","method":"initialized"}`)}))
 	assert.Contains(t, stdin.String(), `"method":"turn/interrupt"`)
 	assert.Contains(t, stdin.String(), `"method":"initialized"`)
 }
@@ -418,7 +419,7 @@ func TestCodexStandingApprovalRereadsAfterRegistration(t *testing.T) {
 	a.approveOutstandingForBypass()
 	require.Empty(t, sink.Notifications(), "the sweep found no record")
 
-	a.registerApprovalRequest([]byte(codexCommandApprovalLine), nil, answer)
+	a.registerApprovalRequest(a.sink, []byte(codexCommandApprovalLine), nil, answer)
 
 	assert.JSONEq(t, `{"decision":"accept"}`, string(stdinResponse(t, stdin, "7")))
 	require.Eventually(t, func() bool { return len(sink.CanceledControls()) > 0 }, 30*time.Second, time.Millisecond)
@@ -831,6 +832,19 @@ func TestCodexAsyncQuestionInstanceSurvivesRepeatedPublication(t *testing.T) {
 	assert.NotEqual(t, records[0].InstanceID, records[6].InstanceID, "native sessions distinguish identical items")
 	assert.Equal(t, "codex-async-question-call-1-1", records[0].RequestID)
 	assert.Equal(t, "codex-async-question-call-1-2", records[1].RequestID)
+}
+
+func TestCodexAsyncQuestionRevisionsReceiveDistinctClaims(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newCodexControlAgent(t)
+	original := asyncQuestionCompletedLine("main-thread", "call-1", `[{"title":"Which color?","options":["Red","Blue"]}]`)
+	revised := asyncQuestionCompletedLine("main-thread", "call-1", `[{"title":"Which color?","options":["Red","Green"]}]`)
+	feedCodexLines(a, original, revised, revised)
+	records := sink.PublishedControls()
+	require.Len(t, records, 3)
+	assert.Equal(t, records[0].RequestID, records[1].RequestID)
+	assert.NotEqual(t, records[0].InstanceID, records[1].InstanceID)
+	assert.Equal(t, records[1].InstanceID, records[2].InstanceID)
 }
 
 func TestCodexQuestionIdentityPreservesUnicodeSeparators(t *testing.T) {

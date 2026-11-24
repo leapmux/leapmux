@@ -1,12 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -16,7 +18,7 @@ import (
 
 // controlResponseQueueID keeps application effects idempotent across response retries.
 func controlResponseQueueID(agentID string, plan controlResponsePlan) string {
-	queuesInput := plan.resolution.FollowUp.Text != "" || plan.exitPlanClearingContext() || plan.isPlanPrompt() && (plan.behavior() == agent.ControlBehaviorAllow || plan.rejectionMessage() != "")
+	queuesInput := plan.resolution.FollowUp.Text != "" || plan.exitPlanClearingContext() || plan.isPlanPrompt() && (plan.behavior() == contracts.ControlAnswerBehaviorAllow || plan.rejectionMessage() != "")
 	if !queuesInput {
 		return ""
 	}
@@ -73,8 +75,14 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 	if err != nil {
 		return fmt.Errorf("recheck the pending control request before delivery: %w", err)
 	}
-	if !found || pending.ClaimToken != plan.requestMeta.ClaimToken || pending.AgentSessionID != plan.requestMeta.AgentSessionID {
-		return errors.New("the control request is no longer pending")
+	if !found {
+		return agent.ErrControlRequestNotPending
+	}
+	if pending.ClaimToken != plan.requestMeta.ClaimToken || !bytes.Equal(pending.Payload, plan.requestMeta.Payload) {
+		return agent.ErrControlInstanceReplaced
+	}
+	if pending.AgentSessionID != plan.requestMeta.AgentSessionID {
+		return agent.ErrControlRequestNotPending
 	}
 	if mode := plan.settings.GetPermissionMode(); mode != "" {
 		group := optionids.GroupByID(svc.optionGroupsForAgent(&latest), agent.OptionIDPermissionMode)
@@ -98,14 +106,18 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 	if plan.resolution.LeapMuxOwned {
 		return nil
 	}
-	// processControlResponse refuses a withheld resolution before it calls this
-	// function, so every plan that arrives here forwards its content.
-	return svc.sendControlResponseFn(ownerID, plan.resolution.Content)
+	// processControlAnswer refuses a withheld resolution before it calls this
+	// function, so every plan that arrives here forwards its content. The
+	// check above leaves a window before the provider writes: the provider can
+	// replace the request under the same ID in it. So the answer states the
+	// instance that it answers, and the provider refuses it when that instance
+	// is no longer current (agent.RawInput.ControlInstanceID).
+	return svc.sendControlResponseFn(ownerID, agent.RawInput{Data: plan.resolution.Content, ControlInstanceID: plan.requestMeta.ClaimToken})
 }
 
 func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Agent, plan controlResponsePlan) error {
 	inputID := controlResponseQueueID(agentID, plan)
-	if plan.behavior() == agent.ControlBehaviorDeny {
+	if plan.behavior() == contracts.ControlAnswerBehaviorDeny {
 		if feedback := plan.rejectionMessage(); feedback != "" {
 			_, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 				ID: inputID, AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: feedback,
@@ -133,10 +145,10 @@ func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Ag
 
 // answersARetiredInstance reports that this answer identifies a request instance the
 // worker no longer holds, because the stored claim token differs from the one the
-// browser sent.
+// client sent.
 //
-// Its caller refuses the answer in SILENCE. See the gate in processControlResponse
+// Its caller refuses the answer in SILENCE. See the gate in processControlAnswer
 // for why that is the correct outcome rather than an error.
-func (plan controlResponsePlan) answersARetiredInstance(claimToken string) bool {
-	return plan.requestMeta.ClaimToken != claimToken
+func (meta controlResponseRequestMetadata) answersARetiredInstance(claimToken string) bool {
+	return meta.ClaimToken != claimToken
 }

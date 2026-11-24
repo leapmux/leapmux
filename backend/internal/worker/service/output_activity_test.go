@@ -1384,9 +1384,8 @@ func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
 //
 // Four situations answer alike, and they have to: the terminal sits idle, its
 // shell exited, the PTY has not spawned yet, or the Worker no longer holds the
-// id. A close guard treats every one as "nothing to warn about", and an ERROR
-// instead of an empty answer would fail the whole close rather than let it
-// proceed unwarned.
+// id. These cases give the close guard a confirmed empty process list. A scan
+// failure instead reports that the Worker could not check the activity.
 func TestInspectTerminalProcesses_OmitsWhatItCannotWarnAbout(t *testing.T) {
 	t.Parallel()
 
@@ -1397,7 +1396,7 @@ func TestInspectTerminalProcesses_OmitsWhatItCannotWarnAbout(t *testing.T) {
 		TerminalIds: []string{"", "no-such-terminal"},
 	}, w)
 
-	require.Empty(t, w.errors, "an unanswerable probe is an empty answer, never a failed close")
+	assert.Empty(t, w.errors, "the Worker holds no shell for these ids")
 	var resp leapmuxv1.InspectTerminalProcessesResponse
 	lastResponse(t, w, &resp)
 	assert.Empty(t, resp.GetTerminals())

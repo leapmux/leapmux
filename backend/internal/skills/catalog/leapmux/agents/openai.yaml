@@ -1,0 +1,4 @@
+interface:
+  display_name: "LeapMux Control"
+  short_description: "Drive LeapMux agents, terminals, worktrees, and Workers via CLI"
+  default_prompt: "Use the leapmux skill to orient yourself in LeapMux and drive workspaces, agents, or terminals safely."

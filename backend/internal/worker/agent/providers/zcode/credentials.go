@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
@@ -96,8 +97,8 @@ func zcodeProjectLocationKey(origin, family, accountID string, team *zcodeTeamPr
 		teamPart = team
 		selection = nil
 	}
-	return "project-key-location:v1:" + zcodeEncodeURIComponent(zcodeJSONStringify(
-		[]any{origin, family, accountID, teamPart, zcodeProjectUsageCodingPlan, selection}))
+	return "project-key-location:v1:" + zcodeEncodeURIComponent(string(providerkit.JSONText(
+		[]any{origin, family, accountID, teamPart, zcodeProjectUsageCodingPlan, selection})))
 }
 
 // zcodeCredentialStore reads the shared credential store.

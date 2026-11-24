@@ -18,24 +18,19 @@ import (
 // replaces it to observe which commands print it.
 var printModeBanner = logging.PrintBanner
 
-// openLifecycleCommand parses a lifecycle command and prints the banner. It
-// reports done when the command needs no further work: --version printed the
-// version, or the flags failed to parse. The caller then returns err.
+// openLifecycleCommand loads a lifecycle command and prints the banner.
 //
-// A parse failure and --help print no banner. Neither does `status --json`,
+// A load failure and --help print no banner. Neither does `status --json`,
 // because a script reads its output.
-func openLifecycleCommand(mode, verb string, args []string) (configuration *lifecycleConfiguration, options lifecycleOptions, done bool, err error) {
-	configuration, options, err = loadLifecycleCommand(mode, verb, args)
-	if handleVersionQuery(err) {
-		return nil, options, true, nil
-	}
+func openLifecycleCommand(line lifecycleCommandLine) (configuration *lifecycleConfiguration, options lifecycleOptions, err error) {
+	configuration, options, err = line.load()
 	if err != nil {
-		return nil, options, true, err
+		return nil, options, err
 	}
 	if !options.json {
-		printModeBanner(mode)
+		printModeBanner(line.mode())
 	}
-	return configuration, options, false, nil
+	return configuration, options, nil
 }
 
 // instanceSelection identifies one instance in a printed command: the
@@ -93,11 +88,14 @@ func currentExecutable() (string, error) {
 	return executable, nil
 }
 
-// printNextCommands prints the commands that act on the instance next, for
+// printNextCommandsTo prints the commands that act on the instance next, for
 // the shell of this platform. It follows a command that already succeeded,
 // so it is best effort, as printInstanceCommands explains.
-func printNextCommands(selection instanceSelection, verbs ...string) {
-	printInstanceCommands(os.Stdout, selection, shellquote.ForOS(runtime.GOOS), exec.LookPath, verbs...)
+func printNextCommandsTo(w io.Writer, selection instanceSelection, verbs ...string) {
+	if w == io.Discard {
+		return
+	}
+	printInstanceCommands(w, selection, shellquote.ForOS(runtime.GOOS), exec.LookPath, verbs...)
 }
 
 // printSelectedNextCommands prints the next commands for the instance that a
@@ -105,6 +103,13 @@ func printNextCommands(selection instanceSelection, verbs ...string) {
 // lookup of the executable prints nothing, because the command already
 // succeeded.
 func printSelectedNextCommands(mode, configFile, dataDirectory string, newController nativeControllerFactory, verbs, serviceVerbs []string) {
+	printSelectedNextCommandsTo(os.Stdout, mode, configFile, dataDirectory, newController, verbs, serviceVerbs)
+}
+
+func printSelectedNextCommandsTo(w io.Writer, mode, configFile, dataDirectory string, newController nativeControllerFactory, verbs, serviceVerbs []string) {
+	if w == io.Discard {
+		return
+	}
 	selection, configured, err := commandSelection(mode, configFile, dataDirectory, newController)
 	if err != nil {
 		return
@@ -112,7 +117,7 @@ func printSelectedNextCommands(mode, configFile, dataDirectory string, newContro
 	if configured {
 		verbs = append(append([]string(nil), verbs...), serviceVerbs...)
 	}
-	printNextCommands(selection, verbs...)
+	printNextCommandsTo(w, selection, verbs...)
 }
 
 // printInstanceCommands prints the exact commands that act on one instance,
@@ -135,7 +140,7 @@ func printInstanceCommands(w io.Writer, selection instanceSelection, shell shell
 	b.WriteString("\nCommands for this instance:\n")
 	for _, verb := range verbs {
 		fmt.Fprintf(&b, "  %-*s %s\n", width, capitalize(verb)+":",
-			shell.Command(program, selection.mode, verb, "--config", selection.configFile, "--data-dir", selection.dataDirectory))
+			shell.Command(program, "daemon", selection.mode, verb, "--config", selection.configFile, "--data-dir", selection.dataDirectory))
 	}
 	_, _ = io.WriteString(w, b.String())
 }

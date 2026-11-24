@@ -26,7 +26,7 @@ func (IdleAgent) PublishTurnActive() agent.TurnState {
 	return agent.TurnState{}
 }
 
-func (IdleAgent) SendRawInput(data []byte, stop agent.StopContext) error { return nil }
+func (IdleAgent) SendRawInput(agent.RawInput) error { return nil }
 
 func (IdleAgent) Stop() {}
 

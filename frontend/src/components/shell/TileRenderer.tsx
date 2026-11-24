@@ -254,6 +254,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const confirmLink = opts.confirmLink
   const mruEditorDeps = opts.mruEditorDeps
 
+  // The title of an agent tab in any workspace, by its id. A message from
+  // another agent states its sender by it, in the transcript and in the queue.
+  const agentTabTitle = (tabId: string): string | undefined => view.getAgentTab(tabId)?.title
+
   // A child tab whose provider rejects direct input is a read-only transcript.
   // Roots and writable children stay interactive. isSteerableAgentTab resolves
   // acceptsMessages with a supportsSubagentSend fallback before hydration.
@@ -1243,6 +1247,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                         }
                       }}
                       {...optionalProp('messageContext', messages())}
+                      tabTitle={agentTabTitle}
                       // Archived workspaces keep the transcript read-only: the
                       // quote/reply hooks stay omitted rather than undefined.
                       {...(isActiveWorkspaceArchived()
@@ -1450,6 +1455,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const queueOps = createAgentInputQueueOperations({
     view,
     store: agentInputQueueStore,
+    chatStore,
     clientId: opts.clientId,
     focusedAgentId,
     forceScrollToBottom: () => forceScrollToBottomRef()?.(),
@@ -1571,12 +1577,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
           agentId={agentId()}
           actionStateStore={opts.agentComposerActionStates}
           {...editorOptionalProps()}
-          {...optionalProp('messageContext', messageContext(focusedAgentTab()?.workerId ?? '', agentId()))}
           queueClientId={opts.clientId()}
+          tabTitle={agentTabTitle}
           repoGitStore={repoGitStore}
           onSendMessage={queueOps.sendMessage}
           onRetryPendingSend={queueOps.retryPendingMessage}
-          onSendControlFeedback={queueOps.sendControlFeedback}
           onBeginQueueEdit={queueOps.beginQueueEdit}
           onUpdateQueueItem={queueOps.updateQueueItem}
           onCancelQueueEdit={queueOps.cancelQueueEdit}
@@ -1591,7 +1596,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
           triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
           focusRef={(fn) => { focusEditorRef.set(fn) }}
-          onControlResponse={agentOps.handleControlResponse}
+          onControlAnswer={agentOps.handleControlAnswer}
           onQuestionsOpenChange={open => controlStore.setQuestionsOpen(agentId(), open)}
           onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
           onInterrupt={() => agentOps.handleInterrupt(agentId())}

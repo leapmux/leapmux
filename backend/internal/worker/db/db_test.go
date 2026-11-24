@@ -197,7 +197,7 @@ func TestAttachmentSizeIsTheDataLength(t *testing.T) {
 	require.NoError(t, db.Migrate(ctx, sqlDB))
 	for _, statement := range []string{
 		`INSERT INTO agents (id) VALUES ('agent-1')`,
-		`INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('item-1', 'agent-1', 1, 1, 1)`,
+		`INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state, idempotency_key) VALUES ('item-1', 'agent-1', 1, 1, 1, 'key-1')`,
 	} {
 		_, err := sqlDB.ExecContext(ctx, statement)
 		require.NoError(t, err)

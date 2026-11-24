@@ -1,4 +1,4 @@
-import type { QuestionOption, QuestionPrompt } from '../model/question'
+import type { ControlQuestion, QuestionOption, QuestionPrompt } from '../model/question'
 import { isObject } from '~/lib/jsonPick'
 
 // The shared builder for the question list a tool call asked.
@@ -65,6 +65,40 @@ export function questionsFromRecords(
             ? [built]
             : []
         }),
+      },
+    ]
+  })
+}
+
+/**
+ * Read an untyped wire array into questions, dropping what a row cannot draw.
+ *
+ * It serves a provider whose question records already use the shared key
+ * spellings (`question`, `header`, `options`, `multiSelect`), so it needs no
+ * reader of its own.
+ *
+ * A cast is not a check. A `null` element, or a bare string, would reach the row as
+ * a question with no text, and the row hands `options` to a `<For>`, which needs a
+ * real array on every element.
+ *
+ * Each element keeps whatever it stated and takes the empty list for an `options`
+ * that is not an array. It does NOT drop a question that states no option: a
+ * free-text question is a real one.
+ */
+export function questionsFromWire(raw: unknown): ControlQuestion[] {
+  if (!Array.isArray(raw))
+    return []
+  return raw.flatMap((item) => {
+    if (!isObject(item))
+      return []
+    const source = item as Partial<ControlQuestion>
+    return [
+      {
+        ...source,
+        question: source.question ?? '',
+        options: Array.isArray(source.options)
+          ? source.options
+          : [],
       },
     ]
   })

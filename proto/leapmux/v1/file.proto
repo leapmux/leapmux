@@ -19,6 +19,12 @@ service WorkerFileService {
   rpc StatFile(StatFileRequest) returns (StatFileResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
   }
+  rpc SearchFiles(SearchFilesRequest) returns (SearchFilesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
+  rpc GlobFiles(GlobFilesRequest) returns (GlobFilesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
 }
 
 message ListDirectoryRequest {
@@ -161,4 +167,37 @@ message FileInfo {
   string mod_time = 5;
   string permissions = 6;
   bool hidden = 7;
+}
+
+// SearchFiles searches text files inside a directory on the Worker over E2EE.
+message SearchFilesRequest {
+  string path = 1;
+  string pattern = 2;
+  string glob = 3;
+  bool regex = 4;
+  bool ignore_case = 5;
+  int32 limit = 6;
+}
+
+message FileSearchMatch {
+  string path = 1;
+  int32 line = 2;
+  string text = 3;
+}
+
+message SearchFilesResponse {
+  repeated FileSearchMatch matches = 1;
+  bool truncated = 2;
+}
+
+// GlobFiles lists file paths matching a glob pattern under a directory on the Worker.
+message GlobFilesRequest {
+  string path = 1;
+  string pattern = 2;
+  int32 limit = 3;
+}
+
+message GlobFilesResponse {
+  repeated string paths = 1;
+  bool truncated = 2;
 }

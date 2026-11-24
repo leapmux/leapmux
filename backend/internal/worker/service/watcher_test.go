@@ -468,7 +468,7 @@ func TestModesForChannel_ReflectsCurrentRegistrations(t *testing.T) {
 	agentModes := m.AgentModesForChannel("ch-1")
 	require.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, agentModes["agent-1"])
 	require.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, agentModes["agent-2"])
-	require.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, m.TerminalModesForChannel("ch-1")["term-1"])
+	require.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, m.TerminalWatchesForChannel("ch-1")["term-1"].mode)
 	assert.Empty(t, m.AgentModesForChannel("ch-other"))
 
 	// After replace, omitted entities disappear from the snapshot.
@@ -1450,7 +1450,10 @@ func TestEventClassCoversEveryAgentOneofCase(t *testing.T) {
 		"turn_end":                 true,
 		"todos_changed":            true,
 		"background_tasks_changed": true,
+		"goal_changed":             true,
 		"activity_changed":         true,
+		"input_queue_revision":     true,
+		"input_reply_changed":      true,
 		// input_queue_changed is deliberately absent: a queue snapshot carries
 		// every item with a text preview, so it is content.
 	}
@@ -1566,6 +1569,24 @@ func TestEventClassCoversEveryTerminalOneofCase(t *testing.T) {
 			_ = terminalEventClass(ev)
 		})
 	}
+}
+
+func TestTerminalGeometryRequiresAFullOptInWatch(t *testing.T) {
+	t.Parallel()
+	registry := newWatcherRegistry()
+	legacy, geometry, notify := newTestWriter(), newTestWriter(), newTestWriter()
+	registry.setWatches("legacy", []watchEntry{{id: "terminal", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, legacy)
+	registry.setWatches("geometry", []watchEntry{{id: "terminal", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, geometry: true}}, geometry)
+	registry.setWatches("notify", []watchEntry{{id: "terminal", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, geometry: true}}, notify)
+	event := &leapmuxv1.TerminalEvent{TerminalId: "terminal", Event: &leapmuxv1.TerminalEvent_ScreenGeometry{
+		ScreenGeometry: &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 2, Cols: 12, Rows: 2},
+	}}
+	registry.broadcast("terminal", &leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: event},
+	}, terminalEventClass(event))
+	assert.Empty(t, legacy.streamsSnapshot())
+	require.Len(t, geometry.streamsSnapshot(), 1)
+	assert.Empty(t, notify.streamsSnapshot())
 }
 
 func TestRetire_DropsTheEntityOnceItsLastWatcherGoes(t *testing.T) {

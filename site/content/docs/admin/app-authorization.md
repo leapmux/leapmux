@@ -26,9 +26,8 @@ A private app is invisible in every sense. Another account does not see it in a 
 A user registers an app from **Preferences → Apps**. An administrator can register from **Preferences → Hub-wide Apps**, or from the CLI:
 
 ```bash
-leapmux control admin app register \
+leapmux admin app register "Deployment bot" \
   --hub https://leapmux.example.com \
-  --name "Deployment bot" \
   --redirect-uri https://bot.example.com/callback \
   --scope "workspace:read agent:read agent:write" \
   --type confidential \
@@ -39,7 +38,7 @@ The response carries the `client_id` and, for a confidential client, the `client
 
 **Registering an app, editing its registration, changing its elevation setting, and vouching for it require a recently proven factor.** Changing the redirect list can divert an authorization code already in flight to an address the editor chose.
 
-In the browser the first such write opens a **Verify your identity** dialog. On the CLI the default ceremony opens a browser on the CLI's own machine; a credential from `leapmux control auth login --device-code`, or one an administrator issued, instead prints an address and a short code to approve in a browser (see [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
+In the browser the first such write opens a **Verify your identity** dialog. On the CLI the default ceremony opens a browser on the CLI's own machine; a credential from `leapmux auth login --device-code`, or one an administrator issued, instead prints an address and a short code to approve in a browser (see [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
 
 ## Permissions
 
@@ -86,7 +85,7 @@ A new registration is **unverified**, and its consent screen says so: the headin
 An administrator vouches for an app once they know what it is:
 
 ```bash
-leapmux control admin app verify --client-id <client_id>
+leapmux admin app verify <client_id>
 ```
 
 The warning disappears, and the app's row under **Preferences → Apps** names the administrator who vouched. `unverify` withdraws it.
@@ -100,7 +99,7 @@ A credential from a browser login verifies through a browser on its own machine.
 Both the loopback and device-code step-up ceremonies require the app registration to allow elevation. New registrations have this setting disabled by default. The Hub enables it when it creates the built-in registrations. To allow elevation for an app, run the following command.
 
 ```bash
-leapmux control admin app allow-elevation --client-id <client_id>
+leapmux admin app allow-elevation <client_id>
 ```
 
 Disabling this setting blocks new step-up requests for the app. For the app’s bearer credentials, the Hub also stops honoring open elevation windows when it next validates the credential.
@@ -112,7 +111,7 @@ The setting is not a trust tier and not a permission. The elevation window multi
 RFC 7591 dynamic registration lets a program register itself with no account at all. It is **off by default**: an anonymous caller who can create a registration can create a row that appears on a consent screen, which is a phishing surface as much as a convenience.
 
 ```bash
-leapmux control admin settings set open_app_registration true
+leapmux admin settings set open_app_registration true
 ```
 
 While it is off, `registration_endpoint` is absent from the Hub's metadata document, so a conformant client library does not try and does not report the refusal as a Hub failure. A self-registered app is always unverified and always hub-wide.
@@ -122,10 +121,10 @@ While it is off, `registration_endpoint` is absent from the Hub's metadata docum
 **Retire** revokes the registration and every credential it holds, for every account, in one transaction:
 
 ```bash
-leapmux control admin app revoke --client-id <client_id>
+leapmux admin app revoke <client_id>
 ```
 
-**Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: the Hub keeps it as history that an administrator can list with `leapmux control admin api-token list --include-revoked`, and deleting the app it belonged to would leave that history pointing at nothing.
+**Delete** removes a registration that never held a credential. The Hub refuses it otherwise and says how many credentials exist, so you can retire instead. A revoked credential still counts: the Hub keeps it as history that an administrator can list with `leapmux admin api-token list --include-revoked`, and deleting the app it belonged to would leave that history pointing at nothing.
 
 The Hub ships with three built-in registrations. They are the control CLI, LeapMux Desktop, and the service account that holds administrator-issued credentials. The elevation setting is the only editable field on a built-in registration. An administrator can change it for any built-in app, including LeapMux Desktop. The Hub also protects these registrations from retirement and deletion.
 
@@ -139,5 +138,5 @@ That is what makes the model useful on one machine: hand a local agent a credent
 
 - [Connected Apps](/docs/using/connected-apps/) — the account holder's side
 - [OAuth API](/docs/reference/oauth-api/) — the wire contract
-- [Control CLI](/docs/using/control-cli/) — `leapmux control admin app ...`
+- [Control CLI](/docs/using/control-cli/) — `leapmux admin app ...`
 - [Security & Threat Model](/docs/admin/security/) — session elevation and the trust boundaries

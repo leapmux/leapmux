@@ -239,10 +239,10 @@ func TestRunErrorPrecedesTheSteerFlush(t *testing.T) {
 	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(observer))
 	feedEvent(t, a, map[string]any{"type": "text_delta", "delta": "buffered output"})
 	feedEvent(t, a, map[string]any{"type": "run_error", "error": "held error"})
-	require.NoError(t, a.SteerInput("guidance", nil))
-	feedMethod(t, a, "turn/steers_delivered", map[string]any{"count": 1})
+	require.NoError(t, a.SteerInput(testCommandCodeSteer(1, "guidance")))
+	feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": 1})
 	assert.Equal(t, 1, observer.noticesAtMessage)
-	require.Len(t, sink.SteerEchoReports(), 1)
+	assert.Equal(t, []agent.SteerResolution{testCommandCodeSteerReport(a, 1, "turn_1", agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 }
 
 func TestRunErrorStaysHeldAcrossLiveProgressWithoutARetry(t *testing.T) {

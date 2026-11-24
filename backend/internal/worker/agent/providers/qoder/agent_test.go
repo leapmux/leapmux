@@ -264,7 +264,7 @@ func TestSteerInputPutsThePromptTextLast(t *testing.T) {
 			a.active = true
 			a.mu.Unlock()
 
-			require.NoError(t, a.SteerInput(tc.text, tc.attachments))
+			require.NoError(t, a.SteerInput(agent.SteerRequest{Content: tc.text, Attachments: tc.attachments}))
 			assert.JSONEq(t, tc.want, sentUserFrame(t, stdin))
 		})
 	}
@@ -297,7 +297,7 @@ func TestSteerInputRejectsAnUnsupportedAttachment(t *testing.T) {
 	a.active = true
 	a.mu.Unlock()
 
-	err := a.SteerInput("Read both.", []*leapmuxv1.Attachment{testPNGAttachment(), testPDFAttachment()})
+	err := a.SteerInput(agent.SteerRequest{Content: "Read both.", Attachments: []*leapmuxv1.Attachment{testPNGAttachment(), testPDFAttachment()}})
 	require.ErrorContains(t, err, "paper.pdf", "a steer must not drop an attachment that Qoder cannot read")
 	assert.Empty(t, stdin.String(), "a rejected steer must write no partial frame")
 	a.mu.Lock()
@@ -312,7 +312,7 @@ func TestSteerInputWithoutATurnWritesNothing(t *testing.T) {
 	stdin := &agenttest.Stdin{}
 	a.SetStdinForTest(stdin)
 
-	err := a.SteerInput("Look at this too.", []*leapmuxv1.Attachment{testPNGAttachment()})
+	err := a.SteerInput(agent.SteerRequest{Content: "Look at this too.", Attachments: []*leapmuxv1.Attachment{testPNGAttachment()}})
 	require.ErrorIs(t, err, agent.ErrNoActiveTurn)
 	assert.Empty(t, stdin.String())
 }

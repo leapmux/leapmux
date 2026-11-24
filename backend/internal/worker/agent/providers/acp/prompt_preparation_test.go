@@ -66,6 +66,28 @@ func TestDetachedPromptRefusesAReplacedSession(t *testing.T) {
 	assert.Empty(t, []byte(out.String()))
 }
 
+func TestDetachedPromptPreparesTheInputForItsSelectedTransport(t *testing.T) {
+	t.Parallel()
+	stdin := &agenttest.Stdin{}
+	b, _ := newACPTurnBase(t, stdin)
+	b.hooks.PreparePrompt = func(_ string, _ []agent.ClassifiedAttachment, blocks []map[string]any) error {
+		blocks[0]["text"] = "prepared input"
+		return nil
+	}
+	b.hooks.PromptParams = func(params map[string]any) { params["ext"] = "prepared metadata" }
+	failure := errors.New("the selected transport refused submission")
+	var request json.RawMessage
+	send := func(params json.RawMessage) error {
+		request = params
+		return failure
+	}
+	require.Error(t, b.SendPromptDetachedUsing("old-session", "input", nil, send))
+	assert.Empty(t, request)
+	require.ErrorIs(t, b.SendPromptDetachedUsing("session-1", "input", nil, send), failure)
+	assert.JSONEq(t, `{"sessionId":"session-1","prompt":[{"type":"text","text":"prepared input"}],"ext":"prepared metadata"}`, string(request))
+	assert.Empty(t, stdin.String())
+}
+
 func TestChildPromptRefusesAnUnservedSessionBeforePreparation(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}

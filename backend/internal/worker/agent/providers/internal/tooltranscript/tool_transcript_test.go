@@ -2009,3 +2009,42 @@ func TestToolTranscript_ExpiredStreamDoesNotBlockTheNewLease(t *testing.T) {
 	assert.Equal(t, 2, child.MessageCount(), "the prefix must not repeat")
 	assert.Equal(t, 1, effects)
 }
+
+func TestModelProgressResetChildToolTranscriptRunsOrderedEffectsWithoutDeadlock(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	transcript, _ := newTestToolTranscript(t, agent.NewProviderServices(raw), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	wrapped := agent.NewModelProgressResetSink(transcript)
+
+	child := wrapped.ChildSink("child-1")
+	rawChild := raw.Child("child-1")
+	child.UpdateSessionID("native-child")
+	receipt := agent.NativeInputReceipt{SessionID: "native-child", InputID: "input-1"}
+
+	require.NoError(t, child.BindNativeInputTurn(receipt, "2"))
+	require.NoError(t, child.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+		Original:       []byte(`{"type":"assistant/message","text":"done"}`),
+		AgentSessionID: "native-child",
+		IdempotencyKey: "session-event:1:block:0",
+	}, agent.SpanInfo{}))
+	require.NoError(t, child.SetNativeControlInputs(agent.NativeControlInputs{
+		SessionID:  "native-child",
+		RequestID:  "req-1",
+		InstanceID: "inst-1",
+		InputIDs:   []string{"input-1"},
+	}))
+	require.NoError(t, child.PublishNativeReplyTurn(agent.NativeReplyTurn{
+		SessionID: "native-child",
+		TurnID:    "2",
+		Outcome:   leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Items:     []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "session-event:1:block:0"}},
+		Inputs:    []agent.NativeReplyBoundary{{InputID: "input-1", AfterOrdinal: 1}},
+	}))
+	child.SetTurnState(agent.TurnState{}, 1)
+	require.NoError(t, child.RetractMessagesByIdempotencyKey(agent.MessageContent{AgentSessionID: "native-child"}, []string{"session-event:1:block:0"}))
+
+	assert.False(t, rawChild.OutputQueue().HasPending())
+	require.Len(t, rawChild.NativeReplyTurns(), 1)
+	assert.Equal(t, "2", rawChild.NativeReplyTurns()[0].TurnID)
+	assert.Equal(t, 1, rawChild.MessageCount())
+}

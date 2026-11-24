@@ -1,8 +1,9 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { WorkerPrivateEvent } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
-import { WorkerPrivateEventSchema, WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { TabStatusTone, WorkerPrivateEventSchema, WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { STREAM_HEALTHY_AFTER_MS } from './retry'
 
 // Mock the E2EE channel transport so we can drive connect / message / error
@@ -268,5 +269,193 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     expect(stream).toHaveBeenCalledTimes(0)
     expect(removeStreamListener).not.toHaveBeenCalled()
     expect(renamed).toEqual([])
+  })
+})
+
+describe('openWorkerPrivateEventStream commands and statuses', () => {
+  const getOrOpenChannel = vi.mocked(channelManager.getOrOpenChannel)
+  const stream = vi.mocked(channelManager.stream)
+  let streams: FakeStream[]
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    streams = []
+    getOrOpenChannel.mockReset()
+    stream.mockReset()
+    getOrOpenChannel.mockResolvedValue('chan')
+    stream.mockImplementation(() => {
+      const s = makeFakeStream()
+      streams.push(s.control)
+      return s.handle as ReturnType<typeof channelManager.stream>
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  async function tick(ms: number) {
+    await vi.advanceTimersByTimeAsync(ms)
+    await vi.advanceTimersByTimeAsync(0)
+  }
+
+  function event(value: NonNullable<MessageInitShape<typeof WorkerPrivateEventSchema>['event']>): WorkerPrivateEvent {
+    return create(WorkerPrivateEventSchema, { event: value })
+  }
+
+  it('surfaces a notification with the tab that sent it', async () => {
+    const onUserNotification = vi.fn()
+    const onUserNotificationCleared = vi.fn()
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+      onUserNotification,
+      onUserNotificationCleared,
+    })
+    await tick(0)
+
+    streams[0]!.emitMessage(event({
+      case: 'userNotification',
+      value: {
+        id: 'notice',
+        title: 'Tests passed',
+        body: 'All 42',
+        sourceTabId: 'a1',
+        destination: {
+          target: { case: 'workspaceId', value: 'workspace-1' },
+        },
+      },
+    }))
+    expect(onUserNotification).toHaveBeenCalledExactlyOnceWith({
+      id: 'notice',
+      title: 'Tests passed',
+      body: 'All 42',
+      sourceTabId: 'a1',
+      destination: expect.objectContaining({
+        target: { case: 'workspaceId', value: 'workspace-1' },
+      }),
+    })
+    streams[0]!.emitMessage(event({
+      case: 'userNotificationCleared',
+      value: { id: 'notice' },
+    }))
+    expect(onUserNotificationCleared).toHaveBeenCalledExactlyOnceWith('notice')
+    stop()
+  })
+
+  it('surfaces a reveal', async () => {
+    const onTabRevealCommand = vi.fn()
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+      onTabRevealCommand,
+    })
+    await tick(0)
+
+    streams[0]!.emitMessage(event({
+      case: 'tabRevealCommand',
+      value: { tabId: 'a1' },
+    }))
+    expect(onTabRevealCommand).toHaveBeenCalledExactlyOnceWith({ tabId: 'a1' })
+    stop()
+  })
+
+  it('decodes a status, and reads an absent one as a clear', async () => {
+    const onTabStatusChanged = vi.fn()
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+      onTabStatusChanged,
+    })
+    await tick(0)
+
+    streams[0]!.emitMessage(event({
+      case: 'tabStatusChanged',
+      value: {
+        tabId: 'a1',
+        status: { text: 'Migrating rows', progressPercent: 40, tone: TabStatusTone.ERROR },
+      },
+    }))
+    streams[0]!.emitMessage(event({
+      case: 'tabStatusChanged',
+      value: { tabId: 'a1' },
+    }))
+
+    expect(onTabStatusChanged.mock.calls).toEqual([
+      [
+        {
+          tabId: 'a1',
+          status: { text: 'Migrating rows', progressPercent: 40, tone: 'error' },
+        },
+      ],
+      [
+        { tabId: 'a1', status: undefined },
+      ],
+    ])
+    stop()
+  })
+
+  // The bootstrap of each new stream replays every status that is set, so the
+  // caller resets before the first frame of EACH stream, reconnects included.
+  it('reports each new stream before its first event', async () => {
+    const order: string[] = []
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+      onSubscribed: () => order.push('subscribed'),
+      onTabStatusChanged: evt => order.push(`status ${evt.tabId}`),
+    })
+    await tick(0)
+    streams[0]!.emitMessage(event({
+      case: 'tabStatusChanged',
+      value: {
+        tabId: 'a1',
+        status: { text: 'x' },
+      },
+    }))
+
+    streams[0]!.emitError(new Error('drop'))
+    await tick(250)
+    expect(streams).toHaveLength(2)
+    streams[1]!.emitMessage(event({
+      case: 'tabStatusChanged',
+      value: {
+        tabId: 'a2',
+        status: { text: 'y' },
+      },
+    }))
+
+    expect(order).toEqual([
+      'subscribed',
+      'status a1',
+      'subscribed',
+      'status a2',
+    ])
+    stop()
+  })
+
+  // A throwing callback must not cost the stream: the events after it still
+  // arrive on the same stream.
+  it('keeps the stream when the subscribe callback throws', async () => {
+    const onTabRevealCommand = vi.fn()
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+      onSubscribed: () => {
+        throw new Error('boom')
+      },
+      onTabRevealCommand,
+    })
+    await tick(0)
+
+    streams[0]!.emitMessage(event({
+      case: 'tabRevealCommand',
+      value: { tabId: 'a1' },
+    }))
+    expect(onTabRevealCommand).toHaveBeenCalledOnce()
+    expect(stream).toHaveBeenCalledOnce()
+    stop()
   })
 })

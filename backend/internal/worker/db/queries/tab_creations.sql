@@ -1,10 +1,13 @@
 -- name: GetTabCreation :one
 SELECT * FROM tab_creations WHERE user_id = ? AND worker_id = ? AND tab_id = ?;
 
+-- name: GetTabCreationSelectedWorktree :one
+SELECT selected_worktree_identity FROM tab_creations WHERE user_id = ? AND worker_id = ? AND tab_id = ? AND tab_type = ?;
+
 -- name: InsertTabCreation :exec
 INSERT INTO tab_creations(user_id, worker_id, tab_id, tab_type, request_hash, request_payload,
-    publication_payload, runtime_payload, publication_result, state)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    publication_payload, runtime_payload, selected_worktree_identity, publication_result, state)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListPendingTabCreations :many
 SELECT * FROM tab_creations
@@ -54,6 +57,16 @@ WHERE user_id = ? AND worker_id = ? AND tab_id = ? AND state = ?;
 -- name: SaveTabCreationRuntime :execrows
 UPDATE tab_creations SET runtime_payload = ?
 WHERE user_id = ? AND worker_id = ? AND tab_id = ? AND state = ?;
+
+-- name: ClaimTerminalInitialCommand :execrows
+UPDATE tab_creations SET initial_command_claimed = TRUE
+WHERE user_id = sqlc.arg(user_id) AND worker_id = sqlc.arg(worker_id)
+    AND tab_id = sqlc.arg(tab_id) AND tab_type = sqlc.arg(tab_type)
+    AND state = sqlc.arg(published_state) AND NOT initial_command_claimed
+    AND EXISTS (
+        SELECT 1 FROM terminals
+        WHERE terminals.id = tab_creations.tab_id AND closed_at IS NULL AND NOT workspace_archived
+    );
 
 -- name: SaveTabCreationCancelProgress :execrows
 UPDATE tab_creations SET cancel_progress_payload = ?

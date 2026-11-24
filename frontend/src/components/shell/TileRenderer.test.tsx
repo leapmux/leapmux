@@ -30,6 +30,7 @@ import { workerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { deferred } from '~/test-support/async'
 import { reportChatViewportSize } from '~/test-support/chatViewRows'
+import { testControlRequest } from '~/test-support/controlRequests'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { useTestStorage } from '~/test-support/persistentStorage'
@@ -1182,10 +1183,16 @@ describe('TileRenderer fileDropDisabled', () => {
 
   it('enables the drop while a closed non-blocking question waits', () => {
     const { controlStore, fileDropDisabled } = renderDropGuard()
-    controlStore.addRequest('a1', {
+    controlStore.addRequest('a1', testControlRequest({
       agentId: 'a1',
       requestId: 'q1',
       claimToken: 'tok-q1',
+      prompt: {
+        kind: 'question',
+        questions: [
+          { question: 'Which color?', options: [] },
+        ],
+      },
       payload: {
         request: {
           tool_name: 'CodexAsyncQuestion',
@@ -1193,16 +1200,22 @@ describe('TileRenderer fileDropDisabled', () => {
         },
       },
       nonBlocking: true,
-    })
+    }))
     expect(fileDropDisabled()).toBe(false)
   })
 
   it('disables the drop while the reader has the question open', () => {
     const { controlStore, fileDropDisabled } = renderDropGuard()
-    controlStore.addRequest('a1', {
+    controlStore.addRequest('a1', testControlRequest({
       agentId: 'a1',
       requestId: 'q1',
       claimToken: 'tok-q1',
+      prompt: {
+        kind: 'question',
+        questions: [
+          { question: 'Which color?', options: [] },
+        ],
+      },
       payload: {
         request: {
           tool_name: 'CodexAsyncQuestion',
@@ -1210,21 +1223,21 @@ describe('TileRenderer fileDropDisabled', () => {
         },
       },
       nonBlocking: true,
-    })
+    }))
     controlStore.setQuestionsOpen('a1', true)
     expect(fileDropDisabled()).toBe(true)
   })
 
   it('disables the drop for a blocking request', () => {
     const { controlStore, fileDropDisabled } = renderDropGuard()
-    controlStore.addRequest('a1', {
+    controlStore.addRequest('a1', testControlRequest({
       agentId: 'a1',
       requestId: 'b1',
       claimToken: 'tok-b1',
       payload: {
         request: { tool_name: 'Bash', input: {} },
       },
-    })
+    }))
     expect(fileDropDisabled()).toBe(true)
   })
 })

@@ -1,11 +1,14 @@
 import type { AutoReviewEntry } from './model/notification'
 import type { ChatRow } from './model/row'
 import type { ToolCall } from './model/toolCall'
+import type { PersistedControlResponse } from './persistedControlResponse'
 import type { ProviderTranscriptCapability } from './providers/capabilities'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { ResolvedMessageContent, RowExtractionInput } from './rowExtractionTypes'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
 import { MESSAGE_METADATA_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { ControlDecisionSchema } from '~/generated/proto/leapmux/v1/agent_control_pb'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { pluginFor, resolveMessageForRendering } from './providers/registry'
@@ -285,7 +288,7 @@ describe('extractChatRow notification thread', () => {
 })
 
 describe('extractChatRow control response', () => {
-  const response = {
+  const response: PersistedControlResponse = {
     requestId: 'r1',
     claimToken: 'c1',
     request: undefined,
@@ -294,14 +297,28 @@ describe('extractChatRow control response', () => {
         response: { behavior: 'allow' },
       },
     },
+    prompt: {
+      kind: 'permission',
+      permission: {
+        options: [
+          { optionId: 'ok', kind: 'allow_once', name: 'Allow' },
+        ],
+      },
+    },
+    decision: create(ControlDecisionSchema, {
+      kind: {
+        case: 'permission',
+        value: { optionId: 'ok' },
+      },
+    }),
   }
 
   // LeapMux writes this row itself, so it needs no plugin -- and it must reach the model
   // rather than skipping it, or the transcript needs a second render path for it.
   //
-  // The row carries the DISPLAY, not the native payloads: layer 1 runs the provider's
-  // own derivation once, so the transcript row and the scroll-rail dot cannot state
-  // two different answers for one row.
+  // The row carries the DISPLAY, not the native payloads: layer 1 resolves it once from
+  // the prompt and the decision that the Worker recorded, so the transcript row and the
+  // scroll-rail dot cannot state two different answers for one row.
   it('carries the derived display, with no plugin involved', () => {
     expect(rowOf(extractChatRow(undefined, parsed({}), { kind: 'control_response', response })))
       .toEqual({
@@ -310,10 +327,10 @@ describe('extractChatRow control response', () => {
       })
   })
 
-  // Degradation is the chokepoint's job, and the extraction must not bypass it: a
-  // response no derivation recognizes still draws the neutral label rather than
-  // falling to the card that says LeapMux has no display for the row.
-  it('degrades to the neutral label for a response no derivation reads', () => {
+  // Degradation is the chokepoint's job, and the extraction must not bypass it: a row
+  // that records no decision still draws the neutral label rather than falling to the
+  // card that says LeapMux has no display for the row.
+  it('degrades to the neutral label for a row that records no decision', () => {
     const unreadable = {
       requestId: 'r2',
       claimToken: 'c2',
@@ -400,6 +417,58 @@ describe('extractChatRow user content', () => {
     finally {
       extract.mockRestore()
     }
+  })
+
+  // The Worker states the sender of a message from another agent in the row's
+  // metadata, which no provider reads. The shared entry adds it after every
+  // provider's extraction, so a provider cannot drop it.
+  describe('a message from another agent', () => {
+    const sender = { tabId: 'sender-tab', provider: AgentProvider.CLAUDE_CODE }
+    const metadata = {
+      [MESSAGE_METADATA_FIELD.AgentMessageSender]: { tabId: 'sender-tab', provider: 'AGENT_PROVIDER_CLAUDE_CODE' },
+    }
+    const withMetadata = (provider: AgentProvider): ResolvedMessageContent => ({
+      ...parsed({ content: 'Run the tests' }, provider),
+      messageMetadata: metadata,
+    })
+    const registered = Object.values(AgentProvider)
+      .filter((value): value is AgentProvider => typeof value === 'number' && pluginFor(value) !== undefined)
+
+    it('states the sender for a provider that has no plugin', () => {
+      expect(rowOf(extractChatRow(undefined, withMetadata(AgentProvider.UNSPECIFIED), { kind: 'user_content' })))
+        .toEqual({
+          kind: 'user',
+          text: 'Run the tests',
+          attachments: [],
+          sender,
+        })
+    })
+
+    it('states the sender for every registered provider', () => {
+      expect(registered.length).toBeGreaterThan(20)
+      for (const provider of registered) {
+        expect(rowOf(extractChatRow(provider, withMetadata(provider), { kind: 'user_content' })), AgentProvider[provider])
+          .toEqual({
+            kind: 'user',
+            text: 'Run the tests',
+            attachments: [],
+            sender,
+          })
+      }
+    })
+
+    it('states no sender on a user row without the metadata', () => {
+      expect(rowOf(extractChatRow(AgentProvider.CODEX, parsed({ content: 'Run the tests' }, AgentProvider.CODEX), { kind: 'user_content' })))
+        .toEqual({ kind: 'user', text: 'Run the tests', attachments: [] })
+    })
+
+    it('adds no sender to a row that is not a message', () => {
+      const resolved = {
+        ...parsed({ content: '  ' }),
+        messageMetadata: metadata,
+      }
+      expect(rowOf(extractChatRow(undefined, resolved, { kind: 'user_content' }))).toEqual({ kind: 'hidden' })
+    })
   })
 
   it('reports a registered provider that reads no row for its user frame as unsupported', () => {

@@ -549,6 +549,48 @@ func TestWorkspaceTrustAsksOnceForEachSession(t *testing.T) {
 	assert.Equal(t, 2, sink.PublishedControlCount(), "another session asks its own question")
 }
 
+// The question's payload states no key, so the session that the Worker
+// stores with it gives the key, which is the key that Ask publishes it under.
+func TestWorkspaceTrustRequestKeyIsTheKeyOfThePublication(t *testing.T) {
+	t.Parallel()
+	sink, services := newWorkspaceTrustSink()
+	var trust WorkspaceTrust
+	trust.Ask(services, &fakeWorkspaceTrustHost{}, "session-1", "/work/project", []string{"MCP servers"})
+	published := sink.LastPublishedControl()
+	key, ok := WorkspaceTrustRequestKey(published.Payload, published.AgentSessionID)
+	require.True(t, ok)
+	assert.Equal(t, published.RequestID, key)
+
+	for name, tc := range map[string]struct {
+		payload   string
+		sessionID string
+	}{
+		"a question of no session": {string(published.Payload), ""},
+		"another payload":          {`{"type":"control_request","request_id":"workspace-trust:session-1"}`, "session-1"},
+		"a payload with no type":   {`{"path":"/work/project"}`, "session-1"},
+	} {
+		key, ok := WorkspaceTrustRequestKey([]byte(tc.payload), tc.sessionID)
+		assert.False(t, ok, name)
+		assert.Empty(t, key, name)
+	}
+}
+
+// A question of no session would be stored with the session that the sink
+// holds, and its key would then disagree with the stored question, so Ask
+// asks nothing and checks nothing.
+func TestWorkspaceTrustAsksNothingWithoutASession(t *testing.T) {
+	t.Parallel()
+	sink, services := newWorkspaceTrustSink()
+	host := &fakeWorkspaceTrustHost{}
+	var trust WorkspaceTrust
+	trust.Ask(services, host, "", "/work/project", nil)
+	assert.Zero(t, sink.PublishedControlCount())
+	assert.Zero(t, host.checks)
+
+	trust.Ask(services, host, "session-1", "/work/project", nil)
+	assert.Equal(t, 1, sink.PublishedControlCount(), "a later session still asks")
+}
+
 // An agent that learns of the untrusted folder again, from an event that repeats,
 // asks no second question once the reader answered the first.
 func TestWorkspaceTrustAsksOnceForEachSessionAfterAnAnswer(t *testing.T) {
@@ -730,34 +772,36 @@ func TestWorkspaceTrustFailedPublicationAsksAgain(t *testing.T) {
 	assert.Equal(t, 1, sink.PublishedControlCount())
 }
 
-// The browser's neutral decision becomes the saved answer {decision}. A stored
-// request of another kind is the provider's own.
+// The neutral allow or deny becomes the saved answer {decision}. A stored
+// request of another kind is the provider's own. Each answer addresses the
+// stored request, as every answer that the Worker resolves does.
 func TestResolveWorkspaceTrustResponse(t *testing.T) {
 	t.Parallel()
 	question := []byte(`{"type":"leapmux_workspace_trust","path":"/work/project","configuration":["MCP servers"]}`)
 	requestID := WorkspaceTrustRequestID("session-1")
 	for behavior, want := range map[string]string{
-		agent.ControlBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
-		agent.ControlBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
+		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,
+		contracts.ControlAnswerBehaviorDeny:  contracts.WorkspaceTrustDecisionReject,
 	} {
 		content, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": requestID, "response": map[string]string{"behavior": behavior}}})
 		require.NoError(t, err)
-		resolution, ok := ResolveWorkspaceTrustResponse(agent.ControlResponseContext{RequestID: requestID, RequestPayload: question, ResponseContent: content})
+		resolution, ok := ResolveWorkspaceTrustResponse(agenttest.ControlResponseContextOf(question, requestID, agent.ControlAnswer{Content: content}))
 		require.True(t, ok, behavior)
 		require.False(t, resolution.Withhold, behavior)
 		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+requestID+`","response":{"decision":"`+want+`"}}}`, string(resolution.Content), behavior)
 	}
 
 	for name, content := range map[string]string{
-		"no decision":     `{"response":{"request_id":"` + requestID + `","response":{"behavior":"maybe"}}}`,
-		"not an envelope": `not json`,
-		"another request": `{"response":{"request_id":"workspace-trust:session-2","response":{"behavior":"allow"}}}`,
+		"an unknown decision": `{"response":{"request_id":"` + requestID + `","response":{"behavior":"maybe"}}}`,
+		"no decision":         `{"response":{"request_id":"` + requestID + `","response":{}}}`,
 	} {
-		resolution, ok := ResolveWorkspaceTrustResponse(agent.ControlResponseContext{RequestID: requestID, RequestPayload: question, ResponseContent: []byte(content)})
+		resolution, ok := ResolveWorkspaceTrustResponse(agenttest.ControlResponseContextOf(question, requestID, agent.ControlAnswer{Content: []byte(content)}))
 		require.True(t, ok, name)
 		assert.True(t, resolution.Withhold, name)
+		assert.EqualError(t, resolution.Refusal(), agent.RefusalNoDecision, name)
 	}
 
-	_, ok := ResolveWorkspaceTrustResponse(agent.ControlResponseContext{RequestID: "other", RequestPayload: []byte(`{"type":"permission"}`), ResponseContent: []byte(`{}`)})
+	_, ok := ResolveWorkspaceTrustResponse(agenttest.ControlResponseContextOf([]byte(`{"type":"permission"}`), "other",
+		agent.ControlAnswer{Content: agent.AllowResponse("other", json.RawMessage(`{}`))}))
 	assert.False(t, ok, "another kind of request")
 }

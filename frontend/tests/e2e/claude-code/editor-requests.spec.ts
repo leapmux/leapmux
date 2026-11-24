@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { claudeExtractControl } from '../../../src/components/chat/providers/claude/extractControl'
 import { claudeTest } from '../claude-fixtures'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
@@ -20,7 +19,6 @@ claudeTest('classifies an actual native permission and confirms the absent edito
   const command = `printf 'NATIVECONTROL%s\\n' "$((40 + 2))" > ${quotePosixShellArgument(file)}; cat ${quotePosixShellArgument(file)}`
   await exerciseUnsupportedControlThroughPermission(native, {
     purpose: 'editor',
-    classify: claudeExtractControl,
     operation: {
       toolCall: bashToolCall(native.provider, callId, command),
       beforeDecision: () => expect(existsSync(file)).toBe(false),

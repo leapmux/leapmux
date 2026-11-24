@@ -45,11 +45,11 @@ func TestLoadWorkerRegisterCommandReadsTheEndpointAndKeyFromFlagsOnly(t *testing
 	t.Setenv("LEAPMUX_WORKER_HUB", "https://from-env.example")
 	t.Setenv("LEAPMUX_WORKER_REGISTRATION_KEY", "from-env")
 
-	_, _, err := loadWorkerRegisterCommand([]string{"--config", configPath, "--registration-key", "key"})
-	require.ErrorContains(t, err, "--hub is required")
+	err := runWorkerRegister([]string{"--config", configPath, "--registration-key", "key"})
+	require.ErrorContains(t, err, "missing required flag --hub")
 
-	_, _, err = loadWorkerRegisterCommand([]string{"--config", configPath, "--hub", "https://hub.example"})
-	require.ErrorContains(t, err, "--registration-key is required")
+	err = runWorkerRegister([]string{"--config", configPath, "--hub", "https://hub.example"})
+	require.ErrorContains(t, err, "missing required flag --registration-key")
 
 	_, options, err := loadWorkerRegisterCommand([]string{"--config", configPath, "--hub", "https://hub.example", "--registration-key", "key"})
 	require.NoError(t, err)
@@ -66,11 +66,11 @@ func TestWorkerCredentialCommandsRefuseOtherFlags(t *testing.T) {
 		args    []string
 		flag    string
 	}{
-		{"register", []string{"--hub", "https://hub.example", "--registration-key", "key", "--name", "box"}, "-name"},
-		{"register", []string{"--hub", "https://hub.example", "--registration-key", "key", "--log-level", "debug"}, "-log-level"},
-		{"deregister", []string{"--hub", "https://hub.example"}, "-hub"},
-		{"deregister", []string{"--registration-key", "key"}, "-registration-key"},
-		{"deregister", []string{"--agent-startup-timeout", "1m"}, "-agent-startup-timeout"},
+		{"register", []string{"--hub", "https://hub.example", "--registration-key", "key", "--name", "box"}, "--name"},
+		{"register", []string{"--hub", "https://hub.example", "--registration-key", "key", "--log-level", "debug"}, "--log-level"},
+		{"deregister", []string{"--hub", "https://hub.example"}, "--hub"},
+		{"deregister", []string{"--registration-key", "key"}, "--registration-key"},
+		{"deregister", []string{"--agent-startup-timeout", "1m"}, "--agent-startup-timeout"},
 	} {
 		t.Run(tc.command+" "+tc.flag, func(t *testing.T) {
 			args := append(tc.args, "--data-dir", t.TempDir())
@@ -80,7 +80,7 @@ func TestWorkerCredentialCommandsRefuseOtherFlags(t *testing.T) {
 			} else {
 				_, _, err = loadWorkerDeregisterCommand(args)
 			}
-			require.ErrorContains(t, err, "flag provided but not defined: "+tc.flag)
+			require.ErrorContains(t, err, "unknown flag: "+tc.flag)
 		})
 	}
 }
@@ -122,20 +122,21 @@ func TestWorkerCredentialCommandHelp(t *testing.T) {
 		{
 			command: "register",
 			summary: workerRegisterSummary,
-			present: []string{"  -hub string", "  -registration-key string", "  -timeout ", "  -data-dir string", "  -config string"},
-			absent:  []string{"  -name ", "  -log-level ", "  -agent-startup-timeout ", "  -db-max-conns ", "127.0.0.1:4327", "first run"},
+			present: []string{"--hub string", "--registration-key string", "--timeout duration", "--data-dir string", "--config string", "(required)"},
+			absent:  []string{"--name ", "--log-level ", "--agent-startup-timeout ", "--db-max-conns ", "127.0.0.1:4327", "first run"},
 		},
 		{
 			command: "deregister",
 			summary: workerDeregisterSummary,
-			present: []string{"  -timeout ", "  -data-dir string", "  -config string"},
-			absent:  []string{"  -hub ", "  -registration-key ", "  -name ", "  -log-level "},
+			present: []string{"--timeout duration", "--data-dir string", "--config string"},
+			absent:  []string{"--hub ", "--registration-key ", "--name ", "--log-level "},
 		},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			result := invokeLifecycleCLI(t, t.TempDir(), "worker", tc.command, "--help")
 			require.Equal(t, 0, result.exitCode, result.stderr)
-			assert.True(t, strings.HasPrefix(result.stdout, tc.summary+".\n\nUsage: leapmux worker "+tc.command+" [flags]\n"), result.stdout)
+			assert.True(t, strings.HasPrefix(result.stdout, tc.summary+"."), result.stdout)
+			assert.Contains(t, result.stdout, "\nUsage:\n  leapmux daemon worker "+tc.command+" [flags]\n")
 			for _, line := range tc.present {
 				assert.Contains(t, result.stdout, line)
 			}

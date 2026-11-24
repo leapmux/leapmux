@@ -61,16 +61,15 @@ func TestControlResponseSuites(t *testing.T) {
 // reads it in SendRawInput.
 func TestControlResponseForwardsTheNeutralEnvelope(t *testing.T) {
 	t.Parallel()
-	request, err := json.Marshal(contracts.AmpPermissionRequest{
-		Type: contracts.AmpPermissionRequestTypeRequest, ToolName: "shell_command", Input: json.RawMessage(`{"command":"ls"}`),
+	request, err := json.Marshal(ampStoredPermissionRequest{
+		AmpPermissionRequest: contracts.AmpPermissionRequest{
+			Type: contracts.AmpPermissionRequestTypeRequest, ToolName: "shell_command", Input: json.RawMessage(`{"command":"ls"}`),
+		},
+		RequestID: "amp-permission-0a0b0c0d-1",
 	})
 	require.NoError(t, err)
-	response := controlAnswer(t, "amp-permission-0a0b0c0d-1", agent.ControlBehaviorDeny, "no")
-	resolution := ampProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "amp-permission-0a0b0c0d-1",
-		RequestPayload:  request,
-		ResponseContent: response,
-	})
+	response := controlAnswer(t, "amp-permission-0a0b0c0d-1", contracts.ControlAnswerBehaviorDeny, "no")
+	resolution := agenttest.ResolveAnswer(ampProvider{}, request, "amp-permission-0a0b0c0d-1", agent.ControlAnswer{Content: response})
 	assert.Equal(t, response, resolution.Content)
 	assert.False(t, resolution.Withhold)
 	assert.Equal(t, "amp-permission-0a0b0c0d-1", ampProvider{}.ControlResponseRequestID(response))

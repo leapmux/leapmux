@@ -47,6 +47,7 @@ func publishedQuestions(t *testing.T, questions []map[string]any) []map[string]a
 
 	published := sink.PublishedControls()
 	require.Len(t, published, 1)
+	agenttest.AssertPublishedControlKeys(t, droidProvider{}, sink)
 	var payload struct {
 		Questions []map[string]any `json:"questions"`
 	}

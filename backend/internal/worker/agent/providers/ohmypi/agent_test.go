@@ -221,7 +221,7 @@ func TestARefusedSteerContinuesNothing(t *testing.T) {
 	r.emit(`{"type":"agent_start"}`)
 
 	var refused *commandError
-	require.ErrorAs(t, r.agent.SteerInput("guide", nil), &refused)
+	require.ErrorAs(t, r.agent.SteerInput(agent.SteerRequest{Content: "guide"}), &refused)
 	active, _ := r.sink.LastTurnActive()
 	assert.True(t, active, "a refused steer leaves the running turn alone")
 
@@ -299,7 +299,7 @@ func TestSteerInput(t *testing.T) {
 
 	t.Run("refuses when no turn runs", func(t *testing.T) {
 		r := newRig(t)
-		assert.ErrorIs(t, r.agent.SteerInput("guide", nil), agent.ErrNoActiveTurn)
+		assert.ErrorIs(t, r.agent.SteerInput(agent.SteerRequest{Content: "guide"}), agent.ErrNoActiveTurn)
 		assert.Empty(t, r.commandsOfType(CommandPrompt))
 	})
 
@@ -308,7 +308,7 @@ func TestSteerInput(t *testing.T) {
 		r.emit(`{"type":"agent_start"}`)
 		before := len(r.sink.TurnActives())
 
-		require.NoError(t, r.agent.SteerInput("guide", nil))
+		require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "guide"}))
 
 		prompts := r.commandsOfType(CommandPrompt)
 		require.Len(t, prompts, 1)

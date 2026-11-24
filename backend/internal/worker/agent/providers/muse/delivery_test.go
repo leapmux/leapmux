@@ -176,11 +176,18 @@ func TestNativeParentInputMatcherRequiresPositiveHumanProvenance(t *testing.T) {
 				record, err := decodeNativeRecord(raw, scenario.ParentSessionID)
 				require.NoError(t, err)
 				if record.ID == identity.ID {
-					return rewriteNativeInputJSON(t, raw, caller.value, "payload", "event", "delivery_snapshot", "source", "caller")
+					input := rewriteNativeInputJSON(t, raw, caller.value, "payload", "event", "delivery_snapshot", "source", "caller")
+					return rewriteNativeInputJSON(t, input, json.RawMessage(`"child-command"`), "payload", "event", "delivery_snapshot", "source", "command_id")
 				}
 				return raw
 			})
-			assert.Equal(t, caller.want, matchNativeParentInput(log, drain, target).Status)
+			match := matchNativeParentInput(log, drain, target)
+			require.Equal(t, caller.want, match.Status)
+			if caller.want == nativeParentInputHuman {
+				assert.Equal(t, agent.NativeInputReceipt{SessionID: target.ChildSessionID, InputID: "child-command", TurnID: target.RunID}, match.Receipt)
+			} else {
+				assert.Empty(t, match.Receipt)
+			}
 		})
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -118,6 +117,11 @@ func TestCodexAudioValidationRejectsEmptyAndUnrelatedBinary(t *testing.T) {
 	for _, mime := range []string{"audio/flac", "application/zip", "application/octet-stream", ""} {
 		require.Error(t, provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindBinary, MIMEType: mime, Data: []byte{0, 1}}))
 	}
+	// The failed input shows the refusal, and an input can hold several
+	// files, so the refusal states the file.
+	err := provider.ValidateAttachment(agent.ClassifiedAttachment{Kind: contracts.AttachmentMediaKindAudio, MIMEType: "audio/flac", Filename: "tone.flac", Data: []byte{0, 1}})
+	require.ErrorContains(t, err, "tone.flac")
+	require.ErrorContains(t, err, "audio/flac")
 }
 
 func TestCodexAudioModelValidation(t *testing.T) {
@@ -149,7 +153,7 @@ func TestCodexAudioDispatchAndSteerKeepTheRunningModel(t *testing.T) {
 	require.NoError(t, a.SendInput("Listen.", attachments))
 	assert.Equal(t, "audio-model", a.mainTurn.model)
 	a.model = "text-model"
-	require.NoError(t, a.SteerInput("Listen again.", attachments))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "Listen again.", Attachments: attachments}))
 	recorded := requests()
 	require.Len(t, recorded, 2)
 	assert.Equal(t, "turn/start", recorded[0].Method)
@@ -174,7 +178,7 @@ func TestCodexRefusesAudioBeforeNativeDispatch(t *testing.T) {
 		assert.Nil(t, a.pendingStart)
 		a.mainTurn = codexMainTurn{id: "text-turn", model: current}
 		a.model = "audio-model"
-		require.ErrorContains(t, a.SteerInput("Listen.", attachments), "does not accept audio")
+		require.ErrorContains(t, a.SteerInput(agent.SteerRequest{Content: "Listen.", Attachments: attachments}), "does not accept audio")
 		assert.Zero(t, a.mainTurn.steers)
 		assert.Empty(t, a.pendingSteerCalls)
 		assert.Empty(t, requests())
@@ -214,9 +218,9 @@ func TestCodexInputEntryPointsRefuseInvalidAttachmentsBeforeNativeDispatch(t *te
 				case "session send":
 					err = a.SendInputForSession("audio-thread", "Keep the attachment.", attachments)
 				case "steer":
-					err = a.SteerInput("Keep the attachment.", attachments)
+					err = a.SteerInput(agent.SteerRequest{Content: "Keep the attachment.", Attachments: attachments})
 				case "session steer":
-					err = a.SteerInputForSession("audio-thread", "Keep the attachment.", attachments)
+					err = a.SteerInputForSession("audio-thread", agent.SteerRequest{Content: "Keep the attachment.", Attachments: attachments})
 				}
 				assert.Error(t, err)
 				assert.Empty(t, requests())

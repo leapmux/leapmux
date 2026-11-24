@@ -55,18 +55,21 @@ antigravityTest('preserves native agent messages in both directions after reload
     {
       sender: root.id,
       recipient: child.childId,
+      nativeSender: root.agentSessionId,
       nativeRecipient: child.nativeChildId,
       label: 'parent-to-child',
     },
     {
       sender: child.childId,
       recipient: root.id,
+      nativeSender: child.nativeChildId,
       nativeRecipient: root.agentSessionId,
       label: 'child-to-parent',
     },
   ]
   for (const direction of directions) {
     const message = `${marker}${direction.label}`
+    const nativeMessage = `sender=${direction.nativeSender} priority=MESSAGE_PRIORITY_HIGH content=${message}`
     const prompt = `${marker} Send ${direction.label} through the native message tool.`
     const gate = `${direction.label}-${marker}`
     const recipientRule = `${direction.label} receives its native message`
@@ -81,7 +84,9 @@ antigravityTest('preserves native agent messages in both directions after reload
       once: true,
     }, {
       name: recipientRule,
-      when: { user: message },
+      when: {
+        body: [nativeMessage],
+      },
       respond: { text: `Received ${direction.label}.`, gate },
       once: true,
     })
@@ -90,7 +95,7 @@ antigravityTest('preserves native agent messages in both directions after reload
       await waitForAgentIdle(native.page)
       await sendMessage(native.page, native.modelScript.prompt(prompt))
       const held = await native.modelScript.waitForGate(gate)
-      expect(nativeModelContextText(ruleRequest(held, recipientRule))).toContain(message)
+      expect(nativeModelContextText(ruleRequest(held, recipientRule))).toContain(nativeMessage)
       // Root activity includes the child, so waiting here would block the parent-to-child case.
       await native.page.locator(`${AGENT_TAB_SELECTOR}${tabIdSelector(direction.recipient)}:visible`).click()
       await expect(messageContents(native.page).filter({ hasText: message })).toHaveCount(1)
@@ -103,7 +108,7 @@ antigravityTest('preserves native agent messages in both directions after reload
         const snapshot = await readNativeMessageSnapshot(native, direction.recipient)
         const messages = snapshot.messages.map(nativeMessageBody).filter(isObject).map(frame => pickObject(pickObject(frame, 'systemMessage'), 'agentMessage')).filter(frame => pickString(frame, 'content').includes(message))
         expect(messages).toHaveLength(1)
-        expect(pickString(messages[0], 'sender')).not.toBe('')
+        expect(pickString(messages[0], 'sender')).toBe(direction.nativeSender)
       }
     }, async () => { await native.modelScript.releaseGateIfHeld(gate) })
   }

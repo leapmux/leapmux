@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -50,27 +51,32 @@ func (a *Agent) decidePermission(ctx context.Context, request helperRequest) hel
 	if len(input) == 0 {
 		input = json.RawMessage("{}")
 	}
-	payload, err := json.Marshal(contracts.AmpPermissionRequest{
-		Type:      contracts.AmpPermissionRequestTypeRequest,
-		ToolName:  request.Tool,
-		ToolUseID: toolUseID,
-		Input:     input,
+	requestID := a.bridge.newRequestID()
+	payload, err := json.Marshal(ampStoredPermissionRequest{
+		AmpPermissionRequest: contracts.AmpPermissionRequest{
+			Type:      contracts.AmpPermissionRequestTypeRequest,
+			ToolName:  request.Tool,
+			ToolUseID: toolUseID,
+			Input:     input,
+		},
+		RequestID: requestID,
 	})
 	if err != nil {
 		return rejectDecision(fmt.Sprintf("LeapMux could not read the tool input: %v", err))
 	}
 
-	requestID := a.bridge.newRequestID()
 	pending, ok := a.bridge.register(requestID)
 	if !ok {
 		return rejectDecision("LeapMux stopped the agent")
 	}
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{
+	control := agent.ControlRequest{
 		AgentSessionID: threadID,
 		RequestID:      requestID,
+		InstanceID:     id.Generate(),
 		Payload:        payload,
 		SourceSeq:      sourceSeq,
-	}); err != nil {
+	}
+	if err := a.sink.PublishControlRequest(control); err != nil {
 		a.bridge.unregister(requestID)
 		slog.Error("amp publish permission request", "agent_id", a.agentID, "tool", request.Tool, "error", err)
 		return rejectDecision(fmt.Sprintf("LeapMux could not show the permission request: %v", err))
@@ -80,6 +86,8 @@ func (a *Agent) decidePermission(ctx context.Context, request helperRequest) hel
 		// That refusal found no banner to withdraw, so this withdraws it. The
 		// refusal waits in pending.answer, and the select below returns it.
 		a.sink.CancelControlRequest(requestID)
+	} else {
+		a.bindReplyPermission(ctx, control, toolUseID)
 	}
 	// A mode change can occur between the first mode check and request registration.
 	a.approvePendingPermissions()
@@ -185,7 +193,8 @@ func (a *Agent) toolCallRow(toolUseID string) int64 {
 // Amp's stdin takes user lines alone, and Amp ends the whole session at any
 // other line. So SendRawInput refuses an answer whose behavior it cannot read,
 // and every line that is not a user line, and sends nothing to Amp.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	if requestID, behavior, message, ok := agent.DecodeControlBehavior(data); ok && requestID != "" {
 		return a.answerPermission(requestID, behavior, message)
 	}
@@ -210,13 +219,13 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 func (a *Agent) answerPermission(requestID, behavior, message string) error {
 	var decision helperDecision
 	switch behavior {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		decision = allowDecision()
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		decision = rejectDecision(message)
 	default:
 		return fmt.Errorf("the answer to the Amp permission request %s states the behavior %q, and LeapMux knows only %q and %q",
-			requestID, behavior, agent.ControlBehaviorAllow, agent.ControlBehaviorDeny)
+			requestID, behavior, contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny)
 	}
 	if !a.bridge.answer(requestID, decision) {
 		return fmt.Errorf("the Amp permission request %s no longer waits for an answer", requestID)

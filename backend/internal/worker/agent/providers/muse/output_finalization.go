@@ -36,7 +36,7 @@ func nativeItemKey(id string, revision int64) string {
 	return fmt.Sprintf("muse:item:%s:%d", id, revision)
 }
 
-func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw []byte, ended agent.MessageCompletion, closeOpenTools bool) *turnFinalization {
+func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw []byte, ended agent.MessageCompletion, closeOpenTools bool, outcome leapmuxv1.AgentInputTurnOutcome) *turnFinalization {
 	a.stateMu.Lock()
 	for _, pending := range state.finalizations {
 		if pending.turnID == turnID {
@@ -106,7 +106,7 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 			for _, scope := range scopes {
 				_, err := state.generation.PersistScope(scope, ended, func(content []byte) error {
 					pending.messages = append(pending.messages, pendingMessage{source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-						content: agent.MessageContent{Original: content, AgentSessionID: id, Completion: ended, IdempotencyKey: "muse:partial:" + turnID + ":" + scope}})
+						content: agent.MessageContent{Original: content, AgentSessionID: id, NativeTurnID: turnID, Completion: ended, IdempotencyKey: "muse:partial:" + turnID + ":" + scope}})
 					return nil
 				})
 				if err != nil {
@@ -136,9 +136,12 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 	}
 	for index, content := range partials {
 		pending.messages = append(pending.messages, pendingMessage{source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-			content: agent.MessageContent{Original: content, AgentSessionID: id, Completion: ended, IdempotencyKey: fmt.Sprintf("muse:partial:%s:%d", turnID, index)}})
+			content: agent.MessageContent{Original: content, AgentSessionID: id, NativeTurnID: turnID, Completion: ended, IdempotencyKey: fmt.Sprintf("muse:partial:%s:%d", turnID, index)}})
 	}
-	pending.end = agent.WithToolUseCount(agent.MessageContent{Original: slices.Clone(raw), AgentSessionID: id, Completion: ended, IdempotencyKey: "muse:turn:" + turnID}, int(state.toolUses))
+	pending.end = agent.WithToolUseCount(agent.MessageContent{
+		Original: slices.Clone(raw), AgentSessionID: id, NativeTurnID: turnID, InputTurnOutcome: outcome,
+		Completion: ended, IdempotencyKey: "muse:turn:" + turnID,
+	}, int(state.toolUses))
 	for i := range pending.messages {
 		pending.messages[i].content.WriteReceipt = agent.NewTranscriptWriteReceipt()
 	}
@@ -149,6 +152,19 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 	}
 	a.stateMu.Unlock()
 	return pending
+}
+
+func museInputTurnOutcome(terminal string) leapmuxv1.AgentInputTurnOutcome {
+	switch terminal {
+	case contracts.MuseTurnOutcomeCompleted:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
+	case contracts.MuseTurnOutcomeCancelled:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	case contracts.MuseTurnOutcomeFailed:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
+	default:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
+	}
 }
 
 // retryFinalizations submits each complete turn before the caller can release its queue.
@@ -306,6 +322,12 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 // registry row. The caller holds dispatcher.mu and has retired all supplied states.
 func (a *Agent) retireSessionStates(states map[string]*sessionState, ended agent.MessageCompletion) {
 	for id, state := range states {
+		a.retireChildInputCommands(id, state)
+		for _, report := range a.steerLedger.TakeUnechoedSteers(id, "") {
+			report.Outcome = agent.SteerOutcomeUncertain
+			report.Receipt = agent.NativeInputReceipt{}
+			retainMuseSteerResolution(state.sink, report)
+		}
 		a.stateMu.Lock()
 		var bootstrap [][]byte
 		if state.viewRecovery != nil {
@@ -333,7 +355,7 @@ func (a *Agent) retireSessionStates(states map[string]*sessionState, ended agent
 		state.controls = nil
 		a.stateMu.Unlock()
 		if turnID != "" {
-			a.captureFinalization(state, id, turnID, nil, ended, true)
+			a.captureFinalization(state, id, turnID, nil, ended, true, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 		}
 		a.retryFinalizations(state)
 		a.closeIdleOpenTools(state, ended)

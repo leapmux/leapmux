@@ -3,6 +3,12 @@
   This <style> is unlayered, so it wins over Hextra's @layer'd Tailwind utilities.
 */ -}}
 
+{{- /* Advertise llms.txt and per-page Markdown alternates for coding agents and LLM crawlers. */ -}}
+<link rel="llms-txt" href="{{ "llms.txt" | absURL }}">
+{{- with .OutputFormats.Get "markdown" }}
+<link rel="alternate" type="text/markdown" href="{{ .Permalink }}" title="{{ $.Title }} (Markdown)">
+{{- end }}
+
 {{- /* App code font: plain Hack (not the Nerd Font) from CDN; wired into
        --hx-font-mono in assets/css/custom.css. */ -}}
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>

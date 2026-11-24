@@ -1,28 +1,24 @@
 import type { Locator } from '@playwright/test'
-import type { ControlExtractionInput, ExtractedControlRequest } from '../../../src/components/chat/providers/capabilities'
 import type { MockModelRequestRecord } from './mockModelScript'
 import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { withCleanup } from './cleanup'
 import { expectNoNativeControl } from './nativeControlObservation'
-import { watchNativeControls } from './nativeControlWatch'
+import { readsProviderPermission, watchNativeControls } from './nativeControlWatch'
 import { allowNativeOperation, createNativePermissionFileWrite } from './nativePermission'
 import { currentNativeAgent } from './nativeScenario'
 
 /** The control route that a provider lacks. */
 export type UnsupportedControlPurpose = 'editor' | 'workspace-trust' | 'question'
 
-/** Read one native control payload into the browser's control model. */
-export type NativeControlClassifier = (input: ControlExtractionInput) => ExtractedControlRequest | null
-
-/** Check a source-proved missing route against real provider controls and the browser classifier. */
+/** Check a source-proved missing route against real provider controls and the prompts that the Worker reads from them. */
 export async function exerciseUnsupportedNativeControl(
   context: ManagedNativeScenarioContext,
   options: {
     purpose: UnsupportedControlPurpose
+    /** The spec's own test of a native question payload, beside the prompt that the Worker reads from it. */
     isQuestionRequest?: (payload: Record<string, unknown>) => boolean
-    classify: NativeControlClassifier
     /** Run the related native operation. Its result, such as the model request that a decision helper returns, is unused. */
     relatedProof: (beforeDecision: (banner: Locator) => Promise<void>) => Promise<unknown>
   },
@@ -31,9 +27,7 @@ export async function exerciseUnsupportedNativeControl(
   const watch = await watchNativeControls(context.leapmuxServer, agent.id)
   const nativeProof = async () => {
     await options.relatedProof(async (banner) => {
-      await expect.poll(() => watch.controls().some(frame => options.classify({ payload: frame.payload })?.kind === 'permission')).toBe(true)
-      const permissions = watch.controls().map(frame => options.classify({ payload: frame.payload })).filter(value => value?.kind === 'permission')
-      expect(permissions.length).toBeGreaterThan(0)
+      await expect.poll(() => watch.controls().some(readsProviderPermission)).toBe(true)
       await expect(banner).toBeVisible()
       await expect(context.page.locator('[data-testid="dialog-editor"]:visible')).toHaveCount(0)
       if (options.purpose === 'workspace-trust')
@@ -42,10 +36,13 @@ export async function exerciseUnsupportedNativeControl(
     const frames = watch.controls()
     expect(frames.length).toBeGreaterThan(0)
     for (const frame of frames) {
-      const control = options.classify({ payload: frame.payload })
+      const control = frame.prompt
       expect(control?.kind).not.toBe('dialog')
-      if (options.purpose === 'question' && options.isQuestionRequest)
-        expect(options.isQuestionRequest(frame.payload), 'the provider sends no native question request').toBe(false)
+      if (options.purpose === 'question') {
+        expect(control?.kind, 'the provider sends no native question request').not.toBe('question')
+        if (options.isQuestionRequest)
+          expect(options.isQuestionRequest(frame.payload), 'the provider sends no native question request').toBe(false)
+      }
       if (control?.kind === 'permission' && options.purpose === 'workspace-trust')
         expect(control.permission.title ?? '').not.toMatch(/Trust the workspace|Do not trust/)
     }
@@ -65,7 +62,7 @@ export async function exerciseUnsupportedNativeControl(
 /** How {@link exerciseUnsupportedControlThroughPermission} proves a missing control route. */
 export interface UnsupportedControlThroughPermissionOptions {
   purpose: UnsupportedControlPurpose
-  classify: NativeControlClassifier
+  /** The spec's own test of a native question payload, beside the prompt that the Worker reads from it. */
   isQuestionRequest?: (payload: Record<string, unknown>) => boolean
   /**
    * The real native operation whose permission the reader allows. By default, a native file write in the agent's
@@ -100,7 +97,6 @@ export async function exerciseUnsupportedControlThroughPermission(
   const operation = options.operation ?? await createNativePermissionFileWrite(context, defaultControlPermissionWrite(options.purpose))
   await exerciseUnsupportedNativeControl(context, {
     purpose: options.purpose,
-    classify: options.classify,
     ...(options.isQuestionRequest
       ? { isQuestionRequest: options.isQuestionRequest }
       : {}),

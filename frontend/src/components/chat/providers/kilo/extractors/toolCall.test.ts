@@ -134,9 +134,8 @@ describe('kiloToolCallAdapterFor subagent launches', () => {
 
 // The frames below are the ones a live `kilo acp` session sent for the family's
 // `question` tool: an ordinary tool call whose `rawInput` carries the questions.
-// It is NOT the `question.asked` control payload the frontend's own OpenCode
-// control surface expects, and nothing over ACP answers it -- see the constant's
-// own note in `toolPresentation.ts`.
+// It is NOT the `question.asked` control payload that the Worker reads into a
+// question prompt, and nothing over ACP answers it.
 const KILO_QUESTION_INPUT = {
   questions: [
     {

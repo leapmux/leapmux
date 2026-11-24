@@ -25,7 +25,9 @@ func fishSetEnv(pins []environmentPin) string {
 
 func buildFishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	var script strings.Builder
-	script.WriteString(fishClearEnv(spec.StripEnvKeys) + fishSetEnv(spec.pins))
+	// The step runs after the profile and before StripEnvKeys and the pins, so
+	// a PATH that a provider pins wins (see fishReprependControlCLI).
+	script.WriteString(fishReprependControlCLI + fishClearEnv(spec.StripEnvKeys) + fishSetEnv(spec.pins))
 	if len(prepared.candidates) != 0 {
 		script.WriteString(fishLookupSetup)
 		fmt.Fprintf(&script, "set -l __lm_selected\nfor __lm_candidate in %s\nset __lm_selected \"$__lm_candidate\"\n__leapmux_lookup \"$__lm_selected\" command\nif test \"$__lm_kind\" != missing; break; end\nend\n", strings.Join(quotedArguments(prepared.candidates, fishQuote), " "))

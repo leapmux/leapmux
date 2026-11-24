@@ -21,24 +21,6 @@ const PROVIDERS_DIR = join(CHAT_DIR, 'providers')
 const MODEL_DIR = join(CHAT_DIR, 'model')
 
 /**
- * The provider `.tsx` modules that MAY draw.
- *
- * Each is a control surface: a permission prompt, a question form, a plan
- * approval. Those read a provider's own request payload and answer it, which is
- * not a transcript row -- the row model does not describe them.
- *
- * `eslint.config.ts` bans `JSXElement` under `providers/` and lists exactly
- * these three paths in its `ignores`, beside the two `testUtils.tsx` helpers
- * that render for a provider's own tests. This list is what keeps the two in
- * step: a path that leaves one and not the other fails below.
- */
-const DRAWING_ALLOWED = [
-  'codex/CodexControlActions.tsx',
-  'cursor/CursorControlActions.tsx',
-  'pi/PiPlanApprovalActions.tsx',
-]
-
-/**
  * The display surfaces that MAY identify one provider in shared code.
  *
  * `AgentProviderIcon` is the whole list: an icon is a per-provider asset, and no
@@ -450,19 +432,6 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
       + 'gives the answer to "which shared message category one frame takes". Move the '
       + 'classifier there and import it here.',
     ).toStrictEqual([])
-  })
-
-  /**
-   * Every exception the ESLint config carves out stays pinned to a path that exists.
-   *
-   * Left behind after a module moves, an exception would silently forgive whatever
-   * new file takes that path -- the linter rule would read as green while guarding
-   * nothing.
-   */
-  it('keeps every drawing exception pinned to a file that exists', () => {
-    const present = new Set(providerModules().map(file => posixRelative(PROVIDERS_DIR, file)))
-    const stale = DRAWING_ALLOWED.filter(entry => !present.has(entry))
-    expect(stale, 'Delete the entry in `eslint.config.ts`, or repoint it at the module that replaced it.').toEqual([])
   })
 
   it('keeps the provider-icon exception pinned to a file that exists', () => {

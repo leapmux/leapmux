@@ -4,23 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
-	"strconv"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 )
-
-type piQuestionOption struct {
-	Label       string `json:"label"`
-	Description string `json:"description"`
-}
-
-type piQuestion struct {
-	Question    string             `json:"question"`
-	Header      string             `json:"header"`
-	MultiSelect bool               `json:"multiSelect"`
-	Options     []piQuestionOption `json:"options"`
-}
 
 type piQuestionDialog struct {
 	Method      string   `json:"method"`
@@ -31,46 +18,28 @@ type piQuestionDialog struct {
 
 func piQuestionText(text string) string { return strings.ReplaceAll(text, "\r\n", "\n") }
 
-// piQuestionIndex verifies the formatting that rpiv-ask-user-question uses for RPC dialogs.
+// view reads what piSourceQuestion.matches compares of the dialog.
+func (d piQuestionDialog) view() piDialogView {
+	return piDialogView{method: d.Method, title: d.Title, placeholder: d.Placeholder, options: d.Options, optionsOK: true}
+}
+
+// piQuestionIndex returns the index of the one question of an
+// ask_user_question call's arguments that dialog asks, as
+// rpiv-ask-user-question formats its RPC dialogs. It reads the questions as
+// the prompt does (readPiSourceQuestion): a question that the dialog cannot
+// have asked is skipped, and a dialog that two questions match matches none.
 func piQuestionIndex(dialog piQuestionDialog, args json.RawMessage) (int, bool) {
 	var input struct {
-		Questions []piQuestion `json:"questions"`
+		Questions []json.RawMessage `json:"questions"`
 	}
 	if json.Unmarshal(args, &input) != nil {
 		return 0, false
 	}
+	view := dialog.view()
 	matched := -1
-	for index, question := range input.Questions {
-		if question.Question == "" || len(question.Options) == 0 {
-			continue
-		}
-		title := piQuestionText(question.Question)
-		if question.Header != "" {
-			title = "[" + piQuestionText(question.Header) + "] " + title
-		}
-		options := make([]string, len(question.Options))
-		for optionIndex, option := range question.Options {
-			options[optionIndex] = strconv.Itoa(optionIndex+1) + ". " + piQuestionText(option.Label) + " — " + piQuestionText(option.Description)
-		}
-		valid := false
-		switch dialog.Method {
-		case contracts.PiDialogMethodSelect:
-			if question.MultiSelect || len(dialog.Options) != len(options)+1 {
-				continue
-			}
-			valid = dialog.Title == title || strings.HasPrefix(dialog.Title, title+"\n\n--- ")
-			for optionIndex, option := range options {
-				valid = valid && dialog.Options[optionIndex] == option
-			}
-			valid = valid && strings.HasPrefix(dialog.Options[len(options)], strconv.Itoa(len(options)+1)+". ")
-		case contracts.PiDialogMethodInput:
-			if question.MultiSelect {
-				valid = dialog.Placeholder == contracts.PiQuestionDialogMultiSelectPlaceholder && strings.HasPrefix(dialog.Title, title+"\n\n"+strings.Join(options, "\n")+"\n\n")
-			} else {
-				valid = dialog.Placeholder == "" && strings.HasPrefix(dialog.Title, title+"\n\n") && !strings.HasPrefix(dialog.Title, title+"\n\n--- ")
-			}
-		}
-		if !valid {
+	for index, raw := range input.Questions {
+		question := readPiSourceQuestion(index, raw)
+		if question == nil || !question.matches(view) {
 			continue
 		}
 		if matched >= 0 {

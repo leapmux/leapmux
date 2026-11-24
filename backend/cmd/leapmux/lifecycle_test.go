@@ -4,17 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
@@ -111,7 +113,7 @@ func TestForegroundFlagValuesAreNotLifecycleSelectors(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			ready := false
-			err := runModeRunWithInvocation("worker", runInvocation{Context: ctx, OnReady: func() { ready = true; cancel() }})(cmdCtx{}, []string{"--name", name, "--data-dir", cfg.DataDir})
+			err := runForeground("worker", runInvocation{Context: ctx, OnReady: func() { ready = true; cancel() }}, []string{"--name", name, "--data-dir", cfg.DataDir}...)
 			require.NoError(t, err)
 			assert.True(t, ready)
 		})
@@ -122,7 +124,7 @@ func TestForegroundRejectsSelectorsAfterFlagTerminatorBeforePublication(t *testi
 	cfg := writeRegisteredStateAgainst(t, "http://127.0.0.1:1")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	err := runModeRunWithInvocation("worker", runInvocation{Context: ctx})(cmdCtx{}, []string{"--", "--data-dir", cfg.DataDir})
+	err := runForeground("worker", runInvocation{Context: ctx}, []string{"--", "--data-dir", cfg.DataDir}...)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected argument")
 	assert.NoFileExists(t, lifecycle.PathsOf(mustCanonicalDir(t, cfg.DataDir)).RuntimeRecord)
@@ -133,51 +135,64 @@ func TestForegroundAllowsAnEmptyFlagTerminator(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	ready := false
-	err := runModeRunWithInvocation("worker", runInvocation{Context: ctx, OnReady: func() { ready = true; cancel() }})(cmdCtx{}, []string{"--data-dir", cfg.DataDir, "--"})
+	err := runForeground("worker", runInvocation{Context: ctx, OnReady: func() { ready = true; cancel() }}, []string{"--data-dir", cfg.DataDir, "--"}...)
 	require.NoError(t, err)
 	assert.True(t, ready)
 }
 
-func TestModePostparseHookPrecedesConfigurationIO(t *testing.T) {
+// `run --service-spec` takes every setting from the saved specification, so
+// it selects the managed launch before it reads any configuration file: a
+// malformed default file fails a plain run and never a managed one.
+func TestManagedRunSelectionPrecedesConfigurationIO(t *testing.T) {
 	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
 		t.Run(mode, func(t *testing.T) {
-			file := filepath.Join(t.TempDir(), "malformed.yaml")
-			require.NoError(t, os.WriteFile(file, []byte("[invalid YAML"), 0o600))
-			sentinel := errors.New("parsed without configuration IO")
-			called := false
-			_, err := loadLifecycleConfiguration(mode, "run", []string{"--config", file}, nil, func(fs *flag.FlagSet) error {
-				called = true
-				assert.Equal(t, file, fs.Lookup("config").Value.String())
-				return sentinel
-			})
-			require.ErrorIs(t, err, sentinel)
-			assert.True(t, called)
-			_, err = loadLifecycleConfiguration(mode, "run", []string{"--config", file}, nil, nil)
-			require.Error(t, err, "a real configuration failure must propagate without interception")
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			probe := pflag.NewFlagSet("probe", pflag.ContinueOnError)
+			_, err := registerLifecycleFlags(mode, "run", probe)
+			require.NoError(t, err)
+			defaultFile := internalconfig.ExpandHome(probe.Lookup("config").DefValue)
+			require.True(t, strings.HasPrefix(defaultFile, home), "the default file %s must be under the test home", defaultFile)
+			require.NoError(t, os.MkdirAll(filepath.Dir(defaultFile), 0o700))
+			require.NoError(t, os.WriteFile(defaultFile, []byte("[invalid YAML"), 0o600))
+
+			_, _, err = loadLifecycleCommand(mode, "run", nil)
+			require.Error(t, err, "a plain run reads the malformed default file")
+			assert.NotErrorIs(t, err, errManagedRunSelected)
+
+			_, _, err = loadLifecycleCommand(mode, "run", []string{"--service-spec", filepath.Join(home, "service.yaml")})
+			require.ErrorIs(t, err, errManagedRunSelected, "a managed run reads no configuration file")
 		})
 	}
 }
 
-func TestModePostparseHookFollowsMetadataAndArgumentValidation(t *testing.T) {
+// The parse precedes the managed-run selection: an unknown flag or a
+// positional argument fails a managed run as it fails a plain one.
+func TestManagedRunSelectionFollowsArgumentValidation(t *testing.T) {
 	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
-		for _, args := range [][]string{{"--version"}, {"--help"}, {"--unknown-flag"}, {"--", "--data-dir", "ignored"}} {
-			t.Run(mode+strings.Join(args, " "), func(t *testing.T) {
-				called := false
-				_, err := loadLifecycleConfiguration(mode, "run", args, nil, func(*flag.FlagSet) error { called = true; return nil })
+		for _, args := range [][]string{{"--unknown-flag"}, {"--", "--data-dir", "ignored"}} {
+			t.Run(mode+" "+strings.Join(args, " "), func(t *testing.T) {
+				_, _, err := loadLifecycleCommand(mode, "run", append([]string{"--service-spec", filepath.Join(t.TempDir(), "service.yaml")}, args...))
 				require.Error(t, err)
-				assert.False(t, called, "metadata and invalid arguments must precede configuration interception")
+				assert.NotErrorIs(t, err, errManagedRunSelected)
 			})
 		}
-		file := filepath.Join(t.TempDir(), "last.yaml")
-		sentinel := errors.New("last parsed config selected")
-		_, err := loadLifecycleConfiguration(mode, "run", []string{"--config", "first.yaml", "--config", file}, nil, func(fs *flag.FlagSet) error {
-			assert.Equal(t, file, fs.Lookup("config").Value.String())
-			return sentinel
-		})
-		require.ErrorIs(t, err, sentinel)
 	}
 }
 
+// The last --config of a command line selects the configuration file, as the
+// last value of every other flag wins.
+func TestTheLastConfigFlagWins(t *testing.T) {
+	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
+		t.Run(mode, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "last.yaml")
+			configuration, _, err := loadLifecycleCommand(mode, "status", []string{"--config", "first.yaml", "--config", file, "--data-dir", t.TempDir()})
+			require.NoError(t, err)
+			assert.Equal(t, file, configuration.configurationFile)
+		})
+	}
+}
 func TestRunInvocationReportsReadinessAndJoinsParentCancellation(t *testing.T) {
 	for _, mode := range []string{"hub", "dev"} {
 		t.Run(mode, func(t *testing.T) {
@@ -189,7 +204,7 @@ func TestRunInvocationReportsReadinessAndJoinsParentCancellation(t *testing.T) {
 			root := t.TempDir()
 			notified := false
 			invocation := runInvocation{Context: ctx, OnReady: func() { notified = true; cancel() }}
-			err := runModeRunWithInvocation(mode, invocation)(cmdCtx{}, []string{"--data-dir", root, "--listen", locallistentest.UniqueListenURL(t, "lmx-native-ready")})
+			err := runForeground(mode, invocation, []string{"--data-dir", root, "--listen", locallistentest.UniqueListenURL(t, "lmx-native-ready")}...)
 			require.NoError(t, err)
 			assert.True(t, notified)
 			record, err := lifecycle.ReadRuntimeRecord(lifecycle.PathsOf(mustCanonicalDir(t, root)).RuntimeRecord)
@@ -274,19 +289,20 @@ func TestForegroundNeverConfiguresOrElevates(t *testing.T) {
 			defer cancel()
 			ready := false
 			invocation := runInvocation{Context: ctx, OnReady: func() { ready = true; cancel() }}
-			commands := lifecycleCommandsWithDependencies(mode, lifecycleDependencies{
-				foreground: invocation,
-				controller: func(string, string) (*servicelaunch.Controller, error) {
-					t.Fatal("foreground execution accessed the native controller or elevation path")
-					return nil, errors.New("forbidden native access")
-				},
-			})
-			run := commandNamed(t, commands, "run")
-			require.NoError(t, run.Run(cmdCtx{}, args))
+			runners := defaultCLIRunners()
+			runners.modes.foreground = invocation
+			runners.modes.controller = func(string, string) (*servicelaunch.Controller, error) {
+				t.Fatal("foreground execution accessed the native controller or elevation path")
+				return nil, errors.New("forbidden native access")
+			}
+			run := func(args ...string) error {
+				return runLeapmux(ctx, runners, append([]string{"daemon", mode, "run"}, args...)...)
+			}
+			require.NoError(t, run(args...))
 			require.True(t, ready, "exercise successful foreground execution")
 			specPath := lifecycle.PathsOf(mustCanonicalDir(t, root)).ServiceSpec
 			assert.NoFileExists(t, specPath, "foreground startup never configures native startup")
-			require.Error(t, run.Run(cmdCtx{}, append(args, "--unknown-foreground-option")))
+			require.Error(t, run(append(args, "--unknown-foreground-option")...))
 			assert.NoFileExists(t, specPath, "foreground failure never configures native startup")
 		})
 	}
@@ -323,7 +339,7 @@ func TestInvalidTimeoutsAndMissingRegistration(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("an unregistered worker's status reports stopped with exit 3", func(t *testing.T) {
+	t.Run("an unregistered worker's status reports stopped with exit 8", func(t *testing.T) {
 		err := runMode(t, "worker", "status", "--data-dir", t.TempDir())
 		require.ErrorIs(t, err, errStoppedExit)
 	})
@@ -338,7 +354,7 @@ func TestWaitTimeoutDoesNotChangeRuntimeOutcome(t *testing.T) {
 		// A directory nothing serves: the wait expires, the verdict
 		// identifies status, and no replacement launched.
 		dataDir := t.TempDir()
-		err := waitForReadiness("worker", mustCanonicalDir(t, dataDir), 150*time.Millisecond)
+		err := waitForReadiness(t.Context(), "worker", mustCanonicalDir(t, dataDir), 150*time.Millisecond)
 		require.ErrorIs(t, err, context.DeadlineExceeded, "the command must fail when its readiness wait expires")
 	})
 
@@ -372,7 +388,7 @@ func TestWaitTimeoutDoesNotChangeRuntimeOutcome(t *testing.T) {
 
 func TestReadinessWaitAcceptsTinyPositiveTimeout(t *testing.T) {
 	assert.NotPanics(t, func() {
-		err := waitForReadiness("worker", mustCanonicalDir(t, t.TempDir()), time.Nanosecond)
+		err := waitForReadiness(t.Context(), "worker", mustCanonicalDir(t, t.TempDir()), time.Nanosecond)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 }
@@ -382,9 +398,9 @@ func TestReadinessAndShutdownContinueAfterWaitTimeout(t *testing.T) {
 	runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: lifecycle.RoleHub, DataDir: root, Execution: lifecycle.ExecutionForeground})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runtime.Finish(nil) })
-	require.ErrorIs(t, waitForReadiness("hub", root, time.Nanosecond), context.DeadlineExceeded)
+	require.ErrorIs(t, waitForReadiness(t.Context(), "hub", root, time.Nanosecond), context.DeadlineExceeded)
 	runtime.SetReadiness(lifecycle.ReadinessReady)
-	require.NoError(t, waitForReadiness("hub", root, time.Second))
+	require.NoError(t, waitForReadiness(t.Context(), "hub", root, time.Second))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -402,19 +418,6 @@ func TestReadinessAndShutdownContinueAfterWaitTimeout(t *testing.T) {
 	held, err = lifecycle.ProbeRuntimeLock(runtime.Paths())
 	require.NoError(t, err)
 	require.False(t, held)
-}
-
-// commandNamed returns the command of a group by its name, so a test does not
-// depend on the order in which help lists the commands.
-func commandNamed(t *testing.T, group cmdGroup, name string) cmdLeaf {
-	t.Helper()
-	for _, command := range group.Commands {
-		if command.Name == name {
-			return command
-		}
-	}
-	require.FailNow(t, "the group has no command "+name)
-	return cmdLeaf{}
 }
 
 // mustCanonicalDir canonicalizes for assertions.
@@ -454,16 +457,16 @@ func TestLifecycleStartupOptions(t *testing.T) {
 // configuration or saves any argument.
 func TestWorkerLifecycleCommandsRefuseRegistrationFlags(t *testing.T) {
 	for _, verb := range []string{"start", "restart", "stop", "status", "enable", "disable"} {
-		for _, args := range [][]string{{"--hub", "https://hub.example"}, {"--hub=https://hub.example"}, {"--registration-key", "key"}, {"-registration-key=key"}} {
+		for _, args := range [][]string{{"--hub", "https://hub.example"}, {"--hub=https://hub.example"}, {"--registration-key", "key"}, {"--registration-key=key"}} {
 			t.Run(verb+" "+args[0], func(t *testing.T) {
 				_, _, err := loadLifecycleCommand("worker", verb, append([]string{"--data-dir", t.TempDir()}, args...))
-				require.ErrorContains(t, err, "belongs to `leapmux worker register`")
+				require.ErrorContains(t, err, "belongs to `leapmux daemon worker register`")
 			})
 		}
 	}
 	t.Run("the hub and the other modes do not know the worker flags", func(t *testing.T) {
 		_, _, err := loadLifecycleCommand("hub", "start", []string{"--data-dir", t.TempDir(), "--registration-key", "key"})
-		require.ErrorContains(t, err, "flag provided but not defined: -registration-key")
+		require.ErrorContains(t, err, "unknown flag: --registration-key")
 	})
 }
 
@@ -475,8 +478,8 @@ func TestLifecycleCommandHelpIdentifiesTheCommand(t *testing.T) {
 		mode, verb string
 		absent     []string
 	}{
-		{"worker", "run", []string{"service-spec", "  -hub ", "  -registration-key "}},
-		{"worker", "start", []string{"service-spec", "  -hub ", "  -registration-key "}},
+		{"worker", "run", []string{"service-spec", "--hub ", "--registration-key "}},
+		{"worker", "start", []string{"service-spec", "--hub ", "--registration-key "}},
 		{"hub", "run", []string{"service-spec"}},
 		{"solo", "status", []string{"service-spec"}},
 		{"dev", "enable", []string{"service-spec"}},
@@ -484,9 +487,9 @@ func TestLifecycleCommandHelpIdentifiesTheCommand(t *testing.T) {
 		t.Run(tc.mode+" "+tc.verb, func(t *testing.T) {
 			result := invokeLifecycleCLI(t, t.TempDir(), tc.mode, tc.verb, "--help")
 			require.Equal(t, 0, result.exitCode, result.stderr)
-			header := lifecycleSummary(tc.mode, tc.verb) + ".\n\nUsage: leapmux " + tc.mode + " " + tc.verb + " [flags]\n"
+			header := lifecycleSummary(tc.mode, tc.verb) + "\n\nUsage:\n  leapmux daemon " + tc.mode + " " + tc.verb + " [flags]\n"
 			assert.True(t, strings.HasPrefix(result.stdout, header), result.stdout)
-			assert.Contains(t, result.stdout, "  -data-dir string")
+			assert.Contains(t, result.stdout, "  --data-dir string")
 			for _, text := range tc.absent {
 				assert.NotContains(t, result.stdout, text)
 			}
@@ -509,7 +512,7 @@ func TestSelectionCommandsAcceptOnlyTheSelectionFlags(t *testing.T) {
 			t.Run(mode+" "+verb, func(t *testing.T) {
 				dataDir := t.TempDir()
 				_, _, err := loadLifecycleCommand(mode, verb, append([]string{"--data-dir", dataDir}, runtimeFlag...))
-				require.ErrorContains(t, err, "flag provided but not defined: "+strings.TrimPrefix(runtimeFlag[0], "-"))
+				require.ErrorContains(t, err, "unknown flag: "+runtimeFlag[0])
 
 				configuration, _, err := loadLifecycleCommand(mode, verb, []string{"--data-dir", dataDir})
 				require.NoError(t, err)
@@ -532,37 +535,34 @@ func TestSelectionCommandsAcceptOnlyTheSelectionFlags(t *testing.T) {
 	t.Run("help shows only the selection and command flags", func(t *testing.T) {
 		result := invokeLifecycleCLI(t, t.TempDir(), "solo", "status", "--help")
 		require.Equal(t, 0, result.exitCode, result.stderr)
-		for _, present := range []string{"  -data-dir string", "  -config string", "  -json", "  -timeout "} {
+		for _, present := range []string{"  --data-dir string", "  --config string", "  --json", "  --timeout "} {
 			assert.Contains(t, result.stdout, present)
 		}
-		for _, absent := range []string{"  -listen ", "  -encryption-mode ", "  -log-level ", "  -storage-sqlite-max-conns "} {
+		for _, absent := range []string{"--listen ", "--encryption-mode ", "--log-level ", "--storage-sqlite-max-conns "} {
 			assert.NotContains(t, result.stdout, absent)
 		}
 	})
 }
 
-// The mode's command list and the dispatcher read one tree, so the list shows
-// exactly the commands that dispatch accepts, each with its one summary.
-func TestModeCommandGroupListsEachCommandOnce(t *testing.T) {
+// The mode's command list and the parse read one tree, so the list shows
+// exactly the commands that run, in the order of the help, each with its one
+// summary.
+func TestModeCommandListsEachCommandOnce(t *testing.T) {
 	for _, mode := range []string{"solo", "hub", "worker", "dev"} {
-		group := modeCommandGroup(mode)
-		names := make([]string, 0, len(group.Commands))
-		for _, command := range group.Commands {
-			names = append(names, command.Name)
-			require.NotNil(t, command.Run, "%s %s has no runner", mode, command.Name)
-			require.NotEmpty(t, command.Summary)
+		group := newModeCommand(mode, defaultModeDependencies())
+		names := make([]string, 0, len(group.Commands()))
+		for _, command := range group.Commands() {
+			names = append(names, command.Name())
+			require.NotEmpty(t, command.Short, "%s %s has no summary", mode, command.Name())
 		}
-		want := []string{"start", "stop", "restart", "status", "enable", "disable", "run"}
+		want := slices.Clone(lifecycleVerbs)
 		if mode == "worker" {
-			want = append(want, "register", "deregister")
-			require.Len(t, group.Subgroups, 1)
-			assert.Equal(t, "cross-worker-pins", group.Subgroups[0].Name)
-		} else {
-			assert.Empty(t, group.Subgroups)
+			want = append(want, "register", "deregister", "cross-worker-pins")
 		}
 		assert.Equal(t, want, names)
-		for _, command := range group.Commands[:7] {
-			assert.Equal(t, lifecycleSummary(mode, command.Name), command.Summary)
+		for _, command := range group.Commands()[:len(lifecycleVerbs)] {
+			require.True(t, command.Runnable(), "%s %s does not run", mode, command.Name())
+			assert.Equal(t, lifecycleSummary(mode, command.Name()), command.Short)
 		}
 	}
 	assert.Panics(t, func() { lifecycleSummary("hub", "register") },
@@ -645,11 +645,7 @@ func TestForegroundRunPrintsTheBannerToTheAttemptLog(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			commands := lifecycleCommandsWithDependencies(mode, lifecycleDependencies{
-				foreground: runInvocation{Context: ctx, OnReady: cancel},
-				controller: nativeController,
-			})
-			require.NoError(t, commandNamed(t, commands, "run").Run(cmdCtx{}, args))
+			require.NoError(t, runForeground(mode, runInvocation{Context: ctx, OnReady: cancel}, args...))
 			paths := lifecycle.PathsOf(mustCanonicalDir(t, root))
 			record, err := lifecycle.ReadRuntimeRecord(paths.RuntimeRecord)
 			require.NoError(t, err)

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
-	"github.com/leapmux/leapmux/generated/contracts"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"

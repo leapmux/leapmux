@@ -18,6 +18,14 @@ DELETE FROM control_requests WHERE agent_id = ? AND request_id = ? RETURNING *;
 -- name: DeleteControlRequestInstance :one
 DELETE FROM control_requests WHERE agent_id = ? AND request_id = ? AND claim_token = ? RETURNING *;
 
+-- name: DeleteObservedControlRequest :one
+-- Recording an answer must leave a replacement request intact.
+DELETE FROM control_requests
+WHERE agent_id = sqlc.arg(agent_id) AND request_id = sqlc.arg(request_id) AND claim_token = sqlc.arg(claim_token)
+AND payload = COALESCE(CAST(sqlc.arg(request_payload) AS BLOB), X'')
+AND agent_session_id = sqlc.arg(agent_session_id)
+RETURNING *;
+
 -- name: DeleteControlRequestsByAgentID :many
 DELETE FROM control_requests WHERE agent_id = ? RETURNING *;
 
@@ -34,3 +42,6 @@ SELECT * FROM control_requests WHERE agent_id = ? ORDER BY created_at ASC;
 
 -- name: GetControlRequest :one
 SELECT * FROM control_requests WHERE agent_id = ? AND request_id = ?;
+
+-- name: GetControlRequestClaim :one
+SELECT claim_token FROM control_requests WHERE agent_id = ? AND request_id = ?;

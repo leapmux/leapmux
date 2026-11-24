@@ -25,6 +25,10 @@ func (a *Agent) registerControl(requestID string, control *pendingControl) {
 		a.Mu.Unlock()
 		return
 	}
+	owner := a.out.toolOwner[control.toolCallID]
+	if reply := a.turn.inputReply; reply.ownsOutput(control.sessionID) && !reply.agentDone && reply.end == nil && (owner == nil || owner == a.out.lead) {
+		control.nativeTurnID = reply.receipt.TurnID
+	}
 	a.controls[requestID] = control
 	automatic := a.canApproveControlLocked(control)
 	if automatic {
@@ -46,7 +50,7 @@ func (a *Agent) canApproveControlLocked(control *pendingControl) bool {
 }
 
 func (a *Agent) publishRegisteredControl(requestID string, control *pendingControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.sessionID, RequestID: requestID,
+	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.sessionID, NativeTurnID: control.nativeTurnID, RequestID: requestID,
 		InstanceID: control.instanceID, Payload: control.payload, SourceSeq: control.sourceSeq})
 	a.Mu.Lock()
 	current := a.controls[requestID] == control

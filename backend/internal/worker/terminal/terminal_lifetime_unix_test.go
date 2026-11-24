@@ -18,7 +18,7 @@ func startTerminalTree(t *testing.T, home, id string) (*Terminal, *processtest.T
 	t.Helper()
 	tree := processtest.New(t, home)
 	ctx, cancel := context.WithCancel(t.Context())
-	terminal, err := Start(ctx, Options{ID: id, Shell: tree.Shell(t), WorkingDir: t.TempDir(), ExtraEnv: tree.Environment()}, quartz.NewReal(), func([]byte, int64, []Signal) {})
+	terminal, err := Start(ctx, Options{ID: id, Shell: tree.Shell(t), WorkingDir: t.TempDir(), ExtraEnv: tree.Environment()}, quartz.NewReal(), func(Output) {})
 	require.NoError(t, err)
 	t.Cleanup(func() { terminal.Stop(); cancel() })
 	tree.Ready(t, terminal.ShellPID())

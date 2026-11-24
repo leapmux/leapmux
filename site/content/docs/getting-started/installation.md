@@ -134,7 +134,7 @@ Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary de
 {{< /callout >}}
 
 {{< callout type="warning" >}}
-The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container. Set `public_url`, `secure_cookies`, and `trusted_proxy_ranges` with `leapmux control admin settings set`. See [Reverse Proxy](/docs/admin/reverse-proxy/) for a tested configuration of each common proxy.
+The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container. Set `public_url`, `secure_cookies`, and `trusted_proxy_ranges` with `leapmux admin settings set`. See [Reverse Proxy](/docs/admin/reverse-proxy/) for a tested configuration of each common proxy.
 {{< /callout >}}
 
 ### Running a Worker container
@@ -166,8 +166,8 @@ Download the archive for your platform, extract it, and run the `leapmux` execut
 ```bash
 tar -xzf leapmux_<version>_linux_amd64.tar.gz
 cd leapmux_<version>_linux_amd64
-./leapmux hub start        # Start a Hub in the background as a service.
-./leapmux hub stop         # Stop it.
+./leapmux daemon hub start        # Start a Hub in the background as a service.
+./leapmux daemon hub stop         # Stop it.
 ```
 
 The same commands work for `solo` and `dev`. A service keeps running after you log out, and starts again after a restart of the computer; see [Starting and Stopping](/docs/admin/starting-and-stopping/). Register a standalone Worker before you start it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).

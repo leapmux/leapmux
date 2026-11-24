@@ -18,9 +18,9 @@ import (
 //   - `proceed_once`: leave plan mode for default.
 //   - `cancel`: stay in plan mode and keep planning.
 //
-// The browser answers it through the shared plan approval, whose Approve
-// carries the permission mode the reader chose, and whose Reject carries the
-// reason the reader typed. resolvePlanApproval picks the option that states
+// AnswerControlRequest answers it with the shared plan answer
+// (agent.AnswerNeutralPlan), whose approval carries the permission mode the
+// reader chose, and whose refusal carries the reason the reader typed. resolvePlanApproval picks the option that states
 // the same choice.
 
 // storePlan records the plan that a plan approval carries as the argument of
@@ -67,13 +67,17 @@ func permissionAllowsBypass(line *providerkit.ParsedLine) bool {
 	return tool != "" && tool != contracts.QwenToolExitPlanMode && tool != contracts.QwenToolAskUserQuestion
 }
 
-// isPlanApproval reports whether a stored request is Qwen's plan approval.
+// isPlanApproval reports whether a stored request is Qwen's plan approval: a
+// permission about `exit_plan_mode` that Qwen does not mark as a question
+// dialog. A marked request is a question whatever tool it states, as
+// ReadControlRequest reads it, so its answer is Qwen's own question reply.
 func isPlanApproval(payload json.RawMessage) bool {
 	var request qwenPermissionRequest
 	if json.Unmarshal(payload, &request) != nil || request.Method != "session/request_permission" {
 		return false
 	}
-	return qwenToolName(request.Params.ToolCall.Meta) == contracts.QwenToolExitPlanMode
+	return qwenToolName(request.Params.ToolCall.Meta) == contracts.QwenToolExitPlanMode &&
+		!readQwenPermissionToolCall(payload).asksQuestion()
 }
 
 // resolvePlanApproval answers a plan approval.
@@ -87,28 +91,25 @@ func isPlanApproval(payload json.RawMessage) bool {
 //     reader typed follows as a message of its own.
 func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.DefaultControlResponseResolution(ctx)
-	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	id, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
+	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	id, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
 	switch {
-	case !ok || requestID == "":
+	case !ok:
 		result.Refuse(agent.RefusalNoDecision)
 		return result
 	case !found:
 		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
-	case requestID != agent.StoredControlRequestID(ctx, storedID):
-		result.Refuse(agent.RefusalOtherRequest)
-		return result
 	}
 	var option string
 	switch behavior {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		option = contracts.QwenPermissionOptionProceedOnce
 		if ctx.PlanApproval.GetPermissionMode() == contracts.QwenModeAutoEdit {
 			option = contracts.QwenPermissionOptionProceedAlways
 		}
 		result.PlanModeControl = agent.PlanModeControlExit
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		option = contracts.QwenPermissionOptionCancel
 		result.FollowUp = agent.FeedbackFollowUp(message)
 	default:

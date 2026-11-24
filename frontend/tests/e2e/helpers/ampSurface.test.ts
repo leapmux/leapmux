@@ -517,6 +517,55 @@ describe('the Amp REST surface', () => {
     })
   })
 
+  it('exports the exact native input IDs and admits a retry once per thread', async () => {
+    mock = await startMock([
+      { text: 'First reply.' },
+      { text: 'Other thread reply.' },
+    ])
+    const first = await openThread(mock)
+    const input = userMessage('The same prompt on two threads.')
+    first.client.request('client_append_user_msg', input)
+    await expect.poll(() => first.client.messages().length).toBe(2)
+    await expect.poll(() => first.client.notifications('agent_state').at(-1)?.state).toBe('idle')
+
+    const retry = first.client.request('client_append_user_msg', input)
+    await expect.poll(() => first.client.reply(retry)).toEqual({ ok: true })
+    expect(mock.inferences).toHaveLength(1)
+    const second = await openThread(mock)
+    second.client.request('client_append_user_msg', input)
+    await expect.poll(() => second.client.messages().length).toBe(2)
+    await expect.poll(() => second.client.notifications('agent_state').at(-1)?.state).toBe('idle')
+
+    for (const [thread, reply] of [
+      [first, 'First reply.'],
+      [second, 'Other thread reply.'],
+    ] as const) {
+      const exported = await mock.post('/api/internal?getThreadTail', {
+        params: { thread: thread.threadID },
+      })
+      expect(exported).toMatchObject({
+        result: {
+          messages: [
+            {
+              protocolMessageID: input.messageId,
+              role: 'user',
+              meta: { fromExecutorClient: true },
+            },
+            {
+              protocolMessageID: thread.client.messages()[1]!.messageId,
+              role: 'assistant',
+              state: { type: 'complete', stopReason: 'end_turn' },
+              content: [
+                { type: 'text', text: reply },
+              ],
+            },
+          ],
+        },
+      })
+    }
+    expect(mock.inferences).toHaveLength(2)
+  })
+
   it('reads an empty body as a request with no parameters', async () => {
     mock = await startMock([])
     const created = await fetch(`${mock.origin}/api/thread-actors`, { method: 'POST' })
@@ -1219,21 +1268,48 @@ describe('the Amp actor', () => {
       held.promise,
       { text: 'steered answer' },
     ])
-    const { client } = await openThread(mock)
+    const { client, threadID } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s9 start'))
     await expect.poll(() => mock!.inferences.length).toBe(1)
-    const steer = client.request('client_append_user_msg', userMessage('Also say steered.'))
+    const input = userMessage('Also say steered.')
+    const steer = client.request('client_append_user_msg', input)
+    const retry = client.request('client_append_user_msg', input)
     await expect.poll(() => client.reply(steer)).toEqual({ ok: true })
+    await expect.poll(() => client.reply(retry)).toEqual({ ok: true })
 
     held.settle({ text: 'first answer' })
-    await expect.poll(() => client.messages().length).toBe(4)
-    await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
+    await expect.poll(() => client.messages().filter(message => message.role === 'assistant').length).toBe(2)
     expect(client.messages().map(message => message.role)).toEqual([
       'user',
       'assistant',
       'user',
       'assistant',
     ])
+    await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
+    expect(client.messages()[2]!.messageId).toBe(input.messageId)
+    const exported = await mock.post('/api/internal?getThreadTail', {
+      params: { thread: threadID },
+    })
+    expect(exported).toMatchObject({
+      result: {
+        messages: [
+          { role: 'user' },
+          {
+            role: 'assistant',
+            state: { type: 'complete' },
+          },
+          {
+            role: 'user',
+            protocolMessageID: input.messageId,
+            meta: { steer: true, fromExecutorClient: true },
+          },
+          {
+            role: 'assistant',
+            state: { type: 'complete', stopReason: 'end_turn' },
+          },
+        ],
+      },
+    })
     expect(mock.inferences[1]?.userText).toBe('Also say steered.')
   })
 

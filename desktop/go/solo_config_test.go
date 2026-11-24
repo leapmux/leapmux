@@ -15,24 +15,32 @@ import (
 func TestDesktopSoloConfig_PassesDevFrontendWhenSet(t *testing.T) {
 	t.Parallel()
 
-	cfg := desktopSoloConfig("http://localhost:4328")
+	cfg := desktopSoloConfig("http://localhost:4328", "")
 	assert.True(t, cfg.NoTCP)
-	assert.Equal(t, []string{"-dev-frontend", "http://localhost:4328"}, cfg.Args)
+	assert.Equal(t, []string{"--dev-frontend", "http://localhost:4328"}, cfg.Args)
 }
 
 func TestDesktopSoloConfig_OmitsDevFrontendWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	cfg := desktopSoloConfig("")
+	cfg := desktopSoloConfig("", "")
 	assert.True(t, cfg.NoTCP)
 	assert.Empty(t, cfg.Args)
+}
+
+func TestDesktopSoloConfig_PassesTheBundledCli(t *testing.T) {
+	t.Parallel()
+
+	cfg := desktopSoloConfig("", "/Applications/LeapMux.app/Contents/MacOS/leapmux")
+	assert.Equal(t, "/Applications/LeapMux.app/Contents/MacOS/leapmux", cfg.ControlCLI)
+	assert.Empty(t, desktopSoloConfig("", "").ControlCLI, "an install that ships no CLI links none")
 }
 
 func TestDesktopSoloConfigFromEnv_ReadsContractEnv(t *testing.T) {
 	// Not parallel: t.Setenv mutates process env for this test.
 	t.Setenv(contracts.EnvDevFrontend, "http://localhost:4328")
 	cfg := desktopSoloConfigFromEnv()
-	assert.Equal(t, []string{"-dev-frontend", "http://localhost:4328"}, cfg.Args)
+	assert.Equal(t, []string{"--dev-frontend", "http://localhost:4328"}, cfg.Args)
 
 	t.Setenv(contracts.EnvDevFrontend, "")
 	cfg = desktopSoloConfigFromEnv()

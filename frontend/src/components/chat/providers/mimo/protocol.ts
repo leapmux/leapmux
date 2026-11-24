@@ -45,22 +45,6 @@ export const MIMO_DECLINED_ERRORS = [
 export const MIMO_ABORTED_TOOL_ERROR = 'Tool execution aborted'
 
 /**
- * The permissions that MiMo always asks for, whatever the rules say
- * (`FORCED_ASK` in MiMo's `permission/index.ts`).
- *
- * MiMo reads an `always` answer to one of them as `once`, so it saves nothing.
- */
-export const MIMO_FORCED_ASK_PERMISSIONS: ReadonlySet<string> = new Set(['bash_delete'])
-
-/**
- * The `key` of the one question that MiMo asks for an MCP server's confirmation
- * (MiMo 0.1.17, `mcp/elicitation.ts`).
- */
-export const MIMO_QUESTION_KEY = {
-  McpElicitation: 'mcp_elicitation',
-} as const
-
-/**
  * The title MiMo gives a `plan_exit` call that runs outside plan mode. MiMo asks
  * nobody then, and states `switched: false` as it does for a plan that the reader
  * sent back, so the title is the only word that separates the two.

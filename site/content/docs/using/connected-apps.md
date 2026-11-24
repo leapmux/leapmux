@@ -5,7 +5,7 @@ type: docs
 weight: 12
 ---
 
-An app you authorize holds a credential on your account until you disconnect it. **Preferences → Apps → Connected apps** lists them — grouped by app, one row per machine — and each row says what that one can actually do. `leapmux control auth credentials` prints the same list from a terminal.
+An app you authorize holds a credential on your account until you disconnect it. **Preferences → Apps → Connected apps** lists them — grouped by app, one row per machine — and each row says what that one can actually do. `leapmux auth credentials` prints the same list from a terminal.
 
 ## Authorizing an app
 
@@ -19,7 +19,7 @@ The screen says whose account it asks to use, and where it will return you — t
 
 The permission list shows every family the app reaches into, and each family in full: the permissions this app asks for are ticked, the rest are dimmed, and each carries its wire token beside a sentence in plain words — *Type into your terminals, which runs any command on your machine*, not `terminal:write`. An app that asks for nothing at all is one that could do nothing with your account, and the screen says that too.
 
-Two rules guard the widest permissions. An app must **name** a hub-administration permission to ask for one — a request that omits its permission list never includes any — and only an administrator can grant it; anybody else's consent is refused outright. On the headless [device-code flow](/docs/using/control-cli/#leapmux-control-auth-login) a request that includes a hub-administration permission stops twice: the first **Authorize** returns the page with the caution stated beside it, and only the second one binds.
+Two rules guard the widest permissions. An app must **name** a hub-administration permission to ask for one — a request that omits its permission list never includes any — and only an administrator can grant it; anybody else's consent is refused outright. On the headless [device-code flow](/docs/using/control-cli/#leapmux-auth-login) a request that includes a hub-administration permission stops twice: the first **Authorize** returns the page with the caution stated beside it, and only the second one binds.
 
 Authorizing needs a verified session, so the screen may ask you to prove a factor first — a password, a passkey, or a linked provider. That proof lasts {{< duration elevation-window >}}, so a second authorization in the same sitting does not ask again.
 
@@ -36,7 +36,7 @@ The list is **grouped by app**. Each block identifies one app, and under it is o
 
 Each row also says when it was **last used** — or **added**, if it never was. A renewing credential says when its machine must **sign in again**. A fixed-lifetime one (minted by an administrator with a TTL) says when it **expires**. A row with neither never expires.
 
-An empty list says how to start one: run `leapmux control auth login` to connect the command-line tool, or authorize an app from its own sign-in screen.
+An empty list says how to start one: run `leapmux auth login` to connect the command-line tool, or authorize an app from its own sign-in screen.
 
 ## Ending an app's access
 

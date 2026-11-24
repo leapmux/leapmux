@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -26,6 +27,12 @@ type FamilyBase struct {
 	Questions openCodeQuestions
 	// MemberEvents receives native session metadata. Set it before the daemon reader starts.
 	MemberEvents func(eventType string, properties json.RawMessage)
+	// AssistantTextKey identifies a member's assembled root text rows.
+	AssistantTextKey       func(messageID string) string
+	AssistantTextPrepared  func(messageID, key, text string)
+	RootPromptTransport    func(agent.NativeInputReceipt, json.RawMessage) (func(func(json.RawMessage, error)) error, error)
+	QuestionTurnID         func(ctx context.Context, sessionID, assistantID string) string
+	NativePermissionTurnID func(sessionID, toolCallID string) string
 	// DaemonReady runs once the address of the daemon's HTTP server is known,
 	// so ReadDaemon can reach it. Its context ends with the daemon bridge. It
 	// runs before the bridge reads events, so it must not wait. Set it before
@@ -81,12 +88,46 @@ func (b *FamilyBase) configureQuestions(sink agent.ControlServices) {
 	b.Questions.Configure(sink)
 	b.Questions.observe = b.handleDaemonEvent
 	b.Questions.ready = b.DaemonReady
+	b.Questions.questionTurnID = b.QuestionTurnID
+	b.Questions.questionOwner = b.sessionControlOwner
+}
+
+func (b *FamilyBase) sessionControlOwner(sessionID string) (agent.ControlServices, error) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	if b.IsCurrentSession(sessionID) {
+		return b.Questions.sink, nil
+	}
+	owner, found := b.SessionOwner(sessionID)
+	if !found {
+		return nil, nil
+	}
+	if err := owner.BindChildSessionID(sessionID); err != nil {
+		if errors.Is(err, agent.ErrChildIdentityRefused) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return owner, nil
 }
 
 // ReadDaemon GETs one route of the daemon's HTTP server, such as a route that
 // one member of the family serves alone, and returns its body.
 func (b *FamilyBase) ReadDaemon(ctx context.Context, route string) ([]byte, error) {
 	raw, _, err := b.Questions.readRoute(ctx, route)
+	return raw, err
+}
+
+// ReadDaemonPage reads JSON and the daemon's cursor for the next older page.
+func (b *FamilyBase) ReadDaemonPage(ctx context.Context, route string) ([]byte, string, error) {
+	raw, headers, err := b.Questions.readRoute(ctx, route)
+	return raw, headers.Get(openCodeNextCursorHeader), err
+}
+
+// PostDaemon sends prepared JSON to the member's discovered daemon.
+func (b *FamilyBase) PostDaemon(ctx context.Context, route string, body json.RawMessage) ([]byte, error) {
+	raw, _, err := b.Questions.requestRoute(ctx, "POST", route, body)
 	return raw, err
 }
 
@@ -97,11 +138,11 @@ func (b *FamilyBase) ReadDaemon(ctx context.Context, route string) ([]byte, erro
 // that LeapMux answers by id on the stream it arrived on; a question never reached
 // that stream, so it has no id there to answer and the daemon reads its answer from
 // a route instead.
-func (b *FamilyBase) SendRawInput(raw []byte, stop agent.StopContext) error {
-	if handled, err := b.Questions.answer(b.Context(), raw); handled {
+func (b *FamilyBase) SendRawInput(input agent.RawInput) error {
+	if handled, err := b.Questions.answer(b.Context(), input.Data); handled {
 		return err
 	}
-	return b.Base.SendRawInput(raw, stop)
+	return b.Base.SendRawInput(input)
 }
 
 // SteerInput sends the steer as a second prompt on the running session.
@@ -113,7 +154,8 @@ func (b *FamilyBase) SendRawInput(raw []byte, stop agent.StopContext) error {
 //
 // A STOPPED agent states nothing: the reader ended the turn themselves, so a steer
 // that did not land is the outcome they asked for.
-func (b *FamilyBase) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (b *FamilyBase) SteerInput(request agent.SteerRequest) error {
+	content, attachments := request.Content, request.Attachments
 	_, active, sessionID, _ := b.SteerTarget()
 	if !active {
 		return agent.ErrNoActiveTurn

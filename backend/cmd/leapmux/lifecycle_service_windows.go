@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/lifecycle"
@@ -26,6 +28,11 @@ func runNativeServiceEntry(args []string) (bool, error) {
 	name := args[1]
 	return true, servicelaunch.RunWindowsService(name, func(ctx context.Context, ready func()) error {
 		logging.Setup()
-		return runModeRunWithInvocation(role.String(), runInvocation{Context: ctx, OnReady: ready, ServiceName: name})(cmdCtx{}, args[4:])
+		// The service runs `leapmux <mode> run` through the command tree, so
+		// it parses its saved arguments as a person's command line would.
+		runners := defaultCLIRunners()
+		runners.modes.foreground = runInvocation{Context: ctx, OnReady: ready, ServiceName: name}
+		command := append([]string{role.String(), "run"}, args[4:]...)
+		return cli.Run(ctx, newRootCommand(runners), command, os.Stdin, os.Stdout, os.Stderr)
 	})
 }

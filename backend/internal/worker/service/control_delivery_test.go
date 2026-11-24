@@ -18,8 +18,8 @@ func TestControlResponseRecordsDeliveryBeforeItsRecoveryRead(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
-		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
-		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
+		AgentID: "agent-1", RequestID: "jsonrpc:7", ClaimToken: "claim",
+		Payload: []byte(`{"id":7,"method":"item/commandExecution/requestApproval"}`),
 	})
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
@@ -37,15 +37,15 @@ func TestControlResponseRecordsDeliveryBeforeItsRecoveryRead(t *testing.T) {
 		query: svc.DB.QueryContext,
 	})
 	sends := 0
-	svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
-	request := &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", ClaimToken: "claim", Content: []byte(`{"id":"request","result":{"decision":"accept"}}`)}
-	require.Error(t, svc.processControlResponse(row, request))
+	svc.sendControlResponseFn = func(string, agent.RawInput) error { sends++; return nil }
+	answer := workerAnswer{claimToken: "claim", content: []byte(`{"id":"jsonrpc:7","result":{"decision":"accept"}}`)}
+	require.Error(t, svc.processControlAnswer(row, answer))
 	require.Equal(t, 1, sends, "a recovery read must not strand a known-unsent reservation")
 	svc.Queries = db.New(svc.DB)
-	answer, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "request", ClaimToken: "claim"})
+	stored, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "jsonrpc:7", ClaimToken: "claim"})
 	require.NoError(t, err)
-	require.Equal(t, storedStateDelivered, answer.State)
-	require.NoError(t, svc.processControlResponse(row, request))
+	require.Equal(t, storedStateDelivered, stored.State)
+	require.NoError(t, svc.processControlAnswer(row, answer))
 	require.Equal(t, 1, sends)
 }
 
@@ -85,7 +85,7 @@ func TestControlDeliveryRecoveryNeverRepeatsDelivery(t *testing.T) {
 			require.Equal(t, storedStateDelivered, row.State)
 			require.ErrorIs(t, resumeControlDelivery(row.State, func() error { return failure }), failure)
 			require.NoError(t, resumeControlDelivery(row.State, func() error {
-				completed, err := completeControlDelivery(svc.Queries, row.ID)
+				completed, err := completeControlDelivery(t.Context(), svc.Queries, row.ID)
 				assert.True(t, completed)
 				return err
 			}))
@@ -123,7 +123,7 @@ func TestControlDeliveryCompletionRequiresConfirmedDelivery(t *testing.T) {
 				OperationID: "operation", InstanceID: "instance", State: state,
 			})
 			require.NoError(t, err)
-			completed, err := completeControlDelivery(svc.Queries, "delivery")
+			completed, err := completeControlDelivery(t.Context(), svc.Queries, "delivery")
 			if state == storedStatePending || state == storedStateUncertain {
 				require.Error(t, err)
 				require.False(t, completed)

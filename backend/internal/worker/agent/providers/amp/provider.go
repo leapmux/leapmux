@@ -23,6 +23,13 @@ type ampProvider struct {
 	cli launch.Locator
 }
 
+// ControlRequestKey reads the key that the agent publishes a permission
+// request under: the bridge's id, which the payload states as its request_id
+// (ampStoredPermissionRequest).
+func (ampProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	return agent.EnvelopeControlRequestKey(payload)
+}
+
 // ValidateAttachment accepts text and images and refuses the rest. See
 // validateAttachment for the whole policy.
 func (ampProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {

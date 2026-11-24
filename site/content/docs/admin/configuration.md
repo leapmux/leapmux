@@ -10,7 +10,7 @@ This chapter is the complete configuration reference for the LeapMux **Hub** and
 For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/admin/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 {{< callout type="info" >}}
-Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/admin/running-leapmux/), [Control CLI](/docs/using/control-cli/), and [Recovery](/docs/admin/recover/).
+Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/admin/running-leapmux/), [Control CLI](/docs/using/control-cli/), and [Recovery](/docs/admin/recover/).
 {{< /callout >}}
 
 ## Configuration precedence
@@ -63,12 +63,12 @@ Each mode looks for a YAML config file in its own directory under `~/.config/lea
 | `solo`   | `~/.config/leapmux/solo`          | `~/.config/leapmux/solo/solo.yaml`       |
 | `dev`    | `~/.config/leapmux/dev`           | `~/.config/leapmux/dev/dev.yaml`         |
 
-Override the path with the `--config` (or `-config`) flag, which accepts `--config=PATH`, `--config PATH`, `-config=PATH`, or `-config PATH`. It is scanned out of the arguments before normal flag parsing, so it works regardless of position.
+Override the path with the `--config` flag, which accepts `--config=PATH` or `--config PATH`. It is scanned out of the arguments before normal flag parsing, so it works regardless of position.
 
 ```bash
 # Pass the same path to every command of the instance.
-leapmux hub start --config /etc/leapmux/hub.yaml
-leapmux hub status --config /etc/leapmux/hub.yaml
+leapmux daemon hub start --config /etc/leapmux/hub.yaml
+leapmux daemon hub status --config /etc/leapmux/hub.yaml
 ```
 
 ### Data directory resolution
@@ -115,7 +115,7 @@ LEAPMUX_HUB_LOG_LEVEL: "debug"
 ```
 
 ```bash
-leapmux hub start --environment-file /etc/leapmux/hub-environment.yaml
+leapmux daemon hub start --environment-file /etc/leapmux/hub-environment.yaml
 ```
 
 A container reads the variables from its own environment:
@@ -178,12 +178,12 @@ Before the `solo` account has a password, a TCP caller can only set the first pa
 
 ### Network access
 
-Solo mode serves additional addresses beside the addresses `-listen` gives it. Open **Preferences → Administration → Network access**. Under **Additional addresses**, pick an interface and a port for each TCP address you want, then select **Apply**. The Hub binds the addresses immediately and on every later start. The Hub stores them as the `extra_listen_addresses` setting, which you can also edit with `leapmux control admin settings`.
+Solo mode serves additional addresses beside the addresses `--listen` gives it. Open **Preferences → Administration → Network access**. Under **Additional addresses**, pick an interface and a port for each TCP address you want, then select **Apply**. The Hub binds the addresses immediately and on every later start. The Hub stores them as the `extra_listen_addresses` setting, which you can also edit with `leapmux admin settings`.
 
 Two things follow from adding one:
 
 - **Every network address then asks for a sign-in as `solo`**, `127.0.0.1` included. The panel asks you to set that password before it will publish an address. The desktop app's local socket is the only transport that never asks. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the rule in full.
-- **Overlapping addresses merge.** Ask for every interface on the port `-listen` already uses and the Hub serves one socket rather than two: `-listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. Every `-listen` address takes part, so a secondary one folds too. The panel says so before you apply, and **TCP listeners** lists what is serving with the reason for each entry.
+- **Overlapping addresses merge.** Ask for every interface on the port `--listen` already uses and the Hub serves one socket rather than two: `--listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. Every `--listen` address takes part, so a secondary one folds too. The panel says so before you apply, and **TCP listeners** lists what is serving with the reason for each entry.
 
 An address that cannot be bound — a VPN that is down, a port another program holds — does not stop the Hub. It stays configured, the rest are served, and the panel reports the operating system's own reason beside it.
 
@@ -234,7 +234,7 @@ The list is the bind set: what you give is what binds. Exactly one entry is adde
 | `--listen :8080 --listen :9090` | `:8080` + `:9090` + `<default local>` |
 | `--listen :8080 --listen unix:/tmp/x` | `:8080` + `unix:/tmp/x` |
 
-**At least one local IPC address is always bound.** `leapmux control` on the Hub's host reaches it without a login over that socket (no other caller gets that), so a TCP-only list is impossible and nothing turns the socket off. Naming a local entry moves it: the default socket is then not bound, and `leapmux control` needs `--hub` pointed at the URL you named.
+**At least one local IPC address is always bound.** `leapmux` on the Hub's host reaches it without a login over that socket (no other caller gets that), so a TCP-only list is impossible and nothing turns the socket off. Naming a local entry moves it: the default socket is then not bound, and `leapmux` needs `--hub` pointed at the URL you named.
 
 The platform default local IPC URL:
 
@@ -266,15 +266,15 @@ These four keys (plus the storage block below and `encryption_key_path`) are the
 
 ### Instance settings (database)
 
-All behavioral configuration — auth policy, SMTP, timeouts, limits, queue budgets, bot protection — lives in the Hub's database, in one `hub_settings` table managed by `leapmux control admin settings`:
+All behavioral configuration — auth policy, SMTP, timeouts, limits, queue budgets, bot protection — lives in the Hub's database, in one `hub_settings` table managed by `leapmux admin settings`:
 
 ```bash
-leapmux control admin settings list
-leapmux control admin settings set signup_enabled true
-leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"hub@example.com"}'
-leapmux control admin settings set-secret smtp '{"password":"..."}'
-leapmux control admin settings get smtp
-leapmux control admin settings reset signup_enabled
+leapmux admin settings list
+leapmux admin settings set signup_enabled true
+leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"hub@example.com"}'
+leapmux admin settings set-secret smtp '{"password":"..."}'
+leapmux admin settings get smtp
+leapmux admin settings reset signup_enabled
 ```
 
 A value is a JSON document; fields it omits keep their current (or default) values, so `{"port":465}` retunes one SMTP field without restating the host. Both the value and secret halves of each row are encrypted at rest with the Hub keystore. Secret-bearing fields (the SMTP password, captcha signing keys) live in the separate `secret` half written through `set-secret` and never appear in `list` or `get` output. A key with no stored row sits at its built-in default — `reset` returns a key to exactly that.
@@ -324,13 +324,13 @@ Email verification is not a separate setting. Once the `smtp` block is fully con
 
 ### Bot protection (captcha & rate limits)
 
-Captcha and rate-limit settings are instance settings (the `captcha.*` and `rate_limit.*` keys above), changed at runtime with `leapmux control admin`:
+Captcha and rate-limit settings are instance settings (the `captcha.*` and `rate_limit.*` keys above), changed at runtime with `leapmux admin`:
 
 ```bash
-leapmux control admin captcha show
-leapmux control admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
-leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
-leapmux control admin rate-limit list
+leapmux admin captcha get
+leapmux admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
+leapmux admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
+leapmux admin rate-limit list
 ```
 
 With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/admin/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. Two more caps guard the relay: `email_change` limits the requests to change an account email that reach the mail machinery (6 per 15 minutes per user — each one drove a mint and an SMTP attempt, a loop otherwise pays no captcha and guesses no secret, while the elevation prompt and validation refusals that precede the work cost nothing), and `mail_limits` caps how often the Hub mails one recipient address (10 per hour by default) plus how long a **failed** send blocks the next verification or recovery mail (10 seconds by default, and never more than the 60-second resend cooldown — one failed send must not block longer than a successful one). The per-recipient budget counts delivered mail: a send the relay refuses spends nothing. It folds plus-tagged addresses (`victim+1@`, `victim+2@`) onto the one inbox they share on every provider that honors tags, so a provider that treats `+` as a literal local-part character shares one budget between mailboxes that differ only in the tag.
@@ -394,7 +394,7 @@ Left at `0` (the default), each budget is a share of the memory the process may 
 Set the fields explicitly whenever your fleet's shape differs from that assumption — many Workers and few tabs, or the reverse:
 
 ```bash
-leapmux control admin settings set queue_budget '{"relay_bytes":1073741824}'
+leapmux admin settings set queue_budget '{"relay_bytes":1073741824}'
 ```
 
 Three facts matter when you pick numbers:
@@ -449,7 +449,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 
 `max_connections_per_user` (default `32`) caps how many long-lived connections one account may hold at once — a guard against a client that leaks sockets, or one account crowding out the rest. It is not a quota anyone should meet in normal use; it exists because the queue budgets above guarantee every connection a small working set, so an unlimited connection count would add up to unlimited memory.
 
-**It counts sockets, not tabs, and an active browser tab holds two** — one for live updates, and one more once it opens its first terminal or agent. Everything authenticated as the same account draws on the one allowance: browser tabs, the desktop app, and any `leapmux control` CLI session. At the default of `32` that is roughly sixteen active tabs alongside a CLI session or two. Tunnels are cheaper than they look — all of a machine's tunnels to one Worker share a single connection, so what counts is how many *distinct Workers* you hold tunnels to.
+**It counts sockets, not tabs, and an active browser tab holds two** — one for live updates, and one more once it opens its first terminal or agent. Everything authenticated as the same account draws on the one allowance: browser tabs, the desktop app, and any `leapmux` CLI session. At the default of `32` that is roughly sixteen active tabs alongside a CLI session or two. Tunnels are cheaper than they look — all of a machine's tunnels to one Worker share a single connection, so what counts is how many *distinct Workers* you hold tunnels to.
 
 When a user is at the limit the Hub refuses the **newest** connection and everything already open keeps working; the refused tab says so and stops retrying, so the remedy is to close another tab and reload. Set the key to `0` to turn the cap off entirely. Refusals are counted in `leapmux_connections_refused_total{reason="too_many_connections"}` and logged with the user id and the limit — steady growth is either a client leaking sockets or a cap set below the way your users actually work.
 
@@ -497,7 +497,7 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 | `use_login_shell` | `true` | Wrap the agent invocation in the user's login shell. |
 
 {{< callout type="info" >}}
-The Hub URL and the registration key are not configuration keys. Both are flags of `leapmux worker register` only, and the Worker saves the Hub URL with its credentials. See [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
+The Hub URL and the registration key are not configuration keys. Both are flags of `leapmux daemon worker register` only, and the Worker saves the Hub URL with its credentials. See [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 {{< /callout >}}
 
 ### Timeout and limit options
@@ -538,7 +538,7 @@ The Worker keeps its own SQLite database (`<data_dir>/worker.db`) for transient 
 
 ### Worker state file
 
-`leapmux worker register` saves the Worker's identity to `<data_dir>/state.json` (mode `0600`): its Hub URL, Worker ID, Hub auth token, and its private E2EE keypairs, which the command generates. For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+`leapmux daemon worker register` saves the Worker's identity to `<data_dir>/state.json` (mode `0600`): its Hub URL, Worker ID, Hub auth token, and its private E2EE keypairs, which the command generates. For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 {{< callout type="warning" >}}
 `state.json` holds the Worker's private E2EE keys and Hub auth token, and it is **not encrypted**. Treat it as a secret and back it up. Losing it forces re-registration with a new registration key and a new key identity.
@@ -702,17 +702,17 @@ storage:
 
 ```bash
 # Start the Hub as a background service.
-leapmux hub start --config /etc/leapmux/hub.yaml
+leapmux daemon hub start --config /etc/leapmux/hub.yaml
 
 # Behavioral settings live in the database now — set once, then they
 # survive and can change under the running Hub:
-leapmux control admin settings set public_url "https://hub.example.com"
-leapmux control admin settings set secure_cookies true
-leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'
-leapmux control admin settings set signup_enabled true
-leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"username":"leapmux@example.com","from_address":"no-reply@example.com","tls_mode":"starttls"}'
-leapmux control admin settings set-secret smtp '{"password":"..."}'   # or read from your secret manager
-leapmux control admin settings set session_duration_seconds 86400     # sign an idle user out after a day
+leapmux admin settings set public_url "https://hub.example.com"
+leapmux admin settings set secure_cookies true
+leapmux admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'
+leapmux admin settings set signup_enabled true
+leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"username":"leapmux@example.com","from_address":"no-reply@example.com","tls_mode":"starttls"}'
+leapmux admin settings set-secret smtp '{"password":"..."}'   # or read from your secret manager
+leapmux admin settings set session_duration_seconds 86400     # sign an idle user out after a day
 ```
 
 ### Worker connecting to a remote Hub
@@ -728,10 +728,10 @@ agent_startup_concurrency: 0   # 0 = 4, or the CPU count when that is lower
 
 ```bash
 # Once: register with the Hub, using a key from its Register worker dialog.
-leapmux worker register --hub https://hub.example.com --registration-key "<key-from-hub-ui>"
+leapmux daemon worker register --hub https://hub.example.com --registration-key "<key-from-hub-ui>"
 # Then: start the Worker as a background service. It reads worker.yaml, and
 # it connects to the Hub URL that the registration saved.
-leapmux worker start
+leapmux daemon worker start
 ```
 
 ## Configuration of a service
@@ -740,12 +740,12 @@ A service reads the configuration file at the path that it saved, each time it s
 
 ## Help and version
 
-Every mode supports the standard help tokens, and each mode command honors `--version`:
+Every command prints its help, and the binary prints its version:
 
-- `-h`, `-help`, or `--help` prints help to stdout. After a mode (`leapmux hub --help`), it lists the commands of the mode. After a command (`leapmux hub <command> --help`), it prints the flags of that command, grouped by category. The bare `help` token works only at the top level (`leapmux help`).
-- `--version` (or `-version`) prints the build version and exits. It works at the top level (`leapmux --version`) and after a command (`leapmux hub <command> --version`).
+- `-h` or `--help` prints help to stdout. After a mode (`leapmux daemon hub --help`), it lists the commands of the mode. After a command (`leapmux daemon hub <command> --help`), it prints the flags of that command, grouped by category. `leapmux help <command>` prints the same help.
+- `leapmux --version`, `leapmux -v` and `leapmux version` print the build version. A command takes no `--version` of its own, so `leapmux daemon hub run --version` fails as an unknown flag.
 
-The bare `version` subcommand is a **top-level** command (`leapmux version`), not a mode command. `leapmux hub version` fails with `unknown hub command: version` and prints the commands of the mode. A command rejects an unexpected positional argument, identifies it, and points you at `--help`.
+`version` is a top-level command, not a mode command: `leapmux daemon hub version` fails with `unknown command "version" for "leapmux daemon hub"`. A command rejects an unexpected positional argument, identifies it, and points you at `--help`.
 
 ## Related chapters
 

@@ -61,12 +61,12 @@ vi.mock('./processRegistry', async (importOriginal) => {
     ...await importOriginal<typeof import('./processRegistry')>(),
     spawnTestProcess: (_binary: string, args: string[]) => {
       state.args = args
-      const dataDir = args[args.indexOf('-data-dir') + 1]
+      const dataDir = args[args.indexOf('--data-dir') + 1]
       if (!dataDir)
         throw new Error('the hub needs its data directory')
       const stateDir = join(dataDir, 'hub')
       mkdirSync(stateDir, { recursive: true })
-      const requested = args[args.indexOf('-listen') + 1] ?? ''
+      const requested = args[args.indexOf('--listen') + 1] ?? ''
       const host = requested.slice(0, requested.lastIndexOf(':'))
       writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
         listen: [`${host}:49123`],
@@ -115,7 +115,13 @@ describe('startUnseededDevServer', () => {
 
     const server = await startUnseededDevServer()
 
-    expect(state.args.slice(0, 4)).toEqual(['dev', 'run', '-listen', '127.0.0.1:0'])
+    expect(state.args.slice(0, 5)).toEqual([
+      'daemon',
+      'dev',
+      'run',
+      '--listen',
+      '127.0.0.1:0',
+    ])
     expect(server.hubUrl).toBe('http://localhost:49123')
     expect(state.waitedURL).toBe(server.hubUrl)
   })
@@ -125,7 +131,13 @@ describe('startUnseededDevServer', () => {
 
     const server = await startSoloServer({ listenHost: '0.0.0.0' })
 
-    expect(state.args.slice(0, 4)).toEqual(['solo', 'run', '-listen', '0.0.0.0:0'])
+    expect(state.args.slice(0, 5)).toEqual([
+      'daemon',
+      'solo',
+      'run',
+      '--listen',
+      '0.0.0.0:0',
+    ])
     expect(server.listen).toBe('0.0.0.0:49123')
     expect(server.hubUrl).toBe('http://127.0.0.1:49123')
     expect(state.waitedURL).toBe(server.hubUrl)

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,6 +152,30 @@ func openSteers(a *Agent) int {
 	return len(a.steers.open)
 }
 
+func testCodewhaleSubmission(index int) agent.SteerResolution {
+	return agent.SteerResolution{
+		InputID: "input-" + strconv.Itoa(index), AttemptID: "attempt-" + strconv.Itoa(index),
+		Receipt: agent.NativeInputReceipt{SessionID: testThreadID, TurnID: testTurnID},
+	}
+}
+
+func testCodewhaleSteer(index int, text string, attachments ...*leapmuxv1.Attachment) agent.SteerRequest {
+	submission := testCodewhaleSubmission(index)
+	return agent.SteerRequest{InputID: submission.InputID, AttemptID: submission.AttemptID, Content: text, Attachments: attachments}
+}
+
+func testCodewhaleReport(index int, outcome agent.SteerOutcome) agent.SteerResolution {
+	report := testCodewhaleSubmission(index)
+	report.Outcome, report.Receipt = outcome, agent.NativeInputReceipt{}
+	return report
+}
+
+func testCodewhaleEcho(index int, itemID, turnID string) agent.SteerResolution {
+	report := testCodewhaleReport(index, agent.SteerOutcomeEchoed)
+	report.Receipt = agent.NativeInputReceipt{SessionID: testThreadID, InputID: itemID, TurnID: turnID}
+	return report
+}
+
 func TestSteerInputReadsARefusalAsNoTurn(t *testing.T) {
 	t.Parallel()
 	// 409: the engine dropped the steer within the route's wait, or no turn
@@ -162,13 +185,13 @@ func TestSteerInputReadsARefusalAsNoTurn(t *testing.T) {
 		rt := newFakeRuntime(t)
 		rt.respondStatus(http.MethodPost, steerRoute, status, "Turn "+testTurnID+" is stopping and cannot be steered")
 		a, _ := newSteeringAgent(t, rt)
-		assert.ErrorIs(t, a.SteerInput("More.", nil), agent.ErrNoActiveTurn, status)
+		assert.ErrorIs(t, a.SteerInput(testCodewhaleSteer(1, "More.")), agent.ErrNoActiveTurn, status)
 		assert.Zero(t, openSteers(a), status)
 	}
 	rt := newFakeRuntime(t)
 	rt.respondStatus(http.MethodPost, steerRoute, http.StatusInternalServerError, "Failed to persist steer")
 	a, sink := newSteeringAgent(t, rt)
-	err := a.SteerInput("More.", nil)
+	err := a.SteerInput(testCodewhaleSteer(2, "More."))
 	assert.ErrorContains(t, err, "Failed to persist steer")
 	assert.NotErrorIs(t, err, agent.ErrNoActiveTurn)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
@@ -201,7 +224,7 @@ func TestALostReplyAfterTheVerdictSettlesTheSteer(t *testing.T) {
 			_ = conn.Close()
 		})
 
-		err := a.SteerInput("Also this.", nil)
+		err := a.SteerInput(testCodewhaleSteer(1, "Also this."))
 		if tc.want == nil {
 			assert.NoError(t, err, name)
 		} else {
@@ -221,7 +244,7 @@ func TestASteerEventThatStatesNoTurn(t *testing.T) {
 	rt := newFakeRuntime(t)
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 
 	a.HandleOutput([]byte(`{"seq":2,"event":"turn.steered","thread_id":"` + testThreadID + `","payload":{"input":"Also this."}}`))
 	assert.Equal(t, 1, openSteers(a), "the delivery addresses no turn")
@@ -243,7 +266,7 @@ func TestSteerInputReadsALostReplyAsUncertain(t *testing.T) {
 		_ = conn.Close()
 	})
 	a, _ := newSteeringAgent(t, rt)
-	assert.ErrorIs(t, a.SteerInput("More.", nil), agent.ErrDeliveryUncertain)
+	assert.ErrorIs(t, a.SteerInput(testCodewhaleSteer(1, "More.")), agent.ErrDeliveryUncertain)
 	assert.Zero(t, openSteers(a))
 }
 
@@ -256,7 +279,7 @@ func TestTheDropOfARefusedSteerDrawsNoRow(t *testing.T) {
 	rt.respondStatus(http.MethodPost, steerRoute, http.StatusConflict, "Turn moved on before the steer reached the model")
 	a, sink := newSteeringAgent(t, rt)
 
-	require.ErrorIs(t, a.SteerInput("Also this.", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")), agent.ErrNoActiveTurn)
 	a.HandleOutput(steerDroppedEvent(2, "Also this."))
 	assert.Zero(t, sink.NotificationCount())
 	assert.Empty(t, sink.RequeuedInputs(), "the queue sends it already")
@@ -273,7 +296,7 @@ func TestADropBeforeTheAnswerRefusesTheSteer(t *testing.T) {
 		writeFakeJSON(w, http.StatusOK, map[string]any{"id": testTurnID})
 	})
 
-	assert.ErrorIs(t, a.SteerInput("Also this.", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")), agent.ErrNoActiveTurn)
 	assert.Zero(t, sink.NotificationCount())
 	assert.Empty(t, sink.RequeuedInputs())
 	assert.Zero(t, openSteers(a))
@@ -288,7 +311,7 @@ func TestADeliveryBeforeTheAnswerSettlesTheSteer(t *testing.T) {
 		writeFakeJSON(w, http.StatusOK, map[string]any{"id": testTurnID})
 	})
 
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	assert.Zero(t, openSteers(a))
 }
 
@@ -301,20 +324,20 @@ func TestADropAfterTheAnswerHandsTheSteerBack(t *testing.T) {
 	a, sink := newSteeringAgent(t, rt)
 	attachments := []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("alpha")}}
 
-	require.NoError(t, a.SteerInput("Also this.", attachments))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.", attachments...)))
 	prompt := rt.lastBody(t, http.MethodPost, steerRoute)["prompt"].(string)
 	require.Contains(t, prompt, "alpha", "the route takes the attachment inline")
 	assert.Equal(t, 1, openSteers(a))
 
 	a.HandleOutput(steerDroppedEvent(2, prompt))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeDropped)}, sink.SteerResolutions())
 	assert.Empty(t, sink.RequeuedInputs(), "the original input and attachments remain in the shared queue")
 	assert.Zero(t, sink.NotificationCount(), "the queue sends it again, so the reader is not told to")
 	assert.Zero(t, openSteers(a))
 
 	// A replay of the same drop finds nothing to hand back.
 	a.HandleOutput(steerDroppedEvent(3, prompt))
-	assert.Len(t, sink.SteerEchoReports(), 1)
+	assert.Len(t, sink.SteerResolutions(), 1)
 	assert.Zero(t, sink.NotificationCount())
 }
 
@@ -325,9 +348,9 @@ func TestADropUsesTheHeldInputWhenANewQueueInsertionWouldFail(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	sink.RequeueErr = errors.New("the queue is full")
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(steerDroppedEvent(2, "Also this."))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeDropped)}, sink.SteerResolutions())
 	assert.Empty(t, sink.RequeuedInputs())
 	assert.Zero(t, sink.NotificationCount())
 	assert.Zero(t, openSteers(a))
@@ -339,15 +362,15 @@ func TestATurnEndUsesTheHeldInputWhenANewQueueInsertionWouldFail(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	sink.RequeueErr = errors.New("the queue is full")
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	writeTurnRecord(t, a, [2]string{itemStatusCanceled, "Also this."})
 	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusInterrupted))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeDropped)}, sink.SteerResolutions())
 	assert.Empty(t, sink.RequeuedInputs())
 	assert.Zero(t, openSteers(a))
 	a.HandleOutput(steerDroppedEvent(3, "Also this."))
 	assert.Zero(t, sink.NotificationCount())
-	assert.Len(t, sink.SteerEchoReports(), 1)
+	assert.Len(t, sink.SteerResolutions(), 1)
 }
 
 // A drop of a steer that LeapMux did not send states itself too.
@@ -365,7 +388,7 @@ func TestADeliveredSteerIsForgotten(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(steeredEvent(2, "Also this."))
 	assert.Zero(t, openSteers(a))
 	writeTurnRecord(t, a, [2]string{itemStatusQueued, "Also this."})
@@ -378,19 +401,22 @@ func TestASteerThatItsTurnNeverCommittedIsHandedBackAtTheTurnEnd(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
 	acceptSteers(rt)
-	a, sink := newSteeringAgent(t, rt)
+	var sink *agenttest.ControlSink
+	var lifecycleAtDrop []string
+	a, sink := newSteeringAgent(t, rt, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+		return &codewhaleSteerOrderSink{ProviderServices: inner, record: func() {
+			lifecycleAtDrop = sink.TurnLifecycle()
+		}}
+	}})
 
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	writeTurnRecord(t, a, [2]string{itemStatusCompleted, "Do it."}, [2]string{itemStatusCanceled, "Also this."})
 	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusInterrupted))
 
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeDropped)}, sink.SteerResolutions())
 	assert.Empty(t, sink.RequeuedInputs())
-	lifecycle := sink.TurnLifecycle()
-	requeued := slices.Index(lifecycle, "steer-dropped:1")
-	ended := slices.Index(lifecycle, "turn_active:false")
-	require.GreaterOrEqual(t, requeued, 0, lifecycle)
-	assert.Less(t, requeued, ended, lifecycle)
+	assert.Equal(t, []string{"turn_active:true"}, lifecycleAtDrop)
+	assert.Contains(t, sink.TurnLifecycle(), "turn_active:false")
 	last, _ := sink.LastTurnActive()
 	assert.False(t, last)
 	assert.Zero(t, openSteers(a))
@@ -400,7 +426,23 @@ func TestASteerThatItsTurnNeverCommittedIsHandedBackAtTheTurnEnd(t *testing.T) {
 	a.HandleOutput(turnStartedEvent(3, "turn_next"))
 	a.HandleOutput(runtimeEvent(4, contracts.CodewhaleEventTurnSteerDropped, testTurnID, "item_steer_1", map[string]any{"turn_id": testTurnID, "input": "Also this."}))
 	assert.Zero(t, sink.NotificationCount())
-	assert.Len(t, sink.SteerEchoReports(), 1)
+	assert.Len(t, sink.SteerResolutions(), 1)
+}
+
+type codewhaleSteerOrderSink struct {
+	agent.ProviderServices
+	record func()
+}
+
+func (s *codewhaleSteerOrderSink) CaptureSteerResolution(resolution agent.SteerResolution) func() error {
+	write := s.ProviderServices.CaptureSteerResolution(resolution)
+	return func() error {
+		if err := write(); err != nil {
+			return err
+		}
+		s.record()
+		return nil
+	}
 }
 
 // Two steers with one text: the record decides how many the model read.
@@ -410,12 +452,15 @@ func TestTheTurnEndCountsSteersOfOneText(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 
-	require.NoError(t, a.SteerInput("Again.", nil))
-	require.NoError(t, a.SteerInput("Again.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Again.")))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(2, "Again.")))
 	writeTurnRecord(t, a, [2]string{itemStatusCompleted, "Again."}, [2]string{itemStatusCanceled, "Again."})
 	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusFailed))
 
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}, {Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", ""), testCodewhaleReport(2, agent.SteerOutcomeDropped)}, sink.SteerResolutions())
+	assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+		testCodewhaleEcho(1, "item_steer_1", "").Receipt: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+	}, sink.NativeReplyRetirements())
 	assert.Empty(t, sink.RequeuedInputs())
 	assert.Zero(t, openSteers(a))
 }
@@ -427,15 +472,15 @@ func TestASteerThatTheRecordDoesNotProveBecomesUncertain(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusInterrupted))
 	assert.Empty(t, sink.RequeuedInputs())
 	assert.Zero(t, openSteers(a))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeUncertain)}, sink.SteerResolutions())
 
 	a.HandleOutput(steerDroppedEvent(3, "Also this."))
 	assert.Empty(t, sink.RequeuedInputs())
-	assert.Len(t, sink.SteerEchoReports(), 1)
+	assert.Len(t, sink.SteerResolutions(), 1)
 	assert.Zero(t, sink.NotificationCount())
 }
 
@@ -448,12 +493,12 @@ func TestAnExitHandsBackTheSteersThatTheRecordStatesUndelivered(t *testing.T) {
 	rt.respondJSON(http.MethodPost, turnPath(testThreadID, testTurnID, turnRouteInterrupt), http.StatusOK, map[string]any{"id": testTurnID})
 	a, sink := newSteeringAgent(t, rt)
 
-	require.NoError(t, a.SteerInput("Also this.", nil))
-	require.NoError(t, a.SteerInput("And this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(2, "And this.")))
 	writeTurnRecord(t, a, [2]string{itemStatusCanceled, "Also this."})
 	a.Stop()
 
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}, {Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeDropped), testCodewhaleReport(2, agent.SteerOutcomeUncertain)}, sink.SteerResolutions())
 	assert.Empty(t, sink.RequeuedInputs(), "an unproved steer must not be sent twice")
 	assert.Zero(t, openSteers(a))
 }
@@ -467,7 +512,7 @@ func TestADiscardedProcessHandsNothingBack(t *testing.T) {
 	rt.respondJSON(http.MethodPost, turnPath(testThreadID, testTurnID, turnRouteInterrupt), http.StatusOK, map[string]any{"id": testTurnID})
 	a, sink := newSteeringAgent(t, rt)
 
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	writeTurnRecord(t, a, [2]string{itemStatusQueued, "Also this."})
 	a.DiscardOutput()
 	a.Stop()
@@ -517,12 +562,12 @@ func TestCodewhaleSteerRowWaitsForTheNativeEcho(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	writeTurnRecord(t, a)
-	require.NoError(t, a.SteerInput("Also this.", nil))
-	assert.Empty(t, sink.SteerEchoReports())
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
+	assert.Empty(t, sink.SteerResolutions())
 	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemCompleted, "answer", contracts.CodewhaleItemKindAgentMessage, "The preceding answer.", nil))
 	require.Len(t, sink.Messages(), 1)
 	a.HandleOutput(steeredEvent(3, "Also this."))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 	assert.Empty(t, sink.RequeuedInputs())
 }
 
@@ -532,24 +577,24 @@ func TestCodewhaleSteerDropReturnsTheHeldInput(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	writeTurnRecord(t, a)
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(steerDroppedEvent(2, "Also this."))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeDropped)}, sink.SteerResolutions())
 	assert.Empty(t, sink.RequeuedInputs(), "the shared queue already owns the input")
 }
 
-func TestCodewhaleSteerReportsFollowSendOrder(t *testing.T) {
+func TestCodewhaleSteerResolvesTheNativeDispatchBeforeAnEarlierEcho(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	writeTurnRecord(t, a)
-	require.NoError(t, a.SteerInput("First.", nil))
-	require.NoError(t, a.SteerInput("Second.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "First.")))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(2, "Second.")))
 	a.HandleOutput(runtimeEvent(2, contracts.CodewhaleEventTurnSteerDropped, testTurnID, "item_steer_2", map[string]any{"turn_id": testTurnID, "input": "Second."}))
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(2, agent.SteerOutcomeDropped)}, sink.SteerResolutions())
 	a.HandleOutput(steeredEvent(3, "First."))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}, {Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(2, agent.SteerOutcomeDropped), testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 }
 
 func TestCodewhaleRepeatedReceiptCannotResolveAnIdenticalInput(t *testing.T) {
@@ -557,14 +602,14 @@ func TestCodewhaleRepeatedReceiptCannotResolveAnIdenticalInput(t *testing.T) {
 	rt := newFakeRuntime(t)
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
-	require.NoError(t, a.SteerInput("Again.", nil))
-	require.NoError(t, a.SteerInput("Again.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Again.")))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(2, "Again.")))
 	a.HandleOutput(steeredEvent(2, "Again."))
 	a.HandleOutput(steeredEvent(3, "Again."))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 	assert.Equal(t, 1, openSteers(a))
 	a.HandleOutput(runtimeEvent(4, contracts.CodewhaleEventTurnSteerDropped, testTurnID, "item_steer_2", map[string]any{"turn_id": testTurnID, "input": "Again."}))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}, {Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID), testCodewhaleReport(2, agent.SteerOutcomeDropped)}, sink.SteerResolutions())
 }
 
 func TestCodewhaleUnreadableSteerRecordProvesNoOutcome(t *testing.T) {
@@ -574,7 +619,7 @@ func TestCodewhaleUnreadableSteerRecordProvesNoOutcome(t *testing.T) {
 			rt := newFakeRuntime(t)
 			acceptSteers(rt)
 			a, sink := newSteeringAgent(t, rt)
-			require.NoError(t, a.SteerInput("Again.", nil))
+			require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Again.")))
 			path := filepath.Join(a.store.runtimeDir(), "items", "item_steer_1.json")
 			if content == "" {
 				require.NoError(t, os.Remove(path))
@@ -582,7 +627,7 @@ func TestCodewhaleUnreadableSteerRecordProvesNoOutcome(t *testing.T) {
 				require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 			}
 			a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusCompleted))
-			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+			assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeUncertain)}, sink.SteerResolutions())
 			assert.Empty(t, sink.RequeuedInputs())
 		})
 	}
@@ -594,19 +639,19 @@ func TestCodewhaleDiscardDropsAHeldEcho(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "answer", contracts.CodewhaleItemKindAgentMessage, "", nil))
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(steeredEvent(3, "Also this."))
-	require.Empty(t, sink.SteerEchoReports())
+	require.Empty(t, sink.SteerResolutions())
 	a.DiscardOutput()
 	a.finishAfterExit(agent.MessageCompletionInterrupted)
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	assert.Zero(t, openSteers(a))
 }
 
 func TestCodewhaleOnlyTheCurrentSteerCallReleasesTheTurnEnd(t *testing.T) {
 	t.Parallel()
 	a, sink := newSteeringAgent(t, nil)
-	current := a.steers.begin(testTurnID, "Current.", nil, false)
+	current := a.steers.begin(testCodewhaleSubmission(1), "Current.", nil, false)
 	a.steerCall = current
 	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusCompleted))
 	a.finishSteerCall(&steerTicket{})
@@ -623,12 +668,12 @@ func TestCodewhaleSteerRecoveryRejectsAnOlderIdenticalMessage(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	writeTurnRecord(t, a, [2]string{itemStatusCompleted, "Again."})
-	require.NoError(t, a.SteerInput("Again.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Again.")))
 	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusCompleted))
 	assert.Zero(t, openSteers(a))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports(), "an old message cannot prove the new steer was read")
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeUncertain)}, sink.SteerResolutions(), "an old message cannot prove the new steer was read")
 	a.finishAfterExit(agent.MessageCompletionComplete)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeUncertain)}, sink.SteerResolutions())
 }
 
 func TestCodewhaleQueuedRecordDoesNotProveARejection(t *testing.T) {
@@ -637,14 +682,14 @@ func TestCodewhaleQueuedRecordDoesNotProveARejection(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	writeTurnRecord(t, a)
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	writeTurnRecord(t, a, [2]string{itemStatusQueued, "Also this."})
 	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusCompleted))
 	assert.Zero(t, openSteers(a))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeUncertain)}, sink.SteerResolutions())
 	assert.Empty(t, sink.RequeuedInputs())
 	a.HandleOutput(steeredEvent(3, "Also this."))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeUncertain, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleReport(1, agent.SteerOutcomeUncertain)}, sink.SteerResolutions())
 }
 
 func TestCodewhaleTurnEndWaitsForThePendingSteerReply(t *testing.T) {
@@ -665,7 +710,7 @@ func TestCodewhaleTurnEndWaitsForThePendingSteerReply(t *testing.T) {
 		writeFakeJSON(w, http.StatusOK, map[string]any{"id": testTurnID, "status": "in_progress"})
 	})
 	result := make(chan error, 1)
-	go func() { result <- a.SteerInput("Also this.", nil) }()
+	go func() { result <- a.SteerInput(testCodewhaleSteer(1, "Also this.")) }()
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-entered:
@@ -677,7 +722,7 @@ func TestCodewhaleTurnEndWaitsForThePendingSteerReply(t *testing.T) {
 	a.HandleOutput(runtimeEvent(4, contracts.CodewhaleEventItemCompleted, "next-turn", "next-item", map[string]any{"item": map[string]any{"id": "next-item", "turn_id": "next-turn", "kind": contracts.CodewhaleItemKindAgentMessage, "detail": "The next answer."}}))
 	assert.Empty(t, sink.Messages(), "the final row and later output wait for the steer request")
 	a.HandleOutput(steeredEvent(5, "Also this."))
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 	unblock()
 	select {
 	case err := <-result:
@@ -696,21 +741,37 @@ func TestCodewhaleEchoWaitsForThePrecedingGeneratedItem(t *testing.T) {
 	rt := newFakeRuntime(t)
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
+	a.beginCodewhaleReplyStart()
+	a.finishCodewhaleReplyStart(codewhaleInputReceipt(testThreadID, testTurnID))
 	// The native trace reports turn.steered before the preceding item.completed.
 	// Source: .tmp/probe/codewhale/logs/runtime-events.jsonl, frames 25-42.
 	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "answer", contracts.CodewhaleItemKindAgentMessage, "", nil))
 	a.HandleOutput(runtimeEvent(3, eventItemDelta, testTurnID, "answer", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "HEAD "}))
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(runtimeEvent(4, eventItemDelta, testTurnID, "answer", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "TAIL"}))
 	a.HandleOutput(steeredEvent(5, "Also this."))
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	assert.Empty(t, sink.Messages(), "the echo must not split the native answer")
 	final := itemEvent(6, contracts.CodewhaleEventItemCompleted, "answer", contracts.CodewhaleItemKindAgentMessage, "HEAD TAIL", nil)
 	a.HandleOutput(final)
 	rows := sink.Messages()
 	require.Len(t, rows, 1)
 	assert.Equal(t, final, rows[0].Content)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
+	a.HandleOutput(itemEvent(7, contracts.CodewhaleEventItemCompleted, "later", contracts.CodewhaleItemKindAgentMessage, "After the steer.", nil))
+	a.HandleOutput(turnCompletedEvent(8, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	assert.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: testThreadID, TurnID: testTurnID,
+		Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs: []agent.NativeReplyBoundary{
+			{InputID: testTurnID, AfterOrdinal: 1},
+			{InputID: "item_steer_1", AfterOrdinal: 2},
+		},
+		Items: []agent.NativeReplyItem{
+			{Ordinal: 2, MessageKey: codewhaleReplyMessageKey(testTurnID, "answer")},
+			{Ordinal: 3, MessageKey: codewhaleReplyMessageKey(testTurnID, "later")},
+		},
+	}}, sink.NativeReplyTurns())
 }
 
 func TestCodewhaleEchoWaitsForThePrecedingToolResult(t *testing.T) {
@@ -719,14 +780,14 @@ func TestCodewhaleEchoWaitsForThePrecedingToolResult(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	a.HandleOutput(toolStartEvent(2, "tool-item", "tool-call", contracts.CodewhaleToolBash, map[string]any{"command": "printf done"}))
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(steeredEvent(3, "Also this."))
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	a.HandleOutput(toolEndEvent(4, contracts.CodewhaleEventItemCompleted, "tool-item", "tool-call", contracts.CodewhaleToolBash, "done", map[string]any{"command": "printf done"}, nil))
 	rows := sink.Messages()
 	require.Len(t, rows, 2)
 	assert.True(t, rows[1].Closing)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 }
 
 func TestCodewhaleEchoWaitsForAFailedPrecedingWrite(t *testing.T) {
@@ -739,19 +800,19 @@ func TestCodewhaleEchoWaitsForAFailedPrecedingWrite(t *testing.T) {
 		return blocked
 	}})
 	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "answer", contracts.CodewhaleItemKindAgentMessage, "", nil))
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(steeredEvent(3, "Also this."))
 	blocked.blocked.Store(true)
 	final := itemEvent(4, contracts.CodewhaleEventItemCompleted, "answer", contracts.CodewhaleItemKindAgentMessage, "The complete answer.", nil)
 	a.HandleOutput(final)
 	assert.Empty(t, sink.Messages())
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	blocked.blocked.Store(false)
 	require.NoError(t, agent.FlushPendingOutput(a.sink))
 	rows := sink.Messages()
 	require.Len(t, rows, 1)
 	assert.Equal(t, final, rows[0].Content)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 }
 
 func TestCodewhaleEchoReleasesAfterAnAbandonedPredecessor(t *testing.T) {
@@ -763,14 +824,14 @@ func TestCodewhaleEchoReleasesAfterAnAbandonedPredecessor(t *testing.T) {
 			a, sink := newSteeringAgent(t, rt)
 			a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "old", kind, "", nil))
 			a.HandleOutput(runtimeEvent(3, eventItemDelta, testTurnID, "old", map[string]any{"kind": kind, "delta": "DISCARDED-ATTEMPT"}))
-			require.NoError(t, a.SteerInput("Also this.", nil))
+			require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 			a.HandleOutput(steeredEvent(4, "Also this."))
-			assert.Empty(t, sink.SteerEchoReports())
+			assert.Empty(t, sink.SteerResolutions())
 			if kind == contracts.CodewhaleItemKindAgentReasoning {
 				a.HandleOutput(requestSnapshotEvent(5, 1, false))
 			}
 			a.HandleOutput(itemEvent(6, contracts.CodewhaleEventItemStarted, "new", contracts.CodewhaleItemKindAgentMessage, "", nil))
-			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 			a.HandleOutput(itemEvent(7, contracts.CodewhaleEventItemCompleted, "new", contracts.CodewhaleItemKindAgentMessage, "The new answer.", nil))
 			a.HandleOutput(turnCompletedEvent(8, testTurnID, contracts.CodewhaleTurnStatusCompleted))
 			for _, row := range sink.Messages() {
@@ -793,16 +854,16 @@ func TestCodewhaleEchoWaitsThroughARepeatedOrInvalidStart(t *testing.T) {
 			a, sink := newSteeringAgent(t, rt)
 			a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "answer", contracts.CodewhaleItemKindAgentMessage, "", nil))
 			a.HandleOutput(runtimeEvent(3, eventItemDelta, testTurnID, "answer", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "The preceding answer."}))
-			require.NoError(t, a.SteerInput("Also this.", nil))
+			require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 			a.HandleOutput(steeredEvent(4, "Also this."))
 			a.HandleOutput(itemEvent(5, contracts.CodewhaleEventItemStarted, test.id, test.kind, "", nil))
-			assert.Empty(t, sink.SteerEchoReports())
+			assert.Empty(t, sink.SteerResolutions())
 			_, text, present := a.generationBuffer.ScopeSnapshot("answer")
 			assert.True(t, present)
 			assert.Equal(t, "The preceding answer.", text)
 			a.HandleOutput(itemEvent(6, contracts.CodewhaleEventItemCompleted, "answer", contracts.CodewhaleItemKindAgentMessage, "The preceding answer.", nil))
 			assert.Len(t, sink.Messages(), 1)
-			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 		})
 	}
 }
@@ -822,16 +883,16 @@ func TestCodewhaleEchoWaitsForTheCompleteModelRequest(t *testing.T) {
 	a, sink := newSteeringAgent(t, rt)
 	a.HandleOutput(requestSnapshotEvent(2, 0, false))
 	a.HandleOutput(itemEvent(3, contracts.CodewhaleEventItemStarted, "thought", contracts.CodewhaleItemKindAgentReasoning, "", nil))
-	require.NoError(t, a.SteerInput("Also this.", nil))
+	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(steeredEvent(4, "Also this."))
 	a.HandleOutput(itemEvent(5, contracts.CodewhaleEventItemCompleted, "thought", contracts.CodewhaleItemKindAgentReasoning, "The preceding thought.", nil))
-	assert.Empty(t, sink.SteerEchoReports(), "the same request can still produce text")
+	assert.Empty(t, sink.SteerResolutions(), "the same request can still produce text")
 	a.HandleOutput(itemEvent(6, contracts.CodewhaleEventItemStarted, "answer", contracts.CodewhaleItemKindAgentMessage, "", nil))
 	a.HandleOutput(itemEvent(7, contracts.CodewhaleEventItemCompleted, "answer", contracts.CodewhaleItemKindAgentMessage, "The preceding answer.", nil))
-	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, sink.SteerResolutions())
 	a.HandleOutput(requestSnapshotEvent(8, 1, false))
 	require.Len(t, sink.Messages(), 2)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_1", testTurnID)}, sink.SteerResolutions())
 }
 
 func TestCodewhalePreparedRequestDiscardsAbandonedGeneratedKinds(t *testing.T) {

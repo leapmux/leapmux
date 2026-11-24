@@ -3,6 +3,7 @@ package pi
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -86,6 +87,23 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
+	if opts.AgentDirs == nil {
+		cancel()
+		return nil, fmt.Errorf("the Pi provider requires the Worker's private agent directories")
+	}
+	directory, err := opts.AgentDirs.New(ctx, *registration.AgentDir)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	failLaunch := func(err error) (agent.Agent, error) {
+		cancel()
+		return nil, errors.Join(err, directory.Close())
+	}
+	extensionPath, steerBridge, err := writePiSteerBridge(directory.Path())
+	if err != nil {
+		return failLaunch(err)
+	}
 	// Pi has no --working-dir flag (it uses the process cwd). Wrap
 	// already sets cmd.Dir to opts.WorkingDir, so the agent picks up the right
 	// directory implicitly.
@@ -93,12 +111,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     launchSpec,
-		BaseArgs:   append([]string{"--mode", "rpc"}, resumeArgs...),
+		BaseArgs:   append([]string{"--mode", "rpc", "--extension", extensionPath}, resumeArgs...),
 		WorkingDir: opts.WorkingDir,
 	})
 	if err != nil {
-		cancel()
-		return nil, err
+		return failLaunch(err)
 	}
 	cmd := prepared.Cmd
 
@@ -106,7 +123,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
-		return nil, err
+		return failLaunch(err)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
@@ -117,11 +134,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		provider:      cmp.Or(opts.Options[OptionProvider], DefaultProvider),
 		workingDir:    opts.WorkingDir,
 		sink:          sink,
+		directory:     directory,
+		steerBridge:   steerBridge,
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 
 	if err := a.StartCmd(); err != nil {
-		return nil, err
+		return failLaunch(err)
 	}
 	a.DrainStderr(stderrPipe)
 

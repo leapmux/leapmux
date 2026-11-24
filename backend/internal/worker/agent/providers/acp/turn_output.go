@@ -117,14 +117,18 @@ type acpToolUpdateState struct {
 }
 
 type acpTurnSnapshot struct {
+	// answeredPrompt precedes the output that a session drain collected.
+	answeredPrompt                                        *acpTurnSnapshot
 	sessionID                                             string
 	interrupted                                           bool
 	cleanup                                               func()
+	reconciliation                                        func() error
 	cleanupCaptured                                       bool
 	hasPromptBoundary                                     bool
+	textProgressCompleted                                 bool
 	thoughtAdmission, assistantAdmission, endingAdmission *acpTranscriptAdmission
 	rootTargets                                           []*acpTranscriptTarget
-	priorText                                             *agent.CapturedTranscriptBatch
+	textBatch                                             *agent.CapturedTranscriptBatch
 	assistantMessageID                                    string
 	thoughtMessageID                                      string
 	assistantText                                         string

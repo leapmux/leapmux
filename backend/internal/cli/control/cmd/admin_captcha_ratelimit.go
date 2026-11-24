@@ -3,53 +3,32 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 )
 
-// The captcha and rate-limit verbs are client-side convenience wrappers
-// over AdminSettingsService: each composes the partial JSON documents for one
-// or more settings keys. There are no dedicated server RPCs — the settings
-// surface IS the API, and these verbs exist so operators do not have to
-// hand-write the documents.
-//
-// A verb that touches SEVERAL keys uses UpdateSettings, which applies them
-// in one transaction with the cross-key rules run once. A sequence of
-// single-key writes cannot express that: each is validated against the
-// state the previous one left, so the order has to keep every intermediate
-// state legal, and a failure part-way leaves stored state the command
-// reported it never reached.
-
-// updateSettingJSON is the shared body: marshal a value and merge it onto
-// one settings key.
-//
-// The two callers below stay separate one-line entry points on purpose.
-// Collapsing them into a single `any` parameter would erase the
-// compile-time difference between a partial DOCUMENT (a map of field
-// names) and a whole SCALAR value — and that mistake does not fail at the
-// call site, it travels to the hub and comes back as a merge error.
-func updateSettingJSON(c *control.Client, key string, value any) (*leapmuxv1.SettingValue, error) {
+func updateSettingJSON(ctx context.Context, c *control.Client, key string, value any) (*leapmuxv1.SettingValue, error) {
 	doc, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	updated, _, err := updateOneSetting(c, &leapmuxv1.SettingWrite{Key: key, PartialJson: string(doc)})
+	updated, _, err := updateOneSetting(ctx, c, &leapmuxv1.SettingWrite{Key: key, PartialJson: string(doc)})
 	return updated, err
 }
 
-// updateOneSetting sends ONE write through UpdateSettings, the hub's only
-// write verb. It returns the key's resulting value, and whether the hub
-// applies the key only after a restart.
-func updateOneSetting(c *control.Client, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
-	resp, err := c.AdminSettingsService().UpdateSettings(context.Background(), &leapmuxv1.UpdateSettingsRequest{
+func updateOneSetting(ctx context.Context, c *control.Client, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
+	resp, err := c.AdminSettingsService().UpdateSettings(ctx, &leapmuxv1.UpdateSettingsRequest{
 		Writes: []*leapmuxv1.SettingWrite{write},
 	})
 	if err != nil {
@@ -62,11 +41,8 @@ func updateOneSetting(c *control.Client, write *leapmuxv1.SettingWrite) (*leapmu
 	return value, slices.Contains(resp.GetRestartKeys(), write.GetKey()), nil
 }
 
-// resetOneSetting removes ONE key's row through ResetSettings, the hub's only
-// reset verb, and returns the key's resulting value and whether the key is
-// restart-class.
-func resetOneSetting(c *control.Client, key string) (*leapmuxv1.SettingValue, bool, error) {
-	resp, err := c.AdminSettingsService().ResetSettings(context.Background(), &leapmuxv1.ResetSettingsRequest{
+func resetOneSetting(ctx context.Context, c *control.Client, key string) (*leapmuxv1.SettingValue, bool, error) {
+	resp, err := c.AdminSettingsService().ResetSettings(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{key},
 	})
 	if err != nil {
@@ -79,9 +55,6 @@ func resetOneSetting(c *control.Client, key string) (*leapmuxv1.SettingValue, bo
 	return value, slices.Contains(resp.GetRestartKeys(), key), nil
 }
 
-// onlySettingValue reads the one value a single-key request answers. The hub
-// answers one value per listed key, so any other count is a hub fault, and
-// reading index 0 of it would print a value for the wrong key or panic.
 func onlySettingValue(values []*leapmuxv1.SettingValue) (*leapmuxv1.SettingValue, error) {
 	if len(values) != 1 {
 		return nil, fmt.Errorf("the hub answered %d setting values for one key", len(values))
@@ -89,32 +62,14 @@ func onlySettingValue(values []*leapmuxv1.SettingValue) (*leapmuxv1.SettingValue
 	return values[0], nil
 }
 
-// adminUpdateSetting merges one partial document onto one settings key.
-func adminUpdateSetting(c *control.Client, key string, partial map[string]any) (*leapmuxv1.SettingValue, error) {
-	return updateSettingJSON(c, key, partial)
+func adminUpdateSetting(ctx context.Context, c *control.Client, key string, partial map[string]any) (*leapmuxv1.SettingValue, error) {
+	return updateSettingJSON(ctx, c, key, partial)
 }
 
-// adminUpdateSettingScalar writes a scalar key's whole value. The type
-// parameter is what makes the split above real: a map does not satisfy it,
-// so the merge error the comment describes cannot be written here.
-func adminUpdateSettingScalar[T bool | int64 | float64 | string](c *control.Client, key string, value T) (*leapmuxv1.SettingValue, error) {
-	return updateSettingJSON(c, key, value)
+func adminUpdateSettingScalar[T bool | int64 | float64 | string](ctx context.Context, c *control.Client, key string, value T) (*leapmuxv1.SettingValue, error) {
+	return updateSettingJSON(ctx, c, key, value)
 }
 
-// Secrets need no helper of their own, because updateOneSetting takes a
-// whole SettingWrite. `settings set-secret` sends its secret half through
-// it. `captcha set` sends both halves of a row in ONE UpdateSettings write,
-// so a site key and its secret land together or not at all.
-
-// defaultIfZero substitutes a family default for a value the operator
-// passed as 0.
-//
-// An explicit 0 means "restore the default" on every captcha and
-// rate-limit tuning flag, because it is the one spelling an operator can
-// type without first looking the number up. Storing the 0 verbatim
-// answered with the key's own range check -- `captcha cost (PBKDF2
-// iterations) must be between 10000 and 1000000 (got 0)` -- which reads as
-// a refusal of the flag rather than of the value.
 func defaultIfZero[T int64 | float64](passed, def T) T {
 	if passed == 0 {
 		return def
@@ -122,10 +77,6 @@ func defaultIfZero[T int64 | float64](passed, def T) T {
 	return passed
 }
 
-// captchaSettingKeys lists every captcha settings key, taken from the same
-// descriptor list that the hub registers. `captcha show` and `captcha
-// reset` both need the whole set, and deriving it here means a new captcha
-// key reaches both verbs without a second list to keep in step.
 func captchaSettingKeys() []string {
 	descriptors := captcha.SettingsDescriptors()
 	keys := make([]string, 0, len(descriptors))
@@ -135,30 +86,35 @@ func captchaSettingKeys() []string {
 	return keys
 }
 
-func RunAdminCaptchaShow(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
+func newAdminCaptchaShow() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:              "get",
+		Short:            "Show the captcha configuration in effect",
+		QuietUnsupported: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin captcha get"},
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			c, err := requireAdminClient(inv)
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
+			}
+			resp, err := c.AdminSettingsService().ListSettings(inv.Context, &leapmuxv1.ListSettingsRequest{})
+			if err != nil {
+				return nil, err
 			}
 			wanted := captchaSettingKeys()
-			values := map[string]any{}
+			values := make(map[string]adminSettingRow)
 			for _, v := range resp.GetValues() {
 				if slices.Contains(wanted, v.GetKey()) {
-					values[v.GetKey()] = settingValueJSON(v)
+					values[v.GetKey()] = adminSettingRowOf(v)
 				}
 			}
-			return control.EmitData(values)
+			return values, nil
 		},
 	})
 }
 
-// captchaFlagProviders restricts each tuning flag to the providers that
-// own it. A flag whose owner is not the target is refused, never applied
-// to a different key and never dropped: a cost meant for ALTCHA must not
-// reach Turnstile, and a site key meant for Turnstile must not vanish
-// under ALTCHA.
 var captchaFlagProviders = map[string][]string{
 	"algorithm":   {captcha.ProviderAlias(captcha.ProviderAltcha)},
 	"cost":        {captcha.ProviderAlias(captcha.ProviderAltcha)},
@@ -170,50 +126,34 @@ var captchaFlagProviders = map[string][]string{
 	"secret":      {captcha.ProviderAlias(captcha.ProviderRecaptchaV3), captcha.ProviderAlias(captcha.ProviderTurnstile)},
 }
 
-// refuseProviderForeignFlags rejects each passed flag whose owning
-// provider is not the target. Refusing beats ignoring: a cost meant for
-// ALTCHA silently dropped under Turnstile, and a secret meant for
-// Turnstile silently REWROTE the ALTCHA signing key, which fails every
-// challenge already issued to a browser.
-func refuseProviderForeignFlags(a adminArgs, target captcha.Provider) error {
+func refuseProviderForeignFlags(inv *cli.Invocation, target captcha.Provider) error {
 	alias := captcha.ProviderAlias(target)
 	for _, name := range slices.Sorted(maps.Keys(captchaFlagProviders)) {
-		if !a.Passed(name) || slices.Contains(captchaFlagProviders[name], alias) {
+		if !inv.Changed(name) || slices.Contains(captchaFlagProviders[name], alias) {
 			continue
 		}
-		return control.EmitError("invalid_request", fmt.Sprintf(
+		return cli.Usagef(
 			"--%s applies only to %s; the target provider is %s",
-			name, strings.Join(captchaFlagProviders[name], " and "), alias))
+			name, strings.Join(captchaFlagProviders[name], " and "), alias)
 	}
 	return nil
 }
 
-// captchaState is one read of the hub's captcha configuration: which
-// provider is selected, which of the external providers already hold a
-// complete key pair, and which ALTCHA algorithm family is stored.
-//
-// They travel together because `captcha set` needs all three before it
-// writes anything — see its own refusal, and the zero-restores-the-default
-// substitution — and one ListSettings answers every question.
 type captchaState struct {
-	selected captcha.Provider
-	// siteKeySet and secretSet report, per provider key, whether the
-	// stored row already carries that half.
-	siteKeySet map[string]bool
-	secretSet  map[string]bool
-	// altchaAlgorithm is the stored ALTCHA family. A tuning flag passed as
-	// 0 restores the default, and the defaults belong to the family.
+	selected        captcha.Provider
+	siteKeySet      map[string]bool
+	secretSet       map[string]bool
 	altchaAlgorithm string
 }
 
-func readCaptchaState(c *control.Client) (captchaState, error) {
+func readCaptchaState(ctx context.Context, c *control.Client) (captchaState, error) {
 	out := captchaState{
 		selected:        captcha.ProviderAltcha,
 		siteKeySet:      map[string]bool{},
 		secretSet:       map[string]bool{},
 		altchaAlgorithm: captcha.DefaultAltchaSettings().Algorithm,
 	}
-	resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
+	resp, err := c.AdminSettingsService().ListSettings(ctx, &leapmuxv1.ListSettingsRequest{})
 	if err != nil {
 		return out, err
 	}
@@ -232,18 +172,12 @@ func readCaptchaState(c *control.Client) (captchaState, error) {
 			found = true
 			continue
 		}
-		// ANY stored secret field counts, because each provider uses its
-		// own: ALTCHA signs with `hmac_key` and the external providers
-		// verify with `secret_key`. Asking for one field name reported
-		// ALTCHA as unconfigured whatever it held.
 		for _, set := range v.GetSecretSet() {
 			if set {
 				out.secretSet[v.GetKey()] = true
 				break
 			}
 		}
-		// A scalar key (captcha.enabled) decodes into neither field, so a
-		// decode failure is expected and simply leaves the row unreported.
 		var row struct {
 			SiteKey   string `json:"site_key"`
 			Algorithm string `json:"algorithm"`
@@ -257,154 +191,117 @@ func readCaptchaState(c *control.Client) (captchaState, error) {
 		}
 	}
 	if !found {
-		// A hub that does not report the key at all (solo mode omits every
-		// captcha key) has no selection to tune.
 		return out, fmt.Errorf("this hub reports no captcha configuration")
 	}
 	return out, nil
 }
 
-// RunAdminCaptchaSet implements `control admin captcha set`. The
-// provider selection and the enable switch travel in the public half; each
-// provider's secret travels in the secret half.
-//
-// The provider's row, its secret, and the selection travel in ONE
-// UpdateSettings. The hub merges every key first and runs the cross-key
-// rule (SelectedConfigured) ONCE over the whole result, so the order of the
-// writes below carries no meaning; UpdateMany sorts them by key name to
-// take the row locks in one canonical order.
-func RunAdminCaptchaSet(rawCtx any, args []string) error {
+// newAdminCaptchaSet builds `admin captcha set`.
+func newAdminCaptchaSet() *cobra.Command {
 	var provider, algorithm, siteKey, secret string
 	var minScore float64
 	var cost, memoryCost, parallelism, expires int64
-	// An explicit --provider settles the target without asking the hub, so
-	// BeforeDial can check every provider-owned flag: a typo answers with
-	// the typo, not with a connection error.
-	var explicitTarget *captcha.Provider
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&provider, "provider", "", "provider alias (altcha, recaptcha_v3, turnstile); omit to tune the active provider")
+	return cli.NewLeaf(cli.Leaf{
+		Use:              "set",
+		Short:            "Change the captcha settings, or switch the provider",
+		Mutates:          true,
+		QuietUnsupported: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin captcha set --provider turnstile --site-key 0x4AAA --secret s3cr3t"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			fs.StringVar(&provider, "provider", "", "provider alias; omit to tune the active provider")
+			cli.SetEnum(fs, "provider", captcha.SupportedProviders()...)
+			cli.SetFlagGroup(fs, "provider", "Provider")
+
 			fs.StringVar(&algorithm, "algorithm", "", "ALTCHA algorithm")
+			cli.SetEnum(fs, "algorithm", captcha.SupportedAltchaAlgorithms()...)
 			fs.Int64Var(&cost, "cost", 0, "algorithm cost parameter; 0 restores the default")
 			fs.Int64Var(&memoryCost, "memory-cost", 0, "algorithm memory cost; 0 restores the default")
 			fs.Int64Var(&parallelism, "parallelism", 0, "algorithm parallelism; 0 restores the default")
 			fs.Int64Var(&expires, "expires", 0, "challenge expiry seconds; 0 restores the default")
+			for _, name := range []string{"algorithm", "cost", "memory-cost", "parallelism", "expires"} {
+				cli.SetFlagGroup(fs, name, "ALTCHA")
+			}
+
 			fs.StringVar(&siteKey, "site-key", "", "provider site key")
 			fs.StringVar(&secret, "secret", "", "provider secret (stored encrypted)")
 			fs.Float64Var(&minScore, "min-score", 0, "recaptcha_v3 minimum score (0 < v <= 1); 0 restores the default")
+			for _, name := range []string{"site-key", "secret", "min-score"} {
+				cli.SetFlagGroup(fs, name, "External Providers")
+			}
 		},
-		BeforeDial: func(a adminArgs) error {
-			// --hub selects the hub; it changes nothing, so an invocation
-			// that carries it alone is still an empty one.
-			if !a.AnyPassed() {
-				return control.EmitError("invalid_request", "nothing to set (pass --provider or a tuning flag)")
+		Run: func(inv *cli.Invocation) (any, error) {
+			if !anyLocalFlagChanged(inv) {
+				return nil, cli.Usagef("nothing to set (pass --provider or a tuning flag)")
 			}
-			// Neither half of a key pair may be passed empty. An empty
-			// secret fails every verification, and an empty site key both
-			// fails verification and defeats the completeness check below —
-			// which asks whether the flag was PASSED, so `--site-key ""`
-			// would satisfy it and still store nothing usable.
-			if a.Passed("secret") && secret == "" {
-				return control.EmitError("invalid_request", "--secret must not be empty; an empty secret fails every verification")
+			if inv.Changed("secret") && secret == "" {
+				return nil, cli.Usagef("--secret must not be empty; an empty secret fails every verification")
 			}
-			if a.Passed("site-key") && siteKey == "" {
-				return control.EmitError("invalid_request", "--site-key must not be empty; an empty site key fails every verification")
+			if inv.Changed("site-key") && siteKey == "" {
+				return nil, cli.Usagef("--site-key must not be empty; an empty site key fails every verification")
 			}
-			if a.Passed("algorithm") {
+			if inv.Changed("algorithm") {
 				if err := captcha.ValidateAltchaAlgorithm(algorithm); err != nil {
-					return control.EmitErrorWith("invalid_request", err)
+					return nil, cli.Wrap(cli.CodeUsage, err, "")
 				}
 			}
-			if !a.Passed("provider") {
-				return nil
+			var explicitTarget *captcha.Provider
+			if inv.Changed("provider") {
+				p, err := captcha.ParseProvider(provider)
+				if err != nil {
+					return nil, cli.Wrap(cli.CodeUsage, err, "")
+				}
+				if err := refuseProviderForeignFlags(inv, p); err != nil {
+					return nil, err
+				}
+				explicitTarget = &p
 			}
-			p, err := captcha.ParseProvider(provider)
+			c, err := requireAdminClient(inv)
 			if err != nil {
-				return control.EmitErrorWith("invalid_request", err)
+				return nil, err
 			}
-			if err := refuseProviderForeignFlags(a, p); err != nil {
-				return err
-			}
-			explicitTarget = &p
-			return nil
-		},
-		Run: func(c *control.Client, a adminArgs) error {
-			state, err := readCaptchaState(c)
+			state, err := readCaptchaState(inv.Context, c)
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
 			current := state.selected
 			target := current
 			if explicitTarget != nil {
 				target = *explicitTarget
 			}
-			// ONE statement of the rule, over the settled target. The
-			// pre-dial call in BeforeDial is the early answer for an
-			// explicit --provider; this one covers the target the hub
-			// resolved, and the check is a pure predicate, so running it
-			// twice costs nothing and changes nothing.
-			if err := refuseProviderForeignFlags(a, target); err != nil {
-				return err
+			if err := refuseProviderForeignFlags(inv, target); err != nil {
+				return nil, err
 			}
 			switching := target != current
 
-			// The stored row must already hold every half this invocation
-			// does not pass. The hub refuses the same state, but it answers
-			// with the KEY -- not with the flags the operator has to add --
-			// and only after the write travelled. ALTCHA is exempt: its
-			// row self-provisions on first use.
 			if target != captcha.ProviderAltcha {
 				row := captcha.DescriptorFor(target).Name()
 				var missing, flags []string
-				if !a.Passed("site-key") && !state.siteKeySet[row] {
+				if !inv.Changed("site-key") && !state.siteKeySet[row] {
 					missing, flags = append(missing, "site key"), append(flags, "--site-key")
 				}
-				if !a.Passed("secret") && !state.secretSet[row] {
+				if !inv.Changed("secret") && !state.secretSet[row] {
 					missing, flags = append(missing, "secret"), append(flags, "--secret")
 				}
 				if len(missing) > 0 {
-					return control.EmitError("invalid_request", fmt.Sprintf(
+					return nil, cli.Usagef(
 						"%s has no stored %s; pass %s in this invocation",
 						captcha.ProviderAlias(target),
-						strings.Join(missing, " and "), strings.Join(flags, " and ")))
+						strings.Join(missing, " and "), strings.Join(flags, " and "))
 				}
 			}
 
-			// A tuning flag passed as 0 restores the default of the family
-			// this invocation LEAVES IN PLACE: the one --algorithm specifies
-			// when the operator passes it, and the stored one otherwise.
 			alg := state.altchaAlgorithm
-			if a.Passed("algorithm") {
+			if inv.Changed("algorithm") {
 				alg = algorithm
 			}
 			family, err := captcha.DefaultAltchaSettingsFor(alg)
 			if err != nil {
-				// Only a STORED algorithm can fail here, because BeforeDial
-				// already refused a passed one this build cannot derive
-				// with. Reporting the stored value is the hub's job, so fall
-				// back to the shared defaults and let a passed 0 restore a
-				// legal value.
 				family = captcha.DefaultAltchaSettings()
 			}
 
-			// ONE atomic write. Every key this invocation touches travels
-			// in a single UpdateSettings, so the hub merges them all,
-			// validates the cross-key rules ONCE over the whole result,
-			// and stores them in one transaction.
-			//
-			// A sequence of single-key writes could not do this. Each write
-			// was validated against the state the previous one left, so somebody
-			// had to choose an order that kept every intermediate state legal
-			// — and a failure part-way left the hub in a state the command
-			// reported it never reached. Re-keying the SELECTED provider
-			// was the worst of it: a new site key could go live beside the
-			// old secret, failing every verification.
 			writes := []*leapmuxv1.SettingWrite{}
-			// addWrite takes already-marshalled halves, because the two
-			// shapes are not interchangeable: an OBJECT-shaped key takes a
-			// map of field names, and a SCALAR key takes the bare value.
-			// Passing a map for a scalar produces `{"": v}`, which the
-			// key's typed decode refuses.
 			addWrite := func(key string, public, secret json.RawMessage) {
 				if len(public) == 0 && len(secret) == 0 {
 					return
@@ -417,39 +314,30 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			}
 			marshal := func(v any) (json.RawMessage, error) { return json.Marshal(v) }
 
-			// The target provider's row: both halves in ONE write, so a
-			// site key and its secret land together or not at all.
 			doc := map[string]any{}
-			if a.Passed("algorithm") {
-				// Only the algorithm travels. The key's own reconciler
-				// (captcha.normalizeAltchaFamily, run inside the partial
-				// merge) resets the family-specific parameters, so every
-				// client gets the same behaviour and an explicit flag below
-				// still wins.
+			if inv.Changed("algorithm") {
 				doc["algorithm"] = algorithm
 			}
-			if a.Passed("cost") {
+			if inv.Changed("cost") {
 				doc["cost"] = defaultIfZero(cost, family.Cost)
 			}
-			if a.Passed("memory-cost") {
-				// The PBKDF2 and SHA families really do default to 0 here,
-				// so this substitution stores 0 for them.
+			if inv.Changed("memory-cost") {
 				doc["memory_cost"] = defaultIfZero(memoryCost, family.MemoryCost)
 			}
-			if a.Passed("parallelism") {
+			if inv.Changed("parallelism") {
 				doc["parallelism"] = defaultIfZero(parallelism, family.Parallelism)
 			}
-			if a.Passed("expires") {
+			if inv.Changed("expires") {
 				doc["challenge_expiry_seconds"] = defaultIfZero(expires, captcha.DefaultAltchaSettings().ChallengeExpirySeconds)
 			}
-			if a.Passed("site-key") {
+			if inv.Changed("site-key") {
 				doc["site_key"] = siteKey
 			}
-			if a.Passed("min-score") {
+			if inv.Changed("min-score") {
 				doc["min_score"] = defaultIfZero(minScore, captcha.DefaultRecaptchaV3Settings().MinScore)
 			}
 			secretDoc := map[string]any{}
-			if a.Passed("secret") {
+			if inv.Changed("secret") {
 				secretField := "secret_key"
 				if target == captcha.ProviderAltcha {
 					secretField = "hmac_key"
@@ -459,255 +347,273 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 			var publicJSON, secretJSON json.RawMessage
 			if len(doc) > 0 {
 				if publicJSON, err = marshal(doc); err != nil {
-					return control.EmitErrorWith("captcha_set_failed", err)
+					return nil, err
 				}
 			}
 			if len(secretDoc) > 0 {
 				if secretJSON, err = marshal(secretDoc); err != nil {
-					return control.EmitErrorWith("captcha_set_failed", err)
+					return nil, err
 				}
 			}
 			addWrite(captcha.DescriptorFor(target).Name(), publicJSON, secretJSON)
 
-			// The selection, and with it the enable switch. Choosing a
-			// provider means running it: a switch re-enables verification,
-			// so a hub disabled for debugging does not silently stay
-			// undefended through a provider change. In-place tuning leaves
-			// the switch alone.
 			if switching {
 				alias, err := marshal(captcha.ProviderAlias(target))
 				if err != nil {
-					return control.EmitErrorWith("captcha_set_failed", err)
+					return nil, err
 				}
 				enabled, err := marshal(true)
 				if err != nil {
-					return control.EmitErrorWith("captcha_set_failed", err)
+					return nil, err
 				}
 				addWrite(captcha.CaptchaSelectedKey.Name(), alias, nil)
 				addWrite(captcha.CaptchaEnabledKey.Name(), enabled, nil)
 			}
 			if len(writes) == 0 {
-				return control.EmitError("invalid_request", "nothing to set (pass --provider or a tuning flag)")
+				return nil, cli.Usagef("nothing to set (pass --provider or a tuning flag)")
 			}
-			if _, err := c.AdminSettingsService().UpdateSettings(context.Background(),
+			if _, err := c.AdminSettingsService().UpdateSettings(inv.Context,
 				&leapmuxv1.UpdateSettingsRequest{Writes: writes}); err != nil {
-				return control.EmitErrorWith("captcha_set_failed", err)
+				return nil, err
 			}
-			return control.EmitData(map[string]any{
-				"updated":   true,
-				"provider":  captcha.ProviderAlias(target),
-				"activated": switching,
-			})
+			return struct {
+				Updated   bool   `json:"updated"`
+				Provider  string `json:"provider"`
+				Activated bool   `json:"activated"`
+			}{Updated: true, Provider: captcha.ProviderAlias(target), Activated: switching}, nil
 		},
 	})
 }
 
-// RunAdminCaptchaSetEnabled implements `control admin captcha enable|disable`.
-func RunAdminCaptchaSetEnabled(rawCtx any, args []string, enabled bool) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := adminUpdateSettingScalar(c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
-				return control.EmitErrorWith("captcha_set_failed", err)
-			}
-			return control.EmitData(map[string]any{captcha.CaptchaEnabledKey.Name(): enabled})
-		},
-	})
-}
-
-// RunAdminCaptchaReset implements `control admin captcha reset
-// [--provider X]` — omit the flag to reset every captcha key.
-func RunAdminCaptchaReset(rawCtx any, args []string) error {
-	var provider string
-	var target *captcha.Provider
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&provider, "provider", "", "reset one provider's row (omit = all captcha settings)")
-		},
-		BeforeDial: func(adminArgs) error {
-			if provider == "" {
-				return nil
-			}
-			p, err := captcha.ParseProvider(provider)
+func newAdminCaptchaSetEnabled(enabled bool, use, short string, examples []cli.Example) *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:              use,
+		Short:            short,
+		Examples:         examples,
+		Mutates:          true,
+		QuietUnsupported: true,
+		Run: func(inv *cli.Invocation) (any, error) {
+			c, err := requireAdminClient(inv)
 			if err != nil {
-				return control.EmitErrorWith("invalid_request", err)
+				return nil, err
 			}
-			target = &p
-			return nil
+			if _, err := adminUpdateSettingScalar(inv.Context, c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
+				return nil, err
+			}
+			return map[string]bool{captcha.CaptchaEnabledKey.Name(): enabled}, nil
 		},
-		Run: func(c *control.Client, _ adminArgs) error {
+	})
+}
+
+type adminCaptchaResetResult struct {
+	Reset []string `json:"reset"`
+}
+
+func (r adminCaptchaResetResult) QuietLines() []string { return r.Reset }
+
+func newAdminCaptchaReset() *cobra.Command {
+	var provider string
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "reset",
+		Short:       "Restore the captcha defaults of every provider, or of one",
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin captcha reset"},
+			{Comment: "Reset one provider.", Command: "leapmux admin captcha reset --provider altcha"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			fs.StringVar(&provider, "provider", "", "reset one provider's row (omit = all captcha settings)")
+			cli.SetEnum(fs, "provider", captcha.SupportedProviders()...)
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			var target *captcha.Provider
+			if provider != "" {
+				p, err := captcha.ParseProvider(provider)
+				if err != nil {
+					return nil, cli.Wrap(cli.CodeUsage, err, "")
+				}
+				target = &p
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
 			keys := captchaSettingKeys()
 			if target != nil {
 				keys = []string{captcha.DescriptorFor(*target).Name()}
-				// Resetting the row of the SELECTED external provider alone
-				// would leave a selection whose row has no keys, which the
-				// cross-key rule refuses. Return the selection to its default
-				// in the SAME request, so the state that rule sees is legal.
-				state, err := readCaptchaState(c)
+				state, err := readCaptchaState(inv.Context, c)
 				if err != nil {
-					return control.EmitErrorWith("rpc_failed", err)
+					return nil, err
 				}
 				if state.selected == *target && *target != captcha.ProviderAltcha {
 					keys = append([]string{captcha.CaptchaSelectedKey.Name()}, keys...)
 				}
 			}
-			// ONE transaction. The hub clears every key together and runs
-			// the cross-key rules once over the whole result, so no order
-			// can make an intermediate state illegal and no refusal can
-			// leave part of the set already cleared. The loop this replaced
-			// destroyed the selection and two provider rows before
-			// answering that it reset nothing.
-			resp, err := c.AdminSettingsService().ResetSettings(context.Background(),
+			resp, err := c.AdminSettingsService().ResetSettings(inv.Context,
 				&leapmuxv1.ResetSettingsRequest{Keys: keys})
 			if err != nil {
-				return control.EmitErrorWith("reset_failed", err)
+				return nil, err
 			}
 			reset := make([]string, 0, len(resp.GetValues()))
 			for _, v := range resp.GetValues() {
 				reset = append(reset, v.GetKey())
 			}
-			return control.EmitData(map[string]any{"reset": reset})
+			return adminCaptchaResetResult{Reset: reset}, nil
 		},
 	})
 }
 
-// rateLimitOperation resolves the --operation flag to its settings key.
-// The catalogue is the authority, so a typo answers with the known names
-// instead of travelling to the hub as an unknown settings key.
 func rateLimitOperation(op string) (string, error) {
 	known := ratelimit.KnownOperations()
 	names := make([]string, 0, len(known))
 	for _, k := range known {
 		names = append(names, string(k))
 	}
+	hint := "known operations: " + strings.Join(names, ", ")
 	if op == "" {
-		return "", fmt.Errorf("--operation is required (known: %s)", strings.Join(names, ", "))
+		return "", cli.Usagef("<operation> is empty").WithHint("%s", hint)
 	}
 	key, ok := ratelimit.LimitKey(ratelimit.Operation(op))
 	if !ok {
-		return "", fmt.Errorf("unknown operation %q (known: %s)", op, strings.Join(names, ", "))
+		return "", cli.Usagef("unknown operation %q", op).WithHint("%s", hint)
 	}
 	return key.Name(), nil
 }
 
-// rateLimitTarget carries the --operation flag of the three verbs that
-// address one operation, and the settings key that it resolves to.
-//
-// The flag and its resolution travel together because the catalogue lookup
-// has to happen before the dial: a typo must answer with the known
-// operation names, not with a connection error.
-type rateLimitTarget struct {
-	operation string
-	// Key is the settings key of the operation. resolve fills it, so Run
-	// reads it and never repeats the lookup.
-	Key string
+type adminRateLimitListResult struct {
+	RateLimits []adminSettingRow `json:"rate_limits"`
 }
 
-func (t *rateLimitTarget) bind(fs *flag.FlagSet, usage string) {
-	fs.StringVar(&t.operation, "operation", "", usage)
-}
-
-// resolve matches adminVerbSpec.BeforeDial, so a verb assigns it directly.
-func (t *rateLimitTarget) resolve(adminArgs) error {
-	key, err := rateLimitOperation(t.operation)
-	if err != nil {
-		return control.EmitError("invalid_request", err.Error())
+func (r adminRateLimitListResult) QuietLines() []string {
+	out := make([]string, 0, len(r.RateLimits))
+	for _, row := range r.RateLimits {
+		out = append(out, row.Key)
 	}
-	t.Key = key
-	return nil
+	return out
 }
 
-func RunAdminRateLimitList(rawCtx any, args []string) error {
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
+func newAdminRateLimitList() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List the rate limits of every operation",
+		Examples: []cli.Example{
+			{Command: "leapmux admin rate-limit list"},
+		},
+		Run: func(inv *cli.Invocation) (any, error) {
+			c, err := requireAdminClient(inv)
 			if err != nil {
-				return control.EmitErrorWith("rpc_failed", err)
+				return nil, err
 			}
-			rows := make([]map[string]any, 0)
+			resp, err := c.AdminSettingsService().ListSettings(inv.Context, &leapmuxv1.ListSettingsRequest{})
+			if err != nil {
+				return nil, err
+			}
+			rows := make([]adminSettingRow, 0)
 			for _, v := range resp.GetValues() {
 				if strings.HasPrefix(v.GetKey(), ratelimit.SettingKeyPrefix) {
-					rows = append(rows, settingValueJSON(v))
+					rows = append(rows, adminSettingRowOf(v))
 				}
 			}
-			return control.EmitData(rows)
+			return adminRateLimitListResult{RateLimits: rows}, nil
 		},
 	})
 }
 
-func RunAdminRateLimitSet(rawCtx any, args []string) error {
-	var target rateLimitTarget
+func newAdminRateLimitSet() *cobra.Command {
 	var maxAttempts, window int64
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to limit (elevation)")
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "set <operation>",
+		Short:   "Change the rate limit of an operation",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin rate-limit set elevation --max-attempts 5 --window 900"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
 			fs.Int64Var(&maxAttempts, "max-attempts", 0, "failed attempts allowed per window (1-1000); 0 restores the default")
 			fs.Int64Var(&window, "window", 0, "window seconds (60-86400); 0 restores the default")
 		},
-		BeforeDial: func(a adminArgs) error {
-			if err := target.resolve(a); err != nil {
-				return err
+		Complete: completeRateLimitOperations,
+		Run: func(inv *cli.Invocation) (any, error) {
+			op := strings.TrimSpace(inv.Arg("operation"))
+			key, err := rateLimitOperation(op)
+			if err != nil {
+				return nil, err
 			}
-			if !a.Passed("max-attempts") && !a.Passed("window") {
-				return control.EmitError("invalid_request", "pass --max-attempts, --window, or both")
+			if !inv.Changed("max-attempts") && !inv.Changed("window") {
+				return nil, cli.Usagef("pass --max-attempts, --window, or both")
 			}
-			return nil
-		},
-		Run: func(c *control.Client, a adminArgs) error {
-			// Tune one field or both; the partial merge keeps the other.
-			// `enabled` is NOT written here — `rate-limit enable|disable` owns
-			// the switch, so adjusting a window cannot silently re-arm a
-			// limiter an operator deliberately turned off.
-			//
-			// A field passed as 0 restores the operation's catalogue
-			// default. target.resolve already proved the operation is
-			// catalogued, so the lookup below always finds it.
-			def, _ := ratelimit.DefaultLimits(ratelimit.Operation(target.operation))
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			def, _ := ratelimit.DefaultLimits(ratelimit.Operation(op))
 			doc := map[string]any{}
-			if a.Passed("max-attempts") {
+			if inv.Changed("max-attempts") {
 				doc["max_attempts"] = defaultIfZero(maxAttempts, def.MaxAttempts)
 			}
-			if a.Passed("window") {
+			if inv.Changed("window") {
 				doc["window_seconds"] = defaultIfZero(window, def.WindowSeconds)
 			}
-			value, err := adminUpdateSetting(c, target.Key, doc)
+			value, err := adminUpdateSetting(inv.Context, c, key, doc)
 			if err != nil {
-				return control.EmitErrorWith("rate_limit_set_failed", err)
+				return nil, err
 			}
-			return control.EmitData(settingValueJSON(value))
+			return adminSettingRowOf(value), nil
 		},
 	})
 }
 
-func RunAdminRateLimitSetEnabled(rawCtx any, args []string, enabled bool) error {
-	var target rateLimitTarget
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to limit (elevation)")
-		},
-		BeforeDial: target.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			value, err := adminUpdateSetting(c, target.Key, map[string]any{"enabled": enabled})
+func newAdminRateLimitSetEnabled(enabled bool, use, short string, examples []cli.Example) *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:      use,
+		Short:    short,
+		Examples: examples,
+		Mutates:  true,
+		Complete: completeRateLimitOperations,
+		Run: func(inv *cli.Invocation) (any, error) {
+			key, err := rateLimitOperation(strings.TrimSpace(inv.Arg("operation")))
 			if err != nil {
-				return control.EmitErrorWith("rate_limit_set_failed", err)
+				return nil, err
 			}
-			return control.EmitData(settingValueJSON(value))
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			value, err := adminUpdateSetting(inv.Context, c, key, map[string]any{"enabled": enabled})
+			if err != nil {
+				return nil, err
+			}
+			return adminSettingRowOf(value), nil
 		},
 	})
 }
 
-func RunAdminRateLimitReset(rawCtx any, args []string) error {
-	var target rateLimitTarget
-	return adminVerb(rawCtx, args, adminVerbSpec{
-		Flags: func(fs *flag.FlagSet) {
-			target.bind(fs, "operation to reset (elevation)")
+func newAdminRateLimitReset() *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "reset <operation>",
+		Short:       "Restore the default rate limit of an operation",
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin rate-limit reset elevation"},
 		},
-		BeforeDial: target.resolve,
-		Run: func(c *control.Client, _ adminArgs) error {
-			value, _, err := resetOneSetting(c, target.Key)
+		Complete: completeRateLimitOperations,
+		Run: func(inv *cli.Invocation) (any, error) {
+			key, err := rateLimitOperation(strings.TrimSpace(inv.Arg("operation")))
 			if err != nil {
-				return control.EmitErrorWith("reset_failed", err)
+				return nil, err
 			}
-			return control.EmitData(settingValueJSON(value))
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			value, _, err := resetOneSetting(inv.Context, c, key)
+			if err != nil {
+				return nil, err
+			}
+			return adminSettingRowOf(value), nil
 		},
 	})
 }

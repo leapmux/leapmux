@@ -102,6 +102,9 @@ type Base struct {
 	settingsPublications agentapi.OutputQueue
 	nativeModeID         string
 	promptOutputDrained  bool
+	// rootPromptRequest identifies the detached request that may end the prompt.
+	// turnMu protects the request and its captured output.
+	rootPromptRequest *acpRootPromptRequest
 
 	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
 	promptActive bool
@@ -118,10 +121,10 @@ type Base struct {
 	agentTurnActive bool
 	// agentTurnQueued records an agent turn that starts before the base processes the preceding prompt's end.
 	// The prompt's end transfers the busy state to that turn. See BeginAgentTurn.
-	// queuedAgentTurnEnd holds the agent turn's end frame when that frame arrives before the prompt's end.
+	// queuedAgentTurnEnd holds the agent turn's end record while the preceding prompt finishes.
 	// b.Mu protects these fields.
 	agentTurnQueued    bool
-	queuedAgentTurnEnd json.RawMessage
+	queuedAgentTurnEnd *acpAgentTurnEnd
 	publishTurnActive  func(active bool, seq uint64)
 	steerMethod        string
 	steerRunID         string
@@ -257,7 +260,7 @@ func (b *Base) persistFinishedTurn(frame json.RawMessage) {
 	textCompletion, incomplete := b.turnOutputCompletions(stopped)
 	turn := b.detachRootPrompt(!stopped)
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
-		b.persistPromptResponseTo(writer, frame, count, turn.sessionID, stopped)
+		b.persistPromptResponseTo(writer, agentapi.MessageContent{Original: frame}, count, turn.sessionID, stopped)
 	})
 	if stopped {
 		b.releaseAwaitedTerminals()
@@ -301,14 +304,14 @@ func (b *Base) finishFailedRootSnapshot(turn acpTurnSnapshot, err error, ending 
 	slog.Error("ACP prompt failed", "agent_id", b.AgentID(), "error", err)
 	b.finishRootSnapshot(turn, agentapi.MessageCompletionError, agentapi.MessageCompletionError, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
 		if !ending.NoteWritten {
-			if turn.endingAdmission == nil {
+			if !turn.endingAdmission.captured() {
 				b.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err)})
 			} else {
 				b.persistRootFailure(writer, err)
 			}
 		}
 		if len(ending.EndFrame) > 0 {
-			b.persistPromptResponseTo(writer, ending.EndFrame, count, turn.sessionID, false)
+			b.persistPromptResponseTo(writer, agentapi.MessageContent{Original: ending.EndFrame}, count, turn.sessionID, false)
 		}
 	})
 }
@@ -324,7 +327,12 @@ func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agentapi.MessageCo
 }
 
 func (b *Base) finishACPTurnFor(turn acpTurnSnapshot, completion agentapi.MessageCompletion, reason RootTranscriptEnd) {
+	if turn.answeredPrompt != nil {
+		b.finishRootSnapshot(*turn.answeredPrompt, completion, completion, reason, nil)
+		b.retireAbandonedInputReply(turn.answeredPrompt.endingAdmission)
+	}
 	b.finishRootSnapshot(turn, completion, completion, reason, nil)
+	b.retireAbandonedInputReply(turn.endingAdmission)
 	providerkit.ResetSpansAndProgress(b.sink)
 }
 
@@ -355,7 +363,7 @@ func (b *Base) handleACPUpdate(update json.RawMessage) {
 	// An update whose tag identifies no child transcript stays in the main transcript, where the reader can still see it.
 	if b.hooks.ChildUpdateRoute != nil {
 		if rowKey := b.hooks.ChildUpdateRoute(header.SessionUpdate, header.Meta); rowKey != "" &&
-			b.routeToChild(rowKey, header, update) != childRouteUnknown {
+			b.routeToChild(rowKey, header, acpSessionUpdate{Update: update}) != childRouteUnknown {
 			return
 		}
 	}
@@ -1661,8 +1669,8 @@ func (b *Base) extractACPChunkText(content json.RawMessage, kind string) string 
 	return c.Text
 }
 
-func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, resp json.RawMessage, numToolUses int, sessionID string, resetSpans bool) {
-	if err := writer.PersistTurnEnd(agentapi.WithToolUseCount(agentapi.MessageContent{Original: resp}, numToolUses), agentapi.SpanInfo{}); err != nil && !agentapi.OutputRetained(err) {
+func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, content agentapi.MessageContent, numToolUses int, sessionID string, resetSpans bool) {
+	if err := writer.PersistTurnEnd(agentapi.WithToolUseCount(content, numToolUses), agentapi.SpanInfo{}); err != nil && !agentapi.OutputRetained(err) {
 		slog.Error("persist ACP prompt result", "agent_id", b.AgentID(), "error", err)
 	}
 	if resetSpans {

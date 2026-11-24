@@ -53,7 +53,7 @@ func (transport *delayedStreamTransport) DispatchWith(ctx context.Context, _ cha
 	<-ctx.Done()
 }
 
-func (transport *delayedStreamTransport) StreamInner(ctx context.Context, _ string, _ userid.UserID, _ string, _ []byte, _ func(*leapmuxv1.InnerStreamMessage), bind func(channel.StreamController)) error {
+func (transport *delayedStreamTransport) StreamInner(ctx context.Context, _ string, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, _ func(*leapmuxv1.InnerStreamMessage), bind func(channel.StreamController)) error {
 	transport.calls <- delayedStreamBinding{bind: func(controller channel.StreamController) func() {
 		bind(controller)
 		return func() {}

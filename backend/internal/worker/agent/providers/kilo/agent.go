@@ -10,7 +10,10 @@ import (
 // Agent manages a single Kilo ACP process.
 type Agent struct {
 	opencode.FamilyBase
-	steers kiloSteerState
+	steers        kiloSteerState
+	nativeReplies kiloNativeReplies
+	daemonReady   chan struct{}
+	workingDir    string
 	// usageRefresh wakes refreshUsageLoop. newAgent creates it, and it never
 	// changes afterwards.
 	usageRefresh chan struct{}
@@ -26,10 +29,16 @@ type Agent struct {
 // holds. Once the daemon answers, it reads Kilo's configuration and the plan
 // usage, and it reads the usage again after each turn.
 func newAgent(swarm bool) *Agent {
-	a := &Agent{usageRefresh: make(chan struct{}, 1), swarm: swarm}
+	a := &Agent{usageRefresh: make(chan struct{}, 1), daemonReady: make(chan struct{}), swarm: swarm}
 	a.MemberEvents = a.observeKiloGoal
+	a.AssistantTextKey = kiloAssistantTextKey
+	a.AssistantTextPrepared = a.nativeReplies.recordText
+	a.RootPromptTransport = a.prepareNativePrompt
+	a.QuestionTurnID = a.nativeQuestionTurnID
+	a.NativePermissionTurnID = a.nativePermissionTurnID
 	a.MemberOptionGroups = a.swarmOptionGroups
 	a.DaemonReady = func(ctx context.Context) {
+		close(a.daemonReady)
 		a.requestUsageRefresh()
 		// The bridge calls this before it reads events, so the read goes on its own goroutine.
 		go a.readSwarmConfig(ctx)
@@ -44,12 +53,10 @@ func newAgent(swarm bool) *Agent {
 // "does not implement Agent".
 var _ agent.Agent = (*Agent)(nil)
 
-// Kilo steers through a second ACP prompt and keeps its late answer as a turn.
-// This assertion keeps the capability when the family or Kilo agent changes.
+// Kilo delivers a steer as a separate prompt and preserves its late answer.
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
 
-// Kilo stops one subagent and steers a running one through the family base,
-// as OpenCode does.
+// Kilo can interrupt or steer a running subagent on its own native session.
 var _ agent.ChildInterrupter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)

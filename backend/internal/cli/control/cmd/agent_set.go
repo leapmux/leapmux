@@ -1,59 +1,60 @@
 package cmd
 
 import (
-	"context"
-	"flag"
 	"fmt"
 	"sort"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
-// RunAgentSet updates --model / --effort / --permission-mode /
+// agentSetResult is the result of `agent set`.
+type agentSetResult struct {
+	ID string `json:"id"`
+	// Applied maps each axis that took effect to the value the agent
+	// confirmed.
+	Applied map[string]string `json:"applied"`
+	// NotApplied lists the axes that the provider removed instead of
+	// setting.
+	NotApplied []string `json:"not_applied,omitempty"`
+	// Unresolved lists the axes that the agent did not confirm.
+	Unresolved []string `json:"unresolved,omitempty"`
+}
+
+// runAgentSet updates --model / --effort / --permission-mode /
 // --option key=value (repeatable).
-func RunAgentSet(rawCtx any, args []string) error {
-	var model, effort, permissionMode string
-	optionSettings := stringSliceFlag{}
-	settings := &leapmuxv1.AgentSettings{Options: map[string]string{}}
-	return withResolvedAgent(rawCtx, args, agentScaffoldOpts{
-		setup: func(fs *flag.FlagSet) {
-			fs.StringVar(&model, "model", "", "model id (empty = no change)")
-			fs.StringVar(&effort, "effort", "", "effort id (empty = no change)")
-			fs.StringVar(&permissionMode, "permission-mode", "", "permission mode (empty = no change)")
-			fs.Var(&optionSettings, "option", "provider option in key=value form (repeatable)")
-		},
-		validate: func() error {
-			opts, err := buildAgentSetOptions(model, effort, permissionMode, optionSettings.values)
-			if err != nil {
-				return control.EmitErrorWith("invalid_request", err)
-			}
-			settings.Options = opts
-			return nil
-		},
-		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
-			resp := &leapmuxv1.UpdateAgentSettingsResponse{}
-			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
-				AgentId:  agentID,
-				Settings: settings,
-			}, resp); err != nil {
-				return err
-			}
-			applied, notApplied, unresolved := appliedFromSettlements(settings.GetOptions(), resp.GetOptionSettlements())
-			data := map[string]any{"agent_id": agentID, "applied": applied}
-			// Only surface not_applied when something didn't take, so the common all-applied case
-			// stays uncluttered.
-			if len(notApplied) > 0 {
-				data["not_applied"] = notApplied
-			}
-			if len(unresolved) > 0 {
-				data["unresolved"] = unresolved
-			}
-			return control.EmitData(data)
-		},
-	})
+func runAgentSet(inv *cli.Invocation) (any, error) {
+	options := inv.StringArray("option")
+	opts, err := buildAgentSetOptions(stringFlag(inv, "model"), stringFlag(inv, "effort"), stringFlag(inv, "permission-mode"), options)
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
+	if len(opts) == 0 {
+		return nil, cli.Usagef("nothing to set").
+			WithHint("pass --model, --effort, --permission-mode or --option")
+	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	got, err := s.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
+	if err != nil {
+		return nil, err
+	}
+	settings := &leapmuxv1.AgentSettings{Options: opts}
+	resp := &leapmuxv1.UpdateAgentSettingsResponse{}
+	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
+		AgentId:  got.ID,
+		Settings: settings,
+	}, resp); err != nil {
+		return nil, err
+	}
+	applied, notApplied, unresolved := appliedFromSettlements(settings.GetOptions(), resp.GetOptionSettlements())
+	return agentSetResult{ID: got.ID, Applied: applied, NotApplied: notApplied, Unresolved: unresolved}, nil
 }
 
 // appliedFromSettlements classifies each requested axis. A confirmed
@@ -102,17 +103,6 @@ func buildAgentSetOptions(model, effort, permissionMode string, options []string
 		out[k] = v
 	}
 	return out, nil
-}
-
-// stringSliceFlag implements flag.Value for repeatable string flags.
-type stringSliceFlag struct {
-	values []string
-}
-
-func (s *stringSliceFlag) String() string { return fmt.Sprintf("%v", s.values) }
-func (s *stringSliceFlag) Set(v string) error {
-	s.values = append(s.values, v)
-	return nil
 }
 
 func splitKV(s string) (string, string, error) {

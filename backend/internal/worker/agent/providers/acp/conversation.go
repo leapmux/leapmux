@@ -93,6 +93,11 @@ func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessa
 			messageID = providerID
 		}
 	}
+	if c.childSink == nil && updateType == contracts.ACPUpdateAgentMessageChunk && c.b.hooks.RootAssistantMessageID != nil {
+		if providerID := c.b.hooks.RootAssistantMessageID(update); providerID != "" {
+			messageID = providerID
+		}
+	}
 	// Flush model segments at each chronology boundary. Status and tool-progress
 	// updates do not split a segment.
 	switch updateType {
@@ -194,9 +199,17 @@ func (c *conversation) flushTextBuffer(kind agent.AssembledMessageKind) {
 }
 
 func (c *conversation) persistFinishedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
-	defer admission.release()
+	c.completeTextProgress(kind)
+	c.persistSelectedTextTo(admission, kind, messageID, text, completion)
+}
+
+func (c *conversation) completeTextProgress(kind agent.AssembledMessageKind) {
 	c.sink().ReportProgress(agent.CompleteModelProgress("acp:" + acpTextProgressScope(kind)))
-	c.persistAssembledTextTo(admission.transcript(c.sink()), kind, messageID, text, completion)
+}
+
+func (c *conversation) persistSelectedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+	defer admission.release()
+	c.persistAssembledTextTo(admission, kind, messageID, text, completion)
 }
 
 // persistAssembledText stores one assembled text segment.
@@ -208,7 +221,7 @@ func (c *conversation) persistFinishedTextTo(admission *acpTranscriptAdmission, 
 // column that holds the agent's own bytes -- and the interrupted path already used
 // this envelope, so the completed path had a second shape for the same content.
 func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
-	c.persistAssembledTextTo(c.sink(), kind, messageID, text, completion)
+	c.persistAssembledTextTo(nil, kind, messageID, text, completion)
 }
 
 func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) (agent.MessageContent, func() []byte, error) {
@@ -216,9 +229,19 @@ func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, me
 	if err != nil {
 		return agent.MessageContent{}, nil, err
 	}
+	template := agent.MessageContent{Original: raw}
+	if kind == agent.AssembledMessageKindText && messageID != "" && c.b.hooks.AssistantTextKey != nil {
+		template.IdempotencyKey = c.b.hooks.AssistantTextKey(messageID)
+	}
 	selectText := c.b.hooks.SegmentText
 	prepare := func() []byte {
+		observe := func(selected string) {
+			if template.IdempotencyKey != "" && c.b.hooks.AssistantTextPrepared != nil {
+				c.b.hooks.AssistantTextPrepared(messageID, template.IdempotencyKey, selected)
+			}
+		}
 		if c.childSink != nil || selectText == nil {
+			observe(text)
 			return raw
 		}
 		selected := selectText(kind, messageID, text)
@@ -230,18 +253,19 @@ func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, me
 			slog.Error("marshal selected ACP text", "agent_id", c.b.AgentID(), "error", encodeErr)
 			return nil
 		}
+		observe(selected)
 		return selectedRaw
 	}
-	return agent.MessageContent{Original: raw}, prepare, nil
+	return template, prepare, nil
 }
 
-func (c *conversation) persistAssembledTextTo(writer agent.TranscriptServices, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+func (c *conversation) persistAssembledTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
 	if text == "" {
 		return
 	}
 	template, prepare, err := c.preparedAssembledText(kind, messageID, text, completion)
 	if err == nil {
-		err = agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, template, agent.SpanInfo{}, prepare)
+		err = agent.PersistPreparedMessage(admission.transcript(c.sink()), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, admission.tagReply(template), agent.SpanInfo{}, prepare)
 	}
 	if err != nil && !agent.OutputRetained(err) {
 		slog.Error("persist assembled ACP text", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "error", err)
@@ -304,9 +328,10 @@ func (c *conversation) persistClosingToolTo(writer agent.TranscriptServices, too
 
 func (c *conversation) completeToolOutput(toolCallID string) {
 	c.b.ClearCumulativeOutput(toolCallID)
-	c.sink().ReportProgress(agent.CompleteOutputProgress(toolCallID))
+	sink := c.sink()
+	sink.ReportProgress(agent.CompleteOutputProgress(toolCallID))
 	if c.b.hooks.ToolOutputComplete != nil {
-		c.b.hooks.ToolOutputComplete(toolCallID)
+		c.b.hooks.ToolOutputComplete(sink.MessageSessionID(), toolCallID)
 	}
 }
 

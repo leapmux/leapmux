@@ -139,6 +139,17 @@ waits for.
 
 An item already on its way to the agent cannot be moved, reordered around, or deleted.
 
+### Messages from other agents
+
+An agent can send another agent a message with `leapmux agent send`. The message reaches the recipient as that agent's message, never as yours:
+
+- The recipient reads the message after one line that states the sending agent and its provider, and that the message is not from its operator.
+- The transcript shows the sending agent's icon and the title of its tab above the message, and the queue row shows them in place of the kind.
+- **Edit** is disabled on such a row, because the text is the other agent's. **Delete**, the moves and **Steer** work as they do for your own messages.
+- A message that an agent drops after a steer, and that LeapMux queues again, still comes from the sending agent.
+
+LeapMux takes the sender from the credentials of the sending agent's tab, so an agent cannot claim to be another agent or pass its words off as yours. This holds for an agent on another Worker too.
+
 ### Scheduling a send
 
 The calendar button beside **Send** schedules the composer's next message:
@@ -202,6 +213,13 @@ first press adds it to the queue, and the second press steers it. In
 **Enter sends** mode, press **`Enter`** first to queue the message, then press
 **`Cmd/Ctrl+Enter`** to steer it. When another item already waits in the queue,
 the shortcut steers that first item instead.
+
+Some agents can drop a steered item before the model reads it, for example when
+you stop the turn while the item still waits in the agent's own inbox. LeapMux
+then queues the item again behind what the queue holds, and the transcript
+states that the message was queued again. A message from another agent comes
+back as that agent's message, with the same sender. Every other item comes back
+as your own message, with the text that the agent would have read.
 
 ## How tool calls and results render
 
@@ -268,11 +286,13 @@ When an agent needs your approval — to run a command, edit a file, or proceed 
 
 The provider's protocol supplies the buttons and labels. Most providers ask about one call at a time. Some offer approval for the rest of the session. Others offer a rule that the CLI remembers. Check each button's scope before you allow a call. Text that you submit with a denial reaches the agent as its rejection reason.
 
+Some agents that speak the Agent Client Protocol (ACP) offer no way to refuse a call. LeapMux then adds a **Cancel** button, which refuses the call and ends the agent's turn. An agent that offers no answer at all gets **Cancel** alone, because its protocol accepts no approval that the agent did not offer.
+
 The banner shows a **Permissions** choice when the provider supplies permission shortcuts. See [Changing settings mid-session](#changing-settings-mid-session). It offers **Unchanged**, **Smart**, or **Bypass** (only the shortcuts the session supports appear). An approval applies the selected shortcut to the session as well; the initial choice matches the session's current shortcut, and a plan-approval banner starts with **Smart** when the provider offers it.
 
 ### Questions
 
-A question uses radio buttons for a single answer or checkboxes for several; you can also type a custom answer. A prompt with several questions shows **Question N of M**, and one submission answers all of them. Requested MCP input is collected through a form or the provider's native questions (see the [feature matrix](#feature-matrix)).
+A question uses radio buttons for a single answer or checkboxes for several; you can also type a custom answer. For a question with radio buttons, the typed answer replaces the chosen one. For a question with checkboxes, the typed answer joins the checked options: checking **A** and typing **X** answers **A** and **X**. A prompt with several questions shows **Question N of M**, and one submission answers all of them. Requested MCP input is collected through a form or the provider's native questions (see the [feature matrix](#feature-matrix)).
 
 ### Plan approvals
 
@@ -280,7 +300,21 @@ When an agent finishes planning, the banner shows the plan. **Approve** starts t
 
 If several prompts queue up, you answer them one at a time. LeapMux de-duplicates requests and remembers answered ones, so a reconnect never re-asks something you already handled.
 
+An agent can replace a prompt while you answer it, for example when it asks something else at the same step. LeapMux then does not send your answer, because it was for the earlier prompt. The banner shows the new prompt. Answer that one.
+
+After you answer, the transcript keeps a row that states your answer in the same words for every provider:
+
+- **A permission:** the option that you chose.
+- **A plan:** **Approve** or **Reject**, or the choice that you picked. An approval that changes the permission mode states the mode after it, such as **Approve (Act)**.
+- **Questions:** each question with your answers. A dismissal reads **Dismissed:** followed by the questions.
+- **A form:** **Approved** and each field under its title, or **Rejected** or **Cancelled**.
+- **A dialog:** **Approved**, **Rejected**, **Cancelled**, or the value that you sent.
+
+A reason that reached the agent with your answer shows under **Sent feedback:** instead. A reason that the agent receives as your next message shows as that message.
+
 The exact buttons and their names come from the provider's own protocol.
+
+A script answers the same requests with `leapmux agent requests`, `approve`, `deny` and `answer`; see [Driving agents from a script](#driving-agents-from-a-script).
 
 ## Changing settings mid-session
 
@@ -288,7 +322,7 @@ Beneath the editor box is a status bar with one chip per setting axis — the gi
 
 The **[+]** menu holds every axis, including provider-specific options that have no chip. Each axis has a submenu. The menu also holds **Agent info** for context usage, rate limits, and the session.
 
-LeapMux exposes the native settings its provider adapter supports — model, reasoning effort, mode, permissions, and other provider-specific axes — with the values the CLI's own configuration offers. You pick these as named radio options in the interface; when driving an agent with `leapmux control agent set`, `--permission-mode` sets the permission axis and `--option` any other one.
+LeapMux exposes the native settings its provider adapter supports — model, reasoning effort, mode, permissions, and other provider-specific axes — with the values the CLI's own configuration offers. You pick these as named radio options in the interface; when driving an agent with `leapmux agent set`, `--permission-mode` sets the permission axis and `--option` any other one.
 
 You can hide the status bar with **[+] > Show status bar**. The **[+]** menu still gives access to all status bar settings.
 
@@ -328,26 +362,43 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 
 ## Driving agents from a script
 
-Everything in this chapter has a programmatic counterpart in the `leapmux control` CLI, which agents themselves can call (the Worker injects credentials into each spawned agent's environment). The most relevant commands:
+Everything in this chapter has a programmatic counterpart in the `leapmux` CLI, which agents themselves can call (the Worker injects credentials into each spawned agent's environment). The most relevant commands:
 ```bash
-# Send a message to an agent tab
-leapmux control agent send --tab-id <id> --message "Refactor the auth module"
+# List your agents with their states (idle, working, waiting_for_user)
+leapmux agent list
+
+# Send a message to an agent, then follow its reply as it arrives
+leapmux agent send <agent> "Refactor the auth module"
+leapmux agent messages <agent> --follow
+
+# Inside an agent's tab, a message reaches the other agent as this agent's message
+leapmux agent send <agent> "Review the diff in the fix-auth branch"
+
+# Send a message, wait until the agent settles, and print its last reply
+leapmux agent send <agent> "Which tests fail?" --wait --timeout 30m
+
+# Wait until agents settle, or until one of them waits for an answer
+leapmux agent wait <agent> <agent>
+leapmux agent wait <agent> <agent> --until waiting_for_user --any
+
+# List the prompts that agents wait on, then answer one
+leapmux agent requests
+leapmux agent approve <agent> <request>
+leapmux agent deny <agent> <request> --message "Use the staging database"
+leapmux agent answer <agent> <request> --option 2
 
 # Interrupt the current turn
-leapmux control agent interrupt --tab-id <id> --reason "wrong file"
+leapmux agent interrupt <agent> --reason "wrong file"
 
 # Change model / effort / permission mode mid-session
-leapmux control agent set --tab-id <id> --model gpt-5.4 --effort high
+leapmux agent set <agent> --model gpt-5.4 --effort high
 
 # Open a new agent in a tab (provider, model, working dir, worktree, etc.)
-leapmux control tab open --type agent --worker-id <id> --provider "Claude Code" \
-  --working-dir /repo --initial-message "Start on the bug fix"
-
-# Answer a Claude-Code-style control request
-leapmux control agent send-control-response --tab-id <id> --content '<raw JSON>'
+leapmux agent open --worker <worker> --provider claude \
+  --dir /repo --message "Start on the bug fix"
 ```
 
-See [Control CLI](/docs/using/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.
+`<agent>` is an id, a unique id prefix, `title:<title>`, `name:<name>`, a bare case-insensitive title/slug, or `self` for the agent that runs the command. See [Control CLI](/docs/using/control-cli/) for targets, output and errors, and the [Control Command Reference](/docs/reference/control-commands/#leapmux-agent) for every agent command.
 
 ## Feature matrix
 

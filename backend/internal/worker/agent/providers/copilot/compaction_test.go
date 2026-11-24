@@ -87,7 +87,7 @@ func TestCopilotManualCompactionDoesNotOfferSteering(t *testing.T) {
 	a := provider.(*Agent)
 	require.NoError(t, a.CompactContext())
 	require.False(t, a.SupportsSteering(), "a summary RPC does not accept an immediate user message")
-	require.ErrorIs(t, a.SteerInput("unexpected steer", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "unexpected steer"}), agent.ErrAgentBusy)
 	require.ErrorIs(t, a.SendInput("unexpected turn", nil), agent.ErrAgentBusy)
 	active, published := sink.LastTurnActive()
 	require.True(t, published)

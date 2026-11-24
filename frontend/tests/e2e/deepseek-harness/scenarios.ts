@@ -11,7 +11,7 @@ import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCall
 import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
 import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { finishDeepseekHarnessChild, waitForDeepseekHarnessChildReport } from './childReportCompletion'
+import { deepseekHarnessChildReportSubject, finishDeepseekHarnessChild, waitForDeepseekHarnessChildReport } from './childReportCompletion'
 import { registerDeepseekHarnessChildReport } from './childReportRegistration'
 import { deepseekHarnessModelContextText } from './modelContextText'
 
@@ -82,7 +82,9 @@ export async function registerChildReports(context: ManagedNativeScenarioContext
     const child = await nativeAgentById(context, task.childAgentId)
     if (!child?.agentSessionId)
       throw new Error('The DeepSeek Harness child report has no stored native Session identity.')
-    await registerDeepseekHarnessChildReport(context.modelScript, child.agentSessionId)
+    const parentId = child.parentAgentId || (await currentNativeAgent(context)).id
+    const subject = await deepseekHarnessChildReportSubject(context, child, parentId)
+    await registerDeepseekHarnessChildReport(context.modelScript, subject)
   }
 }
 

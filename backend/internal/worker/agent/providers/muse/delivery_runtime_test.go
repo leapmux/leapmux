@@ -16,6 +16,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestHostExitRetiresChildInputsWithoutProvedDelivery(t *testing.T) {
+	t.Parallel()
+	a, _ := testAgent(t)
+	sink := &agenttest.Sink{}
+	a.sessions["child-session"] = &sessionState{
+		childID: "child-tab", parentSessionID: "session", sink: agent.NewProviderServices(sink),
+		childInputCommands: map[string]museChildInputCommand{
+			"followup": {inputID: "ordinary-input"},
+			"steer":    {inputID: "steered-input", steerAttemptID: "dispatch"},
+		},
+	}
+
+	a.retireHost(agent.MessageCompletionInterrupted)
+	a.retireHost(agent.MessageCompletionInterrupted)
+
+	assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+		{SessionID: "child-session", InputID: "followup"}: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+	}, sink.NativeReplyRetirements())
+	assert.Equal(t, []agent.SteerResolution{
+		{InputID: "steered-input", AttemptID: "dispatch", Outcome: agent.SteerOutcomeUncertain},
+	}, sink.SteerResolutions())
+}
+
 func requireFailedParentInputProjection(t *testing.T, a *Agent, root *agenttest.Sink, childID string, scenario nativeParentInputCase) {
 	t.Helper()
 	state := a.sessions[scenario.ChildSessionID]

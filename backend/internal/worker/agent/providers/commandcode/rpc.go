@@ -9,6 +9,10 @@ import (
 )
 
 func (a *Agent) request(method string, params any, timeout time.Duration) (json.RawMessage, error) {
+	return a.requestObserved(method, params, timeout, nil)
+}
+
+func (a *Agent) requestObserved(method string, params any, timeout time.Duration, observe func(json.RawMessage, error)) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if params != nil {
 		var err error
@@ -17,7 +21,7 @@ func (a *Agent) request(method string, params any, timeout time.Duration) (json.
 			return nil, fmt.Errorf("encode the Command Code request: %w", err)
 		}
 	}
-	return a.SendRequest(method, raw, timeout)
+	return a.SendRequestObserved(method, raw, timeout, observe)
 }
 
 func (a *Agent) HandleOutput(content []byte) {

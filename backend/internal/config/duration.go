@@ -1,7 +1,6 @@
 package config
 
 import (
-	"flag"
 	"fmt"
 	"math"
 	"reflect"
@@ -11,16 +10,14 @@ import (
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/v2"
+	"github.com/spf13/pflag"
 )
 
 // UnitSyntax describes the spellings ParseDuration accepts. Put it in the help
-// text of every duration flag, so the CLI states the syntax once per flag and
-// the operator never has to find this package.
-//
-// The backquoted word is the placeholder that flag.UnquoteUsage lifts into the
-// flag's help line, which would otherwise read the bare "value" that the flag
-// package prints for every flag.Value.
-const UnitSyntax = "Takes a `duration` suffix: ns, us, ms, s, m, h, d, w. A bare number is seconds."
+// text of every duration flag, after a semicolon, so the CLI states the syntax
+// once per flag and the operator never has to find this package. It is a
+// clause, not a sentence, so the help can append its own notes after it.
+const UnitSyntax = "takes ns, us, ms, s, m, h, d or w as a suffix; a bare number is seconds"
 
 // extendedUnits holds the two units that time.ParseDuration does not know.
 // Everything else goes to the standard parser unchanged, so a duration this
@@ -214,25 +211,24 @@ func add(a, b time.Duration) (time.Duration, error) {
 	return a + b, nil
 }
 
-// DurationFlag adapts a time.Duration to the flag package, so a CLI flag reads
-// the same spellings as the config file and the environment variable. The
-// standard flag.Duration accepts neither the bare seconds count nor the d and w
-// units, so a flag registered with it would refuse a value that the same key
-// takes in the config file.
+// DurationFlag adapts a time.Duration to pflag, so a CLI flag reads the same
+// spellings as the config file and the environment variable. pflag's own
+// Duration accepts neither the bare seconds count nor the d and w units, so a
+// flag registered with it would refuse a value that the same key takes in the
+// config file.
 type DurationFlag struct {
 	target *time.Duration
 }
 
-// NewDurationFlag returns a flag.Value that writes into target, and sets target
-// to def so the flag reports the default before Parse runs.
+// NewDurationFlag returns a pflag.Value that writes into target, and sets
+// target to def so the flag reports the default before Parse runs.
 func NewDurationFlag(target *time.Duration, def time.Duration) *DurationFlag {
 	*target = def
 	return &DurationFlag{target: target}
 }
 
-// String reports the current value. The flag package builds a zero DurationFlag
-// by reflection to recognize a zero default, so this must answer on a value
-// that carries no target.
+// String reports the current value. It answers on a value that carries no
+// target too, so a zero DurationFlag prints as "0".
 func (f *DurationFlag) String() string {
 	if f == nil || f.target == nil {
 		return "0"
@@ -250,16 +246,11 @@ func (f *DurationFlag) Set(s string) error {
 	return nil
 }
 
-// Get satisfies flag.Getter, which the help printer uses to decide whether a
-// default needs quotation marks.
-func (f *DurationFlag) Get() any {
-	if f == nil || f.target == nil {
-		return time.Duration(0)
-	}
-	return *f.target
-}
+// Type names the value in help: a duration takes the same spellings as the
+// config file, which the flag's usage states.
+func (f *DurationFlag) Type() string { return "duration" }
 
-var _ flag.Getter = (*DurationFlag)(nil)
+var _ pflag.Value = (*DurationFlag)(nil)
 
 // toDurationHookFunc converts a configured value to a time.Duration.
 //

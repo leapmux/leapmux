@@ -1,7 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { codexExtractControl } from '../../../src/components/chat/providers/codex/extractControl'
 import { CODEX_OPTION } from '../../../src/generated/contracts/codex-protocol'
 import { codexTest } from '../codex-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -13,7 +12,6 @@ import { ensureGitRepositoryRoot } from '../helpers/worktree'
 codexTest('classifies an actual native permission and confirms the absent workspace-trust route', async ({ native }) => {
   await exerciseMissingWorkspaceTrustRoute(native, {
     askOption: 'permissionMode-on-request',
-    classify: codexExtractControl,
     operation: () => outsideFileWriteOperation(codexEscalatedCommandToolCall),
   })
 })

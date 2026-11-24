@@ -220,6 +220,8 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 			CanonicalPath: pathutil.Canonicalize(filePath),
 		})
 	})
+
+	registerFileSearchHandlers(d, svc)
 }
 
 // sendFileError maps a filesystem open or stat error to its RPC error response.

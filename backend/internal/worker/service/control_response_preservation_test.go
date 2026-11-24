@@ -38,7 +38,7 @@ func TestControlResponseMessagePreservesOriginalBytes(t *testing.T) {
 			plan.requestMeta.RequestID = "request-1"
 			plan.requestMeta.AgentSessionID = "session-1"
 			plan.resolution.Content = tc.original
-			content, err := controlResponseMessageContent(plan)
+			content, err := controlResponseMessageContent(plan, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tc.original, content.Original)
 			assert.Equal(t, "session-1", content.AgentSessionID)
@@ -85,7 +85,7 @@ func TestControlResponseMessageKeepsTheFullRequestSeparate(t *testing.T) {
 	plan.requestMeta.RequestID = "jsonrpc:9007199254740993"
 	plan.requestMeta.Payload = request
 	plan.resolution.Content = []byte(`{"id":9007199254740993,"result":{"answers":{}}}`)
-	content, err := controlResponseMessageContent(plan)
+	content, err := controlResponseMessageContent(plan, nil)
 	require.NoError(t, err)
 	assert.Equal(t, request, content.Supplemental)
 	assert.NotEmpty(t, content.Metadata)

@@ -187,11 +187,14 @@ type antigravityStep struct {
 		ModelUsage  antigravityModelUsage `json:"modelUsage"`
 		ExecutionID string                `json:"executionId"`
 	} `json:"metadata"`
-	RequestedInteraction json.RawMessage            `json:"requestedInteraction"`
-	PlannerResponse      antigravityPlannerResponse `json:"plannerResponse"`
-	UserInput            struct {
-		Tags  []string               `json:"tags"`
-		Items []antigravityInputItem `json:"items"`
+	RequestedInteraction json.RawMessage `json:"requestedInteraction"`
+	// The count distinguishes repeated requests of the same step.
+	CompletedInteractions []json.RawMessage          `json:"completedInteractions"`
+	PlannerResponse       antigravityPlannerResponse `json:"plannerResponse"`
+	UserInput             struct {
+		Tags            []string               `json:"tags"`
+		Items           []antigravityInputItem `json:"items"`
+		ClientMessageID string                 `json:"clientMessageId"`
 	} `json:"userInput"`
 	SystemMessage struct {
 		AgentMessage *struct {
@@ -222,35 +225,13 @@ type antigravityStep struct {
 	} `json:"errorMessage"`
 }
 
-type requestedInteraction struct {
-	Permission  *permissionInteraction  `json:"permission"`
-	AskQuestion *askQuestionInteraction `json:"askQuestion"`
-}
-
+// permissionInteraction is the permission that a step requests, as the
+// automatic approval policy reads it: the resource that the step acts on.
 type permissionInteraction struct {
 	Resource struct {
 		Action string `json:"action"`
 		Target string `json:"target"`
 	} `json:"resource"`
-	ActionDescription       string `json:"actionDescription"`
-	SuggestedPersistPattern string `json:"suggestedPersistPattern"`
-}
-
-type askQuestionInteraction struct {
-	Questions []question `json:"questions"`
-}
-
-type question struct {
-	Question      string           `json:"question"`
-	Options       []questionOption `json:"options"`
-	IsMultiSelect bool             `json:"isMultiSelect"`
-	ID            string           `json:"id,omitempty"`
-	Header        string           `json:"header,omitempty"`
-}
-
-type questionOption struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
 }
 
 func isOpenStepStatus(status string) bool {

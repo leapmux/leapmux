@@ -39,6 +39,10 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 		a.handleAgentStart()
 	case contracts.OhMyPiEventAgentEnd:
 		a.handleAgentEnd(line.Raw)
+	case contracts.OhMyPiEventAvailableCommandsUpdate:
+		a.observeOMPSteerCapability(line.Raw)
+	case "agent_pause":
+		a.observeOMPPause(root, line.Raw)
 	case contracts.OhMyPiEventMessageUpdate:
 		a.handleMessageUpdate(root, line.Raw)
 	case contracts.OhMyPiEventMessageEnd:
@@ -88,22 +92,24 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 	case contracts.OhMyPiEventRetryFallbackApplied:
 		a.handleRetryFallback(line.Raw)
 		a.persistConversationNotification(root, line.Raw)
-	case contracts.OhMyPiEventTurnStart, contracts.OhMyPiEventTurnEnd, contracts.OhMyPiEventMessageStart:
-		// Lifecycle markers inside a run. agent_start and agent_end bracket the
-		// turn, and message_end carries each message whole.
+	case contracts.OhMyPiEventTurnStart:
+		// Starting a native turn may deliver more user messages before a model call.
+	case contracts.OhMyPiEventTurnEnd:
+		a.observeOMPAssistantBoundary(root, line.Raw, true)
+	case contracts.OhMyPiEventMessageStart:
+		a.observeOMPAssistantBoundary(root, line.Raw, false)
 	case contracts.OhMyPiEventToolStreamUpdate:
 		// A preview of an `edit` call's arguments while the model writes them.
 		// The tool_execution_* frames carry the call itself.
 	case contracts.OhMyPiEventHostToolCancel, contracts.OhMyPiEventHostUriCancel:
 		// The withdrawal of a host call. LeapMux registers no host tool and no
 		// host URI scheme, and refuses every call at once, so nothing is pending.
-	case contracts.OhMyPiEventAvailableCommandsUpdate, contracts.OhMyPiEventSessionInfoUpdate,
+	case contracts.OhMyPiEventSessionInfoUpdate,
 		contracts.OhMyPiEventAdvisorCostChanged,
 		contracts.OhMyPiEventAdvisorYielded, contracts.OhMyPiEventConfigWarningsChanged,
 		contracts.OhMyPiEventTodoAutoClear, contracts.OhMyPiEventSessionSettled,
 		contracts.OhMyPiEventQueueUpdate:
-		// State that LeapMux has no surface for. The slash-command list feeds no
-		// menu, LeapMux gives its tabs their own names, and the advisor, the
+		// LeapMux gives its tabs their own names. The advisor and the
 		// configuration warnings have no row.
 		// omp 18.2.11 declares todo_auto_clear and never sends it.
 		//
@@ -163,6 +169,10 @@ func (a *Agent) handlePromptFailure(id, message string) {
 	if a.IsStopped() {
 		return
 	}
+	if reply := a.takeReplyPrompt(id); reply != nil {
+		a.retireOMPReplyInputs(reply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+	}
+	a.resolveUnreadOMPSteer(id, agent.SteerOutcomeDropped)
 	a.dropSteer(id)
 	a.steers.DropID(id)
 	a.steers.Settle(a.sink)
@@ -177,26 +187,31 @@ func (a *Agent) handlePromptFailure(id, message string) {
 	})
 }
 
-// handlePromptResult reads omp's report that a prompt it acknowledged started no
-// run. A local command resolves its steer echo, or releases the pending prompt.
+// handlePromptResult resolves a native prompt. A local command also resolves
+// its steer echo or releases the pending prompt.
 func (a *Agent) handlePromptResult(raw []byte) {
-	var result struct {
-		ID           string `json:"id"`
-		AgentInvoked *bool  `json:"agentInvoked"`
-	}
+	var result ompPromptResult
 	if err := json.Unmarshal(raw, &result); err != nil {
 		slog.Warn("omp prompt_result decode failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	a.resolveOMPReply(result)
 	if result.AgentInvoked == nil {
 		slog.Warn("omp prompt result has no invocation status", "agent_id", a.AgentID())
 		return
 	}
 	if !*result.AgentInvoked && result.ID != "" {
+		if result.Status == "completed" {
+			a.completeLocalOMPSteer(result.ID)
+		} else {
+			a.resolveUnreadOMPSteer(result.ID, agent.SteerOutcomeDropped)
+		}
 		a.dropSteer(result.ID)
 		a.steers.EchoID(result.ID)
 		a.steers.Settle(a.sink)
 		a.disarmTurn(result.ID)
+	} else if result.SessionSettled {
+		a.resolveUnreadOMPSteer(result.ID, agent.SteerOutcomeUncertain)
 	}
 }
 

@@ -1,11 +1,8 @@
 package cmd
 
 import (
-	"fmt"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
@@ -13,25 +10,21 @@ import (
 
 // RunTileSplit emits the 9-op SplitTile batch (T flips LEAF -> SPLIT,
 // two new leaf children created, tabs on T migrate to childA).
-func RunTileSplit(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, direction string
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.StringVar(&direction, "direction", "vertical", `divider orientation: "vertical" (|) puts the new pane to the right; "horizontal" (-) puts it below`)
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
+func runTileSplit(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
 	}
+	defer s.Close()
+	direction := stringFlag(inv, "direction")
 	dirEnum, ok := parseSplitDirection(direction)
 	if !ok {
-		return control.EmitError("invalid_request", "--direction must be horizontal|vertical")
+		return nil, cli.Usagef("--direction must be horizontal|vertical")
 	}
-	cc, _, tileID, err := openTileCRDTCall(hub, in)
+	cc, _, tileID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer cc.close()
 	childA := id.Generate()
 	childB := id.Generate()
 	posA := lexorank.First()
@@ -52,7 +45,7 @@ func RunTileSplit(rawCtx any, args []string) error {
 		ops = append(ops, opSetTabTileID(cc.bs, t.TabType, t.TabID, childA))
 	}
 	if err := cc.submitOps(ops); err != nil {
-		return err
+		return nil, err
 	}
 	// Output names reflect what the user gets back from the split:
 	//   split_tile_id          — the original tile, now a SPLIT
@@ -66,11 +59,27 @@ func RunTileSplit(rawCtx any, args []string) error {
 	//                                   second: right for a vertical
 	//                                   divider, bottom for a
 	//                                   horizontal).
-	return control.EmitData(map[string]any{
-		"split_tile_id":                   tileID,
-		"leaf_tile_with_existing_tabs_id": childA,
-		"leaf_tile_with_empty_tabs_id":    childB,
-	})
+	return tileSplitResult{
+		SplitTileID:                tileID,
+		LeafTileWithExistingTabsID: childA,
+		LeafTileWithEmptyTabsID:    childB,
+	}, nil
+}
+
+// tileSplitResult is the result of `tile split`.
+type tileSplitResult struct {
+	SplitTileID                string `json:"split_tile_id"`
+	LeafTileWithExistingTabsID string `json:"leaf_tile_with_existing_tabs_id"`
+	LeafTileWithEmptyTabsID    string `json:"leaf_tile_with_empty_tabs_id"`
+}
+
+// QuietLines prints the newly created empty leaf tile ID so callers can pass
+// `T=$(leapmux tile split self -q)` directly into `agent open --tile`.
+func (r tileSplitResult) QuietLines() []string {
+	if r.LeafTileWithEmptyTabsID == "" {
+		return nil
+	}
+	return []string{r.LeafTileWithEmptyTabsID}
 }
 
 // RunTileClose closes a tile. Behaviour depends on the target kind
@@ -92,30 +101,25 @@ func RunTileSplit(rawCtx any, args []string) error {
 //	                       for grids).
 //
 // Tombstoning the calling tab's tile kills its PTY, so
-// `guardTileClose` rejects that case unless --force is supplied.
-func RunTileClose(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, withTabs string
-	var force, recursive, allowBusy bool
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.BoolVar(&force, "force", false, "close even if the calling tab sits on the target tile (would kill the caller's own PTY)")
-	fs.BoolVar(&allowBusy, "allow-busy", false, allowBusyFlagHelp)
-	fs.StringVar(&withTabs, "with-tabs", "", `policy for live tabs on the closing tile (or subtree): "close" tombstones them; "move" migrates them to the heir tile. Required when the target has tabs.`)
-	fs.BoolVar(&recursive, "recursive", false, "required to close a SPLIT or GRID tile; cascades the close to every descendant in one batch")
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
+// `guardTileClose` rejects that case unless --allow-self is supplied.
+func runTileClose(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
 	}
+	defer s.Close()
+	allowSelf := boolFlag(inv, allowSelfFlag)
+	allowBusy := boolFlag(inv, "allow-busy")
+	withTabs := stringFlag(inv, "with-tabs")
+	recursive := boolFlag(inv, "recursive")
 	policy, err := parseWithTabsPolicy(withTabs)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cc, workspaceID, tileID, err := openTileCRDTCall(hub, in)
+	cc, workspaceID, tileID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer cc.close()
 
 	// Argument-validation phase: reject targets the command can't
 	// operate on at all (grid node, grid cell, non-leaf without
@@ -131,30 +135,27 @@ func RunTileClose(rawCtx any, args []string) error {
 	// produce different visual outcomes for root vs non-root grids,
 	// and `tile remove-grid --with-tabs` handles both uniformly).
 	if kind == leapmuxv1.NodeKind_NODE_KIND_GRID {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("tile %s is a GRID node; use `tile remove-grid --tile-id %s` (with --with-tabs=close|move when the grid has tabs) to remove it",
-				tileID, tileID))
+		return nil, cli.Usagef("tile %s is a grid", tileID).
+			WithHint(`run "leapmux tile remove-grid %s" to remove it, with --with-tabs close or move when the grid has tabs`, tileID)
 	}
 
 	if !isLeaf && !recursive {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("tile %s is a %s node, not a leaf; use `tile close --recursive` to cascade-close the subtree",
-				tileID, kindLabel(kind)))
+		return nil, cli.Usagef("tile %s is a %s node, not a leaf; use `tile close --recursive` to cascade-close the subtree",
+			tileID, kindLabel(kind))
 	}
 
 	// Reject closing a grid cell directly. Tombstoning a single cell
 	// leaves a renderer-synthesised empty placeholder in the grid
 	// (renderTree.ts `__empty_<grid>_<idx>`) that isn't addressable in
-	// the CRDT — `tab open --tile-id` can't target it, so the slot is
+	// the CRDT — `agent open --tile` can't target it, so the slot is
 	// effectively unusable. Grid shape is fixed at make-grid time;
 	// shrinking it isn't supported, so closing a single cell has no
 	// sensible interpretation. Users who want to clear the cell
 	// should close its tabs individually; users who want to remove
 	// the grid should use `tile remove-grid`.
 	if parentID, ok := isGridCell(cc.bs.State, tileID); ok {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("tile %s is a cell of grid %s; closing a single cell leaves an unusable hole. Close the tabs on the cell with `tab close`, or use `tile remove-grid --tile-id %s` to remove the whole grid",
-				tileID, parentID, parentID))
+		return nil, cli.Usagef("tile %s is a cell of grid %s; closing one cell would leave a hole that nothing can fill", tileID, parentID).
+			WithHint(`close the tabs on the cell with "leapmux tab close", or remove the whole grid with "leapmux tile remove-grid %s"`, parentID)
 	}
 
 	rootNodeID := cc.bs.State.GetWorkspaces()[workspaceID].GetRootNodeId()
@@ -169,28 +170,27 @@ func RunTileClose(rawCtx any, args []string) error {
 	// Policy-decision phase: a tile with live tabs needs an explicit
 	// --with-tabs choice (mirrors the frontend's CloseTileDialog).
 	// This runs BEFORE the self-target guard so a user who hasn't
-	// chosen a policy yet doesn't get a `--force`-shaped error for a
+	// chosen a policy yet doesn't get a `--allow-self`-shaped error for a
 	// problem they haven't reached — they'd just hit the same wall
-	// again after adding --force.
+	// again after adding --allow-self.
 	if len(tabsAffected) > 0 && policy == withTabsUnspecified {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("tile %s has %d live tab(s); pass --with-tabs=close to tombstone them or --with-tabs=move to migrate them to the heir tile",
-				tileID, len(tabsAffected)))
+		return nil, cli.Usagef("tile %s has %d live tab(s); pass --with-tabs=close to tombstone them or --with-tabs=move to migrate them to the heir tile",
+			tileID, len(tabsAffected))
 	}
 
 	// Safety phase: refuse to tear down the calling tab's own PTY
-	// unless --force. Skipped for --with-tabs=move because that path
+	// unless --allow-self. Skipped for --with-tabs=move because that path
 	// migrates the tab's tile_id before tombstoning its old tile, so
 	// the tab (and its PTY) survive.
 	if policy != withTabsMove {
-		if err := guardTileClose(cc.bs.State, tileID, force); err != nil {
-			return err
+		if err := guardLayoutClose("tile "+tileID, tabsAffected, allowSelf); err != nil {
+			return nil, err
 		}
 		// Running work, for the same reason and in the same place. Skipped for
 		// --with-tabs=move as well: migrating a tab keeps its agent and its PTY
 		// alive, so there is nothing to interrupt.
 		if err := guardTabsBusy(cc, tabsAffected, allowBusy); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -204,8 +204,7 @@ func RunTileClose(rawCtx any, args []string) error {
 		if policy == withTabsMove && len(tabsAffected) > 0 {
 			heirID = crdt.FindHeirTileID(cc.bs.State, tileID, rootNodeID)
 			if heirID == "" {
-				return control.EmitError("invalid_request",
-					fmt.Sprintf("no heir tile available for the tabs on %s; pass --with-tabs=close instead", tileID))
+				return nil, cli.Usagef("no heir tile available for the tabs on %s; pass --with-tabs=close instead", tileID)
 			}
 		}
 		ops = buildCloseSubtreeOps(cc.bs, tileID, heirID, false)
@@ -224,8 +223,7 @@ func RunTileClose(rawCtx any, args []string) error {
 		// land without running the command first.
 		heirID = crdt.FindHeirTileID(cc.bs.State, tileID, rootNodeID)
 		if heirID == "" {
-			return control.EmitError("invalid_request",
-				fmt.Sprintf("no heir tile available for tabs on %s; pass --with-tabs=close instead", tileID))
+			return nil, cli.Usagef("no heir tile available for tabs on %s; pass --with-tabs=close instead", tileID)
 		}
 		heirPos := lexorank.First()
 		for _, t := range tabsAffected {
@@ -241,24 +239,56 @@ func RunTileClose(rawCtx any, args []string) error {
 	}
 
 	if err := cc.submitOps(ops); err != nil {
-		return err
+		return nil, err
 	}
-	out := map[string]any{
-		"tile_id":     tileID,
-		"tabs_closed": 0,
-		"tabs_moved":  0,
+	out := tileCloseResult{
+		TileID: tileID,
 	}
 	switch policy {
 	case withTabsClose:
-		out["tabs_closed"] = len(tabsAffected)
+		out.TabsClosed = len(tabsAffected)
 	case withTabsMove:
-		out["tabs_moved"] = len(tabsAffected)
-		out["heir_tile_id"] = heirID
+		out.TabsMoved = len(tabsAffected)
+		out.HeirTileID = heirID
 	default:
 		// withTabsUnspecified means the flag was absent, which handlers reject
 		// before reaching here, so the zero counts above stand.
 	}
-	return control.EmitData(out)
+	return out, nil
+}
+
+type tileCloseResult struct {
+	TileID     string `json:"tile_id"`
+	TabsClosed int    `json:"tabs_closed"`
+	TabsMoved  int    `json:"tabs_moved"`
+	HeirTileID string `json:"heir_tile_id,omitempty"`
+}
+
+func (r tileCloseResult) QuietLines() []string { return []string{r.TileID} }
+
+type tileMakeGridResult struct {
+	GridTileID                 string   `json:"grid_tile_id"`
+	Rows                       int      `json:"rows"`
+	Cols                       int      `json:"cols"`
+	LeafTileIDs                []string `json:"leaf_tile_ids"`
+	LeafTileWithExistingTabsID string   `json:"leaf_tile_with_existing_tabs_id"`
+	TabsMoved                  int      `json:"tabs_moved"`
+}
+
+func (r tileMakeGridResult) QuietLines() []string { return []string{r.GridTileID} }
+
+type tileRemoveGridResult struct {
+	GridTileID string `json:"grid_tile_id"`
+	TabsClosed int    `json:"tabs_closed"`
+	TabsMoved  int    `json:"tabs_moved"`
+	LeafTileID string `json:"leaf_tile_id,omitempty"`
+}
+
+func (r tileRemoveGridResult) QuietLines() []string {
+	if r.LeafTileID != "" {
+		return []string{r.LeafTileID}
+	}
+	return []string{r.GridTileID}
 }
 
 // withTabsPolicy is the parsed form of `--with-tabs`. Unspecified
@@ -272,8 +302,7 @@ const (
 	withTabsMove
 )
 
-// withTabsPolicyMap is the constrained --with-tabs mapping. Routed
-// through parseEnumFlag in parseWithTabsPolicy.
+// withTabsPolicyMap is the constrained --with-tabs mapping.
 var withTabsPolicyMap = map[string]withTabsPolicy{
 	"close": withTabsClose,
 	"move":  withTabsMove,
@@ -286,9 +315,9 @@ func parseWithTabsPolicy(s string) (withTabsPolicy, error) {
 	if s == "" {
 		return withTabsUnspecified, nil
 	}
-	v, ok := parseEnumFlag(s, withTabsPolicyMap)
+	v, ok := withTabsPolicyMap[s]
 	if !ok {
-		return withTabsUnspecified, control.EmitError("invalid_request", `--with-tabs must be "close" or "move"`)
+		return withTabsUnspecified, cli.Usagef(`--with-tabs must be "close" or "move"; got %q`, s)
 	}
 	return v, nil
 }
@@ -519,32 +548,32 @@ func buildCloseSubtreeOps(bs *CRDTBootstrap, tileID, migrateTo string, keepRoot 
 // the projection. Use `tile close --recursive` (for splits) or
 // `tile remove-grid` (for grids) first if the user wants to start
 // fresh.
-func RunTileMakeGrid(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub string
-	var rows, cols int
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
+func runTileMakeGrid(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
 	maxDim := int(crdt.MaxGridDimension)
-	fs.IntVar(&rows, "rows", 0, fmt.Sprintf("grid rows (1-%d, required)", maxDim))
-	fs.IntVar(&cols, "cols", 0, fmt.Sprintf("grid cols (1-%d, required)", maxDim))
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
+	rows, err := inv.Command.Flags().GetInt("rows")
+	if err != nil {
+		return nil, err
+	}
+	cols, err := inv.Command.Flags().GetInt("cols")
+	if err != nil {
+		return nil, err
 	}
 	if rows < 1 || rows > maxDim || cols < 1 || cols > maxDim {
-		return control.EmitError("invalid_request", fmt.Sprintf("--rows and --cols must be in [1, %d]", maxDim))
+		return nil, cli.Usagef("--rows and --cols must be in [1, %d]", maxDim)
 	}
-	cc, _, tileID, err := openTileCRDTCall(hub, in)
+	cc, _, tileID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer cc.close()
 
 	kind := cc.bs.State.GetNodes()[tileID].GetKind().GetValue()
 	if kind != leapmuxv1.NodeKind_NODE_KIND_LEAF && kind != leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("tile %s is a %s node; only leaf tiles can be converted to a grid", tileID, kindLabel(kind)))
+		return nil, cli.Usagef("tile %s is a %s node; only leaf tiles can be converted to a grid", tileID, kindLabel(kind))
 	}
 
 	tabsOnLeaf := crdt.TabsOnTile(cc.bs.State, tileID)
@@ -565,7 +594,7 @@ func RunTileMakeGrid(rawCtx any, args []string) error {
 			ops = append(ops,
 				opSetNodeKind(cc.bs, cellID, leapmuxv1.NodeKind_NODE_KIND_LEAF),
 				opSetNodeParentID(cc.bs, cellID, tileID),
-				opSetNodePosition(cc.bs, cellID, fmt.Sprintf("%d,%d", r, c)),
+				opSetNodePosition(cc.bs, cellID, crdt.GridCellPosition(r, c)),
 			)
 		}
 	}
@@ -578,17 +607,17 @@ func RunTileMakeGrid(rawCtx any, args []string) error {
 	}
 
 	if err := cc.submitOps(ops); err != nil {
-		return err
+		return nil, err
 	}
 
-	return control.EmitData(map[string]any{
-		"grid_tile_id":                    tileID,
-		"rows":                            rows,
-		"cols":                            cols,
-		"leaf_tile_ids":                   cellTileIDs,
-		"leaf_tile_with_existing_tabs_id": dest,
-		"tabs_moved":                      len(tabsOnLeaf),
-	})
+	return tileMakeGridResult{
+		GridTileID:                 tileID,
+		Rows:                       rows,
+		Cols:                       cols,
+		LeafTileIDs:                cellTileIDs,
+		LeafTileWithExistingTabsID: dest,
+		TabsMoved:                  len(tabsOnLeaf),
+	}, nil
 }
 
 // RunTileRemoveGrid removes a grid. The behaviour depends on
@@ -613,69 +642,60 @@ func RunTileMakeGrid(rawCtx any, args []string) error {
 //
 // Tombstoning a descendant tile kills the PTYs on it, so
 // `guardTileRemoveGrid` rejects the operation when the calling tab
-// sits anywhere inside the doomed subtree unless --force is supplied.
-func RunTileRemoveGrid(rawCtx any, args []string) error {
-	cmd := asCtx(rawCtx)
-	var hub, withTabs string
-	var force, allowBusy bool
-	var in resolve.Inputs
-	fs := flagSet(cmd, &hub)
-	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
-	fs.BoolVar(&force, "force", false, "remove even if the calling tab sits inside the target grid (would kill the caller's own PTY)")
-	fs.BoolVar(&allowBusy, "allow-busy", false, allowBusyFlagHelp)
-	fs.StringVar(&withTabs, "with-tabs", "", `policy for live tabs in the grid: "close" tombstones them; "move" collapses the grid to a single leaf (in the grid's old slot) and migrates the tabs onto it. Required when the grid has tabs.`)
-	if err := parseFlags(fs, args, cmd.Description()); err != nil {
-		return err
+// sits anywhere inside the doomed subtree unless --allow-self is supplied.
+func runTileRemoveGrid(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
 	}
+	defer s.Close()
+	allowSelf := boolFlag(inv, allowSelfFlag)
+	allowBusy := boolFlag(inv, "allow-busy")
+	withTabs := stringFlag(inv, "with-tabs")
 	policy, err := parseWithTabsPolicy(withTabs)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cc, _, gridID, err := openTileCRDTCall(hub, in)
+	cc, _, gridID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer cc.close()
 	// Argument-validation phase: target must be a GRID node.
 	if err := preflightTileKind(cc.bs.State, gridID, leapmuxv1.NodeKind_NODE_KIND_GRID, "remove-grid", "GRID", ""); err != nil {
-		return err
+		return nil, err
 	}
 	gridRec := cc.bs.State.GetNodes()[gridID]
-	descendants := crdt.DescendantsLeavesFirst(cc.bs.State, gridID)
 	tabsInSubtree := crdt.LiveTabsInSubtree(cc.bs.State, gridID)
 
 	// Policy-decision phase: a grid carrying live tabs needs an
 	// explicit --with-tabs choice (mirrors the frontend's
 	// CloseGridDialog). This runs BEFORE the self-target guard so a
 	// user who hasn't picked a policy yet doesn't get a
-	// `--force`-shaped error for a problem they haven't reached —
-	// they'd just hit the same wall again after adding --force.
+	// `--allow-self`-shaped error for a problem they haven't reached —
+	// they'd just hit the same wall again after adding --allow-self.
 	if len(tabsInSubtree) > 0 && policy == withTabsUnspecified {
-		return control.EmitError("invalid_request",
-			fmt.Sprintf("grid %s has %d live tab(s); pass --with-tabs=close to tombstone them or --with-tabs=move to collapse the grid back to a single tile with the tabs preserved",
-				gridID, len(tabsInSubtree)))
+		return nil, cli.Usagef("grid %s has %d live tab(s); pass --with-tabs=close to tombstone them or --with-tabs=move to collapse the grid back to a single tile with the tabs preserved",
+			gridID, len(tabsInSubtree))
 	}
 
 	// Safety phase: refuse to tear down the calling tab's own PTY
-	// unless --force. Skipped for --with-tabs=move because that path
+	// unless --allow-self. Skipped for --with-tabs=move because that path
 	// migrates every tab in the subtree onto the replacement leaf
 	// (or the root for a root grid), so the tab and its PTY survive.
 	if policy != withTabsMove {
-		if err := guardTileRemoveGrid(cc.bs.State, descendants, force); err != nil {
-			return err
+		if err := guardLayoutClose("grid "+gridID, tabsInSubtree, allowSelf); err != nil {
+			return nil, err
 		}
 		if err := guardTabsBusy(cc, tabsInSubtree, allowBusy); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	parentID := gridRec.GetParentId()
 	isRoot := parentID == ""
 	ops := []*leapmuxv1.CrdtOp{}
-	out := map[string]any{
-		"grid_tile_id": gridID,
-		"tabs_closed":  0,
-		"tabs_moved":   0,
+	out := tileRemoveGridResult{
+		GridTileID: gridID,
 	}
 
 	switch policy {
@@ -686,7 +706,7 @@ func RunTileRemoveGrid(rawCtx any, args []string) error {
 			// on the root tile itself.
 			ops = append(ops, buildCloseSubtreeOps(cc.bs, gridID, gridID, true)...)
 			ops = append(ops, opSetNodeKind(cc.bs, gridID, leapmuxv1.NodeKind_NODE_KIND_LEAF))
-			out["leaf_tile_id"] = gridID
+			out.LeafTileID = gridID
 		} else {
 			// Non-root grid: mint a fresh leaf in the grid's slot
 			// (inherits parent_id + position), migrate all tabs onto
@@ -702,9 +722,9 @@ func RunTileRemoveGrid(rawCtx any, args []string) error {
 				opSetNodeParentID(cc.bs, newLeaf, parentID),
 				opSetNodePosition(cc.bs, newLeaf, pos),
 			)
-			out["leaf_tile_id"] = newLeaf
+			out.LeafTileID = newLeaf
 		}
-		out["tabs_moved"] = len(tabsInSubtree)
+		out.TabsMoved = len(tabsInSubtree)
 
 	default:
 		// withTabsClose, or no tabs to worry about.
@@ -713,11 +733,11 @@ func RunTileRemoveGrid(rawCtx any, args []string) error {
 			// Root: flip the (still-alive) NodeRecord's kind to LEAF.
 			ops = append(ops, opSetNodeKind(cc.bs, gridID, leapmuxv1.NodeKind_NODE_KIND_LEAF))
 		}
-		out["tabs_closed"] = len(tabsInSubtree)
+		out.TabsClosed = len(tabsInSubtree)
 	}
 
 	if err := cc.submitOps(ops); err != nil {
-		return err
+		return nil, err
 	}
-	return control.EmitData(out)
+	return out, nil
 }

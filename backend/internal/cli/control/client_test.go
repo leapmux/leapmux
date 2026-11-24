@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -453,19 +455,47 @@ func (h *workerSideChannelHub) CloseChannel(
 
 // TestNewClientFromEnv_NoHubErrorMentionsControlCommand locks the
 // guidance a user sees when the caller supplies no transport input: neither the
-// --hub flag, LEAPMUX_HUB, nor LEAPMUX_CONTROL_SOCK. The message points
-// at the renamed `leapmux control auth login` command, so a future
-// rename that forgets this string fails the test.
+// --hub flag, LEAPMUX_HUB, nor LEAPMUX_CONTROL_SOCK, and no stored credential.
+// The envelope points at the `leapmux control auth login` command, so a
+// future rename that forgets this string fails the test.
 func TestNewClientFromEnv_NoHubErrorMentionsControlCommand(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 	t.Setenv("LEAPMUX_HUB", "")
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 
 	_, err := control.NewClientFromEnv("")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "leapmux control auth login",
-		"the no-transport error must guide the user at the control command")
-	assert.NotContains(t, err.Error(), "leapmux remote",
+	var noHub *control.NoHubError
+	require.ErrorAs(t, err, &noHub)
+	envelope := cli.FromError(err)
+	assert.Equal(t, cli.CodeNotLoggedIn, envelope.Code, "with no credential stored, the user is signed in nowhere")
+	hints := strings.Join(envelope.Hints, "\n")
+	assert.Contains(t, hints, "leapmux auth login",
+		"the no-transport error must guide the user at the auth command")
+	assert.Contains(t, hints, "--hub")
+	assert.NotContains(t, hints, "leapmux remote",
 		"the guidance must not reference the retired remote command name")
+}
+
+// With several credentials stored and no default chosen, the user is signed
+// in and must choose: the envelope is a usage error that states `auth use`.
+func TestNewClientFromEnv_SeveralHubsAndNoDefaultAskForAChoice(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+	t.Setenv("LEAPMUX_HUB", "")
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	for _, hub := range []string{"https://a.example", "https://b.example"} {
+		require.NoError(t, control.SaveCredentials(hub, control.CredentialFile{HubURL: hub, AccessToken: "lmx_a_x"}))
+	}
+
+	_, err := control.NewClientFromEnv("")
+	envelope := cli.FromError(err)
+	assert.Equal(t, cli.CodeUsage, envelope.Code)
+	assert.Contains(t, envelope.Message, "2 hubs")
+	assert.Contains(t, strings.Join(envelope.Hints, "\n"), "leapmux auth use <hub>")
+
+	require.NoError(t, control.SetDefaultHub("https://b.example"))
+	c, err := control.NewClientFromEnv("")
+	require.NoError(t, err, "a chosen default selects the hub")
+	assert.Equal(t, "https://b.example", c.HubURL)
 }
 
 // TestOpenE2EEChannel_RejectsIdentityMismatch pins the ExpectedUserID
@@ -537,13 +567,6 @@ func TestHubSocketClientSendsBearerNotIPCHeader(t *testing.T) {
 	// ControlIPCService refuses: the peer is the hub, not the worker.
 	_, err = c.ControlIPCService()
 	require.Error(t, err)
-
-	// The WebSocket surfaces refuse a socket hub URL: they build absolute
-	// WS URLs from the hub origin, which a socket URL cannot provide.
-	_, err = c.OpenUserEvents(context.Background(), nil)
-	require.ErrorContains(t, err, "http(s) hub origin")
-	_, err = c.OpenE2EEChannel(context.Background(), context.Background(), "worker-1")
-	require.ErrorContains(t, err, "http(s) hub origin")
 }
 
 // TestWorkerIPCClientSendsIPCHeader is the mirror: a worker-spawned
@@ -703,7 +726,7 @@ func TestNewClient_RemoteHubGetsAWebSocketClient(t *testing.T) {
 // TestWorkerIPCStreamLaneCarriesNoTimeout pins the lane a control-IPC SERVER
 // STREAM must run on.
 //
-// `events watch` over local IPC and `agent messages --follow` both open
+// `layout watch` over local IPC and `agent messages --follow` both open
 // ControlIPCService.StreamInner, which rides the HTTP client rather than a
 // WebSocket. An http.Client timeout covers the BODY read and a stream's body
 // ends only when the stream does, so the timed unary client severed both

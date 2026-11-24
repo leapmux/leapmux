@@ -264,12 +264,12 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, user
 // delegation scope used both for minting the bearer and for keying the
 // channel pool. An error that the sibling's handler answers comes back as the
 // *channelwire.RPCError that tunnel.Channel.CallRPC returns, which keeps its code.
-func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error) {
+func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error) {
 	ch, err := c.channelFor(ctx, targetWorkerID, userID)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := ch.CallRPC(ctx, method, payload)
+	resp, err := ch.CallRequest(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -292,27 +292,27 @@ func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID us
 // CLI simply stops receiving events and never learns why. Pooling is a
 // connection-reuse optimisation; it must not make two independent
 // subscribers share an identity.
-func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
+func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	ch, err := c.dedicatedChannel(ctx, targetWorkerID, userID)
 	if err != nil {
 		return err
 	}
 	defer ch.Close()
-	return runStream(ctx, ch, method, payload, onMsg, bindCtrl)
+	return runStream(ctx, ch, req, onMsg, bindCtrl)
 }
 
 // streamRPCChannel is what runStream needs from a dedicated channel.
 // *tunnel.Channel implements it, and a test substitutes a fake.
 type streamRPCChannel interface {
 	streamChannel
-	SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers tunnel.RPCHandlers) (uint64, error)
+	SendRequestNoWait(ctx context.Context, req *leapmuxv1.InnerRpcRequest, handlers tunnel.RPCHandlers) (uint64, error)
 	UnregisterPending(reqID uint64)
 	UnregisterStream(reqID uint64)
 }
 
 // runStream runs one server-streaming inner RPC on ch, which belongs to this
 // stream alone, and returns when the stream ends or ctx is cancelled.
-func runStream(ctx context.Context, ch streamRPCChannel, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
+func runStream(ctx context.Context, ch streamRPCChannel, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	done := make(chan struct{})
 	var doneOnce sync.Once
 	var streamErr error
@@ -336,7 +336,7 @@ func runStream(ctx context.Context, ch streamRPCChannel, method string, payload 
 	// hanging until the caller's context expires. streamevents.ChannelTransport
 	// watches a response channel for the same reason.
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := ch.SendRPCNoWait(ctx, method, payload, tunnel.RPCHandlers{
+	reqID, err := ch.SendRequestNoWait(ctx, req, tunnel.RPCHandlers{
 		Response: respCh,
 		Stream: func(m *leapmuxv1.InnerStreamMessage) {
 			if closed.Load() {

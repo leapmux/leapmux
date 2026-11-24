@@ -72,6 +72,14 @@ service WorkerConnectorService {
   rpc ResolveTabPublication(ResolveTabPublicationRequest) returns (ResolveTabPublicationResponse) {
     option (leapmux.v1.access) = { public: {} };
   }
+  // Verify a notification destination against the authenticated Worker's owner.
+  rpc CheckNotificationWorkspace(CheckNotificationWorkspaceRequest) returns (google.protobuf.Empty) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+}
+
+message CheckNotificationWorkspaceRequest {
+  string workspace_id = 1;
 }
 
 message PublishTabRequest {
@@ -175,6 +183,10 @@ service WorkerManagementService {
   // List registered workers for the authenticated user. A worker that is
   // deregistering is not listed.
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+  // Read a witness for the authenticated account's active Worker inventory.
+  rpc GetWorkerEnrollmentRevision(GetWorkerEnrollmentRevisionRequest) returns (GetWorkerEnrollmentRevisionResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
   // Get a single worker's details. A worker that is deregistering answers
@@ -289,6 +301,14 @@ message ListWorkersRequest {
 message ListWorkersResponse {
   repeated Worker workers = 1;
   PageResponse page = 2;
+}
+
+message GetWorkerEnrollmentRevisionRequest {}
+
+message GetWorkerEnrollmentRevisionResponse {
+  string owner_user_id = 1;
+  int64 revision = 2;
+  int64 active_workers = 3;
 }
 
 message GetWorkerRequest {

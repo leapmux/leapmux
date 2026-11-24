@@ -66,6 +66,55 @@ type AutoRetrySchedule struct {
 type TurnState struct {
 	Active    bool
 	Steerable bool
+	// TurnSequence identifies an active turn across publications. A provider
+	// can change it when a successor starts without an inactive interval.
+	// A zero value leaves the current active scope in place.
+	TurnSequence uint64
+}
+
+// NativeInputReceipt identifies one dispatched input in the provider's session.
+// The Worker records it when it accepts the dispatch.
+type NativeInputReceipt struct {
+	SessionID string
+	InputID   string
+	// TurnID binds the input during acceptance when dispatch already identifies its turn.
+	TurnID string
+}
+
+// NativeReplyTurn describes a completed native turn in its canonical order.
+type NativeReplyTurn struct {
+	SessionID string
+	TurnID    string
+	Outcome   leapmuxv1.AgentInputTurnOutcome
+	Items     []NativeReplyItem
+	Inputs    []NativeReplyBoundary
+	// ExclusiveItems replaces provisional transcript membership when native
+	// evidence identifies every input that owns these items.
+	ExclusiveItems bool
+}
+
+type NativeReplyItem struct {
+	Ordinal    int64
+	MessageKey string
+}
+
+type NativeReplyBoundary struct {
+	InputID      string
+	AfterOrdinal int64
+}
+
+// NativeControlInputs identifies one pending request and the inputs it blocks.
+type NativeControlInputs struct {
+	SessionID  string
+	RequestID  string
+	InstanceID string
+	InputIDs   []string
+}
+
+// InputReceiptSender supplies the native identity needed to follow an input
+// through its own turn.
+type InputReceiptSender interface {
+	SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error)
 }
 
 // TurnStateLease keeps one accepted provider state current through a store mutation.
@@ -89,6 +138,12 @@ type MessageContent struct {
 	IdempotencyKey string
 	// AgentSessionID identifies the provider session that produced these bytes.
 	AgentSessionID string
+	// NativeInputID identifies the verified input that owns this output.
+	NativeInputID string
+	// NativeTurnID identifies the provider turn that produced this output.
+	NativeTurnID string
+	// InputTurnOutcome is set only on the last record of a verified turn.
+	InputTurnOutcome leapmuxv1.AgentInputTurnOutcome
 	// Supplemental holds recovered provider data. Metadata holds worker-calculated fields.
 	Supplemental []byte
 	Metadata     []byte
@@ -228,6 +283,10 @@ type PreparedTranscriptWriter interface {
 
 // TurnServices publishes the provider's turn state.
 type TurnServices interface {
+	BindNativeInputTurn(receipt NativeInputReceipt, nativeTurnID string) error
+	RetireNativeInputTurn(receipt NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error
+	PublishNativeReplyTurn(turn NativeReplyTurn) error
+	SetNativeControlInputs(control NativeControlInputs) error
 	// SetTurnState publishes whether a turn is active. It is the only signal for
 	// that fact. Steerable states whether the active turn accepts steering.
 	// The Worker derives two answers from this state.
@@ -264,16 +323,25 @@ type TurnServices interface {
 	// authoritative -- so each provider's tests pin the clear on every path that
 	// ends a turn.
 	SetTurnState(state TurnState, seq uint64)
-	// RequeueDroppedInput hands back input that the provider accepted into the
-	// running turn and that the agent dropped before the model read it. The
-	// Worker queues it as the reader's next message, under the queue's own rules,
-	// and states in the transcript why the message appears again. dropID
-	// identifies the drop within the agent, so a second call for the same drop
-	// queues nothing and writes nothing.
+	// RequeueDroppedInput hands back a steer that the provider accepted into the
+	// running turn and that the agent dropped before the model read it. dropped
+	// is the request that the provider received in SteerInput or
+	// SteerInputForSession, unchanged: the Worker finds the queue item by
+	// dropped.InputID and queues it again as the reader's next input, under the
+	// queue's own rules. A message from another agent comes back as that agent's
+	// message, with its sender and the text that the sender wrote, never as the
+	// user's. The Worker also states in the transcript why the input appears
+	// again.
+	//
+	// The input id identifies the drop, so a second call for the same input
+	// queues nothing and writes nothing. A provider that hands back a steer
+	// declares SteerSurvivor. Without it, the queue returns a steer to the queue
+	// itself when the turn ends during the steer, and a hand-back that came
+	// before that return already queued a copy, so the input comes twice.
 	//
 	// An error means that the queue did not take the input, and the provider
 	// must then tell the reader that the model never read it.
-	RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error
+	RequeueDroppedInput(dropped SteerRequest) error
 }
 
 // SpanServices owns transcript span state.
@@ -316,9 +384,15 @@ type ControlRequest struct {
 	// value makes the sink store the session that it holds when it stores the
 	// request, and that session is empty until the first UpdateSessionID.
 	AgentSessionID string
+	// NativeTurnID identifies the provider turn that owns this prompt.
+	NativeTurnID string
+	// NativeInputIDs identifies the inputs that this request blocks when the
+	// provider can prove their ownership before their turn bindings are stored.
+	NativeInputIDs []string
 	RequestID      string
 	// InstanceID optionally identifies this publication across asynchronous cancellation.
-	// Providers that supply it must use a fresh secure ID for each new request instance.
+	// A provider that supplies it must use a fresh secure ID when the request
+	// changes its payload, session, or blocking behavior.
 	InstanceID string
 	Payload    []byte
 	SourceSeq  int64
@@ -345,6 +419,9 @@ type SessionServices interface {
 	// The broadcast then identifies the same session as the child's rows.
 	MessageSessionID() string
 	UpdateSessionID(sessionID string)
+	// BindChildSessionID records a child's first native session. It is
+	// idempotent for that session and refuses to replace a different one.
+	BindChildSessionID(sessionID string) error
 	// AdoptNativeSession starts a new publication lifetime, even when the ID
 	// repeats. Call it before publishing the adopted session's output.
 	AdoptNativeSession(sessionID string)
@@ -755,6 +832,15 @@ const (
 	SteerOutcomeUncertain
 )
 
+// SteerResolution reports the delivery outcome of one queue dispatch.
+// A consumed input can carry the receipt of its receiving turn.
+type SteerResolution struct {
+	InputID   string
+	AttemptID string
+	Outcome   SteerOutcome
+	Receipt   NativeInputReceipt
+}
+
 // SteerEchoServices reports delivery outcomes in the order of accepted steers.
 type SteerEchoServices interface {
 	// ReportSteersEchoed follows the output before the steer and precedes the output after it.
@@ -772,6 +858,8 @@ type OutputEffectServices interface {
 	OutputQueue() *OutputQueue
 	// CaptureSteerReport retains the original publisher and span context. A failed effect can be retried.
 	CaptureSteerReport(count int, outcome SteerOutcome) func() error
+	// CaptureSteerResolution retains the same context for a report about one dispatch.
+	CaptureSteerResolution(resolution SteerResolution) func() error
 	// CaptureBackgroundTaskExit retains the original physical registry owner and exit decision.
 	// A nil operation means that no process-exit registry write is admitted.
 	CaptureBackgroundTaskExit(stopped bool) func() error
@@ -895,6 +983,30 @@ func RestartRequiredSettings(options optionmap.Map) SettingsApplyResult {
 	return SettingsApplyResult{Settlements: settlements}
 }
 
+// RawInput is one frame that an agent receives in the provider's own wire
+// format, without the user-message envelope (Agent.SendRawInput).
+type RawInput struct {
+	// Data is the frame.
+	Data []byte
+	// Stop is the user stop that the frame delivers, such as the interrupt
+	// frame of SendAgentRawMessage. The zero value delivers no stop.
+	Stop StopContext
+	// ControlInstanceID identifies the control request instance that the frame
+	// answers: the claim token that the Worker stored for the request, which is
+	// ControlRequest.InstanceID when the provider stated one. Only the Worker's
+	// delivery of an answer states it, and every other frame leaves it empty.
+	//
+	// A provider can replace a waiting request with another instance under the
+	// same request ID, for example when the runtime asks something else in the
+	// same place. An answer to the replaced instance must not reach the
+	// replacement. So a provider that states its own instances delivers an
+	// answer only while the instance that the answer states is the request's
+	// current instance. It refuses an answer that states no instance, because
+	// that answer cannot prove which instance it is for
+	// (ControlInstanceRefusal).
+	ControlInstanceID string
+}
+
 // Agent is the interface that all coding agent providers must implement.
 type Agent interface {
 	AgentID() string
@@ -934,7 +1046,12 @@ type Agent interface {
 	// lives on the interface rather than in each provider's SendInput so a new
 	// provider cannot leave it out.
 	PublishTurnActive() TurnState
-	SendRawInput(data []byte, stop StopContext) error
+	// SendRawInput writes one frame in the provider's own wire format, without
+	// the user-message envelope. The Worker writes two kinds of frame through
+	// it: the answer to a control request, which states the request instance
+	// that it answers, and a frame of SendAgentRawMessage, such as an
+	// interrupt, which can carry a user stop. RawInput states which.
+	SendRawInput(input RawInput) error
 	Stop()
 	IsStopped() bool
 	DiscardOutput()
@@ -1029,10 +1146,39 @@ type InputProcessPreparer interface {
 	InputProcessRecoveryRequired() bool
 }
 
+// SteerRequest is one input that the Worker's queue steers into a running turn.
+type SteerRequest struct {
+	// InputID identifies the queue item that the steer delivers. A provider
+	// that drops the steer before the model reads it hands the whole request
+	// back through RequeueDroppedInput, and the Worker reads the item by this
+	// id. The Manager refuses a request without one, so every steer that a
+	// provider receives states its item.
+	InputID string
+	// AttemptID is set when the queue waits for an echo. A new dispatch of the
+	// same input gets a new ID, so a late native report cannot resolve it.
+	AttemptID string
+	// Content is the text that the model reads. The Worker builds it from the
+	// item: a message from another agent holds the header that identifies the
+	// sender, and a control reply holds the words that state what it answers.
+	Content string
+	// Attachments are the files of the item, after the provider's attachment
+	// policy normalized them.
+	Attachments []*leapmuxv1.Attachment
+}
+
+// validate refuses a request that states no queue item. A provider that
+// dropped such a steer could not hand it back.
+func (r SteerRequest) validate() error {
+	if r.InputID == "" {
+		return errors.New("the steer request states no queue item")
+	}
+	return nil
+}
+
 // InputSteerer adds input to an active turn. The queue calls it only for an
 // explicit Steer operation. Normal dispatch always starts a later turn.
 type InputSteerer interface {
-	SteerInput(content string, attachments []*leapmuxv1.Attachment) error
+	SteerInput(request SteerRequest) error
 	// SupportsSteering reports whether this provider can steer the running
 	// process right now. The Manager publishes the answer to the client, which
 	// shows or hides the Steer control, so a provider that cannot steer must
@@ -1041,6 +1187,11 @@ type InputSteerer interface {
 	// interface, not to an optional one, so a new provider cannot forget it and
 	// claim a capability that it does not have.
 	SupportsSteering() bool
+}
+
+// SteerReceiptSender reports the provider's durable admission of a steer.
+type SteerReceiptSender interface {
+	SteerInputWithReceipt(request SteerRequest) (NativeInputReceipt, error)
 }
 
 // SteerPreparer persists buffered output before the queue reserves the steer's position.
@@ -1064,7 +1215,7 @@ type SteerPolicy struct{ RowAtEcho, SurvivesTurnEnd bool }
 // A provider without this capability cannot steer an answer to a recorded question.
 type SessionInputSteerer interface {
 	InputSteerer
-	SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error
+	SteerInputForSession(sessionID string, request SteerRequest) error
 }
 
 var (
@@ -1123,6 +1274,7 @@ func (e *AgentBusyError) Unwrap() error {
 
 // ChildInput carries one user message and its readiness notification.
 type ChildInput struct {
+	InputID     string
 	Content     string
 	Attachments []*leapmuxv1.Attachment
 	// Ready asks the Worker to reconsider this child's queue. The capture
@@ -1133,7 +1285,8 @@ type ChildInput struct {
 
 // ChildInputResult distinguishes native prompt admission from a started turn.
 type ChildInputResult struct {
-	StartsTurn bool
+	StartsTurn    bool
+	NativeReceipt NativeInputReceipt
 }
 
 // InputReadinessAdmission retains the source of a native readiness observation.
@@ -1160,6 +1313,18 @@ type ChildSteerer interface {
 	// ActiveChildTurnState classifies the child's current turn after
 	// SendChildInput returns ErrAgentBusy.
 	ActiveChildTurnState(childKey string) TurnState
+}
+
+// ChildSteerReceiptSender reports durable admission into a child conversation.
+type ChildSteerReceiptSender interface {
+	SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error)
+}
+
+// ChildEchoSteerer confirms the dispatch at the native child input boundary.
+type ChildEchoSteerer interface {
+	ChildSteerer
+	SteerChildInputAtEcho(childKey string, request SteerRequest) error
+	ChildSteerSurvivesTurnEnd() bool
 }
 
 // ChildInterrupter lets a provider stop a child turn without claiming that the

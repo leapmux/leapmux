@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -443,7 +442,8 @@ func (a *Agent) stopCanCancelLocked() bool {
 // A stop request requires its native integer ID and the current native session.
 // It takes the queued steers back first, as Interrupt does. The answer to the
 // hook-trust question goes to the question, because no ZCode request waits for it.
-func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	if handled, err := a.workspaceTrust.Answer(a.sink, zcodeWorkspaceTrustHost{a}, data); handled {
 		return err
 	}
@@ -641,6 +641,8 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 		a.resetZCodeTurnProgress(owner)
 	}
 	if owner != nil {
+		a.retireObservedInput(owner.nativeReceipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED)
+		a.retireZCodeTurnSteers(owner, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED)
 		a.Mu.Lock()
 		a.dropZCodeTurnLocked(owner)
 		a.Mu.Unlock()
@@ -789,20 +791,27 @@ func (a *Agent) Wait() error {
 func (a *Agent) finalizeZCodeProcessTranscript() {
 	completion := a.ProcessExitCompletion()
 	a.flushZCodeGeneration(completion)
-	a.retireZCodeProcessTurns()
+	outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
+	if completion == agent.MessageCompletionInterrupted {
+		outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	}
+	a.retireZCodeProcessTurns(outcome)
 	a.persistIncompleteZCodeTools(completion)
 	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // retireZCodeProcessTurns clears every owner after process exit and orders the
 // last retry callback with native event dispatch.
-func (a *Agent) retireZCodeProcessTurns() {
+func (a *Agent) retireZCodeProcessTurns(outcome leapmuxv1.AgentInputTurnOutcome) {
 	a.dispatchMu.Lock()
 	defer a.unlockZCodeDispatch()
 	a.retryHistory = nil
 	a.Mu.Lock()
 	a.compactionSessionID = ""
-	a.clearZCodeTurnsLocked()
+	retired := a.clearZCodeTurnsLocked()
 	a.Mu.Unlock()
+	for _, receipt := range retired {
+		a.retireObservedInput(receipt, outcome)
+	}
 	a.publishZCodeModelAPIRetryLocked()
 }

@@ -38,32 +38,6 @@ describe('reasonix provider', () => {
       binary: true,
     })
   })
-
-  it('reads the native MCP form request', () => {
-    const schema = {
-      type: 'object',
-      properties: {
-        count: { type: 'string', maxLength: 4096 },
-      },
-    }
-    expect(plugin?.controls?.elicitation?.({
-      method: 'elicitation/create',
-      params: {
-        sessionId: 'session-1',
-        mode: 'form',
-        message: 'Choose a count.',
-        requestedSchema: schema,
-      },
-    })).toEqual({
-      mode: 'form',
-      message: 'Choose a count.',
-      server: '',
-      schema,
-      url: '',
-      title: '',
-      description: '',
-    })
-  })
 })
 
 describe('native output file paths', () => {

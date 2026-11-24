@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -312,8 +311,14 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	if err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
-	_, err = a.submitReservedPrompt(submission, parts)
-	return agent.ChildInputResult{}, err
+	reply, err := a.submitReservedPrompt(submission, parts)
+	if err != nil && (!errors.Is(err, agent.ErrDeliveryUncertain) || !a.hasObservedPrompt(submission)) {
+		return agent.ChildInputResult{}, err
+	}
+	if reply.Status == kimiPromptBlocked && !a.hasObservedPrompt(submission) {
+		a.retireKimiInput(submission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+	}
+	return agent.ChildInputResult{NativeReceipt: submission.receipt()}, nil
 }
 
 func (a *Agent) reserveChildPromptSubmission(childKey string, input agent.ChildInput) (*kimiPromptSubmission, error) {
@@ -345,6 +350,7 @@ func (a *Agent) reserveChildPromptSubmission(childKey string, input agent.ChildI
 		return nil, err
 	}
 	submission.ready = input.Ready
+	submission.replySink = a.runSink(run)
 	if input.Ready != nil {
 		submission.readyCapture = agent.CaptureTranscript(a.runSink(run), agent.MessageContent{}, agent.SpanInfo{})
 	}

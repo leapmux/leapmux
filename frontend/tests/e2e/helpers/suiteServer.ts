@@ -26,6 +26,7 @@ import { registerAmbientScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
 import { stopProcess } from './process'
 import { trackProcess } from './processRegistry'
+import { QODER_BOOTSTRAP_HOSTS } from './qoderSurface'
 import { hubDataDir, hubSpawnEnv, waitForHubStart } from './server'
 import { startTlsProxy } from './tlsProxy'
 
@@ -139,7 +140,8 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
   }
 
   try {
-    modelTLS = await startTlsProxy(`${mockModel.url}/healthz`, options.tmpDir)
+    modelTLS = await startTlsProxy(`${mockModel.url}/healthz`, options.tmpDir, QODER_BOOTSTRAP_HOSTS)
+    mockModel.setQoderBootstrapPort(Number(new URL(modelTLS.url).port))
     await bootstrapFirstAdmin(options.binaryPath, hubDataDir(dataDir))
     // Awaiting matters: the function runs each provider's CLI setup (Letta's
     // `backend local` / `connect`, which discover the mock's model catalog). A
@@ -167,13 +169,14 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
       socketDir = mkdtempSync(join(tmpdir(), 'lm-e2e-sock-'))
       const localListen = `unix:${join(socketDir, 'hub.sock')}`
       proc = spawn(options.binaryPath, [
+        'daemon',
         'dev',
         'run',
-        '-listen',
+        '--listen',
         `${E2E_HUB_HOST}:0`,
-        '-listen',
+        '--listen',
         localListen,
-        '-data-dir',
+        '--data-dir',
         dataDir,
       ], {
         stdio: ['ignore', log, log],
@@ -236,9 +239,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
 async function bootstrapFirstAdmin(binaryPath: string, dataDir: string): Promise<void> {
   await execFileAsync(binaryPath, [
     'recover',
-    'bootstrap',
     'create-admin',
-    '--username',
     TEST_ADMIN_USERNAME,
     '--password',
     TEST_ADMIN_PASSWORD,

@@ -148,6 +148,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.finishOpenCompactions()
 	a.steers.DropAll()
 	a.steers.Settle(a.sink)
+	a.retireOpenReplies(agent.SteerOutcomeDropped)
 	stateRaw, err := a.sendCommand(CommandGetState, nil, a.APITimeout())
 	if err != nil {
 		return "", fmt.Errorf("read the new omp session: %w", err)

@@ -161,7 +161,7 @@ func TestJunieSteerSendsTheNativeMethod(t *testing.T) {
 			a.SetSessionIDForTest("junie-session")
 			a.SetPromptActiveForTest(true)
 
-			err := a.SteerInput("Steer text while active.", nil)
+			err := a.SteerInput(agent.SteerRequest{Content: "Steer text while active."})
 			assert.Equal(t, tc.wantErr, err)
 			sent := false
 			for _, request := range requests() {
@@ -225,7 +225,7 @@ func TestJunieStartedNewTurnEndsAtTheLastRequestCompleteMarker(t *testing.T) {
 	a.HooksForTest().SessionNotificationMetadata = a.observeJunieTurnEnd
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput("Steer text while active.", nil))
+	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "Steer text while active."}))
 	assert.False(t, a.AgentTurnActive(), "the turn of Junie's own waits for the prompt that runs")
 
 	// The prompt's response hands the busy state to the waiting turn.

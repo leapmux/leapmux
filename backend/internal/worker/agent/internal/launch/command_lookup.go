@@ -304,6 +304,22 @@ func pwshNativeLookupSetup() string {
 
 func isCsh(shell string) bool { return shell == "csh" || shell == "tcsh" }
 
+// cshUnaliasBuiltins is the first line of each csh command that the package
+// builds. An alias replaces a builtin at the start of a line, and tcsh and csh
+// let a profile alias each builtin that the commands call there: set, setenv,
+// unsetenv, exec, else, foreach and break. The line removes those aliases. It
+// stands alone, because csh substitutes the aliases of a whole line before it
+// runs any command of that line. tcsh refuses an alias named unalias.
+//
+// It removes no other alias, so a selected wrapper alias keeps the echo,
+// which, eval and source of its profile. buildCshCommand removes the alias of
+// exit only before its own exit, for the same reason. The other words that
+// the commands use, such as then, endif and end, take no alias.
+//
+// No line of the file can remove an alias named if: it breaks the line that
+// sources the file (see cshInvocationPrefix) before the file runs.
+const cshUnaliasBuiltins = "unalias set setenv unsetenv exec else foreach break\n"
+
 func lookupSetup(shell string, nativeOnly bool) string {
 	switch {
 	case terminal.IsPwsh(shell):
@@ -315,7 +331,7 @@ func lookupSetup(shell string, nativeOnly bool) string {
 	case shell == "xonsh":
 		return xonshLookupSetup
 	case isCsh(shell):
-		return ""
+		return cshUnaliasBuiltins
 	default:
 		return posixProtocolSetup(shell) + posixLookupSetup(shell)
 	}
@@ -323,9 +339,13 @@ func lookupSetup(shell string, nativeOnly bool) string {
 
 // renderCommandProbe runs each lookup in the same profile and working directory.
 // Metadata is line-framed separately from the profile's output.
-func renderCommandProbe(shell, nonce string, names []string, nativeOnly bool) string {
+func renderCommandProbe(shell, nonce string, names []string, nativeOnly, loginShell bool) string {
 	var script strings.Builder
-	script.WriteString(lookupSetup(shell, nativeOnly))
+	if shell == "elvish" {
+		script.WriteString(elvishSetup(loginShell))
+	} else {
+		script.WriteString(lookupSetup(shell, nativeOnly))
+	}
 	if shell == "bash" && !nativeOnly {
 		fmt.Fprintf(&script, "__lm_probe_records=('' '%s:start')\n", nonce)
 		for index, name := range names {
@@ -366,6 +386,8 @@ func protocolLine(shell, line string, first bool) string {
 	case shell == "fish":
 		separator = "builtin printf '\\n'; "
 		record = "builtin printf '%s\\n' " + fishQuote(line) + "\n"
+	case shell == "elvish":
+		return elvishProtocolLine(line, first)
 	case isCsh(shell):
 		separator = "'/bin/echo' ''\n"
 		record = "'/bin/echo' " + cshQuote(line) + "\n"
@@ -406,6 +428,8 @@ func commandProbeResult(shell, name, prefix string, nativeOnly bool) string {
 			nuQuote(name), nativeOnly, value, absent)
 	case shell == "xonsh":
 		return xonshProbeResult(name, present, absent, nativeOnly)
+	case shell == "elvish":
+		return elvishProbeResult(name, present, absent, nativeOnly)
 	case shell == "fish":
 		if nativeOnly {
 			return fmt.Sprintf("__leapmux_lookup %s path\nif test \"$__lm_kind\" = external; if not string match -q '/*' -- \"$__lm_path\"; set __lm_path \"$PWD/$__lm_path\"; end; builtin printf '%%s:%%s\\n' '%s' \"$__lm_path\"; else; builtin printf '%%s\\n' '%s'; end\n",

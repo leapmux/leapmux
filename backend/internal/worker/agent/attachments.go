@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -195,9 +194,12 @@ func isTextAttachmentMimeType(mimeType string) bool {
 
 // ValidateAttachment requires each provider to implement its audio route explicitly.
 // Other kinds retain the provider's existing policy.
+//
+// A refusal states the file name, as every provider's own refusal does: the
+// failed input shows the refusal, and the input can hold several files.
 func (ProviderDefaults) ValidateAttachment(attachment ClassifiedAttachment) error {
 	if attachment.Kind == contracts.AttachmentMediaKindAudio {
-		return fmt.Errorf("audio attachments are not supported by this provider")
+		return fmt.Errorf("this provider does not support audio attachments: %s", attachment.Filename)
 	}
 	return nil
 }

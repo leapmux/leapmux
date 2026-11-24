@@ -45,7 +45,8 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	return err
 }
 
-func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
+func (a *Agent) SendRawInput(input agent.RawInput) error {
+	raw, stop := input.Data, input.Stop
 	var message frame
 	if err := json.Unmarshal(raw, &message); err != nil {
 		return err

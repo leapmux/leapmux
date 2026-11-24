@@ -7,6 +7,7 @@ import { AccountPasskeys } from '../account/AccountPasskeys'
 import { AccountPassword } from '../account/AccountPassword'
 import { AccountProfile } from '../account/AccountProfile'
 import { AppRegistrations } from '../account/AppRegistrations'
+import { AgentSkillsControl } from './AgentSkillsControl'
 import { KeybindingsControl } from './KeybindingsControl'
 import { KeyPinsControl } from './KeyPinsControl'
 import { NetworkAccessControl } from './NetworkAccessControl'
@@ -102,4 +103,6 @@ export const CUSTOM_EDITORS: Record<CustomEditorId, CustomEditorComponent> = {
   terminalTheme: TerminalThemeControl,
   /** Highlighted code. Separate from the terminal: different surface, different habits. */
   syntaxTheme: SyntaxThemeControl,
+  /** Curated LeapMux Agent Skills installed and auto-synced on connected Workers. */
+  agentSkills: AgentSkillsControl,
 }

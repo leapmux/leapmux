@@ -95,16 +95,18 @@ async function readyWorker(name) {
       throw new Error(`Worker exited before readiness:\n${docker(['logs', name])}`)
     }
     try {
+      // With --json, `leapmux daemon worker status` prints the report as {"data": ...}.
       const status = JSON.parse(docker([
         'exec',
         name,
         '/usr/local/bin/leapmux',
+        'daemon',
         'worker',
         'status',
         '--data-dir',
         '/data/worker',
         '--json',
-      ]))
+      ])).data
       if (status.readiness === 'ready' && status.registration.state === 'registered' && status.connection.state === 'connected')
         return status.registration.worker_id
     }
@@ -172,12 +174,10 @@ try {
     '/usr/local/bin/leapmux',
   ], [
     'recover',
-    'bootstrap',
     'create-admin',
+    'container-admin',
     '--data-dir',
     '/data/hub',
-    '--username',
-    'container-admin',
     '--password',
     password,
   ])
@@ -204,6 +204,7 @@ try {
     `${volume}:/data`,
   ]
   const registration = create([...workerOptions, '--entrypoint', '/usr/local/bin/leapmux'], [
+    'daemon',
     'worker',
     'register',
     '--data-dir',
@@ -248,16 +249,17 @@ try {
   const probe = join(directory, 'probe')
   writeFileSync(probe, `#!/bin/sh
 set -eu
-test "$#" -eq 4
-test "$1" = "$LEAPMUX_MODE"
-test "$2" = run
-test "$3" = -config
-test "$4" = "$LEAPMUX_DATA_DIR/$LEAPMUX_MODE/$LEAPMUX_MODE.yaml"
+test "$#" -eq 5
+test "$1" = daemon
+test "$2" = "$LEAPMUX_MODE"
+test "$3" = run
+test "$4" = --config
+test "$5" = "$LEAPMUX_DATA_DIR/$LEAPMUX_MODE/$LEAPMUX_MODE.yaml"
 test "$LEAPMUX_HUB_LOG_LEVEL" = debug
-test -f "$4"
-test "$(stat -c %a "$4")" = 600
+test -f "$5"
+test "$(stat -c %a "$5")" = 600
 if test "$PROBE_EXISTING" = yes; then
-  test "$(cat "$4")" = preserved
+  test "$(cat "$5")" = preserved
 else
   test ! -s "$4"
 fi

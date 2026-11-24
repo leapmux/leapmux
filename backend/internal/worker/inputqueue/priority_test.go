@@ -52,6 +52,45 @@ func itemIDs(snapshot Snapshot) []string {
 	return ids
 }
 
+func TestEnqueueRequiresAFutureScheduleOnlyForANewInput(t *testing.T) {
+	t.Parallel()
+	clock, _, store := newPriorityFixture(t)
+	ctx := t.Context()
+	first := NewItem{
+		AgentID: "agent-1", ID: "scheduled", Text: "Continue.",
+		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		ScheduledAt: scheduled(t, time.Minute), RequireFutureSchedule: true,
+	}
+	initial, err := store.Enqueue(ctx, first)
+	require.NoError(t, err)
+	clock.Advance(time.Minute).MustWait(ctx)
+
+	replay, err := store.Enqueue(ctx, first)
+	require.NoError(t, err)
+	assert.Equal(t, initial.Revision, replay.Revision)
+	assert.Equal(t, []string{"scheduled"}, itemIDs(replay))
+
+	changed := first
+	changed.Text = "Different content."
+	_, err = store.Enqueue(ctx, changed)
+	require.ErrorIs(t, err, ErrConflict)
+
+	fresh := first
+	fresh.ID = "fresh-expired"
+	_, err = store.Enqueue(ctx, fresh)
+	require.ErrorIs(t, err, ErrInvalidInput)
+	assert.ErrorContains(t, err, "must be in the future")
+	afterRefusal, err := store.Snapshot(ctx, first.AgentID)
+	require.NoError(t, err)
+	assert.Equal(t, replay.Revision, afterRefusal.Revision)
+	assert.Equal(t, []string{"scheduled"}, itemIDs(afterRefusal))
+
+	fresh.RequireFutureSchedule = false
+	defaultAdmission, err := store.Enqueue(ctx, fresh)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"scheduled", "fresh-expired"}, itemIDs(defaultAdmission))
+}
+
 func TestPriorityGroupsEmptyPastNowAndFutureSchedules(t *testing.T) {
 	t.Parallel()
 	clock, _, store := newPriorityFixture(t)
@@ -377,12 +416,12 @@ func TestPriorityRepeatedEnqueueComparesTheSchedule(t *testing.T) {
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{})
 	require.NoError(t, err)
 
-	_, added, err := store.enqueue(ctx, NewItem{
+	_, receipt, err := store.enqueue(ctx, NewItem{
 		ID: "scheduled", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Continue.",
 		ScheduledAt: at,
 	}, nil)
 	require.NoError(t, err)
-	assert.False(t, added)
+	assert.False(t, receipt.Added)
 	later := at.Add(time.Hour)
 	_, _, err = store.enqueue(ctx, NewItem{
 		ID: "scheduled", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Continue.",

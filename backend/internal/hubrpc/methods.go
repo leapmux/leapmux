@@ -55,8 +55,10 @@ type Descriptor struct {
 // Registry is the single source of truth for hub methods, keyed by the full
 // procedure path. Adding a method only requires one entry.
 var Registry = registry(
+	entry[leapmuxv1.GetSystemInfoRequest, leapmuxv1.GetSystemInfoResponse](leapmuxv1connect.SystemServiceGetSystemInfoProcedure),
 	entry[leapmuxv1.LocateTabRequest, leapmuxv1.LocateTabResponse](leapmuxv1connect.WorkspaceServiceLocateTabProcedure),
 	entry[leapmuxv1.LocateTileRequest, leapmuxv1.LocateTileResponse](leapmuxv1connect.WorkspaceServiceLocateTileProcedure),
+	entry[leapmuxv1.ReadLayoutEventsRequest, leapmuxv1.ReadLayoutEventsResponse](leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure),
 	entry[leapmuxv1.ListTabsRequest, leapmuxv1.ListTabsResponse](leapmuxv1connect.WorkspaceServiceListTabsProcedure),
 	entry[leapmuxv1.SubmitOpsRequest, leapmuxv1.SubmitOpsResponse](leapmuxv1connect.UserCRDTSubmitOpsProcedure),
 	entry[leapmuxv1.UpdatePresenceRequest, leapmuxv1.UpdatePresenceResponse](leapmuxv1connect.UserCRDTUpdatePresenceProcedure),
@@ -67,6 +69,7 @@ var Registry = registry(
 	entry[leapmuxv1.RenameWorkspaceRequest, leapmuxv1.RenameWorkspaceResponse](leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure),
 	entry[leapmuxv1.DeleteWorkspaceRequest, leapmuxv1.DeleteWorkspaceResponse](leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure),
 	entry[leapmuxv1.ListWorkersRequest, leapmuxv1.ListWorkersResponse](leapmuxv1connect.WorkerManagementServiceListWorkersProcedure),
+	entry[leapmuxv1.GetWorkerEnrollmentRevisionRequest, leapmuxv1.GetWorkerEnrollmentRevisionResponse](leapmuxv1connect.WorkerManagementServiceGetWorkerEnrollmentRevisionProcedure),
 	entry[leapmuxv1.GetWorkerRequest, leapmuxv1.GetWorkerResponse](leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure),
 )
 

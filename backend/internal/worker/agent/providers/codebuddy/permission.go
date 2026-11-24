@@ -14,6 +14,7 @@ import (
 
 type nativeControl struct {
 	payload         []byte
+	inputReceipt    agent.NativeInputReceipt
 	automaticReply  []byte
 	rootPermission  bool
 	published       bool
@@ -44,6 +45,11 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 	a.mu.Lock()
 	_, ownTool := a.turnToolCalls[request.ToolUseID]
 	record.rootPermission = request.Subtype == contracts.CodebuddyControlRequestSubtypeCanUseTool && request.AgentID == "" && ownTool
+	if reply := a.inputReply; record.rootPermission && reply != nil {
+		if _, owned := reply.tools[request.ToolUseID]; owned {
+			record.inputReceipt = reply.receipt
+		}
+	}
 	if a.controls == nil {
 		a.controls = make(map[string]*nativeControl)
 	}
@@ -73,7 +79,10 @@ func (a *Agent) canBypassControlLocked(record *nativeControl) bool {
 }
 
 func (a *Agent) publishRegisteredControl(id string, record *nativeControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: id, Payload: record.payload})
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: id, Payload: record.payload,
+		AgentSessionID: record.inputReceipt.SessionID, NativeTurnID: record.inputReceipt.TurnID,
+	})
 	a.mu.Lock()
 	current := a.controls[id] == record
 	record.published, record.ready = err == nil, true

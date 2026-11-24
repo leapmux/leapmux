@@ -1,6 +1,5 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { mimoExtractControl } from '../../../src/components/chat/providers/mimo/extractControl'
 import { MIMO_OPTION, MIMO_PERMISSION_POLICY } from '../../../src/generated/contracts/mimo-protocol'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration, projectConfigurationWorker } from '../helpers/nativeWorkspaceTrustLimit'
 import { mimoTest } from '../mimo-fixtures'
@@ -10,7 +9,6 @@ import { nativeLaunch } from './scenarios'
 mimoTest('classifies real native controls and proves the missing workspace-trust route', async ({ native }) => {
   await exerciseMissingWorkspaceTrustRoute(native, {
     askOption: `${MIMO_OPTION.PermissionPolicy}-${MIMO_PERMISSION_POLICY.Ask}`,
-    classify: mimoExtractControl,
     operation: () => createMiMoControlDeletion(native, 'workspace-trust'),
   })
 })

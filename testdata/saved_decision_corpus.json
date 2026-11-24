@@ -1,0 +1,1422 @@
+{
+  "_readme": "Saved permission decisions CAPTURED from the installed runtimes, rather than written by hand (RL-001): five cases on September 14, 2026; Grok Build, Qwen Code and Oh My Pi on September 23, 2026; Codewhale, Kiro and Cline on September 24, 2026; and Kimi Code on October 30, 2026. Claude Code, Cursor, OpenCode, Kilo and Pi approved the same operations on their own on the first day, so they have no case. Each case states the two halves that the Worker stores for one answer: request, the provider section of supplemental_content, and response, the agent's own bytes. requestId is the id under which the Worker stores the request, which the answer addresses. prompt is the control prompt that the Worker records in the row's metadata (control_prompt): agent.ReadControlPrompt of the request with no transcript row, as protojson, with a permission's input_json compact. decision is the neutral decision that the Worker records beside it (control_decision), as protojson: the answer that the reader chose, which the provider turned into response. label is what the transcript row reads. permissionModeLabels, where a case states it, holds the labels of the agent's permission modes that the browser holds when it reads the row: a plan approval names the mode that it switches to by its label. TestSavedDecisionCorpusPrompts (backend/internal/worker/agent/providers) reads each request through its provider and requires the stated prompt. TestSavedDecisionCorpusDecisions answers each request with its decision through its provider, resolves the answer as the Worker does before delivery, and requires the captured response. frontend/src/components/chat/savedDecisionCorpus.test.ts reads each prompt and decision through the shared saved-answer display and requires the label. The display reads no request and no response, so a runtime that changes its wire shape cannot change the words of a reloaded row. The worker metadata is otherwise absent: it carries a per-request claim token, which is a credential, and the displayed words never derive from it.",
+  "cases": [
+    {
+      "name": "codex Allow",
+      "provider": "AGENT_PROVIDER_CODEX",
+      "requestId": "jsonrpc:0",
+      "note": "Codex answers with a bare decision word and states no option list.",
+      "label": "Allow",
+      "request": {
+        "method": "item/fileChange/requestApproval",
+        "id": 0,
+        "params": {
+          "threadId": "01a09eee-c9e5-7af0-821f-8263b3228ae8",
+          "turnId": "01a09f1a-6b3f-7863-857c-1983b4eaf0ef",
+          "itemId": "exec-bdce7ddf-fe2f-4f8b-a807-c2a038d43e5c",
+          "startedAtMs": 1789375706740,
+          "reason": null,
+          "grantRoot": null
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "decision": "accept"
+        }
+      },
+      "prompt": {
+        "permission": {
+          "title": "File Change",
+          "options": [
+            {
+              "optionId": "accept",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow"
+            },
+            {
+              "optionId": "cancel",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Cancel",
+              "endsTurn": true
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "accept"
+        }
+      }
+    },
+    {
+      "name": "github-copilot Allow once",
+      "provider": "AGENT_PROVIDER_GITHUB_COPILOT",
+      "requestId": "copilot-HPfsGc_Bya70ZnVHt8Ac0GUO4VJoSaaMjmUCGqE6RlU",
+      "note": "Copilot names its own approval kind, and `approve-once` is the single-use one.",
+      "label": "Allow once",
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "sessionId": "4d29e3a0-ea62-4580-8080-55c32e89058c",
+          "event": {
+            "type": "permission.requested",
+            "data": {
+              "requestId": "da1d347c-00fa-4b9a-ad64-874f9c2bb5a3",
+              "permissionRequest": {
+                "kind": "shell",
+                "toolCallId": "call_9s8QPL2WSVY7xwYumO7hAgOX",
+                "fullCommandText": "ls -1",
+                "intention": "List current directory entries",
+                "commands": [
+                  {
+                    "identifier": "ls -1",
+                    "readOnly": false
+                  }
+                ],
+                "commandSegments": [
+                  {
+                    "identifier": "ls",
+                    "fullCommandText": "ls -1"
+                  }
+                ],
+                "possiblePaths": [],
+                "possibleUrls": [],
+                "hasWriteFileRedirection": false,
+                "canOfferSessionApproval": false
+              },
+              "promptRequest": {
+                "kind": "commands",
+                "fullCommandText": "ls -1",
+                "intention": "List current directory entries",
+                "commandIdentifiers": [
+                  "ls -1"
+                ],
+                "canOfferSessionApproval": false,
+                "toolCallId": "call_9s8QPL2WSVY7xwYumO7hAgOX",
+                "assistedApproval": {
+                  "recommendation": "approve",
+                  "reason": "User explicitly requested listing current directory entries with `ls -1`; it is harmless read-only inspection.",
+                  "model": "gpt-5.6-luna"
+                }
+              },
+              "agentMode": "interactive"
+            },
+            "id": "6be5cc1f-e115-4f72-b624-ad288cbd1b9f",
+            "timestamp": "2026-09-14T08:02:41.484Z",
+            "parentId": "394bc080-5aee-469e-ac1d-c1c7a0ce3b12"
+          }
+        }
+      },
+      "response": {
+        "response": {
+          "request_id": "copilot-HPfsGc_Bya70ZnVHt8Ac0GUO4VJoSaaMjmUCGqE6RlU",
+          "response": {
+            "kind": "approve-once"
+          },
+          "subtype": "success"
+        },
+        "type": "control_response"
+      },
+      "prompt": {
+        "permission": {
+          "title": "List current directory entries",
+          "command": "ls -1",
+          "inputJson": "{\"kind\":\"shell\",\"toolCallId\":\"call_9s8QPL2WSVY7xwYumO7hAgOX\",\"fullCommandText\":\"ls -1\",\"intention\":\"List current directory entries\",\"commands\":[{\"identifier\":\"ls -1\",\"readOnly\":false}],\"commandSegments\":[{\"identifier\":\"ls\",\"fullCommandText\":\"ls -1\"}],\"possiblePaths\":[],\"possibleUrls\":[],\"hasWriteFileRedirection\":false,\"canOfferSessionApproval\":false}",
+          "options": [
+            {
+              "optionId": "once",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow once"
+            },
+            {
+              "optionId": "reject",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Reject"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "once"
+        }
+      }
+    },
+    {
+      "name": "github-copilot Allow for this project",
+      "provider": "AGENT_PROVIDER_GITHUB_COPILOT",
+      "requestId": "copilot-ySEH4ZYy1nWBJijF3XCHFJ0jQM2Jm3AI4785BVe0lJg",
+      "note": "The location scope carries a second `approval.kind` beside the decision.",
+      "label": "Allow for this project",
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "sessionId": "4d29e3a0-ea62-4580-8080-55c32e89058c",
+          "event": {
+            "type": "permission.requested",
+            "data": {
+              "requestId": "09aef253-4031-438c-b31f-abce2bc8f8d3",
+              "permissionRequest": {
+                "kind": "write",
+                "toolCallId": "custom_call_XHRLjJLbxJTEhzZX19TApHPv",
+                "intention": "Create file",
+                "fileName": "/work/probe-two.txt",
+                "diff": "\ndiff --git a/work/probe-two.txt b/work/probe-two.txt\ncreate file mode 100644\nindex 0000000..0000000\n--- a/dev/null\n+++ b/work/probe-two.txt\n@@ -1,0 +1,2 @@\n+beta\n+\n\n",
+                "newFileContents": "beta\n",
+                "canOfferSessionApproval": true
+              },
+              "promptRequest": {
+                "kind": "write",
+                "toolCallId": "custom_call_XHRLjJLbxJTEhzZX19TApHPv",
+                "intention": "Create file",
+                "fileName": "/work/probe-two.txt",
+                "diff": "\ndiff --git a/work/probe-two.txt b/work/probe-two.txt\ncreate file mode 100644\nindex 0000000..0000000\n--- a/dev/null\n+++ b/work/probe-two.txt\n@@ -1,0 +1,2 @@\n+beta\n+\n\n",
+                "newFileContents": "beta\n",
+                "canOfferSessionApproval": true,
+                "assistedApproval": {
+                  "recommendation": "requireApproval",
+                  "reason": "Proposed file name and content differ from the user's authorized request.",
+                  "model": "gpt-5.6-luna"
+                }
+              },
+              "agentMode": "interactive"
+            },
+            "id": "ea864f5f-0c4f-463f-8e2c-9e2064ad7d0e",
+            "timestamp": "2026-09-14T08:12:24.993Z",
+            "parentId": "7774c31d-8b92-4134-a4ce-3635720b7d92"
+          }
+        }
+      },
+      "response": {
+        "response": {
+          "request_id": "copilot-ySEH4ZYy1nWBJijF3XCHFJ0jQM2Jm3AI4785BVe0lJg",
+          "response": {
+            "approval": {
+              "kind": "write"
+            },
+            "kind": "approve-for-location"
+          },
+          "subtype": "success"
+        },
+        "type": "control_response"
+      },
+      "prompt": {
+        "permission": {
+          "title": "Create file",
+          "inputJson": "{\"kind\":\"write\",\"toolCallId\":\"custom_call_XHRLjJLbxJTEhzZX19TApHPv\",\"intention\":\"Create file\",\"fileName\":\"/work/probe-two.txt\",\"diff\":\"\\ndiff --git a/work/probe-two.txt b/work/probe-two.txt\\ncreate file mode 100644\\nindex 0000000..0000000\\n--- a/dev/null\\n+++ b/work/probe-two.txt\\n@@ -1,0 +1,2 @@\\n+beta\\n+\\n\\n\",\"newFileContents\":\"beta\\n\",\"canOfferSessionApproval\":true}",
+          "options": [
+            {
+              "optionId": "once",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow once"
+            },
+            {
+              "optionId": "session",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Allow for this session"
+            },
+            {
+              "optionId": "project",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Allow for this project"
+            },
+            {
+              "optionId": "reject",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Reject"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "project"
+        }
+      }
+    },
+    {
+      "name": "goose Allow",
+      "provider": "AGENT_PROVIDER_GOOSE",
+      "requestId": "jsonrpc:\"9f6040cd-a7e4-49bf-b497-f73c73b09d3f\"",
+      "note": "Goose names every option after its own id, which is no label, so the row reads the words of the button that sends the option (ACP-004).",
+      "label": "Allow",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "9f6040cd-a7e4-49bf-b497-f73c73b09d3f",
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "20260914_21",
+          "toolCall": {
+            "toolCallId": "call_400f32a30c3c49708c3d1995",
+            "kind": "other",
+            "status": "pending",
+            "title": "todo: todo write",
+            "rawInput": {
+              "content": "- [ ] Run `ls -1` in the current directory via the shell tool\n- [ ] Report its output to the user"
+            }
+          },
+          "options": [
+            {
+              "optionId": "allow_always",
+              "name": "allow_always",
+              "kind": "allow_always"
+            },
+            {
+              "optionId": "allow_once",
+              "name": "allow_once",
+              "kind": "allow_once"
+            },
+            {
+              "optionId": "reject_once",
+              "name": "reject_once",
+              "kind": "reject_once"
+            },
+            {
+              "optionId": "reject_always",
+              "name": "reject_always",
+              "kind": "reject_always"
+            }
+          ]
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "9f6040cd-a7e4-49bf-b497-f73c73b09d3f",
+        "result": {
+          "outcome": {
+            "outcome": "selected",
+            "optionId": "allow_once"
+          }
+        }
+      },
+      "prompt": {
+        "permission": {
+          "title": "todo: todo write",
+          "inputJson": "{\"content\":\"- [ ] Run `ls -1` in the current directory via the shell tool\\n- [ ] Report its output to the user\"}",
+          "options": [
+            {
+              "optionId": "allow_always",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "allow_always"
+            },
+            {
+              "optionId": "allow_once",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "allow_once"
+            },
+            {
+              "optionId": "reject_once",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "reject_once"
+            },
+            {
+              "optionId": "reject_always",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ALWAYS",
+              "name": "reject_always"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow_once"
+        }
+      }
+    },
+    {
+      "name": "reasonix Allow",
+      "provider": "AGENT_PROVIDER_REASONIX",
+      "requestId": "jsonrpc:1",
+      "note": "Reasonix writes its own option names, and its single-use one is a bare \"Allow\".",
+      "label": "Allow",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "1901ef1a-52bf-4fe8-974a-5b36c29ef6ef",
+          "toolCall": {
+            "toolCallId": "gate-1",
+            "title": "write_file reload-probe.txt",
+            "kind": "edit",
+            "status": "pending",
+            "rawInput": {
+              "content": "alpha",
+              "path": "reload-probe.txt"
+            },
+            "locations": [
+              {
+                "path": "/work/reload-probe.txt"
+              }
+            ],
+            "_meta": {
+              "reasonix.io": {
+                "approvalId": "1",
+                "fresh": false,
+                "subject": "reload-probe.txt",
+                "tool": "write_file"
+              }
+            }
+          },
+          "options": [
+            {
+              "optionId": "allow_once",
+              "name": "Allow",
+              "kind": "allow_once"
+            },
+            {
+              "optionId": "allow_always",
+              "name": "Allow Edit for this session",
+              "kind": "allow_always"
+            },
+            {
+              "optionId": "reject_once",
+              "name": "Reject",
+              "kind": "reject_once"
+            }
+          ]
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "outcome": {
+            "outcome": "selected",
+            "optionId": "allow_once"
+          }
+        }
+      },
+      "prompt": {
+        "permission": {
+          "title": "write_file reload-probe.txt",
+          "inputJson": "{\"content\":\"alpha\",\"path\":\"reload-probe.txt\"}",
+          "options": [
+            {
+              "optionId": "allow_once",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow"
+            },
+            {
+              "optionId": "allow_always",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Allow Edit for this session"
+            },
+            {
+              "optionId": "reject_once",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Reject"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow_once"
+        }
+      }
+    },
+    {
+      "name": "reasonix Allow Bash=ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt for this session",
+      "provider": "AGENT_PROVIDER_REASONIX",
+      "requestId": "jsonrpc:5",
+      "label": "Allow Bash=ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt for this session",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "1901ef1a-52bf-4fe8-974a-5b36c29ef6ef",
+          "toolCall": {
+            "toolCallId": "gate-5",
+            "title": "bash ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt",
+            "kind": "execute",
+            "status": "pending",
+            "rawInput": {
+              "command": "ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt"
+            },
+            "_meta": {
+              "reasonix.io": {
+                "approvalId": "5",
+                "fresh": false,
+                "subject": "ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt",
+                "tool": "bash"
+              }
+            }
+          },
+          "options": [
+            {
+              "optionId": "allow_once",
+              "name": "Allow",
+              "kind": "allow_once"
+            },
+            {
+              "optionId": "allow_always",
+              "name": "Allow Bash=ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt for this session",
+              "kind": "allow_always"
+            },
+            {
+              "optionId": "reject_once",
+              "name": "Reject",
+              "kind": "reject_once"
+            }
+          ]
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "outcome": {
+            "outcome": "selected",
+            "optionId": "allow_always"
+          }
+        }
+      },
+      "prompt": {
+        "permission": {
+          "title": "bash ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt",
+          "command": "ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt",
+          "inputJson": "{\"command\":\"ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt\"}",
+          "options": [
+            {
+              "optionId": "allow_once",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow"
+            },
+            {
+              "optionId": "allow_always",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Allow Bash=ls -1; echo '---'; wc -c probe-two.txt; od -c probe-two.txt for this session"
+            },
+            {
+              "optionId": "reject_once",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Reject"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow_always"
+        }
+      }
+    },
+    {
+      "name": "zcode Allow once",
+      "provider": "AGENT_PROVIDER_ZCODE",
+      "requestId": "perm_0aa4972e-11ff-468d-9795-014ea21b46e8",
+      "note": "ZCode answers with a decision word and a reason, and offers no approval scope. Its answer states no option, so the decision states the option that the reader chose.",
+      "label": "Allow once",
+      "request": {
+        "type": "control_request",
+        "request_id": "perm_0aa4972e-11ff-468d-9795-014ea21b46e8",
+        "id": "server-3",
+        "method": "interaction/requestPermission",
+        "request": {
+          "tool_name": "Write",
+          "tool_use_id": "call_a34f7e8c209048e88a6768ae",
+          "input": {
+            "file_path": "/work/reload-probe.txt",
+            "content": "alpha"
+          }
+        },
+        "params": {
+          "input": {
+            "file_path": "/work/reload-probe.txt",
+            "content": "alpha"
+          },
+          "reason": "Tool has side effects and requires approval",
+          "requestId": "perm_0aa4972e-11ff-468d-9795-014ea21b46e8",
+          "riskLevel": "medium",
+          "sessionId": "sess_7967eb7a-1f1c-4df1-8e2a-0f53459d3c77",
+          "options": [
+            {
+              "kind": "allow_once",
+              "name": "Allow once",
+              "optionId": "allow_once",
+              "response": {
+                "decision": "allow",
+                "reason": "Approved once"
+              }
+            },
+            {
+              "description": "Do not ask again for matching requests in this project",
+              "kind": "allow_always",
+              "name": "Always allow in this project",
+              "optionId": "allow_project",
+              "response": {
+                "decision": "allow",
+                "permissionUpdates": [
+                  {
+                    "behavior": "allow",
+                    "rules": [
+                      {
+                        "toolName": "Write",
+                        "ruleContent": "/work/reload-probe.txt"
+                      }
+                    ],
+                    "type": "addRules"
+                  }
+                ],
+                "reason": "Approved for this project"
+              }
+            },
+            {
+              "kind": "deny",
+              "name": "Deny",
+              "optionId": "deny",
+              "response": {
+                "decision": "deny",
+                "reason": "Denied"
+              }
+            }
+          ],
+          "toolCallId": "call_a34f7e8c209048e88a6768ae",
+          "toolName": "Write",
+          "turnId": "turn_f78e2d5b-99be-415b-82e1-ff91e03f30ad"
+        }
+      },
+      "response": {
+        "id": "server-3",
+        "result": {
+          "decision": "allow",
+          "reason": "Approved once"
+        }
+      },
+      "prompt": {
+        "permission": {
+          "title": "Write",
+          "reason": "Tool has side effects and requires approval",
+          "inputJson": "{\"file_path\":\"/work/reload-probe.txt\",\"content\":\"alpha\"}",
+          "options": [
+            {
+              "optionId": "allow_once",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow once"
+            },
+            {
+              "optionId": "allow_project",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Always allow in this project"
+            },
+            {
+              "optionId": "deny",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Deny"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow_once"
+        }
+      }
+    },
+    {
+      "name": "codewhale Allow",
+      "provider": "AGENT_PROVIDER_CODEWHALE",
+      "requestId": "approval:approval_14c379cb62564e9db7baae791c12a0fe",
+      "note": "Codewhale answers an approval with a decision word alone. The response is the reply frame the worker posted, and the request is the stored payload beside the runtime's own `approval.required` event, from Codewhale 0.9.13.",
+      "label": "Allow",
+      "request": {
+        "event": {
+          "schema_version": 1,
+          "seq": 17,
+          "event": "approval.required",
+          "kind": "approval.required",
+          "thread_id": "thr_700b0f43",
+          "turn_id": "turn_94101b47",
+          "item_id": null,
+          "timestamp": "2026-09-23T20:05:41.351736+00:00",
+          "created_at": "2026-09-23T20:05:41.351736+00:00",
+          "payload": {
+            "id": "approval_14c379cb62564e9db7baae791c12a0fe",
+            "approval_id": "approval_14c379cb62564e9db7baae791c12a0fe",
+            "tool_call_id": "call_f984d324",
+            "tool_name": "bash",
+            "description": "Execute a shell command in the workspace and return stdout and stderr. Output keeps the last 2000 lines or 50KB. An optional timeout is expressed in seconds; when omitted the command is killed after 120 seconds, so pass an explicit timeout for work expected to take longer. In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (the narrowest wider mode that suffices) and a one-sentence justification; the approval prompt asks the user.",
+            "intent_summary": null
+          },
+          "previous_seq": 16
+        },
+        "request": {
+          "tool_name": "bash",
+          "tool_use_id": "call_f984d324",
+          "input": {
+            "command": "touch x.txt"
+          }
+        },
+        "request_id": "approval:approval_14c379cb62564e9db7baae791c12a0fe",
+        "type": "control_request"
+      },
+      "response": {
+        "frame": "approval",
+        "approval_id": "approval_14c379cb62564e9db7baae791c12a0fe",
+        "decision": "allow"
+      },
+      "prompt": {
+        "permission": {
+          "title": "bash",
+          "command": "touch x.txt",
+          "inputJson": "{\"command\":\"touch x.txt\"}",
+          "options": [
+            {
+              "optionId": "leapmux:allow",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE"
+            },
+            {
+              "optionId": "leapmux:deny",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "leapmux:allow"
+        }
+      }
+    },
+    {
+      "name": "kimi Allow for this session",
+      "provider": "AGENT_PROVIDER_KIMI_CODE",
+      "requestId": "approval_cf9626b4-39a1-41a7-8997-e8a180544556",
+      "note": "Captured from Kimi Code 2.4.0 on October 30, 2026. The Worker keeps the complete interaction frame and the native answer to the unified route. A cold browser displayed the session-scoped approval as the label below.",
+      "label": "Allow for this session",
+      "request": {
+        "type": "interaction",
+        "session_id": "session_95882f97-016a-41fe-8b84-db5d4fdb9193",
+        "agent_id": "main",
+        "event_created_at": "2026-10-30T01:05:56.980Z",
+        "interaction_id": "approval_cf9626b4-39a1-41a7-8997-e8a180544556",
+        "status": "pending",
+        "tool_call_id": "interaction-first",
+        "kind": "approval",
+        "request": {
+          "tool_name": "Bash",
+          "action": "Running: echo kimi-interaction-$((40 + 2))",
+          "tool_input_display": {
+            "kind": "command",
+            "command": "echo kimi-interaction-$((40 + 2))",
+            "cwd": "/private/tmp/leapmux-e2e-XZYER4/kimi-e2e-wd-2PLvPU",
+            "language": "bash"
+          },
+          "expires_at": "2026-10-31T01:05:56.979Z"
+        }
+      },
+      "response": {
+        "response": {
+          "request_id": "approval_cf9626b4-39a1-41a7-8997-e8a180544556",
+          "response": {
+            "kind": "approval",
+            "decision": "approved",
+            "scope": "session"
+          },
+          "subtype": "success"
+        },
+        "type": "control_response"
+      },
+      "prompt": {
+        "permission": {
+          "title": "Bash",
+          "reason": "Running: echo kimi-interaction-$((40 + 2))",
+          "command": "echo kimi-interaction-$((40 + 2))",
+          "workingDirectory": "/private/tmp/leapmux-e2e-XZYER4/kimi-e2e-wd-2PLvPU",
+          "inputJson": "{\"kind\":\"command\",\"command\":\"echo kimi-interaction-$((40 + 2))\",\"cwd\":\"/private/tmp/leapmux-e2e-XZYER4/kimi-e2e-wd-2PLvPU\",\"language\":\"bash\"}",
+          "options": [
+            {
+              "optionId": "approve",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow"
+            },
+            {
+              "optionId": "approve_for_session",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Allow for this session"
+            },
+            {
+              "optionId": "reject",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Deny"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "approve_for_session"
+        }
+      }
+    },
+    {
+      "name": "grok Yes, proceed",
+      "provider": "AGENT_PROVIDER_GROK_BUILD",
+      "requestId": "jsonrpc:0",
+      "note": "Grok Build and Qwen Code, captured from their live ACP sessions on September 23, 2026 (the permission request from the wire, and the reply LeapMux sends for the option the reader chose). Both write their own option names.",
+      "label": "Yes, proceed",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "01a0cf76-dd5f-7dd0-b6a3-934dd82157cf",
+          "toolCall": {
+            "toolCallId": "call_2_0",
+            "kind": "execute",
+            "title": "Execute `echo probe > probe.txt && ls`",
+            "rawInput": {
+              "variant": "Bash",
+              "command": "echo probe > probe.txt && ls",
+              "description": "Write probe file",
+              "is_background": false
+            },
+            "_meta": {
+              "x.ai/tool": {
+                "version": 1,
+                "name": "run_terminal_command",
+                "kind": "execute",
+                "namespace": "grok_build",
+                "label": "Run Command",
+                "read_only": false,
+                "input": {
+                  "command": "echo probe > probe.txt && ls",
+                  "description": "Write probe file"
+                }
+              }
+            }
+          },
+          "options": [
+            {
+              "optionId": "always-allow",
+              "name": "Yes, and don't ask again for bash commands",
+              "kind": "allow_always"
+            },
+            {
+              "optionId": "allow-once",
+              "name": "Yes, proceed",
+              "kind": "allow_once"
+            },
+            {
+              "optionId": "reject-once",
+              "name": "No, and tell Grok what to do differently",
+              "kind": "reject_once"
+            },
+            {
+              "optionId": "reject-always",
+              "name": "No, and don't ask again for this command",
+              "kind": "reject_always"
+            }
+          ]
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "outcome": {
+            "outcome": "selected",
+            "optionId": "allow-once"
+          }
+        }
+      },
+      "prompt": {
+        "permission": {
+          "title": "Execute `echo probe > probe.txt && ls`",
+          "command": "echo probe > probe.txt && ls",
+          "inputJson": "{\"variant\":\"Bash\",\"command\":\"echo probe > probe.txt && ls\",\"description\":\"Write probe file\",\"is_background\":false}",
+          "options": [
+            {
+              "optionId": "always-allow",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Yes, and don't ask again for bash commands"
+            },
+            {
+              "optionId": "allow-once",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Yes, proceed"
+            },
+            {
+              "optionId": "reject-once",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "No, and tell Grok what to do differently"
+            },
+            {
+              "optionId": "reject-always",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ALWAYS",
+              "name": "No, and don't ask again for this command"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "allow-once"
+        }
+      }
+    },
+    {
+      "name": "kiro Allow",
+      "provider": "AGENT_PROVIDER_KIRO",
+      "requestId": "jsonrpc:3",
+      "note": "Kiro, captured from a v3 `kiro-cli-chat acp` session on September 24, 2026.",
+      "label": "Allow",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "sess_ca621409-cf06-4c03-8911-d4c820271708",
+          "toolCall": {
+            "toolCallId": "run_command_t_sh",
+            "status": "pending",
+            "title": "echo v3-shell"
+          },
+          "options": [
+            {
+              "optionId": "accept",
+              "name": "Allow",
+              "kind": "allow_once"
+            },
+            {
+              "optionId": "always-accept",
+              "name": "Always allow",
+              "kind": "allow_always"
+            },
+            {
+              "optionId": "reject",
+              "name": "Deny",
+              "kind": "reject_once"
+            },
+            {
+              "optionId": "always-reject",
+              "name": "Always deny",
+              "kind": "reject_always"
+            }
+          ],
+          "_meta": {
+            "kiro": {
+              "toolId": "run_command",
+              "command": "echo v3-shell",
+              "consent": {
+                "capability": "shell",
+                "resource": "echo v3-shell",
+                "askType": "implicit",
+                "workspaceRoot": "/w"
+              },
+              "consentRound": 1
+            }
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "outcome": {
+            "outcome": "selected",
+            "optionId": "accept"
+          }
+        }
+      },
+      "prompt": {
+        "permission": {
+          "title": "echo v3-shell",
+          "command": "echo v3-shell",
+          "options": [
+            {
+              "optionId": "accept",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow"
+            },
+            {
+              "optionId": "always-accept",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Always allow for this session",
+              "scope": "PERMISSION_SCOPE_SESSION"
+            },
+            {
+              "optionId": "always-accept-workspace",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Always allow in this workspace",
+              "scope": "PERMISSION_SCOPE_WORKSPACE"
+            },
+            {
+              "optionId": "always-accept-user",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Always allow everywhere",
+              "scope": "PERMISSION_SCOPE_USER"
+            },
+            {
+              "optionId": "reject",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Deny"
+            },
+            {
+              "optionId": "always-reject",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ALWAYS",
+              "name": "Always deny for this session",
+              "scope": "PERMISSION_SCOPE_SESSION"
+            },
+            {
+              "optionId": "always-reject-workspace",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ALWAYS",
+              "name": "Always deny in this workspace",
+              "scope": "PERMISSION_SCOPE_WORKSPACE"
+            },
+            {
+              "optionId": "always-reject-user",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ALWAYS",
+              "name": "Always deny everywhere",
+              "scope": "PERMISSION_SCOPE_USER"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "accept"
+        }
+      }
+    },
+    {
+      "name": "qwen Allow",
+      "provider": "AGENT_PROVIDER_QWEN_CODE",
+      "requestId": "jsonrpc:0",
+      "label": "Allow",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "session/request_permission",
+        "params": {
+          "sessionId": "70dab2cd-62c7-4f76-b53e-50a950df1520",
+          "options": [
+            {
+              "optionId": "proceed_always_project",
+              "name": "Always Allow in project: touch *",
+              "kind": "allow_always"
+            },
+            {
+              "optionId": "proceed_always_user",
+              "name": "Always Allow for user: touch *",
+              "kind": "allow_always"
+            },
+            {
+              "optionId": "proceed_once",
+              "name": "Allow",
+              "kind": "allow_once"
+            },
+            {
+              "optionId": "cancel",
+              "name": "Reject",
+              "kind": "reject_once"
+            }
+          ],
+          "toolCall": {
+            "toolCallId": "call_a0915b2ff3",
+            "status": "pending",
+            "title": "touch /work/touched.txt (Create a marker file)",
+            "content": [],
+            "locations": [],
+            "kind": "execute",
+            "rawInput": {
+              "command": "touch /work/touched.txt",
+              "description": "Create a marker file"
+            },
+            "_meta": {
+              "toolName": "run_shell_command"
+            }
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "outcome": {
+            "outcome": "selected",
+            "optionId": "proceed_once"
+          }
+        }
+      },
+      "prompt": {
+        "permission": {
+          "title": "touch /work/touched.txt (Create a marker file)",
+          "command": "touch /work/touched.txt",
+          "inputJson": "{\"command\":\"touch /work/touched.txt\",\"description\":\"Create a marker file\"}",
+          "options": [
+            {
+              "optionId": "proceed_always_project",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Always Allow in project: touch *"
+            },
+            {
+              "optionId": "proceed_always_user",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ALWAYS",
+              "name": "Always Allow for user: touch *"
+            },
+            {
+              "optionId": "proceed_once",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Allow"
+            },
+            {
+              "optionId": "cancel",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Reject"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "proceed_once"
+        }
+      }
+    },
+    {
+      "name": "oh my pi Approve",
+      "provider": "AGENT_PROVIDER_OH_MY_PI",
+      "requestId": "158b2ba5001bfb93",
+      "note": "Oh My Pi asks with a `select` dialog and takes its own option word as the answer. Captured from omp 18.2.11 on September 23, 2026, with `tools.approvalMode: always-ask`; the answers are the extension_ui_response lines that LeapMux sends. Each option's name is its own id, which is no label, so the row reads the words of the button that sends the option.",
+      "label": "Allow",
+      "request": {
+        "type": "extension_ui_request",
+        "id": "158b2ba5001bfb93",
+        "method": "select",
+        "title": "Allow tool: bash\nCommand: echo approved-run",
+        "options": [
+          "Approve",
+          "Deny"
+        ]
+      },
+      "response": {
+        "type": "extension_ui_response",
+        "id": "158b2ba5001bfb93",
+        "value": "Approve"
+      },
+      "prompt": {
+        "permission": {
+          "title": "bash",
+          "command": "echo approved-run",
+          "options": [
+            {
+              "optionId": "Approve",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Approve"
+            },
+            {
+              "optionId": "Deny",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Deny"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "Approve"
+        }
+      }
+    },
+    {
+      "name": "oh my pi Deny",
+      "provider": "AGENT_PROVIDER_OH_MY_PI",
+      "requestId": "158b2ba55c9bfb95",
+      "label": "Deny",
+      "request": {
+        "type": "extension_ui_request",
+        "id": "158b2ba55c9bfb95",
+        "method": "select",
+        "title": "Allow tool: bash\nCommand: echo denied-run",
+        "options": [
+          "Approve",
+          "Deny"
+        ]
+      },
+      "response": {
+        "type": "extension_ui_response",
+        "id": "158b2ba55c9bfb95",
+        "value": "Deny"
+      },
+      "prompt": {
+        "permission": {
+          "title": "bash",
+          "command": "echo denied-run",
+          "options": [
+            {
+              "optionId": "Approve",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE",
+              "name": "Approve"
+            },
+            {
+              "optionId": "Deny",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE",
+              "name": "Deny"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "Deny"
+        }
+      }
+    },
+    {
+      "name": "cline Allow",
+      "provider": "AGENT_PROVIDER_CLINE",
+      "requestId": "approval_1790258525021_0l541",
+      "note": "Cline states each approval and each question as its hub's own event, which the worker stores verbatim: the requests below were captured from the Cline 3.0.64 hub on September 24, 2026. The stored answer is the reply the worker sends Cline, as Cline's `approval.respond` and `capability.respond` take it. The worker keeps the mode an approved plan switches to in the stored copy alone.",
+      "label": "Allow",
+      "request": {
+        "version": "v1",
+        "event": "approval.requested",
+        "eventId": "hevt_1790258525021_pu703",
+        "sessionId": "1790258346189_zqp76",
+        "timestamp": 1790258525021,
+        "payload": {
+          "approvalId": "approval_1790258525021_0l541",
+          "sessionId": "1790258346189_zqp76",
+          "agentId": "agent_1790258346331_0r5l6z",
+          "conversationId": "conv_1790258346406_9ncl4sl",
+          "iteration": 1,
+          "toolCallId": "call_bash_1",
+          "toolName": "run_commands",
+          "inputJson": "{\"commands\":[\"echo probe-bash\"]}",
+          "policy": {
+            "autoApprove": false
+          }
+        },
+        "sequence": 324
+      },
+      "response": {
+        "approvalId": "approval_1790258525021_0l541",
+        "approved": true
+      },
+      "prompt": {
+        "permission": {
+          "title": "run_commands",
+          "command": "echo probe-bash",
+          "inputJson": "{\"commands\":[\"echo probe-bash\"]}",
+          "options": [
+            {
+              "optionId": "leapmux:allow",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE"
+            },
+            {
+              "optionId": "leapmux:deny",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "leapmux:allow"
+        }
+      }
+    },
+    {
+      "name": "cline Deny",
+      "provider": "AGENT_PROVIDER_CLINE",
+      "requestId": "approval_1790258525021_0l541",
+      "label": "Deny",
+      "request": {
+        "version": "v1",
+        "event": "approval.requested",
+        "eventId": "hevt_1790258525021_pu703",
+        "sessionId": "1790258346189_zqp76",
+        "timestamp": 1790258525021,
+        "payload": {
+          "approvalId": "approval_1790258525021_0l541",
+          "sessionId": "1790258346189_zqp76",
+          "agentId": "agent_1790258346331_0r5l6z",
+          "conversationId": "conv_1790258346406_9ncl4sl",
+          "iteration": 1,
+          "toolCallId": "call_bash_1",
+          "toolName": "run_commands",
+          "inputJson": "{\"commands\":[\"echo probe-bash\"]}",
+          "policy": {
+            "autoApprove": false
+          }
+        },
+        "sequence": 324
+      },
+      "response": {
+        "approvalId": "approval_1790258525021_0l541",
+        "approved": false,
+        "reason": "The user declined this tool call."
+      },
+      "prompt": {
+        "permission": {
+          "title": "run_commands",
+          "command": "echo probe-bash",
+          "inputJson": "{\"commands\":[\"echo probe-bash\"]}",
+          "options": [
+            {
+              "optionId": "leapmux:allow",
+              "kind": "PERMISSION_OPTION_KIND_ALLOW_ONCE"
+            },
+            {
+              "optionId": "leapmux:deny",
+              "kind": "PERMISSION_OPTION_KIND_REJECT_ONCE"
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "permission": {
+          "optionId": "leapmux:deny"
+        }
+      }
+    },
+    {
+      "name": "cline plan Approve",
+      "provider": "AGENT_PROVIDER_CLINE",
+      "requestId": "approval_1790258352751_4cqa2",
+      "label": "Approve (Act)",
+      "request": {
+        "version": "v1",
+        "event": "approval.requested",
+        "eventId": "hevt_1790258352751_h0q45",
+        "sessionId": "1790258346189_zqp76",
+        "timestamp": 1790258352751,
+        "payload": {
+          "approvalId": "approval_1790258352751_4cqa2",
+          "sessionId": "1790258346189_zqp76",
+          "agentId": "agent_1790258346331_0r5l6z",
+          "conversationId": "conv_1790258346406_9ncl4sl",
+          "iteration": 1,
+          "toolCallId": "call_switch_1",
+          "toolName": "switch_to_act_mode",
+          "inputJson": "{}",
+          "policy": {
+            "autoApprove": false
+          }
+        },
+        "sequence": 286
+      },
+      "response": {
+        "approvalId": "approval_1790258352751_4cqa2",
+        "approved": true,
+        "permissionMode": "act"
+      },
+      "prompt": {
+        "plan": {},
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_FEEDBACK"
+      },
+      "decision": {
+        "plan": {
+          "approve": true,
+          "permissionMode": "act"
+        }
+      },
+      "permissionModeLabels": {
+        "plan": "Plan",
+        "act": "Act",
+        "auto-approve": "Auto-approve"
+      }
+    },
+    {
+      "name": "cline question answer",
+      "provider": "AGENT_PROVIDER_CLINE",
+      "requestId": "capreq_1790258346728_1gzza",
+      "label": "Which color do you prefer?: Blue",
+      "request": {
+        "version": "v1",
+        "event": "capability.requested",
+        "eventId": "hevt_1790258346728_xavjj",
+        "sessionId": "1790258346189_zqp76",
+        "timestamp": 1790258346728,
+        "payload": {
+          "requestId": "capreq_1790258346728_1gzza",
+          "targetClientId": "client_leapmux_probe_73642",
+          "capabilityName": "tool_executor.askQuestion",
+          "payload": {
+            "executor": "askQuestion",
+            "args": [
+              "Which color do you prefer?",
+              [
+                "Red",
+                "Blue"
+              ]
+            ],
+            "context": {
+              "sessionId": "1790258346189_zqp76",
+              "agentId": "agent_1790258346331_0r5l6z",
+              "conversationId": "conv_1790258346406_9ncl4sl",
+              "runId": "run_N9WC0hrX",
+              "iteration": 1,
+              "toolCallId": "call_ask_1",
+              "metadata": {
+                "modelSupportsImages": true
+              }
+            }
+          }
+        },
+        "sequence": 133
+      },
+      "response": {
+        "requestId": "capreq_1790258346728_1gzza",
+        "ok": true,
+        "payload": {
+          "result": "Blue"
+        }
+      },
+      "prompt": {
+        "question": {
+          "questions": [
+            {
+              "question": "Which color do you prefer?",
+              "options": [
+                {
+                  "value": "Red",
+                  "label": "Red"
+                },
+                {
+                  "value": "Blue",
+                  "label": "Blue"
+                }
+              ]
+            }
+          ]
+        },
+        "editorPurpose": "CONTROL_EDITOR_PURPOSE_ANSWER"
+      },
+      "decision": {
+        "question": {
+          "answers": [
+            {
+              "selected": [
+                "Blue"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

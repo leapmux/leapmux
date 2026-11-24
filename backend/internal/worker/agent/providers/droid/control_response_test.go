@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // permissionRequestPayload is the control request that onRequestPermission
@@ -51,8 +52,8 @@ func colorAndSizeQuestions() []map[string]any {
 	}
 }
 
-// decision is the browser's neutral control response around the fields of one
-// decision.
+// decision is the neutral control response around the fields of one decision,
+// as AnswerControlRequest builds it.
 func decision(t *testing.T, requestID string, fields map[string]any) []byte {
 	t.Helper()
 	content, err := json.Marshal(map[string]any{
@@ -62,13 +63,12 @@ func decision(t *testing.T, requestID string, fields map[string]any) []byte {
 	return content
 }
 
-// resolve runs the provider's resolution for one stored request and one decision.
-func resolve(requestPayload, content []byte) agent.ControlResponseResolution {
-	return droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "droid-request",
-		RequestPayload:  requestPayload,
-		ResponseContent: content,
-	})
+// resolve resolves the decision of fields to the request stored as requestID,
+// as the Worker does. The decision addresses that request, as each answer of
+// AnswerControlRequest does, and it carries no plan settings.
+func resolve(t *testing.T, requestPayload []byte, requestID string, fields map[string]any) agent.ControlResponseResolution {
+	t.Helper()
+	return agenttest.ResolveAnswer(droidProvider{}, requestPayload, requestID, agent.ControlAnswer{Content: decision(t, requestID, fields)})
 }
 
 // replyResult reads the id and the `result` of the JSON-RPC response that a
@@ -91,17 +91,7 @@ func TestResolveControlResponseWritesAResponseEnvelope(t *testing.T) {
 	t.Parallel()
 	request := permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit,
 		contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionCancel)
-	response, _ := json.Marshal(map[string]any{
-		"response": map[string]any{
-			"request_id": "droid-perm-1",
-			"response":   map[string]any{"behavior": "allow"},
-		},
-	})
-	resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID:       "droid-perm-1",
-		RequestPayload:  request,
-		ResponseContent: response,
-	})
+	resolution := resolve(t, request, "droid-perm-1", map[string]any{"behavior": "allow"})
 	require.False(t, resolution.Withhold)
 	require.NotEmpty(t, resolution.Content)
 
@@ -124,10 +114,9 @@ func TestResolveControlResponseWritesAResponseEnvelope(t *testing.T) {
 func TestResolveControlResponseClassifiesNativeSpecApproval(t *testing.T) {
 	t.Parallel()
 	request := []byte(`{"type":"permission_request","requestId":"droid-perm-exit-1","rpcId":"rpc-exit-1","toolUse":{"type":"tool_use","id":"exit-1","name":"ExitSpecMode","input":{"plan":"# Native plan"}},"confirmationType":"exit_spec_mode","options":["proceed_once","proceed_auto_run_low","cancel"]}`)
-	response := []byte(`{"response":{"request_id":"droid-perm-exit-1","response":{"behavior":"allow"}}}`)
-	resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-		RequestID: "droid-perm-exit-1", RequestPayload: request, ResponseContent: response,
-	})
+	answer, err := agenttest.AnswerControl(droidProvider{}, request, "droid-perm-exit-1", agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true}))
+	require.NoError(t, err)
+	resolution := agenttest.ResolveAnswer(droidProvider{}, request, "droid-perm-exit-1", answer)
 	require.False(t, resolution.Withhold)
 	assert.Equal(t, agent.PlanModeControlExit, resolution.PlanModeControl)
 	var envelope struct {
@@ -139,52 +128,46 @@ func TestResolveControlResponseClassifiesNativeSpecApproval(t *testing.T) {
 	assert.JSONEq(t, `{"selectedOption":"proceed_once"}`, string(envelope.Result))
 }
 
+// A plan decision reaches Droid as the approval option of its permission
+// mode. The Worker resolves the plan answer of AnswerControlRequest, which
+// carries the settings of an approval and none for a refusal.
 func TestResolvePlanApprovalSelectsNativeAutonomy(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name, mode, selected, want                        string
-		deny, clear, noOffer, ordinary, wrongConfirmation bool
-		refusal                                           string
+		name, mode, want     string
+		deny, clear, noOffer bool
+		mission              bool
+		refusal              string
 	}{
 		{name: "unchanged", want: "proceed_once"},
 		{name: "default", mode: "default", want: "proceed_once"},
 		{name: "low", mode: "auto-low", want: "proceed_auto_run_low"},
 		{name: "medium", mode: "auto-medium", want: "proceed_auto_run_medium"},
 		{name: "high", mode: "auto-high", want: "proceed_auto_run_high"},
-		{name: "matching explicit option", mode: "auto-medium", selected: "proceed_auto_run_medium", want: "proceed_auto_run_medium"},
-		{name: "reject keeps cancellation", mode: "auto-high", deny: true, noOffer: true, want: "cancel"},
-		{name: "ordinary tool cannot change autonomy", mode: "auto-high", ordinary: true, want: "proceed_once"},
+		{name: "reject keeps cancellation", deny: true, noOffer: true, want: "cancel"},
 		{name: "clear context uses the service path", mode: "auto-medium", clear: true, want: "proceed_once"},
 		{name: "unoffered policy", mode: "auto-medium", noOffer: true, refusal: "Factory Droid did not offer proceed_auto_run_medium"},
 		{name: "unknown policy", mode: "other", refusal: "the Factory Droid session cannot approve a plan with permission mode \"other\""},
 		{name: "spec is not an approval policy", mode: "spec", refusal: "the Factory Droid session cannot approve a plan with permission mode \"spec\""},
-		{name: "wrong confirmation", mode: "auto-medium", wrongConfirmation: true, refusal: "this Factory Droid confirmation cannot apply the selected plan permission mode"},
-		{name: "conflicting explicit option", mode: "auto-medium", selected: "proceed_once", refusal: "the selected native option contradicts the plan permission mode"},
+		{name: "a mission proposal takes no permission mode", mode: "auto-medium", mission: true, refusal: "this Factory Droid confirmation cannot apply the selected plan permission mode"},
+		{name: "a mission proposal approves without a permission mode", mission: true, want: "proceed_once"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tool, confirmation := contracts.DroidToolExitSpecMode, contracts.DroidConfirmationTypeExitSpecMode
-			if tc.ordinary {
-				tool = contracts.DroidToolEdit
-			}
-			if tc.ordinary || tc.wrongConfirmation {
-				confirmation = contracts.DroidConfirmationTypeEdit
+			if tc.mission {
+				tool, confirmation = contracts.DroidToolProposeMission, contracts.DroidConfirmationTypeProposeMission
 			}
 			offered := []string{"proceed_once", "proceed_auto_run_low", "proceed_auto_run_medium", "proceed_auto_run_high", "cancel"}
 			if tc.noOffer {
 				offered = []string{"proceed_once"}
 			}
-			behavior := "allow"
-			if tc.deny {
-				behavior = "deny"
-			}
-			resolution := droidProvider{}.ResolveControlResponse(agent.ControlResponseContext{
-				RequestID:       "droid-perm-1",
-				RequestPayload:  permissionRequestPayload(t, tool, confirmation, offered...),
-				ResponseContent: decision(t, "droid-perm-1", map[string]any{"behavior": behavior, "selectedOption": tc.selected}),
-				PlanApproval:    &leapmuxv1.PlanApprovalSettings{PermissionMode: tc.mode, ClearContext: tc.clear},
-			})
+			plan := &leapmuxv1.PlanDecision{Approve: !tc.deny, PermissionMode: tc.mode, ClearContext: tc.clear}
+			payload := permissionRequestPayload(t, tool, confirmation, offered...)
+			answer, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1", agenttest.PlanDecision(plan))
+			require.NoError(t, err)
+			resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-1", answer)
 			if tc.refusal != "" {
 				require.True(t, resolution.Withhold)
 				assert.EqualError(t, resolution.Refusal(), tc.refusal)
@@ -193,7 +176,7 @@ func TestResolvePlanApprovalSelectsNativeAutonomy(t *testing.T) {
 			}
 			id, raw := replyResult(t, resolution)
 			assert.Equal(t, "rpc-42", id)
-			var reply droidPermissionResult
+			var reply contracts.DroidPermissionResult
 			require.NoError(t, json.Unmarshal(raw, &reply))
 			assert.Equal(t, tc.want, reply.SelectedOption)
 		})
@@ -222,9 +205,9 @@ func TestResolveControlResponseSendsTheDenyReasonAsFeedback(t *testing.T) {
 			t.Parallel()
 			request := permissionRequestPayload(t, tc.toolName, tc.confirmationType,
 				contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionCancel)
-			resolution := resolve(request, decision(t, "droid-perm-1", map[string]any{
+			resolution := resolve(t, request, "droid-perm-1", map[string]any{
 				"behavior": "deny", "message": "  Use a dry run first.  ",
-			}))
+			})
 			_, result := replyResult(t, resolution)
 			assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(result),
 				"the reply is Droid's own cancel; Droid discards a comment beside it")
@@ -239,9 +222,9 @@ func TestResolveControlResponseSendsTheDenyReasonAsFeedback(t *testing.T) {
 // `{cancelled, answers}`. The reason follows as Feedback.
 func TestResolveControlResponseSendsAQuestionRefusalReasonAsFeedback(t *testing.T) {
 	t.Parallel()
-	resolution := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...), decision(t, "droid-ask-1", map[string]any{
+	resolution := resolve(t, askUserRequestPayload(t, colorAndSizeQuestions()...), "droid-ask-1", map[string]any{
 		"behavior": "deny", "message": "Ask about the shape instead.",
-	}))
+	})
 	id, result := replyResult(t, resolution)
 	assert.Equal(t, "rpc-43", id)
 	assert.JSONEq(t, `{"cancelled":true,"answers":[]}`, string(result), "Droid's own cancel carries no answer")
@@ -249,19 +232,17 @@ func TestResolveControlResponseSendsAQuestionRefusalReasonAsFeedback(t *testing.
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, resolution.FollowUp.Kind)
 }
 
-// The browser fills the reason of a bare rejection with a placeholder. That is
+// DenyResponse fills the reason of a bare rejection with a placeholder. That is
 // no reason, so it must not reach the model as the user's words.
 func TestResolveControlResponseSendsNoFeedbackForABareRejection(t *testing.T) {
 	t.Parallel()
-	for _, message := range []string{agent.ControlRejectedByUserMessage, "", "   "} {
-		permission := resolve(permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit, contracts.DroidPermissionOptionCancel),
-			decision(t, "droid-perm-1", map[string]any{"behavior": "deny", "message": message}))
+	for _, message := range []string{contracts.ControlAnswerMessageRejectedByUser, "", "   "} {
+		permission := resolve(t, permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit, contracts.DroidPermissionOptionCancel), "droid-perm-1", map[string]any{"behavior": "deny", "message": message})
 		_, result := replyResult(t, permission)
 		assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(result))
 		assert.Emptyf(t, permission.FollowUp, "a permission rejection with the message %q has no reason", message)
 
-		question := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...),
-			decision(t, "droid-ask-1", map[string]any{"behavior": "deny", "message": message}))
+		question := resolve(t, askUserRequestPayload(t, colorAndSizeQuestions()...), "droid-ask-1", map[string]any{"behavior": "deny", "message": message})
 		_, result = replyResult(t, question)
 		assert.JSONEq(t, `{"cancelled":true,"answers":[]}`, string(result))
 		assert.Emptyf(t, question.FollowUp, "a question refusal with the message %q has no reason", message)
@@ -272,8 +253,7 @@ func TestResolveControlResponseSendsNoFeedbackForABareRejection(t *testing.T) {
 // the model.
 func TestResolveControlResponseSendsNoFeedbackForAnApproval(t *testing.T) {
 	t.Parallel()
-	resolution := resolve(permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit, contracts.DroidPermissionOptionProceedOnce),
-		decision(t, "droid-perm-1", map[string]any{"behavior": "allow", "message": "Go ahead."}))
+	resolution := resolve(t, permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit, contracts.DroidPermissionOptionProceedOnce), "droid-perm-1", map[string]any{"behavior": "allow", "message": "Go ahead."})
 	_, result := replyResult(t, resolution)
 	assert.JSONEq(t, `{"selectedOption":"proceed_once"}`, string(result))
 	assert.Empty(t, resolution.FollowUp)
@@ -281,16 +261,16 @@ func TestResolveControlResponseSendsNoFeedbackForAnApproval(t *testing.T) {
 
 // Droid identifies each answer by the `index` of its question. The reply lists
 // the answers in Droid's own question order, with Droid's own numbers and
-// question words, whatever order the browser lists them in.
+// question words, whatever order the answer lists them in.
 func TestResolveControlResponseAnswersEachQuestionByItsNativeIndex(t *testing.T) {
 	t.Parallel()
-	resolution := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...), decision(t, "droid-ask-1", map[string]any{
+	resolution := resolve(t, askUserRequestPayload(t, colorAndSizeQuestions()...), "droid-ask-1", map[string]any{
 		"behavior": "allow",
 		"answers": []map[string]any{
 			{"index": 2, "answer": "Small, Large"},
 			{"index": 1, "answer": "Blue"},
 		},
-	}))
+	})
 	id, result := replyResult(t, resolution)
 	assert.Equal(t, "rpc-43", id)
 	assert.JSONEq(t, `{"cancelled":false,"answers":[
@@ -308,10 +288,10 @@ func TestResolveControlResponseKeepsANativeIndexThatDoesNotStartAtOne(t *testing
 		map[string]any{"index": 7, "question": "Seventh?", "options": []string{"Yes", "No"}},
 		map[string]any{"index": 3, "question": "Third?", "options": []string{"Yes", "No"}},
 	)
-	resolution := resolve(request, decision(t, "droid-ask-1", map[string]any{
+	resolution := resolve(t, request, "droid-ask-1", map[string]any{
 		"behavior": "allow",
 		"answers":  []map[string]any{{"index": 3, "answer": "No"}, {"index": 7, "answer": "Yes"}},
-	}))
+	})
 	_, result := replyResult(t, resolution)
 	assert.JSONEq(t, `{"cancelled":false,"answers":[
 		{"index":7,"question":"Seventh?","answer":"Yes"},
@@ -323,10 +303,10 @@ func TestResolveControlResponseKeepsANativeIndexThatDoesNotStartAtOne(t *testing
 // holds no choice.
 func TestResolveControlResponseForwardsAnEmptyAnswer(t *testing.T) {
 	t.Parallel()
-	resolution := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...), decision(t, "droid-ask-1", map[string]any{
+	resolution := resolve(t, askUserRequestPayload(t, colorAndSizeQuestions()...), "droid-ask-1", map[string]any{
 		"behavior": "allow",
 		"answers":  []map[string]any{{"index": 1, "answer": ""}, {"index": 2, "answer": "Large"}},
-	}))
+	})
 	_, result := replyResult(t, resolution)
 	assert.JSONEq(t, `{"cancelled":false,"answers":[
 		{"index":1,"question":"Which color?","answer":""},
@@ -355,9 +335,9 @@ func TestResolveControlResponseRefusesAnswersThatDoNotMatchTheQuestions(t *testi
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			resolution := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...), decision(t, "droid-ask-1", map[string]any{
+			resolution := resolve(t, askUserRequestPayload(t, colorAndSizeQuestions()...), "droid-ask-1", map[string]any{
 				"behavior": "allow", "answers": tc.answers,
-			}))
+			})
 			require.True(t, resolution.Withhold)
 			assert.EqualError(t, resolution.Refusal(), tc.reason)
 		})
@@ -372,10 +352,11 @@ func TestResolveControlResponseRefusesAnswersThatDoNotMatchTheQuestions(t *testi
 		"answers by question":        {map[string]any{"behavior": "allow", "answers": map[string]string{"Which color?": "Blue"}}, agent.RefusalUnreadableAnswer},
 		"answers not a list":         {map[string]any{"behavior": "allow", "answers": "Blue"}, agent.RefusalUnreadableAnswer},
 		"absent answers field":       {map[string]any{"behavior": "allow"}, "the decision holds no answer list"},
+		"null answers field":         {map[string]any{"behavior": "allow", "answers": nil}, "the decision holds no answer list"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			resolution := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...), decision(t, "droid-ask-1", tc.fields))
+			resolution := resolve(t, askUserRequestPayload(t, colorAndSizeQuestions()...), "droid-ask-1", tc.fields)
 			require.True(t, resolution.Withhold)
 			assert.EqualError(t, resolution.Refusal(), tc.reason)
 		})
@@ -391,13 +372,13 @@ func TestResolveControlResponseRefusesAnswersToQuestionsThatRepeatAnIndex(t *tes
 		map[string]any{"index": 1, "question": "Which color?", "options": []string{"Blue", "Red"}},
 		map[string]any{"index": 1, "question": "Which size?", "options": []string{"Small", "Large"}},
 	)
-	approval := resolve(request, decision(t, "droid-ask-1", map[string]any{
+	approval := resolve(t, request, "droid-ask-1", map[string]any{
 		"behavior": "allow", "answers": []map[string]any{{"index": 1, "answer": "Blue"}},
-	}))
+	})
 	require.True(t, approval.Withhold)
 	assert.EqualError(t, approval.Refusal(), "two questions state the index 1")
 
-	refusal := resolve(request, decision(t, "droid-ask-1", map[string]any{"behavior": "deny"}))
+	refusal := resolve(t, request, "droid-ask-1", map[string]any{"behavior": "deny"})
 	_, result := replyResult(t, refusal)
 	assert.JSONEq(t, `{"cancelled":true,"answers":[]}`, string(result))
 }
@@ -416,7 +397,7 @@ func TestResolveControlResponseRefusesAnUnofferedOption(t *testing.T) {
 	for name, option := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			resolution := resolve(request, decision(t, "droid-perm-1", map[string]any{"behavior": "allow", "selectedOption": option}))
+			resolution := resolve(t, request, "droid-perm-1", map[string]any{"behavior": "allow", "selectedOption": option})
 			require.True(t, resolution.Withhold)
 			assert.EqualError(t, resolution.Refusal(), agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, option))
 		})
@@ -429,12 +410,11 @@ func TestResolveControlResponseRefusesAnApprovalThatTheRequestDoesNotOffer(t *te
 	t.Parallel()
 	request := permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit,
 		contracts.DroidPermissionOptionProceedAlways, contracts.DroidPermissionOptionCancel)
-	resolution := resolve(request, decision(t, "droid-perm-1", map[string]any{"behavior": "allow"}))
+	resolution := resolve(t, request, "droid-perm-1", map[string]any{"behavior": "allow"})
 	require.True(t, resolution.Withhold)
 	assert.EqualError(t, resolution.Refusal(), agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, contracts.DroidPermissionOptionProceedOnce))
 
-	none := resolve(permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit),
-		decision(t, "droid-perm-1", map[string]any{"behavior": "allow"}))
+	none := resolve(t, permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit), "droid-perm-1", map[string]any{"behavior": "allow"})
 	require.True(t, none.Withhold, "a request that offers no option offers no approval")
 	assert.EqualError(t, none.Refusal(), agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, contracts.DroidPermissionOptionProceedOnce))
 }
@@ -446,9 +426,9 @@ func TestResolveControlResponseRefusesAnEditedSpecApproval(t *testing.T) {
 	t.Parallel()
 	request := permissionRequestPayload(t, "ExitSpecMode", contracts.DroidConfirmationTypeExitSpecMode,
 		contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionProceedEdit, contracts.DroidPermissionOptionCancel)
-	resolution := resolve(request, decision(t, "droid-perm-1", map[string]any{
+	resolution := resolve(t, request, "droid-perm-1", map[string]any{
 		"behavior": "allow", "selectedOption": contracts.DroidPermissionOptionProceedEdit,
-	}))
+	})
 	require.True(t, resolution.Withhold)
 	assert.EqualError(t, resolution.Refusal(), "the option proceed_edit requires an edited spec, which LeapMux does not send")
 }
@@ -457,9 +437,9 @@ func TestResolveControlResponseForwardsAnOfferedOption(t *testing.T) {
 	t.Parallel()
 	request := permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit,
 		contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionProceedAlways, contracts.DroidPermissionOptionCancel)
-	resolution := resolve(request, decision(t, "droid-perm-1", map[string]any{
+	resolution := resolve(t, request, "droid-perm-1", map[string]any{
 		"behavior": "allow", "selectedOption": contracts.DroidPermissionOptionProceedAlways,
-	}))
+	})
 	_, result := replyResult(t, resolution)
 	assert.JSONEq(t, `{"selectedOption":"proceed_always"}`, string(result))
 }
@@ -478,7 +458,7 @@ func TestResolveControlResponseAlwaysSendsACancel(t *testing.T) {
 			{"behavior": "deny"},
 			{"behavior": "deny", "selectedOption": contracts.DroidPermissionOptionCancel},
 		} {
-			resolution := resolve(request, decision(t, "droid-perm-1", fields))
+			resolution := resolve(t, request, "droid-perm-1", fields)
 			require.Falsef(t, resolution.Withhold, "cancel %s, decision %v", name, fields)
 			_, result := replyResult(t, resolution)
 			assert.JSONEqf(t, `{"selectedOption":"cancel"}`, string(result), "cancel %s, decision %v", name, fields)
@@ -498,7 +478,7 @@ func TestResolveControlResponseRefusesAnOptionThatContradictsTheBehavior(t *test
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			resolution := resolve(request, decision(t, "droid-perm-1", fields))
+			resolution := resolve(t, request, "droid-perm-1", fields)
 			require.True(t, resolution.Withhold)
 			option, _ := fields["selectedOption"].(string)
 			assert.EqualError(t, resolution.Refusal(), "the option "+option+" contradicts the decision")
@@ -511,14 +491,12 @@ func TestResolveControlResponseRefusesAnOptionThatContradictsTheBehavior(t *test
 func TestResolveControlResponseRefusesAnUnknownBehavior(t *testing.T) {
 	t.Parallel()
 	for _, behavior := range []string{"", "maybe"} {
-		permission := resolve(permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit,
-			contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionCancel),
-			decision(t, "droid-perm-1", map[string]any{"behavior": behavior}))
+		permission := resolve(t, permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit,
+			contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionCancel), "droid-perm-1", map[string]any{"behavior": behavior})
 		require.Truef(t, permission.Withhold, "a permission decision with the behavior %q", behavior)
 		assert.EqualError(t, permission.Refusal(), agent.RefusalNoDecision)
 
-		question := resolve(askUserRequestPayload(t, colorAndSizeQuestions()...),
-			decision(t, "droid-ask-1", map[string]any{"behavior": behavior}))
+		question := resolve(t, askUserRequestPayload(t, colorAndSizeQuestions()...), "droid-ask-1", map[string]any{"behavior": behavior})
 		require.Truef(t, question.Withhold, "a question decision with the behavior %q", behavior)
 		assert.EqualError(t, question.Refusal(), agent.RefusalNoDecision)
 	}
@@ -529,7 +507,7 @@ func TestResolveControlResponseRefusesAnUnknownBehavior(t *testing.T) {
 func TestResolveControlResponseRefusesAnUnknownRequestType(t *testing.T) {
 	t.Parallel()
 	request := []byte(`{"type":"pick_options_request","requestId":"droid-pick-1","rpcId":"rpc-44","options":["proceed_once","cancel"]}`)
-	resolution := resolve(request, decision(t, "droid-pick-1", map[string]any{"behavior": "allow"}))
+	resolution := resolve(t, request, "droid-pick-1", map[string]any{"behavior": "allow"})
 	require.True(t, resolution.Withhold)
 	assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableRequest)
 }

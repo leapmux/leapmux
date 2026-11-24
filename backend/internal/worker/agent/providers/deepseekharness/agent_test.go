@@ -130,7 +130,7 @@ func TestInterruptRemovesAndRequeuesAPendingSteer(t *testing.T) {
 			t.Cleanup(endpoint.Close)
 			a.rpc = remoteRPC{endpoint: endpoint}
 			attachment := &leapmuxv1.Attachment{Filename: "input.png", MimeType: "image/png", Data: []byte{1, 2, 3}}
-			require.NoError(t, a.SteerInput("steer", []*leapmuxv1.Attachment{attachment}))
+			require.NoError(t, a.SteerInput(agent.SteerRequest{InputID: "input-1", Content: "steer", Attachments: []*leapmuxv1.Attachment{attachment}}))
 			attachment.Data[0] = 9
 			require.NoError(t, a.Interrupt(agent.StopContext{}))
 			mu.Lock()
@@ -141,10 +141,11 @@ func TestInterruptRemovesAndRequeuesAPendingSteer(t *testing.T) {
 			} else {
 				assert.Equal(t, []string{"/api/session/prompt", "/api/session/cancel", "/api/session/updateQueue"}, methods)
 				require.Len(t, sink.RequeuedInputs(), 1)
-				assert.Equal(t, "steer", sink.RequeuedInputs()[0].Content)
-				assert.Equal(t, "dsh-steer:"+requestID, sink.RequeuedInputs()[0].DropID)
-				require.Len(t, sink.RequeuedInputs()[0].Attachments, 1)
-				assert.Equal(t, []byte{1, 2, 3}, sink.RequeuedInputs()[0].Attachments[0].Data)
+				dropped := sink.RequeuedInputs()[0].Request
+				assert.Equal(t, "input-1", dropped.InputID, "the hand-back states the queue item that the Worker steered")
+				assert.Equal(t, "steer", dropped.Content)
+				require.Len(t, dropped.Attachments, 1)
+				assert.Equal(t, []byte{1, 2, 3}, dropped.Attachments[0].Data, "the hand-back keeps the data that the steer carried")
 			}
 		})
 	}
@@ -155,7 +156,7 @@ func TestRemovePendingSteerKeepsUnconfirmedRemovals(t *testing.T) {
 		t.Run(code, func(t *testing.T) {
 			base := &agenttest.Sink{}
 			a := newOfflineAgent(t, base)
-			steer := &pendingSteer{requestID: "request", itemID: "item", content: "steer"}
+			steer := &pendingSteer{requestID: "request", itemID: "item", request: agent.SteerRequest{InputID: "input-1", Content: "steer"}}
 			a.pendingSteers = []*pendingSteer{steer}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var request struct {
@@ -198,14 +199,16 @@ func TestRemovedSteerCanRetryAQueueFailureWithoutRemovingItAgain(t *testing.T) {
 	cause := errors.New("queue write failed")
 	base := &agenttest.Sink{RequeueErr: cause}
 	a := newOfflineAgent(t, base)
-	steer := &pendingSteer{requestID: "request", itemID: "item", content: "steer", removed: true}
+	steer := &pendingSteer{requestID: "request", itemID: "item", request: agent.SteerRequest{InputID: "input-1", Content: "steer"}, removed: true}
 	a.pendingSteers = []*pendingSteer{steer}
 	require.ErrorIs(t, a.removePendingSteer("native-root", steer), cause)
 	assert.Len(t, a.pendingSteers, 1)
 	base.RequeueErr = nil
 	require.NoError(t, a.removePendingSteer("native-root", steer))
 	assert.Empty(t, a.pendingSteers)
-	assert.Len(t, base.RequeuedInputs(), 1)
+	require.Len(t, base.RequeuedInputs(), 1)
+	assert.Equal(t, agent.SteerRequest{InputID: "input-1", Content: "steer"}, base.RequeuedInputs()[0].Request,
+		"the retry hands back the request that the steer carried")
 }
 
 func TestSteerSurvivesTheNativeTurnEnd(t *testing.T) {

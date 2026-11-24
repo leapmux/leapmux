@@ -117,11 +117,20 @@ var agentHandlerCases = []agentHandlerCase{
 	{leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, func(id string) proto.Message {
 		return &leapmuxv1.ListAgentInputQueueRequest{AgentId: id}
 	}},
+	{leapmuxv1connect.WorkerAgentInputServiceGetQueuedAgentInputProcedure, func(id string) proto.Message {
+		return &leapmuxv1.GetQueuedAgentInputRequest{AgentId: id, InputId: "input-1"}
+	}},
 	{leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, func(id string) proto.Message {
 		return &leapmuxv1.UpdateAgentSettingsRequest{AgentId: id, Settings: &leapmuxv1.AgentSettings{Options: map[string]string{"model": "opus"}}}
 	}},
-	{leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, func(id string) proto.Message {
-		return &leapmuxv1.SendControlResponseRequest{AgentId: id, Content: []byte("{}")}
+	{leapmuxv1connect.WorkerAgentServiceRecordControlResponseProcedure, func(id string) proto.Message {
+		return &leapmuxv1.RecordControlResponseRequest{AgentId: id, RequestId: "request", ClaimToken: "claim"}
+	}},
+	{leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure, func(id string) proto.Message {
+		return &leapmuxv1.ListControlRequestsRequest{AgentId: id}
+	}},
+	{leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure, func(id string) proto.Message {
+		return &leapmuxv1.AnswerControlRequest{AgentId: id, RequestId: "request", ClaimToken: "claim"}
 	}},
 	{leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure, func(id string) proto.Message {
 		return &leapmuxv1.UpdateAgentGoalRequest{
@@ -150,6 +159,9 @@ var agentHandlerCases = []agentHandlerCase{
 	}},
 	{leapmuxv1connect.WorkerAgentServiceListMessageMarksProcedure, func(id string) proto.Message {
 		return &leapmuxv1.ListMessageMarksRequest{AgentId: id}
+	}},
+	{leapmuxv1connect.WorkerAgentServiceGetAgentSessionInfoProcedure, func(id string) proto.Message {
+		return &leapmuxv1.GetAgentSessionInfoRequest{AgentId: id}
 	}},
 	// InterruptAgent is agent-ID-scoped via registerAgentGuarded.
 	{leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, func(id string) proto.Message {
@@ -355,6 +367,24 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 				Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
 			}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, func() proto.Message {
+			return &leapmuxv1.NotifyRequest{Title: "Build finished", Body: "All tests passed"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, func() proto.Message {
+			return &leapmuxv1.ListNotificationsRequest{}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, func() proto.Message {
+			return &leapmuxv1.ClearNotificationRequest{Id: "notification"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, func() proto.Message {
+			return &leapmuxv1.RevealTabRequest{TabId: "agent-1"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, func() proto.Message {
+			return &leapmuxv1.SetTabStatusRequest{TabId: "agent-1", Status: &leapmuxv1.TabStatus{Text: "Running the tests"}}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, func() proto.Message {
+			return &leapmuxv1.ListTabStatusesRequest{TabId: "agent-1"}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, func() proto.Message {
 			return &leapmuxv1.RegisterTabPayloadRequest{Creation: &leapmuxv1.TabCreation{TabId: "tab-1"}, Payload: fileTabPayload("/tmp/x", "")}
 		}},
@@ -378,11 +408,20 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
 			}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerWatchServiceWatchSemanticEventsProcedure, leapmuxv1connect.WorkerWatchServiceWatchSemanticEventsProcedure, func() proto.Message {
+			return &leapmuxv1.WatchSemanticEventsRequest{Tab: terminalTabIdent("term-1")}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerWatchServiceWatchWorkerSemanticEventsProcedure, leapmuxv1connect.WorkerWatchServiceWatchWorkerSemanticEventsProcedure, func() proto.Message {
+			return &leapmuxv1.WatchWorkerSemanticEventsRequest{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, func() proto.Message {
 			return &leapmuxv1.ListAgentSessionsRequest{
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 				WorkingDir:    "/tmp",
 			}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerAgentServiceSearchAgentMessagesProcedure, leapmuxv1connect.WorkerAgentServiceSearchAgentMessagesProcedure, func() proto.Message {
+			return &leapmuxv1.SearchAgentMessagesRequest{Query: "hello"}
 		}},
 
 		// The machine-scoped families. Their reach is the whole filesystem
@@ -406,6 +445,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, func() proto.Message {
 			return &leapmuxv1.ListGitWorktreesRequest{Path: "/tmp"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure, leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure, func() proto.Message {
+			return &leapmuxv1.GetGitWorktreeRequest{Target: &leapmuxv1.GetGitWorktreeRequest_Self{Self: true}}
 		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, func() proto.Message {
 			return &leapmuxv1.ReadGitFileRequest{Path: "/tmp/x", Ref: leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD}
@@ -434,6 +476,21 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, func() proto.Message {
 			return &leapmuxv1.InspectLastTabCloseRequest{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGetGitDiffProcedure, leapmuxv1connect.WorkerGitServiceGetGitDiffProcedure, func() proto.Message {
+			return &leapmuxv1.GetGitDiffRequest{Path: "/tmp"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGetGitLogProcedure, leapmuxv1connect.WorkerGitServiceGetGitLogProcedure, func() proto.Message {
+			return &leapmuxv1.GetGitLogRequest{Path: "/tmp"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGitCommitProcedure, leapmuxv1connect.WorkerGitServiceGitCommitProcedure, func() proto.Message {
+			return &leapmuxv1.GitCommitRequest{Path: "/tmp", Message: "test"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceCreateGitWorktreeProcedure, leapmuxv1connect.WorkerGitServiceCreateGitWorktreeProcedure, func() proto.Message {
+			return &leapmuxv1.CreateGitWorktreeRequest{Path: "/tmp", Branch: "feature"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceRemoveGitWorktreeProcedure, leapmuxv1connect.WorkerGitServiceRemoveGitWorktreeProcedure, func() proto.Message {
+			return &leapmuxv1.RemoveGitWorktreeRequest{Path: "/tmp"}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, func() proto.Message {
 			return &leapmuxv1.ListDirectoryRequest{Path: "/tmp", MaxDepth: 1}
 		}},
@@ -446,6 +503,12 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{leapmuxv1connect.WorkerFileServiceStatFileProcedure, leapmuxv1connect.WorkerFileServiceStatFileProcedure, func() proto.Message {
 			return &leapmuxv1.StatFileRequest{Path: "/tmp/x"}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerFileServiceSearchFilesProcedure, leapmuxv1connect.WorkerFileServiceSearchFilesProcedure, func() proto.Message {
+			return &leapmuxv1.SearchFilesRequest{Path: "/tmp", Pattern: "hello"}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerFileServiceGlobFilesProcedure, leapmuxv1connect.WorkerFileServiceGlobFilesProcedure, func() proto.Message {
+			return &leapmuxv1.GlobFilesRequest{Path: "/tmp", Pattern: "*.go"}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, func() proto.Message {
 			return &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: []string{"term-1"}}
 		}},
@@ -457,6 +520,12 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, func() proto.Message {
 			return &leapmuxv1.GetWorkerSystemInfoRequest{}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerSystemServiceGetWorkerSkillsProcedure, leapmuxv1connect.WorkerSystemServiceGetWorkerSkillsProcedure, func() proto.Message {
+			return &leapmuxv1.GetWorkerSkillsRequest{}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerSystemServiceUpdateWorkerSkillsProcedure, leapmuxv1connect.WorkerSystemServiceUpdateWorkerSkillsProcedure, func() proto.Message {
+			return &leapmuxv1.UpdateWorkerSkillsRequest{SyncNow: true}
 		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, func() proto.Message {
 			return &leapmuxv1.OpenTunnelConnRequest{
@@ -962,6 +1031,7 @@ func TestAUnaryMethodDeniesWithAUnaryError(t *testing.T) {
 // whatever payload arrives, so it has no decode refusal to check.
 var ownerOnlyMethodsThatReadNoRequest = map[string]string{
 	leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure: "its request has no fields, and its handler reports the worker's own facts without reading the payload",
+	leapmuxv1connect.WorkerSystemServiceGetWorkerSkillsProcedure:     "its request has no fields, and its handler reports the worker's installed skill state without reading the payload",
 }
 
 // TestEveryOwnerOnlyMethodRefusesAnUndecodablePayloadInItsShape pins the decode

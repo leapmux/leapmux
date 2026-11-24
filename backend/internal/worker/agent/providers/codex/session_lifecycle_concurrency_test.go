@@ -41,7 +41,7 @@ func TestCodexRetryCannotSnapshotAnUnsettledSteer(t *testing.T) {
 	}))
 	armRetryableTurn(t, a, sink)
 	steered := make(chan error, 1)
-	go func() { steered <- a.SteerInput("Keep the original files.", nil) }()
+	go func() { steered <- a.SteerInput(agent.SteerRequest{Content: "Keep the original files."}) }()
 	<-entered
 	_, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
 	require.ErrorIs(t, err, agent.ErrAgentBusy, "the retry cannot copy input while an earlier delivery remains unresolved")
@@ -68,7 +68,7 @@ func TestCodexUncertainSteerWithdrawsItsRetryOffer(t *testing.T) {
 		return agenttest.RPCReply{Error: json.RawMessage(`{"message":"an unreadable error without a code"}`)}
 	})
 	armRetryableTurn(t, a, sink)
-	require.ErrorIs(t, a.SteerInput("An instruction that might arrive.", nil), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "An instruction that might arrive."}), agent.ErrDeliveryUncertain)
 	offer, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyTurnRetryOffer)
 	require.True(t, exists)
 	assert.Nil(t, offer, "a retry cannot reconstruct an input whose delivery is uncertain")

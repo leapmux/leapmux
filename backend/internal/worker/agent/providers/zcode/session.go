@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -461,7 +461,7 @@ func (a *Agent) retireZCodeSessionState(sessionID string) {
 		a.persistIncompleteZCodeToolsForChild(spawn.spanID, agent.MessageCompletionInterrupted)
 	}
 	a.Mu.Lock()
-	a.clearZCodeTurnsLocked()
+	retired := a.clearZCodeTurnsLocked()
 	a.compactionSessionID = ""
 	a.cancelStoppedZCodeTurnLocked()
 	a.TurnToolUses = 0
@@ -474,6 +474,9 @@ func (a *Agent) retireZCodeSessionState(sessionID string) {
 	shellRowKeys := slices.Sorted(maps.Keys(a.openShellTasks))
 	clear(a.openShellTasks)
 	a.Mu.Unlock()
+	for _, receipt := range retired {
+		a.retireObservedInput(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	}
 	a.publishZCodeModelAPIRetryLocked()
 	a.upsertZCodeWorkflowRows(upserts)
 	for _, spawn := range activeSpawns {

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -24,23 +23,23 @@ func TestCursorRefusesEmbeddedBlobAttachments(t *testing.T) {
 	}
 }
 
+// Each answer below addresses the Worker's key of its request: "jsonrpc:"
+// and the request's JSON-RPC id, as the Worker stores a Cursor request.
+
 func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T) {
 	t.Parallel()
 
-	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
-		RequestPayload: []byte(`{
+	res := agenttest.ResolveAnswer(cursorProvider{}, []byte(`{
 			"jsonrpc":"2.0",
 			"id":7,
 			"method":"cursor/create_plan",
 			"params":{}
-		}`),
-		ResponseContent: []byte(`{
+		}`), "jsonrpc:7", agentapi.ControlAnswer{Content: []byte(`{
 			"response":{
-				"request_id":"7",
+				"request_id":"jsonrpc:7",
 				"response":{"behavior":"deny","message":"Needs tests."}
 			}
-		}`),
-	})
+		}`)})
 
 	// The plan decision renders from the transformed outcome alone, so the pruned context is
 	// method-only.
@@ -62,20 +61,17 @@ func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T)
 func TestResolveControlResponse_CursorCreatePlanAcceptsResponse(t *testing.T) {
 	t.Parallel()
 
-	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
-		RequestPayload: []byte(`{
+	res := agenttest.ResolveAnswer(cursorProvider{}, []byte(`{
 			"jsonrpc":"2.0",
 			"id":"plan-7",
 			"method":"cursor/create_plan",
 			"params":{}
-		}`),
-		ResponseContent: []byte(`{
+		}`), `jsonrpc:"plan-7"`, agentapi.ControlAnswer{Content: []byte(`{
 			"response":{
-				"request_id":"plan-7",
+				"request_id":"jsonrpc:\"plan-7\"",
 				"response":{"behavior":"allow"}
 			}
-		}`),
-	})
+		}`)})
 
 	var normalized struct {
 		ID     string `json:"id"`
@@ -95,20 +91,17 @@ func TestResolveControlResponse_CursorCreatePlanAcceptsResponse(t *testing.T) {
 func TestResolveControlResponse_CursorCreatePlanRejectsDefaultMessageAsReject(t *testing.T) {
 	t.Parallel()
 
-	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
-		RequestPayload: []byte(`{
+	res := agenttest.ResolveAnswer(cursorProvider{}, []byte(`{
 			"jsonrpc":"2.0",
 			"id":"plan-7",
 			"method":"cursor/create_plan",
 			"params":{}
-		}`),
-		ResponseContent: []byte(`{
+		}`), `jsonrpc:"plan-7"`, agentapi.ControlAnswer{Content: []byte(`{
 			"response":{
-				"request_id":"plan-7",
+				"request_id":"jsonrpc:\"plan-7\"",
 				"response":{"behavior":"deny","message":"Rejected by user."}
 			}
-		}`),
-	})
+		}`)})
 
 	var normalized struct {
 		Result struct {
@@ -128,30 +121,28 @@ func TestResolveControlResponse_CursorCreatePlanIgnoresMalformedEnvelope(t *test
 
 	// The response isn't the neutral envelope, so the transform bails and the create-plan request
 	// falls through to the ACP permission context -- which has no options, so it degrades to
-	// method-only. The raw response is forwarded unchanged.
-	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"rejected","reason":"No"}}}`)
-	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
-		RequestPayload: []byte(`{
+	// method-only. The raw response is forwarded with its result unchanged, under Cursor's own id.
+	content := agentapi.JSONRPCResult("jsonrpc:7", map[string]any{"outcome": map[string]any{"outcome": "rejected", "reason": "No"}})
+	res := agenttest.ResolveAnswer(cursorProvider{}, []byte(`{
 			"jsonrpc":"2.0",
 			"id":7,
 			"method":"cursor/create_plan",
 			"params":{}
-		}`),
-		ResponseContent: content,
-	})
+		}`), "jsonrpc:7", agentapi.ControlAnswer{Content: content})
 
-	assert.Equal(t, content, res.Content)
+	require.NoError(t, res.Refusal())
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"rejected","reason":"No"}}}`, string(res.Content))
 }
 
-// The cursor questions answer travels unchanged: only create_plan needs a transform.
+// The cursor questions answer travels unchanged under Cursor's own id: only
+// create_plan needs a transform.
 func TestCursorProviderForwardsAQuestionAnswerUnchanged(t *testing.T) {
 	t.Parallel()
-	response := []byte(`{"id":7,"result":{"outcome":{"outcome":"answered","answers":[{"questionId":"color","selectedOptionIds":["red"]}]}}}`)
-	res := cursorProvider{}.ResolveControlResponse(agentapi.ControlResponseContext{
-		RequestPayload:  []byte(`{"id":7,"method":"cursor/ask_question","params":{}}`),
-		ResponseContent: response,
-	})
-	assert.Equal(t, response, res.Content)
+	response := agentapi.JSONRPCResult("jsonrpc:7", map[string]any{"outcome": map[string]any{
+		"outcome": "answered", "answers": []any{map[string]any{"questionId": "color", "selectedOptionIds": []string{"red"}}},
+	}})
+	res := agenttest.ResolveAnswer(cursorProvider{}, []byte(`{"id":7,"method":"cursor/ask_question","params":{}}`), "jsonrpc:7", agentapi.ControlAnswer{Content: response})
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"answered","answers":[{"questionId":"color","selectedOptionIds":["red"]}]}}}`, string(res.Content))
 	assert.False(t, res.Withhold)
 }
 

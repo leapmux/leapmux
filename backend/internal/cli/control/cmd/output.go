@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -18,21 +19,24 @@ import (
 // both cannot compare them without parsing zones first.
 const timeFormat = "2006-01-02T15:04:05.000Z07:00"
 
-// putTime writes one optional timestamp into an output row, omitting the
-// field when the hub sent none.
-func putTime(row map[string]any, key string, ts *timestamppb.Timestamp) {
+// formatTime renders an optional timestamp in timeFormat, or "" when the hub
+// sent none, so `omitempty` drops it from the result.
+func formatTime(ts *timestamppb.Timestamp) string {
 	if ts == nil {
-		return
+		return ""
 	}
-	row[key] = ts.AsTime().UTC().Format(timeFormat)
+	return ts.AsTime().UTC().Format(timeFormat)
 }
 
-// putWallTime is putTime for a wall-clock time.Time -- the credential
-// file's own fields, saved in whatever zone wrote them (SaveCredentials
-// normalizes new writes to UTC; this keeps older files honest too).
-func putWallTime(row map[string]any, key string, ts time.Time) {
+// formatWallTime is formatTime for a wall-clock time.Time.
+func formatWallTime(ts time.Time) string {
 	if ts.IsZero() {
-		return
+		return ""
 	}
-	row[key] = ts.UTC().Format(timeFormat)
+	return ts.UTC().Format(timeFormat)
+}
+
+// jsonObject encodes {key: value}.
+func jsonObject(key string, value any) ([]byte, error) {
+	return json.Marshal(map[string]any{key: value})
 }

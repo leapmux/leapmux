@@ -529,25 +529,58 @@ func OutputQueueFor(writer TranscriptServices) *OutputQueue {
 	}
 }
 
+// RetainSteerResolution orders the input row between the native output that
+// preceded and followed the echo. Retries keep the original publisher and span context.
+func RetainSteerResolution(writer ProviderServices, resolution SteerResolution) error {
+	run := writer.CaptureSteerResolution(resolution)
+	if queue := OutputQueueFor(writer); queue != nil {
+		return (orderedTranscript{queue: queue}).submit("resolve steered input", run)
+	}
+	return run()
+}
+
 // DirectTranscript preserves the decorated writer below the queue.
 // A generation batch uses it after it reserves its own positions in that same queue.
 func DirectTranscript(writer TranscriptServices) TranscriptServices {
 	switch value := writer.(type) {
 	case *orderedProviderServices:
-		return value.ProviderServices
+		return directForQueue(nil, value.ProviderServices)
 	case orderedTranscript:
 		return value.TranscriptServices
 	default:
+		if services, ok := writer.(ProviderServices); ok {
+			return directForQueue(nil, services)
+		}
 		return writer
+	}
+}
+
+type directForQueueProvider interface {
+	DirectProviderServicesForQueue(queue *OutputQueue) (ProviderServices, bool)
+}
+
+func directForQueue(queue *OutputQueue, services ProviderServices) ProviderServices {
+	for {
+		if ordered, ok := services.(*orderedProviderServices); ok {
+			if queue != nil && ordered.transcript.queue != queue && ordered.transcript.queue.HasPending() {
+				panic("cannot replace an output queue while it owns pending writes")
+			}
+			services = ordered.ProviderServices
+			continue
+		}
+		if provider, ok := services.(directForQueueProvider); ok {
+			if next, unwrapped := provider.DirectProviderServicesForQueue(queue); unwrapped && next != nil {
+				services = next
+				continue
+			}
+		}
+		return services
 	}
 }
 
 // DirectProviderServices exposes provider effects when a sequence already owns their order.
 func DirectProviderServices(services ProviderServices) ProviderServices {
-	if ordered, ok := services.(*orderedProviderServices); ok {
-		return ordered.ProviderServices
-	}
-	return services
+	return directForQueue(nil, services)
 }
 
 // OrderedTranscript shares one output queue with the caller's generation buffers.
@@ -691,15 +724,10 @@ func NewOrderedProviderServices(queue *OutputQueue, inner ProviderServices) Prov
 	if queue == nil {
 		queue = &OutputQueue{}
 	}
-	if existing, ok := inner.(*orderedProviderServices); ok {
-		if existing.transcript.queue == queue {
-			return existing
-		}
-		if existing.transcript.queue.HasPending() {
-			panic("cannot replace an output queue while it owns pending writes")
-		}
-		inner = existing.ProviderServices
+	if existing, ok := inner.(*orderedProviderServices); ok && existing.transcript.queue == queue {
+		return existing
 	}
+	inner = directForQueue(queue, inner)
 	return &orderedProviderServices{ProviderServices: inner, transcript: orderedTranscript{TranscriptServices: inner, queue: queue}}
 }
 
@@ -759,6 +787,29 @@ func (services *orderedProviderServices) SetTurnState(state TurnState, seq uint6
 		return
 	}
 	services.submitEffect("release turn", func() error { services.ProviderServices.SetTurnState(state, seq); return nil })
+}
+func (services *orderedProviderServices) BindNativeInputTurn(receipt NativeInputReceipt, nativeTurnID string) error {
+	return services.transcript.submit("bind native input", func() error {
+		return services.ProviderServices.BindNativeInputTurn(receipt, nativeTurnID)
+	})
+}
+func (services *orderedProviderServices) RetireNativeInputTurn(receipt NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
+	return services.transcript.submit("retire native input", func() error {
+		return services.ProviderServices.RetireNativeInputTurn(receipt, outcome)
+	})
+}
+func (services *orderedProviderServices) PublishNativeReplyTurn(turn NativeReplyTurn) error {
+	turn.Items = slices.Clone(turn.Items)
+	turn.Inputs = slices.Clone(turn.Inputs)
+	return services.transcript.submit("publish canonical native reply", func() error {
+		return services.ProviderServices.PublishNativeReplyTurn(turn)
+	})
+}
+func (services *orderedProviderServices) SetNativeControlInputs(control NativeControlInputs) error {
+	control.InputIDs = slices.Clone(control.InputIDs)
+	return services.transcript.submit("bind native control inputs", func() error {
+		return services.ProviderServices.SetNativeControlInputs(control)
+	})
 }
 func (services *orderedProviderServices) ReportSteersEchoed(count int) {
 	if count <= 0 {

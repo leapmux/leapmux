@@ -4,18 +4,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 // The native HTTP reply can acknowledge only a queued steer. turn.steered proves that the model read it.
-// Native receipts identify an item. The queue retains the original input until the shared ledger reports its outcome.
+// Native receipts identify an item. The queue retains the original input until its dispatch is resolved.
 //
 // The runtime writes steer outcomes on a detached task. A queued record can lag an actual model read.
 // Only completed and canceled records prove an outcome. An unresolved delivery becomes uncertain when its turn ends.
@@ -44,28 +46,28 @@ type steerOutputKey struct {
 // steerTicket retains native identity evidence. The shared queue owns the input and its attachments.
 type steerTicket struct {
 	key            steerKey
-	ledgerID       providerkit.SteerTicket
+	submission     agent.SteerResolution
 	nativeID       string
 	before         map[string]bool
 	baselineOK     bool
 	replied        bool
 	verdict        agent.SteerOutcome
+	liveEcho       bool
 	preceding      map[steerOutputKey]bool
 	waitRequestEnd bool
 }
 
 // codewhaleSteers holds unresolved submissions. The caller holds Agent.Mu.
-// Ledger reports run outside Agent.Mu.
+// Reports run outside Agent.Mu.
 type codewhaleSteers struct {
 	open     []*steerTicket
-	ledger   providerkit.SteerLedger
 	absorbed []steerKey
 	observed []string
 }
 
-func (s *codewhaleSteers) begin(turnID, prompt string, before map[string]bool, baselineOK bool) *steerTicket {
-	key := steerKey{turnID: turnID, input: strings.TrimSpace(prompt)}
-	ticket := &steerTicket{key: key, before: before, baselineOK: baselineOK, ledgerID: s.ledger.Add(turnID + "\x00" + key.input)}
+func (s *codewhaleSteers) begin(submission agent.SteerResolution, prompt string, before map[string]bool, baselineOK bool) *steerTicket {
+	key := steerKey{turnID: submission.Receipt.TurnID, input: strings.TrimSpace(prompt)}
+	ticket := &steerTicket{key: key, submission: submission, before: before, baselineOK: baselineOK}
 	s.open = append(s.open, ticket)
 	return ticket
 }
@@ -110,7 +112,7 @@ func (s *codewhaleSteers) match(key steerKey, id string) *steerTicket {
 
 func (s *codewhaleSteers) unidentified() bool {
 	for _, ticket := range s.open {
-		if ticket.replied && ticket.nativeID == "" {
+		if ticket.verdict == agent.SteerOutcomePending && ticket.replied && ticket.nativeID == "" {
 			return true
 		}
 	}
@@ -148,26 +150,14 @@ func (s *codewhaleSteers) resolve(ticket *steerTicket, id string, outcome agent.
 	if ticket.verdict != agent.SteerOutcomePending {
 		return
 	}
+	if outcome == agent.SteerOutcomePending {
+		panic("cannot resolve a pending steer")
+	}
 	ticket.verdict = outcome
 	if id != "" {
 		ticket.nativeID = id
-		s.ledger.SetID(ticket.ledgerID, id)
 		s.observe(id)
 	}
-	switch outcome {
-	case agent.SteerOutcomeEchoed:
-		if len(ticket.preceding) > 0 || ticket.waitRequestEnd {
-			return
-		}
-		s.ledger.Echo(ticket.ledgerID)
-	case agent.SteerOutcomeDropped:
-		s.ledger.Drop(ticket.ledgerID)
-	case agent.SteerOutcomeUncertain:
-		s.ledger.Uncertain(ticket.ledgerID)
-	case agent.SteerOutcomePending:
-		panic("cannot resolve a pending steer")
-	}
-	s.remove(ticket)
 }
 
 // bindSteerItem identifies the new native user item without claiming that the model read it.
@@ -200,7 +190,6 @@ func (a *Agent) bindSteerItem(ticket *steerTicket) {
 	a.Mu.Lock()
 	if ticket.verdict == agent.SteerOutcomePending && ticket.nativeID == "" {
 		ticket.nativeID = id
-		a.steers.ledger.SetID(ticket.ledgerID, id)
 	}
 	a.Mu.Unlock()
 }
@@ -224,7 +213,6 @@ func (a *Agent) settleSteerReply(ticket *steerTicket, err error) error {
 			ticket.replied = true
 		} else {
 			a.steers.remove(ticket)
-			a.steers.ledger.Forget(ticket.ledgerID)
 			var status *providerkit.HTTPStatusError
 			if errors.As(err, &status) {
 				switch status.StatusCode {
@@ -241,9 +229,7 @@ func (a *Agent) settleSteerReply(ticket *steerTicket, err error) error {
 	}
 	changed := before != a.steerableLocked()
 	a.Mu.Unlock()
-	if !a.IsDiscardingOutput() {
-		a.steers.ledger.Settle(a.sink)
-	}
+	a.releaseSteerOutputs(nil)
 	if changed {
 		a.PublishTurnActive()
 	}
@@ -291,11 +277,12 @@ func (a *Agent) handleSteerDelivered(env codewhaleEnvelope) {
 	if ticket != nil {
 		ticket.preceding = preceding
 		ticket.waitRequestEnd = a.modelRequestObserved
+		ticket.liveEcho = true
 		a.steers.resolve(ticket, id, agent.SteerOutcomeEchoed)
 	}
 	changed := before != a.steerableLocked()
 	a.Mu.Unlock()
-	a.steers.ledger.Settle(a.sink)
+	a.releaseSteerOutputs(nil)
 	if changed {
 		a.PublishTurnActive()
 	}
@@ -319,7 +306,7 @@ func (a *Agent) handleSteerDropped(env codewhaleEnvelope) {
 	}
 	changed := before != a.steerableLocked()
 	a.Mu.Unlock()
-	a.steers.ledger.Settle(a.sink)
+	a.releaseSteerOutputs(nil)
 	if changed {
 		a.PublishTurnActive()
 	}
@@ -341,7 +328,6 @@ func (a *Agent) settleStoredSteers(turnID string) {
 	if a.IsDiscardingOutput() {
 		a.Mu.Lock()
 		a.steers.open = nil
-		a.steers.ledger.Reset()
 		a.Mu.Unlock()
 		return
 	}
@@ -376,7 +362,7 @@ func (a *Agent) settleStoredSteers(turnID string) {
 		}
 		a.Mu.Unlock()
 	}
-	a.steers.ledger.Settle(a.sink)
+	a.releaseSteerOutputs(nil)
 }
 
 type storedTurn struct {
@@ -489,10 +475,10 @@ func (a *Agent) openGenerationIDs() []string {
 		seen[id] = true
 	}
 	var extra []string
-	for _, id := range a.openGeneratedItems {
-		if !seen[id] {
-			seen[id] = true
-			extra = append(extra, id)
+	for _, open := range a.openGeneratedItems {
+		if !seen[open.id] {
+			seen[open.id] = true
+			extra = append(extra, open.id)
 		}
 	}
 	sort.Strings(extra)
@@ -514,30 +500,51 @@ func (a *Agent) steerPredecessors() map[steerOutputKey]bool {
 	return preceding
 }
 
-// releaseSteerOutputs reports read inputs only after their preceding native rows enter the ordered sink.
+// releaseSteerOutputs reports read inputs after their preceding native rows enter the ordered sink.
+// The caller holds dispatchMu so each reply boundary precedes later output.
 func (a *Agent) releaseSteerOutputs(keys []steerOutputKey) {
 	discarding := a.IsDiscardingOutput()
 	a.Mu.Lock()
 	kept := a.steers.open[:0]
+	var ready []*steerTicket
 	for _, ticket := range a.steers.open {
 		for _, key := range keys {
 			delete(ticket.preceding, key)
 		}
-		if ticket.verdict == agent.SteerOutcomeEchoed && len(ticket.preceding) == 0 && !ticket.waitRequestEnd {
-			if discarding {
-				a.steers.ledger.Forget(ticket.ledgerID)
-			} else {
-				a.steers.ledger.Echo(ticket.ledgerID)
-			}
-		} else {
+		if ticket.verdict == agent.SteerOutcomePending ||
+			ticket.verdict == agent.SteerOutcomeEchoed && (len(ticket.preceding) > 0 || ticket.waitRequestEnd) {
 			kept = append(kept, ticket)
+		} else if !discarding {
+			ready = append(ready, ticket)
 		}
 	}
 	clear(a.steers.open[len(kept):])
 	a.steers.open = kept
 	a.Mu.Unlock()
-	if !discarding {
-		a.steers.ledger.Settle(a.sink)
+	for _, ticket := range ready {
+		a.reportSteerResolution(ticket)
+	}
+}
+
+func (a *Agent) reportSteerResolution(ticket *steerTicket) {
+	resolution := ticket.submission
+	resolution.Outcome = ticket.verdict
+	resolution.Receipt = agent.NativeInputReceipt{}
+	if ticket.verdict == agent.SteerOutcomeEchoed {
+		receipt := ticket.submission.Receipt
+		receipt.InputID = ticket.nativeID
+		if !ticket.liveEcho || !a.recordCodewhaleSteerBoundary(receipt) {
+			// The stored completion can prove delivery after a missed event.
+			// It gives no position in the live reply.
+			receipt.TurnID = ""
+		}
+		resolution.Receipt = receipt
+	}
+	if err := agent.RetainSteerResolution(a.sink, resolution); !agent.OutputRetained(err) {
+		slog.Error("Record the CodeWhale steer resolution", "agent_id", a.AgentID(), "input_id", resolution.InputID, "error", err)
+	}
+	if receipt := resolution.Receipt; receipt.InputID != "" && receipt.TurnID == "" {
+		a.retireCodewhaleInput(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 	}
 }
 

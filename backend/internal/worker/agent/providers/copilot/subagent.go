@@ -36,6 +36,14 @@ type copilotNativeChild struct {
 	// idle is true for a background subagent between its turns. Its row is
 	// paused, and a message starts its next turn. outputMu guards it.
 	idle bool
+	// Reply ownership state for inputs sent to this background child. outputMu guards all fields below.
+	liveInteraction    string
+	liveIteration      string
+	liveIterationEnded bool
+	nextAdmissionSeq   uint64
+	admissions         []*copilotChildAdmission
+	uncertainPrompts   map[string]int
+	replyTurn          *copilotChildReplyTurn
 }
 
 // copilotSubagentEvent is the part of every `subagent.*` event that LeapMux reads.
@@ -128,8 +136,7 @@ func (a *Agent) startNativeSubagent(raw []byte, event copilotEvent) {
 	background := started.ExecutionMode == copilotExecutionBackground
 	workerAgentID, err := owner.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildTask,
-
-		SpawnSpanID: started.ToolCallID, ProviderChildKey: event.AgentID, Title: title,
+		SpawnSpanID:  started.ToolCallID, ProviderChildKey: event.AgentID, AgentSessionID: a.currentNativeSessionID(), Title: title,
 		Options: optionmap.Map{copilotOptionExecutionMode: started.ExecutionMode},
 	})
 	if err != nil {
@@ -201,6 +208,16 @@ func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 	completion := providerkit.ChildCompletion(status)
 	a.closeStreamedNativeText(child, completion)
 	a.closeOpenNativeTools(child, completion)
+	a.clearNativeChildControls(child.nativeAgentID)
+	switch status {
+	case bgtask.StatusStopped:
+		a.retireChildReply(child, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED)
+	case bgtask.StatusFailed:
+		a.retireChildReply(child, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+	default:
+		a.completeChildReply(child)
+		a.retireChildAdmissions(child, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	}
 	a.persistNativeFrameTo(child.sink, raw, agent.SpanInfo{})
 	providerkit.ResetSpansAndProgress(child.sink)
 	a.publishChildTurn(child, false)
@@ -221,7 +238,11 @@ func (a *Agent) pauseNativeChild(raw []byte, child *copilotNativeChild) {
 // finished a turn. It does nothing for a foreground subagent, an idle one, or
 // an unknown one. Still-open child tool calls remain open across the pause.
 func (a *Agent) markNativeChildIdle(child *copilotNativeChild) {
-	if child == nil || !child.background || child.idle {
+	if child == nil || !child.background {
+		return
+	}
+	a.completeChildReply(child)
+	if child.idle {
 		return
 	}
 	child.idle = true
@@ -338,6 +359,8 @@ func (a *Agent) clearNativeChildren(completion agent.MessageCompletion, status b
 	for _, child := range orderedNativeChildren(children) {
 		a.closeStreamedNativeText(child, completion)
 		a.closeOpenNativeTools(child, completion)
+		a.clearNativeChildControls(child.nativeAgentID)
+		a.retireChildReply(child, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 		a.publishChildTurn(child, false)
 		providerkit.LogRegistryRefusal("copilot", "close subagent", child.owner.CloseBackgroundTask(child.nativeAgentID, status))
 		providerkit.ResetSpansAndProgress(child.sink)
@@ -391,6 +414,7 @@ func orderedNativeChildren(children map[string]*copilotNativeChild) []*copilotNa
 
 var _ agent.ChildInterrupter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
+var _ agent.ChildEchoSteerer = (*Agent)(nil)
 
 // errCopilotSubagentEnded refuses a message to a subagent that ended. A turn
 // that the message started would reach no one.
@@ -500,7 +524,7 @@ func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
 
 // SendChildInput sends a message to an idle background subagent, which reads
 // it in its next turn. A running background subagent answers busy, and the
-// queue steers the message (SteerChildInput). A foreground subagent and an
+// queue steers the message (SteerChildInputAtEcho). A foreground subagent and an
 // ended one take no message.
 func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
 	state, known := a.childState(childKey)
@@ -512,13 +536,20 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	case !state.idle:
 		return agent.ChildInputResult{StartsTurn: true}, agent.ErrAgentBusy
 	}
-	return agent.ChildInputResult{StartsTurn: true}, a.sendChildMessage(state, input.Content, input.Attachments)
+	receipt, err := a.sendChildMessage(childKey, state, input.Content, input.Attachments, false, nil)
+	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 
 // SteerChildInput sends a message to a running background subagent. Copilot
 // queues it, and the subagent reads it in the turn that follows its running
 // one, before it goes idle.
 func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	return a.SteerChildInputAtEcho(childKey, agent.SteerRequest{Content: content, Attachments: attachments})
+}
+
+// SteerChildInputAtEcho sends a keyed steer to a running background subagent
+// and resolves the queue row once Copilot echoes that client message.
+func (a *Agent) SteerChildInputAtEcho(childKey string, request agent.SteerRequest) error {
 	state, known := a.childState(childKey)
 	switch {
 	case !known || state.idle:
@@ -526,8 +557,23 @@ func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmux
 	case !state.background:
 		return errCopilotForegroundSubagent
 	}
-	return a.sendChildMessage(state, content, attachments)
+	var steer *copilotQueuedSteer
+	if request.InputID != "" && request.AttemptID != "" {
+		steer = &copilotQueuedSteer{
+			prompt: request.Content,
+			resolution: agent.SteerResolution{
+				InputID: request.InputID, AttemptID: request.AttemptID,
+			},
+		}
+	}
+	_, err := a.sendChildMessage(childKey, state, request.Content, request.Attachments, true, steer)
+	return err
 }
+
+// ChildSteerSurvivesTurnEnd keeps a steered background-child message pending
+// when the child finishes its running turn while delivery is in flight: Copilot
+// wakes the idle child to read it.
+func (*Agent) ChildSteerSurvivesTurnEnd() bool { return true }
 
 // ActiveChildTurnState reports the running turn of a subagent. Only a
 // background subagent takes a message during it.
@@ -539,42 +585,54 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 
 // sendChildMessage sends a message to the subagent of state with Copilot's
 // task message. Copilot's task message carries text alone, so an attachment is
-// refused. The queue writes the message into the subagent's transcript, and
-// Copilot's own echo of it is not stored (CopilotEventUserMessage), so it shows
-// once.
-func (a *Agent) sendChildMessage(state copilotChildState, content string, attachments []*leapmuxv1.Attachment) error {
+// refused. Passing an empty fromAgentId matches Copilot's own interactive client:
+// the model sees the unmodified prompt and the child's user.message echo omits
+// source, keeping client inputs disjoint from parent write_agent calls.
+func (a *Agent) sendChildMessage(childKey string, state copilotChildState, content string, attachments []*leapmuxv1.Attachment, isSteer bool, steer *copilotQueuedSteer) (agent.NativeInputReceipt, error) {
 	if len(attachments) > 0 {
-		return fmt.Errorf("copilot sends a subagent text alone, not an attachment")
+		return agent.NativeInputReceipt{}, fmt.Errorf("copilot sends a subagent text alone, not an attachment")
 	}
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
 	if a.IsStopped() {
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	taskID, err := a.childTaskID(state.spawnToolCallID)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	raw, err := a.requestNativeSession("tasks.sendMessage", map[string]any{"id": taskID, "message": content})
+	child, admission, err := a.beginChildAdmission(childKey, content, isSteer, steer)
 	if err != nil {
-		return providerkit.ClassifyJSONRPCDeliveryError("send the message to the Copilot subagent", err)
+		return agent.NativeInputReceipt{}, err
+	}
+	raw, err := a.requestNativeSession("tasks.sendMessage", map[string]any{
+		"id": taskID, "message": content, "fromAgentId": "",
+	})
+	if err != nil {
+		classified := providerkit.ClassifyJSONRPCDeliveryError("send the message to the Copilot subagent", err)
+		a.discardChildAdmission(child, admission, errors.Is(classified, agent.ErrDeliveryUncertain))
+		return agent.NativeInputReceipt{}, classified
 	}
 	var result struct {
 		Sent  *bool  `json:"sent"`
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return fmt.Errorf("%w: read the Copilot task message: %w", agent.ErrDeliveryUncertain, err)
+		a.discardChildAdmission(child, admission, true)
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: read the Copilot task message: %w", agent.ErrDeliveryUncertain, err)
 	}
 	if result.Sent == nil {
-		return fmt.Errorf("%w: read the Copilot task message: Copilot omitted the delivery receipt", agent.ErrDeliveryUncertain)
+		a.discardChildAdmission(child, admission, true)
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: read the Copilot task message: Copilot omitted the delivery receipt", agent.ErrDeliveryUncertain)
 	}
 	if !*result.Sent {
+		a.discardChildAdmission(child, admission, false)
 		reason := result.Error
 		if reason == "" {
 			reason = "Copilot did not deliver it"
 		}
-		return fmt.Errorf("the message did not reach the Copilot subagent: %s", reason)
+		return agent.NativeInputReceipt{}, fmt.Errorf("the message did not reach the Copilot subagent: %s", reason)
 	}
-	return nil
+	a.acceptChildAdmission(child, admission)
+	return admission.receipt, nil
 }

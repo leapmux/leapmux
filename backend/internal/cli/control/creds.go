@@ -4,15 +4,18 @@
 package control
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
@@ -60,8 +63,8 @@ func (c *CredentialFile) ClientIDOrBuiltIn() string {
 	return c.ClientID
 }
 
-// HubHost extracts the hostname (or socket path) used for the on-disk
-// credential filename.
+// HubHost extracts a collision-free filesystem key for hubURL, preserving
+// scheme, hostname, port, and any non-root base path.
 func HubHost(hubURL string) (string, error) {
 	if strings.HasPrefix(hubURL, "unix:") || strings.HasPrefix(hubURL, "npipe:") {
 		// Local sockets use the URL verbatim, with non-filename chars
@@ -73,24 +76,42 @@ func HubHost(hubURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse hub url: %w", err)
 	}
-	host := u.Hostname()
+	host := strings.ToLower(u.Hostname())
 	if host == "" {
 		return "", fmt.Errorf("hub url missing hostname")
 	}
-	if u.Port() != "" {
-		host = host + "_" + u.Port()
+	// IPv6 literals contain colons, which are illegal in Windows filenames.
+	host = strings.ReplaceAll(host, ":", "-")
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "" {
+		scheme = "https"
 	}
-	return host, nil
+	key := scheme + "_" + host
+	if u.Port() != "" {
+		key = key + "_" + u.Port()
+	}
+	cleanPath := strings.TrimRight(u.Path, "/")
+	if cleanPath != "" {
+		sum := sha256.Sum256([]byte(cleanPath))
+		key = key + "_" + hex.EncodeToString(sum[:6])
+	}
+	return key, nil
 }
 
-// ConfigDir returns ~/.config/leapmux/control (XDG-style on POSIX,
-// %APPDATA%\leapmux\control on Windows).
+// ConfigDir returns the control CLI configuration directory:
+// $LEAPMUX_CONTROL_CONFIG_DIR, else $XDG_CONFIG_HOME/leapmux/control, else
+// %APPDATA%\leapmux\control on Windows or ~/.config/leapmux/control on POSIX.
 func ConfigDir() (string, error) {
 	if env := os.Getenv("LEAPMUX_CONTROL_CONFIG_DIR"); env != "" {
 		return env, nil
 	}
 	if env := os.Getenv("XDG_CONFIG_HOME"); env != "" {
 		return filepath.Join(env, "leapmux", "control"), nil
+	}
+	if runtime.GOOS == "windows" {
+		if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+			return filepath.Join(dir, "leapmux", "control"), nil
+		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -195,7 +216,7 @@ func ListCredentialFiles() ([]CredentialFile, error) {
 	}
 	var out []CredentialFile
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || e.Name() == contextFileName || e.Name() == "pins.json" {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
@@ -211,5 +232,110 @@ func ListCredentialFiles() ([]CredentialFile, error) {
 }
 
 // LoadCredentials returns ErrNotLoggedIn when no credential file exists for
-// the requested hub.
-var ErrNotLoggedIn = errors.New("not logged in to this hub; run `leapmux control auth login`")
+// the requested hub. It wraps cli.ErrNotLoggedIn, so the error envelope
+// reports not_logged_in, with the login command as its hint, wherever the
+// error surfaces.
+var ErrNotLoggedIn = fmt.Errorf("%w to this hub", cli.ErrNotLoggedIn)
+
+// NoHubError reports that nothing selects a hub: no --hub flag, no tab
+// socket, no LEAPMUX_HUB, and no single or chosen default among the stored
+// credentials.
+type NoHubError struct {
+	// Stored is the number of stored credentials. With none, the user is
+	// signed in nowhere; with several, the user must choose one.
+	Stored int
+}
+
+func (e *NoHubError) Error() string {
+	if e.Stored > 1 {
+		return fmt.Sprintf("no hub selected; this machine stores credentials for %d hubs and none is the default", e.Stored)
+	}
+	return "no hub selected"
+}
+
+// CLIError classifies the error for the envelope.
+func (e *NoHubError) CLIError() *cli.Error {
+	if e.Stored > 1 {
+		return cli.Wrap(cli.CodeUsage, e, "").
+			WithHint("pass --hub <url>").
+			WithHint(`run "leapmux auth use <hub>" to choose the default hub`)
+	}
+	return cli.Wrap(cli.CodeNotLoggedIn, e, "").
+		WithHint("pass --hub <url> or set LEAPMUX_HUB").
+		WithHint(`run "leapmux auth login --hub <url>" to store a credential`)
+}
+
+// defaultHubFile is the file in ConfigDir that holds the hub `auth use`
+// chose. It is not a ".json" file, so ListCredentialFiles never reads it as
+// a credential.
+const defaultHubFile = "default-hub"
+
+// DefaultHub returns the hub that a command addresses when neither --hub
+// nor a tab's socket selects one: LEAPMUX_HUB, else context.json's hub, else
+// the hub of the only stored credential, else the hub that `auth use` chose,
+// else a live local solo/dev Hub IPC socket. It returns a *NoHubError when
+// none of them selects a hub.
+func DefaultHub() (string, error) {
+	if hub := strings.TrimSpace(os.Getenv("LEAPMUX_HUB")); hub != "" {
+		return hub, nil
+	}
+	if ctxCfg, err := LoadContext(); err == nil && ctxCfg.Hub != "" {
+		return ctxCfg.Hub, nil
+	}
+	files, err := ListCredentialFiles()
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 1 {
+		return files[0].HubURL, nil
+	}
+	chosen, err := readDefaultHub()
+	if err != nil {
+		return "", err
+	}
+	if chosen != "" {
+		return chosen, nil
+	}
+	if len(files) == 0 {
+		if local := DiscoverLocalHub(); local != "" {
+			return local, nil
+		}
+	}
+	return "", &NoHubError{Stored: len(files)}
+}
+
+// SetDefaultHub records hub as the default hub. An empty hub removes the
+// record.
+func SetDefaultHub(hub string) error {
+	dir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, defaultHubFile)
+	if hub == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return atomicfile.WriteFile(path, []byte(hub+"\n"), 0o600)
+}
+
+// readDefaultHub returns the hub that SetDefaultHub recorded, or "".
+func readDefaultHub() (string, error) {
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(dir, defaultHubFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}

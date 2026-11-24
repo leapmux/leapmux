@@ -3,7 +3,6 @@ package resolve_test
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"reflect"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
@@ -258,14 +258,12 @@ func TestResolve_ConflictBetweenTabAndWorkspace(t *testing.T) {
 		},
 	)
 	require.Error(t, err)
-	var re *resolve.ResolveError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, "invalid_request", re.Code)
+	re := usageError(t, err)
 	assert.Contains(t, re.Message, "workspace_id")
 	assert.Contains(t, re.Message, "ws-A")
 	assert.Contains(t, re.Message, "ws-B")
-	assert.Contains(t, re.Message, "--tab-id")
-	assert.Contains(t, re.Message, "--workspace-id")
+	assert.Contains(t, re.Message, "the tab")
+	assert.Contains(t, re.Message, "--workspace")
 }
 
 // TestResolve_AgreementAcrossSourcesIsOK is the inverse of the
@@ -304,12 +302,10 @@ func TestResolve_MissingRequiredSurfacesAllFields(t *testing.T) {
 		resolve.Inputs{},
 	)
 	require.Error(t, err)
-	var re *resolve.ResolveError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, "invalid_request", re.Code)
-	assert.Contains(t, re.Message, "--workspace-id")
-	assert.Contains(t, re.Message, "--tile-id")
-	assert.Contains(t, re.Message, "--worker-id")
+	re := usageError(t, err)
+	assert.Contains(t, re.Message, "--workspace")
+	assert.Contains(t, re.Message, "--tile")
+	assert.Contains(t, re.Message, "--worker")
 	assert.NotContains(t, re.Message, "--user-id",
 		"a user id is never required: the hub derives the tenant from the session")
 }
@@ -340,32 +336,10 @@ func TestResolve_TabIDWithoutTypeIsAllowed(t *testing.T) {
 	assert.Equal(t, "worker-A", got.WorkerID)
 }
 
-// TestResolve_FixedTabTypeRejectsContradictingFlag locks in the
-// agent / terminal subgroup contract: those commands pin
-// FixedTabType, and a user passing --tab-type for a different kind
-// must error out (not silently override the pin).
-func TestResolve_FixedTabTypeRejectsContradictingFlag(t *testing.T) {
-	_, err := resolve.Resolve(context.Background(), resolve.Deps{},
-		resolve.Need{},
-		resolve.Inputs{
-			TabID:        "tab-1",
-			TabType:      "terminal",
-			FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		},
-	)
-	require.Error(t, err)
-	var re *resolve.ResolveError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, "invalid_request", re.Code)
-	assert.Contains(t, re.Message, "contradicts")
-}
-
-// The contradiction message prints BOTH sides through TabTypeWireName, so a
-// kind that function does not name reads as `--tab-type "" contradicts this
-// command's implicit type ""`. FILE has been in the enum all along and IMAGE
-// joined it, and neither was stated -- so this pins the round trip for every
-// kind rather than the two the message happened to cover.
-func TestResolve_ContradictionNamesEveryTabKind(t *testing.T) {
+// Every tab kind round-trips between its wire token and its enum value. FILE
+// has been in the enum all along and IMAGE joined it, and neither was
+// stated once -- so this pins the round trip for every kind.
+func TestTabTypeWireNameRoundTripsEveryKind(t *testing.T) {
 	kinds := []struct {
 		enum leapmuxv1.TabType
 		wire string
@@ -383,54 +357,6 @@ func TestResolve_ContradictionNamesEveryTabKind(t *testing.T) {
 	}
 	assert.Empty(t, resolve.TabTypeWireName(leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED),
 		"the zero value stays empty, which is how a caller guards the env-var emit")
-
-	// The message a user actually reads, with neither side an empty string.
-	_, err := resolve.Resolve(context.Background(), resolve.Deps{},
-		resolve.Need{},
-		resolve.Inputs{
-			TabID:        "tab-1",
-			TabType:      "image",
-			FixedTabType: leapmuxv1.TabType_TAB_TYPE_FILE,
-		},
-	)
-	require.Error(t, err)
-	var re *resolve.ResolveError
-	require.ErrorAs(t, err, &re)
-	assert.Contains(t, re.Message, `"image"`)
-	assert.Contains(t, re.Message, `"file"`)
-}
-
-// TestResolve_FixedTabTypeAgreeingFlagIsOK is the inverse: passing
-// --tab-type explicitly to an agent-subgroup command must be
-// accepted as long as it matches. Catches a regression that
-// reject-the-agreement would produce.
-func TestResolve_FixedTabTypeAgreeingFlagIsOK(t *testing.T) {
-	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
-			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A"), nil
-		},
-	}.toDeps()
-	got, err := resolve.Resolve(context.Background(), deps,
-		resolve.Need{WorkerID: true},
-		resolve.Inputs{TabID: "tab-1", TabType: "agent", FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
-	)
-	require.NoError(t, err)
-	assert.Equal(t, "worker-A", got.WorkerID)
-}
-
-// TestResolve_UnknownTabTypeIsInvalidArgument guards against the
-// "user typed a typo'd tab type" case. The resolver must not
-// silently map "agnt" to AGENT or TabTypeUnspecified — it has to
-// reject so the user sees the fix.
-func TestResolve_UnknownTabTypeIsInvalidArgument(t *testing.T) {
-	_, err := resolve.Resolve(context.Background(), resolve.Deps{},
-		resolve.Need{},
-		resolve.Inputs{TabID: "tab-1", TabType: "agnt"},
-	)
-	require.Error(t, err)
-	var re *resolve.ResolveError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, "invalid_request", re.Code)
 }
 
 // TestResolve_RpcErrorPropagates ensures a transport / coding
@@ -536,9 +462,7 @@ func TestResolve_TwoExplicitInputsStillConflict(t *testing.T) {
 		},
 	)
 	require.Error(t, err)
-	var re *resolve.ResolveError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, "invalid_request", re.Code)
+	re := usageError(t, err)
 	assert.Contains(t, re.Message, "tile_id")
 	assert.Contains(t, re.Message, "tile-X")
 	assert.Contains(t, re.Message, "tile-Y")
@@ -616,7 +540,6 @@ func TestResolve_HasNoUserIDAxis(t *testing.T) {
 		{"Inputs", reflect.TypeOf(resolve.Inputs{}), "ExplicitUserID"},
 		{"Resolved", reflect.TypeOf(resolve.Resolved{}), "UserID"},
 		{"Deps", reflect.TypeOf(resolve.Deps{}), "GetUser"},
-		{"FlagOptions", reflect.TypeOf(resolve.FlagOptions{}), "HideUser"},
 	} {
 		_, found := tc.typ.FieldByName(tc.field)
 		assert.False(t, found, "%s must not carry a %s field", tc.name, tc.field)
@@ -722,7 +645,7 @@ func TestResolve_UnlocatableTabIsFatalWhenAFieldNeededIt(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, resolve.ErrTabNotLocatable,
 		"the cause stays reachable, so a caller need not match on the message")
-	assert.Contains(t, err.Error(), "--workspace-id",
+	assert.Contains(t, err.Error(), "--workspace",
 		"and it still gives the flag that would satisfy what the miss left empty")
 }
 
@@ -750,19 +673,17 @@ func TestResolve_LocateTabTransportFailureStaysFatal(t *testing.T) {
 	assert.Contains(t, err.Error(), "connection refused")
 }
 
-// The `terminal ...` subgroup's --tab-id default, across the three spawn
-// shapes a `leapmux control` invocation can find itself in.
-//
-// The quake row is the one that needed the new source: there TAB_ID identifies a
-// NEIGHBOURING tab, so the old type gate refused it (agent != terminal) and a
-// bare `terminal send` had no target at all.
-func TestBindEntityFlags_TerminalTabIDDefault(t *testing.T) {
+// "self" of a terminal command prefers LEAPMUX_CONTROL_TERMINAL_ID, which
+// a quake panel sets: there LEAPMUX_CONTROL_TAB_ID identifies a NEIGHBOURING
+// tab, so the type gate alone would refuse it (agent != terminal) and a
+// terminal command run inside the panel had no "self" at all.
+func TestListingSelfTabID_TerminalPrefersTheTerminalID(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		tabID       string
-		tabType     string
-		terminalID  string
-		wantDefault string
+		name       string
+		tabID      string
+		tabType    string
+		terminalID string
+		want       string
 	}{
 		{
 			name: "inside a quake panel, the shell is the only id there is",
@@ -770,48 +691,42 @@ func TestBindEntityFlags_TerminalTabIDDefault(t *testing.T) {
 			// to a directory, and no tab in it is "the tab you are in" -- and
 			// the panel's own shell as the terminal.
 			tabID: "", tabType: "", terminalID: "quake-1",
-			wantDefault: "quake-1",
+			want: "quake-1",
 		},
 		{
 			name:  "inside an ordinary terminal tab, both name the same id",
 			tabID: "term-1", tabType: "terminal", terminalID: "term-1",
-			wantDefault: "term-1",
+			want: "term-1",
 		},
 		{
-			name: "inside an agent, there is no terminal to default to",
+			name: "inside an agent, there is no terminal",
 			// The type gate still decides here, and it refuses: an agent tab
-			// is not a terminal, so `terminal send` must ask for --tab-id
-			// rather than target the agent.
+			// is not a terminal, so a terminal command must take an explicit
+			// target rather than act on the agent.
 			tabID: "agent-1", tabType: "agent", terminalID: "",
-			wantDefault: "",
+			want: "",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("LEAPMUX_CONTROL_TAB_ID", tc.tabID)
-			t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", tc.tabType)
-			t.Setenv("LEAPMUX_CONTROL_TERMINAL_ID", tc.terminalID)
-
-			var in resolve.Inputs
-			fs := flag.NewFlagSet("terminal send", flag.ContinueOnError)
-			resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
-				FixedTabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-			})
-			require.NoError(t, fs.Parse(nil))
-
-			assert.Equal(t, tc.wantDefault, in.TabID)
+			l := resolve.Listing{Getenv: envOf(map[string]string{
+				"LEAPMUX_CONTROL_TAB_ID":      tc.tabID,
+				"LEAPMUX_CONTROL_TAB_TYPE":    tc.tabType,
+				"LEAPMUX_CONTROL_TERMINAL_ID": tc.terminalID,
+			})}
+			assert.Equal(t, tc.want, l.SelfTabID(resolve.KindTerminal))
 		})
 	}
 }
 
-// The AGENT subgroup never reads TERMINAL_ID: an agent command must not default
-// to a terminal id, whatever the surrounding spawn is.
+// "self" of an agent command never reads TERMINAL_ID: an agent command must
+// not resolve to a terminal, whatever the surrounding spawn is.
 //
 // The two rows are the two spawns that set it. Inside an ordinary terminal TAB
-// the ambient tab is that terminal, so `agent send` still has no default and
-// asks for --tab-id. Inside a QUAKE panel there is no ambient tab at all, which
-// is the deliberate outcome: the panel belongs to a directory, so the user
-// names the agent they mean rather than having one picked for them.
-func TestBindEntityFlags_AgentTabIDDefaultIgnoresTheTerminalID(t *testing.T) {
+// the ambient tab is that terminal, so an agent command still has no "self".
+// Inside a QUAKE panel there is no ambient tab at all, which is the deliberate
+// outcome: the panel belongs to a directory, so the user gives the agent they
+// mean rather than having one picked for them.
+func TestListingSelfTabID_AgentIgnoresTheTerminalID(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		tabID   string
@@ -821,20 +736,38 @@ func TestBindEntityFlags_AgentTabIDDefaultIgnoresTheTerminalID(t *testing.T) {
 		{name: "inside a quake panel", tabID: "", tabType: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("LEAPMUX_CONTROL_TAB_ID", tc.tabID)
-			t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", tc.tabType)
-			t.Setenv("LEAPMUX_CONTROL_TERMINAL_ID", "quake-1")
-
-			var in resolve.Inputs
-			fs := flag.NewFlagSet("agent send", flag.ContinueOnError)
-			resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{
-				FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-			})
-			require.NoError(t, fs.Parse(nil))
-
-			assert.Empty(t, in.TabID, "an agent command must never default to a terminal")
+			l := resolve.Listing{Getenv: envOf(map[string]string{
+				"LEAPMUX_CONTROL_TAB_ID":      tc.tabID,
+				"LEAPMUX_CONTROL_TAB_TYPE":    tc.tabType,
+				"LEAPMUX_CONTROL_TERMINAL_ID": "quake-1",
+			})}
+			assert.Empty(t, l.SelfTabID(resolve.KindAgent), "an agent command must never resolve to a terminal")
 		})
 	}
+}
+
+// A tab command accepts the ambient tab of any type.
+func TestListingSelfTabID_TabAcceptsEveryType(t *testing.T) {
+	l := resolve.Listing{Getenv: envOf(map[string]string{
+		"LEAPMUX_CONTROL_TAB_ID":   "term-1",
+		"LEAPMUX_CONTROL_TAB_TYPE": "terminal",
+	})}
+	assert.Equal(t, "term-1", l.SelfTabID(resolve.KindTab))
+	assert.Empty(t, l.SelfTabID(resolve.KindAgent))
+}
+
+// envOf is a Getenv that reads m.
+func envOf(m map[string]string) func(string) string {
+	return func(key string) string { return m[key] }
+}
+
+// usageError asserts that err is a usage error and returns its envelope.
+func usageError(t *testing.T, err error) *cli.Error {
+	t.Helper()
+	require.Error(t, err)
+	e := cli.FromError(err)
+	require.Equal(t, cli.CodeUsage, e.Code, "error: %v", err)
+	return e
 }
 
 // The tolerance is for an AMBIENT tab id only. A tab id the user TYPED says

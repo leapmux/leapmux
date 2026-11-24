@@ -132,11 +132,12 @@ describe('process restart cleanup', () => {
     expect(reportStartupFailure).not.toHaveBeenCalled()
     if (field === 'hubProc') {
       expect(spawnTestProcess).toHaveBeenCalledWith('private-leapmux', [
+        'daemon',
         'hub',
         'run',
-        '-listen',
+        '--listen',
         ':12345',
-        '-data-dir',
+        '--data-dir',
         join(server.dataDir, 'hub'),
       ], expect.objectContaining({ detached: true }))
       expect(loginViaAPI).toHaveBeenCalledWith(server.hubUrl, 'admin', 'password')
@@ -144,6 +145,7 @@ describe('process restart cleanup', () => {
     else {
       // The restarted Worker keeps the registration in its data directory; the run process takes no endpoint flag.
       expect(spawnTestProcess).toHaveBeenCalledWith('private-leapmux', [
+        'daemon',
         'worker',
         'run',
         '--data-dir',
@@ -259,7 +261,7 @@ describe('initial process fixture port ownership', () => {
     vi.mocked(waitForNewOnlineWorkerViaAPI).mockResolvedValue('assigned-worker')
     vi.mocked(spawnTestProcess).mockImplementation((_command, args) => {
       // The registration command is its own short-lived process.
-      if (args[0] === 'worker' && args[1] === 'register') {
+      if (args[0] === 'daemon' && args[1] === 'worker' && args[2] === 'register') {
         const registerStub = createProcessStub({ pid: 9000 + children.length })
         queueMicrotask(() => {
           registerStub.emitter.exitCode = 0
@@ -287,11 +289,12 @@ describe('initial process fixture port ownership', () => {
     await runInitialFixture(use)
     expect(findFreePort).not.toHaveBeenCalled()
     expect(spawnTestProcess).toHaveBeenNthCalledWith(1, 'private-leapmux', [
+      'daemon',
       'hub',
       'run',
-      '-listen',
+      '--listen',
       '127.0.0.1:0',
-      '-data-dir',
+      '--data-dir',
       expect.any(String),
     ], expect.any(Object))
     expect(waitForHubStart).toHaveBeenCalledWith(expect.stringMatching(/hub[/\\]state\.json$/), children[0]?.proc)
@@ -303,6 +306,7 @@ describe('initial process fixture port ownership', () => {
       workerProc: children[1]?.proc,
     }))
     expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'private-leapmux', expect.arrayContaining([
+      'daemon',
       'worker',
       'register',
       '--hub',
@@ -313,6 +317,7 @@ describe('initial process fixture port ownership', () => {
       stdio: ['ignore', 'pipe', 'pipe'],
     }))
     expect(spawnTestProcess).toHaveBeenNthCalledWith(3, 'private-leapmux', expect.arrayContaining([
+      'daemon',
       'worker',
       'run',
     ]), expect.objectContaining({

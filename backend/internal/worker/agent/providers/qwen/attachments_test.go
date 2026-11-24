@@ -81,7 +81,7 @@ func TestQwenPlainPromptDoesNotQueryAudioAndAudioSteerStaysInTheWorkerQueue(t *t
 	require.NoError(t, a.SendInput("text", nil))
 	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), "qwen/status/workspace/providers"))
-	err := a.SteerInput("audio", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}})
+	err := a.SteerInput(agent.SteerRequest{Content: "audio", Attachments: []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}})
 	require.ErrorIs(t, err, agent.ErrSteeringUnsupported)
 	a.stateMu.Lock()
 	assert.Empty(t, a.steer.items)

@@ -78,7 +78,7 @@ Four specifics matter:
 - **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync](/docs/using/device-sync/)).
 - **Worker public keys are visible; private keys never leave the Worker.** The Worker registers its public composite keys with the Hub once, and the Hub refuses a connection that presents other ones. Its private halves stay in the Worker's local state.
 - **Agent and terminal state live in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. That cache is not keyed to the account, and signing out does not clear it. See [Encryption & Data](/docs/admin/encryption-and-data/) for where that data lives and how to back it up.
-- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or sends on its stream. A different component does send one: `leapmux control` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself. Step-up verification always registers the default `user@host` label, regardless of the label you chose at login.
+- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or sends on its stream. A different component does send one: `leapmux` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself. Step-up verification always registers the default `user@host` label, regardless of the label you chose at login.
 
 ## The E2EE protocol
 
@@ -125,7 +125,7 @@ The Hub enforces resource limits **without decrypting**: it caps the reassembled
 
 **In-band rekey** rotates the channel's transport keys on the existing connection. Both modes mix a fresh X25519 secret into the next key epoch. In post-quantum mode, the initiator also encapsulates to the Worker's static ML-KEM key and supplies a fresh ML-KEM public key. The Worker encapsulates to that fresh key, and both sides mix the two ML-KEM secrets into the next epoch. The initiator keeps sending under the current key until the Worker acknowledges the rekey.
 
-The exchange travels inside the already-encrypted channel, so the current cipher authenticates it and no extra signature is needed; the Hub relays it without decrypting, as it does everything else. A refused rekey leaves both sides on their existing keys. A short key-overlap window (~10 s) lets frames a peer encrypted just before the swap still decrypt afterwards, so traffic keeps flowing across the round trip — the Frontend, `leapmux control`, cross-worker links, and the desktop app's tunnels all share this, which is why port-forwards and SOCKS sessions survive hourly rotation without a stall.
+The exchange travels inside the already-encrypted channel, so the current cipher authenticates it and no extra signature is needed; the Hub relays it without decrypting, as it does everything else. A refused rekey leaves both sides on their existing keys. A short key-overlap window (~10 s) lets frames a peer encrypted just before the swap still decrypt afterwards, so traffic keeps flowing across the round trip — the Frontend, `leapmux`, cross-worker links, and the desktop app's tunnels all share this, which is why port-forwards and SOCKS sessions survive hourly rotation without a stall.
 
 Hub credential expiry still limits bearer-token channels from the outside: CLI access tokens and delegation tokens live one hour. Desktop tunnels authorized by a sliding session cookie can stay open for days, and rekey is what limits their *key epoch* without resetting multiplexed TCP connections. Hard nonce exhaustion remains fail-closed. The Frontend re-checks key age the next time it uses a channel, on a one-minute idle timer, and again when the page wakes from suspend — so a frozen clock cannot hide an over-age key. A rekey refused for being too early tells the initiator how long to wait rather than leaving it to guess.
 
@@ -176,13 +176,13 @@ Teardown is immediate when the Hub handling the request is also the one holding 
 
 Revocations that originate outside the live Hub — offline `leapmux recover` tools, or a predecessor that stopped mid-flight — land through a durable revocation ledger that the Hub replays on its next sweep, at the cost of a brief propagation delay.
 
-Revoke a credential with `leapmux control admin`: `api-token revoke`, `delegation-token revoke`, `session revoke`, or `session revoke-user`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/) for the flags, and [Control CLI](/docs/using/control-cli/) for how delegation tokens are used.
+Revoke a credential with `leapmux admin`: `api-token revoke`, `delegation-token revoke`, `session revoke`, or `session revoke-user`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/) for the flags, and [Control CLI](/docs/using/control-cli/) for how delegation tokens are used.
 
 ### What a delegation token can reach
 
 A Worker mints a delegation token for the agent running in one of its tabs. The token carries the identity of that Worker's **owner** — the single user the Worker is registered to — and is limited to the machines it may reach: the Worker that minted it, plus that owner's other Workers. It can never be aimed at someone else's machine. The Hub re-checks that limit every time the token opens a channel, not only at the mint.
 
-On those machines the token can do whatever its owner could do from a browser. That includes the Worker RPCs that act on the machine rather than on a single tab — filesystem, git, tunnels, system info. Their scope is the whole host: paths are normalized and traversal is blocked, but nothing confines them to one project directory. This is how `leapmux control` normally works. It is also the exposure to weigh before you point a prompt-injectable agent at a Worker.
+On those machines the token can do whatever its owner could do from a browser. That includes the Worker RPCs that act on the machine rather than on a single tab — filesystem, git, tunnels, system info. Their scope is the whole host: paths are normalized and traversal is blocked, but nothing confines them to one project directory. This is how `leapmux` normally works. It is also the exposure to weigh before you point a prompt-injectable agent at a Worker.
 
 Every Worker RPC that touches data is **owner-only**: a Worker serves nobody but the user it is registered to. Because that is exactly one user, "the caller owns this Worker" and "the caller owns every tab this Worker holds" are the same statement. The one exception is the liveness ping, which does no work and discloses nothing.
 
@@ -251,8 +251,8 @@ The desktop app writes its Worker's line to standard error, prefixed with `deskt
 
 In the browser and in the desktop app, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. The desktop app keeps its pins in its own storage, one store per Hub. Its tunnels share that record; see [Tunnel key trust](#tunnel-key-trust). Two non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/).
 
-- Worker-to-Worker (cross-worker) pins, cleared with `leapmux worker cross-worker-pins remove --target-worker-id=<id>`.
-- `leapmux control` CLI pins, cleared with `leapmux control worker pins remove --worker-id=<id>`.
+- Worker-to-Worker (cross-worker) pins, cleared with `leapmux daemon worker cross-worker-pins remove <worker-id>`.
+- `leapmux` CLI pins, cleared with `leapmux worker pins remove <worker>`.
 
 Both follow the same rule: first contact auto-pins, any later mismatch aborts the connection until you explicitly clear the pin.
 
@@ -294,7 +294,7 @@ Setting the password is what [Network access](/docs/admin/configuration/#network
 A solo hub runs no captcha, so a rate limit guards the sign-in form instead: ten failed passwords from one client address pause sign-in from that address for fifteen minutes. `rate_limit.login_anonymous` sets it — see [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-limits).
 
 {{< callout type="warning" >}}
-Point solo mode at a non-loopback address with `-listen` and LeapMux warns you at startup. Until the `solo` account has a password, another machine can win the first-password setup race.
+Point solo mode at a non-loopback address with `--listen` and LeapMux warns you at startup. Until the `solo` account has a password, another machine can win the first-password setup race.
 
 The app shows only the password-setup screen on every passwordless TCP connection, including loopback. Set the password from a trusted connection. Firewall or tunnel a non-loopback address.
 {{< /callout >}}
@@ -343,7 +343,7 @@ These actions require elevation:
 - Removing a linked OAuth provider.
 - Authorizing an app.
 - Registering an app, editing its registration, allowing it the step-up ceremony, or vouching for it.
-- Changing any **Hub setting**, from the Preferences dialog or from `leapmux control admin settings`.
+- Changing any **Hub setting**, from the Preferences dialog or from `leapmux admin settings`.
 
 Your account email and a linked provider are on that list because both are recovery identities: the address receives the recovery link, and a provider is a login method. Whoever can move either one can come back later without the session they started from.
 
@@ -384,14 +384,14 @@ Inside a LeapMux agent or terminal tab the question does not arise: a tab holds 
 
 ### Verifying a command-line credential
 
-How the proof runs depends on how the credential was issued. `leapmux control` picks the ceremony for you, and a refused command starts it.
+How the proof runs depends on how the credential was issued. `leapmux` picks the ceremony for you, and a refused command starts it.
 
-A credential from the default `leapmux control auth login` verifies through the **loopback ceremony**. A refused command opens a browser on the CLI's own machine. Verify your identity if prompted, then approve the request on the Hub's page. Approval sends a code to the CLI's loopback listener. The command retries after the CLI redeems the code successfully.
+A credential from the default `leapmux auth login` verifies through the **loopback ceremony**. A refused command opens a browser on the CLI's own machine. Verify your identity if prompted, then approve the request on the Hub's page. Approval sends a code to the CLI's loopback listener. The command retries after the CLI redeems the code successfully.
 
-A credential from `leapmux control auth login --device-code`, or one an administrator issued with `leapmux control admin api-token issue`, verifies through the **device-code ceremony**: the CLI prints an address and a short code, a person approves it in a browser, and the refused command runs.
+A credential from `leapmux auth login --device-code`, or one an administrator issued with `leapmux admin api-token issue`, verifies through the **device-code ceremony**: the CLI prints an address and a short code, a person approves it in a browser, and the refused command runs.
 
 ```
-$ leapmux control admin settings set public_url https://hub.example.com
+$ leapmux admin settings set public_url https://hub.example.com
 This command needs you to verify your identity.
   1. Visit https://hub.example.com/oauth/device
   2. Enter the code: 7XC-8DZ
@@ -427,18 +427,18 @@ Account recovery and admin reset-password also leave Workers registered. After a
 
 ## App credentials
 
-`leapmux control auth login` mints an app credential: an access token that lives for {{< duration access-token >}} and renews itself, backed by a refresh token that lives {{< duration refresh-token >}}. The credential is written to one file per Hub at mode `0600` — see [Credential file location](/docs/using/control-cli/#credential-file-location) for where.
+`leapmux auth login` mints an app credential: an access token that lives for {{< duration access-token >}} and renews itself, backed by a refresh token that lives {{< duration refresh-token >}}. The credential is written to one file per Hub at mode `0600` — see [Credential file location](/docs/using/control-cli/#credential-file-location) for where.
 
 These rules limit what that credential can do:
 
 - **Authorizing one needs an elevated session.** The consent page sends you through a verification prompt first, and consenting slides the window forward like every other sensitive action. This holds for the device-code flow too, where the verification happens in a browser on a *different* machine from the one being authorized — which is the point.
 - **Every credential carries a set of named permissions.** A grant only ever subtracts from what its owner can do; it never adds. The consent page states each permission as a sentence, and the credential is refused anything outside its grant — at the Hub, and again inside the encrypted channel at the Worker, which is where a file read or a terminal write actually happens.
-- **Hub administration is opt-in per credential.** An ordinary credential can do everything you can do *except* administer the Hub, even when your account is an administrator. `leapmux control auth login --scope "admin:read admin:users"` asks for it, the browser consent page states plainly what it grants, and only an administrator may grant it. So a stolen credential file from a routine login cannot manage users, workers, or settings.
+- **Hub administration is opt-in per credential.** An ordinary credential can do everything you can do *except* administer the Hub, even when your account is an administrator. `leapmux auth login --scope "admin:read admin:users"` asks for it, the browser consent page states plainly what it grants, and only an administrator may grant it. So a stolen credential file from a routine login cannot manage users, workers, or settings.
 - **The account's own authenticators are outside every grant.** Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are refused to any credential, whatever the consent screen offered. Each of those creates authority that outlives the app's connection, so disconnecting the app would no longer withdraw what it was given.
 - **The lifetime is capped.** Each refresh moves the refresh window forward, but never past **{{< duration absolute-cap >}}** from the day you authorized the credential. After that the device signs in again.
 - **Logging in again retires the old credential.** The previous token is revoked, so a re-login does not leave a live secret behind in your shell history or on the Hub.
 - **A credential issued by another credential does not renew, expires no later than its issuer, and is never wider than it.** So a chain of self-issued credentials gets shorter and narrower each time, and ends at the browser consent that started it instead of restarting the ceiling at each step.
-- **A credential either renews or has a fixed lifetime, never both.** `leapmux control auth login` and the default `admin api-token issue` mint the renewing kind. `admin api-token issue --ttl <seconds>` mints a service credential that lives exactly that long and carries no refresh token; see [API tokens](/docs/admin/admin-cli/#api-tokens).
+- **A credential either renews or has a fixed lifetime, never both.** `leapmux auth login` and the default `admin api-token issue` mint the renewing kind. `admin api-token issue --ttl <seconds>` mints a service credential that lives exactly that long and carries no refresh token; see [API tokens](/docs/admin/admin-cli/#api-tokens).
 
 If SMTP is configured and your address is verified, LeapMux emails you whenever a credential is issued for your account. The message lists the app, the installation, and **every** permission granted — listed in full rather than counted, so an ordinary authorization is distinguishable from one that also administers the Hub. A credential an administrator issued for you says so, and does not read as a receipt for something you did.
 
@@ -503,7 +503,7 @@ Solo mode and the desktop app reissue their own Worker's token. For each standal
 
 ## Local control and service accounts
 
-`leapmux <mode> stop`, `restart`, and `status` talk to a running instance through a private local endpoint: a Unix socket, or a named pipe on Windows. Only the operating-system account that runs the instance can open it. On Windows, the pipe admits only that account's security identifier (SID). Each request must also carry the identity of the running process, and a token from the instance's data directory that only that account can read. This endpoint controls the process only; it does not replace the sign-in that the Hub requires over the network.
+`leapmux daemon <mode> stop`, `restart`, and `status` talk to a running instance through a private local endpoint: a Unix socket, or a named pipe on Windows. Only the operating-system account that runs the instance can open it. On Windows, the pipe admits only that account's security identifier (SID). Each request must also carry the identity of the running process, and a token from the instance's data directory that only that account can read. This endpoint controls the process only; it does not replace the sign-in that the Hub requires over the network.
 
 A service runs LeapMux as your own account, for boot startup too, never as `root` or `SYSTEM`. The administrator rights that LeapMux asks for create the service and, on Windows, grant your account the right to run it. They do not make LeapMux run as an administrator.
 
@@ -531,10 +531,10 @@ If you run a Hub for a team, the security of the deployment rests largely on the
    4. Register it with a new key. It receives a new Worker ID.
 
 4. **Rotate encryption keys deliberately.** Use `rotate` → restart → `reencrypt`, and never `remove` an old version before the re-encryption migrated every row. The exact runbook is in [Encryption & Data](/docs/admin/encryption-and-data/).
-5. **Give the `solo` account a password before you expose solo mode beyond loopback.** Without one, the first TCP caller can claim the account. Use hub mode (`leapmux hub`) for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/admin/configuration/#network-access) for listen addresses.
+5. **Give the `solo` account a password before you expose solo mode beyond loopback.** Without one, the first TCP caller can claim the account. Use hub mode (`leapmux daemon hub`) for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/admin/configuration/#network-access) for listen addresses.
 6. **Mint registration keys carefully.** A valid registration key immediately produces an active Worker — there is no separate approval queue, so possession of a live key *is* the gate. Keys are single-use, expire 5 minutes after issue, and the UI dialog destroys the key when closed. Note the 5 minutes is per issuance, not a hard lifetime: an open registration dialog auto-extends its key as expiry approaches, so a key stays live as long as the dialog is open. Treat them as one-time secrets, deliver them over a trusted channel, and close the dialog when you are done. See [Managing Workers](/docs/admin/managing-workers/).
 7. **Teach users to take the key-change dialog seriously.** The "Worker public key changed" prompt detects a Hub substituting a Worker key in a channel your browser opens. Users should reject a changed key, and accept only after the 4-word fingerprint matches the one the Worker logs when it starts.
-8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Run these operations with `leapmux control admin`: `session revoke-user`, `api-token revoke`, and `delegation-token revoke`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/).
+8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Run these operations with `leapmux admin`: `session revoke-user`, `api-token revoke`, and `delegation-token revoke`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/).
 
 ## Quick reference
 

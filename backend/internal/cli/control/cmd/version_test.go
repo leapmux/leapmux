@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -11,43 +10,22 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
-	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
-// fakeCmdCtx is the minimal Ctx implementation the command runners need
-// for help text. The cmd package's Ctx interface only requires Path and
-// Description.
-type fakeCmdCtx struct{}
-
-func (fakeCmdCtx) Path() string        { return "remote version" }
-func (fakeCmdCtx) Description() string { return "print versions" }
-
-// withCapturedStdout swaps `control.Out` for a buffer for the duration of
-// fn. Returns the buffered bytes so tests can decode the JSON envelope.
-func withCapturedStdout(t *testing.T, fn func()) []byte {
-	t.Helper()
-	buf := &bytes.Buffer{}
-	prev := control.Out
-	control.Out = buf
-	defer func() { control.Out = prev }()
-	fn()
-	return buf.Bytes()
-}
-
-// clearRemoteEnv blanks every LEAPMUX_CONTROL_* env var a worker spawn emits,
-// plus LEAPMUX_HUB. Only _TAB_ID and _WORKER_ID are actually read as flag
-// defaults by resolve.BindEntityFlags; _WORKSPACE_ID, _TILE_ID and _USER_ID are
-// informational (no flag reads them) and are cleared anyway so a spawned test
-// process cannot depend on their presence. Without this, tests that
-// pin the "missing flag" code paths flake (and produce `resolve_failed`
-// instead of `invalid_request`) when run inside a worker-spawned
-// process that inherits these variables.
+// clearRemoteEnv blanks LEAPMUX_HUB and the LEAPMUX_CONTROL_* variables that
+// give a command its context. A test that runs inside a LeapMux tab would
+// otherwise resolve "self" and the default worker from the tab that runs the
+// test. It leaves the socket and its token alone: each test sets or blanks
+// them itself.
 func clearRemoteEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"LEAPMUX_HUB",
 		"LEAPMUX_CONTROL_TAB_ID",
 		"LEAPMUX_CONTROL_TAB_TYPE",
+		"LEAPMUX_CONTROL_TERMINAL_ID",
+		"LEAPMUX_CONTROL_WORKING_DIR",
+		"LEAPMUX_CONTROL_AGENT_PROVIDER",
 		"LEAPMUX_CONTROL_WORKER_ID",
 		"LEAPMUX_CONTROL_WORKSPACE_ID",
 		"LEAPMUX_CONTROL_TILE_ID",
@@ -59,42 +37,44 @@ func clearRemoteEnv(t *testing.T) {
 
 // A build that another binary reports prints with the key names of this
 // binary's own build, so a script reads one spelling.
-func TestBuildInfoToMapUsesTheKeysOfCLIVersionFields(t *testing.T) {
-	got := buildInfoToMap(nil)
-	for key := range cliVersionFields() {
-		assert.Containsf(t, got, key, "the key %q of `control version`", key)
+func TestBuildInfoOfUsesTheKeysOfTheCLIBuild(t *testing.T) {
+	want, err := json.Marshal(cliBuildInfo())
+	require.NoError(t, err)
+	got, err := json.Marshal(buildInfoOf(&leapmuxv1.BuildInfo{Version: "1", CommitHash: "c", CommitTime: "t", Branch: "b", BuildTime: "bt"}))
+	require.NoError(t, err)
+	var wantKeys, gotKeys map[string]any
+	require.NoError(t, json.Unmarshal(want, &wantKeys))
+	require.NoError(t, json.Unmarshal(got, &gotKeys))
+	for key := range wantKeys {
+		assert.Containsf(t, gotKeys, key, "the key %q of `control version`", key)
 	}
 }
 
-// The formatted line describes the build that the map renders, not this binary.
-func TestBuildInfoToMapFormatsTheReportedBuild(t *testing.T) {
-	got := buildInfoToMap(&leapmuxv1.BuildInfo{Version: "9.9.9", CommitHash: "abc1234"})
-	assert.Equal(t, "9.9.9 · abc1234", got["formatted"])
-	assert.Empty(t, buildInfoToMap(nil)["formatted"], "a nil build formats as nothing")
+// The formatted line describes the build that the row renders, not this binary.
+func TestBuildInfoOfFormatsTheReportedBuild(t *testing.T) {
+	got := buildInfoOf(&leapmuxv1.BuildInfo{Version: "9.9.9", CommitHash: "abc1234"})
+	assert.Equal(t, "9.9.9 · abc1234", got.Formatted)
+	assert.Empty(t, buildInfoOf(nil).Formatted, "a nil build formats as nothing")
 }
 
-// TestRunVersion_NoHubPrintsCLIOnly is the happy-path case when no
-// `--hub` is provided: the envelope's data carries only the cli
-// fields, never a hub key.
+// TestRunVersion_NoHubPrintsCLIOnly is the happy-path case when no hub is
+// selected: the envelope's data carries only the cli fields, never a hub
+// key.
 func TestRunVersion_NoHubPrintsCLIOnly(t *testing.T) {
-	out := withCapturedStdout(t, func() {
-		err := RunVersion(fakeCmdCtx{}, nil)
-		require.NoError(t, err)
-	})
-
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	clearRemoteEnv(t)
+	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	env := struct{ Data map[string]any }{runControl(t, "version").Data(t)}
 	require.Contains(t, env.Data, "cli")
 	require.NotContains(t, env.Data, "hub", "no --hub means no hub field in envelope")
 	require.NotContains(t, env.Data, "hub_error")
 
-	cli, ok := env.Data["cli"].(map[string]any)
+	cliBuild, ok := env.Data["cli"].(map[string]any)
 	require.True(t, ok, "cli field must be an object")
-	// Ensure the contract fields exist; values are build-time defaults.
-	for _, k := range []string{"version", "commit", "branch", "build_time", "formatted"} {
-		assert.Contains(t, cli, k)
+	// The fields that a build always has; the rest are empty in a test
+	// binary, and omitempty drops them.
+	for _, k := range []string{"version", "formatted"} {
+		assert.Contains(t, cliBuild, k)
 	}
 }
 
@@ -119,15 +99,7 @@ func TestRunVersion_WithHubFetchesAndIncludesHub(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out := withCapturedStdout(t, func() {
-		err := RunVersion(fakeCmdCtx{}, []string{"--hub", srv.URL})
-		require.NoError(t, err)
-	})
-
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := struct{ Data map[string]any }{runControl(t, "version", "--hub", srv.URL).Data(t)}
 
 	require.Contains(t, env.Data, "cli")
 	require.Contains(t, env.Data, "hub")
@@ -152,15 +124,7 @@ func TestRunVersion_HubUnreachableSurfacesHubError(t *testing.T) {
 	// 127.0.0.1:1 is reliably unreachable across CI, dev boxes, and
 	// containers — the kernel rejects it with ECONNREFUSED rather
 	// than dialing somewhere unrelated.
-	out := withCapturedStdout(t, func() {
-		err := RunVersion(fakeCmdCtx{}, []string{"--hub", "http://127.0.0.1:1"})
-		require.NoError(t, err)
-	})
-
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := struct{ Data map[string]any }{runControl(t, "version", "--hub", "http://127.0.0.1:1").Data(t)}
 
 	require.Contains(t, env.Data, "cli")
 	require.NotContains(t, env.Data, "hub")
@@ -178,15 +142,7 @@ func TestRunVersion_HubNon200SurfacesHubError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out := withCapturedStdout(t, func() {
-		err := RunVersion(fakeCmdCtx{}, []string{"--hub", srv.URL})
-		require.NoError(t, err)
-	})
-
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := struct{ Data map[string]any }{runControl(t, "version", "--hub", srv.URL).Data(t)}
 
 	require.Contains(t, env.Data, "hub_error")
 	hubErr, _ := env.Data["hub_error"].(string)
@@ -203,15 +159,7 @@ func TestRunVersion_HubMalformedJSONSurfacesHubError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out := withCapturedStdout(t, func() {
-		err := RunVersion(fakeCmdCtx{}, []string{"--hub", srv.URL})
-		require.NoError(t, err)
-	})
-
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := struct{ Data map[string]any }{runControl(t, "version", "--hub", srv.URL).Data(t)}
 	assert.Contains(t, env.Data, "hub_error")
 }
 
@@ -231,15 +179,7 @@ func TestRunVersion_TrailingSlashHubURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out := withCapturedStdout(t, func() {
-		err := RunVersion(fakeCmdCtx{}, []string{"--hub", srv.URL + "/"})
-		require.NoError(t, err)
-	})
-
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := struct{ Data map[string]any }{runControl(t, "version", "--hub", srv.URL+"/").Data(t)}
 	require.Contains(t, env.Data, "hub")
 	assert.Equal(t, 1, hits)
 }
@@ -254,15 +194,7 @@ func TestRunVersion_TrailingSlashHubURL(t *testing.T) {
 func TestRunVersion_ReachesAHubOverASocket(t *testing.T) {
 	socketURL := serveVersionOverSocket(t)
 
-	out := withCapturedStdout(t, func() {
-		err := RunVersion(fakeCmdCtx{}, []string{"--hub", socketURL})
-		require.NoError(t, err)
-	})
-
-	var env struct {
-		Data map[string]any `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env))
+	env := struct{ Data map[string]any }{runControl(t, "version", "--hub", socketURL).Data(t)}
 	require.NotContains(t, env.Data, "hub_error", "the socket hub must be reachable")
 	require.Contains(t, env.Data, "hub")
 	assert.Equal(t, "9.9.9", env.Data["hub"].(map[string]any)["version"])

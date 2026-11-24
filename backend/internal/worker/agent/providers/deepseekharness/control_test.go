@@ -50,6 +50,9 @@ func TestPlanReviewHandsTheWorkerAPlanThatItCanDecodeAndTitle(t *testing.T) {
 	assert.Equal(t, plan, string(stored))
 	assert.Equal(t, "Exact native plan", update.Title)
 	require.Equal(t, 1, sink.PublishedControlCount())
+	// The agent rewrites the request of a user-questions event, so the stored
+	// plan review must still give the key that the agent published it under.
+	agenttest.AssertPublishedControlKeys(t, Registration().Plugin, sink)
 }
 
 func TestPlanReviewWithoutAPlanStoresNothingAndStillAsksTheReader(t *testing.T) {

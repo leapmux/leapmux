@@ -129,6 +129,7 @@ func (a *Agent) applyProjections(stream *sessionStream, values map[string]json.R
 			CreatedAt *int64  `json:"createdAt"`
 			Mode      string  `json:"mode"`
 			Label     *string `json:"label"`
+			Name      string  `json:"name"`
 		}
 		if json.Unmarshal(raw, &entries) != nil || providerkit.RawKindOf(raw) == providerkit.RawNull {
 			return fmt.Errorf("DeepSeek Harness returned an invalid native child catalog projection")
@@ -137,7 +138,7 @@ func (a *Agent) applyProjections(stream *sessionStream, values map[string]json.R
 			if entry.ID == "" || entry.CreatedAt == nil || *entry.CreatedAt < 0 || entry.Mode == "continuable" && entry.Label == nil {
 				return fmt.Errorf("DeepSeek Harness child catalog projection has an invalid native identity")
 			}
-			descriptor := nativeChildDescriptor{ID: entry.ID, Mode: entry.Mode}
+			descriptor := nativeChildDescriptor{ID: entry.ID, Mode: entry.Mode, Name: entry.Name}
 			if entry.Label != nil {
 				descriptor.Label = *entry.Label
 			}

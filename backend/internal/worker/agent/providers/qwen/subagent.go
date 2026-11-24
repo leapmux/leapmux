@@ -1119,7 +1119,7 @@ func workflowObservation(sessionID, toolCallID string, rawInput json.RawMessage)
 // records the arguments that the request states, because Qwen's progress
 // frames can omit them and the closing frame always does. It stores the plan
 // of a plan approval.
-func (a *Agent) observeControlRequest(line *providerkit.ParsedLine) {
+func (a *Agent) observeControlRequest(_ string, line *providerkit.ParsedLine) {
 	var params struct {
 		ToolCall struct {
 			ToolCallID string          `json:"toolCallId"`

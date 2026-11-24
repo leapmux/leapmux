@@ -156,18 +156,43 @@ func (a lifecycleOutboxAdapter) ListPendingLifecycleOutbox(ctx context.Context, 
 	out := make([]crdt.LifecycleOutboxRow, len(rows))
 	for i, r := range rows {
 		out[i] = crdt.LifecycleOutboxRow{
-			ID:      r.ID,
-			UserID:  r.UserID,
-			OpType:  crdt.LifecycleOpType(r.OpType),
-			Payload: r.Payload,
+			ID:                r.ID,
+			UserID:            r.UserID,
+			OpType:            crdt.LifecycleOpType(r.OpType),
+			Payload:           r.Payload,
+			LayoutFactWritten: r.LayoutFactWritten,
 		}
 	}
 	return out, nil
 }
 
-func (a lifecycleOutboxAdapter) MarkLifecycleOutboxConsumed(ctx context.Context, id int64, consumedAt time.Time) error {
-	return a.store.LifecycleOutbox().MarkConsumed(ctx, store.MarkLifecycleOutboxConsumedParams{
-		ID:         id,
+func (a lifecycleOutboxAdapter) MarkLifecycleOutboxConsumed(ctx context.Context, row crdt.LifecycleOutboxRow, consumedAt time.Time, fact *leapmuxv1.LayoutEventFact) error {
+	mark := store.MarkLifecycleOutboxConsumedParams{
+		ID:         row.ID,
 		ConsumedAt: consumedAt,
+	}
+	if fact == nil {
+		return a.store.LifecycleOutbox().MarkConsumed(ctx, mark)
+	}
+	owner, err := mintTenant(row.UserID)
+	if err != nil {
+		return err
+	}
+	payloads, err := marshalLayoutFacts([]*leapmuxv1.LayoutEventFact{fact})
+	if err != nil {
+		return err
+	}
+	return a.store.RunInTransaction(ctx, func(tx store.Store) error {
+		events := tx.LayoutEvents()
+		claimed, err := events.ClaimLifecycle(ctx, owner, row.ID)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			if err := appendLayoutEvents(ctx, events, owner, consumedAt.UnixMilli(), payloads, ""); err != nil {
+				return err
+			}
+		}
+		return tx.LifecycleOutbox().MarkConsumed(ctx, mark)
 	})
 }

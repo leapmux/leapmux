@@ -38,9 +38,8 @@ const (
 // mimoIgnoredEvents are the event types the worker reads and acts on nowhere.
 // Each entry states its reason. The default branch preserves an unknown event of the current session.
 var mimoIgnoredEvents = map[string]string{
-	"session.receipt.updated": "native input delivery metadata; conversation rows carry user input",
-	"session.inbox.delta":     "native inbox synchronization metadata",
-	"session.inbox.snapshot":  "native inbox synchronization metadata",
+	"session.inbox.delta":    "native inbox synchronization metadata",
+	"session.inbox.snapshot": "native inbox synchronization metadata",
 
 	"session.idle":    "a deprecated repeat of session.status idle",
 	"session.created": "the create route already returned the session",
@@ -298,6 +297,8 @@ func (a *Agent) dispatchEvent(data []byte) {
 		// The stream loop reads the first. The second keeps the stream open.
 	case contracts.MiMoEventSessionStatus:
 		a.handleSessionStatus(event)
+	case mimoReceiptUpdated:
+		a.handleReceiptUpdated(event.Properties)
 	case contracts.MiMoEventSessionRetryAttempt:
 		a.handleRetryAttempt(event)
 	case contracts.MiMoEventSessionError:

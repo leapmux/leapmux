@@ -42,6 +42,7 @@ func TestQoderChildPermissionRequestPublishesOnTheRootSink(t *testing.T) {
 	request := sink.LastPublishedControl()
 	assert.Equal(t, "child-permission", request.RequestID)
 	assert.Equal(t, raw, request.Payload)
+	agenttest.AssertPublishedControlKeys(t, qoderProvider{}, sink)
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, sink.BackgroundTasks())
 }

@@ -233,7 +233,7 @@ func TestOpenCodeKeepsTheLoadedChildModelSeparateFromTheRoot(t *testing.T) {
 	require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Result: json.RawMessage(`{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"private/voice","options":[{"value":"private/voice","name":"Voice"}]}]}`)})))
 	testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("call-1").Steerable })
 	a.childSessionsMu.Lock()
-	model := a.childSessions["call-1"].modelID
+	model := a.childSessions["call-1"].settings.ModelID
 	a.childSessionsMu.Unlock()
 	assert.Equal(t, "private/voice", model)
 	assert.Equal(t, "private/parent", a.CurrentModel())

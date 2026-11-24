@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -44,7 +45,15 @@ type openCodeSessionRuntime struct {
 	activityVersion uint64
 	settingsVersion uint64
 	admissions      map[string]*openCodeInputAdmission
-	steers          providerkit.SteerLedger
+	replyInputs     map[string]agent.NativeInputReceipt
+	steers          map[string]agent.SteerResolution
+}
+
+type openCodeInputOptions struct {
+	expected   *string
+	steer      bool
+	trackReply bool
+	queueSteer *agent.SteerRequest
 }
 
 func newOpenCodeSessionRuntime(ctx context.Context, rpc openCodeRPC, info openCodeSessionInfo, catalog openCodeCatalog, services openCodeSessionServices) (*openCodeSessionRuntime, error) {
@@ -67,13 +76,15 @@ func newOpenCodeSessionRuntime(ctx context.Context, rpc openCodeRPC, info openCo
 
 func (s *openCodeSessionRuntime) SupportsSteering() bool { return true }
 func (s *openCodeSessionRuntime) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return s.sendInput(nil, content, attachments, false)
+	_, err := s.submitInput(content, attachments, openCodeInputOptions{})
+	return err
 }
 func (s *openCodeSessionRuntime) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return s.sendInput(&sessionID, content, attachments, false)
+	_, err := s.submitInput(content, attachments, openCodeInputOptions{expected: &sessionID})
+	return err
 }
-func (s *openCodeSessionRuntime) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return s.sendInput(nil, content, attachments, true)
+func (s *openCodeSessionRuntime) steerQueuedInput(expected *string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return s.submitInput(request.Content, request.Attachments, openCodeInputOptions{expected: expected, steer: true, trackReply: true, queueSteer: &request})
 }
 
 func (s *openCodeSessionRuntime) turnStateLocked() agent.TurnState {
@@ -119,32 +130,35 @@ func (s *openCodeSessionRuntime) checkInputActivityLocked(steer bool) error {
 	return nil
 }
 
-func (s *openCodeSessionRuntime) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) (sendErr error) {
+func (s *openCodeSessionRuntime) submitInput(content string, attachments []*leapmuxv1.Attachment, options openCodeInputOptions) (_ agent.NativeInputReceipt, sendErr error) {
 	s.operations.Lock()
 	defer s.operations.Unlock()
 	if err := s.ctx.Err(); err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	s.mu.Lock()
-	if err := providerkit.CheckInputSession(expected, s.id); err != nil {
+	if err := providerkit.CheckInputSession(options.expected, s.id); err != nil {
 		s.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	if err := s.checkInputActivityLocked(steer); err != nil {
+	if err := s.checkInputActivityLocked(options.steer); err != nil {
 		s.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	model, err := s.catalog.effectiveModel(s.selectedModel, s.selectedAgentID)
 	if err != nil {
 		s.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	nativeModel := s.catalog.findModel(openCodeModelKey(model))
 	sessionID := s.id
 	s.mu.Unlock()
 	request, err := buildOpenCodePrompt(content, attachments, nativeModel)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
+	}
+	if steer := options.queueSteer; steer != nil && (steer.InputID == "" || steer.AttemptID == "") {
+		return agent.NativeInputReceipt{}, errors.New("an OpenCode steer requires a queue input and dispatch attempt")
 	}
 	request.ID = openCodeInputIDPrefix + id.Generate()
 	// Native queued input waits behind pending steer reminders and can miss the next model step.
@@ -152,15 +166,15 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 	request.Delivery = "steer"
 	s.mu.Lock()
 	// Activity can change while the attachment builder validates local data.
-	if err := s.checkInputActivityLocked(steer); err != nil {
+	if err := s.checkInputActivityLocked(options.steer); err != nil {
 		s.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	previous := s.turnStateLocked()
 	seq := s.claimTurnSequence()
 	if seq == 0 {
 		s.mu.Unlock()
-		return agent.ErrInputSessionChanged
+		return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 	}
 	s.active = true
 	s.activityVersion++
@@ -170,22 +184,30 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 		s.admissions = make(map[string]*openCodeInputAdmission)
 	}
 	s.admissions[request.ID] = admission
-	var ticket providerkit.SteerTicket
-	if steer && s.parentID == "" {
-		ticket = s.steers.Add(request.ID)
-		s.steers.SetID(ticket, request.ID)
+	var receipt agent.NativeInputReceipt
+	if options.trackReply {
+		receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: request.ID}
+		if s.replyInputs == nil {
+			s.replyInputs = make(map[string]agent.NativeInputReceipt)
+		}
+		s.replyInputs[request.ID] = receipt
+	}
+	if steer := options.queueSteer; steer != nil {
+		if s.steers == nil {
+			s.steers = make(map[string]agent.SteerResolution)
+		}
+		s.steers[request.ID] = agent.SteerResolution{InputID: steer.InputID, AttemptID: steer.AttemptID}
 	}
 	state := s.turnStateLocked()
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.admissions, request.ID)
-		admitted := admission.admitted
-		s.mu.Unlock()
-		if sendErr != nil && ticket != 0 && !admitted {
-			s.steers.Forget(ticket)
-			s.steers.Settle(s.sink)
+		if sendErr != nil {
+			delete(s.replyInputs, request.ID)
+			delete(s.steers, request.ID)
 		}
+		s.mu.Unlock()
 	}()
 	s.publishState(state, seq)
 	_, err = s.rpc.prompt(s.ctx, sessionID, request)
@@ -196,7 +218,7 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 	admitted := admission.admitted
 	s.mu.Unlock()
 	if err == nil || admitted {
-		return nil
+		return receipt, nil
 	}
 	if !openCodeDeliveryUncertain(err) {
 		s.mu.Lock()
@@ -207,7 +229,7 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 		state, seq := s.turnStateLocked(), s.claimTurnSequence()
 		s.mu.Unlock()
 		s.publishState(state, seq)
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	confirmed, reconcileErr := s.reconcileInput(request.ID, version)
 	s.mu.Lock()
@@ -215,9 +237,9 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 	confirmed = admission.admitted
 	s.mu.Unlock()
 	if confirmed {
-		return nil
+		return receipt, nil
 	}
-	return fmt.Errorf("%w: OpenCode did not confirm input delivery: %w", agent.ErrDeliveryUncertain, errors.Join(err, reconcileErr))
+	return agent.NativeInputReceipt{}, fmt.Errorf("%w: OpenCode did not confirm input delivery: %w", agent.ErrDeliveryUncertain, errors.Join(err, reconcileErr))
 }
 
 // reconcileInput separates native activity from an uncertain HTTP outcome.
@@ -273,10 +295,16 @@ func (s *openCodeSessionRuntime) inputAdmitted(inputID, kind string) (bool, erro
 type openCodeInputAdmission struct{ admitted bool }
 
 func (s *openCodeSessionRuntime) finishPendingSteers() {
-	for _, ticket := range s.steers.Pending() {
-		s.steers.Uncertain(ticket)
+	s.mu.Lock()
+	pending := s.steers
+	s.steers = nil
+	s.mu.Unlock()
+	for _, resolution := range pending {
+		resolution.Outcome = agent.SteerOutcomeUncertain
+		if err := agent.RetainSteerResolution(s.sink, resolution); !agent.OutputRetained(err) {
+			slog.Warn("could not retire an OpenCode steer", "session_id", s.id, "error", err)
+		}
 	}
-	s.steers.Settle(s.sink)
 }
 
 func copyOpenCodeModelRef(model *openCodeModelRef) *openCodeModelRef {

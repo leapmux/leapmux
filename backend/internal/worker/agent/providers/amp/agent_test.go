@@ -85,7 +85,7 @@ func TestSteeringWritesASteerLineIntoTheRunningTurn(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("sleep")
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput("also say steered", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "also say steered"}))
 	lines := fp.lines()
 	require.Len(t, lines, 2)
 	assert.Equal(t, true, lines[1]["steer"])
@@ -98,7 +98,7 @@ func TestSteerabilityStartsWhenTheThreadIdentityArrives(t *testing.T) {
 	state := h.agent.PublishTurnActive()
 	assert.True(t, state.Active)
 	assert.False(t, state.Steerable, "the first unfinished message supplies no thread identity for the native history read")
-	require.ErrorIs(t, h.agent.SteerInput("wait in the queue", nil), agent.ErrSteeringUnsupported)
+	require.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "wait in the queue"}), agent.ErrSteeringUnsupported)
 	assert.Len(t, fp.lines(), 1)
 	h.feed(fp, initLine("T-1"))
 	kinds := h.sink.TurnKinds()
@@ -109,10 +109,10 @@ func TestSteerabilityStartsWhenTheThreadIdentityArrives(t *testing.T) {
 func TestSteeringNeedsARunningTurn(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	assert.ErrorIs(t, h.agent.SteerInput("nothing runs", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "nothing runs"}), agent.ErrNoActiveTurn)
 	fp := h.send("one")
 	h.feed(fp, textLine("done", stopReasonEndTurn))
-	assert.ErrorIs(t, h.agent.SteerInput("the turn ended", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "the turn ended"}), agent.ErrNoActiveTurn)
 }
 
 // A process that an interrupt signalled is on its way out, so a steering line
@@ -124,7 +124,7 @@ func TestSteeringIsRefusedWhileTheProcessEnds(t *testing.T) {
 	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	require.True(t, h.turnActive(), "the turn ends at Amp's result, not at the signal")
 
-	assert.ErrorIs(t, h.agent.SteerInput("too late", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "too late"}), agent.ErrNoActiveTurn)
 	assert.Len(t, fp.lines(), 1, "the steering line never reached the process")
 }
 
@@ -686,18 +686,18 @@ func TestRawInputReachesTheRunningProcess(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	userLine := []byte(`{"type":"user","message":{"role":"user","content":[]}}`)
-	assert.ErrorContains(t, h.agent.SendRawInput(userLine, agent.StopContext{}), "no Amp process")
+	assert.ErrorContains(t, h.agent.SendRawInput(agent.RawInput{Data: userLine}), "no Amp process")
 	fp := h.send("go")
-	require.NoError(t, h.agent.SendRawInput(userLine, agent.StopContext{}))
+	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: userLine}))
 	assert.Len(t, fp.lines(), 2)
 
 	// A process that an interrupt signalled takes no new line.
 	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
-	assert.ErrorContains(t, h.agent.SendRawInput(userLine, agent.StopContext{}), "no Amp process")
+	assert.ErrorContains(t, h.agent.SendRawInput(agent.RawInput{Data: userLine}), "no Amp process")
 	assert.Len(t, fp.lines(), 2)
 
 	h.agent.Stop()
-	assert.ErrorIs(t, h.agent.SendRawInput(userLine, agent.StopContext{}), errAgentStopped)
+	assert.ErrorIs(t, h.agent.SendRawInput(agent.RawInput{Data: userLine}), errAgentStopped)
 }
 
 func TestStderrComesFromTheLastProcess(t *testing.T) {
@@ -762,7 +762,7 @@ func TestSteerEchoAtTheUserLine(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("first")
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	assert.Empty(t, h.sink.SteerEchoReports())
 	// The native echo shape comes from .tmp/verify-c29/amp/run1.
 	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"unrelated"}]}}`)
@@ -779,7 +779,7 @@ func TestSteerAfterEndTurnIsNotRunTwice(t *testing.T) {
 	fp.stdin.mu.Lock()
 	fp.stdin.beforeWrite = func() { h.feed(fp, textLine("first answer", stopReasonEndTurn)) }
 	fp.stdin.mu.Unlock()
-	require.NoError(t, h.agent.SteerInput("second", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
 	require.False(t, h.turnActive())
 	survivor, ok := any(h.agent).(agent.SteerSurvivor)
 	require.True(t, ok)
@@ -803,7 +803,7 @@ func TestSteerEchoWithAnImageOnlyMessage(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("first")
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput("", []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "", Attachments: []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}}))
 	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.test/image"}}]}}`)
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
 }
@@ -813,7 +813,7 @@ func TestSteerIgnoresAMalformedEmptyEcho(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("first")
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput("", nil))
+	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: ""}))
 	for _, content := range []string{`[]`, `[{"type":"text"}]`, `[{"type":"text","text":null}]`, `[{"type":"text","text":7}]`} {
 		h.feed(fp, `{"type":"user","message":{"role":"user","content":`+content+`}}`)
 	}

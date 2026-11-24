@@ -3,13 +3,13 @@ package cmd
 import (
 	"context"
 	"regexp"
-	"strconv"
 	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +21,6 @@ type creationPublicationDispatcher struct {
 	mu             sync.Mutex
 	calls          []recordedWorkerCall
 	failOpen       bool
-	initialFailure bool
 	invalidReceipt string
 }
 
@@ -39,8 +38,6 @@ func (d *creationPublicationDispatcher) DispatchWith(_ context.Context, _ channe
 	case leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:
 		request = &leapmuxv1.RegisterTabPayloadRequest{}
 		kind = leapmuxv1.TabType_TAB_TYPE_FILE
-	case leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure:
-		request = &leapmuxv1.EnqueueAgentInputRequest{}
 	default:
 		_ = w.SendError(int32(codes.Unimplemented), "unexpected method")
 		return
@@ -59,13 +56,6 @@ func (d *creationPublicationDispatcher) DispatchWith(_ context.Context, _ channe
 		creation = request.GetCreation()
 	case *leapmuxv1.RegisterTabPayloadRequest:
 		creation = request.GetCreation()
-	case *leapmuxv1.EnqueueAgentInputRequest:
-		if d.initialFailure {
-			_ = w.SendError(int32(codes.Internal), "initial input failed")
-			return
-		}
-		_ = w.SendResponse(channelwire.NewPayloadResponse(nil))
-		return
 	}
 	if creation.GetPlacement() == nil {
 		_ = w.SendError(int32(codes.InvalidArgument), "creation intent is required")
@@ -119,27 +109,24 @@ func TestTabCreationCLI_PassesPlacementAndUsesTheWorkerReceipt(t *testing.T) {
 					state := newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").tabAt("anchor", "root-1", "m", leapmuxv1.TabType_TAB_TYPE_AGENT).st
 					hub, dispatcher := &recordingHub{materialized: state}, &creationPublicationDispatcher{}
 					hubFlag := transport.start(t, hub, dispatcher)
-					client, err := requireClient(hubFlag)
+					client, err := control.NewClientFromEnv(hubFlag)
 					require.NoError(t, err)
 					var resultID, resultTile, resultPosition string
-					var openErr error
-					output := withCapturedStdout(t, func() {
-						openErr = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
-							if kind == leapmuxv1.TabType_TAB_TYPE_AGENT {
-								result, err := openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1", WorkingDir: "/src", Position: spec})
-								if err == nil {
-									resultID, resultTile, resultPosition = result.Agent.GetId(), result.TileID, result.Position
-								}
-								return err
-							}
-							result, err := openTerminalAndAddTab(t.Context(), client, worker, openTerminalArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1", WorkingDir: "/src", Position: spec})
+					openErr := withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
+						if kind == leapmuxv1.TabType_TAB_TYPE_AGENT {
+							result, err := openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1", WorkingDir: "/src", Position: spec})
 							if err == nil {
-								resultID, resultTile, resultPosition = result.TerminalID, result.TileID, result.Position
+								resultID, resultTile, resultPosition = result.Agent.GetId(), result.TileID, result.Position
 							}
 							return err
-						})
+						}
+						result, err := openTerminalAndAddTab(t.Context(), client, worker, openTerminalArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1", WorkingDir: "/src", Position: spec})
+						if err == nil {
+							resultID, resultTile, resultPosition = result.TerminalID, result.TileID, result.Position
+						}
+						return err
 					})
-					require.NoError(t, openErr, "stdout: %s", output)
+					require.NoError(t, openErr)
 					calls := dispatcher.recorded()
 					require.Len(t, calls, 1)
 					var creation *leapmuxv1.TabCreation
@@ -171,19 +158,13 @@ func TestTabCreationCLI_RejectsAMismatchedOrIncompleteReceipt(t *testing.T) {
 			t.Run(transport.name+"/"+invalid, func(t *testing.T) {
 				dispatcher := &creationPublicationDispatcher{invalidReceipt: invalid}
 				hub := &recordingHub{}
-				client, err := requireClient(transport.start(t, hub, dispatcher))
+				client, err := control.NewClientFromEnv(transport.start(t, hub, dispatcher))
 				require.NoError(t, err)
-				var openErr error
-				output := withCapturedStdout(t, func() {
-					openErr = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
-						_, err := openTerminalAndAddTab(t.Context(), client, worker, openTerminalArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1"})
-						return err
-					})
+				openErr := withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
+					_, err := openTerminalAndAddTab(t.Context(), client, worker, openTerminalArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1"})
+					return err
 				})
-				require.Error(t, openErr)
-				envelopes := decodeEnvelopes(t, output)
-				require.Len(t, envelopes, 1)
-				assert.Equal(t, "invalid_worker_response", envelopes[0]["error"]["code"])
+				assert.Equal(t, "internal", failureOf(t, openErr).Error["code"])
 				require.Len(t, dispatcher.recorded(), 1, "a malformed reply does not authorize compensating close")
 				assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
 			})
@@ -195,19 +176,13 @@ func TestTabCreationCLI_PreservesAnUncertainWorkerOperation(t *testing.T) {
 	for _, transport := range tabOpenTransports {
 		t.Run(transport.name, func(t *testing.T) {
 			dispatcher, hub := &creationPublicationDispatcher{failOpen: true}, &recordingHub{}
-			client, err := requireClient(transport.start(t, hub, dispatcher))
+			client, err := control.NewClientFromEnv(transport.start(t, hub, dispatcher))
 			require.NoError(t, err)
-			var openErr error
-			output := withCapturedStdout(t, func() {
-				openErr = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
-					_, err := openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1"})
-					return err
-				})
+			openErr := withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
+				_, err := openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1"})
+				return err
 			})
-			require.Error(t, openErr)
-			envelopes := decodeEnvelopes(t, output)
-			require.Len(t, envelopes, 1)
-			assert.Contains(t, envelopes[0]["error"]["message"], "publication outcome remains unknown")
+			assert.Contains(t, failureOf(t, openErr).Error["message"], "publication outcome remains unknown")
 			calls := dispatcher.recorded()
 			require.Len(t, calls, 1)
 			assert.Equal(t, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, calls[0].method)
@@ -217,31 +192,26 @@ func TestTabCreationCLI_PreservesAnUncertainWorkerOperation(t *testing.T) {
 	}
 }
 
-func TestTabCreationCLI_ReportsInitialInputFailureAfterPublication(t *testing.T) {
+func TestTabCreationCLI_SendsTheInitialMessageWithTheCreation(t *testing.T) {
 	for _, transport := range tabOpenTransports {
 		t.Run(transport.name, func(t *testing.T) {
-			dispatcher, hub := &creationPublicationDispatcher{initialFailure: true}, &recordingHub{}
-			client, err := requireClient(transport.start(t, hub, dispatcher))
+			dispatcher, hub := &creationPublicationDispatcher{}, &recordingHub{}
+			client, err := control.NewClientFromEnv(transport.start(t, hub, dispatcher))
 			require.NoError(t, err)
 			var result *openAgentResult
-			output := withCapturedStdout(t, func() {
-				err = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
-					var openErr error
-					result, openErr = openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1", InitialMessage: "inspect the workspace"})
-					return openErr
-				})
+			err = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
+				var openErr error
+				result, openErr = openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{WorkspaceID: "ws-1", WorkerID: "worker-A", TileID: "root-1", InitialMessage: new("inspect the workspace")})
+				return openErr
 			})
-			require.NoError(t, err, "stdout: %s", output)
+			require.NoError(t, err)
 			require.NotNil(t, result)
-			assert.Contains(t, result.InitialMsgWarn, "initial input failed")
 			assert.Equal(t, "hub-rank", result.Position)
 			calls := dispatcher.recorded()
-			require.Len(t, calls, 2)
-			creation := calls[0].in.(*leapmuxv1.OpenAgentRequest).GetCreation()
-			input := calls[1].in.(*leapmuxv1.EnqueueAgentInputRequest)
-			assert.Equal(t, creation.GetTabId(), input.GetAgentId())
-			assert.Equal(t, "inspect the workspace", input.GetText())
-			assert.NotEmpty(t, input.GetInputId())
+			require.Len(t, calls, 1)
+			open := calls[0].in.(*leapmuxv1.OpenAgentRequest)
+			assert.Equal(t, open.GetCreation().GetTabId(), result.Agent.GetId())
+			assert.Equal(t, "inspect the workspace", open.GetInitialMessage())
 			assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
 		})
 	}
@@ -251,17 +221,14 @@ func TestTabCreationCLI_PublishesFilePresentationWithTheEncryptedPayload(t *test
 	for _, transport := range tabOpenTransports {
 		t.Run(transport.name, func(t *testing.T) {
 			dispatcher := &creationPublicationDispatcher{}
-			hub := &recordingHub{materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
+			hub := &recordingHub{workers: workerRows("worker-A"), materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
 			hubFlag := transport.start(t, hub, dispatcher)
-			var openErr error
-			output := withCapturedStdout(t, func() {
-				openErr = RunTabOpen(fakeCmdCtx{}, []string{"--hub", hubFlag, "--type", "file", "--workspace-id", "ws-1", "--worker-id", "worker-A", "--tile-id", "root-1", "--path", "/private/report.txt", "--working-dir", "/private", "--display-mode", "2", "--file-view-mode", "2", "--first"})
-			})
-			require.NoError(t, openErr, "stdout: %s", output)
-			envelopes := decodeEnvelopes(t, output)
-			require.Len(t, envelopes, 1)
-			assert.Equal(t, "hub-rank", envelopes[0]["data"]["position"])
-			assert.Equal(t, "/private/report.txt", envelopes[0]["data"]["path"])
+			args := []string{"file", "open", "/private/report.txt", "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", "--dir", "/private", "--display-mode", "source", "--view-mode", "head", "--first"}
+			o := runControl(t, append(args, testHubArgs(hubFlag)...)...)
+			require.Len(t, o.lines(), 1, "exactly one envelope: %s", o.Stdout)
+			data := o.Data(t)
+			assert.Equal(t, "hub-rank", data["position"])
+			assert.Equal(t, "/private/report.txt", data["path"])
 			calls := dispatcher.recorded()
 			require.Len(t, calls, 1)
 			request := calls[0].in.(*leapmuxv1.RegisterTabPayloadRequest)
@@ -275,56 +242,52 @@ func TestTabCreationCLI_PublishesFilePresentationWithTheEncryptedPayload(t *test
 	}
 }
 
-func TestTabCreationCLI_RejectsPresentationOverflowBeforeCalls(t *testing.T) {
+// An unknown presentation token is refused before any call: the hub and the
+// worker see nothing.
+func TestTabCreationCLI_RejectsAnUnknownPresentationBeforeCalls(t *testing.T) {
 	for _, transport := range tabOpenTransports {
 		t.Run(transport.name, func(t *testing.T) {
-			for _, flag := range []string{"--display-mode", "--file-view-mode"} {
-				for _, value := range []string{"-2147483649", "2147483648"} {
-					t.Run(flag+"="+value, func(t *testing.T) {
-						dispatcher := &creationPublicationDispatcher{}
-						hub := &recordingHub{materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
-						hubFlag := transport.start(t, hub, dispatcher)
-						var openErr error
-						output := withCapturedStdout(t, func() {
-							openErr = RunTabOpen(fakeCmdCtx{}, []string{"--hub", hubFlag, "--type", "file", "--workspace-id", "ws-1", "--worker-id", "worker-A", "--tile-id", "root-1", "--path", "/private/report.txt", flag, value, "--first"})
-						})
-						require.Error(t, openErr)
-						envelopes := decodeEnvelopes(t, output)
-						require.Len(t, envelopes, 1)
-						assert.Equal(t, "invalid_request", envelopes[0]["error"]["code"])
-						assert.Equal(t, flag+" must be between -2147483648 and 2147483647", envelopes[0]["error"]["message"])
-						assert.Empty(t, hub.called())
-						assert.Empty(t, dispatcher.recorded())
-					})
-				}
+			for _, flag := range []string{"--display-mode", "--view-mode"} {
+				t.Run(flag, func(t *testing.T) {
+					dispatcher := &creationPublicationDispatcher{}
+					hub := &recordingHub{workers: workerRows("worker-A"), materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
+					hubFlag := transport.start(t, hub, dispatcher)
+					args := []string{"file", "open", "/private/report.txt", "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", flag, "2", "--first"}
+					o := runControl(t, append(args, testHubArgs(hubFlag)...)...)
+					f := o.requireFailure(t, "usage")
+					assert.Contains(t, f.Message, flag+" must be one of")
+					assert.Empty(t, hub.called())
+					assert.Empty(t, dispatcher.recorded())
+				})
 			}
 		})
 	}
 }
 
+// Every presentation token reaches the worker as its enum value, and an
+// absent flag leaves the register unset.
 func TestTabCreationCLI_PreservesPresentationValues(t *testing.T) {
 	for _, transport := range tabOpenTransports {
 		t.Run(transport.name, func(t *testing.T) {
-			for _, value := range []int32{-2147483648, -1, 0, 2, 999, 2147483647} {
-				t.Run(strconv.FormatInt(int64(value), 10), func(t *testing.T) {
+			for _, display := range append([]string{""}, enumTokens(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED)...) {
+				t.Run("display="+display, func(t *testing.T) {
 					dispatcher := &creationPublicationDispatcher{}
-					hub := &recordingHub{materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
+					hub := &recordingHub{workers: workerRows("worker-A"), materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
 					hubFlag := transport.start(t, hub, dispatcher)
-					var openErr error
-					output := withCapturedStdout(t, func() {
-						mode := strconv.FormatInt(int64(value), 10)
-						openErr = RunTabOpen(fakeCmdCtx{}, []string{"--hub", hubFlag, "--type", "file", "--workspace-id", "ws-1", "--worker-id", "worker-A", "--tile-id", "root-1", "--path", "/private/report.txt", "--display-mode", mode, "--file-view-mode", mode, "--first"})
-					})
-					require.NoError(t, openErr, "stdout: %s", output)
-					require.Len(t, decodeEnvelopes(t, output), 1)
+					args := []string{"file", "open", "/private/report.txt", "--workspace", "ws-1", "--worker", "worker-A", "--tile", "root-1", "--first"}
+					args = append(args, testHubArgs(hubFlag)...)
+					if display != "" {
+						args = append(args, "--display-mode", display)
+					}
+					o := runControl(t, args...)
+					require.Len(t, o.lines(), 1, "exactly one envelope: %s", o.Stdout)
 					calls := dispatcher.recorded()
 					require.Len(t, calls, 1)
 					presentation := calls[0].in.(*leapmuxv1.RegisterTabPayloadRequest).GetCreation().GetPresentation()
 					require.NotNil(t, presentation)
-					assert.Equal(t, value, int32(presentation.GetDisplayMode()))
-					assert.Equal(t, value, int32(presentation.GetFileViewMode()))
-					assert.Equal(t, value != 0, presentation.DisplayMode != nil)
-					assert.Equal(t, value != 0, presentation.FileViewMode != nil)
+					assert.Equal(t, display, enumToken(presentation.GetDisplayMode()))
+					assert.Equal(t, display != "", presentation.DisplayMode != nil)
+					assert.Nil(t, presentation.FileViewMode, "an absent flag leaves the register unset")
 				})
 			}
 		})

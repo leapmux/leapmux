@@ -13,15 +13,15 @@ import (
 
 // Kimi Code's control answers.
 //
-// The browser sends the neutral approve/reject envelope every control surface
-// produces, plus the fields a Kimi request needs beside the behavior: an approval
+// AnswerControlRequest builds the neutral approve/reject envelope, plus the
+// fields a Kimi request needs beside the behavior: an approval
 // scope, a plan or goal choice, a question's answers in the server's own shape.
 // This file turns one of those into the exact body the server's REST route takes,
 // so the server's vocabulary stays in the provider and the browser states a
 // decision. The resolution is pure: the running agent posts the body
 // (deliverControlResponse).
 
-// kimiResolveControlResponse turns the browser's answer into the server's body.
+// kimiResolveControlResponse turns the neutral answer into the server's body.
 func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.DefaultControlResponseResolution(ctx)
 	if len(ctx.RequestPayload) == 0 {
@@ -39,18 +39,13 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
-	requestID, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
+	_, behavior, message, decoded := agent.DecodeControlBehavior(ctx.ResponseContent)
+	if !decoded || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		slog.Warn("kimi control response carried no decision", "request_id", ctx.RequestID)
 		result.Refuse(agent.RefusalNoDecision)
 		return result
 	}
-	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
-		slog.Warn("kimi control response addressed another request", "answered", requestID, "stored", ctx.RequestID)
-		result.Refuse(agent.RefusalOtherRequest)
-		return result
-	}
-	allow := behavior == agent.ControlBehaviorAllow
+	allow := behavior == contracts.ControlAnswerBehaviorAllow
 	var fields contracts.KimiDecisionFields
 	if err := json.Unmarshal(kimiInnerResponse(ctx.ResponseContent), &fields); err != nil {
 		result.Refuse(agent.RefusalUnreadableAnswer)
@@ -248,7 +243,7 @@ func kimiAllOffered(offered, picked []string) bool {
 	return true
 }
 
-// kimiInnerResponse returns the inner response object of the browser's envelope,
+// kimiInnerResponse returns the inner response object of the neutral envelope,
 // or an empty object.
 func kimiInnerResponse(content []byte) json.RawMessage {
 	var envelope kimiControlEnvelope

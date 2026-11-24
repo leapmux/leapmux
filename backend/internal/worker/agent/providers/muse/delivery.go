@@ -35,6 +35,7 @@ type nativeParentInputMatch struct {
 	Records        []json.RawMessage
 	IdempotencyKey string
 	InboxID        string
+	Receipt        agent.NativeInputReceipt
 	Reason         string
 }
 
@@ -390,18 +391,20 @@ func matchNativeParentInput(log *nativeLog, drain storedRecord, target nativePar
 	if failure != "" {
 		return invalid(failure)
 	}
-	if human {
-		return inputOutcome(nativeParentInputHuman, "The worker owns the human child input.")
-	}
-	human, failure = nativeInputHumanIntake(log, source)
-	if failure != "" {
-		return invalid(failure)
-	}
-	if human {
-		if len(source.Caller) != 0 {
+	if !human {
+		human, failure = nativeInputHumanIntake(log, source)
+		if failure != "" {
+			return invalid(failure)
+		}
+		if human && len(source.Caller) != 0 {
 			return invalid("The native input has conflicting caller provenance.")
 		}
-		return inputOutcome(nativeParentInputHuman, "The worker owns the admitted human child input.")
+	}
+	if human {
+		return nativeParentInputMatch{
+			Status:  nativeParentInputHuman,
+			Receipt: agent.NativeInputReceipt{SessionID: target.ChildSessionID, InputID: source.CommandID, TurnID: target.RunID},
+		}
 	}
 	spawn, spawnControl, count := selectNativeInputControl(log, contracts.MuseParentInputSpawnAccepted, func(control nativeInputControl) bool { return control.SubagentID == target.SubagentID })
 	if count == 0 {

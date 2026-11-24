@@ -321,7 +321,7 @@ func TestTerminalReplayNeverBlocksOnAStalledSender(t *testing.T) {
 		for _, terminalID := range []string{id, other} {
 			row, err := svc.terminalCatalog().get(context.Background(), terminalID)
 			assert.NoError(t, err)
-			svc.replayTerminalCatchUp(sink, terminalID, 0, row)
+			svc.replayTerminalCatchUp(sink, &leapmuxv1.WatchTerminalEntry{TerminalId: terminalID}, row)
 		}
 	})
 	select {
@@ -360,7 +360,7 @@ func replayIntoStalledDrain(t *testing.T, svc *Service, id string, stalled *stal
 	replaying.before = func() { runOnAnotherGoroutine(func() { publishTerminalReady(svc, id) }) }
 
 	replayed := runStalledTestWork(t, stalled, func() {
-		svc.replayTerminalCatchUp(newReplaySink(replaying, 0, nil, nil), id, 0, row)
+		svc.replayTerminalCatchUp(newReplaySink(replaying, 0, nil, nil), &leapmuxv1.WatchTerminalEntry{TerminalId: id}, row)
 	})
 	select {
 	case <-stalled.parked:
@@ -443,7 +443,7 @@ func TestTerminalStatusKeepsItsOrderUnderConcurrentEmittersAndReplays(t *testing
 		emitters.Go(func() {
 			sink := newReplaySink(newTestWriter(), 0, nil, nil)
 			for range rounds {
-				svc.replayTerminalCatchUp(sink, id, 0, row)
+				svc.replayTerminalCatchUp(sink, &leapmuxv1.WatchTerminalEntry{TerminalId: id}, row)
 			}
 		})
 	}
@@ -570,7 +570,7 @@ func TestReplayTerminalStatusReachesOnlyItsSubscriber(t *testing.T) {
 	watchTerminal(svc, "term", watcher)
 
 	subscriber := newTestWriter()
-	svc.replayTerminalCatchUp(newReplaySink(subscriber, 0, nil, nil), "term", 0, row)
+	svc.replayTerminalCatchUp(newReplaySink(subscriber, 0, nil, nil), &leapmuxv1.WatchTerminalEntry{TerminalId: "term"}, row)
 
 	assert.Equal(t, []leapmuxv1.TerminalStatus{leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED},
 		waitForWireTerminalStatuses(t, subscriber, 1))

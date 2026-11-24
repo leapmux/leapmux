@@ -13,6 +13,7 @@ import (
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -58,6 +59,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		runtimeDir:     directory, bridgeSecret: secret, outputDone: make(chan struct{}),
 		workingDir: opts.WorkingDir, homeDir: opts.HomeDir, clock: quartz.NewReal(),
 		permissionMode: opts.PermissionMode(), children: make(map[string]*childState),
+		replyProcessID: id.Generate(),
 	}
 	a.sink = agent.NewModelProgressResetSink(sink)
 	if err := a.StartCmd(); err != nil {

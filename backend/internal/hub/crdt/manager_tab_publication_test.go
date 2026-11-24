@@ -133,6 +133,35 @@ func TestPublishTab_ResolvesInsertionAndSerializesConcurrentCalls(t *testing.T) 
 	assert.Len(t, manager.Materialized(crdt.SubscriberFilter{}).GetTabs(), 3)
 }
 
+func TestPublishTab_FirstLeafUsesVisibleGridOrder(t *testing.T) {
+	manager, _, _ := runManager(t, "user-1", allowAll{}, 1000)
+	seedRootInternal(t, manager, "ws", "root")
+	const first = "\U0001F600"
+	manager.SeedStateForTest(func(state *leapmuxv1.UserCrdtState) {
+		root := state.Nodes["root"]
+		root.Kind = &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_GRID}
+		root.Rows = &leapmuxv1.LWWUint32{Value: 1}
+		root.Cols = &leapmuxv1.LWWUint32{Value: 11}
+		root.RowRatios = &leapmuxv1.LWWDoubles{Value: &leapmuxv1.DoubleList{Values: crdt.EqualRatios(1)}}
+		root.ColRatios = &leapmuxv1.LWWDoubles{Value: &leapmuxv1.DoubleList{Values: crdt.EqualRatios(11)}}
+		for id, position := range map[string]string{
+			"hidden": "-1,0", first: "0,2", "\uE000": "0,2", "later": "0,10",
+		} {
+			state.Nodes[id] = &leapmuxv1.NodeRecord{
+				NodeId: id, ParentId: "root",
+				Kind:     &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+				Position: &leapmuxv1.LWWString{Value: position},
+			}
+		}
+	})
+	request := publicationRequest("open-in-grid")
+	request.Creation.Placement.Destination = &leapmuxv1.TabPlacement_FirstLeaf{FirstLeaf: &emptypb.Empty{}}
+	response, err := manager.PublishTab(t.Context(), "worker", request)
+	require.NoError(t, err)
+	require.NotNil(t, response.GetPublished(), "publication response: %v", response)
+	assert.Equal(t, first, response.GetPublished().GetTileId())
+}
+
 type publicationAuth struct{ workspace, worker bool }
 
 func (a publicationAuth) CanAccessWorkspace(context.Context, string, string) (bool, error) {

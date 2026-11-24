@@ -1,0 +1,170 @@
+{
+  "_readme": "OpenCode asks for typed values in a native form (form.created). The Worker reads a form that is no question of the question tool into an MCP elicitation prompt: a JSON Schema with one property for each field, and a rule for each field that states whether the form hides it and which earlier answers it needs. The browser's shared form then draws that prompt and builds the answer. Each case states a stored payload, the prompt that the Worker records for it, and what the shared form shows and sends for some answers. TestReadControlRequest_FormPromptConformance (backend/internal/worker/agent/providers/opencode) reads each payload and requires the stated prompt. formPromptConformance.test.ts (frontend/src/components/chat/providers/opencode) fills the form of each prompt and requires the stated fields and answers. A change to either half therefore fails a case here.",
+  "cases": [
+    {
+      "name": "a required text field with an empty default needs a value",
+      "payload": {
+        "type": "form.created",
+        "data": { "form": { "fields": [{ "key": "empty", "type": "string", "required": true, "default": "" }] } }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"empty\":{\"default\":\"\",\"type\":\"string\",\"minLength\":1}},\"required\":[\"empty\"]}","fieldRules":[{"key":"empty"}]}},
+      "reads": [{ "answers": {}, "error": true }]
+    },
+    {
+      "name": "a required multiselect field with an empty default needs a selection",
+      "payload": {
+        "type": "form.created",
+        "data": { "form": { "fields": [{ "key": "empty", "type": "multiselect", "required": true, "options": [], "default": [] }] } }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"empty\":{\"default\":[],\"type\":\"array\",\"items\":{\"type\":\"string\",\"enum\":[],\"enumNames\":[]},\"minItems\":1}},\"required\":[\"empty\"]}","fieldRules":[{"key":"empty"}]}},
+      "reads": [{ "answers": {}, "error": true }]
+    },
+    {
+      "name": "a choice refuses a default outside its options",
+      "payload": {
+        "type": "form.created",
+        "data": { "form": { "fields": [{ "key": "empty", "type": "string", "options": [{ "value": "allowed", "label": "Allowed" }], "default": "other" }] } }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"empty\":{\"default\":\"other\",\"type\":\"string\",\"enum\":[\"allowed\"],\"enumNames\":[\"Allowed\"]}},\"required\":[]}","fieldRules":[{"key":"empty"}]}},
+      "reads": [{ "answers": {}, "error": true }]
+    },
+    {
+      "name": "an inactive field sends no stale answer, and the fields after it are inactive too",
+      "payload": {
+        "type": "form.created",
+        "data": {
+          "form": {
+            "fields": [
+              { "key": "enabled", "type": "boolean", "default": false },
+              { "key": "details", "type": "string", "required": true, "when": [{ "key": "enabled", "op": "eq", "value": true }] },
+              { "key": "count", "type": "integer", "required": true, "when": [{ "key": "details", "op": "neq", "value": "" }] },
+              { "key": "hidden", "type": "integer", "hidden": true, "default": 0 }
+            ]
+          }
+        }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"enabled\":{\"default\":false,\"type\":\"boolean\"},\"details\":{\"type\":\"string\",\"minLength\":1},\"count\":{\"type\":\"integer\"},\"hidden\":{\"default\":0,\"type\":\"integer\"}},\"required\":[\"details\",\"count\"]}","fieldRules":[{"key":"enabled"},{"conditions":[{"comparison":"ELICITATION_FIELD_COMPARISON_EQUAL","field":"enabled","valueJson":"true"}],"key":"details"},{"conditions":[{"comparison":"ELICITATION_FIELD_COMPARISON_NOT_EQUAL","field":"details","valueJson":"\"\""}],"key":"count"},{"hidden":true,"key":"hidden"}]}},
+      "visible": [
+        { "answers": { "details": "previous answer", "count": "invalid stale number" }, "fields": ["enabled"] },
+        { "answers": { "enabled": "true", "details": "yes", "count": "0" }, "fields": ["enabled", "details", "count"] }
+      ],
+      "reads": [
+        { "answers": { "details": "previous answer", "count": "invalid stale number" }, "content": { "enabled": false, "hidden": 0 } },
+        { "answers": { "enabled": "true" }, "error": "details is required." },
+        { "answers": { "enabled": "true", "details": "yes", "count": "0" }, "content": { "enabled": true, "details": "yes", "count": 0, "hidden": 0 } }
+      ]
+    },
+    {
+      "name": "an unanswered field meets no equal condition",
+      "payload": {
+        "type": "form.created",
+        "data": {
+          "form": {
+            "fields": [
+              { "key": "source", "type": "string" },
+              { "key": "dependent", "type": "string", "required": true, "when": [{ "key": "source", "op": "eq", "value": "chosen" }] }
+            ]
+          }
+        }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"source\":{\"type\":\"string\"},\"dependent\":{\"type\":\"string\",\"minLength\":1}},\"required\":[\"dependent\"]}","fieldRules":[{"key":"source"},{"conditions":[{"comparison":"ELICITATION_FIELD_COMPARISON_EQUAL","field":"source","valueJson":"\"chosen\""}],"key":"dependent"}]}},
+      "visible": [{ "answers": {}, "fields": ["source"] }],
+      "reads": [{ "answers": {}, "content": {} }]
+    },
+    {
+      "name": "an unanswered field meets no not-equal condition",
+      "payload": {
+        "type": "form.created",
+        "data": {
+          "form": {
+            "fields": [
+              { "key": "source", "type": "string" },
+              { "key": "dependent", "type": "string", "required": true, "when": [{ "key": "source", "op": "neq", "value": "chosen" }] }
+            ]
+          }
+        }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"source\":{\"type\":\"string\"},\"dependent\":{\"type\":\"string\",\"minLength\":1}},\"required\":[\"dependent\"]}","fieldRules":[{"key":"source"},{"conditions":[{"comparison":"ELICITATION_FIELD_COMPARISON_NOT_EQUAL","field":"source","valueJson":"\"chosen\""}],"key":"dependent"}]}},
+      "visible": [{ "answers": {}, "fields": ["source"] }],
+      "reads": [{ "answers": {}, "content": {} }]
+    },
+    {
+      "name": "a selection meets an equal condition on a value that it holds, and a hidden field sends its empty default",
+      "payload": {
+        "type": "form.created",
+        "data": {
+          "form": {
+            "fields": [
+              { "key": "options", "type": "multiselect", "options": [{ "value": "a", "label": "A" }], "default": ["a"] },
+              { "key": "selected", "type": "string", "default": "", "hidden": true, "when": [{ "key": "options", "op": "eq", "value": "a" }] },
+              { "key": "other", "type": "boolean", "default": false, "when": [{ "key": "options", "op": "neq", "value": "a" }] }
+            ]
+          }
+        }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"options\":{\"default\":[\"a\"],\"type\":\"array\",\"items\":{\"type\":\"string\",\"enum\":[\"a\"],\"enumNames\":[\"A\"]}},\"selected\":{\"default\":\"\",\"type\":\"string\"},\"other\":{\"default\":false,\"type\":\"boolean\"}},\"required\":[]}","fieldRules":[{"key":"options"},{"conditions":[{"comparison":"ELICITATION_FIELD_COMPARISON_EQUAL","field":"options","valueJson":"\"a\""}],"hidden":true,"key":"selected"},{"conditions":[{"comparison":"ELICITATION_FIELD_COMPARISON_NOT_EQUAL","field":"options","valueJson":"\"a\""}],"key":"other"}]}},
+      "reads": [
+        { "answers": {}, "content": { "options": ["a"], "selected": "" } },
+        { "answers": { "options": "[]" }, "content": { "options": [], "other": false } }
+      ]
+    },
+    {
+      "name": "a conditional field is required only while its condition holds",
+      "payload": {
+        "type": "form.created",
+        "data": {
+          "form": {
+            "fields": [
+              { "key": "enabled", "type": "boolean", "default": false },
+              { "key": "details", "type": "string", "required": true, "when": [{ "key": "enabled", "op": "eq", "value": true }] }
+            ]
+          }
+        }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"enabled\":{\"default\":false,\"type\":\"boolean\"},\"details\":{\"type\":\"string\",\"minLength\":1}},\"required\":[\"details\"]}","fieldRules":[{"key":"enabled"},{"conditions":[{"comparison":"ELICITATION_FIELD_COMPARISON_EQUAL","field":"enabled","valueJson":"true"}],"key":"details"}]}},
+      "reads": [{ "answers": {}, "content": { "enabled": false } }]
+    },
+    {
+      "name": "keys that name prototype members stay data, with their typed defaults",
+      "payload": {
+        "type": "form.created",
+        "data": {
+          "form": {
+            "fields": [
+              { "key": "__proto__", "type": "integer", "default": 0, "required": true },
+              { "key": "constructor", "type": "boolean", "default": false },
+              { "key": "", "type": "string", "default": "" }
+            ]
+          }
+        }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"__proto__\":{\"default\":0,\"type\":\"integer\"},\"constructor\":{\"default\":false,\"type\":\"boolean\"},\"\":{\"default\":\"\",\"type\":\"string\"}},\"required\":[\"__proto__\"]}","fieldRules":[{"key":"__proto__"},{"key":"constructor"},{}]}},
+      "reads": [{ "answers": {}, "content": { "__proto__": 0, "constructor": false, "": "" } }]
+    },
+    {
+      "name": "a condition shows a field, and a hidden field sends its default with the typed answers",
+      "payload": {
+        "type": "form.created",
+        "data": {
+          "form": {
+            "fields": [
+              { "key": "choice", "type": "string", "title": "Choice" },
+              { "key": "details", "type": "string", "title": "Details", "required": true, "when": [{ "key": "choice", "op": "eq", "value": "yes" }] },
+              { "key": "count", "type": "integer", "title": "Hidden count", "hidden": true, "default": 0 }
+            ]
+          }
+        }
+      },
+      "prompt": {"editorPurpose":"CONTROL_EDITOR_PURPOSE_NONE","elicitation":{"mode":"form","schemaJson":"{\"type\":\"object\",\"properties\":{\"choice\":{\"title\":\"Choice\",\"type\":\"string\"},\"details\":{\"title\":\"Details\",\"type\":\"string\",\"minLength\":1},\"count\":{\"title\":\"Hidden count\",\"default\":0,\"type\":\"integer\"}},\"required\":[\"details\"]}","fieldRules":[{"key":"choice"},{"conditions":[{"comparison":"ELICITATION_FIELD_COMPARISON_EQUAL","field":"choice","valueJson":"\"yes\""}],"key":"details"},{"hidden":true,"key":"count"}]}},
+      "visible": [
+        { "answers": {}, "fields": ["choice"] },
+        { "answers": { "choice": "yes" }, "fields": ["choice", "details"] },
+        { "answers": { "choice": "no", "details": "stale" }, "fields": ["choice"] }
+      ],
+      "reads": [
+        { "answers": { "choice": "yes" }, "error": "Details is required." },
+        { "answers": { "choice": "no", "details": "stale" }, "content": { "choice": "no", "count": 0 } }
+      ]
+    }
+  ]
+}

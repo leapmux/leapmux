@@ -74,6 +74,43 @@ export function showInfoToast(message: string) {
   renderToast(message, 'success')
 }
 
+/** What a notification toast shows. */
+export interface NotificationToastContent {
+  id?: string
+  title: string
+  /** More text below the title. Empty shows none. */
+  body: string
+  /** The title of the tab that sent the notification, when it is known. */
+  sourceTabTitle: string | undefined
+  destination?: { label: string, open: () => void } | undefined
+}
+
+/**
+ * How long a notification toast stays. A process asked to tell the user
+ * something, often while the user looks at another window, so it outlasts the
+ * three-second toast that reports the app's own progress. It is not sticky: a
+ * script that notifies in a loop must not bury the screen in toasts that each
+ * need a click.
+ */
+export const NOTIFICATION_TOAST_MS = 10_000
+
+/**
+ * Show a notification that a process asked for (`leapmux control notify`):
+ * the title, the body below it, and the tab that sent it.
+ */
+export function showNotificationToast(content: NotificationToastContent) {
+  renderToast(content, 'success', NOTIFICATION_TOAST_MS)
+}
+
+export function dismissNotificationToast(id: string) {
+  if (!id)
+    return
+  for (const toast of document.querySelectorAll<HTMLElement>('output[data-notification-id]')) {
+    if (toast.dataset.notificationId === id)
+      dismissToast(toast)
+  }
+}
+
 /**
  * Live sticky toasts, keyed by the text they render.
  *
@@ -90,9 +127,61 @@ export function showInfoToast(message: string) {
  */
 const liveSticky = new Map<string, HTMLElement>()
 
+/**
+ * Fill a toast's message element. A string is one line of text. A
+ * notification is three parts, each its own element, and each set through
+ * `textContent`: the text comes from a process, so none of it may become
+ * markup.
+ */
+function fillToastMessage(el: HTMLElement, content: string | NotificationToastContent) {
+  if (typeof content === 'string') {
+    el.textContent = content
+    return
+  }
+  const title = document.createElement('div')
+  title.className = 'toast-title'
+  title.style.fontWeight = '600'
+  title.style.overflowWrap = 'anywhere'
+  title.textContent = content.title
+  el.appendChild(title)
+  if (content.body) {
+    const body = document.createElement('div')
+    body.className = 'toast-body'
+    // The body is a few lines, such as the end of a build log, so its line
+    // breaks stay. A long one scrolls inside the toast instead of filling the
+    // screen.
+    body.style.whiteSpace = 'pre-wrap'
+    body.style.overflowWrap = 'anywhere'
+    body.style.maxHeight = '12em'
+    body.style.overflowY = 'auto'
+    body.textContent = content.body
+    el.appendChild(body)
+  }
+  if (content.sourceTabTitle) {
+    const source = document.createElement('div')
+    source.className = 'toast-source'
+    source.style.color = 'var(--muted-foreground)'
+    source.style.fontSize = 'var(--text-8)'
+    source.textContent = `From ${content.sourceTabTitle}`
+    el.appendChild(source)
+  }
+  if (content.destination) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.setAttribute('data-notification-open', '')
+    button.textContent = content.destination.label
+    button.style.marginTop = 'var(--space-2)'
+    el.appendChild(button)
+  }
+}
+
 // durationMs of 0 means "until dismissed"; the toast already renders its own
-// close button, so a sticky one is never a dead end.
-function renderToast(message: string, type: ToastType, durationMs = 3000) {
+// close button, so a sticky one is never a dead end. Only a string toast can
+// be sticky, because the sticky dedupe keys on the rendered text.
+function renderToast(content: string | NotificationToastContent, type: ToastType, durationMs = 3000) {
+  const message = typeof content === 'string'
+    ? content
+    : content.title
   // `window.ot` is DECLARED non-optional (see ~/lib/oat.ts) because the design
   // system installs it during startup. It is genuinely absent before that runs,
   // and under test, so the annotation widens what the declaration promises.
@@ -120,6 +209,8 @@ function renderToast(message: string, type: ToastType, durationMs = 3000) {
     : 'danger'
 
   const toast = document.createElement('output')
+  if (typeof content !== 'string' && content.id)
+    toast.dataset.notificationId = content.id
   toast.setAttribute('data-variant', variant)
   toast.style.display = 'flex'
   toast.style.alignItems = 'start'
@@ -128,7 +219,8 @@ function renderToast(message: string, type: ToastType, durationMs = 3000) {
   const msgEl = document.createElement('div')
   msgEl.className = 'toast-message'
   msgEl.style.flex = '1'
-  msgEl.textContent = message
+  msgEl.style.minWidth = '0'
+  fillToastMessage(msgEl, content)
   toast.appendChild(msgEl)
 
   const closeBtn = document.createElement('button')
@@ -152,6 +244,15 @@ function renderToast(message: string, type: ToastType, durationMs = 3000) {
 
   if (sticky) {
     liveSticky.set(message, mounted)
+  }
+  const destination = typeof content === 'string'
+    ? undefined
+    : content.destination
+  if (destination) {
+    mounted.querySelector('[data-notification-open]')?.addEventListener('click', () => {
+      destination.open()
+      dismissToast(mounted)
+    })
   }
 
   mounted.querySelector('[data-close]')?.addEventListener('click', () => {

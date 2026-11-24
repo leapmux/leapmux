@@ -20,7 +20,10 @@ import (
 type openCodeControlOwner struct {
 	nativeSessionID string
 	sessionID       string
+	nativeInputIDs  []string
 	sink            agent.ProviderServices
+	// replyInputs checks which native inputs own a control's assistant message.
+	replyInputs func(messageID string) []string
 	// current reads captured session authority only. Callers do not hold the owner mutex when entering this registry.
 	current func() bool
 }
@@ -65,6 +68,48 @@ func openCodeControlKey(kind, sessionID, nativeID string) string {
 	return "opencode:" + kind + ":" + sessionID + ":" + nativeID
 }
 
+// ControlRequestKey reads the key that register gives a stored native request
+// (openCodeControlKey): its kind, the session that owns it, and its id. A
+// permission states its session and its id itself, and a form states them in
+// its `form`. register keys a request by the session of its owner, and
+// publishPermission and publishForm refuse a request of another session, so
+// the session that the request states is the owner's.
+func (opencodeProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
+	var request struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(payload, &request) != nil {
+		return "", false
+	}
+	var kind string
+	var native struct {
+		ID        string `json:"id"`
+		SessionID string `json:"sessionID"`
+	}
+	switch request.Type {
+	case contracts.OpenCodeNativeEventPermissionAsked:
+		kind = "permission"
+		if json.Unmarshal(request.Data, &native) != nil {
+			return "", false
+		}
+	case contracts.OpenCodeNativeEventFormCreated:
+		kind = "form"
+		var data struct {
+			Form json.RawMessage `json:"form"`
+		}
+		if json.Unmarshal(request.Data, &data) != nil || json.Unmarshal(data.Form, &native) != nil {
+			return "", false
+		}
+	default:
+		return "", false
+	}
+	if native.ID == "" || native.SessionID == "" {
+		return "", false
+	}
+	return openCodeControlKey(kind, native.SessionID, native.ID), true
+}
+
 func (r *openCodeControls) publishPermission(owner openCodeControlOwner, raw json.RawMessage) error {
 	permission, err := readOpenCodePermission(raw)
 	if err != nil {
@@ -76,6 +121,9 @@ func (r *openCodeControls) publishPermission(owner openCodeControlOwner, raw jso
 	header := map[string]any{"tool_name": permission.Action}
 	if permission.Source != nil && permission.Source.MessageID != "" {
 		header["tool_use_id"] = openCodeToolSpanID(permission.Source.MessageID, permission.Source.ID)
+		if owner.replyInputs != nil {
+			owner.nativeInputIDs = owner.replyInputs(permission.Source.MessageID)
+		}
 	}
 	return r.register(owner, permission.ID, "permission", contracts.OpenCodeNativeEventPermissionAsked, raw, header)
 }
@@ -110,6 +158,9 @@ func (r *openCodeControls) publishForm(owner openCodeControlOwner, raw json.RawM
 	header := map[string]any{"tool_name": toolName}
 	if metadata.Tool != nil && metadata.Tool.MessageID != "" {
 		header["tool_use_id"] = openCodeToolSpanID(metadata.Tool.MessageID, metadata.Tool.ID)
+		if owner.replyInputs != nil {
+			owner.nativeInputIDs = owner.replyInputs(metadata.Tool.MessageID)
+		}
 	}
 	data, err := json.Marshal(map[string]json.RawMessage{"form": raw})
 	if err != nil {
@@ -131,12 +182,16 @@ func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, 
 	r.mu.Lock()
 	if r.closed || !owner.current() {
 		r.mu.Unlock()
-		return providerkit.ErrControlRequestNotPending
+		return agent.ErrControlRequestNotPending
 	}
 	if previous := r.pending[key]; previous != nil {
 		if previous.owner.sessionID == owner.sessionID {
 			retry := previous.publicationFailed && !previous.published && !previous.publishing && !previous.answering
+			published := previous.published
 			r.mu.Unlock()
+			if published {
+				return bindOpenCodeControlInputs(previous, owner.nativeInputIDs)
+			}
 			if retry {
 				return r.publish(previous)
 			}
@@ -173,6 +228,10 @@ func (r *openCodeControls) publish(record *openCodePendingControl) error {
 	record.publishing = true
 	r.mu.Unlock()
 	err := record.owner.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.owner.sessionID, RequestID: record.requestID, InstanceID: record.instanceID, Payload: record.payload})
+	var bindingErr error
+	if err == nil {
+		bindingErr = bindOpenCodeControlInputs(record, record.owner.nativeInputIDs)
+	}
 	r.mu.Lock()
 	record.publishing = false
 	current := r.pending[record.requestID] == record
@@ -197,6 +256,19 @@ func (r *openCodeControls) publish(record *openCodePendingControl) error {
 	}
 	if automatic {
 		r.queueApprovals()
+	}
+	return errors.Join(err, bindingErr)
+}
+
+func bindOpenCodeControlInputs(record *openCodePendingControl, inputIDs []string) error {
+	if len(inputIDs) == 0 {
+		return nil
+	}
+	err := record.owner.sink.SetNativeControlInputs(agent.NativeControlInputs{
+		SessionID: record.owner.sessionID, RequestID: record.requestID, InstanceID: record.instanceID, InputIDs: inputIDs,
+	})
+	if agent.OutputRetained(err) {
+		return nil
 	}
 	return err
 }
@@ -293,7 +365,7 @@ func (r *openCodeControls) answer(raw []byte) error {
 	record := r.pending[header.RequestID]
 	r.mu.Unlock()
 	if record == nil {
-		return providerkit.ErrControlRequestNotPending
+		return agent.ErrControlRequestNotPending
 	}
 	answer, err := readOpenCodeControlAnswer(raw, record.requestID, record.kind)
 	if err != nil {
@@ -302,7 +374,7 @@ func (r *openCodeControls) answer(raw []byte) error {
 	r.mu.Lock()
 	if r.closed || r.pending[record.requestID] != record || !record.owner.current() {
 		r.mu.Unlock()
-		return providerkit.ErrControlRequestNotPending
+		return agent.ErrControlRequestNotPending
 	}
 	if record.uncertain {
 		r.mu.Unlock()

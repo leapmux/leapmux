@@ -74,6 +74,56 @@ func TestActAsksBeforeATool(t *testing.T) {
 	assert.Empty(t, approvalReplies(t, r.hub), "nothing answers until the user does")
 }
 
+// The Worker refuses each answer to a stored request whose payload gives
+// another key than its publication, so the key that ControlRequestKey reads
+// must be the key of each request that the agent publishes: an approval and a
+// question.
+func TestControlRequestKeyIsTheKeyOfEachPublication(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feed(t, contracts.ClineEventApprovalRequested, approval("a1", contracts.ClineToolRunCommands))
+	r.feed(t, contracts.ClineEventCapabilityRequested, question(r, "q1"))
+	require.Equal(t, 2, r.sink.PublishedControlCount())
+	agenttest.AssertPublishedControlKeys(t, clineProvider{}, r.sink)
+}
+
+// A payload gives a key only where Cline's hub states the id of a request that
+// the agent publishes.
+func TestControlRequestKeyReadsNoKeyFromAnotherPayload(t *testing.T) {
+	t.Parallel()
+	for name, payload := range map[string][]byte{
+		"another event":                     eventEnvelope(t, "s", contracts.ClineEventAssistantFinished, map[string]any{"approvalId": "a1"}),
+		"an approval with no id":            eventEnvelope(t, "s", contracts.ClineEventApprovalRequested, map[string]any{"toolName": "editor"}),
+		"an approval with an empty id":      eventEnvelope(t, "s", contracts.ClineEventApprovalRequested, map[string]any{"approvalId": ""}),
+		"an approval whose id is a number":  eventEnvelope(t, "s", contracts.ClineEventApprovalRequested, map[string]any{"approvalId": 1}),
+		"an approval whose payload is text": eventEnvelope(t, "s", contracts.ClineEventApprovalRequested, "a1"),
+		"a question with no id":             eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"capabilityName": contracts.ClineCapabilityAskQuestion}),
+		"an approval's id outside payload":  []byte(`{"event":"approval.requested","approvalId":"a1","payload":{}}`),
+		"no event":                          []byte(`{"payload":{"approvalId":"a1"}}`),
+	} {
+		key, ok := clineProvider{}.ControlRequestKey(payload, "s")
+		assert.False(t, ok, name)
+		assert.Empty(t, key, name)
+	}
+	key, ok := clineProvider{}.ControlRequestKey(eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "c1", "capabilityName": capabilitySwitchToActMode}), "s")
+	assert.True(t, ok, "a capability request of another capability still states its id")
+	assert.Equal(t, "c1", key)
+}
+
+// No Worker path resolves an event that is no request: its payload gives no
+// key (ControlRequestKey), so the Worker refuses the answer before Cline reads
+// it. The resolution refuses it as well, so a caller that skips the Worker's
+// check still sends the hub nothing.
+func TestResolveControlResponseWithholdsAnEventThatIsNoRequest(t *testing.T) {
+	t.Parallel()
+	stored := eventEnvelope(t, "s", contracts.ClineEventAssistantFinished, map[string]any{})
+	content := browserDecision(t, "a1", contracts.ControlAnswerBehaviorAllow, "", nil)
+	res := agenttest.ResolveAnswerPastTheKeyCheck(clineProvider{}, stored, "a1", agent.ControlAnswer{Content: content})
+	assert.True(t, res.Withhold)
+	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest)
+	assert.Equal(t, content, res.Content)
+}
+
 func TestActRunsTheToolsThatOnlyRead(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -193,7 +243,7 @@ func TestAQuestionNoUserCanSeeIsRefused(t *testing.T) {
 	assert.Equal(t, "q1", reply.RequestId)
 	assert.False(t, reply.Ok)
 	assert.Contains(t, reply.Error, "could not show the question")
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true}), agent.StopContext{}), errUnknownControl,
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true})}), errUnknownControl,
 		"a refused question takes no later answer")
 }
 
@@ -206,7 +256,7 @@ func TestAnApprovalNoUserCanSeeIsRefused(t *testing.T) {
 	reply := approvalReplies(t, r.hub)[0]
 	assert.False(t, reply.Approved, "fail closed")
 	assert.Contains(t, reply.Reason, "could not show")
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}), agent.StopContext{}), errUnknownControl,
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), errUnknownControl,
 		"a refused request takes no later answer")
 }
 
@@ -214,11 +264,11 @@ func TestTheUsersApprovalReachesCline(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.feed(t, contracts.ClineEventApprovalRequested, approval("a1", "editor"))
-	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: false, Reason: "No."}), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: false, Reason: "No."})}))
 	replies := approvalReplies(t, r.hub)
 	require.Len(t, replies, 1)
 	assert.Equal(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: false, Reason: "No."}, replies[0])
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}), agent.StopContext{}), errUnknownControl, "an answered request takes no second answer")
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), errUnknownControl, "an answered request takes no second answer")
 }
 
 func TestAnAnswerOfAnOldSessionIsRefused(t *testing.T) {
@@ -229,8 +279,8 @@ func TestAnAnswerOfAnOldSessionIsRefused(t *testing.T) {
 	r.agent.Mu.Lock()
 	r.agent.sessionID = "replaced"
 	r.agent.Mu.Unlock()
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}), agent.StopContext{}), agent.ErrInputSessionChanged)
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true}), agent.StopContext{}), agent.ErrInputSessionChanged)
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), agent.ErrInputSessionChanged)
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true})}), agent.ErrInputSessionChanged)
 	assert.Empty(t, approvalReplies(t, r.hub))
 	assert.Empty(t, r.hub.commandsNamed(commandCapabilityRespond))
 }
@@ -249,14 +299,14 @@ func TestSendRawInputRefusesWhatIsNotAnAnswer(t *testing.T) {
 		{`{"approvalId":5,"approved":true}`, "read the Cline approval answer"},
 		{`{"requestId":["q1"],"ok":true}`, "read the Cline question answer"},
 	} {
-		err := r.agent.SendRawInput([]byte(tc.data), agent.StopContext{})
+		err := r.agent.SendRawInput(agent.RawInput{Data: []byte(tc.data)})
 		require.Error(t, err, tc.data)
 		assert.Contains(t, err.Error(), tc.want, tc.data)
 	}
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q9", Ok: true}), agent.StopContext{}), errUnknownControl)
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q9", Ok: true})}), errUnknownControl)
 	assert.Empty(t, approvalReplies(t, r.hub), "no malformed answer reaches Cline")
 	assert.Empty(t, r.hub.commandsNamed(commandCapabilityRespond))
-	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}), agent.StopContext{}), "the requests still wait for their answers")
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), "the requests still wait for their answers")
 }
 
 func TestSendRawInputRefusesAStoppedAgent(t *testing.T) {
@@ -264,7 +314,7 @@ func TestSendRawInputRefusesAStoppedAgent(t *testing.T) {
 	r := newRig(t)
 	r.feed(t, contracts.ClineEventApprovalRequested, approval("a1", "editor"))
 	r.agent.Stop()
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}), agent.StopContext{}), errAgentStopped)
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), errAgentStopped)
 	assert.Empty(t, approvalReplies(t, r.hub))
 }
 
@@ -276,13 +326,13 @@ func TestAnAnswerOfTheWrongKindIsRefused(t *testing.T) {
 	r := newRig(t)
 	r.feed(t, contracts.ClineEventApprovalRequested, approval("a1", "editor"))
 	r.feed(t, contracts.ClineEventCapabilityRequested, question(r, "q1"))
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "q1", Approved: true}), agent.StopContext{}), errUnknownControl)
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineCapabilityReply{RequestId: "a1", Ok: true}), agent.StopContext{}), errUnknownControl)
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "q1", Approved: true})}), errUnknownControl)
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "a1", Ok: true})}), errUnknownControl)
 	assert.Empty(t, approvalReplies(t, r.hub))
 	assert.Empty(t, r.hub.commandsNamed(commandCapabilityRespond))
 
-	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}), agent.StopContext{}))
-	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Error: "No."}), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Error: "No."})}))
 	assert.Len(t, approvalReplies(t, r.hub), 1)
 	assert.Equal(t, []contracts.ClineCapabilityReply{{RequestId: "q1", Error: "No."}}, capabilityReplies(t, r.hub))
 }
@@ -297,12 +347,12 @@ func TestAnAnswerThatClineRefusesFails(t *testing.T) {
 		return fakeReply{Code: "approval_not_found", Message: "no such approval"}
 	})
 	r.feed(t, contracts.ClineEventApprovalRequested, approval("a1", "editor"))
-	err := r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}), agent.StopContext{})
+	err := r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})})
 	var refused *HubCommandError
 	require.ErrorAs(t, err, &refused)
 	assert.Equal(t, "approval_not_found", refused.Code)
 	assert.Contains(t, err.Error(), "answer the Cline approval")
-	require.ErrorIs(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}), agent.StopContext{}), errUnknownControl)
+	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), errUnknownControl)
 }
 
 // A request that states no id cannot take an answer, so the worker neither
@@ -339,7 +389,7 @@ func TestAQuestionIsPublishedAndAnswered(t *testing.T) {
 
 	payload, err := json.Marshal(map[string]string{contracts.ClineCapabilityReplyResult: "Blue"})
 	require.NoError(t, err)
-	require.NoError(t, r.agent.SendRawInput(mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true, Payload: payload}), agent.StopContext{}))
+	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true, Payload: payload})}))
 	commands := r.hub.commandsNamed(commandCapabilityRespond)
 	require.Len(t, commands, 1)
 	assert.JSONEq(t, `{"requestId":"q1","ok":true,"payload":{"result":"Blue"}}`, string(commands[0].Payload))
@@ -459,7 +509,8 @@ func storedApproval(t *testing.T, id, tool string) []byte {
 	return eventEnvelope(t, "sess-1", contracts.ClineEventApprovalRequested, approval(id, tool))
 }
 
-// browserDecision is the browser's neutral decision envelope.
+// browserDecision is the neutral decision envelope that AnswerControlRequest
+// builds.
 func browserDecision(t *testing.T, requestID, behavior, message string, extra map[string]any) []byte {
 	t.Helper()
 	inner := map[string]any{"behavior": behavior, "message": message}
@@ -478,10 +529,7 @@ func mustJSON(t *testing.T, value any) []byte {
 
 func TestResolveControlResponseApproves(t *testing.T) {
 	t.Parallel()
-	res := resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "a1", RequestPayload: storedApproval(t, "a1", "editor"),
-		ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil),
-	})
+	res := agenttest.ResolveAnswer(clineProvider{}, storedApproval(t, "a1", "editor"), "a1", agent.ControlAnswer{Content: browserDecision(t, "a1", contracts.ControlAnswerBehaviorAllow, "", nil)})
 	require.False(t, res.Withhold)
 	assert.JSONEq(t, `{"approvalId":"a1","approved":true}`, string(res.Content))
 	assert.Equal(t, agent.PlanModeControlNone, res.PlanModeControl)
@@ -489,16 +537,10 @@ func TestResolveControlResponseApproves(t *testing.T) {
 
 func TestResolveControlResponseDeclinesWithTheUsersReason(t *testing.T) {
 	t.Parallel()
-	res := resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "a1", RequestPayload: storedApproval(t, "a1", "editor"),
-		ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorDeny, "Use the other file.", nil),
-	})
+	res := agenttest.ResolveAnswer(clineProvider{}, storedApproval(t, "a1", "editor"), "a1", agent.ControlAnswer{Content: browserDecision(t, "a1", contracts.ControlAnswerBehaviorDeny, "Use the other file.", nil)})
 	assert.JSONEq(t, `{"approvalId":"a1","approved":false,"reason":"Use the other file."}`, string(res.Content))
 
-	res = resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "a1", RequestPayload: storedApproval(t, "a1", "editor"),
-		ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorDeny, agent.ControlRejectedByUserMessage, nil),
-	})
+	res = agenttest.ResolveAnswer(clineProvider{}, storedApproval(t, "a1", "editor"), "a1", agent.ControlAnswer{Content: browserDecision(t, "a1", contracts.ControlAnswerBehaviorDeny, contracts.ControlAnswerMessageRejectedByUser, nil)})
 	assert.JSONEq(t, `{"approvalId":"a1","approved":false,"reason":"`+declinedToolReason+`"}`, string(res.Content))
 }
 
@@ -517,11 +559,12 @@ func TestResolveControlResponseCarriesThePlansMode(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			res := resolveControlResponse(agent.ControlResponseContext{
-				RequestID: "p1", RequestPayload: storedApproval(t, "p1", contracts.ClineToolSwitchToActMode),
-				ResponseContent: browserDecision(t, "p1", agent.ControlBehaviorAllow, "", nil),
-				PlanApproval:    &leapmuxv1.PlanApprovalSettings{PermissionMode: tc.picked, ClearContext: tc.clear},
-			})
+			payload := storedApproval(t, "p1", contracts.ClineToolSwitchToActMode)
+			answer, err := agenttest.AnswerControl(clineProvider{}, payload, "p1", agenttest.PlanDecision(&leapmuxv1.PlanDecision{
+				Approve: true, PermissionMode: tc.picked, ClearContext: tc.clear,
+			}))
+			require.NoError(t, err)
+			res := agenttest.ResolveAnswer(clineProvider{}, payload, "p1", answer)
 			require.False(t, res.Withhold)
 			assert.Equal(t, agent.PlanModeControlExit, res.PlanModeControl)
 			var reply contracts.ClineApprovalReply
@@ -534,10 +577,7 @@ func TestResolveControlResponseCarriesThePlansMode(t *testing.T) {
 
 func TestResolveControlResponseRejectsAPlanWithoutAMode(t *testing.T) {
 	t.Parallel()
-	res := resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "p1", RequestPayload: storedApproval(t, "p1", contracts.ClineToolSwitchToActMode),
-		ResponseContent: browserDecision(t, "p1", agent.ControlBehaviorDeny, "Split it.", nil),
-	})
+	res := agenttest.ResolveAnswer(clineProvider{}, storedApproval(t, "p1", contracts.ClineToolSwitchToActMode), "p1", agent.ControlAnswer{Content: browserDecision(t, "p1", contracts.ControlAnswerBehaviorDeny, "Split it.", nil)})
 	var reply contracts.ClineApprovalReply
 	require.NoError(t, json.Unmarshal(res.Content, &reply))
 	assert.False(t, reply.Approved)
@@ -550,92 +590,76 @@ func TestResolveControlResponseAnswersAQuestion(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, func(c *rigConfig) { c.noSession = true })
 	stored := eventEnvelope(t, "sess-1", contracts.ClineEventCapabilityRequested, question(r, "q1"))
-	res := resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "q1", RequestPayload: stored,
-		ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "Blue"}),
-	})
+	res := agenttest.ResolveAnswer(clineProvider{}, stored, "q1", agent.ControlAnswer{Content: browserDecision(t, "q1", contracts.ControlAnswerBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "Blue"})})
 	require.False(t, res.Withhold)
 	assert.JSONEq(t, `{"requestId":"q1","ok":true,"payload":{"result":"Blue"}}`, string(res.Content))
 
-	res = resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "q1", RequestPayload: stored,
-		ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "  "}),
-	})
+	res = agenttest.ResolveAnswer(clineProvider{}, stored, "q1", agent.ControlAnswer{Content: browserDecision(t, "q1", contracts.ControlAnswerBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "  "})})
 	assert.True(t, res.Withhold, "an empty answer is not an answer")
 	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableAnswer)
 
-	res = resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "q1", RequestPayload: stored,
-		ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorDeny, "", nil),
-	})
+	res = agenttest.ResolveAnswer(clineProvider{}, stored, "q1", agent.ControlAnswer{Content: browserDecision(t, "q1", contracts.ControlAnswerBehaviorDeny, "", nil)})
 	assert.JSONEq(t, `{"requestId":"q1","ok":false,"error":"`+declinedQuestionError+`"}`, string(res.Content))
 
-	res = resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "q1", RequestPayload: stored,
-		ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorDeny, "Ask me later.", nil),
-	})
+	res = agenttest.ResolveAnswer(clineProvider{}, stored, "q1", agent.ControlAnswer{Content: browserDecision(t, "q1", contracts.ControlAnswerBehaviorDeny, "Ask me later.", nil)})
 	assert.JSONEq(t, `{"requestId":"q1","ok":false,"error":"Ask me later."}`, string(res.Content), "the user's own words decline the question")
 
-	res = resolveControlResponse(agent.ControlResponseContext{
-		RequestID: "q1", RequestPayload: stored,
-		ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", nil),
-	})
+	res = agenttest.ResolveAnswer(clineProvider{}, stored, "q1", agent.ControlAnswer{Content: browserDecision(t, "q1", contracts.ControlAnswerBehaviorAllow, "", nil)})
 	assert.True(t, res.Withhold, "an answer that states no answer field is not an answer")
 	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableAnswer)
 }
 
-// withheldCase is an answer that resolveControlResponse withholds. reason is
-// the sentence that the browser shows. detail is the cause that the worker log
-// states, which tells the cases apart when one reason covers several.
+// withheldCase is an answer that resolveControlResponse withholds. content
+// answers the request that the Worker stores as requestID, and stored is the
+// payload of that request. reason is the sentence that the browser shows.
+// detail is the cause that the worker log states, which tells the cases apart
+// when one reason covers several.
+//
+// The Worker resolves only an answer that addresses the stored request, and
+// only a stored request whose payload gives its key (agenttest.ResolveAnswer).
+// So no case reaches the refusal of an answer for another request, of an
+// answer that is not JSON, or of a stored request that disagrees with its key:
+// the Worker refuses each of them before Cline reads it.
 type withheldCase struct {
-	name   string
-	ctx    agent.ControlResponseContext
-	reason string
-	detail string
+	name      string
+	stored    []byte
+	requestID string
+	content   []byte
+	reason    string
+	detail    string
+}
+
+// resolve resolves the answer of the case as the Worker does.
+func (tc withheldCase) resolve() agent.ControlResponseResolution {
+	return agenttest.ResolveAnswer(clineProvider{}, tc.stored, tc.requestID, agent.ControlAnswer{Content: tc.content})
 }
 
 func withheldCases(t *testing.T) []withheldCase {
 	t.Helper()
 	good := storedApproval(t, "a1", "editor")
 	return []withheldCase{
-		{"no decision", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: []byte(`{"response":{"request_id":"a1","response":{}}}`)},
+		{"no decision", good, "a1", []byte(`{"response":{"request_id":"a1","response":{}}}`),
 			agent.RefusalNoDecision, "the answer states neither allow nor deny"},
-		{"another request", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: browserDecision(t, "a2", agent.ControlBehaviorAllow, "", nil)},
-			agent.RefusalOtherRequest, "the answer is for request a2, and the stored request is a1"},
-		{"a stored id that differs", agent.ControlResponseContext{RequestID: "a9", RequestPayload: good, ResponseContent: browserDecision(t, "a9", agent.ControlBehaviorAllow, "", nil)},
-			agent.RefusalUnreadableRequest, "the stored approval states id a1, and its request key is a9"},
-		{"an event that is not a request", agent.ControlResponseContext{RequestID: "a1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventAssistantFinished, map[string]any{}), ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)},
-			agent.RefusalUnreadableRequest, "the stored event " + contracts.ClineEventAssistantFinished + " is not a request"},
-		{"a capability that is not a question", agent.ControlResponseContext{RequestID: "c1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "c1", "capabilityName": capabilitySwitchToActMode}), ResponseContent: browserDecision(t, "c1", agent.ControlBehaviorAllow, "", nil)},
+		{"a capability that is not a question", eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "c1", "capabilityName": capabilitySwitchToActMode}), "c1", browserDecision(t, "c1", contracts.ControlAnswerBehaviorAllow, "", nil),
 			agent.RefusalUnreadableRequest, "the stored capability request is " + capabilitySwitchToActMode + ", not a question"},
-		{"an approval with no id", agent.ControlResponseContext{RequestID: "a1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventApprovalRequested, map[string]any{}), ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)},
-			agent.RefusalUnreadableRequest, "the stored approval states no id"},
-		{"no stored request", agent.ControlResponseContext{RequestID: "a1", ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)},
+		{"no stored request", nil, "a1", browserDecision(t, "a1", contracts.ControlAnswerBehaviorAllow, "", nil),
 			agent.RefusalUnreadableRequest, "the stored request is empty"},
-		{"a stored request that is not JSON", agent.ControlResponseContext{RequestID: "a1", RequestPayload: []byte(`not json`), ResponseContent: browserDecision(t, "a1", agent.ControlBehaviorAllow, "", nil)},
+		{"a stored request that is not JSON", []byte(`not json`), "a1", browserDecision(t, "a1", contracts.ControlAnswerBehaviorAllow, "", nil),
 			agent.RefusalUnreadableRequest, "the stored request does not decode"},
-		{"a decision that is neither allow nor deny", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: browserDecision(t, "a1", "ask", "", nil)},
+		{"a decision that is neither allow nor deny", good, "a1", browserDecision(t, "a1", "ask", "", nil),
 			agent.RefusalNoDecision, "the answer states neither allow nor deny"},
-		{"a response that is not JSON", agent.ControlResponseContext{RequestID: "a1", RequestPayload: good, ResponseContent: []byte(`not json`)},
-			agent.RefusalNoDecision, "the answer states neither allow nor deny"},
-		{"a question keyed by another id", agent.ControlResponseContext{RequestID: "q9", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "q1", "capabilityName": contracts.ClineCapabilityAskQuestion}), ResponseContent: browserDecision(t, "q9", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "Blue"})},
-			agent.RefusalUnreadableRequest, "the stored capability request states id q1, and its request key is q9"},
-		{"a question with no id", agent.ControlResponseContext{RequestID: "q1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"capabilityName": contracts.ClineCapabilityAskQuestion}), ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "Blue"})},
-			agent.RefusalUnreadableRequest, "the stored capability request states no id"},
-		{"an answer with no text", agent.ControlResponseContext{RequestID: "q1", RequestPayload: eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "q1", "capabilityName": contracts.ClineCapabilityAskQuestion}), ResponseContent: browserDecision(t, "q1", agent.ControlBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "  "})},
+		{"an answer with no text", eventEnvelope(t, "s", contracts.ClineEventCapabilityRequested, map[string]any{"requestId": "q1", "capabilityName": contracts.ClineCapabilityAskQuestion}), "q1", browserDecision(t, "q1", contracts.ControlAnswerBehaviorAllow, "", map[string]any{contracts.ClineQuestionAnswerAnswer: "  "}),
 			agent.RefusalUnreadableAnswer, "the answer to the question states no text"},
 	}
 }
 
-// Each refusal states the cause that the browser shows to the reader. A stored
-// request whose own id differs from its request key is a stored request that
-// LeapMux cannot trust, not an answer for another request.
+// Each refusal states the cause that the browser shows to the reader.
 func TestResolveControlResponseWithholdsWhatItCannotRead(t *testing.T) {
 	t.Parallel()
 	for _, tc := range withheldCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			res := resolveControlResponse(tc.ctx)
+			res := tc.resolve()
 			assert.True(t, res.Withhold)
 			assert.EqualError(t, res.Refusal(), tc.reason)
 		})
@@ -653,7 +677,7 @@ func TestResolveControlResponseLogsTheCauseOfEachRefusal(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	for _, tc := range withheldCases(t) {
 		logged.Reset()
-		res := resolveControlResponse(tc.ctx)
+		res := tc.resolve()
 		require.True(t, res.Withhold, tc.name)
 		line := logged.String()
 		assert.Contains(t, line, "cline control response withheld", tc.name)

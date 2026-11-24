@@ -85,7 +85,7 @@ func decodeReasonixPermissionRequest(payload json.RawMessage) (reasonixPermissio
 
 // observeControlRequest saves the proposal after the base has flushed it into
 // the transcript. A later fresh-context approval executes that same text.
-func (a *Agent) observeControlRequest(line *providerkit.ParsedLine) {
+func (a *Agent) observeControlRequest(_ string, line *providerkit.ParsedLine) {
 	if !isPlanApproval(line.Raw) {
 		return
 	}
@@ -104,17 +104,14 @@ func (a *Agent) observeControlRequest(line *providerkit.ParsedLine) {
 // because the selected option cannot carry it.
 func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.DefaultControlResponseResolution(ctx)
-	requestID, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	id, storedID, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
+	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	id, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
 	switch {
-	case !ok || requestID == "":
+	case !ok:
 		result.Refuse(agent.RefusalNoDecision)
 		return result
 	case !found:
 		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	case requestID != agent.StoredControlRequestID(ctx, storedID):
-		result.Refuse(agent.RefusalOtherRequest)
 		return result
 	}
 	request, valid := decodeReasonixPermissionRequest(ctx.RequestPayload)
@@ -124,10 +121,10 @@ func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponse
 	}
 	var option string
 	switch behavior {
-	case agent.ControlBehaviorAllow:
+	case contracts.ControlAnswerBehaviorAllow:
 		option = "allow_once"
 		result.PlanModeControl = agent.PlanModeControlExit
-	case agent.ControlBehaviorDeny:
+	case contracts.ControlAnswerBehaviorDeny:
 		option = "reject_once"
 		result.FollowUp = agent.FeedbackFollowUp(message)
 	default:
@@ -161,7 +158,7 @@ func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponse
 }
 
 // isReasonixJSONRPCReply distinguishes a native reply from the neutral
-// allow/deny envelope that the shared plan surface sends.
+// allow/deny envelope that agent.AnswerNeutralPlan builds.
 func isReasonixJSONRPCReply(content []byte) bool {
 	var reply map[string]json.RawMessage
 	if json.Unmarshal(content, &reply) != nil {

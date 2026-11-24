@@ -143,12 +143,17 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		cancel()
 		return nil, errors.Join(fmt.Errorf("write the Oh My Pi runtime configuration: %w", err), directory.Close())
 	}
+	steerExtension, steerBridge, err := writeOMPSteerBridge(directory.Path())
+	if err != nil {
+		cancel()
+		return nil, errors.Join(err, directory.Close())
+	}
 	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
 		StripEnvKeys: terminalIdentityEnvKeys,
-		BaseArgs:     append(launchArgs(opts, resume), "--config", configPath),
+		BaseArgs:     append(launchArgs(opts, resume), "--config", configPath, "--extension", steerExtension),
 		WorkingDir:   opts.WorkingDir,
 	})
 	if err != nil {
@@ -175,6 +180,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		thinkingLevel: launchEffort(opts),
 		approvalMode:  launchApprovalMode(opts),
 		outputStyle:   outputStyle,
+		steerBridge:   steerBridge,
 	}
 	a.startupSnapshot.Store(true)
 

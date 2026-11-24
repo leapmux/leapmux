@@ -3,16 +3,17 @@ import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createControlStore, pendingQuestionCount, requestInstanceId, shownControlRequest } from '~/stores/control.store'
+import { testControlRequest } from '~/test-support/controlRequests'
 
 // claimToken defaults to a per-requestId token (so a re-add of the SAME id models a reconnect replay of
 // the SAME instance); pass an explicit token to model a REISSUED instance that reused the request_id.
 function makeRequest(requestId: string, agentId: string, payload: Record<string, unknown> = { data: requestId }, claimToken: string = `tok-${requestId}`): ControlRequest {
-  return {
+  return testControlRequest({
     requestId,
     agentId,
     payload,
     claimToken,
-  }
+  })
 }
 
 describe('createControlStore', () => {
@@ -139,7 +140,7 @@ describe('createControlStore', () => {
     expect(requestInstanceId(first)).toBe('r1:tok-r1')
     expect(requestInstanceId(second)).toBe('r1:tok-other')
     expect(requestInstanceId(first)).not.toBe(requestInstanceId(second))
-    expect(requestInstanceId({ requestId: 'r1', agentId: 'agent-1', payload: {} })).toBe('r1')
+    expect(requestInstanceId(testControlRequest({ requestId: 'r1', agentId: 'agent-1' }))).toBe('r1')
   })
 
   it('should return empty array for unknown agent on getRequests', () => {

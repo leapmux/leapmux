@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -142,6 +143,9 @@ func (zcodeProvider) ResolveProviderData(content agent.MessageContent) []byte {
 	if !ok {
 		return content.Original
 	}
+	if original.Type == contracts.ZCodeEventSessionUpdated {
+		return zcodeResolveReplyCoverage(original, content)
+	}
 	supplement, ok := parseZCodeEvent(content.Supplemental)
 	if !ok || supplement.Type != original.Type {
 		return content.Original
@@ -179,6 +183,39 @@ func (zcodeProvider) ResolveProviderData(content agent.MessageContent) []byte {
 		return content.Original
 	}
 	resolved := original.withPayload(encoded).persistBytes()
+	if resolved == nil {
+		return content.Original
+	}
+	return resolved
+}
+
+func zcodeResolveReplyCoverage(event zcodeEventEnvelope, content agent.MessageContent) []byte {
+	prefix := zcodeAcceptedReplyPrefix(content.Supplemental)
+	if prefix == "" {
+		return content.Original
+	}
+	var update zcodeSessionUpdatedPayload
+	if json.Unmarshal(event.Payload, &update) != nil || update.kind() != zcodeSessionUpdateModelResponse {
+		return content.Original
+	}
+	var text string
+	if json.Unmarshal(update.Content, &text) != nil {
+		return content.Original
+	}
+	suffix, ok := strings.CutPrefix(text, prefix)
+	if !ok {
+		return content.Original
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return content.Original
+	}
+	payload["content"], _ = json.Marshal(suffix)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return content.Original
+	}
+	resolved := event.withPayload(encoded).persistBytes()
 	if resolved == nil {
 		return content.Original
 	}

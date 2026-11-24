@@ -1,19 +1,13 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ProviderPermissionPresets } from '../../providerSettings'
-import type { AttachmentCapabilities, ProviderAskUserQuestion, ProviderConfigurationCapability, ProviderControlCapability, ProviderPlugin, ProviderTranscriptCapability } from '../capabilities'
-import type { ACPPermissionRejectReason } from './controlResponse'
+import type { AttachmentCapabilities, ProviderConfigurationCapability, ProviderControlCapability, ProviderPlugin, ProviderTranscriptCapability } from '../capabilities'
 import type { ACPToolCallAdapter } from './extractors/toolCall'
 import type { ACPNativeNotifications } from './notification'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
-import { withElicitationResponse } from '../../controls/elicitationResponse'
-import { sendSelectedOptionResponse } from '../../controls/types'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyACPMessage } from './classification'
-import { acpControlFeedbackRule, acpControlResponseBuilder, acpControlResponseSummary } from './controlResponse'
-import { acpElicitation } from './elicitation'
-import { acpExtractControl, acpPermissionSpanId } from './extractControl'
 import { acpDividerReader } from './extractors/resultDivider'
 import { createACPRowExtractor } from './extractors/row'
 import { resolveACPMessage } from './extractors/toolCall'
@@ -36,17 +30,10 @@ export type ACPSettingsPanelConfig
     | { kind: 'optionGroup', optionGroupKey: string, defaultValue: string }
 
 /**
- * Per-provider question-handling hooks. Providers that delegate `AskUserQuestion`
- * to the shared ACP path leave this unset; OpenCode/Kilo/Cursor each plug in
- * their own payload sniffer + extractor + responder.
- */
-export type ACPQuestionHandling = ProviderAskUserQuestion
-
-/**
- * Options accepted by {@link registerACPProvider}. Every value beyond
- * `provider`, the settings config, and the control components is derived from
- * the settings config — the `planMode` config (when `planValue` is supplied) falls
- * out of its `kind` plus its `defaultMode` / `defaultValue` / `optionGroupKey`.
+ * Options accepted by {@link registerACPProvider}. The plan-mode config and the
+ * trigger's mode group derive from the settings config — the `planMode` config (when
+ * `planValue` is supplied) falls out of its `kind` plus its `defaultMode` /
+ * `defaultValue` / `optionGroupKey`.
  *
  * Supply EXACTLY ONE of `settingsConfig` or `defaultPermissionMode`: the latter is
  * sugar for the common `{ kind: 'permissionMode', defaultMode }` case (Cursor/
@@ -68,42 +55,12 @@ export interface ACPProviderOptions {
   /** Sugar for `settingsConfig: { kind: 'permissionMode', defaultMode }`. */
   defaultPermissionMode?: PermissionMode
   /**
-   * Control reader. Defaults to the shared {@link acpExtractControl}; a provider
-   * whose payload is shaped differently (Cursor) passes its own.
-   */
-  extractControl?: ProviderControlCapability['extractControl']
-  /**
-   * The requests this provider answers ITSELF. Omit it for the whole family, which
-   * answers every permission through the shared decision row.
-   */
-  controlActionsFor?: ProviderControlCapability['controlActionsFor']
-  /**
-   * How this provider sends one chosen option. Defaults to the selected-option
-   * outcome, which is the Agent Client Protocol's own reply and which OpenCode and
-   * Kilo answer with unchanged.
-   */
-  sendPermissionOption?: ProviderControlCapability['sendPermissionOption']
-  /**
    * Mode value that represents "plan" for this provider's plan-mode toggle.
    * Omit to disable plan-mode wiring (e.g. Goose has no plan mode).
    */
   planValue?: string
   /** Provider-native presets for standard permission actions. */
   permissionPresets?: ProviderPermissionPresets
-  /** Question-handling hooks for providers that override the default ACP path. */
-  questionHandling?: ACPQuestionHandling
-  /**
-   * The provider's question reply carries the chosen options AND the reader's own
-   * words for one question (Grok Build's `annotations[q].notes`), so the dialog keeps
-   * both. Omit it for a provider whose reply takes one or the other.
-   */
-  preservesSelectionNotes?: boolean
-  /**
-   * Persisted control-response -> display derivation. Defaults to {@link acpControlResponseSummary}
-   * (the permission-selection path); OpenCode/Kilo and Cursor pass their own, which dispatch on the
-   * request shape and delegate back to the ACP default for the permission case.
-   */
-  controlResponseDisplay?: ProviderControlCapability['controlResponseDisplay']
   /**
    * Provider-specific classification of a `tool_call_update` session update.
    * Returns a `tool_use` category when the provider recognizes its own wire
@@ -115,18 +72,6 @@ export interface ACPProviderOptions {
    * Attachment capabilities. Each provider declares the kinds its native input accepts.
    */
   attachments: AttachmentCapabilities
-  /**
-   * The MCP elicitation reader. Defaults to {@link acpElicitation}, the protocol's own
-   * `elicitation/create`; a provider that raises an elicitation under a method of its
-   * own (Grok Build) passes its reader.
-   */
-  elicitation?: ProviderControlCapability['elicitation']
-  /**
-   * The provider's own field for the reason of a rejected permission (Grok Build's
-   * `_meta.followup_message`). Omit it, and the reason follows the reply as a message
-   * of its own.
-   */
-  permissionRejectReason?: ACPPermissionRejectReason
   /**
    * The stop reason that the provider's own frame states for the end of a turn the
    * agent started by itself (Grok Build's `turn_completed`, Qwen Code's
@@ -183,36 +128,13 @@ export function createACPProvider(opts: Omit<ACPProviderOptions, 'provider'>): P
   }
   // Each hook below is composed from the options and imported readers only: the
   // registration rule refuses a hook that a local value supplies.
-  const controls: ProviderControlCapability = {
-    controlResponseDisplay: withElicitationResponse(opts.elicitation ?? acpElicitation, opts.controlResponseDisplay ?? acpControlResponseSummary),
-    elicitation: opts.elicitation ?? acpElicitation,
-    // The reply builder asks the provider's OWN control reader which requests are plan
-    // approvals, so the composer answers each request the way the banner draws it.
-    buildControlResponse: acpControlResponseBuilder(opts.extractControl ?? acpExtractControl, opts.permissionRejectReason),
-    controlFeedbackAsFollowUpMessage: acpControlFeedbackRule(opts.extractControl ?? acpExtractControl, opts.permissionRejectReason),
-    // The shared Agent Client Protocol reader; a provider whose payload is shaped
-    // differently (Cursor) passes its own, which delegates back for the rest.
-    extractControl: opts.extractControl ?? acpExtractControl,
-    controlToolSpanId: acpPermissionSpanId,
-
-    // Neither half of the banner needs a component from this family now. The reader
-    // above fills the model, the shared row draws it, and the decision travels back as
-    // the protocol's own selected-option outcome.
-    sendPermissionOption: opts.sendPermissionOption ?? sendSelectedOptionResponse,
-
-    ...(opts.controlActionsFor !== undefined
-      ? { controlActionsFor: opts.controlActionsFor }
-      : {}),
-    ...(opts.permissionPresets !== undefined
-      ? { permissionPresets: opts.permissionPresets }
-      : {}),
-    ...(opts.questionHandling
-      ? { askUserQuestion: opts.questionHandling }
-      : {}),
-    ...(opts.preservesSelectionNotes
-      ? { preservesSelectionNotes: true }
-      : {}),
-  }
+  //
+  // The Worker reads each control request, builds each answer, and records the
+  // decision that words a saved answer, so the browser keeps only the permission
+  // presets.
+  const controls: ProviderControlCapability = opts.permissionPresets !== undefined
+    ? { permissionPresets: opts.permissionPresets }
+    : {}
   const configuration: ProviderConfigurationCapability = {
     attachments: opts.attachments,
     ...(opts.planValue !== undefined
