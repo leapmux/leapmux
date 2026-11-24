@@ -662,4 +662,3 @@ func (s *Service) applySignCountUpdate(ctx context.Context, credentialID []byte,
 	}
 	return fmt.Errorf("update sign count: row did not advance (stored %d, assertion %d)", fresh.SignCount, newSignCount)
 }
-

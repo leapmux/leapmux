@@ -988,6 +988,7 @@ func (h *IdPHandler) storePendingSignup(providerID string, claims *huboauth.User
 
 	return token, nil
 }
+
 // buildProvider returns the built client for one provider row, from the
 // cache when it is warm and through one collapsed build when it is not.
 //

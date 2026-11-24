@@ -2062,6 +2062,7 @@ type ReencryptResult struct {
 	RowsUpdated   int64
 	ActiveVersion uint32
 }
+
 // GetWorkerOwnedTabStateParams scopes a point read to one owner's hosting Worker.
 type GetWorkerOwnedTabStateParams struct {
 	UserID          userid.UserID
