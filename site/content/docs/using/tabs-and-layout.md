@@ -11,7 +11,7 @@ The layout you build is part of the workspace, not just your local view: the til
 
 For the concept-level model of workspaces, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For the content that lives *inside* tabs, see [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/).
 
-{{< screenshot src="tabs-tiling-layout" alt="LeapMux tiled workspace showing a coding agent chat pane, inline file diff viewer, and integrated terminal side by side" caption="Tiled split panes keep a coding agent chat, a live diff viewer, and a shell terminal visible together." width="992" height="900" >}}
+{{< screenshot src="tabs-tiling-layout" alt="LeapMux tiled workspace showing a coding agent chat pane, inline file diff viewer, and integrated terminal side by side" caption="Tiled split panes keep a coding agent chat, a live diff viewer, and a shell terminal visible together." width="948" height="900" >}}
 
 ## Tabs
 
@@ -211,7 +211,7 @@ A workspace always keeps at least one tile. The last remaining tile in the main 
 
 ## Floating windows
 
-{{< screenshot src="floating-window" alt="LeapMux workspace with a semi-transparent floating terminal window hovering over tiled agent, diff viewer, and terminal panes" caption="A popped-out floating window hovers above the tiling canvas with adjustable opacity when you scroll on its title bar." width="1216" height="900" >}}
+{{< screenshot src="floating-window" alt="LeapMux workspace with a semi-transparent floating terminal window hovering over tiled agent, diff viewer, and terminal panes" caption="A popped-out floating window hovers above the tiling canvas with adjustable opacity when you scroll on its title bar." width="1172" height="900" >}}
 
 A floating window is a tab (or a full layout) lifted out of the tiling grid and rendered as a draggable, resizable overlay on top of the workspace. It is useful for keeping a terminal or an agent visible while you rearrange everything underneath it.
 

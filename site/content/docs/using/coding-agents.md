@@ -119,7 +119,7 @@ The **Interrupt** button is hidden whenever the agent is waiting on you with a p
 
 ## The input queue
 
-{{< screenshot src="input-queue" alt="LeapMux agent input queue stacked above the composer while a turn runs, showing immediate queued rows with reorder, edit, delete, and Steer buttons, a scheduled row with local timestamp, and Pause Queue" caption="Queued messages stack above the composer while a turn runs, with Steer on the first waiting item, reorder and edit controls, scheduled timestamps, and Pause Queue." width="992" height="363" >}}
+{{< screenshot src="input-queue" alt="LeapMux agent input queue stacked above the composer while a turn runs, showing immediate queued rows with reorder, edit, delete, and Steer buttons, a scheduled row with local timestamp, and Pause Queue" caption="Queued messages stack above the composer while a turn runs, with Steer on the first waiting item, reorder and edit controls, scheduled timestamps, and Pause Queue." width="948" height="363" >}}
 
 Everything you send an agent goes into its input queue first: a message, an
 attachment, a `/clear`, a plan execution, an answer to a permission prompt. The
@@ -294,7 +294,7 @@ The banner shows a **Permissions** choice when the provider supplies permission 
 
 ### Questions
 
-{{< screenshot src="question-prompt-banner" alt="LeapMux agent question control banner displaying radio-button choices above a custom answer composer input" caption="When an agent asks a structured question, LeapMux renders selectable options above the composer with a custom-answer box." width="992" height="494" >}}
+{{< screenshot src="question-prompt-banner" alt="LeapMux agent question control banner displaying radio-button choices above a custom answer composer input" caption="When an agent asks a structured question, LeapMux renders selectable options above the composer with a custom-answer box." width="948" height="494" >}}
 
 A question uses radio buttons for a single answer or checkboxes for several; you can also type a custom answer. For a question with radio buttons, the typed answer replaces the chosen one. For a question with checkboxes, the typed answer joins the checked options: checking **A** and typing **X** answers **A** and **X**. A prompt with several questions shows **Question N of M**, and one submission answers all of them. Requested MCP input is collected through a form or the provider's native questions (see the [feature matrix](#feature-matrix)).
 
@@ -322,7 +322,7 @@ A script answers the same requests with `leapmux agent requests`, `approve`, `de
 
 ## Changing settings mid-session
 
-{{< screenshot src="composer-plus-menu" alt="LeapMux composer plus menu open above the status bar chips, showing Attach file, Model, Effort, Permission Mode, git branch, Agent info, Smart and Bypass permissions, and Enter-key send toggles" caption="Use the status bar chips or the composer [+] menu to change model, effort, permission mode, branch, or Enter-key behavior mid-session." width="1004" height="646" >}}
+{{< screenshot src="composer-plus-menu" alt="LeapMux composer plus menu open above the status bar chips, showing Attach file, Model, Effort, Permission Mode, git branch, Agent info, Smart and Bypass permissions, and Enter-key send toggles" caption="Use the status bar chips or the composer [+] menu to change model, effort, permission mode, branch, or Enter-key behavior mid-session." width="960" height="646" >}}
 
 Beneath the editor box is a status bar with one chip per setting axis — the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
 

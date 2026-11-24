@@ -15,7 +15,7 @@ The file viewer is strictly read-only. LeapMux has no file-editing or file-writi
 
 ## The Files section
 
-{{< screenshot src="file-browser-diff" alt="LeapMux file browser with Changed git filter and inline syntax-highlighted unified diff viewer" caption="The right-hand file browser filters modified and added files and opens unified diffs beside your agents." width="744" height="504" >}}
+{{< screenshot src="file-browser-diff" alt="LeapMux file browser with Changed git filter and inline syntax-highlighted unified diff viewer" caption="The right-hand file browser filters modified and added files and opens unified diffs beside your agents." width="722" height="504" >}}
 
 The **Files** section is a collapsible panel in the workspace sidebar, marked with a folder-tree icon. It is open by default and can be reordered or collapsed like any other sidebar section.
 
@@ -188,7 +188,7 @@ The file viewer auto-detects the content type and renders it accordingly.
 
 ### Markdown and SVG view toggle
 
-{{< screenshot src="file-viewer-markdown" alt="LeapMux file viewer displaying README.md in side-by-side mode with rendered Markdown beside syntax-highlighted source and the Rendered, Side-by-side, and Source toggle" caption="Markdown and SVG files offer a top-right toggle between Rendered, Side-by-side, and raw Source views." width="736" height="491" >}}
+{{< screenshot src="file-viewer-markdown" alt="LeapMux file viewer displaying README.md in side-by-side mode with rendered Markdown beside syntax-highlighted source and the Rendered, Side-by-side, and Source toggle" caption="Markdown and SVG files offer a top-right toggle between Rendered, Side-by-side, and raw Source views." width="714" height="491" >}}
 
 Markdown files and SVG images show a segmented toggle in the top-right corner:
 

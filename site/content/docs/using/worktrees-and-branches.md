@@ -27,7 +27,7 @@ Worktrees are optional. You can also keep working in your repository's main chec
 
 ## The Repo → Branch sidebar tree
 
-{{< screenshot src="sidebar-workspaces" alt="LeapMux sidebar grouping parallel branches and linked git worktrees under one workspace" caption="Each feature branch and linked git worktree gets its own group of agent and terminal tabs inside the same workspace." width="402" height="900" >}}
+{{< screenshot src="sidebar-branch-tree" alt="LeapMux sidebar grouping parallel branches and linked git worktrees under one workspace" caption="Each feature branch and linked git worktree gets its own group of agent and terminal tabs inside the same workspace." width="302" height="432" >}}
 
 Open tabs are grouped in the workspace sidebar into a two-level tree:
 
@@ -46,7 +46,7 @@ A working directory with no current branch carries a state label instead. **`(no
 
 ### The branch context menu
 
-{{< screenshot src="branch-context-menu" alt="LeapMux branch context menu in the left sidebar showing Switch to branch, Create new branch, Create new worktree, Delete worktree, quick-launch Agents and Terminals, and repository copy actions" caption="Each branch group's context menu manages branch and worktree actions and launches new agents or terminals directly in that checkout." width="575" height="823" >}}
+{{< screenshot src="branch-context-menu" alt="LeapMux branch context menu in the left sidebar showing Switch to branch, Create new branch, Create new worktree, Delete worktree, quick-launch Agents and Terminals, and repository copy actions" caption="Each branch group's context menu manages branch and worktree actions and launches new agents or terminals directly in that checkout." width="619" height="823" >}}
 
 Each branch row has a **`...`** context menu. Right-click the row, or press and hold it on a touch screen, to open the same menu.
 

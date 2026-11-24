@@ -13,7 +13,7 @@ For the bigger picture of tabs, tiling, and layout, see [Tabs & Layout](/docs/us
 
 ## What a LeapMux terminal is
 
-{{< screenshot src="terminal-pane" alt="LeapMux integrated PTY terminal running git status and go test with colored output" caption="Integrated PTY terminals run full shells alongside your agents and stay alive across reconnects." width="518" height="450" >}}
+{{< screenshot src="terminal-pane" alt="LeapMux integrated PTY terminal running git status and go test with colored output" caption="Integrated PTY terminals run full shells alongside your agents and stay alive across reconnects." width="496" height="450" >}}
 
 When you open a terminal, the Worker spawns your chosen shell as an interactive login shell (for example `bash -i -l` or `zsh -i -l`), connects it to a real pseudo-terminal (PTY), and streams its output to an [xterm.js](https://xtermjs.org/) view in your tab. The shell and all of its child processes run on the Worker machine — the same machine where your code and git repositories live — not in your browser.
 
@@ -183,7 +183,7 @@ See [Settings & Preferences](/docs/using/settings/) for fonts, themes, and other
 
 ## Quake-mode terminal
 
-{{< screenshot src="quake-terminal" alt="LeapMux translucent Quake-mode terminal sliding down from the top over tiled agent and diff panes running git diff --stat" caption="Press Ctrl+` from any tab to slide down a translucent Quake-mode terminal bound to that tab's working directory." width="992" height="900" >}}
+{{< screenshot src="quake-terminal" alt="LeapMux translucent Quake-mode terminal sliding down from the top over tiled agent and diff panes running git diff --stat" caption="Press Ctrl+` from any tab to slide down a translucent Quake-mode terminal bound to that tab's working directory." width="948" height="900" >}}
 
 A Quake-mode terminal is a shell that slides over the centre of the app for one
 **working directory**. It belongs to that directory rather than to a tab or a

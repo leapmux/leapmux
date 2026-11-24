@@ -586,12 +586,23 @@ function futureLocalDateTime(): string {
   return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}T09:00`
 }
 
+async function resetLeftSidebarScroll(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll('*')) {
+      if (el.scrollLeft > 0)
+        el.scrollLeft = 0
+    }
+  })
+}
+
 async function captureCleanWorkspaceViews(
   page: Page,
   theme: 'light' | 'dark',
+  wsOAuth: string,
   recorded: Record<string, ClipRect>,
 ): Promise<void> {
   await waitForTheme(page, theme)
+  await resetLeftSidebarScroll(page)
   await page.waitForTimeout(200)
 
   const tiles = page.locator('[data-testid="tile"]')
@@ -599,6 +610,8 @@ async function captureCleanWorkspaceViews(
   const tile2 = await requireBox(tiles.nth(2), 'tile 2 (terminal)')
   const resizeHandles = page.locator('[data-testid="resize-handle"]')
   const leftHandle = await requireBox(resizeHandles.nth(0), 'left resize handle')
+  const oauthRow = page.locator(`[data-testid="workspace-item-${wsOAuth}"]:visible`).first()
+  const oauthBox = await requireBox(oauthRow, 'OAuth workspace row')
   const centerClip = await centerCanvasClip(page)
 
   await snap(page, 'sidebar-workspaces', theme, clampClip({
@@ -606,6 +619,13 @@ async function captureCleanWorkspaceViews(
     y: 0,
     width: leftHandle.x + leftHandle.width + 150,
     height: VIEWPORT.height,
+  }), recorded)
+
+  await snap(page, 'sidebar-branch-tree', theme, clampClip({
+    x: 0,
+    y: 0,
+    width: leftHandle.x + leftHandle.width + 6,
+    height: oauthBox.y + oauthBox.height + 24,
   }), recorded)
 
   await snap(page, 'terminal-pane', theme, clampClip({
@@ -761,6 +781,7 @@ async function captureFloatingViews(
   recorded: Record<string, ClipRect>,
 ): Promise<void> {
   await waitForTheme(page, theme)
+  await resetLeftSidebarScroll(page)
   await page.waitForTimeout(200)
   await snap(page, 'hero-workspace', theme, {
     x: 0,
@@ -908,6 +929,7 @@ async function captureDialogsAndMenus(
   recorded: Record<string, ClipRect>,
 ): Promise<void> {
   await waitForTheme(page, theme)
+  await resetLeftSidebarScroll(page)
 
   // 1. Workspace row context menu (left sidebar).
   const wsRow = page.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
@@ -1869,9 +1891,22 @@ async function main(): Promise<void> {
       }, 15_000)
       await page.waitForTimeout(400)
 
+      // Widen the left sidebar slightly so workspace titles and repo names fit
+      // without horizontal clipping, then reset horizontal scroll to 0.
+      const initialLeftHandle = await requireBox(page.locator('[data-testid="resize-handle"]').nth(0), 'initial left resize handle')
+      await dragPointer(
+        page,
+        initialLeftHandle.x + initialLeftHandle.width / 2,
+        VIEWPORT.height / 2,
+        initialLeftHandle.x + initialLeftHandle.width / 2 + 44,
+        VIEWPORT.height / 2,
+      )
+      await resetLeftSidebarScroll(page)
+      await page.waitForTimeout(250)
+
       console.log('Capturing clean 3-pane workspace views (light & dark) ...')
-      await captureCleanWorkspaceViews(page, 'light', recordedClips)
-      await captureCleanWorkspaceViews(page, 'dark', recordedClips)
+      await captureCleanWorkspaceViews(page, 'light', wsOAuth, recordedClips)
+      await captureCleanWorkspaceViews(page, 'dark', wsOAuth, recordedClips)
       await waitForTheme(page, 'light')
 
       console.log('Popping out semi-transparent floating window for hero-workspace & floating-window ...')

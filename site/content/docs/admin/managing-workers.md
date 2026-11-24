@@ -168,7 +168,7 @@ The Hub probes each Worker's stream every 10 seconds. Each probe has a ten-secon
 
 ### In the sidebar
 
-{{< screenshot src="worker-context-menu" alt="LeapMux Worker row context menu in the left sidebar showing Worker name, version, build time, OS architecture metadata, and Deregister action" caption="Open a Worker's context menu in the left sidebar to copy its metadata as JSON or deregister it." width="508" height="250" >}}
+{{< screenshot src="worker-context-menu" alt="LeapMux Worker row context menu in the left sidebar showing Worker name, version, build time, OS architecture metadata, and Deregister action" caption="Open a Worker's context menu in the left sidebar to copy its metadata as JSON or deregister it." width="557" height="250" >}}
 
 Each Worker appears as a row in the sidebar **Workers** section showing its name (or an em-dash `—` if the name hasn't been fetched yet) and a status dot. The dot reflects whether your browser currently has a live end-to-end-encrypted channel open to that Worker — *connected* or *disconnected*. When you have no Workers, the section reads **No workers**.
 
