@@ -110,6 +110,17 @@ func (s *oauthProviderStore) UpdateEnabled(ctx context.Context, p store.UpdateOA
 	}))
 }
 
+func (s *oauthProviderStore) UpdateClientSecret(ctx context.Context, p store.UpdateOAuthProviderClientSecretParams) error {
+	sealed, err := s.conn.ks.SealBytes(p.ClientSecret, sqlutil.OAuthProviderClientSecretAAD(p.ID))
+	if err != nil {
+		return err
+	}
+	return mapErr(s.conn.q.UpdateOAuthProviderClientSecret(ctx, gendb.UpdateOAuthProviderClientSecretParams{
+		ClientSecret: sealed,
+		ID:           p.ID,
+	}))
+}
+
 func (s *oauthProviderStore) Delete(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.DeleteOAuthProvider(ctx, id))
 }

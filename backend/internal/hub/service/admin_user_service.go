@@ -289,12 +289,12 @@ func (s *AdminUserService) GetUser(ctx context.Context, req *leapmuxv1.GetUserRe
 }
 
 // Creating an account is creating durable new authority: this verb takes a
-// password the caller chooses and an is_admin flag, so a stolen credential
-// that reaches it does not need to defeat any ceiling -- it makes a fresh
-// administrator and signs in as them. See
-// requireElevatedSessionForDurableAuthority.
+// password the caller chooses and an is_admin flag. It requires an elevated
+// administrator credential (browser session or CLI credential with admin:users
+// scope that completed browser step-up elevation) and commits under
+// commitUnderElevation.
 func (s *AdminUserService) CreateUser(ctx context.Context, req *leapmuxv1.CreateUserRequest) (*leapmuxv1.CreateUserResponse, error) {
-	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	actor, err := requireElevatedActor(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -438,22 +438,9 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 	return value, msg.EmailVerified != nil || value != user.EmailVerified
 }
 
-// An account's email address is a RECOVERY IDENTITY, so writing one is
-// creating durable new authority.
-//
-// {email: attacker@example.com, email_verified: true} in one call moves where
-// the public RequestAccountRecovery mails a recovery link, and that verb refuses
-// only an UNVERIFIED address -- so this pair hands over any account, exactly
-// as ResetPassword does, and leaves the victim's password working until the
-// attacker chooses to reset it. Restricting ResetPassword and not this
-// gained nothing: an un-elevated administrator cookie reached the same
-// outcome by the longer route.
-//
-// TWO checks, because the verb writes two classes. The email fields take the
-// strict session rule its sibling ResetPassword takes; a display-name edit or
-// a cleared pending address only needs the acting credential's own proven
-// factor, and refusing a bearer for those would break
-// `leapmux control admin user update --display-name` for no gain.
+// UpdateUser edits profile, email, and verification fields on an account under
+// an elevated administrator credential (browser session or elevated CLI
+// credential with admin:users scope).
 func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.UpdateUserRequest) (*leapmuxv1.UpdateUserResponse, error) {
 	msg := req
 	updateDisplayName := msg.DisplayName != nil
@@ -463,17 +450,8 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.Update
 	if !updateDisplayName && !updateEmail && !updateEmailVerified && !clearPending {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "no fields to update")
 	}
-	var actor *auth.UserInfo
-	var err error
-	if auth.UpdateUserRequiresSession(msg) {
-		actor, err = requireElevatedSessionForDurableAuthority(ctx, s.now())
-	} else {
-		actor, err = requireElevatedActor(ctx, s.now())
-	}
+	actor, err := requireElevatedActor(ctx, s.now())
 	if err != nil {
-		if errors.Is(err, auth.ErrElevationRequired) {
-			serverCallInfo(ctx).ResponseHeader().Set(ElevationRequiredHeader, "1")
-		}
 		return nil, err
 	}
 	user, err := resolveAdminUser(ctx, s.store, msg.GetUser())
@@ -725,10 +703,11 @@ func liveWorkerIDs(ctx context.Context, st store.Store, owner userid.UserID) ([]
 	}
 }
 
-// Granting administration is creating durable new authority. See
-// requireElevatedSessionForDurableAuthority.
+// Granting or revoking administration requires an elevated administrator
+// credential (browser session or elevated CLI credential with admin:users
+// scope) and commits under commitUnderElevation.
 func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetUserAdminRequest) (*leapmuxv1.SetUserAdminResponse, error) {
-	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	actor, err := requireElevatedActor(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -794,11 +773,11 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetU
 // Unlike self-demotion on SetUserAdmin it is not irreversible -- the caller
 // chose the new password and can log in again with it -- so it takes no
 // force flag.
-// Setting an account's password without the old one is creating durable new
-// authority: it is account takeover by design, which is why it is an admin
-// verb at all. See requireElevatedSessionForDurableAuthority.
+// Setting an account's password without the old one requires an elevated
+// administrator credential (browser session or elevated CLI credential with
+// admin:users scope) and commits under commitUnderElevation.
 func (s *AdminUserService) ResetPassword(ctx context.Context, req *leapmuxv1.ResetPasswordRequest) (*leapmuxv1.ResetPasswordResponse, error) {
-	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
+	actor, err := requireElevatedActor(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}

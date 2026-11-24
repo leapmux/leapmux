@@ -44,6 +44,13 @@ type Provider interface {
 	Exchange(ctx context.Context, code, codeVerifier string) (*UserClaims, error)
 }
 
+// FormPostProvider is implemented by providers whose authorization callback
+// arrives as a cross-site HTTP POST (response_mode=form_post), such as Sign in
+// with Apple.
+type FormPostProvider interface {
+	UsesFormPost() bool
+}
+
 // Provider type constants. oauth_providers.provider_type stores these ordinals.
 const (
 	ProviderTypeGitHub = leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB

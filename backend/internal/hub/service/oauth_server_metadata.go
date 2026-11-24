@@ -57,7 +57,7 @@ type protectedResourceMetadata struct {
 }
 
 // serviceDocumentationURL points a developer at the wire contract.
-const serviceDocumentationURL = "https://leapmux.com/docs/reference/oauth-api/"
+const serviceDocumentationURL = "https://leapmux.dev/docs/reference/oauth-api/"
 
 // metadataBase is the address every endpoint in both documents is built from,
 // or a refusal.

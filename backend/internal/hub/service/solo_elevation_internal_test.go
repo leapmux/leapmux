@@ -50,9 +50,9 @@ func TestElevationRuleAdmitsSoloMode(t *testing.T) {
 		"the mint's backstop must admit it for the same reason")
 
 	ctx := auth.WithUser(context.Background(), solo)
-	actor, err := requireElevatedSessionForDurableAuthority(ctx, now)
+	actor, err := requireElevatedActor(ctx, now)
 	require.NoError(t, err,
-		"the strict rule must answer solo BEFORE its session test, which the synthetic user cannot pass")
+		"requireElevatedActor must admit solo mode, which holds no credential row")
 	assert.Same(t, solo, actor, "the caller needs the actor back to slide and re-read with")
 }
 
@@ -79,6 +79,6 @@ func TestElevationRuleStillRefusesAnOrdinaryCallerWithNoCredential(t *testing.T)
 		"a credential that can never carry a window must not be sent to a prompt")
 
 	ctx := auth.WithUser(context.Background(), bare)
-	_, err = requireElevatedSessionForDurableAuthority(ctx, now)
-	require.Error(t, err, "the strict rule must refuse a caller that holds no session")
+	_, err = requireElevatedActor(ctx, now)
+	require.Error(t, err, "requireElevatedActor must refuse a caller that holds no credential")
 }

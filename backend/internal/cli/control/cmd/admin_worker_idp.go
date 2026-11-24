@@ -561,6 +561,50 @@ func newAdminOAuthProviderSetEnabled(enabled bool, use, short string, examples [
 	})
 }
 
+type adminIdPRotateSecretResult struct {
+	ID string `json:"id"`
+}
+
+func (r adminIdPRotateSecretResult) QuietLines() []string { return []string{r.ID} }
+
+// newAdminOAuthProviderRotateSecret builds `admin idp rotate-secret`.
+func newAdminOAuthProviderRotateSecret() *cobra.Command {
+	var clientSecret string
+	return cli.NewLeaf(cli.Leaf{
+		Use:     "rotate-secret <idp>",
+		Short:   "Replace a sign-in provider's client secret without removing linked users",
+		Mutates: true,
+		Examples: []cli.Example{
+			{Command: "leapmux admin idp rotate-secret 3hKd9s --client-secret new-s3cr3t"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			fs.StringVar(&clientSecret, "client-secret", "", "new OAuth client secret")
+			cli.MarkRequired(fs, "client-secret")
+		},
+		Complete: completeAdminIdPs,
+		Run: func(inv *cli.Invocation) (any, error) {
+			id, err := requireNonEmptyArg(inv, "idp")
+			if err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := resolveAdminIdPID(inv.Context, c, id)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := c.AdminIdPService().UpdateOAuthProviderSecret(inv.Context, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+				Id: resolved, ClientSecret: clientSecret,
+			}); err != nil {
+				return nil, err
+			}
+			return adminIdPRotateSecretResult{ID: resolved}, nil
+		},
+	})
+}
+
 // parseBoolFlag parses a tri-state string flag ("true"/"false").
 func parseBoolFlag(raw, name string) (bool, error) {
 	b, err := strconv.ParseBool(raw)

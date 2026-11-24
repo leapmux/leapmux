@@ -237,4 +237,20 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, prov.Enabled)
 	})
+
+	t.Run("update client secret", func(t *testing.T) {
+		st := s.NewStore(t)
+		provID := seedProvider(t, st, "rotate-prov", true)
+
+		err := st.OAuthProviders().UpdateClientSecret(ctx, store.UpdateOAuthProviderClientSecretParams{
+			ID:           provID,
+			ClientSecret: []byte("rotated-secret-value"),
+		})
+		require.NoError(t, err)
+
+		prov, err := st.OAuthProviders().GetByID(ctx, provID)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("rotated-secret-value"), prov.ClientSecret)
+		assert.Equal(t, "rotate-prov", prov.Name)
+	})
 }

@@ -402,8 +402,8 @@ func TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	assert.Empty(t, emailInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
-		"a browser session is required, so a bearer step-up cannot clear this refusal")
+	assert.Equal(t, "1", emailInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"an un-elevated admin:users bearer can clear UpdateUser via browser step-up")
 }
 
 // TestAdminGate_NonAdminAdminScopedBearerStillDenied pins the COMPOSITION

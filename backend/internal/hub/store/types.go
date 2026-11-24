@@ -1270,6 +1270,11 @@ type UpdateOAuthProviderEnabledParams struct {
 	Enabled bool
 }
 
+type UpdateOAuthProviderClientSecretParams struct {
+	ID           string
+	ClientSecret []byte
+}
+
 // ConsumeAltchaSaltParams records a solved ALTCHA challenge's salt as
 // used until its expiry, so single-use enforcement survives restarts and
 // holds across hub instances sharing the database.

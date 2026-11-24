@@ -666,6 +666,9 @@ service AdminIdPService {
   rpc SetOAuthProviderEnabled(SetOAuthProviderEnabledRequest) returns (SetOAuthProviderEnabledResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_ADMIN_SETTINGS };
   }
+  rpc UpdateOAuthProviderSecret(UpdateOAuthProviderSecretRequest) returns (UpdateOAuthProviderSecretResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ADMIN_SETTINGS };
+  }
 }
 
 message AdminOAuthProvider {
@@ -728,3 +731,13 @@ message SetOAuthProviderEnabledRequest {
 }
 
 message SetOAuthProviderEnabledResponse {}
+
+message UpdateOAuthProviderSecretRequest {
+  string id = 1;
+  // Write-only: replaces the stored client secret without changing the
+  // provider ID or dropping linked user accounts (required for providers
+  // such as Sign in with Apple whose client secret JWT expires every 6 months).
+  string client_secret = 2;
+}
+
+message UpdateOAuthProviderSecretResponse {}

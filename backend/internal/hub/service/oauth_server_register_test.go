@@ -108,6 +108,7 @@ func TestRegister_TheSettingIsTheWholeGate(t *testing.T) {
 
 		endpoint, _ := authorizationServerMetadata(t, env)["registration_endpoint"].(string)
 		assert.True(t, strings.HasSuffix(endpoint, "/oauth/register"), "got %q", endpoint)
+		assert.Equal(t, "https://leapmux.dev/docs/reference/oauth-api/", authorizationServerMetadata(t, env)["service_documentation"])
 
 		// The ROW, which is what a consent screen reads. A dynamically
 		// registered app is hub-wide, unverified, and never seeded with the

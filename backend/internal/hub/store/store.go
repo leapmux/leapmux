@@ -876,6 +876,7 @@ type OAuthProviderStore interface {
 	ListEnabled(ctx context.Context) ([]OAuthProviderSummary, error)
 	ListAll(ctx context.Context) ([]OAuthProviderSummary, error)
 	UpdateEnabled(ctx context.Context, p UpdateOAuthProviderEnabledParams) error
+	UpdateClientSecret(ctx context.Context, p UpdateOAuthProviderClientSecretParams) error
 	Delete(ctx context.Context, id string) error
 }
 

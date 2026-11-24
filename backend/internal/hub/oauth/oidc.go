@@ -2,8 +2,11 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
@@ -15,6 +18,44 @@ type OIDCProvider struct {
 	oauth2Config *oauth2.Config
 	verifier     *gooidc.IDTokenVerifier
 	provider     *gooidc.Provider
+	useFormPost  bool
+}
+
+// isAppleIssuer reports whether issuerURL targets Sign in with Apple.
+// Apple mandates response_mode=form_post whenever name or email scope is
+// requested, so Apple OIDC providers use form_post callbacks.
+func isAppleIssuer(issuerURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(issuerURL))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "https") &&
+		strings.EqualFold(u.Hostname(), "appleid.apple.com") &&
+		(u.Path == "" || u.Path == "/")
+}
+
+// flexibleBool unmarshals both JSON booleans (true/false) and string-encoded
+// booleans ("true"/"false") that Sign in with Apple emits for email_verified.
+type flexibleBool bool
+
+func (b *flexibleBool) UnmarshalJSON(data []byte) error {
+	var rawBool bool
+	if err := json.Unmarshal(data, &rawBool); err == nil {
+		*b = flexibleBool(rawBool)
+		return nil
+	}
+	var rawStr string
+	if err := json.Unmarshal(data, &rawStr); err == nil {
+		switch rawStr {
+		case "true":
+			*b = true
+			return nil
+		case "false":
+			*b = false
+			return nil
+		}
+	}
+	return fmt.Errorf("expected boolean or \"true\"/\"false\" string, got %s", string(data))
 }
 
 // NewOIDCProvider creates an OIDC provider by discovering the issuer's configuration.
@@ -42,7 +83,13 @@ func NewOIDCProvider(ctx context.Context, issuerURL, clientID, clientSecret, red
 		oauth2Config: oauth2Config,
 		verifier:     verifier,
 		provider:     provider,
+		useFormPost:  isAppleIssuer(issuerURL),
 	}, nil
+}
+
+// UsesFormPost reports whether this OIDC provider requests response_mode=form_post.
+func (p *OIDCProvider) UsesFormPost() bool {
+	return p.useFormPost
 }
 
 // ReauthMaxAge is the max_age this provider sends on a re-authentication,
@@ -95,6 +142,9 @@ func (p *OIDCProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions) 
 	codeOpts := []oauth2.AuthCodeOption{
 		oauth2.S256ChallengeOption(codeVerifier),
 	}
+	if p.useFormPost {
+		codeOpts = append(codeOpts, oauth2.SetAuthURLParam("response_mode", "form_post"))
+	}
 	if opts.ForceReauthentication {
 		codeOpts = append(codeOpts,
 			oauth2.SetAuthURLParam("prompt", "login"),
@@ -124,22 +174,23 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 	}
 
 	var claims struct {
-		Email         string `json:"email"`
-		EmailVerified *bool  `json:"email_verified,omitempty"`
-		Name          string `json:"name"`
+		Email         string        `json:"email"`
+		EmailVerified *flexibleBool `json:"email_verified,omitempty"`
+		Name          string        `json:"name"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, fmt.Errorf("oidc parse claims: %w", err)
 	}
 
 	// INVARIANT: UserClaims.Email carries only an email the provider confirms
-	// as verified. This check ensures email_verified is explicitly true;
-	// missing or false values result in an empty email. The per-provider
-	// trust_email setting controls whether the hub treats such verified emails
-	// as pre-verified for account linking and signup — it does NOT bypass this
-	// provider-level check. See also fetchGitHubVerifiedEmail in github.go.
+	// as verified. This check ensures email_verified is explicitly true (either
+	// JSON boolean true or Apple's string "true"); missing or false values
+	// result in an empty email. The per-provider trust_email setting controls
+	// whether the hub treats such verified emails as pre-verified for account
+	// linking and signup — it does NOT bypass this provider-level check. See
+	// also fetchGitHubVerifiedEmail in github.go.
 	email := ""
-	if claims.EmailVerified != nil && *claims.EmailVerified {
+	if claims.EmailVerified != nil && bool(*claims.EmailVerified) {
 		email = claims.Email
 	}
 

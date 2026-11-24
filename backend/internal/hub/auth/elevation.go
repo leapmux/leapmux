@@ -303,12 +303,11 @@ func RequireElevatableCredential(userInfo *UserInfo) error {
 // RequireElevatableSession returns the acting SESSION id, refusing every
 // other credential -- a command-line credential included.
 //
-// The narrower rule, and the two service callers need it. The elevation RPCs
-// collect a factor and stamp a row: a bearer that could call them would
-// elevate ITSELF, which is exactly the property the browser verification exists to
-// prevent (the factor must be proven somewhere the credential file cannot
-// reach). requireElevatedSessionForDurableAuthority needs it for its own
-// reason, which it states.
+// The narrower rule, used by the browser elevation RPCs. Those RPCs collect a
+// factor and stamp a session row: a bearer that could call them would elevate
+// ITSELF, which is exactly the property browser verification at /oauth/step-up
+// exists to prevent (the factor must be proven somewhere the credential file
+// cannot reach).
 //
 // Nil-safe, like every sibling in this family.
 func RequireElevatableSession(userInfo *UserInfo) (string, error) {

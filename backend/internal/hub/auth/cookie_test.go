@@ -112,6 +112,17 @@ func TestBuildOAuthNonceCookie_Insecure(t *testing.T) {
 	assert.Equal(t, int((5 * time.Minute).Seconds()), c.MaxAge)
 }
 
+func TestBuildOAuthNonceCookieForFormPost(t *testing.T) {
+	secure := auth.BuildOAuthNonceCookieForFormPost("state-apple", "nonce-xyz", 5*time.Minute, true)
+	assert.True(t, secure.Secure)
+	assert.True(t, secure.HttpOnly)
+	assert.Equal(t, http.SameSiteNoneMode, secure.SameSite, "cross-site POST callbacks require SameSite=None on HTTPS")
+
+	insecure := auth.BuildOAuthNonceCookieForFormPost("state-apple", "nonce-xyz", 5*time.Minute, false)
+	assert.False(t, insecure.Secure)
+	assert.Equal(t, http.SameSiteLaxMode, insecure.SameSite, "plain HTTP must keep SameSite=Lax because browsers reject SameSite=None without Secure")
+}
+
 func TestBuildOAuthNonceCookie_Secure(t *testing.T) {
 	c := auth.BuildOAuthNonceCookie("state-abc", "nonce-xyz", 5*time.Minute, true)
 

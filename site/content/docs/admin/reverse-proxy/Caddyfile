@@ -2,5 +2,9 @@
 # Caddy obtains and renews the certificate for hub.example.com itself.
 
 hub.example.com {
+	# Block unauthenticated Prometheus metrics from external clients.
+	# Scrape http://127.0.0.1:4327/metrics directly on the host instead.
+	respond /metrics 404
+
 	reverse_proxy 127.0.0.1:4327
 }

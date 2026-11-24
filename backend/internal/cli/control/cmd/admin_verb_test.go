@@ -79,6 +79,7 @@ func adminCases() []adminCase {
 		{[]string{"idp", "remove"}, []string{"p1"}},
 		{[]string{"idp", "enable"}, []string{"p1"}},
 		{[]string{"idp", "disable"}, []string{"p1"}},
+		{[]string{"idp", "rotate-secret"}, []string{"p1", "--client-secret", "new-secret"}},
 
 		{[]string{"captcha", "get"}, nil},
 		{[]string{"captcha", "set"}, []string{"--provider", "altcha"}},

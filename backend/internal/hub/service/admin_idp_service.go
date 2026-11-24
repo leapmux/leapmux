@@ -233,3 +233,29 @@ func (s *AdminIdPService) SetOAuthProviderEnabled(ctx context.Context, req *leap
 	s.cache.InvalidateProvider(req.GetId())
 	return &leapmuxv1.SetOAuthProviderEnabledResponse{}, nil
 }
+
+// UpdateOAuthProviderSecret replaces the encrypted client secret on an
+// existing identity provider without changing its ID or disturbing linked user
+// accounts, then evicts cached provider clients so subsequent sign-ins use the
+// new secret immediately.
+func (s *AdminIdPService) UpdateOAuthProviderSecret(ctx context.Context, req *leapmuxv1.UpdateOAuthProviderSecretRequest) (*leapmuxv1.UpdateOAuthProviderSecretResponse, error) {
+	if err := requireField(req.GetClientSecret(), "client_secret"); err != nil {
+		return nil, err
+	}
+	if err := s.requireOAuthProvider(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
+	if err := writeUnderElevation(ctx, s.store, s.now, func(tx store.Store) error {
+		if err := tx.OAuthProviders().UpdateClientSecret(ctx, store.UpdateOAuthProviderClientSecretParams{
+			ID:           req.GetId(),
+			ClientSecret: []byte(req.GetClientSecret()),
+		}); err != nil {
+			return storeConnectError(err, "update provider secret")
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	s.cache.InvalidateProvider(req.GetId())
+	return &leapmuxv1.UpdateOAuthProviderSecretResponse{}, nil
+}

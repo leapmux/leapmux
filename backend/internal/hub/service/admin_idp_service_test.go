@@ -271,6 +271,26 @@ func TestAdminIdPService_SetEnabledAndRemove(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, enabledNow())
 
+	_, err = env.client.UpdateOAuthProviderSecret(authedReq(ctx, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+		Id: id, ClientSecret: "rotated-apple-jwt-secret",
+	}, env.token))
+	require.NoError(t, err)
+	stored, err := env.st.OAuthProviders().GetByID(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("rotated-apple-jwt-secret"), stored.ClientSecret)
+
+	_, err = env.client.UpdateOAuthProviderSecret(authedReq(ctx, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+		Id: id, ClientSecret: "",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	_, err = env.client.UpdateOAuthProviderSecret(authedReq(ctx, &leapmuxv1.UpdateOAuthProviderSecretRequest{
+		Id: "no-such-provider", ClientSecret: "rotated",
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
 	_, err = env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{Id: id}, env.token))
 	require.NoError(t, err)
 	listed, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))

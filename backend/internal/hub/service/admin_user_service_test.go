@@ -1493,14 +1493,13 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 		})
 	}
 
-	// These three operations require a browser session and refuse a bearer
-	// without an elevation marker. Browser-approved API elevation cannot
-	// satisfy that session requirement. IssueAPIToken is the documented
-	// exception; the mint's lifetime clamp restricts the issued credential.
+	// Elevated command-line credentials with admin:users scope are admitted
+	// after browser step-up elevation, while un-elevated bearers receive the
+	// step-up marker so the CLI can run its verification ceremony.
 	for name, call := range map[string]func(context.Context, *adminUserEnv, string) error{
 		"CreateUser": func(ctx context.Context, env *adminUserEnv, bearer string) error {
 			_, err := env.client.CreateUser(adminBearerReq(ctx, &leapmuxv1.CreateUserRequest{
-				Username: "planted-by-bearer", Password: "password123", IsAdmin: true,
+				Username: "created-by-bearer", Password: "password123", IsAdmin: true,
 			}, bearer))
 			return err
 		},
@@ -1517,7 +1516,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 			return err
 		},
 	} {
-		t.Run(name+" refuses a bearer", func(t *testing.T) {
+		t.Run(name+" prompts an un-elevated bearer", func(t *testing.T) {
 			env := setupAdminUserTest(t)
 			issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 				User: service.SelectUserByID(env.adminID), InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
@@ -1526,10 +1525,22 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 
 			callCtx, info := connect.NewClientContext(ctx)
 			err = call(callCtx, env, issued.GetAccessToken())
-			require.Error(t, err, "a bearer must not create durable new authority")
+			require.Error(t, err, "an un-elevated bearer must still prove a factor first")
 			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-			assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
-				"API elevation cannot satisfy the browser-session requirement, so the refusal must not offer a prompt")
+			assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
+				"an un-elevated CLI credential must receive the step-up prompt marker")
+		})
+
+		t.Run(name+" admits an elevated bearer", func(t *testing.T) {
+			env := setupAdminUserTest(t)
+			issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
+				User: service.SelectUserByID(env.adminID), InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
+			}, env.token))
+			require.NoError(t, err)
+			hubtestutil.ElevateAPIToken(t, env.st, issued.GetTokenId(), env.adminID)
+
+			assert.NoError(t, call(ctx, env, issued.GetAccessToken()),
+				"an elevated CLI credential with admin:users must succeed")
 		})
 	}
 }
@@ -1625,7 +1636,22 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 		assert.NoError(t, updateEmail(ctx, env, cookieAuth(env.token)))
 	})
 
-	t.Run("UpdateUser email refuses a bearer", func(t *testing.T) {
+	t.Run("UpdateUser email prompts an un-elevated bearer", func(t *testing.T) {
+		env := setupAdminUserTest(t)
+		createRetainedAdministrator(t, env.st)
+		issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
+			User: service.SelectUserByID(env.adminID), InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
+		}, env.token))
+		require.NoError(t, err)
+
+		callCtx, info := connect.NewClientContext(ctx)
+		err = updateEmail(callCtx, env, bearerAuth(issued.GetAccessToken()))
+		require.Error(t, err, "an un-elevated bearer must verify before moving a recovery identity")
+		assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
+			"an un-elevated CLI credential must receive the step-up prompt marker")
+	})
+
+	t.Run("UpdateUser email admits an elevated bearer", func(t *testing.T) {
 		env := setupAdminUserTest(t)
 		createRetainedAdministrator(t, env.st)
 		issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
@@ -1634,11 +1660,8 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 		require.NoError(t, err)
 		hubtestutil.ElevateAPIToken(t, env.st, issued.GetTokenId(), env.adminID)
 
-		callCtx, info := connect.NewClientContext(ctx)
-		err = updateEmail(callCtx, env, bearerAuth(issued.GetAccessToken()))
-		require.Error(t, err, "a bearer must not move a recovery identity")
-		assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
-			"API elevation cannot satisfy the browser-session requirement, so the refusal must not offer a prompt")
+		assert.NoError(t, updateEmail(ctx, env, bearerAuth(issued.GetAccessToken())),
+			"an elevated CLI credential with admin:users must update email fields")
 	})
 }
 
@@ -2074,16 +2097,11 @@ func TestAdminUserService_ResetPassword_KillsTheAccountsAPITokens(t *testing.T) 
 	_, err = env.client.GetUser(adminBearerReq(ctx, &leapmuxv1.GetUserRequest{User: service.SelectUserByID(env.adminID)}, bearer))
 	require.NoError(t, err)
 
-	_, err = env.client.ResetPassword(adminBearerReq(ctx, &leapmuxv1.ResetPasswordRequest{
+	// From an elevated CLI bearer with admin:users it lands, and revokes the
+	// acting bearer itself along with every other credential on the account.
+	resp, err := env.client.ResetPassword(adminBearerReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		User: service.SelectUserByID(env.adminID), Password: "brand-new-adminpass",
 	}, bearer))
-	require.Error(t, err, "a bearer must not set a password it does not know")
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-
-	// From the elevated session it lands, and it takes the bearer with it.
-	resp, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
-		User: service.SelectUserByID(env.adminID), Password: "brand-new-adminpass",
-	}, env.token))
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), resp.GetApiTokensRevoked(),
 		"the account's token is counted among the revoked, not exempted from them")

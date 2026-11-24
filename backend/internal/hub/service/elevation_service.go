@@ -266,59 +266,12 @@ func verifyElevationPassword(ctx context.Context, user *store.User, currentPassw
 	return nil
 }
 
-// Creating DURABLE NEW AUTHORITY is one class, and these two functions are
-// the whole of its rule.
-//
-// Four verbs on the admin surface create it: IssueAPIToken mints a credential
-// that outlives the session by months, CreateUser mints an account (optionally
-// an administrator, with a password the caller chooses), SetUserAdmin grants
-// administration itself, and ResetPassword sets any account's password without
-// the old one. Each gives somebody a new way to sign in that does not depend
-// on the credential used to create it.
-//
-// Only IssueAPIToken required elevation, and requiring it on one of four
-// recorded a security property the hub did not have: a stolen admin bearer
-// that could not renew itself past the one-year ceiling could instead
-// CreateUser a fresh administrator with a chosen password, sign in through a
-// browser, elevate with that password, and mint anything. The ceiling on the
-// bearer's own descendants gave no protection while that path stayed open.
-//
-// requireElevatedSessionForDurableAuthority is the strict answer, for the
-// three verbs that need no bearer path. requireElevatedActor is the
-// one exception, and it carries its own justification.
-
-// requireElevatedSessionForDurableAuthority demands an elevated SESSION, and
-// refuses a bearer outright.
-//
-// The hub mints a bearer once, and it lives for months, so "was somebody at
-// the keyboard recently" has no answer for it -- and what these three verbs
-// create is a new way into an account that the bearer itself did not have. The
-// refusal carries no ElevationRequiredHeader, for the reason
-// auth.RequireElevatableCredential states: a prompt would ask for a factor and
-// then refuse the retry for the same reason.
-//
-// It costs the headless path deliberately. `leapmux control admin user
-// create` and `... reset-password` now need a browser session, which is the
-// point: creating an administrator is not routine automation. The offline
-// `leapmux recover` verbs remain for an operator with no browser at all.
-// It returns the acting credential, so the caller can pass it to
-// commitUnderElevation -- the gate alone is half the rule.
-func requireElevatedSessionForDurableAuthority(ctx context.Context, now time.Time) (*auth.UserInfo, error) {
-	userInfo, err := auth.MustGetUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// Solo mode first, for the reason auth.RequireElevation states. The
-	// session test below would refuse the synthetic user before the code
-	// could reach that reason, because solo mode holds no session row.
-	if userInfo.SoloAuthenticated() {
-		return userInfo, nil
-	}
-	if _, err := auth.RequireElevatableSession(userInfo); err != nil {
-		return nil, err
-	}
-	return userInfo, auth.RequireElevation(userInfo, now)
-}
+// Creating or rewriting durable authority on the admin surface requires a
+// recently proven factor on the acting credential (browser session or
+// command-line credential elevated through /oauth/step-up), followed by
+// commitUnderElevation to re-read authority before the write and slide the
+// elevation window afterward. Delegation bearers can never hold admin scopes
+// or carry an elevation window.
 
 // commitUnderElevation runs an irreversible write on behalf of an already
 // admitted actor: it re-reads that actor's authority immediately before the

@@ -387,3 +387,72 @@ func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
 		t.Fatal("Exchange ignored the caller's deadline and hung on the stalled token endpoint")
 	}
 }
+
+func TestOIDC_Apple_FormPostDetection(t *testing.T) {
+	assert.True(t, isAppleIssuer("https://appleid.apple.com"))
+	assert.True(t, isAppleIssuer("https://appleid.apple.com/"))
+	assert.True(t, isAppleIssuer("https://APPLEID.APPLE.COM"))
+	assert.False(t, isAppleIssuer("https://accounts.google.com"))
+	assert.False(t, isAppleIssuer("http://appleid.apple.com"))
+	assert.False(t, isAppleIssuer("https://appleid.apple.com/other"))
+
+	srv, _ := mockOIDCServer(t)
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "name", "email"})
+	require.NoError(t, err)
+	assert.False(t, p.UsesFormPost())
+	assert.NotContains(t, p.AuthURL("st", "ver", AuthURLOptions{}), "response_mode=form_post")
+
+	p.useFormPost = true
+	assert.True(t, p.UsesFormPost())
+	assert.Contains(t, p.AuthURL("st", "ver", AuthURLOptions{}), "response_mode=form_post")
+}
+
+func TestOIDC_Exchange_StringEmailVerified(t *testing.T) {
+	srv, privKey := mockOIDCServer(t)
+
+	for _, tc := range []struct {
+		name      string
+		claimVal  any
+		wantEmail string
+		wantErr   bool
+	}{
+		{name: "string true (Sign in with Apple)", claimVal: "true", wantEmail: "apple@example.com"},
+		{name: "string false", claimVal: "false", wantEmail: ""},
+		{name: "invalid string", claimVal: "yes", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privKey}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"))
+				allClaims := map[string]any{
+					"iss":            srv.URL,
+					"sub":            "apple-user-1",
+					"aud":            "test-client",
+					"exp":            time.Now().Add(time.Hour).Unix(),
+					"iat":            time.Now().Unix(),
+					"email":          "apple@example.com",
+					"email_verified": tc.claimVal,
+				}
+				rawToken, _ := jwt.Signed(signer).Claims(allClaims).Serialize()
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token": "tok",
+					"token_type":   "Bearer",
+					"id_token":     rawToken,
+				})
+			}))
+			t.Cleanup(tokenSrv.Close)
+
+			p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "name", "email"})
+			require.NoError(t, err)
+			p.oauth2Config.Endpoint.TokenURL = tokenSrv.URL + "/token"
+
+			claims, err := p.Exchange(context.Background(), "code", "verifier")
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantEmail, claims.Email)
+		})
+	}
+}

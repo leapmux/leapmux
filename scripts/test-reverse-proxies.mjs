@@ -414,6 +414,21 @@ export class ProxyEnvironment {
     this.log('PASS: the web app loads over HTTP/2')
   }
 
+  async checkMetricsBlocked() {
+    const result = await this.curl([
+      '--write-out',
+      '\n%{http_code}',
+      `${HUB_URL}/metrics`,
+    ])
+    assert.equal(result.status, 0, result.stderr)
+    const lines = result.stdout.trimEnd().split('\n')
+    const code = lines.pop()
+    const body = lines.join('\n')
+    assert(['403', '404'].includes(code), `/metrics answered ${code}, expected 403 or 404`)
+    assert.doesNotMatch(body, /go_goroutines|leapmux_/, '/metrics body leaked Prometheus metrics')
+    this.log(`PASS: /metrics is blocked (${code})`)
+  }
+
   /**
    * Trust the proxy, then sign in once to check the client's address and secure cookie name. The proxy's
    * X-Forwarded-For header supplies that address, and its X-Forwarded-Proto header makes the Hub issue the
@@ -666,6 +681,7 @@ export class ProxyEnvironment {
     await this.start()
     await this.checkRedirect()
     await this.checkWebApp()
+    await this.checkMetricsBlocked()
     const { cookie, userId } = await this.checkForwardedHeaders()
     await this.rpc('UserService/ElevateSession', { currentPassword: this.password }, cookie)
     await this.startWebSocket(cookie, stabilitySeconds)

@@ -2225,3 +2225,48 @@ func TestCompleteOAuthSignupRequiresALiveExistingUser(t *testing.T) {
 		})
 	}
 }
+
+func TestIdPHandler_Callback_FormPostAndAppleUserName(t *testing.T) {
+	base := hubtestutil.OpenTestStore(t)
+	createRetainedAdministrator(t, base)
+	env := setupOAuthSignupEnv(t, base)
+	providerID := createCallbackTestProvider(t, env.store, env.ks, "apple-user@example.com", "apple-sub-1", true)
+
+	// Seed a flow state directly so we can POST a form_post callback (as Sign in with Apple does).
+	const state, nonce = "apple-form-post-state", "apple-form-post-nonce"
+	require.NoError(t, env.states.Create(service.CreateOAuthStateParams{
+		State:        state,
+		ProviderID:   providerID,
+		PkceVerifier: "verifier",
+		NonceHash:    hashNonceForTest(nonce),
+		Purpose:      service.OAuthStatePurposeLogin,
+		ExpiresAt:    time.Now().Add(5 * time.Minute).UTC(),
+	}))
+
+	// PUT must be rejected with 405 Method Not Allowed.
+	putReq, err := http.NewRequest(http.MethodPut, env.server.URL+"/auth/idp/"+providerID+"/callback", nil)
+	require.NoError(t, err)
+	putResp, err := noRedirectClient().Do(putReq)
+	require.NoError(t, err)
+	_ = putResp.Body.Close()
+	assert.Equal(t, http.StatusMethodNotAllowed, putResp.StatusCode)
+
+	// POST form_post with code, state, and Apple's first-login `user` JSON payload succeeds.
+	form := url.Values{}
+	form.Set("code", "apple-code")
+	form.Set("state", state)
+	form.Set("user", `{"name":{"firstName":"Jane","lastName":"Appleseed"},"email":"apple-user@example.com"}`)
+	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/auth/idp/"+providerID+"/callback", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(auth.BuildOAuthNonceCookieForFormPost(state, nonce, time.Minute, false))
+
+	resp, err := noRedirectClient().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	loc, err := resp.Location()
+	require.NoError(t, err)
+	assert.Equal(t, service.IdPCompleteSignupPath, loc.Path)
+	assert.NotEmpty(t, loc.Query().Get("token"))
+}

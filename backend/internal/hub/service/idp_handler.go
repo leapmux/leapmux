@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -428,7 +429,13 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 
 	// Set the cookie BEFORE the redirect: http.Redirect writes the header, so
 	// a SetCookie after it never reaches the browser.
-	http.SetCookie(w, auth.BuildOAuthNonceCookie(state, nonce, oauthStateExpiry, h.secureCookies(ctx)))
+	var nonceCookie *http.Cookie
+	if fp, ok := provider.(huboauth.FormPostProvider); ok && fp.UsesFormPost() {
+		nonceCookie = auth.BuildOAuthNonceCookieForFormPost(state, nonce, oauthStateExpiry, h.secureCookies(ctx))
+	} else {
+		nonceCookie = auth.BuildOAuthNonceCookie(state, nonce, oauthStateExpiry, h.secureCookies(ctx))
+	}
+	http.SetCookie(w, nonceCookie)
 
 	authURL := provider.AuthURL(state, verifier, huboauth.AuthURLOptions{
 		// Without this the provider silently reuses its own session, the
@@ -453,27 +460,66 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 //
 // It also returns the code, so the caller does not read the query again for
 // a value this function already validated.
-func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, providerID string) (code string, oauthState *OAuthState, ok bool) {
+const maxOAuthCallbackFormBytes = 64 << 10
+
+// parseAppleUserDisplayName extracts the optional user display name that Sign
+// in with Apple sends in the form_post `user` JSON parameter on a user's first
+// sign-in ({"name":{"firstName":"Jane","lastName":"Doe"}}). Malformed or absent
+// payloads return "" so login never fails on optional profile metadata.
+func parseAppleUserDisplayName(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var payload struct {
+		Name struct {
+			FirstName string `json:"firstName"`
+			LastName  string `json:"lastName"`
+		} `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimSpace(payload.Name.FirstName) + " " + strings.TrimSpace(payload.Name.LastName))
+}
+
+func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, providerID string) (code, formDisplayName string, oauthState *OAuthState, ok bool) {
 	ctx := r.Context()
 
-	code = r.URL.Query().Get("code")
-	state := r.URL.Query().Get("state")
+	var params url.Values
+	switch r.Method {
+	case http.MethodGet:
+		params = r.URL.Query()
+	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, maxOAuthCallbackFormBytes)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid OAuth callback form", http.StatusBadRequest)
+			return "", "", nil, false
+		}
+		params = r.PostForm
+		formDisplayName = parseAppleUserDisplayName(params.Get("user"))
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return "", "", nil, false
+	}
+
+	code = params.Get("code")
+	state := params.Get("state")
 	if code == "" || state == "" {
-		errMsg := r.URL.Query().Get("error_description")
+		errMsg := params.Get("error_description")
 		if errMsg == "" {
-			errMsg = r.URL.Query().Get("error")
+			errMsg = params.Get("error")
 		}
 		if errMsg == "" {
 			errMsg = "missing code or state"
 		}
 		http.Error(w, "OAuth error: "+errMsg, http.StatusBadRequest)
-		return "", nil, false
+		return "", "", nil, false
 	}
 
 	oauthState, found := h.states.Get(state)
 	if !found {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
-		return "", nil, false
+		return "", "", nil, false
 	}
 	// Bind the flow to the browser that started it, BEFORE anything is
 	// spent. A state minted without a nonce cannot be completed at all:
@@ -494,7 +540,7 @@ func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, p
 	secureCookies := h.secureCookies(ctx)
 	if !browserSecretMatches(oauthState.NonceHash, auth.OAuthNonceFromRequest(r, oauthState.State, secureCookies)) {
 		http.Error(w, "a different browser started this sign-in; start again from the sign-in page", http.StatusBadRequest)
-		return "", nil, false
+		return "", "", nil, false
 	}
 
 	// The owner presented the nonce, so consume the single-use entry now and
@@ -514,24 +560,24 @@ func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, p
 	}
 	if !consumed {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
-		return "", nil, false
+		return "", "", nil, false
 	}
 
 	if auth.IsExpired(h.now().UTC(), oauthState.ExpiresAt) {
 		http.Error(w, "state expired", http.StatusBadRequest)
-		return "", nil, false
+		return "", "", nil, false
 	}
 	if oauthState.ProviderID != providerID {
 		http.Error(w, "state/provider mismatch", http.StatusBadRequest)
-		return "", nil, false
+		return "", "", nil, false
 	}
-	return code, oauthState, true
+	return code, formDisplayName, oauthState, true
 }
 
 func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, providerID string) {
 	ctx := r.Context()
 
-	code, oauthState, ok := h.consumeOAuthState(w, r, providerID)
+	code, formDisplayName, oauthState, ok := h.consumeOAuthState(w, r, providerID)
 	if !ok {
 		return
 	}
@@ -560,6 +606,9 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 		slog.Error("oauth: exchange", "error", err)
 		http.Error(w, "OAuth exchange failed", http.StatusBadRequest)
 		return
+	}
+	if claims.DisplayName == "" && claims.Name == "" && formDisplayName != "" {
+		claims.Name = formDisplayName
 	}
 
 	// Check if this OAuth identity is already linked to a user.

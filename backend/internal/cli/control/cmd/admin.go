@@ -534,6 +534,7 @@ func newAdminCommand() *cobra.Command {
 				[]cli.Example{{Command: "leapmux admin idp enable 3hKd9s"}}),
 			newAdminOAuthProviderSetEnabled(false, "disable <idp>", "Disable a sign-in provider",
 				[]cli.Example{{Command: "leapmux admin idp disable 3hKd9s"}}),
+			newAdminOAuthProviderRotateSecret(),
 		),
 		cli.Group("captcha", "Manage the bot protection: ALTCHA, reCAPTCHA v3 or Turnstile (a solo hub never asks)",
 			newAdminCaptchaShow(),
