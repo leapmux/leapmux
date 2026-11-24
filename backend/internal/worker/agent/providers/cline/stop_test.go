@@ -333,3 +333,27 @@ func TestDescribeExitKeepsTheEndOfTheStderr(t *testing.T) {
 	assert.Equal(t, exited+": ..."+long[len(long)-2000:], describeWith(t, long))
 	assert.NotContains(t, describeWith(t, long), "HEAD", "the start of a long output goes")
 }
+
+func TestIdleInterruptSettlesCrossTurnSpawns(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	requestID := r.startTurn(t, "Delegate.")
+	r.emit(contracts.ClineEventToolStarted, spawnStart("spawn_1", "Look."))
+	waitFor(t, r.agent.spawnRuns, "the spawn runs")
+	r.endRun(t, requestID, contracts.ClineRunReasonCompleted)
+	require.False(t, r.turnActive())
+	require.True(t, r.agent.spawnRuns(), "normal turn end preserves open spawn across turns")
+
+	require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
+	assert.False(t, r.agent.spawnRuns(), "idle interrupt must settle open spawns")
+	r.agent.Mu.Lock()
+	leadSpawns := len(r.agent.out.lead.spawns)
+	r.agent.Mu.Unlock()
+	assert.Zero(t, leadSpawns, "idle interrupt must clear lead spawns")
+	item, ok := r.sink.BackgroundTask("spawn_1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusStopped, item.Status)
+	assert.Contains(t, r.sink.ClosedSpans(), "spawn_1")
+	assert.Contains(t, r.sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetProgress())
+}

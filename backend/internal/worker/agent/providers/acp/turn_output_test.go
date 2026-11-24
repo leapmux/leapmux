@@ -7,8 +7,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +26,7 @@ func TestACPTurnOutputOwnsTextAndIncompleteToolLifecycles(t *testing.T) {
 	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{
 		"toolCallId": json.RawMessage(`"tool-1"`),
 	}, opener, nil)
-	output.completeTool("tool-complete")
+	output.claimFinalTool("tool-complete")
 
 	turn := output.drainTurn()
 	assert.Equal(t, "answer", turn.assistantText)
@@ -126,7 +128,7 @@ func endToolCall(output *acpTurnOutput, toolCallID string) {
 		"toolCallId": json.RawMessage(`"` + toolCallID + `"`),
 		"status":     json.RawMessage(`"failed"`),
 	}, true, json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"`+toolCallID+`","status":"failed"}`))
-	output.completeTool(toolCallID)
+	output.claimFinalTool(toolCallID)
 }
 
 // Junie sends its own `failed` update for a command that a stop ended, then one more
@@ -178,7 +180,9 @@ func TestACPTurnOutputCountsACallOfThePromptOnceAcrossTheBoundary(t *testing.T) 
 	endToolCall(&output, "tool-1")
 	endToolCall(&output, "tool-1")
 
-	prompt, hasPromptBoundary := output.drainPromptTurn()
+	output.turnMu.Lock()
+	prompt, hasPromptBoundary := output.drainPromptTurnLocked(false)
+	output.turnMu.Unlock()
 	require.True(t, hasPromptBoundary)
 	assert.Equal(t, 1, prompt.completedToolUses, "the prompt made the call once")
 	assert.Zero(t, output.drainTurn().completedToolUses, "the agent turn after the boundary made no call")
@@ -492,7 +496,7 @@ func TestACPSpecMessageIDsSurviveEveryTextSnapshot(t *testing.T) {
 			var snapshot acpTurnSnapshot
 			switch path {
 			case "turn":
-				snapshot = output.drainTurnLocked()
+				snapshot = output.drainTurnLocked(false)
 			case "unowned":
 				snapshot = output.takeUnownedOutputLocked()
 			case "prompt boundary":
@@ -617,7 +621,7 @@ func TestSegmentTextSeesEveryMainSnapshotPath(t *testing.T) {
 				b.promptActive = true
 				require.True(t, b.BeginAgentTurn())
 			case "work end":
-				b.storeWorkOutput(b.drainTurn())
+				b.storeWorkOutput(b.drainTurn(), b.CurrentSessionID(), false)
 			case "process end":
 				b.finishAllTurnOutput(agent.MessageCompletionError)
 			}
@@ -625,4 +629,154 @@ func TestSegmentTextSeesEveryMainSnapshotPath(t *testing.T) {
 			assert.Equal(t, []string{"text:stored answer"}, assembledTexts(t, sink.Messages()))
 		})
 	}
+}
+
+type sealingTestRootTranscript struct {
+	writer agent.TranscriptServices
+	sealed bool
+}
+
+func (r *sealingTestRootTranscript) Prepare() error                       { return nil }
+func (r *sealingTestRootTranscript) PrepareInput([]json.RawMessage) error { return nil }
+func (r *sealingTestRootTranscript) Reserve() RootTranscriptCapture {
+	return sealingTestRootCapture{writer: r.writer}
+}
+func (r *sealingTestRootTranscript) Finish(RootTranscriptCompletion) error {
+	r.sealed = true
+	return nil
+}
+
+type sealingTestRootCapture struct {
+	writer agent.TranscriptServices
+}
+
+func (c sealingTestRootCapture) Writer() agent.TranscriptServices { return c.writer }
+func (c sealingTestRootCapture) Complete()                        {}
+
+func TestACPNormalAndFailedTurnKeepOpenToolAcrossSealedTarget(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		response *providerkit.ParsedLine
+	}{
+		{
+			name:     "normal end_turn",
+			response: promptResponse(1),
+		},
+		{
+			name:     "failed RPC error",
+			response: providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"http 400"}}`)),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			out := &agenttest.Stdin{}
+			b, sink := newACPTurnBase(t, out)
+			var transcripts []*sealingTestRootTranscript
+			b.hooks.OpenRootTranscript = func(_ RootTranscriptStart, fallback agent.ProviderServices) RootTranscript {
+				tr := &sealingTestRootTranscript{writer: fallback}
+				transcripts = append(transcripts, tr)
+				return tr
+			}
+
+			require.NoError(t, b.SendInput("turn 1", nil))
+			b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"bg-1","title":"Watch","kind":"execute","status":"in_progress"}`))
+			b.HandleJSONRPCResponseForTest(tc.response)
+			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+
+			require.Len(t, transcripts, 1)
+			assert.True(t, transcripts[0].sealed, "turn 1 target must be sealed after turn end")
+			assert.True(t, b.HasOpenRootTool("bg-1"))
+
+			// Late progress update and final completion after target seal must not panic on sealed target.
+			assert.NotPanics(t, func() {
+				b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call_update","toolCallId":"bg-1","status":"in_progress","rawInput":{"cmd":"watch"},"content":[{"type":"content","content":{"type":"text","text":"tick"}}]} `))
+				b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call_update","toolCallId":"bg-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"done"}}]} `))
+			})
+			assert.False(t, b.HasOpenRootTool("bg-1"))
+			assert.Equal(t, []agent.MessageCompletion{""}, closingRows(sink, "bg-1"))
+		})
+	}
+}
+
+func TestACPClearContextStopWaitAndChildFinishResetSpans(t *testing.T) {
+	t.Parallel()
+
+	t.Run("stop resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		b, sink := newExitedACPTurnBase(t)
+		openAllTurns(t, b)
+		b.Stop()
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		child := sink.Child("child-of-call-bg")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("wait resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		b, sink := newExitedACPTurnBase(t)
+		openAllTurns(t, b)
+		require.NoError(t, b.Wait())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		child := sink.Child("child-of-call-bg")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("clear context resets spans and closedSpans", func(t *testing.T) {
+		t.Parallel()
+		a, _ := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
+			if method == MethodSessionNew {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-2"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+		sink := &agenttest.Sink{}
+		a.sink = agent.NewProviderServices(sink)
+		a.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-reuse","kind":"execute","title":"Run"}`))
+
+		_, err := a.ClearContext()
+		require.NoError(t, err)
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Equal(t, acpSpanNotClosed, a.closeKind("call-reuse"), "ClearContext must reset closedSpans for the new session")
+
+		// Reusing the same toolCallId inline-final in session 2 must still forward
+		// non-final SubagentFromToolCallUpdate notifications (such as Goose delegate updates).
+		var forwarded []string
+		a.hooks.SubagentFromToolCallUpdate = func(update ToolCallUpdateEnvelope) *SubagentObservation {
+			forwarded = append(forwarded, update.ToolCallID)
+			return nil
+		}
+		a.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-reuse","kind":"execute","title":"Delegate","status":"completed"}`))
+		a.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-reuse","status":"in_progress"}`))
+		assert.Equal(t, []string{"call-reuse"}, forwarded)
+	})
+}
+
+func TestACPClosedSpanMapEvictsNativeAndForcedTogether(t *testing.T) {
+	t.Parallel()
+
+	m := acpClosedSpanMap{limit: 3}
+	m.mark("forced-1", acpSpanClosedForced)
+	m.mark("native-1", acpSpanClosedNative)
+	m.mark("native-2", acpSpanClosedNative)
+	// Upgrading an existing entry to forced preserves its single slot and upgrades its kind.
+	m.mark("native-1", acpSpanClosedForced)
+	assert.Equal(t, acpSpanClosedForced, m.kind("native-1"))
+	// A forced entry cannot be downgraded to native.
+	m.mark("forced-1", acpSpanClosedNative)
+	assert.Equal(t, acpSpanClosedForced, m.kind("forced-1"))
+
+	// Adding a 4th entry evicts the oldest ("forced-1") completely.
+	m.mark("native-3", acpSpanClosedNative)
+	assert.Equal(t, acpSpanNotClosed, m.kind("forced-1"))
+	assert.Equal(t, acpSpanClosedForced, m.kind("native-1"))
+	assert.Equal(t, acpSpanClosedNative, m.kind("native-2"))
+	assert.Equal(t, acpSpanClosedNative, m.kind("native-3"))
 }

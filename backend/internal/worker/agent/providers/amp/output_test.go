@@ -133,7 +133,7 @@ func TestTurnEndPrecedesTheClear_Amp(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("go")
 	h.feed(fp, textLine("done", stopReasonEndTurn))
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, h.sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, h.sink.TurnLifecycle())
 }
 
 func TestUserEchoesAreDropped(t *testing.T) {
@@ -865,6 +865,30 @@ func TestTurnEndClosesTheCallsItOutlived(t *testing.T) {
 	assert.ElementsMatch(t, []string{"TU-shell", "TU-task"}, h.sink.ClosedSpans())
 	// The turn made both calls, so its divider counts both, although neither ended with a result.
 	assert.Equal(t, []int{2}, agenttest.TurnToolUseCounts(t, h.turnEnds()))
+	assert.Contains(t, h.sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, h.sink.ProgressUpdates(), agent.ResetProgress())
+}
+
+func TestAmpNormalEndTurnPreservesOpenToolsAndLateToolResultAfterInterruptDropped(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	h.feed(fp, assistantLine(`[`+toolUseBlock("TU-1", "shell_command", `{"command":"sleep 30"}`)+`]`, "tool_use"))
+	h.feed(fp, textLine("done", stopReasonEndTurn))
+
+	assert.Empty(t, h.sink.ClosedSpans(), "normal end_turn keeps open tools alive")
+	assert.NotContains(t, h.sink.TurnLifecycle(), "reset_spans")
+
+	// Idle interrupt closes the open tool and resets spans and progress.
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
+	assert.Contains(t, h.sink.ClosedSpans(), "TU-1")
+	assert.Contains(t, h.sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, h.sink.ProgressUpdates(), agent.ResetProgress())
+	countBeforeLate := len(h.rows())
+
+	// Late tool_result after interrupt is suppressed without duplicating rows.
+	h.feed(fp, toolResultLine("TU-1", "late output", false))
+	assert.Len(t, h.rows(), countBeforeLate)
 }
 
 func TestDiscardedOutputPersistsNothing(t *testing.T) {

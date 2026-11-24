@@ -86,7 +86,7 @@ type codewhaleChild struct {
 	offset    int64
 	pending   []byte
 	nextIndex int
-	openTools map[string]string
+	openTools providerkit.ToolSpanLedger[[]byte]
 	// answer holds the text of the child's latest assistant message.
 	answer string
 }
@@ -303,7 +303,7 @@ func (a *Agent) startChild(agentID, spawnSpan, title, prompt string) {
 	child := &codewhaleChild{
 		agentID: agentID, spawnSpan: spawnSpan, title: title,
 		path:  childTranscriptPath(a.workingDir, agentID),
-		nudge: make(chan struct{}, 1), openTools: make(map[string]string),
+		nudge: make(chan struct{}, 1),
 	}
 	// These receipts belong to this queue entry. A rejected later step cannot
 	// recreate the child or submit another copy of an accepted opening prompt.
@@ -564,7 +564,8 @@ func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
 // finishChild retains child output, the parent report, registry close, and cleanup in order.
 // A closed registry row therefore always has its available report persisted.
 func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, status bgtask.Status, summary string) {
-	closeChildTools(sink, child)
+	closeChildTools(sink, child, providerkit.ChildCompletion(status), a.IsDiscardingOutput())
+	providerkit.ResetSpansAndProgress(sink)
 	queue := a.sink.OutputQueue()
 	if childQueue := sink.OutputQueue(); childQueue != nil && childQueue != queue {
 		queue.Append(agent.OutputWrite{Label: "flush Codewhale child output", Run: childQueue.Flush})
@@ -605,13 +606,16 @@ func (a *Agent) closeOpenChildren(completion agent.MessageCompletion) {
 	}
 }
 
-// closeChildTools closes the spans of the child's tool calls that the
-// transcript never answered.
-func closeChildTools(sink agent.ProviderServices, child *codewhaleChild) {
-	for toolID := range child.openTools {
-		sink.CloseSpan(toolID)
-		delete(child.openTools, toolID)
-	}
+// closeChildTools persists closing rows and closes the spans of the child's
+// tool calls that the transcript never answered, in opening order.
+func closeChildTools(sink agent.ProviderServices, child *codewhaleChild, completion agent.MessageCompletion, discarding bool) {
+	entries := child.openTools.DrainAll()
+	providerkit.CloseToolSpans(sink, entries, completion, func(entry providerkit.OpenToolEntry[[]byte]) (agent.MessageContent, agent.SpanInfo, bool) {
+		if discarding || len(entry.Data) == 0 {
+			return agent.MessageContent{}, agent.SpanInfo{}, false
+		}
+		return agent.MessageContent{Original: entry.Data}, agent.SpanInfo{SpanID: entry.SpanID, SpanType: entry.SpanType}, true
+	})
 }
 
 // --- the transcript file ---
@@ -837,7 +841,7 @@ func (a *Agent) persistChildBlock(sink agent.ProviderServices, child *codewhaleC
 		if block.ID == "" {
 			break
 		}
-		child.openTools[block.ID] = block.Name
+		child.openTools.Open(block.ID, block.Name, false, append([]byte(nil), row...))
 		if err := providerkit.OpenToolSpan(sink, content, block.ID, block.Name, false); err != nil {
 			slog.Warn("codewhale persist a child tool call", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
 		}
@@ -846,10 +850,12 @@ func (a *Agent) persistChildBlock(sink agent.ProviderServices, child *codewhaleC
 		if block.ToolUseID == "" {
 			break
 		}
-		name := child.openTools[block.ToolUseID]
-		delete(child.openTools, block.ToolUseID)
+		entry, _, alreadyClosed := child.openTools.CompleteNative(block.ToolUseID)
+		if alreadyClosed {
+			return
+		}
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content,
-			agent.SpanInfo{SpanID: block.ToolUseID, SpanType: name, Closing: true}); err != nil {
+			agent.SpanInfo{SpanID: block.ToolUseID, SpanType: entry.SpanType, Closing: true}); err != nil {
 			slog.Warn("codewhale persist a child tool result", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
 		}
 		sink.CloseSpan(block.ToolUseID)

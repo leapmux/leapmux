@@ -18,7 +18,8 @@ const abortWait = 2 * time.Second
 
 // Interrupt aborts the running turn. Cline cancels the turn's pending approvals
 // and questions, stops the run, and ends it with run.aborted, which ends the
-// turn as an interruption. It does nothing when no turn runs.
+// turn as an interruption. When no turn runs, it settles any open spawns,
+// closes any open tool calls as interrupted, and resets spans and progress.
 //
 // Three turns have no run to abort yet:
 //   - A turn whose message left and whose run did not start. Cline finds no
@@ -47,7 +48,21 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		a.turn.interruptRequested = true
 	}
 	a.Mu.Unlock()
-	if !turn.active || sessionID == "" || waitsForRun || turn.settling {
+	if !turn.active {
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && !a.turn.active
+		lead := a.out.lead
+		a.Mu.Unlock()
+		if stillIdle {
+			a.settleSpawns(agent.MessageCompletionInterrupted)
+			a.closeOpenTools(lead, agent.MessageCompletionInterrupted)
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
+		return nil
+	}
+	if sessionID == "" || waitsForRun || turn.settling {
 		return nil
 	}
 	err := a.abortRun(sessionID)
@@ -203,16 +218,17 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion, message string)
 		if completion == agent.MessageCompletionInterrupted {
 			reason = runReasonAborted
 		}
-		a.endTurn(completion, runEndRow(sessionID, reason, message))
+		a.endTurnWithTeardown(completion, runEndRow(sessionID, reason, message), true)
 	} else {
 		a.withdrawAllControls()
 		a.settleSpawns(completion)
+		a.closeOpenTools(lead, completion)
 	}
 	status := bgtask.StatusStopped
 	if completion == agent.MessageCompletionError {
 		status = bgtask.StatusInterrupted
 	}
 	a.closeTeamRuns(status)
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 	a.PublishTurnActive()
 }

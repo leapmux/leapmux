@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type pendingMessage struct {
@@ -24,17 +25,18 @@ type pendingMessage struct {
 // turnFinalization keeps the original completion and the progress of each write.
 // dispatcher.finalizationMu protects writes. stateMu protects publication and session ownership.
 type turnFinalization struct {
-	turnID   string
-	messages []pendingMessage
-	retries  []agent.CapturedTranscript
-	end      agent.MessageContent
+	turnID         string
+	messages       []pendingMessage
+	retries        []agent.CapturedTranscript
+	end            agent.MessageContent
+	closeOpenTools bool
 }
 
 func nativeItemKey(id string, revision int64) string {
 	return fmt.Sprintf("muse:item:%s:%d", id, revision)
 }
 
-func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw []byte, ended agent.MessageCompletion) *turnFinalization {
+func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw []byte, ended agent.MessageCompletion, closeOpenTools bool) *turnFinalization {
 	a.stateMu.Lock()
 	for _, pending := range state.finalizations {
 		if pending.turnID == turnID {
@@ -55,12 +57,19 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 	state.completed[turnID] = turnCompletionCaptured
 	var items []*itemState
 	for _, item := range state.items {
-		if len(item.raw) > 0 && item.params.Item.TurnID != nil && *item.params.Item.TurnID == turnID {
+		if len(item.raw) == 0 {
+			continue
+		}
+		sameTurn := item.params.Item.TurnID != nil && *item.params.Item.TurnID == turnID
+		openTool := closeOpenTools && item.opened && !item.forceClosed &&
+			item.params.Item.Status == contracts.MuseItemStatusInProgress &&
+			(item.params.Item.Kind == contracts.MuseItemKindToolCall || item.params.Item.Kind == contracts.MuseItemKindUserShell)
+		if sameTurn || openTool {
 			items = append(items, item)
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].order < items[j].order })
-	pending := &turnFinalization{turnID: turnID, retries: state.retryNotices}
+	pending := &turnFinalization{turnID: turnID, retries: state.retryNotices, closeOpenTools: closeOpenTools}
 	state.retryNotices = nil
 	state.retryItems = nil
 	for _, item := range items {
@@ -105,8 +114,10 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 				}
 			}
 			continue
-		} else if !item.opened {
+		} else if !closeOpenTools || !item.opened || item.forceClosed {
 			continue
+		} else {
+			item.forceClosed = true
 		}
 		message := pendingMessage{source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, item: item, revision: params.Item.Revision, params: cloneItemParams(params),
 			content: museItemMessageContent(slices.Clone(item.raw), params)}
@@ -200,6 +211,9 @@ func (a *Agent) retryFinalizations(state *sessionState) {
 				return
 			}
 		}
+		if turn.closeOpenTools {
+			providerkit.ResetSpansAndProgress(state.sink)
+		}
 		a.stateMu.Lock()
 		state.finalizations[0] = nil
 		state.finalizations = state.finalizations[1:]
@@ -207,8 +221,64 @@ func (a *Agent) retryFinalizations(state *sessionState) {
 	}
 }
 
+// closeIdleOpenTools closes all opened in-progress toolCall and userShell items
+// across state.items without writing a synthetic turn.end row.
+// The caller holds dispatcher.mu.
+func (a *Agent) closeIdleOpenTools(state *sessionState, completion agent.MessageCompletion) {
+	if state == nil {
+		return
+	}
+	type idleTool struct {
+		item   *itemState
+		raw    []byte
+		params itemParams
+		order  uint64
+	}
+	a.stateMu.Lock()
+	var open []idleTool
+	for _, item := range state.items {
+		if !item.opened || item.forceClosed || item.params.Item.Status != contracts.MuseItemStatusInProgress {
+			continue
+		}
+		kind := item.params.Item.Kind
+		if kind != contracts.MuseItemKindToolCall && kind != contracts.MuseItemKindUserShell {
+			continue
+		}
+		item.forceClosed = true
+		open = append(open, idleTool{
+			item:   item,
+			raw:    slices.Clone(item.raw),
+			params: cloneItemParams(item.params),
+			order:  item.order,
+		})
+	}
+	a.stateMu.Unlock()
+	sort.Slice(open, func(i, j int) bool { return open[i].order < open[j].order })
+
+	a.dispatcher.finalizationMu.Lock()
+	defer a.dispatcher.finalizationMu.Unlock()
+	discarding := a.IsDiscardingOutput()
+	for _, entry := range open {
+		if !discarding && len(entry.raw) > 0 {
+			content := museItemMessageContent(entry.raw, entry.params)
+			content.Completion = completion
+			content.IdempotencyKey = "muse:retained:idle:" + entry.params.Item.ID
+			content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+			if err := state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
+				SpanID: entry.params.Item.ID, SpanType: entry.params.Item.Tool, Closing: true,
+			}); err != nil {
+				slog.Warn("persist Muse idle interrupted tool", "item", entry.params.Item.ID, "error", err)
+			}
+		}
+		state.sink.ReportProgress(agent.CompleteOutputProgress(entry.params.Item.ID))
+		state.sink.CloseSpan(entry.params.Item.ID)
+	}
+	providerkit.ResetSpansAndProgress(state.sink)
+}
+
 // retireHost retains provider-owned output before it withdraws live session state.
 func (a *Agent) retireHost(ended agent.MessageCompletion) {
+	var retired []*sessionState
 	func() {
 		a.dispatcher.mu.Lock()
 		defer a.dispatcher.mu.Unlock()
@@ -216,6 +286,7 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 		states := make(map[string]*sessionState, len(a.sessions))
 		for id, state := range a.sessions {
 			states[id] = state
+			retired = append(retired, state)
 			state.retired = true
 			if state.projection != nil {
 				state.projection.signal()
@@ -225,6 +296,9 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 		a.retireSessionStates(states, ended)
 	}()
 	a.drainDeferredOutputActions()
+	for _, state := range retired {
+		_ = agent.FlushPendingOutput(state.sink)
+	}
 	a.drainControls()
 }
 
@@ -259,9 +333,10 @@ func (a *Agent) retireSessionStates(states map[string]*sessionState, ended agent
 		state.controls = nil
 		a.stateMu.Unlock()
 		if turnID != "" {
-			a.captureFinalization(state, id, turnID, nil, ended)
+			a.captureFinalization(state, id, turnID, nil, ended, true)
 		}
 		a.retryFinalizations(state)
+		a.closeIdleOpenTools(state, ended)
 		for _, control := range controls {
 			if control.published {
 				a.enqueueControl(&controlRecord{kind: controlCancel, state: state, key: control.key})

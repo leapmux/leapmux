@@ -177,12 +177,13 @@ func (a *Agent) routeClaudeRootSequence(label string, prepare func(func()) claud
 }
 
 type claudeRootMessage struct {
-	content      []byte
-	source       leapmuxv1.MessageSource
-	envelope     *messageEnvelope
-	notification bool
-	resetSpans   bool
-	apiRetry     bool
+	content        []byte
+	source         leapmuxv1.MessageSource
+	envelope       *messageEnvelope
+	notification   bool
+	resetSpans     bool
+	resetOpenTools bool
+	apiRetry       bool
 }
 
 func (a *Agent) prepareClaudeRootMessage(message claudeRootMessage) claudeRootSequence {
@@ -224,6 +225,13 @@ func (a *Agent) prepareClaudeRootMessage(message claudeRootMessage) claudeRootSe
 		}
 		if _, err := sequence.Persist(*operation); err != nil {
 			return err
+		}
+		if message.resetOpenTools {
+			message.resetOpenTools = false
+			a.openTools.reset()
+			if agent.TranscriptFrameIsCurrent(content) {
+				destination.sink.ReportProgress(agent.ResetProgress())
+			}
 		}
 		if message.apiRetry {
 			destination.apiRetry.NoteRetry()

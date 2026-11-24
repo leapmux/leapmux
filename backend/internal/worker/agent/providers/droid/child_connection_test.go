@@ -207,15 +207,35 @@ func TestChildSendLoadsItsOwnStreamSession(t *testing.T) {
 func TestChildProcessSinkLeavesChatRowsToTheArchive(t *testing.T) {
 	t.Parallel()
 	recorder := &agenttest.Sink{}
+	recorder.OpenSpan("archive-tool", "")
+	recorder.SetSpanType("archive-tool", "Read")
+	recorder.ReportProgress(agent.ModelTextProgress("archive-scope", "archive thinking"))
+
 	sink := droidArchiveOnlySink{ProviderServices: agent.NewProviderServices(recorder)}
 	sink.UpdateSessionID(steerChildID)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: []byte(`{"type":"assembled","text":"duplicate"}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"agent_turn_completed"}`)}, agent.SpanInfo{}))
-	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"settings_updated"}`)})
+	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"error","message":"duplicate"}`)})
 	require.NoError(t, err)
+	assert.False(t, broadcast)
+	broadcast, err = sink.PersistWorkerNotification(agent.MessageContent{Original: []byte(`{"type":"api_retry_resolved"}`)})
+	require.NoError(t, err)
+	assert.False(t, broadcast)
+
+	sink.OpenSpan("proc-tool", "")
+	sink.SetSpanType("proc-tool", "Execute")
+	sink.CloseSpan("archive-tool")
+	sink.ResetSpans()
+	assert.Zero(t, sink.ReserveSpanColor("proc-tool", ""))
+	sink.ReportProgress(agent.ResetProgress())
+
 	assert.Empty(t, recorder.Messages(), "the archive remains the only chat writer")
-	assert.Len(t, recorder.PersistedNotifications(), 1, "status notifications still reach the child")
+	assert.Empty(t, recorder.PersistedNotifications(), "notifications from the bound process do not write into the child transcript")
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "archive-tool"}}, recorder.OpenSpans(), "bound process span calls must not mutate the archive-owned child spans")
+	assert.Empty(t, recorder.ClosedSpans(), "bound process CloseSpan must not close archive-owned child spans")
+	assert.Zero(t, recorder.ResetSpanCount(), "bound process ResetSpans must not reset archive-owned child spans")
+	assert.Positive(t, recorder.ProgressSnapshot().ThinkingTokens, "bound process ReportProgress must not wipe archive-owned child progress")
 	assert.Equal(t, steerChildID, recorder.LastSessionID())
 }
 

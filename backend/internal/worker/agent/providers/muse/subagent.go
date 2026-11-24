@@ -300,15 +300,42 @@ func (a *Agent) commandChild(key, method string, params map[string]any) error {
 	return err
 }
 func (a *Agent) InterruptChild(key string, stop agent.StopContext) error {
-	a.sendMu.Lock()
-	defer a.sendMu.Unlock()
-	a.stateMu.Lock()
-	_, child := a.ownedChildRoute(key)
-	a.stateMu.Unlock()
-	if child == nil || a.IsStopped() {
-		return agent.ErrChildRouteNotReady
+	var childSessionID string
+	err := func() error {
+		a.sendMu.Lock()
+		defer a.sendMu.Unlock()
+		a.stateMu.Lock()
+		id, child := a.ownedChildRoute(key)
+		a.stateMu.Unlock()
+		if child == nil || a.IsStopped() {
+			return agent.ErrChildRouteNotReady
+		}
+		childSessionID = id
+		return a.commandChild(key, methodChildInterrupt, map[string]any{"sessionId": child.parentSessionID, "subagentId": child.subagentID})
+	}()
+	if err != nil {
+		return err
 	}
-	return a.commandChild(key, methodChildInterrupt, map[string]any{"sessionId": child.parentSessionID, "subagentId": child.subagentID})
+	var flushedSink agent.ProviderServices
+	func() {
+		a.dispatcher.mu.Lock()
+		defer a.dispatcher.mu.Unlock()
+		a.stateMu.Lock()
+		state := a.sessions[childSessionID]
+		stillIdle := a.currentSessionState(childSessionID, state) && state.turnID == "" && !state.childTurnActive() && state.sink != nil
+		a.stateMu.Unlock()
+		if !stillIdle {
+			return
+		}
+		a.retryFinalizations(state)
+		a.closeIdleOpenTools(state, agent.MessageCompletionInterrupted)
+		flushedSink = state.sink
+	}()
+	a.drainDeferredOutputActions()
+	if flushedSink != nil {
+		_ = agent.FlushPendingOutput(flushedSink)
+	}
+	return nil
 }
 
 // childRouteHistoryItems reads the native folded item forms. A budgeted or

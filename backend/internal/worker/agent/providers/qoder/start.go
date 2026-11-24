@@ -139,6 +139,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	transferred = true
 	a.DrainStderr(stderrPipe)
 	scanner := a.NewOutputScanner(stdout)
+	a.outputDone = make(chan struct{})
 	go a.readOutputLoop(scanner)
 
 	if err := a.startDaemon(workerArgs); err != nil {

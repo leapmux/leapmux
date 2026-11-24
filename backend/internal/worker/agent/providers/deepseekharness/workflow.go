@@ -3,8 +3,10 @@ package deepseekharness
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -84,4 +86,22 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 		return sink.CloseBackgroundTask(key, status)
 	}
 	return nil
+}
+
+// closeOpenWorkflows drains all open workflow runs and closes their background task rows.
+func (a *Agent) closeOpenWorkflows(status bgtask.Status) {
+	a.Mu.Lock()
+	runIDs := make([]string, 0, len(a.workflows))
+	for runID := range a.workflows {
+		runIDs = append(runIDs, runID)
+	}
+	clear(a.workflows)
+	a.Mu.Unlock()
+	if len(runIDs) == 0 || a.sink == nil {
+		return
+	}
+	slices.Sort(runIDs)
+	for _, runID := range runIDs {
+		providerkit.LogRegistryRefusal("deepseekharness", "close workflow", a.sink.CloseBackgroundTask("deepseek-workflow:"+runID, status))
+	}
 }

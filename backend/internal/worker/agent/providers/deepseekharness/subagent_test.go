@@ -203,3 +203,141 @@ func TestChildTurnStateRetainsARegistryCloseFailure(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.True(t, row.EndedAt.IsZero())
 }
+
+func TestIdleContinuableChildInterruptClosesPendingToolsAndResetsSpans(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	descriptor := nativeChildDescriptor{ID: "native-child", Parent: "native-root", Mode: "continuable", Label: "Native child"}
+	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode},
+	})
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: descriptor.ID, Kind: bgtask.KindSubagent, ChildAgentID: virtualID, Title: descriptor.Label, Status: bgtask.StatusRunning}))
+	a.childCatalog[descriptor.ID] = descriptor
+	a.children[descriptor.ID] = &nativeChild{descriptor: descriptor, agentID: virtualID, active: true}
+	childStream := &sessionStream{
+		address:         sessionAddress{Kind: "subagent", ParentSessionID: "native-root", ChildSessionID: descriptor.ID, Mode: "continuable"},
+		sessionID:       descriptor.ID,
+		parentSessionID: "native-root",
+		childAgentID:    virtualID,
+		lastSeq:         -1,
+		pending:         map[string][]byte{},
+		ready:           make(chan struct{}),
+	}
+	a.streams["child-stream"] = childStream
+
+	require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"turn/start","seq":0,"time":1000,"data":{}}`)))
+	require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"tool/call","seq":1,"time":1001,"data":{"callId":"child-call-1","name":"bash"}}`)))
+	require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"turn/end","seq":2,"time":1002,"data":{"reason":{"kind":"completed"}}}`)))
+	childSink := sink.Child(virtualID)
+	require.False(t, a.ActiveChildTurnState(descriptor.ID).Active)
+	require.Equal(t, []agent.TurnState{
+		{Active: true, Steerable: true},
+		{Active: false, Steerable: false},
+	}, childSink.TurnStates(), "continuable child turn start and end must publish SetTurnState")
+	seqs := childSink.TurnSeqs()
+	require.Len(t, seqs, 2)
+	assert.Greater(t, seqs[0], uint64(0))
+	assert.Greater(t, seqs[1], seqs[0])
+	require.Empty(t, childSink.ClosedSpans())
+
+	require.NoError(t, a.InterruptChild(descriptor.ID, agent.StopContext{}))
+	assert.Contains(t, childSink.ClosedSpans(), "child-call-1")
+	assert.Contains(t, childSink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, childSink.ProgressUpdates(), agent.ResetProgress())
+
+	var foundClosing bool
+	for _, m := range childSink.Messages() {
+		if m.Closing && m.SpanID == "child-call-1" {
+			foundClosing = true
+			assert.Equal(t, agent.MessageCompletionInterrupted, m.Completion)
+		}
+	}
+	assert.True(t, foundClosing, "idle continuable InterruptChild must persist an interrupted closing row for pending tools")
+}
+
+func TestContinuableChildTurnStatePublishesMonotonicTransitions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		reason string
+	}{
+		{name: "completed", reason: `{"kind":"completed"}`},
+		{name: "error", reason: `{"kind":"error","error":{"message":"boom"}}`},
+		{name: "interrupted", reason: `{"kind":"interrupted"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			descriptor := nativeChildDescriptor{ID: "native-child", Parent: "native-root", Mode: "continuable", Label: "Native child"}
+			virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode},
+			})
+			require.NoError(t, err)
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: descriptor.ID, Kind: bgtask.KindSubagent, ChildAgentID: virtualID, Title: descriptor.Label, Status: bgtask.StatusRunning}))
+			a.childCatalog[descriptor.ID] = descriptor
+			a.children[descriptor.ID] = &nativeChild{descriptor: descriptor, agentID: virtualID}
+			childStream := &sessionStream{
+				address:         sessionAddress{Kind: "subagent", ParentSessionID: "native-root", ChildSessionID: descriptor.ID, Mode: "continuable"},
+				sessionID:       descriptor.ID,
+				parentSessionID: "native-root",
+				childAgentID:    virtualID,
+				lastSeq:         -1,
+				pending:         map[string][]byte{},
+				ready:           make(chan struct{}),
+			}
+			a.streams["child-stream"] = childStream
+
+			require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"turn/start","seq":0,"time":1000,"data":{}}`)))
+			require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"turn/end","seq":1,"time":1001,"data":{"reason":`+tc.reason+`}}`)))
+			require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"turn/start","seq":2,"time":1002,"data":{}}`)))
+			require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"turn/end","seq":3,"time":1003,"data":{"reason":{"kind":"completed"}}}`)))
+
+			childSink := sink.Child(virtualID)
+			assert.Equal(t, []agent.TurnState{
+				{Active: true, Steerable: true},
+				{Active: false, Steerable: false},
+				{Active: true, Steerable: true},
+				{Active: false, Steerable: false},
+			}, childSink.TurnStates())
+			seqs := childSink.TurnSeqs()
+			require.Len(t, seqs, 4)
+			for i := 1; i < len(seqs); i++ {
+				assert.Greater(t, seqs[i], seqs[i-1], "child turn sequence must increase monotonically")
+			}
+		})
+	}
+
+	t.Run("one_shot_child_does_not_publish_turn_state", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		descriptor := nativeChildDescriptor{ID: "one-shot-child", Parent: "native-root", Mode: "one-shot", Label: "One-shot"}
+		virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole:     bgtask.RoleChildTask,
+			ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode},
+		})
+		require.NoError(t, err)
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: descriptor.ID, Kind: bgtask.KindSubagent, ChildAgentID: virtualID, Title: descriptor.Label, Status: bgtask.StatusRunning}))
+		a.childCatalog[descriptor.ID] = descriptor
+		a.children[descriptor.ID] = &nativeChild{descriptor: descriptor, agentID: virtualID}
+		childStream := &sessionStream{
+			address:         sessionAddress{Kind: "subagent", ParentSessionID: "native-root", ChildSessionID: descriptor.ID, Mode: "one-shot"},
+			sessionID:       descriptor.ID,
+			parentSessionID: "native-root",
+			childAgentID:    virtualID,
+			lastSeq:         -1,
+			pending:         map[string][]byte{},
+			ready:           make(chan struct{}),
+		}
+		a.streams["one-shot-stream"] = childStream
+
+		require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"turn/start","seq":0,"time":1000,"data":{}}`)))
+		require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"turn/end","seq":1,"time":1001,"data":{"reason":{"kind":"completed"}}}`)))
+		assert.Empty(t, sink.Child(virtualID).TurnStates(), "one-shot child must remain registry-only")
+	})
+}

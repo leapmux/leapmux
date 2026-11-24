@@ -302,17 +302,17 @@ func TestRetainedOutputKeepsEveryBlockAndReleasesTheTurnAfterPersistence(t *test
 	sink.failure = nil
 	require.NoError(t, agent.FlushPendingOutput(a.sink))
 	rows := base.Messages()
-	require.Len(t, rows, 5)
+	require.Len(t, rows, 4)
 	assert.JSONEq(t, `{"blockIndex":0}`, string(rows[0].SupplementalContent))
 	assert.JSONEq(t, `{"blockIndex":1}`, string(rows[1].SupplementalContent))
 	assert.Equal(t, "call-1", rows[2].SpanID)
-	assert.Equal(t, "call-1", rows[3].SpanID)
-	assert.True(t, rows[4].TurnEnd)
+	assert.False(t, rows[2].Closing, "normal turn end must keep the open tool span alive")
+	assert.True(t, rows[3].TurnEnd)
 	assert.Equal(t, "turn_active:false", base.TurnLifecycle()[len(base.TurnLifecycle())-1])
 	for _, frame := range frames {
 		require.NoError(t, a.handleSessionEvent(stream, []byte(frame)))
 	}
-	assert.Len(t, base.Messages(), 5, "native replay must not submit retained rows again")
+	assert.Len(t, base.Messages(), 4, "native replay must not submit retained rows again")
 }
 
 func TestRetainedNotificationStillResolvesRetryAndCompactionState(t *testing.T) {
@@ -521,5 +521,46 @@ func TestAssistantMessageCarriesTheContextWindowOfItsStream(t *testing.T) {
 		require.NoError(t, a.handleFrame([]byte(snapshot)))
 		feed(t, a, a.streams["root"], assistant)
 		assert.JSONEq(t, `{"blockIndex":0}`, supplements(sink)[0])
+	})
+}
+
+func TestDeepSeekNormalAndErrorTurnPreserveOpenToolsAndSuppressLateResultAfterInterrupt(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"completed", "error"} {
+		t.Run("non-interrupted "+reason, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			stream := a.streams["root"]
+			require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"turn/start","seq":1,"time":1000,"data":{}}`)))
+			require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"tool/call","seq":2,"time":1001,"data":{"callId":"call-1","name":"bash"}}`)))
+			require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"turn/end","seq":3,"time":1002,"data":{"reason":{"kind":"`+reason+`"}}}`)))
+			assert.Empty(t, sink.ClosedSpans(), "non-interrupted turn must keep open tool span alive")
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+			// A later native tool/result closes the span cleanly once.
+			require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"tool/result","seq":4,"time":1003,"data":{"message":{"toolCallId":"call-1","isError":false}}}`)))
+			assert.Equal(t, []string{"call-1"}, sink.ClosedSpans())
+		})
+	}
+
+	t.Run("interrupted turn closes open tools and suppresses late tool/result", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		stream := a.streams["root"]
+		require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"turn/start","seq":1,"time":1000,"data":{}}`)))
+		require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"tool/call","seq":2,"time":1001,"data":{"callId":"call-1","name":"bash"}}`)))
+		require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"turn/end","seq":3,"time":1002,"data":{"reason":{"kind":"interrupted"}}}`)))
+		assert.Equal(t, []string{"call-1"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("call-1"))
+
+		countBeforeLate := sink.MessageCount()
+		require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"tool/result","seq":4,"time":1003,"data":{"message":{"toolCallId":"call-1","isError":false}}}`)))
+		assert.Equal(t, countBeforeLate, sink.MessageCount(), "late tool/result after interrupt must be suppressed")
+		assert.Equal(t, []string{"call-1"}, sink.ClosedSpans())
 	})
 }

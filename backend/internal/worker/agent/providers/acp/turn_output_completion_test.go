@@ -38,7 +38,7 @@ func TestACPCompletedTurnKeepsInterruptedTextCompletion(t *testing.T) {
 						}
 						base.handleACPPromptResponse(response)
 					} else {
-						base.storeWorkOutput(base.drainTurn())
+						base.storeWorkOutput(base.drainTurn(), base.CurrentSessionID(), interrupted)
 					}
 					want := agent.MessageCompletionComplete
 					if interrupted {

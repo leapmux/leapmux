@@ -211,12 +211,16 @@ func (a *Agent) completeTurn(end codewhaleTurnEnd) {
 		providerkit.PersistCompactionEnded(a.sink, outcome, "")
 	}
 	a.flushGeneration(completion)
-	a.persistIncompleteTools(completion)
+	if completion == agent.MessageCompletionInterrupted {
+		a.persistIncompleteTools(completion)
+	}
 	a.finishSteerRequestBoundary()
 	// A question or an approval cannot outlive its turn. The runtime settles each
 	// one with its own event as well; this retires any card that event missed.
 	a.withdrawControlsOfTurn(turnID)
-	a.ResetCumulativeOutput()
+	if completion == agent.MessageCompletionInterrupted {
+		a.ResetCumulativeOutput()
+	}
 	a.sink.ReportProgress(agent.ResetModelProgress())
 
 	// A proved native cancellation returns the retained input to the queue.
@@ -228,7 +232,9 @@ func (a *Agent) completeTurn(end codewhaleTurnEnd) {
 	if err := a.sink.PersistTurnEnd(a.turnEndContent(env.raw), agent.SpanInfo{}); err != nil {
 		slog.Error("codewhale persist turn end", "agent_id", a.AgentID(), "error", err)
 	}
-	a.sink.ResetSpans()
+	if completion == agent.MessageCompletionInterrupted {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	if a.markTurnFinished(turnID) {
 		a.PublishTurnActive()
 	}
@@ -589,9 +595,10 @@ func toolCallIsHeld(name string) bool {
 
 // codewhaleToolCalls indexes the open tool calls. The caller holds Mu.
 type codewhaleToolCalls struct {
-	bySpan    map[string]*codewhaleToolCall
-	byItem    map[string]string
-	nextOrder uint64
+	bySpan      map[string]*codewhaleToolCall
+	byItem      map[string]string
+	nextOrder   uint64
+	closedSpans providerkit.ClosedSpanSet
 }
 
 func (t *codewhaleToolCalls) add(call *codewhaleToolCall) {
@@ -649,6 +656,7 @@ func (a *Agent) openToolCall(env codewhaleEnvelope, itemID, spanID, name string,
 		a.Mu.Unlock()
 		return
 	}
+	a.tools.closedSpans.Reopen(spanID)
 	held := toolCallIsHeld(name)
 	a.tools.add(&codewhaleToolCall{
 		spanID:    spanID,
@@ -703,6 +711,10 @@ func (a *Agent) closeToolCall(env codewhaleEnvelope, payload itemEventPayload, s
 	defer a.releaseSteerOutputs([]steerOutputKey{{kind: steerToolOutput, id: spanID}})
 	md := payload.Item.metadata()
 	a.Mu.Lock()
+	if a.tools.closedSpans.WasClosed(spanID) {
+		a.Mu.Unlock()
+		return
+	}
 	call := a.tools.remove(spanID)
 	if call != nil && name == "" {
 		name = call.name
@@ -778,6 +790,7 @@ func (a *Agent) persistIncompleteTools(completion agent.MessageCompletion) {
 	a.Mu.Lock()
 	calls := make([]*codewhaleToolCall, 0, len(a.tools.bySpan))
 	for spanID := range a.tools.bySpan {
+		a.tools.closedSpans.MarkClosed(spanID)
 		calls = append(calls, a.tools.remove(spanID))
 	}
 	a.Mu.Unlock()

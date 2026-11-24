@@ -108,17 +108,25 @@ func TestACPTurnActive_ClearActivePromptCloses(t *testing.T) {
 func TestTurnEndPrecedesTheClear_ACP(t *testing.T) {
 	t.Parallel()
 
-	// The ACP base handles the prompt response -- which persists the turn end --
-	// and only then clears promptActive, both inside one callback. This pins that
-	// order, because a callback that cleared first would invert it.
+	// Normal end_turn persists the turn end and clears promptActive without resetting open spans.
 	var out bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&out))
 
 	require.NoError(t, b.SendInput("hi", nil))
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)))
 
-	testutil.RequireEventually(t, func() bool { return len(sink.TurnLifecycle()) == 4 })
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	testutil.RequireEventually(t, func() bool { return len(sink.TurnLifecycle()) == 3 })
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+
+	// An interrupted turn still resets spans between turn_end and turn_active:false.
+	var out2 bytes.Buffer
+	b2, sink2 := newACPTurnBase(t, agenttest.NopStdin(&out2))
+	require.NoError(t, b2.SendInput("hi", nil))
+	b2.noteACPInterruptRequested()
+	b2.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"cancelled"}}`)))
+
+	testutil.RequireEventually(t, func() bool { return len(sink2.TurnLifecycle()) == 4 })
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink2.TurnLifecycle())
 }
 
 func TestACPTurnActive_IssuesRisingOrderingTokens(t *testing.T) {

@@ -181,6 +181,8 @@ func (q *piInterruptOutput) dispose(resolve func(), dispatch func(*providerkit.P
 }
 
 func (a *Agent) dispatchPiOutput(line *providerkit.ParsedLine, observedAt time.Time) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	handlePiOutputObserved(a, line, observedAt)
 }
 

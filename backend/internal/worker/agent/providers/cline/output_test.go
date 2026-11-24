@@ -389,20 +389,114 @@ func TestANoticeNeedsItsText(t *testing.T) {
 	assert.Contains(t, string(notifications[0].Content), "Retrying.")
 }
 
-// A run that completed around a call that it still held open did not finish the
-// call, so the call closes as an error, not as a success.
+// Completed and non-interrupted error runs keep an open tool span and its live
+// output progress alive across the turn boundary.
 func TestACompletedRunClosesAnOpenCallAsAnError(t *testing.T) {
 	t.Parallel()
-	r := newRig(t)
-	requestID := r.startTurn(t, "Hello.")
-	r.emit(contracts.ClineEventToolStarted, map[string]any{"toolCallId": "call_1", "toolName": "run_commands", "input": map[string]any{}})
-	r.endRun(t, requestID, contracts.ClineRunReasonCompleted)
-	messages := r.sink.Messages()
-	require.Len(t, messages, 3)
-	assert.True(t, messages[1].Closing)
-	assert.Equal(t, agent.MessageCompletionError, messages[1].Completion)
-	assert.Equal(t, agent.MessageCompletionComplete, messages[2].Completion)
-	assert.EqualValues(t, 0, decode(t, messages[2].Metadata)[contracts.MessageMetadataFieldToolUses], "an open call is no finished tool use")
+	cases := []struct {
+		name           string
+		reason         string
+		wantCompletion agent.MessageCompletion
+	}{
+		{name: "completed run", reason: contracts.ClineRunReasonCompleted, wantCompletion: agent.MessageCompletionComplete},
+		{name: "non-interrupted error run", reason: contracts.ClineRunReasonError, wantCompletion: agent.MessageCompletionError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			requestID := r.startTurn(t, "Hello.")
+			r.emit(contracts.ClineEventToolStarted, map[string]any{"toolCallId": "call_1", "toolName": "run_commands", "input": map[string]any{}})
+			r.emit(eventToolUpdated, map[string]any{"toolCallId": "call_1", "update": map[string]any{"chunk": "still running\n"}})
+			r.endRun(t, requestID, tc.reason)
+			messages := r.sink.Messages()
+			require.Len(t, messages, 2)
+			assert.False(t, messages[0].Closing)
+			assert.True(t, messages[1].TurnEnd)
+			assert.Equal(t, tc.wantCompletion, messages[1].Completion)
+			assert.Empty(t, r.sink.ClosedSpans())
+			assert.NotContains(t, r.sink.TurnLifecycle(), "reset_spans")
+			assert.NotContains(t, r.sink.ProgressUpdates(), agent.ResetProgress())
+			assert.Positive(t, r.sink.ProgressSnapshot().OutputBytes, "non-interrupted run end must preserve open tool output progress")
+			assert.EqualValues(t, 0, decode(t, messages[1].Metadata)[contracts.MessageMetadataFieldToolUses], "an open call is no finished tool use")
+		})
+	}
+}
+
+func TestClineIdleInterruptAndIdleFinishOutputCloseOpenToolsAndResetSpans(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt closes open lead tool and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		requestID := r.startTurn(t, "Hello.")
+		r.emit(contracts.ClineEventToolStarted, map[string]any{"toolCallId": "call_idle", "toolName": "run_commands", "input": map[string]any{}})
+		r.endRun(t, requestID, contracts.ClineRunReasonCompleted)
+		require.Empty(t, r.sink.ClosedSpans())
+
+		require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
+		assert.Contains(t, r.sink.ClosedSpans(), "call_idle")
+		assert.Contains(t, r.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("idle finishOutput closes open lead tool and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		requestID := r.startTurn(t, "Hello.")
+		r.emit(contracts.ClineEventToolStarted, map[string]any{"toolCallId": "call_exit", "toolName": "run_commands", "input": map[string]any{}})
+		r.endRun(t, requestID, contracts.ClineRunReasonCompleted)
+		require.Empty(t, r.sink.ClosedSpans())
+
+		r.agent.finishOutput(agent.MessageCompletionInterrupted, "")
+		assert.Contains(t, r.sink.ClosedSpans(), "call_exit")
+		assert.Contains(t, r.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("discarding idle finishOutput resets spans and progress without persisting closing rows", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		requestID := r.startTurn(t, "Hello.")
+		r.emit(contracts.ClineEventToolStarted, map[string]any{"toolCallId": "call_discard", "toolName": "run_commands", "input": map[string]any{}})
+		r.endRun(t, requestID, contracts.ClineRunReasonCompleted)
+		require.Empty(t, r.sink.ClosedSpans())
+
+		msgsBefore := r.sink.MessageCount()
+		r.agent.DiscardOutput()
+		r.agent.finishOutput(agent.MessageCompletionInterrupted, "")
+
+		assert.Equal(t, msgsBefore, r.sink.MessageCount(), "discarding finishOutput must not persist closing rows")
+		assert.Contains(t, r.sink.ClosedSpans(), "call_discard")
+		assert.Contains(t, r.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("finishSpawn closes child open tool and resets child spans and progress", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.feedTurn(t)
+		r.feed(t, contracts.ClineEventToolStarted, spawnStart("spawn_1", "Run child tool."))
+		r.feed(t, eventIterationStarted, map[string]any{"iteration": 1})
+		r.feed(t, contracts.ClineEventToolStarted, map[string]any{"toolCallId": "call_sub_open", "toolName": "run_commands", "input": map[string]any{}})
+		r.feed(t, eventToolUpdated, map[string]any{"toolCallId": "call_sub_open", "update": map[string]any{"chunk": "working\n"}})
+		child := r.childSink(t, "spawn_1")
+		require.Empty(t, child.ClosedSpans())
+
+		r.feed(t, contracts.ClineEventToolFinished, spawnFinish("spawn_1", "Done.", contracts.ClineRunReasonCompleted))
+
+		assert.Contains(t, child.ClosedSpans(), "call_sub_open")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+		var foundClosing bool
+		for _, m := range child.Messages() {
+			if m.Closing && m.SpanID == "call_sub_open" {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionError, m.Completion)
+			}
+		}
+		assert.True(t, foundClosing, "finishSpawn must persist a closing row for the child's open tool")
+	})
 }
 
 // Output of a call that is not open, and output with no text, report nothing.

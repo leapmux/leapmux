@@ -18,16 +18,57 @@ func kimiConversationProgressID(frame kimiConversationFrame, itemID, kind string
 	return view.key()
 }
 
+func (publication *kimiConversationTurnOutput) toolCallState(itemID string) (opened, closed bool) {
+	_, opened = publication.requests[itemID]
+	_, closed = publication.results[itemID]
+	return opened, closed
+}
+
+func (publication *kimiConversationTurnOutput) sessionCurrent() bool {
+	if publication.writer == nil || publication.progress == nil {
+		return false
+	}
+	owner := publication.progress.Owner()
+	if owner == nil {
+		return false
+	}
+	if frameOwner, ok := owner.(agent.TranscriptFrameOwner); ok {
+		return frameOwner.IsTranscriptFrameCurrent()
+	}
+	return owner.IsSessionCurrent()
+}
+
+// reportProgressUpdate routes every progress update through the turn's captured
+// TranscriptPublication so the Worker enforces turn-scoped model progress and
+// session-scoped output progress in one place.
+func (publication *kimiConversationTurnOutput) reportProgressUpdate(update agent.ProgressUpdate) {
+	if publication.progress == nil {
+		return
+	}
+	publication.progress.ReportProgress(update)
+}
+
 // Delta publication reads only the accumulator needed by that field. In
 // particular, output deltas never encode the growing native tool item.
 func (publication *kimiConversationTurnOutput) reportDelta(frame kimiConversationFrame, state *kimiConversationItemState) {
-	if publication.progress == nil || publication.historical || publication.completed || frame.Delta == nil {
+	if publication.progress == nil || publication.historical || frame.Delta == nil {
+		return
+	}
+	isTool := state.identity.kind == contracts.KimiConversationItemKindToolCall
+	var opened, closed bool
+	if isTool {
+		opened, closed = publication.toolCallState(state.identity.itemID)
+		if closed {
+			return
+		}
+	}
+	if publication.completed && (!isTool || !opened || frame.Field != "output") {
 		return
 	}
 	scopeID := kimiConversationProgressID(frame, state.identity.itemID, state.identity.kind)
 	switch frame.Field {
 	case "text", "input_text":
-		publication.progress.ReportProgress(agent.ModelTextProgress(scopeID, *frame.Delta))
+		publication.reportProgressUpdate(agent.ModelTextProgress(scopeID, *frame.Delta))
 	case "output":
 		if state.output != nil {
 			publication.reportOutput(scopeID, state.output)
@@ -37,27 +78,40 @@ func (publication *kimiConversationTurnOutput) reportDelta(frame kimiConversatio
 
 func (publication *kimiConversationTurnOutput) reportOutput(scopeID string, output *kimiConversationToolOutput) {
 	tail, clipped := agent.ClipTailBytes(output.text, kimiLiveOutputLimit)
-	publication.progress.ReportProgress(agent.OutputExactTotalProgress(scopeID, output.total))
-	publication.progress.ReportProgress(agent.OutputTailProgress(scopeID, tail, clipped || output.truncated()))
+	publication.reportProgressUpdate(agent.OutputExactTotalProgress(scopeID, output.total))
+	publication.reportProgressUpdate(agent.OutputTailProgress(scopeID, tail, clipped || output.truncated()))
 }
 
 // A full item replaces a prior live view. Its first text includes the first
 // streamed chunk, while later deltas carry only their appended text.
 func (publication *kimiConversationTurnOutput) reportItem(frame kimiConversationFrame, item kimiConversationItem, output *kimiConversationToolOutput) {
-	if publication.progress == nil || publication.historical || publication.completed {
+	if publication.progress == nil || publication.historical {
+		return
+	}
+	isTool := item.Type == contracts.KimiConversationItemKindToolCall
+	var opened, closed bool
+	if isTool {
+		opened, closed = publication.toolCallState(item.ItemID)
+		if closed {
+			return
+		}
+	}
+	if publication.completed && (!isTool || !opened) {
 		return
 	}
 	scopeID := kimiConversationProgressID(frame, item.ItemID, item.Type)
 	full := frame.Type == "item.started" || frame.Type == "item.ended"
-	if full && item.Text != nil {
-		publication.progress.ReportProgress(agent.ResetModelScopeProgress(scopeID))
-		publication.progress.ReportProgress(agent.ModelTextProgress(scopeID, *item.Text))
+	if !publication.completed && full && item.Text != nil {
+		publication.reportProgressUpdate(agent.ResetModelScopeProgress(scopeID))
+		publication.reportProgressUpdate(agent.ModelTextProgress(scopeID, *item.Text))
 	}
-	if item.Type == contracts.KimiConversationItemKindToolCall {
-		_, inputChanged := frame.Set["input_text"]
-		if item.InputText != nil && (full || inputChanged) {
-			publication.progress.ReportProgress(agent.ResetModelScopeProgress(scopeID))
-			publication.progress.ReportProgress(agent.ModelTextProgress(scopeID, *item.InputText))
+	if isTool {
+		if !publication.completed {
+			_, inputChanged := frame.Set["input_text"]
+			if item.InputText != nil && (full || inputChanged) {
+				publication.reportProgressUpdate(agent.ResetModelScopeProgress(scopeID))
+				publication.reportProgressUpdate(agent.ModelTextProgress(scopeID, *item.InputText))
+			}
 		}
 		_, outputChanged := frame.Set["output"]
 		if output != nil && (full || outputChanged) {
@@ -65,9 +119,9 @@ func (publication *kimiConversationTurnOutput) reportItem(frame kimiConversation
 		}
 	}
 	if item.Status == contracts.KimiConversationStatusEnded {
-		publication.progress.ReportProgress(agent.CompleteModelProgress(scopeID))
-		if item.Type == contracts.KimiConversationItemKindToolCall {
-			publication.progress.ReportProgress(agent.CompleteOutputProgress(scopeID))
+		publication.reportProgressUpdate(agent.CompleteModelProgress(scopeID))
+		if isTool {
+			publication.reportProgressUpdate(agent.CompleteOutputProgress(scopeID))
 		}
 	}
 }

@@ -100,10 +100,13 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		// A final tool update ends the call its badge watched.
 		ToolOutputComplete: a.completeToolOutput,
-		// The turn end clears every permission-check badge and forgets a
-		// pending retry row, a stop included.
-		PromptEnded: func(error, bool) acp.PromptEnding {
-			a.clearPermissionChecks()
+		// A stopped turn clears every permission-check badge; normal and error
+		// turns keep badges for open spans alive until those calls finish.
+		// Every prompt end forgets a pending retry row.
+		PromptEnded: func(_ error, stopped bool) acp.PromptEnding {
+			if stopped {
+				a.clearPermissionChecks()
+			}
 			a.retryResolution.Reset()
 			a.stateMu.Lock()
 			a.chunkStreamStart = 0
@@ -113,6 +116,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 			providerkit.EndCompaction(a.Sink())
 			return acp.PromptEnding{}
 		},
+		IsCancelledTurnEnd: grokIsCancelledTurnEnd,
 		// The first genuine model output after a retry resolves its row. The
 		// handler claims no update.
 		SessionUpdateHandler: a.observeRetryContent,

@@ -1348,3 +1348,50 @@ func TestLateRetainedActorFailureKeepsReplacementProgress(t *testing.T) {
 		})
 	}
 }
+
+func TestMiMoNonInterruptedFallbackChildExitDoesNotBlockRootSpanReset(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		outcome    string
+		errText    string
+		completion agent.MessageCompletion
+	}{
+		{name: "succeeded", outcome: contracts.MiMoActorOutcomeSuccess, completion: agent.MessageCompletionComplete},
+		{name: "failed", outcome: contracts.MiMoActorOutcomeFailure, errText: "child failed", completion: agent.MessageCompletionError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSinkTestAgent(t)
+			recovering := &recoveringChildPartSink{ProviderServices: a.sink}
+			recovering.creationFails.Store(true)
+			a.sink = recovering
+
+			feed(a,
+				actorStatusEvent(t, "orphan-child", contracts.MiMoActorStatusRunning, "", 0, ""),
+				messageEvent(t, "msg_child_fb", roleAssistant, "orphan-child", false),
+				toolPartEvent(t, "prt_child_fb", "msg_child_fb", contracts.MiMoToolBash, "call-child-fb", toolState{
+					Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "sleep 200"},
+				}),
+				actorStatusEvent(t, "orphan-child", contracts.MiMoActorStatusIdle, tc.outcome, 1, tc.errText),
+			)
+
+			assert.Contains(t, sink.ClosedSpans(), "prt_child_fb")
+			var closing []agenttest.Message
+			for _, row := range sink.Messages() {
+				if row.SpanID == "prt_child_fb" && row.Closing {
+					closing = append(closing, row)
+				}
+			}
+			require.Len(t, closing, 1)
+			assert.Equal(t, tc.completion, closing[0].Completion)
+
+			var preserved bool
+			stop := agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })
+			require.NoError(t, a.Interrupt(stop))
+			assert.False(t, preserved, "a finished fallback child must not permanently block root span reset")
+			assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		})
+	}
+}

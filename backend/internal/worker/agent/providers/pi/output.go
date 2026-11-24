@@ -329,22 +329,30 @@ func (a *Agent) handlePiAgentEnd(raw []byte) {
 	interrupted := !willRetry && a.takePiInterruptOutcome(env)
 	if willRetry {
 		providerkit.DiscardGenerationScopes(&a.generationBuffer, a.sink, a.generationBuffer.ScopeIDs())
-		a.discardIncompletePiTools()
-		a.sink.ReportProgress(agent.ResetProgress())
+		a.sink.ReportProgress(agent.ResetModelProgress())
+		a.Mu.Lock()
+		a.clearPiQuestionStateLocked()
+		a.Mu.Unlock()
 	} else {
 		completion := env.retainedCompletion()
 		if interrupted {
 			completion = agent.MessageCompletionInterrupted
 		}
 		a.flushPiGeneration(completion)
-		a.persistIncompletePiTools(completion)
+		if interrupted {
+			a.persistIncompletePiTools(completion)
+			a.ResetCumulativeOutput()
+		} else {
+			a.Mu.Lock()
+			a.clearPiQuestionStateLocked()
+			a.Mu.Unlock()
+			a.clearStartlessPiTools()
+		}
 	}
-	a.ResetCumulativeOutput()
 	a.Mu.Lock()
 	a.heldDivider = &piHeldDivider{raw: append([]byte(nil), raw...), env: env, willRetry: willRetry, interrupted: interrupted}
 	a.Mu.Unlock()
 	// Another run can continue this turn. Only agent_settled writes its final divider.
-	a.sink.ResetSpans()
 	if a.canRequestPiSessionStats() {
 		go func() { _, _ = a.refreshPiSessionStats(piSessionStatsTimeout(a.APITimeout())) }()
 	}
@@ -619,6 +627,7 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 	}
 	description := piExtractDescription(input, env.ToolName)
 	a.Mu.Lock()
+	a.closedSpans.Reopen(env.ToolCallID)
 	if a.toolStates == nil {
 		a.toolStates = make(map[string]*piToolState)
 	}
@@ -729,8 +738,13 @@ func (a *Agent) handlePiToolExecutionUpdate(raw []byte) {
 		return
 	}
 	var partial piPartialResult
-	if len(env.PartialResult) > 0 && json.Unmarshal(env.PartialResult, &partial) == nil {
-		a.Mu.Lock()
+	hasPartial := len(env.PartialResult) > 0 && json.Unmarshal(env.PartialResult, &partial) == nil
+	a.Mu.Lock()
+	if a.closedSpans.WasClosed(env.ToolCallID) {
+		a.Mu.Unlock()
+		return
+	}
+	if hasPartial {
 		if a.toolStates == nil {
 			a.toolStates = make(map[string]*piToolState)
 		}
@@ -743,8 +757,8 @@ func (a *Agent) handlePiToolExecutionUpdate(raw []byte) {
 		// json.Unmarshal already copied the RawMessage from the input line. Move
 		// that owned slice into the recovery state without a second full copy.
 		tool.PartialResult = env.PartialResult
-		a.Mu.Unlock()
 	}
+	a.Mu.Unlock()
 
 	// Pi re-sends the WHOLE partial result on every update, so a join of every text
 	// block costs the accumulated output each time and the cost grows with the call.
@@ -823,6 +837,10 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 	}
 
 	a.Mu.Lock()
+	if a.closedSpans.WasClosed(env.ToolCallID) {
+		a.Mu.Unlock()
+		return
+	}
 	tool := a.toolStates[env.ToolCallID]
 	if tool == nil || !tool.nested {
 		a.TurnToolUses++
@@ -873,6 +891,26 @@ func (a *Agent) discardIncompletePiTools() {
 	a.toolCallPrompts.Clear()
 }
 
+// clearStartlessPiTools releases tool_execution_update state and cumulative
+// output counters for calls that never observed a tool_execution_start, while
+// preserving started open tools across normal and error turn endings.
+func (a *Agent) clearStartlessPiTools() {
+	a.Mu.Lock()
+	var orphanIDs []string
+	for toolCallID, tool := range a.toolStates {
+		if tool == nil || len(tool.StartFrame) == 0 {
+			delete(a.toolStates, toolCallID)
+			orphanIDs = append(orphanIDs, toolCallID)
+		}
+	}
+	a.Mu.Unlock()
+	sort.Strings(orphanIDs)
+	for _, toolCallID := range orphanIDs {
+		a.ClearCumulativeOutput(toolCallID)
+		a.sink.ReportProgress(agent.CompleteOutputProgress(toolCallID))
+	}
+}
+
 func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {
 	if a.IsDiscardingOutput() {
 		a.discardIncompletePiTools()
@@ -885,6 +923,7 @@ func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {
 		if tool == nil {
 			continue
 		}
+		a.closedSpans.MarkClosed(toolCallID)
 		toolCallIDs = append(toolCallIDs, toolCallID)
 		tools[toolCallID] = *tool
 	}

@@ -18,9 +18,7 @@ func (a *Agent) settleConversationAfterExit(run *kimiRun, completion agent.Messa
 	if a.IsDiscardingOutput() {
 		// A restart discards buffered output, but still releases the spans
 		// opened by requests the Worker already accepted.
-		for _, publication := range output.turns {
-			publication.scope.ResetSpans()
-		}
+		a.closeOpenConversationToolsAcrossTurns(run, completion, true)
 		run.conversation = nil
 		return
 	}
@@ -62,5 +60,6 @@ func (a *Agent) settleConversationAfterExit(run *kimiRun, completion agent.Messa
 			a.persistConversationItems(run, turn, publication, frame, selection)
 		}
 	}
+	a.closeOpenConversationToolsAcrossTurns(run, completion, true)
 	output.activeTurnID = ""
 }

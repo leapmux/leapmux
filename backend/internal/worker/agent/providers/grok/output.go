@@ -129,6 +129,20 @@ func (a *Agent) handleTurnCompleted(notification grokNotification, raw []byte, m
 	a.EndAgentTurn(json.RawMessage(raw))
 }
 
+func grokIsCancelledTurnEnd(frame json.RawMessage) bool {
+	var envelope struct {
+		Params struct {
+			Update struct {
+				StopReason string `json:"stop_reason"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(frame, &envelope) != nil {
+		return false
+	}
+	return envelope.Params.Update.StopReason == "cancelled"
+}
+
 // handleResponseCompleted broadcasts the token counts of one model call. The
 // input, the cached input and the output of the LAST call are the context that
 // the conversation fills now, so the browser derives the fill from them.

@@ -644,6 +644,7 @@ func (a *Agent) onToolCall(payload []byte, target droidOutputTarget) {
 		target.state.nextToolOrder++
 		tool = &droidTool{id: n.ToolUse.ID, spanID: "droid-tool-" + n.ToolUse.ID, order: target.state.nextToolOrder, pendingRow: slices.Clone(payload)}
 		target.state.tools[n.ToolUse.ID] = tool
+		target.state.closedSpans.Reopen(tool.spanID)
 		target.sink.OpenSpan(tool.spanID, "")
 	} else if tool.pendingRow != nil {
 		tool.pendingRow = slices.Clone(payload)
@@ -696,11 +697,14 @@ func (a *Agent) onToolProgressUpdate(payload []byte, target droidOutputTarget) {
 	if notification.ToolUseID == "" {
 		return
 	}
+	scope := "droid-tool-" + notification.ToolUseID
+	if target.state.closedSpans.WasClosed(scope) {
+		return
+	}
 	tail := notification.Update.Text
 	if notification.Update.FullOutput != nil {
 		tail = *notification.Update.FullOutput
 	}
-	scope := "droid-tool-" + notification.ToolUseID
 	// Droid forwards a preview but omits its native truncation flag. A short
 	// preview can have lost earlier lines, so neither length proves completeness.
 	target.sink.ReportProgress(agent.OutputTailProgress(scope, tail, false))
@@ -723,11 +727,16 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
+	spanID := "droid-tool-" + n.ToolUseID
+	if n.ToolUseID != "" && target.state.closedSpans.WasClosed(spanID) {
+		return
+	}
 	a.flushPendingToolCall(target, n.ToolUseID)
 	tool := target.state.tools[n.ToolUseID]
 	delete(target.state.tools, n.ToolUseID)
 	if tool != nil {
 		target.state.turnToolUse++
+		spanID = tool.spanID
 	}
 	if n.IsError {
 		sessionID := target.childSessionID
@@ -736,15 +745,59 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 		}
 		delete(a.childSpawns, droidSpawnKey(sessionID, n.ToolUseID))
 	}
-	spanID := "droid-tool-" + n.ToolUseID
-	if tool != nil {
-		spanID = tool.spanID
-	}
 	a.persistRow(payload, agent.SpanInfo{SpanID: spanID, Closing: true}, target)
 	if n.ToolUseID != "" {
 		target.sink.ReportProgress(agent.CompleteOutputProgress(spanID))
 	}
 	target.sink.CloseSpan(spanID)
+}
+
+// closeOpenTools flushes any pending opening rows first, closes all open tools
+// in deterministic (order, id) order with completion, and optionally resets
+// spans and progress on target.sink.
+func (a *Agent) closeOpenTools(target droidOutputTarget, completion agent.MessageCompletion, resetSpans bool) {
+	discarding := a.IsDiscardingOutput()
+	if !discarding {
+		a.flushPendingToolCalls(target)
+	}
+	if len(target.state.tools) > 0 {
+		open := make([]*droidTool, 0, len(target.state.tools))
+		for _, tool := range target.state.tools {
+			open = append(open, tool)
+		}
+		sort.Slice(open, func(i, j int) bool {
+			if open[i].order != open[j].order {
+				return open[i].order < open[j].order
+			}
+			return open[i].id < open[j].id
+		})
+		for _, tool := range open {
+			target.state.closedSpans.MarkClosed(tool.spanID)
+			if !discarding {
+				closingPayload, err := json.Marshal(map[string]any{
+					"type":      contracts.DroidToolNotificationToolResult,
+					"toolUseId": tool.id,
+					"isError":   completion != agent.MessageCompletionComplete,
+				})
+				if err == nil {
+					a.enqueueOutput(target, agent.MessageContent{
+						Original:   closingPayload,
+						Completion: completion,
+					}, agent.SpanInfo{
+						SpanID:   tool.spanID,
+						SpanType: tool.name,
+						Closing:  true,
+					}, droidOutputMessage)
+				}
+			}
+			target.sink.ReportProgress(agent.CompleteOutputProgress(tool.spanID))
+			target.sink.CloseSpan(tool.spanID)
+		}
+		clear(target.state.tools)
+	}
+	if resetSpans {
+		providerkit.ResetSpansAndProgress(target.sink)
+	}
 }
 
 // onAgentTurnCompleted ends the turn. PersistTurnEnd runs before the clear, so
@@ -763,10 +816,16 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	completion, status := droidTurnCompletion(n.Reason)
 	a.persistRemainingGeneration(target, completion)
 	a.flushPendingToolCalls(target)
+	if completion == agent.MessageCompletionInterrupted || target.childSessionID != "" {
+		a.closeOpenTools(target, completion, false)
+	}
 	a.persistTurnEnd(payload, target)
 	if target.childSessionID != "" {
 		a.closeChildSession(target.childSessionID, status)
 	} else {
+		if completion == agent.MessageCompletionInterrupted {
+			providerkit.ResetSpansAndProgress(target.sink)
+		}
 		a.endTurn()
 		a.refreshContextUsage()
 	}

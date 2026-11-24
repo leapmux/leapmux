@@ -34,6 +34,10 @@ type Agent struct {
 	// that arrives after the ack still names the spawn id, so it must reach
 	// the renamed row.
 	gooseChildRenames map[string]string
+	// activeDelegations tracks foreground delegated subagent session IDs
+	// started in this session until a completed/failed notice or interrupted
+	// prompt closes them. Guarded by a.Mu.
+	activeDelegations map[string]struct{}
 }
 
 // This assertion makes a missing Agent method a compile error.

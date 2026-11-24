@@ -288,13 +288,10 @@ func TestLettaTurnEndStoresTheStartOfEachCallItOutlivesAsItsClosingRow(t *testin
 		stopReason string
 		want       agent.MessageCompletion
 	}{
-		// `client_tool_end` states how the call ended, whatever the turn did.
-		{name: "an error end", endStatus: "error", stopReason: "end_turn", want: agent.MessageCompletionError},
-		{name: "a success end", endStatus: "success", stopReason: "cancelled", want: agent.MessageCompletionComplete},
-		// A call that never ended did not finish, also in a turn that ended normally.
-		{name: "no end in a turn that ended", stopReason: "end_turn", want: agent.MessageCompletionInterrupted},
+		// `client_tool_end` states how the call ended, whatever the interrupted turn did.
+		{name: "an error end in a cancelled turn", endStatus: "error", stopReason: "cancelled", want: agent.MessageCompletionError},
+		{name: "a success end in a cancelled turn", endStatus: "success", stopReason: "cancelled", want: agent.MessageCompletionComplete},
 		{name: "no end in a cancelled turn", stopReason: "cancelled", want: agent.MessageCompletionInterrupted},
-		{name: "no end in a failed turn", stopReason: "error", want: agent.MessageCompletionError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -479,4 +476,111 @@ func TestLettaCloseToolScopeStoresNoClosingRowOnceOutputIsDiscarded(t *testing.T
 	assert.Equal(t, []string{"letta-tool-call"}, sink.ClosedSpans(), "the call still ends")
 	assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("letta-tool-call"))
 	assert.Empty(t, a.tools)
+}
+
+func TestLettaNormalAndErrorTurnPreserveOpenToolsAndLateReturnAfterInterruptSuppressed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("normal and error turns preserve open tools", func(t *testing.T) {
+		t.Parallel()
+		for _, stopReason := range []string{"end_turn", "error"} {
+			a, sink := newLettaChildTestAgent(t)
+			start, _ := lettaOutputFrame(t, "", lettaOutputStart("call-open", "run-1"))
+			a.HandleOutput(start)
+			a.HandleOutput(lettaTurnEnd(t, stopReason))
+
+			assert.Empty(t, sink.ClosedSpans(), stopReason)
+			assert.Empty(t, lettaClosingRows(sink.Messages()), stopReason)
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans", stopReason)
+			assert.Contains(t, a.tools, lettaToolKey("", "call-open"), stopReason)
+
+			// Late native tool return closes it cleanly once.
+			ret, _ := lettaOutputFrame(t, "", map[string]any{
+				"message_type": "tool_return_message", "run_id": "run-1",
+				"tool_call_id": "call-open", "status": "success", "tool_return": "done",
+			})
+			a.HandleOutput(ret)
+			assert.Equal(t, []string{"letta-tool-call-open"}, sink.ClosedSpans(), stopReason)
+		}
+	})
+
+	t.Run("cancelled turn resets spans and suppresses late tool frames", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newLettaChildTestAgent(t)
+		start, _ := lettaOutputFrame(t, "", lettaOutputStart("call-cut", "run-1"))
+		a.HandleOutput(start)
+		a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
+
+		assert.Equal(t, []string{"letta-tool-call-cut"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+		countBeforeLate := sink.MessageCount()
+		progressBeforeLate := len(sink.ProgressUpdates())
+		window, _ := lettaOutputFrame(t, "", lettaOutputWindow("call-cut", "run-1", "late output window"))
+		a.HandleOutput(window)
+		assert.Equal(t, countBeforeLate, sink.MessageCount(), "late tool progress window after force-close must be dropped")
+		assert.Equal(t, progressBeforeLate, len(sink.ProgressUpdates()), "late tool progress window after force-close must not emit progress")
+
+		statusEnd, _ := lettaOutputFrame(t, "", map[string]any{
+			"message_type": "client_tool_end", "run_id": "run-1",
+			"tool_call_id": "call-cut", "status": "success",
+		})
+		a.HandleOutput(statusEnd)
+		assert.Equal(t, countBeforeLate, sink.MessageCount(), "late status-only client_tool_end after force-close must be dropped")
+		assert.Equal(t, progressBeforeLate, len(sink.ProgressUpdates()), "late status-only client_tool_end after force-close must not emit progress")
+
+		ret, _ := lettaOutputFrame(t, "", map[string]any{
+			"message_type": "tool_return_message", "run_id": "run-1",
+			"tool_call_id": "call-cut", "status": "success", "tool_return": "late",
+		})
+		a.HandleOutput(ret)
+		assert.Equal(t, countBeforeLate, sink.MessageCount(), "late tool_return_message after force-close must be dropped")
+		assert.Equal(t, progressBeforeLate, len(sink.ProgressUpdates()), "late tool_return_message after force-close must not emit progress")
+	})
+}
+
+func TestLettaRootInterruptDoesNotSuppressChildToolReturnWithSharedCallID(t *testing.T) {
+	t.Parallel()
+	a, root := newLettaChildTestAgent(t)
+	a.HandleOutput(lettaOutputChildState(t, "child-one", "running"))
+	row, found := root.BackgroundTask("child-one")
+	require.True(t, found)
+	child := root.Child(row.ChildAgentID)
+
+	rootStart, _ := lettaOutputFrame(t, "", lettaOutputStart("shared-call", "run-root"))
+	childStart, _ := lettaOutputFrame(t, "child-one", lettaOutputStart("shared-call", "run-child"))
+	a.HandleOutput(rootStart)
+	a.HandleOutput(childStart)
+
+	// Interrupting the root turn force-closes root's shared-call only.
+	a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
+	assert.Equal(t, []string{"letta-tool-shared-call"}, root.ClosedSpans())
+	assert.NotContains(t, a.tools, lettaToolKey("", "shared-call"))
+	assert.Contains(t, a.tools, lettaToolKey("child-one", "shared-call"))
+	assert.Empty(t, child.ClosedSpans())
+
+	// A late root tool_return_message is still suppressed.
+	rootCountBefore := root.MessageCount()
+	lateRootReturn, _ := lettaOutputFrame(t, "", map[string]any{
+		"message_type": "tool_return_message", "run_id": "run-root",
+		"tool_call_id": "shared-call", "status": "success", "tool_return": "late root",
+	})
+	a.HandleOutput(lateRootReturn)
+	assert.Equal(t, rootCountBefore, root.MessageCount(), "late root tool_return_message after force-close must be dropped")
+
+	// The running child's native tool_return_message for the same tool_call_id must still persist and close its span.
+	childCountBefore := child.MessageCount()
+	childReturn, nativeChildReturn := lettaOutputFrame(t, "child-one", map[string]any{
+		"message_type": "tool_return_message", "run_id": "run-child",
+		"tool_call_id": "shared-call", "status": "success", "tool_return": "child done",
+	})
+	a.HandleOutput(childReturn)
+	childRows := child.Messages()
+	require.Len(t, childRows, childCountBefore+1, "child tool_return_message must not be dropped by root closedSpans")
+	assert.Equal(t, nativeChildReturn, childRows[len(childRows)-1].Content)
+	assert.True(t, childRows[len(childRows)-1].Closing)
+	assert.Equal(t, "letta-tool-shared-call", childRows[len(childRows)-1].SpanID)
+	assert.Equal(t, []string{"letta-tool-shared-call"}, child.ClosedSpans())
+	assert.NotContains(t, a.tools, lettaToolKey("child-one", "shared-call"))
 }

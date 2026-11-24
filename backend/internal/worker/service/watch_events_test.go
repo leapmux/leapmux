@@ -1785,3 +1785,68 @@ func TestWatchEventsRequestCancellationJoinsItsHandler(t *testing.T) {
 	assert.Nil(t, controller, "handler must release its stream binding")
 	assert.Empty(t, svc.Watchers.channelOwners)
 }
+
+func TestSessionInfoReplayEventsIncludesRunningToolTailsAndOpenPermissionChecks(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, _ := newSessionInfoServiceFixture(t)
+	sink.UpdateSessionID("sess-1")
+	sink.OpenSpan("S1", "")
+	sink.OpenSpan("S2", "")
+	sink.CloseSpan("S2")
+
+	sink.ReportProgress(agent.OutputTailProgress("S1", "still running tail", true))
+	sink.ReportProgress(agent.OutputTailProgress("S2", "closed span tail", false))
+	sink.BroadcastSessionInfo(permissionCheckInfo("sess-1", "S1", true))
+	sink.BroadcastSessionInfo(permissionCheckInfo("sess-1", "S2", true))
+
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"agent_end"}`)}, agent.SpanInfo{}))
+
+	// After PersistTurnEnd, S1's tail and permission check replay while S2's permission check was pruned.
+	events := svc.Output.SessionInfoReplayEvents("agent-1")
+	var replayedTails []map[string]interface{}
+	var replayedChecks []map[string]interface{}
+	for _, ev := range events {
+		info := replayedSessionInfo(t, ev)
+		running, ok := info[contracts.SessionInfoKeyRunningTool].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasTail := running[contracts.RunningToolFieldOutputTail]; hasTail {
+			replayedTails = append(replayedTails, running)
+		}
+		if _, hasCheck := running[contracts.RunningToolFieldPermissionCheck]; hasCheck {
+			replayedChecks = append(replayedChecks, running)
+		}
+	}
+	require.Len(t, replayedTails, 2)
+	assert.Equal(t, "S1", replayedTails[0][contracts.RunningToolFieldSpanId])
+	assert.Equal(t, "still running tail", replayedTails[0][contracts.RunningToolFieldOutputTail])
+	assert.Equal(t, true, replayedTails[0][contracts.RunningToolFieldOutputTruncated])
+	require.Len(t, replayedChecks, 1, "PersistTurnEnd must prune closed S2 while retaining open S1")
+	assert.Equal(t, "S1", replayedChecks[0][contracts.RunningToolFieldSpanId])
+	assert.Equal(t, true, replayedChecks[0][contracts.RunningToolFieldPermissionCheck])
+
+	// CloseSpan(S1) clears S1's tail and permission check.
+	sink.CloseSpan("S1")
+	for _, ev := range svc.Output.SessionInfoReplayEvents("agent-1") {
+		info := replayedSessionInfo(t, ev)
+		running, ok := info[contracts.SessionInfoKeyRunningTool].(map[string]interface{})
+		if ok {
+			assert.NotEqual(t, "S1", running[contracts.RunningToolFieldSpanId])
+		}
+	}
+
+	// ResetSpans clears any remaining permission checks.
+	sink.OpenSpan("S3", "")
+	sink.BroadcastSessionInfo(permissionCheckInfo("sess-1", "S3", true))
+	sink.ResetSpans()
+	for _, ev := range svc.Output.SessionInfoReplayEvents("agent-1") {
+		info := replayedSessionInfo(t, ev)
+		running, ok := info[contracts.SessionInfoKeyRunningTool].(map[string]interface{})
+		if ok {
+			_, hasCheck := running[contracts.RunningToolFieldPermissionCheck]
+			assert.False(t, hasCheck, "ResetSpans must clear cached permission checks")
+		}
+	}
+}

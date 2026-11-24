@@ -339,7 +339,7 @@ func TestAnExitAfterADiscardPersistsNoStreamedText(t *testing.T) {
 }
 
 // The agent reads a turn end whose payload states no turn from its envelope.
-// Its status is unknown, so the agent closes what it cut off as an error.
+// Its status is unknown (non-interrupted error), so still-open tools stay open across the divider.
 func TestATurnEndWithNoTurnRecordUsesTheEnvelope(t *testing.T) {
 	t.Parallel()
 	for name, payload := range map[string]any{"an empty payload": map[string]any{}, "a payload of no shape": "x"} {
@@ -351,8 +351,8 @@ func TestATurnEndWithNoTurnRecordUsesTheEnvelope(t *testing.T) {
 
 		assert.Equal(t, []bool{true, false}, sink.TurnActives(), name)
 		rows := messagesWithSpan(sink, "call_1")
-		require.Len(t, rows, 2, name)
-		assert.Equal(t, agent.MessageCompletionError, rows[1].Completion, name)
+		require.Len(t, rows, 1, name)
+		assert.Empty(t, sink.ClosedSpans(), name)
 		var turnEnds int
 		for _, message := range sink.Messages() {
 			if message.TurnEnd {
@@ -362,6 +362,45 @@ func TestATurnEndWithNoTurnRecordUsesTheEnvelope(t *testing.T) {
 		}
 		assert.Equal(t, 1, turnEnds, name)
 	}
+}
+
+func TestCodewhaleNormalAndErrorTurnPreserveOpenToolAndLateDupSuppressed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("normal and error turns preserve open tool and native result closes once", func(t *testing.T) {
+		t.Parallel()
+		for _, status := range []string{contracts.CodewhaleTurnStatusCompleted, contracts.CodewhaleTurnStatusFailed} {
+			a, sink := newTestAgent(t, nil)
+			a.HandleOutput(turnStartedEvent(1, testTurnID))
+			a.HandleOutput(toolStartEvent(2, "item_1", "call_1", contracts.CodewhaleToolBash, map[string]any{"command": "sleep 10"}))
+			a.HandleOutput(turnCompletedEvent(3, testTurnID, status))
+
+			assert.Empty(t, sink.ClosedSpans(), status)
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans", status)
+			assert.Len(t, messagesWithSpan(sink, "call_1"), 1, status)
+
+			a.HandleOutput(toolEndEvent(4, contracts.CodewhaleEventItemCompleted, "item_1", "call_1", contracts.CodewhaleToolBash, "done", nil, nil))
+			assert.Contains(t, sink.ClosedSpans(), "call_1", status)
+			assert.Len(t, messagesWithSpan(sink, "call_1"), 2, status)
+		}
+	})
+
+	t.Run("late completion after interrupted turn is suppressed without incrementing TurnToolUses", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newTestAgent(t, nil)
+		a.HandleOutput(turnStartedEvent(1, testTurnID))
+		a.HandleOutput(toolStartEvent(2, "item_1", "call_1", contracts.CodewhaleToolBash, map[string]any{"command": "sleep 10"}))
+		a.HandleOutput(turnCompletedEvent(3, testTurnID, contracts.CodewhaleTurnStatusInterrupted))
+
+		require.Len(t, messagesWithSpan(sink, "call_1"), 2)
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+		toolUsesBefore := a.TurnToolUses
+		a.HandleOutput(toolEndEvent(4, contracts.CodewhaleEventItemCompleted, "item_1", "call_1", contracts.CodewhaleToolBash, "late", nil, nil))
+		assert.Len(t, messagesWithSpan(sink, "call_1"), 2, "late completion must not duplicate closing row")
+		assert.Equal(t, toolUsesBefore, a.TurnToolUses, "late completion must not increment TurnToolUses")
+	})
 }
 
 // A tool item that states no call id has no span to open, and its end finds

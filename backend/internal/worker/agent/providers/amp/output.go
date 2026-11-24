@@ -119,6 +119,8 @@ func (a *Agent) handleLine(proc *ampProcess, line *providerkit.ParsedLine) {
 	if a.discarding() || line == nil {
 		return
 	}
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	switch line.Type {
 	case contracts.AmpLineTypeSystem:
 		a.handleSystemLine(proc, line.Raw)
@@ -370,7 +372,7 @@ func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 	}
 	a.prepareSteerRecovery()
 	ended := false
-	a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
+	a.endTurn(false, func(turn turnState) (agent.MessageCompletion, []byte) {
 		ended = true
 		switch {
 		case turn.interruptRequested && !line.statesFailure():
@@ -407,6 +409,7 @@ func (a *Agent) openToolCall(block ampBlock, content agent.MessageContent) {
 		subagent: isSubagentTool(block.Name),
 	}
 	a.mu.Lock()
+	a.closedSpans.Reopen(block.ID)
 	tool.order = a.nextOrder
 	a.nextOrder++
 	a.tools[block.ID] = tool
@@ -430,6 +433,10 @@ func (a *Agent) closeToolCall(block ampBlock, row []byte) {
 		return
 	}
 	a.mu.Lock()
+	if a.closedSpans.WasClosed(block.ToolUseID) {
+		a.mu.Unlock()
+		return
+	}
 	tool := a.tools[block.ToolUseID]
 	delete(a.tools, block.ToolUseID)
 	if a.turn.active {
@@ -462,20 +469,17 @@ func (a *Agent) closeToolCall(block ampBlock, row []byte) {
 // resultLine is the `result` Amp printed, or nil for a turn that ended inside
 // the process, whose row the worker writes itself.
 func (a *Agent) finishTurn(completion agent.MessageCompletion, resultLine []byte) {
-	a.endTurn(func(turnState) (agent.MessageCompletion, []byte) { return completion, resultLine })
+	a.endTurn(false, func(turnState) (agent.MessageCompletion, []byte) { return completion, resultLine })
 }
 
-// endTurn ends the running turn: it closes the tool calls the turn left open,
-// persists the turn-end row, and clears the flag. decide states the turn's
-// completion and its `result` line from the turn itself, read under the same
-// lock that ends it, so an interrupt that lands a moment earlier is never
-// lost. A nil line makes the worker write one: Amp's success shape for a
-// complete turn, and its error shape otherwise.
+// endTurn ends the running turn: when closeOnTeardown is true or the turn was
+// interrupted, it closes the tool calls the turn left open and resets spans and
+// progress; normal and non-exiting error turns preserve open tool spans.
 //
 // The worker persists the row BEFORE the flag clears, because the clear is the
 // settle edge that spends the turn's tool count (see
 // agent.TranscriptServices.PersistTurnEnd).
-func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []byte)) {
+func (a *Agent) endTurn(closeOnTeardown bool, decide func(turn turnState) (agent.MessageCompletion, []byte)) {
 	endedAt := a.now()
 	a.mu.Lock()
 	if !a.turn.active {
@@ -485,14 +489,20 @@ func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []
 	turn := a.turn
 	completion, resultLine := decide(turn)
 	a.turn = turnState{}
-	open := a.takeOpenToolsLocked()
+	closeOpen := closeOnTeardown || completion == agent.MessageCompletionInterrupted
+	var open []*openTool
+	if closeOpen {
+		open = a.takeOpenToolsLocked()
+	}
 	threadID := a.threadID
 	usage := maps.Clone(a.contextUsage)
 	a.mu.Unlock()
 
-	// A permission request outlives no turn: every tool of the turn ended.
-	a.bridge.cancelAll(errTurnEnded)
-	a.closeIncompleteTools(open, completion)
+	if closeOpen {
+		// Pending permission prompts cannot outlive tools that this turn end or teardown closes.
+		a.bridge.cancelAll(errTurnEnded)
+		a.closeIncompleteTools(open, completion)
+	}
 	if resultLine == nil {
 		if completion == agent.MessageCompletionComplete {
 			resultLine = successResultLine(threadID, turn)
@@ -513,8 +523,20 @@ func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []
 			slog.Error("amp persist turn end", "agent_id", a.agentID, "error", err)
 		}
 	}
-	a.sink.ResetSpans()
+	if closeOpen {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	a.PublishTurnActive()
+}
+
+// drainAndResetOpenTools closes every remaining open tool call with completion
+// and resets spans and progress. The caller holds outputMu.
+func (a *Agent) drainAndResetOpenTools(completion agent.MessageCompletion) {
+	a.mu.Lock()
+	open := a.takeOpenToolsLocked()
+	a.mu.Unlock()
+	a.closeIncompleteTools(open, completion)
+	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // takeOpenToolsLocked removes every open tool call, in the order they started.
@@ -522,6 +544,7 @@ func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []
 func (a *Agent) takeOpenToolsLocked() []*openTool {
 	open := make([]*openTool, 0, len(a.tools))
 	for _, tool := range a.tools {
+		a.closedSpans.MarkClosed(tool.id)
 		open = append(open, tool)
 	}
 	clear(a.tools)

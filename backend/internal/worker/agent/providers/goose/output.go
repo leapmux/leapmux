@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -410,6 +411,11 @@ func (a *Agent) handleGooseSessionUpdate(params json.RawMessage) bool {
 		// notice at its end. A completed notice without a summary states a
 		// single child, whose final output only the session export carries.
 		if obs := gooseSubagentNotice(update.Status.Message); obs != nil {
+			if obs.CloseRow {
+				a.Mu.Lock()
+				delete(a.activeDelegations, obs.RowKey)
+				a.Mu.Unlock()
+			}
 			a.ApplySubagentObservation(obs)
 			if obs.Status == bgtask.StatusSucceeded && obs.Report.Text == "" {
 				a.fetchGooseSubagentReport(obs.RowKey)
@@ -474,13 +480,62 @@ func goosePromptFailureWasDisplayed(output goosePromptOutputState, err error) bo
 		providerkit.StringField(response.Data, "reason") == "turn_failed"
 }
 
+// clearGooseState resets provider-local state across ClearContext.
+func (a *Agent) clearGooseState() {
+	a.Mu.Lock()
+	clear(a.gooseChildRenames)
+	clear(a.gooseOutput)
+	clear(a.activeDelegations)
+	a.promptOutput = goosePromptOutputState{}
+	a.Mu.Unlock()
+}
+
+func (a *Agent) takeActiveDelegationsLocked() []string {
+	if len(a.activeDelegations) == 0 {
+		return nil
+	}
+	cancelled := make([]string, 0, len(a.activeDelegations))
+	for id := range a.activeDelegations {
+		cancelled = append(cancelled, id)
+	}
+	clear(a.activeDelegations)
+	return cancelled
+}
+
+func (a *Agent) closeCancelledDelegations(cancelled []string) {
+	if len(cancelled) == 0 {
+		return
+	}
+	slices.Sort(cancelled)
+	for _, id := range cancelled {
+		a.ApplySubagentObservation(&acp.SubagentObservation{
+			RowKey:   id,
+			Status:   bgtask.StatusInterrupted,
+			CloseRow: true,
+			Mode:     acp.ModeCloseOnly,
+		})
+	}
+}
+
+func (a *Agent) cancelActiveDelegations() {
+	a.Mu.Lock()
+	cancelled := a.takeActiveDelegationsLocked()
+	a.Mu.Unlock()
+	a.closeCancelledDelegations(cancelled)
+}
+
 // finishGoosePrompt consumes one prompt's message, goal and compaction observations.
 func (a *Agent) finishGoosePrompt(err error, stopped bool) acp.PromptEnding {
 	a.Mu.Lock()
 	output := a.promptOutput
 	// Later chunks need a new buffer because this snapshot is read after unlock.
 	a.promptOutput = goosePromptOutputState{}
+	var cancelledDelegations []string
+	if stopped {
+		cancelledDelegations = a.takeActiveDelegationsLocked()
+	}
 	a.Mu.Unlock()
+	a.closeCancelledDelegations(cancelledDelegations)
 	ending := a.finishGooseGoalPrompt(output, err, stopped)
 	if !stopped && goosePromptFailureWasDisplayed(output, err) {
 		ending.NoteWritten = true

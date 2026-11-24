@@ -89,6 +89,7 @@ func (a *Agent) hooks(model string, sink agent.ProviderServices) acp.Hooks {
 		PreparePrompt:              a.prepareAudioPrompt,
 		OpenRootTranscript:         a.openRootTranscript,
 		PromptEnded:                a.retryChildArchives,
+		IdleInterrupt:              a.clearOpenRootSpans,
 		SessionNotificationMetadata: func(_ string, metadata map[string]json.RawMessage) {
 			broadcastFastagentStatusLine(sink, metadata)
 		},

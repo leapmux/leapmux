@@ -242,7 +242,7 @@ func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
 	msg := sink.Messages()[0]
 	assert.True(t, msg.TurnEnd, "agent_end must route through PersistTurnEnd")
 
-	assert.Equal(t, 1, sink.ResetSpanCount(), "agent_end should reset spans")
+	assert.Equal(t, 0, sink.ResetSpanCount(), "normal agent_end must preserve open spans")
 	// agent_end broadcasts no session information.
 	// The usage snapshot is empty, and get_session_stats requires live stdin.
 	// Any broadcast here reports an unexpected key.
@@ -471,7 +471,7 @@ func TestHandlePiOutput_AgentEnd_PersistsIncompleteToolOutput(t *testing.T) {
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash","args":{"command":"printf partial"}}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_update","toolCallId":"tool-1","partialResult":{"content":[{"type":"text","text":"partial output"}],"details":{}}}`)))
-	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}]}`)))
+	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`)))
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
@@ -488,7 +488,7 @@ func TestHandlePiOutput_AgentEnd_PersistsIncompleteToolOutput(t *testing.T) {
 		"toolName":"bash",
 		"partialResult":{"content":[{"type":"text","text":"partial output"}],"details":{}}
 	}`, string(result.SupplementalContent))
-	assert.Equal(t, agent.MessageCompletionError, result.Completion)
+	assert.Equal(t, agent.MessageCompletionInterrupted, result.Completion)
 
 	// The start frame and supplement resolve to one completed call.
 	// Every extractor must receive its output.
@@ -509,7 +509,7 @@ func TestHandlePiOutput_AgentEndClosesToolWithoutPartialOutput(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newPiAgentWithSink(agent.NewProviderServices(sink))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_start","toolCallId":"tool-empty","toolName":"bash","args":{"command":"sleep 10"}}`)))
-	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}]}`)))
+	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`)))
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	require.Len(t, sink.Messages(), 3)
@@ -520,7 +520,7 @@ func TestHandlePiOutput_AgentEndClosesToolWithoutPartialOutput(t *testing.T) {
 		`{"type":"tool_execution_start","toolCallId":"tool-empty","toolName":"bash","args":{"command":"sleep 10"}}`,
 		string(closing.Content))
 	assert.Empty(t, closing.SupplementalContent, "the call reported nothing, so nothing was recovered")
-	assert.Equal(t, agent.MessageCompletionError, closing.Completion)
+	assert.Equal(t, agent.MessageCompletionInterrupted, closing.Completion)
 }
 
 // A supplement that identifies another call cannot reach this row's result.
@@ -2270,4 +2270,96 @@ func TestPiPendingGenerationStaysBeforeALaterNativeMessage(t *testing.T) {
 	require.Len(t, messages, 2)
 	assert.Contains(t, string(messages[0].Content), "Earlier answer")
 	assert.Contains(t, string(messages[1].Content), "Later answer")
+}
+
+func TestPiNormalAndErrorAgentEndPreserveOpenTool(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		agentEnd string
+	}{
+		{name: "normal", agentEnd: `{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop"}]}`},
+		{name: "error", agentEnd: `{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"boom"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+			a.HandleOutput([]byte(`{"type":"agent_start"}`))
+			a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-open","toolName":"bash","args":{"command":"sleep 30"}}`))
+			a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"tc-open","toolName":"bash","partialResult":{"content":[{"type":"text","text":"running"}]}}`))
+			a.HandleOutput([]byte(tc.agentEnd))
+			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+
+			rows := sink.Messages()
+			require.Len(t, rows, 2)
+			assert.False(t, rows[0].Closing)
+			assert.True(t, rows[1].TurnEnd)
+			assert.Empty(t, sink.ClosedSpans())
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		})
+	}
+}
+
+func TestPiLateToolExecutionEndAfterInterruptSuppressed(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"agent_start"}`))
+	a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-1","toolName":"bash","args":{"command":"sleep 30"}}`))
+	a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"aborted"}]}`))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+	require.Len(t, sink.Messages(), 3)
+	assert.True(t, sink.Messages()[1].Closing)
+	assert.Equal(t, agent.MessageCompletionInterrupted, sink.Messages()[1].Completion)
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+	// Late tool_execution_update after interrupt is suppressed without emitting progress or re-creating toolStates.
+	progressBefore := len(sink.ProgressUpdates())
+	a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"tc-1","toolName":"bash","partialResult":{"content":[{"type":"text","text":"late tail"}]}}`))
+	assert.Empty(t, sink.ProgressUpdates()[progressBefore:])
+	a.Mu.Lock()
+	assert.Empty(t, a.toolStates)
+	a.Mu.Unlock()
+
+	// Late native tool_execution_end after interrupt is suppressed without duplicating rows or incrementing TurnToolUses.
+	a.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"tc-1","toolName":"bash","result":{"content":[{"type":"text","text":"late"}]}}`))
+	assert.Len(t, sink.Messages(), 3)
+	a.Mu.Lock()
+	toolUses := a.TurnToolUses
+	a.Mu.Unlock()
+	assert.Zero(t, toolUses)
+}
+
+func TestPiNormalAndErrorAgentEndClearStartlessUpdatesWithoutDroppingOpenTools(t *testing.T) {
+	t.Parallel()
+	for _, stopReason := range []string{"stop", "error"} {
+		t.Run(stopReason, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+
+			a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-open","toolName":"bash","args":{"command":"sleep 30"}}`))
+			a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"tc-open","toolName":"bash","partialResult":{"content":[{"type":"text","text":"running..."}]}}`))
+			a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"orphan","toolName":"bash","partialResult":{"content":[{"type":"text","text":"orphan output"}]}}`))
+			require.True(t, a.HasCumulativeOutputForTest("tc-open"))
+			require.True(t, a.HasCumulativeOutputForTest("orphan"))
+
+			a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"` + stopReason + `"}]}`))
+			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+
+			assert.False(t, a.HasCumulativeOutputForTest("orphan"), "startless update cumulative output must be released on %s agent_end", stopReason)
+			assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("orphan"))
+			assert.True(t, a.HasCumulativeOutputForTest("tc-open"), "started open tool cumulative output must survive %s agent_end", stopReason)
+			assert.NotContains(t, sink.ClosedSpans(), "tc-open")
+			a.Mu.Lock()
+			_, orphanPresent := a.toolStates["orphan"]
+			_, openPresent := a.toolStates["tc-open"]
+			a.Mu.Unlock()
+			assert.False(t, orphanPresent)
+			assert.True(t, openPresent)
+		})
+	}
 }

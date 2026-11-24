@@ -532,3 +532,37 @@ func TestGooseSubagentDetectorsClaimOnlyTheSpawn(t *testing.T) {
 		}
 	}
 }
+
+func TestGooseInterruptedPromptClosesActiveDelegatedSubagent(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newGooseOutputAgent(agent.NewProviderServices(sink))
+	hooks := a.HooksForTest()
+	hooks.SubagentFromToolCall = gooseSubagentFromToolCall
+	hooks.SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+	hooks.ToolNotification = a.observeGooseToolNotification
+
+	feedUpdate := func(raw string) {
+		t.Helper()
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":` + raw + `}}`))
+	}
+	feedUpdate(`{"sessionUpdate":"tool_call","toolCallId":"spawn-1","title":"delegate","status":"pending","rawInput":{"instructions":"Work"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`)
+	feedUpdate(`{"sessionUpdate":"tool_call_update","toolCallId":"spawn-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent delegated-sess-1"}}]}`)
+
+	row, found := sink.BackgroundTask("delegated-sess-1")
+	require.True(t, found)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// Normal prompt end must keep the delegated subagent open.
+	a.finishGoosePrompt(nil, false)
+	row, found = sink.BackgroundTask("delegated-sess-1")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// Interrupted prompt closes active foreground delegations as Interrupted.
+	a.finishGoosePrompt(nil, true)
+	row, found = sink.BackgroundTask("delegated-sess-1")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
+}

@@ -215,3 +215,39 @@ func TestPiOldDialogCancellationPreservesAReusedRequestID(t *testing.T) {
 	assert.JSONEq(t, `{"type":"extension_ui_response","id":"input","value":"My new answer"}`, frames[1])
 	assert.Len(t, sink.PublishedControls(), 2)
 }
+
+func TestPiAgentEndWillRetryClearsQuestionStateWhileKeepingToolCallPrompts(t *testing.T) {
+	t.Parallel()
+	a, sink, output := piQuestionResponseFixture()
+	// Also open a cross-turn subagent tool with a remembered spawn prompt.
+	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_start","toolCallId":"sub-1","toolName":"Agent","args":{"description":"Inspect","prompt":"Inspect the repo."}}`)))
+	// Store a custom answer for the pending question dialog.
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My stale custom answer"}`), agent.StopContext{}))
+	// Re-publish a pending question dialog so both questionDialogs and customQuestionAnswers are populated.
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"select-2","method":"select","title":"Choose","options":["1. A — first","2. B — second","3. Type something."]}`))
+	a.Mu.Lock()
+	require.NotEmpty(t, a.questionDialogs)
+	require.NotEmpty(t, a.customQuestionAnswers)
+	a.Mu.Unlock()
+
+	// agent_end with willRetry:true must clear stale question state while keeping toolCallPrompts.
+	// Clear stdin around agent_end so background get_session_stats does not race the test buffer.
+	a.SetStdinForTest(nil)
+	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","willRetry":true,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"transient"}]}`)))
+	a.SetStdinForTest(agenttest.NopStdin(output))
+
+	a.Mu.Lock()
+	assert.Empty(t, a.questionDialogs, "willRetry agent_end must clear stale questionDialogs")
+	assert.Empty(t, a.customQuestionAnswers, "willRetry agent_end must clear stale customQuestionAnswers")
+	a.Mu.Unlock()
+
+	// A follow-up input dialog must not automatically replay the stale custom answer from before the retry.
+	writtenBefore := output.Len()
+	controlsBefore := len(sink.PublishedControls())
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input-after-retry","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
+	assert.Equal(t, writtenBefore, output.Len(), "stale custom answer must not be replayed across retries")
+	assert.Equal(t, controlsBefore+1, len(sink.PublishedControls()))
+
+	// Cross-turn open tool prompts must still survive willRetry.
+	assert.Equal(t, "Inspect the repo.", a.toolCallPrompts.Take("sub-1"))
+}

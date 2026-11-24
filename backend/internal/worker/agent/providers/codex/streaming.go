@@ -481,6 +481,12 @@ func (a *Agent) handleCodexToolOutputDelta(params json.RawMessage) {
 		Delta  string `json:"delta"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.ItemID != "" && notif.Delta != "" {
+		a.Mu.Lock()
+		closed := a.closedSpans.WasClosed(notif.ItemID)
+		a.Mu.Unlock()
+		if closed {
+			return
+		}
 		a.appendCodexToolOutput(notif.ItemID, notif.Delta)
 		// The ACCUMULATED output, not the delta that just landed: Codex sends
 		// deltas, and only this agent knows where the earlier ones ended. It is

@@ -3,6 +3,7 @@ package gemini
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -191,4 +194,110 @@ func TestGeminiChildTranscriptStopBeforeStartDoesNotWaitForAnAbsentLoop(t *testi
 		<-stopped
 		t.Fatal("the stop waited for a child loop that did not start")
 	}
+}
+
+type geminiCloseCountingServices struct {
+	agent.ProviderServices
+	mu         sync.Mutex
+	closeCalls []bgtask.Status
+	failNext   bool
+}
+
+func (s *geminiCloseCountingServices) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	s.mu.Lock()
+	fail := s.failNext
+	if fail {
+		s.failNext = false
+	}
+	s.closeCalls = append(s.closeCalls, status)
+	s.mu.Unlock()
+	if fail {
+		return errors.New("transient close error")
+	}
+	return s.ProviderServices.CloseBackgroundTask(rowKey, status)
+}
+
+func TestGeminiChildTranscriptDoesNotRecloseSucceededOrFlushedChildren(t *testing.T) {
+	t.Parallel()
+
+	t.Run("succeeded child is removed and not reclosed on final flush", func(t *testing.T) {
+		t.Parallel()
+		transcript, sink, path := geminiChildTranscriptFixture(t)
+		counting := &geminiCloseCountingServices{ProviderServices: agent.NewProviderServices(sink)}
+		transcript.services = counting
+
+		appendGeminiChildRecord(t, path, `{"id":"native-complete-model","type":"gemini","content":"","toolCalls":[{"id":"complete_task__child-end","name":"complete_task","args":{"result":{"response":"done"}},"status":"success","result":[{"functionResponse":{"response":{"output":"ok"}}}]}]}`)
+		transcript.flush(false, agent.MessageCompletionComplete)
+		transcript.flush(true, agent.MessageCompletionInterrupted)
+
+		counting.mu.Lock()
+		calls := append([]bgtask.Status(nil), counting.closeCalls...)
+		counting.mu.Unlock()
+		assert.Equal(t, []bgtask.Status{bgtask.StatusSucceeded}, calls, "a succeeded child must not be re-closed on a later final flush")
+	})
+
+	t.Run("flushed incomplete child is removed and not closed twice", func(t *testing.T) {
+		t.Parallel()
+		transcript, sink, _ := geminiChildTranscriptFixture(t)
+		counting := &geminiCloseCountingServices{ProviderServices: agent.NewProviderServices(sink)}
+		transcript.services = counting
+
+		transcript.flush(true, agent.MessageCompletionInterrupted)
+		transcript.flush(true, agent.MessageCompletionError)
+
+		counting.mu.Lock()
+		calls := append([]bgtask.Status(nil), counting.closeCalls...)
+		counting.mu.Unlock()
+		assert.Equal(t, []bgtask.Status{bgtask.StatusInterrupted}, calls, "a child closed in final flush must not be closed again")
+	})
+}
+
+func TestGeminiNormalPromptEndKeepsRunningChildOpenAndRetriesTransientCloseError(t *testing.T) {
+	t.Parallel()
+
+	transcript, sink, _ := geminiChildTranscriptFixture(t)
+	counting := &geminiCloseCountingServices{ProviderServices: agent.NewProviderServices(sink), failNext: true}
+	transcript.services = counting
+	a := &Agent{}
+	a.children = transcript
+
+	// Non-final poll on normal prompt end keeps running child open.
+	a.pollNativeChildren()
+	row, found := sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// First final flush hits transient error, so child stays in transcript.children for retry.
+	a.finishNativeChildren(agent.MessageCompletionInterrupted)
+	row, found = sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// Second final flush succeeds and closes the child once.
+	a.finishNativeChildren(agent.MessageCompletionInterrupted)
+	row, found = sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
+}
+
+func TestGeminiIdleInterruptFinishesNativeChildren(t *testing.T) {
+	t.Parallel()
+
+	transcript, sink, _ := geminiChildTranscriptFixture(t)
+	a, _ := acptest.NewAgentForRPC(t, func() *Agent { return &Agent{} }, func(a *Agent) *acp.Base { return &a.Base })
+	services := agent.NewProviderServices(sink)
+	a.SetSinkForTest(services)
+	*a.HooksForTest() = a.configure(t.Context(), agent.Options{}, services)
+	a.children = transcript
+
+	a.pollNativeChildren()
+	row, found := sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+
+	row, found = sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status, "idle Interrupt must finish lingering Gemini native children")
 }

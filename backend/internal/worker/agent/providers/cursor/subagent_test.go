@@ -310,7 +310,8 @@ func TestACP_CursorAlreadyFinalTaskCallLeavesNoNote(t *testing.T) {
 	a.Mu.Unlock()
 	assert.Zero(t, remaining, "an already-final call has no later update to read a note")
 
-	// A later backgrounded SHELL that reuses the id is still a shell.
+	// A later backgrounded SHELL that reuses the id opens a new tool_call and is still a shell.
+	b.HandleToolCallForTest(json.RawMessage(`{"toolCallId":"call-task","kind":"execute","title":"npm run dev"}`))
 	b.HandleToolCallUpdateForTest(json.RawMessage(`{"toolCallId":"call-task","status":"completed","title":"npm run dev","rawOutput":{"isBackground":true}}`))
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)

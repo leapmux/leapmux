@@ -373,7 +373,27 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	}
 	compactionGeneration, compactionSessionID, sessionID := a.compactionGeneration, a.compactionSessionID, a.sessionID
 	a.Mu.Unlock()
-	if (owner == nil && compactionSessionID == "") || sessionID == "" {
+	if owner == nil && compactionSessionID == "" {
+		a.dispatchMu.Lock()
+		defer a.unlockZCodeDispatch()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && a.zcodeStopTargetLocked() == nil && a.compactionSessionID == ""
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		a.persistIncompleteZCodeToolsFor(nil, agent.MessageCompletionInterrupted, "", true)
+		if a.sink != nil {
+			if a.resetZCodeSpansWhenIdle() {
+				a.sink.ReportProgress(agent.ResetProgress())
+			} else {
+				a.sink.ReportProgress(agent.ResetModelProgress())
+				stop.PreserveOpenSpans()
+			}
+		}
+		return nil
+	}
+	if sessionID == "" {
 		return nil
 	}
 	a.withdrawZCodeSteersLocked()
@@ -541,12 +561,10 @@ func (a *Agent) stopProvenIgnoredLocked() bool {
 // activity. The compaction state goes only when the stop watched the compaction
 // itself.
 //
-// What this does NOT do is close the turn's tool calls. The abort reaches the model
-// stream, not a command the runtime already launched: an interrupted `sleep 90` ran
-// its full ninety seconds and then reported success. Marking that call interrupted
-// would state an outcome the runtime goes on to contradict, so an open call keeps its
-// running card until its own update arrives, or until the process ends. That is also
-// why the settled owner stays in turns until its last tool result.
+// It also closes all settled non-background root tools across turns as
+// interrupted so a user interrupt acts as a reliable escape hatch for dangling
+// spans, while preserving live background children and unsettled overlapping
+// turns.
 //
 // No PROVIDER row is written either. A turn-end divider is built from the frame that
 // reports the end, the app-server sent none, and LeapMux invents no provider output. A
@@ -605,22 +623,23 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 
 	if compacting {
 		a.endZCodeCompaction()
-		// A compaction has no generation scopes of its own, and the buffer holds
-		// nothing else at a compaction: flush what is there and stop everything,
-		// as this path always did for the one thing it ended.
 		a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
-		a.ResetCumulativeOutput()
-		a.sink.ReportProgress(agent.ResetProgress())
 	} else {
 		// The text the model had already produced is a real segment that ended early.
 		// The buffer is empty when the abort found the stream idle, so this costs
-		// nothing in the case where a tool was running. Only the stopped owner's
-		// scopes are flushed and only its progress is reset: a turn still running
-		// keeps its output and its meters.
+		// nothing in the case where a tool was running.
 		a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionInterrupted)
+	}
+	a.persistIncompleteZCodeToolsFor(nil, agent.MessageCompletionInterrupted, "", true)
+	a.persistZCodeStopRow()
+	if a.resetZCodeSpansWhenIdle() {
+		a.ResetCumulativeOutput()
+		a.sink.ReportProgress(agent.ResetProgress())
+	} else if compacting {
+		a.sink.ReportProgress(agent.ResetModelProgress())
+	} else {
 		a.resetZCodeTurnProgress(owner)
 	}
-	a.persistZCodeStopRow()
 	if owner != nil {
 		a.Mu.Lock()
 		a.dropZCodeTurnLocked(owner)
@@ -629,9 +648,12 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 }
 
 // resetZCodeTurnProgress resets one owner's model progress and the cumulative
-// output baselines of its own tool calls. Every other turn's scopes and calls
-// keep their live state.
+// output baselines of its finalized tool calls. Still-open calls and live
+// background children keep their live state.
 func (a *Agent) resetZCodeTurnProgress(owner *zcodeTurnState) {
+	if owner == nil {
+		return
+	}
 	a.Mu.Lock()
 	var scopes []string
 	for scopeID := range owner.contentByScope {
@@ -639,6 +661,9 @@ func (a *Agent) resetZCodeTurnProgress(owner *zcodeTurnState) {
 	}
 	var tools []string
 	for toolCallID := range owner.toolInvocationIDs {
+		if tc := a.toolInvocations[toolCallID]; tc != nil && !tc.final {
+			continue
+		}
 		if a.liveZCodeBackgroundToolLocked(toolCallID) {
 			continue
 		}
@@ -665,10 +690,8 @@ func (a *Agent) resetZCodeTurnProgress(owner *zcodeTurnState) {
 // window. It carries the shared `interrupted` notification type, which is the row
 // Claude Code's transcript already draws for a stopped turn, so the two read alike.
 //
-// The spans stay OPEN, unlike the Claude path, which resets them here. The abort
-// reaches the model stream and not a command the runtime already launched, so a call
-// that is still running needs its span for the update it still sends -- the same
-// reason endStoppedZCodeTurn closes no tool call.
+// The caller resets spans when no unsettled owner or live background child
+// remains open.
 func (a *Agent) persistZCodeStopRow() {
 	content, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeInterrupted})
 	if err != nil {
@@ -743,7 +766,6 @@ func (a *Agent) Stop() {
 	if stopWasPending {
 		a.persistZCodeStopRow()
 	}
-	a.sink.ReportProgress(agent.ResetProgress())
 	a.resetZCodeSteers()
 	a.forgetZCodeConversation()
 }
@@ -759,7 +781,6 @@ func (a *Agent) Wait() error {
 	a.withdrawPendingControls()
 	a.cancelStoppedZCodeTurn()
 	a.finalizeZCodeProcessTranscript()
-	a.sink.ReportProgress(agent.ResetProgress())
 	a.resetZCodeSteers()
 	a.forgetZCodeConversation()
 	return err
@@ -770,6 +791,7 @@ func (a *Agent) finalizeZCodeProcessTranscript() {
 	a.flushZCodeGeneration(completion)
 	a.retireZCodeProcessTurns()
 	a.persistIncompleteZCodeTools(completion)
+	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // retireZCodeProcessTurns clears every owner after process exit and orders the

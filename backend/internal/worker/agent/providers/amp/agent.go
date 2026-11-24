@@ -69,6 +69,10 @@ type Agent struct {
 	// settingsMu serializes setting changes through their persistence. Take it before mu.
 	settingsMu sync.Mutex
 
+	// outputMu serializes stdout line handling and idle or teardown open-tool draining.
+	// Take it before mu.
+	outputMu sync.Mutex
+
 	// mu guards every field below it.
 	mu sync.Mutex
 	providerkit.TurnSeq
@@ -92,7 +96,8 @@ type Agent struct {
 	turn           turnState
 	stopped        bool
 	// tools holds the tool calls that started and did not end, by tool-use id.
-	tools map[string]*openTool
+	tools       map[string]*openTool
+	closedSpans providerkit.ClosedSpanSet
 	// shells holds the registry row of each background command of the running
 	// process, by PID. See subagent.go.
 	shells    map[int]string
@@ -441,7 +446,8 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 // cancel, so the server can finish the turn with no executor attached.
 // The exit handler reads native history to recover pending steers and their replies.
 //
-// It does nothing when no turn runs.
+// When no turn runs, it cancels pending permission requests, closes open tool
+// calls as interrupted, and resets spans and progress.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.mu.Lock()
 	if a.stopped {
@@ -450,6 +456,19 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	}
 	if !a.turn.active {
 		a.mu.Unlock()
+		a.outputMu.Lock()
+		defer a.outputMu.Unlock()
+		a.mu.Lock()
+		if a.stopped {
+			a.mu.Unlock()
+			return errAgentStopped
+		}
+		stillIdle := !a.turn.active
+		a.mu.Unlock()
+		if stillIdle {
+			a.bridge.cancelAll(errTurnInterrupted)
+			a.drainAndResetOpenTools(agent.MessageCompletionInterrupted)
+		}
 		return nil
 	}
 	a.turn.interruptRequested = true
@@ -534,19 +553,24 @@ func (a *Agent) stop() {
 		completion = proc.ProcessExitCompletion()
 		shellStatus = processShellExitStatus(proc)
 	}
+	var message string
 	if proc != nil && completion == agent.MessageCompletionError {
-		message := exitMessage(proc, threadID, a.exitStderr(proc))
-		a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
+		message = exitMessage(proc, threadID, a.exitStderr(proc))
+	}
+	a.outputMu.Lock()
+	if proc != nil && completion == agent.MessageCompletionError {
+		a.endTurn(true, func(turn turnState) (agent.MessageCompletion, []byte) {
 			if turn.interruptRequested {
 				return agent.MessageCompletionInterrupted, errorResultLine(threadID, interruptedMessage)
 			}
 			return agent.MessageCompletionError, errorResultLine(threadID, message)
 		})
 	} else {
-		a.finishTurn(completion, nil)
+		a.endTurn(true, func(turnState) (agent.MessageCompletion, []byte) { return completion, nil })
 	}
+	a.drainAndResetOpenTools(completion)
+	a.outputMu.Unlock()
 	a.closeAllShellRows(shellStatus)
-	a.sink.ReportProgress(agent.ResetProgress())
 	providerkit.RemoveAgentDir("amp", a.agentID, a.dir)
 	close(a.done)
 }

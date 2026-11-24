@@ -851,11 +851,21 @@ func TestHandleACPOutput_CompletedPromptClosesAToolWithoutAFinalUpdate(t *testin
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"command","kind":"execute","status":"pending"}}}`))
 	a.HandlePromptResponseForTest(json.RawMessage(`{"stopReason":"end_turn"}`))
 
-	require.Len(t, sink.Messages(), 3)
-	result := sink.Messages()[1]
-	assert.True(t, result.Closing)
-	assert.Equal(t, agent.MessageCompletionError, result.Completion)
-	assert.True(t, sink.Messages()[2].TurnEnd)
+	require.Len(t, sink.Messages(), 2)
+	assert.False(t, sink.Messages()[0].Closing)
+	assert.True(t, sink.Messages()[1].TurnEnd)
+	assert.Empty(t, sink.ClosedSpans(), "normal end_turn keeps open tool spans alive")
+
+	// Cancelled prompt closes open tools as interrupted.
+	sinkCancelled := &agenttest.Sink{}
+	aCancelled := newOpenCodeAgentWithSink(agent.NewProviderServices(sinkCancelled))
+	aCancelled.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-2","title":"command","kind":"execute","status":"pending"}}}`))
+	aCancelled.HandlePromptResponseForTest(json.RawMessage(`{"stopReason":"cancelled"}`))
+
+	require.Len(t, sinkCancelled.Messages(), 3)
+	assert.True(t, sinkCancelled.Messages()[1].Closing)
+	assert.Equal(t, agent.MessageCompletionInterrupted, sinkCancelled.Messages()[1].Completion)
+	assert.True(t, sinkCancelled.Messages()[2].TurnEnd)
 }
 
 func TestHandleACPOutput_FinalToolCallClosesItsEarlierSpan(t *testing.T) {

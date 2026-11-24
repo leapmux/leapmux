@@ -97,8 +97,8 @@ type transcript struct {
 	text strings.Builder
 	// open holds the tool calls that started and did not finish, by id.
 	open map[string]*openTool
-	// nextOrder orders the open calls, so a turn end closes them in the order
-	// they started.
+	// nextOrder orders the open calls, so an interrupted turn, an idle
+	// interrupt, or teardown closes them in the order they started.
 	nextOrder uint64
 	// written counts what reached this transcript live, so a later backfill
 	// from Cline's stored messages writes only the rest (subagent.go).
@@ -588,6 +588,10 @@ func (a *Agent) handleRunEnded(event hubEvent) {
 // turn, and a goroutine applies the change and then clears it (afterTurn). The
 // input queue holds the next message until the session runs in its new mode.
 func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
+	a.endTurnWithTeardown(completion, row, false)
+}
+
+func (a *Agent) endTurnWithTeardown(completion agent.MessageCompletion, row []byte, teardown bool) {
 	a.leadRetry.Reset()
 	endedAt := a.clock.Now()
 	a.Mu.Lock()
@@ -601,17 +605,20 @@ func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
 	usage := maps.Clone(a.contextUsage)
 	a.Mu.Unlock()
 
+	closeOpen := teardown || completion == agent.MessageCompletionInterrupted
 	a.withdrawAllControls()
 	a.finishTranscriptCompaction(lead, completion)
-	a.settleSpawns(completion)
-	a.flushPending(lead, sessionID, completion)
-	// A call that a completed turn still held open did not finish: the run
-	// ended around it.
-	toolCompletion := completion
-	if toolCompletion == agent.MessageCompletionComplete {
-		toolCompletion = agent.MessageCompletionError
+	if closeOpen {
+		a.settleSpawns(completion)
 	}
-	a.closeOpenTools(lead, toolCompletion)
+	a.flushPending(lead, sessionID, completion)
+	if closeOpen {
+		toolCompletion := completion
+		if toolCompletion == agent.MessageCompletionComplete {
+			toolCompletion = agent.MessageCompletionError
+		}
+		a.closeOpenTools(lead, toolCompletion)
+	}
 	if !a.IsDiscardingOutput() {
 		content := agent.MessageContent{
 			Original:   row,
@@ -625,7 +632,9 @@ func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
 			slog.Error("cline persist turn end", "agent_id", a.AgentID(), "error", err)
 		}
 	}
-	a.sink.ResetSpans()
+	if closeOpen {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 
 	a.Mu.Lock()
 	change := a.modeRebuild
@@ -639,7 +648,6 @@ func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
 	}
 	a.Mu.Unlock()
 	a.PublishTurnActive()
-	a.sink.ReportProgress(agent.ResetProgress())
 	if change == nil {
 		return
 	}

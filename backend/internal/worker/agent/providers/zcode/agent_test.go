@@ -296,7 +296,7 @@ func TestZCodeInterrupt_EndsTheTurnTheAppServerNeverAnnounces(t *testing.T) {
 
 	reset := false
 	for _, update := range sink.ProgressUpdates() {
-		if update.Operation == agent.ProgressModelReset {
+		if update.Operation == agent.ProgressModelReset || update.Operation == agent.ProgressReset {
 			reset = true
 		}
 	}

@@ -5,12 +5,27 @@ func (a *Agent) clearProviderState() {
 	a.rootMu.Lock()
 	a.rootSession = ""
 	a.rootFresh = true
+	a.rootSessionEpoch++
+	a.openRootSpans = nil
+	a.rootMu.Unlock()
+	if sink := a.Sink(); sink != nil {
+		sink.ResetSpans()
+	}
+}
+
+func (a *Agent) clearOpenRootSpans() {
+	a.rootMu.Lock()
+	a.openRootSpans = nil
 	a.rootMu.Unlock()
 }
 
 func (a *Agent) initializeRootArchive(resumed bool) error {
 	sessionID := a.CurrentSessionID()
 	a.rootMu.Lock()
+	if a.rootSession != "" && a.rootSession != sessionID {
+		a.rootSessionEpoch++
+		a.openRootSpans = nil
+	}
 	a.rootSession = sessionID
 	a.rootFresh = !resumed
 	a.rootMu.Unlock()

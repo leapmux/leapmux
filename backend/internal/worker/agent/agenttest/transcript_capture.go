@@ -80,7 +80,9 @@ type testTranscriptKey struct {
 	scope     *testTranscriptScope
 }
 type testTranscriptOwner struct {
+	childLease       *testChildSinkLifetime
 	activationLease  *testChildSinkLifetime
+	historical       bool
 	publisherSession *testSessionFact
 	sink             *Sink
 	key              testTranscriptKey
@@ -116,9 +118,15 @@ func (sink *Sink) captureMessageLocked(content agent.MessageContent) agent.Messa
 		content.AgentSessionID = session.id
 	}
 	key := testTranscriptKey{session: session, sessionID: content.AgentSessionID, scope: sink.transcriptScope}
-	owner := &testTranscriptOwner{sink: sink, key: key, publisherSession: publisherSession, spans: sink.liveSpansLocked()}
+	owner := &testTranscriptOwner{sink: sink, key: key, childLease: sink.childLifetime, publisherSession: publisherSession, spans: sink.liveSpansLocked()}
 	content.Publication = owner
 	return content
+}
+
+func (owner *testTranscriptOwner) outputProgressCurrentLocked() bool {
+	return !owner.historical && owner.currentSessionLocked() &&
+		owner.sink.childLifetime == owner.childLease &&
+		(owner.activationLease == nil || owner.sink.childLifetime == owner.activationLease)
 }
 
 func (owner *testTranscriptOwner) currentLocked() bool {
@@ -160,7 +168,11 @@ func (owner *testTranscriptOwner) PublishSessionInfo(info map[string]interface{}
 func (owner *testTranscriptOwner) ReportProgress(update agent.ProgressUpdate) {
 	owner.sink.mu.Lock()
 	defer owner.sink.mu.Unlock()
-	if !owner.currentLocked() {
+	admitted := owner.currentLocked()
+	if agent.IsOutputProgress(update.Operation) {
+		admitted = owner.outputProgressCurrentLocked()
+	}
+	if !admitted {
 		return
 	}
 	owner.sink.progress = append(owner.sink.progress, update)

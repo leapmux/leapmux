@@ -1,6 +1,8 @@
 package service
 
 import (
+	"cmp"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,8 +32,9 @@ const runningToolTailBytes = 2048
 var generationProgressRevision atomic.Uint64
 
 type progressEmission struct {
-	info  map[string]interface{}
-	owner *transcriptOwner
+	info          map[string]interface{}
+	owner         *transcriptOwner
+	sessionScoped bool
 }
 
 // The live output of ONE running tool call, between two broadcasts.
@@ -51,14 +54,15 @@ type runningToolTail struct {
 }
 
 type generationProgressPublisher struct {
-	mu            sync.Mutex
-	counter       agent.ProgressCounter
-	timer         *time.Timer
-	closed        bool
-	seen          bool
-	revision      uint64
-	pending       *progressEmission
-	emissionOwner *transcriptOwner
+	mu                    sync.Mutex
+	counter               agent.ProgressCounter
+	timer                 *time.Timer
+	closed                bool
+	seen                  bool
+	revision              uint64
+	pending               *progressEmission
+	emissionOwner         *transcriptOwner
+	emissionSessionScoped bool
 	// tailQueue holds the running-tool payloads flushTails produced, drained by the
 	// SAME goroutine that publishes `pending`. Publishing them from the timer's own
 	// goroutine put two publishers on one stream: a tail captured just before a
@@ -118,14 +122,21 @@ func (p *generationProgressPublisher) reportOwned(update agent.ProgressUpdate, o
 	// never saw moves nothing. The browser drops its own entry when the result row
 	// lands; this stops the worker re-broadcasting a tail for a finished span,
 	// which would revive the entry the browser just dropped.
-	p.dropTailsLocked(update)
+	p.dropTailsLocked(update, owner)
 	snapshot, changed := p.counter.Apply(update)
 	if !changed {
+		if update.Operation == agent.ProgressReset {
+			select {
+			case p.wake <- struct{}{}:
+			default:
+			}
+		}
 		p.mu.Unlock()
 		return
 	}
 	p.seen = true
 	p.emissionOwner = owner
+	p.emissionSessionScoped = isOutputProgress(update.Operation)
 	p.revision = generationProgressRevision.Add(1)
 	urgent := update.Operation == agent.ProgressReset ||
 		update.Operation == agent.ProgressModelReset ||
@@ -160,7 +171,11 @@ func (p *generationProgressPublisher) flush() {
 }
 
 func (p *generationProgressPublisher) queueLocked(snapshot agent.ProgressSnapshot) {
-	p.pending = &progressEmission{info: progressInfo(snapshot, p.revision), owner: p.emissionOwner}
+	p.pending = &progressEmission{
+		info:          progressInfo(snapshot, p.revision),
+		owner:         p.emissionOwner,
+		sessionScoped: p.emissionSessionScoped,
+	}
 	select {
 	case p.wake <- struct{}{}:
 	default:
@@ -199,7 +214,7 @@ func (p *generationProgressPublisher) run() {
 // publishEmission checks the retained authority outside every publisher mutex.
 func (p *generationProgressPublisher) publishEmission(emission progressEmission) {
 	if emission.owner != nil {
-		emission.owner.PublishSessionInfo(emission.info)
+		emission.owner.publishSessionInfo(emission.info, emission.sessionScoped)
 	} else {
 		p.publish(emission.info)
 	}
@@ -212,6 +227,51 @@ func (p *generationProgressPublisher) snapshotInfo() map[string]interface{} {
 		return nil
 	}
 	return progressInfo(p.counter.Snapshot(), p.revision)
+}
+
+// tailSnapshots returns a deterministic (sessionID, spanID)-sorted copy of all
+// active running_tool tail payloads for replay on reconnect or page reload.
+func (p *generationProgressPublisher) tailSnapshots() []map[string]interface{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || len(p.tails) == 0 {
+		return nil
+	}
+	type tailKey struct {
+		sessionID string
+		spanID    string
+		text      string
+		truncated bool
+	}
+	entries := make([]tailKey, 0, len(p.tails))
+	for spanID, entry := range p.tails {
+		entries = append(entries, tailKey{
+			sessionID: entry.sessionID,
+			spanID:    spanID,
+			text:      entry.text,
+			truncated: entry.truncated,
+		})
+	}
+	slices.SortFunc(entries, func(a, b tailKey) int {
+		return cmp.Or(cmp.Compare(a.sessionID, b.sessionID), cmp.Compare(a.spanID, b.spanID))
+	})
+	snapshots := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		snapshots = append(snapshots, runningToolTailPayload(entry.spanID, entry.sessionID, entry.text, entry.truncated))
+	}
+	return snapshots
+}
+
+func runningToolTailPayload(spanID, sessionID, text string, truncated bool) map[string]interface{} {
+	return map[string]interface{}{
+		contracts.RunningToolFieldSpanId: spanID,
+		// The session of the CAPTURE, which a flush or replay can trail by a whole
+		// interval. Reading the live session here stamped a tail from the previous
+		// session with the id of the one ClearContext just minted.
+		contracts.RunningToolFieldAgentSessionId:  sessionID,
+		contracts.RunningToolFieldOutputTail:      text,
+		contracts.RunningToolFieldOutputTruncated: truncated,
+	}
 }
 
 func (p *generationProgressPublisher) close() {
@@ -289,10 +349,18 @@ func (p *generationProgressPublisher) noteTailLocked(update agent.ProgressUpdate
 //
 // The linter checks every operation case. A new operation fails lint until this switch handles it.
 // The listed model and output updates keep the tail because they do not end the tool call.
-func (p *generationProgressPublisher) dropTailsLocked(update agent.ProgressUpdate) {
+func (p *generationProgressPublisher) dropTailsLocked(update agent.ProgressUpdate, owner *transcriptOwner) {
 	switch update.Operation {
 	case agent.ProgressReset:
+		if p.tailTimer != nil {
+			p.tailTimer.Stop()
+			p.tailTimer = nil
+		}
 		p.tails = nil
+		p.tailQueue = []progressEmission{{
+			info:  map[string]interface{}{contracts.SessionInfoKeyRunningTool: nil},
+			owner: owner,
+		}}
 	case agent.ProgressOutputComplete, agent.ProgressOutputReset:
 		delete(p.tails, update.ScopeID)
 	case agent.ProgressModelText, agent.ProgressNativeTokens, agent.ProgressOutputDelta,
@@ -349,16 +417,8 @@ func (p *generationProgressPublisher) flushTails() {
 			continue
 		}
 		entry.dirty = false
-		payloads = append(payloads, progressEmission{owner: entry.owner, info: map[string]interface{}{
-			contracts.SessionInfoKeyRunningTool: map[string]interface{}{
-				contracts.RunningToolFieldSpanId: spanID,
-				// The session of the CAPTURE, which this flush can trail by a whole
-				// interval. Reading the live session here stamped a tail from the
-				// previous session with the id of the one ClearContext just minted.
-				contracts.RunningToolFieldAgentSessionId:  entry.sessionID,
-				contracts.RunningToolFieldOutputTail:      entry.text,
-				contracts.RunningToolFieldOutputTruncated: entry.truncated,
-			},
+		payloads = append(payloads, progressEmission{owner: entry.owner, sessionScoped: true, info: map[string]interface{}{
+			contracts.SessionInfoKeyRunningTool: runningToolTailPayload(spanID, entry.sessionID, entry.text, entry.truncated),
 		}})
 	}
 	p.tailQueue = append(p.tailQueue, payloads...)

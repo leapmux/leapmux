@@ -352,6 +352,7 @@ func (a *Agent) endSubagent(id string, status bgtask.Status) {
 func (a *Agent) finishSubagent(state *subagentState, status bgtask.Status) {
 	if state.conv != nil {
 		a.persistIncompleteTools(state.conv, completionForStatus(status))
+		providerkit.ResetSpansAndProgress(state.conv.sink)
 	}
 	a.Mu.Lock()
 	report := state.report
@@ -592,12 +593,17 @@ func (a *Agent) endChildRun(c *conversation, raw []byte) {
 	toolUses := c.toolUses
 	c.toolUses = 0
 	a.Mu.Unlock()
-	a.persistIncompleteTools(c, env.completion())
+	interrupted := env.statesAborted()
+	if interrupted {
+		a.persistIncompleteTools(c, agent.MessageCompletionInterrupted)
+	}
 	content := agentEndContent(raw, usageSnapshot{}, turnDurationMs(startedAt, endedAt))
 	if err := c.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 		slog.Warn("omp persist subagent agent_end", "agent_id", a.AgentID(), "child_agent_id", c.childID, "error", err)
 	}
-	c.sink.ResetSpans()
+	if interrupted {
+		providerkit.ResetSpansAndProgress(c.sink)
+	}
 }
 
 // persistChildPrompt opens a child transcript with the prompt its parent gave the

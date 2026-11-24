@@ -42,14 +42,23 @@ func (a *Agent) settleHeldPiTurnAt(completion agent.MessageCompletion, settledAt
 	a.TurnToolUses = 0
 	a.interruptRequests = nil
 	a.Mu.Unlock()
+	interrupted := completion == agent.MessageCompletionInterrupted || (held != nil && (held.interrupted || held.willRetry))
+	if interrupted {
+		a.persistIncompletePiTools(agent.MessageCompletionInterrupted)
+	}
 	if held != nil {
 		content := piAgentEndContent(held.raw, a.currentPiUsageSnapshot(), piTurnDurationMs(startedAt, settledAt))
-		if completion == agent.MessageCompletionInterrupted || held.interrupted || held.willRetry {
+		if interrupted {
 			content.Completion = agent.MessageCompletionInterrupted
 		}
 		a.persistPiAgentEnd(agent.WithToolUseCount(content, toolUses))
 		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.orderedSink(), !held.willRetry && held.env.isRetryableFailure(), held.raw)
 	}
-	a.sink.ReportProgress(agent.ResetProgress())
+	if interrupted {
+		a.ResetCumulativeOutput()
+		providerkit.ResetSpansAndProgress(a.sink)
+	} else {
+		a.sink.ReportProgress(agent.ResetModelProgress())
+	}
 	a.PublishTurnActive()
 }

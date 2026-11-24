@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // ClearContext suspends the current session and creates a replacement.
@@ -145,7 +146,8 @@ func (a *Agent) forgetNativeSessionState(nextSessionID string) {
 	providerkit.EndCompaction(a.sink)
 	// Store and drop what the OUTGOING session produced before the identity moves, so
 	// every row this sweep writes carries the session that produced it.
-	a.clearNativeChildren()
+	a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
+	a.closedSpans.Reset()
 	a.steers.DropAll()
 	a.steers.Settle(a.sink)
 	a.clearNativeControls()

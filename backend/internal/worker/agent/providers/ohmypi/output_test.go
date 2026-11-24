@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -86,10 +87,10 @@ func TestTheTurnSpansRetriesAndEndsAtAgentEnd(t *testing.T) {
 	assert.Equal(t, json.Number("5000"), metadata[contracts.MessageMetadataFieldDurationMs], "the turn is timed from its FIRST run")
 	assert.Equal(t, json.Number("1"), metadata[contracts.MessageMetadataFieldToolUses])
 	lifecycle := r.sink.TurnLifecycle()
-	require.GreaterOrEqual(t, len(lifecycle), 3)
-	assert.Equal(t, []string{"turn_end", "reset_spans", "turn_active:false"}, lifecycle[len(lifecycle)-3:],
-		"the turn end and the span reset reach the sink before the flag clears")
-	assert.Equal(t, 1, r.sink.ResetSpanCount())
+	require.GreaterOrEqual(t, len(lifecycle), 2)
+	assert.Equal(t, []string{"turn_end", "turn_active:false"}, lifecycle[len(lifecycle)-2:],
+		"normal agent_end persists turn_end before clearing turn_active without resetting open spans")
+	assert.Equal(t, 0, r.sink.ResetSpanCount())
 }
 
 func TestARunOmpStartedByItselfIsATurn(t *testing.T) {
@@ -958,4 +959,64 @@ func TestTtsrFlagEndsWithItsRun(t *testing.T) {
 			assert.Equal(t, agent.MessageCompletionInterrupted, rows[before].Completion)
 		})
 	}
+}
+
+func TestOhMyPiNormalAndErrorAgentEndPreserveOpenToolsAndSuppressLateDupAfterInterrupt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		agentEnd string
+	}{
+		{name: "normal", agentEnd: `{"type":"agent_end","isTerminal":true,"messages":[{"role":"assistant","stopReason":"stop"}]}`},
+		{name: "error", agentEnd: `{"type":"agent_end","isTerminal":true,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"boom"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.emit(
+				`{"type":"agent_start"}`,
+				`{"type":"tool_execution_start","toolCallId":"call_bg","toolName":"bash","args":{"command":"sleep 30"}}`,
+				tc.agentEnd,
+			)
+			rows := r.sink.Messages()
+			require.Len(t, rows, 2)
+			assert.False(t, rows[0].Closing)
+			assert.True(t, rows[1].TurnEnd)
+			assert.Empty(t, r.sink.ClosedSpans())
+			assert.Equal(t, 0, r.sink.ResetSpanCount())
+
+			// Idle interrupt closes the surviving open tool and resets spans + progress.
+			require.NoError(t, r.agent.Interrupt(agent.StopContext{}))
+			require.Len(t, r.sink.Messages(), 3)
+			assert.True(t, r.sink.Messages()[2].Closing)
+			assert.Equal(t, agent.MessageCompletionInterrupted, r.sink.Messages()[2].Completion)
+			assert.Equal(t, 1, r.sink.ResetSpanCount())
+			assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetProgress())
+
+			// Late tool_execution_end after interrupt is suppressed without duplicating rows or incrementing tool uses.
+			r.emit(`{"type":"tool_execution_end","toolCallId":"call_bg","toolName":"bash","result":{"content":[{"type":"text","text":"late"}]}}`)
+			assert.Len(t, r.sink.Messages(), 3)
+			r.agent.Mu.Lock()
+			toolUses := r.agent.TurnToolUses
+			r.agent.Mu.Unlock()
+			assert.Zero(t, toolUses)
+		})
+	}
+}
+
+func TestOhMyPiFinishOutputClosesAllShellsAndResetsSpans(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(
+		`{"type":"agent_start"}`,
+		`{"type":"tool_execution_start","toolCallId":"call_shell","toolName":"bash","args":{"command":"sleep 60"}}`,
+		`{"type":"tool_execution_end","toolCallId":"call_shell","toolName":"bash","result":{"content":[{"type":"text","text":"bg"}],"details":{"async":{"state":"running","jobId":"job-1","type":"bash"}}}}`,
+	)
+	require.Len(t, r.sink.BackgroundTasks(), 1)
+	r.agent.finishOutput(agent.MessageCompletionInterrupted)
+	for _, task := range r.sink.BackgroundTasks() {
+		assert.Equal(t, bgtask.StatusStopped, task.Status)
+	}
+	assert.Equal(t, 1, r.sink.ResetSpanCount())
+	assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetProgress())
 }

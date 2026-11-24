@@ -85,7 +85,7 @@ func (a *Agent) interruptCodexTurn(threadID, turnID string) (bool, error) {
 		<-done
 		return existing.accepted, existing.err
 	}
-	call := &codexInterruptCall{done: make(chan struct{}), commands: a.commandIDsForTurnLocked(threadID, turnID)}
+	call := &codexInterruptCall{done: make(chan struct{}), commands: a.commandIDsForThreadLocked(threadID)}
 	a.interruptCalls[key] = call
 	a.Mu.Unlock()
 
@@ -124,16 +124,17 @@ func (a *Agent) clearInterruptCallsForThread(threadID string) {
 	a.Mu.Unlock()
 }
 
-// commandIDsForTurnLocked captures only commands that the requested turn owns.
-// Older commands and other threads must remain untouched. The caller holds Mu.
-func (a *Agent) commandIDsForTurnLocked(threadID, turnID string) map[string]struct{} {
+// commandIDsForThreadLocked captures all open command executions owned by threadID
+// across turns so cross-turn background commands are also terminated on interrupt.
+// Other threads remain untouched. The caller holds Mu.
+func (a *Agent) commandIDsForThreadLocked(threadID string) map[string]struct{} {
 	commands := make(map[string]struct{})
 	for itemID, tool := range a.incompleteTools {
 		if tool == nil || tool.itemType != contracts.CodexItemTypeCommandExecution {
 			continue
 		}
 		event, ok := newCodexItemEvent(nil, tool.params)
-		if ok && event.itemID == itemID && event.threadID == threadID && event.turnID == turnID {
+		if ok && event.itemID == itemID && event.threadID == threadID {
 			commands[itemID] = struct{}{}
 		}
 	}
@@ -150,8 +151,10 @@ func (a *Agent) rememberCommandForStopLocked(itemID, itemType string, params jso
 	if !ok || event.itemID != itemID || event.itemType != contracts.CodexItemTypeCommandExecution {
 		return
 	}
-	call := a.interruptCalls[codexInterruptKey{threadID: event.threadID, turnID: event.turnID}]
-	if call != nil {
+	for key, call := range a.interruptCalls {
+		if key.threadID != event.threadID || call == nil {
+			continue
+		}
 		if call.commands == nil {
 			call.commands = make(map[string]struct{})
 		}

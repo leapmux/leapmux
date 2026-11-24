@@ -64,6 +64,28 @@ func TestGrokAgentStartedTurnOpensAndEnds(t *testing.T) {
 	assert.JSONEq(t, string(end), string(ends[0].Content), "Grok's own frame is the turn-end row")
 }
 
+func TestGrokAgentTurnCancelledFrameClosesOpenTools(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+
+	a.HandleOutput(queueChanged(t, grokTestSession, "subagent-completed-bg-1"))
+	a.HandleToolCallForTest(json.RawMessage(`{"toolCallId":"call-grok-bg","kind":"execute","title":"Sleep"}`))
+	require.True(t, a.HasOpenRootTool("call-grok-bg"))
+
+	a.HandleOutput(notification(t, grokTestSession, map[string]any{
+		"sessionUpdate": "turn_completed", "prompt_id": "subagent-completed-bg-1", "stop_reason": "cancelled",
+	}))
+
+	assert.False(t, a.HasOpenRootTool("call-grok-bg"), "cancelled native agent turn must close open tools")
+	var closing []agent.MessageCompletion
+	for _, msg := range sink.Messages() {
+		if msg.SpanID == "call-grok-bg" && msg.Closing {
+			closing = append(closing, msg.Completion)
+		}
+	}
+	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closing)
+}
+
 // ownPromptID registers a prompt of LeapMux's, as sending one does, and returns
 // the id that it states.
 func ownPromptID(t *testing.T, a *Agent) string {

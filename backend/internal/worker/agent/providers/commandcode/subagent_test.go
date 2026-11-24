@@ -3,6 +3,7 @@ package commandcode
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -60,4 +61,34 @@ func TestNativeChildProgressPreservesTheOriginalFrame(t *testing.T) {
 
 func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 	agenttest.AssertChildCapabilities(t, commandcodeProvider{}, (*Agent)(nil))
+}
+
+func TestCommandCodeRootInterruptClosesForegroundChildAndPreservesBackgroundChild(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	a.startTurn("turn_1")
+	feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "fg-spawn", "toolName": "agent", "input": map[string]any{"description": "Foreground child", "prompt": "Foreground prompt.", "run_in_background": false}})
+	feedEvent(t, a, map[string]any{"type": "subagent_start", "toolCallId": "fg-spawn", "subagentType": "general", "description": "Foreground child", "background": false})
+	feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "bg-spawn", "toolName": "agent", "input": map[string]any{"description": "Background child", "prompt": "Background prompt.", "run_in_background": true}})
+	feedEvent(t, a, map[string]any{"type": "subagent_start", "toolCallId": "bg-spawn", "subagentType": "general", "description": "Background child", "background": true})
+
+	feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": "interrupted"})
+
+	fgRow, fgExists := sink.BackgroundTask(childRowKey("native-session", "fg-spawn"))
+	require.True(t, fgExists)
+	assert.Equal(t, agent.IncompleteTaskStatus(agent.MessageCompletionInterrupted), fgRow.Status, "foreground child must close on root interrupt")
+
+	bgRow, bgExists := sink.BackgroundTask(childRowKey("native-session", "bg-spawn"))
+	require.True(t, bgExists)
+	assert.Equal(t, bgtask.StatusRunning, bgRow.Status, "background child must survive root interrupt")
+
+	// Idle interrupt also preserves background children.
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	bgRow, _ = sink.BackgroundTask(childRowKey("native-session", "bg-spawn"))
+	assert.Equal(t, bgtask.StatusRunning, bgRow.Status)
+
+	// finishStream closes remaining background children on teardown.
+	a.finishStream()
+	bgRow, _ = sink.BackgroundTask(childRowKey("native-session", "bg-spawn"))
+	assert.Equal(t, bgtask.StatusFailed, bgRow.Status)
 }

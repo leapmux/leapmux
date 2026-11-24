@@ -161,12 +161,13 @@ func (a *Agent) ClearContext() (string, error) {
 	a.applyState(stateRaw)
 	a.Mu.Lock()
 	a.turn.clear()
+	root.closedSpans.Reset()
 	a.asks.clearLocked()
 	a.usage.reset()
 	handle := a.sessionHandleLocked()
 	a.Mu.Unlock()
 	a.PublishTurnActive()
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 	// A goal belongs to the session it was set in, and the new session has none.
 	a.sink.ClearGoal(false)
 	if handle == "" {

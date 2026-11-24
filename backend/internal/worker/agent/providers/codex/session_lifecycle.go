@@ -168,6 +168,7 @@ func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 	a.rawExecutionOrder = 0
 	clear(a.incompleteTools)
 	a.incompleteToolOrder = 0
+	a.closedSpans.Reset()
 	a.Mu.Unlock()
 	a.generationBuffer.Reset()
 	// New-thread output must observe the new transcript identity.
@@ -175,7 +176,7 @@ func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 	a.outputMu.Unlock()
 
 	a.PublishTurnActive()
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 	a.sink.ClearGoal(false)
 	return oldThreadID, nil
 }

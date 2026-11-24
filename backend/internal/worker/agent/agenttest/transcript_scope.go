@@ -41,6 +41,7 @@ func (sink *Sink) HistoricalTranscriptScopeFor(captured agent.CapturedTranscript
 		return nil, errors.New("the captured transcript has an invalid native session")
 	}
 	historical := *owner
+	historical.historical = true
 	historical.key.scope = &testTranscriptScope{}
 	historical.spans = nil
 	return &sinkTranscriptScope{writer: writer, anchor: &historical}, nil

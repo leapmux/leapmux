@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 var _ agent.StartFunc = Start
@@ -66,7 +67,7 @@ func startNativeCopilotWithClock(ctx context.Context, opts agent.Options, sink a
 		connection.Stop()
 		_ = connection.Wait()
 		a.outputMu.Lock()
-		a.clearNativeChildren()
+		a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 		a.clearNativeControls()
 		a.outputMu.Unlock()
 		return nil, err

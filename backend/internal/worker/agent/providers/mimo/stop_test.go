@@ -774,3 +774,134 @@ func TestStopWithPendingCompactionStartPublishesInactive(t *testing.T) {
 	assert.True(t, published)
 	assert.False(t, active, "the stopped process owns no pending compaction turn")
 }
+
+func TestMiMoInterruptedTurnAndIdleInterruptCloseMainToolsAndPreserveChildSpans(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt closes main tool and resets spans when no fallback child exists", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newSinkTestAgent(t)
+		feed(a,
+			statusEvent(t, contracts.MiMoStatusTypeBusy),
+			messageEvent(t, "msg_1", roleAssistant, mainActorID, false),
+			toolPartEvent(t, "prt_main", "msg_1", contracts.MiMoToolBash, "call-1", toolState{
+				Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "sleep 100"},
+			}),
+			statusEvent(t, contracts.MiMoStatusTypeIdle),
+		)
+		require.Empty(t, sink.ClosedSpans())
+		require.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+
+		var preserved bool
+		stop := agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })
+		require.NoError(t, a.Interrupt(stop))
+		assert.False(t, preserved)
+		assert.Contains(t, sink.ClosedSpans(), "prt_main")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("idle interrupt preserves child fallback root span and sets PreserveOpenSpans", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newSinkTestAgent(t)
+		recovering := &recoveringChildPartSink{ProviderServices: a.sink}
+		recovering.creationFails.Store(true)
+		a.sink = recovering
+		feed(a,
+			statusEvent(t, contracts.MiMoStatusTypeBusy),
+			messageEvent(t, "msg_main", roleAssistant, mainActorID, false),
+			toolPartEvent(t, "prt_main", "msg_main", contracts.MiMoToolBash, "call-main", toolState{
+				Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "sleep 100"},
+			}),
+			// Child actor whose EnsureChildAgent fails falls back to root sink.
+			messageEvent(t, "msg_child_fb", roleAssistant, "orphan-child", false),
+			toolPartEvent(t, "prt_child_fb", "msg_child_fb", contracts.MiMoToolBash, "call-child-fb", toolState{
+				Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "sleep 200"},
+			}),
+			statusEvent(t, contracts.MiMoStatusTypeIdle),
+		)
+		require.Empty(t, sink.ClosedSpans())
+
+		progressBefore := len(sink.ProgressUpdates())
+		var preserved bool
+		stop := agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })
+		require.NoError(t, a.Interrupt(stop))
+		assert.True(t, preserved, "spared child fallback span must preserve root spans")
+		assert.Contains(t, sink.ClosedSpans(), "prt_main")
+		assert.NotContains(t, sink.ClosedSpans(), "prt_child_fb")
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates()[progressBefore:], agent.ResetModelProgress())
+	})
+
+	t.Run("idle interrupt preserves streaming child fallback model progress", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newSinkTestAgent(t)
+		recovering := &recoveringChildPartSink{ProviderServices: a.sink}
+		recovering.creationFails.Store(true)
+		a.sink = recovering
+		feed(a,
+			statusEvent(t, contracts.MiMoStatusTypeBusy),
+			messageEvent(t, "msg_main", roleAssistant, mainActorID, false),
+			toolPartEvent(t, "prt_main", "msg_main", contracts.MiMoToolBash, "call-main", toolState{
+				Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "sleep 100"},
+			}),
+			actorStatusEvent(t, "orphan-child", contracts.MiMoActorStatusRunning, "", 0, ""),
+			messageEvent(t, "msg_child_stream", roleAssistant, "orphan-child", false),
+			textPartEvent(t, partTypeText, "prt_child_stream", "msg_child_stream", "", false),
+			deltaEvent(t, "prt_child_stream", "msg_child_stream", "CHILDCHILDCHILDCHILD"),
+			statusEvent(t, contracts.MiMoStatusTypeIdle),
+		)
+		require.EqualValues(t, 5, sink.ProgressSnapshot().ThinkingTokens)
+
+		var preserved bool
+		stop := agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })
+		require.NoError(t, a.Interrupt(stop))
+		assert.False(t, preserved)
+		assert.Contains(t, sink.ClosedSpans(), "prt_main")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.EqualValues(t, 5, sink.ProgressSnapshot().ThinkingTokens, "idle root interrupt must not wipe a streaming fallback child's model progress")
+	})
+
+	t.Run("interrupted endTurn closes main tool and preserves child fallback root span", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newSinkTestAgent(t)
+		recovering := &recoveringChildPartSink{ProviderServices: a.sink}
+		recovering.creationFails.Store(true)
+		a.sink = recovering
+		feed(a,
+			statusEvent(t, contracts.MiMoStatusTypeBusy),
+			messageEvent(t, "msg_main", roleAssistant, mainActorID, false),
+			toolPartEvent(t, "prt_main", "msg_main", contracts.MiMoToolBash, "call-main", toolState{
+				Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "sleep 100"},
+			}),
+			// Child actor whose EnsureChildAgent fails falls back to root sink.
+			messageEvent(t, "msg_child_fb", roleAssistant, "orphan-child", false),
+			toolPartEvent(t, "prt_child_fb", "msg_child_fb", contracts.MiMoToolBash, "call-child-fb", toolState{
+				Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "sleep 200"},
+			}),
+			nativeAbortMarker(t, "message", "msg_main"),
+			statusEvent(t, contracts.MiMoStatusTypeIdle),
+		)
+
+		assert.Contains(t, sink.ClosedSpans(), "prt_main")
+		assert.NotContains(t, sink.ClosedSpans(), "prt_child_fb")
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelProgress())
+		var mainClosing, divider *agenttest.Message
+		for i := range sink.Messages() {
+			row := sink.Messages()[i]
+			if row.Closing && row.SpanID == "prt_main" {
+				mainClosing = &row
+			}
+			if row.TurnEnd {
+				divider = &row
+			}
+		}
+		require.NotNil(t, mainClosing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, mainClosing.Completion)
+		require.NotNil(t, divider)
+		assert.Equal(t, agent.MessageCompletionInterrupted, divider.Completion)
+	})
+}

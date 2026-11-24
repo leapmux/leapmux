@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type RootTranscriptStart struct {
@@ -287,9 +288,9 @@ func (b *Base) captureRootSnapshotLocked(turn *acpTurnSnapshot, allTurns bool) {
 	b.promptOutputDrained = true
 }
 
-func (b *Base) detachRootPrompt() acpTurnSnapshot {
+func (b *Base) detachRootPrompt(keepTools bool) acpTurnSnapshot {
 	b.turnMu.Lock()
-	turn, _ := b.drainPromptTurnLocked()
+	turn, _ := b.drainPromptTurnLocked(keepTools)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()
@@ -297,9 +298,31 @@ func (b *Base) detachRootPrompt() acpTurnSnapshot {
 	return turn
 }
 
+// detachIdleRootTools drains open root tools during an idle Interrupt without
+// mutating promptOutputDrained or touching any active rootTarget.
+func (b *Base) detachIdleRootTools() acpTurnSnapshot {
+	b.sessionUpdates.mu.Lock()
+	b.turnMu.Lock()
+	b.Mu.Lock()
+	if b.promptActive || b.agentTurnActive || b.agentTurnQueued {
+		b.Mu.Unlock()
+		b.turnMu.Unlock()
+		b.sessionUpdates.mu.Unlock()
+		return acpTurnSnapshot{}
+	}
+	sessionID := b.sessionID
+	b.Mu.Unlock()
+	turn := b.drainOpenToolsOnlyLocked()
+	turn.sessionID = sessionID
+	turn.interrupted = true
+	b.turnMu.Unlock()
+	b.sessionUpdates.mu.Unlock()
+	return turn
+}
+
 func (b *Base) detachAllRootOutput() acpTurnSnapshot {
 	b.turnMu.Lock()
-	turn := b.drainTurnLocked()
+	turn := b.drainTurnLocked(false)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, true)
 	b.Mu.Unlock()
@@ -309,7 +332,8 @@ func (b *Base) detachAllRootOutput() acpTurnSnapshot {
 
 func (b *Base) replaceRootSession(updateProtocol func()) acpTurnSnapshot {
 	b.turnMu.Lock()
-	turn := b.drainTurnLocked()
+	turn := b.drainTurnLocked(false)
+	b.closedSpans.reset()
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, true)
 	b.Mu.Unlock()
@@ -318,14 +342,18 @@ func (b *Base) replaceRootSession(updateProtocol func()) acpTurnSnapshot {
 	return turn
 }
 
-func (b *Base) resetCompletedRootSpans(sessionID string) {
+func (b *Base) resetCompletedRootSpans(sessionID string, resetProgress bool) {
 	b.turnMu.Lock()
 	defer b.turnMu.Unlock()
 	b.Mu.Lock()
 	reset := b.sessionID == sessionID && !b.agentTurnQueued && !b.agentTurnActive
 	b.Mu.Unlock()
 	if reset && b.rootTarget == nil {
-		b.sink.ResetSpans()
+		if resetProgress {
+			providerkit.ResetSpansAndProgress(b.sink)
+		} else {
+			b.sink.ResetSpans()
+		}
 	}
 }
 
@@ -349,7 +377,7 @@ func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTransc
 
 func (b *Base) finishUnsentPrompt(sessionID string) {
 	b.sessionUpdates.mu.Lock()
-	turn := b.detachRootPrompt()
+	turn := b.detachRootPrompt(true)
 	b.sessionUpdates.mu.Unlock()
 	b.finishRootSnapshot(turn, agent.MessageCompletionError, agent.MessageCompletionError, RootTranscriptPromptNotSent, nil)
 	// This request never ran. Do not ask the provider for another continuation

@@ -33,6 +33,7 @@ type transcriptOwner struct {
 	childLease      *childSinkLifetime
 	activationLease *childSinkLifetime
 	frameAuthority  bool
+	historical      bool
 	// publisherSession protects state admission without changing transcript activity.
 	publisherSession *nativeSessionFact
 	sessionID        string
@@ -65,7 +66,19 @@ func (owner *transcriptOwner) sameLiveAuthority(other *transcriptOwner) bool {
 	}
 	return owner.sink == other.sink && owner.activity == other.activity && owner.scope == other.scope &&
 		owner.session == other.session && owner.sessionID == other.sessionID &&
-		owner.publisherSession == other.publisherSession && owner.childLease == other.childLease && owner.activationLease == other.activationLease
+		owner.publisherSession == other.publisherSession && owner.childLease == other.childLease && owner.activationLease == other.activationLease &&
+		owner.historical == other.historical
+}
+
+func isOutputProgress(op agent.ProgressOperation) bool {
+	return agent.IsOutputProgress(op)
+}
+
+func (owner *transcriptOwner) outputProgressCurrentLocked() bool {
+	return !owner.historical && owner.sessionCurrentLocked() &&
+		owner.sink.childLifetime == owner.childLease &&
+		(owner.activationLease == nil || owner.sink.childLifetime == owner.activationLease) &&
+		(!owner.frameAuthority || owner.frameSessionCurrentLocked())
 }
 
 func (owner *transcriptOwner) currentLocked() bool {
@@ -124,12 +137,20 @@ func (publication *transcriptPublication) ReportProgress(update agent.ProgressUp
 	owner := publication.owner
 	owner.activity.mu.Lock()
 	defer owner.activity.mu.Unlock()
-	if owner.currentLocked() {
+	admitted := owner.currentLocked()
+	if isOutputProgress(update.Operation) {
+		admitted = owner.outputProgressCurrentLocked()
+	}
+	if admitted {
 		owner.sink.progress.reportOwned(update, owner)
 	}
 }
 
 func (owner *transcriptOwner) PublishSessionInfo(info map[string]interface{}) bool {
+	return owner.publishSessionInfo(info, false)
+}
+
+func (owner *transcriptOwner) publishSessionInfo(info map[string]interface{}, sessionScoped bool) bool {
 	encoded := make(map[string][]byte, len(info))
 	for key, value := range info {
 		data, err := json.Marshal(value)
@@ -145,7 +166,11 @@ func (owner *transcriptOwner) PublishSessionInfo(info map[string]interface{}) bo
 	// Turn completion and goal publication take activity admission before the session-info cache.
 	// Use the same order so a pending progress update cannot block their completion.
 	owner.activity.mu.Lock()
-	if !owner.currentLocked() {
+	admitted := owner.currentLocked()
+	if sessionScoped {
+		admitted = owner.outputProgressCurrentLocked()
+	}
+	if !admitted {
 		owner.activity.mu.Unlock()
 		return false
 	}
@@ -244,7 +269,15 @@ func (owner *transcriptOwner) enqueueMessage(message *leapmuxv1.AgentChatMessage
 func (owner *transcriptOwner) dropOutputTail(spanID string) {
 	owner.activity.mu.Lock()
 	defer owner.activity.mu.Unlock()
-	if owner.currentLocked() {
+	if owner.outputProgressCurrentLocked() {
+		owner.sink.progress.dropTail(spanID)
+	}
+}
+
+func (owner *transcriptOwner) dropOutputTailForFrame(spanID string) {
+	owner.activity.mu.Lock()
+	defer owner.activity.mu.Unlock()
+	if owner.sessionCurrentLocked() && owner.frameSessionCurrentLocked() {
 		owner.sink.progress.dropTail(spanID)
 	}
 }

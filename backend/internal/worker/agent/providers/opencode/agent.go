@@ -193,12 +193,28 @@ func (a *Agent) Interrupt(_ agent.StopContext) error {
 	if err != nil {
 		return err
 	}
+	return a.interruptRun(run)
+}
+func (a *Agent) interruptRun(run *openCodeRun) error {
 	interrupted, err := a.rpc.interrupt(a.Context(), run.id)
 	if err != nil {
 		return err
 	}
 	if !interrupted {
-		return a.restoreRun(a.Context(), run)
+		if err := a.restoreRun(a.Context(), run); err != nil {
+			return err
+		}
+		a.dispatch.Lock()
+		defer a.dispatch.Unlock()
+		run.mu.Lock()
+		stillActive := run.active || run.compacting
+		run.mu.Unlock()
+		if !stillActive {
+			if err := run.tools.finish(agent.MessageCompletionInterrupted); err != nil {
+				return err
+			}
+			providerkit.ResetSpansAndProgress(run.sink)
+		}
 	}
 	return nil
 }
@@ -239,14 +255,7 @@ func (a *Agent) InterruptChild(key string, _ agent.StopContext) error {
 	if run.parentID == "" {
 		return errors.New("the native child key identifies the root conversation")
 	}
-	interrupted, err := a.rpc.interrupt(a.Context(), run.id)
-	if err != nil {
-		return err
-	}
-	if !interrupted {
-		return a.restoreRun(a.Context(), run)
-	}
-	return nil
+	return a.interruptRun(run)
 }
 func (a *Agent) HandleOutput(raw []byte) {
 	if err := a.acceptNativeEvent(a.Context(), raw); err != nil {

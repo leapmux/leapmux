@@ -11,6 +11,7 @@ import (
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -122,4 +123,63 @@ func TestACPAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	err := agent.Interrupt(agentapi.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
+}
+
+func TestGooseClearProviderStateResetsDelegationAndOutputState(t *testing.T) {
+	t.Parallel()
+	a, _ := newGooseAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
+		if method == acp.MethodSessionNew {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"s2"}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.SetSinkForTest(agentapi.NewProviderServices(&agenttest.Sink{}))
+	*a.HooksForTest() = a.hooks()
+	a.Mu.Lock()
+	a.gooseChildRenames = map[string]string{"spawn-1": "sess-1"}
+	a.gooseOutput = map[string]gooseOutputState{"call-1": {sequence: 3, bytes: 10}}
+	a.activeDelegations = map[string]struct{}{"sess-1": {}}
+	a.promptOutput = goosePromptOutputState{goalArmed: true, lastMessageID: "msg-1"}
+	a.Mu.Unlock()
+
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Empty(t, a.gooseChildRenames)
+	assert.Empty(t, a.gooseOutput)
+	assert.Empty(t, a.activeDelegations)
+	assert.Equal(t, goosePromptOutputState{}, a.promptOutput)
+}
+
+func TestGooseIdleInterruptClosesActiveDelegations(t *testing.T) {
+	t.Parallel()
+	a, _ := newGooseAgentForRPCWithResponder(t, func(string) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agentapi.NewProviderServices(sink))
+	*a.HooksForTest() = a.hooks()
+
+	// Register a running delegated subagent row and record it in activeDelegations.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "sess-fg-1",
+		Kind:   bgtask.KindSubagent,
+		Title:  "Delegated worker",
+		Status: bgtask.StatusRunning,
+	}))
+	a.Mu.Lock()
+	a.activeDelegations = map[string]struct{}{"sess-fg-1": {}}
+	a.Mu.Unlock()
+
+	require.NoError(t, a.Interrupt(agentapi.StopContext{}))
+
+	a.Mu.Lock()
+	remaining := len(a.activeDelegations)
+	a.Mu.Unlock()
+	assert.Zero(t, remaining, "idle Interrupt must drain activeDelegations")
+	row, found := sink.BackgroundTask("sess-fg-1")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status, "idle Interrupt must close lingering delegated subagents as interrupted")
 }

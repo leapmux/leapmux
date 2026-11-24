@@ -136,6 +136,7 @@ type itemState struct {
 	nativeItemRaw json.RawMessage
 	registry      *registryPublication
 	opened        bool
+	forceClosed   bool
 	// retainedRevision includes writes that the shared queue owns for retry.
 	retainedRevision     int64
 	retainedWriteReceipt *agent.TranscriptWriteReceipt

@@ -116,6 +116,26 @@ func TestCodexRawExecMatchesACommandOnlyDuringItsWait(t *testing.T) {
 	}
 }
 
+func TestCodexRawExecMatchesCrossTurnTypedCommandDuringWait(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.mainTurn.id = "turn-1"
+	request := []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"custom_tool_call","call_id":"cross-turn-exec","name":"exec","input":"await shell()"}}}`)
+	for _, frame := range [][]byte{
+		request,
+		codexCellOutputFrame(t, "custom_tool_call_output", "cross-turn-exec", codexTestCellYield, "main-thread", "turn-1"),
+		[]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`),
+		[]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`),
+		codexWaitCallFrame(t, "wait-turn-2", "205", "main-thread", "turn-2"),
+		rawExecToolEvent("item/completed", "commandExecution", "main-thread", "turn-2"),
+		codexCellOutputFrame(t, "function_call_output", "wait-turn-2", codexTestCellCompleted, "main-thread", "turn-2", codexHelloReceipt),
+	} {
+		handleCodexOutput(a, providerkit.ParseLine(frame))
+	}
+	require.Empty(t, codexSpanRows(sink.Messages(), "cross-turn-exec"), "a Turn 2 typed command completion must cover the Turn 1 yielded cell receipt")
+}
+
 func TestCodexRawExecKeepsImagesAndFailureAfterTypedOutput(t *testing.T) {
 	t.Parallel()
 	for _, failed := range []bool{false, true} {

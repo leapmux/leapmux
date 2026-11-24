@@ -2737,17 +2737,13 @@ func TestZCodeNativeEnd_PreservesToolsOfALocallySettledOwner(t *testing.T) {
 	generation := a.stopWindow.generation
 	a.Mu.Unlock()
 	a.endStoppedZCodeTurn(generation)
+	// Explicit user stop closes non-background root tools on silence-window expiry.
+	assert.Contains(t, sink.ClosedSpans(), zcodeTestSpanID(t, &sink.Sink, "tool-A"))
 	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-B", contracts.ZCodeEventTurnStarted, `{"messageId":"user-B"}`))
 	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-B", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
 	dividers := zcodeNativeTurnEndRows(t, sink.Messages())
 	require.Len(t, dividers, 1)
-	assert.False(t, dividers[0].TurnEnd, "an older launched tool still owns activity")
-	a.Mu.Lock()
-	invocation := a.resolveZCodeInvocationLocked(owner, "tool-A", "message-A", false)
-	open := invocation != nil && !invocation.final
-	a.Mu.Unlock()
-	assert.True(t, open)
-	assert.Equal(t, "Bash", a.sink.GetSpanType(zcodeTestSpanID(t, &sink.Sink, "tool-A")))
+	assert.True(t, dividers[0].TurnEnd)
 }
 
 func TestZCodeRecoveryCoverage_ReusesCanonicalStringsForRecoveredSuffixes(t *testing.T) {

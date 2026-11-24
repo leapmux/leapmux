@@ -19,9 +19,10 @@ type droidChildConnection struct {
 	err   error
 }
 
-// droidArchiveOnlySink keeps the native JSONL tail authoritative for chat
-// rows. The bound process still sends controls, settings, and turn state to the
-// child sink through the embedded services.
+// droidArchiveOnlySink keeps the native JSONL tail authoritative for child
+// transcript rows, spans, and live progress. The bound process still sends
+// controls, settings, and turn state to the child sink through the embedded
+// services.
 type droidArchiveOnlySink struct{ agent.ProviderServices }
 
 var _ agent.ProviderServices = droidArchiveOnlySink{}
@@ -33,6 +34,21 @@ func (droidArchiveOnlySink) PersistMessage(leapmuxv1.MessageSource, agent.Messag
 func (droidArchiveOnlySink) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error {
 	return nil
 }
+
+func (droidArchiveOnlySink) PersistNotification(leapmuxv1.MessageSource, agent.MessageContent) (bool, error) {
+	return false, nil
+}
+
+func (droidArchiveOnlySink) PersistWorkerNotification(agent.MessageContent) (bool, error) {
+	return false, nil
+}
+
+func (droidArchiveOnlySink) OpenSpan(string, string)               {}
+func (droidArchiveOnlySink) CloseSpan(string)                      {}
+func (droidArchiveOnlySink) ResetSpans()                           {}
+func (droidArchiveOnlySink) SetSpanType(string, string)            {}
+func (droidArchiveOnlySink) ReserveSpanColor(string, string) int32 { return 0 }
+func (droidArchiveOnlySink) ReportProgress(agent.ProgressUpdate)   {}
 
 // registeredChildID rejects a key that the Worker's child registry cannot
 // resolve. A guessed native UUID is never enough to open another session.

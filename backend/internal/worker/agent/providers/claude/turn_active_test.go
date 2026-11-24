@@ -101,13 +101,28 @@ func TestClaudeTurnActive_SubagentResultLeavesTheRootTurnOpen(t *testing.T) {
 func TestTurnEndPrecedesTheClear_Claude(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.Sink{}
-	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-	require.NoError(t, a.SendInput("hello", nil))
+	t.Run("normal result keeps spans open", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+		require.NoError(t, a.SendInput("hello", nil))
 
-	a.HandleOutput([]byte(`{"type":"result","subtype":"success","num_tool_uses":2}`))
+		a.HandleOutput([]byte(`{"type":"result","subtype":"success","num_tool_uses":2}`))
 
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+		assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	})
+
+	t.Run("interrupted result resets spans after turn_end", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+		require.NoError(t, a.SendInput("hello", nil))
+		a.noteInterruptRequested()
+
+		a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`))
+
+		assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	})
 }
 
 func TestClaudeTurnActive_RootAssistantOutputArmsATurnTheWorkerDidNotStart(t *testing.T) {
@@ -500,9 +515,9 @@ func TestTurnEndPrecedesTheIdleClear_Claude(t *testing.T) {
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end"}, sink.TurnLifecycle())
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 func TestClaudeTurnActive_AForwardedChildStateDecidesNothing(t *testing.T) {
@@ -632,14 +647,14 @@ func TestClaudeQueuedNativeIdleWaitsForTheResultEdge(t *testing.T) {
 	assert.Equal(t, []string{"turn_active:true"}, sink.TurnLifecycle())
 	blocked = false
 	require.NoError(t, agent.FlushPendingOutput(services))
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
 	require.NoError(t, a.SendInput("next", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"next-tool","message":{"content":[{"type":"tool_use","id":"next-tool","name":"Read"}]}}`))
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 	rows := sink.Messages()
 	require.Len(t, rows, 4)
 	assert.Equal(t, "next-tool", rows[2].IdempotencyKey)
-	assert.Empty(t, rows[2].SpansOpenAtPersist, "the next opener starts at clean geometry")
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "old-tool"}}, rows[2].SpansOpenAtPersist, "an unclosed tool span from the normal prior turn stays open across turns")
 	assert.Equal(t, []int{1, 1}, agenttest.TurnToolUseCounts(t, rows))
 }
 

@@ -607,7 +607,7 @@ func TestCodexRawExecRetriesBeforeLaterRowsAtTurnEnd(t *testing.T) {
 	require.Contains(t, string(sink.Messages()[2].Content), `"id":"nested-tool"`)
 }
 
-func TestCodexRawExecDropsStaleTurns(t *testing.T) {
+func TestCodexRawExecPreservesCallsAcrossNextTurnStart(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
@@ -615,9 +615,9 @@ func TestCodexRawExecDropsStaleTurns(t *testing.T) {
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"next-turn"}}}`)))
-	require.Empty(t, a.rawExecutionCalls)
+	require.Len(t, a.rawExecutionCalls, 1)
 	handleCodexOutput(a, providerkit.ParseLine(output))
-	require.Empty(t, sink.Messages())
+	require.Empty(t, sink.Messages(), "stale-turn custom_tool_call_output is ignored while the new turn is active")
 }
 
 func TestCodexRawExecRetainsLargePayloads(t *testing.T) {
@@ -963,7 +963,7 @@ func TestCodexRawExecTurnEndPreservesOtherThread(t *testing.T) {
 			handleCodexOutput(a, providerkit.ParseLine(rootRequest))
 			handleCodexOutput(a, providerkit.ParseLine(childRequest))
 			require.Len(t, a.rawExecutionCalls, 2)
-			completion := fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":%q,"turn":{"id":"raw-turn","status":"completed"}}}`, endedThread)
+			completion := fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":%q,"turn":{"id":"raw-turn","status":"interrupted"}}}`, endedThread)
 			handleCodexOutput(a, providerkit.ParseLine([]byte(completion)))
 			require.Len(t, a.rawExecutionCalls, 1)
 			endedSink, retainedSink := sink, sink.Child("child-of-spawn")
@@ -1180,9 +1180,9 @@ func TestCodexRawExecEndsACellThatAWaitTerminates(t *testing.T) {
 	assert.Contains(t, string(rows[1].SupplementalContent), "Script terminated")
 }
 
-// A cell that still runs when the turn ends keeps the output that it stated,
-// marked as interrupted, because LeapMux reads no more of it. A cell that
-// stated no output keeps no card, as before.
+// A normal turn end keeps a yielded cell alive across turns. An interrupted
+// turn retains the output that the cell stated, marked as interrupted, and a
+// cell that stated no output keeps no card.
 func TestCodexRawExecRetainsAnUnfinishedCellAtTurnEnd(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"with output", "without output", "inside a wait"} {
@@ -1204,13 +1204,19 @@ func TestCodexRawExecRetainsAnUnfinishedCellAtTurnEnd(t *testing.T) {
 			for _, frame := range frames {
 				handleCodexOutput(a, providerkit.ParseLine(frame))
 			}
+			assert.Empty(t, codexSpanRows(sink.Messages(), "raw-exec-call"), "normal turn end keeps the yielded cell open")
+			assert.NotEmpty(t, a.rawExecutionCalls)
+
+			// Interrupting closes the unfinished cell.
+			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`)))
+			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-2","status":"interrupted"}}}`)))
 			rows := codexSpanRows(sink.Messages(), "raw-exec-call")
 			if scenario == "without output" {
 				assert.Empty(t, rows, "an unfinished cell with no output has nothing to show")
 				return
 			}
 			require.Len(t, rows, 2)
-			assert.Equal(t, agentapi.MessageCompletionInterrupted, rows[1].Completion, "the turn ended before the cell")
+			assert.Equal(t, agentapi.MessageCompletionInterrupted, rows[1].Completion, "the interrupt ended the cell")
 			assert.Empty(t, rows[1].SupplementalContent, "no wait output arrived")
 			assert.Empty(t, a.rawExecutionCalls)
 		})

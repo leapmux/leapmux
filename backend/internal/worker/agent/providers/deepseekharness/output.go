@@ -167,6 +167,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		if stream.childAgentID == "" {
 			a.retryResolution.Resolve(sink)
 		}
+		stream.closedSpans.Reopen(call.ID)
 		sink.OpenSpan(call.ID, "")
 		sink.SetSpanType(call.ID, call.Name)
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: call.ID, SpanType: call.Name, SpanColor: sink.ReserveSpanColor(call.ID, "")}); !agent.OutputRetained(err) {
@@ -186,6 +187,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			return fmt.Errorf("DeepSeek Harness tool result has no call identity")
 		}
 		id := result.Message.ID
+		if stream.closedSpans.WasClosed(id) {
+			return nil
+		}
 		completion := agent.MessageCompletionComplete
 		if result.Message.IsError {
 			completion = agent.MessageCompletionError
@@ -217,8 +221,10 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			a.flushPendingErrors(end.Reason.Error.Message)
 			a.lastTurnError = end.Reason.Error.Message
 		}
-		if err := a.finishPendingTools(stream, completion); err != nil {
-			return err
+		if completion == agent.MessageCompletionInterrupted {
+			if err := a.finishPendingTools(stream, completion); err != nil {
+				return err
+			}
 		}
 		metadata, err := encodeJSON(map[string]any{contracts.MessageMetadataFieldDurationMs: max(int64(0), event.Time-stream.startedAt)})
 		if err != nil {
@@ -229,6 +235,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		content = agent.WithToolUseCount(content, int(stream.tools))
 		if err := sink.PersistTurnEnd(content, agent.SpanInfo{}); !agent.OutputRetained(err) {
 			return err
+		}
+		if completion == agent.MessageCompletionInterrupted {
+			providerkit.ResetSpansAndProgress(sink)
 		}
 		if stream.childAgentID == "" {
 			a.setTurnState(false)
@@ -407,20 +416,27 @@ func nativeTurnCompletion(raw []byte) agent.MessageCompletion {
 
 func (a *Agent) finishPendingTools(stream *sessionStream, completion agent.MessageCompletion) error {
 	sink := a.streamSink(stream)
+	discarding := a.discard.Load() || a.IsDiscardingOutput()
 	for _, id := range stream.pendingOrder {
 		raw, exists := stream.pending[id]
 		if !exists {
 			continue
 		}
-		var event sessionEvent
-		if err := json.Unmarshal(raw, &event); err != nil || event.Seq == nil {
-			return fmt.Errorf("DeepSeek Harness pending tool has no native sequence")
+		if !discarding && sink != nil {
+			var event sessionEvent
+			if err := json.Unmarshal(raw, &event); err != nil || event.Seq == nil {
+				return fmt.Errorf("DeepSeek Harness pending tool has no native sequence")
+			}
+			content := agent.MessageContent{Original: raw, AgentSessionID: stream.sessionID, Completion: completion, IdempotencyKey: fmt.Sprintf("session-event:%d:retained-close", *event.Seq)}
+			if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: id, SpanType: sink.GetSpanType(id), SpanColor: sink.ReserveSpanColor(id, ""), Closing: true}); !agent.OutputRetained(err) {
+				return err
+			}
 		}
-		content := agent.MessageContent{Original: raw, AgentSessionID: stream.sessionID, Completion: completion, IdempotencyKey: fmt.Sprintf("session-event:%d:retained-close", *event.Seq)}
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: id, SpanType: sink.GetSpanType(id), SpanColor: sink.ReserveSpanColor(id, ""), Closing: true}); !agent.OutputRetained(err) {
-			return err
+		stream.closedSpans.MarkClosed(id)
+		if sink != nil {
+			sink.CloseSpan(id)
+			sink.ReportProgress(agent.CompleteOutputProgress(id))
 		}
-		sink.CloseSpan(id)
 		delete(stream.pending, id)
 	}
 	stream.pendingOrder = nil

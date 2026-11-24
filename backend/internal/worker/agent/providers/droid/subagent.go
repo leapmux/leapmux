@@ -164,6 +164,10 @@ func (a *Agent) closeChildSession(sessionID string, status bgtask.Status) {
 	if sessionID == "" || a.childAgents[sessionID] == "" {
 		return
 	}
+	if target, ok := a.outputTargetFor(sessionID); ok {
+		a.closeOpenTools(target, providerkit.ChildCompletion(status), true)
+		a.flushPendingOutput(target)
+	}
 	providerkit.LogRegistryRefusal("droid", "finish child", a.sink.CloseBackgroundTask(sessionID, status))
 	if state := a.outputStates[sessionID]; state != nil {
 		state.ended = true

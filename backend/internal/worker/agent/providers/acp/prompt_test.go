@@ -167,6 +167,120 @@ func TestACPPromptEndedSkipsAResponseOfThePreviousSession(t *testing.T) {
 	assert.Empty(t, *ends, "the prompt of a replaced session is no prompt of the current one")
 }
 
+func TestACPFinishOwnedPromptRequestSerializesPromptEndedWithStoppedAndOwnership(t *testing.T) {
+	t.Parallel()
+
+	t.Run("interrupt landing while reader holds sessionUpdates passes stopped=true to PromptEnded", func(t *testing.T) {
+		t.Parallel()
+		var output bytes.Buffer
+		b, sink := newACPTurnBase(t, agenttest.NopStdin(&output))
+		b.Mu.Lock()
+		b.promptActive = true
+		b.Mu.Unlock()
+		b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-race","kind":"execute","title":"Sleep"}`))
+
+		hookEntered := make(chan struct{}, 1)
+		var hookCalled, hookStopped, locksReleased bool
+		b.hooks.PromptEnded = func(_ error, stopped bool) PromptEnding {
+			hookCalled = true
+			hookStopped = stopped
+			if b.sessionUpdates.mu.TryLock() {
+				b.sessionUpdates.mu.Unlock()
+				if b.turnMu.TryLock() {
+					b.turnMu.Unlock()
+					if b.Mu.TryLock() {
+						b.Mu.Unlock()
+						locksReleased = true
+					}
+				}
+			}
+			select {
+			case hookEntered <- struct{}{}:
+			default:
+			}
+			return PromptEnding{}
+		}
+
+		b.sessionUpdates.mu.Lock()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			b.finishOwnedPromptRequest("session-1", nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+		}()
+
+		// Wait until finishOwnedPromptRequest holds sessionMu.RLock and blocks on sessionUpdates.mu.
+		testutil.RequireEventually(t, func() bool {
+			if !b.sessionMu.TryLock() {
+				return true
+			}
+			b.sessionMu.Unlock()
+			return false
+		})
+		select {
+		case <-hookEntered:
+			t.Fatal("PromptEnded must not run while sessionUpdates.mu is held")
+		default:
+		}
+		b.noteACPInterruptRequested()
+		b.sessionUpdates.mu.Unlock()
+		<-done
+
+		assert.True(t, hookCalled)
+		assert.True(t, locksReleased, "PromptEnded must run after releasing sessionUpdates.mu, turnMu, and Mu")
+		assert.True(t, hookStopped, "PromptEnded must receive the same locked stopped=true value as the turn drain")
+		assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closingRows(sink, "call-race"))
+		assert.False(t, b.HasOpenRootTool("call-race"))
+	})
+
+	t.Run("prompt drained while reader holds sessionUpdates skips PromptEnded", func(t *testing.T) {
+		t.Parallel()
+		var output bytes.Buffer
+		b, _ := newACPTurnBase(t, agenttest.NopStdin(&output))
+		b.Mu.Lock()
+		b.promptActive = true
+		b.Mu.Unlock()
+
+		hookEntered := make(chan struct{}, 1)
+		var hookCalled bool
+		b.hooks.PromptEnded = func(_ error, _ bool) PromptEnding {
+			hookCalled = true
+			select {
+			case hookEntered <- struct{}{}:
+			default:
+			}
+			return PromptEnding{}
+		}
+
+		b.sessionUpdates.mu.Lock()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			b.finishOwnedPromptRequest("session-1", nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+		}()
+
+		// Wait until finishOwnedPromptRequest holds sessionMu.RLock and blocks on sessionUpdates.mu.
+		testutil.RequireEventually(t, func() bool {
+			if !b.sessionMu.TryLock() {
+				return true
+			}
+			b.sessionMu.Unlock()
+			return false
+		})
+		select {
+		case <-hookEntered:
+			t.Fatal("PromptEnded must not run while sessionUpdates.mu is held")
+		default:
+		}
+		b.Mu.Lock()
+		b.promptOutputDrained = true
+		b.Mu.Unlock()
+		b.sessionUpdates.mu.Unlock()
+		<-done
+
+		assert.False(t, hookCalled, "PromptEnded must not run when the prompt lost ownership before locking")
+	})
+}
+
 // The conversation that a resumed session replays before its session/load reply
 // is history the Worker already stores as its own transcript rows, so the base
 // drops it. Goose, Reasonix, Fast Agent and Dirac all replay inside the load

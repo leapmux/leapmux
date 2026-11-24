@@ -164,8 +164,17 @@ func (a *Agent) ClearContext() (string, error) {
 	a.retireSessionStates(retired, agent.MessageCompletionInterrupted)
 	a.dispatcher.mu.Unlock()
 	a.drainDeferredOutputActions()
+	resetRoot := false
+	for _, previous := range retired {
+		_ = agent.FlushPendingOutput(previous.sink)
+		if previous.sink == a.sink {
+			resetRoot = true
+		}
+	}
 	a.drainControls()
-	a.sink.ResetSpans()
+	if !resetRoot {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	a.sink.UpdateSessionID(replacement)
 	if old != replacement {
 		a.sink.ClearGoal(false)

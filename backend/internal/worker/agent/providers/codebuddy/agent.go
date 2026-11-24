@@ -1,6 +1,7 @@
 package codebuddy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -47,6 +48,7 @@ type Agent struct {
 	turnOrder                  providerkit.TurnSeq
 	activityRev                uint64
 	turnToolCalls              map[string]struct{}
+	openTools                  providerkit.ToolSpanLedger[[]byte]
 	// modelStreams keeps the latest response per transcript owner. Empty identifies the root.
 	// The map and every stream state are guarded by mu.
 	modelStreams      map[string]*codebuddyModelStream
@@ -58,6 +60,9 @@ type Agent struct {
 	// permissionInterruptPending holds the global stop until the main run ends.
 	permissionInterruptPending bool
 	permissionWriteMu          sync.Mutex
+	// outputMu serializes stdout frame dispatch against idle interrupt and exit tool cleanup.
+	// Lock order: outputMu -> mu (never hold permissionWriteMu when acquiring outputMu).
+	outputMu sync.Mutex
 
 	// pendingControl routes a control_response to the caller waiting on its
 	// request id. See sendControlAndWait.
@@ -316,15 +321,26 @@ func codebuddySteerOutcome(resp codebuddyControlResult, err error) error {
 // CodeBuddy's permission refusal carries interrupt:true and stops the native run.
 // Send the global stop after the native run ends, before the next input enters.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
+	requested, err := a.sendInterrupt(stop)
+	if err != nil {
+		return err
+	}
+	if !requested {
+		a.closeOpenTools(agent.MessageCompletionInterrupted, true, true)
+	}
+	return nil
+}
+
+func (a *Agent) sendInterrupt(agent.StopContext) (bool, error) {
 	a.permissionWriteMu.Lock()
 	defer a.permissionWriteMu.Unlock()
 	if a.IsStopped() {
-		return fmt.Errorf("the CodeBuddy process is stopped")
+		return false, fmt.Errorf("the CodeBuddy process is stopped")
 	}
 	a.mu.Lock()
 	if a.permissionInterruptPending {
 		a.mu.Unlock()
-		return nil
+		return true, nil
 	}
 	sessionID := a.sessionID
 	revision := a.activityRev
@@ -354,7 +370,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 			forgetFailedAttempt()
 		}
 		if err != nil || refused {
-			return err
+			return requested, err
 		}
 		a.mu.Lock()
 		a.permissionInterruptPending = false
@@ -362,9 +378,45 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	}
 	if err := a.sendInterruptControl(sessionID); err != nil {
 		forgetFailedAttempt()
-		return err
+		return requested, err
 	}
-	return nil
+	return requested, nil
+}
+
+func codebuddyBuildClosingRow(entry providerkit.OpenToolEntry[[]byte]) (agent.MessageContent, agent.SpanInfo, bool) {
+	if len(entry.Data) == 0 {
+		return agent.MessageContent{}, agent.SpanInfo{}, false
+	}
+	return agent.MessageContent{Original: bytes.Clone(entry.Data)}, agent.SpanInfo{
+		SpanID:   entry.SpanID,
+		SpanType: entry.SpanType,
+		Closing:  true,
+	}, true
+}
+
+func (a *Agent) closeOpenTools(completion agent.MessageCompletion, idleOnly, resetSpans bool) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
+	a.closeOpenToolsLocked(completion, idleOnly, resetSpans)
+}
+
+func (a *Agent) closeOpenToolsLocked(completion agent.MessageCompletion, idleOnly, resetSpans bool) {
+	a.mu.Lock()
+	if idleOnly && (a.active || a.StoppedLocked()) {
+		a.mu.Unlock()
+		return
+	}
+	entries := a.openTools.DrainAll()
+	a.mu.Unlock()
+	if a.sink == nil {
+		return
+	}
+	if !a.IsDiscardingOutput() && len(entries) > 0 {
+		providerkit.CloseToolSpans(a.sink, entries, completion, codebuddyBuildClosingRow)
+	}
+	if resetSpans {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 }
 
 // Stop terminates the process.
@@ -383,10 +435,11 @@ func (a *Agent) Wait() error {
 	return err
 }
 
-// cleanupAfterProcessExit stops archive retries and clears controls and turn state.
+// cleanupAfterProcessExit stops archive retries and clears controls, open tools, and turn state.
 func (a *Agent) cleanupAfterProcessExit() {
 	a.stopWorkflowArchiveRetries()
 	a.withdrawControls()
+	a.closeOpenTools(a.ProcessExitCompletion(), false, true)
 	a.setTurnActive(false)
 }
 

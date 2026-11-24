@@ -33,7 +33,7 @@ func testAgent(t *testing.T) (*Agent, *agenttest.Sink) {
 	sink := &agenttest.Sink{}
 	a := &Agent{
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "command-code-test", ProviderName: "Command Code", Ctx: ctx, Cancel: cancel, Stdin: &agenttest.Stdin{}, ProcessDone: ended})},
-		sink:           agent.NewProviderServices(sink), clock: quartz.NewReal(), sessionID: "native-session", model: "native-model", permissionMode: "default", tools: make(map[string]openTool), children: make(map[string]*childState),
+		sink:           agent.NewProviderServices(sink), clock: quartz.NewReal(), sessionID: "native-session", model: "native-model", permissionMode: "default", children: make(map[string]*childState),
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 	t.Cleanup(func() { a.Stop(); cancel() })

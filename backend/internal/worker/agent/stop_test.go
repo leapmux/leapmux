@@ -62,6 +62,20 @@ func TestStopContextReportsOnlyItsOwnCallback(t *testing.T) {
 	assert.Equal(t, 1, second)
 }
 
+func TestStopContextPreserveOpenSpans(t *testing.T) {
+	t.Parallel()
+	var zero agent.StopContext
+	assert.NotPanics(t, zero.PreserveOpenSpans)
+	var ignored, preserved int
+	stop := agent.NewStopContext(func() { ignored++ }).WithPreserveOpenSpans(func() { preserved++ })
+	stop.PreserveOpenSpans()
+	assert.Zero(t, ignored)
+	assert.Equal(t, 1, preserved)
+	stop.ReportIgnored()
+	assert.Equal(t, 1, ignored)
+	assert.Equal(t, 1, preserved)
+}
+
 func TestStopTargetKeepsANonComparableRegistration(t *testing.T) {
 	t.Parallel()
 	m := agent.NewManager(testRegistry, nil)

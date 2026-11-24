@@ -48,15 +48,14 @@ func TestFailedPromptWithEndFrameWritesTheDivider(t *testing.T) {
 
 	b.finishPromptRequest("session-1", nil, errors.New("failed"))
 
-	assert.Equal(t, []string{"message", "message", "note", "end"}, sink.events)
+	assert.Equal(t, []string{"message", "note", "end"}, sink.events)
 	rows := sink.Messages()
-	require.Len(t, rows, 4)
+	require.Len(t, rows, 3)
 	assert.Contains(t, string(rows[1].Content), "partial answer")
 	assert.Contains(t, string(rows[1].Content), `"completion":"error"`)
-	assert.Equal(t, agent.MessageCompletionError, rows[2].Completion)
-	assert.True(t, rows[2].Closing)
-	assert.Equal(t, []byte(frame), rows[3].Content)
-	assert.True(t, rows[3].TurnEnd)
+	assert.Equal(t, []byte(frame), rows[2].Content)
+	assert.True(t, rows[2].TurnEnd)
+	assert.True(t, b.HasOpenRootTool("tool-1"))
 	active, _ := sink.LastTurnActive()
 	assert.False(t, active)
 }
@@ -140,4 +139,26 @@ func TestPromptEndedIgnoresFailureFrameAfterAStopOrSuccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestACPFailedPromptAndUnsentPromptPreservePriorOpenTools(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	b, sink := newACPTurnBase(t, agenttest.NopStdin(&output))
+	b.promptActive = true
+	b.handleACPUpdate(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"prior-tool","title":"Watch","kind":"execute","status":"in_progress"}`))
+
+	// Non-interrupted failed prompt keeps prior-tool open.
+	b.finishPromptRequest("session-1", nil, errors.New("http 400"))
+	assert.True(t, b.HasOpenRootTool("prior-tool"))
+	assert.Empty(t, closingRows(sink, "prior-tool"))
+
+	// Unsent prompt (prepare failure) also preserves prior-tool.
+	b.hooks.PreparePrompt = func(string, []agent.ClassifiedAttachment, []map[string]any) error {
+		return errors.New("prepare failed")
+	}
+	require.Error(t, b.SendInput("next", nil))
+	assert.True(t, b.HasOpenRootTool("prior-tool"))
+	assert.Empty(t, closingRows(sink, "prior-tool"))
 }

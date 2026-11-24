@@ -3,6 +3,7 @@ package deepseekharness
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -157,7 +159,16 @@ func (a *Agent) childTurnState(id string, active bool, completion agent.MessageC
 		}
 	}
 	child.active = active
+	childAgentID := child.agentID
+	continuable := child.descriptor.Mode == "continuable"
+	var turnSeq uint64
+	if continuable && childAgentID != "" {
+		turnSeq = a.NextTurnSeq()
+	}
 	a.Mu.Unlock()
+	if a.sink != nil && continuable && childAgentID != "" {
+		providerkit.PublishTurnStateTo(a.sink.ChildSink(childAgentID), agent.TurnState{Active: active, Steerable: active}, turnSeq)
+	}
 	if active {
 		if err := a.sink.ReviveBackgroundTask(id); err != nil {
 			return err
@@ -218,9 +229,46 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	a.Mu.Lock()
 	child := a.children[childKey]
+	var active bool
+	var mode, parent string
+	if child != nil {
+		active = child.active
+		mode = child.descriptor.Mode
+		parent = child.descriptor.Parent
+	}
 	a.Mu.Unlock()
-	if child == nil || child.descriptor.Mode != "continuable" {
+	if child == nil || mode != "continuable" {
 		return agent.ErrChildOperationUnsupported
 	}
-	return a.rpc.call(a.Context(), "subagents/interruptByParent", map[string]any{"childSessionId": childKey, "parentSessionId": child.descriptor.Parent, "mode": "continuable"}, nil)
+	if !active {
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.Mu.Lock()
+		current := a.children[childKey]
+		stillIdle := current != nil && !current.active && !a.StoppedLocked()
+		var childStreams []*sessionStream
+		var childAgentID string
+		if stillIdle {
+			childAgentID = current.agentID
+			for _, stream := range a.sortedStreamsLocked() {
+				if stream.sessionID == childKey && stream.childAgentID != "" {
+					childStreams = append(childStreams, stream)
+				}
+			}
+		}
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		var failures error
+		for _, stream := range childStreams {
+			failures = errors.Join(failures, a.finishPendingTools(stream, agent.MessageCompletionInterrupted))
+			providerkit.ResetSpansAndProgress(a.streamSink(stream))
+		}
+		if len(childStreams) == 0 && childAgentID != "" {
+			providerkit.ResetSpansAndProgress(a.sink.ChildSink(childAgentID))
+		}
+		return failures
+	}
+	return a.rpc.call(a.Context(), "subagents/interruptByParent", map[string]any{"childSessionId": childKey, "parentSessionId": parent, "mode": "continuable"}, nil)
 }

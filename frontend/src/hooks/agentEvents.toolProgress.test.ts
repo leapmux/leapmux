@@ -4,7 +4,7 @@ import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { applyNotificationMetadata, dropFinishedToolProgress, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleControlRequest, handleResultDivider, wireRunningToolToUpdate } from '~/hooks/agentEvents'
 import { parseMessageContent } from '~/lib/messageParser'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -36,7 +36,7 @@ function span(spanId: string, agentSessionId: string = SESSION): MessageSpanIden
   return { spanId, agentSessionId }
 }
 
-function agentMessage(content: unknown, overrides: Partial<{ spanId: string, agentSessionId: string, source: MessageSource, agentProvider: AgentProvider }> = {}) {
+function agentMessage(content: unknown, overrides: Partial<{ spanId: string, agentSessionId: string, source: MessageSource, agentProvider: AgentProvider, completion: MessageCompletion }> = {}) {
   return create(AgentChatMessageSchema, {
     id: 'm1',
     source: overrides.source ?? MessageSource.AGENT,
@@ -46,6 +46,7 @@ function agentMessage(content: unknown, overrides: Partial<{ spanId: string, age
     agentProvider: overrides.agentProvider ?? AgentProvider.CLAUDE_CODE,
     spanId: overrides.spanId ?? '',
     agentSessionId: overrides.agentSessionId ?? SESSION,
+    completion: overrides.completion ?? MessageCompletion.UNSPECIFIED,
   })
 }
 
@@ -443,7 +444,6 @@ describe('handleAgentSessionInfo running_tool', () => {
         elapsedSeconds: 30,
       })
       for (const value of [
-        null,
         'x',
         42,
         {},
@@ -451,6 +451,31 @@ describe('handleAgentSessionInfo running_tool', () => {
       ])
         expect(handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ running_tool: value })), s)).toBe(true)
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toEqual({ elapsedSeconds: 30 })
+      dispose()
+    })
+  })
+
+  it('clears all tool progress when running_tool is null', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      s.chatStore.applyToolProgress('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+        outputTail: 'running',
+      })
+      s.chatStore.applyToolProgress('a1', {
+        ...span('toolu_B'),
+        elapsedSeconds: 60,
+      })
+      s.chatStore.applyToolProgress('a2', {
+        ...span('toolu_A'),
+        elapsedSeconds: 15,
+      })
+
+      expect(handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ running_tool: null })), s)).toBe(true)
+      expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toBeUndefined()
+      expect(s.chatStore.getToolProgress('a1', span('toolu_B'))).toBeUndefined()
+      expect(s.chatStore.getToolProgress('a2', span('toolu_A'))?.elapsedSeconds).toBe(15)
       dispose()
     })
   })
@@ -526,7 +551,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   }
 
   /**
-   * Each turn-end boundary must clear both live indicators or retain both.
+   * Each lifecycle or progress-reset boundary must clear every live indicator.
    * A lost connection can omit the worker's explicit counter clear.
    * The lifecycle handler must clear every live field. Otherwise, an indicator stays stale for the rest of the session.
    * A handler that calls only clearToolProgress fails these checks.
@@ -538,13 +563,93 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     expect(s.agentSessionStore.getProgress('a1').output).toBeUndefined()
   }
 
-  it('the turn-end result divider clears every live indicator', () => {
+  it('keeps running tool progress and output bytes across normal, error, and interrupted dividers', () => {
+    createRoot((dispose) => {
+      for (const divider of [
+        agentMessage({ type: 'result', subtype: 'success' }),
+        agentMessage({ type: 'result', subtype: 'error_during_execution', is_error: true }),
+        agentMessage({
+          turn: { id: 't1', status: 'completed' },
+        }, { agentProvider: AgentProvider.CODEX }),
+        agentMessage({
+          turn: {
+            id: 't1',
+            status: 'failed',
+            error: { message: '400 Bad Request' },
+          },
+        }, { agentProvider: AgentProvider.CODEX }),
+        agentMessage({ type: 'result', subtype: 'success' }, { completion: MessageCompletion.INTERRUPTED }),
+        agentMessage({ type: 'result', subtype: 'cancelled' }, { agentProvider: AgentProvider.CLAUDE_CODE }),
+        agentMessage({
+          turn: { id: 't1', status: 'interrupted' },
+        }, { agentProvider: AgentProvider.CODEX }),
+        agentMessage({ stopReason: 'cancelled' }, { agentProvider: AgentProvider.CURSOR }),
+        agentMessage({
+          role: 'result',
+          content: { stopReason: 'cancelled' },
+        }, { agentProvider: AgentProvider.CURSOR }),
+        agentMessage({
+          method: 'session.event',
+          params: {
+            event: {
+              type: 'session.idle',
+              data: { aborted: true },
+            },
+          },
+        }, { agentProvider: AgentProvider.GITHUB_COPILOT }),
+        agentMessage({ type: 'agent_turn_completed', reason: 'cancelled' }, { agentProvider: AgentProvider.DROID }),
+        agentMessage({ type: 'agent_turn_completed', reason: 'process_exit' }, { agentProvider: AgentProvider.DROID }),
+        agentMessage({
+          type: 'agent_end',
+          messages: [
+            { role: 'assistant', stopReason: 'aborted' },
+          ],
+        }, { agentProvider: AgentProvider.PI }),
+        agentMessage({
+          type: 'agent_end',
+          messages: [
+            { role: 'assistant', stopReason: 'aborted' },
+          ],
+        }, { agentProvider: AgentProvider.OH_MY_PI }),
+      ]) {
+        const s = boundaryStores()
+        s.chatStore.setTurnRetryOffer('a1', { turnId: 't1', model: 'fast' })
+        s.chatStore.setPromptSuggestion('a1', { text: 'next step' })
+        handleResultDivider('a1', divider, parseMessageContent(divider), s, 'live')
+        expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
+        expect(s.chatStore.getTurnRetryOffer('a1')).toBeUndefined()
+        expect(s.chatStore.getPromptSuggestion('a1')).toBeUndefined()
+        expect(s.agentSessionStore.getProgress('a1').output?.bytes).toBe(2048)
+        expect(running(s.chatStore)).toHaveLength(2)
+        expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.permissionCheck).toBe(true)
+      }
+      dispose()
+    })
+  })
+
+  it('clears tool progress and generation progress on worker progress reset for the target agent only', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
-      expect(running(s.chatStore)).toHaveLength(2)
-      const msg = agentMessage({ type: 'result', subtype: 'success' })
-      handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
+      s.chatStore.applyToolProgress('a2', {
+        ...span('toolu_A'),
+        elapsedSeconds: 45,
+      })
+      s.agentSessionStore.applyProgress('a2', {
+        revision: 1,
+        thinkingTokens: 120,
+        output: { bytes: 512, minimum: false },
+      })
+      const reset = sessionInfoMessage({
+        running_tool: null,
+        thinking_tokens: 0,
+        output_bytes: 0,
+        generation_progress_revision: 2,
+      })
+      expect(handleAgentSessionInfo('a1', parseMessageContent(reset), s)).toBe(true)
       expectNothingLive(s)
+      expect(s.chatStore.getToolProgress('a2', span('toolu_A'))?.elapsedSeconds).toBe(45)
+      expect(s.agentSessionStore.getProgress('a2').thinkingTokens).toBe(120)
+      expect(s.agentSessionStore.getProgress('a2').output).toEqual({ bytes: 512, minimum: false })
       dispose()
     })
   })
@@ -600,16 +705,15 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     })
   })
 
-  it('a boundary on ONE agent leaves another agent\'s spans alone', () => {
+  it('leaves another agent\'s spans alone when one agent becomes inactive', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
       s.chatStore.applyToolProgress('a2', {
         ...span('toolu_A'),
         elapsedSeconds: 30,
       })
-      const msg = agentMessage({ type: 'result', subtype: 'success' })
-      handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
-      expect(running(s.chatStore)).toHaveLength(0)
+      handleAgentInactive('a1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'live', s)
+      expectNothingLive(s)
       expect(s.chatStore.getToolProgress('a2', span('toolu_A'))?.elapsedSeconds).toBe(30)
       dispose()
     })

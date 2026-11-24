@@ -28,8 +28,12 @@ const (
 )
 
 // stopAttempt retains its exact disposition after the scope removes its active mark.
-// agentActivity.mu guards the disposition. The allocation supplies its unique identity.
-type stopAttempt struct{ disposition stopDisposition }
+// agentActivity.mu guards the disposition and preserveOpenSpans. The allocation
+// supplies its unique identity.
+type stopAttempt struct {
+	disposition       stopDisposition
+	preserveOpenSpans bool
+}
 
 type ownedControlRequest struct {
 	claimToken string
@@ -44,6 +48,8 @@ type agentStopRequest struct {
 	scope       *activityScope
 	attempt     *stopAttempt
 	controls    []controlRequestInstance
+	// beforeIdleReset pauses SettleIdleStop under st.mu before clearing spans in tests.
+	beforeIdleReset func()
 }
 
 func (s *agentOutputSink) ownsControlPublisher() bool {
@@ -138,6 +144,10 @@ func (r *agentStopRequest) Context() agent.StopContext {
 	agentID, rootAgentID := r.agentID, r.rootAgentID
 	return agent.NewStopContext(func() {
 		h.withdrawStopAttempt(st, scope, attempt, stopIgnored, agentID, rootAgentID)
+	}).WithPreserveOpenSpans(func() {
+		st.mu.Lock()
+		attempt.preserveOpenSpans = true
+		st.mu.Unlock()
 	})
 }
 
@@ -211,5 +221,85 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 			continue
 		}
 		publication.enqueueCancellation(r.h, r.agentID, request.RequestID, request.ClaimToken)
+	}
+}
+
+// SettleIdleRootStop finalizes a delivered root interrupt when no turn is
+// active.
+func (r *agentStopRequest) SettleIdleRootStop() {
+	if r == nil || r.agentID != r.rootAgentID {
+		return
+	}
+	r.SettleIdleStop()
+}
+
+// SettleIdleStop finalizes a delivered root or multi-turn child interrupt when
+// no turn is active. It resets any remaining open spans, permission checks, and
+// progress unless the provider explicitly requested PreserveOpenSpans, then
+// rotates st.scope so subsequent prompts and spans are not suppressed by the
+// old stop scope. Registry-only children (turnSeq == 0) never report turn
+// state, so idle settlement leaves them untouched.
+func (r *agentStopRequest) SettleIdleStop() {
+	if r == nil {
+		return
+	}
+	isChild := r.agentID != r.rootAgentID
+	mutation := r.h.transcriptMutationMutex(r.rootAgentID)
+	mutation.Lock()
+	st := r.activity
+	st.mu.Lock()
+	if r.attempt.disposition != stopDelivered || st.turnActive || st.scope != r.scope || (isChild && st.turnSeq == 0) {
+		st.mu.Unlock()
+		mutation.Unlock()
+		return
+	}
+	preserve := r.attempt.preserveOpenSpans
+	var hasRootSpans bool
+	if !isChild {
+		hasRootSpans = r.h.hasOpenRootSpans(r.rootAgentID)
+	}
+	var resetSink *agentOutputSink
+	if !preserve {
+		var value any
+		var ok bool
+		if isChild {
+			value, ok = r.h.sinksByAgent.Load(r.agentID)
+		} else {
+			value, ok = r.h.rootSinks.Load(r.rootAgentID)
+		}
+		if ok {
+			candidate := value.(*agentOutputSink)
+			if r.scope.publisher == nil || candidate.turnPublisher() == r.scope.publisher {
+				resetSink = candidate
+				resetSink.clearPermissionChecks()
+				if r.beforeIdleReset != nil {
+					r.beforeIdleReset()
+				}
+				if hasRootSpans || (isChild && resetSink.currentSpanTracker().HasActiveSpans()) {
+					resetSink.currentSpanTracker().Reset()
+				}
+			}
+		} else if !isChild && hasRootSpans && r.h.trackers != nil {
+			if r.beforeIdleReset != nil {
+				r.beforeIdleReset()
+			}
+			r.h.trackers.reset(r.rootAgentID)
+		} else if isChild && r.h.trackers != nil {
+			if tracker, _, found := r.h.trackers.get(r.agentID); found && tracker.HasActiveSpans() {
+				if r.beforeIdleReset != nil {
+					r.beforeIdleReset()
+				}
+				r.h.trackers.reset(r.agentID)
+			}
+		}
+	}
+	st.scope = &activityScope{publisher: r.scope.publisher}
+	st.mu.Unlock()
+	if resetSink != nil && resetSink.progress != nil {
+		resetSink.progress.report(agent.ResetProgress())
+	}
+	mutation.Unlock()
+	if hasRootSpans {
+		r.h.publishSpanActivity(r.rootAgentID, settleImmediate)
 	}
 }

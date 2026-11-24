@@ -449,23 +449,36 @@ func TestGrokFinalToolUpdateClearsTheCheck(t *testing.T) {
 	assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck])
 }
 
-// The turn end clears every badge, a stop included: no check outlives the turn
-// that raised it.
-func TestGrokTurnEndClearsTheChecks(t *testing.T) {
+// A stopped turn clears every permission-check badge. Normal and error turns
+// preserve badges for open spans until those calls finish.
+func TestGrokTurnEndClearsTheChecksOnlyWhenStopped(t *testing.T) {
 	t.Parallel()
-	for _, stopped := range []bool{false, true} {
-		t.Run(fmt.Sprintf("stopped=%v", stopped), func(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		stopped   bool
+		wantClear bool
+	}{
+		{name: "normal turn preserves check", err: nil, stopped: false, wantClear: false},
+		{name: "error turn preserves check", err: assert.AnError, stopped: false, wantClear: false},
+		{name: "stopped turn clears check", err: nil, stopped: true, wantClear: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
 			a.HandleOutput(notification(t, grokTestSession, map[string]any{
 				"sessionUpdate": "pending_interaction", "tool_call_id": "call_2", "kind": "permission",
 			}))
-			a.HooksForTest().PromptEnded(nil, stopped)
+			a.HooksForTest().PromptEnded(tc.err, tc.stopped)
 			running, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
 			require.True(t, ok)
 			fields, ok := running.(map[string]interface{})
 			require.True(t, ok)
-			assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck])
+			if tc.wantClear {
+				assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck])
+			} else {
+				assert.Equal(t, true, fields[contracts.RunningToolFieldPermissionCheck])
+			}
 		})
 	}
 }

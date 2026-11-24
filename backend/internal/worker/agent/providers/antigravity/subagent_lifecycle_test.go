@@ -384,7 +384,7 @@ func TestAntigravityRetiredRootCannotStopReplacement(t *testing.T) {
 	a.generation++
 	a.installRoot("replacement", false)
 	a.Mu.Unlock()
-	a.stop(retired)
+	a.stop(retired, false)
 	assert.False(t, a.IsStopped())
 	assert.Equal(t, "replacement", a.root.id)
 	assert.NoError(t, a.streamCtx.Err())
@@ -1008,4 +1008,101 @@ func TestAntigravityFatalChildCancelsNativeWork(t *testing.T) {
 			assert.NoError(t, a.streamCtx.Err())
 		})
 	}
+}
+
+func TestAntigravityInterruptChildIdleAndCancelRollback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle child interrupt closes open tool without latching interrupted onto next turn", func(t *testing.T) {
+		t.Parallel()
+		a, sink, child := childLifecycleTestAgent(t)
+		rpc, _ := fakeAntigravityRPC(t)
+		a.rpc = rpc
+		childSink := sink.Child(child.childAgentID)
+		cmd := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"cmd-child-idle"}},"runCommand":{"command":"sleep 30"}}`)
+		require.NoError(t, a.applyUpdate(child, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{cmd}), false))
+		require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusIdle}, false))
+		require.Equal(t, cascadeTurnIdle, child.turnPhase)
+		require.Empty(t, childSink.ClosedSpans())
+
+		var preserved bool
+		require.NoError(t, a.InterruptChild(child.id, agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })))
+		assert.False(t, child.interrupted, "idle child interrupt must not latch interrupted onto next turn")
+		assert.False(t, preserved)
+		assert.Contains(t, childSink.ClosedSpans(), "cmd-child-idle")
+		assert.Contains(t, childSink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, childSink.ProgressUpdates(), agent.ResetProgress())
+
+		// Next turn on child must complete normally, not as stopped/interrupted.
+		require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusRunning}, false))
+		require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusIdle}, false))
+		row, ok := sink.BackgroundTask(child.id)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	})
+
+	t.Run("idle child interrupt with background task preserves open spans and resets model progress only", func(t *testing.T) {
+		t.Parallel()
+		a, sink, child := childLifecycleTestAgent(t)
+		rpc, _ := fakeAntigravityRPC(t)
+		a.rpc = rpc
+		childSink := sink.Child(child.childAgentID)
+		child.background[4] = backgroundTask{rowKey: "child-bg", stepIndex: 4}
+
+		var preserved bool
+		require.NoError(t, a.InterruptChild(child.id, agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })))
+		assert.False(t, child.interrupted)
+		assert.True(t, preserved)
+		assert.NotContains(t, childSink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, childSink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, childSink.ProgressUpdates(), agent.ResetModelProgress())
+	})
+
+	t.Run("failed active child cancel rolls back interrupted flag and respects interruptGen", func(t *testing.T) {
+		t.Parallel()
+		a, _, child := childLifecycleTestAgent(t)
+		var calls atomic.Int32
+		firstEntered := make(chan struct{})
+		releaseFirst, unblockFirst := newTestGate(t)
+		a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, languageServerService+"CancelCascadeInvocation", r.URL.Path)
+			if calls.Add(1) == 1 {
+				close(firstEntered)
+				<-releaseFirst
+				http.Error(w, "stale child cancel failed", http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+		})
+		a.beginTurn(child)
+
+		firstErr := make(chan error, 1)
+		go func() {
+			firstErr <- a.InterruptChild(child.id, agent.StopContext{})
+		}()
+		receiveTestValue(t, firstEntered)
+
+		require.NoError(t, a.InterruptChild(child.id, agent.StopContext{}))
+		unblockFirst()
+		require.Error(t, receiveTestValue(t, firstErr))
+
+		a.Mu.Lock()
+		interrupted := child.interrupted
+		gen := child.interruptGen
+		a.Mu.Unlock()
+		assert.True(t, interrupted, "stale failed cancel must not roll back a newer child cancel")
+		assert.Equal(t, uint64(2), gen)
+
+		// Single failed cancel on a fresh active turn rolls back interrupted to false.
+		a2, _, child2 := childLifecycleTestAgent(t)
+		a2.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "cancel failed", http.StatusInternalServerError)
+		})
+		a2.beginTurn(child2)
+		require.Error(t, a2.InterruptChild(child2.id, agent.StopContext{}))
+		a2.Mu.Lock()
+		interrupted2 := child2.interrupted
+		a2.Mu.Unlock()
+		assert.False(t, interrupted2, "failed active child cancel must roll back child.interrupted")
+	})
 }

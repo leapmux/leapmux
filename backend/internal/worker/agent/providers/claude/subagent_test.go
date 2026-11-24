@@ -2483,3 +2483,231 @@ func holdClaudeSiblingRestart(t *testing.T, sink agentapi.ServiceFacets, recorde
 	restartTaskStarted(a, "send-call", "continue")
 	return a, services, sender, blocker
 }
+
+func TestClaudeTaskNotificationClosesChildOpenToolsAndWorkflowSpanReleaseNotDoubleClosed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("task_notification closes remaining child open tools with status-mapped completion", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name            string
+			status          string
+			markInterrupted bool
+			wantTaskStatus  bgtask.Status
+			completion      agentapi.MessageCompletion
+		}{
+			{name: "stopped", status: "stopped", wantTaskStatus: bgtask.StatusStopped, completion: agentapi.MessageCompletionInterrupted},
+			{name: "interrupted", status: "stopped", markInterrupted: true, wantTaskStatus: bgtask.StatusInterrupted, completion: agentapi.MessageCompletionInterrupted},
+			{name: "failed", status: "failed", wantTaskStatus: bgtask.StatusFailed, completion: agentapi.MessageCompletionError},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				a := newTestAgent(agentapi.NewProviderServices(sink))
+				a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Worker","prompt":"run"}`))
+				a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"spawn-1","uuid":"child-u1","message":{"content":[{"type":"tool_use","id":"child-tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+				child := sink.Child("child-of-spawn-1")
+				require.NotNil(t, child)
+				require.NotContains(t, child.ClosedSpans(), "child-tool-1")
+				if tc.markInterrupted {
+					a.tasks.markInterrupted("task-1")
+				}
+
+				a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"` + tc.status + `","summary":"ended"}`))
+
+				_, taskStatus, found, err := sink.LookupBackgroundTask("task-1")
+				require.NoError(t, err)
+				require.True(t, found)
+				assert.Equal(t, tc.wantTaskStatus, taskStatus)
+				assert.Contains(t, child.ClosedSpans(), "child-tool-1")
+				assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+				assert.Contains(t, child.ProgressUpdates(), agentapi.ResetProgress())
+				var closing []agenttest.Message
+				for _, msg := range child.Messages() {
+					if msg.SpanID == "child-tool-1" && msg.Closing {
+						closing = append(closing, msg)
+					}
+				}
+				require.Len(t, closing, 1)
+				assert.Equal(t, tc.completion, closing[0].Completion)
+			})
+		}
+	})
+
+	t.Run("workflow span released by task_started is not double-closed on interrupt", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a, _ := newClaudeAgentWithStdin(agentapi.NewProviderServices(sink))
+		require.NoError(t, a.SendInput("run workflow", nil))
+		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"wf-call-1","name":"WorkflowTool","input":{}}]}}`))
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"wf-task-1","tool_use_id":"wf-call-1","task_type":"local_workflow","workflow_name":"review"}`))
+		require.Contains(t, sink.ClosedSpans(), "wf-call-1")
+
+		a.noteInterruptRequested()
+		a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`))
+
+		// No synthetic closing row is emitted for the already-released workflow span.
+		var wfClosing int
+		for _, msg := range sink.Messages() {
+			if msg.SpanID == "wf-call-1" && msg.Closing {
+				wfClosing++
+			}
+		}
+		assert.Zero(t, wfClosing)
+	})
+}
+
+func TestClaudeChildResultAndNotificationCleanupOpenTools(t *testing.T) {
+	t.Parallel()
+
+	t.Run("interrupted child result closes open child tools, resets spans and progress, and forgets child ledger", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		services := agentapi.NewProviderServices(sink)
+		a := newTestAgent(services)
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-res-int","tool_use_id":"spawn-res-int","task_type":"local_agent","description":"Worker","prompt":"run"}`))
+		a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"spawn-res-int","uuid":"cu1","message":{"content":[{"type":"tool_use","id":"child-tool-int","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+		childID := "child-of-spawn-res-int"
+		child := sink.Child(childID)
+		require.NotNil(t, child)
+		services.ChildSink(childID).ReportProgress(agentapi.OutputDeltaProgress("child-tool-int", 25))
+		a.tasks.markInterrupted("task-res-int")
+
+		a.HandleOutput([]byte(`{"type":"result","parent_tool_use_id":"spawn-res-int","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`))
+
+		assert.Contains(t, child.ClosedSpans(), "child-tool-int")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		assert.Equal(t, agentapi.ProgressSnapshot{}, child.ProgressSnapshot())
+		assert.Contains(t, child.ProgressUpdates(), agentapi.ResetProgress())
+		var closing []agenttest.Message
+		for _, msg := range child.Messages() {
+			if msg.SpanID == "child-tool-int" && msg.Closing {
+				closing = append(closing, msg)
+			}
+		}
+		require.Len(t, closing, 1)
+		assert.Equal(t, agentapi.MessageCompletionInterrupted, closing[0].Completion)
+
+		a.openTools.mu.Lock()
+		_, stillTracked := a.openTools.children[childID]
+		a.openTools.mu.Unlock()
+		assert.False(t, stillTracked, "completed child ledger must be forgotten after interrupted result")
+	})
+
+	t.Run("errored child result closes open child tools with error completion and forgets child ledger", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		services := agentapi.NewProviderServices(sink)
+		a := newTestAgent(services)
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-res-err","tool_use_id":"spawn-res-err","task_type":"local_agent","description":"Worker","prompt":"run"}`))
+		a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"spawn-res-err","uuid":"cu1","message":{"content":[{"type":"tool_use","id":"child-tool-err","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+		childID := "child-of-spawn-res-err"
+		child := sink.Child(childID)
+		require.NotNil(t, child)
+		services.ChildSink(childID).ReportProgress(agentapi.OutputDeltaProgress("child-tool-err", 30))
+
+		a.HandleOutput([]byte(`{"type":"result","parent_tool_use_id":"spawn-res-err","subtype":"error_during_execution","is_error":true,"terminal_reason":"api_error"}`))
+
+		assert.Contains(t, child.ClosedSpans(), "child-tool-err")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		assert.Equal(t, agentapi.ProgressSnapshot{}, child.ProgressSnapshot())
+		var closing []agenttest.Message
+		for _, msg := range child.Messages() {
+			if msg.SpanID == "child-tool-err" && msg.Closing {
+				closing = append(closing, msg)
+			}
+		}
+		require.Len(t, closing, 1)
+		assert.Equal(t, agentapi.MessageCompletionError, closing[0].Completion)
+
+		a.openTools.mu.Lock()
+		_, stillTracked := a.openTools.children[childID]
+		a.openTools.mu.Unlock()
+		assert.False(t, stillTracked, "completed child ledger must be forgotten after errored result")
+	})
+
+	t.Run("task_notification stopped forgets child ledger and orders behind queued child writes", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		services := agentapi.NewProviderServices(sink)
+		a := newTestAgent(services)
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-seq","tool_use_id":"spawn-seq","task_type":"local_agent","description":"Worker","prompt":"run"}`))
+		childID := "child-of-spawn-seq"
+		child := sink.Child(childID)
+		require.NotNil(t, child)
+		childServices := services.ChildSink(childID)
+		queue := agentapi.OutputQueueFor(childServices)
+		require.NotNil(t, queue)
+
+		blocker := agentapi.NewOutputOwner()
+		queue.Append(agentapi.OutputWrite{Owner: blocker, Label: "block child write", Run: func() error {
+			return agentapi.ErrOutputInFlight
+		}})
+
+		// Queue an assistant tool_use followed by task_notification: stopped while the child queue is blocked.
+		a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"spawn-seq","uuid":"cu1","message":{"content":[{"type":"tool_use","id":"child-tool-seq","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-seq","status":"stopped","summary":"stopped"}`))
+
+		assert.Empty(t, child.ClosedSpans(), "blocked child notification must wait for queued child writes")
+
+		queue.ClearOwner(blocker)
+		require.NoError(t, agentapi.FlushPendingOutput(childServices))
+
+		assert.Contains(t, child.ClosedSpans(), "child-tool-seq")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		var openIdx, closeIdx = -1, -1
+		for i, msg := range child.Messages() {
+			if msg.SpanID == "child-tool-seq" && !msg.Closing {
+				openIdx = i
+			}
+			if msg.SpanID == "child-tool-seq" && msg.Closing {
+				closeIdx = i
+			}
+		}
+		require.NotEqual(t, -1, openIdx, "opening row must persist")
+		require.NotEqual(t, -1, closeIdx, "closing row must persist")
+		assert.Less(t, openIdx, closeIdx, "closing row must land after queued opening row")
+
+		a.openTools.mu.Lock()
+		_, stillTracked := a.openTools.children[childID]
+		a.openTools.mu.Unlock()
+		assert.False(t, stillTracked, "child ledger must be forgotten after stopped task_notification")
+	})
+
+	t.Run("superseded child run notification does not wipe replacement child run progress", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		services := agentapi.NewProviderServices(sink)
+		a := newTestAgent(services)
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-rev","tool_use_id":"spawn-rev","task_type":"local_agent","description":"Worker","prompt":"run"}`))
+		childID := "child-of-spawn-rev"
+		child := sink.Child(childID)
+		require.NotNil(t, child)
+		childServices := services.ChildSink(childID)
+		queue := agentapi.OutputQueueFor(childServices)
+		require.NotNil(t, queue)
+
+		// Open a tool in run 1, then block the child queue and deliver run 1's stopped notification.
+		a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"spawn-rev","uuid":"cu1","message":{"content":[{"type":"tool_use","id":"tool-run-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+		blocker := agentapi.NewOutputOwner()
+		queue.Append(agentapi.OutputWrite{Owner: blocker, Label: "block run-1 stop", Run: func() error {
+			return agentapi.ErrOutputInFlight
+		}})
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-rev","status":"stopped","summary":"stopped"}`))
+
+		// Replace the child transcript lease as happens on child restart, then report run 2's live progress.
+		a.replaceChildTranscript(childID)
+		childServices.OpenSpan("tool-run-2", "spawn-rev")
+		childServices.ReportProgress(agentapi.OutputDeltaProgress("tool-run-2", 88))
+		resetsBefore := child.ResetSpanCount()
+
+		// Flushing run 1's delayed notification must not wipe run 2's live spans or progress.
+		queue.ClearOwner(blocker)
+		require.NoError(t, agentapi.FlushPendingOutput(childServices))
+
+		assert.Equal(t, resetsBefore, child.ResetSpanCount(),
+			"superseded child run notification must not reset replacement run spans")
+		assert.Equal(t, int64(88), child.ProgressSnapshot().OutputBytes,
+			"superseded child run notification must not wipe replacement run progress")
+	})
+}

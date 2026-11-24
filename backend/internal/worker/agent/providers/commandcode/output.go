@@ -124,7 +124,7 @@ func (a *Agent) handleMethod(line *providerkit.ParsedLine) {
 	case methodTurnStarted:
 		a.startTurn(envelope.Params.TurnID)
 	case contracts.CommandCodeMethodTurnCompleted:
-		a.completeTurn(line.Raw, envelope.Params.TurnID, envelope.Params.StopReason, nil)
+		a.completeTurnWithTeardown(line.Raw, envelope.Params.TurnID, envelope.Params.StopReason, nil, false)
 	}
 }
 
@@ -173,11 +173,11 @@ func (a *Agent) handleEvent(raw []byte) {
 			return
 		}
 		a.Mu.Lock()
-		if _, exists := a.tools[event.ToolCallID]; exists {
+		if _, exists := a.tools.Get(event.ToolCallID); exists {
 			a.Mu.Unlock()
 			return
 		}
-		a.tools[event.ToolCallID] = openTool{name: event.ToolName, input: slices.Clone(event.Input), opening: slices.Clone(raw)}
+		a.tools.Open(event.ToolCallID, event.ToolName, false, openTool{name: event.ToolName, input: slices.Clone(event.Input), opening: slices.Clone(raw)})
 		a.TurnToolUses++
 		a.Mu.Unlock()
 		a.retryResolution.Resolve(commandCodeWorkerNotifications{a: a})
@@ -189,7 +189,7 @@ func (a *Agent) handleEvent(raw []byte) {
 			return
 		}
 		a.Mu.Lock()
-		_, known := a.tools[event.ToolCallID]
+		_, known := a.tools.Get(event.ToolCallID)
 		a.Mu.Unlock()
 		if !known {
 			return
@@ -297,19 +297,19 @@ func (a *Agent) finishTool(raw []byte, event nativeEvent) {
 		return
 	}
 	a.Mu.Lock()
-	opening, known := a.tools[event.ToolCallID]
-	delete(a.tools, event.ToolCallID)
+	entry, known, _ := a.tools.CompleteNative(event.ToolCallID)
 	a.Mu.Unlock()
 	if !known {
 		return
 	}
+	opening := entry.Data
 	a.persist(raw, agent.SpanInfo{SpanID: event.ToolCallID, SpanType: opening.name, Closing: true})
 	a.sink.CloseSpan(event.ToolCallID)
 	a.sink.ReportProgress(agent.CompleteOutputProgress(event.ToolCallID))
 	a.finishChildTool(event, opening)
 }
 
-func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFailure error) {
+func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, compactionFailure error, teardown bool) {
 	if turnID == "" {
 		return
 	}
@@ -341,7 +341,11 @@ func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFa
 	if err := a.generation.PersistAllTo(completion, a.sink, agent.MessageContent{Completion: completion}, agent.SpanInfo{}); err != nil {
 		slog.Warn("retain partial Command Code output", "agent_id", a.AgentID(), "error", err)
 	}
-	a.closeUnfinishedTools(completion)
+	closeTools := completion == agent.MessageCompletionInterrupted || teardown
+	if closeTools {
+		a.closeUnfinishedTools(completion)
+		a.closeChildren(agent.IncompleteTaskStatus(completion), true)
+	}
 	a.endUnfinishedCompaction(compactionFailure)
 	duration := max(int64(0), a.clock.Now().Sub(started).Milliseconds())
 	metadata, err := json.Marshal(map[string]any{contracts.MessageMetadataFieldDurationMs: duration, contracts.SessionInfoKeyContextUsage: usage})
@@ -354,6 +358,9 @@ func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFa
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("persist the Command Code turn end", "agent_id", a.AgentID(), "error", err)
 	}
+	if closeTools {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	a.Mu.Lock()
 	if a.turnID == turnID {
 		a.turnID = ""
@@ -364,23 +371,32 @@ func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFa
 
 func (a *Agent) closeUnfinishedTools(completion agent.MessageCompletion) {
 	a.Mu.Lock()
-	tools := a.tools
-	a.tools = make(map[string]openTool)
+	entries := a.tools.DrainAll()
 	a.Mu.Unlock()
-	for id, tool := range tools {
-		content := a.messageContent(tool.opening)
-		content.Completion = completion
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: id, SpanType: tool.name, Closing: true}); err != nil {
-			slog.Warn("close an incomplete Command Code tool", "agent_id", a.AgentID(), "error", err)
-		}
-		a.sink.CloseSpan(id)
+	if len(entries) == 0 || a.sink == nil {
+		return
 	}
+	discarding := a.IsDiscardingOutput()
+	providerkit.CloseToolSpans(a.sink, entries, completion, func(e providerkit.OpenToolEntry[openTool]) (agent.MessageContent, agent.SpanInfo, bool) {
+		if discarding {
+			return agent.MessageContent{}, agent.SpanInfo{SpanID: e.SpanID, SpanType: e.Data.name, Closing: true}, false
+		}
+		content := a.messageContent(e.Data.opening)
+		content.Completion = completion
+		return content, agent.SpanInfo{SpanID: e.SpanID, SpanType: e.Data.name, Closing: true}, true
+	})
 }
 
 func (a *Agent) finishStream() {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	completion := a.ProcessExitCompletion()
 	if a.IsDiscardingOutput() {
+		a.closeUnfinishedTools(completion)
+		if a.sink != nil {
+			a.closeChildren(agent.IncompleteTaskStatus(completion), false)
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
 		return
 	}
 	a.flushPendingRunError()
@@ -398,22 +414,26 @@ func (a *Agent) finishStream() {
 	a.Mu.Unlock()
 	if turnID != "" {
 		stopReason := "run_error"
-		if a.ProcessExitCompletion() == agent.MessageCompletionInterrupted {
+		if completion == agent.MessageCompletionInterrupted {
 			stopReason = "interrupted"
 		}
 		// A process exit needs a boundary even when the native host emitted none.
 		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": contracts.CommandCodeMethodTurnCompleted, "params": map[string]any{"turnId": turnID, "stopReason": stopReason, "error": map[string]string{"message": "The Command Code process exited before the turn completed."}}})
 		if err == nil {
-			a.completeTurn(raw, turnID, stopReason, compactionFailure)
+			a.completeTurnWithTeardown(raw, turnID, stopReason, compactionFailure, true)
 		}
 	} else {
 		a.endUnfinishedCompaction(compactionFailure)
+		a.closeUnfinishedTools(completion)
+		if a.sink != nil {
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
 	}
 	if a.sink != nil {
 		if compacting && turnID == "" {
 			a.PublishTurnActive()
 		}
-		a.closeChildren()
+		a.closeChildren(agent.IncompleteTaskStatus(completion), false)
 	}
 }
 

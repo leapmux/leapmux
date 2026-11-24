@@ -381,7 +381,7 @@ func TestPiNullMessagesKeepsTheActiveQuestionAndContinuation(t *testing.T) {
 	assert.False(t, a.currentTurnActive)
 	assert.Empty(t, a.questionDialogs)
 	a.Mu.Unlock()
-	assert.Equal(t, 3, sink.MessageCount(), "the valid end keeps the unfinished tool and its native divider")
+	assert.Equal(t, 2, sink.MessageCount(), "the valid end keeps the unfinished tool open and writes its native divider")
 }
 
 func TestPiOmittedMessagesStillEndsTheObservedTurn(t *testing.T) {

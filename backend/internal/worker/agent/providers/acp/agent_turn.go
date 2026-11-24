@@ -36,7 +36,8 @@ func (b *Base) PrepareSteer() {
 //
 // The output that the agent streams while its turn waits belongs to the agent
 // turn, so the prompt's output ends here: the prompt's text is persisted now,
-// and the prompt's end closes only the tool calls that are open now.
+// and only an interrupted or stopped prompt end closes the tool calls that are
+// open now.
 //
 // COMPROMISE: rows of the waiting agent turn that persist before the prompt's
 // end (a tool call row, a text segment that a tool call ends) appear above the
@@ -232,25 +233,25 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 	}
 	active := b.agentTurnActive
 	sessionID := b.sessionID
-	stopped := b.interruptRequested
+	stopped := b.StoppedLocked() || b.interruptRequested || b.isCancelledTurnEnd(frame)
 	b.agentTurnActive = false
 	b.Mu.Unlock()
 	if !active {
 		b.turnMu.Unlock()
 		return
 	}
-	turn, _ := b.drainPromptTurnLocked()
+	turn, _ := b.drainPromptTurnLocked(!stopped)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()
 	b.turnMu.Unlock()
-	textCompletion, incomplete := agent.MessageCompletionComplete, agent.MessageCompletionError
-	if stopped {
-		textCompletion, incomplete = agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted
-	}
+	textCompletion, incomplete := b.turnOutputCompletions(stopped)
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agent.TranscriptServices, count int) {
-		b.persistPromptResponseTo(writer, frame, count, sessionID)
+		b.persistPromptResponseTo(writer, frame, count, sessionID, stopped)
 	})
+	if stopped {
+		b.releaseAwaitedTerminals()
+	}
 	b.endTurn(sessionID)
 }
 
@@ -275,45 +276,52 @@ func (b *Base) EndAgentTurnWithoutRow() {
 	if b.agentTurnQueued {
 		b.agentTurnQueued = false
 		b.queuedAgentTurnEnd = nil
+		sessionID := b.sessionID
+		stopped := b.StoppedLocked() || b.interruptRequested
 		b.Mu.Unlock()
 		drained := !b.dropPromptBoundaryLocked()
 		var turn acpTurnSnapshot
 		if drained {
-			turn = b.drainTurnLocked()
+			turn = b.drainTurnLocked(!stopped)
 			b.Mu.Lock()
 			b.captureRootSnapshotLocked(&turn, false)
 			b.Mu.Unlock()
 		}
 		b.turnMu.Unlock()
 		if drained {
-			b.storeWorkOutput(turn)
+			b.storeWorkOutput(turn, sessionID, stopped)
 		}
 		return
 	}
 	active := b.agentTurnActive
 	sessionID := b.sessionID
+	stopped := b.StoppedLocked() || b.interruptRequested
 	b.agentTurnActive = false
 	b.Mu.Unlock()
 	if !active {
 		b.turnMu.Unlock()
 		return
 	}
-	turn := b.drainTurnLocked()
+	turn := b.drainTurnLocked(!stopped)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()
 	b.turnMu.Unlock()
-	b.storeWorkOutput(turn)
+	b.storeWorkOutput(turn, sessionID, stopped)
 	b.endTurn(sessionID)
 }
 
 // storeWorkOutput stores the output of agent work that ends with no turn-end
-// row, as a turn end stores it: the text, and each tool call that the work left
-// open, which failed unless the reader stopped the work.
-func (b *Base) storeWorkOutput(turn acpTurnSnapshot) {
-	textCompletion, incomplete := b.turnOutputCompletions()
+// row, keeping open tools and their output progress alive unless stopped.
+func (b *Base) storeWorkOutput(turn acpTurnSnapshot, sessionID string, stopped bool) {
+	textCompletion, incomplete := b.turnOutputCompletions(stopped)
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptWorkEnded, nil)
-	b.sink.ReportProgress(agent.ResetProgress())
+	if stopped {
+		b.releaseAwaitedTerminals()
+		b.resetCompletedRootSpans(sessionID, true)
+		return
+	}
+	b.sink.ReportProgress(agent.ResetModelProgress())
 }
 
 // takeQueuedAgentTurn hands the busy state of the turn that just ended to the

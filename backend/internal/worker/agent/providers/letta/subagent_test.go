@@ -441,7 +441,7 @@ func TestLettaLiveOutputKeepsRootAndTwoChildOwnersSeparate(t *testing.T) {
 	assert.Equal(t, native, rows[len(rows)-1].Content)
 	assert.True(t, rows[len(rows)-1].Closing)
 	assert.Contains(t, a.tools, lettaToolKey("child-two", "shared-call"))
-	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
 	assert.NotContains(t, a.tools, lettaToolKey("", "shared-call"))
 	assert.Contains(t, a.tools, lettaToolKey("child-two", "shared-call"))
 	assert.Equal(t, []int{1}, agenttest.TurnToolUseCounts(t, root.Messages()))

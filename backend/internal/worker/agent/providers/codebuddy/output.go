@@ -2,6 +2,7 @@ package codebuddy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,8 @@ func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {
 
 // handleOutput dispatches one NDJSON frame.
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	if a.consumeResumeFrame(line) {
 		return
 	}
@@ -298,10 +301,15 @@ func (a *Agent) handleResult(raw []byte) {
 		}
 		providerkit.PersistCompactionEnded(a.sink, outcome, "")
 	}
+	if interrupted {
+		a.closeOpenToolsLocked(agent.MessageCompletionInterrupted, false, false)
+	}
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("codebuddy: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
-	a.sink.ResetSpans()
+	if interrupted {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	a.setTurnActive(false)
 	a.mu.Lock()
 	refreshStyles := a.outputStyles != nil
@@ -719,6 +727,31 @@ func (a *Agent) persistRaw(raw []byte) {
 		} `json:"message"`
 	}
 	decoded := json.Unmarshal(raw, &frame) == nil
+	if decoded && frame.Type == contracts.CodebuddyFrameKindUser && len(frame.Message.Content) > 0 {
+		allToolResults := true
+		var ids []string
+		for _, block := range frame.Message.Content {
+			if block.Type != "tool_result" || strings.TrimSpace(block.ToolUseID) == "" {
+				allToolResults = false
+				break
+			}
+			ids = append(ids, block.ToolUseID)
+		}
+		if allToolResults && len(ids) > 0 {
+			a.mu.Lock()
+			allClosed := true
+			for _, id := range ids {
+				if !a.openTools.WasClosed(id) {
+					allClosed = false
+					break
+				}
+			}
+			a.mu.Unlock()
+			if allClosed {
+				return
+			}
+		}
+	}
 	info := agent.SpanInfo{}
 	if decoded {
 		for _, block := range frame.Message.Content {
@@ -741,14 +774,21 @@ func (a *Agent) persistRaw(raw []byte) {
 		return
 	}
 	seen := make(map[string]struct{})
+	var clonedRaw []byte
 	for _, block := range frame.Message.Content {
 		if frame.Type == contracts.CodebuddyFrameKindAssistant && block.Type == "tool_use" && strings.TrimSpace(block.ID) != "" && block.Name != "" {
 			if _, duplicate := seen[block.ID]; duplicate {
 				continue
 			}
 			seen[block.ID] = struct{}{}
+			if clonedRaw == nil {
+				clonedRaw = bytes.Clone(raw)
+			}
 			a.sink.SetSpanType(block.ID, block.Name)
 			a.sink.OpenSpan(block.ID, frame.ParentToolUseID)
+			a.mu.Lock()
+			a.openTools.Open(block.ID, block.Name, false, clonedRaw)
+			a.mu.Unlock()
 		}
 		if frame.Type == contracts.CodebuddyFrameKindUser && block.Type == "tool_result" && strings.TrimSpace(block.ToolUseID) != "" {
 			if _, duplicate := seen[block.ToolUseID]; duplicate {
@@ -756,6 +796,9 @@ func (a *Agent) persistRaw(raw []byte) {
 			}
 			seen[block.ToolUseID] = struct{}{}
 			a.sink.CloseSpan(block.ToolUseID)
+			a.mu.Lock()
+			a.openTools.CompleteNative(block.ToolUseID)
+			a.mu.Unlock()
 		}
 	}
 }

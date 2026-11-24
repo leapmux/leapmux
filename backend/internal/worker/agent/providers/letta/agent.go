@@ -58,6 +58,7 @@ type Agent struct {
 	settings         lettaSettings
 	catalog          lettaCatalog
 	tools            map[string]*lettaTool
+	closedSpans      providerkit.ClosedSpanSet
 	toolStarts       uint64
 	turnToolCallIDs  map[string]struct{}
 	children         map[string]*lettaChild
@@ -359,6 +360,16 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return &agent.InterruptUnavailableError{Message: "the Letta Code process cannot interrupt compaction; wait for it to finish or close the agent"}
 	}
 	if !active {
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && !a.turnActive
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		a.closeToolScope("", a.sink, agent.MessageCompletionInterrupted)
+		providerkit.ResetSpansAndProgress(a.sink)
 		return nil
 	}
 	cmd := newLettaCommand("abort_message", a.nextRequestID())

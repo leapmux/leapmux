@@ -104,7 +104,7 @@ func TestCodewhaleLateCancellationCannotNotifyAReplacementChild(t *testing.T) {
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the cancellation did not start")
 	}
-	replacement := &codewhaleChild{agentID: testChildID, childID: "replacement", nudge: make(chan struct{}, 1), openTools: map[string]string{}}
+	replacement := &codewhaleChild{agentID: testChildID, childID: "replacement", nudge: make(chan struct{}, 1)}
 	a.children.mu.Lock()
 	a.children.byID[testChildID] = replacement
 	a.children.mu.Unlock()
@@ -233,7 +233,7 @@ func TestCodewhaleFinalTranscriptRetryDoesNotPollNativeRuns(t *testing.T) {
 	require.NoError(t, err)
 	path := childTranscriptPath(a.workingDir, testChildID)
 	require.NoError(t, os.MkdirAll(path, 0o700))
-	child := &codewhaleChild{agentID: testChildID, childID: childID, spawnSpan: "final-drain", title: "Finished child", path: path, observedStatus: bgtask.StatusSucceeded, nudge: make(chan struct{}, 1), openTools: make(map[string]string)}
+	child := &codewhaleChild{agentID: testChildID, childID: childID, spawnSpan: "final-drain", title: "Finished child", path: path, observedStatus: bgtask.StatusSucceeded, nudge: make(chan struct{}, 1)}
 	retry := clock.Trap().NewTimer(childTimerTag)
 	t.Cleanup(retry.Close)
 	require.True(t, a.children.start(child, a.watchChild))
@@ -275,7 +275,7 @@ func TestCodewhaleFinalOnlyPollingStopsAndRestartsForPausedChildren(t *testing.T
 			RegistryRole: bgtask.RoleChildTask,
 			SpawnSpanID:  "spawn-" + key, ProviderChildKey: key, Title: key})
 		require.NoError(t, err)
-		child := &codewhaleChild{agentID: key, childID: id, observedStatus: status, nudge: make(chan struct{}, 1), openTools: make(map[string]string)}
+		child := &codewhaleChild{agentID: key, childID: id, observedStatus: status, nudge: make(chan struct{}, 1)}
 		require.True(t, a.children.start(child, func(ctx context.Context, _ *codewhaleChild) { <-ctx.Done() }))
 		return child
 	}

@@ -1146,25 +1146,16 @@ func (a *Agent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUp
 	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.spanID()), event, payload, nil, owner)
 }
 
-// persistIncompleteZCodeTools closes each announced call that never reported its end,
-// with completion, and returns how many it closed. It is the teardown variant: a
-// turn end closes only its own turn's calls, through
-// persistIncompleteZCodeToolsForTurn.
+// persistIncompleteZCodeTools closes every announced call that never reported
+// its end, with completion, and returns how many it closed.
 func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) int {
-	return a.persistIncompleteZCodeToolsFor(nil, completion, "")
-}
-
-// persistIncompleteZCodeToolsForTurn closes the announced calls of ONE turn that
-// never reported their end, with completion, and returns how many it closed. A
-// turn end counts them as calls of the turn (see persistZCodeTurnDivider).
-func (a *Agent) persistIncompleteZCodeToolsForTurn(owner *zcodeTurnState, completion agent.MessageCompletion) int {
-	return a.persistIncompleteZCodeToolsFor(owner, completion, "")
+	return a.persistIncompleteZCodeToolsFor(nil, completion, "", false)
 }
 
 // persistIncompleteZCodeToolsForChild closes the announced calls for spawnID
 // that never reported their end. An empty spawnID selects every call.
 func (a *Agent) persistIncompleteZCodeToolsForChild(spawnID string, completion agent.MessageCompletion) int {
-	return a.persistIncompleteZCodeToolsFor(nil, completion, spawnID)
+	return a.persistIncompleteZCodeToolsFor(nil, completion, spawnID, false)
 }
 
 type zcodePendingToolClose struct {
@@ -1175,7 +1166,7 @@ type zcodePendingToolClose struct {
 	owner      *zcodeTurnState
 }
 
-func (a *Agent) persistIncompleteZCodeToolsFor(owner *zcodeTurnState, completion agent.MessageCompletion, childSpawnID string) int {
+func (a *Agent) persistIncompleteZCodeToolsFor(owner *zcodeTurnState, completion agent.MessageCompletion, childSpawnID string, preserveBackgroundChildren bool) int {
 	a.Mu.Lock()
 	var pending []zcodePendingToolClose
 	for spanID, tool := range a.toolInvocations {
@@ -1186,6 +1177,9 @@ func (a *Agent) persistIncompleteZCodeToolsFor(owner *zcodeTurnState, completion
 		if owner != nil && callOwner != owner {
 			continue
 		}
+		if owner == nil && preserveBackgroundChildren && callOwner != nil && !callOwner.settled {
+			continue
+		}
 		a.children.mu.Lock()
 		spawnID := a.children.toolSpawns[spanID]
 		spawn := a.children.spawns[spawnID]
@@ -1194,7 +1188,7 @@ func (a *Agent) persistIncompleteZCodeToolsFor(owner *zcodeTurnState, completion
 		if childSpawnID != "" && spawnID != childSpawnID {
 			continue
 		}
-		if owner != nil && liveBackgroundChild {
+		if preserveBackgroundChildren && liveBackgroundChild {
 			continue
 		}
 		payload := tool.native

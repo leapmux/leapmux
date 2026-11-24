@@ -5825,6 +5825,20 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(state.metadata.liveStatusEpoch('a1')).toBe(1)
     expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(2)
     expect(state.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
+    expect(state.agentSessionStore.getProgress('a1').output).toEqual({ bytes: 8, minimum: false })
+    expect(state.chatStore.getToolProgress('a1', TOOL_A)?.outputTail).toBe('current output')
+    state.emitMessage({ type: 'result', subtype: 'cancelled' })
+    expect(state.agentSessionStore.getProgress('a1').output).toEqual({ bytes: 8, minimum: false })
+    expect(state.chatStore.getToolProgress('a1', TOOL_A)?.outputTail).toBe('current output')
+    state.emitMessage({
+      type: 'agent_session_info',
+      info: {
+        generation_progress_revision: 3,
+        thinking_tokens: 0,
+        output_bytes: 0,
+        running_tool: null,
+      },
+    })
     expect(state.agentSessionStore.getProgress('a1').output).toBeUndefined()
     expect(state.chatStore.getToolProgress('a1', TOOL_A)).toBeUndefined()
   })

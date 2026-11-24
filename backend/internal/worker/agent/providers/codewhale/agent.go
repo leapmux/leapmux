@@ -336,11 +336,13 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	return a.settleSteerReply(ticket, a.steerTurn(threadID, turnID, prompt))
 }
 
-// Interrupt stops the running turn. It is a no-op when no turn runs.
+// Interrupt stops the running turn. When no turn runs, it closes any open tool
+// calls as interrupted, resets cumulative output, and resets spans and progress.
 //
-// The runtime settles the turn itself: the pending approvals and questions end
-// as cancelled, the running tools fail, and the turn completes as interrupted.
-// Each of those arrives as an event, so this method changes no state.
+// When a turn runs, the runtime settles the turn itself: the pending approvals
+// and questions end as cancelled, the running tools fail, and the turn
+// completes as interrupted. Each of those arrives as an event, so this method
+// changes no active-turn state.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
@@ -350,6 +352,17 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return fmt.Errorf("agent is stopped")
 	}
 	if threadID == "" || turnID == "" {
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && a.turnID == ""
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		a.persistIncompleteTools(agent.MessageCompletionInterrupted)
+		a.ResetCumulativeOutput()
+		providerkit.ResetSpansAndProgress(a.sink)
 		return nil
 	}
 	if err := a.interruptTurn(threadID, turnID, a.APITimeout()); err != nil {
@@ -491,7 +504,7 @@ func (a *Agent) finishAfterExit(completion agent.MessageCompletion) {
 	if cleared {
 		a.PublishTurnActive()
 	}
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // DiscardOutput drops the output of a process that is about to restart. The

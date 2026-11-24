@@ -132,7 +132,10 @@ type Agent struct {
 	retryResolution       providerkit.RetryResolution
 	incompleteTools       map[string]*codexIncompleteTool
 	incompleteToolOrder   uint64
-	availableModels       []*agent.ModelInfo
+	// closedSpans remembers tool item IDs force-closed by interrupt or teardown
+	// so late output deltas and item/completed frames are dropped. Guarded by Mu.
+	closedSpans     providerkit.ClosedSpanSet
+	availableModels []*agent.ModelInfo
 	// collabChildren is the durable in-process route from each Codex child
 	// thread to its LeapMux transcript. The route survives completed runs, so
 	// a follow-up turn reuses the same transcript. ClearContext removes it,
@@ -442,6 +445,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	stopped := a.StoppedLocked()
 	threadID := a.threadID
 	turnID := a.mainTurn.id
+	held := a.retry != nil || a.pendingStart != nil || a.pendingSteerTurnEnd != nil
 	if !stopped {
 		// The user's stop overrides a running retry: its next phase sends no
 		// turn/start. A stop in the gap before the retry's turn/started finds no
@@ -462,8 +466,103 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return fmt.Errorf("agent is stopped")
 	}
 	a.withdrawTurnRetryOffer()
-	_, err := a.interruptMainTurn(threadID, turnID)
-	return err
+	if turnID != "" || held {
+		_, err := a.interruptMainTurn(threadID, turnID)
+		return err
+	}
+	a.AnswerOutstandingControlRequests(a.sink)
+	if threadID == "" {
+		return nil
+	}
+	return a.interruptIdleThread(threadID, true)
+}
+
+func (a *Agent) interruptIdleThread(threadID string, isMain bool) error {
+	childFilter := threadID
+	if isMain {
+		childFilter = ""
+	}
+	stillIdleLocked := func() bool {
+		if a.StoppedLocked() {
+			return false
+		}
+		if isMain {
+			return a.threadID == threadID && a.mainTurn.id == "" && a.retry == nil && a.pendingStart == nil && a.pendingSteerTurnEnd == nil
+		}
+		state := a.collabChildren[threadID]
+		return state != nil && state.turnID == ""
+	}
+
+	// Lock order: outputMu -> Mu. rawExecutionCalls is guarded by outputMu.
+	a.outputMu.Lock()
+	a.Mu.Lock()
+	if !stillIdleLocked() {
+		a.Mu.Unlock()
+		a.outputMu.Unlock()
+		return nil
+	}
+	snapshotTools := make(map[string]struct{})
+	for itemID, tool := range a.incompleteTools {
+		if tool != nil && tool.childThreadID == childFilter {
+			snapshotTools[itemID] = struct{}{}
+		}
+	}
+	snapshotCommands := a.commandIDsForThreadLocked(threadID)
+	snapshotRawKeys := make(map[codexRawExecutionKey]struct{})
+	for key := range a.rawExecutionCalls {
+		if key.threadID == threadID {
+			snapshotRawKeys[key] = struct{}{}
+		}
+	}
+	a.Mu.Unlock()
+	a.outputMu.Unlock()
+
+	var stopErr error
+	if len(snapshotCommands) > 0 {
+		stopErr = a.stopCodexCommands(threadID, snapshotCommands)
+	}
+
+	a.outputMu.Lock()
+	if len(snapshotTools) > 0 {
+		a.persistMatchingCodexTools(func(itemID string, tool *codexIncompleteTool) bool {
+			_, ok := snapshotTools[itemID]
+			return ok && tool.childThreadID == childFilter
+		}, agent.MessageCompletionInterrupted)
+	}
+	if len(snapshotRawKeys) > 0 {
+		a.finishMatchingCodexRawExecutions(agent.MessageCompletionInterrupted, func(key codexRawExecutionKey) bool {
+			_, ok := snapshotRawKeys[key]
+			return ok
+		})
+	}
+	hasOpenRaw := false
+	for key := range a.rawExecutionCalls {
+		if key.threadID == threadID {
+			hasOpenRaw = true
+			break
+		}
+	}
+	a.Mu.Lock()
+	hasOpenTools := false
+	for _, tool := range a.incompleteTools {
+		if tool != nil && tool.childThreadID == childFilter {
+			hasOpenTools = true
+			break
+		}
+	}
+	reset := stillIdleLocked() && !hasOpenTools && !hasOpenRaw
+	a.Mu.Unlock()
+	if reset {
+		if isMain {
+			if a.sink != nil {
+				providerkit.ResetSpansAndProgress(a.sink)
+			}
+		} else if route, ok := a.lookupCodexChildRoute(threadID); ok {
+			providerkit.ResetSpansAndProgress(route.childSink)
+		}
+	}
+	a.outputMu.Unlock()
+	return stopErr
 }
 
 // interruptMainTurn stops one main-thread turn and retires the control
@@ -515,7 +614,7 @@ func (a *Agent) Stop() {
 	a.retireCodexInputAfterExit()
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // Wait retains unfinished model output after an unexpected process exit.
@@ -530,7 +629,7 @@ func (a *Agent) Wait() error {
 	a.retireCodexInputAfterExit()
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 	return err
 }
 

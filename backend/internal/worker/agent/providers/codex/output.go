@@ -296,12 +296,10 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 	if previousTurnID != "" && previousTurnID != turnID {
 		a.persistOpenCodexCompactionEnd(a.currentThreadID(), agent.MessageCompletionInterrupted)
 		a.flushCodexGeneration(agent.MessageCompletionInterrupted)
-		a.persistIncompleteCodexTools("", false, agent.MessageCompletionInterrupted)
 	}
 	threadID := a.currentThreadID()
 	a.clearReasoningStateForThread(threadID)
 	a.clearInterruptCallsForThread(threadID)
-	a.clearCodexRawExecutionsBeforeTurn(threadID, turnID)
 	a.Mu.Lock()
 	a.mainTurn.finish()
 	a.mainTurn = codexMainTurn{id: turnID, model: a.model, ended: make(chan struct{})}
@@ -356,7 +354,6 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 }
 
 func (a *Agent) handleChildTurnStarted(threadID, turnID string, route codexChildRoute) {
-	a.clearCodexRawExecutionsBeforeTurn(threadID, turnID)
 	a.activateCollabChild(threadID)
 	a.setChildTurnID(threadID, turnID)
 	a.flushCodexChildGeneration(threadID, agent.MessageCompletionInterrupted)
@@ -583,9 +580,13 @@ func (a *Agent) handleCodexItemCompletedForSink(
 		a.codexRetryResolution(mainThread, event.threadID).Resolve(sink)
 	}
 	a.Mu.Lock()
+	alreadyClosed := a.closedSpans.WasClosed(event.itemID)
 	delete(a.incompleteTools, event.itemID)
 	delete(a.collabChildItems, event.itemID)
 	a.Mu.Unlock()
+	if alreadyClosed {
+		return
+	}
 	if mainThread {
 		discardCompletedCodexGeneration(&a.generationBuffer, event.itemType, event.itemID)
 	} else {
@@ -705,9 +706,10 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	completion := codexTurnCompletion(params)
 	a.persistOpenCodexCompactionEnd(notif.ThreadID, completion)
 	a.flushCodexGeneration(completion)
-	incompleteToolUses := a.persistIncompleteCodexTools("", false, completion)
-	a.finishCodexRawExecutions(notif.ThreadID, completion)
+	incompleteToolUses := 0
 	if completion == agent.MessageCompletionInterrupted {
+		incompleteToolUses = a.persistIncompleteCodexTools("", false, completion)
+		a.finishCodexRawExecutions(notif.ThreadID, completion)
 		a.steerLedger.DropAll()
 	} else {
 		a.steerLedger.EchoOldest(len(a.steerLedger.Pending()))
@@ -773,11 +775,13 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 		slog.Error("codex persist turn/completed", "agent_id", a.AgentID(), "error", err)
 	}
 
-	// Reset all span tracking at turn-end so the next turn starts clean.
-	// The child routes stay here because background tasks outlive root turns.
-	// A completed child run keeps its route for later input. ClearContext or a
-	// process restart removes the routes for the old child tree.
-	a.sink.ResetSpans()
+	// Only an interrupted turn resets spans and progress. Normal and
+	// non-interrupted error turns preserve open spans so cross-turn background
+	// commands and yielded code executions stay open across turn boundaries.
+	// Child routes survive root interrupt because background subagents outlive root turns.
+	if completion == agent.MessageCompletionInterrupted {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 
 	if turnStatus != "" {
 		retryable := !authenticationFailure && turnStatus == "failed" &&
@@ -829,8 +833,10 @@ func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage
 	completion := codexTurnCompletion(params)
 	a.persistOpenCodexCompactionEnd(threadID, completion)
 	a.flushCodexChildGeneration(threadID, completion)
-	a.persistIncompleteCodexTools(threadID, false, completion)
-	a.finishCodexRawExecutions(threadID, completion)
+	if completion == agent.MessageCompletionInterrupted {
+		a.persistIncompleteCodexTools(threadID, false, completion)
+		a.finishCodexRawExecutions(threadID, completion)
+	}
 	if reportID, label, report, ok := a.takeCodexChildReportCandidate(threadID); ok {
 		providerkit.PersistSubagentReport(route.parentSink, agent.SubagentReportWrite{
 			ReportID: reportID,
@@ -839,6 +845,9 @@ func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage
 	}
 	if err := route.childSink.PersistTurnEnd(agent.MessageContent{Original: params}, agent.SpanInfo{}); err != nil {
 		slog.Warn("codex persist child turn/completed", "agent_id", a.AgentID(), "thread", threadID, "error", err)
+	}
+	if completion == agent.MessageCompletionInterrupted {
+		providerkit.ResetSpansAndProgress(route.childSink)
 	}
 	hadTurn := a.childTurnID(threadID) != ""
 	a.clearChildTurnID(threadID)

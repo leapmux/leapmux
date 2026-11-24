@@ -2,10 +2,13 @@ package qoder
 
 import (
 	"bufio"
+	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"time"
 
@@ -37,11 +40,19 @@ func shortID() string { return id.Short() }
 
 // readOutputLoop reads NDJSON frames from stdout until the process exits.
 func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {
+	defer func() {
+		if a.outputDone != nil {
+			close(a.outputDone)
+		}
+	}()
 	a.ReadOutput(scanner, a.handlePendingControlResponse, a.handleOutput)
+	a.finishStream()
 }
 
 // handleOutput dispatches one NDJSON frame.
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	if a.routeChildFrame(line.Raw) {
 		return
 	}
@@ -65,7 +76,7 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		a.handleWorkflowLaunch(line.Raw)
 		a.handleWorkflowReplayCompletion(line.Raw)
 		if qoderUserFrameHasToolResult(line.Raw) {
-			if stored, _ := a.persistNativeToolFrame(a.sink, line.Raw); !stored {
+			if stored, _ := a.persistNativeToolFrame(a.sink, "", line.Raw); !stored {
 				a.persistRaw(line.Raw)
 			}
 		}
@@ -432,7 +443,7 @@ func (a *Agent) handleAssistant(raw []byte) {
 		a.mu.Unlock()
 	}
 	a.markTurnActiveFromOutput()
-	stored, opened := a.persistNativeToolFrame(a.sink, raw)
+	stored, opened := a.persistNativeToolFrame(a.sink, "", raw)
 	if !stored {
 		a.persistRaw(raw)
 	}
@@ -452,6 +463,9 @@ func (a *Agent) handleResult(raw []byte) {
 	a.sink.ReportProgress(agent.ResetModelProgress())
 	interrupted := a.takeInterruptRequest() && !qoderResultSucceeded(raw)
 	a.finishNotifications(a.sink, "", interrupted)
+	if interrupted {
+		a.closeOpenToolsForTarget(a.sink, "", agent.MessageCompletionInterrupted, false)
+	}
 	// Qoder's `result` carries no num_tool_uses field, so the Worker counts the
 	// tool calls of the turn itself. The count restarts here for the next turn.
 	a.Mu.Lock()
@@ -464,6 +478,9 @@ func (a *Agent) handleResult(raw []byte) {
 	}
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Error("Persist Qoder turn end", "agent_id", a.AgentID(), "error", err)
+	}
+	if interrupted {
+		providerkit.ResetSpansAndProgress(a.sink)
 	}
 	a.setTurnActive(false)
 	a.broadcastContextUsage(raw)
@@ -534,7 +551,7 @@ func (a *Agent) nativeSessionID() string {
 // frame. Each tool keeps its native ID and the unchanged frame that declares
 // it. The function reports whether it stored the frame, and how many tool calls
 // the frame opened.
-func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte) (stored bool, opened int) {
+func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, childID string, raw []byte) (stored bool, opened int) {
 	var frame struct {
 		Type      string `json:"type"`
 		SessionID string `json:"session_id"`
@@ -556,19 +573,34 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte
 		sessionID = a.nativeSessionID()
 	}
 	nativeContent := qoderMessageContent(raw, sessionID)
+	var clonedRaw []byte
 	for _, block := range frame.Message.Content {
 		content := nativeContent
 		if frame.Type == contracts.QoderFrameKindAssistant && block.Type == "tool_use" && block.ID != "" && block.Name != "" {
 			stored = true
 			opened++
 			spawns := block.Name == "Agent" || block.Name == "Workflow"
+			if clonedRaw == nil {
+				clonedRaw = bytes.Clone(raw)
+			}
+			a.openToolEntry(childID, block.ID, block.Name, spawns, qoderOpenTool{
+				raw:       clonedRaw,
+				sessionID: sessionID,
+			})
 			if err := providerkit.OpenToolSpan(target, content, block.ID, block.Name, spawns); err != nil {
 				slog.Error("Persist Qoder tool request", "agent_id", a.AgentID(), "tool_call_id", block.ID, "error", err)
 			}
 		} else if frame.Type == contracts.QoderFrameKindUser && block.Type == "tool_result" && block.CallID != "" {
 			stored = true
+			entry, wasOpen, alreadyClosed := a.completeNativeToolEntry(childID, block.CallID)
+			if alreadyClosed {
+				continue
+			}
 			name := target.GetSpanType(block.CallID)
-			spawns := name == "Agent" || name == "Workflow"
+			if name == "" && wasOpen {
+				name = entry.SpanType
+			}
+			spawns := (wasOpen && entry.NoSpan) || name == "Agent" || name == "Workflow"
 			if block.IsError {
 				content.Completion = agent.MessageCompletionError
 			}
@@ -583,6 +615,148 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte
 		}
 	}
 	return stored, opened
+}
+
+func (a *Agent) toolLedgerLocked(childID string, create bool) *providerkit.ToolSpanLedger[qoderOpenTool] {
+	if childID == "" {
+		return &a.rootTools
+	}
+	if a.childTools == nil {
+		if !create {
+			return nil
+		}
+		a.childTools = make(map[string]*providerkit.ToolSpanLedger[qoderOpenTool])
+	}
+	ledger := a.childTools[childID]
+	if ledger == nil && create {
+		ledger = &providerkit.ToolSpanLedger[qoderOpenTool]{}
+		a.childTools[childID] = ledger
+	}
+	return ledger
+}
+
+func (a *Agent) openToolEntry(childID, spanID, spanType string, noSpan bool, data qoderOpenTool) {
+	a.toolMu.Lock()
+	a.toolLedgerLocked(childID, true).Open(spanID, spanType, noSpan, data)
+	a.toolMu.Unlock()
+}
+
+func (a *Agent) completeNativeToolEntry(childID, spanID string) (providerkit.OpenToolEntry[qoderOpenTool], bool, bool) {
+	a.toolMu.Lock()
+	defer a.toolMu.Unlock()
+	ledger := a.toolLedgerLocked(childID, false)
+	if ledger == nil {
+		return providerkit.OpenToolEntry[qoderOpenTool]{}, false, false
+	}
+	return ledger.CompleteNative(spanID)
+}
+
+// closeOpenToolsForTarget drains open tool entries for root (childID == "") or
+// a child transcript and closes each with completion. When includeSpawns is
+// false, Agent and Workflow spawning tool entries stay tracked so their native
+// tool_result frames still resolve normally.
+func (a *Agent) closeOpenToolsForTarget(target agent.ProviderServices, childID string, completion agent.MessageCompletion, includeSpawns bool) {
+	a.toolMu.Lock()
+	ledger := a.toolLedgerLocked(childID, false)
+	var entries []providerkit.OpenToolEntry[qoderOpenTool]
+	if ledger != nil {
+		if includeSpawns {
+			entries = ledger.DrainAll()
+		} else {
+			entries = ledger.DrainMatching(func(entry providerkit.OpenToolEntry[qoderOpenTool]) bool {
+				return !entry.NoSpan
+			})
+		}
+	}
+	a.toolMu.Unlock()
+	if len(entries) == 0 || target == nil {
+		return
+	}
+	discarding := a.IsDiscardingOutput()
+	providerkit.CloseToolSpans(target, entries, completion, func(entry providerkit.OpenToolEntry[qoderOpenTool]) (agent.MessageContent, agent.SpanInfo, bool) {
+		if discarding || len(entry.Data.raw) == 0 {
+			return agent.MessageContent{}, agent.SpanInfo{}, false
+		}
+		content := agent.MessageContent{
+			Original:       entry.Data.raw,
+			AgentSessionID: entry.Data.sessionID,
+			Completion:     completion,
+		}
+		return content, agent.SpanInfo{SpanID: entry.SpanID, SpanType: entry.SpanType, Closing: true, NoSpan: entry.NoSpan}, true
+	})
+}
+
+// finishStream closes remaining open root and child tool spans, open task and
+// workflow background rows, and resets spans and progress on process exit.
+func (a *Agent) finishStream() {
+	a.finishOnce.Do(func() {
+		a.outputMu.Lock()
+		defer a.outputMu.Unlock()
+		completion := a.ProcessExitCompletion()
+		taskStatus := agent.IncompleteTaskStatus(completion)
+		a.closeOpenToolsForTarget(a.sink, "", completion, true)
+
+		a.toolMu.Lock()
+		childIDs := make([]string, 0, len(a.childTools))
+		for childID := range a.childTools {
+			childIDs = append(childIDs, childID)
+		}
+		a.toolMu.Unlock()
+		slices.Sort(childIDs)
+		for _, childID := range childIDs {
+			var childSink agent.ProviderServices
+			if a.sink != nil {
+				childSink = a.sink.ChildSink(childID)
+			}
+			a.closeOpenToolsForTarget(childSink, childID, completion, true)
+			providerkit.ResetSpansAndProgress(childSink)
+		}
+		a.toolMu.Lock()
+		clear(a.childTools)
+		a.toolMu.Unlock()
+
+		a.mu.Lock()
+		taskKeys := make([]string, 0, len(a.childTaskIDs))
+		for key := range a.childTaskIDs {
+			taskKeys = append(taskKeys, key)
+		}
+		clear(a.childTaskIDs)
+		workflows := make([]*qoderWorkflowRun, 0, len(a.workflows))
+		for _, run := range a.workflows {
+			workflows = append(workflows, run)
+		}
+		clear(a.workflows)
+		a.mu.Unlock()
+		slices.SortFunc(workflows, func(left, right *qoderWorkflowRun) int {
+			return cmp.Or(cmp.Compare(left.key.sessionID, right.key.sessionID), cmp.Compare(left.key.toolUseID, right.key.toolUseID))
+		})
+
+		if a.sink != nil {
+			slices.Sort(taskKeys)
+			for _, key := range taskKeys {
+				if childID, _, found, err := a.sink.LookupBackgroundTask(key); err == nil && found && childID != "" {
+					providerkit.ResetSpansAndProgress(a.sink.ChildSink(childID))
+					providerkit.LogRegistryRefusal("qoder", "close child on exit", a.sink.CloseBackgroundTask(key, taskStatus))
+					a.sink.CleanupChildAgent(childID)
+				} else {
+					providerkit.LogRegistryRefusal("qoder", "close child on exit", a.sink.CloseBackgroundTask(key, taskStatus))
+				}
+			}
+			for _, run := range workflows {
+				for _, taskID := range run.order {
+					child := run.children[taskID]
+					providerkit.LogRegistryRefusal("qoder", "close workflow child on exit", a.sink.CloseBackgroundTask(taskID, taskStatus))
+					if child != nil && child.childID != "" {
+						providerkit.ResetSpansAndProgress(a.sink.ChildSink(child.childID))
+						a.sink.CleanupChildAgent(child.childID)
+					}
+				}
+				providerkit.LogRegistryRefusal("qoder", "close workflow on exit", a.sink.CloseBackgroundTask(qoderWorkflowRowKey(run.key), taskStatus))
+			}
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
+		a.setTurnActive(false)
+	})
 }
 
 // HandleOutput processes one NDJSON line through the same handlers as the process reader.
