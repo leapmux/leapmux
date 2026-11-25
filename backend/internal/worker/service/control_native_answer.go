@@ -3,7 +3,6 @@ package service
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"reflect"
 	"unicode/utf8"
 
@@ -16,11 +15,11 @@ import (
 func matchNativePermissionAnswer(plugin agent.Provider, input agent.ControlAnswerInput, content []byte) (agent.ControlAnswer, *leapmuxv1.ControlDecision, error) {
 	permission := input.Prompt.GetPermission()
 	if permission == nil {
-		return agent.ControlAnswer{}, nil, errors.New("a native response needs a permission prompt with offered choices")
+		return agent.ControlAnswer{}, nil, invalidControlArgument("a native response needs a permission prompt with offered choices")
 	}
 	submitted, ok := decodeUniqueControlObject(content)
 	if !ok {
-		return agent.ControlAnswer{}, nil, errors.New("the native response must be a JSON object with unique member names")
+		return agent.ControlAnswer{}, nil, invalidControlArgument("the native response must be a JSON object with unique member names")
 	}
 	var matchedAnswer agent.ControlAnswer
 	var matchedDecision *leapmuxv1.ControlDecision
@@ -37,12 +36,12 @@ func matchNativePermissionAnswer(plugin agent.Provider, input agent.ControlAnswe
 			continue
 		}
 		if matchedDecision != nil {
-			return agent.ControlAnswer{}, nil, errors.New("the native response matches more than one offered choice. Send a decision with its option ID")
+			return agent.ControlAnswer{}, nil, invalidControlArgument("the native response matches more than one offered choice. Send a decision with its option ID")
 		}
 		matchedDecision, matchedAnswer = input.Decision, answer
 	}
 	if matchedDecision == nil {
-		return agent.ControlAnswer{}, nil, errors.New("the native response does not match a permission choice offered by this request")
+		return agent.ControlAnswer{}, nil, invalidControlArgument("the native response does not match a permission choice offered by this request")
 	}
 	return matchedAnswer, matchedDecision, nil
 }

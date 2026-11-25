@@ -226,7 +226,11 @@ func (svc *Service) validateGitMode(ctx context.Context, workingDir string, setu
 		if branch == "" {
 			return gitModePlan{}, errors.New("create_worktree.branch is required")
 		}
-		return svc.validateCreateWorktree(ctx, workingDir, branch, mode.CreateWorktree.GetBaseBranch())
+		return svc.validateCreateWorktree(ctx, createWorktreeValidation{
+			workingDir: workingDir,
+			branch:     branch,
+			baseBranch: mode.CreateWorktree.GetBaseBranch(),
+		})
 	case *leapmuxv1.GitSetup_UseWorktree:
 		return svc.validateUseWorktree(ctx, workingDir, mode.UseWorktree)
 	case *leapmuxv1.GitSetup_CheckoutBranch:
@@ -245,11 +249,18 @@ func (svc *Service) validateGitMode(ctx context.Context, workingDir string, setu
 	}
 }
 
-func (svc *Service) validateCreateWorktree(ctx context.Context, workingDir, branch, baseBranch string) (gitModePlan, error) {
-	return svc.validateCreateWorktreeWithPath(ctx, workingDir, branch, baseBranch, "", false)
+var errWorktreePathExists = errors.New("already exists on disk")
+
+type createWorktreeValidation struct {
+	workingDir      string
+	branch          string
+	baseBranch      string
+	explicitPath    string
+	allowBaseCommit bool
 }
 
-func (svc *Service) validateCreateWorktreeWithPath(ctx context.Context, workingDir, branch, baseBranch, explicitPath string, allowBaseCommit bool) (gitModePlan, error) {
+func (svc *Service) validateCreateWorktree(ctx context.Context, opts createWorktreeValidation) (gitModePlan, error) {
+	workingDir, branch, baseBranch, explicitPath, allowBaseCommit := opts.workingDir, opts.branch, opts.baseBranch, opts.explicitPath, opts.allowBaseCommit
 	if err := gitutil.ValidateBranchName(branch); err != nil {
 		return gitModePlan{}, err
 	}
@@ -320,11 +331,20 @@ func (svc *Service) validateCreateWorktreeWithPath(ctx context.Context, workingD
 	startPoint := "HEAD"
 	if baseBranch != "" {
 		if !baseRef.Local && !baseRef.Remote {
-			if !allowBaseCommit || gitutil.Run(ctx, workingDir, "rev-parse", "--verify", "--quiet", baseBranch+"^{commit}") != nil {
+			if !allowBaseCommit {
 				return gitModePlan{}, fmt.Errorf("base branch %q does not exist", baseBranch)
 			}
+			// Resolve checkout-relative commit specs (e.g. HEAD~1) in workingDir
+			// so executeCreateWorktree receives an immutable commit SHA usable
+			// from the common repository directory.
+			resolved, err := gitutil.Output(ctx, workingDir, "rev-parse", "--verify", "--quiet", baseBranch+"^{commit}")
+			if err != nil {
+				return gitModePlan{}, fmt.Errorf("base branch %q does not exist", baseBranch)
+			}
+			startPoint = strings.TrimSpace(resolved)
+		} else {
+			startPoint = baseBranch
 		}
-		startPoint = baseBranch
 	} else if info.BranchName != "" {
 		startPoint = info.BranchName
 	}
@@ -336,7 +356,7 @@ func (svc *Service) validateCreateWorktreeWithPath(ctx context.Context, workingD
 		worktreePath = filepath.Join(filepath.Dir(repoRoot), filepath.Base(repoRoot)+"-worktrees", branch)
 	}
 	if _, err := os.Stat(worktreePath); err == nil {
-		return gitModePlan{}, fmt.Errorf(`worktree path "%s" already exists on disk`, worktreePath)
+		return gitModePlan{}, fmt.Errorf(`worktree path "%s" %w`, worktreePath, errWorktreePathExists)
 	} else if !os.IsNotExist(err) {
 		return gitModePlan{}, fmt.Errorf(`worktree path "%s": %w`, worktreePath, err)
 	}

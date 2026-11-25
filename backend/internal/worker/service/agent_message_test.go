@@ -261,7 +261,7 @@ func TestBeginQueuedAgentInputEditRefusesAnAgentMessage(t *testing.T) {
 		"the refusal states the reason that the snapshot states in edit_refusal")
 }
 
-func TestAgentMessageHeaderNamesTheSenderAndQuotesItsTitle(t *testing.T) {
+func TestAgentMessageHeaderIdentifiesTheSenderAndQuotesItsTitle(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, `[Message from agent "Fix flaky spec" (Claude Code), not from your operator]`,
 		agentMessageHeader("Fix flaky spec", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
@@ -558,7 +558,7 @@ var _ agent.ChildSteerer = childInputRecorder{}
 
 // A message from another agent to a subagent takes the route of the user's
 // own message: the queue admits it for a subagent that accepts messages, and
-// the owner process receives it behind the header that names the sender.
+// the owner process receives it behind the header that identifies the sender.
 func TestAgentMessageReachesASubagentBehindItsHeader(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

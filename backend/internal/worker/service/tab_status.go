@@ -57,8 +57,9 @@ const (
 type TabStatusStore struct {
 	events *PrivateEventsBus
 
-	mu      sync.Mutex
-	byOwner map[string]*ownerTabStatuses
+	mu         sync.Mutex
+	byOwner    map[string]*ownerTabStatuses
+	closeEpoch uint64
 }
 
 // ownerTabStatuses is the statuses of one user's tabs. An entry exists only
@@ -78,14 +79,24 @@ func NewTabStatusStore(events *PrivateEventsBus) *TabStatusStore {
 	}
 }
 
+// currentCloseEpoch returns the monotonic counter incremented on every
+// forgetClosed call. Callers sample it before checking tab liveness so set can
+// report whether any tab closed before the status entered the store.
+func (s *TabStatusStore) currentCloseEpoch() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeEpoch
+}
+
 // set stores a status under one key and publishes the new visible status.
+// It returns epochChanged=true when forgetClosed ran since expectedCloseEpoch.
 // The store and its events share the validated status. It must stay immutable.
 //
 // An unminted owner stores nothing. No subscriber could read the status: the
 // bus refuses to register or publish to such an owner.
-func (s *TabStatusStore) set(key ownedTabKey, owner userid.UserID, statusKey string, status *leapmuxv1.TabStatus) error {
+func (s *TabStatusStore) set(key ownedTabKey, owner userid.UserID, statusKey string, status *leapmuxv1.TabStatus, expectedCloseEpoch uint64) (bool, error) {
 	if owner.IsZero() {
-		return nil
+		return false, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -98,11 +109,11 @@ func (s *TabStatusStore) set(key ownedTabKey, owner userid.UserID, statusKey str
 	if index := tabStatusEntryIndex(entries, statusKey); index >= 0 {
 		entries = slices.Delete(entries, index, index+1)
 	} else if len(entries) == tabStatusMaxKeys {
-		return fmt.Errorf("a tab can hold at most %d status keys", tabStatusMaxKeys)
+		return false, fmt.Errorf("a tab can hold at most %d status keys", tabStatusMaxKeys)
 	}
 	statuses.tabs[key] = append(entries, &leapmuxv1.TabStatusEntry{Key: statusKey, Status: status})
 	s.events.PublishTabStatusChanged(owner, key.tabType, key.tabID, status)
-	return nil
+	return s.closeEpoch != expectedCloseEpoch, nil
 }
 
 // clear removes one key and publishes the remaining visible status.
@@ -161,6 +172,7 @@ func (s *TabStatusStore) list(key ownedTabKey, owner userid.UserID) []*leapmuxv1
 func (s *TabStatusStore) forgetClosed(key ownedTabKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closeEpoch++
 	for _, statuses := range s.byOwner {
 		if _, ok := statuses.tabs[key]; !ok {
 			continue
@@ -179,21 +191,8 @@ func (s *TabStatusStore) removeLocked(statuses *ownerTabStatuses, key ownedTabKe
 	}
 }
 
-// get returns the status of the tab that key identifies, or nil when none is
-// set.
-func (s *TabStatusStore) get(key ownedTabKey) *leapmuxv1.TabStatus {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, statuses := range s.byOwner {
-		if entries, ok := statuses.tabs[key]; ok {
-			return latestTabStatus(entries)
-		}
-	}
-	return nil
-}
-
 // snapshotFor returns one TabStatusChanged for each of owner's tabs whose
-// status is set, in tab id order, for the bootstrap of
+// status is set, in tab id and tab type order, for the bootstrap of
 // WatchWorkerPrivateEvents. An unminted owner owns nothing.
 //
 // It takes only the store lock, never the bus lock, which is what lets
@@ -213,7 +212,9 @@ func (s *TabStatusStore) snapshotFor(owner userid.UserID) []*leapmuxv1.WorkerPri
 	s.mu.Unlock()
 	// Map iteration order is random. A stable order keeps the bootstrap the
 	// same from one subscription to the next.
-	slices.SortFunc(tabs, func(a, b tabStatusSnapshotEntry) int { return cmp.Compare(a.tabID, b.tabID) })
+	slices.SortFunc(tabs, func(a, b tabStatusSnapshotEntry) int {
+		return cmp.Or(cmp.Compare(a.tabID, b.tabID), cmp.Compare(a.tabType, b.tabType))
+	})
 	events := make([]*leapmuxv1.WorkerPrivateEvent, 0, len(tabs))
 	for _, tab := range tabs {
 		events = append(events, tabStatusChangedEvent(tab.tabType, tab.tabID, tab.status))

@@ -227,6 +227,15 @@ func TestSemanticRequestHandleMatchesOnlyTheCurrentClaim(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: agentID, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
+	lookupHandle := func(request *leapmuxv1.SemanticAgentRequest) (string, error) {
+		var handle string
+		err := svc.resolveSemanticRequestHandles(t.Context(), journal, []semanticRequestHandleTarget{{
+			agentID:   agentID,
+			request:   request,
+			setHandle: func(h string) { handle = h },
+		}})
+		return handle, err
+	}
 	markPending := func(claim string) {
 		createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 			AgentID: agentID, RequestID: "reused ID", ClaimToken: claim, Payload: []byte("{}"),
@@ -237,13 +246,13 @@ func TestSemanticRequestHandleMatchesOnlyTheCurrentClaim(t *testing.T) {
 		RequestId: "reused ID", RequestInstance: journal.RequestInstance(agentID, "old claim"),
 		PromptKind: leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION,
 	}
-	handle, err := svc.currentSemanticRequestHandle(t.Context(), journal, agentID, request)
+	handle, err := lookupHandle(request)
 	require.NoError(t, err)
 	assert.Equal(t, "old claim", handle)
 	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: agentID, RequestID: "durable question", ClaimToken: "question claim", Payload: []byte("{}"), NonBlocking: true,
 	})
-	questionHandle, err := svc.currentSemanticRequestHandle(t.Context(), journal, agentID, &leapmuxv1.SemanticAgentRequest{
+	questionHandle, err := lookupHandle(&leapmuxv1.SemanticAgentRequest{
 		RequestId: "durable question", RequestInstance: journal.RequestInstance(agentID, "question claim"),
 		PromptKind: leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_QUESTION,
 	})
@@ -251,18 +260,18 @@ func TestSemanticRequestHandleMatchesOnlyTheCurrentClaim(t *testing.T) {
 	assert.Equal(t, "question claim", questionHandle)
 	_, err = svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{ID: agentID, WorkspaceArchived: true})
 	require.NoError(t, err)
-	handle, err = svc.currentSemanticRequestHandle(t.Context(), journal, agentID, request)
+	handle, err = lookupHandle(request)
 	require.NoError(t, err)
 	assert.Empty(t, handle, "archive already prevents answering the open prompt")
 	_, err = svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{ID: agentID, WorkspaceArchived: false})
 	require.NoError(t, err)
 	request.PromptKind = leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_UNREADABLE
-	handle, err = svc.currentSemanticRequestHandle(t.Context(), journal, agentID, request)
+	handle, err = lookupHandle(request)
 	require.NoError(t, err)
 	assert.Empty(t, handle, "an unreadable request cannot take an answer")
 	request.PromptKind = leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION
 	markPending("replacement claim")
-	handle, err = svc.currentSemanticRequestHandle(t.Context(), journal, agentID, request)
+	handle, err = lookupHandle(request)
 	require.NoError(t, err)
 	assert.Empty(t, handle)
 }
@@ -824,4 +833,144 @@ func TestAdmittedRelaunchDoesNotLaunchAfterItsRowCloses(t *testing.T) {
 		t.Fatal("the admitted relaunch did not finish")
 	}
 	assert.Zero(t, starts.Load())
+}
+
+func TestClosedAgentRecordsADeliveredControlWithoutSemanticJournal(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t)
+	// Deliberately do NOT call svc.EnableSemanticEvents() so journal == nil.
+	require.Nil(t, svc.semanticEvents.journal.Load())
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
+
+	const agentID = "retired-control-no-journal"
+	const requestID = "jsonrpc:1"
+	createClaimTestAgent(t, svc, agentID)
+	ctx := testutil.DeadlineContext(t)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: requestID,
+		Payload:   []byte(`{"id":1,"method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
+	}))
+	request := requireLookupControlRequest(t, ctx, svc.Output, agentID, requestID)
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+
+	trigger := fmt.Sprintf(`CREATE TRIGGER fail_retired_control_no_journal BEFORE INSERT ON messages WHEN NEW.mark_type=%d
+		BEGIN SELECT RAISE(ABORT, 'answer storage failed'); END`, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE)
+	_, err = svc.DB.ExecContext(ctx, trigger)
+	require.NoError(t, err)
+	var sends atomic.Int64
+	svc.sendControlResponseFn = func(string, agent.RawInput) error { sends.Add(1); return nil }
+	require.ErrorContains(t, svc.processControlAnswer(row, workerAnswer{
+		content:    []byte(`{"id":"jsonrpc:1","result":{"decision":"accept"}}`),
+		claimToken: request.ClaimToken,
+	}), "answer storage failed")
+	require.Equal(t, int64(1), sends.Load())
+
+	_, err = svc.DB.ExecContext(ctx, "DROP TRIGGER fail_retired_control_no_journal")
+	require.NoError(t, err)
+
+	closed := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
+		&leapmuxv1.CloseTabRequest{Tab: agentTabIdent(agentID)}, closed)
+	require.Empty(t, closed.errors)
+
+	// REMOVALS-3: Even with journal == nil, closing the agent must record the delivered answer.
+	recorded, err := svc.recordControlResponse(row, &leapmuxv1.RecordControlResponseRequest{
+		AgentId:    agentID,
+		RequestId:  requestID,
+		ClaimToken: request.ClaimToken,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, recorded.GetState())
+
+	answer, err := svc.Queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{
+		AgentID: agentID, RequestID: requestID, ClaimToken: request.ClaimToken,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, storedStateCompleted, answer.State)
+
+	messages, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: agentID, Limit: 10})
+	require.NoError(t, err)
+	assert.NotEmpty(t, messages, "the delivered control response must be persisted in messages on close")
+}
+
+func TestPopulateSemanticRequestHandles_BatchesMultipleAgentsInOnePage(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	svc.EnableSemanticEvents()
+	t.Cleanup(func() {
+		svc.Shutdown()
+		svc.FinalizeSemanticEvents(true)
+	})
+	journal := svc.semanticEvents.journal.Load()
+	require.NotNil(t, journal)
+	ctx := testutil.DeadlineContext(t)
+
+	createClaimTestAgent(t, svc, "agent-live")
+	createClaimTestAgent(t, svc, "agent-archived")
+	_, err := svc.Queries.SetAgentWorkspaceArchived(ctx, db.SetAgentWorkspaceArchivedParams{ID: "agent-archived", WorkspaceArchived: true})
+	require.NoError(t, err)
+
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
+		AgentID: "agent-live", RequestID: "req-1", ClaimToken: "claim-1", Payload: []byte("{}"),
+	})
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
+		AgentID: "agent-live", RequestID: "req-2", ClaimToken: "claim-2", Payload: []byte("{}"), NonBlocking: true,
+	})
+	createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
+		AgentID: "agent-archived", RequestID: "req-arch", ClaimToken: "claim-arch", Payload: []byte("{}"),
+	})
+
+	frames := []*leapmuxv1.WatchWorkerSemanticEventsResponse{
+		{Event: &leapmuxv1.WatchWorkerSemanticEventsResponse_Record{Record: &leapmuxv1.SemanticWorkerWatchRecord{
+			Tab: agentTabIdent("agent-live"),
+			Fact: &leapmuxv1.SemanticTabFact{Event: &leapmuxv1.SemanticTabFact_AgentRequest{AgentRequest: &leapmuxv1.SemanticAgentRequest{
+				RequestId: "req-1", RequestInstance: journal.RequestInstance("agent-live", "claim-1"),
+				PromptKind: leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION,
+			}}},
+		}}},
+		{Event: &leapmuxv1.WatchWorkerSemanticEventsResponse_Record{Record: &leapmuxv1.SemanticWorkerWatchRecord{
+			Tab: agentTabIdent("agent-live"),
+			Fact: &leapmuxv1.SemanticTabFact{Event: &leapmuxv1.SemanticTabFact_AgentRequest{AgentRequest: &leapmuxv1.SemanticAgentRequest{
+				RequestId: "req-2", RequestInstance: journal.RequestInstance("agent-live", "claim-2"),
+				PromptKind: leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_QUESTION,
+			}}},
+		}}},
+		{Event: &leapmuxv1.WatchWorkerSemanticEventsResponse_Record{Record: &leapmuxv1.SemanticWorkerWatchRecord{
+			Tab: agentTabIdent("agent-archived"),
+			Fact: &leapmuxv1.SemanticTabFact{Event: &leapmuxv1.SemanticTabFact_AgentRequest{AgentRequest: &leapmuxv1.SemanticAgentRequest{
+				RequestId: "req-arch", RequestInstance: journal.RequestInstance("agent-archived", "claim-arch"),
+				PromptKind: leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION,
+			}}},
+		}}},
+		{Event: &leapmuxv1.WatchWorkerSemanticEventsResponse_Record{Record: &leapmuxv1.SemanticWorkerWatchRecord{
+			Tab: agentTabIdent("agent-live"),
+			Fact: &leapmuxv1.SemanticTabFact{Event: &leapmuxv1.SemanticTabFact_AgentRequest{AgentRequest: &leapmuxv1.SemanticAgentRequest{
+				RequestId: "req-1", RequestInstance: journal.RequestInstance("agent-live", "claim-1"),
+				PromptKind: leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_UNREADABLE,
+			}}},
+		}}},
+	}
+
+	require.NoError(t, populateSemanticRequestHandles(svc, ctx, journal, frames, func(frame *leapmuxv1.WatchWorkerSemanticEventsResponse) (semanticRequestHandleTarget, bool) {
+		record := frame.GetRecord()
+		request := record.GetFact().GetAgentRequest()
+		if request == nil {
+			return semanticRequestHandleTarget{}, false
+		}
+		return semanticRequestHandleTarget{
+			agentID:   record.GetTab().GetTabId(),
+			request:   request,
+			setHandle: func(h string) { record.CurrentRequestHandle = h },
+		}, true
+	}))
+
+	assert.Equal(t, "claim-1", frames[0].GetRecord().GetCurrentRequestHandle())
+	assert.Equal(t, "claim-2", frames[1].GetRecord().GetCurrentRequestHandle())
+	assert.Empty(t, frames[2].GetRecord().GetCurrentRequestHandle(), "archived agent must not expose an answer handle")
+	assert.Empty(t, frames[3].GetRecord().GetCurrentRequestHandle(), "unreadable prompt kind must not expose an answer handle")
 }

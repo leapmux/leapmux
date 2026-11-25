@@ -263,6 +263,17 @@ func (b *PrivateEventsBus) SnapshotAndSubscribe(
 	byID[subID] = ch
 	b.mu.Unlock()
 
+	defer func() {
+		b.mu.Lock()
+		if byID, ok := b.subscribers[ownerKey]; ok {
+			delete(byID, subID)
+			if len(byID) == 0 {
+				delete(b.subscribers, ownerKey)
+			}
+		}
+		b.mu.Unlock()
+	}()
+
 	// Snapshot AFTER releasing the lock. The registration above is what makes
 	// that safe: every event published from here on lands in ch, so nothing can
 	// slip between the snapshot and the subscription -- at worst an event appears
@@ -279,17 +290,6 @@ func (b *PrivateEventsBus) SnapshotAndSubscribe(
 	if snapshotFn != nil {
 		snapshot = snapshotFn(owner)
 	}
-
-	defer func() {
-		b.mu.Lock()
-		if byID, ok := b.subscribers[ownerKey]; ok {
-			delete(byID, subID)
-			if len(byID) == 0 {
-				delete(b.subscribers, ownerKey)
-			}
-		}
-		b.mu.Unlock()
-	}()
 
 	for _, evt := range snapshot {
 		if err := sendFn(evt); err != nil {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -28,7 +29,7 @@ import (
 
 // terminalSendInputReceipts deduplicates keyed terminal SendInput requests in
 // memory so `leapmux terminal run --request-id` retries safely without
-// double-executing a shell command. Bounded FIFO keeps memory O(1).
+// double-executing a shell command. A capped FIFO keeps memory O(1).
 const maxTerminalSendInputReceipts = 1024
 
 func terminalSendInputFingerprint(r *leapmuxv1.SendInputRequest) [sha256.Size]byte {
@@ -58,15 +59,16 @@ func terminalSendInputFingerprint(r *leapmuxv1.SendInputRequest) [sha256.Size]by
 }
 
 type sendInputReceiptEntry struct {
+	key  string
 	fp   [sha256.Size]byte
 	done chan struct{} // non-nil while an initial SendInput for this key is in flight
 	err  error         // outcome of the initial SendInput once done is closed
 }
 
 type terminalSendInputReceipts struct {
-	mu      sync.Mutex
-	entries map[string]*sendInputReceiptEntry
-	order   []string
+	mu        sync.Mutex
+	entries   map[string]*sendInputReceiptEntry
+	completed list.List // FIFO of completed *sendInputReceiptEntry; in-flight entries are never evicted
 }
 
 type sendInputReceiptOutcome int
@@ -77,10 +79,13 @@ const (
 	sendInputConflict
 )
 
-// begin atomically reserves (terminalID, requestID) for a new SendInput or
-// waits for a concurrent in-flight SendInput with the same key, eliminating
-// check-then-act races that could double-write a command to the PTY.
-func (c *terminalSendInputReceipts) begin(terminalID, requestID string, fp [sha256.Size]byte) (sendInputReceiptOutcome, *sendInputReceiptEntry, error) {
+var errSendInputPanicked = errors.New("terminal send input panicked")
+
+// execute atomically deduplicates (terminalID, requestID), running fn at most
+// once per succeeded key. In-flight entries stay out of the completed FIFO so
+// they cannot be evicted while running, a deferred release prevents deadlocks
+// on panic, and concurrent retries observe ctx cancellation while waiting.
+func (c *terminalSendInputReceipts) execute(ctx context.Context, terminalID, requestID string, fp [sha256.Size]byte, fn func() error) (sendInputReceiptOutcome, error) {
 	key := terminalID + "\x00" + requestID
 	for {
 		c.mu.Lock()
@@ -89,47 +94,66 @@ func (c *terminalSendInputReceipts) begin(terminalID, requestID string, fp [sha2
 		}
 		prev, ok := c.entries[key]
 		if !ok {
-			entry := &sendInputReceiptEntry{fp: fp, done: make(chan struct{})}
-			if len(c.order) >= maxTerminalSendInputReceipts {
-				oldest := c.order[0]
-				c.order = c.order[1:]
-				delete(c.entries, oldest)
-			}
+			entry := &sendInputReceiptEntry{key: key, fp: fp, done: make(chan struct{})}
 			c.entries[key] = entry
-			c.order = append(c.order, key)
 			c.mu.Unlock()
-			return sendInputNew, entry, nil
+			return sendInputNew, c.runAndFinish(entry, fn)
 		}
 		if prev.fp != fp {
 			c.mu.Unlock()
-			return sendInputConflict, nil, nil
+			return sendInputConflict, nil
 		}
 		done := prev.done
 		c.mu.Unlock()
 		if done == nil {
-			return sendInputDuplicate, nil, nil
+			return sendInputDuplicate, nil
 		}
-		<-done
-		if prev.err == nil {
-			return sendInputDuplicate, nil, nil
+		select {
+		case <-done:
+			if prev.err == nil {
+				return sendInputDuplicate, nil
+			}
+			// The prior attempt failed and removed itself; loop to retry cleanly.
+		case <-ctx.Done():
+			return sendInputDuplicate, ctx.Err()
 		}
-		// The prior attempt failed and removed itself; loop to retry cleanly.
 	}
 }
 
-func (c *terminalSendInputReceipts) finish(terminalID, requestID string, entry *sendInputReceiptEntry, sendErr error) {
-	key := terminalID + "\x00" + requestID
-	c.mu.Lock()
-	entry.err = sendErr
-	done := entry.done
-	entry.done = nil
-	if sendErr != nil && c.entries[key] == entry {
-		delete(c.entries, key)
-	}
-	c.mu.Unlock()
-	if done != nil {
-		close(done)
-	}
+func (c *terminalSendInputReceipts) runAndFinish(entry *sendInputReceiptEntry, fn func() error) (runErr error) {
+	completed := false
+	defer func() {
+		finalErr := runErr
+		if !completed {
+			finalErr = errSendInputPanicked
+		}
+		c.mu.Lock()
+		entry.err = finalErr
+		done := entry.done
+		entry.done = nil
+		if finalErr != nil {
+			if c.entries[entry.key] == entry {
+				delete(c.entries, entry.key)
+			}
+		} else {
+			if c.completed.Len() >= maxTerminalSendInputReceipts {
+				if front := c.completed.Front(); front != nil {
+					oldest := c.completed.Remove(front).(*sendInputReceiptEntry)
+					if c.entries[oldest.key] == oldest {
+						delete(c.entries, oldest.key)
+					}
+				}
+			}
+			c.completed.PushBack(entry)
+		}
+		c.mu.Unlock()
+		if done != nil {
+			close(done)
+		}
+	}()
+	runErr = fn()
+	completed = true
+	return runErr
 }
 
 // pendingResizeWaitCap limits how long runTerminalStartup blocks waiting
@@ -393,7 +417,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// write, encoded for the terminal's modes. It parses every key name before
 	// it writes anything, so an unknown name refuses the whole request.
 	registerTerminalGuardedByID(d, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, dispatchPlain,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
+		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			keys, err := terminput.ParseKeys(r.GetKeys())
@@ -402,31 +426,33 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 
-			reqID := strings.TrimSpace(r.GetRequestId())
-			var receiptEntry *sendInputReceiptEntry
-			if reqID != "" {
+			deliver := func() error {
+				if svc.WakeLock != nil {
+					svc.WakeLock.RecordActivity()
+				}
+				in := terminput.Input{Data: r.GetData(), Paste: r.GetPaste(), Keys: keys}
+				return svc.Terminals.SendInput(terminalID, in)
+			}
+
+			var sendErr error
+			if reqID := strings.TrimSpace(r.GetRequestId()); reqID != "" {
 				fp := terminalSendInputFingerprint(r)
-				outcome, entry, _ := svc.sendInputReceipts.begin(terminalID, reqID, fp)
+				outcome, err := svc.sendInputReceipts.execute(ctx, terminalID, reqID, fp, deliver)
 				switch outcome {
-				case sendInputNew:
-					receiptEntry = entry
-				case sendInputDuplicate:
-					sendProtoResponse(sender, &leapmuxv1.SendInputResponse{})
-					return
 				case sendInputConflict:
 					sendFailedPrecondition(sender, fmt.Sprintf("request_id %q was already used for a different terminal input payload", reqID))
 					return
+				case sendInputDuplicate:
+					if err != nil {
+						return
+					}
+					sendProtoResponse(sender, &leapmuxv1.SendInputResponse{})
+					return
+				case sendInputNew:
+					sendErr = err
 				}
-			}
-
-			if svc.WakeLock != nil {
-				svc.WakeLock.RecordActivity()
-			}
-
-			in := terminput.Input{Data: r.GetData(), Paste: r.GetPaste(), Keys: keys}
-			sendErr := svc.Terminals.SendInput(terminalID, in)
-			if receiptEntry != nil {
-				svc.sendInputReceipts.finish(terminalID, reqID, receiptEntry, sendErr)
+			} else {
+				sendErr = deliver()
 			}
 			if sendErr != nil {
 				slog.Error("failed to send input", "terminal_id", terminalID, "error", sendErr)
@@ -1643,6 +1669,7 @@ func (svc *Service) adoptExistingQuakeTerminal(sender channel.ResponseWriter, wo
 	sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 		TerminalId: existing.ID,
 		Title:      existing.Title,
+		Adopted:    true,
 	})
 	return true
 }

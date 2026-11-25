@@ -101,6 +101,9 @@ message OpenTerminalResponse {
   // finishes on the async startup path.
   string title = 2;
   PublishedTab publication = 3;
+  // True when a quake open adopted an existing live shell rather than starting
+  // a new one (so initial_command was not executed).
+  bool adopted = 4;
 }
 
 // RestartTerminalRequest starts a new shell in the same tab with the same

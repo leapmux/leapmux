@@ -134,8 +134,8 @@ func TestSendInput_EncodesAPasteForTheModesOfTheProgram(t *testing.T) {
 	}, "the paste arrives between the markers, with CR for its line ending, and Enter follows it")
 }
 
-// The refusal names the key, so the caller knows which one to correct.
-func TestSendInput_TheRefusalNamesTheKey(t *testing.T) {
+// The refusal identifies the key, so the caller knows which one to correct.
+func TestSendInput_TheRefusalIdentifiesTheKey(t *testing.T) {
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, t.Context(), "term-name")
 

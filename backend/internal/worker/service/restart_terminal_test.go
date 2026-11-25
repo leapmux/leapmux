@@ -699,13 +699,13 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 	})
 }
 
-type gatedTerminalRestartIPC struct {
+type blockingTerminalRestartIPC struct {
 	fakeRemoteIPC
 	entered chan struct{}
 	release <-chan struct{}
 }
 
-func (f *gatedTerminalRestartIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string, func(), error) {
+func (f *blockingTerminalRestartIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string, func(), error) {
 	close(f.entered)
 	<-f.release
 	return f.fakeRemoteIPC.TerminalSpawning(info)
@@ -717,7 +717,7 @@ func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	continueStart := make(chan struct{})
 	release := sync.OnceFunc(func() { close(continueStart) })
-	ipc := &gatedTerminalRestartIPC{entered: make(chan struct{}), release: continueStart}
+	ipc := &blockingTerminalRestartIPC{entered: make(chan struct{}), release: continueStart}
 	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
 	svc.EnableSemanticEvents()
 	t.Cleanup(func() {

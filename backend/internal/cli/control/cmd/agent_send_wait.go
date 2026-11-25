@@ -169,14 +169,24 @@ func workerReplyReader(c *control.Client, workerID, agentID string) replyReader 
 func pageExactInputReply(list func(*leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error)) ([]*leapmuxv1.AgentChatMessage, error) {
 	var rows []*leapmuxv1.AgentChatMessage
 	var cursor int64
+	var canonical *bool
 	for {
 		resp, err := list(&leapmuxv1.ListAgentMessagesRequest{
 			Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST, ReplyCursor: cursor,
-			Limit: contracts.MessagePageLimit,
+			ReplyCursorCanonical: canonical,
+			Limit:                contracts.MessagePageLimit,
 		})
 		if err != nil {
 			return nil, err
 		}
+		respCanonical := resp.GetReplyCanonical()
+		if canonical != nil && !*canonical && respCanonical {
+			// The turn became canonical between pages, so the Worker restarted
+			// from canonical ordinal 0 instead of reusing the pre-publication seq.
+			rows = nil
+			cursor = 0
+		}
+		canonical = &respCanonical
 		rows = append(rows, resp.GetMessages()...)
 		if !resp.GetHasMore() {
 			return rows, nil

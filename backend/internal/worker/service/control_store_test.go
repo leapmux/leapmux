@@ -26,7 +26,7 @@ func TestControlRequestStore_BlockingLifecycleAndUnifiedListing(t *testing.T) {
 
 	var store controlRequestStore
 	assert.False(t, store.hasBlocking("agent-1"))
-	assert.False(t, store.hasBlockingInstance("agent-1", "req-1", "claim-1"))
+	assert.False(t, store.hasBlockingSnapshot("agent-1", "req-1", "claim-1", "sess-1", nil))
 	_, found := store.getBlocking("agent-1", "req-1")
 	assert.False(t, found)
 
@@ -49,8 +49,8 @@ func TestControlRequestStore_BlockingLifecycleAndUnifiedListing(t *testing.T) {
 	})
 	assert.Equal(t, int64(7), replayed.SourceSeq)
 	assert.Equal(t, t2, replayed.CreatedAt)
-	assert.True(t, store.hasBlockingInstance("agent-1", "req-b", "claim-b"))
-	assert.False(t, store.hasBlockingInstance("agent-1", "req-b", "wrong-claim"))
+	assert.True(t, store.hasBlockingSnapshot("agent-1", "req-b", "claim-b", "sess-1", []byte(`{"tool":"bash"}`)))
+	assert.False(t, store.hasBlockingSnapshot("agent-1", "req-b", "wrong-claim", "sess-1", []byte(`{"tool":"bash"}`)))
 
 	// Insert a second blocking request under pubB and a non-blocking request in SQLite.
 	store.upsertBlocking(blockingControlRecord{
@@ -96,7 +96,7 @@ func TestControlRequestStore_BlockingLifecycleAndUnifiedListing(t *testing.T) {
 	drainedA := store.drainBlockingForPublisher("agent-1", pubA)
 	require.Len(t, drainedA, 1)
 	assert.Equal(t, "req-b", drainedA[0].RequestID)
-	assert.True(t, store.hasBlockingInstance("agent-1", "req-c", "claim-c"))
+	assert.True(t, store.hasBlockingSnapshot("agent-1", "req-c", "claim-c", "", nil))
 
 	drainedRest := store.drainBlocking("agent-1")
 	require.Len(t, drainedRest, 1)

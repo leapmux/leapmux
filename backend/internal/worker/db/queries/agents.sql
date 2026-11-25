@@ -516,3 +516,28 @@ WHERE id = sqlc.arg(id) AND parent_agent_id = sqlc.arg(parent_agent_id)
 -- GetRootAgentSessionID validates that id is a root agent and reads its native session ID.
 -- name: GetRootAgentSessionID :one
 SELECT agent_session_id FROM agents WHERE id = ? AND parent_agent_id IS NULL;
+
+-- GetAgentProvider reads only the provider column so attachment validation on
+-- registerAgentGuardedByID handlers skips options and option_groups JSON blobs.
+-- name: GetAgentProvider :one
+SELECT agent_provider FROM agents WHERE id = ?;
+
+-- ListOpenAgentsForSearch returns the minimal metadata needed by
+-- SearchAgentMessages across all open agents.
+-- name: ListOpenAgentsForSearch :many
+SELECT id, title, agent_provider FROM agents WHERE closed_at IS NULL ORDER BY created_at DESC;
+
+-- ListOpenAgentsForSearchByIDs returns the minimal metadata needed by
+-- SearchAgentMessages for an explicit set of open agent IDs.
+-- name: ListOpenAgentsForSearchByIDs :many
+SELECT id, title, agent_provider FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL ORDER BY created_at DESC;
+
+-- ListDescendantAgentIDsByParentIDs walks parent_agent_id down from a batch of
+-- root or intermediate agent IDs in a single recursive query.
+-- name: ListDescendantAgentIDsByParentIDs :many
+WITH RECURSIVE descendants AS (
+    SELECT a.id AS id FROM agents a WHERE a.parent_agent_id IS NOT NULL AND a.parent_agent_id IN (sqlc.slice('parent_ids'))
+    UNION
+    SELECT a.id AS id FROM agents a JOIN descendants ON a.parent_agent_id = descendants.id
+)
+SELECT descendants.id FROM descendants;

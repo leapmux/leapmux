@@ -77,47 +77,56 @@ func parseQueueSchedule(value string) (*time.Time, error) {
 // classification is a function of the request, so a repeated request still
 // matches the input that it repeats.
 func queueAttachments(attachments []*leapmuxv1.Attachment) []inputqueue.Attachment {
-	result := make([]inputqueue.Attachment, len(attachments))
-	for i, attachment := range attachments {
-		mimeType := attachment.GetMimeType()
-		if classified := agent.ClassifyAttachments([]*leapmuxv1.Attachment{attachment}); len(classified) == 1 {
-			mimeType = classified[0].MIMEType
-		}
+	if len(attachments) == 0 {
+		return nil
+	}
+	classified := agent.ClassifyAttachments(attachments)
+	result := make([]inputqueue.Attachment, len(classified))
+	for i, attachment := range classified {
 		result[i] = inputqueue.Attachment{
-			Filename: attachment.GetFilename(),
-			MimeType: mimeType,
-			Data:     append([]byte(nil), attachment.GetData()...),
+			Filename: attachment.Filename,
+			MimeType: attachment.MIMEType,
+			Data:     append([]byte(nil), attachment.Data...),
 		}
 	}
 	return result
 }
 
-// refuseUnreadableAttachments applies the attachment policy of the agent's
-// provider to the attachments of a client's enqueue or edit. A file that the
-// provider cannot read then fails the request that sent it, and the refusal
-// states the file. The dispatch applies the same policy, through the same
-// NormalizeAttachments, but a refusal there fails the input in the queue, and
-// a failed first input holds every input behind it. The browser checks the
-// provider's capabilities before it sends, and the CLI cannot, because it
-// holds no provider code.
+// prepareQueuedAttachments applies the attachment policy of the agent's
+// provider and returns the classified attachments in the queue's form in a
+// single classification pass. A file that the provider cannot read fails the
+// request that sent it, and the refusal states the file. The dispatch applies
+// the same policy, through the same NormalizeAttachments, but a refusal there
+// fails the input in the queue, and a failed first input holds every input
+// behind it. The browser checks the provider's capabilities before it sends,
+// and the CLI cannot, because it holds no provider code.
 //
 // A missing agent passes, because the queue refuses the request for it with
 // its own error.
-func (svc *Service) refuseUnreadableAttachments(agentID string, attachments []*leapmuxv1.Attachment) error {
+func (svc *Service) prepareQueuedAttachments(agentID string, attachments []*leapmuxv1.Attachment) ([]inputqueue.Attachment, error) {
 	if len(attachments) == 0 {
-		return nil
+		return nil, nil
 	}
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	provider, err := svc.Queries.GetAgentProvider(bgCtx(), agentID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return queueAttachments(attachments), nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if _, err := svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, attachments); err != nil {
-		return fmt.Errorf("%w: %w", inputqueue.ErrInvalidInput, err)
+	normalized, err := svc.Agents.Registry().NormalizeAttachments(provider, attachments)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", inputqueue.ErrInvalidInput, err)
 	}
-	return nil
+	result := make([]inputqueue.Attachment, len(normalized))
+	for i, attachment := range normalized {
+		result[i] = inputqueue.Attachment{
+			Filename: attachment.GetFilename(),
+			MimeType: attachment.GetMimeType(),
+			Data:     append([]byte(nil), attachment.GetData()...),
+		}
+	}
+	return result, nil
 }
 
 func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attachment {
@@ -284,10 +293,15 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 				return inputqueue.DispatchResult{}, err
 			}
 		}
-		if _, err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
+		receipt, err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments)
+		if err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: svc.Output.snapshotPassthroughSpanLines(item.AgentID)}, nil
+		return inputqueue.DispatchResult{
+			StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID),
+			SpanLines:     svc.Output.snapshotPassthroughSpanLines(item.AgentID),
+			NativeReceipt: receipt,
+		}, nil
 	default:
 		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
@@ -399,14 +413,23 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		if rowErr != nil {
 			return inputqueue.DispatchResult{}, rowErr
 		}
+		if !a.svc.Agents.AgentAlive(row.OwnerAgentID) {
+			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
+		}
 		receipt, err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, request)
 	} else if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
+		if !a.svc.Agents.AgentAlive(item.AgentID) && a.svc.Agents.HasAgent(item.AgentID) {
+			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
+		}
 		// A validated answer steers into an existing turn, so it must keep
 		// reaching the process whose question asked it, even while new prompts
 		// wait for recovery approval. An
 		// idle question ends its steer and returns through Dispatch readiness.
 		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, request)
 	} else {
+		if !a.svc.Agents.AgentAlive(item.AgentID) && a.svc.Agents.HasAgent(item.AgentID) {
+			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
+		}
 		// A new prompt steered at the root is subject to the same readiness as
 		// a dispatched one: a process that requires recovery holds the prompt
 		// for approval before the steer reaches it.
@@ -650,12 +673,13 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			if sendQueueError(sender, svc.refuseUnreadableAttachments(r.GetAgentId(), r.GetAttachments())) {
+			attachments, err := svc.prepareQueuedAttachments(r.GetAgentId(), r.GetAttachments())
+			if sendQueueError(sender, err) {
 				return
 			}
 			snapshot, receipt, err := svc.InputQueue.EnqueueWithReceipt(bgCtx(), inputqueue.NewItem{
 				ID: r.GetInputId(), AgentID: r.GetAgentId(), Kind: r.GetKind(), Sender: from, Text: r.GetText(),
-				Attachments:           queueAttachments(r.GetAttachments()),
+				Attachments:           attachments,
 				ReclassifyOnEdit:      r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 				ScheduledAt:           scheduledAt,
 				RequireFutureSchedule: r.GetRequireFutureSchedule(),
@@ -761,7 +785,8 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 				}
 				schedule = inputqueue.ReplaceSchedule(scheduledAt)
 			}
-			if sendQueueError(sender, svc.refuseUnreadableAttachments(r.GetAgentId(), r.GetAttachments())) {
+			attachments, err := svc.prepareQueuedAttachments(r.GetAgentId(), r.GetAttachments())
+			if sendQueueError(sender, err) {
 				return
 			}
 			snapshot, err := svc.InputQueue.Update(bgCtx(), inputqueue.UpdateRequest{
@@ -770,7 +795,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 				ClientID:        r.GetClientId(),
 				ExpectedVersion: r.GetExpectedVersion(),
 				Text:            r.GetText(),
-				Attachments:     queueAttachments(r.GetAttachments()),
+				Attachments:     attachments,
 				Schedule:        schedule,
 			})
 			if sendQueueError(sender, err) {

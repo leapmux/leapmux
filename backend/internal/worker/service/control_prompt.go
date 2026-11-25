@@ -8,8 +8,32 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+var errInvalidControlArgument = errors.New("invalid control argument")
+
+// controlArgumentError wraps a caller-validation refusal while keeping its
+// exact message text for tests and user-facing errors.
+type controlArgumentError struct {
+	msg string
+}
+
+func (e controlArgumentError) Error() string { return e.msg }
+func (e controlArgumentError) Unwrap() error { return errInvalidControlArgument }
+
+func invalidControlArgument(msg string) error {
+	return controlArgumentError{msg: msg}
+}
+
+func sendControlError(sender channel.ResponseWriter, err error) {
+	if errors.Is(err, errInvalidControlArgument) || errors.Is(err, agent.ErrInvalidControlDecision) {
+		sendInvalidArgument(sender, err.Error())
+		return
+	}
+	sendInternalError(sender, err.Error())
+}
 
 // controlRequestPrompt reads what one control request asks, through its
 // provider, with the rows that the prompt can need (agent.ReadControlPrompt).
@@ -82,9 +106,7 @@ func (svc *Service) listControlRequests(dbAgent db.Agent) (*leapmuxv1.ListContro
 	plugin := svc.Agents.Registry().Plugin(dbAgent.AgentProvider)
 	response := &leapmuxv1.ListControlRequestsResponse{}
 	for _, row := range rows {
-		request, err := buildAgentControlRequest(svc.Output, plugin, dbAgent.ID, dbAgent.AgentProvider, agent.ControlRequest{
-			RequestID: row.RequestID, Payload: row.Payload, SourceSeq: row.SourceSeq, AgentSessionID: row.AgentSessionID, NonBlocking: row.NonBlocking,
-		}, row.ClaimToken)
+		request, err := buildAgentControlRequest(svc.Output, plugin, dbAgent.ID, dbAgent.AgentProvider, row.controlRequest(), row.ClaimToken)
 		if err != nil {
 			return nil, err
 		}
@@ -113,17 +135,17 @@ func unanswerableControlRequest() error {
 // states a fault, or a decision that does not answer the prompt.
 func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRequest) (*leapmuxv1.AnswerControlResponse, error) {
 	if r.GetRequestId() == "" {
-		return nil, errors.New("the control request ID is missing")
+		return nil, invalidControlArgument("the control request ID is missing")
 	}
 	if r.GetClaimToken() == "" {
-		return nil, errors.New("the control request claim token is missing")
+		return nil, invalidControlArgument("the control request claim token is missing")
 	}
 	native := r.GetNativeResponse()
 	if (r.GetDecision() == nil) == (native == nil) {
-		return nil, errors.New("supply exactly one control decision or native response")
+		return nil, invalidControlArgument("supply exactly one control decision or native response")
 	}
 	if native != nil && len(native.GetContent()) == 0 {
-		return nil, errors.New("the native response is empty")
+		return nil, invalidControlArgument("the native response is empty")
 	}
 	finish, err := svc.admitAgentMutation(bgCtx(), dbAgent)
 	if errors.Is(err, errAgentPublicationClosed) {
@@ -137,8 +159,21 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 		return nil, err
 	}
 	defer finish()
+	if existing, answerErr := svc.Queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
+		AgentID: dbAgent.ID, RequestID: r.GetRequestId(), ClaimToken: r.GetClaimToken(),
+	}); answerErr == nil {
+		opErr := svc.resumeControlResponseFinalization(bgCtx(), existing)
+		state, errText := svc.reportControlResponseState(dbAgent, r.GetRequestId(), r.GetClaimToken(), opErr)
+		return &leapmuxv1.AnswerControlResponse{State: state, Error: errText}, nil
+	} else if !errors.Is(answerErr, sql.ErrNoRows) {
+		return nil, answerErr
+	}
 	row, found, err := svc.Output.LookupControlRequest(bgCtx(), dbAgent.ID, r.GetRequestId())
-	if err != nil || !found || row.ClaimToken != r.GetClaimToken() {
+	if err != nil {
+		state, stateErr := controlResponseState(bgCtx(), svc.Output, dbAgent.ID, r.GetRequestId(), r.GetClaimToken())
+		return &leapmuxv1.AnswerControlResponse{State: state, Error: errors.Join(err, stateErr).Error()}, nil
+	}
+	if !found || row.ClaimToken != r.GetClaimToken() {
 		state, stateErr := controlResponseState(bgCtx(), svc.Output, dbAgent.ID, r.GetRequestId(), r.GetClaimToken())
 		response := &leapmuxv1.AnswerControlResponse{State: state}
 		if stateErr != nil {
@@ -157,16 +192,14 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 		state, errText := svc.reportControlResponseState(dbAgent, row.RequestID, row.ClaimToken, refusal)
 		return &leapmuxv1.AnswerControlResponse{State: state, Error: errText}, nil
 	}
-	request := agent.ControlRequest{
-		RequestID: row.RequestID, Payload: row.Payload, SourceSeq: row.SourceSeq, AgentSessionID: row.AgentSessionID, NonBlocking: row.NonBlocking,
-	}
-	prompt := controlRequestPrompt(svc.Queries, plugin, dbAgent.ID, request)
+	reqInput := controlRequestInput(svc.Queries, plugin, dbAgent.ID, row.controlRequest())
+	prompt := agent.ReadControlPrompt(plugin, reqInput)
 	if prompt.GetUnreadable() != leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED {
 		// The provider does not recognize the request (agent.UnrecognizedControlPrompt).
 		return nil, unanswerableControlRequest()
 	}
 	input := agent.ControlAnswerInput{
-		Request:   controlRequestInput(svc.Queries, plugin, dbAgent.ID, request),
+		Request:   reqInput,
 		RequestID: row.RequestID,
 		Prompt:    prompt,
 		Decision:  r.GetDecision(),

@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/pathutil"
 	"github.com/leapmux/leapmux/util/validate"
@@ -22,6 +24,10 @@ import (
 const (
 	defaultGitLogLimit = 20
 	maxGitLogLimit     = 200
+	// gitDiffProtoOverhead reserves headroom for GetGitDiffResponse protobuf
+	// framing (tag + varint length + truncated bool + total_size varint) so a
+	// budget-capped diff never trips channel MaxPayloadBudget after marshaling.
+	gitDiffProtoOverhead = 64
 )
 
 func registerGitOpsHandlers(d ownerOnlyRegistrar, svc *Service) {
@@ -30,6 +36,21 @@ func registerGitOpsHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGitCommitProcedure, dispatchTracked, svc.handleGitCommit)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceCreateGitWorktreeProcedure, dispatchTracked, svc.handleCreateGitWorktree)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceRemoveGitWorktreeProcedure, dispatchTracked, svc.handleRemoveGitWorktree)
+}
+
+func sendGitReadError(sender channel.ResponseWriter, stderrStr string, err error) {
+	msg := strings.TrimSpace(stderrStr)
+	if msg == "" {
+		msg = err.Error()
+	}
+	if native := nativeGitExit(err); native != nil && (native.ExitCode() == 128 || native.ExitCode() == 129) {
+		lower := strings.ToLower(msg)
+		if strings.Contains(lower, "not a git repository") || strings.Contains(lower, "unknown revision") || strings.Contains(lower, "bad revision") {
+			sendInvalidArgument(sender, msg)
+			return
+		}
+	}
+	sendInternalError(sender, msg)
 }
 
 func (svc *Service) handleGetGitDiff(ctx context.Context, _ channel.Caller, r *leapmuxv1.GetGitDiffRequest, sender channel.ResponseWriter) {
@@ -59,11 +80,12 @@ func (svc *Service) handleGetGitDiff(ctx context.Context, _ channel.Caller, r *l
 		}
 	}
 
-	limit := svc.readLimit(r.GetLimit(), sender)
+	maxDiffBytes := max(svc.payloadBudget(sender)-gitDiffProtoOverhead, 0)
+	limit := min(svc.readLimit(r.GetLimit(), sender), maxDiffBytes)
 	ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
 	defer cancel()
 
-	args := []string{"-C", dirPath, "diff"}
+	var args []string
 	if r.GetStaged() {
 		args = append(args, "--cached")
 	}
@@ -73,47 +95,53 @@ func (svc *Service) handleGetGitDiff(ctx context.Context, _ channel.Caller, r *l
 	args = append(args, "--")
 	args = append(args, filePaths...)
 
-	cmd := gitutil.NewGitCmd(ctx, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
 	limited := &limitedByteCounter{limit: limit}
-	cmd.Stdout = limited
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		if strings.Contains(strings.ToLower(msg), "not a git repository") || strings.Contains(strings.ToLower(msg), "unknown revision") || strings.Contains(strings.ToLower(msg), "bad revision") {
-			sendInvalidArgument(sender, msg)
-			return
-		}
-		sendInternalError(sender, msg)
+	stderr, err := gitutil.DiffToWriter(ctx, dirPath, limited, args...)
+	if err != nil {
+		sendGitReadError(sender, string(stderr), err)
 		return
 	}
+	diffText, truncated := sanitizeUTF8TruncatedWithinBudget(limited.buf.Bytes(), limited.total > limit, maxDiffBytes)
 	sendProtoResponse(sender, &leapmuxv1.GetGitDiffResponse{
-		Diff:      sanitizeUTF8Truncated(limited.buf.Bytes(), limited.total > limit),
-		Truncated: limited.total > limit,
+		Diff:      diffText,
+		Truncated: truncated,
 		TotalSize: limited.total,
 	})
 }
 
-// sanitizeUTF8Truncated trims a partial trailing UTF-8 sequence when truncated
-// mid-rune and replaces any non-UTF-8 bytes so proto3 string marshaling never fails.
+// sanitizeUTF8Truncated trims an incomplete trailing UTF-8 sequence when b was
+// cut mid-rune, then replaces any remaining non-UTF-8 bytes so proto3 string
+// marshaling never fails. It inspects only the trailing utf8.UTFMax bytes so
+// invalid bytes earlier in b never strip valid trailing runes.
 func sanitizeUTF8Truncated(b []byte, truncated bool) string {
-	if truncated {
-		for i := 0; i < 3 && len(b) > 0; i++ {
-			if utf8.Valid(b) {
-				break
-			}
-			// Drop trailing continuation/leading byte of a split rune.
-			if utf8.RuneStart(b[len(b)-1]) {
-				b = b[:len(b)-1]
-				break
-			}
-			b = b[:len(b)-1]
+	if truncated && len(b) > 0 {
+		// Walk back across up to utf8.UTFMax-1 continuation bytes to the start
+		// of the final rune, and drop it only if the trailing sequence is incomplete.
+		start := len(b) - 1
+		for steps := 0; start > 0 && steps < utf8.UTFMax-1 && !utf8.RuneStart(b[start]); steps++ {
+			start--
+		}
+		if utf8.RuneStart(b[start]) && !utf8.FullRune(b[start:]) {
+			b = b[:start]
 		}
 	}
 	return strings.ToValidUTF8(string(b), "\uFFFD")
+}
+
+// sanitizeUTF8TruncatedWithinBudget sanitizes b and ensures the resulting UTF-8
+// string fits within maxBytes (accounting for invalid-byte -> 3-byte U+FFFD
+// expansion) without splitting a multi-byte rune.
+func sanitizeUTF8TruncatedWithinBudget(b []byte, truncated bool, maxBytes int64) (string, bool) {
+	s := sanitizeUTF8Truncated(b, truncated)
+	if maxBytes >= 0 && int64(len(s)) > maxBytes {
+		cut := int(maxBytes)
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
+		truncated = true
+	}
+	return s, truncated
 }
 
 // limitedByteCounter keeps at most limit bytes while counting total bytes written.
@@ -142,16 +170,10 @@ func (svc *Service) handleGetGitLog(ctx context.Context, _ channel.Caller, r *le
 		sendPermissionDenied(sender, "access denied")
 		return
 	}
-	if r.GetLimit() < 0 {
-		sendInvalidArgument(sender, "limit must not be negative")
+	limit, err := resolveSearchLimit(r.GetLimit(), defaultGitLogLimit, maxGitLogLimit)
+	if err != nil {
+		sendInvalidArgument(sender, err.Error())
 		return
-	}
-	limit := int(r.GetLimit())
-	if limit == 0 {
-		limit = defaultGitLogLimit
-	}
-	if limit > maxGitLogLimit {
-		limit = maxGitLogLimit
 	}
 	ref := strings.TrimSpace(r.GetRef())
 	if strings.HasPrefix(ref, "-") {
@@ -163,7 +185,7 @@ func (svc *Service) handleGetGitLog(ctx context.Context, _ channel.Caller, r *le
 	defer cancel()
 
 	args := []string{
-		"-C", dirPath, "log",
+		"log",
 		fmt.Sprintf("-n%d", limit),
 		"--format=%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1e",
 	}
@@ -172,30 +194,19 @@ func (svc *Service) handleGetGitLog(ctx context.Context, _ channel.Caller, r *le
 	}
 	args = append(args, "--")
 
-	cmd := gitutil.NewGitCmd(ctx, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		lower := strings.ToLower(msg)
-		if strings.Contains(lower, "does not have any commits yet") {
+	stdout, stderr, err := gitutil.Capture(ctx, dirPath, args...)
+	if err != nil {
+		if native := nativeGitExit(err); native != nil && native.ExitCode() == 128 &&
+			strings.Contains(strings.ToLower(strings.TrimSpace(string(stderr))), "does not have any commits yet") {
 			sendProtoResponse(sender, &leapmuxv1.GetGitLogResponse{})
 			return
 		}
-		if msg == "" {
-			msg = err.Error()
-		}
-		if strings.Contains(lower, "not a git repository") || strings.Contains(lower, "unknown revision") || strings.Contains(lower, "bad revision") {
-			sendInvalidArgument(sender, msg)
-			return
-		}
-		sendInternalError(sender, msg)
+		sendGitReadError(sender, string(stderr), err)
 		return
 	}
 
 	var commits []*leapmuxv1.GitCommitEntry
-	for _, rec := range strings.Split(stdout.String(), "\x1e") {
+	for _, rec := range strings.Split(string(stdout), "\x1e") {
 		rec = strings.Trim(rec, "\r\n")
 		if rec == "" {
 			continue
@@ -248,7 +259,7 @@ func (svc *Service) handleGitCommit(_ context.Context, _ channel.Caller, r *leap
 		parts := strings.SplitN(strings.TrimSpace(out), "\x1f", 2)
 		if len(parts) == 2 {
 			resp.Hash = parts[0]
-			resp.Subject = parts[1]
+			resp.Subject = strings.ToValidUTF8(parts[1], "\uFFFD")
 		}
 		return nil
 	})
@@ -257,8 +268,8 @@ func (svc *Service) handleGitCommit(_ context.Context, _ channel.Caller, r *leap
 			sendInvalidArgument(sender, err.Error())
 			return
 		}
-		lowerErr := strings.ToLower(err.Error())
-		if isGitCommitPreconditionError(lowerErr) {
+		if native := nativeGitExit(err); native != nil && (native.ExitCode() == 1 || native.ExitCode() == 128) &&
+			isGitCommitPreconditionError(strings.ToLower(err.Error())) {
 			sendFailedPrecondition(sender, err.Error())
 			return
 		}
@@ -286,17 +297,20 @@ func isGitCommitPreconditionError(lower string) bool {
 	return false
 }
 
+type gitCommandOutputError struct {
+	msg string
+	err error
+}
+
+func (e *gitCommandOutputError) Error() string { return e.msg }
+func (e *gitCommandOutputError) Unwrap() error { return e.err }
+
 func runGitCommand(ctx context.Context, dir string, stdin io.Reader, args ...string) error {
-	full := append([]string{"-C", dir}, args...)
-	cmd := gitutil.NewGitCmd(ctx, full...)
-	cmd.Stdin = stdin
-	var combined bytes.Buffer
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(combined.String())
+	combined, err := gitutil.RunCombinedWithStdin(ctx, dir, stdin, args...)
+	if err != nil {
+		msg := strings.TrimSpace(string(combined))
 		if msg != "" {
-			return errors.New(msg)
+			return &gitCommandOutputError{msg: msg, err: err}
 		}
 		return err
 	}
@@ -321,7 +335,7 @@ func (svc *Service) handleCreateGitWorktree(_ context.Context, _ channel.Caller,
 	}
 
 	var explicitPath string
-	if raw := strings.TrimSpace(r.GetWorktreePath()); raw != "" {
+	if raw := r.GetWorktreePath(); raw != "" {
 		explicitPath, err = validate.ResolveLiteralPath(raw, svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
@@ -332,13 +346,19 @@ func (svc *Service) handleCreateGitWorktree(_ context.Context, _ channel.Caller,
 	ctx, cancel := context.WithTimeout(bgCtx(), branchMutationTimeout)
 	defer cancel()
 
-	plan, err := svc.validateCreateWorktreeWithPath(ctx, dirPath, branch, baseBranch, explicitPath, true)
+	plan, err := svc.validateCreateWorktree(ctx, createWorktreeValidation{
+		workingDir:      dirPath,
+		branch:          branch,
+		baseBranch:      baseBranch,
+		explicitPath:    explicitPath,
+		allowBaseCommit: true,
+	})
 	if err != nil {
-		if strings.Contains(err.Error(), "already exists on disk") {
+		if errors.Is(err, errWorktreePathExists) {
 			sendFailedPrecondition(sender, err.Error())
 			return
 		}
-		sendInvalidArgument(sender, err.Error())
+		sendValidationError(sender, err)
 		return
 	}
 
@@ -403,69 +423,113 @@ func (svc *Service) handleRemoveGitWorktree(_ context.Context, _ channel.Caller,
 		return
 	}
 
-	args := []string{"worktree", "remove"}
-	if r.GetForce() {
-		args = append(args, "--force")
-	}
-	args = append(args, info.TopLevel)
-
-	removeErr := svc.withGitIndexLock(info.CommonDir, func() error {
-		return (gitutil.Repository{GitDir: info.CommonDir}).Run(ctx, args...)
-	})
-	if removeErr != nil {
-		msg := removeErr.Error()
-		if strings.Contains(strings.ToLower(msg), "contains modified or untracked files") {
-			sendFailedPrecondition(sender, msg)
-			return
+	var (
+		preconditionErr error
+		internalErr     error
+	)
+	_ = svc.withGitIndexLock(info.CommonDir, func() error {
+		liveInfo, probeErr := queryGitPathInfo(ctx, info.TopLevel)
+		if probeErr != nil {
+			if _, statErr := os.Stat(info.TopLevel); errors.Is(statErr, os.ErrNotExist) &&
+				!svc.gitStillListsWorktree(ctx, db.Worktree{WorktreePath: info.TopLevel, RepoRoot: info.RepoRoot, RepoGitDir: info.CommonDir}) {
+				// Already removed concurrently.
+				return nil
+			}
+			internalErr = probeErr
+			return nil
 		}
-		sendInternalError(sender, msg)
+		if !liveInfo.IsWorktree || !pathutil.SamePath(liveInfo.TopLevel, info.TopLevel) || !pathutil.SamePath(liveInfo.CommonDir, info.CommonDir) {
+			preconditionErr = errSelectedWorktreeChanged
+			return nil
+		}
+
+		args := []string{"worktree", "remove"}
+		if r.GetForce() {
+			args = append(args, "--force")
+		}
+		args = append(args, liveInfo.TopLevel)
+		if removeErr := (gitutil.Repository{GitDir: liveInfo.CommonDir}).Run(ctx, args...); removeErr != nil {
+			wt := db.Worktree{WorktreePath: liveInfo.TopLevel, RepoRoot: liveInfo.RepoRoot, RepoGitDir: liveInfo.CommonDir}
+			if _, statErr := os.Stat(liveInfo.TopLevel); !errors.Is(statErr, os.ErrNotExist) || svc.gitStillListsWorktree(ctx, wt) {
+				msg := removeErr.Error()
+				if native := nativeGitExit(removeErr); native != nil && native.ExitCode() == 128 &&
+					strings.Contains(strings.ToLower(string(native.Stderr)), "contains modified or untracked files") {
+					preconditionErr = errors.New(msg)
+				} else {
+					internalErr = errors.New(msg)
+				}
+				return nil
+			}
+		}
+
+		// Clean up any LeapMux tracking row only if the removed directory is still absent.
+		if _, statErr := os.Stat(canonicalPath); errors.Is(statErr, os.ErrNotExist) {
+			if tracked, terr := svc.Queries.GetWorktreeByPath(ctx, canonicalPath); terr == nil {
+				if delErr := svc.Queries.DeleteWorktree(ctx, tracked.ID); delErr != nil {
+					slog.Warn("failed to delete removed worktree tracking row", "worktree_id", tracked.ID, "error", delErr)
+				}
+			} else if !errors.Is(terr, sql.ErrNoRows) {
+				slog.Warn("failed to look up removed worktree row", "path", canonicalPath, "error", terr)
+			}
+		}
+
+		if r.GetDeleteBranch() && liveInfo.BranchName != "" {
+			flag := "-d"
+			if r.GetForce() {
+				flag = "-D"
+			}
+			if brErr := (gitutil.Repository{GitDir: liveInfo.CommonDir}).Run(ctx, "branch", flag, "--", liveInfo.BranchName); brErr != nil {
+				preconditionErr = fmt.Errorf("worktree removed, but deleting branch %q failed: %w", liveInfo.BranchName, brErr)
+			}
+		}
+		return nil
+	})
+	if preconditionErr != nil {
+		sendFailedPrecondition(sender, preconditionErr.Error())
 		return
 	}
-
-	// Clean up any LeapMux tracking row for this worktree best-effort.
-	if tracked, terr := svc.Queries.GetWorktreeByPath(ctx, canonicalPath); terr == nil {
-		if delErr := svc.Queries.DeleteWorktree(ctx, tracked.ID); delErr != nil {
-			slog.Warn("failed to delete removed worktree tracking row", "worktree_id", tracked.ID, "error", delErr)
-		}
-	} else if !errors.Is(terr, sql.ErrNoRows) {
-		slog.Warn("failed to look up removed worktree row", "path", canonicalPath, "error", terr)
-	}
-
-	if r.GetDeleteBranch() && info.BranchName != "" {
-		flag := "-d"
-		if r.GetForce() {
-			flag = "-D"
-		}
-		if brErr := svc.withGitIndexLock(info.CommonDir, func() error {
-			return (gitutil.Repository{GitDir: info.CommonDir}).Run(ctx, "branch", flag, "--", info.BranchName)
-		}); brErr != nil {
-			sendFailedPrecondition(sender, fmt.Sprintf("worktree removed, but deleting branch %q failed: %v", info.BranchName, brErr))
-			return
-		}
+	if internalErr != nil {
+		sendInternalError(sender, internalErr.Error())
+		return
 	}
 
 	sendProtoResponse(sender, &leapmuxv1.RemoveGitWorktreeResponse{})
 }
 
+// countLiveTabsInWorktree mirrors hasOtherLiveWorktreeTab's fail-closed
+// physical prefix containment across both workingDir and linkDir.
 func (svc *Service) countLiveTabsInWorktree(ctx context.Context, canonicalTop string) (int, error) {
 	if svc.Queries == nil {
 		return 0, nil
+	}
+	top, err := canonicalGitDirectory(canonicalTop)
+	if err != nil {
+		return 0, err
 	}
 	tabs, err := svc.liveWorktreeTabs(ctx)
 	if err != nil {
 		return 0, err
 	}
-	if len(tabs) == 0 {
-		return 0, nil
-	}
-	dirs := make([]string, 0, len(tabs))
-	for _, tab := range tabs {
-		dirs = append(dirs, tab.linkDir)
-	}
-	matched := matchWorktreeDirectories(ctx, canonicalTop, dirs, newBranchInfoProbe(branchProbeConcurrency))
 	count := 0
 	for _, tab := range tabs {
-		if matched[tab.linkDir].matches {
+		if tab.err != nil {
+			return 0, tab.err
+		}
+		matched := false
+		for _, dir := range []string{tab.workingDir, tab.linkDir} {
+			if dir == "" {
+				continue
+			}
+			canonical, candErr := worktreeDirectoryCandidate(dir, top)
+			if candErr != nil {
+				return 0, candErr
+			}
+			if canonical != "" {
+				matched = true
+				break
+			}
+		}
+		if matched {
 			count++
 		}
 	}

@@ -60,8 +60,8 @@ type controlInput struct {
 
 // resolveControlInput validates every approval-linked input before dispatch.
 // Feedback receives a fixed prefix so its text cannot become a native slash command.
-// A message from another agent receives the header that names its sender (see
-// agentMessageText), and that prefix keeps its text from a slash command too.
+// A message from another agent receives the header that identifies its sender
+// (see agentMessageText), and that prefix keeps its text from a slash command too.
 func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAgent db.Agent) (controlInput, error) {
 	resolved := controlInput{text: item.Text}
 	sources, err := svc.Queries.GetControlResponseSourcesForInput(bgCtx(), db.GetControlResponseSourcesForInputParams{

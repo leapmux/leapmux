@@ -963,7 +963,7 @@ func TestDeliverControlAnswer_WithholdsDuplicateAnswerRow(t *testing.T) {
 	answer := workerAnswer{content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)}
 	for range 2 {
 		_, errText := deliverControlAnswerForTest(t, svc, "agent-1", "req-1", answer)
-		require.Empty(t, errText, "neither answer errors -- the winner forwards, the duplicate is a deduped no-op")
+		require.Empty(t, errText, "neither answer fails -- the winner forwards, the duplicate is a deduped no-op")
 	}
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
@@ -972,12 +972,12 @@ func TestDeliverControlAnswer_WithholdsDuplicateAnswerRow(t *testing.T) {
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
-// TestDeliverControlAnswer_DuplicateAnswerDeletesRequestOnce pins the delete-gating half of the
+// TestDeliverControlAnswer_DuplicateAnswerDeletesRequestOnce pins the delete-control half of the
 // idempotency claim: firstAnswer controls deleteControlRequest, so ONLY the claim winner deletes
 // the pending request and broadcasts its cancel. A duplicate answer (an RPC retry / a second window)
-// therefore draws exactly ONE ControlCancel and one row -- never a second delete. Gating the delete
-// on the winner is also what keeps the winner's request read while-present, so a concurrent duplicate
-// can't tear the request out from under it and force a context-less / double-marked row.
+// therefore draws exactly ONE ControlCancel and one row -- never a second delete. Restricting the
+// delete to the winner is also what keeps the winner's request read while-present, so a concurrent
+// duplicate can't tear the request out from under it and force a context-less / double-marked row.
 func TestDeliverControlAnswer_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 	t.Parallel()
 
@@ -1002,7 +1002,7 @@ func TestDeliverControlAnswer_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 	answer := workerAnswer{content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)}
 	for range 2 {
 		_, errText := deliverControlAnswerForTest(t, svc, "agent-1", "req-1", answer)
-		require.Empty(t, errText, "neither answer errors -- the winner forwards, the duplicate is a deduped no-op")
+		require.Empty(t, errText, "neither answer fails -- the winner forwards, the duplicate is a deduped no-op")
 	}
 
 	cancels := 0

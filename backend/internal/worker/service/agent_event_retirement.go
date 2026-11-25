@@ -11,7 +11,7 @@ import (
 // retireAgentEventHistory joins the physical root before sealing its retired
 // tabs. Each virtual child has its own history and shares the root's process.
 func (svc *Service) retireAgentEventHistory(rootID string, retiredIDs []string) {
-	svc.retireSemanticHistory(leapmuxv1.TabType_TAB_TYPE_AGENT, retiredIDs, func(ctx context.Context) bool {
+	if svc.retireSemanticHistory(leapmuxv1.TabType_TAB_TYPE_AGENT, retiredIDs, func(ctx context.Context) bool {
 		if svc.AgentStartup.waitForTabStartup(ctx, rootID) != nil ||
 			svc.semanticEvents.agentMutations.wait(ctx, rootID) != nil ||
 			svc.Agents.WaitForAgentExit(ctx, rootID) != nil {
@@ -35,7 +35,18 @@ func (svc *Service) retireAgentEventHistory(rootID string, retiredIDs []string) 
 			}
 		}
 		return complete && svc.Output.activityByRoot.wait(ctx, rootID) == nil
-	})
+	}) {
+		return
+	}
+	// When no active owned journal will run the seal callback, still finalize
+	// delivered control answers and clear retired control requests so closed
+	// agents do not strand unrecorded answers in DELIVERED.
+	ctx, cancel := context.WithTimeout(bgCtx(), semanticJournalDeadline)
+	defer cancel()
+	for _, id := range retiredIDs {
+		svc.recordRetiredAgentResponses(ctx, id)
+		_ = svc.Output.clearAgentControlRequests(ctx, id)
+	}
 }
 
 // recordRetiredAgentResponses recovers only answers whose provider delivery

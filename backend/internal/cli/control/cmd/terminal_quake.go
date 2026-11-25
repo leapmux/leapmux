@@ -128,7 +128,7 @@ func (s *session) resolveQuakeTerminalWithInit(dir string, createIfMissing bool,
 		Title:      openResp.GetTitle(),
 		WorkingDir: dir,
 		Quake:      true,
-	}, true, nil
+	}, !openResp.GetAdopted(), nil
 }
 
 // waitForQuakeTerminalReady polls ListTerminals on workerID until a newly

@@ -167,20 +167,6 @@ func (r *watcherRegistry) hasFullWatcher(entityID string) bool {
 	return false
 }
 
-// modesForChannel returns entity ID -> mode for this channel's registrations.
-// watchSession uses the registry to detect promotions without a separate copy of the modes.
-func (r *watcherRegistry) modesForChannel(channelID string) map[string]leapmuxv1.WatchMode {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make(map[string]leapmuxv1.WatchMode)
-	for entityID, byChannel := range r.byEntity {
-		if reg, ok := byChannel[channelID]; ok {
-			out[entityID] = reg.mode
-		}
-	}
-	return out
-}
-
 // snapshot copies out entityID's registrations under the read lock.
 func (r *watcherRegistry) snapshot(entityID string) []registration {
 	r.mu.RLock()
@@ -446,7 +432,14 @@ func (m *WatcherManager) SetTerminalWatchesForSession(channelID string, sessionI
 
 // AgentModesForChannel returns the current agent watch modes for channelID.
 func (m *WatcherManager) AgentModesForChannel(channelID string) map[string]leapmuxv1.WatchMode {
-	return m.agents.modesForChannel(channelID)
+	m.agents.mu.RLock()
+	entries := m.agents.entriesForChannelLocked(channelID)
+	m.agents.mu.RUnlock()
+	out := make(map[string]leapmuxv1.WatchMode, len(entries))
+	for entityID, entry := range entries {
+		out[entityID] = entry.mode
+	}
+	return out
 }
 
 // TerminalWatchesForChannel returns the current terminal interests.
@@ -501,7 +494,7 @@ func (m *WatcherManager) enqueueAgentEvent(agentID string, event *leapmuxv1.Agen
 	}
 	snapshot := proto.Clone(event).(*leapmuxv1.AgentEvent)
 	m.agentEvents.enqueue(agentID, func() *leapmuxv1.AgentEvent {
-		if recordFact && m.recordAgentFact != nil {
+		if recordFact && m.recordAgentFact != nil && agentEventClass(snapshot) == classNotify {
 			m.recordAgentFact(agentID, snapshot)
 		}
 		return snapshot
@@ -602,12 +595,13 @@ func (m *WatcherManager) drainTerminalStatuses(terminalID string) {
 // terminal. A status change or a closed event goes through PublishTerminalStatus
 // instead, so that it keeps its order against the replay of a new subscriber.
 func (m *WatcherManager) BroadcastTerminalEvent(terminalID string, event *leapmuxv1.TerminalEvent) {
-	if m.recordTerminalFact != nil {
+	class := terminalEventClass(event)
+	if class == classNotify && m.recordTerminalFact != nil {
 		m.recordTerminalFact(terminalID, event)
 	}
 	m.terminals.broadcast(terminalID, &leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
 			TerminalEvent: event,
 		},
-	}, terminalEventClass(event))
+	}, class)
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -23,7 +24,7 @@ func registerSkillsHandlers(d ownerOnlyRegistrar, svc *Service) {
 		}
 		sendProtoResponse(sender, resp)
 	})
-	registerOwnerGuarded(d, leapmuxv1connect.WorkerSystemServiceUpdateWorkerSkillsProcedure, dispatchPlain, svc.handleUpdateWorkerSkills)
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerSystemServiceUpdateWorkerSkillsProcedure, dispatchTracked, svc.handleUpdateWorkerSkills)
 }
 
 func (svc *Service) handleUpdateWorkerSkills(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateWorkerSkillsRequest, sender channel.ResponseWriter) {
@@ -42,6 +43,8 @@ func (svc *Service) SyncConfiguredSkills() {
 	if svc.DataDir == "" || svc.HomeDir == "" {
 		return
 	}
+	svc.skillsMu.Lock()
+	defer svc.skillsMu.Unlock()
 	st, err := skills.LoadWorkerState(svc.DataDir)
 	if err != nil {
 		slog.Warn("load worker skills state failed", "error", err)
@@ -70,10 +73,16 @@ func (svc *Service) SyncConfiguredSkills() {
 }
 
 func (svc *Service) buildWorkerSkillsResponse() (*leapmuxv1.GetWorkerSkillsResponse, error) {
+	svc.skillsMu.Lock()
+	defer svc.skillsMu.Unlock()
 	st, err := skills.LoadWorkerState(svc.DataDir)
 	if err != nil {
 		return nil, err
 	}
+	return svc.buildWorkerSkillsResponseForState(st), nil
+}
+
+func (svc *Service) buildWorkerSkillsResponseForState(st skills.WorkerState) *leapmuxv1.GetWorkerSkillsResponse {
 	primaryTarget := skills.TargetAgents
 	if len(st.Targets) > 0 {
 		primaryTarget = st.Targets[0]
@@ -113,108 +122,28 @@ func (svc *Service) buildWorkerSkillsResponse() (*leapmuxv1.GetWorkerSkillsRespo
 		Targets:          st.Targets,
 		PrimarySkillsDir: primaryDir,
 		Skills:           rows,
-	}, nil
+	}
 }
 
 func (svc *Service) updateWorkerSkills(r *leapmuxv1.UpdateWorkerSkillsRequest) (*leapmuxv1.GetWorkerSkillsResponse, codes.Code, error) {
 	if svc.HomeDir == "" || svc.DataDir == "" {
 		return nil, codes.FailedPrecondition, fmt.Errorf("worker home or data directory is not configured")
 	}
-	prev, err := skills.LoadWorkerState(svc.DataDir)
+	svc.skillsMu.Lock()
+	defer svc.skillsMu.Unlock()
+	next, err := skills.ApplyWorkerStateUpdate(svc.DataDir, svc.HomeDir, skills.WorkerStateUpdate{
+		AutoSync:            r.AutoSync,
+		Targets:             r.GetTargets(),
+		UpdateEnabledSkills: r.GetUpdateEnabledSkills(),
+		EnabledSkills:       r.GetEnabledSkills(),
+		SyncNow:             r.GetSyncNow(),
+		Force:               r.GetForce(),
+	})
 	if err != nil {
+		if errors.Is(err, skills.ErrInvalidWorkerStateUpdate) {
+			return nil, codes.InvalidArgument, err
+		}
 		return nil, codes.Internal, err
 	}
-	next := prev
-	if r.AutoSync != nil {
-		next.AutoSync = r.GetAutoSync()
-	}
-	if len(r.GetTargets()) > 0 {
-		validated := make([]string, 0, len(r.GetTargets()))
-		for _, raw := range r.GetTargets() {
-			norm, nErr := skills.NormalizeTarget(raw)
-			if nErr != nil {
-				return nil, codes.InvalidArgument, nErr
-			}
-			if !slices.Contains(validated, norm) {
-				validated = append(validated, norm)
-			}
-		}
-		next.Targets = validated
-	}
-	var newlyDisabled []string
-	if r.GetUpdateEnabledSkills() {
-		validated := make([]string, 0, len(r.GetEnabledSkills()))
-		for _, name := range r.GetEnabledSkills() {
-			if _, ok := skills.Lookup(name); !ok {
-				return nil, codes.InvalidArgument, fmt.Errorf("unknown skill %q", name)
-			}
-			if !slices.Contains(validated, name) {
-				validated = append(validated, name)
-			}
-		}
-		for _, old := range prev.Enabled {
-			if !slices.Contains(validated, old) {
-				newlyDisabled = append(newlyDisabled, old)
-			}
-		}
-		next.Enabled = validated
-	}
-
-	// Persist configuration before writing skill files so Worker restarts always
-	// reflect the user's latest choice.
-	if err := skills.SaveWorkerState(svc.DataDir, next); err != nil {
-		return nil, codes.Internal, err
-	}
-
-	// Uninstall newly disabled skills from previously configured targets (never
-	// deleting locally modified or unmanaged files unless force is true).
-	if len(newlyDisabled) > 0 {
-		allTargets := make([]string, 0, len(prev.Targets)+len(next.Targets))
-		for _, t := range append(slices.Clone(prev.Targets), next.Targets...) {
-			if !slices.Contains(allTargets, t) {
-				allTargets = append(allTargets, t)
-			}
-		}
-		for _, target := range allTargets {
-			dir, err := skills.ResolveTargetDir(svc.HomeDir, target)
-			if err != nil {
-				continue
-			}
-			for _, name := range newlyDisabled {
-				s, ok := skills.Lookup(name)
-				if !ok {
-					continue
-				}
-				st := skills.InspectOne(dir, s)
-				if st.State == skills.StateNotInstalled {
-					continue
-				}
-				if (st.State == skills.StateModified || st.State == skills.StateUnmanaged) && !r.GetForce() {
-					continue
-				}
-				if _, err := skills.Uninstall(dir, []string{name}, skills.InstallOptions{Force: r.GetForce()}); err != nil {
-					return nil, codes.Internal, err
-				}
-			}
-		}
-	}
-
-	// Sync enabled skills whenever skills/targets changed or sync_now was asked.
-	if len(next.Enabled) > 0 && (r.GetUpdateEnabledSkills() || len(r.GetTargets()) > 0 || r.GetSyncNow()) {
-		for _, target := range next.Targets {
-			dir, err := skills.ResolveTargetDir(svc.HomeDir, target)
-			if err != nil {
-				return nil, codes.InvalidArgument, err
-			}
-			if _, err := skills.SyncEnabled(dir, next.Enabled, r.GetForce()); err != nil {
-				return nil, codes.Internal, err
-			}
-		}
-	}
-
-	resp, err := svc.buildWorkerSkillsResponse()
-	if err != nil {
-		return nil, codes.Internal, err
-	}
-	return resp, codes.OK, nil
+	return svc.buildWorkerSkillsResponseForState(next), codes.OK, nil
 }

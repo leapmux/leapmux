@@ -964,6 +964,10 @@ message ListAgentMessagesRequest {
   string reply_input_id = 6;
   // The exclusive position returned by the previous exact reply page.
   int64 reply_cursor = 7;
+  // Whether reply_cursor came from a canonical exact reply page (true) or a
+  // pre-publication seq page (false). When false and the turn has since become
+  // canonical, the Worker ignores the seq cursor and returns canonical page 1.
+  optional bool reply_cursor_canonical = 8;
 }
 
 message ListAgentMessagesResponse {
@@ -1004,6 +1008,9 @@ message ListAgentMessagesResponse {
   AgentGoalSnapshot goal = 6;
   // The next position of an exact reply page. Zero means no more rows.
   int64 next_reply_cursor = 7;
+  // True when this exact reply page was read from the canonical reply turn
+  // (using ordinal cursors rather than message seq cursors).
+  bool reply_canonical = 8;
 }
 
 // GetAgentMessage fetches a SINGLE message by its per-agent seq. Used by the

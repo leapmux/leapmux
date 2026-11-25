@@ -118,7 +118,7 @@ func completeControlDelivery(ctx context.Context, queries *db.Queries, deliveryI
 	if count == 1 {
 		return true, nil
 	}
-	delivery, err := queries.GetControlDelivery(bgCtx(), deliveryID)
+	delivery, err := queries.GetControlDelivery(ctx, deliveryID)
 	if err != nil {
 		return false, err
 	}

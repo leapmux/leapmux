@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,11 +136,22 @@ func revealTab(d testRPCDispatcher, tabID string) *testResponseWriter {
 	return w
 }
 
+func (s *TabStatusStore) get(key ownedTabKey) *leapmuxv1.TabStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, statuses := range s.byOwner {
+		if entries, ok := statuses.tabs[key]; ok {
+			return latestTabStatus(entries)
+		}
+	}
+	return nil
+}
+
 func progress(n uint32) *uint32 { return &n }
 
-// The notification names the tab whose control token made the call, which the
-// router stamps on the caller. The text is trimmed, so a trailing newline from
-// a pipe does not reach the toast.
+// The notification identifies the tab whose control token made the call, which
+// the router stamps on the caller. The text is trimmed, so a trailing newline
+// from a pipe does not reach the toast.
 func TestNotify_ShowsTheNotificationWithTheCallersTab(t *testing.T) {
 	t.Parallel()
 	svc, d, _ := setupTestService(t)
@@ -629,6 +641,16 @@ func TestSetTabStatus_DropsTheFieldsThatTheWorkerDoesNotKnow(t *testing.T) {
 	assert.Empty(t, published.ProtoReflect().GetUnknown(), "the event holds no unknown field")
 }
 
+func faultHostedAgentReads() (setupOption, *atomic.Bool) {
+	var faulted atomic.Bool
+	return withQueryRewrite(func(query string) string {
+		if faulted.Load() && strings.HasPrefix(query, "-- name: CanWatchAgentHistory :one") {
+			return "SELECT EXISTS (SELECT 1 FROM no_such_table WHERE id = ?)"
+		}
+		return query
+	}), &faulted
+}
+
 // A failure to read the tab is not a tab that the Worker does not host: the
 // caller gets INTERNAL, which it may retry, and not NOT_FOUND. Nothing is
 // stored, and nothing reaches the frontends.
@@ -643,7 +665,7 @@ func TestWorkerPrivateCommands_ReportAFailedTabLookupAsInternal(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			option, faulted := faultAgentReads()
+			option, faulted := faultHostedAgentReads()
 			svc, d, _ := setupTestService(t, option)
 			seedAgent(t, svc, "agent-1")
 			log := watchPrivateEvents(t, svc, d)
@@ -659,16 +681,20 @@ func TestWorkerPrivateCommands_ReportAFailedTabLookupAsInternal(t *testing.T) {
 	}
 }
 
-// The second read of the tab, after the set, can fail to read. That failure
-// does not say that the tab closed, so the status stays: it already reached
-// the frontends, and the tab's own close clears it if the tab is gone.
+// The second read of the tab, after the set (triggered when another tab closes
+// during the call), can fail to read. That failure does not say that the tab
+// closed, so the status stays: it already reached the frontends, and the tab's
+// own close clears it if the tab is gone.
 func TestSetTabStatus_KeepsTheStatusWhenTheSecondReadFails(t *testing.T) {
 	t.Parallel()
-	option, faulted := faultAgentReads()
+	option, faulted := faultHostedAgentReads()
 	svc, d, _ := setupTestService(t, option)
 	seedAgent(t, svc, "agent-1")
 	log := watchPrivateEvents(t, svc, d)
-	svc.afterTabStatusSetFn = func() { faulted.Store(true) }
+	svc.beforeTabStatusSetFn = func() {
+		svc.TabStatuses.forgetClosed(newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, "other-agent", ""))
+		faulted.Store(true)
+	}
 
 	w := setTabStatus(d, "agent-1", &leapmuxv1.TabStatus{Text: "Running"})
 	faulted.Store(false)
@@ -681,6 +707,26 @@ func TestSetTabStatus_KeepsTheStatusWhenTheSecondReadFails(t *testing.T) {
 	events := log.waitForSentinel(t, svc)
 	require.Len(t, events, 1, "the frontends hear the set and no clear")
 	assert.Equal(t, "Running", events[0].GetTabStatusChanged().GetStatus().GetText())
+}
+
+// When no tab closes between hostedTabKey and TabStatuses.set, the closeEpoch
+// fast-path skips the second SQLite liveness check completely.
+func TestSetTabStatus_SkipsSecondDBReadWhenNoTabClosed(t *testing.T) {
+	t.Parallel()
+	var reads atomic.Int64
+	option := withQueryRewrite(func(query string) string {
+		if strings.HasPrefix(query, "-- name: CanWatchAgentHistory :one") {
+			reads.Add(1)
+		}
+		return query
+	})
+	svc, d, _ := setupTestService(t, option)
+	seedAgent(t, svc, "agent-1")
+	reads.Store(0)
+
+	w := setTabStatus(d, "agent-1", &leapmuxv1.TabStatus{Text: "Running"})
+	requireOK(t, w)
+	assert.Equal(t, int64(1), reads.Load(), "common-path SetTabStatus must run only one CanWatchAgentHistory read")
 }
 
 func TestSetTabStatus_RefusesATabThatTheWorkerDoesNotHost(t *testing.T) {
@@ -872,18 +918,19 @@ func TestCloseTab_ClearsTheStatusesOfSubagentTabs(t *testing.T) {
 	assert.Empty(t, svc.TabStatuses.snapshotFor(userid.MustNew("user-1")), "the root's close clears every status of its tree")
 }
 
-// The tab can close between the lookup and the set. The handler reads the tab
-// again after the set, so the status does not outlive a close that already
-// ran.
+// The tab can close between the lookup and the set. Its forgetClosed advances
+// closeEpoch, so the handler detects the close race and reads the tab again
+// after the set so the status does not outlive a close that already ran.
 func TestSetTabStatus_ForgetsTheStatusOfATabThatClosedDuringTheSet(t *testing.T) {
 	t.Parallel()
 	svc, d, _ := setupTestService(t)
 	seedAgent(t, svc, "agent-1")
 	log := watchPrivateEvents(t, svc, d)
-	svc.afterTabStatusSetFn = func() {
-		// What a concurrent close commits. Its own clear already ran, against
-		// a store that did not hold this status yet.
+	svc.beforeTabStatusSetFn = func() {
+		// What a concurrent close commits, followed by applyTabCloseEffects
+		// calling forgetClosed against a store that did not hold this status yet.
 		require.NoError(t, closeErr(svc.Queries.CloseAgent(context.Background(), "agent-1")))
+		svc.TabStatuses.forgetClosed(newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1", ""))
 	}
 
 	w := setTabStatus(d, "agent-1", &leapmuxv1.TabStatus{Text: "Running"})
@@ -915,7 +962,7 @@ func TestPrivateEventVisible_WorkspaceReadGovernsTheViewEvents(t *testing.T) {
 	}
 }
 
-// A reveal and a status name one tab, and the tab's kind governs them as it
+// A reveal and a status identify one tab, and the tab's kind governs them as it
 // governs a rename: a status text is the same kind of data as a title. A
 // caller that may read the view but not agents hears nothing of an agent tab.
 func TestPrivateEventVisible_TheTabKindGovernsARevealAndAStatus(t *testing.T) {
@@ -1050,13 +1097,16 @@ func TestTabStatusStore_KeepsAnOwnerOnlyWhileItHoldsAStatus(t *testing.T) {
 	second := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "term-1", "user-1")
 	status := &leapmuxv1.TabStatus{Text: "Running"}
 
-	require.NoError(t, store.set(first, userid.UserID{}, defaultTabStatusKey, status))
+	_, err := store.set(first, userid.UserID{}, defaultTabStatusKey, status, 0)
+	require.NoError(t, err)
 	assert.Nil(t, store.get(first), "an unminted owner stores nothing")
 	assert.Empty(t, store.byOwner)
 	assert.Nil(t, store.snapshotFor(userid.UserID{}), "an unminted owner owns nothing")
 
-	require.NoError(t, store.set(first, owner, defaultTabStatusKey, status))
-	require.NoError(t, store.set(second, owner, defaultTabStatusKey, status))
+	_, err = store.set(first, owner, defaultTabStatusKey, status, 0)
+	require.NoError(t, err)
+	_, err = store.set(second, owner, defaultTabStatusKey, status, 0)
+	require.NoError(t, err)
 	store.clear(first, owner, defaultTabStatusKey)
 	assert.Nil(t, store.get(first))
 	assert.Same(t, status, store.get(second), "a clear removes one tab's status")
@@ -1065,7 +1115,8 @@ func TestTabStatusStore_KeepsAnOwnerOnlyWhileItHoldsAStatus(t *testing.T) {
 	store.forgetClosed(second)
 	assert.Empty(t, store.byOwner, "the owner's last status took the entry with it")
 
-	require.NoError(t, store.set(first, owner, defaultTabStatusKey, status))
+	_, err = store.set(first, owner, defaultTabStatusKey, status, 0)
+	require.NoError(t, err)
 	store.clear(first, owner, defaultTabStatusKey)
 	assert.Empty(t, store.byOwner, "a clear of the last status takes the entry too")
 }
@@ -1081,7 +1132,8 @@ func TestTabStatusStore_KeepsConcurrentKeysAndUpdatesAtTheLimit(t *testing.T) {
 		writers.Go(func() {
 			<-begin
 			key := fmt.Sprintf("reporter-%d", i)
-			assert.NoError(t, store.set(tab, owner, key, &leapmuxv1.TabStatus{Text: key}))
+			_, err := store.set(tab, owner, key, &leapmuxv1.TabStatus{Text: key}, 0)
+			assert.NoError(t, err)
 		})
 	}
 	close(begin)
@@ -1095,16 +1147,19 @@ func TestTabStatusStore_KeepsConcurrentKeysAndUpdatesAtTheLimit(t *testing.T) {
 		seen[entry.GetKey()] = true
 	}
 	originalVisible := entries[0]
-	assert.ErrorContains(t, store.set(tab, owner, "extra", &leapmuxv1.TabStatus{Text: "Extra"}), "status keys")
+	_, err := store.set(tab, owner, "extra", &leapmuxv1.TabStatus{Text: "Extra"}, 0)
+	assert.ErrorContains(t, err, "status keys")
 	assert.Same(t, originalVisible.GetStatus(), store.get(tab))
 	updatedKey := entries[len(entries)-1].GetKey()
 	replacement := &leapmuxv1.TabStatus{Text: "Done"}
-	require.NoError(t, store.set(tab, owner, updatedKey, replacement))
+	_, err = store.set(tab, owner, updatedKey, replacement, 0)
+	require.NoError(t, err)
 	assert.Same(t, replacement, store.get(tab))
 	assert.Same(t, originalVisible, entries[0], "a later change cannot reorder the earlier list")
 	store.clear(tab, owner, updatedKey)
 	assert.Same(t, originalVisible.GetStatus(), store.get(tab))
-	require.NoError(t, store.set(tab, owner, "extra", &leapmuxv1.TabStatus{Text: "Extra"}))
+	_, err = store.set(tab, owner, "extra", &leapmuxv1.TabStatus{Text: "Extra"}, 0)
+	require.NoError(t, err)
 	store.forgetClosed(tab)
 	assert.Empty(t, store.list(tab, owner))
 	assert.Empty(t, store.snapshotFor(owner))
@@ -1161,7 +1216,8 @@ func TestTabStatusStore_PublishesTheChangesOfOneTabInTheOrderThatItStoresThem(t 
 					store.clear(key, owner, defaultTabStatusKey)
 					return
 				}
-				assert.NoError(t, store.set(key, owner, defaultTabStatusKey, &leapmuxv1.TabStatus{Text: fmt.Sprintf("round %d, writer %d", round, writer)}))
+				_, err := store.set(key, owner, defaultTabStatusKey, &leapmuxv1.TabStatus{Text: fmt.Sprintf("round %d, writer %d", round, writer)}, 0)
+				assert.NoError(t, err)
 			})
 		}
 		wg.Go(func() {

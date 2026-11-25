@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -341,7 +343,13 @@ func TestEnqueueAgentInput_FailsWhenTheAttachmentPolicyCannotReadTheAgent(t *tes
 	t.Parallel()
 
 	ctx := context.Background()
-	option, faulted := faultAgentReads()
+	var faulted atomic.Bool
+	option := withQueryRewrite(func(query string) string {
+		if faulted.Load() && strings.HasPrefix(query, "-- name: GetAgentProvider :one") {
+			return "SELECT agent_provider FROM no_such_table WHERE id = ?"
+		}
+		return query
+	})
 	svc, d, _ := setupTestService(t, option)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -376,8 +384,11 @@ func TestEnqueueAgentInput_FailsWhenTheAttachmentPolicyCannotReadTheAgent(t *tes
 
 // A missing agent passes the policy, so the queue refuses the request with its
 // own error for the missing agent.
-func TestRefuseUnreadableAttachments_PassesAMissingAgent(t *testing.T) {
+func TestPrepareQueuedAttachments_PassesAMissingAgent(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
-	assert.NoError(t, svc.refuseUnreadableAttachments("no-such-agent", []*leapmuxv1.Attachment{{Filename: "build.tar", Data: []byte{0xff, 0x00}}}))
+	got, err := svc.prepareQueuedAttachments("no-such-agent", []*leapmuxv1.Attachment{{Filename: "build.tar", Data: []byte{0xff, 0x00}}})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "build.tar", got[0].Filename)
 }

@@ -15,6 +15,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -26,23 +27,18 @@ const (
 	maxMessagesScannedPerAgent  = 5000
 	maxTotalMessagesScanned     = 50_000
 	maxAgentSearchIDs           = 500
-	agentSearchTimeout          = 30 * time.Second
 	agentSearchSnippetMaxRunes  = 200
 	agentSearchSnippetHalfRunes = 80
 )
+
+var agentSearchTimeout = 30 * time.Second
 
 func registerAgentSearchHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceSearchAgentMessagesProcedure, dispatchPlain, svc.handleSearchAgentMessages)
 }
 
-type searchAgentRow struct {
-	id       string
-	title    string
-	provider leapmuxv1.AgentProvider
-}
-
-func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Caller, r *leapmuxv1.SearchAgentMessagesRequest, sender channel.ResponseWriter) {
-	ctx, cancel := context.WithTimeout(ctx, agentSearchTimeout)
+func (svc *Service) handleSearchAgentMessages(parentCtx context.Context, _ channel.Caller, r *leapmuxv1.SearchAgentMessagesRequest, sender channel.ResponseWriter) {
+	ctx, cancel := context.WithTimeout(parentCtx, agentSearchTimeout)
 	defer cancel()
 	if len(r.GetAgentIds()) > maxAgentSearchIDs {
 		sendInvalidArgument(sender, fmt.Sprintf("too many agent_ids (maximum %d)", maxAgentSearchIDs))
@@ -53,21 +49,29 @@ func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Cal
 		sendInvalidArgument(sender, "query is required")
 		return
 	}
-	if r.GetLimit() < 0 {
-		sendInvalidArgument(sender, "limit must not be negative")
+	limit, err := resolveSearchLimit(r.GetLimit(), defaultAgentSearchLimit, maxAgentSearchLimit)
+	if err != nil {
+		sendInvalidArgument(sender, err.Error())
 		return
 	}
-	limit := int(r.GetLimit())
-	if limit == 0 {
-		limit = defaultAgentSearchLimit
-	}
-	if limit > maxAgentSearchLimit {
-		limit = maxAgentSearchLimit
-	}
 
-	var findMatch func(string) (int, int, bool)
-	if r.GetRegex() {
+	var findMatch func(string) (int, bool)
+	if !r.GetRegex() && r.GetCaseSensitive() {
+		findMatch = func(text string) (int, bool) {
+			idx := strings.Index(text, query)
+			if idx < 0 {
+				return 0, false
+			}
+			return idx, true
+		}
+	} else {
+		// For case-insensitive literal queries, use RE2 (?i) with QuoteMeta so
+		// matched byte offsets always correspond to the original string even
+		// under UTF-8 case-folding length changes (e.g. 'İ' U+0130 or 'K' U+212A).
 		expr := query
+		if !r.GetRegex() {
+			expr = regexp.QuoteMeta(expr)
+		}
 		if !r.GetCaseSensitive() {
 			expr = "(?i)" + expr
 		}
@@ -76,36 +80,12 @@ func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Cal
 			sendInvalidArgument(sender, fmt.Sprintf("invalid regular expression: %v", err))
 			return
 		}
-		findMatch = func(text string) (int, int, bool) {
+		findMatch = func(text string) (int, bool) {
 			loc := re.FindStringIndex(text)
 			if loc == nil {
-				return 0, 0, false
+				return 0, false
 			}
-			return loc[0], loc[1], true
-		}
-	} else if r.GetCaseSensitive() {
-		findMatch = func(text string) (int, int, bool) {
-			idx := strings.Index(text, query)
-			if idx < 0 {
-				return 0, 0, false
-			}
-			return idx, idx + len(query), true
-		}
-	} else {
-		// Use RE2 (?i) with QuoteMeta so matched byte offsets ALWAYS correspond
-		// to the original string even under UTF-8 case-folding length changes
-		// (e.g. 'İ' U+0130 or 'K' U+212A).
-		re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(query))
-		if err != nil {
-			sendInvalidArgument(sender, fmt.Sprintf("invalid query: %v", err))
-			return
-		}
-		findMatch = func(text string) (int, int, bool) {
-			loc := re.FindStringIndex(text)
-			if loc == nil {
-				return 0, 0, false
-			}
-			return loc[0], loc[1], true
+			return loc[0], true
 		}
 	}
 
@@ -123,7 +103,7 @@ func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Cal
 
 	agents, err := svc.listSearchableAgents(ctx, r.GetAgentIds(), r.GetProvider())
 	if err != nil {
-		if ctx.Err() != nil {
+		if sendSearchContextError(parentCtx, ctx, sender, "agent message search timed out") {
 			return
 		}
 		slog.Error("failed to list agents for transcript search", "error", err)
@@ -135,11 +115,11 @@ func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Cal
 	truncated := false
 	totalScanned := 0
 
-	// Scan each agent up to limit newest matches (bounded by a global scan
+	// Scan each agent up to limit newest matches (capped by a global scan
 	// budget) so a newly created agent cannot starve older agents, trimming
 	// hits periodically so memory stays O(limit).
 	for _, ag := range agents {
-		if ctx.Err() != nil {
+		if sendSearchContextError(parentCtx, ctx, sender, "agent message search timed out") {
 			return
 		}
 		if totalScanned >= maxTotalMessagesScanned {
@@ -151,27 +131,31 @@ func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Cal
 		var cursorSeq int64
 		firstPage := true
 		for scanned < maxMessagesScannedPerAgent && totalScanned < maxTotalMessagesScanned {
-			if ctx.Err() != nil {
+			if sendSearchContextError(parentCtx, ctx, sender, "agent message search timed out") {
 				return
 			}
 			var rows []db.Message
 			var qerr error
 			if firstPage {
 				rows, qerr = svc.Queries.ListLatestMessagesByAgentID(ctx, db.ListLatestMessagesByAgentIDParams{
-					AgentID: ag.id,
+					AgentID: ag.ID,
 					Limit:   agentSearchPageSize,
 				})
 				firstPage = false
 			} else {
 				rows, qerr = svc.Queries.ListMessagesByAgentIDReverse(ctx, db.ListMessagesByAgentIDReverseParams{
-					AgentID: ag.id,
+					AgentID: ag.ID,
 					Seq:     cursorSeq,
 					Limit:   agentSearchPageSize,
 				})
 			}
 			if qerr != nil {
-				slog.Warn("failed to scan agent messages for search", "agent_id", ag.id, "error", qerr)
-				break
+				if sendSearchContextError(parentCtx, ctx, sender, "agent message search timed out") {
+					return
+				}
+				slog.Error("failed to scan agent messages for search", "agent_id", ag.ID, "error", qerr)
+				sendInternalError(sender, "failed to search agent messages")
+				return
 			}
 			if len(rows) == 0 {
 				break
@@ -192,11 +176,11 @@ func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Cal
 					reachedSinceCutoff = true
 					break
 				}
-				searchable := svc.searchableMessageText(m, ag.provider)
+				searchable := svc.searchableMessageText(m, ag.AgentProvider)
 				if searchable == "" {
 					continue
 				}
-				start, end, matched := findMatch(searchable)
+				start, matched := findMatch(searchable)
 				if !matched {
 					continue
 				}
@@ -210,12 +194,12 @@ func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Cal
 					createdAt = timefmt.Format(m.CreatedAt.Time)
 				}
 				hits = append(hits, &leapmuxv1.AgentMessageSearchHit{
-					AgentId:    ag.id,
-					AgentTitle: ag.title,
-					Provider:   ag.provider,
+					AgentId:    ag.ID,
+					AgentTitle: ag.Title,
+					Provider:   ag.AgentProvider,
 					Seq:        m.Seq,
 					Source:     m.Source,
-					Snippet:    buildSearchSnippet(searchable, start, end),
+					Snippet:    buildSearchSnippet(searchable, start),
 					CreatedAt:  createdAt,
 				})
 				agentHits++
@@ -233,6 +217,10 @@ func (svc *Service) handleSearchAgentMessages(ctx context.Context, _ channel.Cal
 			hits = hits[:limit]
 			truncated = true
 		}
+	}
+
+	if sendSearchContextError(parentCtx, ctx, sender, "agent message search timed out") {
+		return
 	}
 
 	sortAgentSearchHits(hits)
@@ -256,126 +244,144 @@ func sortAgentSearchHits(hits []*leapmuxv1.AgentMessageSearchHit) {
 	})
 }
 
-func (svc *Service) listSearchableAgents(ctx context.Context, agentIDs []string, provider leapmuxv1.AgentProvider) ([]searchAgentRow, error) {
+func (svc *Service) listSearchableAgents(ctx context.Context, agentIDs []string, provider leapmuxv1.AgentProvider) ([]db.ListOpenAgentsForSearchRow, error) {
+	if svc.Queries == nil {
+		return nil, nil
+	}
+	var all []db.ListOpenAgentsForSearchRow
 	if len(agentIDs) > 0 {
-		rows, err := svc.Queries.ListAgentsByIDs(ctx, agentIDs)
+		rows, err := svc.Queries.ListOpenAgentsForSearchByIDs(ctx, agentIDs)
 		if err != nil {
 			return nil, err
 		}
-		out := make([]searchAgentRow, 0, len(rows))
-		for i := range rows {
-			if provider != leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED && rows[i].AgentProvider != provider {
-				continue
-			}
-			out = append(out, searchAgentRow{
-				id:       rows[i].ID,
-				title:    rows[i].Title,
-				provider: rows[i].AgentProvider,
-			})
+		all = make([]db.ListOpenAgentsForSearchRow, len(rows))
+		for i, row := range rows {
+			all[i] = db.ListOpenAgentsForSearchRow(row)
 		}
-		return out, nil
-	}
-	if svc.DB == nil {
-		return nil, nil
-	}
-	sqlRows, err := svc.DB.QueryContext(ctx, "SELECT id, title, agent_provider FROM agents WHERE closed_at IS NULL ORDER BY created_at DESC")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = sqlRows.Close() }()
-
-	var out []searchAgentRow
-	for sqlRows.Next() {
-		var row searchAgentRow
-		if err := sqlRows.Scan(&row.id, &row.title, &row.provider); err != nil {
+	} else {
+		rows, err := svc.Queries.ListOpenAgentsForSearch(ctx)
+		if err != nil {
 			return nil, err
 		}
-		if provider != leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED && row.provider != provider {
-			continue
-		}
-		out = append(out, row)
+		all = rows
 	}
-	if err := sqlRows.Err(); err != nil {
-		return nil, err
+	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return all, nil
+	}
+	out := make([]db.ListOpenAgentsForSearchRow, 0, len(all))
+	for _, row := range all {
+		if row.AgentProvider == provider {
+			out = append(out, row)
+		}
 	}
 	return out, nil
 }
 
+// searchableMessageText extracts searchable text by message source without
+// guessing provider wire shapes: agent rows use Provider.ReplyText exclusively,
+// and user rows use the Worker's {"content": ...} envelope (or plain text).
 func (svc *Service) searchableMessageText(m *db.Message, provider leapmuxv1.AgentProvider) string {
-	if m.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
-		if protoMsg, err := messageToProto(m, provider); err == nil {
-			if reply := svc.replyTextOf(protoMsg); reply != nil && strings.TrimSpace(*reply) != "" {
-				return strings.ToValidUTF8(*reply, "\uFFFD")
-			}
+	switch m.Source {
+	case leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT:
+		if svc.Agents == nil {
+			return ""
 		}
-	}
-	raw, err := msgcodec.Decompress(m.Content, m.ContentCompression)
-	if err != nil || len(raw) == 0 {
-		return ""
-	}
-	trimmed := strings.TrimSpace(strings.ToValidUTF8(string(raw), "\uFFFD"))
-	if trimmed == "" {
-		return ""
-	}
-	if strings.HasPrefix(trimmed, "{") {
-		var obj map[string]any
-		if json.Unmarshal(raw, &obj) == nil {
-			for _, key := range []string{"text", "message", "content", "prompt"} {
-				if v, ok := obj[key].(string); ok && strings.TrimSpace(v) != "" {
-					return strings.ToValidUTF8(v, "\uFFFD")
+		content, err := decodeStoredRow(*m, "agent search message")
+		if err != nil {
+			return ""
+		}
+		reply, ok := agent.ReplyText(svc.Agents.Registry().Plugin(provider), content)
+		if !ok || strings.TrimSpace(reply) == "" {
+			return ""
+		}
+		return strings.ToValidUTF8(reply, "\uFFFD")
+
+	case leapmuxv1.MessageSource_MESSAGE_SOURCE_USER:
+		raw, err := msgcodec.Decompress(m.Content, m.ContentCompression)
+		if err != nil || len(raw) == 0 {
+			return ""
+		}
+		trimmed := strings.TrimSpace(strings.ToValidUTF8(string(raw), "\uFFFD"))
+		if trimmed == "" {
+			return ""
+		}
+		if strings.HasPrefix(trimmed, "{") {
+			var envelope struct {
+				Content string `json:"content"`
+			}
+			if json.Unmarshal(raw, &envelope) == nil {
+				if strings.TrimSpace(envelope.Content) == "" {
+					return ""
 				}
-			}
-			// Avoid matching structural JSON keys on raw agent frames that
-			// carried no human-readable reply text (e.g. tool_use/thinking frames).
-			if m.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
-				return ""
+				return strings.ToValidUTF8(envelope.Content, "\uFFFD")
 			}
 		}
+		return trimmed
+
+	default:
+		return ""
 	}
-	return trimmed
 }
 
-func buildSearchSnippet(text string, matchStart, matchEnd int) string {
-	flat := strings.Join(strings.Fields(text), " ")
-	if utf8.RuneCountInString(flat) <= agentSearchSnippetMaxRunes {
-		return flat
+func buildSearchSnippet(text string, matchStart int) string {
+	// Fast check: scan at most agentSearchSnippetMaxRunes+1 runes before
+	// deciding whether the entire message fits without windowing.
+	if exceedsRuneCount(text, agentSearchSnippetMaxRunes) {
+		return buildWindowedSearchSnippet(text, matchStart)
 	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func exceedsRuneCount(s string, maxRunes int) bool {
+	count := 0
+	for range s {
+		count++
+		if count > maxRunes {
+			return true
+		}
+	}
+	return false
+}
+
+func buildWindowedSearchSnippet(text string, matchStart int) string {
 	if matchStart < 0 {
 		matchStart = 0
 	}
 	if matchStart > len(text) {
 		matchStart = len(text)
 	}
-	if matchEnd < matchStart {
-		matchEnd = matchStart
+	// Walk backward at most agentSearchSnippetHalfRunes runes from matchStart.
+	lo := matchStart
+	for runes := 0; lo > 0 && runes < agentSearchSnippetHalfRunes; runes++ {
+		_, size := utf8.DecodeLastRuneInString(text[:lo])
+		lo -= size
 	}
-	if matchEnd > len(text) {
-		matchEnd = len(text)
+	// Walk forward from lo up to agentSearchSnippetMaxRunes runes.
+	hi := lo
+	for runes := 0; hi < len(text) && runes < agentSearchSnippetMaxRunes; runes++ {
+		_, size := utf8.DecodeRuneInString(text[hi:])
+		hi += size
 	}
-	prefixRunes := utf8.RuneCountInString(text[:matchStart])
-	matchRunes := utf8.RuneCountInString(text[matchStart:matchEnd])
-	all := []rune(text)
-	lo := prefixRunes - agentSearchSnippetHalfRunes
-	if lo < 0 {
-		lo = 0
-	}
-	hi := prefixRunes + matchRunes + agentSearchSnippetHalfRunes
-	if hi-lo > agentSearchSnippetMaxRunes {
-		hi = lo + agentSearchSnippetMaxRunes
-	}
-	if hi > len(all) {
-		hi = len(all)
-	}
-	snippet := strings.Join(strings.Fields(string(all[lo:hi])), " ")
-	if utf8.RuneCountInString(snippet) > agentSearchSnippetMaxRunes {
-		snippet = string([]rune(snippet)[:agentSearchSnippetMaxRunes])
-		hi = len(all) - 1 // ensure trailing ellipsis
+	snippet := strings.Join(strings.Fields(text[lo:hi]), " ")
+	truncatedEnd := hi < len(text)
+	if exceedsRuneCount(snippet, agentSearchSnippetMaxRunes) {
+		snippet = sliceRunes(snippet, agentSearchSnippetMaxRunes)
+		truncatedEnd = true
 	}
 	if lo > 0 {
 		snippet = "…" + snippet
 	}
-	if hi < len(all) {
+	if truncatedEnd {
 		snippet += "…"
 	}
 	return snippet
+}
+
+func sliceRunes(s string, maxRunes int) string {
+	idx := 0
+	for runes := 0; idx < len(s) && runes < maxRunes; runes++ {
+		_, size := utf8.DecodeRuneInString(s[idx:])
+		idx += size
+	}
+	return s[:idx]
 }

@@ -2,6 +2,9 @@
 
 package service
 
-func worktreeDirectoryIdentity(string) (worktreeDirectoryID, error) {
+func worktreeDirectoryIdentity(path string) (worktreeDirectoryID, error) {
+	if _, err := verifyWorktreeDirectory(path); err != nil {
+		return worktreeDirectoryID{}, err
+	}
 	return worktreeDirectoryID{}, nil
 }

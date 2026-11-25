@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -73,6 +72,7 @@ func (svc *Service) handleSetTabStatus(ctx context.Context, caller channel.Calle
 		}
 		status = validated
 	}
+	closeEpoch := svc.TabStatuses.currentCloseEpoch()
 	key, err := svc.hostedTabKey(ctx, caller.UserID, tabID)
 	if err != nil {
 		sendHostedTabError(sender, tabID, err)
@@ -83,28 +83,30 @@ func (svc *Service) handleSetTabStatus(ctx context.Context, caller channel.Calle
 		sendProtoResponse(sender, &leapmuxv1.SetTabStatusResponse{Key: statusKey})
 		return
 	}
-	if err := svc.TabStatuses.set(key, caller.UserID, statusKey, status); err != nil {
+	if svc.beforeTabStatusSetFn != nil {
+		svc.beforeTabStatusSetFn()
+	}
+	epochChanged, err := svc.TabStatuses.set(key, caller.UserID, statusKey, status, closeEpoch)
+	if err != nil {
 		sendFailedPrecondition(sender, err.Error())
 		return
 	}
-	if svc.afterTabStatusSetFn != nil {
-		svc.afterTabStatusSetFn()
-	}
-	// The tab can close between the lookup above and the set. Its close then
-	// cleared a store that did not hold this status yet, and the status would
-	// stay until the Worker stops, replayed to every frontend that subscribes.
-	// Reading the tab again after the set closes that window: a close that
-	// commits before this read is seen here, and one that commits after it
-	// clears the status itself (applyTabCloseEffects runs after the commit).
-	switch _, err := svc.hostedTabKey(ctx, caller.UserID, tabID); {
-	case errors.Is(err, errTabNotHosted):
-		svc.TabStatuses.forgetClosed(key)
-		sendHostedTabError(sender, tabID, err)
-		return
-	case err != nil:
-		// The status stays: the set already reached the frontends, and the
-		// tab's own close clears it if the tab is gone.
-		slog.Warn("failed to read the tab again after its status was set", "tab_id", tabID, "error", err)
+	// A tab close that commits after set calls forgetClosed after set releases
+	// TabStatusStore.mu, so forgetClosed clears this status itself. Only a close
+	// whose forgetClosed ran between closeEpoch and set can leave this status
+	// stranded, and that close incremented closeEpoch. Skip the second DB read
+	// whenever no close occurred in that window.
+	if epochChanged {
+		switch open, err := svc.isHostedTabOpen(ctx, caller.UserID, key); {
+		case err == nil && !open:
+			svc.TabStatuses.forgetClosed(key)
+			sendHostedTabError(sender, tabID, errTabNotHosted)
+			return
+		case err != nil:
+			// The status stays: the set already reached the frontends, and the
+			// tab's own close clears it if the tab is gone.
+			slog.Warn("failed to read the tab again after its status was set", "tab_id", tabID, "error", err)
+		}
 	}
 	sendProtoResponse(sender, &leapmuxv1.SetTabStatusResponse{Status: status, Key: statusKey})
 }
@@ -143,25 +145,19 @@ var errTabNotHosted = errors.New("this worker hosts no such tab")
 // agent's row stays open while its tab is closed, because closing a subagent
 // tab only hides it; such a tab still counts as hosted.
 func (svc *Service) hostedTabKey(ctx context.Context, owner userid.UserID, tabID string) (ownedTabKey, error) {
-	agentRow, err := svc.Queries.GetAgentByID(ctx, tabID)
-	switch {
-	case err == nil:
-		if agentRow.ClosedAt.Valid {
-			return ownedTabKey{}, errTabNotHosted
-		}
-		return newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, tabID, owner.String()), nil
-	case !errors.Is(err, sql.ErrNoRows):
+	openAgent, err := svc.Queries.CanWatchAgentHistory(ctx, tabID)
+	if err != nil {
 		return ownedTabKey{}, fmt.Errorf("read the agent: %w", err)
 	}
-	terminalRow, err := svc.Queries.GetTerminalForReady(ctx, tabID)
-	switch {
-	case err == nil:
-		if terminalRow.ClosedAt.Valid {
-			return ownedTabKey{}, errTabNotHosted
-		}
-		return newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, tabID, owner.String()), nil
-	case !errors.Is(err, sql.ErrNoRows):
+	if openAgent {
+		return newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, tabID, owner.String()), nil
+	}
+	openTerminal, err := svc.Queries.CanWatchTerminalHistory(ctx, tabID)
+	if err != nil {
 		return ownedTabKey{}, fmt.Errorf("read the terminal: %w", err)
+	}
+	if openTerminal {
+		return newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, tabID, owner.String()), nil
 	}
 	tabType, err := svc.TabPayloads.TabTypeOf(ctx, owner.String(), tabID)
 	switch {
@@ -171,6 +167,24 @@ func (svc *Service) hostedTabKey(ctx context.Context, owner userid.UserID, tabID
 		return ownedTabKey{}, errTabNotHosted
 	default:
 		return ownedTabKey{}, fmt.Errorf("read the tab payload: %w", err)
+	}
+}
+
+func (svc *Service) isHostedTabOpen(ctx context.Context, owner userid.UserID, key ownedTabKey) (bool, error) {
+	switch key.tabType {
+	case leapmuxv1.TabType_TAB_TYPE_AGENT:
+		return svc.Queries.CanWatchAgentHistory(ctx, key.tabID)
+	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
+		return svc.Queries.CanWatchTerminalHistory(ctx, key.tabID)
+	default:
+		tabType, err := svc.TabPayloads.TabTypeOf(ctx, owner.String(), key.tabID)
+		if errors.Is(err, ErrTabPayloadNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return tabType == key.tabType, nil
 	}
 }
 

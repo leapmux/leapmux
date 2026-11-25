@@ -29,6 +29,7 @@ const semanticRetirementTimerTag = "semantic history retirement"
 type semanticEventCapture struct {
 	mu                         sync.Mutex
 	enabled, draining, stopped bool
+	starting                   bool
 	producersFinished          bool
 	journal                    atomic.Pointer[eventjournal.Journal]
 	retirements                drain.Counter
@@ -46,26 +47,54 @@ func (svc *Service) EnableSemanticEvents() {
 
 func (svc *Service) bindSemanticEvents() {
 	capture := &svc.semanticEvents
-	capture.mu.Lock()
-	defer capture.mu.Unlock()
-	owner := svc.RegisteredBy()
-	if !capture.enabled || capture.draining || capture.stopped || owner.IsZero() {
-		return
-	}
-	if journal := capture.journal.Load(); journal != nil {
-		if !journal.OwnedBy(owner) {
-			journal.Revoke()
+	for {
+		capture.mu.Lock()
+		owner := svc.RegisteredBy()
+		if !capture.enabled || capture.draining || capture.stopped || owner.IsZero() {
+			capture.mu.Unlock()
+			return
 		}
+		if journal := capture.journal.Load(); journal != nil {
+			if !journal.OwnedBy(owner) {
+				journal.Revoke()
+			}
+			capture.mu.Unlock()
+			return
+		}
+		if capture.starting {
+			capture.mu.Unlock()
+			return
+		}
+		capture.starting = true
+		capture.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), semanticJournalDeadline)
+		journal, err := eventjournal.Start(ctx, svc.DB, svc.WorkerID, owner, svc.Clock)
+		cancel()
+
+		capture.mu.Lock()
+		capture.starting = false
+		if err != nil {
+			capture.mu.Unlock()
+			slog.Warn("start Worker event journal failed", "error", err)
+			return
+		}
+		currentOwner := svc.RegisteredBy()
+		if !capture.enabled || capture.draining || capture.stopped || !journal.OwnedBy(currentOwner) {
+			retry := capture.enabled && !capture.draining && !capture.stopped && !currentOwner.IsZero() && !journal.OwnedBy(currentOwner)
+			capture.mu.Unlock()
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), semanticJournalDeadline)
+			_ = journal.Stop(stopCtx, false)
+			stopCancel()
+			if retry {
+				continue
+			}
+			return
+		}
+		capture.journal.Store(journal)
+		capture.mu.Unlock()
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), semanticJournalDeadline)
-	defer cancel()
-	journal, err := eventjournal.Start(ctx, svc.DB, svc.WorkerID, owner, svc.Clock)
-	if err != nil {
-		slog.Warn("start Worker event journal failed", "error", err)
-		return
-	}
-	capture.journal.Store(journal)
 }
 
 func (svc *Service) recordTerminalFact(tabID string, event *leapmuxv1.TerminalEvent) {
@@ -92,13 +121,17 @@ func (svc *Service) retireTerminalEventHistory(terminalID string) {
 	})
 }
 
-func (svc *Service) retireSemanticHistory(tabType leapmuxv1.TabType, ids []string, join func(context.Context) bool) {
+func (svc *Service) retireSemanticHistory(tabType leapmuxv1.TabType, ids []string, join func(context.Context) bool) bool {
 	capture := &svc.semanticEvents
 	capture.mu.Lock()
-	journal := capture.journal.Load()
-	if journal == nil || capture.stopped || !journal.OwnedBy(svc.RegisteredBy()) {
+	if capture.stopped {
 		capture.mu.Unlock()
-		return
+		return true
+	}
+	journal := capture.journal.Load()
+	if journal == nil || !journal.OwnedBy(svc.RegisteredBy()) {
+		capture.mu.Unlock()
+		return false
 	}
 	tabs := make([]eventjournal.Tab, len(ids))
 	for i, id := range ids {
@@ -127,6 +160,7 @@ func (svc *Service) retireSemanticHistory(tabType leapmuxv1.TabType, ids []strin
 		}
 		journal.Seal(tabs, drained)
 	}()
+	return true
 }
 
 func (svc *Service) stopSemanticEventReaders(producersFinished bool) {
@@ -146,20 +180,25 @@ func (svc *Service) stopSemanticEventReaders(producersFinished bool) {
 func (svc *Service) FinalizeSemanticEvents(handlersFinished bool) {
 	capture := &svc.semanticEvents
 	capture.mu.Lock()
-	defer capture.mu.Unlock()
 	if capture.stopped {
+		capture.mu.Unlock()
 		return
 	}
 	capture.stopped = true
-	if journal := capture.journal.Load(); journal != nil {
-		budget := svc.ShutdownDeadline.Cap(semanticJournalDeadline)
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		defer cancel()
-		sealsFinished := drain.WaitBounded(capture.retirements.DoneChan(), budget, "")
-		mutationsFinished := capture.agentMutations.waitAll(ctx) == nil
-		if err := journal.Stop(ctx, capture.producersFinished && handlersFinished && sealsFinished && mutationsFinished && budget > 0); err != nil {
-			slog.Warn("stop Worker event journal failed", "error", err)
-		}
+	producersFinished := capture.producersFinished
+	journal := capture.journal.Load()
+	capture.mu.Unlock()
+	if journal == nil {
+		return
+	}
+	retireBudget := svc.ShutdownDeadline.Cap(semanticJournalDeadline)
+	sealsFinished := drain.WaitBounded(capture.retirements.DoneChan(), retireBudget, "")
+	stopBudget := svc.ShutdownDeadline.Cap(semanticJournalDeadline)
+	ctx, cancel := context.WithTimeout(context.Background(), stopBudget)
+	defer cancel()
+	mutationsFinished := capture.agentMutations.waitAll(ctx) == nil
+	if err := journal.Stop(ctx, producersFinished && handlersFinished && sealsFinished && mutationsFinished && stopBudget > 0); err != nil {
+		slog.Warn("stop Worker event journal failed", "error", err)
 	}
 }
 
@@ -174,13 +213,59 @@ type semanticWatchControl struct{ cancel context.CancelFunc }
 func (semanticWatchControl) OnClientFrame([]byte) {}
 func (c semanticWatchControl) OnCancel()          { c.cancel() }
 
+type semanticRequestHandleTarget struct {
+	agentID   string
+	request   *leapmuxv1.SemanticAgentRequest
+	setHandle func(string)
+}
+
+type semanticFrameOps[F proto.Message] struct {
+	open           func(ctx context.Context, journal *eventjournal.Journal) (read func(context.Context, int64) ([]F, <-chan struct{}, error), readyFrame proto.Message, after int64, err error)
+	requestBinding func(F) (semanticRequestHandleTarget, bool)
+	isFinished     func(F) bool
+	nextAfter      func(F) int64
+}
+
 func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Caller, req *leapmuxv1.WatchSemanticEventsRequest, sender channel.ResponseWriter) {
 	tab := eventjournal.Tab{Type: req.GetTab().GetTabType(), ID: req.GetTab().GetTabId()}
 	if !tab.Valid() {
 		sendSemanticWatchError(sender, codes.InvalidArgument, "an agent or terminal tab is required")
 		return
 	}
-	scope, grant := semanticHistoryReadGrant(tab.Type)
+	streamSemanticEvents(svc, ctx, caller, tab.Type, sender, semanticFrameOps[*leapmuxv1.WatchSemanticEventsResponse]{
+		open: func(ctx context.Context, journal *eventjournal.Journal) (func(context.Context, int64) ([]*leapmuxv1.WatchSemanticEventsResponse, <-chan struct{}, error), proto.Message, int64, error) {
+			reader, ready, err := journal.Open(ctx, tab, req.GetAfterCursor())
+			if err != nil {
+				return nil, nil, 0, err
+			}
+			return reader.Read, &leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{Ready: ready}}, ready.GetAfterSequence(), nil
+		},
+		requestBinding: func(frame *leapmuxv1.WatchSemanticEventsResponse) (semanticRequestHandleTarget, bool) {
+			record := frame.GetRecord()
+			request := record.GetFact().GetAgentRequest()
+			if request == nil {
+				return semanticRequestHandleTarget{}, false
+			}
+			return semanticRequestHandleTarget{
+				agentID:   tab.ID,
+				request:   request,
+				setHandle: func(handle string) { record.CurrentRequestHandle = handle },
+			}, true
+		},
+		isFinished: func(frame *leapmuxv1.WatchSemanticEventsResponse) bool {
+			return frame.GetRetired() != nil
+		},
+		nextAfter: func(frame *leapmuxv1.WatchSemanticEventsResponse) int64 {
+			if gap := frame.GetGap(); gap != nil {
+				return gap.GetResumeAfterSequence()
+			}
+			return frame.GetRecord().GetSequence()
+		},
+	})
+}
+
+func streamSemanticEvents[F proto.Message](svc *Service, ctx context.Context, caller channel.Caller, tabType leapmuxv1.TabType, sender channel.ResponseWriter, ops semanticFrameOps[F]) {
+	scope, grant := semanticHistoryReadGrant(tabType)
 	if !caller.Allows(scope) {
 		sendSemanticWatchError(sender, codes.PermissionDenied, "event history requires "+grant)
 		return
@@ -209,7 +294,7 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 	if !checkOwner() {
 		return
 	}
-	reader, ready, err := journal.Open(ctx, tab, req.GetAfterCursor())
+	read, readyFrame, after, err := ops.open(ctx, journal)
 	if err != nil {
 		reportSemanticWatchError(ctx, sender, err)
 		return
@@ -217,13 +302,16 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 	if !checkOwner() {
 		return
 	}
-	if !sendSemanticWatchFrame(sender, &leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{Ready: ready}}, false) {
+	if !sendSemanticWatchFrame(sender, readyFrame, false) {
 		return
 	}
-	after := ready.GetAfterSequence()
 	for ctx.Err() == nil && checkOwner() {
-		frames, changed, err := reader.Read(ctx, after)
+		frames, changed, err := read(ctx, after)
 		if err != nil {
+			reportSemanticWatchError(ctx, sender, err)
+			return
+		}
+		if err := populateSemanticRequestHandles(svc, ctx, journal, frames, ops.requestBinding); err != nil {
 			reportSemanticWatchError(ctx, sender, err)
 			return
 		}
@@ -231,27 +319,14 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 			if ctx.Err() != nil || !checkOwner() {
 				return
 			}
-			record := frame.GetRecord()
-			if request := record.GetFact().GetAgentRequest(); request != nil {
-				handle, err := svc.currentSemanticRequestHandle(ctx, journal, tab.ID, request)
-				if err != nil {
-					reportSemanticWatchError(ctx, sender, err)
-					return
-				}
-				record.CurrentRequestHandle = handle
-			}
-			finished := frame.GetRetired() != nil
-			if !checkOwner() || !sendSemanticWatchFrame(sender, frame, finished) {
+			finished := ops.isFinished(frame)
+			if !sendSemanticWatchFrame(sender, frame, finished) {
 				return
 			}
 			if finished {
 				return
 			}
-			if gap := frame.GetGap(); gap != nil {
-				after = gap.GetResumeAfterSequence()
-			} else {
-				after = record.GetSequence()
-			}
+			after = ops.nextAfter(frame)
 		}
 		if len(frames) == 0 {
 			select {
@@ -262,34 +337,73 @@ func (svc *Service) watchSemanticEvents(ctx context.Context, caller channel.Call
 	}
 }
 
-func (svc *Service) currentSemanticRequestHandle(ctx context.Context, journal *eventjournal.Journal, agentID string, request *leapmuxv1.SemanticAgentRequest) (string, error) {
-	kind := request.GetPromptKind()
-	if kind < leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION ||
-		kind > leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_DIALOG {
-		return "", nil
+func isAnswerableSemanticPromptKind(kind leapmuxv1.SemanticControlPromptKind) bool {
+	return kind >= leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_PERMISSION &&
+		kind <= leapmuxv1.SemanticControlPromptKind_SEMANTIC_CONTROL_PROMPT_KIND_DIALOG
+}
+
+func populateSemanticRequestHandles[F proto.Message](
+	svc *Service,
+	ctx context.Context,
+	journal *eventjournal.Journal,
+	frames []F,
+	extract func(F) (semanticRequestHandleTarget, bool),
+) error {
+	var pending []semanticRequestHandleTarget
+	for _, frame := range frames {
+		target, ok := extract(frame)
+		if ok && isAnswerableSemanticPromptKind(target.request.GetPromptKind()) {
+			pending = append(pending, target)
+		}
+	}
+	return svc.resolveSemanticRequestHandles(ctx, journal, pending)
+}
+
+func (svc *Service) resolveSemanticRequestHandles(ctx context.Context, journal *eventjournal.Journal, pending []semanticRequestHandleTarget) error {
+	if len(pending) == 0 {
+		return nil
 	}
 	tx, err := svc.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	queries := db.New(tx)
-	canAnswer, err := queries.CanAnswerSemanticAgentRequest(ctx, agentID)
-	if err != nil || !canAnswer {
-		return "", err
+	canAnswerCache := make(map[string]bool, len(pending))
+	for _, item := range pending {
+		if !isAnswerableSemanticPromptKind(item.request.GetPromptKind()) {
+			continue
+		}
+		canAnswer, cached := canAnswerCache[item.agentID]
+		if !cached {
+			canAnswer, err = queries.CanAnswerSemanticAgentRequest(ctx, item.agentID)
+			if err != nil {
+				return err
+			}
+			canAnswerCache[item.agentID] = canAnswer
+		}
+		if !canAnswer {
+			continue
+		}
+		claim, found, err := svc.Output.controls.lookupClaim(ctx, queries, item.agentID, item.request.GetRequestId())
+		if err != nil {
+			return err
+		}
+		if !found || claim == "" || !hmac.Equal(item.request.GetRequestInstance(), journal.RequestInstance(item.agentID, claim)) {
+			continue
+		}
+		// lookupClaim already proved the matching claim exists in the live request store.
+		// Check only whether an answer record already moved this claim out of READY.
+		_, err = storedControlResponseState(ctx, queries, item.agentID, item.request.GetRequestId(), claim)
+		if errors.Is(err, sql.ErrNoRows) {
+			item.setHandle(claim)
+			continue
+		}
+		if err != nil {
+			return err
+		}
 	}
-	claim, found, err := svc.Output.controls.lookupClaim(ctx, queries, agentID, request.GetRequestId())
-	if err != nil || !found {
-		return "", err
-	}
-	if claim == "" || !hmac.Equal(request.GetRequestInstance(), journal.RequestInstance(agentID, claim)) {
-		return "", nil
-	}
-	state, err := controlResponseStateForQueries(ctx, &svc.Output.controls, queries, agentID, request.GetRequestId(), claim)
-	if err != nil || state != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY {
-		return "", err
-	}
-	return claim, nil
+	return nil
 }
 
 func semanticHistoryReadGrant(tabType leapmuxv1.TabType) (leapmuxv1.Scope, string) {

@@ -1,15 +1,21 @@
 package cmd
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 )
 
@@ -166,5 +172,75 @@ func TestTerminalOpenLong(t *testing.T) {
 	}
 	for _, line := range strings.Split(terminalOpenLong, "\n") {
 		assert.LessOrEqualf(t, len(line), helpWidth, "line %q", line)
+	}
+}
+
+type quakeRunDispatcher struct {
+	adopted  bool
+	mu       sync.Mutex
+	sentCmds []*leapmuxv1.SendInputRequest
+}
+
+func (d *quakeRunDispatcher) DispatchWith(_ context.Context, _ channel.Caller, r *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	var resp proto.Message
+	switch r.GetMethod() {
+	case leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure:
+		resp = &leapmuxv1.ListTerminalsResponse{}
+	case leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure:
+		resp = &leapmuxv1.OpenTerminalResponse{
+			TerminalId: "quake-term-1",
+			Adopted:    d.adopted,
+		}
+	case leapmuxv1connect.WorkerTerminalServiceSendInputProcedure:
+		var req leapmuxv1.SendInputRequest
+		if err := proto.Unmarshal(r.GetPayload(), &req); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		d.mu.Lock()
+		d.sentCmds = append(d.sentCmds, &req)
+		d.mu.Unlock()
+		resp = &leapmuxv1.SendInputResponse{}
+	default:
+		_ = w.SendError(int32(codes.Unimplemented), "unexpected method "+r.GetMethod())
+		return
+	}
+	raw, err := proto.Marshal(resp)
+	if err != nil {
+		_ = w.SendError(int32(codes.Internal), err.Error())
+		return
+	}
+	_ = w.SendResponse(channelwire.NewPayloadResponse(raw))
+}
+
+func TestTerminalQuakeRun_AdoptedSendsCommandViaSendInput(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		adopted      bool
+		wantSendCall bool
+	}{
+		{name: "fresh quake runs InitialCommand on open", adopted: false, wantSendCall: false},
+		{name: "adopted quake forwards command via SendInput", adopted: true, wantSendCall: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := &recordingHub{workers: workerRows("worker-A")}
+			disp := &quakeRunDispatcher{adopted: tc.adopted}
+			startSpawnIPC(t, hub, disp)
+
+			o := runControlIn(t, "", "terminal", "quake", "run", "echo hello", "--worker", "worker-A", "--dir", "/src/app", "--json")
+			data := o.Data(t)
+			assert.Equal(t, "quake-term-1", data["id"])
+
+			disp.mu.Lock()
+			sent := append([]*leapmuxv1.SendInputRequest(nil), disp.sentCmds...)
+			disp.mu.Unlock()
+			if tc.wantSendCall {
+				require.Len(t, sent, 1)
+				assert.Equal(t, "quake-term-1", sent[0].GetTerminalId())
+				assert.Equal(t, []byte("echo hello"), sent[0].GetData())
+			} else {
+				assert.Empty(t, sent)
+			}
+		})
 	}
 }

@@ -121,6 +121,16 @@ func storedControlRequestMetadata(request storedControlRequest) controlResponseR
 	})
 }
 
+func (m controlResponseRequestMetadata) controlRequest() agent.ControlRequest {
+	return agent.ControlRequest{
+		RequestID:      m.RequestID,
+		Payload:        m.Payload,
+		SourceSeq:      m.SourceSeq,
+		AgentSessionID: m.AgentSessionID,
+		NonBlocking:    m.NonBlocking,
+	}
+}
+
 // completeControlRequestMetadata reads the tool of the stored request with
 // the readers of package agent, which the provider tests read through too.
 // Each field reads alone, so a sibling of the wrong type hides nothing. Only

@@ -501,6 +501,7 @@ func (svc *Service) registerQuakeTerminal(
 			sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 				TerminalId: existing.ID,
 				Title:      existing.Title,
+				Adopted:    true,
 			})
 			return nil, nil, false
 		}

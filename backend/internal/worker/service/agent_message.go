@@ -21,8 +21,8 @@ import (
 //     the request cannot state, so no caller can forge or drop it. The caller
 //     states the tab of the control token that made the call, or the tab that
 //     a sibling Worker states for a call that it relays (see CallSource).
-//   - Delivery: agentMessageText puts one header before the text, which names
-//     the sender and states that the message is not the operator's
+//   - Delivery: agentMessageText puts one header before the text, which
+//     identifies the sender and states that the message is not the operator's
 //     instruction. Every provider receives it through resolveControlInput, the
 //     one place where a queued input becomes the text that a provider reads.
 //
@@ -96,8 +96,8 @@ func (svc *Service) agentMessageSender(caller channel.Caller) (*inputqueue.Agent
 // The header states the title that the sender had when it sent the message,
 // which the queue keeps, as a letter states its sender. The dispatch reads no
 // row for it: the sender can live on a sibling Worker, or its row can be
-// purged while the message waits. A sender with no title is named by its tab
-// id.
+// purged while the message waits. A sender with no title is identified by its
+// tab id.
 func agentMessageText(item inputqueue.DispatchItem) (string, error) {
 	if item.Sender == nil {
 		// The schema ties the kind to a sender, so only a broken row gets here.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -14,19 +15,45 @@ import (
 )
 
 var (
-	errSelectedWorktreeChanged  = errors.New("the selected Git worktree changed")
-	errSelectedWorktreeUnproved = errors.New("the Worker could not verify the selected Git worktree's filesystem identity")
+	errSelectedWorktreeChanged      = errors.New("the selected Git worktree changed")
+	errSelectedWorktreeUnproved     = errors.New("the Worker could not verify the selected Git worktree's filesystem identity")
+	errSelectedWorktreeNotDirectory = errors.New("the selected Git path is no longer a directory")
 )
 
+func verifyWorktreeDirectory(path string) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, errSelectedWorktreeNotDirectory
+	}
+	return info, nil
+}
+
 // worktreeDirectoryID identifies a filesystem object for as long as it exists.
-// Creation time distinguishes file indexes reused on a filesystem.
+// Creation time distinguishes file indexes reused on a filesystem; when a
+// filesystem or platform does not report creation time, (Volume, FileIndex)
+// still identifies the directory.
 type worktreeDirectoryID struct {
 	Volume             uint64
 	FileIndex          uint64
 	CreatedAtUnixNanos int64
 }
 
-func (id worktreeDirectoryID) known() bool { return id.CreatedAtUnixNanos != 0 }
+func (id worktreeDirectoryID) hasBirthTime() bool { return id.CreatedAtUnixNanos != 0 }
+func (id worktreeDirectoryID) hasFileID() bool    { return id.Volume != 0 || id.FileIndex != 0 }
+func (id worktreeDirectoryID) known() bool        { return id.hasBirthTime() || id.hasFileID() }
+
+func (id worktreeDirectoryID) matches(current worktreeDirectoryID) bool {
+	if id.hasBirthTime() {
+		return id == current
+	}
+	if id.hasFileID() {
+		return current.hasFileID() && id.Volume == current.Volume && id.FileIndex == current.FileIndex
+	}
+	return true
+}
 
 // selectedWorktreeIdentity records the native checkout selected by an open.
 // CloseTab retains this proof after creation clears private runtime inputs.
@@ -69,8 +96,7 @@ func (selection selectedWorktreeIdentity) verify(info *gitPathInfo, removing boo
 	if err != nil {
 		return fmt.Errorf("%w: %w", errSelectedWorktreeChanged, err)
 	}
-	if selection.CheckoutID.known() && selection.CheckoutID != current.CheckoutID ||
-		selection.GitDirID.known() && selection.GitDirID != current.GitDirID {
+	if !selection.CheckoutID.matches(current.CheckoutID) || !selection.GitDirID.matches(current.GitDirID) {
 		return errSelectedWorktreeChanged
 	}
 	return nil

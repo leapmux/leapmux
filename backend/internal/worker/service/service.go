@@ -74,6 +74,7 @@ type Service struct {
 	creations           *tabCreationCoordinator
 	archiveObservations archiveObservationTracker
 	semanticEvents      semanticEventCapture
+	skillsMu            sync.Mutex
 
 	Queries    *db.Queries
 	Watchers   *WatcherManager // Fan-out manager for event broadcasting
@@ -103,9 +104,9 @@ type Service struct {
 	beforeAgentRetirementFn func(string)
 	// beforeWorktreeRemovalFn controls the final removal boundary in tests.
 	beforeWorktreeRemovalFn func()
-	// afterTabStatusSetFn runs between SetTabStatus's set and its second read
-	// of the tab in tests, so a test can close the tab inside that window.
-	afterTabStatusSetFn func()
+	// beforeTabStatusSetFn runs between SetTabStatus's lookup and its store write
+	// in tests, so a test can interleave a concurrent tab close inside that window.
+	beforeTabStatusSetFn func()
 	// afterPayloadPersistenceFn pauses payload creation before Hub publication in tests.
 	afterPayloadPersistenceFn func(context.Context)
 	// afterWorktreeBranchProbeFn controls the branch-selection boundary in tests.

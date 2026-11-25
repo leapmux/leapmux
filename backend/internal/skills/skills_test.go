@@ -204,3 +204,56 @@ func TestWorkerState_RoundTrip(t *testing.T) {
 	assert.Equal(t, []string{"leapmux", "leapmux-review", "leapmux-help"}, got.Enabled)
 	assert.Equal(t, []string{"agents", "claude", "gemini"}, got.Targets)
 }
+
+func TestUninstall_SkipProtectedPreservesModifiedSkills(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := Install(dir, []string{"leapmux", "leapmux-review"}, InstallOptions{})
+	require.NoError(t, err)
+	modifiedPath := filepath.Join(dir, "leapmux-review", "SKILL.md")
+	require.NoError(t, os.WriteFile(modifiedPath, []byte("# local edit\n"), 0o644))
+
+	outcomes, err := Uninstall(dir, []string{"leapmux", "leapmux-review"}, InstallOptions{SkipProtected: true})
+	require.NoError(t, err)
+	require.Len(t, outcomes, 2)
+	assert.Equal(t, "removed", outcomes[0].Action)
+	assert.Equal(t, "skipped_modified", outcomes[1].Action)
+	assert.NoDirExists(t, filepath.Join(dir, "leapmux"))
+	assert.FileExists(t, modifiedPath)
+}
+
+func TestApplyWorkerStateUpdate_ValidationAndSkipProtected(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	homeDir := t.TempDir()
+
+	_, err := ApplyWorkerStateUpdate(dataDir, homeDir, WorkerStateUpdate{
+		UpdateEnabledSkills: true,
+		EnabledSkills:       []string{"no-such-skill"},
+	})
+	require.ErrorIs(t, err, ErrInvalidWorkerStateUpdate)
+
+	autoSync := true
+	st, err := ApplyWorkerStateUpdate(dataDir, homeDir, WorkerStateUpdate{
+		AutoSync:            &autoSync,
+		Targets:             []string{"agents"},
+		UpdateEnabledSkills: true,
+		EnabledSkills:       []string{"leapmux", "leapmux-review"},
+		SyncNow:             true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"leapmux", "leapmux-review"}, st.Enabled)
+
+	modifiedPath := filepath.Join(homeDir, ".agents", "skills", "leapmux-review", "SKILL.md")
+	require.NoError(t, os.WriteFile(modifiedPath, []byte("# user edit\n"), 0o644))
+
+	// Disabling both removes clean leapmux and skips modified leapmux-review.
+	st, err = ApplyWorkerStateUpdate(dataDir, homeDir, WorkerStateUpdate{
+		UpdateEnabledSkills: true,
+		EnabledSkills:       []string{},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, st.Enabled)
+	assert.NoDirExists(t, filepath.Join(homeDir, ".agents", "skills", "leapmux"))
+	assert.FileExists(t, modifiedPath)
+}

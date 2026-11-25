@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -16,81 +17,34 @@ func (svc *Service) watchWorkerSemanticEvents(ctx context.Context, caller channe
 		sendSemanticWatchError(sender, codes.InvalidArgument, "select the agent or terminal event history")
 		return
 	}
-	scope, grant := semanticHistoryReadGrant(tabType)
-	if !caller.Allows(scope) {
-		sendSemanticWatchError(sender, codes.PermissionDenied, "event history requires "+grant)
-		return
-	}
-	journal := svc.semanticEvents.journal.Load()
-	if journal == nil {
-		sendSemanticWatchError(sender, codes.Unavailable, eventjournal.ErrUnavailable.Error())
-		return
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	release, ok := sender.BindStream(semanticWatchControl{cancel: cancel})
-	if !ok {
-		sendSemanticWatchError(sender, codes.FailedPrecondition, "stream binding unavailable")
-		return
-	}
-	defer release()
-
-	checkOwner := func() bool {
-		if !callerIsWorkerOwner(svc, caller.UserID) || !journal.OwnedBy(caller.UserID) {
-			sendSemanticWatchError(sender, codes.PermissionDenied, workerOwnerDenial)
-			return false
-		}
-		return true
-	}
-	if !checkOwner() {
-		return
-	}
-	reader, ready, err := journal.OpenFeed(ctx, tabType, req.GetAfterCursor())
-	if err != nil {
-		reportSemanticWatchError(ctx, sender, err)
-		return
-	}
-	if !checkOwner() {
-		return
-	}
-	readyFrame := &leapmuxv1.WatchWorkerSemanticEventsResponse{Event: &leapmuxv1.WatchWorkerSemanticEventsResponse_Ready{Ready: ready}}
-	if !sendSemanticWatchFrame(sender, readyFrame, false) {
-		return
-	}
-	after := ready.GetAfterSequence()
-	for ctx.Err() == nil && checkOwner() {
-		frames, changed, err := reader.Read(ctx, after)
-		if err != nil {
-			reportSemanticWatchError(ctx, sender, err)
-			return
-		}
-		for _, frame := range frames {
-			if ctx.Err() != nil || !checkOwner() {
-				return
+	streamSemanticEvents(svc, ctx, caller, tabType, sender, semanticFrameOps[*leapmuxv1.WatchWorkerSemanticEventsResponse]{
+		open: func(ctx context.Context, journal *eventjournal.Journal) (func(context.Context, int64) ([]*leapmuxv1.WatchWorkerSemanticEventsResponse, <-chan struct{}, error), proto.Message, int64, error) {
+			reader, ready, err := journal.OpenFeed(ctx, tabType, req.GetAfterCursor())
+			if err != nil {
+				return nil, nil, 0, err
 			}
+			return reader.Read, &leapmuxv1.WatchWorkerSemanticEventsResponse{Event: &leapmuxv1.WatchWorkerSemanticEventsResponse_Ready{Ready: ready}}, ready.GetAfterSequence(), nil
+		},
+		requestBinding: func(frame *leapmuxv1.WatchWorkerSemanticEventsResponse) (semanticRequestHandleTarget, bool) {
 			record := frame.GetRecord()
-			if request := record.GetFact().GetAgentRequest(); request != nil {
-				handle, err := svc.currentSemanticRequestHandle(ctx, journal, record.GetTab().GetTabId(), request)
-				if err != nil {
-					reportSemanticWatchError(ctx, sender, err)
-					return
-				}
-				record.CurrentRequestHandle = handle
+			request := record.GetFact().GetAgentRequest()
+			if request == nil {
+				return semanticRequestHandleTarget{}, false
 			}
-			if !checkOwner() || !sendSemanticWatchFrame(sender, frame, false) {
-				return
-			}
+			return semanticRequestHandleTarget{
+				agentID:   record.GetTab().GetTabId(),
+				request:   request,
+				setHandle: func(handle string) { record.CurrentRequestHandle = handle },
+			}, true
+		},
+		isFinished: func(*leapmuxv1.WatchWorkerSemanticEventsResponse) bool {
+			return false
+		},
+		nextAfter: func(frame *leapmuxv1.WatchWorkerSemanticEventsResponse) int64 {
 			if gap := frame.GetGap(); gap != nil {
-				after = gap.GetResumeAfterSequence()
-			} else {
-				after = record.GetSequence()
+				return gap.GetResumeAfterSequence()
 			}
-		}
-		if len(frames) == 0 {
-			select {
-			case <-ctx.Done():
-			case <-changed:
-			}
-		}
-	}
+			return frame.GetRecord().GetSequence()
+		},
+	})
 }

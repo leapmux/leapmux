@@ -56,7 +56,7 @@ func closedControlResponseState(ctx context.Context, queries *db.Queries, agentI
 func (svc *Service) recordControlResponse(currentAgent db.Agent, request *leapmuxv1.RecordControlResponseRequest) (*leapmuxv1.RecordControlResponseResponse, error) {
 	requestID, claimToken := request.GetRequestId(), request.GetClaimToken()
 	if requestID == "" {
-		return nil, errors.New("the control request ID is missing")
+		return nil, invalidControlArgument("the control request ID is missing")
 	}
 	finish, err := svc.admitAgentMutation(bgCtx(), currentAgent)
 	if errors.Is(err, errAgentPublicationClosed) {
@@ -88,10 +88,10 @@ func (svc *Service) recordControlResponse(currentAgent db.Agent, request *leapmu
 // that AnswerControl read and the provider answered.
 func (svc *Service) deliverControlAnswer(currentAgent db.Agent, requestID string, answer workerAnswer) (leapmuxv1.ControlResponseState, string, error) {
 	if requestID == "" {
-		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, "", errors.New("the control request ID is missing")
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, "", invalidControlArgument("the control request ID is missing")
 	}
 	if decodedID := svc.Agents.Registry().Plugin(currentAgent.AgentProvider).ControlResponseRequestID(answer.content); decodedID != requestID {
-		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, "", fmt.Errorf("the answer addresses the request %q, not %q", decodedID, requestID)
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, "", invalidControlArgument(fmt.Sprintf("the answer addresses the request %q, not %q", decodedID, requestID))
 	}
 	state, errText := svc.reportControlResponseState(currentAgent, requestID, answer.claimToken, svc.processControlAnswer(currentAgent, answer))
 	return state, errText, nil
@@ -142,12 +142,10 @@ func (svc *Service) broadcastControlResponseState(currentAgent db.Agent, request
 		if answer.State != storedStateDelivered {
 			return
 		}
-		request = storedControlRequest{RequestID: requestID, ClaimToken: claimToken, Payload: answer.RequestPayload, AgentSessionID: answer.AgentSessionID, SourceSeq: answer.SourceSeq, NonBlocking: answer.NonBlocking}
+		request = storedControlFromAnswer(answer)
 		provider = answer.AgentProvider
 	}
-	event, stateErr := buildAgentControlRequest(svc.Output, svc.Agents.Registry().Plugin(provider), currentAgent.ID, provider, agent.ControlRequest{
-		RequestID: requestID, Payload: request.Payload, SourceSeq: request.SourceSeq, AgentSessionID: request.AgentSessionID, NonBlocking: request.NonBlocking,
-	}, claimToken)
+	event, stateErr := buildAgentControlRequest(svc.Output, svc.Agents.Registry().Plugin(provider), currentAgent.ID, provider, request.controlRequest(), claimToken)
 	if stateErr != nil {
 		slog.Error("could not read the control response state", "agent_id", currentAgent.ID, "request_id", requestID, "error", stateErr)
 	}

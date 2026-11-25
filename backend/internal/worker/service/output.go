@@ -1469,7 +1469,7 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 //
 // A child sink refuses. The queue steers a subagent's input through
 // ChildSteerer.SteerChildInput, which states no queue item, so no steer of a
-// subagent can name the item to take back.
+// subagent can specify the item to take back.
 func (s *agentOutputSink) RequeueDroppedInput(dropped agent.SteerRequest) error {
 	if s.root != nil {
 		return fmt.Errorf("requeue dropped input: a steer of subagent %s states no queue item", s.agentID)
@@ -1769,14 +1769,8 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		}
 		current, hasCurrent := s.h.controls.getBlocking(s.agentID, requestID)
 		claimToken := request.InstanceID
-		if claimToken != "" {
-			if hasExistingSQL && existingSQL.ClaimToken == claimToken {
-				return errors.New("the control request instance changed without a new instance ID")
-			}
-			if hasCurrent && current.ClaimToken == claimToken &&
-				(!bytes.Equal(current.Payload, payload) || current.AgentSessionID != request.AgentSessionID) {
-				return errors.New("the control request instance changed without a new instance ID")
-			}
+		if err := validateControlInstanceReuse(claimToken, hasExistingSQL, existingSQL.ClaimToken, hasCurrent, current.ClaimToken, current.Payload, current.AgentSessionID, payload, request.AgentSessionID); err != nil {
+			return err
 		}
 		var deletedSQL db.ControlRequest
 		var deletedSQLRow bool
@@ -1827,12 +1821,8 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			}
 			return nil
 		}
-		if hasCurrent && current.ClaimToken != "" && current.ClaimToken != stored.ClaimToken {
-			publication.enqueueCancellation(s.h, s.agentID, requestID, current.ClaimToken)
-		}
-		if deletedSQLRow && deletedSQL.ClaimToken != "" && deletedSQL.ClaimToken != stored.ClaimToken {
-			publication.enqueueCancellation(s.h, s.agentID, requestID, deletedSQL.ClaimToken)
-		}
+		enqueueReplacedClaimCancellation(&publication, s.h, s.agentID, requestID, hasCurrent, current.ClaimToken, stored.ClaimToken)
+		enqueueReplacedClaimCancellation(&publication, s.h, s.agentID, requestID, deletedSQLRow, deletedSQL.ClaimToken, stored.ClaimToken)
 		storedClaimToken = stored.ClaimToken
 		storedSourceSeq = stored.SourceSeq
 		storedSessionID = stored.AgentSessionID
@@ -1856,14 +1846,9 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			return nil
 		}
 		claimToken := request.InstanceID
-		if claimToken != "" {
-			if existingBlocking, hasBlocking := s.h.controls.getBlocking(s.agentID, requestID); hasBlocking && existingBlocking.ClaimToken == claimToken {
-				return errors.New("the control request instance changed without a new instance ID")
-			}
-			if hasCurrent && current.ClaimToken == claimToken &&
-				(!bytes.Equal(current.Payload, payload) || current.AgentSessionID != request.AgentSessionID) {
-				return errors.New("the control request instance changed without a new instance ID")
-			}
+		existingBlocking, hasBlocking := s.h.controls.getBlocking(s.agentID, requestID)
+		if err := validateControlInstanceReuse(claimToken, hasBlocking, existingBlocking.ClaimToken, hasCurrent, current.ClaimToken, current.Payload, current.AgentSessionID, payload, request.AgentSessionID); err != nil {
+			return err
 		}
 		if claimToken == "" {
 			claimToken = id.Generate()
@@ -1892,9 +1877,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			}
 			return nil
 		}
-		if hasCurrent && current.ClaimToken != "" && current.ClaimToken != stored.ClaimToken {
-			publication.enqueueCancellation(s.h, s.agentID, requestID, current.ClaimToken)
-		}
+		enqueueReplacedClaimCancellation(&publication, s.h, s.agentID, requestID, hasCurrent, current.ClaimToken, stored.ClaimToken)
 		// Only after the durable write commits and publisher ownership still holds,
 		// drop any same-requestID blocking entry from memory to keep (agentID, requestID) unique.
 		if removedBlocking, ok := s.h.controls.deleteBlocking(s.agentID, requestID, ""); ok {
@@ -1932,6 +1915,42 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		s.h.watcher.EnqueueAgentEventLiveOnly(s.agentID, event)
 	}
 	return nil
+}
+
+func validateControlInstanceReuse(
+	claimToken string,
+	hasOtherStore bool,
+	otherStoreClaim string,
+	hasCurrent bool,
+	currentClaim string,
+	currentPayload []byte,
+	currentSessionID string,
+	payload []byte,
+	sessionID string,
+) error {
+	if claimToken == "" {
+		return nil
+	}
+	if hasOtherStore && otherStoreClaim == claimToken {
+		return errors.New("the control request instance changed without a new instance ID")
+	}
+	if hasCurrent && currentClaim == claimToken &&
+		(!bytes.Equal(currentPayload, payload) || currentSessionID != sessionID) {
+		return errors.New("the control request instance changed without a new instance ID")
+	}
+	return nil
+}
+
+func enqueueReplacedClaimCancellation(
+	publication *controlPublication,
+	h *OutputHandler,
+	agentID, requestID string,
+	hasOld bool,
+	oldClaim, newClaim string,
+) {
+	if hasOld && oldClaim != "" && oldClaim != newClaim {
+		publication.enqueueCancellation(h, agentID, requestID, oldClaim)
+	}
 }
 
 func (s *agentOutputSink) restoreDeletedNonBlockingControl(row db.ControlRequest) error {
@@ -3008,6 +3027,19 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 	}
 }
 
+func (s *agentOutputSink) mergedSessionInfo() map[string]interface{} {
+	info := s.sessionInfoSnapshot()
+	if info == nil {
+		info = make(map[string]interface{})
+	}
+	if s.progress != nil {
+		for key, value := range s.progress.snapshotInfo() {
+			info[key] = value
+		}
+	}
+	return info
+}
+
 // SessionInfoSnapshot returns the agent's current ephemeral session info map
 // (cached fields merged with live progress counters), or nil when no live sink
 // exists for agentID.
@@ -3016,15 +3048,7 @@ func (h *OutputHandler) SessionInfoSnapshot(agentID string) map[string]interface
 	if sink == nil {
 		return nil
 	}
-	info := sink.sessionInfoSnapshot()
-	if info == nil {
-		info = make(map[string]interface{})
-	}
-	if sink.progress != nil {
-		for key, value := range sink.progress.snapshotInfo() {
-			info[key] = value
-		}
-	}
+	info := sink.mergedSessionInfo()
 	if checks := sink.permissionCheckSnapshots(); len(checks) > 0 {
 		info[contracts.SessionInfoKeyRunningTool] = checks[len(checks)-1]
 	}
@@ -3040,15 +3064,7 @@ func (h *OutputHandler) SessionInfoReplayEvents(agentID string) []*leapmuxv1.Age
 	if sink == nil {
 		return nil
 	}
-	info := sink.sessionInfoSnapshot()
-	if info == nil {
-		info = make(map[string]interface{})
-	}
-	if sink.progress != nil {
-		for key, value := range sink.progress.snapshotInfo() {
-			info[key] = value
-		}
-	}
+	info := sink.mergedSessionInfo()
 	var events []*leapmuxv1.AgentEvent
 	if len(info) > 0 {
 		events = append(events, sessionInfoEvent(agentID, info))

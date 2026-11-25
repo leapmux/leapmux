@@ -601,3 +601,49 @@ func TestAgentReplyEnded(t *testing.T) {
 		})
 	}
 }
+
+func TestPageExactInputReply_MidPagingCanonicalTransitionRestartsCleanly(t *testing.T) {
+	t.Parallel()
+	call := 0
+	rows, err := pageExactInputReply(func(req *leapmuxv1.ListAgentMessagesRequest) (*leapmuxv1.ListAgentMessagesResponse, error) {
+		call++
+		switch call {
+		case 1:
+			assert.Nil(t, req.ReplyCursorCanonical)
+			assert.Zero(t, req.GetReplyCursor())
+			return &leapmuxv1.ListAgentMessagesResponse{
+				Messages:        []*leapmuxv1.AgentChatMessage{{Id: "pre-1", Seq: 50}},
+				HasMore:         true,
+				NextReplyCursor: 50,
+				ReplyCanonical:  false,
+			}, nil
+		case 2:
+			require.NotNil(t, req.ReplyCursorCanonical)
+			assert.False(t, *req.ReplyCursorCanonical)
+			assert.Equal(t, int64(50), req.GetReplyCursor())
+			// Turn became canonical between page 1 and page 2: Worker restarted at ordinal 0.
+			return &leapmuxv1.ListAgentMessagesResponse{
+				Messages:        []*leapmuxv1.AgentChatMessage{{Id: "canon-1", Seq: 50}},
+				HasMore:         true,
+				NextReplyCursor: 1,
+				ReplyCanonical:  true,
+			}, nil
+		case 3:
+			require.NotNil(t, req.ReplyCursorCanonical)
+			assert.True(t, *req.ReplyCursorCanonical)
+			assert.Equal(t, int64(1), req.GetReplyCursor())
+			return &leapmuxv1.ListAgentMessagesResponse{
+				Messages:       []*leapmuxv1.AgentChatMessage{{Id: "canon-2", Seq: 51}},
+				HasMore:        false,
+				ReplyCanonical: true,
+			}, nil
+		default:
+			t.Fatalf("unexpected page call %d", call)
+			return nil, nil
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "canon-1", rows[0].GetId())
+	assert.Equal(t, "canon-2", rows[1].GetId())
+}

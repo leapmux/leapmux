@@ -90,10 +90,7 @@ func (svc *Service) finalizeControlResponse(ctx context.Context, answer db.Contr
 	}
 	var write *messageWrite
 	if plan.needsTranscriptRow() {
-		prompt := controlRequestPrompt(svc.Queries, svc.Agents.Registry().Plugin(provider), agentID, agent.ControlRequest{
-			RequestID: plan.requestMeta.RequestID, Payload: plan.requestMeta.Payload, SourceSeq: plan.requestMeta.SourceSeq,
-			AgentSessionID: plan.requestMeta.AgentSessionID, NonBlocking: plan.requestMeta.NonBlocking,
-		})
+		prompt := controlRequestPrompt(svc.Queries, svc.Agents.Registry().Plugin(provider), agentID, plan.requestMeta.controlRequest())
 		content, err := controlResponseMessageContent(plan, prompt)
 		if err != nil {
 			return err
@@ -115,6 +112,8 @@ func (svc *Service) finalizeControlResponse(ctx context.Context, answer db.Contr
 	var seq int64
 	var removedRequestID string
 	apply := func(tx *sql.Tx) error {
+		seq = 0
+		removedRequestID = ""
 		queries := svc.Queries.WithTx(tx)
 		completed, err := completeControlDelivery(ctx, queries, answer.DeliveryID)
 		if err != nil {

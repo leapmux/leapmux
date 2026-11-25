@@ -508,7 +508,8 @@ func InspectAll(targetDir string) []SkillStatus {
 
 // InstallOptions controls Install behavior.
 type InstallOptions struct {
-	Force bool
+	Force         bool
+	SkipProtected bool
 }
 
 // InstallOutcome reports what Install did for one skill.
@@ -590,6 +591,14 @@ func Uninstall(targetDir string, names []string, opts InstallOptions) ([]Install
 			continue
 		}
 		if (st.State == StateModified || st.State == StateUnmanaged) && !opts.Force {
+			if opts.SkipProtected {
+				action := "skipped_modified"
+				if st.State == StateUnmanaged {
+					action = "skipped_unmanaged"
+				}
+				outcomes = append(outcomes, InstallOutcome{Name: s.Name, Action: action, Path: st.Path})
+				continue
+			}
 			return nil, fmt.Errorf("skill %q at %s has local edits or is unmanaged (pass --force to remove)", s.Name, st.Path)
 		}
 		if err := os.RemoveAll(skillDir); err != nil {

@@ -29,7 +29,7 @@ func TestSearchAgentMessages_LiteralRegexAndFilters(t *testing.T) {
 		ID:                             "m1",
 		AgentID:                        "agent-a",
 		Source:                         leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:                        []byte(`{"text":"Investigate flaky checkout race condition"}`),
+		Content:                        []byte(`{"content":"Investigate flaky checkout race condition"}`),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 	})
@@ -38,7 +38,7 @@ func TestSearchAgentMessages_LiteralRegexAndFilters(t *testing.T) {
 		ID:                             "m2",
 		AgentID:                        "agent-b",
 		Source:                         leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:                        []byte(`{"text":"Deploy version 2.4.1 to staging"}`),
+		Content:                        []byte(`{"content":"Deploy version 2.4.1 to staging"}`),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 	})
@@ -278,26 +278,69 @@ func TestPhase4_TerminalSendInputIdempotency(t *testing.T) {
 	var c terminalSendInputReceipts
 	req1 := &leapmuxv1.SendInputRequest{TerminalId: "t1", Data: []byte("echo hi\n"), RequestId: "req-1"}
 	fp1 := terminalSendInputFingerprint(req1)
-	outcome, entry, err := c.begin("t1", "req-1", fp1)
-	require.NoError(t, err)
-	assert.Equal(t, sendInputNew, outcome)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan sendInputReceiptOutcome, 1)
+	go func() {
+		o, err := c.execute(context.Background(), "t1", "req-1", fp1, func() error {
+			close(started)
+			<-release
+			return nil
+		})
+		require.NoError(t, err)
+		firstDone <- o
+	}()
+	<-started
+
+	// WRAPPERS-1: Filling the 1024-entry completed FIFO must not evict the in-flight entry.
+	for i := range maxTerminalSendInputReceipts + 16 {
+		id := strings.Repeat("k", 1) + string(rune('a'+(i%26))) + "-" + string(rune('0'+(i/26)%10)) + "-" + string(rune('0'+(i/260)%10)) + "-" + string(rune('0'+(i/2600)%10))
+		o, err := c.execute(context.Background(), "t1", id, fp1, func() error { return nil })
+		require.NoError(t, err)
+		require.Equal(t, sendInputNew, o)
+	}
 
 	// A concurrent retry while the first call is still in flight must wait and
-	// observe sendInputDuplicate once finish(nil) runs — never sendInputNew.
+	// observe sendInputDuplicate once fn returns nil — never sendInputNew.
 	dupDone := make(chan sendInputReceiptOutcome, 1)
 	go func() {
-		o, _, _ := c.begin("t1", "req-1", fp1)
+		o, err := c.execute(context.Background(), "t1", "req-1", fp1, func() error {
+			t.Error("duplicate retry must not execute fn")
+			return nil
+		})
+		require.NoError(t, err)
 		dupDone <- o
 	}()
+
+	// TRAPS-13: Canceled context while waiting on an in-flight duplicate returns promptly.
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := c.execute(canceledCtx, "t1", "req-1", fp1, func() error { return nil })
+	require.ErrorIs(t, err, context.Canceled)
+
 	// Different payload with the same request_id conflicts immediately.
 	req2 := &leapmuxv1.SendInputRequest{TerminalId: "t1", Data: []byte("rm -rf /\n"), RequestId: "req-1"}
-	conflictOutcome, _, _ := c.begin("t1", "req-1", terminalSendInputFingerprint(req2))
+	conflictOutcome, err := c.execute(context.Background(), "t1", "req-1", terminalSendInputFingerprint(req2), func() error { return nil })
+	require.NoError(t, err)
 	assert.Equal(t, sendInputConflict, conflictOutcome)
 
-	c.finish("t1", "req-1", entry, nil)
+	close(release)
+	assert.Equal(t, sendInputNew, <-firstDone)
 	assert.Equal(t, sendInputDuplicate, <-dupDone)
 
 	// Subsequent retry after completion also observes duplicate.
-	afterOutcome, _, _ := c.begin("t1", "req-1", fp1)
+	afterOutcome, err := c.execute(context.Background(), "t1", "req-1", fp1, func() error { return nil })
+	require.NoError(t, err)
 	assert.Equal(t, sendInputDuplicate, afterOutcome)
+
+	// TRAPS-13: Panic in fn releases the reservation so a later retry runs cleanly.
+	require.Panics(t, func() {
+		_, _ = c.execute(context.Background(), "t1", "req-panic", fp1, func() error {
+			panic("boom")
+		})
+	})
+	o, err := c.execute(context.Background(), "t1", "req-panic", fp1, func() error { return nil })
+	require.NoError(t, err)
+	assert.Equal(t, sendInputNew, o)
 }

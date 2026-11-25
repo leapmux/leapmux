@@ -1,8 +1,6 @@
 package service
 
 import (
-	"errors"
-
 	"golang.org/x/sys/windows"
 )
 
@@ -23,13 +21,14 @@ func worktreeDirectoryIdentity(path string) (worktreeDirectoryID, error) {
 		return worktreeDirectoryID{}, err
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 || info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return worktreeDirectoryID{}, errors.New("the selected Git path is no longer a directory")
+		return worktreeDirectoryID{}, errSelectedWorktreeNotDirectory
 	}
-	if info.CreationTime.HighDateTime == 0 && info.CreationTime.LowDateTime == 0 {
-		return worktreeDirectoryID{}, nil
+	id := worktreeDirectoryID{
+		Volume:    uint64(info.VolumeSerialNumber),
+		FileIndex: uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
 	}
-	return worktreeDirectoryID{
-		Volume: uint64(info.VolumeSerialNumber), FileIndex: uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
-		CreatedAtUnixNanos: info.CreationTime.Nanoseconds(),
-	}, nil
+	if info.CreationTime.HighDateTime != 0 || info.CreationTime.LowDateTime != 0 {
+		id.CreatedAtUnixNanos = info.CreationTime.Nanoseconds()
+	}
+	return id, nil
 }

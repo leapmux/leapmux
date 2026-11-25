@@ -145,21 +145,25 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 		if r.GetIncludeDescendants() {
 			seen := make(map[string]bool, len(tabIDs))
 			expanded := make([]string, 0, len(tabIDs))
+			parentIDs := make([]sql.NullString, 0, len(tabIDs))
 			for _, tid := range tabIDs {
-				if !seen[tid] {
-					seen[tid] = true
-					expanded = append(expanded, tid)
-				}
-				descIDs, descErr := svc.Queries.ListDescendantAgentIDs(ctx, sql.NullString{String: tid, Valid: true})
-				if descErr != nil {
-					slog.Warn("failed to list descendant agents", "agent_id", tid, "error", descErr)
+				if seen[tid] {
 					continue
 				}
-				for _, did := range descIDs {
-					if !seen[did] {
-						seen[did] = true
-						expanded = append(expanded, did)
-					}
+				seen[tid] = true
+				expanded = append(expanded, tid)
+				parentIDs = append(parentIDs, sql.NullString{String: tid, Valid: true})
+			}
+			descIDs, descErr := svc.Queries.ListDescendantAgentIDsByParentIDs(ctx, parentIDs)
+			if descErr != nil {
+				slog.Error("failed to list descendant agents", "tab_ids", tabIDs, "error", descErr)
+				sendInternalError(sender, "failed to list descendant agents")
+				return
+			}
+			for _, did := range descIDs {
+				if !seen[did] {
+					seen[did] = true
+					expanded = append(expanded, did)
 				}
 			}
 			queryIDs = expanded
@@ -317,6 +321,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
 			var dbMessages []db.Message
 			var nextReplyCursor int64
+			var replyCanonical bool
 			var queryErr error
 			if inputID := r.GetReplyInputId(); inputID != "" {
 				if r.GetAnchor() != leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST ||
@@ -324,9 +329,9 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 					sendInvalidArgument(sender, "select an oldest page and use only the reply cursor")
 					return
 				}
-				dbMessages, nextReplyCursor, queryErr = svc.listExactInputReply(ctx, agentID, inputID, r.GetReplyCursor(), plan.limit)
+				dbMessages, nextReplyCursor, replyCanonical, queryErr = svc.listExactInputReply(ctx, agentID, inputID, r.GetReplyCursor(), r.ReplyCursorCanonical, plan.limit)
 			} else {
-				if r.GetReplyCursor() != 0 {
+				if r.GetReplyCursor() != 0 || r.ReplyCursorCanonical != nil {
 					sendInvalidArgument(sender, "reply_cursor requires an input ID")
 					return
 				}
@@ -351,14 +356,14 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 			protoMessages := make([]*leapmuxv1.AgentChatMessage, 0, len(dbMessages))
 			for i := range dbMessages {
-				message, err := messageToProto(&dbMessages[i], agentRow.AgentProvider)
+				message, supplement, err := messageToProtoWithSupplement(&dbMessages[i], agentRow.AgentProvider)
 				if err != nil {
 					slog.Error("prepare the listed transcript message", "agent_id", agentID, "message_id", dbMessages[i].ID, "error", err)
 					sendInternalError(sender, "failed to prepare transcript message")
 					return
 				}
 				if r.GetIncludeReplyText() {
-					message.ReplyText = svc.replyTextOf(message)
+					message.ReplyText = svc.replyTextOf(message, supplement)
 				}
 				protoMessages = append(protoMessages, message)
 			}
@@ -385,6 +390,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				BackgroundTasks: backgroundTasks,
 				Goal:            goal,
 				NextReplyCursor: nextReplyCursor,
+				ReplyCanonical:  replyCanonical,
 			})
 		})
 
@@ -695,7 +701,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RecordControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			response, err := svc.recordControlResponse(dbAgent, r)
 			if err != nil {
-				sendInvalidArgument(sender, err.Error())
+				sendControlError(sender, err)
 				return
 			}
 
@@ -717,13 +723,27 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// recording does.
 	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.AnswerControlRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
-			if caller.SourceTabID != "" && caller.SourceTabID == dbAgent.ID {
-				sendPermissionDenied(sender, "an agent cannot answer its own requests")
-				return
+			if caller.SourceTabID != "" {
+				if caller.SourceTabID == dbAgent.ID {
+					sendPermissionDenied(sender, "an agent cannot answer its own requests")
+					return
+				}
+				if dbAgent.ParentAgentID.Valid && dbAgent.ParentAgentID.String != "" {
+					rootID, err := svc.Queries.GetRootAgentID(bgCtx(), dbAgent.ID)
+					if err != nil {
+						slog.Error("failed to resolve root agent for control answer", "agent_id", dbAgent.ID, "error", err)
+						sendInternalError(sender, "failed to verify control answer caller")
+						return
+					}
+					if rootID == caller.SourceTabID {
+						sendPermissionDenied(sender, "an agent cannot answer its own requests")
+						return
+					}
+				}
 			}
 			response, err := svc.answerControl(dbAgent, r)
 			if err != nil {
-				sendInvalidArgument(sender, err.Error())
+				sendControlError(sender, err)
 				return
 			}
 			sendProtoResponse(sender, response)
@@ -1349,7 +1369,7 @@ func (svc *Service) replayAgentCatchUp(
 	} else {
 		for _, cr := range controlReqs {
 			replayedControls[controlRequestInstance{RequestID: cr.RequestID, ClaimToken: cr.ClaimToken}] = struct{}{}
-			request, stateErr := buildAgentControlRequest(svc.Output, svc.Agents.Registry().Plugin(dbAgent.AgentProvider), agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID, NonBlocking: cr.NonBlocking}, cr.ClaimToken)
+			request, stateErr := buildAgentControlRequest(svc.Output, svc.Agents.Registry().Plugin(dbAgent.AgentProvider), agentID, dbAgent.AgentProvider, cr.controlRequest(), cr.ClaimToken)
 			if stateErr != nil {
 				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", cr.RequestID, "error", stateErr)
 			}
@@ -1373,9 +1393,7 @@ func (svc *Service) replayAgentCatchUp(
 			if _, exists := replayedControls[controlRequestInstance{RequestID: answer.RequestID, ClaimToken: answer.ClaimToken}]; exists {
 				continue
 			}
-			request, stateErr := buildAgentControlRequest(svc.Output, svc.Agents.Registry().Plugin(answer.AgentProvider), agentID, answer.AgentProvider, agent.ControlRequest{
-				RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID, NonBlocking: answer.NonBlocking,
-			}, answer.ClaimToken)
+			request, stateErr := buildAgentControlRequest(svc.Output, svc.Agents.Registry().Plugin(answer.AgentProvider), agentID, answer.AgentProvider, storedControlFromAnswer(answer).controlRequest(), answer.ClaimToken)
 			if stateErr != nil {
 				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", answer.RequestID, "error", stateErr)
 			}
@@ -4468,11 +4486,11 @@ func reverseMessages(msgs []db.Message) {
 }
 
 // replyTextOf reads the reply text of a listed agent row through its
-// provider, from the same content and rendering supplement that the browser
-// reads. A row of another source, or one that holds no reply, gives nil. A
-// row whose bytes do not decode gives nil too: the page still lists it, and
-// the caller sees no reply in it.
-func (svc *Service) replyTextOf(message *leapmuxv1.AgentChatMessage) *string {
+// provider, from the same content and uncompressed rendering supplement that
+// the browser reads. A row of another source, or one that holds no reply, gives
+// nil. A row whose bytes do not decode gives nil too: the page still lists it,
+// and the caller sees no reply in it.
+func (svc *Service) replyTextOf(message *leapmuxv1.AgentChatMessage, supplemental []byte) *string {
 	if message.GetSource() != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
 		return nil
 	}
@@ -4480,14 +4498,6 @@ func (svc *Service) replyTextOf(message *leapmuxv1.AgentChatMessage) *string {
 	if err != nil {
 		slog.Warn("decode the content of a listed message for its reply text", "message_id", message.GetId(), "error", err)
 		return nil
-	}
-	var supplemental []byte
-	if len(message.GetSupplementalContent()) > 0 {
-		supplemental, err = msgcodec.Decompress(message.GetSupplementalContent(), message.GetSupplementalContentCompression())
-		if err != nil {
-			slog.Warn("decode the supplement of a listed message for its reply text", "message_id", message.GetId(), "error", err)
-			return nil
-		}
 	}
 	stored, err := agent.DecodeMessageSupplement(content, supplemental)
 	if err != nil {
@@ -4506,34 +4516,40 @@ func (svc *Service) replyTextOf(message *leapmuxv1.AgentChatMessage) *string {
 // The provider is the message's agent's: an agent never changes provider, so
 // no message row stores a copy of it.
 func messageToProto(m *db.Message, provider leapmuxv1.AgentProvider) (*leapmuxv1.AgentChatMessage, error) {
+	msg, _, err := messageToProtoWithSupplement(m, provider)
+	return msg, err
+}
+
+func messageToProtoWithSupplement(m *db.Message, provider leapmuxv1.AgentProvider) (*leapmuxv1.AgentChatMessage, []byte, error) {
+	var projected []byte
 	var rendering []byte
 	compression := leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
 	if len(m.SupplementalContent) != 0 {
 		stored, err := msgcodec.Decompress(m.SupplementalContent, m.SupplementalContentCompression)
 		if err != nil {
-			return nil, fmt.Errorf("decode the stored supplement of message %q: %w", m.ID, err)
+			return nil, nil, fmt.Errorf("decode the stored supplement of message %q: %w", m.ID, err)
 		}
 		parsed, err := agent.ParseStoredMessageSupplement(stored)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		messageCount := 0
 		if parsed.HasNotificationReduction() {
 			content, err := msgcodec.Decompress(m.Content, m.ContentCompression)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			wrapper, err := unwrapNotifContent(content)
 			if err != nil || wrapper.Type != notifThreadWrapperType {
-				return nil, errors.New("the stored notification reduction has no matching thread")
+				return nil, nil, errors.New("the stored notification reduction has no matching thread")
 			}
 			messageCount = len(wrapper.Messages)
 		}
-		rendering, err = parsed.Project(messageCount)
+		projected, err = parsed.Project(messageCount)
 		if err != nil {
-			return nil, fmt.Errorf("project the stored supplement of message %q: %w", m.ID, err)
+			return nil, nil, fmt.Errorf("project the stored supplement of message %q: %w", m.ID, err)
 		}
-		rendering, compression = msgcodec.Compress(rendering)
+		rendering, compression = msgcodec.Compress(projected)
 	}
 	return &leapmuxv1.AgentChatMessage{
 		TranscriptOnly:                 m.TranscriptOnly,
@@ -4557,7 +4573,7 @@ func messageToProto(m *db.Message, provider leapmuxv1.AgentProvider) (*leapmuxv1
 		MarkType:                       workerdb.StorageEnumValue(m.MarkType),
 		AssembledKind:                  workerdb.StorageEnumValue(m.AssembledKind),
 		Completion:                     workerdb.StorageEnumValue(m.Completion),
-	}, nil
+	}, projected, nil
 }
 
 // tabTypeReadScope returns the scope that governs the facts a tab of this kind
@@ -4610,8 +4626,8 @@ func callerReadsTabView(caller channel.Caller, tabType leapmuxv1.TabType) bool {
 //
 // A notification, a reveal and a tab status act on the user's view of the
 // workspace, as the RPCs that send them (which take workspace:write) do, so
-// workspace:read governs all three. A reveal and a status also name one tab,
-// so the scope of its kind governs them too (see callerReadsTabView).
+// workspace:read governs all three. A reveal and a status also identify one
+// tab, so the scope of its kind governs them too (see callerReadsTabView).
 //
 // A payload this binary cannot parse fails closed. It cannot state its kind,
 // so it cannot state which scope governs it.

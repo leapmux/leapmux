@@ -91,14 +91,23 @@ func (svc *Service) resolveGitWorktree(ctx context.Context, repoDir string, sele
 		if entry.Bare || branch != "" && entry.Branch != branch {
 			continue
 		}
-		canonicalPath, err := canonicalGitDirectory(entry.Path)
-		if errors.Is(err, os.ErrNotExist) || err != nil && path != "" && !pathutil.SamePath(path, entry.Path) {
-			continue
+		var canonicalPath string
+		if path != "" && pathutil.SamePath(path, entry.Path) {
+			canonicalPath = path
+		} else {
+			var err error
+			canonicalPath, err = canonicalGitDirectory(entry.Path)
+			if errors.Is(err, os.ErrNotExist) || err != nil && path != "" {
+				continue
+			}
+			if err != nil {
+				return nil, selected, fmt.Errorf("%w: %w", errGitWorktreeLookup, err)
+			}
+			if path != "" && !pathutil.SamePath(path, canonicalPath) {
+				continue
+			}
 		}
-		if err != nil {
-			return nil, selected, fmt.Errorf("%w: %w", errGitWorktreeLookup, err)
-		}
-		if path != "" && !pathutil.SamePath(path, canonicalPath) || slices.ContainsFunc(matches, func(match string) bool {
+		if slices.ContainsFunc(matches, func(match string) bool {
 			return pathutil.SamePath(match, canonicalPath)
 		}) {
 			continue
@@ -106,6 +115,9 @@ func (svc *Service) resolveGitWorktree(ctx context.Context, repoDir string, sele
 		matches = append(matches, canonicalPath)
 		selected = entry
 		selected.Path = canonicalPath
+		if path != "" {
+			break
+		}
 	}
 	switch len(matches) {
 	case 0:
@@ -137,7 +149,7 @@ func (svc *Service) resolveCallingWorktree(ctx context.Context, caller channel.C
 	}
 	var dir string
 	for _, kind := range []leapmuxv1.TabType{leapmuxv1.TabType_TAB_TYPE_AGENT, leapmuxv1.TabType_TAB_TYPE_TERMINAL} {
-		candidate, err := svc.getTabWorkingDir(ctx, kind, caller.SourceTabID, caller.UserID.String())
+		candidate, err := svc.readOpenCallingTabWorkingDir(ctx, kind, caller.SourceTabID)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -160,6 +172,36 @@ func (svc *Service) resolveCallingWorktree(ctx context.Context, caller channel.C
 		return nil, fmt.Errorf("%w: read the calling tab's checkout: %w", errGitWorktreeLookup, err)
 	}
 	return &leapmuxv1.GitWorktreeSelector{Selector: &leapmuxv1.GitWorktreeSelector_Path{Path: root}}, nil
+}
+
+func (svc *Service) readOpenCallingTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (string, error) {
+	var dir string
+	switch tabType {
+	case leapmuxv1.TabType_TAB_TYPE_AGENT:
+		row, err := svc.Queries.GetAgentByID(ctx, tabID)
+		if err != nil {
+			return "", err
+		}
+		if row.ClosedAt.Valid {
+			return "", sql.ErrNoRows
+		}
+		dir = row.WorkingDir
+	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
+		row, err := svc.Queries.GetTerminal(ctx, tabID)
+		if err != nil {
+			return "", err
+		}
+		if row.ClosedAt.Valid {
+			return "", sql.ErrNoRows
+		}
+		dir = row.WorkingDir
+	default:
+		return "", sql.ErrNoRows
+	}
+	if dir == "" {
+		return "", fmt.Errorf("tab %q has no working directory recorded: %w", tabID, errNoTabWorkingDir)
+	}
+	return dir, nil
 }
 
 // openGitWorkingDir resolves the repository directory for an existing selection.

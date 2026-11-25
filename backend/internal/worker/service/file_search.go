@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"google.golang.org/grpc/codes"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -31,18 +33,78 @@ const (
 	maxSearchLineBytes      = 16 * 1024       // 16 KiB
 	maxSearchLineTextLength = 500
 	maxWalkedEntries        = 200_000
-	fileSearchTimeout       = 30 * time.Second
 )
 
-var errSearchLimitReached = errors.New("search limit reached")
+var (
+	fileSearchTimeout     = 30 * time.Second
+	errSearchLimitReached = errors.New("search limit reached")
+)
 
 func registerFileSearchHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerFileServiceSearchFilesProcedure, dispatchPlain, svc.handleSearchFiles)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerFileServiceGlobFilesProcedure, dispatchPlain, svc.handleGlobFiles)
 }
 
-func (svc *Service) handleSearchFiles(ctx context.Context, _ channel.Caller, r *leapmuxv1.SearchFilesRequest, sender channel.ResponseWriter) {
-	ctx, cancel := context.WithTimeout(ctx, fileSearchTimeout)
+func resolveSearchLimit(requested, defaultLimit, maxLimit int32) (int, error) {
+	if requested < 0 {
+		return 0, errors.New("limit must not be negative")
+	}
+	limit := int(requested)
+	if limit == 0 {
+		limit = int(defaultLimit)
+	}
+	if limit > int(maxLimit) {
+		limit = int(maxLimit)
+	}
+	return limit, nil
+}
+
+// sendSearchContextError reports a local handler timeout to the caller when the
+// parent RPC context is still open. It returns true whenever searchCtx has ended.
+func sendSearchContextError(parentCtx, searchCtx context.Context, sender channel.ResponseWriter, timeoutMsg string) bool {
+	if searchCtx.Err() == nil {
+		return false
+	}
+	if parentCtx.Err() != nil {
+		return true
+	}
+	_ = sender.SendError(int32(codes.DeadlineExceeded), timeoutMsg)
+	return true
+}
+
+func walkSearchDir(ctx context.Context, rootPath string, skipSymlinks bool, truncated *bool, visit func(p, slashRel string, d fs.DirEntry) error) error {
+	walked := 0
+	return filepath.WalkDir(rootPath, func(p string, d fs.DirEntry, walkErr error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		walked++
+		if walked > maxWalkedEntries {
+			*truncated = true
+			return errSearchLimitReached
+		}
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != rootPath && shouldSkipSearchDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if skipSymlinks && d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		rel, relErr := filepath.Rel(rootPath, p)
+		if relErr != nil {
+			return nil
+		}
+		return visit(p, filepath.ToSlash(rel), d)
+	})
+}
+
+func (svc *Service) handleSearchFiles(parentCtx context.Context, _ channel.Caller, r *leapmuxv1.SearchFilesRequest, sender channel.ResponseWriter) {
+	ctx, cancel := context.WithTimeout(parentCtx, fileSearchTimeout)
 	defer cancel()
 	rootPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 	if err != nil {
@@ -56,21 +118,18 @@ func (svc *Service) handleSearchFiles(ctx context.Context, _ channel.Caller, r *
 		sendInvalidArgument(sender, "pattern is required")
 		return
 	}
-	if r.GetLimit() < 0 {
-		sendInvalidArgument(sender, "limit must not be negative")
+	limit, err := resolveSearchLimit(r.GetLimit(), defaultFileSearchLimit, maxFileSearchLimit)
+	if err != nil {
+		sendInvalidArgument(sender, err.Error())
 		return
 	}
-	limit := int(r.GetLimit())
-	if limit == 0 {
-		limit = defaultFileSearchLimit
-	}
-	if limit > maxFileSearchLimit {
-		limit = maxFileSearchLimit
-	}
 
-	var matcher func(string) bool
-	if r.GetRegex() {
+	var matcher func([]byte) bool
+	if r.GetRegex() || r.GetIgnoreCase() {
 		expr := pattern
+		if !r.GetRegex() {
+			expr = regexp.QuoteMeta(expr)
+		}
 		if r.GetIgnoreCase() {
 			expr = "(?i)" + expr
 		}
@@ -79,19 +138,16 @@ func (svc *Service) handleSearchFiles(ctx context.Context, _ channel.Caller, r *
 			sendInvalidArgument(sender, fmt.Sprintf("invalid regular expression: %v", err))
 			return
 		}
-		matcher = re.MatchString
-	} else if r.GetIgnoreCase() {
-		needle := strings.ToLower(pattern)
-		matcher = func(line string) bool {
-			return strings.Contains(strings.ToLower(line), needle)
-		}
+		matcher = re.Match
 	} else {
-		matcher = func(line string) bool {
-			return strings.Contains(line, pattern)
+		needle := []byte(pattern)
+		matcher = func(line []byte) bool {
+			return bytes.Contains(line, needle)
 		}
 	}
 
 	var globMatcher func(string) bool
+	globHasSlash := false
 	if glob := strings.TrimSpace(r.GetGlob()); glob != "" {
 		gm, err := compileGlobPattern(glob)
 		if err != nil {
@@ -99,6 +155,7 @@ func (svc *Service) handleSearchFiles(ctx context.Context, _ channel.Caller, r *
 			return
 		}
 		globMatcher = gm
+		globHasSlash = strings.Contains(filepath.ToSlash(glob), "/")
 	}
 
 	info, err := os.Stat(rootPath)
@@ -109,12 +166,14 @@ func (svc *Service) handleSearchFiles(ctx context.Context, _ channel.Caller, r *
 
 	var matches []*leapmuxv1.FileSearchMatch
 	truncated := false
+	reader := bufio.NewReaderSize(nil, 8192)
+	lineBuf := make([]byte, 0, 256)
 
-	scanFile := func(filePath, relPath string) error {
+	scanFile := func(filePath, relPath, baseName string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if globMatcher != nil && !globMatcher(relPath) && !globMatcher(filepath.Base(relPath)) {
+		if globMatcher != nil && !globMatcher(relPath) && (globHasSlash || !globMatcher(baseName)) {
 			return nil
 		}
 		fi, err := os.Stat(filePath)
@@ -127,37 +186,39 @@ func (svc *Service) handleSearchFiles(ctx context.Context, _ channel.Caller, r *
 		}
 		defer func() { _ = f.Close() }()
 
-		var probe [512]byte
-		n, readErr := f.Read(probe[:])
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		reader.Reset(f)
+		probe, peekErr := reader.Peek(512)
+		if peekErr != nil && !errors.Is(peekErr, io.EOF) && !errors.Is(peekErr, bufio.ErrBufferFull) {
 			return nil
 		}
-		if bytes.IndexByte(probe[:n], 0) >= 0 {
-			return nil
-		}
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
+		if bytes.IndexByte(probe, 0) >= 0 {
 			return nil
 		}
 
-		reader := bufio.NewReaderSize(f, 8192)
+		safeRelPath := ""
 		lineNo := int32(0)
 		for {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			lineBytes, readLineErr := readBoundedLine(reader, maxSearchLineBytes)
+			var lineBytes []byte
+			var readLineErr error
+			lineBytes, lineBuf, readLineErr = readLimitedLine(reader, maxSearchLineBytes, lineBuf)
 			if len(lineBytes) == 0 && errors.Is(readLineErr, io.EOF) {
 				break
 			}
 			lineNo++
-			line := strings.ToValidUTF8(string(lineBytes), "\uFFFD")
-			if matcher(line) {
+			if matcher(lineBytes) {
 				if len(matches) >= limit {
 					truncated = true
 					return errSearchLimitReached
 				}
+				if safeRelPath == "" {
+					safeRelPath = strings.ToValidUTF8(relPath, "\uFFFD")
+				}
+				line := strings.ToValidUTF8(string(lineBytes), "\uFFFD")
 				matches = append(matches, &leapmuxv1.FileSearchMatch{
-					Path: relPath,
+					Path: safeRelPath,
 					Line: lineNo,
 					Text: truncateRunes(line, maxSearchLineTextLength),
 				})
@@ -173,45 +234,20 @@ func (svc *Service) handleSearchFiles(ctx context.Context, _ channel.Caller, r *
 	}
 
 	if !info.IsDir() {
-		if err := scanFile(rootPath, filepath.Base(rootPath)); err != nil && !errors.Is(err, errSearchLimitReached) {
-			if ctx.Err() != nil {
+		base := filepath.Base(rootPath)
+		if err := scanFile(rootPath, base, base); err != nil && !errors.Is(err, errSearchLimitReached) {
+			if sendSearchContextError(parentCtx, ctx, sender, "file search timed out") {
 				return
 			}
 			sendInternalError(sender, "failed to search file")
 			return
 		}
 	} else {
-		walked := 0
-		walkErr := filepath.WalkDir(rootPath, func(p string, d fs.DirEntry, walkErr error) error {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			walked++
-			if walked > maxWalkedEntries {
-				truncated = true
-				return errSearchLimitReached
-			}
-			if walkErr != nil {
-				return nil
-			}
-			name := d.Name()
-			if d.IsDir() {
-				if p != rootPath && shouldSkipSearchDir(name) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if d.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			rel, relErr := filepath.Rel(rootPath, p)
-			if relErr != nil {
-				return nil
-			}
-			return scanFile(p, filepath.ToSlash(rel))
+		walkErr := walkSearchDir(ctx, rootPath, true, &truncated, func(p, slashRel string, d fs.DirEntry) error {
+			return scanFile(p, slashRel, d.Name())
 		})
 		if walkErr != nil && !errors.Is(walkErr, errSearchLimitReached) {
-			if ctx.Err() != nil {
+			if sendSearchContextError(parentCtx, ctx, sender, "file search timed out") {
 				return
 			}
 			sendInternalError(sender, "failed to search directory")
@@ -225,8 +261,8 @@ func (svc *Service) handleSearchFiles(ctx context.Context, _ channel.Caller, r *
 	})
 }
 
-func (svc *Service) handleGlobFiles(ctx context.Context, _ channel.Caller, r *leapmuxv1.GlobFilesRequest, sender channel.ResponseWriter) {
-	ctx, cancel := context.WithTimeout(ctx, fileSearchTimeout)
+func (svc *Service) handleGlobFiles(parentCtx context.Context, _ channel.Caller, r *leapmuxv1.GlobFilesRequest, sender channel.ResponseWriter) {
+	ctx, cancel := context.WithTimeout(parentCtx, fileSearchTimeout)
 	defer cancel()
 	rootPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 	if err != nil {
@@ -240,16 +276,10 @@ func (svc *Service) handleGlobFiles(ctx context.Context, _ channel.Caller, r *le
 		sendInvalidArgument(sender, "pattern is required")
 		return
 	}
-	if r.GetLimit() < 0 {
-		sendInvalidArgument(sender, "limit must not be negative")
+	limit, err := resolveSearchLimit(r.GetLimit(), defaultFileGlobLimit, maxFileGlobLimit)
+	if err != nil {
+		sendInvalidArgument(sender, err.Error())
 		return
-	}
-	limit := int(r.GetLimit())
-	if limit == 0 {
-		limit = defaultFileGlobLimit
-	}
-	if limit > maxFileGlobLimit {
-		limit = maxFileGlobLimit
 	}
 
 	matchFn, err := compileGlobPattern(pattern)
@@ -271,30 +301,7 @@ func (svc *Service) handleGlobFiles(ctx context.Context, _ channel.Caller, r *le
 
 	var paths []string
 	truncated := false
-	walked := 0
-	walkErr := filepath.WalkDir(rootPath, func(p string, d fs.DirEntry, walkErr error) error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		walked++
-		if walked > maxWalkedEntries {
-			truncated = true
-			return errSearchLimitReached
-		}
-		if walkErr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if p != rootPath && shouldSkipSearchDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, relErr := filepath.Rel(rootPath, p)
-		if relErr != nil {
-			return nil
-		}
-		slashRel := filepath.ToSlash(rel)
+	walkErr := walkSearchDir(ctx, rootPath, false, &truncated, func(_ string, slashRel string, d fs.DirEntry) error {
 		matched := matchFn(slashRel)
 		if !matched && !hasSlash {
 			matched = matchFn(d.Name())
@@ -306,11 +313,11 @@ func (svc *Service) handleGlobFiles(ctx context.Context, _ channel.Caller, r *le
 			truncated = true
 			return errSearchLimitReached
 		}
-		paths = append(paths, slashRel)
+		paths = append(paths, strings.ToValidUTF8(slashRel, "\uFFFD"))
 		return nil
 	})
 	if walkErr != nil && !errors.Is(walkErr, errSearchLimitReached) {
-		if ctx.Err() != nil {
+		if sendSearchContextError(parentCtx, ctx, sender, "glob search timed out") {
 			return
 		}
 		sendInternalError(sender, "failed to walk directory")
@@ -331,6 +338,143 @@ func shouldSkipSearchDir(name string) bool {
 	return false
 }
 
+type globTokenKind uint8
+
+const (
+	globTokLit globTokenKind = iota
+	globTokAnyOne
+	globTokAnyMany
+	globTokClass
+)
+
+type globRange struct {
+	lo, hi rune
+}
+
+type globToken struct {
+	kind    globTokenKind
+	lit     rune
+	negated bool
+	ranges  []globRange
+}
+
+func (tok globToken) matchesRune(r rune) bool {
+	switch tok.kind {
+	case globTokLit:
+		return r == tok.lit
+	case globTokAnyOne:
+		return true
+	case globTokClass:
+		inClass := false
+		for _, rg := range tok.ranges {
+			if r >= rg.lo && r <= rg.hi {
+				inClass = true
+				break
+			}
+		}
+		if tok.negated {
+			return !inClass
+		}
+		return inClass
+	default:
+		return false
+	}
+}
+
+type globSegment struct {
+	doublestar bool
+	tokens     []globToken
+}
+
+func compileGlobSegment(seg string) (globSegment, error) {
+	if seg == "**" {
+		return globSegment{doublestar: true}, nil
+	}
+	runes := []rune(seg)
+	tokens := make([]globToken, 0, len(runes))
+	for i := 0; i < len(runes); i++ {
+		switch runes[i] {
+		case '*':
+			// Collapse adjacent '*' within a single segment.
+			if len(tokens) == 0 || tokens[len(tokens)-1].kind != globTokAnyMany {
+				tokens = append(tokens, globToken{kind: globTokAnyMany})
+			}
+		case '?':
+			tokens = append(tokens, globToken{kind: globTokAnyOne})
+		case '[':
+			start := i + 1
+			negated := false
+			if start < len(runes) && (runes[start] == '!' || runes[start] == '^') {
+				negated = true
+				start++
+			}
+			scan := start
+			// A leading ']' right after '[' or '[!' / '[^' is a literal member.
+			if scan < len(runes) && runes[scan] == ']' {
+				scan++
+			}
+			closeIdx := -1
+			for j := scan; j < len(runes); j++ {
+				if runes[j] == ']' {
+					closeIdx = j
+					break
+				}
+			}
+			if closeIdx < 0 {
+				return globSegment{}, errors.New("unclosed character class '['")
+			}
+			cls := runes[start:closeIdx]
+			if len(cls) == 0 {
+				return globSegment{}, errors.New("empty character class '[]'")
+			}
+			ranges := make([]globRange, 0, len(cls))
+			for j := 0; j < len(cls); j++ {
+				if j+2 < len(cls) && cls[j+1] == '-' {
+					lo, hi := cls[j], cls[j+2]
+					if lo > hi {
+						return globSegment{}, fmt.Errorf("invalid character range '%c-%c'", lo, hi)
+					}
+					ranges = append(ranges, globRange{lo: lo, hi: hi})
+					j += 2
+				} else {
+					ranges = append(ranges, globRange{lo: cls[j], hi: cls[j]})
+				}
+			}
+			tokens = append(tokens, globToken{kind: globTokClass, negated: negated, ranges: ranges})
+			i = closeIdx
+		default:
+			tokens = append(tokens, globToken{kind: globTokLit, lit: runes[i]})
+		}
+	}
+	return globSegment{tokens: tokens}, nil
+}
+
+func matchGlobSegment(tokens []globToken, seg string) bool {
+	runes := []rune(seg)
+	ti, ri := 0, 0
+	starIdx, matchIdx := -1, 0
+	for ri < len(runes) {
+		if ti < len(tokens) && tokens[ti].kind == globTokAnyMany {
+			starIdx = ti
+			matchIdx = ri
+			ti++
+		} else if ti < len(tokens) && tokens[ti].matchesRune(runes[ri]) {
+			ti++
+			ri++
+		} else if starIdx >= 0 {
+			ti = starIdx + 1
+			matchIdx++
+			ri = matchIdx
+		} else {
+			return false
+		}
+	}
+	for ti < len(tokens) && tokens[ti].kind == globTokAnyMany {
+		ti++
+	}
+	return ti == len(tokens)
+}
+
 // compileGlobPattern compiles a slash-separated glob pattern supporting `*`,
 // `?`, character classes `[...]`, and `**` multi-segment wildcards.
 func compileGlobPattern(pattern string) (func(string) bool, error) {
@@ -338,74 +482,69 @@ func compileGlobPattern(pattern string) (func(string) bool, error) {
 	if p == "" {
 		return nil, errors.New("empty pattern")
 	}
-	var b strings.Builder
-	b.WriteString("^")
-	for i := 0; i < len(p); i++ {
-		switch p[i] {
-		case '*':
-			if i+1 < len(p) && p[i+1] == '*' {
-				if i+2 < len(p) && p[i+2] == '/' {
-					b.WriteString("(?:.*/)?")
-					i += 2
-				} else {
-					b.WriteString(".*")
-					i++
-				}
-			} else {
-				b.WriteString("[^/]*")
-			}
-		case '?':
-			b.WriteString("[^/]")
-		case '[':
-			// A leading ']' (or ']' right after '!'/'^') is a literal member of the class.
-			start := i + 1
-			negated := false
-			if start < len(p) && (p[start] == '!' || p[start] == '^') {
-				negated = true
-				start++
-			}
-			scan := start
-			if scan < len(p) && p[scan] == ']' {
-				scan++
-			}
-			relEnd := strings.IndexByte(p[scan:], ']')
-			if relEnd < 0 {
-				return nil, errors.New("unclosed character class '['")
-			}
-			closeIdx := scan + relEnd
-			cls := p[start:closeIdx]
-			if cls == "" {
-				return nil, errors.New("empty character class '[]'")
-			}
-			b.WriteByte('[')
-			if negated {
-				b.WriteByte('^')
-				if !strings.ContainsRune(cls, '/') {
-					b.WriteByte('/')
-				}
-			}
-			b.WriteString(cls)
-			b.WriteByte(']')
-			i = closeIdx
-		default:
-			b.WriteString(regexp.QuoteMeta(string(p[i])))
+	rawSegs := strings.Split(p, "/")
+	segs := make([]globSegment, len(rawSegs))
+	for i, raw := range rawSegs {
+		compiled, err := compileGlobSegment(raw)
+		if err != nil {
+			return nil, err
 		}
+		segs[i] = compiled
 	}
-	b.WriteString("$")
-	re, err := regexp.Compile(b.String())
-	if err != nil {
-		return nil, err
-	}
-	return re.MatchString, nil
+	trailingDoublestar := len(segs) > 1 && segs[len(segs)-1].doublestar
+
+	return func(candidate string) bool {
+		pathSegs := strings.Split(candidate, "/")
+		pi, si := 0, 0
+		starPi, starSi := -1, 0
+		for si < len(pathSegs) {
+			if pi < len(segs) && segs[pi].doublestar {
+				if pi == len(segs)-1 && trailingDoublestar {
+					return true
+				}
+				starPi = pi
+				starSi = si
+				pi++
+			} else if pi < len(segs) && matchGlobSegment(segs[pi].tokens, pathSegs[si]) {
+				pi++
+				si++
+			} else if starPi >= 0 {
+				pi = starPi + 1
+				starSi++
+				si = starSi
+			} else {
+				return false
+			}
+		}
+		for pi < len(segs) && segs[pi].doublestar {
+			if pi == len(segs)-1 && trailingDoublestar {
+				return false
+			}
+			pi++
+		}
+		return pi == len(segs)
+	}, nil
 }
 
-// readBoundedLine reads one newline-terminated line from r, keeping at most
+// readLimitedLine reads one newline-terminated line from r, keeping at most
 // maxBytes and draining any excess bytes through the next '\n' so an oversized
-// line never aborts scanning the rest of the file.
-func readBoundedLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
-	var buf []byte
+// line never aborts scanning the rest of the file. When the full line fits in
+// r's internal buffer, the returned slice aliases r's buffer without copying.
+func readLimitedLine(r *bufio.Reader, maxBytes int, scratch []byte) ([]byte, []byte, error) {
+	frag, err := r.ReadSlice('\n')
+	if !errors.Is(err, bufio.ErrBufferFull) {
+		if len(frag) > maxBytes {
+			frag = frag[:maxBytes]
+		}
+		return bytes.TrimRight(frag, "\r\n"), scratch, err
+	}
+	buf := scratch[:0]
+	if len(frag) > 0 {
+		take := min(len(frag), maxBytes)
+		buf = append(buf, frag[:take]...)
+	}
 	for {
-		frag, err := r.ReadSlice('\n')
+		frag, err = r.ReadSlice('\n')
 		if len(frag) > 0 && len(buf) < maxBytes {
 			take := min(len(frag), maxBytes-len(buf))
 			buf = append(buf, frag[:take]...)
@@ -413,8 +552,7 @@ func readBoundedLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
 		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
-		buf = bytes.TrimRight(buf, "\r\n")
-		return buf, err
+		return bytes.TrimRight(buf, "\r\n"), buf, err
 	}
 }
 
