@@ -5,7 +5,7 @@ layout: hextra-home
 
 <div class="hx:mt-6 hx:mb-4 hero-headline-with-ticker">
 {{< hextra/hero-headline >}}
-  A workspace for a fleet&nbsp;<br class="hx:sm:block hx:hidden" />of coding agents
+  <span class="hero-headline-line hero-headline-line--top">A workspace for a fleet</span> <span class="hero-headline-line hero-headline-line--bottom">of coding agents</span>
 {{< /hextra/hero-headline >}}
 {{< agent-ticker >}}
 </div>

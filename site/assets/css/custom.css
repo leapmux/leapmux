@@ -558,10 +558,11 @@
 }
 
 /*
-  Landing page hero headline with inline coding-agent icon ticker.
-  Keeps the ticker beside "of coding agents" on sm+ viewports without placing
-  duplicate links inside <h1>, and drops to a flush-left single row on narrow
-  phones with zero horizontal page overflow.
+  Landing page hero headline with fluid coding-agent icon ticker.
+  Keeps the ticker beside "of coding agents" on sm+ viewports, expanding to
+  fill the remaining horizontal width inside the page margins without placing
+  links inside <h1>. Drops to a full-width single row on narrow phones with
+  zero horizontal page overflow.
 */
 .hero-headline-with-ticker {
   max-width: 100%;
@@ -575,79 +576,89 @@
 
 .hero-headline-with-ticker .agent-ticker {
   display: flex;
+  width: 100%;
   margin-top: 0.75rem;
 }
 
 @media (min-width: 640px) {
+  .hero-headline-with-ticker {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    column-gap: 0.75rem;
+  }
+
   .hero-headline-with-ticker h1 {
-    display: inline;
-    -webkit-box-decoration-break: clone;
-    box-decoration-break: clone;
+    display: contents;
+  }
+
+  .hero-headline-line {
+    justify-self: start;
+    line-height: 1.12;
+    padding-bottom: 0.06em;
+    background-image: linear-gradient(to right, var(--hx-color-gray-900), var(--hx-color-gray-600));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .dark .hero-headline-line {
+    background-image: linear-gradient(to right, var(--hx-color-gray-100), var(--hx-color-gray-400));
+  }
+
+  .hero-headline-line--top {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .hero-headline-line--bottom {
+    grid-column: 1;
+    grid-row: 2;
+    white-space: nowrap;
   }
 
   .hero-headline-with-ticker .agent-ticker {
-    display: inline-flex;
+    grid-column: 2;
+    grid-row: 2;
+    display: flex;
+    width: 100%;
+    min-width: 0;
     margin-top: 0;
-    margin-left: 0.625rem;
-    vertical-align: middle;
-    transform: translateY(-6px);
-  }
-}
-
-@media (min-width: 768px) {
-  .hero-headline-with-ticker .agent-ticker {
-    transform: translateY(-8px);
+    align-self: center;
   }
 }
 
 /*
   Dynamic coding-agent icon ticker (agent-ticker shortcode).
-  Shows up to nine icons in a single non-wrapping row (scaling down on
-  narrower viewports so it stays beside "of coding agents" without wrapping or
-  overflowing), fades and softly blurs both edges, and scales animation
+  Fills the available container width in a single non-wrapping row so it shows
+  as many provider icons as the page width allows while respecting container
+  margins and padding. Fades and softly blurs both edges, and scales animation
   duration to --agent-ticker-count so scroll speed stays constant as supported
   providers are added.
 */
 .agent-ticker {
-  --agent-ticker-visible: 9;
   --agent-ticker-item-size: 34px;
   --agent-ticker-gap: 8px;
   --agent-ticker-icon-size: 20px;
   --agent-ticker-edge: 26px;
-  --agent-ticker-width: calc(
-    var(--agent-ticker-visible) * var(--agent-ticker-item-size) +
-    (var(--agent-ticker-visible) - 1) * var(--agent-ticker-gap)
-  );
   position: relative;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  width: min(var(--agent-ticker-width), 100%);
+  width: 100%;
   max-width: 100%;
+  min-width: 0;
   height: calc(var(--agent-ticker-item-size) + 4px);
   overflow: hidden;
   overflow: clip;
   isolation: isolate;
 }
 
-@media (min-width: 640px) {
-  .agent-ticker {
-    --agent-ticker-visible: 7;
-  }
-}
-
 @media (min-width: 768px) {
   .agent-ticker {
-    --agent-ticker-visible: 7;
     --agent-ticker-item-size: 40px;
     --agent-ticker-gap: 10px;
     --agent-ticker-icon-size: 24px;
     --agent-ticker-edge: 32px;
-  }
-}
-
-@media (min-width: 900px) {
-  .agent-ticker {
-    --agent-ticker-visible: 9;
   }
 }
 
