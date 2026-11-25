@@ -1172,7 +1172,7 @@
 }
 
 .lm-closing-cta p {
-  margin: 0 0 1.25rem;
+  margin: 0 0 0.875rem;
   color: var(--hx-color-gray-600);
   line-height: 1.6;
 }
@@ -1212,8 +1212,22 @@
   line-height: 1.6;
 }
 
+.lm-download-hero-desc code {
+  font-family: var(--hx-font-mono);
+  font-size: 0.875em;
+  padding: 0.1em 0.35em;
+  border-radius: var(--hx-radius-sm);
+  background: var(--hx-color-gray-200);
+  color: var(--hx-color-gray-900);
+}
+
 .dark .lm-download-hero-desc {
   color: var(--hx-color-gray-300);
+}
+
+.dark .lm-download-hero-desc code {
+  background: var(--hx-color-gray-800);
+  color: var(--hx-color-gray-100);
 }
 
 .lm-download-hero-actions {

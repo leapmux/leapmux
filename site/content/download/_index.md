@@ -39,7 +39,13 @@ layout: hextra-home
   if (hint.includes('mac')) {
     eyebrow.textContent = 'Detected: macOS';
     title.textContent = 'Download LeapMux for macOS';
-    desc.textContent = 'Signed and notarized .dmg installer for Apple Silicon (arm64). Offers to install the leapmux CLI symlink at /usr/local/bin/leapmux.';
+    const binPath = document.createElement('code');
+    binPath.textContent = '/usr/local/bin';
+    desc.replaceChildren(
+      'Signed and notarized .dmg installer for Apple Silicon (arm64). Offers to install the leapmux CLI symlink at ',
+      binPath,
+      '.',
+    );
     btn.textContent = 'Download macOS .dmg (GitHub Releases)';
   } else if (hint.includes('win')) {
     eyebrow.textContent = 'Detected: Windows';
