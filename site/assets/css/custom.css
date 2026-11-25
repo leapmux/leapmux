@@ -1118,15 +1118,24 @@
 }
 
 .lm-showcase-list {
+  list-style: disc;
   margin: 0 0 1rem;
-  padding-left: 1.15rem;
+  padding-left: 1.25rem;
   font-size: 0.9375rem;
-  line-height: 1.6;
+  line-height: 1.65;
   color: var(--hx-color-gray-700);
+}
+
+.lm-showcase-list li::marker {
+  color: var(--hx-color-primary-600);
 }
 
 .dark .lm-showcase-list {
   color: var(--hx-color-gray-300);
+}
+
+.dark .lm-showcase-list li::marker {
+  color: var(--hx-color-primary-400);
 }
 
 .lm-showcase-link {
@@ -1141,50 +1150,6 @@
   color: var(--hx-color-primary-400);
 }
 
-.lm-home-faq {
-  margin-block: 3rem;
-}
-
-.lm-home-faq h2 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin-bottom: 1rem;
-}
-
-.lm-home-faq details {
-  border: 1px solid var(--hx-color-gray-200);
-  border-radius: var(--hx-radius-md);
-  background: var(--hx-color-gray-50);
-  padding: 0.875rem 1.125rem;
-  margin-bottom: 0.625rem;
-}
-
-.dark .lm-home-faq details {
-  border-color: var(--hx-color-gray-800);
-  background: var(--hx-color-gray-900);
-}
-
-.lm-home-faq summary {
-  font-weight: 600;
-  cursor: pointer;
-  color: var(--hx-color-gray-900);
-}
-
-.dark .lm-home-faq summary {
-  color: var(--hx-color-gray-100);
-}
-
-.lm-home-faq details p {
-  margin: 0.625rem 0 0;
-  font-size: 0.9375rem;
-  line-height: 1.6;
-  color: var(--hx-color-gray-600);
-}
-
-.dark .lm-home-faq details p {
-  color: var(--hx-color-gray-300);
-}
-
 .lm-closing-cta,
 .lm-download-hero {
   margin-block: 2.5rem;
@@ -1192,6 +1157,28 @@
   border: 1px solid var(--hx-color-gray-200);
   border-radius: var(--hx-radius-md);
   background: var(--hx-color-gray-50);
+}
+
+.lm-closing-cta h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--hx-color-gray-900);
+}
+
+.dark .lm-closing-cta h2 {
+  color: var(--hx-color-gray-100);
+}
+
+.lm-closing-cta p {
+  margin: 0 0 1.25rem;
+  color: var(--hx-color-gray-600);
+  line-height: 1.6;
+}
+
+.dark .lm-closing-cta p {
+  color: var(--hx-color-gray-300);
 }
 
 .dark .lm-closing-cta,

@@ -72,12 +72,13 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
   <section class="lm-showcase-row">
     <div class="lm-showcase-copy">
       <div class="lm-showcase-eyebrow">Parallel Worktrees &amp; Layout</div>
-      <h2 class="lm-showcase-title">Run parallel agents without merge collisions</h2>
+      <h2 class="lm-showcase-title">Parallel agents, zero collisions</h2>
       <p class="lm-showcase-text">Open each agent in its own git worktree and branch from one dialog. Tile agents beside a syntax-highlighted diff viewer and live PTY terminals, steer running turns mid-flight, and clean up worktrees safely when you close the last tab.</p>
       <ul class="lm-showcase-list">
-        <li>Create isolated git worktrees and branches in one click</li>
-        <li>Queue follow-up prompts, steer or preempt mid-turn, and inspect diffs side by side</li>
-        <li>Dirty-worktree close guards prevent losing uncommitted agent edits</li>
+        <li>Create isolated git worktrees in one click</li>
+        <li>Queue prompts and steer or preempt mid-turn</li>
+        <li>Inspect unified and split diffs side by side</li>
+        <li>Guard dirty worktrees before closing tabs</li>
       </ul>
       <a class="lm-showcase-link" href="/docs/recipes/parallel-agents/">Read the parallel agents recipe &rarr;</a>
     </div>
@@ -89,12 +90,13 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
   <section class="lm-showcase-row lm-showcase-row--reverse">
     <div class="lm-showcase-copy">
       <div class="lm-showcase-eyebrow">Remote Workers &amp; E2EE</div>
-      <h2 class="lm-showcase-title">Connect any devbox behind NAT, end-to-end encrypted</h2>
+      <h2 class="lm-showcase-title">Encrypted devboxes behind NAT</h2>
       <p class="lm-showcase-text">Start solo on your laptop with one click, or pair a Hub with remote Workers on cloud VMs, office desktops, or GPU servers. Workers dial out over HTTPS/WebSocket, so you open zero inbound ports on your devboxes.</p>
       <ul class="lm-showcase-list">
-        <li>Hybrid post-quantum end-to-end encrypted channels between your client and each Worker</li>
-        <li>Live layout sync across your browser and desktop devices when network access or a Hub is enabled</li>
-        <li>Persistent background sessions in daemon and distributed modes survive browser closes and network drops</li>
+        <li>Hybrid post-quantum E2EE to every Worker</li>
+        <li>Live layout sync across desktop and browser</li>
+        <li>Daemon sessions survive browser closes</li>
+        <li>Outbound WebSockets with zero open ports</li>
       </ul>
       <a class="lm-showcase-link" href="/docs/recipes/remote-devbox/">Connect a remote devbox &rarr;</a>
     </div>
@@ -106,12 +108,13 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
   <section class="lm-showcase-row">
     <div class="lm-showcase-copy">
       <div class="lm-showcase-eyebrow">CLI &amp; Agent Skills</div>
-      <h2 class="lm-showcase-title">Script your fleet from shell, CI, or another agent</h2>
+      <h2 class="lm-showcase-title">Script your fleet from the CLI</h2>
       <p class="lm-showcase-text">Every workspace action is scriptable through the <code>leapmux</code> CLI (short alias <code>lmx</code>) and six built-in Agent Skills. Spawn worktree agents, wait without polling, enforce JSON schemas on replies, and forward TCP ports over encrypted channels.</p>
       <ul class="lm-showcase-list">
-        <li>Event-driven <code>agent send --wait --output-schema</code> and <code>agent wait --any</code></li>
-        <li>Checkpoint-resumable <code>events</code> streams and idempotent <code>--request-id</code> retries</li>
-        <li>Built-in skills for delegation, contrasting second-opinion review, council, and handoff</li>
+        <li>Wait on agents with <code>--wait</code> and <code>--any</code></li>
+        <li>Enforce JSON schemas on agent replies</li>
+        <li>Resume event streams and retry idempotently</li>
+        <li>Six built-in skills for parallel workflows</li>
       </ul>
       <a class="lm-showcase-link" href="/docs/using/cli-guide/">Explore the CLI guide &rarr;</a>
     </div>
@@ -130,29 +133,9 @@ leapmux agent wait "$A1" "$A2" --any --json
   </section>
 </div>
 
-<section class="lm-home-faq">
-  <h2>Common Questions</h2>
-  <details>
-    <summary>Does LeapMux include AI models or charge per token?</summary>
-    <p>No. LeapMux wraps the coding-agent CLIs you already have installed on your machine or remote Workers and uses your existing subscriptions and API keys. See <a href="/docs/reference/supported-agents/">Supported Agents</a> for all {{< agent-provider-count >}} providers.</p>
-  </details>
-  <details>
-    <summary>Do agents keep running if I close LeapMux?</summary>
-    <p>Closing a browser tab never stops an agent. In Solo Desktop mode, closing the window minimizes to the tray while quitting the desktop app stops the bundled local sidecar. For sessions that outlive app quits or laptop reboots, run <code>leapmux up</code> (background daemon) or Distributed mode with a Hub and Workers.</p>
-  </details>
-  <details>
-    <summary>What can the Hub see in distributed mode?</summary>
-    <p>Agent conversations, tool output, terminal I/O, and files travel over end-to-end encrypted channels directly between your client and each Worker. As long as the Hub acts only as a relay, it cannot read channel contents. See <a href="/docs/admin/security-and-auth/">Security &amp; Authentication</a> for the exact trust boundary.</p>
-  </details>
-  <details>
-    <summary>How is LeapMux licensed?</summary>
-    <p>LeapMux is source-available under the Functional Source License (<a href="/docs/reference/legal/">FSL-1.1-ALv2</a>), which allows personal, commercial, and internal team self-hosting and converts automatically to Apache 2.0 two years after each release.</p>
-  </details>
-</section>
-
 <section class="lm-closing-cta">
-  <h2 class="hx:text-2xl hx:font-bold hx:mb-2">Ready to run your fleet?</h2>
-  <p class="hx:text-gray-600 hx:dark:text-gray-400 hx:mb-5">Download LeapMux Desktop or start solo mode from the command line in under five minutes.</p>
+  <h2>Ready to run your fleet?</h2>
+  <p>Download LeapMux Desktop or start solo mode from the command line in under five minutes.</p>
   <div class="lm-download-hero-actions">
     <a class="lm-btn-primary" href="/download/">Download LeapMux</a>
     <a class="lm-btn-secondary" href="/docs/getting-started/quick-start/">5-Minute Quick Start</a>
