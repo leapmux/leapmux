@@ -258,10 +258,14 @@
 /* Group provider columns in tables that can scroll on a narrow screen. */
 .feature-matrix {
   overflow-x: auto;
+  --matrix-feature-col: 180px;
+  --matrix-provider-col: 49px;
 }
 
 .feature-matrix table {
   table-layout: fixed;
+  /* Definite width keeps table-layout: fixed identical across partial-width tables. */
+  width: calc(var(--matrix-feature-col) + var(--matrix-provider-cols, 10) * var(--matrix-provider-col) + 2px);
   /* The outer container scrolls. This table keeps one border for each cell. */
   display: table;
   overflow: visible;
@@ -275,11 +279,11 @@
 }
 
 .feature-matrix table th:first-child {
-  width: 150px;
+  width: var(--matrix-feature-col);
 }
 
 .feature-matrix table th:not(:first-child) {
-  width: 42px;
+  width: var(--matrix-provider-col);
 }
 
 /* Keep an underline off the compact note markers beside each symbol. */

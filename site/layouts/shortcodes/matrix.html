@@ -12,7 +12,7 @@
 </ul>
 <div class="feature-matrix">
   {{- range $groupIndex, $group := $checklist.providerGroups -}}
-    <table aria-label="Coding agent feature matrix, part {{ add $groupIndex 1 }} of {{ len $checklist.providerGroups }}">
+    <table style="--matrix-provider-cols: {{ len $group }};" aria-label="Coding agent feature matrix, part {{ add $groupIndex 1 }} of {{ len $checklist.providerGroups }}">
       <thead>
         <tr>
           <th>Feature</th>
