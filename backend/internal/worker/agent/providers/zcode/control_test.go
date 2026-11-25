@@ -57,10 +57,61 @@ func TestZCodeConcurrentPlanAnnouncementsPersistOneSource(t *testing.T) {
 	close(start)
 	workers.Wait()
 	require.Len(t, sink.Messages(), 1)
+	require.Equal(t, count, sink.PublishedControlCount())
 	requests := sink.PublishedControls()
-	require.Len(t, requests, count)
+	assert.NotEmpty(t, requests[0].InstanceID)
 	for _, request := range requests {
-		assert.Equal(t, requests[0].Payload, request.Payload)
+		assert.Equal(t, requests[0], request)
+	}
+}
+
+func TestZCodeControlIngress_KeepsTheFirstPlanWhenItsHandlerRunsLast(t *testing.T) {
+	t.Parallel()
+	for _, malformed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("malformed retransmission %t", malformed), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			first := zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput,
+				`{"requestId":"plan","input":{"plan":"# First plan"},"schema":{"interaction":"plan_approval"}}`)
+			firstHandler, consumed := a.routeZCodeRPC(providerkit.ParseLine(first))
+			require.True(t, consumed)
+			require.NotNil(t, firstHandler)
+
+			params := `{"requestId":"plan","input":{"plan":"# Repeated plan"},"schema":{"interaction":"plan_approval"}}`
+			if malformed {
+				params = `{"requestId":"plan","schema":{"interaction":42}}`
+			}
+			a.HandleOutput(zcodeRequestLine(t, 8, contracts.ZCodeMethodRequestUserInput, params))
+			assert.Empty(t, sink.Messages(), "only the first handler can store the plan")
+			assert.Zero(t, sink.PublishedControlCount(), "publication must wait for the first handler")
+			firstHandler()
+
+			messages := sink.Messages()
+			require.Len(t, messages, 1)
+			assert.Equal(t, first, messages[0].Content)
+			published := sink.PublishedControls()
+			if malformed {
+				require.Len(t, published, 1)
+				frames := stdin.Frames()
+				require.Len(t, frames, 1)
+				var response zcodeSentRequest
+				require.NoError(t, json.Unmarshal(frames[0], &response))
+				assert.Equal(t, "8", string(response.ID))
+				require.NotNil(t, response.Error)
+				assert.Equal(t, ErrInternal, response.Error.Code)
+			} else {
+				require.Len(t, published, 2)
+				assert.Equal(t, published[0], published[1])
+				assert.Empty(t, stdin.Frames())
+			}
+			var payload zcodeControlRequestPayload
+			require.NoError(t, json.Unmarshal(published[0].Payload, &payload))
+			assert.Equal(t, "7", string(payload.WireID))
+			assert.Contains(t, string(payload.Request.Input), "# First plan")
+			assert.NotContains(t, string(payload.Request.Input), "# Repeated plan")
+		})
 	}
 }
 

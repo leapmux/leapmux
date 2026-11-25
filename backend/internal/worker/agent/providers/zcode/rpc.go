@@ -206,11 +206,9 @@ func (a *Agent) routeZCodeRPC(line *providerkit.ParsedLine) (handler func(), con
 	}
 	switch line.Method {
 	case contracts.ZCodeMethodRequestPermission:
-		record := a.prepareZCodeControlRequest(line.ID, line.Params)
-		return func() { a.handlePreparedPermissionRequest(line.ID, line.Params, record) }, true
+		return a.zcodePermissionHandler(line.ID, line.Params), true
 	case contracts.ZCodeMethodRequestUserInput:
-		record := a.prepareZCodeControlRequest(line.ID, line.Params)
-		return func() { a.handlePreparedUserInputRequest(line.ID, line.Params, line.Raw, record) }, true
+		return a.zcodeUserInputHandler(line.ID, line.Params, line.Raw), true
 	}
 	return func() { a.handleServerRequest(line) }, true
 }
@@ -231,9 +229,7 @@ func (a *Agent) interceptResponse(line *providerkit.ParsedLine) bool {
 
 // handleServerRequest routes one app-server request to its handler.
 //
-// interaction/requestProviderRuntimeHeaders is NOT routed here: routeZCodeRPC
-// registers its answer before the handler exists (see
-// prepareZCodeRuntimeHeaderAnswer).
+// routeZCodeRPC handles requests that need a reservation before dispatch.
 //
 // Every branch MUST answer, including the ones LeapMux cannot satisfy. The
 // app-server blocks the flow behind an unanswered request -- the runtime-preferences
@@ -243,10 +239,6 @@ func (a *Agent) handleServerRequest(line *providerkit.ParsedLine) {
 	switch method {
 	case MethodRequestRuntimePreferences:
 		a.answerRuntimePreferences(id)
-	case contracts.ZCodeMethodRequestPermission:
-		a.handlePermissionRequest(id, params)
-	case contracts.ZCodeMethodRequestUserInput:
-		a.handleUserInputRequest(id, params, line.Raw)
 	case MethodRequestOfficialMcpAuthHeaders:
 		a.answerOfficialMcpAuthHeaders(id)
 	case MethodRequestCredentialCipher:

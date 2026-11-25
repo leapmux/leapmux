@@ -73,22 +73,24 @@ type zcodePermissionOption struct {
 	Response json.RawMessage `json:"response"`
 }
 
-// handlePermissionRequest persists a permission prompt and broadcasts it.
-//
-// It does NOT reply. The reply is built from the user's answer in
-// ResolveControlResponse, and the app-server waits for it -- which is the whole
-// point of a permission prompt.
-func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
-	a.handlePreparedPermissionRequest(id, params, a.prepareZCodeControlRequest(id, params))
-}
-
-func (a *Agent) handlePreparedPermissionRequest(id, params json.RawMessage, record *pendingControl) {
-	defer a.discardUnpreparedZCodeControl(record)
+func (a *Agent) zcodePermissionHandler(id, params json.RawMessage) func() {
 	var req zcodePermissionRequest
 	if err := json.Unmarshal(params, &req); err != nil {
-		slog.Warn("zcode permission request unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		a.replyZCodeControlFailure(id, "leapmux could not read the permission request")
-		return
+		return func() {
+			slog.Warn("zcode permission request unmarshal failed", "agent_id", a.AgentID(), "error", err)
+			a.replyZCodeControlFailure(id, "leapmux could not read the permission request")
+		}
+	}
+	ingress := a.reserveZCodeControlRequest(id, req.RequestID, req.SessionID)
+	return func() { a.handlePreparedPermissionRequest(id, params, req, ingress) }
+}
+
+// handlePreparedPermissionRequest publishes the prompt. ResolveControlResponse
+// sends the reply when the user answers.
+func (a *Agent) handlePreparedPermissionRequest(id, params json.RawMessage, req zcodePermissionRequest, ingress zcodeControlIngress) {
+	record := ingress.record
+	if ingress.prepares {
+		defer a.finishZCodeControlWork(req.RequestID, record)
 	}
 	if !a.isCurrentZCodeSession(req.SessionID) {
 		a.replyZCodePermission(id, req.Options, agent.ControlBehaviorDeny, "The session is no longer active.")
@@ -108,11 +110,7 @@ func (a *Agent) handlePreparedPermissionRequest(id, params json.RawMessage, reco
 		a.replyZCodeControlFailure(id, "LeapMux cannot accept this interaction before the session is ready.")
 		return
 	}
-	if !a.beginZCodeControlWork(req.RequestID, record) {
-		return
-	}
-	defer a.finishZCodeControlWork(req.RequestID, record)
-	if record.prepared {
+	if !a.beginZCodeControlWork(req.RequestID, ingress) {
 		return
 	}
 	id = record.wireID
@@ -235,18 +233,23 @@ func (r zcodeUserInputRequest) toolInput() (json.RawMessage, error) {
 	return json.Marshal(fields)
 }
 
-// handleUserInputRequest persists a plan approval or a question.
-func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
-	a.handlePreparedUserInputRequest(id, params, original, a.prepareZCodeControlRequest(id, params))
-}
-
-func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMessage, record *pendingControl) {
-	defer a.discardUnpreparedZCodeControl(record)
+func (a *Agent) zcodeUserInputHandler(id, params, original json.RawMessage) func() {
 	var req zcodeUserInputRequest
 	if err := json.Unmarshal(params, &req); err != nil {
-		slog.Warn("zcode user input request unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		a.replyZCodeControlFailure(id, "leapmux could not read the user-input request")
-		return
+		return func() {
+			slog.Warn("zcode user input request unmarshal failed", "agent_id", a.AgentID(), "error", err)
+			a.replyZCodeControlFailure(id, "leapmux could not read the user-input request")
+		}
+	}
+	ingress := a.reserveZCodeControlRequest(id, req.RequestID, req.SessionID)
+	return func() { a.handlePreparedUserInputRequest(id, params, original, req, ingress) }
+}
+
+// handlePreparedUserInputRequest persists a plan approval or a question.
+func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMessage, req zcodeUserInputRequest, ingress zcodeControlIngress) {
+	record := ingress.record
+	if ingress.prepares {
+		defer a.finishZCodeControlWork(req.RequestID, record)
 	}
 	if !a.isCurrentZCodeSession(req.SessionID) {
 		a.replyZCodeUserInput(id, agent.ControlBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
@@ -264,11 +267,7 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 		a.replyZCodeControlFailure(id, "LeapMux cannot accept this interaction before the session is ready.")
 		return
 	}
-	if !a.beginZCodeControlWork(req.RequestID, record) {
-		return
-	}
-	defer a.finishZCodeControlWork(req.RequestID, record)
-	if record.prepared {
+	if !a.beginZCodeControlWork(req.RequestID, ingress) {
 		return
 	}
 	id = record.wireID
@@ -980,20 +979,19 @@ func zcodeAnswerContent(reply zcodeUserInputReply) map[string]any {
 
 // --- permission bookkeeping ---
 
-// beginZCodeControlWork keeps one preparer and publisher per request. Reannouncements
-// add publication attempts without blocking an independent or reentrant handler.
-func (a *Agent) beginZCodeControlWork(requestID string, record *pendingControl) bool {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if a.pendingControls[requestID] != record || !a.zcodeControlLifetimeCurrentLocked(record) {
-		return false
+// zcodeControlIngress gives the first handler exclusive ownership of preparation.
+// A retransmission can request publication while that handler captures or stores the source.
+type zcodeControlIngress struct {
+	record   *pendingControl
+	prepares bool
+}
+
+func (a *Agent) beginZCodeControlWork(requestID string, ingress zcodeControlIngress) bool {
+	if ingress.prepares {
+		return a.zcodeControlRequestCurrent(requestID, ingress.record)
 	}
-	record.announcements++
-	if record.working || !record.ingressReady {
-		return false
-	}
-	record.working = true
-	return true
+	a.publishRegisteredControl(requestID, ingress.record)
+	return false
 }
 
 // zcodeControlPublisher remains registered until its sink call and compensation finish.
@@ -1004,7 +1002,6 @@ func (a *Agent) finishZCodeControlWork(requestID string, record *pendingControl)
 	a.Mu.Lock()
 	owned := a.pendingControls[requestID] == record
 	current := owned && a.zcodeControlLifetimeCurrentLocked(record) && record.prepared
-	record.working = false
 	if !current {
 		if owned {
 			delete(a.pendingControls, requestID)
@@ -1067,58 +1064,36 @@ func (a *Agent) drainZCodeControlPublications(requestID string, publisher *zcode
 	}
 }
 
-func (a *Agent) discardUnpreparedZCodeControl(record *pendingControl) {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if record == nil || !record.ingressReady || record.working || record.prepared {
-		return
-	}
-	for requestID, current := range a.pendingControls {
-		if current == record {
-			delete(a.pendingControls, requestID)
-			record.publicationOnce.Do(func() { close(record.publicationDone) })
-			return
-		}
-	}
-}
-
-// prepareZCodeControlRequest reserves an instance before its handler can be delayed.
-func (a *Agent) prepareZCodeControlRequest(wireID, params json.RawMessage) *pendingControl {
-	var request struct {
-		RequestID string `json:"requestId"`
-		SessionID string `json:"sessionId"`
-	}
-	if json.Unmarshal(params, &request) != nil || request.RequestID == "" {
-		return nil
+// reserveZCodeControlRequest reserves a validated request before its handler runs.
+func (a *Agent) reserveZCodeControlRequest(wireID json.RawMessage, requestID, sessionID string) zcodeControlIngress {
+	if requestID == "" {
+		return zcodeControlIngress{}
 	}
 	identity, valid := agent.NewControlRequestIdentity(wireID)
 	if !valid {
-		return nil
+		return zcodeControlIngress{}
 	}
 	a.Mu.Lock()
 	session := a.captureZCodeObservationIdentityLocked()
-	if !a.zcodeSessionLifetimeCurrentLocked(session) || request.SessionID != "" && request.SessionID != session.sessionID {
+	if !a.zcodeSessionLifetimeCurrentLocked(session) || sessionID != "" && sessionID != session.sessionID {
 		a.Mu.Unlock()
-		return nil
+		return zcodeControlIngress{}
 	}
-	if record := a.pendingControls[request.RequestID]; record != nil {
+	if record := a.pendingControls[requestID]; record != nil {
 		a.Mu.Unlock()
-		return record
+		return zcodeControlIngress{record: record}
 	}
 	record := newPendingControl(nil)
 	record.ownerSessionID, record.sessionID, record.epoch = session.sessionID, session.sessionID, session.epoch
 	record.wireID, record.wireKey = identity.Native, identity.Key
+	record.announcements = 1
 	if a.pendingControls == nil {
 		a.pendingControls = make(map[string]*pendingControl)
 	}
-	a.pendingControls[request.RequestID] = record
+	a.pendingControls[requestID] = record
 	a.Mu.Unlock()
-	captured := agent.CaptureTranscript(a.sink, agent.MessageContent{AgentSessionID: session.sessionID}, agent.SpanInfo{})
-	a.Mu.Lock()
-	record.captured = captured
-	record.ingressReady = true
-	a.Mu.Unlock()
-	return record
+	record.captured = agent.CaptureTranscript(a.sink, agent.MessageContent{AgentSessionID: session.sessionID}, agent.SpanInfo{})
+	return zcodeControlIngress{record: record, prepares: true}
 }
 
 func (a *Agent) zcodeControlLifetimeCurrentLocked(record *pendingControl) bool {
@@ -1147,14 +1122,19 @@ func (a *Agent) completeZCodeControlRequest(requestID string, record *pendingCon
 	return true
 }
 
-// publishRegisteredControl schedules a retry under the logical request's publisher.
+// publishRegisteredControl queues another publication. Preparation drains any
+// announcements that arrive before the payload is ready.
 func (a *Agent) publishRegisteredControl(requestID string, record *pendingControl) {
 	a.Mu.Lock()
-	if a.pendingControls[requestID] != record || !a.zcodeControlLifetimeCurrentLocked(record) || !record.prepared {
+	if a.pendingControls[requestID] != record || !a.zcodeControlLifetimeCurrentLocked(record) {
 		a.Mu.Unlock()
 		return
 	}
 	record.announcements++
+	if !record.prepared {
+		a.Mu.Unlock()
+		return
+	}
 	publisher, start := a.queueZCodeControlPublicationLocked(requestID, record)
 	a.Mu.Unlock()
 	if start {

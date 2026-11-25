@@ -692,6 +692,10 @@ func zcodeRememberControlForTest(t *testing.T, a *Agent, requestID string) {
 	a.handlePermissionRequest(json.RawMessage(`"native-wire"`), params)
 }
 
+func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
+	a.zcodePermissionHandler(id, params)()
+}
+
 func zcodeTestReceive[T any](t *testing.T, channel <-chan T) T {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)

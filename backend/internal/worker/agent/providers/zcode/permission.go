@@ -14,9 +14,7 @@ import (
 )
 
 type pendingControl struct {
-	working         bool
 	announcements   uint64
-	ingressReady    bool
 	epoch           uint64
 	prepared        bool
 	captured        agent.CapturedTranscript

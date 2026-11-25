@@ -798,10 +798,7 @@ func (h *OutputHandler) AgentActivityPublished(agentID, rootAgentID string) leap
 	return h.AgentActivitySnapshot(agentID, rootAgentID).State
 }
 
-// activitySnapshotFrom is AgentActivitySnapshot against a root the caller
-// already resolved and registry rows it already holds. refreshActivityTree
-// derives a whole tree through it from ONE read, so two sibling tabs cannot be
-// published from lists taken at different moments.
+// activitySnapshotFrom derives activity for a resolved root and an existing registry snapshot.
 func (h *OutputHandler) activitySnapshotFrom(agentID, rootAgentID string, rows []bgtask.Item) AgentActivity {
 	in := h.externalActivityInputs(agentID, rootAgentID, rows)
 	if !in.processAlive {
@@ -863,7 +860,11 @@ func (h *OutputHandler) hiddenBackgroundTaskActivity(rootAgentID string) backgro
 	if h.queries == nil {
 		return backgroundTaskActivity{}
 	}
-	cache := h.bgTaskCache(rootAgentID)
+	value, exists := h.bgtasks.Load(rootAgentID)
+	if !exists {
+		return backgroundTaskActivity{}
+	}
+	cache := value.(*bgTaskCache)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
 	return backgroundTaskActivity{activeTasks: cache.evictedActive.count(), working: cache.evictedActive.hasWorking()}
@@ -917,13 +918,20 @@ func (h *OutputHandler) backgroundTaskRowsCtx(ctx context.Context, rootAgentID s
 		// No store, so no registry: there is no work to report.
 		return nil
 	}
+	return h.backgroundTaskRowsIn(ctx, rootAgentID, h.bgTaskCache(rootAgentID))
+}
+
+func (h *OutputHandler) backgroundTaskRowsIn(ctx context.Context, rootAgentID string, cache *bgTaskCache) []bgtask.Item {
+	if cache == nil {
+		return nil
+	}
 	loadCtx := h.bgTaskCtx()
 	if ctx != nil && ctx.Done() != nil {
 		linked, cancel := ctxutil.WithLinkedCancel(loadCtx, ctx)
 		defer cancel()
 		loadCtx = linked
 	}
-	rows, err := h.LoadBackgroundTasks(loadCtx, rootAgentID)
+	rows, err := h.loadBackgroundTasks(loadCtx, rootAgentID, cache)
 	if err != nil {
 		// This display read remains best effort when seeding fails. Raw turn
 		// state is independent. Process recovery requires explicit approval
@@ -1063,7 +1071,10 @@ func (h *OutputHandler) refreshActivityIn(
 	st *agentActivity, agentID, rootAgentID string, rows []bgtask.Item, seq uint64, mode settleMode,
 ) {
 	in := h.externalActivityInputs(agentID, rootAgentID, rows)
-	retire := h.enqueueActivity(st, agentID, rootAgentID, in, seq, mode)
+	h.finishActivityRefresh(st, agentID, h.enqueueActivity(st, agentID, rootAgentID, in, seq, mode))
+}
+
+func (h *OutputHandler) finishActivityRefresh(st *agentActivity, agentID string, retire bool) {
 	h.watcher.DrainAgentEvents(agentID)
 	if retire {
 		h.retireActivity(agentID, st)
@@ -1073,6 +1084,10 @@ func (h *OutputHandler) refreshActivityIn(
 // enqueueActivity records the activity decision without provider reads or watcher delivery.
 func (h *OutputHandler) enqueueActivity(st *agentActivity, agentID, rootAgentID string, in activityInputs, seq uint64, mode settleMode) bool {
 	st.mu.Lock()
+	if current, _ := h.activity.Load(agentID); current != st {
+		st.mu.Unlock()
+		return false
+	}
 	if st.hasPublished && seq < st.publishedSeq {
 		// This refresh read its rows before the one that already published. Its
 		// answer is older, so it must not overwrite a fresher one.
@@ -1184,16 +1199,83 @@ func (h *OutputHandler) refreshActivityTree(rootAgentID string, mode settleMode)
 	if rootAgentID == "" {
 		return
 	}
+	mutation := h.transcriptMutationMutex(rootAgentID)
+	mutation.RLock()
+	owner := activityTreeOwner{
+		rootAgentID: rootAgentID,
+		entry:       h.activityFor(rootAgentID, rootAgentID),
+		sink:        h.sinkForAgent(rootAgentID),
+	}
+	mutation.RUnlock()
+	h.refreshOwnedActivityTree(owner, mode)
+}
+
+// activityTreeOwner keeps the sink as well as the entry because a control
+// mutation can retain the entry after cleanup retires the sink.
+type activityTreeOwner struct {
+	rootAgentID string
+	entry       *agentActivity
+	sink        *agentOutputSink
+}
+
+// current requires the root transcript mutation lease.
+func (owner activityTreeOwner) current(h *OutputHandler) bool {
+	entry, _ := h.activity.Load(owner.rootAgentID)
+	return entry == owner.entry && h.sinkForAgent(owner.rootAgentID) == owner.sink
+}
+
+// refreshOwnedActivityTree takes the cache and activity entries under the root
+// mutation lease. It reads the registry and delivers watcher events outside that
+// lease. Only the current tree can enqueue a new activity event.
+func (h *OutputHandler) refreshOwnedActivityTree(owner activityTreeOwner, mode settleMode) {
+	rootAgentID := owner.rootAgentID
+	mutation := h.transcriptMutationMutex(rootAgentID)
+	mutation.RLock()
+	if !owner.current(h) {
+		mutation.RUnlock()
+		return
+	}
+	var cache *bgTaskCache
+	if h.queries != nil {
+		cache = h.bgTaskCache(rootAgentID)
+	}
+	mutation.RUnlock()
+
 	// ONE read for the whole tree, and ONE ticket: every tab here derives from
 	// the same instant, so they share the age that orders them against a
 	// concurrent refresh. Asking per tab reloaded the same list once for the
 	// root and once more for every child, and each tab then derived from a
 	// different instant.
 	seq := h.activitySeq.Add(1)
-	rows := h.backgroundTaskRows(rootAgentID)
-	h.refreshActivityFrom(rootAgentID, rootAgentID, rows, seq, mode)
-	for _, childID := range h.treeChildIDs(rootAgentID, rows) {
-		h.refreshActivityFrom(childID, rootAgentID, rows, seq, mode)
+	rows := h.backgroundTaskRowsIn(context.Background(), rootAgentID, cache)
+
+	mutation.RLock()
+	if !owner.current(h) {
+		mutation.RUnlock()
+		return
+	}
+	type activityRefreshTarget struct {
+		id    string
+		entry *agentActivity
+	}
+	childIDs := h.treeChildIDs(rootAgentID, rows)
+	targets := make([]activityRefreshTarget, 1, 1+len(childIDs))
+	targets[0] = activityRefreshTarget{id: rootAgentID, entry: owner.entry}
+	for _, childID := range childIDs {
+		targets = append(targets, activityRefreshTarget{id: childID, entry: h.activityFor(childID, rootAgentID)})
+	}
+	mutation.RUnlock()
+
+	for _, target := range targets {
+		inputs := h.externalActivityInputs(target.id, rootAgentID, rows)
+		mutation.RLock()
+		if !owner.current(h) {
+			mutation.RUnlock()
+			return
+		}
+		retire := h.enqueueActivity(target.entry, target.id, rootAgentID, inputs, seq, mode)
+		mutation.RUnlock()
+		h.finishActivityRefresh(target.entry, target.id, retire)
 	}
 }
 
@@ -1553,16 +1635,14 @@ func (h *OutputHandler) NoteAgentProcessStarted(rootAgentID string) {
 // two process boundaries, which want exactly the same thing for the same reason:
 // no turn is in flight across them.
 //
-// The RESET is synchronous -- three field writes under the entry's own mutex --
-// so the new state is in place before the process it belongs to starts. The
+// The reset writes the inputs under the entry's mutex before the process starts. The
 // PUBLISH is not: restartAgentLocked calls this holding the per-agent lifecycle
 // lock, and a broadcast reaches SendStream, which blocks on a slow transport.
 // Publishing there would stall every relaunch behind the slowest watcher, which
 // is the rule broadcastBackgroundTasks already states for the registry.
 //
-// Deferring it is safe because refreshActivity RE-READS the state rather than
-// replaying a captured value: a turn that starts before the goroutine runs
-// simply gets published as busy, and the edge trigger drops the duplicate.
+// The deferred refresh derives activity from the current inputs of the same tree.
+// If a turn starts before the refresh runs, it can publish that turn's activity.
 func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	if rootAgentID == "" {
 		return
@@ -1583,6 +1663,7 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	publisher, _ := h.turnPublisher.Load(rootAgentID)
 	st.scope = &activityScope{publisher: publisher}
 	st.mu.Unlock()
+	owner := activityTreeOwner{rootAgentID: rootAgentID, entry: st, sink: h.sinkForAgent(rootAgentID)}
 	mutation.Unlock()
 	// The field writes above run whatever the latch says, because
 	// AgentActivitySnapshot reads them and a process boundary must leave the
@@ -1592,7 +1673,7 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	}
 	go func() {
 		defer h.activityRefreshes.Done()
-		h.refreshActivityTree(rootAgentID, settleImmediate)
+		h.refreshOwnedActivityTree(owner, settleImmediate)
 	}()
 }
 

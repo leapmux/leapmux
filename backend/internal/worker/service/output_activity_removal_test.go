@@ -22,6 +22,140 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type heldActivityRegistryRead struct {
+	db.DBTX
+	entered chan struct{}
+	release chan struct{}
+	held    atomic.Bool
+}
+
+func (reader *heldActivityRegistryRead) QueryContext(ctx context.Context, query string, arguments ...any) (*sql.Rows, error) {
+	if strings.Contains(query, "-- name: ListActiveAgentBackgroundTasksByKind :many") && reader.held.CompareAndSwap(false, true) {
+		close(reader.entered)
+		<-reader.release
+	}
+	return reader.DBTX.QueryContext(ctx, query, arguments...)
+}
+
+func holdDeferredProcessActivityRefresh(t *testing.T, svc *Service, rootID string) func() {
+	t.Helper()
+	reader := &heldActivityRegistryRead{DBTX: svc.DB, entered: make(chan struct{}), release: make(chan struct{})}
+	svc.Output.queries = db.New(reader)
+	finish := sync.OnceFunc(func() {
+		close(reader.release)
+		svc.Output.WaitActivityRefreshes()
+	})
+	t.Cleanup(finish)
+
+	svc.Output.NoteAgentProcessStarted(rootID)
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-reader.entered:
+	case <-ctx.Done():
+		t.Fatal("the deferred activity refresh did not reach the registry")
+	}
+	return finish
+}
+
+func TestDeferredProcessActivityRefreshDoesNotRestoreRetiredState(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const rootID = "agent-1"
+	createClaimTestAgent(t, svc, rootID)
+	sink := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	recorder := watchActivity(t, svc, rootID)
+	finish := holdDeferredProcessActivityRefresh(t, svc, rootID)
+
+	svc.Output.CleanupAgent(rootID)
+	_, present := svc.Output.activity.Load(rootID)
+	require.False(t, present)
+	sink.CancelControlRequest("retired")
+	finish()
+
+	_, present = svc.Output.activity.Load(rootID)
+	assert.False(t, present, "the deferred refresh must not restore retired activity")
+	_, cached := svc.Output.bgtasks.Load(rootID)
+	assert.False(t, cached, "the deferred refresh must not restore the retired registry cache")
+	assert.Empty(t, recorder.agentIDs(), "the deferred refresh must not publish activity after cleanup")
+}
+
+func TestDeferredProcessActivityRefreshCannotUseAnEntryRetainedByControlCleanup(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const rootID = "agent-1"
+	createClaimTestAgent(t, svc, rootID)
+	newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	recorder := watchActivity(t, svc, rootID)
+	activity, _, releaseControl := svc.Output.lockControlMutation(rootID, rootID)
+	release := sync.OnceFunc(releaseControl)
+	t.Cleanup(release)
+	finish := holdDeferredProcessActivityRefresh(t, svc, rootID)
+
+	retiredRoot, retiredIDs, retiredSink, retired := svc.Output.retireAgentState(rootID)
+	require.True(t, retired)
+	require.NotNil(t, retiredSink)
+	retained, present := svc.Output.activity.Load(rootID)
+	require.True(t, present, "the active control mutation retains the retired sink's entry")
+	require.Same(t, activity, retained)
+	finish()
+
+	_, cached := svc.Output.bgtasks.Load(rootID)
+	assert.False(t, cached, "a retired sink cannot restore its registry cache")
+	assert.Empty(t, recorder.agentIDs(), "a retained entry does not let a retired sink publish")
+
+	release()
+	svc.Output.clearBlockingControlsForCleanup(rootID, retiredRoot, retiredSink)
+	svc.Output.finishAgentCleanup(rootID, retiredIDs)
+	_, present = svc.Output.activity.Load(rootID)
+	assert.False(t, present, "cleanup removes the entry once the mutation releases it")
+}
+
+func TestDeferredProcessActivityRefreshDiscardsInputsFromReplacedSink(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const rootID = "agent-1"
+	createClaimTestAgent(t, svc, rootID)
+	newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	recorder := watchActivity(t, svc, rootID)
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	svc.Output.processRunning = func(string) bool {
+		if held.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+			return false
+		}
+		return true
+	}
+	finish := sync.OnceFunc(func() {
+		close(release)
+		svc.Output.WaitActivityRefreshes()
+	})
+	t.Cleanup(finish)
+	svc.Output.NoteAgentProcessStarted(rootID)
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the deferred refresh did not reach the process check")
+	}
+
+	original, present := svc.Output.activity.Load(rootID)
+	require.True(t, present)
+	replacement := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	current, present := svc.Output.activity.Load(rootID)
+	require.True(t, present)
+	require.Same(t, original, current, "the replacement inherits the activity entry")
+	finish()
+	require.Empty(t, recorder.agentIDs(), "the old process check cannot publish for the replacement")
+
+	svc.Output.NoteAgentProcessStarted(rootID)
+	svc.Output.WaitActivityRefreshes()
+	replacement.SetTurnState(agent.TurnState{Active: true}, 1)
+	assert.Equal(t, []bool{false, true}, recorder.busyStates())
+}
+
 type observedChildRowRead struct {
 	db.DBTX
 	childID string

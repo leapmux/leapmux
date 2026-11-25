@@ -431,7 +431,10 @@ func (h *OutputHandler) broadcastBackgroundTasks(rootAgentID string, rows []bgta
 // resolvable by key. A caller that needs the linkage must query the table --
 // LookupBackgroundTask and GetAgentBackgroundTaskByChildAgentID both do.
 func (h *OutputHandler) LoadBackgroundTasks(ctx context.Context, rootAgentID string) ([]bgtask.Item, error) {
-	cache := h.bgTaskCache(rootAgentID)
+	return h.loadBackgroundTasks(ctx, rootAgentID, h.bgTaskCache(rootAgentID))
+}
+
+func (h *OutputHandler) loadBackgroundTasks(ctx context.Context, rootAgentID string, cache *bgTaskCache) ([]bgtask.Item, error) {
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
 	if err := cache.on(h.queries, rootAgentID).ensureSeededLocked(ctx); err != nil {
