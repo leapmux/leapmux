@@ -9,6 +9,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/semanticevents"
+	"github.com/leapmux/leapmux/internal/util/seqcursor"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -30,10 +32,15 @@ func (j *Journal) Open(ctx context.Context, tab Tab, cursor []byte) (reader *Rea
 	if err := j.barrier(ctx); err != nil {
 		return nil, nil, err
 	}
-	err = j.store.write(ctx, func(q *db.Queries) error {
-		now := j.clock.Now()
-		var tail db.SemanticEventTail
-		var after int64
+	var (
+		tail       db.SemanticEventTail
+		after      int64
+		needsWrite bool
+		usage      batchUsage
+	)
+	now := j.clock.Now()
+	expiredAt := now.Add(-j.store.retention.age).UnixMilli()
+	err = j.store.read(ctx, func(q *db.Queries) error {
 		var err error
 		if len(cursor) == 0 {
 			live, liveErr := tab.live(ctx, q)
@@ -43,42 +50,81 @@ func (j *Journal) Open(ctx context.Context, tab Tab, cursor []byte) (reader *Rea
 			if !live {
 				return ErrAdmission
 			}
-			tail, err = j.store.ensureTail(ctx, q, tab, now.UnixMilli())
+			tail, err = q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: tab.Type, TabID: tab.ID})
+			if errors.Is(err, sql.ErrNoRows) {
+				needsWrite = true
+				return nil
+			}
+			if err != nil {
+				return err
+			}
 			after = tail.HighSequence
 		} else {
-			tail, err = q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: int64(tab.Type), TabID: tab.ID})
+			tail, err = q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: tab.Type, TabID: tab.ID})
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrCursor
 			}
-			if err == nil {
-				after, err = j.identity.position(tab, tail.TabStreamID, cursor)
-				if after > tail.HighSequence {
-					return ErrCursor
-				}
+			if err != nil {
+				return err
+			}
+			after, err = j.identity.position(tab, tail.TabStreamID, cursor)
+			if err != nil || after > tail.HighSequence {
+				return ErrCursor
 			}
 		}
+		expired, err := q.HasExpiredSemanticEventEntries(ctx, expiredAt)
 		if err != nil {
 			return err
 		}
-		if err := j.store.pruneExpired(ctx, q, now); err != nil {
-			return err
-		}
-		reader = &Reader{journal: j, tab: tab, streamID: tail.TabStreamID}
-		ready = &leapmuxv1.SemanticWatchReady{
-			Tab:      &leapmuxv1.TabIdent{TabType: tab.Type, TabId: tab.ID},
-			WorkerId: j.identity.workerID, JournalId: j.identity.journalID, TabStreamId: tail.TabStreamID,
-			AfterSequence: after, HighWaterSequence: tail.HighSequence, Cursor: reader.cursor(after),
-		}
+		needsWrite = expired
 		return nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	j.signalLocked()
-	if err := j.checkAvailableLocked(); err != nil {
+	if needsWrite {
+		err = j.store.write(ctx, func(q *db.Queries) error {
+			now = j.clock.Now()
+			var err error
+			if len(cursor) == 0 {
+				live, liveErr := tab.live(ctx, q)
+				if liveErr != nil {
+					return liveErr
+				}
+				if !live {
+					return ErrAdmission
+				}
+				tail, err = j.store.ensureTail(ctx, q, tab, now.UnixMilli(), true, &usage)
+				after = tail.HighSequence
+			} else {
+				tail, err = q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: tab.Type, TabID: tab.ID})
+				if errors.Is(err, sql.ErrNoRows) {
+					return ErrCursor
+				}
+				if err == nil {
+					after, err = j.identity.position(tab, tail.TabStreamID, cursor)
+					if err == nil && after > tail.HighSequence {
+						return ErrCursor
+					}
+				}
+			}
+			if err != nil {
+				return err
+			}
+			return j.store.pruneExpired(ctx, q, now, &usage)
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := j.finishOpen(usage.affectedTabs); err != nil {
 		return nil, nil, err
+	}
+	reader = &Reader{journal: j, tab: tab, streamID: tail.TabStreamID}
+	ready = &leapmuxv1.SemanticWatchReady{
+		Tab:      &leapmuxv1.TabIdent{TabType: tab.Type, TabId: tab.ID},
+		WorkerId: j.identity.workerID, JournalId: j.identity.journalID, TabStreamId: tail.TabStreamID,
+		AfterSequence: after, HighWaterSequence: tail.HighSequence, Cursor: reader.cursor(after),
 	}
 	return reader, ready, nil
 }
@@ -92,9 +138,7 @@ func (r *Reader) cursor(sequence int64) []byte {
 // miss a commit made during the query or before the wait starts.
 func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSemanticEventsResponse, <-chan struct{}, error) {
 	j := r.journal
-	j.mu.Lock()
-	changed, available := j.changed, j.checkAvailableLocked()
-	j.mu.Unlock()
+	changed, available := j.watchTab(r.tab)
 	if available != nil {
 		return nil, nil, available
 	}
@@ -104,7 +148,7 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := db.New(tx)
-	tail, err := q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: int64(r.tab.Type), TabID: r.tab.ID})
+	tail, err := q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: r.tab.Type, TabID: r.tab.ID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, ErrCursor
 	}
@@ -114,8 +158,9 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 	if tail.TabStreamID != r.streamID || after < 0 || after > tail.HighSequence {
 		return nil, nil, ErrCursor
 	}
+	signer := j.identity.tabSigner(r.tab, r.streamID)
 	if after < tail.FloorSequence {
-		gap := r.gap(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_RETENTION, after, tail.FloorSequence)
+		gap := tabGapFrame(signer, leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_RETENTION, after, tail.FloorSequence)
 		return []*leapmuxv1.WatchSemanticEventsResponse{gap}, changed, nil
 	}
 	if after == tail.HighSequence {
@@ -127,27 +172,34 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 		}
 		return nil, changed, nil
 	}
-	expired, err := q.GetExpiredSemanticEventCutoff(ctx, db.GetExpiredSemanticEventCutoffParams{
-		TabType: int64(r.tab.Type), TabID: r.tab.ID, ExpiredAt: j.clock.Now().Add(-j.store.retention.age).UnixMilli(),
-	})
+	expiredAt := j.clock.Now().Add(-j.store.retention.age).UnixMilli()
+	hasExpired, err := q.HasExpiredSemanticEventEntries(ctx, expiredAt)
 	if err != nil {
 		return nil, nil, err
 	}
-	if after < expired {
-		// End the read transaction before acquiring the write lock. Persist
-		// the cutoff so a later wall clock adjustment cannot restore it.
-		if err := tx.Rollback(); err != nil {
-			return nil, nil, err
-		}
-		floor, err := r.persistExpiredCutoff(ctx, expired)
+	if hasExpired {
+		expired, err := q.GetExpiredSemanticEventCutoff(ctx, db.GetExpiredSemanticEventCutoffParams{
+			TabType: r.tab.Type, TabID: r.tab.ID, ExpiredAt: expiredAt,
+		})
 		if err != nil {
 			return nil, nil, err
 		}
-		gap := r.gap(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_RETENTION, after, floor)
-		return []*leapmuxv1.WatchSemanticEventsResponse{gap}, changed, nil
+		if after < expired {
+			// End the read transaction before acquiring the write lock. Persist
+			// the cutoff so a later wall clock adjustment cannot restore it.
+			if err := tx.Rollback(); err != nil {
+				return nil, nil, err
+			}
+			floor, err := r.persistExpiredCutoff(ctx, expired)
+			if err != nil {
+				return nil, nil, err
+			}
+			gap := tabGapFrame(signer, leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_RETENTION, after, floor)
+			return []*leapmuxv1.WatchSemanticEventsResponse{gap}, changed, nil
+		}
 	}
 	rows, err := q.ListSemanticEventEntriesAfter(ctx, db.ListSemanticEventEntriesAfterParams{
-		TabType: int64(r.tab.Type), TabID: r.tab.ID, AfterSequence: after, PageSize: readBatchSize,
+		TabType: r.tab.Type, TabID: r.tab.ID, AfterSequence: after, PageSize: readBatchSize,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -160,15 +212,15 @@ func (r *Reader) Read(ctx context.Context, after int64) ([]*leapmuxv1.WatchSeman
 		if row.Sequence != after+1 {
 			return nil, nil, fmt.Errorf("%w: discontinuous event sequence", ErrUnavailable)
 		}
-		if row.GapReason.Valid {
-			frames = append(frames, r.gap(leapmuxv1.SemanticWatchGapReason(row.GapReason.Int64), after, row.Sequence))
+		if row.GapReason != nil {
+			frames = append(frames, tabGapFrame(signer, *row.GapReason, after, row.Sequence))
 		} else {
 			var fact leapmuxv1.SemanticTabFact
-			if err := proto.Unmarshal(row.Fact, &fact); err != nil || semanticFactTabType(&fact) != r.tab.Type {
+			if err := proto.Unmarshal(row.Fact, &fact); err != nil || semanticevents.FactTabType(&fact) != r.tab.Type {
 				return nil, nil, fmt.Errorf("%w: invalid stored event", ErrUnavailable)
 			}
 			frames = append(frames, &leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Record{
-				Record: &leapmuxv1.SemanticWatchRecord{Sequence: row.Sequence, ObservedUnixMillis: row.ObservedUnixMillis, Fact: &fact, Cursor: r.cursor(row.Sequence)},
+				Record: &leapmuxv1.SemanticWatchRecord{Sequence: row.Sequence, ObservedUnixMillis: row.ObservedUnixMillis, Fact: &fact, Cursor: signer.Sign(row.Sequence)},
 			}})
 		}
 		after = row.Sequence
@@ -180,7 +232,7 @@ func (r *Reader) persistExpiredCutoff(ctx context.Context, expired int64) (int64
 	j := r.journal
 	var floor int64
 	err := j.store.write(ctx, func(q *db.Queries) error {
-		tail, err := q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: int64(r.tab.Type), TabID: r.tab.ID})
+		tail, err := q.GetSemanticEventTail(ctx, db.GetSemanticEventTailParams{TabType: r.tab.Type, TabID: r.tab.ID})
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrCursor
 		}
@@ -200,8 +252,8 @@ func (r *Reader) persistExpiredCutoff(ctx context.Context, expired int64) (int64
 	return floor, err
 }
 
-func (r *Reader) gap(reason leapmuxv1.SemanticWatchGapReason, after, through int64) *leapmuxv1.WatchSemanticEventsResponse {
+func tabGapFrame(signer seqcursor.Signer, reason leapmuxv1.SemanticWatchGapReason, after, through int64) *leapmuxv1.WatchSemanticEventsResponse {
 	return &leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Gap{
-		Gap: &leapmuxv1.SemanticWatchGap{Reason: reason, AfterSequence: after, ResumeAfterSequence: through, Cursor: r.cursor(through)},
+		Gap: &leapmuxv1.SemanticWatchGap{Reason: reason, AfterSequence: after, ResumeAfterSequence: through, Cursor: signer.Sign(through)},
 	}}
 }

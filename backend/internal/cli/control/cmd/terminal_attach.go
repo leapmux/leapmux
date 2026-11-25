@@ -184,11 +184,7 @@ func runTerminalAttach(inv *cli.Invocation) (any, error) {
 
 		var feedWG sync.WaitGroup
 		items := make(chan screenFeedItem, 32)
-		startPos := terminalScreenPosition{
-			offset:   info.GetScreenEndOffset(),
-			epoch:    info.GetScreenTimeline().GetBase().GetEpoch(),
-			revision: info.GetScreenTimeline().GetBase().GetRevision(),
-		}
+		startPos := terminalScreenPositionFromInfo(info)
 		startScreenFeed(ctx, &feedWG, workerScreenFeedSource(s.c, got.WorkerID), got.ID, startPos, items)
 
 		// Decouple blocking stdin reads from RPC dispatch so channel shutdown
@@ -278,6 +274,19 @@ func runTerminalAttach(inv *cli.Invocation) (any, error) {
 		runErr = chErr
 	}
 	return nil, runErr
+}
+
+func terminalScreenPositionFromInfo(info *leapmuxv1.TerminalInfo) terminalScreenPosition {
+	timeline := info.GetScreenTimeline()
+	geometry := timeline.GetBase()
+	if changes := timeline.GetChanges(); len(changes) != 0 {
+		geometry = changes[len(changes)-1]
+	}
+	return terminalScreenPosition{
+		offset:   info.GetScreenEndOffset(),
+		epoch:    geometry.GetEpoch(),
+		revision: geometry.GetRevision(),
+	}
 }
 
 // terminalChunkSanitizer buffers incomplete trailing UTF-8 sequences and
@@ -465,11 +474,7 @@ func followTerminalOutput(inv *cli.Invocation, s *session, got tabTarget, info *
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	items := make(chan screenFeedItem, 32)
-	startPos := terminalScreenPosition{
-		offset:   info.GetScreenEndOffset(),
-		epoch:    info.GetScreenTimeline().GetBase().GetEpoch(),
-		revision: info.GetScreenTimeline().GetBase().GetRevision(),
-	}
+	startPos := terminalScreenPositionFromInfo(info)
 	startScreenFeed(ctx, &wg, workerScreenFeedSource(s.c, got.WorkerID), got.ID, startPos, items)
 	var sanitizer terminalChunkSanitizer
 	for {

@@ -569,8 +569,8 @@ func TestCleanup_PurgesRemovedAgentInputsPastTheirRetention(t *testing.T) {
 	t.Cleanup(inputs.StopAndWait)
 	runCleanup(ctx, queries, inputs)
 
-	rowIDs := func() []string {
-		rows, err := sqlDB.QueryContext(ctx, `SELECT id FROM agent_input_queue_items ORDER BY id`)
+	rowIDs := func(table string) []string {
+		rows, err := sqlDB.QueryContext(ctx, `SELECT id FROM `+table+` ORDER BY id`)
 		require.NoError(t, err)
 		defer func() { require.NoError(t, rows.Close()) }()
 		var ids []string
@@ -582,7 +582,8 @@ func TestCleanup_PurgesRemovedAgentInputsPastTheirRetention(t *testing.T) {
 		require.NoError(t, rows.Err())
 		return ids
 	}
-	assert.Equal(t, []string{"held", "removed-later"}, rowIDs())
+	assert.Equal(t, []string{"held"}, rowIDs("agent_input_queue_items"))
+	assert.Equal(t, []string{"removed-later"}, rowIDs("agent_input_queue_removed"))
 	snapshot, err := store.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)

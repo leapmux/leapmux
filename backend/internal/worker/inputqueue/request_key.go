@@ -4,12 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
+	"hash"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -54,56 +53,64 @@ const InputRequestKeyPrefix = "input:"
 //   - The attachments, with their data. An attachment without data counts the
 //     same whether its data is nil or empty, as bytes.Equal compares them.
 func inputIdempotencyKey(input NewItem) string {
-	type idempotencyAttachment struct {
-		Filename string `json:"filename"`
-		MimeType string `json:"mime_type"`
-		Data     []byte `json:"data"`
+	h := sha256.New()
+	var lenBuf [8]byte
+	writeUint64 := func(v uint64) {
+		binary.BigEndian.PutUint64(lenBuf[:], v)
+		_, _ = h.Write(lenBuf[:])
 	}
-	type idempotencySender struct {
-		TabID    string                  `json:"tab_id"`
-		Provider leapmuxv1.AgentProvider `json:"provider"`
+	writeString := func(s string) {
+		writeUint64(uint64(len(s)))
+		_, _ = h.Write([]byte(s))
 	}
-	type idempotencyPayload struct {
-		ID               string                   `json:"id"`
-		AgentID          string                   `json:"agent_id"`
-		Kind             leapmuxv1.AgentInputKind `json:"kind"`
-		Sender           *idempotencySender       `json:"sender,omitempty"`
-		Text             string                   `json:"text"`
-		TargetMode       string                   `json:"target_mode"`
-		PrepareContext   bool                     `json:"prepare_context"`
-		ReclassifyOnEdit bool                     `json:"reclassify_on_edit"`
-		ScheduledAt      *string                  `json:"scheduled_at,omitempty"`
-		SourcePayload    []byte                   `json:"source_payload,omitempty"`
-		Attachments      []idempotencyAttachment  `json:"attachments"`
-	}
-	attachments := make([]idempotencyAttachment, len(input.Attachments))
-	for index := range input.Attachments {
-		attachments[index] = idempotencyAttachment(input.Attachments[index])
-		if len(attachments[index].Data) == 0 {
-			// encoding/json writes a nil slice as null and an empty one as "".
-			attachments[index].Data = nil
+	writeBytes := func(b []byte) {
+		writeUint64(uint64(len(b)))
+		if len(b) > 0 {
+			_, _ = h.Write(b)
 		}
 	}
-	var scheduled *string
-	if input.ScheduledAt != nil {
-		text := timefmt.Format(*input.ScheduledAt)
-		scheduled = &text
+	writeBool := func(v bool) {
+		if v {
+			_, _ = h.Write([]byte{1})
+		} else {
+			_, _ = h.Write([]byte{0})
+		}
 	}
-	var sender *idempotencySender
+	writeHashHeader(h)
+	writeString(input.ID)
+	writeString(input.AgentID)
+	writeUint64(uint64(input.Kind))
 	if input.Sender != nil {
-		sender = &idempotencySender{TabID: input.Sender.TabID, Provider: input.Sender.Provider}
+		writeBool(true)
+		writeString(input.Sender.TabID)
+		writeUint64(uint64(input.Sender.Provider))
+	} else {
+		writeBool(false)
 	}
-	data, err := json.Marshal(idempotencyPayload{
-		ID: input.ID, AgentID: input.AgentID, Kind: input.Kind, Sender: sender, Text: input.Text,
-		TargetMode: input.TargetMode, PrepareContext: input.PrepareContext,
-		ReclassifyOnEdit: input.ReclassifyOnEdit, ScheduledAt: scheduled,
-		SourcePayload: input.SourcePayload, Attachments: attachments,
-	})
-	if err != nil {
-		panic(fmt.Sprintf("marshal queued input idempotency key: %v", err))
+	writeString(input.Text)
+	writeString(input.TargetMode)
+	writeBool(input.PrepareContext)
+	writeBool(input.ReclassifyOnEdit)
+	if input.ScheduledAt != nil {
+		writeBool(true)
+		writeString(timefmt.Format(*input.ScheduledAt))
+	} else {
+		writeBool(false)
 	}
-	sum := sha256.Sum256(data)
+	writeBytes(input.SourcePayload)
+	writeUint64(uint64(len(input.Attachments)))
+	for i := range input.Attachments {
+		writeString(input.Attachments[i].Filename)
+		writeString(input.Attachments[i].MimeType)
+		writeBytes(input.Attachments[i].Data)
+	}
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
 	return InputRequestKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+func writeHashHeader(h hash.Hash) {
+	_, _ = h.Write([]byte("leapmux.input.idempotency.v1\x00"))
 }
 
 type storedInputRequest struct {
@@ -116,10 +123,11 @@ type storedInputRequest struct {
 // IDs are unique across the Worker, so a row of another agent conflicts.
 func storedRequest(ctx context.Context, tx db.DBTX, agentID, inputID string) (storedInputRequest, bool, error) {
 	statements := [...]string{
-		// The queue row, whether the queue holds the input or someone removed
-		// it: a retry of the request that queued a removed input matches it
-		// too, so the statement takes both values of removed_at on purpose.
-		`SELECT agent_id, idempotency_key, 0 FROM agent_input_queue_items WHERE id = ? AND (removed_at IS NULL OR removed_at IS NOT NULL)`,
+		// The live queue row.
+		`SELECT agent_id, idempotency_key, 0 FROM agent_input_queue_items WHERE id = ?`,
+		// The tombstone of an input that someone removed from the queue before
+		// delivery: a retry of the request that queued it matches it too.
+		`SELECT agent_id, idempotency_key, 0 FROM agent_input_queue_removed WHERE id = ?`,
 		// The transcript row of the accepted input, whose message id is the
 		// input id.
 		`SELECT agent_id, idempotency_key, seq FROM messages WHERE id = ?`,

@@ -64,7 +64,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ScheduledAt: &scheduled,
 	})
 	require.NoError(t, err)
-	// agent_input_queue_items.removed_at is Go-bound on every removal, from
+	// agent_input_queue_removed.removed_at is Go-bound on every removal, from
 	// the queue's clock, which reads the non-UTC instant above.
 	_, err = queue.Enqueue(ctx, inputqueue.NewItem{
 		ID: "queue-removed", AgentID: "agent-1",

@@ -140,3 +140,44 @@ func TestKsh93InitialCommandRefusesAnotherShellUsingTheKshName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
+
+func TestKornShellStartupCachesProbeByExecutableIdentity(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "count")
+	shell := filepath.Join(dir, "ksh")
+	testutil.WriteExecutable(t, shell, fmt.Sprintf("#!/bin/sh\nprintf 'x\\n' >> %q\nprintf 'Version AJM 93u+ 2012-08-01'\n", counter))
+
+	bootstrap, err := newInitialCommandBootstrap(dir)
+	require.NoError(t, err)
+	t.Cleanup(bootstrap.close)
+
+	env1, err := bootstrap.kornShellStartup(t.Context(), shell, nil)
+	require.NoError(t, err)
+	assert.Contains(t, env1, "ENV="+kshEnvironmentSelector)
+	env2, err := bootstrap.kornShellStartup(t.Context(), shell, nil)
+	require.NoError(t, err)
+	assert.Contains(t, env2, "ENV="+kshEnvironmentSelector)
+
+	raw, err := os.ReadFile(counter)
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(string(raw)), "\n"), 1, "repeated launches of the same ksh binary must reuse the cached probe")
+
+	// Replacing the executable with a different size/content must invalidate the cache.
+	testutil.WriteExecutable(t, shell, fmt.Sprintf("#!/bin/sh\n# replaced executable with mksh engine\nprintf 'x\\n' >> %q\nprintf 'MIRBSD KSH R59 2020/10/31'\n", counter))
+	env3, err := bootstrap.kornShellStartup(t.Context(), shell, nil)
+	require.NoError(t, err)
+	assert.Contains(t, env3, "ENV="+filepath.Join(bootstrap.dir, "mksh-interactive"))
+	raw, err = os.ReadFile(counter)
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(string(raw)), "\n"), 2, "replaced executable must be probed again")
+
+	// Failing probes must not be cached.
+	failing := filepath.Join(dir, "ksh-fail")
+	testutil.WriteExecutable(t, failing, "#!/bin/sh\nexit 1\n")
+	_, err = bootstrap.kornShellStartup(t.Context(), failing, nil)
+	require.Error(t, err)
+	testutil.WriteExecutable(t, failing, "#!/bin/sh\nprintf 'MIRBSD KSH R59 2020/10/31'\n")
+	_, err = bootstrap.kornShellStartup(t.Context(), failing, nil)
+	require.NoError(t, err)
+}

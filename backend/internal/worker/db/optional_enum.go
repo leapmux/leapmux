@@ -4,7 +4,8 @@ import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
 type optionalStorageEnum interface {
 	leapmuxv1.MarkType | leapmuxv1.AssembledMessageKind | leapmuxv1.MessageCompletion |
-		leapmuxv1.AgentInputQueuePauseReason | leapmuxv1.AgentInputQueuePauseOwner | leapmuxv1.AgentInputTurnOutcome
+		leapmuxv1.AgentInputQueuePauseReason | leapmuxv1.AgentInputQueuePauseOwner |
+		leapmuxv1.AgentInputTurnOutcome | leapmuxv1.SemanticWatchGapReason
 }
 
 // OptionalStorageEnum maps a wire absence to SQL NULL.

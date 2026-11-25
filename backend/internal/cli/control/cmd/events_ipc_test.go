@@ -213,17 +213,14 @@ func (s siblingWorkers) CallInner(_ context.Context, target string, _ userid.Use
 }
 
 func (s siblingWorkers) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest,
-	onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController),
+	onMsg func(*leapmuxv1.InnerStreamMessage) error, bindCtrl func(channel.StreamController),
 ) error {
 	w := s.workers[target]
 	if w == nil || req.GetMethod() != leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure {
 		return fmt.Errorf("unexpected stream %s on %s", req.GetMethod(), target)
 	}
 	w.serveWatch(ctx, req.GetPayload(),
-		func(m *leapmuxv1.InnerStreamMessage) error {
-			onMsg(m)
-			return nil
-		},
+		onMsg,
 		func(ctrl channel.StreamController) (func(), bool) {
 			bindCtrl(ctrl)
 			return func() {}, true

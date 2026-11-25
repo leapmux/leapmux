@@ -391,7 +391,7 @@ func TestCreationRestart_RestoresTheCurrentTerminalDimensions(t *testing.T) {
 			defer oldService.Shutdown()
 			intent := hub.intent("current-terminal")
 			_, request := recoveryCreationRequest(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, intent, directory)
-			runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}}, Options: terminal.Options{ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25}, Title: "Saved terminal"}
+			runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}}, Options: terminalCreationOptions{ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25}, Title: "Saved terminal"}
 			seedRecoveryCreation(t, oldService, recoveryCreationSeed{request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL}, runtime: runtime, state: state,
 				write: func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 					return q.CreateTerminal(ctx, db.CreateTerminalParams{ID: intent.TabId, WorkingDir: directory, Shell: runtime.Options.Shell, Title: runtime.Title, Cols: 117, Rows: 53, Screen: []byte{}})
@@ -447,7 +447,7 @@ func TestCreationRestartDoesNotReleaseAClaimedTerminalCommandAgain(t *testing.T)
 	request.(*leapmuxv1.OpenTerminalRequest).InitialCommand = command
 	runtime := &terminalCreationRuntime{
 		Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}},
-		Options: terminal.Options{
+		Options: terminalCreationOptions{
 			ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25,
 			InitialCommand: command,
 		},

@@ -17,6 +17,7 @@ func TestOptionalStorageEnumPreservesAbsenceAndExplicitOrdinals(t *testing.T) {
 	assert.Nil(t, workerdb.OptionalStorageEnum(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED))
 	assert.Nil(t, workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED))
 	assert.Nil(t, workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_UNSPECIFIED))
+	assert.Nil(t, workerdb.OptionalStorageEnum(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNSPECIFIED))
 	for _, value := range []leapmuxv1.MarkType{leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, leapmuxv1.MarkType(-1), leapmuxv1.MarkType(99)} {
 		stored := workerdb.OptionalStorageEnum(value)
 		require.NotNil(t, stored)

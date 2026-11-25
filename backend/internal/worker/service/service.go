@@ -711,7 +711,18 @@ func New(cfg Config) *Service {
 	svc.TabStatuses = NewTabStatusStore(svc.PrivateEvents)
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.creations = newTabCreationCoordinator(svc)
-	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB, cfg.Clock), queueAdapter, queueAdapter)
+	queueStore := inputqueue.NewStore(cfg.DB, cfg.Clock)
+	queueStore.SetCreationScope(func() (string, string, bool) {
+		if svc.WorkerID == "" {
+			return "", "", false
+		}
+		owner, ok := userid.OwnerFilter(svc.RegisteredBy())
+		if !ok {
+			return "", "", false
+		}
+		return owner, svc.WorkerID, true
+	})
+	svc.InputQueue = inputqueue.NewManager(queueStore, queueAdapter, queueAdapter)
 	svc.Output.SetQueueHeadDispatchFunc(svc.queueHeadDispatch)
 	svc.Output.SetInputProcessStateFunc(func(agentID string) {
 		if _, err := svc.InputQueue.RefreshSnapshot(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
@@ -1011,7 +1022,6 @@ func (svc *Service) RestoreState() {
 	if err := svc.Queries.RetireNativeInputsAfterRestart(ctx, db.RetireNativeInputsAfterRestartParams{
 		UnprovedOutcome: workerdb.OptionalStorageEnum(leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED),
 		UserSource:      leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
 	}); err != nil {
 		slog.Warn("recover native input outcomes failed", "error", err)
 	}

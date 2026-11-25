@@ -141,6 +141,14 @@ func TestStoreSteeredInputFindsNoInputThatNoPlaceHolds(t *testing.T) {
 		VALUES ('agent-reply', 'agent-1', ?, ?, '{"content":"done"}', ?)`,
 		seq, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE)
 	require.NoError(t, err)
+	require.NoError(t, database.QueryRowContext(ctx, `
+		UPDATE agents SET message_seq_hwm = message_seq_hwm + 1
+		WHERE id = 'agent-1' RETURNING message_seq_hwm`).Scan(&seq))
+	_, err = database.ExecContext(ctx, `
+		INSERT INTO messages (id, agent_id, seq, source, content, content_compression, from_input_queue)
+		VALUES ('provider-user', 'agent-1', ?, ?, '{"content":"recovered"}', ?, 0)`,
+		seq, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE)
+	require.NoError(t, err)
 	prepared := steerAgentMessage(t, store, "Run the tests", nil)
 	_, _, err = store.Accept(ctx, prepared, DispatchResult{StartsTurn: true, Steering: true})
 	require.NoError(t, err)
@@ -148,6 +156,7 @@ func TestStoreSteeredInputFindsNoInputThatNoPlaceHolds(t *testing.T) {
 	for _, test := range []struct{ name, agentID, inputID string }{
 		{name: "an unknown input", agentID: "agent-1", inputID: "unknown"},
 		{name: "a message of the agent", agentID: "agent-1", inputID: "agent-reply"},
+		{name: "a provider user row not from the input queue", agentID: "agent-1", inputID: "provider-user"},
 		{name: "an input of another agent", agentID: "agent-2", inputID: "from-agent"},
 	} {
 		_, err := store.SteeredInput(ctx, test.agentID, test.inputID)

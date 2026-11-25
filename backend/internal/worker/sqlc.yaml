@@ -72,6 +72,10 @@ sql:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "AgentInputTurnOutcome"
               pointer: true
+          - column: "native_agent_reply_turns.outcome"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentInputTurnOutcome"
           - column: "agent_input_queue_state.pause_reason"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -152,6 +156,8 @@ sql:
           # same way, so the retype is correct in both directions.
           - column: "messages.transcript_only"
             go_type: "bool"
+          - column: "messages.from_input_queue"
+            go_type: "bool"
           - column: "terminals.workspace_archived"
             go_type: "bool"
           - column: "agents.workspace_archived"
@@ -168,3 +174,20 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "TabType"
+          - column: "semantic_event_feed_heads.tab_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "TabType"
+          - column: "semantic_event_tails.tab_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "TabType"
+          - column: "semantic_event_entries.tab_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "TabType"
+          - column: "semantic_event_entries.gap_reason"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "SemanticWatchGapReason"
+              pointer: true

@@ -350,6 +350,13 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	if deliveryID == "" {
 		answer, err := readAnswer()
 		if errors.Is(err, sql.ErrNoRows) {
+			latest, lookupErr := svc.loadControlResponseRequestMetadata(agentID, requestID)
+			if lookupErr == nil && latest.Exists &&
+				(latest.answersARetiredInstance(claimToken) ||
+					!bytes.Equal(latest.Payload, plan.requestMeta.Payload) ||
+					latest.AgentSessionID != plan.requestMeta.AgentSessionID) {
+				return agent.ErrControlInstanceReplaced
+			}
 			return agent.ErrControlRequestNotPending
 		}
 		if err != nil {

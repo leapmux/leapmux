@@ -65,7 +65,7 @@ func (s *Store) SteeredInput(ctx context.Context, agentID, inputID string) (Stee
 		return SteeredInput{Sender: item.Sender, Text: item.Text}, nil
 	}
 	var removed bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NOT NULL)`,
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM agent_input_queue_removed WHERE agent_id = ? AND id = ?)`,
 		agentID, inputID).Scan(&removed); err != nil {
 		return SteeredInput{}, err
 	}
@@ -76,14 +76,13 @@ func (s *Store) SteeredInput(ctx context.Context, agentID, inputID string) (Stee
 }
 
 // readInputTranscript reads the transcript row that Accept wrote for the input
-// inputID of agentID. It reads only a row that the user's side of the
-// conversation holds, so a message of any other source never reads as an
-// input.
+// inputID of agentID. It reads only a user row accepted from the input queue,
+// so a message from any other source or producer never reads as a queued input.
 func readInputTranscript(ctx context.Context, tx db.DBTX, agentID, inputID string) (SteeredInput, error) {
 	var content, supplemental []byte
 	var contentCompression, supplementalCompression int32
 	err := tx.QueryRowContext(ctx, `SELECT content, content_compression, supplemental_content, supplemental_content_compression
-		FROM messages WHERE id = ? AND agent_id = ? AND source = ?`,
+		FROM messages WHERE id = ? AND agent_id = ? AND source = ? AND from_input_queue = 1`,
 		inputID, agentID, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER).
 		Scan(&content, &contentCompression, &supplemental, &supplementalCompression)
 	if errors.Is(err, sql.ErrNoRows) {

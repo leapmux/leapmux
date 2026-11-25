@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -21,6 +22,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
@@ -279,6 +281,53 @@ func TestRestartTerminal_DoesNotRunTheInitialCommandAgain(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(screen), marker))
 }
 
+func TestRestartTerminal_InitialCommandRefusesReleaseAfterOwnerChange(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	t.Parallel()
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+
+	id := openTerminalRunning(t, svc, d, testutil.TestShell(), "exit 0")
+	waitForTerminalExit(t, svc.Terminals, id)
+
+	// Switch the Worker owner right after RestartTerminal dispatches its goroutine
+	// or verify via authorizeTerminalCommandRelease wired into RestartTerminal.
+	// Use a shell profile gate so we can flip ownership after the RPC accepts
+	// and before ReleaseInitialCommand runs.
+	dir := t.TempDir()
+	entered := filepath.Join(dir, "entered")
+	gate := filepath.Join(dir, "gate")
+	effect := filepath.Join(dir, "effect")
+	shell := filepath.Join(dir, "sh")
+	testutil.WriteExecutable(t, shell, `#!/bin/sh
+printf ready > "`+entered+`"
+while [ ! -f "`+gate+`" ]; do
+  sleep 0.02
+done
+exec /bin/sh "$@"
+`)
+	_, err := svc.DB.ExecContext(t.Context(), `UPDATE terminals SET shell = ? WHERE id = ?`, shell, id)
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+		TerminalId:     id,
+		InitialCommand: `printf leaked > "` + effect + `"`,
+	}, writer)
+	require.Empty(t, writer.errors)
+
+	testutil.RequireEventually(t, func() bool {
+		_, err := os.Stat(entered)
+		return err == nil
+	}, "restarted shell should start before ownership changes")
+
+	svc.SetRegisteredBy(userid.MustNew("different-owner"))
+	testutil.WriteExecutable(t, gate, "")
+
+	svc.TerminalStartup.WaitForInFlight()
+	assert.NoFileExists(t, effect, "restarted initial command must not run after Worker ownership changed")
+}
+
 // An empty initial command runs nothing, and the terminal arms no wait for it.
 func TestOpenTerminal_AnEmptyInitialCommandRunsNothing(t *testing.T) {
 	skipWithoutPOSIXShell(t)
@@ -358,7 +407,7 @@ func TestCreationRestart_KeepsTheInitialCommand(t *testing.T) {
 			_, request := recoveryCreationRequest(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, intent, directory)
 			runtime := &terminalCreationRuntime{
 				Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}},
-				Options: terminal.Options{ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25, InitialCommand: "make test\nmake lint"},
+				Options: terminalCreationOptions{ID: intent.TabId, WorkingDir: directory, Shell: testutil.TestShell(), Cols: 80, Rows: 25, InitialCommand: "make test\nmake lint"},
 				Title:   "Saved terminal",
 			}
 			seedRecoveryCreation(t, oldService, recoveryCreationSeed{request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL}, runtime: runtime, state: state,

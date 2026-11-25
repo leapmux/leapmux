@@ -14,5 +14,5 @@ RETURNING message_seq_hwm;
 -- name: HasQueuedAgentInput :one
 SELECT EXISTS(
     SELECT 1 FROM agent_input_queue_items
-    WHERE agent_id = ? AND state = ? AND removed_at IS NULL
+    WHERE agent_id = ? AND state = ?
 );

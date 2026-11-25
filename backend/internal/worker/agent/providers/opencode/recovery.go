@@ -135,7 +135,7 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 			if strings.HasPrefix(message.ID, openCodeInputIDPrefix) {
 				return nil
 			}
-			return run.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: message.Raw, AgentSessionID: run.id, IdempotencyKey: "input:" + message.ID}, agent.SpanInfo{})
+			return run.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: message.Raw, AgentSessionID: run.id, IdempotencyKey: "opencode-user:" + message.ID}, agent.SpanInfo{})
 		default:
 			return run.persistNativeRecord(agent.MessageContent{Original: message.Raw, AgentSessionID: run.id, IdempotencyKey: "record:" + message.ID})
 		}

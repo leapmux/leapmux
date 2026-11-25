@@ -33,7 +33,7 @@ func (p compiledGitPeer) CallInner(_ context.Context, worker string, owner useri
 	return nil, nil
 }
 
-func (compiledGitPeer) StreamInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest, func(*leapmuxv1.InnerStreamMessage), func(channel.StreamController)) error {
+func (compiledGitPeer) StreamInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest, func(*leapmuxv1.InnerStreamMessage) error, func(channel.StreamController)) error {
 	return fmt.Errorf("unexpected git stream")
 }
 

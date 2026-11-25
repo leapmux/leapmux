@@ -450,6 +450,7 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 	for _, object := range []string{
 		"agent_input_queue_state",
 		"agent_input_queue_items",
+		"agent_input_queue_removed",
 		"agent_input_queue_attachments",
 		"idx_agent_input_queue_order",
 		"idx_agent_input_queue_removed",
@@ -512,15 +513,81 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE name = 'agent_input_queue_items'`).Scan(&itemsTableSQL))
 	assert.NotContains(t, itemsTableSQL, "UNIQUE(agent_id, id)")
-	// A removed input keeps its order_index, so the order is unique among the
-	// inputs that the queue holds, through a partial index, and not across
-	// the whole table.
+	// Order uniqueness is enforced directly on agent_input_queue_items because
+	// removed input receipts live in agent_input_queue_removed.
 	assert.NotContains(t, itemsTableSQL, "UNIQUE(agent_id, order_index)")
 	var orderIndexSQL string
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE name = 'idx_agent_input_queue_order'`).Scan(&orderIndexSQL))
 	assert.Contains(t, orderIndexSQL, "UNIQUE INDEX")
-	assert.Contains(t, orderIndexSQL, "(agent_id, order_index) WHERE removed_at IS NULL")
+	assert.Contains(t, orderIndexSQL, "(agent_id, order_index)")
+	assert.NotContains(t, orderIndexSQL, "removed_at")
+}
+
+func TestStorePrepareDispatchScopesTabCreationCheckByOwnerAndWorker(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	store.SetCreationScope(func() (string, string, bool) {
+		return "cur-user", "cur-worker", true
+	})
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "input-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello",
+	})
+	require.NoError(t, err)
+
+	insertCreation := func(userID, workerID string, state leapmuxv1.TabCreationState) {
+		t.Helper()
+		_, err := database.ExecContext(ctx, `
+			INSERT INTO tab_creations (user_id, worker_id, tab_id, tab_type, request_hash, request_payload, publication_payload, runtime_payload, state)
+			VALUES (?, ?, 'agent-1', ?, ?, X'', X'', X'', ?)`,
+			userID, workerID, leapmuxv1.TabType_TAB_TYPE_AGENT, make([]byte, 32), state)
+		require.NoError(t, err)
+	}
+
+	// A stale REJECTED creation row from a previous Worker registration must
+	// not block dispatch for the active (user_id, worker_id) registration.
+	insertCreation("old-user", "old-worker", leapmuxv1.TabCreationState_TAB_CREATION_STATE_REJECTED)
+	insertCreation("cur-user", "cur-worker", leapmuxv1.TabCreationState_TAB_CREATION_STATE_COMMITTED)
+
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared, "a stale prior-registration creation row must not block dispatch")
+	assert.Equal(t, "input-1", prepared.Item.ID)
+
+	// Requeue and flip the active registration's creation row to PENDING:
+	// now dispatch must be blocked.
+	_, err = store.RequeuePrepared(ctx, "agent-1", "input-1")
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, `
+		UPDATE tab_creations SET state = ? WHERE user_id = 'cur-user' AND worker_id = 'cur-worker' AND tab_id = 'agent-1'`,
+		leapmuxv1.TabCreationState_TAB_CREATION_STATE_PENDING)
+	require.NoError(t, err)
+
+	blocked, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	assert.Nil(t, blocked, "a non-committed creation row for the active owner and Worker must block dispatch")
+
+	// When the active registration commits again, a scope returning ok=false
+	// (pre-registration) or nil must fall back to the unscoped check and still
+	// see the stale non-committed row.
+	_, err = database.ExecContext(ctx, `
+		UPDATE tab_creations SET state = ? WHERE user_id = 'cur-user' AND worker_id = 'cur-worker' AND tab_id = 'agent-1'`,
+		leapmuxv1.TabCreationState_TAB_CREATION_STATE_COMMITTED)
+	require.NoError(t, err)
+	store.SetCreationScope(func() (string, string, bool) {
+		return "", "", false
+	})
+	blockedPreReg, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	assert.Nil(t, blockedPreReg, "an unready scope must fall back to the unscoped tab_creations check")
+
+	store.SetCreationScope(nil)
+	blockedUnscoped, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	assert.Nil(t, blockedUnscoped, "a nil scope must fall back to the unscoped tab_creations check")
 }
 
 func TestStoreEnqueueRoundTripAndIdempotency(t *testing.T) {
@@ -2420,7 +2487,7 @@ func pauseAgentAndEndTurn(t *testing.T, store *Store, reason leapmuxv1.AgentInpu
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
 	staged := store.cloneEphemeral("agent-1")
-	result, err := pauseAndEndTurn(t.Context(), tx, "agent-1", reason, owner, &staged)
+	result, err := pauseAndEndTurn(t.Context(), tx, "agent-1", reason, owner, &staged, time.Now())
 	require.NoError(t, err)
 	rows, err := result.RowsAffected()
 	require.NoError(t, err)
@@ -3049,7 +3116,7 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 			tx, err := database.BeginTx(ctx, nil)
 			require.NoError(t, err)
 			staged := store.cloneEphemeral("agent-1")
-			require.NoError(t, replacePauseAndEndTurn(ctx, tx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED, pauseOwnerDelivery, &staged))
+			require.NoError(t, replacePauseAndEndTurn(ctx, tx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED, pauseOwnerDelivery, &staged, time.Now()))
 			require.NoError(t, store.commitEphemeral(tx, "agent-1", staged))
 			assertCleared(t, store)
 		})

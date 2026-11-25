@@ -168,7 +168,7 @@ func TestParseKey_CanonicalName(t *testing.T) {
 	}
 }
 
-// ParseKey refuses a name it cannot encode, and names the key in the error.
+// ParseKey refuses a name it cannot encode, and identifies the key in the error.
 func TestParseKey_Refusals(t *testing.T) {
 	for name, want := range map[string]string{
 		"":                "is empty",
@@ -275,4 +275,22 @@ func TestParseKey_ShiftOnALetterSuggestsTheCapital(t *testing.T) {
 	_, err = ParseKey("shift-1")
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "capital")
+}
+
+func TestAppendPaste_LinearStripsDeeplyNestedEndMarkersAndNormalizesNewlines(t *testing.T) {
+	t.Parallel()
+	const depth = 2000
+	var nested strings.Builder
+	for range depth {
+		nested.WriteString("\x1b[20")
+	}
+	for range depth {
+		nested.WriteString("1~")
+	}
+	out := Input{Data: []byte(nested.String()), Paste: true}.Encode(Modes{BracketedPaste: true})
+	assert.Empty(t, out, "nested paste end markers that collapse to empty must emit nothing")
+
+	mixed := "a\r\nb\nc" + nested.String() + "d"
+	out = Input{Data: []byte(mixed), Paste: true}.Encode(Modes{BracketedPaste: true})
+	assert.Equal(t, []byte(pasteStart+"a\rb\rcd"+pasteEnd), out)
 }

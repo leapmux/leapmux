@@ -23,11 +23,11 @@ import (
 const cliDirectoryPrefix = "cli-"
 
 // CLIDirectory is the directory that a Worker puts first on the PATH of each
-// process that it spawns with remote control. It holds one entry: `leapmux`
-// (`leapmux.exe` on Windows), a link to the executable that serves
-// `leapmux control` for this Worker. A bare `leapmux` in a tab then runs the
-// CLI of the Worker that started the tab, and not a copy that the user
-// installed, which can be another version.
+// process that it spawns with remote control. It holds `leapmux` and its short
+// `lmx` alias (`leapmux.exe` and `lmx.exe` on Windows), linked to the
+// executable that serves `leapmux control` for this Worker. A bare `leapmux`
+// or `lmx` in a tab then runs the CLI of the Worker that started the tab, and
+// not a copy that the user installed, which can be another version.
 //
 // One Worker process owns one directory, and the directory has a unique name.
 // A new process therefore never finds the link of an ended one in its own
@@ -77,9 +77,11 @@ func PrepareCLIDirectory(dataDir, executable string) (*CLIDirectory, error) {
 		return nil, errors.Join(fmt.Errorf("link the control CLI %s into %s: %w", target, dir, err), os.RemoveAll(dir))
 	}
 	// Also link the short `lmx` alias alongside `leapmux` so spawned tabs and
-	// agents can run either name without extra PATH setup.
+	// agents can run either name without extra PATH setup. When `leapmux` had
+	// to be copied, hard-link `lmx` to the copy in the same directory instead
+	// of copying the binary a second time; when symlinked, symlink directly.
 	aliasLink := filepath.Join(dir, cliAliasExecutableName(runtime.GOOS))
-	if _, aliasErr := linkExecutable(target, aliasLink, linkMethods); aliasErr != nil {
+	if aliasErr := linkAliasExecutable(target, link, aliasLink, method); aliasErr != nil {
 		slog.Warn("could not link short CLI alias in control CLI directory", "alias", aliasLink, "error", aliasErr)
 	}
 	slog.Info("control CLI linked for spawned processes", "link", link, "target", target, "method", method)
@@ -217,6 +219,28 @@ func linkExecutable(target, link string, methods []linkMethod) (string, error) {
 		}
 	}
 	return "", errors.Join(failures...)
+}
+
+// linkAliasExecutable links aliasLink using the cheapest method consistent with
+// how link was created from target.
+func linkAliasExecutable(target, link, aliasLink, method string) error {
+	switch method {
+	case "copy":
+		if err := os.Link(link, aliasLink); err == nil {
+			return nil
+		}
+		_, err := linkExecutable(link, aliasLink, linkMethods[1:])
+		return err
+	case "symbolic link":
+		if err := os.Symlink(target, aliasLink); err == nil {
+			return nil
+		}
+		_, err := linkExecutable(target, aliasLink, linkMethods[2:])
+		return err
+	default:
+		_, err := linkExecutable(target, aliasLink, linkMethods)
+		return err
+	}
 }
 
 // copyExecutable copies target to link, which must not exist yet. The copy is

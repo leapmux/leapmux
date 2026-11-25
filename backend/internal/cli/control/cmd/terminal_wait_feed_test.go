@@ -349,3 +349,26 @@ func TestScreenFeedValidatesEpochBeforeClippingOffsets(t *testing.T) {
 	assert.Equal(t, previous, forward.position)
 	assert.Empty(t, out)
 }
+
+func TestTerminalScreenPositionFromInfoUsesLatestChange(t *testing.T) {
+	t.Parallel()
+	baseOnly := &leapmuxv1.TerminalInfo{
+		ScreenEndOffset: 100,
+		ScreenTimeline: &leapmuxv1.TerminalScreenTimeline{
+			Base: &leapmuxv1.TerminalScreenGeometry{Epoch: "ep-1", Revision: 1, Cols: 80, Rows: 24},
+		},
+	}
+	assert.Equal(t, terminalScreenPosition{offset: 100, epoch: "ep-1", revision: 1}, terminalScreenPositionFromInfo(baseOnly))
+
+	withChanges := &leapmuxv1.TerminalInfo{
+		ScreenEndOffset: 250,
+		ScreenTimeline: &leapmuxv1.TerminalScreenTimeline{
+			Base: &leapmuxv1.TerminalScreenGeometry{Epoch: "ep-1", Revision: 1, Cols: 80, Rows: 24},
+			Changes: []*leapmuxv1.TerminalScreenGeometry{
+				{Epoch: "ep-1", Revision: 2, Offset: 120, Cols: 100, Rows: 30},
+				{Epoch: "ep-1", Revision: 3, Offset: 200, Cols: 120, Rows: 40},
+			},
+		},
+	}
+	assert.Equal(t, terminalScreenPosition{offset: 250, epoch: "ep-1", revision: 3}, terminalScreenPositionFromInfo(withChanges))
+}

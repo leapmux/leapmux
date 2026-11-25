@@ -73,7 +73,7 @@ INSERT INTO messages (
   content_compression, supplemental_content,
   supplemental_content_compression, supplemental_revision, idempotency_key,
   depth, span_id, parent_span_id, span_type, span_lines, span_color,
-  mark_type, assembled_kind, completion, transcript_only, created_at
+  mark_type, assembled_kind, completion, transcript_only, from_input_queue, created_at
 )
 SELECT
   CAST(sqlc.arg(target_agent_id) AS TEXT) || ':' || CAST(m.seq AS TEXT),
@@ -83,7 +83,7 @@ SELECT
   m.supplemental_content_compression, m.supplemental_revision,
   m.idempotency_key, m.depth, m.span_id, m.parent_span_id,
   m.span_type, m.span_lines, m.span_color,
-  m.mark_type, m.assembled_kind, m.completion, m.transcript_only, m.created_at
+  m.mark_type, m.assembled_kind, m.completion, m.transcript_only, m.from_input_queue, m.created_at
 FROM messages AS m
 WHERE m.agent_id = sqlc.arg(source_agent_id)
 ORDER BY m.seq ASC;

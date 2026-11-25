@@ -126,3 +126,44 @@ func TestScreenReplayReportsGeometryEvictionAheadOfRetainedBytes(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, replay.Timeline.HistoryTruncated)
 }
+
+func TestScreenBufferWriteAndDeliverAllowsNilHandler(t *testing.T) {
+	t.Parallel()
+	buffer := NewScreenBuffer()
+	owner := buffer.beginGeometry(80, 24, nil)
+	require.NotPanics(t, func() {
+		buffer.WriteAndDeliver(owner, []byte("hello"), nil)
+	})
+	screen, offset := buffer.Snapshot()
+	assert.Equal(t, "hello", string(screen))
+	assert.Equal(t, int64(5), offset)
+}
+
+func TestScreenResizeDoesNotHoldDeliverMuAcrossNativeResize(t *testing.T) {
+	t.Parallel()
+	buffer := NewScreenBuffer()
+	owner := buffer.beginGeometry(80, 24, nil)
+
+	inResize := make(chan struct{})
+	releaseResize := make(chan struct{})
+	resizeDone := make(chan error, 1)
+	go func() {
+		resizeDone <- buffer.resizeWithGeometry(owner, 100, 30, func() error {
+			close(inResize)
+			<-releaseResize
+			return nil
+		}, nil)
+	}()
+	<-inResize
+
+	// WriteAndDeliver must complete while the native resize callback is blocked;
+	// previously holding deliverMu across resize() deadlocked with ConPTY close-flush.
+	writeDone := make(chan struct{})
+	go func() {
+		buffer.WriteAndDeliver(owner, []byte("chunk"), func(Output) {})
+		close(writeDone)
+	}()
+	<-writeDone
+	close(releaseResize)
+	require.NoError(t, <-resizeDone)
+}

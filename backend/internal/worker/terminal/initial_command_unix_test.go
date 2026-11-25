@@ -59,6 +59,86 @@ func TestInitialCommandCannotReachAForegroundStartupChild(t *testing.T) {
 	require.Error(t, startErr, "the shell did not reach an execution point for the initial command")
 }
 
+func TestBashStartupProbesVersionAndCachesByExecutableIdentity(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	shell := filepath.Join(dir, "bash")
+	counter := filepath.Join(dir, "probe-count")
+
+	writeFakeBash := func(major string) {
+		t.Helper()
+		testutil.WriteExecutable(t, shell, fmt.Sprintf(`#!/bin/sh
+printf 'x' >> %q
+printf '%%s' %q
+`, counter, major))
+	}
+
+	// Bash 3.x at a non-/bin/bash path must select --rcfile -i and cache the probe.
+	writeFakeBash("3")
+	b1, err := newInitialCommandBootstrap(dir)
+	require.NoError(t, err)
+	defer b1.close()
+	_, args1, err := b1.unixStartup(t.Context(), shell, "bash", dir, nil, []string{"-l"})
+	require.NoError(t, err)
+	require.Len(t, args1, 3)
+	assert.Equal(t, "--rcfile", args1[0])
+	assert.Equal(t, "-i", args1[2])
+
+	b2, err := newInitialCommandBootstrap(dir)
+	require.NoError(t, err)
+	defer b2.close()
+	_, args2, err := b2.unixStartup(t.Context(), shell, "bash", dir, nil, []string{"-l"})
+	require.NoError(t, err)
+	assert.Equal(t, "--rcfile", args2[0])
+
+	hits, err := os.ReadFile(counter)
+	require.NoError(t, err)
+	assert.Len(t, hits, 1, "identical bash executable identity should be probed once")
+
+	// Replacing the executable with Bash 4 (boundary major == 4) must
+	// invalidate the cache and switch to --noprofile --posix.
+	writeFakeBash("40")
+	b3, err := newInitialCommandBootstrap(dir)
+	require.NoError(t, err)
+	defer b3.close()
+	_, args3, err := b3.unixStartup(t.Context(), shell, "bash", dir, nil, []string{"-l"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"--noprofile", "--posix", "-l"}, args3)
+
+	hits, err = os.ReadFile(counter)
+	require.NoError(t, err)
+	assert.Len(t, hits, 2, "a replaced bash executable must be probed again")
+
+	// Exact boundary major == 4 (single-digit 4) selects --noprofile --posix.
+	boundaryShell := filepath.Join(dir, "bash4")
+	testutil.WriteExecutable(t, boundaryShell, "#!/bin/sh\nprintf '4'\n")
+	useRcfile, err := bashRequiresRcfileFallback(t.Context(), boundaryShell)
+	require.NoError(t, err)
+	assert.False(t, useRcfile, "Bash 4 supports ENV in POSIX mode and must not use --rcfile")
+
+	// Non-integer or failing wrapper output falls back to false without error
+	// and is not cached.
+	weirdCounter := filepath.Join(dir, "weird-count")
+	weirdShell := filepath.Join(dir, "bash-weird")
+	testutil.WriteExecutable(t, weirdShell, fmt.Sprintf("#!/bin/sh\nprintf 'x' >> %q\nprintf 'not-a-number'\n", weirdCounter))
+	for range 2 {
+		useRcfile, err = bashRequiresRcfileFallback(t.Context(), weirdShell)
+		require.NoError(t, err)
+		assert.False(t, useRcfile)
+	}
+	weirdHits, err := os.ReadFile(weirdCounter)
+	require.NoError(t, err)
+	assert.Len(t, weirdHits, 2, "unparseable bash version output must not be cached")
+
+	// A canceled context returns ctx.Err() instead of silently falling back.
+	canceledCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	uncachedShell := filepath.Join(dir, "bash-canceled")
+	testutil.WriteExecutable(t, uncachedShell, "#!/bin/sh\nprintf '3'\n")
+	_, err = bashRequiresRcfileFallback(canceledCtx, uncachedShell)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
 func TestInitialCommandRunsInTheOriginalShellAndKeepsItsState(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -333,4 +413,81 @@ done
 	testutil.RegisterTerminalCleanup(t, manager, opts.ID)
 	assert.Equal(t, 1, failures)
 	assert.Equal(t, int32(1), releases.Load())
+}
+
+func TestInitialCommandPreservesExitStatusAndResistsShadowedPrintf(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "profile")
+	require.NoError(t, os.WriteFile(profile, []byte("printf() { return 99; }\n"), 0o600))
+	receipt := filepath.Join(dir, "status")
+	term, err := Start(testutil.DeadlineContext(t), Options{
+		ID: "status-and-printf", Shell: "/bin/sh", WorkingDir: dir, InitialCommandDir: dir,
+		InitialCommand: "(exit 42)",
+		ExtraEnv:       []string{"ENV=" + profile, "LEAPMUX_TEST_RECEIPT=" + receipt},
+	}, quartz.NewReal(), func(Output) {})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		term.Stop()
+		term.Wait()
+	})
+	require.NoError(t, term.SendInput([]byte(`command printf '%s' "$?" > "$LEAPMUX_TEST_RECEIPT"`+"\r")))
+	testutil.RequireEventually(t, func() bool {
+		got, err := os.ReadFile(receipt)
+		return err == nil && string(got) == "42"
+	}, "initial command exit status must survive handoff and shadowed printf must not break handoff")
+}
+
+func TestRestartTerminal_InitialCommandSeesRegisteredTerminalAndRestoresOnFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	manager := NewManager()
+	const id = "restart-initial"
+	require.NoError(t, manager.StartTerminal(testutil.DeadlineContext(t), Options{
+		ID: id, Shell: "/bin/sh", WorkingDir: dir, Title: "Build Shell", InitialCommandDir: dir,
+		InitialCommand: "exit 0", ExtraEnv: []string{"ENV="},
+	}, func(Output) {}, nil))
+	testutil.RegisterTerminalCleanup(t, manager, id)
+	manager.WaitForExit(id)
+
+	meta, ok := manager.GetMeta(id)
+	require.True(t, ok)
+	assert.Equal(t, "Build Shell", meta.Title, "initial registration must carry the title during startup")
+
+	refused := errors.New("refused restart release")
+	var sawRegistered bool
+	var sawTitle string
+	err := manager.RestartTerminal(testutil.DeadlineContext(t), Options{
+		ID: id, Shell: "/bin/sh", WorkingDir: dir, Title: "Build Shell", InitialCommandDir: dir,
+		InitialCommand: "printf restarted", ExtraEnv: []string{"ENV="},
+		ReleaseInitialCommand: func(context.Context, func() error) error {
+			m, found := manager.GetMeta(id)
+			sawRegistered = found && manager.IsRunning(id)
+			sawTitle = m.Title
+			return refused
+		},
+	}, 0, func(Output) {}, nil)
+	require.ErrorIs(t, err, refused)
+	assert.True(t, sawRegistered, "RestartTerminal must register the new terminal before ReleaseInitialCommand")
+	assert.Equal(t, "Build Shell", sawTitle)
+	assert.True(t, manager.HasTerminal(id), "failed restart rollback must restore the previous exited terminal")
+	assert.True(t, manager.IsExited(id))
+}
+
+func TestInitialCommandMarkerMatchesRejectsSymlinkAndFIFO(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bootstrap, err := newInitialCommandBootstrap(dir)
+	require.NoError(t, err)
+	t.Cleanup(bootstrap.close)
+
+	target := filepath.Join(dir, "target")
+	require.NoError(t, os.WriteFile(target, []byte("124 expected\n"), 0o600))
+	symlink := filepath.Join(bootstrap.dir, "sym")
+	require.NoError(t, os.Symlink(target, symlink))
+	assert.False(t, bootstrap.markerMatches(symlink, "124 expected"))
+
+	fifo := filepath.Join(bootstrap.dir, "fifo")
+	require.NoError(t, makeInitialCommandPipe(fifo))
+	assert.False(t, bootstrap.markerMatches(fifo, "124 expected"))
 }

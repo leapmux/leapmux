@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -67,21 +66,8 @@ func TestInitialCommandCanExitPowerShell(t *testing.T) {
 		t.Skip("PowerShell is unavailable")
 	}
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	term, err := Start(ctx, Options{
+	assertInitialCommandExits(t, Options{
 		ID: "powershell-exit", Shell: shell, WorkingDir: dir, InitialCommandDir: dir,
 		InitialCommand: "exit 7",
-	}, quartz.NewReal(), func(Output) {})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		term.Stop()
-		term.Wait()
-	})
-	select {
-	case <-term.exitCh:
-		assert.Equal(t, 7, term.Wait())
-	case <-ctx.Done():
-		t.Fatal("PowerShell did not exit")
-	}
+	}, 7, "PowerShell")
 }

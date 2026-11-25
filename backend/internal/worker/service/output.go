@@ -1752,6 +1752,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	var storedClaimToken string
 	var storedSourceSeq int64
 	var storedSessionID string
+	var isNewClaim bool
 	if !request.NonBlocking {
 		if !s.ownsControlPublisher() {
 			return nil
@@ -1835,6 +1836,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		storedClaimToken = stored.ClaimToken
 		storedSourceSeq = stored.SourceSeq
 		storedSessionID = stored.AgentSessionID
+		isNewClaim = !hasCurrent || current.ClaimToken != stored.ClaimToken
 		st.mu.Lock()
 		if st.pendingControl == nil {
 			st.pendingControl = make(map[string]ownedControlRequest)
@@ -1845,10 +1847,11 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	} else {
 		// The database owns persisted non-blocking values. A non-blocking request
 		// outlives its scope, so its claim reuse reads only the stored row.
-		current, err := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("read the pending control request: %w", err)
+		current, getErr := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+		if getErr != nil && !errors.Is(getErr, sql.ErrNoRows) {
+			return fmt.Errorf("read the pending control request: %w", getErr)
 		}
+		hasCurrent := getErr == nil
 		if !s.ownsControlPublisher() {
 			return nil
 		}
@@ -1857,7 +1860,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			if existingBlocking, hasBlocking := s.h.controls.getBlocking(s.agentID, requestID); hasBlocking && existingBlocking.ClaimToken == claimToken {
 				return errors.New("the control request instance changed without a new instance ID")
 			}
-			if err == nil && current.ClaimToken == claimToken &&
+			if hasCurrent && current.ClaimToken == claimToken &&
 				(!bytes.Equal(current.Payload, payload) || current.AgentSessionID != request.AgentSessionID) {
 				return errors.New("the control request instance changed without a new instance ID")
 			}
@@ -1865,7 +1868,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		if claimToken == "" {
 			claimToken = id.Generate()
 		}
-		if err == nil && request.InstanceID == "" &&
+		if hasCurrent && request.InstanceID == "" &&
 			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
 			claimToken = current.ClaimToken
 		}
@@ -1889,7 +1892,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			}
 			return nil
 		}
-		if err == nil && current.ClaimToken != "" && current.ClaimToken != stored.ClaimToken {
+		if hasCurrent && current.ClaimToken != "" && current.ClaimToken != stored.ClaimToken {
 			publication.enqueueCancellation(s.h, s.agentID, requestID, current.ClaimToken)
 		}
 		// Only after the durable write commits and publisher ownership still holds,
@@ -1906,6 +1909,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		storedClaimToken = stored.ClaimToken
 		storedSourceSeq = stored.SourceSeq
 		storedSessionID = stored.AgentSessionID
+		isNewClaim = !hasCurrent || current.ClaimToken != stored.ClaimToken
 	}
 	request.SourceSeq = storedSourceSeq
 	request.AgentSessionID = storedSessionID
@@ -1916,12 +1920,17 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	if stateErr != nil {
 		publication.recordFailure("could not read the control response state", "agent_id", s.agentID, "request_id", requestID, "error", stateErr)
 	}
-	s.h.watcher.EnqueueAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+	event := &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event: &leapmuxv1.AgentEvent_ControlRequest{
 			ControlRequest: prepared,
 		},
-	})
+	}
+	if isNewClaim {
+		s.h.watcher.EnqueueAgentEvent(s.agentID, event)
+	} else {
+		s.h.watcher.EnqueueAgentEventLiveOnly(s.agentID, event)
+	}
 	return nil
 }
 

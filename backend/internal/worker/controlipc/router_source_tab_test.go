@@ -15,7 +15,7 @@ import (
 )
 
 // The caller of a local dispatch carries the tab of the token that made the
-// call, so a handler can stamp it as provenance: Notify names the tab that sent
+// call, so a handler can stamp it as provenance: Notify identifies the tab that sent
 // a notification. The token store supplies it, never the request, so a
 // process cannot claim another tab.
 func TestRouter_LocalCallerCarriesTheTokensTab(t *testing.T) {

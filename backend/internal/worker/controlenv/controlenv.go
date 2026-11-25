@@ -40,8 +40,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-
-	"github.com/leapmux/leapmux/internal/util/envutil"
 )
 
 const (
@@ -50,7 +48,8 @@ const (
 	VariablePrefix = "LEAPMUX_CONTROL_"
 	// CLIVariable holds the absolute path of the `leapmux` executable that
 	// serves the Worker that started the process. The Worker owns the directory
-	// of that path, and the directory holds nothing else.
+	// of that path, which holds `leapmux` and its `lmx` alias (`leapmux.exe`
+	// and `lmx.exe` on Windows).
 	CLIVariable = VariablePrefix + "CLI"
 	// SocketVariable holds the address of the local socket of the tab, which
 	// the CLI speaks to inside the tab.
@@ -126,31 +125,14 @@ func PathEntryAllowed(dir string) bool {
 }
 
 func apply(environ, control []string, style pathList) []string {
-	inherited := cliDirectory(environ)
-	// StripByPrefix returns a new slice, so the append never writes into
-	// environ.
-	env := append(envutil.StripByPrefix(environ, VariablePrefix), control...)
-	return style.editPath(env, inherited, cliDirectory(control))
+	inherited := style.cliDirectory(environ)
+	// stripPrefix returns a new slice, so the append never writes into environ.
+	env := append(style.stripPrefix(environ, VariablePrefix), control...)
+	return style.editPath(env, inherited, style.cliDirectory(control))
 }
 
-// cliDirectory returns the directory of the last LEAPMUX_CONTROL_CLI value in
-// env, or "" when env holds none or the value is not an absolute path. The
-// name matches case-sensitively, as the prefix strip in Apply does, so the
-// variable that Apply reads is the variable that it strips.
-func cliDirectory(env []string) string {
-	executable := ""
-	for _, entry := range env {
-		if name, value, ok := strings.Cut(entry, "="); ok && name == CLIVariable {
-			executable = value
-		}
-	}
-	if !filepath.IsAbs(executable) {
-		return ""
-	}
-	return filepath.Dir(executable)
-}
-
-// pathList states how one operating system spells PATH and its entries.
+// pathList states how one operating system spells environment variable names,
+// PATH, and its entries.
 type pathList struct {
 	// separator joins the entries of PATH: ":" on Unix, ";" on Windows.
 	separator string
@@ -172,6 +154,78 @@ func (p pathList) same(a, b string) bool {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
+}
+
+// hasPrefix reports whether name begins with prefix under this operating
+// system's variable-name matching rules.
+func (p pathList) hasPrefix(name, prefix string) bool {
+	if len(name) < len(prefix) {
+		return false
+	}
+	return p.same(name[:len(prefix)], prefix)
+}
+
+// stripPrefix returns a fresh slice with every entry whose variable name starts
+// with prefix removed.
+func (p pathList) stripPrefix(env []string, prefix string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if p.hasPrefix(name, prefix) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// cliDirectory returns the directory of the last LEAPMUX_CONTROL_CLI value in
+// env, or "" when env holds none or the value is not an absolute path. Name
+// matching follows p.foldCase, matching stripPrefix.
+func (p pathList) cliDirectory(env []string) string {
+	executable := ""
+	for _, entry := range env {
+		if name, value, ok := strings.Cut(entry, "="); ok && p.same(name, CLIVariable) {
+			executable = value
+		}
+	}
+	if !filepath.IsAbs(executable) {
+		return ""
+	}
+	return filepath.Dir(executable)
+}
+
+// samePathEntry compares a raw PATH entry against a clean directory path. On
+// Windows it also strips surrounding double quotes and trailing path separators
+// (except on root paths such as `C:\` or `\`).
+func (p pathList) samePathEntry(raw, target string) bool {
+	if p.same(raw, target) {
+		return true
+	}
+	if !p.foldCase {
+		return false
+	}
+	norm := strings.TrimSpace(raw)
+	if len(norm) >= 2 && norm[0] == '"' && norm[len(norm)-1] == '"' {
+		norm = norm[1 : len(norm)-1]
+	}
+	norm = trimWindowsTrailingSlash(norm)
+	target = trimWindowsTrailingSlash(target)
+	return strings.EqualFold(norm, target)
+}
+
+func trimWindowsTrailingSlash(path string) string {
+	for len(path) > 1 {
+		last := path[len(path)-1]
+		if last != '\\' && last != '/' {
+			break
+		}
+		if len(path) == 3 && path[1] == ':' {
+			break
+		}
+		path = path[:len(path)-1]
+	}
+	return path
 }
 
 // entryAllowed reports whether dir can be an entry of PATH: it must not hold
@@ -207,7 +261,7 @@ func (p pathList) editPath(env []string, remove, prepend string) []string {
 	name, value, _ := strings.Cut(env[last], "=")
 	var kept []string
 	for _, entry := range strings.Split(value, p.separator) {
-		if (remove != "" && p.same(entry, remove)) || (prepend != "" && p.same(entry, prepend)) {
+		if (remove != "" && p.samePathEntry(entry, remove)) || (prepend != "" && p.samePathEntry(entry, prepend)) {
 			continue
 		}
 		kept = append(kept, entry)

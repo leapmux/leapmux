@@ -89,7 +89,7 @@ func (f *fakeCrossWorker) record(target string, req *leapmuxv1.InnerRpcRequest) 
 	f.calls++
 }
 
-func (f *fakeCrossWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
+func (f *fakeCrossWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage) error, bindCtrl func(channel.StreamController)) error {
 	f.mu.Lock()
 	f.record(target, req)
 	hold := f.hold
@@ -114,8 +114,7 @@ func (f *fakeCrossWorker) StreamInner(ctx context.Context, target string, _ user
 			return ctx.Err()
 		}
 	}
-	onMsg(&leapmuxv1.InnerStreamMessage{Payload: resp, End: true})
-	return nil
+	return onMsg(&leapmuxv1.InnerStreamMessage{Payload: resp, End: true})
 }
 
 // fakeStreams records the release calls so the test asserts the
@@ -704,11 +703,11 @@ func TestRouter_UpdateStream_DeliversToController(t *testing.T) {
 	}()
 	<-ready
 	require.NoError(t, reviseStream(r, "req-update", []byte("revision")))
-	require.Eventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
 		return len(ctrl.payloads) == 1 && string(ctrl.payloads[0]) == "revision"
-	}, time.Second, 10*time.Millisecond)
+	})
 }
 
 func TestRouter_UpdateStream_CrossWorkerDeliversToBoundController(t *testing.T) {
@@ -726,16 +725,16 @@ func TestRouter_UpdateStream_CrossWorkerDeliversToBoundController(t *testing.T) 
 			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 	// Give StreamInner time to bind the controller before UpdateStream.
-	require.Eventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		_, ok := r.StreamCancellers.Load("req-xw-update")
 		return ok
-	}, time.Second, 10*time.Millisecond)
+	})
 	require.NoError(t, reviseStream(r, "req-xw-update", []byte("sibling-revision")))
-	require.Eventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
 		return len(ctrl.payloads) == 1 && string(ctrl.payloads[0]) == "sibling-revision"
-	}, time.Second, 10*time.Millisecond)
+	})
 	close(hold)
 	require.NoError(t, <-done)
 }
@@ -754,17 +753,17 @@ func TestRouter_UpdateStreamCancel_CrossWorkerCallsOnCancel(t *testing.T) {
 			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "B", "req-xw-cancel",
 			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
-	require.Eventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		_, ok := r.StreamCancellers.Load("req-xw-cancel")
 		return ok
-	}, time.Second, 10*time.Millisecond)
+	})
 
 	require.NoError(t, cancelStream(r, "req-xw-cancel"))
-	require.Eventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
 		return ctrl.cancelled
-	}, time.Second, 10*time.Millisecond)
+	})
 	// A cancel through UpdateStream cancels the stream ctx, which unblocks hold via ctx.Done.
 	require.ErrorIs(t, <-done, context.Canceled)
 }
@@ -849,11 +848,11 @@ func TestRouter_UpdateStreamCancel_CallsOnCancel(t *testing.T) {
 	}()
 	<-ready
 	require.NoError(t, cancelStream(r, "req-oncancel"))
-	require.Eventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
 		return ctrl.cancelled
-	}, time.Second, 10*time.Millisecond)
+	})
 	first := <-order
 	assert.Equal(t, "cancel", first, "OnCancel must run before the stream ctx is cancelled")
 }
@@ -893,21 +892,21 @@ func TestRouter_BindStream_RefusesAfterCancel(t *testing.T) {
 
 	// The bind must observe the retirement and return ok=false. The handler
 	// then owns its ctx-based retirement (the <-ctx.Done() in DispatchWith).
-	require.Eventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		select {
 		case res := <-dispatcher.bindResult:
 			return !res
 		default:
 			return false
 		}
-	}, time.Second, 10*time.Millisecond, "BindStream must return ok=false when a cancel retired the entry")
+	}, "BindStream must return ok=false when a cancel retired the entry")
 
 	// The late-bound controller must never receive OnCancel from the registry
 	// (it was never installed); the handler's ctx cancel is the sole retirement.
 	assert.False(t, ctrl.cancelled, "late controller must not receive registry OnCancel")
 
 	// Drain the StreamInner goroutine.
-	require.Eventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		select {
 		case err := <-done:
 			assert.NoError(t, err)
@@ -915,7 +914,7 @@ func TestRouter_BindStream_RefusesAfterCancel(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Second, 10*time.Millisecond)
+	})
 }
 
 type cancelRaceDispatcher struct {
@@ -1432,9 +1431,14 @@ func (*framesCrossWorker) CallInner(context.Context, string, userid.UserID, *lea
 	return nil, errors.New("framesCrossWorker serves streams only")
 }
 
-func (f *framesCrossWorker) StreamInner(_ context.Context, _ string, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController)) error {
+func (f *framesCrossWorker) StreamInner(_ context.Context, _ string, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage) error, _ func(channel.StreamController)) error {
 	for _, frame := range f.frames {
-		onMsg(frame)
+		if err := onMsg(frame); err != nil {
+			if f.err != nil {
+				return f.err
+			}
+			return err
+		}
 	}
 	return f.err
 }
@@ -1567,4 +1571,120 @@ func TestRouter_StreamInner_HubNamespaceWrapsEachPayload(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeUnimplemented, connect.CodeOf(err))
 	})
+}
+
+func TestRouter_StreamInner_EmptyClientReqIDAllowsBinding(t *testing.T) {
+	t.Run("cross-worker stream does not cancel controller on empty client_request_id", func(t *testing.T) {
+		ctrl := &recordingStreamController{}
+		hold := make(chan struct{})
+		cross := &fakeCrossWorker{bindCtrl: ctrl, hold: hold}
+		r := &controlipc.Router{
+			WorkerID: "A", UserID: userid.MustNew("u"),
+			CrossWorker: cross,
+		}
+		done := make(chan error, 1)
+		go func() {
+			done <- r.StreamInner(context.Background(), controlipc.TokenInfo{},
+				"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "B", "",
+				func(*leapmuxv1.InnerStreamMessage) error { return nil })
+		}()
+		testutil.RequireEventually(t, func() bool {
+			cross.mu.Lock()
+			defer cross.mu.Unlock()
+			return cross.calls == 1
+		})
+		// While the stream is still open (hold not closed), ctrl must not be cancelled.
+		ctrl.mu.Lock()
+		cancelledWhileOpen := ctrl.cancelled
+		ctrl.mu.Unlock()
+		assert.False(t, cancelledWhileOpen, "controller must not be cancelled while stream is open with empty client_request_id")
+		close(hold)
+		require.NoError(t, <-done)
+	})
+
+	t.Run("local stream BindStream succeeds with empty client_request_id", func(t *testing.T) {
+		bound := make(chan bool, 1)
+		local := &funcLocalDispatcher{
+			fn: func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+				release, ok := w.BindStream(&recordingStreamController{})
+				bound <- ok
+				if ok {
+					release()
+				}
+				_ = w.SendStream(&leapmuxv1.InnerStreamMessage{End: true})
+			},
+		}
+		r := &controlipc.Router{
+			WorkerID: "A", UserID: userid.MustNew("u"),
+			LocalDispatcher: local,
+		}
+		err := r.StreamInner(context.Background(), controlipc.TokenInfo{},
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+		require.NoError(t, err)
+		assert.True(t, <-bound, "BindStream must succeed even when client_request_id is empty")
+	})
+}
+
+type funcLocalDispatcher struct {
+	fn func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
+}
+
+func (f *funcLocalDispatcher) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	f.fn(ctx, caller, req, w)
+}
+
+func TestRouter_StreamInner_LocalNonEndSendErrorSettlesImmediately(t *testing.T) {
+	sendErr := errors.New("client socket broken")
+	local := &funcLocalDispatcher{
+		fn: func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+			_ = w.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("chunk")})
+			// Handler returns without sending End when SendStream fails.
+		},
+	}
+	r := &controlipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		LocalDispatcher: local,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := r.StreamInner(ctx, controlipc.TokenInfo{},
+		"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-err",
+		func(*leapmuxv1.InnerStreamMessage) error { return sendErr })
+	require.ErrorIs(t, err, sendErr, "non-End onMsg error must settle streamLocal immediately")
+}
+
+func TestRouter_StreamInner_CrossWorkerPlainErrorNormalizedToInternal(t *testing.T) {
+	transportErr := errors.New("dial sibling: connection refused")
+	r := &controlipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		CrossWorker: &fakeCrossWorker{respErr: transportErr},
+	}
+	err := r.StreamInner(context.Background(), controlipc.TokenInfo{},
+		"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "B", "req-xerr",
+		func(*leapmuxv1.InnerStreamMessage) error { return nil })
+	require.ErrorIs(t, err, transportErr)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+}
+
+func TestRouter_StreamInner_CrossWorkerPropagatesOnMsgError(t *testing.T) {
+	sendErr := errors.New("local stream closed")
+	r := &controlipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		CrossWorker: &framesCrossWorker{
+			frames: []*leapmuxv1.InnerStreamMessage{
+				{Payload: []byte("one")},
+				{Payload: []byte("two"), End: true},
+			},
+		},
+	}
+	var seen int
+	err := r.StreamInner(context.Background(), controlipc.TokenInfo{},
+		"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, nil, "B", "req-xsend",
+		func(*leapmuxv1.InnerStreamMessage) error {
+			seen++
+			return sendErr
+		})
+	require.ErrorIs(t, err, sendErr)
+	assert.Equal(t, 1, seen)
 }

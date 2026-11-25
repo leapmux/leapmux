@@ -486,12 +486,22 @@ func (m *WatcherManager) BroadcastAgentEvent(agentID string, event *leapmuxv1.Ag
 
 // EnqueueAgentEvent copies one event without calling a watcher.
 func (m *WatcherManager) EnqueueAgentEvent(agentID string, event *leapmuxv1.AgentEvent) {
+	m.enqueueAgentEvent(agentID, event, true)
+}
+
+// EnqueueAgentEventLiveOnly copies one event for live watchers without
+// recording a semantic event fact.
+func (m *WatcherManager) EnqueueAgentEventLiveOnly(agentID string, event *leapmuxv1.AgentEvent) {
+	m.enqueueAgentEvent(agentID, event, false)
+}
+
+func (m *WatcherManager) enqueueAgentEvent(agentID string, event *leapmuxv1.AgentEvent, recordFact bool) {
 	if event == nil {
 		return
 	}
 	snapshot := proto.Clone(event).(*leapmuxv1.AgentEvent)
 	m.agentEvents.enqueue(agentID, func() *leapmuxv1.AgentEvent {
-		if m.recordAgentFact != nil {
+		if recordFact && m.recordAgentFact != nil {
 			m.recordAgentFact(agentID, snapshot)
 		}
 		return snapshot

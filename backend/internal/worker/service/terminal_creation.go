@@ -182,7 +182,19 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 	// resumed startup spawns. adoptExistingQuakeTerminal answered before this
 	// line for a quake terminal that already runs, so that terminal never
 	// receives the command.
-	runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: plan}, Options: terminal.Options{ID: terminalID, Shell: shell, WorkingDir: plan.PlannedWorkingDir, ShellStartDir: shellStartDir, Cols: uint16(cols), Rows: uint16(rows), InitialCommand: r.GetInitialCommand()}, Title: terminalTitle}
+	runtime := &terminalCreationRuntime{
+		Startup: creationStartupIntent{Plan: plan},
+		Options: terminalCreationOptions{
+			ID:             terminalID,
+			Shell:          shell,
+			WorkingDir:     plan.PlannedWorkingDir,
+			ShellStartDir:  shellStartDir,
+			Cols:           uint16(cols),
+			Rows:           uint16(rows),
+			InitialCommand: r.GetInitialCommand(),
+		},
+		Title: terminalTitle,
+	}
 	if isQuake {
 		var ok bool
 		startupCtx, startupHandle, ok = svc.registerQuakeTerminal(sender, QuakeTerminal{
@@ -247,9 +259,35 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 	svc.finishTerminalCreation(op, caller, sender, runtime, startupCtx, startupHandle, isQuake)
 }
 
+// terminalCreationOptions holds the durable terminal launch parameters stored
+// in tab_creations.runtime_payload. Process-local fields on terminal.Options
+// are attached only when startup launches the shell.
+type terminalCreationOptions struct {
+	ID             string
+	Shell          string
+	WorkingDir     string
+	ShellStartDir  string
+	Cols           uint16
+	Rows           uint16
+	InitialCommand string
+}
+
+func (o terminalCreationOptions) terminalOptions(title string) terminal.Options {
+	return terminal.Options{
+		ID:             o.ID,
+		Shell:          o.Shell,
+		WorkingDir:     o.WorkingDir,
+		ShellStartDir:  o.ShellStartDir,
+		Title:          title,
+		Cols:           o.Cols,
+		Rows:           o.Rows,
+		InitialCommand: o.InitialCommand,
+	}
+}
+
 type terminalCreationRuntime struct {
 	Startup creationStartupIntent
-	Options terminal.Options
+	Options terminalCreationOptions
 	Title   string
 }
 
@@ -346,18 +384,19 @@ func (svc *Service) finishTerminalCreation(op *creationOperation, caller channel
 		}
 	}
 	spawnInfo := TerminalSpawnInfo{UserID: caller.UserID, WorkerID: svc.WorkerID, TabID: runtime.Options.ID, IsQuake: isQuake, WorkingDir: runtime.Startup.Plan.PlannedWorkingDir}
-	if runtime.Options.InitialCommand != "" {
-		runtime.Options.InitialCommandDir = svc.DataDir
+	termOpts := runtime.Options.terminalOptions(runtime.Title)
+	if termOpts.InitialCommand != "" {
+		termOpts.InitialCommandDir = svc.DataDir
 		if op != nil {
-			runtime.Options.ReleaseInitialCommand = op.releaseTerminalInitialCommand
+			termOpts.ReleaseInitialCommand = op.releaseTerminalInitialCommand
 		} else {
-			runtime.Options.ReleaseInitialCommand = func(_ context.Context, expose func() error) error {
+			termOpts.ReleaseInitialCommand = func(_ context.Context, expose func() error) error {
 				return svc.authorizeTerminalCommandRelease(caller.UserID, expose)
 			}
 		}
 	}
 	start := func() {
-		go svc.runTerminalStartup(startupCtx, runtime.Options, spawnInfo, runtime.Startup.Plan, svc.makeTerminalOutputFn(runtime.Options.ID), svc.makeTerminalExitFn(), handle)
+		go svc.runTerminalStartup(startupCtx, termOpts, spawnInfo, runtime.Startup.Plan, svc.makeTerminalOutputFn(runtime.Options.ID), svc.makeTerminalExitFn(), handle)
 	}
 	if op == nil {
 		start()

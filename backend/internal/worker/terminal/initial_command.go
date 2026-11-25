@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/quartz"
@@ -26,8 +30,29 @@ const (
 	initialCommandPollTag     = "terminal-initial-command-probe"
 )
 
-const initialCommandLaunchRoot = "terminal-command-handoffs"
-const initialCommandLaunchPrefix = "launch-"
+const (
+	initialCommandLaunchRoot   = "terminal-command-handoffs"
+	initialCommandLaunchPrefix = "launch-"
+
+	initialCommandEnvPrefix         = "LEAPMUX_INITIAL_COMMAND_"
+	initialCommandEnvFile           = initialCommandEnvPrefix + "FILE"
+	initialCommandEnvAck            = initialCommandEnvPrefix + "ACK"
+	initialCommandEnvReady          = initialCommandEnvPrefix + "READY"
+	initialCommandEnvNonce          = initialCommandEnvPrefix + "NONCE"
+	initialCommandEnvParent         = initialCommandEnvPrefix + "PARENT"
+	initialCommandEnvEnvFile        = initialCommandEnvPrefix + "ENV_FILE"
+	initialCommandEnvOriginalEnv    = initialCommandEnvPrefix + "ORIGINAL_ENV"
+	initialCommandEnvHasEnv         = initialCommandEnvPrefix + "HAS_ENV"
+	initialCommandEnvOriginalZdot   = initialCommandEnvPrefix + "ORIGINAL_ZDOTDIR"
+	initialCommandEnvHasZdot        = initialCommandEnvPrefix + "HAS_ZDOTDIR"
+	initialCommandEnvManagedZdot    = initialCommandEnvPrefix + "MANAGED_ZDOTDIR"
+	initialCommandEnvKshLogin       = initialCommandEnvPrefix + "KSH_LOGIN"
+	initialCommandEnvKshInteractive = initialCommandEnvPrefix + "KSH_INTERACTIVE"
+	initialCommandEnvCshStartup     = initialCommandEnvPrefix + "CSH_STARTUP"
+	initialCommandEnvCshHome        = initialCommandEnvPrefix + "CSH_HOME"
+	initialCommandEnvCshHomeEnv     = initialCommandEnvPrefix + "CSH_HOME_ENV"
+	initialCommandEnvPoshHome       = initialCommandEnvPrefix + "POSH_HOME"
+)
 
 var ErrInitialCommandHandoff = errors.New("the original shell did not acknowledge the initial command")
 var errInitialCommandUnproved = errors.New("the Worker cannot verify whether the released initial command ran")
@@ -146,18 +171,26 @@ func (b *initialCommandBootstrap) commandPath() string { return filepath.Join(b.
 func (b *initialCommandBootstrap) ackPath() string     { return filepath.Join(b.dir, "acknowledged") }
 func (b *initialCommandBootstrap) requestPath() string { return filepath.Join(b.dir, "ready") }
 
+func (b *initialCommandBootstrap) writeFile(name, content, label string) (string, error) {
+	path := filepath.Join(b.dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return "", fmt.Errorf("write the %s: %w", label, err)
+	}
+	return path, nil
+}
+
 func (b *initialCommandBootstrap) launch(ctx context.Context, shell, workingDir string, args, env []string) (string, []string, []string, error) {
+	dialect := initialCommandDialect(shell)
 	env = append(env,
-		"LEAPMUX_INITIAL_COMMAND_FILE="+b.commandPath(),
-		"LEAPMUX_INITIAL_COMMAND_ACK="+b.ackPath(),
-		"LEAPMUX_INITIAL_COMMAND_READY="+b.requestPath(),
-		"LEAPMUX_INITIAL_COMMAND_NONCE="+b.nonce,
-		"LEAPMUX_INITIAL_COMMAND_PARENT="+filepath.Join(b.dir, "parent"),
+		initialCommandEnvFile+"="+b.commandPath(),
+		initialCommandEnvAck+"="+b.ackPath(),
+		initialCommandEnvReady+"="+b.requestPath(),
+		initialCommandEnvNonce+"="+b.nonce,
 	)
-	if initialCommandDialect(shell) == "powershell" {
+	if dialect == "powershell" {
 		return shell, append(args, "-NoExit", "-Command", powerShellInitialCommand), env, nil
 	}
-	env, args, err := b.unixStartup(ctx, shell, workingDir, env, args)
+	env, args, err := b.unixStartup(ctx, shell, dialect, workingDir, env, args)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -167,18 +200,21 @@ func (b *initialCommandBootstrap) launch(ctx context.Context, shell, workingDir 
 	return "/bin/sh", append(launcher, args...), env, nil
 }
 
-func (b *initialCommandBootstrap) unixStartup(ctx context.Context, shell, workingDir string, env, args []string) ([]string, []string, error) {
-	switch initialCommandDialect(shell) {
+func (b *initialCommandBootstrap) unixStartup(ctx context.Context, shell, dialect, workingDir string, env, args []string) ([]string, []string, error) {
+	switch dialect {
 	case "bash":
-		source := filepath.Join(b.dir, "environment")
-		if err := os.WriteFile(source, []byte(bashInitialStartup), 0o600); err != nil {
-			return nil, nil, fmt.Errorf("write the Bash startup file: %w", err)
+		source, err := b.writeFile("environment", bashInitialStartup, "Bash startup file")
+		if err != nil {
+			return nil, nil, err
 		}
 		env = rememberStartupEnvironment(env, source)
-		resolved, _ := filepath.EvalSymlinks(shell)
-		if runtime.GOOS == "darwin" && resolved == "/bin/bash" {
-			// Apple's Bash 3.2 skips ENV in Bash's own POSIX mode. An
-			// interactive rcfile can still load the login profiles.
+		useRcfile, err := bashRequiresRcfileFallback(ctx, shell)
+		if err != nil {
+			return nil, nil, err
+		}
+		if useRcfile {
+			// Bash 3.x skips ENV in Bash's own POSIX mode. An interactive
+			// rcfile can still load the login profiles.
 			args = []string{"--rcfile", source, "-i"}
 		} else {
 			args = append([]string{"--noprofile", "--posix"}, args...)
@@ -186,15 +222,14 @@ func (b *initialCommandBootstrap) unixStartup(ctx context.Context, shell, workin
 	case "zsh":
 		original, hasOriginal := lookupLaunchEnv(env, "ZDOTDIR")
 		if hasOriginal {
-			env = append(env, "LEAPMUX_INITIAL_COMMAND_ORIGINAL_ZDOTDIR="+original, "LEAPMUX_INITIAL_COMMAND_HAS_ZDOTDIR=1")
+			env = append(env, initialCommandEnvOriginalZdot+"="+original, initialCommandEnvHasZdot+"=1")
 		}
 		for _, profile := range []string{".zshenv", ".zprofile", ".zshrc", ".zlogin"} {
-			source := filepath.Join(b.dir, profile)
-			if err := os.WriteFile(source, []byte(zshInitialStartup(profile, profile == ".zlogin")), 0o600); err != nil {
-				return nil, nil, fmt.Errorf("write the zsh startup file: %w", err)
+			if _, err := b.writeFile(profile, zshInitialStartup(profile, profile == ".zlogin"), "zsh startup file"); err != nil {
+				return nil, nil, err
 			}
 		}
-		env = append(env, "ZDOTDIR="+b.dir, "LEAPMUX_INITIAL_COMMAND_MANAGED_ZDOTDIR="+b.dir)
+		env = append(env, "ZDOTDIR="+b.dir, initialCommandEnvManagedZdot+"="+b.dir)
 	case "fish":
 		args = append(args, "-C", fishInitialCommand)
 	case "csh":
@@ -210,11 +245,11 @@ func (b *initialCommandBootstrap) unixStartup(ctx context.Context, shell, workin
 		}
 		args = append(args, "-rc", source)
 	case "posix":
-		source := filepath.Join(b.dir, "environment")
-		if err := os.WriteFile(source, []byte(posixInitialStartup), 0o600); err != nil {
-			return nil, nil, fmt.Errorf("write the shell startup hook: %w", err)
+		source, err := b.writeFile("environment", posixInitialStartup, "shell startup hook")
+		if err != nil {
+			return nil, nil, err
 		}
-		env = rememberStartupEnvironment(env, source)
+		env = append(rememberStartupEnvironment(env, source), initialCommandEnvParent+"="+filepath.Join(b.dir, "parent"))
 		// Login files can replace ENV before the shell opens it. Read those
 		// files from the managed interactive hook in their startup order.
 		args = []string{"-i"}
@@ -224,23 +259,26 @@ func (b *initialCommandBootstrap) unixStartup(ctx context.Context, shell, workin
 		if err != nil {
 			return nil, nil, err
 		}
+		env = append(env, initialCommandEnvParent+"="+filepath.Join(b.dir, "parent"))
 	case "korn":
 		var err error
 		env, err = b.kornShellStartup(ctx, shell, env)
 		if err != nil {
 			return nil, nil, err
 		}
+		env = append(env, initialCommandEnvParent+"="+filepath.Join(b.dir, "parent"))
 		args = []string{"-i"}
 	case "yash":
-		source := filepath.Join(b.dir, "profile")
-		if err := os.WriteFile(source, []byte(yashInitialStartup), 0o600); err != nil {
-			return nil, nil, fmt.Errorf("write the Yash startup profile: %w", err)
+		source, err := b.writeFile("profile", yashInitialStartup, "Yash startup profile")
+		if err != nil {
+			return nil, nil, err
 		}
+		env = append(env, initialCommandEnvParent+"="+filepath.Join(b.dir, "parent"))
 		args = append(args, "--profile="+source, "--norcfile")
 	case "xonsh":
-		source := filepath.Join(b.dir, "startup.py")
-		if err := os.WriteFile(source, []byte(xonshInitialStartup), 0o600); err != nil {
-			return nil, nil, fmt.Errorf("write the Xonsh startup file: %w", err)
+		source, err := b.writeFile("startup.py", xonshInitialStartup, "Xonsh startup file")
+		if err != nil {
+			return nil, nil, err
 		}
 		args = append(args, "--no-script-cache", "--rc", source)
 	case nushellExecutable:
@@ -261,17 +299,62 @@ func (b *initialCommandBootstrap) unixStartup(ctx context.Context, shell, workin
 	return env, args, nil
 }
 
+const bashRcfileCacheLimit = 64
+
+var (
+	bashRcfileCacheMu sync.RWMutex
+	bashRcfileCache   = make(map[shellBinaryKey]bool)
+)
+
+// bashRequiresRcfileFallback reports whether shell is a Bash 3.x binary whose
+// POSIX mode ignores ENV. Results are cached by executable identity.
+func bashRequiresRcfileFallback(ctx context.Context, shell string) (bool, error) {
+	key, cacheable := shellBinaryIdentity(shell)
+	if cacheable {
+		bashRcfileCacheMu.RLock()
+		cached, ok := bashRcfileCache[key]
+		bashRcfileCacheMu.RUnlock()
+		if ok {
+			return cached, nil
+		}
+	}
+	// Probe BASH_VERSINFO[0] without passing startup profiles or credentials.
+	probe := exec.CommandContext(ctx, shell, "-c", `command printf '%s' "${BASH_VERSINFO[0]-}"`)
+	probe.Env = []string{"ENV=", "BASH_ENV="}
+	out, err := probe.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, nil
+	}
+	major, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || major < 1 {
+		return false, nil
+	}
+	needsRcfile := major < 4
+	if cacheable {
+		bashRcfileCacheMu.Lock()
+		if len(bashRcfileCache) >= bashRcfileCacheLimit {
+			clear(bashRcfileCache)
+		}
+		bashRcfileCache[key] = needsRcfile
+		bashRcfileCacheMu.Unlock()
+	}
+	return needsRcfile, nil
+}
+
 func rememberStartupEnvironment(env []string, source string) []string {
 	// ENV undergoes shell expansion. Expand a variable containing the path
 	// so characters in the path stay data.
-	return append(saveOriginalStartupEnvironment(env), "LEAPMUX_INITIAL_COMMAND_ENV_FILE="+source, "ENV=${LEAPMUX_INITIAL_COMMAND_ENV_FILE}")
+	return append(saveOriginalStartupEnvironment(env), initialCommandEnvEnvFile+"="+source, "ENV=${"+initialCommandEnvEnvFile+"}")
 }
 
 func saveOriginalStartupEnvironment(env []string) []string {
 	if previous, ok := lookupLaunchEnv(env, "ENV"); ok {
-		return append(env, "LEAPMUX_INITIAL_COMMAND_ORIGINAL_ENV="+previous, "LEAPMUX_INITIAL_COMMAND_HAS_ENV=1")
+		return append(env, initialCommandEnvOriginalEnv+"="+previous, initialCommandEnvHasEnv+"=1")
 	}
-	return append(env, "LEAPMUX_INITIAL_COMMAND_HAS_ENV=0")
+	return append(env, initialCommandEnvHasEnv+"=0")
 }
 
 func lookupLaunchEnv(env []string, name string) (string, bool) {
@@ -347,12 +430,17 @@ waiting:
 }
 
 func (b *initialCommandBootstrap) markerMatches(path, expected string) bool {
-	info, err := os.Lstat(path)
+	f, err := openInitialCommandMarker(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 256 {
 		return false
 	}
-	content, err := os.ReadFile(path)
-	return err == nil && strings.TrimSpace(string(content)) == expected
+	content, err := io.ReadAll(io.LimitReader(f, 257))
+	return err == nil && len(content) <= 256 && strings.TrimSpace(string(content)) == expected
 }
 
 func (b *initialCommandBootstrap) release(ctx context.Context, term *Terminal, opts Options) error {

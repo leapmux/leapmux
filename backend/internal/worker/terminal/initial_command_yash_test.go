@@ -90,20 +90,11 @@ func TestYashInitialCommandWithoutStartupFiles(t *testing.T) {
 		t.Skip("Yash is unavailable")
 	}
 	dir := t.TempDir()
-	ctx := testutil.DeadlineContext(t)
-	term, err := Start(ctx, Options{
+	assertInitialCommandExits(t, Options{
 		ID: "yash-no-profile", Shell: shell, WorkingDir: dir, InitialCommandDir: dir,
 		ExtraEnv: []string{
 			"HOME=" + dir, "XDG_CONFIG_HOME=" + dir, "YASH_LOADPATH=" + dir,
 		},
 		InitialCommand: "exit 19",
-	}, quartz.NewReal(), func(Output) {})
-	require.NoError(t, err)
-	t.Cleanup(term.Stop)
-	select {
-	case <-term.exitCh:
-		assert.Equal(t, 19, term.Wait())
-	case <-ctx.Done():
-		t.Fatal("Yash did not exit")
-	}
+	}, 19, "Yash")
 }

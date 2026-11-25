@@ -8,20 +8,22 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
-// RemovedInputRetention is how long the Worker keeps the row of an input that
-// someone removed from the queue (see Store.Delete). Until PurgeRemoved
-// deletes the row, a retry of the request that queued the input finds it and
-// queues nothing. Such a retry is EnqueueAgentInput with the same input id, as
-// each run of `leapmux control agent send --request-id` sends. After the
-// purge, the retry queues the input as a new one.
+// RemovedInputRetention is how long the Worker keeps the receipt of an input
+// that someone removed from the queue (see Store.Delete). Until PurgeRemoved
+// deletes the receipt from agent_input_queue_removed, a retry of the request
+// that queued the input finds it and queues nothing. Such a retry is
+// EnqueueAgentInput with the same input id, as each run of `leapmux control
+// agent send --request-id` sends. After the purge, the retry queues the input
+// as a new one.
 //
 // The window covers a script that retries within minutes, and a job that runs
 // again hours or days later, such as a nightly job after a failed night. It
 // equals the time for which the Worker keeps a closed agent or terminal
 // (cleanupRetention in package service), so what someone removes or closes
-// stays for one window. A removed row holds at most MaxItemBytes of text and
-// attachments, and the Worker's hourly cleanup purges it within about an hour
-// after the window ends.
+// stays for one window. Store.Delete deletes the queue row and its attachments
+// immediately, keeping only a small receipt in agent_input_queue_removed until
+// the Worker's hourly cleanup purges it within about an hour after the window
+// ends.
 const RemovedInputRetention = 7 * 24 * time.Hour
 
 // removedInputPurgeBatch caps the rows that one PurgeRemoved call deletes, so
@@ -29,20 +31,20 @@ const RemovedInputRetention = 7 * 24 * time.Hour
 // until a call deletes nothing.
 const removedInputPurgeBatch = 1000
 
-// purgeRemovedStatement deletes up to a limit of the rows whose removal lies
-// before a cutoff. The cutoff and removed_at share the canonical layout of
-// sqltime, so the text comparison orders them as instants. The comparison
-// implies removed_at IS NOT NULL, so SQLite finds the rows through
-// idx_agent_input_queue_removed; TestQueueStatementsUseThePartialIndexes pins
-// that plan.
+// purgeRemovedStatement deletes up to a limit of the tombstones whose removal
+// lies before a cutoff. The cutoff and removed_at share the canonical layout of
+// sqltime, so the text comparison orders them as instants. SQLite finds the
+// rows through idx_agent_input_queue_removed; TestQueueStatementsUseIndexes
+// pins that plan.
 const purgeRemovedStatement = `
-	DELETE FROM agent_input_queue_items
-	WHERE rowid IN (SELECT rowid FROM agent_input_queue_items WHERE removed_at < ? LIMIT ?)`
+	DELETE FROM agent_input_queue_removed
+	WHERE rowid IN (SELECT rowid FROM agent_input_queue_removed WHERE removed_at < ? LIMIT ?)`
 
-// PurgeRemoved deletes up to removedInputPurgeBatch rows of inputs that
-// someone removed more than RemovedInputRetention before the instant that the
-// store's clock reads, for every agent. The attachments of each row go with
-// it. A row removed exactly RemovedInputRetention earlier stays.
+// PurgeRemoved deletes up to removedInputPurgeBatch tombstone rows of inputs
+// that someone removed more than RemovedInputRetention before the instant that
+// the store's clock reads, for every agent (text and attachments were already
+// cleared by Store.Delete). A row removed exactly RemovedInputRetention
+// earlier stays.
 //
 // The store's clock also stamps each removal, so the cutoff and removed_at
 // come from one clock.

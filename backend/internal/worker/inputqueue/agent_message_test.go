@@ -143,7 +143,7 @@ func TestStoreAgentMessageRepeatComparesTheSender(t *testing.T) {
 
 			assertRepeatAddsNothing(t, store, input)
 
-			// The title names the sender but does not identify it: a tab that
+			// The title displays the sender but does not identify it: a tab that
 			// the user renamed between a request and its retry is still the
 			// same sender.
 			renamed := input

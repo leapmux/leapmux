@@ -247,51 +247,73 @@ func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn Outp
 	}
 	m.mu.Unlock()
 
-	started := make(chan bool, 1)
-	var installed *Terminal
-	register := func(t *Terminal) error {
-		m.mu.Lock()
-		if _, exists := m.current[opts.ID]; exists {
-			m.mu.Unlock()
-			return fmt.Errorf("terminal already exists: %s", opts.ID)
-		}
-		registration := m.addRegistrationLocked(opts.ID, t, func(TerminalMeta) TerminalMeta {
-			return TerminalMeta{
-				WorkingDir:    opts.WorkingDir,
-				ShellStartDir: opts.ShellStartDir,
-				Cols:          uint32(opts.Cols),
-				Rows:          uint32(opts.Rows),
-			}
-		})
-		m.mu.Unlock()
-		installed = t
-		m.watchTerminalExit(registration, func(id string, code int) {
-			if <-started && exitFn != nil {
-				exitFn(id, code)
-			}
-		})
-		return nil
-	}
-	_, err := startWithTerminalRegistration(ctx, opts, m.clock, NewScreenBuffer(), outputFn, register)
+	launch, err := spawnTerminal(ctx, opts, m.clock, NewScreenBuffer(), outputFn)
 	if err != nil {
-		m.mu.Lock()
-		if current := m.current[opts.ID]; current != nil && current.terminal == installed {
-			delete(m.current, opts.ID)
-		}
-		m.mu.Unlock()
-		started <- false
 		return err
 	}
-	started <- true
+	defer launch.closeBootstrap()
+	if err := launch.awaitReady(ctx); err != nil {
+		launch.abort()
+		return err
+	}
+
+	// Hold resizeMu across registration and activate so a concurrent Resize
+	// waits until screenOwner and startup geometry are initialized.
+	launch.terminal.resizeMu.Lock()
+	m.mu.Lock()
+	if _, exists := m.current[opts.ID]; exists {
+		m.mu.Unlock()
+		launch.terminal.resizeMu.Unlock()
+		launch.abort()
+		return fmt.Errorf("terminal already exists: %s", opts.ID)
+	}
+	registration := m.addRegistrationLocked(opts.ID, launch.terminal, func(TerminalMeta) TerminalMeta {
+		return TerminalMeta{
+			WorkingDir:    opts.WorkingDir,
+			ShellStartDir: opts.ShellStartDir,
+			Title:         validate.CleanName(opts.Title),
+			Cols:          uint32(opts.Cols),
+			Rows:          uint32(opts.Rows),
+		}
+	})
+	m.mu.Unlock()
+	launch.activate()
+	launch.terminal.resizeMu.Unlock()
+
+	if err := launch.releaseAndAck(ctx); err != nil {
+		m.rollbackLaunch(opts.ID, registration, nil, launch)
+		return err
+	}
+	launch.finish()
+	m.watchTerminalExit(registration, exitFn)
 	return nil
 }
 
-// installTerminal installs a replacement physical terminal and watches its exit.
+// installTerminal installs a terminal directly into the manager and watches its exit.
 func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, composeMeta func(prev TerminalMeta) TerminalMeta) {
 	m.mu.Lock()
 	registration := m.addRegistrationLocked(id, t, composeMeta)
 	m.mu.Unlock()
 	m.watchTerminalExit(registration, exitFn)
+}
+
+// rollbackLaunch reverses a registration installed before initial-command
+// release failed, restoring restoreReg when non-nil and cleaning up draining.
+func (m *Manager) rollbackLaunch(terminalID string, registration, restoreReg *terminalRegistration, launch *pendingTerminalLaunch) {
+	m.mu.Lock()
+	if m.current[terminalID] == registration {
+		if restoreReg != nil {
+			m.current[terminalID] = restoreReg
+		} else {
+			delete(m.current, terminalID)
+		}
+	}
+	m.mu.Unlock()
+	launch.abort()
+	close(registration.done)
+	m.mu.Lock()
+	delete(m.draining, registration)
+	m.mu.Unlock()
 }
 
 // addRegistrationLocked reads the old metadata under the install lock so a
@@ -453,46 +475,57 @@ func (m *Manager) RestartTerminal(
 	exitFn ExitHandler,
 ) error {
 	m.mu.Lock()
-	prev, hasPrev := m.currentTerminalLocked(opts.ID)
+	prevReg := m.current[opts.ID]
 	m.mu.Unlock()
 
-	var (
-		t   *Terminal
-		err error
-	)
-	if hasPrev {
-		if !prev.IsExited() {
+	var screenBuf *ScreenBuffer
+	if prevReg != nil {
+		if !prevReg.terminal.IsExited() {
 			return fmt.Errorf("%w: %s", ErrTerminalStillRunning, opts.ID)
 		}
-		// Release the pty this restart REPLACES, before the new one takes its
-		// place in the map. Nothing else ever does: installTerminal overwrites
-		// the entry, and RemoveTerminal only ever stops whichever terminal is
-		// current by then, so every restart used to leave the old master (and
-		// on Windows the old ConPTY pipes) open for the life of the Worker.
-		//
-		// It also ends a reader that the drain grace gave up on. Such a reader
-		// still holds the screen buffer that Respawn hands to the NEW terminal,
-		// so without this Stop the dead shell's last bytes could land in the
-		// restarted session's screen -- at an offset the client already read.
-		// Stop closes the master, which ends that parked Read at once, and
-		// ScreenBuffer.WriteAndDeliver serializes whatever chunk is in flight
-		// ahead of the new reader's first write.
-		prev.Stop()
-		t, err = prev.Respawn(ctx, opts, outputFn)
+		screenBuf = prevReg.terminal.screenBuf
 	} else {
-		t, err = startWithScreenBuffer(ctx, opts, m.clock, NewScreenBufferWithOffset(fallbackOffset), outputFn)
+		screenBuf = NewScreenBufferWithOffset(fallbackOffset)
 	}
+
+	launch, err := spawnTerminal(ctx, opts, m.clock, screenBuf, outputFn)
 	if err != nil {
 		return err
 	}
+	defer launch.closeBootstrap()
+	if err := launch.awaitReady(ctx); err != nil {
+		launch.abort()
+		return err
+	}
 
-	m.installTerminal(opts.ID, t, exitFn, func(prev TerminalMeta) TerminalMeta {
+	if prevReg != nil {
+		// Release the pty this restart replaces only after the replacement is
+		// ready so a failed spawn or readiness wait leaves prev untouched.
+		prevReg.terminal.Stop()
+	}
+
+	launch.terminal.resizeMu.Lock()
+	m.mu.Lock()
+	registration := m.addRegistrationLocked(opts.ID, launch.terminal, func(prev TerminalMeta) TerminalMeta {
 		prev.WorkingDir = opts.WorkingDir
 		prev.ShellStartDir = opts.ShellStartDir
+		if prev.Title == "" {
+			prev.Title = validate.CleanName(opts.Title)
+		}
 		prev.Cols = uint32(opts.Cols)
 		prev.Rows = uint32(opts.Rows)
 		return prev
 	})
+	m.mu.Unlock()
+	launch.activate()
+	launch.terminal.resizeMu.Unlock()
+
+	if err := launch.releaseAndAck(ctx); err != nil {
+		m.rollbackLaunch(opts.ID, registration, prevReg, launch)
+		return err
+	}
+	launch.finish()
+	m.watchTerminalExit(registration, exitFn)
 	return nil
 }
 

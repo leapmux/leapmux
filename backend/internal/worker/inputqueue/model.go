@@ -519,7 +519,3 @@ type NopObserver struct{}
 
 func (NopObserver) QueueChanged(Snapshot)            {}
 func (NopObserver) InputAccepted(AcceptedTranscript) {}
-
-func nowText() string {
-	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-}

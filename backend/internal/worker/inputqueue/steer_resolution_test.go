@@ -158,3 +158,128 @@ func TestIdentifiedSteerDropPreservesInputAndRejectsPreviousAttempt(t *testing.T
 	require.Len(t, result.snapshot.Items, 1)
 	assert.Equal(t, "older", result.snapshot.Items[0].ID, "the echo resolves its own item")
 }
+
+func TestResolveSteerUncertainPreventsAdvanceAutoResume(t *testing.T) {
+	t.Parallel()
+	f := newEchoQueueFixture(t, true)
+	f.enqueue(t, "e0")
+	f.enqueue(t, "h1")
+	var firstAttempt string
+	f.dispatcher.onSteer = func(item DispatchItem) {
+		if item.ID == "e0" {
+			firstAttempt = item.SteerAttemptID
+		}
+	}
+	_, err := f.manager.Steer(t.Context(), "agent-1", "e0")
+	require.NoError(t, err)
+	require.NotEmpty(t, firstAttempt)
+
+	// While Advance steers h1 from a MANUAL pause, ResolveSteer marks earlier e0 uncertain.
+	f.dispatcher.onSteer = func(item DispatchItem) {
+		if item.ID == "h1" {
+			matched, rerr := f.manager.ResolveSteer(t.Context(), "agent-1", agent.SteerResolution{
+				InputID: "e0", AttemptID: firstAttempt, Outcome: agent.SteerOutcomeUncertain,
+			}, "")
+			require.NoError(t, rerr)
+			require.True(t, matched)
+		}
+	}
+	snapshot, err := f.manager.Advance(t.Context(), "agent-1", nil)
+	require.NoError(t, err)
+	assert.True(t, snapshot.Paused, "Advance must not auto-resume after ResolveSteer marks an earlier steer uncertain")
+}
+
+func TestConfirmedNativeReceiptAcceptsInsteadOfHoldingForEchoAfterTurnEnd(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{
+		steering:     true,
+		policy:       agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: false},
+		steerReceipt: agent.NativeInputReceipt{SessionID: "session", InputID: "native-1", TurnID: "turn-1"},
+	}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+
+	_, err := manager.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = store.Enqueue(t.Context(), NewItem{
+		ID: "s1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "steer with receipt",
+	})
+	require.NoError(t, err)
+	dispatcher.onSteer = func(DispatchItem) {
+		_, terr := manager.TurnEnded(t.Context(), "agent-1")
+		require.NoError(t, terr)
+	}
+
+	snapshot, err := manager.Steer(t.Context(), "agent-1", "s1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items, "a steer confirmed by a NativeReceipt must be accepted, not parked in AWAITING_ECHO")
+}
+
+func TestWaitForRetiredDispatchWaitsForAdvanceAndPreempt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Advance", func(t *testing.T) {
+		t.Parallel()
+		_, store := newStoreFixture(t)
+		started := make(chan struct{})
+		release := make(chan struct{})
+		dispatcher := &recordingDispatcher{
+			steering:     true,
+			steerStarted: started,
+			steerRelease: release,
+		}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.TurnStarted(t.Context(), "agent-1", true)
+		require.NoError(t, err)
+		_, err = store.Enqueue(t.Context(), NewItem{
+			ID: "a1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "advance",
+		})
+		require.NoError(t, err)
+
+		advanceDone := make(chan error, 1)
+		go func() {
+			_, aerr := manager.Advance(t.Context(), "agent-1", nil)
+			advanceDone <- aerr
+		}()
+		<-started
+		require.NoError(t, manager.RetireAgent(t.Context(), "agent-1"))
+
+		// While Advance is blocked in Steer, c.dispatches must remain non-zero so
+		// WaitForRetiredDispatch cannot return before Advance finishes.
+		select {
+		case <-manager.coordinator("agent-1").dispatches.DoneChan():
+			require.Fail(t, "WaitForRetiredDispatch channel was already closed while Advance was steering")
+		default:
+		}
+		waitDone := make(chan error, 1)
+		go func() {
+			waitDone <- manager.WaitForRetiredDispatch(t.Context(), "agent-1")
+		}()
+		close(release)
+		require.NoError(t, <-advanceDone)
+		require.NoError(t, <-waitDone)
+	})
+
+	t.Run("Preempt rejects retired agent", func(t *testing.T) {
+		t.Parallel()
+		_, store := newStoreFixture(t)
+		dispatcher := &recordingDispatcher{preemption: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.TurnStarted(t.Context(), "agent-1", false)
+		require.NoError(t, err)
+		_, err = store.Enqueue(t.Context(), NewItem{
+			ID: "p1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "preempt",
+		})
+		require.NoError(t, err)
+		require.NoError(t, manager.RetireAgent(t.Context(), "agent-1"))
+
+		_, err = manager.Preempt(t.Context(), "agent-1", "p1")
+		assert.ErrorIs(t, err, ErrConflict)
+		assert.Empty(t, dispatcher.interrupts())
+	})
+}

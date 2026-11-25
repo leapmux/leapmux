@@ -16,7 +16,7 @@ import (
 
 // A user message that a process in an agent tab enqueues through its control
 // token reaches the queue as that agent's message. The token store, not the
-// request, names the sender: EnqueueAgentInputRequest has no field for one.
+// request, identifies the sender: EnqueueAgentInputRequest has no field for one.
 func TestRouterEnqueueFromAnAgentTokenQueuesAnAgentMessage(t *testing.T) {
 	for _, test := range []struct {
 		name       string

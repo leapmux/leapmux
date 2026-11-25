@@ -43,7 +43,7 @@ func (s *Store) resolveSteer(ctx context.Context, agentID string, report agent.S
 	}
 	var state leapmuxv1.AgentInputState
 	err = q.tx.QueryRowContext(ctx, `SELECT state FROM agent_input_queue_items
-		WHERE agent_id = ? AND id = ? AND steer_attempt_id = ? AND removed_at IS NULL`,
+		WHERE agent_id = ? AND id = ? AND steer_attempt_id = ?`,
 		agentID, report.InputID, report.AttemptID).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return resolvedSteer{}, nil
@@ -66,16 +66,16 @@ func (s *Store) resolveSteer(ctx context.Context, agentID string, report agent.S
 		if err != nil {
 			return resolvedSteer{}, err
 		}
-		if err := compactAfterSteerEcho(ctx, q.tx, agentID); err != nil {
+		if err := compactAfterSteerEcho(ctx, q.tx, agentID, q.now); err != nil {
 			return resolvedSteer{}, err
 		}
 	} else if report.Outcome == agent.SteerOutcomeUncertain {
-		if err := markSteerIDsUncertain(ctx, q.tx, agentID, []string{report.InputID}, &q.staged); err != nil {
+		if err := markSteerIDsUncertain(ctx, q.tx, agentID, []string{report.InputID}, &q.staged, q.now); err != nil {
 			return resolvedSteer{}, err
 		}
 	} else if !inFlight {
 		// finishSteer handles a removal that precedes the dispatch reply.
-		if err := requeueSteerIDs(ctx, q.tx, agentID, []string{report.InputID}, &q.staged); err != nil {
+		if err := requeueSteerIDs(ctx, q.tx, agentID, []string{report.InputID}, &q.staged, q.now); err != nil {
 			return resolvedSteer{}, err
 		}
 		if err := q.bumpRevision(ctx); err != nil {
@@ -107,6 +107,9 @@ func (m *Manager) ResolveSteer(ctx context.Context, agentID string, report agent
 	if err == nil && result.matched {
 		if result.inFlight {
 			c.echoSteer.outcome = report.Outcome
+		}
+		if report.Outcome == agent.SteerOutcomeUncertain {
+			c.pauseEvents++
 		}
 		if result.accepted.ID != "" {
 			result.accepted.Content = slices.Clone(result.accepted.Content)

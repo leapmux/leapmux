@@ -683,18 +683,16 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if inputID := r.GetReplyInputId(); inputID != "" {
 				state, err := svc.Queries.GetInputReplyState(ctx, db.GetInputReplyStateParams{
 					AgentID: r.GetAgentId(), InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-					InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
 				})
 				switch {
 				case err == nil:
 					outcome := leapmuxv1.AgentInputTurnOutcome(state.Outcome)
 					canonical, err := svc.Queries.GetCanonicalInputReplyOutcome(ctx, db.GetCanonicalInputReplyOutcomeParams{
 						AgentID: r.GetAgentId(), InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-						InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
 					})
 					switch {
 					case err == nil:
-						outcome = leapmuxv1.AgentInputTurnOutcome(canonical.Outcome)
+						outcome = canonical.Outcome
 						if canonical.MissingItems {
 							outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
 						}

@@ -13,7 +13,7 @@ def __leapmux_install_startup():
 
     XSH.ctx.pop("__leapmux_install_startup", None)
     prefix = "LEAPMUX_INITIAL_COMMAND_"
-    launch = {key: os.environ[prefix + key] for key in ("FILE", "READY", "ACK", "NONCE", "PID", "PARENT")}
+    launch = {key: os.environ[prefix + key] for key in ("FILE", "READY", "ACK", "NONCE", "PID")}
 
     # LoadEvent calls later registrations first. Register before loading
     # profiles so their pre-cmdloop hooks can prepare the command's context.

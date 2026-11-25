@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -17,15 +16,11 @@ const elvishStartupLinkPrefix = ".leapmux-elvish-startup-"
 func elvishProfilePath(workingDir string, env []string) (string, error) {
 	configHome, _ := lookupLaunchEnv(env, "XDG_CONFIG_HOME")
 	if configHome == "" {
-		home, _ := lookupLaunchEnv(env, "HOME")
-		if home == "" {
-			current, err := user.Current()
-			if err != nil {
-				return "", fmt.Errorf("find the Elvish home directory: %w", err)
-			}
-			home = current.HomeDir
+		home, err := startupHomeDirectory(env)
+		if err != nil {
+			return "", fmt.Errorf("find the Elvish home directory: %w", err)
 		}
-		configHome = filepath.Join(strings.TrimRight(home, "/"), ".config")
+		configHome = filepath.Join(home, ".config")
 	}
 	profile := filepath.Join(configHome, "elvish", "rc.elv")
 	if !filepath.IsAbs(profile) {
@@ -69,8 +64,8 @@ func (b *initialCommandBootstrap) elvishStartupSource(workingDir string, env []s
 	// Record the path before creating the link so a restarted Worker can
 	// remove it even if the original Worker stopped during preparation.
 	link := filepath.Join(filepath.Dir(profile), elvishStartupLinkPrefix+b.nonce+".elv")
-	if err := os.WriteFile(filepath.Join(b.dir, elvishStartupLinkRecord), []byte(link), 0o600); err != nil {
-		return "", fmt.Errorf("record the Elvish startup source: %w", err)
+	if _, err := b.writeFile(elvishStartupLinkRecord, link, "Elvish startup link record"); err != nil {
+		return "", err
 	}
 	if err := os.Symlink(source, link); err != nil {
 		return "", fmt.Errorf("create an Elvish startup link beside its profile: %w", err)
@@ -156,7 +151,7 @@ if $true {
     if (leapmux-startup-os:is-regular $source) {
       var code = (leapmux-startup-builtin:slurp < $source)
       var acknowledgment = $E:LEAPMUX_INITIAL_COMMAND_ACK
-      for key [LEAPMUX_INITIAL_COMMAND_FILE LEAPMUX_INITIAL_COMMAND_READY LEAPMUX_INITIAL_COMMAND_ACK LEAPMUX_INITIAL_COMMAND_NONCE LEAPMUX_INITIAL_COMMAND_PID LEAPMUX_INITIAL_COMMAND_PARENT] {
+      for key [LEAPMUX_INITIAL_COMMAND_FILE LEAPMUX_INITIAL_COMMAND_READY LEAPMUX_INITIAL_COMMAND_ACK LEAPMUX_INITIAL_COMMAND_NONCE LEAPMUX_INITIAL_COMMAND_PID] {
         leapmux-startup-builtin:unset-env $key
       }
       var filter = $nil

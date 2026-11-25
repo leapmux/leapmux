@@ -3,14 +3,6 @@ package inputqueue
 import (
 	"database/sql"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,35 +141,28 @@ func TestManagerEnqueueReportingAddedReportsNothingForARemovedInput(t *testing.T
 	assert.Equal(t, []string{"marker"}, dispatcher.dispatches())
 }
 
-// removedRow is what the table holds for one removed input.
-type removedRow struct {
-	removedAt   sql.NullString
-	order       int64
-	state       leapmuxv1.AgentInputState
-	text        string
-	payloadSize int
-	attachments int
+// removedReceipt is what agent_input_queue_removed holds for one removed input.
+type removedReceipt struct {
+	agentID        string
+	idempotencyKey string
+	removedAt      string
 }
 
-func readRemovedRow(t *testing.T, database *sql.DB, id string) removedRow {
+func readRemovedReceipt(t *testing.T, database *sql.DB, id string) removedReceipt {
 	t.Helper()
-	var row removedRow
+	var row removedReceipt
 	require.NoError(t, database.QueryRowContext(t.Context(), `
-		SELECT CAST(removed_at AS TEXT), order_index, state, text, length(source_payload),
-			(SELECT COUNT(*) FROM agent_input_queue_attachments WHERE item_id = i.id)
-		FROM agent_input_queue_items i WHERE id = ?`, id).
-		Scan(&row.removedAt, &row.order, &row.state, &row.text, &row.payloadSize, &row.attachments))
+		SELECT agent_id, idempotency_key, CAST(removed_at AS TEXT)
+		FROM agent_input_queue_removed WHERE id = ?`, id).
+		Scan(&row.agentID, &row.idempotencyKey, &row.removedAt))
 	return row
 }
 
-// A removal stamps removed_at from the store's clock, in the canonical layout
-// that the purge compares. The row keeps the key of the request that queued
-// it for the repeat check. It gives up what only an input that the queue holds
-// can own -- its edit and its reserved transcript sequence -- and its content:
-// nothing reads the text, the source payload or the attachments of a removed
-// input, and the attachments alone can hold MaxQueueAttachmentBytes until the
-// purge. A second removal finds no input.
-func TestStoreDeleteKeepsTheRowOfARemovedInput(t *testing.T) {
+// A removal moves the request receipt to agent_input_queue_removed with the
+// store clock's timestamp in canonical layout, deletes the live queue row
+// (cascading its attachments), and drops ephemeral state (edit owner and
+// reserved transcript sequence). A second removal returns ErrNotFound.
+func TestStoreDeleteMovesTheReceiptToRemovedTable(t *testing.T) {
 	t.Parallel()
 
 	clock, database, store := newPriorityFixture(t)
@@ -199,25 +184,23 @@ func TestStoreDeleteKeepsTheRowOfARemovedInput(t *testing.T) {
 
 	_, err = store.Delete(ctx, "agent-1", input.ID)
 	require.NoError(t, err)
-	row := readRemovedRow(t, database, input.ID)
+	receipt := readRemovedReceipt(t, database, input.ID)
 	afterEphem := store.cloneEphemeral("agent-1")
-	assert.Equal(t, sql.NullString{String: timefmt.Format(clock.Now()), Valid: true}, row.removedAt)
+	assert.Equal(t, "agent-1", receipt.agentID)
+	assert.Equal(t, timefmt.Format(clock.Now()), receipt.removedAt)
+	assert.Equal(t, inputIdempotencyKey(input), receipt.idempotencyKey, "the repeat check compares the key")
 	assert.Empty(t, afterEphem.editOwnerOf(input.ID), "a removed input holds no edit")
 	assert.Zero(t, afterEphem.reservedSeqOf(input.ID), "a removed input reserves no transcript sequence")
-	assert.Empty(t, row.text, "a removed input keeps no text")
-	assert.Zero(t, row.payloadSize, "a removed input keeps no source payload")
-	assert.Zero(t, row.attachments, "a removed input keeps no attachment")
-	assert.Equal(t, inputIdempotencyKey(input), queuedRequestKeyOf(t, database, input.ID), "the repeat check compares the key")
+	assert.Zero(t, countRows(t, database, "agent_input_queue_items", "id = ?", input.ID), "the live queue row is deleted")
+	assert.Zero(t, countRows(t, database, "agent_input_queue_attachments", "item_id = ?", input.ID), "attachments cascade-delete with the queue row")
 
 	_, err = store.Delete(ctx, "agent-1", input.ID)
 	require.ErrorIs(t, err, ErrNotFound)
-	assert.Equal(t, row, readRemovedRow(t, database, input.ID), "a second removal changes nothing")
+	assert.Equal(t, receipt, readRemovedReceipt(t, database, input.ID), "a second removal changes nothing")
 }
 
-// removalFixture is a queue that holds "head" and "next", and the row of
-// "ghost", an input with an attachment that someone removed before them. The
-// removal freed the first slot, and "head" took it while "ghost" keeps it, so
-// a write that did not skip the removed row would collide with it.
+// removalFixture is a queue that holds "head" and "next", and the removed
+// receipt of "ghost" in agent_input_queue_removed.
 type removalFixture struct {
 	database *sql.DB
 	store    *Store
@@ -240,20 +223,8 @@ func newRemovalFixture(t *testing.T) removalFixture {
 	require.NoError(t, err)
 	require.Equal(t, []string{"head", "next"}, queueSnapshotIDs(snapshot))
 	require.Equal(t, int64(1), snapshot.Items[0].Order)
-	require.Equal(t, int64(1), readRemovedRow(t, database, "ghost").order, "the removed row keeps the slot that the head took")
+	require.Equal(t, inputIdempotencyKey(ghost), readRemovedReceipt(t, database, "ghost").idempotencyKey)
 	return removalFixture{database: database, store: store, clock: clock}
-}
-
-// shapeGhost writes columns of the removed row, so that a read that found the
-// row would answer differently: a state, an edit or a schedule.
-func (f removalFixture) shapeGhost(t *testing.T, assignments string, args ...any) {
-	t.Helper()
-	result, err := f.database.ExecContext(t.Context(),
-		`UPDATE agent_input_queue_items SET `+assignments+` WHERE id = 'ghost' AND removed_at IS NOT NULL`, args...)
-	require.NoError(t, err)
-	rows, err := result.RowsAffected()
-	require.NoError(t, err)
-	require.Equal(t, int64(1), rows)
 }
 
 func (f removalFixture) snapshot(t *testing.T) Snapshot {
@@ -274,17 +245,11 @@ func assertQueueOrder(t *testing.T, snapshot Snapshot, ids ...string) {
 	}
 }
 
-// Every read and write of the queue skips a removed row, whatever the row
-// holds. Each case gives the row of "ghost" a shape that would change the
-// answer of one path if that path found it, and asserts the answer without
-// it.
+// Every read and write of the queue ignores removed inputs, which live only in
+// agent_input_queue_removed.
 func TestStoreReadsAndWritesSkipARemovedInput(t *testing.T) {
 	t.Parallel()
 
-	ghostRow := func(t *testing.T, f removalFixture) removedRow {
-		t.Helper()
-		return readRemovedRow(t, f.database, "ghost")
-	}
 	for _, c := range []struct {
 		name string
 		run  func(t *testing.T, f removalFixture)
@@ -295,15 +260,6 @@ func TestStoreReadsAndWritesSkipARemovedInput(t *testing.T) {
 			for _, item := range snapshot.Items {
 				assert.Empty(t, item.Metadata, "input %s carries no attachment of the removed input", item.ID)
 			}
-		}},
-		{"the snapshot arms no deadline of a removed future input", func(t *testing.T, f removalFixture) {
-			deadline := priorityBaseTime().Add(time.Hour)
-			f.shapeGhost(t, "scheduled_at = ?", sqltime.SQLiteNullTimeOf(deadline))
-			assert.True(t, f.snapshot(t).NextDeadline.IsZero())
-			f.clock.Set(deadline).MustWait(t.Context())
-			_, due, err := f.store.MatureScheduled(t.Context(), "agent-1", deadline)
-			require.NoError(t, err)
-			assert.False(t, due, "no input of the queue holds the deadline")
 		}},
 		{"the item limit counts the inputs that the queue holds", func(t *testing.T, f removalFixture) {
 			for i := 3; i < MaxItems; i++ {
@@ -318,28 +274,12 @@ func TestStoreReadsAndWritesSkipARemovedInput(t *testing.T) {
 			_, err = f.store.Enqueue(t.Context(), NewItem{ID: "overflow", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "overflow"})
 			assert.ErrorIs(t, err, ErrQueueFull, "the limit still holds for the inputs that the queue holds")
 		}},
-		{"the attachment limit counts the inputs that the queue holds", func(t *testing.T, f removalFixture) {
-			// A removal drops the attachments, so the row of "ghost" gets one
-			// that fills the limit by hand.
-			_, err := f.database.ExecContext(t.Context(),
-				`INSERT INTO agent_input_queue_attachments (item_id, position, filename, mime_type, data) VALUES ('ghost', 0, 'full.bin', '', zeroblob(?))`, MaxQueueAttachmentBytes)
-			require.NoError(t, err)
-			_, err = f.store.Enqueue(t.Context(), NewItem{
-				ID: "attached", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
-				Attachments: []Attachment{{Filename: "one.bin", Data: []byte{1}}},
-			})
-			assert.NoError(t, err)
-		}},
-		{"a new input and a move take slots beside the removed row", func(t *testing.T, f removalFixture) {
-			// The highest slot, so a new input that counted it would take the
-			// slot after it.
-			f.shapeGhost(t, "order_index = 50")
+		{"a new input and a move take slots beside the removed receipt", func(t *testing.T, f removalFixture) {
 			_, err := f.store.Enqueue(t.Context(), NewItem{ID: "last", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "last"})
 			require.NoError(t, err)
 			moved, err := f.store.Move(t.Context(), "agent-1", "last", "head")
 			require.NoError(t, err)
 			assertQueueOrder(t, moved, "last", "head", "next")
-			assert.Equal(t, int64(50), ghostRow(t, f).order, "no write moved the removed row")
 		}},
 		{"a control reply takes its place among the inputs that the queue holds", func(t *testing.T, f removalFixture) {
 			snapshot, err := f.store.Enqueue(t.Context(), NewItem{ID: "feedback", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "Use the cache."})
@@ -352,30 +292,7 @@ func TestStoreReadsAndWritesSkipARemovedInput(t *testing.T) {
 			require.NotNil(t, prepared)
 			assert.Equal(t, "head", prepared.Item.ID)
 		}},
-		{"a dispatch waits for no echo of a removed steer", func(t *testing.T, f removalFixture) {
-			f.shapeGhost(t, "state = ?", leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO)
-			prepared, _, err := f.store.PrepareDispatch(t.Context(), "agent-1", false)
-			require.NoError(t, err)
-			require.NotNil(t, prepared, "a removed row awaits no echo")
-			assert.Equal(t, "head", prepared.Item.ID)
-		}},
-		{"the echo paths find no removed steer", func(t *testing.T, f removalFixture) {
-			f.shapeGhost(t, "state = ?", leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO)
-			ctx := t.Context()
-			accepted, _, _, err := f.store.AcceptEchoedSteers(ctx, "agent-1", 1, "", "")
-			require.NoError(t, err)
-			assert.Empty(t, accepted)
-			_, requeued, err := f.store.RequeueUnechoedSteers(ctx, "agent-1", -1)
-			require.NoError(t, err)
-			assert.Zero(t, requeued)
-			snapshot, resolved, _, err := f.store.ResolveUnechoedSteers(ctx, "agent-1", -1, "")
-			require.NoError(t, err)
-			assert.Zero(t, resolved)
-			assert.False(t, snapshot.Paused)
-			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, ghostRow(t, f).state)
-		}},
 		{"the dispatch outcomes find no removed input", func(t *testing.T, f removalFixture) {
-			f.shapeGhost(t, "state = ?", leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 			ctx := t.Context()
 			_, err := f.store.FailDispatch(ctx, "agent-1", "ghost", assert.AnError, false)
 			assert.ErrorIs(t, err, ErrConflict)
@@ -384,15 +301,6 @@ func TestStoreReadsAndWritesSkipARemovedInput(t *testing.T) {
 			_, err = f.store.RequeueAndPause(ctx, "agent-1", "ghost", assert.AnError,
 				leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
 			assert.ErrorIs(t, err, ErrConflict)
-			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, ghostRow(t, f).state)
-		}},
-		{"a recovery finds no removed delivery to doubt", func(t *testing.T, f removalFixture) {
-			f.shapeGhost(t, "state = ?", leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
-			snapshots, err := f.store.Recover(t.Context(), nil)
-			require.NoError(t, err)
-			require.Len(t, snapshots, 1)
-			assert.False(t, snapshots[0].Paused, "no input of the queue was in flight")
-			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, ghostRow(t, f).state)
 		}},
 		{"a removed input holds no edit that another edit waits for", func(t *testing.T, f removalFixture) {
 			_, _, _, err := f.store.BeginEdit(t.Context(), "agent-1", "next", "other-client", false)
@@ -406,8 +314,6 @@ func TestStoreReadsAndWritesSkipARemovedInput(t *testing.T) {
 			assert.NoError(t, err)
 		}},
 		{"the edit paths find no removed input", func(t *testing.T, f removalFixture) {
-			// A path that found the removed row would answer with something
-			// other than ErrNotFound: a kind, or an edit owner mismatch.
 			ctx := t.Context()
 			_, _, _, err := f.store.BeginEdit(ctx, "agent-1", "ghost", "client", true)
 			assert.ErrorIs(t, err, ErrNotFound)
@@ -426,7 +332,6 @@ func TestStoreReadsAndWritesSkipARemovedInput(t *testing.T) {
 			assert.ErrorIs(t, err, ErrNotFound)
 			_, err = f.store.Delete(ctx, "agent-1", "ghost")
 			assert.ErrorIs(t, err, ErrNotFound)
-			f.shapeGhost(t, "state = ?", leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED)
 			_, err = f.store.Retry(ctx, "agent-1", "ghost", false)
 			assert.ErrorIs(t, err, ErrNotHead)
 		}},
@@ -438,16 +343,26 @@ func TestStoreReadsAndWritesSkipARemovedInput(t *testing.T) {
 		}},
 		{"an automatic retry ignores a removed pending retry of its kind", func(t *testing.T, f removalFixture) {
 			serverError := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
-			f.shapeGhost(t, "kind = ?, text = 'Continue.', reclassify_on_edit = 0", serverError)
 			ctx := t.Context()
+			firstSnap, err := f.store.scheduleAutoRetry(ctx, "agent-1", agent.AutoRetrySchedule{Kind: serverError})
+			require.NoError(t, err)
+			var retryID string
+			for _, it := range firstSnap.Items {
+				if it.Kind == serverError {
+					retryID = it.ID
+				}
+			}
+			require.NotEmpty(t, retryID)
+			_, err = f.store.Delete(ctx, "agent-1", retryID)
+			require.NoError(t, err)
 			snapshot, err := f.store.scheduleAutoRetry(ctx, "agent-1", agent.AutoRetrySchedule{Kind: serverError})
 			require.NoError(t, err)
-			require.Len(t, snapshot.Items, 3, "a new pending retry joins beside the removed one")
+			require.Len(t, snapshot.Items, 3, "a new pending retry joins after removing the previous one")
 			_, cancelled, err := f.store.cancelAutoRetries(ctx, "agent-1", serverError)
 			require.NoError(t, err)
 			assert.True(t, cancelled)
 			assertQueueOrder(t, f.snapshot(t), "head", "next")
-			assert.True(t, ghostRow(t, f).removedAt.Valid, "the cancellation leaves the removed row to the purge")
+			assert.NotEmpty(t, readRemovedReceipt(t, f.database, retryID).removedAt, "cancellation leaves the removed receipt to the purge")
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -474,8 +389,8 @@ func TestManagerPreemptFindsNoRemovedInput(t *testing.T) {
 	assert.Empty(t, dispatcher.interrupts())
 }
 
-// insertRemovedRows writes count rows of removed inputs of agentID, each
-// removed at removedAt.
+// insertRemovedRows writes count tombstones for agentID, each removed at
+// removedAt.
 func insertRemovedRows(t *testing.T, database *sql.DB, agentID string, count int, removedAt time.Time) {
 	t.Helper()
 	tx, err := database.BeginTx(t.Context(), nil)
@@ -484,9 +399,9 @@ func insertRemovedRows(t *testing.T, database *sql.DB, agentID string, count int
 	for i := range count {
 		id := fmt.Sprintf("%s-removed-%d", agentID, i)
 		_, err := tx.ExecContext(t.Context(), `
-			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text, idempotency_key, removed_at)
-			VALUES (?, ?, ?, 1, 'removed', ?, ?)`,
-			id, agentID, i+1, "key-"+id, sqltime.SQLiteNullTimeOf(removedAt))
+			INSERT INTO agent_input_queue_removed (id, agent_id, idempotency_key, removed_at)
+			VALUES (?, ?, ?, ?)`,
+			id, agentID, "key-"+id, sqltime.NewSQLiteTime(removedAt))
 		require.NoError(t, err)
 	}
 	require.NoError(t, tx.Commit())
@@ -534,6 +449,7 @@ func TestStorePurgeRemovedDeletesARowOnlyAfterTheRetention(t *testing.T) {
 
 	clock.Set(removedAt.Add(RemovedInputRetention + time.Millisecond)).MustWait(ctx)
 	assert.Equal(t, int64(1), purgeRemoved(t, store))
+	assert.Zero(t, countRows(t, database, "agent_input_queue_removed", "id = ?", input.ID))
 	assert.Zero(t, countRows(t, database, "agent_input_queue_items", "id = ?", input.ID))
 	assert.Zero(t, countRows(t, database, "agent_input_queue_attachments", "item_id = ?", input.ID),
 		"the attachments of the row go with it")
@@ -583,13 +499,12 @@ func TestStorePurgeRemovedDeletesOneBatchPerCall(t *testing.T) {
 	assert.Equal(t, int64(removedInputPurgeBatch), purgeRemoved(t, store))
 	assert.Equal(t, int64(1), purgeRemoved(t, store))
 	assert.Zero(t, purgeRemoved(t, store))
-	assert.Zero(t, countRows(t, database, "agent_input_queue_items", "removed_at IS NOT NULL"))
+	assert.Zero(t, countRows(t, database, "agent_input_queue_removed", "1 = 1"))
 }
 
-// The live reads of the queue and the purge carry the terms of the partial
-// indexes that serve them. SQLite matches a partial index syntactically, so a
-// statement without the term reads and sorts the whole table, with no error.
-func TestQueueStatementsUseThePartialIndexes(t *testing.T) {
+// The live ordering read and the removed-receipt purge seek their dedicated
+// indexes without sorting.
+func TestQueueStatementsUseIndexes(t *testing.T) {
 	t.Parallel()
 
 	database := newQueueDatabase(t)
@@ -614,94 +529,4 @@ func TestQueueStatementsUseThePartialIndexes(t *testing.T) {
 
 	purge := plan(purgeRemovedStatement, "2026-01-01T00:00:00.000Z", removedInputPurgeBatch)
 	assert.Contains(t, purge, "USING COVERING INDEX idx_agent_input_queue_removed (removed_at<?)")
-}
-
-// queueTable is the table whose every statement must say whether it sees a
-// removed input.
-const queueTable = "agent_input_queue_items"
-
-// sqlcStatementMarker matches the line that opens each statement of a sqlc
-// query file.
-var sqlcStatementMarker = regexp.MustCompile(`(?m)^--\s*name:\s*\w+`)
-
-// Every statement of the Worker that reads or writes the queue table states
-// removed_at, so none can see a removed input by omission. A live statement
-// carries `removed_at IS NULL`; the repeat check and the purge state the
-// removed rows that they want. An INSERT creates an input that the queue
-// holds, so it needs no term.
-//
-// The sweep reads every Go string literal of the Worker outside the tests and
-// the generated code, and every sqlc statement of the Worker. A statement
-// that a Go literal splits keeps the term in the literal that holds the table.
-func TestEveryQueueStatementStatesRemovedAt(t *testing.T) {
-	t.Parallel()
-
-	checked := 0
-	check := func(where, statement string) {
-		if !strings.Contains(statement, queueTable) {
-			return
-		}
-		if strings.HasPrefix(strings.TrimSpace(statement), "INSERT INTO "+queueTable) {
-			return
-		}
-		checked++
-		assert.Containsf(t, statement, "removed_at",
-			"%s reads or writes %s without a removed_at term, so it sees an input that someone removed:\n%s",
-			where, queueTable, statement)
-	}
-
-	worker, err := filepath.Abs("..")
-	require.NoError(t, err)
-	fset := token.NewFileSet()
-	require.NoError(t, filepath.WalkDir(worker, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if entry.Name() == "generated" || entry.Name() == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		content, err := os.ReadFile(path)
-		if err != nil || !strings.Contains(string(content), queueTable) {
-			return err
-		}
-		file, err := parser.ParseFile(fset, path, content, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		ast.Inspect(file, func(node ast.Node) bool {
-			literal, ok := node.(*ast.BasicLit)
-			if !ok || literal.Kind != token.STRING {
-				return true
-			}
-			value, err := strconv.Unquote(literal.Value)
-			require.NoError(t, err)
-			check(fset.Position(literal.Pos()).String(), value)
-			return true
-		})
-		return nil
-	}))
-
-	queries, err := filepath.Glob(filepath.Join(worker, "db", "queries", "*.sql"))
-	require.NoError(t, err)
-	require.NotEmpty(t, queries, "the Worker declares sqlc queries; a scan that finds none is broken")
-	for _, path := range queries {
-		content, err := os.ReadFile(path)
-		require.NoError(t, err)
-		text := string(content)
-		markers := sqlcStatementMarker.FindAllStringIndex(text, -1)
-		for i, marker := range markers {
-			end := len(text)
-			if i+1 < len(markers) {
-				end = markers[i+1][0]
-			}
-			check(filepath.Base(path), text[marker[0]:end])
-		}
-	}
-	require.Greater(t, checked, 40, "the sweep found too few statements of the queue; the scan is broken")
 }

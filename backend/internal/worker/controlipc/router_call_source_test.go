@@ -147,3 +147,20 @@ func TestRouter_CallInner_RefusesARelayWhoseTabItCannotDescribe(t *testing.T) {
 		})
 	}
 }
+
+func TestRouter_CallInner_TerminalTabSkipsAgentSourceLookup(t *testing.T) {
+	t.Parallel()
+	cross := &fakeCrossWorker{resp: []byte("from-B")}
+	sources := &fakeCallSources{err: errors.New("must not query agents for terminal tab")}
+	r := relayRouter(cross, sources)
+
+	_, err := r.CallInner(context.Background(), controlipc.TokenInfo{
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
+		TabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+	}, enqueueMethod, []byte("hi"), "worker-B")
+	require.NoError(t, err)
+	assert.Empty(t, sources.questions())
+	assert.True(t, proto.Equal(&leapmuxv1.CallSource{TabId: "term-1"}, cross.callSource))
+}

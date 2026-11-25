@@ -72,10 +72,11 @@ type frameRecorder struct {
 	frames []*leapmuxv1.InnerStreamMessage
 }
 
-func (r *frameRecorder) onMsg(m *leapmuxv1.InnerStreamMessage) {
+func (r *frameRecorder) onMsg(m *leapmuxv1.InnerStreamMessage) error {
 	r.mu.Lock()
 	r.frames = append(r.frames, m)
 	r.mu.Unlock()
+	return nil
 }
 
 func (r *frameRecorder) recorded() []*leapmuxv1.InnerStreamMessage {
@@ -159,8 +160,9 @@ func TestRunStream_EndsWhenTheCallerGivesUp(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := runStream(ctx, ch, watchRequest(), func(*leapmuxv1.InnerStreamMessage) {
+	err := runStream(ctx, ch, watchRequest(), func(*leapmuxv1.InnerStreamMessage) error {
 		t.Error("a stream that sent nothing forwards nothing")
+		return nil
 	}, nil)
 
 	require.ErrorIs(t, err, context.Canceled)
@@ -179,8 +181,70 @@ func TestRunStream_SendsTheRequestWithItsSource(t *testing.T) {
 	req := watchRequest()
 	req.Source = &leapmuxv1.CallSource{TabId: "agent-1"}
 
-	require.NoError(t, runStream(testutil.DeadlineContext(t), ch, req, func(*leapmuxv1.InnerStreamMessage) {}, nil))
+	require.NoError(t, runStream(testutil.DeadlineContext(t), ch, req, func(*leapmuxv1.InnerStreamMessage) error { return nil }, nil))
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	assert.Same(t, req, ch.sent)
+}
+
+func TestRunStream_WaitsForInFlightOnMsgBeforeReturningOnCancel(t *testing.T) {
+	inOnMsg := make(chan struct{})
+	releaseOnMsg := make(chan struct{})
+	var onMsgDone bool
+	var mu sync.Mutex
+
+	ch := &scriptedStreamChannel{
+		ctx:    t.Context(),
+		frames: []*leapmuxv1.InnerStreamMessage{{Payload: []byte("first")}},
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	returned := make(chan error, 1)
+	go func() {
+		returned <- runStream(ctx, ch, watchRequest(), func(*leapmuxv1.InnerStreamMessage) error {
+			close(inOnMsg)
+			<-releaseOnMsg
+			mu.Lock()
+			onMsgDone = true
+			mu.Unlock()
+			return nil
+		}, nil)
+	}()
+
+	<-inOnMsg
+	cancel()
+	// Wait until UnregisterStream has run (teardown started), then confirm runStream
+	// is still blocked waiting for onMsg to finish.
+	testutil.RequireEventually(t, func() bool {
+		ch.mu.Lock()
+		defer ch.mu.Unlock()
+		return ch.unregisteredStream
+	})
+	select {
+	case err := <-returned:
+		require.Failf(t, "runStream returned early", "returned (%v) while onMsg was still in flight", err)
+	default:
+	}
+	close(releaseOnMsg)
+	require.ErrorIs(t, <-returned, context.Canceled)
+	mu.Lock()
+	assert.True(t, onMsgDone)
+	mu.Unlock()
+}
+
+func TestRunStream_AbortsAndReturnsOnMsgError(t *testing.T) {
+	sendErr := assert.AnError
+	ch := &scriptedStreamChannel{
+		ctx: t.Context(),
+		frames: []*leapmuxv1.InnerStreamMessage{
+			{Payload: []byte("one")},
+			{Payload: []byte("two"), End: true},
+		},
+	}
+	var seen int
+	err := runStream(testutil.DeadlineContext(t), ch, watchRequest(), func(*leapmuxv1.InnerStreamMessage) error {
+		seen++
+		return sendErr
+	}, nil)
+	require.ErrorIs(t, err, sendErr)
+	assert.Equal(t, 1, seen, "frames after a delivery error must not be forwarded")
 }

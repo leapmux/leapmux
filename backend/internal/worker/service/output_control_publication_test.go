@@ -497,6 +497,102 @@ func TestControlPublicationKeepsClaimOnRepeatedAnnouncement(t *testing.T) {
 	assert.Equal(t, journal.RequestInstance(tab.ID, changed.ClaimToken), replacement.GetRequestInstance())
 }
 
+func TestControlPublicationReannouncementAfterRetentionPruneRecordsNoDuplicateOpening(t *testing.T) {
+	t.Parallel()
+	for _, nonBlocking := range []bool{false, true} {
+		name := "blocking"
+		if nonBlocking {
+			name = "non-blocking"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			svc, _, _ := setupTestService(t)
+			svc.EnableSemanticEvents()
+			t.Cleanup(func() {
+				svc.Shutdown()
+				svc.FinalizeSemanticEvents(true)
+			})
+			journal := svc.semanticEvents.journal.Load()
+			require.NotNil(t, journal)
+			const agentID = "agent-1"
+			tab := eventjournal.Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: agentID}
+			createClaimTestAgent(t, svc, agentID)
+			_, start, err := journal.Open(t.Context(), tab, nil)
+			require.NoError(t, err)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+			payload := []byte(`{"id":7,"request_id":"permission-1","method":"interaction/requestPermission"}`)
+			req := agent.ControlRequest{RequestID: "permission-1", NonBlocking: nonBlocking, Payload: payload}
+			require.NoError(t, sink.PublishControlRequest(req))
+
+			// Wait for the opening to commit and verify it landed.
+			reader, _, err := journal.Open(t.Context(), tab, start.GetCursor())
+			require.NoError(t, err)
+			records, _, err := reader.Read(t.Context(), start.GetAfterSequence())
+			require.NoError(t, err)
+			var afterFirst int64
+			openings := 0
+			for _, frame := range records {
+				if rec := frame.GetRecord(); rec != nil {
+					afterFirst = rec.GetSequence()
+					if rec.GetFact().GetAgentRequest() != nil {
+						openings++
+					}
+				}
+			}
+			require.Equal(t, 1, openings)
+
+			// Simulate retention pruning of the original opening entry from SQLite.
+			_, err = svc.DB.ExecContext(t.Context(), `DELETE FROM semantic_event_entries WHERE tab_type = ? AND tab_id = ?`,
+				leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
+			require.NoError(t, err)
+
+			// Register a live watcher to verify claim reuse still delivers to
+			// live watchers (EnqueueAgentEventLiveOnly) while skipping the journal.
+			live := newTestWriter()
+			registerAgentWatch(svc, live.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, live)
+
+			// Re-announcing the same request reuses the claim and must not append
+			// a duplicate AgentRequest fact even though the original row was pruned.
+			require.NoError(t, sink.PublishControlRequest(req))
+			firstStored := requireLookupControlRequest(t, t.Context(), svc.Output, agentID, "permission-1")
+			// Re-announcing with the explicit matching InstanceID also reuses the
+			// active claim without appending a duplicate opening.
+			explicitReuse := req
+			explicitReuse.InstanceID = firstStored.ClaimToken
+			require.NoError(t, sink.PublishControlRequest(explicitReuse))
+
+			var liveDelivered int
+			for _, msg := range live.streamsSnapshot() {
+				var resp leapmuxv1.WatchEventsResponse
+				require.NoError(t, proto.Unmarshal(msg.GetPayload(), &resp))
+				if cr := resp.GetAgentEvent().GetControlRequest(); cr != nil && cr.GetRequestId() == "permission-1" {
+					liveDelivered++
+				}
+			}
+			assert.Equal(t, 2, liveDelivered, "live watchers must still receive re-announced control requests")
+
+			// Publish a distinct request to prove the journal is still recording
+			// new openings and to flush the barrier.
+			require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+				RequestID:   "permission-2",
+				NonBlocking: nonBlocking,
+				Payload:     []byte(`{"id":8,"request_id":"permission-2","method":"interaction/requestPermission"}`),
+			}))
+			readerAfter, _, err := journal.Open(t.Context(), tab, start.GetCursor())
+			require.NoError(t, err)
+			afterRecords, _, err := readerAfter.Read(t.Context(), afterFirst)
+			require.NoError(t, err)
+			var seen []string
+			for _, frame := range afterRecords {
+				if reqFact := frame.GetRecord().GetFact().GetAgentRequest(); reqFact != nil {
+					seen = append(seen, reqFact.GetRequestId())
+				}
+			}
+			assert.Equal(t, []string{"permission-2"}, seen, "claim reuse must not record a second AgentRequest after retention prune")
+		})
+	}
+}
+
 func TestControlPublicationCancellationKeepsAReplacementInstance(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)

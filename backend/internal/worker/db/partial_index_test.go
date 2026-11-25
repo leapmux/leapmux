@@ -84,7 +84,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			index: "idx_messages_native_turn",
 			run: func(t *testing.T) {
 				_, err := q.GetInputReplyState(t.Context(), queries.GetInputReplyStateParams{
-					AgentID: "agent", InputID: "input", InputKeyPattern: "input:*",
+					AgentID: "agent", InputID: "input",
 					UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 				})
 				require.ErrorIs(t, err, sql.ErrNoRows)
@@ -93,13 +93,27 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		{
 			name:  "ListInputReplyMessages",
 			index: "idx_messages_native_turn",
+			seek:  "SEARCH reply USING INDEX idx_messages_native_turn",
 			run: func(t *testing.T) {
 				rows, err := q.ListInputReplyMessages(t.Context(), queries.ListInputReplyMessagesParams{
-					AgentID: "agent", InputID: "input", InputKeyPattern: "input:*",
+					AgentID: "agent", InputID: "input",
 					UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, CursorSeq: 1, PageSize: 10,
 				})
 				require.NoError(t, err)
 				assert.Empty(t, rows)
+			},
+		},
+		{
+			name:  "RetireNativeInputsAfterRestart",
+			index: "idx_messages_native_input",
+			seek:  "SCAN input USING INDEX idx_messages_native_input",
+			run: func(t *testing.T) {
+				unproved := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
+				err := q.RetireNativeInputsAfterRestart(t.Context(), queries.RetireNativeInputsAfterRestartParams{
+					UnprovedOutcome: &unproved,
+					UserSource:      leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+				})
+				require.NoError(t, err)
 			},
 		},
 		{
@@ -220,17 +234,6 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			},
 		},
 		{
-			name:  "HasSemanticEventRequestOpening",
-			index: "semantic_event_request_open_idx",
-			run: func(t *testing.T) {
-				present, err := q.HasSemanticEventRequestOpening(t.Context(), queries.HasSemanticEventRequestOpeningParams{
-					TabType: int64(leapmuxv1.TabType_TAB_TYPE_AGENT), TabID: "agent", RequestOpenInstance: make([]byte, 32),
-				})
-				require.NoError(t, err)
-				assert.False(t, present)
-			},
-		},
-		{
 			name:  "GetChildAgentsBySpawnSpan",
 			index: "idx_agents_spawn_span",
 			run: func(t *testing.T) {
@@ -276,15 +279,6 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		"idx_terminals_closed_at":                   "no query filters on closed_at through this index",
 		"idx_terminals_open_working_dir":            "no query filters on working_dir through this index",
 		"idx_agent_todos_task_id":                   "a uniqueness constraint, enforced on write rather than read",
-		// The queue's statements are hand-written in inputqueue, outside the
-		// sqlc files that the cases above run, so their guards live there, in
-		// inputqueue/removal_test.go: TestEveryQueueStatementStatesRemovedAt
-		// requires the removed_at term in every statement of the queue, and
-		// TestQueueStatementsUseThePartialIndexes pins the plans of the
-		// ordering read and of the purge.
-		"idx_agent_input_queue_order":   "read only by inputqueue's hand-written statements; inputqueue pins the plan of its ordering read",
-		"idx_agent_input_queue_pending": "read only by inputqueue's hand-written statements, each of which states its removed_at term",
-		"idx_agent_input_queue_removed": "read only by inputqueue's purge; inputqueue pins its plan",
 	}
 	for _, index := range partialIndexes(t, connection) {
 		if _, ok := covered[index]; ok {

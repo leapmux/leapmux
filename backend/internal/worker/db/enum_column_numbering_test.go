@@ -73,6 +73,10 @@ func integerEnumColumns() []integerEnumColumn {
 		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3, nil, false},
 		{"agent_background_tasks.role", "UPDATE agent_background_tasks SET role = ?", "SELECT typeof(role), role FROM agent_background_tasks", 1, 3, nil, false},
 		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8, nil, false},
+		{"semantic_event_feed_heads.tab_type", "UPDATE semantic_event_feed_heads SET tab_type = ?", "SELECT typeof(tab_type), tab_type FROM semantic_event_feed_heads", 1, 2, nil, false},
+		{"semantic_event_tails.tab_type", "UPDATE semantic_event_tails SET tab_type = ? WHERE tab_id = 'enum-tail-only'", "SELECT typeof(tab_type), tab_type FROM semantic_event_tails WHERE tab_id = 'enum-tail-only'", 1, 2, nil, false},
+		// CHECK ties gap_reason IS NULL to length(fact) > 0, so update both from ?1.
+		{"semantic_event_entries.gap_reason", "UPDATE semantic_event_entries SET gap_reason = ?1, fact = CASE WHEN ?1 IS NULL THEN X'01' ELSE X'' END", "SELECT typeof(gap_reason), gap_reason FROM semantic_event_entries", 2, 3, nil, true},
 	}
 }
 
@@ -93,6 +97,11 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-review', 'enum-owner', 2, 'review', 'session', 1)",
 		"INSERT INTO auto_review_approval_payloads (delivery_id, message_id) VALUES ('enum-review', 'enum-message')",
 		"INSERT INTO agent_todos (agent_id, seq, content, status) VALUES ('enum-owner', 1, 'todo', 1)",
+		"INSERT INTO semantic_event_journal (singleton, worker_id, owner_user_id, journal_id, cursor_key, dirty, entry_count, payload_bytes) VALUES (1, 'enum-worker', 'enum-user', 'enum-journal', zeroblob(32), 0, 1, 1)",
+		"INSERT INTO semantic_event_feed_heads (tab_type, singleton, high_sequence) VALUES (1, 1, 1)",
+		"INSERT INTO semantic_event_tails (tab_type, tab_id, tab_stream_id, high_sequence, floor_sequence, last_observed_unix_millis) VALUES (1, 'enum-tab', 'enum-stream', 1, 0, 1)",
+		"INSERT INTO semantic_event_tails (tab_type, tab_id, tab_stream_id, high_sequence, floor_sequence, last_observed_unix_millis) VALUES (1, 'enum-tail-only', 'enum-stream-only', 0, 0, 1)",
+		"INSERT INTO semantic_event_entries (tab_type, tab_id, sequence, feed_sequence, observed_unix_millis, fact, gap_reason) VALUES (1, 'enum-tab', 1, 1, 1, X'', 2)",
 	} {
 		_, err := store.ExecContext(t.Context(), statement)
 		require.NoError(t, err)
@@ -220,8 +229,6 @@ func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 		"the index's state literal is the AGENT_INPUT_STATE_QUEUED ordinal")
 	assert.Contains(t, index, fmt.Sprintf("kind IN (%d, %d)", usageLimit, serverError),
 		"the index's kind literals are the two AUTO_RETRY ordinals")
-	assert.Contains(t, index, "removed_at IS NULL",
-		"a removed retry keeps its row for the repeat check, and must not count as the pending one")
 
 	connection, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -245,11 +252,10 @@ func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 	assert.ErrorContains(t, err, "UNIQUE constraint failed",
 		"a queued retry conflicts with a FAILED row of the same kind, so cancellation must delete the row")
 
-	_, err = connection.ExecContext(t.Context(),
-		`UPDATE agent_input_queue_items SET removed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 'retry-usage'`)
+	_, err = connection.ExecContext(t.Context(), `DELETE FROM agent_input_queue_items WHERE id = 'retry-usage'`)
 	require.NoError(t, err)
 	require.NoError(t, insert("retry-usage-3", 4, usageLimit, queued),
-		"a removed queued retry leaves room for the next pending retry of its kind")
+		"deleting a queued retry leaves room for the next pending retry of its kind")
 }
 
 // The tie CHECK binds follow_up text to follow_up_kind: a queued kind without
@@ -761,6 +767,12 @@ func TestSemanticEventEnumColumnsMatchProto(t *testing.T) {
 		"CHECK (gap_reason BETWEEN %d AND %d)",
 		leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP,
 		leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT))
+	// Pin the full enum extent so adding a new SemanticWatchGapReason ordinal
+	// forces an explicit decision on whether it is stored or reader-derived.
+	assert.Equal(t, int32(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_HISTORY_UNAVAILABLE),
+		lastDeclaredOrdinal(t, leapmuxv1.SemanticWatchGapReason_name))
+	assert.Equal(t, int32(1), int32(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_RETENTION))
+	assert.Equal(t, int32(4), int32(leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_HISTORY_UNAVAILABLE))
 }
 
 func TestBackgroundTaskCanonicalRolePredicatesMatchProtoOrdinals(t *testing.T) {

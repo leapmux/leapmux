@@ -502,18 +502,22 @@ func QueryCommonGitDir(ctx context.Context, dir string) (string, error) {
 	if err == nil || ctx.Err() != nil || !filepath.IsAbs(dir) {
 		return commonDir, err
 	}
+	// Avoid spawning a fallback git subprocess on plain non-git directories.
+	if _, statErr := os.Stat(filepath.Join(dir, "HEAD")); statErr != nil {
+		return "", err
+	}
 	// Git refuses implicit discovery of a bare repository. Check the exact
 	// supplied directory with --git-dir and keep the policy enabled.
 	repository := Repository{GitDir: dir}
-	bare, bareErr := repository.Output(ctx, "rev-parse", "--is-bare-repository")
-	if bareErr != nil || bare != "true\n" {
+	output, bareErr := repository.Output(ctx, "rev-parse", "--is-bare-repository", "--path-format=absolute", option)
+	if bareErr != nil {
 		return "", err
 	}
-	output, err := repository.Output(ctx, "rev-parse", "--path-format=absolute", option)
-	if err != nil {
+	reportedPath, isBare := strings.CutPrefix(output, "true\n")
+	if !isBare {
 		return "", err
 	}
-	return parseReportedGitPath(output, option)
+	return parseReportedGitPath(reportedPath, option)
 }
 
 // QueryWorktreePaths gives each unrestricted path its own output stream.

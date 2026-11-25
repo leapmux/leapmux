@@ -31,7 +31,7 @@ type LocalDispatcher interface {
 // of the tab that made it.
 type CrossWorkerClient interface {
 	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error)
-	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error
+	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, onMsg func(*leapmuxv1.InnerStreamMessage) error, bindCtrl func(channel.StreamController)) error
 }
 
 // CallSources describes a tab of this Worker as the source of a call. The
@@ -161,6 +161,10 @@ func (r *Router) relayRequest(ctx context.Context, info TokenInfo, method string
 	if info.TabID == "" {
 		return req, nil
 	}
+	if info.TabType == leapmuxv1.TabType_TAB_TYPE_TERMINAL {
+		req.Source = &leapmuxv1.CallSource{TabId: info.TabID}
+		return req, nil
+	}
 	if r.Sources == nil {
 		return nil, connect.Errorf(connect.CodeInternal, "the worker cannot describe the calling tab, so it relays no call from it")
 	}
@@ -172,11 +176,12 @@ func (r *Router) relayRequest(ctx context.Context, info TokenInfo, method string
 	return req, nil
 }
 
-// relayError preserves the Connect error code of a failure to reach the hub or a
-// sibling worker, such as a channel that cannot open or a hub that refuses the
-// call. Callers use these codes to distinguish missing resources from
-// unavailable workers. These failures carry a nil response. An error that a
-// worker's handler answers stays in-band instead, as dispatchLocal's does.
+// relayError preserves the Connect error code of a relay failure to reach the
+// hub or a sibling worker, such as a channel that cannot open, a streamed hub
+// call that fails, or a plain transport error. Callers use these codes to
+// distinguish missing resources from unavailable workers. Unary hub Connect
+// errors and worker handler errors stay in-band on CallInner instead, so the
+// CLI reads them the same way as a direct call.
 func relayError(err error) *connect.Error {
 	// Preserve upstream codes. A plain error has CodeUnknown and maps to CodeInternal.
 	code := connect.CodeOf(err)
@@ -239,18 +244,15 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 func (r *Router) streamInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, clientReqID string, onMsg func(*leapmuxv1.InnerStreamMessage) error) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var entry *streamCancelEntry
+	entry := &streamCancelEntry{cancel: cancel}
+	defer entry.inbox.Cancel()
 	if clientReqID != "" {
-		entry = &streamCancelEntry{cancel: cancel}
 		if previous, loaded := r.StreamCancellers.Swap(clientReqID, entry); loaded {
 			if old, ok := previous.(*streamCancelEntry); ok {
 				old.retire()
 			}
 		}
-		defer func() {
-			r.StreamCancellers.CompareAndDelete(clientReqID, entry)
-			entry.inbox.Cancel()
-		}()
+		defer r.StreamCancellers.CompareAndDelete(clientReqID, entry)
 	}
 
 	switch ns := namespaceOf(method); ns {
@@ -266,13 +268,19 @@ func (r *Router) streamInner(ctx context.Context, info TokenInfo, method string,
 		if err != nil {
 			return err
 		}
-		return r.CrossWorker.StreamInner(streamCtx, targetWorkerID, r.UserID, req, func(m *leapmuxv1.InnerStreamMessage) {
-			_ = onMsg(m)
-		}, func(ctrl channel.StreamController) {
+		err = r.CrossWorker.StreamInner(streamCtx, targetWorkerID, r.UserID, req, onMsg, func(ctrl channel.StreamController) {
 			if !entry.bind(ctrl) {
 				ctrl.OnCancel()
 			}
 		})
+		if err != nil {
+			var rpcErr *channelwire.RPCError
+			if errors.As(err, &rpcErr) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			return relayError(err)
+		}
+		return nil
 	case namespaceHub:
 		if r.HubStreams == nil {
 			return connect.Errorf(connect.CodeUnimplemented, "hub streamer not configured")
@@ -282,8 +290,8 @@ func (r *Router) streamInner(ctx context.Context, info TokenInfo, method string,
 			return onMsg(&leapmuxv1.InnerStreamMessage{Payload: p})
 		})
 		if err != nil {
-			// As the unary hub path does: a hub code stays, and a plain
-			// error becomes internal with its own message.
+			// Preserve the hub Connect code on the stream, and turn a plain
+			// transport error into CodeInternal with its own message.
 			return relayError(err)
 		}
 		return nil
@@ -518,11 +526,11 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	}
 	err := c.forward(m)
 
-	// End and error frames complete the collector, as SendResponse and SendError do.
+	// End, error frames, and delivery failures complete the collector, as SendResponse and SendError do.
 	streamErr := channelwire.ErrorOf(m.GetError())
-	if m.GetEnd() || streamErr != nil {
+	if err != nil || m.GetEnd() || streamErr != nil {
 		if c.claim() {
-			// Preserve delivery failures on a clean End. An explicit provider error takes precedence.
+			// Preserve delivery failures on a clean End or data frame. An explicit provider error takes precedence.
 			outcome := err
 			if streamErr != nil {
 				outcome = streamErr

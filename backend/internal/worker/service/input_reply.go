@@ -11,7 +11,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 func (s *agentOutputSink) BindNativeInputTurn(receipt agent.NativeInputReceipt, nativeTurnID string) error {
@@ -67,7 +66,7 @@ func (s *agentOutputSink) PublishNativeReplyTurn(turn agent.NativeReplyTurn) err
 	queries := db.New(tx)
 	changed, err := queries.PublishNativeReplyTurn(ctx, db.PublishNativeReplyTurnParams{
 		AgentID: s.agentID, AgentSessionID: turn.SessionID, NativeTurnID: turn.TurnID,
-		Outcome: int64(turn.Outcome), ReplyCount: int64(len(turn.Items)),
+		Outcome: turn.Outcome, ReplyCount: int64(len(turn.Items)),
 	})
 	if err != nil {
 		return err
@@ -80,7 +79,7 @@ func (s *agentOutputSink) PublishNativeReplyTurn(turn agent.NativeReplyTurn) err
 		if err != nil {
 			return err
 		}
-		if stored.Outcome != int64(turn.Outcome) || stored.ReplyCount != int64(len(turn.Items)) {
+		if stored.Outcome != turn.Outcome || stored.ReplyCount != int64(len(turn.Items)) {
 			return errNativeReplyConflict
 		}
 	}
@@ -195,16 +194,16 @@ func (svc *Service) inputWaitingForUser(agentID string, state db.GetInputReplySt
 }
 
 func (svc *Service) listExactInputReply(ctx context.Context, agentID, inputID string, cursor, limit int64) ([]db.Message, int64, error) {
-	userSource, keyPattern := leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, inputqueue.InputRequestKeyPrefix+"*"
+	userSource := leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
 	canonical, err := svc.Queries.HasCanonicalInputReply(ctx, db.HasCanonicalInputReplyParams{
-		AgentID: agentID, InputID: inputID, UserSource: userSource, InputKeyPattern: keyPattern,
+		AgentID: agentID, InputID: inputID, UserSource: userSource,
 	})
 	if err != nil {
 		return nil, 0, err
 	}
 	if canonical {
 		rows, err := svc.Queries.ListCanonicalInputReplyMessages(ctx, db.ListCanonicalInputReplyMessagesParams{
-			AgentID: agentID, InputID: inputID, UserSource: userSource, InputKeyPattern: keyPattern,
+			AgentID: agentID, InputID: inputID, UserSource: userSource,
 			CursorOrdinal: cursor, PageSize: limit + 1,
 		})
 		if err != nil {
@@ -213,13 +212,14 @@ func (svc *Service) listExactInputReply(ctx context.Context, agentID, inputID st
 		var next int64
 		if int64(len(rows)) > limit {
 			next, err = svc.Queries.GetCanonicalInputReplyCursor(ctx, db.GetCanonicalInputReplyCursorParams{
-				AgentID: agentID, InputID: inputID, MessageID: sql.NullString{String: rows[limit-1].ID, Valid: true},
+				AgentID: agentID, InputID: inputID, UserSource: userSource,
+				MessageID: sql.NullString{String: rows[limit-1].ID, Valid: true},
 			})
 		}
 		return rows, next, err
 	}
 	rows, err := svc.Queries.ListInputReplyMessages(ctx, db.ListInputReplyMessagesParams{
-		AgentID: agentID, InputID: inputID, UserSource: userSource, InputKeyPattern: keyPattern,
+		AgentID: agentID, InputID: inputID, UserSource: userSource,
 		CursorSeq: cursor, PageSize: limit + 1,
 	})
 	var next int64

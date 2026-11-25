@@ -4,7 +4,6 @@ package terminal
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -120,48 +119,21 @@ func TestInitialCommandCanExitElvishWithoutAProfile(t *testing.T) {
 	opts, profile := elvishInitialCommandOptions(t)
 	require.NoError(t, os.RemoveAll(filepath.Dir(profile)))
 	opts.InitialCommand = "exit 23"
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	term, err := Start(ctx, opts, quartz.NewReal(), func(Output) {})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		term.Stop()
-		term.Wait()
-	})
-	select {
-	case <-term.exitCh:
-		assert.Equal(t, 23, term.Wait())
-	case <-ctx.Done():
-		t.Fatal("Elvish did not exit")
-	}
+	assertInitialCommandExits(t, opts, 23, "Elvish")
 }
 
 func TestInitialCommandDoesNotReachElvishWhenReleaseIsDenied(t *testing.T) {
 	t.Parallel()
 	opts, profile := elvishInitialCommandOptions(t)
 	opts.InitialCommand = "echo released > released"
-	refusal := errors.New("the creation claim was refused")
-	opts.ReleaseInitialCommand = func(context.Context, func() error) error {
+	assertInitialCommandRefusalKeepsPrivate(t, opts, filepath.Join(opts.WorkingDir, "released"), func() {
 		assert.FileExists(t, filepath.Join(opts.WorkingDir, "profile-ready"))
 		entries, err := os.ReadDir(filepath.Join(opts.InitialCommandDir, initialCommandLaunchRoot))
 		assert.NoError(t, err)
 		if assert.Len(t, entries, 1) {
 			assert.NoFileExists(t, filepath.Join(opts.InitialCommandDir, initialCommandLaunchRoot, entries[0].Name(), "command"))
 		}
-		return refusal
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	term, err := Start(ctx, opts, quartz.NewReal(), func(Output) {})
-	if term != nil {
-		t.Cleanup(func() {
-			term.Stop()
-			term.Wait()
-		})
-	}
-	require.ErrorIs(t, err, refusal)
-	assert.Nil(t, term)
-	assert.NoFileExists(t, filepath.Join(opts.WorkingDir, "released"))
+	})
 	entries, err := os.ReadDir(filepath.Dir(profile))
 	require.NoError(t, err)
 	assert.Len(t, entries, 2)
@@ -264,6 +236,10 @@ func TestElvishProfilePathUsesTheShellWorkingDirectory(t *testing.T) {
 	profile, err = elvishProfilePath(worktree, []string{"HOME=" + home, "XDG_CONFIG_HOME=profile"})
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(worktree, "profile", "elvish", "rc.elv"), profile)
+
+	profile, err = elvishProfilePath(worktree, []string{"HOME=/"})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("/", ".config", "elvish", "rc.elv"), profile)
 }
 
 func TestElvishStartupSourceRequiresARegularProfile(t *testing.T) {

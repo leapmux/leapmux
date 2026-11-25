@@ -4,7 +4,6 @@ package terminal
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -91,25 +90,7 @@ func TestInitialCommandCanExitNushell(t *testing.T) {
 	t.Parallel()
 	opts := nushellInitialCommandOptions(t)
 	opts.InitialCommand = "exit 7"
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	var output testutil.LogBuffer
-	term, err := Start(ctx, opts, quartz.NewReal(), func(chunk Output) {
-		_, _ = output.Write(chunk.Data)
-	})
-	if err != nil {
-		t.Fatalf("Nushell startup failed: %v\n%s", err, output.String())
-	}
-	t.Cleanup(func() {
-		term.Stop()
-		term.Wait()
-	})
-	select {
-	case <-term.exitCh:
-		assert.Equal(t, 7, term.Wait())
-	case <-ctx.Done():
-		t.Fatal("Nushell did not exit")
-	}
+	assertInitialCommandExits(t, opts, 7, "Nushell")
 }
 
 func TestInitialCommandResolvesARelativeWorkerDirectoryForNushell(t *testing.T) {
@@ -119,20 +100,7 @@ func TestInitialCommandResolvesARelativeWorkerDirectoryForNushell(t *testing.T) 
 	opts.WorkingDir = filepath.Join(opts.WorkingDir, "worktree")
 	require.NoError(t, os.Mkdir(opts.WorkingDir, 0o700))
 	opts.InitialCommand = "exit 19"
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	term, err := Start(ctx, opts, quartz.NewReal(), func(Output) {})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		term.Stop()
-		term.Wait()
-	})
-	select {
-	case <-term.exitCh:
-		assert.Equal(t, 19, term.Wait())
-	case <-ctx.Done():
-		t.Fatal("Nushell did not exit")
-	}
+	assertInitialCommandExits(t, opts, 19, "Nushell")
 }
 
 func TestInitialCommandDoesNotReachNushellWhenReleaseIsDenied(t *testing.T) {
@@ -140,8 +108,7 @@ func TestInitialCommandDoesNotReachNushellWhenReleaseIsDenied(t *testing.T) {
 	opts := nushellInitialCommandOptions(t)
 	witness := filepath.Join(opts.WorkingDir, "released")
 	opts.InitialCommand = "'released' | %save --raw released"
-	refusal := errors.New("the creation claim was refused")
-	opts.ReleaseInitialCommand = func(context.Context, func() error) error {
+	assertInitialCommandRefusalKeepsPrivate(t, opts, witness, func() {
 		assert.FileExists(t, filepath.Join(opts.WorkingDir, "profile-ready"))
 		root := filepath.Join(opts.InitialCommandDir, initialCommandLaunchRoot)
 		entries, err := os.ReadDir(root)
@@ -149,18 +116,5 @@ func TestInitialCommandDoesNotReachNushellWhenReleaseIsDenied(t *testing.T) {
 		if assert.Len(t, entries, 1) {
 			assert.NoFileExists(t, filepath.Join(root, entries[0].Name(), "command"))
 		}
-		return refusal
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	term, err := Start(ctx, opts, quartz.NewReal(), func(Output) {})
-	if term != nil {
-		defer term.Stop()
-	}
-	require.ErrorIs(t, err, refusal)
-	assert.Nil(t, term)
-	assert.NoFileExists(t, witness)
-	entries, err := os.ReadDir(filepath.Join(opts.InitialCommandDir, initialCommandLaunchRoot))
-	require.NoError(t, err)
-	assert.Empty(t, entries)
+	})
 }

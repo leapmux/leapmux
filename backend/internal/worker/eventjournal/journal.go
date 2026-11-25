@@ -2,7 +2,6 @@
 package eventjournal
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -16,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/semanticevents"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -41,13 +41,15 @@ type Journal struct {
 	store    store
 	clock    quartz.Clock
 	identity cursorIdentity
-	queue    chan observation
+	queue    chan journalOp
 	cancel   context.CancelFunc
 	done     chan struct{}
 	revoked  atomic.Bool
 
 	mu                  sync.Mutex
-	changed             chan struct{}
+	barrierChanged      chan struct{}
+	tabWatchers         map[Tab]chan struct{}
+	feedWatchers        map[leapmuxv1.TabType]chan struct{}
 	accepted, committed uint64
 	closing             bool
 	readersStopped      bool
@@ -68,8 +70,10 @@ func start(ctx context.Context, database *sql.DB, workerID string, owner userid.
 	writerCtx, cancel := context.WithCancel(context.Background())
 	j := &Journal{
 		store: s, clock: clock, identity: cursorIdentity{workerID: workerID, owner: owner, journalID: row.JournalID, key: row.CursorKey},
-		queue: make(chan observation, maxPendingObservations), cancel: cancel, done: make(chan struct{}),
-		changed: make(chan struct{}),
+		queue: make(chan journalOp, maxPendingObservations), cancel: cancel, done: make(chan struct{}),
+		barrierChanged: make(chan struct{}),
+		tabWatchers:    make(map[Tab]chan struct{}),
+		feedWatchers:   make(map[leapmuxv1.TabType]chan struct{}),
 	}
 	go j.writePublications(writerCtx)
 	return j, nil
@@ -85,10 +89,9 @@ func (j *Journal) Record(tab Tab, fact *leapmuxv1.SemanticTabFact) {
 	if !tab.Valid() || fact.GetEvent() == nil {
 		return
 	}
-	item := observation{tab: tab, observed: j.clock.Now().UnixMilli()}
-	item.requestOpening = bytes.Clone(fact.GetAgentRequest().GetRequestInstance())
+	item := appendOp{tab: tab, observed: j.clock.Now().UnixMilli()}
 	var err error
-	if semanticFactTabType(fact) == tab.Type && proto.Size(fact) <= maxObservationBytes {
+	if semanticevents.FactTabType(fact) == tab.Type && proto.Size(fact) <= maxObservationBytes {
 		item.fact, err = proto.Marshal(fact)
 	}
 	if err != nil || len(item.fact) == 0 {
@@ -105,14 +108,14 @@ func (j *Journal) Seal(tabs []Tab, publishersFinished bool) {
 	if len(tabs) == 0 {
 		return
 	}
-	item := observation{observed: j.clock.Now().UnixMilli(), sealing: slices.Clone(tabs)}
+	item := sealOp{tabs: slices.Clone(tabs), observed: j.clock.Now().UnixMilli()}
 	if !publishersFinished {
 		item.gap = leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT
 	}
 	j.enqueue(item)
 }
 
-func (j *Journal) enqueue(item observation) {
+func (j *Journal) enqueue(item journalOp) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.closing {
@@ -147,13 +150,76 @@ func (j *Journal) closeAdmissionLocked() {
 	if !j.closing {
 		j.closing = true
 		close(j.queue)
-		j.signalLocked()
+		j.signalAllLocked()
 	}
 }
 
-func (j *Journal) signalLocked() {
-	close(j.changed)
-	j.changed = make(chan struct{})
+func (j *Journal) signalBarrierLocked() {
+	close(j.barrierChanged)
+	j.barrierChanged = make(chan struct{})
+}
+
+func (j *Journal) signalTabLocked(tab Tab) {
+	if ch, ok := j.tabWatchers[tab]; ok {
+		close(ch)
+		delete(j.tabWatchers, tab)
+	}
+}
+
+func (j *Journal) signalFeedLocked(tabType leapmuxv1.TabType) {
+	if ch, ok := j.feedWatchers[tabType]; ok {
+		close(ch)
+		delete(j.feedWatchers, tabType)
+	}
+}
+
+func (j *Journal) signalAllLocked() {
+	j.signalBarrierLocked()
+	for tab, ch := range j.tabWatchers {
+		close(ch)
+		delete(j.tabWatchers, tab)
+	}
+	for tabType, ch := range j.feedWatchers {
+		close(ch)
+		delete(j.feedWatchers, tabType)
+	}
+}
+
+func (j *Journal) watchTab(tab Tab) (<-chan struct{}, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if err := j.checkAvailableLocked(); err != nil {
+		return nil, err
+	}
+	ch := j.tabWatchers[tab]
+	if ch == nil {
+		ch = make(chan struct{})
+		j.tabWatchers[tab] = ch
+	}
+	return ch, nil
+}
+
+func (j *Journal) watchFeed(tabType leapmuxv1.TabType) (<-chan struct{}, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if err := j.checkAvailableLocked(); err != nil {
+		return nil, err
+	}
+	ch := j.feedWatchers[tabType]
+	if ch == nil {
+		ch = make(chan struct{})
+		j.feedWatchers[tabType] = ch
+	}
+	return ch, nil
+}
+
+func (j *Journal) finishOpen(affectedTabs []Tab) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, tab := range affectedTabs {
+		j.signalTabLocked(tab)
+	}
+	return j.checkAvailableLocked()
 }
 
 // StopReaders ends subscriptions while admitted producers finish publishing.
@@ -162,7 +228,7 @@ func (j *Journal) StopReaders() {
 	defer j.mu.Unlock()
 	if !j.readersStopped {
 		j.readersStopped = true
-		j.signalLocked()
+		j.signalAllLocked()
 	}
 }
 
@@ -176,6 +242,10 @@ func (j *Journal) Stop(ctx context.Context, producersStopped bool) error {
 	select {
 	case <-j.done:
 	case <-ctx.Done():
+		// Cancel the writer context and still join j.done before returning so
+		// callers can safely close the database without racing writePublications.
+		j.cancel()
+		<-j.done
 		return ctx.Err()
 	}
 	j.mu.Lock()
@@ -196,30 +266,44 @@ func (j *Journal) writePublications(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		batch := []observation{first}
+		batch := []journalOp{first}
 		for len(batch) < maxCommitBatch && len(j.queue) > 0 {
 			batch = append(batch, <-j.queue)
 		}
 		now := j.clock.Now()
 		prune := now.Before(lastPrune) || now.Sub(lastPrune) >= time.Minute
+		var usage batchUsage
+		var touchedTypes []leapmuxv1.TabType
+		noteType := func(tabType leapmuxv1.TabType) {
+			if !slices.Contains(touchedTypes, tabType) {
+				touchedTypes = append(touchedTypes, tabType)
+			}
+		}
 		writeCtx, cancel := context.WithTimeout(ctx, journalWriteTimeout)
 		err := j.store.write(writeCtx, func(q *db.Queries) error {
 			for _, item := range batch {
-				if len(item.sealing) > 0 {
-					for _, tab := range item.sealing {
-						item.tab = tab
-						if err := j.store.seal(writeCtx, q, item); err != nil {
+				switch op := item.(type) {
+				case sealOp:
+					for _, tab := range op.tabs {
+						if err := j.store.seal(writeCtx, q, tab, op.observed, op.gap, &usage); err != nil {
 							return err
 						}
+						if op.gap != 0 {
+							noteType(tab.Type)
+						}
 					}
-					continue
-				}
-				if _, err := j.store.append(writeCtx, q, item); err != nil {
-					return err
+				case appendOp:
+					if _, err := j.store.append(writeCtx, q, op, &usage); err != nil {
+						return err
+					}
+					noteType(op.tab.Type)
 				}
 			}
+			if err := j.store.flushAndEnforceRetention(writeCtx, q, &usage); err != nil {
+				return err
+			}
 			if prune {
-				return j.store.pruneExpired(writeCtx, q, now)
+				return j.store.pruneExpired(writeCtx, q, now, &usage)
 			}
 			return nil
 		})
@@ -235,7 +319,13 @@ func (j *Journal) writePublications(ctx context.Context) {
 		}
 		j.mu.Lock()
 		j.committed += uint64(len(batch))
-		j.signalLocked()
+		j.signalBarrierLocked()
+		for _, tab := range usage.affectedTabs {
+			j.signalTabLocked(tab)
+		}
+		for _, tabType := range touchedTypes {
+			j.signalFeedLocked(tabType)
+		}
 		j.mu.Unlock()
 	}
 }
@@ -247,7 +337,7 @@ func (j *Journal) barrier(ctx context.Context) error {
 	defer j.mu.Unlock()
 	target := j.accepted
 	for !j.closing && !j.readersStopped && j.committed < target {
-		changed := j.changed
+		changed := j.barrierChanged
 		j.mu.Unlock()
 		select {
 		case <-ctx.Done():

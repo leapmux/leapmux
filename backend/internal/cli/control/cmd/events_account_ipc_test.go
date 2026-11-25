@@ -238,7 +238,7 @@ func (*cappedAccountIPCWorkers) CallInner(context.Context, string, userid.UserID
 }
 
 func (w *cappedAccountIPCWorkers) StreamInner(ctx context.Context, workerID string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest,
-	send func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController),
+	send func(*leapmuxv1.InnerStreamMessage) error, _ func(channel.StreamController),
 ) error {
 	if !w.active.CompareAndSwap(false, true) {
 		return connect.NewError(connect.CodeUnavailable, "the Worker connection slot is busy")
@@ -274,7 +274,9 @@ func (w *cappedAccountIPCWorkers) StreamInner(ctx context.Context, workerID stri
 	if err != nil {
 		return err
 	}
-	send(&leapmuxv1.InnerStreamMessage{Payload: raw})
+	if err := send(&leapmuxv1.InnerStreamMessage{Payload: raw}); err != nil {
+		return err
+	}
 	if high > 0 {
 		frame.Event = &leapmuxv1.WatchWorkerSemanticEventsResponse_Record{Record: &leapmuxv1.SemanticWorkerWatchRecord{
 			Sequence: 1, Cursor: []byte("bell"), Tab: &leapmuxv1.TabIdent{TabType: checkpointTerminalType, TabId: "second-terminal"},
@@ -284,7 +286,9 @@ func (w *cappedAccountIPCWorkers) StreamInner(ctx context.Context, workerID stri
 		if err != nil {
 			return err
 		}
-		send(&leapmuxv1.InnerStreamMessage{Payload: raw})
+		if err := send(&leapmuxv1.InnerStreamMessage{Payload: raw}); err != nil {
+			return err
+		}
 	}
 	<-ctx.Done()
 	return ctx.Err()

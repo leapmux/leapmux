@@ -23,7 +23,7 @@ LEFT JOIN native_agent_inputs AS binding ON binding.agent_id = input.agent_id
 WHERE input.agent_id = sqlc.arg(agent_id)
   AND input.id = sqlc.arg(input_id)
   AND input.source = sqlc.arg(user_source)
-  AND input.idempotency_key GLOB sqlc.arg(input_key_pattern)
+  AND input.from_input_queue = 1
   AND input.native_input_id <> '';
 
 -- name: ListInputReplyMessages :many
@@ -33,7 +33,7 @@ JOIN native_agent_inputs AS binding ON binding.agent_id = input.agent_id
     AND binding.agent_session_id = input.agent_session_id
     AND binding.native_input_id = input.native_input_id
     AND binding.native_turn_id <> ''
-JOIN messages AS reply ON reply.agent_id = input.agent_id
+JOIN messages AS reply INDEXED BY idx_messages_native_turn ON reply.agent_id = input.agent_id
     AND reply.agent_session_id = input.agent_session_id
     AND reply.native_turn_id = binding.native_turn_id
     AND reply.native_turn_id <> ''
@@ -41,7 +41,7 @@ JOIN messages AS reply ON reply.agent_id = input.agent_id
 WHERE input.agent_id = sqlc.arg(agent_id)
   AND input.id = sqlc.arg(input_id)
   AND input.source = sqlc.arg(user_source)
-  AND input.idempotency_key GLOB sqlc.arg(input_key_pattern)
+  AND input.from_input_queue = 1
   AND input.native_input_id <> ''
   AND reply.seq > input.seq
   AND reply.seq > sqlc.arg(cursor_seq)
@@ -77,7 +77,7 @@ JOIN native_agent_reply_turns AS published ON published.agent_id = binding.agent
 WHERE input.agent_id = sqlc.arg(agent_id)
   AND input.id = sqlc.arg(input_id)
   AND input.source = sqlc.arg(user_source)
-  AND input.idempotency_key GLOB sqlc.arg(input_key_pattern)
+  AND input.from_input_queue = 1
   AND binding.reply_after_ordinal IS NOT NULL;
 
 -- name: HasCanonicalInputReply :one
@@ -89,7 +89,7 @@ SELECT EXISTS (
     WHERE input.agent_id = sqlc.arg(agent_id)
       AND input.id = sqlc.arg(input_id)
       AND input.source = sqlc.arg(user_source)
-      AND input.idempotency_key GLOB sqlc.arg(input_key_pattern)
+      AND input.from_input_queue = 1
       AND binding.reply_after_ordinal IS NOT NULL
 );
 
@@ -108,7 +108,7 @@ JOIN messages AS reply ON reply.id = member.message_id AND reply.agent_id = memb
 WHERE input.agent_id = sqlc.arg(agent_id)
   AND input.id = sqlc.arg(input_id)
   AND input.source = sqlc.arg(user_source)
-  AND input.idempotency_key GLOB sqlc.arg(input_key_pattern)
+  AND input.from_input_queue = 1
   AND member.ordinal > sqlc.arg(cursor_ordinal)
 ORDER BY member.ordinal
 LIMIT sqlc.arg(page_size);
@@ -122,8 +122,12 @@ JOIN native_agent_inputs AS binding ON binding.agent_id = input.agent_id
 JOIN native_agent_reply_items AS member ON member.agent_id = binding.agent_id
     AND member.agent_session_id = binding.agent_session_id
     AND member.native_turn_id = binding.native_turn_id
+    AND member.ordinal > binding.reply_after_ordinal
 WHERE input.agent_id = sqlc.arg(agent_id)
   AND input.id = sqlc.arg(input_id)
+  AND input.source = sqlc.arg(user_source)
+  AND input.from_input_queue = 1
+  AND binding.reply_after_ordinal IS NOT NULL
   AND member.message_id = sqlc.arg(message_id);
 
 -- name: PublishNativeReplyTurn :execrows
@@ -183,7 +187,7 @@ SELECT input.agent_id, input.agent_session_id, input.native_input_id, sqlc.arg(u
 FROM messages AS input
 WHERE input.native_input_id <> ''
   AND input.source = sqlc.arg(user_source)
-  AND input.idempotency_key GLOB sqlc.arg(input_key_pattern)
+  AND input.from_input_queue = 1
   AND NOT EXISTS (
       SELECT 1 FROM native_agent_inputs AS completed
       WHERE completed.agent_id = input.agent_id

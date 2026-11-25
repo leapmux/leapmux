@@ -674,8 +674,7 @@ func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
 	client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
 
 	// The wrapper must still do the delivery it wrapped.
-	assert.Eventually(t, func() bool { return w.Service.RegisteredBy().Matches("user-1") },
-		5*time.Second, 10*time.Millisecond,
+	testutil.AssertEventually(t, func() bool { return w.Service.RegisteredBy().Matches("user-1") },
 		"the identity nudge dropped the delivery it wraps")
 	assert.Equal(t, "alice", w.Service.OwnerUsername(userid.MustNew("user-1")),
 		"the delivery carries the owner's username to the service")

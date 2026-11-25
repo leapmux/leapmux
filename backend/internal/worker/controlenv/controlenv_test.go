@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // unixPathList and windowsPathList let one host test the PATH rules of both
@@ -19,11 +20,10 @@ var (
 	windowsPathList = pathList{separator: ";", foldCase: true}
 )
 
-// absoluteDir returns an absolute directory of the host, so the tests of Apply
-// pass on Windows as well as on Unix.
-func absoluteDir(t *testing.T, parts ...string) string {
-	t.Helper()
-	return filepath.Join(append([]string{t.TempDir()}, parts...)...)
+// absoluteDir returns a synthetic host-native absolute directory without
+// creating filesystem entries.
+func absoluteDir(_ *testing.T, parts ...string) string {
+	return testutil.NativeAbsPath("/" + strings.Join(parts, "/"))
 }
 
 func TestApply(t *testing.T) {
@@ -292,14 +292,35 @@ func TestCLIDirectory(t *testing.T) {
 	t.Parallel()
 	dir := absoluteDir(t, "cli-1")
 
-	assert.Equal(t, dir, cliDirectory([]string{CLIVariable + "=" + filepath.Join(dir, "leapmux")}))
-	assert.Empty(t, cliDirectory(nil), "no variable gives no directory")
-	assert.Empty(t, cliDirectory([]string{CLIVariable + "="}), "an empty value gives no directory")
-	assert.Empty(t, cliDirectory([]string{CLIVariable + "=leapmux"}), "a relative value gives no directory")
-	assert.Empty(t, cliDirectory([]string{"leapmux_control_cli=" + filepath.Join(dir, "leapmux")}),
-		"the name matches case-sensitively, as the prefix strip does")
-	assert.Equal(t, dir, cliDirectory([]string{
+	assert.Equal(t, dir, unixPathList.cliDirectory([]string{CLIVariable + "=" + filepath.Join(dir, "leapmux")}))
+	assert.Empty(t, unixPathList.cliDirectory(nil), "no variable gives no directory")
+	assert.Empty(t, unixPathList.cliDirectory([]string{CLIVariable + "="}), "an empty value gives no directory")
+	assert.Empty(t, unixPathList.cliDirectory([]string{CLIVariable + "=leapmux"}), "a relative value gives no directory")
+	assert.Empty(t, unixPathList.cliDirectory([]string{"leapmux_control_cli=" + filepath.Join(dir, "leapmux")}),
+		"on Unix the name matches case-sensitively, as the prefix strip does")
+	assert.Equal(t, dir, windowsPathList.cliDirectory([]string{"leapmux_control_cli=" + filepath.Join(dir, "leapmux.exe")}),
+		"on Windows the name matches case-insensitively")
+	assert.Equal(t, dir, unixPathList.cliDirectory([]string{
 		CLIVariable + "=" + filepath.Join(absoluteDir(t, "older"), "leapmux"),
 		CLIVariable + "=" + filepath.Join(dir, "leapmux"),
 	}), "the last value wins, as it does for exec")
+}
+
+func TestApply_WindowsCaseFoldAndPathNormalization(t *testing.T) {
+	t.Parallel()
+	oldDir := absoluteDir(t, "cli-old")
+	newDir := absoluteDir(t, "cli-new")
+	environ := []string{
+		"leapmux_control_token=secret",
+		"LeapMux_Control_CLI=" + filepath.Join(oldDir, "leapmux.exe"),
+		`Path="` + oldDir + `\";C:\Windows\System32`,
+	}
+	control := []string{
+		CLIVariable + "=" + filepath.Join(newDir, "leapmux.exe"),
+	}
+
+	got := apply(environ, control, windowsPathList)
+	assert.False(t, envutil.HasKey(got, "leapmux_control_token"), "mixed-case inherited control var must be stripped on Windows")
+	assert.Equal(t, []string{newDir + `;C:\Windows\System32`}, envutil.ValuesFor(got, "Path"),
+		"quoted and trailing-slash inherited CLI directory must be removed from Windows PATH")
 }

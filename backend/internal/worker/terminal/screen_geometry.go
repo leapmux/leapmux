@@ -96,18 +96,24 @@ func (sb *ScreenBuffer) beginGeometry(cols, rows uint16, deliver OutputHandler) 
 }
 
 func (sb *ScreenBuffer) resizeWithGeometry(owner uint64, cols, rows uint16, resize func() error, deliver OutputHandler) error {
-	sb.deliverMu.Lock()
-	defer sb.deliverMu.Unlock()
 	sb.mu.Lock()
 	current := sb.geometry.owner == owner
 	sb.mu.Unlock()
 	if !current {
 		return ErrTerminalInstanceChanged
 	}
+	// Run the PTY resize outside deliverMu so output delivery and ConPTY
+	// close-flush cannot form a lock cycle with ptyMu.
 	if err := resize(); err != nil {
 		return err
 	}
+	sb.deliverMu.Lock()
+	defer sb.deliverMu.Unlock()
 	sb.mu.Lock()
+	if sb.geometry.owner != owner {
+		sb.mu.Unlock()
+		return ErrTerminalInstanceChanged
+	}
 	geometry, changed := sb.geometry.record(sb.total, cols, rows)
 	sb.mu.Unlock()
 	if changed && deliver != nil {
@@ -156,7 +162,7 @@ func (sb *ScreenBuffer) snapshotWithTimeline() ([]byte, int64, *ScreenTimeline) 
 	defer sb.mu.Unlock()
 	prefix := sb.tracker.snapshotPrefix()
 	retained := sb.retainedLocked()
-	screen := prependPrefix(prefix, sb.tailBytesLocked(retained))
+	screen := sb.snapshotBytesLocked(prefix, retained)
 	if sb.geometry.base.Epoch == "" {
 		return screen, sb.total, nil
 	}

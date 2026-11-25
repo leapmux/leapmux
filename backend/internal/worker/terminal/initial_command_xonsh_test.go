@@ -3,8 +3,6 @@
 package terminal
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -77,20 +75,11 @@ func TestXonshInitialCommandCanExitTheShell(t *testing.T) {
 		t.Skip("Xonsh is unavailable")
 	}
 	dir := t.TempDir()
-	ctx := testutil.DeadlineContext(t)
-	term, err := Start(ctx, Options{
+	assertInitialCommandExits(t, Options{
 		ID: "xonsh-exit", Shell: shell, WorkingDir: dir, InitialCommandDir: dir,
 		ExtraEnv:       xonshStartupTestEnv(dir, filepath.Join(dir, "no-rc"), filepath.Join(dir, "no-rc-dir")),
 		InitialCommand: "exit 19",
-	}, quartz.NewReal(), func(Output) {})
-	require.NoError(t, err)
-	t.Cleanup(term.Stop)
-	select {
-	case <-term.exitCh:
-		assert.Equal(t, 19, term.Wait())
-	case <-ctx.Done():
-		t.Fatal("Xonsh did not exit")
-	}
+	}, 19, "Xonsh")
 }
 
 func TestXonshInitialCommandRefusalKeepsThePayloadPrivate(t *testing.T) {
@@ -101,24 +90,11 @@ func TestXonshInitialCommandRefusalKeepsThePayloadPrivate(t *testing.T) {
 	}
 	dir := t.TempDir()
 	effect := filepath.Join(dir, "effect")
-	refused := errors.New("the terminal creation lost its owner")
-	called := false
-	term, err := Start(testutil.DeadlineContext(t), Options{
+	assertInitialCommandRefusalKeepsPrivate(t, Options{
 		ID: "xonsh-refused", Shell: shell, WorkingDir: dir, InitialCommandDir: dir,
 		ExtraEnv:       append(xonshStartupTestEnv(dir, filepath.Join(dir, "no-rc"), filepath.Join(dir, "no-rc-dir")), "LEAPMUX_TEST_EFFECT="+effect),
 		InitialCommand: `from pathlib import Path; Path($LEAPMUX_TEST_EFFECT).touch()`,
-		ReleaseInitialCommand: func(context.Context, func() error) error {
-			called = true
-			return refused
-		},
-	}, quartz.NewReal(), func(Output) {})
-	require.ErrorIs(t, err, refused)
-	assert.True(t, called)
-	assert.Nil(t, term)
-	assert.NoFileExists(t, effect)
-	files, err := os.ReadDir(filepath.Join(dir, initialCommandLaunchRoot))
-	require.NoError(t, err)
-	assert.Empty(t, files)
+	}, effect, nil)
 }
 
 func xonshStartupTestEnv(dir, rc, rcDir string) []string {

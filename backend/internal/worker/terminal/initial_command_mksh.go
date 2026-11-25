@@ -1,15 +1,9 @@
 package terminal
 
-import (
-	"fmt"
-	"os"
-	"path/filepath"
-)
-
 func (b *initialCommandBootstrap) mkshStartup(env []string) ([]string, error) {
-	source := filepath.Join(b.dir, "mksh-interactive")
-	if err := os.WriteFile(source, []byte(mkshInitialStartup), 0o600); err != nil {
-		return nil, fmt.Errorf("write the mksh startup hook: %w", err)
+	source, err := b.writeFile("mksh-interactive", mkshInitialStartup, "mksh startup hook")
+	if err != nil {
+		return nil, err
 	}
 	// mksh uses the value of ENV as the path. An indirection through a second
 	// variable would make it try to open the variable expression itself.

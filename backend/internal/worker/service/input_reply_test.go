@@ -38,6 +38,10 @@ func TestInputReplyReadsOnlyTheAcceptedInputsTurn(t *testing.T) {
 			CreatedAt: sqltime.NewSQLiteTime(nowMillis()),
 		})
 		require.NoError(t, err)
+		if id == inputID {
+			_, err = svc.DB.ExecContext(ctx, `UPDATE messages SET from_input_queue = 1 WHERE agent_id = ? AND id = ?`, agentID, id)
+			require.NoError(t, err)
+		}
 		return seq
 	}
 	user := leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
@@ -125,6 +129,8 @@ func TestRestoreStateRetiresAnAcceptedInputWithoutAnOutcome(t *testing.T) {
 		CreatedAt: sqltime.NewSQLiteTime(nowMillis()),
 	})
 	require.NoError(t, err)
+	_, err = svc.DB.ExecContext(ctx, `UPDATE messages SET from_input_queue = 1 WHERE agent_id = ? AND id = ?`, agentID, inputID)
+	require.NoError(t, err)
 
 	svc.RestoreState()
 	writer := newTestWriter()
@@ -154,6 +160,10 @@ func TestExclusiveReplyMovesOnlyItsOwnRowsOutOfThePriorInput(t *testing.T) {
 			ContentCompression: compression, CreatedAt: sqltime.NewSQLiteTime(nowMillis()),
 		})
 		require.NoError(t, err)
+		if source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
+			_, err = svc.DB.ExecContext(ctx, `UPDATE messages SET from_input_queue = 1 WHERE agent_id = ? AND id = ?`, agentID, id)
+			require.NoError(t, err)
+		}
 	}
 	user, assistant := leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
 	write("lead", inputqueue.InputRequestKeyPrefix+"lead", "native-lead", leadTurn, "Original request.", user)
@@ -254,6 +264,10 @@ func TestCanonicalInputReplyUsesNativeOrderAndConsumingBoundaries(t *testing.T) 
 			CreatedAt: sqltime.NewSQLiteTime(nowMillis()),
 		})
 		require.NoError(t, err)
+		if source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
+			_, err = svc.DB.ExecContext(ctx, `UPDATE messages SET from_input_queue = 1 WHERE agent_id = ? AND id = ?`, agentID, id)
+			require.NoError(t, err)
+		}
 		return seq
 	}
 	user, assistant := leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
@@ -368,6 +382,8 @@ func TestNativeInputControlProofCannotChangeAReplacementClaim(t *testing.T) {
 			Content: content, ContentCompression: compression, CreatedAt: sqltime.NewSQLiteTime(nowMillis()),
 		})
 		require.NoError(t, err)
+		_, err = svc.DB.ExecContext(ctx, `UPDATE messages SET from_input_queue = 1 WHERE agent_id = ? AND id = ?`, agentID, inputID)
+		require.NoError(t, err)
 	}
 	payload := []byte("{}")
 	storeClaim := func(claim string) {
@@ -422,6 +438,8 @@ func TestControlPublicationStoresAllReplyInputBindingsTogether(t *testing.T) {
 			Content: content, ContentCompression: compression, CreatedAt: sqltime.NewSQLiteTime(nowMillis()),
 		})
 		require.NoError(t, err)
+		_, err = svc.DB.ExecContext(ctx, `UPDATE messages SET from_input_queue = 1 WHERE agent_id = ? AND id = ?`, agentID, inputID)
+		require.NoError(t, err)
 	}
 	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	request := agent.ControlRequest{
@@ -440,9 +458,37 @@ func TestControlPublicationStoresAllReplyInputBindingsTogether(t *testing.T) {
 	for _, inputID := range []string{"lead", "first-steer", "second-steer"} {
 		state, err := svc.Queries.GetInputReplyState(ctx, db.GetInputReplyStateParams{
 			AgentID: agentID, InputID: inputID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-			InputKeyPattern: inputqueue.InputRequestKeyPrefix + "*",
 		})
 		require.NoError(t, err)
 		assert.Equal(t, inputID != "lead", svc.inputWaitingForUser(agentID, state))
 	}
+}
+
+func TestInputReplyIgnoresProviderUserMessageWithInputPrefix(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupInputQueueRPCService(t)
+	ctx := t.Context()
+	const agentID, sessionID, messageID = "agent-1", "session-a", "provider-user-msg"
+	content, compression := msgcodec.Compress([]byte(`{"content":"provider-authored user row"}`))
+	// CreateMessage leaves from_input_queue = 0 even when idempotency_key starts
+	// with inputqueue.InputRequestKeyPrefix and native_input_id is set.
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID: messageID, AgentID: agentID, AgentSessionID: sessionID, NativeInputID: "native-1",
+		IdempotencyKey: inputqueue.InputRequestKeyPrefix + "collision",
+		Source:         leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: content, ContentCompression: compression,
+		CreatedAt: sqltime.NewSQLiteTime(nowMillis()),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.Queries.GetInputReplyState(ctx, db.GetInputReplyStateParams{
+		AgentID: agentID, InputID: messageID, UserSource: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+	})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "a provider user row with from_input_queue = 0 must not match input reply queries")
+
+	svc.RestoreState()
+	var retiredCount int
+	require.NoError(t, svc.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM native_agent_inputs WHERE agent_id = ? AND agent_session_id = ? AND native_input_id = 'native-1'`,
+		agentID, sessionID).Scan(&retiredCount))
+	assert.Zero(t, retiredCount, "RetireNativeInputsAfterRestart must not retire non-queue user rows")
 }

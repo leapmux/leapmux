@@ -62,18 +62,32 @@ func (in Input) Encode(m Modes) []byte {
 // Removing a marker can join two halves of another one, so it removes them
 // until none remains. A text with nothing left after that sends no paste.
 func appendPaste(dst, text []byte, bracketed bool) []byte {
-	body := bytes.ReplaceAll(text, []byte("\r\n"), []byte("\r"))
-	body = bytes.ReplaceAll(body, []byte("\n"), []byte("\r"))
-	for bytes.Contains(body, []byte(pasteEnd)) {
-		body = bytes.ReplaceAll(body, []byte(pasteEnd), nil)
-	}
-	if len(body) == 0 {
+	if len(text) == 0 {
 		return dst
 	}
-	if !bracketed {
-		return append(dst, body...)
+	pasteEndBytes := []byte(pasteEnd)
+	origLen := len(dst)
+	if bracketed {
+		dst = append(dst, pasteStart...)
 	}
-	dst = append(dst, pasteStart...)
-	dst = append(dst, body...)
-	return append(dst, pasteEnd...)
+	bodyStart := len(dst)
+	for i := 0; i < len(text); i++ {
+		b := text[i]
+		if b == '\r' && i+1 < len(text) && text[i+1] == '\n' {
+			i++
+		} else if b == '\n' {
+			b = '\r'
+		}
+		dst = append(dst, b)
+		if len(dst)-bodyStart >= len(pasteEndBytes) && bytes.HasSuffix(dst[bodyStart:], pasteEndBytes) {
+			dst = dst[:len(dst)-len(pasteEndBytes)]
+		}
+	}
+	if len(dst) == bodyStart {
+		return dst[:origLen]
+	}
+	if bracketed {
+		dst = append(dst, pasteEnd...)
+	}
+	return dst
 }

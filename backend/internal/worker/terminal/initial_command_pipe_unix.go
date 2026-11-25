@@ -34,3 +34,7 @@ func openInitialCommandPipe(path string) (*os.File, error) {
 	}
 	return nil, fmt.Errorf("%q is not a named pipe", path)
 }
+
+func openInitialCommandMarker(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+}

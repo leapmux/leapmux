@@ -3,6 +3,7 @@ package semanticevents
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -31,11 +32,43 @@ const promptDetailLength = 120
 
 // PromptDetail supplies one short line to identify a request for display.
 func PromptDetail(prompt *leapmuxv1.ControlPrompt) string {
-	runes := []rune(strings.Join(strings.Fields(promptDetail(prompt)), " "))
-	if len(runes) <= promptDetailLength {
-		return string(runes)
+	raw := promptDetail(prompt)
+	var b strings.Builder
+	b.Grow(min(len(raw), promptDetailLength))
+	count := 0
+	truncateLen := 0
+	emit := func(r rune) bool {
+		if count == promptDetailLength {
+			return false
+		}
+		if count == promptDetailLength-1 {
+			truncateLen = b.Len()
+		}
+		b.WriteRune(r)
+		count++
+		return true
 	}
-	return string(runes[:promptDetailLength-1]) + "…"
+	seenWord := false
+	needSpace := false
+	for _, r := range raw {
+		if unicode.IsSpace(r) {
+			if seenWord {
+				needSpace = true
+			}
+			continue
+		}
+		if needSpace {
+			if !emit(' ') {
+				return b.String()[:truncateLen] + "…"
+			}
+			needSpace = false
+		}
+		if !emit(r) {
+			return b.String()[:truncateLen] + "…"
+		}
+		seenWord = true
+	}
+	return b.String()
 }
 
 func promptDetail(prompt *leapmuxv1.ControlPrompt) string {
@@ -63,11 +96,11 @@ func promptDetail(prompt *leapmuxv1.ControlPrompt) string {
 	case *leapmuxv1.ControlPrompt_Dialog:
 		return firstNonEmpty(value.Dialog.GetTitle(), value.Dialog.GetMessage())
 	case *leapmuxv1.ControlPrompt_Unreadable:
-		fault := ""
 		if label := leapmuxv1.ControlPayloadFault_name[int32(value.Unreadable)]; value.Unreadable != 0 && label != "" {
-			fault = strings.ToLower(strings.TrimPrefix(label, "CONTROL_PAYLOAD_FAULT_"))
+			fault := strings.ToLower(strings.TrimPrefix(label, "CONTROL_PAYLOAD_FAULT_"))
+			return fmt.Sprintf("LeapMux cannot read it (%s)", fault)
 		}
-		return fmt.Sprintf("LeapMux cannot read it (%s)", fault)
+		return "LeapMux cannot read it"
 	default:
 		return ""
 	}

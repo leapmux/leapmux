@@ -19,6 +19,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
@@ -113,12 +114,12 @@ func TestFactory_AgentSpawnAcquiresAndCleanupReleases(t *testing.T) {
 // envValue reads one LEAPMUX_CONTROL_* value out of a spawn's env slice.
 func envValue(t *testing.T, envs []string, key string) string {
 	t.Helper()
-	for _, kv := range envs {
-		if name, value, ok := strings.Cut(kv, "="); ok && name == key {
-			return value
-		}
+	values := envutil.ValuesFor(envs, key)
+	if len(values) == 0 {
+		return ""
 	}
-	return ""
+	require.Len(t, values, 1, "expected at most one %s entry", key)
+	return values[0]
 }
 
 // A QUAKE terminal advertises NO TAB, and an ordinary terminal advertises
@@ -481,10 +482,8 @@ func TestFactory_SpawnWithoutCLIDirectoryAdvertisesNone(t *testing.T) {
 	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
 
 	for kind, envs := range spawnAll(t, f) {
-		for _, entry := range envs {
-			name, _, _ := strings.Cut(entry, "=")
-			assert.NotEqual(t, controlenv.CLIVariable, name, "a %s spawn must not advertise a CLI the Worker has not linked", kind)
-		}
+		assert.False(t, envutil.HasKey(envs, controlenv.CLIVariable),
+			"a %s spawn must not advertise a CLI the Worker has not linked", kind)
 		assert.NotEmpty(t, envValue(t, envs, "LEAPMUX_CONTROL_SOCK"), "a %s spawn keeps its remote control", kind)
 	}
 }
@@ -629,4 +628,47 @@ func TestFactory_SpawnRefusesEmptyUserID(t *testing.T) {
 	require.Error(t, err, "terminal spawn with a zero user id must fail")
 	assert.Nil(t, cleanup)
 	assert.ErrorIs(t, err, service.ErrMissingIdentity)
+}
+
+func TestFactory_NilBackendsReturnUnimplemented(t *testing.T) {
+	f := &controlipc.Factory{
+		SocketDir: socketDirectory(t),
+		WorkerID:  "worker-A",
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
+	})
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+
+	httpClient, baseURL := ipcClient(t, envValue(t, envs, "LEAPMUX_CONTROL_SOCK"))
+	httpClient.Transport = &authHeaderInjector{token: envValue(t, envs, "LEAPMUX_CONTROL_TOKEN"), base: httpClient.Transport}
+	client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+
+	// Nil LocalDispatcher returns gRPC Unimplemented (12) in-band, not Unknown (2).
+	resp, err := client.CallInner(t.Context(), &leapmuxv1.CallInnerRequest{
+		Method: "worker./leapmux.v1.WorkerAgentService/ListAgents",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.GetError())
+	assert.Equal(t, int32(12), resp.GetError().GetCode())
+
+	// Nil CrossWorker returns Connect CodeUnimplemented.
+	_, err = client.CallInner(t.Context(), &leapmuxv1.CallInnerRequest{
+		Method:         "worker./leapmux.v1.WorkerAgentService/ListAgents",
+		TargetWorkerId: "worker-B",
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnimplemented, connect.CodeOf(err))
+
+	// Nil HubBridge returns Connect CodeUnimplemented.
+	_, err = client.CallInner(t.Context(), &leapmuxv1.CallInnerRequest{
+		Method: "hub./leapmux.v1.WorkspaceService/LocateTab",
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnimplemented, connect.CodeOf(err))
 }

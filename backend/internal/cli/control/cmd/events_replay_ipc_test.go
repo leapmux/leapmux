@@ -31,7 +31,7 @@ func (*replayIPCWorker) CallInner(context.Context, string, userid.UserID, *leapm
 }
 
 func (w *replayIPCWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest,
-	send func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController),
+	send func(*leapmuxv1.InnerStreamMessage) error, _ func(channel.StreamController),
 ) error {
 	if target != "worker-B" || req.GetMethod() != semanticWatchProcedure {
 		return fmt.Errorf("unexpected stream %s on %s", req.GetMethod(), target)
@@ -54,8 +54,7 @@ func (w *replayIPCWorker) StreamInner(ctx context.Context, target string, _ user
 		if err != nil {
 			return err
 		}
-		send(&leapmuxv1.InnerStreamMessage{Payload: raw})
-		return nil
+		return send(&leapmuxv1.InnerStreamMessage{Payload: raw})
 	}
 	if err := frame(&leapmuxv1.WatchSemanticEventsResponse{Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{
 		Ready: &leapmuxv1.SemanticWatchReady{
@@ -167,7 +166,7 @@ func (*retiredHistoryIPCWorker) CallInner(context.Context, string, userid.UserID
 }
 
 func (w *retiredHistoryIPCWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest,
-	send func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController),
+	send func(*leapmuxv1.InnerStreamMessage) error, _ func(channel.StreamController),
 ) error {
 	if target != "worker-B" || req.GetMethod() != semanticWatchProcedure {
 		return fmt.Errorf("unexpected stream %s on %s", req.GetMethod(), target)
@@ -194,7 +193,9 @@ func (w *retiredHistoryIPCWorker) StreamInner(ctx context.Context, target string
 		if err != nil {
 			return err
 		}
-		send(&leapmuxv1.InnerStreamMessage{Payload: raw, End: frame.GetRetired() != nil && w.end})
+		if err := send(&leapmuxv1.InnerStreamMessage{Payload: raw, End: frame.GetRetired() != nil && w.end}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

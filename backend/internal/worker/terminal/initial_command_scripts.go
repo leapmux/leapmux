@@ -4,7 +4,7 @@ package terminal
 // the PTY and authorizes this launch. It loads the full command before the
 // final acknowledgement, after which the Worker can remove the launch files.
 const posixInitialCommand = `
-if (set -C; printf '%s %s\n' "$LEAPMUX_INITIAL_COMMAND_PID" "$LEAPMUX_INITIAL_COMMAND_NONCE" > "$LEAPMUX_INITIAL_COMMAND_READY"); then
+if (set -C; command printf '%s %s\n' "$LEAPMUX_INITIAL_COMMAND_PID" "$LEAPMUX_INITIAL_COMMAND_NONCE" > "$LEAPMUX_INITIAL_COMMAND_READY"); then
   __leapmux_waits=0
   while [ ! -f "$LEAPMUX_INITIAL_COMMAND_FILE" ] && [ -f "$LEAPMUX_INITIAL_COMMAND_READY" ] &&
         [ "$__leapmux_waits" -lt 1500 ]; do
@@ -13,13 +13,15 @@ if (set -C; printf '%s %s\n' "$LEAPMUX_INITIAL_COMMAND_PID" "$LEAPMUX_INITIAL_CO
   done
   unset __leapmux_waits
   if [ -f "$LEAPMUX_INITIAL_COMMAND_FILE" ] &&
-     __leapmux_command="$(command cat -- "$LEAPMUX_INITIAL_COMMAND_FILE" && printf .)"; then
+     __leapmux_command="$(command cat -- "$LEAPMUX_INITIAL_COMMAND_FILE" && command printf .)"; then
     __leapmux_command=${__leapmux_command%.}
-    if (set -C; printf '%s %s\n' "$LEAPMUX_INITIAL_COMMAND_PID" "$LEAPMUX_INITIAL_COMMAND_NONCE" > "$LEAPMUX_INITIAL_COMMAND_ACK"); then
+    if (set -C; command printf '%s %s\n' "$LEAPMUX_INITIAL_COMMAND_PID" "$LEAPMUX_INITIAL_COMMAND_NONCE" > "$LEAPMUX_INITIAL_COMMAND_ACK"); then
       unset LEAPMUX_INITIAL_COMMAND_FILE LEAPMUX_INITIAL_COMMAND_READY LEAPMUX_INITIAL_COMMAND_ACK LEAPMUX_INITIAL_COMMAND_NONCE LEAPMUX_INITIAL_COMMAND_PID LEAPMUX_INITIAL_COMMAND_PARENT
-      eval "$__leapmux_command"
+      eval 'unset __leapmux_command
+'"$__leapmux_command"
+    else
+      unset __leapmux_command
     fi
-    unset __leapmux_command
   fi
 fi
 `
@@ -90,22 +92,24 @@ if [ -n "${ENV:-}" ]; then
   # filename cannot finish the shell statement that expands it.
   __leapmux_delimiter=LEAPMUX_$LEAPMUX_INITIAL_COMMAND_NONCE
   case "$ENV" in
-    *"$__leapmux_delimiter"*) return ;;
-  esac
-  __leapmux_profile="$(eval "command cat <<$__leapmux_delimiter
+    *"$__leapmux_delimiter"*) ;;
+    *)
+      __leapmux_profile="$(eval "command cat <<$__leapmux_delimiter
 $ENV.
 $__leapmux_delimiter
 ")"
-  __leapmux_profile=${__leapmux_profile%.}
-  # A dot operand without a slash searches PATH. The shell's startup file
-  # lookup opens a relative ENV path from the working directory.
-  case "$__leapmux_profile" in
-    ''|/*) ;;
-    *) __leapmux_profile=./$__leapmux_profile ;;
+      __leapmux_profile=${__leapmux_profile%.}
+      # A dot operand without a slash searches PATH. The shell's startup file
+      # lookup opens a relative ENV path from the working directory.
+      case "$__leapmux_profile" in
+        ''|/*) ;;
+        *) __leapmux_profile=./$__leapmux_profile ;;
+      esac
+      if [ -r "$__leapmux_profile" ]; then
+        . "$__leapmux_profile"
+      fi
+      ;;
   esac
-  if [ -r "$__leapmux_profile" ]; then
-    . "$__leapmux_profile"
-  fi
   unset __leapmux_profile __leapmux_delimiter
 fi
 `
@@ -115,9 +119,11 @@ if [ "$$" = "$LEAPMUX_INITIAL_COMMAND_PID" ] &&
    /bin/sh -c 'printf "%s\n" "$PPID"' > "$LEAPMUX_INITIAL_COMMAND_PARENT" &&
    IFS= read -r __leapmux_parent < "$LEAPMUX_INITIAL_COMMAND_PARENT" &&
    [ "$__leapmux_parent" = "$LEAPMUX_INITIAL_COMMAND_PID" ]; then
+  unset __leapmux_parent
 ` + posixInitialCommand + `
+else
+  unset __leapmux_parent
 fi
-unset __leapmux_parent
 `
 
 const posixLoginProfiles = `
@@ -158,8 +164,9 @@ fi
 ` + posixInitialHandoff
 
 const fishInitialCommand = `
+set -e __leapmux_command
 if test "$fish_pid" = "$LEAPMUX_INITIAL_COMMAND_PID"; and not test -e "$LEAPMUX_INITIAL_COMMAND_READY"
-  printf '%s %s\n' "$fish_pid" "$LEAPMUX_INITIAL_COMMAND_NONCE" > "$LEAPMUX_INITIAL_COMMAND_READY"
+  builtin printf '%s %s\n' "$fish_pid" "$LEAPMUX_INITIAL_COMMAND_NONCE" > "$LEAPMUX_INITIAL_COMMAND_READY"
   set -l __leapmux_waits 0
   while not test -f "$LEAPMUX_INITIAL_COMMAND_FILE"; and test -f "$LEAPMUX_INITIAL_COMMAND_READY"; and test $__leapmux_waits -lt 1500
     command sleep 0.02; or break
@@ -167,13 +174,13 @@ if test "$fish_pid" = "$LEAPMUX_INITIAL_COMMAND_PID"; and not test -e "$LEAPMUX_
   end
   if test -f "$LEAPMUX_INITIAL_COMMAND_FILE"
     set -g __leapmux_command (string collect --allow-empty --no-trim-newlines < "$LEAPMUX_INITIAL_COMMAND_FILE")
-    and printf '%s %s\n' "$fish_pid" "$LEAPMUX_INITIAL_COMMAND_NONCE" > "$LEAPMUX_INITIAL_COMMAND_ACK"
+    and builtin printf '%s %s\n' "$fish_pid" "$LEAPMUX_INITIAL_COMMAND_NONCE" > "$LEAPMUX_INITIAL_COMMAND_ACK"
     or set -e __leapmux_command
   end
 end
-set -e LEAPMUX_INITIAL_COMMAND_FILE LEAPMUX_INITIAL_COMMAND_READY LEAPMUX_INITIAL_COMMAND_ACK LEAPMUX_INITIAL_COMMAND_NONCE LEAPMUX_INITIAL_COMMAND_PID LEAPMUX_INITIAL_COMMAND_PARENT
-eval "$__leapmux_command"
-set -e __leapmux_command
+set -e LEAPMUX_INITIAL_COMMAND_FILE LEAPMUX_INITIAL_COMMAND_READY LEAPMUX_INITIAL_COMMAND_ACK LEAPMUX_INITIAL_COMMAND_NONCE LEAPMUX_INITIAL_COMMAND_PID
+set -q __leapmux_command; and eval "set -e __leapmux_command
+$__leapmux_command"
 `
 
 // Deliver this statement to the parser in a single atomic pipe write. Nushell
@@ -185,7 +192,7 @@ const nushellInitialSource = "source './command'\n"
 const nushellInitialPrelude = `
 if $nu.pid != ($env.LEAPMUX_INITIAL_COMMAND_PID | %into int) { %exit 1 }
 $"($nu.pid) ($env.LEAPMUX_INITIAL_COMMAND_NONCE)" | %save --raw $env.LEAPMUX_INITIAL_COMMAND_ACK
-%hide-env -i LEAPMUX_INITIAL_COMMAND_FILE LEAPMUX_INITIAL_COMMAND_READY LEAPMUX_INITIAL_COMMAND_ACK LEAPMUX_INITIAL_COMMAND_NONCE LEAPMUX_INITIAL_COMMAND_PID LEAPMUX_INITIAL_COMMAND_PARENT
+%hide-env -i LEAPMUX_INITIAL_COMMAND_FILE LEAPMUX_INITIAL_COMMAND_READY LEAPMUX_INITIAL_COMMAND_ACK LEAPMUX_INITIAL_COMMAND_NONCE LEAPMUX_INITIAL_COMMAND_PID
 `
 
 const powerShellInitialCommand = `
@@ -194,15 +201,14 @@ if (-not [IO.File]::Exists($env:LEAPMUX_INITIAL_COMMAND_READY)) {
   $__leapmux_wait = [Diagnostics.Stopwatch]::StartNew()
   while (-not [IO.File]::Exists($env:LEAPMUX_INITIAL_COMMAND_FILE) -and
          [IO.File]::Exists($env:LEAPMUX_INITIAL_COMMAND_READY) -and $__leapmux_wait.ElapsedMilliseconds -lt 30000) {
-    Start-Sleep -Milliseconds 20
+    Microsoft.PowerShell.Utility\Start-Sleep -Milliseconds 20
   }
+  Microsoft.PowerShell.Utility\Remove-Variable __leapmux_wait
   if ([IO.File]::Exists($env:LEAPMUX_INITIAL_COMMAND_FILE)) {
     $__leapmux_command = [IO.File]::ReadAllText($env:LEAPMUX_INITIAL_COMMAND_FILE)
     [IO.File]::WriteAllText($env:LEAPMUX_INITIAL_COMMAND_ACK, "$PID $env:LEAPMUX_INITIAL_COMMAND_NONCE")
-    Remove-Item Env:LEAPMUX_INITIAL_COMMAND_FILE,Env:LEAPMUX_INITIAL_COMMAND_READY,Env:LEAPMUX_INITIAL_COMMAND_ACK,Env:LEAPMUX_INITIAL_COMMAND_NONCE,Env:LEAPMUX_INITIAL_COMMAND_PARENT
-    Invoke-Expression $__leapmux_command
-    Remove-Variable __leapmux_command
+    Microsoft.PowerShell.Management\Remove-Item Env:LEAPMUX_INITIAL_COMMAND_FILE,Env:LEAPMUX_INITIAL_COMMAND_READY,Env:LEAPMUX_INITIAL_COMMAND_ACK,Env:LEAPMUX_INITIAL_COMMAND_NONCE
+    Microsoft.PowerShell.Utility\Invoke-Expression ("Microsoft.PowerShell.Utility\Remove-Variable __leapmux_command` + "`n" + `" + $__leapmux_command)
   }
-  Remove-Variable __leapmux_wait
 }
 `

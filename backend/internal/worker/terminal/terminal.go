@@ -164,7 +164,9 @@ func (sb *ScreenBuffer) WriteAndDeliver(owner uint64, data []byte, deliver Outpu
 	endOffset, signals := sb.writeLocked(data)
 	geometry := sb.geometry.current()
 	sb.mu.Unlock()
-	deliver(Output{Data: data, EndOffset: endOffset, Signals: signals, ScreenEpoch: geometry.Epoch, GeometryRevision: geometry.Revision})
+	if deliver != nil {
+		deliver(Output{Data: data, EndOffset: endOffset, Signals: signals, ScreenEpoch: geometry.Epoch, GeometryRevision: geometry.Revision})
+	}
 }
 
 // InputModes returns the modes that the program in the terminal enabled and
@@ -197,20 +199,17 @@ func (sb *ScreenBuffer) TotalBytes() int64 {
 func (sb *ScreenBuffer) Snapshot() ([]byte, int64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	body := sb.tailBytesLocked(sb.retainedLocked())
-	return prependPrefix(sb.tracker.snapshotPrefix(), body), sb.total
+	return sb.snapshotBytesLocked(sb.tracker.snapshotPrefix(), sb.retainedLocked()), sb.total
 }
 
-// prependPrefix concatenates prefix and body. Returns body unchanged
-// when prefix is nil so the common case (default tracker state) avoids
-// the extra alloc + copy.
-func prependPrefix(prefix, body []byte) []byte {
-	if len(prefix) == 0 {
-		return body
-	}
-	out := make([]byte, 0, len(prefix)+len(body))
-	out = append(out, prefix...)
-	out = append(out, body...)
+// snapshotBytesLocked copies prefix and the trailing n retained bytes into one
+// freshly allocated slice. Caller must hold sb.mu.
+func (sb *ScreenBuffer) snapshotBytesLocked(prefix []byte, n int) []byte {
+	head, wrap := sb.tailLocked(n)
+	out := make([]byte, len(prefix)+len(head)+len(wrap))
+	off := copy(out, prefix)
+	off += copy(out[off:], head)
+	copy(out[off:], wrap)
 	return out
 }
 
@@ -307,8 +306,7 @@ func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset
 	// have with the snapshot flag, prefixed with the tracker's mode-restore
 	// bytes so a TUI in alt screen still renders correctly after the
 	// xterm reset+replay.
-	body := sb.tailBytesLocked(sb.retainedLocked())
-	return prependPrefix(sb.tracker.snapshotPrefix(), body), total, true
+	return sb.snapshotBytesLocked(sb.tracker.snapshotPrefix(), sb.retainedLocked()), total, true
 }
 
 // OutputHandler is called for each chunk of output from the PTY. The
@@ -368,7 +366,17 @@ type Terminal struct {
 	screenBuf    *ScreenBuffer
 	screenOwner  uint64
 	screenOutput OutputHandler
-	mu           sync.Mutex
+	// startupMu serializes pre-activation startup bytes against activate().
+	// Before activation, readOutput buffers into startupBuf instead of mutating
+	// screenBuf so a failed spawn or restart never corrupts a shared buffer.
+	startupMu  sync.Mutex
+	activated  bool
+	startupBuf []byte
+	mu         sync.Mutex
+	// resizeMu serializes direct Terminal.Resize calls so native PTY resize
+	// and geometry recording stay ordered even though ptmx.Resize runs outside
+	// screenBuf.deliverMu.
+	resizeMu sync.Mutex
 	// managedResizeMu serializes the manager's dimension comparison, native
 	// resize, and metadata commit for this instance. Other terminals stay independent.
 	managedResizeMu sync.Mutex
@@ -427,6 +435,7 @@ type Options struct {
 	Shell         string
 	WorkingDir    string
 	ShellStartDir string
+	Title         string
 	Cols          uint16
 	Rows          uint16
 	// ExtraEnv holds the LEAPMUX_CONTROL_* variables of the spawn. The
@@ -443,10 +452,10 @@ type Options struct {
 	// for does not run the command again.
 	InitialCommand string
 	// InitialCommandDir is the private Worker parent for launch files.
-	InitialCommandDir string `json:"-"`
+	InitialCommandDir string
 	// ReleaseInitialCommand authorizes a durable launch and calls expose
 	// while the same Worker owner still controls it.
-	ReleaseInitialCommand func(context.Context, func() error) error `json:"-"`
+	ReleaseInitialCommand func(context.Context, func() error) error
 }
 
 // spawnEnv builds the environment a terminal's login shell is started with,
@@ -476,7 +485,10 @@ func spawnEnv(environ, extraEnv []string) []string {
 	// The provider-helper variable points at one agent's helper spec (see
 	// agent.HelperFunc). A terminal that inherited it would run a plain
 	// `leapmux` as that agent's helper, so the spawn never passes it on.
-	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(envutil.FilterEnv(environ, contracts.EnvAgentHelper),
+	// Strip any inherited initial-command bootstrap variables too so a Worker
+	// started inside another terminal cannot pass stale handoff paths down.
+	cleaned := envutil.StripByPrefix(envutil.FilterEnv(environ, contracts.EnvAgentHelper), initialCommandEnvPrefix)
+	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(cleaned,
 		"TERM=xterm-256color",
 		gitutil.GitOptionalLocksOff,
 	))
@@ -508,17 +520,42 @@ func startWithScreenBuffer(
 	screenBuf *ScreenBuffer,
 	outputFn OutputHandler,
 ) (*Terminal, error) {
-	return startWithTerminalRegistration(ctx, opts, clock, screenBuf, outputFn, nil)
+	launch, err := spawnTerminal(ctx, opts, clock, screenBuf, outputFn)
+	if err != nil {
+		return nil, err
+	}
+	defer launch.closeBootstrap()
+	if err := launch.awaitReady(ctx); err != nil {
+		launch.abort()
+		return nil, err
+	}
+	launch.activate()
+	if err := launch.releaseAndAck(ctx); err != nil {
+		launch.abort()
+		return nil, err
+	}
+	return launch.finish(), nil
 }
 
-func startWithTerminalRegistration(
+// pendingTerminalLaunch separates PTY spawn and shell readiness from screen
+// activation, manager installation, and initial-command release so callers
+// install linearly without mutating a shared ScreenBuffer before readiness.
+type pendingTerminalLaunch struct {
+	opts      Options
+	shell     string
+	terminal  *Terminal
+	bootstrap *initialCommandBootstrap
+	cols      uint16
+	rows      uint16
+}
+
+func spawnTerminal(
 	ctx context.Context,
 	opts Options,
 	clock quartz.Clock,
 	screenBuf *ScreenBuffer,
 	outputFn OutputHandler,
-	register func(*Terminal) error,
-) (*Terminal, error) {
+) (*pendingTerminalLaunch, error) {
 	if clock == nil {
 		panic("terminal: clock must not be nil")
 	}
@@ -551,21 +588,27 @@ func startWithTerminalRegistration(
 		if err != nil {
 			return nil, err
 		}
-		defer bootstrap.close()
 		program, args, env, err = bootstrap.launch(ctx, program, opts.WorkingDir, args, env)
 		if err != nil {
+			bootstrap.close()
 			return nil, err
 		}
 	}
 
 	ptmx, err := pty.New()
 	if err != nil {
+		if bootstrap != nil {
+			bootstrap.close()
+		}
 		return nil, fmt.Errorf("new pty: %w", err)
 	}
 
 	owner, err := procutil.PreparePTYProcess(ctx, ptmx, procutil.PTYLaunch{Program: program, Args: args, Dir: opts.WorkingDir, Env: env})
 	if err != nil {
 		_ = ptmx.Close()
+		if bootstrap != nil {
+			bootstrap.close()
+		}
 		return nil, fmt.Errorf("prepare pty process: %w", err)
 	}
 	// No procutil.HideConsoleWindow here: on Windows, CREATE_NO_WINDOW is
@@ -581,19 +624,18 @@ func startWithTerminalRegistration(
 	}
 	if err := ptmx.Resize(int(cols), int(rows)); err != nil {
 		_ = ptmx.Close()
+		if bootstrap != nil {
+			bootstrap.close()
+		}
 		return nil, fmt.Errorf("resize pty: %w", err)
 	}
 
 	if err := owner.Start(); err != nil {
 		_ = ptmx.Close()
+		if bootstrap != nil {
+			bootstrap.close()
+		}
 		return nil, fmt.Errorf("start pty: %w", err)
-	}
-
-	// Respawn can reuse the screen while the previous reader drains. The
-	// buffer orders both readers and accepts only the current owner's bytes.
-	screenOwner := screenBuf.beginGeometry(cols, rows, outputFn)
-	wrappedOutput := func(data []byte) {
-		screenBuf.WriteAndDeliver(screenOwner, data, outputFn)
 	}
 
 	t := &Terminal{
@@ -602,53 +644,113 @@ func startWithTerminalRegistration(
 		clock:             clock,
 		owner:             owner,
 		ptmx:              ptmx,
-		outputFn:          wrappedOutput,
 		screenBuf:         screenBuf,
-		screenOwner:       screenOwner,
 		screenOutput:      outputFn,
 		exitCh:            make(chan struct{}),
 		readDoneCh:        make(chan struct{}),
 		childSideClosedCh: make(chan struct{}),
 	}
+	t.outputFn = t.deliverOutput
 
 	go func() {
 		t.readOutput()
 		close(t.readDoneCh)
 	}()
 	go t.waitForExit()
-	failStartup := func(err error) (*Terminal, error) {
-		t.Stop()
-		t.Wait()
-		<-t.readDoneCh
-		return nil, err
-	}
-	if bootstrap != nil {
-		if err := bootstrap.awaitReady(ctx, t, clock); err != nil {
-			return failStartup(err)
-		}
-	}
-	if register != nil {
-		if err := register(t); err != nil {
-			return failStartup(err)
-		}
-	}
-	if bootstrap != nil {
-		if err := bootstrap.release(ctx, t, opts); err != nil {
-			return failStartup(err)
-		}
-		if err := bootstrap.await(ctx, t, clock, bootstrap.ackPath(), errInitialCommandUnproved); err != nil {
-			return failStartup(err)
-		}
-	}
 
+	return &pendingTerminalLaunch{
+		opts:      opts,
+		shell:     shell,
+		terminal:  t,
+		bootstrap: bootstrap,
+		cols:      cols,
+		rows:      rows,
+	}, nil
+}
+
+func (l *pendingTerminalLaunch) closeBootstrap() {
+	if l.bootstrap != nil {
+		l.bootstrap.close()
+		l.bootstrap = nil
+	}
+}
+
+func (l *pendingTerminalLaunch) awaitReady(ctx context.Context) error {
+	if l.bootstrap == nil {
+		return nil
+	}
+	return l.bootstrap.awaitReady(ctx, l.terminal, l.terminal.clock)
+}
+
+// activate claims screenBuf geometry ownership and flushes any startup output
+// buffered before activation, keeping output chronological and preventing a
+// failed spawn or restart from mutating a shared ScreenBuffer.
+func (l *pendingTerminalLaunch) activate() {
+	t := l.terminal
+	t.startupMu.Lock()
+	if t.activated {
+		t.startupMu.Unlock()
+		return
+	}
+	owner := t.screenBuf.beginGeometry(l.cols, l.rows, t.screenOutput)
+	t.screenOwner = owner
+	if len(t.startupBuf) > 0 {
+		t.screenBuf.WriteAndDeliver(owner, t.startupBuf, t.screenOutput)
+		t.startupBuf = nil
+	}
+	t.activated = true
+	t.startupMu.Unlock()
+}
+
+func (l *pendingTerminalLaunch) releaseAndAck(ctx context.Context) error {
+	if l.bootstrap == nil {
+		return nil
+	}
+	if err := l.bootstrap.release(ctx, l.terminal, l.opts); err != nil {
+		return err
+	}
+	return l.bootstrap.await(ctx, l.terminal, l.terminal.clock, l.bootstrap.ackPath(), errInitialCommandUnproved)
+}
+
+func (l *pendingTerminalLaunch) abort() {
+	l.closeBootstrap()
+	l.terminal.Stop()
+	l.terminal.Wait()
+	<-l.terminal.readDoneCh
+}
+
+func (l *pendingTerminalLaunch) finish() *Terminal {
 	slog.Info("terminal started",
-		"terminal_id", opts.ID,
-		"shell", shell,
-		"args", LoginShellArgs(shell),
-		"pid", owner.PID(),
+		"terminal_id", l.opts.ID,
+		"shell", l.shell,
+		"args", LoginShellArgs(l.shell),
+		"pid", l.terminal.shellPID,
 	)
+	return l.terminal
+}
 
-	return t, nil
+func (t *Terminal) deliverOutput(data []byte) {
+	t.startupMu.Lock()
+	if !t.activated {
+		t.appendStartupBytesLocked(data)
+		t.startupMu.Unlock()
+		return
+	}
+	owner := t.screenOwner
+	t.startupMu.Unlock()
+	t.screenBuf.WriteAndDeliver(owner, data, t.screenOutput)
+}
+
+func (t *Terminal) appendStartupBytesLocked(data []byte) {
+	if len(data) >= screenBufferSize {
+		t.startupBuf = append(t.startupBuf[:0], data[len(data)-screenBufferSize:]...)
+		return
+	}
+	if excess := len(t.startupBuf) + len(data) - screenBufferSize; excess > 0 {
+		copy(t.startupBuf, t.startupBuf[excess:])
+		t.startupBuf = t.startupBuf[:len(t.startupBuf)-excess]
+	}
+	t.startupBuf = append(t.startupBuf, data...)
 }
 
 // SendInput writes data to the PTY.
@@ -680,7 +782,14 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 	}
 	t.mu.Unlock()
 
-	return t.screenBuf.resizeWithGeometry(t.screenOwner, cols, rows, func() error {
+	t.resizeMu.Lock()
+	defer t.resizeMu.Unlock()
+
+	t.startupMu.Lock()
+	owner := t.screenOwner
+	t.startupMu.Unlock()
+
+	return t.screenBuf.resizeWithGeometry(owner, cols, rows, func() error {
 		t.ptyMu.RLock()
 		defer t.ptyMu.RUnlock()
 		return t.ptmx.Resize(int(cols), int(rows))

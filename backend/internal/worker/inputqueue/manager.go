@@ -484,14 +484,14 @@ func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) 
 // The new agent is private to tx, so the queue needs no coordinator lock or
 // publication. The caller wakes the queue after it records the startup outcome.
 func (m *Manager) StageInitialMessage(ctx context.Context, tx *sql.Tx, agentID, text string, sender *AgentSender) error {
-	input, err := m.store.prepareNewItem(NewItem{
+	prepared, err := m.store.prepareNewItemForEnqueue(NewItem{
 		ID: id.Generate(), AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		Sender: sender, Text: text, ReclassifyOnEdit: true,
 	})
 	if err != nil {
 		return err
 	}
-	_, err = enqueuePreparedItem(ctx, tx, input, inputIdempotencyKey(input), m.store.now())
+	_, err = enqueuePreparedItemWithEphemeral(ctx, tx, prepared.item, prepared.key, m.store.now(), nil)
 	return err
 }
 
@@ -518,22 +518,21 @@ func (m *Manager) EnqueueWithMutation(ctx context.Context, input NewItem, apply 
 }
 
 func (m *Manager) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) error) (Snapshot, EnqueueReceipt, error) {
-	// The classifier rewrites a slash command into its own kind, and a sender
-	// turns a user message into an agent message, so the test must see the
-	// kind the store will store, not the one the client sent. The store asks
-	// the same rules again before writing.
-	admitted, err := m.store.admitNewItem(input)
+	// Prepare and hash once outside the coordinator lock: classification
+	// rewrites slash commands and agent-sent messages into their stored kind,
+	// and hashing attachments reads up to MaxItemBytes.
+	prepared, err := m.store.prepareNewItemForEnqueue(input)
 	if err != nil {
 		return Snapshot{}, EnqueueReceipt{}, err
 	}
-	if err := m.refuseUnacceptedKind(input.AgentID, admitted.Kind); err != nil {
+	if err := m.refuseUnacceptedKind(prepared.item.AgentID, prepared.item.Kind); err != nil {
 		return Snapshot{}, EnqueueReceipt{}, err
 	}
 	// mutateAndDrain can refuse before it calls the store, and then nothing was
 	// added.
 	var receipt EnqueueReceipt
-	snapshot, err := m.mutateAndDrain(input.AgentID, alwaysChanged(func() (Snapshot, error) {
-		inner, innerReceipt, innerErr := m.store.enqueue(ctx, input, apply)
+	snapshot, err := m.mutateAndDrain(prepared.item.AgentID, alwaysChanged(func() (Snapshot, error) {
+		inner, innerReceipt, innerErr := m.store.enqueuePrepared(ctx, prepared, apply)
 		receipt = innerReceipt
 		return inner, innerErr
 	}))
@@ -557,21 +556,21 @@ func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error
 	return snapshot, err
 }
 
-// GetItem returns a snapshot and the full un-truncated text of inputID without
-// acquiring a mutating edit lease.
+// GetItem returns a snapshot and the full un-truncated text of inputID from
+// one consistent read without acquiring a mutating edit lease.
 func (m *Manager) GetItem(ctx context.Context, agentID, inputID string) (Snapshot, string, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, "", ErrManagerStopped
 	}
 	defer m.endActivity()
-	text, err := m.store.GetItem(ctx, agentID, inputID)
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snap, text, err := m.store.GetItem(ctx, agentID, inputID)
 	if err != nil {
 		return Snapshot{}, "", err
 	}
-	snap, err := m.Snapshot(ctx, agentID)
-	if err != nil {
-		return Snapshot{}, "", err
-	}
+	m.rearmMaturityLocked(c, snap)
 	return snap, text, nil
 }
 
@@ -1058,7 +1057,9 @@ func (m *Manager) finishSteerLocked(c *coordinator, ctx context.Context, prepare
 	// A control reply's row is LeapMux's own record, accepted at the steer:
 	// a provider may repeat a steered answer at its own echo long after the
 	// model call that holds it, and the answer's row must not wait for that.
-	if policy.RowAtEcho && !controlReplyKind(prepared.Item.Kind) {
+	// A steer that already returned a NativeReceipt is also confirmed and
+	// accepts directly so the receipt is recorded instead of discarded.
+	if policy.RowAtEcho && !controlReplyKind(prepared.Item.Kind) && !confirmedAdmission {
 		snapshot, persisted, err = m.holdForEcho(c, ctx, prepared)
 	} else {
 		snapshot, persisted, err = m.acceptDispatch(c, ctx, prepared, result)
@@ -1214,6 +1215,12 @@ func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapsho
 	}
 	c := m.coordinator(agentID)
 	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return Snapshot{}, ErrConflict
+	}
+	c.dispatches.Add()
+	defer c.dispatches.Done()
 	return m.preemptWithBypassLocked(c, ctx, agentID, inputID, false)
 }
 
@@ -1338,11 +1345,13 @@ func (m *Manager) Advance(ctx context.Context, agentID string, hasRecovery func(
 		return snapshot, err
 	}
 	c.advancing = true
+	c.dispatches.Add()
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		c.advancing = false
 		c.mu.Unlock()
+		c.dispatches.Done()
 	}()
 
 	return m.advanceClaimed(ctx, agentID, c, hasRecovery)
@@ -1874,7 +1883,6 @@ func (m *Manager) scheduleDrainFrom(agentID string, admission agent.InputReadine
 // take or deliver the same item twice.
 func (m *Manager) drain(agentID string, c *coordinator) {
 	for {
-		policy, policyErr := m.dispatcher.SteerPolicy(agentID)
 		c.mu.Lock()
 		if m.isStopped() {
 			c.draining = false
@@ -1886,6 +1894,7 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		// recorded before it is spent. Only one that arrives during the provider
 		// call carries news that this loop still misses.
 		c.drainAgain = false
+		policy, policyErr := m.dispatcher.SteerPolicy(agentID)
 		if policyErr != nil {
 			m.enqueueFailureLocked(c, "read the agent input queue steering policy", "agent_id", agentID, "error", policyErr)
 			c.draining = false

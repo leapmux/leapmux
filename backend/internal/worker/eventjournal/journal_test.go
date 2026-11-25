@@ -521,3 +521,139 @@ func TestJournalSeparatesAgentAndTerminalPositionsWithTheSameID(t *testing.T) {
 	assert.NotNil(t, page[0].GetRecord().GetFact().GetAgentTurnEnd())
 	assert.Nil(t, page[0].GetRecord().GetFact().GetTerminalBell())
 }
+
+func TestJournalEvictsSealedClosedTailBeforeQuietLiveTail(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	liveOld := terminalHistoryTab("live-old")
+	closedNewer := terminalHistoryTab("closed-newer")
+	incoming := terminalHistoryTab("incoming")
+	database := openJournalDatabase(t, liveOld, closedNewer, incoming)
+	policy := defaultRetention()
+	policy.tabs = 2
+	journal := startTestJournal(t, database, clock, "owner", policy)
+
+	_, liveReady, err := journal.Open(t.Context(), liveOld, nil)
+	require.NoError(t, err)
+	clock.Advance(time.Minute).MustWait(t.Context())
+	_, _, err = journal.Open(t.Context(), closedNewer, nil)
+	require.NoError(t, err)
+	journal.Record(closedNewer, terminalBellFact())
+	require.NoError(t, journal.barrier(t.Context()))
+	_, err = db.New(database).CloseTerminal(t.Context(), closedNewer.ID)
+	require.NoError(t, err)
+	journal.Seal([]Tab{closedNewer}, true)
+	require.NoError(t, journal.barrier(t.Context()))
+
+	clock.Advance(time.Minute).MustWait(t.Context())
+	_, _, err = journal.Open(t.Context(), incoming, nil)
+	require.NoError(t, err)
+
+	_, _, err = journal.Open(t.Context(), liveOld, liveReady.GetCursor())
+	require.NoError(t, err, "a quiet live tail must not be evicted ahead of a sealed closed tail")
+	tails, err := db.New(database).ListSemanticEventTails(t.Context())
+	require.NoError(t, err)
+	require.Len(t, tails, 2)
+	ids := []string{tails[0].TabID, tails[1].TabID}
+	assert.ElementsMatch(t, []string{liveOld.ID, incoming.ID}, ids)
+}
+
+func TestJournalStopJoinsWriterBeforeReturningOnCanceledContext(t *testing.T) {
+	t.Parallel()
+	database := openJournalDatabase(t, terminalHistoryTab("terminal"))
+	journal, err := Start(t.Context(), database, "worker", userid.MustNew("owner"), quartz.NewReal())
+	require.NoError(t, err)
+
+	blocker, err := database.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
+
+	journal.Record(terminalHistoryTab("terminal"), terminalBellFact())
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	stopErr := journal.Stop(canceled, false)
+	require.ErrorIs(t, stopErr, context.Canceled)
+	select {
+	case <-journal.done:
+	default:
+		t.Fatal("Journal.Stop returned while writePublications was still running")
+	}
+}
+
+func TestJournalWakeChannelsIsolateTabsAndTypesAndOpens(t *testing.T) {
+	t.Parallel()
+	tabA := terminalHistoryTab("tab-a")
+	tabB := terminalHistoryTab("tab-b")
+	agentTab := Tab{Type: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: "agent-a"}
+	database := openJournalDatabase(t, tabA, tabB, agentTab)
+	journal := startTestJournal(t, database, quartz.NewReal(), "owner", defaultRetention())
+
+	readerA, _, err := journal.Open(t.Context(), tabA, nil)
+	require.NoError(t, err)
+	feedTerm, _, err := journal.OpenFeed(t.Context(), leapmuxv1.TabType_TAB_TYPE_TERMINAL, nil)
+	require.NoError(t, err)
+
+	_, wakeA, err := readerA.Read(t.Context(), 0)
+	require.NoError(t, err)
+	_, wakeFeedTerm, err := feedTerm.Read(t.Context(), 0)
+	require.NoError(t, err)
+
+	// Opening another tab or feed must not wake unrelated idle watchers.
+	_, _, err = journal.Open(t.Context(), tabB, nil)
+	require.NoError(t, err)
+	_, _, err = journal.OpenFeed(t.Context(), leapmuxv1.TabType_TAB_TYPE_AGENT, nil)
+	require.NoError(t, err)
+	select {
+	case <-wakeA:
+		t.Fatal("opening another tab woke idle reader for tabA")
+	case <-wakeFeedTerm:
+		t.Fatal("opening another feed woke idle terminal feed reader")
+	default:
+	}
+
+	// Recording an agent event must not wake terminal tab or terminal feed watchers.
+	journal.Record(agentTab, &leapmuxv1.SemanticTabFact{Event: &leapmuxv1.SemanticTabFact_AgentTurnEnd{AgentTurnEnd: &leapmuxv1.AgentTurnEnd{}}})
+	require.NoError(t, journal.barrier(t.Context()))
+	select {
+	case <-wakeA:
+		t.Fatal("agent event woke idle terminal tab reader")
+	case <-wakeFeedTerm:
+		t.Fatal("agent event woke idle terminal feed reader")
+	default:
+	}
+
+	// Recording on tabB wakes the terminal feed reader, but NOT tabA's reader.
+	journal.Record(tabB, terminalBellFact())
+	require.NoError(t, journal.barrier(t.Context()))
+	select {
+	case <-wakeA:
+		t.Fatal("tabB event woke idle reader for tabA")
+	default:
+	}
+	select {
+	case <-wakeFeedTerm:
+	default:
+		t.Fatal("tabB event did not wake terminal feed reader")
+	}
+
+	// Recording on tabA wakes tabA's reader.
+	journal.Record(tabA, terminalBellFact())
+	require.NoError(t, journal.barrier(t.Context()))
+	select {
+	case <-wakeA:
+	default:
+		t.Fatal("tabA event did not wake tabA reader")
+	}
+}
+
+func TestTabLookupRejectsUnsupportedTabType(t *testing.T) {
+	t.Parallel()
+	database := openJournalDatabase(t)
+	q := db.New(database)
+	unsupported := Tab{Type: leapmuxv1.TabType_TAB_TYPE_FILE, ID: "file-1"}
+	_, err := unsupported.live(t.Context(), q)
+	require.ErrorContains(t, err, "unsupported semantic event tab type")
+	_, err = unsupported.closed(t.Context(), q)
+	require.ErrorContains(t, err, "unsupported semantic event tab type")
+}

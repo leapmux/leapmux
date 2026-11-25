@@ -5,18 +5,14 @@ package gitutil
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/util/pathutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func shellSingleQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
-}
 
 func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
 	// Inherited GIT_EXTERNAL_DIFF, GIT_CONFIG_PARAMETERS, and GIT_CONFIG_COUNT
@@ -42,7 +38,7 @@ func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
 	require.NoError(t, os.MkdirAll(helperDir, 0o700))
 	marker := filepath.Join(helperDir, "executed")
 	program := filepath.Join(helperDir, "diff-helper")
-	quotedProgram := shellSingleQuote(program)
+	quotedProgram := shellquote.POSIX.Quote(program)
 	t.Setenv("LEAPMUX_TEST_DIFF_MARKER", marker)
 	testutil.WriteExecutable(t, program, "#!/bin/sh\nprintf ran > \"$LEAPMUX_TEST_DIFF_MARKER\"\nprintf converted\n")
 	require.NoError(t, Run(t.Context(), repo, "config", "diff.external", quotedProgram))
@@ -62,7 +58,7 @@ func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
 	envProgram := filepath.Join(helperDir, "env-diff-helper")
 	t.Setenv("LEAPMUX_TEST_ENV_DIFF_MARKER", envMarker)
 	testutil.WriteExecutable(t, envProgram, "#!/bin/sh\nprintf ran > \"$LEAPMUX_TEST_ENV_DIFF_MARKER\"\nprintf env-converted\n")
-	t.Setenv("GIT_EXTERNAL_DIFF", shellSingleQuote(envProgram))
+	t.Setenv("GIT_EXTERNAL_DIFF", shellquote.POSIX.Quote(envProgram))
 	_, err = Bytes(t.Context(), repo, "diff", "--cached", "--no-textconv")
 	require.NoError(t, err)
 	_, err = os.Stat(envMarker)

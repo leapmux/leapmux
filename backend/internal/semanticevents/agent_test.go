@@ -2,6 +2,7 @@ package semanticevents
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -65,4 +66,53 @@ func TestAgentFactProjectsRequestDetailsWithoutStoringTheClaimOrPayload(t *testi
 	require.NotNil(t, ended)
 	assert.Equal(t, record.GetRequestInstance(), ended.GetRequestInstance())
 	assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, ended.GetState())
+}
+
+func TestPromptDetailOmitsEmptyFaultAndTruncatesNormalizedRunes(t *testing.T) {
+	t.Parallel()
+	unreadableUnspecified := &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{
+		Unreadable: leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED,
+	}}
+	assert.Equal(t, "LeapMux cannot read it", PromptDetail(unreadableUnspecified))
+
+	unreadableUnknown := &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Unreadable{
+		Unreadable: leapmuxv1.ControlPayloadFault(999),
+	}}
+	assert.Equal(t, "LeapMux cannot read it", PromptDetail(unreadableUnknown))
+
+	exact := strings.Repeat("가", promptDetailLength)
+	assert.Equal(t, exact, PromptDetail(&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{
+		Permission: &leapmuxv1.PermissionPrompt{Title: "  " + exact + "   "},
+	}}))
+
+	over := strings.Repeat("가", promptDetailLength-1) + "  나  다"
+	want := strings.Repeat("가", promptDetailLength-1) + "…"
+	assert.Equal(t, want, PromptDetail(&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{
+		Permission: &leapmuxv1.PermissionPrompt{Title: over},
+	}}))
+
+	words := "  first\t\n  second   third  "
+	assert.Equal(t, "first second third", PromptDetail(&leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{
+		Permission: &leapmuxv1.PermissionPrompt{Title: words},
+	}}))
+}
+
+func TestFactTabTypeCoversEverySemanticTabFactEventVariant(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, FactTabType(nil))
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, FactTabType(&leapmuxv1.SemanticTabFact{}))
+
+	oneof := (&leapmuxv1.SemanticTabFact{}).ProtoReflect().Descriptor().Oneofs().ByName("event")
+	require.NotNil(t, oneof)
+	fields := oneof.Fields()
+	require.Positive(t, fields.Len())
+	for i := range fields.Len() {
+		field := fields.Get(i)
+		fact := &leapmuxv1.SemanticTabFact{}
+		ref := fact.ProtoReflect()
+		ref.Set(field, ref.NewField(field))
+		got := FactTabType(fact)
+		assert.NotEqual(t, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, got,
+			"FactTabType must classify SemanticTabFact.event field %q", field.Name())
+	}
 }

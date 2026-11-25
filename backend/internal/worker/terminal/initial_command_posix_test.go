@@ -128,20 +128,10 @@ func TestPOSIXInitialCommandCanExitAshAndPosh(t *testing.T) {
 				t.Skipf("%s is unavailable", shellName)
 			}
 			home := t.TempDir()
-			ctx := testutil.DeadlineContext(t)
-			term, err := Start(ctx, Options{
+			assertInitialCommandExits(t, Options{
 				ID: "posix-exit", Shell: shell, WorkingDir: home, InitialCommandDir: home,
 				ExtraEnv: []string{"HOME=" + home, "ENV="}, InitialCommand: "exit 19",
-			}, quartz.NewReal(), func(Output) {})
-			require.NoError(t, err)
-			t.Cleanup(term.Stop)
-			select {
-			case <-term.exitCh:
-				assert.Equal(t, 19, term.Wait())
-			case <-ctx.Done():
-				screen, _ := term.ScreenSnapshot()
-				t.Fatalf("%s did not exit. PTY output %q", shellName, screen)
-			}
+			}, 19, shellName)
 		})
 	}
 }

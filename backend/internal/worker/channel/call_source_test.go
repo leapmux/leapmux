@@ -156,7 +156,7 @@ func TestDispatcher_ReadsTheCallSourceOfARelayedCall(t *testing.T) {
 	}
 }
 
-// A source that names no tab, or an agent of no known provider, cannot be
+// A source that specifies no tab, or an agent of no known provider, cannot be
 // stamped, so the call fails instead of running with half a provenance.
 func TestDispatcher_RefusesAMalformedCallSource(t *testing.T) {
 	t.Parallel()

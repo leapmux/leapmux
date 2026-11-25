@@ -58,7 +58,7 @@ func TestWiringFinalizesTheEventJournalAfterAdmittedHandlersJoin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, journal.Dirty)
 	records, err := w.Service.Queries.ListSemanticEventEntriesAfter(ctx, db.ListSemanticEventEntriesAfterParams{
-		TabType: int64(leapmuxv1.TabType_TAB_TYPE_AGENT), TabID: agentID, PageSize: 10,
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: agentID, PageSize: 10,
 	})
 	require.NoError(t, err)
 	require.Len(t, records, 1)

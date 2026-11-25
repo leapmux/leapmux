@@ -371,7 +371,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				TabID:      terminalID,
 				WorkingDir: dbTerm.WorkingDir,
 			}
-			go svc.runTerminalRestart(startupCtx, terminal.Options{
+			restartOpts := terminal.Options{
 				ID:                terminalID,
 				Shell:             shell,
 				WorkingDir:        dbTerm.WorkingDir,
@@ -380,7 +380,13 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Rows:              uint16(rows),
 				InitialCommand:    command,
 				InitialCommandDir: svc.DataDir,
-			}, spawnInfo, fallbackOffset, outputFn, exitFn, startupHandle)
+			}
+			if command != "" {
+				restartOpts.ReleaseInitialCommand = func(_ context.Context, expose func() error) error {
+					return svc.authorizeTerminalCommandRelease(caller.UserID, expose)
+				}
+			}
+			go svc.runTerminalRestart(startupCtx, restartOpts, spawnInfo, fallbackOffset, outputFn, exitFn, startupHandle)
 		})
 
 	// SendInput writes the data and the keys of a request to a terminal in one

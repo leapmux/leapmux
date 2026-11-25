@@ -40,9 +40,10 @@ UPDATE semantic_event_journal
 SET entry_count = entry_count + sqlc.arg(entry_delta), payload_bytes = payload_bytes + sqlc.arg(byte_delta)
 WHERE singleton = 1 RETURNING *;
 
--- name: InitSemanticEventTail :exec
+-- name: InitSemanticEventTail :one
 INSERT INTO semantic_event_tails (tab_type, tab_id, tab_stream_id, high_sequence, floor_sequence, last_observed_unix_millis)
-VALUES (?, ?, ?, 0, 0, ?) ON CONFLICT(tab_type, tab_id) DO NOTHING;
+VALUES (?, ?, ?, 0, 0, ?)
+RETURNING *;
 
 -- name: GetSemanticEventTail :one
 SELECT * FROM semantic_event_tails WHERE tab_type = ? AND tab_id = ?;
@@ -50,12 +51,17 @@ SELECT * FROM semantic_event_tails WHERE tab_type = ? AND tab_id = ?;
 -- name: ListSemanticEventTails :many
 SELECT * FROM semantic_event_tails ORDER BY tab_type, tab_id;
 
+-- name: ListUnsealedSemanticEventTails :many
+SELECT * FROM semantic_event_tails
+WHERE final_sequence IS NULL AND (CAST(sqlc.arg(include_open) AS INTEGER) <> 0 OR resource_closed)
+ORDER BY tab_type, tab_id;
+
 -- name: CountSemanticEventTails :one
 SELECT COUNT(*) FROM semantic_event_tails;
 
 -- name: GetOldestSemanticEventTailExcept :one
 SELECT * FROM semantic_event_tails WHERE tab_type <> ? OR tab_id <> ?
-ORDER BY last_observed_unix_millis, tab_type, tab_id LIMIT 1;
+ORDER BY (final_sequence IS NULL) ASC, resource_closed DESC, last_observed_unix_millis ASC, tab_type ASC, tab_id ASC LIMIT 1;
 
 -- name: DeleteSemanticEventTail :exec
 DELETE FROM semantic_event_tails WHERE tab_type = ? AND tab_id = ?;
@@ -79,21 +85,17 @@ UPDATE semantic_event_tails SET floor_sequence = sqlc.arg(floor_sequence)
 WHERE tab_type = sqlc.arg(tab_type) AND tab_id = sqlc.arg(tab_id) AND floor_sequence < sqlc.arg(floor_sequence);
 
 -- name: InsertSemanticEventEntry :exec
-INSERT INTO semantic_event_entries (tab_type, tab_id, sequence, feed_sequence, observed_unix_millis, fact, request_open_instance, gap_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-
--- name: HasSemanticEventRequestOpening :one
-SELECT EXISTS (
-    SELECT 1 FROM semantic_event_entries WHERE tab_type = ? AND tab_id = ? AND request_open_instance = ?
-);
+INSERT INTO semantic_event_entries (tab_type, tab_id, sequence, feed_sequence, observed_unix_millis, fact, gap_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListSemanticEventEntriesAfter :many
 SELECT * FROM semantic_event_entries
 WHERE tab_type = sqlc.arg(tab_type) AND tab_id = sqlc.arg(tab_id) AND sequence > sqlc.arg(after_sequence)
 ORDER BY sequence LIMIT sqlc.arg(page_size);
 
--- name: GetOldestSemanticEventEntry :one
-SELECT * FROM semantic_event_entries ORDER BY ingest_order LIMIT 1;
+-- name: ListOldestSemanticEventEntries :many
+SELECT tab_type, tab_id, sequence, CAST(length(fact) AS INTEGER) AS payload_bytes
+FROM semantic_event_entries ORDER BY ingest_order LIMIT sqlc.arg(batch_size);
 
 -- name: ListSemanticEventFeedEntriesAfter :many
 SELECT * FROM semantic_event_entries
@@ -105,7 +107,7 @@ SELECT EXISTS (SELECT 1 FROM semantic_event_entries WHERE observed_unix_millis <
 
 -- name: GetExpiredSemanticEventCutoffs :many
 SELECT tab_type, tab_id, CAST(MAX(sequence) AS INTEGER) AS cutoff
-FROM semantic_event_entries WHERE observed_unix_millis <= ? GROUP BY tab_type, tab_id;
+FROM semantic_event_entries WHERE observed_unix_millis <= ? GROUP BY +tab_type, +tab_id;
 
 -- name: GetExpiredSemanticEventCutoff :one
 SELECT CAST(COALESCE(MAX(sequence), 0) AS INTEGER)
