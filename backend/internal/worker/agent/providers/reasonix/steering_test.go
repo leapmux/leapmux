@@ -30,7 +30,7 @@ func TestAdvertisedACPSteerTimeoutIsDeliveryUncertain(t *testing.T) {
 	reasonix.SetPromptActiveForTest(true)
 	reasonix.SetAPITimeoutForTest(10 * time.Millisecond)
 
-	assert.ErrorIs(t, reasonix.SteerInput(agent.SteerRequest{Content: "guide"}), agent.ErrDeliveryUncertain)
+	assert.ErrorIs(t, agenttest.SteerInput(reasonix, agent.SteerRequest{Content: "guide"}), agent.ErrDeliveryUncertain)
 }
 
 func TestReasonixAdvertisedSteeringCapability(t *testing.T) {
@@ -43,7 +43,7 @@ func TestReasonixAdvertisedSteeringCapability(t *testing.T) {
 	assert.False(t, reasonix.SupportsSteering())
 	reasonix.SetSteerMethodForTest("_reasonix.io/session/steer")
 	reasonix.SetPromptActiveForTest(true)
-	require.NoError(t, reasonix.SteerInput(agent.SteerRequest{Content: "guide"}))
+	require.NoError(t, agenttest.SteerInput(reasonix, agent.SteerRequest{Content: "guide"}))
 	require.Len(t, requests(), 1)
 	assert.Equal(t, "_reasonix.io/session/steer", requests()[0].Method)
 }
@@ -69,7 +69,7 @@ func TestReasonixAdvertisedSteerMapsEndedTurnResponse(t *testing.T) {
 	)
 	reasonix.SetSteerMethodForTest("_reasonix.io/session/steer")
 	reasonix.SetPromptActiveForTest(true)
-	assert.ErrorIs(t, reasonix.SteerInput(agent.SteerRequest{Content: "guide"}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(reasonix, agent.SteerRequest{Content: "guide"}), agent.ErrNoActiveTurn)
 }
 
 // The disposition of Reasonix's steer reply decides what the queue hears.
@@ -106,7 +106,7 @@ func TestReasonixSteerDisposition(t *testing.T) {
 			a.SetSessionIDForTest("reasonix-session")
 			a.SetSteerMethodForTest(reasonixSteerMethod)
 			a.SetPromptActiveForTest(true)
-			err := a.SteerInput(agent.SteerRequest{Content: "more context"})
+			err := agenttest.SteerInput(a, agent.SteerRequest{Content: "more context"})
 			assert.Equal(t, tc.wantErr, err)
 			require.NotEmpty(t, requests(), "the steer request left the agent")
 		})

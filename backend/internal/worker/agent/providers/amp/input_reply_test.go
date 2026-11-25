@@ -105,7 +105,7 @@ func TestAmpPublishesExactRepliesEvenWhenAnEarlierExportWaits(t *testing.T) {
 	}
 	sink := &replyRecordingSink{ProviderServices: h.agent.sink, ready: make(chan agent.NativeReplyTurn, 2)}
 	h.agent.sink = sink
-	first, err := h.agent.SendInputWithReceipt("Identical prompt", nil)
+	first, err := h.agent.SendInput("Identical prompt", nil)
 	require.NoError(t, err)
 	proc := h.nextProc()
 	assert.Equal(t, []string{threadID}, h.startedThreads())
@@ -148,7 +148,7 @@ func TestAmpPublishesExactRepliesEvenWhenAnEarlierExportWaits(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the first reply did not begin its export")
 	}
-	second, err = h.agent.SendInputWithReceipt("Identical prompt", nil)
+	second, err = h.agent.SendInput("Identical prompt", nil)
 	require.NoError(t, err)
 	assert.NotEqual(t, first.InputID, second.InputID)
 	feedReply("Second reply.")
@@ -186,7 +186,7 @@ func TestAmpPublishesExactRepliesEvenWhenAnEarlierExportWaits(t *testing.T) {
 func TestAmpHostExitRetiresAcceptedInputWithoutCompletion(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
-	receipt, err := h.agent.SendInputWithReceipt("prompt", nil)
+	receipt, err := h.agent.SendInput("prompt", nil)
 	require.NoError(t, err)
 	proc := h.nextProc()
 	proc.exit()

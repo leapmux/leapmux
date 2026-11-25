@@ -89,7 +89,7 @@ func TestKimiStartLaunchesTheServer(t *testing.T) {
 	assert.Equal(t, []string{"session_1"}, sink.StatusActives())
 	assert.Equal(t, "kimi-k2", sink.LastSettingsRefresh().Model)
 
-	require.NoError(t, started.SendInput("Hello.", nil), "the server takes a prompt")
+	require.NoError(t, agenttest.SendInput(started, "Hello.", nil), "the server takes a prompt")
 	kimi, ok := started.(*Agent)
 	require.True(t, ok)
 	assert.Equal(t, []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear, agent.GoalActionPause, agent.GoalActionResume},

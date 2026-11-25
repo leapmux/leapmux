@@ -71,7 +71,7 @@ type Agent struct {
 	// process's first input paid (session.go). Guarded by Mu.
 	inputAuthenticationChecked bool
 	inputAuthenticationChecks  singleflight.Group
-	steerLedger                providerkit.SteerLedger
+	steerLedger                providerkit.IdentifiedSteerLedger
 	// Mu protects the requests and the held native turn end.
 	pendingSteerCalls   map[providerkit.SteerTicket]struct{}
 	pendingSteerTurnEnd json.RawMessage
@@ -670,22 +670,11 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 // queue, which classifies only a plain user message: a control response whose
 // text is "/compact" keeps its kind, reaches this method, and a check here
 // starts a compaction in place of the answer that the agent waits for.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputWithTracking(nil, content, attachments)
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInputWithTracking(expected, content, attachments, false)
-	return err
-}
-
-var _ agent.InputReceiptSender = (*Agent)(nil)
-
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendInputWithTracking(nil, content, attachments, true)
-}
-
-func (a *Agent) sendInputWithTracking(expected *string, content string, attachments []*leapmuxv1.Attachment, tracked bool) (agent.NativeInputReceipt, error) {
+func (a *Agent) sendInputWithTracking(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	// Refuse known busy state before waiting for a context transition.
 	// Dispatch checks again under its lock before it writes any bytes.
 	a.Mu.Lock()
@@ -698,7 +687,7 @@ func (a *Agent) sendInputWithTracking(expected *string, content string, attachme
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
-	pending, err := a.dispatchInputForSession(expected, input, tracked)
+	pending, err := a.dispatchInputForSession(expected, input, true)
 	if pending != nil {
 		a.PublishTurnActive()
 	}
@@ -790,16 +779,16 @@ var _ agent.SessionInputSteerer = (*Agent)(nil)
 // for any active turn, so the capability needs no handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	return a.steerInput(nil, request)
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, a.steerInput(nil, request)
 }
 
 // SteerInputForSession delivers the answer to a LeapMux-owned question. The
 // queue owns that answer's row and accepts it at the steer, so this delivery
 // joins no steer ledger: the native echo that later repeats the answer is not
 // news the queue waits for.
-func (a *Agent) SteerInputForSession(sessionID string, request agent.SteerRequest) error {
-	return a.steerInput(&sessionID, request)
+func (a *Agent) SteerInputForSession(sessionID string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, a.steerInput(&sessionID, request)
 }
 
 func (a *Agent) steerInput(expected *string, request agent.SteerRequest) error {
@@ -1053,6 +1042,6 @@ func codexServiceTierValue(tier string) *string {
 	return nil
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputWithTracking(&sessionID, content, attachments)
 }

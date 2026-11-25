@@ -28,11 +28,12 @@ func TestKiroUsageRefreshReadsAfterStartupAndTurnsAndPreservesFailedReads(t *tes
 	require.Eventually(t, func() bool { return len(sink.SessionInfoValues(contracts.SessionInfoKeyRateLimits)) == 1 }, 30*time.Second, time.Millisecond)
 	first := sink.SessionInfoValues(contracts.SessionInfoKeyRateLimits)[0]
 	for index := range 3 {
-		require.NoError(t, a.SendInput("Read the next mocked account quota.", nil))
+		_, err := a.SendInput("Read the next mocked account quota.", nil)
+		require.NoError(t, err)
 		require.Eventually(t, func() bool { return !a.PromptActive() && quotaReads() >= index+2 }, 30*time.Second, time.Millisecond)
 		// The barrier follows the quota request in the native reader, so its
 		// response proves that the fake already sent the quota response.
-		_, err := a.SendRequest("leapmux/test/release_usage", json.RawMessage(`{}`), a.APITimeout())
+		_, err = a.SendRequest("leapmux/test/release_usage", json.RawMessage(`{}`), a.APITimeout())
 		require.NoError(t, err)
 		if index < 2 {
 			assert.Equal(t, []any{first}, sink.SessionInfoValues(contracts.SessionInfoKeyRateLimits))

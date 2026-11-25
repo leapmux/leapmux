@@ -60,14 +60,14 @@ type gooseSteerReply struct {
 	MessageID string `json:"messageId"`
 }
 
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	method, active, sessionID, runID := a.SteerTarget()
 	if method == "" {
-		return agent.ErrSteeringUnsupported
+		return agent.NativeInputReceipt{}, agent.ErrSteeringUnsupported
 	}
 	if !active || runID == "" {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	params, err := json.Marshal(map[string]any{
 		"sessionId":     sessionID,
@@ -75,16 +75,16 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 		"prompt":        acp.BuildPromptBlocks(content, agent.ClassifyAttachments(attachments)),
 	})
 	if err != nil {
-		return fmt.Errorf("marshal ACP steer params: %w", err)
+		return agent.NativeInputReceipt{}, fmt.Errorf("marshal ACP steer params: %w", err)
 	}
 	if request.InputID == "" || request.AttemptID == "" {
 		if _, err := a.SendRequest(method, params, a.APITimeout()); err != nil {
-			return mapGooseSteerError(method, err)
+			return agent.NativeInputReceipt{}, mapGooseSteerError(method, err)
 		}
 		if !a.SteerRunActive(runID) {
-			return agent.ErrNoActiveTurn
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 		}
-		return nil
+		return agent.NativeInputReceipt{}, nil
 	}
 
 	dispatch := &gooseSteerDispatch{
@@ -97,7 +97,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	a.steers.mu.Lock()
 	if a.steers.inFlight != nil {
 		a.steers.mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	a.steers.inFlight = dispatch
 	a.steers.mu.Unlock()
@@ -110,18 +110,18 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 		}
 	})
 	if err != nil {
-		return mapGooseSteerError(method, err)
+		return agent.NativeInputReceipt{}, mapGooseSteerError(method, err)
 	}
 	if replyErr != nil {
-		return replyErr
+		return agent.NativeInputReceipt{}, replyErr
 	}
 	if !a.SteerRunActive(runID) {
 		if a.discardPendingGooseSteer(dispatch) {
-			return agent.ErrNoActiveTurn
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 		}
-		return nil
+		return agent.NativeInputReceipt{}, nil
 	}
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
 func mapGooseSteerError(method string, err error) error {

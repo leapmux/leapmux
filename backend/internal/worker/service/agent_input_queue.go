@@ -271,14 +271,15 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if err := ensureRunning(); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
+		var receipt agent.NativeInputReceipt
 		err := svc.Agents.CompactContext(item.AgentID)
 		if errors.Is(err, agent.ErrCompactionUnsupported) {
-			err = svc.Agents.SendInput(item.AgentID, text, attachments)
+			receipt, err = svc.Agents.SendInput(item.AgentID, text, attachments)
 		}
 		if err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
+		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines, NativeReceipt: receipt}, nil
 	case leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION:
 		if item.PrepareContext {
 			if err := svc.prepareApprovedPlanContext(item, &resolvedInput); err != nil {
@@ -425,7 +426,7 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		// reaching the process whose question asked it, even while new prompts
 		// wait for recovery approval. An
 		// idle question ends its steer and returns through Dispatch readiness.
-		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, request)
+		receipt, err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, request)
 	} else {
 		if !a.svc.Agents.AgentAlive(item.AgentID) && a.svc.Agents.HasAgent(item.AgentID) {
 			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}

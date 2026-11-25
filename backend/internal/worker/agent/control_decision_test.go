@@ -13,9 +13,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-func strPtr(s string) *string { return &s }
-func boolPtr(b bool) *bool    { return &b }
-
 func questionInput(questions []*leapmuxv1.ControlQuestion, decision *leapmuxv1.QuestionDecision) ControlAnswerInput {
 	return ControlAnswerInput{
 		Request:   NewControlRequestInput([]byte(`{}`)),
@@ -26,16 +23,17 @@ func questionInput(questions []*leapmuxv1.ControlQuestion, decision *leapmuxv1.Q
 }
 
 func TestQuestionOptionValue(t *testing.T) {
+	assert.Equal(t, "", QuestionOptionValue(nil))
 	assert.Equal(t, "Red", QuestionOptionValue(&leapmuxv1.QuestionOption{Label: "Red"}))
-	assert.Equal(t, "r", QuestionOptionValue(&leapmuxv1.QuestionOption{Label: "Red", Value: strPtr("r")}))
-	assert.Equal(t, "", QuestionOptionValue(&leapmuxv1.QuestionOption{Label: "Red", Value: strPtr("")}), "a stated empty value is the value")
+	assert.Equal(t, "r", QuestionOptionValue(&leapmuxv1.QuestionOption{Label: "Red", Value: new("r")}))
+	assert.Equal(t, "", QuestionOptionValue(&leapmuxv1.QuestionOption{Label: "Red", Value: new("")}), "a stated empty value is the value")
 }
 
 func TestQuestionDecisionOf(t *testing.T) {
 	questions := []*leapmuxv1.ControlQuestion{
-		{Question: "One?", Options: []*leapmuxv1.QuestionOption{{Label: "A"}, {Label: "B", Value: strPtr("b")}}},
+		{Question: "One?", Options: []*leapmuxv1.QuestionOption{{Label: "A"}, {Label: "B", Value: new("b")}}},
 		{Question: "Many?", MultiSelect: true, Options: []*leapmuxv1.QuestionOption{{Label: "X"}, {Label: "Y"}}},
-		{Question: "Options only?", AllowCustomText: boolPtr(false), Options: []*leapmuxv1.QuestionOption{{Label: "Z"}}},
+		{Question: "Options only?", AllowCustomText: new(false), Options: []*leapmuxv1.QuestionOption{{Label: "Z"}}},
 		{Question: "Skip?", AllowEmpty: true},
 	}
 	answers := func(answers ...*leapmuxv1.QuestionAnswer) *leapmuxv1.QuestionDecision {
@@ -142,9 +140,11 @@ func TestQuestionAnswerValues(t *testing.T) {
 }
 
 func TestQuestionAnswerAt(t *testing.T) {
-	decision := &leapmuxv1.QuestionDecision{Answers: []*leapmuxv1.QuestionAnswer{{CustomText: "first"}}}
+	decision := &leapmuxv1.QuestionDecision{Answers: []*leapmuxv1.QuestionAnswer{{CustomText: "first"}, nil}}
 	assert.Equal(t, "first", QuestionAnswerAt(decision, 0).GetCustomText())
-	assert.True(t, proto.Equal(&leapmuxv1.QuestionAnswer{}, QuestionAnswerAt(decision, 1)), "an unanswered question reads as empty")
+	assert.NotNil(t, QuestionAnswerAt(decision, 1), "a nil entry reads as an empty answer")
+	assert.True(t, proto.Equal(&leapmuxv1.QuestionAnswer{}, QuestionAnswerAt(decision, 2)), "an unanswered question reads as empty")
+	assert.True(t, proto.Equal(&leapmuxv1.QuestionAnswer{}, QuestionAnswerAt(decision, -1)), "a negative index reads as empty")
 }
 
 func planInput(choices []*leapmuxv1.PlanChoice, decision *leapmuxv1.PlanDecision) ControlAnswerInput {

@@ -27,7 +27,7 @@ func TestLettaExactReplyFollowsItsMappedRuns(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	fake, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
 	a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
-	receipt, err := a.SendInputWithReceipt("Check the release.", nil)
+	receipt, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	command := fake.nextCommand(t)
 	payload, ok := command["payload"].(map[string]any)
@@ -94,7 +94,7 @@ func TestLettaExactReplyRejectsMissingOrMixedEvidence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			fake, a, sink := newLettaCompactionTestAgent(t)
-			receipt, err := a.SendInputWithReceipt("Check the release.", nil)
+			receipt, err := a.SendInput("Check the release.", nil)
 			require.NoError(t, err)
 			command := fake.nextCommand(t)
 			replyFrame(t, a, map[string]any{"type": "input_accepted", "request_id": command["request_id"], "accepted": true})
@@ -138,7 +138,7 @@ func TestLettaExactReplyRejectsMissingOrMixedEvidence(t *testing.T) {
 func TestLettaInputRejectionRequiresTheMatchingRequest(t *testing.T) {
 	t.Parallel()
 	fake, a, sink := newLettaCompactionTestAgent(t)
-	receipt, err := a.SendInputWithReceipt("Check the release.", nil)
+	receipt, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	command := fake.nextCommand(t)
 	replyFrame(t, a, map[string]any{"type": "input_accepted", "request_id": "earlier-request", "accepted": false})
@@ -148,4 +148,19 @@ func TestLettaInputRejectionRequiresTheMatchingRequest(t *testing.T) {
 	replyFrame(t, a, map[string]any{"type": "input_accepted", "request_id": command["request_id"], "accepted": false})
 	assert.False(t, a.PublishTurnActive().Active)
 	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED, sink.NativeReplyRetirements()[receipt])
+}
+
+func TestLettaSendInputForSessionTracksReceipt(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	fake, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
+	a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
+	receipt, err := a.SendInputForSession(a.runtime().ConversationID, "Check the session.", nil)
+	require.NoError(t, err)
+	command := fake.nextCommand(t)
+	payload, ok := command["payload"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, receipt.InputID, sentClientMessageID(t, payload))
+	assert.Equal(t, a.runtime().ConversationID, receipt.SessionID)
+	assert.True(t, a.tracksInput())
 }

@@ -210,6 +210,14 @@ func TestWithRefusal(t *testing.T) {
 		{OptionId: "never", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ALWAYS},
 	}
 	assert.Equal(t, []string{"once", "never"}, optionIDs(WithRefusal(withRefusal, refusal)), "a list that can refuse stays as it is")
+
+	backing := []*leapmuxv1.PermissionOption{
+		{OptionId: "once", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE},
+		{OptionId: "untouched", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS},
+	}
+	completed := WithRefusal(backing[:1], refusal)
+	assert.Equal(t, []string{"once", "leapmux:cancel"}, optionIDs(completed))
+	assert.Equal(t, "untouched", backing[1].GetOptionId(), "appending a refusal must not overwrite the caller's backing array")
 }
 
 func optionIDs(options []*leapmuxv1.PermissionOption) []string {
@@ -229,9 +237,7 @@ func TestPermissionDecisionOf(t *testing.T) {
 		{OptionId: "never", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ALWAYS},
 	}}}}
 	decide := func(optionID, feedback string) (*leapmuxv1.PermissionDecision, *leapmuxv1.PermissionOption, error) {
-		return PermissionDecisionOf(ControlAnswerInput{Prompt: prompt, Decision: &leapmuxv1.ControlDecision{
-			Kind: &leapmuxv1.ControlDecision_Permission{Permission: &leapmuxv1.PermissionDecision{OptionId: optionID, Feedback: feedback}},
-		}})
+		return PermissionDecisionOf(ControlAnswerInput{Prompt: prompt, Decision: permission(optionID, feedback)})
 	}
 	decision, option, err := decide("never", "Too broad.")
 	require.NoError(t, err)
@@ -254,7 +260,7 @@ func TestAnswerAllowDeny(t *testing.T) {
 	answer := func(payload, optionID, feedback string) (ControlAnswer, error) {
 		return AnswerAllowDeny(ControlAnswerInput{
 			Request: NewControlRequestInput([]byte(payload)), RequestID: "req-1", Prompt: GenericPermissionPrompt(),
-			Decision: &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Permission{Permission: &leapmuxv1.PermissionDecision{OptionId: optionID, Feedback: feedback}}},
+			Decision: permission(optionID, feedback),
 		})
 	}
 	got, err := answer(`{"request":{"tool_name":"Edit","input":{"file_path":"/w/a.go"}}}`, contracts.ControlAnswerOptionAllow, "")
@@ -307,16 +313,24 @@ func TestDenyResponse_NeverStatesAnEmptyMessage(t *testing.T) {
 	assert.Equal(t, "req-1", envelope.Response.RequestID)
 }
 
-func TestWithControlChoice(t *testing.T) {
-	got := WithControlChoice(AllowResponse("req-1", json.RawMessage(`{"a":1}`)), "revise")
+func TestControlBehaviorResponseChoice(t *testing.T) {
+	got := ControlResponseEnvelope("req-1", ControlBehaviorResponse{
+		Behavior:     contracts.ControlAnswerBehaviorAllow,
+		UpdatedInput: json.RawMessage(`{"a":1}`),
+		Choice:       "revise",
+	})
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow","updatedInput":{"a":1},"choice":"revise"}}}`, string(got))
 	assert.Equal(t, "revise", DecodeControlChoice(got))
-	assert.Panics(t, func() { WithControlChoice([]byte(`{"jsonrpc":"2.0"}`), "x") }, "a choice rides only the neutral envelope")
+
+	bare := ControlResponseEnvelope("req-2", ControlBehaviorResponse{
+		Behavior: contracts.ControlAnswerBehaviorDeny,
+		Choice:   "deny",
+	})
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-2","response":{"behavior":"deny","choice":"deny"}}}`, string(bare))
 }
 
 func TestJSONRPCResultKeepsTheWorkerKeyAsTheID(t *testing.T) {
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"jsonrpc:7","result":{"decision":"accept"}}`, string(JSONRPCResult("jsonrpc:7", map[string]any{"decision": "accept"})))
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"jsonrpc:7","result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}`, string(SelectedOptionResult("jsonrpc:7", "allow-once")))
 }
 
 func TestWithEditorPurpose(t *testing.T) {
@@ -339,4 +353,5 @@ func TestWithEditorPurpose(t *testing.T) {
 	} {
 		assert.Equal(t, tc.want, WithEditorPurpose(tc.prompt).GetEditorPurpose(), name)
 	}
+	assert.Nil(t, WithEditorPurpose(nil))
 }

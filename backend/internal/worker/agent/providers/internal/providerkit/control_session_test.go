@@ -27,7 +27,7 @@ func TestSessionControlApprovalRetainsItsExplicitOwner(t *testing.T) {
 	sink.UpdateSessionID("sink-session")
 	payload := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"method":"permission","params":{"sessionId":"native-payload"}}`)
 	owner := ControlRequestOwner{SessionID: "explicit-session", TurnID: "native-turn"}
-	handle := base.PublishSessionControlRequestWithApproval(sink, owner, payload, nil, map[string]any{"approved": true})
+	handle := base.PublishControlRequest(sink, ControlRequestPublication{Owner: owner, Content: payload, ApproveAnswer: map[string]any{"approved": true}})
 	require.NotEmpty(t, handle.RequestID)
 	assert.Equal(t, owner.SessionID, sink.LastPublishedControl().AgentSessionID)
 	assert.Equal(t, owner.TurnID, sink.LastPublishedControl().NativeTurnID)
@@ -49,7 +49,7 @@ func TestUnpublishedSessionApprovalFailureRetainsItsOwnerAndOriginalPayload(t *t
 			if sessionID != "" {
 				owner.TurnID = "native-turn"
 			}
-			require.True(t, base.ApproveUnpublishedSessionControlRequest(sink, owner, payload, nil, map[string]any{"approved": true}))
+			require.True(t, base.ApproveUnpublishedControlRequest(sink, ControlRequestPublication{Owner: owner, Content: payload, ApproveAnswer: map[string]any{"approved": true}}))
 			require.Eventually(t, func() bool { return sink.PublishedControlCount() == 1 }, 30*time.Second, time.Millisecond)
 			want := sessionID
 			if want == "" {

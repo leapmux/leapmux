@@ -722,7 +722,7 @@ func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, 
 	if captureFn == nil {
 		captureFn = agent.CaptureSubagentReport
 	}
-	captured, present, captureErr := captureFn(agent.DirectTranscript(a.sink), agent.SubagentReportWrite{
+	captured, present, captureErr := captureFn(a.sink, agent.SubagentReportWrite{
 		ReportID: providerkit.SubagentReportContentID(codewhaleProviderName, child.agentID, summary),
 		Report:   agent.SubagentReport{Label: child.title, Text: summary, Status: bgtask.StatusWire(status)},
 	})

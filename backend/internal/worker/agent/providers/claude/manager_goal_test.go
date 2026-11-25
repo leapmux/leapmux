@@ -41,7 +41,8 @@ func TestManagerGoal_SendInputObservesADeliveredClaudeGoalCommand(t *testing.T) 
 	m := agent.NewManager(claudeTestRegistry, nil)
 	m.PutAgentForTest("root", provider)
 
-	require.NoError(t, m.SendInput("root", "/goal ship the release", nil))
+	_, err := m.SendInput("root", "/goal ship the release", nil)
+	require.NoError(t, err)
 
 	goal, ok := sink.LastGoal()
 	require.True(t, ok, "delivery must update the local goal row")
@@ -58,7 +59,8 @@ func TestManagerGoal_SendInputDoesNotObserveARefusedCommand(t *testing.T) {
 	m := agent.NewManager(claudeTestRegistry, nil)
 	m.PutAgentForTest("root", provider)
 
-	assert.Error(t, m.SendInput("root", "/goal ship the release", nil))
+	_, err := m.SendInput("root", "/goal ship the release", nil)
+	assert.Error(t, err)
 	assert.Empty(t, sink.Goals())
 }
 

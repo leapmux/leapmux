@@ -477,13 +477,7 @@ func (a *Agent) noteInterruptRequested() bool {
 }
 
 // SendInput writes a user message to the agent's stdin.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments)
-}
-
-var _ agent.InputReceiptSender = (*Agent)(nil)
-
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.writeClaudeInput(nil, content, attachments, claudeInputOptions{inputID: uuid.NewString()})
 }
 
@@ -589,7 +583,6 @@ func (a *Agent) recordClaudeResultEdgeLocked() map[string]string {
 // provider that stops satisfying InputSteerer, so this assertion makes that
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
-var _ agent.SteerReceiptSender = (*Agent)(nil)
 var _ agent.SteerEchoReporter = (*Agent)(nil)
 var _ agent.SteerSurvivor = (*Agent)(nil)
 
@@ -609,12 +602,7 @@ func (a *Agent) SupportsSteering() bool { return true }
 // image as unsupported, and the worker sends that input as the next turn, where
 // the CLI reads every block. The refusal depends on the input alone, so it
 // comes before the turn check.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.SteerInputWithReceipt(request)
-	return err
-}
-
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText && attachment.Kind != contracts.AttachmentMediaKindImage {
@@ -630,11 +618,6 @@ func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeI
 type claudeInputOptions struct {
 	inputID string
 	steer   *agent.SteerRequest
-}
-
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.writeClaudeInput(expected, content, attachments, claudeInputOptions{})
-	return err
 }
 
 func (a *Agent) writeClaudeInput(expected *string, content string, attachments []*leapmuxv1.Attachment, options claudeInputOptions) (agent.NativeInputReceipt, error) {
@@ -828,6 +811,6 @@ func claudeBase64Block(blockType string, attachment agent.ClassifiedAttachment) 
 	}
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.writeClaudeInput(&sessionID, content, attachments, claudeInputOptions{inputID: uuid.NewString()})
 }

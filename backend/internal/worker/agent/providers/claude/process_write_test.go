@@ -17,7 +17,7 @@ func TestClaudeInputWriteKeepsStateAndStopAvailable(t *testing.T) {
 			provider.Mu.Unlock()
 		}
 	}})
-	require.NoError(t, provider.SendInput("input", nil))
+	require.NoError(t, agenttest.SendInput(provider, "input", nil))
 	require.True(t, unlocked, "a blocked stdin write must not prevent Stop from acquiring the process mutex")
 }
 
@@ -29,7 +29,7 @@ func TestClaudeInputDoesNotReopenATurnThatEndsDuringTheWrite(t *testing.T) {
 			provider.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 		}
 	}})
-	require.NoError(t, provider.SendInput("input", nil))
+	require.NoError(t, agenttest.SendInput(provider, "input", nil))
 	require.False(t, provider.PublishTurnActive().Active)
 	provider.Mu.Lock()
 	awaited := provider.awaitedInputRevision

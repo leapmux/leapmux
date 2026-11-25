@@ -31,7 +31,7 @@ func TestControlRegistryWithoutACancelAnswerSendsNothing(t *testing.T) {
 	t.Parallel()
 	base, stdin := newRegistryBase()
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":"q-1","method":"cursor/ask_question"}`), nil)
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":"q-1","method":"cursor/ask_question"}`)})
 	base.WithdrawAllControlRequests()
 	assert.Empty(t, stdin.String())
 	assert.Equal(t, []string{`jsonrpc:"q-1"`}, sink.CanceledControls())
@@ -42,7 +42,7 @@ func TestControlRegistryWithdrawsThroughTheOriginalPublisher(t *testing.T) {
 	base, _ := newRegistryBase()
 	parent := &agenttest.ControlSink{}
 	child := &agenttest.ControlSink{}
-	base.PublishControlRequestInSession(child, "child-session", []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), nil)
+	base.PublishControlRequest(child, ControlRequestPublication{Owner: ControlRequestOwner{SessionID: "child-session"}, Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`)})
 	require.Equal(t, "child-session", child.LastPublishedControl().AgentSessionID)
 	base.WithdrawControlRequest(parent, "jsonrpc:7")
 	assert.Equal(t, []string{"jsonrpc:7"}, child.CanceledControls())
@@ -85,7 +85,7 @@ func TestControlRegistryWithdrawalWithoutAnAnswerOnlyDropsTheCard(t *testing.T) 
 	t.Parallel()
 	base, stdin := newRegistryBase()
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), CancelAnswer: MCPElicitationCancelAnswer()})
 	base.WithdrawControlRequest(sink, "jsonrpc:7")
 	assert.Empty(t, stdin.String())
 	assert.Equal(t, []string{"jsonrpc:7"}, sink.CanceledControls())
@@ -99,7 +99,7 @@ func TestControlRegistryDropsTheRecordWhenPublicationFails(t *testing.T) {
 	t.Parallel()
 	base, stdin := newRegistryBase()
 	sink := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), CancelAnswer: MCPElicitationCancelAnswer()})
 	// The refusal answers the provider DETACHED, so that frame lands on the writer's
 	// own goroutine. Waiting for it is what makes the reset below take it: without
 	// the wait the frame could arrive after the reset and fail the assertion, or
@@ -117,7 +117,7 @@ func TestControlRegistryForgetsAnAnsweredRequestAfterTheWrite(t *testing.T) {
 	t.Parallel()
 	base, stdin := newRegistryBase()
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), CancelAnswer: MCPElicitationCancelAnswer()})
 	require.NoError(t, base.SendRawInput(sink.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"once"}}}`))))
 	stdin.Reset()
 	base.WithdrawAllControlRequests()
@@ -128,7 +128,7 @@ func TestControlRegistryKeepsARequestWhoseAnswerCouldNotBeWritten(t *testing.T) 
 	t.Parallel()
 	base := &JSONRPCProcess{Process: NewProcessFrom(ProcessConfig{AgentID: "agent", Stdin: agenttest.FailingStdin{}})}
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), CancelAnswer: MCPElicitationCancelAnswer()})
 	require.Error(t, base.SendRawInput(sink.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{}}`))))
 	base.outstandingMu.Lock()
 	_, found := base.outstandingControls["jsonrpc:7"]
@@ -146,7 +146,7 @@ func TestControlRegistryRetiresACardAStopStoleDuringThePublish(t *testing.T) {
 
 	base, _ := newRegistryBase()
 	sink := &stealingPublishSink{base: base}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), CancelAnswer: MCPElicitationCancelAnswer()})
 
 	assert.Equal(t, []string{"jsonrpc:7"}, sink.CanceledControls(),
 		"the publish must retire a card whose record a stop already took")
@@ -166,7 +166,7 @@ func TestControlRegistryKeepsACardTheReaderAnsweredDuringThePublish(t *testing.T
 
 	base, _ := newRegistryBase()
 	sink := &answeringPublishSink{base: base}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), CancelAnswer: MCPElicitationCancelAnswer()})
 
 	assert.Empty(t, sink.CanceledControls(), "an answer inside the publish window must not cancel the card")
 	base.outstandingMu.Lock()
@@ -192,7 +192,7 @@ func TestControlRegistryAnswersEachKindWithItsOwnCancelAnswer(t *testing.T) {
 			t.Parallel()
 			base, stdin := newRegistryBase()
 			sink := &agenttest.ControlSink{}
-			base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"request"}`), tc.answer)
+			base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"request"}`), CancelAnswer: tc.answer})
 			require.Len(t, sink.PublishedControls(), 1)
 			base.WithdrawAllControlRequests()
 			assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"result":`+tc.want+`}`, stdin.String())
@@ -207,7 +207,7 @@ func TestWithdrawOutstandingControlRequestRetiresAnOpenRequest(t *testing.T) {
 	t.Parallel()
 	base, stdin := newRegistryBase()
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), map[string]any{"outcome": "cancelled"})
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), CancelAnswer: map[string]any{"outcome": "cancelled"}})
 
 	assert.True(t, base.WithdrawOutstandingControlRequest("jsonrpc:7"))
 	drainStdin(t, base)
@@ -225,7 +225,7 @@ func TestWithdrawOutstandingControlRequestLeavesAnAnsweredRequest(t *testing.T) 
 	t.Parallel()
 	base, _ := newRegistryBase()
 	sink := &agenttest.ControlSink{}
-	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), nil)
+	base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`)})
 	require.NoError(t, base.SendRawInput(sink.Answer("jsonrpc:7", []byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}}`))))
 
 	assert.False(t, base.WithdrawOutstandingControlRequest("jsonrpc:7"))

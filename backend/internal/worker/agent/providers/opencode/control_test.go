@@ -97,12 +97,36 @@ func TestOpenCodeControlsPublishAndAnswerTheExactNativeOwner(t *testing.T) {
 	require.Len(t, published, 1)
 	assert.Equal(t, "ses_1", published[0].AgentSessionID)
 	assert.NotEmpty(t, published[0].InstanceID)
-	require.NoError(t, controls.answer([]byte(fmt.Sprintf(`{"request_id":%q,"decision":"always","message":"keep this permission"}`, published[0].RequestID))))
+	require.NoError(t, controls.answer(sink.Answer(published[0].RequestID, []byte(fmt.Sprintf(`{"request_id":%q,"decision":"always","message":"keep this permission"}`, published[0].RequestID)))))
 	received := receiveOpenCodeControlTest(t, calls)
 	assert.Equal(t, "/api/session/ses_1/permission/per_1/reply", received.path)
 	assert.Equal(t, map[string]any{"decision": "always", "message": "keep this permission"}, received.body)
 	assert.Equal(t, []string{published[0].RequestID}, sink.CanceledControls())
-	assert.Error(t, controls.answer([]byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, published[0].RequestID))))
+	assert.Error(t, controls.answer(sink.Answer(published[0].RequestID, []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, published[0].RequestID)))))
+}
+
+func TestOpenCodeSendRawInputRefusesUnstatedOrReplacedControlInstance(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	controls, err := newOpenCodeControls(t.Context(), rpc, func() {})
+	require.NoError(t, err)
+	t.Cleanup(controls.close)
+	sink := &agenttest.ControlSink{}
+	owner := testControlOwner(sink)
+	require.NoError(t, controls.publishPermission(owner, testPermission("per_inst")))
+	published := sink.LastPublishedControl()
+	a := &Agent{controls: controls}
+	raw := []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, published.RequestID))
+
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: raw}), agent.ErrControlInstanceUnstated)
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: "stale-instance"}), agent.ErrControlInstanceReplaced)
+	assert.Zero(t, calls.Load())
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: published.InstanceID}))
+	assert.Equal(t, int32(1), calls.Load())
 }
 
 func TestOpenCodeControlsGlobalFormPreservesZeroFalseAndItsBrokerSession(t *testing.T) {
@@ -125,7 +149,7 @@ func TestOpenCodeControlsGlobalFormPreservesZeroFalseAndItsBrokerSession(t *test
 	require.NoError(t, controls.publishForm(owner, form))
 	published := sink.LastPublishedControl()
 	assert.Equal(t, "ses_1", published.AgentSessionID)
-	require.NoError(t, controls.answer([]byte(fmt.Sprintf(`{"request_id":%q,"answer":{"count":0,"enabled":false}}`, published.RequestID))))
+	require.NoError(t, controls.answer(sink.Answer(published.RequestID, []byte(fmt.Sprintf(`{"request_id":%q,"answer":{"count":0,"enabled":false}}`, published.RequestID)))))
 	assert.Equal(t, map[string]any{"answer": map[string]any{"count": float64(0), "enabled": false}}, receiveOpenCodeControlTest(t, calls))
 }
 
@@ -249,12 +273,13 @@ func TestOpenCodeControlsDefiniteRefusalKeepsTheRequestAvailable(t *testing.T) {
 	t.Cleanup(controls.close)
 	sink := &agenttest.ControlSink{}
 	require.NoError(t, controls.publishPermission(testControlOwner(sink), testPermission("per_1")))
-	raw := []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, sink.LastPublishedControl().RequestID))
-	err = controls.answer(raw)
+	reqID := sink.LastPublishedControl().RequestID
+	raw := []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, reqID))
+	err = controls.answer(sink.Answer(reqID, raw))
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.Empty(t, sink.CanceledControls())
-	require.NoError(t, controls.answer(raw))
+	require.NoError(t, controls.answer(sink.Answer(reqID, raw)))
 	assert.Len(t, sink.CanceledControls(), 1)
 	callsMu.Lock()
 	defer callsMu.Unlock()
@@ -280,9 +305,10 @@ func TestOpenCodeControlsUncertainReplyRequiresAnAuthoritativeSnapshot(t *testin
 	t.Cleanup(controls.close)
 	sink := &agenttest.ControlSink{}
 	require.NoError(t, controls.publishPermission(testControlOwner(sink), testPermission("per_1")))
-	raw := []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, sink.LastPublishedControl().RequestID))
-	require.ErrorIs(t, controls.answer(raw), agent.ErrDeliveryUncertain)
-	require.ErrorIs(t, controls.answer(raw), agent.ErrDeliveryUncertain)
+	reqID := sink.LastPublishedControl().RequestID
+	raw := []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, reqID))
+	require.ErrorIs(t, controls.answer(sink.Answer(reqID, raw)), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, controls.answer(sink.Answer(reqID, raw)), agent.ErrDeliveryUncertain)
 	assert.Empty(t, sink.CanceledControls())
 	callsMu.Lock()
 	defer callsMu.Unlock()
@@ -430,7 +456,7 @@ func TestOpenCodeControlsRetryUncertainRepliesOnlyAfterNativeReconciliation(t *t
 				if kind != "permission" {
 					answer = []byte(fmt.Sprintf(`{"request_id":%q,"answer":{"answer":"done"}}`, requestID))
 				}
-				require.ErrorIs(t, controls.answer(answer), agent.ErrDeliveryUncertain)
+				require.ErrorIs(t, controls.answer(sink.Answer(requestID, answer)), agent.ErrDeliveryUncertain)
 				require.NoError(t, publish(), "duplicate live announcements do not reconcile an uncertain answer")
 				assert.Zero(t, snapshots.Load())
 				require.NoError(t, controls.reconcilePending(resource, nativeSessionID))
@@ -439,7 +465,7 @@ func TestOpenCodeControlsRetryUncertainRepliesOnlyAfterNativeReconciliation(t *t
 					require.Len(t, publications, 2)
 					assert.NotEqual(t, publications[0].InstanceID, publications[1].InstanceID)
 				}
-				err = controls.answer(answer)
+				err = controls.answer(sink.Answer(requestID, answer))
 				if settled {
 					require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
 					assert.EqualValues(t, 1, posts.Load())
@@ -453,7 +479,7 @@ func TestOpenCodeControlsRetryUncertainRepliesOnlyAfterNativeReconciliation(t *t
 					expectedCancellations = append(expectedCancellations, requestID)
 				}
 				assert.Equal(t, expectedCancellations, sink.CanceledControls())
-				require.ErrorIs(t, controls.answer(answer), agent.ErrControlRequestNotPending)
+				require.ErrorIs(t, controls.answer(sink.Answer(requestID, answer)), agent.ErrControlRequestNotPending)
 			})
 		}
 	}
@@ -510,7 +536,8 @@ func newBlockedOpenCodeSnapshot(t *testing.T, pending bool) *blockedOpenCodeSnap
 func TestOpenCodeControlsSnapshotCannotRecreateASettledRequest(t *testing.T) {
 	t.Parallel()
 	fixture := newBlockedOpenCodeSnapshot(t, true)
-	require.ErrorIs(t, fixture.controls.answer(fixture.answer), agent.ErrDeliveryUncertain)
+	requestID := fixture.sink.LastPublishedControl().RequestID
+	require.ErrorIs(t, fixture.controls.answer(fixture.sink.Answer(requestID, fixture.answer)), agent.ErrDeliveryUncertain)
 	finished := make(chan error, 1)
 	go func() { finished <- fixture.controls.reconcilePending("permission", "ses_1") }()
 	receiveOpenCodeControlTest(t, fixture.entered)
@@ -519,29 +546,31 @@ func TestOpenCodeControlsSnapshotCannotRecreateASettledRequest(t *testing.T) {
 	require.NoError(t, receiveOpenCodeControlTest(t, finished))
 	assert.Len(t, fixture.sink.PublishedControls(), 1)
 	assert.Len(t, fixture.sink.CanceledControls(), 1)
-	require.ErrorIs(t, fixture.controls.answer(fixture.answer), agent.ErrControlRequestNotPending)
+	require.ErrorIs(t, fixture.controls.answer(fixture.sink.Answer(requestID, fixture.answer)), agent.ErrControlRequestNotPending)
 	assert.EqualValues(t, 1, fixture.posts.Load())
 }
 
 func TestOpenCodeControlsSnapshotCannotOverwriteANewerReplyAttempt(t *testing.T) {
 	t.Parallel()
 	fixture := newBlockedOpenCodeSnapshot(t, false)
+	requestID := fixture.sink.LastPublishedControl().RequestID
 	finished := make(chan error, 1)
 	go func() { finished <- fixture.controls.reconcilePending("permission", "ses_1") }()
 	receiveOpenCodeControlTest(t, fixture.entered)
-	require.ErrorIs(t, fixture.controls.answer(fixture.answer), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, fixture.controls.answer(fixture.sink.Answer(requestID, fixture.answer)), agent.ErrDeliveryUncertain)
 	fixture.release()
 	require.NoError(t, receiveOpenCodeControlTest(t, finished))
 	assert.Empty(t, fixture.sink.CanceledControls())
 	assert.Len(t, fixture.sink.PublishedControls(), 1)
-	require.ErrorIs(t, fixture.controls.answer(fixture.answer), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, fixture.controls.answer(fixture.sink.Answer(requestID, fixture.answer)), agent.ErrDeliveryUncertain)
 	assert.EqualValues(t, 1, fixture.posts.Load())
 }
 
 func TestOpenCodeControlsSnapshotCannotReplaceANewerPublicationOwner(t *testing.T) {
 	t.Parallel()
 	fixture := newBlockedOpenCodeSnapshot(t, true)
-	require.ErrorIs(t, fixture.controls.answer(fixture.answer), agent.ErrDeliveryUncertain)
+	requestID := fixture.sink.LastPublishedControl().RequestID
+	require.ErrorIs(t, fixture.controls.answer(fixture.sink.Answer(requestID, fixture.answer)), agent.ErrDeliveryUncertain)
 	finished := make(chan error, 1)
 	go func() { finished <- fixture.controls.reconcilePending("permission", "ses_1") }()
 	receiveOpenCodeControlTest(t, fixture.entered)
@@ -553,7 +582,7 @@ func TestOpenCodeControlsSnapshotCannotReplaceANewerPublicationOwner(t *testing.
 	require.NoError(t, receiveOpenCodeControlTest(t, finished))
 	assert.Len(t, fixture.sink.PublishedControls(), 2)
 	assert.Equal(t, replacement.InstanceID, fixture.sink.LastPublishedControl().InstanceID)
-	require.NoError(t, fixture.controls.answer(fixture.answer))
+	require.NoError(t, fixture.controls.answer(fixture.sink.Answer(replacement.RequestID, fixture.answer)))
 	assert.EqualValues(t, 2, fixture.posts.Load())
 }
 
@@ -600,7 +629,7 @@ func TestOpenCodeControlsAutoApprovalUsesLinearOwnerChecks(t *testing.T) {
 	assert.LessOrEqual(t, checks.Load(), int64(4*count), "permission approval must not rescan every remaining owner after each reply")
 	assert.Zero(t, forms.Load(), "Auto-approve cannot answer a form")
 	requestID := openCodeControlKey("form", "ses_1", "frm_before")
-	require.NoError(t, controls.answer([]byte(fmt.Sprintf(`{"request_id":%q,"answer":{"answer":"chosen"}}`, requestID))))
+	require.NoError(t, controls.answer(sink.Answer(requestID, []byte(fmt.Sprintf(`{"request_id":%q,"answer":{"answer":"chosen"}}`, requestID)))))
 	assert.EqualValues(t, 1, forms.Load())
 }
 
@@ -658,12 +687,13 @@ func TestOpenCodeControlsAutoApprovalRevalidatesItsBatch(t *testing.T) {
 				t.Errorf("unexpected automatic reply for %s", extra)
 			default:
 			}
-			answer := []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, openCodeControlKey("permission", "ses_1", "per_2")))
+			requestID := openCodeControlKey("permission", "ses_1", "per_2")
+			answer := []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, requestID))
 			if action == "disable" {
-				require.NoError(t, controls.answer(answer))
+				require.NoError(t, controls.answer(sink.Answer(requestID, answer)))
 				assert.Equal(t, "per_2", receiveOpenCodeControlTest(t, requests))
 			} else {
-				require.ErrorIs(t, controls.answer(answer), agent.ErrControlRequestNotPending)
+				require.ErrorIs(t, controls.answer(sink.Answer(requestID, answer)), agent.ErrControlRequestNotPending)
 			}
 		})
 	}
@@ -703,7 +733,8 @@ func TestOpenCodeControlsNotifyRecoveryAfterRecordingUncertainty(t *testing.T) {
 				controls.setAutoApprove(true)
 				controls.work.CloseAndWait()
 			} else {
-				require.ErrorIs(t, controls.answer([]byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, sink.LastPublishedControl().RequestID))), agent.ErrDeliveryUncertain)
+				published := sink.LastPublishedControl()
+				require.ErrorIs(t, controls.answer(sink.Answer(published.RequestID, []byte(fmt.Sprintf(`{"request_id":%q,"decision":"once"}`, published.RequestID)))), agent.ErrDeliveryUncertain)
 			}
 			observedMu.Lock()
 			defer observedMu.Unlock()

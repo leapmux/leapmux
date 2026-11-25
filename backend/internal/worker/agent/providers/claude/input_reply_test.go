@@ -59,7 +59,7 @@ func startTrackedClaudeInput(t *testing.T) (*Agent, *claudeReplyProofSink, agent
 	cleanupClaudeReplyProcess(t, a)
 	a.sessionID = "native-session"
 	sink.UpdateSessionID(a.sessionID)
-	receipt, err := a.SendInputWithReceipt("The release checklist", nil)
+	receipt, err := a.SendInput("The release checklist", nil)
 	require.NoError(t, err)
 	var request UserInputMessage
 	require.NoError(t, json.Unmarshal(stdin.Bytes(), &request))
@@ -112,7 +112,7 @@ func TestClaudeSteerEchoKeepsItsPositionWhileOutputIsDeferred(t *testing.T) {
 	queue.Append(agent.OutputWrite{Owner: blocker, Run: func() error { return errors.New("storage unavailable") }})
 	a.HandleOutput([]byte(`{"type":"assistant","session_id":"native-session","uuid":"before","message":{"role":"assistant","content":[{"type":"text","text":"Before the steer."}]}}`))
 	request := claudeTestSteerRequest("The release checklist", nil)
-	steer, err := a.SteerInputWithReceipt(request)
+	steer, err := a.SteerInput(request)
 	require.NoError(t, err)
 	a.HandleOutput(claudeInputAcknowledgement("previous-session", steer.InputID))
 	a.HandleOutput(claudeInputAcknowledgement(steer.SessionID, "a different input with identical text"))
@@ -146,7 +146,7 @@ func TestClaudeSteerNeedsAnEchoBeforeTheSessionSettles(t *testing.T) {
 			a, sink, lead := startTrackedClaudeInput(t)
 			a.HandleOutput(claudeInputAcknowledgement(lead.SessionID, lead.InputID))
 			request := claudeTestSteerRequest("The release checklist", nil)
-			steer, err := a.SteerInputWithReceipt(request)
+			steer, err := a.SteerInput(request)
 			require.NoError(t, err)
 			a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
 			assert.Empty(t, sink.SteerResolutions(), "the result for the preceding run is still in flight")
@@ -238,7 +238,7 @@ func TestClaudeInputReplyKeepsAResultThatArrivesDuringTheStdinWrite(t *testing.T
 		})),
 	})
 	cleanupClaudeReplyProcess(t, a)
-	receipt, err := a.SendInputWithReceipt("The release checklist", nil)
+	receipt, err := a.SendInput("The release checklist", nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, receipt.InputID)
 	assert.Equal(t, receipt.InputID, sink.bound[receipt])

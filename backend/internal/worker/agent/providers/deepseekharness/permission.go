@@ -114,9 +114,16 @@ func (a *Agent) deliverControlOutcome(id string, control *nativeControl, outcome
 	return err
 }
 
-func (a *Agent) sendControlOutcome(id string, control *nativeControl, outcome map[string]any) error {
+func (a *Agent) sendControlOutcome(id string, control *nativeControl, instanceID string, outcome map[string]any) error {
 	a.Mu.Lock()
-	if a.controls[id] != control || !control.published || control.answering || a.StoppedLocked() || a.streamFailure != nil {
+	if current := a.controls[id]; current != control {
+		a.Mu.Unlock()
+		if current != nil && current.instanceID != instanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return fmt.Errorf("DeepSeek Harness control response has no pending request")
+	}
+	if !control.published || control.answering || a.StoppedLocked() || a.streamFailure != nil {
 		a.Mu.Unlock()
 		return fmt.Errorf("DeepSeek Harness control response has no pending request")
 	}

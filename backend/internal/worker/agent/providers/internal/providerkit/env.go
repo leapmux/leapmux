@@ -61,7 +61,7 @@ var agentIdentityEnvScrubKeys = []string{
 	// Factory Droid -- identity and nesting markers its Task tool injects into
 	// child processes (FACTORY_SESSION_PARENT_ID and the DROID_ spellings).
 	"FACTORY_SESSION_PARENT_ID", "DROID_PARENT_SESSION_ID", "FACTORY_PROJECT_DIR",
-	"CLAUDE_PROJECT_DIR", "DROID_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT",
+	"DROID_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT",
 	// Letta Code -- identity and nesting markers its subagent launcher injects.
 	"LETTA_AGENT_ID", "AGENT_ID", "LETTA_CONVERSATION_ID", "CONVERSATION_ID",
 	"LETTA_PARENT_AGENT_ID", "LETTA_PARENT_CONVERSATION_ID", "LETTA_SUBAGENT_NAME",

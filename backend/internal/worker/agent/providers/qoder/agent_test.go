@@ -242,8 +242,15 @@ func TestSendInputPutsThePromptTextLast(t *testing.T) {
 			stdin := &agenttest.Stdin{}
 			a.SetStdinForTest(stdin)
 
-			require.NoError(t, a.SendInput(tc.text, tc.attachments))
-			assert.JSONEq(t, tc.want, sentUserFrame(t, stdin))
+			receipt, err := a.SendInput(tc.text, tc.attachments)
+			require.NoError(t, err)
+			require.NotEmpty(t, receipt.InputID)
+			var want map[string]any
+			require.NoError(t, json.Unmarshal([]byte(tc.want), &want))
+			want["uuid"] = receipt.InputID
+			wantRaw, err := json.Marshal(want)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(wantRaw), sentUserFrame(t, stdin))
 		})
 	}
 }
@@ -264,7 +271,7 @@ func TestSteerInputPutsThePromptTextLast(t *testing.T) {
 			a.active = true
 			a.mu.Unlock()
 
-			require.NoError(t, a.SteerInput(agent.SteerRequest{Content: tc.text, Attachments: tc.attachments}))
+			require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: tc.text, Attachments: tc.attachments}))
 			assert.JSONEq(t, tc.want, sentUserFrame(t, stdin))
 		})
 	}
@@ -276,7 +283,7 @@ func TestSendInputRejectsAnUnsupportedAttachmentBeforeTheTurnStarts(t *testing.T
 	stdin := &agenttest.Stdin{}
 	a.SetStdinForTest(stdin)
 
-	err := a.SendInput("Read both.", []*leapmuxv1.Attachment{testPNGAttachment(), testPDFAttachment()})
+	err := agenttest.SendInput(a, "Read both.", []*leapmuxv1.Attachment{testPNGAttachment(), testPDFAttachment()})
 	require.ErrorContains(t, err, "paper.pdf")
 	assert.Empty(t, stdin.String(), "a rejected prompt must write no partial frame")
 	a.mu.Lock()
@@ -284,8 +291,9 @@ func TestSendInputRejectsAnUnsupportedAttachmentBeforeTheTurnStarts(t *testing.T
 	a.mu.Unlock()
 	assert.False(t, active, "a rejected prompt must not start a turn")
 
-	require.NoError(t, a.SendInput("Describe this.", nil), "the next prompt must not see a busy agent")
-	assert.JSONEq(t, `{"type":"user","session_id":"session-1","message":{"role":"user","content":"Describe this."}}`, sentUserFrame(t, stdin))
+	receipt, err := a.SendInput("Describe this.", nil)
+	require.NoError(t, err, "the next prompt must not see a busy agent")
+	assert.JSONEq(t, fmt.Sprintf(`{"type":"user","uuid":%q,"session_id":"session-1","message":{"role":"user","content":"Describe this."}}`, receipt.InputID), sentUserFrame(t, stdin))
 }
 
 func TestSteerInputRejectsAnUnsupportedAttachment(t *testing.T) {
@@ -297,7 +305,7 @@ func TestSteerInputRejectsAnUnsupportedAttachment(t *testing.T) {
 	a.active = true
 	a.mu.Unlock()
 
-	err := a.SteerInput(agent.SteerRequest{Content: "Read both.", Attachments: []*leapmuxv1.Attachment{testPNGAttachment(), testPDFAttachment()}})
+	err := agenttest.SteerInput(a, agent.SteerRequest{Content: "Read both.", Attachments: []*leapmuxv1.Attachment{testPNGAttachment(), testPDFAttachment()}})
 	require.ErrorContains(t, err, "paper.pdf", "a steer must not drop an attachment that Qoder cannot read")
 	assert.Empty(t, stdin.String(), "a rejected steer must write no partial frame")
 	a.mu.Lock()
@@ -312,7 +320,7 @@ func TestSteerInputWithoutATurnWritesNothing(t *testing.T) {
 	stdin := &agenttest.Stdin{}
 	a.SetStdinForTest(stdin)
 
-	err := a.SteerInput(agent.SteerRequest{Content: "Look at this too.", Attachments: []*leapmuxv1.Attachment{testPNGAttachment()}})
+	err := agenttest.SteerInput(a, agent.SteerRequest{Content: "Look at this too.", Attachments: []*leapmuxv1.Attachment{testPNGAttachment()}})
 	require.ErrorIs(t, err, agent.ErrNoActiveTurn)
 	assert.Empty(t, stdin.String())
 }

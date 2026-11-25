@@ -139,11 +139,24 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 		return a.Process.SendRawInput(raw, stop)
 	}
 	a.Mu.Lock()
-	record := a.findControlLocked(env.ID, input.ControlInstanceID)
+	record, rpcMatch := a.findControlLocked(env.ID, input.ControlInstanceID)
 	a.Mu.Unlock()
 	if record == nil {
 		child, ambiguous := a.childControllingRequest(env.ID, input.ControlInstanceID)
 		if ambiguous {
+			return fmt.Errorf("the Droid control request matches more than one active child")
+		}
+		if child != nil {
+			return child.SendRawInput(input)
+		}
+		if rpcMatch != nil {
+			return agent.ControlInstanceRefusal(rpcMatch.instanceID, input.ControlInstanceID)
+		}
+		child, ambiguous = a.childControllingRequest(env.ID, "")
+		if ambiguous {
+			if input.ControlInstanceID == "" {
+				return agent.ErrControlInstanceUnstated
+			}
 			return fmt.Errorf("the Droid control request matches more than one active child")
 		}
 		if child != nil {
@@ -159,8 +172,14 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 		return a.ProcessExitError()
 	}
 	a.Mu.Lock()
-	if a.controls[record.requestID] != record || !record.published || record.answering || a.stopped || a.StoppedLocked() ||
-		(input.ControlInstanceID != "" && record.instanceID != input.ControlInstanceID) {
+	if current := a.controls[record.requestID]; current != record {
+		a.Mu.Unlock()
+		if current != nil && current.instanceID != input.ControlInstanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return fmt.Errorf("the Droid control request is no longer pending")
+	}
+	if !record.published || record.answering || a.stopped || a.StoppedLocked() {
 		a.Mu.Unlock()
 		return fmt.Errorf("the Droid control request is no longer pending")
 	}
@@ -175,17 +194,19 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 	return err
 }
 
-func (a *Agent) findControlLocked(rpcID, instanceID string) *droidPendingControl {
+func (a *Agent) findControlLocked(rpcID, instanceID string) (exact, rpcMatch *droidPendingControl) {
 	for _, candidate := range a.controls {
 		if candidate.rpcID != rpcID {
 			continue
 		}
-		if instanceID != "" && candidate.instanceID != instanceID {
-			continue
+		if rpcMatch == nil {
+			rpcMatch = candidate
 		}
-		return candidate
+		if instanceID != "" && candidate.instanceID == instanceID {
+			return candidate, rpcMatch
+		}
 	}
-	return nil
+	return nil, rpcMatch
 }
 
 func (a *Agent) childControllingRequest(rpcID, instanceID string) (*Agent, bool) {
@@ -204,7 +225,8 @@ func (a *Agent) childControllingRequest(rpcID, instanceID string) (*Agent, bool)
 	var match *Agent
 	for _, child := range children {
 		child.Mu.Lock()
-		found := child.findControlLocked(rpcID, instanceID) != nil
+		exact, rpcMatch := child.findControlLocked(rpcID, instanceID)
+		found := exact != nil || (instanceID == "" && rpcMatch != nil)
 		child.Mu.Unlock()
 		if !found {
 			continue

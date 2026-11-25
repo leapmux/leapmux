@@ -133,7 +133,8 @@ func TestFastModeLocalCommandRefreshesState(t *testing.T) {
 		}
 		return &rigReply{Data: json.RawMessage(`{"fastModeEnabled":true}`)}
 	})
-	require.NoError(t, r.agent.SendInput("/fast on", nil))
+	_, err := r.agent.SendInput("/fast on", nil)
+	require.NoError(t, err)
 	r.waitForCommand(CommandGetState, 1)
 	waitFor(t, func() bool { return r.agent.SettingsSnapshot().ConfirmedOptions()["fastMode"] == "true" })
 }

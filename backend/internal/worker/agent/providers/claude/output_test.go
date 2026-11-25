@@ -3372,7 +3372,7 @@ func TestClaudeNormalAndErrorResultPreserveOpenToolSpan(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-			require.NoError(t, a.SendInput("run bash", nil))
+			require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 			a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 			a.HandleOutput([]byte(tc.result))
 
@@ -3479,7 +3479,7 @@ func TestClaudeInterruptedResultPersistsClosingRowsBeforeDivider(t *testing.T) {
 		sink := &agenttest.Sink{}
 		services := agent.NewProviderServices(sink)
 		a, _ := newClaudeAgentWithStdin(services)
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 42))
 		services.ReportProgress(agent.OutputTailProgress("tool-1", "working...", false))
@@ -3508,7 +3508,7 @@ func TestClaudeInterruptedResultPersistsClosingRowsBeforeDivider(t *testing.T) {
 		sink := &claudeInterruptedRetrySink{}
 		services := agent.NewProviderServices(sink)
 		a, _ := newClaudeAgentWithStdin(services)
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}},{"type":"tool_use","id":"tool-2","name":"Bash","input":{"command":"sleep 20"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 12))
 		services.ReportProgress(agent.OutputTailProgress("tool-1", "out1", false))
@@ -3575,7 +3575,7 @@ func TestClaudeIdleInterruptClosesOpenToolsInSequenceAndSuppressesLateResult(t *
 		services := agent.NewProviderServices(sink)
 		a := newClaudeRespondingInterruptAgent(t, services, 2*time.Second)
 
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 42))
 		services.ReportProgress(agent.OutputTailProgress("tool-1", "running...", false))
@@ -3606,7 +3606,7 @@ func TestClaudeIdleInterruptClosesOpenToolsInSequenceAndSuppressesLateResult(t *
 		reserveSink := &claudeReserveErrorSink{ProviderServices: agent.NewProviderServices(sink)}
 		a := newClaudeRespondingInterruptAgent(t, reserveSink, 5*time.Second)
 
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
 
@@ -3622,7 +3622,7 @@ func TestClaudeLateToolProgressAfterForceCloseDoesNotBroadcast(t *testing.T) {
 	sink := &agenttest.Sink{}
 	services := agent.NewProviderServices(sink)
 	a, _ := newClaudeAgentWithStdin(services)
-	require.NoError(t, a.SendInput("run tools", nil))
+	require.NoError(t, agenttest.SendInput(a, "run tools", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[` +
 		`{"type":"tool_use","id":"tool-bash","name":"Bash","input":{"command":"sleep 10"}},` +
 		`{"type":"tool_use","id":"tool-agent","name":"Agent","input":{"description":"sub"}},` +
@@ -3655,7 +3655,7 @@ func TestClaudeProcessExitClosesOpenToolsAndResetsSpans(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-	require.NoError(t, a.SendInput("run bash", nil))
+	require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-exit","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 	a.NoteIntentionalStop()
 	a.finishClaudeProcessExit()
@@ -3677,7 +3677,7 @@ func TestClaudeAbortedResultVariantsAndReplayResetSpans(t *testing.T) {
 		sink := &agenttest.Sink{}
 		services := agent.NewProviderServices(sink)
 		a, _ := newClaudeAgentWithStdin(services)
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-cancel","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-cancel", 15))
 		require.Equal(t, int64(15), sink.ProgressSnapshot().OutputBytes)
@@ -3701,7 +3701,7 @@ func TestClaudeAbortedResultVariantsAndReplayResetSpans(t *testing.T) {
 		sink := &agenttest.Sink{}
 		services := agent.NewProviderServices(sink)
 		a, _ := newClaudeAgentWithStdin(services)
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-abort","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-abort", 20))
 
@@ -3732,7 +3732,7 @@ func TestClaudeAbortedResultVariantsAndReplayResetSpans(t *testing.T) {
 				t.Parallel()
 				sink := &agenttest.Sink{}
 				a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
-				require.NoError(t, a.SendInput("run bash", nil))
+				require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 				a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-keep","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 				a.HandleOutput([]byte(tc.result))
 
@@ -3774,7 +3774,7 @@ func TestClaudeConversationResetAndSessionChangeResetOpenTools(t *testing.T) {
 		services := agent.NewProviderServices(sink)
 		a := newClaudeRespondingInterruptAgent(t, services, 2*time.Second)
 
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-before-reset","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-before-reset", 33))
 		a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
@@ -3799,7 +3799,7 @@ func TestClaudeConversationResetAndSessionChangeResetOpenTools(t *testing.T) {
 		a := newClaudeRespondingInterruptAgent(t, services, 2*time.Second)
 
 		a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"sess-1"}`))
-		require.NoError(t, a.SendInput("run bash", nil))
+		require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","session_id":"sess-1","message":{"content":[{"type":"tool_use","id":"tool-s1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 		services.ReportProgress(agent.OutputDeltaProgress("tool-s1", 44))
 		a.HandleOutput([]byte(`{"type":"result","session_id":"sess-1","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
@@ -3847,7 +3847,7 @@ func TestClaudeDelayedIdleCloseDoesNotWipeReplacementSession(t *testing.T) {
 	a := newClaudeRespondingInterruptAgent(t, notify, 2*time.Second)
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"sess-1"}`))
-	require.NoError(t, a.SendInput("run bash", nil))
+	require.NoError(t, agenttest.SendInput(a, "run bash", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","session_id":"sess-1","message":{"content":[{"type":"tool_use","id":"tool-s1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
 	a.HandleOutput([]byte(`{"type":"result","session_id":"sess-1","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
 

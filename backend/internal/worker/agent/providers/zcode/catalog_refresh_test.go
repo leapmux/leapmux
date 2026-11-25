@@ -519,7 +519,7 @@ func TestZCodeSendInput_RequiresAnAvailableModelChoice(t *testing.T) {
 		}
 		return nil
 	})
-	err := a.SendInput("hello", nil)
+	err := agenttest.SendInput(a, "hello", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "select an available model")
 	assert.Zero(t, sends)
@@ -582,7 +582,7 @@ func TestZCodeCompleteCatalog_DisabledModelsRemainUnavailableUntilACompleteRefre
 	check()
 	zcodeApplySettings(t, a, `{"model":{"current":{"providerId":"personal:p","modelId":"A"},"available":[{"ref":{"providerId":"personal:p","modelId":"A"}}]}}`)
 	check()
-	require.ErrorIs(t, a.SendInput("hello", nil), errZCodeModelSelectionRequired)
+	require.ErrorIs(t, agenttest.SendInput(a, "hello", nil), errZCodeModelSelectionRequired)
 	assert.Zero(t, sends)
 	available[0].DisabledReason = ""
 	a.Mu.Lock()

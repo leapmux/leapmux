@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // A repository's `.amp/settings.json` merges over the settings file that the
@@ -30,7 +31,7 @@ import (
 // process started.
 func refusedTurn(t *testing.T, h *harness) error {
 	t.Helper()
-	err := h.agent.SendInput("go", nil)
+	_, err := h.agent.SendInput("go", nil)
 	require.Error(t, err)
 	assert.Empty(t, h.startedThreads(), "no process starts")
 	assert.False(t, h.turnActive(), "no turn starts")
@@ -101,7 +102,7 @@ func TestAskIgnoresFilesThatAmpDoesNotLoadAsPlugins(t *testing.T) {
 		writeFile(t, filepath.Join(dir, ".amp", "plugins", file), "text\n")
 	}
 	h := newHarness(t, withWorkingDir(dir))
-	require.NoError(t, h.agent.SendInput("go", nil))
+	require.NoError(t, agenttest.SendInput(h.agent, "go", nil))
 }
 
 // A workspace file whose rules only ask or refuse, or delegate to the LeapMux
@@ -123,7 +124,7 @@ func TestAskAcceptsAWorkspaceThatBypassesNothing(t *testing.T) {
 		"amp.mcpServers": {}
 	}`)
 	h := newHarness(t, withWorkingDir(dir))
-	require.NoError(t, h.agent.SendInput("go", nil))
+	require.NoError(t, agenttest.SendInput(h.agent, "go", nil))
 }
 
 // Allow All accepts every call, so the agent refuses nothing there.
@@ -133,7 +134,7 @@ func TestAllowAllRefusesNothing(t *testing.T) {
 	writeFile(t, filepath.Join(dir, ".amp", "settings.json"), `{"amp.dangerouslyAllowAll": true}`)
 	writeFile(t, filepath.Join(dir, ".amp", "plugins", "evil.ts"), "export default () => {}\n")
 	h := newHarness(t, withWorkingDir(dir), withOptions(map[string]string{agent.OptionIDPermissionMode: contracts.AmpPermissionModeAllowAll}))
-	require.NoError(t, h.agent.SendInput("go", nil))
+	require.NoError(t, agenttest.SendInput(h.agent, "go", nil))
 }
 
 // A workspace file that the worker cannot read cannot be shown to bypass
@@ -180,7 +181,7 @@ func TestAskFindsTheWorkspaceFileAsAmpDoes(t *testing.T) {
 		writeFile(t, filepath.Join(sub, ".amp", "settings.json"), `{"amp.notifications.enabled": false}`)
 		writeFile(t, filepath.Join(repo, ".amp", "settings.json"), `{"amp.dangerouslyAllowAll": true}`)
 		h := newHarness(t, withWorkingDir(sub))
-		require.NoError(t, h.agent.SendInput("go", nil), "Amp reads the nearest file alone")
+		require.NoError(t, agenttest.SendInput(h.agent, "go", nil), "Amp reads the nearest file alone")
 	})
 	t.Run("json before jsonc", func(t *testing.T) {
 		t.Parallel()
@@ -188,7 +189,7 @@ func TestAskFindsTheWorkspaceFileAsAmpDoes(t *testing.T) {
 		writeFile(t, filepath.Join(dir, ".amp", "settings.json"), `{}`)
 		writeFile(t, filepath.Join(dir, ".amp", "settings.jsonc"), `{"amp.dangerouslyAllowAll": true}`)
 		h := newHarness(t, withWorkingDir(dir))
-		require.NoError(t, h.agent.SendInput("go", nil), "Amp reads settings.json and never settings.jsonc beside it")
+		require.NoError(t, agenttest.SendInput(h.agent, "go", nil), "Amp reads settings.json and never settings.jsonc beside it")
 	})
 	t.Run("nothing above the git top level", func(t *testing.T) {
 		t.Parallel()
@@ -197,7 +198,7 @@ func TestAskFindsTheWorkspaceFileAsAmpDoes(t *testing.T) {
 		repo := filepath.Join(outer, "repo")
 		require.NoError(t, os.Rename(testutil.NewGitRepo(t), repo))
 		h := newHarness(t, withWorkingDir(repo))
-		require.NoError(t, h.agent.SendInput("go", nil))
+		require.NoError(t, agenttest.SendInput(h.agent, "go", nil))
 	})
 	t.Run("outside a repository only the working directory", func(t *testing.T) {
 		t.Parallel()
@@ -206,7 +207,7 @@ func TestAskFindsTheWorkspaceFileAsAmpDoes(t *testing.T) {
 		sub := filepath.Join(outer, "sub")
 		require.NoError(t, os.MkdirAll(sub, 0o755))
 		h := newHarness(t, withWorkingDir(sub))
-		require.NoError(t, h.agent.SendInput("go", nil))
+		require.NoError(t, agenttest.SendInput(h.agent, "go", nil))
 	})
 }
 
@@ -258,7 +259,7 @@ func TestAskFindsTheSettingsThatAmpReadsPastItsWalkLimit(t *testing.T) {
 		repo := canonicalDir(t, testutil.NewGitRepo(t))
 		writeFile(t, filepath.Join(repo, ".amp", "settings.jsonc"), allowAll)
 		h := newHarness(t, withWorkingDir(nestedDir(t, repo, workspaceSearchLimit)))
-		require.NoError(t, h.agent.SendInput("go", nil))
+		require.NoError(t, agenttest.SendInput(h.agent, "go", nil))
 	})
 	t.Run("past the walk Amp loads the plugins of the top level", func(t *testing.T) {
 		t.Parallel()
@@ -280,7 +281,7 @@ func TestAskChecksTheWorkspaceBeforeEachTurn(t *testing.T) {
 	h.feed(fp, textLine("done", stopReasonEndTurn))
 
 	writeFile(t, filepath.Join(dir, ".amp", "settings.json"), `{"amp.dangerouslyAllowAll": true}`)
-	err := h.agent.SendInput("second", nil)
+	_, err := h.agent.SendInput("second", nil)
 	assert.ErrorContains(t, err, settingDangerouslyAllowAll)
 	assert.Len(t, fp.lines(), 1, "the refused message never reaches Amp")
 	assert.False(t, h.turnActive())
@@ -307,7 +308,7 @@ func TestAskChecksTheWorkspaceBeforeAResume(t *testing.T) {
 		}
 		return false
 	}, 30*time.Second, 2*time.Millisecond, "the refused resume states the plugin")
-	assert.Equal(t, []string{""}, h.startedThreads(), "the resume starts no process")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "the resume starts no process")
 }
 
 func withWorkingDir(dir string) harnessOption {

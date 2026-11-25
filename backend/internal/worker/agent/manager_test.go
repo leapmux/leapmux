@@ -149,10 +149,12 @@ func TestManagerAcceptsANonComparableProvider(t *testing.T) {
 	assert.NotPanics(t, func() { m.LiveOptionGroups("value", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE) })
 }
 
-func (s *stubProvider) AgentID() string                                 { return "stub" }
-func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
-func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
-	return agent.ErrInputSessionChanged
+func (s *stubProvider) AgentID() string { return "stub" }
+func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
+}
+func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 }
 
 // PublishTurnActive is inert here: a stub holds no turn flag and no sink, and
@@ -352,7 +354,8 @@ func TestManager_RetryTurnAbandonsARetryWhoseProviderChanged(t *testing.T) {
 func TestManager_SendInputUnknownAgent(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 
-	assert.Error(t, m.SendInput("nonexistent", "hello", nil), "expected error for unknown agent")
+	_, err := m.SendInput("nonexistent", "hello", nil)
+	assert.Error(t, err, "expected error for unknown agent")
 
 	// The error path must release the lifecycle lock. It is taken before the
 	// lookup, so a return that skipped the unlock would leave the agent id locked
@@ -362,7 +365,8 @@ func TestManager_SendInputUnknownAgent(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		assert.Error(t, m.SendInput("nonexistent", "hello again", nil), "expected error for unknown agent")
+		_, err := m.SendInput("nonexistent", "hello again", nil)
+		assert.Error(t, err, "expected error for unknown agent")
 	}()
 	select {
 	case <-done:

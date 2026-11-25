@@ -201,7 +201,7 @@ func TestAgent_SendInputAfterStop(t *testing.T) {
 	agent.Stop()
 	_ = agent.Wait()
 
-	assert.Error(t, agent.SendInput("should fail", nil), "expected error sending input after stop")
+	assert.Error(t, agenttest.SendInput(agent, "should fail", nil), "expected error sending input after stop")
 }
 
 func TestAgent_AgentID(t *testing.T) {

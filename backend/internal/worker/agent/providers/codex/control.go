@@ -339,23 +339,24 @@ func (a *Agent) publishApprovalRequest(line *providerkit.ParsedLine, cancelAnswe
 	sink := a.codexReplyControlSink(line.Params)
 	answer, approvable := codexStandingApprovalAnswer(line.Raw)
 	if !approvable {
-		a.PublishControlRequest(sink, line.Raw, cancelAnswer)
+		a.PublishControlRequest(sink, providerkit.ControlRequestPublication{Content: line.Raw, CancelAnswer: cancelAnswer})
 		return
 	}
+	request := providerkit.ControlRequestPublication{Content: line.Raw, CancelAnswer: cancelAnswer, ApproveAnswer: answer}
 	a.Mu.Lock()
-	queued := a.bypassActiveLocked() && a.ApproveUnpublishedControlRequest(sink, line.Raw, cancelAnswer, answer)
+	queued := a.bypassActiveLocked() && a.ApproveUnpublishedControlRequest(sink, request)
 	a.Mu.Unlock()
 	if queued {
 		return
 	}
-	a.registerApprovalRequest(sink, line.Raw, cancelAnswer, answer)
+	a.registerApprovalRequest(sink, request)
 }
 
 // registerApprovalRequest publishes a permission request with its approval answer, then
 // reads the standing approval again. A switch to Bypass whose sweep ran before this
 // registration found no record, so this second read is what answers the request.
-func (a *Agent) registerApprovalRequest(sink agent.ControlServices, raw []byte, cancelAnswer, answer any) {
-	publication := a.PublishControlRequestWithApproval(sink, raw, cancelAnswer, answer)
+func (a *Agent) registerApprovalRequest(sink agent.ControlServices, request providerkit.ControlRequestPublication) {
+	publication := a.PublishControlRequest(sink, request)
 	a.Mu.Lock()
 	if publication.RequestID != "" && a.bypassActiveLocked() {
 		a.ApproveOutstandingControlRequest(publication)

@@ -17,13 +17,7 @@ import (
 )
 
 // SendInput starts one prompt. The worker queue holds later input until this prompt ends.
-func (b *Base) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return b.SendPreparedPrompt(content, attachments, nil)
-}
-
-var _ agent.InputReceiptSender = (*Base)(nil)
-
-func (b *Base) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+func (b *Base) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return b.sendPreparedPromptForSession(nil, content, attachments, nil, id.Generate())
 }
 
@@ -204,7 +198,7 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 // SendPromptDetached keeps validation and the write in the captured root session.
 func (b *Base) SendPromptDetached(sessionID, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
 	return b.SendPromptDetachedUsing(sessionID, content, attachments, func(params json.RawMessage) error {
-		return b.SendDetachedRequestObserved(MethodSessionPrompt, params, providerkit.DetachedRequestObservation{}, handle)
+		return b.SendDetachedRequest(MethodSessionPrompt, params, providerkit.DetachedRequestOptions{}, handle)
 	})
 }
 
@@ -316,7 +310,7 @@ func (b *Base) preparePromptBlocks(sessionID, content string, attachments []*lea
 // run: it states the settings of the main session.
 func (b *Base) SendChildPromptDetached(target ChildSessionTarget, content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
 	return b.SendChildPromptDetachedUsing(target, content, attachments, func(params json.RawMessage) error {
-		return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+		return b.SendDetachedRequest(MethodSessionPrompt, params, providerkit.DetachedRequestOptions{}, handle)
 	})
 }
 
@@ -350,9 +344,8 @@ func (b *Base) SendChildPromptDetachedUsing(target ChildSessionTarget, content s
 	return send(params)
 }
 
-func (a *Base) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendPreparedPromptForSession(&sessionID, content, attachments, nil, "")
-	return err
+func (a *Base) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendPreparedPromptForSession(&sessionID, content, attachments, nil, id.Generate())
 }
 
 // BuildPromptBlocks converts text + classified attachments into ACP prompt

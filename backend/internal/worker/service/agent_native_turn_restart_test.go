@@ -50,12 +50,12 @@ func newNativeRestartProbeAgent(id string) *nativeRestartProbeAgent {
 
 func (a *nativeRestartProbeAgent) AgentID() string { return a.id }
 
-func (a *nativeRestartProbeAgent) SendInput(content string, _ []*leapmuxv1.Attachment) error {
+func (a *nativeRestartProbeAgent) SendInput(content string, _ []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.sent <- content
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
-func (a *nativeRestartProbeAgent) SendInputForSession(_ string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *nativeRestartProbeAgent) SendInputForSession(_ string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.SendInput(content, attachments)
 }
 

@@ -150,7 +150,7 @@ func TestOpenCodeContextClearRetiresLoadedChildRoutes(t *testing.T) {
 	clearChildSessionContext(t, a, stdin)
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
 	assert.ErrorIs(t, agenttest.SendChildInput(a, "call-1", agent.ChildInput{Content: "old input"}), errOpenCodeSubagentIdle)
-	assert.ErrorIs(t, a.SteerChildInput("call-1", "old steer", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerChildInput(a, "call-1", "old steer", nil), agent.ErrNoActiveTurn)
 	assert.Empty(t, writtenRequests(stdin, "session/prompt"))
 	_, served := a.SessionOwner("ses-child")
 	assert.False(t, served)
@@ -308,19 +308,19 @@ func TestOpenCodeSteersARunningChild(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newChildSessionAgent(t)
 	assert.ErrorIs(t, agenttest.SendChildInput(a, "call-1", agent.ChildInput{Content: "Also count backwards."}), errOpenCodeSubagentIdle)
-	assert.ErrorIs(t, a.SteerChildInput("call-1", "Also count backwards.", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerChildInput(a, "call-1", "Also count backwards.", nil), agent.ErrNoActiveTurn)
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
 
 	a.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Count slowly to one hundred."))
 	a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
 	assert.Equal(t, agent.TurnState{Active: true}, a.ActiveChildTurnState("call-1"), "a running child takes a steer once its session is loaded")
-	assert.ErrorIs(t, a.SteerChildInput("call-1", "Also count backwards.", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, agenttest.SteerChildInput(a, "call-1", "Also count backwards.", nil), agent.ErrChildRouteNotReady)
 	load := awaitRequest(t, stdin, "session/load", 1)
 	require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Result: json.RawMessage(`{}`)})))
 	testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("call-1").Steerable })
 
 	assert.ErrorIs(t, agenttest.SendChildInput(a, "call-1", agent.ChildInput{Content: "Also count backwards."}), agent.ErrAgentBusy, "the queue steers a running child")
-	require.NoError(t, a.SteerChildInput("call-1", "Also count backwards.", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, "call-1", "Also count backwards.", nil))
 	prompt := awaitRequest(t, stdin, "session/prompt", 1)
 	assert.JSONEq(t, `{"sessionId":"ses-child","prompt":[{"type":"text","text":"Also count backwards."}]}`, string(prompt.Params))
 
@@ -337,7 +337,7 @@ func TestOpenCodeSteersARunningChild(t *testing.T) {
 	// The task's end ends the subagent's turn: a later message is refused.
 	a.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-child", "Counted."))
 	assert.ErrorIs(t, agenttest.SendChildInput(a, "call-1", agent.ChildInput{Content: "One more."}), errOpenCodeSubagentIdle)
-	assert.ErrorIs(t, a.SteerChildInput("call-1", "One more.", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerChildInput(a, "call-1", "One more.", nil), agent.ErrNoActiveTurn)
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
 }
 
@@ -345,7 +345,7 @@ func TestOpenCodeLateChildSteerRefusalReachesTheParentAfterRouteTeardown(t *test
 	t.Parallel()
 	a, sink, stdin := newChildSessionAgent(t)
 	followRunningChild(t, a, stdin)
-	require.NoError(t, a.SteerChildInput("call-1", "Also count backwards.", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, "call-1", "Also count backwards.", nil))
 	prompt := awaitRequest(t, stdin, "session/prompt", 1)
 
 	// The task closes while its detached prompt still waits for the RPC reply.
@@ -367,7 +367,7 @@ func TestOpenCodeLateChildSteerRefusalKeepsItsOutgoingTranscript(t *testing.T) {
 	row, found := sink.BackgroundTask("call-1")
 	require.True(t, found)
 	child := sink.Child(row.ChildAgentID)
-	require.NoError(t, a.SteerChildInput("call-1", "An outgoing child message.", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, "call-1", "An outgoing child message.", nil))
 	prompt := awaitRequest(t, stdin, "session/prompt", 1)
 	clearChildSessionContext(t, a, stdin)
 	require.True(t, a.Deliver(prompt.ID, agenttest.JSONRPCResponse(prompt.ID, agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"the retired child refused the message"}`)})))
@@ -388,7 +388,7 @@ func TestOpenCodeAFailedChildLoadLeavesTheChildUnsteerable(t *testing.T) {
 		load := awaitRequest(t, stdin, "session/load", 1)
 		require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"session not found"}`)})))
 		synctest.Wait()
-		assert.ErrorIs(t, a.SteerChildInput("call-1", "Steer.", nil), agent.ErrChildRouteNotReady)
+		assert.ErrorIs(t, agenttest.SteerChildInput(a, "call-1", "Steer.", nil), agent.ErrChildRouteNotReady)
 		assert.Equal(t, agent.TurnState{Active: true}, a.ActiveChildTurnState("call-1"))
 		a.SimulateExitForTest()
 		a.Stop()

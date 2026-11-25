@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 func TestCodewhaleReplyKeepsItemsPublishedBeforeTheStartResponse(t *testing.T) {
@@ -34,7 +35,7 @@ func TestCodewhaleReplyKeepsItemsPublishedBeforeTheStartResponse(t *testing.T) {
 		writeFakeJSON(response, http.StatusCreated, turnStartResponse{Turn: turnRecord{ID: testTurnID, Status: "queued"}})
 	})
 
-	receipt, err := a.SendInputWithReceipt("Check the result.", nil)
+	receipt, err := a.SendInput("Check the result.", nil)
 	require.NoError(t, err)
 	assert.Equal(t, agent.NativeInputReceipt{SessionID: testThreadID, InputID: testTurnID, TurnID: testTurnID}, receipt)
 	firstKey := codewhaleReplyMessageKey(testTurnID, "response-1")
@@ -69,7 +70,7 @@ func TestCodewhaleReplyRejectsAConflictingItemTurn(t *testing.T) {
 	runtime := newFakeRuntime(t)
 	acceptTurns(runtime, testTurnID)
 	a, sink := newTestAgent(t, runtime)
-	receipt, err := a.SendInputWithReceipt("Check the result.", nil)
+	receipt, err := a.SendInput("Check the result.", nil)
 	require.NoError(t, err)
 
 	a.HandleOutput(runtimeEvent(1, "item.completed", testTurnID, "conflict", map[string]any{
@@ -86,7 +87,7 @@ func TestCodewhaleReplyWithoutANativeEndRetiresOnProcessExit(t *testing.T) {
 	runtime := newFakeRuntime(t)
 	acceptTurns(runtime, testTurnID)
 	a, sink := newTestAgent(t, runtime)
-	receipt, err := a.SendInputWithReceipt("Check the result.", nil)
+	receipt, err := a.SendInput("Check the result.", nil)
 	require.NoError(t, err)
 	a.HandleOutput(itemEvent(1, "item.completed", "partial", contracts.CodewhaleItemKindAgentMessage, "Only part of the turn.", nil))
 
@@ -102,7 +103,7 @@ func TestCodewhaleSteerKeepsItsReplyWithoutALeadReceipt(t *testing.T) {
 	acceptSteers(rt)
 	a, sink := newSteeringAgent(t, rt)
 	a.beginCodewhaleReplyStart()
-	require.NoError(t, a.SteerInput(testCodewhaleSteer(1, "Also this.")))
+	require.NoError(t, agenttest.SteerInput(a, testCodewhaleSteer(1, "Also this.")))
 	a.HandleOutput(steeredEvent(2, "Also this."))
 	a.HandleOutput(itemEvent(3, contracts.CodewhaleEventItemCompleted, "answer", contracts.CodewhaleItemKindAgentMessage, "The steered reply.", nil))
 	a.HandleOutput(turnCompletedEvent(4, testTurnID, contracts.CodewhaleTurnStatusCompleted))
@@ -124,7 +125,7 @@ func TestCodewhaleReplyNeedsTheTurnIDFromAcceptance(t *testing.T) {
 	acceptTurns(runtime, "")
 	a, sink := newTestAgent(t, runtime)
 
-	receipt, err := a.SendInputWithReceipt("Check the result.", nil)
+	receipt, err := a.SendInput("Check the result.", nil)
 
 	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.Empty(t, receipt)
@@ -138,7 +139,7 @@ func TestCodewhaleReplyWithAnOpenItemCannotCompleteAfterANewerStart(t *testing.T
 	runtime := newFakeRuntime(t)
 	acceptTurns(runtime, testTurnID)
 	a, sink := newTestAgent(t, runtime)
-	receipt, err := a.SendInputWithReceipt("Check the result.", nil)
+	receipt, err := a.SendInput("Check the result.", nil)
 	require.NoError(t, err)
 	a.HandleOutput(itemEvent(1, "item.started", "unfinished", contracts.CodewhaleItemKindAgentMessage, "", nil))
 	a.HandleOutput(runtimeEvent(2, "item.delta", testTurnID, "unfinished", map[string]any{

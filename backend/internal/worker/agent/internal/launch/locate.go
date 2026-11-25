@@ -153,8 +153,9 @@ func probeCommands(ctx context.Context, shellPath string, loginShell bool, names
 	if shell == "cmd" {
 		return nil, ""
 	}
+	dialect := resolveDialect(shell)
 	nonce := "__LEAPMUX_PROBE_" + id.Short() + "__"
-	output := runShellProbe(ctx, shellPath, loginShell, renderCommandProbe(shell, nonce, names, nativeOnly, loginShell))
+	output := runShellProbe(ctx, dialect, shellPath, loginShell, dialect.renderProbe(nonce, names, nativeOnly, loginShell))
 	return parseCommandProbe(output, nonce, names, nativeOnly)
 }
 
@@ -164,15 +165,13 @@ func validNativeProgramName(name string) bool {
 
 const maxCommandProbeOutput = 1 << 20
 
-func runShellProbe(ctx context.Context, shellPath string, loginShell bool, script string) string {
-	if isCsh(terminal.ShellBaseName(shellPath)) {
-		scriptFiles := &PreparedLaunch{}
-		var err error
-		script, err = scriptFiles.writeCshInvocation(script)
-		if err != nil {
-			return ""
-		}
-		defer func() { _ = scriptFiles.Close() }()
+func runShellProbe(ctx context.Context, dialect shellDialect, shellPath string, loginShell bool, script string) string {
+	script, cleanup, err := dialect.prepareProbeScript(script)
+	if err != nil {
+		return ""
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	cmd, err := newShellCommand(ctx, shellPath, loginShell, script, os.TempDir(), nil)
 	if err != nil && !pathFallbackAllowed(ctx) {

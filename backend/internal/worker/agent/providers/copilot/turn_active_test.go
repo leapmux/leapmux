@@ -24,5 +24,5 @@ func TestCopilotSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 	a.stateMu.Lock()
 	a.active = true
 	a.stateMu.Unlock()
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, a.SendInput("later turn", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, agenttest.SendInput(a, "later turn", nil))
 }

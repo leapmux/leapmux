@@ -65,14 +65,15 @@ func (a *Agent) decidePermission(ctx context.Context, request helperRequest) hel
 		return rejectDecision(fmt.Sprintf("LeapMux could not read the tool input: %v", err))
 	}
 
-	pending, ok := a.bridge.register(requestID)
+	instanceID := id.Generate()
+	pending, ok := a.bridge.register(requestID, instanceID)
 	if !ok {
 		return rejectDecision("LeapMux stopped the agent")
 	}
 	control := agent.ControlRequest{
 		AgentSessionID: threadID,
 		RequestID:      requestID,
-		InstanceID:     id.Generate(),
+		InstanceID:     instanceID,
 		Payload:        payload,
 		SourceSeq:      sourceSeq,
 	}
@@ -196,7 +197,7 @@ func (a *Agent) toolCallRow(toolUseID string) int64 {
 func (a *Agent) SendRawInput(input agent.RawInput) error {
 	data, stop := input.Data, input.Stop
 	if requestID, behavior, message, ok := agent.DecodeControlBehavior(data); ok && requestID != "" {
-		return a.answerPermission(requestID, behavior, message)
+		return a.answerPermission(requestID, input.ControlInstanceID, behavior, message)
 	}
 	if !isUserLine(data) {
 		return errors.New("the line is not a user message, which is the one line that Amp's input takes, so LeapMux did not send it")
@@ -216,7 +217,7 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 
 // answerPermission delivers the user's decision on one permission request. It
 // refuses a behavior other than allow and deny rather than guess a decision.
-func (a *Agent) answerPermission(requestID, behavior, message string) error {
+func (a *Agent) answerPermission(requestID, instanceID, behavior, message string) error {
 	var decision helperDecision
 	switch behavior {
 	case contracts.ControlAnswerBehaviorAllow:
@@ -227,10 +228,7 @@ func (a *Agent) answerPermission(requestID, behavior, message string) error {
 		return fmt.Errorf("the answer to the Amp permission request %s states the behavior %q, and LeapMux knows only %q and %q",
 			requestID, behavior, contracts.ControlAnswerBehaviorAllow, contracts.ControlAnswerBehaviorDeny)
 	}
-	if !a.bridge.answer(requestID, decision) {
-		return fmt.Errorf("the Amp permission request %s no longer waits for an answer", requestID)
-	}
-	return nil
+	return a.bridge.answer(requestID, instanceID, decision)
 }
 
 // isUserLine reports whether data is a JSON object of the user line type, the

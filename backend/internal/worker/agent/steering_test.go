@@ -13,7 +13,7 @@ import (
 )
 
 // steeringStub is an InputSteerer whose SupportsSteering answer the test
-// controls. It embeds IdleAgent (manager_startup_concurrency_test.go) for the
+// controls. It embeds agenttest.IdleAgent (agenttest/agent_stubs.go) for the
 // rest of the Agent surface, because manager_test.go's stubProvider is
 // `//go:build unix` and this case has no platform behaviour.
 type steeringStub struct {
@@ -21,8 +21,10 @@ type steeringStub struct {
 	supports bool
 }
 
-func (s *steeringStub) SteerInput(agent.SteerRequest) error { return nil }
-func (s *steeringStub) SupportsSteering() bool              { return s.supports }
+func (s *steeringStub) SteerInput(agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
+}
+func (s *steeringStub) SupportsSteering() bool { return s.supports }
 
 // The assertion keeps the stub an InputSteerer when the interface changes. A
 // stub that stopped being one would make the capability test pass for the
@@ -59,9 +61,11 @@ type busyProvider struct {
 	supports  bool
 }
 
-func (p *busyProvider) SendInput(string, []*leapmuxv1.Attachment) error { return p.refuse }
-func (p *busyProvider) SteerInput(agent.SteerRequest) error {
-	return nil
+func (p *busyProvider) SendInput(string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, p.refuse
+}
+func (p *busyProvider) SteerInput(agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
 }
 func (p *busyProvider) SupportsSteering() bool { return p.supports }
 func (p *busyProvider) PublishTurnActive() agent.TurnState {
@@ -108,7 +112,7 @@ func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 			m := agent.NewManager(testRegistry, nil)
 			m.PutAgentForTest("agent-1", provider)
 
-			err := m.SendInput("agent-1", "later turn", nil)
+			_, err := m.SendInput("agent-1", "later turn", nil)
 			assert.Equal(t, tc.refuse != nil, err != nil)
 			assert.Equal(t, tc.republish, provider.republish,
 				"only a busy refusal disproves the Worker's view of the turn")
@@ -125,16 +129,27 @@ func TestManagerSendInputRepublishesTheTurnARefusalDisproves(t *testing.T) {
 // of each session-checked steer.
 type steerRecorder struct {
 	agenttest.IdleAgent
-	requests []agent.SteerRequest
-	sessions []string
+	sendReceipt  agent.NativeInputReceipt
+	steerReceipt agent.NativeInputReceipt
+	requests     []agent.SteerRequest
+	sessions     []string
 }
 
-func (r *steerRecorder) SteerInput(request agent.SteerRequest) error {
+func (r *steerRecorder) SendInput(string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return r.sendReceipt, nil
+}
+
+func (r *steerRecorder) SendInputForSession(sessionID, _ string, _ []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	r.sessions = append(r.sessions, sessionID)
+	return r.sendReceipt, nil
+}
+
+func (r *steerRecorder) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	r.requests = append(r.requests, request)
-	return nil
+	return r.steerReceipt, nil
 }
 
-func (r *steerRecorder) SteerInputForSession(sessionID string, request agent.SteerRequest) error {
+func (r *steerRecorder) SteerInputForSession(sessionID string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	r.sessions = append(r.sessions, sessionID)
 	return r.SteerInput(request)
 }
@@ -148,7 +163,9 @@ var _ agent.SessionInputSteerer = (*steerRecorder)(nil)
 func TestManagerSteerInputHandsTheProviderTheWholeRequest(t *testing.T) {
 	t.Parallel()
 
-	provider := &steerRecorder{}
+	wantSend := agent.NativeInputReceipt{SessionID: "session-1", InputID: "send-1", TurnID: "turn-1"}
+	wantSteer := agent.NativeInputReceipt{SessionID: "session-1", InputID: "steer-1", TurnID: "turn-1"}
+	provider := &steerRecorder{sendReceipt: wantSend, steerReceipt: wantSteer}
 	m := agent.NewManager(testRegistry, nil)
 	m.PutAgentForTest("agent-1", provider)
 	request := agent.SteerRequest{
@@ -156,13 +173,23 @@ func TestManagerSteerInputHandsTheProviderTheWholeRequest(t *testing.T) {
 		Attachments: []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("body")}},
 	}
 
+	gotSend, err := m.SendInput("agent-1", "Start a turn.", nil)
+	require.NoError(t, err)
+	assert.Equal(t, wantSend, gotSend)
+
+	gotSessionSend, err := agent.SendInputToSession(provider, "session-1", "Follow up.", nil)
+	require.NoError(t, err)
+	assert.Equal(t, wantSend, gotSessionSend)
+
 	receipt, err := m.SteerInput("agent-1", request)
 	require.NoError(t, err)
-	assert.Empty(t, receipt)
+	assert.Equal(t, wantSteer, receipt)
 	assert.Equal(t, []agent.SteerRequest{request}, provider.requests)
 
-	require.NoError(t, agent.SteerInputToSession(provider, "session-1", request))
-	assert.Equal(t, []string{"session-1"}, provider.sessions)
+	sessionReceipt, err := agent.SteerInputToSession(provider, "session-1", request)
+	require.NoError(t, err)
+	assert.Equal(t, wantSteer, sessionReceipt)
+	assert.Equal(t, []string{"session-1", "session-1"}, provider.sessions)
 	assert.Equal(t, []agent.SteerRequest{request, request}, provider.requests)
 }
 
@@ -178,7 +205,8 @@ func TestSteerRefusesARequestWithoutAQueueItem(t *testing.T) {
 
 	_, err := m.SteerInput("agent-1", request)
 	require.ErrorContains(t, err, "states no queue item")
-	require.ErrorContains(t, agent.SteerInputToSession(provider, "session-1", request), "states no queue item")
+	_, err = agent.SteerInputToSession(provider, "session-1", request)
+	require.ErrorContains(t, err, "states no queue item")
 	assert.Empty(t, provider.requests)
 	assert.Empty(t, provider.sessions)
 }

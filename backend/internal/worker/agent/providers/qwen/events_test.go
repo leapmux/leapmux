@@ -42,8 +42,8 @@ func TestQwenPromptSuggestionWithdrawsAtTheNextPrompt(t *testing.T) {
 		name string
 		call func(*Agent) error
 	}{
-		{"input", func(a *Agent) error { return a.SendInput("next", nil) }},
-		{"session input", func(a *Agent) error { return a.SendInputForSession(qwenTestSession, "next", nil) }},
+		{"input", func(a *Agent) error { return agenttest.SendInput(a, "next", nil) }},
+		{"session input", func(a *Agent) error { return agenttest.SendInputForSession(a, qwenTestSession, "next", nil) }},
 		{"compaction", func(a *Agent) error { return a.CompactContext() }},
 	} {
 		t.Run(send.name, func(t *testing.T) {
@@ -70,7 +70,7 @@ func TestQwenPromptSuggestionRejectsOtherSessionsAndMalformedValues(t *testing.T
 	value, ok := sink.LastSessionInfoValue("prompt_suggestion")
 	require.True(t, ok)
 	assert.Equal(t, map[string]any{"text": "keep"}, value)
-	require.Error(t, a.SendInputForSession("other-session", "rejected", nil))
+	require.Error(t, agenttest.SendInputForSession(a, "other-session", "rejected", nil))
 	value, _ = sink.LastSessionInfoValue("prompt_suggestion")
 	assert.Equal(t, map[string]any{"text": "keep"}, value)
 }
@@ -119,7 +119,7 @@ func TestQwenPromptSuggestionBusyInputKeepsItsValue(t *testing.T) {
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/prompt-suggestion", qwenTestSession, map[string]any{"suggestion": "keep"}))
 	a.SetPromptActiveForTest(true)
-	require.ErrorIs(t, a.SendInput("rejected", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(a, "rejected", nil), agent.ErrAgentBusy)
 	value, ok := sink.LastSessionInfoValue("prompt_suggestion")
 	require.True(t, ok)
 	assert.Equal(t, map[string]any{"text": "keep"}, value)
@@ -365,7 +365,7 @@ func TestQwenDrainWithNoSessionIsTheCurrentSessions(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "kept"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "kept"}))
 
 	items, ok := drainWithParams(t, a, requests, 1, map[string]any{})["items"].([]any)
 	require.True(t, ok)
@@ -380,8 +380,8 @@ func TestQwenDrainDropsAMessageThatCarriesNothing(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: ""}))
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "real"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: ""}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "real"}))
 
 	items, ok := drain(t, a, requests, 1, qwenTestSession)["items"].([]any)
 	require.True(t, ok)

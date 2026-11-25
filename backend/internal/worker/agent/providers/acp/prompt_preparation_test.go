@@ -24,11 +24,11 @@ func TestPromptPreparationRefusesBeforeWritingAndAllowsRetry(t *testing.T) {
 		assert.Equal(t, "recording", blocks[0]["text"])
 		return failure
 	}
-	require.ErrorIs(t, b.SendInput("recording", nil), failure)
+	require.ErrorIs(t, agenttest.SendInput(b, "recording", nil), failure)
 	assert.False(t, b.PromptActive())
 	assert.Empty(t, []byte(out.String()))
 	b.hooks.PreparePrompt = nil
-	require.NoError(t, b.SendInput("retry", nil))
+	require.NoError(t, agenttest.SendInput(b, "retry", nil))
 	assert.NotEmpty(t, []byte(out.String()))
 }
 
@@ -176,7 +176,7 @@ func TestPromptPreparationReceivesTheOriginalClassifiedAudio(t *testing.T) {
 				require.True(t, b.AttachChildSession(target))
 				require.NoError(t, b.SendChildPromptDetached(target, "listen", attachments, func(json.RawMessage, error) {}))
 			} else {
-				require.NoError(t, b.SendInput("listen", attachments))
+				require.NoError(t, agenttest.SendInput(b, "listen", attachments))
 			}
 		})
 	}

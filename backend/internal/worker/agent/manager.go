@@ -530,14 +530,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 // after the lifecycle call returns, the way the plan-execution path does. The
 // same applies to an ExitHandler, which runs while a lifecycle caller waits --
 // see the contract on that type.
-func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := m.SendInputWithReceipt(agentID, content, attachments)
-	return err
-}
-
-// SendInputWithReceipt delivers input and returns its provider identity when
-// the provider supplies one.
-func (m *Manager) SendInputWithReceipt(agentID, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error) {
+func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error) {
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
 		return NativeInputReceipt{}, err
@@ -547,9 +540,8 @@ func (m *Manager) SendInputWithReceipt(agentID, content string, attachments []*l
 
 // SendInputToSession uses a provider instance that the caller validated under its lifecycle lock.
 // The provider checks the expected session while constructing the native request.
-func SendInputToSession(provider Agent, sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := deliverProviderInput(provider, &sessionID, content, attachments)
-	return err
+func SendInputToSession(provider Agent, sessionID, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error) {
+	return deliverProviderInput(provider, &sessionID, content, attachments)
 }
 
 func deliverProviderInput(p Agent, expected *string, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error) {
@@ -559,11 +551,9 @@ func deliverProviderInput(p Agent, expected *string, content string, attachments
 	var err error
 	var receipt NativeInputReceipt
 	if expected != nil {
-		err = p.SendInputForSession(*expected, content, attachments)
-	} else if sender, ok := p.(InputReceiptSender); ok {
-		receipt, err = sender.SendInputWithReceipt(content, attachments)
+		receipt, err = p.SendInputForSession(*expected, content, attachments)
 	} else {
-		err = p.SendInput(content, attachments)
+		receipt, err = p.SendInput(content, attachments)
 	}
 	if errors.Is(err, ErrAgentBusy) {
 		// The refusal disproves the Worker's view of the turn, and both consumers
@@ -664,12 +654,7 @@ func (m *Manager) SteerInput(agentID string, request SteerRequest) (NativeInputR
 	if err := prepareProviderProcessForInput(p); err != nil {
 		return NativeInputReceipt{}, err
 	}
-	var receipt NativeInputReceipt
-	if sender, ok := p.(SteerReceiptSender); ok {
-		receipt, err = sender.SteerInputWithReceipt(request)
-	} else {
-		err = steerer.SteerInput(request)
-	}
+	receipt, err := steerer.SteerInput(request)
 	if err == nil {
 		observeGoalCommand(p, GoalDeliverySteer, request.Content)
 	}
@@ -704,19 +689,19 @@ func (m *Manager) PrepareSteer(agentID string) {
 
 // SteerInputToSession uses the provider instance and session that the caller validated.
 // It refuses a request that states no queue item, as Manager.SteerInput does.
-func SteerInputToSession(provider Agent, sessionID string, request SteerRequest) error {
+func SteerInputToSession(provider Agent, sessionID string, request SteerRequest) (NativeInputReceipt, error) {
 	if err := request.validate(); err != nil {
-		return err
+		return NativeInputReceipt{}, err
 	}
 	steerer, ok := provider.(SessionInputSteerer)
 	if !ok {
-		return ErrSteeringUnsupported
+		return NativeInputReceipt{}, ErrSteeringUnsupported
 	}
-	err := steerer.SteerInputForSession(sessionID, request)
+	receipt, err := steerer.SteerInputForSession(sessionID, request)
 	if err == nil {
 		observeGoalCommand(provider, GoalDeliverySteer, request.Content)
 	}
-	return err
+	return receipt, err
 }
 
 // SupportsSteering reports whether the running agent can steer its active turn.
@@ -839,6 +824,9 @@ func (m *Manager) SendChildInput(rootAgentID, childKey string, input ChildInput)
 }
 
 func (m *Manager) SteerChildInput(rootAgentID, childKey string, request SteerRequest) (NativeInputReceipt, error) {
+	if err := request.validate(); err != nil {
+		return NativeInputReceipt{}, err
+	}
 	p, err := m.providerAfterLifecycle(rootAgentID)
 	if err != nil {
 		return NativeInputReceipt{}, err
@@ -847,13 +835,7 @@ func (m *Manager) SteerChildInput(rootAgentID, childKey string, request SteerReq
 	if !ok {
 		return NativeInputReceipt{}, ErrChildOperationUnsupported
 	}
-	if reporter, ok := p.(ChildEchoSteerer); ok {
-		return NativeInputReceipt{}, reporter.SteerChildInputAtEcho(childKey, request)
-	}
-	if sender, ok := p.(ChildSteerReceiptSender); ok {
-		return sender.SteerChildInputWithReceipt(childKey, request.Content, request.Attachments)
-	}
-	return NativeInputReceipt{}, steerer.SteerChildInput(childKey, request.Content, request.Attachments)
+	return steerer.SteerChildInput(childKey, request)
 }
 
 // ChildSteerPolicy reads the owner's declarations for its child queues.
@@ -861,8 +843,8 @@ func (m *Manager) ChildSteerPolicy(ownerAgentID string) SteerPolicy {
 	m.mu.RLock()
 	provider := m.agents[ownerAgentID].providerOrNil()
 	m.mu.RUnlock()
-	if reporter, ok := provider.(ChildEchoSteerer); ok {
-		return SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: reporter.ChildSteerSurvivesTurnEnd()}
+	if steerer, ok := provider.(ChildSteerer); ok {
+		return steerer.ChildSteerPolicy()
 	}
 	return SteerPolicy{}
 }

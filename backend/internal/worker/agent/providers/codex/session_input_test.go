@@ -30,10 +30,9 @@ func TestCodexRecoveryRefusesNewInputAdmission(t *testing.T) {
 	})
 	a.threadID = "main-thread"
 	a.markAuthenticationRecoveryRequired()
-
-	err := a.SendInput("hello", nil)
+	_, err := a.SendInput("hello", nil)
 	require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
-	err = a.SendInputForSession("main-thread", "hello", nil)
+	_, err = a.SendInputForSession("main-thread", "hello", nil)
 	require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
 	assert.Empty(t, requests(), "no request reached the stale process")
 }
@@ -76,9 +75,9 @@ func TestCodexAuthenticationFailureBeforeSteerWritePreservesOnlyValidatedAnswers
 			done := make(chan error, 1)
 			go func() {
 				if validated {
-					done <- a.SteerInputForSession("main-thread", agent.SteerRequest{Content: "the answer"})
+					done <- agenttest.SteerInputForSession(a, "main-thread", agent.SteerRequest{Content: "the answer"})
 				} else {
-					done <- a.SteerInput(agent.SteerRequest{Content: "new input"})
+					done <- agenttest.SteerInput(a, agent.SteerRequest{Content: "new input"})
 				}
 			}()
 			require.Eventually(t, func() bool {
@@ -121,14 +120,12 @@ func TestCodexTurnStartAuthenticationRejectionMarksAndRefusesLaterInput(t *testi
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	a.threadID = "main-thread"
-
-	err := a.SendInput("first", nil)
+	_, err := a.SendInput("first", nil)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "an explicit rejection is a known failure")
 	require.Len(t, requests(), 1)
 	assert.True(t, recoveryRequired(a), "the rejection marks the process before the request settles")
-
-	err = a.SendInput("second", nil)
+	_, err = a.SendInput("second", nil)
 	require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
 	assert.Len(t, requests(), 1, "the stale process receives no second turn/start")
 }
@@ -160,7 +157,7 @@ func TestCodexLateTurnStartRejectionMarksTheSharedProcess(t *testing.T) {
 	a.threadID = "main-thread"
 
 	first := make(chan error, 1)
-	go func() { first <- a.SendInput("held", nil) }()
+	go func() { first <- agenttest.SendInput(a, "held", nil) }()
 	var deliver func(agenttest.RPCReply)
 	select {
 	case deliver = <-held:
@@ -198,7 +195,7 @@ func TestCodexLateTurnStartRejectionMarksTheSharedProcess(t *testing.T) {
 		t.Fatal("the clear did not unsubscribe the retired thread")
 	}
 	before := len(requests())
-	require.ErrorIs(t, a.SendInput("new input", nil), agent.ErrInputProcessRestartRequired)
+	require.ErrorIs(t, agenttest.SendInput(a, "new input", nil), agent.ErrInputProcessRestartRequired)
 	assert.Len(t, requests(), before, "the new thread cannot send input through the stale process")
 	deliver(agenttest.RPCReply{Result: json.RawMessage(`{}`)})
 }
@@ -289,12 +286,10 @@ func TestCodexRecoveryRefusesNewPromptSteeringButDeliversValidatedAnswers(t *tes
 		`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"failed","error":{"message":"signed in to another account","codexErrorInfo":"unauthorized"}}}}`,
 	)
 	require.True(t, recoveryRequired(a))
-
-	err := a.SteerInput(agent.SteerRequest{Content: "a new prompt"})
+	_, err := a.SteerInput(agent.SteerRequest{Content: "a new prompt"})
 	require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
 	assert.Empty(t, requests(), "no turn/steer reached the stale process for a new prompt")
-
-	err = a.SteerInputForSession("main-thread", agent.SteerRequest{Content: "the answer"})
+	_, err = a.SteerInputForSession("main-thread", agent.SteerRequest{Content: "the answer"})
 	require.NoError(t, err, "a validated answer still steers into the active turn")
 	require.Len(t, requests(), 1)
 	assert.Equal(t, "turn/steer", requests()[0].Method)

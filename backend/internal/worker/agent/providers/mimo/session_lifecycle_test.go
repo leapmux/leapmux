@@ -116,7 +116,7 @@ func TestClearContext(t *testing.T) {
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
 	assert.Len(t, sink.TurnActives(), before, "the old session's idle belongs to a session the agent left")
 
-	require.NoError(t, a.SendInput("fresh start", nil))
+	require.NoError(t, agenttest.SendInput(a, "fresh start", nil))
 	assert.Len(t, server.requestsTo("POST /session/ses_created/prompt_async"), 1)
 }
 
@@ -467,7 +467,7 @@ func TestClearContextRefusesOldSessionInputDuringCreation(t *testing.T) {
 		t.Fatal("the new session request did not start")
 	}
 
-	assert.ErrorIs(t, a.SendInput("old session input", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "old session input", nil), agent.ErrAgentBusy)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 	assert.ErrorIs(t, a.CompactContext(), agent.ErrAgentBusy)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/summarize"))
@@ -478,7 +478,7 @@ func TestClearContextRefusesOldSessionInputDuringCreation(t *testing.T) {
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the new session request did not answer")
 	}
-	require.NoError(t, a.SendInput("new session input", nil))
+	require.NoError(t, agenttest.SendInput(a, "new session input", nil))
 	assert.Len(t, server.requestsTo("POST /session/ses_created/prompt_async"), 1)
 }
 
@@ -505,7 +505,7 @@ func TestClearContextCreationFailureReleasesQueuedInput(t *testing.T) {
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the replacement session request did not start")
 	}
-	assert.ErrorIs(t, a.SendInput("queued while switching", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "queued while switching", nil), agent.ErrAgentBusy)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 
 	releaseCreation()
@@ -516,7 +516,7 @@ func TestClearContextCreationFailureReleasesQueuedInput(t *testing.T) {
 		t.Fatal("the failed replacement request did not answer")
 	}
 	assert.Equal(t, []bool{false}, sink.TurnActives(), "the old session releases input that waited for creation")
-	require.NoError(t, a.SendInput("retry on old session", nil))
+	require.NoError(t, agenttest.SendInput(a, "retry on old session", nil))
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1)
 }
 
@@ -546,7 +546,7 @@ func TestClearContextCreationFailureKeepsPendingCompactionTurn(t *testing.T) {
 	active, published := sink.LastTurnActive()
 	assert.True(t, published)
 	assert.True(t, active, "the old compaction still owns the queue turn")
-	assert.ErrorIs(t, a.SendInput("too early", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "too early", nil), agent.ErrAgentBusy)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 
 	releaseRoute()
@@ -555,7 +555,7 @@ func TestClearContextCreationFailureKeepsPendingCompactionTurn(t *testing.T) {
 		defer a.Mu.Unlock()
 		return a.manualCompactionID == ""
 	}, "the old compaction route settles")
-	require.NoError(t, a.SendInput("after no-op", nil))
+	require.NoError(t, agenttest.SendInput(a, "after no-op", nil))
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1)
 }
 
@@ -617,9 +617,10 @@ func checkClearDrainsPrompt(t *testing.T, child, uncertain bool) {
 	input := make(chan error, 1)
 	go func() {
 		if child {
-			input <- a.SteerChildInput(spawnSpanID, "old child input", nil)
+			_, err := a.SteerChildInput(spawnSpanID, agent.SteerRequest{Content: "old child input"})
+			input <- err
 		} else {
-			input <- a.SendInput("old session input", nil)
+			input <- agenttest.SendInput(a, "old session input", nil)
 		}
 	}()
 	ctx := testutil.DeadlineContext(t)
@@ -675,7 +676,7 @@ func TestClearContextThatCannotCreateASessionKeepsTheOldOne(t *testing.T) {
 	assert.ErrorContains(t, err, "create a MiMo session")
 	assert.Equal(t, testSessionID, a.sessionID)
 	assert.False(t, a.sessionSwitching)
-	require.NoError(t, a.SendInput("the old session still works", nil))
+	require.NoError(t, agenttest.SendInput(a, "the old session still works", nil))
 
 	a.SetStoppedForTest(true)
 	_, err = a.ClearContext()
@@ -734,7 +735,7 @@ func TestManualCompactionCompletionReleasesTheNextInput(t *testing.T) {
 
 	require.NoError(t, a.CompactContext())
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
-	assert.ErrorIs(t, a.SendInput("continue", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "continue", nil), agent.ErrAgentBusy)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 
 	ended := eventJSON(t, contracts.MiMoEventMessagePartUpdated, map[string]any{"part": map[string]any{
@@ -747,7 +748,7 @@ func TestManualCompactionCompletionReleasesTheNextInput(t *testing.T) {
 	assert.Len(t, sink.PersistedNotifications(), 1, "the repeated completed part persists no second notification")
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
 	assert.Equal(t, []bool{true, false}, sink.TurnActives(), "a late busy restatement cannot hold the next input")
-	require.NoError(t, a.SendInput("continue", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue", nil))
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives(), "the native busy event starts the accepted turn")
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
@@ -786,7 +787,7 @@ func TestManualCompactionIdleThenBusyKeepsTheFollowupReady(t *testing.T) {
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle), statusEvent(t, contracts.MiMoStatusTypeBusy))
 	assert.True(t, a.manualCompactionReady)
 	assert.False(t, a.turnActive)
-	require.NoError(t, a.SendInput("continue", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue", nil))
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1)
 }
 
@@ -811,14 +812,14 @@ func TestManualCompactionIdleBeforeCompletionKeepsTheQueueHeld(t *testing.T) {
 	require.True(t, exists)
 	assert.Equal(t, map[string]any{}, value, "the native summary still runs after the early idle")
 	assert.Equal(t, []bool{true}, sink.TurnActives())
-	assert.ErrorIs(t, a.SendInput("too early", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "too early", nil), agent.ErrAgentBusy)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 
 	feed(a, ended, statusEvent(t, contracts.MiMoStatusTypeBusy))
 	assert.True(t, a.manualCompactionReady)
 	assert.False(t, a.turnActive)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
-	require.NoError(t, a.SendInput("after summary", nil))
+	require.NoError(t, agenttest.SendInput(a, "after summary", nil))
 	assert.Len(t, server.requestsTo("POST /session/ses_test/prompt_async"), 1)
 }
 
@@ -856,7 +857,7 @@ func TestManualCompactionRouteFailureAfterEarlyIdleReleasesTheQueue(t *testing.T
 	require.Len(t, notices, 1)
 	assert.Equal(t, contracts.NotificationTypeAgentError, notices[0][contracts.NotificationFieldType])
 	assert.Contains(t, notices[0][contracts.NotificationFieldText], "MiMo could not compact the context")
-	require.NoError(t, a.SendInput("continue after failure", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue after failure", nil))
 }
 
 func TestManualCompactionSuccessfulRouteWithoutCompletedPartReleasesTheQueue(t *testing.T) {
@@ -898,7 +899,7 @@ func TestManualCompactionSuccessfulRouteWithoutCompletedPartReleasesTheQueue(t *
 	waitFor(t, func() bool { return len(sink.TurnActives()) >= 2 }, "the release publishes the end of the turn")
 	assert.False(t, a.manualCompactionReady)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
-	require.NoError(t, a.SendInput("continue after no-op", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue after no-op", nil))
 }
 
 func TestMiMoFailedManualCompactionWritesNoSecondRow(t *testing.T) {
@@ -969,7 +970,7 @@ func TestManualCompactionRouteFindsADelayedCompletedPart(t *testing.T) {
 	feed(a, ended)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives(), "the delayed event releases no second turn")
 	assert.Len(t, sink.PersistedNotifications(), 1, "only the native completion reaches the transcript")
-	require.NoError(t, a.SendInput("continue after summary", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue after summary", nil))
 }
 
 func TestManualCompactionFollowupBusyBeforeAcceptance(t *testing.T) {
@@ -981,7 +982,7 @@ func TestManualCompactionFollowupBusyBeforeAcceptance(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	require.NoError(t, a.SendInput("continue", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue", nil))
 	assert.False(t, a.manualCompactionReady)
 	assert.False(t, a.manualFollowupSending)
 	assert.False(t, a.manualFollowupBusy)
@@ -1000,7 +1001,7 @@ func TestManualCompactionFollowupIdleBeforeAcceptanceStartsNoTurn(t *testing.T) 
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	require.NoError(t, a.SendInput("continue", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue", nil))
 	assert.False(t, a.manualCompactionReady)
 	assert.False(t, a.manualFollowupSending)
 	assert.False(t, a.manualFollowupBusy)
@@ -1018,7 +1019,7 @@ func TestManualCompactionFollowupRefusalKeepsTheReadyState(t *testing.T) {
 		writeJSON(w, http.StatusBadRequest, `{"name":"BadRequest"}`)
 	})
 
-	require.Error(t, a.SendInput("continue", nil))
+	require.Error(t, agenttest.SendInput(a, "continue", nil))
 	assert.True(t, a.manualCompactionReady, "a later input can still join the native loop")
 	assert.False(t, a.manualFollowupSending)
 	assert.False(t, a.manualFollowupBusy)
@@ -1060,7 +1061,7 @@ func TestManualCompactionFollowupSessionReplacementDrainsOldAndKeepsNewSend(t *t
 
 	a.manualCompactionReady = true
 	oldResult := make(chan error, 1)
-	go func() { oldResult <- a.SendInput("old follow-up", nil) }()
+	go func() { oldResult <- agenttest.SendInput(a, "old follow-up", nil) }()
 	select {
 	case <-oldEntered:
 	case <-testutil.DeadlineContext(t).Done():
@@ -1089,7 +1090,7 @@ func TestManualCompactionFollowupSessionReplacementDrainsOldAndKeepsNewSend(t *t
 	a.manualCompactionReady = true
 	a.Mu.Unlock()
 	newResult := make(chan error, 1)
-	go func() { newResult <- a.SendInput("new follow-up", nil) }()
+	go func() { newResult <- agenttest.SendInput(a, "new follow-up", nil) }()
 	select {
 	case <-newEntered:
 	case <-testutil.DeadlineContext(t).Done():
@@ -1134,7 +1135,7 @@ func TestCompactContextThatFinishesBeforeItsPart(t *testing.T) {
 	require.NoError(t, a.CompactContext())
 	assert.Nil(t, a.compactionAck)
 	assert.Equal(t, []bool{false}, sink.TurnActives())
-	require.NoError(t, a.SendInput("continue after no-op", nil))
+	require.NoError(t, agenttest.SendInput(a, "continue after no-op", nil))
 }
 
 func TestCompactContextRefusals(t *testing.T) {

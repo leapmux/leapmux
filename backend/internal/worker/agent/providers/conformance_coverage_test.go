@@ -222,14 +222,8 @@ var requiredSuites = map[string][]string{
 	},
 }
 
-// TestEveryRegisteredProviderReadsItsSessionStore sweeps the registry rather
-// than a list of providers, so a provider added after this was written fails
-// until its package states what its session store is. The package states that
-// with a test that runs agenttest.RequireReadsSessionStore over a fixture of the
-// store, or with a row here that gives the reason it cannot.
-func TestEveryRegisteredProviderReadsItsSessionStore(t *testing.T) {
-	t.Parallel()
-
+func assertEveryRegisteredProviderRunsSuite(t *testing.T, suite, requirement string) {
+	t.Helper()
 	providers := Registry().Providers()
 	require.NotEmpty(t, providers, "the sweep proves nothing against an empty registry")
 	for _, id := range providers {
@@ -237,10 +231,20 @@ func TestEveryRegisteredProviderReadsItsSessionStore(t *testing.T) {
 			t.Parallel()
 			dir, ok := providerDirs[id]
 			require.Truef(t, ok, "%v has no package directory in providerDirs", id)
-			assert.Truef(t, suitesCalledIn(t, dir)["RequireReadsSessionStore"],
-				"the tests of %s must run agenttest.RequireReadsSessionStore over a fixture of its session store", dir)
+			assert.Truef(t, suitesCalledIn(t, dir)[suite], requirement, dir)
 		})
 	}
+}
+
+// TestEveryRegisteredProviderReadsItsSessionStore sweeps the registry rather
+// than a list of providers, so a provider added after this was written fails
+// until its package states what its session store is. The package states that
+// with a test that runs agenttest.RequireReadsSessionStore over a fixture of the
+// store, or with a row here that gives the reason it cannot.
+func TestEveryRegisteredProviderReadsItsSessionStore(t *testing.T) {
+	t.Parallel()
+	assertEveryRegisteredProviderRunsSuite(t, "RequireReadsSessionStore",
+		"the tests of %s must run agenttest.RequireReadsSessionStore over a fixture of its session store")
 }
 
 // TestEveryRegisteredProviderReadsItsReplyText sweeps the registry, so a
@@ -250,18 +254,8 @@ func TestEveryRegisteredProviderReadsItsSessionStore(t *testing.T) {
 // case, so the sweep and the corpus together cover every provider.
 func TestEveryRegisteredProviderReadsItsReplyText(t *testing.T) {
 	t.Parallel()
-
-	providers := Registry().Providers()
-	require.NotEmpty(t, providers, "the sweep proves nothing against an empty registry")
-	for _, id := range providers {
-		t.Run(id.String(), func(t *testing.T) {
-			t.Parallel()
-			dir, ok := providerDirs[id]
-			require.Truef(t, ok, "%v has no package directory in providerDirs", id)
-			assert.Truef(t, suitesCalledIn(t, dir)["RunReplyTextConformance"],
-				"the tests of %s must run agenttest.RunReplyTextConformance over its cases of testdata/reply_text_conformance.json", dir)
-		})
-	}
+	assertEveryRegisteredProviderRunsSuite(t, "RunReplyTextConformance",
+		"the tests of %s must run agenttest.RunReplyTextConformance over its cases of testdata/reply_text_conformance.json")
 }
 
 // TestEveryProviderPackageRunsItsConformanceSuites checks each row of

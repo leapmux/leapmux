@@ -3,7 +3,7 @@ package providerkit
 import "encoding/json"
 
 // AnthropicContent is one reading of an Anthropic content array, the block
-// list that Claude Code, Qoder, CodeBuddy and Amp all carry in
+// list that Claude Code, Qoder, CodeBuddy, Amp, Pi, and Oh My Pi carry in
 // message.content. Each provider joins the texts by its own browser rule.
 type AnthropicContent struct {
 	// Texts holds the text of each text block in order. A text that is not a

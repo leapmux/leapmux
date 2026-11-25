@@ -35,7 +35,7 @@ type Agent struct {
 	settings               optionmap.Map
 	models                 []*agent.ModelInfo
 	sessions               map[string]*sessionState
-	steerLedger            providerkit.SteerLedger
+	steerLedger            providerkit.IdentifiedSteerLedger
 	uncertainInput         *museUncertainInput           // sendMu protects the pending native command identity.
 	uncertainChildCommands map[string]museUncertainInput // sendMu protects child command identities.
 }
@@ -210,22 +210,16 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	return providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, seq)
 }
 
-func (a *Agent) SendInput(text string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.SendInputWithReceipt(text, attachments)
-	return err
-}
-
-func (a *Agent) SendInputWithReceipt(text string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+func (a *Agent) SendInput(text string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput(nil, text, attachments, nil)
 }
 
-func (a *Agent) SendInputForSession(id, text string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput(&id, text, attachments, nil)
-	return err
+func (a *Agent) SendInputForSession(id, text string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(&id, text, attachments, nil)
 }
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.sendInput(nil, request.Content, request.Attachments, &request)
-	return err
+
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, request.Content, request.Attachments, &request)
 }
 func (a *Agent) SupportsSteering() bool { return true }
 
@@ -288,7 +282,7 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 			a.stateMu.Unlock()
 			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 		}
-		steerTicket = a.steerLedger.AddIdentified(agent.SteerResolution{
+		steerTicket = a.steerLedger.Add(agent.SteerResolution{
 			InputID: steerRequest.InputID, AttemptID: steerRequest.AttemptID,
 			Receipt: agent.NativeInputReceipt{SessionID: id, InputID: commandID},
 		})

@@ -36,26 +36,24 @@ func (sink *acpInputReplySink) PublishControlRequest(request agent.ControlReques
 	return nil
 }
 
-func newACPInputReplyBase(t *testing.T) (*Base, *acpInputReplySink, agent.InputReceiptSender) {
+func newACPInputReplyBase(t *testing.T) (*Base, *acpInputReplySink) {
 	t.Helper()
 	b, baseSink := newACPTurnBase(t, &agenttest.Stdin{})
 	sink := &acpInputReplySink{Sink: baseSink, retired: make(map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome)}
 	b.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
-	sender, ok := any(b).(agent.InputReceiptSender)
-	require.True(t, ok, "the Worker needs an ACP receipt to follow the accepted input")
-	return b, sink, sender
+	return b, sink
 }
 
 func TestACPInputReplyUsesTheDispatchedPrompt(t *testing.T) {
 	t.Parallel()
-	b, sink, sender := newACPInputReplyBase(t)
+	b, sink := newACPInputReplyBase(t)
 	waitForCompletion, resumeCompletion := pausePromptCompletion(t, b)
 	sessionID := b.CurrentSessionID()
 	b.hooks.PromptPrepared = func() {
 		b.HandleOutput(acptest.Chunk(sessionID, "agent_message_chunk", "before dispatch"))
 	}
 
-	receipt, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+	receipt, err := b.SendInput("ordinary prompt", nil)
 	require.NoError(t, err)
 	require.Equal(t, sessionID, receipt.SessionID)
 	require.NotEmpty(t, receipt.InputID)
@@ -96,8 +94,8 @@ func TestACPInputReplyUsesTheDispatchedPrompt(t *testing.T) {
 
 func TestACPInputReplyCannotCompleteFromAnUnrecognizedResponse(t *testing.T) {
 	t.Parallel()
-	b, sink, sender := newACPInputReplyBase(t)
-	receipt, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+	b, sink := newACPInputReplyBase(t)
+	receipt, err := b.SendInput("ordinary prompt", nil)
 	require.NoError(t, err)
 
 	require.True(t, b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))))
@@ -120,8 +118,8 @@ func TestACPPromptSteerSharesOnlyOutputAfterItsEcho(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			b, sink, sender := newACPInputReplyBase(t)
-			lead, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+			b, sink := newACPInputReplyBase(t)
+			lead, err := b.SendInput("ordinary prompt", nil)
 			require.NoError(t, err)
 			b.HandleOutput(acptest.Chunk(lead.SessionID, "agent_message_chunk", "before the echo"))
 			b.FlushBufferedOutput(agent.MessageCompletionComplete)
@@ -171,8 +169,8 @@ func TestACPPromptSteerSharesOnlyOutputAfterItsEcho(t *testing.T) {
 
 func TestACPInputReplyRecognizesAnExplicitCancellation(t *testing.T) {
 	t.Parallel()
-	b, sink, sender := newACPInputReplyBase(t)
-	receipt, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+	b, sink := newACPInputReplyBase(t)
+	receipt, err := b.SendInput("ordinary prompt", nil)
 	require.NoError(t, err)
 	b.HandleOutput(acptest.Chunk(b.CurrentSessionID(), "agent_message_chunk", "partial answer"))
 	response := []byte(`{"jsonrpc":"2.0","id":1,"result":{"role":"result","content":{"stopReason":"cancelled"}}}`)
@@ -189,8 +187,8 @@ func TestACPInputReplyRecognizesAnExplicitCancellation(t *testing.T) {
 
 func TestACPAgentTurnKeepsItsReplyOutcomeUntilTheEarlierPromptEnds(t *testing.T) {
 	t.Parallel()
-	b, sink, sender := newACPInputReplyBase(t)
-	lead, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+	b, sink := newACPInputReplyBase(t)
+	lead, err := b.SendInput("ordinary prompt", nil)
 	require.NoError(t, err)
 	b.HandleOutput(acptest.Chunk(lead.SessionID, "agent_message_chunk", "ordinary reply"))
 	require.True(t, b.BeginAgentTurnWithReply("native-agent-turn"))
@@ -224,8 +222,8 @@ func TestACPAgentTurnKeepsItsReplyOutcomeUntilTheEarlierPromptEnds(t *testing.T)
 
 func TestACPInputReplyRetiresOnNativeRejection(t *testing.T) {
 	t.Parallel()
-	b, sink, sender := newACPInputReplyBase(t)
-	receipt, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+	b, sink := newACPInputReplyBase(t)
+	receipt, err := b.SendInput("ordinary prompt", nil)
 	require.NoError(t, err)
 	response := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"provider refused to run the prompt"}}`)
 	require.True(t, b.HandleJSONRPCResponseForTest(providerkit.ParseLine(response)))
@@ -238,9 +236,9 @@ func TestACPInputReplyRetiresOnNativeRejection(t *testing.T) {
 
 func TestACPInputReplyLeavesSessionLevelControlsUnbound(t *testing.T) {
 	t.Parallel()
-	b, sink, sender := newACPInputReplyBase(t)
+	b, sink := newACPInputReplyBase(t)
 	b.hooks.AnswerlessControlsOutliveTurns = true
-	_, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+	_, err := b.SendInput("ordinary prompt", nil)
 	require.NoError(t, err)
 	line := providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":"session-trust","method":"vendor/trust","params":{"sessionId":"session-1"}}`))
 	b.PublishSessionControlRequest(line, nil)
@@ -256,8 +254,8 @@ func TestACPInputReplyLeavesSessionLevelControlsUnbound(t *testing.T) {
 
 func TestACPInputReplyKeepsOutputOfAgentWorkWithoutADividerSeparate(t *testing.T) {
 	t.Parallel()
-	b, sink, sender := newACPInputReplyBase(t)
-	receipt, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+	b, sink := newACPInputReplyBase(t)
+	receipt, err := b.SendInput("ordinary prompt", nil)
 	require.NoError(t, err)
 	sessionID := b.CurrentSessionID()
 	b.HandleOutput(acptest.Chunk(sessionID, "agent_message_chunk", "first owned answer"))
@@ -283,4 +281,40 @@ func TestACPInputReplyKeepsOutputOfAgentWorkWithoutADividerSeparate(t *testing.T
 		}
 	}
 	assert.Equal(t, []string{"text:first owned answer", "text:second owned answer"}, taggedTexts)
+}
+
+func TestACPSendInputForSessionReturnsReceiptAndTracksReply(t *testing.T) {
+	t.Parallel()
+	b, sink := newACPInputReplyBase(t)
+	sessionID := b.CurrentSessionID()
+
+	for _, bad := range []string{"", "wrong-session"} {
+		receipt, err := b.SendInputForSession(bad, "rejected", nil)
+		require.ErrorIs(t, err, agent.ErrInputSessionChanged)
+		assert.Empty(t, receipt)
+	}
+
+	receipt, err := b.SendInputForSession(sessionID, "session-pinned prompt", nil)
+	require.NoError(t, err)
+	require.Equal(t, sessionID, receipt.SessionID)
+	require.NotEmpty(t, receipt.InputID)
+	require.NotEmpty(t, receipt.TurnID)
+
+	b.HandleOutput(acptest.Chunk(sessionID, "agent_message_chunk", "session reply"))
+	require.True(t, b.HandleJSONRPCResponseForTest(promptResponse(1)))
+	testutil.RequireEventually(t, func() bool { return len(sink.TurnActives()) == 2 })
+
+	var taggedTexts []string
+	var outcomes []leapmuxv1.AgentInputTurnOutcome
+	for _, message := range sink.Messages() {
+		if message.NativeTurnID != receipt.TurnID {
+			continue
+		}
+		taggedTexts = append(taggedTexts, assembledTexts(t, []agenttest.Message{message})...)
+		if message.TurnEnd {
+			outcomes = append(outcomes, message.InputTurnOutcome)
+		}
+	}
+	assert.Equal(t, []string{"text:session reply"}, taggedTexts)
+	assert.Equal(t, []leapmuxv1.AgentInputTurnOutcome{leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED}, outcomes)
 }

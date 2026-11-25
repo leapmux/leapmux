@@ -304,14 +304,14 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 		if err := json.Unmarshal(data, &reply); err != nil {
 			return fmt.Errorf("read the Cline approval answer: %w", err)
 		}
-		return a.answerApproval(reply)
+		return a.answerApproval(reply, input.ControlInstanceID)
 	}
 	if _, ok := probe[contracts.ClineCapabilityReplyRequestId]; ok {
 		var reply contracts.ClineCapabilityReply
 		if err := json.Unmarshal(data, &reply); err != nil {
 			return fmt.Errorf("read the Cline question answer: %w", err)
 		}
-		return a.answerCapability(reply)
+		return a.answerCapability(reply, input.ControlInstanceID)
 	}
 	return errors.New("the Cline control answer is neither an approval nor a question answer")
 }
@@ -319,8 +319,8 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 // answerApproval sends the user's decision on one approval. An approval of the
 // plan tool that states a mode sets the mode the session rebuilds in when the
 // turn ends.
-func (a *Agent) answerApproval(reply contracts.ClineApprovalReply) error {
-	control, err := a.claimPublishedControl(reply.ApprovalId, controlApproval)
+func (a *Agent) answerApproval(reply contracts.ClineApprovalReply, instanceID string) error {
+	control, err := a.claimPublishedControl(reply.ApprovalId, controlApproval, instanceID)
 	if err != nil {
 		return err
 	}
@@ -337,8 +337,8 @@ func (a *Agent) answerApproval(reply contracts.ClineApprovalReply) error {
 }
 
 // answerCapability sends the user's answer to one question.
-func (a *Agent) answerCapability(reply contracts.ClineCapabilityReply) error {
-	control, err := a.claimPublishedControl(reply.RequestId, controlQuestion)
+func (a *Agent) answerCapability(reply contracts.ClineCapabilityReply, instanceID string) error {
+	control, err := a.claimPublishedControl(reply.RequestId, controlQuestion, instanceID)
 	if err != nil {
 		return err
 	}

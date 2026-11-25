@@ -101,7 +101,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		toolInvocations: map[string]*zcodeToolInvocation{},
 		pendingControls: map[string]*pendingControl{},
 	}
-	a.sink = zcodeProgressSink{ProviderServices: agent.NewModelProgressResetSink(a.sink)}
+	a.sink = agent.DecorateProviderServices(agent.NewModelProgressResetSink(a.sink), func(direct agent.ProviderServices) agent.ProviderServices {
+		return zcodeProgressSink{ProviderServices: direct}
+	})
 	a.toolTranscript = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
 		a.Mu.Lock()
 		defer a.Mu.Unlock()

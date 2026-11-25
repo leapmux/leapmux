@@ -145,7 +145,7 @@ type Provider interface {
 	// answer. Both wire shapes it reads -- the neutral approve/reject envelope
 	// ({response:{request_id, ...}}, emitted by AllowResponse/DenyResponse for EVERY
 	// provider) and a top-level JSON-RPC id (used by the ACP family and Codex) -- are
-	// cross-provider, so every provider delegates to defaultControlResponseRequestID. The method
+	// cross-provider, so every provider delegates to ProviderDefaults.ControlResponseRequestID. The method
 	// exists so the lookup is provider-owned dispatch rather than wire parsing in shared service
 	// code; no provider narrows it, because narrowing to one shape would break the other's flows.
 	ControlResponseRequestID(content []byte) string

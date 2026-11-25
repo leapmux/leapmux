@@ -344,14 +344,20 @@ func zcodePermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer,
 		return agent.ControlAnswer{Content: agent.DenyResponse(input.RequestID, feedback)}, nil
 	}
 	if feedback != "" {
-		return agent.ControlAnswer{Content: agent.WithControlChoice(agent.DenyResponse(input.RequestID, feedback), option.GetOptionId())}, nil
+		return agent.ControlAnswer{Content: agent.ControlResponseEnvelope(input.RequestID, agent.ControlBehaviorResponse{
+			Behavior: contracts.ControlAnswerBehaviorDeny,
+			Message:  feedback,
+			Choice:   option.GetOptionId(),
+		})}, nil
 	}
 	behavior := contracts.ControlAnswerBehaviorDeny
 	if zcodeAllowOptionIDs[option.GetOptionId()] {
 		behavior = contracts.ControlAnswerBehaviorAllow
 	}
-	content := agent.ControlResponseEnvelope(input.RequestID, map[string]any{"behavior": behavior})
-	return agent.ControlAnswer{Content: agent.WithControlChoice(content, option.GetOptionId())}, nil
+	return agent.ControlAnswer{Content: agent.ControlResponseEnvelope(input.RequestID, agent.ControlBehaviorResponse{
+		Behavior: behavior,
+		Choice:   option.GetOptionId(),
+	})}, nil
 }
 
 // zcodeQuestionAnswer answers a question as the runtimes of Claude Code's

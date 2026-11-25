@@ -354,7 +354,8 @@ func (r *openCodeControls) approvePending() {
 	}
 }
 
-func (r *openCodeControls) answer(raw []byte) error {
+func (r *openCodeControls) answer(input agent.RawInput) error {
+	raw := input.Data
 	var header struct {
 		RequestID string `json:"request_id"`
 	}
@@ -367,13 +368,23 @@ func (r *openCodeControls) answer(raw []byte) error {
 	if record == nil {
 		return agent.ErrControlRequestNotPending
 	}
+	if err := agent.ControlInstanceRefusal(record.instanceID, input.ControlInstanceID); err != nil {
+		return err
+	}
 	answer, err := readOpenCodeControlAnswer(raw, record.requestID, record.kind)
 	if err != nil {
 		return err
 	}
 	r.mu.Lock()
-	if r.closed || r.pending[record.requestID] != record || !record.owner.current() {
+	if r.closed || !record.owner.current() {
 		r.mu.Unlock()
+		return agent.ErrControlRequestNotPending
+	}
+	if current := r.pending[record.requestID]; current != record {
+		r.mu.Unlock()
+		if current != nil && current.instanceID != input.ControlInstanceID {
+			return agent.ErrControlInstanceReplaced
+		}
 		return agent.ErrControlRequestNotPending
 	}
 	if record.uncertain {

@@ -506,7 +506,7 @@ func TestStartKiroStatesTheReasonOfAFailedPrompt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a, sink, _, _ := startFakeKiroWith(t, "auto", []string{kiroFakePromptErrorEnv + "=" + tc.promptError}, agent.Options{})
 
-			require.NoError(t, a.SendInput("Say hello.", nil))
+			require.NoError(t, agenttest.SendInput(a, "Say hello.", nil))
 			require.Eventually(t, func() bool { return !a.PromptActive() }, 30*time.Second, 10*time.Millisecond)
 
 			assert.Equal(t, tc.wantMessages, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))

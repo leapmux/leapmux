@@ -99,19 +99,19 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 // A steer carries text only: the inbox takes uploaded attachment references,
 // not the inline data that session/send carries. Text attachments inline into
 // the text, as a send inlines them, and anything else goes in the next turn.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	var blocks []string
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText {
-			return fmt.Errorf("%w: a ZCode steer carries text only, so %q goes in the next turn",
+			return agent.NativeInputReceipt{}, fmt.Errorf("%w: a ZCode steer carries text only, so %q goes in the next turn",
 				agent.ErrSteeringUnsupported, attachment.Filename)
 		}
 		blocks = append(blocks, providerkit.BuildInlineTextAttachmentBlock(attachment))
 	}
 	text := zcodeJoinPrompt(content, blocks)
 	if len(text) > zcodeSteerInputMaxBytes {
-		return fmt.Errorf("%w: the input is %d bytes, and ZCode steers at most %d, so it goes in the next turn",
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: the input is %d bytes, and ZCode steers at most %d, so it goes in the next turn",
 			agent.ErrSteeringUnsupported, len(text), zcodeSteerInputMaxBytes)
 	}
 
@@ -122,12 +122,12 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	switch {
 	case a.StoppedLocked():
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	case !a.turnActive:
 		// A compaction alone is not a turn to steer: its summary query is not
 		// the user's conversation, and the queued input takes the next turn.
 		a.Mu.Unlock()
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	sessionID := a.sessionID
 	commandID := zcodeSteerCommandPrefix + id.Short()
@@ -148,11 +148,11 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	})
 	if err != nil {
 		a.forgetZCodeSteer(commandID)
-		return classifyZCodeDeliveryError(MethodCommand, err)
+		return agent.NativeInputReceipt{}, classifyZCodeDeliveryError(MethodCommand, err)
 	}
 	if ack.Status != zcodeCommandAccepted || ack.Result == nil || ack.Result.Type != zcodeCommandResultInputAccepted {
 		a.forgetZCodeSteer(commandID)
-		return fmt.Errorf("ZCode did not accept the steer: %s", zcodeCommandRefusal(ack))
+		return agent.NativeInputReceipt{}, fmt.Errorf("ZCode did not accept the steer: %s", zcodeCommandRefusal(ack))
 	}
 	a.Mu.Lock()
 	// The native start or drain may have already resolved this steer.
@@ -163,7 +163,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 		steer.awaitingTurnStart = steer.awaitingTurnStart || ack.Result.Delivery == zcodeDeliveryStartNow
 	}
 	a.Mu.Unlock()
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
 func (a *Agent) forgetZCodeSteer(commandID string) {

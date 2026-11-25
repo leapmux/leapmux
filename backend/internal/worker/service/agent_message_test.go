@@ -548,9 +548,11 @@ func (a childInputRecorder) SendChildInput(_ string, input agent.ChildInput) (ag
 	return agent.ChildInputResult{StartsTurn: true}, nil
 }
 
-func (childInputRecorder) SteerChildInput(string, string, []*leapmuxv1.Attachment) error {
-	return nil
+func (childInputRecorder) SteerChildInput(string, agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
 }
+
+func (childInputRecorder) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 func (childInputRecorder) ActiveChildTurnState(string) agent.TurnState { return agent.TurnState{} }
 

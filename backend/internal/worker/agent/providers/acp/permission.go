@@ -88,18 +88,23 @@ func (b *Base) PublishSessionControlRequest(line *providerkit.ParsedLine, cancel
 		answer = permissionApprovalAnswer(line.Params)
 	}
 	if answer == nil {
-		publication := b.PublishSessionControlRequestWithApproval(sink, owner, line.Raw, cancelAnswer, nil)
+		publication := b.PublishControlRequest(sink, providerkit.ControlRequestPublication{
+			Owner: owner, Content: line.Raw, CancelAnswer: cancelAnswer,
+		})
 		b.bindURLElicitation(line, publication)
 		return
 	}
+	request := providerkit.ControlRequestPublication{
+		Owner: owner, Content: line.Raw, CancelAnswer: cancelAnswer, ApproveAnswer: answer,
+	}
 	queued := false
 	b.hooks.WithBypassPermission(func() {
-		queued = b.ApproveUnpublishedSessionControlRequest(sink, owner, line.Raw, cancelAnswer, answer)
+		queued = b.ApproveUnpublishedControlRequest(sink, request)
 	})
 	if queued {
 		return
 	}
-	publication := b.PublishSessionControlRequestWithApproval(sink, owner, line.Raw, cancelAnswer, answer)
+	publication := b.PublishControlRequest(sink, request)
 	// A mode change can finish between the first check and request registration.
 	b.hooks.WithBypassPermission(func() { b.ApproveOutstandingControlRequest(publication) })
 }

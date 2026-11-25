@@ -211,20 +211,12 @@ func writeXonshRC(t *testing.T, home, body string) {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 }
 
-// testExecutable returns the absolute path of the test binary.
-func testExecutable(t *testing.T) string {
-	t.Helper()
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	return executable
-}
-
 // reportCandidateDirectory makes a directory that holds the report helper as
 // xonshReportCandidate.
 func reportCandidateDirectory(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	require.NoError(t, os.Symlink(testExecutable(t), filepath.Join(dir, xonshReportCandidate)))
+	require.NoError(t, os.Symlink(profileCommandExecutable(t), filepath.Join(dir, xonshReportCandidate)))
 	return dir
 }
 
@@ -258,7 +250,7 @@ func TestWrapXonshStripsAVariableWithoutPrintingIt(t *testing.T) {
 			home := t.TempDir()
 			run := runXonsh(t, WrapSpec{
 				Shell: shell, LoginShell: login,
-				Launch:       Spec{Program: testExecutable(t), PrefixArgs: xonshReportPrefixArgs},
+				Launch:       Spec{Program: profileCommandExecutable(t), PrefixArgs: xonshReportPrefixArgs},
 				StripEnvKeys: []string{"LEAPMUX_TEST_SECRET", "LEAPMUX_TEST_ABSENT"},
 				SetEnv:       []string{"LEAPMUX_TEST_PIN=pinned"},
 				EnvGated:     testEnvGate("gated"),
@@ -289,7 +281,7 @@ func TestWrapXonshPassesArgumentsAndTheProgramPathExactly(t *testing.T) {
 	odd := filepath.Join(t.TempDir(), xonshOddFileName(t))
 	require.NoError(t, os.Mkdir(odd, 0o700))
 	program := filepath.Join(odd, xonshOddFileName(t))
-	require.NoError(t, os.Symlink(testExecutable(t), program))
+	require.NoError(t, os.Symlink(profileCommandExecutable(t), program))
 	candidates := reportCandidateDirectory(t)
 	for _, tc := range []struct {
 		name    string
@@ -354,7 +346,7 @@ func TestProgramPathFindsAnOddlyNamedProgramThroughXonsh(t *testing.T) {
 func TestWrapXonshSetsEachPinExactly(t *testing.T) {
 	t.Parallel()
 	shell := requireProfileShell(t, "xonsh", "xonsh")
-	executable := testExecutable(t)
+	executable := profileCommandExecutable(t)
 	candidates := reportCandidateDirectory(t)
 	fixture := newControlCLIFixture(t)
 	pins := []string{

@@ -57,7 +57,7 @@ func TestMuseSteerReceiptUsesTheTurnThatReadsTheInput(t *testing.T) {
 				require.NoError(t, err)
 				return agenttest.RPCReply{Result: result}
 			}})
-			require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "Update the checklist.", InputID: "input", AttemptID: "attempt"}))
+			require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Update the checklist.", InputID: "input", AttemptID: "attempt"}))
 			if !tc.beforeAck {
 				feed(t, a, contracts.MuseMethodTurnCompleted, turnCompletion{SessionID: "session", TurnID: activeTurn, Outcome: contracts.MuseTurnOutcomeCompleted})
 				feed(t, a, methodTurnStarted, map[string]string{"sessionId": "session", "turnId": tc.echoTurn})
@@ -110,7 +110,7 @@ func TestMuseDisposesOfAnUnechoedSteerAtRefusalOrHostExit(t *testing.T) {
 				require.NoError(t, err)
 				return agenttest.RPCReply{Result: result}
 			}})
-			err := a.SteerInput(agent.SteerRequest{Content: "Revise the plan.", InputID: "input", AttemptID: "attempt"})
+			err := agenttest.SteerInput(a, agent.SteerRequest{Content: "Revise the plan.", InputID: "input", AttemptID: "attempt"})
 			var want []agent.SteerResolution
 			if tc.refused {
 				require.ErrorContains(t, err, "The input is invalid.")
@@ -151,7 +151,7 @@ func TestMuseInputReceiptRetainsATurnThatCompletedBeforeTheAcknowledgment(t *tes
 		require.NoError(t, err)
 		return agenttest.RPCReply{Result: result}
 	}})
-	receipt, err := a.SendInputWithReceipt("guide", nil)
+	receipt, err := a.SendInput("guide", nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, commandID)
 	assert.Equal(t, agent.NativeInputReceipt{SessionID: "session", InputID: commandID, TurnID: turnID}, receipt)
@@ -204,7 +204,7 @@ func TestMuseQueuedDispositionStartsNoTurn(t *testing.T) {
 				require.NoError(t, err)
 				return agenttest.RPCReply{Result: data}
 			}})
-			require.NoError(t, a.SendInput("message", nil))
+			require.NoError(t, agenttest.SendInput(a, "message", nil))
 			if scenario.want {
 				assert.Equal(t, "turn", a.sessions["session"].turnID)
 				assert.Equal(t, []bool{true}, sink.TurnActiveCalls)
@@ -234,15 +234,15 @@ func TestMuseRetriedInputReusesTheCommandID(t *testing.T) {
 				}
 				return agenttest.RPCReply{Result: json.RawMessage(`{"commandId":"` + params.CommandID + `","status":"accepted","disposition":"queued","turnId":"native-turn"}`)}
 			}})
-			require.ErrorIs(t, a.SendInput("message", nil), agent.ErrDeliveryUncertain)
+			require.ErrorIs(t, agenttest.SendInput(a, "message", nil), agent.ErrDeliveryUncertain)
 			if repeatedFailure {
-				require.ErrorIs(t, a.SendInput("message", nil), agent.ErrDeliveryUncertain)
+				require.ErrorIs(t, agenttest.SendInput(a, "message", nil), agent.ErrDeliveryUncertain)
 			}
-			require.NoError(t, a.SendInput("message", nil))
+			require.NoError(t, agenttest.SendInput(a, "message", nil))
 			for _, id := range ids {
 				assert.Equal(t, ids[0], id)
 			}
-			require.NoError(t, a.SendInput("message", nil))
+			require.NoError(t, agenttest.SendInput(a, "message", nil))
 			assert.NotEqual(t, ids[0], ids[len(ids)-1], "a successful input clears the uncertain command")
 		})
 	}
@@ -266,22 +266,22 @@ func TestMuseRetriedInputDoesNotReuseAnotherInputIdentity(t *testing.T) {
 				require.NoError(t, err)
 				return agenttest.RPCReply{Result: data}
 			}})
-			require.ErrorIs(t, a.SendInput("message", nil), agent.ErrDeliveryUncertain)
+			require.ErrorIs(t, agenttest.SendInput(a, "message", nil), agent.ErrDeliveryUncertain)
 			switch change {
 			case "text":
-				require.NoError(t, a.SendInput("different", nil))
+				require.NoError(t, agenttest.SendInput(a, "different", nil))
 			case "attachment":
-				require.NoError(t, a.SendInput("message", []*leapmuxv1.Attachment{{Filename: "note.txt", MimeType: "text/plain", Data: []byte("different")}}))
+				require.NoError(t, agenttest.SendInput(a, "message", []*leapmuxv1.Attachment{{Filename: "note.txt", MimeType: "text/plain", Data: []byte("different")}}))
 			case "session":
 				a.sessionID = "replacement"
-				require.NoError(t, a.SendInput("message", nil))
+				require.NoError(t, agenttest.SendInput(a, "message", nil))
 				a.sessionID = "session"
 			case "steer":
 				a.startTurn("session", "turn")
-				require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "message"}))
+				require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "message"}))
 				a.sessions["session"].turnID = ""
 			}
-			require.NoError(t, a.SendInput("message", nil))
+			require.NoError(t, agenttest.SendInput(a, "message", nil))
 			require.Len(t, ids, 3)
 			assert.NotEqual(t, ids[0], ids[1])
 			assert.NotEqual(t, ids[0], ids[2])
@@ -303,9 +303,9 @@ func TestMuseRetriedInputForgetsAConfirmedRefusal(t *testing.T) {
 		}
 		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"The input is invalid."}`)}
 	}})
-	require.ErrorIs(t, a.SendInput("message", nil), agent.ErrDeliveryUncertain)
-	require.Error(t, a.SendInput("message", nil))
-	require.Error(t, a.SendInput("message", nil))
+	require.ErrorIs(t, agenttest.SendInput(a, "message", nil), agent.ErrDeliveryUncertain)
+	require.Error(t, agenttest.SendInput(a, "message", nil))
+	require.Error(t, agenttest.SendInput(a, "message", nil))
 	require.Len(t, ids, 3)
 	assert.Equal(t, ids[0], ids[1])
 	assert.NotEqual(t, ids[0], ids[2])

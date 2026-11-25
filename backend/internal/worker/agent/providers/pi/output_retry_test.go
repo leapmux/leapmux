@@ -49,7 +49,7 @@ func TestPiCancelledRetrySettlesTheTurnAsInterrupted(t *testing.T) {
 	assert.Equal(t, 1, dividers, "settlement must not add a duplicate divider")
 	require.Equal(t, 2, sink.NotificationCount())
 	assert.Equal(t, []byte(piRetryCancelled), sink.LastNotification().Content, "the native cancellation notice remains unchanged")
-	require.NoError(t, a.SendInput("Continue after cancelled backoff.", nil), "later input must not return ErrAgentBusy")
+	require.NoError(t, agenttest.SendInput(a, "Continue after cancelled backoff.", nil), "later input must not return ErrAgentBusy")
 }
 
 func TestPiAbortDuringBackoffAcceptsLaterInput(t *testing.T) {
@@ -65,7 +65,7 @@ func TestPiAbortDuringBackoffAcceptsLaterInput(t *testing.T) {
 		return nil, true, ""
 	})
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
-	require.NoError(t, a.SendInput("A normal prompt after the accepted backoff abort.", nil))
+	require.NoError(t, agenttest.SendInput(a, "A normal prompt after the accepted backoff abort.", nil))
 }
 
 func TestPiDuplicateSettlementDoesNotAffectTheNextTurn(t *testing.T) {

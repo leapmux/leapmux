@@ -187,40 +187,30 @@ func newAgentState(sink agent.ProviderServices, rpc mimoRPC, workingDir string, 
 		controls:         map[string]*mimoControl{},
 		mode:             mimoStaticModes[0].Id,
 	}
-	a.sink = agent.NewModelProgressResetSink(mimoRootProgressSink{ProviderServices: sink, owner: a})
+	a.sink = agent.NewModelProgressResetSink(agent.DecorateProviderServices(sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		return mimoRootProgressSink{ProviderServices: direct, owner: a}
+	}))
 	return a
 }
 
-// SendInput delivers a user message to the main agent. It returns once the
-// server accepted the prompt, and never waits for the turn.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.SendInputWithReceipt(content, attachments)
-	return err
-}
-
-// SendInputWithReceipt returns the server's identity for the admitted prompt.
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+// SendInput delivers a user message to the main agent and returns the server's
+// receipt for the admitted prompt. It returns once the server accepted the
+// prompt, and never waits for the turn.
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput(nil, content, attachments, false)
 }
 
-// SendInputForSession is SendInput for the session the caller states.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput(&sessionID, content, attachments, false)
-	return err
+// SendInputForSession is SendInput for the session the caller specifies.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(&sessionID, content, attachments, false)
 }
 
 // SupportsSteering always reports true. A prompt that reaches a running turn
 // joins it: the main loop reads the new message at its next step.
 func (a *Agent) SupportsSteering() bool { return true }
 
-// SteerInput adds a message to the running turn.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.SteerInputWithReceipt(request)
-	return err
-}
-
-// SteerInputWithReceipt returns the inbox admission for a steer into the root.
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+// SteerInput adds a message to the running turn and returns its inbox receipt.
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	return a.sendInput(nil, request.Content, request.Attachments, true)
 }
 

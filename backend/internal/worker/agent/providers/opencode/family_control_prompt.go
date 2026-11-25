@@ -40,7 +40,7 @@ func openCodeDefaultPermissionOptions() []*leapmuxv1.PermissionOption {
 //  4. Any other request reads as unrecognized, as the base reader reads it
 //     (acp.ReadBaseControlRequest).
 func (FamilyProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	if providerkit.IsOpenCodeQuestionEvent(input.Payload) {
+	if isOpenCodeQuestionEvent(input.Payload) {
 		return providerkit.OpenCodeQuestionPrompt(input.Payload)
 	}
 	if elicitation, ok := acp.ReadElicitation(input.Payload); ok {

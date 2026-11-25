@@ -273,3 +273,40 @@ func TestClaudeCanConfirmTheSameModeAfterAnUnresolvedReply(t *testing.T) {
 	assert.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[agent.OptionIDPermissionMode].State)
 	assert.Contains(t, peer.String(), `"subtype":"set_permission_mode"`)
 }
+
+func TestClaudeControlReplacementDuringPublicationWaitReportsReplaced(t *testing.T) {
+	a, _, peer := newPermissionAgent(t, false)
+	first := &claudePendingControl{
+		instanceID:      "inst-1",
+		sessionID:       a.sessionID,
+		publicationDone: make(chan struct{}),
+	}
+	a.Mu.Lock()
+	if a.incomingControls == nil {
+		a.incomingControls = make(map[string]*claudePendingControl)
+	}
+	a.incomingControls["req-1"] = first
+	a.Mu.Unlock()
+
+	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
+	done := make(chan error, 1)
+	go func() {
+		done <- a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: "inst-1"})
+	}()
+
+	// Replace the pending request with a newer instance while the caller waits on publicationDone.
+	replacement := &claudePendingControl{
+		instanceID:      "inst-2",
+		sessionID:       a.sessionID,
+		published:       true,
+		publicationDone: make(chan struct{}),
+	}
+	close(replacement.publicationDone)
+	a.Mu.Lock()
+	a.incomingControls["req-1"] = replacement
+	a.Mu.Unlock()
+	close(first.publicationDone)
+
+	require.ErrorIs(t, <-done, agent.ErrControlInstanceReplaced)
+	assert.Empty(t, peer.String())
+}

@@ -61,7 +61,7 @@ func TestMuseProcessCloseRetainsPartialOutput(t *testing.T) {
 	sink := &agenttest.Sink{}
 	started, err := Start(testutil.DeadlineContext(t), agent.Options{AgentID: "native-probe", WorkingDir: t.TempDir(), Shell: "/bin/sh"}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
-	require.NoError(t, started.SendInput("run", nil))
+	require.NoError(t, agenttest.SendInput(started, "run", nil))
 	require.NoError(t, started.Wait())
 	var partials []string
 	for _, message := range sink.Messages() {

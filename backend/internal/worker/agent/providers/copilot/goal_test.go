@@ -151,7 +151,7 @@ func TestNativeCopilotGoalClearDisposesAndReopensTheSession(t *testing.T) {
 	assert.Equal(t, sessionID, a.currentNativeSessionID(), "the transcript keeps its session identity")
 
 	// The reopened session still accepts input and still reports its settings.
-	require.NoError(t, a.SendInput("Carry on.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Carry on.", nil))
 	assert.NotEmpty(t, a.SettingsSnapshot().SurfacedOptions)
 
 	raw, err := a.SendRequest("probe.interests", json.RawMessage(`{}`), time.Second)
@@ -249,7 +249,7 @@ func TestNativeCopilotGoalClearReopensASessionTheStoreNeverRecorded(t *testing.T
 	assert.Positive(t, sink.GoalClears())
 	assert.Equal(t, sessionID, a.currentNativeSessionID(), "the transcript keeps its session identity")
 
-	require.NoError(t, a.SendInput("Carry on.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Carry on.", nil))
 	file, err := os.Open(requestsPath)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, file.Close()) }()
@@ -295,7 +295,7 @@ func TestNativeCopilotGoalClearEndsTheRunningTurn(t *testing.T) {
 	assert.False(t, a.PublishTurnActive().Active, "the disposed session's turn ends with it")
 	assert.Greater(t, sink.ResetSpanCount(), spansBefore,
 		"the spans of the session that went away are released")
-	require.NoError(t, a.SendInput("Carry on.", nil), "a reset turn accepts the next input")
+	require.NoError(t, agenttest.SendInput(a, "Carry on.", nil), "a reset turn accepts the next input")
 }
 
 // The clear closes the session before it opens it again, so a failure to open leaves the
@@ -312,5 +312,5 @@ func TestNativeCopilotGoalClearStopsWhenTheSessionCannotOpenAgain(t *testing.T) 
 	require.ErrorContains(t, err, "create the Copilot session again")
 	assert.True(t, a.IsStopped(), "an agent with no session does not keep its process")
 	assert.False(t, a.PublishTurnActive().Active)
-	require.Error(t, a.SendInput("Carry on.", nil), "a stopped agent accepts no input")
+	require.Error(t, agenttest.SendInput(a, "Carry on.", nil), "a stopped agent accepts no input")
 }

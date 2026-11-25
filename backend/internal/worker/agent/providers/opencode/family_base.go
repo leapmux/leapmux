@@ -154,13 +154,13 @@ func (b *FamilyBase) SendRawInput(input agent.RawInput) error {
 //
 // A STOPPED agent states nothing: the reader ended the turn themselves, so a steer
 // that did not land is the outcome they asked for.
-func (b *FamilyBase) SteerInput(request agent.SteerRequest) error {
+func (b *FamilyBase) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	_, active, sessionID, _ := b.SteerTarget()
 	if !active {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
-	return b.SendPromptDetached(sessionID, content, attachments, func(_ json.RawMessage, err error) {
+	return agent.NativeInputReceipt{}, b.SendPromptDetached(sessionID, content, attachments, func(_ json.RawMessage, err error) {
 		b.ReportSteerFailure(err)
 	})
 }

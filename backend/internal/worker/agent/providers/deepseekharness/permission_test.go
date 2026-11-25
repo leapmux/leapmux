@@ -46,7 +46,8 @@ func controlAnswer(id string) []byte {
 }
 
 func TestNativeControlAcceptsOnlyOneConcurrentAnswer(t *testing.T) {
-	a := newOfflineAgent(t, &agenttest.Sink{})
+	sink := &agenttest.ControlSink{}
+	a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var count atomic.Int32
 	serveControlReplies(t, a, func(w http.ResponseWriter, request map[string]any) {
@@ -57,15 +58,16 @@ func TestNativeControlAcceptsOnlyOneConcurrentAnswer(t *testing.T) {
 		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": request["rpcId"], "result": map[string]any{"ok": true}}))
 	})
 	publishPermission(t, a, "approval")
+	answer := sink.Answer("approval", controlAnswer("approval"))
 	done := make(chan error, 1)
-	go func() { done <- a.answerControl(controlAnswer("approval")) }()
+	go func() { done <- a.answerControl(answer) }()
 	<-entered
-	second := a.answerControl(controlAnswer("approval"))
+	second := a.answerControl(answer)
 	close(release)
 	require.NoError(t, <-done)
 	assert.Error(t, second)
 	assert.Equal(t, int32(1), count.Load())
-	assert.Error(t, a.answerControl(controlAnswer("approval")))
+	assert.Error(t, a.answerControl(answer))
 }
 
 func TestAutomaticNativeRefusalKeepsAManualFallbackWithoutRetry(t *testing.T) {
@@ -83,9 +85,29 @@ func TestAutomaticNativeRefusalKeepsAManualFallbackWithoutRetry(t *testing.T) {
 	a.queuePermissionApprovals()
 	require.Eventually(t, a.approvalWork.Idle, 30*time.Second, time.Millisecond)
 	assert.Equal(t, int32(1), count.Load())
-	assert.Error(t, a.answerControl(controlAnswer("approval")))
+	assert.Error(t, a.answerControl(sink.Answer("approval", controlAnswer("approval"))))
 	assert.Equal(t, int32(2), count.Load(), "a definite refusal permits a manual retry")
 	assert.Empty(t, sink.CanceledControls())
+}
+
+func TestDeepSeekHarnessRefusesUnstatedOrReplacedControlInstance(t *testing.T) {
+	sink := &agenttest.ControlSink{}
+	a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
+	var count atomic.Int32
+	serveControlReplies(t, a, func(w http.ResponseWriter, request map[string]any) {
+		count.Add(1)
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": request["rpcId"], "result": map[string]any{"ok": true}}))
+	})
+	publishPermission(t, a, "approval")
+	published := sink.LastPublishedControl()
+	raw := controlAnswer("approval")
+
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: raw}), agent.ErrControlInstanceUnstated)
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: "stale-instance"}), agent.ErrControlInstanceReplaced)
+	assert.Zero(t, count.Load())
+
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: published.InstanceID}))
+	assert.Equal(t, int32(1), count.Load())
 }
 
 func TestUnconfirmedNativeAnswerCannotBeSentAgain(t *testing.T) {
@@ -98,9 +120,10 @@ func TestUnconfirmedNativeAnswerCannotBeSentAgain(t *testing.T) {
 		assert.NoError(t, err)
 	})
 	publishPermission(t, a, "approval")
-	assert.ErrorIs(t, a.answerControl(controlAnswer("approval")), agent.ErrDeliveryUncertain)
+	answer := sink.Answer("approval", controlAnswer("approval"))
+	assert.ErrorIs(t, a.answerControl(answer), agent.ErrDeliveryUncertain)
 	assert.Equal(t, []string{"approval"}, sink.CanceledControls(), "an uncertain delivery cannot leave an answerable card")
-	assert.Error(t, a.answerControl(controlAnswer("approval")))
+	assert.Error(t, a.answerControl(answer))
 	assert.Equal(t, int32(1), count.Load())
 }
 

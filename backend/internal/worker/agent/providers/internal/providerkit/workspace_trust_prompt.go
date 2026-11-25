@@ -1,7 +1,6 @@
 package providerkit
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -29,15 +28,6 @@ const (
 // has no display name.
 const workspaceTrustAgentFallback = "The agent"
 
-// WorkspaceTrustOptions are the two answers to the workspace-trust question:
-// trust the folder, or do not.
-func WorkspaceTrustOptions() []*leapmuxv1.PermissionOption {
-	return []*leapmuxv1.PermissionOption{
-		{OptionId: WorkspaceTrustOptionTrust, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Trust this folder"},
-		{OptionId: WorkspaceTrustOptionReject, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Do not trust"},
-	}
-}
-
 // IsWorkspaceTrustQuestion reports whether payload is the workspace-trust
 // question that WorkspaceTrust publishes.
 func IsWorkspaceTrustQuestion(payload []byte) bool {
@@ -55,7 +45,8 @@ func ReadWorkspaceTrustPrompt(payload []byte, provider leapmuxv1.AgentProvider) 
 	if !IsWorkspaceTrustQuestion(payload) {
 		return nil, false
 	}
-	path := StringField(payload, contracts.WorkspaceTrustFieldPath)
+	fields := RawFields(payload)
+	path := ObjectString(fields, contracts.WorkspaceTrustFieldPath)
 	title := "Trust this folder"
 	if path != "" {
 		title = "Trust the folder " + path
@@ -65,31 +56,26 @@ func ReadWorkspaceTrustPrompt(payload []byte, provider leapmuxv1.AgentProvider) 
 		agentName = workspaceTrustAgentFallback
 	}
 	reason := fmt.Sprintf("%s loads %s of a project only from a folder that you trust, and it keeps your answer for the folder.",
-		agentName, workspaceTrustConfigurationPhrase(workspaceTrustConfiguration(payload)))
+		agentName, workspaceTrustConfigurationPhrase(workspaceTrustConfiguration(fields[contracts.WorkspaceTrustFieldConfiguration])))
 	// ResolveWorkspaceTrustResponse sends the runtime the decision alone, so
 	// a typed reason would reach nobody: the editor takes none.
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{
-		Title:   title,
-		Reason:  reason,
-		Options: WorkspaceTrustOptions(),
+		Title:  title,
+		Reason: reason,
+		Options: []*leapmuxv1.PermissionOption{
+			{OptionId: WorkspaceTrustOptionTrust, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Trust this folder"},
+			{OptionId: WorkspaceTrustOptionReject, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Do not trust"},
+		},
 	}}, EditorPurpose: leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE}, true
 }
 
 // workspaceTrustConfiguration reads the words of what the trust controls. An
 // element that is no string, or an empty one, is dropped. A value that is no
 // array reads as no words.
-func workspaceTrustConfiguration(payload []byte) []string {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(payload, &fields) != nil {
-		return nil
-	}
-	var elements []json.RawMessage
-	if json.Unmarshal(fields[contracts.WorkspaceTrustFieldConfiguration], &elements) != nil {
-		return nil
-	}
-	words := make([]string, 0, len(elements))
-	for _, element := range elements {
-		if word, ok := RawString(element); ok && word != "" {
+func workspaceTrustConfiguration(raw []byte) []string {
+	var words []string
+	for _, word := range RawStrings(raw) {
+		if word != "" {
 			words = append(words, word)
 		}
 	}

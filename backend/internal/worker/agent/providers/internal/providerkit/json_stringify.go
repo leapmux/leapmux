@@ -22,6 +22,9 @@ func JSONStringify(value any) ([]byte, error) {
 		return nil, err
 	}
 	encoded := bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))
+	if !bytes.Contains(encoded, []byte(`\u202`)) {
+		return encoded, nil
+	}
 	output := encoded[:0]
 	for index := 0; index < len(encoded); {
 		if encoded[index] != '\\' || index+1 == len(encoded) {

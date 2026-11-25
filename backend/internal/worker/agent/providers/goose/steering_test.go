@@ -73,7 +73,7 @@ func TestGooseSteeringTargetsTheActiveRun(t *testing.T) {
 	goose.SetPromptActiveForTest(true)
 	goose.SetSteerRunIDForTest("run-1")
 	assert.True(t, goose.SupportsSteering())
-	require.NoError(t, goose.SteerInput(agent.SteerRequest{Content: "guide"}))
+	require.NoError(t, agenttest.SteerInput(goose, agent.SteerRequest{Content: "guide"}))
 	require.Len(t, requests(), 1)
 	assert.Equal(t, "_goose/unstable/session/steer", requests()[0].Method)
 	assert.Equal(t, "run-1", requests()[0].Params["expectedRunId"])
@@ -94,7 +94,7 @@ func TestGooseSteerOfARemovedMethodFallsBackToTheQueue(t *testing.T) {
 	goose.SetSteerMethodForTest("_goose/unstable/session/steer")
 	goose.SetPromptActiveForTest(true)
 	goose.SetSteerRunIDForTest("run-1")
-	assert.ErrorIs(t, goose.SteerInput(agent.SteerRequest{Content: "guide"}), agent.ErrSteeringUnsupported)
+	assert.ErrorIs(t, agenttest.SteerInput(goose, agent.SteerRequest{Content: "guide"}), agent.ErrSteeringUnsupported)
 }
 
 // A steer that reaches a turn that already ended maps to ErrNoActiveTurn.
@@ -111,5 +111,5 @@ func TestGooseAdvertisedSteerMapsEndedTurnResponse(t *testing.T) {
 	goose.SetSteerMethodForTest("_goose/unstable/session/steer")
 	goose.SetPromptActiveForTest(true)
 	goose.SetSteerRunIDForTest("run-1")
-	assert.ErrorIs(t, goose.SteerInput(agent.SteerRequest{Content: "guide"}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(goose, agent.SteerRequest{Content: "guide"}), agent.ErrNoActiveTurn)
 }

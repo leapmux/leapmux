@@ -263,18 +263,18 @@ func (w *WorkspaceTrust) releaseRequestStateLocked(requestID string, state *work
 	}
 }
 
-// Answer carries out one answer that the worker forwards. raw is the shared
+// Answer carries out one answer that the worker forwards. input.Data is the shared
 // control response envelope, {response: {request_id, response: {decision}}}.
 // handled is false for an answer to another request, which the provider then
 // answers itself. An answer that fails keeps the question open.
-func (w *WorkspaceTrust) Answer(sink agent.ProviderServices, host WorkspaceTrustHost, raw []byte) (handled bool, err error) {
+func (w *WorkspaceTrust) Answer(sink agent.ProviderServices, host WorkspaceTrustHost, input agent.RawInput) (handled bool, err error) {
 	var envelope struct {
 		Response struct {
 			RequestID string          `json:"request_id"`
 			Response  json.RawMessage `json:"response"`
 		} `json:"response"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil || !IsWorkspaceTrustRequestID(envelope.Response.RequestID) {
+	if json.Unmarshal(input.Data, &envelope) != nil || !IsWorkspaceTrustRequestID(envelope.Response.RequestID) {
 		return false, nil
 	}
 	requestID := envelope.Response.RequestID
@@ -283,6 +283,10 @@ func (w *WorkspaceTrust) Answer(sink agent.ProviderServices, host WorkspaceTrust
 	if question == nil || question.responding {
 		w.mu.Unlock()
 		return true, ErrWorkspaceTrustClosed
+	}
+	if err := agent.ControlInstanceRefusal(question.instanceID, input.ControlInstanceID); err != nil {
+		w.mu.Unlock()
+		return true, err
 	}
 	question.responding = true
 	w.mu.Unlock()
@@ -352,7 +356,7 @@ func (w *WorkspaceTrust) Retire(sink agent.ProviderServices) {
 // for a stored request that is not a workspace-trust question, which the
 // provider then resolves itself.
 func ResolveWorkspaceTrustResponse(ctx agent.ControlResponseContext) (agent.ControlResponseResolution, bool) {
-	if StringField(ctx.RequestPayload, contracts.WorkspaceTrustFieldType) != contracts.WorkspaceTrustControlTypeQuestion {
+	if !IsWorkspaceTrustQuestion(ctx.RequestPayload) {
 		return agent.ControlResponseResolution{}, false
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
@@ -365,18 +369,6 @@ func ResolveWorkspaceTrustResponse(ctx agent.ControlResponseContext) (agent.Cont
 	if behavior == contracts.ControlAnswerBehaviorAllow {
 		decision = contracts.WorkspaceTrustDecisionTrust
 	}
-	content, err := json.Marshal(map[string]any{
-		"type": "control_response",
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": ctx.RequestID,
-			"response":   map[string]string{contracts.WorkspaceTrustFieldDecision: decision},
-		},
-	})
-	if err != nil {
-		result.Refuse(agent.RefusalUnencodableReply)
-		return result, true
-	}
-	result.Content = content
+	result.Content = agent.ControlResponseEnvelope(ctx.RequestID, map[string]string{contracts.WorkspaceTrustFieldDecision: decision})
 	return result, true
 }

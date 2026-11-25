@@ -21,10 +21,7 @@ type MCPElicitationMetaRule func(requestPayload json.RawMessage, persist string)
 // is the provider's rule for an accepted answer's `_meta` scope; nil refuses
 // every answer that carries one.
 func ResolveMCPElicitationResponse(ctx agent.ControlResponseContext, method string, acceptMeta MCPElicitationMetaRule) (agent.ControlResponseResolution, bool) {
-	var request struct {
-		Method string `json:"method"`
-	}
-	if json.Unmarshal(ctx.RequestPayload, &request) != nil || request.Method != method {
+	if method == "" || StringField(ctx.RequestPayload, "method") != method {
 		return agent.ControlResponseResolution{}, false
 	}
 	result := agent.DefaultControlResponseResolution(ctx)

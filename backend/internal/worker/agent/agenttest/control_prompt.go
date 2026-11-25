@@ -113,17 +113,7 @@ func RequireProto(t *testing.T, want, got proto.Message, msgAndArgs ...any) {
 	if proto.Equal(want, got) {
 		return
 	}
-	require.Failf(t, "the messages differ", "want %s\ngot  %s\n%s", protojson.Format(want), protojson.Format(got), formatMessage(msgAndArgs))
-}
-
-func formatMessage(msgAndArgs []any) string {
-	if len(msgAndArgs) == 0 {
-		return ""
-	}
-	if format, ok := msgAndArgs[0].(string); ok {
-		return fmt.Sprintf(format, msgAndArgs[1:]...)
-	}
-	return fmt.Sprint(msgAndArgs...)
+	require.Fail(t, fmt.Sprintf("the messages differ\nwant %s\ngot  %s", protojson.Format(want), protojson.Format(got)), msgAndArgs...)
 }
 
 // PermissionPrompt wraps permission as a prompt.

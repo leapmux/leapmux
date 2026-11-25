@@ -253,7 +253,8 @@ func (a *Agent) replyRemoteEvent(id string, outcome map[string]any) error {
 	return a.rpc.call(a.Context(), "$events/result", map[string]any{"clientId": clientID, "eventId": id, "outcome": outcome}, nil)
 }
 
-func (a *Agent) answerControl(raw []byte) error {
+func (a *Agent) answerControl(input agent.RawInput) error {
+	raw := input.Data
 	id, behavior, _, ok := agent.DecodeControlBehavior(raw)
 	if !ok || id == "" || behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny {
 		return fmt.Errorf("DeepSeek Harness control response is invalid")
@@ -263,6 +264,9 @@ func (a *Agent) answerControl(raw []byte) error {
 	a.Mu.Unlock()
 	if !exists {
 		return fmt.Errorf("DeepSeek Harness control response has no pending request")
+	}
+	if err := agent.ControlInstanceRefusal(pending.instanceID, input.ControlInstanceID); err != nil {
+		return err
 	}
 	if pending.publicationDone != nil {
 		select {
@@ -303,7 +307,7 @@ func (a *Agent) answerControl(raw []byte) error {
 			value = map[string]any{"answers": []map[string]any{{"id": question.ID, "selected": []string{label}}}}
 		} else {
 			if behavior != contracts.ControlAnswerBehaviorAllow {
-				return a.sendControlOutcome(id, pending, map[string]any{"kind": "next"})
+				return a.sendControlOutcome(id, pending, input.ControlInstanceID, map[string]any{"kind": "next"})
 			}
 			var answers []map[string]any
 			if len(response.Response.Response.Answers) == 0 || json.Unmarshal(response.Response.Response.Answers, &answers) != nil {
@@ -312,7 +316,7 @@ func (a *Agent) answerControl(raw []byte) error {
 			value = map[string]any{"answers": answers}
 		}
 	}
-	return a.sendControlOutcome(id, pending, map[string]any{"kind": "result", "value": value})
+	return a.sendControlOutcome(id, pending, input.ControlInstanceID, map[string]any{"kind": "result", "value": value})
 }
 
 // planReviewLabel is the option of a plan review that an answer selects. An

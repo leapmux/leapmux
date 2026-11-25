@@ -117,7 +117,7 @@ func finishCodexReplyLocked(pending *codexPendingTurnStart, err error) {
 // The caller holds outputMu, which orders the echo with reply rows and turn end.
 func (a *Agent) recordCodexSteerEcho(threadID, turnID, clientID string) {
 	receipt := agent.NativeInputReceipt{SessionID: threadID, TurnID: turnID, InputID: clientID}
-	report, matched := a.steerLedger.TakeIdentifiedEcho(receipt)
+	report, matched := a.steerLedger.TakeEcho(receipt)
 	if matched && a.retainCodexSteerResolution(report) {
 		a.replySteers = append(a.replySteers, receipt)
 	}
@@ -126,7 +126,7 @@ func (a *Agent) recordCodexSteerEcho(threadID, turnID, clientID string) {
 func (a *Agent) resolveCodexUnechoedSteers(threadID, turnID string, outcome agent.SteerOutcome) {
 	// Each resolved steer moves ahead of the other resolved inputs. Resolve
 	// newest first to preserve the original send order in the queue.
-	for _, report := range slices.Backward(a.steerLedger.TakeUnechoedSteers(threadID, turnID)) {
+	for _, report := range slices.Backward(a.steerLedger.TakeUnechoed(threadID, turnID)) {
 		report.Outcome = outcome
 		report.Receipt = agent.NativeInputReceipt{}
 		a.retainCodexSteerResolution(report)

@@ -414,7 +414,7 @@ func orderedNativeChildren(children map[string]*copilotNativeChild) []*copilotNa
 
 var _ agent.ChildInterrupter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
-var _ agent.ChildEchoSteerer = (*Agent)(nil)
+var _ agent.ChildSteerer = (*Agent)(nil)
 
 // errCopilotSubagentEnded refuses a message to a subagent that ended. A turn
 // that the message started would reach no one.
@@ -524,7 +524,7 @@ func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
 
 // SendChildInput sends a message to an idle background subagent, which reads
 // it in its next turn. A running background subagent answers busy, and the
-// queue steers the message (SteerChildInputAtEcho). A foreground subagent and an
+// queue steers the message (SteerChildInput). A foreground subagent and an
 // ended one take no message.
 func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
 	state, known := a.childState(childKey)
@@ -540,22 +540,15 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 
-// SteerChildInput sends a message to a running background subagent. Copilot
-// queues it, and the subagent reads it in the turn that follows its running
-// one, before it goes idle.
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.SteerChildInputAtEcho(childKey, agent.SteerRequest{Content: content, Attachments: attachments})
-}
-
-// SteerChildInputAtEcho sends a keyed steer to a running background subagent
+// SteerChildInput sends a keyed steer to a running background subagent
 // and resolves the queue row once Copilot echoes that client message.
-func (a *Agent) SteerChildInputAtEcho(childKey string, request agent.SteerRequest) error {
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	state, known := a.childState(childKey)
 	switch {
 	case !known || state.idle:
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	case !state.background:
-		return errCopilotForegroundSubagent
+		return agent.NativeInputReceipt{}, errCopilotForegroundSubagent
 	}
 	var steer *copilotQueuedSteer
 	if request.InputID != "" && request.AttemptID != "" {
@@ -567,13 +560,15 @@ func (a *Agent) SteerChildInputAtEcho(childKey string, request agent.SteerReques
 		}
 	}
 	_, err := a.sendChildMessage(childKey, state, request.Content, request.Attachments, true, steer)
-	return err
+	return agent.NativeInputReceipt{}, err
 }
 
-// ChildSteerSurvivesTurnEnd keeps a steered background-child message pending
-// when the child finishes its running turn while delivery is in flight: Copilot
-// wakes the idle child to read it.
-func (*Agent) ChildSteerSurvivesTurnEnd() bool { return true }
+// ChildSteerPolicy holds the steer row until echo and keeps a steered
+// background-child message pending when the child finishes its running turn
+// while delivery is in flight: Copilot wakes the idle child to read it.
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}
+}
 
 // ActiveChildTurnState reports the running turn of a subagent. Only a
 // background subagent takes a message during it.

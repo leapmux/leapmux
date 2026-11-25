@@ -75,9 +75,8 @@ type Agent struct {
 }
 
 var (
-	_ agent.Agent              = (*Agent)(nil)
-	_ agent.InputSteerer       = (*Agent)(nil)
-	_ agent.InputReceiptSender = (*Agent)(nil)
+	_ agent.Agent        = (*Agent)(nil)
+	_ agent.InputSteerer = (*Agent)(nil)
 )
 
 // lettaSendWait limits how long SendInput waits for the server to accept input.
@@ -163,7 +162,8 @@ const (
 	lettaControlAskUser    lettaControlKind = "ask_user"
 )
 
-// SendInput delivers a user message to the conversation.
+// SendInput delivers a user message to the conversation and returns the client
+// message ID that Letta maps to its runs.
 //
 // It returns once the input frame is written, and never waits for the turn. A
 // running turn refuses the input with ErrAgentBusy, so the LeapMux input queue
@@ -173,21 +173,14 @@ const (
 // It never sends before the runtime identity exists. Start waits for the
 // runtime_start response, and sendInput refuses an empty scope as a backstop:
 // the App Server drops a scope-less input without an error.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, nil)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, content, attachments)
 }
 
-// SendInputWithReceipt returns the client message ID that Letta maps to its runs.
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	var receipt agent.NativeInputReceipt
-	err := a.sendInput(nil, content, attachments, &receipt)
-	return receipt, err
-}
-
-// SendInputForSession delivers a user message when the conversation it states
-// is still the current one.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&sessionID, content, attachments, nil)
+// SendInputForSession delivers a user message when the conversation it specifies
+// is still the current one, and returns its native receipt.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(&sessionID, content, attachments)
 }
 
 // HandleOutput feeds one stdout line into the dispatcher. The App Server
@@ -197,8 +190,8 @@ func (a *Agent) HandleOutput(content []byte) {
 }
 
 // SteerInput is unsupported: Letta queues a mid-turn message as a new turn.
-func (a *Agent) SteerInput(agent.SteerRequest) error {
-	return agent.ErrSteeringUnsupported
+func (a *Agent) SteerInput(agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, agent.ErrSteeringUnsupported
 }
 
 // SupportsSteering reports false. Letta queues a mid-turn user message and runs
@@ -207,7 +200,7 @@ func (a *Agent) SteerInput(agent.SteerRequest) error {
 func (a *Agent) SupportsSteering() bool { return false }
 
 // sendInput writes one input command.
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, receipt *agent.NativeInputReceipt) error {
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	args, compact := lettaCompactArguments(content)
 	compact = compact && len(attachments) == 0
 	var payload []any
@@ -216,7 +209,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		var err error
 		payload, clientMessageID, err = buildUserMessages(content, attachments)
 		if err != nil {
-			return err
+			return agent.NativeInputReceipt{}, err
 		}
 	}
 
@@ -226,41 +219,38 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.conversationID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return errAgentStopped
+		return agent.NativeInputReceipt{}, errAgentStopped
 	}
 	scope := runtimeScope{AgentID: a.agentID, ConversationID: a.conversationID}
 	active := a.turnActive
 	a.Mu.Unlock()
 	if active {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	// A scope-less input is not a delivery the server can refuse: it is
 	// dropped with no reply at all. Fail it here instead.
 	if scope.AgentID == "" || scope.ConversationID == "" {
-		return errors.New("the worker cannot send input before the Letta runtime identity arrives")
+		return agent.NativeInputReceipt{}, errors.New("the worker cannot send input before the Letta runtime identity arrives")
 	}
 
 	var cmd lettaCommand
+	var receipt agent.NativeInputReceipt
 	if compact {
 		a.setTurnActive(true)
 		cmd = a.prepareManualCompaction(scope, args)
 	} else {
 		cmd = a.createMessageCommand(scope, payload)
-		if receipt != nil {
-			native, err := a.beginInputReply(scope, cmd.RequestID, clientMessageID)
-			if err != nil {
-				return err
-			}
-			*receipt = native
-		} else {
-			a.setTurnActive(true)
+		var err error
+		receipt, err = a.beginInputReply(scope, cmd.RequestID, clientMessageID)
+		if err != nil {
+			return agent.NativeInputReceipt{}, err
 		}
 	}
-	// One line per delivered input. The scope fields name the runtime the
+	// One line per delivered input. The scope fields identify the runtime the
 	// frame addresses, which is the difference between a turn and a silent
 	// drop on this protocol.
 	slog.Info("letta: send input",
@@ -274,11 +264,16 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		if compact {
 			a.failManualCompactionSend(cmd.RequestID)
 		} else {
+			a.Mu.Lock()
+			if a.inputReply != nil && a.inputReply.requestID == cmd.RequestID {
+				a.inputReply = nil
+			}
+			a.Mu.Unlock()
 			a.setTurnActive(false)
 		}
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return nil
+	return receipt, nil
 }
 
 // createMessageCommand returns the `input` command that delivers messages to the

@@ -428,7 +428,8 @@ type kimiControlEnvelope struct {
 var errKimiControlGone = errors.New("the Kimi Code control request is no longer pending")
 
 // deliverControlResponse posts one resolved answer.
-func (a *Agent) deliverControlResponse(raw []byte) error {
+func (a *Agent) deliverControlResponse(input agent.RawInput) error {
+	raw := input.Data
 	var envelope kimiControlEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("decode the Kimi Code control response: %w", err)
@@ -447,6 +448,9 @@ func (a *Agent) deliverControlResponse(raw []byte) error {
 	if pending == nil || unpublished {
 		return errKimiControlGone
 	}
+	if err := agent.ControlInstanceRefusal(pending.instanceID, input.ControlInstanceID); err != nil {
+		return err
+	}
 	ctx := a.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -459,11 +463,18 @@ func (a *Agent) deliverControlResponse(raw []byte) error {
 	a.sessionMu.Lock()
 	defer a.finishSessionMutation()
 	a.Mu.Lock()
+	if current := a.controls[requestID]; current != pending {
+		a.Mu.Unlock()
+		if current != nil && current.instanceID != input.ControlInstanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return errKimiControlGone
+	}
 	if pending.sessionID != a.sessionID {
 		a.Mu.Unlock()
 		return errors.New("the Kimi Code control request belongs to a previous session")
 	}
-	if a.controls[requestID] != pending || pending.answered || pending.answering || !pending.published {
+	if pending.answered || pending.answering || !pending.published {
 		a.Mu.Unlock()
 		return errKimiControlGone
 	}

@@ -138,7 +138,7 @@ func TestKiroSteerInputSendsASessionSteer(t *testing.T) {
 	})
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput(kiroTestSteer("also mention bananas")))
+	require.NoError(t, agenttest.SteerInput(a, kiroTestSteer("also mention bananas")))
 
 	sent := requestsFor(requests(), kiroSteerMethod)
 	require.Len(t, sent, 1)
@@ -150,7 +150,7 @@ func TestKiroSteerInputRefusesAnIdleSession(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newKiroAgent(t, agent.Options{}, nil)
 
-	err := a.SteerInput(agent.SteerRequest{Content: "late"})
+	err := agenttest.SteerInput(a, agent.SteerRequest{Content: "late"})
 
 	assert.ErrorIs(t, err, agent.ErrNoActiveTurn)
 	syncPeer(t, a)
@@ -162,7 +162,7 @@ func TestKiroSteerInputRefusesAnAttachmentAsUnsupported(t *testing.T) {
 	a, _, requests := newKiroAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
 
-	err := a.SteerInput(agent.SteerRequest{Content: "look", Attachments: []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}}})
+	err := agenttest.SteerInput(a, agent.SteerRequest{Content: "look", Attachments: []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}}})
 
 	assert.ErrorIs(t, err, agent.ErrSteeringUnsupported, "the worker then keeps the message, attachment and all, for the next turn")
 	syncPeer(t, a)
@@ -179,7 +179,7 @@ func TestKiroSteerInputReadsADroppedSteerAsAnEndedTurn(t *testing.T) {
 	})
 	a.SetPromptActiveForTest(true)
 
-	err := a.SteerInput(kiroTestSteer("too late"))
+	err := agenttest.SteerInput(a, kiroTestSteer("too late"))
 
 	assert.ErrorIs(t, err, agent.ErrNoActiveTurn)
 	assert.Contains(t, err.Error(), "epoch_changed")
@@ -195,7 +195,7 @@ func TestKiroSteerInputReportsAnUnreadableReply(t *testing.T) {
 	})
 	a.SetPromptActiveForTest(true)
 
-	err := a.SteerInput(kiroTestSteer("hello"))
+	err := agenttest.SteerInput(a, kiroTestSteer("hello"))
 
 	require.ErrorContains(t, err, "read the Kiro steer reply")
 	assert.NotErrorIs(t, err, agent.ErrNoActiveTurn, "a reply that LeapMux cannot read is not a turn that ended")
@@ -217,7 +217,7 @@ func TestKiroSteerInputKeepsAnUnprovedAdmissionUncertain(t *testing.T) {
 				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 			})
 			a.SetPromptActiveForTest(true)
-			err := a.SteerInput(kiroTestSteer("hello"))
+			err := agenttest.SteerInput(a, kiroTestSteer("hello"))
 			assert.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 			assert.NotErrorIs(t, err, agent.ErrNoActiveTurn, "the Worker must not automatically requeue an unproved admission")
 			assert.Empty(t, sink.SteerResolutions())
@@ -238,7 +238,7 @@ func TestKiroSteerInputWithAnEmptyAttachmentListSteers(t *testing.T) {
 
 	request := kiroTestSteer("text only")
 	request.Attachments = []*leapmuxv1.Attachment{}
-	require.NoError(t, a.SteerInput(request))
+	require.NoError(t, agenttest.SteerInput(a, request))
 
 	require.Len(t, requestsFor(requests(), kiroSteerMethod), 1)
 }
@@ -268,7 +268,7 @@ func TestKiroSteerInputReportsAFailedRequest(t *testing.T) {
 	})
 	a.SetPromptActiveForTest(true)
 
-	err := a.SteerInput(kiroTestSteer("hello"))
+	err := agenttest.SteerInput(a, kiroTestSteer("hello"))
 
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, agent.ErrNoActiveTurn), "a failed request is not a turn that ended")
@@ -692,7 +692,7 @@ func TestKiroSteerEchoAtSteeringInjected(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(kiroTestSteer("probe handled")))
+	require.NoError(t, agenttest.SteerInput(a, kiroTestSteer("probe handled")))
 	a.HandleOutput(kiroSteerChunk(t, "Done before the steer."))
 	a.HandleOutput(kiroSteerInfo(t, "steering_injected", map[string]any{"messageId": "steer-1"}))
 	a.HandleOutput(kiroSteerChunk(t, "The rest of the answer."))
@@ -715,7 +715,7 @@ func TestKiroSteerDroppedAtSteeringCleared(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(kiroTestSteer("probe handled")))
+	require.NoError(t, agenttest.SteerInput(a, kiroTestSteer("probe handled")))
 	a.HandleOutput(kiroSteerInfo(t, "steering_cleared", map[string]any{"messageIds": []any{"steer-1"}}))
 
 	reports := sink.SteerResolutions()
@@ -729,7 +729,7 @@ func TestKiroLateSteerSurvivesIntoTheNextPrompt(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(kiroTestSteer("probe handled")))
+	require.NoError(t, agenttest.SteerInput(a, kiroTestSteer("probe handled")))
 	a.FinishPromptRequestForTest(kiroTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 	assert.Empty(t, sink.SteerResolutions(), "the steer survives the turn end")
 
@@ -755,7 +755,7 @@ func TestKiroSteerInjectedBeforeTheReplyStillEchoes(t *testing.T) {
 		return kiroSteerReplyOf("steer-1")(request)
 	})
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(kiroTestSteer("probe handled")))
+	require.NoError(t, agenttest.SteerInput(a, kiroTestSteer("probe handled")))
 	require.Len(t, sink.SteerResolutions(), 1)
 	assert.Equal(t, agent.SteerResolution{
 		InputID: "queued-input", AttemptID: "dispatch", Outcome: agent.SteerOutcomeEchoed,
@@ -772,7 +772,7 @@ func TestKiroSteerClearedBeforeTheReplyStillDrops(t *testing.T) {
 		return kiroSteerReplyOf("steer-1")(request)
 	})
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(kiroTestSteer("probe handled")))
+	require.NoError(t, agenttest.SteerInput(a, kiroTestSteer("probe handled")))
 	assert.Equal(t, []agent.SteerResolution{{
 		InputID: "queued-input", AttemptID: "dispatch", Outcome: agent.SteerOutcomeDropped,
 	}}, sink.SteerResolutions())
@@ -788,8 +788,8 @@ func TestKiroControlReplyEchoCannotResolveAnotherSteer(t *testing.T) {
 		return kiroSteerReplyOf(id)(request)
 	})
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(kiroTestSteer("probe handled")))
-	require.NoError(t, a.SteerInput(agent.SteerRequest{InputID: "answer-input", Content: "answer text"}))
+	require.NoError(t, agenttest.SteerInput(a, kiroTestSteer("probe handled")))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{InputID: "answer-input", Content: "answer text"}))
 	a.HandleOutput(kiroSteerInfo(t, "steering_injected", map[string]any{"messageId": "control-reply"}))
 	assert.Empty(t, sink.SteerResolutions())
 	a.HandleOutput(kiroSteerInfo(t, "steering_injected", map[string]any{"messageId": "queued-guidance"}))
@@ -808,7 +808,7 @@ func TestKiroSteerFailedCallReportsNothing(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	a.SetPromptActiveForTest(true)
-	require.Error(t, a.SteerInput(kiroTestSteer("probe handled")))
+	require.Error(t, agenttest.SteerInput(a, kiroTestSteer("probe handled")))
 	assert.Empty(t, sink.SteerResolutions())
 }
 
@@ -817,7 +817,7 @@ func TestKiroClearContextDropsPendingSteers(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(kiroTestSteer("probe handled")))
+	require.NoError(t, agenttest.SteerInput(a, kiroTestSteer("probe handled")))
 	a.clearProviderState()
 	reports := sink.SteerResolutions()
 	require.Len(t, reports, 1)

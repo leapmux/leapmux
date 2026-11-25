@@ -75,13 +75,11 @@ func newOpenCodeSessionRuntime(ctx context.Context, rpc openCodeRPC, info openCo
 }
 
 func (s *openCodeSessionRuntime) SupportsSteering() bool { return true }
-func (s *openCodeSessionRuntime) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := s.submitInput(content, attachments, openCodeInputOptions{})
-	return err
+func (s *openCodeSessionRuntime) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return s.submitInput(content, attachments, openCodeInputOptions{trackReply: true})
 }
-func (s *openCodeSessionRuntime) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := s.submitInput(content, attachments, openCodeInputOptions{expected: &sessionID})
-	return err
+func (s *openCodeSessionRuntime) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return s.submitInput(content, attachments, openCodeInputOptions{expected: &sessionID, trackReply: true})
 }
 func (s *openCodeSessionRuntime) steerQueuedInput(expected *string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	return s.submitInput(request.Content, request.Attachments, openCodeInputOptions{expected: expected, steer: true, trackReply: true, queueSteer: &request})

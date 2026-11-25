@@ -347,7 +347,7 @@ func TestPi_SendInput_FreshTurnSendsFollowUp(t *testing.T) {
 		return nil, true, ""
 	})
 
-	require.NoError(t, rig.agent.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "hello", nil))
 
 	select {
 	case payload := <-gotPayload:
@@ -366,7 +366,7 @@ func TestPiPromptRefusalRepublishesTheTurn(t *testing.T) {
 		// Native preflight refusal from .tmp/verify-c29/pi/run2/frames.jsonl.
 		return nil, false, "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
 	})
-	require.NoError(t, rig.agent.SendInput("next prompt", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "next prompt", nil))
 	require.Eventually(t, func() bool {
 		active, published := sink.LastTurnActive()
 		return published && !active
@@ -381,7 +381,7 @@ func TestPiHandledPromptRepublishesTheTurn(t *testing.T) {
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		return json.RawMessage(`{"disposition":"handled"}`), true, ""
 	})
-	require.NoError(t, rig.agent.SendInput("handled prompt", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "handled prompt", nil))
 	require.Eventually(t, func() bool {
 		active, published := sink.LastTurnActive()
 		return published && !active
@@ -406,7 +406,7 @@ func TestPiManualCompactUsesNativeRPCCommand(t *testing.T) {
 				got <- req
 				return nil, true, ""
 			})
-			require.NoError(t, rig.agent.SendInput(tc.input, nil))
+			require.NoError(t, agenttest.SendInput(rig.agent, tc.input, nil))
 			select {
 			case request := <-got:
 				assert.Equal(t, "compact", request.Type)
@@ -426,7 +426,7 @@ func TestPiManualCompactRefusesAttachments(t *testing.T) {
 	t.Parallel()
 	rig := newPiTestRig(t, agenttest.Nop())
 	attachment := &leapmuxv1.Attachment{Filename: "note.txt", MimeType: "text/plain", Data: []byte("note")}
-	assert.ErrorContains(t, rig.agent.SendInput("/compact", []*leapmuxv1.Attachment{attachment}), "attachments")
+	assert.ErrorContains(t, agenttest.SendInput(rig.agent, "/compact", []*leapmuxv1.Attachment{attachment}), "attachments")
 	assert.Empty(t, rig.requests())
 }
 
@@ -455,9 +455,9 @@ func TestPiManualCompactLeavesSimilarPromptsAndSteeringAlone(t *testing.T) {
 			})
 			var err error
 			if tc.steer {
-				err = rig.agent.SteerInput(agent.SteerRequest{Content: tc.input})
+				err = agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: tc.input})
 			} else {
-				err = rig.agent.SendInput(tc.input, nil)
+				err = agenttest.SendInput(rig.agent, tc.input, nil)
 			}
 			require.NoError(t, err)
 			select {
@@ -480,7 +480,7 @@ func TestPiManualCompactReturnsTheNativeError(t *testing.T) {
 		}
 		return nil, true, ""
 	})
-	assert.ErrorContains(t, rig.agent.SendInput("/compact", nil), "the session has no conversation to compact")
+	assert.ErrorContains(t, agenttest.SendInput(rig.agent, "/compact", nil), "the session has no conversation to compact")
 }
 
 func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
@@ -499,7 +499,7 @@ func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
 		return nil, true, ""
 	})
 
-	require.NoError(t, rig.agent.SteerInput(agent.SteerRequest{Content: "steer this"}))
+	require.NoError(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "steer this"}))
 
 	select {
 	case payload := <-gotPayload:
@@ -515,7 +515,7 @@ func TestPi_SendInput_StoppedAgentReturnsError(t *testing.T) {
 	rig := newPiTestRig(t, agenttest.Nop())
 	rig.agent.SetStoppedForTest(true)
 
-	err := rig.agent.SendInput("hello", nil)
+	err := agenttest.SendInput(rig.agent, "hello", nil)
 	require.Error(t, err)
 }
 
@@ -536,7 +536,7 @@ func TestPi_SendInput_WithImageAttachment_BuildsImagesArray(t *testing.T) {
 		MimeType: "image/png",
 		Data:     []byte("\x89PNGfake"),
 	}
-	require.NoError(t, rig.agent.SendInput("describe", []*leapmuxv1.Attachment{att}))
+	require.NoError(t, agenttest.SendInput(rig.agent, "describe", []*leapmuxv1.Attachment{att}))
 
 	select {
 	case payload := <-gotPayload:
@@ -1048,7 +1048,7 @@ func TestPiExtensionCommandPublishesIdleBeforeSendReturns(t *testing.T) {
 		return nil, true, ""
 	})
 	rig.agent.refreshPiCommands(time.Second)
-	require.NoError(t, rig.agent.SendInput("/plan start", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "/plan start", nil))
 	active, observed := sink.LastTurnActive()
 	assert.True(t, observed, "the queue needs a completion signal for an extension command")
 	assert.False(t, active)

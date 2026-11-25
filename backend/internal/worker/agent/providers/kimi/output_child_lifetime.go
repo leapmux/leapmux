@@ -121,12 +121,11 @@ func (a *Agent) installChildLifetime(run, parentRun *kimiRun, parent agent.Provi
 	if lease.Sink == nil || lease.CaptureMessage == nil || lease.Activate == nil || lease.Cleanup == nil {
 		return errors.New("the Kimi child services supplied an incomplete lifetime")
 	}
-	direct, valid := agent.DirectTranscript(lease.Sink).(agent.ProviderServices)
-	if !valid {
+	if _, valid := agent.DirectTranscript(lease.Sink).(agent.ProviderServices); !valid {
 		return errors.New("the Kimi child writer does not preserve its provider services")
 	}
-	writer := agent.NewOrderedProviderServices(agent.OutputQueueFor(lease.Sink), &kimiLeasedChildServices{
-		ProviderServices: direct, capture: lease.CaptureMessage,
+	writer := agent.DecorateProviderServices(lease.Sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		return &kimiLeasedChildServices{ProviderServices: direct, capture: lease.CaptureMessage}
 	})
 	queue := agent.OutputQueueFor(writer)
 	if queue == nil {

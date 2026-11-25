@@ -150,10 +150,10 @@ func TestCodexAudioDispatchAndSteerKeepTheRunningModel(t *testing.T) {
 	a.model = "audio-model"
 	a.availableModels = []*agent.ModelInfo{{Id: "audio-model", SupportsAudioInput: true}, {Id: "text-model"}}
 	attachments := []*leapmuxv1.Attachment{{Filename: "sample.wav", MimeType: "audio/wav", Data: []byte{0, 1}}}
-	require.NoError(t, a.SendInput("Listen.", attachments))
+	require.NoError(t, agenttest.SendInput(a, "Listen.", attachments))
 	assert.Equal(t, "audio-model", a.mainTurn.model)
 	a.model = "text-model"
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "Listen again.", Attachments: attachments}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Listen again.", Attachments: attachments}))
 	recorded := requests()
 	require.Len(t, recorded, 2)
 	assert.Equal(t, "turn/start", recorded[0].Method)
@@ -174,11 +174,11 @@ func TestCodexRefusesAudioBeforeNativeDispatch(t *testing.T) {
 		a.model = current
 		a.availableModels = []*agent.ModelInfo{{Id: "audio-model", SupportsAudioInput: true}, {Id: "text-model"}}
 		attachments := []*leapmuxv1.Attachment{{Filename: "sample.wav", MimeType: "audio/wav", Data: []byte{0, 1}}}
-		require.ErrorContains(t, a.SendInput("Listen.", attachments), "does not accept audio")
+		require.ErrorContains(t, agenttest.SendInput(a, "Listen.", attachments), "does not accept audio")
 		assert.Nil(t, a.pendingStart)
 		a.mainTurn = codexMainTurn{id: "text-turn", model: current}
 		a.model = "audio-model"
-		require.ErrorContains(t, a.SteerInput(agent.SteerRequest{Content: "Listen.", Attachments: attachments}), "does not accept audio")
+		require.ErrorContains(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Listen.", Attachments: attachments}), "does not accept audio")
 		assert.Zero(t, a.mainTurn.steers)
 		assert.Empty(t, a.pendingSteerCalls)
 		assert.Empty(t, requests())
@@ -214,13 +214,13 @@ func TestCodexInputEntryPointsRefuseInvalidAttachmentsBeforeNativeDispatch(t *te
 				attachments := []*leapmuxv1.Attachment{attachment}
 				switch entry {
 				case "send":
-					err = a.SendInput("Keep the attachment.", attachments)
+					_, err = a.SendInput("Keep the attachment.", attachments)
 				case "session send":
-					err = a.SendInputForSession("audio-thread", "Keep the attachment.", attachments)
+					_, err = a.SendInputForSession("audio-thread", "Keep the attachment.", attachments)
 				case "steer":
-					err = a.SteerInput(agent.SteerRequest{Content: "Keep the attachment.", Attachments: attachments})
+					_, err = a.SteerInput(agent.SteerRequest{Content: "Keep the attachment.", Attachments: attachments})
 				case "session steer":
-					err = a.SteerInputForSession("audio-thread", agent.SteerRequest{Content: "Keep the attachment.", Attachments: attachments})
+					_, err = a.SteerInputForSession("audio-thread", agent.SteerRequest{Content: "Keep the attachment.", Attachments: attachments})
 				}
 				assert.Error(t, err)
 				assert.Empty(t, requests())

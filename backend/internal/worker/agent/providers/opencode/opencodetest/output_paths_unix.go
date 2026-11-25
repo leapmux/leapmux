@@ -51,7 +51,7 @@ func AssertNativeOutputPathDoesNotSaveText(t *testing.T, binary string, start ag
 			assert.True(t, status.Signaled(), "the stopped fake CLI must exit through its stop signal")
 		}
 	}()
-	require.NoError(t, provider.SendInput("Run the captured native operation.", nil))
+	require.NoError(t, agenttest.SendInput(provider, "Run the captured native operation.", nil))
 	select {
 	case <-sink.finished:
 	case <-ctx.Done():

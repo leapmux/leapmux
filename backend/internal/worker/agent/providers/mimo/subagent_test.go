@@ -338,7 +338,7 @@ func TestChildInput(t *testing.T) {
 	assert.ErrorIs(t, agenttest.SendChildInput(a, spawnSpanID, agent.ChildInput{Content: "more"}), agent.ErrAgentBusy, "a running subagent holds the message for a steer")
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState(spawnSpanID))
 
-	require.NoError(t, a.SteerChildInput(spawnSpanID, "also this", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, spawnSpanID, "also this", nil))
 	requests := server.requestsTo("POST /session/ses_test/prompt_async")
 	require.Len(t, requests, 1)
 	assert.JSONEq(t, `{"parts":[{"type":"text","text":"also this"}],"agentID":"general-1","model":{"providerID":"mock","modelID":"alpha"}}`,
@@ -346,7 +346,7 @@ func TestChildInput(t *testing.T) {
 
 	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(spawnSpanID))
-	assert.ErrorIs(t, a.SteerChildInput(spawnSpanID, "late", nil), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerChildInput(a, spawnSpanID, "late", nil), agent.ErrNoActiveTurn)
 
 	assert.ErrorContains(t, agenttest.SendChildInput(a, "call-unknown", agent.ChildInput{Content: "hello"}), "no subagent")
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-unknown"))
@@ -358,12 +358,12 @@ func TestChildAudioInputValidatesTheModelWithoutChangingItsDeliveryTarget(t *tes
 	a, server := newTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 	attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255}}}
-	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "Listen to this.", attachments), "does not accept audio attachments")
+	assert.ErrorContains(t, agenttest.SteerChildInput(a, spawnSpanID, "Listen to this.", attachments), "does not accept audio attachments")
 	assert.Empty(t, server.allRequests())
 	model := agent.FindAvailableModel(a.catalog.models, a.model)
 	require.NotNil(t, model)
 	model.SupportsAudioInput = true
-	require.NoError(t, a.SteerChildInput(spawnSpanID, "Listen to this.", attachments))
+	require.NoError(t, agenttest.SteerChildInput(a, spawnSpanID, "Listen to this.", attachments))
 	requests := server.requestsTo("POST /session/ses_test/prompt_async")
 	require.Len(t, requests, 1)
 	assert.JSONEq(t, `{"parts":[{"type":"text","text":"Listen to this."},{"type":"file","mime":"audio/wav","url":"data:audio/wav;base64,AP8=","filename":"voice.wav"}],"agentID":"general-1","model":{"providerID":"mock","modelID":"alpha"}}`, string(requests[0].Body))
@@ -436,7 +436,7 @@ func TestChildSteerReportsARefusal(t *testing.T) {
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 	server.respond("POST /session/ses_test/prompt_async", http.StatusBadRequest, `{"name":"BadRequest"}`)
 
-	err := a.SteerChildInput(spawnSpanID, "also this", nil)
+	err := agenttest.SteerChildInput(a, spawnSpanID, "also this", nil)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 }
@@ -559,7 +559,7 @@ func TestRestoreActorLinks(t *testing.T) {
 
 	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 2, ""))
 	assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, spawnSpanID).Status, "a later turn opens the row that the spawn call keys")
-	require.NoError(t, a.SteerChildInput(spawnSpanID, "resume the work", nil))
+	require.NoError(t, agenttest.SteerChildInput(a, spawnSpanID, "resume the work", nil))
 	assert.JSONEq(t, `{"parts":[{"type":"text","text":"resume the work"}],"agentID":"general-1","model":{"providerID":"mock","modelID":"alpha"}}`,
 		string(server.requestsTo("POST /session/ses_test/prompt_async")[0].Body))
 }
@@ -668,14 +668,14 @@ func TestChildSteerRefusalsSendNothing(t *testing.T) {
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
 
 	binary := []*leapmuxv1.Attachment{{Filename: "tool.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}}}
-	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "run it", binary), "tool.bin")
+	assert.ErrorContains(t, agenttest.SteerChildInput(a, spawnSpanID, "run it", binary), "tool.bin")
 
 	a.sessionID = ""
-	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "more", nil), "no MiMo session")
+	assert.ErrorContains(t, agenttest.SteerChildInput(a, spawnSpanID, "more", nil), "no MiMo session")
 
 	a.sessionID = testSessionID
 	a.SetStoppedForTest(true)
-	assert.ErrorContains(t, a.SteerChildInput(spawnSpanID, "more", nil), "stopped")
+	assert.ErrorContains(t, agenttest.SteerChildInput(a, spawnSpanID, "more", nil), "stopped")
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 }
 

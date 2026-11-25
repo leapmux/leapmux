@@ -172,7 +172,7 @@ func TestNativeControlAnswerRestoresTheExactJSONRPCID(t *testing.T) {
 			_, dispatcher, delivered := answerControlFixture(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, key, requestPayload)
 			response, errs := answerControl(t, dispatcher, &leapmuxv1.AnswerControlRequest{
 				AgentId: "agent-1", RequestId: key, ClaimToken: "claim-1",
-				NativeResponse: &leapmuxv1.NativeControlAnswer{Content: agent.SelectedOptionResult(key, "once")},
+				NativeResponse: &leapmuxv1.NativeControlAnswer{Content: agent.JSONRPCResult(key, map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "once"}})},
 			})
 			require.Empty(t, errs)
 			assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, response.GetState())

@@ -25,7 +25,7 @@ func permissionFixture(t *testing.T) (*Agent, *agenttest.ControlSink, *bytes.Buf
 	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(controls))
 	stdin := &bytes.Buffer{}
 	a.SetStdinForTest(agenttest.NopStdin(stdin))
-	require.NoError(t, a.SendInput("Run the scripted command.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the scripted command.", nil))
 	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"waiting-control","name":"Bash"}]}}`))
 	stdin.Reset()
 	return a, controls, stdin
@@ -202,7 +202,7 @@ func TestCodebuddyPermissionInterruptSendsGlobalStopAfterTheNativeRunEnds(t *tes
 	rows := controls.Messages()
 	require.NotEmpty(t, rows)
 	assert.Equal(t, agent.MessageCompletionInterrupted, rows[len(rows)-1].Completion)
-	require.NoError(t, a.SendInput("Run the next turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the next turn.", nil))
 	a.HandleOutput([]byte(codebuddyResultFinished))
 	rows = controls.Messages()
 	assert.NotEqual(t, agent.MessageCompletionInterrupted, rows[len(rows)-1].Completion)
@@ -296,7 +296,7 @@ func TestCodebuddyInterruptRefusesAQuestionBeforeTheCompletedAssistantFrame(t *t
 	a.sink = agent.NewProviderServices(controls)
 	stdin := &bytes.Buffer{}
 	a.SetStdinForTest(agenttest.NopStdin(stdin))
-	require.NoError(t, a.SendInput("Ask the scripted question.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Ask the scripted question.", nil))
 	beginCodebuddyModelStream(t, a, nil)
 	a.HandleOutput(codebuddyProgressFrame(t, map[string]any{
 		"type": "content_block_start", "index": 0,

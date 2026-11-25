@@ -72,7 +72,7 @@ func TestHarnessExactReplyCompletesBeforePromptAcknowledgement(t *testing.T) {
 			}
 			done := make(chan result, 1)
 			go func() {
-				receipt, err := a.SendInputWithReceipt("Check the result.", nil)
+				receipt, err := a.SendInput("Check the result.", nil)
 				done <- result{receipt, err}
 			}()
 			var requestID string
@@ -418,9 +418,10 @@ func TestHarnessChildSteerAndControlBindToChildSink(t *testing.T) {
 			applyChildEvent(1, "turn/start", `{"turn":3}`)
 			applyChildEvent(2, "assistant/message", `{"turn":3,"message":{"content":[{"type":"text","text":"Before steer."}]}}`)
 
-			require.NoError(t, a.SteerChildInputAtEcho("native-child", agent.SteerRequest{
+			_, err = a.SteerChildInput("native-child", agent.SteerRequest{
 				InputID: "queue-child-steer", AttemptID: "attempt-1", Content: "Steer child.",
-			}))
+			})
+			require.NoError(t, err)
 			applyChildEvent(3, "user/message", harnessInputEcho(steerReqID))
 
 			publishChildApproval := func(id, callID string) {
@@ -528,4 +529,52 @@ func TestHarnessChildUncertainDeliveryAndStreamFailureRetirement(t *testing.T) {
 	}}, childSink.SteerResolutions())
 	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
 		childSink.NativeReplyRetirements()[agent.NativeInputReceipt{SessionID: "native-child", InputID: "in-flight", TurnID: "7"}])
+}
+
+func TestHarnessSendInputForSessionReturnsReceiptAndTracksReply(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	var requestID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID      string `json:"rpcId"`
+			Payload struct {
+				Args struct {
+					Request struct {
+						ID      string `json:"requestId"`
+						Session string `json:"sessionId"`
+					} `json:"request"`
+				} `json:"args"`
+			} `json:"payload"`
+		}
+		assert.Equal(t, "/api/session/prompt", r.URL.Path)
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		requestID = request.Payload.Args.Request.ID
+		assert.Equal(t, "native-root", request.Payload.Args.Request.Session)
+		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+			"type": "server-response", "rpcId": request.ID,
+			"result": map[string]any{"ok": true, "value": map[string]any{"accepted": true}},
+		}))
+	}))
+	defer server.Close()
+	endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+	require.NoError(t, err)
+	defer endpoint.Close()
+	a.rpc = remoteRPC{endpoint: endpoint, timeout: 30 * time.Second}
+
+	receipt, err := a.SendInputForSession("native-root", "Check the result.", nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, requestID)
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: "native-root", InputID: requestID}, receipt)
+
+	applyReplyEvent(t, a, 1, "turn/start", `{"turn":12}`)
+	applyReplyEvent(t, a, 2, "user/message", harnessInputEcho(requestID))
+	applyReplyEvent(t, a, 3, "assistant/message", `{"turn":12,"message":{"content":[{"type":"text","text":"Session reply."}]}}`)
+	applyReplyEvent(t, a, 4, "turn/end", `{"turn":12,"reason":{"kind":"completed"}}`)
+	require.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: "native-root", TurnID: "12", Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs: []agent.NativeReplyBoundary{{InputID: requestID, AfterOrdinal: 1}},
+		Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "session-event:3:block:0"}},
+	}}, sink.NativeReplyTurns())
 }

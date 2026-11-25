@@ -34,11 +34,10 @@ func TestAgentTurn_BeginOpensATurnThatRefusesInput(t *testing.T) {
 	require.True(t, b.BeginAgentTurn())
 	assert.True(t, b.AgentTurnActive())
 	assert.Equal(t, []bool{true}, sink.TurnActives(), "the agent turn is published like a prompt")
-
-	// The worker queues a message behind a turn the agent started, exactly as
-	// behind one LeapMux started: a second session/prompt would reach the agent
-	// while it works.
-	err := b.SendInput("later", nil)
+	_, // The worker queues a message behind a turn the agent started, exactly as
+		// behind one LeapMux started: a second session/prompt would reach the agent
+		// while it works.
+		err := b.SendInput("later", nil)
 	assert.ErrorIs(t, err, agent.ErrAgentBusy)
 	assert.Empty(t, out.String(), "a refused input writes nothing")
 }
@@ -63,7 +62,7 @@ func TestAgentTurn_AdmitRefusesWhileAPromptRuns(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(b, "hello", nil))
 
 	assert.False(t, b.AdmitAgentTurn())
 	assert.False(t, b.AgentTurnActive())
@@ -112,7 +111,7 @@ func TestAgentTurn_AFollowUpPromptDoesNotInheritOutputAfterTheDrain(t *testing.T
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("first", nil))
+	require.NoError(t, agenttest.SendInput(b, "first", nil))
 	b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "FIRST"))
 	b.HandleJSONRPCResponseForTest(promptResponse(1))
 	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
@@ -151,7 +150,7 @@ func TestAgentTurn_BeginInsideAPromptWaitsForThePromptToEnd(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("/goal ship it", nil))
+	require.NoError(t, agenttest.SendInput(b, "/goal ship it", nil))
 
 	// The agent starts its turn before the base processed the prompt's end.
 	require.True(t, b.BeginAgentTurn(), "the agent turn waits for the prompt")
@@ -176,7 +175,7 @@ func TestAgentTurn_AQueuedTurnThatEndsFirstEndsAfterThePrompt(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	require.True(t, b.BeginAgentTurn())
 
 	// The whole agent turn went by before the prompt's end was processed.
@@ -198,7 +197,7 @@ func TestAgentTurn_AQueuedTurnDefersTheFollowUpPrompt(t *testing.T) {
 	b, sink := newACPTurnBase(t, out)
 	follow := &followUpBase{pending: []string{"also check the tests"}}
 	b.hooks.FollowUpPrompt = follow.take
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	require.True(t, b.BeginAgentTurn())
 
 	b.HandleJSONRPCResponseForTest(promptResponse(1))
@@ -217,7 +216,7 @@ func TestAgentTurn_AFailedPromptHandsOverToTheQueuedTurn(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("/compress", nil))
+	require.NoError(t, agenttest.SendInput(b, "/compress", nil))
 	require.True(t, b.BeginAgentTurn())
 
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)))
@@ -237,7 +236,7 @@ func TestPromptParams_TheHookAdjustsEachPrompt(t *testing.T) {
 		params["_meta"] = map[string]any{"promptId": "p-1"}
 	}
 
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 
 	var frame struct {
 		Params struct {
@@ -307,7 +306,7 @@ func TestAgentTurn_EndWithoutRowDropsAQueuedTurn(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	require.True(t, b.BeginAgentTurn())
 
 	// The work ended before the prompt ahead of it did.
@@ -327,7 +326,7 @@ func TestAgentTurn_EndWithoutRowGivesTheOutputOfAQueuedTurnBackToThePrompt(t *te
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "Before."))
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","title":"Read","kind":"read","status":"completed"}`))
 	require.True(t, b.BeginAgentTurn())
@@ -361,7 +360,7 @@ func TestAgentTurn_EndWithoutRowAfterThePromptDrainStoresTheOutputOfTheWork(t *t
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	require.True(t, b.BeginAgentTurn())
 	b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "Work."))
 	b.turnMu.Lock()
@@ -430,7 +429,7 @@ func TestFollowUpPrompt_LeftoverInputStartsTheNextPromptWithoutAnIdleGap(t *test
 	}
 	b.hooks.FollowUpPrompt = follow.take
 
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)))
 
 	testutil.RequireEventually(t, func() bool { return strings.Count(out.String(), `"method":"session/prompt"`) == 2 })
@@ -454,7 +453,7 @@ func TestFollowUpPrompt_AStoppedTurnStartsNoPrompt(t *testing.T) {
 	follow := &followUpBase{pending: []string{"kept"}}
 	b.hooks.FollowUpPrompt = follow.take
 
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	b.noteACPInterruptRequested()
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"cancelled"}}`)))
 
@@ -616,7 +615,7 @@ func TestAgentTurn_AQueuedTurnKeepsItsOwnOutputAtThePromptEnd(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("/goal ship it", nil))
+	require.NoError(t, agenttest.SendInput(b, "/goal ship it", nil))
 	b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "Goal set."))
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","title":"Plan","kind":"think","status":"in_progress"}`))
 
@@ -659,7 +658,7 @@ func TestAgentTurn_APromptToolThatEndsAfterTheBoundaryCountsForThePrompt(t *test
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","title":"Read","kind":"read","status":"in_progress"}`))
 	require.True(t, b.BeginAgentTurn())
 
@@ -686,7 +685,7 @@ func TestAgentTurn_AFailedPromptKeepsTheQueuedTurnsOutput(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("/compress", nil))
+	require.NoError(t, agenttest.SendInput(b, "/compress", nil))
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","title":"Plan","kind":"think","status":"in_progress"}`))
 	require.True(t, b.BeginAgentTurn())
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"goal-tool","title":"Build","kind":"execute","status":"in_progress"}`))
@@ -815,7 +814,7 @@ func TestAgentTurn_AQueuedTurnKeepsACopyOfItsEndFrame(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	require.True(t, b.BeginAgentTurn())
 	frame := []byte(agentTurnEndFrame)
 
@@ -835,7 +834,7 @@ func TestAgentTurn_TheBoundaryStoresThePromptsThought(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("/goal ship it", nil))
+	require.NoError(t, agenttest.SendInput(b, "/goal ship it", nil))
 	b.HandleOutput(acptest.Chunk("session-1", "agent_thought_chunk", "Prompt thinks."))
 
 	require.True(t, b.BeginAgentTurn())
@@ -888,7 +887,7 @@ func TestFollowUpPrompt_AFailedPromptStillSendsTheInputThatItNeverRead(t *testin
 	b, sink := newACPTurnBase(t, out)
 	follow := &followUpBase{pending: []string{"also check the tests"}}
 	b.hooks.FollowUpPrompt = follow.take
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)))
 
@@ -1019,7 +1018,7 @@ func TestAgentTurn_AFailedPromptOfADiscardingAgentWritesNoRow(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","title":"Plan","kind":"think","status":"in_progress"}`))
 	require.True(t, b.BeginAgentTurn())
 	b.DiscardOutput()

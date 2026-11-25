@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -302,16 +301,19 @@ func (b *FamilyBase) LoadedChildSteerTarget(childKey string) (acp.ChildSessionTa
 
 // SteerChildInput sends a separate prompt to the loaded child session.
 // The queue writes the steer's user row to the child transcript.
-func (b *FamilyBase) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+func (b *FamilyBase) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	target, _, err := b.LoadedChildSteerTarget(childKey)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	owner, _ := b.SessionOwner(target.SessionID)
-	return b.SendChildPromptDetached(target, content, attachments, func(_ json.RawMessage, err error) {
+	err = b.SendChildPromptDetached(target, request.Content, request.Attachments, func(_ json.RawMessage, err error) {
 		b.ReportChildSteerFailure(target, owner, err)
 	})
+	return agent.NativeInputReceipt{}, err
 }
+
+func (*FamilyBase) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 // ActiveChildTurnState reports a running subagent's turn, which takes a steer
 // once the agent loaded the subagent's session.

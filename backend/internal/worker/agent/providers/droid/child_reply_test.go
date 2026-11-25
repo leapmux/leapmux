@@ -109,9 +109,9 @@ func TestDroidChildSendReturnsNativeReceiptAndExactReply(t *testing.T) {
 func TestDroidChildSteerReportsEchoAndPostSteerReply(t *testing.T) {
 	t.Parallel()
 	root, child, _, childSink, _, childStdin := newBoundChildReplyHarness(t)
-	echoSteerer, ok := any(root).(agent.ChildEchoSteerer)
-	require.True(t, ok, "Droid must implement ChildEchoSteerer for bound child turns")
-	assert.True(t, echoSteerer.ChildSteerSurvivesTurnEnd())
+	steerer, ok := any(root).(agent.ChildSteerer)
+	require.True(t, ok, "Droid must implement ChildSteerer for bound child turns")
+	assert.Equal(t, agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}, steerer.ChildSteerPolicy())
 
 	lead, err := root.SendChildInput(steerChildID, agent.ChildInput{Content: "Run the child tool."})
 	require.NoError(t, err)
@@ -123,9 +123,10 @@ func TestDroidChildSteerReportsEchoAndPostSteerReply(t *testing.T) {
 		"type": contracts.DroidToolNotificationToolResult, "messageId": "child-tool-res-1", "toolUseId": "child-tool-1",
 	})
 
-	require.NoError(t, echoSteerer.SteerChildInputAtEcho(steerChildID, agent.SteerRequest{
+	_, err = steerer.SteerChildInput(steerChildID, agent.SteerRequest{
 		InputID: "queue-steer-1", AttemptID: "attempt-1", Content: "Include the steered note.",
-	}))
+	})
+	require.NoError(t, err)
 	params := lastRequest(t, childStdin)
 	steerMessageID, _ := params["messageId"].(string)
 	require.NotEmpty(t, steerMessageID)

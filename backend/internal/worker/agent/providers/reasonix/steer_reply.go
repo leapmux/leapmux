@@ -24,8 +24,6 @@ const reasonixMidTurnSteerPrefix = "[Mid-turn steer queued by the user. Do not t
 const reasonixReplyMessageID = "reasonix:reply"
 const reasonixSteerAnswerPrefix = "reasonix-steer-reply:"
 
-var _ agent.SteerReceiptSender = (*Agent)(nil)
-
 type reasonixSteerReplies struct {
 	mu        sync.Mutex
 	active    *reasonixSteerTurn
@@ -51,11 +49,11 @@ type reasonixACPAnswer struct {
 	key, text string
 }
 
-// SteerInputWithReceipt sends `_reasonix.io/session/steer` and records the
-// durable receipt plus the pre-steer journal cursor so prompt-end
-// reconciliation can prove exact post-steer reply ownership from Reasonix's
-// committed session transcript.
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+// SteerInput sends `_reasonix.io/session/steer` and records the durable
+// receipt plus the pre-steer journal cursor so prompt-end reconciliation can
+// prove exact post-steer reply ownership from Reasonix's committed session
+// transcript.
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	var receipt agent.NativeInputReceipt
 	a.steerDispatchMu.Lock()
 	defer a.steerDispatchMu.Unlock()
@@ -320,7 +318,7 @@ func (a *Agent) reconcileReasonixSteerReplies(sink agent.ProviderServices, turn 
 	}
 
 	// Match committed assistant messages to stored ACP answer rows from the back
-	// (because PrepareSteer may have flushed pre-steer text before SteerInputWithReceipt).
+	// (because PrepareSteer may have flushed pre-steer text before SteerInput).
 	matchedKeys := matchReasonixAnswersToJournal(assistants, answers)
 
 	for i, steer := range matched {
@@ -415,7 +413,7 @@ func matchReasonixAnswersToJournal(assistants []reasonixJournalAssistant, answer
 		}
 		if !matchedSplit {
 			// Skip an unmatched assistant entry (for example pre-steer text flushed
-			// before SteerInputWithReceipt ran).
+			// before SteerInput ran).
 			continue
 		}
 	}

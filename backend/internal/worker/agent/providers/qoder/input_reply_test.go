@@ -28,7 +28,7 @@ func TestQoderExactReplyWaitsForItsCommandCompletion(t *testing.T) {
 	a, _, stdin := newGoalAgent(t)
 	sink := &agenttest.ControlSink{}
 	a.sink = agent.NewProviderServices(sink)
-	receipt, err := a.SendInputWithReceipt("Check the release.", nil)
+	receipt, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	_, err = uuid.Parse(receipt.InputID)
 	require.NoError(t, err)
@@ -111,7 +111,7 @@ func TestQoderExactReplyRequiresNativeOwnership(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, sink, _ := newGoalAgent(t)
-			receipt, err := a.SendInputWithReceipt("Check the release.", nil)
+			receipt, err := a.SendInput("Check the release.", nil)
 			require.NoError(t, err)
 			a.HandleOutput(commandFrame(receipt.SessionID, receipt.InputID, commandStarted))
 			if tc.echo {
@@ -146,14 +146,14 @@ func TestQoderExactReplyRequiresNativeOwnership(t *testing.T) {
 func TestQoderQueuedSteersKeepTheirOwnReplies(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newGoalAgent(t)
-	root, err := a.SendInputWithReceipt("Check the release.", nil)
+	root, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	a.HandleOutput(commandFrame(root.SessionID, root.InputID, commandStarted))
 	a.HandleOutput(userEchoFrame(root))
 	first := agent.SteerRequest{InputID: "first", AttemptID: "first-attempt", Content: "Check the release."}
 	second := agent.SteerRequest{InputID: "second", AttemptID: "second-attempt", Content: "Check the release."}
-	require.NoError(t, a.SteerInput(first))
-	require.NoError(t, a.SteerInput(second))
+	require.NoError(t, agenttest.SteerInput(a, first))
+	require.NoError(t, agenttest.SteerInput(a, second))
 	lines := strings.Split(strings.TrimSpace(stdin.String()), "\n")
 	require.Len(t, lines, 3)
 	firstReceipt := steerReceiptFromFrame(t, lines[1], root.SessionID)
@@ -210,7 +210,7 @@ func TestQoderUnreadSteerUsesItsNativeDisposition(t *testing.T) {
 			a, sink, stdin := newGoalAgent(t)
 			a.setTurnActive(true)
 			request := agent.SteerRequest{InputID: "input", AttemptID: "attempt", Content: "Update the release check."}
-			require.NoError(t, a.SteerInput(request))
+			require.NoError(t, agenttest.SteerInput(a, request))
 			receipt := steerReceiptFromFrame(t, stdin.String(), a.nativeSessionID())
 			if tc.started {
 				a.HandleOutput(commandFrame(receipt.SessionID, receipt.InputID, commandStarted))

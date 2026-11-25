@@ -33,7 +33,7 @@ func TestAntigravityRejectsMissingAndReplacedSessions(t *testing.T) {
 func TestAntigravityBusyRefusalRepublishesTheTurn(t *testing.T) {
 	a, sink := testAgent(t)
 	a.beginTurn(a.root)
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, a.SendInput("later", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, agenttest.SendInput(a, "later", nil))
 }
 
 func TestAntigravityRisingTurnTokens(t *testing.T) {

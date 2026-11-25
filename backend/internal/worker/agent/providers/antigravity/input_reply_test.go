@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,7 @@ func TestAntigravityExactInputReplyUsesNativeExecutionAndStepOrder(t *testing.T)
 	rpc, requests := fakeAntigravityRPC(t)
 	a, sink := testAgent(t)
 	a.rpc = rpc
-	receipt, err := a.SendInputWithReceipt("identical prompt", nil)
+	receipt, err := a.SendInput("identical prompt", nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, receipt.InputID)
 	require.Equal(t, "cascade", receipt.SessionID)
@@ -41,7 +42,7 @@ func TestAntigravityExactInputReplyUsesNativeExecutionAndStepOrder(t *testing.T)
 		Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "antigravity:cascade:1"}, {Ordinal: 3, MessageKey: "antigravity:cascade:2"}},
 	}}, sink.NativeReplyTurns())
 	assert.Empty(t, sink.NativeReplyRetirements())
-	next, err := a.SendInputWithReceipt("identical prompt", nil)
+	next, err := a.SendInput("identical prompt", nil)
 	require.NoError(t, err)
 	assert.NotEqual(t, receipt.InputID, next.InputID)
 }
@@ -50,7 +51,7 @@ func TestAntigravityExactReplySkipsBlankPlannerRows(t *testing.T) {
 	rpc, _ := fakeAntigravityRPC(t)
 	a, sink := testAgent(t)
 	a.rpc = rpc
-	receipt, err := a.SendInputWithReceipt("report readiness", nil)
+	receipt, err := a.SendInput("report readiness", nil)
 	require.NoError(t, err)
 	feedUpdate(t, a, inputReplyUpdate(cascadeStatusIdle, "trajectory", 3, []int{0, 1, 2},
 		replyInputStep(receipt.InputID, "execution"),
@@ -66,10 +67,10 @@ func TestAntigravityUnreadSteerKeepsItsReceiptForTheNextExecution(t *testing.T) 
 	a, sink := testAgent(t)
 	rpc, requests := fakeAntigravityRPC(t)
 	a.rpc = rpc
-	first, err := a.SendInputWithReceipt("original prompt", nil)
+	first, err := a.SendInput("original prompt", nil)
 	require.NoError(t, err)
 	feedUpdate(t, a, inputReplyUpdate(cascadeStatusRunning, "trajectory", 1, []int{0}, replyInputStep(first.InputID, "first")))
-	steer, err := a.SteerInputWithReceipt(agent.SteerRequest{Content: "revision"})
+	steer, err := a.SteerInput(agent.SteerRequest{Content: "revision"})
 	require.NoError(t, err)
 	require.NotEmpty(t, steer.InputID)
 	assert.Empty(t, steer.TurnID)
@@ -82,7 +83,7 @@ func TestAntigravityUnreadSteerKeepsItsReceiptForTheNextExecution(t *testing.T) 
 	assert.Equal(t, []agent.NativeReplyBoundary{{InputID: first.InputID, AfterOrdinal: 1}}, turns[0].Inputs)
 	assert.Empty(t, sink.NativeReplyRetirements())
 
-	next, err := a.SendInputWithReceipt("continue", nil)
+	next, err := a.SendInput("continue", nil)
 	require.NoError(t, err)
 	feedUpdate(t, a, inputReplyUpdate(cascadeStatusIdle, "trajectory", 5, []int{2, 3, 4},
 		replyInputStep(steer.InputID, "second"),
@@ -103,7 +104,7 @@ func TestAntigravityRetiresAnUnreadChildSteerOnStreamLoss(t *testing.T) {
 	rpc, _ := fakeAntigravityRPC(t)
 	a.rpc = rpc
 	require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusRunning}, false))
-	receipt, err := a.SteerChildInputWithReceipt(child.id, "revision", nil)
+	receipt, err := a.SteerChildInput(child.id, agent.SteerRequest{Content: "revision"})
 	require.NoError(t, err)
 	require.Equal(t, child.id, receipt.SessionID)
 	require.NotEmpty(t, receipt.InputID)
@@ -131,7 +132,7 @@ func TestAntigravitySteerUpdatesAlreadyPublishedControlsByNativePosition(t *test
 	sink := &steerControlBindingSink{ProviderServices: a.root.sink, bindings: make(map[string][]string)}
 	a.root.sink = sink
 	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusRunning, TrajectoryID: "trajectory"})
-	steer, err := a.SteerInputWithReceipt(agent.SteerRequest{Content: "revised input"})
+	steer, err := a.SteerInput(agent.SteerRequest{Content: "revised input"})
 	require.NoError(t, err)
 	permission := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_WAITING","metadata":{"executionId":"execution"},"requestedInteraction":{"permission":{"resource":{"action":"command","target":"printf ready"}}}}`)
 	feedUpdate(t, a, inputReplyUpdate(cascadeStatusRunning, "trajectory", 4, []int{1, 3}, permission, permission))
@@ -149,7 +150,7 @@ func TestAntigravityChildReplyUsesItsOwnCascade(t *testing.T) {
 	a, sink, child := childLifecycleTestAgent(t)
 	rpc, requests := fakeAntigravityRPC(t)
 	a.rpc = rpc
-	rootReceipt, err := a.SendInputWithReceipt("identical prompt", nil)
+	rootReceipt, err := a.SendInput("identical prompt", nil)
 	require.NoError(t, err)
 	result, err := a.SendChildInput(child.id, agent.ChildInput{Content: "identical prompt"})
 	require.NoError(t, err)
@@ -223,7 +224,7 @@ func TestAntigravityExactReplyRequiresUnambiguousNativeEvidence(t *testing.T) {
 			rpc, _ := fakeAntigravityRPC(t)
 			a, sink := testAgent(t)
 			a.rpc = rpc
-			receipt, err := a.SendInputWithReceipt("check readiness", nil)
+			receipt, err := a.SendInput("check readiness", nil)
 			require.NoError(t, err)
 			feedUpdate(t, a, inputReplyUpdate(cascadeStatusRunning, "trajectory", 1, []int{0}, replyInputStep(receipt.InputID, tc.echoExecution)))
 			plannerStatus := tc.plannerStatus
@@ -249,7 +250,7 @@ func TestAntigravityExactReplyRetiresAnInputWhenTheProcessEndsBeforeEcho(t *test
 	rpc, _ := fakeAntigravityRPC(t)
 	a, sink := testAgent(t)
 	a.rpc = rpc
-	receipt, err := a.SendInputWithReceipt("check readiness", nil)
+	receipt, err := a.SendInput("check readiness", nil)
 	require.NoError(t, err)
 	a.finishCascades([]*cascadeState{a.root}, agent.MessageCompletionError, bgtask.StatusFailed)
 	assert.Empty(t, sink.NativeReplyTurns())
@@ -274,7 +275,7 @@ func TestAntigravityExactReplyRequiresNativeEvidenceOfAnAbortedExecution(t *test
 			rpc, _ := fakeAntigravityRPC(t)
 			a, sink := testAgent(t)
 			a.rpc = rpc
-			receipt, err := a.SendInputWithReceipt("check readiness", nil)
+			receipt, err := a.SendInput("check readiness", nil)
 			require.NoError(t, err)
 			feedUpdate(t, a, inputReplyUpdate(cascadeStatusRunning, "trajectory", 1, []int{0}, replyInputStep(receipt.InputID, "execution")))
 			step := json.RawMessage(fmt.Sprintf(`{"type":%q,"status":%q,"metadata":{"executionId":%q},"errorMessage":{}}`,
@@ -324,15 +325,15 @@ func TestAntigravityLateInputRefusalKeepsTheNextInputInFlight(t *testing.T) {
 		_, _ = w.Write([]byte("{}"))
 	})
 	done := make(chan error, 1)
-	go func() { done <- a.SendInput("first", nil) }()
+	go func() { done <- agenttest.SendInput(a, "first", nil) }()
 	receiveTestValue(t, firstSent)
 	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusRunning})
 	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
-	receipt, err := a.SendInputWithReceipt("next", nil)
+	receipt, err := a.SendInput("next", nil)
 	require.NoError(t, err)
 	refuse()
 	require.Error(t, receiveTestValue(t, done))
-	_, err = a.SendInputWithReceipt("must stay queued", nil)
+	_, err = a.SendInput("must stay queued", nil)
 	assert.ErrorIs(t, err, agent.ErrAgentBusy)
 	a.Mu.Lock()
 	defer a.Mu.Unlock()

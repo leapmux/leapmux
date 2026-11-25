@@ -2273,10 +2273,12 @@ func newRequeueFixture(t *testing.T) (*Service, agent.ProviderServices) {
 
 type echoSinkAgent struct{ agenttest.IdleAgent }
 
-func (*echoSinkAgent) SteerInput(agent.SteerRequest) error { return nil }
-func (*echoSinkAgent) SupportsSteering() bool              { return true }
-func (*echoSinkAgent) SteerRowAtEcho() bool                { return true }
-func (*echoSinkAgent) SteerSurvivesTurnEnd() bool          { return true }
+func (*echoSinkAgent) SteerInput(agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
+}
+func (*echoSinkAgent) SupportsSteering() bool     { return true }
+func (*echoSinkAgent) SteerRowAtEcho() bool       { return true }
+func (*echoSinkAgent) SteerSurvivesTurnEnd() bool { return true }
 
 func newSteerEchoServiceFixture(t *testing.T) (*Service, agent.ProviderServices) {
 	t.Helper()
@@ -2690,8 +2692,12 @@ func (a *recordingChildSteererAgent) SendChildInput(childKey string, input agent
 	return agent.ChildInputResult{StartsTurn: false}, nil
 }
 
-func (a *recordingChildSteererAgent) SteerChildInput(string, string, []*leapmuxv1.Attachment) error {
-	return nil
+func (a *recordingChildSteererAgent) SteerChildInput(string, agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
+}
+
+func (a *recordingChildSteererAgent) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{}
 }
 
 func (a *recordingChildSteererAgent) ActiveChildTurnState(string) agent.TurnState {

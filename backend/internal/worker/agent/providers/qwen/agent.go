@@ -105,17 +105,17 @@ func (q *steerQueue) take(limit int) []steerItem {
 
 // SteerInput queues text for the running turn. Qwen reads it after the running
 // tool batch, or, when the turn ends first, as the next prompt.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	// Native drains run on the RPC reader, so they cannot query the model's
 	// audio modality. Leave audio in the worker queue for a validated prompt.
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		if attachment.Kind == contracts.AttachmentMediaKindAudio {
-			return agent.ErrSteeringUnsupported
+			return agent.NativeInputReceipt{}, agent.ErrSteeringUnsupported
 		}
 	}
 	if !a.PromptActive() {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	sessionID := a.CurrentSessionID()
 	a.stateMu.Lock()
@@ -127,7 +127,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 		sessionID:   sessionID,
 	})
 	a.stateMu.Unlock()
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
 // followUpPrompt gives the base the input that the ended turn never read. A

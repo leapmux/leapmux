@@ -168,12 +168,14 @@ func TestCopilotChildIdenticalSteersShareExactReplyAndIgnoreParentWriteAgent(t *
 		}},
 	})
 
-	require.NoError(t, h.agent.SteerChildInputAtEcho("agent-1", agent.SteerRequest{
+	_, err := h.agent.SteerChildInput("agent-1", agent.SteerRequest{
 		InputID: "queue-1", AttemptID: "attempt-1", Content: "Also say CHILD_STEERED.",
-	}))
-	require.NoError(t, h.agent.SteerChildInputAtEcho("agent-1", agent.SteerRequest{
+	})
+	require.NoError(t, err)
+	_, err = h.agent.SteerChildInput("agent-1", agent.SteerRequest{
 		InputID: "queue-2", AttemptID: "attempt-2", Content: "Also say CHILD_STEERED.",
-	}))
+	})
+	require.NoError(t, err)
 
 	// An earlier iteration receives a parent write_agent echo with identical content; it must not consume client admissions.
 	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
@@ -341,9 +343,10 @@ func TestCopilotChildPermissionRoutesToChildSinkAndBindsActiveInputs(t *testing.
 			"turnId": "0", "interactionId": "int-perm",
 		}},
 	})
-	require.NoError(t, h.agent.SteerChildInputAtEcho("agent-1", agent.SteerRequest{
+	_, err := h.agent.SteerChildInput("agent-1", agent.SteerRequest{
 		InputID: "queue-perm", AttemptID: "attempt-perm", Content: "Run tool with permission.",
-	}))
+	})
+	require.NoError(t, err)
 	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventUserMessage, id: "perm-user", data: map[string]any{
 			"messageId": "m-perm", "interactionId": "int-perm", "turnId": "0",

@@ -58,9 +58,10 @@ func TestOMPChildCloseWithoutEchoLeavesSteerUncertain(t *testing.T) {
 	r.emit(`{"type":"available_commands_update","commands":[{"name":"child-proof","source":"extension"}]}`,
 		frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
 	child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
-	require.NoError(t, r.agent.SteerChildInputAtEcho(subagentRowKey(r.agent.sessionID, "Probe"), agent.SteerRequest{
+	_, err := r.agent.SteerChildInput(subagentRowKey(r.agent.sessionID, "Probe"), agent.SteerRequest{
 		InputID: "steer", AttemptID: "steer-attempt", Content: "Next check.",
-	}))
+	})
+	require.NoError(t, err)
 	assert.Empty(t, child.SteerResolutions(), "the command acknowledgement proves no delivery")
 	r.emit(frameCompleted)
 	assert.Equal(t, []agent.SteerResolution{{

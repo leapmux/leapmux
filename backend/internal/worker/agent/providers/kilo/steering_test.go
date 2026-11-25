@@ -39,7 +39,7 @@ func TestOpenCodeFamilySteerFailureReachesTheReader(t *testing.T) {
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
 	ag.SetPromptActiveForTest(true)
 
-	require.NoError(t, ag.SteerInput(agent.SteerRequest{Content: "guide the turn"}))
+	require.NoError(t, agenttest.SteerInput(ag, agent.SteerRequest{Content: "guide the turn"}))
 	require.Eventually(t, func() bool { return len(sink.Notifications()) == 1 }, time.Second, time.Millisecond)
 	notice := sink.Notifications()[0]
 	assert.Equal(t, contracts.NotificationTypeAgentError, notice["type"])
@@ -78,7 +78,7 @@ func TestKiloSteerPersistsAnAnswerAfterTheFirstPromptEnds(t *testing.T) {
 	sink := &agenttest.Sink{}
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
 	ag.SetPromptActiveForTest(true)
-	require.NoError(t, ag.SteerInput(agent.SteerRequest{Content: "guide the turn"}))
+	require.NoError(t, agenttest.SteerInput(ag, agent.SteerRequest{Content: "guide the turn"}))
 	testutil.RequireEventually(t, func() bool { return len(requests()) == 1 })
 	recorded := requests()[0]
 	assert.Equal(t, acp.MethodSessionPrompt, recorded.Method)
@@ -115,8 +115,8 @@ func TestKiloSteerKeepsConcurrentRepliesInOneTurn(t *testing.T) {
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "first steer"}))
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "second steer"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "first steer"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "second steer"}))
 	var requests []struct {
 		ID int64 `json:"id"`
 	}
@@ -161,7 +161,7 @@ func TestKiloSteerFailedWriteReleasesItsTurn(t *testing.T) {
 	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
 	a.SetPromptActiveForTest(true)
 
-	require.Error(t, a.SteerInput(agent.SteerRequest{Content: "guide the turn"}))
+	require.Error(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "guide the turn"}))
 	a.FinishPromptRequestForTest("session-1", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 	assert.False(t, a.PromptActive(), "a failed detached write leaves no turn behind")
 }

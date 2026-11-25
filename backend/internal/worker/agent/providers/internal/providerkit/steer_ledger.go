@@ -22,16 +22,13 @@ type identifiedSteer struct {
 	resolution agent.SteerResolution
 }
 
-// SteerLedger reports resolved steers in send order.
-// A provider that proves a steer by its native receipt takes that entry directly
-// at the echo, in transcript order. Count reports never select such entries.
+// SteerLedger reports count-settled steers in send order.
 // Its zero value is ready for use. Every method permits concurrent calls.
 type SteerLedger struct {
-	mu         sync.Mutex
-	next       SteerTicket
-	entries    []steerEntry
-	identified []identifiedSteer
-	settling   bool
+	mu       sync.Mutex
+	next     SteerTicket
+	entries  []steerEntry
+	settling bool
 }
 
 // Add records a steer before its native write and returns its ticket.
@@ -43,28 +40,37 @@ func (l *SteerLedger) Add(key string) SteerTicket {
 	return l.next
 }
 
-// AddIdentified records the session and native input a native echo must match.
+// IdentifiedSteerLedger tracks steers that a provider resolves by native receipt
+// rather than by ordered count. Its zero value is ready for use. Every method
+// permits concurrent calls.
+type IdentifiedSteerLedger struct {
+	mu      sync.Mutex
+	next    SteerTicket
+	entries []identifiedSteer
+}
+
+// Add records the session and native input that a native echo must match.
 // Set the turn ID when only that turn can read the input. Register before the write.
-func (l *SteerLedger) AddIdentified(resolution agent.SteerResolution) SteerTicket {
+func (l *IdentifiedSteerLedger) Add(resolution agent.SteerResolution) SteerTicket {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.next++
-	l.identified = append(l.identified, identifiedSteer{ticket: l.next, resolution: resolution})
+	l.entries = append(l.entries, identifiedSteer{ticket: l.next, resolution: resolution})
 	return l.next
 }
 
-// TakeIdentifiedEcho resolves one matching dispatch and removes it from the ledger.
-func (l *SteerLedger) TakeIdentifiedEcho(receipt agent.NativeInputReceipt) (agent.SteerResolution, bool) {
+// TakeEcho resolves one matching dispatch and removes it from the ledger.
+func (l *IdentifiedSteerLedger) TakeEcho(receipt agent.NativeInputReceipt) (agent.SteerResolution, bool) {
 	if receipt.SessionID == "" || receipt.InputID == "" || receipt.TurnID == "" {
 		return agent.SteerResolution{}, false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for i, entry := range l.identified {
+	for i, entry := range l.entries {
 		submitted := entry.resolution.Receipt
 		if submitted.SessionID == receipt.SessionID && submitted.InputID == receipt.InputID &&
 			(submitted.TurnID == "" || submitted.TurnID == receipt.TurnID) {
-			l.identified = slices.Delete(l.identified, i, i+1)
+			l.entries = slices.Delete(l.entries, i, i+1)
 			entry.resolution.Outcome = agent.SteerOutcomeEchoed
 			entry.resolution.Receipt = receipt
 			return entry.resolution, true
@@ -73,13 +79,13 @@ func (l *SteerLedger) TakeIdentifiedEcho(receipt agent.NativeInputReceipt) (agen
 	return agent.SteerResolution{}, false
 }
 
-// TakeUnechoedSteers removes pending dispatches for this native turn.
+// TakeUnechoed removes pending dispatches for this native turn.
 // An empty turn ID selects all pending dispatches in the session.
-func (l *SteerLedger) TakeUnechoedSteers(sessionID, turnID string) []agent.SteerResolution {
+func (l *IdentifiedSteerLedger) TakeUnechoed(sessionID, turnID string) []agent.SteerResolution {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var pending []agent.SteerResolution
-	l.identified = slices.DeleteFunc(l.identified, func(entry identifiedSteer) bool {
+	l.entries = slices.DeleteFunc(l.entries, func(entry identifiedSteer) bool {
 		receipt := entry.resolution.Receipt
 		if receipt.SessionID != sessionID || (turnID != "" && receipt.TurnID != turnID) {
 			return false
@@ -88,6 +94,20 @@ func (l *SteerLedger) TakeUnechoedSteers(sessionID, turnID string) []agent.Steer
 		return true
 	})
 	return pending
+}
+
+// Forget removes a failed steer call.
+func (l *IdentifiedSteerLedger) Forget(t SteerTicket) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = slices.DeleteFunc(l.entries, func(entry identifiedSteer) bool { return entry.ticket == t })
+}
+
+// Reset forgets every entry. Ticket numbers stay unique across resets.
+func (l *IdentifiedSteerLedger) Reset() {
+	l.mu.Lock()
+	l.entries = nil
+	l.mu.Unlock()
 }
 
 // SetID records the native ID that the steer reply supplied.
@@ -185,7 +205,6 @@ func (l *SteerLedger) Forget(t SteerTicket) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.entries = slices.DeleteFunc(l.entries, func(entry steerEntry) bool { return entry.ticket == t })
-	l.identified = slices.DeleteFunc(l.identified, func(entry identifiedSteer) bool { return entry.ticket == t })
 }
 
 // Pending returns unresolved tickets in send order.
@@ -262,6 +281,5 @@ func (l *SteerLedger) Settle(sink agent.SteerEchoServices) {
 func (l *SteerLedger) Reset() {
 	l.mu.Lock()
 	l.entries = nil
-	l.identified = nil
 	l.mu.Unlock()
 }

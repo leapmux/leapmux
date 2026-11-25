@@ -60,21 +60,16 @@ func (b *JSONRPCProcess) ApproveOutstandingControlRequest(publication PublishedC
 }
 
 // ApproveUnpublishedControlRequest normally answers without a browser card.
-// A definite delivery failure publishes the original request so the user can still answer it.
-func (b *JSONRPCProcess) ApproveUnpublishedControlRequest(sink agent.ControlServices, content []byte, cancelAnswer, answer any) bool {
-	return b.ApproveUnpublishedSessionControlRequest(sink, ControlRequestOwner{}, content, cancelAnswer, answer)
-}
-
-// ApproveUnpublishedSessionControlRequest keeps the owner if failed delivery requires publication.
-func (b *JSONRPCProcess) ApproveUnpublishedSessionControlRequest(sink agent.ControlServices, owner ControlRequestOwner, content []byte, cancelAnswer, answer any) bool {
-	wireID, _, found := agent.ExtractJSONRPCID(content)
-	identity, valid := agent.NewControlRequestIdentity(wireID)
-	if !found || !valid {
+// A definite delivery failure publishes the original request with its owner so
+// the user can still answer it.
+func (b *JSONRPCProcess) ApproveUnpublishedControlRequest(sink agent.ControlServices, request ControlRequestPublication) bool {
+	identity, valid := agent.JSONRPCControlRequestIdentity(request.Content)
+	if !valid {
 		return false
 	}
 	record := b.registerControl(identity, &outstandingControlRequest{
-		sink: sink, payload: content, sessionID: owner.SessionID, nativeTurnID: owner.TurnID, nativeInputIDs: owner.InputIDs,
-		cancelAnswer: cancelAnswer, approveAnswer: answer, pending: true, publishOnFailure: true,
+		sink: sink, payload: request.Content, sessionID: request.Owner.SessionID, nativeTurnID: request.Owner.TurnID, nativeInputIDs: request.Owner.InputIDs,
+		cancelAnswer: request.CancelAnswer, approveAnswer: request.ApproveAnswer, pending: true, publishOnFailure: true,
 	})
 	if record == nil {
 		return false

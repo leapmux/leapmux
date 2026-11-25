@@ -35,7 +35,7 @@ func TestSendInputStartsATurn(t *testing.T) {
 	acceptTurns(rt, testTurnID)
 	a, sink := newTestAgent(t, rt)
 
-	require.NoError(t, a.SendInput("Say hello.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Say hello.", nil))
 	assert.Equal(t, map[string]any{"prompt": "Say hello."}, rt.lastBody(t, http.MethodPost, turnsRoute))
 	requests := rt.requestsTo(http.MethodPost, turnsRoute)
 	assert.Equal(t, "Bearer "+testToken, requests[0].Auth)
@@ -51,7 +51,7 @@ func TestSendInputSendsTheEffortUnlessItIsAuto(t *testing.T) {
 		acceptTurns(rt, testTurnID)
 		a, _ := newTestAgent(t, rt)
 		a.settings.effort = effort
-		require.NoError(t, a.SendInput("Go.", nil))
+		require.NoError(t, agenttest.SendInput(a, "Go.", nil))
 		assert.Equal(t, want, rt.lastBody(t, http.MethodPost, turnsRoute)["reasoning_effort"], effort)
 	}
 }
@@ -62,7 +62,7 @@ func TestSendInputCarriesAttachments(t *testing.T) {
 	acceptTurns(rt, testTurnID)
 	a, _ := newTestAgent(t, rt)
 
-	require.NoError(t, a.SendInput("Look.", []*leapmuxv1.Attachment{
+	require.NoError(t, agenttest.SendInput(a, "Look.", []*leapmuxv1.Attachment{
 		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("alpha")},
 		{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}},
 	}))
@@ -78,8 +78,7 @@ func TestSendInputRefusesAnImageTheModelCannotRead(t *testing.T) {
 	a, _ := newTestAgent(t, rt)
 	a.settings.model = "deepseek-flash"
 	a.catalog = []providerModel{{ID: "deepseek-flash", ImageInput: capabilityUnsupported}}
-
-	err := a.SendInput("Look.", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}})
+	_, err := a.SendInput("Look.", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}})
 	assert.ErrorContains(t, err, "does not accept images")
 	assert.Empty(t, rt.requestsTo(http.MethodPost, turnsRoute), "nothing reached the runtime")
 }
@@ -89,8 +88,7 @@ func TestSendInputRefusesWhileATurnRuns(t *testing.T) {
 	rt := newFakeRuntime(t)
 	a, sink := newTestAgent(t, rt)
 	a.turnID = testTurnID
-
-	err := a.SendInput("Another.", nil)
+	_, err := a.SendInput("Another.", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, &sink.Sink, a, err)
 	assert.Empty(t, rt.requestsTo(http.MethodPost, turnsRoute))
 }
@@ -100,8 +98,7 @@ func TestSendInputReadsAConflictAsBusy(t *testing.T) {
 	rt := newFakeRuntime(t)
 	rt.respondStatus(http.MethodPost, turnsRoute, http.StatusConflict, "Thread already has an active turn")
 	a, _ := newTestAgent(t, rt)
-
-	err := a.SendInput("Hi.", nil)
+	_, err := a.SendInput("Hi.", nil)
 	assert.ErrorIs(t, err, agent.ErrAgentBusy)
 	assert.ErrorContains(t, err, "active turn")
 }
@@ -119,7 +116,7 @@ func TestSendInputReadsALostReplyAsUncertain(t *testing.T) {
 	})
 	a, _ := newTestAgent(t, rt)
 
-	assert.ErrorIs(t, a.SendInput("Hi.", nil), agent.ErrDeliveryUncertain)
+	assert.ErrorIs(t, agenttest.SendInput(a, "Hi.", nil), agent.ErrDeliveryUncertain)
 }
 
 func TestSendInputReportsAnyOtherRefusal(t *testing.T) {
@@ -127,8 +124,7 @@ func TestSendInputReportsAnyOtherRefusal(t *testing.T) {
 	rt := newFakeRuntime(t)
 	rt.respondStatus(http.MethodPost, turnsRoute, http.StatusBadRequest, "image inputs require a model with explicitly supported image input")
 	a, _ := newTestAgent(t, rt)
-
-	err := a.SendInput("Hi.", nil)
+	_, err := a.SendInput("Hi.", nil)
 	assert.NotErrorIs(t, err, agent.ErrAgentBusy)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.ErrorContains(t, err, "image inputs require")
@@ -138,11 +134,11 @@ func TestSendInputNeedsAThreadAndARunningAgent(t *testing.T) {
 	t.Parallel()
 	a, _ := newTestAgent(t, nil)
 	a.threadID = ""
-	assert.ErrorContains(t, a.SendInput("Hi.", nil), "no thread")
+	assert.ErrorContains(t, agenttest.SendInput(a, "Hi.", nil), "no thread")
 
 	stopped, _ := newTestAgent(t, nil)
 	stopped.SetStoppedForTest(true)
-	assert.ErrorContains(t, stopped.SendInput("Hi.", nil), "stopped")
+	assert.ErrorContains(t, agenttest.SendInput(stopped, "Hi.", nil), "stopped")
 }
 
 func TestSendInputForSession(t *testing.T) {
@@ -152,7 +148,7 @@ func TestSendInputForSession(t *testing.T) {
 	a, _ := newTestAgent(t, rt)
 
 	agenttest.AssertRejectsMissingAndReplacedSessions(t, a)
-	require.NoError(t, a.SendInputForSession(testThreadID, "Hi.", nil))
+	require.NoError(t, agenttest.SendInputForSession(a, testThreadID, "Hi.", nil))
 	assert.Len(t, rt.requestsTo(http.MethodPost, turnsRoute), 1)
 }
 
@@ -164,12 +160,11 @@ func TestSteerInput(t *testing.T) {
 	a, _ := newTestAgent(t, rt)
 	assert.True(t, a.SupportsSteering())
 
-	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "More."}), agent.ErrNoActiveTurn, "no turn runs")
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "More."}), agent.ErrNoActiveTurn, "no turn runs")
 	a.turnID = testTurnID
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "More."}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "More."}))
 	assert.Equal(t, map[string]any{"prompt": "More."}, rt.lastBody(t, http.MethodPost, steer))
-
-	err := a.SteerInput(agent.SteerRequest{Content: "Look.", Attachments: []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}}})
+	_, err := a.SteerInput(agent.SteerRequest{Content: "Look.", Attachments: []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}}})
 	assert.ErrorContains(t, err, "cannot add an image")
 }
 
@@ -356,14 +351,14 @@ func TestSteerInputNeedsARunningAgent(t *testing.T) {
 	a, _ := newTestAgent(t, rt)
 	a.turnID = testTurnID
 	a.SetStoppedForTest(true)
-	assert.ErrorContains(t, a.SteerInput(agent.SteerRequest{Content: "More."}), "stopped")
+	assert.ErrorContains(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "More."}), "stopped")
 	assert.Empty(t, rt.requestsTo(http.MethodPost, turnPath(testThreadID, testTurnID, turnRouteSteer)))
 	assert.Zero(t, openSteers(a), "a refused steer leaves no ticket")
 
 	b, _ := newTestAgent(t, rt)
 	b.threadID = ""
 	b.turnID = testTurnID
-	assert.ErrorIs(t, b.SteerInput(agent.SteerRequest{Content: "More."}), agent.ErrNoActiveTurn, "an agent with no thread steers nothing")
+	assert.ErrorIs(t, agenttest.SteerInput(b, agent.SteerRequest{Content: "More."}), agent.ErrNoActiveTurn, "an agent with no thread steers nothing")
 }
 
 func TestInterruptReportsWhatItCannotStop(t *testing.T) {

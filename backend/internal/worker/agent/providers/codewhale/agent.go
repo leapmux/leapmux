@@ -212,28 +212,17 @@ func (a *Agent) markTurnFinished(turnID string) bool {
 
 // SendInput starts a turn with the user's message. It returns once the runtime
 // created the turn, never when the turn ends.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments)
-}
-
-var _ agent.InputReceiptSender = (*Agent)(nil)
-
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendNativeInput(nil, content, attachments, true)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments)
 }
 
 // SendInputForSession starts a turn only when sessionID is still the agent's
 // thread.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(&sessionID, content, attachments)
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendNativeInput(expected, content, attachments, false)
-	return err
-}
-
-func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment, captureReply bool) (agent.NativeInputReceipt, error) {
+func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.threadID); err != nil {
 		a.Mu.Unlock()
@@ -266,10 +255,8 @@ func (a *Agent) sendNativeInput(expected *string, content string, attachments []
 		request.ReasoningEffort = effort
 	}
 	var receipt agent.NativeInputReceipt
-	if captureReply {
-		a.beginCodewhaleReplyStart()
-		defer func() { a.finishCodewhaleReplyStart(receipt) }()
-	}
+	a.beginCodewhaleReplyStart()
+	defer func() { a.finishCodewhaleReplyStart(receipt) }()
 	turn, err := a.startTurn(threadID, request)
 	if err != nil {
 		return receipt, classifyTurnStartError(err)
@@ -282,9 +269,7 @@ func (a *Agent) sendNativeInput(expected *string, content string, attachments []
 	if a.markTurnStarted(turn.ID) {
 		a.PublishTurnActive()
 	}
-	if captureReply {
-		receipt = codewhaleInputReceipt(threadID, turn.ID)
-	}
+	receipt = codewhaleInputReceipt(threadID, turn.ID)
 	return receipt, nil
 }
 
@@ -323,7 +308,7 @@ func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput sends one native steer. Its HTTP success can mean queued, so it writes no user row.
 // Text attachments enter the native prompt. The shared queue retains the original attachments.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	a.steerMu.Lock()
 	defer a.steerMu.Unlock()
@@ -332,17 +317,17 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	threadID, turnID := a.threadID, a.turnID
 	a.Mu.Unlock()
 	if stopped {
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	if threadID == "" || turnID == "" {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	prompt, images, err := buildTurnInput(content, agent.ClassifyAttachments(attachments), imageInputSupported)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if len(images) > 0 {
-		return fmt.Errorf("the Codewhale runtime cannot add an image to a running turn; send it as a new message")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Codewhale runtime cannot add an image to a running turn; send it as a new message")
 	}
 	before, baselineOK := readTurnItemIDs(a.store, turnID)
 	if !baselineOK {
@@ -353,12 +338,12 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	if a.StoppedLocked() || a.threadID != threadID || a.turnID != turnID || a.finishedTurns.contains(turnID) {
 		a.Mu.Unlock()
 		a.dispatchMu.Unlock()
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if a.steers.unidentified() {
 		a.Mu.Unlock()
 		a.dispatchMu.Unlock()
-		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
+		return agent.NativeInputReceipt{}, &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
 	}
 	ticket := a.steers.begin(agent.SteerResolution{
 		InputID: request.InputID, AttemptID: request.AttemptID,
@@ -368,7 +353,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	a.Mu.Unlock()
 	a.dispatchMu.Unlock()
 	defer a.finishSteerCall(ticket)
-	return a.settleSteerReply(ticket, a.steerTurn(threadID, turnID, prompt))
+	return agent.NativeInputReceipt{}, a.settleSteerReply(ticket, a.steerTurn(threadID, turnID, prompt))
 }
 
 // Interrupt stops the running turn. When no turn runs, it closes any open tool

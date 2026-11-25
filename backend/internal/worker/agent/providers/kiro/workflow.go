@@ -538,7 +538,7 @@ func (a *Agent) cancelRunDetached(workflowID string) {
 		slog.Warn("kiro workflow cancel marshal failed", "agent_id", a.AgentID(), "workflow_id", workflowID, "error", err)
 		return
 	}
-	if err := a.SendDetachedRequest(kiroWorkflowCancelMethod, params, func(_ json.RawMessage, err error) {
+	if err := a.SendDetachedRequest(kiroWorkflowCancelMethod, params, providerkit.DetachedRequestOptions{}, func(_ json.RawMessage, err error) {
 		if err != nil {
 			slog.Warn("kiro workflow cancel failed", "agent_id", a.AgentID(), "workflow_id", workflowID, "error", err)
 		}

@@ -142,12 +142,16 @@ func (a *Agent) approvePendingPermissions() error {
 	return errors.Join(failures...)
 }
 
-func (a *Agent) claimPublishedControl(requestID string, kind controlKind) (*pendingControl, error) {
+func (a *Agent) claimPublishedControl(requestID string, kind controlKind, instanceID string) (*pendingControl, error) {
 	a.Mu.Lock()
 	control := a.controls[requestID]
+	answered := control != nil && control.answered
 	a.Mu.Unlock()
-	if control == nil || control.kind != kind {
+	if control == nil || control.kind != kind || answered {
 		return nil, errUnknownControl
+	}
+	if err := agent.ControlInstanceRefusal(control.instanceID, instanceID); err != nil {
+		return nil, err
 	}
 	select {
 	case <-control.publicationDone:
@@ -156,7 +160,13 @@ func (a *Agent) claimPublishedControl(requestID string, kind controlKind) (*pend
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	if a.controls[requestID] != control || !control.published || control.answering || a.StoppedLocked() {
+	if current := a.controls[requestID]; current != control {
+		if current != nil && current.kind == kind && current.instanceID != instanceID {
+			return nil, agent.ErrControlInstanceReplaced
+		}
+		return nil, errUnknownControl
+	}
+	if !control.published || control.answering || a.StoppedLocked() {
 		return nil, errUnknownControl
 	}
 	if control.sessionID != a.sessionID {

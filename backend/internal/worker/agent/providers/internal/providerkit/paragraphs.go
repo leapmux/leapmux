@@ -9,15 +9,29 @@ import "strings"
 // at least two newlines: the newlines that the text already ends with count,
 // and a longer run stays as it is.
 func JoinParagraphs(parts []string) string {
+	total, nonEmpty := 0, 0
+	for _, part := range parts {
+		if part != "" {
+			total += len(part)
+			nonEmpty++
+		}
+	}
+	if nonEmpty == 0 {
+		return ""
+	}
 	var out strings.Builder
+	out.Grow(total + 2*(nonEmpty-1))
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
 		if out.Len() > 0 {
 			text := out.String()
-			trailing := len(text) - len(strings.TrimRight(text, "\n"))
-			for range max(0, 2-trailing) {
+			trailing := 0
+			for i := len(text) - 1; i >= 0 && text[i] == '\n' && trailing < 2; i-- {
+				trailing++
+			}
+			for range 2 - trailing {
 				out.WriteByte('\n')
 			}
 		}

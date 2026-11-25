@@ -41,7 +41,7 @@ func TestCodexRetryCannotSnapshotAnUnsettledSteer(t *testing.T) {
 	}))
 	armRetryableTurn(t, a, sink)
 	steered := make(chan error, 1)
-	go func() { steered <- a.SteerInput(agent.SteerRequest{Content: "Keep the original files."}) }()
+	go func() { steered <- agenttest.SteerInput(a, agent.SteerRequest{Content: "Keep the original files."}) }()
 	<-entered
 	_, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
 	require.ErrorIs(t, err, agent.ErrAgentBusy, "the retry cannot copy input while an earlier delivery remains unresolved")
@@ -68,7 +68,7 @@ func TestCodexUncertainSteerWithdrawsItsRetryOffer(t *testing.T) {
 		return agenttest.RPCReply{Error: json.RawMessage(`{"message":"an unreadable error without a code"}`)}
 	})
 	armRetryableTurn(t, a, sink)
-	require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "An instruction that might arrive."}), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "An instruction that might arrive."}), agent.ErrDeliveryUncertain)
 	offer, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyTurnRetryOffer)
 	require.True(t, exists)
 	assert.Nil(t, offer, "a retry cannot reconstruct an input whose delivery is uncertain")
@@ -141,7 +141,7 @@ func TestCodexUncertainRetryStartKeepsLaterInputOut(t *testing.T) {
 	active, _ := sink.LastTurnActive()
 	require.True(t, active, "delivery uncertainty must not release the queue")
 	before := requests()
-	require.ErrorIs(t, a.SendInput("A later message.", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(a, "A later message.", nil), agent.ErrAgentBusy)
 	// The barrier reply proves the peer consumed every preceding frame.
 	_, err = a.SendRequest("test/barrier", json.RawMessage(`{}`), 30*time.Second)
 	require.NoError(t, err)
@@ -544,7 +544,7 @@ func TestCodexRetryAcknowledgmentSettlesEachSettingIndependently(t *testing.T) {
 				assert.Equal(t, test.model, model)
 				assert.Equal(t, test.effort, effort)
 				feedCodexLines(a, `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-2","status":"completed"}}}`)
-				require.NoError(t, a.SendInput("Use the settled settings.", nil))
+				require.NoError(t, agenttest.SendInput(a, "Use the settled settings.", nil))
 				sent := requests()
 				last := sent[len(sent)-1]
 				require.Equal(t, "turn/start", last.Method)
@@ -613,7 +613,7 @@ func TestCodexRetryAcknowledgmentFollowsThePermissionUpdateOutcome(t *testing.T)
 			assert.Equal(t, expectedModel, model)
 			assert.Equal(t, expectedEffort, effort)
 			feedCodexLines(a, `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-2","status":"completed"}}}`)
-			require.NoError(t, a.SendInput("Use the accepted settings.", nil))
+			require.NoError(t, agenttest.SendInput(a, "Use the accepted settings.", nil))
 			sent := requests()
 			last := sent[len(sent)-1]
 			assert.Equal(t, expectedModel, last.Params["model"])

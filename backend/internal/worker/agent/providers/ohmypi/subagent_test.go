@@ -39,7 +39,7 @@ func TestChildInputReportsUncertainDelivery(t *testing.T) {
 	r.respond(func(recordedCommand) *rigReply { return &rigReply{Skip: true} })
 	result := make(chan error, 1)
 	go func() {
-		result <- r.agent.SteerChildInput(subagentRowKey(r.agent.sessionID, "Probe"), "Read this", nil)
+		result <- agenttest.SteerChildInput(r.agent, subagentRowKey(r.agent.sessionID, "Probe"), "Read this", nil)
 	}()
 	// The pipe write can finish before the fake process reads it. Observe delivery before expiring its reply timer.
 	r.waitForCommand(CommandSteerSubagent, 1)
@@ -64,7 +64,7 @@ func TestChildInputUsesTheOwnedNativeChild(t *testing.T) {
 	require.ErrorIs(t, agenttest.SendChildInput(steerer, key, agent.ChildInput{Content: "Read this"}), agent.ErrAgentBusy)
 	assert.Empty(t, r.commandsOfType("steer_subagent"))
 	attachment := &leapmuxv1.Attachment{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("revised instructions")}
-	require.NoError(t, steerer.SteerChildInput(key, "Read this", []*leapmuxv1.Attachment{attachment}))
+	require.NoError(t, agenttest.SteerChildInput(steerer, key, "Read this", []*leapmuxv1.Attachment{attachment}))
 	commands := r.commandsOfType("steer_subagent")
 	require.Len(t, commands, 1)
 	assert.Equal(t, "Probe", commands[0].Payload["subagentId"])
@@ -74,7 +74,7 @@ func TestChildInputUsesTheOwnedNativeChild(t *testing.T) {
 
 	r.emit(subagentEvent("Probe", `{"type":"agent_end","messages":[]}`))
 	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState(key))
-	require.ErrorIs(t, steerer.SteerChildInput(key, "Too late", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, agenttest.SteerChildInput(steerer, key, "Too late", nil), agent.ErrNoActiveTurn)
 	require.NoError(t, agenttest.SendChildInput(steerer, key, agent.ChildInput{Content: "Start another child round"}))
 	assert.Len(t, r.commandsOfType("steer_subagent"), 2)
 }
@@ -103,7 +103,7 @@ func TestChildYieldsToOutsideWorkAndAcceptsOrdinaryInput(t *testing.T) {
 	assert.True(t, published)
 	assert.False(t, gotActive, "the ready child releases its queue")
 	assert.Equal(t, bgtask.StatusRunning, subagentRow(t, r, "Probe").Status)
-	require.ErrorIs(t, r.agent.SteerChildInput(key, "Use ordinary input.", nil), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, agenttest.SteerChildInput(r.agent, key, "Use ordinary input.", nil), agent.ErrNoActiveTurn)
 	_, err = r.agent.SendChildInput(key, agent.ChildInput{Content: "Start a new loop."})
 	require.NoError(t, err)
 	assert.Len(t, r.commandsOfType(CommandSteerSubagent), 1)
@@ -137,7 +137,7 @@ func TestChildInputRejectsInvalidPayloads(t *testing.T) {
 			steerer, ok := any(r.agent).(agent.ChildSteerer)
 			require.True(t, ok)
 			r.emit(frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
-			require.Error(t, steerer.SteerChildInput(subagentRowKey(r.agent.sessionID, "Probe"), tc.content, tc.attachments))
+			require.Error(t, agenttest.SteerChildInput(steerer, subagentRowKey(r.agent.sessionID, "Probe"), tc.content, tc.attachments))
 			assert.Empty(t, r.commandsOfType("steer_subagent"))
 		})
 	}
@@ -153,13 +153,13 @@ func TestChildControlsRejectStaleIdentityAndNativeFailures(t *testing.T) {
 	r.emit(frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
 	key := subagentRowKey(r.agent.sessionID, "Probe")
 	for _, invalid := range []string{"", "Probe", "other-session/Probe", key + "/extra"} {
-		require.ErrorIs(t, steerer.SteerChildInput(invalid, "Do not deliver", nil), agent.ErrChildRouteNotReady)
+		require.ErrorIs(t, agenttest.SteerChildInput(steerer, invalid, "Do not deliver", nil), agent.ErrChildRouteNotReady)
 		require.ErrorIs(t, interrupter.InterruptChild(invalid, agent.StopContext{}), agent.ErrChildRouteNotReady)
 	}
 	assert.Empty(t, r.commandsOfType("steer_subagent"))
 	assert.Empty(t, r.commandsOfType("cancel_subagent"))
 	r.respond(func(recordedCommand) *rigReply { return &rigReply{Error: "Subagent not running: Probe"} })
-	require.ErrorContains(t, steerer.SteerChildInput(key, "Refused", nil), "Subagent not running")
+	require.ErrorContains(t, agenttest.SteerChildInput(steerer, key, "Refused", nil), "Subagent not running")
 	require.ErrorContains(t, interrupter.InterruptChild(key, agent.StopContext{}), "Subagent not running")
 	assert.Equal(t, bgtask.StatusRunning, subagentRow(t, r, "Probe").Status, "a refused command does not invent a final status")
 	r.emit(frameCompleted)

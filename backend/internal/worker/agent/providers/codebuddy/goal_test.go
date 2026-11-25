@@ -46,7 +46,7 @@ func TestCodebuddyGoalTextRemainsOrdinaryInput(t *testing.T) {
 			a := newOfflineAgent(t, sink)
 			var input bytes.Buffer
 			a.SetStdinForTest(agenttest.NopStdin(&input))
-			require.NoError(t, a.SendInput(text, nil))
+			require.NoError(t, agenttest.SendInput(a, text, nil))
 			var frame UserInputMessage
 			require.NoError(t, json.Unmarshal(input.Bytes(), &frame))
 			assert.Equal(t, text, frame.Message.Content)

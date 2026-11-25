@@ -307,7 +307,7 @@ func TestACPStopClosesAdmissionAndRunsPrepareStopOnce(t *testing.T) {
 		assert.Error(t, err)
 		_, err = rig.base.ClearContext()
 		assert.Error(t, err)
-		assert.Error(t, rig.base.SendInput("late root prompt", nil))
+		assert.Error(t, agenttest.SendInput(rig.base, "late root prompt", nil))
 		assert.ErrorIs(t, rig.base.SendChildPromptDetached(child, "late child prompt", nil, func(json.RawMessage, error) {}), agent.ErrChildRouteNotReady)
 		assert.Error(t, rig.base.SendPromptDetached("session", "late detached prompt", nil, func(json.RawMessage, error) {}))
 		assert.Len(t, peer.recorded(), 2, "no late operation can reach the ACP peer")
@@ -384,7 +384,7 @@ func TestACPStopCancellationDoesNotWaitForStdin(t *testing.T) {
 				})
 				_, err := rig.handshake(agent.Options{}, SessionConfig{NewMethod: MethodSessionNew})
 				require.NoError(t, err)
-				require.NoError(t, rig.base.SendInput("hold the native read", nil))
+				require.NoError(t, agenttest.SendInput(rig.base, "hold the native read", nil))
 				blocked, err := rig.base.EnqueueStdin([]byte("{}\n"))
 				require.NoError(t, err)
 				synctest.Wait()
@@ -442,7 +442,7 @@ func TestACPStoppedRootPromptDoesNotWaitForTheSessionLock(t *testing.T) {
 	b.stopDone = make(chan struct{})
 	b.Mu.Unlock()
 	done := make(chan error, 1)
-	go func() { done <- b.SendInput("late root prompt", nil) }()
+	go func() { done <- agenttest.SendInput(b, "late root prompt", nil) }()
 	select {
 	case err := <-done:
 		require.Error(t, err)

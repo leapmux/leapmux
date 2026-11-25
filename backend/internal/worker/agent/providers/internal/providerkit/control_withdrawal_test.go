@@ -15,10 +15,10 @@ func TestPublishedControlWithdrawalKeepsAReusedRequestID(t *testing.T) {
 	t.Cleanup(func() { close(done); base.Stop() })
 	sink := &agenttest.ControlSink{}
 	raw := []byte(`{"jsonrpc":"2.0","id":7,"method":"request"}`)
-	first := base.PublishControlRequestWithApproval(sink, raw, nil, nil)
+	first := base.PublishControlRequest(sink, ControlRequestPublication{Content: raw})
 	assert.True(t, base.ControlPublicationIsCurrent(first))
 	require.NoError(t, base.SendRawInput(sink.Answer(first.RequestID, []byte(`{"id":7,"result":{}}`))))
-	second := base.PublishControlRequestWithApproval(sink, raw, nil, nil)
+	second := base.PublishControlRequest(sink, ControlRequestPublication{Content: raw})
 	assert.False(t, base.ControlPublicationIsCurrent(first))
 	assert.True(t, base.ControlPublicationIsCurrent(second))
 	assert.False(t, base.WithdrawPublishedControlRequest(first))
@@ -33,7 +33,7 @@ func TestPublishedControlWithdrawalKeepsAReusedRequestID(t *testing.T) {
 func TestPublishedControlWithdrawalRunsOnceAcrossCallers(t *testing.T) {
 	base := &JSONRPCProcess{}
 	sink := &agenttest.ControlSink{}
-	publication := base.PublishControlRequestWithApproval(sink, []byte(`{"id":7,"method":"request"}`), nil, nil)
+	publication := base.PublishControlRequest(sink, ControlRequestPublication{Content: []byte(`{"id":7,"method":"request"}`)})
 	start := make(chan struct{})
 	results := make(chan bool, 2)
 	for range 2 {

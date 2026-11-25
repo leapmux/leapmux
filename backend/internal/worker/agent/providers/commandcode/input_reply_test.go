@@ -49,7 +49,7 @@ func TestCommandCodeReplyKeysAreDistinctAcrossProcessRestarts(t *testing.T) {
 	var replyKeys []string
 	for _, text := range []string{"The original reply.", "The resumed reply."} {
 		a, sink := commandCodeReplyAgent(t, nil)
-		receipt, err := a.SendInputWithReceipt("Summarize the checks.", nil)
+		receipt, err := a.SendInput("Summarize the checks.", nil)
 		require.NoError(t, err)
 		require.Equal(t, "native-session", receipt.SessionID)
 		feedMethod(t, a, methodTurnStarted, map[string]any{"turnId": "turn_1"})
@@ -86,7 +86,7 @@ func TestCommandCodeReplyUsesTheAcknowledgedTurnAfterItsEarlyEnd(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{"turnId":"turn_1"}`)}
 	})
 
-	receipt, err := a.SendInputWithReceipt("Summarize the checks.", nil)
+	receipt, err := a.SendInput("Summarize the checks.", nil)
 	require.NoError(t, err)
 	durableTurnID := a.commandCodeDurableTurnID("turn_1")
 	assert.Equal(t, agent.NativeInputReceipt{SessionID: "native-session", InputID: durableTurnID, TurnID: durableTurnID}, receipt)
@@ -118,7 +118,7 @@ func TestCommandCodeReplyUsesTheAcknowledgedTurnAfterItsEarlyEnd(t *testing.T) {
 func TestCommandCodeReplyRetainsTextFlushedByNativeCompletion(t *testing.T) {
 	t.Parallel()
 	a, sink := commandCodeReplyAgent(t, nil)
-	receipt, err := a.SendInputWithReceipt("Summarize the checks.", nil)
+	receipt, err := a.SendInput("Summarize the checks.", nil)
 	require.NoError(t, err)
 	feedMethod(t, a, methodTurnStarted, map[string]any{"turnId": "turn_1"})
 	feedEvent(t, a, map[string]any{"type": "thinking_delta", "delta": "Reasoning."})
@@ -155,7 +155,7 @@ func TestCommandCodeReplyKeepsOldBufferedTextOutOfANewerTurn(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{"turnId":"turn_1"}`)}
 	})
 
-	receipt, err := a.SendInputWithReceipt("Start the new turn.", nil)
+	receipt, err := a.SendInput("Start the new turn.", nil)
 	require.NoError(t, err)
 	turns := sink.NativeReplyTurns()
 	require.Len(t, turns, 1)
@@ -188,7 +188,7 @@ func TestCommandCodeReplyNeedsANativeStartAndCompletion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, sink := commandCodeReplyAgent(t, nil)
-			receipt, err := a.SendInputWithReceipt("Summarize the checks.", nil)
+			receipt, err := a.SendInput("Summarize the checks.", nil)
 			require.NoError(t, err)
 
 			tc.end(t, a, "turn_1")
@@ -197,4 +197,23 @@ func TestCommandCodeReplyNeedsANativeStartAndCompletion(t *testing.T) {
 			assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
 		})
 	}
+}
+
+func TestCommandCodeSendInputForSessionReturnsReceiptAndTracksReply(t *testing.T) {
+	t.Parallel()
+	a, sink := commandCodeReplyAgent(t, nil)
+	receipt, err := a.SendInputForSession("native-session", "Summarize the checks.", nil)
+	require.NoError(t, err)
+	durableTurnID := a.commandCodeDurableTurnID("turn_1")
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: "native-session", InputID: durableTurnID, TurnID: durableTurnID}, receipt)
+
+	feedMethod(t, a, methodTurnStarted, map[string]any{"turnId": "turn_1"})
+	feedCommandCodeReplyText(t, a, 10, "Session-checked reply.")
+	finishCommandCodeReply(t, a, "turn_1")
+
+	turns := sink.NativeReplyTurns()
+	require.Len(t, turns, 1)
+	assert.Equal(t, receipt.TurnID, turns[0].TurnID)
+	assert.Equal(t, []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: 1}}, turns[0].Inputs)
+	require.Len(t, turns[0].Items, 1)
 }

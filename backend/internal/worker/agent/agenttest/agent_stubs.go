@@ -16,10 +16,12 @@ type IdleAgent struct{}
 
 func (IdleAgent) AgentID() string { return "idle" }
 
-func (IdleAgent) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
+func (IdleAgent) SendInput(string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
+}
 
-func (IdleAgent) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
-	return agent.ErrInputSessionChanged
+func (IdleAgent) SendInputForSession(string, string, []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 }
 
 func (IdleAgent) PublishTurnActive() agent.TurnState {

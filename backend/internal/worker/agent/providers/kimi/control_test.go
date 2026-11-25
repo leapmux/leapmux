@@ -62,9 +62,24 @@ func TestDeliveredApprovalCannotBeAnsweredAgainBeforeItsResolutionEvent(t *testi
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})
 	rig.feed(t, approvalEvent("approval", map[string]any{"kind": "command", "command": "ls"}))
+	answer := rig.sink.Answer("approval", answerFor(t, rig, "approval", "allow", nil, nil))
+	require.NoError(t, rig.agent.SendRawInput(answer))
+	require.ErrorIs(t, rig.agent.SendRawInput(answer), errKimiControlGone)
+	require.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval", "")), 1)
+}
+
+func TestKimiRefusesUnstatedOrReplacedControlInstance(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	rig.feed(t, approvalEvent("approval", map[string]any{"kind": "command", "command": "ls"}))
+	published := rig.sink.LastPublishedControl()
 	answer := answerFor(t, rig, "approval", "allow", nil, nil)
-	require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answer}))
-	require.ErrorIs(t, rig.agent.SendRawInput(agent.RawInput{Data: answer}), errKimiControlGone)
+
+	require.ErrorIs(t, rig.agent.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlInstanceUnstated)
+	require.ErrorIs(t, rig.agent.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: "stale-instance"}), agent.ErrControlInstanceReplaced)
+	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval", "")))
+
+	require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: published.InstanceID}))
 	require.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval", "")), 1)
 }
 
@@ -173,7 +188,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_1", "allow", map[string]any{"scope": "session"}, nil)}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", map[string]any{"scope": "session"}, nil))))
 		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""))
 		require.Len(t, posts, 1)
 		assert.JSONEq(t, `{"kind":"approval","decision":"approved","scope":"session"}`, string(posts[0].Body))
@@ -181,7 +196,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		// The server's resolution that follows an answer withdraws nothing.
 		rig.feed(t, map[string]any{"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindApproval, "status": kimiInteractionEnded, "outcome": "cancelled", "interaction_id": "approval_1", "decision": "approved"})
 		assert.Empty(t, rig.sink.CanceledControls())
-		require.ErrorIs(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_1", "allow", nil, nil)}), errKimiControlGone,
+		require.ErrorIs(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", nil, nil))), errKimiControlGone,
 			"a resolved request takes no second answer")
 	})
 
@@ -190,7 +205,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDPermissionMode, contracts.KimiModePlan)})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": contracts.KimiDisplayPlanReview, "plan": "# Plan"}))
 		content := answerFor(t, rig, "approval_1", "allow", nil, &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.KimiModeAuto})
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: content}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", content)))
 
 		profile := kimiSessionPath(rig.sessionID(), "/profile")
 		approval := kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")
@@ -228,7 +243,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		// A subagent's plan reads as a permission, whose answer carries no plan
 		// settings.
 		content := answerFor(t, rig, "approval_1", "allow", nil, nil)
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: content}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", content)))
 		assert.Len(t, rig.fake.requestsTo(profile), before, "no profile write reaches the main session")
 		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""))
 		require.Len(t, posts, 1)
@@ -246,7 +261,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": contracts.KimiDisplayGoalStart, "objective": "Ship it"}))
 		content := answerFor(t, rig, "approval_1", "allow", map[string]any{"choice": contracts.KimiGoalModeYolo}, nil)
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: content}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", content)))
 
 		profiles := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/profile"))
 		require.NotEmpty(t, profiles)
@@ -264,7 +279,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": contracts.KimiDisplayGoalStart, "objective": "Ship it"}))
 		before := len(rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/profile")))
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_1", "allow", nil, nil)}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", nil, nil))))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), "/profile")), before)
 		assert.Empty(t, rig.sink.PermissionModes())
 	})
@@ -274,7 +289,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, questionEvent("question_1"))
 		content := answerFor(t, rig, "question_1", "allow", map[string]any{"answers": map[string]any{"q_0": map[string]any{"kind": "single", "option_id": "opt_0_0"}}}, nil)
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: content}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("question_1", content)))
 		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "question_1", ""))
 		require.Len(t, posts, 1)
 		assert.JSONEq(t, `{"kind":"question","answers":{"q_0":{"kind":"single","option_id":"opt_0_0"}},"method":"click"}`, string(posts[0].Body))
@@ -286,7 +301,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig.feed(t, questionEvent("question_1"))
 		route := kimiItemPath(rig.sessionID(), "interactions", "question_1", "")
 		rig.fake.reply("POST "+route, fakeKapReply{Code: kimiCodeOK, Msg: "dismissed"})
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "question_1", "deny", nil, nil)}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("question_1", answerFor(t, rig, "question_1", "deny", nil, nil))))
 		assert.Len(t, rig.fake.requestsTo("POST "+route), 1)
 	})
 
@@ -295,7 +310,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""), fakeKapReply{Code: kimiCodeInteractionEnded})
-		require.ErrorIs(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_1", "allow", nil, nil)}), errKimiControlGone)
+		require.ErrorIs(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", nil, nil))), errKimiControlGone)
 	})
 
 	t.Run("an answer whose reply was lost", func(t *testing.T) {
@@ -303,7 +318,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""), fakeKapReply{Drop: true})
-		require.ErrorIs(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_1", "allow", nil, nil)}), agent.ErrDeliveryUncertain)
+		require.ErrorIs(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", nil, nil))), agent.ErrDeliveryUncertain)
 	})
 
 	t.Run("a refusal the server states", func(t *testing.T) {
@@ -311,7 +326,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""), fakeKapReply{Code: 40001, Msg: "bad decision"})
-		err := rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_1", "allow", nil, nil)})
+		err := rig.agent.SendRawInput(rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", nil, nil)))
 		require.Error(t, err)
 		assert.False(t, errors.Is(err, errKimiControlGone) || errors.Is(err, agent.ErrDeliveryUncertain))
 	})
@@ -335,7 +350,7 @@ func TestKimiRefusesAnswersItCannotDeliver(t *testing.T) {
 	rig.agent.Mu.Lock()
 	rig.agent.controls["approval_1"].sessionID = "session_old"
 	rig.agent.Mu.Unlock()
-	err := rig.agent.SendRawInput(agent.RawInput{Data: []byte(`{"response":{"request_id":"approval_1","response":{"decision":"approved"}}}`)})
+	err := rig.agent.SendRawInput(rig.sink.Answer("approval_1", []byte(`{"response":{"request_id":"approval_1","response":{"decision":"approved"}}}`)))
 	require.ErrorContains(t, err, "previous session")
 	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")))
 }
@@ -510,7 +525,7 @@ func TestKimiRefusesAnAnswerItCannotPost(t *testing.T) {
 			rig := newKimiTestRig(t, agent.Options{})
 			rig.feed(t, tc.event)
 			profiles := len(rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/profile")))
-			require.ErrorContains(t, rig.agent.SendRawInput(agent.RawInput{Data: []byte(tc.answer)}), tc.refusal)
+			require.ErrorContains(t, rig.agent.SendRawInput(rig.sink.Answer(tc.requestID, []byte(tc.answer))), tc.refusal)
 			for _, route := range rig.fake.routes() {
 				assert.NotContains(t, route, tc.requestID, "nothing reaches the server")
 			}
@@ -521,10 +536,11 @@ func TestKimiRefusesAnAnswerItCannotPost(t *testing.T) {
 	t.Run("a control of a kind this build does not know", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
+		control := publishedKimiControl(kimiControlKind(99), rig.agent.sessionID, false)
 		rig.agent.Mu.Lock()
-		rig.agent.controls = map[string]*kimiPendingControl{"approval_1": publishedKimiControl(kimiControlKind(99), rig.agent.sessionID, false)}
+		rig.agent.controls = map[string]*kimiPendingControl{"approval_1": control}
 		rig.agent.Mu.Unlock()
-		err := rig.agent.SendRawInput(agent.RawInput{Data: []byte(`{"response":{"request_id":"approval_1","response":{"decision":"approved"}}}`)})
+		err := rig.agent.SendRawInput(agent.RawInput{Data: []byte(`{"response":{"request_id":"approval_1","response":{"decision":"approved"}}}`), ControlInstanceID: control.instanceID})
 		require.ErrorContains(t, err, "unknown Kimi Code control kind 99")
 	})
 }
@@ -538,17 +554,17 @@ func TestKimiApprovalWhoseModeSwitchFailsStaysPending(t *testing.T) {
 	rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": contracts.KimiDisplayGoalStart, "objective": "Ship it"}))
 	profile := "POST " + kimiSessionPath(rig.sessionID(), "/profile")
 	approval := "POST " + kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")
-	content := answerFor(t, rig, "approval_1", "allow", map[string]any{"choice": contracts.KimiGoalModeYolo}, nil)
+	content := rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", map[string]any{"choice": contracts.KimiGoalModeYolo}, nil))
 
 	rig.fake.reply(profile, fakeKapReply{Code: 50000, Msg: "profile locked"})
-	err := rig.agent.SendRawInput(agent.RawInput{Data: content})
+	err := rig.agent.SendRawInput(content)
 	require.ErrorContains(t, err, "switch the permission mode for the approval")
 	assert.Contains(t, err.Error(), "profile locked")
 	assert.Empty(t, rig.fake.requestsTo(approval))
 	assert.Empty(t, rig.sink.PermissionModes(), "the axis did not move")
 
 	rig.fake.reply(profile, fakeKapReply{})
-	require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: content}))
+	require.NoError(t, rig.agent.SendRawInput(content))
 	assert.Len(t, rig.fake.requestsTo(approval), 1)
 	assert.Equal(t, []string{contracts.KimiModeYolo}, rig.sink.PermissionModes())
 }
@@ -564,7 +580,7 @@ func TestKimiCancelUnpublishedControlRefusesAnUnsafeID(t *testing.T) {
 
 // publishedKimiControl constructs a completed publication for state-only tests.
 func publishedKimiControl(kind kimiControlKind, sessionID string, answered bool) *kimiPendingControl {
-	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, agentID: kimiMainAgentID, answered: answered, ready: true, published: true, publicationDone: make(chan struct{})}
+	pending := &kimiPendingControl{instanceID: "test-instance", kind: kind, sessionID: sessionID, agentID: kimiMainAgentID, answered: answered, ready: true, published: true, publicationDone: make(chan struct{})}
 	pending.publicationOnce.Do(func() { close(pending.publicationDone) })
 	return pending
 }

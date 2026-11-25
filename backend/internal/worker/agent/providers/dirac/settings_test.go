@@ -154,7 +154,7 @@ func TestDiracAppliesYoloOnlyBetweenNativePrompts(t *testing.T) {
 	assert.Equal(t, "true", agent.CurrentOptions(a.OptionGroups())[contracts.DiracConfigYolo], "a native snapshot cannot erase a pending user selection")
 
 	a.SetPromptActiveForTest(false)
-	require.NoError(t, a.SendInput("The next turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "The next turn.", nil))
 	syncPeer(t, a)
 	var operations []string
 	for _, request := range requests() {
@@ -179,7 +179,7 @@ func TestDiracReversingADeferredYoloChoiceSendsNoNativeWrite(t *testing.T) {
 	assert.Equal(t, "false", result.ConfirmedOptions().Get(contracts.DiracConfigYolo))
 	assert.Equal(t, "false", agent.CurrentOptions(a.OptionGroups())[contracts.DiracConfigYolo])
 	a.SetPromptActiveForTest(false)
-	require.NoError(t, a.SendInput("The next turn stays manual.", nil))
+	require.NoError(t, agenttest.SendInput(a, "The next turn stays manual.", nil))
 	syncPeer(t, a)
 	assert.Empty(t, acptest.ConfigWrites(requests()))
 	assert.Len(t, requestsFor(requests(), acp.MethodSessionPrompt), 1)

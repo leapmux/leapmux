@@ -80,7 +80,7 @@ func TestInputReplyUsesTheMatchingNativeResult(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newRig(t)
-			receipt, err := r.agent.SendInputWithReceipt("Report the status.", nil)
+			receipt, err := r.agent.SendInput("Report the status.", nil)
 			require.NoError(t, err)
 			require.Equal(t, r.sessionID(), receipt.SessionID)
 			command, ok := r.hub.waitCommand(commandSessionSendInput)
@@ -153,7 +153,7 @@ func TestInputReplyUsesTheMatchingNativeResult(t *testing.T) {
 func TestClearContextRetiresTheUnfinishedInputReply(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	receipt, err := r.agent.SendInputWithReceipt("Report the status.", nil)
+	receipt, err := r.agent.SendInput("Report the status.", nil)
 	require.NoError(t, err)
 	newSession, err := r.agent.ClearContext()
 	require.NoError(t, err)
@@ -187,7 +187,7 @@ func TestDrainedSteerSeparatesItsReplyFromThePriorCommand(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newRig(t)
-			lead, err := r.agent.SendInputWithReceipt("Initial input.", nil)
+			lead, err := r.agent.SendInput("Initial input.", nil)
 			require.NoError(t, err)
 			command, ok := r.hub.waitCommand(commandSessionSendInput)
 			require.True(t, ok)

@@ -82,12 +82,7 @@ func RawOptionalBool(raw json.RawMessage) *bool {
 
 // StringField reads a string member of a JSON object. Other inputs return an empty string.
 func StringField(content []byte, key string) string {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(content, &fields) != nil {
-		return ""
-	}
-	value, _ := RawString(fields[key])
-	return value
+	return ObjectString(RawFields(content), key)
 }
 
 // RawObject reads a JSON object into its fields. Any other value, JSON null
@@ -136,7 +131,8 @@ func RawStrings(raw json.RawMessage) []string {
 // other value. A prompt states it as the arguments of a call, so a call
 // whose arguments are no object states an empty object.
 func RawObjectOrEmpty(raw json.RawMessage) json.RawMessage {
-	if _, ok := RawObject(raw); !ok {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
 		return json.RawMessage("{}")
 	}
 	return raw
@@ -157,14 +153,14 @@ const maxSafeInteger = 1<<53 - 1
 // double states exactly, as JavaScript's Number.isSafeInteger judges it:
 // `2` and `2.0` are whole, and `1.5`, `"2"` and `null` are not.
 func RawWholeNumber(raw json.RawMessage) (int64, bool) {
-	if value, ok := RawInt64(raw); ok && value >= -maxSafeInteger && value <= maxSafeInteger {
+	if value, ok := RawInt64(raw); ok {
+		if value < -maxSafeInteger || value > maxSafeInteger {
+			return 0, false
+		}
 		return value, true
 	}
-	var number float64
-	if !RawPresent(raw) || json.Unmarshal(raw, &number) != nil {
-		return 0, false
-	}
-	if math.Trunc(number) != number || math.Abs(number) > maxSafeInteger {
+	number, ok := RawFloat64(raw)
+	if !ok || math.Trunc(number) != number || math.Abs(number) > maxSafeInteger {
 		return 0, false
 	}
 	return int64(number), true

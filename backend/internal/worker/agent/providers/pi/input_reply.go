@@ -146,7 +146,7 @@ func (a *Agent) piReplyControlReceipt() agent.NativeInputReceipt {
 }
 
 func (a *Agent) preparePiReplyRow(content *agent.MessageContent) (*piReplyRun, agent.NativeReplyItem) {
-	if _, text := (piProvider{}).ReplyText(*content); !text {
+	if _, text := agent.ReplyText(piProvider{}, *content); !text {
 		return nil, agent.NativeReplyItem{}
 	}
 	a.Mu.Lock()

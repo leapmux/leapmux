@@ -117,8 +117,7 @@ func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "test.png", MimeType: "image/png", Data: data},
 	}
-
-	err = agent.SendInput("look at this image", attachments)
+	_, err = agent.SendInput("look at this image", attachments)
 	require.NoError(t, err)
 
 	// The mock process echoes stdin to stdout, so we can verify the format

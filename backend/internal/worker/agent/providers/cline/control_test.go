@@ -188,9 +188,9 @@ func TestBypassApprovesPendingAndLaterToolsButKeepsQuestionsAndPlans(t *testing.
 			r.feed(t, contracts.ClineEventApprovalRequested, approval("later", "editor"))
 			waitFor(t, func() bool { return len(approvalReplies(t, r.hub)) == 3 }, "the later tool is approved")
 			assert.Equal(t, 4, r.sink.PublishedControlCount())
-			require.ErrorIs(t, r.agent.answerApproval(contracts.ClineApprovalReply{ApprovalId: "first", Approved: false}), errUnknownControl)
-			require.NoError(t, r.agent.answerApproval(contracts.ClineApprovalReply{ApprovalId: "plan", Approved: false}))
-			require.NoError(t, r.agent.answerCapability(contracts.ClineCapabilityReply{RequestId: "question", Ok: true}))
+			require.ErrorIs(t, r.agent.answerApproval(contracts.ClineApprovalReply{ApprovalId: "first", Approved: false}, "any"), errUnknownControl)
+			require.NoError(t, r.agent.answerApproval(contracts.ClineApprovalReply{ApprovalId: "plan", Approved: false}, r.sink.Answer("plan", nil).ControlInstanceID))
+			require.NoError(t, r.agent.answerCapability(contracts.ClineCapabilityReply{RequestId: "question", Ok: true}, r.sink.Answer("question", nil).ControlInstanceID))
 		})
 	}
 }
@@ -264,11 +264,11 @@ func TestTheUsersApprovalReachesCline(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.feed(t, contracts.ClineEventApprovalRequested, approval("a1", "editor"))
-	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: false, Reason: "No."})}))
+	require.NoError(t, r.agent.SendRawInput(r.sink.Answer("a1", mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: false, Reason: "No."}))))
 	replies := approvalReplies(t, r.hub)
 	require.Len(t, replies, 1)
 	assert.Equal(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: false, Reason: "No."}, replies[0])
-	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), errUnknownControl, "an answered request takes no second answer")
+	require.ErrorIs(t, r.agent.SendRawInput(r.sink.Answer("a1", mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}))), errUnknownControl, "an answered request takes no second answer")
 }
 
 func TestAnAnswerOfAnOldSessionIsRefused(t *testing.T) {
@@ -279,8 +279,8 @@ func TestAnAnswerOfAnOldSessionIsRefused(t *testing.T) {
 	r.agent.Mu.Lock()
 	r.agent.sessionID = "replaced"
 	r.agent.Mu.Unlock()
-	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), agent.ErrInputSessionChanged)
-	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true})}), agent.ErrInputSessionChanged)
+	require.ErrorIs(t, r.agent.SendRawInput(r.sink.Answer("a1", mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}))), agent.ErrInputSessionChanged)
+	require.ErrorIs(t, r.agent.SendRawInput(r.sink.Answer("q1", mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true}))), agent.ErrInputSessionChanged)
 	assert.Empty(t, approvalReplies(t, r.hub))
 	assert.Empty(t, r.hub.commandsNamed(commandCapabilityRespond))
 }
@@ -306,7 +306,7 @@ func TestSendRawInputRefusesWhatIsNotAnAnswer(t *testing.T) {
 	require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q9", Ok: true})}), errUnknownControl)
 	assert.Empty(t, approvalReplies(t, r.hub), "no malformed answer reaches Cline")
 	assert.Empty(t, r.hub.commandsNamed(commandCapabilityRespond))
-	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}), "the requests still wait for their answers")
+	require.NoError(t, r.agent.SendRawInput(r.sink.Answer("a1", mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}))), "the requests still wait for their answers")
 }
 
 func TestSendRawInputRefusesAStoppedAgent(t *testing.T) {
@@ -331,8 +331,8 @@ func TestAnAnswerOfTheWrongKindIsRefused(t *testing.T) {
 	assert.Empty(t, approvalReplies(t, r.hub))
 	assert.Empty(t, r.hub.commandsNamed(commandCapabilityRespond))
 
-	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})}))
-	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Error: "No."})}))
+	require.NoError(t, r.agent.SendRawInput(r.sink.Answer("a1", mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true}))))
+	require.NoError(t, r.agent.SendRawInput(r.sink.Answer("q1", mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Error: "No."}))))
 	assert.Len(t, approvalReplies(t, r.hub), 1)
 	assert.Equal(t, []contracts.ClineCapabilityReply{{RequestId: "q1", Error: "No."}}, capabilityReplies(t, r.hub))
 }
@@ -347,7 +347,7 @@ func TestAnAnswerThatClineRefusesFails(t *testing.T) {
 		return fakeReply{Code: "approval_not_found", Message: "no such approval"}
 	})
 	r.feed(t, contracts.ClineEventApprovalRequested, approval("a1", "editor"))
-	err := r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})})
+	err := r.agent.SendRawInput(r.sink.Answer("a1", mustJSON(t, contracts.ClineApprovalReply{ApprovalId: "a1", Approved: true})))
 	var refused *HubCommandError
 	require.ErrorAs(t, err, &refused)
 	assert.Equal(t, "approval_not_found", refused.Code)
@@ -389,7 +389,7 @@ func TestAQuestionIsPublishedAndAnswered(t *testing.T) {
 
 	payload, err := json.Marshal(map[string]string{contracts.ClineCapabilityReplyResult: "Blue"})
 	require.NoError(t, err)
-	require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true, Payload: payload})}))
+	require.NoError(t, r.agent.SendRawInput(r.sink.Answer("q1", mustJSON(t, contracts.ClineCapabilityReply{RequestId: "q1", Ok: true, Payload: payload}))))
 	commands := r.hub.commandsNamed(commandCapabilityRespond)
 	require.Len(t, commands, 1)
 	assert.JSONEq(t, `{"requestId":"q1","ok":true,"payload":{"result":"Blue"}}`, string(commands[0].Payload))

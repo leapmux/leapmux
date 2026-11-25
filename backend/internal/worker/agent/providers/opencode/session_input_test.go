@@ -20,6 +20,16 @@ func openCodeTestSteerRequest(inputID, content string) agent.SteerRequest {
 	return agent.SteerRequest{InputID: inputID, AttemptID: "attempt-" + inputID, Content: content}
 }
 
+func sendOpenCodeTestInput(runtime *openCodeSessionRuntime, content string) error {
+	_, err := runtime.SendInput(content, nil)
+	return err
+}
+
+func sendOpenCodeTestInputForSession(runtime *openCodeSessionRuntime, sessionID, content string) error {
+	_, err := runtime.SendInputForSession(sessionID, content, nil)
+	return err
+}
+
 func steerOpenCodeTestInput(runtime *openCodeSessionRuntime, inputID, content string) error {
 	_, err := runtime.steerQueuedInput(nil, openCodeTestSteerRequest(inputID, content))
 	return err
@@ -54,8 +64,8 @@ func TestOpenCodeInputDispatchesOrdinaryAndLiveInputsThroughNativeSteerReceipts(
 	})
 	sink := &agenttest.Sink{}
 	runtime := inputRuntime(t, rpc, sink)
-	require.NoError(t, runtime.SendInputForSession("ses_1", "text", nil))
-	assert.ErrorIs(t, runtime.SendInput("text", nil), agent.ErrAgentBusy)
+	require.NoError(t, sendOpenCodeTestInputForSession(runtime, "ses_1", "text"))
+	assert.ErrorIs(t, sendOpenCodeTestInput(runtime, "text"), agent.ErrAgentBusy)
 	require.NoError(t, steerOpenCodeTestInput(runtime, "queue-input", "text"))
 	mu.Lock()
 	assert.Equal(t, []string{"steer", "steer"}, deliveries)
@@ -68,8 +78,8 @@ func TestOpenCodeInputRejectsIdentityAndIdleSteeringBeforeHTTP(t *testing.T) {
 	var calls atomic.Int32
 	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) { calls.Add(1); w.WriteHeader(http.StatusNoContent) })
 	runtime := inputRuntime(t, rpc, &agenttest.Sink{})
-	assert.Error(t, runtime.SendInputForSession("", "text", nil))
-	assert.Error(t, runtime.SendInputForSession("ses_other", "text", nil))
+	assert.Error(t, sendOpenCodeTestInputForSession(runtime, "", "text"))
+	assert.Error(t, sendOpenCodeTestInputForSession(runtime, "ses_other", "text"))
 	assert.ErrorIs(t, steerOpenCodeTestInput(runtime, "queue-input", "text"), agent.ErrNoActiveTurn)
 	runtime.setNativeActivity(true, true)
 	assert.ErrorIs(t, steerOpenCodeTestInput(runtime, "queue-input", "text"), agent.ErrNoActiveTurn)
@@ -89,7 +99,7 @@ func TestOpenCodeInputRefusalDoesNotUndoNewerNativeActivity(t *testing.T) {
 				w.WriteHeader(http.StatusConflict)
 			})
 			runtime = inputRuntime(t, rpc, &agenttest.Sink{})
-			require.Error(t, runtime.SendInput("text", nil))
+			require.Error(t, sendOpenCodeTestInput(runtime, "text"))
 			assert.Equal(t, nativeEvent, runtime.PublishTurnActive().Active)
 		})
 	}
@@ -106,7 +116,7 @@ func TestOpenCodeInputCompletionCanPrecedeAdmissionReply(t *testing.T) {
 		assert.NoError(t, err)
 	})
 	runtime = inputRuntime(t, rpc, &agenttest.Sink{})
-	require.NoError(t, runtime.SendInput("text", nil))
+	require.NoError(t, sendOpenCodeTestInput(runtime, "text"))
 	assert.False(t, runtime.PublishTurnActive().Active)
 }
 
@@ -131,13 +141,13 @@ func TestOpenCodeInputConcurrentSendsAdmitOnlyOneNormalPrompt(t *testing.T) {
 	t.Cleanup(cancel)
 	first := make(chan error, 1)
 	second := make(chan error, 1)
-	go func() { first <- runtime.SendInput("first", nil) }()
+	go func() { first <- sendOpenCodeTestInput(runtime, "first") }()
 	select {
 	case <-entered:
 	case <-ctx.Done():
 		t.Fatal("the first native prompt did not reach the server")
 	}
-	go func() { second <- runtime.SendInput("second", nil) }()
+	go func() { second <- sendOpenCodeTestInput(runtime, "second") }()
 	once.Do(func() { close(release) })
 	select {
 	case err := <-first:
@@ -158,7 +168,7 @@ func TestOpenCodeInputReconciliationFailureKeepsDeliveryUncertain(t *testing.T) 
 	t.Parallel()
 	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
 	runtime := inputRuntime(t, rpc, &agenttest.Sink{})
-	require.ErrorIs(t, runtime.SendInput("text", nil), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, sendOpenCodeTestInput(runtime, "text"), agent.ErrDeliveryUncertain)
 	assert.True(t, runtime.PublishTurnActive().Active)
 }
 
@@ -170,7 +180,7 @@ func TestOpenCodeInputCancelledContextSendsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	runtime.ctx = ctx
 	cancel()
-	require.ErrorIs(t, runtime.SendInput("text", nil), context.Canceled)
+	require.ErrorIs(t, sendOpenCodeTestInput(runtime, "text"), context.Canceled)
 	assert.Zero(t, calls.Load())
 }
 
@@ -198,7 +208,7 @@ func TestOpenCodeInputForeignReceiptLeavesAdmissionUncertain(t *testing.T) {
 		assert.NoError(t, err)
 	})
 	runtime := inputRuntime(t, rpc, &agenttest.Sink{})
-	require.ErrorIs(t, runtime.SendInput("text", nil), agent.ErrDeliveryUncertain)
+	require.ErrorIs(t, sendOpenCodeTestInput(runtime, "text"), agent.ErrDeliveryUncertain)
 	assert.True(t, runtime.PublishTurnActive().Active)
 }
 
@@ -209,7 +219,7 @@ func TestOpenCodeInputRetiredSessionSendsAndPublishesNothing(t *testing.T) {
 	sink := &agenttest.Sink{}
 	runtime := inputRuntime(t, rpc, sink)
 	runtime.claimTurnSequence = func() uint64 { return 0 }
-	require.ErrorIs(t, runtime.SendInput("text", nil), agent.ErrInputSessionChanged)
+	require.ErrorIs(t, sendOpenCodeTestInput(runtime, "text"), agent.ErrInputSessionChanged)
 	runtime.setNativeActivity(true, false)
 	assert.Equal(t, agent.TurnState{}, runtime.PublishTurnActive())
 	assert.Empty(t, sink.TurnActiveCalls)
@@ -230,7 +240,7 @@ func TestOpenCodeInputLateRefusalCannotPublishAfterSessionRetirement(t *testing.
 		}
 		return seq.Add(1)
 	}
-	require.Error(t, runtime.SendInput("text", nil))
+	require.Error(t, sendOpenCodeTestInput(runtime, "text"))
 	assert.Equal(t, []bool{true}, sink.TurnActiveCalls)
 }
 
@@ -241,7 +251,7 @@ func TestOpenCodeInputInvalidModelDoesNotPublishActivityOrSendHTTP(t *testing.T)
 	sink := &agenttest.Sink{}
 	runtime := inputRuntime(t, rpc, sink)
 	runtime.selectedModel = &openCodeModelRef{ProviderID: "missing", ID: "model"}
-	require.Error(t, runtime.SendInput("text", nil))
+	require.Error(t, sendOpenCodeTestInput(runtime, "text"))
 	assert.False(t, runtime.PublishTurnActive().Active)
 	assert.Equal(t, []bool{false}, sink.TurnActiveCalls)
 	assert.Zero(t, calls.Load())
@@ -283,7 +293,7 @@ func TestOpenCodeInputNativeAdmissionSurvivesLostHTTPReceipt(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	runtime = inputRuntime(t, rpc, &agenttest.Sink{})
-	require.NoError(t, runtime.SendInput("admitted", nil))
+	require.NoError(t, sendOpenCodeTestInput(runtime, "admitted"))
 	assert.True(t, runtime.PublishTurnActive().Active)
 	assert.Empty(t, runtime.admissions)
 }
@@ -477,7 +487,7 @@ func TestOpenCodeInputReconcilesUnknownAdmissionWithoutAStreamReconnect(t *testi
 				}
 			})
 			runtime = inputRuntime(t, rpc, &agenttest.Sink{})
-			err := runtime.SendInput("first", nil)
+			err := sendOpenCodeTestInput(runtime, "first")
 			if state == "queued" || state == "delivered" {
 				require.NoError(t, err)
 			} else {
@@ -486,7 +496,7 @@ func TestOpenCodeInputReconcilesUnknownAdmissionWithoutAStreamReconnect(t *testi
 			assert.Equal(t, state == "newer activity", runtime.PublishTurnActive().Active)
 			assert.EqualValues(t, 1, posts.Load(), "reconciliation must not resubmit an uncertain input")
 			if state == "absent" {
-				require.NoError(t, runtime.SendInput("second", nil))
+				require.NoError(t, sendOpenCodeTestInput(runtime, "second"))
 				assert.EqualValues(t, 2, posts.Load())
 			}
 		})
@@ -546,7 +556,7 @@ func TestOpenCodeInputActivityCanRecoverWhenAdmissionEvidenceFails(t *testing.T)
 				}
 			})
 			runtime := inputRuntime(t, rpc, &agenttest.Sink{})
-			require.ErrorIs(t, runtime.SendInput("text", nil), agent.ErrDeliveryUncertain)
+			require.ErrorIs(t, sendOpenCodeTestInput(runtime, "text"), agent.ErrDeliveryUncertain)
 			assert.False(t, runtime.PublishTurnActive().Active)
 		})
 	}
@@ -594,7 +604,7 @@ func TestOpenCodeInputRequestsRecoveryAfterAnUncertainHTTPOutcome(t *testing.T) 
 			runtime = inputRuntime(t, rpc, &agenttest.Sink{})
 			var requested atomic.Int32
 			runtime.requestRecovery = func() { requested.Add(1) }
-			err := runtime.SendInput("text", nil)
+			err := sendOpenCodeTestInput(runtime, "text")
 			if tc.status == http.StatusOK || tc.confirmed {
 				require.NoError(t, err)
 			} else {

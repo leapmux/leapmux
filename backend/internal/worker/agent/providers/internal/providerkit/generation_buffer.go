@@ -16,9 +16,19 @@ type generationSegment struct {
 	turn  generationNativeTurn
 }
 
+// NativeTurnRef identifies the provider session and native turn that produced
+// a buffered generation fragment.
+type NativeTurnRef struct {
+	SessionID string
+	TurnID    string
+}
+
 type generationNativeTurn struct {
 	sessionID string
 	turnID    string
+	// mixed records that fragments in the scope disagreed on turn identity,
+	// so prepare clears turn and input metadata instead of inheriting the template.
+	mixed bool
 }
 
 // orderedSegment pairs one segment with its scope, for an ordered walk.
@@ -47,12 +57,12 @@ func (b *GenerationBuffer) Append(scopeID string, kind agent.AssembledMessageKin
 }
 
 // AppendForNativeTurn retains the turn identity when every fragment of the scope agrees.
-func (b *GenerationBuffer) AppendForNativeTurn(scopeID string, kind agent.AssembledMessageKind, text string, join TextJoin, sessionID, turnID string) {
-	if sessionID == "" || turnID == "" {
+func (b *GenerationBuffer) AppendForNativeTurn(scopeID string, kind agent.AssembledMessageKind, text string, join TextJoin, turn NativeTurnRef) {
+	if turn.SessionID == "" || turn.TurnID == "" {
 		b.Append(scopeID, kind, text, join)
 		return
 	}
-	b.append(scopeID, kind, text, join, generationNativeTurn{sessionID: sessionID, turnID: turnID})
+	b.append(scopeID, kind, text, join, generationNativeTurn{sessionID: turn.SessionID, turnID: turn.TurnID})
 }
 
 func (b *GenerationBuffer) append(scopeID string, kind agent.AssembledMessageKind, text string, join TextJoin, turn generationNativeTurn) {
@@ -68,8 +78,8 @@ func (b *GenerationBuffer) append(scopeID string, kind agent.AssembledMessageKin
 		segment = &generationSegment{order: b.nextOrder, turn: turn}
 		b.nextOrder++
 		b.segments[scopeID] = segment
-	} else if segment.turn != turn {
-		segment.turn = generationNativeTurn{}
+	} else if segment.turn.mixed || turn.mixed || segment.turn != turn {
+		segment.turn = generationNativeTurn{mixed: true}
 	}
 	segment.kind = kind
 	AppendText(&segment.text, text, join)

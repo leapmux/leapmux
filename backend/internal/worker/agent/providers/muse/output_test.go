@@ -67,7 +67,7 @@ func TestMuseRejectsMissingAndReplacedSessions(t *testing.T) {
 func TestMuseBusyRefusalRepublishesTheTurn(t *testing.T) {
 	a, sink := testAgent(t)
 	a.startTurn("session", "turn")
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, a.SendInput("later", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, agenttest.SendInput(a, "later", nil))
 }
 func TestMuseRisingTurnTokens(t *testing.T) {
 	a, sink := testAgent(t)

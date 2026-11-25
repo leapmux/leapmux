@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/jsonfield"
 )
 
 // ControlRequestInput is one control request as a provider reads it.
@@ -110,7 +112,7 @@ func GenericPermissionPrompt() *leapmuxv1.ControlPrompt {
 //     the text is no part of them.
 //   - Any other request takes the text as the reason of a refusal.
 func WithEditorPurpose(prompt *leapmuxv1.ControlPrompt) *leapmuxv1.ControlPrompt {
-	if prompt.GetEditorPurpose() != leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_UNSPECIFIED {
+	if prompt == nil || prompt.GetEditorPurpose() != leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_UNSPECIFIED {
 		return prompt
 	}
 	switch prompt.GetKind().(type) {
@@ -180,14 +182,18 @@ func controlFaultPrompt(fault leapmuxv1.ControlPayloadFault) *leapmuxv1.ControlP
 // controlPayloadFault is why payload cannot be read as a JSON object, or
 // UNSPECIFIED for an object.
 func controlPayloadFault(payload []byte) leapmuxv1.ControlPayloadFault {
-	var value any
-	if err := json.Unmarshal(payload, &value); err != nil {
+	if !json.Valid(payload) {
 		return leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_MALFORMED
 	}
-	if _, ok := value.(map[string]any); !ok {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_NOT_AN_OBJECT
 	}
 	return leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED
+}
+
+func isJSONObject(payload []byte) bool {
+	return controlPayloadFault(payload) == leapmuxv1.ControlPayloadFault_CONTROL_PAYLOAD_FAULT_UNSPECIFIED
 }
 
 // PermissionDecisionOf returns the permission decision of input and the
@@ -245,7 +251,7 @@ func WithRefusal(options []*leapmuxv1.PermissionOption, refusal *leapmuxv1.Permi
 	if slices.ContainsFunc(options, IsRefusalOption) {
 		return options
 	}
-	return append(options, refusal)
+	return append(slices.Clone(options), refusal)
 }
 
 // ReadControlRequest defaults to the generic permission prompt.
@@ -277,12 +283,11 @@ func AnswerAllowDeny(input ControlAnswerInput) (ControlAnswer, error) {
 // shape that Claude Code's control protocol defined and the neutral answers
 // echo. Each field reads alone, so a sibling of the wrong type never hides it.
 func controlRequestField(payload []byte, name string) json.RawMessage {
-	var envelope map[string]json.RawMessage
-	var request map[string]json.RawMessage
-	if json.Unmarshal(payload, &envelope) != nil || json.Unmarshal(envelope["request"], &request) != nil {
+	value, err := jsonfield.Get(payload, "request", name)
+	if err != nil {
 		return nil
 	}
-	return request[name]
+	return value
 }
 
 // ControlToolName returns payload.request.tool_name, or "" when it is
@@ -311,8 +316,7 @@ func controlRequestString(payload []byte, name string) string {
 // when the request states none or states a value that is not an object.
 func ControlToolInput(payload []byte) json.RawMessage {
 	input := controlRequestField(payload, "input")
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(input, &fields) != nil || fields == nil {
+	if !isJSONObject(input) {
 		return json.RawMessage("{}")
 	}
 	return input
@@ -321,7 +325,7 @@ func ControlToolInput(payload []byte) json.RawMessage {
 // ControlResponseEnvelope wraps response in the control_response envelope
 // that every neutral answer travels in.
 func ControlResponseEnvelope(requestID string, response any) []byte {
-	encoded, err := json.Marshal(map[string]any{
+	return mustJSON(map[string]any{
 		"type": "control_response",
 		"response": map[string]any{
 			"subtype":    "success",
@@ -329,30 +333,41 @@ func ControlResponseEnvelope(requestID string, response any) []byte {
 			"response":   response,
 		},
 	})
-	if err != nil {
-		panic(fmt.Sprintf("agent: encode a control response: %v", err))
+}
+
+// ControlBehaviorResponse is the inner response object of a neutral allow or
+// deny control answer. See ControlBehaviorEnvelope.
+type ControlBehaviorResponse struct {
+	Behavior     string          `json:"behavior"`
+	UpdatedInput json.RawMessage `json:"updatedInput,omitempty"`
+	Message      string          `json:"message,omitempty"`
+	Choice       string          `json:"choice,omitempty"`
+}
+
+// DenyMessage returns message, or contracts.ControlAnswerMessageRejectedByUser
+// when message is empty, because Claude Code turns a deny into an error tool
+// result and the Anthropic API refuses an empty one.
+func DenyMessage(message string) string {
+	if message == "" {
+		return contracts.ControlAnswerMessageRejectedByUser
 	}
-	return encoded
+	return message
 }
 
 // AllowResponse is the neutral allow, with the input that the call runs with.
 func AllowResponse(requestID string, updatedInput json.RawMessage) []byte {
-	return ControlResponseEnvelope(requestID, map[string]any{
-		"behavior":     contracts.ControlAnswerBehaviorAllow,
-		"updatedInput": updatedInput,
+	return ControlResponseEnvelope(requestID, ControlBehaviorResponse{
+		Behavior:     contracts.ControlAnswerBehaviorAllow,
+		UpdatedInput: updatedInput,
 	})
 }
 
 // DenyResponse is the neutral deny. An empty message states
-// contracts.ControlAnswerMessageRejectedByUser, because Claude Code turns a deny into an error
-// tool result, and the Anthropic API refuses an empty one.
+// contracts.ControlAnswerMessageRejectedByUser (DenyMessage).
 func DenyResponse(requestID, message string) []byte {
-	if message == "" {
-		message = contracts.ControlAnswerMessageRejectedByUser
-	}
-	return ControlResponseEnvelope(requestID, map[string]any{
-		"behavior": contracts.ControlAnswerBehaviorDeny,
-		"message":  message,
+	return ControlResponseEnvelope(requestID, ControlBehaviorResponse{
+		Behavior: contracts.ControlAnswerBehaviorDeny,
+		Message:  DenyMessage(message),
 	})
 }
 
@@ -361,31 +376,6 @@ func DenyResponse(requestID, message string) []byte {
 // ResolveControlResponse restores the runtime's id from the stored request.
 func JSONRPCResult(requestID string, result any) []byte {
 	return mustJSON(map[string]any{"jsonrpc": "2.0", "id": requestID, "result": result})
-}
-
-// SelectedOptionResult is the Agent Client Protocol answer that selects one
-// permission option. The OpenCode protocol shares it.
-func SelectedOptionResult(requestID, optionID string) []byte {
-	return JSONRPCResult(requestID, map[string]any{
-		"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": optionID},
-	})
-}
-
-// WithControlChoice adds the id of one offered choice beside the behavior of
-// a neutral answer. See ControlBehaviorEnvelope.Choice.
-func WithControlChoice(content []byte, choice string) []byte {
-	var envelope map[string]json.RawMessage
-	var outer map[string]json.RawMessage
-	var inner map[string]json.RawMessage
-	if json.Unmarshal(content, &envelope) != nil ||
-		json.Unmarshal(envelope["response"], &outer) != nil ||
-		json.Unmarshal(outer["response"], &inner) != nil || inner == nil {
-		panic("agent: WithControlChoice needs a neutral answer")
-	}
-	inner["choice"] = mustJSON(choice)
-	outer["response"] = mustJSON(inner)
-	envelope["response"] = mustJSON(outer)
-	return mustJSON(envelope)
 }
 
 func mustJSON(v any) json.RawMessage {

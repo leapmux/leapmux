@@ -6,8 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -38,7 +36,7 @@ func TestReadWorkspaceTrustPrompt_StatesTheFolderTheAgentAndWhatTheTrustControls
 			{OptionId: "workspace-reject", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Do not trust"},
 		},
 	}}, EditorPurpose: leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE}
-	require.Truef(t, proto.Equal(want, got), "want %s\ngot  %s", protojson.Format(want), protojson.Format(got))
+	agenttest.RequireProto(t, want, got)
 }
 
 func TestReadWorkspaceTrustPrompt_JoinsTheConfigurationWords(t *testing.T) {

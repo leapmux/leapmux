@@ -445,7 +445,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		assert.Equal(t, "session_1", byID["approval_9"]["session_id"])
 		assert.Equal(t, contracts.KimiFrameInteraction, byID["question_9"]["type"])
 		assert.Equal(t, "agent-0", byID["question_9"]["agent_id"])
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_9", "allow", nil, nil)}))
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_9", answerFor(t, rig, "approval_9", "allow", nil, nil))))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "interactions", "approval_9", "")), 1)
 	})
 	t.Run("withdraws only controls absent from the confirmed native replay", func(t *testing.T) {
@@ -469,8 +469,8 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		_, stale := rig.agent.controls["approval_1"]
 		rig.agent.Mu.Unlock()
 		assert.False(t, stale)
-		require.ErrorIs(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_1", "allow", nil, nil)}), errKimiControlGone)
-		require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_2", "allow", nil, nil)}))
+		require.ErrorIs(t, rig.agent.SendRawInput(rig.sink.Answer("approval_1", answerFor(t, rig, "approval_1", "allow", nil, nil))), errKimiControlGone)
+		require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("approval_2", answerFor(t, rig, "approval_2", "allow", nil, nil))))
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_2", "")), 1)
 	})
@@ -506,7 +506,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		require.NotEmpty(t, messages)
 		assert.True(t, messages[len(messages)-1].TurnEnd)
 		rig.fake.setBusy("session_1", false)
-		require.NoError(t, rig.agent.SendInput("Next.", nil))
+		require.NoError(t, agenttest.SendInput(rig.agent, "Next.", nil))
 	})
 	t.Run("starts a main turn that started during the gap", func(t *testing.T) {
 		t.Parallel()
@@ -517,7 +517,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 		waitFor(t, finished, "the recovered native running turn completes replay")
 		assert.Equal(t, agent.TurnState{Active: true}, rig.agent.PublishTurnActive(), "a turn without a steerable user item takes no steer")
 		var busy *agent.AgentBusyError
-		require.ErrorAs(t, rig.agent.SendInput("Next.", nil), &busy)
+		require.ErrorAs(t, agenttest.SendInput(rig.agent, "Next.", nil), &busy)
 		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
 		native.conversationFrame(t, `{"type":"turn.ended","turn":{"turn_id":"t3","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
 		last, _ := rig.sink.LastTurnActive()

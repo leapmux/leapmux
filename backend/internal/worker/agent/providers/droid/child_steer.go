@@ -1,7 +1,6 @@
 package droid
 
 import (
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -16,10 +15,7 @@ import (
 // A native background child without a bound process is busy but cannot take a
 // steer through the root process. The input queue holds a send until it ends.
 
-var (
-	_ agent.ChildSteerer     = (*Agent)(nil)
-	_ agent.ChildEchoSteerer = (*Agent)(nil)
-)
+var _ agent.ChildSteerer = (*Agent)(nil)
 
 // SendChildInput sends through a process loaded with the child session. A
 // running native background child makes the queue hold the message.
@@ -52,7 +48,7 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
 	receipt, err := child.sendNativeInput(&childKey, input.Content, input.Attachments, droidInputDispatch{
-		mode: droidInputOrdinary, captureReply: true,
+		mode: droidInputOrdinary,
 	})
 	if err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
@@ -62,24 +58,21 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, nil
 }
 
-// SteerChildInput uses only an active process already bound to the child.
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.steerChild(childKey, agent.SteerRequest{Content: content, Attachments: attachments}, droidInputChildSteer)
-}
-
-// SteerChildInputAtEcho injects a steered input into an active bound child
-// process and settles the queue item at Droid's native user echo or discard.
-func (a *Agent) SteerChildInputAtEcho(childKey string, request agent.SteerRequest) error {
+// SteerChildInput injects a steered input into an active bound child process
+// and settles the queue item at Droid's native user echo or discard.
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	mode := droidInputSteer
 	if request.AttemptID == "" {
 		mode = droidInputChildSteer
 	}
-	return a.steerChild(childKey, request, mode)
+	return agent.NativeInputReceipt{}, a.steerChild(childKey, request, mode)
 }
 
-// ChildSteerSurvivesTurnEnd retains accepted child steers until Droid echoes
-// or explicitly discards them.
-func (*Agent) ChildSteerSurvivesTurnEnd() bool { return true }
+// ChildSteerPolicy holds the steer row until echo and retains accepted child
+// steers until Droid echoes or explicitly discards them.
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}
+}
 
 func (a *Agent) steerChild(childKey string, request agent.SteerRequest, mode droidInputMode) error {
 	if _, err := a.registeredChildID(childKey); err != nil {

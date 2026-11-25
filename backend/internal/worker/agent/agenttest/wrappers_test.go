@@ -20,9 +20,11 @@ type capableAgent struct{ IdleAgent }
 
 func (capableAgent) AgentID() string                        { return "inner" }
 func (capableAgent) Interrupt(stop agent.StopContext) error { return errInnerInterrupt }
-func (capableAgent) SteerInput(agent.SteerRequest) error    { return nil }
-func (capableAgent) SupportsSteering() bool                 { return true }
-func (capableAgent) InterruptEscalationReady() bool         { return false }
+func (capableAgent) SteerInput(agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, nil
+}
+func (capableAgent) SupportsSteering() bool         { return true }
+func (capableAgent) InterruptEscalationReady() bool { return false }
 
 // escalationProbe is the method set that Manager.InterruptEscalationReady looks for.
 type escalationProbe interface{ InterruptEscalationReady() bool }

@@ -127,10 +127,10 @@ func (a *Agent) installChildLocked(info openCodeSessionInfo, parent *openCodeRun
 	if lease.Sink == nil || lease.CaptureMessage == nil || lease.Activate == nil || lease.Cleanup == nil {
 		return nil, errors.New("OpenCode could not acquire complete child transcript services")
 	}
-	// The lease already carries an ordered sink. Install its capture function
-	// under one queue so a child write cannot wait on its own queue again.
-	services := agent.NewOrderedProviderServices(agent.OutputQueueFor(lease.Sink), &openCodeLeasedServices{
-		ProviderServices: agent.DirectProviderServices(lease.Sink), capture: lease.CaptureMessage,
+	// The lease already carries an ordered sink. Keep its queue outermost so a
+	// child write cannot wait on its own queue again.
+	services := agent.DecorateProviderServices(lease.Sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		return &openCodeLeasedServices{ProviderServices: direct, capture: lease.CaptureMessage}
 	})
 	run, err := a.newRun(info, services)
 	if err != nil {

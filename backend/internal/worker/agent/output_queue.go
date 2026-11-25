@@ -209,7 +209,12 @@ func (queue *OutputQueue) WaitForAdmittedWrites(ctx context.Context) error {
 		return nil
 	}
 	queue.pending = append(queue.pending, ticket)
+	retryActive := queue.retry != nil && queue.retry.done != nil
+	shouldFlush := !queue.running && !retryActive
 	queue.mu.Unlock()
+	if shouldFlush {
+		_ = queue.Flush()
+	}
 	select {
 	case <-done:
 		return nil

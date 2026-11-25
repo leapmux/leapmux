@@ -635,3 +635,48 @@ func TestOpenCodeRcMarkerNeverReachesTheDaemon(t *testing.T) {
 	t.Parallel()
 	opencodetest.AssertRcMarkerNeverReachesTheDaemon(t, "opencode", "OPENCODE_CLIENT", openCodeQuestionToolEnv, ACPArgs())
 }
+
+func openCodeQuestionEventPayload(t *testing.T, properties any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"type": "question.asked", "properties": properties})
+	require.NoError(t, err)
+	return payload
+}
+
+func TestIsOpenCodeQuestionEvent(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isOpenCodeQuestionEvent([]byte(`{"type":"question.asked","properties":{"questions":[]}}`)))
+	assert.True(t, isOpenCodeQuestionEvent([]byte(`{"type":"question.asked"}`)), "the type alone decides")
+	for _, payload := range []string{
+		`{"type":"question.replied","properties":{"requestID":"que_1"}}`,
+		`{"type":"permission.asked","properties":{"id":"per_1"}}`,
+		`{"method":"requestPermission","params":{"toolCall":{"toolCallId":"tc-1"}}}`,
+		`{"type":7}`,
+		`{}`,
+		`not json`,
+	} {
+		assert.False(t, isOpenCodeQuestionEvent([]byte(payload)), payload)
+	}
+}
+
+func TestOpenCodeQuestionID(t *testing.T) {
+	t.Parallel()
+	id, ok := openCodeQuestionID(openCodeQuestionEventPayload(t, map[string]any{"id": "que_1", "questions": []any{}}))
+	assert.True(t, ok)
+	assert.Equal(t, "que_1", id)
+
+	for name, payload := range map[string][]byte{
+		"no id":                         openCodeQuestionEventPayload(t, map[string]any{"questions": []any{}}),
+		"an empty id":                   openCodeQuestionEventPayload(t, map[string]any{"id": ""}),
+		"an id that is a number":        openCodeQuestionEventPayload(t, map[string]any{"id": 7}),
+		"properties that are no object": openCodeQuestionEventPayload(t, "que_1"),
+		"an id outside the properties":  []byte(`{"type":"question.asked","id":"que_1","properties":{}}`),
+		"a permission with an id":       []byte(`{"type":"permission.asked","properties":{"id":"per_1"}}`),
+		"a reply to the question":       []byte(`{"type":"question.replied","properties":{"id":"que_1"}}`),
+		"no JSON":                       []byte(`not json`),
+	} {
+		id, ok := openCodeQuestionID(payload)
+		assert.False(t, ok, name)
+		assert.Empty(t, id, name)
+	}
+}

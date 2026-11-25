@@ -129,7 +129,7 @@ func TestGeminiIdleReplayContentIsNotRendered(t *testing.T) {
 	testutil.RequireEventually(t, func() bool { return a.HasAvailableCommand("memory") })
 	assert.Empty(t, geminiRows(t, sink.Messages()), "the replay stores nothing")
 
-	require.NoError(t, a.SendInput("OLDER_NATIVE_NEXT_PROMPT", nil))
+	require.NoError(t, agenttest.SendInput(a, "OLDER_NATIVE_NEXT_PROMPT", nil))
 	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
 
 	assert.Equal(t, []string{"text:OLDER_NATIVE_RESUME_CONFIRMED", "turn_end:0"}, geminiRows(t, sink.Messages()),

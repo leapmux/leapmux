@@ -138,6 +138,8 @@ func qoderPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer,
 	if agent.IsAllowOption(option) {
 		behavior = contracts.ControlAnswerBehaviorAllow
 	}
-	content := agent.ControlResponseEnvelope(input.RequestID, map[string]any{"behavior": behavior})
-	return agent.ControlAnswer{Content: agent.WithControlChoice(content, option.GetOptionId())}, nil
+	return agent.ControlAnswer{Content: agent.ControlResponseEnvelope(input.RequestID, agent.ControlBehaviorResponse{
+		Behavior: behavior,
+		Choice:   option.GetOptionId(),
+	})}, nil
 }

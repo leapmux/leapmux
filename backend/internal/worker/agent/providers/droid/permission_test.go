@@ -113,7 +113,7 @@ func TestDroidBypassPreservesProtectedConfirmations(t *testing.T) {
 				}
 				answer, err := json.Marshal(droidResponseEnvelope("protected", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionCancel}))
 				require.NoError(t, err)
-				require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}), "the protected request remains answerable by the user")
+				require.NoError(t, a.SendRawInput(sink.Answer(published.RequestID, answer)), "the protected request remains answerable by the user")
 			})
 		}
 	}
@@ -209,7 +209,7 @@ func TestDroidBypassApprovesPendingAndLaterToolsButKeepsPlans(t *testing.T) {
 }
 
 func TestDroidRejectsUnknownAndRepeatedControlAnswers(t *testing.T) {
-	a, _ := newDroidControlTestAgent(t)
+	a, sink := newDroidControlTestAgent(t)
 	writer := &bufferStdin{}
 	a.SetStdinForTest(writer)
 	raw, err := json.Marshal(droidResponseEnvelope("approval", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
@@ -217,8 +217,31 @@ func TestDroidRejectsUnknownAndRepeatedControlAnswers(t *testing.T) {
 	assert.Error(t, a.SendRawInput(agent.RawInput{Data: raw}))
 	request := permissionRequest(t, "approval", "Edit")
 	a.onRequestPermission(&request)
-	require.NoError(t, a.SendRawInput(agent.RawInput{Data: raw}))
-	assert.Error(t, a.SendRawInput(agent.RawInput{Data: raw}))
+	answer := sink.Answer(sink.LastPublishedControl().RequestID, raw)
+	require.NoError(t, a.SendRawInput(answer))
+	assert.Error(t, a.SendRawInput(answer))
+	writer.mu.Lock()
+	assert.Equal(t, 1, bytes.Count(writer.buf.Bytes(), []byte("\n")))
+	writer.mu.Unlock()
+}
+
+func TestDroidRefusesUnstatedOrReplacedControlInstance(t *testing.T) {
+	a, sink := newDroidControlTestAgent(t)
+	writer := &bufferStdin{}
+	a.SetStdinForTest(writer)
+	request := permissionRequest(t, "approval", "Edit")
+	a.onRequestPermission(&request)
+	published := sink.LastPublishedControl()
+	raw, err := json.Marshal(droidResponseEnvelope("approval", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
+	require.NoError(t, err)
+
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: raw}), agent.ErrControlInstanceUnstated)
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: "stale-instance"}), agent.ErrControlInstanceReplaced)
+	writer.mu.Lock()
+	assert.Zero(t, writer.buf.Len())
+	writer.mu.Unlock()
+
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: published.InstanceID}))
 	writer.mu.Lock()
 	assert.Equal(t, 1, bytes.Count(writer.buf.Bytes(), []byte("\n")))
 	writer.mu.Unlock()
@@ -239,7 +262,7 @@ func TestDroidFailedAutomaticWriteKeepsAManualFallback(t *testing.T) {
 	a.SetStdinForTest(writer)
 	answer, err := json.Marshal(droidResponseEnvelope("approval", contracts.DroidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce}))
 	require.NoError(t, err)
-	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
+	require.NoError(t, a.SendRawInput(sink.Answer(sink.LastPublishedControl().RequestID, answer)))
 	assert.Contains(t, writer.String(), `"selectedOption":"proceed_once"`)
 }
 

@@ -239,7 +239,7 @@ func TestRunErrorPrecedesTheSteerFlush(t *testing.T) {
 	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(observer))
 	feedEvent(t, a, map[string]any{"type": "text_delta", "delta": "buffered output"})
 	feedEvent(t, a, map[string]any{"type": "run_error", "error": "held error"})
-	require.NoError(t, a.SteerInput(testCommandCodeSteer(1, "guidance")))
+	require.NoError(t, agenttest.SteerInput(a, testCommandCodeSteer(1, "guidance")))
 	feedMethod(t, a, methodSteersDelivered, map[string]any{"turnId": "turn_1", "count": 1})
 	assert.Equal(t, 1, observer.noticesAtMessage)
 	assert.Equal(t, []agent.SteerResolution{testCommandCodeSteerReport(a, 1, "turn_1", agent.SteerOutcomeEchoed)}, sink.SteerResolutions())

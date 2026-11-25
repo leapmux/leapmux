@@ -28,7 +28,7 @@ func TestEnvelopeControlRequestKey(t *testing.T) {
 	}
 }
 
-func TestJSONRPCControlRequestKey(t *testing.T) {
+func TestJSONRPCControlRequestIdentity(t *testing.T) {
 	for name, tc := range map[string]struct {
 		payload string
 		want    string
@@ -43,9 +43,9 @@ func TestJSONRPCControlRequestKey(t *testing.T) {
 		"a payload that is no JSON": {`{"id":`, "", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, ok := JSONRPCControlRequestKey([]byte(tc.payload))
+			got, ok := JSONRPCControlRequestIdentity([]byte(tc.payload))
 			assert.Equal(t, tc.ok, ok)
-			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.want, got.Key)
 		})
 	}
 }
@@ -58,7 +58,7 @@ func TestJSONRPCControlRequestIdentityIsTheKeyOfThePublication(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "jsonrpc:1000", identity.Key)
 	assert.JSONEq(t, `1e3`, string(identity.Native), "the answer echoes the id as the runtime spelled it")
-	key, ok := JSONRPCControlRequestKey(payload)
+	key, ok := ProviderDefaults{}.ControlRequestKey(payload, "")
 	assert.True(t, ok)
 	assert.Equal(t, identity.Key, key)
 }

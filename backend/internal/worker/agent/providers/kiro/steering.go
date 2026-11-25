@@ -57,11 +57,11 @@ type kiroSteerReply struct {
 // SteerInput sends text into the running turn. Kiro queues it and injects it
 // before its next model call. If that turn ended, the Worker keeps the input
 // for the next prompt. Kiro accepts text alone through this route.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	if err := providerkit.TextOnlySteer("Kiro", request.Attachments); err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return a.WithSessionID(func(sessionID string) error {
+	err := a.WithSessionID(func(sessionID string) error {
 		if !a.PromptActive() {
 			return agent.ErrNoActiveTurn
 		}
@@ -108,6 +108,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 		}
 		return replyErr
 	})
+	return agent.NativeInputReceipt{}, err
 }
 
 func readKiroSteerReply(raw json.RawMessage) (kiroSteerReply, error) {

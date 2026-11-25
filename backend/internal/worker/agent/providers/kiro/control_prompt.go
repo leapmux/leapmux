@@ -352,7 +352,7 @@ var _ acp.RejectReason = kiroRejectReason
 // `_meta.kiro.rejectionReason`, and keeps every other key of the reply's
 // metadata. resolveKiroPermission keeps it too when it adds a consent scope.
 func kiroRejectReason(result map[string]any, reason string) map[string]any {
-	return providerkit.WithACPMeta(result, reason, contracts.KiroMetaNamespace, contracts.KiroMetaRejectionReason)
+	return acp.WithMeta(result, reason, contracts.KiroMetaNamespace, contracts.KiroMetaRejectionReason)
 }
 
 // kiroQuestionAnswer answers Kiro's question. A cancellation, and an answer

@@ -609,7 +609,6 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 
 var _ agent.ChildInterrupter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
-var _ agent.ChildSteerReceiptSender = (*Agent)(nil)
 
 // ownedChild reads a child under the root held by WithSessionID. Opaque
 // addresses and child IDs never acquire a new root through context clear.
@@ -662,14 +661,11 @@ func validateGrokChildMessage(content string, attachments []*leapmuxv1.Attachmen
 
 // SteerChildInput sends one literal human message to the active native child.
 // The session lock keeps a context clear from replacing the address's owner.
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.steerGrokChild(childKey, content, attachments, false)
-	return err
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.steerGrokChild(childKey, request.Content, request.Attachments, true)
 }
 
-func (a *Agent) SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.steerGrokChild(childKey, content, attachments, true)
-}
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 func (a *Agent) steerGrokChild(childKey, content string, attachments []*leapmuxv1.Attachment, captureReply bool) (agent.NativeInputReceipt, error) {
 	if err := validateGrokChildMessage(content, attachments); err != nil {

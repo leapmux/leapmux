@@ -382,7 +382,7 @@ func (r *codexTurnRetry) Replace() error {
 		return err
 	}
 	r.revertReply = make(chan error, 1)
-	err = a.SendDetachedRequest("thread/revert", params, func(raw json.RawMessage, err error) {
+	err = a.SendDetachedRequest("thread/revert", params, providerkit.DetachedRequestOptions{}, func(raw json.RawMessage, err error) {
 		if err == nil {
 			var result struct {
 				Thread struct {

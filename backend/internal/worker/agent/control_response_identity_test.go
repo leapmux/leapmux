@@ -35,6 +35,31 @@ func TestControlResponseRefusesAStoredRequestWithNoReadableID(t *testing.T) {
 	}
 }
 
+func TestControlResponseRefusesUnreadableOrMismatchedResponseID(t *testing.T) {
+	for name, tc := range map[string]ControlResponseContext{
+		"null id in response": {
+			RequestID:       "jsonrpc:7",
+			RequestPayload:  []byte(`{"id":7,"method":"session/request_permission"}`),
+			ResponseContent: []byte(`{"id":null,"result":{},"response":{"request_id":"jsonrpc:7"}}`),
+		},
+		"mismatched id in hybrid response": {
+			RequestID:       "jsonrpc:7",
+			RequestPayload:  []byte(`{"id":7,"method":"session/request_permission"}`),
+			ResponseContent: []byte(`{"id":"jsonrpc:99","result":{},"response":{"request_id":"jsonrpc:7"}}`),
+		},
+		"mismatched id without context request id": {
+			RequestPayload:  []byte(`{"id":"another-request","method":"session/request_permission"}`),
+			ResponseContent: []byte(`{"id":"request","result":false}`),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resolution := restoreControlResponseID(tc)
+			require.True(t, resolution.Withhold)
+			require.EqualError(t, resolution.Refusal(), RefusalUnreadableAnswer)
+		})
+	}
+}
+
 func TestControlResponseIDKeepsUnrelatedEnvelopesAndExactMatchingBytes(t *testing.T) {
 	for _, response := range []string{
 		` {"id":7,"result":false,"future":9007199254740993} `,

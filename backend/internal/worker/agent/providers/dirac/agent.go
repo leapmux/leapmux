@@ -66,15 +66,15 @@ var _ agent.SteerPreparer = (*Agent)(nil)
 // `queued` or `sent`. A steer that reaches an idle session is refused, because
 // the whisper carries no turn to land in and Dirac buffers only the whispers
 // that arrive while a session has a pending prompt.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	if content == "" {
-		return nil
+		return agent.NativeInputReceipt{}, nil
 	}
 	// The whisper carries text alone, so the queue keeps an attachment-bearing
 	// input for the next turn.
 	if err := providerkit.TextOnlySteer("Dirac", attachments); err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	var tracked *diracPendingSteer
 	err := a.WithActivePromptSession(func(sessionID string) error {
@@ -93,13 +93,13 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	// The turn can end while the whisper writes; a whisper into an ended turn
 	// reaches nothing.
 	if !a.PromptActive() {
 		a.cancelDiracSteer(tracked)
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }

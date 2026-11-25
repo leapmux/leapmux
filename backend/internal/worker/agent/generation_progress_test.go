@@ -313,3 +313,28 @@ func TestModelProgressResetSinkRetainsNativeWritesInOrder(t *testing.T) {
 	assert.JSONEq(t, `{"text":"earlier"}`, string(messages[1].Content))
 	assert.JSONEq(t, `{"text":"later"}`, string(messages[2].Content))
 }
+
+type nilChildSink struct{ *agenttest.Sink }
+
+func (*nilChildSink) ChildSink(string) agent.ProviderServices { return nil }
+
+func TestModelProgressResetSinkWrapsStateLeaseHandlesNilChildAndDeduplicates(t *testing.T) {
+	t.Parallel()
+
+	// WRAPPERS-6: AcquireChildStateSink decorates child with model progress reset.
+	inner := &agenttest.Sink{}
+	sink := agent.NewModelProgressResetSink(agent.NewProviderServices(inner))
+	lease := sink.AcquireChildStateSink("child-state")
+	require.NotNil(t, lease.Sink)
+	require.NoError(t, lease.Sink.PublishControlRequest(agent.ControlRequest{RequestID: "req-1"}))
+	require.Len(t, inner.Child("child-state").ProgressUpdates(), 1)
+
+	// WRAPPERS-7: ChildSink returns nil when inner ChildSink returns nil.
+	nilWrapped := agent.NewModelProgressResetSink(agent.NewProviderServices(&nilChildSink{Sink: &agenttest.Sink{}}))
+	assert.Nil(t, nilWrapped.ChildSink("missing"))
+
+	// WRAPPERS-11: Double wrapping does not emit duplicate progress resets.
+	doubleWrapped := agent.NewModelProgressResetSink(sink)
+	require.NoError(t, doubleWrapped.PublishControlRequest(agent.ControlRequest{RequestID: "req-2"}))
+	assert.Len(t, inner.ProgressUpdates(), 1)
+}

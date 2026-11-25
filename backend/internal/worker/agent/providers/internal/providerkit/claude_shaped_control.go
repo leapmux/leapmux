@@ -1,10 +1,7 @@
 package providerkit
 
 import (
-	"encoding/json"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // Claude-shaped control requests.
@@ -17,9 +14,9 @@ import (
 //   - ExitPlanMode asks the user to approve a plan.
 //   - Any other tool asks for permission to run.
 //
-// The readers below take the tool name and the input from
-// agent.ControlToolName and agent.ControlToolInput, the same readers that the
-// neutral answers use, so a prompt shows the input that its answer sends back.
+// The readers below read `request.tool_name` and `request.input` in one pass
+// with the same JSON-object fallback that agent.ControlToolInput applies, so a
+// prompt shows the input that its answer sends back.
 
 // The tool names that decide what a Claude-shaped control request asks.
 const (
@@ -30,18 +27,21 @@ const (
 	claudeShapedToolBash = "Bash"
 )
 
+func claudeShapedRequest(payload []byte) (toolName string, toolInput []byte) {
+	request := RawFields(RawFields(payload)["request"])
+	return ObjectString(request, "tool_name"), RawObjectOrEmpty(request["input"])
+}
+
 // ClaudeShapedQuestionPrompt reads a request of the AskUserQuestion tool: the
 // `questions` of the tool input, as QuestionsFromWire reads them. It reports
 // false for a request of another tool.
 func ClaudeShapedQuestionPrompt(payload []byte) (*leapmuxv1.ControlPrompt, bool) {
-	if agent.ControlToolName(payload) != claudeShapedToolAskUserQuestion {
+	toolName, toolInput := claudeShapedRequest(payload)
+	if toolName != claudeShapedToolAskUserQuestion {
 		return nil, false
 	}
-	// ControlToolInput always returns a JSON object, so the decode succeeds.
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(agent.ControlToolInput(payload), &fields)
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-		Questions: QuestionsFromWire(fields["questions"]),
+		Questions: QuestionsFromWire(RawFields(toolInput)["questions"]),
 	}}}, true
 }
 
@@ -54,20 +54,17 @@ func ClaudeShapedQuestionPrompt(payload []byte) (*leapmuxv1.ControlPrompt, bool)
 //     title, the tool input, and the options that the provider offers. A Bash
 //     call also states its command, when the input holds one as text.
 func ClaudeShapedToolPrompt(payload []byte, options []*leapmuxv1.PermissionOption) *leapmuxv1.ControlPrompt {
-	toolName := agent.ControlToolName(payload)
+	toolName, toolInput := claudeShapedRequest(payload)
 	if toolName == claudeShapedToolExitPlanMode {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}}
 	}
-	toolInput := agent.ControlToolInput(payload)
 	permission := &leapmuxv1.PermissionPrompt{
 		Title:     toolName,
 		InputJson: string(toolInput),
 		Options:   options,
 	}
 	if toolName == claudeShapedToolBash {
-		var fields map[string]json.RawMessage
-		_ = json.Unmarshal(toolInput, &fields)
-		permission.Command, _ = RawString(fields["command"])
+		permission.Command = ObjectString(RawFields(toolInput), "command")
 	}
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
 }

@@ -24,7 +24,7 @@ func TestMiMoReplyUsesOnlyRetainedTextAfterDelivery(t *testing.T) {
 	t.Parallel()
 	a, sink, server := newSinkTestAgent(t)
 	server.respond("POST /session/ses_test/prompt_async", http.StatusAccepted, `{"receiptId":"owned"}`)
-	_, err := a.SendInputWithReceipt("guide", nil)
+	_, err := a.SendInput("guide", nil)
 	require.NoError(t, err)
 	feed(a,
 		statusEvent(t, contracts.MiMoStatusTypeBusy),
@@ -68,7 +68,7 @@ func TestMiMoReceiptOutcomeWithoutReplyEvidence(t *testing.T) {
 			t.Parallel()
 			a, sink, server := newSinkTestAgent(t)
 			server.respond("POST /session/ses_test/prompt_async", http.StatusAccepted, `{"receiptId":"owned"}`)
-			receipt, err := a.SendInputWithReceipt("guide", nil)
+			receipt, err := a.SendInput("guide", nil)
 			require.NoError(t, err)
 			feed(a, messageEvent(t, "msg_02", roleAssistant, mainActorID, true),
 				receiptEvent(t, "owned", "msg_01", "msg_02", tc.state, tc.outcome))
@@ -94,7 +94,7 @@ func TestMiMoAcknowledgmentDistinguishesAbsentAndInvalidReceipts(t *testing.T) {
 			t.Parallel()
 			a, _, server := newSinkTestAgent(t)
 			server.respond("POST /session/ses_test/prompt_async", tc.status, tc.body)
-			receipt, err := a.SendInputWithReceipt("guide", nil)
+			receipt, err := a.SendInput("guide", nil)
 			if tc.status == http.StatusNoContent {
 				require.NoError(t, err)
 			} else {
@@ -111,7 +111,7 @@ func TestMiMoReconnectedStreamCannotCompleteAnIncompleteReply(t *testing.T) {
 	a.connected = make(chan struct{})
 	a.onStreamConnected(t.Context())
 	server.respond("POST /session/ses_test/prompt_async", http.StatusAccepted, `{"receiptId":"owned"}`)
-	receipt, err := a.SendInputWithReceipt("guide", nil)
+	receipt, err := a.SendInput("guide", nil)
 	require.NoError(t, err)
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
 		messageEvent(t, "msg_02", roleAssistant, mainActorID, false),
@@ -148,7 +148,7 @@ func TestMiMoHTTPReceiptBindsAnAlreadyPublishedNativeQuestion(t *testing.T) {
 		assert.Empty(t, sink.bindings)
 		writeJSON(w, http.StatusAccepted, `{"receiptId":"owned"}`)
 	})
-	_, err := a.SendInputWithReceipt("guide", nil)
+	_, err := a.SendInput("guide", nil)
 	require.NoError(t, err)
 	require.Len(t, sink.bindings, 1)
 	assert.Equal(t, []string{"owned"}, sink.bindings[0].InputIDs)
@@ -176,7 +176,7 @@ func TestMiMoReplySettlesBeforeItsHTTPAcknowledgment(t *testing.T) {
 		assert.Empty(t, sink.NativeReplyTurns(), "no HTTP call has acknowledged a receipt yet")
 		writeJSON(w, http.StatusAccepted, `{"receiptId":"owned"}`)
 	})
-	receipt, err := a.SendInputWithReceipt("guide", nil)
+	receipt, err := a.SendInput("guide", nil)
 	require.NoError(t, err)
 	assert.Equal(t, agent.NativeInputReceipt{SessionID: testSessionID, InputID: "owned", TurnID: "owned"}, receipt)
 	assert.Equal(t, []agent.NativeReplyTurn{{

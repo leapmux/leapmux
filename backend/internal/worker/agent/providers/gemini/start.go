@@ -36,13 +36,17 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 func (a *Agent) configure(ctx context.Context, opts agent.Options, services agent.ProviderServices) acp.Hooks {
 	query := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
-	controls := &geminiControlServices{ProviderServices: services, query: query, currentSession: a.CurrentSessionID}
-	transcript := newGeminiToolTranscript(ctx, &geminiOutputServices{
-		ProviderServices: controls,
-		query:            query,
-		currentSession:   a.CurrentSessionID,
-		onSession:        func(sessionID string) { a.startChildTranscript(services, query, sessionID) },
-	}, query, a.observeNativeMode)
+	var controls *geminiControlServices
+	wrapped := agent.DecorateProviderServices(services, func(direct agent.ProviderServices) agent.ProviderServices {
+		controls = &geminiControlServices{ProviderServices: direct, query: query, currentSession: a.CurrentSessionID}
+		return &geminiOutputServices{
+			ProviderServices: controls,
+			query:            query,
+			currentSession:   a.CurrentSessionID,
+			onSession:        func(sessionID string) { a.startChildTranscript(services, query, sessionID) },
+		}
+	})
+	transcript := newGeminiToolTranscript(ctx, wrapped, query, a.observeNativeMode)
 	controls.transcript = transcript
 	return acp.Hooks{
 		WithBypassPermission:   func(claim func()) { a.WithOptionValue(agent.OptionIDPermissionMode, contracts.GeminiModeYolo, claim) },

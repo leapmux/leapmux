@@ -225,10 +225,27 @@ func TestPermissionAskPublishesABannerAndAllowExitsZero(t *testing.T) {
 	// Worker can check the stored request against its key.
 	agenttest.AssertPublishedControlKeys(t, ampProvider{}, h.sink)
 
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, published.RequestID, contracts.ControlAnswerBehaviorAllow, "")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(published.RequestID, controlAnswer(t, published.RequestID, contracts.ControlAnswerBehaviorAllow, ""))))
 	assert.Equal(t, helperExitAllow, run.exitCode(t))
 	assert.Empty(t, run.stderr.String(), "an allowed call leaves stderr empty")
 	assert.Zero(t, h.agent.bridge.pendingCount())
+}
+
+func TestAmpPermissionRefusesUnstatedOrReplacedControlInstance(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.startToolTurn()
+	run := h.runHelper("shell_command", shellInput)
+	h.awaitPublished(1)
+
+	published := h.sink.LastPublishedControl()
+	raw := controlAnswer(t, published.RequestID, contracts.ControlAnswerBehaviorAllow, "")
+	require.ErrorIs(t, h.agent.SendRawInput(agent.RawInput{Data: raw}), agent.ErrControlInstanceUnstated)
+	require.ErrorIs(t, h.agent.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: "stale-instance"}), agent.ErrControlInstanceReplaced)
+	run.assertStillWaits(t)
+
+	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: published.InstanceID}))
+	assert.Equal(t, helperExitAllow, run.exitCode(t))
 }
 
 func TestPermissionRejectWithFeedbackReachesTheModel(t *testing.T) {
@@ -239,7 +256,7 @@ func TestPermissionRejectWithFeedbackReachesTheModel(t *testing.T) {
 	h.awaitPublished(1)
 
 	requestID := h.sink.LastPublishedControl().RequestID
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, requestID, contracts.ControlAnswerBehaviorDeny, "  Use the clean target instead.  ")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(requestID, controlAnswer(t, requestID, contracts.ControlAnswerBehaviorDeny, "  Use the clean target instead.  "))))
 	assert.Equal(t, helperExitReject, run.exitCode(t))
 	assert.Equal(t, "Use the clean target instead.\n", run.stderr.String(),
 		"Amp hands stderr to the model as the reason, so it holds the reason and nothing else")
@@ -258,7 +275,7 @@ func TestPermissionRejectWithoutFeedbackLeavesStderrEmpty(t *testing.T) {
 			run := h.runHelper("shell_command", shellInput)
 			h.awaitPublished(1)
 			requestID := h.sink.LastPublishedControl().RequestID
-			require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, requestID, contracts.ControlAnswerBehaviorDeny, message)}))
+			require.NoError(t, h.agent.SendRawInput(h.sink.Answer(requestID, controlAnswer(t, requestID, contracts.ControlAnswerBehaviorDeny, message))))
 			assert.Equal(t, helperExitReject, run.exitCode(t))
 			assert.Empty(t, run.stderr.String(), "Amp refuses in its own wording")
 		})
@@ -292,7 +309,7 @@ func TestPermissionFollowsTheCurrentMode(t *testing.T) {
 	run := h.runHelper("shell_command", `{"command":"pwd"}`)
 	h.awaitPublished(1)
 	assert.Equal(t, "TU-2", permissionPayload(t, h.sink.LastPublishedControl().Payload).ToolUseID)
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, h.sink.LastPublishedControl().RequestID, contracts.ControlAnswerBehaviorAllow, "")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(h.sink.LastPublishedControl().RequestID, controlAnswer(t, h.sink.LastPublishedControl().RequestID, contracts.ControlAnswerBehaviorAllow, ""))))
 	assert.Equal(t, helperExitAllow, run.exitCode(t))
 }
 
@@ -359,12 +376,12 @@ func TestPermissionTwoIdenticalCallsMapOntoTwoRows(t *testing.T) {
 	assert.NotEqual(t, published[0].SourceSeq, published[1].SourceSeq)
 	assert.NotEqual(t, published[0].RequestID, published[1].RequestID)
 
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, published[1].RequestID, contracts.ControlAnswerBehaviorDeny, "not the second")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(published[1].RequestID, controlAnswer(t, published[1].RequestID, contracts.ControlAnswerBehaviorDeny, "not the second"))))
 	assert.Equal(t, helperExitReject, second.exitCode(t))
 	assert.Equal(t, "not the second\n", second.stderr.String())
 	first.assertStillWaits(t)
 
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, published[0].RequestID, contracts.ControlAnswerBehaviorAllow, "")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(published[0].RequestID, controlAnswer(t, published[0].RequestID, contracts.ControlAnswerBehaviorAllow, ""))))
 	assert.Equal(t, helperExitAllow, first.exitCode(t))
 }
 
@@ -382,7 +399,7 @@ func TestPermissionConcurrentIdenticalRequestsClaimDistinctCalls(t *testing.T) {
 	ids := map[string]bool{}
 	for _, published := range h.sink.PublishedControls() {
 		ids[permissionPayload(t, published.Payload).ToolUseID] = true
-		require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, published.RequestID, contracts.ControlAnswerBehaviorAllow, "")}))
+		require.NoError(t, h.agent.SendRawInput(h.sink.Answer(published.RequestID, controlAnswer(t, published.RequestID, contracts.ControlAnswerBehaviorAllow, ""))))
 	}
 	assert.Equal(t, map[string]bool{"TU-a": true, "TU-b": true}, ids)
 	for _, run := range runs {
@@ -406,7 +423,7 @@ func TestPermissionWaitsForTheCallToAppear(t *testing.T) {
 	h.feed(fp, assistantLine("["+toolUseBlock("TU-late", "shell_command", shellInput)+"]", "tool_use"))
 	h.awaitPublished(1)
 	assert.Equal(t, "TU-late", permissionPayload(t, h.sink.LastPublishedControl().Payload).ToolUseID)
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, h.sink.LastPublishedControl().RequestID, contracts.ControlAnswerBehaviorAllow, "")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(h.sink.LastPublishedControl().RequestID, controlAnswer(t, h.sink.LastPublishedControl().RequestID, contracts.ControlAnswerBehaviorAllow, ""))))
 	assert.Equal(t, helperExitAllow, run.exitCode(t))
 }
 
@@ -430,7 +447,7 @@ func TestPermissionWithNoMatchingCallPublishesWithoutALink(t *testing.T) {
 	assert.Empty(t, payload.ToolUseID)
 	assert.Equal(t, "edit_file", payload.ToolName)
 	assert.Zero(t, published.SourceSeq)
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, published.RequestID, contracts.ControlAnswerBehaviorAllow, "")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(published.RequestID, controlAnswer(t, published.RequestID, contracts.ControlAnswerBehaviorAllow, ""))))
 	assert.Equal(t, helperExitAllow, run.exitCode(t))
 }
 
@@ -627,7 +644,7 @@ func TestRawInputRefusesALineThatAmpDoesNotTake(t *testing.T) {
 	run.assertStillWaits(t)
 	assert.Equal(t, 1, h.agent.bridge.pendingCount(), "the request still waits for a real answer")
 
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, requestID, contracts.ControlAnswerBehaviorAllow, "")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(requestID, controlAnswer(t, requestID, contracts.ControlAnswerBehaviorAllow, ""))))
 	assert.Equal(t, helperExitAllow, run.exitCode(t))
 }
 
@@ -749,7 +766,7 @@ func TestPermissionHelperTreatsEmptyInputAsAnEmptyObject(t *testing.T) {
 	h.clock.Advance(toolCallWait).MustWait(t.Context())
 	h.awaitPublished(1)
 	assert.JSONEq(t, `{}`, string(permissionPayload(t, h.sink.LastPublishedControl().Payload).Input))
-	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: controlAnswer(t, h.sink.LastPublishedControl().RequestID, contracts.ControlAnswerBehaviorAllow, "")}))
+	require.NoError(t, h.agent.SendRawInput(h.sink.Answer(h.sink.LastPublishedControl().RequestID, controlAnswer(t, h.sink.LastPublishedControl().RequestID, contracts.ControlAnswerBehaviorAllow, ""))))
 	assert.Equal(t, helperExitAllow, run.exitCode(t))
 }
 
@@ -843,7 +860,7 @@ func TestPermissionBridgeCloseIsIdempotentAndRefusesNewRequests(t *testing.T) {
 	t.Parallel()
 	bridge := newTestBridge(t)
 	bridge.serve(func(context.Context, helperRequest) helperDecision { return allowDecision() }, nil)
-	pending, ok := bridge.register("r-1")
+	pending, ok := bridge.register("r-1", "inst-1")
 	require.True(t, ok)
 
 	bridge.close(errAgentStopped)
@@ -854,7 +871,7 @@ func TestPermissionBridgeCloseIsIdempotentAndRefusesNewRequests(t *testing.T) {
 	default:
 		t.Fatal("close answered no waiting request")
 	}
-	_, ok = bridge.register("r-2")
+	_, ok = bridge.register("r-2", "inst-2")
 	assert.False(t, ok)
 	_, err := bridge.listener.Accept()
 	assert.ErrorIs(t, err, net.ErrClosed, "the listener is closed")

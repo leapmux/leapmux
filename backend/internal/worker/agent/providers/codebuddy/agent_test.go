@@ -160,7 +160,7 @@ func TestCodebuddySteerInputReadsTheAnswerOfCodeBuddy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, peer := newCodebuddySteerAgent(t, nil, tc.answer)
-			tc.check(t, a.SteerInput(agent.SteerRequest{Content: "also check the tests"}))
+			tc.check(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "also check the tests"}))
 			assert.Contains(t, peer.String(), `"subtype":"steer"`, "the steer reached CodeBuddy")
 		})
 	}
@@ -182,7 +182,7 @@ func TestCodebuddySteerInputWithoutAnAnswerIsUncertain(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 
 	result := make(chan error, 1)
-	go func() { result <- a.SteerInput(agent.SteerRequest{Content: "also check the tests"}) }()
+	go func() { result <- agenttest.SteerInput(a, agent.SteerRequest{Content: "also check the tests"}) }()
 
 	delay := testutil.WaitForTimer(t, ctx, newTimer)
 	assert.Equal(t, a.APITimeout(), delay, "the steer waits for its answer as long as any other request")
@@ -231,7 +231,7 @@ func TestCodebuddySteerInputWithAFailedWriteIsUncertain(t *testing.T) {
 	deadline := testutil.DeadlineContext(t)
 
 	result := make(chan error, 1)
-	go func() { result <- a.SteerInput(agent.SteerRequest{Content: "also check the tests"}) }()
+	go func() { result <- agenttest.SteerInput(a, agent.SteerRequest{Content: "also check the tests"}) }()
 
 	delay := testutil.WaitForTimer(t, deadline, newTimer)
 	assert.Equal(t, codebuddyControlExitWait, delay, "a failed write waits a moment for the exit that can explain it")
@@ -263,7 +263,7 @@ func TestCodebuddySteerInputRefusesAFileThatSteeringDrops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(codebuddySteered))
-			assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: codebuddyOrderPrompt, Attachments: tc.attachments}), agent.ErrSteeringUnsupported)
+			assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: codebuddyOrderPrompt, Attachments: tc.attachments}), agent.ErrSteeringUnsupported)
 			assert.Empty(t, peer.String(), "a refused steer writes nothing")
 		})
 	}
@@ -277,7 +277,7 @@ func TestCodebuddySteerInputChecksTheFilesBeforeTheTurn(t *testing.T) {
 	t.Parallel()
 	a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(codebuddySteered))
 	a.setTurnActive(false)
-	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: codebuddyOrderPrompt, Attachments: []*leapmuxv1.Attachment{codebuddyOrderPNG()}}), agent.ErrSteeringUnsupported)
-	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: codebuddyOrderPrompt, Attachments: []*leapmuxv1.Attachment{codebuddyOrderNotes()}}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: codebuddyOrderPrompt, Attachments: []*leapmuxv1.Attachment{codebuddyOrderPNG()}}), agent.ErrSteeringUnsupported)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: codebuddyOrderPrompt, Attachments: []*leapmuxv1.Attachment{codebuddyOrderNotes()}}), agent.ErrNoActiveTurn)
 	assert.Empty(t, peer.String())
 }

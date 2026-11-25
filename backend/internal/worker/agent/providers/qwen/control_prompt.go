@@ -139,7 +139,7 @@ func qwenQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, er
 	}
 	options := acp.PermissionOptions(input.Request.Payload)
 	if decision.GetCancelled() {
-		return agent.ControlAnswer{Content: agent.SelectedOptionResult(input.RequestID,
+		return agent.ControlAnswer{Content: acp.SelectedOptionResult(input.RequestID,
 			qwenOptionOfKind(options, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, contracts.QwenPermissionOptionCancel))}, nil
 	}
 	answers := map[string]string{}

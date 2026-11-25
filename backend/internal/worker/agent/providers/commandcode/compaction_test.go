@@ -112,7 +112,7 @@ func TestAutomaticCompactionReleasesTheTurn(t *testing.T) {
 	feedEvent(t, a, map[string]any{"type": "compaction_outcome", "outcome": "too-small"})
 	feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": "end_turn"})
 	assert.False(t, a.PublishTurnActive().Active)
-	require.NoError(t, a.SendInput("next turn", nil))
+	require.NoError(t, agenttest.SendInput(a, "next turn", nil))
 }
 
 func TestCompactionDoneStoresNoRow(t *testing.T) {
@@ -319,7 +319,7 @@ func TestCompactionReplyFailureStopsOnlyUnresolvedNativeWork(t *testing.T) {
 			} else {
 				require.Len(t, sink.LeapMuxNotifications(), 1)
 				assert.Equal(t, contracts.CompactionEndOutcomeFailed, sink.LeapMuxNotifications()[0][contracts.NotificationFieldOutcome])
-				assert.Error(t, a.SendInput("do not overlap the uncertain compaction", nil))
+				assert.Error(t, agenttest.SendInput(a, "do not overlap the uncertain compaction", nil))
 			}
 			value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
 			assert.True(t, exists)

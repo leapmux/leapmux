@@ -129,9 +129,8 @@ type Agent struct {
 // that stops satisfying InputSteerer, so the assertion makes that regression a
 // compile error.
 var (
-	_ agent.Agent              = (*Agent)(nil)
-	_ agent.InputSteerer       = (*Agent)(nil)
-	_ agent.InputReceiptSender = (*Agent)(nil)
+	_ agent.Agent        = (*Agent)(nil)
+	_ agent.InputSteerer = (*Agent)(nil)
 )
 
 // turnState is the turn the agent owes the user a reply for. Guarded by mu.
@@ -223,20 +222,14 @@ func (a *Agent) HandleOutput(content []byte) {
 }
 
 // SendInput starts a turn with one user message.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput(nil, content, attachments, nil, "")
-	return err
-}
-
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput(nil, content, attachments, nil, id.Generate())
 }
 
-// SendInputForSession starts a turn with one user message, when the thread it
-// states is still the current one.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput(&sessionID, content, attachments, nil, "")
-	return err
+// SendInputForSession starts a turn with one user message when the thread it
+// specifies is still the current one.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(&sessionID, content, attachments, nil, id.Generate())
 }
 
 // SupportsSteering reports true: Amp takes a steering line during any turn.
@@ -249,17 +242,11 @@ func (*Agent) SteerRowAtEcho() bool { return true }
 func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 var _ agent.SteerEchoReporter = (*Agent)(nil)
-var _ agent.SteerReceiptSender = (*Agent)(nil)
 var _ agent.SteerSurvivor = (*Agent)(nil)
 
 // SteerInput adds a message to the running turn. Amp queues it on its server
 // and inserts it at the turn's next interruption point, after the running tool.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.SteerInputWithReceipt(request)
-	return err
-}
-
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	requestID := ""
 	if request.InputID != "" && request.AttemptID != "" {
 		requestID = id.Generate()

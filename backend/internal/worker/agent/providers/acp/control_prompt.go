@@ -304,3 +304,11 @@ func AnswerPermission(input agent.ControlAnswerInput, rejectReason RejectReason)
 	answer.Content = agent.JSONRPCResult(input.RequestID, result)
 	return answer, nil
 }
+
+// SelectedOptionResult is the Agent Client Protocol answer that selects one
+// permission option.
+func SelectedOptionResult(requestID, optionID string) []byte {
+	return agent.JSONRPCResult(requestID, map[string]any{
+		"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": optionID},
+	})
+}

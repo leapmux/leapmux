@@ -3,22 +3,15 @@ package kilo
 import (
 	"encoding/json"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-var _ agent.ChildSteerReceiptSender = (*Agent)(nil)
-
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.SteerChildInputWithReceipt(childKey, content, attachments)
-	return err
-}
-
-// SteerChildInputWithReceipt admits a steer into the loaded child session and
-// keeps the child transcript as the destination for its reply.
-func (a *Agent) SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+// SteerChildInput admits a steer into the loaded child session and keeps the
+// child transcript as the destination for its reply.
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	child, settings, err := a.LoadedChildSteerTarget(childKey)
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
@@ -29,7 +22,7 @@ func (a *Agent) SteerChildInputWithReceipt(childKey, content string, attachments
 	}
 	inputID := id.Generate()
 	receipt := agent.NativeInputReceipt{SessionID: child.SessionID, InputID: inputID, TurnID: inputID}
-	err = a.SendChildPromptDetachedUsing(child, content, attachments, func(params json.RawMessage) error {
+	err = a.SendChildPromptDetachedUsing(child, request.Content, request.Attachments, func(params json.RawMessage) error {
 		owner, found := a.SessionOwner(child.SessionID)
 		if !found {
 			return agent.ErrChildRouteNotReady
@@ -52,7 +45,7 @@ func (a *Agent) SteerChildInputWithReceipt(childKey, content string, attachments
 		}
 		if send == nil {
 			receipt = agent.NativeInputReceipt{}
-			return a.SendDetachedRequest(acp.MethodSessionPrompt, params, finish)
+			return a.SendDetachedRequest(acp.MethodSessionPrompt, params, providerkit.DetachedRequestOptions{}, finish)
 		}
 		return send(finish)
 	})

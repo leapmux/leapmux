@@ -27,7 +27,7 @@ func TestQwenSteerBindsExactReplyAtDrainAndDropsUndrainedOnPromptEnd(t *testing.
 	require.True(t, ok, "Qwen must report steer resolution at drain")
 	assert.True(t, reporter.SteerRowAtEcho())
 
-	lead, err := a.SendInputWithReceipt("Check the release.", nil)
+	lead, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, lead.TurnID)
 
@@ -36,7 +36,7 @@ func TestQwenSteerBindsExactReplyAtDrainAndDropsUndrainedOnPromptEnd(t *testing.
 		"content":       map[string]any{"type": "text", "text": "Before drain."},
 	}))
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-1",
 		AttemptID: "attempt-1",
 		Content:   "Include changelog.",
@@ -59,7 +59,7 @@ func TestQwenSteerBindsExactReplyAtDrainAndDropsUndrainedOnPromptEnd(t *testing.
 	assert.Equal(t, lead.TurnID, got.Receipt.TurnID)
 
 	// Queue a second tracked steer that Qwen never drains before the turn finishes.
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-2",
 		AttemptID: "attempt-2",
 		Content:   "Undrained follow-up.",
@@ -97,7 +97,7 @@ func TestQwenStoppedPromptDropsUndrainedTrackedSteerToQueue(t *testing.T) {
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-stop",
 		AttemptID: "attempt-stop",
 		Content:   "Keep in paused queue.",

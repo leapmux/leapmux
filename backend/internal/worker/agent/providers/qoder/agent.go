@@ -86,7 +86,6 @@ type qoderOpenTool struct {
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
-var _ agent.InputReceiptSender = (*Agent)(nil)
 var _ agent.ChildInterrupter = (*Agent)(nil)
 
 // qoderControlResult is the outcome of one pending control request.
@@ -126,50 +125,46 @@ func (a *Agent) setTurnActive(active bool) {
 	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, seq)
 }
 
-// SendInput delivers one user message over stdin.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments, nil)
+// SendInput delivers one user message over stdin and returns the identity that
+// Qoder reports in its command lifecycle.
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputForSession(nil, content, attachments)
 }
 
-// SendInputWithReceipt supplies the identity that Qoder reports in its command lifecycle.
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	var receipt agent.NativeInputReceipt
-	err := a.sendInputForSession(nil, content, attachments, &receipt)
-	return receipt, err
+// SendInputForSession validates the session while constructing the request and
+// returns the identity that Qoder reports in its command lifecycle.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputForSession(&sessionID, content, attachments)
 }
 
-// SendInputForSession validates the session while constructing the request.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments, nil)
-}
-
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, receipt *agent.NativeInputReceipt) error {
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	if a.IsStopped() {
-		return fmt.Errorf("the Qoder process is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Qoder process is stopped")
 	}
 	userContent, err := qoderUserContent(content, attachments)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	a.mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.active {
 		a.mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	var commandID string
-	if receipt != nil && a.sessionID != "" {
+	var receipt agent.NativeInputReceipt
+	if a.sessionID != "" {
 		id, err := uuid.NewRandom()
 		if err != nil {
 			a.mu.Unlock()
-			return fmt.Errorf("create the Qoder command ID: %w", err)
+			return agent.NativeInputReceipt{}, fmt.Errorf("create the Qoder command ID: %w", err)
 		}
 		commandID = id.String()
-		*receipt = agent.NativeInputReceipt{SessionID: a.sessionID, InputID: commandID, TurnID: commandID}
-		a.inputReply = &inputReply{receipt: *receipt}
+		receipt = agent.NativeInputReceipt{SessionID: a.sessionID, InputID: commandID, TurnID: commandID}
+		a.inputReply = &inputReply{receipt: receipt}
 	}
 	a.active = true
 	a.activityRev++
@@ -179,13 +174,13 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	raw, err := marshalUserFrame(userContent, commandID)
 	if err != nil {
 		a.setTurnActive(false)
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if err := a.SendRawInput(agent.RawInput{Data: raw}); err != nil {
 		a.setTurnActive(false)
-		return providerkit.ClassifyJSONRPCDeliveryError("user", err)
+		return agent.NativeInputReceipt{}, providerkit.ClassifyJSONRPCDeliveryError("user", err)
 	}
-	return nil
+	return receipt, nil
 }
 
 // marshalUserFrame encodes one stream-json user frame that carries content.
@@ -257,31 +252,31 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // SteerInput sends one user frame during the active turn, with its attachments.
 // Qoder keeps queued content unchanged and reads it when the queued prompt starts its own turn.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	if a.IsStopped() {
-		return fmt.Errorf("the Qoder process is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Qoder process is stopped")
 	}
 	userContent, err := qoderUserContent(content, attachments)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	commandID, err := a.prepareQueuedSteer(request)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	raw, err := marshalUserFrame(userContent, commandID)
 	if err != nil {
 		a.mu.Lock()
 		delete(a.queuedSteers, commandID)
 		a.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	err = a.SendRawInput(agent.RawInput{Data: raw})
 	if err != nil && commandID != "" {
-		return providerkit.ClassifyJSONRPCDeliveryError("steer", err)
+		return agent.NativeInputReceipt{}, providerkit.ClassifyJSONRPCDeliveryError("steer", err)
 	}
-	return err
+	return agent.NativeInputReceipt{}, err
 }
 
 // Interrupt aborts the running turn with Qoder's own interrupt control request.

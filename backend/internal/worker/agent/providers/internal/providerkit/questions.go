@@ -20,30 +20,40 @@ import (
 // draw. A value of the wrong type reads as absent. A raw value that is no
 // array reads as no question.
 func QuestionsFromWire(raw json.RawMessage) []*leapmuxv1.ControlQuestion {
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil {
+	return questionsFromWire(raw, nil)
+}
+
+// questionsFromWire decodes a JSON array of wire questions and optionally lets
+// a same-package caller adjust each decoded question from its raw fields in the
+// same pass.
+func questionsFromWire(raw json.RawMessage, adjust func(fields map[string]json.RawMessage, question *leapmuxv1.ControlQuestion)) []*leapmuxv1.ControlQuestion {
+	elements, ok := RawArray(raw)
+	if !ok {
 		return nil
 	}
 	questions := make([]*leapmuxv1.ControlQuestion, 0, len(elements))
 	for _, element := range elements {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(element, &fields) != nil || fields == nil {
+		fields, ok := RawObject(element)
+		if !ok {
 			continue
 		}
 		question := &leapmuxv1.ControlQuestion{
-			Id:          stringField(fields, "id"),
-			Header:      stringField(fields, "header"),
-			Question:    stringField(fields, "question"),
+			Id:          ObjectString(fields, "id"),
+			Header:      ObjectString(fields, "header"),
+			Question:    ObjectString(fields, "question"),
 			Options:     questionOptionsFromWire(fields["options"]),
 			MultiSelect: RawBool(fields["multiSelect"]),
 			AllowEmpty:  RawBool(fields["allowEmpty"]),
 		}
 		question.AllowCustomText = RawOptionalBool(fields["allowCustomText"])
-		if minimum, ok := RawInt64(fields["minimumSelections"]); ok {
-			question.MinimumSelections = int32Of(minimum)
+		if minimum, ok := RawWholeNumber(fields["minimumSelections"]); ok && minimum >= 0 {
+			question.MinimumSelections = nonNegativeInt32Of(minimum)
 		}
-		if maximum, ok := RawInt64(fields["maximumSelections"]); ok {
-			question.MaximumSelections = int32Of(maximum)
+		if maximum, ok := RawWholeNumber(fields["maximumSelections"]); ok && maximum >= 0 {
+			question.MaximumSelections = nonNegativeInt32Of(maximum)
+		}
+		if adjust != nil {
+			adjust(fields, question)
 		}
 		questions = append(questions, question)
 	}
@@ -53,20 +63,20 @@ func QuestionsFromWire(raw json.RawMessage) []*leapmuxv1.ControlQuestion {
 // questionOptionsFromWire reads the options of one wire question. An element
 // that is no object is dropped.
 func questionOptionsFromWire(raw json.RawMessage) []*leapmuxv1.QuestionOption {
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil {
+	elements, ok := RawArray(raw)
+	if !ok {
 		return nil
 	}
 	options := make([]*leapmuxv1.QuestionOption, 0, len(elements))
 	for _, element := range elements {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(element, &fields) != nil || fields == nil {
+		fields, ok := RawObject(element)
+		if !ok {
 			continue
 		}
 		option := &leapmuxv1.QuestionOption{
-			Label:       stringField(fields, "label"),
-			Description: stringField(fields, "description"),
-			Preview:     stringField(fields, "preview"),
+			Label:       ObjectString(fields, "label"),
+			Description: ObjectString(fields, "description"),
+			Preview:     ObjectString(fields, "preview"),
 		}
 		if value, ok := RawString(fields["value"]); ok {
 			option.Value = &value
@@ -76,14 +86,9 @@ func questionOptionsFromWire(raw json.RawMessage) []*leapmuxv1.QuestionOption {
 	return options
 }
 
-func stringField(fields map[string]json.RawMessage, key string) string {
-	value, _ := RawString(fields[key])
-	return value
-}
-
-// int32Of narrows a count to int32, saturating at the type's limits.
-func int32Of(value int64) *int32 {
-	narrowed := int32(max(math.MinInt32, min(math.MaxInt32, value)))
+// nonNegativeInt32Of narrows a non-negative count to int32, capping at math.MaxInt32.
+func nonNegativeInt32Of(value int64) *int32 {
+	narrowed := int32(min(math.MaxInt32, value))
 	return &narrowed
 }
 
@@ -122,8 +127,8 @@ func AskUserQuestionAnswers(input agent.ControlAnswerInput, toolInput json.RawMe
 			answers[key] = ""
 		}
 	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(toolInput, &fields) != nil || fields == nil {
+	fields, ok := RawObject(toolInput)
+	if !ok {
 		fields = map[string]json.RawMessage{}
 	}
 	encoded, err := json.Marshal(answers)

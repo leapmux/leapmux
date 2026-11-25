@@ -75,10 +75,7 @@ func TestReasonixSteerReceiptAndJournalReconciliation(t *testing.T) {
 	a.SetPromptActiveForTest(true)
 	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
 
-	sender, ok := any(a).(agent.SteerReceiptSender)
-	require.True(t, ok, "Reasonix must implement SteerReceiptSender")
-
-	receipt, err := sender.SteerInputWithReceipt(agent.SteerRequest{
+	receipt, err := a.SteerInput(agent.SteerRequest{
 		InputID: "queue-steer-1",
 		Content: "Also include the changelog.",
 	})
@@ -158,8 +155,7 @@ func TestReasonixUnappliedSteerRetiresAsUnproved(t *testing.T) {
 	a.SetPromptActiveForTest(true)
 	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
 
-	sender := any(a).(agent.SteerReceiptSender)
-	receipt, err := sender.SteerInputWithReceipt(agent.SteerRequest{
+	receipt, err := a.SteerInput(agent.SteerRequest{
 		InputID: "queue-steer-unapplied",
 		Content: "Stopped before injection.",
 	})
@@ -201,7 +197,7 @@ func TestReasonixSteerTracksWhenTranscriptDoesNotExistYet(t *testing.T) {
 	a.SetPromptActiveForTest(true)
 	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
 
-	receipt, err := a.SteerInputWithReceipt(agent.SteerRequest{
+	receipt, err := a.SteerInput(agent.SteerRequest{
 		InputID: "queue-steer-first",
 		Content: "First turn steer.",
 	})
@@ -356,14 +352,14 @@ func TestReasonixV4FramedStoreSteerAndQueuedFollowupReconciliation(t *testing.T)
 	a.SetPromptActiveForTest(true)
 	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
 
-	steerReceipt, err := a.SteerInputWithReceipt(agent.SteerRequest{
+	steerReceipt, err := a.SteerInput(agent.SteerRequest{
 		InputID: "queue-v4-steer",
 		Content: "Steer in v4.",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, agent.NativeInputReceipt{SessionID: sessionID, InputID: "item-v4-steer"}, steerReceipt)
 
-	followupReceipt, err := a.SteerInputWithReceipt(agent.SteerRequest{
+	followupReceipt, err := a.SteerInput(agent.SteerRequest{
 		InputID: "queue-v4-followup",
 		Content: "Follow up in v4.",
 	})
@@ -437,7 +433,7 @@ func TestReasonixSteerCapturesFinalTextFlushedAfterCaptureReplyReconciliation(t 
 	a.SetPromptActiveForTest(true)
 	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
 
-	_, err := a.SteerInputWithReceipt(agent.SteerRequest{
+	_, err := a.SteerInput(agent.SteerRequest{
 		InputID: "queue-capture-order",
 		Content: "Add the changelog summary.",
 	})
@@ -520,7 +516,7 @@ func TestReasonixLegacyReplaceAppendEventsJSONLSteerReconciliation(t *testing.T)
 	a.SetPromptActiveForTest(true)
 	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
 
-	_, err := a.SteerInputWithReceipt(agent.SteerRequest{
+	_, err := a.SteerInput(agent.SteerRequest{
 		InputID: "queue-schema1",
 		Content: "Also include the changelog.",
 	})

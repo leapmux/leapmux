@@ -14,7 +14,7 @@ import (
 func TestAPromptThatFailsAfterItsAcknowledgementReleasesTheTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.NoError(t, r.agent.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "hello", nil))
 	id := r.commandsOfType(CommandPrompt)[0].ID
 
 	r.emit(mustJSON(t, map[string]any{
@@ -34,7 +34,7 @@ func TestAPromptThatFailsAfterItsAcknowledgementReleasesTheTurn(t *testing.T) {
 func TestAPromptFailureWithNoMessageStatesAReason(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.NoError(t, r.agent.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "hello", nil))
 	id := r.commandsOfType(CommandPrompt)[0].ID
 
 	r.emit(mustJSON(t, map[string]any{"type": "response", "id": id, "command": "prompt", "success": false}))
@@ -59,7 +59,7 @@ func TestAPromptFailureAfterAStopPersistsNothing(t *testing.T) {
 func TestAPromptFailureAfterTheRunStartedKeepsTheTurn(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.NoError(t, r.agent.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "hello", nil))
 	id := r.commandsOfType(CommandPrompt)[0].ID
 	r.emit(`{"type":"agent_start"}`)
 
@@ -72,7 +72,7 @@ func TestAPromptFailureAfterTheRunStartedKeepsTheTurn(t *testing.T) {
 func TestPromptResultReleasesTheArm(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.NoError(t, r.agent.SendInput("/skill", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "/skill", nil))
 	id := r.commandsOfType(CommandPrompt)[0].ID
 
 	r.emit(mustJSON(t, map[string]any{"type": "prompt_result", "id": id, "agentInvoked": false}))
@@ -84,7 +84,7 @@ func TestPromptResultReleasesTheArm(t *testing.T) {
 func TestPromptResultForAnotherPromptLeavesTheArm(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.NoError(t, r.agent.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "hello", nil))
 
 	r.emit(`{"type":"prompt_result","id":"leapmux-999","agentInvoked":false}`)
 
@@ -95,7 +95,7 @@ func TestPromptResultForAnotherPromptLeavesTheArm(t *testing.T) {
 func TestAPromptResultThatStartsARunLeavesTheArm(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
-	require.NoError(t, r.agent.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "hello", nil))
 	id := r.commandsOfType(CommandPrompt)[0].ID
 	published := len(r.sink.TurnActives())
 

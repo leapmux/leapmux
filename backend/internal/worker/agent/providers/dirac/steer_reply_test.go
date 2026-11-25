@@ -58,13 +58,13 @@ func TestDiracSteerBindsExactReplyAtSentStatusAndDropsUnreadOnPromptEnd(t *testi
 	require.True(t, ok, "Dirac must report steer resolution at native echo")
 	assert.True(t, reporter.SteerRowAtEcho())
 
-	lead, err := a.SendInputWithReceipt("Check the release.", nil)
+	lead, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, lead.TurnID)
 
 	a.HandleOutput(diracFrame(t, diracText(t, "Before whisper.")))
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-1",
 		AttemptID: "attempt-1",
 		Content:   "Include changelog.",
@@ -86,7 +86,7 @@ func TestDiracSteerBindsExactReplyAtSentStatusAndDropsUnreadOnPromptEnd(t *testi
 	}, sink.SteerResolutions()[0])
 
 	// Queue a second whisper that is never injected before the turn finishes.
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-2",
 		AttemptID: "attempt-2",
 		Content:   "Never injected.",
@@ -112,9 +112,9 @@ func TestDiracSteerClearSessionMarksPendingUncertain(t *testing.T) {
 		promptReply <- agenttest.RPCReply{Result: json.RawMessage(`{"stopReason":"cancelled"}`)}
 	}()
 
-	_, err := a.SendInputWithReceipt("Check the release.", nil)
+	_, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-1",
 		AttemptID: "attempt-1",
 		Content:   "Pending during reset.",

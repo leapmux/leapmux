@@ -125,7 +125,7 @@ func TestStoppedProcessCannotSendInputOverAnOpenSocket(t *testing.T) {
 	fake, a := openedAgent(t)
 	a.SetStoppedForTest(true)
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("This must not reach the stopped runtime.", nil) }()
+	go func() { result <- agenttest.SendInput(a, "This must not reach the stopped runtime.", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case err := <-result:
@@ -440,7 +440,7 @@ func TestEveryUserMessageOptsIntoTheQuestionTool(t *testing.T) {
 	t.Parallel()
 	fake, a := openedAgent(t)
 
-	require.NoError(t, a.SendInput("Ask me a question.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Ask me a question.", nil))
 
 	payload := inputPayload(t, fake)
 	assert.Equal(t, "create_message", payload["kind"])
@@ -470,12 +470,12 @@ func TestEveryUserMessageStatesItsOwnClientMessageID(t *testing.T) {
 	t.Parallel()
 	fake, a := openedAgent(t)
 
-	require.NoError(t, a.SendInput("First message.", nil))
+	require.NoError(t, agenttest.SendInput(a, "First message.", nil))
 	first := sentClientMessageID(t, inputPayload(t, fake))
 	// The turn ends, so the agent takes the next message.
 	a.HandleOutput([]byte(`{"type":"update_loop_status","loop_status":{"status":"WAITING_ON_INPUT","active_run_ids":[],"executing_tool_call_ids":[]},"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"}}`))
 	a.HandleOutput([]byte(`{"type":"turn_finished","turn_id":"first-input-turn","stop_reason":"end_turn"}`))
-	require.NoError(t, a.SendInput("Second message.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Second message.", nil))
 	second := sentClientMessageID(t, inputPayload(t, fake))
 
 	assert.NotEmpty(t, first, "the first message states no client_message_id")

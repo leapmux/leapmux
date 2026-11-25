@@ -360,9 +360,11 @@ func (a *Agent) reserveChildPromptSubmission(childKey string, input agent.ChildI
 
 // SteerChildInput is not possible: the server steers the main agent's queue
 // alone, and a steer for a subagent's queued prompt reports it as not pending.
-func (a *Agent) SteerChildInput(string, string, []*leapmuxv1.Attachment) error {
-	return agent.ErrChildOperationUnsupported
+func (a *Agent) SteerChildInput(string, agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return agent.NativeInputReceipt{}, agent.ErrChildOperationUnsupported
 }
+
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 // ActiveChildTurnState reports a subagent's turn. It takes no steering.
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {

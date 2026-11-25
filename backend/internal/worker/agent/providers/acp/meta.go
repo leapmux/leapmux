@@ -1,12 +1,12 @@
-package providerkit
+package acp
 
 import "maps"
 
-// acpMetaKey is the field of the Agent Client Protocol that carries a
+// metaKey is the field of the Agent Client Protocol that carries a
 // runtime's own extensions of a message.
-const acpMetaKey = "_meta"
+const metaKey = "_meta"
 
-// WithACPMeta returns a copy of an Agent Client Protocol result whose `_meta`
+// WithMeta returns a copy of an Agent Client Protocol result whose `_meta`
 // object holds value under key, or under the path that key and nested state,
 // one key for each level below `_meta`.
 //
@@ -18,8 +18,8 @@ const acpMetaKey = "_meta"
 // that holds a value other than a map[string]any, becomes a new object, so a
 // later value always reaches its place. The function never changes result or
 // a map inside it, because the caller may hold them.
-func WithACPMeta(result map[string]any, value any, key string, nested ...string) map[string]any {
-	path := append([]string{acpMetaKey, key}, nested...)
+func WithMeta(result map[string]any, value any, key string, nested ...string) map[string]any {
+	path := append([]string{metaKey, key}, nested...)
 	return withObjectPath(result, value, path)
 }
 

@@ -280,20 +280,17 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendChild(childKey, content, attachments, &agent.SteerRequest{Content: content, Attachments: attachments}, false)
-	return err
-}
-
-func (a *Agent) SteerChildInputAtEcho(childKey string, request agent.SteerRequest) error {
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	_, err := a.sendChild(childKey, request.Content, request.Attachments, &request, request.AttemptID != "")
-	return err
+	return agent.NativeInputReceipt{}, err
 }
 
-// ChildSteerSurvivesTurnEnd keeps a steered continuable-child input pending
-// when the child finishes its running turn while delivery is in flight: DeepSeek
+// ChildSteerPolicy holds the steer row until echo and keeps it pending when
+// the child finishes its running turn while delivery is in flight: DeepSeek
 // Harness retains the message in the child's inbox for the next turn.
-func (*Agent) ChildSteerSurvivesTurnEnd() bool { return true }
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}
+}
 
 func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Attachment, steer *agent.SteerRequest, trackReply bool) (agent.NativeInputReceipt, error) {
 	var inputReceipt agent.NativeInputReceipt

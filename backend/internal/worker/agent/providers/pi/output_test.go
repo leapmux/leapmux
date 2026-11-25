@@ -1187,7 +1187,7 @@ func TestPiCompactCommandFailureEndsLiveState(t *testing.T) {
 	rig := newPiTestRig(t, agent.NewProviderServices(sink))
 	rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) { return nil, false, "summary failed" })
 	rig.agent.HandleOutput([]byte(`{"type":"compaction_start","reason":"manual"}`))
-	require.ErrorContains(t, rig.agent.SendInput("/compact", nil), "summary failed")
+	require.ErrorContains(t, agenttest.SendInput(rig.agent, "/compact", nil), "summary failed")
 	assert.Equal(t, []any{map[string]any{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 }
 

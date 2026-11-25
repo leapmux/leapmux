@@ -65,7 +65,7 @@ func TestFastAgentAudioUsesTheRunningProvider(t *testing.T) {
 			services := agent.NewProviderServices(sink)
 			a.SetSinkForTest(services)
 			*a.HooksForTest() = a.hooks("launch-model-is-not-authority", services)
-			err := a.SendInput("", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
+			err := agenttest.SendInput(a, "", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
 			if name == "google" || name == "maximum status" {
 				require.NoError(t, err)
 			} else {
@@ -126,10 +126,10 @@ func TestFastAgentAudioStatusFailureAllowsRetry(t *testing.T) {
 			a.SetSinkForTest(services)
 			*a.HooksForTest() = a.hooks("unused-launch-model", services)
 			attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}}
-			require.Error(t, a.SendInput("listen", attachments))
+			require.Error(t, agenttest.SendInput(a, "listen", attachments))
 			assert.False(t, a.PromptActive())
 			valid.Store(true)
-			require.NoError(t, a.SendInput("retry", attachments))
+			require.NoError(t, agenttest.SendInput(a, "retry", attachments))
 			_, err := a.SendRequest("test/sync", nil, a.APITimeout())
 			require.NoError(t, err)
 			var originals int
@@ -158,7 +158,7 @@ func TestFastAgentPlainPromptKeepsItsOutputWithoutAnAudioQuery(t *testing.T) {
 	services := agent.NewProviderServices(sink)
 	a.SetSinkForTest(services)
 	*a.HooksForTest() = a.hooks("model", services)
-	require.NoError(t, a.SendInput("ordinary prompt", nil))
+	require.NoError(t, agenttest.SendInput(a, "ordinary prompt", nil))
 	testutil.RequireEventually(t, func() bool {
 		for _, message := range sink.Messages() {
 			if strings.Contains(string(message.Content), "ordinary native answer") {
@@ -194,7 +194,7 @@ func TestFastAgentAudioQueryPreservesUnrelatedNativeText(t *testing.T) {
 	services := agent.NewProviderServices(sink)
 	a.SetSinkForTest(services)
 	*a.HooksForTest() = a.hooks("launch", services)
-	require.NoError(t, a.SendInput("listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}}))
+	require.NoError(t, agenttest.SendInput(a, "listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}}))
 	testutil.RequireEventually(t, func() bool {
 		for _, message := range sink.Messages() {
 			if strings.Contains(string(message.Content), "ordinary native text outside the model query") {

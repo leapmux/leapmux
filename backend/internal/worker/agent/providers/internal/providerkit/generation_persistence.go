@@ -115,7 +115,8 @@ func generationCallback(persist func([]byte) error) prepareGenerationWrite {
 func (b *GenerationBuffer) prepareAndFlush(pending []*generationPreparation, prepare prepareGenerationWrite) error {
 	tickets := make([]*agent.OutputTicket, 0, len(pending))
 	for _, row := range pending {
-		row.run = prepare(slices.Clone(row.raw), row.turn)
+		row.run = prepare(row.raw, row.turn)
+		row.raw = nil
 		row.ready.Store(true)
 		tickets = append(tickets, row.ticket)
 	}
@@ -230,7 +231,14 @@ func (destination *generationDestination) prepare(raw []byte, turn generationNat
 	}
 	content := destination.template.Clone()
 	content.Original = raw
-	if turn.turnID != "" {
+	switch {
+	case turn.mixed:
+		content.NativeTurnID = ""
+		content.NativeInputID = ""
+	case turn.turnID != "":
+		if content.AgentSessionID != turn.sessionID || content.NativeTurnID != turn.turnID {
+			content.NativeInputID = ""
+		}
 		if content.AgentSessionID != turn.sessionID {
 			// CaptureTranscript resolves publication for the session that produced this row.
 			content.AgentSessionID = turn.sessionID

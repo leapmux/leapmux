@@ -154,7 +154,7 @@ func TestClineStartRunsAPrivateHub(t *testing.T) {
 	assert.Equal(t, "claude-opus-5", sink.LastSettingsRefresh().Model, "the user's Cline settings choose the model")
 	assert.Equal(t, "anthropic", a.selection.Provider)
 
-	require.NoError(t, a.SendInput("Hello.", nil), "the hub takes a prompt")
+	require.NoError(t, agenttest.SendInput(a, "Hello.", nil), "the hub takes a prompt")
 
 	pid := a.record.PID
 	a.Stop()

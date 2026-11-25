@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -177,6 +176,7 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	if shell == "cmd" {
 		return nil, errors.New("cmd.exe cannot launch agents. Configure a PowerShell or Bash shell for the Worker")
 	}
+	dialect := resolveDialect(shell)
 	// Native lookup errors remain on cmd.Err. A launch can use the last known
 	// Windows PATH when the refresh fails.
 	cmd, _ := newShellCommand(ctx, spec.Shell, spec.LoginShell, "", spec.WorkingDir, spec.Environment)
@@ -188,46 +188,16 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 	shellSpec := shellLaunchSpec{WrapSpec: spec}
 	if len(spec.SetEnv) != 0 {
 		environment := cmd.Environ()
-		shellSpec = prepareShellLaunch(spec, token, environment)
+		shellSpec = prepareShellLaunch(dialect, spec, token, environment)
 		cmd.Env = shellSpec.pinEnvironment(environment)
 		for _, pin := range shellSpec.pins {
 			prepared.pinSources = append(prepared.pinSources, pin.source)
 		}
 	}
 
-	var script string
-	switch {
-	case terminal.IsPwsh(shell):
-		script = buildPwshCommand(shellSpec, prepared)
-	case shell == "nu" && len(prepared.candidates) != 0:
-		scripts, err := prepared.writeNuInvocations(spec)
-		if err != nil {
-			return nil, err
-		}
-		script = buildNuSelection(shellSpec, prepared, scripts)
-	case shell == "nu":
-		script = buildNuCommand(shellSpec, prepared)
-	case shell == "fish":
-		script = buildFishCommand(shellSpec, prepared)
-	case shell == "elvish":
-		script = buildElvishCommand(shellSpec, prepared)
-	case shell == "xonsh":
-		script = buildXonshCommand(shellSpec, prepared)
-	case isCsh(shell):
-		var err error
-		script, err = prepared.writeCshInvocation(buildCshCommand(shellSpec, prepared))
-		if err != nil {
-			return nil, err
-		}
-	default:
-		script = buildPosixCommand(shell, shellSpec, prepared)
-	}
-	if runtime.GOOS == "windows" && shell == "bash" {
-		var err error
-		script, err = prepared.writeBashInvocation(script)
-		if err != nil {
-			return nil, err
-		}
+	script, err := dialect.buildCommand(shellSpec, prepared)
+	if err != nil {
+		return nil, err
 	}
 	// CommandArgs places the command text after all shell flags.
 	cmd.Args[len(cmd.Args)-1] = script
@@ -264,6 +234,15 @@ func (p *PreparedLaunch) writeCshInvocation(script string) (string, error) {
 	}
 	// A single-line if calls the builtin without expanding a source alias.
 	return cshInvocationPrefix + cshQuote(path), nil
+}
+
+func (cshDialect) prepareProbeScript(script string) (string, func(), error) {
+	scriptFiles := &PreparedLaunch{}
+	wrapped, err := scriptFiles.writeCshInvocation(script)
+	if err != nil {
+		return "", nil, err
+	}
+	return wrapped, func() { _ = scriptFiles.Close() }, nil
 }
 
 func (p *PreparedLaunch) writeNuInvocations(spec WrapSpec) (map[string]nuInvocationFiles, error) {
@@ -307,24 +286,6 @@ func writeNuInvocation(path, name string, count int) error {
 	}
 	script.WriteString(" }\n")
 	return os.WriteFile(path, []byte(script.String()), 0o600)
-}
-
-// buildNuCommand builds the inner command string for Nushell.
-func buildNuCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
-	// `^"<program>"` is Nushell's documented form for running an external
-	// command whose path contains a space.
-	return nuLaunchEnvironment(spec) +
-		nuLaunchArguments(spec.WrapSpec, prepared.MetaPrefix) +
-		prepared.nuReadiness(spec.EnvGated == nil, "") +
-		"^" + nuQuote(spec.Launch.Program) + " ...$__lm_args\n"
-}
-
-// nuLaunchEnvironment is the head of both Nushell builders. It runs after the
-// profile: it puts the directory of the Worker's CLI first on PATH again (see
-// nuReprependControlCLI), then removes StripEnvKeys and sets the pins, so a
-// PATH that a provider pins wins.
-func nuLaunchEnvironment(spec shellLaunchSpec) string {
-	return nuReprependControlCLI + nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n"
 }
 
 // legacyNativeArgument quotes one token for the Windows native command-line

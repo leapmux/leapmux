@@ -269,7 +269,7 @@ func TestStartHandshake(t *testing.T) {
 	assert.Equal(t, "mock/beta", optionids.GroupByID(groups, agent.OptionIDModel).GetCurrentValue(), "the configured model runs")
 	assert.Equal(t, contracts.MiMoModeBuild, optionids.GroupByID(groups, agent.OptionIDPermissionMode).GetCurrentValue())
 
-	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(a, "hello", nil))
 	requests := readHelperRequests(t, recordDir)
 	for _, want := range []string{"GET " + routeHealth, "GET " + routeEvents, "GET " + routeConfigProviders, "POST " + routeSessions,
 		"POST " + routeSkipAll, "POST " + routeAutoApproveDel, "POST /session/ses_created/prompt_async"} {

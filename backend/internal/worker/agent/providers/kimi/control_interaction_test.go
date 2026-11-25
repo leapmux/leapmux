@@ -124,7 +124,7 @@ func TestKimiControlAnswersUseUnifiedInteractionRoute(t *testing.T) {
 			t.Parallel()
 			rig := newKimiTestRig(t, agent.Options{})
 			rig.feed(t, tc.request)
-			require.NoError(t, rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "interaction_1", tc.behavior, tc.fields, nil)}))
+			require.NoError(t, rig.agent.SendRawInput(rig.sink.Answer("interaction_1", answerFor(t, rig, "interaction_1", tc.behavior, tc.fields, nil))))
 			posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "interaction_1", ""))
 			require.Len(t, posts, 1, "the current server accepts control answers through its interaction route")
 			assert.JSONEq(t, tc.want, string(posts[0].Body))
@@ -143,7 +143,7 @@ func TestKimiMissingSessionRetiresItsInteractions(t *testing.T) {
 	rig.feed(t, approvalEvent("approval_missing_session", map[string]any{"kind": "command", "command": "pwd"}))
 	route := kimiItemPath(rig.sessionID(), "interactions", "approval_missing_session", "")
 	rig.fake.reply("POST "+route, fakeKapReply{Code: 40401, Msg: "the session does not exist"})
-	err := rig.agent.SendRawInput(agent.RawInput{Data: answerFor(t, rig, "approval_missing_session", "allow", nil, nil)})
+	err := rig.agent.SendRawInput(rig.sink.Answer("approval_missing_session", answerFor(t, rig, "approval_missing_session", "allow", nil, nil)))
 	assert.ErrorIs(t, err, errKimiControlGone)
 	assert.Equal(t, []string{"approval_missing_session"}, rig.sink.CanceledControls(),
 		"a control whose native session disappeared must leave the user's banner")

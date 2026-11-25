@@ -65,15 +65,7 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 // ErrDeliveryUncertain leaves it removed because the provider can already hold the answer.
 // Restoring it in that case can send a second answer to a retired request.
 func (b *JSONRPCProcess) SendRawInput(input agent.RawInput) error {
-	restore, _, err := b.takeOutstandingControl(input)
-	if err != nil {
-		return err
-	}
-	err = b.writeRawFrame(input.Data)
-	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
-		restore()
-	}
-	return err
+	return b.sendRawInput(input, false)
 }
 
 func (b *JSONRPCProcess) writeRawFrame(data []byte) error {
@@ -195,10 +187,6 @@ func (b *JSONRPCProcess) sendRequest(ctx context.Context, method string, params 
 	return decodeJSONRPCResponse(resp)
 }
 
-func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessage, handle func(json.RawMessage, error)) error {
-	return b.SendDetachedRequestWithTimeout(method, params, 0, handle)
-}
-
 type DetachedRequestObservation struct {
 	// BeforeWrite runs on the stdin writer before the native write.
 	BeforeWrite func()
@@ -206,21 +194,19 @@ type DetachedRequestObservation struct {
 	Response func(json.RawMessage)
 }
 
-// SendDetachedRequestObserved brackets one request at the transport.
-// Neither observer may wait for another request.
-func (b *JSONRPCProcess) SendDetachedRequestObserved(method string, params json.RawMessage, observation DetachedRequestObservation, handle func(json.RawMessage, error)) error {
-	return b.sendDetachedRequest(method, params, 0, observation, handle)
+// DetachedRequestOptions configures timeout and transport observation for
+// SendDetachedRequest. Zero Timeout leaves the request open until process exit.
+type DetachedRequestOptions struct {
+	Timeout     time.Duration
+	Observation DetachedRequestObservation
 }
 
-// SendDetachedRequestWithTimeout limits how long the detached callback waits
-// for the correlated reply. Zero leaves the request open until process exit.
-func (b *JSONRPCProcess) SendDetachedRequestWithTimeout(method string, params json.RawMessage, timeout time.Duration, handle func(json.RawMessage, error)) error {
-	return b.sendDetachedRequest(method, params, timeout, DetachedRequestObservation{}, handle)
-}
-
-func (b *JSONRPCProcess) sendDetachedRequest(method string, params json.RawMessage, timeout time.Duration, observation DetachedRequestObservation, handle func(json.RawMessage, error)) error {
+// SendDetachedRequest writes a JSON-RPC request synchronously and invokes handle
+// asynchronously when the correlated reply arrives or times out. Neither
+// observer in options.Observation may wait for another request.
+func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessage, options DetachedRequestOptions, handle func(json.RawMessage, error)) error {
 	reqID := b.nextReqID.Add(1)
-	ch, release, err := b.RegisterObserved(reqID, observation.Response)
+	ch, release, err := b.RegisterObserved(reqID, options.Observation.Response)
 	if err != nil {
 		return &jsonRPCRequestNotSentError{cause: err}
 	}
@@ -229,13 +215,13 @@ func (b *JSONRPCProcess) sendDetachedRequest(method string, params json.RawMessa
 		release()
 		return &jsonRPCRequestNotSentError{cause: fmt.Errorf("marshal request: %w", err)}
 	}
-	if err := b.writeStdin(b.frameJSONRPCMessage(data), observation.BeforeWrite); err != nil {
+	if err := b.writeStdin(b.frameJSONRPCMessage(data), options.Observation.BeforeWrite); err != nil {
 		release()
 		return jsonRPCRequestWriteError(err)
 	}
 	go func() {
 		defer release()
-		resp, err := b.AwaitResponse(ch, method, timeout)
+		resp, err := b.AwaitResponse(ch, method, options.Timeout)
 		if err == nil {
 			resp, err = decodeJSONRPCResponse(resp)
 		}

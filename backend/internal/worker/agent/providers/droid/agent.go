@@ -113,12 +113,11 @@ type droidLaunch struct {
 }
 
 var (
-	_ agent.Agent              = (*Agent)(nil)
-	_ agent.InputReceiptSender = (*Agent)(nil)
-	_ agent.InputSteerer       = (*Agent)(nil)
-	_ agent.ContextCompactor   = (*Agent)(nil)
-	_ agent.SteerEchoReporter  = (*Agent)(nil)
-	_ agent.SteerSurvivor      = (*Agent)(nil)
+	_ agent.Agent             = (*Agent)(nil)
+	_ agent.InputSteerer      = (*Agent)(nil)
+	_ agent.ContextCompactor  = (*Agent)(nil)
+	_ agent.SteerEchoReporter = (*Agent)(nil)
+	_ agent.SteerSurvivor     = (*Agent)(nil)
 )
 
 // errAgentStopped reports that the agent's process already ended.
@@ -208,18 +207,14 @@ type droidPendingControl struct {
 //
 // Droid replies when it enqueues the message. This method waits for that reply, not the turn end.
 // A running turn refuses ordinary input with ErrAgentBusy, so the LeapMux queue retains it.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(nil, content, attachments, droidInputOrdinary)
-}
-
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendNativeInput(nil, content, attachments, droidInputDispatch{mode: droidInputOrdinary, captureReply: true})
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments, droidInputDispatch{mode: droidInputOrdinary})
 }
 
 // SendInputForSession delivers a user message when the session it states is
 // still the current one.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&sessionID, content, attachments, droidInputOrdinary)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(&sessionID, content, attachments, droidInputDispatch{mode: droidInputOrdinary})
 }
 
 // SupportsSteering reports true: Droid accepts end_of_turn during a running
@@ -233,11 +228,11 @@ func (*Agent) SteerRowAtEcho() bool { return true }
 func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // SteerInput adds a message to the running turn.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	_, err := a.sendNativeInput(nil, request.Content, request.Attachments, droidInputDispatch{
 		mode: droidInputSteer, queueInputID: request.InputID, attemptID: request.AttemptID,
 	})
-	return err
+	return agent.NativeInputReceipt{}, err
 }
 
 type droidInputMode uint8
@@ -251,22 +246,16 @@ const (
 
 type droidInputDispatch struct {
 	mode         droidInputMode
-	captureReply bool
 	queueInputID string
 	attemptID    string
 }
 
-// sendInput writes one droid.add_user_message request.
+// sendNativeInput writes one droid.add_user_message request.
 //
 // A plain message during a turn would be queued by Droid itself and become the
 // next turn out of LeapMux's sight, so the agent refuses a new message while a
 // turn runs: the LeapMux input queue owns queueing. A steering message uses
 // the same native placement while the turn is active.
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, mode droidInputMode) error {
-	_, err := a.sendNativeInput(expected, content, attachments, droidInputDispatch{mode: mode})
-	return err
-}
-
 func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment, dispatch droidInputDispatch) (agent.NativeInputReceipt, error) {
 	steer := dispatch.mode != droidInputOrdinary
 	message, err := buildUserMessage(content, attachments)
@@ -324,10 +313,8 @@ func (a *Agent) sendNativeInput(expected *string, content string, attachments []
 	var reply *droidNativeReply
 	var receipt agent.NativeInputReceipt
 	if !steer {
-		if dispatch.captureReply {
-			receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: params.MessageID, TurnID: params.MessageID}
-			reply = a.beginDroidReply(receipt, id)
-		}
+		receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: params.MessageID, TurnID: params.MessageID}
+		reply = a.beginDroidReply(receipt, id)
 		a.startTurn()
 	}
 	if dispatch.mode == droidInputSteer {

@@ -558,7 +558,7 @@ func TestApprovedPlanAdoptsBuild(t *testing.T) {
 	assert.Equal(t, contracts.MiMoModeBuild, a.mode)
 	assert.Equal(t, contracts.MiMoModeBuild, sink.PermissionMode())
 
-	require.NoError(t, a.SendInput("go", nil))
+	require.NoError(t, agenttest.SendInput(a, "go", nil))
 	assert.Equal(t, "build", decodeBody(t, server.requestsTo("POST /session/ses_test/prompt_async")[0])["agent"])
 }
 

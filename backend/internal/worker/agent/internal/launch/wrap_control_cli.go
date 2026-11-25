@@ -91,10 +91,10 @@ set:/*)
 	*)
 		if (PATH="$PATH") 2>/dev/null; then
 			__lm_cli_path=":$PATH:"
-			while :; do
+			while ` + prefix + `:; do
 				case "$__lm_cli_path" in
 				*:"$__lm_cli_dir":*) __lm_cli_path="${__lm_cli_path%%:"$__lm_cli_dir":*}:${__lm_cli_path#*:"$__lm_cli_dir":}";;
-				*) break;;
+				*) ` + prefix + `break;;
 				esac
 			done
 			case "$__lm_cli_path" in
@@ -155,26 +155,46 @@ const fishReprependControlCLI = `if set --query PATH; and string match --quiet -
 // nuReprependControlCLI is the step for Nushell. `$env.NAME?` reads a variable
 // that may be unset, and it ignores case, so it reads Path on Windows as well.
 // `split row` accepts PATH as a list, which Nushell makes of it, and as a
-// string. The pattern accepts a Unix path, a Windows path with a drive, and a
-// UNC path. The `%` sigil calls each builtin even when the profile defines a
-// command of the same name. `where` is a keyword, which no profile can define,
-// and which takes no sigil.
+// string. The absolute-path pattern matches the host OS rule (`filepath.IsAbs`):
+// drive or UNC paths on Windows (`%char esep == ';'`) and leading `/` on Unix.
+// The `%` sigil calls each builtin even when the profile defines a command of
+// the same name. `where` is a keyword, which no profile can define, and which
+// takes no sigil.
 const nuReprependControlCLI = `let __lm_cli = ($env.` + controlCLIVariable + `? | %default ''); ` +
+	`let __lm_cli_abs = (if (%char esep) == ';' { $__lm_cli =~ '^([A-Za-z]:[\\/]|[\\/][\\/])' } else { $__lm_cli =~ '^/' }); ` +
 	`let __lm_cli_dir = ($__lm_cli | %path dirname); ` +
-	`if ($env.PATH? != null) and ($__lm_cli =~ '^(/|[A-Za-z]:[\\/]|[\\/][\\/])') and not ($__lm_cli_dir | %str contains (%char esep)) { ` +
+	`if ($env.PATH? != null) and $__lm_cli_abs and ($__lm_cli_dir != '') and not ($__lm_cli_dir | %str contains (%char esep)) { ` +
 	`$env.PATH = ($env.PATH | %split row (%char esep) | where {|entry| $entry != $__lm_cli_dir } | %prepend $__lm_cli_dir) }; `
+
+// elvishReprependControlCLI is the step for Elvish.
+const elvishReprependControlCLI = `use str __lm_str
+if (and (__lm_builtin:has-env PATH) (__lm_builtin:has-env ` + controlCLIVariable + `)) {
+  var cli = (__lm_builtin:get-env ` + controlCLIVariable + `)
+  if (__lm_path:is-abs $cli) {
+    var directory = (__lm_path:dir $cli)
+    if (not (__lm_str:contains $directory $__lm_path:list-separator)) {
+      var entries = [(__lm_str:split $__lm_path:list-separator (__lm_builtin:get-env PATH))]
+      var reordered = [$directory (for entry $entries {
+        if (not (__lm_builtin:eq $entry $directory)) { __lm_builtin:put $entry }
+      })]
+      __lm_builtin:set-env PATH (__lm_str:join $__lm_path:list-separator $reordered)
+    }
+  }
+}
+`
 
 // pwshReprependControlCLI is the step for PowerShell 7 and Windows PowerShell
 // 5.1, which reads $env:PATH regardless of case on Windows. It uses only .NET
 // members that both versions have. It calls Where-Object by its
 // module-qualified name, because PowerShell runs a function or an alias of the
-// profile before a cmdlet of the same name. buildPwshCommand runs it before it
-// sets $ErrorActionPreference, so a failure in it reports an error and the
-// launch goes on.
+// profile before a cmdlet of the same name. pwshDialect.buildCommand runs it
+// before it sets $ErrorActionPreference, so a failure in it reports an error
+// and the launch goes on.
 const pwshReprependControlCLI = `$__lm_cli = [string]$env:` + controlCLIVariable + `; ` +
-	`if ($null -ne $env:PATH -and $__lm_cli -match '^(/|[A-Za-z]:[\\/]|[\\/][\\/])') { ` +
-	`$__lm_cli_dir = [System.IO.Path]::GetDirectoryName($__lm_cli); ` +
 	`$__lm_separator = [string][System.IO.Path]::PathSeparator; ` +
+	`$__lm_abs_pattern = if ($__lm_separator -eq ';') { '^([A-Za-z]:[\\/]|[\\/][\\/])' } else { '^/' }; ` +
+	`if ($null -ne $env:PATH -and $__lm_cli -match $__lm_abs_pattern) { ` +
+	`$__lm_cli_dir = [System.IO.Path]::GetDirectoryName($__lm_cli); ` +
 	`if ($__lm_cli_dir -and -not $__lm_cli_dir.Contains($__lm_separator)) { ` +
 	`$env:PATH = (@($__lm_cli_dir) + @($env:PATH.Split([char]$__lm_separator) | Microsoft.PowerShell.Core\Where-Object { $_ -cne $__lm_cli_dir })) -join $__lm_separator } }; `
 

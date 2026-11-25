@@ -21,9 +21,8 @@ var jsonRPCPublication = struct {
 	pkgPath:  modulePath + providerTree + "/internal/providerkit",
 	receiver: "JSONRPCProcess",
 	names: []string{
-		"PublishControlRequest", "PublishControlRequestInSession",
-		"PublishControlRequestWithApproval", "PublishSessionControlRequestWithApproval",
-		"ApproveUnpublishedControlRequest", "ApproveUnpublishedSessionControlRequest",
+		"PublishControlRequest",
+		"ApproveUnpublishedControlRequest",
 	},
 }
 

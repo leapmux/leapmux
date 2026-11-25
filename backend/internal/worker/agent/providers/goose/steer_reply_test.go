@@ -102,7 +102,7 @@ func TestGooseSteerBindsExactReplyAtUserMessageChunkAndDropsUnreadOnPromptEnd(t 
 	require.True(t, ok, "Goose must report steer resolution at native echo")
 	assert.True(t, reporter.SteerRowAtEcho())
 
-	lead, err := a.SendInputWithReceipt("Check the release.", nil)
+	lead, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, lead.TurnID)
 
@@ -116,7 +116,7 @@ func TestGooseSteerBindsExactReplyAtUserMessageChunkAndDropsUnreadOnPromptEnd(t 
 		"content":       map[string]any{"type": "text", "text": "Before steer."},
 	}))
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-1",
 		AttemptID: "attempt-1",
 		Content:   "Include changelog.",
@@ -149,7 +149,7 @@ func TestGooseSteerBindsExactReplyAtUserMessageChunkAndDropsUnreadOnPromptEnd(t 
 	}, sink.SteerResolutions()[0])
 
 	// Queue a second steer that Goose discards when the run ends.
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-2",
 		AttemptID: "attempt-2",
 		Content:   "Discarded at run end.",
@@ -185,13 +185,13 @@ func TestGooseEarlySteerUserChunkCommitsWhenSteerRPCReturns(t *testing.T) {
 	}()
 
 	var err error
-	lead, err = a.SendInputWithReceipt("Check the release.", nil)
+	lead, err = a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	a.HandleOutput(gooseSessionUpdateFrame(t, "goose-session", map[string]any{
 		"sessionUpdate": "session_info_update",
 		"_meta":         map[string]any{"goose": map[string]any{"activeRunId": "run-1"}},
 	}))
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-early",
 		AttemptID: "attempt-early",
 		Content:   "Early steer.",

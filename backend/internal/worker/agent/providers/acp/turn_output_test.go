@@ -681,7 +681,7 @@ func TestACPNormalAndFailedTurnKeepOpenToolAcrossSealedTarget(t *testing.T) {
 				return tr
 			}
 
-			require.NoError(t, b.SendInput("turn 1", nil))
+			require.NoError(t, agenttest.SendInput(b, "turn 1", nil))
 			b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"bg-1","title":"Watch","kind":"execute","status":"in_progress"}`))
 			b.HandleJSONRPCResponseForTest(tc.response)
 			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })

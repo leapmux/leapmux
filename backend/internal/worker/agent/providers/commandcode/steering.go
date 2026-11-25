@@ -15,7 +15,7 @@ import (
 
 // SteerInput submits to the native parent-turn queue. The RPC acknowledges
 // each append before the reader can observe the next drain of that queue.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()
@@ -23,15 +23,15 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	active := turnID != "" && !a.compacting && a.manualCompaction == nil
 	a.Mu.Unlock()
 	if !active {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if proofLost {
-		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
+		return agent.NativeInputReceipt{}, &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
 	}
 	content := request.Content
 	for _, attachment := range agent.ClassifyAttachments(request.Attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText {
-			return agent.ErrSteeringUnsupported
+			return agent.NativeInputReceipt{}, agent.ErrSteeringUnsupported
 		}
 		content += "\n\n" + providerkit.BuildInlineTextAttachmentBlock(attachment)
 	}
@@ -54,10 +54,10 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 	if acknowledged {
-		return acknowledgmentErr
+		return agent.NativeInputReceipt{}, acknowledgmentErr
 	}
 	if providerkit.HasJSONRPCErrorCode(err, -32001) {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if err == nil {
 		err = errors.New("the Command Code response did not report steer admission")
@@ -66,7 +66,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	if errors.Is(err, agent.ErrDeliveryUncertain) {
 		a.loseCommandCodeSteerProof(turnID)
 	}
-	return err
+	return agent.NativeInputReceipt{}, err
 }
 
 // observeCommandCodeSteerAck runs on the reader before later notifications.

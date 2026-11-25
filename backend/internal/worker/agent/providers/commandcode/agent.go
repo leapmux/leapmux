@@ -68,12 +68,11 @@ type openTool struct {
 }
 
 var (
-	_ agent.Agent              = (*Agent)(nil)
-	_ agent.InputReceiptSender = (*Agent)(nil)
-	_ agent.InputSteerer       = (*Agent)(nil)
-	_ agent.ContextCompactor   = (*Agent)(nil)
-	_ agent.SteerEchoReporter  = (*Agent)(nil)
-	_ agent.SteerSurvivor      = (*Agent)(nil)
+	_ agent.Agent             = (*Agent)(nil)
+	_ agent.InputSteerer      = (*Agent)(nil)
+	_ agent.ContextCompactor  = (*Agent)(nil)
+	_ agent.SteerEchoReporter = (*Agent)(nil)
+	_ agent.SteerSurvivor     = (*Agent)(nil)
 )
 
 // PublishTurnActive reads and publishes the same state that refuses concurrent input.
@@ -86,24 +85,15 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	return providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: steerable}, seq)
 }
 
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments)
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments)
 }
 
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendNativeInput(nil, content, attachments, true)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(&sessionID, content, attachments)
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments)
-}
-
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendNativeInput(expected, content, attachments, false)
-	return err
-}
-
-func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment, captureReply bool) (agent.NativeInputReceipt, error) {
+func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()
@@ -125,10 +115,8 @@ func (a *Agent) sendNativeInput(expected *string, content string, attachments []
 	}
 	var receipt agent.NativeInputReceipt
 	var wireTurnID string
-	if captureReply {
-		a.beginCommandCodeReplyStart()
-		defer func() { a.finishCommandCodeReplyStart(wireTurnID, receipt) }()
-	}
+	a.beginCommandCodeReplyStart()
+	defer func() { a.finishCommandCodeReplyStart(wireTurnID, receipt) }()
 	result, err := a.request(methodTurnStart, map[string]any{"input": blocks}, a.APITimeout())
 	if err != nil {
 		if providerkit.HasJSONRPCErrorCode(err, -32010) {
@@ -143,11 +131,9 @@ func (a *Agent) sendNativeInput(expected *string, content string, attachments []
 		return receipt, fmt.Errorf("%w: Command Code returned no turn ID", agent.ErrDeliveryUncertain)
 	}
 	a.startTurn(response.TurnID)
-	if captureReply {
-		wireTurnID = response.TurnID
-		turnID := a.commandCodeDurableTurnID(wireTurnID)
-		receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: turnID, TurnID: turnID}
-	}
+	wireTurnID = response.TurnID
+	turnID := a.commandCodeDurableTurnID(wireTurnID)
+	receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: turnID, TurnID: turnID}
 	return receipt, nil
 }
 

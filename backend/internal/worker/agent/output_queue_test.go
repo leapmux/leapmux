@@ -210,3 +210,16 @@ func TestOutputQueueWaitForAdmittedWritesJoinsARetry(t *testing.T) {
 	clock.Advance(delay).MustWait(ctx)
 	require.NoError(t, <-result)
 }
+
+func TestOutputQueueWaitForAdmittedWritesFlushesIdlePendingWrite(t *testing.T) {
+	t.Parallel()
+	var queue OutputQueue
+	var ran atomic.Bool
+	queue.Append(OutputWrite{Label: "idle pending", Run: func() error {
+		ran.Store(true)
+		return nil
+	}})
+	require.NoError(t, queue.WaitForAdmittedWrites(testutil.DeadlineContext(t)))
+	assert.True(t, ran.Load())
+	assert.False(t, queue.HasPending())
+}

@@ -5,22 +5,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
-
-func requireClaudeShapedPrompt(t *testing.T, want, got *leapmuxv1.ControlPrompt) {
-	t.Helper()
-	require.Truef(t, proto.Equal(want, got), "prompt mismatch:\nwant %s\ngot  %s", protojson.Format(want), protojson.Format(got))
-}
 
 func TestClaudeShapedQuestionPrompt_ReadsTheQuestionsOfTheToolInput(t *testing.T) {
 	got, ok := ClaudeShapedQuestionPrompt([]byte(`{"request":{"tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which?","header":"Pick","options":[{"label":"A"}]}]}}}`))
 	require.True(t, ok)
-	requireClaudeShapedPrompt(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
+	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
 		Questions: []*leapmuxv1.ControlQuestion{{Question: "Which?", Header: "Pick", Options: []*leapmuxv1.QuestionOption{{Label: "A"}}}},
 	}}}, got)
 }
@@ -47,7 +41,7 @@ func TestClaudeShapedQuestionPrompt_RefusesAnotherTool(t *testing.T) {
 
 func TestClaudeShapedToolPrompt_ExitPlanModeIsAPlanThatStatesItsKindAlone(t *testing.T) {
 	got := ClaudeShapedToolPrompt([]byte(`{"request":{"tool_name":"ExitPlanMode","input":{"plan":"1. Edit.","allowedPrompts":[{"tool":"Bash","prompt":"run the tests"}]}}}`), agent.AllowDenyOptions())
-	requireClaudeShapedPrompt(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}}, got)
+	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}}, got)
 }
 
 func TestClaudeShapedToolPrompt_AnotherToolIsAPermissionWithTheGivenOptions(t *testing.T) {
@@ -59,7 +53,7 @@ func TestClaudeShapedToolPrompt_AnotherToolIsAPermissionWithTheGivenOptions(t *t
 	assert.JSONEq(t, `{"file_path":"/w/a.go","command":"not a shell"}`, permission.GetInputJson())
 	assert.Empty(t, permission.GetCommand(), "a `command` of a tool that is no shell is one of its arguments")
 	require.Len(t, permission.GetOptions(), 1)
-	assert.True(t, proto.Equal(options[0], permission.GetOptions()[0]), "the prompt offers the options that the provider gives")
+	agenttest.RequireProto(t, options[0], permission.GetOptions()[0], "the prompt offers the options that the provider gives")
 }
 
 func TestClaudeShapedToolPrompt_ABashCallStatesItsCommand(t *testing.T) {

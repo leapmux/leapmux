@@ -51,11 +51,6 @@ type Agent struct {
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
 
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.SteerInputWithReceipt(request)
-	return err
-}
-
 // readReasonixSteerDisposition reads the disposition of one steer reply. A
 // steer_accepted steer reached the active turn, and a queued_followup one
 // runs as the follow-up turn when the active one ends, so both deliver. Every

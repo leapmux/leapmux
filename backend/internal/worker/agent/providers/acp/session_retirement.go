@@ -324,7 +324,7 @@ func (b *Base) sendSessionClose(sessionID string) {
 			slog.Warn("acp session/close failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
 		}
 	}
-	if err := b.SendDetachedRequest(MethodSessionClose, params, logFailure); err != nil {
+	if err := b.SendDetachedRequest(MethodSessionClose, params, providerkit.DetachedRequestOptions{}, logFailure); err != nil {
 		logFailure(nil, err)
 	}
 }

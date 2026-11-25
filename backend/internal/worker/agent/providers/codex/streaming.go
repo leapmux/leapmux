@@ -90,7 +90,7 @@ func (a *Agent) bufferCodexModelText(
 	if reportProgress {
 		sink.ReportProgress(agent.ModelTextProgress(scopeID, text))
 	}
-	buffer.AppendForNativeTurn(scopeID, kind, text, join, threadID, turnID)
+	buffer.AppendForNativeTurn(scopeID, kind, text, join, providerkit.NativeTurnRef{SessionID: threadID, TurnID: turnID})
 }
 
 func (a *Agent) reportCodexModelProgress(scopeID, threadID, text string) {

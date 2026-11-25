@@ -236,7 +236,7 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 	a.stateMu.Unlock()
 	if current && item.Item.Kind == contracts.MuseItemKindUserMessage && item.Item.Status == contracts.MuseItemStatusCompleted &&
 		!item.Item.Retracted && item.Item.TurnID != nil {
-		report, matched := a.steerLedger.TakeIdentifiedEcho(agent.NativeInputReceipt{
+		report, matched := a.steerLedger.TakeEcho(agent.NativeInputReceipt{
 			SessionID: item.SessionID, InputID: item.Item.CommandID, TurnID: *item.Item.TurnID,
 		})
 		if matched {

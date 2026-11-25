@@ -160,7 +160,7 @@ func TestKimiNewParentInvocationRetainsItsOwnOutcome(t *testing.T) {
 				deliverKimiChildPromptTurn(t, native, kimiTestChildPromptTurn{id: "user", ordinal: 0, promptID: "independent", outcome: "completed"})
 			}
 			native.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
-			require.NoError(t, native.agent.SendInput("Resume the child.", nil))
+			require.NoError(t, agenttest.SendInput(native.agent, "Resume the child.", nil))
 			requests := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 			require.Len(t, requests, 1)
 			promptID := decodePrompt(t, requests[0]).PromptID

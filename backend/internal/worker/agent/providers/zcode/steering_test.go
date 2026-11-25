@@ -140,7 +140,7 @@ func newZCodeSteerAgent(t *testing.T) (*Agent, *agenttest.Sink, *zcodeRecordedSt
 func steerZCode(t *testing.T, a *Agent, stdin *zcodeRecordedStdin, nth int, seq int64) string {
 	t.Helper()
 	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, nth, zcodeAcceptedSteer("queue"))
-	require.NoError(t, a.SteerInput(zcodeTestSteerRequest(nth, "Identical steer")))
+	require.NoError(t, agenttest.SteerInput(a, zcodeTestSteerRequest(nth, "Identical steer")))
 	commands := zcodeSentCommandsOf(t, stdin, zcodeCommandSendText)
 	require.Len(t, commands, nth)
 	commandID := commands[nth-1].CommandID
@@ -170,7 +170,7 @@ func TestZCodeSteerInputSendsAGuideCommand(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newZCodeSteerAgent(t)
 	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("queue"))
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "Also run the linter."}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Also run the linter."}))
 
 	commands := zcodeSentCommands(t, stdin)
 	require.Len(t, commands, 1)
@@ -218,7 +218,7 @@ func TestZCodeSteerQueuedBeforeCommandAcknowledgement(t *testing.T) {
 			t.Parallel()
 			a, sink, stdin := newZCodeSteerAgent(t)
 			done := make(chan error, 1)
-			go func() { done <- a.SteerInput(zcodeTestSteerRequest(1, "early queued input")) }()
+			go func() { done <- agenttest.SteerInput(a, zcodeTestSteerRequest(1, "early queued input")) }()
 			waitZCodeRequestNumber(t, stdin, MethodCommand, 0)
 			commands := zcodeSentCommandsOf(t, stdin, zcodeCommandSendText)
 			require.Len(t, commands, 1)
@@ -271,7 +271,7 @@ func TestZCodeSteerThatStartsATurnEchoesAtItsNativeStart(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newZCodeSteerAgent(t)
 	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("startNow"))
-	require.NoError(t, a.SteerInput(zcodeTestSteerRequest(1, "late")))
+	require.NoError(t, agenttest.SteerInput(a, zcodeTestSteerRequest(1, "late")))
 	require.Empty(t, sink.SteerResolutions(), "the acknowledgment carries no turn ID")
 	commandID := zcodeSentCommandsOf(t, stdin, zcodeCommandSendText)[0].CommandID
 	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn_2", contracts.ZCodeEventTurnStarted, fmt.Sprintf(`{"inputId":%q}`, commandID)))
@@ -283,7 +283,7 @@ func TestZCodeTurnEndKeepsASteerAdmittedAsTheNextTurn(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newZCodeSteerAgent(t)
 	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("startNow"))
-	require.NoError(t, a.SteerInput(zcodeTestSteerRequest(1, "Run this next")))
+	require.NoError(t, agenttest.SteerInput(a, zcodeTestSteerRequest(1, "Run this next")))
 	a.Mu.Lock()
 	a.turns["turn_1"].settled = true
 	a.refreshTurnActiveLocked()
@@ -308,7 +308,7 @@ func TestZCodeSteerInputThatTheInboxRefuses(t *testing.T) {
 			t.Parallel()
 			a, sink, stdin := newZCodeSteerAgent(t)
 			answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, reply)
-			err := a.SteerInput(agent.SteerRequest{Content: "refused"})
+			err := agenttest.SteerInput(a, agent.SteerRequest{Content: "refused"})
 			require.Error(t, err)
 			assert.NotErrorIs(t, err, agent.ErrSteeringUnsupported)
 			assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the inbox answered")
@@ -333,7 +333,7 @@ func TestZCodeSteerInputWithAnUnreadableAcknowledgement(t *testing.T) {
 			t.Parallel()
 			a, sink, stdin := newZCodeSteerAgent(t)
 			answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, reply)
-			require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "unread"}), agent.ErrDeliveryUncertain)
+			require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "unread"}), agent.ErrDeliveryUncertain)
 			assert.Zero(t, zcodePendingSteerCount(a))
 			assert.Empty(t, sink.SteerResolutions())
 		})
@@ -347,7 +347,7 @@ func TestZCodeSteerInputThatTheAppServerRefuses(t *testing.T) {
 		req := waitZCodeRequest(t, stdin, MethodCommand)
 		a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, req), -32602, "Invalid params"))
 	}()
-	err := a.SteerInput(agent.SteerRequest{Content: "refused"})
+	err := agenttest.SteerInput(a, agent.SteerRequest{Content: "refused"})
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrSteeringUnsupported)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the app-server answered")
@@ -361,7 +361,7 @@ func TestZCodeSteerInputReportsAnAbsentCurrentMethod(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newZCodeSteerAgent(t)
 	refuseZCodeRequest(t, a, stdin, MethodCommand, ErrMethodNotFound, "Method not found")
-	err := a.SteerInput(agent.SteerRequest{Content: "no inbox"})
+	err := agenttest.SteerInput(a, agent.SteerRequest{Content: "no inbox"})
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrSteeringUnsupported)
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
@@ -379,7 +379,7 @@ func TestZCodeSteerInputPreconditions(t *testing.T) {
 		a.Mu.Lock()
 		a.turnActive = false
 		a.Mu.Unlock()
-		require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "idle"}), agent.ErrNoActiveTurn)
+		require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "idle"}), agent.ErrNoActiveTurn)
 		assert.Empty(t, zcodeSentCommands(t, stdin))
 	})
 	t.Run("a compaction alone", func(t *testing.T) {
@@ -389,20 +389,20 @@ func TestZCodeSteerInputPreconditions(t *testing.T) {
 		a.turnActive = false
 		a.compactionSessionID = a.sessionID
 		a.Mu.Unlock()
-		require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "compacting"}), agent.ErrNoActiveTurn)
+		require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "compacting"}), agent.ErrNoActiveTurn)
 		assert.Empty(t, zcodeSentCommands(t, stdin))
 	})
 	t.Run("a stopped agent", func(t *testing.T) {
 		t.Parallel()
 		a, _, stdin := newZCodeSteerAgent(t)
 		a.SetStoppedForTest(true)
-		require.Error(t, a.SteerInput(agent.SteerRequest{Content: "stopped"}))
+		require.Error(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "stopped"}))
 		assert.Empty(t, zcodeSentCommands(t, stdin))
 	})
 	t.Run("an input above the runtime's limit", func(t *testing.T) {
 		t.Parallel()
 		a, _, stdin := newZCodeSteerAgent(t)
-		require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: strings.Repeat("x", zcodeSteerInputMaxBytes+1)}), agent.ErrSteeringUnsupported)
+		require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: strings.Repeat("x", zcodeSteerInputMaxBytes+1)}), agent.ErrSteeringUnsupported)
 		assert.Empty(t, zcodeSentCommands(t, stdin))
 	})
 }
@@ -415,7 +415,7 @@ func TestZCodeSteerInputAttachments(t *testing.T) {
 		t.Parallel()
 		a, _, stdin := newZCodeSteerAgent(t)
 		answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("queue"))
-		require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "Read this.", Attachments: []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("the notes")}}}))
+		require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Read this.", Attachments: []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("the notes")}}}))
 		commands := zcodeSentCommands(t, stdin)
 		require.Len(t, commands, 1)
 		var payload zcodeSendTextPayload
@@ -427,7 +427,7 @@ func TestZCodeSteerInputAttachments(t *testing.T) {
 	t.Run("an image goes in the next turn", func(t *testing.T) {
 		t.Parallel()
 		a, _, stdin := newZCodeSteerAgent(t)
-		err := a.SteerInput(agent.SteerRequest{Content: "Look.", Attachments: []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}}})
+		err := agenttest.SteerInput(a, agent.SteerRequest{Content: "Look.", Attachments: []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}}})
 		require.ErrorIs(t, err, agent.ErrSteeringUnsupported)
 		assert.Empty(t, zcodeSentCommands(t, stdin))
 	})
@@ -620,7 +620,7 @@ func TestZCodeWithdrawalThatDoesNotDeleteIsUncertain(t *testing.T) {
 		t.Parallel()
 		a, sink, stdin := newZCodeSteerAgent(t)
 		answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("queue"))
-		require.NoError(t, a.SteerInput(zcodeTestSteerRequest(1, "unqueued")))
+		require.NoError(t, agenttest.SteerInput(a, zcodeTestSteerRequest(1, "unqueued")))
 		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
 		require.NoError(t, a.Interrupt(agent.StopContext{}))
 		assert.Empty(t, zcodeSentCommandsOf(t, stdin, zcodeCommandDeleteQueueItem))

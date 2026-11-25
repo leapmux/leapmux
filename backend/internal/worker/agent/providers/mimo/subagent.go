@@ -750,17 +750,13 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	return agent.ChildInputResult{StartsTurn: a.ActiveChildTurnState(childKey).Active, NativeReceipt: receipt}, err
 }
 
-// SteerChildInput adds a message to a subagent's running turn. The actor reads
-// it at its next step, as the main agent does.
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.SteerChildInputWithReceipt(childKey, content, attachments)
-	return err
+// SteerChildInput adds a message to a subagent's running turn and returns the
+// inbox admission for the captured child.
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.sendChildInput(childKey, request.Content, request.Attachments, true)
 }
 
-// SteerChildInputWithReceipt returns the inbox admission for the captured child.
-func (a *Agent) SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendChildInput(childKey, content, attachments, true)
-}
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 // ActiveChildTurnState classifies a subagent's turn after a refusal.
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {

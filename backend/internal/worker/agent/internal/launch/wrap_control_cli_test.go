@@ -106,6 +106,7 @@ func TestWrapRunsTheControlCLIStepBeforeTheLaunchInEveryDialect(t *testing.T) {
 		{"/usr/bin/profile-shim", posix("profile-shim")},
 		{"/usr/bin/fish", fishReprependControlCLI},
 		{"/usr/bin/nu", nuReprependControlCLI},
+		{"/usr/bin/elvish", elvishReprependControlCLI},
 		{"/bin/tcsh", cshReprependControlCLI},
 		{"/bin/csh", cshReprependControlCLI},
 		{"/usr/bin/pwsh", pwshReprependControlCLI},
@@ -201,6 +202,11 @@ func pathCases(dir string) []pathCase {
 		{"leaves PATH alone for a relative executable", join(system, bin), filepath.Join("cli-1", "leapmux")},
 		{"leaves PATH alone without the variable", join(system, bin), ""},
 	}
+	if runtime.GOOS == "windows" {
+		cases = append(cases, pathCase{"leaves PATH alone for a drive-relative path", join(system, bin), `/foo/leapmux`})
+	} else {
+		cases = append(cases, pathCase{"leaves PATH alone for a Windows path on Unix", join(system, bin), `C:\foo\leapmux`})
+	}
 	if runtime.GOOS != "windows" {
 		// An empty entry stands for the working directory, and it keeps its
 		// place. Windows holds no variable with an empty value: PowerShell
@@ -278,8 +284,7 @@ func TestWrapMovesTheControlCLIDirectoryAsControlenvDoes(t *testing.T) {
 // cli as LEAPMUX_CONTROL_CLI, and returns the PATH that the program receives.
 func runWrappedPath(t *testing.T, shell, home string, path programPath, cli string) programPath {
 	t.Helper()
-	executable, err := os.Executable()
-	require.NoError(t, err)
+	executable := profileCommandExecutable(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	cmd, delimiter, _ := wrapTestCommand(t, ctx, WrapSpec{

@@ -125,7 +125,7 @@ func (a *Agent) CompactContext() error {
 		if err != nil {
 			return fmt.Errorf("marshal the Kiro compaction: %w", err)
 		}
-		return a.SendDetachedRequest(kiroCompactMethod, params, func(response json.RawMessage, err error) {
+		return a.SendDetachedRequest(kiroCompactMethod, params, providerkit.DetachedRequestOptions{}, func(response json.RawMessage, err error) {
 			a.finishCompaction(id, response, err)
 		})
 	})
@@ -169,7 +169,7 @@ func (a *Agent) refreshContextUsage(sessionID string) {
 	if err != nil {
 		return
 	}
-	if err := a.SendDetachedRequest(kiroContextShowMethod, params, func(json.RawMessage, error) {}); err != nil {
+	if err := a.SendDetachedRequest(kiroContextShowMethod, params, providerkit.DetachedRequestOptions{}, func(json.RawMessage, error) {}); err != nil {
 		slog.Debug("kiro context show request failed", "agent_id", a.AgentID(), "error", err)
 	}
 }

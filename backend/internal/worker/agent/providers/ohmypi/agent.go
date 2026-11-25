@@ -146,13 +146,12 @@ type Agent struct {
 // that stops satisfying InputSteerer, so the assertion makes that regression a
 // compile error. The same holds for compaction.
 var (
-	_ agent.Agent              = (*Agent)(nil)
-	_ agent.InputReceiptSender = (*Agent)(nil)
-	_ agent.InputSteerer       = (*Agent)(nil)
-	_ agent.SteerEchoReporter  = (*Agent)(nil)
-	_ agent.SteerSurvivor      = (*Agent)(nil)
-	_ agent.ContextCompactor   = (*Agent)(nil)
-	_ agent.GoalWriter         = (*Agent)(nil)
+	_ agent.Agent             = (*Agent)(nil)
+	_ agent.InputSteerer      = (*Agent)(nil)
+	_ agent.SteerEchoReporter = (*Agent)(nil)
+	_ agent.SteerSurvivor     = (*Agent)(nil)
+	_ agent.ContextCompactor  = (*Agent)(nil)
+	_ agent.GoalWriter        = (*Agent)(nil)
 )
 
 // rootConversation returns the conversation of the session itself, and creates it
@@ -172,20 +171,14 @@ func (a *Agent) rootConversation() *conversation {
 }
 
 // SendInput starts a turn with one user message.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput(nil, content, attachments, ompInputMode{})
-	return err
-}
-
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendInput(nil, content, attachments, ompInputMode{trackReply: true})
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, content, attachments, nil)
 }
 
 // SendInputForSession starts a turn with one user message, when the session it
 // states is still the current one.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput(&sessionID, content, attachments, ompInputMode{})
-	return err
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(&sessionID, content, attachments, nil)
 }
 
 // SupportsSteering always reports true. omp accepts a steering message during any
@@ -194,14 +187,9 @@ func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput adds a message to the running turn. omp checks for steering between
 // tool calls, and it moves a long `bash` call to the background to take it.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.sendInput(nil, request.Content, request.Attachments, ompInputMode{steer: &request})
-	return err
-}
-
-type ompInputMode struct {
-	trackReply bool
-	steer      *agent.SteerRequest
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	_, err := a.sendInput(nil, request.Content, request.Attachments, &request)
+	return agent.NativeInputReceipt{}, err
 }
 
 // SteerRowAtEcho places a steer at the native user echo or a confirmed local command result.
@@ -227,12 +215,12 @@ func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 // The Worker queues a tracked prompt if a native background run starts first.
 // Its fresh admission proves which run owns replies and controls. Slash
 // commands can expand into native work and use the native follow-up path.
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, mode ompInputMode) (agent.NativeInputReceipt, error) {
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steerReq *agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
 
 	var receipt agent.NativeInputReceipt
-	steer := mode.steer != nil
+	steer := steerReq != nil
 	a.Mu.Lock()
 	sessionID := a.sessionHandleLocked()
 	if err := providerkit.CheckInputSession(expected, sessionID); err != nil {
@@ -254,8 +242,8 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	}
 
 	isPrompt := sessionID != "" && !strings.HasPrefix(strings.TrimSpace(content), "/")
-	trackReply := mode.trackReply && isPrompt
-	identifySteer := steer && isPrompt && bridgeReady && mode.steer.InputID != "" && mode.steer.AttemptID != ""
+	trackReply := !steer && isPrompt
+	identifySteer := steer && isPrompt && bridgeReady && steerReq.InputID != "" && steerReq.AttemptID != ""
 	payload := promptPayload(content, attachments)
 	if steer {
 		payload["streamingBehavior"] = streamingBehaviorSteer
@@ -265,7 +253,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 
 	var resolution agent.SteerResolution
 	if identifySteer {
-		resolution = a.prepareOMPSteer(sessionID, *mode.steer, payload)
+		resolution = a.prepareOMPSteer(sessionID, *steerReq, payload)
 		receipt = resolution.Receipt
 	} else if trackReply {
 		receipt = newOMPReceipt(sessionID)

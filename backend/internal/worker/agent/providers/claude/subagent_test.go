@@ -2566,7 +2566,7 @@ func TestClaudeTaskNotificationClosesChildOpenToolsAndWorkflowSpanReleaseNotDoub
 		t.Parallel()
 		sink := &agenttest.Sink{}
 		a, _ := newClaudeAgentWithStdin(agentapi.NewProviderServices(sink))
-		require.NoError(t, a.SendInput("run workflow", nil))
+		require.NoError(t, agenttest.SendInput(a, "run workflow", nil))
 		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"wf-call-1","name":"WorkflowTool","input":{}}]}}`))
 		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"wf-task-1","tool_use_id":"wf-call-1","task_type":"local_workflow","workflow_name":"review"}`))
 		require.Contains(t, sink.ClosedSpans(), "wf-call-1")

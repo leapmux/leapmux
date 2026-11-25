@@ -44,6 +44,7 @@ func TestReplyTextRefusesRowsBeforeTheProvider(t *testing.T) {
 		"a malformed plan row":           `{"type":"assembled_message","kind":"plan","text":"1. Edit."}`,
 		"a notification thread":          `{"type":"notification_thread","messages":[{"type":"text","text":"Retrying."}]}`,
 		"content that is not JSON":       `not json`,
+		"content that is JSON null":      `null`,
 		"content that is not an object":  `["The tests pass."]`,
 		"a valid text row of blank text": `{"type":"assembled_message","kind":"text","text":" \n\t","completion":"complete"}`,
 	} {

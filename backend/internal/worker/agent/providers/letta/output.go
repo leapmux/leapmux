@@ -438,7 +438,7 @@ func (a *Agent) appendModelText(target agent.ProviderServices, subagentID string
 	if kind == agent.AssembledMessageKindReasoning {
 		scope += ":reasoning"
 	}
-	a.generation.AppendForNativeTurn(scope, kind, text, providerkit.JoinVerbatim, receipt.SessionID, receipt.TurnID)
+	a.generation.AppendForNativeTurn(scope, kind, text, providerkit.JoinVerbatim, providerkit.NativeTurnRef{SessionID: receipt.SessionID, TurnID: receipt.TurnID})
 	target.ReportProgress(agent.ModelTextProgress(scope, text))
 }
 

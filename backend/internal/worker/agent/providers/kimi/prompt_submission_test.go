@@ -58,7 +58,7 @@ func TestKimiPromptExecutionProofUsesItsSessionAndReceivingAgent(t *testing.T) {
 			if scenario.name == "wrong receiving agent" {
 				receiver = "agent-0"
 			}
-			reply, _, err := rig.agent.submitPrompt(rig.sessionID(), receiver, []map[string]any{{"type": "text", "text": "Run the prompt."}}, false)
+			reply, _, err := rig.agent.submitPrompt(rig.sessionID(), receiver, []map[string]any{{"type": "text", "text": "Run the prompt."}})
 			require.NoError(t, err)
 			requests := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 			require.Len(t, requests, 1)
@@ -97,69 +97,58 @@ func TestKimiPromptExecutionProofUsesItsSessionAndReceivingAgent(t *testing.T) {
 func TestKimiPromptSubmissionRetainsExecutionBeforeTheReceipt(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"lost receipt", "late refusal", "different receipt id", "invalid status", "definite refusal"} {
-		for _, tracked := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s tracked=%t", scenario, tracked), func(t *testing.T) {
-				t.Parallel()
-				rig, native := newKimiPublicPromptRig(t)
-				prove := func(promptID string) {
-					t.Helper()
-					native.startPublicTurn(t, kimiMainAgentID, "turn", 0)
-					native.conversationFrame(t, `{"type":"item.ended","turn_id":"turn","item":`+
-						kimiPublicPromptItem(t, promptID, "opener", promptID)+`}`)
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			rig, native := newKimiPublicPromptRig(t)
+			prove := func(promptID string) {
+				t.Helper()
+				native.startPublicTurn(t, kimiMainAgentID, "turn", 0)
+				native.conversationFrame(t, `{"type":"item.ended","turn_id":"turn","item":`+
+					kimiPublicPromptItem(t, promptID, "opener", promptID)+`}`)
+			}
+			result := fakeKapReply{DataFor: func(request fakeKapRequest) any {
+				promptID := decodePrompt(t, request).PromptID
+				if scenario != "definite refusal" {
+					prove(promptID)
 				}
-				result := fakeKapReply{DataFor: func(request fakeKapRequest) any {
-					promptID := decodePrompt(t, request).PromptID
-					if scenario != "definite refusal" {
-						prove(promptID)
-					}
-					returnedID, status := promptID, kimiPromptRunning
-					if scenario == "different receipt id" {
-						returnedID = "foreign-receipt"
-					}
-					if scenario == "invalid status" {
-						status = "invalid"
-					}
-					return map[string]any{"prompt_id": returnedID, "status": status}
-				}}
-				path := "POST " + kimiSessionPath(rig.sessionID(), "/prompts")
-				if scenario == "lost receipt" {
-					result.Drop = true
-					result.BeforeReply = func() {
-						requests := rig.fake.requestsTo(path)
-						require.Len(t, requests, 1)
-						prove(decodePrompt(t, requests[0]).PromptID)
-					}
+				returnedID, status := promptID, kimiPromptRunning
+				if scenario == "different receipt id" {
+					returnedID = "foreign-receipt"
 				}
-				if scenario == "late refusal" || scenario == "definite refusal" {
-					result.Code, result.Msg = 40001, "prompt refused"
+				if scenario == "invalid status" {
+					status = "invalid"
 				}
-				rig.fake.reply(path, result)
-				var receipt agent.NativeInputReceipt
-				var err error
-				if tracked {
-					receipt, err = rig.agent.SendInputWithReceipt("Run the prompt.", nil)
-				} else {
-					err = rig.agent.SendInput("Run the prompt.", nil)
+				return map[string]any{"prompt_id": returnedID, "status": status}
+			}}
+			path := "POST " + kimiSessionPath(rig.sessionID(), "/prompts")
+			if scenario == "lost receipt" {
+				result.Drop = true
+				result.BeforeReply = func() {
+					requests := rig.fake.requestsTo(path)
+					require.Len(t, requests, 1)
+					prove(decodePrompt(t, requests[0]).PromptID)
 				}
-				requests := rig.fake.requestsTo(path)
-				require.Len(t, requests, 1)
-				promptID := decodePrompt(t, requests[0]).PromptID
-				if tracked && scenario != "definite refusal" {
-					require.NoError(t, err)
-					assert.Equal(t, agent.NativeInputReceipt{SessionID: rig.sessionID(), InputID: promptID}, receipt)
-				} else {
-					require.Error(t, err)
-					assert.Empty(t, receipt)
-					if scenario != "late refusal" && scenario != "definite refusal" {
-						assert.ErrorIs(t, err, agent.ErrDeliveryUncertain)
-					}
-				}
-				assert.Equal(t, scenario != "definite refusal", kimiPromptObserved(rig.agent, promptID))
-				prove(promptID)
-				assert.Equal(t, scenario != "definite refusal", kimiPromptObserved(rig.agent, promptID),
-					"a late native item cannot resurrect a definitively refused submission")
-			})
-		}
+			}
+			if scenario == "late refusal" || scenario == "definite refusal" {
+				result.Code, result.Msg = 40001, "prompt refused"
+			}
+			rig.fake.reply(path, result)
+			receipt, err := rig.agent.SendInput("Run the prompt.", nil)
+			requests := rig.fake.requestsTo(path)
+			require.Len(t, requests, 1)
+			promptID := decodePrompt(t, requests[0]).PromptID
+			if scenario != "definite refusal" {
+				require.NoError(t, err)
+				assert.Equal(t, agent.NativeInputReceipt{SessionID: rig.sessionID(), InputID: promptID}, receipt)
+			} else {
+				require.Error(t, err)
+				assert.Empty(t, receipt)
+			}
+			assert.Equal(t, scenario != "definite refusal", kimiPromptObserved(rig.agent, promptID))
+			prove(promptID)
+			assert.Equal(t, scenario != "definite refusal", kimiPromptObserved(rig.agent, promptID),
+				"a late native item cannot resurrect a definitively refused submission")
+		})
 	}
 }
 
@@ -189,7 +178,7 @@ func TestKimiUnjoinedChildActivityStaysIndependentFromLaterParentInvocation(t *t
 			native.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
 			submit := func() string {
 				t.Helper()
-				reply, _, err := rig.agent.submitPrompt(rig.sessionID(), kimiMainAgentID, []map[string]any{{"type": "text", "text": "Resume again."}}, false)
+				reply, _, err := rig.agent.submitPrompt(rig.sessionID(), kimiMainAgentID, []map[string]any{{"type": "text", "text": "Resume again."}})
 				require.NoError(t, err)
 				return reply.PromptID
 			}

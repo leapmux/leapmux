@@ -121,7 +121,7 @@ func TestZCodeTurnRecovery_ProvisionalOwnerAdoptsNativeTurnID(t *testing.T) {
 
 	// Send input and get an accepted receipt.
 	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":5}`)
-	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(a, "hello", nil))
 
 	// The provisional owner exists with a synthetic ID.
 	a.Mu.Lock()

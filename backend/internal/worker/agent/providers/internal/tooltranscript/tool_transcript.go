@@ -266,53 +266,73 @@ func New(ctx context.Context, services agent.ProviderServices, source Source) *T
 
 type directTranscript struct {
 	agent.ProviderServices
+	queue *agent.OutputQueue
+}
+
+func (d directTranscript) OutputQueue() *agent.OutputQueue { return d.queue }
+
+type directTranscriptFacets struct {
+	agent.OutputEffectServices
+	agent.SteerEchoServices
+	agent.TranscriptServices
+	agent.TurnServices
+	agent.SpanServices
+	agent.ProgressServices
+	agent.ControlServices
+	agent.SessionServices
+	agent.PlanServices
+	agent.TodoServices
+	agent.GoalServices
+	agent.AutoRetryServices
+	agent.ChildServices
+	agent.BackgroundTaskServices
+}
+
+type directTranscriptSession struct {
+	agent.SessionServices
 	transcript *Transcript
 }
 
-func (d directTranscript) OutputQueue() *agent.OutputQueue { return d.transcript.queue }
-func (d directTranscript) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
-	return d.transcript.PersistMessage(source, content, span)
-}
-func (d directTranscript) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
-	return d.transcript.PersistNotification(source, content)
-}
-func (d directTranscript) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
-	return d.transcript.PersistWorkerNotification(content)
-}
-func (d directTranscript) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
-	return d.transcript.PersistTurnEnd(content, span)
-}
-func (d directTranscript) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
-	return d.transcript.CaptureMessage(content, span)
-}
-func (d directTranscript) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
-	return d.transcript.ReserveTranscriptOutput(queue, writes...)
-}
-func (d directTranscript) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
-	return d.transcript.ValidateTranscriptOutput(ticket)
-}
-func (d directTranscript) UpdateSessionID(sessionID string) {
+func (d directTranscriptSession) UpdateSessionID(sessionID string) {
 	d.transcript.UpdateSessionID(sessionID)
 }
-func (d directTranscript) BindChildSessionID(sessionID string) error {
+func (d directTranscriptSession) BindChildSessionID(sessionID string) error {
 	return d.transcript.BindChildSessionID(sessionID)
 }
-func (d directTranscript) AdoptNativeSession(sessionID string) {
+func (d directTranscriptSession) AdoptNativeSession(sessionID string) {
 	d.transcript.AdoptNativeSession(sessionID)
 }
-func (d directTranscript) ChildSink(childID string) agent.ProviderServices {
+func (d directTranscriptSession) PersistLeapMuxNotification(content map[string]interface{}) {
+	raw, err := json.Marshal(content)
+	if err == nil {
+		_, err = d.transcript.persistWorkerNotification(agent.MessageContent{Original: raw})
+	}
+	if err != nil {
+		slog.Error("persist direct tool transcript worker notification", "error", err)
+	}
+}
+
+type directTranscriptChildren struct {
+	agent.ChildServices
+	transcript *Transcript
+}
+
+func (d directTranscriptChildren) ChildSink(childID string) agent.ProviderServices {
 	return d.transcript.ChildSink(childID)
 }
-func (d directTranscript) AcquireChildSink(childID string) agent.ChildSinkLease {
+func (d directTranscriptChildren) AcquireChildSink(childID string) agent.ChildSinkLease {
 	return d.transcript.AcquireChildSink(childID)
 }
-func (d directTranscript) CleanupChildAgent(childID string) {
+func (d directTranscriptChildren) AcquireChildStateSink(childID string) agent.ChildSinkLease {
+	return d.transcript.AcquireChildStateSink(childID)
+}
+func (d directTranscriptChildren) CleanupChildAgent(childID string) {
 	d.transcript.CleanupChildAgent(childID)
 }
-func (d directTranscript) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
+func (d directTranscriptChildren) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
 	return d.transcript.PersistChildMessage(childAgentID, source, content, span)
 }
-func (d directTranscript) PersistChildTurnEnd(childAgentID string, content agent.MessageContent, span agent.SpanInfo) error {
+func (d directTranscriptChildren) PersistChildTurnEnd(childAgentID string, content agent.MessageContent, span agent.SpanInfo) error {
 	return d.transcript.PersistChildTurnEnd(childAgentID, content, span)
 }
 
@@ -320,9 +340,30 @@ func (d directTranscript) PersistChildTurnEnd(childAgentID string, content agent
 // outer ordered wrapper on the same OutputQueue never re-enters an inner queue wrapper.
 func (s *Transcript) DirectProviderServicesForQueue(queue *agent.OutputQueue) (agent.ProviderServices, bool) {
 	if queue != nil && queue != s.queue {
-		return s, false
+		if s.queue.HasPending() {
+			panic("cannot replace an output queue while it owns pending writes")
+		}
+		panic("cannot wrap a tool transcript with another output queue")
 	}
-	return directTranscript{ProviderServices: s.direct, transcript: s}, true
+	return directTranscript{
+		ProviderServices: agent.NewProviderServices(directTranscriptFacets{
+			OutputEffectServices:   s.direct,
+			SteerEchoServices:      s.direct,
+			TranscriptServices:     toolTranscriptWriter{s},
+			TurnServices:           s.direct,
+			SpanServices:           s.direct,
+			ProgressServices:       s.direct,
+			ControlServices:        s.direct,
+			SessionServices:        directTranscriptSession{SessionServices: s.direct, transcript: s},
+			PlanServices:           s.direct,
+			TodoServices:           s.direct,
+			GoalServices:           s.direct,
+			AutoRetryServices:      s.direct,
+			ChildServices:          directTranscriptChildren{ChildServices: s.direct, transcript: s},
+			BackgroundTaskServices: s.direct,
+		}),
+		queue: s.queue,
+	}, true
 }
 
 // toolTranscriptWriter preserves observation overrides in retained queue writes.
@@ -341,6 +382,14 @@ func (writer toolTranscriptWriter) PersistWorkerNotification(content agent.Messa
 
 func (writer toolTranscriptWriter) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
 	return writer.persistTurnEnd(content, span)
+}
+
+func (writer toolTranscriptWriter) RetractMessagesByIdempotencyKey(captured agent.MessageContent, keys []string) error {
+	return writer.direct.RetractMessagesByIdempotencyKey(captured, keys)
+}
+
+func (writer toolTranscriptWriter) IsMessageRetracted(captured agent.MessageContent, key string) (bool, error) {
+	return writer.direct.IsMessageRetracted(captured, key)
 }
 
 func (s *Transcript) OutputQueue() *agent.OutputQueue { return s.queue }
@@ -655,7 +704,7 @@ func (s *Transcript) PersistNotification(source leapmuxv1.MessageSource, content
 }
 
 func (s *Transcript) persistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
-	return s.ProviderServices.PersistNotification(source, s.CaptureMessage(content, agent.SpanInfo{}))
+	return s.direct.PersistNotification(source, s.CaptureMessage(content, agent.SpanInfo{}))
 }
 
 func (s *Transcript) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
@@ -666,7 +715,17 @@ func (s *Transcript) PersistWorkerNotification(content agent.MessageContent) (bo
 }
 
 func (s *Transcript) persistWorkerNotification(content agent.MessageContent) (bool, error) {
-	return s.ProviderServices.PersistWorkerNotification(s.CaptureMessage(content, agent.SpanInfo{}))
+	return s.direct.PersistWorkerNotification(s.CaptureMessage(content, agent.SpanInfo{}))
+}
+
+func (s *Transcript) PersistLeapMuxNotification(content map[string]interface{}) {
+	raw, err := json.Marshal(content)
+	if err == nil {
+		_, err = s.PersistWorkerNotification(agent.MessageContent{Original: raw})
+	}
+	if err != nil {
+		slog.Error("persist tool transcript worker notification", "error", err)
+	}
 }
 
 func (s *Transcript) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
@@ -678,7 +737,7 @@ func (s *Transcript) PersistMessage(source leapmuxv1.MessageSource, content agen
 
 func (s *Transcript) persistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
 	if source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
-		return s.ProviderServices.PersistMessage(source, content, span)
+		return s.direct.PersistMessage(source, content, span)
 	}
 	if content.WriteReceipt == nil {
 		content.WriteReceipt = agent.NewTranscriptWriteReceipt()
@@ -697,7 +756,7 @@ func (s *Transcript) persistMessage(source leapmuxv1.MessageSource, content agen
 	}
 	s.sourceMu.Unlock()
 	s.retainRetired(retireToolTranscripts(orphans))
-	if err := s.ProviderServices.PersistMessage(source, content, span); err != nil {
+	if err := s.direct.PersistMessage(source, content, span); err != nil {
 		return err
 	}
 	if !content.WriteReceipt.ClaimSourceObservation() {
@@ -858,7 +917,7 @@ func (s *Transcript) persistTurnEnd(content agent.MessageContent, span agent.Spa
 			return err
 		}
 	}
-	if err := s.ProviderServices.PersistTurnEnd(content, span); err != nil {
+	if err := s.direct.PersistTurnEnd(content, span); err != nil {
 		return err
 	}
 	if current && s.source.AuthorityIsCurrent(content.Publication.Owner()) && content.WriteReceipt.ClaimSourceObservation() {

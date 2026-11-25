@@ -51,7 +51,6 @@ var _ agent.Agent = (*Agent)(nil)
 // false, with no build error, for a provider that stops satisfying
 // InputSteerer, so this assertion makes that regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
-var _ agent.SteerReceiptSender = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
 
 // junieSteerMethod is Junie's own steering method: it injects into the running
@@ -69,15 +68,4 @@ func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessag
 	if providerkit.RawBool(metadata["lastRequestComplete"]) {
 		a.EndAgentTurnWithoutRow()
 	}
-}
-
-// SteerInput injects text into the running turn through Junie's own
-// `_session/steering`. The reply's outcome states what the session did:
-// `injected` reached the running turn, and `startedNewTurn` began a new turn of
-// Junie's own, which the provider tracks as an agent turn so its end still
-// closes the turn state. A refused request answers ErrNoActiveTurn, so the
-// queue keeps the input for the next turn.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.SteerInputWithReceipt(request)
-	return err
 }

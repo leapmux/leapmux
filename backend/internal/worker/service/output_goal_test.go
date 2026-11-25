@@ -752,7 +752,8 @@ func TestGoal_DeliveredTextCommandPersistsThroughTheOutputSink(t *testing.T) {
 	startGoalAgentProcess(t, svc, agentID, claudetest.StartEchoWithGoalCommand)
 	require.Equal(t, []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}, svc.Agents.SupportedGoalActions(agentID), "startup advertises the fixture's goal command before delivery")
 
-	require.NoError(t, svc.Agents.SendInput(agentID, "/goal ship the release", nil))
+	_, err := svc.Agents.SendInput(agentID, "/goal ship the release", nil)
+	require.NoError(t, err)
 	stored, err := svc.Output.LoadGoal(t.Context(), agentID)
 	require.NoError(t, err)
 	require.NotNil(t, stored.Goal)

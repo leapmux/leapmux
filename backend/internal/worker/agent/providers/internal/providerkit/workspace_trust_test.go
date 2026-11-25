@@ -311,7 +311,7 @@ func TestWorkspaceTrustConcurrentTrustAnswersRunOnce(t *testing.T) {
 	defer release()
 	var trust WorkspaceTrust
 	trust.Ask(services, host, "session-1", "/work/project", nil)
-	raw := workspaceTrustAnswer(t, WorkspaceTrustRequestID("session-1"), contracts.WorkspaceTrustDecisionTrust)
+	raw := sink.Answer(WorkspaceTrustRequestID("session-1"), workspaceTrustAnswer(t, WorkspaceTrustRequestID("session-1"), contracts.WorkspaceTrustDecisionTrust))
 	first := make(chan workspaceTrustAnswerResult, 1)
 	go func() {
 		handled, err := trust.Answer(services, host, raw)
@@ -438,7 +438,7 @@ func TestWorkspaceTrustOldPublicationAndRetirementCannotCancelReplacement(t *tes
 		assert.Equal(t, instances[1], active.InstanceID)
 		assert.JSONEq(t, `{"type":"leapmux_workspace_trust","path":"/work/project","configuration":["replacement"]}`, string(active.Payload))
 	}
-	handled, err := trust.Answer(services, host, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust))
+	handled, err := trust.Answer(services, host, sink.Answer(requestID, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust)))
 	assert.True(t, handled)
 	require.NoError(t, err, "the replacement must remain answerable")
 	assert.Equal(t, 1, host.trustCalls)
@@ -602,7 +602,7 @@ func TestWorkspaceTrustAsksOnceForEachSessionAfterAnAnswer(t *testing.T) {
 			host := &fakeWorkspaceTrustHost{}
 			var trust WorkspaceTrust
 			trust.Ask(services, host, "session-1", "/work/project", nil)
-			handled, err := trust.Answer(services, host, workspaceTrustAnswer(t, WorkspaceTrustRequestID("session-1"), decision))
+			handled, err := trust.Answer(services, host, sink.Answer(WorkspaceTrustRequestID("session-1"), workspaceTrustAnswer(t, WorkspaceTrustRequestID("session-1"), decision)))
 			require.True(t, handled)
 			require.NoError(t, err)
 
@@ -652,15 +652,39 @@ func TestWorkspaceTrustTrustRetiresTheQuestion(t *testing.T) {
 	var trust WorkspaceTrust
 	trust.Ask(services, host, "session-1", "/work/project", nil)
 	requestID := WorkspaceTrustRequestID("session-1")
-	handled, err := trust.Answer(services, host, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust))
+	handled, err := trust.Answer(services, host, sink.Answer(requestID, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust)))
 	require.True(t, handled)
 	require.NoError(t, err)
 	assert.Equal(t, 1, host.trustCalls)
 	assert.Equal(t, []string{requestID}, sink.CanceledControls())
 
-	handled, err = trust.Answer(services, host, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust))
+	handled, err = trust.Answer(services, host, sink.Answer(requestID, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust)))
 	assert.True(t, handled)
 	require.ErrorIs(t, err, ErrWorkspaceTrustClosed, "an answered question takes no second answer")
+	assert.Equal(t, 1, host.trustCalls)
+}
+
+func TestWorkspaceTrustRefusesUnstatedOrReplacedControlInstance(t *testing.T) {
+	t.Parallel()
+	sink, services := newWorkspaceTrustSink()
+	host := &fakeWorkspaceTrustHost{}
+	var trust WorkspaceTrust
+	trust.Ask(services, host, "session-1", "/work/project", nil)
+	requestID := WorkspaceTrustRequestID("session-1")
+	raw := workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust)
+
+	handled, err := trust.Answer(services, host, agent.RawInput{Data: raw})
+	assert.True(t, handled)
+	require.ErrorIs(t, err, agent.ErrControlInstanceUnstated)
+
+	handled, err = trust.Answer(services, host, agent.RawInput{Data: raw, ControlInstanceID: "stale-instance"})
+	assert.True(t, handled)
+	require.ErrorIs(t, err, agent.ErrControlInstanceReplaced)
+	assert.Zero(t, host.trustCalls)
+
+	handled, err = trust.Answer(services, host, sink.Answer(requestID, raw))
+	assert.True(t, handled)
+	require.NoError(t, err)
 	assert.Equal(t, 1, host.trustCalls)
 }
 
@@ -684,13 +708,13 @@ func TestWorkspaceTrustKeepsTheQuestionAfterAFailedAnswer(t *testing.T) {
 			var trust WorkspaceTrust
 			trust.Ask(services, host, "session-1", "/work/project", nil)
 			requestID := WorkspaceTrustRequestID("session-1")
-			handled, err := trust.Answer(services, host, workspaceTrustAnswer(t, requestID, test.decision))
+			handled, err := trust.Answer(services, host, sink.Answer(requestID, workspaceTrustAnswer(t, requestID, test.decision)))
 			require.True(t, handled)
 			require.ErrorContains(t, err, test.wantText)
 			assert.Empty(t, sink.CanceledControls())
 
 			host.trustErr = nil
-			handled, err = trust.Answer(services, host, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust))
+			handled, err = trust.Answer(services, host, sink.Answer(requestID, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionTrust)))
 			require.True(t, handled)
 			require.NoError(t, err, "the question stays answerable")
 			assert.Equal(t, []string{requestID}, sink.CanceledControls())
@@ -707,7 +731,7 @@ func TestWorkspaceTrustRejectAsksNoMore(t *testing.T) {
 	var trust WorkspaceTrust
 	trust.Ask(services, host, "session-1", "/work/project", nil)
 	requestID := WorkspaceTrustRequestID("session-1")
-	handled, err := trust.Answer(services, host, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionReject))
+	handled, err := trust.Answer(services, host, sink.Answer(requestID, workspaceTrustAnswer(t, requestID, contracts.WorkspaceTrustDecisionReject)))
 	require.True(t, handled)
 	require.NoError(t, err)
 	assert.Zero(t, host.trustCalls)
@@ -730,7 +754,7 @@ func TestWorkspaceTrustRetireWithdrawsTheOpenQuestion(t *testing.T) {
 	trust.Ask(services, host, "session-1", "/work/project", nil)
 	trust.Retire(services)
 	assert.Equal(t, []string{WorkspaceTrustRequestID("session-1")}, sink.CanceledControls())
-	handled, err := trust.Answer(services, host, workspaceTrustAnswer(t, WorkspaceTrustRequestID("session-1"), contracts.WorkspaceTrustDecisionTrust))
+	handled, err := trust.Answer(services, host, sink.Answer(WorkspaceTrustRequestID("session-1"), workspaceTrustAnswer(t, WorkspaceTrustRequestID("session-1"), contracts.WorkspaceTrustDecisionTrust)))
 	assert.True(t, handled)
 	require.ErrorIs(t, err, ErrWorkspaceTrustClosed)
 	assert.Zero(t, host.trustCalls)
@@ -751,7 +775,7 @@ func TestWorkspaceTrustLeavesOtherAnswersAlone(t *testing.T) {
 		[]byte(`not json`),
 		[]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`),
 	} {
-		handled, err := trust.Answer(services, host, raw)
+		handled, err := trust.Answer(services, host, agent.RawInput{Data: raw})
 		assert.False(t, handled, string(raw))
 		assert.NoError(t, err, string(raw))
 	}

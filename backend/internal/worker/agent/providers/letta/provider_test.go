@@ -227,7 +227,7 @@ func TestBusyRefusalRepublishesTheTurn(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 	a.setTurnActive(true)
-	err := a.SendInput("hello", nil)
+	err := agenttest.SendInput(a, "hello", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }
 

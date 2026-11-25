@@ -21,17 +21,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSendInputArmsTheTurnAndSendsAFollowUpPrompt(t *testing.T) {
+func TestSendInputArmsTheTurnAndReturnsAReceipt(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 
-	require.NoError(t, r.agent.SendInput("say hello", nil))
+	receipt, err := r.agent.SendInput("say hello", nil)
+	require.NoError(t, err)
 
 	prompts := r.commandsOfType(CommandPrompt)
 	require.Len(t, prompts, 1)
+	assert.Equal(t, receipt.InputID, prompts[0].ID)
+	assert.NotEmpty(t, receipt.SessionID)
 	assert.Equal(t, "say hello", prompts[0].Payload["message"])
-	assert.Equal(t, streamingBehaviorFollowUp, prompts[0].Payload["streamingBehavior"],
-		"a new turn queues behind a run omp may have started by itself")
+	assert.NotContains(t, prompts[0].Payload, "streamingBehavior",
+		"a tracked prompt omits streamingBehavior so omp refuses if a background run started first")
 	_, hasImages := prompts[0].Payload["images"]
 	assert.False(t, hasImages, "a text prompt carries no image list")
 
@@ -45,7 +48,7 @@ func TestSendInputRefusesABusyAgent(t *testing.T) {
 	r := newRig(t)
 	r.emit(`{"type":"agent_start"}`)
 
-	err := r.agent.SendInput("second", nil)
+	err := agenttest.SendInput(r.agent, "second", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, &r.sink.Sink, r.agent, err)
 	assert.Empty(t, r.commandsOfType(CommandPrompt), "a refused input reaches omp not at all")
 }
@@ -66,7 +69,10 @@ func TestSendInputForSessionRejectsMissingAndReplacedSessions(t *testing.T) {
 	r.agent.Mu.Lock()
 	handle := r.agent.sessionHandleLocked()
 	r.agent.Mu.Unlock()
-	require.NoError(t, r.agent.SendInputForSession(handle, "for this session", nil))
+	receipt, err := r.agent.SendInputForSession(handle, "for this session", nil)
+	require.NoError(t, err)
+	assert.Equal(t, handle, receipt.SessionID)
+	assert.NotEmpty(t, receipt.InputID)
 	assert.Len(t, r.commandsOfType(CommandPrompt), 1)
 }
 
@@ -74,7 +80,7 @@ func TestSendInputInlinesTextAndSendsImages(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 
-	require.NoError(t, r.agent.SendInput("look", []*leapmuxv1.Attachment{
+	require.NoError(t, agenttest.SendInput(r.agent, "look", []*leapmuxv1.Attachment{
 		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("attached text")},
 		{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}},
 	}))
@@ -101,8 +107,12 @@ func TestSendInputReleasesTheArmForALocalCommand(t *testing.T) {
 		return nil
 	})
 
-	require.NoError(t, r.agent.SendInput("/model", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "/model", nil))
 
+	prompts := r.commandsOfType(CommandPrompt)
+	require.Len(t, prompts, 1)
+	assert.Equal(t, streamingBehaviorFollowUp, prompts[0].Payload["streamingBehavior"],
+		"slash commands keep the native follow-up path")
 	active, published := r.sink.LastTurnActive()
 	require.True(t, published)
 	assert.False(t, active, "a slash command omp answered itself starts no turn")
@@ -120,7 +130,7 @@ func TestSendInputReturnsARefusal(t *testing.T) {
 		return nil
 	})
 
-	err := r.agent.SendInput("hello", nil)
+	err := agenttest.SendInput(r.agent, "hello", nil)
 	require.Error(t, err)
 	var refused *commandError
 	require.True(t, errors.As(err, &refused))
@@ -138,7 +148,7 @@ func TestSendInputReportsAnUncertainDelivery(t *testing.T) {
 	r.respond(func(recordedCommand) *rigReply { return &rigReply{Skip: true} })
 
 	result := make(chan error, 1)
-	go func() { result <- r.agent.SendInput("hello", nil) }()
+	go func() { result <- agenttest.SendInput(r.agent, "hello", nil) }()
 	assert.Equal(t, promptAckTimeout, testutil.WaitForTimer(t, ctx, ack))
 	r.clock.Advance(promptAckTimeout - time.Nanosecond).MustWait(ctx)
 	select {
@@ -165,7 +175,7 @@ func TestSendInputOnAStoppedAgent(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.agent.SetStoppedForTest(true)
-	assert.ErrorContains(t, r.agent.SendInput("hello", nil), "stopped")
+	assert.ErrorContains(t, agenttest.SendInput(r.agent, "hello", nil), "stopped")
 	assert.Empty(t, r.sink.TurnActives(), "a stopped agent arms no turn")
 }
 
@@ -182,7 +192,7 @@ func TestSendInputReleasesTheArmWhenOmpExitsBeforeItsAcknowledgement(t *testing.
 		return nil
 	})
 	result := make(chan error, 1)
-	go func() { result <- r.agent.SendInput("hello", nil) }()
+	go func() { result <- agenttest.SendInput(r.agent, "hello", nil) }()
 	r.waitForCommand(CommandPrompt, 1)
 
 	require.NoError(t, r.stdinR.Close())
@@ -202,7 +212,7 @@ func TestSendInputReleasesTheArmWhenThePromptCannotBeWritten(t *testing.T) {
 	r := newRig(t)
 	require.NoError(t, r.stdinW.Close())
 
-	assert.ErrorContains(t, r.agent.SendInput("hello", nil), "write omp prompt")
+	assert.ErrorContains(t, agenttest.SendInput(r.agent, "hello", nil), "write omp prompt")
 	assert.Equal(t, []bool{true, false}, r.sink.TurnActives(),
 		"the turn is armed before the write and released when the write fails")
 }
@@ -221,7 +231,7 @@ func TestARefusedSteerContinuesNothing(t *testing.T) {
 	r.emit(`{"type":"agent_start"}`)
 
 	var refused *commandError
-	require.ErrorAs(t, r.agent.SteerInput(agent.SteerRequest{Content: "guide"}), &refused)
+	require.ErrorAs(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "guide"}), &refused)
 	active, _ := r.sink.LastTurnActive()
 	assert.True(t, active, "a refused steer leaves the running turn alone")
 
@@ -299,7 +309,7 @@ func TestSteerInput(t *testing.T) {
 
 	t.Run("refuses when no turn runs", func(t *testing.T) {
 		r := newRig(t)
-		assert.ErrorIs(t, r.agent.SteerInput(agent.SteerRequest{Content: "guide"}), agent.ErrNoActiveTurn)
+		assert.ErrorIs(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "guide"}), agent.ErrNoActiveTurn)
 		assert.Empty(t, r.commandsOfType(CommandPrompt))
 	})
 
@@ -308,7 +318,7 @@ func TestSteerInput(t *testing.T) {
 		r.emit(`{"type":"agent_start"}`)
 		before := len(r.sink.TurnActives())
 
-		require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "guide"}))
+		require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "guide"}))
 
 		prompts := r.commandsOfType(CommandPrompt)
 		require.Len(t, prompts, 1)

@@ -255,7 +255,7 @@ func TestACPIdleInterruptClosesOpenToolAndSuppressesLateUpdatesAndFinal(t *testi
 			assert.Equal(t, msgsBefore, sink.MessageCount())
 
 			// A subsequent Turn 2 must still own and finish its prompt normally.
-			require.NoError(t, b.SendInput("turn 2", nil))
+			require.NoError(t, agenttest.SendInput(b, "turn 2", nil))
 			b.HandleOutput(acptest.Chunk("session-1", contracts.ACPUpdateAgentMessageChunk, "turn 2 reply"))
 			b.HandleJSONRPCResponseForTest(promptResponse(1))
 			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
@@ -284,12 +284,19 @@ func TestACPIdleInterruptClosesOpenToolAndSuppressesLateUpdatesAndFinal(t *testi
 			})
 
 			// Start Turn 2 while idle Interrupt is paused before detachIdleRootTools().
-			require.NoError(t, b.SendInput("turn 2", nil))
+			// SendInput claims the prompt and opens Turn 2's rootTarget before its
+			// BeforeWrite hook blocks on sessionUpdates.mu.
+			sendErr := make(chan error, 1)
+			go func() {
+				sendErr <- agenttest.SendInput(b, "turn 2", nil)
+			}()
+			testutil.RequireEventually(t, func() bool { return b.PromptActive() })
 			b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-turn2","kind":"execute","title":"Turn2"}`))
 			lifecycleBefore := len(sink.TurnLifecycle())
 			progressBefore := len(sink.ProgressUpdates())
 			b.sessionUpdates.mu.Unlock()
 
+			require.NoError(t, <-sendErr)
 			require.NoError(t, <-interruptErr)
 			assert.True(t, b.PromptActive(), "racing idle Interrupt must not disturb concurrent Turn 2")
 			assert.True(t, b.HasOpenRootTool("call-turn2"), "racing idle Interrupt must not close Turn 2 tools")

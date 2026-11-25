@@ -240,7 +240,14 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 		return a.ProcessExitError()
 	}
 	a.Mu.Lock()
-	if a.incomingControls[frame.Response.RequestID] != record || !record.published || record.answering || a.StoppedLocked() {
+	if current := a.incomingControls[frame.Response.RequestID]; current != record {
+		a.Mu.Unlock()
+		if current != nil && current.instanceID != input.ControlInstanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return fmt.Errorf("the Claude Code control request is no longer pending")
+	}
+	if !record.published || record.answering || a.StoppedLocked() {
 		a.Mu.Unlock()
 		return fmt.Errorf("the Claude Code control request is no longer pending")
 	}

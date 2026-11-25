@@ -1,6 +1,7 @@
 package amp
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"path"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -57,8 +59,15 @@ func (a *Agent) runCreateThread(config threadConfiguration) (string, error) {
 		args = append(args, "--fast")
 	}
 	opts := a.launch.opts
+	locator := ampLocator
+	if a.launch.spec.Program != "" {
+		spec := a.launch.spec
+		locator = launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
+			return spec, launch.Found
+		})
+	}
 	output, err := providerkit.RunCLI(a.ctx, providerkit.CLIRun{
-		Locator: ampLocator, Label: "Amp", Shell: opts.Shell, LoginShell: opts.LoginShell,
+		Locator: locator, Label: "Amp", Shell: opts.Shell, LoginShell: opts.LoginShell,
 		Args: args, WorkingDir: opts.WorkingDir, StripEnvKeys: ampIdentityEnvKeys,
 		SetEnv: a.launch.setEnv(), Env: a.launch.processEnv,
 		Timeout: opts.EffectiveAPITimeout(), MaxOutput: 8 << 10,

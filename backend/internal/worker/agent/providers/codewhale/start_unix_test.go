@@ -130,7 +130,7 @@ func TestStartOpensAThreadOnAFreshStore(t *testing.T) {
 	assert.Equal(t, int32(os.Getpid()), parsed.WorkerPID)
 	assert.Equal(t, int32(launch.PID), parsed.RuntimePID)
 
-	require.NoError(t, a.SendInput("Say hello.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Say hello.", nil))
 	awaitReply(t, sink)
 }
 
@@ -226,7 +226,7 @@ func TestStartRestoresOutputStyleOnTheSameThread(t *testing.T) {
 		for key, value := range options {
 			assert.Equal(t, value, current[key], key)
 		}
-		require.NoError(t, a.SendInput("Keep the native conversation.", nil))
+		require.NoError(t, agenttest.SendInput(a, "Keep the native conversation.", nil))
 		awaitReply(t, sink)
 		a.Stop()
 		// Stop cancels the launch context even when the fake process exits cleanly.
@@ -317,5 +317,5 @@ func TestStartStatesATurnThatTheRuntimeStillRuns(t *testing.T) {
 	last, published := sink.LastTurnActive()
 	require.True(t, published)
 	assert.True(t, last)
-	assert.ErrorIs(t, a.SendInput("Hi.", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "Hi.", nil), agent.ErrAgentBusy)
 }

@@ -81,3 +81,29 @@ func assertPrintableASCII(t *testing.T, script string) {
 		}
 	}
 }
+
+func TestXonshEnvCheckUsesDetypedEnvironment(t *testing.T) {
+	t.Parallel()
+	cmd, _, _ := wrapTestCommand(t, t.Context(), WrapSpec{
+		Shell:      "/usr/bin/xonsh",
+		Launch:     Spec{Program: "/bin/sh"},
+		EnvGated:   testEnvGate("--extra"),
+		WorkingDir: "/tmp",
+	})
+	script := renderedWrapScript(t, cmd)
+	assert.Contains(t, script, "__xonsh__.env.detype()")
+	assert.NotContains(t, script, "__xonsh__.env.get(name)")
+}
+
+func TestElvishFollowsSymlinkProfileAndTracksObservedProbe(t *testing.T) {
+	t.Parallel()
+	assert.Contains(t, elvishLoadProfile, "&follow-symlink=$true")
+	cmd, delimiter, _ := wrapTestCommand(t, t.Context(), WrapSpec{
+		Shell:              "/usr/bin/elvish",
+		Launch:             Spec{Program: "/bin/sh"},
+		ObserveEnvironment: &ObservationRequest{Variables: []string{"LEAPMUX_TEST_OBS"}},
+		WorkingDir:         "/tmp",
+	})
+	script := renderedWrapScript(t, cmd)
+	assert.Contains(t, script, "__lm_builtin:printf \"%s\\n\" '"+delimiter+"'")
+}

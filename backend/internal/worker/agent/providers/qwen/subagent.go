@@ -756,7 +756,7 @@ func (a *Agent) cancelTask(sessionID string, task qwenTask) (bool, error) {
 // Every request goes out detached, because the clear must not wait on the
 // agent. A failure is logged: the session is already out of LeapMux's view.
 func (a *Agent) retireSession(sessionID string) {
-	err := a.SendDetachedRequest(qwenTaskListMethod, qwenSessionParams(sessionID), func(response json.RawMessage, err error) {
+	err := a.SendDetachedRequest(qwenTaskListMethod, qwenSessionParams(sessionID), providerkit.DetachedRequestOptions{}, func(response json.RawMessage, err error) {
 		if err == nil {
 			var tasks []qwenTask
 			if tasks, err = decodeQwenTasks(response); err == nil {
@@ -783,7 +783,7 @@ func (a *Agent) cancelTasksDetached(sessionID string, tasks []qwenTask) {
 				slog.Warn("qwen cancel a task of a retired session", "agent_id", a.AgentID(), "session_id", sessionID, "task_id", task.ID, "error", err)
 			}
 		}
-		if err := a.SendDetachedRequest(qwenTaskCancelMethod, qwenTaskCancelParams(sessionID, task), logFailure); err != nil {
+		if err := a.SendDetachedRequest(qwenTaskCancelMethod, qwenTaskCancelParams(sessionID, task), providerkit.DetachedRequestOptions{}, logFailure); err != nil {
 			logFailure(nil, err)
 		}
 	}
@@ -919,7 +919,7 @@ func (a *Agent) reconcileBackgroundTasks() {
 	if err != nil {
 		return
 	}
-	err = a.SendDetachedRequest(qwenTaskListMethod, params, func(response json.RawMessage, reqErr error) {
+	err = a.SendDetachedRequest(qwenTaskListMethod, params, providerkit.DetachedRequestOptions{}, func(response json.RawMessage, reqErr error) {
 		if reqErr != nil {
 			slog.Warn("qwen reconcile background tasks after queue overflow", "agent_id", a.AgentID(), "session_id", sessionID, "error", reqErr)
 			return

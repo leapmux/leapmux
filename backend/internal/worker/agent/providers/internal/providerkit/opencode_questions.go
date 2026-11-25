@@ -2,10 +2,10 @@ package providerkit
 
 import (
 	"encoding/json"
-	"strconv"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -25,37 +25,6 @@ import (
 // OpenCode itself asks its questions in native forms, which its own package
 // reads (opencode/control_prompt.go).
 
-// openCodeEventFields reads the members of a stored event, or nil for a
-// payload that is no JSON object.
-func openCodeEventFields(payload []byte) map[string]json.RawMessage {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(payload, &fields) != nil {
-		return nil
-	}
-	return fields
-}
-
-// IsOpenCodeQuestionEvent reports whether payload is a stored
-// `question.asked` event. A provider whose questions include requests that it
-// answers on another surface, as MiMo's plan approval, narrows this further.
-func IsOpenCodeQuestionEvent(payload []byte) bool {
-	eventType, _ := RawString(openCodeEventFields(payload)["type"])
-	return eventType == contracts.OpenCodeEventQuestionAsked
-}
-
-// OpenCodeQuestionID returns the daemon's own id of a stored `question.asked`
-// event: its `properties.id`. ok is false for another payload, and for an id
-// that is absent, empty, or not a string. Each provider keys the control
-// request of a question by this id (agent.Provider.ControlRequestKey).
-func OpenCodeQuestionID(payload []byte) (string, bool) {
-	if !IsOpenCodeQuestionEvent(payload) {
-		return "", false
-	}
-	properties, _ := RawObject(openCodeEventFields(payload)["properties"])
-	id, _ := RawString(properties["id"])
-	return id, id != ""
-}
-
 // OpenCodeQuestionPrompt reads the questions of a stored `question.asked`
 // event into a question prompt.
 //
@@ -66,47 +35,16 @@ func OpenCodeQuestionID(payload []byte) (string, bool) {
 // selection, so the prompt does not preserve one: AnswerOpenCodeQuestions
 // sends typed text as one more value of a multiple-choice question instead.
 func OpenCodeQuestionPrompt(payload []byte) *leapmuxv1.ControlPrompt {
-	var properties map[string]json.RawMessage
-	_ = json.Unmarshal(openCodeEventFields(payload)["properties"], &properties)
+	properties := RawFields(RawFields(payload)["properties"])
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-		Questions: QuestionsFromWire(foldOpenCodeMultiple(properties["questions"])),
+		Questions: questionsFromWire(properties["questions"], func(fields map[string]json.RawMessage, question *leapmuxv1.ControlQuestion) {
+			// A question that states `multiSelect` (even null or false) keeps it;
+			// otherwise fall back to the daemon's boolean `multiple` flag.
+			if _, stated := fields["multiSelect"]; !stated {
+				question.MultiSelect = RawBool(fields["multiple"])
+			}
+		}),
 	}}}
-}
-
-// foldOpenCodeMultiple copies the daemon's `multiple` onto `multiSelect` for
-// each question that states no `multiSelect`, before QuestionsFromWire reads
-// the questions. A question that states `multiSelect` keeps it, and a
-// `multiple` that is no boolean states nothing. A raw value that is no array
-// is returned unchanged, and QuestionsFromWire then reads no question.
-func foldOpenCodeMultiple(raw json.RawMessage) json.RawMessage {
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil {
-		return raw
-	}
-	for i, element := range elements {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(element, &fields) != nil || fields == nil {
-			continue
-		}
-		if _, stated := fields["multiSelect"]; stated {
-			continue
-		}
-		multiple := RawOptionalBool(fields["multiple"])
-		if multiple == nil {
-			continue
-		}
-		fields["multiSelect"] = json.RawMessage(strconv.FormatBool(*multiple))
-		folded, err := json.Marshal(fields)
-		if err != nil {
-			continue
-		}
-		elements[i] = folded
-	}
-	folded, err := json.Marshal(elements)
-	if err != nil {
-		return raw
-	}
-	return folded
 }
 
 // AnswerOpenCodeQuestions answers a question prompt in the protocol's own
@@ -132,12 +70,9 @@ func AnswerOpenCodeQuestions(input agent.ControlAnswerInput) (agent.ControlAnswe
 	}
 	answers := make([][]string, len(questions))
 	for i, question := range questions {
-		answers[i] = agent.QuestionAnswerValues(question, agent.QuestionAnswerAt(decision, i))
-		if answers[i] == nil {
-			// The answer to each question is a list, so an unanswered question
-			// takes an empty list, never null.
-			answers[i] = []string{}
-		}
+		// The answer to each question is a list, so an unanswered question
+		// takes an empty list, never null.
+		answers[i] = ptrconv.NonNil(agent.QuestionAnswerValues(question, agent.QuestionAnswerAt(decision, i)))
 	}
 	return agent.ControlAnswer{Content: agent.JSONRPCResult(input.RequestID, map[string]any{
 		contracts.OpenCodeAnswerFieldAnswers: answers,

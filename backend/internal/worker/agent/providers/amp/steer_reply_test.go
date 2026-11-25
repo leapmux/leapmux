@@ -18,9 +18,9 @@ func TestAmpRecoversExactReplyForConsecutiveNativeSteers(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("initial")
-	first, err := h.agent.SteerInputWithReceipt(agent.SteerRequest{InputID: "first", AttemptID: "attempt-1", Content: "Identical steer"})
+	first, err := h.agent.SteerInput(agent.SteerRequest{InputID: "first", AttemptID: "attempt-1", Content: "Identical steer"})
 	require.NoError(t, err)
-	second, err := h.agent.SteerInputWithReceipt(agent.SteerRequest{InputID: "second", AttemptID: "attempt-2", Content: "Identical steer"})
+	second, err := h.agent.SteerInput(agent.SteerRequest{InputID: "second", AttemptID: "attempt-2", Content: "Identical steer"})
 	require.NoError(t, err)
 	require.NotEqual(t, first.InputID, second.InputID)
 	exported, err := parseThreadExport([]byte(fmt.Sprintf(`{"id":"T-1","messages":[
@@ -51,10 +51,10 @@ func TestAmpCarriesAnUnreadSteerPastThePriorNativeEnd(t *testing.T) {
 	h := newHarness(t, withResume("T-1"))
 	sink := &replyRecordingSink{ProviderServices: h.agent.sink, ready: make(chan agent.NativeReplyTurn, 2)}
 	h.agent.sink = sink
-	original, err := h.agent.SendInputWithReceipt("Initial prompt", nil)
+	original, err := h.agent.SendInput("Initial prompt", nil)
 	require.NoError(t, err)
 	proc := h.nextProc()
-	steer, err := h.agent.SteerInputWithReceipt(agent.SteerRequest{InputID: "queued", AttemptID: "attempt", Content: "Identical prompt"})
+	steer, err := h.agent.SteerInput(agent.SteerRequest{InputID: "queued", AttemptID: "attempt", Content: "Identical prompt"})
 	require.NoError(t, err)
 	var consumed atomic.Bool
 	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
@@ -104,7 +104,7 @@ func TestAmpReportsUncertainSteerByAttemptWhenRecoveryExpires(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("initial")
-	_, err := h.agent.SteerInputWithReceipt(agent.SteerRequest{InputID: "queued", AttemptID: "attempt-1", Content: "Pending steer"})
+	_, err := h.agent.SteerInput(agent.SteerRequest{InputID: "queued", AttemptID: "attempt-1", Content: "Pending steer"})
 	require.NoError(t, err)
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	started := make(chan struct{})
@@ -139,7 +139,11 @@ func TestAmpRecoversAReplyAfterItsVisibleSteerPrefix(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("initial")
-	steer, err := h.agent.SteerInputWithReceipt(agent.SteerRequest{InputID: "queued", AttemptID: "attempt", Content: "Adjust this"})
+	// Clear the prior turn's reply so the steer starts its own reply when echoed.
+	h.agent.mu.Lock()
+	h.agent.turn.reply = nil
+	h.agent.mu.Unlock()
+	steer, err := h.agent.SteerInput(agent.SteerRequest{InputID: "queued", AttemptID: "attempt", Content: "Adjust this"})
 	require.NoError(t, err)
 	var completed atomic.Bool
 	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
@@ -180,7 +184,11 @@ func TestAmpStopRetiresAnEchoedSteerThatHasNoReply(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("initial")
-	steer, err := h.agent.SteerInputWithReceipt(agent.SteerRequest{InputID: "queued", AttemptID: "attempt", Content: "Stop before the answer"})
+	// Clear the prior turn's reply so the steer starts its own reply when echoed.
+	h.agent.mu.Lock()
+	h.agent.turn.reply = nil
+	h.agent.mu.Unlock()
+	steer, err := h.agent.SteerInput(agent.SteerRequest{InputID: "queued", AttemptID: "attempt", Content: "Stop before the answer"})
 	require.NoError(t, err)
 	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
 		return []byte(fmt.Sprintf(`{"id":%q,"messages":[{"protocolMessageID":%q,"role":"user","meta":{"steer":true}}]}`, threadID, steer.InputID)), nil

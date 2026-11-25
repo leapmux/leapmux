@@ -126,8 +126,8 @@ func TestQwenSteerInputIsDrainedByTheNextToolBatch(t *testing.T) {
 	a, _, requests := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "also mention steering"}))
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "and the tests", Attachments: []*leapmuxv1.Attachment{{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "also mention steering"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "and the tests", Attachments: []*leapmuxv1.Attachment{{
 		Filename: "notes.txt", MimeType: "text/plain", Data: []byte("line 4"),
 	}}}))
 
@@ -151,7 +151,7 @@ func TestQwenDrainTakesAtMostTenItems(t *testing.T) {
 	a, _, requests := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
 	for i := range 12 {
-		require.NoError(t, a.SteerInput(agent.SteerRequest{Content: string(rune('a' + i))}))
+		require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: string(rune('a' + i))}))
 	}
 
 	assert.Len(t, drain(t, a, requests, 1, qwenTestSession)["items"], 10, "Qwen reads ten items and drops the rest")
@@ -162,7 +162,7 @@ func TestQwenDrainOfAnotherSessionIsEmpty(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "kept"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "kept"}))
 
 	assert.Empty(t, drain(t, a, requests, 1, "other-session")["items"])
 	assert.Len(t, drain(t, a, requests, 2, qwenTestSession)["items"], 1, "the input waits for its own session")
@@ -171,7 +171,7 @@ func TestQwenDrainOfAnotherSessionIsEmpty(t *testing.T) {
 func TestQwenSteerInputRefusesAnIdleSession(t *testing.T) {
 	t.Parallel()
 	a, _, _ := newQwenAgent(t, nil, nil)
-	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "late"}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "late"}), agent.ErrNoActiveTurn)
 	assert.True(t, a.SupportsSteering(), "Qwen steers by its own pull, which no handshake advertises")
 }
 
@@ -179,8 +179,8 @@ func TestQwenFollowUpPromptSendsWhatNoDrainTook(t *testing.T) {
 	t.Parallel()
 	a, _, _ := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "first"}))
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "second", Attachments: []*leapmuxv1.Attachment{{Filename: "a.png", MimeType: "image/png", Data: []byte{1}}}}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "first"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "second", Attachments: []*leapmuxv1.Attachment{{Filename: "a.png", MimeType: "image/png", Data: []byte{1}}}}))
 
 	content, attachments, ok := a.followUpPrompt(a.CurrentSessionID(), false)
 	require.True(t, ok)
@@ -194,7 +194,7 @@ func TestQwenFollowUpPromptSendsWhatNoDrainTook(t *testing.T) {
 func TestQwenForeignTurnCannotTakeTheCurrentSessionsFollowUpInput(t *testing.T) {
 	a, _, _ := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "the current session's input"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "the current session's input"}))
 	_, _, ok := a.followUpPrompt("retired-session", false)
 	assert.False(t, ok)
 	content, _, ok := a.followUpPrompt(a.CurrentSessionID(), false)
@@ -206,8 +206,8 @@ func TestQwenStoppedTurnDropsItsInputAndSaysSo(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "never read"}))
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "never read either"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "never read"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "never read either"}))
 
 	_, _, ok := a.followUpPrompt(a.CurrentSessionID(), true)
 	assert.False(t, ok, "a stopped turn starts nothing")
@@ -255,7 +255,7 @@ func TestQwenClearDropsTheSessionState(t *testing.T) {
 	t.Parallel()
 	a, _, _ := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "for the old session"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "for the old session"}))
 	a.tools.remember("call-1", contracts.QwenToolAgent, nil)
 	// A foreground spawn that runs, and a background child whose transcript
 	// the agent reads.
@@ -337,7 +337,7 @@ func TestQwenConcurrentSteersReachQwenOnceInOrder(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for i := range perSender {
-				assert.NoError(t, a.SteerInput(agent.SteerRequest{Content: fmt.Sprintf("s%d-m%02d", sender, i)}))
+				assert.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: fmt.Sprintf("s%d-m%02d", sender, i)}))
 			}
 		}()
 	}
@@ -399,7 +399,7 @@ func TestQwenFailedPromptStatesTheNativeCause(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 
-	require.NoError(t, a.SendInput("Run the native model error probe.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the native model error probe.", nil))
 	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
 
 	texts := agenttest.AgentErrorTexts(sink.Notifications())

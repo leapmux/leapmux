@@ -7,9 +7,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
-
-var _ agent.SteerReceiptSender = (*Agent)(nil)
 
 // kiloSteerState holds the detached prompts that share one active turn.
 // Kilo can answer them after the prompt that received the user's first input.
@@ -21,24 +20,11 @@ type kiloSteerState struct {
 	response  json.RawMessage
 }
 
-// SteerInput preserves Kilo's second ACP prompt as a turn of its own. Kilo can
-// answer that prompt after the first response. Without this turn, the first
+// SteerInput preserves Kilo's second ACP prompt as a turn of its own and
+// returns its native receipt when Kilo's daemon route admits the prompt. Kilo
+// can answer that prompt after the first response. Without this turn, the first
 // response clears the text buffer and no callback persists the later answer.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	sessionID, err := a.beginKiloSteer()
-	if err != nil {
-		return err
-	}
-	err = a.SendPromptDetached(sessionID, request.Content, request.Attachments, func(response json.RawMessage, err error) {
-		a.finishKiloSteer(sessionID, response, err, true)
-	})
-	if err != nil {
-		a.finishKiloSteer(sessionID, nil, err, false)
-	}
-	return err
-}
-
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	release, err := a.TrackRootPromptCallback()
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
@@ -61,7 +47,7 @@ func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeI
 		}
 		if send == nil {
 			receipt = agent.NativeInputReceipt{}
-			return a.SendDetachedRequest(acp.MethodSessionPrompt, params, finish)
+			return a.SendDetachedRequest(acp.MethodSessionPrompt, params, providerkit.DetachedRequestOptions{}, finish)
 		}
 		return send(finish)
 	})

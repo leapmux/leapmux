@@ -36,11 +36,13 @@ func TestKimiSendInput(t *testing.T) {
 	t.Run("posts the prompt to the main agent", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		require.NoError(t, rig.agent.SendInput("Explain the build.", nil))
+		receipt, err := rig.agent.SendInput("Explain the build.", nil)
+		require.NoError(t, err)
 
 		prompts := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 		require.Len(t, prompts, 1)
 		body := decodePrompt(t, prompts[0])
+		assert.Equal(t, agent.NativeInputReceipt{SessionID: rig.sessionID(), InputID: body.PromptID}, receipt)
 		assert.Empty(t, body.AgentID, "the main agent is the server's default")
 		assert.Equal(t, []map[string]any{{"type": "text", "text": "Explain the build."}}, body.Content)
 
@@ -54,7 +56,7 @@ func TestKimiSendInput(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
-		err := rig.agent.SendInput("Another message.", nil)
+		err := agenttest.SendInput(rig.agent, "Another message.", nil)
 		agenttest.AssertBusyRefusalRepublishesTheTurn(t, &rig.sink.Sink, rig.agent, err)
 		var busy *agent.AgentBusyError
 		require.ErrorAs(t, err, &busy)
@@ -66,28 +68,32 @@ func TestKimiSendInput(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		agenttest.AssertRejectsMissingAndReplacedSessions(t, rig.agent)
-		require.NoError(t, rig.agent.SendInputForSession(rig.sessionID(), "Hello.", nil))
+		receipt, err := rig.agent.SendInputForSession(rig.sessionID(), "Hello.", nil)
+		require.NoError(t, err)
+		prompts := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
+		require.Len(t, prompts, 1)
+		assert.Equal(t, agent.NativeInputReceipt{SessionID: rig.sessionID(), InputID: decodePrompt(t, prompts[0]).PromptID}, receipt)
 	})
 
 	t.Run("refuses input once stopped", func(t *testing.T) {
 		t.Parallel()
 		a := newOfflineKimiAgent(t, &agenttest.Sink{})
 		a.SetStoppedForTest(true)
-		require.ErrorContains(t, a.SendInput("Hello.", nil), "stopped")
+		require.ErrorContains(t, agenttest.SendInput(a, "Hello.", nil), "stopped")
 	})
 
 	t.Run("refuses input with no session", func(t *testing.T) {
 		t.Parallel()
 		a := newOfflineKimiAgent(t, &agenttest.Sink{})
 		a.sessionID = ""
-		require.ErrorContains(t, a.SendInput("Hello.", nil), "no Kimi Code session")
+		require.ErrorContains(t, agenttest.SendInput(a, "Hello.", nil), "no Kimi Code session")
 	})
 
 	t.Run("reports a refusal the server states as a clear failure", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{Code: 40001, Msg: "model not configured"})
-		err := rig.agent.SendInput("Hello.", nil)
+		err := agenttest.SendInput(rig.agent, "Hello.", nil)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 		assert.Contains(t, err.Error(), "model not configured")
@@ -97,14 +103,14 @@ func TestKimiSendInput(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{Drop: true})
-		err := rig.agent.SendInput("Hello.", nil)
+		err := agenttest.SendInput(rig.agent, "Hello.", nil)
 		require.ErrorIs(t, err, agent.ErrDeliveryUncertain, "the server may have taken the prompt, so the queue must not send it again")
 	})
 
 	t.Run("refuses an attachment before it sends", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		err := rig.agent.SendInput("Read this.", []*leapmuxv1.Attachment{{Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
+		err := agenttest.SendInput(rig.agent, "Read this.", []*leapmuxv1.Attachment{{Filename: "spec.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
 		require.ErrorContains(t, err, "PDF")
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), "/prompts")))
 	})
@@ -115,7 +121,7 @@ func TestKimiSendInput(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		data := []byte{0x89, 0x50, 0x4e, 0x47}
-		require.NoError(t, rig.agent.SendInput("Look.", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: data}}))
+		require.NoError(t, agenttest.SendInput(rig.agent, "Look.", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: data}}))
 		prompts := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 		require.Len(t, prompts, 1)
 		assert.Equal(t, []map[string]any{
@@ -127,7 +133,7 @@ func TestKimiSendInput(t *testing.T) {
 	t.Run("refuses an image for a text-only model before it sends", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDModel, "kimi-text")})
-		err := rig.agent.SendInput("Look.", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89}}})
+		err := agenttest.SendInput(rig.agent, "Look.", []*leapmuxv1.Attachment{{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89}}})
 		require.ErrorContains(t, err, "does not take images")
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), "/prompts")))
 	})
@@ -140,7 +146,7 @@ func TestKimiBlockedPromptReleasesTheTurn(t *testing.T) {
 		return map[string]any{"prompt_id": decodePrompt(t, request).PromptID, "status": "blocked"}
 	}})
 	before := len(rig.sink.TurnActives())
-	require.NoError(t, rig.agent.SendInput("The hook blocks this prompt.", nil))
+	require.NoError(t, agenttest.SendInput(rig.agent, "The hook blocks this prompt.", nil))
 	assert.Equal(t, []bool{false}, rig.sink.TurnActives()[before:], "the queue must receive the inactive state before dispatch returns")
 }
 
@@ -164,7 +170,7 @@ func TestKimiSteerInput(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		startTurn(t, rig)
-		receipt, err := rig.agent.SteerInputWithReceipt(agent.SteerRequest{Content: "Use the other file."})
+		receipt, err := rig.agent.SteerInput(agent.SteerRequest{Content: "Use the other file."})
 		require.NoError(t, err)
 		prompts := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 		require.Len(t, prompts, 1)
@@ -177,7 +183,7 @@ func TestKimiSteerInput(t *testing.T) {
 	t.Run("needs a running turn", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		require.ErrorIs(t, rig.agent.SteerInput(agent.SteerRequest{Content: "Too late."}), agent.ErrNoActiveTurn)
+		require.ErrorIs(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "Too late."}), agent.ErrNoActiveTurn)
 		assert.True(t, rig.agent.SupportsSteering())
 	})
 
@@ -186,7 +192,7 @@ func TestKimiSteerInput(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
 		// The server ended the turn before the prompt arrived, so the prompt ran.
-		receipt, err := rig.agent.SteerInputWithReceipt(agent.SteerRequest{Content: "Also this."})
+		receipt, err := rig.agent.SteerInput(agent.SteerRequest{Content: "Also this."})
 		require.NoError(t, err)
 		requests := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 		require.Len(t, requests, 1)
@@ -205,7 +211,7 @@ func TestKimiSteerInput(t *testing.T) {
 			rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", promptID, ":steer"), fakeKapReply{Code: kimiCodePromptNotPending})
 			return map[string]any{"prompt_id": promptID, "status": kimiPromptQueued}
 		}})
-		require.NoError(t, rig.agent.SteerInput(agent.SteerRequest{Content: "Also this."}))
+		require.NoError(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "Also this."}))
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "prompts", decodePrompt(t, rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))[0]).PromptID, kimiActionAbort)))
 	})
 
@@ -226,7 +232,7 @@ func TestKimiSteerInput(t *testing.T) {
 			})
 			return map[string]any{"prompt_id": promptID, "status": kimiPromptQueued}
 		}})
-		receipt, err := rig.agent.SteerInputWithReceipt(agent.SteerRequest{Content: "Also this."})
+		receipt, err := rig.agent.SteerInput(agent.SteerRequest{Content: "Also this."})
 		require.NoError(t, err)
 		requests := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 		require.Len(t, requests, 1)
@@ -244,7 +250,7 @@ func TestKimiSteerInput(t *testing.T) {
 			rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", promptID, ":steer"), fakeKapReply{Code: 50000, Msg: "boom"})
 			return map[string]any{"prompt_id": promptID, "status": kimiPromptQueued}
 		}})
-		receipt, err := rig.agent.SteerInputWithReceipt(agent.SteerRequest{Content: "Also this."})
+		receipt, err := rig.agent.SteerInput(agent.SteerRequest{Content: "Also this."})
 		require.Error(t, err)
 		assert.Empty(t, receipt)
 		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the withdrawn prompt reached nobody")
@@ -264,7 +270,7 @@ func TestKimiSteerInput(t *testing.T) {
 			rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", promptID, kimiActionAbort), fakeKapReply{Code: 50000, Msg: "boom"})
 			return map[string]any{"prompt_id": promptID, "status": kimiPromptQueued}
 		}})
-		require.ErrorIs(t, rig.agent.SteerInput(agent.SteerRequest{Content: "Also this."}), agent.ErrDeliveryUncertain)
+		require.ErrorIs(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "Also this."}), agent.ErrDeliveryUncertain)
 	})
 
 	t.Run("refuses a prompt id the server would not issue", func(t *testing.T) {
@@ -272,14 +278,14 @@ func TestKimiSteerInput(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		startTurn(t, rig)
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{Data: map[string]any{"prompt_id": "../x", "status": kimiPromptQueued}})
-		require.ErrorContains(t, rig.agent.SteerInput(agent.SteerRequest{Content: "Also this."}), "prompt id")
+		require.ErrorContains(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "Also this."}), "prompt id")
 	})
 
 	t.Run("refuses once stopped", func(t *testing.T) {
 		t.Parallel()
 		a := newOfflineKimiAgent(t, &agenttest.Sink{})
 		a.SetStoppedForTest(true)
-		require.ErrorContains(t, a.SteerInput(agent.SteerRequest{Content: "Hello."}), "stopped")
+		require.ErrorContains(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Hello."}), "stopped")
 	})
 
 	t.Run("reports a prompt the server refuses and steers nothing", func(t *testing.T) {
@@ -287,7 +293,7 @@ func TestKimiSteerInput(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		startTurn(t, rig)
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{Code: 40001, Msg: "prompt too long"})
-		err := rig.agent.SteerInput(agent.SteerRequest{Content: "Also this."})
+		err := agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "Also this."})
 		require.ErrorContains(t, err, "prompt too long")
 		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the server stated that it took nothing")
 		for _, route := range rig.fake.routes() {
@@ -299,7 +305,7 @@ func TestKimiSteerInput(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		startTurn(t, rig)
-		err := rig.agent.SteerInput(agent.SteerRequest{Content: "Read this.", Attachments: []*leapmuxv1.Attachment{{Filename: "a.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}}}})
+		err := agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "Read this.", Attachments: []*leapmuxv1.Attachment{{Filename: "a.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}}}})
 		require.ErrorContains(t, err, "binary")
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), "/prompts")))
 	})
@@ -333,11 +339,11 @@ func TestKimiTurnSteerability(t *testing.T) {
 			rig.fake.setBusy(rig.sessionID(), true)
 			assert.Equal(t, agent.TurnState{Active: true, Steerable: test.steerable}, rig.agent.PublishTurnActive())
 			var busy *agent.AgentBusyError
-			require.ErrorAs(t, rig.agent.SendInput("More.", nil), &busy)
+			require.ErrorAs(t, agenttest.SendInput(rig.agent, "More.", nil), &busy)
 			assert.Equal(t, test.steerable, busy.ActiveTurnSteerable)
 			if !test.steerable {
 				assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, rig.sink.TurnKinds()[0])
-				require.ErrorAs(t, rig.agent.SteerInput(agent.SteerRequest{Content: "More."}), &busy)
+				require.ErrorAs(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "More."}), &busy)
 				assert.False(t, busy.ActiveTurnSteerable)
 			}
 			assert.Empty(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), "/prompts")))

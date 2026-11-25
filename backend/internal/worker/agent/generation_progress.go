@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"math"
 	"slices"
 	"strings"
@@ -452,8 +453,20 @@ func (s modelProgressResetChildren) AcquireChildSink(childAgentID string) ChildS
 	return lease
 }
 
+func (s modelProgressResetChildren) AcquireChildStateSink(childAgentID string) ChildSinkLease {
+	lease := s.ChildServices.AcquireChildStateSink(childAgentID)
+	if lease.Sink != nil {
+		lease.Sink = NewModelProgressResetSink(lease.Sink)
+	}
+	return lease
+}
+
 func (s modelProgressResetChildren) ChildSink(childAgentID string) ProviderServices {
-	return NewModelProgressResetSink(s.ChildServices.ChildSink(childAgentID))
+	child := s.ChildServices.ChildSink(childAgentID)
+	if child == nil {
+		return nil
+	}
+	return NewModelProgressResetSink(child)
 }
 
 // Only the AGENT-source child writes are overridden. See the ChildServices doc on
@@ -465,16 +478,32 @@ func (s modelProgressResetChildren) PersistChildMessage(
 	content []byte,
 	span SpanInfo,
 ) error {
-	return s.ChildSink(childAgentID).PersistMessage(source, MessageContent{Original: content}, span)
+	child := s.ChildSink(childAgentID)
+	if child == nil {
+		return errors.New("the child transcript sink is unavailable")
+	}
+	return child.PersistMessage(source, MessageContent{Original: content}, span)
 }
 
 func (s modelProgressResetChildren) PersistChildTurnEnd(childAgentID string, content MessageContent, span SpanInfo) error {
-	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
+	child := s.ChildSink(childAgentID)
+	if child == nil {
+		return errors.New("the child transcript sink is unavailable")
+	}
+	return child.PersistTurnEnd(content, span)
 }
 
 func NewModelProgressResetSink(inner ProviderServices) ProviderServices {
+	if inner == nil {
+		return nil
+	}
 	queue := OutputQueueFor(inner)
 	inner = directForQueue(queue, inner)
+	if existing, ok := inner.(providerServices); ok {
+		if _, already := existing.TranscriptServices.(modelProgressResetTranscript); already {
+			return NewOrderedProviderServices(queue, inner)
+		}
+	}
 	decorated := providerServices{
 		OutputEffectServices: inner, SteerEchoServices: inner,
 		TranscriptServices: modelProgressResetTranscript{

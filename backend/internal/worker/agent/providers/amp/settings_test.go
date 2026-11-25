@@ -131,7 +131,7 @@ func TestUpdateSettingsBeforeTheFirstMessage(t *testing.T) {
 	assert.Equal(t, contracts.AmpPermissionModeAllowAll, refresh.PermissionMode)
 
 	h.send("go")
-	assert.Equal(t, []string{""}, h.startedThreads(), "a mode change before the first message needs no restart")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "a mode change before the first message needs no restart")
 	assert.Equal(t, agentModeLow, h.agent.agentMode)
 }
 
@@ -143,7 +143,7 @@ func TestUpdateSettingsAfterTheFirstMessageKeepsTheMode(t *testing.T) {
 	h.send("go")
 	result := h.agent.UpdateSettings(map[string]string{contracts.AmpOptionAgentMode: agentModeUltra})
 	assert.Equal(t, agentModeMedium, result.ConfirmedOptions().Get(contracts.AmpOptionAgentMode))
-	assert.Equal(t, []string{""}, h.startedThreads(), "no new thread starts in silence")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "no new thread starts in silence")
 }
 
 func TestUpdateSettingsIgnoresUnknownValues(t *testing.T) {

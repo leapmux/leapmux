@@ -225,7 +225,8 @@ func TestSteerChildInputWritesEndOfTurn(t *testing.T) {
 	a, child, _, childStdin := newBoundChildAgent(t)
 	child.startTurn()
 
-	require.NoError(t, a.SteerChildInput(steerChildID, "more", nil))
+	_, err := a.SteerChildInput(steerChildID, agent.SteerRequest{Content: "more"})
+	require.NoError(t, err)
 	params := lastRequest(t, childStdin)
 	assert.Equal(t, steerChildID, params["sessionId"])
 	assert.Equal(t, "end_of_turn", params["queuePlacement"], "Droid processes this placement during a running child turn")
@@ -237,7 +238,7 @@ func TestSteerChildInputRefusesAnIdleChild(t *testing.T) {
 	t.Parallel()
 	a, _, _, childStdin := newBoundChildAgent(t)
 
-	err := a.SteerChildInput(steerChildID, "more", nil)
+	_, err := a.SteerChildInput(steerChildID, agent.SteerRequest{Content: "more"})
 	require.ErrorIs(t, err, agent.ErrNoActiveTurn, "a steer needs a running turn")
 	assert.Empty(t, childStdin.frames(), "a refused steer writes no request")
 	assert.False(t, a.ActiveChildTurnState(steerChildID).Active)
@@ -259,7 +260,8 @@ func TestChildInputRefusesAnUnregisteredSession(t *testing.T) {
 	const unknown = "52af9b7b-5e82-4932-83c0-a2bf1caa2fcd"
 	assert.ErrorIs(t, agenttest.SendChildInput(a, unknown, agent.ChildInput{Content: "hello"}), agent.ErrChildRouteNotReady)
 	a.armChildTurn(unknown)
-	assert.ErrorIs(t, a.SteerChildInput(unknown, "guide", nil), agent.ErrChildRouteNotReady)
+	_, err := a.SteerChildInput(unknown, agent.SteerRequest{Content: "guide"})
+	assert.ErrorIs(t, err, agent.ErrChildRouteNotReady)
 	assert.Empty(t, stdin.frames(), "an unregistered child cannot use the root stream")
 }
 

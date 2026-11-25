@@ -7,6 +7,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -311,7 +312,7 @@ func TestThinkingRefusal(t *testing.T) {
 		assert.Equal(t, false, config["thinking"])
 		assert.NotContains(t, config, "reasoningEffort")
 		assert.False(t, r.turnActive())
-		require.NoError(t, r.agent.SendInput("Continue in the restored session.", nil))
+		require.NoError(t, agenttest.SendInput(r.agent, "Continue in the restored session.", nil))
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -109,12 +110,6 @@ type NativeControlInputs struct {
 	RequestID  string
 	InstanceID string
 	InputIDs   []string
-}
-
-// InputReceiptSender supplies the native identity needed to follow an input
-// through its own turn.
-type InputReceiptSender interface {
-	SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error)
 }
 
 // TurnStateLease keeps one accepted provider state current through a store mutation.
@@ -910,6 +905,37 @@ type providerServices struct {
 
 func (providerServices) providerServices() {}
 
+func (p providerServices) directForQueue(queue *OutputQueue) (ProviderServices, bool) {
+	inner, ok := p.OutputEffectServices.(ProviderServices)
+	if !ok {
+		return p, false
+	}
+	if _, isOrdered := inner.(*orderedProviderServices); !isOrdered {
+		if _, isProvider := inner.(directForQueueProvider); !isProvider {
+			return p, false
+		}
+	}
+	if rt := reflect.TypeOf(inner); rt == nil || !rt.Comparable() {
+		return p, false
+	}
+	if p.SteerEchoServices != inner ||
+		p.TranscriptServices != inner ||
+		p.TurnServices != inner ||
+		p.SpanServices != inner ||
+		p.ProgressServices != inner ||
+		p.ControlServices != inner ||
+		p.SessionServices != inner ||
+		p.PlanServices != inner ||
+		p.TodoServices != inner ||
+		p.GoalServices != inner ||
+		p.AutoRetryServices != inner ||
+		p.ChildServices != inner ||
+		p.BackgroundTaskServices != inner {
+		return p, false
+	}
+	return directForQueue(queue, inner), true
+}
+
 // NewProviderServices composes one implementation into opaque provider facets.
 func NewProviderServices(services ServiceFacets) ProviderServices {
 	return providerServices{
@@ -1031,10 +1057,13 @@ type Agent interface {
 	//
 	// A turn-level failure is reported afterwards, out of band, through the
 	// provider's own error notification -- not by holding this call open.
-	SendInput(content string, attachments []*leapmuxv1.Attachment) error
+	// The returned receipt carries the provider identity needed to follow the
+	// input through its own turn, or a zero value when the provider assigns none.
+	SendInput(content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error)
 	// SendInputForSession validates the supplied session while constructing its native request.
-	// It rejects empty and replaced session IDs without sending input.
-	SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error
+	// It rejects empty and replaced session IDs without sending input, and returns
+	// the native receipt when the provider supplies one.
+	SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error)
 	// PublishTurnActive republishes this provider's turn flag through its sink.
 	// It re-reads the flag, so a caller states nothing. The return value is the
 	// turn kind that it published, or UNSPECIFIED when it cannot classify it.
@@ -1178,7 +1207,9 @@ func (r SteerRequest) validate() error {
 // InputSteerer adds input to an active turn. The queue calls it only for an
 // explicit Steer operation. Normal dispatch always starts a later turn.
 type InputSteerer interface {
-	SteerInput(request SteerRequest) error
+	// SteerInput delivers a steer to the active turn and returns the provider's
+	// durable admission receipt when the provider assigns one.
+	SteerInput(request SteerRequest) (NativeInputReceipt, error)
 	// SupportsSteering reports whether this provider can steer the running
 	// process right now. The Manager publishes the answer to the client, which
 	// shows or hides the Steer control, so a provider that cannot steer must
@@ -1187,11 +1218,6 @@ type InputSteerer interface {
 	// interface, not to an optional one, so a new provider cannot forget it and
 	// claim a capability that it does not have.
 	SupportsSteering() bool
-}
-
-// SteerReceiptSender reports the provider's durable admission of a steer.
-type SteerReceiptSender interface {
-	SteerInputWithReceipt(request SteerRequest) (NativeInputReceipt, error)
 }
 
 // SteerPreparer persists buffered output before the queue reserves the steer's position.
@@ -1215,7 +1241,7 @@ type SteerPolicy struct{ RowAtEcho, SurvivesTurnEnd bool }
 // A provider without this capability cannot steer an answer to a recorded question.
 type SessionInputSteerer interface {
 	InputSteerer
-	SteerInputForSession(sessionID string, request SteerRequest) error
+	SteerInputForSession(sessionID string, request SteerRequest) (NativeInputReceipt, error)
 }
 
 var (
@@ -1308,23 +1334,15 @@ type ChildSteerer interface {
 	// childKey (the provider linkage key stored in the registry row_key). Returns
 	// ErrChildOperationUnsupported only via the Manager's capability check.
 	SendChildInput(childKey string, input ChildInput) (ChildInputResult, error)
-	// SteerChildInput adds input to the child's active turn.
-	SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
+	// SteerChildInput adds input to the child's active turn and returns any
+	// durable native receipt confirmed on admission.
+	SteerChildInput(childKey string, request SteerRequest) (NativeInputReceipt, error)
+	// ChildSteerPolicy declares when a child steer gets its row and whether it
+	// survives a turn end. The answer is constant and takes no lock.
+	ChildSteerPolicy() SteerPolicy
 	// ActiveChildTurnState classifies the child's current turn after
 	// SendChildInput returns ErrAgentBusy.
 	ActiveChildTurnState(childKey string) TurnState
-}
-
-// ChildSteerReceiptSender reports durable admission into a child conversation.
-type ChildSteerReceiptSender interface {
-	SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error)
-}
-
-// ChildEchoSteerer confirms the dispatch at the native child input boundary.
-type ChildEchoSteerer interface {
-	ChildSteerer
-	SteerChildInputAtEcho(childKey string, request SteerRequest) error
-	ChildSteerSurvivesTurnEnd() bool
 }
 
 // ChildInterrupter lets a provider stop a child turn without claiming that the

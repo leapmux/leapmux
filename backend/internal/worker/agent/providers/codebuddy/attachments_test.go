@@ -253,8 +253,10 @@ func TestCodebuddySendInputPutsThePromptTextLast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newCodebuddyContentAgent(t)
-			require.NoError(t, a.SendInput(tc.content, tc.attachments))
-			assert.JSONEq(t, `{"type":"user","message":{"role":"user","content":`+tc.wantContent+`}}`,
+			receipt, err := a.SendInput(tc.content, tc.attachments)
+			require.NoError(t, err)
+			require.NotEmpty(t, receipt.TurnID)
+			assert.JSONEq(t, `{"type":"user","_meta":{"codebuddy.ai/conversationRequestId":"`+receipt.TurnID+`"},"message":{"role":"user","content":`+tc.wantContent+`}}`,
 				oneCodebuddyFrame(t, stdin.String()))
 		})
 	}
@@ -266,7 +268,7 @@ func TestCodebuddySteerInputPutsThePromptTextLast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(codebuddySteered))
-			err := a.SteerInput(agent.SteerRequest{Content: tc.content, Attachments: tc.attachments})
+			_, err := a.SteerInput(agent.SteerRequest{Content: tc.content, Attachments: tc.attachments})
 			if tc.steerRefused {
 				require.ErrorIs(t, err, agent.ErrSteeringUnsupported,
 					"the queue keeps the input, files and all, for the next turn")

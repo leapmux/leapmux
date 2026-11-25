@@ -39,7 +39,7 @@ func runQwenCompactionFailure(t *testing.T, tc qwenCompactionFailureCase) *agent
 	if tc.manual {
 		require.NoError(t, a.CompactContext())
 	} else {
-		require.NoError(t, a.SendInput("ordinary prompt", nil))
+		require.NoError(t, agenttest.SendInput(a, "ordinary prompt", nil))
 	}
 	if tc.tryWhileBusy {
 		require.ErrorIs(t, a.CompactContext(), agent.ErrAgentBusy)

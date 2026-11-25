@@ -61,13 +61,13 @@ func TestCodexAuthenticationObservationPrecedesChildRouting(t *testing.T) {
 			if scenario == "ordinary failure" {
 				assert.False(t, recoveryRequired(a))
 				require.NoError(t, a.PrepareInputProcess())
-				require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "ordinary input"}))
+				require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "ordinary input"}))
 				require.Len(t, requests(), 1)
 				assert.Equal(t, "turn/steer", requests()[0].Method)
 				return
 			}
 			require.ErrorIs(t, a.PrepareInputProcess(), agent.ErrInputProcessRestartRequired)
-			require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "new input"}), agent.ErrInputProcessRestartRequired)
+			require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "new input"}), agent.ErrInputProcessRestartRequired)
 			assert.Empty(t, requests())
 			assert.Equal(t, "main-turn", a.mainTurn.id, "the child failure does not end its parent turn")
 			if scenario == "event count limit" || scenario == "event byte limit" {
@@ -113,7 +113,7 @@ func TestCodexRetiredAuthenticationOutputOnlyChangesLiveProcessHealth(t *testing
 			assert.Equal(t, "main-thread", a.currentThreadID())
 			if !ended {
 				assert.Equal(t, "current-turn", a.mainTurn.id)
-				require.ErrorIs(t, a.SendInput("later input", nil), agent.ErrInputProcessRestartRequired)
+				require.ErrorIs(t, agenttest.SendInput(a, "later input", nil), agent.ErrInputProcessRestartRequired)
 			}
 			assert.Len(t, sink.Messages(), messages, "retired output writes no current transcript message")
 			assert.Len(t, sink.PersistedNotifications(), notifications)
@@ -429,7 +429,7 @@ func TestCodexCompactionRetainsLateAuthenticationRejection(t *testing.T) {
 				assert.Nil(t, offer, "a late authentication rejection withdraws a visible retry offer")
 			}
 			before := len(requests())
-			require.ErrorIs(t, a.SendInput("later input", nil), agent.ErrInputProcessRestartRequired)
+			require.ErrorIs(t, agenttest.SendInput(a, "later input", nil), agent.ErrInputProcessRestartRequired)
 			assert.Len(t, requests(), before)
 			if completedBy == "timeout" {
 				assert.ErrorIs(t, original, agent.ErrDeliveryUncertain, "a later reply does not rewrite the caller's earlier result")

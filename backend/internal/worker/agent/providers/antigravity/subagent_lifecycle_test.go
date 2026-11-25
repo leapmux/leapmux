@@ -326,7 +326,8 @@ func TestAntigravityChildInputEchoOwnership(t *testing.T) {
 				_, _ = w.Write([]byte(`{}`))
 			})
 			if steer {
-				require.NoError(t, a.SteerChildInput(child.id, "same text", nil))
+				_, err := a.SteerChildInput(child.id, agent.SteerRequest{Content: "same text"})
+				require.NoError(t, err)
 			} else {
 				require.NoError(t, agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "same text"}))
 			}
@@ -825,7 +826,7 @@ func installClearTestRPC(t *testing.T, a *Agent) (chan string, chan struct{}) {
 func TestAntigravityClearCancelsAcceptedInputBeforeRunning(t *testing.T) {
 	a, _ := testAgent(t)
 	canceled, opened := installClearTestRPC(t, a)
-	require.NoError(t, a.SendInput("accepted before a stream update", nil))
+	require.NoError(t, agenttest.SendInput(a, "accepted before a stream update", nil))
 	a.Mu.Lock()
 	assert.Equal(t, cascadeTurnIdle, a.root.turnPhase)
 	assert.True(t, a.root.sendInFlight)

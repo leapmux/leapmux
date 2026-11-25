@@ -285,7 +285,7 @@ func TestStartRunsTheHandshake(t *testing.T) {
 	assert.Equal(t, agent.EffortAuto, groupByID(groups, agent.OptionIDEffort).GetCurrentValue(),
 		"the reader chose omp's own level, whatever level omp resolved")
 
-	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(a, "hello", nil))
 	waitFor(t, func() bool {
 		active, published := sink.LastTurnActive()
 		return len(turnEndRows(sink.Messages())) == 1 && published && !active
@@ -414,7 +414,7 @@ func TestStartReportsTheResumedGoalAsASnapshot(t *testing.T) {
 	assert.True(t, goals[0].Snapshot)
 	assert.Equal(t, agent.GoalStatusActive, goals[0].Status)
 
-	require.NoError(t, a.SendInput("finish it", nil))
+	require.NoError(t, agenttest.SendInput(a, "finish it", nil))
 	waitFor(t, func() bool { return len(sink.Goals()) == 2 })
 	assert.False(t, sink.Goals()[1].Snapshot)
 	assert.Equal(t, agent.GoalStatusDone, sink.Goals()[1].Status)

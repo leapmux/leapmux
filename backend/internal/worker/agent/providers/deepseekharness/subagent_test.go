@@ -63,7 +63,8 @@ func TestChildOperationsRefuseUnknownAndOneShotChildrenBeforeTransport(t *testin
 	a.children["one-shot"] = &nativeChild{descriptor: nativeChildDescriptor{ID: "one-shot", Parent: "native-root", Mode: "one-shot"}}
 	for _, key := range []string{"", "missing", "one-shot"} {
 		assert.ErrorIs(t, agenttest.SendChildInput(a, key, agent.ChildInput{Content: "message"}), agent.ErrChildOperationUnsupported)
-		assert.ErrorIs(t, a.SteerChildInput(key, "message", nil), agent.ErrChildOperationUnsupported)
+		_, err := a.SteerChildInput(key, agent.SteerRequest{Content: "message"})
+		assert.ErrorIs(t, err, agent.ErrChildOperationUnsupported)
 		assert.ErrorIs(t, a.InterruptChild(key, agent.StopContext{}), agent.ErrChildOperationUnsupported)
 	}
 }

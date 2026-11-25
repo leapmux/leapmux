@@ -50,11 +50,28 @@ func TestQuestionsFromWire_ToleratesWhatItCannotDraw(t *testing.T) {
 	}
 }
 
-func TestQuestionsFromWire_SaturatesACountAtTheLimitsOfInt32(t *testing.T) {
-	questions := QuestionsFromWire(json.RawMessage(`[{"minimumSelections":-9999999999,"maximumSelections":9999999999}]`))
+func TestQuestionsFromWire_IgnoresNegativeCountsAndSaturatesAtMaxInt32(t *testing.T) {
+	questions := QuestionsFromWire(json.RawMessage(`[{"minimumSelections":-1,"maximumSelections":-9999999999},{"minimumSelections":0,"maximumSelections":9999999999}]`))
+	require.Len(t, questions, 2)
+	assert.Nil(t, questions[0].MinimumSelections)
+	assert.Nil(t, questions[0].MaximumSelections)
+	require.NotNil(t, questions[1].MinimumSelections)
+	assert.EqualValues(t, 0, questions[1].GetMinimumSelections())
+	assert.EqualValues(t, math.MaxInt32, questions[1].GetMaximumSelections())
+}
+
+func TestQuestionsFromWire_AcceptsWholeNumberFloats(t *testing.T) {
+	questions := QuestionsFromWire(json.RawMessage(`[{"minimumSelections":1.0,"maximumSelections":2.0}]`))
 	require.Len(t, questions, 1)
-	assert.EqualValues(t, math.MinInt32, questions[0].GetMinimumSelections())
-	assert.EqualValues(t, math.MaxInt32, questions[0].GetMaximumSelections())
+	require.NotNil(t, questions[0].MinimumSelections)
+	require.NotNil(t, questions[0].MaximumSelections)
+	assert.EqualValues(t, 1, questions[0].GetMinimumSelections())
+	assert.EqualValues(t, 2, questions[0].GetMaximumSelections())
+
+	fractional := QuestionsFromWire(json.RawMessage(`[{"minimumSelections":1.5,"maximumSelections":2.5}]`))
+	require.Len(t, fractional, 1)
+	assert.Nil(t, fractional[0].MinimumSelections)
+	assert.Nil(t, fractional[0].MaximumSelections)
 }
 
 func TestAskUserQuestionAnswers_KeepsTheToolInputBesideTheAnswers(t *testing.T) {

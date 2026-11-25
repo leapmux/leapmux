@@ -13,7 +13,7 @@ const elvishLookupSetup = "use builtin __lm_builtin\nuse path __lm_path\nvar __l
 // directory beside rc.elv. This spec resolves to rc in its parent.
 const elvishLoadProfile = `use os __lm_os
 use runtime __lm_runtime
-if (and (not (__lm_builtin:eq $__lm_runtime:rc-path $nil)) (__lm_os:is-regular $__lm_runtime:rc-path)) {
+if (and (not (__lm_builtin:eq $__lm_runtime:rc-path $nil)) (__lm_os:is-regular &follow-symlink=$true $__lm_runtime:rc-path)) {
   if (__lm_os:exists (__lm_path:join (__lm_path:dir $__lm_runtime:rc-path) rc.so)) {
     __lm_builtin:fail 'Elvish cannot load the launch profile because a native module also uses its basename'
   }
@@ -33,12 +33,16 @@ func elvishQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
-func elvishProtocolLine(line string, first bool) string {
+func (elvishDialect) protocolLine(line string, first bool) string {
 	format := `"%s\n"`
 	if first {
 		format = `"\n%s\n"`
 	}
 	return "__lm_builtin:printf " + format + " " + elvishQuote(line) + "\n"
+}
+
+func (d elvishDialect) renderProbe(nonce string, names []string, nativeOnly, loginShell bool) string {
+	return renderStandardProbe(elvishSetup(loginShell), d, elvishProbeResult, nonce, names, nativeOnly)
 }
 
 func elvishProbeResult(name, present, absent string, nativeOnly bool) string {
@@ -57,23 +61,7 @@ func elvishProfileCallable(variable string) string {
 	return "(and (not (__lm_builtin:eq $__lm_profile $nil)) (__lm_builtin:has-key $__lm_profile " + variable + "))"
 }
 
-const elvishReprependControlCLI = `use str __lm_str
-if (and (__lm_builtin:has-env PATH) (__lm_builtin:has-env ` + controlCLIVariable + `)) {
-  var cli = (__lm_builtin:get-env ` + controlCLIVariable + `)
-  if (__lm_path:is-abs $cli) {
-    var directory = (__lm_path:dir $cli)
-    if (not (__lm_str:contains $directory $__lm_path:list-separator)) {
-      var entries = [(__lm_str:split $__lm_path:list-separator (__lm_builtin:get-env PATH))]
-      var reordered = [$directory (for entry $entries {
-        if (not (__lm_builtin:eq $entry $directory)) { __lm_builtin:put $entry }
-      })]
-      __lm_builtin:set-env PATH (__lm_str:join $__lm_path:list-separator $reordered)
-    }
-  }
-}
-`
-
-func buildElvishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
+func (d elvishDialect) buildCommand(spec shellLaunchSpec, prepared *PreparedLaunch) (string, error) {
 	var script strings.Builder
 	script.WriteString(elvishSetup(spec.LoginShell))
 	script.WriteString(elvishReprependControlCLI)
@@ -96,7 +84,7 @@ func buildElvishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 			"    set __lm_program = (__lm_path:abs (__lm_builtin:search-external $candidate))\n" +
 			"    break\n  }\n}\n")
 		fmt.Fprintf(&script, "if (and (__lm_builtin:eq $__lm_program '') (__lm_builtin:eq $__lm_callable $nil)) {\n  %s >&2\n  __lm_builtin:exit 127\n}\n",
-			strings.TrimSpace(elvishProtocolLine(prepared.exhaustedMarker, true)))
+			strings.TrimSpace(d.protocolLine(prepared.exhaustedMarker, true)))
 	}
 	fmt.Fprintf(&script, "var __lm_args = [%s]\n", elvishArguments(spec.BaseArgs))
 	if optional := spec.EnvGated; optional != nil {
@@ -107,15 +95,19 @@ func buildElvishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 		}
 		fmt.Fprintf(&script, "if (or %s) {\n%s} else {\n%sset __lm_args = [$@__lm_args %s]\n}\n",
 			strings.Join(conditions, " "),
-			elvishProtocolLine(prepared.MetaPrefix+optional.MetaKey+"=false", true),
-			elvishProtocolLine(prepared.MetaPrefix+optional.MetaKey+"=true", true),
+			d.protocolLine(prepared.MetaPrefix+optional.MetaKey+"=false", true),
+			d.protocolLine(prepared.MetaPrefix+optional.MetaKey+"=true", true),
 			elvishArguments(optional.Args))
 	}
-	if len(prepared.environmentProbe) != 0 {
-		fmt.Fprintf(&script, "if (__lm_builtin:eq $__lm_callable $nil) { try { (__lm_builtin:external %s) %s } catch _ { } }\n",
+	if len(prepared.environmentProbe) == 0 {
+		script.WriteString(d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
+	} else {
+		script.WriteString("var __lm_observed = $false\n")
+		fmt.Fprintf(&script, "if (__lm_builtin:eq $__lm_callable $nil) { try { (__lm_builtin:external %s) %s; set __lm_observed = $true } catch _ { } }\n",
 			elvishQuote(prepared.environmentProbe[0]), elvishArguments(prepared.environmentProbe[1:]))
+		fmt.Fprintf(&script, "if $__lm_observed {\n%s} else {\n%s}\n",
+			d.protocolLine(prepared.Delimiter, false), d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	}
-	script.WriteString(elvishProtocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	// Elvish has no process-replacement builtin on Windows.
 	invokeProgram := "(__lm_builtin:external $__lm_program) $@__lm_args"
 	if runtime.GOOS != "windows" {
@@ -134,7 +126,7 @@ func buildElvishCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
   __lm_builtin:fail $failure[reason]
 }
 `, invokeProgram)
-	return script.String()
+	return script.String(), nil
 }
 
 func elvishArguments(args []string) string {

@@ -160,7 +160,7 @@ func TestCodebuddyBusyRefusalRepublishesTheTurn(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	a.setTurnActive(true)
-	err := a.SendInput("later turn", nil)
+	_, err := a.SendInput("later turn", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }
 

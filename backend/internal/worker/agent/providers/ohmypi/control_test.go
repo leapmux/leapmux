@@ -303,7 +303,7 @@ const frameCommandEditor = `{"type":"extension_ui_request","id":"e1","method":"e
 // the turn armed while the handler waits on its dialog.
 func armCommandTurn(t *testing.T, r *rig) {
 	t.Helper()
-	require.NoError(t, r.agent.SendInput("/e2e-editor", nil))
+	require.NoError(t, agenttest.SendInput(r.agent, "/e2e-editor", nil))
 	active, _ := r.sink.LastTurnActive()
 	require.True(t, active, "the command's turn runs while its dialog waits")
 }

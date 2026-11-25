@@ -281,7 +281,7 @@ func TestWrapNushellCallsTheBuiltinsPastProfileCommands(t *testing.T) {
 			t.Run(launch.name+"/gate="+tc.gate, func(t *testing.T) {
 				t.Parallel()
 				// The program prints the stripped variable, the pin, whether its
-				// environment holds a private pin variable, and the gated
+				// environment holds a private pin variable, and the conditional
 				// argument.
 				report := `printf '%s|%s|' "${LEAPMUX_TEST_STRIP-unset}" "${LEAPMUX_TEST_PIN-unset}"; ` +
 					`case "$(env)" in *` + environmentPinPrefix + `*) printf leaked;; *) printf clean;; esac; ` +

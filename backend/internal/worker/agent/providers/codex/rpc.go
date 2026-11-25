@@ -163,7 +163,7 @@ func (a *Agent) beginCodexTurnStartWithTracking(threadID string, input []map[str
 	if tracked {
 		replyTimeout = turnStartAckTimeout
 	}
-	err = a.SendDetachedRequestWithTimeout("turn/start", raw, replyTimeout, func(result json.RawMessage, responseErr error) {
+	err = a.SendDetachedRequest("turn/start", raw, providerkit.DetachedRequestOptions{Timeout: replyTimeout}, func(result json.RawMessage, responseErr error) {
 		a.handleCodexTurnStartResponse(pending, responseErr)
 		a.bindCodexInputReply(pending, result, responseErr)
 	})
@@ -305,7 +305,7 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 	// ID only for a dispatch whose transcript row must wait for the native echo.
 	var ticket providerkit.SteerTicket
 	if !sessionValidated && request.AttemptID != "" {
-		ticket = a.steerLedger.AddIdentified(agent.SteerResolution{
+		ticket = a.steerLedger.Add(agent.SteerResolution{
 			InputID: request.InputID, AttemptID: request.AttemptID,
 			Receipt: agent.NativeInputReceipt{SessionID: threadID, TurnID: turnID, InputID: clientID},
 		})
@@ -316,7 +316,7 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 	}
 	a.Mu.Unlock()
 	reply := make(chan error, 1)
-	err = a.SendDetachedRequest("turn/steer", raw, func(_ json.RawMessage, err error) { reply <- err })
+	err = a.SendDetachedRequest("turn/steer", raw, providerkit.DetachedRequestOptions{}, func(_ json.RawMessage, err error) { reply <- err })
 	a.turnDispatchMu.Unlock()
 	if err == nil {
 		err = <-reply

@@ -40,7 +40,7 @@ type recoveryHeldSendAgent struct {
 	release <-chan struct{}
 }
 
-func (a *recoveryHeldSendAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *recoveryHeldSendAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	close(a.entered)
 	<-a.release
 	return a.recoveryAgent.SendInput(content, attachments)

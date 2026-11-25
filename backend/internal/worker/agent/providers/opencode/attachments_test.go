@@ -109,7 +109,7 @@ func TestFamilyAudioRequiresTheSelectedModelAndGoogleAdapter(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			a, requests, calls := newFamilyAudioAgent(t, familyAudioAgentConfig{status: tc.status, catalog: tc.catalog})
-			err := a.SendInput("listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
+			err := agenttest.SendInput(a, "listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
 			if tc.accepts {
 				require.NoError(t, err)
 			} else {
@@ -145,7 +145,7 @@ func TestFamilyAudioChildUsesItsLoadedModelAndKeepsTheParentRunning(t *testing.T
 			a.handleDaemonEvent(taskPartEvent(t, a.CurrentSessionID(), "task", "task", "running", "child-session"))
 			testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("task").Steerable })
 			require.True(t, a.BeginAgentTurn())
-			err := a.SteerChildInput("task", "", []*leapmuxv1.Attachment{{Filename: "voice.flac", MimeType: "audio/flac", Data: []byte{0, 255, 1}}})
+			_, err := a.SteerChildInput("task", agent.SteerRequest{Attachments: []*leapmuxv1.Attachment{{Filename: "voice.flac", MimeType: "audio/flac", Data: []byte{0, 255, 1}}}})
 			prompts := audioPromptRequests(t, a, requests)
 			if childAccepts {
 				require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestFamilyAudioChildUsesItsLoadedModelAndKeepsTheParentRunning(t *testing.T
 func TestFamilyPlainPromptDoesNotQueryTheAudioCatalog(t *testing.T) {
 	t.Parallel()
 	a, requests, calls := newFamilyAudioAgent(t, familyAudioAgentConfig{status: http.StatusServiceUnavailable, catalog: `{}`})
-	require.NoError(t, a.SendInput("plain", nil))
+	require.NoError(t, agenttest.SendInput(a, "plain", nil))
 	require.Len(t, audioPromptRequests(t, a, requests), 1)
 	assert.Zero(t, calls.Load())
 }
@@ -174,11 +174,11 @@ func TestFamilyAudioRefusalAllowsARecordingRetryAfterTheModelChanges(t *testing.
 	a, requests, calls := newFamilyAudioAgent(t, familyAudioAgentConfig{status: http.StatusOK, catalog: familyAudioCatalog})
 	a.SetCurrentModel("private/text")
 	attachments := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}}
-	require.ErrorContains(t, a.SendInput("listen", attachments), "does not accept audio attachments")
+	require.ErrorContains(t, agenttest.SendInput(a, "listen", attachments), "does not accept audio attachments")
 	assert.Empty(t, audioPromptRequests(t, a, requests))
 	assert.False(t, a.PromptActive())
 	a.SetCurrentModel("private/voice")
-	require.NoError(t, a.SendInput("retry", attachments))
+	require.NoError(t, agenttest.SendInput(a, "retry", attachments))
 	require.Len(t, audioPromptRequests(t, a, requests), 1)
 	assert.EqualValues(t, 2, calls.Load())
 }
@@ -188,7 +188,7 @@ func TestFamilyAudioSteerRefusalKeepsTheParentTurnActive(t *testing.T) {
 	a, requests, _ := newFamilyAudioAgent(t, familyAudioAgentConfig{status: http.StatusOK, catalog: familyAudioCatalog})
 	a.SetCurrentModel("private/text")
 	require.True(t, a.BeginAgentTurn())
-	require.ErrorContains(t, a.SteerInput(agent.SteerRequest{Content: "listen", Attachments: []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}}), "does not accept audio attachments")
+	require.ErrorContains(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "listen", Attachments: []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}}), "does not accept audio attachments")
 	assert.Empty(t, audioPromptRequests(t, a, requests))
 	assert.True(t, a.PromptActive())
 }

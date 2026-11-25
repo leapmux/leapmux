@@ -216,7 +216,7 @@ type ordinaryInputSteerer struct {
 	recorder *recordingQuestionAgent
 }
 
-func (p ordinaryInputSteerer) SteerInput(request agent.SteerRequest) error {
+func (p ordinaryInputSteerer) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	return p.recorder.SteerInput(request)
 }
 
@@ -258,4 +258,130 @@ func TestQuestionSteeringRequiresItsSessionCapabilityOnlyForAnswers(t *testing.T
 			}
 		})
 	}
+}
+
+type receiptQuestionAgent struct {
+	recordingQuestionAgent
+	sendReceipt  agent.NativeInputReceipt
+	steerReceipt agent.NativeInputReceipt
+}
+
+func (a *receiptQuestionAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	_, err := a.recordingQuestionAgent.SendInputForSession("", content, attachments)
+	return a.sendReceipt, err
+}
+
+func (a *receiptQuestionAgent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	_, err := a.recordingQuestionAgent.SendInputForSession(sessionID, content, attachments)
+	return a.sendReceipt, err
+}
+
+func (a *receiptQuestionAgent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	_, err := a.recordingQuestionAgent.SteerInput(request)
+	return a.steerReceipt, err
+}
+
+func (a *receiptQuestionAgent) SteerInputForSession(sessionID string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	_, err := a.recordingQuestionAgent.SteerInputForSession(sessionID, request)
+	return a.steerReceipt, err
+}
+
+func TestControlLinkedInputPropagatesNativeReceipt(t *testing.T) {
+	t.Parallel()
+	wantSend := agent.NativeInputReceipt{SessionID: "session-1", InputID: "native-send-1", TurnID: "turn-1"}
+	wantSteer := agent.NativeInputReceipt{SessionID: "session-1", InputID: "native-steer-1", TurnID: "turn-1"}
+
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{
+		ID: "agent-1", AgentSessionID: "session-1",
+	}))
+	for _, tc := range []struct {
+		id, reqID, claim, followUp string
+		followUpKind               leapmuxv1.AgentInputKind
+		nonBlocking                bool
+	}{
+		{"input-plan", "req-plan", "claim-plan", "", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, false},
+		{"input-question", "req-question", "claim-question", "Red", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, true},
+		{"input-feedback", "req-feedback", "claim-feedback", "Use option B.", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, false},
+	} {
+		require.NoError(t, dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+			AgentID: "agent-1", RequestID: tc.reqID, ClaimToken: tc.claim, State: storedStateCompleted,
+			RequestPayload: asyncQuestionPayload(tc.reqID), FollowUp: tc.followUp, FollowUpKind: tc.followUpKind,
+			InputID: tc.id, AgentSessionID: "session-1", NonBlocking: tc.nonBlocking,
+		}))
+	}
+
+	recorder := &receiptQuestionAgent{sendReceipt: wantSend, steerReceipt: wantSteer}
+	svc.Agents.PutAgentForTest("agent-1", recorder)
+	adapter := &agentInputQueueAdapter{svc: svc}
+
+	for _, tc := range []struct {
+		name string
+		item inputqueue.DispatchItem
+	}{
+		{
+			name: "plan execution",
+			item: inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
+				ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{
+					ID: "input-plan", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
+				}},
+				Text: "Implement the approved plan.",
+			}},
+		},
+		{
+			name: "question answer",
+			item: inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
+				ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{
+					ID: "input-question", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+				}},
+				Text: "Red",
+			}},
+		},
+		{
+			name: "control feedback",
+			item: inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
+				ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{
+					ID: "input-feedback", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
+				}},
+				Text: "Use option B.",
+			}},
+		},
+	} {
+		t.Run("dispatch/"+tc.name, func(t *testing.T) {
+			result, err := adapter.Dispatch(tc.item)
+			require.NoError(t, err)
+			assert.Equal(t, wantSend, result.NativeReceipt)
+		})
+	}
+
+	steerResult, err := adapter.Steer(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
+		ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{
+			ID: "input-question", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+		}},
+		Text: "Red",
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, wantSteer, steerResult.NativeReceipt)
+}
+
+func TestCompactContextFallbackPropagatesNativeReceipt(t *testing.T) {
+	t.Parallel()
+	wantSend := agent.NativeInputReceipt{SessionID: "session-1", InputID: "native-compact-1", TurnID: "turn-compact"}
+
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	recorder := &receiptQuestionAgent{sendReceipt: wantSend}
+	svc.Agents.PutAgentForTest("agent-1", recorder)
+
+	result, err := (&agentInputQueueAdapter{svc: svc}).Dispatch(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
+		ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{
+			ID: "compact-1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT,
+		}},
+		Text: "/compact",
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, wantSend, result.NativeReceipt)
+	_, sent := recorder.deliveries()
+	assert.Equal(t, []string{"/compact"}, sent)
 }

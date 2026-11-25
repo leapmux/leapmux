@@ -41,14 +41,14 @@ func newCopilotFolderTrustHarness(t *testing.T, answers map[string]string) (copi
 
 // answerCopilotFolderTrust sends the saved answer to the folder-trust question,
 // as the worker forwards it.
-func answerCopilotFolderTrust(t *testing.T, a *Agent, requestID, decision string) error {
+func answerCopilotFolderTrust(t *testing.T, a *Agent, sink *agenttest.ControlSink, requestID, decision string) error {
 	t.Helper()
 	raw, err := json.Marshal(map[string]any{"type": "control_response", "response": map[string]any{
 		"subtype": "success", "request_id": requestID,
 		"response": map[string]string{contracts.WorkspaceTrustFieldDecision: decision},
 	}})
 	require.NoError(t, err)
-	return a.SendRawInput(agent.RawInput{Data: raw})
+	return a.SendRawInput(sink.Answer(requestID, raw))
 }
 
 // copilotFolderTrustRequestID identifies the question of the session `session-1`.
@@ -67,6 +67,21 @@ func TestFolderTrustAsksCopilotAboutTheWorkingDirectory(t *testing.T) {
 	assert.Equal(t, copilotFolderTrustRequestID, published.RequestID)
 	assert.JSONEq(t, `{"type":"leapmux_workspace_trust","path":"/work/project","configuration":["MCP servers"]}`, string(published.Payload))
 	agenttest.AssertPublishedControlKeys(t, copilotProvider{}, sink)
+}
+
+func TestFolderTrustRefusesUnstatedOrReplacedControlInstance(t *testing.T) {
+	t.Parallel()
+	h, sink := newCopilotFolderTrustHarness(t, nil)
+	h.agent.checkFolderTrust()
+	published := sink.LastPublishedControl()
+	raw, err := json.Marshal(map[string]any{"type": "control_response", "response": map[string]any{
+		"subtype": "success", "request_id": published.RequestID,
+		"response": map[string]string{contracts.WorkspaceTrustFieldDecision: contracts.WorkspaceTrustDecisionTrust},
+	}})
+	require.NoError(t, err)
+	require.ErrorIs(t, h.agent.SendRawInput(agent.RawInput{Data: raw}), agent.ErrControlInstanceUnstated)
+	require.ErrorIs(t, h.agent.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: "stale-instance"}), agent.ErrControlInstanceReplaced)
+	require.NoError(t, h.agent.SendRawInput(agent.RawInput{Data: raw, ControlInstanceID: published.InstanceID}))
 }
 
 // A trusted folder, a refused check and an answer without a verdict ask nothing.
@@ -92,7 +107,7 @@ func TestFolderTrustTrustAddsTheFolderAndLoadsTheProject(t *testing.T) {
 	t.Parallel()
 	h, sink := newCopilotFolderTrustHarness(t, nil)
 	h.agent.checkFolderTrust()
-	require.NoError(t, answerCopilotFolderTrust(t, h.agent, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionTrust))
+	require.NoError(t, answerCopilotFolderTrust(t, h.agent, sink, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionTrust))
 	assert.Equal(t, []string{
 		"session.permissions.folderTrust.isTrusted",
 		"session.permissions.folderTrust.addTrusted",
@@ -116,7 +131,7 @@ func TestFolderTrustRetiresTheQuestionAfterAFailedReload(t *testing.T) {
 		"sessions.loadDeferredRepoHooks": `{"error":{"code":-32603,"message":"hooks failed"}}`,
 	})
 	h.agent.checkFolderTrust()
-	require.NoError(t, answerCopilotFolderTrust(t, h.agent, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionTrust))
+	require.NoError(t, answerCopilotFolderTrust(t, h.agent, sink, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionTrust))
 	assert.Equal(t, []string{copilotFolderTrustRequestID}, sink.CanceledControls())
 }
 
@@ -135,7 +150,7 @@ func TestFolderTrustKeepsTheQuestionAfterARefusedTrust(t *testing.T) {
 			t.Parallel()
 			h, sink := newCopilotFolderTrustHarness(t, map[string]string{"session.permissions.folderTrust.addTrusted": test.answer})
 			h.agent.checkFolderTrust()
-			err := answerCopilotFolderTrust(t, h.agent, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionTrust)
+			err := answerCopilotFolderTrust(t, h.agent, sink, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionTrust)
 			require.ErrorContains(t, err, test.wantText)
 			assert.Empty(t, sink.CanceledControls())
 			assert.NotContains(t, h.methods(), "session.mcp.reload", "nothing loads before Copilot trusts the folder")
@@ -149,7 +164,7 @@ func TestFolderTrustRejectAsksNoMore(t *testing.T) {
 	t.Parallel()
 	h, sink := newCopilotFolderTrustHarness(t, nil)
 	h.agent.checkFolderTrust()
-	require.NoError(t, answerCopilotFolderTrust(t, h.agent, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionReject))
+	require.NoError(t, answerCopilotFolderTrust(t, h.agent, sink, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionReject))
 	assert.Equal(t, []string{"session.permissions.folderTrust.isTrusted"}, h.methods())
 	assert.Equal(t, []string{copilotFolderTrustRequestID}, sink.CanceledControls())
 
@@ -175,7 +190,7 @@ func TestFolderTrustAsksAgainInAReplacedSession(t *testing.T) {
 	require.Eventually(t, h.agent.backgroundWork.Idle, offReaderWait, time.Millisecond)
 	require.Equal(t, 2, sink.PublishedControlCount())
 	assert.Equal(t, providerkit.WorkspaceTrustRequestID(newID), sink.LastPublishedControl().RequestID)
-	err = answerCopilotFolderTrust(t, h.agent, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionTrust)
+	err = answerCopilotFolderTrust(t, h.agent, sink, copilotFolderTrustRequestID, contracts.WorkspaceTrustDecisionTrust)
 	require.ErrorIs(t, err, providerkit.ErrWorkspaceTrustClosed, "the question of the previous session takes no answer")
 }
 

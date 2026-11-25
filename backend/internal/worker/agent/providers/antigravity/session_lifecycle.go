@@ -17,40 +17,24 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-var (
-	_ agent.InputReceiptSender      = (*Agent)(nil)
-	_ agent.SteerReceiptSender      = (*Agent)(nil)
-	_ agent.ChildSteerReceiptSender = (*Agent)(nil)
-)
+var _ agent.ChildSteerer = (*Agent)(nil)
 
 type cascadeInputDelivery uint8
 
 const (
 	deliverPrompt cascadeInputDelivery = iota
-	deliverPromptWithReceipt
 	deliverSteer
 )
 
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput(nil, content, attachments, deliverPrompt)
-	return err
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, content, attachments, deliverPrompt)
 }
 
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendInput(nil, content, attachments, deliverPromptWithReceipt)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInput(&sessionID, content, attachments, deliverPrompt)
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput(&sessionID, content, attachments, deliverPrompt)
-	return err
-}
-
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.SteerInputWithReceipt(request)
-	return err
-}
-
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	return a.sendInput(nil, request.Content, request.Attachments, deliverSteer)
 }
 
@@ -69,18 +53,15 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 }
 
 func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
-	receipt, err := a.sendChild(childKey, input.Content, input.Attachments, deliverPromptWithReceipt)
+	receipt, err := a.sendChild(childKey, input.Content, input.Attachments, deliverPrompt)
 	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.SteerChildInputWithReceipt(childKey, content, attachments)
-	return err
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.sendChild(childKey, request.Content, request.Attachments, deliverSteer)
 }
 
-func (a *Agent) SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendChild(childKey, content, attachments, deliverSteer)
-}
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Attachment, delivery cascadeInputDelivery) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
@@ -200,7 +181,7 @@ func (a *Agent) sendToStateCommand(state *cascadeState, content string, attachme
 	}
 	request := map[string]any{"cascadeId": state.id, "items": items, "media": media, "cascadeConfig": config, "tags": []string{antigravityQueueInputTag}}
 	receipt := agent.NativeInputReceipt{}
-	if command == "" && (delivery == deliverPromptWithReceipt || delivery == deliverSteer) {
+	if command == "" {
 		receipt = agent.NativeInputReceipt{SessionID: state.id, InputID: id.Generate()}
 		if state.inputReplies == nil {
 			state.inputReplies = make(map[string]*inputReply)

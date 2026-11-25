@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 func deliverDroidReplyNotification(t *testing.T, a *Agent, payload map[string]any) {
@@ -68,7 +69,7 @@ func TestDroidReplyFollowsToolResultsBeforeTheInputResponse(t *testing.T) {
 				answerDroidInput(t, a, request.ID, refusedResponse)
 			}
 
-			receipt, err := a.SendInputWithReceipt("Check the reply.", nil)
+			receipt, err := a.SendInput("Check the reply.", nil)
 			require.NoError(t, err)
 			require.NotEmpty(t, receipt.InputID)
 			assert.Equal(t, receipt.InputID, receipt.TurnID)
@@ -101,7 +102,7 @@ func TestDroidReplyFollowsToolResultsBeforeTheInputResponse(t *testing.T) {
 func TestDroidReplyLeavesANewerTurnActiveWhenAnOlderTurnEnds(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
-	first, err := a.SendInputWithReceipt("Begin the first input.", nil)
+	first, err := a.SendInput("Begin the first input.", nil)
 	require.NoError(t, err)
 	deliverDroidReplyMessage(t, a, "", first.InputID, "root", "user")
 	deliverDroidReplyMessage(t, a, "", "first-reply", first.InputID, "assistant",
@@ -111,7 +112,7 @@ func TestDroidReplyLeavesANewerTurnActiveWhenAnOlderTurnEnds(t *testing.T) {
 		"type": contracts.DroidNotificationWorkingStateChanged, "newState": contracts.DroidWorkingStateIdle,
 	})
 
-	second, err := a.SendInputWithReceipt("Begin the second input.", nil)
+	second, err := a.SendInput("Begin the second input.", nil)
 	require.NoError(t, err)
 	deliverDroidReplyMessage(t, a, "", second.InputID, "first-reply", "user")
 	deliverDroidReplyMessage(t, a, "", "second-reply", second.InputID, "assistant",
@@ -131,7 +132,7 @@ func beginDroidTestReply(t *testing.T, a *Agent, requests <-chan droidEnvelope) 
 	t.Helper()
 	leadDone := make(chan agent.NativeInputReceipt, 1)
 	go func() {
-		receipt, err := a.SendInputWithReceipt("Begin the native turn.", nil)
+		receipt, err := a.SendInput("Begin the native turn.", nil)
 		assert.NoError(t, err)
 		leadDone <- receipt
 	}()
@@ -155,7 +156,7 @@ func TestDroidReplyStartsTheSteerAfterCommittedText(t *testing.T) {
 	})
 
 	steerDone := make(chan error, 1)
-	go func() { steerDone <- a.SteerInput(testDroidSteer(1, "Check a different result.")) }()
+	go func() { steerDone <- agenttest.SteerInput(a, testDroidSteer(1, "Check a different result.")) }()
 	steerRequest := receiveDroidInput(t, requests)
 	steer := testDroidSteerEcho(t, steerRequest, 1)
 	steer.Receipt.TurnID = lead.TurnID
@@ -188,7 +189,7 @@ func TestDroidSteerWithUnknownParentLeavesTheReplyUnproved(t *testing.T) {
 	a, sink, requests, _ := newDroidInputHarness(t)
 	lead := beginDroidTestReply(t, a, requests)
 	steerDone := make(chan error, 1)
-	go func() { steerDone <- a.SteerInput(testDroidSteer(1, "Check the revised result.")) }()
+	go func() { steerDone <- agenttest.SteerInput(a, testDroidSteer(1, "Check the revised result.")) }()
 	request := receiveDroidInput(t, requests)
 	steer := testDroidSteerEcho(t, request, 1)
 	steer.Receipt.TurnID = ""
@@ -210,7 +211,7 @@ func TestDroidSteerWithUnknownParentLeavesTheReplyUnproved(t *testing.T) {
 func TestDroidReplyRejectsAnAssistantMessageWithUnknownAncestry(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
-	receipt, err := a.SendInputWithReceipt("Begin the input.", nil)
+	receipt, err := a.SendInput("Begin the input.", nil)
 	require.NoError(t, err)
 	deliverDroidReplyMessage(t, a, "", receipt.InputID, "root", "user")
 	deliverDroidReplyMessage(t, a, "", "first-reply", receipt.InputID, "assistant",
@@ -226,7 +227,7 @@ func TestDroidReplyRejectsAnAssistantMessageWithUnknownAncestry(t *testing.T) {
 func TestDroidReplyCompletesWhenTheNativeTurnHasNoVisibleReply(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
-	receipt, err := a.SendInputWithReceipt("Begin the input.", nil)
+	receipt, err := a.SendInput("Begin the input.", nil)
 	require.NoError(t, err)
 	deliverDroidReplyMessage(t, a, "", receipt.InputID, "root", "user")
 	deliverDroidReplyEnd(t, a, receipt.TurnID)
@@ -241,17 +242,39 @@ func TestDroidReplyCompletesWhenTheNativeTurnHasNoVisibleReply(t *testing.T) {
 func TestDroidReplyKeepsAProvisionalTurnThroughAnOlderIdle(t *testing.T) {
 	t.Parallel()
 	a, _, _ := newSteerAgent(t)
-	receipt, err := a.SendInputWithReceipt("Begin the input.", nil)
+	receipt, err := a.SendInput("Begin the input.", nil)
 	require.NoError(t, err)
 
 	deliverDroidReplyNotification(t, a, map[string]any{
 		"type": contracts.DroidNotificationWorkingStateChanged, "newState": contracts.DroidWorkingStateIdle,
 	})
 	require.True(t, a.PublishTurnActive().Active)
-	_, err = a.SendInputWithReceipt("Another input.", nil)
+	_, err = a.SendInput("Another input.", nil)
 	require.ErrorIs(t, err, agent.ErrAgentBusy)
 
 	deliverDroidReplyMessage(t, a, "", receipt.InputID, "root", "user")
 	deliverDroidReplyEnd(t, a, receipt.TurnID)
 	assert.False(t, a.PublishTurnActive().Active)
+}
+
+func TestDroidSendInputForSessionReturnsReceiptAndTracksReply(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	receipt, err := a.SendInputForSession("main-session", "Check the session reply.", nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, receipt.InputID)
+	assert.Equal(t, "main-session", receipt.SessionID)
+	assert.Equal(t, receipt.InputID, receipt.TurnID)
+
+	deliverDroidReplyMessage(t, a, "", receipt.InputID, "root", "user")
+	deliverDroidReplyMessage(t, a, "", "session-reply", receipt.InputID, "assistant",
+		map[string]any{"type": "text", "text": "Session reply."})
+	deliverDroidReplyEnd(t, a, receipt.TurnID)
+
+	require.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: "main-session", TurnID: receipt.TurnID,
+		Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs:  []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: 1}},
+		Items:   []agent.NativeReplyItem{{Ordinal: 2, MessageKey: droidMessageWriteKey("session-reply", 0)}},
+	}}, sink.NativeReplyTurns())
 }

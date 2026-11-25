@@ -10,6 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 type droidTurnSnapshotSink struct {
@@ -49,7 +50,7 @@ func TestSendInputCarriesImageBytes(t *testing.T) {
 	a, _, stdin := newSteerAgent(t)
 	data := []byte{0x89, 'P', 'N', 'G', 0x00}
 
-	require.NoError(t, a.SendInput("Describe this.", []*leapmuxv1.Attachment{{
+	require.NoError(t, agenttest.SendInput(a, "Describe this.", []*leapmuxv1.Attachment{{
 		Filename: "shot.png", MimeType: "image/png", Data: data,
 	}}))
 	params := lastRequest(t, stdin)
@@ -83,14 +84,14 @@ func TestSendInputCarriesPDFBytes(t *testing.T) {
 			switch mode {
 			case "attachment only":
 				text = ""
-				err = a.SendInput(text, attachments)
+				err = agenttest.SendInput(a, text, attachments)
 			case "session checked":
-				err = a.SendInputForSession("main-session", text, attachments)
+				err = agenttest.SendInputForSession(a, "main-session", text, attachments)
 			case "steering":
 				a.startTurn()
-				err = a.SteerInput(agent.SteerRequest{Content: text, Attachments: attachments})
+				err = agenttest.SteerInput(a, agent.SteerRequest{Content: text, Attachments: attachments})
 			default:
-				err = a.SendInput(text, attachments)
+				err = agenttest.SendInput(a, text, attachments)
 			}
 			require.NoError(t, err)
 			params := lastRequest(t, stdin)
@@ -129,7 +130,7 @@ func TestPDFDeliveryUsesTheSelectedNativeModel(t *testing.T) {
 				models = append(models, tc.model)
 			}
 			installDroidPDFCatalog(t, a, "model", models)
-			err := a.SendInput("Inspect.", []*leapmuxv1.Attachment{{Filename: "sample.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
+			err := agenttest.SendInput(a, "Inspect.", []*leapmuxv1.Attachment{{Filename: "sample.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
 			if tc.allow {
 				require.NoError(t, err)
 				assert.Contains(t, lastRequest(t, stdin), "files")
@@ -149,14 +150,14 @@ func TestPDFDeliveryFollowsNativeModelChanges(t *testing.T) {
 		{"id": "compatible", "supportsPDFs": true}, {"id": "incompatible", "supportsPDFs": false},
 	})
 	attachments := []*leapmuxv1.Attachment{{Filename: "sample.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}}
-	require.NoError(t, a.SendInput("First.", attachments))
+	require.NoError(t, agenttest.SendInput(a, "First.", attachments))
 	a.endTurn()
 	a.onSettingsUpdated([]byte(`{"type":"settings_updated","settings":{"modelId":"incompatible"}}`))
-	require.ErrorContains(t, a.SendInput("Unsent.", attachments), "selected")
+	require.ErrorContains(t, agenttest.SendInput(a, "Unsent.", attachments), "selected")
 	assert.Len(t, stdin.frames(), 1)
 	assert.False(t, a.PublishTurnActive().Active)
 	a.onSettingsUpdated([]byte(`{"type":"settings_updated","settings":{"modelId":"compatible"}}`))
-	require.NoError(t, a.SendInput("Second.", attachments))
+	require.NoError(t, agenttest.SendInput(a, "Second.", attachments))
 	assert.Len(t, stdin.frames(), 2)
 }
 
@@ -167,7 +168,7 @@ func TestPDFDeliveryNeedsANativeSelectedModelIdentity(t *testing.T) {
 			t.Parallel()
 			a, _, stdin := newSteerAgent(t)
 			installDroidPDFCatalog(t, a, selected, []map[string]any{{"id": selected, "supportsPDFs": true}})
-			err := a.SendInput("Unsent.", []*leapmuxv1.Attachment{{Filename: "sample.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
+			err := agenttest.SendInput(a, "Unsent.", []*leapmuxv1.Attachment{{Filename: "sample.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
 			require.ErrorContains(t, err, "selected")
 			assert.Empty(t, stdin.frames())
 			assert.False(t, a.PublishTurnActive().Active)
@@ -233,7 +234,7 @@ func TestPDFDeliveryKeepsInputGuards(t *testing.T) {
 				want = errAgentStopped
 			}
 			before := a.PublishTurnActive().Active
-			err := a.SendInputForSession(sessionID, "Unsent.", []*leapmuxv1.Attachment{{Filename: "sample.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
+			err := agenttest.SendInputForSession(a, sessionID, "Unsent.", []*leapmuxv1.Attachment{{Filename: "sample.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
 			require.ErrorIs(t, err, want)
 			assert.Empty(t, stdin.frames())
 			assert.Equal(t, before, a.PublishTurnActive().Active)
@@ -257,7 +258,7 @@ func TestInputAdmissionHoldsSettingsOrder(t *testing.T) {
 		}
 		original(request)
 	}
-	require.NoError(t, a.SendInput("One ordered input.", nil))
+	require.NoError(t, agenttest.SendInput(a, "One ordered input.", nil))
 	assert.True(t, observed)
 	require.True(t, a.settingsApplyMu.TryLock(), "input acknowledgment must release the settings transaction")
 	a.settingsApplyMu.Unlock()
@@ -268,7 +269,7 @@ func TestSteerInputWritesNativeSteeringPlacement(t *testing.T) {
 	a, _, stdin := newSteerAgent(t)
 	a.startTurn()
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "guide this turn"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "guide this turn"}))
 	params := lastRequest(t, stdin)
 	assert.Equal(t, "end_of_turn", params["queuePlacement"], "Droid processes this placement during a running turn")
 	assert.True(t, a.PublishTurnActive().Active)

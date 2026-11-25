@@ -318,7 +318,7 @@ func TestDiracStopConfirmsTheLaunchedProfileBeforeEOF(t *testing.T) {
 	assert.Equal(t, "Witten", metadata.Tasklets[0].Record.ID)
 	require.NoError(t, os.Remove(filepath.Join(profile, "data", "acp-session-runtime-configs", diracStartupSessionID+".json")))
 
-	require.NoError(t, a.SendInput("hold the model response", nil))
+	require.NoError(t, agenttest.SendInput(a, "hold the model response", nil))
 
 	// A valid old checkpoint in the Worker's assumed archive cannot satisfy this stop.
 	writeDiracCheckpointStore(t, workerProfile, diracStartupSessionID, runtimeConfig("task", "act"), matchingHistory("task", diracStartupSessionID), "task", map[string]string{
@@ -399,7 +399,7 @@ dirac_test_callable() {
 	assert.Equal(t, redirect, events[0].Profile)
 	assert.Empty(t, a.checkpointProfile())
 	assert.Equal(t, fallback, a.root, "child archive history keeps the Worker fallback")
-	require.NoError(t, a.SendInput("hold the model response", nil))
+	require.NoError(t, agenttest.SendInput(a, "hold the model response", nil))
 	writeDiracCheckpointStore(t, fallback, diracStartupSessionID, runtimeConfig("task", "act"), `[]`, "task", nil)
 
 	awaitDiracTestStop(t, startDiracTestStop(t, a, 2))
@@ -439,7 +439,7 @@ exec "$LEAPMUX_TEST_DIRAC_PEER" "$@"
 	require.Len(t, events, 1)
 	assert.Equal(t, redirect, events[0].Profile)
 	assert.Equal(t, observed, a.checkpointProfile())
-	require.NoError(t, a.SendInput("hold the model response", nil))
+	require.NoError(t, agenttest.SendInput(a, "hold the model response", nil))
 	writeDiracCheckpointStore(t, observed, "old-session", runtimeConfig("task", "act"),
 		matchingHistory("task", diracStartupSessionID), "task", map[string]string{
 			"api_conversation_history.jsonl": diracUserMessageHistory,
@@ -516,7 +516,7 @@ func TestDiracStopDisposesAReadThatOutlivesTheDeadline(t *testing.T) {
 	require.NoError(t, err)
 	a := started.(*Agent)
 	t.Cleanup(a.Stop)
-	require.NoError(t, a.SendInput("hold the model response", nil))
+	require.NoError(t, agenttest.SendInput(a, "hold the model response", nil))
 	entered, release, closed := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	releaseRead := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseRead)
@@ -532,7 +532,7 @@ func TestDiracStopDisposesAReadThatOutlivesTheDeadline(t *testing.T) {
 
 	finished := startDiracTestStop(t, a, 2)
 	awaitDiracTestStop(t, entered)
-	assert.Error(t, a.SteerInput(agent.SteerRequest{
+	assert.Error(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID: "late-whisper",
 		Content: "whisper after stop admission closes",
 	}))
@@ -621,7 +621,7 @@ func TestDiracStopReleasesBlockedStdinAtTheCheckpointDeadline(t *testing.T) {
 			require.NoError(t, err)
 			a := started.(*Agent)
 			t.Cleanup(a.Stop)
-			require.NoError(t, a.SendInput("hold the model response", nil))
+			require.NoError(t, agenttest.SendInput(a, "hold the model response", nil))
 			writeDiracCheckpointStore(t, profile, diracStartupSessionID, runtimeConfig("task", "act"), matchingHistory("task", diracStartupSessionID), "task", map[string]string{
 				"api_conversation_history.jsonl": "{not a record}\n",
 			})

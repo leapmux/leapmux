@@ -88,7 +88,6 @@ type Agent struct {
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerEchoReporter = (*Agent)(nil)
-var _ agent.InputReceiptSender = (*Agent)(nil)
 var _ agent.NativeTurnRestarter = (*Agent)(nil)
 
 // SteerRowAtEcho keeps a steered queue item until CodeBuddy emits its durable
@@ -189,46 +188,40 @@ func (a *Agent) setTurnActive(active bool) {
 }
 
 // SendInput delivers one user message over stdin. The write IS the delivery.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(nil, content, attachments, nil)
-}
-
-// SendInputWithReceipt supplies the turn ID that CodeBuddy will adopt for the input.
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	var receipt agent.NativeInputReceipt
-	err := a.sendInputForSession(nil, content, attachments, &receipt)
-	return receipt, err
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputForSession(nil, content, attachments)
 }
 
 // SendInputForSession validates the session while constructing the request.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInputForSession(&sessionID, content, attachments, nil)
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputForSession(&sessionID, content, attachments)
 }
 
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, receipt *agent.NativeInputReceipt) error {
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	if a.IsStopped() {
-		return fmt.Errorf("the CodeBuddy process is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the CodeBuddy process is stopped")
 	}
 	words := strings.Fields(content)
 	manualCompaction := len(attachments) == 0 && len(words) > 0 && words[0] == "/compact"
+	var receipt agent.NativeInputReceipt
 	var meta *inputMeta
 	a.mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.active {
 		a.mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
-	if receipt != nil && !manualCompaction && a.sessionID != "" {
+	if !manualCompaction && a.sessionID != "" {
 		turnID, err := newInputTurnID()
 		if err != nil {
 			a.mu.Unlock()
-			return err
+			return agent.NativeInputReceipt{}, err
 		}
-		*receipt = agent.NativeInputReceipt{SessionID: a.sessionID, InputID: turnID, TurnID: turnID}
-		a.inputReply = &inputReply{receipt: *receipt}
+		receipt = agent.NativeInputReceipt{SessionID: a.sessionID, InputID: turnID, TurnID: turnID}
+		a.inputReply = &inputReply{receipt: receipt}
 		meta = &inputMeta{ConversationRequestID: turnID}
 	}
 	a.active = true
@@ -260,13 +253,13 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	raw, err := json.Marshal(msg)
 	if err != nil {
 		a.setTurnActive(false)
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if err := a.SendRawInput(agent.RawInput{Data: raw}); err != nil {
 		a.setTurnActive(false)
-		return providerkit.ClassifyJSONRPCDeliveryError("user", err)
+		return agent.NativeInputReceipt{}, providerkit.ClassifyJSONRPCDeliveryError("user", err)
 	}
-	return nil
+	return receipt, nil
 }
 
 // SupportsSteering reports true: CodeBuddy carries a `steer` control request
@@ -284,15 +277,15 @@ func (a *Agent) SupportsSteering() bool { return true }
 // The refusal depends on the input alone, so it comes before the turn check.
 //
 // See codebuddySteerOutcome for how the answer of CodeBuddy maps to the result.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	if a.IsStopped() {
-		return fmt.Errorf("the CodeBuddy process is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the CodeBuddy process is stopped")
 	}
 	classified := agent.ClassifyAttachments(attachments)
 	for _, attachment := range classified {
 		if attachment.Kind != contracts.AttachmentMediaKindText {
-			return fmt.Errorf("%w: CodeBuddy steers a running turn with text only, so %q goes in the next turn",
+			return agent.NativeInputReceipt{}, fmt.Errorf("%w: CodeBuddy steers a running turn with text only, so %q goes in the next turn",
 				agent.ErrSteeringUnsupported, attachment.Filename)
 		}
 	}
@@ -320,7 +313,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	}
 	a.mu.Unlock()
 	if !active {
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if tracked != nil {
 		defer a.cancelInFlightSteer(tracked)
@@ -335,7 +328,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	var observer func(codebuddyControlResult, error)
 	if tracked != nil {
@@ -343,7 +336,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 			a.finishInFlightSteer(tracked, codebuddySteerOutcome(resp, respErr) == nil)
 		}
 	}
-	return codebuddySteerOutcome(a.sendControlAndWaitObserved(string(body), a.APITimeout(), observer))
+	return agent.NativeInputReceipt{}, codebuddySteerOutcome(a.sendControlAndWaitObserved(string(body), a.APITimeout(), observer))
 }
 
 // codebuddySteerOutcome maps the answer of CodeBuddy to a steer request (its

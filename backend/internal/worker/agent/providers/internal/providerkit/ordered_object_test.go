@@ -38,6 +38,14 @@ func TestOrderedObjectMergeKeepsTheOrderOfEachSide(t *testing.T) {
 	assert.Equal(t, `{"patterns":["ls"],"cwd":"/new","timeout":5}`, string(object.Encode()), "a merged key that the object holds keeps its place, as Object.assign keeps it")
 }
 
+func TestOrderedObjectMergeIgnoresNil(t *testing.T) {
+	t.Parallel()
+	var object OrderedObject
+	object.Set("a", json.RawMessage(`1`))
+	assert.NotPanics(t, func() { object.Merge(nil) })
+	assert.Equal(t, `{"a":1}`, string(object.Encode()))
+}
+
 func TestOrderedObjectEncodesKeysAsJSONStringify(t *testing.T) {
 	t.Parallel()
 	var object OrderedObject

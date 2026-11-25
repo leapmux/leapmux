@@ -151,7 +151,7 @@ func DefaultControlResponseResolution(ctx ControlResponseContext) ControlRespons
 	return restoreControlResponseID(ctx)
 }
 
-// defaultControlResponseRequestID reads the stored-control-request lookup id from a raw
+// ControlResponseRequestID reads the stored-control-request lookup id from a raw
 // control response. It tries the neutral approve/reject envelope first
 // (DecodeControlBehavior: {response:{request_id, ...}}, which ControlResponseEnvelope writes) and
 // falls back to a top-level JSON-RPC id (ExtractJSONRPCID, used by the ACP family and Codex). When
@@ -165,7 +165,7 @@ func DefaultControlResponseResolution(ctx ControlResponseContext) ControlRespons
 // under -- as a JSON STRING in that field (JSONRPCResult). So the text already IS the stored
 // key, and running it through
 // NewControlRequestIdentity would prefix it a second time and match nothing.
-func defaultControlResponseRequestID(content []byte) string {
+func (ProviderDefaults) ControlResponseRequestID(content []byte) string {
 	if requestID, _, _, ok := DecodeControlBehavior(content); ok && requestID != "" {
 		return requestID
 	}
@@ -173,10 +173,6 @@ func defaultControlResponseRequestID(content []byte) string {
 		return requestID
 	}
 	return ""
-}
-
-func (ProviderDefaults) ControlResponseRequestID(content []byte) string {
-	return defaultControlResponseRequestID(content)
 }
 
 func (ProviderDefaults) ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution {
@@ -194,7 +190,7 @@ type ControlBehaviorEnvelope struct {
 			// Choice is the id of one of the choices a control request offered
 			// beside its plain approve and reject: a plan's own approach, a
 			// refusal that also ends plan mode. Empty for a plain decision.
-			// AnswerControlRequest writes it (WithControlChoice), and each
+			// AnswerControlRequest writes it (ControlBehaviorResponse.Choice), and each
 			// provider maps the id onto its own wire answer.
 			Choice string `json:"choice"`
 		} `json:"response"`
@@ -248,7 +244,7 @@ func DecodeControlUpdatedInput(content []byte) map[string]any {
 // rejection reason, with the contracts.ControlAnswerMessageRejectedByUser sentinel (an auto-filled placeholder,
 // not a real reason) collapsed to "". The SINGLE home for the sentinel rule, shared by the Codex
 // feedback path, the Cursor create-plan transform, and the shared control-response request-id
-// default (defaultControlResponseRequestID), so a sentinel change lands in exactly one place.
+// default (ProviderDefaults.ControlResponseRequestID), so a sentinel change lands in exactly one place.
 func DecodeControlBehavior(content []byte) (requestID, behavior, message string, ok bool) {
 	var cr ControlBehaviorEnvelope
 	if err := json.Unmarshal(content, &cr); err != nil {

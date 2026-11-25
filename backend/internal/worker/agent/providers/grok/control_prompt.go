@@ -173,7 +173,7 @@ var _ acp.RejectReason = grokRejectReason
 // Grok reads it from `_meta.followup_message`: it gives the text to the model
 // and the turn goes on, where a bare refusal ends the turn.
 func grokRejectReason(result map[string]any, reason string) map[string]any {
-	return providerkit.WithACPMeta(result, reason, contracts.GrokReplyFieldFollowupMessage)
+	return acp.WithMeta(result, reason, contracts.GrokReplyFieldFollowupMessage)
 }
 
 // grokQuestionAnswer answers a question dialog. A cancellation takes Grok's

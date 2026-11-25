@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -252,17 +251,15 @@ func (a *Agent) SendChildInput(key string, input agent.ChildInput) (agent.ChildI
 	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 
-func (a *Agent) SteerChildInput(key, text string, attachments []*leapmuxv1.Attachment) error {
-	return a.SteerChildInputAtEcho(key, agent.SteerRequest{Content: text, Attachments: attachments})
-}
-
-func (a *Agent) SteerChildInputAtEcho(key string, request agent.SteerRequest) error {
+func (a *Agent) SteerChildInput(key string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	_, err := a.childInput(key, agent.ChildInput{InputID: request.InputID, Content: request.Content, Attachments: request.Attachments}, true, request.AttemptID)
-	return err
+	return agent.NativeInputReceipt{}, err
 }
 
-// ChildSteerSurvivesTurnEnd keeps an admitted note until its receiving run is proved.
-func (*Agent) ChildSteerSurvivesTurnEnd() bool { return true }
+// ChildSteerPolicy holds the steer row until echo and keeps an admitted note until its receiving run is proved.
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}
+}
 
 type museChildInputCommand struct {
 	inputID        string

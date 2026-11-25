@@ -208,12 +208,13 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 }
 
 func TestBuildNuCommand_SingleQuoteInArgs(t *testing.T) {
-	inner := buildNuCommand(prepareShellLaunch(WrapSpec{
+	inner, err := nuDialect{}.buildCommand(prepareShellLaunch(nuDialect{}, WrapSpec{
 		Launch:       Spec{Program: "claude"},
 		StripEnvKeys: []string{"CLAUDECODE"},
 		BaseArgs:     []string{"--output-format", "stream-json"},
 		EnvGated:     testEnvGate("--model", "it's-a-model"),
 	}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__", MetaPrefix: "__META__ "})
+	require.NoError(t, err)
 	// Single quotes in args must be safely double-quoted, not POSIX-quoted.
 	assert.Contains(t, inner, `"it's-a-model"`)
 	assert.NotContains(t, inner, `'\''`)
@@ -437,12 +438,14 @@ func TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel_NuAndPwsh(t *testi
 }
 
 func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
-	inner := buildPosixCommand("sh", prepareShellLaunch(WrapSpec{
+	dialect := posixDialect{shell: "sh"}
+	inner, err := dialect.buildCommand(prepareShellLaunch(dialect, WrapSpec{
 		Launch:       Spec{Program: "claude"},
 		StripEnvKeys: []string{"CLAUDECODE"},
 		BaseArgs:     []string{"--output-format", "stream-json"},
 		EnvGated:     testEnvGate("--model", "opus", "--effort", "high"),
 	}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__", MetaPrefix: "__META__ "})
+	require.NoError(t, err)
 
 	// The else branch should contain the gated args
 	parts := strings.SplitN(inner, "\nelse\n", 2)
@@ -492,35 +495,43 @@ func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers_NuAndPwsh(t *testing.
 func TestBuildShellWrappedCommand_QuotesProgramPathWithSpace(t *testing.T) {
 	const program = `/Applications/My Tools/node`
 
-	posix := buildPosixCommand("sh", prepareShellLaunch(WrapSpec{
+	sh := posixDialect{shell: "sh"}
+	posix, err := sh.buildCommand(prepareShellLaunch(sh, WrapSpec{
 		Launch:   Spec{Program: program},
 		BaseArgs: []string{"/opt/zcode.cjs", "app-server", "--stdio"},
 	}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	require.NoError(t, err)
 	assert.Contains(t, posix, "__lm_path='"+program+"'")
 
-	nu := buildNuCommand(prepareShellLaunch(WrapSpec{
+	nu, err := nuDialect{}.buildCommand(prepareShellLaunch(nuDialect{}, WrapSpec{
 		Launch:   Spec{Program: program},
 		BaseArgs: []string{"/opt/zcode.cjs"},
 	}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	require.NoError(t, err)
 	assert.Contains(t, nu, `^"`+program+`"`)
 
-	pwsh := buildPwshCommand(prepareShellLaunch(WrapSpec{
+	pwsh, err := pwshDialect{}.buildCommand(prepareShellLaunch(pwshDialect{}, WrapSpec{
 		Launch:   Spec{Program: program},
 		BaseArgs: []string{"/opt/zcode.cjs"},
 	}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	require.NoError(t, err)
 	assert.Contains(t, pwsh, "__leapmux_lookup '"+program+"'")
 }
 
 // The quoting must also survive a quote character inside the path, using each
 // dialect's own escape (POSIX '\”, PowerShell doubled ”, Nushell \").
 func TestBuildShellWrappedCommand_EscapesQuoteInProgramPath(t *testing.T) {
-	posix := buildPosixCommand("sh", prepareShellLaunch(WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	sh := posixDialect{shell: "sh"}
+	posix, err := sh.buildCommand(prepareShellLaunch(sh, WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	require.NoError(t, err)
 	assert.Contains(t, posix, `__lm_path='/opt/it'\''s/node'`)
 
-	pwsh := buildPwshCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	pwsh, err := pwshDialect{}.buildCommand(prepareShellLaunch(pwshDialect{}, WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	require.NoError(t, err)
 	assert.Contains(t, pwsh, `__leapmux_lookup '/opt/it''s/node'`)
 
-	nu := buildNuCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: `/opt/say"hi"/node`}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	nu, err := nuDialect{}.buildCommand(prepareShellLaunch(nuDialect{}, WrapSpec{Launch: Spec{Program: `/opt/say"hi"/node`}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	require.NoError(t, err)
 	assert.Contains(t, nu, `^"/opt/say\"hi\"/node"`)
 }
 
@@ -528,14 +539,16 @@ func TestBuildShellWrappedCommand_EscapesQuoteInProgramPath(t *testing.T) {
 // a command that no PATH entry supplies must exit 127 as POSIX shells do, so
 // the absent-CLI mappings of the providers keep working under pwsh.
 func TestBuildPwshCommand_PropagatesExitCodes(t *testing.T) {
-	pwsh := buildPwshCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: "/opt/node"}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	pwsh, err := pwshDialect{}.buildCommand(prepareShellLaunch(pwshDialect{}, WrapSpec{Launch: Spec{Program: "/opt/node"}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
+	require.NoError(t, err)
 	assert.Contains(t, pwsh, "exit $LASTEXITCODE")
 	assert.Contains(t, pwsh, "if ($null -eq $__lm_selected) { exit 127 }")
 
-	gated := buildPwshCommand(prepareShellLaunch(WrapSpec{
+	gated, err := pwshDialect{}.buildCommand(prepareShellLaunch(pwshDialect{}, WrapSpec{
 		Launch:   Spec{Program: "/opt/node"},
 		EnvGated: &EnvGatedArgs{EnvVars: []string{"ELECTRON_RUN_AS_NODE"}, Args: []string{"--node"}},
 	}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__", MetaPrefix: "__META__ "})
+	require.NoError(t, err)
 	assert.Contains(t, gated, "exit $LASTEXITCODE")
 	assert.Contains(t, gated, "if ($null -eq $__lm_selected) { exit 127 }")
 }
@@ -616,7 +629,7 @@ func TestBuildShellWrappedCommand_NoLaunchEnvLeavesTheEnvironmentInherited(t *te
 // Every dialect prepends the same way, or a bundled provider would work on one shell
 // and start with no script on another.
 func TestBuildShellWrappedCommand_EveryDialectPrependsThePrefixArgs(t *testing.T) {
-	for _, shell := range []string{"/bin/bash", "/bin/zsh", "/usr/bin/fish", "/usr/bin/nu", "/usr/bin/pwsh", "/bin/tcsh", "/usr/bin/xonsh"} {
+	for _, shell := range []string{"/bin/bash", "/bin/zsh", "/usr/bin/fish", "/usr/bin/nu", "/usr/bin/elvish", "/usr/bin/pwsh", "/bin/tcsh", "/usr/bin/xonsh"} {
 		t.Run(shell, func(t *testing.T) {
 			cmd, _, _ := wrapTestCommand(t, context.Background(), WrapSpec{
 				Shell:      shell,
@@ -675,6 +688,7 @@ func TestBuildShellWrappedCommand_EveryDialectSetsTheSetEnvEntries(t *testing.T)
 		{"/usr/bin/fish", []string{`set --global --export LEAPMUX_TEST_PORT "$__LEAPMUX_PIN_`, `set --global --export LEAPMUX_TEST_PATH "$__LEAPMUX_PIN_`}},
 		{"/bin/tcsh", []string{`setenv LEAPMUX_TEST_PORT ${__LEAPMUX_PIN_`, `setenv LEAPMUX_TEST_PATH ${__LEAPMUX_PIN_`}},
 		{"/usr/bin/nu", []string{`$env.LEAPMUX_TEST_PORT = $env.__LEAPMUX_PIN_`, `$env.LEAPMUX_TEST_PATH = $env.__LEAPMUX_PIN_`}},
+		{"/usr/bin/elvish", []string{`__lm_builtin:set-env 'LEAPMUX_TEST_PORT' (__lm_builtin:get-env '__LEAPMUX_PIN_`, `__lm_builtin:set-env 'LEAPMUX_TEST_PATH' (__lm_builtin:get-env '__LEAPMUX_PIN_`}},
 		{"/usr/bin/pwsh", []string{`$env:LEAPMUX_TEST_PORT = $env:__LEAPMUX_PIN_`, `$env:LEAPMUX_TEST_PATH = $env:__LEAPMUX_PIN_`}},
 		{"/usr/bin/xonsh", []string{`__leapmux_pin("LEAPMUX_TEST_PORT", "__LEAPMUX_PIN_`, `__leapmux_pin("LEAPMUX_TEST_PATH", "__LEAPMUX_PIN_`}},
 	}

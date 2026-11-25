@@ -496,7 +496,7 @@ func PersistPreparedMessage(writer TranscriptServices, source leapmuxv1.MessageS
 	if err := validateOrderedContent(source, template); err != nil {
 		return err
 	}
-	if prepared, ok := writer.(PreparedTranscriptWriter); ok {
+	if prepared := preparedTranscriptWriterFor(writer); prepared != nil {
 		return prepared.PersistPreparedMessage(source, template, span, prepare)
 	}
 	if OutputQueueFor(writer) == nil {
@@ -514,6 +514,47 @@ func PersistPreparedMessage(writer TranscriptServices, source leapmuxv1.MessageS
 	})
 }
 
+func preparedTranscriptWriterFor(writer TranscriptServices) PreparedTranscriptWriter {
+	for {
+		if prepared, ok := writer.(PreparedTranscriptWriter); ok {
+			return prepared
+		}
+		switch value := writer.(type) {
+		case *orderedProviderServices:
+			writer = value.ProviderServices
+		case orderedTranscript:
+			writer = value.TranscriptServices
+		case providerServices:
+			writer = value.TranscriptServices
+		case modelProgressResetTranscript:
+			inner := preparedTranscriptWriterFor(value.TranscriptServices)
+			if inner == nil {
+				return nil
+			}
+			return preparedModelProgressResetWriter{inner: inner, reset: value}
+		default:
+			return nil
+		}
+	}
+}
+
+type preparedModelProgressResetWriter struct {
+	inner PreparedTranscriptWriter
+	reset modelProgressResetTranscript
+}
+
+func (w preparedModelProgressResetWriter) PersistPreparedMessage(source leapmuxv1.MessageSource, template MessageContent, span SpanInfo, prepare func() []byte) error {
+	if template.WriteReceipt == nil {
+		template.WriteReceipt = NewTranscriptWriteReceipt()
+	}
+	template = w.reset.CaptureMessage(template, span)
+	err := w.inner.PersistPreparedMessage(source, template, span, prepare)
+	if err == nil && source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && span.ParentSpanID == "" {
+		w.reset.resetModelProgress(template)
+	}
+	return err
+}
+
 // OutputQueueFor returns the ordering queue of an ordered transcript writer.
 func OutputQueueFor(writer TranscriptServices) *OutputQueue {
 	switch value := writer.(type) {
@@ -521,6 +562,8 @@ func OutputQueueFor(writer TranscriptServices) *OutputQueue {
 		return value.transcript.queue
 	case orderedTranscript:
 		return value.queue
+	case providerServices:
+		return OutputQueueFor(value.TranscriptServices)
 	default:
 		if owner, ok := writer.(interface{ OutputQueue() *OutputQueue }); ok {
 			return owner.OutputQueue()
@@ -568,6 +611,12 @@ func directForQueue(queue *OutputQueue, services ProviderServices) ProviderServi
 			services = ordered.ProviderServices
 			continue
 		}
+		if composed, ok := services.(providerServices); ok {
+			if next, unwrapped := composed.directForQueue(queue); unwrapped && next != nil {
+				services = next
+				continue
+			}
+		}
 		if provider, ok := services.(directForQueueProvider); ok {
 			if next, unwrapped := provider.DirectProviderServicesForQueue(queue); unwrapped && next != nil {
 				services = next
@@ -581,6 +630,21 @@ func directForQueue(queue *OutputQueue, services ProviderServices) ProviderServi
 // DirectProviderServices exposes provider effects when a sequence already owns their order.
 func DirectProviderServices(services ProviderServices) ProviderServices {
 	return directForQueue(nil, services)
+}
+
+// DecorateProviderServices wraps inner with wrap while keeping any outer
+// *orderedProviderServices on the outside, so a provider decorator cannot trap
+// an inner OutputQueue below another ordered wrapper.
+func DecorateProviderServices(inner ProviderServices, wrap func(direct ProviderServices) ProviderServices) ProviderServices {
+	if inner == nil || wrap == nil {
+		return inner
+	}
+	if queue := OutputQueueFor(inner); queue != nil {
+		if direct := directForQueue(queue, inner); direct != inner {
+			return NewOrderedProviderServices(queue, wrap(direct))
+		}
+	}
+	return wrap(inner)
 }
 
 // OrderedTranscript shares one output queue with the caller's generation buffers.
@@ -851,6 +915,9 @@ func (services *orderedProviderServices) CancelServerErrorRetry() {
 // ChildSink gives each child a stable queue and retains the child's original writer.
 func (services *orderedProviderServices) ChildSink(childAgentID string) ProviderServices {
 	child := services.ProviderServices.ChildSink(childAgentID)
+	if child == nil {
+		return nil
+	}
 	return NewOrderedProviderServices(OutputQueueFor(child), child)
 }
 
@@ -861,11 +928,29 @@ func (services *orderedProviderServices) AcquireChildSink(childAgentID string) C
 	}
 	return lease
 }
-func (services *orderedProviderServices) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
-	return services.ChildSink(childAgentID).PersistMessage(source, MessageContent{Original: content}, span)
+
+func (services *orderedProviderServices) AcquireChildStateSink(childAgentID string) ChildSinkLease {
+	lease := services.ProviderServices.AcquireChildStateSink(childAgentID)
+	if lease.Sink != nil {
+		lease.Sink = NewOrderedProviderServices(OutputQueueFor(lease.Sink), lease.Sink)
+	}
+	return lease
 }
+
+func (services *orderedProviderServices) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
+	child := services.ChildSink(childAgentID)
+	if child == nil {
+		return errors.New("the child transcript sink is unavailable")
+	}
+	return child.PersistMessage(source, MessageContent{Original: content}, span)
+}
+
 func (services *orderedProviderServices) PersistChildTurnEnd(childAgentID string, content MessageContent, span SpanInfo) error {
-	return services.ChildSink(childAgentID).PersistTurnEnd(content, span)
+	child := services.ChildSink(childAgentID)
+	if child == nil {
+		return errors.New("the child transcript sink is unavailable")
+	}
+	return child.PersistTurnEnd(content, span)
 }
 
 // ValidateTranscriptOutputTicket checks that a reservation has an ordering queue.

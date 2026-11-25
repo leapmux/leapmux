@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -79,7 +80,7 @@ func answerOpenCodePermission(input agent.ControlAnswerInput) (agent.ControlAnsw
 	if feedback := decision.GetFeedback(); feedback != "" {
 		return agent.ControlAnswer{Content: agent.DenyResponse(input.RequestID, feedback)}, nil
 	}
-	return agent.ControlAnswer{Content: agent.SelectedOptionResult(input.RequestID, option.GetOptionId())}, nil
+	return agent.ControlAnswer{Content: acp.SelectedOptionResult(input.RequestID, option.GetOptionId())}, nil
 }
 
 // answerOpenCodeQuestions answers the questions of a question-tool form in
@@ -331,16 +332,20 @@ func openCodeQuestionOptions(raw json.RawMessage) []*leapmuxv1.QuestionOption {
 	return options
 }
 
-// openCodeSelectionCount reads a count of selections, or nil for a value that
-// is no number. round turns a fraction into the whole count that admits the
-// same selections: a minimum rounds up, and a maximum rounds down. The count
-// saturates at the limits of int32.
+// openCodeSelectionCount reads a non-negative count of selections, or nil for
+// a value that is negative or not a number. round turns a fraction into the
+// whole count that admits the same selections: a minimum rounds up, and a
+// maximum rounds down. The count caps at math.MaxInt32.
 func openCodeSelectionCount(raw json.RawMessage, round func(float64) float64) *int32 {
 	value, ok := providerkit.RawFloat64(raw)
 	if !ok {
 		return nil
 	}
-	count := int32(max(math.MinInt32, min(math.MaxInt32, round(value))))
+	rounded := round(value)
+	if rounded < 0 {
+		return nil
+	}
+	count := int32(min(float64(math.MaxInt32), rounded))
 	return &count
 }
 

@@ -11,6 +11,9 @@ import (
 // QuestionOptionValue is what an answer sends for option: its value, or its
 // label when it states none.
 func QuestionOptionValue(option *leapmuxv1.QuestionOption) string {
+	if option == nil {
+		return ""
+	}
 	if option.Value != nil {
 		return option.GetValue()
 	}
@@ -121,8 +124,8 @@ func QuestionAnswerValues(question *leapmuxv1.ControlQuestion, answer *leapmuxv1
 // QuestionAnswerAt returns the answer to question i, or an empty answer for
 // a question that the decision leaves unanswered.
 func QuestionAnswerAt(decision *leapmuxv1.QuestionDecision, i int) *leapmuxv1.QuestionAnswer {
-	if i < len(decision.GetAnswers()) {
-		return decision.GetAnswers()[i]
+	if answers := decision.GetAnswers(); i >= 0 && i < len(answers) && answers[i] != nil {
+		return answers[i]
 	}
 	return &leapmuxv1.QuestionAnswer{}
 }
@@ -161,15 +164,6 @@ func PlanDecisionOf(input ControlAnswerInput) (*leapmuxv1.PlanDecision, error) {
 	return decision, nil
 }
 
-// PlanApprovalSettingsOf is the LeapMux settings of an approving plan
-// decision. The browser sends them with every approval, empty ones too.
-func PlanApprovalSettingsOf(decision *leapmuxv1.PlanDecision) *leapmuxv1.PlanApprovalSettings {
-	return &leapmuxv1.PlanApprovalSettings{
-		PermissionMode: decision.GetPermissionMode(),
-		ClearContext:   decision.GetClearContext(),
-	}
-}
-
 // AnswerNeutralPlan answers a plan prompt with the neutral envelope: an
 // approval allows with the request's own input and carries the LeapMux
 // settings, a refusal denies with the feedback, and a choice rides beside
@@ -179,19 +173,26 @@ func AnswerNeutralPlan(input ControlAnswerInput) (ControlAnswer, error) {
 	if err != nil {
 		return ControlAnswer{}, err
 	}
-	var answer ControlAnswer
 	if decision.GetApprove() {
-		answer = ControlAnswer{
-			Content:      AllowResponse(input.RequestID, ControlToolInput(input.Request.Payload)),
-			PlanApproval: PlanApprovalSettingsOf(decision),
-		}
-	} else {
-		answer = ControlAnswer{Content: DenyResponse(input.RequestID, decision.GetFeedback())}
+		return ControlAnswer{
+			Content: ControlResponseEnvelope(input.RequestID, ControlBehaviorResponse{
+				Behavior:     contracts.ControlAnswerBehaviorAllow,
+				UpdatedInput: ControlToolInput(input.Request.Payload),
+				Choice:       decision.GetChoiceId(),
+			}),
+			PlanApproval: &leapmuxv1.PlanApprovalSettings{
+				PermissionMode: decision.GetPermissionMode(),
+				ClearContext:   decision.GetClearContext(),
+			},
+		}, nil
 	}
-	if decision.GetChoiceId() != "" {
-		answer.Content = WithControlChoice(answer.Content, decision.GetChoiceId())
-	}
-	return answer, nil
+	return ControlAnswer{
+		Content: ControlResponseEnvelope(input.RequestID, ControlBehaviorResponse{
+			Behavior: contracts.ControlAnswerBehaviorDeny,
+			Message:  DenyMessage(decision.GetFeedback()),
+			Choice:   decision.GetChoiceId(),
+		}),
+	}, nil
 }
 
 // ElicitationDecisionOf returns the elicitation decision of input, checked
@@ -219,8 +220,7 @@ func ElicitationDecisionOf(input ControlAnswerInput) (*leapmuxv1.ElicitationDeci
 		if mode := prompt.GetMode(); mode != "" && mode != contracts.MCPElicitationModeForm {
 			return nil, InvalidControlDecision("an elicitation in %s mode has no form, so its accept carries no content", mode)
 		}
-		var fields map[string]json.RawMessage
-		if json.Unmarshal([]byte(content), &fields) != nil || fields == nil {
+		if !isJSONObject([]byte(content)) {
 			return nil, InvalidControlDecision("the form content is not a JSON object")
 		}
 	}

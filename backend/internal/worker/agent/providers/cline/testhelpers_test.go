@@ -212,7 +212,7 @@ func eventEnvelope(t *testing.T, sessionID, event string, payload any) []byte {
 // returns the request id of the send.
 func (r *rig) startTurn(t *testing.T, text string) string {
 	t.Helper()
-	require.NoError(t, r.agent.SendInput(text, nil))
+	require.NoError(t, agenttest.SendInput(r.agent, text, nil))
 	command, ok := r.hub.waitCommand(commandSessionSendInput)
 	require.True(t, ok, "the send reaches the hub")
 	return command.RequestID

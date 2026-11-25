@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 var (
-	_ agent.ChildEchoSteerer = (*Agent)(nil)
+	_ agent.ChildSteerer     = (*Agent)(nil)
 	_ agent.ChildInterrupter = (*Agent)(nil)
 )
 
@@ -49,17 +48,15 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 }
 
 // SteerChildInput delivers input to the child's current native round.
-func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.SteerChildInputAtEcho(childKey, agent.SteerRequest{Content: content, Attachments: attachments})
-}
-
-func (a *Agent) SteerChildInputAtEcho(childKey string, request agent.SteerRequest) error {
+func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	_, err := a.sendChildInput(childKey, request, true)
-	return err
+	return agent.NativeInputReceipt{}, err
 }
 
-// ChildSteerSurvivesTurnEnd keeps the steer pending when native admission races a yield.
-func (*Agent) ChildSteerSurvivesTurnEnd() bool { return true }
+// ChildSteerPolicy holds the steer row until echo and keeps it across a racing yield.
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy {
+	return agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: true}
+}
 
 func (a *Agent) sendChildInput(childKey string, request agent.SteerRequest, steer bool) (agent.NativeInputReceipt, error) {
 	var receipt agent.NativeInputReceipt

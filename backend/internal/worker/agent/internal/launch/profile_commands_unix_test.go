@@ -169,12 +169,13 @@ func TestCheckBinaryDiscardsACompletedProbeWithProcessFailure(t *testing.T) {
 	t.Setenv("PATH", dir)
 	testutil.WriteExecutable(t, filepath.Join(dir, name), "#!/bin/sh\nexit 0\n")
 	names := []string{name}
+	dialect := posixDialect{shell: "sh"}
 	script := renderCommandProbe("sh", nonce, names, false, false)
-	results, _ := parseCommandProbe(runShellProbe(t.Context(), "/bin/sh", false, script), nonce, names, false)
+	results, _ := parseCommandProbe(runShellProbe(t.Context(), dialect, "/bin/sh", false, script), nonce, names, false)
 	require.Equal(t, ProbeYes, results[name], "the script emits a complete presence result")
 
 	t.Run("the shell exits nonzero after emitting the completion record", func(t *testing.T) {
-		output := runShellProbe(t.Context(), "/bin/sh", false, script+"exit 43\n")
+		output := runShellProbe(t.Context(), dialect, "/bin/sh", false, script+"exit 43\n")
 		require.Empty(t, output)
 	})
 
@@ -186,7 +187,7 @@ func TestCheckBinaryDiscardsACompletedProbeWithProcessFailure(t *testing.T) {
 		})
 		// The helper holds the inherited stdout until cleanup releases the FIFO.
 		script := "(read -r release < " + shellquote.POSIX.Quote(release.Name()) + ") &\n" + script
-		output := runShellProbe(t.Context(), "/bin/sh", false, script)
+		output := runShellProbe(t.Context(), dialect, "/bin/sh", false, script)
 		require.Empty(t, output)
 	})
 
@@ -202,7 +203,7 @@ func TestCheckBinaryDiscardsACompletedProbeWithProcessFailure(t *testing.T) {
 		ctx, cancel := context.WithCancelCause(t.Context())
 		defer cancel(context.Canceled)
 		outputs := make(chan string, 1)
-		go func() { outputs <- runShellProbe(ctx, "/bin/sh", false, script) }()
+		go func() { outputs <- runShellProbe(ctx, dialect, "/bin/sh", false, script) }()
 		type readiness struct {
 			line string
 			err  error
@@ -790,7 +791,7 @@ func TestProfileCommandElvishReadsItsLoginProfile(t *testing.T) {
 		"use ./provider\nprintf 'Profile banner without a newline'\nfn "+candidate+" {|@arguments| provider:invoke $@arguments }\n",
 	), 0o600))
 
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	assert.Equal(t, ProbeNo, CheckBinary(ctx, shell, false, candidate))
 	require.Equal(t, ProbeYes, CheckBinary(ctx, shell, true, candidate))

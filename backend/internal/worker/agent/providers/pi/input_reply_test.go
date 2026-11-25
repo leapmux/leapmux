@@ -71,7 +71,7 @@ func TestPiExactReplyKeepsTheSamePromptAcrossNativeRetry(t *testing.T) {
 		assert.Empty(t, sink.NativeReplyTurns(), "the final low-level run still needs native settlement")
 		a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	})
-	receipt, err := a.SendInputWithReceipt("Original input.", nil)
+	receipt, err := a.SendInput("Original input.", nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, receipt.InputID)
 	require.Equal(t, receipt.InputID, receipt.TurnID)
@@ -81,6 +81,29 @@ func TestPiExactReplyKeepsTheSamePromptAcrossNativeRetry(t *testing.T) {
 		Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "pi-reply:" + receipt.TurnID + ":2"}},
 	}}, sink.NativeReplyTurns())
 	assert.Empty(t, sink.NativeReplyRetirements())
+}
+
+func TestPiExactReplySkipsNonReplyAssistantRows(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.sessionFile = "session-file"
+	setPiReplyWriter(t, a, func(id string) {
+		a.HandleOutput(piReplyResponse(id, "started"))
+		a.HandleOutput([]byte(`{"type":"agent_start"}`))
+		a.HandleOutput([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking."},{"type":"toolCall","id":"call-1","name":"bash","arguments":{}}]}}`))
+		a.HandleOutput([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"   \n\t"}]}}`))
+		a.HandleOutput([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Actual reply."}]}}`))
+		a.HandleOutput(piSuccessfulReplyEnd)
+		a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+	})
+	receipt, err := a.SendInput("Check the files.", nil)
+	require.NoError(t, err)
+	assert.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: "session-file", TurnID: receipt.TurnID, Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs: []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: 1}},
+		Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "pi-reply:" + receipt.TurnID + ":2"}},
+	}}, sink.NativeReplyTurns())
 }
 
 func TestPiReplyAdmissionStaysBehindOlderBufferedEvents(t *testing.T) {
@@ -95,7 +118,7 @@ func TestPiReplyAdmissionStaysBehindOlderBufferedEvents(t *testing.T) {
 	setPiReplyWriter(t, a, func(id string) {
 		a.HandleOutput(piReplyResponse(id, "started"))
 	})
-	receipt, err := a.SendInputWithReceipt("New input.", nil)
+	receipt, err := a.SendInput("New input.", nil)
 	require.NoError(t, err)
 	a.HandleOutput([]byte(`{"type":"agent_start"}`))
 	a.HandleOutput([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"New native reply."}]}}`))
@@ -140,7 +163,7 @@ func TestPiExactReplyRequiresNativeAdmissionAndSettlement(t *testing.T) {
 			setPiReplyWriter(t, a, func(id string) {
 				a.HandleOutput(tc.response(id))
 			})
-			receipt, err := a.SendInputWithReceipt("One input.", nil)
+			receipt, err := a.SendInput("One input.", nil)
 			require.NoError(t, err)
 			a.HandleOutput([]byte(`{"type":"agent_start"}`))
 			a.HandleOutput(piSuccessfulReplyEnd)
@@ -192,7 +215,7 @@ func TestPiExactReplyReportsNativeOutcomes(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newPiAgentWithSink(agent.NewProviderServices(sink))
 			setPiReplyWriter(t, a, func(id string) { a.HandleOutput(piReplyResponse(id, tc.disposition)) })
-			receipt, err := a.SendInputWithReceipt("One input.", nil)
+			receipt, err := a.SendInput("One input.", nil)
 			require.NoError(t, err)
 			for _, event := range tc.events {
 				a.HandleOutput([]byte(event))

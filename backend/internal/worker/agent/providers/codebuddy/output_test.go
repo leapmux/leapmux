@@ -168,7 +168,7 @@ func TestCodebuddyCoalescesOutputStyleDiscovery(t *testing.T) {
 	a.HandleOutput([]byte(codebuddyResultFinished))
 	first := nextRequest()
 	for range 4 {
-		require.NoError(t, a.SendInput("Another completed turn.", nil))
+		require.NoError(t, agenttest.SendInput(a, "Another completed turn.", nil))
 		a.HandleOutput([]byte(codebuddyResultFinished))
 	}
 	answer := codebuddyControlAnswer(`{"output_style":"Default","available_output_styles":["Default","Custom"]}`)
@@ -320,7 +320,7 @@ func TestManualCompactionStaysLiveUntilItsResult(t *testing.T) {
 			failed := strings.Contains(result, `"is_error":true`)
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
-			require.NoError(t, a.SendInput("/compact keep the current task", nil))
+			require.NoError(t, agenttest.SendInput(a, "/compact keep the current task", nil))
 			assert.False(t, a.PublishTurnActive().Steerable)
 			assert.Equal(t, []interface{}{map[string]interface{}{"trigger": "manual"}}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 			assert.Empty(t, sink.Messages())
@@ -347,7 +347,7 @@ func TestManualCompactionFailureToWriteEndsLiveState(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	a.SetStdinForTest(agenttest.FailingStdin{})
-	require.Error(t, a.SendInput("/compact", nil))
+	require.Error(t, agenttest.SendInput(a, "/compact", nil))
 	assert.Equal(t, []interface{}{map[string]interface{}{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 	assert.False(t, a.PublishTurnActive().Active)
 }
@@ -359,7 +359,7 @@ func TestManualCompactionEarlyResultLeavesNoLiveStart(t *testing.T) {
 	a.SetStdinForTest(agenttest.NopStdin(permissionRetiringWriter{output: new(bytes.Buffer), retire: func() {
 		a.HandleOutput([]byte(`{"type":"result","subtype":"success","result":"","is_error":false}`))
 	}}))
-	require.NoError(t, a.SendInput("/compact", nil))
+	require.NoError(t, agenttest.SendInput(a, "/compact", nil))
 	assert.Equal(t, []interface{}{map[string]interface{}{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 }
 
@@ -367,7 +367,7 @@ func TestOrdinaryInputDoesNotPublishCompaction(t *testing.T) {
 	for _, input := range []string{"", "/compactly", "explain /compact"} {
 		sink := &agenttest.Sink{}
 		a := newOfflineAgent(t, sink)
-		require.NoError(t, a.SendInput(input, nil))
+		require.NoError(t, agenttest.SendInput(a, input, nil))
 		assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 	}
 }
@@ -469,7 +469,7 @@ func TestCodebuddyInterruptMarksOnlyTheCurrentNativeResult(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
-	require.NoError(t, a.SendInput("Run the current turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the current turn.", nil))
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	result := []byte(codebuddyResultAbortedStreaming)
 	a.HandleOutput(result)
@@ -477,7 +477,7 @@ func TestCodebuddyInterruptMarksOnlyTheCurrentNativeResult(t *testing.T) {
 	require.Len(t, first, 1)
 	assert.Equal(t, result, first[0].Content)
 	assert.Equal(t, agent.MessageCompletionInterrupted, first[0].Completion)
-	require.NoError(t, a.SendInput("Run the next turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the next turn.", nil))
 	a.HandleOutput(result)
 	final := sink.Messages()
 	require.Len(t, final, 2)
@@ -509,7 +509,7 @@ func TestCodebuddyAStopThatTookEffectMarksTheTurnEndInterrupted(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
-			require.NoError(t, a.SendInput("Run the current turn.", nil))
+			require.NoError(t, agenttest.SendInput(a, "Run the current turn.", nil))
 			require.NoError(t, a.Interrupt(agent.StopContext{}))
 			a.HandleOutput([]byte(tc.frame))
 			rows := turnEnds(sink.Messages())
@@ -533,7 +533,7 @@ func TestCodebuddyATurnThatEndedBeforeTheStopKeepsItsOutcome(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
-			require.NoError(t, a.SendInput("Run the current turn.", nil))
+			require.NoError(t, agenttest.SendInput(a, "Run the current turn.", nil))
 			require.NoError(t, a.Interrupt(agent.StopContext{}))
 			a.HandleOutput([]byte(tc.frame))
 			rows := turnEnds(sink.Messages())
@@ -550,10 +550,10 @@ func TestCodebuddyAFinishedTurnSpendsTheStopNote(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
-	require.NoError(t, a.SendInput("Run the current turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the current turn.", nil))
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	a.HandleOutput([]byte(codebuddyResultFinished))
-	require.NoError(t, a.SendInput("Run the next turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run the next turn.", nil))
 	a.HandleOutput([]byte(codebuddyResultAbortedStreaming))
 	rows := turnEnds(sink.Messages())
 	require.Len(t, rows, 2)
@@ -565,7 +565,7 @@ func TestCodebuddyIdleInterruptDoesNotMarkTheNextNativeResult(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
-	require.NoError(t, a.SendInput("Run a new turn.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Run a new turn.", nil))
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success","result":"","is_error":false}`))
 	messages := sink.Messages()
 	require.Len(t, messages, 1)
@@ -997,7 +997,7 @@ func TestCodebuddyRejectedPlanExitSettlesAfterItsResult(t *testing.T) {
 			assert.True(t, published)
 			assert.Equal(t, tc.wantActive, active)
 			if !tc.wantActive {
-				require.NoError(t, a.SendInput("Present the revised plan.", nil))
+				require.NoError(t, agenttest.SendInput(a, "Present the revised plan.", nil))
 			}
 		})
 	}
@@ -1201,7 +1201,7 @@ func TestCodebuddyRejectedPlanResultOwnershipAndReplay(t *testing.T) {
 			states := sink.TurnActives()
 			a.HandleOutput(raw)
 			assert.Equal(t, states, sink.TurnActives(), "a duplicate result does not publish another end")
-			require.NoError(t, a.SendInput("A new turn", nil))
+			require.NoError(t, agenttest.SendInput(a, "A new turn", nil))
 			a.HandleOutput(raw)
 			a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"session-1","permissionMode":"plan"}`))
 			assert.True(t, a.active, "old rejection and init frames cannot end the new turn")

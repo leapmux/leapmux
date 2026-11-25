@@ -196,11 +196,11 @@ func TestInitLineStatesTheThreadOnce(t *testing.T) {
 	fp := h.send("go")
 	h.feed(fp, initLine("T-first"))
 	h.feed(fp, initLine("T-first"))
-	assert.Equal(t, []string{"T-first"}, h.sink.SessionIDs(), "a repeated init states nothing new")
+	assert.Equal(t, []string{testCreatedThreadID, "T-first"}, h.sink.SessionIDs(), "a repeated init states nothing new")
 	assert.True(t, fp.sawInit.Load())
 
 	h.feed(fp, initLine("T-second"))
-	assert.Equal(t, []string{"T-first", "T-second"}, h.sink.SessionIDs(), "a different thread replaces the handle")
+	assert.Equal(t, []string{testCreatedThreadID, "T-first", "T-second"}, h.sink.SessionIDs(), "a different thread replaces the handle")
 	assert.Contains(t, h.sink.StatusActives(), "T-second")
 }
 
@@ -210,7 +210,7 @@ func TestUnknownSystemLineIsKept(t *testing.T) {
 	fp := h.send("go")
 	h.feed(fp, `{"type":"system","subtype":"future"}`)
 	require.Len(t, h.rows(), 1)
-	assert.Empty(t, h.sink.SessionIDs())
+	assert.Equal(t, []string{testCreatedThreadID}, h.sink.SessionIDs())
 }
 
 func TestUsageBroadcastsOnlyAChangedReading(t *testing.T) {
@@ -409,7 +409,7 @@ func TestInitLineWithNoThreadStatesNothing(t *testing.T) {
 	statusBefore := h.sink.StatusActiveCount()
 	h.feed(fp, `{"type":"system","subtype":"init","cwd":"/work"}`)
 	assert.True(t, fp.sawInit.Load())
-	assert.Empty(t, h.sink.SessionIDs())
+	assert.Equal(t, []string{testCreatedThreadID}, h.sink.SessionIDs())
 	assert.Equal(t, statusBefore, h.sink.StatusActiveCount())
 	assert.Empty(t, h.rows())
 }
@@ -473,7 +473,7 @@ func TestProbeInterruptTranscript(t *testing.T) {
 	assert.Equal(t, "tool_use", rowBlocks(t, closing[1].Content)[0].(map[string]any)["type"])
 
 	assert.Equal(t, "T-01a0d1c6-c614-728f-a585-70ccc160a717", h.sink.LastSessionID())
-	assert.Equal(t, []string{""}, h.startedThreads(), "an interrupt resumes nothing at once")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "an interrupt resumes nothing at once")
 	assert.Empty(t, h.sink.Notifications())
 }
 
@@ -493,11 +493,11 @@ func TestProbeSteerTranscript(t *testing.T) {
 	}
 	require.False(t, h.turnActive(), "the first turn ended at its end_turn message")
 
-	require.NoError(t, h.agent.SendInput("Run sleep 8, then reply finished", nil))
+	require.NoError(t, agenttest.SendInput(h.agent, "Run sleep 8, then reply finished", nil))
 	for _, line := range lines[7:10] {
 		h.feed(fp, line)
 	}
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "Also append the word steered to your final reply."}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "Also append the word steered to your final reply."}))
 	for _, line := range lines[10:] {
 		h.feed(fp, line)
 	}
@@ -506,7 +506,7 @@ func TestProbeSteerTranscript(t *testing.T) {
 	require.Len(t, stdin, 3, "two turns and one steering line, all in one process")
 	assert.Nil(t, stdin[1]["steer"])
 	assert.Equal(t, true, stdin[2]["steer"])
-	assert.Equal(t, []string{""}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads())
 
 	ends := h.turnEnds()
 	require.Len(t, ends, 2)
@@ -598,7 +598,7 @@ func TestProbeInterruptDuringAModelRequest(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionInterrupted, ends[0].Completion)
 	assert.JSONEq(t, lines[2], string(ends[0].Content), "the turn end is Amp's own result")
 	assert.False(t, fp.resumeAfterExit.Load(), "an interrupt waits for the next message")
-	assert.Equal(t, []string{""}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads())
 	assert.Empty(t, h.sink.Notifications())
 }
 
@@ -626,11 +626,11 @@ func TestATurnThatFinishedBeforeTheStopKeepsItsOutcome(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionComplete, ends[0].Completion, "Amp's end_turn message ended the turn before the stop")
 	assert.Empty(t, h.sink.Notifications(), "Amp's cancel result answers the worker's own signal")
 	assert.False(t, fp.resumeAfterExit.Load())
-	assert.Equal(t, []string{""}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads())
 
 	// The next turn runs in a new process, and it ends as complete.
-	require.NoError(t, h.agent.SendInput("next", nil))
-	require.Equal(t, []string{"", "T-acd2eb8e-93b8-4de7-926a-c08625532237"}, h.startedThreads())
+	require.NoError(t, agenttest.SendInput(h.agent, "next", nil))
+	require.Equal(t, []string{testCreatedThreadID, "T-acd2eb8e-93b8-4de7-926a-c08625532237"}, h.startedThreads())
 	next := h.nextProcAfter(fp)
 	h.feed(next, textLine("again", stopReasonEndTurn))
 	ends = h.turnEnds()
@@ -726,7 +726,7 @@ func TestStopKeepsAFailureThatEndedTheTurnFirst(t *testing.T) {
 	ends := h.turnEnds()
 	require.Len(t, ends, 1)
 	assert.Equal(t, agent.MessageCompletionError, ends[0].Completion)
-	assert.Equal(t, []string{""}, h.startedThreads(), "a stopped agent resumes nothing")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "a stopped agent resumes nothing")
 }
 
 // No probed signal printed a success `result`, so the shape is not known to

@@ -20,11 +20,11 @@ type kimiPromptSubmission struct {
 	readyCapture            agent.CapturedTranscript
 }
 
-func (a *Agent) reservePromptSubmission(sessionID, receiver string, tracked bool) (*kimiPromptSubmission, error) {
+func (a *Agent) reservePromptSubmission(sessionID, receiver string) (*kimiPromptSubmission, error) {
 	a.dispatchMu.Lock()
 	defer a.finishDispatch()
 	submission, err := a.registerPromptSubmissionLocked(sessionID, receiver)
-	if err == nil && tracked {
+	if err == nil {
 		submission.replySink = a.sink
 	}
 	return submission, err

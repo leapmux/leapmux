@@ -56,7 +56,7 @@ func TestAntigravitySendInputBuildsStrictRequest(t *testing.T) {
 	rpc, requests := fakeAntigravityRPC(t)
 	a, _ := testAgent(t)
 	a.rpc = rpc
-	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, agenttest.SendInput(a, "hello", nil))
 	require.Len(t, requests("SendUserCascadeMessage"), 1)
 	body := requests("SendUserCascadeMessage")[0]
 	assert.Equal(t, "cascade", body["cascadeId"])
@@ -67,7 +67,7 @@ func TestAntigravitySendInputBuildsStrictRequest(t *testing.T) {
 	a.Mu.Lock()
 	assert.True(t, a.root.sendInFlight)
 	a.Mu.Unlock()
-	assert.ErrorIs(t, a.SendInput("busy", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "busy", nil), agent.ErrAgentBusy)
 }
 
 func TestAntigravitySlashAndCompactInput(t *testing.T) {
@@ -75,7 +75,7 @@ func TestAntigravitySlashAndCompactInput(t *testing.T) {
 	a, _ := testAgent(t)
 	a.rpc = rpc
 	a.slashCommands = []string{"compact", "plan"}
-	require.NoError(t, a.SendInput("/compact", nil))
+	require.NoError(t, agenttest.SendInput(a, "/compact", nil))
 	items := requests("SendUserCascadeMessage")[0]["items"].([]any)
 	assert.Len(t, items, 1)
 	assert.Contains(t, items[0], "item")
@@ -128,9 +128,9 @@ func TestAntigravitySteerPolicy(t *testing.T) {
 	rpc, requests := fakeAntigravityRPC(t)
 	a, _ := testAgent(t)
 	a.rpc = rpc
-	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "early"}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "early"}), agent.ErrNoActiveTurn)
 	a.beginTurn(a.root)
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "steer"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "steer"}))
 	require.Len(t, requests("SendUserCascadeMessage"), 1)
 	assert.True(t, a.SteerSurvivesTurnEnd())
 	_, echo := any(a).(agent.SteerEchoReporter)
@@ -219,10 +219,10 @@ func TestAntigravitySteerPreservesUncertainDelivery(t *testing.T) {
 				a.cascades[child.id] = child
 				close(child.connected)
 				a.beginTurn(child)
-				err = a.SteerChildInput(child.id, "steer once", nil)
+				_, err = a.SteerChildInput(child.id, agent.SteerRequest{Content: "steer once"})
 			} else {
 				a.beginTurn(a.root)
-				err = a.SteerInput(agent.SteerRequest{Content: "steer once"})
+				_, err = a.SteerInput(agent.SteerRequest{Content: "steer once"})
 			}
 			assert.Equal(t, int32(1), accepted.Load())
 			assert.ErrorIs(t, err, agent.ErrDeliveryUncertain)
@@ -286,7 +286,8 @@ func TestAntigravityPendingChildInputPublishesItsActualSteeringState(t *testing.
 	require.NotEmpty(t, states)
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: false}, states[len(states)-1])
 	assert.Equal(t, a.ActiveChildTurnState(child.id), states[len(states)-1])
-	assert.ErrorIs(t, a.SteerChildInput(child.id, "too early", nil), agent.ErrNoActiveTurn)
+	_, err := a.SteerChildInput(child.id, agent.SteerRequest{Content: "too early"})
+	assert.ErrorIs(t, err, agent.ErrNoActiveTurn)
 }
 
 func TestAntigravityTurnSnapshotRequiresAnOpenObserverForSteering(t *testing.T) {
@@ -407,7 +408,7 @@ func TestAntigravityClearKeepsOldSessionWhenReplacementStreamIsRefused(t *testin
 	assert.False(t, touchedOld)
 	assert.Equal(t, []string{"replacement"}, removed)
 	requestsMu.Unlock()
-	require.NoError(t, a.SendInputForSession("cascade", "continue here", nil))
+	require.NoError(t, agenttest.SendInputForSession(a, "cascade", "continue here", nil))
 	assert.True(t, sent.Load())
 }
 

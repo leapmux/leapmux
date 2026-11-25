@@ -305,13 +305,31 @@ func openCodeQuestionControlID(questionID string) string {
 	return "opencode-question:" + questionID
 }
 
+// isOpenCodeQuestionEvent reports whether payload is a stored
+// `question.asked` event.
+func isOpenCodeQuestionEvent(payload []byte) bool {
+	return providerkit.ObjectString(providerkit.RawFields(payload), "type") == contracts.OpenCodeEventQuestionAsked
+}
+
+// openCodeQuestionID returns the daemon's own id of a stored `question.asked`
+// event: its `properties.id`. ok is false for another payload, and for an id
+// that is absent, empty, or not a string.
+func openCodeQuestionID(payload []byte) (string, bool) {
+	fields := providerkit.RawFields(payload)
+	if providerkit.ObjectString(fields, "type") != contracts.OpenCodeEventQuestionAsked {
+		return "", false
+	}
+	id := providerkit.ObjectString(providerkit.RawFields(fields["properties"]), "id")
+	return id, id != ""
+}
+
 // ControlRequestKey reads the key of a stored request of the family's
 // transport. A question that the question bridge publishes is keyed by the
 // daemon's own question id (openCodeQuestionControlID). Any other request is
 // a request of the Agent Client Protocol, which the base keys.
 func (p FamilyProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
-	if providerkit.IsOpenCodeQuestionEvent(payload) {
-		id, ok := providerkit.OpenCodeQuestionID(payload)
+	if isOpenCodeQuestionEvent(payload) {
+		id, ok := openCodeQuestionID(payload)
 		if !ok {
 			return "", false
 		}

@@ -225,7 +225,7 @@ func TestChildCommandsKeepUncertainIdentityUntilConfirmed(t *testing.T) {
 			invoke := func() error {
 				switch operation {
 				case "steer":
-					return a.SteerChildInput("key", "note", nil)
+					return agenttest.SteerChildInput(a, "key", "note", nil)
 				case "interrupt":
 					return a.InterruptChild("key", agent.StopContext{})
 				default:
@@ -262,7 +262,7 @@ func TestChildCommandsRejectRetiredRoutesBeforeWriting(t *testing.T) {
 				return agenttest.RPCReply{Result: data}
 			}})
 			assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("key"))
-			require.ErrorIs(t, a.SteerChildInput("key", "note", nil), agent.ErrChildRouteNotReady)
+			require.ErrorIs(t, agenttest.SteerChildInput(a, "key", "note", nil), agent.ErrChildRouteNotReady)
 			require.ErrorIs(t, a.InterruptChild("key", agent.StopContext{}), agent.ErrChildRouteNotReady)
 			assert.Zero(t, writes)
 		})
@@ -305,7 +305,7 @@ func TestChildInputValidatesBeforeNativeAdmission(t *testing.T) {
 			}
 			var err error
 			if tc.steer {
-				err = a.SteerChildInput("key", tc.text, attachments)
+				err = agenttest.SteerChildInput(a, "key", tc.text, attachments)
 			} else {
 				err = agenttest.SendChildInput(a, "key", agent.ChildInput{Content: tc.text, Attachments: attachments})
 			}

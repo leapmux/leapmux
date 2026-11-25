@@ -55,7 +55,7 @@ func TestPiSteerEchoReportsTheRowAtTheUserMessageEnd(t *testing.T) {
 	rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) {
 		return json.RawMessage(`{"disposition":"queued"}`), true, ""
 	})
-	require.NoError(t, rig.agent.SteerInput(agent.SteerRequest{Content: "Reply with the single word THREE."}))
+	require.NoError(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "Reply with the single word THREE."}))
 	assert.Empty(t, sink.SteerEchoReports())
 	// Trimmed user echo from .tmp/verify-c29/pi/run3-steer/frames.jsonl.
 	rig.agent.HandleOutput([]byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"before"}]}}`))
@@ -80,7 +80,7 @@ func TestPiSteerEchoBeforeTheReplyReportsOnce(t *testing.T) {
 			return json.RawMessage(`{"disposition":"` + disposition + `"}`), true, ""
 		})
 		result := make(chan error, 1)
-		go func() { result <- rig.agent.SteerInput(agent.SteerRequest{Content: "guide"}) }()
+		go func() { result <- agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "guide"}) }()
 		require.Eventually(t, func() bool { return len(rig.requests()) > 0 }, 30*time.Second, time.Millisecond)
 		echo := []byte(`{"type":"message_end","message":{"role":"user","content":"guide"}}`)
 		rig.agent.HandleOutput(echo)
@@ -106,7 +106,7 @@ func TestPiSteerHandledByAnExtensionReportsTheEchoAtOnce(t *testing.T) {
 	rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) {
 		return json.RawMessage(`{"disposition":"handled"}`), true, ""
 	})
-	require.NoError(t, rig.agent.SteerInput(agent.SteerRequest{Content: "/local"}))
+	require.NoError(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "/local"}))
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
 }
 
@@ -117,7 +117,7 @@ func TestPiSteerRefusalReturnsTheErrorAndReportsNothing(t *testing.T) {
 	rig.agent.currentTurnActive = true
 	rig.agent.generationBuffer.Append("answer", agent.AssembledMessageKindText, "still active", providerkit.JoinVerbatim)
 	rig.setResponder(func(piRecordedRequest) (json.RawMessage, bool, string) { return nil, false, "steer refused" })
-	err := rig.agent.SteerInput(agent.SteerRequest{Content: "guide"})
+	err := agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "guide"})
 	require.ErrorContains(t, err, "steer refused")
 	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.Empty(t, sink.SteerEchoReports())
@@ -170,7 +170,7 @@ func TestPiSteerLostReplyIsDeliveryUncertain(t *testing.T) {
 		rig.agent.currentTurnActive = true
 		rig.holdMethod, rig.holdReply = CommandPrompt, make(chan struct{})
 		result := make(chan error, 1)
-		go func() { result <- rig.agent.SteerInput(agent.SteerRequest{Content: "guide"}) }()
+		go func() { result <- agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "guide"}) }()
 		require.Eventually(t, func() bool { return len(rig.requests()) > 0 }, 30*time.Second, time.Millisecond)
 		if malformed {
 			request := rig.requests()[0]
@@ -198,7 +198,7 @@ func TestPiSteerTimeoutIsDeliveryUncertain(t *testing.T) {
 	rig.agent.currentTurnActive = true
 	rig.holdMethod, rig.holdReply = CommandPrompt, make(chan struct{})
 	result := make(chan error, 1)
-	go func() { result <- rig.agent.SteerInput(agent.SteerRequest{Content: "guide"}) }()
+	go func() { result <- agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "guide"}) }()
 	ctx := testutil.DeadlineContext(t)
 	delay := testutil.WaitForTimer(t, ctx, trap)
 	assert.Equal(t, 2*time.Second, delay)
@@ -228,7 +228,7 @@ func TestPiClearContextDropsPendingSteers(t *testing.T) {
 		}
 		return nil, true, ""
 	})
-	require.NoError(t, rig.agent.SteerInput(agent.SteerRequest{Content: "guide"}))
+	require.NoError(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "guide"}))
 	_, err := rig.agent.ClearContext()
 	require.NoError(t, err)
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
@@ -245,7 +245,7 @@ func TestPiClearContextKeepsSteersWhenCancelled(t *testing.T) {
 		}
 		return json.RawMessage(`{"disposition":"queued"}`), true, ""
 	})
-	require.NoError(t, rig.agent.SteerInput(agent.SteerRequest{Content: "guide"}))
+	require.NoError(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "guide"}))
 	_, err := rig.agent.ClearContext()
 	require.ErrorIs(t, err, agent.ErrContextClearCancelled)
 	assert.Empty(t, sink.SteerEchoReports())
@@ -268,7 +268,7 @@ func TestPiClearContextDropsSteersEvenWhenTheNewStateReadFails(t *testing.T) {
 			return json.RawMessage(`{"disposition":"queued"}`), true, ""
 		}
 	})
-	require.NoError(t, rig.agent.SteerInput(agent.SteerRequest{Content: "guide"}))
+	require.NoError(t, agenttest.SteerInput(rig.agent, agent.SteerRequest{Content: "guide"}))
 	_, err := rig.agent.ClearContext()
 	require.ErrorContains(t, err, "state unavailable")
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
@@ -303,5 +303,5 @@ func TestPiSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 		currentTurnActive: true,
 		sink:              agent.NewProviderServices(sink),
 	}
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, agent, agent.SendInput("later turn", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, agent, agenttest.SendInput(agent, "later turn", nil))
 }

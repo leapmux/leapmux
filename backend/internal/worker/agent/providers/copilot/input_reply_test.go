@@ -61,7 +61,7 @@ func TestCopilotReplyUsesTheAcknowledgedInputAndItsFinalIdle(t *testing.T) {
 					deliverCopilotReplyEvents(t, a, events)
 				}
 			})
-			receipt, err := h.agent.SendInputWithReceipt("Verify.", nil)
+			receipt, err := h.agent.SendInput("Verify.", nil)
 			require.NoError(t, err)
 			assert.Equal(t, agent.NativeInputReceipt{SessionID: "session-1", InputID: "input", TurnID: "input"}, receipt)
 			if !test.before {
@@ -84,7 +84,7 @@ func TestCopilotReplyUsesTheAcknowledgedInputAndItsFinalIdle(t *testing.T) {
 func TestCopilotReplyRetiresWhenAnotherInputOverlaps(t *testing.T) {
 	t.Parallel()
 	h := newCopilotRuntimeHarness(t, map[string]string{"session.send": `{"messageId":"input"}`}, nil)
-	receipt, err := h.agent.SendInputWithReceipt("Verify.", nil)
+	receipt, err := h.agent.SendInput("Verify.", nil)
 	require.NoError(t, err)
 	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{kind: contracts.CopilotEventUserMessage, id: "input-echo", data: map[string]any{"messageId": "input", "interactionId": "interaction"}},
@@ -187,4 +187,29 @@ func TestCopilotSteerSharesItsReceivingRunWithoutBorrowingEarlierText(t *testing
 			}, sink.NativeReplyTurns())
 		})
 	}
+}
+
+func TestCopilotSendInputForSessionAndSteerInputReturnReceipts(t *testing.T) {
+	t.Parallel()
+	h := newCopilotRuntimeHarness(t, map[string]string{"session.send": `{"messageId":"lead-input"}`}, nil)
+	leadReceipt, err := h.agent.SendInputForSession("session-1", "Verify.", nil)
+	require.NoError(t, err)
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: "session-1", InputID: "lead-input", TurnID: "lead-input"}, leadReceipt)
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
+		{kind: contracts.CopilotEventUserMessage, id: "lead-echo", data: map[string]any{"messageId": "lead-input", "interactionId": "initial"}},
+		{kind: contracts.CopilotEventAssistantTurnStart, id: "lead-start", parent: "lead-echo", data: map[string]any{"turnId": "0", "interactionId": "initial"}},
+		{kind: contracts.CopilotEventAssistantMessage, id: "lead-reply", parent: "lead-start", data: map[string]any{"turnId": "0", "interactionId": "initial", "originatingMessageId": "lead-input", "content": "Lead reply."}},
+		{kind: contracts.CopilotEventAssistantTurnEnd, id: "lead-end", parent: "lead-reply", data: map[string]any{"turnId": "0"}},
+		{kind: contracts.CopilotEventSessionIdle, id: "idle", parent: "lead-end", ephemeral: true, data: map[string]any{"mode": "interactive"}},
+	})
+	require.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: "session-1", TurnID: "lead-input", Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs: []agent.NativeReplyBoundary{{InputID: "lead-input", AfterOrdinal: 1}},
+		Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: copilotReplyMessageKey("lead-reply")}},
+	}}, h.sink.NativeReplyTurns())
+
+	a, _, _ := newCopilotSteeringAgent(t, copilotSteerScript{})
+	steerReceipt, err := a.SteerInput(testCopilotSteerRequest("Focus on the diff."))
+	require.NoError(t, err)
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: "session-1", InputID: "native-steer", TurnID: "native-steer"}, steerReceipt)
 }

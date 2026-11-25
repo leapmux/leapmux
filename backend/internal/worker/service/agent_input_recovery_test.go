@@ -97,21 +97,21 @@ func (a *recoveryAgent) PublishTurnActive() agent.TurnState {
 	return state
 }
 
-func (a *recoveryAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *recoveryAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.mu.Lock()
 	a.sentTexts = append(a.sentTexts, content)
 	a.sentAttachments = append(a.sentAttachments, attachments)
 	a.mu.Unlock()
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
-func (a *recoveryAgent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *recoveryAgent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.mu.Lock()
 	a.sentTexts = append(a.sentTexts, content)
 	a.sentAttachments = append(a.sentAttachments, attachments)
 	a.sentSessions = append(a.sentSessions, sessionID)
 	a.mu.Unlock()
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
 func (a *recoveryAgent) Stop() {

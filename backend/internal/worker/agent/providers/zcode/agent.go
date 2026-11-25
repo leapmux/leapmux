@@ -423,7 +423,6 @@ type zcodeInputAdmission struct {
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.ContextCompactor = (*Agent)(nil)
-var _ agent.InputReceiptSender = (*Agent)(nil)
 
 // zcodeSendRetryWindow limits how long SendInput retries a native busy refusal.
 // A recently ended turn can hold the prompt lock briefly. SendInput still
@@ -433,19 +432,13 @@ const (
 	zcodeSendRetryInterval = 250 * time.Millisecond
 )
 
-// SendInput delivers a user message.
+// SendInput delivers a user message and returns the identity ZCode used for
+// the acknowledged input. A native turn start carries the same input ID.
 //
 // It returns on the app-server's `{accepted:true}` acknowledgement and NEVER waits
 // for the turn -- the Agent.SendInput contract. A refusal because a turn is already
 // running is retried briefly, because it is transient by construction.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.SendInputWithReceipt(content, attachments)
-	return err
-}
-
-// SendInputWithReceipt returns the identity ZCode used for the acknowledged
-// input. A native turn start carries the same input ID.
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInputForSession(nil, content, attachments)
 }
 
@@ -738,7 +731,6 @@ func classifyZCodeDeliveryError(method string, err error) error {
 	return fmt.Errorf("%w: ZCode did not confirm %s delivery: %v", agent.ErrDeliveryUncertain, method, err)
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInputForSession(&sessionID, content, attachments)
-	return err
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendInputForSession(&sessionID, content, attachments)
 }

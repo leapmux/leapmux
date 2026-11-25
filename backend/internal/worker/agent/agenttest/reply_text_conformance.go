@@ -85,16 +85,11 @@ func RunReplyTextConformance(t *testing.T, registration agent.Registration) {
 }
 
 func assembledKindToken(token string) leapmuxv1.AssembledMessageKind {
-	switch token {
-	case "":
+	if token == "" {
 		return leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED
-	case "text":
-		return leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_TEXT
-	case "reasoning":
-		return leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_REASONING
-	case "plan":
-		return leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN
-	default:
-		panic("unknown assembled kind " + token)
 	}
+	if kind := agent.AssembledMessageKindFromToken(token); kind != leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED {
+		return kind
+	}
+	panic("unknown assembled kind " + token)
 }

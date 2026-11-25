@@ -84,7 +84,7 @@ func TestCompactionHoldsTheTurnWhileItRunsAndThenReleasesIt(t *testing.T) {
 		run  func(a *Agent) error
 	}{
 		{"the compact context request", func(a *Agent) error { return a.CompactContext() }},
-		{"a typed compact command", func(a *Agent) error { return a.SendInput("/compact", nil) }},
+		{"a typed compact command", func(a *Agent) error { return agenttest.SendInput(a, "/compact", nil) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -147,7 +147,7 @@ func TestCommandThatRunsNoTurnPublishesTheTurnState(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
 			serveCommands(t, a, func(string) {})
-			require.NoError(t, a.SendInput(line, nil))
+			require.NoError(t, agenttest.SendInput(a, line, nil))
 			assert.Equal(t, []string{"turn_active:false"}, sink.TurnLifecycle(), "a command that starts no turn releases the turn that the input queue opened")
 		})
 	}
@@ -159,7 +159,7 @@ func TestCommandDuringARunningNativeTurnKeepsThatTurnActive(t *testing.T) {
 	a := newOfflineAgent(t, sink)
 	a.active = true
 	serveCommands(t, a, func(string) {})
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "/plan"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "/plan"}))
 	assert.Equal(t, []string{"turn_active:true"}, sink.TurnLifecycle(), "the native turn still runs")
 }
 

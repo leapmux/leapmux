@@ -6,8 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -33,48 +31,7 @@ func openCodeQuestionsOf(t *testing.T, payload []byte) []*leapmuxv1.ControlQuest
 
 func requireOpenCodeQuestions(t *testing.T, want, got []*leapmuxv1.ControlQuestion) {
 	t.Helper()
-	wantPrompt := &leapmuxv1.QuestionPrompt{Questions: want}
-	gotPrompt := &leapmuxv1.QuestionPrompt{Questions: got}
-	require.Truef(t, proto.Equal(wantPrompt, gotPrompt), "questions mismatch:\nwant %s\ngot  %s", protojson.Format(wantPrompt), protojson.Format(gotPrompt))
-}
-
-func TestIsOpenCodeQuestionEvent(t *testing.T) {
-	assert.True(t, IsOpenCodeQuestionEvent([]byte(`{"type":"question.asked","properties":{"questions":[]}}`)))
-	assert.True(t, IsOpenCodeQuestionEvent([]byte(`{"type":"question.asked"}`)), "the type alone decides")
-	for _, payload := range []string{
-		`{"type":"question.replied","properties":{"requestID":"que_1"}}`,
-		`{"type":"permission.asked","properties":{"id":"per_1"}}`,
-		`{"method":"requestPermission","params":{"toolCall":{"toolCallId":"tc-1"}}}`,
-		`{"type":7}`,
-		`{}`,
-		`not json`,
-	} {
-		assert.False(t, IsOpenCodeQuestionEvent([]byte(payload)), payload)
-	}
-}
-
-// A provider keys the control request of a question by the daemon's own id,
-// so a stored event of another type, or one whose id is not non-empty text,
-// gives no id, and the Worker refuses every answer to it.
-func TestOpenCodeQuestionID(t *testing.T) {
-	id, ok := OpenCodeQuestionID(openCodeQuestionEvent(t, map[string]any{"id": "que_1", "questions": []any{}}))
-	assert.True(t, ok)
-	assert.Equal(t, "que_1", id)
-
-	for name, payload := range map[string][]byte{
-		"no id":                         openCodeQuestionEvent(t, map[string]any{"questions": []any{}}),
-		"an empty id":                   openCodeQuestionEvent(t, map[string]any{"id": ""}),
-		"an id that is a number":        openCodeQuestionEvent(t, map[string]any{"id": 7}),
-		"properties that are no object": openCodeQuestionEvent(t, "que_1"),
-		"an id outside the properties":  []byte(`{"type":"question.asked","id":"que_1","properties":{}}`),
-		"a permission with an id":       []byte(`{"type":"permission.asked","properties":{"id":"per_1"}}`),
-		"a reply to the question":       []byte(`{"type":"question.replied","properties":{"id":"que_1"}}`),
-		"no JSON":                       []byte(`not json`),
-	} {
-		id, ok := OpenCodeQuestionID(payload)
-		assert.False(t, ok, name)
-		assert.Empty(t, id, name)
-	}
+	agenttest.RequireProto(t, &leapmuxv1.QuestionPrompt{Questions: want}, &leapmuxv1.QuestionPrompt{Questions: got}, "questions mismatch")
 }
 
 func TestOpenCodeQuestionPrompt_ReadsTheQuestionsAndTheirOptions(t *testing.T) {

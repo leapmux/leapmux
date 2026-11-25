@@ -208,7 +208,7 @@ func TestReadControlRequest_AQuestionStatesWholeSelectionCounts(t *testing.T) {
 
 	question = agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"form.created","data":{"form":{"metadata":{"kind":"question"},"fields":[
 		{"key":"a","type":"multiselect","minItems":-1e12,"maxItems":1e12}]}}}`)).GetQuestion().GetQuestions()[0]
-	assert.Equal(t, int32(-2147483648), question.GetMinimumSelections(), "a count saturates")
+	assert.Nil(t, question.MinimumSelections, "a negative count reads as absent")
 	assert.Equal(t, int32(2147483647), question.GetMaximumSelections())
 
 	question = agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"form.created","data":{"form":{"metadata":{"kind":"question"},"fields":[

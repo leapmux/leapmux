@@ -323,7 +323,7 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 func (a *Agent) retireSessionStates(states map[string]*sessionState, ended agent.MessageCompletion) {
 	for id, state := range states {
 		a.retireChildInputCommands(id, state)
-		for _, report := range a.steerLedger.TakeUnechoedSteers(id, "") {
+		for _, report := range a.steerLedger.TakeUnechoed(id, "") {
 			report.Outcome = agent.SteerOutcomeUncertain
 			report.Receipt = agent.NativeInputReceipt{}
 			retainMuseSteerResolution(state.sink, report)

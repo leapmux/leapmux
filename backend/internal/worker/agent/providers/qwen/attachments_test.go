@@ -56,7 +56,7 @@ func TestQwenAudioPromptUsesTheNativeModelCapability(t *testing.T) {
 				return agenttest.RPCReply{Result: json.RawMessage(`{"stopReason":"end_turn"}`)}
 			})
 			a.SetCurrentModel("voice(openai)")
-			err := a.SendInput("listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
+			err := agenttest.SendInput(a, "listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 255, 1}}})
 			if name == "audio model" {
 				require.NoError(t, err)
 				syncPeer(t, a)
@@ -78,10 +78,10 @@ func TestQwenAudioPromptUsesTheNativeModelCapability(t *testing.T) {
 func TestQwenPlainPromptDoesNotQueryAudioAndAudioSteerStaysInTheWorkerQueue(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newQwenAgent(t, nil, nil)
-	require.NoError(t, a.SendInput("text", nil))
+	require.NoError(t, agenttest.SendInput(a, "text", nil))
 	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), "qwen/status/workspace/providers"))
-	err := a.SteerInput(agent.SteerRequest{Content: "audio", Attachments: []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}})
+	err := agenttest.SteerInput(a, agent.SteerRequest{Content: "audio", Attachments: []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}})
 	require.ErrorIs(t, err, agent.ErrSteeringUnsupported)
 	a.stateMu.Lock()
 	assert.Empty(t, a.steer.items)
@@ -102,11 +102,11 @@ func TestQwenAudioStatusFailureRetainsInputForAnAttachmentOnlyRetry(t *testing.T
 	})
 	a.SetCurrentModel("voice(openai)")
 	attachments := []*leapmuxv1.Attachment{{Filename: "voice.flac", MimeType: "audio/flac", Data: []byte{0, 255, 1}}}
-	require.ErrorContains(t, a.SendInput("", attachments), "check Qwen Code audio model")
+	require.ErrorContains(t, agenttest.SendInput(a, "", attachments), "check Qwen Code audio model")
 	assert.False(t, a.PromptActive())
 	assert.Empty(t, requestsFor(requests(), acp.MethodSessionPrompt))
 	accepts.Store(true)
-	require.NoError(t, a.SendInput("", attachments))
+	require.NoError(t, agenttest.SendInput(a, "", attachments))
 	syncPeer(t, a)
 	prompts := requestsFor(requests(), acp.MethodSessionPrompt)
 	require.Len(t, prompts, 1)
@@ -124,7 +124,7 @@ func TestQwenAudioRejectsTheSessionModelWhenTheWorkspaceDefaultAcceptsAudio(t *t
 		return agenttest.RPCReply{Result: json.RawMessage(`{"stopReason":"end_turn"}`)}
 	})
 	a.SetCurrentModel("text(openai)")
-	require.ErrorContains(t, a.SendInput("listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}), "does not accept audio attachments")
+	require.ErrorContains(t, agenttest.SendInput(a, "listen", []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{1}}}), "does not accept audio attachments")
 	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), acp.MethodSessionPrompt))
 }

@@ -36,7 +36,7 @@ type droppingSteerAgent struct {
 
 var _ agent.SessionInputSteerer = (*droppingSteerAgent)(nil)
 
-func (a *droppingSteerAgent) SteerInput(request agent.SteerRequest) error {
+func (a *droppingSteerAgent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	a.mu.Lock()
 	a.requests = append(a.requests, request)
 	a.mu.Unlock()
@@ -46,10 +46,10 @@ func (a *droppingSteerAgent) SteerInput(request agent.SteerRequest) error {
 		a.dropErrs = append(a.dropErrs, err)
 		a.mu.Unlock()
 	}
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
-func (a *droppingSteerAgent) SteerInputForSession(sessionID string, request agent.SteerRequest) error {
+func (a *droppingSteerAgent) SteerInputForSession(sessionID string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	a.mu.Lock()
 	a.sessions = append(a.sessions, sessionID)
 	a.mu.Unlock()

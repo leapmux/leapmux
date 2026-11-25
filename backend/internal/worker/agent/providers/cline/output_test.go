@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
 // feedTurn starts a turn by hand, with no hub command, so a test drives every
@@ -139,8 +140,8 @@ func TestTheRunsEndWritesATrimmedTurnEnd(t *testing.T) {
 		},
 		"snapshot": map[string]any{"status": "idle"},
 	})
-	waitFor(t, func() bool { return !r.turnActive() }, "the run's end ends the turn")
 	r.hub.reply(requestID, fakeReply{})
+	waitFor(t, func() bool { return !r.turnActive() }, "the run's end ends the turn")
 
 	messages := r.sink.Messages()
 	last := messages[len(messages)-1]
@@ -542,7 +543,7 @@ func TestClineSteerReplyRecordsAnUnlistedSteer(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.feedTurn(t)
-	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "Use the second answer."}))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Use the second answer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The cut answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)
@@ -558,7 +559,7 @@ func TestClineSteerReplyAfterSubmissionDoesNotInterruptTheNextAnswer(t *testing.
 		r.feed(t, eventPendingPromptSubmitted, map[string]any{"prompt": map[string]any{"delivery": "steer"}})
 		return fakeReply{Payload: map[string]any{"queued": true}}
 	})
-	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "Use the second answer."}))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Use the second answer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The next answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)
@@ -631,7 +632,7 @@ func TestClineSteerReplyCannotChangeTheReplacementTurn(t *testing.T) {
 		r.agent.beginInputTurn()
 		return fakeReply{Payload: map[string]any{"queued": true}}
 	})
-	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{Content: "The old steer."}))
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "The old steer."}))
 	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The replacement answer."})
 	rows := r.sink.Messages()
 	require.Len(t, rows, 1)

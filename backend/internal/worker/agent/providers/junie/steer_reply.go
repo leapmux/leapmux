@@ -38,7 +38,14 @@ type junieSteerInput struct {
 	text    string
 }
 
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+// SteerInput injects text into the running turn through Junie's own
+// `_session/steering` and returns its admission receipt when journal tracking
+// is available. The reply's outcome states what the session did: `injected`
+// reached the running turn, and `startedNewTurn` began a new turn of Junie's
+// own, which the provider tracks as an agent turn so its end still closes the
+// turn state. A refused request returns ErrNoActiveTurn, so the queue keeps the
+// input for the next turn.
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	var receipt agent.NativeInputReceipt
 	if request.Content == "" {
 		return receipt, nil

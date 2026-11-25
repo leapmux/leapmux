@@ -29,7 +29,7 @@ func TestClaudeSteerWritesNextPriority(t *testing.T) {
 	})
 	steer := claudeTestSteerRequest("guide", nil)
 	agent := &Agent{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Stdin: writer}), turnActive: true, sessionID: "s-1"}
-	require.NoError(t, agent.SteerInput(steer))
+	require.NoError(t, agenttest.SteerInput(agent, steer))
 	line, err := bufio.NewReader(reader).ReadBytes('\n')
 	require.NoError(t, err)
 	var input struct {
@@ -44,7 +44,7 @@ func TestClaudeSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 
 	sink := &agenttest.Sink{}
 	agent := &Agent{turnActive: true, sink: agent.NewProviderServices(sink)}
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, agent, agent.SendInput("later turn", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, agent, agenttest.SendInput(agent, "later turn", nil))
 }
 
 func TestClaudeSteerMarksTheTurnAwaitingItsResult(t *testing.T) {
@@ -53,10 +53,10 @@ func TestClaudeSteerMarksTheTurnAwaitingItsResult(t *testing.T) {
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"s-1"}`))
-	require.NoError(t, a.SteerInput(claudeTestSteerRequest("steer", nil)))
+	require.NoError(t, agenttest.SteerInput(a, claudeTestSteerRequest("steer", nil)))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
-	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "next", nil), agent.ErrAgentBusy)
 	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
-	assert.NoError(t, a.SendInput("next", nil))
+	assert.NoError(t, agenttest.SendInput(a, "next", nil))
 }

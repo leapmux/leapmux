@@ -67,7 +67,7 @@ func TestDiracSteerInputSendsAWhisper(t *testing.T) {
 	a, requests := newDiracAgent(t)
 	a.SetPromptActiveForTest(true)
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{Content: "also mention bananas"}))
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "also mention bananas"}))
 	syncPeer(t, a)
 
 	whispers := requestsFor(requests(), diracSteerMethod)
@@ -79,7 +79,7 @@ func TestDiracSteerInputSendsAWhisper(t *testing.T) {
 func TestDiracSteerInputRefusesWhenNoTurnRuns(t *testing.T) {
 	t.Parallel()
 	a, _ := newDiracAgent(t)
-	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: "late"}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "late"}), agent.ErrNoActiveTurn)
 }
 
 // diracUpdateFrame is a session/update frame of one session that carries the

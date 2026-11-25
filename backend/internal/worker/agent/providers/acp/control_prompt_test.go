@@ -273,3 +273,7 @@ func TestAnswerBaseControlRequest_AnswersAnElicitationAndRefusesAnotherKind(t *t
 	}, nil)
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 }
+
+func TestSelectedOptionResult(t *testing.T) {
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"jsonrpc:7","result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}`, string(SelectedOptionResult("jsonrpc:7", "allow-once")))
+}

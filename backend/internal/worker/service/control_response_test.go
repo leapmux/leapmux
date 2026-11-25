@@ -2434,18 +2434,18 @@ type recordingQuestionAgent struct {
 	sent    []string
 }
 
-func (a *recordingQuestionAgent) SendInputForSession(_ string, content string, _ []*leapmuxv1.Attachment) error {
+func (a *recordingQuestionAgent) SendInputForSession(_ string, content string, _ []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sent = append(a.sent, content)
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
-func (a *recordingQuestionAgent) SteerInput(request agent.SteerRequest) error {
+func (a *recordingQuestionAgent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.steered = append(a.steered, request.Content)
-	return nil
+	return agent.NativeInputReceipt{}, nil
 }
 
 func (a *recordingQuestionAgent) SupportsSteering() bool { return true }
@@ -2545,7 +2545,7 @@ func TestQuestionAnswerDispatchesWhenNoTurnIsActive(t *testing.T) {
 	assert.Empty(t, steered, "no turn runs, so there is nothing to steer into")
 }
 
-func (a *recordingQuestionAgent) SteerInputForSession(_ string, request agent.SteerRequest) error {
+func (a *recordingQuestionAgent) SteerInputForSession(_ string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	return a.SteerInput(request)
 }
 
@@ -2634,12 +2634,12 @@ type heldQuestionSteerer struct {
 	release chan struct{}
 }
 
-func (a *heldQuestionSteerer) SteerInput(request agent.SteerRequest) error {
+func (a *heldQuestionSteerer) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	a.first.Do(func() { close(a.entered); <-a.release })
 	return a.recordingQuestionAgent.SteerInput(request)
 }
 
-func (a *heldQuestionSteerer) SteerInputForSession(_ string, request agent.SteerRequest) error {
+func (a *heldQuestionSteerer) SteerInputForSession(_ string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	return a.SteerInput(request)
 }
 

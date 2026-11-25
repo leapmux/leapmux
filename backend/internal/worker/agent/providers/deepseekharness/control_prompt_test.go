@@ -365,7 +365,7 @@ func TestAnswerControlRequest_DeepseekHarnessAnswersReachTheRuntimeAsItsOutcome(
 		answer, err := agenttest.AnswerControl(deepseekHarnessProvider{}, published.Payload, published.RequestID, decision)
 		require.NoError(t, err)
 		require.NoError(t, agenttest.ResolveAnswer(deepseekHarnessProvider{}, published.Payload, published.RequestID, answer).Refusal())
-		require.NoError(t, a.answerControl(answer.Content))
+		require.NoError(t, a.answerControl(sink.Answer(published.RequestID, answer.Content)))
 		return outcome
 	}
 

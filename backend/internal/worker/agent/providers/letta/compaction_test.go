@@ -72,7 +72,7 @@ func TestLettaManualCompactionCommand(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			t.Parallel()
 			fake, a, sink := newLettaCompactionTestAgent(t)
-			require.NoError(t, a.SendInput(tc.input, nil))
+			require.NoError(t, agenttest.SendInput(a, tc.input, nil))
 			command := fake.nextCommand(t)
 			assert.Equal(t, "execute_command", command["type"])
 			assert.Equal(t, "compact", command["command_id"])
@@ -102,7 +102,7 @@ func TestLettaManualCompactionOrdinaryInputs(t *testing.T) {
 			if text == "/compact" || text == "/compact help" {
 				attachments = []*leapmuxv1.Attachment{{Filename: "note.txt", MimeType: "text/plain", Data: []byte("Attached context")}}
 			}
-			require.NoError(t, a.SendInput(text, attachments))
+			require.NoError(t, agenttest.SendInput(a, text, attachments))
 			command := fake.nextCommand(t)
 			assert.Equal(t, "input", command["type"])
 			payload, ok := command["payload"].(map[string]any)
@@ -130,7 +130,7 @@ func TestLettaManualCompactionLifecycle(t *testing.T) {
 	fake, a, sink := newLettaCompactionTestAgent(t)
 	observed := &lettaCompactionReleaseSink{Sink: sink}
 	a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(observed))
-	require.NoError(t, a.SendInput("/compact all", nil))
+	require.NoError(t, agenttest.SendInput(a, "/compact all", nil))
 	command := fake.nextCommand(t)
 	a.HandleOutput(compactDelta(t, "slash_command_start", "/compact all", nil))
 	assert.Equal(t, []any{map[string]any{"trigger": "manual"}}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
@@ -154,7 +154,7 @@ func TestLettaManualCompactionLifecycle(t *testing.T) {
 	require.NoError(t, json.Unmarshal(end, &envelope))
 	assert.JSONEq(t, string(envelope.Delta), string(observed.noticesAtRelease[0].Content))
 
-	require.NoError(t, a.SendInput("Continue after compaction.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Continue after compaction.", nil))
 	assert.Equal(t, "input", fake.nextCommand(t)["type"])
 	a.HandleOutput(compactResponse(t, command["request_id"], true))
 	assertLettaActive(t, sink, true)
@@ -184,7 +184,7 @@ func TestLettaManualCompactionFailures(t *testing.T) {
 			if tc.help {
 				input += " help"
 			}
-			require.NoError(t, a.SendInput(input, nil))
+			require.NoError(t, agenttest.SendInput(a, input, nil))
 			command := fake.nextCommand(t)
 			a.HandleOutput(compactDelta(t, "slash_command_start", input, nil))
 			if tc.nativeEnd {
@@ -222,7 +222,7 @@ func TestLettaManualCompactionFailures(t *testing.T) {
 func TestLettaManualCompactionInterrupt(t *testing.T) {
 	t.Parallel()
 	fake, a, sink := newLettaCompactionTestAgent(t)
-	require.NoError(t, a.SendInput("/compact", nil))
+	require.NoError(t, agenttest.SendInput(a, "/compact", nil))
 	command := fake.nextCommand(t)
 	interruptErr := a.Interrupt(agent.StopContext{})
 	require.ErrorContains(t, interruptErr, "cannot interrupt compaction")
@@ -254,9 +254,9 @@ func TestLettaManualCompactionAdmission(t *testing.T) {
 			}
 			var err error
 			if mode == "stale session" {
-				err = a.SendInputForSession("other", "/compact", nil)
+				err = agenttest.SendInputForSession(a, "other", "/compact", nil)
 			} else {
-				err = a.SendInput("/compact", nil)
+				err = agenttest.SendInput(a, "/compact", nil)
 			}
 			require.Error(t, err)
 			require.NoError(t, a.sendCommand(newLettaCommand("app_server_info", "barrier")))
@@ -275,7 +275,7 @@ func TestLettaManualCompactionConcurrentAdmission(t *testing.T) {
 		if i%2 == 0 {
 			text = "Ordinary input."
 		}
-		senders.Go(func() { results <- a.SendInput(text, nil) })
+		senders.Go(func() { results <- agenttest.SendInput(a, text, nil) })
 	}
 	senders.Wait()
 	close(results)
@@ -300,13 +300,13 @@ func TestLettaManualCompactionWriteFailure(t *testing.T) {
 	connection := a.ws
 	a.ws = nil
 	a.Mu.Unlock()
-	require.Error(t, a.SendInput("/compact", nil))
+	require.Error(t, agenttest.SendInput(a, "/compact", nil))
 	assertLettaActive(t, sink, false)
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	a.Mu.Lock()
 	a.ws = connection
 	a.Mu.Unlock()
-	require.NoError(t, a.SendInput("/compact all", nil))
+	require.NoError(t, agenttest.SendInput(a, "/compact all", nil))
 	command := fake.nextCommand(t)
 	assert.Equal(t, "execute_command", command["type"])
 	a.HandleOutput(compactResponse(t, command["request_id"], true))
@@ -317,7 +317,7 @@ func TestLettaManualCompactionPersistenceFailureStillSettles(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{PersistErr: assert.AnError}
 	fake, a := newLettaCompactionTestAgentWithSink(t, sink)
-	require.NoError(t, a.SendInput("/compact", nil))
+	require.NoError(t, agenttest.SendInput(a, "/compact", nil))
 	command := fake.nextCommand(t)
 	a.HandleOutput(compactDelta(t, "slash_command_start", "/compact", nil))
 	success := true
@@ -335,7 +335,7 @@ func TestLettaManualCompactionIgnoresUnownedDeltas(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			t.Parallel()
 			fake, a, sink := newLettaCompactionTestAgent(t)
-			require.NoError(t, a.SendInput("/compact", nil))
+			require.NoError(t, agenttest.SendInput(a, "/compact", nil))
 			fake.nextCommand(t)
 			var frame map[string]any
 			require.NoError(t, json.Unmarshal(compactDelta(t, "slash_command_start", "/compact", nil), &frame))

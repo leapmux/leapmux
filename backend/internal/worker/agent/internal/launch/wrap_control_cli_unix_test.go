@@ -134,8 +134,7 @@ func runWrappedWithControlCLI(t *testing.T, spec WrapSpec, cli string, env ...st
 // TestControlCLIPathReport).
 func pathReportSpec(t *testing.T, shell string, login bool, home string) WrapSpec {
 	t.Helper()
-	executable, err := os.Executable()
-	require.NoError(t, err)
+	executable := profileCommandExecutable(t)
 	return WrapSpec{
 		Shell: shell, LoginShell: login,
 		Launch:     Spec{Program: executable},
@@ -214,6 +213,17 @@ func TestWrapPutsTheControlCLIFirstAfterAZshLoginProfile(t *testing.T) {
 	assert.Equal(t, "worker\n", got)
 }
 
+func assertWorkerCLIFirst(t *testing.T, got string, fixture controlCLIFixture, profileMessage string) {
+	t.Helper()
+	path, resolved, found := strings.Cut(got, "\n")
+	require.True(t, found, "output: %q", got)
+	entries := filepath.SplitList(path)
+	require.NotEmpty(t, entries)
+	assert.Equal(t, fixture.linkDir, entries[0], "the directory comes first")
+	assert.Contains(t, entries, fixture.decoyDir, profileMessage)
+	assert.Equal(t, "worker\n", resolved)
+}
+
 // Every dialect puts the directory first again after its own login profile,
 // on both launch paths:
 //
@@ -239,13 +249,7 @@ func TestWrapPutsTheControlCLIFirstAfterEveryLoginProfile(t *testing.T) {
 					WorkingDir: home,
 				}, fixture.cli, homeEnv(home)...)
 
-				path, resolved, found := strings.Cut(got, "\n")
-				require.True(t, found, "output: %q", got)
-				entries := filepath.SplitList(path)
-				require.NotEmpty(t, entries)
-				assert.Equal(t, fixture.linkDir, entries[0], "the directory comes first")
-				assert.Contains(t, entries, fixture.decoyDir, "the profile ran, so the step ran after it")
-				assert.Equal(t, "worker\n", resolved)
+				assertWorkerCLIFirst(t, got, fixture, "the profile ran, so the step ran after it")
 			})
 
 			t.Run("candidates", func(t *testing.T) {
@@ -330,7 +334,8 @@ func TestWrapRunsThePosixStepPastProfileFunctions(t *testing.T) {
 			writeShellProfiles(t, home, shellProfiles{posix: "set -a\n" +
 				"unset() { /usr/bin/printf 'profile-unset\\n'; }\n" +
 				"export() { /usr/bin/printf 'profile-export\\n'; }\n" +
-				"builtin() { /usr/bin/printf 'profile-builtin\\n'; }\n"})
+				"builtin() { /usr/bin/printf 'profile-builtin\\n'; }\n" +
+				"break() { /usr/bin/printf 'profile-break\\n'; }\n"})
 
 			got := runWrappedWithControlCLI(t, WrapSpec{
 				Shell: shell, LoginShell: true, Launch: Spec{Program: "/usr/bin/env"}, WorkingDir: home,
@@ -342,7 +347,7 @@ func TestWrapRunsThePosixStepPastProfileFunctions(t *testing.T) {
 			require.Len(t, paths, 1, "environment: %q", got.program)
 			assert.Equal(t, fixture.linkDir, firstPathEntry(t, setPath(paths[0])), "the directory comes first")
 			for _, entry := range environ {
-				assert.False(t, strings.HasPrefix(entry, "__lm_cli_"), "the step leaves %q", entry)
+				assert.False(t, strings.HasPrefix(entry, "__lm_cli_") || strings.HasPrefix(entry, "__lm_restore_") || strings.HasPrefix(entry, "__lm_builtin_"), "the launch environment leaves %q", entry)
 			}
 		})
 	}
@@ -392,17 +397,11 @@ func TestWrapPutsTheControlCLIFirstAfterTheXonshRCWithoutLoginFlags(t *testing.T
 		WorkingDir: home,
 	}, fixture.cli, homeEnv(home)...)
 
-	path, resolved, found := strings.Cut(got, "\n")
-	require.True(t, found, "output: %q", got)
-	entries := filepath.SplitList(path)
-	require.NotEmpty(t, entries)
-	assert.Equal(t, fixture.linkDir, entries[0], "the directory comes first")
-	assert.Contains(t, entries, fixture.decoyDir, "rc.xsh ran, so the step ran after it")
-	assert.Equal(t, "worker\n", resolved)
+	assertWorkerCLIFirst(t, got, fixture, "rc.xsh ran, so the step ran after it")
 }
 
 // Every dialect checks the env gate after the profile, and each one answers
-// the same: a set variable withholds the gated arguments.
+// the same: a set variable withholds the conditional arguments.
 func TestEveryInstalledShellRunsTheEnvGate(t *testing.T) {
 	t.Parallel()
 	for _, name := range controlCLIShells {

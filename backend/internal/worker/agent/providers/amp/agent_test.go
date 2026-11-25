@@ -1,6 +1,7 @@
 package amp
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -33,7 +34,7 @@ func TestFirstMessageStartsANewThreadAndWritesTheLine(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("hello")
 
-	assert.Equal(t, []string{""}, h.startedThreads(), "a new thread")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "a new thread")
 	lines := fp.lines()
 	require.Len(t, lines, 1)
 	assert.Equal(t, "user", lines[0]["type"])
@@ -49,7 +50,7 @@ func TestSecondMessageReusesTheRunningProcess(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("one")
 	h.feed(fp, textLine("done", stopReasonEndTurn))
-	require.NoError(t, h.agent.SendInput("two", nil))
+	require.NoError(t, agenttest.SendInput(h.agent, "two", nil))
 	assert.Len(t, h.startedThreads(), 1)
 	assert.Len(t, fp.lines(), 2)
 }
@@ -60,7 +61,7 @@ func TestBusyRefusalRepublishesTheTurn(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	fp := h.send("one")
-	err := h.agent.SendInput("two", nil)
+	_, err := h.agent.SendInput("two", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, &h.sink.Sink, h.agent, err)
 	assert.Len(t, fp.lines(), 1, "the refused message reached no stdin")
 }
@@ -76,7 +77,7 @@ func TestSendInputForSessionRejectsMissingAndReplacedSessions(t *testing.T) {
 	h := newHarness(t, withResume("T-current"))
 	agenttest.AssertRejectsMissingAndReplacedSessions(t, h.agent)
 	assert.Empty(t, h.startedThreads())
-	require.NoError(t, h.agent.SendInputForSession("T-current", "go", nil))
+	require.NoError(t, agenttest.SendInputForSession(h.agent, "T-current", "go", nil))
 	assert.Equal(t, []string{"T-current"}, h.startedThreads(), "a resumed agent continues its thread")
 }
 
@@ -85,7 +86,7 @@ func TestSteeringWritesASteerLineIntoTheRunningTurn(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("sleep")
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "also say steered"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "also say steered"}))
 	lines := fp.lines()
 	require.Len(t, lines, 2)
 	assert.Equal(t, true, lines[1]["steer"])
@@ -98,7 +99,7 @@ func TestSteerabilityStartsWhenTheThreadIdentityArrives(t *testing.T) {
 	state := h.agent.PublishTurnActive()
 	assert.True(t, state.Active)
 	assert.False(t, state.Steerable, "the first unfinished message supplies no thread identity for the native history read")
-	require.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "wait in the queue"}), agent.ErrSteeringUnsupported)
+	require.ErrorIs(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "wait in the queue"}), agent.ErrSteeringUnsupported)
 	assert.Len(t, fp.lines(), 1)
 	h.feed(fp, initLine("T-1"))
 	kinds := h.sink.TurnKinds()
@@ -109,10 +110,10 @@ func TestSteerabilityStartsWhenTheThreadIdentityArrives(t *testing.T) {
 func TestSteeringNeedsARunningTurn(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	assert.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "nothing runs"}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "nothing runs"}), agent.ErrNoActiveTurn)
 	fp := h.send("one")
 	h.feed(fp, textLine("done", stopReasonEndTurn))
-	assert.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "the turn ended"}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "the turn ended"}), agent.ErrNoActiveTurn)
 }
 
 // A process that an interrupt signalled is on its way out, so a steering line
@@ -124,14 +125,14 @@ func TestSteeringIsRefusedWhileTheProcessEnds(t *testing.T) {
 	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
 	require.True(t, h.turnActive(), "the turn ends at Amp's result, not at the signal")
 
-	assert.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "too late"}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "too late"}), agent.ErrNoActiveTurn)
 	assert.Len(t, fp.lines(), 1, "the steering line never reached the process")
 }
 
 func TestARefusedMessageStartsNoProcess(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	err := h.agent.SendInput("", []*leapmuxv1.Attachment{{Filename: "a.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
+	_, err := h.agent.SendInput("", []*leapmuxv1.Attachment{{Filename: "a.pdf", MimeType: "application/pdf", Data: []byte("%PDF")}})
 	require.Error(t, err)
 	assert.Empty(t, h.startedThreads())
 	assert.False(t, h.turnActive())
@@ -140,16 +141,19 @@ func TestARefusedMessageStartsNoProcess(t *testing.T) {
 func TestAFailedStartDisarmsNothingAndReportsTheError(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	h.startErr = errors.New("amp: command not found")
-	err := h.agent.SendInput("go", nil)
+	h.agent.createThreadFn = func(context.Context, threadConfiguration) (string, error) {
+		return "", errors.New("amp: command not found")
+	}
+	_, err := h.agent.SendInput("go", nil)
 	require.ErrorContains(t, err, "command not found")
 	assert.False(t, h.turnActive(), "the agent armed no turn for a message that never left")
 	assert.Empty(t, h.sink.TurnActives(), "the agent published no turn for a message that never left")
-	assert.False(t, h.agent.modeLocked, "a thread that never got a message keeps a mutable mode")
+	assert.False(t, h.agent.modeLocked, "a thread that never existed keeps a mutable mode")
 }
 
 // A message whose write fails never reached Amp, so the agent releases the turn
-// that it armed for the message, and the thread keeps a mutable mode.
+// that it armed for the message. Thread creation already fixed the thread's mode
+// on Amp's server.
 func TestAFailedWriteDisarmsTheTurn(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -166,14 +170,13 @@ func TestAFailedWriteDisarmsTheTurn(t *testing.T) {
 		return proc, nil
 	}
 	statusBefore := h.sink.StatusActiveCount()
-
-	err := h.agent.SendInput("go", nil)
+	_, err := h.agent.SendInput("go", nil)
 	require.ErrorContains(t, err, "deliver the message to amp")
 	assert.False(t, h.turnActive())
 	assert.Equal(t, []bool{true, false}, h.sink.TurnActives(), "the agent armed the turn before the write and released it after the failure")
-	assert.False(t, h.agent.modeLocked, "the thread got no message, so its mode can still change")
-	assert.Equal(t, statusBefore, h.sink.StatusActiveCount(), "the settings view learns of no fixed mode")
-	assert.True(t, groupByID(t, h.agent.OptionGroups(), contracts.AmpOptionAgentMode).GetMutable())
+	assert.True(t, h.agent.modeLocked, "creating the thread fixed its mode on Amp")
+	assert.Equal(t, statusBefore+1, h.sink.StatusActiveCount(), "creating the thread announced the active session")
+	assert.False(t, groupByID(t, h.agent.OptionGroups(), contracts.AmpOptionAgentMode).GetMutable())
 }
 
 // Two messages at the same moment start one turn in one process. The second
@@ -187,7 +190,7 @@ func TestConcurrentMessagesStartOneTurn(t *testing.T) {
 	for _, text := range []string{"one", "two"} {
 		go func() {
 			<-gate
-			errs <- h.agent.SendInput(text, nil)
+			errs <- agenttest.SendInput(h.agent, text, nil)
 		}()
 	}
 	close(gate)
@@ -206,7 +209,7 @@ func TestConcurrentMessagesStartOneTurn(t *testing.T) {
 	}
 	assert.Equal(t, 1, accepted)
 	assert.Equal(t, 1, busy)
-	assert.Equal(t, []string{""}, h.startedThreads(), "one process starts")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "one process starts")
 	fp := h.nextProc()
 	assert.Len(t, fp.lines(), 1, "one message reached Amp")
 }
@@ -251,7 +254,7 @@ func TestModeLocksAtTheModeThatTheThreadStartedWith(t *testing.T) {
 		return h.start(threadID, config)
 	}
 	sent := make(chan error, 1)
-	go func() { sent <- h.agent.SendInput("go", nil) }()
+	go func() { sent <- agenttest.SendInput(h.agent, "go", nil) }()
 	started := <-entered
 	h.agent.UpdateSettings(map[string]string{contracts.AmpOptionAgentMode: agentModeHigh, OptionFastMode: "true"})
 	close(gate)
@@ -285,12 +288,12 @@ func TestInterruptSignalsTheProcessAndTheResultEndsTheTurn(t *testing.T) {
 	ends := h.turnEnds()
 	require.Len(t, ends, 1)
 	assert.Equal(t, agent.MessageCompletionInterrupted, ends[0].Completion)
-	assert.Equal(t, []string{""}, h.startedThreads(), "an interrupt does not resume at once")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "an interrupt does not resume at once")
 
 	// The next message resumes the thread in a new process.
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SendInput("next", nil))
-	assert.Equal(t, []string{"", "T-1"}, h.startedThreads())
+	require.NoError(t, agenttest.SendInput(h.agent, "next", nil))
+	assert.Equal(t, []string{testCreatedThreadID, "T-1"}, h.startedThreads())
 }
 
 func TestInterruptWithNoTurnIsANoop(t *testing.T) {
@@ -342,14 +345,14 @@ func TestErrorExitMidTurnResumesTheThreadOnce(t *testing.T) {
 	fp.awaitHandled(t)
 
 	resumed := h.nextProcAfter(fp)
-	assert.Equal(t, []string{"", "T-9"}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID, "T-9"}, h.startedThreads())
 	assert.True(t, resumed.resumed)
 	assert.Empty(t, resumed.lines(), "the resume writes nothing; the next message does")
 
 	// The resumed process dies while idle: it states the failure and resumes nothing.
 	resumed.exit()
 	resumed.awaitHandled(t)
-	assert.Equal(t, []string{"", "T-9"}, h.startedThreads(), "no retry loop")
+	assert.Equal(t, []string{testCreatedThreadID, "T-9"}, h.startedThreads(), "no retry loop")
 	notifications := h.sink.Notifications()
 	require.Len(t, notifications, 1)
 	assert.Contains(t, notifications[0][contracts.NotificationFieldError], "send /clear", "a resume that fails before its init line says how to start fresh")
@@ -410,7 +413,7 @@ func TestAFailedResumeStatesTheFailure(t *testing.T) {
 		}
 		return false
 	}, 30*time.Second, 2*time.Millisecond, "the failed resume states the thread and the reason")
-	assert.Equal(t, []string{"", "T-6"}, h.startedThreads(), "the resume ran once")
+	assert.Equal(t, []string{testCreatedThreadID, "T-6"}, h.startedThreads(), "the resume ran once")
 	assert.False(t, h.turnActive(), "a failed resume arms no turn")
 }
 
@@ -431,7 +434,7 @@ func TestNewMessageStopsAnOldProcessThatDoesNotExit(t *testing.T) {
 
 	h.drainStarted()
 	sent := make(chan error, 1)
-	go func() { sent <- h.agent.SendInput("next", nil) }()
+	go func() { sent <- agenttest.SendInput(h.agent, "next", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	trap.MustWait(ctx).MustRelease(ctx)
 	h.clock.Advance(10 * time.Second).MustWait(ctx)
@@ -440,7 +443,7 @@ func TestNewMessageStopsAnOldProcessThatDoesNotExit(t *testing.T) {
 	assert.True(t, fp.IntentionalStopRequested(), "the agent stopped the old process")
 	next := h.nextProc()
 	assert.True(t, next.resumed)
-	assert.Equal(t, []string{"", "T-4"}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID, "T-4"}, h.startedThreads())
 	assert.True(t, h.turnActive(), "the stopped process ended no new turn")
 	assert.Len(t, h.turnEnds(), 1)
 	assert.Empty(t, h.sink.Notifications(), "an idle process that the agent stopped states no error")
@@ -460,7 +463,7 @@ func TestStopEndsAMessageThatWaitsForTheOldProcess(t *testing.T) {
 
 	h.drainStarted()
 	sent := make(chan error, 1)
-	go func() { sent <- h.agent.SendInput("next", nil) }()
+	go func() { sent <- agenttest.SendInput(h.agent, "next", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	trap.MustWait(ctx).MustRelease(ctx)
 	h.agent.Stop()
@@ -499,7 +502,7 @@ func TestStopMakesAmpsCancelResultAnInterruption(t *testing.T) {
 	assert.Equal(t, interruptedMessage, row["error"])
 	assert.EqualValues(t, 5, row["duration_ms"], "the turn end is Amp's own result row")
 	assert.False(t, fp.resumeAfterExit.Load(), "an interruption resumes nothing")
-	assert.Equal(t, []string{""}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads())
 	assert.Empty(t, h.sink.Notifications())
 }
 
@@ -516,7 +519,7 @@ func TestDiscardedOutputEndsNoTurnAtTheExit(t *testing.T) {
 
 	assert.Empty(t, h.turnEnds())
 	assert.Empty(t, h.sink.Notifications())
-	assert.Equal(t, []string{""}, h.startedThreads(), "a discarded agent resumes nothing")
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads(), "a discarded agent resumes nothing")
 }
 
 // A crash mid-turn -- a process that printed no `result` -- ends the turn with
@@ -534,7 +537,7 @@ func TestCrashMidTurnEndsTheTurnWithTheReasonAndResumes(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionError, ends[0].Completion)
 	assert.Contains(t, decodeRow(t, ends[0].Content)["error"], "exited unexpectedly")
 	h.nextProcAfter(fp)
-	assert.Equal(t, []string{"", "T-5"}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID, "T-5"}, h.startedThreads())
 }
 
 // A new thread whose process died before its init line has no thread to
@@ -546,7 +549,7 @@ func TestCrashBeforeTheThreadExistedResumesNothing(t *testing.T) {
 	fp.exit()
 	fp.awaitHandled(t)
 	assert.Len(t, h.turnEnds(), 1)
-	assert.Equal(t, []string{""}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID}, h.startedThreads())
 }
 
 func TestIdleExitWithAResultStatesNothing(t *testing.T) {
@@ -602,11 +605,11 @@ func TestNewMessageWaitsForTheOldProcessExit(t *testing.T) {
 
 	h.drainStarted()
 	sent := make(chan error, 1)
-	go func() { sent <- h.agent.SendInput("next", nil) }()
+	go func() { sent <- agenttest.SendInput(h.agent, "next", nil) }()
 	awaitExitWait(t, h, trap)
 	fp.exit()
 	require.NoError(t, <-sent)
-	assert.Equal(t, []string{"", "T-2"}, h.startedThreads())
+	assert.Equal(t, []string{testCreatedThreadID, "T-2"}, h.startedThreads())
 	assert.True(t, h.turnActive(), "the old process's exit did not end the new turn")
 }
 
@@ -637,7 +640,7 @@ func TestNewMessageWaitsForTheWholeExitHandler(t *testing.T) {
 
 	h.drainStarted()
 	sent := make(chan error, 1)
-	go func() { sent <- h.agent.SendInput("next", nil) }()
+	go func() { sent <- agenttest.SendInput(h.agent, "next", nil) }()
 	awaitExitWait(t, h, trap)
 	close(gate)
 	require.NoError(t, <-sent)
@@ -662,7 +665,7 @@ func TestStopEndsTheRunningTurnAndRemovesTheDirectory(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "the agent's directory is gone")
 	require.NoError(t, h.agent.Wait())
 
-	assert.ErrorContains(t, h.agent.SendInput("after", nil), "stopped")
+	assert.ErrorContains(t, agenttest.SendInput(h.agent, "after", nil), "stopped")
 	assert.ErrorContains(t, h.agent.Interrupt(agent.StopContext{}), "stopped")
 	h.agent.Stop() // idempotent
 }
@@ -762,7 +765,7 @@ func TestSteerEchoAtTheUserLine(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("first")
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	assert.Empty(t, h.sink.SteerEchoReports())
 	// The native echo shape comes from .tmp/verify-c29/amp/run1.
 	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"unrelated"}]}}`)
@@ -779,7 +782,7 @@ func TestSteerAfterEndTurnIsNotRunTwice(t *testing.T) {
 	fp.stdin.mu.Lock()
 	fp.stdin.beforeWrite = func() { h.feed(fp, textLine("first answer", stopReasonEndTurn)) }
 	fp.stdin.mu.Unlock()
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	require.False(t, h.turnActive())
 	survivor, ok := any(h.agent).(agent.SteerSurvivor)
 	require.True(t, ok)
@@ -803,7 +806,7 @@ func TestSteerEchoWithAnImageOnlyMessage(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("first")
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "", Attachments: []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "", Attachments: []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}}))
 	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.test/image"}}]}}`)
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
 }
@@ -813,7 +816,7 @@ func TestSteerIgnoresAMalformedEmptyEcho(t *testing.T) {
 	h := newHarness(t)
 	fp := h.send("first")
 	h.feed(fp, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: ""}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: ""}))
 	for _, content := range []string{`[]`, `[{"type":"text"}]`, `[{"type":"text","text":null}]`, `[{"type":"text","text":7}]`} {
 		h.feed(fp, `{"type":"user","message":{"role":"user","content":`+content+`}}`)
 	}

@@ -7,13 +7,14 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestOMPReplyStopsCollectingAtItsNativeYield(t *testing.T) {
 	r := newRig(t)
-	receipt, err := r.agent.SendInputWithReceipt("A reader prompt.", nil)
+	receipt, err := r.agent.SendInput("A reader prompt.", nil)
 	require.NoError(t, err)
 	commands := r.commandsOfType(CommandPrompt)
 	require.Len(t, commands, 1)
@@ -55,7 +56,7 @@ func TestOMPExactInputStaysInWorkerQueueAfterNativeBusyRefusal(t *testing.T) {
 		}
 		return nil
 	})
-	receipt, err := r.agent.SendInputWithReceipt("A reader prompt.", nil)
+	receipt, err := r.agent.SendInput("A reader prompt.", nil)
 	require.ErrorIs(t, err, agent.ErrAgentBusy)
 	assert.Empty(t, receipt)
 	assert.True(t, r.agent.PublishTurnActive().Active)
@@ -78,7 +79,7 @@ func TestOMPReplyRequiresEvidenceOfSuccess(t *testing.T) {
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			r := newRig(t)
-			receipt, err := r.agent.SendInputWithReceipt("A reader prompt.", nil)
+			receipt, err := r.agent.SendInput("A reader prompt.", nil)
 			require.NoError(t, err)
 			r.emit(ompResultFrame(receipt.InputID, tc.status))
 			assert.Empty(t, r.sink.NativeReplyTurns())
@@ -89,7 +90,7 @@ func TestOMPReplyRequiresEvidenceOfSuccess(t *testing.T) {
 
 func TestOMPReplyFinishesAtNativePauseWhileSessionIsActive(t *testing.T) {
 	r := newRig(t)
-	receipt, err := r.agent.SendInputWithReceipt("A reader prompt.", nil)
+	receipt, err := r.agent.SendInput("A reader prompt.", nil)
 	require.NoError(t, err)
 	r.emit(
 		`{"type":"agent_start"}`,
@@ -112,7 +113,7 @@ func TestOMPLocalReplyCanCompleteAtItsAcknowledgement(t *testing.T) {
 		}
 		return nil
 	})
-	receipt, err := r.agent.SendInputWithReceipt("Text handled by an input hook.", nil)
+	receipt, err := r.agent.SendInput("Text handled by an input hook.", nil)
 	require.NoError(t, err)
 	assert.Equal(t, []agent.NativeReplyTurn{{
 		SessionID: receipt.SessionID, TurnID: receipt.TurnID,
@@ -130,7 +131,7 @@ func TestOMPLateAcknowledgementCannotClaimAnotherRun(t *testing.T) {
 		}
 		return nil
 	})
-	receipt, err := r.agent.SendInputWithReceipt("A reader prompt.", nil)
+	receipt, err := r.agent.SendInput("A reader prompt.", nil)
 	require.NoError(t, err)
 	r.emit(
 		`{"type":"agent_end","isTerminal":true}`,
@@ -149,7 +150,7 @@ func TestOMPQueuedSteersShareReplyAcrossToolUse(t *testing.T) {
 	r := newRig(t)
 	r.agent.steerBridge = ompSteerBridge{Capability: "steer-ready", Prefix: "steer-prefix:"}
 	r.emit(`{"type":"available_commands_update","commands":[{"name":"steer-ready","source":"extension"}]}`)
-	lead, err := r.agent.SendInputWithReceipt("Check the main shipment.", nil)
+	lead, err := r.agent.SendInput("Check the main shipment.", nil)
 	require.NoError(t, err)
 	r.emit(
 		`{"type":"agent_start"}`,
@@ -157,7 +158,7 @@ func TestOMPQueuedSteersShareReplyAcrossToolUse(t *testing.T) {
 		`{"type":"turn_end","message":{"role":"assistant","stopReason":"toolUse"}}`,
 	)
 	for _, id := range []string{"first", "second"} {
-		require.NoError(t, r.agent.SteerInput(agent.SteerRequest{
+		require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{
 			Content: "Check the next shipment.", InputID: id, AttemptID: id + "-attempt",
 		}))
 	}
@@ -204,7 +205,7 @@ func TestOMPSettledPromptWithoutUserEchoLeavesSteerUncertain(t *testing.T) {
 		`{"type":"available_commands_update","commands":[{"name":"steer-ready","source":"extension"}]}`,
 		`{"type":"agent_start"}`,
 	)
-	require.NoError(t, r.agent.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{
 		Content: "Check the next shipment.", InputID: "steer", AttemptID: "steer-attempt",
 	}))
 	commands := r.commandsOfType(CommandPrompt)

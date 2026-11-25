@@ -15,7 +15,7 @@ const copilotBinaryName = "copilot"
 const copilotOptionSessionMode = contracts.CopilotOptionSessionMode
 
 // copilotOptionFleet is the option of Fleet. While it is on, each new turn goes
-// through Copilot's fleet request (sendInputForSession).
+// through Copilot's fleet request (sendNativeInput).
 const copilotOptionFleet = contracts.CopilotOptionFleet
 
 // copilotNativeModes are the session modes the runtime accepts. Copilot 1.0.83

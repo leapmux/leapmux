@@ -252,7 +252,9 @@ func mimoPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, 
 	}
 	switch option.GetOptionId() {
 	case contracts.MiMoPermissionReplyOnce, contracts.MiMoPermissionReplyAlways, contracts.MiMoPermissionReplyReject:
-		return agent.ControlAnswer{Content: agent.SelectedOptionResult(input.RequestID, option.GetOptionId())}, nil
+		return agent.ControlAnswer{Content: agent.JSONRPCResult(input.RequestID, map[string]any{
+			"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": option.GetOptionId()},
+		})}, nil
 	default:
 		return agent.ControlAnswer{}, agent.InvalidControlDecision("MiMo Code offers no option %q", option.GetOptionId())
 	}

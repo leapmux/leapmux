@@ -495,7 +495,7 @@ func TestSendInputRefusesAnAddresslessInput(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 
-	err := a.SendInput("This input has no runtime to address.", nil)
+	err := agenttest.SendInput(a, "This input has no runtime to address.", nil)
 	require.Error(t, err, "an input with no runtime identity is refused")
 	assert.Contains(t, err.Error(), "runtime", "the refusal states the missing identity")
 	assert.Empty(t, sink.TurnActives(), "a refused input arms no turn")

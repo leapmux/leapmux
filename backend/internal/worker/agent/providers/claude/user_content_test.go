@@ -165,9 +165,11 @@ func TestClaudeSendInputPutsThePromptTextLast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newClaudeContentAgent(t, false)
-			require.NoError(t, a.SendInput(tc.content, tc.attachments))
+			receipt, err := a.SendInput(tc.content, tc.attachments)
+			require.NoError(t, err)
+			require.NotEmpty(t, receipt.InputID)
 			assertOneClaudeFrame(t, stdin.String(),
-				`{"type":"user","message":{"role":"user","content":`+tc.wantContent+`}}`)
+				`{"type":"user","uuid":"`+receipt.InputID+`","message":{"role":"user","content":`+tc.wantContent+`}}`)
 		})
 	}
 }
@@ -178,7 +180,7 @@ func TestClaudeSteerInputPutsThePromptTextLast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newClaudeContentAgent(t, true)
-			receipt, err := a.SteerInputWithReceipt(claudeTestSteerRequest(tc.content, tc.attachments))
+			receipt, err := a.SteerInput(claudeTestSteerRequest(tc.content, tc.attachments))
 			if tc.steerRefused {
 				require.ErrorIs(t, err, agent.ErrSteeringUnsupported,
 					"the worker keeps the input, document and all, for the next turn")
@@ -214,7 +216,7 @@ func TestClaudeSteerInputRefusesWhatTheFoldDrops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			a, stdin := newClaudeContentAgent(t, true)
-			require.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: tc.content, Attachments: tc.attachments}), agent.ErrSteeringUnsupported)
+			require.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: tc.content, Attachments: tc.attachments}), agent.ErrSteeringUnsupported)
 			assert.Empty(t, stdin.String(), "a refused steer writes nothing")
 		})
 	}
@@ -227,7 +229,7 @@ func TestClaudeSteerInputRefusesWhatTheFoldDrops(t *testing.T) {
 func TestClaudeSteerInputChecksTheFilesBeforeTheTurn(t *testing.T) {
 	t.Parallel()
 	a, stdin := newClaudeContentAgent(t, false)
-	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: claudeOrderPrompt, Attachments: []*leapmuxv1.Attachment{claudeOrderPDF()}}), agent.ErrSteeringUnsupported)
-	assert.ErrorIs(t, a.SteerInput(agent.SteerRequest{Content: claudeOrderPrompt, Attachments: []*leapmuxv1.Attachment{claudeOrderPNG()}}), agent.ErrNoActiveTurn)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: claudeOrderPrompt, Attachments: []*leapmuxv1.Attachment{claudeOrderPDF()}}), agent.ErrSteeringUnsupported)
+	assert.ErrorIs(t, agenttest.SteerInput(a, agent.SteerRequest{Content: claudeOrderPrompt, Attachments: []*leapmuxv1.Attachment{claudeOrderPNG()}}), agent.ErrNoActiveTurn)
 	assert.Empty(t, stdin.String())
 }

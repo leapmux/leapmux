@@ -72,7 +72,7 @@ func TestZCodeSendInput_PreservesNativeEventsBeforeTheSenderResumes(t *testing.T
 					}
 					return len(raw), nil
 				})))
-				receipt, err := a.SendInputWithReceipt("hello", nil)
+				receipt, err := a.SendInput("hello", nil)
 				require.NoError(t, err)
 				require.Equal(t, "sess-1", receipt.SessionID)
 				require.Equal(t, <-wireInputID, receipt.InputID)
@@ -272,7 +272,7 @@ func TestZCodeSendInput_NewAdmissionDoesNotInheritThePreviousToolCount(t *testin
 		`{"kind":"result","toolCallId":"call","toolName":"Bash","result":{"success":true,"content":"/workspace"}}`))
 	a.HandleOutput(zcodeTurnEventLine(t, 0, "first", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
 	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":2}`)
-	require.NoError(t, a.SendInput("second", nil))
+	require.NoError(t, agenttest.SendInput(a, "second", nil))
 	request := waitZCodeRequest(t, stdin, MethodSessionSend)
 	var input struct {
 		InputID string `json:"inputId"`
@@ -295,7 +295,7 @@ func TestZCodeSendInput_RetriesABusyRefusalOnTheProcessClock(t *testing.T) {
 		Ctx: a.Context(), Clock: clock, Stdin: stdin, ProcessDone: make(chan struct{}),
 	})
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("guide", nil) }()
+	go func() { result <- agenttest.SendInput(a, "guide", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	answer := func(payload string) {
 		t.Helper()
@@ -331,7 +331,7 @@ func TestZCodeSendInputSendsPlainSessionSend(t *testing.T) {
 	a.model = "provider/model"
 	a.Mu.Unlock()
 	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"session-1","accepted":true,"stateRevision":0}`)
-	require.NoError(t, a.SendInput("guide", nil))
+	require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
@@ -359,7 +359,7 @@ func TestZCodeSendInputTimeoutIsDeliveryUncertain(t *testing.T) {
 	a.Mu.Unlock()
 
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("guide", nil) }()
+	go func() { result <- agenttest.SendInput(a, "guide", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	assert.Equal(t, time.Minute, testutil.WaitForTimer(t, ctx, trap))
 	clock.Advance(time.Minute).MustWait(ctx)
@@ -381,7 +381,7 @@ func TestZCodeSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 	a.model = "provider/model"
 	a.turnActive = true
 	a.Mu.Unlock()
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, a.SendInput("later turn", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, agenttest.SendInput(a, "later turn", nil))
 }
 
 // Every send receipt must be the full {sessionId, accepted:true, stateRevision}
@@ -412,7 +412,7 @@ func TestZCodeSendInput_MalformedReceiptIsDeliveryUncertain(t *testing.T) {
 			stdin := &zcodeRecordedStdin{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 			answerZCodeRequest(t, a, stdin, MethodSessionSend, tc.result)
-			err := a.SendInput("guide", nil)
+			err := agenttest.SendInput(a, "guide", nil)
 			require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 			a.Mu.Lock()
 			defer a.Mu.Unlock()
@@ -436,7 +436,7 @@ func TestZCodeSendInput_ExplicitRejectionKeepsTheOrdinaryError(t *testing.T) {
 			stdin := &zcodeRecordedStdin{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 			answerZCodeRequest(t, a, stdin, MethodSessionSend, tc.result)
-			err := a.SendInput("guide", nil)
+			err := agenttest.SendInput(a, "guide", nil)
 			require.Error(t, err)
 			assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the app-server answered with a verdict")
 			assert.ErrorContains(t, err, "did not accept")
@@ -455,7 +455,7 @@ func TestZCodeSendInput_AcceptsAZeroStateRevision(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":0}`)
-	require.NoError(t, a.SendInput("guide", nil))
+	require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -476,7 +476,7 @@ func TestZCodeSendInput_FoldsTheReceiptRevisionMonotonically(t *testing.T) {
 		a.stateRevision = 3
 		a.Mu.Unlock()
 		answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":7}`)
-		require.NoError(t, a.SendInput("guide", nil))
+		require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -491,7 +491,7 @@ func TestZCodeSendInput_FoldsTheReceiptRevisionMonotonically(t *testing.T) {
 		a.stateRevision = 10
 		a.Mu.Unlock()
 		answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":7}`)
-		require.NoError(t, a.SendInput("guide", nil))
+		require.NoError(t, agenttest.SendInput(a, "guide", nil))
 
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
@@ -512,7 +512,7 @@ func TestZCodeSendInput_ReplacedSessionReceiptDoesNotTouchTheNewSession(t *testi
 	a.Mu.Unlock()
 
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("guide", nil) }()
+	go func() { result <- agenttest.SendInput(a, "guide", nil) }()
 	ctx := testutil.DeadlineContext(t)
 	request := waitZCodeRequest(t, stdin, MethodSessionSend)
 
@@ -545,7 +545,7 @@ func TestZCodeSendInput_SameIDReplacementReceiptCannotCreateAnOwner(t *testing.T
 	sink := &zcodeReceiptSink{retirements: make(chan zcodeInputRetirement, 4)}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	result := make(chan error, 1)
-	go func() { result <- a.SendInput("old input", nil) }()
+	go func() { result <- agenttest.SendInput(a, "old input", nil) }()
 	request := zcodeNthRequest(t, stdin, MethodSessionSend, 1)
 	snapshot, ok := a.parseStateSnapshot(json.RawMessage(`{"session":{"sessionId":"sess-1"},"runtime":{"stateRevision":1,"eventSeq":0}}`))
 	require.True(t, ok)

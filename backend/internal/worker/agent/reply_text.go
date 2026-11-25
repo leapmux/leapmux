@@ -32,18 +32,27 @@ import (
 // copies it: the text without the white space at either end. A row whose
 // text is all white space holds no reply.
 func ReplyText(provider Provider, content MessageContent) (string, bool) {
-	if kind, _ := MessageMetadata(content); kind != leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED &&
-		kind != leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_TEXT {
-		return "", false
+	origFields, origOK := decodeAssembledEnvelopeFields(content.Original)
+	if origOK {
+		if kind, _ := origFields.metadata(content.Completion); kind != leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED &&
+			kind != leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_TEXT {
+			return "", false
+		}
 	}
 	frame := ResolveMessageContent(provider, content)
-	var envelope map[string]json.RawMessage
-	if json.Unmarshal(frame, &envelope) != nil {
+	var (
+		envelope assembledEnvelopeFields
+		ok       bool
+	)
+	if len(frame) == len(content.Original) && (len(frame) == 0 || &frame[0] == &content.Original[0]) {
+		envelope, ok = origFields, origOK
+	} else {
+		envelope, ok = decodeAssembledEnvelopeFields(frame)
+	}
+	if !ok {
 		return "", false
 	}
-	var envelopeType string
-	_ = json.Unmarshal(envelope[contracts.AssembledMessageFieldType], &envelopeType)
-	switch envelopeType {
+	switch envelope.envelopeType() {
 	case contracts.NotificationThreadWrapperType:
 		return "", false
 	case contracts.AssembledMessageType:
@@ -61,17 +70,17 @@ func ReplyText(provider Provider, content MessageContent) (string, bool) {
 // assembledReplyText reads an assembled envelope. valid is false for an
 // envelope that the browser does not accept as one, which then reaches the
 // provider as any other frame does.
-func assembledReplyText(envelope map[string]json.RawMessage) (text string, ok, valid bool) {
+func assembledReplyText(envelope assembledEnvelopeFields) (text string, ok, valid bool) {
 	var kind, completion string
-	if json.Unmarshal(envelope[contracts.AssembledMessageFieldKind], &kind) != nil ||
-		json.Unmarshal(envelope[contracts.AssembledMessageFieldCompletion], &completion) != nil {
+	if json.Unmarshal(envelope.Kind, &kind) != nil ||
+		json.Unmarshal(envelope.Completion, &completion) != nil {
 		return "", false, false
 	}
-	if assembledMessageKindFromToken(kind) == 0 || messageCompletionFromToken(completion) == 0 {
+	if AssembledMessageKindFromToken(kind) == 0 || messageCompletionFromToken(completion) == 0 {
 		return "", false, false
 	}
 	// The browser reads a missing or non-string text as empty.
-	_ = json.Unmarshal(envelope[contracts.AssembledMessageFieldText], &text)
+	_ = json.Unmarshal(envelope.Text, &text)
 	return text, AssembledMessageKind(kind) == AssembledMessageKindText, true
 }
 

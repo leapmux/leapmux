@@ -26,12 +26,25 @@ func restoreControlResponseID(ctx ControlResponseContext) ControlResponseResolut
 	if len(response["result"]) == 0 && len(response["error"]) == 0 {
 		return resolution
 	}
-	nativeID, _, validRequest := ExtractJSONRPCID(ctx.RequestPayload)
+	nativeID, requestID, validRequest := ExtractJSONRPCID(ctx.RequestPayload)
 	if !validRequest {
 		resolution.Refuse(RefusalUnreadableRequest)
 		return resolution
 	}
+	_, responseID, validResponse := ExtractJSONRPCID(ctx.ResponseContent)
+	if !validResponse {
+		resolution.Refuse(RefusalUnreadableAnswer)
+		return resolution
+	}
 	if bytes.Equal(nativeID, response["id"]) {
+		return resolution
+	}
+	expectedID := ctx.RequestID
+	if expectedID == "" {
+		expectedID = requestID
+	}
+	if responseID != expectedID {
+		resolution.Refuse(RefusalUnreadableAnswer)
 		return resolution
 	}
 	content, err := jsonfield.Set(ctx.ResponseContent, nativeID, "id")

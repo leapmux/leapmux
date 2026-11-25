@@ -543,7 +543,7 @@ func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTransc
 	if target != nil && target.inputReceipt.TurnID != "" {
 		observation.BeforeWrite = func() { b.startInputReply(request) }
 	}
-	err = b.SendDetachedRequestObserved(MethodSessionPrompt, params, observation, handle)
+	err = b.SendDetachedRequest(MethodSessionPrompt, params, providerkit.DetachedRequestOptions{Observation: observation}, handle)
 	if observation.BeforeWrite != nil {
 		b.turnMu.Lock()
 		preceding := request.beforeDispatch

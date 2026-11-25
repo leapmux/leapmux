@@ -1194,7 +1194,7 @@ func TestUserMessageEchoWithoutAnUnreadPDFStatesNothing(t *testing.T) {
 // The steer echo still settles when the echo also states its attachments.
 func TestUserMessageEchoWithAttachmentsStillSettlesTheSteer(t *testing.T) {
 	a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{})
-	require.NoError(t, a.SteerInput(testCopilotSteerRequest("Read the attachments.")))
+	require.NoError(t, agenttest.SteerInput(a, testCopilotSteerRequest("Read the attachments.")))
 	a.HandleOutput(copilotUserMessageEcho(t, []map[string]any{copilotEchoAttachment("report.pdf", "application/pdf")}, []string{"application/pdf"}))
 	assert.Equal(t, []agent.SteerResolution{testCopilotSteerResolution(agent.SteerOutcomeEchoed)}, sink.SteerResolutions())
 	assert.Empty(t, sink.LeapMuxNotifications())

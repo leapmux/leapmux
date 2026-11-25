@@ -62,7 +62,7 @@ func TestACPTurnActive_PromptOpensTheTurnAndTheResponseCloses(t *testing.T) {
 	var out bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&out))
 
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	assert.Equal(t, []bool{true}, sink.TurnActives(), "the turn opens once the prompt is on stdin")
 
 	// The provider answers. SendDetachedRequest correlates on the request id, so
@@ -82,7 +82,7 @@ func TestACPTurnActive_AFailedSendOpensNoTurn(t *testing.T) {
 	// the life of the process.
 	b, sink := newACPTurnBase(t, agenttest.FailingStdin{})
 
-	require.Error(t, b.SendInput("hi", nil))
+	require.Error(t, agenttest.SendInput(b, "hi", nil))
 
 	last, published := sink.LastTurnActive()
 	require.True(t, published)
@@ -112,7 +112,7 @@ func TestTurnEndPrecedesTheClear_ACP(t *testing.T) {
 	var out bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&out))
 
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)))
 
 	testutil.RequireEventually(t, func() bool { return len(sink.TurnLifecycle()) == 3 })
@@ -121,7 +121,7 @@ func TestTurnEndPrecedesTheClear_ACP(t *testing.T) {
 	// An interrupted turn still resets spans between turn_end and turn_active:false.
 	var out2 bytes.Buffer
 	b2, sink2 := newACPTurnBase(t, agenttest.NopStdin(&out2))
-	require.NoError(t, b2.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b2, "hi", nil))
 	b2.noteACPInterruptRequested()
 	b2.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"cancelled"}}`)))
 
@@ -134,7 +134,7 @@ func TestPromptResponseSeparatesLaterSessionText(t *testing.T) {
 
 	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
 	waitForCompletion, resumeCompletion := pausePromptCompletion(t, b)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	sessionID := b.CurrentSessionID()
 	b.HandleOutput(acptest.Chunk(sessionID, "agent_message_chunk", "prompt reply"))
 	require.True(t, b.HandleJSONRPCResponseForTest(promptResponse(1)))
@@ -164,7 +164,7 @@ func TestPromptResponseKeepsItsTextBeforeQueuedAgentWork(t *testing.T) {
 	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
 	b.sink = agent.NewModelProgressResetSink(b.sink)
 	waitForCompletion, resumeCompletion := pausePromptCompletion(t, b)
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	b.HandleOutput(acptest.Chunk(b.CurrentSessionID(), "agent_message_chunk", "prompt reply"))
 	require.True(t, b.HandleJSONRPCResponseForTest(promptResponse(1)))
 	waitForCompletion()
@@ -209,7 +209,7 @@ func TestPromptResponseKeepsCapturedTextWhenTheSessionIsReplaced(t *testing.T) {
 	t.Parallel()
 
 	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	sessionID := b.CurrentSessionID()
 
 	// ClearContext holds this lock while the reader delivers outgoing frames.
@@ -262,7 +262,7 @@ func TestACPTurnActive_ProviderErrorPersistsBufferedText(t *testing.T) {
 
 	var out bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&out))
-	require.NoError(t, b.SendInput("hi", nil))
+	require.NoError(t, agenttest.SendInput(b, "hi", nil))
 	b.HandleOutput(acptest.Chunk(b.CurrentSessionID(), "agent_message_chunk", "partial answer"))
 
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"provider failed"}}`)))

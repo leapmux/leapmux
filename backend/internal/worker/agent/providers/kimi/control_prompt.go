@@ -337,22 +337,33 @@ func kimiPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, 
 	}
 	feedback := decision.GetFeedback()
 	id := option.GetOptionId()
-	allow := agent.ControlResponseEnvelope(input.RequestID, map[string]any{"behavior": contracts.ControlAnswerBehaviorAllow})
 	var content []byte
 	switch {
 	case id == kimiControlOptionApprove:
-		content = allow
+		content = agent.ControlResponseEnvelope(input.RequestID, agent.ControlBehaviorResponse{
+			Behavior: contracts.ControlAnswerBehaviorAllow,
+		})
 	case id == kimiControlOptionApproveForSession:
 		content = agent.ControlResponseEnvelope(input.RequestID, map[string]any{
 			"behavior":               contracts.ControlAnswerBehaviorAllow,
 			contracts.KimiReplyScope: contracts.KimiApprovalScopeSession,
 		})
 	case strings.HasPrefix(id, kimiControlOptionGoalModePrefix):
-		content = agent.WithControlChoice(allow, strings.TrimPrefix(id, kimiControlOptionGoalModePrefix))
+		content = agent.ControlResponseEnvelope(input.RequestID, agent.ControlBehaviorResponse{
+			Behavior: contracts.ControlAnswerBehaviorAllow,
+			Choice:   strings.TrimPrefix(id, kimiControlOptionGoalModePrefix),
+		})
 	case strings.HasPrefix(id, kimiControlOptionPlanApprovePrefix):
-		content = agent.WithControlChoice(allow, strings.TrimPrefix(id, kimiControlOptionPlanApprovePrefix))
+		content = agent.ControlResponseEnvelope(input.RequestID, agent.ControlBehaviorResponse{
+			Behavior: contracts.ControlAnswerBehaviorAllow,
+			Choice:   strings.TrimPrefix(id, kimiControlOptionPlanApprovePrefix),
+		})
 	case strings.HasPrefix(id, kimiControlOptionPlanRejectPrefix):
-		content = agent.WithControlChoice(agent.DenyResponse(input.RequestID, feedback), strings.TrimPrefix(id, kimiControlOptionPlanRejectPrefix))
+		content = agent.ControlResponseEnvelope(input.RequestID, agent.ControlBehaviorResponse{
+			Behavior: contracts.ControlAnswerBehaviorDeny,
+			Message:  agent.DenyMessage(feedback),
+			Choice:   strings.TrimPrefix(id, kimiControlOptionPlanRejectPrefix),
+		})
 	default:
 		content = agent.DenyResponse(input.RequestID, feedback)
 	}

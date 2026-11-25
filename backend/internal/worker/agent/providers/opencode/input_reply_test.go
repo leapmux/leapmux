@@ -40,9 +40,7 @@ func openCodeInputReplyFixture(t *testing.T, messages func(query url.Values, inp
 		}
 	})
 	a, sink := assemblyAgent(t, rpc)
-	sender, ok := any(a).(agent.InputReceiptSender)
-	require.True(t, ok, "the Worker needs the submitted native input identity")
-	receipt, err := sender.SendInputWithReceipt("ordinary prompt", nil)
+	receipt, err := a.SendInput("ordinary prompt", nil)
 	require.NoError(t, err)
 	require.Equal(t, "ses_1", receipt.SessionID)
 	require.Equal(t, submitted.Load(), receipt.InputID)
@@ -140,7 +138,7 @@ func TestOpenCodeInputReplyKeepsEachBoundaryInTheSharedExecution(t *testing.T) {
 			})
 			leadID = lead.InputID
 			request := openCodeTestSteerRequest("queued-steer", "steer prompt")
-			steer, err := a.SteerInputWithReceipt(request)
+			steer, err := a.SteerInput(request)
 			require.NoError(t, err)
 			require.NotEqual(t, lead.InputID, steer.InputID)
 			if restore {
@@ -214,4 +212,65 @@ func TestOpenCodeInputReplyBindsOnlyControlsFromItsOwnAssistant(t *testing.T) {
 		SessionID: receipt.SessionID, RequestID: controls[1].RequestID, InstanceID: controls[1].InstanceID,
 		InputIDs: []string{receipt.InputID},
 	}}, controlSink.bindings)
+}
+
+func TestOpenCodeSendAndSteerInputForSessionReturnReceipts(t *testing.T) {
+	t.Parallel()
+	var submittedIDs []string
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/session/ses_1/prompt":
+			var prompt openCodePrompt
+			assert.NoError(t, json.NewDecoder(request.Body).Decode(&prompt))
+			submittedIDs = append(submittedIDs, prompt.ID)
+			_, _ = fmt.Fprintf(w, `{"data":{"id":%q,"sessionID":"ses_1","type":"user"}}`, prompt.ID)
+		case "/api/session/ses_1/message":
+			lead := fmt.Sprintf(`{"id":%q,"type":"user"}`, submittedIDs[0])
+			steer := fmt.Sprintf(`{"id":%q,"type":"user"}`, submittedIDs[1])
+			const first = `{"id":"msg_first","type":"assistant","content":[{"type":"text","text":"lead reply"}],"time":{"completed":2}}`
+			const second = `{"id":"msg_second","type":"assistant","content":[{"type":"text","text":"steer reply"}],"time":{"completed":7}}`
+			const ending = `{"id":"msg_done","type":"idle","outcome":"succeeded"}`
+			_, _ = fmt.Fprintf(w, `{"data":[%s,%s,%s,%s,%s],"cursor":{}}`, ending, second, steer, first, lead)
+		case "/api/session/ses_1":
+			_, _ = fmt.Fprint(w, `{"data":{"id":"ses_1","agent":"build"}}`)
+		case "/api/session/active":
+			_, _ = fmt.Fprint(w, `{"data":{}}`)
+		case "/api/session/ses_1/permission", "/api/session/ses_1/form":
+			_, _ = fmt.Fprint(w, `{"data":[]}`)
+		default:
+			t.Errorf("unexpected OpenCode request %s %s", request.Method, request.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	a, sink := assemblyAgent(t, rpc)
+
+	badSend, err := a.SendInputForSession("ses_wrong", "rejected", nil)
+	require.ErrorIs(t, err, agent.ErrInputSessionChanged)
+	assert.Empty(t, badSend)
+
+	lead, err := a.SendInputForSession("ses_1", "session lead", nil)
+	require.NoError(t, err)
+	require.Equal(t, "ses_1", lead.SessionID)
+	require.NotEmpty(t, lead.InputID)
+
+	badSteer, err := a.SteerInputForSession("ses_wrong", openCodeTestSteerRequest("queued-bad", "rejected steer"))
+	require.ErrorIs(t, err, agent.ErrInputSessionChanged)
+	assert.Empty(t, badSteer)
+
+	request := openCodeTestSteerRequest("queued-steer", "session steer")
+	steer, err := a.SteerInputForSession("ses_1", request)
+	require.NoError(t, err)
+	require.Equal(t, "ses_1", steer.SessionID)
+	require.NotEmpty(t, steer.InputID)
+	require.NotEqual(t, lead.InputID, steer.InputID)
+
+	require.NoError(t, a.acceptNativeEvent(t.Context(), []byte(`{"id":"evt_done","created":9,"type":"session.execution.succeeded","data":{"sessionID":"ses_1"}}`)))
+	assert.Equal(t, []agent.SteerResolution{{
+		InputID: request.InputID, AttemptID: request.AttemptID, Outcome: agent.SteerOutcomeEchoed, Receipt: steer,
+	}}, sink.SteerResolutions())
+	assert.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: "ses_1", TurnID: "msg_done", Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs: []agent.NativeReplyBoundary{{InputID: lead.InputID, AfterOrdinal: 1}, {InputID: steer.InputID, AfterOrdinal: 2}},
+		Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "opencode:msg_first:text:0"}, {Ordinal: 3, MessageKey: "opencode:msg_second:text:0"}},
+	}}, sink.NativeReplyTurns())
 }

@@ -57,8 +57,25 @@ func TestZCodeRefusesUnknownAndRepeatedNativeAnswers(t *testing.T) {
 	assert.Error(t, a.SendRawInput(agent.RawInput{Data: answer}))
 	assert.Empty(t, stdin.Frames())
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
-	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer}))
-	assert.Error(t, a.SendRawInput(agent.RawInput{Data: answer}))
+	reqID := sink.LastPublishedControl().RequestID
+	require.NoError(t, a.SendRawInput(sink.Answer(reqID, answer)))
+	assert.Error(t, a.SendRawInput(sink.Answer(reqID, answer)))
+	assert.Len(t, stdin.Frames(), 1)
+}
+
+func TestZCodeRefusesUnstatedOrReplacedControlInstance(t *testing.T) {
+	sink := &agenttest.ControlSink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
+	published := sink.LastPublishedControl()
+	answer := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"allow","scope":"once"}}`)
+
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlInstanceUnstated)
+	require.ErrorIs(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: "stale-instance"}), agent.ErrControlInstanceReplaced)
+	assert.Empty(t, stdin.Frames())
+
+	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: published.InstanceID}))
 	assert.Len(t, stdin.Frames(), 1)
 }
 
@@ -85,7 +102,7 @@ func TestZCodeChildRequestKeepsItsOwningRootDeliverySession(t *testing.T) {
 	assert.True(t, a.approvalWork.Idle())
 	require.Equal(t, 1, sink.PublishedControlCount())
 	assert.Equal(t, "sess-1", sink.LastPublishedControl().AgentSessionID)
-	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"allow","reason":"Approved once"}}`)}))
+	require.NoError(t, a.SendRawInput(sink.Answer(sink.LastPublishedControl().RequestID, []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"allow","reason":"Approved once"}}`))))
 	assert.Len(t, stdin.Frames(), 1)
 }
 
@@ -172,7 +189,7 @@ func TestZCodeFailedAutomaticWriteKeepsAManualFallback(t *testing.T) {
 	require.Eventually(t, a.approvalWork.Idle, 30*time.Second, time.Millisecond)
 	assert.Equal(t, 1, sink.PublishedControlCount())
 	a.SetStdinForTest(stdin)
-	require.NoError(t, a.SendRawInput(agent.RawInput{Data: []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"allow","reason":"Approved once"}}`)}))
+	require.NoError(t, a.SendRawInput(sink.Answer(sink.LastPublishedControl().RequestID, []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"allow","reason":"Approved once"}}`))))
 	assert.Len(t, stdin.Frames(), 1)
 	a.HandleOutput(zcodeRequestLine(t, 99, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
 	assert.Len(t, stdin.Frames(), 1)

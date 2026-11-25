@@ -444,14 +444,14 @@ func (a *Agent) stopCanCancelLocked() bool {
 // hook-trust question goes to the question, because no ZCode request waits for it.
 func (a *Agent) SendRawInput(input agent.RawInput) error {
 	data, stop := input.Data, input.Stop
-	if handled, err := a.workspaceTrust.Answer(a.sink, zcodeWorkspaceTrustHost{a}, data); handled {
+	if handled, err := a.workspaceTrust.Answer(a.sink, zcodeWorkspaceTrustHost{a}, input); handled {
 		return err
 	}
 	var method struct {
 		Method string `json:"method"`
 	}
 	if json.Unmarshal(data, &method) != nil || method.Method != MethodSessionStop {
-		return a.sendControlOrRaw(data, stop)
+		return a.sendControlOrRaw(input)
 	}
 	var frame struct {
 		ID     *int64 `json:"id"`

@@ -80,7 +80,7 @@ func TestFastagentRootTurnKeepsTheCompleteNativeConversationOrder(t *testing.T) 
 	a.WireTurnActiveForTest()
 	require.NoError(t, a.initializeRootArchive(false))
 	ready <- a
-	receipt, err := a.SendInputWithReceipt("Run the native command.", nil)
+	receipt, err := a.SendInput("Run the native command.", nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, receipt.TurnID)
 	ctx := testutil.DeadlineContext(t)

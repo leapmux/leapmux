@@ -23,7 +23,7 @@ func TestCodebuddyExactInputOwnsOnlyItsRootRowsAndControls(t *testing.T) {
 	a, stdin := newCodebuddyContentAgent(t)
 	sink := &agenttest.ControlSink{}
 	a.sink = agent.NewProviderServices(sink)
-	receipt, err := a.SendInputWithReceipt("Check the release.", nil)
+	receipt, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	require.Len(t, receipt.InputID, 32)
 	nativeID, err := uuid.Parse(receipt.InputID)
@@ -100,7 +100,7 @@ func TestCodebuddyExactInputNeedsNativeOutcomeEvidence(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
-			receipt, err := a.SendInputWithReceipt("Check the release.", nil)
+			receipt, err := a.SendInput("Check the release.", nil)
 			require.NoError(t, err)
 			if !tc.skipEcho {
 				a.HandleOutput(codebuddyInputEcho(receipt.SessionID, receipt.TurnID))
@@ -132,7 +132,7 @@ func TestCodebuddySteerEchoBindsExactReplyAndDropsUnreadOnTurnEnd(t *testing.T) 
 	a.sink = agent.NewProviderServices(sink)
 	a.active = false
 
-	lead, err := a.SendInputWithReceipt("Check the release.", nil)
+	lead, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	a.HandleOutput(codebuddyInputEcho(lead.SessionID, lead.TurnID))
 	a.HandleOutput(fmt.Appendf(nil, `{"type":"assistant","session_id":%q,"_requestId":%q,"message":{"content":[{"type":"text","text":"Before steer."}]}}`, lead.SessionID, lead.TurnID))
@@ -141,7 +141,7 @@ func TestCodebuddySteerEchoBindsExactReplyAndDropsUnreadOnTurnEnd(t *testing.T) 
 	require.True(t, ok, "CodeBuddy must report steer echo resolution")
 	assert.True(t, reporter.SteerRowAtEcho())
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-1",
 		AttemptID: "attempt-1",
 		Content:   "Also check the changelog.",
@@ -164,7 +164,7 @@ func TestCodebuddySteerEchoBindsExactReplyAndDropsUnreadOnTurnEnd(t *testing.T) 
 	}, sink.SteerResolutions()[0])
 
 	// Queue a second steer that CodeBuddy never drains before the turn ends.
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-2",
 		AttemptID: "attempt-2",
 		Content:   "Unread steer before end.",
@@ -188,18 +188,18 @@ func TestCodebuddySteerProcessExitRetiresEchoedAndMarksUnreadUncertain(t *testin
 	a.sink = agent.NewProviderServices(sink)
 	a.active = false
 
-	lead, err := a.SendInputWithReceipt("Check the release.", nil)
+	lead, err := a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	a.HandleOutput(codebuddyInputEcho(lead.SessionID, lead.TurnID))
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-1",
 		AttemptID: "attempt-1",
 		Content:   "Echoed steer.",
 	}))
 	a.HandleOutput(fmt.Appendf(nil, `{"type":"user","uuid":"steer-native-1","session_id":%q,"_requestId":%q,"isReplay":true,"message":{"role":"user","content":"Echoed steer."}}`, lead.SessionID, lead.TurnID))
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-2",
 		AttemptID: "attempt-2",
 		Content:   "Unread steer.",
@@ -238,11 +238,11 @@ func TestCodebuddyEarlySteerEchoCommitsWhenControlResponseAccepts(t *testing.T) 
 	a.active = false
 
 	var err error
-	lead, err = a.SendInputWithReceipt("Check the release.", nil)
+	lead, err = a.SendInput("Check the release.", nil)
 	require.NoError(t, err)
 	a.HandleOutput(codebuddyInputEcho(lead.SessionID, lead.TurnID))
 
-	require.NoError(t, a.SteerInput(agent.SteerRequest{
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
 		InputID:   "queue-steer-early",
 		AttemptID: "attempt-early",
 		Content:   "Early steer.",

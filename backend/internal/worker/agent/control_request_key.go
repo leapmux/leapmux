@@ -39,8 +39,8 @@ func EnvelopeControlRequestKey(payload []byte) (string, bool) {
 // states no id, a null id, or an id that is neither a string nor a number.
 //
 // The publication of a JSON-RPC request keys it by this identity, and
-// JSONRPCControlRequestKey reads the key back with it, so the two cannot
-// derive different keys.
+// ProviderDefaults.ControlRequestKey reads the key back with it, so the two
+// cannot derive different keys.
 func JSONRPCControlRequestIdentity(payload []byte) (ControlRequestIdentity, bool) {
 	wireID, _, found := ExtractJSONRPCID(payload)
 	if !found {
@@ -49,20 +49,10 @@ func JSONRPCControlRequestIdentity(payload []byte) (ControlRequestIdentity, bool
 	return NewControlRequestIdentity(wireID)
 }
 
-// JSONRPCControlRequestKey returns the key of a JSON-RPC request: the
-// canonical key of its id (JSONRPCControlRequestIdentity).
-func JSONRPCControlRequestKey(payload []byte) (string, bool) {
-	identity, ok := JSONRPCControlRequestIdentity(payload)
-	if !ok {
-		return "", false
-	}
-	return identity.Key, true
-}
-
 // ControlRequestKey defaults to the two shapes that several providers
 // publish: the control_request envelope, keyed by its request_id
 // (EnvelopeControlRequestKey), and a JSON-RPC request, keyed by its id
-// (JSONRPCControlRequestKey). A payload that states a request_id is an
+// (JSONRPCControlRequestIdentity). A payload that states a request_id is an
 // envelope, so a JSON-RPC id beside it states no key: ZCode stores the wire
 // id of its request beside the envelope's key.
 func (ProviderDefaults) ControlRequestKey(payload []byte, _ string) (string, bool) {
@@ -73,7 +63,8 @@ func (ProviderDefaults) ControlRequestKey(payload []byte, _ string) (string, boo
 	if _, envelope := fields[envelopeRequestIDField]; envelope {
 		return nonEmptyJSONString(fields[envelopeRequestIDField])
 	}
-	return JSONRPCControlRequestKey(payload)
+	identity, ok := JSONRPCControlRequestIdentity(payload)
+	return identity.Key, ok
 }
 
 // StoredControlRequestAgrees reports whether the payload of a stored control

@@ -415,7 +415,7 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 		// LeapMux asked this question, so no runtime request waits for the answer.
 		a.sessionMu.RLock()
 		defer a.sessionMu.RUnlock()
-		_, err := a.workspaceTrust.Answer(a.sink, copilotWorkspaceTrustHost{a}, raw)
+		_, err := a.workspaceTrust.Answer(a.sink, copilotWorkspaceTrustHost{a}, input)
 		return err
 	}
 	a.controlMu.Lock()

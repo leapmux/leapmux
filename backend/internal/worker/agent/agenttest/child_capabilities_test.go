@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -37,8 +36,11 @@ type steeringAgent struct{ interruptingAgent }
 func (*steeringAgent) SendChildInput(string, agentapi.ChildInput) (agentapi.ChildInputResult, error) {
 	return agentapi.ChildInputResult{StartsTurn: true}, nil
 }
-func (*steeringAgent) SteerChildInput(string, string, []*leapmuxv1.Attachment) error { return nil }
-func (*steeringAgent) ActiveChildTurnState(string) agentapi.TurnState                { return agentapi.TurnState{} }
+func (*steeringAgent) SteerChildInput(string, agentapi.SteerRequest) (agentapi.NativeInputReceipt, error) {
+	return agentapi.NativeInputReceipt{}, nil
+}
+func (*steeringAgent) ChildSteerPolicy() agentapi.SteerPolicy         { return agentapi.SteerPolicy{} }
+func (*steeringAgent) ActiveChildTurnState(string) agentapi.TurnState { return agentapi.TurnState{} }
 
 func TestAssertChildCapabilitiesPassesWhenThePluginStatesTheMethodSet(t *testing.T) {
 	t.Parallel()

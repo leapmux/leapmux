@@ -123,33 +123,22 @@ var (
 // The reply can state that the prompt started, entered the queue, or was blocked.
 const kimiSendWait = 30 * time.Second
 
-// SendInput delivers a user message to the main agent.
+// SendInput delivers a user message to the main agent and returns its receipt.
 //
 // The POST reply states whether the prompt started, queued, or was blocked.
 // This call never waits for a turn to finish.
 // A running turn returns ErrAgentBusy so the LeapMux queue retains the input.
 // Native queueing would otherwise show that input before its turn starts.
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput(nil, content, attachments)
 }
 
-// SendInputForSession validates the session before it sends.
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+// SendInputForSession validates the session before it sends and returns its receipt.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput(&sessionID, content, attachments)
 }
 
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInputWithTracking(expected, content, attachments, false)
-	return err
-}
-
-var _ agent.InputReceiptSender = (*Agent)(nil)
-
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
-	return a.sendInputWithTracking(nil, content, attachments, true)
-}
-
-func (a *Agent) sendInputWithTracking(expected *string, content string, attachments []*leapmuxv1.Attachment, tracked bool) (agent.NativeInputReceipt, error) {
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
@@ -178,13 +167,13 @@ func (a *Agent) sendInputWithTracking(expected *string, content string, attachme
 	// with no event left to clear it. A second message that slips in before
 	// the native turn header waits in the server's queue and runs next, which delivers
 	// it all the same.
-	reply, submission, err := a.submitPrompt(sessionID, kimiMainAgentID, parts, tracked)
-	if err != nil && (submission == nil || !tracked || !a.hasObservedPrompt(submission)) {
+	reply, submission, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
+	if err != nil && (submission == nil || !a.hasObservedPrompt(submission)) {
 		return agent.NativeInputReceipt{}, err
 	}
 	if reply.Status == kimiPromptBlocked {
 		a.PublishTurnActive()
-		if tracked && !a.hasObservedPrompt(submission) {
+		if !a.hasObservedPrompt(submission) {
 			a.retireKimiInput(submission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
 		}
 	}
@@ -192,11 +181,11 @@ func (a *Agent) sendInputWithTracking(expected *string, content string, attachme
 }
 
 // submitPrompt reserves a native identity before it posts the prompt.
-func (a *Agent) submitPrompt(sessionID, agentID string, parts []map[string]any, tracked bool) (kimiPromptReply, *kimiPromptSubmission, error) {
+func (a *Agent) submitPrompt(sessionID, agentID string, parts []map[string]any) (kimiPromptReply, *kimiPromptSubmission, error) {
 	if err := kimiCheckID("session", sessionID); err != nil {
 		return kimiPromptReply{}, nil, err
 	}
-	submission, err := a.reservePromptSubmission(sessionID, agentID, tracked)
+	submission, err := a.reservePromptSubmission(sessionID, agentID)
 	if err != nil {
 		return kimiPromptReply{}, nil, err
 	}
@@ -251,7 +240,7 @@ func classifyKimiDeliveryError(err error) error {
 // state says so.
 func (a *Agent) SupportsSteering() bool { return true }
 
-// SteerInput adds a message to the running main turn.
+// SteerInput adds a message to the running main turn and returns its receipt.
 //
 // It posts the message, which the server queues behind the turn, and then
 // steers the queued prompt into it. A turn that ended in between launched the
@@ -261,14 +250,7 @@ func (a *Agent) SupportsSteering() bool { return true }
 // message would wait in the server's queue behind it. SteerInput posts nothing
 // for such a turn and reports it busy, so the input queue holds the message
 // until the turn ends.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.SteerInputWithReceipt(request)
-	return err
-}
-
-var _ agent.SteerReceiptSender = (*Agent)(nil)
-
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	a.Mu.Lock()
 	inputState := a.inputStateLocked(kimiMainAgentID)
@@ -287,7 +269,7 @@ func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeI
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
-	reply, submission, err := a.submitPrompt(sessionID, kimiMainAgentID, parts, true)
+	reply, submission, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
 	if err != nil {
 		if submission != nil && errors.Is(err, agent.ErrDeliveryUncertain) && a.hasObservedPrompt(submission) {
 			return submission.receipt(), nil
@@ -391,10 +373,10 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 		return a.Interrupt(stop)
 	}
 	// LeapMux asked the workspace-trust question, so no server request waits for its answer.
-	if handled, err := a.workspaceTrust.Answer(a.sink, kimiWorkspaceTrustHost{a}, data); handled {
+	if handled, err := a.workspaceTrust.Answer(a.sink, kimiWorkspaceTrustHost{a}, input); handled {
 		return err
 	}
-	return a.deliverControlResponse(data)
+	return a.deliverControlResponse(input)
 }
 
 // isKimiRawAbort reports whether data is the raw abort frame.

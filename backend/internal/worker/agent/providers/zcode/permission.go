@@ -141,7 +141,8 @@ func (a *Agent) approvePendingPermissions() {
 	}
 }
 
-func (a *Agent) sendControlOrRaw(data []byte, stop agent.StopContext) error {
+func (a *Agent) sendControlOrRaw(input agent.RawInput) error {
+	data, stop := input.Data, input.Stop
 	var frame struct {
 		ID     json.RawMessage `json:"id"`
 		Method *string         `json:"method"`
@@ -166,6 +167,9 @@ func (a *Agent) sendControlOrRaw(data []byte, stop agent.StopContext) error {
 	if record == nil {
 		return fmt.Errorf("the ZCode control request is no longer pending")
 	}
+	if err := agent.ControlInstanceRefusal(record.instanceID, input.ControlInstanceID); err != nil {
+		return err
+	}
 	select {
 	case <-record.publicationDone:
 	case <-a.Context().Done():
@@ -174,7 +178,14 @@ func (a *Agent) sendControlOrRaw(data []byte, stop agent.StopContext) error {
 		return a.ProcessExitError()
 	}
 	a.Mu.Lock()
-	if a.pendingControls[requestID] != record || !record.published || record.answering || a.StoppedLocked() {
+	if current := a.pendingControls[requestID]; current != record {
+		a.Mu.Unlock()
+		if current != nil && current.instanceID != input.ControlInstanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return fmt.Errorf("the ZCode control request is no longer pending")
+	}
+	if !record.published || record.answering || a.StoppedLocked() {
 		a.Mu.Unlock()
 		return fmt.Errorf("the ZCode control request is no longer pending")
 	}

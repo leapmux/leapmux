@@ -24,7 +24,7 @@ func TestSteerWithoutAnExportBaselineStaysUnsent(t *testing.T) {
 		calls++
 		return nil, assert.AnError
 	}
-	err := h.agent.SteerInput(agent.SteerRequest{Content: "do not send without a baseline"})
+	_, err := h.agent.SteerInput(agent.SteerRequest{Content: "do not send without a baseline"})
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Equal(t, 1, calls)
 	assert.Len(t, proc.stdin.lines(), 1)
@@ -41,7 +41,7 @@ func TestReconcileStoppedSteersPersistsTheHiddenReplyOnce(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) { return []byte(recoveryHistory), nil }
 	h.agent.reconcileStoppedSteers("T-1")
@@ -104,7 +104,7 @@ func TestReconcileStoppedSteersMarksFailedReadsUncertain(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	started := make(chan struct{})
 	h.agent.exportFn = func(ctx context.Context, _ string) ([]byte, error) {
@@ -138,7 +138,7 @@ func TestReconcileWaitsOnTheInjectedClock(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	calls := 0
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) {
@@ -180,7 +180,7 @@ func TestProcessForTurnRechecksAnUncertainServerDelivery(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	h.agent.mu.Lock()
 	submission := h.agent.nativeSteers[0]
 	submission.uncertain = true
@@ -193,7 +193,7 @@ func TestProcessForTurnRechecksAnUncertainServerDelivery(t *testing.T) {
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) {
 		return []byte(`{"id":"T-1","messages":[{"protocolMessageID":"M-running","role":"assistant","state":{"type":"in-progress"},"content":[]}]}`), nil
 	}
-	require.ErrorIs(t, h.agent.SendInput("next", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(h.agent, "next", nil), agent.ErrAgentBusy)
 	assert.Len(t, h.startedThreads(), 1)
 }
 
@@ -207,11 +207,11 @@ func TestSteerRequiresTheNativeThreadIdentityBeforeItReadsHistory(t *testing.T) 
 		assert.Equal(t, "T-1", threadID)
 		return []byte(`{"id":"T-1","messages":[]}`), nil
 	}
-	require.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}), agent.ErrSteeringUnsupported)
+	require.ErrorIs(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}), agent.ErrSteeringUnsupported)
 	assert.Zero(t, exports)
 	assert.Len(t, proc.stdin.lines(), 1)
 	h.feed(proc, initLine("T-1"))
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	assert.Equal(t, 1, exports)
 	assert.Len(t, proc.stdin.lines(), 2)
 }
@@ -224,7 +224,7 @@ func TestSteerRechecksTheTurnAfterReadingTheBaseline(t *testing.T) {
 		h.feed(proc, textLine("finished", stopReasonEndTurn))
 		return []byte(`{"id":"T-1","messages":[]}`), nil
 	}
-	require.ErrorIs(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}), agent.ErrNoActiveTurn)
+	require.ErrorIs(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}), agent.ErrNoActiveTurn)
 	assert.Len(t, proc.stdin.lines(), 1)
 	assert.Empty(t, h.agent.nativeSteers)
 }
@@ -250,7 +250,7 @@ func TestReconcileStoppedSteersKeepsALivePrefixWithoutDuplicatingIt(t *testing.T
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	h.feed(proc, userEchoLine("second"))
 	h.feed(proc, textLine("Already visible.", "tool_use"))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
@@ -278,7 +278,7 @@ func TestReconcileStoppedSteersWaitsForAFinalNativeReply(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	exported, err := parseThreadExport([]byte(recoveryHistory), "T-1")
 	require.NoError(t, err)
@@ -300,13 +300,13 @@ func TestReconcileStoppedSteersWaitsForAFinalNativeReply(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	assert.Equal(t, ampExportInterval, testutil.WaitForTimer(t, ctx, trap))
 	assert.True(t, h.turnActive())
-	require.ErrorIs(t, h.agent.SendInput("next", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendInput(h.agent, "next", nil), agent.ErrAgentBusy)
 	assert.Len(t, h.startedThreads(), 1)
 	assert.Empty(t, h.agent.importedMessages)
 	h.clock.Advance(ampExportInterval).MustWait(ctx)
 	proc.awaitHandled(t)
 	assert.False(t, h.turnActive())
-	require.NoError(t, h.agent.SendInput("next", nil))
+	require.NoError(t, agenttest.SendInput(h.agent, "next", nil))
 	assert.Len(t, h.startedThreads(), 2)
 }
 
@@ -315,7 +315,7 @@ func TestReconcileStoppedSteersRetainsRowsAndTheirSessionAfterAWriteFailure(t *t
 	h := newHarness(t, withResume("T-1"))
 	h.agent.sink = agent.NewModelProgressResetSink(h.agent.sink)
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	h.sink.PersistErr = assert.AnError
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) { return []byte(recoveryHistory), nil }
@@ -342,7 +342,7 @@ func TestRecoveredSteersRespectOutputDiscard(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	exported, err := parseThreadExport([]byte(recoveryHistory), "T-1")
 	require.NoError(t, err)
 	h.agent.DiscardOutput()
@@ -356,7 +356,7 @@ func TestReconcileStoppedSteersMarksAnAbsentReceiptUncertain(t *testing.T) {
 	h := newHarness(t, withResume("T-1"))
 	h.send("first")
 	h.agent.exportFn = func(context.Context, string) ([]byte, error) { return []byte(recoveryHistory), nil }
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
 	trap := h.clock.Trap().NewTimer(AmpExportIntervalTag)
 	defer trap.Close()
@@ -381,7 +381,7 @@ func TestStopCancelsTheNativeRecoveryRead(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withResume("T-1"))
 	proc := h.send("first")
-	require.NoError(t, h.agent.SteerInput(agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
 	started := make(chan struct{})
 	h.agent.exportFn = func(ctx context.Context, _ string) ([]byte, error) {
 		close(started)

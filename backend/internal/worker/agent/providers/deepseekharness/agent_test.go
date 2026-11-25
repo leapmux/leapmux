@@ -130,7 +130,7 @@ func TestInterruptRemovesAndRequeuesAPendingSteer(t *testing.T) {
 			t.Cleanup(endpoint.Close)
 			a.rpc = remoteRPC{endpoint: endpoint}
 			attachment := &leapmuxv1.Attachment{Filename: "input.png", MimeType: "image/png", Data: []byte{1, 2, 3}}
-			require.NoError(t, a.SteerInput(agent.SteerRequest{InputID: "input-1", Content: "steer", Attachments: []*leapmuxv1.Attachment{attachment}}))
+			require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{InputID: "input-1", Content: "steer", Attachments: []*leapmuxv1.Attachment{attachment}}))
 			attachment.Data[0] = 9
 			require.NoError(t, a.Interrupt(agent.StopContext{}))
 			mu.Lock()
@@ -258,7 +258,7 @@ func TestBusyRefusalRepublishesTheTurn(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
 	a.active = true
-	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, a.SendInput("later turn", nil))
+	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, agenttest.SendInput(a, "later turn", nil))
 }
 
 func TestRejectsMissingAndReplacedSessionsBeforeTransport(t *testing.T) {
@@ -338,7 +338,7 @@ func TestRemoteStreamFailureEndsOwnedWorkAndRefusesFurtherNativeInput(t *testing
 	cause := errors.New("the native Remote connection failed")
 	a.reportStreamFailure(cause)
 	assert.Equal(t, []map[string]interface{}{{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: cause.Error()}}, base.LeapMuxNotifications())
-	require.Error(t, a.SendInput("This prompt must not reach the disconnected native process.", nil))
+	require.Error(t, agenttest.SendInput(a, "This prompt must not reach the disconnected native process.", nil))
 	assert.Equal(t, int32(0), inputCalls.Load())
 	assert.False(t, a.active)
 	assert.False(t, a.children["native-child"].active)
@@ -383,7 +383,7 @@ func TestNativeModelErrorKeepsTheRemoteConnectionAndWaitsForTheDurableTurnEnd(t 
 	assert.Empty(t, sink.TurnActiveCalls)
 	require.NoError(t, a.handleFrame([]byte(`{"type":"item","streamId":"root","value":{"type":"event","event":{"type":"turn/end","seq":17,"time":1000,"data":{"turn":1,"reason":{"kind":"error","error":{"message":"The native model request failed.","code":"HTTP_400","status":400}}}}}}`)))
 	assert.False(t, a.active)
-	require.NoError(t, a.SendInput("Continue after the actual native model failure.", nil))
+	require.NoError(t, agenttest.SendInput(a, "Continue after the actual native model failure.", nil))
 	assert.Equal(t, int32(1), inputCalls.Load())
 }
 

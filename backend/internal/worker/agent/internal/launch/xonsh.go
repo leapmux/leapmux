@@ -71,7 +71,7 @@ def __leapmux_lookup(name, native_only=False):
 // prepareShellLaunch), so no PATH or DIRS pattern applies to it, and pop
 // returns its value as the environment held it.
 //
-// buildXonshCommand writes the setup into every launch, because the control
+// xonshDialect.buildCommand writes the setup into every launch, because the control
 // CLI step runs in every launch.
 const xonshEnvironmentSetup = `
 from xonsh.environ import EnvPath as __lm_EnvPath
@@ -136,6 +136,17 @@ func pythonString(value string) string {
 	return literal.String()
 }
 
+func (xonshDialect) protocolLine(line string, first bool) string {
+	if first {
+		line = "\n" + line
+	}
+	return "__leapmux_write(__lm_sys.stdout, " + pythonString(line) + ")\n"
+}
+
+func (d xonshDialect) renderProbe(nonce string, names []string, nativeOnly, _ bool) string {
+	return renderStandardProbe(xonshLookupSetup, d, xonshProbeResult, nonce, names, nativeOnly)
+}
+
 func xonshProbeResult(name, present, absent string, nativeOnly bool) string {
 	if nativeOnly {
 		return fmt.Sprintf("__lm_result = __leapmux_lookup(%s, True)\n__leapmux_write(__lm_sys.stdout, %s + __lm_result[1] if __lm_result else %s)\n",
@@ -150,13 +161,13 @@ func pythonArguments(args []string) string {
 	return "[" + strings.Join(quotedArguments(args, pythonString), ", ") + "]"
 }
 
-// buildXonshCommand builds the inner command string for xonsh.
+// buildCommand builds the inner command string for xonsh.
 //
 // `xonsh -c` prints the value of each expression statement outside a
 // function, also inside a loop or an if statement. Each statement outside a
 // function is therefore an assignment, a compound statement, or a call that
 // returns None, which xonsh does not print.
-func buildXonshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
+func (d xonshDialect) buildCommand(spec shellLaunchSpec, prepared *PreparedLaunch) (string, error) {
 	var script strings.Builder
 	script.WriteString(xonshLookupSetup)
 	script.WriteString(xonshEnvironmentSetup)
@@ -184,18 +195,18 @@ func buildXonshCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	}
 	fmt.Fprintf(&script, "__lm_args = %s\n", pythonArguments(spec.BaseArgs))
 	if gate := spec.EnvGated; gate != nil {
-		fmt.Fprintf(&script, "if __lm_builtins.any(__xonsh__.env.get(name) for name in %s):\n    __leapmux_write(__lm_sys.stdout, %s)\nelse:\n    __leapmux_write(__lm_sys.stdout, %s)\n    __lm_args.extend(%s)\n",
+		fmt.Fprintf(&script, "__lm_gate_environ = __xonsh__.env.detype()\nif __lm_builtins.any(__lm_gate_environ.get(name) for name in %s):\n    __leapmux_write(__lm_sys.stdout, %s)\nelse:\n    __leapmux_write(__lm_sys.stdout, %s)\n    __lm_args.extend(%s)\n",
 			pythonArguments(gate.EnvVars), pythonString("\n"+prepared.MetaPrefix+gate.MetaKey+"=false"), pythonString("\n"+prepared.MetaPrefix+gate.MetaKey+"=true"), pythonArguments(gate.Args))
 	}
 	if len(prepared.environmentProbe) == 0 {
-		script.WriteString(protocolLine("xonsh", prepared.Delimiter, spec.EnvGated == nil))
+		script.WriteString(d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	} else {
 		script.WriteString("import subprocess as __lm_subprocess\n__lm_observed = False\nif __lm_selected[0] == 'external':\n    __lm_sys.stdout.flush()\n    try:\n")
 		fmt.Fprintf(&script, "        __lm_observed = (__lm_subprocess.call(%s, env=__xonsh__.env.detype()) == 0)\n", pythonArguments(prepared.environmentProbe))
 		script.WriteString("    except __lm_builtins.OSError:\n        pass\n")
 		fmt.Fprintf(&script, "if __lm_observed:\n    %selse:\n    %s",
-			protocolLine("xonsh", prepared.Delimiter, false), protocolLine("xonsh", prepared.Delimiter, spec.EnvGated == nil))
+			d.protocolLine(prepared.Delimiter, false), d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	}
 	script.WriteString("raise __lm_builtins.SystemExit(![@([__lm_selected[1]] + __lm_args)].returncode)\n")
-	return script.String()
+	return script.String(), nil
 }

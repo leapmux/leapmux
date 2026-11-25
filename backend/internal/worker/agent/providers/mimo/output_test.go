@@ -1745,7 +1745,7 @@ func TestRepeatedTurnFailureIsDropped(t *testing.T) {
 	assert.True(t, rows[0].TurnEnd)
 	assert.Equal(t, string(failure), string(rows[0].Content))
 
-	require.NoError(t, a.SendInput("again", nil))
+	require.NoError(t, agenttest.SendInput(a, "again", nil))
 	feed(a, failure, message, message)
 	assert.Equal(t, 1, sink.NotificationCount(), "a failure after new input is a new failure")
 	assert.Equal(t, string(failure), string(sink.LastNotification().Content))
@@ -1898,7 +1898,7 @@ func TestAutoCompactionKeepsTheTurnUntilNativeIdle(t *testing.T) {
 
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "msg_auto", roleUser, mainActorID, false), started, ended)
 	assert.Equal(t, []bool{true}, sink.TurnActives())
-	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+	assert.ErrorIs(t, agenttest.SendInput(a, "next", nil), agent.ErrAgentBusy)
 	assert.Empty(t, server.requestsTo("POST /session/ses_test/prompt_async"))
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())

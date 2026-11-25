@@ -97,7 +97,7 @@ func TestUpdateSettingsAppliesAtTheNextPrompt(t *testing.T) {
 	assert.Equal(t, "mock/beta", sink.LastSettingsRefresh().Model)
 	assert.Equal(t, contracts.MiMoModePlan, sink.LastSettingsRefresh().PermissionMode)
 
-	require.NoError(t, a.SendInput("plan it", nil))
+	require.NoError(t, agenttest.SendInput(a, "plan it", nil))
 	body := decodeBody(t, server.requestsTo("POST /session/ses_test/prompt_async")[0])
 	assert.Equal(t, contracts.MiMoModePlan, body["agent"])
 	assert.Equal(t, map[string]any{"providerID": "mock", "modelID": "beta"}, body["model"])
@@ -121,7 +121,7 @@ func TestUpdateSettingsKeepsTheEffortAcrossAModelSwitch(t *testing.T) {
 	assert.Equal(t, "mock/gamma", result.ConfirmedOptions()[agent.OptionIDModel])
 	assert.Equal(t, "high", result.ConfirmedOptions()[agent.OptionIDEffort])
 	assert.Equal(t, "high", sink.LastSettingsRefresh().Effort)
-	require.NoError(t, a.SendInput("keep going", nil))
+	require.NoError(t, agenttest.SendInput(a, "keep going", nil))
 	body := decodeBody(t, server.requestsTo("POST /session/ses_test/prompt_async")[0])
 	assert.Equal(t, "high", body["variant"], "the prompt states the kept variant")
 	assert.Equal(t, map[string]any{"providerID": "mock", "modelID": "gamma"}, body["model"], "the prompt states the new model")

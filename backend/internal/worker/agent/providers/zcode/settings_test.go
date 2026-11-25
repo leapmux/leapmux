@@ -1401,7 +1401,7 @@ func TestZCodePlanFlag_ADeclinedPlanKeepsPlanMode(t *testing.T) {
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 	_, resolution := zcodeResolve(t, zcodeStoredPayload(t, sink), zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorDeny, "Split step 2.", nil))
 	require.NotEmpty(t, resolution.Content)
-	require.NoError(t, a.SendRawInput(agent.RawInput{Data: resolution.Content}))
+	require.NoError(t, a.SendRawInput(sink.Answer(sink.LastPublishedControl().RequestID, resolution.Content)))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
 	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
 
@@ -1431,7 +1431,7 @@ func TestZCodePlanFlag_AnApprovedPlanReturnsToTheNativeMode(t *testing.T) {
 	a.HandleOutput(zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, zcodePlanParams))
 	_, resolution := zcodeResolve(t, zcodeStoredPayload(t, sink), zcodeAnswer(t, "req-plan", contracts.ControlAnswerBehaviorAllow, "", nil))
 	require.NotEmpty(t, resolution.Content)
-	require.NoError(t, a.SendRawInput(agent.RawInput{Data: resolution.Content}))
+	require.NoError(t, a.SendRawInput(sink.Answer(sink.LastPublishedControl().RequestID, resolution.Content)))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
 	a.HandleOutput(zcodeModeChangedLine(t, 3, zcodeModeChangedPayload{
 		Mode: contracts.ZCodeModeEdit, PlanEnabled: false,

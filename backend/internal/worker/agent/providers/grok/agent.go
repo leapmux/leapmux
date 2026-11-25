@@ -57,23 +57,18 @@ var _ agent.Agent = (*Agent)(nil)
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerPreparer = (*Agent)(nil)
-var _ agent.SteerReceiptSender = (*Agent)(nil)
 
 // Agent compacts through Grok's own `/compact` turn.
 var _ agent.ContextCompactor = (*Agent)(nil)
 
-// SteerInput sends text into the running turn. Grok delivers it at the next
-// safe point, after the running tool call, and echoes it on
+// SteerInput sends text into the running turn and returns its native receipt
+// when the request supplies a queue input ID. Grok delivers the input at the
+// next safe point, after the running tool call, and echoes it on
 // `_x.ai/session/interjection`.
 //
 // A steer that reaches an idle session is not lost: Grok runs it as a turn of
 // its own, which the queue notification then reports as an agent turn.
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.SteerInputWithReceipt(request)
-	return err
-}
-
-func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
 	if !a.PromptActive() {
 		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
@@ -161,5 +156,6 @@ func grokSteerContent(content string, attachments []agent.ClassifiedAttachment) 
 // makes the summary turn, and reports its size on an `auto_compact_completed`
 // notification.
 func (a *Agent) CompactContext() error {
-	return a.SendInput(grokCompactCommand, nil)
+	_, err := a.SendInput(grokCompactCommand, nil)
+	return err
 }

@@ -88,7 +88,7 @@ func TestCodexInputReplyTimesOutWithoutTheCorrelatedStartResult(t *testing.T) {
 	a.threadID = "main-thread"
 	done := make(chan error, 1)
 	go func() {
-		_, err := a.SendInputWithReceipt("The submitted prompt", nil)
+		_, err := a.SendInput("The submitted prompt", nil)
 		done <- err
 	}()
 	require.Equal(t, turnStartAckTimeout, testutil.WaitForTimer(t, ctx, trap))

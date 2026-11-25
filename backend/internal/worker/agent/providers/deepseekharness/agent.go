@@ -81,40 +81,32 @@ type pendingSteer struct {
 }
 
 var _ agent.Agent = (*Agent)(nil)
-var _ agent.InputReceiptSender = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerEchoReporter = (*Agent)(nil)
 var _ agent.SteerSurvivor = (*Agent)(nil)
 var _ agent.ContextCompactor = (*Agent)(nil)
 var _ agent.GoalWriter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
-var _ agent.ChildEchoSteerer = (*Agent)(nil)
 var _ agent.ChildInterrupter = (*Agent)(nil)
 
 func newAgent(sink agent.ProviderServices, workingDir string) *Agent {
 	return &Agent{sink: sink, workingDir: workingDir, streamDone: make(chan struct{}), ready: make(chan struct{}), streams: map[string]*sessionStream{}, controls: map[string]*nativeControl{}, children: map[string]*nativeChild{}, childCatalog: map[string]nativeChildDescriptor{}, workflows: map[string]nativeWorkflow{}, pendingWorkflowChildren: map[string]pendingWorkflowChild{}, mode: "act", permissions: "workspace-write"}
 }
 
-func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	_, err := a.sendInput("", content, attachments, nil, false)
-	return err
-}
-
-func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput("", content, attachments, nil, true)
 }
 
-func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	if sessionID == "" {
-		return agent.ErrInputSessionChanged
+		return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 	}
-	_, err := a.sendInput(sessionID, content, attachments, nil, false)
-	return err
+	return a.sendInput(sessionID, content, attachments, nil, true)
 }
 
-func (a *Agent) SteerInput(request agent.SteerRequest) error {
+func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	_, err := a.sendInput("", request.Content, request.Attachments, &request, request.AttemptID != "")
-	return err
+	return agent.NativeInputReceipt{}, err
 }
 
 // SteerRowAtEcho waits for the native event that identifies the consuming turn.
@@ -371,7 +363,7 @@ func (a *Agent) CompactContext() error {
 
 func (a *Agent) DiscardOutput() { a.discard.Store(true); a.Process.DiscardOutput() }
 
-func (a *Agent) SendRawInput(input agent.RawInput) error { return a.answerControl(input.Data) }
+func (a *Agent) SendRawInput(input agent.RawInput) error { return a.answerControl(input) }
 
 // HandleOutput accepts one native mux frame for provider tests.
 func (a *Agent) HandleOutput(raw []byte) {
