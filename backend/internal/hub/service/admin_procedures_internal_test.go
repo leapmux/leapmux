@@ -131,7 +131,7 @@ var adminProcedureElevation = map[string]struct {
 // on and why.
 //
 // It checks the RECORD, not the handler. The other half is behavioral --
-// TestAdminIdPService_WritesNeedAnElevatedSession,
+// TestAdminIdPService_WritesNeedAProvenFactor,
 // TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession,
 // TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor and
 // TestAdminSettingsService_WriteGate drive the protected verbs through a real

@@ -3,8 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,8 +139,41 @@ type Config struct {
 	// deadline it shares between its Hub and its Worker. When it is nil,
 	// NewServer creates a deadline of its own.
 	ShutdownDeadline *drain.Deadline
-	DevMode          bool              // Non-solo development mode. The first administrator completes setup.
-	Extras           map[string]string // Extra flag values not in the hub Config struct
+	DevMode          bool           // Non-solo development mode. The first administrator completes setup.
+	Extras           map[string]any // Typed extra flag values not in the hub Config struct
+}
+
+// ExtraString returns the string extra stored under key, or def when absent.
+func (c *Config) ExtraString(key, def string) string {
+	if c == nil {
+		return def
+	}
+	if v, ok := c.Extras[key].(string); ok {
+		return v
+	}
+	return def
+}
+
+// ExtraInt returns the int extra stored under key, or def when absent.
+func (c *Config) ExtraInt(key string, def int) int {
+	if c == nil {
+		return def
+	}
+	if v, ok := c.Extras[key].(int); ok {
+		return v
+	}
+	return def
+}
+
+// ExtraBool returns the bool extra stored under key, or def when absent.
+func (c *Config) ExtraBool(key string, def bool) bool {
+	if c == nil {
+		return def
+	}
+	if v, ok := c.Extras[key].(bool); ok {
+		return v
+	}
+	return def
 }
 
 // StorageType identifies a storage backend.
@@ -631,21 +665,6 @@ func IntExtraFlag(name, koanfKey, category, usage string, def int) ExtraFlagDef 
 	return newExtraFlag(intFlag(name, koanfKey, category, usage, def))
 }
 
-// Name is the flag's name, without its dashes.
-func (e ExtraFlagDef) Name() string { return e.def.name }
-
-// KoanfKey is the key of Config.Extras that holds the flag's value.
-func (e ExtraFlagDef) KoanfKey() string { return e.def.koanfKey }
-
-// Category is the section of the help that lists the flag.
-func (e ExtraFlagDef) Category() string { return e.def.category }
-
-// Usage is the help text of the flag.
-func (e ExtraFlagDef) Usage() string { return e.def.usage }
-
-// Default is the flag's default. Its type is the flag's type.
-func (e ExtraFlagDef) Default() any { return e.def.value }
-
 // LoadOptions parameterizes differences between hub and solo/dev mode config loading.
 type LoadOptions struct {
 	DefaultListen     string         // default TCP listen address (hub: ":4327", solo: "127.0.0.1:4327")
@@ -667,14 +686,12 @@ func Load(args []string) (*Config, error) {
 // after the parse.
 func LoadWithOptions(args []string, opts LoadOptions) (*Config, error) {
 	flags := NewFlags(opts)
-	fs := pflag.NewFlagSet("leapmux hub", pflag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	flags.Register(fs)
-	if err := fs.Parse(args); err != nil {
+	fs, err := internalconfig.ParseFlags("leapmux hub", args, func(fs *pflag.FlagSet) error {
+		flags.Register(fs)
+		return nil
+	})
+	if err != nil {
 		return nil, err
-	}
-	if fs.NArg() > 0 {
-		return nil, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	return flags.Load(fs)
 }
@@ -684,10 +701,9 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, error) {
 // adds them to the command's flag set, and Load reads that set after the
 // parse, so the help, the parse and the load read one declaration.
 type Flags struct {
-	opts       LoadOptions
-	listen     string
-	configDir  string
-	configFile string
+	opts      LoadOptions
+	listen    string
+	configDir string
 	// registered lists the flags that Register adds, in help order.
 	registered []flagDef
 	fieldMap   map[string]string
@@ -748,7 +764,7 @@ func NewFlags(opts LoadOptions) *Flags {
 	}
 
 	allFlags := []flagDef{
-		strSliceFlag("listen", "listen", "Server options", "listen address, a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none, so that leapmux keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
+		strSliceFlag("listen", "listen", "Server options", "listen address, a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list specifies none, so that leapmux keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
 		strFlag("data-dir", "data_dir", "Server options", "data directory, which LEAPMUX_HUB_DATA_DIR and data_dir of the config file also set; a relative path is relative to the directory of the config file", "."),
 		strFlag("dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ""),
 		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),
@@ -780,7 +796,7 @@ func NewFlags(opts LoadOptions) *Flags {
 	// Build fieldMap/defaults from the canonical list. The config file flag
 	// comes first, so the help lists it first.
 	f := &Flags{
-		opts: opts, listen: listen, configDir: configDir, configFile: configFile,
+		opts: opts, listen: listen, configDir: configDir,
 		registered: []flagDef{strFlag("config", "", "Common options", "path to config file", configFile)},
 		fieldMap:   make(map[string]string, len(allFlags)),
 		defaults:   make(map[string]interface{}, len(allFlags)),
@@ -828,7 +844,11 @@ func (f *Flags) Register(fs *pflag.FlagSet) {
 // then the flags that the command line set.
 func (f *Flags) Load(fs *pflag.FlagSet) (*Config, error) {
 	opts, configDir, listen := f.opts, f.configDir, f.listen
-	configPath := fs.Lookup("config").Value.String()
+	configFlag := fs.Lookup("config")
+	if configFlag == nil {
+		return nil, fmt.Errorf("load config: config flag is not registered; call Register before Load")
+	}
+	configPath := configFlag.Value.String()
 
 	k := koanf.New(internalconfig.Delim)
 	fp := internalconfig.NewFlagProvider(fs, f.fieldMap)
@@ -870,15 +890,70 @@ func (f *Flags) Load(fs *pflag.FlagSet) (*Config, error) {
 	cfg.defaultTCP = listen
 	cfg.SoloMode = opts.SoloMode
 
-	// Populate extra flag values.
+	// Populate typed extra flag values.
 	if len(opts.ExtraFlags) > 0 {
-		cfg.Extras = make(map[string]string, len(opts.ExtraFlags))
+		cfg.Extras = make(map[string]any, len(opts.ExtraFlags))
 		for _, ef := range opts.ExtraFlags {
-			cfg.Extras[ef.KoanfKey()] = k.String(ef.KoanfKey())
+			val, err := decodeExtraValue(ef.def.koanfKey, k.Get(ef.def.koanfKey), ef.def.value)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Extras[ef.def.koanfKey] = val
 		}
 	}
 
 	return &cfg, nil
+}
+
+func decodeExtraValue(key string, raw, def any) (any, error) {
+	if raw == nil {
+		return def, nil
+	}
+	switch def.(type) {
+	case string:
+		if s, ok := raw.(string); ok {
+			return s, nil
+		}
+		return fmt.Sprint(raw), nil
+	case int:
+		switch v := raw.(type) {
+		case int:
+			return v, nil
+		case int64:
+			if v < math.MinInt || v > math.MaxInt {
+				return nil, fmt.Errorf("invalid int value %d for %s: out of range", v, key)
+			}
+			return int(v), nil
+		case uint64:
+			if v > math.MaxInt {
+				return nil, fmt.Errorf("invalid int value %d for %s: out of range", v, key)
+			}
+			return int(v), nil
+		case string:
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				return nil, fmt.Errorf("invalid int value %q for %s: %w", v, key, err)
+			}
+			return n, nil
+		default:
+			return nil, fmt.Errorf("invalid int value %v for %s", raw, key)
+		}
+	case bool:
+		switch v := raw.(type) {
+		case bool:
+			return v, nil
+		case string:
+			b, err := strconv.ParseBool(strings.TrimSpace(v))
+			if err != nil {
+				return nil, fmt.Errorf("invalid bool value %q for %s: %w", v, key, err)
+			}
+			return b, nil
+		default:
+			return nil, fmt.Errorf("invalid bool value %v for %s", raw, key)
+		}
+	default:
+		return raw, nil
+	}
 }
 
 // Validate checks the configuration values and ensures required directories exist.

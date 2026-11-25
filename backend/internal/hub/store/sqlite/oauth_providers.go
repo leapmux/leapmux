@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -33,6 +34,7 @@ func (c *sqliteConn) fromDBOAuthProvider(p gendb.OauthProvider) (*store.OAuthPro
 			ClientID:     sum.ClientID,
 			Scopes:       sum.Scopes,
 			TrustEmail:   ptrconv.Int64ToBool(p.TrustEmail),
+			ResponseMode: p.ResponseMode,
 			Enabled:      ptrconv.Int64ToBool(p.Enabled),
 			CreatedAt:    p.CreatedAt.Time,
 		},
@@ -53,6 +55,7 @@ func (c *sqliteConn) fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuth
 		ClientID:     sum.ClientID,
 		Scopes:       sum.Scopes,
 		TrustEmail:   ptrconv.Int64ToBool(r.TrustEmail),
+		ResponseMode: r.ResponseMode,
 		Enabled:      ptrconv.Int64ToBool(r.Enabled),
 		CreatedAt:    r.CreatedAt.Time,
 	}, nil
@@ -67,6 +70,10 @@ func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProv
 	if err != nil {
 		return err
 	}
+	mode := p.ResponseMode
+	if mode == leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_UNSPECIFIED {
+		mode = leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_QUERY
+	}
 	return s.conn.queryError(s.conn.q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
 		ID:           p.ID,
 		ProviderType: p.ProviderType,
@@ -76,6 +83,7 @@ func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProv
 		ClientSecret: sealed.ClientSecret,
 		Scopes:       sealed.Scopes,
 		TrustEmail:   ptrconv.BoolToInt64(p.TrustEmail),
+		ResponseMode: mode,
 		Enabled:      ptrconv.BoolToInt64(p.Enabled),
 	}))
 }
@@ -116,10 +124,17 @@ func (s *oauthProviderStore) UpdateClientSecret(ctx context.Context, p store.Upd
 	if err != nil {
 		return err
 	}
-	return s.conn.queryError(s.conn.q.UpdateOAuthProviderClientSecret(ctx, gendb.UpdateOAuthProviderClientSecretParams{
+	rows, err := s.conn.q.UpdateOAuthProviderClientSecret(ctx, gendb.UpdateOAuthProviderClientSecretParams{
 		ID:           p.ID,
 		ClientSecret: sealed,
-	}))
+	})
+	if err != nil {
+		return s.conn.queryError(err)
+	}
+	if rows == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (s *oauthProviderStore) Delete(ctx context.Context, id string) error {

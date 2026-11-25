@@ -383,12 +383,14 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 				UserID: userid.MustNew("user-1"),
 				Hub:    hub,
 			}
-			_, err := r.CallInner(context.Background(),
+			resp, err := r.CallInner(context.Background(),
 				controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
 				"hub."+leapmuxv1connect.WorkspaceServiceLocateTabProcedure, []byte("{}"), "")
-			require.Error(t, err)
-			assert.Equal(t, tc.code, connect.CodeOf(err),
+			require.NoError(t, err)
+			require.NotNil(t, resp.GetError(), "hub Connect refusals return in-band in InnerRpcResponse.error")
+			assert.Equal(t, tc.code, connect.Code(resp.GetError().GetCode()),
 				"the originating code must survive the relay, not collapse to Internal")
+			assert.Equal(t, "upstream", resp.GetError().GetMessage())
 		})
 
 		t.Run("cross-worker namespace: "+tc.name, func(t *testing.T) {

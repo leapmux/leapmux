@@ -681,6 +681,8 @@ message AdminOAuthProvider {
   bool trust_email = 7;
   bool enabled = 8;
   google.protobuf.Timestamp created_at = 9;
+  // "query" or "form_post".
+  string response_mode = 10;
 }
 
 message AddOAuthProviderRequest {
@@ -690,12 +692,15 @@ message AddOAuthProviderRequest {
   string client_id = 3;
   // Write-only: never returned by ListOAuthProviders.
   string client_secret = 4;
-  // Required for "oidc" providers only; presets skip issuer validation.
+  // Required for "oidc" providers only; presets supply their default issuer.
   string issuer_url = 5;
   string scopes = 6;
   // Unset means "use the preset default"; presets without a default
   // refuse the call (generic OIDC must state it).
   optional bool trust_email = 7;
+  // Optional: "query" or "form_post". Empty uses the preset default
+  // ("form_post" for apple, "query" for all others).
+  string response_mode = 8;
 }
 
 message AddOAuthProviderResponse {

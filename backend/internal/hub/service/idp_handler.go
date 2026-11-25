@@ -2,9 +2,9 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -65,14 +65,10 @@ type IdPHandler struct {
 	// providers caches built Provider instances.
 	//
 	// The key carries the redirect URL as well as the provider ID, because
-	// a built Provider includes BOTH and only one of them is immutable. The
-	// row's own config cannot change after creation -- AdminIdPService
-	// exposes add, remove and enable/disable and no edit verb, and the one
-	// writer of client_secret is the offline re-encrypt command, which
-	// rewrites the SAME plaintext under a new key version in another process.
-	// A future edit verb must call InvalidateProvider, exactly as remove and
-	// disable already do. The redirect URL is different: it derives from
-	// public_url and
+	// a built Provider includes BOTH and neither is strictly immutable:
+	// AdminIdPService.UpdateOAuthProviderSecret rotates client_secret in place
+	// and calls EvictProviderCache (while remove and disable call
+	// InvalidateProvider). The redirect URL derives from public_url and
 	// secure_cookies, and neither key is restart-class -- an admin changes
 	// them live. Keyed on the ID alone, the cache kept serving the old
 	// redirect_uri until the process restarted, and every login for that
@@ -430,8 +426,13 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 	// Set the cookie BEFORE the redirect: http.Redirect writes the header, so
 	// a SetCookie after it never reaches the browser.
 	var nonceCookie *http.Cookie
-	if fp, ok := provider.(huboauth.FormPostProvider); ok && fp.UsesFormPost() {
-		nonceCookie = auth.BuildOAuthNonceCookieForFormPost(state, nonce, oauthStateExpiry, h.secureCookies(ctx))
+	if provider.UsesFormPost() {
+		// Cross-site POST callbacks require SameSite=None; Secure whenever the
+		// browser arrives over HTTPS -- including behind a reverse proxy whose
+		// public_url is https:// even when secure_cookies and trusted_proxy_ranges
+		// are unset. OAuthNonceFromRequest always checks the __Host- cookie first.
+		secureFormPost := h.secureCookies(ctx) || strings.HasPrefix(strings.ToLower(settings.KeyPublicURL.Of(h.set.Snapshot(ctx))), "https://")
+		nonceCookie = auth.BuildOAuthNonceCookieForFormPost(state, nonce, oauthStateExpiry, secureFormPost)
 	} else {
 		nonceCookie = auth.BuildOAuthNonceCookie(state, nonce, oauthStateExpiry, h.secureCookies(ctx))
 	}
@@ -447,8 +448,11 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
-// consumeOAuthState turns a callback request into a validated, single-use
-// state entry, or writes the refusal itself and reports false.
+const maxOAuthCallbackFormBytes = 64 << 10
+
+// consumeOAuthState turns a GET query or POST form_post callback request into
+// a validated, single-use state entry, or writes the refusal itself and
+// reports false.
 //
 // It is separate from handleCallback because it owns ONE thing that the rest
 // of the callback does not touch: the order in which a flow's single use is
@@ -458,31 +462,10 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 // with it. See the comments inside for why the nonce runs before the
 // consume.
 //
-// It also returns the code, so the caller does not read the query again for
-// a value this function already validated.
-const maxOAuthCallbackFormBytes = 64 << 10
-
-// parseAppleUserDisplayName extracts the optional user display name that Sign
-// in with Apple sends in the form_post `user` JSON parameter on a user's first
-// sign-in ({"name":{"firstName":"Jane","lastName":"Doe"}}). Malformed or absent
-// payloads return "" so login never fails on optional profile metadata.
-func parseAppleUserDisplayName(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	var payload struct {
-		Name struct {
-			FirstName string `json:"firstName"`
-			LastName  string `json:"lastName"`
-		} `json:"name"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(strings.TrimSpace(payload.Name.FirstName) + " " + strings.TrimSpace(payload.Name.LastName))
-}
-
-func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, providerID string) (code, formDisplayName string, oauthState *OAuthState, ok bool) {
+// It also returns the code and any parsed POST form values (nil for GET
+// callbacks), so the provider can inspect optional form_post fields after
+// state and nonce validation succeed without re-reading the request body.
+func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, providerID string) (code string, postForm url.Values, oauthState *OAuthState, ok bool) {
 	ctx := r.Context()
 
 	var params url.Values
@@ -490,16 +473,28 @@ func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, p
 	case http.MethodGet:
 		params = r.URL.Query()
 	case http.MethodPost:
-		r.Body = http.MaxBytesReader(w, r.Body, maxOAuthCallbackFormBytes)
-		if err := r.ParseForm(); err != nil {
+		// Read ONLY the POST body rather than r.ParseForm(), which also parses
+		// r.URL.RawQuery and fails valid form_post callbacks on malformed query
+		// strings. Map MaxBytesError to 413 Request Entity Too Large.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxOAuthCallbackFormBytes))
+		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "OAuth callback form too large", http.StatusRequestEntityTooLarge)
+				return "", nil, nil, false
+			}
 			http.Error(w, "invalid OAuth callback form", http.StatusBadRequest)
-			return "", "", nil, false
+			return "", nil, nil, false
 		}
-		params = r.PostForm
-		formDisplayName = parseAppleUserDisplayName(params.Get("user"))
+		params, err = url.ParseQuery(string(body))
+		if err != nil {
+			http.Error(w, "invalid OAuth callback form", http.StatusBadRequest)
+			return "", nil, nil, false
+		}
+		postForm = params
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return "", "", nil, false
+		return "", nil, nil, false
 	}
 
 	code = params.Get("code")
@@ -513,13 +508,13 @@ func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, p
 			errMsg = "missing code or state"
 		}
 		http.Error(w, "OAuth error: "+errMsg, http.StatusBadRequest)
-		return "", "", nil, false
+		return "", nil, nil, false
 	}
 
 	oauthState, found := h.states.Get(state)
 	if !found {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
-		return "", "", nil, false
+		return "", nil, nil, false
 	}
 	// Bind the flow to the browser that started it, BEFORE anything is
 	// spent. A state minted without a nonce cannot be completed at all:
@@ -540,7 +535,7 @@ func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, p
 	secureCookies := h.secureCookies(ctx)
 	if !browserSecretMatches(oauthState.NonceHash, auth.OAuthNonceFromRequest(r, oauthState.State, secureCookies)) {
 		http.Error(w, "a different browser started this sign-in; start again from the sign-in page", http.StatusBadRequest)
-		return "", "", nil, false
+		return "", nil, nil, false
 	}
 
 	// The owner presented the nonce, so consume the single-use entry now and
@@ -560,24 +555,24 @@ func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, p
 	}
 	if !consumed {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
-		return "", "", nil, false
+		return "", nil, nil, false
 	}
 
 	if auth.IsExpired(h.now().UTC(), oauthState.ExpiresAt) {
 		http.Error(w, "state expired", http.StatusBadRequest)
-		return "", "", nil, false
+		return "", nil, nil, false
 	}
 	if oauthState.ProviderID != providerID {
 		http.Error(w, "state/provider mismatch", http.StatusBadRequest)
-		return "", "", nil, false
+		return "", nil, nil, false
 	}
-	return code, formDisplayName, oauthState, true
+	return code, postForm, oauthState, true
 }
 
 func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, providerID string) {
 	ctx := r.Context()
 
-	code, formDisplayName, oauthState, ok := h.consumeOAuthState(w, r, providerID)
+	code, postForm, oauthState, ok := h.consumeOAuthState(w, r, providerID)
 	if !ok {
 		return
 	}
@@ -601,14 +596,11 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 	// stuck IdP while the hub is healthy.
 	exchangeCtx, cancelExchange := context.WithTimeout(ctx, settings.KeyTimeouts.Of(h.set.Snapshot(r.Context())).APITimeout())
 	defer cancelExchange()
-	claims, err := provider.Exchange(exchangeCtx, code, oauthState.PkceVerifier)
+	claims, err := provider.Exchange(exchangeCtx, code, oauthState.PkceVerifier, huboauth.ExchangeOptions{FormValues: postForm})
 	if err != nil {
 		slog.Error("oauth: exchange", "error", err)
 		http.Error(w, "OAuth exchange failed", http.StatusBadRequest)
 		return
-	}
-	if claims.DisplayName == "" && claims.Name == "" && formDisplayName != "" {
-		claims.Name = formDisplayName
 	}
 
 	// Check if this OAuth identity is already linked to a user.
@@ -1071,7 +1063,11 @@ func (h *IdPHandler) buildProvider(ctx context.Context, dbProvider *store.OAuthP
 	// for every waiter -- the trade refresh.go states for its own flight, and
 	// settings.Manager takes for the same reason. It keeps its own deadline,
 	// so a stuck identity provider still cannot block the work for ever.
-	built, err, _ := h.providerFlight.Do(key.providerID+"\x00"+key.redirectURL, func() (any, error) {
+	// Include builtAtGen in the singleflight key so a post-rotation caller
+	// that loaded a new client_secret at generation N+1 never joins an
+	// in-flight discovery build started at generation N with the old secret.
+	flightKey := fmt.Sprintf("%s\x00%s\x00%d", key.providerID, key.redirectURL, builtAtGen)
+	built, err, _ := h.providerFlight.Do(flightKey, func() (any, error) {
 		// Re-check INSIDE the flight: a caller that gathered while the leader
 		// built shares the leader's result, and a later arrival finds the
 		// cache warm. This is what keeps "every caller receives the same
@@ -1130,7 +1126,7 @@ func (h *IdPHandler) newProvider(
 		// handler for the process's life.
 		discoverCtx, cancel := context.WithTimeout(ctx, settings.KeyTimeouts.Of(snap).APITimeout())
 		defer cancel()
-		return huboauth.NewOIDCProvider(discoverCtx, dbProvider.IssuerURL, dbProvider.ClientID, clientSecret, key.redirectURL, scopes)
+		return huboauth.NewOIDCProvider(discoverCtx, dbProvider.IssuerURL, dbProvider.ClientID, clientSecret, key.redirectURL, scopes, dbProvider.ResponseMode)
 	case huboauth.ProviderTypeGitHub:
 		return huboauth.NewGitHubProvider(dbProvider.ClientID, clientSecret, key.redirectURL, scopes), nil
 	default:
@@ -1176,23 +1172,21 @@ func (h *IdPHandler) providerGeneration(providerID string) uint64 {
 	return h.providerGen[providerID]
 }
 
-// InvalidateProvider drops every built instance of one provider, and bars
-// an in-flight build of the same provider from inserting a new one.
-//
-// An administrator who removes or disables a provider makes its entry
-// UNREACHABLE rather than stale: loadEnabledProvider refuses a deleted row
-// with 404 and a disabled row with 403 before buildProvider runs, so no
-// later request can evict it through cacheProvider. Without this call the
-// built client -- holding the client secret the keystore decrypted -- stays
-// in memory for the life of the process.
-//
-// The eviction is hygiene, never access control: loadEnabledProvider's own
-// row read is what refuses the flow.
-func (h *IdPHandler) InvalidateProvider(providerID string) {
+// EvictProviderCache drops every cached built Provider for providerID and
+// bumps its generation so in-flight builds with an old secret cannot repopulate
+// the cache, while preserving in-flight login states and pending signups.
+func (h *IdPHandler) EvictProviderCache(providerID string) {
 	h.providersMu.Lock()
 	h.providerGen[providerID]++
 	h.dropProviderLocked(providerID)
 	h.providersMu.Unlock()
+}
+
+// InvalidateProvider drops every built instance of one provider, bars an
+// in-flight build of the same provider from inserting a new one, and removes
+// every pending state and signup for that provider (for remove and disable).
+func (h *IdPHandler) InvalidateProvider(providerID string) {
+	h.EvictProviderCache(providerID)
 
 	h.states.DeleteByProvider(providerID)
 	h.pendingSignups.DeleteByProvider(providerID)

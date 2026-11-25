@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -32,6 +33,7 @@ func (c *pgConn) fromDBOAuthProvider(p gendb.OauthProvider) (*store.OAuthProvide
 			ClientID:     sum.ClientID,
 			Scopes:       sum.Scopes,
 			TrustEmail:   p.TrustEmail,
+			ResponseMode: p.ResponseMode,
 			Enabled:      p.Enabled,
 			CreatedAt:    p.CreatedAt.Time,
 		},
@@ -52,6 +54,7 @@ func (c *pgConn) fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuthProv
 		ClientID:     sum.ClientID,
 		Scopes:       sum.Scopes,
 		TrustEmail:   r.TrustEmail,
+		ResponseMode: r.ResponseMode,
 		Enabled:      r.Enabled,
 		CreatedAt:    r.CreatedAt.Time,
 	}, nil
@@ -66,6 +69,10 @@ func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProv
 	if err != nil {
 		return err
 	}
+	mode := p.ResponseMode
+	if mode == leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_UNSPECIFIED {
+		mode = leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_QUERY
+	}
 	return mapErr(s.conn.q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
 		ID:           p.ID,
 		ProviderType: p.ProviderType,
@@ -75,6 +82,7 @@ func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProv
 		ClientSecret: sealed.ClientSecret,
 		Scopes:       sealed.Scopes,
 		TrustEmail:   p.TrustEmail,
+		ResponseMode: mode,
 		Enabled:      p.Enabled,
 	}))
 }
@@ -115,10 +123,17 @@ func (s *oauthProviderStore) UpdateClientSecret(ctx context.Context, p store.Upd
 	if err != nil {
 		return err
 	}
-	return mapErr(s.conn.q.UpdateOAuthProviderClientSecret(ctx, gendb.UpdateOAuthProviderClientSecretParams{
+	rows, err := s.conn.q.UpdateOAuthProviderClientSecret(ctx, gendb.UpdateOAuthProviderClientSecretParams{
 		ClientSecret: sealed,
 		ID:           p.ID,
-	}))
+	})
+	if err != nil {
+		return mapErr(err)
+	}
+	if rows == 0 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 func (s *oauthProviderStore) Delete(ctx context.Context, id string) error {

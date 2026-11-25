@@ -2,13 +2,17 @@
 
 package validate
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestResolveLiteralPathPreservesBackslashAfterTilde(t *testing.T) {
 	path, err := ResolveLiteralPath(`~/\checkout`, "/home/user")
-	if err != nil || path != `/home/user/\checkout` {
-		t.Fatalf("ResolveLiteralPath returned %q, %v", path, err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, `/home/user/\checkout`, path)
 }
 
 func TestSanitizePath_Unix(t *testing.T) {

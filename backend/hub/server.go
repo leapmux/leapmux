@@ -331,6 +331,7 @@ type Server struct {
 	workerMgr         *workermgr.Manager
 	workerConnector   *service.WorkerConnectorService
 	authService       *service.AuthService
+	workspaceSvc      *service.WorkspaceService
 	crdtRegistry      *crdt.Registry
 	revocationWatcher runtimeLeaseWatcher
 	// workerEffects runs the out-of-database half of a worker's removal, for
@@ -767,7 +768,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 			return nil, err
 		}
 		return mgr, nil
-	}, slog.Default())
+	}, slog.Default(), crdt.WithLifecycleOutbox(service.NewLifecycleOutboxReader(st)))
 	acquired.crdtRegistry = crdtRegistry
 
 	// A deletion the notifier completes tells the owner's /ws/userevents
@@ -1263,6 +1264,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		workerMgr:         wMgr,
 		workerConnector:   connectorSvc,
 		authService:       authSvc,
+		workspaceSvc:      workspaceSvc,
 		crdtRegistry:      crdtRegistry,
 		revocationWatcher: revWatcher,
 		workerEffects:     workerEffects,
@@ -1768,11 +1770,11 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	// 5b. End the hub's own lifetime context: every piece of detached work it
 	// carries, such as the refresh flight and the bearer-validation flight,
-	// ends here, so none of it reads the store
-	// the steps below close.
+	// ends here, so none of it reads the store the steps below close.
 	s.cancelServing()
 
-	// 6. Stop CRDT managers while their journal store is still available.
+	// 6. Stop CRDT lifecycle drains and managers while their journal store is
+	// still available.
 	s.crdtRegistry.Shutdown(s.shutdownDeadline.Cap(crdtShutdownTimeout))
 
 	// 7. Stop the watcher before removing its durable cursor, then close the

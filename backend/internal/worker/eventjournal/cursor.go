@@ -1,19 +1,12 @@
 package eventjournal
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/binary"
-	"io"
-	"math"
 	"strconv"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/seqcursor"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
-
-const cursorVersion = 1
-const cursorPositionSize = 1 + 8
 
 type cursorIdentity struct {
 	workerID, journalID string
@@ -23,20 +16,32 @@ type cursorIdentity struct {
 
 // The token carries only the version and position. The signature binds the
 // rest to the identity established by this Worker and the tab it admitted.
+func (c cursorIdentity) tabSigner(tab Tab, streamID string) seqcursor.Signer {
+	return seqcursor.NewSigner(
+		c.key,
+		"leapmux semantic tab cursor",
+		c.workerID, c.owner.String(), c.journalID,
+		strconv.FormatInt(int64(tab.Type), 10), tab.ID, streamID,
+	)
+}
+
+func (c cursorIdentity) feedSigner(tabType leapmuxv1.TabType) seqcursor.Signer {
+	return seqcursor.NewSigner(
+		c.key,
+		"leapmux semantic Worker cursor",
+		c.workerID, c.owner.String(), c.journalID,
+		strconv.FormatInt(int64(tabType), 10),
+	)
+}
+
 func (c cursorIdentity) sign(tab Tab, streamID string, sequence int64) []byte {
-	return c.signPosition(sequence, "leapmux semantic tab cursor", strconv.FormatInt(int64(tab.Type), 10), tab.ID, streamID)
+	signer := c.tabSigner(tab, streamID)
+	return signer.Sign(sequence)
 }
 
 func (c cursorIdentity) signFeedPosition(tabType leapmuxv1.TabType, sequence int64) []byte {
-	return c.signPosition(sequence, "leapmux semantic Worker cursor", strconv.FormatInt(int64(tabType), 10))
-}
-
-func (c cursorIdentity) signPosition(sequence int64, purpose string, scope ...string) []byte {
-	position := make([]byte, cursorPositionSize, cursorPositionSize+sha256.Size)
-	position[0] = cursorVersion
-	binary.BigEndian.PutUint64(position[1:], uint64(sequence))
-	sum := c.digest(purpose, append(scope, string(position))...)
-	return append(position, sum...)
+	signer := c.feedSigner(tabType)
+	return signer.Sign(sequence)
 }
 
 // RequestInstance derives a journal-local identity from a live claim. The
@@ -45,40 +50,28 @@ func (j *Journal) RequestInstance(agentID, claim string) []byte {
 	if agentID == "" || claim == "" {
 		return nil
 	}
-	return j.identity.digest("leapmux control request instance", agentID, claim)
-}
-
-func (c cursorIdentity) digest(purpose string, fields ...string) []byte {
-	mac := hmac.New(sha256.New, c.key)
-	for _, field := range append([]string{purpose, c.workerID, c.owner.String(), c.journalID}, fields...) {
-		var length [8]byte
-		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
-		_, _ = mac.Write(length[:])
-		_, _ = io.WriteString(mac, field)
-	}
-	return mac.Sum(nil)
+	return seqcursor.Digest(
+		j.identity.key,
+		"leapmux control request instance",
+		j.identity.workerID, j.identity.owner.String(), j.identity.journalID,
+		agentID, claim,
+	)
 }
 
 func (c cursorIdentity) position(tab Tab, streamID string, cursor []byte) (int64, error) {
-	sequence, ok := decodePosition(cursor)
-	if !ok || !hmac.Equal(cursor, c.sign(tab, streamID, sequence)) {
+	signer := c.tabSigner(tab, streamID)
+	sequence, ok := signer.Verify(cursor)
+	if !ok {
 		return 0, ErrCursor
 	}
 	return sequence, nil
 }
 
 func (c cursorIdentity) feedPosition(tabType leapmuxv1.TabType, cursor []byte) (int64, error) {
-	sequence, ok := decodePosition(cursor)
-	if !ok || !hmac.Equal(cursor, c.signFeedPosition(tabType, sequence)) {
+	signer := c.feedSigner(tabType)
+	sequence, ok := signer.Verify(cursor)
+	if !ok {
 		return 0, ErrFeedCursor
 	}
 	return sequence, nil
-}
-
-func decodePosition(cursor []byte) (int64, bool) {
-	if len(cursor) != cursorPositionSize+sha256.Size || cursor[0] != cursorVersion {
-		return 0, false
-	}
-	sequence := binary.BigEndian.Uint64(cursor[1:cursorPositionSize])
-	return int64(sequence), sequence <= math.MaxInt64
 }

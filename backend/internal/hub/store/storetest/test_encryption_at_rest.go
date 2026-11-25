@@ -497,6 +497,24 @@ func (s *Suite) testEncryptionAtRest(t *testing.T) {
 		assert.Equal(t, codeScopesNeedle, gotAuthCode.GrantedScopes)
 		assert.Equal(t, codeInstNeedle, gotAuthCode.InstallationName)
 
+		// 16. layout_event_heads (1 encrypted column: cursor_key)
+		// 17. layout_event_entries (1 encrypted column: fact)
+		cursorKeyNeedle := addNeedle("layout_event_heads", "cursor_key", "needle-44-layout-cursor-key-32by")
+		require.Len(t, cursorKeyNeedle, 32)
+		require.NoError(t, st.LayoutEvents().EnsureHead(ctx, uid, "enc-layout-journal", []byte(cursorKeyNeedle)))
+		layoutFactNeedle := addNeedle("layout_event_entries", "fact", "needle-45-layout-event-entry-fact")
+		_, err = st.LayoutEvents().Append(ctx, store.AppendLayoutEventsParams{
+			Owner:              uid,
+			ObservedUnixMillis: now.UnixMilli(),
+			Facts:              [][]byte{[]byte(layoutFactNeedle)},
+		})
+		require.NoError(t, err)
+		gotLayoutPage, err := st.LayoutEvents().ReadPage(ctx, uid, "", 0, 10)
+		require.NoError(t, err)
+		assert.Equal(t, []byte(cursorKeyNeedle), gotLayoutPage.Head.CursorKey)
+		require.Len(t, gotLayoutPage.Rows, 1)
+		assert.Equal(t, []byte(layoutFactNeedle), gotLayoutPage.Rows[0].Fact)
+
 		// Confirm we tested every single encrypted column registered in sqlutil.
 		totalCols := 0
 		for _, tbl := range sqlutil.PersistentEncryptedTables {
@@ -673,6 +691,16 @@ func (s *Suite) testEncryptionAtRest(t *testing.T) {
 			Secret: []byte(`{"s":"rot-sec"}`),
 		}))
 
+		rotCursorKey := []byte("rot-layout-cursor-key-32-bytes!!")
+		require.Len(t, rotCursorKey, 32)
+		require.NoError(t, stV1.LayoutEvents().EnsureHead(ctx, uid, "rot-layout-journal", rotCursorKey))
+		_, err = stV1.LayoutEvents().Append(ctx, store.AppendLayoutEventsParams{
+			Owner:              uid,
+			ObservedUnixMillis: now.UnixMilli(),
+			Facts:              [][]byte{[]byte("rot-layout-fact")},
+		})
+		require.NoError(t, err)
+
 		// Seed 1 row in the transient table under v1.
 		authCodeHash := FixtureSecretHash("rot-auth-code")
 		require.NoError(t, stV1.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
@@ -802,6 +830,12 @@ func (s *Suite) testEncryptionAtRest(t *testing.T) {
 		require.NotNil(t, settingRow.Value)
 		assert.Equal(t, settingVal, *settingRow.Value)
 		assert.Equal(t, []byte(`{"s":"rot-sec"}`), settingRow.Secret)
+
+		rotLayoutPage, err := stV2.LayoutEvents().ReadPage(ctx, uid, "", 0, 10)
+		require.NoError(t, err)
+		assert.Equal(t, rotCursorKey, rotLayoutPage.Head.CursorKey)
+		require.Len(t, rotLayoutPage.Rows, 1)
+		assert.Equal(t, []byte("rot-layout-fact"), rotLayoutPage.Rows[0].Fact)
 
 		// The transient table was NOT re-encrypted, so reads under {v2} only must fail decryption.
 		_, err = stV2.OAuthAuthorizationCodes().Get(ctx, authCodeHash)

@@ -45,6 +45,9 @@ type CRDTRegistry interface {
 	// credential holds worker:read, through an already-loaded manager, and
 	// never bootstraps one.
 	BroadcastWorkersChanged(userID string)
+	// DrainLifecycle drains pending workspace lifecycle outbox rows for userID,
+	// coalescing concurrent callers onto one flight.
+	DrainLifecycle(ctx context.Context, userID string) error
 }
 
 type WorkerConnectorService struct {
@@ -153,6 +156,23 @@ func NewWorkerConnectorService(d WorkerConnectorServiceDeps) *WorkerConnectorSer
 // workerHelloTimeout limits the wait for the first message.
 const workerHelloTimeout = 10 * time.Second
 const workerHelloTimerTag = "worker-hello"
+
+// authenticateWorkerOwner authenticates the calling Worker via its bearer token
+// and mints its registrant's owner UserID.
+func (s *WorkerConnectorService) authenticateWorkerOwner(ctx context.Context) (*store.Worker, userid.UserID, error) {
+	worker, err := auth.AuthenticateWorkerBearer(ctx, s.store, s.hasher, serverCallInfo(ctx).RequestHeader().Get("Authorization"))
+	if err != nil {
+		if auth.IsWorkerCredentialError(err) {
+			return nil, userid.UserID{}, wrappedConnectError(connect.CodeUnauthenticated, err)
+		}
+		return nil, userid.UserID{}, wrappedConnectError(connect.CodeInternal, err)
+	}
+	owner, ok := userid.New(worker.RegisteredBy)
+	if !ok {
+		return nil, userid.UserID{}, connect.Errorf(connect.CodeInternal, "worker %s has a blank registrant", worker.ID)
+	}
+	return worker, owner, nil
+}
 
 // SetMaxWorkersPerUser limits how many Workers one user may have registered at
 // once; 0 (the zero value) is unlimited. Updates may run concurrently with

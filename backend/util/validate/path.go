@@ -8,24 +8,25 @@ import (
 	"unicode"
 )
 
-// Sentinel errors returned by SanitizePath.
+// Sentinel errors returned by SanitizePath and ResolveLiteralPath.
 var (
-	ErrEmptyPath    = errors.New("path is empty")
-	ErrNotAbsolute  = errors.New("path must be absolute")
-	ErrTraversal    = errors.New("path traversal not allowed")
-	ErrNoHomeDir    = errors.New("cannot expand tilde: home directory not set")
-	ErrReservedName = errors.New("path component is a reserved device name")
-	ErrReservedChar = errors.New("path contains a reserved character")
+	ErrEmptyPath          = errors.New("path is empty")
+	ErrNotAbsolute        = errors.New("path must be absolute")
+	ErrTraversal          = errors.New("path traversal not allowed")
+	ErrNoHomeDir          = errors.New("cannot expand tilde: home directory not set")
+	ErrReservedName       = errors.New("path component is a reserved device name")
+	ErrReservedChar       = errors.New("path contains a reserved character")
+	ErrTrailingDotOrSpace = errors.New("a Windows path component cannot end in a dot or space")
 )
 
 // SanitizePath validates and normalizes a filesystem path for the host OS.
 //
 // On Windows it additionally rejects DOS reserved device names (CON, PRN,
 // AUX, NUL, COM0-9, LPT0-9 — matched case-insensitively, ignoring trailing
-// dots/spaces and the extension) and the Win32 forbidden filename characters
-// < > " | ? *. Paths in the \\?\ extended-length namespace skip the
-// reserved-name check — the caller has opted out of Win32 name translation —
-// but \\.\ device-namespace paths are still rejected.
+// dots/spaces and the extension), the Win32 forbidden filename characters
+// < > " | ? *, and non-"." components ending in a dot or space. Paths in the
+// \\?\ extended-length namespace skip these Win32 name-translation checks,
+// while \\.\ device-namespace paths are still rejected.
 //
 // Accepted on POSIX:   /home/user, /Users/john, ~, ~/projects
 // Accepted on Windows: C:\Users\u, c:/Users/u, \\server\share\x,
@@ -67,18 +68,7 @@ func ResolveLiteralPath(value, homeDir string) (string, error) {
 	if WireString(value) != value || strings.IndexFunc(value, unicode.IsControl) >= 0 {
 		return "", errors.New("the path contains an invalid character")
 	}
-	path, err := resolveAbsolutePath(value, homeDir)
-	if err != nil {
-		return "", err
-	}
-	if runtime.GOOS == "windows" && !strings.HasPrefix(path, `\\?\`) {
-		for _, component := range splitPathComponents(path) {
-			if strings.TrimRight(component, " .") != component {
-				return "", errors.New("a Windows path component cannot end in a dot or space")
-			}
-		}
-	}
-	return path, nil
+	return resolveAbsolutePath(value, homeDir)
 }
 
 func resolveAbsolutePath(s, homeDir string) (string, error) {
@@ -144,8 +134,15 @@ func splitPathComponents(s string) []string {
 
 // Caller must only invoke this on Windows.
 func checkWindowsReserved(s string) error {
-	// \\?\ disables Win32 name translation, so reserved device names passed
-	// through it are legal filenames.
+	return checkWindowsPath(s, filepath.VolumeName(s))
+}
+
+// checkWindowsPath validates Win32 filename restrictions after stripping volume
+// (so UNC FQDN hosts such as \\fileserver.corp.example.\share\repo are allowed).
+// Separating volume lets cross-OS unit tests exercise Windows rules directly.
+func checkWindowsPath(s, volume string) error {
+	// \\?\ disables Win32 name translation, so reserved device names and
+	// trailing dots/spaces passed through it are legal filenames.
 	if strings.HasPrefix(s, `\\?\`) {
 		return nil
 	}
@@ -154,16 +151,18 @@ func checkWindowsReserved(s string) error {
 		return ErrReservedName
 	}
 
-	vol := filepath.VolumeName(s)
-	rest := strings.TrimPrefix(s, vol)
-
-	for _, comp := range splitPathComponents(rest) {
+	rest := strings.TrimPrefix(s, volume)
+	for _, comp := range strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' }) {
 		// Colon is only legal in the volume name, which was stripped above.
 		if strings.ContainsAny(comp, `<>"|?*:`) {
 			return ErrReservedChar
 		}
 		if IsReservedDeviceName(comp) {
 			return ErrReservedName
+		}
+		// Skip "." because checkWindowsReserved runs before filepath.Clean.
+		if comp != "." && strings.TrimRight(comp, " .") != comp {
+			return ErrTrailingDotOrSpace
 		}
 	}
 	return nil

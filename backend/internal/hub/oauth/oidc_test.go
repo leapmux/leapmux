@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,8 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // mockOIDCServer creates a test OIDC provider with discovery, JWKS, token, and userinfo endpoints.
@@ -91,7 +94,7 @@ func mockOIDCServer(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
 func TestOIDC_AuthURL_IncludesStateAndChallenge(t *testing.T) {
 	srv, _ := mockOIDCServer(t)
 
-	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "profile", "email"})
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "profile", "email"}, ResponseModeQuery)
 	require.NoError(t, err)
 
 	url := p.AuthURL("test-state", "test-challenge", AuthURLOptions{})
@@ -111,7 +114,7 @@ func TestOIDC_AuthURL_IncludesStateAndChallenge(t *testing.T) {
 func TestOIDC_AuthURL_ForceReauthentication(t *testing.T) {
 	srv, _ := mockOIDCServer(t)
 
-	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil, ResponseModeQuery)
 	require.NoError(t, err)
 
 	url := p.AuthURL("test-state", "test-challenge", AuthURLOptions{ForceReauthentication: true})
@@ -123,10 +126,10 @@ func TestOIDC_AuthURL_ForceReauthentication(t *testing.T) {
 func TestOIDC_Exchange_Success(t *testing.T) {
 	srv, _ := mockOIDCServer(t)
 
-	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil, ResponseModeQuery)
 	require.NoError(t, err)
 
-	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier", ExchangeOptions{})
 	require.NoError(t, err)
 
 	assert.Equal(t, "oidc-user-123", claims.Subject)
@@ -182,13 +185,13 @@ func TestOIDC_Exchange_UnverifiedEmail(t *testing.T) {
 	// Since we can't split discovery from exchange easily, we test at the provider level
 	// by creating a provider that points to srv for discovery, then calling Exchange
 	// with the unverifiedSrv's token endpoint.
-	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil, ResponseModeQuery)
 	require.NoError(t, err)
 
 	// Override the token endpoint to point to our unverified server.
 	p.oauth2Config.Endpoint.TokenURL = unverifiedSrv.URL + "/token"
 
-	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier", ExchangeOptions{})
 	require.NoError(t, err)
 
 	assert.Empty(t, claims.Email, "unverified email must not be returned")
@@ -235,11 +238,11 @@ func TestOIDC_Exchange_MissingEmailVerified(t *testing.T) {
 	}))
 	t.Cleanup(noVerifiedSrv.Close)
 
-	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil, ResponseModeQuery)
 	require.NoError(t, err)
 	p.oauth2Config.Endpoint.TokenURL = noVerifiedSrv.URL + "/token"
 
-	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier")
+	claims, err := p.Exchange(context.Background(), "valid-code", "test-verifier", ExchangeOptions{})
 	require.NoError(t, err)
 
 	assert.Empty(t, claims.Email, "email must not be returned when email_verified is missing")
@@ -248,10 +251,10 @@ func TestOIDC_Exchange_MissingEmailVerified(t *testing.T) {
 func TestOIDC_Exchange_InvalidCode(t *testing.T) {
 	srv, _ := mockOIDCServer(t)
 
-	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil, ResponseModeQuery)
 	require.NoError(t, err)
 
-	_, err = p.Exchange(context.Background(), "invalid-code", "test-verifier")
+	_, err = p.Exchange(context.Background(), "invalid-code", "test-verifier", ExchangeOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "oidc exchange")
 }
@@ -318,7 +321,7 @@ func TestOIDC_Exchange_InvalidIDTokenSignature(t *testing.T) {
 	// but with a tampered exchange. This is hard without replacing the token endpoint.
 	// Simplification: just verify that an ID token signed with the wrong key fails verification.
 
-	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil)
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", nil, ResponseModeQuery)
 	require.NoError(t, err)
 
 	// The verifier checks signatures against the JWKS from srv. An ID token signed with wrongKey
@@ -350,7 +353,7 @@ func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
 	// Discovery has to succeed, so build the provider against the healthy
 	// server first and block only the token endpoint it calls next.
 	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback",
-		[]string{"openid", "profile", "email"})
+		[]string{"openid", "profile", "email"}, ResponseModeQuery)
 	require.NoError(t, err)
 
 	// Never answers, but always unwinds: a client that abandons a keep-alive
@@ -377,7 +380,7 @@ func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
 	// failing case is a hang, and a guard reports that directly.
 	exchanged := make(chan error, 1)
 	go func() {
-		_, exErr := p.Exchange(ctx, "any-code", "any-verifier")
+		_, exErr := p.Exchange(ctx, "any-code", "any-verifier", ExchangeOptions{})
 		exchanged <- exErr
 	}()
 	select {
@@ -388,23 +391,35 @@ func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
 	}
 }
 
-func TestOIDC_Apple_FormPostDetection(t *testing.T) {
-	assert.True(t, isAppleIssuer("https://appleid.apple.com"))
-	assert.True(t, isAppleIssuer("https://appleid.apple.com/"))
-	assert.True(t, isAppleIssuer("https://APPLEID.APPLE.COM"))
-	assert.False(t, isAppleIssuer("https://accounts.google.com"))
-	assert.False(t, isAppleIssuer("http://appleid.apple.com"))
-	assert.False(t, isAppleIssuer("https://appleid.apple.com/other"))
+func TestOIDC_ResponseModeConfiguration(t *testing.T) {
+	assert.Equal(t, "query", ResponseModeWire(ResponseModeQuery))
+	assert.Equal(t, "form_post", ResponseModeWire(ResponseModeFormPost))
+	assert.Equal(t, "", ResponseModeWire(0))
+
+	got, err := ParseResponseMode("query")
+	require.NoError(t, err)
+	assert.Equal(t, ResponseModeQuery, got)
+	got, err = ParseResponseMode("FORM_POST")
+	require.NoError(t, err)
+	assert.Equal(t, ResponseModeFormPost, got)
+	_, err = ParseResponseMode("fragment")
+	require.Error(t, err)
+
+	assert.Equal(t, ResponseModeFormPost, Presets["apple"].ResponseMode)
+	assert.Equal(t, ResponseModeQuery, Presets["google"].ResponseMode)
+	assert.Equal(t, ResponseModeQuery, Presets["github"].ResponseMode)
+	assert.Equal(t, ResponseModeQuery, Presets["oidc"].ResponseMode)
 
 	srv, _ := mockOIDCServer(t)
-	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "name", "email"})
+	queryProvider, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "name", "email"}, ResponseModeQuery)
 	require.NoError(t, err)
-	assert.False(t, p.UsesFormPost())
-	assert.NotContains(t, p.AuthURL("st", "ver", AuthURLOptions{}), "response_mode=form_post")
+	assert.False(t, queryProvider.UsesFormPost())
+	assert.NotContains(t, queryProvider.AuthURL("st", "ver", AuthURLOptions{}), "response_mode=form_post")
 
-	p.useFormPost = true
-	assert.True(t, p.UsesFormPost())
-	assert.Contains(t, p.AuthURL("st", "ver", AuthURLOptions{}), "response_mode=form_post")
+	formPostProvider, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "name", "email"}, ResponseModeFormPost)
+	require.NoError(t, err)
+	assert.True(t, formPostProvider.UsesFormPost())
+	assert.Contains(t, formPostProvider.AuthURL("st", "ver", AuthURLOptions{}), "response_mode=form_post")
 }
 
 func TestOIDC_Exchange_StringEmailVerified(t *testing.T) {
@@ -442,17 +457,98 @@ func TestOIDC_Exchange_StringEmailVerified(t *testing.T) {
 			}))
 			t.Cleanup(tokenSrv.Close)
 
-			p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "name", "email"})
+			p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "name", "email"}, ResponseModeFormPost)
 			require.NoError(t, err)
 			p.oauth2Config.Endpoint.TokenURL = tokenSrv.URL + "/token"
 
-			claims, err := p.Exchange(context.Background(), "code", "verifier")
+			claims, err := p.Exchange(context.Background(), "code", "verifier", ExchangeOptions{})
 			if tc.wantErr {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantEmail, claims.Email)
+		})
+	}
+}
+
+func TestOIDC_Exchange_FormPostUserDisplayNameFallback(t *testing.T) {
+	srv, privKey := mockOIDCServer(t)
+
+	for _, tc := range []struct {
+		name     string
+		mode     leapmuxv1.OAuthResponseMode
+		oidcName string
+		rawUser  string
+		wantName string
+	}{
+		{
+			name:     "form_post uses Apple user JSON when OIDC name is empty",
+			mode:     ResponseModeFormPost,
+			oidcName: "",
+			rawUser:  `{"name":{"firstName":"Jane","lastName":"Appleseed"}}`,
+			wantName: "Jane Appleseed",
+		},
+		{
+			name:     "form_post uses Apple user JSON when OIDC name is whitespace",
+			mode:     ResponseModeFormPost,
+			oidcName: "   ",
+			rawUser:  `{"name":{"firstName":"Jane","lastName":""}}`,
+			wantName: "Jane",
+		},
+		{
+			name:     "form_post prefers non-empty OIDC name",
+			mode:     ResponseModeFormPost,
+			oidcName: "Provider Name",
+			rawUser:  `{"name":{"firstName":"Jane","lastName":"Appleseed"}}`,
+			wantName: "Provider Name",
+		},
+		{
+			name:     "query mode ignores Apple user JSON",
+			mode:     ResponseModeQuery,
+			oidcName: "",
+			rawUser:  `{"name":{"firstName":"Jane","lastName":"Appleseed"}}`,
+			wantName: "",
+		},
+		{
+			name:     "malformed user JSON does not fail exchange",
+			mode:     ResponseModeFormPost,
+			oidcName: "",
+			rawUser:  `{not-json`,
+			wantName: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privKey}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test-key"))
+				rawToken, _ := jwt.Signed(signer).Claims(map[string]any{
+					"iss":            srv.URL,
+					"sub":            "sub-1",
+					"aud":            "test-client",
+					"exp":            time.Now().Add(time.Hour).Unix(),
+					"iat":            time.Now().Unix(),
+					"email":          "apple@example.com",
+					"email_verified": true,
+					"name":           tc.oidcName,
+				}).Serialize()
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token": "tok",
+					"token_type":   "Bearer",
+					"id_token":     rawToken,
+				})
+			}))
+			t.Cleanup(tokenSrv.Close)
+
+			p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback", []string{"openid", "name", "email"}, tc.mode)
+			require.NoError(t, err)
+			p.oauth2Config.Endpoint.TokenURL = tokenSrv.URL + "/token"
+
+			form := url.Values{}
+			form.Set("user", tc.rawUser)
+			claims, err := p.Exchange(context.Background(), "code", "verifier", ExchangeOptions{FormValues: form})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantName, claims.Name)
 		})
 	}
 }

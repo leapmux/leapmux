@@ -7,7 +7,17 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 )
 
-// Persistent table AAD constructors (14 tables, 33 columns).
+// Persistent table AAD constructors (16 tables, 35 columns).
+
+// LayoutEventHeadCursorKeyAAD returns the AAD for layout_event_heads.cursor_key.
+func LayoutEventHeadCursorKeyAAD(userID string) []byte {
+	return keystore.ColumnAAD("layout_event_heads", "cursor_key", userID)
+}
+
+// LayoutEventEntryFactAAD returns the AAD for layout_event_entries.fact.
+func LayoutEventEntryFactAAD(userID string, sequence int64) []byte {
+	return keystore.ColumnAAD("layout_event_entries", "fact", userID, strconv.FormatInt(sequence, 10))
+}
 
 // UserPasswordHashAAD returns the AAD for users.password_hash.
 func UserPasswordHashAAD(userID string) []byte {

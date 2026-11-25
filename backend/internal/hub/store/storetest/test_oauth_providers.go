@@ -45,8 +45,30 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		assert.Equal(t, []byte("secret-test-prov"), prov.ClientSecret)
 		assert.Equal(t, "openid profile email", prov.Scopes)
 		assert.True(t, prov.TrustEmail)
+		assert.Equal(t, leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_QUERY, prov.ResponseMode)
 		assert.True(t, prov.Enabled)
 		assert.False(t, prov.CreatedAt.IsZero())
+
+		formPostID := id.Generate()
+		require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+			ID:           formPostID,
+			ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
+			Name:         "apple-prov",
+			IssuerURL:    "https://appleid.apple.com",
+			ClientID:     "client-apple",
+			ClientSecret: []byte("secret-apple"),
+			Scopes:       "openid name email",
+			TrustEmail:   true,
+			ResponseMode: leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_FORM_POST,
+			Enabled:      true,
+		}))
+		gotFP, err := st.OAuthProviders().GetByID(ctx, formPostID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_FORM_POST, gotFP.ResponseMode)
+		all, err := st.OAuthProviders().ListAll(ctx)
+		require.NoError(t, err)
+		require.Len(t, all, 2)
+		assert.Equal(t, leapmuxv1.OAuthResponseMode_O_AUTH_RESPONSE_MODE_FORM_POST, all[1].ResponseMode)
 	})
 
 	t.Run("get by id not found", func(t *testing.T) {
@@ -252,5 +274,11 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []byte("rotated-secret-value"), prov.ClientSecret)
 		assert.Equal(t, "rotate-prov", prov.Name)
+
+		err = st.OAuthProviders().UpdateClientSecret(ctx, store.UpdateOAuthProviderClientSecretParams{
+			ID:           "missing-provider-id",
+			ClientSecret: []byte("rotated-secret-value"),
+		})
+		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 }

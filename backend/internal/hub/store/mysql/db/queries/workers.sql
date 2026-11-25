@@ -234,8 +234,10 @@ WHERE w.id = ?;
 
 -- name: GetWorkerEnrollmentRevision :one
 SELECT CAST(COALESCE((SELECT revision FROM worker_enrollment_revisions WHERE user_id = sqlc.arg(user_id)), 0) AS SIGNED) AS revision,
-       CAST((SELECT COUNT(*) FROM workers WHERE registered_by = sqlc.arg(user_id)
-         AND deregistering_at IS NULL AND deleted_at IS NULL) AS SIGNED) AS active_workers;
+       CAST((SELECT COUNT(*) FROM workers USE INDEX (idx_workers_registered_by_state_created)
+         WHERE registered_by = sqlc.arg(user_id)
+           AND (deleted_at IS NOT NULL) = FALSE
+           AND (deleted_at IS NULL AND deregistering_at IS NOT NULL) = FALSE) AS SIGNED) AS active_workers;
 
 -- name: AdvanceWorkerEnrollment :exec
 INSERT INTO worker_enrollment_revisions (user_id, revision)

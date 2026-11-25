@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -16,17 +17,15 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func TestReadLayoutEventsBindsAccountAndScopeAndRedactsTheOtherPlacement(t *testing.T) {
 	t.Parallel()
-	st, err := sqlite.OpenTestable(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := hubtestutil.OpenTestStore(t)
 	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-owner").ID)
 	other := userid.MustNew(storetest.SeedUser(t, st, "layout-stranger").ID)
 	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
@@ -97,9 +96,7 @@ func TestReadLayoutEventsBindsAccountAndScopeAndRedactsTheOtherPlacement(t *test
 
 func TestCommitBatchRollsBackTheCanonicalWriteWhenLayoutAppendFails(t *testing.T) {
 	t.Parallel()
-	st, err := sqlite.OpenTestable(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := hubtestutil.OpenTestStore(t)
 	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-rollback-owner").ID)
 	hlc := &leapmuxv1.HLC{Physical: 100, ClientId: crdt.CanonicalClockID}
 	journal := &crdtJournal{store: st}
@@ -138,19 +135,13 @@ func TestCommitBatchRollsBackTheCanonicalWriteWhenLayoutAppendFails(t *testing.T
 
 func TestReadLayoutEventsDrainsDurableRenameAndDeleteAfterManagerRestart(t *testing.T) {
 	t.Parallel()
-	st, err := sqlite.OpenTestable(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := hubtestutil.OpenTestStore(t)
 	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-lifecycle-owner").ID)
 	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
 	factory := func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
-		manager := crdt.NewManager(owner, NewCRDTJournal(st), NewCRDTAuthChecker(st), nil, time.Now)
-		if err := manager.Bootstrap(ctx); err != nil {
-			return nil, err
-		}
-		return manager, nil
+		return bootLayoutTestManager(ctx, st, owner)
 	}
-	first := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0))
+	first := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
 	stopFirst := sync.OnceFunc(func() { first.Shutdown(2 * time.Second) })
 	t.Cleanup(stopFirst)
 	creator := NewWorkspaceService(st, first, nil)
@@ -173,7 +164,7 @@ func TestReadLayoutEventsDrainsDurableRenameAndDeleteAfterManagerRestart(t *test
 	require.NoError(t, err)
 	require.Equal(t, int64(1), history.Head.HighSequence)
 
-	restarted := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0))
+	restarted := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
 	t.Cleanup(func() { restarted.Shutdown(2 * time.Second) })
 	reader := NewWorkspaceService(st, restarted, nil)
 	page, err := reader.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{
@@ -220,6 +211,21 @@ type layoutOutboxFaultStore struct {
 	failConsume atomic.Bool
 }
 
+func (s *layoutOutboxFaultStore) RunInTransaction(ctx context.Context, fn func(tx store.Store) error) error {
+	return s.Store.RunInTransaction(ctx, func(tx store.Store) error {
+		return fn(&layoutOutboxFaultTx{Store: tx, failConsume: &s.failConsume})
+	})
+}
+
+type layoutOutboxFaultTx struct {
+	store.Store
+	failConsume *atomic.Bool
+}
+
+func (s *layoutOutboxFaultTx) LifecycleOutbox() store.LifecycleOutboxStore {
+	return layoutOutboxFaultRows{LifecycleOutboxStore: s.Store.LifecycleOutbox(), failConsume: s.failConsume.Load()}
+}
+
 func (s *layoutOutboxFaultStore) LifecycleOutbox() store.LifecycleOutboxStore {
 	return layoutOutboxFaultRows{LifecycleOutboxStore: s.Store.LifecycleOutbox(), failConsume: s.failConsume.Load()}
 }
@@ -238,20 +244,14 @@ func (s layoutOutboxFaultRows) MarkConsumed(ctx context.Context, p store.MarkLif
 
 func TestReadLayoutEventsRecoversAfterDeleteCommitAndFailedAcknowledgement(t *testing.T) {
 	t.Parallel()
-	base, err := sqlite.OpenTestable(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = base.Close() })
+	base := hubtestutil.OpenTestStore(t)
 	st := &layoutOutboxFaultStore{Store: base}
 	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-delete-retry").ID)
 	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
 	factory := func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
-		manager := crdt.NewManager(owner, NewCRDTJournal(st), NewCRDTAuthChecker(st), nil, time.Now)
-		if err := manager.Bootstrap(ctx); err != nil {
-			return nil, err
-		}
-		return manager, nil
+		return bootLayoutTestManager(ctx, st, owner)
 	}
-	first := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0))
+	first := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
 	stopFirst := sync.OnceFunc(func() { first.Shutdown(2 * time.Second) })
 	t.Cleanup(stopFirst)
 	creator := NewWorkspaceService(st, first, nil)
@@ -279,7 +279,7 @@ func TestReadLayoutEventsRecoversAfterDeleteCommitAndFailedAcknowledgement(t *te
 
 	stopFirst()
 	st.failConsume.Store(false)
-	restarted := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0))
+	restarted := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
 	t.Cleanup(func() { restarted.Shutdown(2 * time.Second) })
 	reader := NewWorkspaceService(st, restarted, nil)
 	account, err := reader.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{})
@@ -302,9 +302,7 @@ func TestReadLayoutEventsRecoversAfterDeleteCommitAndFailedAcknowledgement(t *te
 
 func TestReadLayoutEventsSchedulesCatchUpWhilePagesAdvance(t *testing.T) {
 	t.Parallel()
-	st, err := sqlite.OpenTestable(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := hubtestutil.OpenTestStore(t)
 	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-busy-account").ID)
 	ctx := auth.WithUser(testutil.DeadlineContext(t), &auth.UserInfo{ID: owner})
 	watched := storetest.SeedWorkspace(t, st, owner.String(), "Watched")
@@ -334,7 +332,7 @@ func TestReadLayoutEventsSchedulesCatchUpWhilePagesAdvance(t *testing.T) {
 			return nil, ctx.Err()
 		}
 		return bootLayoutTestManager(ctx, st, owner)
-	}, nil, crdt.WithManagerIdleTTL(0))
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 	t.Cleanup(unblock)
 	reader := NewWorkspaceService(st, registry, nil)
@@ -349,9 +347,9 @@ func TestReadLayoutEventsSchedulesCatchUpWhilePagesAdvance(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("committed page delivery did not schedule lifecycle catch-up")
 	}
-	draining := reader.startLayoutLifecycleDrain(ctx, owner)
+	draining := registry.StartLifecycleDrain(owner.String())
 	for range 64 {
-		require.Equal(t, draining, reader.startLayoutLifecycleDrain(ctx, owner),
+		require.Equal(t, draining, registry.StartLifecycleDrain(owner.String()),
 			"all live requests for an account must share one completion signal")
 	}
 	unblock()
@@ -367,9 +365,7 @@ func TestReadLayoutEventsSchedulesCatchUpWhilePagesAdvance(t *testing.T) {
 
 func TestReadLayoutEventsRetainsLossOfAnUnreadableLifecycleRow(t *testing.T) {
 	t.Parallel()
-	st, err := sqlite.OpenTestable(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := hubtestutil.OpenTestStore(t)
 	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-unreadable-outbox").ID)
 	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
 	workspace := storetest.SeedWorkspace(t, st, owner.String(), "Watched")
@@ -388,7 +384,7 @@ func TestReadLayoutEventsRetainsLossOfAnUnreadableLifecycleRow(t *testing.T) {
 	}))
 	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
 		return bootLayoutTestManager(ctx, st, owner)
-	}, nil, crdt.WithManagerIdleTTL(0))
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 	reader := NewWorkspaceService(st, registry, nil)
 	accountPage, err := reader.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{AfterCursor: account.GetCursor()})
@@ -422,4 +418,172 @@ func bootLayoutTestManager(ctx context.Context, st store.Store, owner userid.Use
 		return nil, err
 	}
 	return manager, nil
+}
+
+func TestReadLayoutEventsCapsWaitBeforeContextDeadline(t *testing.T) {
+	t.Parallel()
+	st := hubtestutil.OpenTestStore(t)
+	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-deadline-owner").ID)
+	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		return bootLayoutTestManager(ctx, st, owner)
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+	mClock := quartz.NewMock(t)
+	mClock.Set(time.Now())
+	svc := NewWorkspaceService(st, registry, nil).WithClock(mClock)
+
+	start, err := svc.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{})
+	require.NoError(t, err)
+
+	// Client asks for 15s wait under a 5s context deadline (modeling the unary
+	// timeout interceptor's default). With a registry attached, no 2s recheck
+	// ticker is started, so advancing 4.75s in one step hits the capped expiry
+	// timer directly with zero wall-clock wait.
+	const budget = 5 * time.Second
+	deadline := mClock.Now().Add(budget)
+	shortCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	trap := mClock.Trap().NewTimer()
+	defer trap.Close()
+
+	type pollResult struct {
+		page *leapmuxv1.ReadLayoutEventsResponse
+		err  error
+	}
+	resCh := make(chan pollResult, 1)
+	go func() {
+		page, err := svc.ReadLayoutEvents(shortCtx, &leapmuxv1.ReadLayoutEventsRequest{
+			AfterCursor: start.GetCursor(),
+			WaitMillis:  15_000,
+		})
+		resCh <- pollResult{page: page, err: err}
+	}()
+
+	call, err := trap.Wait(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, budget-layoutEventDeadlineMargin, call.Duration)
+	require.NoError(t, call.Release(t.Context()))
+
+	mClock.Advance(budget - layoutEventDeadlineMargin).MustWait(t.Context())
+
+	res := <-resCh
+	require.NoError(t, res.err)
+	assert.Empty(t, res.page.GetRecords())
+	assert.Equal(t, start.GetAfterSequence(), res.page.GetScannedSequence())
+	assert.NoError(t, shortCtx.Err(), "handler must return before the request deadline fires")
+}
+
+func TestReadLayoutEventsSkipsLifecycleDrainWhenNoOutboxPending(t *testing.T) {
+	t.Parallel()
+	st := hubtestutil.OpenTestStore(t)
+	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-idle-owner").ID)
+	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
+
+	var boots atomic.Int32
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		boots.Add(1)
+		return bootLayoutTestManager(ctx, st, owner)
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	svc := NewWorkspaceService(st, registry, nil)
+	start, err := svc.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{})
+	require.NoError(t, err)
+
+	page, err := svc.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{
+		AfterCursor: start.GetCursor(),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, page.GetRecords())
+	assert.Zero(t, boots.Load(), "idle layout poll with no pending lifecycle outbox must not bootstrap CRDT manager")
+}
+
+func TestReadLayoutEventsWakesImmediatelyWithoutLoadedManagerOrTicker(t *testing.T) {
+	t.Parallel()
+	st := hubtestutil.OpenTestStore(t)
+	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-wake-owner").ID)
+	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
+
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		return bootLayoutTestManager(ctx, st, owner)
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	mClock := quartz.NewMock(t)
+	svc := NewWorkspaceService(st, registry, nil).WithClock(mClock)
+	start, err := svc.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{})
+	require.NoError(t, err)
+	_, loaded := registry.Loaded(owner.String())
+	require.False(t, loaded, "precondition: no CRDT manager is loaded yet")
+
+	// Mock clock never advances, so only Registry.LayoutEventWake can wake the
+	// long poll (no 2s fallback ticker is created when registry != nil).
+	timerTrap := mClock.Trap().NewTimer()
+	defer timerTrap.Close()
+
+	type pollResult struct {
+		page *leapmuxv1.ReadLayoutEventsResponse
+		err  error
+	}
+	resCh := make(chan pollResult, 1)
+	go func() {
+		page, err := svc.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{
+			AfterCursor: start.GetCursor(),
+			WaitMillis:  10_000,
+		})
+		resCh <- pollResult{page: page, err: err}
+	}()
+
+	call, err := timerTrap.Wait(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, call.Release(t.Context()))
+
+	// Create a workspace after the long poll is parked; the wake channel on
+	// Registry must deliver the event immediately without advancing the clock.
+	_, err = svc.CreateWorkspace(ctx, &leapmuxv1.CreateWorkspaceRequest{Title: "Woken"})
+	require.NoError(t, err)
+
+	res := <-resCh
+	require.NoError(t, res.err)
+	require.Len(t, res.page.GetRecords(), 1)
+	assert.Equal(t, "Woken", res.page.GetRecords()[0].GetFact().GetWorkspace().GetTitle())
+}
+
+func TestRegistryShutdownCancelsAndJoinsLifecycleDrains(t *testing.T) {
+	t.Parallel()
+	st := hubtestutil.OpenTestStore(t)
+	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-shutdown-owner").ID)
+
+	entered := make(chan struct{})
+	exited := make(chan struct{})
+	registry := crdt.NewRegistry(func(workCtx context.Context, _ userid.UserID) (*crdt.Manager, error) {
+		close(entered)
+		<-workCtx.Done()
+		close(exited)
+		return nil, workCtx.Err()
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
+
+	_ = registry.StartLifecycleDrain(owner.String())
+	<-entered
+
+	registry.Shutdown(2 * time.Second)
+
+	select {
+	case <-exited:
+	default:
+		t.Fatal("Registry.Shutdown returned before the cancelled lifecycle drain goroutine exited")
+	}
+}
+
+func TestConsumeLifecycleOutboxWithLayoutFactRejectsNilFact(t *testing.T) {
+	t.Parallel()
+	st := hubtestutil.OpenTestStore(t)
+	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-nil-fact-owner").ID)
+	reader := NewLifecycleOutboxReader(st)
+	err := reader.ConsumeLifecycleOutboxWithLayoutFact(t.Context(), crdt.LifecycleOutboxRow{
+		ID: 1, UserID: owner.String(),
+	}, time.Now(), nil)
+	require.ErrorContains(t, err, "layout event fact is required")
 }

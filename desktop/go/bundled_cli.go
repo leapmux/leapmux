@@ -4,16 +4,20 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // cliBinaryName is the basename of the leapmux CLI that the desktop app
 // ships, and of the CLI on PATH.
-var cliBinaryName = func() string {
-	if runtime.GOOS == "windows" {
+var cliBinaryName = cliBinaryNameFor(runtime.GOOS)
+
+func cliBinaryNameFor(goos string) string {
+	if goos == "windows" {
 		return "leapmux.exe"
 	}
 	return "leapmux"
-}()
+}
 
 // bundledCliPath returns the leapmux CLI that this desktop install ships, or
 // "" when it ships none. The Worker that the sidecar runs links it into the
@@ -24,38 +28,69 @@ func bundledCliPath() string {
 	if err != nil {
 		return ""
 	}
-	return resolveBundledCli(exe)
+	allowDevLayout := os.Getenv(contracts.EnvDevEndpoint) != "" || os.Getenv(contracts.EnvDevFrontend) != ""
+	return resolveExecutableBundledCli(exe, allowDevLayout)
 }
 
-// resolveBundledCli returns the leapmux CLI that ships beside the sidecar
-// whose executable is exe, or "". It tries each layout that a build produces,
-// in this order, and the first CLI that exists wins:
-//
-//  1. Beside the sidecar: the macOS .app puts both in Contents/MacOS.
-//  2. In the cli subdirectory beside the sidecar: the Windows installer
-//     ships cli\leapmux.exe in the install directory and adds that directory
-//     to the user's PATH.
-//  3. In ../../bin from the sidecar: the Linux .deb installs the sidecar as a
-//     resource under /usr/lib/<product>/ and the CLI as /usr/bin/leapmux.
-//  4. Four levels up, at the repository root: a development build runs the
-//     sidecar from <repo>/desktop/go/bin/, and `task build-backend` writes the
-//     CLI to <repo>/leapmux.
-//
-// The installed layouts come first, so a real install never resolves to a
-// stray leapmux file four levels up its parent chain. An AppImage ships no
-// CLI, so it resolves to "".
-func resolveBundledCli(exe string) string {
+// resolveExecutableBundledCli resolves symlinks on exe before probing the
+// bundled CLI layouts, so a symlinked sidecar resolves relative paths against
+// its real installation directory rather than the symlink directory.
+func resolveExecutableBundledCli(exe string, allowDevLayout bool) string {
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return resolveBundledCliFor(runtime.GOOS, allowDevLayout, exe)
+}
+
+// bundledCliCandidatesFor returns the candidate CLI paths for exe in priority
+// order for goos, skipping parent-relative candidates whose traversal would
+// bottom out at the filesystem root. The four-level repository-root fallback
+// is enabled only when allowDevLayout is true so production bundles never
+// climb into unrelated ancestor directories (~, AppData, or /tmp).
+func bundledCliCandidatesFor(goos string, allowDevLayout bool, exe string) []string {
 	dir := filepath.Dir(exe)
-	candidates := []string{
-		filepath.Join(dir, cliBinaryName),
-		filepath.Join(dir, "cli", cliBinaryName),
-		filepath.Join(dir, "..", "..", "bin", cliBinaryName),
+	bin := cliBinaryNameFor(goos)
+	var candidates []string
+	switch goos {
+	case "darwin":
+		candidates = append(candidates, filepath.Join(dir, bin))
+	case "windows":
+		candidates = append(candidates, filepath.Join(dir, "cli", bin))
+	case "linux":
+		candidates = append(candidates, filepath.Join(dir, bin))
+		if prefix := parentN(dir, 2); prefix != "" {
+			candidates = append(candidates, filepath.Join(prefix, "bin", bin))
+		}
+	default:
+		candidates = append(candidates, filepath.Join(dir, bin))
 	}
-	if root := parentN(exe, 4); root != "" {
-		candidates = append(candidates, filepath.Join(root, cliBinaryName))
+	if allowDevLayout {
+		if root := parentN(exe, 4); root != "" {
+			candidates = append(candidates, filepath.Join(root, bin))
+		}
 	}
-	for _, candidate := range candidates {
-		if isRegularExecutable(candidate) {
+	return candidates
+}
+
+// resolveBundledCli returns the leapmux CLI that ships beside the sidecar on
+// the current host OS in production layout mode, or "".
+func resolveBundledCli(exe string) string {
+	return resolveBundledCliFor(runtime.GOOS, false, exe)
+}
+
+// resolveBundledCliFor returns the leapmux CLI that ships beside the sidecar
+// whose executable is exe for goos, or "". It tries the layouts for that OS in
+// order, and the first executable CLI that exists wins:
+//
+//   - darwin: beside the sidecar (Contents/MacOS/leapmux).
+//   - windows: in the cli subdirectory beside the sidecar (cli\leapmux.exe).
+//   - linux: beside the sidecar (unbundled runs) and ../../bin (/usr/bin/leapmux
+//     from /usr/lib/<product>/). An AppImage ships no CLI, so it resolves to "".
+//   - dev mode (allowDevLayout): four levels up at the repository root
+//     (<repo>/desktop/go/bin/<sidecar> -> <repo>/leapmux).
+func resolveBundledCliFor(goos string, allowDevLayout bool, exe string) string {
+	for _, candidate := range bundledCliCandidatesFor(goos, allowDevLayout, exe) {
+		if isRegularExecutableFor(goos, candidate) {
 			return filepath.Clean(candidate)
 		}
 	}
@@ -77,14 +112,20 @@ func parentN(path string, n int) string {
 	return path
 }
 
-// isRegularExecutable reports whether path is a regular file, after
-// following symlinks, that the system can run: one with an exec bit set, or
+// isRegularExecutable reports whether path is an executable regular file on the
+// host OS.
+func isRegularExecutable(path string) bool {
+	return isRegularExecutableFor(runtime.GOOS, path)
+}
+
+// isRegularExecutableFor reports whether path is a regular file, after
+// following symlinks, that goos can run: one with an exec bit set on Unix, or
 // any regular file on Windows, which has no exec bits. Directories named
 // leapmux and unreadable entries are rejected.
-func isRegularExecutable(path string) bool {
+func isRegularExecutableFor(goos, path string) bool {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return false
 	}
-	return runtime.GOOS == "windows" || info.Mode().Perm()&0o111 != 0
+	return goos == "windows" || info.Mode().Perm()&0o111 != 0
 }

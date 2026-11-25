@@ -377,6 +377,10 @@ type Manager struct {
 	// nothing. Only WaitForNudges (tests) waits, which is safe because a test
 	// nudger returns promptly.
 	nudgeWG sync.WaitGroup
+
+	// onLayoutEvents, when set by an owning Registry, forwards layout-event
+	// wake signals to the registry's per-owner channel. Guarded by m.mu.
+	onLayoutEvents func()
 }
 
 // overflowed reports whether the transport flagged a dropped frame. A nil

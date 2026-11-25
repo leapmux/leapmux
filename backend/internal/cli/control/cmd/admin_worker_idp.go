@@ -365,15 +365,16 @@ func newAdminWorkerRegKeyPurgeExpired() *cobra.Command {
 }
 
 type adminOAuthProviderRow struct {
-	ID         string `json:"id" table:"ID,short"`
-	Type       string `json:"type" table:"TYPE"`
-	Name       string `json:"name" table:"NAME"`
-	IssuerURL  string `json:"issuer_url"`
-	ClientID   string `json:"client_id" table:"CLIENT ID"`
-	Scopes     string `json:"scopes"`
-	TrustEmail bool   `json:"trust_email"`
-	Enabled    bool   `json:"enabled" table:"ENABLED"`
-	CreatedAt  string `json:"created_at,omitempty"`
+	ID           string `json:"id" table:"ID,short"`
+	Type         string `json:"type" table:"TYPE"`
+	Name         string `json:"name" table:"NAME"`
+	IssuerURL    string `json:"issuer_url"`
+	ClientID     string `json:"client_id" table:"CLIENT ID"`
+	Scopes       string `json:"scopes"`
+	TrustEmail   bool   `json:"trust_email"`
+	ResponseMode string `json:"response_mode,omitempty"`
+	Enabled      bool   `json:"enabled" table:"ENABLED"`
+	CreatedAt    string `json:"created_at,omitempty"`
 }
 
 func (r adminOAuthProviderRow) QuietLines() []string { return []string{r.ID} }
@@ -392,20 +393,21 @@ func (r adminOAuthProviderListResult) QuietLines() []string {
 
 func adminOAuthProviderRowOf(p *leapmuxv1.AdminOAuthProvider) adminOAuthProviderRow {
 	return adminOAuthProviderRow{
-		ID:         p.GetId(),
-		Type:       p.GetProviderType(),
-		Name:       p.GetName(),
-		IssuerURL:  p.GetIssuerUrl(),
-		ClientID:   p.GetClientId(),
-		Scopes:     p.GetScopes(),
-		TrustEmail: p.GetTrustEmail(),
-		Enabled:    p.GetEnabled(),
-		CreatedAt:  formatTime(p.GetCreatedAt()),
+		ID:           p.GetId(),
+		Type:         p.GetProviderType(),
+		Name:         p.GetName(),
+		IssuerURL:    p.GetIssuerUrl(),
+		ClientID:     p.GetClientId(),
+		Scopes:       p.GetScopes(),
+		TrustEmail:   p.GetTrustEmail(),
+		ResponseMode: p.GetResponseMode(),
+		Enabled:      p.GetEnabled(),
+		CreatedAt:    formatTime(p.GetCreatedAt()),
 	}
 }
 
 func newAdminOAuthProviderAdd() *cobra.Command {
-	var providerType, name, clientID, clientSecret, issuerURL, scopes, trustEmail string
+	var providerType, name, clientID, clientSecret, issuerURL, scopes, trustEmail, responseMode string
 	return cli.NewLeaf(cli.Leaf{
 		Use:     "add",
 		Short:   "Add an OAuth or OIDC sign-in provider",
@@ -424,11 +426,23 @@ func newAdminOAuthProviderAdd() *cobra.Command {
 			fs.StringVar(&scopes, "scopes", "", "space-separated scopes")
 			fs.StringVar(&trustEmail, "trust-email", "", "trust verified provider emails (required for generic OIDC)")
 			cli.SetEnum(fs, "trust-email", "true", "false")
+			fs.StringVar(&responseMode, "response-mode", "", "OAuth callback response mode (defaults to form_post for apple, query otherwise)")
+			cli.SetEnum(fs, "response-mode", "query", "form_post")
+			for _, f := range []string{"type", "name", "issuer-url"} {
+				cli.SetFlagGroup(fs, f, "Provider")
+			}
+			for _, f := range []string{"client-id", "client-secret"} {
+				cli.SetFlagGroup(fs, f, "Credentials")
+			}
+			for _, f := range []string{"scopes", "trust-email", "response-mode"} {
+				cli.SetFlagGroup(fs, f, "Behavior")
+			}
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
 			req := &leapmuxv1.AddOAuthProviderRequest{
 				ProviderType: providerType, Name: name, ClientId: clientID,
 				ClientSecret: clientSecret, IssuerUrl: issuerURL, Scopes: scopes,
+				ResponseMode: responseMode,
 			}
 			if trustEmail != "" {
 				b, err := parseBoolFlag(trustEmail, "trust-email")

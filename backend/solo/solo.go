@@ -11,8 +11,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -749,10 +747,7 @@ func (i *Instance) failStartup(cause error) error {
 // `--max-connections-per-user` stopped parsing while solo's own test asserted it
 // was exposed.
 func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
-	modeName := "solo"
-	if cfg.DevMode {
-		modeName = "dev"
-	}
+	modeName := string(soloRole(cfg.DevMode))
 
 	defaultListen := cfg.Listen
 	if defaultListen == "" {
@@ -1282,15 +1277,15 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			DBCacheSize:  p.hubCfg.Storage.SQLite.CacheSize,
 			DBMmapSize:   p.hubCfg.Storage.SQLite.MmapSize,
 			// 0 (the default) lets the worker apply contracts.DefaultMaxIncompleteChunked.
-			MaxIncompleteChunked: parseInt(p.hubCfg.Extras["max_incomplete_chunked"], 0),
+			MaxIncompleteChunked: p.hubCfg.ExtraInt("max_incomplete_chunked", 0),
 			MaxMessageSize:       int(settings.KeyMaxMessageSizeBytes.Of(snap)),
 			AgentStartupTimeout:  workerTimeouts.Of(snap).AgentStartupTimeout(),
 			APITimeout:           workerTimeouts.Of(snap).APITimeout(),
 			// 0 (the default) lets the worker resolve the concurrency from this
 			// machine's core count.
-			AgentStartupConcurrency: parseInt(p.hubCfg.Extras["agent_startup_concurrency"], 0),
-			EncryptionMode:          workerconfig.ParseEncryptionMode(p.hubCfg.Extras["encryption_mode"]),
-			UseLoginShell:           parseBool(p.hubCfg.Extras["use_login_shell"], true),
+			AgentStartupConcurrency: p.hubCfg.ExtraInt("agent_startup_concurrency", 0),
+			EncryptionMode:          workerconfig.ParseEncryptionMode(p.hubCfg.ExtraString("encryption_mode", "")),
+			UseLoginShell:           p.hubCfg.ExtraBool("use_login_shell", true),
 			ControlCLI:              p.controlCLI,
 			RegisteredBy:            state.RegisteredBy,
 		})
@@ -1684,30 +1679,6 @@ func defaultCLIFlags() []string {
 		"listen", "data-dir", "dev-frontend",
 		"storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size",
 		"log-level",
-	}
-}
-
-// parseInt parses a string as an int, returning defaultVal if the string is
-// empty or not a valid integer. It is the int counterpart of parseBool, used to
-// read the string-typed Extras map that carries solo's worker-scoped flags.
-func parseInt(s string, defaultVal int) int {
-	n, err := strconv.Atoi(strings.TrimSpace(s))
-	if err != nil {
-		return defaultVal
-	}
-	return n
-}
-
-// parseBool parses a string as a boolean, returning defaultVal if the string
-// is empty or not recognized.
-func parseBool(s string, defaultVal bool) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "true", "1", "yes":
-		return true
-	case "false", "0", "no":
-		return false
-	default:
-		return defaultVal
 	}
 }
 

@@ -127,6 +127,20 @@ func TestFlagProvider(t *testing.T) {
 
 		assert.Equal(t, map[string]interface{}{"log_level": "debug"}, m)
 	})
+
+	t.Run("forwards standard pflag SliceValue flags as slices", func(t *testing.T) {
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		fs.StringArray("listen", nil, "listen addresses")
+
+		require.NoError(t, fs.Parse([]string{"--listen", ":8080", "--listen", "unix:/tmp/a,b.sock"}))
+
+		m, err := NewFlagProvider(fs, map[string]string{"listen": "listen"}).Read()
+		require.NoError(t, err)
+
+		assert.Equal(t, map[string]interface{}{
+			"listen": []string{":8080", "unix:/tmp/a,b.sock"},
+		}, m)
+	})
 }
 
 func TestExpandHome(t *testing.T) {
@@ -242,6 +256,9 @@ func TestHiddenFunc(t *testing.T) {
 		fs := newFlags(&received)
 		require.NoError(t, fs.Parse([]string{"--secret", "one", "--secret=two"}))
 		assert.Equal(t, []string{"one", "two"}, received)
+		got, err := fs.GetString("secret")
+		require.NoError(t, err)
+		assert.Equal(t, "two", got, "GetString reflects the last accepted value")
 	})
 
 	t.Run("an error from the function fails the parse", func(t *testing.T) {
@@ -265,5 +282,29 @@ func TestHiddenFunc(t *testing.T) {
 		var received []string
 		fs := newFlags(&received)
 		assert.Equal(t, "string", fs.Lookup("secret").Value.Type(), "the help and the completion read the type")
+	})
+}
+
+func TestParseFlags(t *testing.T) {
+	t.Run("parses flags and returns FlagSet", func(t *testing.T) {
+		var host string
+		fs, err := ParseFlags("probe", []string{"--host", "127.0.0.1"}, func(fs *pflag.FlagSet) error {
+			fs.StringVar(&host, "host", "", "listen host")
+			return nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "127.0.0.1", host)
+		assert.True(t, fs.Changed("host"))
+	})
+
+	t.Run("rejects unexpected positional arguments", func(t *testing.T) {
+		_, err := ParseFlags("probe", []string{"extra"}, func(*pflag.FlagSet) error { return nil })
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unexpected argument "extra"`)
+	})
+
+	t.Run("propagates registration errors", func(t *testing.T) {
+		_, err := ParseFlags("probe", nil, func(*pflag.FlagSet) error { return assert.AnError })
+		require.ErrorIs(t, err, assert.AnError)
 	})
 }

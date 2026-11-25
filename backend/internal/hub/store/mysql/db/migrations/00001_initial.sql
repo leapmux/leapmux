@@ -368,7 +368,9 @@ CREATE INDEX idx_user_op_batches_physical_ms ON user_op_batches(physical_ms);
 CREATE TABLE layout_event_heads (
     user_id VARCHAR(255) PRIMARY KEY,
     journal_id VARCHAR(255) NOT NULL CHECK (journal_id <> ''),
-    cursor_key VARBINARY(32) NOT NULL CHECK (octet_length(cursor_key) = 32),
+    -- Encrypted 32-byte HMAC cursor key carries 44 bytes of XChaCha20-Poly1305
+    -- envelope overhead (4-byte version + 24-byte nonce + 16-byte tag) = 76 bytes.
+    cursor_key VARBINARY(76) NOT NULL CHECK (octet_length(cursor_key) = 76),
     high_sequence BIGINT NOT NULL DEFAULT 0 CHECK (high_sequence >= 0),
     floor_sequence BIGINT NOT NULL DEFAULT 0,
     CHECK (floor_sequence >= 0 AND floor_sequence <= high_sequence),
@@ -379,7 +381,9 @@ CREATE TABLE layout_event_entries (
     user_id VARCHAR(255) NOT NULL,
     sequence BIGINT NOT NULL CHECK (sequence > 0),
     observed_unix_millis BIGINT NOT NULL,
-    fact LONGBLOB NOT NULL CHECK (octet_length(fact) > 0),
+    -- Encrypted serialized LayoutEventFact carries 44 bytes of envelope overhead,
+    -- so > 44 rejects an empty plaintext payload.
+    fact LONGBLOB NOT NULL CHECK (octet_length(fact) > 44),
     PRIMARY KEY (user_id, sequence),
     FOREIGN KEY (user_id) REFERENCES layout_event_heads(user_id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
@@ -473,7 +477,7 @@ CREATE TABLE lifecycle_outbox (
     consumed_at DATETIME(6),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, id);
+CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, consumed_at, id);
 
 CREATE TABLE revocation_events (
     id         VARCHAR(255) PRIMARY KEY,
@@ -705,6 +709,7 @@ CREATE TABLE oauth_providers (
     client_secret   BLOB NOT NULL,
     scopes          BLOB NOT NULL,
     trust_email     BOOLEAN NOT NULL DEFAULT TRUE,
+    response_mode   SMALLINT NOT NULL DEFAULT 1 CHECK (response_mode BETWEEN 1 AND 2),
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
 ) COLLATE=utf8mb4_bin;

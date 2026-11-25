@@ -1,8 +1,6 @@
 package config
 
 import (
-	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,9 +10,8 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/clitest"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
-	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -479,14 +476,5 @@ func TestResolveStartupConcurrency(t *testing.T) {
 // registers, as the help of a Worker command prints them.
 func flagsHelp(t *testing.T, opts LoadOptions) string {
 	t.Helper()
-	leaf := cli.NewLeaf(cli.Leaf{
-		Use:   "probe",
-		Short: "Probe the flags",
-		Flags: func(fs *pflag.FlagSet) { NewFlags(opts).Register(fs) },
-		Run:   func(*cli.Invocation) (any, error) { return nil, nil },
-	})
-	var stdout, stderr bytes.Buffer
-	code := cli.Execute(context.Background(), leaf, []string{"--help"}, strings.NewReader(""), &stdout, &stderr)
-	require.Equal(t, cli.ExitOK, code, stderr.String())
-	return stdout.String()
+	return clitest.FlagsHelp(t, NewFlags(opts).Register)
 }

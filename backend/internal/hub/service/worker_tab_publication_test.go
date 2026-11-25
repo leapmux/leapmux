@@ -68,7 +68,7 @@ func publicationRegistry(t *testing.T, st store.Store) *crdt.Registry {
 			return nil, err
 		}
 		return manager, nil
-	}, nil, crdt.WithManagerIdleTTL(0))
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
 	t.Cleanup(func() { registry.Shutdown(30 * time.Second) })
 	return registry
 }

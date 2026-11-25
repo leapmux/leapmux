@@ -57,8 +57,11 @@ type TabKey struct {
 	TabID  string
 }
 
-// DiffProjectionForBatch is the commit hot-path entry point: it
-// returns the same IndexDiff DiffProjection would, but skips the
+// An empty row identifies an absent placement.
+type tabPlacementObserver func(before, after TabIndexRow)
+
+// diffProjectionForBatch is the commit hot-path entry point: it
+// returns the same IndexDiff diffProjection would, but skips the
 // per-tab chain walks for tabs the batch cannot possibly transition.
 //
 // The op classification mirrors the validator's tabPlacementCheck
@@ -74,13 +77,6 @@ type TabKey struct {
 // full Project + Diff path because the affected subtree can span any
 // number of pre-existing tabs and tight scoping would re-create most
 // of the per-batch cost we're trying to avoid.
-func DiffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) IndexDiff {
-	return diffProjectionForBatch(prev, next, batch, nil)
-}
-
-// An empty row identifies an absent placement.
-type tabPlacementObserver func(before, after TabIndexRow)
-
 func diffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp, observe tabPlacementObserver) IndexDiff {
 	if batchHasStructuralOp(batch) {
 		return diffProjection(Project(prev), Project(next), observe)
@@ -153,13 +149,9 @@ func indexRow(owned *OwnedTab, rendered bool) TabIndexRow {
 	}
 }
 
-// DiffProjection returns the write plan to take the index from `prev`
+// diffProjection returns the write plan to take the index from `prev`
 // to `next`. The diff is computed from the projection (not the raw
 // state), so projection-repair drops are reflected in the Rendered flag.
-func DiffProjection(prev, next *Projection) IndexDiff {
-	return diffProjection(prev, next, nil)
-}
-
 func diffProjection(prev, next *Projection, observe tabPlacementObserver) IndexDiff {
 	prevRows := indexRowsOf(prev)
 	nextRows := indexRowsOf(next)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -276,14 +275,12 @@ func Load(args []string) (*Config, error) {
 // after the parse.
 func LoadWithOptions(args []string, opts LoadOptions) (*Config, error) {
 	flags := NewFlags(opts)
-	fs := pflag.NewFlagSet("leapmux worker", pflag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	flags.Register(fs)
-	if err := fs.Parse(args); err != nil {
+	fs, err := internalconfig.ParseFlags("leapmux worker", args, func(fs *pflag.FlagSet) error {
+		flags.Register(fs)
+		return nil
+	})
+	if err != nil {
 		return nil, err
-	}
-	if fs.NArg() > 0 {
-		return nil, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	return flags.Load(fs)
 }

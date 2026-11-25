@@ -63,7 +63,13 @@ func (p *GitHubProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions
 	return p.oauth2Config.AuthCodeURL(state, options...)
 }
 
-func (p *GitHubProvider) Exchange(ctx context.Context, code, codeVerifier string) (*UserClaims, error) {
+// UsesFormPost reports false because GitHub OAuth callbacks arrive via GET
+// query parameters.
+func (p *GitHubProvider) UsesFormPost() bool {
+	return false
+}
+
+func (p *GitHubProvider) Exchange(ctx context.Context, code, codeVerifier string, _ ExchangeOptions) (*UserClaims, error) {
 	token, err := p.oauth2Config.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
 		return nil, fmt.Errorf("github exchange: %w", err)

@@ -216,8 +216,22 @@ func add(a, b time.Duration) (time.Duration, error) {
 // Duration accepts neither the bare seconds count nor the d and w units, so a
 // flag registered with it would refuse a value that the same key takes in the
 // config file.
+//
+// pflag.FlagSet.GetDuration is impossible on a DurationFlag: pflag checks
+// Type() == "duration" and then re-parses String() with stdlib
+// time.ParseDuration, which rejects the "d" unit that FormatDuration emits for
+// multiples of 24h. Read the bound target variable, call Get(), or use
+// cli.Invocation.Duration instead.
 type DurationFlag struct {
 	target *time.Duration
+}
+
+// Get returns the parsed duration directly without re-parsing String().
+func (f *DurationFlag) Get() time.Duration {
+	if f == nil || f.target == nil {
+		return 0
+	}
+	return *f.target
 }
 
 // NewDurationFlag returns a pflag.Value that writes into target, and sets
@@ -246,7 +260,7 @@ func (f *DurationFlag) Set(s string) error {
 	return nil
 }
 
-// Type names the value in help: a duration takes the same spellings as the
+// Type identifies the value in help: a duration takes the same spellings as the
 // config file, which the flag's usage states.
 func (f *DurationFlag) Type() string { return "duration" }
 

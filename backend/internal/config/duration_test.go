@@ -236,8 +236,18 @@ func TestDurationFlag(t *testing.T) {
 
 	// The help prints the type beside the flag's name, and the completion
 	// reads it.
-	t.Run("Type names a duration", func(t *testing.T) {
+	t.Run("Type identifies a duration", func(t *testing.T) {
 		assert.Equal(t, "duration", (&DurationFlag{}).Type())
+	})
+
+	t.Run("Get returns the parsed duration directly", func(t *testing.T) {
+		var d time.Duration
+		f := NewDurationFlag(&d, 7*24*time.Hour)
+		assert.Equal(t, 7*24*time.Hour, f.Get())
+		require.NoError(t, f.Set("2d"))
+		assert.Equal(t, 48*time.Hour, f.Get())
+		assert.Zero(t, (&DurationFlag{}).Get())
+		assert.Zero(t, (*DurationFlag)(nil).Get())
 	})
 }
 

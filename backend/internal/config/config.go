@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -13,23 +14,52 @@ import (
 	"github.com/leapmux/leapmux/util/pathutil"
 )
 
+// ParseFlags creates a quiet pflag.FlagSet named name, runs register on it,
+// parses args, and rejects unexpected positional arguments.
+func ParseFlags(name string, args []string, register func(*pflag.FlagSet) error) (*pflag.FlagSet, error) {
+	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.SortFlags = false
+	if err := register(fs); err != nil {
+		return nil, err
+	}
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	if fs.NArg() > 0 {
+		return nil, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	return fs, nil
+}
+
 // HiddenFunc defines a string flag that help output omits; fn receives each
 // value. A hidden flag serves a caller other than a person: the service
 // definition that LeapMux writes passes one, and a command can accept a flag
 // that belongs to another command only to state that command in its error.
 func HiddenFunc(fs *pflag.FlagSet, name, usage string, fn func(string) error) {
-	fs.Var(funcValue(fn), name, usage)
+	fs.Var(&funcValue{fn: fn}, name, usage)
 	if err := fs.MarkHidden(name); err != nil {
 		panic(fmt.Sprintf("config: hide flag %q: %v", name, err))
 	}
 }
 
-// funcValue adapts a function to pflag.Value, as flag.Func does internally.
-type funcValue func(string) error
+// funcValue adapts a function to pflag.Value, as flag.Func does internally,
+// and retains the last accepted argument so String() and fs.GetString reflect
+// what the command line passed.
+type funcValue struct {
+	fn  func(string) error
+	val string
+}
 
-func (f funcValue) Set(s string) error { return f(s) }
-func (f funcValue) String() string     { return "" }
-func (f funcValue) Type() string       { return "string" }
+func (f *funcValue) Set(s string) error {
+	if err := f.fn(s); err != nil {
+		return err
+	}
+	f.val = s
+	return nil
+}
+func (f *funcValue) String() string { return f.val }
+func (f *funcValue) Type() string   { return "string" }
 
 // Delim is the koanf path separator. Every koanf instance in this repo takes
 // it, and FlagProvider splits a nested key on it, so the two cannot disagree.
@@ -75,6 +105,10 @@ func (f *FlagProvider) Read() (map[string]interface{}, error) {
 	f.fs.Visit(func(fl *pflag.Flag) {
 		key, ok := f.fieldMap[fl.Name]
 		if !ok {
+			return
+		}
+		if sv, isSlice := fl.Value.(pflag.SliceValue); isSlice {
+			out[key] = sv.GetSlice()
 			return
 		}
 		if lv, isList := fl.Value.(listValuer); isList {

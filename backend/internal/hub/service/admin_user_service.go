@@ -294,7 +294,7 @@ func (s *AdminUserService) GetUser(ctx context.Context, req *leapmuxv1.GetUserRe
 // scope that completed browser step-up elevation) and commits under
 // commitUnderElevation.
 func (s *AdminUserService) CreateUser(ctx context.Context, req *leapmuxv1.CreateUserRequest) (*leapmuxv1.CreateUserResponse, error) {
-	actor, err := requireElevatedActor(ctx, s.now())
+	actor, err := requireElevatedSessionOrControlCLI(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -450,7 +450,13 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.Update
 	if !updateDisplayName && !updateEmail && !updateEmailVerified && !clearPending {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "no fields to update")
 	}
-	actor, err := requireElevatedActor(ctx, s.now())
+	var actor *auth.UserInfo
+	var err error
+	if updateEmail || updateEmailVerified {
+		actor, err = requireElevatedSessionOrControlCLI(ctx, s.now())
+	} else {
+		actor, err = requireElevatedActor(ctx, s.now())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -566,11 +572,11 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.Update
 // identity, and destruction is one: this verb soft-deletes the account, every
 // workspace it owns and every worker it registered, revokes every credential
 // it holds, and clears its passkeys -- with force, on another administrator.
-// requireElevatedActor rather than the stricter session rule, because
-// deletion creates no NEW way into an account and `leapmux control admin user
-// delete` is a documented headless verb; the admin scope that admits a
-// credential here was itself granted at a browser consent that demanded a
-// proven factor.
+// requireElevatedActor admits either an elevated browser session or an
+// elevated API token, because `leapmux control admin user delete` is a
+// documented CLI verb and deletion creates no new way into an account. Both
+// credential types require a live step-up elevation window proven by an
+// interactive factor.
 func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.DeleteUserRequest) (*leapmuxv1.DeleteUserResponse, error) {
 	actor, err := requireElevatedActor(ctx, s.now())
 	if err != nil {
@@ -707,7 +713,7 @@ func liveWorkerIDs(ctx context.Context, st store.Store, owner userid.UserID) ([]
 // credential (browser session or elevated CLI credential with admin:users
 // scope) and commits under commitUnderElevation.
 func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetUserAdminRequest) (*leapmuxv1.SetUserAdminResponse, error) {
-	actor, err := requireElevatedActor(ctx, s.now())
+	actor, err := requireElevatedSessionOrControlCLI(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -777,7 +783,7 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetU
 // administrator credential (browser session or elevated CLI credential with
 // admin:users scope) and commits under commitUnderElevation.
 func (s *AdminUserService) ResetPassword(ctx context.Context, req *leapmuxv1.ResetPasswordRequest) (*leapmuxv1.ResetPasswordResponse, error) {
-	actor, err := requireElevatedActor(ctx, s.now())
+	actor, err := requireElevatedSessionOrControlCLI(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}

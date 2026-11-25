@@ -317,7 +317,9 @@ CREATE INDEX idx_user_op_batches_physical_ms ON user_op_batches(physical_ms);
 CREATE TABLE layout_event_heads (
     user_id TEXT COLLATE "C" PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     journal_id TEXT COLLATE "C" NOT NULL CHECK (journal_id <> ''),
-    cursor_key BYTEA NOT NULL CHECK (octet_length(cursor_key) = 32),
+    -- Encrypted 32-byte HMAC cursor key carries 44 bytes of XChaCha20-Poly1305
+    -- envelope overhead (4-byte version + 24-byte nonce + 16-byte tag) = 76 bytes.
+    cursor_key BYTEA NOT NULL CHECK (octet_length(cursor_key) = 76),
     high_sequence BIGINT NOT NULL DEFAULT 0 CHECK (high_sequence >= 0),
     floor_sequence BIGINT NOT NULL DEFAULT 0 CHECK (floor_sequence >= 0 AND floor_sequence <= high_sequence)
 );
@@ -326,7 +328,9 @@ CREATE TABLE layout_event_entries (
     user_id TEXT COLLATE "C" NOT NULL REFERENCES layout_event_heads(user_id) ON DELETE CASCADE,
     sequence BIGINT NOT NULL CHECK (sequence > 0),
     observed_unix_millis BIGINT NOT NULL,
-    fact BYTEA NOT NULL CHECK (octet_length(fact) > 0),
+    -- Encrypted serialized LayoutEventFact carries 44 bytes of envelope overhead,
+    -- so > 44 rejects an empty plaintext payload.
+    fact BYTEA NOT NULL CHECK (octet_length(fact) > 44),
     PRIMARY KEY (user_id, sequence)
 );
 
@@ -636,6 +640,7 @@ CREATE TABLE oauth_providers (
     client_secret   BYTEA NOT NULL,
     scopes          BYTEA NOT NULL,
     trust_email     BOOLEAN NOT NULL DEFAULT TRUE,
+    response_mode   SMALLINT NOT NULL DEFAULT 1 CHECK (response_mode BETWEEN 1 AND 2),
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

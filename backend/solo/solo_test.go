@@ -18,11 +18,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/hub"
+	"github.com/leapmux/leapmux/internal/cli"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -310,73 +312,75 @@ func TestDefaultCLIFlagsCarryTheBindBootstrapFlags(t *testing.T) {
 func TestDefaultExtraFlagsCarryWorkerScopedKnobs(t *testing.T) {
 	t.Parallel()
 
-	byName := map[string]hubconfig.ExtraFlagDef{}
-	for _, ef := range defaultExtraFlags() {
-		byName[ef.Name()] = ef
-	}
+	fs := pflag.NewFlagSet("solo", pflag.ContinueOnError)
+	Flags(Config{}).Register(fs)
 	for _, name := range []string{"encryption-mode", "use-login-shell", "max-incomplete-chunked", "agent-startup-concurrency"} {
-		require.Contains(t, byName, name, "solo must expose the worker-scoped %q flag", name)
+		require.NotNil(t, fs.Lookup(name), "solo must expose the worker-scoped %q flag", name)
 	}
 
 	// agent-startup-concurrency is worker-scoped for the same reason
 	// max-incomplete-chunked is: it caps the EMBEDDED worker's boot-time resume
 	// sweep, and the hub has no such pool. Solo is therefore the only place the
 	// desktop app can tune it.
-	startupConcurrency := byName["agent-startup-concurrency"]
-	assert.Equal(t, "agent_startup_concurrency", startupConcurrency.KoanfKey(),
-		"the koanf key is what bringUpLocalWorker reads out of Extras")
-	assert.Equal(t, 0, startupConcurrency.Default(),
+	startupConcurrency := fs.Lookup("agent-startup-concurrency")
+	assert.Equal(t, "int", startupConcurrency.Value.Type())
+	assert.Equal(t, "0", startupConcurrency.DefValue,
 		"0 must be the default so the worker resolves the concurrency from this machine's core count")
-	assert.Equal(t, "Timeout and limit options", startupConcurrency.Category(),
+	assert.Equal(t, "Timeout and limit options", cli.FlagGroupOf(startupConcurrency),
 		"it is a limit, not a server option -- the help output groups it accordingly")
-	assert.Contains(t, startupConcurrency.Usage(), strconv.Itoa(workerconfig.DefaultMaxStartupConcurrency),
+	assert.Contains(t, startupConcurrency.Usage, strconv.Itoa(workerconfig.DefaultMaxStartupConcurrency),
 		"the usage string must derive the default from the constant; a hand-written number makes -help lie the day it changes")
 
-	chunked := byName["max-incomplete-chunked"]
-	assert.Equal(t, "max_incomplete_chunked", chunked.KoanfKey(),
-		"the koanf key is what bringUpLocalWorker reads out of Extras")
-	assert.Equal(t, 0, chunked.Default(),
+	chunked := fs.Lookup("max-incomplete-chunked")
+	assert.Equal(t, "int", chunked.Value.Type())
+	assert.Equal(t, "0", chunked.DefValue,
 		"0 must be the default so the worker applies contracts.DefaultMaxIncompleteChunked")
-	assert.Contains(t, chunked.Usage(), "(0 = "+strconv.Itoa(contracts.DefaultMaxIncompleteChunked)+")",
+	assert.Contains(t, chunked.Usage, "(0 = "+strconv.Itoa(contracts.DefaultMaxIncompleteChunked)+")",
 		"the usage string must derive the cap from the contract")
-	assert.Equal(t, "Timeout and limit options", chunked.Category(),
+	assert.Equal(t, "Timeout and limit options", cli.FlagGroupOf(chunked),
 		"it is a limit, not a server option -- the help output groups it accordingly")
 
 	// use-login-shell is a bool, as the same flag of `leapmux worker` is, so
 	// the bare flag works in both modes.
-	assert.Equal(t, true, byName["use-login-shell"].Default())
+	loginShell := fs.Lookup("use-login-shell")
+	assert.Equal(t, "bool", loginShell.Value.Type())
+	assert.Equal(t, "true", loginShell.DefValue)
 
-	_, hasMaxMessageSizeExtra := byName["max-message-size"]
-	assert.False(t, hasMaxMessageSizeExtra,
+	opts, _ := soloLoadOptions(Config{})
+	opts.DefaultConfigFile = filepath.Join(t.TempDir(), "nonexistent.yaml")
+	cfg, err := hubconfig.LoadWithOptions([]string{
+		"--agent-startup-concurrency", "7",
+		"--max-incomplete-chunked", "9",
+	}, opts)
+	require.NoError(t, err)
+	assert.Equal(t, 7, cfg.ExtraInt("agent_startup_concurrency", 0),
+		"the koanf key is what bringUpLocalWorker reads out of Extras")
+	assert.Equal(t, 9, cfg.ExtraInt("max_incomplete_chunked", 0),
+		"the koanf key is what bringUpLocalWorker reads out of Extras")
+	assert.NotContains(t, cfg.Extras, "max_message_size",
 		"max-message-size is a first-class hub flag forwarded into worker.RunConfig, not an Extra")
 }
 
-// TestParseIntReadsTheStringTypedExtras covers the Extras -> RunConfig hop. Extras
-// is string-typed (koanf reads every extra with k.String), so a malformed or absent
-// value must degrade to the default rather than silently becoming 0-and-meaningful.
-func TestParseIntReadsTheStringTypedExtras(t *testing.T) {
+// TestTypedExtrasReadThroughDefaults covers the Extras -> RunConfig hop with
+// typed extra accessors and default fallbacks when a key is absent.
+func TestTypedExtrasReadThroughDefaults(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name       string
-		in         string
-		defaultVal int
-		want       int
-	}{
-		{"a set value", "8", 0, 8},
-		{"surrounding whitespace", "  8  ", 0, 8},
-		{"the unset default", "0", 0, 0},
-		{"absent key", "", 0, 0},
-		{"absent key with a non-zero default", "", 4, 4},
-		{"garbage falls back", "lots", 4, 4},
-		{"a float is not an int", "8.5", 4, 4},
-		{"negative parses (the worker clamps <=0 to its default)", "-1", 0, -1},
+	cfg := &hubconfig.Config{
+		Extras: map[string]any{
+			"max_incomplete_chunked":    8,
+			"agent_startup_concurrency": -1,
+			"encryption_mode":           "post-quantum",
+			"use_login_shell":           false,
+		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, parseInt(tt.in, tt.defaultVal))
-		})
-	}
+	assert.Equal(t, 8, cfg.ExtraInt("max_incomplete_chunked", 4))
+	assert.Equal(t, -1, cfg.ExtraInt("agent_startup_concurrency", 0))
+	assert.Equal(t, 4, cfg.ExtraInt("missing_int", 4))
+	assert.Equal(t, "post-quantum", cfg.ExtraString("encryption_mode", ""))
+	assert.Equal(t, "fallback", cfg.ExtraString("missing_str", "fallback"))
+	assert.False(t, cfg.ExtraBool("use_login_shell", true))
+	assert.True(t, cfg.ExtraBool("missing_bool", true))
 }
 
 // soloTestTimeout bounds every wait in this file that could otherwise hang: the

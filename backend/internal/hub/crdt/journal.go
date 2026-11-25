@@ -231,7 +231,13 @@ type LifecycleOutboxRow struct {
 // LifecycleOutboxReader is the manager's view onto the outbox table.
 type LifecycleOutboxReader interface {
 	ListPendingLifecycleOutbox(ctx context.Context, userID string) ([]LifecycleOutboxRow, error)
-	MarkLifecycleOutboxConsumed(ctx context.Context, row LifecycleOutboxRow, consumedAt time.Time, fact *leapmuxv1.LayoutEventFact) error
+	// MarkLifecycleOutboxConsumed acknowledges a row whose layout event fact
+	// was already written (for example, inside CommitBatch).
+	MarkLifecycleOutboxConsumed(ctx context.Context, rowID int64, consumedAt time.Time) error
+	// ConsumeLifecycleOutboxWithLayoutFact claims the row's layout fact, appends
+	// fact to the owner's layout log, and marks the row consumed atomically.
+	// fact must be non-nil.
+	ConsumeLifecycleOutboxWithLayoutFact(ctx context.Context, row LifecycleOutboxRow, consumedAt time.Time, fact *leapmuxv1.LayoutEventFact) error
 }
 
 // PublicationReceipt retains the result for one immutable Worker creation.

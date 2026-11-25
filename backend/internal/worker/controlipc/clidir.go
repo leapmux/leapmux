@@ -220,17 +220,17 @@ func linkExecutable(target, link string, methods []linkMethod) (string, error) {
 }
 
 // copyExecutable copies target to link, which must not exist yet. The copy is
-// executable by this account only, and a failure removes it. execfile.Write
-// keeps every fork of this process out while the copy is open for writing,
-// so no child inherits the descriptor and no later exec of the copy fails
-// with "text file busy".
+// executable by this account only, and a failure removes it.
+// execfile.CreateExclusive keeps every fork of this process out while the copy
+// is open for writing, so no child inherits the descriptor and no later exec
+// of the copy fails with "text file busy".
 func copyExecutable(target, link string) error {
 	source, err := os.Open(target)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = source.Close() }()
-	return execfile.Write(link, 0o700, true, func(w io.Writer) error {
+	return execfile.CreateExclusive(link, 0o700, func(w io.Writer) error {
 		_, err := io.Copy(w, source)
 		return err
 	})

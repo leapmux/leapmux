@@ -109,11 +109,19 @@ func DecodeLifecyclePayload(data []byte) (LifecyclePayload, []*leapmuxv1.CrdtOp,
 // caller logs the fault; a transient fault clears on the next drain and the
 // deferred rows apply then, in order.
 func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxReader) error {
+	_, _, err := m.submitLifecyclePage(ctx, reader)
+	return err
+}
+
+func (m *Manager) submitLifecyclePage(ctx context.Context, reader LifecycleOutboxReader) (int64, int, error) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	rows, err := reader.ListPendingLifecycleOutbox(ctx, m.owner.String())
 	if err != nil {
-		return fmt.Errorf("list outbox: %w", err)
+		return 0, 0, fmt.Errorf("list outbox: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, 0, nil
 	}
 	blocked := map[string]bool{}
 	var firstErr error
@@ -145,7 +153,7 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 			loss := &leapmuxv1.LayoutEventFact{Event: &leapmuxv1.LayoutEventFact_Loss{
 				Loss: &leapmuxv1.LayoutEventLoss{},
 			}}
-			if cerr := reader.MarkLifecycleOutboxConsumed(ctx, row, m.now(), loss); cerr != nil {
+			if cerr := reader.ConsumeLifecycleOutboxWithLayoutFact(ctx, row, m.now(), loss); cerr != nil {
 				// Consumption failing is a transient store fault: leave the row
 				// for the next drain to discard.
 				m.logger.Error("consume undecodable lifecycle row", "id", row.ID, "err", cerr)
@@ -188,7 +196,7 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 		// pinned once the fault clears.
 		delete(m.applyFailedLogged, row.ID)
 	}
-	return firstErr
+	return rows[0].ID, len(rows), firstErr
 }
 
 // logRowFaultOnce logs a lifecycle-outbox row fault at Error on the FIRST sighting
@@ -335,7 +343,7 @@ func (m *Manager) finishLifecycleCreate(ctx context.Context, row LifecycleOutbox
 	// Broadcast before acknowledging the row so a retry can notify subscribers
 	// if consumption fails.
 	m.broadcastWorkspaceCreatedEvent(p.WorkspaceID, p.Title, p.RootNodeID)
-	return reader.MarkLifecycleOutboxConsumed(ctx, row, m.now(), nil)
+	return reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now())
 }
 
 func (m *Manager) applyLifecycleRename(ctx context.Context, row LifecycleOutboxRow, p LifecyclePayload, reader LifecycleOutboxReader) error {
@@ -349,7 +357,7 @@ func (m *Manager) applyLifecycleRename(ctx context.Context, row LifecycleOutboxR
 	// subscribers, and no seed batch re-validates), so broadcasting first costs
 	// nothing on the retry path the order exists to make reachable.
 	m.BroadcastWorkspaceRenamed(p.WorkspaceID, p.NewTitle)
-	if err := reader.MarkLifecycleOutboxConsumed(ctx, row, m.now(), workspaceLayoutFact(p.WorkspaceID, p.NewTitle, LifecycleOpRename)); err != nil {
+	if err := reader.ConsumeLifecycleOutboxWithLayoutFact(ctx, row, m.now(), workspaceLayoutFact(p.WorkspaceID, p.NewTitle, LifecycleOpRename)); err != nil {
 		return err
 	}
 	m.signalLayoutEvents()
@@ -444,7 +452,7 @@ func (m *Manager) finishLifecycleDelete(ctx context.Context, row LifecycleOutbox
 	// across the manager's lifetime. Mirrors the contraction on a failed
 	// create in applyLifecycleCreate.
 	m.contractSubscribersForWorkspace(p.WorkspaceID)
-	return reader.MarkLifecycleOutboxConsumed(ctx, row, m.now(), nil)
+	return reader.MarkLifecycleOutboxConsumed(ctx, row.ID, m.now())
 }
 
 // enumerateWorkspaceDeleteOps walks the in-memory state and produces

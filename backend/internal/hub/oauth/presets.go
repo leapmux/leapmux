@@ -12,6 +12,7 @@ type Preset struct {
 	IssuerURL    string // empty for GitHub
 	Scopes       string
 	TrustEmail   *bool // nil means the user must specify --trust-email explicitly
+	ResponseMode leapmuxv1.OAuthResponseMode
 }
 
 // Presets maps provider type aliases to their default configurations.
@@ -22,6 +23,7 @@ var Presets = map[string]Preset{
 		IssuerURL:    "",
 		Scopes:       "read:user user:email",
 		TrustEmail:   ptrconv.Ptr(true),
+		ResponseMode: ResponseModeQuery,
 	},
 	"google": {
 		Name:         "Google",
@@ -29,6 +31,7 @@ var Presets = map[string]Preset{
 		IssuerURL:    "https://accounts.google.com",
 		Scopes:       "openid profile email",
 		TrustEmail:   ptrconv.Ptr(true),
+		ResponseMode: ResponseModeQuery,
 	},
 	"apple": {
 		Name:         "Apple",
@@ -36,6 +39,7 @@ var Presets = map[string]Preset{
 		IssuerURL:    "https://appleid.apple.com",
 		Scopes:       "openid name email",
 		TrustEmail:   ptrconv.Ptr(true),
+		ResponseMode: ResponseModeFormPost,
 	},
 	"oidc": {
 		Name:         "",
@@ -43,5 +47,6 @@ var Presets = map[string]Preset{
 		IssuerURL:    "",
 		Scopes:       "openid profile email",
 		TrustEmail:   nil, // must be specified explicitly
+		ResponseMode: ResponseModeQuery,
 	},
 }

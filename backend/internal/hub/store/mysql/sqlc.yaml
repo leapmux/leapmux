@@ -61,6 +61,10 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "IdentityProviderType"
+          - column: "oauth_providers.response_mode"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "OAuthResponseMode"
           - column: "lifecycle_outbox.op_type"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -109,11 +113,19 @@ sql:
             go_type:
               type: "byte"
               slice: true
-          # Encrypted-at-rest columns (37 columns across 15 tables).
+          # Encrypted-at-rest columns (39 columns across 17 tables).
           # Retyping them to opaque keystore.Ciphertext / NullCiphertext makes
           # forgetting to seal on write or open on read a compile error.
           # Kept in sync with sqlutil.PersistentEncryptedTables and
           # sqlutil.TransientEncryptedTables by TestEncryptedRegistryMatchesSqlcOverrides.
+          - column: "layout_event_heads.cursor_key"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "layout_event_entries.fact"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
           - column: "users.password_hash"
             go_type:
               import: "github.com/leapmux/leapmux/internal/hub/keystore"

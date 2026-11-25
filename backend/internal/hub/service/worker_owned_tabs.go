@@ -7,9 +7,7 @@ import (
 	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // ListOwnedTabsForWorker resolves the calling worker via its bearer token (the
@@ -20,30 +18,12 @@ func (s *WorkerConnectorService) ListOwnedTabsForWorker(
 	ctx context.Context,
 	req *leapmuxv1.ListOwnedTabsForWorkerRequest,
 ) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
-	info := serverCallInfo(ctx)
-	w, err := auth.AuthenticateWorkerBearer(ctx, s.store, s.hasher, info.RequestHeader().Get("Authorization"))
-	if err != nil {
-		if auth.IsWorkerCredentialError(err) {
-			return nil, wrappedConnectError(connect.CodeUnauthenticated, err)
-		}
-		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
 	// The bearer resolves the worker AND its registrant, so the owner axis is
-	// in hand here. It is bound in the query, because workspace_tab_owned is
-	// keyed by (user_id, tab_id) and worker_id alone selects across tenants:
-	// nothing in the schema ties a row's user_id to the registrant of the
-	// worker it names.
-	//
-	// Binding it also NARROWS what the response means, and the narrowing is
-	// the point of OwnerUserId below: the reconciler on the other end reaps
-	// every local row this list omits, so a list that covers one owner must
-	// say so or it reads as a universal absence.
-	registeredBy, ok := userid.New(w.RegisteredBy)
-	if !ok {
-		// A worker row with a blank registrant cannot be scoped to an owner,
-		// so there is no answer to give -- and an empty, unscoped response is
-		// the one thing the reconciler must not act on.
-		return nil, connect.Errorf(connect.CodeInternal, "worker %s has a blank registrant", w.ID)
+	// in hand here. Binding it in the query narrows what the response means,
+	// and OwnerUserId states that owner once for the reconciler.
+	w, registeredBy, err := s.authenticateWorkerOwner(ctx)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := s.store.WorkspaceTabIndex().ListOwnedByWorker(ctx, store.ListOwnedTabsByWorkerParams{
 		UserID:   registeredBy,

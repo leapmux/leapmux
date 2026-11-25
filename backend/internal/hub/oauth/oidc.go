@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // OIDCProvider implements the Provider interface for generic OpenID Connect providers.
@@ -21,17 +23,32 @@ type OIDCProvider struct {
 	useFormPost  bool
 }
 
-// isAppleIssuer reports whether issuerURL targets Sign in with Apple.
-// Apple mandates response_mode=form_post whenever name or email scope is
-// requested, so Apple OIDC providers use form_post callbacks.
-func isAppleIssuer(issuerURL string) bool {
-	u, err := url.Parse(strings.TrimSpace(issuerURL))
-	if err != nil {
-		return false
+// parseAppleUserDisplayName extracts the optional user display name that Sign
+// in with Apple sends in the form_post `user` JSON parameter on a user's first
+// sign-in ({"name":{"firstName":"Jane","lastName":"Doe"}}). Malformed or absent
+// payloads return "" so login never fails on optional profile metadata.
+func parseAppleUserDisplayName(raw string) string {
+	if raw == "" {
+		return ""
 	}
-	return strings.EqualFold(u.Scheme, "https") &&
-		strings.EqualFold(u.Hostname(), "appleid.apple.com") &&
-		(u.Path == "" || u.Path == "/")
+	var payload struct {
+		Name struct {
+			FirstName string `json:"firstName"`
+			LastName  string `json:"lastName"`
+		} `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	first := strings.TrimSpace(payload.Name.FirstName)
+	last := strings.TrimSpace(payload.Name.LastName)
+	if first == "" {
+		return last
+	}
+	if last == "" {
+		return first
+	}
+	return first + " " + last
 }
 
 // flexibleBool unmarshals both JSON booleans (true/false) and string-encoded
@@ -59,7 +76,12 @@ func (b *flexibleBool) UnmarshalJSON(data []byte) error {
 }
 
 // NewOIDCProvider creates an OIDC provider by discovering the issuer's configuration.
-func NewOIDCProvider(ctx context.Context, issuerURL, clientID, clientSecret, redirectURL string, scopes []string) (*OIDCProvider, error) {
+func NewOIDCProvider(
+	ctx context.Context,
+	issuerURL, clientID, clientSecret, redirectURL string,
+	scopes []string,
+	responseMode leapmuxv1.OAuthResponseMode,
+) (*OIDCProvider, error) {
 	provider, err := gooidc.NewProvider(ctx, issuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery for %s: %w", issuerURL, err)
@@ -83,7 +105,7 @@ func NewOIDCProvider(ctx context.Context, issuerURL, clientID, clientSecret, red
 		oauth2Config: oauth2Config,
 		verifier:     verifier,
 		provider:     provider,
-		useFormPost:  isAppleIssuer(issuerURL),
+		useFormPost:  responseMode == ResponseModeFormPost,
 	}, nil
 }
 
@@ -154,7 +176,7 @@ func (p *OIDCProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions) 
 	return p.oauth2Config.AuthCodeURL(state, codeOpts...)
 }
 
-func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) (*UserClaims, error) {
+func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string, exOpts ExchangeOptions) (*UserClaims, error) {
 	opts := []oauth2.AuthCodeOption{
 		oauth2.VerifierOption(codeVerifier),
 	}
@@ -194,10 +216,17 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 		email = claims.Email
 	}
 
+	name := claims.Name
+	if p.useFormPost && validate.CleanName(name) == "" && exOpts.FormValues != nil {
+		if formName := parseAppleUserDisplayName(exOpts.FormValues.Get("user")); formName != "" {
+			name = formName
+		}
+	}
+
 	return &UserClaims{
 		Subject: idToken.Subject,
 		Email:   email,
-		Name:    claims.Name,
+		Name:    name,
 	}, nil
 }
 

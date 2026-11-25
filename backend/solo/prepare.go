@@ -62,18 +62,20 @@ func PrepareParsed(cfg Config, flags *hubconfig.Flags, fs *pflag.FlagSet) (*Prep
 	return prepared(cfg, hubCfg)
 }
 
-func prepared(cfg Config, hubCfg *hubconfig.Config) (*PreparedConfig, error) {
-	_, modeName := soloLoadOptions(cfg)
-	hubCfg.DevMode = cfg.DevMode
-	role, err := lifecycle.ParseRole(modeName)
-	if err != nil {
-		return nil, err
+func soloRole(devMode bool) lifecycle.Role {
+	if devMode {
+		return lifecycle.RoleDev
 	}
+	return lifecycle.RoleSolo
+}
+
+func prepared(cfg Config, hubCfg *hubconfig.Config) (*PreparedConfig, error) {
+	hubCfg.DevMode = cfg.DevMode
 	canonical, err := lifecycle.CanonicalDir(hubCfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	return &PreparedConfig{hubCfg: hubCfg, role: role, dataDir: canonical, config: cfg}, nil
+	return &PreparedConfig{hubCfg: hubCfg, role: soloRole(cfg.DevMode), dataDir: canonical, config: cfg}, nil
 }
 
 // Start launches a Hub and Worker in-process, as one combined instance

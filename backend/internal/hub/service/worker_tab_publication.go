@@ -6,7 +6,6 @@ import (
 
 	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/tabcreation"
@@ -23,16 +22,9 @@ type workerTabPublisher struct {
 // authenticateTabPublisher derives the tenant and Worker for publication calls.
 // The Worker checks the originating caller's grant before resource persistence.
 func (s *WorkerConnectorService) authenticateTabPublisher(ctx context.Context, request *leapmuxv1.TabPublication) (*workerTabPublisher, error) {
-	worker, err := auth.AuthenticateWorkerBearer(ctx, s.store, s.hasher, serverCallInfo(ctx).RequestHeader().Get("Authorization"))
+	worker, owner, err := s.authenticateWorkerOwner(ctx)
 	if err != nil {
-		if auth.IsWorkerCredentialError(err) {
-			return nil, wrappedConnectError(connect.CodeUnauthenticated, err)
-		}
-		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
-	owner, ok := userid.New(worker.RegisteredBy)
-	if !ok {
-		return nil, connect.NewError(connect.CodeInternal, "the Worker has no owner")
+		return nil, err
 	}
 	if err := tabcreation.Validate(request.GetCreation(), request.GetTabType()); err != nil {
 		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
@@ -66,23 +58,11 @@ func (s *WorkerConnectorService) catchUpFreshTabPublication(ctx context.Context,
 		})
 		return ready
 	}
-	reader := lifecycleOutboxAdapter{store: s.store}
-	for !workspaceReady() {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		pending, err := reader.ListPendingLifecycleOutbox(ctx, publisher.owner.String())
-		if err != nil {
-			return err
-		}
-		if len(pending) == 0 {
-			return nil
-		}
-		// SubmitLifecycle queues canonical seed writes itself, so it runs outside
-		// the publication writer. Its successful page consumes every listed row.
-		if err := publisher.manager.SubmitLifecycle(ctx, reader); err != nil && !workspaceReady() {
-			return err
-		}
+	if workspaceReady() {
+		return nil
+	}
+	if err := s.crdtRegistry.DrainLifecycle(ctx, publisher.owner.String()); err != nil && !workspaceReady() {
+		return err
 	}
 	return nil
 }

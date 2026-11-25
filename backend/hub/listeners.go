@@ -190,7 +190,7 @@ func (s *listenerSet) setServer(server *http.Server) {
 // the merge and the live-listener map are keyed on.
 //
 // --listen may ask for port 0 (a test harness picking a free port), and after
-// this the banner, the merge and the administration surface all name the port
+// this the banner, the merge and the administration surface all report the port
 // a client can actually connect to.
 func resolvePort(addr listenset.Addr, ln net.Listener) listenset.Addr {
 	if addr.Port() != 0 {

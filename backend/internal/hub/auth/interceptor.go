@@ -1088,6 +1088,17 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 // RequireElevation, which admits an elevated browser session or an elevated
 // command-line credential (and refuses un-elevatable credentials without a
 // step-up marker).
+// durableAuthorityAdminProcedures lists the admin procedures that create or
+// take over accounts and therefore accept only a browser session or the
+// built-in interactive Control CLI (never service-account tokens or
+// third-party OAuth apps). Checked in enforceAdmin before RequireElevation so
+// disallowed bearers never receive ElevationRequiredHeader.
+var durableAuthorityAdminProcedures = map[string]bool{
+	leapmuxv1connect.AdminUserServiceCreateUserProcedure:    true,
+	leapmuxv1connect.AdminUserServiceSetUserAdminProcedure:  true,
+	leapmuxv1connect.AdminUserServiceResetPasswordProcedure: true,
+}
+
 func enforceAdmin(procedure string, userInfo *UserInfo, now time.Time) error {
 	// Deny by PREFIX, never by a list of procedures. See
 	// adminProcedurePrefix: a list that missed a procedure would open one
@@ -1102,6 +1113,9 @@ func enforceAdmin(procedure string, userInfo *UserInfo, now time.Time) error {
 	// the guard keeps the rule correct if that ever changes.
 	if userInfo.SoloAuthenticated() {
 		return nil
+	}
+	if durableAuthorityAdminProcedures[procedure] {
+		return RequireElevationForDurableAuthority(userInfo, now)
 	}
 	return RequireElevation(userInfo, now)
 }

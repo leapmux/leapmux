@@ -18,12 +18,22 @@ func (m *Manager) LayoutEventWake() <-chan struct{} {
 	return m.layoutEventWake
 }
 
+func (m *Manager) setOnLayoutEvents(fn func()) {
+	m.mu.Lock()
+	m.onLayoutEvents = fn
+	m.mu.Unlock()
+}
+
 func (m *Manager) signalLayoutEvents() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.layoutEventWake != nil {
 		close(m.layoutEventWake)
 		m.layoutEventWake = nil
+	}
+	cb := m.onLayoutEvents
+	m.mu.Unlock()
+	if cb != nil {
+		cb()
 	}
 }
 

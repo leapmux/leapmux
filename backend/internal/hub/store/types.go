@@ -446,6 +446,7 @@ type OAuthProviderSummary struct {
 	ClientID     string
 	Scopes       string
 	TrustEmail   bool
+	ResponseMode leapmuxv1.OAuthResponseMode
 	Enabled      bool
 	CreatedAt    time.Time
 }
@@ -1262,6 +1263,7 @@ type CreateOAuthProviderParams struct {
 	ClientSecret []byte
 	Scopes       string
 	TrustEmail   bool
+	ResponseMode leapmuxv1.OAuthResponseMode
 	Enabled      bool
 }
 

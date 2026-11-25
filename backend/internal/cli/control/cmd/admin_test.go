@@ -825,7 +825,7 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 			name: "adminOAuthProviderRowOf", msg: provider,
 			render: func() any { return adminOAuthProviderRowOf(provider) },
 			keys: merge(identity("id", "name", "issuer_url", "client_id", "scopes",
-				"trust_email", "enabled", "created_at"),
+				"trust_email", "response_mode", "enabled", "created_at"),
 				map[string]string{"provider_type": "type"}),
 		},
 	}

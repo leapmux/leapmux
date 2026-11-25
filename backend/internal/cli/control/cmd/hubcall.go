@@ -54,9 +54,6 @@ func hubCallLocalIPC(ctx context.Context, c *control.Client, procedure string, i
 		Payload: payload,
 	})
 	if err != nil {
-		if channelwire.IsHubRelayError(err) {
-			return err
-		}
 		return &codedRPCError{Code: "rpc_failed", Cause: err}
 	}
 	if err := channelwire.ErrorOf(resp.GetError()); err != nil {

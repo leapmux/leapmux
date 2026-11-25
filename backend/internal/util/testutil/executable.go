@@ -15,14 +15,14 @@ import (
 //
 // A plain os.WriteFile can make the next start of the file fail with ETXTBSY
 // (`text file busy`), because a fork in another goroutine inherits the open
-// descriptor; execfile.Write states the mechanism and keeps every fork out.
+// descriptor; execfile.Overwrite states the mechanism and keeps every fork out.
 //
 // The failure is easy to misread. A provider starts its program through a shell,
 // so the error arrives as exit status 126 from a program that never ran. A
 // reader that treats a failure as an empty list then reports no error at all.
 func WriteExecutable(t testing.TB, path, content string) {
 	t.Helper()
-	require.NoError(t, execfile.Write(path, 0o755, false, func(w io.Writer) error {
+	require.NoError(t, execfile.Overwrite(path, 0o755, func(w io.Writer) error {
 		_, err := io.WriteString(w, content)
 		return err
 	}))

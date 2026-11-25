@@ -7,6 +7,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -229,6 +230,31 @@ func (inv *Invocation) StringArray(name string) []string {
 		panic(fmt.Sprintf("cli: flag %q of %s is not a list", name, inv.Command.CommandPath()))
 	}
 	return append([]string{}, values.GetSlice()...)
+}
+
+// durationValuer is implemented by custom duration flags (such as
+// internal/config.DurationFlag) whose String() emits units that stdlib
+// time.ParseDuration does not accept (e.g. "7d").
+type durationValuer interface {
+	Get() time.Duration
+}
+
+// Duration returns the parsed duration value of flag name. It reads custom
+// duration flags via Get() directly before falling back to pflag's GetDuration,
+// avoiding pflag's stdlib time.ParseDuration re-parse on extended units like "d".
+func (inv *Invocation) Duration(name string) time.Duration {
+	flag := inv.Command.Flags().Lookup(name)
+	if flag == nil {
+		panic(fmt.Sprintf("cli: %s declares no flag %q", inv.Command.CommandPath(), name))
+	}
+	if dv, ok := flag.Value.(durationValuer); ok {
+		return dv.Get()
+	}
+	d, err := inv.Command.Flags().GetDuration(name)
+	if err != nil {
+		panic(fmt.Sprintf("cli: flag %q of %s is not a duration: %v", name, inv.Command.CommandPath(), err))
+	}
+	return d
 }
 
 // NewLeaf builds the cobra command for l.

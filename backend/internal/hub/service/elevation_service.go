@@ -266,12 +266,26 @@ func verifyElevationPassword(ctx context.Context, user *store.User, currentPassw
 	return nil
 }
 
+// requireElevatedSessionOrControlCLI enforces durable-authority admin verbs:
+// the caller must hold either an elevated browser session or an elevated
+// built-in Control CLI credential (never a service-account token or
+// third-party OAuth app).
+func requireElevatedSessionOrControlCLI(ctx context.Context, now time.Time) (*auth.UserInfo, error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := auth.RequireElevationForDurableAuthority(user, now); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
 // Creating or rewriting durable authority on the admin surface requires a
-// recently proven factor on the acting credential (browser session or
-// command-line credential elevated through /oauth/step-up), followed by
-// commitUnderElevation to re-read authority before the write and slide the
-// elevation window afterward. Delegation bearers can never hold admin scopes
-// or carry an elevation window.
+// recently proven factor on an elevated browser session or built-in Control CLI
+// credential, followed by commitUnderElevation to re-read authority before the
+// write and slide the elevation window afterward. Service-account tokens,
+// third-party OAuth apps, and delegation bearers are refused.
 
 // commitUnderElevation runs an irreversible write on behalf of an already
 // admitted actor: it re-reads that actor's authority immediately before the
@@ -449,13 +463,11 @@ func assertElevatedActor(userInfo *auth.UserInfo, now time.Time) error {
 // administrator cookie that could add one gains more than any single account
 // mutation the elevation window already guards.
 //
-// requireElevatedActor, not auth.RequireElevation: an admin-scoped bearer holds
-// no session row to stamp, and
-// `leapmux control admin settings ...` is the documented headless path.
-// The hub grants that scope only at a browser consent that itself required an
-// elevated session, so somebody proved the factor once for the credential.
-// Refusing it here would break the CLI outright rather than ask it for
-// anything.
+// requireElevatedActor, not auth.RequireElevation: `leapmux control admin
+// settings ...` and `leapmux control admin idp ...` are documented CLI paths,
+// so an API token with an active step-up elevation window must be admitted
+// alongside an elevated browser session. Both credential types carry their own
+// `elevated_until` deadline and must hold a live window proven by a factor.
 //
 // It also SLIDES the window the write used, which is why every handler goes
 // through this rather than calling the gate itself: the hub's standing rule

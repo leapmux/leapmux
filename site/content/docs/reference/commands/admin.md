@@ -697,6 +697,7 @@ leapmux admin idp add [flags]
 | `--issuer-url string` | OIDC issuer URL |
 | `--scopes string` | space-separated scopes |
 | `--trust-email string` | trust verified provider emails (required for generic OIDC) (one of: true, false) |
+| `--response-mode string` | OAuth callback response mode (defaults to form_post for apple, query otherwise) (one of: query, form_post) |
 
 ```sh
 leapmux admin idp add --type github --client-id Iv1.abc --client-secret s3cr3t

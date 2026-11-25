@@ -137,6 +137,10 @@ func (r *recordingRegistry) BroadcastWorkersChanged(userID string) {
 	r.inner.BroadcastWorkersChanged(userID)
 }
 
+func (r *recordingRegistry) DrainLifecycle(ctx context.Context, userID string) error {
+	return r.inner.DrainLifecycle(ctx, userID)
+}
+
 func (r *recordingRegistry) seen() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()

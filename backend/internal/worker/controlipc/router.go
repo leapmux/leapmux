@@ -134,11 +134,11 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		}
 		out, err := r.Hub.CallInner(ctx, r.UserID, stripNamespace(method), payload)
 		if err != nil {
-			failure := relayError(err)
-			if failure.Code() == connect.CodeUnimplemented {
-				failure = channelwire.WithHubRelayOrigin(failure)
+			var refusal *connect.Error
+			if errors.As(err, &refusal) {
+				return channelwire.NewErrorResponse(int32(refusal.Code()), refusal.Message()), nil
 			}
-			return nil, failure
+			return nil, relayError(err)
 		}
 		return channelwire.NewPayloadResponse(out), nil
 	default:

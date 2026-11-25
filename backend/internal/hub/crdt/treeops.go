@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -146,9 +147,49 @@ func GridCellPosition(row, col int) string {
 	return fmt.Sprintf("%d,%d", row, col)
 }
 
-// compareLayoutString follows the browser's UTF-16 code unit order.
+// compareLayoutString follows the browser's UTF-16 code unit order without
+// allocating temporary rune or UTF-16 slices.
 func compareLayoutString(a, b string) int {
-	return slices.Compare(utf16.Encode([]rune(a)), utf16.Encode([]rune(b)))
+	var pendA, pendB uint16
+	for {
+		var uA, uB uint16
+		var okA, okB bool
+		uA, a, pendA, okA = nextUTF16Unit(a, pendA)
+		uB, b, pendB, okB = nextUTF16Unit(b, pendB)
+		if !okA && !okB {
+			return 0
+		}
+		if !okA {
+			return -1
+		}
+		if !okB {
+			return 1
+		}
+		if uA != uB {
+			if uA < uB {
+				return -1
+			}
+			return 1
+		}
+	}
+}
+
+func nextUTF16Unit(s string, pending uint16) (unit uint16, rest string, nextPending uint16, ok bool) {
+	if pending != 0 {
+		return pending, s, 0, true
+	}
+	if len(s) == 0 {
+		return 0, "", 0, false
+	}
+	if s[0] < utf8.RuneSelf {
+		return uint16(s[0]), s[1:], 0, true
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	if r <= 0xFFFF {
+		return uint16(r), s[size:], 0, true
+	}
+	r1, r2 := utf16.EncodeRune(r)
+	return uint16(r1), s[size:], uint16(r2), true
 }
 
 // LayoutChildIDs returns the children in display order. It takes a live
@@ -173,20 +214,54 @@ func gridChildIDs(nodes map[string]*leapmuxv1.NodeRecord, children []string, row
 	if rows > MaxGridDimension || cols > MaxGridDimension {
 		return nil
 	}
-	cells := make(map[string]string, len(children))
+	ordered := make([]string, int(rows*cols))
 	for _, childID := range children {
-		position := nodes[childID].GetPosition().GetValue()
-		if other := cells[position]; other == "" || compareLayoutString(childID, other) < 0 {
-			cells[position] = childID
+		idx, ok := parseGridCellIndex(nodes[childID].GetPosition().GetValue(), rows, cols)
+		if !ok {
+			continue
 		}
-	}
-	ordered := make([]string, 0, int(rows*cols))
-	for row := range int(rows) {
-		for col := range int(cols) {
-			ordered = append(ordered, cells[GridCellPosition(row, col)])
+		if other := ordered[idx]; other == "" || compareLayoutString(childID, other) < 0 {
+			ordered[idx] = childID
 		}
 	}
 	return ordered
+}
+
+// parseGridCellIndex parses canonical GridCellPosition ("row,col") strings into
+// a flat row-major slice index for a rows x cols grid. Non-canonical strings
+// (leading zeros, signs, whitespace, or out-of-range coordinates) return false.
+func parseGridCellIndex(pos string, rows, cols uint32) (int, bool) {
+	row, rest, ok := parseCanonicalGridCoord(pos)
+	if !ok || len(rest) == 0 || rest[0] != ',' || row >= rows {
+		return 0, false
+	}
+	col, tail, ok := parseCanonicalGridCoord(rest[1:])
+	if !ok || len(tail) != 0 || col >= cols {
+		return 0, false
+	}
+	return int(row*cols + col), true
+}
+
+func parseCanonicalGridCoord(s string) (uint32, string, bool) {
+	if len(s) == 0 || s[0] < '0' || s[0] > '9' {
+		return 0, "", false
+	}
+	if s[0] == '0' {
+		if len(s) > 1 && s[1] >= '0' && s[1] <= '9' {
+			return 0, "", false
+		}
+		return 0, s[1:], true
+	}
+	var v uint32
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		v = v*10 + uint32(s[i]-'0')
+		if v > MaxGridDimension {
+			return 0, "", false
+		}
+		i++
+	}
+	return v, s[i:], true
 }
 
 // FirstLiveLayoutLeaf returns the first leaf that can receive a tab. It

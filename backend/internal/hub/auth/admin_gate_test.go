@@ -362,10 +362,9 @@ func TestAdminGate_AppWithoutElevationAllowedRefused(t *testing.T) {
 		"re-enabling the app restores the ordinary verification remedy")
 }
 
-// TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused pins the marker on
-// a NON-session-only admin procedure: an app credential without a window is
-// refused WITH the prompt signal, unlike the session-only refusals that can
-// offer no ceremony that would help.
+// TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused pins the step-up
+// marker on UpdateUser: an app credential without an active elevation window
+// is refused with the prompt header so the CLI can run verification.
 func TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused(t *testing.T) {
 	f := setupAdminGateServer(t)
 	owner, ownerOK := userid.New(f.adminUserID)

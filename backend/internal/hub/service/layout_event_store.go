@@ -15,12 +15,20 @@ import (
 
 const retainedLayoutEvents = 32_768
 
-func ensureLayoutEventHead(ctx context.Context, events store.LayoutEventStore, owner userid.UserID) error {
+func newLayoutEventHead() (string, []byte, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
-		return fmt.Errorf("create layout journal key: %w", err)
+		return "", nil, fmt.Errorf("create layout journal key: %w", err)
 	}
-	return events.EnsureHead(ctx, owner, id.Generate(), key)
+	return id.Generate(), key, nil
+}
+
+func ensureLayoutEventHead(ctx context.Context, events store.LayoutEventStore, owner userid.UserID) error {
+	journalID, key, err := newLayoutEventHead()
+	if err != nil {
+		return err
+	}
+	return events.EnsureHead(ctx, owner, journalID, key)
 }
 
 func marshalLayoutFacts(facts []*leapmuxv1.LayoutEventFact) ([][]byte, error) {
@@ -40,29 +48,13 @@ func appendLayoutEvents(ctx context.Context, events store.LayoutEventStore, owne
 	if len(payloads) == 0 {
 		return nil
 	}
-	if err := ensureLayoutEventHead(ctx, events, owner); err != nil {
-		return err
-	}
-	count := int64(len(payloads))
-	head, err := events.ReservePositions(ctx, owner, count)
-	if err != nil {
-		return err
-	}
-	after := head.HighSequence - count
-	for i, payload := range payloads {
-		if err := events.Insert(ctx, owner, store.LayoutEventRow{
-			Sequence: after + int64(i) + 1, ObservedUnixMillis: observed, Fact: payload,
-		}); err != nil {
-			return err
-		}
-	}
-	if closedWorkspace != "" {
-		if err := events.MarkWorkspaceClosed(ctx, owner, closedWorkspace, head.HighSequence); err != nil {
-			return err
-		}
-	}
-	if through := head.HighSequence - retainedLayoutEvents; through > head.FloorSequence {
-		return events.PruneThrough(ctx, owner, through)
-	}
-	return nil
+	_, err := events.Append(ctx, store.AppendLayoutEventsParams{
+		Owner:              owner,
+		ObservedUnixMillis: observed,
+		Facts:              payloads,
+		ClosedWorkspaceID:  closedWorkspace,
+		RetainCount:        retainedLayoutEvents,
+		NewHead:            newLayoutEventHead,
+	})
+	return err
 }

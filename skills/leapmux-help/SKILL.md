@@ -1,6 +1,6 @@
 ---
 name: leapmux-help
-description: Answer questions about installing, configuring, using, or troubleshooting LeapMux (Hub, Workers, E2EE, tunnels, agent providers, workspaces, CLI, and settings) by consulting live LeapMux Markdown docs (`https://leapmux.com/llms.txt`) and running minimal read-only diagnostics. Do not activate when the user asks you to drive LeapMux tabs or spawn agents (use `leapmux`, `leapmux-delegate`, `leapmux-review`, `leapmux-council`, or `leapmux-handoff`).
+description: Answer questions about installing, configuring, using, or troubleshooting LeapMux (Hub, Workers, E2EE, tunnels, agent providers, workspaces, CLI, and settings) by consulting live LeapMux Markdown docs (`https://leapmux.dev/llms.txt`) and running minimal read-only diagnostics. Do not activate when the user asks you to drive LeapMux tabs or spawn agents (use `leapmux`, `leapmux-delegate`, `leapmux-review`, `leapmux-council`, or `leapmux-handoff`).
 user-invocable: true
 argument-hint: "<question, setup goal, or troubleshooting issue>"
 ---
@@ -15,7 +15,7 @@ Load [references/diagnostics-checklist.md](references/diagnostics-checklist.md) 
 
 Never answer LeapMux feature, config, or CLI questions from stale memory:
 
-1. Fetch `https://leapmux.com/llms.txt` to discover the current documentation index and per-page Markdown endpoints (`/docs/.../index.md`).
+1. Fetch `https://leapmux.dev/llms.txt` to discover the current documentation index and per-page Markdown endpoints (`/docs/.../index.md`).
 2. Fetch the specific `/docs/.../index.md` page(s) matching the user's question (or inspect `leapmux guide` / `leapmux <group> --help` when answering CLI syntax questions locally).
 3. Answer the user directly with concrete steps or commands — do not deflect by telling them to go read the docs.
 

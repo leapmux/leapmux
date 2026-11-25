@@ -551,3 +551,140 @@ func TestRegistryGetRaceDiscardsTheDuplicate(t *testing.T) {
 	}
 	assert.Equal(t, n-1, losers)
 }
+
+// LayoutEventWake lives on the Registry rather than the Manager, so a waiter
+// captures a valid wake channel before any Manager loads and continues to wake
+// even after SweepIdle evicts the Manager.
+func TestRegistryLayoutEventWakeSurvivesIdleEviction(t *testing.T) {
+	userID := registryUserID(8)
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		if err := m.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return m, nil
+	}, nil, crdt.WithManagerIdleTTL(time.Millisecond))
+	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
+
+	// 1. Wake before any manager is loaded.
+	chBefore := registry.LayoutEventWake(userID.String())
+	registry.SignalLayoutEvents(userID.String())
+	select {
+	case <-chBefore:
+	default:
+		t.Fatal("LayoutEventWake did not close on SignalLayoutEvents before manager load")
+	}
+
+	// 2. Load a manager, capture a wake channel, evict the manager, then signal.
+	_, err := registry.Get(t.Context(), userID.String())
+	require.NoError(t, err)
+	chAcrossEvict := registry.LayoutEventWake(userID.String())
+	require.Eventually(t, func() bool {
+		registry.SweepIdle()
+		_, loaded := registry.Loaded(userID.String())
+		return !loaded
+	}, 2*time.Second, 2*time.Millisecond, "manager must be evicted by SweepIdle")
+
+	registry.SignalLayoutEvents(userID.String())
+	select {
+	case <-chAcrossEvict:
+	default:
+		t.Fatal("LayoutEventWake did not close across SweepIdle eviction")
+	}
+}
+
+type nonAdvancingOutbox struct {
+	lists atomic.Int32
+}
+
+func (o *nonAdvancingOutbox) ListPendingLifecycleOutbox(_ context.Context, userID string) ([]crdt.LifecycleOutboxRow, error) {
+	o.lists.Add(1)
+	payload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
+		OpType: crdt.LifecycleOpRename, WorkspaceID: "ws-stuck", NewTitle: "Same",
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return []crdt.LifecycleOutboxRow{{ID: 42, UserID: userID, OpType: crdt.LifecycleOpRename, Payload: payload}}, nil
+}
+
+func (o *nonAdvancingOutbox) MarkLifecycleOutboxConsumed(context.Context, int64, time.Time) error {
+	return nil
+}
+
+func (o *nonAdvancingOutbox) ConsumeLifecycleOutboxWithLayoutFact(context.Context, crdt.LifecycleOutboxRow, time.Time, *leapmuxv1.LayoutEventFact) error {
+	return nil
+}
+
+func TestRegistryLifecycleDrainEdgeCases(t *testing.T) {
+	userID := registryUserID(9)
+
+	// 1. Nil outbox or blank userID returns an already-closed drain with nil error.
+	noOutbox := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		return m, m.Bootstrap(ctx)
+	}, nil, crdt.WithManagerIdleTTL(0))
+	t.Cleanup(func() { noOutbox.Shutdown(5 * time.Second) })
+	d := noOutbox.StartLifecycleDrain(userID.String())
+	select {
+	case <-d.Done():
+		assert.NoError(t, d.Err())
+	default:
+		t.Fatal("StartLifecycleDrain without outbox must complete immediately")
+	}
+
+	// 2. Caller context cancellation unblocks DrainLifecycle while the shared
+	// flight finishes for another waiter.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	outbox := &gatedOutbox{entered: entered, release: release}
+	reg := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		return m, m.Bootstrap(ctx)
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(outbox))
+	t.Cleanup(func() {
+		releaseOnce()
+		reg.Shutdown(5 * time.Second)
+	})
+
+	dBlank := reg.StartLifecycleDrain("")
+	<-dBlank.Done()
+	assert.NoError(t, dBlank.Err())
+
+	cancelCtx, cancel := context.WithCancel(t.Context())
+	cancelDone := make(chan error, 1)
+	go func() {
+		cancelDone <- reg.DrainLifecycle(cancelCtx, userID.String())
+	}()
+	<-entered
+	enteredOnce.Do(func() {})
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- reg.DrainLifecycle(t.Context(), userID.String())
+	}()
+
+	cancel()
+	require.ErrorIs(t, <-cancelDone, context.Canceled)
+
+	releaseOnce()
+	require.NoError(t, <-secondDone)
+
+	// 3. Shutdown makes subsequent StartLifecycleDrain return ErrRegistryClosed.
+	reg.Shutdown(5 * time.Second)
+	closedDrain := reg.StartLifecycleDrain(userID.String())
+	<-closedDrain.Done()
+	assert.ErrorIs(t, closedDrain.Err(), crdt.ErrRegistryClosed)
+
+	// 4. Non-advancing leading row ID stops after two passes instead of looping forever.
+	stuckOutbox := &nonAdvancingOutbox{}
+	stuckReg := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		return m, m.Bootstrap(ctx)
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(stuckOutbox))
+	t.Cleanup(func() { stuckReg.Shutdown(5 * time.Second) })
+	require.NoError(t, stuckReg.DrainLifecycle(t.Context(), userID.String()))
+	assert.Equal(t, int32(2), stuckOutbox.lists.Load(), "non-advancing outbox must stop on the second pass")
+}

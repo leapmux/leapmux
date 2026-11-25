@@ -1,15 +1,13 @@
 package config
 
 import (
-	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/clitest"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
@@ -234,11 +232,13 @@ encryption_key_path: "/tmp/leapmux-enc.key"
 			ExtraFlags: extras,
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "8", cfg.Extras["max_incomplete_chunked"])
-		// An unset extra still lands in Extras at its declared default, in the
-		// spelling that k.String gives its type.
+		assert.Equal(t, 8, cfg.Extras["max_incomplete_chunked"])
+		assert.Equal(t, 8, cfg.ExtraInt("max_incomplete_chunked", 0))
+		// An unset extra still lands in Extras at its declared typed default.
 		assert.Equal(t, "post-quantum", cfg.Extras["encryption_mode"])
-		assert.Equal(t, "true", cfg.Extras["use_login_shell"])
+		assert.Equal(t, "post-quantum", cfg.ExtraString("encryption_mode", ""))
+		assert.Equal(t, true, cfg.Extras["use_login_shell"])
+		assert.Equal(t, true, cfg.ExtraBool("use_login_shell", false))
 
 		// CLIFlags lists only "listen", so parsing -max-incomplete-chunked at all
 		// is the assertion that extras bypass the allowlist: that list names the
@@ -280,8 +280,40 @@ encryption_key_path: "/tmp/leapmux-enc.key"
 			},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "16", cfg.Extras["max_incomplete_chunked"],
+		assert.Equal(t, 16, cfg.Extras["max_incomplete_chunked"],
 			"solo.yaml is the only config file solo reads; the embedded worker's cap must be settable there")
+	})
+
+	t.Run("malformed YAML extra values fail loudly", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		badInt := filepath.Join(tmpDir, "bad-int.yaml")
+		require.NoError(t, os.WriteFile(badInt, []byte("max_incomplete_chunked: lots\n"), 0o644))
+		_, err := LoadWithOptions([]string{"--config", badInt}, LoadOptions{
+			ExtraFlags: []ExtraFlagDef{
+				IntExtraFlag("max-incomplete-chunked", "max_incomplete_chunked", "Timeout and limit options", "cap", 0),
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "max_incomplete_chunked")
+
+		badFloat := filepath.Join(tmpDir, "bad-float.yaml")
+		require.NoError(t, os.WriteFile(badFloat, []byte("max_incomplete_chunked: 8.5\n"), 0o644))
+		_, err = LoadWithOptions([]string{"--config", badFloat}, LoadOptions{
+			ExtraFlags: []ExtraFlagDef{
+				IntExtraFlag("max-incomplete-chunked", "max_incomplete_chunked", "Timeout and limit options", "cap", 0),
+			},
+		})
+		require.Error(t, err)
+
+		badBool := filepath.Join(tmpDir, "bad-bool.yaml")
+		require.NoError(t, os.WriteFile(badBool, []byte("use_login_shell: sometimes\n"), 0o644))
+		_, err = LoadWithOptions([]string{"--config", badBool}, LoadOptions{
+			ExtraFlags: []ExtraFlagDef{
+				BoolExtraFlag("use-login-shell", "use_login_shell", "", "use login shell", true),
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "use_login_shell")
 	})
 
 	t.Run("the hub does not define max-incomplete-chunked", func(t *testing.T) {
@@ -300,7 +332,7 @@ encryption_key_path: "/tmp/leapmux-enc.key"
 			ExtraFlags: []ExtraFlagDef{BoolExtraFlag("use-login-shell", "use_login_shell", "", "use the login shell", true)},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "false", cfg.Extras["use_login_shell"])
+		assert.Equal(t, false, cfg.Extras["use_login_shell"])
 		_, err = LoadWithOptions([]string{"--use-login-shell=sometimes"}, LoadOptions{
 			ExtraFlags: []ExtraFlagDef{BoolExtraFlag("use-login-shell", "use_login_shell", "", "use the login shell", true)},
 		})
@@ -486,14 +518,14 @@ func TestPoolDurationsKeepTheirOwnZero(t *testing.T) {
 // registers, as the help of a lifecycle command prints them.
 func flagsHelp(t *testing.T, opts LoadOptions) string {
 	t.Helper()
-	leaf := cli.NewLeaf(cli.Leaf{
-		Use:   "probe",
-		Short: "Probe the flags",
-		Flags: func(fs *pflag.FlagSet) { NewFlags(opts).Register(fs) },
-		Run:   func(*cli.Invocation) (any, error) { return nil, nil },
-	})
-	var stdout, stderr bytes.Buffer
-	code := cli.Execute(context.Background(), leaf, []string{"--help"}, strings.NewReader(""), &stdout, &stderr)
-	require.Equal(t, cli.ExitOK, code, stderr.String())
-	return stdout.String()
+	return clitest.FlagsHelp(t, NewFlags(opts).Register)
+}
+
+func TestFlagsLoadRefusesUnregisteredFlagSet(t *testing.T) {
+	t.Parallel()
+	flags := NewFlags(LoadOptions{})
+	fs := pflag.NewFlagSet("unregistered", pflag.ContinueOnError)
+	_, err := flags.Load(fs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Register")
 }

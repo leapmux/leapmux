@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -151,18 +150,14 @@ func registerLifecycleFlags(mode, verb string, fs *pflag.FlagSet) (*lifecycleFla
 // line; this serves a command line that the program builds itself: the
 // arguments a service specification saved, and the proposal of a start.
 func loadLifecycleCommand(mode, verb string, args []string) (*lifecycleConfiguration, lifecycleOptions, error) {
-	fs := pflag.NewFlagSet("leapmux "+mode+" "+verb, pflag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.SortFlags = false
-	flags, err := registerLifecycleFlags(mode, verb, fs)
+	var flags *lifecycleFlags
+	fs, err := internalconfig.ParseFlags("leapmux "+mode+" "+verb, args, func(fs *pflag.FlagSet) error {
+		var regErr error
+		flags, regErr = registerLifecycleFlags(mode, verb, fs)
+		return regErr
+	})
 	if err != nil {
 		return nil, lifecycleOptions{}, err
-	}
-	if err := fs.Parse(args); err != nil {
-		return nil, lifecycleOptions{}, err
-	}
-	if fs.NArg() > 0 {
-		return nil, lifecycleOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	return flags.load(fs)
 }

@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"connectrpc.com/connect/v2"
+	"github.com/coder/quartz"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -28,8 +28,20 @@ type WorkspaceService struct {
 	store           store.Store
 	registry        *crdt.Registry
 	reconcileNudger workspaceReconcileNudger
-	layoutDrainsMu  sync.Mutex
-	layoutDrains    map[string]*layoutLifecycleDrain
+	clock           quartz.Clock
+}
+
+// WithClock overrides the clock used for layout-event long-poll waits.
+func (s *WorkspaceService) WithClock(clock quartz.Clock) *WorkspaceService {
+	s.clock = clock
+	return s
+}
+
+func (s *WorkspaceService) clk() quartz.Clock {
+	if s.clock != nil {
+		return s.clock
+	}
+	return quartz.NewReal()
 }
 
 type workspaceReconcileNudger interface {
@@ -54,6 +66,7 @@ func NewWorkspaceService(
 		store:           st,
 		registry:        registry,
 		reconcileNudger: reconcileNudger,
+		clock:           quartz.NewReal(),
 	}
 }
 
@@ -149,19 +162,13 @@ func refuseArchivedWorkspace(ctx context.Context, tx store.Store, workspaceID st
 	return nil
 }
 
-// readWorkspaceOrNotFound loads a workspace for reading and collapses the two
-// existence-revealing codes into notFound.
-//
-// PermissionDenied and NotFound both become notFound so a non-owner cannot tell "exists but not
-// yours" from "does not exist". Anything else passes through unchanged: a
-// transient Internal must stay retryable rather than becoming the permanent
-// answer a NotFound is.
-//
-// One function rather than the three hand-copied ladders this replaced, so the
-// tab and tile lookups cannot drift into leaking existence through a code one
-// of them forgot to fold.
-func readWorkspaceOrNotFound(ctx context.Context, st store.Store, workspaceID string, user *auth.UserInfo, notFound error) (*store.Workspace, error) {
-	ws, err := loadWorkspaceForRead(ctx, st, workspaceID, user)
+// loadOwnedWorkspaceOrNotFound loads a workspace owned by owner and collapses
+// both existence-revealing codes (PermissionDenied and NotFound) into notFound
+// so a non-owner cannot distinguish "exists but belongs to someone else" from
+// "does not exist". Any other error passes through unchanged so transient
+// Internal failures remain retryable.
+func loadOwnedWorkspaceOrNotFound(ctx context.Context, st store.Store, workspaceID string, owner userid.UserID, notFound error) (*store.Workspace, error) {
+	ws, err := loadOwnedWorkspaceOr403(ctx, st, workspaceID, owner, "no access to workspace")
 	if err != nil {
 		if code := connect.CodeOf(err); code == connect.CodePermissionDenied || code == connect.CodeNotFound {
 			return nil, notFound
@@ -169,6 +176,12 @@ func readWorkspaceOrNotFound(ctx context.Context, st store.Store, workspaceID st
 		return nil, err
 	}
 	return ws, nil
+}
+
+// readWorkspaceOrNotFound loads a workspace for reading and collapses the two
+// existence-revealing codes into notFound.
+func readWorkspaceOrNotFound(ctx context.Context, st store.Store, workspaceID string, user *auth.UserInfo, notFound error) (*store.Workspace, error) {
+	return loadOwnedWorkspaceOrNotFound(ctx, st, workspaceID, user.ID, notFound)
 }
 
 // loadWorkspaceForRead is the single loader every workspace-read handler goes

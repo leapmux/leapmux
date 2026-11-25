@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -358,4 +361,144 @@ func TestInvalidateProviderDropsEveryEntry(t *testing.T) {
 	// Idempotent: an id with no entries is the state a second delete finds.
 	h.InvalidateProvider("gh")
 	assert.Len(t, h.providers, 1)
+}
+
+func TestEvictProviderCachePreservesFlows(t *testing.T) {
+	t.Parallel()
+
+	h := newProviderCacheTestHandler()
+	stub := huboauth.NewGitHubProvider("id", "secret", "http://localhost/cb", nil)
+	h.providers[providerCacheKey{providerID: "apple", redirectURL: "https://hub/cb"}] = stub
+
+	exp := time.Now().UTC().Add(10 * time.Minute)
+	require.NoError(t, h.states.Create(CreateOAuthStateParams{
+		State: "state-apple", ProviderID: "apple", Purpose: OAuthStatePurposeLogin, ExpiresAt: exp,
+	}))
+	require.NoError(t, h.pendingSignups.Create(CreatePendingOAuthSignupParams{
+		Token: "signup-apple", ProviderID: "apple", ProviderSubject: "sub-apple", ExpiresAt: exp,
+	}))
+
+	beforeGen := h.providerGeneration("apple")
+	h.EvictProviderCache("apple")
+
+	assert.Empty(t, h.providers, "cached provider instances must be evicted")
+	assert.Greater(t, h.providerGeneration("apple"), beforeGen, "generation must advance to block stale in-flight builds")
+	_, ok := h.states.Get("state-apple")
+	assert.True(t, ok, "in-flight login state must survive a secret rotation")
+	_, ok = h.pendingSignups.Get("signup-apple")
+	assert.True(t, ok, "pending signup must survive a secret rotation")
+}
+
+type stubFormPostProvider struct {
+	huboauth.Provider
+}
+
+func (stubFormPostProvider) UsesFormPost() bool { return true }
+
+func TestBeginOAuthFlowFormPostUsesSecureCookieForHTTPSPublicURL(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	st := hubtestutil.OpenTestStore(t)
+	set := settings.NewManager(st, settings.CoreDescriptors())
+	require.NoError(t, set.Load(ctx))
+	require.NoError(t, set.SetValue(ctx, settings.KeyPublicURL, "https://hub.example.com"))
+
+	h := NewIdPHandler(IdPHandlerDeps{
+		SessionHasher: hubtestutil.TestSecretHasher(),
+		Store:         st,
+		Config:        &config.Config{},
+		Settings:      set,
+		Lifecycle:     auth.NewCredentialLifecycleEffects(nil, nil, nil),
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://hub.internal/auth/idp/apple/login", nil)
+	provider := stubFormPostProvider{Provider: huboauth.NewGitHubProvider("cid", "secret", "https://hub.example.com/auth/idp/apple/callback", nil)}
+	h.beginOAuthFlow(rec, req, "apple", provider, OAuthStatePurposeLogin, "")
+
+	require.Equal(t, http.StatusFound, rec.Code)
+	cookies := rec.Result().Cookies()
+	require.Len(t, cookies, 1)
+	assert.Equal(t, http.SameSiteNoneMode, cookies[0].SameSite)
+	assert.True(t, cookies[0].Secure)
+	assert.True(t, strings.HasPrefix(cookies[0].Name, "__Host-"), "https public_url must emit __Host- SameSite=None; Secure cookie")
+}
+
+func TestBuildProviderFlightKeySeparatesGenerations(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	st := hubtestutil.OpenTestStore(t)
+	set := settings.NewManager(st, settings.CoreDescriptors())
+	require.NoError(t, set.Load(ctx))
+
+	var calls atomic.Int32
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q}`,
+			srv.URL, srv.URL+"/auth", srv.URL+"/token", srv.URL+"/jwks")
+	})
+
+	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+		ID: "apple", ProviderType: huboauth.ProviderTypeOIDC, Name: "Apple",
+		IssuerURL: srv.URL, ClientID: "cid", ClientSecret: []byte("old-secret"), Enabled: true,
+	}))
+	h := NewIdPHandler(IdPHandlerDeps{
+		SessionHasher: hubtestutil.TestSecretHasher(),
+		Store:         st,
+		Config:        &config.Config{},
+		Settings:      set,
+		Lifecycle:     auth.NewCredentialLifecycleEffects(nil, nil, nil),
+	})
+
+	gen1 := h.providerGeneration("apple")
+	row1, err := st.OAuthProviders().GetByID(ctx, "apple")
+	require.NoError(t, err)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, buildErr := h.buildProvider(ctx, row1, gen1)
+		firstDone <- buildErr
+	}()
+	<-firstEntered
+
+	// Rotate the secret and evict while generation 1 is still in flight.
+	require.NoError(t, st.OAuthProviders().UpdateClientSecret(ctx, store.UpdateOAuthProviderClientSecretParams{
+		ID:           "apple",
+		ClientSecret: []byte("new-secret"),
+	}))
+	h.EvictProviderCache("apple")
+
+	gen2 := h.providerGeneration("apple")
+	row2, err := st.OAuthProviders().GetByID(ctx, "apple")
+	require.NoError(t, err)
+
+	// Generation 2 must NOT coalesce onto generation 1's blocked singleflight call.
+	built2, err := h.buildProvider(ctx, row2, gen2)
+	require.NoError(t, err)
+	require.NotNil(t, built2)
+	assert.Equal(t, int32(2), calls.Load(), "generation 2 must start its own flight rather than coalesce onto generation 1")
+
+	close(releaseFirst)
+	require.NoError(t, <-firstDone)
+
+	// The cache must retain generation 2's provider, not generation 1's.
+	h.providersMu.RLock()
+	require.Len(t, h.providers, 1)
+	for _, cached := range h.providers {
+		assert.Equal(t, built2, cached)
+	}
+	h.providersMu.RUnlock()
 }

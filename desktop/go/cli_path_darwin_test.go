@@ -15,13 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func writeExec(t *testing.T, dir, name string, contents []byte, mode os.FileMode) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(path, contents, mode))
-	return path
-}
-
 func TestFindOnPath_FindsFirstExecutable(t *testing.T) {
 	t.Parallel()
 	a := t.TempDir()
