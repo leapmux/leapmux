@@ -5418,7 +5418,6 @@ export const PROVIDER_PROTOCOLS = [
         goTable: 'QuestionField',
         tsTable: 'QUESTION_FIELD',
         tsType: 'CodewhaleQuestionField',
-        goTagPin: 'backend/internal/worker/agent/providers/codewhale/contract_tags_test.go',
         doc: 'fields of the questions of a `user_input` request and of their options',
       },
       {

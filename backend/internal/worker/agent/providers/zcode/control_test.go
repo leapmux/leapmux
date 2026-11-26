@@ -108,8 +108,11 @@ func TestZCodeControlIngress_KeepsTheFirstPlanWhenItsHandlerRunsLast(t *testing.
 			var payload zcodeControlRequestPayload
 			require.NoError(t, json.Unmarshal(published[0].Payload, &payload))
 			assert.Equal(t, "7", string(payload.WireID))
-			assert.Contains(t, string(payload.Request.Input), "# First plan")
-			assert.NotContains(t, string(payload.Request.Input), "# Repeated plan")
+			// The stored header carries only the questions. ReadControlRequest reads
+			// the plan from the native params, so the prompt states which request
+			// the Worker prepared.
+			assert.Equal(t, "# First plan", agenttest.ControlPromptOf(zcodeProvider{}, published[0].Payload).GetPlan().GetText())
+			assert.NotContains(t, string(published[0].Payload), "# Repeated plan")
 		})
 	}
 }

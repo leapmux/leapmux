@@ -19,9 +19,10 @@ import (
 // refused the write -- and either way the caller must write the input itself or
 // lose it. With an error it means the read could not say.
 //
-// The caller decides what an unconfirmed read is worth. handleUserInputRequest
-// treats a FAILED read as "the transcript has it", because a second plan row over
-// one that is already there draws the plan twice.
+// The caller decides what an unconfirmed read is worth.
+// handlePreparedUserInputRequest treats a FAILED read as "the transcript has
+// it", because a second plan row over one that is already there draws the plan
+// twice.
 func (a *Agent) supplementZCodeControlInput(toolCallID, toolName string, input json.RawMessage) (carriesInput bool, err error) {
 	return a.supplementZCodeControlInputForSpan(a.zcodeSpanForNativeCall(toolCallID), toolName, input)
 }

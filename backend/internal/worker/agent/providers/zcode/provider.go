@@ -227,9 +227,9 @@ func (zcodeProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) e
 
 // ControlRequestKey reads the key of a stored ZCode request: the request id
 // that the app-server stated, which the Worker writes as the envelope's
-// request_id (handlePermissionRequest, handleUserInputRequest). LeapMux's
-// workspace-trust question states no key, so its session gives it
-// (providerkit.WorkspaceTrustRequestKey).
+// request_id (handlePreparedPermissionRequest,
+// handlePreparedUserInputRequest). LeapMux's workspace-trust question states no
+// key, so its session gives it (providerkit.WorkspaceTrustRequestKey).
 func (zcodeProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
 	if providerkit.IsWorkspaceTrustQuestion(payload) {
 		return providerkit.WorkspaceTrustRequestKey(payload, agentSessionID)
