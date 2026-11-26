@@ -168,6 +168,7 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 			return
 		}
 		if a.acknowledgeClaudeInputReply(routing.sessionID, &env) || routing.isReplay && claudeReplayedPrompt(&env) {
+			a.flushHeldAPIErrorIfPending()
 			return
 		}
 	}
@@ -205,6 +206,10 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 		frame := destination.captureFrame(content, msgType, &env)
 		if frame.spans == nil {
 			a.releaseClaudeInferredTurn(inputEvidence)
+			if result != nil {
+				a.retireUnprovedClaudeReply(result.reply)
+				result.reply = nil
+			}
 			return func(agent.TranscriptSequence) error {
 				return errors.New("the Claude frame has no retained span authority")
 			}
@@ -216,6 +221,7 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 				frame.content.InputTurnOutcome = outcome
 			} else if result != nil {
 				a.retireUnprovedClaudeReply(result.reply)
+				result.reply = nil
 			}
 		}
 		frame.inputEvidence = inputEvidence
@@ -306,7 +312,7 @@ type claudeReceivedResult struct {
 
 func (a *Agent) captureClaudeResultEdge(sessionID string, fromPeer bool) *claudeReceivedResult {
 	a.Mu.Lock()
-	if fromPeer && a.inputReply != nil {
+	if fromPeer && a.inputReply != nil && a.inputReply.acknowledged && (sessionID == "" || a.inputReply.receipt.SessionID == sessionID) {
 		// A peer result can arrive while the ordinary input still owns the turn.
 		a.Mu.Unlock()
 		return nil
@@ -610,6 +616,20 @@ func (a *Agent) resolveHeldAPIError(sequence agent.TranscriptSequence, resolver 
 	}
 	a.clearHeldAPIError(held)
 	return nil
+}
+
+func (a *Agent) flushHeldAPIErrorIfPending() {
+	a.heldAPIErrorMu.Lock()
+	hasHeld := a.heldAPIError != nil
+	a.heldAPIErrorMu.Unlock()
+	if !hasHeld {
+		return
+	}
+	a.routeClaudeRootSequence("flush held Claude API error", func(func()) claudeRootSequence {
+		return func(sequence agent.TranscriptSequence) error {
+			return a.resolveHeldAPIError(sequence, nil)
+		}
+	})
 }
 
 func (a *Agent) clearHeldAPIError(held *claudeHeldAPIError) {

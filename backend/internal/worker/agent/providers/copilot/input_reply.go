@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"log/slog"
 	"slices"
@@ -31,6 +32,7 @@ type copilotReplyFrame struct {
 }
 
 type copilotReplyCapture struct {
+	order         uint64
 	receipt       agent.NativeInputReceipt
 	steer         *copilotQueuedSteer
 	early         []copilotReplyFrame
@@ -79,8 +81,24 @@ func (a *Agent) registerNativeReplyCapture(capture *copilotReplyCapture) *copilo
 	if a.replyCaptures == nil {
 		a.replyCaptures = make(map[*copilotReplyCapture]struct{})
 	}
+	a.nextReplyCaptureOrder++
+	capture.order = a.nextReplyCaptureOrder
 	a.replyCaptures[capture] = struct{}{}
 	return capture
+}
+
+func (a *Agent) orderedReplyCaptures() []*copilotReplyCapture {
+	if len(a.replyCaptures) == 0 {
+		return nil
+	}
+	ordered := make([]*copilotReplyCapture, 0, len(a.replyCaptures))
+	for capture := range a.replyCaptures {
+		ordered = append(ordered, capture)
+	}
+	slices.SortFunc(ordered, func(left, right *copilotReplyCapture) int {
+		return cmp.Compare(left.order, right.order)
+	})
+	return ordered
 }
 
 func (a *Agent) acceptNativeReplyCapture(capture *copilotReplyCapture, messageID string) agent.NativeInputReceipt {
@@ -184,15 +202,21 @@ func (a *Agent) finishDeferredSteerEvents() {
 	a.flushDeferredSteerEvents()
 }
 
-func (a *Agent) reportNativeSteer(capture *copilotReplyCapture, outcome agent.SteerOutcome) {
-	resolution := capture.steer.resolution
+func reportCopilotSteer(sink agent.ProviderServices, steer *copilotQueuedSteer, outcome agent.SteerOutcome, receipt agent.NativeInputReceipt, msg string, attrs ...any) error {
+	resolution := steer.resolution
 	resolution.Outcome = outcome
 	if outcome == agent.SteerOutcomeEchoed {
-		resolution.Receipt = capture.receipt
+		resolution.Receipt = receipt
 	}
-	if err := agent.RetainSteerResolution(a.sink, resolution); !agent.OutputRetained(err) {
-		slog.Warn("Retain Copilot steer outcome", "error", err)
+	err := agent.RetainSteerResolution(sink, resolution)
+	if !agent.OutputRetained(err) {
+		slog.Warn(msg, append(attrs, "error", err)...)
 	}
+	return err
+}
+
+func (a *Agent) reportNativeSteer(capture *copilotReplyCapture, outcome agent.SteerOutcome) {
+	_ = reportCopilotSteer(a.sink, capture.steer, outcome, capture.receipt, "Retain Copilot steer outcome")
 }
 
 type copilotSteerWithdrawal struct {
@@ -204,7 +228,7 @@ func (a *Agent) pendingNativeSteerWithdrawals() []copilotSteerWithdrawal {
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
 	var pending []copilotSteerWithdrawal
-	for capture := range a.replyCaptures {
+	for _, capture := range a.orderedReplyCaptures() {
 		if capture.steer != nil && !capture.steer.echoed && capture.receipt.InputID != "" {
 			pending = append(pending, copilotSteerWithdrawal{
 				capture: capture, messageID: capture.receipt.InputID, prompt: capture.steer.prompt,
@@ -226,7 +250,7 @@ func (a *Agent) dropUnreadNativeSteer(capture *copilotReplyCapture) {
 // dropUnreadNativeSteers reports pending inputs of a disposed session.
 // The caller holds outputMu.
 func (a *Agent) dropUnreadNativeSteers() {
-	for capture := range a.replyCaptures {
+	for _, capture := range a.orderedReplyCaptures() {
 		if capture.steer != nil && !capture.steer.echoed {
 			delete(a.replyCaptures, capture)
 			a.reportNativeSteer(capture, agent.SteerOutcomeDropped)
@@ -245,9 +269,9 @@ func (frame copilotReplyFrame) identifiesInput(messageID string) bool {
 
 // observeNativeReply runs after the event's transcript row or control card
 // is published. outputMu also serializes it against RPC acknowledgements.
-func (a *Agent) observeNativeReply(raw []byte, event copilotEvent) {
+func (a *Agent) observeNativeReply(raw []byte, event copilotEvent, controlKey string) {
 	if event.AgentID != "" {
-		a.observeChildReply(raw, event)
+		a.observeChildReply(raw, event, controlKey)
 	}
 	if len(a.replyCaptures) == 0 {
 		return
@@ -264,18 +288,16 @@ func (a *Agent) observeNativeReply(raw []byte, event copilotEvent) {
 			contracts.CopilotEventSessionError:
 			_ = json.Unmarshal(event.Data, &frame.fields)
 		default:
-			for _, spec := range copilotControlSpecs {
-				if spec.requestEvent == frame.kind {
-					if control, owner := a.nativeReplyControl(raw); owner == "" {
-						frame.control = control
-					}
-					break
+			if copilotControlSpecForRequest(frame.kind) != nil {
+				if control, owner := a.nativeReplyControl(raw, controlKey); owner == "" {
+					frame.control = control
 				}
 			}
 		}
 	}
+	captures := a.orderedReplyCaptures()
 	if frame.root && frame.kind == contracts.CopilotEventUserMessage {
-		for capture := range a.replyCaptures {
+		for _, capture := range captures {
 			if capture.steer != nil && !capture.steer.echoed && frame.identifiesInput(capture.receipt.InputID) {
 				frame.steerEcho = true
 				break
@@ -284,14 +306,14 @@ func (a *Agent) observeNativeReply(raw []byte, event copilotEvent) {
 	}
 	if frame.control.RequestID != "" {
 		var acknowledged []*copilotReplyCapture
-		for capture := range a.replyCaptures {
+		for _, capture := range captures {
 			if capture.receipt.InputID != "" {
 				acknowledged = append(acknowledged, capture)
 			}
 		}
 		a.bindNativeReplyControl(frame, acknowledged)
 	}
-	for capture := range a.replyCaptures {
+	for _, capture := range captures {
 		if capture.receipt.InputID != "" {
 			a.advanceNativeReplyCapture(capture, frame)
 		} else if len(capture.early) == maxCopilotEarlyReplyFrames {
@@ -320,10 +342,14 @@ func (a *Agent) bindNativeReplyControl(frame copilotReplyFrame, captures []*copi
 	}
 }
 
-func (a *Agent) nativeReplyControl(raw []byte) (agent.NativeControlInputs, string) {
-	key, ok := (copilotProvider{}).ControlRequestKey(raw, a.currentNativeSessionID())
-	if !ok {
-		return agent.NativeControlInputs{}, ""
+func (a *Agent) nativeReplyControl(raw []byte, controlKey string) (agent.NativeControlInputs, string) {
+	key := controlKey
+	if key == "" {
+		var ok bool
+		key, ok = (copilotProvider{}).ControlRequestKey(raw, a.currentNativeSessionID())
+		if !ok {
+			return agent.NativeControlInputs{}, ""
+		}
 	}
 	a.controlMu.Lock()
 	defer a.controlMu.Unlock()
@@ -442,13 +468,13 @@ func (a *Agent) endNativeReplyCapture(capture *copilotReplyCapture, outcome leap
 			Inputs: []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: copilotReplyInputOrdinal}},
 			Items:  capture.items,
 		})
-		if err == nil || agent.OutputRetained(err) {
+		if agent.OutputRetained(err) {
 			return
 		}
 		slog.Error("Persist exact Copilot reply", "error", err)
 		outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
 	}
-	if err := a.sink.RetireNativeInputTurn(receipt, outcome); err != nil && !agent.OutputRetained(err) {
+	if err := a.sink.RetireNativeInputTurn(receipt, outcome); !agent.OutputRetained(err) {
 		slog.Error("Record Copilot reply outcome", "error", err)
 	}
 }
@@ -456,7 +482,7 @@ func (a *Agent) endNativeReplyCapture(capture *copilotReplyCapture, outcome leap
 // discardNativeReplyCaptures ends unfinished waits for the retiring session.
 // The caller holds outputMu.
 func (a *Agent) discardNativeReplyCaptures() {
-	for capture := range a.replyCaptures {
+	for _, capture := range a.orderedReplyCaptures() {
 		if capture.receipt.InputID != "" {
 			a.endNativeReplyCapture(capture, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 		}

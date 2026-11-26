@@ -13,6 +13,7 @@ import (
 )
 
 type copilotReplyTestEvent struct {
+	agentID          string
 	kind, id, parent string
 	ephemeral        bool
 	data             map[string]any
@@ -21,12 +22,16 @@ type copilotReplyTestEvent struct {
 func deliverCopilotReplyEvents(t *testing.T, a *Agent, events []copilotReplyTestEvent) {
 	t.Helper()
 	for _, event := range events {
+		payload := map[string]any{
+			"type": event.kind, "id": event.id, "parentId": event.parent, "data": event.data,
+			"ephemeral": event.ephemeral,
+		}
+		if event.agentID != "" {
+			payload["agentId"] = event.agentID
+		}
 		raw, err := json.Marshal(map[string]any{
 			"jsonrpc": "2.0", "method": "session.event",
-			"params": map[string]any{"sessionId": "session-1", "event": map[string]any{
-				"type": event.kind, "id": event.id, "parentId": event.parent, "data": event.data,
-				"ephemeral": event.ephemeral,
-			}},
+			"params": map[string]any{"sessionId": "session-1", "event": payload},
 		})
 		require.NoError(t, err)
 		a.HandleOutput(raw)
@@ -211,5 +216,10 @@ func TestCopilotSendInputForSessionAndSteerInputReturnReceipts(t *testing.T) {
 	a, _, _ := newCopilotSteeringAgent(t, copilotSteerScript{})
 	steerReceipt, err := a.SteerInput(testCopilotSteerRequest("Focus on the diff."))
 	require.NoError(t, err)
-	assert.Equal(t, agent.NativeInputReceipt{SessionID: "session-1", InputID: "native-steer", TurnID: "native-steer"}, steerReceipt)
+	assert.Zero(t, steerReceipt, "RowAtEcho steer must return an empty receipt so inputqueue holds it for echo")
+
+	// Control-reply steers carry an empty AttemptID and must succeed without steer tracking.
+	controlReceipt, err := a.SteerInput(agent.SteerRequest{InputID: "control-feedback", Content: "denied reason"})
+	require.NoError(t, err)
+	assert.Zero(t, controlReceipt)
 }

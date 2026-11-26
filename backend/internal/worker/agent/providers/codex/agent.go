@@ -82,7 +82,7 @@ type Agent struct {
 	replySteers []agent.NativeInputReceipt
 	// pendingStart keeps delivery ownership after a caller stops waiting.
 	pendingStart     *codexPendingTurnStart
-	replyStarts      map[string]*codexPendingTurnStart
+	replyStarts      map[string]*codexTrackedReply
 	settingRevisions map[string]uint64
 	// A contextCompaction item can confirm a compact request before its JSON-RPC
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
@@ -608,22 +608,17 @@ func (a *Agent) interruptMainTurn(threadID, turnID string) (accepted bool, err e
 // Stop stops the process, then retains unfinished model output.
 func (a *Agent) Stop() {
 	a.Process.Stop()
-	a.outputMu.Lock()
-	a.finishCodexSteersAfterExit()
-	completion := a.ProcessExitCompletion()
-	a.flushAllCodexGeneration(completion)
-	a.persistIncompleteCodexTools("", true, completion)
-	a.finishAllCodexRawExecutions(completion)
-	a.retireCodexInputAfterExit()
-	a.retireCodexInputReplies("")
-	a.rawExecutionOrder = 0
-	a.outputMu.Unlock()
-	providerkit.ResetSpansAndProgress(a.sink)
+	a.finalizeCodexExit()
 }
 
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.finalizeCodexExit()
+	return err
+}
+
+func (a *Agent) finalizeCodexExit() {
 	completion := a.ProcessExitCompletion()
 	a.outputMu.Lock()
 	a.finishCodexSteersAfterExit()
@@ -635,7 +630,6 @@ func (a *Agent) Wait() error {
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	providerkit.ResetSpansAndProgress(a.sink)
-	return err
 }
 
 // PublishTurnActive publishes the current turn and pending input state.
@@ -697,7 +691,7 @@ func (a *Agent) sendInputWithTracking(expected *string, content string, attachme
 	if err := a.awaitCodexTurnStart(pending); err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
-	return pending.receipt, nil
+	return pending.reply.receipt, nil
 }
 
 func (a *Agent) CompactContext() error {

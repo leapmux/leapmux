@@ -176,7 +176,7 @@ func TestCodexReadControlRequest_ReadsATextFieldOfTheWrongTypeAsAbsent(t *testin
 }
 
 // TestCodexReadControlRequest_StatesNoTitleForAnotherMethod covers a method
-// that names no approval. A method that spells a member of JavaScript's
+// that identifies no approval. A method that spells a member of JavaScript's
 // Object.prototype is an unknown method as well.
 func TestCodexReadControlRequest_StatesNoTitleForAnotherMethod(t *testing.T) {
 	t.Parallel()
@@ -1458,4 +1458,41 @@ func codexAllowOption(t *testing.T, permission *leapmuxv1.PermissionPrompt) *lea
 	}
 	require.NotNil(t, allowAlways, "the prompt offers an allow option")
 	return allowAlways
+}
+
+func TestCodexUserInputAnswerIgnoresNonObjectOptionsForIsOtherAndUsesJSSpace(t *testing.T) {
+	t.Parallel()
+	// Options array containing only non-object entries yields zero options in QuestionsFromWire,
+	// so isOther must not prepend "None of the above".
+	payload := codexRequestPayload(t, contracts.CodexMethodToolRequestUserInput, map[string]any{
+		"questions": []any{
+			map[string]any{
+				"id":       "q1",
+				"question": "Details?",
+				"isOther":  true,
+				"options":  []any{nil},
+			},
+			map[string]any{
+				"id":       "q2",
+				"question": "Choice?",
+				"options":  []any{map[string]any{"label": "Yes"}},
+			},
+		},
+	})
+	answer := requireCodexAnswer(t, payload, "req-1", agenttest.QuestionDecision(
+		agenttest.QuestionAnswer("\u0085"),
+		agenttest.QuestionAnswer("\uFEFF", "Yes"),
+	))
+	var envelope struct {
+		Result struct {
+			Answers map[string]struct {
+				Answers []string `json:"answers"`
+			} `json:"answers"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(answer.Content, &envelope))
+	assert.Equal(t, []string{"user_note: \u0085"}, envelope.Result.Answers["q1"].Answers,
+		"non-object options must not trigger None of the above, and U+0085 is not JS whitespace")
+	assert.Equal(t, []string{"Yes"}, envelope.Result.Answers["q2"].Answers,
+		"U+FEFF is JS whitespace and must not emit a user_note")
 }

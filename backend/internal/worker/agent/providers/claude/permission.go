@@ -88,6 +88,7 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	if a.incomingControls == nil {
 		a.incomingControls = make(map[string]*claudePendingControl)
 	}
+	var replacedInstanceID string
 	if existing := a.incomingControls[envelope.RequestID]; existing != nil {
 		if existing.answering {
 			a.Mu.Unlock()
@@ -96,6 +97,9 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 		if bytes.Equal(existing.payload, content) {
 			record = existing
 		} else {
+			if existing.published {
+				replacedInstanceID = existing.instanceID
+			}
 			existing.publicationOnce.Do(func() { close(existing.publicationDone) })
 		}
 	}
@@ -107,10 +111,13 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	a.Mu.Unlock()
 	if bypass {
+		if replacedInstanceID != "" {
+			a.sink.CancelControlRequestInstance(envelope.RequestID, replacedInstanceID)
+		}
 		a.queuePermissionApprovals()
 		return
 	}
-	a.publishRegisteredControl(envelope.RequestID, record)
+	a.publishRegisteredControl(envelope.RequestID, record, replacedInstanceID)
 }
 
 func (a *Agent) canBypassControlLocked(record *claudePendingControl) bool {
@@ -119,7 +126,7 @@ func (a *Agent) canBypassControlLocked(record *claudePendingControl) bool {
 		record.sessionID == a.sessionID && len(record.automaticReply) > 0 && !record.automaticFailed
 }
 
-func (a *Agent) publishRegisteredControl(requestID string, record *claudePendingControl) {
+func (a *Agent) publishRegisteredControl(requestID string, record *claudePendingControl, replacedInstanceID string) {
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
 		RequestID: requestID, InstanceID: record.instanceID, AgentSessionID: record.sessionID, NativeTurnID: record.nativeTurnID, Payload: record.payload,
 	})
@@ -139,6 +146,9 @@ func (a *Agent) publishRegisteredControl(requestID string, record *claudePending
 	a.Mu.Unlock()
 	if cancel {
 		a.sink.CancelControlRequestInstance(requestID, record.instanceID)
+	}
+	if err != nil && replacedInstanceID != "" {
+		a.sink.CancelControlRequestInstance(requestID, replacedInstanceID)
 	}
 	if bypass {
 		a.queuePermissionApprovals()
@@ -186,7 +196,7 @@ func (a *Agent) approvePendingPermissions() {
 	}
 	a.Mu.Unlock()
 	for requestID, record := range publish {
-		a.publishRegisteredControl(requestID, record)
+		a.publishRegisteredControl(requestID, record, "")
 	}
 	for requestID, record := range claimed {
 		a.Mu.Lock()
@@ -217,7 +227,7 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 	}
 	// Claude Code can ask again under a waiting request ID with another request,
 	// which replaces the answered instance (claudeCodeHandleControlRequest). It
-	// applies an answer to the request that the ID names now, so the answer goes
+	// applies an answer to the request that the ID identifies now, so the answer goes
 	// only to the instance that it states (agent.RawInput.ControlInstanceID).
 	a.Mu.Lock()
 	record := a.incomingControls[frame.Response.RequestID]
@@ -287,7 +297,7 @@ func (a *Agent) finishControlAnswer(requestID string, record *claudePendingContr
 		a.sink.CancelControlRequestInstance(requestID, record.instanceID)
 	}
 	if current && publish {
-		a.publishRegisteredControl(requestID, record)
+		a.publishRegisteredControl(requestID, record, "")
 	}
 }
 

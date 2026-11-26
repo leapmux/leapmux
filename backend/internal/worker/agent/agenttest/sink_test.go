@@ -1306,3 +1306,46 @@ func TestSink_UpsertBackgroundTaskDefaultsParentAgentIDAfterPreservingBlanks(t *
 	assert.Equal(t, "Run build", row.Title)
 	assert.Equal(t, "Testing", row.ActiveForm)
 }
+
+func TestSink_RecordsNativeControlAndInputTurnBindings(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	assert.Empty(t, sink.NativeControlInputBindings())
+	assert.Empty(t, sink.NativeInputTurnBindings())
+
+	inputIDs := []string{"input-1", "input-2"}
+	require.NoError(t, sink.SetNativeControlInputs(agent.NativeControlInputs{
+		SessionID:  "sess-1",
+		RequestID:  "req-1",
+		InstanceID: "inst-1",
+		InputIDs:   inputIDs,
+	}))
+	// Mutating the caller slice must not mutate the recorded binding.
+	inputIDs[0] = "mutated"
+
+	gotControls := sink.NativeControlInputBindings()
+	require.Len(t, gotControls, 1)
+	assert.Equal(t, agent.NativeControlInputs{
+		SessionID:  "sess-1",
+		RequestID:  "req-1",
+		InstanceID: "inst-1",
+		InputIDs:   []string{"input-1", "input-2"},
+	}, gotControls[0])
+	// Mutating the returned slice must not mutate the sink's state.
+	gotControls[0].InputIDs[0] = "mutated-again"
+	assert.Equal(t, []string{"input-1", "input-2"}, sink.NativeControlInputBindings()[0].InputIDs)
+
+	receipt := agent.NativeInputReceipt{SessionID: "sess-1", InputID: "input-1"}
+	require.NoError(t, sink.BindNativeInputTurn(receipt, "turn-1"))
+	gotTurns := sink.NativeInputTurnBindings()
+	assert.Equal(t, map[agent.NativeInputReceipt]string{receipt: "turn-1"}, gotTurns)
+	gotTurns[receipt] = "mutated-turn"
+	assert.Equal(t, "turn-1", sink.NativeInputTurnBindings()[receipt])
+
+	child := sink.Child("child-1")
+	require.NoError(t, child.SetNativeControlInputs(agent.NativeControlInputs{
+		SessionID: "child-sess", RequestID: "child-req", InstanceID: "child-inst", InputIDs: []string{"child-in"},
+	}))
+	assert.Len(t, sink.NativeControlInputBindings(), 1)
+	assert.Len(t, child.NativeControlInputBindings(), 1)
+}

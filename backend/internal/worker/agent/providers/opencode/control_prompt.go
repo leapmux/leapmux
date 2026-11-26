@@ -10,8 +10,8 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -28,14 +28,22 @@ import (
 //   - Any other request reads as unrecognized. The registry publishes no
 //     other request, and the resolver refuses an answer to one.
 func (opencodeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	if form, ok := readOpenCodePromptForm(input.Payload); ok {
-		if form.isQuestion() {
-			return openCodeQuestionPrompt(form)
-		}
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: openCodeElicitationPrompt(form)}}
+	event, err := decodeOpenCodeControlEnvelope(input.Payload)
+	if err != nil {
+		return agent.UnrecognizedControlPrompt()
 	}
-	if permission, ok := readOpenCodePermissionPrompt(input.Payload); ok {
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
+	switch event.Type {
+	case contracts.OpenCodeNativeEventFormCreated:
+		if form, ok := readOpenCodePromptFormFrom(event.Data); ok {
+			if form.isQuestion() {
+				return openCodeQuestionPrompt(form)
+			}
+			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: openCodeElicitationPrompt(form)}}
+		}
+	case contracts.OpenCodeNativeEventPermissionAsked:
+		if permission, ok := readOpenCodePermissionPromptFrom(event.Data); ok {
+			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
+		}
 	}
 	return agent.UnrecognizedControlPrompt()
 }
@@ -56,11 +64,21 @@ func (opencodeProvider) AnswerControlRequest(input agent.ControlAnswerInput) (ag
 		return answerOpenCodeQuestions(input)
 	case *leapmuxv1.ControlPrompt_Elicitation:
 		return agent.AnswerElicitation(input, nil)
-	}
-	if _, ok := readOpenCodePermissionPrompt(input.Request.Payload); ok {
-		return answerOpenCodePermission(input)
+	case *leapmuxv1.ControlPrompt_Permission:
+		if isOpenCodePermissionEvent(input.Request.Payload) {
+			return answerOpenCodePermission(input)
+		}
 	}
 	return agent.ControlAnswer{}, agent.InvalidControlDecision("OpenCode publishes no such request")
+}
+
+func isOpenCodePermissionEvent(payload []byte) bool {
+	event, err := decodeOpenCodeControlEnvelope(payload)
+	if err != nil || event.Type != contracts.OpenCodeNativeEventPermissionAsked {
+		return false
+	}
+	_, ok := providerkit.RawObject(event.Data)
+	return ok
 }
 
 // answerOpenCodePermission answers a native permission:
@@ -80,7 +98,7 @@ func answerOpenCodePermission(input agent.ControlAnswerInput) (agent.ControlAnsw
 	if feedback := decision.GetFeedback(); feedback != "" {
 		return agent.ControlAnswer{Content: agent.DenyResponse(input.RequestID, feedback)}, nil
 	}
-	return agent.ControlAnswer{Content: acp.SelectedOptionResult(input.RequestID, option.GetOptionId())}, nil
+	return agent.ControlAnswer{Content: providerkit.SelectedOptionResult(input.RequestID, option.GetOptionId())}, nil
 }
 
 // answerOpenCodeQuestions answers the questions of a question-tool form in
@@ -108,10 +126,7 @@ func answerOpenCodeQuestions(input agent.ControlAnswerInput) (agent.ControlAnswe
 		values := agent.QuestionAnswerValues(question, agent.QuestionAnswerAt(decision, i))
 		switch {
 		case question.GetMultiSelect():
-			if values == nil {
-				values = []string{}
-			}
-			answer[question.GetId()] = values
+			answer[question.GetId()] = ptrconv.NonNil(values)
 		case len(values) > 0:
 			answer[question.GetId()] = values[0]
 		}
@@ -136,12 +151,8 @@ func answerOpenCodeQuestions(input agent.ControlAnswerInput) (agent.ControlAnswe
 //
 // A member of the wrong type reads as absent, and the reader drops a
 // resource that is no string.
-func readOpenCodePermissionPrompt(payload []byte) (*leapmuxv1.PermissionPrompt, bool) {
-	event := providerkit.RawFields(payload)
-	if eventType, _ := providerkit.RawString(event["type"]); eventType != contracts.OpenCodeNativeEventPermissionAsked {
-		return nil, false
-	}
-	data, ok := providerkit.RawObject(event["data"])
+func readOpenCodePermissionPromptFrom(rawData json.RawMessage) (*leapmuxv1.PermissionPrompt, bool) {
+	data, ok := providerkit.RawObject(rawData)
 	if !ok {
 		return nil, false
 	}
@@ -209,12 +220,8 @@ type openCodePromptField struct {
 // a field that is no object, has no string key or has a type outside
 // contracts.OpenCodeNativeFormFieldType*, reads as no form at all: a prompt
 // that dropped the field would send an answer that the form does not take.
-func readOpenCodePromptForm(payload []byte) (openCodePromptForm, bool) {
-	event := providerkit.RawFields(payload)
-	if eventType, _ := providerkit.RawString(event["type"]); eventType != contracts.OpenCodeNativeEventFormCreated {
-		return openCodePromptForm{}, false
-	}
-	form, ok := providerkit.RawObject(providerkit.RawFields(event["data"])["form"])
+func readOpenCodePromptFormFrom(rawData json.RawMessage) (openCodePromptForm, bool) {
+	form, ok := providerkit.RawObject(providerkit.RawFields(rawData)["form"])
 	if !ok {
 		return openCodePromptForm{}, false
 	}
@@ -233,11 +240,7 @@ func readOpenCodePromptForm(payload []byte) (openCodePromptForm, bool) {
 			return openCodePromptForm{}, false
 		}
 		fieldType := providerkit.ObjectString(members, "type")
-		switch fieldType {
-		case contracts.OpenCodeNativeFormFieldTypeString, contracts.OpenCodeNativeFormFieldTypeNumber,
-			contracts.OpenCodeNativeFormFieldTypeInteger, contracts.OpenCodeNativeFormFieldTypeBoolean,
-			contracts.OpenCodeNativeFormFieldTypeMultiselect, contracts.OpenCodeNativeFormFieldTypeExternal:
-		default:
+		if !isValidOpenCodeFormFieldType(fieldType) {
 			return openCodePromptForm{}, false
 		}
 		fields = append(fields, openCodePromptField{key: key, fieldType: fieldType, members: members})
@@ -338,13 +341,10 @@ func openCodeQuestionOptions(raw json.RawMessage) []*leapmuxv1.QuestionOption {
 // maximum rounds down. The count caps at math.MaxInt32.
 func openCodeSelectionCount(raw json.RawMessage, round func(float64) float64) *int32 {
 	value, ok := providerkit.RawFloat64(raw)
-	if !ok {
+	if !ok || value < 0 {
 		return nil
 	}
 	rounded := round(value)
-	if rounded < 0 {
-		return nil
-	}
 	count := int32(min(float64(math.MaxInt32), rounded))
 	return &count
 }
@@ -487,8 +487,8 @@ func rawOrNull(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// atLeastOne is the bound of a required field: the stated number when it is
-// one or more, else one. A value that is no number states no bound.
+// atLeastOne is the minimum of a required field: the stated number when it is
+// one or more, else one. A value that is no number states no minimum.
 func atLeastOne(raw json.RawMessage) json.RawMessage {
 	if value, ok := providerkit.RawFloat64(raw); ok && value > 1 {
 		return providerkit.JSONText(value)
@@ -536,12 +536,13 @@ func openCodeConditionValue(raw json.RawMessage) (json.RawMessage, bool) {
 	if text, ok := providerkit.RawString(raw); ok {
 		return providerkit.JSONText(text), true
 	}
-	if number, ok := providerkit.RawFloat64(raw); ok {
-		return providerkit.JSONText(number), true
+	trimmed := bytes.TrimSpace(raw)
+	if _, ok := providerkit.RawFloat64(trimmed); ok {
+		return trimmed, true
 	}
-	switch string(bytes.TrimSpace(raw)) {
+	switch string(trimmed) {
 	case "true", "false":
-		return bytes.TrimSpace(raw), true
+		return trimmed, true
 	}
 	return nil, false
 }

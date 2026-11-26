@@ -1,14 +1,18 @@
 package mimo
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"slices"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 const mimoReceiptUpdated = "session.receipt.updated"
@@ -28,6 +32,7 @@ type mimoInputReply struct {
 	native  mimoReceiptUpdate
 	childID string
 	owned   bool
+	order   uint64
 	// A specified outcome freezes the parts observed before native settlement.
 	outcome   leapmuxv1.AgentInputTurnOutcome
 	projected bool
@@ -87,7 +92,8 @@ func (a *Agent) inputReplyLocked(update mimoReceiptUpdate, childID string) *mimo
 	}
 	reply := a.inputReplies[update.ID]
 	if reply == nil || reply.native.SessionID != update.SessionID || reply.native.ActorID != update.ActorID || reply.childID != childID {
-		reply = &mimoInputReply{native: update, childID: childID}
+		a.nextInputReplyOrder++
+		reply = &mimoInputReply{native: update, childID: childID, order: a.nextInputReplyOrder}
 		a.inputReplies[update.ID] = reply
 	}
 	return reply
@@ -131,7 +137,7 @@ func (a *Agent) confirmPromptReceipt(sessionID string, send *mimoInputSend, rece
 	if reply != nil {
 		a.refreshChildReceiptTurn(reply)
 		if !settled {
-			a.bindOpenReplyControls()
+			a.bindOpenReplyControls(reply.native.SessionID, reply.childID)
 		}
 	}
 	return mimoNativeReceipt(sessionID, receiptID)
@@ -186,9 +192,10 @@ func (a *Agent) applyReceiptUpdate(update mimoReceiptUpdate) {
 			reply.parts = make(map[string]mimoReplyPart)
 		}
 		bind := nowDelivered && reply.owned
+		sessionID, replyChildID := reply.native.SessionID, reply.childID
 		a.Mu.Unlock()
 		if bind {
-			a.bindOpenReplyControls()
+			a.bindOpenReplyControls(sessionID, replyChildID)
 		}
 	case "settled", "cancelled", "rejected":
 		reply = a.inputReplyLocked(update, childID)
@@ -282,6 +289,9 @@ func (a *Agent) abandonRepliesMatching(match func(*mimoInputReply) bool) {
 		}
 	}
 	a.Mu.Unlock()
+	slices.SortFunc(replies, func(left, right *mimoInputReply) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	for _, reply := range replies {
 		a.publishInputReply(reply)
 	}
@@ -295,22 +305,62 @@ func (a *Agent) abandonRepliesMatching(match func(*mimoInputReply) bool) {
 // The caller holds dispatchMu so live events follow these snapshots.
 func (a *Agent) reconcileInputReplies(ctx context.Context) {
 	a.abandonRepliesMatching(func(reply *mimoInputReply) bool { return reply.childID == "" })
+	type pendingChildReceipt struct {
+		order   uint64
+		receipt mimoReceiptUpdate
+	}
 	a.Mu.Lock()
-	var children []mimoReceiptUpdate
+	var children []pendingChildReceipt
 	for _, reply := range a.inputReplies {
 		if reply.childID != "" && reply.outcome == 0 {
 			reply.textUnproved = true
-			children = append(children, reply.native)
+			children = append(children, pendingChildReceipt{order: reply.order, receipt: reply.native})
 		}
 	}
 	a.Mu.Unlock()
-	for _, receipt := range children {
-		update, err := a.rpc.readInputReceipt(ctx, receipt.SessionID, receipt.ID)
-		if err != nil {
-			slog.Debug("read the MiMo child receipt after reconnect", "receipt", receipt.ID, "error", err)
+	if len(children) == 0 {
+		return
+	}
+	slices.SortFunc(children, func(left, right pendingChildReceipt) int {
+		return cmp.Compare(left.order, right.order)
+	})
+	type childReceiptResult struct {
+		receipt mimoReceiptUpdate
+		update  mimoReceiptUpdate
+		err     error
+	}
+	results := make([]childReceiptResult, len(children))
+	if len(children) == 1 {
+		update, err := a.rpc.readInputReceipt(ctx, children[0].receipt.SessionID, children[0].receipt.ID)
+		results[0] = childReceiptResult{receipt: children[0].receipt, update: update, err: err}
+	} else {
+		const maxConcurrentReceiptReads = 8
+		sem := make(chan struct{}, maxConcurrentReceiptReads)
+		var wg sync.WaitGroup
+		for i, entry := range children {
+			wg.Add(1)
+			go func(index int, receipt mimoReceiptUpdate) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				update, err := a.rpc.readInputReceipt(ctx, receipt.SessionID, receipt.ID)
+				results[index] = childReceiptResult{receipt: receipt, update: update, err: err}
+			}(i, entry.receipt)
+		}
+		wg.Wait()
+	}
+	for _, res := range results {
+		if res.err != nil {
+			if providerkit.IsHTTPStatus(res.err, http.StatusNotFound) {
+				a.abandonRepliesMatching(func(reply *mimoInputReply) bool {
+					return reply.native.SessionID == res.receipt.SessionID && reply.native.ID == res.receipt.ID
+				})
+				continue
+			}
+			slog.Debug("read the MiMo child receipt after reconnect", "receipt", res.receipt.ID, "error", res.err)
 			continue
 		}
-		a.applyReceiptUpdate(update)
+		a.applyReceiptUpdate(res.update)
 	}
 }
 
@@ -330,22 +380,6 @@ func (a *Agent) refreshChildReceiptTurn(reply *mimoInputReply) {
 	if reply.childID == "" {
 		return
 	}
-	a.Mu.Lock()
-	actor := a.actors[reply.native.ActorID]
-	if actor == nil || actor.childAgentID != reply.childID || a.sessionID != reply.native.SessionID {
-		a.Mu.Unlock()
-		return
-	}
-	wasRunning, wasClosed := actor.running, actor.closed
-	running := actor.toolRunning || a.hasOpenChildReceiptLocked(actor, reply.native.SessionID)
-	a.Mu.Unlock()
-	if running == wasRunning {
-		return
-	}
-	if running {
-		a.startActorTurn(reply.native.ActorID, false, wasClosed)
-		return
-	}
 	outcome := contracts.MiMoActorOutcomeCancelled
 	switch {
 	case reply.native.State == "settled" && reply.native.Outcome == "success":
@@ -353,7 +387,7 @@ func (a *Agent) refreshChildReceiptTurn(reply *mimoInputReply) {
 	case reply.native.State == "rejected" || reply.native.Outcome == "assistant_error":
 		outcome = contracts.MiMoActorOutcomeFailure
 	}
-	a.endActorTurn(mimoActorStatus{ActorID: reply.native.ActorID, LastOutcome: outcome}, false)
+	a.syncActorReceiptTurn(reply.native.SessionID, reply.native.ActorID, reply.childID, outcome)
 }
 
 // recordInputReplyText adds a text row once the transcript owns its write.
@@ -402,15 +436,24 @@ func (a *Agent) retractReplyTextLocked(messageID, key string) {
 
 // bindOpenReplyControls retries attribution when a delivery or its HTTP
 // acknowledgment follows the control's publication.
-func (a *Agent) bindOpenReplyControls() {
+func (a *Agent) bindOpenReplyControls(sessionID, childID string) {
+	type pendingControl struct {
+		id      string
+		control *mimoControl
+	}
 	a.Mu.Lock()
-	controls := make(map[string]*mimoControl, len(a.controls))
+	var controls []pendingControl
 	for id, control := range a.controls {
-		controls[id] = control
+		if control.sessionID == sessionID && control.childID == childID {
+			controls = append(controls, pendingControl{id: id, control: control})
+		}
 	}
 	a.Mu.Unlock()
-	for id, control := range controls {
-		a.bindControlReplyInputs(id, control)
+	slices.SortFunc(controls, func(left, right pendingControl) int {
+		return cmp.Compare(left.id, right.id)
+	})
+	for _, entry := range controls {
+		a.bindControlReplyInputs(entry.id, entry.control)
 	}
 }
 
@@ -425,15 +468,22 @@ func (a *Agent) bindControlReplyInputs(requestID string, control *mimoControl) {
 			}
 		}
 	}
+	slices.Sort(ids)
+	unchanged := len(ids) == 0 || slices.Equal(control.boundInputIDs, ids)
 	a.Mu.Unlock()
-	if len(ids) == 0 {
+	if unchanged {
 		return
 	}
-	slices.Sort(ids)
 	err := a.controlSink(control).SetNativeControlInputs(agent.NativeControlInputs{
 		SessionID: control.sessionID, RequestID: requestID, InstanceID: control.instanceID, InputIDs: ids,
 	})
 	if !agent.OutputRetained(err) {
 		slog.Warn("bind the MiMo control to its native inputs", "request_id", requestID, "error", err)
+		return
 	}
+	a.Mu.Lock()
+	if a.controls[requestID] == control {
+		control.boundInputIDs = ids
+	}
+	a.Mu.Unlock()
 }

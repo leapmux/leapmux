@@ -99,14 +99,16 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
-	return run.steerQueuedInput(nil, request)
+	_, err = run.steerQueuedInput(nil, request)
+	return agent.NativeInputReceipt{}, err
 }
 func (a *Agent) SteerInputForSession(id string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	run, err := a.rootRun()
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
-	return run.steerQueuedInput(&id, request)
+	_, err = run.steerQueuedInput(&id, request)
+	return agent.NativeInputReceipt{}, err
 }
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	run, err := a.rootRun()
@@ -226,7 +228,7 @@ func (a *Agent) SendChildInput(key string, input agent.ChildInput) (agent.ChildI
 	if run.parentID == "" {
 		return agent.ChildInputResult{StartsTurn: true}, errors.New("the native child key identifies the root conversation")
 	}
-	receipt, err := run.submitInput(input.Content, input.Attachments, openCodeInputOptions{trackReply: true})
+	receipt, err := run.SendInput(input.Content, input.Attachments)
 	return agent.ChildInputResult{StartsTurn: true, NativeReceipt: receipt}, err
 }
 func (a *Agent) SteerChildInput(key string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {

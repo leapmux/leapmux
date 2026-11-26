@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -60,11 +61,7 @@ func (child *copilotNativeChild) nextSeq() uint64 {
 	return child.nextAdmissionSeq
 }
 
-func (a *Agent) awaitsChildAcknowledgment(agentID string) bool {
-	child := a.children[agentID]
-	if child == nil {
-		return false
-	}
+func (child *copilotNativeChild) awaitsAcknowledgment() bool {
 	for _, admission := range child.admissions {
 		if !admission.acked && !admission.earlyOverflow {
 			return true
@@ -73,12 +70,15 @@ func (a *Agent) awaitsChildAcknowledgment(agentID string) bool {
 	return false
 }
 
+func (a *Agent) awaitsChildAcknowledgment(agentID string) bool {
+	child := a.children[agentID]
+	return child != nil && child.awaitsAcknowledgment()
+}
+
 func (a *Agent) awaitsAnyChildAcknowledgment() bool {
 	for _, child := range a.children {
-		for _, admission := range child.admissions {
-			if !admission.acked && !admission.earlyOverflow {
-				return true
-			}
+		if child.awaitsAcknowledgment() {
+			return true
 		}
 	}
 	return false
@@ -122,6 +122,8 @@ func (a *Agent) acceptChildAdmission(child *copilotNativeChild, admission *copil
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
 	defer a.flushDeferredSteerEvents()
+	admission.acked = true
+	admission.ackSeq = child.nextSeq()
 	index := slices.Index(child.admissions, admission)
 	if index < 0 {
 		// The child ended while tasks.sendMessage was in flight.
@@ -133,8 +135,6 @@ func (a *Agent) acceptChildAdmission(child *copilotNativeChild, admission *copil
 		a.retireChildAdmission(child, admission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 		return
 	}
-	admission.acked = true
-	admission.ackSeq = child.nextSeq()
 }
 
 func (a *Agent) discardChildAdmission(child *copilotNativeChild, admission *copilotChildAdmission, uncertain bool) {
@@ -146,15 +146,15 @@ func (a *Agent) discardChildAdmission(child *copilotNativeChild, admission *copi
 	}
 	if uncertain {
 		if child.uncertainPrompts == nil {
-			child.uncertainPrompts = make(map[string]int)
+			child.uncertainPrompts = make(map[[32]byte]int)
 		}
-		child.uncertainPrompts[admission.prompt]++
+		child.uncertainPrompts[sha256.Sum256([]byte(admission.prompt))]++
 	}
 }
 
 // observeChildReply tracks child turns, echoes, replies, and control bindings.
 // The caller holds outputMu.
-func (a *Agent) observeChildReply(raw []byte, event copilotEvent) {
+func (a *Agent) observeChildReply(raw []byte, event copilotEvent, controlKey string) {
 	child := a.children[event.AgentID]
 	if child == nil {
 		return
@@ -210,12 +210,9 @@ func (a *Agent) observeChildReply(raw []byte, event copilotEvent) {
 			turn.iterationEnded = true
 		}
 	default:
-		for _, spec := range copilotControlSpecs {
-			if spec.requestEvent == event.Type {
-				_ = json.Unmarshal(event.Data, &fields)
-				a.bindChildReplyControl(child, raw, event.Type, fields)
-				break
-			}
+		if copilotControlSpecForRequest(event.Type) != nil {
+			_ = json.Unmarshal(event.Data, &fields)
+			a.bindChildReplyControl(child, raw, event.Type, fields, controlKey)
 		}
 	}
 }
@@ -229,11 +226,12 @@ func (a *Agent) observeChildUserMessage(child *copilotNativeChild, fields copilo
 		}
 		return
 	}
-	if count := child.uncertainPrompts[fields.Content]; count > 0 {
+	promptDigest := sha256.Sum256([]byte(fields.Content))
+	if count := child.uncertainPrompts[promptDigest]; count > 0 {
 		if count == 1 {
-			delete(child.uncertainPrompts, fields.Content)
+			delete(child.uncertainPrompts, promptDigest)
 		} else {
-			child.uncertainPrompts[fields.Content] = count - 1
+			child.uncertainPrompts[promptDigest] = count - 1
 		}
 		hasAcked := false
 		kept := child.admissions[:0]
@@ -245,6 +243,7 @@ func (a *Agent) observeChildUserMessage(child *copilotNativeChild, fields copilo
 			}
 			kept = append(kept, admission)
 		}
+		clear(child.admissions[len(kept):])
 		child.admissions = kept
 		if hasAcked && child.replyTurn != nil {
 			child.replyTurn.unproved = true
@@ -358,7 +357,7 @@ func (a *Agent) observeChildAssistantMessage(child *copilotNativeChild, turn *co
 	})
 }
 
-func (a *Agent) bindChildReplyControl(child *copilotNativeChild, raw []byte, eventType string, fields copilotChildReplyFields) {
+func (a *Agent) bindChildReplyControl(child *copilotNativeChild, raw []byte, eventType string, fields copilotChildReplyFields, controlKey string) {
 	turn := child.replyTurn
 	if turn == nil || turn.unproved || turn.iteration == "" || turn.iterationEnded || len(turn.inputs) == 0 {
 		return
@@ -369,7 +368,7 @@ func (a *Agent) bindChildReplyControl(child *copilotNativeChild, raw []byte, eve
 			return
 		}
 	}
-	control, owner := a.nativeReplyControl(raw)
+	control, owner := a.nativeReplyControl(raw, controlKey)
 	if control.RequestID == "" || owner != child.nativeAgentID {
 		return
 	}
@@ -403,7 +402,7 @@ func (a *Agent) completeChildReply(child *copilotNativeChild) {
 		Inputs:    turn.inputs,
 		Items:     turn.items,
 	})
-	if err == nil || agent.OutputRetained(err) {
+	if agent.OutputRetained(err) {
 		return
 	}
 	slog.Error("Persist exact Copilot child reply", "agent_id", a.AgentID(), "child_agent_id", child.workerAgentID, "error", err)
@@ -433,15 +432,16 @@ func (a *Agent) retireChildAdmissions(child *copilotNativeChild, outcome leapmux
 }
 
 func (a *Agent) retireChildAdmission(child *copilotNativeChild, admission *copilotChildAdmission, outcome leapmuxv1.AgentInputTurnOutcome) {
+	if !admission.acked {
+		return
+	}
 	if admission.isSteer {
 		if admission.steer != nil {
 			_ = a.reportChildSteer(child, admission.steer, agent.SteerOutcomeUncertain, agent.NativeInputReceipt{})
 		}
 		return
 	}
-	if admission.acked {
-		a.retireChildInput(child, admission.receipt, outcome)
-	}
+	a.retireChildInput(child, admission.receipt, outcome)
 }
 
 func (a *Agent) retireChildTurnInputs(child *copilotNativeChild, turn *copilotChildReplyTurn, outcome leapmuxv1.AgentInputTurnOutcome) {
@@ -457,20 +457,12 @@ func (a *Agent) retireChildInput(child *copilotNativeChild, receipt agent.Native
 	if receipt.SessionID == "" || receipt.InputID == "" {
 		return
 	}
-	if err := child.sink.RetireNativeInputTurn(receipt, outcome); err != nil && !agent.OutputRetained(err) {
+	if err := child.sink.RetireNativeInputTurn(receipt, outcome); !agent.OutputRetained(err) {
 		slog.Error("Record Copilot child reply outcome", "agent_id", a.AgentID(), "child_agent_id", child.workerAgentID, "error", err)
 	}
 }
 
 func (a *Agent) reportChildSteer(child *copilotNativeChild, steer *copilotQueuedSteer, outcome agent.SteerOutcome, receipt agent.NativeInputReceipt) error {
-	resolution := steer.resolution
-	resolution.Outcome = outcome
-	if outcome == agent.SteerOutcomeEchoed {
-		resolution.Receipt = receipt
-	}
-	err := agent.RetainSteerResolution(child.sink, resolution)
-	if !agent.OutputRetained(err) {
-		slog.Warn("Retain Copilot child steer outcome", "agent_id", a.AgentID(), "child_agent_id", child.workerAgentID, "error", err)
-	}
-	return err
+	return reportCopilotSteer(child.sink, steer, outcome, receipt, "Retain Copilot child steer outcome",
+		"agent_id", a.AgentID(), "child_agent_id", child.workerAgentID)
 }

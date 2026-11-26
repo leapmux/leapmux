@@ -300,7 +300,11 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 	// there": a second plan row over one already in the transcript draws it twice.
 	// A request that states no plan gets no row, because the row exists to carry
 	// the plan.
-	if req.isPlanApproval() && req.planText() != "" && !carriesInput && sourceErr == nil {
+	var planText string
+	if req.isPlanApproval() {
+		planText = req.planText()
+	}
+	if planText != "" && !carriesInput && sourceErr == nil {
 		if len(original) == 0 {
 			a.replyZCodeControlFailure(id, "The original plan request is unavailable.")
 			return
@@ -328,7 +332,7 @@ func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMess
 	}
 	if req.isPlanApproval() {
 		toolName = zcodeControlPlanApproval
-		if planText := req.planText(); planText != "" {
+		if planText != "" {
 			// A context-clear approval reads this canonical copy after it replaces the native session.
 			writer, err := a.sink.PlanWriterFor(record.captured)
 			if err == nil {
@@ -1362,10 +1366,7 @@ func zcodeMCPElicitationResult(params json.RawMessage, action string, content js
 	if err := json.Unmarshal(params, &request); err != nil {
 		return nil, fmt.Errorf("read the stored MCP form request: %w", err)
 	}
-	schema := request.Schema.RequestedSchema
-	if len(schema) == 0 {
-		schema = request.Input.RequestedSchema
-	}
+	schema := zcodeElicitationSchema(request.Schema.RequestedSchema, request.Input.RequestedSchema)
 	answers := map[string]any{}
 	for i, field := range zcodeElicitationFields(schema) {
 		if text, ok := zcodeElicitationAnswerText(values[field]); ok {

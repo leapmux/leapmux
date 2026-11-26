@@ -50,7 +50,7 @@ func newTaskPartAgent(t *testing.T, pages map[string]taskPartPage) (*familyTestA
 	daemon := &taskPartDaemon{pages: pages, readStatus: http.StatusOK, abortStatus: http.StatusOK}
 	server := httptest.NewServer(http.HandlerFunc(daemon.serve(t)))
 	t.Cleanup(server.Close)
-	a.Questions.baseURL = server.URL
+	a.Daemon().setBaseURL(server.URL)
 	return a, sink, daemon
 }
 
@@ -260,7 +260,7 @@ func TestOpenCodeInterruptChildFailures(t *testing.T) {
 	t.Run("no daemon address", func(t *testing.T) {
 		t.Parallel()
 		a, _, daemon := newTaskPartAgent(t, nil)
-		a.Questions.baseURL = ""
+		a.Daemon().setBaseURL("")
 		err := a.InterruptChild("call-1", agent.StopContext{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "daemon address")

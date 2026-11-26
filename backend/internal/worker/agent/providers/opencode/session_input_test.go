@@ -643,3 +643,38 @@ func TestOpenCodeRuntimeOwnsTheObservedModelSelection(t *testing.T) {
 	model.Variant = "low"
 	assert.Equal(t, "variant:high", runtime.SettingsSnapshot().ConfirmedOptions()[agent.OptionIDEffort])
 }
+
+func TestOpenCodeSubmitInputUncertainRequestsRecoveryAfterCleanupAndUnlock(t *testing.T) {
+	t.Parallel()
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/session/ses_1/prompt":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/api/session/ses_1/inbox":
+			_, _ = fmt.Fprint(w, `{"data":[]}`)
+		case "/api/session/ses_1/message":
+			_, _ = fmt.Fprint(w, `{"data":[],"cursor":{}}`)
+		case "/api/session/active":
+			_, _ = fmt.Fprint(w, `{"data":{}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	runtime := inputRuntime(t, rpc, &agenttest.Sink{})
+	var unlocked, cleanedAdmissions, cleanedReplies bool
+	runtime.requestRecovery = func() {
+		if runtime.operations.TryLock() {
+			unlocked = true
+			runtime.operations.Unlock()
+		}
+		runtime.mu.Lock()
+		cleanedAdmissions = len(runtime.admissions) == 0
+		cleanedReplies = len(runtime.replyInputs) == 0
+		runtime.mu.Unlock()
+	}
+	_, err := runtime.SendInput("uncertain", nil)
+	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+	assert.True(t, unlocked, "requestRecovery must run after operations.Unlock()")
+	assert.True(t, cleanedAdmissions, "requestRecovery must run after admissions cleanup")
+	assert.True(t, cleanedReplies, "requestRecovery must run after replyInputs cleanup")
+}

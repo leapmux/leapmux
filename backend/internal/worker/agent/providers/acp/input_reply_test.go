@@ -461,7 +461,7 @@ func TestACPEndAgentTurnPreservesEmptyFrameWhileQueued(t *testing.T) {
 	b.EndAgentTurn(nil)
 
 	require.True(t, b.HandleJSONRPCResponseForTest(promptResponse(1)))
-	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+	testutil.RequireEventually(t, func() bool { return !b.PromptActive() && len(sink.TurnActives()) == 2 })
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
 }
 

@@ -266,10 +266,6 @@ func TestAnswerBaseControlRequest_AnswersAnElicitationAndRefusesAnotherKind(t *t
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 }
 
-func TestSelectedOptionResult(t *testing.T) {
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"jsonrpc:7","result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}`, string(SelectedOptionResult("jsonrpc:7", "allow-once")))
-}
-
 func TestWithRefusalDoesNotMutateCallerBackingArray(t *testing.T) {
 	sentinel := &leapmuxv1.PermissionOption{OptionId: "sentinel", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS}
 	backing := []*leapmuxv1.PermissionOption{

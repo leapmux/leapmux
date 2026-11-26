@@ -84,13 +84,38 @@ func readOpenCodeForm(raw json.RawMessage) (openCodeForm, error) {
 		if field.Key == nil {
 			return form, errors.New("the OpenCode form field has no key")
 		}
-		switch field.Type {
-		case contracts.OpenCodeNativeFormFieldTypeString, contracts.OpenCodeNativeFormFieldTypeNumber, contracts.OpenCodeNativeFormFieldTypeInteger, contracts.OpenCodeNativeFormFieldTypeBoolean, contracts.OpenCodeNativeFormFieldTypeMultiselect, contracts.OpenCodeNativeFormFieldTypeExternal:
-		default:
+		if !isValidOpenCodeFormFieldType(field.Type) {
 			return form, fmt.Errorf("unsupported OpenCode form field type %q", field.Type)
 		}
 	}
 	return form, nil
+}
+
+func isValidOpenCodeFormFieldType(fieldType string) bool {
+	switch fieldType {
+	case contracts.OpenCodeNativeFormFieldTypeString,
+		contracts.OpenCodeNativeFormFieldTypeNumber,
+		contracts.OpenCodeNativeFormFieldTypeInteger,
+		contracts.OpenCodeNativeFormFieldTypeBoolean,
+		contracts.OpenCodeNativeFormFieldTypeMultiselect,
+		contracts.OpenCodeNativeFormFieldTypeExternal:
+		return true
+	default:
+		return false
+	}
+}
+
+type openCodeControlEnvelope struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+func decodeOpenCodeControlEnvelope(raw []byte) (openCodeControlEnvelope, error) {
+	var envelope openCodeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return openCodeControlEnvelope{}, err
+	}
+	return envelope, nil
 }
 
 // openCodeControlAnswer is the browser reply, addressed to the pending request.

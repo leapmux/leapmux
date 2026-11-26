@@ -104,11 +104,8 @@ type openCodeStoredControl struct {
 }
 
 func readOpenCodeStoredControl(raw json.RawMessage) (openCodeStoredControl, error) {
-	var request struct {
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &request); err != nil {
+	request, err := decodeOpenCodeControlEnvelope(raw)
+	if err != nil {
 		return openCodeStoredControl{}, err
 	}
 	switch request.Type {

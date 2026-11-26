@@ -1208,9 +1208,9 @@ func (a *Agent) claudeCodeHandleSystemInit(content []byte) {
 	expected := a.sessionID
 	a.sessionID = initMsg.SessionID
 	var retired *claudeInputReply
-	var pending map[string]*claudePendingSteer
+	var pending []*claudePendingSteer
 	if expected != "" && expected != initMsg.SessionID {
-		pending = a.pendingSteers
+		pending = sortedClaudeSteers(a.pendingSteers)
 		a.pendingSteers = nil
 	}
 	if a.inputReply != nil && a.inputReply.receipt.SessionID != initMsg.SessionID {
@@ -1223,7 +1223,9 @@ func (a *Agent) claudeCodeHandleSystemInit(content []byte) {
 	a.Mu.Unlock()
 	a.retireUnprovedClaudeReply(retired)
 	for _, steer := range pending {
-		a.reportUnconfirmedClaudeSteer(steer)
+		if steer.written {
+			a.reportUnconfirmedClaudeSteer(steer)
+		}
 	}
 	if expected != "" && expected != initMsg.SessionID {
 		slog.Warn("Claude Code reported a different session ID", "agent_id", a.AgentID(), "expected_session_id", expected, "session_id", initMsg.SessionID)

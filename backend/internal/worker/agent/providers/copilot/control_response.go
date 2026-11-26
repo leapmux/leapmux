@@ -38,13 +38,40 @@ const copilotLocationKeyField = "locationKey"
 // copilotPermissionRequest is the part of a permission request that decides which
 // session-wide approval rule an "allow for this session" answer may carry.
 type copilotPermissionRequest struct {
-	Kind                    string `json:"kind"`
-	CanOfferSessionApproval bool   `json:"canOfferSessionApproval"`
-	ServerName              string `json:"serverName"`
-	ToolName                string `json:"toolName"`
-	Commands                []struct {
-		Identifier string `json:"identifier"`
-	} `json:"commands"`
+	Kind                    string
+	CanOfferSessionApproval bool
+	ServerName              string
+	ToolName                string
+	CommandIdentifiers      []string
+	HasInvalidCommand       bool
+}
+
+// readCopilotPermissionRequest extracts the approval-rule fields from a
+// permissionRequest object tolerantly so prompt option availability and
+// response resolution agree even when sibling fields are mistyped.
+func readCopilotPermissionRequest(fields map[string]json.RawMessage) copilotPermissionRequest {
+	if fields == nil {
+		return copilotPermissionRequest{}
+	}
+	req := copilotPermissionRequest{
+		Kind:                    providerkit.ObjectString(fields, "kind"),
+		CanOfferSessionApproval: providerkit.RawBool(fields["canOfferSessionApproval"]),
+		ServerName:              providerkit.ObjectString(fields, "serverName"),
+		ToolName:                providerkit.ObjectString(fields, "toolName"),
+	}
+	if commands, ok := providerkit.RawArray(fields["commands"]); ok {
+		req.CommandIdentifiers = make([]string, 0, len(commands))
+		for _, command := range commands {
+			cmdFields, ok := providerkit.RawObject(command)
+			identifier := providerkit.ObjectString(cmdFields, "identifier")
+			if !ok || identifier == "" {
+				req.HasInvalidCommand = true
+				break
+			}
+			req.CommandIdentifiers = append(req.CommandIdentifiers, identifier)
+		}
+	}
+	return req
 }
 
 // copilotSessionApproval builds the approval rule for a session-wide allow.
@@ -63,17 +90,10 @@ func copilotSessionApproval(request copilotPermissionRequest) map[string]any {
 		}
 		return map[string]any{"kind": "write"}
 	case "shell":
-		if !request.CanOfferSessionApproval || len(request.Commands) == 0 {
+		if !request.CanOfferSessionApproval || request.HasInvalidCommand || len(request.CommandIdentifiers) == 0 {
 			return nil
 		}
-		identifiers := make([]string, 0, len(request.Commands))
-		for _, command := range request.Commands {
-			if command.Identifier == "" {
-				return nil
-			}
-			identifiers = append(identifiers, command.Identifier)
-		}
-		return map[string]any{"kind": "commands", "commandIdentifiers": identifiers}
+		return map[string]any{"kind": "commands", "commandIdentifiers": request.CommandIdentifiers}
 	case "mcp":
 		if request.ServerName == "" {
 			return nil
@@ -136,13 +156,12 @@ func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilo
 		if !scoped {
 			return map[string]any{"kind": copilotDecisionApproveOnce}, ""
 		}
-		var request struct {
-			PermissionRequest copilotPermissionRequest `json:"permissionRequest"`
-		}
-		if json.Unmarshal(data, &request) != nil {
+		dataFields, ok := providerkit.RawObject(data)
+		if !ok {
 			return nil, agent.RefusalUnreadableRequest
 		}
-		approval := copilotSessionApproval(request.PermissionRequest)
+		reqFields, _ := providerkit.RawObject(dataFields["permissionRequest"])
+		approval := copilotSessionApproval(readCopilotPermissionRequest(reqFields))
 		if approval == nil {
 			return nil, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, decision.scope+" scope")
 		}
@@ -220,7 +239,7 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 	}
 	result := agent.DefaultControlResponseResolution(ctx)
 	if eventType == contracts.CopilotEventElicitationRequested {
-		if native, ok := copilotElicitationAnswer(ctx.ResponseContent, copilotElicitationMode(data)); ok {
+		if native, ok := copilotElicitationAnswer(ctx.ResponseContent, copilotElicitationMode(providerkit.RawFields(data))); ok {
 			content, err := copilotControlResponseContent(ctx.RequestID, native)
 			if err != nil {
 				result.Refuse(agent.RefusalUnencodableReply)
@@ -260,26 +279,19 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 
 // copilotControlEvent reports the event type and data of a stored Copilot control request.
 func copilotControlEvent(payload json.RawMessage) (string, json.RawMessage, bool) {
-	for _, eventType := range []string{
-		contracts.CopilotEventPermissionRequested,
-		contracts.CopilotEventUserInputRequested,
-		contracts.CopilotEventExitPlanModeRequested,
-		contracts.CopilotEventElicitationRequested,
-		contracts.CopilotEventAutoModeSwitchRequested,
-		contracts.CopilotEventSamplingRequested,
-	} {
-		if data, ok := copilotEventOfType(payload, eventType); ok {
-			return eventType, data, true
-		}
+	var frame copilotSessionEventFrame
+	if json.Unmarshal(payload, &frame) != nil || frame.Method != copilotMethodSessionEvent {
+		return "", nil, false
 	}
-	return "", nil, false
+	if copilotControlSpecForRequest(frame.Params.Event.Type) == nil {
+		return "", nil, false
+	}
+	return frame.Params.Event.Type, frame.Params.Event.Data, true
 }
 
 // copilotElicitationMode is the MCP mode of an elicitation.requested: its
 // `mode`, or a form when it states none, as copilotElicitationPrompt reads it.
-func copilotElicitationMode(data json.RawMessage) string {
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(data, &fields)
+func copilotElicitationMode(fields map[string]json.RawMessage) string {
 	if mode, ok := providerkit.RawString(fields["mode"]); ok {
 		return mode
 	}

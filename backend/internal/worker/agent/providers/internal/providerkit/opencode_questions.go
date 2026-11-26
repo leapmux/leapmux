@@ -37,7 +37,7 @@ import (
 func OpenCodeQuestionPrompt(payload []byte) *leapmuxv1.ControlPrompt {
 	properties := RawFields(RawFields(payload)["properties"])
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-		Questions: questionsFromWire(properties["questions"], func(fields map[string]json.RawMessage, question *leapmuxv1.ControlQuestion) {
+		Questions: QuestionsFromWireWith(properties["questions"], func(fields map[string]json.RawMessage, question *leapmuxv1.ControlQuestion) {
 			// A question that states `multiSelect` (even null or false) keeps it;
 			// otherwise fall back to the daemon's boolean `multiple` flag.
 			if _, stated := fields["multiSelect"]; !stated {

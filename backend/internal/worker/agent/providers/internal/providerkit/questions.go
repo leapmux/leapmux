@@ -20,13 +20,13 @@ import (
 // draw. A value of the wrong type reads as absent. A raw value that is no
 // array reads as no question.
 func QuestionsFromWire(raw json.RawMessage) []*leapmuxv1.ControlQuestion {
-	return questionsFromWire(raw, nil)
+	return QuestionsFromWireWith(raw, nil)
 }
 
-// questionsFromWire decodes a JSON array of wire questions and optionally lets
-// a same-package caller adjust each decoded question from its raw fields in the
-// same pass.
-func questionsFromWire(raw json.RawMessage, adjust func(fields map[string]json.RawMessage, question *leapmuxv1.ControlQuestion)) []*leapmuxv1.ControlQuestion {
+// QuestionsFromWireWith decodes a JSON array of wire questions and optionally lets
+// the caller inspect or adjust each decoded question from its raw fields in the
+// same pass, keeping question and option filtering index-aligned with QuestionsFromWire.
+func QuestionsFromWireWith(raw json.RawMessage, adjust func(fields map[string]json.RawMessage, question *leapmuxv1.ControlQuestion)) []*leapmuxv1.ControlQuestion {
 	elements, ok := RawArray(raw)
 	if !ok {
 		return nil

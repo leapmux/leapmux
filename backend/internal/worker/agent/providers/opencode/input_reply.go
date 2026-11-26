@@ -1,12 +1,11 @@
 package opencode
 
 import (
+	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/url"
 	"slices"
 
@@ -16,10 +15,28 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-func (s *openCodeSessionRuntime) pendingInputReplies() map[string]agent.NativeInputReceipt {
+func (s *openCodeSessionRuntime) pendingInputReplies() []agent.NativeInputReceipt {
+	return s.collectPendingInputReplies(false)
+}
+
+func (s *openCodeSessionRuntime) pendingSettledInputReplies() []agent.NativeInputReceipt {
+	return s.collectPendingInputReplies(true)
+}
+
+func (s *openCodeSessionRuntime) collectPendingInputReplies(skipAdmitting bool) []agent.NativeInputReceipt {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return maps.Clone(s.replyInputs)
+	replies := make([]agent.NativeInputReceipt, 0, len(s.replyInputs))
+	for inputID, receipt := range s.replyInputs {
+		if skipAdmitting && s.admissions[inputID] != nil {
+			continue
+		}
+		replies = append(replies, receipt)
+	}
+	slices.SortFunc(replies, func(left, right agent.NativeInputReceipt) int {
+		return cmp.Compare(left.InputID, right.InputID)
+	})
+	return replies
 }
 
 func (s *openCodeSessionRuntime) hasPendingInputReplies() bool {
@@ -35,7 +52,7 @@ func (s *openCodeSessionRuntime) forgetInputReply(inputID string) {
 }
 
 func (s *openCodeSessionRuntime) retireInputReply(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
-	if err := s.sink.RetireNativeInputTurn(receipt, outcome); err != nil {
+	if err := s.sink.RetireNativeInputTurn(receipt, outcome); !agent.OutputRetained(err) {
 		return err
 	}
 	s.forgetInputReply(receipt.InputID)
@@ -125,6 +142,9 @@ func (run *openCodeRun) readReplyProjection(ctx context.Context, endingID string
 	if err != nil {
 		return openCodeReplyProjection{}, err
 	}
+	if ending.ID == "" {
+		return openCodeReplyProjection{}, fmt.Errorf("OpenCode ending record %q not found", endingID)
+	}
 	projection := openCodeReplyProjection{ending: ending}
 	for _, message := range slices.Backward(newestFirst) {
 		projection.observe(message, run.replyReceipt(message))
@@ -199,34 +219,21 @@ func (run *openCodeRun) publishInputReply(projection openCodeReplyProjection) er
 		if providerkit.RawPresent(snapshot.Retry) {
 			continue
 		}
-		if err := run.text.recoverSnapshot(message.ID, snapshot); err != nil {
+		textKeys, err := run.text.recoverSnapshotWithTextKeys(message.ID, snapshot)
+		if !agent.OutputRetained(err) {
 			return err
 		}
-		ordinal := 0
-		for _, raw := range *snapshot.Content {
-			var part struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}
-			if err := json.Unmarshal(raw, &part); err != nil {
-				return err
-			}
-			if part.Type != "text" {
-				continue
-			}
-			if part.Text != "" {
-				turn.Items = append(turn.Items, agent.NativeReplyItem{
-					Ordinal:    inputOrdinal + 1 + int64(len(turn.Items)),
-					MessageKey: openCodeTextScopeID(message.ID, agent.AssembledMessageKindText, ordinal),
-				})
-			}
-			ordinal++
+		for _, key := range textKeys {
+			turn.Items = append(turn.Items, agent.NativeReplyItem{
+				Ordinal:    inputOrdinal + 1 + int64(len(turn.Items)),
+				MessageKey: key,
+			})
 		}
 	}
 	for _, input := range inputs {
 		turn.Inputs = append(turn.Inputs, agent.NativeReplyBoundary{InputID: input.receipt.InputID, AfterOrdinal: inputOrdinal + int64(len(turn.Items))})
 	}
-	if err := run.sink.PublishNativeReplyTurn(turn); err != nil {
+	if err := run.sink.PublishNativeReplyTurn(turn); !agent.OutputRetained(err) {
 		return fmt.Errorf("publish the exact OpenCode reply: %w", err)
 	}
 	for _, input := range turn.Inputs {
@@ -249,8 +256,16 @@ func openCodeProjectedReplyOutcome(message openCodeStoredMessage) leapmuxv1.Agen
 }
 
 func (run *openCodeRun) retirePendingInputReplies() error {
+	return run.retireInputReplies(run.pendingInputReplies())
+}
+
+func (run *openCodeRun) retireSettledPendingInputReplies() error {
+	return run.retireInputReplies(run.pendingSettledInputReplies())
+}
+
+func (run *openCodeRun) retireInputReplies(replies []agent.NativeInputReceipt) error {
 	var result error
-	for _, receipt := range run.pendingInputReplies() {
+	for _, receipt := range replies {
 		result = errors.Join(result, run.retireInputReply(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED))
 	}
 	return result

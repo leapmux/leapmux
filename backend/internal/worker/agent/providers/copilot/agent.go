@@ -50,7 +50,8 @@ type Agent struct {
 	closedSpans providerkit.ClosedSpanSet
 	// replyCaptures owns the submitted inputs still awaiting native proof.
 	// outputMu orders the reader, acknowledgement, and session retirement.
-	replyCaptures map[*copilotReplyCapture]struct{}
+	replyCaptures         map[*copilotReplyCapture]struct{}
+	nextReplyCaptureOrder uint64
 	// An echo can arrive before its command reply supplies the native ID.
 	// Keep the echo and the following events in transcript order until then.
 	deferredSteerEvents []copilotDeferredSteerEvent
@@ -80,8 +81,9 @@ type Agent struct {
 	reasoningSeen  map[string]struct{}
 	reasoningOrder []string
 
-	controlMu sync.Mutex
-	controls  map[string]*copilotPendingControl
+	controlMu        sync.Mutex
+	controls         map[string]*copilotPendingControl
+	nextControlOrder uint64
 	// workspaceTrust holds the folder-trust question that LeapMux asks for
 	// Copilot (folder_trust.go).
 	workspaceTrust providerkit.WorkspaceTrust
@@ -144,17 +146,21 @@ func (a *Agent) offReader(key string, work func()) {
 // roll back to. An agent that kept its process alive there would accept input that can
 // never arrive anywhere.
 func (a *Agent) stopNativeConnection() {
+	a.finishNativeOutput(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
+	a.copilotConnection.Stop()
+}
+
+func (a *Agent) finishNativeOutput(completion agent.MessageCompletion, taskStatus bgtask.Status) {
 	a.outputMu.Lock()
 	a.closing = true
 	a.finishDeferredSteerEvents()
-	a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
+	a.clearNativeChildren(completion, taskStatus)
 	a.clearNativeControls()
 	a.discardNativeReplyCaptures()
 	a.outputMu.Unlock()
 	providerkit.ResetSpansAndProgress(a.sink)
 	a.forgetNativeControlEvents()
 	a.clearNativeCompaction()
-	a.copilotConnection.Stop()
 }
 
 func (a *Agent) nativeTurnActive() bool {
@@ -446,17 +452,17 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 	if !active {
 		return receipt, agent.ErrNoActiveTurn
 	}
-	if request.InputID == "" || request.AttemptID == "" {
-		return receipt, errors.New("a Copilot steer requires a queue input and dispatch attempt")
-	}
 	values := map[string]any{"prompt": content, "mode": "immediate"}
 	if len(attachments) > 0 {
 		values["attachments"] = copilotBlobAttachments(attachments)
 	}
-	capture := a.beginNativeSteerCapture(sessionID, request)
+	var capture *copilotReplyCapture
+	if request.InputID != "" && request.AttemptID != "" {
+		capture = a.beginNativeSteerCapture(sessionID, request)
+	}
 	accepted := false
 	defer func() {
-		if !accepted {
+		if !accepted && capture != nil {
 			a.discardNativeReplyCapture(capture)
 		}
 	}()
@@ -471,7 +477,12 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 		return receipt, fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
 	}
 	accepted = true
-	return a.acceptNativeReplyCapture(capture, response.MessageID), nil
+	if capture != nil {
+		a.acceptNativeReplyCapture(capture, response.MessageID)
+	}
+	// SteerRowAtEcho is true: return an empty receipt so the input queue holds
+	// the row until the echo resolves it with its native receipt.
+	return agent.NativeInputReceipt{}, nil
 }
 
 // Interrupt aborts the running turn with Copilot's own `session.abort`.
@@ -548,30 +559,14 @@ func (a *Agent) Stop() {
 	}
 	a.copilotConnection.Stop()
 	completion := a.ProcessExitCompletion()
-	a.outputMu.Lock()
-	a.finishDeferredSteerEvents()
-	a.clearNativeChildren(completion, agent.IncompleteTaskStatus(completion))
-	a.clearNativeControls()
-	a.discardNativeReplyCaptures()
-	a.outputMu.Unlock()
-	providerkit.ResetSpansAndProgress(a.sink)
-	a.clearNativeCompaction()
+	a.finishNativeOutput(completion, agent.IncompleteTaskStatus(completion))
 	a.setNativeTurnActive(false)
 }
 
 func (a *Agent) Wait() error {
 	err := a.copilotConnection.Wait()
 	completion := a.ProcessExitCompletion()
-	a.outputMu.Lock()
-	a.closing = true
-	a.finishDeferredSteerEvents()
-	a.clearNativeChildren(completion, agent.IncompleteTaskStatus(completion))
-	a.clearNativeControls()
-	a.discardNativeReplyCaptures()
-	a.outputMu.Unlock()
-	providerkit.ResetSpansAndProgress(a.sink)
-	a.forgetNativeControlEvents()
-	a.clearNativeCompaction()
+	a.finishNativeOutput(completion, agent.IncompleteTaskStatus(completion))
 	a.setNativeTurnActive(false)
 	return err
 }

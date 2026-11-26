@@ -177,6 +177,9 @@ func (a *Agent) dispatchRunEventLocked(ctx context.Context, run *openCodeRun, ev
 				return nil
 			}
 			// OpenCode retains the claim on shutdown and writes no ending message.
+			if err := run.retirePendingInputReplies(); err != nil {
+				return err
+			}
 			return a.finishRunExecutionLocked(run, nativeMessageIDForEvent(event.ID), event.Raw, agent.MessageCompletionInterrupted)
 		}
 		return a.finishRunExecutionEventLocked(ctx, run, event, agent.MessageCompletionInterrupted)

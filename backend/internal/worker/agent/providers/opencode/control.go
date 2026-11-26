@@ -1,13 +1,14 @@
 package opencode
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -20,7 +21,6 @@ import (
 type openCodeControlOwner struct {
 	nativeSessionID string
 	sessionID       string
-	nativeInputIDs  []string
 	sink            agent.ProviderServices
 	// replyInputs checks which native inputs own a control's assistant message.
 	replyInputs func(messageID string) []string
@@ -34,6 +34,7 @@ type openCodePendingControl struct {
 	nativeID           string
 	instanceID         string
 	kind               string
+	sourceMessageID    string
 	payload            []byte
 	order              uint64
 	publishing         bool
@@ -75,11 +76,8 @@ func openCodeControlKey(kind, sessionID, nativeID string) string {
 // publishPermission and publishForm refuse a request of another session, so
 // the session that the request states is the owner's.
 func (opencodeProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
-	var request struct {
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-	}
-	if json.Unmarshal(payload, &request) != nil {
+	request, err := decodeOpenCodeControlEnvelope(payload)
+	if err != nil {
 		return "", false
 	}
 	var kind string
@@ -119,13 +117,12 @@ func (r *openCodeControls) publishPermission(owner openCodeControlOwner, raw jso
 		return errors.New("the OpenCode permission belongs to another owner")
 	}
 	header := map[string]any{"tool_name": permission.Action}
+	var sourceMessageID string
 	if permission.Source != nil && permission.Source.MessageID != "" {
 		header["tool_use_id"] = openCodeToolSpanID(permission.Source.MessageID, permission.Source.ID)
-		if owner.replyInputs != nil {
-			owner.nativeInputIDs = owner.replyInputs(permission.Source.MessageID)
-		}
+		sourceMessageID = permission.Source.MessageID
 	}
-	return r.register(owner, permission.ID, "permission", contracts.OpenCodeNativeEventPermissionAsked, raw, header)
+	return r.register(owner, permission.ID, "permission", sourceMessageID, contracts.OpenCodeNativeEventPermissionAsked, raw, header)
 }
 
 func (r *openCodeControls) publishForm(owner openCodeControlOwner, raw json.RawMessage) error {
@@ -156,20 +153,19 @@ func (r *openCodeControls) publishForm(owner openCodeControlOwner, raw json.RawM
 		toolName = "form"
 	}
 	header := map[string]any{"tool_name": toolName}
+	var sourceMessageID string
 	if metadata.Tool != nil && metadata.Tool.MessageID != "" {
 		header["tool_use_id"] = openCodeToolSpanID(metadata.Tool.MessageID, metadata.Tool.ID)
-		if owner.replyInputs != nil {
-			owner.nativeInputIDs = owner.replyInputs(metadata.Tool.MessageID)
-		}
+		sourceMessageID = metadata.Tool.MessageID
 	}
 	data, err := json.Marshal(map[string]json.RawMessage{"form": raw})
 	if err != nil {
 		return err
 	}
-	return r.register(owner, form.ID, "form", contracts.OpenCodeNativeEventFormCreated, data, header)
+	return r.register(owner, form.ID, "form", sourceMessageID, contracts.OpenCodeNativeEventFormCreated, data, header)
 }
 
-func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, eventType string, data json.RawMessage, header map[string]any) error {
+func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, sourceMessageID, eventType string, data json.RawMessage, header map[string]any) error {
 	if owner.sink == nil || owner.current == nil || owner.sessionID == "" {
 		return errors.New("the OpenCode control has no publication owner")
 	}
@@ -190,7 +186,7 @@ func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, 
 			published := previous.published
 			r.mu.Unlock()
 			if published {
-				return bindOpenCodeControlInputs(previous, owner.nativeInputIDs)
+				return bindOpenCodeControlInputs(previous, resolveOpenCodeControlInputs(owner, sourceMessageID))
 			}
 			if retry {
 				return r.publish(previous)
@@ -204,7 +200,7 @@ func (r *openCodeControls) register(owner openCodeControlOwner, nativeID, kind, 
 		replaced = previous
 	}
 	r.nextOrder++
-	record := &openCodePendingControl{owner: owner, requestID: key, nativeID: nativeID, instanceID: id.Generate(), kind: kind, payload: payload, order: r.nextOrder}
+	record := &openCodePendingControl{owner: owner, requestID: key, nativeID: nativeID, instanceID: id.Generate(), kind: kind, sourceMessageID: sourceMessageID, payload: payload, order: r.nextOrder}
 	r.pending[key] = record
 	automatic := r.autoApprove && kind == "permission"
 	replacedPublished := replaced != nil && replaced.published
@@ -227,11 +223,14 @@ func (r *openCodeControls) publish(record *openCodePendingControl) error {
 	}
 	record.publishing = true
 	r.mu.Unlock()
-	err := record.owner.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.owner.sessionID, RequestID: record.requestID, InstanceID: record.instanceID, Payload: record.payload})
-	var bindingErr error
-	if err == nil {
-		bindingErr = bindOpenCodeControlInputs(record, record.owner.nativeInputIDs)
-	}
+	inputIDs := resolveOpenCodeControlInputs(record.owner, record.sourceMessageID)
+	err := record.owner.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: record.owner.sessionID,
+		NativeInputIDs: inputIDs,
+		RequestID:      record.requestID,
+		InstanceID:     record.instanceID,
+		Payload:        record.payload,
+	})
 	r.mu.Lock()
 	record.publishing = false
 	current := r.pending[record.requestID] == record
@@ -257,7 +256,14 @@ func (r *openCodeControls) publish(record *openCodePendingControl) error {
 	if automatic {
 		r.queueApprovals()
 	}
-	return errors.Join(err, bindingErr)
+	return err
+}
+
+func resolveOpenCodeControlInputs(owner openCodeControlOwner, messageID string) []string {
+	if messageID == "" || owner.replyInputs == nil {
+		return nil
+	}
+	return owner.replyInputs(messageID)
 }
 
 func bindOpenCodeControlInputs(record *openCodePendingControl, inputIDs []string) error {
@@ -295,6 +301,9 @@ func (r *openCodeControls) setAutoApprove(enabled bool) {
 		}
 	}
 	r.mu.Unlock()
+	slices.SortFunc(publish, func(left, right *openCodePendingControl) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	for _, record := range publish {
 		if err := r.publish(record); err != nil {
 			slog.Error("OpenCode could not publish a permission after Auto-approve was disabled", "request_id", record.requestID, "error", err)
@@ -324,7 +333,9 @@ func (r *openCodeControls) approvePending() {
 		}
 	}
 	r.mu.Unlock()
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].order < candidates[j].order })
+	slices.SortFunc(candidates, func(left, right *openCodePendingControl) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	for _, selected := range candidates {
 		r.mu.Lock()
 		if r.closed || !r.autoApprove {
@@ -417,6 +428,9 @@ func (r *openCodeControls) reconcilePending(kind, sessionID string) error {
 		}
 	}
 	r.mu.Unlock()
+	slices.SortFunc(observations, func(left, right observation) int {
+		return cmp.Compare(left.record.order, right.record.order)
+	})
 	var snapshot []json.RawMessage
 	var err error
 	switch kind {
@@ -561,6 +575,9 @@ func (r *openCodeControls) removePendingLocked(matches func(*openCodePendingCont
 		}
 		delete(r.pending, key)
 	}
+	slices.SortFunc(retired, func(left, right *openCodePendingControl) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	return retired
 }
 

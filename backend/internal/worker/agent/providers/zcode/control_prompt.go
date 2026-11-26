@@ -35,12 +35,6 @@ var zcodeAllowOptionIDs = map[string]bool{
 	"allowSession":  true,
 }
 
-// zcodeText reads a string field, or "" for a value of another type.
-func zcodeText(fields map[string]json.RawMessage, key string) string {
-	value, _ := providerkit.RawString(fields[key])
-	return value
-}
-
 // ReadControlRequest reads ZCode's control requests: LeapMux's
 // workspace-trust question, and the two requests of the app-server, a
 // permission and a user input. A user input is a question, an MCP form or the
@@ -53,34 +47,31 @@ func (zcodeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 	if prompt, ok := providerkit.ReadWorkspaceTrustPrompt(input.Payload, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE); ok {
 		return prompt
 	}
-	switch providerkit.StringField(input.Payload, "method") {
+	frame := providerkit.RawFields(input.Payload)
+	method := providerkit.ObjectString(frame, "method")
+	switch method {
 	case contracts.ZCodeMethodRequestPermission, contracts.ZCodeMethodRequestUserInput:
 	default:
 		return agent.UnrecognizedControlPrompt()
 	}
-	toolName := agent.ControlToolName(input.Payload)
+	request, _ := providerkit.RawObject(frame["request"])
+	params := providerkit.RawFields(frame["params"])
+	toolName := providerkit.ObjectString(request, "tool_name")
 	if toolName == contracts.ZCodeToolNameAskUserQuestion {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-			Questions: zcodeQuestions(input.Payload),
+			Questions: zcodeQuestions(params, request["input"]),
 		}}}
 	}
-	if elicitation, ok := zcodeElicitationPrompt(input.Payload); ok {
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
+	if method == contracts.ZCodeMethodRequestUserInput {
+		if elicitation, ok := zcodeElicitationPrompt(params); ok {
+			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
+		}
 	}
 	if toolName == contracts.ZCodeToolNameExitPlanMode {
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{Text: zcodeStoredPlanText(input.Payload)}}}
+		planText := zcodeUserInputRequest{Input: params["input"], Context: params["context"]}.planText()
+		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{Text: planText}}}
 	}
-	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: zcodePermissionPrompt(input.Payload, toolName)}}
-}
-
-// zcodeStoredPlanText reads the plan of a stored plan approval from ZCode's own
-// request (`params`), by the rule that stores the canonical plan
-// (zcodeUserInputRequest.planText). The user approves this plan, so the
-// browser and `leapmux control agent requests` show it. A field that is no
-// text states no plan.
-func zcodeStoredPlanText(payload []byte) string {
-	params := providerkit.RawFields(providerkit.RawFields(payload)["params"])
-	return zcodeUserInputRequest{Input: params["input"], Context: params["context"]}.planText()
+	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: zcodePermissionPrompt(params, input.Payload, toolName)}}
 }
 
 // zcodeQuestionRecords reads the question records of a stored user-input
@@ -94,8 +85,7 @@ func zcodeStoredPlanText(payload []byte) string {
 // app-server that sent it declares no question, so it does not fall back to
 // the header. The header (`request.input.questions`) is the last source, for
 // a request that carries no native list at all.
-func zcodeQuestionRecords(payload []byte) []map[string]json.RawMessage {
-	params := providerkit.RawFields(providerkit.RawFields(payload)["params"])
+func zcodeQuestionRecords(params map[string]json.RawMessage, requestInput json.RawMessage) []map[string]json.RawMessage {
 	candidates := []json.RawMessage{
 		providerkit.RawFields(params["schema"])["questions"],
 		params["questions"],
@@ -103,8 +93,7 @@ func zcodeQuestionRecords(payload []byte) []map[string]json.RawMessage {
 	}
 	var lists [][]json.RawMessage
 	for _, candidate := range candidates {
-		var list []json.RawMessage
-		if json.Unmarshal(candidate, &list) == nil && list != nil {
+		if list, ok := providerkit.RawArray(candidate); ok {
 			lists = append(lists, list)
 		}
 	}
@@ -119,7 +108,7 @@ func zcodeQuestionRecords(payload []byte) []map[string]json.RawMessage {
 			}
 		}
 	default:
-		_ = json.Unmarshal(providerkit.RawFields(agent.ControlToolInput(payload))["questions"], &chosen)
+		chosen, _ = providerkit.RawArray(providerkit.RawFields(requestInput)["questions"])
 	}
 	records := make([]map[string]json.RawMessage, 0, len(chosen))
 	for _, element := range chosen {
@@ -134,20 +123,20 @@ func zcodeQuestionRecords(payload []byte) []map[string]json.RawMessage {
 // answer is keyed by the question's text, so a record with neither a question
 // nor a header could never be answered, and it is dropped. The header stands
 // in for absent question text.
-func zcodeQuestions(payload []byte) []*leapmuxv1.ControlQuestion {
-	records := zcodeQuestionRecords(payload)
+func zcodeQuestions(params map[string]json.RawMessage, requestInput json.RawMessage) []*leapmuxv1.ControlQuestion {
+	records := zcodeQuestionRecords(params, requestInput)
 	questions := make([]*leapmuxv1.ControlQuestion, 0, len(records))
 	for _, record := range records {
-		text := zcodeText(record, "question")
+		text := providerkit.ObjectString(record, "question")
 		if text == "" {
-			text = zcodeText(record, "header")
+			text = providerkit.ObjectString(record, "header")
 		}
 		if text == "" {
 			continue
 		}
 		questions = append(questions, &leapmuxv1.ControlQuestion{
 			Question:    text,
-			Header:      zcodeText(record, "header"),
+			Header:      providerkit.ObjectString(record, "header"),
 			Options:     zcodeQuestionOptions(record),
 			MultiSelect: providerkit.RawBool(record["multiSelect"]),
 		})
@@ -161,8 +150,8 @@ func zcodeQuestions(payload []byte) []*leapmuxv1.ControlQuestion {
 // with neither has nothing to send, and it is dropped. A preview of only
 // whitespace shows nothing, so it is left out.
 func zcodeQuestionOptions(record map[string]json.RawMessage) []*leapmuxv1.QuestionOption {
-	var elements []json.RawMessage
-	if json.Unmarshal(record["options"], &elements) != nil {
+	elements, ok := providerkit.RawArray(record["options"])
+	if !ok {
 		return nil
 	}
 	options := make([]*leapmuxv1.QuestionOption, 0, len(elements))
@@ -171,15 +160,15 @@ func zcodeQuestionOptions(record map[string]json.RawMessage) []*leapmuxv1.Questi
 		if fields == nil {
 			continue
 		}
-		label := zcodeText(fields, "label")
+		label := providerkit.ObjectString(fields, "label")
 		if label == "" {
-			label = zcodeText(fields, "value")
+			label = providerkit.ObjectString(fields, "value")
 		}
 		if label == "" {
 			continue
 		}
-		option := &leapmuxv1.QuestionOption{Label: label, Description: zcodeText(fields, "description")}
-		if preview := zcodeText(fields, "preview"); strings.TrimSpace(preview) != "" {
+		option := &leapmuxv1.QuestionOption{Label: label, Description: providerkit.ObjectString(fields, "description")}
+		if preview := providerkit.ObjectString(fields, "preview"); strings.TrimSpace(preview) != "" {
 			option.Preview = preview
 		}
 		options = append(options, option)
@@ -187,38 +176,40 @@ func zcodeQuestionOptions(record map[string]json.RawMessage) []*leapmuxv1.Questi
 	return options
 }
 
+func zcodeElicitationSchema(primary, fallback json.RawMessage) json.RawMessage {
+	if providerkit.RawPresent(primary) {
+		return primary
+	}
+	if providerkit.RawPresent(fallback) {
+		return fallback
+	}
+	return nil
+}
+
 // zcodeElicitationPrompt reads an MCP server's input form from a stored
 // user-input request of the `mcp_elicitation` interaction. The request also
 // flattens the form into questions, which lose each field's type, so the
 // prompt states the server's own schema instead. The schema's own form wins
 // over the input's, and the input's message over the request's prompt.
-func zcodeElicitationPrompt(payload []byte) (*leapmuxv1.ElicitationPrompt, bool) {
-	frame := providerkit.RawFields(payload)
-	if zcodeText(frame, "method") != contracts.ZCodeMethodRequestUserInput {
-		return nil, false
-	}
-	params := providerkit.RawFields(frame["params"])
+func zcodeElicitationPrompt(params map[string]json.RawMessage) (*leapmuxv1.ElicitationPrompt, bool) {
 	schema := providerkit.RawFields(params["schema"])
-	if zcodeText(schema, "interaction") != contracts.ZCodeInteractionMcpElicitation {
+	if providerkit.ObjectString(schema, "interaction") != contracts.ZCodeInteractionMcpElicitation {
 		return nil, false
 	}
 	input := providerkit.RawFields(params["input"])
 	prompt := &leapmuxv1.ElicitationPrompt{
 		Mode:    contracts.MCPElicitationModeForm,
-		Message: zcodeText(input, "message"),
-		Server:  zcodeText(schema, "serverName"),
+		Message: providerkit.ObjectString(input, "message"),
+		Server:  providerkit.ObjectString(schema, "serverName"),
 	}
 	if prompt.Message == "" {
-		prompt.Message = zcodeText(params, "prompt")
+		prompt.Message = providerkit.ObjectString(params, "prompt")
 	}
 	if prompt.Server == "" {
-		prompt.Server = zcodeText(input, "serverName")
+		prompt.Server = providerkit.ObjectString(input, "serverName")
 	}
-	for _, requested := range []json.RawMessage{schema["requestedSchema"], input["requestedSchema"]} {
-		if providerkit.RawPresent(requested) {
-			prompt.SchemaJson = string(requested)
-			break
-		}
+	if requested := zcodeElicitationSchema(schema["requestedSchema"], input["requestedSchema"]); requested != nil {
+		prompt.SchemaJson = string(requested)
 	}
 	return prompt, true
 }
@@ -226,18 +217,21 @@ func zcodeElicitationPrompt(payload []byte) (*leapmuxv1.ElicitationPrompt, bool)
 // zcodePermissionPrompt reads a permission request: the tool, ZCode's own
 // reason, the tool's input, the command of a shell call, and the options
 // that the app-server offers. An empty option list gets LeapMux's allow and
-// deny, and a list with no refusal gets LeapMux's deny (zcodeWithRefusal).
-func zcodePermissionPrompt(payload []byte, toolName string) *leapmuxv1.PermissionPrompt {
+// deny, and a list with no refusal gets LeapMux's deny.
+func zcodePermissionPrompt(params map[string]json.RawMessage, payload []byte, toolName string) *leapmuxv1.PermissionPrompt {
 	toolInput := agent.ControlToolInput(payload)
-	params := providerkit.RawFields(providerkit.RawFields(payload)["params"])
 	permission := &leapmuxv1.PermissionPrompt{
 		Title:     toolName,
-		Reason:    zcodeText(params, "reason"),
+		Reason:    providerkit.ObjectString(params, "reason"),
 		InputJson: string(toolInput),
-		Options:   zcodeWithRefusal(zcodePermissionOptions(params)),
+		Options: agent.WithRefusal(zcodePermissionOptions(params), &leapmuxv1.PermissionOption{
+			OptionId: contracts.ControlAnswerOptionDeny,
+			Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE,
+			Name:     "Deny",
+		}),
 	}
 	if toolName == contracts.ZCodeToolNameBash {
-		permission.Command = zcodeText(providerkit.RawFields(toolInput), "command")
+		permission.Command = providerkit.ObjectString(providerkit.RawFields(toolInput), "command")
 	}
 	return permission
 }
@@ -247,19 +241,19 @@ func zcodePermissionPrompt(payload []byte, toolName string) *leapmuxv1.Permissio
 // answered, so it is dropped. The app-server embeds the complete reply of
 // each option, so the ID is what the answer echoes.
 func zcodePermissionOptions(params map[string]json.RawMessage) []*leapmuxv1.PermissionOption {
-	var elements []json.RawMessage
-	if json.Unmarshal(params["options"], &elements) != nil {
+	elements, ok := providerkit.RawArray(params["options"])
+	if !ok {
 		return nil
 	}
 	var options []*leapmuxv1.PermissionOption
 	for _, element := range elements {
 		fields := providerkit.RawFields(element)
-		id := zcodeText(fields, "optionId")
+		id := providerkit.ObjectString(fields, "optionId")
 		if id == "" {
 			continue
 		}
-		native := zcodeText(fields, "kind")
-		option := &leapmuxv1.PermissionOption{OptionId: id, Kind: zcodeOptionKind(native), Name: zcodeText(fields, "name")}
+		native := providerkit.ObjectString(fields, "kind")
+		option := &leapmuxv1.PermissionOption{OptionId: id, Kind: zcodeOptionKind(native), Name: providerkit.ObjectString(fields, "name")}
 		if option.Kind == leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_OTHER && option.Name == "" {
 			option.Name = native
 			if option.Name == "" {
@@ -289,23 +283,12 @@ func zcodeOptionKind(kind string) leapmuxv1.PermissionOptionKind {
 	}
 }
 
-// zcodeWithRefusal completes the app-server's option list so that a client
-// can always refuse: a list with no refusal gains LeapMux's deny, which
-// denies as the composer's typed refusal does.
-func zcodeWithRefusal(options []*leapmuxv1.PermissionOption) []*leapmuxv1.PermissionOption {
-	return agent.WithRefusal(options, &leapmuxv1.PermissionOption{
-		OptionId: contracts.ControlAnswerOptionDeny,
-		Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE,
-		Name:     "Deny",
-	})
-}
-
 // AnswerControlRequest builds ZCode's answer in the neutral envelope, which
 // ResolveControlResponse turns into the app-server's own reply.
 func (zcodeProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	switch input.Prompt.GetKind().(type) {
 	case *leapmuxv1.ControlPrompt_Question:
-		return zcodeQuestionAnswer(input)
+		return providerkit.AskUserQuestionAnswers(input, agent.ControlToolInput(input.Request.Payload))
 	case *leapmuxv1.ControlPrompt_Elicitation:
 		return agent.AnswerElicitation(input, nil)
 	case *leapmuxv1.ControlPrompt_Plan:
@@ -358,13 +341,4 @@ func zcodePermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer,
 		Behavior: behavior,
 		Choice:   option.GetOptionId(),
 	})}, nil
-}
-
-// zcodeQuestionAnswer answers a question as the runtimes of Claude Code's
-// shape read it: the tool's own input with the answers beside it, keyed by
-// each question's text. A cancelled decision denies with its feedback.
-// QuestionDecisionOf requires an answer to every question, which matters
-// here: the app-server reads a question with no answer as a silent refusal.
-func zcodeQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
-	return providerkit.AskUserQuestionAnswers(input, agent.ControlToolInput(input.Request.Payload))
 }

@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -58,7 +59,17 @@ var copilotControlSpecs = []copilotControlSpec{
 	},
 }
 
+func copilotControlSpecForRequest(eventType string) *copilotControlSpec {
+	for index := range copilotControlSpecs {
+		if copilotControlSpecs[index].requestEvent == eventType {
+			return &copilotControlSpecs[index]
+		}
+	}
+	return nil
+}
+
 type copilotPendingControl struct {
+	order           uint64
 	spec            copilotControlSpec
 	sink            agent.ProviderServices
 	nativeAgentID   string
@@ -155,16 +166,14 @@ func (copilotProvider) ControlRequestKey(payload []byte, agentSessionID string) 
 	if json.Unmarshal(payload, &frame) != nil || frame.Method != copilotMethodSessionEvent || frame.Params.SessionID == "" {
 		return "", false
 	}
-	index := slices.IndexFunc(copilotControlSpecs, func(spec copilotControlSpec) bool {
-		return spec.requestEvent == frame.Params.Event.Type
-	})
+	spec := copilotControlSpecForRequest(frame.Params.Event.Type)
 	var data struct {
 		RequestID string `json:"requestId"`
 	}
-	if index < 0 || json.Unmarshal(frame.Params.Event.Data, &data) != nil || data.RequestID == "" {
+	if spec == nil || json.Unmarshal(frame.Params.Event.Data, &data) != nil || data.RequestID == "" {
 		return "", false
 	}
-	return copilotControlID(frame.Params.SessionID, copilotControlSpecs[index].kind, data.RequestID), true
+	return copilotControlID(frame.Params.SessionID, spec.kind, data.RequestID), true
 }
 
 // copilotControlID separates native request kinds and sessions without changing the provider payload.
@@ -174,7 +183,7 @@ func copilotControlID(sessionID, kind, requestID string) string {
 	return "copilot-" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
+func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) (bool, string) {
 	var spec *copilotControlSpec
 	completed := false
 	for index := range copilotControlSpecs {
@@ -186,7 +195,7 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 		}
 	}
 	if spec == nil {
-		return false
+		return false, ""
 	}
 	child := a.childForEvent(event)
 	sink := a.sinkFor(child)
@@ -196,7 +205,7 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 	}
 	a.persistNativeFrameTo(sink, raw, agent.SpanInfo{})
 	if a.closing {
-		return true
+		return true, ""
 	}
 	var data struct {
 		RequestID      string `json:"requestId"`
@@ -204,13 +213,13 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil || data.RequestID == "" {
 		slog.Warn("Read Copilot control request", "event", event.Type, "error", err)
-		return true
+		return true, ""
 	}
 	sessionID := a.currentNativeSessionID()
 	identifier := copilotControlID(sessionID, spec.kind, data.RequestID)
 	if completed || data.ResolvedByHook {
 		a.removeNativeControl(identifier)
-		return true
+		return true, ""
 	}
 	a.controlMu.Lock()
 	if a.controls == nil {
@@ -226,8 +235,10 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 		if pending != nil && pending.published {
 			replaced = pending
 		}
+		a.nextControlOrder++
 		pending = &copilotPendingControl{
-			spec: *spec, sink: sink, nativeAgentID: nativeAgentID, sessionID: sessionID, nativeRequestID: data.RequestID, instanceID: id.Generate(),
+			order: a.nextControlOrder,
+			spec:  *spec, sink: sink, nativeAgentID: nativeAgentID, sessionID: sessionID, nativeRequestID: data.RequestID, instanceID: id.Generate(),
 			payload: append([]byte(nil), raw...), data: append(json.RawMessage(nil), event.Data...),
 			ready: make(chan struct{}),
 		}
@@ -267,7 +278,7 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 	if err == nil && spec.kind == "permission" {
 		a.offReader(copilotApprovePermissions, a.approvePendingPermissions)
 	}
-	return true
+	return true, identifier
 }
 
 func (a *Agent) controlSink(pending *copilotPendingControl) agent.ProviderServices {
@@ -335,52 +346,45 @@ func (a *Agent) withdrawNativeControlCard(identifier string, pending *copilotPen
 	}
 }
 
-func (a *Agent) clearNativeChildControls(nativeAgentID string) {
-	if nativeAgentID == "" {
-		return
-	}
+func (a *Agent) clearNativeControlsMatching(match func(*copilotPendingControl) bool) {
 	type withdrawn struct {
+		order                  uint64
 		identifier, instanceID string
 		sink                   agent.ProviderServices
 	}
 	var canceled []withdrawn
 	a.controlMu.Lock()
 	for identifier, pending := range a.controls {
-		if pending.nativeAgentID != nativeAgentID {
+		if !match(pending) {
 			continue
 		}
 		if pending.published {
 			canceled = append(canceled, withdrawn{
-				identifier: identifier, instanceID: pending.instanceID, sink: a.controlSink(pending),
+				order: pending.order, identifier: identifier, instanceID: pending.instanceID, sink: a.controlSink(pending),
 			})
 		}
 		delete(a.controls, identifier)
 	}
 	a.controlMu.Unlock()
+	slices.SortFunc(canceled, func(left, right withdrawn) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	for _, item := range canceled {
 		item.sink.CancelControlRequestInstance(item.identifier, item.instanceID)
 	}
 }
 
+func (a *Agent) clearNativeChildControls(nativeAgentID string) {
+	if nativeAgentID == "" {
+		return
+	}
+	a.clearNativeControlsMatching(func(pending *copilotPendingControl) bool {
+		return pending.nativeAgentID == nativeAgentID
+	})
+}
+
 func (a *Agent) clearNativeControls() {
-	type withdrawn struct {
-		identifier, instanceID string
-		sink                   agent.ProviderServices
-	}
-	a.controlMu.Lock()
-	canceled := make([]withdrawn, 0, len(a.controls))
-	for identifier, pending := range a.controls {
-		if pending.published {
-			canceled = append(canceled, withdrawn{
-				identifier: identifier, instanceID: pending.instanceID, sink: a.controlSink(pending),
-			})
-		}
-	}
-	clear(a.controls)
-	a.controlMu.Unlock()
-	for _, item := range canceled {
-		item.sink.CancelControlRequestInstance(item.identifier, item.instanceID)
-	}
+	a.clearNativeControlsMatching(func(*copilotPendingControl) bool { return true })
 	// The folder-trust question belongs to the session too.
 	a.workspaceTrust.Retire(a.sink)
 }
@@ -467,7 +471,15 @@ func (a *Agent) answerNativeControl(identifier string, pending *copilotPendingCo
 		a.stateMu.Unlock()
 		return pending.publicationErr
 	}
-	if a.controls[identifier] != pending || pending.responding {
+	if current := a.controls[identifier]; current != pending {
+		a.controlMu.Unlock()
+		a.stateMu.Unlock()
+		if current != nil && current.instanceID != pending.instanceID {
+			return agent.ErrControlInstanceReplaced
+		}
+		return fmt.Errorf("the Copilot control request is no longer pending")
+	}
+	if pending.responding {
 		a.controlMu.Unlock()
 		a.stateMu.Unlock()
 		return fmt.Errorf("the Copilot control request is no longer pending")
@@ -495,9 +507,12 @@ func (a *Agent) answerNativeControl(identifier string, pending *copilotPendingCo
 			return err
 		}
 		a.controlMu.Lock()
-		current := a.controls[identifier] == pending
+		current := a.controls[identifier]
 		a.controlMu.Unlock()
-		if !current {
+		if current != pending {
+			if current != nil && current.instanceID != pending.instanceID {
+				return agent.ErrControlInstanceReplaced
+			}
 			return fmt.Errorf("the Copilot sampling request is no longer pending")
 		}
 	}
@@ -524,20 +539,28 @@ func (a *Agent) answerNativeControl(identifier string, pending *copilotPendingCo
 // approvePendingPermissions runs under sessionMu, outside the event reader.
 // The existing delivery path checks native receipts and excludes competing answers.
 func (a *Agent) approvePendingPermissions() {
+	type pendingApproval struct {
+		identifier string
+		pending    *copilotPendingControl
+	}
 	a.controlMu.Lock()
-	permissions := make(map[string]*copilotPendingControl)
+	var permissions []pendingApproval
 	for identifier, pending := range a.controls {
 		if pending.spec.kind == "permission" && !pending.responding && !pending.automaticFailed {
 			select {
 			case <-pending.ready:
-				permissions[identifier] = pending
+				permissions = append(permissions, pendingApproval{identifier: identifier, pending: pending})
 			default:
 			}
 		}
 	}
 	a.controlMu.Unlock()
+	slices.SortFunc(permissions, func(left, right pendingApproval) int {
+		return cmp.Compare(left.pending.order, right.pending.order)
+	})
 	response, _ := json.Marshal(map[string]string{"kind": contracts.CopilotDecisionApproveOnce})
-	for identifier, pending := range permissions {
+	for _, entry := range permissions {
+		identifier, pending := entry.identifier, entry.pending
 		err := a.answerNativeControl(identifier, pending, response, true)
 		a.controlMu.Lock()
 		current := a.controls[identifier] == pending

@@ -108,7 +108,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 func (a *Agent) readSwarmConfig(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, kiloConfigReadTimeout)
 	defer cancel()
-	raw, err := a.ReadDaemon(ctx, kiloConfigRoute)
+	raw, err := a.Daemon().Get(ctx, kiloConfigRoute)
 	if err != nil {
 		slog.Debug("kilo could not read its configuration", "agent_id", a.AgentID(), "error", err)
 		return

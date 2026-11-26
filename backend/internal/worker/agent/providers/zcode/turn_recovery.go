@@ -1058,7 +1058,10 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 
 	if settle.persistEnd == nil {
 		// The end carries no persistable content: the owner settles and drops,
-		// and no scope, tool, span or row is touched.
+		// and no scope, tool, span or row is touched, but any bound inputs still
+		// retire so the queue does not wait for a divider that will never land.
+		a.retireObservedInput(owner.nativeReceipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+		a.retireZCodeTurnSteers(owner, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 		a.Mu.Lock()
 		a.dropZCodeTurnLocked(owner)
 		a.Mu.Unlock()
@@ -1133,16 +1136,20 @@ func (a *Agent) persistZCodeRecoveryEvidenceForOwner(owner *zcodeTurnState, comp
 		a.persistZCodeBackgroundTurnEnd(owner, evidence, completion)
 		return
 	}
-	sink := a.zcodeProgressSinkForTurn(owner)
-	content.InputTurnOutcome = a.zcodeReplyOutcome(owner, sink, completion)
+	sink, scope := a.zcodeReplySinkForTurn(owner)
+	content.InputTurnOutcome = a.zcodeReplyOutcome(owner, scope, completion)
 	var err error
 	if publish {
 		err = sink.PersistTurnEnd(content, agent.SpanInfo{})
 	} else {
 		err = sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
 	}
-	if err != nil {
+	if !agent.OutputRetained(err) {
 		slog.Error("zcode persist recovery evidence", "agent_id", a.AgentID(), "turn_id", owner.id, "error", err)
+		if content.InputTurnOutcome != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+			a.retireObservedInput(owner.nativeReceipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+			a.retireZCodeTurnSteers(owner, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+		}
 	}
 }
 

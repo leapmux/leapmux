@@ -42,7 +42,7 @@ type copilotNativeChild struct {
 	liveIterationEnded bool
 	nextAdmissionSeq   uint64
 	admissions         []*copilotChildAdmission
-	uncertainPrompts   map[string]int
+	uncertainPrompts   map[[32]byte]int
 	replyTurn          *copilotChildReplyTurn
 }
 
@@ -413,7 +413,6 @@ func orderedNativeChildren(children map[string]*copilotNativeChild) []*copilotNa
 }
 
 var _ agent.ChildInterrupter = (*Agent)(nil)
-var _ agent.ChildSteerer = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
 
 // errCopilotSubagentEnded refuses a message to a subagent that ended. A turn

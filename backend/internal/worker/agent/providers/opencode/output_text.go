@@ -90,25 +90,20 @@ func (s *openCodeTextStreams) recover(message openCodeStoredMessage) error {
 	return s.recoverSnapshot(message.ID, snapshot)
 }
 
-func (s *openCodeTextStreams) recoverSnapshot(messageID string, snapshot *openCodeAssistantSnapshot) error {
-	ordinals := make(map[string]int)
-	for _, raw := range *snapshot.Content {
-		var header struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(raw, &header); err != nil {
-			return err
-		}
-		ordinal := ordinals[header.Type]
-		ordinals[header.Type]++
-		if err := s.recoverPart(messageID, ordinal, raw, snapshot); err != nil {
-			return err
-		}
-	}
-	return nil
+type openCodeRecoveredPart struct {
+	Type string  `json:"type"`
+	Text *string `json:"text"`
+	Time struct {
+		Completed *float64 `json:"completed"`
+	} `json:"time"`
 }
 
-func (s *openCodeTextStreams) recoverPart(messageID string, ordinal int, raw json.RawMessage, snapshot *openCodeAssistantSnapshot) error {
+func (s *openCodeTextStreams) recoverSnapshot(messageID string, snapshot *openCodeAssistantSnapshot) error {
+	_, err := s.recoverSnapshotWithTextKeys(messageID, snapshot)
+	return err
+}
+
+func openCodeSnapshotCompletion(snapshot *openCodeAssistantSnapshot) (agent.MessageCompletion, bool, error) {
 	completion := agent.MessageCompletionComplete
 	failed := providerkit.RawPresent(snapshot.Error)
 	if failed {
@@ -117,22 +112,41 @@ func (s *openCodeTextStreams) recoverPart(messageID string, ordinal int, raw jso
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(snapshot.Error, &nativeError); err != nil {
-			return err
+			return "", false, err
 		}
 		if nativeError.Type == "aborted" {
 			completion = agent.MessageCompletionInterrupted
 		}
 	}
-	var part struct {
-		Type string  `json:"type"`
-		Text *string `json:"text"`
-		Time struct {
-			Completed *float64 `json:"completed"`
-		} `json:"time"`
+	return completion, failed, nil
+}
+
+func (s *openCodeTextStreams) recoverSnapshotWithTextKeys(messageID string, snapshot *openCodeAssistantSnapshot) ([]string, error) {
+	completion, failed, err := openCodeSnapshotCompletion(snapshot)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(raw, &part); err != nil {
-		return err
+	retried := providerkit.RawPresent(snapshot.Retry)
+	ordinals := make(map[string]int)
+	var textKeys []string
+	for _, raw := range *snapshot.Content {
+		var part openCodeRecoveredPart
+		if err := json.Unmarshal(raw, &part); err != nil {
+			return nil, err
+		}
+		ordinal := ordinals[part.Type]
+		ordinals[part.Type]++
+		if err := s.recoverPart(messageID, ordinal, part, snapshot, completion, failed, retried); err != nil {
+			return nil, err
+		}
+		if part.Type == "text" && part.Text != nil && *part.Text != "" && !retried {
+			textKeys = append(textKeys, openCodeTextScopeID(messageID, agent.AssembledMessageKindText, ordinal))
+		}
 	}
+	return textKeys, nil
+}
+
+func (s *openCodeTextStreams) recoverPart(messageID string, ordinal int, part openCodeRecoveredPart, snapshot *openCodeAssistantSnapshot, completion agent.MessageCompletion, failed, retried bool) error {
 	kind := agent.AssembledMessageKindText
 	switch part.Type {
 	case "text":
@@ -148,7 +162,7 @@ func (s *openCodeTextStreams) recoverPart(messageID string, ordinal int, raw jso
 	if err != nil {
 		return err
 	}
-	if providerkit.RawPresent(snapshot.Retry) {
+	if retried {
 		s.discardMessage(messageID)
 		return nil
 	}

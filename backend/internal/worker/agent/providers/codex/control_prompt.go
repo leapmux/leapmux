@@ -118,6 +118,8 @@ type codexControlRequest struct {
 	// toolName is the tool name of a request that LeapMux published itself:
 	// the plan-mode prompt or an async question.
 	toolName string
+	// toolInput is the request's tool input object when toolName is set.
+	toolInput json.RawMessage
 	// params is the request's params object, or nil when it states none.
 	params map[string]json.RawMessage
 	// rawParams is the request's params as Codex sent them.
@@ -129,10 +131,11 @@ type codexControlRequest struct {
 // as a request that states nothing.
 func readCodexControlRequest(payload []byte) codexControlRequest {
 	fields := providerkit.RawFields(payload)
-	method, _ := providerkit.RawString(fields["method"])
+	reqFields := providerkit.RawFields(fields["request"])
 	return codexControlRequest{
-		method:    method,
-		toolName:  agent.ControlToolName(payload),
+		method:    providerkit.ObjectString(fields, "method"),
+		toolName:  providerkit.ObjectString(reqFields, "tool_name"),
+		toolInput: providerkit.RawObjectOrEmpty(reqFields["input"]),
 		params:    providerkit.RawFields(fields["params"]),
 		rawParams: fields["params"],
 	}
@@ -151,7 +154,7 @@ func (codexProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 	request := readCodexControlRequest(input.Payload)
 	switch {
 	case request.toolName == contracts.CodexControlToolAsyncQuestion:
-		return codexQuestionPrompt(codexAsyncQuestions(input.Payload))
+		return codexQuestionPrompt(codexAsyncQuestions(request.toolInput))
 	case request.method == contracts.CodexMethodToolRequestUserInput:
 		return codexQuestionPrompt(providerkit.QuestionsFromWire(request.params["questions"]))
 	case request.method == contracts.MCPElicitationMethodCodex:
@@ -176,9 +179,9 @@ func codexQuestionPrompt(questions []*leapmuxv1.ControlQuestion) *leapmuxv1.Cont
 // that publishAsyncQuestions wrote: its title, and each option that is not
 // blank. A request with no title states no question, so a client can only
 // skip it.
-func codexAsyncQuestions(payload []byte) []*leapmuxv1.ControlQuestion {
-	input := providerkit.RawFields(agent.ControlToolInput(payload))
-	title, _ := providerkit.RawString(input[contracts.CodexAsyncQuestionInputTitle])
+func codexAsyncQuestions(toolInput json.RawMessage) []*leapmuxv1.ControlQuestion {
+	input := providerkit.RawFields(toolInput)
+	title := providerkit.ObjectString(input, contracts.CodexAsyncQuestionInputTitle)
 	if title == "" {
 		return nil
 	}
@@ -194,23 +197,14 @@ func codexAsyncQuestions(payload []byte) []*leapmuxv1.ControlQuestion {
 
 // codexQuestionsWithOther reports, for each question that
 // providerkit.QuestionsFromWire reads from raw, whether Codex adds its own
-// free-form option to it: `isOther` is true and the question states options.
-// It skips each element that QuestionsFromWire drops, so the two lists align
-// by index.
+// free-form option to it: `isOther` is true and the question states at least
+// one valid option object. It uses providerkit.QuestionsFromWireWith so the
+// two slices stay aligned by index.
 func codexQuestionsWithOther(raw json.RawMessage) []bool {
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil {
-		return nil
-	}
-	withOther := make([]bool, 0, len(elements))
-	for _, element := range elements {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(element, &fields) != nil || fields == nil {
-			continue
-		}
-		options, _ := providerkit.RawArray(fields["options"])
-		withOther = append(withOther, providerkit.RawBool(fields["isOther"]) && len(options) > 0)
-	}
+	var withOther []bool
+	providerkit.QuestionsFromWireWith(raw, func(fields map[string]json.RawMessage, question *leapmuxv1.ControlQuestion) {
+		withOther = append(withOther, providerkit.RawBool(fields["isOther"]) && len(question.GetOptions()) > 0)
+	})
 	return withOther
 }
 
@@ -219,19 +213,15 @@ func codexQuestionsWithOther(raw json.RawMessage) []bool {
 // tool's arguments, a default title and description, and the accept choices
 // that remember the approval.
 func codexElicitationPrompt(params map[string]json.RawMessage) *leapmuxv1.ElicitationPrompt {
-	text := func(fields map[string]json.RawMessage, key string) string {
-		value, _ := providerkit.RawString(fields[key])
-		return value
-	}
 	mode, ok := providerkit.RawString(params["mode"])
 	if !ok || mode == codexElicitationModeOpenAIForm || mode == codexElicitationModeOpenAIFormCamel {
 		mode = contracts.MCPElicitationModeForm
 	}
 	prompt := &leapmuxv1.ElicitationPrompt{
 		Mode:    mode,
-		Message: text(params, "message"),
-		Server:  text(params, "serverName"),
-		Url:     text(params, "url"),
+		Message: providerkit.ObjectString(params, "message"),
+		Server:  providerkit.ObjectString(params, "serverName"),
+		Url:     providerkit.ObjectString(params, "url"),
 	}
 	if schema := params["requestedSchema"]; providerkit.RawPresent(schema) {
 		prompt.SchemaJson = string(schema)
@@ -248,7 +238,7 @@ func codexElicitationPrompt(params map[string]json.RawMessage) *leapmuxv1.Elicit
 			title = codexElicitationApprovalTitle
 		}
 		if !hasDescription {
-			description = text(meta, "tool_description")
+			description = providerkit.ObjectString(meta, "tool_description")
 		}
 		for _, choice := range codexElicitationAcceptChoices(meta) {
 			prompt.AcceptChoices = append(prompt.AcceptChoices, &leapmuxv1.ElicitationAcceptChoice{Key: choice.key, Label: choice.label})
@@ -262,7 +252,7 @@ func codexElicitationPrompt(params map[string]json.RawMessage) *leapmuxv1.Elicit
 // codexIsToolApprovalElicitation reports whether an elicitation's `_meta`
 // states an MCP tool-call or tool-suggestion approval.
 func codexIsToolApprovalElicitation(meta map[string]json.RawMessage) bool {
-	kind, _ := providerkit.RawString(meta["codex_approval_kind"])
+	kind := providerkit.ObjectString(meta, "codex_approval_kind")
 	return kind == contracts.MCPElicitationApprovalKindToolCall || kind == contracts.MCPElicitationApprovalKindToolSuggestion
 }
 
@@ -286,20 +276,14 @@ func codexElicitationAcceptChoices(meta map[string]json.RawMessage) []codexElici
 	if !codexIsToolApprovalElicitation(meta) {
 		return nil
 	}
-	persist, _ := providerkit.RawArray(meta["persist"])
-	offers := func(scope string) bool {
-		return slices.ContainsFunc(persist, func(raw json.RawMessage) bool {
-			value, ok := providerkit.RawString(raw)
-			return ok && value == scope
-		})
-	}
+	persist := providerkit.RawStrings(meta["persist"])
 	choices := []codexElicitationAcceptChoice{{key: codexElicitationAcceptOnce, label: "Once"}}
-	if offers(contracts.MCPElicitationApprovalScopeSession) {
+	if slices.Contains(persist, contracts.MCPElicitationApprovalScopeSession) {
 		choices = append(choices, codexElicitationAcceptChoice{
 			key: contracts.MCPElicitationApprovalScopeSession, label: "Session", persist: contracts.MCPElicitationApprovalScopeSession,
 		})
 	}
-	if offers(contracts.MCPElicitationApprovalScopeAlways) {
+	if slices.Contains(persist, contracts.MCPElicitationApprovalScopeAlways) {
 		choices = append(choices, codexElicitationAcceptChoice{
 			key: contracts.MCPElicitationApprovalScopeAlways, label: "Always", persist: contracts.MCPElicitationApprovalScopeAlways,
 		})
@@ -311,15 +295,11 @@ func codexElicitationAcceptChoices(meta map[string]json.RawMessage) []codexElici
 // in its method, and the reason, the command and the working directory in its
 // params.
 func codexPermissionPrompt(request codexControlRequest) *leapmuxv1.PermissionPrompt {
-	text := func(key string) string {
-		value, _ := providerkit.RawString(request.params[key])
-		return value
-	}
 	permission := &leapmuxv1.PermissionPrompt{
 		Title:            codexApprovalTitles[request.method],
-		Reason:           text("reason"),
-		Command:          text("command"),
-		WorkingDirectory: text("cwd"),
+		Reason:           providerkit.ObjectString(request.params, "reason"),
+		Command:          providerkit.ObjectString(request.params, "command"),
+		WorkingDirectory: providerkit.ObjectString(request.params, "cwd"),
 	}
 	if request.method == contracts.CodexMethodPermissionsRequestApproval {
 		// The request asks for a set of permissions, and the set is what the
@@ -473,11 +453,7 @@ func codexWordDecision(word string) codexDecisionChoice {
 		option.Kind, option.Name = leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, codexLabelCancel
 		option.EndsTurn = true
 	}
-	encoded, err := json.Marshal(word)
-	if err != nil {
-		panic(fmt.Sprintf("codex: encode the decision %q: %v", word, err))
-	}
-	return codexDecisionChoice{option: option, decision: encoded}
+	return codexDecisionChoice{option: option, decision: json.RawMessage(providerkit.JSONText(word))}
 }
 
 // codexExecPolicyAmendment reads the body of an exec policy amendment: an
@@ -631,7 +607,7 @@ func codexUserInputAnswer(input agent.ControlAnswerInput, params map[string]json
 			}
 			answer := agent.QuestionAnswerAt(decision, i)
 			values := append([]string{}, answer.GetSelected()...)
-			if note := strings.TrimSpace(answer.GetCustomText()); note != "" {
+			if note := agent.TrimJavaScriptSpace(answer.GetCustomText()); note != "" {
 				if len(values) == 0 && i < len(withOther) && withOther[i] {
 					values = append(values, codexOtherOptionLabel)
 				}
@@ -664,7 +640,7 @@ func codexAsyncQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnsw
 	if selected := answer.GetSelected(); len(selected) > 0 {
 		selection = selected[0]
 	}
-	note := strings.TrimSpace(answer.GetCustomText())
+	note := agent.TrimJavaScriptSpace(answer.GetCustomText())
 	var text string
 	switch {
 	case selection != "" && note != "":

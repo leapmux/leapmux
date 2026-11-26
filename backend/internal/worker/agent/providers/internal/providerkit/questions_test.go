@@ -74,6 +74,15 @@ func TestQuestionsFromWire_AcceptsWholeNumberFloats(t *testing.T) {
 	assert.Nil(t, fractional[0].MaximumSelections)
 }
 
+func TestQuestionsFromWireWith_VisitsEachParsedQuestionInIndexOrder(t *testing.T) {
+	var visited []bool
+	questions := QuestionsFromWireWith(json.RawMessage(`[null,{"question":"First","isOther":true,"options":[{"label":"A"}]},{"question":"Second","isOther":true,"options":[null]},{"question":"Third","isOther":false,"options":[{"label":"B"}]}]`), func(fields map[string]json.RawMessage, q *leapmuxv1.ControlQuestion) {
+		visited = append(visited, RawBool(fields["isOther"]) && len(q.GetOptions()) > 0)
+	})
+	require.Len(t, questions, 3)
+	assert.Equal(t, []bool{true, false, false}, visited)
+}
+
 func TestAskUserQuestionAnswers_KeepsTheToolInputBesideTheAnswers(t *testing.T) {
 	input := agent.ControlAnswerInput{
 		Request:   agent.NewControlRequestInput([]byte(`{}`)),

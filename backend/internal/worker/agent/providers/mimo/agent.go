@@ -68,7 +68,8 @@ type Agent struct {
 	// these calls before aborting the outgoing native session.
 	inputSends map[string]map[*mimoInputSend]struct{}
 	// Mu protects receipt observations and the text rows they own.
-	inputReplies map[string]*mimoInputReply
+	inputReplies        map[string]*mimoInputReply
+	nextInputReplyOrder uint64
 
 	catalog mimoCatalog
 	// model is the `<provider>/<model>` every prompt states. Empty until the

@@ -153,13 +153,8 @@ func (a *Agent) submitNativePrompt(target kiloReplyTarget, messageID string, raw
 	receipt := target.receipt
 	ctx, cancel := context.WithTimeout(a.Context(), a.APITimeout())
 	defer cancel()
-	select {
-	case <-a.daemonReady:
-		if a.daemonFailed.Load() {
-			return errors.New("the Kilo daemon is unavailable")
-		}
-	case <-ctx.Done():
-		return fmt.Errorf("wait for the Kilo daemon: %w", ctx.Err())
+	if err := a.Daemon().WaitReady(ctx); err != nil {
+		return fmt.Errorf("wait for the Kilo daemon: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -178,7 +173,7 @@ func (a *Agent) submitNativePrompt(target kiloReplyTarget, messageID string, raw
 		}
 	}()
 	go func() {
-		body, err := a.PostDaemon(runCtx, a.nativeMessageRoute(receipt.SessionID, ""), raw)
+		body, err := a.Daemon().Post(runCtx, a.nativeMessageRoute(receipt.SessionID, ""), raw)
 		var message kiloNativeMessage
 		if err == nil {
 			err = json.Unmarshal(body, &message)

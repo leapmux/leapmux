@@ -314,3 +314,22 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 	}
 	return res
 }
+
+// ResolveProviderData applies stored supplements to native events for semantic extractors.
+func (zcodeProvider) ResolveProviderData(content agent.MessageContent) []byte {
+	if len(content.Supplemental) == 0 {
+		return content.Original
+	}
+	original, ok := parseZCodeEvent(content.Original)
+	if !ok {
+		return content.Original
+	}
+	switch original.Type {
+	case contracts.ZCodeEventSessionUpdated:
+		return zcodeResolveReplyCoverage(original, content)
+	case contracts.ZCodeEventToolUpdated:
+		return zcodeResolveToolInput(original, content)
+	default:
+		return content.Original
+	}
+}

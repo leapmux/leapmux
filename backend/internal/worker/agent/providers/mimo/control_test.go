@@ -779,3 +779,113 @@ func TestLateUnresolvedControlRetiresOnMainResolutionOrClear(t *testing.T) {
 		}
 	}
 }
+
+type mimoBlockingPublishSink struct {
+	agenttest.ControlSink
+	enterPublish chan struct{}
+	allowPublish chan struct{}
+	failNext     bool
+}
+
+func (s *mimoBlockingPublishSink) PublishControlRequest(req agent.ControlRequest) error {
+	if s.failNext {
+		s.failNext = false
+		return errors.New("publish failed")
+	}
+	if s.enterPublish != nil {
+		select {
+		case s.enterPublish <- struct{}{}:
+		default:
+		}
+		<-s.allowPublish
+	}
+	return s.ControlSink.PublishControlRequest(req)
+}
+
+func TestMiMoControlReplyReplacedWhilePublishingReturnsReplacedError(t *testing.T) {
+	t.Parallel()
+	sink := &mimoBlockingPublishSink{
+		enterPublish: make(chan struct{}, 1),
+		allowPublish: make(chan struct{}),
+	}
+	a, _ := newTestAgent(t, agent.NewProviderServices(sink))
+
+	first := eventJSON(t, contracts.MiMoEventPermissionAsked, map[string]any{
+		"id": "per_replace", "sessionID": testSessionID, "permission": "bash", "patterns": []string{"echo 1"},
+	})
+
+	publishDone := make(chan struct{})
+	go func() {
+		defer close(publishDone)
+		feed(a, first)
+	}()
+	<-sink.enterPublish
+
+	a.Mu.Lock()
+	origInstance := a.controls[permissionRequestPrefix+"per_replace"].instanceID
+	a.Mu.Unlock()
+
+	answer := agent.JSONRPCResult(permissionRequestPrefix+"per_replace", map[string]any{
+		"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": contracts.MiMoPermissionReplyOnce},
+	})
+	replyErrCh := make(chan error, 1)
+	go func() {
+		replyErrCh <- a.executeControlReply([]byte(answer), origInstance)
+	}()
+
+	// Replace the pending control while the first publication is in flight.
+	// Call publishControl directly so this test does not block on dispatchMu.
+	sink.enterPublish = nil
+	replacementPayload, err := controlPayload(contracts.MiMoEventPermissionAsked, json.RawMessage(`{"id":"per_replace","sessionID":"ses_test","permission":"bash","patterns":["echo 2"]}`), mimoControlHeader{ToolName: "bash"}, "")
+	require.NoError(t, err)
+	a.publishControl(permissionRequestPrefix+"per_replace", &mimoControl{
+		kind: controlPermission, nativeID: "per_replace", sessionID: testSessionID, actorID: mainActorID, payload: replacementPayload,
+	})
+	close(sink.allowPublish)
+	<-publishDone
+
+	err = <-replyErrCh
+	assert.ErrorIs(t, err, agent.ErrControlInstanceReplaced)
+}
+
+func TestMiMoReplacedControlCancelsOldInstanceOnBypassAndPublishFailure(t *testing.T) {
+	t.Parallel()
+	t.Run("bypass replacement cancels prior published control", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newControlTestAgent(t)
+		first := eventJSON(t, contracts.MiMoEventPermissionAsked, map[string]any{
+			"id": "per_bypass", "sessionID": testSessionID, "permission": "bash", "patterns": []string{"echo 1"},
+		})
+		second := eventJSON(t, contracts.MiMoEventPermissionAsked, map[string]any{
+			"id": "per_bypass", "sessionID": testSessionID, "permission": "bash", "patterns": []string{"echo 2"},
+		})
+		feed(a, first)
+		require.Equal(t, 1, sink.PublishedControlCount())
+
+		a.Mu.Lock()
+		a.permissionPolicy = contracts.MiMoPermissionPolicyBypass
+		a.Mu.Unlock()
+		feed(a, second)
+
+		assert.Contains(t, sink.CanceledControls(), permissionRequestPrefix+"per_bypass")
+	})
+
+	t.Run("failed replacement publication cancels prior published control", func(t *testing.T) {
+		t.Parallel()
+		sink := &mimoBlockingPublishSink{}
+		a, _ := newTestAgent(t, agent.NewProviderServices(sink))
+		first := eventJSON(t, contracts.MiMoEventPermissionAsked, map[string]any{
+			"id": "per_fail", "sessionID": testSessionID, "permission": "bash", "patterns": []string{"echo 1"},
+		})
+		second := eventJSON(t, contracts.MiMoEventPermissionAsked, map[string]any{
+			"id": "per_fail", "sessionID": testSessionID, "permission": "bash", "patterns": []string{"echo 2"},
+		})
+		feed(a, first)
+		require.Equal(t, 1, sink.PublishedControlCount())
+
+		sink.failNext = true
+		feed(a, second)
+
+		assert.Contains(t, sink.CanceledControls(), permissionRequestPrefix+"per_fail")
+	})
+}

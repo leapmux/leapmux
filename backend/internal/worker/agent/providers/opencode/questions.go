@@ -2,15 +2,18 @@ package opencode
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -18,6 +21,7 @@ import (
 	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/util/procutil"
@@ -44,7 +48,7 @@ func (q *openCodeQuestions) readStoredMessage(ctx context.Context, clock quartz.
 	if err != nil {
 		return nil, err
 	}
-	response, err := q.client.Do(request)
+	response, err := q.daemon.httpClient().Do(request)
 	if err != nil {
 		return nil, errors.Join(err, context.Cause(ctx))
 	}
@@ -141,7 +145,7 @@ func (q *openCodeQuestions) readMessagePage(ctx context.Context, sessionID, befo
 	if before != "" {
 		query.Set("before", before)
 	}
-	raw, header, err := q.readRoute(ctx, "/session/"+url.PathEscape(sessionID)+"/message?"+query.Encode())
+	raw, header, err := q.daemon.request(ctx, http.MethodGet, "/session/"+url.PathEscape(sessionID)+"/message?"+query.Encode(), nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -158,43 +162,6 @@ func (q *openCodeQuestions) readMessagePage(ctx context.Context, sessionID, befo
 	return parts, header.Get(openCodeNextCursorHeader), nil
 }
 
-// readRoute GETs one route of the daemon. It returns the body and the headers
-// of the answer, which must be 200 OK and at most openCodeQuestionMaxEvent bytes.
-func (q *openCodeQuestions) readRoute(ctx context.Context, route string) ([]byte, http.Header, error) {
-	return q.requestRoute(ctx, http.MethodGet, route, nil)
-}
-
-func (q *openCodeQuestions) requestRoute(ctx context.Context, method, route string, body json.RawMessage) ([]byte, http.Header, error) {
-	base := q.base()
-	if base == "" {
-		return nil, nil, fmt.Errorf("the OpenCode daemon address is unavailable")
-	}
-	request, err := http.NewRequestWithContext(ctx, method, base+route, bytes.NewReader(body))
-	if err != nil {
-		return nil, nil, err
-	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	response, err := q.client.Do(request)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the OpenCode route %s: %w", route, err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		detail, _ := io.ReadAll(io.LimitReader(response.Body, 1<<12))
-		return nil, nil, fmt.Errorf("the OpenCode route %s answered %s: %s", route, response.Status, bytes.TrimSpace(detail))
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, openCodeQuestionMaxEvent+1))
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the OpenCode route %s: %w", route, err)
-	}
-	if len(raw) > openCodeQuestionMaxEvent {
-		return nil, nil, fmt.Errorf("the OpenCode route %s answered more than %d bytes", route, openCodeQuestionMaxEvent)
-	}
-	return raw, response.Header, nil
-}
-
 // abortSession asks the daemon to cancel the running work of sessionID.
 func (q *openCodeQuestions) abortSession(ctx context.Context, sessionID string) error {
 	base := q.base()
@@ -205,7 +172,7 @@ func (q *openCodeQuestions) abortSession(ctx context.Context, sessionID string) 
 	if err != nil {
 		return err
 	}
-	response, err := q.client.Do(request)
+	response, err := q.daemon.httpClient().Do(request)
 	if err != nil {
 		return fmt.Errorf("send the OpenCode session abort: %w", err)
 	}
@@ -328,9 +295,10 @@ func openCodeQuestionID(payload []byte) (string, bool) {
 // daemon's own question id (openCodeQuestionControlID). Any other request is
 // a request of the Agent Client Protocol, which the base keys.
 func (p FamilyProvider) ControlRequestKey(payload []byte, agentSessionID string) (string, bool) {
-	if isOpenCodeQuestionEvent(payload) {
-		id, ok := openCodeQuestionID(payload)
-		if !ok {
+	fields := providerkit.RawFields(payload)
+	if providerkit.ObjectString(fields, "type") == contracts.OpenCodeEventQuestionAsked {
+		id := providerkit.ObjectString(providerkit.RawFields(fields["properties"]), "id")
+		if id == "" {
 			return "", false
 		}
 		return openCodeQuestionControlID(id), true
@@ -449,7 +417,7 @@ func (q *openCodeQuestions) servesQuestions(ctx context.Context, base string) bo
 	if err != nil {
 		return false
 	}
-	response, err := q.client.Do(request)
+	response, err := q.daemon.httpClient().Do(request)
 	if err != nil {
 		return false
 	}
@@ -511,51 +479,47 @@ func openCodeDescendants(ctx context.Context, pid int32) []int32 {
 // The zero value is inert: a bridge that was never configured takes no frame and
 // publishes nothing, so a test that builds a bare agent needs no server.
 type openCodeQuestions struct {
-	baseURL string
-	client  *http.Client
+	daemon  FamilyDaemon
 	sink    agent.ControlServices
 	agentID string
 	observe func(json.RawMessage)
 	// ready runs once the daemon address is known, before the event stream
 	// opens, with the context of the bridge. It may be nil.
 	ready          func(context.Context)
-	unavailable    func()
 	questionTurnID func(context.Context, string, string) string
 	questionOwner  func(string) (agent.ControlServices, error)
 
-	// mu guards baseURL and pending. Each pending question retains its daemon ID
-	// and the transcript that published it. Discovery writes baseURL once.
+	// mu guards pending and stopped. Each pending question retains its daemon ID,
+	// control instance ID, and the transcript that published it.
 	mu      sync.Mutex
 	pending map[string]*openCodePendingQuestion
 
 	// stopped closes when the goroutine that Begin or beginAt started has
 	// fully returned -- past the run loop and past its deferred cancelAll,
-	// which writes through CancelControlRequest. wait receives from it, so the
-	// family's AfterWaitCleanup joins the bridge instead of leaving its last
-	// writes racing the caller's teardown. nil until one of the two begin
+	// which writes through CancelControlRequestInstance. wait receives from it,
+	// so the family's AfterWaitCleanup joins the bridge instead of leaving its
+	// last writes racing the caller's teardown. nil until one of the two begin
 	// methods starts the goroutine, and nil for ever when a Begin found no
 	// sink.
 	stopped chan struct{}
 }
 
 type openCodePendingQuestion struct {
-	requestID string
-	nativeID  string
-	sessionID string
-	owner     agent.ControlServices
+	requestID  string
+	instanceID string
+	nativeID   string
+	sessionID  string
+	owner      agent.ControlServices
 }
 
 func (question *openCodePendingQuestion) cancel() {
-	question.owner.CancelControlRequest(question.requestID)
+	question.owner.CancelControlRequestInstance(question.requestID, question.instanceID)
 }
 
 // Configure records the sink. It runs before the process starts, so it opens no
 // connection and knows no port yet.
 func (q *openCodeQuestions) Configure(sink agent.ControlServices) {
 	q.sink = sink
-	// No client timeout: the event stream stays open for the life of the session.
-	// The per-answer requests below carry their own deadline through the context.
-	q.client = &http.Client{}
 }
 
 // base is where the daemon's server was found, or "" before discovery finishes.
@@ -563,9 +527,7 @@ func (q *openCodeQuestions) Configure(sink agent.ControlServices) {
 // It is guarded because discovery runs on its own goroutine while the reader may
 // already answer something else on the ACP stream.
 func (q *openCodeQuestions) base() string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return q.baseURL
+	return q.daemon.base()
 }
 
 // Begin finds the daemon's question server and then reads its event stream.
@@ -589,15 +551,12 @@ func (q *openCodeQuestions) Begin(ctx context.Context, clock quartz.Clock, agent
 		if err != nil {
 			slog.Warn("No OpenCode question server; questions stay unanswerable",
 				"agent_id", agentID, "pid", pid, "error", err)
-			if q.unavailable != nil {
-				q.unavailable()
-			}
+			q.daemon.markUnavailable(err)
 			return
 		}
-		q.mu.Lock()
-		q.baseURL = baseURL
-		q.mu.Unlock()
-		q.announceReady(ctx)
+		if q.daemon.markReady(baseURL) {
+			q.announceReady(ctx)
+		}
 		q.run(ctx, clock)
 	}()
 }
@@ -628,11 +587,12 @@ func (q *openCodeQuestions) beginAt(ctx context.Context, clock quartz.Clock, age
 	}
 	q.agentID = agentID
 	q.mu.Lock()
-	q.baseURL = baseURL
 	q.stopped = make(chan struct{})
 	stopped := q.stopped
 	q.mu.Unlock()
-	q.announceReady(ctx)
+	if q.daemon.markReady(baseURL) {
+		q.announceReady(ctx)
+	}
 	go func() {
 		defer close(stopped)
 		q.run(ctx, clock)
@@ -666,7 +626,7 @@ func (q *openCodeQuestions) consume(ctx context.Context) error {
 		return err
 	}
 	request.Header.Set("Accept", "text/event-stream")
-	response, err := q.client.Do(request)
+	response, err := q.daemon.httpClient().Do(request)
 	if err != nil {
 		return err
 	}
@@ -742,7 +702,7 @@ func (q *openCodeQuestions) publishPending(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	response, err := q.client.Do(request)
+	response, err := q.daemon.httpClient().Do(request)
 	if err != nil {
 		slog.Debug("read the OpenCode questions the daemon holds", "error", err)
 		return
@@ -782,6 +742,9 @@ func (q *openCodeQuestions) retireUnheld(held map[string]struct{}) {
 		delete(q.pending, requestID)
 	}
 	q.mu.Unlock()
+	slices.SortFunc(stale, func(left, right *openCodePendingQuestion) int {
+		return cmp.Compare(left.requestID, right.requestID)
+	})
 	for _, question := range stale {
 		question.cancel()
 	}
@@ -846,21 +809,28 @@ func (q *openCodeQuestions) publish(ctx context.Context, properties json.RawMess
 	if q.questionTurnID != nil && question.SessionID != "" && question.Tool.MessageID != "" {
 		nativeTurnID = q.questionTurnID(ctx, question.SessionID, question.Tool.MessageID)
 	}
+	instanceID := id.Generate()
+	pending := &openCodePendingQuestion{
+		requestID:  requestID,
+		instanceID: instanceID,
+		nativeID:   question.ID,
+		sessionID:  question.SessionID,
+		owner:      owner,
+	}
 	q.mu.Lock()
 	if q.pending == nil {
 		q.pending = make(map[string]*openCodePendingQuestion)
 	}
-	q.pending[requestID] = &openCodePendingQuestion{
-		requestID: requestID, nativeID: question.ID, sessionID: question.SessionID, owner: owner,
-	}
+	q.pending[requestID] = pending
 	q.mu.Unlock()
 	if err := owner.PublishControlRequest(agent.ControlRequest{
 		RequestID:      requestID,
+		InstanceID:     instanceID,
 		Payload:        payload,
 		AgentSessionID: question.SessionID,
 		NativeTurnID:   nativeTurnID,
 	}); err != nil {
-		q.forget(requestID)
+		q.forgetIf(requestID, pending)
 		q.rejectUnpublished(ctx, question.ID, requestID, err)
 		return ""
 	}
@@ -899,13 +869,22 @@ func (q *openCodeQuestions) forget(requestID string) *openCodePendingQuestion {
 	return question
 }
 
+// forgetIf removes requestID only when the stored entry still points to expected.
+func (q *openCodeQuestions) forgetIf(requestID string, expected *openCodePendingQuestion) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.pending[requestID] == expected {
+		delete(q.pending, requestID)
+	}
+}
+
 func (q *openCodeQuestions) cancelAll() {
 	q.mu.Lock()
 	pending := q.pending
 	q.pending = nil
 	q.mu.Unlock()
-	for _, question := range pending {
-		question.cancel()
+	for _, requestID := range slices.Sorted(maps.Keys(pending)) {
+		pending[requestID].cancel()
 	}
 }
 
@@ -914,11 +893,11 @@ func (q *openCodeQuestions) cancelAll() {
 //
 // A frame it does not claim goes to the stdio stream unchanged, which is where every
 // other control answer belongs.
-func (q *openCodeQuestions) answer(ctx context.Context, raw []byte) (bool, error) {
-	if q.client == nil || q.base() == "" {
+func (q *openCodeQuestions) answer(ctx context.Context, input agent.RawInput) (bool, error) {
+	if q.base() == "" {
 		return false, nil
 	}
-	_, requestID, ok := agent.ExtractJSONRPCID(raw)
+	_, requestID, ok := agent.ExtractJSONRPCID(input.Data)
 	if !ok || requestID == "" {
 		return false, nil
 	}
@@ -928,10 +907,13 @@ func (q *openCodeQuestions) answer(ctx context.Context, raw []byte) (bool, error
 	if question == nil {
 		return false, nil
 	}
+	if err := agent.ControlInstanceRefusal(question.instanceID, input.ControlInstanceID); err != nil {
+		return true, err
+	}
 	var frame struct {
 		Result openCodeAnswerResult `json:"result"`
 	}
-	if err := json.Unmarshal(raw, &frame); err != nil {
+	if err := json.Unmarshal(input.Data, &frame); err != nil {
 		return true, fmt.Errorf("decode the OpenCode question answer: %w", err)
 	}
 	var err error
@@ -948,7 +930,7 @@ func (q *openCodeQuestions) answer(ctx context.Context, raw []byte) (bool, error
 	}
 	// The daemon states `question.replied` as well, and that arrives on the event
 	// stream. Whichever reaches the record first retires it; the other finds nothing.
-	q.forget(requestID)
+	q.forgetIf(requestID, question)
 	return true, nil
 }
 
@@ -994,7 +976,7 @@ func (q *openCodeQuestions) post(ctx context.Context, questionID, action string,
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := q.client.Do(request)
+	response, err := q.daemon.httpClient().Do(request)
 	if err != nil {
 		return fmt.Errorf("send the OpenCode question %s: %w", action, err)
 	}

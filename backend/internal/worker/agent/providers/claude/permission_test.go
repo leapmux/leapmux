@@ -94,7 +94,7 @@ func TestClaudeRefusesUnknownAndRepeatedPermissionAnswers(t *testing.T) {
 // Claude Code can ask again under a request ID that waits for an answer, with
 // another request (claudeCodeHandleControlRequest). The second request
 // replaces the first instance, and Claude Code applies an answer to the
-// request that its ID names now. So an answer reaches Claude Code only while
+// request that its ID identifies now. So an answer reaches Claude Code only while
 // the instance that it answers is current, and an answer that states no
 // instance reaches nothing.
 func TestClaudeRefusesAnAnswerToAReplacedRequest(t *testing.T) {
@@ -113,6 +113,23 @@ func TestClaudeRefusesAnAnswerToAReplacedRequest(t *testing.T) {
 	assert.Empty(t, peer.String(), "no answer reaches the request that replaced the answered one")
 	require.NoError(t, a.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: current.InstanceID}))
 	assert.Equal(t, 1, strings.Count(peer.String(), `"request_id":"permission"`))
+}
+
+func TestClaudeReplacedPublishedControlCancelsPreviousInstanceUnderBypass(t *testing.T) {
+	a, sink, _ := newPermissionAgent(t, false)
+	a.HandleOutput(nativeToolPermission("permission", "Bash"))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	replaced := sink.LastPublishedControl()
+
+	// Switch to bypass mode and receive a replacement payload under the same request_id.
+	a.Mu.Lock()
+	a.confirmedPermissionMode = contracts.ClaudeModeBypassPermissions
+	a.Mu.Unlock()
+	a.HandleOutput(nativeToolPermission("permission", "Write"))
+
+	require.NotEmpty(t, replaced.InstanceID)
+	assert.Contains(t, sink.CanceledControls(), "permission",
+		"replacing a published control under bypass mode must cancel the superseded instance")
 }
 
 func TestClaudeDeferredModeReplyWithoutModeStillSettlesTheRequest(t *testing.T) {

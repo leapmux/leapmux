@@ -2,9 +2,13 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -90,11 +94,36 @@ func TestFamilyQuestionsLeaveAnUnservedSessionAlone(t *testing.T) {
 	family := &FamilyBase{}
 	family.SetSessionIDForTest("parent-session")
 	family.configureQuestions(agent.NewProviderServices(sink))
-	family.Questions.baseURL = daemon.Server.URL
+	family.Daemon().setBaseURL(daemon.Server.URL)
 
 	assert.Empty(t, family.Questions.publish(t.Context(), []byte(opencodetest.FakeQuestion)))
 	assert.Empty(t, sink.PublishedControls())
 	assert.Empty(t, daemon.Answers())
+}
+
+func TestFamilyBaseSessionControlOwnerUsesWrappedSink(t *testing.T) {
+	t.Parallel()
+	rawSink := &agenttest.ControlSink{}
+	rawServices := agent.NewProviderServices(rawSink)
+	wrappedServices := agent.NewModelProgressResetSink(rawServices)
+
+	family := &FamilyBase{}
+	family.SetSessionIDForTest("parent-session")
+	family.SetSinkForTest(wrappedServices)
+	family.configureQuestions(rawServices)
+
+	owner, err := family.sessionControlOwner("parent-session")
+	require.NoError(t, err)
+	require.NoError(t, owner.PublishControlRequest(agent.ControlRequest{RequestID: "q-1", Payload: []byte(`{}`)}))
+
+	var sawReset bool
+	for _, update := range rawSink.ProgressUpdates() {
+		if update.Operation == agent.ProgressModelReset {
+			sawReset = true
+			break
+		}
+	}
+	assert.True(t, sawReset, "root question publication must route through modelProgressResetControl")
 }
 
 func TestDaemonReadyRunsOnceTheAddressIsKnown(t *testing.T) {
@@ -108,7 +137,7 @@ func TestDaemonReadyRunsOnceTheAddressIsKnown(t *testing.T) {
 	f := &FamilyBase{}
 	ready := make(chan struct{})
 	f.DaemonReady = func(context.Context) { close(ready) }
-	_, err := f.ReadDaemon(ctx, "/member/route")
+	_, err := f.Daemon().Get(ctx, "/member/route")
 	require.ErrorContains(t, err, "daemon address", "no route before the address is known")
 	f.BeginQuestionsForTest(ctx, agent.NewProviderServices(&agenttest.ControlSink{}), "agent-1", daemon.Server.URL)
 	select {
@@ -116,17 +145,107 @@ func TestDaemonReadyRunsOnceTheAddressIsKnown(t *testing.T) {
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the bridge did not report the daemon address")
 	}
-	raw, err := f.ReadDaemon(ctx, "/member/route")
+	require.NoError(t, f.Daemon().WaitReady(ctx))
+	raw, err := f.Daemon().Get(ctx, "/member/route")
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"answer":42}`, string(raw))
-	_, err = f.ReadDaemon(ctx, "/missing/route")
+	_, err = f.Daemon().Get(ctx, "/missing/route")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "404")
 }
 
-// parkingControlSink parks the first CancelControlRequest, so the bridge's
-// cancelAll -- and with it the whole bridge goroutine -- stays inside the
-// answer a test controls.
+func TestFamilyDaemonWaitReadyAndIdempotency(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unblocks on unavailable with ErrDaemonUnavailable", func(t *testing.T) {
+		t.Parallel()
+		var d FamilyDaemon
+		done := make(chan error, 1)
+		go func() { done <- d.WaitReady(t.Context()) }()
+		d.MarkUnavailableForTest(errors.New("discovery timed out"))
+		err := <-done
+		require.ErrorIs(t, err, ErrDaemonUnavailable)
+		assert.Contains(t, err.Error(), "discovery timed out")
+		// Repeated transitions are no-ops and do not panic.
+		assert.False(t, d.markUnavailable(nil))
+		assert.False(t, d.markReady("http://127.0.0.1:1"))
+	})
+
+	t.Run("markReady wakes a waiting caller and is idempotent", func(t *testing.T) {
+		t.Parallel()
+		var d FamilyDaemon
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.ErrorIs(t, d.WaitReady(ctx), context.Canceled)
+
+		waiting := make(chan error, 1)
+		go func() { waiting <- d.WaitReady(t.Context()) }()
+		testutil.RequireEventually(t, func() bool {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			return d.readyCh != nil
+		})
+		assert.True(t, d.markReady("http://127.0.0.1:9999"))
+		require.NoError(t, <-waiting)
+		assert.False(t, d.markReady("http://127.0.0.1:9999"))
+		require.NoError(t, d.WaitReady(t.Context()))
+	})
+
+	t.Run("MarkUnavailableForTest with nil cause returns ErrDaemonUnavailable", func(t *testing.T) {
+		t.Parallel()
+		var d FamilyDaemon
+		d.MarkUnavailableForTest(nil)
+		err := d.WaitReady(t.Context())
+		require.ErrorIs(t, err, ErrDaemonUnavailable)
+		assert.Equal(t, ErrDaemonUnavailable, err)
+	})
+}
+
+func TestFamilyDaemonGetPagePostAndSizeCap(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/page":
+			assert.Equal(t, http.MethodGet, r.Method)
+			w.Header().Set(openCodeNextCursorHeader, "cursor-2")
+			_, _ = fmt.Fprint(w, `[{"id":"m1"}]`)
+		case "/submit":
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+			body, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
+			assert.JSONEq(t, `{"ok":true}`, string(body))
+			_, _ = fmt.Fprint(w, `{"saved":true}`)
+		case "/oversized":
+			_, _ = io.WriteString(w, strings.Repeat("a", openCodeQuestionMaxEvent+1))
+		default:
+			http.Error(w, "missing", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var d FamilyDaemon
+	d.markReady(server.URL)
+
+	raw, cursor, err := d.GetPage(t.Context(), "/page")
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"id":"m1"}]`, string(raw))
+	assert.Equal(t, "cursor-2", cursor)
+
+	posted, err := d.Post(t.Context(), "/submit", json.RawMessage(`{"ok":true}`))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"saved":true}`, string(posted))
+
+	_, err = d.Post(t.Context(), "/reject", json.RawMessage(`{}`))
+	require.ErrorContains(t, err, "400")
+
+	_, err = d.Get(t.Context(), "/oversized")
+	require.ErrorContains(t, err, "more than")
+}
+
+// parkingControlSink parks the first CancelControlRequestInstance, so the
+// bridge's cancelAll -- and with it the whole bridge goroutine -- stays inside
+// the answer a test controls.
 type parkingControlSink struct {
 	*agenttest.Sink
 	release chan struct{}
@@ -134,14 +253,14 @@ type parkingControlSink struct {
 	once    sync.Once
 }
 
-func (s *parkingControlSink) CancelControlRequest(requestID string) {
+func (s *parkingControlSink) CancelControlRequestInstance(requestID, instanceID string) {
 	s.once.Do(func() { close(s.entered) })
 	<-s.release
 }
 
 // The hook the family binds must join the bridge: the run loop defers
-// cancelAll, whose writes go through CancelControlRequest, and Base.Wait calls
-// the hook after it admits its final cleanup.
+// cancelAll, whose writes go through CancelControlRequestInstance, and
+// Base.Wait calls the hook after it admits its final cleanup.
 func TestAfterWaitCleanupJoinsTheQuestionBridge(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		release := make(chan struct{})
@@ -157,7 +276,7 @@ func TestAfterWaitCleanupJoinsTheQuestionBridge(t *testing.T) {
 		// before the bridge can reach its deferred cancelAll.
 		f.Questions.mu.Lock()
 		f.Questions.pending = map[string]*openCodePendingQuestion{
-			"req-1": {requestID: "req-1", nativeID: "daemon-1", owner: f.Questions.sink},
+			"req-1": {requestID: "req-1", instanceID: "inst-1", nativeID: "daemon-1", owner: f.Questions.sink},
 		}
 		f.Questions.mu.Unlock()
 		ctx, cancel := context.WithCancel(context.Background())

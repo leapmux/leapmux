@@ -106,6 +106,7 @@ type mimoControl struct {
 	answered        bool
 	automatic       bool
 	automaticFailed bool
+	boundInputIDs   []string
 	publicationDone chan struct{}
 	publicationOnce sync.Once
 }
@@ -329,6 +330,7 @@ func (a *Agent) publishControl(requestID string, control *mimoControl) {
 		control.childSink = a.sink.ChildSink(control.childID)
 	}
 	a.Mu.Lock()
+	var replaced *mimoControl
 	if existing := a.controls[requestID]; existing != nil {
 		if existing.answering {
 			a.Mu.Unlock()
@@ -338,6 +340,9 @@ func (a *Agent) publishControl(requestID string, control *mimoControl) {
 			control = existing
 		} else {
 			existing.publicationOnce.Do(func() { close(existing.publicationDone) })
+			if existing.published {
+				replaced = existing
+			}
 		}
 	}
 	if control.publicationDone == nil {
@@ -351,6 +356,9 @@ func (a *Agent) publishControl(requestID string, control *mimoControl) {
 		control.publicationOnce.Do(func() { close(control.publicationDone) })
 	}
 	a.Mu.Unlock()
+	if replaced != nil {
+		a.controlSink(replaced).CancelControlRequestInstance(requestID, replaced.instanceID)
+	}
 	if bypass {
 		a.queuePermissionApprovals()
 		return
@@ -856,7 +864,15 @@ func (a *Agent) executeControlReply(data []byte, instanceID string) error {
 		return a.Context().Err()
 	}
 	a.Mu.Lock()
-	if a.controls[requestID] != control || !control.published || control.answering || a.StoppedLocked() || a.sessionSwitching || !a.ownsSessionLocked(control.sessionID) {
+	current := a.controls[requestID]
+	if current != control {
+		a.Mu.Unlock()
+		if current != nil {
+			return agent.ControlInstanceRefusal(current.instanceID, instanceID)
+		}
+		return fmt.Errorf("MiMo holds no pending request %q", requestID)
+	}
+	if !control.published || control.answering || a.StoppedLocked() || a.sessionSwitching || !a.ownsSessionLocked(control.sessionID) {
 		a.Mu.Unlock()
 		return fmt.Errorf("MiMo holds no pending request %q", requestID)
 	}

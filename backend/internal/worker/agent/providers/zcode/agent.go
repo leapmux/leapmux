@@ -60,9 +60,6 @@ type Agent struct {
 	sink                        agent.ProviderServices
 	workingDir                  string
 	workspace                   zcodeWorkspace
-	// pendingInputRetirements holds replaced inputs until their state publishes.
-	// Mu protects the list.
-	pendingInputRetirements []agent.NativeInputReceipt
 	// seenInputTurns retains the native starts already admitted in this session.
 	seenInputTurns zcodeSeenInputTurns
 	// homeDir is the finalized home directory used at startup. The refresh owner
@@ -165,7 +162,8 @@ type Agent struct {
 
 	// steers maps the command id of each steer that ZCode accepted and has not
 	// resolved to its bookkeeping. See steering.go.
-	steers map[string]*zcodeSteer
+	steers         map[string]*zcodeSteer
+	nextSteerOrder uint64
 	// withdrawnSteerInputs holds the queued inputs that a withdrawal deleted,
 	// until ZCode reports their discard, so that event is known as LeapMux's own.
 	withdrawnSteerInputs map[string]struct{}
@@ -709,7 +707,7 @@ func (a *Agent) createProvisionalZCodeTurnForSession(identity zcodeSessionObserv
 	if admissionRevision == 0 {
 		admissionRevision = a.stateRevision
 	}
-	turn := a.createZCodeTurnLocked(zcodeTurnState{
+	turn, displaced := a.createZCodeTurnLocked(zcodeTurnState{
 		admissionRevision: admissionRevision,
 		inputID:           inputID,
 	})
@@ -717,6 +715,7 @@ func (a *Agent) createProvisionalZCodeTurnForSession(identity zcodeSessionObserv
 		admission.owner = turn
 	}
 	a.Mu.Unlock()
+	a.retireUnprovedInputs(displaced)
 	a.publishZCodeModelAPIRetryLocked()
 	a.PublishTurnActive()
 }
@@ -728,7 +727,7 @@ func classifyZCodeDeliveryError(method string, err error) error {
 	if errors.As(err, &responseErr) {
 		return err
 	}
-	return fmt.Errorf("%w: ZCode did not confirm %s delivery: %v", agent.ErrDeliveryUncertain, method, err)
+	return fmt.Errorf("%w: ZCode did not confirm %s delivery: %w", agent.ErrDeliveryUncertain, method, err)
 }
 
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {

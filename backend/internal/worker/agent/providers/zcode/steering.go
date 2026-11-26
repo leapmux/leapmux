@@ -70,6 +70,7 @@ type zcodeDeleteQueueItemPayload struct {
 type zcodeSteer struct {
 	queueInputID string
 	attemptID    string
+	order        uint64
 	// inputID is the input id that the acknowledgement stated. ZCode uses the
 	// command id, and a turn that runs the input states it.
 	inputID string
@@ -132,12 +133,17 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 	sessionID := a.sessionID
 	commandID := zcodeSteerCommandPrefix + id.Short()
 	// The steer is registered before the command, because its events can
-	// arrive before the acknowledgement.
-	steer := &zcodeSteer{queueInputID: request.InputID, attemptID: request.AttemptID, inputID: commandID}
-	if a.steers == nil {
-		a.steers = map[string]*zcodeSteer{}
+	// arrive before the acknowledgement. Steered control replies carry an empty
+	// AttemptID and are accepted immediately without steer resolution tracking.
+	var steer *zcodeSteer
+	if request.AttemptID != "" {
+		a.nextSteerOrder++
+		steer = &zcodeSteer{queueInputID: request.InputID, attemptID: request.AttemptID, order: a.nextSteerOrder, inputID: commandID}
+		if a.steers == nil {
+			a.steers = map[string]*zcodeSteer{}
+		}
+		a.steers[commandID] = steer
 	}
-	a.steers[commandID] = steer
 	a.Mu.Unlock()
 
 	ack, err := a.sendZCodeCommand(zcodeCommandEnvelope{
@@ -147,22 +153,38 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 		Payload:   zcodeSendTextPayload{Text: text, RequestedDelivery: zcodeDeliveryGuide},
 	})
 	if err != nil {
-		a.forgetZCodeSteer(commandID)
+		if steer != nil {
+			a.forgetZCodeSteer(commandID)
+		}
 		return agent.NativeInputReceipt{}, classifyZCodeDeliveryError(MethodCommand, err)
 	}
 	if ack.Status != zcodeCommandAccepted || ack.Result == nil || ack.Result.Type != zcodeCommandResultInputAccepted {
-		a.forgetZCodeSteer(commandID)
+		if steer != nil {
+			a.forgetZCodeSteer(commandID)
+		}
 		return agent.NativeInputReceipt{}, fmt.Errorf("ZCode did not accept the steer: %s", zcodeCommandRefusal(ack))
 	}
+	if steer == nil {
+		return agent.NativeInputReceipt{}, nil
+	}
+	var echoedReceipt agent.NativeInputReceipt
 	a.Mu.Lock()
 	// The native start or drain may have already resolved this steer.
 	if a.steers[commandID] == steer {
 		if ack.Result.InputID != "" {
 			steer.inputID = ack.Result.InputID
 		}
-		steer.awaitingTurnStart = steer.awaitingTurnStart || ack.Result.Delivery == zcodeDeliveryStartNow
+		if turnID := a.seenInputTurns.inputs[steer.inputID]; turnID != "" {
+			delete(a.steers, commandID)
+			echoedReceipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: steer.inputID, TurnID: turnID}
+		} else {
+			steer.awaitingTurnStart = steer.awaitingTurnStart || ack.Result.Delivery == zcodeDeliveryStartNow
+		}
 	}
 	a.Mu.Unlock()
+	if echoedReceipt.TurnID != "" {
+		a.reportZCodeSteer(steer, agent.SteerOutcomeEchoed, echoedReceipt)
+	}
 	return agent.NativeInputReceipt{}, nil
 }
 
@@ -183,6 +205,9 @@ func (a *Agent) takeZCodeSteers(match func(commandID string, steer *zcodeSteer) 
 			delete(a.steers, commandID)
 		}
 	}
+	slices.SortFunc(matched, func(left, right *zcodeSteer) int {
+		return cmp.Compare(left.order, right.order)
+	})
 	return matched
 }
 
@@ -388,29 +413,41 @@ func (a *Agent) hasPendingZCodeSteers() bool {
 // remaining case is an input that ZCode removed without a word. A steer whose
 // queued input ZCode has not stated cannot be addressed, and is uncertain too.
 // The caller holds steerMu.
-func (a *Agent) withdrawZCodeSteersLocked() {
+func (a *Agent) withdrawZCodeSteersLocked(includeAwaitingStart bool) {
+	type pendingSteer struct {
+		commandID      string
+		pendingInputID string
+		order          uint64
+	}
 	a.Mu.Lock()
 	sessionID := a.sessionID
-	pending := make(map[string]string, len(a.steers))
+	var pending []pendingSteer
 	for commandID, steer := range a.steers {
-		if !steer.awaitingTurnStart {
-			pending[commandID] = steer.pendingInputID
+		if includeAwaitingStart || !steer.awaitingTurnStart {
+			pending = append(pending, pendingSteer{
+				commandID:      commandID,
+				pendingInputID: steer.pendingInputID,
+				order:          steer.order,
+			})
 		}
 	}
 	a.Mu.Unlock()
-	for commandID, pendingInputID := range pending {
+	slices.SortFunc(pending, func(left, right pendingSteer) int {
+		return cmp.Compare(left.order, right.order)
+	})
+	for _, entry := range pending {
 		outcome := agent.SteerOutcomeUncertain
-		if pendingInputID != "" && a.deleteZCodeQueuedInput(sessionID, pendingInputID) {
+		if entry.pendingInputID != "" && a.deleteZCodeQueuedInput(sessionID, entry.pendingInputID) {
 			outcome = agent.SteerOutcomeDropped
 		}
 		a.Mu.Lock()
-		steer := a.steers[commandID]
+		steer := a.steers[entry.commandID]
 		// A native promotion can arrive during the withdrawal RPC.
-		if steer != nil && steer.awaitingTurnStart {
+		if !includeAwaitingStart && steer != nil && steer.awaitingTurnStart {
 			steer = nil
 		}
 		if steer != nil {
-			delete(a.steers, commandID)
+			delete(a.steers, entry.commandID)
 		}
 		a.Mu.Unlock()
 		if steer != nil {
@@ -463,7 +500,7 @@ func (a *Agent) withdrawZCodeSteersAfterTurnEnd() {
 	if active || stopped {
 		return
 	}
-	a.withdrawZCodeSteersLocked()
+	a.withdrawZCodeSteersLocked(false)
 }
 
 // dropZCodeSteersOfReplacedSession drops the steers of a session that a new

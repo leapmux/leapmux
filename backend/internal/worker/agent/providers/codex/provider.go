@@ -183,7 +183,7 @@ func (codexProvider) ReportsDefaultModelSentinel() bool { return false }
 // codexMCPElicitationMeta admits the approval scope Codex offers on an MCP
 // tool-call or tool-suggestion elicitation. The request's
 // `_meta.codex_approval_kind` states which approval it is, and its
-// `_meta.persist` lists the scopes it accepts; an answer may name only one of
+// `_meta.persist` lists the scopes it accepts; an answer may specify only one of
 // those, and only a session or an always scope. codexElicitationAcceptChoices
 // reads both, so the answer admits exactly the scopes that the prompt offers.
 func codexMCPElicitationMeta(requestPayload json.RawMessage, persist string) bool {

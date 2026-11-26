@@ -2,8 +2,6 @@ package kilo
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -15,12 +13,9 @@ import (
 // Agent manages a single Kilo ACP process.
 type Agent struct {
 	opencode.FamilyBase
-	steers          kiloSteerState
-	nativeReplies   kiloNativeReplies
-	daemonReady     chan struct{}
-	daemonReadyOnce sync.Once
-	daemonFailed    atomic.Bool
-	workingDir      string
+	steers        kiloSteerState
+	nativeReplies kiloNativeReplies
+	workingDir    string
 	// usageRefresh wakes refreshUsageLoop. newAgent creates it, and it never
 	// changes afterwards.
 	usageRefresh chan struct{}
@@ -30,32 +25,21 @@ type Agent struct {
 	swarmConfigOff bool
 }
 
-func (a *Agent) markDaemonReady() {
-	a.daemonReadyOnce.Do(func() {
-		close(a.daemonReady)
-	})
-}
-
 // newAgent builds the Kilo agent with the launch value of Kilo Swarm. The
 // constructor binds the native session-metadata reader before the daemon
 // bridge starts, so every start path reports the session goal that Kilo itself
 // holds. Once the daemon answers, it reads Kilo's configuration and the plan
 // usage, and it reads the usage again after each turn.
 func newAgent(swarm bool) *Agent {
-	a := &Agent{usageRefresh: make(chan struct{}, 1), daemonReady: make(chan struct{}), swarm: swarm}
+	a := &Agent{usageRefresh: make(chan struct{}, 1), swarm: swarm}
 	a.MemberEvents = a.observeKiloGoal
 	a.ConfigureHooks = a.configureHooks
 	a.QuestionTurnID = a.nativeQuestionTurnID
 	a.MemberOptionGroups = a.swarmOptionGroups
 	a.DaemonReady = func(ctx context.Context) {
-		a.markDaemonReady()
 		a.requestUsageRefresh()
 		// The bridge calls this before it reads events, so the read goes on its own goroutine.
 		go a.readSwarmConfig(ctx)
-	}
-	a.DaemonUnavailable = func() {
-		a.daemonFailed.Store(true)
-		a.markDaemonReady()
 	}
 	a.TurnEnded = a.requestUsageRefresh
 	return a

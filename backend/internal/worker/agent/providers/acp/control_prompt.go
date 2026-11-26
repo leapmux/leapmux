@@ -307,14 +307,6 @@ func answerPermission(input agent.ControlAnswerInput, rejectReason RejectReason)
 	return answer, nil
 }
 
-// SelectedOptionResult is the Agent Client Protocol answer that selects one
-// permission option.
-func SelectedOptionResult(requestID, optionID string) []byte {
-	return agent.JSONRPCResult(requestID, map[string]any{
-		"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": optionID},
-	})
-}
-
 // IsJSONRPCReply reports whether content is a JSON-RPC result or error
 // envelope rather than a neutral control decision envelope.
 func IsJSONRPCReply(content []byte) bool {

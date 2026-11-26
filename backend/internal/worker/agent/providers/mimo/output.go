@@ -175,6 +175,15 @@ type mimoRootProgressSink struct {
 	owner *Agent
 }
 
+type mimoRootProgressPublication struct {
+	agent.TranscriptPublication
+	owner *Agent
+}
+
+func (p mimoRootProgressPublication) ReportProgress(update agent.ProgressUpdate) {
+	p.TranscriptPublication.ReportProgress(p.owner.adjustRootProgress(update))
+}
+
 func (a *Agent) fallbackChildModelScopesLocked() []string {
 	var scopes []string
 	for partID, state := range a.parts {
@@ -202,35 +211,49 @@ func (a *Agent) processExited() bool {
 	}
 }
 
-func (s mimoRootProgressSink) ReportProgress(update agent.ProgressUpdate) {
+func (a *Agent) adjustRootProgress(update agent.ProgressUpdate) agent.ProgressUpdate {
 	switch update.Operation {
 	case agent.ProgressModelReset:
 		if update.ScopeID == "" {
-			s.owner.Mu.Lock()
-			preserved := append(slices.Clone(update.PreserveModelScopes), s.owner.fallbackChildModelScopesLocked()...)
-			s.owner.Mu.Unlock()
+			a.Mu.Lock()
+			preserved := append(slices.Clone(update.PreserveModelScopes), a.fallbackChildModelScopesLocked()...)
+			a.Mu.Unlock()
 			update.PreserveModelScopes = preserved
 		}
 	case agent.ProgressReset:
-		s.owner.Mu.Lock()
+		a.Mu.Lock()
 		var preserved []string
 		hasFallbackTool := false
-		if !s.owner.StoppedLocked() && !s.owner.processExited() {
-			preserved = s.owner.fallbackChildModelScopesLocked()
-			for _, call := range s.owner.tools {
-				if call.actorID != mainActorID && call.progressTarget != nil && call.progressTarget.childID == "" && call.lastFrame != nil && call.sessionID == s.owner.sessionID {
+		if !a.StoppedLocked() && !a.processExited() {
+			preserved = a.fallbackChildModelScopesLocked()
+			for _, call := range a.tools {
+				if call.actorID != mainActorID && call.progressTarget != nil && call.progressTarget.childID == "" && call.lastFrame != nil && call.sessionID == a.sessionID {
 					hasFallbackTool = true
 					break
 				}
 			}
 		}
-		s.owner.Mu.Unlock()
+		a.Mu.Unlock()
 		if len(preserved) > 0 || hasFallbackTool {
 			update = agent.ResetModelProgressPreservingScopes(preserved)
 		}
 	default:
 	}
-	s.ProviderServices.ReportProgress(update)
+	return update
+}
+
+func (s mimoRootProgressSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	captured := s.ProviderServices.CaptureMessage(content, span)
+	if captured.Publication != nil {
+		if _, wrapped := captured.Publication.(mimoRootProgressPublication); !wrapped {
+			captured.Publication = mimoRootProgressPublication{TranscriptPublication: captured.Publication, owner: s.owner}
+		}
+	}
+	return captured
+}
+
+func (s mimoRootProgressSink) ReportProgress(update agent.ProgressUpdate) {
+	s.ProviderServices.ReportProgress(s.owner.adjustRootProgress(update))
 }
 
 // progressScope is the id of one part in the live progress counters.

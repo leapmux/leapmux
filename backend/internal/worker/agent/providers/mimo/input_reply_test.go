@@ -125,19 +125,9 @@ func TestMiMoReconnectedStreamCannotCompleteAnIncompleteReply(t *testing.T) {
 	}, sink.NativeReplyRetirements())
 }
 
-type mimoReplyControlSink struct {
-	agenttest.ControlSink
-	bindings []agent.NativeControlInputs
-}
-
-func (s *mimoReplyControlSink) SetNativeControlInputs(binding agent.NativeControlInputs) error {
-	s.bindings = append(s.bindings, binding)
-	return nil
-}
-
 func TestMiMoHTTPReceiptBindsAnAlreadyPublishedNativeQuestion(t *testing.T) {
 	t.Parallel()
-	sink := &mimoReplyControlSink{}
+	sink := &agenttest.ControlSink{}
 	a, server := newTestAgent(t, agent.NewProviderServices(sink))
 	server.handle("POST /session/ses_test/prompt_async", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
 		feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
@@ -145,15 +135,16 @@ func TestMiMoHTTPReceiptBindsAnAlreadyPublishedNativeQuestion(t *testing.T) {
 			receiptEvent(t, "owned", "msg_01", "msg_02", "claimed", ""),
 			[]byte(`{"type":"question.asked","properties":{"id":"question-exact","sessionID":"ses_test","questions":[{"header":"Choice","question":"Select a checklist","options":[{"label":"First","description":"The first checklist"}]}],"tool":{"messageID":"msg_02","callID":"call-question"}}}`),
 		)
-		assert.Empty(t, sink.bindings)
+		assert.Empty(t, sink.NativeControlInputBindings())
 		writeJSON(w, http.StatusAccepted, `{"receiptId":"owned"}`)
 	})
 	_, err := a.SendInput("guide", nil)
 	require.NoError(t, err)
-	require.Len(t, sink.bindings, 1)
-	assert.Equal(t, []string{"owned"}, sink.bindings[0].InputIDs)
-	assert.Equal(t, testSessionID, sink.bindings[0].SessionID)
-	assert.NotEmpty(t, sink.bindings[0].InstanceID)
+	bindings := sink.NativeControlInputBindings()
+	require.Len(t, bindings, 1)
+	assert.Equal(t, []string{"owned"}, bindings[0].InputIDs)
+	assert.Equal(t, testSessionID, bindings[0].SessionID)
+	assert.NotEmpty(t, bindings[0].InstanceID)
 }
 
 func TestMiMoReplySettlesBeforeItsHTTPAcknowledgment(t *testing.T) {
@@ -187,4 +178,48 @@ func TestMiMoReplySettlesBeforeItsHTTPAcknowledgment(t *testing.T) {
 	feed(a, receiptEvent(t, "owned", "msg_03", "msg_04", "settled", "success"))
 	assert.Len(t, sink.NativeReplyTurns(), 1)
 	assert.Empty(t, sink.NativeReplyRetirements())
+}
+
+func TestMiMoReconcileChildReceipt404AbandonsReceipt(t *testing.T) {
+	t.Parallel()
+	a, sink, server := newSinkTestAgent(t)
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
+	server.respond("POST /session/ses_test/prompt_async", http.StatusAccepted, `{"receiptId":"child-404"}`)
+
+	result, err := a.SendChildInput(spawnSpanID, agent.ChildInput{Content: "next task"})
+	require.NoError(t, err)
+	require.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.ActiveChildTurnState(spawnSpanID))
+
+	server.respond("GET /session/ses_test/receipts/child-404", http.StatusNotFound, `{}`)
+	a.dispatchMu.Lock()
+	a.reconcileInputReplies(t.Context())
+	a.dispatchMu.Unlock()
+
+	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(spawnSpanID), "404 receipt must end the child turn instead of wedging it")
+	childSink := sink.Child("child-of-" + spawnSpanID)
+	assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+		result.NativeReceipt: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+	}, childSink.NativeReplyRetirements())
+}
+
+func TestMiMoControlBindingSkipsUnchangedInputs(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a, server := newTestAgent(t, agent.NewProviderServices(sink))
+	server.respond("POST /session/ses_test/prompt_async", http.StatusAccepted, `{"receiptId":"owned-1"}`)
+	_, err := a.SendInput("first", nil)
+	require.NoError(t, err)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
+		messageEvent(t, "msg_02", roleAssistant, mainActorID, false),
+		receiptEvent(t, "owned-1", "msg_01", "msg_02", "claimed", ""),
+		[]byte(`{"type":"question.asked","properties":{"id":"question-dedup","sessionID":"ses_test","questions":[{"header":"Choice","question":"Select","options":[{"label":"A"}]}],"tool":{"messageID":"msg_02","callID":"call-q"}}}`),
+	)
+	require.Len(t, sink.NativeControlInputBindings(), 1)
+
+	// An unrelated receipt confirmation for a later message must not re-bind the already-bound control with the same InputIDs.
+	server.respond("POST /session/ses_test/prompt_async", http.StatusAccepted, `{"receiptId":"owned-2"}`)
+	_, err = a.SteerInput(agent.SteerRequest{Content: "second"})
+	require.NoError(t, err)
+	assert.Len(t, sink.NativeControlInputBindings(), 1, "unchanged control input IDs must not emit duplicate SetNativeControlInputs calls")
 }

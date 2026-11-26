@@ -2,7 +2,9 @@ package claude
 
 import (
 	"bytes"
+	"cmp"
 	"log/slog"
+	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -18,9 +20,24 @@ type claudeInputReply struct {
 }
 
 type claudePendingSteer struct {
+	order        uint64
 	resolution   agent.SteerResolution
 	written      bool
 	acknowledged bool
+}
+
+func sortedClaudeSteers(pending map[string]*claudePendingSteer) []*claudePendingSteer {
+	if len(pending) == 0 {
+		return nil
+	}
+	ordered := make([]*claudePendingSteer, 0, len(pending))
+	for _, steer := range pending {
+		ordered = append(ordered, steer)
+	}
+	slices.SortFunc(ordered, func(a, b *claudePendingSteer) int {
+		return cmp.Compare(a.order, b.order)
+	})
+	return ordered
 }
 
 // acknowledgeClaudeSteer runs on a native replay echo. A result read before
@@ -42,12 +59,16 @@ func (a *Agent) acknowledgeClaudeSteer(sessionID string, env *messageEnvelope) b
 	resolution.Outcome = agent.SteerOutcomeEchoed
 	resolution.Receipt.TurnID = env.UUID
 	var superseded *claudeInputReply
+	var attachedTo *claudeInputReply
+	var createdReply *claudeInputReply
 	if reply := a.inputReply; reply != nil && reply.acknowledged && reply.receipt.SessionID == sessionID {
 		resolution.Receipt.TurnID = reply.receipt.InputID
 		reply.steers = append(reply.steers, resolution.Receipt)
+		attachedTo = reply
 	} else {
 		superseded = a.inputReply
-		a.inputReply = &claudeInputReply{receipt: resolution.Receipt, acknowledged: true}
+		createdReply = &claudeInputReply{receipt: resolution.Receipt, acknowledged: true}
+		a.inputReply = createdReply
 	}
 	steer.resolution = resolution
 	a.Mu.Unlock()
@@ -56,9 +77,23 @@ func (a *Agent) acknowledgeClaudeSteer(sessionID string, env *messageEnvelope) b
 	const label = "record Claude steer echo"
 	route, err := a.reserveRoutedClaudeRootOutput(label, func(func()) claudeRootSequence {
 		record := a.rootTranscript().sink.CaptureSteerResolution(resolution)
-		return func(agent.TranscriptSequence) error { return record() }
+		return func(sequence agent.TranscriptSequence) error {
+			if err := a.resolveHeldAPIError(sequence, nil); err != nil {
+				return err
+			}
+			return record()
+		}
 	})
 	if err != nil {
+		a.Mu.Lock()
+		if attachedTo != nil {
+			attachedTo.steers = slices.DeleteFunc(attachedTo.steers, func(r agent.NativeInputReceipt) bool {
+				return r == resolution.Receipt
+			})
+		} else if createdReply != nil && a.inputReply == createdReply {
+			a.inputReply = nil
+		}
+		a.Mu.Unlock()
 		a.reportClaudeSequenceError(label, err)
 		a.reportUnconfirmedClaudeSteer(steer)
 		return true
@@ -71,7 +106,7 @@ func (a *Agent) acknowledgeClaudeSteer(sessionID string, env *messageEnvelope) b
 // event. A later input cannot belong to that idle even if output is delayed.
 func (a *Agent) observedClaudeSteersLocked() []*claudePendingSteer {
 	var observed []*claudePendingSteer
-	for _, steer := range a.pendingSteers {
+	for _, steer := range sortedClaudeSteers(a.pendingSteers) {
 		if steer.written {
 			observed = append(observed, steer)
 		}
@@ -118,10 +153,17 @@ func (a *Agent) acknowledgeClaudeInputReply(sessionID string, env *messageEnvelo
 	reply.acknowledged = true
 	a.Mu.Unlock()
 	if first {
-		writer := agent.DirectProviderServices(a.sink)
-		if err := writer.BindNativeInputTurn(reply.receipt, env.UUID); err != nil {
+		if err := a.sink.BindNativeInputTurn(reply.receipt, env.UUID); !agent.OutputRetained(err) {
 			slog.Warn("retain the Claude input binding", "error", err)
-			a.retireUnprovedClaudeReply(reply)
+			a.Mu.Lock()
+			detached := a.inputReply == reply
+			if detached {
+				a.inputReply = nil
+			}
+			a.Mu.Unlock()
+			if detached {
+				a.retireUnprovedClaudeReply(reply)
+			}
 		}
 	}
 	return true
@@ -168,12 +210,14 @@ func (a *Agent) retireClaudeInputReply() {
 	a.Mu.Lock()
 	reply := a.inputReply
 	a.inputReply = nil
-	pending := a.pendingSteers
+	pending := sortedClaudeSteers(a.pendingSteers)
 	a.pendingSteers = nil
 	a.Mu.Unlock()
 	a.retireUnprovedClaudeReply(reply)
 	for _, steer := range pending {
-		a.reportUnconfirmedClaudeSteer(steer)
+		if steer.written {
+			a.reportUnconfirmedClaudeSteer(steer)
+		}
 	}
 }
 
@@ -181,12 +225,11 @@ func (a *Agent) retireUnprovedClaudeReply(reply *claudeInputReply) {
 	if reply == nil {
 		return
 	}
-	writer := agent.DirectProviderServices(a.sink)
-	if err := writer.RetireNativeInputTurn(reply.receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED); err != nil {
+	if err := a.sink.RetireNativeInputTurn(reply.receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED); !agent.OutputRetained(err) {
 		slog.Warn("retain the unproved Claude reply", "error", err)
 	}
 	for _, receipt := range reply.steers {
-		if err := writer.RetireNativeInputTurn(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED); err != nil {
+		if err := a.sink.RetireNativeInputTurn(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED); !agent.OutputRetained(err) {
 			slog.Warn("retain the unproved Claude steer reply", "error", err)
 		}
 	}

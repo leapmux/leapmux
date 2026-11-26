@@ -70,7 +70,7 @@ func newFamilyAudioAgent(t *testing.T, config familyAudioAgentConfig) (*familyTe
 	services := agent.NewProviderServices(&agenttest.Sink{})
 	a.SetSinkForTest(services)
 	a.configureQuestions(services)
-	a.Questions.baseURL = server.URL
+	a.Daemon().setBaseURL(server.URL)
 	*a.HooksForTest() = FamilyHooks(&a.FamilyBase)
 	a.SetCurrentModel("private/voice")
 	return a, requests, calls

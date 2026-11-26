@@ -527,3 +527,27 @@ func TestSamplingAfterCancellationWritesNoRequest(t *testing.T) {
 	require.NotErrorIs(t, err, agentapi.ErrDeliveryUncertain)
 	require.Empty(t, stdin.String())
 }
+
+func TestCopilotAnswerControlReturnsReplacedWhenSupersededDuringWait(t *testing.T) {
+	t.Parallel()
+	a := newCopilotControlAgent(agentapi.NewProviderServices(&agenttest.ControlSink{}))
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context()})
+	a.sessionID = "session"
+	oldPending := &copilotPendingControl{
+		spec: copilotControlSpecs[0], sessionID: "session", nativeRequestID: "req-1",
+		instanceID: "old-instance", ready: make(chan struct{}), published: true,
+	}
+	newPending := &copilotPendingControl{
+		spec: copilotControlSpecs[0], sessionID: "session", nativeRequestID: "req-1",
+		instanceID: "new-instance", ready: make(chan struct{}), published: true,
+	}
+	close(oldPending.ready)
+	close(newPending.ready)
+	a.controls = map[string]*copilotPendingControl{"ctrl-1": newPending}
+
+	a.sessionMu.RLock()
+	err := a.answerNativeControl("ctrl-1", oldPending, []byte(`{"kind":"approve-once"}`), false)
+	a.sessionMu.RUnlock()
+	require.ErrorIs(t, err, agentapi.ErrControlInstanceReplaced,
+		"answering a control superseded during wait must return ErrControlInstanceReplaced")
+}

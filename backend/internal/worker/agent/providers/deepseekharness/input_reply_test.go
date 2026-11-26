@@ -177,20 +177,10 @@ func TestHarnessSteerBindsToTheTurnThatActuallyConsumesIt(t *testing.T) {
 	}}, sink.NativeReplyTurns())
 }
 
-type harnessReplyControlSink struct {
-	agenttest.ControlSink
-	bindings []agent.NativeControlInputs
-}
-
-func (s *harnessReplyControlSink) SetNativeControlInputs(binding agent.NativeControlInputs) error {
-	s.bindings = append(s.bindings, binding)
-	return nil
-}
-
 func TestHarnessExactReplyOwnsControlInEitherStreamOrder(t *testing.T) {
 	for _, controlFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("control first=%t", controlFirst), func(t *testing.T) {
-			sink := &harnessReplyControlSink{}
+			sink := &agenttest.ControlSink{}
 			a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
 			a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "input"}, nil)
 			applyReplyEvent(t, a, 1, "turn/start", `{"turn":8}`)
@@ -218,7 +208,7 @@ func TestHarnessExactReplyOwnsControlInEitherStreamOrder(t *testing.T) {
 			require.NotEmpty(t, published[1].InstanceID)
 			assert.Equal(t, []agent.NativeControlInputs{{
 				SessionID: "native-root", RequestID: "owned", InstanceID: published[1].InstanceID, InputIDs: []string{"input"},
-			}}, sink.bindings)
+			}}, sink.NativeControlInputBindings())
 		})
 	}
 }
@@ -236,7 +226,7 @@ func harnessInputEcho(requestID string) string {
 }
 
 func TestHarnessChildReplyAndControlOwnership(t *testing.T) {
-	rootSink := &harnessReplyControlSink{}
+	rootSink := &agenttest.ControlSink{}
 	a := newOfflineAgentServing(t, agent.NewProviderServices(rootSink), nil)
 
 	// Register one continuable child and its session stream.
@@ -315,7 +305,6 @@ type harnessRecordedChildControlSink struct {
 	*agenttest.Sink
 	mu        sync.Mutex
 	published []agent.ControlRequest
-	bindings  []agent.NativeControlInputs
 	children  map[string]*harnessRecordedChildControlSink
 }
 
@@ -340,13 +329,6 @@ func (s *harnessRecordedChildControlSink) ChildSink(childAgentID string) agent.P
 func (s *harnessRecordedChildControlSink) PublishControlRequest(req agent.ControlRequest) error {
 	s.mu.Lock()
 	s.published = append(s.published, req)
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *harnessRecordedChildControlSink) SetNativeControlInputs(binding agent.NativeControlInputs) error {
-	s.mu.Lock()
-	s.bindings = append(s.bindings, binding)
 	s.mu.Unlock()
 	return nil
 }
@@ -444,14 +426,14 @@ func TestHarnessChildSteerAndControlBindToChildSink(t *testing.T) {
 			childRecorded := rootSink.children[childID]
 			require.NotNil(t, childRecorded)
 			assert.Empty(t, rootSink.published)
-			assert.Empty(t, rootSink.bindings)
+			assert.Empty(t, rootSink.NativeControlInputBindings())
 			require.Len(t, childRecorded.published, 1)
 			assert.Equal(t, "child-perm", childRecorded.published[0].RequestID)
 			require.Equal(t, []agent.NativeControlInputs{{
 				SessionID: "native-child", RequestID: "child-perm",
 				InstanceID: childRecorded.published[0].InstanceID,
 				InputIDs:   []string{steerReqID},
-			}}, childRecorded.bindings)
+			}}, childRecorded.NativeControlInputBindings())
 
 			require.Equal(t, []agent.SteerResolution{{
 				InputID: "queue-child-steer", AttemptID: "attempt-1", Outcome: agent.SteerOutcomeEchoed,

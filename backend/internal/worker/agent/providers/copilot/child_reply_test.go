@@ -13,46 +13,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type copilotChildReplyTestEvent struct {
-	agentID string
-	kind    string
-	id      string
-	parent  string
-	data    map[string]any
-}
-
-func deliverCopilotChildReplyEvents(t *testing.T, a *Agent, events []copilotChildReplyTestEvent) {
-	t.Helper()
-	for _, event := range events {
-		payload := map[string]any{
-			"type": event.kind, "id": event.id, "parentId": event.parent, "data": event.data,
-		}
-		if event.agentID != "" {
-			payload["agentId"] = event.agentID
-		}
-		raw, err := json.Marshal(map[string]any{
-			"jsonrpc": "2.0", "method": "session.event",
-			"params": map[string]any{"sessionId": "session-1", "event": payload},
-		})
-		require.NoError(t, err)
-		a.HandleOutput(raw)
-	}
-}
-
 type copilotRecordedControlSink struct {
 	*agenttest.Sink
 	mu               sync.Mutex
 	published        []agent.ControlRequest
 	canceled         []string
-	controlBindings  []agent.NativeControlInputs
-	turnBindings     map[agent.NativeInputReceipt]string
 	childControlSink map[string]*copilotRecordedControlSink
 }
 
 func newCopilotRecordedControlSink(base *agenttest.Sink) *copilotRecordedControlSink {
 	return &copilotRecordedControlSink{
 		Sink:             base,
-		turnBindings:     make(map[agent.NativeInputReceipt]string),
 		childControlSink: make(map[string]*copilotRecordedControlSink),
 	}
 }
@@ -87,20 +58,6 @@ func (s *copilotRecordedControlSink) CancelControlRequestInstance(requestID, ins
 	s.mu.Unlock()
 }
 
-func (s *copilotRecordedControlSink) SetNativeControlInputs(control agent.NativeControlInputs) error {
-	s.mu.Lock()
-	s.controlBindings = append(s.controlBindings, control)
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *copilotRecordedControlSink) BindNativeInputTurn(receipt agent.NativeInputReceipt, turnID string) error {
-	s.mu.Lock()
-	s.turnBindings[receipt] = turnID
-	s.mu.Unlock()
-	return nil
-}
-
 func TestCopilotChildIdleSendPublishesExactReply(t *testing.T) {
 	t.Parallel()
 	h := newCopilotTaskHarness(t, copilotTaskScript{})
@@ -121,7 +78,7 @@ func TestCopilotChildIdleSendPublishesExactReply(t *testing.T) {
 	require.Equal(t, "session-1", result.NativeReceipt.SessionID)
 	require.NotEmpty(t, result.NativeReceipt.InputID)
 
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventUserMessage, id: "child-user-1", data: map[string]any{
 			"messageId": "m-idle-1", "interactionId": "int-idle-1", "turnId": "0",
 			"delivery": "idle", "content": "Now say CHILD_AGAIN.",
@@ -156,7 +113,7 @@ func TestCopilotChildIdenticalSteersShareExactReplyAndIgnoreParentWriteAgent(t *
 	_, childSink := startCopilotSubagent(t, h.agent, h.sink, copilotExecutionBackground)
 
 	// The child's initial iteration runs and receives a parent write_agent message with identical text.
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventAssistantTurnStart, id: "init-start", data: map[string]any{
 			"turnId": "0", "interactionId": "int-run",
 		}},
@@ -178,7 +135,7 @@ func TestCopilotChildIdenticalSteersShareExactReplyAndIgnoreParentWriteAgent(t *
 	require.NoError(t, err)
 
 	// An earlier iteration receives a parent write_agent echo with identical content; it must not consume client admissions.
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventAssistantTurnStart, id: "parent-iter-start", data: map[string]any{
 			"turnId": "1", "interactionId": "int-run",
 		}},
@@ -197,7 +154,7 @@ func TestCopilotChildIdenticalSteersShareExactReplyAndIgnoreParentWriteAgent(t *
 	assert.Empty(t, childSink.NativeReplyTurns())
 
 	// Next iteration receives both client steers (source omitted) plus another parent echo, and replies once.
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventAssistantTurnStart, id: "steer-start", data: map[string]any{
 			"turnId": "2", "interactionId": "int-run",
 		}},
@@ -252,7 +209,7 @@ func TestCopilotChildEarlyEchoDeferredUntilRPCReceipt(t *testing.T) {
 	}, func(a *Agent, method string) {
 		if method == "session.tasks.sendMessage" && !earlyDelivered {
 			earlyDelivered = true
-			deliverCopilotChildReplyEvents(t, a, []copilotChildReplyTestEvent{
+			deliverCopilotReplyEvents(t, a, []copilotReplyTestEvent{
 				{agentID: "agent-1", kind: contracts.CopilotEventUserMessage, id: "early-user", data: map[string]any{
 					"messageId": "m-early", "interactionId": "int-early", "turnId": "0",
 					"delivery": "idle", "content": "Early echo.",
@@ -301,7 +258,7 @@ func TestCopilotChildUncertainDeliveryTaintsIdenticalPrompt(t *testing.T) {
 	h.agent.acceptChildAdmission(child, second)
 
 	// When the tainted echo arrives, the second admission must retire UNPROVED rather than claiming it.
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventUserMessage, id: "tainted-user", data: map[string]any{
 			"messageId": "m-tainted", "interactionId": "int-tainted", "turnId": "0",
 			"delivery": "idle", "content": "Repeat.",
@@ -338,7 +295,7 @@ func TestCopilotChildPermissionRoutesToChildSinkAndBindsActiveInputs(t *testing.
 	require.NotNil(t, childRecorded)
 
 	// Start child iteration and deliver a steered client message.
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventAssistantTurnStart, id: "iter-0-start", data: map[string]any{
 			"turnId": "0", "interactionId": "int-perm",
 		}},
@@ -347,7 +304,7 @@ func TestCopilotChildPermissionRoutesToChildSinkAndBindsActiveInputs(t *testing.
 		InputID: "queue-perm", AttemptID: "attempt-perm", Content: "Run tool with permission.",
 	})
 	require.NoError(t, err)
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventUserMessage, id: "perm-user", data: map[string]any{
 			"messageId": "m-perm", "interactionId": "int-perm", "turnId": "0",
 			"delivery": "steering", "content": "Run tool with permission.",
@@ -375,9 +332,10 @@ func TestCopilotChildPermissionRoutesToChildSinkAndBindsActiveInputs(t *testing.
 
 	resolutions := childSink.SteerResolutions()
 	require.Len(t, resolutions, 1)
-	require.Len(t, childRecorded.controlBindings, 1)
-	assert.Equal(t, expectedKey, childRecorded.controlBindings[0].RequestID)
-	assert.Equal(t, []string{resolutions[0].Receipt.InputID}, childRecorded.controlBindings[0].InputIDs)
+	controlBindings := childRecorded.NativeControlInputBindings()
+	require.Len(t, controlBindings, 1)
+	assert.Equal(t, expectedKey, controlBindings[0].RequestID)
+	assert.Equal(t, []string{resolutions[0].Receipt.InputID}, controlBindings[0].InputIDs)
 
 	// Approving the child control sends the RPC on the root session with the native requestId.
 	answer, err := json.Marshal(map[string]any{
@@ -397,7 +355,7 @@ func TestCopilotChildPermissionRoutesToChildSinkAndBindsActiveInputs(t *testing.
 	}, h.lastParams(t))
 
 	// Completing the permission cancels the card on childRecorded, not rootSink.
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventPermissionCompleted, id: "perm-done-1", data: map[string]any{
 			"requestId": "native-perm-1", "toolCallId": "tc-child-1",
 		}},
@@ -406,7 +364,7 @@ func TestCopilotChildPermissionRoutesToChildSinkAndBindsActiveInputs(t *testing.
 	assert.Equal(t, []string{expectedKey + ":" + childRecorded.published[0].InstanceID}, childRecorded.canceled)
 
 	// Cancelling the subagent withdraws any remaining child controls and retires the active turn as INTERRUPTED.
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventSubagentCompleted, id: "sub-cancel", data: map[string]any{
 			"toolCallId": "task-1", "cancelled": true,
 		}},
@@ -439,7 +397,7 @@ func TestCopilotChildOverlappedIdenticalSteersSplittingIterationsRetireUnproved(
 	h.agent.acceptChildAdmission(child, second)
 
 	// Only one echo lands in iteration 0 before the model replies, and the second lands in iteration 1.
-	deliverCopilotChildReplyEvents(t, h.agent, []copilotChildReplyTestEvent{
+	deliverCopilotReplyEvents(t, h.agent, []copilotReplyTestEvent{
 		{agentID: "agent-1", kind: contracts.CopilotEventAssistantTurnStart, id: "s0", data: map[string]any{
 			"turnId": "0", "interactionId": "int-split",
 		}},
@@ -469,4 +427,59 @@ func TestCopilotChildOverlappedIdenticalSteersSplittingIterationsRetireUnproved(
 	assert.Equal(t, agent.SteerOutcomeEchoed, resolutions[0].Outcome)
 	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, childSink.NativeReplyRetirements()[resolutions[0].Receipt])
 	assert.Equal(t, agent.SteerOutcomeUncertain, resolutions[1].Outcome)
+}
+
+func TestCopilotChildAdmissionInFlightWhenChildEndsRetiresOrdinaryOnceAndSteerOnce(t *testing.T) {
+	t.Parallel()
+	// Ordinary child input: child finishes while tasks.sendMessage is in flight, then sendMessage succeeds.
+	a, sink := newNativeCopilotForEvents(t)
+	deliverCopilotReplyEvents(t, a, []copilotReplyTestEvent{
+		{kind: contracts.CopilotEventSubagentStarted, id: "start-1", data: map[string]any{
+			"toolCallId": "task-1", "agentName": "worker", "executionMode": "background",
+		}},
+		{agentID: "agent-1", kind: contracts.CopilotEventSubagentStarted, id: "child-up", data: map[string]any{
+			"toolCallId": "task-1", "agentName": "worker", "executionMode": "background",
+		}},
+	})
+	a.outputMu.Lock()
+	child := a.children["agent-1"]
+	if child == nil {
+		// Ensure child exists with idle state for beginChildAdmission.
+		child = &copilotNativeChild{
+			nativeAgentID: "agent-1", workerAgentID: "child-1", background: true, idle: true,
+			sink: sink.ChildSink("child-1"),
+		}
+		a.children["agent-1"] = child
+	} else {
+		child.idle = true
+	}
+	a.outputMu.Unlock()
+
+	_, ordAdm, err := a.beginChildAdmission("agent-1", "ordinary msg", false, nil)
+	require.NoError(t, err)
+	// Child ends while RPC is in flight -> retireChildAdmissions runs while acked == false.
+	a.outputMu.Lock()
+	a.retireChildAdmissions(child, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	a.outputMu.Unlock()
+	// RPC succeeds and calls acceptChildAdmission -> must retire ordAdm.receipt once!
+	a.acceptChildAdmission(child, ordAdm)
+	childSink := sink.Child(child.workerAgentID)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+		childSink.NativeReplyRetirements()[ordAdm.receipt],
+		"ordinary child input accepted after child exit must retire its receipt")
+
+	// Steer child input: child ends while tasks.sendMessage is in flight; must NOT report uncertain before RPC settles,
+	// and if RPC succeeds must report uncertain ONCE (not twice).
+	a.outputMu.Lock()
+	child.idle = false
+	a.outputMu.Unlock()
+	steer := &copilotQueuedSteer{prompt: "steer msg", resolution: agent.SteerResolution{InputID: "s-1", AttemptID: "a-1"}}
+	_, steerAdm, err := a.beginChildAdmission("agent-1", "steer msg", true, steer)
+	require.NoError(t, err)
+	a.outputMu.Lock()
+	a.retireChildAdmissions(child, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	a.outputMu.Unlock()
+	assert.Empty(t, childSink.SteerResolutions(), "unacked child steer must not emit SteerOutcomeUncertain before RPC settles")
+	a.acceptChildAdmission(child, steerAdm)
+	assert.Len(t, childSink.SteerResolutions(), 1, "accepted child steer after child exit must report SteerOutcomeUncertain exactly once")
 }

@@ -32,42 +32,6 @@ const (
 // switch that the current model's rate limit caused.
 const copilotAutoSwitchRateLimitCode = "user_model_rate_limited"
 
-// copilotAllowOption reports whether optionID is one of the approval scopes,
-// which allow the call. Every other ID refuses it.
-func copilotAllowOption(optionID string) bool {
-	switch optionID {
-	case copilotControlOptionOnce, copilotControlOptionSession, copilotControlOptionProject:
-		return true
-	default:
-		return false
-	}
-}
-
-// copilotEventFields reads the data of one control event as an object. Data
-// that is no object reads as an empty one.
-func copilotEventFields(data json.RawMessage) map[string]json.RawMessage {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(data, &fields) != nil || fields == nil {
-		return map[string]json.RawMessage{}
-	}
-	return fields
-}
-
-// copilotText reads a string field, or "" for a value of another type.
-func copilotText(fields map[string]json.RawMessage, key string) string {
-	value, _ := providerkit.RawString(fields[key])
-	return value
-}
-
-// copilotObject reads an object field, or nil for a value of another type.
-func copilotObject(fields map[string]json.RawMessage, key string) map[string]json.RawMessage {
-	var object map[string]json.RawMessage
-	if json.Unmarshal(fields[key], &object) != nil {
-		return nil
-	}
-	return object
-}
-
 // ReadControlRequest reads Copilot's control requests:
 //
 //   - user_input.requested is a question.
@@ -82,31 +46,31 @@ func copilotObject(fields map[string]json.RawMessage, key string) map[string]jso
 // to one.
 func (copilotProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	eventType, data, _ := copilotControlEvent(input.Payload)
-	fields := copilotEventFields(data)
-	if eventType == contracts.CopilotEventUserInputRequested {
+	if eventType == "" {
+		if prompt, ok := providerkit.ReadWorkspaceTrustPrompt(input.Payload, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT); ok {
+			return prompt
+		}
+		return agent.UnrecognizedControlPrompt()
+	}
+	fields := providerkit.RawFields(data)
+	switch eventType {
+	case contracts.CopilotEventUserInputRequested:
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
 			Questions: []*leapmuxv1.ControlQuestion{copilotQuestion(fields)},
 		}}}
-	}
-	if eventType == contracts.CopilotEventElicitationRequested {
+	case contracts.CopilotEventElicitationRequested:
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: copilotElicitationPrompt(fields)}}
-	}
-	if prompt, ok := providerkit.ReadWorkspaceTrustPrompt(input.Payload, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT); ok {
-		return prompt
-	}
-	if eventType == contracts.CopilotEventExitPlanModeRequested {
+	case contracts.CopilotEventExitPlanModeRequested:
 		// Copilot sends the whole plan in its approval request, where other
 		// providers identify a plan that the transcript already holds.
-		text := copilotText(fields, "planContent")
+		text := providerkit.ObjectString(fields, "planContent")
 		if text == "" {
-			text = copilotText(fields, "summary")
+			text = providerkit.ObjectString(fields, "summary")
 		}
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{Text: text}}}
+	default:
+		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: copilotPermissionPrompt(eventType, fields)}}
 	}
-	if eventType == "" {
-		return agent.UnrecognizedControlPrompt()
-	}
-	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: copilotPermissionPrompt(eventType, fields)}}
 }
 
 // copilotQuestion reads the one question of a user_input.requested. The
@@ -120,22 +84,18 @@ func (copilotProvider) ReadControlRequest(input agent.ControlRequestInput) *leap
 //     question refuses typed text. With no choice, typed text stays the only
 //     way to answer, and the runtime decides.
 func copilotQuestion(fields map[string]json.RawMessage) *leapmuxv1.ControlQuestion {
-	var choices []json.RawMessage
-	_ = json.Unmarshal(fields["choices"], &choices)
+	choices := providerkit.RawStrings(fields["choices"])
 	options := make([]*leapmuxv1.QuestionOption, 0, len(choices))
-	for _, choice := range choices {
-		if label, ok := providerkit.RawString(choice); ok {
-			options = append(options, &leapmuxv1.QuestionOption{Label: label})
-		}
+	for _, label := range choices {
+		options = append(options, &leapmuxv1.QuestionOption{Label: label})
 	}
 	question := &leapmuxv1.ControlQuestion{
-		Question:   copilotText(fields, "question"),
+		Question:   providerkit.ObjectString(fields, "question"),
 		Options:    options,
 		AllowEmpty: providerkit.RawBool(fields["allowFreeform"]),
 	}
-	var freeform bool
-	if raw := fields["allowFreeform"]; providerkit.RawPresent(raw) && json.Unmarshal(raw, &freeform) == nil && !freeform && len(options) > 0 {
-		question.AllowCustomText = &freeform
+	if freeform := providerkit.RawOptionalBool(fields["allowFreeform"]); freeform != nil && !*freeform && len(options) > 0 {
+		question.AllowCustomText = freeform
 	}
 	return question
 }
@@ -143,15 +103,11 @@ func copilotQuestion(fields map[string]json.RawMessage) *leapmuxv1.ControlQuesti
 // copilotElicitationPrompt reads the MCP form of an elicitation.requested.
 // The mode defaults to a form, and the server is the elicitation's source.
 func copilotElicitationPrompt(fields map[string]json.RawMessage) *leapmuxv1.ElicitationPrompt {
-	mode, ok := providerkit.RawString(fields["mode"])
-	if !ok {
-		mode = contracts.MCPElicitationModeForm
-	}
 	prompt := &leapmuxv1.ElicitationPrompt{
-		Mode:    mode,
-		Message: copilotText(fields, "message"),
-		Server:  copilotText(fields, "elicitationSource"),
-		Url:     copilotText(fields, "url"),
+		Mode:    copilotElicitationMode(fields),
+		Message: providerkit.ObjectString(fields, "message"),
+		Server:  providerkit.ObjectString(fields, "elicitationSource"),
+		Url:     providerkit.ObjectString(fields, "url"),
 	}
 	if schema := fields["requestedSchema"]; providerkit.RawPresent(schema) {
 		prompt.SchemaJson = string(schema)
@@ -175,22 +131,18 @@ func copilotPermissionPrompt(eventType string, fields map[string]json.RawMessage
 			// Each answer is its own decision, and no permission preset applies.
 			IndependentOptions: true,
 		}
-		if copilotText(fields, "errorCode") == copilotAutoSwitchRateLimitCode {
+		if providerkit.ObjectString(fields, "errorCode") == copilotAutoSwitchRateLimitCode {
 			permission.Reason = "The current model reached its rate limit."
 		}
 		return permission
 	case contracts.CopilotEventSamplingRequested:
 		title := "The MCP server asks the model to answer"
-		if server := copilotText(fields, "serverName"); server != "" {
+		if server := providerkit.ObjectString(fields, "serverName"); server != "" {
 			title = "The MCP server " + server + " asks the model to answer"
-		}
-		request := json.RawMessage("{}")
-		if copilotObject(fields, "request") != nil {
-			request = fields["request"]
 		}
 		return &leapmuxv1.PermissionPrompt{
 			Title:     title,
-			InputJson: string(request),
+			InputJson: string(providerkit.RawObjectOrEmpty(fields["request"])),
 			Options: []*leapmuxv1.PermissionOption{
 				{OptionId: copilotControlOptionOnce, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Allow"},
 				{OptionId: copilotControlOptionReject, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Deny"},
@@ -199,12 +151,12 @@ func copilotPermissionPrompt(eventType string, fields map[string]json.RawMessage
 	}
 	var request map[string]json.RawMessage
 	if eventType == contracts.CopilotEventPermissionRequested {
-		request = copilotObject(fields, "permissionRequest")
+		request, _ = providerkit.RawObject(fields["permissionRequest"])
 	}
-	kind := copilotText(request, "kind")
+	kind := providerkit.ObjectString(request, "kind")
 	permission := &leapmuxv1.PermissionPrompt{Title: kind}
 	for _, key := range []string{"intention", "toolTitle", "toolName"} {
-		if title := copilotText(request, key); title != "" {
+		if title := providerkit.ObjectString(request, key); title != "" {
 			permission.Title = title
 			break
 		}
@@ -213,7 +165,7 @@ func copilotPermissionPrompt(eventType string, fields map[string]json.RawMessage
 		permission.InputJson = string(fields["permissionRequest"])
 	}
 	if kind == "shell" {
-		permission.Command = copilotText(request, "fullCommandText")
+		permission.Command = providerkit.ObjectString(request, "fullCommandText")
 	}
 	options := []*leapmuxv1.PermissionOption{
 		{OptionId: copilotControlOptionOnce, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE, Name: "Allow once"},
@@ -222,7 +174,7 @@ func copilotPermissionPrompt(eventType string, fields map[string]json.RawMessage
 	// express one can express the other. The project scope outlives the
 	// session: the runtime stores it against the working directory's own
 	// location key.
-	if copilotOffersSessionApproval(request) {
+	if copilotSessionApproval(readCopilotPermissionRequest(request)) != nil {
 		options = append(options,
 			&leapmuxv1.PermissionOption{OptionId: copilotControlOptionSession, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS, Name: "Allow for this session"},
 			&leapmuxv1.PermissionOption{OptionId: copilotControlOptionProject, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS, Name: "Allow for this project"},
@@ -232,41 +184,6 @@ func copilotPermissionPrompt(eventType string, fields map[string]json.RawMessage
 		OptionId: copilotControlOptionReject, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, Name: "Reject",
 	})
 	return permission
-}
-
-// copilotOffersSessionApproval reports whether a session-wide approval is
-// expressible for request. The runtime needs an explicit approval rule, not a
-// bare "for this session": a bare one did not keep the read approval in
-// CP-007. This build can construct a rule for a read, a write, a shell call
-// and an MCP tool, and the runtime states for a write and a shell call whether
-// it can offer one at all. copilotSessionApproval builds the same rule.
-func copilotOffersSessionApproval(request map[string]json.RawMessage) bool {
-	if request == nil {
-		return false
-	}
-	offered := providerkit.RawBool(request["canOfferSessionApproval"])
-	switch copilotText(request, "kind") {
-	case "read":
-		return true
-	case "write":
-		return offered
-	case "shell":
-		var commands []json.RawMessage
-		if !offered || json.Unmarshal(request["commands"], &commands) != nil || len(commands) == 0 {
-			return false
-		}
-		for _, command := range commands {
-			var fields map[string]json.RawMessage
-			if json.Unmarshal(command, &fields) != nil || fields == nil || copilotText(fields, "identifier") == "" {
-				return false
-			}
-		}
-		return true
-	case "mcp":
-		return copilotText(request, "serverName") != ""
-	default:
-		return false
-	}
 }
 
 // AnswerControlRequest builds Copilot's answer in the neutral envelope, which
@@ -298,11 +215,8 @@ func copilotPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswe
 	if err != nil {
 		return agent.ControlAnswer{}, err
 	}
-	if !copilotAllowOption(option.GetOptionId()) {
+	if !agent.IsAllowOption(option) {
 		return agent.ControlAnswer{Content: agent.DenyResponse(input.RequestID, decision.GetFeedback())}, nil
-	}
-	if decision.GetFeedback() != "" {
-		return agent.ControlAnswer{}, agent.InvalidControlDecision("feedback goes with a refusal, and %q allows the call", option.GetOptionId())
 	}
 	return agent.ControlAnswer{Content: agent.ControlResponseEnvelope(input.RequestID, map[string]any{
 		"behavior": contracts.ControlAnswerBehaviorAllow,

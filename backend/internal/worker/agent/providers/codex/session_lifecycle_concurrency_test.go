@@ -378,7 +378,7 @@ func TestCodexRetryFailureCannotEnterAReplacementSession(t *testing.T) {
 	require.NotNil(t, pending)
 	replied := make(chan struct{})
 	go func() {
-		a.handleCodexTurnStartResponse(pending, &providerkit.JSONRPCResponseError{Code: -32602, Message: "The request is invalid."})
+		a.handleCodexTurnStartResult(pending, nil, &providerkit.JSONRPCResponseError{Code: -32602, Message: "The request is invalid."})
 		close(replied)
 	}()
 	<-pending.done

@@ -1503,3 +1503,84 @@ func TestResumedActorTurnRevivesClosedRowWithoutPriorChild(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, spawnSpanID).Status)
 	assert.Equal(t, turnCountBefore+1, len(sink.Child(childID).TurnActives()), "child turn active must be published once, not twice")
 }
+
+func TestMiMoAbsentActorReconcileReportsUnknownOutcomeAndClearsInboxActiveText(t *testing.T) {
+	t.Parallel()
+	t.Run("absent actor without inbox reports unknown outcome", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+		runActorTurn(t, a, "Partial background result.")
+
+		server.respond("GET /session/ses_test/actors", http.StatusOK, `[]`)
+		server.respond("GET /workflows", http.StatusOK, `[]`)
+		a.dispatchMu.Lock()
+		a.reconcileActorsAndWorkflowsLocked(t.Context())
+		a.dispatchMu.Unlock()
+
+		reports := sink.LeapMuxNotifications()
+		require.Len(t, reports, 1)
+		assert.Equal(t, bgtask.StatusWire(bgtask.StatusEndedWithUnknownOutcome), reports[0][contracts.NotificationFieldStatus])
+	})
+
+	t.Run("absent actor with active inbox clears stale lastText", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+		runActorTurn(t, a, "Stale tool turn result.")
+
+		// Simulate an open child receipt alongside the still-active tool turn.
+		a.Mu.Lock()
+		actor := a.actors[actorID]
+		a.inputReplies = map[string]*mimoInputReply{
+			"child-open": {
+				native:  mimoReceiptUpdate{ID: "child-open", SessionID: testSessionID, ActorID: actorID},
+				childID: actor.childAgentID,
+				owned:   true,
+			},
+		}
+		a.Mu.Unlock()
+
+		server.respond("GET /session/ses_test/actors", http.StatusOK, `[]`)
+		server.respond("GET /workflows", http.StatusOK, `[]`)
+		a.dispatchMu.Lock()
+		a.reconcileActorsAndWorkflowsLocked(t.Context())
+		a.dispatchMu.Unlock()
+
+		a.Mu.Lock()
+		remainingText := a.actors[actorID].lastText
+		a.Mu.Unlock()
+		assert.Empty(t, remainingText, "reconciling an absent actor with an active inbox must not leave stale lastText")
+		reports := sink.LeapMuxNotifications()
+		require.Len(t, reports, 1)
+		assert.Equal(t, bgtask.StatusWire(bgtask.StatusEndedWithUnknownOutcome), reports[0][contracts.NotificationFieldStatus])
+	})
+}
+
+func TestMiMoRootProgressCapturePreservesFallbackChildScopes(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	a.Mu.Lock()
+	a.parts["fallback-part"] = &mimoTextPart{
+		actorID:        actorID,
+		messageID:      "msg_child",
+		progressTarget: &mimoTranscriptTarget{sink: a.sink, childID: ""},
+	}
+	a.Mu.Unlock()
+
+	// PersistMessage through modelProgressResetTranscript captures content.Publication
+	// and calls content.Publication.ReportProgress(ResetModelProgress()).
+	err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+		Original: []byte(`{"type":"root"}`),
+	}, agent.SpanInfo{})
+	require.NoError(t, err)
+
+	var foundReset bool
+	for _, update := range sink.ProgressUpdates() {
+		if update.Operation == agent.ProgressModelReset && update.ScopeID == "" {
+			foundReset = true
+			assert.Contains(t, update.PreserveModelScopes, progressScope("fallback-part"))
+		}
+	}
+	assert.True(t, foundReset, "expected a root ProgressModelReset update")
+}

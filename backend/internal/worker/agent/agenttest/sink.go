@@ -63,8 +63,10 @@ type Sink struct {
 	settingsRefreshes  []SettingsRefresh
 	sessionInfos       []map[string]interface{}
 
-	nativeReplyTurns       []agent.NativeReplyTurn
-	nativeReplyRetirements map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome
+	nativeReplyTurns        []agent.NativeReplyTurn
+	nativeReplyRetirements  map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome
+	nativeControlInputs     []agent.NativeControlInputs
+	nativeInputTurnBindings map[agent.NativeInputReceipt]string
 	// leapMuxNotifications holds every PersistLeapMuxNotification payload in
 	// arrival order. These are the worker's OWN notification envelopes, which no
 	// provider writes, so a test reads the meaning rather than provider bytes.
@@ -552,7 +554,24 @@ func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo)
 	return nil
 }
 
-func (s *Sink) SetNativeControlInputs(agent.NativeControlInputs) error { return nil }
+func (s *Sink) SetNativeControlInputs(binding agent.NativeControlInputs) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding.InputIDs = slices.Clone(binding.InputIDs)
+	s.nativeControlInputs = append(s.nativeControlInputs, binding)
+	return nil
+}
+
+func (s *Sink) NativeControlInputBindings() []agent.NativeControlInputs {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	bindings := slices.Clone(s.nativeControlInputs)
+	for i := range bindings {
+		bindings[i].InputIDs = slices.Clone(bindings[i].InputIDs)
+	}
+	return bindings
+}
+
 func (s *Sink) PublishNativeReplyTurn(turn agent.NativeReplyTurn) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -573,7 +592,21 @@ func (s *Sink) NativeReplyTurns() []agent.NativeReplyTurn {
 	return turns
 }
 
-func (s *Sink) BindNativeInputTurn(agent.NativeInputReceipt, string) error { return nil }
+func (s *Sink) BindNativeInputTurn(receipt agent.NativeInputReceipt, turnID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nativeInputTurnBindings == nil {
+		s.nativeInputTurnBindings = make(map[agent.NativeInputReceipt]string)
+	}
+	s.nativeInputTurnBindings[receipt] = turnID
+	return nil
+}
+
+func (s *Sink) NativeInputTurnBindings() map[agent.NativeInputReceipt]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.nativeInputTurnBindings)
+}
 func (s *Sink) RetireNativeInputTurn(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

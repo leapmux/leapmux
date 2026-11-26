@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // zcodeTestBundleDigest is the bundle digest of the test's hook admission.
@@ -363,12 +364,7 @@ func TestZCodeWithdrawingTheControlsRetiresTheTrustQuestion(t *testing.T) {
 // a ZCode frame.
 func TestZCodeResolvesTheTrustAnswer(t *testing.T) {
 	t.Parallel()
-	payload, err := json.Marshal(map[string]any{
-		contracts.WorkspaceTrustFieldType:          contracts.WorkspaceTrustControlTypeQuestion,
-		contracts.WorkspaceTrustFieldPath:          "/tmp/zcode-workspace",
-		contracts.WorkspaceTrustFieldConfiguration: zcodeTrustedConfiguration,
-	})
-	require.NoError(t, err)
+	payload := providerkittest.WorkspaceTrustQuestionPayload(t, "/tmp/zcode-workspace", zcodeTrustedConfiguration)
 	requestID := providerkit.WorkspaceTrustRequestID("sess-1")
 	for behavior, decision := range map[string]string{
 		contracts.ControlAnswerBehaviorAllow: contracts.WorkspaceTrustDecisionTrust,

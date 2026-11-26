@@ -312,9 +312,6 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 			retry.resolution.Resolve(a.sinkFor(a.childForEvent(event)))
 		}
 	}
-	if a.handleNativeControlEvent(raw, event) {
-		return
-	}
 	if event.Type == contracts.CopilotEventSystemNotification {
 		var notice struct {
 			Kind struct {
@@ -1096,8 +1093,12 @@ func (a *Agent) handleNativeOutput(line *providerkit.ParsedLine) {
 }
 
 func (a *Agent) applyNativeOutput(raw []byte, event copilotEvent) {
+	if handled, controlKey := a.handleNativeControlEvent(raw, event); handled {
+		a.observeNativeReply(raw, event, controlKey)
+		return
+	}
 	a.handleNativeEvent(raw, event)
-	a.observeNativeReply(raw, event)
+	a.observeNativeReply(raw, event, "")
 }
 
 func (a *Agent) persistNativeFrame(raw []byte, span agent.SpanInfo) {

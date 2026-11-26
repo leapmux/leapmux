@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // kimiTestRequestID is the stored id of the request that each test answers.
@@ -313,13 +314,7 @@ func TestKimiReadControlRequest_ReadsAnyOtherPayloadAsUnrecognized(t *testing.T)
 
 func kimiTrustQuestion(t *testing.T) []byte {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{
-		contracts.WorkspaceTrustFieldType:          contracts.WorkspaceTrustControlTypeQuestion,
-		contracts.WorkspaceTrustFieldPath:          "/work/project",
-		contracts.WorkspaceTrustFieldConfiguration: []any{"MCP servers", "hooks"},
-	})
-	require.NoError(t, err)
-	return payload
+	return providerkittest.WorkspaceTrustQuestionPayload(t, "/work/project", []any{"MCP servers", "hooks"})
 }
 
 func TestKimiReadControlRequest_DrawsTheWorkspaceTrustQuestionWithTheAgentName(t *testing.T) {

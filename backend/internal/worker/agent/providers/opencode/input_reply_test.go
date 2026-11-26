@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -123,10 +124,11 @@ func TestOpenCodeInputReplyKeepsEachBoundaryInTheSharedExecution(t *testing.T) {
 		}
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
-			var leadID string
-			a, sink, lead := openCodeInputReplyFixture(t, func(query url.Values, steerID string) string {
+			var leadID, steerID string
+			a, sink, lead := openCodeInputReplyFixture(t, func(query url.Values, submittedID string) string {
+				steerID = submittedID
 				lead := fmt.Sprintf(`{"id":%q,"type":"user"}`, leadID)
-				steer := fmt.Sprintf(`{"id":%q,"type":"user"}`, steerID)
+				steer := fmt.Sprintf(`{"id":%q,"type":"user"}`, submittedID)
 				const first = `{"id":"msg_first","type":"assistant","content":[{"type":"text","text":"first reply"}],"time":{"completed":2}}`
 				const second = `{"id":"msg_second","type":"assistant","content":[{"type":"text","text":"second reply"}],"time":{"completed":7}}`
 				const ending = `{"id":"msg_done","type":"idle","outcome":"succeeded"}`
@@ -140,32 +142,23 @@ func TestOpenCodeInputReplyKeepsEachBoundaryInTheSharedExecution(t *testing.T) {
 			request := openCodeTestSteerRequest("queued-steer", "steer prompt")
 			steer, err := a.SteerInput(request)
 			require.NoError(t, err)
-			require.NotEqual(t, lead.InputID, steer.InputID)
+			assert.Zero(t, steer)
 			if restore {
 				require.NoError(t, a.restoreRun(t.Context(), a.root))
 				require.NoError(t, a.restoreRun(t.Context(), a.root))
 			} else {
 				require.NoError(t, a.acceptNativeEvent(t.Context(), []byte(`{"id":"evt_done","created":9,"type":"session.execution.succeeded","data":{"sessionID":"ses_1"}}`)))
 			}
-			assert.Equal(t, []agent.SteerResolution{{InputID: request.InputID, AttemptID: request.AttemptID, Outcome: agent.SteerOutcomeEchoed, Receipt: steer}}, sink.SteerResolutions())
+			expectedSteerReceipt := agent.NativeInputReceipt{SessionID: lead.SessionID, InputID: steerID}
+			assert.Equal(t, []agent.SteerResolution{{InputID: request.InputID, AttemptID: request.AttemptID, Outcome: agent.SteerOutcomeEchoed, Receipt: expectedSteerReceipt}}, sink.SteerResolutions())
 			assert.Equal(t, []agent.NativeReplyTurn{{
 				SessionID: lead.SessionID, TurnID: "msg_done", Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
-				Inputs: []agent.NativeReplyBoundary{{InputID: lead.InputID, AfterOrdinal: 1}, {InputID: steer.InputID, AfterOrdinal: 2}},
+				Inputs: []agent.NativeReplyBoundary{{InputID: lead.InputID, AfterOrdinal: 1}, {InputID: steerID, AfterOrdinal: 2}},
 				Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "opencode:msg_first:text:0"}, {Ordinal: 3, MessageKey: "opencode:msg_second:text:0"}},
 			}}, sink.NativeReplyTurns())
 			assert.Empty(t, sink.NativeReplyRetirements())
 		})
 	}
-}
-
-type openCodeReplyControlSink struct {
-	agent.ProviderServices
-	bindings []agent.NativeControlInputs
-}
-
-func (sink *openCodeReplyControlSink) SetNativeControlInputs(binding agent.NativeControlInputs) error {
-	sink.bindings = append(sink.bindings, binding)
-	return sink.ProviderServices.SetNativeControlInputs(binding)
 }
 
 func TestOpenCodeInputReplyDoesNotUseTheNextInputsExecutionResult(t *testing.T) {
@@ -185,9 +178,19 @@ func TestOpenCodeInputReplyDoesNotUseTheNextInputsExecutionResult(t *testing.T) 
 	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
 }
 
+type openCodePublishedControlSink struct {
+	agent.ProviderServices
+	published []agent.ControlRequest
+}
+
+func (sink *openCodePublishedControlSink) PublishControlRequest(request agent.ControlRequest) error {
+	sink.published = append(sink.published, request)
+	return sink.ProviderServices.PublishControlRequest(request)
+}
+
 func TestOpenCodeInputReplyBindsOnlyControlsFromItsOwnAssistant(t *testing.T) {
 	t.Parallel()
-	a, sink, receipt := openCodeInputReplyFixture(t, func(query url.Values, inputID string) string {
+	a, _, receipt := openCodeInputReplyFixture(t, func(query url.Values, inputID string) string {
 		assert.Equal(t, "desc", query.Get("order"))
 		return fmt.Sprintf(`{"data":[
 			{"id":"msg_owned","type":"assistant"},
@@ -196,7 +199,7 @@ func TestOpenCodeInputReplyBindsOnlyControlsFromItsOwnAssistant(t *testing.T) {
 			{"id":"msg_prior_input","type":"user"}
 		],"cursor":{}}`, inputID)
 	})
-	controlSink := &openCodeReplyControlSink{ProviderServices: a.root.sink}
+	controlSink := &openCodePublishedControlSink{ProviderServices: a.root.sink}
 	a.root.sink = controlSink
 
 	for i, messageID := range []string{"msg_prior", "msg_owned"} {
@@ -206,12 +209,9 @@ func TestOpenCodeInputReplyBindsOnlyControlsFromItsOwnAssistant(t *testing.T) {
 		})
 		require.NoError(t, a.acceptNativeEvent(t.Context(), event))
 	}
-	controls := sink.PublishedControls()
-	require.Len(t, controls, 2)
-	assert.Equal(t, []agent.NativeControlInputs{{
-		SessionID: receipt.SessionID, RequestID: controls[1].RequestID, InstanceID: controls[1].InstanceID,
-		InputIDs: []string{receipt.InputID},
-	}}, controlSink.bindings)
+	require.Len(t, controlSink.published, 2)
+	assert.Empty(t, controlSink.published[0].NativeInputIDs)
+	assert.Equal(t, []string{receipt.InputID}, controlSink.published[1].NativeInputIDs)
 }
 
 func TestOpenCodeSendAndSteerInputForSessionReturnReceipts(t *testing.T) {
@@ -260,17 +260,146 @@ func TestOpenCodeSendAndSteerInputForSessionReturnReceipts(t *testing.T) {
 	request := openCodeTestSteerRequest("queued-steer", "session steer")
 	steer, err := a.SteerInputForSession("ses_1", request)
 	require.NoError(t, err)
-	require.Equal(t, "ses_1", steer.SessionID)
-	require.NotEmpty(t, steer.InputID)
-	require.NotEqual(t, lead.InputID, steer.InputID)
+	assert.Zero(t, steer)
+	require.Len(t, submittedIDs, 2)
+	steerID := submittedIDs[1]
+	require.NotEqual(t, lead.InputID, steerID)
 
 	require.NoError(t, a.acceptNativeEvent(t.Context(), []byte(`{"id":"evt_done","created":9,"type":"session.execution.succeeded","data":{"sessionID":"ses_1"}}`)))
 	assert.Equal(t, []agent.SteerResolution{{
-		InputID: request.InputID, AttemptID: request.AttemptID, Outcome: agent.SteerOutcomeEchoed, Receipt: steer,
+		InputID: request.InputID, AttemptID: request.AttemptID, Outcome: agent.SteerOutcomeEchoed,
+		Receipt: agent.NativeInputReceipt{SessionID: "ses_1", InputID: steerID},
 	}}, sink.SteerResolutions())
 	assert.Equal(t, []agent.NativeReplyTurn{{
 		SessionID: "ses_1", TurnID: "msg_done", Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
-		Inputs: []agent.NativeReplyBoundary{{InputID: lead.InputID, AfterOrdinal: 1}, {InputID: steer.InputID, AfterOrdinal: 2}},
+		Inputs: []agent.NativeReplyBoundary{{InputID: lead.InputID, AfterOrdinal: 1}, {InputID: steerID, AfterOrdinal: 2}},
 		Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "opencode:msg_first:text:0"}, {Ordinal: 3, MessageKey: "opencode:msg_second:text:0"}},
 	}}, sink.NativeReplyTurns())
+}
+
+func TestOpenCodeSteerInputReturnsEmptyReceiptAndAllowsEmptyAttemptID(t *testing.T) {
+	t.Parallel()
+	var submitted []string
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/session/ses_1/prompt":
+			var prompt openCodePrompt
+			assert.NoError(t, json.NewDecoder(request.Body).Decode(&prompt))
+			submitted = append(submitted, prompt.ID)
+			_, _ = fmt.Fprintf(w, `{"data":{"id":%q,"sessionID":"ses_1","type":"user"}}`, prompt.ID)
+		case "/api/session/ses_1":
+			_, _ = fmt.Fprint(w, `{"data":{"id":"ses_1","agent":"build"}}`)
+		default:
+			t.Errorf("unexpected OpenCode request %s %s", request.Method, request.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	a, _ := assemblyAgent(t, rpc)
+	_, err := a.SendInput("lead", nil)
+	require.NoError(t, err)
+
+	// SteerRowAtEcho() is true, so SteerInput and SteerInputForSession must return an empty receipt.
+	receipt, err := a.SteerInput(openCodeTestSteerRequest("queued-1", "steer 1"))
+	require.NoError(t, err)
+	assert.Zero(t, receipt, "SteerInput must not return a confirmed receipt when SteerRowAtEcho is true")
+
+	receiptForSession, err := a.SteerInputForSession("ses_1", openCodeTestSteerRequest("queued-2", "steer 2"))
+	require.NoError(t, err)
+	assert.Zero(t, receiptForSession, "SteerInputForSession must not return a confirmed receipt when SteerRowAtEcho is true")
+
+	// Control-reply steers carry an empty AttemptID and must still be accepted without tracking steers or replyInputs.
+	beforeReplies := len(a.root.pendingInputReplies())
+	controlReplyReceipt, err := a.SteerInput(agent.SteerRequest{InputID: "control-reply-1", Content: "feedback text"})
+	require.NoError(t, err)
+	assert.Zero(t, controlReplyReceipt)
+	assert.Len(t, submitted, 4)
+	assert.Equal(t, beforeReplies, len(a.root.pendingInputReplies()), "empty-AttemptID steer must not be tracked in replyInputs")
+}
+
+func TestOpenCodeInputReplyRetiresOnShutdownIdleRestoreAndMissingEnding(t *testing.T) {
+	t.Parallel()
+	t.Run("shutdown interruption retires pending reply inputs", func(t *testing.T) {
+		t.Parallel()
+		a, sink, receipt := openCodeInputReplyFixture(t, func(_ url.Values, _ string) string {
+			return `{"data":[],"cursor":{}}`
+		})
+		shutdown := []byte(`{"id":"evt_shutdown","created":9,"type":"session.execution.interrupted","data":{"sessionID":"ses_1","reason":"shutdown"}}`)
+		require.NoError(t, a.acceptNativeEvent(t.Context(), shutdown))
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
+		assert.False(t, a.root.hasPendingInputReplies())
+	})
+
+	t.Run("idle restore without trailing idle record retires pending reply inputs", func(t *testing.T) {
+		t.Parallel()
+		a, sink, receipt := openCodeInputReplyFixture(t, func(_ url.Values, inputID string) string {
+			return fmt.Sprintf(`{"data":[
+				{"id":%q,"type":"user"},
+				{"id":"msg_partial","type":"assistant","content":[{"type":"text","text":"partial"}],"time":{"completed":3}}
+			],"cursor":{}}`, inputID)
+		})
+		require.NoError(t, a.restoreRun(t.Context(), a.root))
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
+		assert.False(t, a.root.hasPendingInputReplies())
+	})
+
+	t.Run("missing ending record returns error instead of stranding reply inputs", func(t *testing.T) {
+		t.Parallel()
+		a, _, _ := openCodeInputReplyFixture(t, func(_ url.Values, inputID string) string {
+			return fmt.Sprintf(`{"data":[{"id":%q,"type":"user"}],"cursor":{}}`, inputID)
+		})
+		_, err := a.root.readReplyProjection(t.Context(), "msg_missing_ending")
+		assert.Error(t, err, "missing ending record must return an error so recovery runs instead of stranding replyInputs")
+	})
+}
+
+type openCodeFailFirstPersistSink struct {
+	*agenttest.ControlSink
+	failPersist atomic.Bool
+}
+
+func (s *openCodeFailFirstPersistSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if s.failPersist.Swap(false) {
+		return errors.New("transient store failure")
+	}
+	return s.ControlSink.PersistMessage(source, content, span)
+}
+
+func TestOpenCodeInputReplyRetainedOutputForgetsInputAndFinishesExecution(t *testing.T) {
+	t.Parallel()
+	var submitted atomic.Value
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/session/ses_1/prompt":
+			var prompt openCodePrompt
+			assert.NoError(t, json.NewDecoder(request.Body).Decode(&prompt))
+			submitted.Store(prompt.ID)
+			_, _ = fmt.Fprintf(w, `{"data":{"id":%q,"sessionID":"ses_1","type":"user"}}`, prompt.ID)
+		case "/api/session/ses_1/message":
+			_, _ = fmt.Fprintf(w, `{"data":[
+				{"id":"msg_done","type":"idle","outcome":"succeeded"},
+				{"id":"msg_answer","type":"assistant","content":[{"type":"text","text":"exact"}],"time":{"completed":8}},
+				{"id":%q,"type":"user"}
+			],"cursor":{}}`, submitted.Load().(string))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	baseSink := &agenttest.ControlSink{}
+	failingSink := &openCodeFailFirstPersistSink{ControlSink: baseSink}
+	a, _ := assemblyAgent(t, rpc)
+	a.root.sink = agent.NewOrderedProviderServices(&agent.OutputQueue{}, agent.NewProviderServices(failingSink))
+	a.root.text.sink = a.root.sink
+
+	_, err := a.SendInput("prompt", nil)
+	require.NoError(t, err)
+
+	// Force OutputQueue into backed-up state so subsequent writes return *PendingOutputError.
+	failingSink.failPersist.Store(true)
+	_ = a.root.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"seed":1}`), AgentSessionID: "ses_1"}, agent.SpanInfo{})
+
+	end := []byte(`{"id":"evt_done","created":9,"type":"session.execution.succeeded","data":{"sessionID":"ses_1"}}`)
+	_ = a.acceptNativeEvent(t.Context(), end)
+	assert.False(t, a.root.hasPendingInputReplies(), "retained PublishNativeReplyTurn must still forget replyInputs")
+	require.NoError(t, a.root.sink.OutputQueue().Flush())
+	assert.Len(t, baseSink.NativeReplyTurns(), 1)
 }

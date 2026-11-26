@@ -181,7 +181,7 @@ func (r *kiloNativeReplies) replyItemsExpected(expected []kiloExpectedReply) ([]
 
 func (a *Agent) readNativeMessage(ctx context.Context, sessionID, messageID string) (kiloNativeMessage, error) {
 	var message kiloNativeMessage
-	raw, err := a.ReadDaemon(ctx, a.nativeMessageRoute(sessionID, messageID))
+	raw, err := a.Daemon().Get(ctx, a.nativeMessageRoute(sessionID, messageID))
 	if err != nil {
 		return message, err
 	}
@@ -292,7 +292,7 @@ func (a *Agent) readNativeMessagePage(ctx context.Context, sessionID, before str
 	if before != "" {
 		query.Set("before", before)
 	}
-	raw, next, err := a.ReadDaemonPage(ctx, a.nativeMessageRoute(sessionID, "")+"&"+query.Encode())
+	raw, next, err := a.Daemon().GetPage(ctx, a.nativeMessageRoute(sessionID, "")+"&"+query.Encode())
 	if err != nil {
 		return nil, "", err
 	}

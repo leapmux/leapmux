@@ -336,20 +336,20 @@ func codexIsToolCallApprovalElicitation(params json.RawMessage) bool {
 // approval is read AGAIN after the registration, so a switch to Bypass that ran
 // between the two reads still answers the request.
 func (a *Agent) publishApprovalRequest(line *providerkit.ParsedLine, cancelAnswer any) {
-	sink := a.codexReplyControlSink(line.Params)
+	owner := a.codexControlRequestOwner(line.Params)
 	answer, approvable := codexStandingApprovalAnswer(line.Raw)
 	if !approvable {
-		a.PublishControlRequest(sink, providerkit.ControlRequestPublication{Content: line.Raw, CancelAnswer: cancelAnswer})
+		a.PublishControlRequest(a.sink, providerkit.ControlRequestPublication{Content: line.Raw, CancelAnswer: cancelAnswer, Owner: owner})
 		return
 	}
-	request := providerkit.ControlRequestPublication{Content: line.Raw, CancelAnswer: cancelAnswer, ApproveAnswer: answer}
+	request := providerkit.ControlRequestPublication{Content: line.Raw, CancelAnswer: cancelAnswer, ApproveAnswer: answer, Owner: owner}
 	a.Mu.Lock()
-	queued := a.bypassActiveLocked() && a.ApproveUnpublishedControlRequest(sink, request)
+	queued := a.bypassActiveLocked() && a.ApproveUnpublishedControlRequest(a.sink, request)
 	a.Mu.Unlock()
 	if queued {
 		return
 	}
-	a.registerApprovalRequest(sink, request)
+	a.registerApprovalRequest(a.sink, request)
 }
 
 // registerApprovalRequest publishes a permission request with its approval answer, then

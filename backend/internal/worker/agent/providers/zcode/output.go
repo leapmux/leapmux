@@ -1,10 +1,12 @@
 package zcode
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -286,12 +288,7 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 		Steerable: a.turnActive,
 	}
 	seq := a.NextTurnSeq()
-	retired := a.pendingInputRetirements
-	a.pendingInputRetirements = nil
 	a.Mu.Unlock()
-	for _, receipt := range retired {
-		a.retireObservedInput(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
-	}
 	state = providerkit.PublishTurnStateTo(a.sink, state, seq)
 	if !state.Active {
 		if a.hasPendingZCodeSteers() {
@@ -433,8 +430,15 @@ func (a *Agent) dropZCodeTurnLocked(owner *zcodeTurnState) {
 // clearZCodeTurnsLocked drops every owner, at a session replacement or a
 // teardown. The caller holds a.Mu.
 func (a *Agent) clearZCodeTurnsLocked() []agent.NativeInputReceipt {
-	var retired []agent.NativeInputReceipt
+	owners := make([]*zcodeTurnState, 0, len(a.turns))
 	for _, owner := range a.turns {
+		owners = append(owners, owner)
+	}
+	slices.SortFunc(owners, func(left, right *zcodeTurnState) int {
+		return cmp.Compare(left.generation, right.generation)
+	})
+	var retired []agent.NativeInputReceipt
+	for _, owner := range owners {
 		owner.modelAPIRetry = nil
 		owner.completedModelAPIRetryCalls = nil
 		a.stopZCodeTurnWatcherLocked(owner)
@@ -450,9 +454,10 @@ func (a *Agent) clearZCodeTurnsLocked() []agent.NativeInputReceipt {
 	return retired
 }
 
-// createZCodeTurnLocked installs one new owner with its recovery lifetime.
+// createZCodeTurnLocked installs one new owner with its recovery lifetime and
+// returns any native input receipts displaced from a replaced foreground owner.
 // The caller supplies only state established by this admission.
-func (a *Agent) createZCodeTurnLocked(initial zcodeTurnState) *zcodeTurnState {
+func (a *Agent) createZCodeTurnLocked(initial zcodeTurnState) (*zcodeTurnState, []agent.NativeInputReceipt) {
 	if a.turns == nil {
 		a.turns = make(map[string]*zcodeTurnState)
 	}
@@ -466,16 +471,18 @@ func (a *Agent) createZCodeTurnLocked(initial zcodeTurnState) *zcodeTurnState {
 	initial.toolInvocationIDs = make(map[string]struct{})
 	initial.invocationsByNativeID = make(map[string]map[string]*zcodeToolInvocation)
 	owner := &initial
+	var displaced []agent.NativeInputReceipt
 	if !owner.background {
-		a.replaceForegroundZCodeTurnLocked(owner)
+		displaced = a.replaceForegroundZCodeTurnLocked(owner)
 	}
 	a.turns[owner.id] = owner
 	a.refreshTurnActiveLocked()
 	a.startZCodeTurnWatcherLocked(owner)
-	return owner
+	return owner, displaced
 }
 
-func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) {
+func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) []agent.NativeInputReceipt {
+	var displaced []agent.NativeInputReceipt
 	if previous := a.turns[a.foregroundTurnID]; previous != nil {
 		a.retireZCodeForegroundTurnLocked(previous)
 		if !previous.settled && previous.pendingNative == nil && len(previous.deferredResponses) == 0 {
@@ -483,8 +490,8 @@ func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) {
 			for scopeID := range previous.contentByScope {
 				a.generationBuffer.Discard(scopeID)
 			}
-			a.pendingInputRetirements = append(a.pendingInputRetirements, previous.nativeReceipt())
-			a.pendingInputRetirements = append(a.pendingInputRetirements, previous.steerReceipts...)
+			displaced = append(displaced, previous.nativeReceipt())
+			displaced = append(displaced, previous.steerReceipts...)
 			delete(a.turns, previous.id)
 		}
 	}
@@ -492,6 +499,7 @@ func (a *Agent) replaceForegroundZCodeTurnLocked(next *zcodeTurnState) {
 	a.stopCancelledRequest = false
 	a.TurnToolUses = 0
 	a.foregroundTurnID = next.id
+	return displaced
 }
 
 // retireZCodeForegroundTurnLocked clears retry ownership even if the turn
@@ -558,7 +566,7 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 
 	a.Mu.Lock()
 	confirmed := !background && event.TurnID != "" && payload.InputID != "" && event.SessionID == a.sessionID
-	if a.seenInputTurns.turns[event.TurnID] || confirmed && a.seenInputTurns.inputs[payload.InputID] {
+	if a.seenInputTurns.turns[event.TurnID] || confirmed && a.seenInputTurns.inputs[payload.InputID] != "" {
 		a.Mu.Unlock()
 		return
 	}
@@ -602,7 +610,7 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	if confirmed {
 		a.seenInputTurns.record(payload.InputID, event.TurnID)
 	}
-	turn := a.createZCodeTurnLocked(zcodeTurnState{
+	turn, displaced := a.createZCodeTurnLocked(zcodeTurnState{
 		id:                    event.TurnID,
 		background:            background,
 		foregroundExecutionID: payload.ForegroundExecutionID,
@@ -618,6 +626,7 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	a.refreshTurnActiveLocked()
 	receipt, confirmed, turnID := turn.nativeReceipt(), turn.inputConfirmed, turn.id
 	a.Mu.Unlock()
+	a.retireUnprovedInputs(displaced)
 	if confirmed {
 		a.bindObservedInputTurn(receipt, turnID)
 	}
@@ -790,14 +799,14 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, owner *zcodeTurnState,
 	case owner.background:
 		callCompletion = agent.MessageCompletionComplete
 	}
-	source := a.zcodeProgressSinkForTurn(owner).CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
-	sink := a.zcodeProgressSinkForTurn(owner)
-	sink.source = source
+	turnSink := a.zcodeProgressSinkForTurn(owner)
+	source := turnSink.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
 	content := zcodeTurnContent(raw, a.usageSnapshot())
 	if end.cancelled {
 		content.Completion = agent.MessageCompletionInterrupted
 	}
-	content = sink.CaptureMessage(content, agent.SpanInfo{})
+	content.AgentSessionID, content.Publication = source.AgentSessionID, source.Publication
+	content = turnSink.CaptureMessage(content, agent.SpanInfo{})
 	a.Mu.Lock()
 	divider := zcodeTurnDivider{
 		kind: event.Type, content: content, toolUses: owner.toolUses, nativeCountKnown: end.toolCallCount > 0,
@@ -835,16 +844,20 @@ func (a *Agent) persistZCodeTurnDivider(owner *zcodeTurnState, divider zcodeTurn
 		toolUses += closed
 	}
 	content := agent.WithToolUseCount(divider.content, toolUses)
-	sink := a.zcodeProgressSinkForTurn(owner)
-	content.InputTurnOutcome = a.zcodeReplyOutcome(owner, sink, completion)
+	sink, scope := a.zcodeReplySinkForTurn(owner)
+	content.InputTurnOutcome = a.zcodeReplyOutcome(owner, scope, completion)
 	var err error
 	if publish {
 		err = sink.PersistTurnEnd(content, agent.SpanInfo{})
 	} else {
 		err = sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
 	}
-	if err != nil {
+	if !agent.OutputRetained(err) {
 		slog.Error("zcode persist turn end", "agent_id", a.AgentID(), "type", divider.kind, "error", err)
+		if content.InputTurnOutcome != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+			a.retireObservedInput(owner.nativeReceipt(), leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+			a.retireZCodeTurnSteers(owner, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+		}
 	}
 }
 

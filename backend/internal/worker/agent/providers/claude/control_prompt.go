@@ -35,40 +35,24 @@ func claudePermissionOptions() []*leapmuxv1.PermissionOption {
 	}
 }
 
-// claudeElicitationRequest is the request of an MCP elicitation that Claude
-// Code relays.
-type claudeElicitationRequest struct {
-	Request struct {
-		Subtype         string          `json:"subtype"`
-		Mode            *string         `json:"mode"`
-		Message         string          `json:"message"`
-		DisplayName     string          `json:"display_name"`
-		MCPServerName   string          `json:"mcp_server_name"`
-		RequestedSchema json.RawMessage `json:"requested_schema"`
-		URL             string          `json:"url"`
-		Title           string          `json:"title"`
-		Description     string          `json:"description"`
-	} `json:"request"`
-}
-
 // ReadControlRequest reads Claude Code's control requests. Claude states
 // every prompt in one request shape, a tool name and its input, so the tool
 // name decides: AskUserQuestion is a question, ExitPlanMode a plan, an MCP
 // elicitation a form, and any other tool a permission.
 func (claudeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	toolName := agent.ControlToolName(input.Payload)
-	toolInput := agent.ControlToolInput(input.Payload)
+	rawRequest := providerkit.RawFields(input.Payload)["request"]
+	request := providerkit.RawFields(rawRequest)
+	toolName := providerkit.ObjectString(request, "tool_name")
+	toolInput := providerkit.RawObjectOrEmpty(request["input"])
 	if toolName == ToolNameAskUserQuestion {
-		var fields struct {
-			Questions json.RawMessage `json:"questions"`
-		}
-		_ = json.Unmarshal(toolInput, &fields)
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-			Questions: providerkit.QuestionsFromWire(fields.Questions),
+			Questions: providerkit.QuestionsFromWire(providerkit.RawFields(toolInput)["questions"]),
 		}}}
 	}
-	if elicitation, ok := claudeElicitation(input.Payload); ok {
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
+	if providerkit.ObjectString(request, "subtype") == contracts.MCPElicitationSubtypeClaude {
+		if elicitation, ok := claudeElicitation(rawRequest); ok {
+			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
+		}
 	}
 	switch toolName {
 	case ToolNameExitPlanMode:
@@ -82,11 +66,7 @@ func (claudeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapm
 			Options:   claudePermissionOptions(),
 		}
 		if toolName == toolNameBash || toolName == toolNamePowerShell {
-			var fields struct {
-				Command json.RawMessage `json:"command"`
-			}
-			_ = json.Unmarshal(toolInput, &fields)
-			permission.Command, _ = providerkit.RawString(fields.Command)
+			permission.Command = providerkit.ObjectString(providerkit.RawFields(toolInput), "command")
 		}
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
 	}
@@ -96,20 +76,12 @@ func (claudeProvider) ReadControlRequest(input agent.ControlRequestInput) *leapm
 // beside itself, `allowedPrompts: [{tool, prompt}]`. A pair with either half
 // blank states no permission that a reader could weigh, so it is dropped.
 func claudePlanPermissions(toolInput json.RawMessage) []*leapmuxv1.PlanPermission {
-	var fields struct {
-		AllowedPrompts []json.RawMessage `json:"allowedPrompts"`
-	}
-	if json.Unmarshal(toolInput, &fields) != nil {
-		return nil
-	}
 	var permissions []*leapmuxv1.PlanPermission
-	for _, raw := range fields.AllowedPrompts {
-		var pair map[string]json.RawMessage
-		if json.Unmarshal(raw, &pair) != nil {
-			continue
-		}
-		tool, _ := providerkit.RawString(pair["tool"])
-		prompt, _ := providerkit.RawString(pair["prompt"])
+	items, _ := providerkit.RawArray(providerkit.RawFields(toolInput)["allowedPrompts"])
+	for _, raw := range items {
+		pair := providerkit.RawFields(raw)
+		tool := providerkit.ObjectString(pair, "tool")
+		prompt := providerkit.ObjectString(pair, "prompt")
 		if strings.TrimSpace(tool) != "" && strings.TrimSpace(prompt) != "" {
 			permissions = append(permissions, &leapmuxv1.PlanPermission{Tool: tool, Prompt: prompt})
 		}
@@ -118,12 +90,21 @@ func claudePlanPermissions(toolInput json.RawMessage) []*leapmuxv1.PlanPermissio
 }
 
 // claudeElicitation reads an MCP elicitation that Claude Code relays.
-func claudeElicitation(payload []byte) (*leapmuxv1.ElicitationPrompt, bool) {
-	var envelope claudeElicitationRequest
-	if json.Unmarshal(payload, &envelope) != nil || envelope.Request.Subtype != contracts.MCPElicitationSubtypeClaude {
+func claudeElicitation(rawRequest json.RawMessage) (*leapmuxv1.ElicitationPrompt, bool) {
+	var request struct {
+		Subtype         string          `json:"subtype"`
+		Mode            *string         `json:"mode"`
+		Message         string          `json:"message"`
+		DisplayName     string          `json:"display_name"`
+		MCPServerName   string          `json:"mcp_server_name"`
+		RequestedSchema json.RawMessage `json:"requested_schema"`
+		URL             string          `json:"url"`
+		Title           string          `json:"title"`
+		Description     string          `json:"description"`
+	}
+	if json.Unmarshal(rawRequest, &request) != nil || request.Subtype != contracts.MCPElicitationSubtypeClaude {
 		return nil, false
 	}
-	request := envelope.Request
 	mode := contracts.MCPElicitationModeForm
 	if request.Mode != nil {
 		mode = *request.Mode

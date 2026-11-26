@@ -1,7 +1,6 @@
 package zcode
 
 import (
-	"errors"
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -9,18 +8,18 @@ import (
 )
 
 // zcodeSeenInputTurns rejects duplicate starts and conflicting input or turn
-// IDs. Both sets record the same admitted start under the provider mutex.
+// IDs. Both maps record the same admitted start under the provider mutex.
 type zcodeSeenInputTurns struct {
-	inputs map[string]bool
+	inputs map[string]string
 	turns  map[string]bool
 }
 
 func (seen *zcodeSeenInputTurns) record(inputID, turnID string) {
 	if seen.inputs == nil {
-		seen.inputs = make(map[string]bool)
+		seen.inputs = make(map[string]string)
 		seen.turns = make(map[string]bool)
 	}
-	seen.inputs[inputID] = true
+	seen.inputs[inputID] = turnID
 	seen.turns[turnID] = true
 }
 
@@ -36,7 +35,7 @@ func (a *Agent) bindObservedInputTurn(receipt agent.NativeInputReceipt, turnID s
 	if receipt.SessionID == "" || receipt.InputID == "" || turnID == "" {
 		return
 	}
-	if err := a.sink.BindNativeInputTurn(receipt, turnID); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+	if err := a.sink.BindNativeInputTurn(receipt, turnID); !agent.OutputRetained(err) {
 		slog.Error("zcode record input turn binding", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -45,8 +44,14 @@ func (a *Agent) retireObservedInput(receipt agent.NativeInputReceipt, outcome le
 	if receipt.SessionID == "" || receipt.InputID == "" {
 		return
 	}
-	if err := a.sink.RetireNativeInputTurn(receipt, outcome); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+	if err := a.sink.RetireNativeInputTurn(receipt, outcome); !agent.OutputRetained(err) {
 		slog.Error("zcode record input retirement", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+func (a *Agent) retireUnprovedInputs(receipts []agent.NativeInputReceipt) {
+	for _, receipt := range receipts {
+		a.retireObservedInput(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 	}
 }
 
@@ -63,15 +68,15 @@ func (a *Agent) retireZCodeTurnSteers(owner *zcodeTurnState, outcome leapmuxv1.A
 // zcodeReplyOutcome finalizes the inputs for which the turn still proves its
 // output order. Recovery can prove the lead from its native start while losing
 // the position of a steer within the turn.
-func (a *Agent) zcodeReplyOutcome(owner *zcodeTurnState, sink zcodeProgressSink, completion agent.MessageCompletion) leapmuxv1.AgentInputTurnOutcome {
+func (a *Agent) zcodeReplyOutcome(owner *zcodeTurnState, scope zcodeTurnReplyScope, completion agent.MessageCompletion) leapmuxv1.AgentInputTurnOutcome {
 	unproved := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
-	if sink.nativeTurnID == "" {
+	if scope.nativeTurnID == "" {
 		a.retireObservedInput(owner.nativeReceipt(), unproved)
 	}
-	if sink.nativeTurnID == "" || sink.nativeInputID != "" {
+	if scope.nativeTurnID == "" || scope.nativeInputID != "" {
 		a.retireZCodeTurnSteers(owner, unproved)
 	}
-	if sink.nativeTurnID == "" {
+	if scope.nativeTurnID == "" {
 		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 	}
 	return zcodeInputTurnOutcome(completion)

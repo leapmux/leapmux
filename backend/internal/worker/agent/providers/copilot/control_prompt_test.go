@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // copilotTestRequestID is the stored id of the request that each test answers.
@@ -291,13 +292,7 @@ func TestCopilotReadControlRequest_ReadsAnUnknownPayloadAsUnrecognized(t *testin
 
 func copilotTrustQuestion(t *testing.T) []byte {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{
-		contracts.WorkspaceTrustFieldType:          contracts.WorkspaceTrustControlTypeQuestion,
-		contracts.WorkspaceTrustFieldPath:          "/work/project",
-		contracts.WorkspaceTrustFieldConfiguration: []any{"MCP servers"},
-	})
-	require.NoError(t, err)
-	return payload
+	return providerkittest.WorkspaceTrustQuestionPayload(t, "/work/project", []any{"MCP servers"})
 }
 
 func TestCopilotReadControlRequest_DrawsTheWorkspaceTrustQuestionWithTheAgentName(t *testing.T) {

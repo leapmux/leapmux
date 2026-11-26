@@ -252,7 +252,7 @@ func TestReadControlRequest_ARequiredFieldNeedsOneValueAtLeast(t *testing.T) {
 		`"t":{"minLength":1,"type":"string"},`+
 		`"m":{"type":"array","items":{"type":"string"},"minItems":4},`+
 		`"b":{"type":"string","enum":["y"],"enumNames":["Y"]}},`+
-		`"required":["s","t","m"]}`, got.GetSchemaJson(), "a bound that is no number or less than one becomes one, and options turn any field into a choice of text")
+		`"required":["s","t","m"]}`, got.GetSchemaJson(), "a minimum that is no number or less than one becomes one, and options turn any field into a choice of text")
 }
 
 func TestReadControlRequest_AFormOfOneExternalFieldIsAURLElicitation(t *testing.T) {
@@ -375,7 +375,7 @@ func TestAnswerControlRequest_AnswersAQuestionFormByFieldKey(t *testing.T) {
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"`+nativeFormRequestID+`","result":{"answer":{"task":"build","env":["qa"]}}}`, string(got.Content))
 }
 
-// A field key is data, so a key that names a prototype member is an answer
+// A field key is data, so a key that matches a prototype member is an answer
 // like any other.
 func TestAnswerControlRequest_SendsAFieldKeyAsData(t *testing.T) {
 	payload := `{"type":"form.created","data":{"form":{"metadata":{"kind":"question"},"fields":[
@@ -438,4 +438,20 @@ func TestAnswerControlRequest_AcceptsAURLFormWithItsExternalFieldConfirmed(t *te
 
 	_, err = agenttest.AnswerControl(opencodeProvider{}, []byte(nativeURLForm), nativeFormRequestID, agenttest.QuestionDecision())
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "a form takes an elicitation decision")
+}
+
+func TestReadControlRequest_RejectsNegativeFractionSelectionCountAndPreservesLargeIntegerCondition(t *testing.T) {
+	t.Parallel()
+	qPrompt := agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"form.created","data":{"form":{"metadata":{"kind":"question"},"fields":[
+		{"key":"q","type":"multiselect","title":"Pick","minItems":-0.5,"maxItems":-0.1,"options":[{"value":"a","label":"A"}]}]}}}`)).GetQuestion()
+	require.Len(t, qPrompt.GetQuestions(), 1)
+	assert.Nil(t, qPrompt.GetQuestions()[0].MinimumSelections, "negative fraction minItems must be nil, not 0")
+	assert.Nil(t, qPrompt.GetQuestions()[0].MaximumSelections, "negative fraction maxItems must be nil, not 0")
+
+	formPrompt := agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"form.created","data":{"form":{"fields":[
+		{"key":"id","type":"integer"},
+		{"key":"extra","type":"string","when":[{"key":"id","op":"eq","value":9007199254740993}]}]}}}`)).GetElicitation()
+	require.Len(t, formPrompt.GetFieldRules(), 2)
+	require.Len(t, formPrompt.GetFieldRules()[1].GetConditions(), 1)
+	assert.Equal(t, "9007199254740993", formPrompt.GetFieldRules()[1].GetConditions()[0].GetValueJson())
 }

@@ -1,6 +1,7 @@
 package mimo
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -472,15 +473,8 @@ func (a *Agent) handleActorStatus(event mimoEvent) {
 	case contracts.MiMoActorStatusRunning:
 		a.startActorTurn(payload.ActorID, wasRunning, wasClosed)
 	case contracts.MiMoActorStatusIdle:
-		a.retryForActor(payload.ActorID).Reset()
-		if inboxActive {
-			if payload.Error != "" {
-				a.retainActorFailure(payload, actor)
-			}
-			a.retainActorToolReport(actor, payload.TurnCount, payload.LastOutcome)
-		} else if wasRunning || !wasClosed {
-			a.endActorTurn(payload, true)
-		}
+		status, completion := actorOutcomeStatus(payload.LastOutcome)
+		a.finishActorToolIdle(actor, payload, status, completion, true, inboxActive, wasRunning || !wasClosed)
 	default:
 		// pending: the actor waits for its first turn, and its row opens when the
 		// turn starts.
@@ -557,7 +551,7 @@ func (a *Agent) endActorTurnWithOutcome(payload mimoActorStatus, status bgtask.S
 	// caches of the tab go.
 	a.publishChildTurn(actor, sessionID)
 	if fromTool {
-		a.retainActorToolReport(actor, payload.TurnCount, payload.LastOutcome)
+		a.retainActorToolReport(actor, payload.TurnCount, status)
 	} else {
 		a.Mu.Lock()
 		actor.lastText = ""
@@ -575,13 +569,83 @@ func (a *Agent) endActorTurnWithOutcome(payload mimoActorStatus, status bgtask.S
 	a.flushHeldFailure()
 }
 
-func (a *Agent) retainActorToolReport(actor *mimoActor, turnCount int, outcome string) {
+func (a *Agent) actorNeedsToolReconcileLocked(actor *mimoActor, sessionID string) bool {
+	return actor.running && (actor.toolRunning || !a.hasOpenChildReceiptLocked(actor, sessionID))
+}
+
+func (a *Agent) reconcileActorToolIdle(sessionID, actorID string, snap mimoActorSnapshot, present bool) {
+	a.Mu.Lock()
+	actor := a.actors[actorID]
+	stillRunning := a.sessionID == sessionID && actor != nil && actor.running
+	fromTool := stillRunning && actor.toolRunning
+	inboxActive := stillRunning && a.hasOpenChildReceiptLocked(actor, sessionID)
+	var turnCount int
+	if stillRunning {
+		turnCount = actor.turnCount
+	}
+	if fromTool {
+		actor.toolRunning = false
+	}
+	a.Mu.Unlock()
+	if !stillRunning || (!fromTool && inboxActive) {
+		return
+	}
+	payload := mimoActorStatus{
+		SessionID: sessionID,
+		ActorID:   actorID,
+		Status:    contracts.MiMoActorStatusIdle,
+		TurnCount: turnCount,
+	}
+	status, completion := bgtask.StatusEndedWithUnknownOutcome, agent.MessageCompletionFinished
+	if present {
+		payload.LastOutcome = snap.LastOutcome
+		payload.TurnCount = snap.TurnCount
+		payload.Error = cmp.Or(snap.Error, snap.LastError)
+		status, completion = actorOutcomeStatus(payload.LastOutcome)
+	}
+	a.finishActorToolIdle(actor, payload, status, completion, fromTool, inboxActive, true)
+}
+
+func (a *Agent) finishActorToolIdle(actor *mimoActor, payload mimoActorStatus, status bgtask.Status, completion agent.MessageCompletion, fromTool, inboxActive, closeWhenOpen bool) {
+	a.retryForActor(payload.ActorID).Reset()
+	if inboxActive {
+		if payload.Error != "" {
+			a.retainActorFailure(payload, actor)
+		}
+		a.retainActorToolReport(actor, payload.TurnCount, status)
+		return
+	}
+	if closeWhenOpen {
+		a.endActorTurnWithOutcome(payload, status, completion, fromTool)
+	}
+}
+
+func (a *Agent) syncActorReceiptTurn(sessionID, actorID, childID, idleOutcome string) {
+	a.Mu.Lock()
+	actor := a.actors[actorID]
+	if actor == nil || actor.childAgentID != childID || a.sessionID != sessionID {
+		a.Mu.Unlock()
+		return
+	}
+	wasRunning, wasClosed := actor.running, actor.closed
+	running := actor.toolRunning || a.hasOpenChildReceiptLocked(actor, sessionID)
+	a.Mu.Unlock()
+	if running == wasRunning {
+		return
+	}
+	if running {
+		a.startActorTurn(actorID, false, wasClosed)
+		return
+	}
+	a.endActorTurn(mimoActorStatus{ActorID: actorID, LastOutcome: idleOutcome}, false)
+}
+
+func (a *Agent) retainActorToolReport(actor *mimoActor, turnCount int, status bgtask.Status) {
 	a.Mu.Lock()
 	rowKey, title, background, report := actor.rowKey, actor.title(), actor.background, actor.lastText
 	actor.lastText = ""
 	a.Mu.Unlock()
 	if background && strings.TrimSpace(report) != "" && rowKey != "" {
-		status, _ := actorOutcomeStatus(outcome)
 		providerkit.PersistSubagentReport(a.sink, agent.SubagentReportWrite{
 			ReportID: "mimo-report:" + rowKey + ":" + strconv.Itoa(turnCount),
 			Report: agent.SubagentReport{

@@ -14,8 +14,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+// SelectedOptionResult is the JSON-RPC permission answer that selects one
+// option ID in the ACP-shaped outcome envelope shared across providers.
+func SelectedOptionResult(requestID, optionID string) []byte {
+	return agent.JSONRPCResult(requestID, map[string]any{
+		"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": optionID},
+	})
+}
 
 // JSONRPCProcess shares request correlation across JSON-RPC providers.
 type JSONRPCProcess struct {

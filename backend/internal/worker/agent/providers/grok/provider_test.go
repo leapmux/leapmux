@@ -43,7 +43,7 @@ func neutralDecision(t *testing.T, requestID, behavior, message string) []byte {
 }
 
 // selectedOption is the permission reply that selects one option, as
-// acp.SelectedOptionResult builds it.
+// providerkit.SelectedOptionResult builds it.
 func selectedOption(t *testing.T, requestID, optionID string) []byte {
 	t.Helper()
 	data, err := json.Marshal(map[string]any{

@@ -1,10 +1,12 @@
 package codex
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // codexNonReplyMethods are the methods that the browser draws as a
@@ -28,51 +30,74 @@ var codexNonReplyMethods = map[string]bool{
 	contracts.CodexMethodStrictReviewRequired:          true,
 }
 
+type codexReplyItem struct {
+	Type json.RawMessage `json:"type"`
+	Text json.RawMessage `json:"text"`
+}
+
 // ReplyText reads the text of an agentMessage item, as the browser's
 // codexExtractRow does. Codex stores an item under three envelopes: a bare
 // {item}, a notification's {params: {item}}, or the item itself.
 func (codexProvider) ReplyText(message agent.MessageContent) (string, bool) {
-	var frame map[string]json.RawMessage
+	var frame struct {
+		Method json.RawMessage `json:"method"`
+		Turn   json.RawMessage `json:"turn"`
+		Item   json.RawMessage `json:"item"`
+		Params json.RawMessage `json:"params"`
+		Type   json.RawMessage `json:"type"`
+		Text   json.RawMessage `json:"text"`
+	}
 	if json.Unmarshal(message.Original, &frame) != nil {
 		return "", false
 	}
-	var method string
-	_ = json.Unmarshal(frame["method"], &method)
-	if codexNonReplyMethods[method] {
+	if method, ok := providerkit.RawString(frame.Method); ok && codexNonReplyMethods[method] {
 		return "", false
 	}
-	var turn struct {
-		Status json.RawMessage `json:"status"`
+	if len(frame.Turn) > 0 {
+		var turn struct {
+			Status json.RawMessage `json:"status"`
+		}
+		if json.Unmarshal(frame.Turn, &turn) == nil {
+			if status, ok := providerkit.RawString(turn.Status); ok && status != "" {
+				return "", false
+			}
+		}
 	}
-	var status string
-	if json.Unmarshal(frame["turn"], &turn) == nil && json.Unmarshal(turn.Status, &status) == nil && status != "" {
+	item, ok := codexReplyItemOf(frame.Item, frame.Params, frame.Type, frame.Text)
+	if !ok {
 		return "", false
 	}
-	item := codexItemOf(frame)
-	var itemType, text string
-	_ = json.Unmarshal(item[contracts.CodexItemType], &itemType)
+	itemType, _ := providerkit.RawString(item.Type)
 	if itemType != contracts.CodexItemTypeAgentMessage {
 		return "", false
 	}
-	_ = json.Unmarshal(item["text"], &text)
+	text, _ := providerkit.RawString(item.Text)
 	return text, true
 }
 
-// codexItemOf unwraps an item as the browser's extractItem does.
-func codexItemOf(frame map[string]json.RawMessage) map[string]json.RawMessage {
-	var item map[string]json.RawMessage
-	if json.Unmarshal(frame[contracts.CodexItemEnvelope], &item) == nil && item != nil {
-		return item
+// codexReplyItemOf unwraps an item as the browser's extractItem does.
+func codexReplyItemOf(rawItem, rawParams, rawType, rawText json.RawMessage) (codexReplyItem, bool) {
+	if trimmed := bytes.TrimSpace(rawItem); len(trimmed) > 0 && trimmed[0] == '{' {
+		var item codexReplyItem
+		if json.Unmarshal(trimmed, &item) == nil {
+			return item, true
+		}
 	}
-	var params struct {
-		Item map[string]json.RawMessage `json:"item"`
+	if trimmed := bytes.TrimSpace(rawParams); len(trimmed) > 0 && trimmed[0] == '{' {
+		var params struct {
+			Item json.RawMessage `json:"item"`
+		}
+		if json.Unmarshal(trimmed, &params) == nil {
+			if inner := bytes.TrimSpace(params.Item); len(inner) > 0 && inner[0] == '{' {
+				var item codexReplyItem
+				if json.Unmarshal(inner, &item) == nil {
+					return item, true
+				}
+			}
+		}
 	}
-	if json.Unmarshal(frame["params"], &params) == nil && params.Item != nil {
-		return params.Item
+	if frameType, ok := providerkit.RawString(rawType); ok && frameType != "" {
+		return codexReplyItem{Type: rawType, Text: rawText}, true
 	}
-	var frameType string
-	if json.Unmarshal(frame["type"], &frameType) == nil && frameType != "" {
-		return frame
-	}
-	return nil
+	return codexReplyItem{}, false
 }

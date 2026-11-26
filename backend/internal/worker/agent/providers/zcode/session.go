@@ -431,10 +431,12 @@ func (a *Agent) adoptCompleteZCodeSessionSnapshot(snap zcodeStateSnapshot, fresh
 	a.applyParsedStateSnapshotLocked(snap)
 	a.lastSeq = max(a.lastSeq, snap.Runtime.EventSeq)
 	newOwner := snap.Runtime.ActiveTurnID != "" && a.turns[snap.Runtime.ActiveTurnID] == nil
+	var displaced []agent.NativeInputReceipt
 	if newOwner {
-		a.createResumedZCodeTurnLocked(snap)
+		displaced = a.createResumedZCodeTurnLocked(snap)
 	}
 	a.Mu.Unlock()
+	a.retireUnprovedInputs(displaced)
 	if newOwner {
 		a.publishZCodeModelAPIRetryLocked()
 	}
@@ -517,12 +519,13 @@ func (a *Agent) resetZCodeSessionCountersLocked() {
 // reports. The owner starts without content or a user-message anchor.
 // Recovery can select native messages whose turn anchor matches this turn.
 // The caller holds a.Mu.
-func (a *Agent) createResumedZCodeTurnLocked(snap zcodeStateSnapshot) {
-	a.createZCodeTurnLocked(zcodeTurnState{
+func (a *Agent) createResumedZCodeTurnLocked(snap zcodeStateSnapshot) []agent.NativeInputReceipt {
+	_, displaced := a.createZCodeTurnLocked(zcodeTurnState{
 		id:                snap.Runtime.ActiveTurnID,
 		background:        false,
 		admissionRevision: snap.Runtime.StateRevision,
 	})
+	return displaced
 }
 
 func (a *Agent) applyParsedStateSnapshotLocked(snap zcodeStateSnapshot) {

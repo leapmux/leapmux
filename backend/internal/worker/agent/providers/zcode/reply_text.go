@@ -2,9 +2,11 @@ package zcode
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // ReplyText reads the reply of a model-response session.updated event, as
@@ -25,15 +27,44 @@ func (zcodeProvider) ReplyText(message agent.MessageContent) (string, bool) {
 }
 
 func zcodeAcceptedReplyPrefix(supplemental []byte) string {
-	var supplement map[string]json.RawMessage
-	if json.Unmarshal(supplemental, &supplement) != nil {
-		return ""
+	coverage := providerkit.RawFields(providerkit.RawFields(supplemental)[contracts.ZCodeSupplementResponseText])
+	return providerkit.ObjectString(coverage, contracts.ZCodeResponseTextAcceptedPrefix)
+}
+
+func zcodeResolveReplyCoverage(event zcodeEventEnvelope, content agent.MessageContent) []byte {
+	prefix := zcodeAcceptedReplyPrefix(content.Supplemental)
+	if prefix == "" {
+		return content.Original
 	}
-	var coverage map[string]json.RawMessage
-	if json.Unmarshal(supplement[contracts.ZCodeSupplementResponseText], &coverage) != nil {
-		return ""
+	payload := providerkit.RawFields(event.Payload)
+	update := zcodeSessionUpdatedPayload{
+		Type:             payload["type"],
+		RequestID:        payload["requestId"],
+		TaskID:           payload["taskId"],
+		AgentID:          payload["agentId"],
+		ParentToolCallID: payload["parentToolCallId"],
+		Content:          payload["content"],
+		StopReason:       payload["stopReason"],
 	}
-	var prefix string
-	_ = json.Unmarshal(coverage[contracts.ZCodeResponseTextAcceptedPrefix], &prefix)
-	return prefix
+	if update.kind() != zcodeSessionUpdateModelResponse {
+		return content.Original
+	}
+	text, ok := providerkit.RawString(payload["content"])
+	if !ok {
+		return content.Original
+	}
+	suffix, ok := strings.CutPrefix(text, prefix)
+	if !ok {
+		return content.Original
+	}
+	payload["content"] = providerkit.JSONText(suffix)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return content.Original
+	}
+	resolved := event.withPayload(encoded).persistBytes()
+	if resolved == nil {
+		return content.Original
+	}
+	return resolved
 }

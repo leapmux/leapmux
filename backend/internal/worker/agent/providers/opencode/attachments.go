@@ -43,7 +43,7 @@ func (b *FamilyBase) prepareAudioPrompt(sessionID string, attachments []agent.Cl
 	}
 	ctx, cancel := context.WithTimeout(b.Context(), b.APITimeout())
 	defer cancel()
-	raw, err := b.ReadDaemon(ctx, "/provider")
+	raw, err := b.Daemon().Get(ctx, "/provider")
 	if err != nil {
 		return fmt.Errorf("check %s audio model: %w", b.ProviderName(), err)
 	}

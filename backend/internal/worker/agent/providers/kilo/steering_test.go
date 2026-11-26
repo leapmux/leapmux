@@ -180,7 +180,7 @@ func TestKiloNativePromptDoesNotHoldSessionLockWhileWaitingForDaemon(t *testing.
 	}, agent.Options{}, "", ""))
 	a.SetPromptActiveForTest(true)
 
-	// Start a native SteerInput that blocks on <-a.daemonReady.
+	// Start a native SteerInput that blocks on a.Daemon().WaitReady.
 	steerDone := make(chan error, 1)
 	go func() {
 		_, err := a.SteerInput(agent.SteerRequest{InputID: "in-1", Content: "steer while daemon starting"})
@@ -207,13 +207,12 @@ func TestKiloNativePromptDoesNotHoldSessionLockWhileWaitingForDaemon(t *testing.
 	case <-sessionAcquired:
 	case <-time.After(300 * time.Millisecond):
 		cancel()
-		t.Fatal("WithSessionID blocked on sessionMu while submitNativePrompt waited for daemonReady")
+		t.Fatal("WithSessionID blocked on sessionMu while submitNativePrompt waited for daemon readiness")
 	}
-	// DaemonUnavailable must unblock submitNativePrompt immediately with an error.
-	a.DaemonUnavailable()
+	// MarkUnavailableForTest must unblock submitNativePrompt immediately with an error.
+	a.Daemon().MarkUnavailableForTest(nil)
 	err := <-steerDone
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unavailable")
+	require.ErrorIs(t, err, opencode.ErrDaemonUnavailable)
 }
 
 func TestKiloDaemonReadyIsIdempotent(t *testing.T) {

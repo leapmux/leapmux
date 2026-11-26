@@ -2,7 +2,6 @@ package mimo
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -15,7 +14,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // mimoListenPattern matches the stdout line `mimo serve` prints once it
@@ -194,7 +192,7 @@ func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
 	sessionID := a.sessionID
 	var runningActorIDs []string
 	for actorID, actor := range a.actors {
-		if actor.running && (actor.toolRunning || !a.hasOpenChildReceiptLocked(actor, sessionID)) {
+		if a.actorNeedsToolReconcileLocked(actor, sessionID) {
 			runningActorIDs = append(runningActorIDs, actorID)
 		}
 	}
@@ -219,52 +217,7 @@ func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
 				if present && snap.isRunning() {
 					continue
 				}
-				a.Mu.Lock()
-				actor := a.actors[actorID]
-				stillRunning := a.sessionID == sessionID && actor != nil && actor.running
-				fromTool := stillRunning && actor.toolRunning
-				inboxActive := stillRunning && a.hasOpenChildReceiptLocked(actor, sessionID)
-				if fromTool {
-					actor.toolRunning = false
-				}
-				a.Mu.Unlock()
-				if !stillRunning || (!fromTool && inboxActive) {
-					continue
-				}
-				a.retryForActor(actorID).Reset()
-				if inboxActive {
-					if present {
-						payload := mimoActorStatus{
-							SessionID:   sessionID,
-							ActorID:     actorID,
-							Status:      contracts.MiMoActorStatusIdle,
-							LastOutcome: snap.LastOutcome,
-							TurnCount:   snap.TurnCount,
-							Error:       cmp.Or(snap.Error, snap.LastError),
-						}
-						if payload.Error != "" {
-							a.retainActorFailure(payload, actor)
-						}
-						a.retainActorToolReport(actor, payload.TurnCount, payload.LastOutcome)
-					}
-					continue
-				}
-				if present {
-					a.endActorTurn(mimoActorStatus{
-						SessionID:   sessionID,
-						ActorID:     actorID,
-						Status:      contracts.MiMoActorStatusIdle,
-						LastOutcome: snap.LastOutcome,
-						TurnCount:   snap.TurnCount,
-						Error:       cmp.Or(snap.Error, snap.LastError),
-					}, fromTool)
-				} else {
-					a.endActorTurnWithOutcome(mimoActorStatus{
-						SessionID: sessionID,
-						ActorID:   actorID,
-						Status:    contracts.MiMoActorStatusIdle,
-					}, bgtask.StatusEndedWithUnknownOutcome, agent.MessageCompletionFinished, fromTool)
-				}
+				a.reconcileActorToolIdle(sessionID, actorID, snap, present)
 			}
 		}
 	}

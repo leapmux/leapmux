@@ -61,20 +61,21 @@ type storedControlPayload struct {
 // readStoredControlPayload reads the fields of a stored payload that the
 // readers need. A payload that is no JSON object reads as empty fields.
 func readStoredControlPayload(payload []byte) storedControlPayload {
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(payload, &fields)
-	stored := storedControlPayload{toolName: agent.ControlToolName(payload)}
-	stored.eventType, _ = providerkit.RawString(fields["type"])
-	stored.plan, _ = providerkit.RawString(fields[contracts.MiMoControlFieldPlan])
-	_ = json.Unmarshal(fields["properties"], &stored.properties)
-	return stored
+	fields := providerkit.RawFields(payload)
+	request, _ := providerkit.RawObject(fields["request"])
+	properties, _ := providerkit.RawObject(fields["properties"])
+	return storedControlPayload{
+		eventType:  providerkit.ObjectString(fields, "type"),
+		toolName:   providerkit.ObjectString(request, "tool_name"),
+		plan:       providerkit.ObjectString(fields, contracts.MiMoControlFieldPlan),
+		properties: properties,
+	}
 }
 
 // questions returns the elements of properties.questions, or nil for a
 // value that is no array.
 func (s storedControlPayload) questions() []json.RawMessage {
-	var questions []json.RawMessage
-	_ = json.Unmarshal(s.properties["questions"], &questions)
+	questions, _ := providerkit.RawArray(s.properties["questions"])
 	return questions
 }
 
@@ -91,16 +92,16 @@ func (s storedControlPayload) questions() []json.RawMessage {
 //     and the resolution refuses an answer to one.
 func (mimoProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	stored := readStoredControlPayload(input.Payload)
-	elicitation := mimoElicitation(stored)
-	isQuestionEvent := stored.eventType == contracts.OpenCodeEventQuestionAsked
-	switch {
-	case isQuestionEvent && stored.toolName != contracts.MiMoToolPlanExit && elicitation == nil:
+	switch stored.eventType {
+	case contracts.OpenCodeEventQuestionAsked:
+		if stored.toolName == contracts.MiMoToolPlanExit {
+			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: mimoPlanPrompt(stored)}}
+		}
+		if elicitation := mimoElicitation(stored); elicitation != nil {
+			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
+		}
 		return providerkit.OpenCodeQuestionPrompt(input.Payload)
-	case elicitation != nil:
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
-	case isQuestionEvent && stored.toolName == contracts.MiMoToolPlanExit:
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: mimoPlanPrompt(stored)}}
-	case stored.eventType == contracts.MiMoEventPermissionAsked:
+	case contracts.MiMoEventPermissionAsked:
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: mimoPermissionPrompt(stored)}}
 	default:
 		return agent.UnrecognizedControlPrompt()
@@ -123,15 +124,15 @@ func mimoElicitation(stored storedControlPayload) *leapmuxv1.ElicitationPrompt {
 	if len(questions) != 1 {
 		return nil
 	}
-	var question map[string]json.RawMessage
-	if json.Unmarshal(questions[0], &question) != nil || question == nil {
+	question, ok := providerkit.RawObject(questions[0])
+	if !ok {
 		return nil
 	}
-	if key, _ := providerkit.RawString(question["key"]); key != mimoQuestionKeyMCPElicitation {
+	if providerkit.ObjectString(question, "key") != mimoQuestionKeyMCPElicitation {
 		return nil
 	}
-	server, _ := providerkit.RawString(question["header"])
-	message, _ := providerkit.RawString(question["question"])
+	server := providerkit.ObjectString(question, "header")
+	message := providerkit.ObjectString(question, "question")
 	if server != "" {
 		message = strings.TrimPrefix(message, server+"\n\n")
 	}
@@ -151,16 +152,16 @@ func mimoPlanPrompt(stored storedControlPayload) *leapmuxv1.PlanPrompt {
 	if stored.plan != "" {
 		return &leapmuxv1.PlanPrompt{Text: stored.plan}
 	}
-	var question, params map[string]json.RawMessage
+	var question map[string]json.RawMessage
 	if questions := stored.questions(); len(questions) > 0 {
-		_ = json.Unmarshal(questions[0], &question)
+		question, _ = providerkit.RawObject(questions[0])
 	}
-	_ = json.Unmarshal(question["params"], &params)
-	if path, _ := providerkit.RawString(params["plan"]); strings.TrimSpace(path) != "" {
-		return &leapmuxv1.PlanPrompt{Details: []string{"Plan file: " + strings.TrimSpace(path)}}
+	params, _ := providerkit.RawObject(question["params"])
+	if path := strings.TrimSpace(providerkit.ObjectString(params, "plan")); path != "" {
+		return &leapmuxv1.PlanPrompt{Details: []string{"Plan file: " + path}}
 	}
-	if words, _ := providerkit.RawString(question["question"]); strings.TrimSpace(words) != "" {
-		return &leapmuxv1.PlanPrompt{Details: []string{strings.TrimSpace(words)}}
+	if words := strings.TrimSpace(providerkit.ObjectString(question, "question")); words != "" {
+		return &leapmuxv1.PlanPrompt{Details: []string{words}}
 	}
 	return &leapmuxv1.PlanPrompt{}
 }
@@ -176,7 +177,7 @@ func mimoPlanPrompt(stored storedControlPayload) *leapmuxv1.PlanPrompt {
 //     a request that offers it
 //   - each field of the metadata
 func mimoPermissionPrompt(stored storedControlPayload) *leapmuxv1.PermissionPrompt {
-	permission, _ := providerkit.RawString(stored.properties["permission"])
+	permission := providerkit.ObjectString(stored.properties, "permission")
 	patterns := providerkit.RawStrings(stored.properties["patterns"])
 	always := providerkit.RawStrings(stored.properties["always"])
 	metadata := providerkit.ReadOrderedObject(stored.properties["metadata"])
@@ -245,16 +246,11 @@ func mimoPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, 
 		return agent.ControlAnswer{}, err
 	}
 	if feedback := decision.GetFeedback(); feedback != "" {
-		if agent.IsAllowOption(option) {
-			return agent.ControlAnswer{}, agent.InvalidControlDecision("feedback goes with a refusal, and %q allows the call", option.GetOptionId())
-		}
 		return agent.ControlAnswer{Content: agent.DenyResponse(input.RequestID, feedback)}, nil
 	}
 	switch option.GetOptionId() {
 	case contracts.MiMoPermissionReplyOnce, contracts.MiMoPermissionReplyAlways, contracts.MiMoPermissionReplyReject:
-		return agent.ControlAnswer{Content: agent.JSONRPCResult(input.RequestID, map[string]any{
-			"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": option.GetOptionId()},
-		})}, nil
+		return agent.ControlAnswer{Content: providerkit.SelectedOptionResult(input.RequestID, option.GetOptionId())}, nil
 	default:
 		return agent.ControlAnswer{}, agent.InvalidControlDecision("MiMo Code offers no option %q", option.GetOptionId())
 	}

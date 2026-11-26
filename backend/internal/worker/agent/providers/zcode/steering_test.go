@@ -2,8 +2,10 @@ package zcode
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -170,7 +172,7 @@ func TestZCodeSteerInputSendsAGuideCommand(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newZCodeSteerAgent(t)
 	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("queue"))
-	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{Content: "Also run the linter."}))
+	require.NoError(t, agenttest.SteerInput(a, zcodeTestSteerRequest(1, "Also run the linter.")))
 
 	commands := zcodeSentCommands(t, stdin)
 	require.Len(t, commands, 1)
@@ -736,4 +738,168 @@ func TestZCodeRecoveredTurnKeepsLeadOutcomeAndRetiresSteerReply(t *testing.T) {
 	assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
 		echo.Receipt: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
 	}, sink.NativeReplyRetirements())
+}
+
+func TestZCodeSteerEmptyAttemptIDSkipsSteerTracking(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("guide"))
+
+	_, err := a.SteerInput(agent.SteerRequest{InputID: "control-reply-1", Content: "feedback"})
+	require.NoError(t, err)
+	assert.Zero(t, zcodePendingSteerCount(a), "empty-AttemptID steer must not be registered in a.steers")
+
+	commandID := zcodeSentCommandsOf(t, stdin, zcodeCommandSendText)[0].CommandID
+	a.HandleOutput(zcodeSteerDrainedLine(t, 2, []string{commandID}, nil))
+	assert.Empty(t, sink.SteerResolutions(), "empty-AttemptID steer must not emit a SteerResolution")
+}
+
+func TestZCodeSteerStartNowWithDifferentInputIDAlreadyStartedEchoesImmediately(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, func(cmd zcodeTestCommand) string {
+		// Deliver turn.started with a server-assigned inputId BEFORE returning the command ack.
+		a.HandleOutput(zcodeTurnEventLine(t, 1, "turn_2", contracts.ZCodeEventTurnStarted, `{"inputId":"server-assigned-input"}`))
+		return fmt.Sprintf(`{"commandId":%q,"status":"accepted","result":{"type":"inputAccepted","delivery":"startNow","inputId":"server-assigned-input"},"revision":9}`, cmd.CommandID)
+	})
+
+	require.NoError(t, agenttest.SteerInput(a, zcodeTestSteerRequest(1, "late")))
+	assert.Zero(t, zcodePendingSteerCount(a), "already-started steer must be resolved immediately")
+	assert.Equal(t, []agent.SteerResolution{zcodeTestSteerEcho(1, "server-assigned-input", "turn_2")}, sink.SteerResolutions())
+}
+
+func TestZCodeInterruptWithdrawsAwaitingTurnStartSteer(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newZCodeSteerAgent(t)
+	answerZCodeCommand(t, a, stdin, zcodeCommandSendText, 1, zcodeAcceptedSteer("startNow"))
+	require.NoError(t, agenttest.SteerInput(a, zcodeTestSteerRequest(1, "promoted steer")))
+	require.Equal(t, 1, zcodePendingSteerCount(a))
+
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+
+	assert.Zero(t, zcodePendingSteerCount(a), "Interrupt must not leave an awaitingTurnStart steer stranded")
+	assert.Equal(t, []agent.SteerResolution{
+		zcodeTestSteerResolution(1, agent.SteerOutcomeUncertain, agent.NativeInputReceipt{}),
+	}, sink.SteerResolutions())
+}
+
+type zcodeFailingTurnEndSink struct {
+	*agenttest.Sink
+	failTurnEnd atomic.Bool
+}
+
+func (*zcodeFailingTurnEndSink) OutputQueue() *agent.OutputQueue { return nil }
+
+func (s *zcodeFailingTurnEndSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	if s.failTurnEnd.Load() {
+		return errors.New("disk full")
+	}
+	return s.Sink.PersistTurnEnd(content, span)
+}
+
+func TestZCodeSettleWithoutPersistEndOrOnFailedPersistRetiresInputs(t *testing.T) {
+	t.Parallel()
+	t.Run("nil persistEnd retires owner and steers", func(t *testing.T) {
+		t.Parallel()
+		a, sink, stdin := newZCodeSteerAgent(t)
+		commandID := steerZCode(t, a, stdin, 1, 1)
+		a.HandleOutput(zcodeSteerDrainedLine(t, 2, []string{commandID}, nil))
+		echo := zcodeTestSteerEcho(1, commandID, "turn_1")
+
+		a.Mu.Lock()
+		owner := a.turns["turn_1"]
+		a.Mu.Unlock()
+		require.NotNil(t, owner)
+		require.True(t, a.settleZCodeTurn(owner, zcodeTurnSettlement{
+			textCompletion: agent.MessageCompletionInterrupted,
+			callCompletion: agent.MessageCompletionInterrupted,
+		}))
+
+		retirements := sink.NativeReplyRetirements()
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, retirements[agent.NativeInputReceipt{SessionID: "sess-1", InputID: "lead"}])
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, retirements[echo.Receipt])
+	})
+
+	t.Run("failed non-retained PersistTurnEnd retires owner and steers", func(t *testing.T) {
+		t.Parallel()
+		baseSink := &agenttest.Sink{}
+		failingSink := &zcodeFailingTurnEndSink{Sink: baseSink}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(failingSink))
+		// Bypass orderedProviderServices so PersistTurnEnd returns a non-retained error.
+		a.sink = agent.NewProviderServices(failingSink)
+		a.Mu.Lock()
+		a.sessionID = "sess-1"
+		owner, _ := a.createZCodeTurnLocked(zcodeTurnState{
+			id:             "turn_1",
+			inputID:        "lead",
+			inputConfirmed: true,
+		})
+		steerReceipt := agent.NativeInputReceipt{SessionID: "sess-1", InputID: "steer-1", TurnID: "turn_1"}
+		owner.steerReceipts = []agent.NativeInputReceipt{steerReceipt}
+		a.Mu.Unlock()
+
+		failingSink.failTurnEnd.Store(true)
+		a.persistZCodeTurnDivider(owner, zcodeTurnDivider{
+			kind:    "turn.completed",
+			content: agent.MessageContent{Original: []byte(`{"type":"turn.completed"}`), Completion: agent.MessageCompletionComplete},
+		}, 0, true, agent.MessageCompletionComplete)
+
+		retirements := baseSink.NativeReplyRetirements()
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, retirements[agent.NativeInputReceipt{SessionID: "sess-1", InputID: "lead"}])
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, retirements[steerReceipt])
+	})
+
+	t.Run("retained PersistTurnEnd failure does not prematurely retire inputs", func(t *testing.T) {
+		t.Parallel()
+		baseSink := &agenttest.Sink{}
+		failingSink := &zcodeFailingTurnEndSink{Sink: baseSink}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(failingSink))
+		a.Mu.Lock()
+		a.sessionID = "sess-1"
+		owner, _ := a.createZCodeTurnLocked(zcodeTurnState{
+			id:             "turn_1",
+			inputID:        "lead",
+			inputConfirmed: true,
+		})
+		steerReceipt := agent.NativeInputReceipt{SessionID: "sess-1", InputID: "steer-1", TurnID: "turn_1"}
+		owner.steerReceipts = []agent.NativeInputReceipt{steerReceipt}
+		a.Mu.Unlock()
+
+		failingSink.failTurnEnd.Store(true)
+		a.persistZCodeTurnDivider(owner, zcodeTurnDivider{
+			kind:    "turn.completed",
+			content: agent.MessageContent{Original: []byte(`{"type":"turn.completed"}`), Completion: agent.MessageCompletionComplete},
+		}, 0, true, agent.MessageCompletionComplete)
+		assert.Empty(t, baseSink.NativeReplyRetirements(), "OutputQueue-retained turn end must not prematurely retire inputs")
+
+		failingSink.failTurnEnd.Store(false)
+		require.NoError(t, agent.OutputQueueFor(a.sink).Flush())
+		assert.Empty(t, baseSink.NativeReplyRetirements())
+		require.Len(t, baseSink.Messages(), 1)
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, baseSink.Messages()[0].InputTurnOutcome)
+	})
+}
+
+func TestZCodeProgressSinkForTurnPreservesOuterOutputQueue(t *testing.T) {
+	t.Parallel()
+	queue := &agent.OutputQueue{}
+	rawSink := &agenttest.Sink{}
+	ordered := agent.NewOrderedProviderServices(queue, agent.NewProviderServices(rawSink))
+	a := newZCodeTestAgent(t, ordered)
+	a.Mu.Lock()
+	owner, _ := a.createZCodeTurnLocked(zcodeTurnState{id: "turn_1"})
+	a.Mu.Unlock()
+
+	turnSink := a.zcodeProgressSinkForTurn(owner)
+	assert.Same(t, queue, agent.OutputQueueFor(turnSink))
+	assert.NotEqual(t, turnSink, agent.DirectProviderServices(turnSink), "OutputQueue must stay outermost when zcodeProgressSink decorates a.sink")
+}
+
+func TestZCodeClassifyDeliveryErrorPreservesWrappedCause(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("broken pipe")
+	err := classifyZCodeDeliveryError(MethodCommand, sentinel)
+	assert.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+	assert.ErrorIs(t, err, sentinel)
 }

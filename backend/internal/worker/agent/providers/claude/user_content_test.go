@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -188,9 +189,12 @@ func TestClaudeSteerInputPutsThePromptTextLast(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.NotEmpty(t, receipt.InputID)
+			assert.Zero(t, receipt, "RowAtEcho steer must return an empty receipt so inputqueue holds it for echo")
+			var sent UserInputMessage
+			require.NoError(t, json.Unmarshal([]byte(stdin.String()), &sent))
+			require.NotEmpty(t, sent.UUID)
 			assertOneClaudeFrame(t, stdin.String(),
-				`{"type":"user","uuid":"`+receipt.InputID+`","message":{"role":"user","content":`+tc.wantContent+`},"priority":"next"}`)
+				`{"type":"user","uuid":"`+sent.UUID+`","message":{"role":"user","content":`+tc.wantContent+`},"priority":"next"}`)
 		})
 	}
 }

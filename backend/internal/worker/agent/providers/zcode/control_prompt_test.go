@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // zcodeTestRequestID is the stored id of the request that each test answers.
@@ -423,15 +424,22 @@ func TestZCodeReadControlRequest_ReadsTheServersOwnFormNotTheFlattenedQuestions(
 
 func TestZCodeReadControlRequest_ReadsTheFormOfTheInputWhenTheSchemaStatesOnlyTheInteraction(t *testing.T) {
 	t.Parallel()
-	schema := map[string]any{"type": "object"}
-	got := agenttest.ControlPromptOf(zcodeProvider{}, zcodeControlPayload(t, contracts.ZCodeMethodRequestUserInput, "McpElicitation", map[string]any{}, map[string]any{
+	schema := map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}}}
+	stored := zcodeControlPayload(t, contracts.ZCodeMethodRequestUserInput, "McpElicitation", map[string]any{}, map[string]any{
 		"prompt": "The prompt of the request.",
 		"input":  map[string]any{"serverName": "input_server", "requestedSchema": schema},
 		"schema": map[string]any{"interaction": contracts.ZCodeInteractionMcpElicitation, "requestedSchema": nil},
-	}))
+	})
+	got := agenttest.ControlPromptOf(zcodeProvider{}, stored)
 	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: &leapmuxv1.ElicitationPrompt{
-		Mode: "form", Message: "The prompt of the request.", Server: "input_server", SchemaJson: `{"type":"object"}`,
+		Mode: "form", Message: "The prompt of the request.", Server: "input_server", SchemaJson: `{"properties":{"name":{"type":"string"}},"type":"object"}`,
 	}}}, got)
+
+	answer, err := agenttest.AnswerControl(zcodeProvider{}, stored, zcodeTestRequestID, agenttest.ElicitationDecision(leapmuxv1.ElicitationAction_ELICITATION_ACTION_ACCEPT, `{"name":"alice"}`))
+	require.NoError(t, err)
+	result, _ := zcodeReplyResult(t, stored, answer.Content)
+	assert.Equal(t, map[string]any{"action": "accept", "content": map[string]any{"answer_0": "alice"}}, result,
+		"ResolveControlResponse must fall back to input.requestedSchema when schema.requestedSchema is JSON null")
 }
 
 func TestZCodeReadControlRequest_ReadsNoFormFromAnotherRequest(t *testing.T) {
@@ -786,13 +794,7 @@ func TestZCodeAnswerControlRequest_RefusesAPermissionDecisionThatThePromptDoesNo
 
 func zcodeTrustQuestion(t *testing.T) []byte {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{
-		contracts.WorkspaceTrustFieldType:          contracts.WorkspaceTrustControlTypeQuestion,
-		contracts.WorkspaceTrustFieldPath:          "/work/project",
-		contracts.WorkspaceTrustFieldConfiguration: []any{"hooks"},
-	})
-	require.NoError(t, err)
-	return payload
+	return providerkittest.WorkspaceTrustQuestionPayload(t, "/work/project", []any{"hooks"})
 }
 
 func TestZCodeReadControlRequest_DrawsTheHookTrustQuestionWithTheAgentName(t *testing.T) {

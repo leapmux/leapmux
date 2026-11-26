@@ -395,7 +395,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if sessionID == "" {
 		return nil
 	}
-	a.withdrawZCodeSteersLocked()
+	a.withdrawZCodeSteersLocked(true)
 	a.beginZCodeStop()
 	accepted, err := a.sendZCodeStopExecution(sessionID, executionID)
 	// The end of the request, the open and the arm share ONE critical section. Split
@@ -482,7 +482,7 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 	a.steerMu.Lock()
 	defer a.steerMu.Unlock()
 	if active {
-		a.withdrawZCodeSteersLocked()
+		a.withdrawZCodeSteersLocked(true)
 		a.beginZCodeStop()
 	}
 	_, err := a.sendZCodeFrameContext(a.Context(), *frame.ID, MethodSessionStop, data, zcodeStopTimeout, nil)

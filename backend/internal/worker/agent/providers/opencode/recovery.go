@@ -163,6 +163,9 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 		if err := run.tools.finish(agent.MessageCompletionInterrupted); err != nil {
 			return err
 		}
+		if err := run.retireSettledPendingInputReplies(); err != nil {
+			return err
+		}
 		if pending == nil && run.childAgentID != "" {
 			if err := run.sink.CloseBackgroundTask(run.id, bgtask.StatusEndedWithUnknownOutcome); err != nil {
 				return err

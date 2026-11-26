@@ -181,7 +181,7 @@ func TestCodexLateTurnStartRejectionMarksTheSharedProcess(t *testing.T) {
 
 	// Invoke the retired request's handler synchronously. A buffered peer reply
 	// would not prove that the detached handler ran before the assertion.
-	a.handleCodexTurnStartResponse(pending, &providerkit.JSONRPCResponseError{
+	a.handleCodexTurnStartResult(pending, nil, &providerkit.JSONRPCResponseError{
 		Message: "workspace routing discovery unauthorized (401)",
 	})
 	assert.True(t, recoveryRequired(a), "the same physical process still holds the rejected login")

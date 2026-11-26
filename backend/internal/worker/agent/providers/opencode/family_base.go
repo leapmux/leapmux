@@ -31,14 +31,11 @@ type FamilyBase struct {
 	// FamilyHooks before the process starts. Set it before the start. It may be nil.
 	ConfigureHooks func(hooks *acp.Hooks)
 	QuestionTurnID func(ctx context.Context, sessionID, assistantID string) string
-	// DaemonReady runs once the address of the daemon's HTTP server is known,
-	// so ReadDaemon can reach it. Its context ends with the daemon bridge. It
+	// DaemonReady runs once the address of the daemon HTTP server is known,
+	// so Daemon() can reach it. Its context ends with the daemon bridge. It
 	// runs before the bridge reads events, so it must not wait. Set it before
 	// the start. It may be nil.
 	DaemonReady func(ctx context.Context)
-	// DaemonUnavailable runs if daemon discovery fails so callers waiting on
-	// DaemonReady can unblock immediately instead of waiting for a timeout.
-	DaemonUnavailable func()
 	// TurnEnded runs after each prompt ends, also after a failure or a stop. Set
 	// it before the start. It may be nil.
 	TurnEnded func()
@@ -89,7 +86,6 @@ func (b *FamilyBase) configureQuestions(sink agent.ControlServices) {
 	b.Questions.Configure(sink)
 	b.Questions.observe = b.handleDaemonEvent
 	b.Questions.ready = b.DaemonReady
-	b.Questions.unavailable = b.DaemonUnavailable
 	b.Questions.questionTurnID = b.QuestionTurnID
 	b.Questions.questionOwner = b.sessionControlOwner
 }
@@ -113,6 +109,9 @@ func (b *FamilyBase) sessionControlOwner(sessionID string) (agent.ControlService
 		return nil, nil
 	}
 	if b.IsCurrentSession(sessionID) {
+		if sink := b.Sink(); sink != nil {
+			return sink, nil
+		}
 		return b.Questions.sink, nil
 	}
 	owner, found := b.SessionOwner(sessionID)
@@ -128,23 +127,10 @@ func (b *FamilyBase) sessionControlOwner(sessionID string) (agent.ControlService
 	return owner, nil
 }
 
-// ReadDaemon GETs one route of the daemon's HTTP server, such as a route that
-// one member of the family serves alone, and returns its body.
-func (b *FamilyBase) ReadDaemon(ctx context.Context, route string) ([]byte, error) {
-	raw, _, err := b.Questions.readRoute(ctx, route)
-	return raw, err
-}
-
-// ReadDaemonPage reads JSON and the daemon's cursor for the next older page.
-func (b *FamilyBase) ReadDaemonPage(ctx context.Context, route string) ([]byte, string, error) {
-	raw, headers, err := b.Questions.readRoute(ctx, route)
-	return raw, headers.Get(openCodeNextCursorHeader), err
-}
-
-// PostDaemon sends prepared JSON to the member's discovered daemon.
-func (b *FamilyBase) PostDaemon(ctx context.Context, route string, body json.RawMessage) ([]byte, error) {
-	raw, _, err := b.Questions.requestRoute(ctx, "POST", route, body)
-	return raw, err
+// Daemon returns the HTTP client and readiness handle for the member's
+// discovered daemon server.
+func (b *FamilyBase) Daemon() *FamilyDaemon {
+	return &b.Questions.daemon
 }
 
 // SendRawInput answers a question through the daemon's HTTP server, and sends every
@@ -155,7 +141,7 @@ func (b *FamilyBase) PostDaemon(ctx context.Context, route string, body json.Raw
 // that stream, so it has no id there to answer and the daemon reads its answer from
 // a route instead.
 func (b *FamilyBase) SendRawInput(input agent.RawInput) error {
-	if handled, err := b.Questions.answer(b.Context(), input.Data); handled {
+	if handled, err := b.Questions.answer(b.Context(), input); handled {
 		return err
 	}
 	return b.Base.SendRawInput(input)

@@ -308,8 +308,7 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 	a.mainTurn.finish()
 	a.mainTurn = codexMainTurn{id: turnID, model: a.model, ended: make(chan struct{})}
 	pending := a.pendingStart
-	matched := pending != nil && pending.threadID == threadID &&
-		(pending.replyDone == nil || pending.replyTurnID == turnID)
+	matched := pending != nil && pending.threadID == threadID && pending.reply.allowsTurnStartLocked(turnID)
 	var publishSettings, settled bool
 	if matched {
 		publishSettings, settled = a.attachCodexTurnStartLocked(pending, turnID)
@@ -329,7 +328,9 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 }
 
 func (a *Agent) attachCodexTurnStartLocked(pending *codexPendingTurnStart, turnID string) (publishSettings, settled bool) {
-	a.mainTurn.input = pending.input
+	if !a.mainTurn.agentMessageStarted {
+		a.mainTurn.input = pending.input
+	}
 	if pending.settings.model != "" {
 		a.mainTurn.model = pending.settings.model
 	}
@@ -764,21 +765,29 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	// Ingress already retained process authentication evidence. Keep the
 	// current turn's classification here to exclude automatic server retries.
 	authenticationFailure := codexCompletedTurnAuthFailure(turnStatus, turnErrorMessage, turnErrorInfo)
-	if notif.ThreadID != "" && turnID != "" {
-		outcome := agent.SteerOutcomeUncertain
-		if completion == agent.MessageCompletionInterrupted {
-			outcome = agent.SteerOutcomeDropped
-		}
-		a.resolveCodexUnechoedSteers(notif.ThreadID, turnID, outcome)
-	}
 	// Clear provider turn state before the deferred publish below releases the
 	// Worker's input queue. This lets the next queued input start a new turn.
 	a.Mu.Lock()
+	resolveThreadID := notif.ThreadID
+	if resolveThreadID == "" {
+		resolveThreadID = a.threadID
+	}
+	resolveTurnID := turnID
+	if resolveTurnID == "" {
+		resolveTurnID = a.mainTurn.id
+	}
 	a.mainTurn.finish()
 	a.turnSawPlan = false
 	a.turnPlanText = ""
 	clear(a.codexSpawnPrompts)
 	a.Mu.Unlock()
+	if resolveThreadID != "" {
+		outcome := agent.SteerOutcomeUncertain
+		if completion == agent.MessageCompletionInterrupted {
+			outcome = agent.SteerOutcomeDropped
+		}
+		a.resolveCodexUnechoedSteers(resolveThreadID, resolveTurnID, outcome)
+	}
 	// The turn ended, so its retry offer ends with it.
 	a.withdrawTurnRetryOffer()
 	// Publish after PersistTurnEnd records the tool count. An earlier publish could use an empty count for the completion sound.

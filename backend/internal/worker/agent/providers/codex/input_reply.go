@@ -2,83 +2,47 @@ package codex
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// bindCodexInputReply consumes the result of this request. A turn/started
-// notification can establish activity before this result arrives.
-func (a *Agent) bindCodexInputReply(pending *codexPendingTurnStart, raw json.RawMessage, responseErr error) {
-	receipt := pending.receipt
-	if receipt.InputID == "" {
-		return
-	}
-	turnID := codexReplyTurnID(raw)
-	a.Mu.Lock()
-	if a.replyStarts[receipt.InputID] != pending || pending.replySettled || pending.replyTurnID != "" {
-		a.Mu.Unlock()
-		return
-	}
-	if responseErr != nil || turnID == "" {
-		delete(a.replyStarts, receipt.InputID)
-		var deliveryErr error
-		var activitySettled bool
-		if responseErr != nil {
-			deliveryErr = pending.err
-			if deliveryErr == nil {
-				deliveryErr = classifyCodexTurnStartRequestError("turn/start", responseErr)
-			}
-		} else if a.pendingStart == pending {
-			// Admission was confirmed without establishing reply ownership.
-			activitySettled = a.finishCodexTurnStartLocked(pending, "", nil)
-		}
-		a.Mu.Unlock()
-		outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
-		if deliveryErr != nil && !errors.Is(deliveryErr, agent.ErrDeliveryUncertain) {
-			outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
-		}
-		a.retireCodexNativeReply(receipt, outcome)
-		a.finishCodexReply(pending, deliveryErr)
-		if activitySettled {
-			close(pending.done)
-			a.PublishTurnActive()
-		}
-		return
-	}
-	pending.replyTurnID = turnID
-	retained, ended := pending.endedBeforeAck[turnID]
-	if ended {
-		delete(a.replyStarts, receipt.InputID)
-	}
-	pending.endedBeforeAck = nil
-	var settings, settled bool
-	attaching := !ended && a.pendingStart == pending && a.mainTurn.id == turnID
-	if attaching {
-		settings, settled = a.attachCodexTurnStartLocked(pending, turnID)
-	} else if ended && a.pendingStart == pending {
-		settled = a.finishCodexTurnStartLocked(pending, turnID, nil)
-	}
-	a.Mu.Unlock()
+// codexTrackedReply owns native reply correlation for one SendInput turn/start
+// request independently of turn-start admission state. Guarded by Agent.Mu.
+// The done channel retains its identity.
+type codexTrackedReply struct {
+	receipt        agent.NativeInputReceipt
+	done           chan struct{}
+	err            error
+	settled        bool
+	detached       bool
+	turnID         string
+	endedBeforeAck map[string]bool
+}
 
-	err := a.sink.BindNativeInputTurn(receipt, turnID)
-	if !agent.OutputRetained(err) {
-		slog.Warn("retain the Codex native input binding", "error", err)
+func newCodexTrackedReply(receipt agent.NativeInputReceipt) *codexTrackedReply {
+	return &codexTrackedReply{
+		receipt:        receipt,
+		done:           make(chan struct{}),
+		endedBeforeAck: make(map[string]bool),
 	}
-	if !agent.OutputRetained(err) || ended && !retained {
-		a.retireCodexNativeReply(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+}
+
+// allowsTurnStartLocked reports whether a turn/started notification for turnID
+// may attach to a pending start carrying this reply. The caller holds Agent.Mu.
+func (r *codexTrackedReply) allowsTurnStartLocked(turnID string) bool {
+	if r == nil {
+		return true
 	}
-	if attaching {
-		a.publishCodexTurnStart(pending, receipt.SessionID, turnID, settings, settled)
-	} else if settled {
-		close(pending.done)
+	if r.turnID != "" {
+		return r.turnID == turnID
 	}
-	a.PublishTurnActive()
-	a.finishCodexReply(pending, nil)
+	return r.detached
 }
 
 func codexReplyTurnID(raw json.RawMessage) string {
@@ -100,16 +64,16 @@ func codexReplyTurnID(raw json.RawMessage) string {
 	}
 }
 
-func (a *Agent) finishCodexReply(pending *codexPendingTurnStart, err error) {
+func (a *Agent) finishCodexReply(reply *codexTrackedReply, err error) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	finishCodexReplyLocked(pending, err)
+	finishCodexReplyLocked(reply, err)
 }
 
-func finishCodexReplyLocked(pending *codexPendingTurnStart, err error) {
-	if !pending.replySettled {
-		pending.replySettled, pending.replyErr = true, err
-		close(pending.replyDone)
+func finishCodexReplyLocked(reply *codexTrackedReply, err error) {
+	if !reply.settled {
+		reply.settled, reply.err = true, err
+		close(reply.done)
 	}
 }
 
@@ -165,18 +129,19 @@ func (a *Agent) recordCodexReplyEnd(threadID, turnID string, retained bool) {
 		unproved = nil
 	}
 	a.Mu.Lock()
-	for inputID, pending := range a.replyStarts {
-		if pending.receipt.SessionID != threadID {
+	for _, inputID := range slices.Sorted(maps.Keys(a.replyStarts)) {
+		reply := a.replyStarts[inputID]
+		if reply.receipt.SessionID != threadID {
 			continue
 		}
-		switch pending.replyTurnID {
+		switch reply.turnID {
 		case turnID:
 			delete(a.replyStarts, inputID)
 			if !retained {
-				unproved = append(unproved, pending.receipt)
+				unproved = append(unproved, reply.receipt)
 			}
 		case "":
-			pending.endedBeforeAck[turnID] = retained
+			reply.endedBeforeAck[turnID] = retained
 		}
 	}
 	a.Mu.Unlock()
@@ -185,39 +150,30 @@ func (a *Agent) recordCodexReplyEnd(threadID, turnID string, retained bool) {
 	}
 }
 
-type codexTurnControlSink struct {
-	agent.ControlServices
-	threadID, turnID string
-}
-
-func (s codexTurnControlSink) PublishControlRequest(request agent.ControlRequest) error {
-	request.AgentSessionID, request.NativeTurnID = s.threadID, s.turnID
-	return s.ControlServices.PublishControlRequest(request)
-}
-
-func (a *Agent) codexReplyControlSink(params json.RawMessage) agent.ControlServices {
+func (a *Agent) codexControlRequestOwner(params json.RawMessage) providerkit.ControlRequestOwner {
 	var owner struct {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
 	}
 	if json.Unmarshal(params, &owner) != nil || owner.ThreadID == "" || owner.TurnID == "" || !a.isMainThreadID(owner.ThreadID) {
-		return a.sink
+		return providerkit.ControlRequestOwner{}
 	}
-	return codexTurnControlSink{ControlServices: a.sink, threadID: owner.ThreadID, turnID: owner.TurnID}
+	return providerkit.ControlRequestOwner{SessionID: owner.ThreadID, TurnID: owner.TurnID}
 }
 
 func (a *Agent) retireCodexInputReplies(threadID string) {
 	receipts := a.takeCodexSteerReplies(threadID, "")
 	a.Mu.Lock()
-	for inputID, pending := range a.replyStarts {
-		if threadID == "" || threadID == pending.receipt.SessionID {
+	for _, inputID := range slices.Sorted(maps.Keys(a.replyStarts)) {
+		reply := a.replyStarts[inputID]
+		if threadID == "" || threadID == reply.receipt.SessionID {
 			delete(a.replyStarts, inputID)
-			receipts = append(receipts, pending.receipt)
+			receipts = append(receipts, reply.receipt)
 			var err error
-			if pending.replyTurnID == "" {
+			if reply.turnID == "" {
 				err = fmt.Errorf("%w: Codex retired the request before confirming it", agent.ErrDeliveryUncertain)
 			}
-			finishCodexReplyLocked(pending, err)
+			finishCodexReplyLocked(reply, err)
 		}
 	}
 	a.Mu.Unlock()
