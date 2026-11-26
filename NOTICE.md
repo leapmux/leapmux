@@ -421,7 +421,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [phf_macros 0.14.0 (MIT)](#phf_macros-0140-mit)
 - [phf_shared 0.13.1 (MIT)](#phf_shared-0131-mit)
 - [phf_shared 0.14.0 (MIT)](#phf_shared-0140-mit)
-- [pin-project-lite 0.2.17 (Apache-2.0 OR MIT)](#pin-project-lite-0217-apache-20-or-mit)
+- [pin-project-lite 0.2.18 (Apache-2.0 OR MIT)](#pin-project-lite-0218-apache-20-or-mit)
 - [piper 0.2.5 (MIT OR Apache-2.0)](#piper-025-mit-or-apache-20)
 - [pkg-config 0.3.34 (MIT OR Apache-2.0)](#pkg-config-0334-mit-or-apache-20)
 - [plist 1.10.4 (MIT)](#plist-1104-mit)
@@ -497,7 +497,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [simd-adler32 0.3.10 (MIT)](#simd-adler32-0310-mit)
 - [siphasher 1.0.4 (MIT OR Apache-2.0)](#siphasher-104-mit-or-apache-20)
 - [slab 0.4.12 (MIT)](#slab-0412-mit)
-- [smallvec 1.16.5 (MIT OR Apache-2.0)](#smallvec-1165-mit-or-apache-20)
+- [smallvec 1.16.6 (MIT OR Apache-2.0)](#smallvec-1166-mit-or-apache-20)
 - [smappservice-rs 0.1.3 (MIT)](#smappservice-rs-013-mit)
 - [socket2 0.6.5 (MIT OR Apache-2.0)](#socket2-065-mit-or-apache-20)
 - [softbuffer 0.4.8 (MIT OR Apache-2.0)](#softbuffer-048-mit-or-apache-20)
@@ -517,14 +517,14 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [sync_wrapper 1.0.2 (Apache-2.0)](#sync_wrapper-102-apache-20)
 - [synstructure 0.14.0 (MIT)](#synstructure-0140-mit)
 - [system-deps 6.2.2 (MIT OR Apache-2.0)](#system-deps-622-mit-or-apache-20)
-- [tao 0.37.2 (Apache-2.0)](#tao-0372-apache-20)
+- [tao 0.37.3 (Apache-2.0)](#tao-0373-apache-20)
 - [tao-macros 0.1.4 (MIT OR Apache-2.0)](#tao-macros-014-mit-or-apache-20)
 - [target-lexicon 0.12.16 (Apache-2.0 WITH LLVM-exception)](#target-lexicon-01216-apache-20-with-llvm-exception)
 - [tauri 2.12.7 (Apache-2.0 OR MIT)](#tauri-2127-apache-20-or-mit)
 - [tauri-build 2.7.6 (Apache-2.0 OR MIT)](#tauri-build-276-apache-20-or-mit)
 - [tauri-codegen 2.7.6 (Apache-2.0 OR MIT)](#tauri-codegen-276-apache-20-or-mit)
 - [tauri-macros 2.7.6 (Apache-2.0 OR MIT)](#tauri-macros-276-apache-20-or-mit)
-- [tauri-plugin 2.7.2 (Apache-2.0 OR MIT)](#tauri-plugin-272-apache-20-or-mit)
+- [tauri-plugin 2.7.4 (Apache-2.0 OR MIT)](#tauri-plugin-274-apache-20-or-mit)
 - [tauri-plugin-autostart 2.7.0 (Apache-2.0 OR MIT)](#tauri-plugin-autostart-270-apache-20-or-mit)
 - [tauri-plugin-clipboard-manager 2.5.0 (Apache-2.0 OR MIT)](#tauri-plugin-clipboard-manager-250-apache-20-or-mit)
 - [tauri-plugin-dialog 2.8.4 (Apache-2.0 OR MIT)](#tauri-plugin-dialog-284-apache-20-or-mit)
@@ -724,7 +724,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [seroval 1.8.2 (MIT)](#seroval-182-mit)
 - [shiki 4.6.0 (MIT)](#shiki-460-mit)
 - [solid-js 1.9.19 (MIT)](#solid-js-1919-mit)
-- [source-map-js 1.2.2 (BSD-3-Clause)](#source-map-js-122-bsd-3-clause)
+- [source-map-js 1.2.4 (BSD-3-Clause)](#source-map-js-124-bsd-3-clause)
 - [tinykeys 4.0.1 (MIT)](#tinykeys-401-mit)
 - [unified 11.0.5 (MIT)](#unified-1105-mit)
 
@@ -58336,7 +58336,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### pin-project-lite 0.2.17 (Apache-2.0 OR MIT)
+### pin-project-lite 0.2.18 (Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -72623,7 +72623,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### smallvec 1.16.5 (MIT OR Apache-2.0)
+### smallvec 1.16.6 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -75990,7 +75990,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### tao 0.37.2 (Apache-2.0)
+### tao 0.37.3 (Apache-2.0)
 
 ```
 Apache License
@@ -77512,7 +77512,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-plugin 2.7.2 (Apache-2.0 OR MIT)
+### tauri-plugin 2.7.4 (Apache-2.0 OR MIT)
 
 ```
                               Apache License
@@ -103129,7 +103129,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### source-map-js 1.2.2 (BSD-3-Clause)
+### source-map-js 1.2.4 (BSD-3-Clause)
 
 ```
 Copyright (c) 2009-2011, Mozilla Foundation and contributors
