@@ -36,8 +36,19 @@ type Agent struct {
 	models                 []*agent.ModelInfo
 	sessions               map[string]*sessionState
 	steerLedger            providerkit.IdentifiedSteerLedger
-	uncertainInput         *museUncertainInput           // sendMu protects the pending native command identity.
-	uncertainChildCommands map[string]museUncertainInput // sendMu protects child command identities.
+	inFlightSteers         map[museSteerKey]*museInFlightSteer // stateMu protects in-flight steer echo tracking.
+	uncertainInput         *museUncertainInput                 // sendMu protects the pending native command identity.
+	uncertainChildCommands map[string]museUncertainInput       // sendMu protects child command identities.
+}
+
+type museSteerKey struct {
+	sessionID string
+	commandID string
+}
+
+type museInFlightSteer struct {
+	ticket providerkit.SteerTicket
+	echoed bool
 }
 
 type museUncertainInput struct {
@@ -85,7 +96,7 @@ type sessionState struct {
 	acceptedViewCursor   *string
 	projection           *childProjection
 	openingPrompt        *childOpeningPrompt
-	childInputCommands   map[string]museChildInputCommand
+	childInputCommands   map[string]*museChildInputCommand
 	nativeTurn           childNativeTurnState
 	nativeHead           *childNativeHead
 	settledChildControls map[string]*childControlSettlement
@@ -275,6 +286,7 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 		commandID = prior.commandID
 	}
 	var steerTicket providerkit.SteerTicket
+	var steerKey museSteerKey
 	// A control response already has a transcript row, so it supplies no dispatch attempt.
 	if steer && steerRequest.AttemptID != "" {
 		a.stateMu.Lock()
@@ -286,6 +298,11 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 			InputID: steerRequest.InputID, AttemptID: steerRequest.AttemptID,
 			Receipt: agent.NativeInputReceipt{SessionID: id, InputID: commandID},
 		})
+		steerKey = museSteerKey{sessionID: id, commandID: commandID}
+		if a.inFlightSteers == nil {
+			a.inFlightSteers = make(map[museSteerKey]*museInFlightSteer)
+		}
+		a.inFlightSteers[steerKey] = &museInFlightSteer{ticket: steerTicket}
 		a.stateMu.Unlock()
 	}
 	a.uncertainInput = nil
@@ -310,9 +327,21 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 			receipt = agent.NativeInputReceipt{SessionID: id, InputID: commandID, TurnID: reply.TurnID}
 		}
 	}
-	if err != nil {
-		if steerTicket != 0 {
+	steerEchoed := false
+	if steerTicket != 0 {
+		a.stateMu.Lock()
+		if inFlight := a.inFlightSteers[steerKey]; inFlight != nil {
+			steerEchoed = inFlight.echoed
+			delete(a.inFlightSteers, steerKey)
+		}
+		if err != nil && !steerEchoed {
 			a.steerLedger.Forget(steerTicket)
+		}
+		a.stateMu.Unlock()
+	}
+	if err != nil {
+		if steerEchoed {
+			return agent.NativeInputReceipt{}, nil
 		}
 		err = providerkit.ClassifyJSONRPCDeliveryError(method, err)
 		if !steer && errors.Is(err, agent.ErrDeliveryUncertain) {

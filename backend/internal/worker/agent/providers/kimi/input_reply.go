@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/url"
+	"slices"
 	"strconv"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -53,25 +55,16 @@ func (a *Agent) retireKimiInput(submission *kimiPromptSubmission, outcome leapmu
 	}
 }
 
-// Queue a reply write after the owning transcript. The root queue also
-// orders child cleanup and releases provider locks before the child writes.
+// Queue a reply write directly onto the owning transcript's output queue so
+// child reply bindings, publications, and retirements stay FIFO with child
+// transcript rows and turn-state updates while releasing provider locks first.
 func (a *Agent) queueKimiReplyWrite(sink agent.ProviderServices, label string, write func(agent.ProviderServices) error) error {
 	queue := agent.OutputQueueFor(sink)
 	if queue == nil {
 		return errors.New("the Kimi reply has no transcript output queue")
 	}
-	if queue == agent.OutputQueueFor(a.sink) {
-		direct := agent.DirectProviderServices(sink)
-		return a.queueProviderWrite(label, func() error { return write(direct) })
-	}
-	ordered := agent.NewOrderedProviderServices(queue, agent.DirectProviderServices(sink))
-	return a.queueProviderWrite(label, func() error {
-		err := write(ordered)
-		if agent.OutputRetained(err) {
-			return nil
-		}
-		return err
-	})
+	direct := agent.DirectProviderServices(sink)
+	return a.queueOutputWrite(queue, label, func() error { return write(direct) })
 }
 
 func (a *Agent) scheduleExactReply(run *kimiRun, turn *kimiConversationTurnState, publication *kimiConversationTurnOutput) {
@@ -141,14 +134,17 @@ func (a *Agent) publishExactReply(run *kimiRun, publication *kimiConversationTur
 	if existing := run.conversation.document.turns[snapshot.TurnID]; existing != nil {
 		document.turns[snapshot.TurnID] = existing
 	}
-	if err := document.replaceSnapshot([]kimiConversationTurn{snapshot}); err != nil {
+	changed, err := document.replaceSnapshot([]kimiConversationTurn{snapshot})
+	if err != nil {
 		return err
 	}
-	turn := document.turns[snapshot.TurnID]
-	frame := kimiConversationFrame{SessionID: sessionID, AgentID: run.agentID, EventCreatedAt: snapshot.EndedAt}
-	a.projectConversationTurn(run, turn, frame)
-	if turn.projectionPending {
-		return errors.New("the Worker could not retain the authoritative Kimi transcript items")
+	if changed || !publication.completed {
+		turn := document.turns[snapshot.TurnID]
+		frame := kimiConversationFrame{SessionID: sessionID, AgentID: run.agentID, EventCreatedAt: snapshot.EndedAt}
+		a.projectConversationTurn(run, turn, frame)
+		if turn.projectionPending {
+			return errors.New("the Worker could not retain the authoritative Kimi transcript items")
+		}
 	}
 	reply, missing, err := exactReplyProjection(sessionID, run.agentID, snapshot, publication.replyInputs)
 	if err != nil {
@@ -208,7 +204,8 @@ func exactReplyProjection(sessionID, agentID string, snapshot kimiConversationTu
 		}
 	}
 	var missing []*kimiPromptSubmission
-	for id, submission := range inputs {
+	for _, id := range slices.Sorted(maps.Keys(inputs)) {
+		submission := inputs[id]
 		if ordinal := found[id]; ordinal > 0 {
 			reply.Inputs = append(reply.Inputs, agent.NativeReplyBoundary{InputID: id, AfterOrdinal: ordinal})
 		} else {
@@ -219,14 +216,15 @@ func exactReplyProjection(sessionID, agentID string, snapshot kimiConversationTu
 }
 
 func (a *Agent) retireExactReplyInputs(run *kimiRun, publication *kimiConversationTurnOutput) {
-	for _, submission := range publication.replyInputs {
-		a.retireKimiInput(submission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	for _, id := range slices.Sorted(maps.Keys(publication.replyInputs)) {
+		a.retireKimiInput(publication.replyInputs[id], leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 	}
 	a.forgetExactReplyInputs(run, publication)
 }
 
 func (a *Agent) retireKimiSessionReplies(sessionID string) {
-	for id, submission := range a.promptSubmissions {
+	for _, id := range slices.Sorted(maps.Keys(a.promptSubmissions)) {
+		submission := a.promptSubmissions[id]
 		if submission.replySink != nil && submission.sessionID == sessionID {
 			a.retireKimiInput(submission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 			delete(a.promptSubmissions, id)

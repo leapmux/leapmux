@@ -246,3 +246,105 @@ func TestKimiWorkspaceTrustResolvesTheNeutralDecision(t *testing.T) {
 		assert.Contains(t, string(resolution.Content), `"decision":"`+want+`"`, behavior)
 	}
 }
+
+// Stop and Wait retire an open or blocked workspace-trust check without a
+// manual call to withdrawAllControls.
+func TestKimiShutdownRetiresWorkspaceTrust(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Stop retires an open workspace-trust question and Wait stays idempotent", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTrustRig(t, false)
+		exitOnShutdown(rig)
+		rig.agent.checkWorkspaceTrust()
+		requestID := providerkit.WorkspaceTrustRequestID(rig.sessionID())
+		require.Equal(t, requestID, rig.sink.LastPublishedControl().RequestID)
+
+		rig.agent.Stop()
+		assert.Equal(t, []string{requestID}, rig.sink.CanceledControls())
+		require.ErrorContains(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionTrust), "agent is stopped")
+		raw, err := json.Marshal(map[string]any{"type": "control_response", "response": map[string]any{
+			"subtype": "success", "request_id": requestID,
+			"response": map[string]string{contracts.WorkspaceTrustFieldDecision: contracts.WorkspaceTrustDecisionTrust},
+		}})
+		require.NoError(t, err)
+		handled, err := rig.agent.workspaceTrust.Answer(rig.agent.sink, kimiWorkspaceTrustHost{rig.agent}, rig.sink.Answer(requestID, raw))
+		require.True(t, handled)
+		require.ErrorIs(t, err, providerkit.ErrWorkspaceTrustClosed)
+		assert.Empty(t, rig.fake.requestsTo("POST "+kimiTrustRoute))
+
+		require.NoError(t, rig.agent.Wait())
+		assert.Equal(t, []string{requestID}, rig.sink.CanceledControls())
+	})
+
+	t.Run("Wait retires an open workspace-trust question after unexpected exit", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTrustRig(t, false)
+		rig.agent.checkWorkspaceTrust()
+		requestID := providerkit.WorkspaceTrustRequestID(rig.sessionID())
+		require.Equal(t, requestID, rig.sink.LastPublishedControl().RequestID)
+
+		rig.agent.SimulateExitForTest()
+		require.NoError(t, rig.agent.Wait())
+		assert.Equal(t, []string{requestID}, rig.sink.CanceledControls())
+		require.ErrorIs(t, answerKimiWorkspaceTrust(t, rig.agent, rig.sink, requestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
+		assert.Empty(t, rig.fake.requestsTo("POST "+kimiTrustRoute))
+	})
+
+	t.Run("Stop retires a blocked workspace-trust check", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTrustRig(t, false)
+		exitOnShutdown(rig)
+		entered, held := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(held) })
+		defer release()
+		rig.fake.reply("GET "+kimiTrustRoute, fakeKapReply{Data: map[string]any{"trusted": false}, BeforeReply: func() { close(entered); <-held }})
+		completed := make(chan struct{})
+		go func() { rig.agent.checkWorkspaceTrust(); close(completed) }()
+		ctx := testutil.DeadlineContext(t)
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("the workspace-trust check did not reach its native HTTP read")
+		}
+
+		rig.agent.Stop()
+		release()
+		select {
+		case <-completed:
+		case <-ctx.Done():
+			t.Fatal("the retired workspace-trust check did not finish")
+		}
+		assert.Zero(t, rig.sink.PublishedControlCount(), "a late HTTP result cannot publish after Stop")
+		require.NoError(t, rig.agent.Wait())
+		assert.Zero(t, rig.sink.PublishedControlCount())
+	})
+
+	t.Run("Wait retires a blocked workspace-trust check after unexpected exit", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTrustRig(t, false)
+		entered, held := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(held) })
+		defer release()
+		rig.fake.reply("GET "+kimiTrustRoute, fakeKapReply{Data: map[string]any{"trusted": false}, BeforeReply: func() { close(entered); <-held }})
+		completed := make(chan struct{})
+		go func() { rig.agent.checkWorkspaceTrust(); close(completed) }()
+		ctx := testutil.DeadlineContext(t)
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("the workspace-trust check did not reach its native HTTP read")
+		}
+
+		rig.agent.SimulateExitForTest()
+		require.NoError(t, rig.agent.Wait())
+		release()
+		select {
+		case <-completed:
+		case <-ctx.Done():
+			t.Fatal("the retired workspace-trust check did not finish")
+		}
+		assert.Zero(t, rig.sink.PublishedControlCount(), "a late HTTP result cannot publish after Wait")
+		assert.Len(t, rig.fake.requestsTo("GET "+kimiTrustRoute), 1)
+	})
+}

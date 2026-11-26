@@ -19,16 +19,9 @@ import (
 // deepseekHarnessAnswer answers.
 const deepseekHarnessTestRequestID = "native-event"
 
-func deepseekHarnessJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	require.NoError(t, err)
-	return encoded
-}
-
 func deepseekHarnessPrompt(t *testing.T, payload any) *leapmuxv1.ControlPrompt {
 	t.Helper()
-	return agenttest.ControlPromptOf(deepseekHarnessProvider{}, deepseekHarnessJSON(t, payload))
+	return agenttest.ControlPromptOf(deepseekHarnessProvider{}, agenttest.MustJSON(t, payload))
 }
 
 func deepseekHarnessApproval(request any) map[string]any {
@@ -119,11 +112,11 @@ func TestReadControlRequest_DeepseekHarnessRoutesAPlanReviewToThePlan(t *testing
 	}}))
 	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}}, got)
 
-	plan, ok := deepseekHarnessPlanPrompt([]map[string]json.RawMessage{{
-		"intent":  json.RawMessage(`{"kind":"plan-review","approve":"Go"}`),
-		"options": json.RawMessage(`[null,"Go",{"label":""},{"label":"Go"},{"label":"Stop"}]`),
-	}})
-	require.True(t, ok)
+	plan := deepseekHarnessPrompt(t, deepseekHarnessUserQuestions([]any{map[string]any{
+		"intent":  map[string]any{"kind": deepseekHarnessIntentPlanReview, "approve": "Go"},
+		"options": []any{nil, "Go", map[string]any{"label": ""}, map[string]any{"label": "Go"}, map[string]any{"label": "Stop"}},
+	}})).GetPlan()
+	require.NotNil(t, plan)
 	assert.Equal(t, []string{"Go", "Stop"}, []string{plan.GetChoices()[0].GetId(), plan.GetChoices()[1].GetId()}, "an option with no label offers no choice")
 	assert.Equal(t, leapmuxv1.PlanChoiceEffect_PLAN_CHOICE_EFFECT_APPROVE, plan.GetChoices()[0].GetEffect())
 }
@@ -155,8 +148,7 @@ func TestReadControlRequest_DeepseekHarnessRefusesAControlThatItCannotRead(t *te
 	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
 		Questions: []*leapmuxv1.ControlQuestion{}, PreservesSelectionNotes: true,
 	}}}, deepseekHarnessPrompt(t, deepseekHarnessUserQuestions([]any{nil})))
-	_, ok := deepseekHarnessPlanPrompt(nil)
-	assert.False(t, ok, "a request with no readable question is no plan")
+	assert.Nil(t, deepseekHarnessPrompt(t, deepseekHarnessUserQuestions(nil)).GetPlan(), "a request with no readable question is no plan")
 }
 
 func deepseekHarnessOption(label string) *leapmuxv1.QuestionOption {
@@ -196,7 +188,7 @@ func TestReadControlRequest_DeepseekHarnessKeepsAFreeTextQuestionAndDropsMalform
 
 func deepseekHarnessAnswer(t *testing.T, payload any, decision *leapmuxv1.ControlDecision) (agent.ControlAnswer, error) {
 	t.Helper()
-	return agenttest.AnswerControl(deepseekHarnessProvider{}, deepseekHarnessJSON(t, payload), deepseekHarnessTestRequestID, decision)
+	return agenttest.AnswerControl(deepseekHarnessProvider{}, agenttest.MustJSON(t, payload), deepseekHarnessTestRequestID, decision)
 }
 
 func TestAnswerControlRequest_DeepseekHarnessApprovalSendsTheNativeDecision(t *testing.T) {
@@ -243,7 +235,7 @@ func TestAnswerControlRequest_DeepseekHarnessAnswersNoUnrecognizedRequest(t *tes
 		_, err := deepseekHarnessAnswer(t, payload, decision)
 		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 		_, err = deepseekHarnessProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
-			Request: agent.NewControlRequestInput(deepseekHarnessJSON(t, payload)), RequestID: "native-event",
+			Request: agent.NewControlRequestInput(agenttest.MustJSON(t, payload)), RequestID: "native-event",
 			Prompt: agent.GenericPermissionPrompt(), Decision: decision,
 		})
 		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
@@ -331,8 +323,22 @@ func TestAnswerControlRequest_DeepseekHarnessRefusesAnUnofferedOption(t *testing
 func TestAnswerControlRequest_DeepseekHarnessCancelledQuestionDeniesWithItsFeedback(t *testing.T) {
 	got, err := deepseekHarnessAnswer(t, deepseekHarnessTwoQuestions(), agenttest.CancelQuestions("User stopped"))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"native-event","response":{"behavior":"deny","message":"User stopped"}}}`, string(got.Content))
-	assert.Empty(t, got.FollowUp, "the question's stop sends no message")
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"native-event","response":{"behavior":"deny","message":"Rejected by user."}}}`, string(got.Content))
+	assert.Equal(t, "User stopped", got.FollowUp, "the cancelled question's feedback follows as the next message")
+
+	got, err = deepseekHarnessAnswer(t, deepseekHarnessTwoQuestions(), agenttest.CancelQuestions("\u00a0\u2028\ufeff"))
+	require.NoError(t, err)
+	assert.Empty(t, got.FollowUp, "JavaScript-space-only feedback sends no message")
+
+	got, err = deepseekHarnessAnswer(t, deepseekHarnessTwoQuestions(), agenttest.QuestionDecision(
+		&leapmuxv1.QuestionAnswer{Selected: []string{"First"}, CustomText: "\u00a0\u2028\ufeff"},
+		&leapmuxv1.QuestionAnswer{Selected: []string{"Second"}, CustomText: "\u00a0Note\u2028"},
+	))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"native-event","response":{"behavior":"allow","answers":[
+		{"id":"single","selected":["First"]},
+		{"id":"multi","selected":["Second"],"custom":"Note"}
+	]}}}`, string(got.Content))
 }
 
 func TestAnswerControlRequest_DeepseekHarnessRefusesADecisionOfAnotherKind(t *testing.T) {
@@ -358,8 +364,8 @@ func TestAnswerControlRequest_DeepseekHarnessAnswersReachTheRuntimeAsItsOutcome(
 			outcome, _ = args["outcome"].(map[string]any)
 			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": call["rpcId"], "result": map[string]any{"ok": true}}))
 		})
-		rawRequest := deepseekHarnessJSON(t, request)
-		raw := deepseekHarnessJSON(t, map[string]any{"type": "waterfall", "event": event, "eventId": "native-event", "agentId": "native-root", "request": json.RawMessage(rawRequest)})
+		rawRequest := agenttest.MustJSON(t, request)
+		raw := agenttest.MustJSON(t, map[string]any{"type": "waterfall", "event": event, "eventId": "native-event", "agentId": "native-root", "request": json.RawMessage(rawRequest)})
 		require.NoError(t, a.publishNativeControl(event, "native-event", "native-root", rawRequest, raw))
 		published := sink.LastPublishedControl()
 		answer, err := agenttest.AnswerControl(deepseekHarnessProvider{}, published.Payload, published.RequestID, decision)
@@ -401,6 +407,8 @@ func TestAnswerControlRequest_DeepseekHarnessAnswersReachTheRuntimeAsItsOutcome(
 	questions := map[string]any{"questions": []any{map[string]any{"id": "q", "question": "Pick.", "options": []any{map[string]any{"label": "A"}}}}}
 	assert.Equal(t, map[string]any{"kind": "result", "value": map[string]any{"answers": []any{map[string]any{"id": "q", "selected": []any{"A"}, "custom": "why"}}}},
 		outcomeOf(t, contracts.DeepseekHarnessControlEventUserQuestions, questions, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"A"}, CustomText: " why "})))
+	assert.Equal(t, map[string]any{"kind": "next"},
+		outcomeOf(t, contracts.DeepseekHarnessControlEventUserQuestions, questions, agenttest.CancelQuestions("skip")))
 }
 
 func nativeQuestionOf(t *testing.T, raw string) nativeQuestion {

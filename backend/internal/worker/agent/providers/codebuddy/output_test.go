@@ -75,7 +75,7 @@ func TestCodebuddyControlResponseReadsStyleMetadata(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
 			reply := make(chan codebuddyControlResult, 1)
-			a.pendingControl["init-styles"] = reply
+			a.pendingControl["init-styles"] = pendingControlWaiter{ch: reply}
 			a.HandleOutput([]byte(codebuddyControlAnswer(tc.payload)("init-styles")))
 			select {
 			case result := <-reply:
@@ -109,7 +109,7 @@ func TestCodebuddyControlResponsePreservesThinkingConfirmation(t *testing.T) {
 		sink := &agenttest.Sink{}
 		a := newOfflineAgent(t, sink)
 		reply := make(chan codebuddyControlResult, 1)
-		a.pendingControl["config-1"] = reply
+		a.pendingControl["config-1"] = pendingControlWaiter{ch: reply}
 		body, err := json.Marshal(map[string]any{"updated": map[string]bool{"alwaysThinkingEnabled": enabled}, "errors": map[string]string{"other": "Native configuration detail."}})
 		require.NoError(t, err)
 		a.HandleOutput([]byte(codebuddyControlAnswer(string(body))("config-1")))
@@ -1070,7 +1070,7 @@ func TestCodebuddyAvailableModelsResponseKeepsNativeIds(t *testing.T) {
 	t.Parallel()
 	a := newOfflineAgent(t, &agenttest.Sink{})
 	response := make(chan codebuddyControlResult, 1)
-	a.pendingControl["models-1"] = response
+	a.pendingControl["models-1"] = pendingControlWaiter{ch: response}
 	line := providerkit.ParseLine([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"models-1","response":{"availableModels":[{"modelId":"custom-local:primary","name":"Primary"},{"modelId":"custom-local:alternate","name":"Alternate"}]}}}`))
 
 	require.True(t, a.handlePendingControlResponse(line))

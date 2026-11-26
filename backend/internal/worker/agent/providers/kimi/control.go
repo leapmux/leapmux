@@ -1,11 +1,13 @@
 package kimi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,9 +52,10 @@ type kimiPendingControl struct {
 	sessionID            string
 	agentID              string
 	toolCallID           string
-	proofToolCallID      string
 	toolIdentityConflict bool
 	nativeInputs         atomic.Pointer[agent.NativeControlInputs]
+	inputsMu             sync.Mutex
+	appliedInputs        *agent.NativeControlInputs
 	// answered is set once LeapMux delivered an answer, so the server's
 	// resolution that follows does not withdraw a request the user answered.
 	answered        bool
@@ -64,6 +67,11 @@ type kimiPendingControl struct {
 	automaticFailed bool
 	publicationDone chan struct{}
 	publicationOnce sync.Once
+}
+
+type kimiControlWithdrawal struct {
+	id         string
+	instanceID string
 }
 
 // kimiInteraction reads the native interaction identity and its nested request.
@@ -186,9 +194,9 @@ func (a *Agent) publishControl(interaction kimiInteraction, kind kimiControlKind
 	}
 	if existing := a.controls[requestID]; existing != nil {
 		if existing.sessionID == interaction.SessionID && existing.agentID == interaction.agent() && existing.kind == kind {
-			if existing.proofToolCallID == "" {
-				existing.proofToolCallID = interaction.ToolCallID
-			} else if interaction.ToolCallID != "" && interaction.ToolCallID != existing.proofToolCallID {
+			if existing.toolCallID == "" {
+				existing.toolCallID = interaction.ToolCallID
+			} else if interaction.ToolCallID != "" && interaction.ToolCallID != existing.toolCallID {
 				existing.toolIdentityConflict = true
 			}
 		} else {
@@ -203,7 +211,7 @@ func (a *Agent) publishControl(interaction kimiInteraction, kind kimiControlKind
 	}
 	bypass := bypassable && a.settings.permissionOption() == contracts.KimiModeAuto && !a.StoppedLocked()
 	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, bypassable: bypassable, instanceID: id.Generate(),
-		agentID: interaction.agent(), toolCallID: interaction.ToolCallID, proofToolCallID: interaction.ToolCallID,
+		agentID: interaction.agent(), toolCallID: interaction.ToolCallID,
 		payload: append([]byte(nil), interaction.Raw...), ready: bypass, publicationDone: make(chan struct{})}
 	a.controls[requestID] = pending
 	a.Mu.Unlock()
@@ -239,8 +247,14 @@ func (a *Agent) publishRegisteredControl(requestID string, pending *kimiPendingC
 		return
 	}
 	a.Mu.Unlock()
+	publishedProof := pending.nativeInputs.Load()
+	var nativeInputIDs []string
+	if publishedProof != nil && len(publishedProof.InputIDs) != 0 {
+		nativeInputIDs = slices.Clone(publishedProof.InputIDs)
+	}
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
-		RequestID: requestID, Payload: pending.payload, AgentSessionID: pending.sessionID, InstanceID: pending.instanceID,
+		RequestID: requestID, Payload: pending.payload, AgentSessionID: pending.sessionID,
+		InstanceID: pending.instanceID, NativeInputIDs: nativeInputIDs,
 	})
 	a.Mu.Lock()
 	pending.ready, pending.published = true, err == nil
@@ -255,7 +269,7 @@ func (a *Agent) publishRegisteredControl(requestID string, pending *kimiPendingC
 		if !current {
 			a.sink.CancelControlRequestInstance(requestID, pending.instanceID)
 		} else {
-			a.retainExactControlInputs(pending)
+			a.finishPublishedControlInputs(pending, publishedProof)
 			if bypass {
 				a.queuePermissionApprovals()
 			}
@@ -337,7 +351,7 @@ func (a *Agent) finishControlReply(requestID string, pending *kimiPendingControl
 	}
 	if retire || err == nil {
 		if published && (automatic || retire) {
-			a.sink.CancelControlRequest(requestID)
+			a.sink.CancelControlRequestInstance(requestID, pending.instanceID)
 		}
 	} else if !published {
 		a.publishRegisteredControl(requestID, pending)
@@ -390,24 +404,27 @@ func (a *Agent) resolveControl(interaction kimiInteraction) {
 	if !withdraw {
 		return
 	}
-	a.sink.CancelControlRequest(requestID)
+	a.sink.CancelControlRequestInstance(requestID, pending.instanceID)
 }
 
-// withdrawAllControls withdraws every pending request, for a session the agent
-// no longer drives.
+// withdrawAllControls withdraws every pending request and workspace-trust check
+// when the agent stops driving a session or the process exits.
 func (a *Agent) withdrawAllControls() {
 	a.Mu.Lock()
-	ids := make([]string, 0, len(a.controls))
+	withdrawn := make([]kimiControlWithdrawal, 0, len(a.controls))
 	for id, pending := range a.controls {
 		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
 		if !pending.answered && pending.published {
-			ids = append(ids, id)
+			withdrawn = append(withdrawn, kimiControlWithdrawal{id: id, instanceID: pending.instanceID})
 		}
 	}
 	clear(a.controls)
 	a.Mu.Unlock()
-	for _, id := range ids {
-		a.sink.CancelControlRequest(id)
+	slices.SortFunc(withdrawn, func(left, right kimiControlWithdrawal) int {
+		return cmp.Compare(left.id, right.id)
+	})
+	for _, item := range withdrawn {
+		a.sink.CancelControlRequestInstance(item.id, item.instanceID)
 	}
 	// The workspace-trust question belongs to the session too.
 	a.workspaceTrust.Retire(a.sink)

@@ -102,12 +102,7 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
-	content, err := kimiControlResponseContent(ctx.RequestID, native)
-	if err != nil {
-		result.Refuse(agent.RefusalUnencodableReply)
-		return result
-	}
-	result.Content = content
+	result.Content = agent.ControlResponseEnvelope(ctx.RequestID, native)
 	return result
 }
 
@@ -241,17 +236,4 @@ func kimiAllOffered(offered, picked []string) bool {
 		}
 	}
 	return true
-}
-
-// kimiControlResponseContent wraps the server's body in the shared envelope,
-// which is what the service stores and SendRawInput reads back.
-func kimiControlResponseContent(requestID string, native any) ([]byte, error) {
-	return json.Marshal(map[string]any{
-		"type": "control_response",
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": requestID,
-			"response":   native,
-		},
-	})
 }

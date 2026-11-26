@@ -1,7 +1,6 @@
 package qoder
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,13 +20,7 @@ const qoderTestRequestID = "approval:1"
 // Worker publishes it.
 func qoderToolPayload(t *testing.T, toolName string, input any) []byte {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{
-		"type":       "control_request",
-		"request_id": "approval:1",
-		"request":    map[string]any{"subtype": "can_use_tool", "tool_name": toolName, "tool_use_id": "call-1", "input": input},
-	})
-	require.NoError(t, err)
-	return payload
+	return agenttest.CanUseToolPayload(t, qoderTestRequestID, toolName, input)
 }
 
 // qoderElicitationPayload is a stored MCP elicitation with the given request
@@ -38,9 +31,7 @@ func qoderElicitationPayload(t *testing.T, fields map[string]any) []byte {
 	for key, value := range fields {
 		request[key] = value
 	}
-	payload, err := json.Marshal(map[string]any{"type": "control_request", "request_id": "form-1", "request": request})
-	require.NoError(t, err)
-	return payload
+	return agenttest.MustJSON(t, map[string]any{"type": "control_request", "request_id": "form-1", "request": request})
 }
 
 func TestQoderReadControlRequest_AskUserQuestionReadsEachQuestionAndItsOptions(t *testing.T) {
@@ -139,7 +130,7 @@ func TestQoderReadControlRequest_AnMCPElicitationIsAForm(t *testing.T) {
 	assert.Empty(t, elicitation.GetAcceptChoices())
 
 	assert.NotNil(t, agenttest.ControlPromptOf(qoderProvider{}, []byte(`{"request":{"subtype":"can_use_tool"}}`)).GetPermission(), "a can_use_tool request is no form")
-	assert.NotNil(t, agenttest.ControlPromptOf(qoderProvider{}, []byte(`{"request":{"subtype":7}}`)).GetPermission(), "a subtype that is no text names no form")
+	assert.NotNil(t, agenttest.ControlPromptOf(qoderProvider{}, []byte(`{"request":{"subtype":7}}`)).GetPermission(), "a subtype that is no text specifies no form")
 }
 
 // Each field reads as absent when it is not text: a missing mode is a form, and
@@ -168,6 +159,17 @@ func TestQoderReadControlRequest_AnElicitationReadsEachFieldAsQoderStatesIt(t *t
 	got = agenttest.ControlPromptOf(qoderProvider{}, qoderElicitationPayload(t, map[string]any{"mode": "", "display_name": "", "mcp_server_name": "github"})).GetElicitation()
 	assert.Empty(t, got.GetMode(), "a mode that is text stays, an empty one included")
 	assert.Empty(t, got.GetServer(), "a display name that is text wins, an empty one included")
+
+	assert.Nil(t, agenttest.ControlPromptOf(qoderProvider{}, []byte(`{"REQUEST":{"subtype":"elicitation","message":"Upper"}}`)).GetElicitation(), "uppercase request key must not match an elicitation")
+	assert.Nil(t, agenttest.ControlPromptOf(qoderProvider{}, []byte(`{"request":{"SUBTYPE":"elicitation","message":"Upper"}}`)).GetElicitation(), "uppercase subtype key must not match an elicitation")
+	assert.Nil(t, agenttest.ControlPromptOf(qoderProvider{}, []byte(`null`)).GetElicitation(), "null payload must not match an elicitation")
+	assert.Nil(t, agenttest.ControlPromptOf(qoderProvider{}, []byte(`{"request":null}`)).GetElicitation(), "null request must not match an elicitation")
+
+	got = agenttest.ControlPromptOf(qoderProvider{}, []byte(`{"request":{"subtype":"elicitation","MODE":"url","DISPLAY_NAME":"Upper","mcp_server_name":"github","MESSAGE":"Ignored"}}`)).GetElicitation()
+	require.NotNil(t, got)
+	assert.Equal(t, contracts.MCPElicitationModeForm, got.GetMode(), "uppercase mode key must be ignored")
+	assert.Equal(t, "github", got.GetServer(), "uppercase display_name key must fall back to mcp_server_name")
+	assert.Empty(t, got.GetMessage(), "uppercase message key must be ignored")
 }
 
 // The question tool's request is a question even when it also states the

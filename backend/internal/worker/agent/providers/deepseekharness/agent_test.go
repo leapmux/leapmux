@@ -152,7 +152,7 @@ func TestInterruptRemovesAndRequeuesAPendingSteer(t *testing.T) {
 }
 
 func TestRemovePendingSteerKeepsUnconfirmedRemovals(t *testing.T) {
-	for _, code := range []string{"", "session/queue-item-not-found", "session/unavailable", "refused"} {
+	for _, code := range []string{"", "session/queue-item-not-found", "session/agent-busy", "session/unavailable", "refused"} {
 		t.Run(code, func(t *testing.T) {
 			base := &agenttest.Sink{}
 			a := newOfflineAgent(t, base)
@@ -176,7 +176,7 @@ func TestRemovePendingSteerKeepsUnconfirmedRemovals(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(endpoint.Close)
 			a.rpc = remoteRPC{endpoint: endpoint}
-			err = a.removePendingSteer("native-root", steer)
+			err = a.removePendingSteer(steerTarget{sessionID: "native-root", sink: a.sink}, steer)
 			switch code {
 			case "":
 				require.NoError(t, err)
@@ -193,6 +193,29 @@ func TestRemovePendingSteerKeepsUnconfirmedRemovals(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("empty itemID skips updateQueue RPC", func(t *testing.T) {
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		base := &agenttest.Sink{}
+		a := newOfflineAgent(t, base)
+		a.rpc = remoteRPC{endpoint: endpoint}
+		steer := &pendingSteer{requestID: "request", request: agent.SteerRequest{InputID: "input-1", Content: "steer"}}
+		a.pendingSteers = []*pendingSteer{steer}
+
+		require.NoError(t, a.removePendingSteer(steerTarget{sessionID: "native-root", sink: a.sink}, steer))
+		assert.Zero(t, calls.Load())
+		assert.Len(t, a.pendingSteers, 1)
+		assert.Empty(t, base.RequeuedInputs())
+	})
 }
 
 func TestRemovedSteerCanRetryAQueueFailureWithoutRemovingItAgain(t *testing.T) {
@@ -201,10 +224,10 @@ func TestRemovedSteerCanRetryAQueueFailureWithoutRemovingItAgain(t *testing.T) {
 	a := newOfflineAgent(t, base)
 	steer := &pendingSteer{requestID: "request", itemID: "item", request: agent.SteerRequest{InputID: "input-1", Content: "steer"}, removed: true}
 	a.pendingSteers = []*pendingSteer{steer}
-	require.ErrorIs(t, a.removePendingSteer("native-root", steer), cause)
+	require.ErrorIs(t, a.removePendingSteer(steerTarget{sessionID: "native-root", sink: a.sink}, steer), cause)
 	assert.Len(t, a.pendingSteers, 1)
 	base.RequeueErr = nil
-	require.NoError(t, a.removePendingSteer("native-root", steer))
+	require.NoError(t, a.removePendingSteer(steerTarget{sessionID: "native-root", sink: a.sink}, steer))
 	assert.Empty(t, a.pendingSteers)
 	require.Len(t, base.RequeuedInputs(), 1)
 	assert.Equal(t, agent.SteerRequest{InputID: "input-1", Content: "steer"}, base.RequeuedInputs()[0].Request,
@@ -580,5 +603,497 @@ func TestDeepSeekIdleInterruptStopAndStreamFailureCloseToolsAndWorkflows(t *test
 		wf, exists := sink.BackgroundTask("deepseek-workflow:wf-once")
 		require.True(t, exists)
 		assert.Equal(t, bgtask.StatusStopped, wf.Status)
+	})
+}
+
+func TestSendInputClearsOptimisticTurnOnRefusalAndUnstartedFailure(t *testing.T) {
+	t.Parallel()
+
+	t.Run("accepted false is a definite refusal and releases active turn", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				ID string `json:"rpcId"`
+			}
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+				return
+			}
+			accepted := calls.Add(1) > 1
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"type": "server-response", "rpcId": req.ID,
+				"result": map[string]any{"ok": true, "value": map[string]any{"accepted": accepted}},
+			}))
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.rpc = remoteRPC{endpoint: endpoint}
+
+		_, err = a.SendInput("first prompt", nil)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "explicit accepted=false is a definite refusal")
+		assert.False(t, a.active, "definite refusal must clear optimistic active state")
+		assert.Equal(t, []bool{true, false}, sink.TurnActiveCalls)
+
+		_, err = a.SendInput("second prompt", nil)
+		require.NoError(t, err, "next prompt must not fail with ErrAgentBusy")
+		assert.Equal(t, int32(2), calls.Load())
+	})
+
+	t.Run("HTTP 502 without turn start returns uncertain and clears optimistic active turn", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				ID string `json:"rpcId"`
+			}
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+				return
+			}
+			if calls.Add(1) == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"type": "server-response", "rpcId": req.ID,
+				"result": map[string]any{"ok": true, "value": map[string]any{"accepted": true}},
+			}))
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.rpc = remoteRPC{endpoint: endpoint}
+
+		_, err = a.SendInput("lost response", nil)
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.False(t, a.active, "unstarted turn after transport failure must clear optimistic active state")
+
+		_, err = a.SendInput("retry prompt", nil)
+		require.NoError(t, err, "agent must not remain stuck busy after unstarted transport failure")
+		assert.Equal(t, int32(2), calls.Load())
+	})
+
+	t.Run("HTTP 502 after turn start preserves active turn", func(t *testing.T) {
+		t.Parallel()
+		entered, release := make(chan struct{}), make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-release
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.rpc = remoteRPC{endpoint: endpoint}
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := a.SendInput("started before 502", nil)
+			done <- err
+		}()
+		<-entered
+		require.NoError(t, a.handleFrame([]byte(`{"type":"item","streamId":"root","value":{"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}}}`)))
+		close(release)
+
+		err = <-done
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.True(t, a.active, "a turn that already started natively must stay active")
+	})
+
+	t.Run("HTTP 400 is a definite refusal and clears active turn", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "bad request", http.StatusBadRequest)
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.rpc = remoteRPC{endpoint: endpoint}
+
+		_, err = a.SendInput("bad prompt", nil)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.False(t, a.active)
+	})
+
+	t.Run("steer accepted false is a definite refusal and keeps active turn", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				ID string `json:"rpcId"`
+			}
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+				return
+			}
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"type": "server-response", "rpcId": req.ID,
+				"result": map[string]any{"ok": true, "value": map[string]any{"accepted": false}},
+			}))
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.rpc = remoteRPC{endpoint: endpoint}
+		a.active = true
+
+		_, err = a.SteerInput(agent.SteerRequest{InputID: "steer-1", AttemptID: "att-1", Content: "steer"})
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.True(t, a.active, "refused steer must not clear the running turn")
+	})
+
+	t.Run("promptParts validates nil attachment before uploading earlier files", func(t *testing.T) {
+		t.Parallel()
+		var uploads atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			uploads.Add(1)
+			var req struct {
+				ID string `json:"rpcId"`
+			}
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+				return
+			}
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"type": "server-response", "rpcId": req.ID,
+				"result": map[string]any{"ok": true, "value": map[string]any{"receiptId": "rec-1"}},
+			}))
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		a := newOfflineAgent(t, &agenttest.Sink{})
+		a.rpc = remoteRPC{endpoint: endpoint}
+
+		_, err = a.promptParts("native-root", "hi", []*leapmuxv1.Attachment{
+			{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
+			nil,
+		})
+		require.Error(t, err)
+		assert.Zero(t, uploads.Load(), "nil attachment must fail before uploading any earlier attachment")
+
+		parts, err := a.promptParts("native-root", "hi", []*leapmuxv1.Attachment{
+			{Filename: "pic.png", MimeType: "image/png", Data: []byte{1, 2}},
+			{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
+		})
+		require.NoError(t, err)
+		require.Len(t, parts, 3)
+		assert.Equal(t, "image", parts[1]["type"])
+		assert.Equal(t, "file", parts[2]["type"])
+		assert.Equal(t, "rec-1", parts[2]["receiptId"])
+		assert.Equal(t, int32(1), uploads.Load())
+	})
+
+	t.Run("promptParts rejects empty file upload receiptId and upload RPC errors", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				ID string `json:"rpcId"`
+			}
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+				return
+			}
+			if calls.Add(1) == 1 {
+				assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+					"type": "server-response", "rpcId": req.ID,
+					"result": map[string]any{"ok": true, "value": map[string]any{"receiptId": ""}},
+				}))
+				return
+			}
+			http.Error(w, "upload failed", http.StatusInternalServerError)
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		a := newOfflineAgent(t, &agenttest.Sink{})
+		a.rpc = remoteRPC{endpoint: endpoint}
+		file := []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")}}
+
+		_, err = a.promptParts("native-root", "hi", file)
+		require.ErrorContains(t, err, "did not confirm the file upload")
+
+		_, err = a.promptParts("native-root", "hi", file)
+		require.Error(t, err)
+	})
+
+	t.Run("HTTP 408 is uncertain while remoteFailure is a definite refusal", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				ID string `json:"rpcId"`
+			}
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+				return
+			}
+			if calls.Add(1) == 1 {
+				http.Error(w, "request timeout", http.StatusRequestTimeout)
+				return
+			}
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"type": "server-response", "rpcId": req.ID,
+				"result": map[string]any{"ok": false, "error": map[string]any{"code": "session/refused", "message": "rejected"}},
+			}))
+		}))
+		defer server.Close()
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		defer endpoint.Close()
+
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.rpc = remoteRPC{endpoint: endpoint}
+
+		_, err = a.SendInput("timeout prompt", nil)
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.False(t, a.active)
+
+		_, err = a.SendInput("refused prompt", nil)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.False(t, a.active)
+	})
+
+	t.Run("SendInput rechecks state after promptParts and cleans up replySubmission", func(t *testing.T) {
+		t.Parallel()
+		for _, condition := range []string{"active", "stopped", "streamFailure"} {
+			t.Run(condition, func(t *testing.T) {
+				t.Parallel()
+				entered, release := make(chan struct{}), make(chan struct{})
+				var promptCalls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var req struct {
+						ID string `json:"rpcId"`
+					}
+					if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+						return
+					}
+					if r.URL.Path == "/api/fileUploads/upload" {
+						close(entered)
+						<-release
+						assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+							"type": "server-response", "rpcId": req.ID,
+							"result": map[string]any{"ok": true, "value": map[string]any{"receiptId": "rec-1"}},
+						}))
+						return
+					}
+					promptCalls.Add(1)
+					http.Error(w, "should not send prompt", http.StatusInternalServerError)
+				}))
+				defer server.Close()
+				endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+				require.NoError(t, err)
+				defer endpoint.Close()
+
+				sink := &agenttest.Sink{}
+				a := newOfflineAgent(t, sink)
+				a.rpc = remoteRPC{endpoint: endpoint}
+				file := []*leapmuxv1.Attachment{{Filename: "doc.txt", MimeType: "text/plain", Data: []byte("body")}}
+
+				done := make(chan error, 1)
+				go func() {
+					_, err := a.SendInput("with upload", file)
+					done <- err
+				}()
+				<-entered
+				switch condition {
+				case "active":
+					a.Mu.Lock()
+					a.active = true
+					a.Mu.Unlock()
+				case "stopped":
+					a.SetStoppedForTest(true)
+				case "streamFailure":
+					a.Mu.Lock()
+					a.streamFailure = errors.New("stream closed")
+					a.Mu.Unlock()
+				}
+				close(release)
+
+				err = <-done
+				require.Error(t, err)
+				if condition == "active" {
+					assert.ErrorIs(t, err, agent.ErrAgentBusy)
+				}
+				assert.Zero(t, promptCalls.Load())
+				a.dispatchMu.Lock()
+				assert.Empty(t, a.replySubmissions, "failed SendInput must not leak replySubmissions")
+				a.dispatchMu.Unlock()
+			})
+		}
+	})
+
+	t.Run("root SteerInput honors echo and delivered before HTTP 502 error", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name      string
+			attemptID string
+			delivered bool
+		}{
+			{"tracked steer echoed before 502", "att-1", true},
+			{"tracked steer not echoed before 502", "att-2", false},
+			{"untracked steer delivered before 502", "", true},
+			{"untracked steer not delivered before 502", "", false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				a := newOfflineAgent(t, sink)
+				a.active = true
+				require.NoError(t, a.handleFrame([]byte(`{"type":"item","streamId":"root","value":{"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":5}}}}`)))
+
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var req struct {
+						Payload struct {
+							Args struct {
+								Request struct {
+									RequestID string `json:"requestId"`
+								} `json:"request"`
+							} `json:"args"`
+						} `json:"payload"`
+					}
+					if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+						return
+					}
+					if tc.delivered {
+						frame := fmt.Sprintf(`{"type":"item","streamId":"root","value":{"type":"event","event":{"type":"user/message","seq":2,"time":1001,"data":{"source":{"kind":"user","rpcId":%q}}}}}`, req.Payload.Args.Request.RequestID)
+						assert.NoError(t, a.handleFrame([]byte(frame)))
+					}
+					w.WriteHeader(http.StatusBadGateway)
+				}))
+				defer server.Close()
+				endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+				require.NoError(t, err)
+				defer endpoint.Close()
+				a.rpc = remoteRPC{endpoint: endpoint}
+
+				_, err = a.SteerInput(agent.SteerRequest{InputID: "in-1", AttemptID: tc.attemptID, Content: "steer"})
+				if tc.delivered {
+					require.NoError(t, err)
+					if tc.attemptID != "" {
+						require.Len(t, sink.SteerResolutions(), 1)
+						assert.Equal(t, agent.SteerOutcomeEchoed, sink.SteerResolutions()[0].Outcome)
+					}
+				} else {
+					require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+					assert.Empty(t, sink.SteerResolutions())
+				}
+				a.Mu.Lock()
+				assert.Empty(t, a.pendingSteers)
+				a.Mu.Unlock()
+				a.dispatchMu.Lock()
+				assert.Empty(t, a.replySubmissions)
+				a.dispatchMu.Unlock()
+			})
+		}
+	})
+}
+
+type failingSteerResolutionSink struct {
+	*agenttest.Sink
+	err error
+}
+
+func (*failingSteerResolutionSink) OutputQueue() *agent.OutputQueue { return nil }
+
+func (s *failingSteerResolutionSink) CaptureSteerResolution(resolution agent.SteerResolution) func() error {
+	if s.err != nil {
+		err := s.err
+		return func() error { return err }
+	}
+	return s.Sink.CaptureSteerResolution(resolution)
+}
+
+func TestSettleDroppedSteerHandlesAttemptFailureAndNilSink(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-retained steer resolution error preserves submission for retry", func(t *testing.T) {
+		t.Parallel()
+		cause := errors.New("steer resolution write failed")
+		base := &agenttest.Sink{}
+		failing := &failingSteerResolutionSink{Sink: base, err: cause}
+		a := newOfflineAgentServing(t, agent.NewProviderServices(failing), nil)
+
+		steer := &pendingSteer{
+			requestID: "req-1",
+			itemID:    "item-1",
+			request:   agent.SteerRequest{InputID: "in-1", AttemptID: "att-1", Content: "steer"},
+			removed:   true,
+		}
+		a.pendingSteers = []*pendingSteer{steer}
+		a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "req-1"}, &steer.request)
+		target := steerTarget{sessionID: "native-root", sink: a.sink}
+
+		require.ErrorIs(t, a.removePendingSteer(target, steer), cause)
+		assert.Len(t, a.pendingSteers, 1)
+		assert.False(t, steer.resolved)
+		a.dispatchMu.Lock()
+		assert.Contains(t, a.replySubmissions, "req-1")
+		a.dispatchMu.Unlock()
+
+		failing.err = nil
+		require.NoError(t, a.removePendingSteer(target, steer))
+		assert.Empty(t, a.pendingSteers)
+		assert.True(t, steer.resolved)
+		a.dispatchMu.Lock()
+		assert.NotContains(t, a.replySubmissions, "req-1")
+		a.dispatchMu.Unlock()
+		assert.Equal(t, []agent.SteerResolution{{
+			InputID: "in-1", AttemptID: "att-1", Outcome: agent.SteerOutcomeDropped,
+		}}, base.SteerResolutions())
+	})
+
+	t.Run("nil sink settles tracked and untracked steers without panicking", func(t *testing.T) {
+		t.Parallel()
+		a := newOfflineAgent(t, &agenttest.Sink{})
+		tracked := &pendingSteer{
+			requestID: "req-tracked",
+			itemID:    "item-tracked",
+			request:   agent.SteerRequest{InputID: "in-1", AttemptID: "att-1", Content: "tracked"},
+			removed:   true,
+		}
+		untracked := &pendingSteer{
+			requestID: "req-untracked",
+			itemID:    "item-untracked",
+			request:   agent.SteerRequest{InputID: "in-2", Content: "untracked"},
+			removed:   true,
+		}
+		a.pendingSteers = []*pendingSteer{tracked, untracked}
+		a.registerReplySubmission(nil, agent.NativeInputReceipt{SessionID: "native-root", InputID: "req-tracked"}, &tracked.request)
+		target := steerTarget{sessionID: "native-root", sink: nil}
+
+		require.NoError(t, a.removePendingSteer(target, tracked))
+		require.NoError(t, a.removePendingSteer(target, untracked))
+		assert.Empty(t, a.pendingSteers)
+		assert.True(t, tracked.resolved)
+		assert.True(t, untracked.resolved)
+		a.dispatchMu.Lock()
+		assert.Empty(t, a.replySubmissions)
+		a.dispatchMu.Unlock()
 	})
 }

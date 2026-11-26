@@ -74,3 +74,9 @@ func TestSamePath(t *testing.T) {
 			"Windows ignores the case of a path")
 	}
 }
+
+func TestMustJSON(t *testing.T) {
+	t.Parallel()
+	assert.JSONEq(t, `{"count":2,"ok":true}`, string(MustJSON(t, map[string]any{"count": 2, "ok": true})))
+	assert.Equal(t, []byte("null"), MustJSON(t, nil))
+}

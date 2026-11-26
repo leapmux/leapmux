@@ -108,7 +108,7 @@ func TestCodebuddyResumeReplayKeepsControlsFunctional(t *testing.T) {
 	a.resumeState = &codebuddyResumeState{done: make(chan error, 1)}
 	a.HandleOutput([]byte(codebuddyReplayInit))
 	reply := make(chan codebuddyControlResult, 1)
-	a.pendingControl["catalog"] = reply
+	a.pendingControl["catalog"] = pendingControlWaiter{ch: reply}
 	a.HandleOutput([]byte(codebuddyControlAnswer(`{"availableModels":[]}`)("catalog")))
 	select {
 	case result := <-reply:

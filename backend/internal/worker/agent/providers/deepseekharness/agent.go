@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -33,7 +34,6 @@ type Agent struct {
 	streamDone   chan struct{}
 	ready        chan struct{}
 	readyOnce    sync.Once
-	discard      atomic.Bool
 	sessionID    string
 	clientID     string
 	catalog      modelCatalog
@@ -43,11 +43,14 @@ type Agent struct {
 	// autoReview states whether the native permission catalog offers Auto.
 	autoReview              bool
 	active                  bool
+	nativeTurnEpoch         uint64
 	streams                 map[string]*sessionStream
 	controls                map[string]*nativeControl
+	unboundControls         atomic.Int32
 	approvalWork            providerkit.CoalescingWork
 	children                map[string]*nativeChild
 	childCatalog            map[string]nativeChildDescriptor
+	childCatalogByName      map[childNameKey]string
 	workflows               map[string]nativeWorkflow
 	pendingWorkflowChildren map[string]pendingWorkflowChild
 	directory               *agentdir.Dir
@@ -70,14 +73,33 @@ type Agent struct {
 type pendingSteer struct {
 	// requestID is the native prompt request, which native history states.
 	requestID string
-	// itemID is the native inbox item, known once native history states it.
+	// itemID is the native inbox item, known once native history or prompt receipt states it.
 	itemID string
 	// request is the Worker's steer, which removePendingSteer hands back
 	// unchanged. Its attachments are copies, so a later change of the caller's
 	// slice does not reach the hand-back.
 	request   agent.SteerRequest
 	delivered bool
-	removed   bool
+	// removed records that native history or session/updateQueue removed the item without delivery.
+	removed bool
+	// resolved records that the Worker sink accepted the dropped steer report.
+	resolved bool
+}
+
+// steerTarget identifies the root or continuable child session that owns a pendingSteer.
+type steerTarget struct {
+	sessionID string
+	isChild   bool
+	sink      agent.ProviderServices
+}
+
+func newPendingSteer(requestID string, steer agent.SteerRequest) *pendingSteer {
+	pending := &pendingSteer{requestID: requestID, request: steer}
+	pending.request.Attachments = nil
+	for _, attachment := range steer.Attachments {
+		pending.request.Attachments = append(pending.request.Attachments, proto.CloneOf(attachment))
+	}
+	return pending
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -90,7 +112,21 @@ var _ agent.ChildSteerer = (*Agent)(nil)
 var _ agent.ChildInterrupter = (*Agent)(nil)
 
 func newAgent(sink agent.ProviderServices, workingDir string) *Agent {
-	return &Agent{sink: sink, workingDir: workingDir, streamDone: make(chan struct{}), ready: make(chan struct{}), streams: map[string]*sessionStream{}, controls: map[string]*nativeControl{}, children: map[string]*nativeChild{}, childCatalog: map[string]nativeChildDescriptor{}, workflows: map[string]nativeWorkflow{}, pendingWorkflowChildren: map[string]pendingWorkflowChild{}, mode: "act", permissions: "workspace-write"}
+	return &Agent{
+		sink:                    sink,
+		workingDir:              workingDir,
+		streamDone:              make(chan struct{}),
+		ready:                   make(chan struct{}),
+		streams:                 map[string]*sessionStream{},
+		controls:                map[string]*nativeControl{},
+		children:                map[string]*nativeChild{},
+		childCatalog:            map[string]nativeChildDescriptor{},
+		childCatalogByName:      map[childNameKey]string{},
+		workflows:               map[string]nativeWorkflow{},
+		pendingWorkflowChildren: map[string]pendingWorkflowChild{},
+		mode:                    "act",
+		permissions:             "workspace-write",
+	}
 }
 
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
@@ -183,9 +219,33 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 		inputReceipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: requestID}
 		submission = a.registerReplySubmission(a.sink, inputReceipt, steer)
 	}
+	var startEpoch uint64
 	if delivery == "queue" {
 		a.Mu.Lock()
+		if a.streamFailure != nil {
+			failure := a.streamFailure
+			a.Mu.Unlock()
+			if submission != nil {
+				a.takeReplySubmissionEchoed(submission)
+			}
+			return agent.NativeInputReceipt{}, fmt.Errorf("DeepSeek Harness lost its native Remote stream: %w", failure)
+		}
+		if a.StoppedLocked() {
+			a.Mu.Unlock()
+			if submission != nil {
+				a.takeReplySubmissionEchoed(submission)
+			}
+			return agent.NativeInputReceipt{}, fmt.Errorf("DeepSeek Harness is stopped")
+		}
+		if a.active {
+			a.Mu.Unlock()
+			if submission != nil {
+				a.takeReplySubmissionEchoed(submission)
+			}
+			return agent.NativeInputReceipt{}, agent.ErrAgentBusy
+		}
 		a.active = true
+		startEpoch = a.nativeTurnEpoch
 		seq := a.NextTurnSeq()
 		a.Mu.Unlock()
 		a.sink.SetTurnState(agent.TurnState{Active: true, Steerable: true}, seq)
@@ -195,24 +255,25 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 	}
 	var pending *pendingSteer
 	if steer != nil {
-		pending = &pendingSteer{requestID: requestID, request: *steer}
-		pending.request.Attachments = nil
-		for _, attachment := range steer.Attachments {
-			pending.request.Attachments = append(pending.request.Attachments, proto.CloneOf(attachment))
-		}
+		pending = newPendingSteer(requestID, *steer)
 		a.Mu.Lock()
 		a.pendingSteers = append(a.pendingSteers, pending)
 		a.Mu.Unlock()
 	}
 	err = a.rpc.request(a.Context(), "session/prompt", map[string]any{"requestId": requestID, "sessionId": sessionID, "mode": delivery, "content": parts}, &receipt)
+	refused := false
 	if err == nil && !receipt.Accepted {
+		refused = true
 		err = fmt.Errorf("DeepSeek Harness did not accept the prompt")
 	}
 	if err == nil {
 		return inputReceipt, nil
 	}
 	if submission != nil {
-		if a.replySubmissionEchoed(submission) {
+		if a.takeReplySubmissionEchoed(submission) {
+			if pending != nil {
+				a.forgetPendingSteer(steerTarget{sessionID: sessionID}, pending)
+			}
 			return inputReceipt, nil
 		}
 		inputReceipt = agent.NativeInputReceipt{}
@@ -226,14 +287,22 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 			return inputReceipt, nil
 		}
 	}
-	var native *remoteFailure
-	if errors.As(err, &native) {
-		if delivery == "queue" {
-			a.setTurnState(false)
-		}
+	if delivery == "queue" {
+		a.clearOptimisticTurnState(startEpoch)
+	}
+	if refused || isDefinitePromptRefusal(err) {
 		return inputReceipt, err
 	}
 	return inputReceipt, fmt.Errorf("%w: DeepSeek Harness did not confirm the prompt: %w", agent.ErrDeliveryUncertain, err)
+}
+
+func isDefinitePromptRefusal(err error) bool {
+	var native *remoteFailure
+	if errors.As(err, &native) {
+		return true
+	}
+	var status *providerkit.HTTPStatusError
+	return errors.As(err, &status) && status.StatusCode >= http.StatusBadRequest && status.StatusCode < http.StatusInternalServerError && status.StatusCode != http.StatusRequestTimeout
 }
 
 func (a *Agent) PublishTurnActive() agent.TurnState {
@@ -247,10 +316,27 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 
 func (a *Agent) setTurnState(active bool) {
 	a.Mu.Lock()
+	if active {
+		a.nativeTurnEpoch++
+	}
 	a.active = active
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	a.sink.SetTurnState(agent.TurnState{Active: active, Steerable: active}, seq)
+}
+
+// clearOptimisticTurnState clears the turn state that sendInput set optimistically
+// when no native turn start arrived while the prompt request was in flight.
+func (a *Agent) clearOptimisticTurnState(startEpoch uint64) {
+	a.Mu.Lock()
+	if !a.active || a.nativeTurnEpoch != startEpoch {
+		a.Mu.Unlock()
+		return
+	}
+	a.active = false
+	seq := a.NextTurnSeq()
+	a.Mu.Unlock()
+	a.sink.SetTurnState(agent.TurnState{}, seq)
 }
 
 func (a *Agent) Interrupt(stop agent.StopContext) error {
@@ -267,8 +353,9 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		}
 	}
 	var failures error
+	rootTarget := steerTarget{sessionID: sessionID, sink: a.sink}
 	for _, steer := range steers {
-		failures = errors.Join(failures, a.removePendingSteer(sessionID, steer))
+		failures = errors.Join(failures, a.removePendingSteer(rootTarget, steer))
 	}
 	if !active {
 		a.dispatchMu.Lock()
@@ -294,22 +381,31 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	return failures
 }
 
-func (a *Agent) removePendingSteer(sessionID string, steer *pendingSteer) error {
+func (a *Agent) removePendingSteer(target steerTarget, steer *pendingSteer) error {
 	a.Mu.Lock()
-	id, delivered, removed := steer.itemID, steer.delivered, steer.removed
+	id, delivered, removed, resolved := steer.itemID, steer.delivered, steer.removed, steer.resolved
 	a.Mu.Unlock()
-	if delivered || id == "" {
+	if delivered || resolved || id == "" {
 		return nil
 	}
 	if !removed {
 		var receipt struct {
 			Accepted bool `json:"accepted"`
 		}
-		err := a.rpc.request(a.Context(), "session/updateQueue", map[string]any{"sessionId": sessionID, "itemId": id, "action": map[string]string{"kind": "remove"}}, &receipt)
+		err := a.rpc.request(a.Context(), "session/updateQueue", map[string]any{"sessionId": target.sessionID, "itemId": id, "action": map[string]string{"kind": "remove"}}, &receipt)
 		var native *remoteFailure
-		if errors.As(err, &native) && native.Code == "session/queue-item-not-found" {
-			a.forgetPendingSteer(steer)
-			return nil
+		if errors.As(err, &native) {
+			switch native.Code {
+			case "session/queue-item-not-found":
+				a.forgetPendingSteer(target, steer)
+				return nil
+			case "session/agent-busy":
+				if target.isChild {
+					// DeepSeek Harness returns session/agent-busy when a continuable
+					// subagent is cold or evicted and cannot accept session/updateQueue.
+					return nil
+				}
+			}
 		}
 		if err != nil {
 			return err
@@ -321,26 +417,94 @@ func (a *Agent) removePendingSteer(sessionID string, steer *pendingSteer) error 
 		steer.removed = true
 		a.Mu.Unlock()
 	}
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	return a.settleDroppedSteerLocked(target, steer)
+}
+
+// settleDroppedSteerLocked reports a removed steer to its sink once and deletes
+// it from pending tracking. The caller holds dispatchMu.
+func (a *Agent) settleDroppedSteerLocked(target steerTarget, steer *pendingSteer) error {
+	a.Mu.Lock()
+	if steer.delivered || steer.resolved {
+		a.Mu.Unlock()
+		return nil
+	}
+	steer.removed = true
+	a.Mu.Unlock()
+
 	if steer.request.AttemptID != "" {
-		a.dispatchMu.Lock()
-		delete(a.replySubmissions, steer.requestID)
-		a.dispatchMu.Unlock()
-		err := a.reportSteerResolution(a.sink, steer.request, agent.SteerOutcomeDropped, agent.NativeInputReceipt{})
-		if !agent.OutputRetained(err) {
-			return err
+		if target.sink != nil {
+			err := a.reportSteerResolution(target.sink, steer.request, agent.SteerOutcomeDropped, agent.NativeInputReceipt{})
+			if !agent.OutputRetained(err) {
+				return err
+			}
 		}
-	} else {
-		if err := a.sink.RequeueDroppedInput(steer.request); err != nil {
+		delete(a.replySubmissions, steer.requestID)
+	} else if target.sink != nil {
+		if err := target.sink.RequeueDroppedInput(steer.request); err != nil {
 			return err
 		}
 	}
-	a.forgetPendingSteer(steer)
+	a.Mu.Lock()
+	steer.resolved = true
+	a.forgetPendingSteerLocked(target, steer)
+	a.Mu.Unlock()
 	return nil
 }
 
-func (a *Agent) forgetPendingSteer(steer *pendingSteer) {
+func (a *Agent) forgetPendingSteer(target steerTarget, steer *pendingSteer) {
 	a.Mu.Lock()
-	a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(candidate *pendingSteer) bool { return candidate == steer })
+	a.forgetPendingSteerLocked(target, steer)
+	a.Mu.Unlock()
+}
+
+// forgetPendingSteerLocked deletes steer from its owning slice. The caller holds Mu.
+func (a *Agent) forgetPendingSteerLocked(target steerTarget, steer *pendingSteer) {
+	steers := a.pendingSteersPtrLocked(target)
+	if steers == nil {
+		return
+	}
+	*steers = slices.DeleteFunc(*steers, func(candidate *pendingSteer) bool { return candidate == steer })
+}
+
+// pendingSteersPtrLocked returns the slice that stores pending steers for target.
+// The caller holds Mu.
+func (a *Agent) pendingSteersPtrLocked(target steerTarget) *[]*pendingSteer {
+	if !target.isChild {
+		return &a.pendingSteers
+	}
+	child := a.children[target.sessionID]
+	if child == nil {
+		return nil
+	}
+	return &child.pendingSteers
+}
+
+func (a *Agent) markPendingSteerDelivered(stream *sessionStream, rpcID string) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	steers := a.pendingSteersPtrLocked(steerTarget{sessionID: stream.sessionID, isChild: stream.childAgentID != ""})
+	if steers == nil {
+		return
+	}
+	*steers = slices.DeleteFunc(*steers, func(steer *pendingSteer) bool {
+		if steer.requestID != rpcID {
+			return false
+		}
+		steer.delivered = true
+		return true
+	})
+}
+
+func (a *Agent) clearPendingSteers() {
+	a.Mu.Lock()
+	a.pendingSteers = nil
+	for _, child := range a.children {
+		if child != nil {
+			child.pendingSteers = nil
+		}
+	}
 	a.Mu.Unlock()
 }
 
@@ -361,8 +525,6 @@ func (a *Agent) CompactContext() error {
 	return a.compact(sessionID, "/compact")
 }
 
-func (a *Agent) DiscardOutput() { a.discard.Store(true); a.Process.DiscardOutput() }
-
 func (a *Agent) SendRawInput(input agent.RawInput) error { return a.answerControl(input) }
 
 // HandleOutput accepts one native mux frame for provider tests.
@@ -382,9 +544,6 @@ func (a *Agent) Stop() {
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopConnection()
-	a.dispatchMu.Lock()
-	a.retireUnfinishedReplies()
-	a.dispatchMu.Unlock()
 	a.Mu.Lock()
 	failure, stopDone := a.streamFailure, a.failureStopDone
 	a.Mu.Unlock()
@@ -396,7 +555,8 @@ func (a *Agent) Wait() error {
 }
 
 // finishAfterExit closes remaining pending tools, resets spans and progress,
-// closes open workflows, and clears an active turn after the connection stops.
+// closes open workflows, retires unfinished replies, and clears an active turn
+// after the connection stops.
 func (a *Agent) finishAfterExit() {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
@@ -411,8 +571,14 @@ func (a *Agent) finishAfterExit() {
 		agentID string
 		seq     uint64
 	}
+	childKeys := make([]string, 0, len(a.children))
+	for id := range a.children {
+		childKeys = append(childKeys, id)
+	}
+	slices.Sort(childKeys)
 	var activeChildren []activeChild
-	for _, child := range a.children {
+	for _, id := range childKeys {
+		child := a.children[id]
 		if child != nil && child.active {
 			child.active = false
 			if child.descriptor.Mode == "continuable" && child.agentID != "" {
@@ -423,6 +589,7 @@ func (a *Agent) finishAfterExit() {
 	a.Mu.Unlock()
 	completion := a.ProcessExitCompletion()
 	_ = a.closeStreamsAndWorkflows(streams, completion, false)
+	a.retireUnfinishedReplies()
 	if a.sink != nil {
 		for _, child := range activeChildren {
 			providerkit.PublishTurnStateTo(a.sink.ChildSink(child.agentID), agent.TurnState{}, child.seq)

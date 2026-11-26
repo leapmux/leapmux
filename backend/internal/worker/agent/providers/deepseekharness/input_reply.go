@@ -3,6 +3,7 @@ package deepseekharness
 import (
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strconv"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -19,11 +20,15 @@ type harnessReplySubmission struct {
 // Each tracked Session (root or continuable child) runs one native turn at a
 // time. The Remote reader applies durable events in sequence under dispatchMu.
 type harnessReplyTurn struct {
-	sessionID  string
-	sink       agent.ProviderServices
-	id         string
-	ordinal    int64
-	inputs     []agent.NativeReplyBoundary
+	sessionID string
+	sink      agent.ProviderServices
+	id        string
+	ordinal   int64
+	inputs    []agent.NativeReplyBoundary
+	// inputIDs is an immutable snapshot of the input IDs in inputs, replaced
+	// whenever bindReplyInput appends a new input so earlier tool calls keep
+	// their own slice.
+	inputIDs   []string
 	items      []agent.NativeReplyItem
 	toolInputs map[string][]string
 	unproved   bool
@@ -52,8 +57,9 @@ func (a *Agent) registerReplySubmission(sink agent.ProviderServices, receipt age
 	return submission
 }
 
-// A committed user echo proves admission even if the HTTP result is lost.
-func (a *Agent) replySubmissionEchoed(submission *harnessReplySubmission) bool {
+// takeReplySubmissionEchoed removes submission from pending tracking and
+// reports whether a committed user echo already proved its admission.
+func (a *Agent) takeReplySubmissionEchoed(submission *harnessReplySubmission) bool {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 	delete(a.replySubmissions, submission.receipt.InputID)
@@ -118,6 +124,11 @@ func (a *Agent) bindReplyInput(stream *sessionStream, requestID string) {
 	}
 	turn.ordinal++
 	turn.inputs = append(turn.inputs, agent.NativeReplyBoundary{InputID: requestID, AfterOrdinal: turn.ordinal})
+	nextIDs := make([]string, len(turn.inputs))
+	for i, input := range turn.inputs {
+		nextIDs[i] = input.InputID
+	}
+	turn.inputIDs = nextIDs
 }
 
 func (a *Agent) reportSteerResolution(sink agent.ProviderServices, request agent.SteerRequest, outcome agent.SteerOutcome, receipt agent.NativeInputReceipt) error {
@@ -158,14 +169,15 @@ func (a *Agent) recordReplyToolCall(sessionID, callID string, number *int64) {
 	if turn == nil || harnessTurnID(number) != turn.id || turn.toolInputs[callID] != nil {
 		return
 	}
-	inputs := make([]string, 0, len(turn.inputs))
-	for _, input := range turn.inputs {
-		inputs = append(inputs, input.InputID)
-	}
+	inputs := turn.inputIDs
 	if turn.toolInputs == nil {
 		turn.toolInputs = make(map[string][]string)
 	}
 	turn.toolInputs[callID] = inputs
+
+	if a.unboundControls.Load() == 0 {
+		return
+	}
 
 	// The Remote control stream can deliver a request before session/follow
 	// delivers its tool call. Attach the proof when both have arrived.
@@ -175,17 +187,30 @@ func (a *Agent) recordReplyToolCall(sessionID, callID string, number *int64) {
 	}
 	var bindings []controlBinding
 	a.Mu.Lock()
+	controlIDs := make([]string, 0, len(a.controls))
 	for id, control := range a.controls {
 		if control.agentID == sessionID && control.replyCallID == callID {
-			control.replyInputIDs = inputs
-			if binding := control.takeReplyInputsLocked(id); binding.RequestID != "" {
-				bindings = append(bindings, controlBinding{sink: control.sink, binding: binding})
-			}
+			controlIDs = append(controlIDs, id)
+		}
+	}
+	slices.Sort(controlIDs)
+	for _, id := range controlIDs {
+		control := a.controls[id]
+		control.replyInputIDs = inputs
+		a.clearControlUnboundLocked(control)
+		if binding := control.takeReplyInputsLocked(id); binding.RequestID != "" {
+			bindings = append(bindings, controlBinding{sink: control.sink, binding: binding})
 		}
 	}
 	a.Mu.Unlock()
 	for _, item := range bindings {
 		a.bindReplyControl(item.sink, item.binding)
+	}
+}
+
+func (a *Agent) forgetReplyToolCall(sessionID, callID string) {
+	if turn := a.replyTurns[sessionID]; turn != nil && turn.toolInputs != nil {
+		delete(turn.toolInputs, callID)
 	}
 }
 
@@ -216,7 +241,7 @@ func (a *Agent) bindReplyControl(sink agent.ProviderServices, binding agent.Nati
 	}
 }
 
-func (a *Agent) finishReplyTurn(sessionID string, number *int64, reason string) {
+func (a *Agent) finishReplyTurn(sessionID string, number *int64, outcome leapmuxv1.AgentInputTurnOutcome) {
 	turn := a.replyTurns[sessionID]
 	if turn == nil || turn.sessionID != sessionID {
 		return
@@ -225,7 +250,6 @@ func (a *Agent) finishReplyTurn(sessionID string, number *int64, reason string) 
 	if len(turn.inputs) == 0 {
 		return
 	}
-	outcome := harnessReplyOutcome(reason)
 	if turn.unproved || harnessTurnID(number) != turn.id || outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
 		a.retireReplyTurn(turn)
 		return
@@ -235,19 +259,6 @@ func (a *Agent) finishReplyTurn(sessionID string, number *int64, reason string) 
 	}); !agent.OutputRetained(err) {
 		slog.Warn("Store the exact DeepSeek Harness reply", "agent_id", a.AgentID(), "error", err)
 		a.retireReplyTurn(turn)
-	}
-}
-
-func harnessReplyOutcome(reason string) leapmuxv1.AgentInputTurnOutcome {
-	switch reason {
-	case "completed", "max-tokens":
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
-	case "aborted", "interrupted":
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
-	case "blocked", "error":
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
-	default:
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 	}
 }
 
@@ -267,16 +278,31 @@ func (a *Agent) retireReplyTurn(turn *harnessReplyTurn) {
 }
 
 func (a *Agent) retireUnfinishedReplies() {
-	for _, turn := range a.replyTurns {
-		a.retireReplyTurn(turn)
+	turnKeys := make([]string, 0, len(a.replyTurns))
+	for key := range a.replyTurns {
+		turnKeys = append(turnKeys, key)
+	}
+	slices.Sort(turnKeys)
+	for _, key := range turnKeys {
+		a.retireReplyTurn(a.replyTurns[key])
 	}
 	clear(a.replyTurns)
-	for _, submission := range a.replySubmissions {
+
+	submissionKeys := make([]string, 0, len(a.replySubmissions))
+	for key := range a.replySubmissions {
+		submissionKeys = append(submissionKeys, key)
+	}
+	slices.Sort(submissionKeys)
+	for _, key := range submissionKeys {
+		submission := a.replySubmissions[key]
 		if submission.steer.AttemptID == "" {
 			a.retireReplyInput(submission.sink, submission.receipt)
-		} else if submission.receipt.SessionID != a.session() && submission.sink != nil {
-			_ = a.reportSteerResolution(submission.sink, submission.steer, agent.SteerOutcomeUncertain, agent.NativeInputReceipt{})
+		} else if submission.sink != nil {
+			if err := a.reportSteerResolution(submission.sink, submission.steer, agent.SteerOutcomeUncertain, agent.NativeInputReceipt{}); !agent.OutputRetained(err) {
+				slog.Warn("Store the DeepSeek Harness steer outcome", "agent_id", a.AgentID(), "error", err)
+			}
 		}
 	}
 	clear(a.replySubmissions)
+	a.clearPendingSteers()
 }

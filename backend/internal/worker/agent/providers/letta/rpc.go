@@ -35,6 +35,13 @@ type wsConn struct {
 	conn *websocket.Conn
 }
 
+// wsWriteError marks a failure returned by WebSocket Write after the write
+// began, where the client cannot prove zero bytes reached the server.
+type wsWriteError struct{ err error }
+
+func (e wsWriteError) Error() string { return e.err.Error() }
+func (e wsWriteError) Unwrap() error { return e.err }
+
 // writeJSON sends one command frame.
 func (w *wsConn) writeJSON(ctx context.Context, v any) error {
 	raw, err := json.Marshal(v)
@@ -43,7 +50,10 @@ func (w *wsConn) writeJSON(ctx context.Context, v any) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.conn.Write(ctx, websocket.MessageText, raw)
+	if err := w.conn.Write(ctx, websocket.MessageText, raw); err != nil {
+		return wsWriteError{err: err}
+	}
+	return nil
 }
 
 // close ends the socket.
@@ -67,6 +77,9 @@ func (a *Agent) sendCommandContext(ctx context.Context, command any) error {
 	}
 	if ctx == nil {
 		return errAgentStopped
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, lettaSendWait)
 	defer cancel()
@@ -246,7 +259,7 @@ func (a *Agent) handleFrame(line []byte) {
 		}
 		a.onLoopStatus(head.LoopStatus, scope)
 	case contracts.LettaMessageControlRequest:
-		a.onControlRequest(line, head.Request, head.RequestID)
+		a.onControlRequest(head.Runtime, head.SubagentID, head.Request, head.RequestID)
 	case "runtime_start_response":
 		a.adoptRuntime(line)
 	case "list_models_response":

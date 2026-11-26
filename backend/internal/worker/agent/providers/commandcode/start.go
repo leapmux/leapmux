@@ -61,6 +61,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		permissionMode: opts.PermissionMode(), children: make(map[string]*childState),
 		replyProcessID: id.Generate(),
 	}
+	a.replies = providerkit.NativeReplyLedger{
+		RequireStart:  true,
+		DurableTurnID: a.commandCodeDurableTurnID,
+		Provider:      "Command Code",
+		AgentID:       opts.AgentID,
+	}
 	a.sink = agent.NewModelProgressResetSink(sink)
 	if err := a.StartCmd(); err != nil {
 		a.cleanupRuntime()

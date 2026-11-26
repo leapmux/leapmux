@@ -61,7 +61,7 @@ func TestCodewhaleReplyKeepsItemsPublishedBeforeTheStartResponse(t *testing.T) {
 	}
 	assert.Equal(t, map[string]string{firstKey: "First result.", secondKey: "Second result."}, textByKey)
 	assert.Empty(t, sink.NativeReplyRetirements())
-	assert.Empty(t, a.replyTurns)
+	assert.Zero(t, a.replies.Len())
 	assert.Empty(t, a.turnID, "the late start response must not reopen the finished turn")
 }
 
@@ -129,8 +129,8 @@ func TestCodewhaleReplyNeedsTheTurnIDFromAcceptance(t *testing.T) {
 
 	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.Empty(t, receipt)
-	assert.Empty(t, a.replyTurns)
-	assert.Zero(t, a.replyStarts)
+	assert.Zero(t, a.replies.Len())
+	assert.Zero(t, a.replies.PendingStarts())
 	assert.Empty(t, sink.NativeReplyTurns())
 }
 
@@ -153,4 +153,121 @@ func TestCodewhaleReplyWithAnOpenItemCannotCompleteAfterANewerStart(t *testing.T
 	assert.Empty(t, sink.NativeReplyTurns())
 	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
 	assert.Equal(t, "turn_newer", a.turnID)
+}
+
+type orderedRetirementSink struct {
+	agent.ProviderServices
+	retiredTurns []string
+}
+
+func (s *orderedRetirementSink) RetireNativeInputTurn(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
+	s.retiredTurns = append(s.retiredTurns, receipt.TurnID)
+	return s.ProviderServices.RetireNativeInputTurn(receipt, outcome)
+}
+
+func TestCodewhaleReplyRetirementAndSteerFlushOrderIsDeterministic(t *testing.T) {
+	t.Parallel()
+	wantTurns := []string{"turn_1", "turn_2", "turn_3", "turn_4", "turn_5", "turn_6", "turn_7", "turn_8"}
+
+	for range 16 {
+		var recorder *orderedRetirementSink
+		a, _ := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+			recorder = &orderedRetirementSink{ProviderServices: inner}
+			return recorder
+		}})
+		for _, turnID := range wantTurns {
+			a.beginCodewhaleReplyStart()
+			a.finishCodewhaleReplyStart(codewhaleInputReceipt(testThreadID, turnID))
+		}
+		a.dispatchMu.Lock()
+		a.retireCodewhaleRepliesAfterExit()
+		a.dispatchMu.Unlock()
+		require.Equal(t, wantTurns, recorder.retiredTurns)
+	}
+
+	for range 16 {
+		a, sink := newTestAgent(t, nil)
+		a.beginCodewhaleReplyStart()
+		a.dispatchMu.Lock()
+		for _, turnID := range wantTurns {
+			require.True(t, a.replies.RecordSteerBoundary(turnID, agent.NativeInputReceipt{
+				SessionID: testThreadID, TurnID: turnID, InputID: "steer_" + turnID,
+			}))
+			a.replies.Finish(turnID, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, a.sink)
+		}
+		a.dispatchMu.Unlock()
+		a.finishCodewhaleReplyStart(agent.NativeInputReceipt{})
+		turns := sink.NativeReplyTurns()
+		require.Len(t, turns, len(wantTurns))
+		gotTurns := make([]string, len(turns))
+		for i, turn := range turns {
+			gotTurns[i] = turn.TurnID
+		}
+		require.Equal(t, wantTurns, gotTurns)
+	}
+}
+
+type failMessagePersistSink struct {
+	agent.ProviderServices
+	err error
+}
+
+func (s *failMessagePersistSink) OutputQueue() *agent.OutputQueue { return nil }
+
+func (s *failMessagePersistSink) PersistMessage(leapmuxv1.MessageSource, agent.MessageContent, agent.SpanInfo) error {
+	return s.err
+}
+
+func TestCodewhaleReplyUnprovedOnStreamedPersistFailureAndSteerBoundaryGuards(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-retained final message persist failure retires turn as unproved", func(t *testing.T) {
+		t.Parallel()
+		runtime := newFakeRuntime(t)
+		acceptTurns(runtime, testTurnID)
+		a, sink := newTestAgent(t, runtime)
+		a.sink = &failMessagePersistSink{ProviderServices: a.sink, err: assert.AnError}
+
+		receipt, err := a.SendInput("Check the result.", nil)
+		require.NoError(t, err)
+		a.HandleOutput(itemEvent(1, "item.completed", "msg-1", contracts.CodewhaleItemKindAgentMessage, "Final reply.", nil))
+		a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+
+		assert.Empty(t, sink.NativeReplyTurns())
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
+	})
+
+	t.Run("retained pending streamed text error still publishes exact reply", func(t *testing.T) {
+		t.Parallel()
+		runtime := newFakeRuntime(t)
+		acceptTurns(runtime, testTurnID)
+		a, sink := newTestAgent(t, runtime)
+		a.sink = &failMessagePersistSink{ProviderServices: a.sink, err: assert.AnError}
+
+		_, err := a.SendInput("Check the result.", nil)
+		require.NoError(t, err)
+		a.HandleOutput(runtimeEvent(1, "item.delta", testTurnID, "streamed-1", map[string]any{
+			"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "Streamed reply.",
+		}))
+		a.HandleOutput(itemEvent(2, "item.completed", "streamed-1", contracts.CodewhaleItemKindAgentMessage, "", nil))
+		a.HandleOutput(turnCompletedEvent(3, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+
+		assert.Empty(t, sink.NativeReplyRetirements())
+		require.Len(t, sink.NativeReplyTurns(), 1)
+		assert.Equal(t, []agent.NativeReplyItem{{Ordinal: 2, MessageKey: codewhaleReplyMessageKey(testTurnID, "streamed-1")}}, sink.NativeReplyTurns()[0].Items)
+	})
+
+	t.Run("recordCodewhaleSteerBoundary rejects empty or mismatched thread ID", func(t *testing.T) {
+		t.Parallel()
+		a, _ := newTestAgent(t, nil)
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		assert.False(t, a.recordCodewhaleSteerBoundary(agent.NativeInputReceipt{
+			SessionID: "", TurnID: testTurnID, InputID: "steer-1",
+		}))
+		assert.False(t, a.recordCodewhaleSteerBoundary(agent.NativeInputReceipt{
+			SessionID: "other-thread", TurnID: testTurnID, InputID: "steer-1",
+		}))
+		assert.Zero(t, a.replies.Len())
+	})
 }

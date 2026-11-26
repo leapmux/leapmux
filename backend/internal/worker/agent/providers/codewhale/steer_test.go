@@ -126,7 +126,7 @@ func writeTurnRecord(t *testing.T, a *Agent, items ...[2]string) {
 		}
 	}
 	ids := []string{"item_tool"}
-	require.NoError(t, os.WriteFile(filepath.Join(root, "items", "item_tool.json"), mustJSON(t, map[string]any{"id": "item_tool", "turn_id": testTurnID, "kind": "tool_call", "status": "completed", "detail": "Also this."}), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "items", "item_tool.json"), agenttest.MustJSON(t, map[string]any{"id": "item_tool", "turn_id": testTurnID, "kind": "tool_call", "status": "completed", "detail": "Also this."}), 0o600))
 	used := make(map[string]bool)
 	for _, entry := range items {
 		id := ""
@@ -140,10 +140,10 @@ func writeTurnRecord(t *testing.T, a *Agent, items ...[2]string) {
 			id = "item_fixture_" + strconv.FormatUint(fixtureSteerSequence.Add(1), 10)
 		}
 		used[id] = true
-		require.NoError(t, os.WriteFile(filepath.Join(root, "items", id+".json"), mustJSON(t, storedItem{ID: id, TurnID: testTurnID, Kind: itemKindUserMessage, Status: entry[0], Detail: entry[1]}), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(root, "items", id+".json"), agenttest.MustJSON(t, storedItem{ID: id, TurnID: testTurnID, Kind: itemKindUserMessage, Status: entry[0], Detail: entry[1]}), 0o600))
 		ids = append(ids, id)
 	}
-	require.NoError(t, os.WriteFile(filepath.Join(root, "turns", testTurnID+".json"), mustJSON(t, storedTurn{ID: testTurnID, ItemIDs: ids}), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "turns", testTurnID+".json"), agenttest.MustJSON(t, storedTurn{ID: testTurnID, ItemIDs: ids}), 0o600))
 }
 
 func openSteers(a *Agent) int {
@@ -929,4 +929,201 @@ func TestCodewhaleFinalRequestSnapshotKeepsInterruptedOutput(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "The partial answer.", text)
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion)
+}
+
+func TestCodewhaleSteerWithoutAttemptIDEmitsNoResolution(t *testing.T) {
+	t.Parallel()
+	t.Run("accepted control feedback leaves no open ticket and reports no steer resolution", func(t *testing.T) {
+		t.Parallel()
+		rt := newFakeRuntime(t)
+		acceptSteers(rt)
+		a, sink := newSteeringAgent(t, rt)
+
+		// Control feedback has an InputID but no AttemptID because its transcript row is already reserved.
+		require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
+			InputID: "feedback-1",
+			Content: "Use a dry run.",
+		}))
+		assert.Zero(t, openSteers(a))
+		a.Mu.Lock()
+		unidentified := a.steers.unidentified()
+		a.Mu.Unlock()
+		assert.False(t, unidentified)
+
+		// A subsequent tracked steer is not blocked and resolves normally.
+		require.NoError(t, agenttest.SteerInput(a, testCodewhaleSteer(1, "Follow up.")))
+		a.HandleOutput(runtimeEvent(2, eventTurnSteered, testTurnID, "item_steer_1", map[string]any{
+			"thread_id": testThreadID, "turn_id": testTurnID, "input": "Use a dry run.",
+		}))
+		a.HandleOutput(runtimeEvent(3, eventTurnSteered, testTurnID, "item_steer_2", map[string]any{
+			"thread_id": testThreadID, "turn_id": testTurnID, "input": "Follow up.",
+		}))
+		a.HandleOutput(turnCompletedEvent(4, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+
+		assert.Equal(t, []agent.SteerResolution{testCodewhaleEcho(1, "item_steer_2", testTurnID)}, sink.SteerResolutions())
+	})
+
+	t.Run("refused untracked steer returns ErrNoActiveTurn and absorbs its drop notification", func(t *testing.T) {
+		t.Parallel()
+		rt := newFakeRuntime(t)
+		rt.respondStatus(http.MethodPost, steerRoute, http.StatusConflict, "Turn moved on")
+		a, sink := newSteeringAgent(t, rt)
+
+		err := agenttest.SteerInput(a, agent.SteerRequest{
+			InputID: "feedback-2",
+			Content: "Use a dry run.",
+		})
+		require.ErrorIs(t, err, agent.ErrNoActiveTurn)
+		assert.Zero(t, openSteers(a))
+
+		a.HandleOutput(steerDroppedEvent(2, "Use a dry run."))
+		assert.Zero(t, sink.NotificationCount())
+		assert.Empty(t, sink.SteerResolutions())
+	})
+
+	t.Run("lost reply on untracked steer returns ErrDeliveryUncertain", func(t *testing.T) {
+		t.Parallel()
+		rt := newFakeRuntime(t)
+		rt.handle(http.MethodPost, steerRoute, func(w http.ResponseWriter, _ *http.Request) {
+			hijacker, ok := w.(http.Hijacker)
+			require.True(t, ok)
+			conn, _, err := hijacker.Hijack()
+			require.NoError(t, err)
+			_ = conn.Close()
+		})
+		a, sink := newSteeringAgent(t, rt)
+
+		err := agenttest.SteerInput(a, agent.SteerRequest{
+			InputID: "feedback-3",
+			Content: "Use a dry run.",
+		})
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.Zero(t, openSteers(a))
+		assert.Empty(t, sink.SteerResolutions())
+	})
+
+	t.Run("empty input ID with non-empty attempt ID is also untracked", func(t *testing.T) {
+		t.Parallel()
+		rt := newFakeRuntime(t)
+		acceptSteers(rt)
+		a, sink := newSteeringAgent(t, rt)
+
+		require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
+			AttemptID: "attempt-only",
+			Content:   "Use a dry run.",
+		}))
+		assert.Zero(t, openSteers(a))
+		a.HandleOutput(steeredEvent(2, "Use a dry run."))
+		assert.Empty(t, sink.SteerResolutions())
+	})
+
+	t.Run("server error on untracked steer returns HTTP error without absorbing drop", func(t *testing.T) {
+		t.Parallel()
+		rt := newFakeRuntime(t)
+		rt.respondStatus(http.MethodPost, steerRoute, http.StatusInternalServerError, "store busy")
+		a, sink := newSteeringAgent(t, rt)
+
+		err := agenttest.SteerInput(a, agent.SteerRequest{
+			InputID: "feedback-500",
+			Content: "Use a dry run.",
+		})
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, agent.ErrNoActiveTurn)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.ErrorContains(t, err, "store busy")
+		assert.Zero(t, openSteers(a))
+
+		a.HandleOutput(steerDroppedEvent(2, "Use a dry run."))
+		assert.Equal(t, 1, sink.NotificationCount(), "a 500 failure must not absorb a later drop notification")
+		assert.Empty(t, sink.SteerResolutions())
+	})
+
+	t.Run("unidentified tracked steer blocks subsequent untracked steer", func(t *testing.T) {
+		t.Parallel()
+		rt := newFakeRuntime(t)
+		acceptSteers(rt)
+		a, _ := newSteeringAgent(t, rt)
+		// Clear the store so bindSteerItem cannot read an item ID and the steer stays unidentified.
+		a.store = codewhaleStore{}
+
+		require.NoError(t, agenttest.SteerInput(a, testCodewhaleSteer(1, "First tracked.")))
+		assert.False(t, a.PublishTurnActive().Steerable)
+
+		err := agenttest.SteerInput(a, agent.SteerRequest{
+			InputID: "feedback-blocked",
+			Content: "Use a dry run.",
+		})
+		var busy *agent.AgentBusyError
+		require.ErrorAs(t, err, &busy)
+		assert.False(t, busy.ActiveTurnSteerable)
+	})
+
+	t.Run("reportSteerResolution ignores a ticket missing input or attempt ID", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newSteeringAgent(t, nil)
+		a.reportSteerResolution(&steerTicket{
+			submission: agent.SteerResolution{InputID: "feedback-1"},
+			verdict:    agent.SteerOutcomeEchoed,
+		})
+		a.reportSteerResolution(&steerTicket{
+			submission: agent.SteerResolution{AttemptID: "attempt-1"},
+			verdict:    agent.SteerOutcomeDropped,
+		})
+		assert.Empty(t, sink.SteerResolutions())
+	})
+}
+
+func TestReadStoredItemAndReadSteerItem(t *testing.T) {
+	t.Parallel()
+	store := codewhaleStore{dir: t.TempDir()}
+	root := store.runtimeDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "turns"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "items"), 0o700))
+
+	toolItem := storedItem{ID: "item_tool", TurnID: testTurnID, Kind: "tool_call", Status: itemStatusCompleted, Detail: "ok"}
+	userItem := storedItem{ID: "item_user", TurnID: testTurnID, Kind: itemKindUserMessage, Status: itemStatusCompleted, Detail: "hello"}
+	mismatchTurn := storedItem{ID: "item_other", TurnID: "turn_other", Kind: itemKindUserMessage, Status: itemStatusCompleted, Detail: "hi"}
+	mismatchID := storedItem{ID: "different_id", TurnID: testTurnID, Kind: itemKindUserMessage, Status: itemStatusCompleted, Detail: "wrong id"}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "items", "item_tool.json"), agenttest.MustJSON(t, toolItem), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "items", "item_user.json"), agenttest.MustJSON(t, userItem), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "items", "item_other.json"), agenttest.MustJSON(t, mismatchTurn), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "items", "item_wrong_id.json"), agenttest.MustJSON(t, mismatchID), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "turns", testTurnID+".json"), agenttest.MustJSON(t, storedTurn{
+		ID: testTurnID, ItemIDs: []string{"item_tool", "item_user"},
+	}), 0o600))
+
+	gotTool, ok := readStoredItem(store, testTurnID, "item_tool")
+	assert.True(t, ok)
+	assert.Equal(t, toolItem, gotTool)
+	gotSteerTool, ok := readSteerItem(store, testTurnID, "item_tool")
+	assert.False(t, ok)
+	assert.Zero(t, gotSteerTool)
+
+	gotUser, ok := readSteerItem(store, testTurnID, "item_user")
+	assert.True(t, ok)
+	assert.Equal(t, userItem, gotUser)
+
+	_, ok = readStoredItem(store, testTurnID, "item_other")
+	assert.False(t, ok, "item belonging to another turn must be rejected")
+	_, ok = readStoredItem(store, testTurnID, "item_wrong_id")
+	assert.False(t, ok, "item whose body ID differs from its filename must be rejected")
+	_, ok = readStoredItem(store, "", "item_user")
+	assert.False(t, ok, "empty turn ID must be rejected")
+	_, ok = readStoredItem(store, testTurnID, "")
+	assert.False(t, ok, "empty item ID must be rejected")
+	_, ok = readStoredItem(store, testTurnID, "../item_user")
+	assert.False(t, ok, "path traversal must be rejected")
+	_, ok = readStoredItem(codewhaleStore{}, testTurnID, "item_user")
+	assert.False(t, ok, "empty store must be rejected")
+
+	steers, ok := readTurnSteers(store, testTurnID, nil)
+	assert.True(t, ok)
+	assert.Equal(t, []storedItem{userItem}, steers)
+
+	// An unreadable new record makes readTurnSteers fail.
+	require.NoError(t, os.WriteFile(filepath.Join(root, "turns", testTurnID+".json"), agenttest.MustJSON(t, storedTurn{
+		ID: testTurnID, ItemIDs: []string{"item_tool", "item_missing"},
+	}), 0o600))
+	_, ok = readTurnSteers(store, testTurnID, map[string]bool{"item_tool": true})
+	assert.False(t, ok)
 }

@@ -23,12 +23,10 @@ type Agent struct {
 	dispatchMu sync.Mutex
 	// replyProcessID separates durable reply keys when a process reuses a native turn ID.
 	replyProcessID string
-	// dispatchMu guards reply capture and the turn named by the native output stream.
+	// dispatchMu guards reply capture and the turn identified by the native output stream.
 	replyOutputTurnID string
-	replyStartPending bool
-	replyStreamClosed bool
-	nativeReplies     map[string]*commandCodeNativeReply
-	pendingSteers     []agent.SteerResolution
+	replies           providerkit.NativeReplyLedger
+	pendingSteers     []*pendingCommandCodeSteer
 	// dispatchMu guards the error while the next native row determines whether it repeats.
 	pendingRunError *agent.CapturedTranscript
 	clock           quartz.Clock

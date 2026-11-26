@@ -584,3 +584,131 @@ func publishedKimiControl(kind kimiControlKind, sessionID string, answered bool)
 	pending.publicationOnce.Do(func() { close(pending.publicationDone) })
 	return pending
 }
+
+type kimiInstanceCancelCall struct {
+	requestID  string
+	instanceID string
+}
+
+type kimiInstanceCancelSink struct {
+	agenttest.ControlSink
+	mu       sync.Mutex
+	unscoped []string
+	byInst   []kimiInstanceCancelCall
+}
+
+func (s *kimiInstanceCancelSink) CancelControlRequest(requestID string) {
+	s.mu.Lock()
+	s.unscoped = append(s.unscoped, requestID)
+	s.mu.Unlock()
+	s.ControlSink.CancelControlRequest(requestID)
+}
+
+func (s *kimiInstanceCancelSink) CancelControlRequestInstance(requestID, instanceID string) {
+	s.mu.Lock()
+	s.byInst = append(s.byInst, kimiInstanceCancelCall{requestID: requestID, instanceID: instanceID})
+	s.mu.Unlock()
+	s.ControlSink.CancelControlRequestInstance(requestID, instanceID)
+}
+
+func (s *kimiInstanceCancelSink) cancelSnapshots() (unscoped []string, scoped []kimiInstanceCancelCall) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.unscoped...), append([]kimiInstanceCancelCall(nil), s.byInst...)
+}
+
+func TestKimiControlWithdrawalsScopeToInstanceID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("resolveControl withdraws by instance ID", func(t *testing.T) {
+		t.Parallel()
+		sink := &kimiInstanceCancelSink{}
+		a := newOfflineKimiAgent(t, sink)
+		sink.UpdateSessionID("session_1")
+		a.HandleOutput(kimiEventFrame(t, "session_1", approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"})))
+		published := sink.LastPublishedControl()
+		require.NotEmpty(t, published.InstanceID)
+
+		a.HandleOutput(kimiEventFrame(t, "session_1", map[string]any{
+			"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindApproval,
+			"status": kimiInteractionEnded, "outcome": "cancelled", "interaction_id": "approval_1",
+		}))
+		unscoped, scoped := sink.cancelSnapshots()
+		assert.Empty(t, unscoped)
+		assert.Equal(t, []kimiInstanceCancelCall{{requestID: "approval_1", instanceID: published.InstanceID}}, scoped)
+	})
+
+	t.Run("withdrawAllControls withdraws by instance ID", func(t *testing.T) {
+		t.Parallel()
+		sink := &kimiInstanceCancelSink{}
+		a := newOfflineKimiAgent(t, sink)
+		sink.UpdateSessionID("session_1")
+		a.HandleOutput(kimiEventFrame(t, "session_1", approvalEvent("approval_b", map[string]any{"kind": "command", "command": "ls"})))
+		instB := sink.LastPublishedControl().InstanceID
+		a.HandleOutput(kimiEventFrame(t, "session_1", questionEvent("question_a")))
+		instA := sink.LastPublishedControl().InstanceID
+
+		a.withdrawAllControls()
+		unscoped, scoped := sink.cancelSnapshots()
+		assert.Empty(t, unscoped)
+		assert.Equal(t, []kimiInstanceCancelCall{
+			{requestID: "approval_b", instanceID: instB},
+			{requestID: "question_a", instanceID: instA},
+		}, scoped)
+	})
+
+	t.Run("finishControlReply withdraws by instance ID on automatic approval and retirement", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name      string
+			err       error
+			automatic bool
+		}{
+			{"automatic approval", nil, true},
+			{"retired gone error", errKimiControlGone, false},
+			{"retired uncertain error", agent.ErrDeliveryUncertain, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sink := &kimiInstanceCancelSink{}
+				a := newOfflineKimiAgent(t, sink)
+				pending := publishedKimiControl(kimiControlApproval, "session_1", false)
+				pending.instanceID = "inst-" + tc.name
+				a.Mu.Lock()
+				a.controls = map[string]*kimiPendingControl{"approval_1": pending}
+				a.Mu.Unlock()
+
+				a.finishControlReply("approval_1", pending, tc.err, tc.automatic)
+				unscoped, scoped := sink.cancelSnapshots()
+				assert.Empty(t, unscoped)
+				assert.Equal(t, []kimiInstanceCancelCall{{requestID: "approval_1", instanceID: pending.instanceID}}, scoped)
+			})
+		}
+	})
+
+	t.Run("finishControlReplay withdraws absent controls by instance ID", func(t *testing.T) {
+		t.Parallel()
+		sink := &kimiInstanceCancelSink{}
+		a := newOfflineKimiAgent(t, sink)
+		pendingA := publishedKimiControl(kimiControlApproval, "session_1", false)
+		pendingA.instanceID = "inst-a"
+		pendingB := publishedKimiControl(kimiControlQuestion, "session_1", false)
+		pendingB.instanceID = "inst-b"
+		a.controls = map[string]*kimiPendingControl{
+			"b_req": pendingB,
+			"a_req": pendingA,
+		}
+		a.dispatchMu.Lock()
+		a.captureControlReplay("session_1")
+		replay := a.controlReplay
+		a.finishDispatch()
+
+		a.finishControlReplay(replay, true)
+		unscoped, scoped := sink.cancelSnapshots()
+		assert.Empty(t, unscoped)
+		assert.Equal(t, []kimiInstanceCancelCall{
+			{requestID: "a_req", instanceID: "inst-a"},
+			{requestID: "b_req", instanceID: "inst-b"},
+		}, scoped)
+	})
+}

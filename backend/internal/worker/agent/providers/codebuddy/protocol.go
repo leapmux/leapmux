@@ -13,15 +13,12 @@ type MessageType string
 
 const (
 	// Input messages written to stdin.
-	MessageTypeUser           MessageType = "user"
-	MessageTypeControlRequest MessageType = "control_request"
+	MessageTypeUser MessageType = "user"
 
 	// Output messages read from stdout.
 	MessageTypeSystem            MessageType = "system"
 	MessageTypeAssistant         MessageType = "assistant"
 	MessageTypeResult            MessageType = "result"
-	MessageTypeControlRequestOut MessageType = "control_request"
-	MessageTypeControlResponse   MessageType = "control_response"
 	MessageTypeToolProgress      MessageType = "tool_progress"
 	MessageTypeActiveGoal        MessageType = "active_goal"
 	MessageTypeConversationReset MessageType = "conversation_reset"

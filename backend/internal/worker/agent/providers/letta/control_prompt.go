@@ -2,6 +2,7 @@ package letta
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -25,15 +26,14 @@ type lettaControlPayload struct {
 	toolInput  json.RawMessage
 }
 
-// readLettaControlPayload reads payload by the names that the Worker writes it
-// under. A field that is not text reads as empty, and a tool input that is not a
-// JSON object reads as `{}`. It reports false when payload is neither a JSON
-// object nor JSON null, and when a field that the Worker writes as text holds
-// another value. The Worker writes no such payload, so an answer to it cannot be
-// addressed.
+// readLettaControlPayload reads payload under the keys that the Worker writes.
+// A field that is not text reads as empty, and a tool input that is not a JSON
+// object reads as `{}`. It reports false when payload is not a JSON object, or
+// when a text field holds a non-string, non-null value. The Worker writes no
+// such payload, so an answer to it cannot be addressed.
 func readLettaControlPayload(payload []byte) (lettaControlPayload, bool) {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(payload, &fields) != nil {
+	fields, ok := providerkit.RawObject(payload)
+	if !ok {
 		return lettaControlPayload{toolInput: json.RawMessage("{}")}, false
 	}
 	readable := true
@@ -64,14 +64,24 @@ func readLettaControlPayload(payload []byte) (lettaControlPayload, bool) {
 //   - A permission request (`permission`) asks whether one tool call may run.
 //     A call of the question tool is one of them: Strict mode asks it.
 //
-// Any other payload reads as unrecognized: the Worker publishes no other
-// request, and the resolution refuses an answer to one.
+// Any other or unanswerable payload reads as unrecognized, matching the
+// refusal rules of lettaResolveControlResponse.
 func (lettaProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	payload, _ := readLettaControlPayload(input.Payload)
+	payload, readable := readLettaControlPayload(input.Payload)
+	if !readable {
+		return agent.UnrecognizedControlPrompt()
+	}
 	switch payload.kind {
 	case string(lettaControlAskUser):
+		if payload.toolCallID == "" {
+			return agent.UnrecognizedControlPrompt()
+		}
+		questions, ok := readLettaQuestions(providerkit.RawFields(payload.toolInput)[contracts.LettaQuestionFieldQuestions])
+		if !ok {
+			return agent.UnrecognizedControlPrompt()
+		}
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-			Questions: lettaPromptQuestions(payload.toolInput),
+			Questions: questions,
 		}}}
 	case string(lettaControlPermission):
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: lettaPermissionPrompt(payload)}}
@@ -96,57 +106,61 @@ func lettaPermissionPrompt(payload lettaControlPayload) *leapmuxv1.PermissionPro
 		Options:   agent.AllowDenyOptions(),
 	}
 	if title == contracts.LettaToolBash {
-		var fields map[string]json.RawMessage
-		_ = json.Unmarshal(payload.toolInput, &fields)
-		permission.Command, _ = providerkit.RawString(fields["command"])
+		permission.Command = providerkit.ObjectString(providerkit.RawFields(payload.toolInput), "command")
 	}
 	return permission
 }
 
-// lettaPromptQuestions reads the `questions` of a question call's input.
+// readLettaQuestions parses and validates a Letta question array (`questions`).
+// It reports false when the list is not a nonempty JSON array of question
+// objects, when any question has missing, non-string, or blank text, or when
+// two questions share the same text (answers are keyed by question text).
 //
-// Letta's question states its text, its options and whether it takes several
-// of them. An element that is no object is dropped. An option is an object
-// with a label, or a bare string; an option with no label is dropped, and the
-// label is also the value that the answer sends. A question keeps no header
-// and no description: the transcript row of the call draws those.
-func lettaPromptQuestions(toolInput json.RawMessage) []*leapmuxv1.ControlQuestion {
-	var fields map[string]json.RawMessage
-	var elements []json.RawMessage
-	if json.Unmarshal(toolInput, &fields) != nil || json.Unmarshal(fields[contracts.LettaQuestionFieldQuestions], &elements) != nil {
-		return nil
+// An option is an object with a label or a bare string; an option with no
+// label is dropped, and the label is also the value that the answer sends.
+// A question keeps no header and no description: the transcript row draws those.
+func readLettaQuestions(raw json.RawMessage) ([]*leapmuxv1.ControlQuestion, bool) {
+	elements, ok := providerkit.RawArray(raw)
+	if !ok || len(elements) == 0 {
+		return nil, false
 	}
+	seen := make(map[string]struct{}, len(elements))
 	questions := make([]*leapmuxv1.ControlQuestion, 0, len(elements))
 	for _, element := range elements {
-		var question map[string]json.RawMessage
-		if json.Unmarshal(element, &question) != nil || question == nil {
-			continue
+		question, ok := providerkit.RawObject(element)
+		if !ok {
+			return nil, false
 		}
-		text, _ := providerkit.RawString(question["question"])
+		text, ok := providerkit.RawString(question["question"])
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, false
+		}
+		if _, repeated := seen[text]; repeated {
+			return nil, false
+		}
+		seen[text] = struct{}{}
 		questions = append(questions, &leapmuxv1.ControlQuestion{
 			Question:    text,
 			Options:     lettaPromptOptions(question["options"]),
 			MultiSelect: providerkit.RawBool(question["multiSelect"]),
 		})
 	}
-	return questions
+	return questions, true
 }
 
 // lettaPromptOptions reads the options of one question. An option is a bare
 // string or an object with a `label`; an option whose label is empty or not
 // text is dropped.
 func lettaPromptOptions(raw json.RawMessage) []*leapmuxv1.QuestionOption {
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil {
+	elements, ok := providerkit.RawArray(raw)
+	if !ok {
 		return nil
 	}
 	options := make([]*leapmuxv1.QuestionOption, 0, len(elements))
 	for _, element := range elements {
 		label, ok := providerkit.RawString(element)
 		if !ok {
-			var option map[string]json.RawMessage
-			_ = json.Unmarshal(element, &option)
-			label, _ = providerkit.RawString(option["label"])
+			label = providerkit.ObjectString(providerkit.RawFields(element), "label")
 		}
 		if label == "" {
 			continue

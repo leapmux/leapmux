@@ -83,13 +83,8 @@ func (kimiProvider) ControlRequestKey(payload []byte, agentSessionID string) (st
 	if providerkit.IsWorkspaceTrustQuestion(payload) {
 		return providerkit.WorkspaceTrustRequestKey(payload, agentSessionID)
 	}
-	var interaction struct {
-		InteractionID string `json:"interaction_id"`
-	}
-	if json.Unmarshal(payload, &interaction) != nil || interaction.InteractionID == "" {
-		return "", false
-	}
-	return interaction.InteractionID, true
+	id := providerkit.StringField(payload, "interaction_id")
+	return id, id != ""
 }
 
 // ResolveControlResponse turns the neutral answer into the server's own

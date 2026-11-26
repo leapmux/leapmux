@@ -1,9 +1,10 @@
 package kimi
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
-	"sort"
+	"slices"
 	"sync/atomic"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -89,7 +90,7 @@ func (a *Agent) finishControlReplay(replay *kimiControlReplay, accepted bool) {
 		a.Mu.Unlock()
 		return
 	}
-	var withdrawn []string
+	var withdrawn []kimiControlWithdrawal
 	for id, pending := range replay.pending {
 		_, seen := replay.seen[id]
 		if seen || a.controls[id] != pending {
@@ -98,12 +99,14 @@ func (a *Agent) finishControlReplay(replay *kimiControlReplay, accepted bool) {
 		delete(a.controls, id)
 		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
 		if pending.published && !pending.answered {
-			withdrawn = append(withdrawn, id)
+			withdrawn = append(withdrawn, kimiControlWithdrawal{id: id, instanceID: pending.instanceID})
 		}
 	}
 	a.Mu.Unlock()
-	sort.Strings(withdrawn)
-	for _, id := range withdrawn {
-		a.sink.CancelControlRequest(id)
+	slices.SortFunc(withdrawn, func(left, right kimiControlWithdrawal) int {
+		return cmp.Compare(left.id, right.id)
+	})
+	for _, item := range withdrawn {
+		a.sink.CancelControlRequestInstance(item.id, item.instanceID)
 	}
 }

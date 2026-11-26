@@ -41,4 +41,16 @@ func TestReadAnthropicContent(t *testing.T) {
 		assert.True(t, got.HasToolUse)
 		assert.Equal(t, []string{"before tool"}, got.Texts)
 	})
+
+	t.Run("rejects case-mismatched keys", func(t *testing.T) {
+		t.Parallel()
+		got := ReadAnthropicContent([]json.RawMessage{
+			json.RawMessage(`{"TYPE":"text","text":"upper type"}`),
+			json.RawMessage(`{"type":"text","TEXT":"upper text"}`),
+			json.RawMessage(`{"TYPE":"tool_use"}`),
+		})
+		assert.True(t, got.HasText)
+		assert.False(t, got.HasToolUse)
+		assert.Equal(t, []string{""}, got.Texts)
+	})
 }

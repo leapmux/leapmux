@@ -19,10 +19,48 @@ var errKimiConversationNeedsSnapshot = errors.New("the Kimi conversation needs a
 // kimiConversationState follows one agent's native document. It performs no I/O.
 // The dispatcher owns it; snapshots and patches validate before they replace state.
 type kimiConversationState struct {
-	sessionID string
-	agentID   string
-	turns     map[string]*kimiConversationTurnState
-	removed   map[string]struct{}
+	sessionID     string
+	agentID       string
+	turns         map[string]*kimiConversationTurnState
+	toolCallTurns map[string]map[string]struct{}
+	removed       map[string]struct{}
+}
+
+func (state *kimiConversationState) ensureToolCallIndex() {
+	if state.toolCallTurns != nil {
+		return
+	}
+	state.toolCallTurns = make(map[string]map[string]struct{})
+	for turnID, turn := range state.turns {
+		for itemID, item := range turn.items {
+			if item != nil && item.identity.kind == contracts.KimiConversationItemKindToolCall {
+				state.indexToolCall(turnID, itemID)
+			}
+		}
+	}
+}
+
+func (state *kimiConversationState) indexToolCall(turnID, itemID string) {
+	if state.toolCallTurns == nil {
+		state.toolCallTurns = make(map[string]map[string]struct{})
+	}
+	turns := state.toolCallTurns[itemID]
+	if turns == nil {
+		turns = make(map[string]struct{})
+		state.toolCallTurns[itemID] = turns
+	}
+	turns[turnID] = struct{}{}
+}
+
+func (state *kimiConversationState) unindexToolCall(turnID, itemID string) {
+	turns := state.toolCallTurns[itemID]
+	if turns == nil {
+		return
+	}
+	delete(turns, turnID)
+	if len(turns) == 0 {
+		delete(state.toolCallTurns, itemID)
+	}
 }
 
 type kimiConversationTurnState struct {
@@ -311,38 +349,57 @@ func (state *kimiConversationItemState) patch(set map[string]json.RawMessage) er
 	return nil
 }
 
-func (state *kimiConversationState) replaceSnapshot(turns []kimiConversationTurn) error {
+func (state *kimiConversationState) replaceSnapshot(turns []kimiConversationTurn) (bool, error) {
 	next := make(map[string]*kimiConversationTurnState, len(turns))
+	nextToolCalls := make(map[string]map[string]struct{})
+	changed := len(turns) != len(state.turns)
 	for _, turn := range turns {
 		if err := turn.validate(); err != nil {
-			return err
+			return false, err
 		}
 		if _, duplicate := next[turn.TurnID]; duplicate {
-			return fmt.Errorf("the Kimi conversation snapshot repeats a turn")
+			return false, fmt.Errorf("the Kimi conversation snapshot repeats a turn")
 		}
 		previous := state.turns[turn.TurnID]
 		if previous != nil && !sameKimiConversationTurnIdentity(previous.header, turn.kimiConversationTurnHeader) {
-			return fmt.Errorf("the Kimi conversation snapshot changes a turn identity")
+			return false, fmt.Errorf("the Kimi conversation snapshot changes a turn identity")
 		}
 		entry := &kimiConversationTurnState{items: make(map[string]*kimiConversationItemState, len(turn.Items))}
 		entry.replaceHeader(turn.kimiConversationTurnHeader)
-		for _, item := range turn.Items {
+		if previous == nil || previous.projectionPending || len(previous.items) != len(turn.Items) ||
+			!reflect.DeepEqual(previous.headerSnapshot(), entry.headerSnapshot()) {
+			changed = true
+		}
+		for index, item := range turn.Items {
 			var old *kimiConversationItemState
 			if previous != nil {
 				old = previous.items[item.ItemID]
 			}
-			value, _, err := prepareKimiConversationItemState(old, item)
+			value, itemChanged, err := prepareKimiConversationItemState(old, item)
 			if err != nil {
-				return err
+				return false, err
+			}
+			if itemChanged || previous == nil || old == nil || old.projectionPending || old.data != nil ||
+				index >= len(previous.order) || previous.order[index] != item.ItemID {
+				changed = true
 			}
 			entry.items[item.ItemID] = value
 			entry.order = append(entry.order, item.ItemID)
+			if value.identity.kind == contracts.KimiConversationItemKindToolCall {
+				owners := nextToolCalls[item.ItemID]
+				if owners == nil {
+					owners = make(map[string]struct{})
+					nextToolCalls[item.ItemID] = owners
+				}
+				owners[turn.TurnID] = struct{}{}
+			}
 		}
 		next[turn.TurnID] = entry
 	}
 	state.turns = next
+	state.toolCallTurns = nextToolCalls
 	clear(state.removed)
-	return nil
+	return changed, nil
 }
 
 func sameKimiConversationTurnIdentity(left, right kimiConversationTurnHeader) bool {
@@ -359,14 +416,24 @@ func (state *kimiConversationState) apply(frame kimiConversationFrame) (bool, er
 		if frame.HasMore == nil || *frame.HasMore {
 			return false, errKimiConversationNeedsSnapshot
 		}
-		return true, state.replaceSnapshot(frame.Turns)
+		_, err := state.replaceSnapshot(frame.Turns)
+		return true, err
 	case "turns.removed":
+		state.ensureToolCallIndex()
 		for _, id := range frame.TurnIDs {
+			if removed := state.turns[id]; removed != nil {
+				for itemID, item := range removed.items {
+					if item != nil && item.identity.kind == contracts.KimiConversationItemKindToolCall {
+						state.unindexToolCall(id, itemID)
+					}
+				}
+			}
 			delete(state.turns, id)
 			state.removed[id] = struct{}{}
 		}
 		return len(frame.TurnIDs) > 0, nil
 	case "turn.started", "turn.ended":
+		state.ensureToolCallIndex()
 		if frame.Turn == nil {
 			return false, fmt.Errorf("the Kimi conversation event has no turn")
 		}
@@ -420,10 +487,19 @@ func (state *kimiConversationState) apply(frame kimiConversationFrame) (bool, er
 			turn.order = append(turn.order, frame.Item.ItemID)
 		}
 		turn.items[frame.Item.ItemID] = next
+		state.ensureToolCallIndex()
+		if next.identity.kind == contracts.KimiConversationItemKindToolCall {
+			state.indexToolCall(frame.TurnID, frame.Item.ItemID)
+		}
 		return true, nil
 	case "item.removed":
-		if _, present := turn.items[frame.ItemID]; !present {
+		item, present := turn.items[frame.ItemID]
+		if !present {
 			return false, nil
+		}
+		state.ensureToolCallIndex()
+		if item != nil && item.identity.kind == contracts.KimiConversationItemKindToolCall {
+			state.unindexToolCall(frame.TurnID, frame.ItemID)
 		}
 		delete(turn.items, frame.ItemID)
 		turn.order = slices.DeleteFunc(turn.order, func(id string) bool { return id == frame.ItemID })

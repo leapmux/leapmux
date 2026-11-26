@@ -194,6 +194,32 @@ func (a *Agent) bindSteerItem(ticket *steerTicket) {
 	a.Mu.Unlock()
 }
 
+func classifySteerReplyError(err error) (result error, absorb bool) {
+	var status *providerkit.HTTPStatusError
+	if errors.As(err, &status) {
+		switch status.StatusCode {
+		case httpStatusConflict, httpStatusNotFound, httpStatusBadRequest:
+			return agent.ErrNoActiveTurn, true
+		default:
+			return err, false
+		}
+	}
+	return fmt.Errorf("%w: Codewhale did not confirm the steer: %v", agent.ErrDeliveryUncertain, err), false
+}
+
+func (a *Agent) settleUntrackedSteerReply(key steerKey, err error) error {
+	if err == nil {
+		return nil
+	}
+	result, absorb := classifySteerReplyError(err)
+	if absorb {
+		a.Mu.Lock()
+		a.steers.absorb(key)
+		a.Mu.Unlock()
+	}
+	return result
+}
+
 // settleSteerReply gives native evidence precedence over the HTTP result.
 func (a *Agent) settleSteerReply(ticket *steerTicket, err error) error {
 	a.dispatchMu.Lock()
@@ -213,17 +239,10 @@ func (a *Agent) settleSteerReply(ticket *steerTicket, err error) error {
 			ticket.replied = true
 		} else {
 			a.steers.remove(ticket)
-			var status *providerkit.HTTPStatusError
-			if errors.As(err, &status) {
-				switch status.StatusCode {
-				case httpStatusConflict, httpStatusNotFound, httpStatusBadRequest:
-					a.steers.absorb(ticket.key)
-					result = agent.ErrNoActiveTurn
-				default:
-					result = err
-				}
-			} else {
-				result = fmt.Errorf("%w: Codewhale did not confirm the steer: %v", agent.ErrDeliveryUncertain, err)
+			var absorb bool
+			result, absorb = classifySteerReplyError(err)
+			if absorb {
+				a.steers.absorb(ticket.key)
 			}
 		}
 	}
@@ -400,7 +419,7 @@ func readTurnItemIDs(store codewhaleStore, turnID string) (map[string]bool, bool
 	return ids, true
 }
 
-func readSteerItem(store codewhaleStore, turnID, id string) (storedItem, bool) {
+func readStoredItem(store codewhaleStore, turnID, id string) (storedItem, bool) {
 	if store.dir == "" || !nativeRecordID(turnID) || !nativeRecordID(id) {
 		return storedItem{}, false
 	}
@@ -410,7 +429,15 @@ func readSteerItem(store codewhaleStore, turnID, id string) (storedItem, bool) {
 	}); err != nil || item.ID != id || item.TurnID != turnID {
 		return storedItem{}, false
 	}
-	return item, item.Kind == itemKindUserMessage
+	return item, true
+}
+
+func readSteerItem(store codewhaleStore, turnID, id string) (storedItem, bool) {
+	item, ok := readStoredItem(store, turnID, id)
+	if !ok || item.Kind != itemKindUserMessage {
+		return storedItem{}, false
+	}
+	return item, true
 }
 
 // readTurnSteers reads new native items only. An unreadable new record makes the identity ambiguous.
@@ -424,10 +451,8 @@ func readTurnSteers(store codewhaleStore, turnID string, before map[string]bool)
 		if before[id] {
 			continue
 		}
-		var item storedItem
-		if err := sessionstore.ReadSidecarFile(filepath.Join(store.runtimeDir(), "items", id+".json"), storeRecordMaxBytes, func(data []byte) error {
-			return json.Unmarshal(data, &item)
-		}); err != nil || item.ID != id || item.TurnID != turnID {
+		item, ok := readStoredItem(store, turnID, id)
+		if !ok {
 			return nil, false
 		}
 		if item.Kind == itemKindUserMessage {
@@ -528,6 +553,9 @@ func (a *Agent) releaseSteerOutputs(keys []steerOutputKey) {
 
 func (a *Agent) reportSteerResolution(ticket *steerTicket) {
 	resolution := ticket.submission
+	if resolution.InputID == "" || resolution.AttemptID == "" {
+		return
+	}
 	resolution.Outcome = ticket.verdict
 	resolution.Receipt = agent.NativeInputReceipt{}
 	if ticket.verdict == agent.SteerOutcomeEchoed {

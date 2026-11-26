@@ -71,10 +71,7 @@ func translateCanUseToolAnswer(content []byte) ([]byte, bool) {
 	}
 	answer := contracts.CodebuddyCanUseToolAnswer{Allowed: behavior == contracts.ControlAnswerBehaviorAllow}
 	if !answer.Allowed {
-		answer.Reason = message
-		if answer.Reason == "" {
-			answer.Reason = contracts.ControlAnswerMessageRejectedByUser
-		}
+		answer.Reason = agent.DenyMessage(message)
 	} else if updatedInput := agent.DecodeControlUpdatedInput(content); len(updatedInput) > 0 {
 		encoded, err := json.Marshal(updatedInput)
 		if err != nil {
@@ -126,10 +123,6 @@ func (codebuddyProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) 
 	}
 }
 
-// IsSelfDisplayingControlTool keeps the stored control response visible.
-// Native tool results remain separate transcript rows.
-func (codebuddyProvider) IsSelfDisplayingControlTool(string) bool { return false }
-
 // TurnEndToolUses reads the tool-use count of a result frame.
 func (codebuddyProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	var result struct {
@@ -140,5 +133,3 @@ func (codebuddyProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	}
 	return *result.NumToolUses, true
 }
-
-// controlRequestSubtype extracts the subtype of a control request payload.

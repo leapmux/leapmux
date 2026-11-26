@@ -2,6 +2,7 @@ package muse
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,13 +14,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
-
-func museJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	require.NoError(t, err)
-	return encoded
-}
 
 // museApproval is an approval request that Muse sends with choices.
 func museApproval(t *testing.T, choices any) []byte {
@@ -33,7 +27,7 @@ func museApproval(t *testing.T, choices any) []byte {
 	if choices != nil {
 		params["availableChoices"] = choices
 	}
-	return museJSON(t, map[string]any{"method": "approval/requested", "params": params})
+	return agenttest.MustJSON(t, map[string]any{"method": "approval/requested", "params": params})
 }
 
 // museTestQuestion is one valid question, with fields overlaid.
@@ -60,7 +54,7 @@ func museTestQuestion(fields map[string]any) map[string]any {
 // museUserInput is a user-input request with questions.
 func museUserInput(t *testing.T, questions any) []byte {
 	t.Helper()
-	return museJSON(t, map[string]any{
+	return agenttest.MustJSON(t, map[string]any{
 		"method": "userInput/requested",
 		"params": map[string]any{"sessionId": "session", "userInputId": "native-input", "questions": questions},
 	})
@@ -102,11 +96,11 @@ func TestReadControlRequest_MuseKeepsEachOfferedChoiceWithItsKindAndScope(t *tes
 }
 
 func TestReadControlRequest_MuseTakesTheToolNameOfTheParamsFirst(t *testing.T) {
-	payload := museJSON(t, map[string]any{"method": "approval/request", "params": map[string]any{
+	payload := agenttest.MustJSON(t, map[string]any{"method": "approval/request", "params": map[string]any{
 		"toolName": "edit", "subject": map[string]any{"toolName": "bash"}, "availableChoices": []any{museChoice("c", "approved", "once")},
 	}})
 	assert.Equal(t, "edit", agenttest.ControlPromptOf(museProvider{}, payload).GetPermission().GetTitle())
-	payload = museJSON(t, map[string]any{"method": "approval/updated", "params": map[string]any{"availableChoices": []any{museChoice("c", "approved", "once")}}})
+	payload = agenttest.MustJSON(t, map[string]any{"method": "approval/updated", "params": map[string]any{"availableChoices": []any{museChoice("c", "approved", "once")}}})
 	permission := agenttest.ControlPromptOf(museProvider{}, payload).GetPermission()
 	assert.Empty(t, permission.GetTitle())
 	assert.Empty(t, permission.GetCommand())
@@ -140,24 +134,19 @@ func TestMuseRefusalWithFeedback_SendsTheChosenChoiceWithTheFeedback(t *testing.
 		map[string]any{"choiceId": "no-feedback", "label": "Deny", "decision": "denied", "scope": "once"},
 		map[string]any{"choiceId": "with-feedback", "label": "Deny with feedback", "decision": "denied", "scope": "once", "acceptsFeedback": true},
 	}))
-	got, err := museRefusalWithFeedback(params, "with-feedback", "  Native feedback\n", "worker-request")
+	choices, ok := readApprovalChoices(params["availableChoices"])
+	require.True(t, ok)
+	got, err := museRefusalWithFeedback(choices, "with-feedback", "  Native feedback\n", "worker-request")
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"worker-request","result":{"choiceId":"with-feedback","feedback":"  Native feedback\n"}}`, string(got.Content))
 
-	_, err = museRefusalWithFeedback(params, "no-feedback", "Native feedback", "worker-request")
+	_, err = museRefusalWithFeedback(choices, "no-feedback", "Native feedback", "worker-request")
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 	assert.ErrorContains(t, err, `the Muse choice "no-feedback" takes no feedback`, "the chosen refusal is never swapped for another")
 }
 
 func TestMuseRefusalWithFeedback_RefusesADenialThatMuseCannotTake(t *testing.T) {
-	refuses := func(choices any, optionID, reason string) {
-		t.Helper()
-		_, err := museRefusalWithFeedback(museParamsOf(t, museApproval(t, choices)), optionID, "Feedback", "worker-request")
-		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
-		assert.ErrorContains(t, err, reason)
-	}
-	const invalid = "the native Muse approval choices are invalid"
-	for name, choices := range map[string]any{
+	for name, rawChoices := range map[string]any{
 		"absent list":           nil,
 		"null list":             json.RawMessage(`null`),
 		"empty list":            []any{},
@@ -172,11 +161,31 @@ func TestMuseRefusalWithFeedback_RefusesADenialThatMuseCannotTake(t *testing.T) 
 		"partial list":          []any{nil, museChoice("deny", "denied", "once")},
 		"duplicate IDs":         []any{museChoice("deny", "denied", "once"), museChoice("deny", "denied", "once")},
 	} {
-		t.Run(name, func(t *testing.T) { refuses(choices, "deny", invalid) })
+		t.Run(name, func(t *testing.T) {
+			payload := museApproval(t, rawChoices)
+			_, ok := readApprovalChoices(museParamsOf(t, payload)["availableChoices"])
+			assert.False(t, ok)
+			_, err := museProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
+				Request: agent.NewControlRequestInput(payload), RequestID: "worker-request",
+				Prompt:   agent.GenericPermissionPrompt(),
+				Decision: agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "Feedback"),
+			})
+			assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+		})
 	}
-	refuses([]any{museChoice("deny", "denied", "once")}, "deny", `the Muse choice "deny" takes no feedback`)
-	refuses([]any{map[string]any{"choiceId": "deny", "label": "Deny", "decision": "denied", "scope": "once", "acceptsFeedback": true}}, contracts.ControlAnswerOptionDeny,
-		`Muse offers no choice "`+contracts.ControlAnswerOptionDeny+`"`)
+	noFeedbackChoices, ok := readApprovalChoices(museParamsOf(t, museApproval(t, []any{museChoice("deny", "denied", "once")}))["availableChoices"])
+	require.True(t, ok)
+	_, err := museRefusalWithFeedback(noFeedbackChoices, "deny", "Feedback", "worker-request")
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	assert.ErrorContains(t, err, `the Muse choice "deny" takes no feedback`)
+
+	withFeedbackChoices, ok := readApprovalChoices(museParamsOf(t, museApproval(t, []any{
+		map[string]any{"choiceId": "deny", "label": "Deny", "decision": "denied", "scope": "once", "acceptsFeedback": true},
+	}))["availableChoices"])
+	require.True(t, ok)
+	_, err = museRefusalWithFeedback(withFeedbackChoices, contracts.ControlAnswerOptionDeny, "Feedback", "worker-request")
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	assert.ErrorContains(t, err, `Muse offers no choice "`+contracts.ControlAnswerOptionDeny+`"`)
 }
 
 func TestAnswerControlRequest_MuseSendsTheExactWorkerRequestIDAndNativeChoiceID(t *testing.T) {
@@ -330,6 +339,14 @@ func TestReadControlRequest_MuseKeepsTheNativeQuestionIDAndOptionPreview(t *test
 	}}}, agenttest.ControlPromptOf(museProvider{}, museUserInput(t, []any{museTestQuestion(nil)})))
 	assert.Empty(t, museQuestionPrompt(t, museUserInput(t, []any{museTestQuestion(map[string]any{"options": []any{}})})).GetOptions(),
 		"a free-text question keeps an empty option list")
+
+	nonTextMeta := museQuestionPrompt(t, museUserInput(t, []any{museTestQuestion(map[string]any{
+		"options": []any{map[string]any{"label": "One", "description": 7, "preview": "not-an-object"}},
+	})}))
+	require.Len(t, nonTextMeta.GetOptions(), 1)
+	assert.Equal(t, "One", nonTextMeta.GetOptions()[0].GetLabel())
+	assert.Empty(t, nonTextMeta.GetOptions()[0].GetDescription())
+	assert.Empty(t, nonTextMeta.GetOptions()[0].GetPreview())
 }
 
 func TestReadControlRequest_MuseRejectsAMalformedCompleteQuestionList(t *testing.T) {
@@ -349,7 +366,7 @@ func TestReadControlRequest_MuseRejectsAMalformedCompleteQuestionList(t *testing
 		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, museUserInput(t, questions)))
 	}
 	// Only a user-input request asks.
-	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, museJSON(t, map[string]any{"method": "userInput/settled", "params": map[string]any{"questions": []any{museTestQuestion(nil)}}})))
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(museProvider{}, agenttest.MustJSON(t, map[string]any{"method": "userInput/settled", "params": map[string]any{"questions": []any{museTestQuestion(nil)}}})))
 }
 
 func TestAnswerControlRequest_MuseKeepsExactSelectionsAndIndependentTypedNotes(t *testing.T) {
@@ -392,7 +409,7 @@ func TestAnswerControlRequest_MuseKeepsFreeTextAndTellsItFromCancellation(t *tes
 	for _, reason := range []string{"", " \t\n", "The user declined this question.", "  Native reason 界\n", "User stopped"} {
 		got, err = agenttest.AnswerControl(museProvider{}, payload, "worker-request", agenttest.CancelQuestions(reason))
 		require.NoError(t, err, reason)
-		assert.JSONEq(t, string(museJSON(t, map[string]any{"jsonrpc": "2.0", "id": "worker-request", "result": map[string]any{"cancelled": true, "reason": reason}})), string(got.Content), reason)
+		assert.JSONEq(t, string(agenttest.MustJSON(t, map[string]any{"jsonrpc": "2.0", "id": "worker-request", "result": map[string]any{"cancelled": true, "reason": reason}})), string(got.Content), reason)
 	}
 }
 
@@ -494,4 +511,93 @@ func TestReadControlRequest_MuseStatesOnlyQuestionsThatTheResolverAccepts(t *tes
 	require.NoError(t, err)
 	resolution := agenttest.ResolveAnswer(museProvider{}, wholeCount, key, answer)
 	assert.NoError(t, resolution.Refusal(), "the resolver accepts the count that the prompt stated")
+}
+
+func TestAnswerControlRequest_MuseEnforcesRuneLimitAndJavaScriptWhitespace(t *testing.T) {
+	t.Parallel()
+	payload := museUserInput(t, []any{museTestQuestion(map[string]any{"options": threeOptions()})})
+	var request struct {
+		Params controlParams `json:"params"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &request))
+	key, err := controlID(request.Params)
+	require.NoError(t, err)
+
+	exactLimit := strings.Repeat("界", 500)
+	overLimit := strings.Repeat("界", 501)
+
+	t.Run("accepts 500-rune freeText and resolves", func(t *testing.T) {
+		t.Parallel()
+		answer, err := agenttest.AnswerControl(museProvider{}, payload, key, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{CustomText: exactLimit}))
+		require.NoError(t, err)
+		resolution := agenttest.ResolveAnswer(museProvider{}, payload, key, answer)
+		assert.NoError(t, resolution.Refusal())
+	})
+
+	t.Run("rejects 501-rune freeText", func(t *testing.T) {
+		t.Parallel()
+		_, err := agenttest.AnswerControl(museProvider{}, payload, key, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{CustomText: overLimit}))
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	})
+
+	t.Run("accepts 500-rune note and resolves", func(t *testing.T) {
+		t.Parallel()
+		answer, err := agenttest.AnswerControl(museProvider{}, payload, key, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"One"}, CustomText: exactLimit}))
+		require.NoError(t, err)
+		resolution := agenttest.ResolveAnswer(museProvider{}, payload, key, answer)
+		assert.NoError(t, resolution.Refusal())
+	})
+
+	t.Run("rejects 501-rune note", func(t *testing.T) {
+		t.Parallel()
+		_, err := agenttest.AnswerControl(museProvider{}, payload, key, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"One"}, CustomText: overLimit}))
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	})
+
+	t.Run("omits whitespace-only note beside selection", func(t *testing.T) {
+		t.Parallel()
+		for _, blank := range []string{" \t\n", "\uFEFF", strings.Repeat(" ", 600)} {
+			answer, err := agenttest.AnswerControl(museProvider{}, payload, key, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"One"}, CustomText: blank}))
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"jsonrpc":"2.0","id":`+string(agenttest.MustJSON(t, key))+`,"result":{"answers":[{"questionId":"native-question","selectedLabel":"One"}]}}`, string(answer.Content))
+			resolution := agenttest.ResolveAnswer(museProvider{}, payload, key, answer)
+			assert.NoError(t, resolution.Refusal())
+		}
+	})
+
+	t.Run("aligns U+0085 and U+FEFF whitespace with resolver", func(t *testing.T) {
+		t.Parallel()
+		// U+0085 is not JavaScript whitespace, so both answer and resolver accept it.
+		answer, err := agenttest.AnswerControl(museProvider{}, payload, key, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{CustomText: "\u0085"}))
+		require.NoError(t, err)
+		resolution := agenttest.ResolveAnswer(museProvider{}, payload, key, answer)
+		assert.NoError(t, resolution.Refusal())
+
+		// U+0085 beside selection attaches note.
+		answer, err = agenttest.AnswerControl(museProvider{}, payload, key, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"One"}, CustomText: "\u0085"}))
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"jsonrpc":"2.0","id":`+string(agenttest.MustJSON(t, key))+`,"result":{"answers":[{"questionId":"native-question","selectedLabel":"One","note":"\u0085"}]}}`, string(answer.Content))
+		resolution = agenttest.ResolveAnswer(museProvider{}, payload, key, answer)
+		assert.NoError(t, resolution.Refusal())
+
+		// U+FEFF is JavaScript whitespace, so both answer and resolver reject it as freeText.
+		_, err = agenttest.AnswerControl(museProvider{}, payload, key, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{CustomText: "\uFEFF"}))
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+		rawBOM := agenttest.MustJSON(t, map[string]any{"id": key, "result": map[string]any{"answers": []any{map[string]any{"questionId": "native-question", "freeText": "\uFEFF"}}}})
+		resolution = agenttest.ResolveAnswer(museProvider{}, payload, key, agent.ControlAnswer{Content: rawBOM})
+		assert.True(t, resolution.Withhold)
+	})
+
+	t.Run("resolver refuses over-limit freeText, over-limit note, and non-string note", func(t *testing.T) {
+		t.Parallel()
+		for name, entry := range map[string]map[string]any{
+			"501-rune freeText": {"questionId": "native-question", "freeText": overLimit},
+			"501-rune note":     {"questionId": "native-question", "selectedLabel": "One", "note": overLimit},
+			"non-string note":   {"questionId": "native-question", "selectedLabel": "One", "note": 42},
+		} {
+			raw := agenttest.MustJSON(t, map[string]any{"id": key, "result": map[string]any{"answers": []any{entry}}})
+			resolution := agenttest.ResolveAnswer(museProvider{}, payload, key, agent.ControlAnswer{Content: raw})
+			assert.True(t, resolution.Withhold, name)
+		}
+	})
 }

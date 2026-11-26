@@ -84,16 +84,9 @@ func codewhaleQuestionPayload(questions []any) map[string]any {
 	}
 }
 
-func codewhaleJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	require.NoError(t, err)
-	return encoded
-}
-
 func codewhalePrompt(t *testing.T, payload any) *leapmuxv1.ControlPrompt {
 	t.Helper()
-	return agenttest.ControlPromptOf(codewhaleProvider{}, codewhaleJSON(t, payload))
+	return agenttest.ControlPromptOf(codewhaleProvider{}, agenttest.MustJSON(t, payload))
 }
 
 // requireCodewhalePermission compares a permission prompt with its input
@@ -159,13 +152,10 @@ func TestReadControlRequest_CodewhaleTakesTheToolNameFromTheEventWhenTheHeaderLo
 }
 
 func TestReadControlRequest_CodewhaleReadsNoPermissionOutOfAQuestionOrAPayloadWithNoEvent(t *testing.T) {
-	_, ok := codewhalePermissionPrompt(codewhaleJSON(t, codewhaleQuestionPayload(codewhaleTestQuestions())))
-	assert.False(t, ok, "a question is no permission")
+	assert.Nil(t, codewhalePrompt(t, codewhaleQuestionPayload(codewhaleTestQuestions())).GetPermission(), "a question is no permission")
 	approvalWithTextEvent := codewhaleApprovalPayload(contracts.CodewhaleToolBash, map[string]any{}, nil)
 	approvalWithTextEvent["event"] = contracts.CodewhaleEventApprovalRequired
 	for _, payload := range []any{map[string]any{}, approvalWithTextEvent} {
-		_, ok := codewhalePermissionPrompt(codewhaleJSON(t, payload))
-		assert.False(t, ok)
 		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), codewhalePrompt(t, payload))
 	}
 	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(codewhaleProvider{}, []byte("not json")))
@@ -205,10 +195,36 @@ func TestReadControlRequest_CodewhaleDropsAQuestionThatTheRuntimeCouldNeverMatch
 		Questions: []*leapmuxv1.ControlQuestion{{Id: "h", Question: "Header only", Options: []*leapmuxv1.QuestionOption{}}},
 	}}}, codewhalePrompt(t, codewhaleQuestionPayload([]any{
 		map[string]any{"question": "No id?"},
+		map[string]any{"id": "   \t ", "question": "Blank id?"},
 		map[string]any{"id": "x"},
 		"x",
 		map[string]any{"id": "h", "header": "Header only", "options": []any{map[string]any{"description": "no label"}}},
 	})))
+}
+
+func TestReadControlRequest_CodewhaleUnrecognizedWhenUnroutable(t *testing.T) {
+	approvalNoID := codewhaleApprovalPayload(contracts.CodewhaleToolBash, map[string]any{"command": "ls"}, map[string]any{"id": "", "approval_id": ""})
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), codewhalePrompt(t, approvalNoID))
+
+	questionNoID := codewhaleQuestionPayload(codewhaleTestQuestions())
+	questionNoID["event"] = codewhaleTestEvent(contracts.CodewhaleEventUserInputRequired, map[string]any{"request": map[string]any{"questions": codewhaleTestQuestions()}})
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), codewhalePrompt(t, questionNoID))
+
+	questionNoThread := codewhaleQuestionPayload(codewhaleTestQuestions())
+	event := codewhaleTestEvent(contracts.CodewhaleEventUserInputRequired, map[string]any{"id": "q1", "request": map[string]any{"questions": codewhaleTestQuestions()}})
+	delete(event, "thread_id")
+	questionNoThread["event"] = event
+	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), codewhalePrompt(t, questionNoThread))
+
+	// Fallback ID fields (`id` alone on approval, `input_id` alone on question) are routable.
+	approvalOnlyID := codewhaleApprovalPayload(contracts.CodewhaleToolBash, map[string]any{"command": "ls"}, map[string]any{"id": "ap-only", "approval_id": ""})
+	assert.NotNil(t, codewhalePrompt(t, approvalOnlyID).GetPermission())
+	questionOnlyInputID := codewhaleQuestionPayload(codewhaleTestQuestions())
+	questionOnlyInputID["event"] = codewhaleTestEvent(contracts.CodewhaleEventUserInputRequired, map[string]any{
+		"input_id": "in-only",
+		"request":  map[string]any{"questions": codewhaleTestQuestions()},
+	})
+	assert.NotNil(t, codewhalePrompt(t, questionOnlyInputID).GetQuestion())
 }
 
 func codewhaleQuestionIDs(t *testing.T, payload any) []string {
@@ -224,7 +240,7 @@ func TestReadControlRequest_CodewhaleFallsBackToTheStoredEventWhenTheHeaderLostT
 	payload := codewhaleQuestionPayload(codewhaleTestQuestions())
 	payload["request"] = map[string]any{"tool_name": contracts.CodewhaleToolRequestUserInput, "input": map[string]any{}}
 	assert.Equal(t, []string{"color", "sizes"}, codewhaleQuestionIDs(t, payload))
-	assert.Empty(t, codewhaleQuestionRecords([]byte(`{}`)))
+	assert.Empty(t, storedRequestQuestions([]byte(`{}`), nil))
 }
 
 // The header is what the Worker stored for the control to answer, so it wins
@@ -246,14 +262,14 @@ func TestReadControlRequest_CodewhaleReadsTheHeadersListOverTheStoredEvents(t *t
 func TestReadControlRequest_CodewhaleDropsARecordThatIsNoObject(t *testing.T) {
 	first := codewhaleTestQuestions()[0]
 	assert.Equal(t, []string{"color"}, codewhaleQuestionIDs(t, codewhaleQuestionPayload([]any{first, nil, 7, "x"})))
-	assert.Empty(t, codewhaleQuestionRecords(codewhaleJSON(t, map[string]any{
+	assert.Empty(t, storedRequestQuestions(agenttest.MustJSON(t, map[string]any{
 		"request": map[string]any{"tool_name": contracts.CodewhaleToolRequestUserInput, "input": map[string]any{"questions": "Which color?"}},
-	})), "a list in another shape reads as none")
+	}), nil), "a list in another shape reads as none")
 }
 
 func answerCodewhale(t *testing.T, payload any, decision *leapmuxv1.ControlDecision) (agent.ControlAnswer, error) {
 	t.Helper()
-	return agenttest.AnswerControl(codewhaleProvider{}, codewhaleJSON(t, payload), codewhaleStoredRequestID(payload), decision)
+	return agenttest.AnswerControl(codewhaleProvider{}, agenttest.MustJSON(t, payload), codewhaleStoredRequestID(payload), decision)
 }
 
 // codewhaleStoredRequestID is the id that the Worker stores payload under: its
@@ -303,6 +319,24 @@ func TestAnswerControlRequest_CodewhaleSendsTheRuntimesOwnAnswerList(t *testing.
 		}}}}`, string(got.Content))
 	assert.Nil(t, got.PlanApproval)
 	assert.Empty(t, got.FollowUp)
+}
+
+func TestAnswerControlRequest_CodewhaleQuestionWithNonObjectHeaderInputStartsFromEmptyObject(t *testing.T) {
+	t.Parallel()
+	payload := codewhaleQuestionPayload(codewhaleTestQuestions())
+	payload["request"] = map[string]any{
+		"tool_name": contracts.CodewhaleToolRequestUserInput,
+		"input":     "not-an-object",
+	}
+	got, err := answerCodewhale(t, payload, agenttest.QuestionDecision(
+		&leapmuxv1.QuestionAnswer{Selected: []string{"Red"}},
+		&leapmuxv1.QuestionAnswer{Selected: []string{"S"}},
+	))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"user_input:q1","response":{
+		"behavior":"allow",
+		"updatedInput":{"answers":[{"id":"color","label":"Red","value":"Red"},{"id":"sizes","label":"S","value":"S"}]}
+	}}}`, string(got.Content))
 }
 
 func TestAnswerControlRequest_CodewhaleSendsOneEntryForEachChosenOptionAndTextAsOther(t *testing.T) {
@@ -406,7 +440,7 @@ func TestAnswerControlRequest_CodewhaleRefusesADecisionThatThePromptDoesNotTake(
 func TestAnswerControlRequest_CodewhaleAnswersResolveIntoTheRuntimesReply(t *testing.T) {
 	resolve := func(payload any, answer agent.ControlAnswer) (codewhaleReplyFrame, agent.ControlResponseResolution) {
 		t.Helper()
-		resolution := agenttest.ResolveAnswer(codewhaleProvider{}, codewhaleJSON(t, payload), codewhaleStoredRequestID(payload), answer)
+		resolution := agenttest.ResolveAnswer(codewhaleProvider{}, agenttest.MustJSON(t, payload), codewhaleStoredRequestID(payload), answer)
 		require.NoError(t, resolution.Refusal())
 		var frame codewhaleReplyFrame
 		require.NoError(t, json.Unmarshal(resolution.Content, &frame))

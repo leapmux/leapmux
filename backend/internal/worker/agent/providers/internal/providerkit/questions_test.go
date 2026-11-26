@@ -134,4 +134,28 @@ func TestAskUserQuestionAnswers_ListsTheTypedTextOfAMultipleChoiceAfterItsOption
 	require.NoError(t, err)
 	assert.Contains(t, string(got.Content), `"behavior":"deny"`)
 	assert.Contains(t, string(got.Content), `"message":"Not now."`)
+
+	input.Decision = agenttest.PermissionDecision("allow", "")
+	_, err = AskUserQuestionAnswers(input, json.RawMessage(`{}`))
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+}
+
+func TestAllowWithToolAnswers(t *testing.T) {
+	t.Parallel()
+	got, err := AllowWithToolAnswers("req-1", json.RawMessage(`{"questions":[1],"answers":"old"}`), []map[string]string{{"id": "q1", "value": "A"}})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow","updatedInput":{"questions":[1],"answers":[{"id":"q1","value":"A"}]}}}}`, string(got.Content))
+
+	for _, raw := range []json.RawMessage{json.RawMessage(`null`), nil, json.RawMessage(`{malformed`)} {
+		got, err = AllowWithToolAnswers("req-2", raw, map[string]string{"Q": "Yes"})
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-2","response":{"behavior":"allow","updatedInput":{"answers":{"Q":"Yes"}}}}}`, string(got.Content))
+	}
+
+	got, err = AllowWithToolAnswers("req-nil", json.RawMessage(`{"keep":true}`), nil)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"req-nil","response":{"behavior":"allow","updatedInput":{"keep":true,"answers":null}}}}`, string(got.Content))
+
+	_, err = AllowWithToolAnswers("req-3", json.RawMessage(`{}`), make(chan int))
+	assert.Error(t, err)
 }

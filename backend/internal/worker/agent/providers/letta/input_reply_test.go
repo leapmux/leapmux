@@ -1,7 +1,9 @@
 package letta
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -163,4 +165,198 @@ func TestLettaSendInputForSessionTracksReceipt(t *testing.T) {
 	assert.Equal(t, receipt.InputID, sentClientMessageID(t, payload))
 	assert.Equal(t, a.runtime().ConversationID, receipt.SessionID)
 	assert.True(t, a.tracksInput())
+}
+
+// Permission frames from a subagent or a foreign runtime must not inherit the
+// main input turn ID, while a main-runtime tool call inherits its owning run's
+// turn ID.
+func TestLettaPermissionTurnIDScopesByRuntimeAndSubagent(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	fake, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
+	a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
+	receipt, err := a.SendInput("Run a command.", nil)
+	require.NoError(t, err)
+	command := fake.nextCommand(t)
+	replyFrame(t, a, map[string]any{"type": "input_accepted", "request_id": command["request_id"], "accepted": true})
+	replyFrame(t, a, map[string]any{
+		"type": "update_loop_status",
+		"loop_status": lettaLoopStatus{
+			Status:                  "WAITING_ON_APPROVAL",
+			ActiveRunIDs:            []string{"owned-run"},
+			ClientMessageIDsByRunID: map[string][]string{"owned-run": {receipt.InputID}},
+		},
+	})
+
+	// Subagent permission request gets no native turn ID.
+	replyFrame(t, a, map[string]any{
+		"type": "control_request", "request_id": "subagent-perm", "subagent_id": "sub-1",
+		"request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_call_id": "sub-tool", "input": map[string]string{"command": "ls"}},
+	})
+	// Foreign runtime permission request gets no native turn ID.
+	replyFrame(t, a, map[string]any{
+		"type": "control_request", "request_id": "foreign-perm",
+		"runtime": runtimeScope{AgentID: a.runtime().AgentID, ConversationID: "other-conv"},
+		"request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_call_id": "foreign-tool", "input": map[string]string{"command": "ls"}},
+	})
+	// Missing tool_call_id gets no native turn ID even when request_id is set.
+	replyFrame(t, a, map[string]any{
+		"type": "control_request", "request_id": "no-call-perm",
+		"request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_call_id": "", "input": map[string]string{"command": "ls"}},
+	})
+	// Missing runtime (scope == nil) gets no native turn ID.
+	noRuntimeFrame, err := json.Marshal(map[string]any{
+		"type": "control_request", "request_id": "no-runtime-perm",
+		"request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_call_id": "no-runtime-tool", "input": map[string]string{"command": "ls"}},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(noRuntimeFrame)
+	// Open tool from a foreign run overrides the owned approvalRunID.
+	a.Mu.Lock()
+	a.tools = map[string]*lettaTool{
+		lettaToolKey("", "foreign-run-tool"): {id: "foreign-run-tool", runID: "foreign-run"},
+		lettaToolKey("", "owned-run-tool"):   {id: "owned-run-tool", runID: "owned-run"},
+	}
+	a.Mu.Unlock()
+	replyFrame(t, a, map[string]any{
+		"type": "control_request", "request_id": "foreign-run-perm",
+		"request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_call_id": "foreign-run-tool", "input": map[string]string{"command": "ls"}},
+	})
+	// Main runtime permission request inherits the turn ID via approvalRunID.
+	replyFrame(t, a, map[string]any{
+		"type": "control_request", "request_id": "main-perm",
+		"request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_call_id": "main-tool", "input": map[string]string{"command": "ls"}},
+	})
+	// Open tool from an owned run inherits the turn ID even when approvalRunID is cleared.
+	replyFrame(t, a, map[string]any{
+		"type": "update_loop_status",
+		"loop_status": lettaLoopStatus{
+			Status:                  "PROCESSING_API_RESPONSE",
+			ActiveRunIDs:            []string{"owned-run"},
+			ClientMessageIDsByRunID: map[string][]string{"owned-run": {receipt.InputID}},
+		},
+	})
+	replyFrame(t, a, map[string]any{
+		"type": "control_request", "request_id": "owned-tool-perm",
+		"request": map[string]any{"subtype": "can_use_tool", "tool_name": "Bash", "tool_call_id": "owned-run-tool", "input": map[string]string{"command": "ls"}},
+	})
+
+	controls := sink.PublishedControls()
+	require.Len(t, controls, 7)
+	assert.Empty(t, controls[0].NativeTurnID, "subagent permission must not inherit main turn ID")
+	assert.Empty(t, controls[1].NativeTurnID, "foreign runtime permission must not inherit main turn ID")
+	assert.Empty(t, controls[2].NativeTurnID, "permission without tool_call_id must not inherit main turn ID")
+	assert.Empty(t, controls[3].NativeTurnID, "permission without runtime must not inherit main turn ID")
+	assert.Empty(t, controls[4].NativeTurnID, "foreign-run tool must override owned approvalRunID")
+	assert.Equal(t, receipt.TurnID, controls[5].NativeTurnID)
+	assert.Equal(t, receipt.TurnID, controls[6].NativeTurnID)
+}
+
+func TestLettaSendInputRefusesEmptyRuntimeWithoutMutatingTurnState(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	_, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
+
+	_, err := a.SendInput("Too early.", nil)
+	require.Error(t, err)
+	assert.False(t, a.tracksInput())
+	assert.False(t, a.PublishTurnActive().Active)
+}
+
+func TestLettaSendInputClassifiesWriteFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("websocket write failure reports uncertain without retiring unreturned receipt", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		_, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
+		a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
+		a.Mu.Lock()
+		a.cancelRuntime = nil
+		ws := a.ws
+		a.Mu.Unlock()
+		ws.close()
+
+		receipt, err := a.SendInput("Check the release.", nil)
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.Equal(t, agent.NativeInputReceipt{}, receipt)
+		assert.False(t, a.tracksInput())
+		assert.False(t, a.PublishTurnActive().Active)
+		assert.Empty(t, sink.NativeReplyRetirements())
+	})
+
+	t.Run("manual compaction websocket write failure reports uncertain and rolls back", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		_, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
+		a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
+		a.Mu.Lock()
+		a.cancelRuntime = nil
+		ws := a.ws
+		a.Mu.Unlock()
+		ws.close()
+
+		receipt, err := a.SendInput("/compact", nil)
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.Equal(t, agent.NativeInputReceipt{}, receipt)
+		assert.False(t, a.PublishTurnActive().Active)
+		a.Mu.Lock()
+		assert.Nil(t, a.manualCompaction)
+		a.Mu.Unlock()
+	})
+
+	t.Run("missing socket remains a definite error", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		_, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
+		a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
+		a.Mu.Lock()
+		a.ws = nil
+		a.Mu.Unlock()
+
+		receipt, err := a.SendInput("Check the release.", nil)
+		require.ErrorIs(t, err, errAgentStopped)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.Equal(t, agent.NativeInputReceipt{}, receipt)
+		assert.False(t, a.tracksInput())
+		assert.False(t, a.PublishTurnActive().Active)
+		assert.Empty(t, sink.NativeReplyRetirements())
+	})
+
+	t.Run("cancelled context before write remains a definite error", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		fake, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
+		a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
+		a.cancelRuntime()
+
+		receipt, err := a.SendInput("Check the release.", nil)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.Equal(t, agent.NativeInputReceipt{}, receipt)
+		assert.False(t, a.tracksInput())
+		assert.False(t, a.PublishTurnActive().Active)
+		assert.Empty(t, sink.NativeReplyRetirements())
+		select {
+		case cmd := <-fake.commands:
+			t.Fatalf("cancelled context wrote a command to the socket: %v", cmd)
+		default:
+		}
+	})
+
+	t.Run("sendCommandContext rejects nil context and unencodable payload without wsWriteError", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		_, a := newFakeAppServerWithServices(t, agent.NewProviderServices(sink), nil)
+
+		var writeErr wsWriteError
+		var nilCtx context.Context
+		err := a.sendCommandContext(nilCtx, map[string]any{"type": "input"})
+		require.ErrorIs(t, err, errAgentStopped)
+		assert.False(t, errors.As(err, &writeErr))
+
+		err = a.sendCommandContext(t.Context(), make(chan int))
+		require.Error(t, err)
+		assert.False(t, errors.As(err, &writeErr))
+	})
 }

@@ -225,31 +225,30 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.Mu.Unlock()
 		return agent.NativeInputReceipt{}, errAgentStopped
 	}
-	scope := runtimeScope{AgentID: a.agentID, ConversationID: a.conversationID}
-	active := a.turnActive
-	a.Mu.Unlock()
-	if active {
+	if a.turnActive {
+		a.Mu.Unlock()
 		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
+	scope := runtimeScope{AgentID: a.agentID, ConversationID: a.conversationID}
 	// A scope-less input is not a delivery the server can refuse: it is
 	// dropped with no reply at all. Fail it here instead.
 	if scope.AgentID == "" || scope.ConversationID == "" {
+		a.Mu.Unlock()
 		return agent.NativeInputReceipt{}, errors.New("the worker cannot send input before the Letta runtime identity arrives")
 	}
 
 	var cmd lettaCommand
 	var receipt agent.NativeInputReceipt
 	if compact {
-		a.setTurnActive(true)
-		cmd = a.prepareManualCompaction(scope, args)
+		cmd = a.prepareManualCompactionLocked(scope, args)
 	} else {
 		cmd = a.createMessageCommand(scope, payload)
-		var err error
-		receipt, err = a.beginInputReply(scope, cmd.RequestID, clientMessageID)
-		if err != nil {
-			return agent.NativeInputReceipt{}, err
-		}
+		receipt = a.beginInputReplyLocked(scope, cmd.RequestID, clientMessageID)
 	}
+	a.turnActive = true
+	seq := a.NextTurnSeq()
+	a.Mu.Unlock()
+	a.sink.SetTurnState(agent.TurnState{Active: true}, seq)
 	// One line per delivered input. The scope fields identify the runtime the
 	// frame addresses, which is the difference between a turn and a silent
 	// drop on this protocol.
@@ -270,6 +269,10 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 			}
 			a.Mu.Unlock()
 			a.setTurnActive(false)
+		}
+		var writeErr wsWriteError
+		if errors.As(err, &writeErr) {
+			return agent.NativeInputReceipt{}, fmt.Errorf("%w: Letta did not confirm the input write: %w", agent.ErrDeliveryUncertain, err)
 		}
 		return agent.NativeInputReceipt{}, err
 	}

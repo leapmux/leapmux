@@ -2,7 +2,7 @@ package codewhale
 
 import (
 	"encoding/json"
-	"fmt"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -33,137 +33,111 @@ func isCodewhaleCommandTool(toolName string) bool {
 // publishes for Codewhale (buildControlPayload): the runtime's event beside
 // the shared `request` header.
 //
-//   - A `user_input.required` event of the `request_user_input` tool is a
-//     question.
-//   - An `approval.required` event is a permission for one call. Codewhale
-//     states no options, so the prompt states LeapMux's allow and deny.
+//   - A `user_input.required` event of the `request_user_input` tool with a
+//     thread ID and input ID is a question.
+//   - An `approval.required` event with an approval ID is a permission for one
+//     call. Codewhale states no options, so the prompt states LeapMux's allow
+//     and deny.
 //
 // Any other payload reads as unrecognized: the runtime takes an answer only
-// to an approval or to a question of that tool, and the resolution refuses
-// LeapMux's Allow to any other request (resolveControlReply).
+// to a routable approval or question of that tool, and resolveControlReply
+// refuses any request without those identifiers.
 func (codewhaleProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	if questions, ok := codewhaleQuestions(input.Payload); ok {
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{Questions: questions}}}
+	env, ok := storedControlEvent(input.Payload)
+	if !ok {
+		return agent.UnrecognizedControlPrompt()
 	}
-	if permission, ok := codewhalePermissionPrompt(input.Payload); ok {
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
+	switch env.Event {
+	case contracts.CodewhaleEventUserInputRequired:
+		if questions, ok := codewhaleQuestions(input.Payload, env); ok {
+			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{Questions: questions}}}
+		}
+	case contracts.CodewhaleEventApprovalRequired:
+		if permission, ok := codewhalePermissionPrompt(input.Payload, env); ok {
+			return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
+		}
 	}
 	return agent.UnrecognizedControlPrompt()
 }
 
-// codewhaleStoredEvent reads the runtime's event object of a stored payload,
-// or nil when the payload states none.
-func codewhaleStoredEvent(payload []byte) map[string]json.RawMessage {
-	fields, _ := providerkit.RawObject(payload)
-	event, _ := providerkit.RawObject(fields[contracts.CodewhaleControlPayloadEvent])
-	return event
-}
-
-// codewhaleStoredEventName is the name of the stored event, such as
-// `approval.required`, or "".
-func codewhaleStoredEventName(payload []byte) string {
-	return providerkit.ObjectString(codewhaleStoredEvent(payload), contracts.CodewhaleEnvelopeFieldEvent)
-}
-
 // codewhalePermissionPrompt reads an approval: the tool, its input, the
 // call's intent as the reason, and the command of a command tool. It
-// reports false for any other payload.
+// reports false for any payload that resolveControlReply cannot route.
 //
 // The tool name comes from the shared header, else from the event. The
 // reason is the call's intent and never the tool's static description.
-func codewhalePermissionPrompt(payload []byte) (*leapmuxv1.PermissionPrompt, bool) {
-	event := codewhaleStoredEvent(payload)
-	if providerkit.ObjectString(event, contracts.CodewhaleEnvelopeFieldEvent) != contracts.CodewhaleEventApprovalRequired {
+func codewhalePermissionPrompt(payload []byte, env codewhaleEnvelope) (*leapmuxv1.PermissionPrompt, bool) {
+	if env.Event != contracts.CodewhaleEventApprovalRequired {
 		return nil, false
 	}
-	approval, _ := providerkit.RawObject(event[contracts.CodewhaleEnvelopeFieldPayload])
+	approval, ok := parseApprovalEventPayload(env.Payload)
+	if !ok {
+		return nil, false
+	}
 	toolName := agent.ControlToolName(payload)
 	if toolName == "" {
-		toolName = providerkit.ObjectString(approval, contracts.CodewhaleApprovalFieldToolName)
+		toolName = approval.ToolName
 	}
 	toolInput := agent.ControlToolInput(payload)
 	permission := &leapmuxv1.PermissionPrompt{
 		Title:     toolName,
-		Reason:    providerkit.ObjectString(approval, contracts.CodewhaleApprovalFieldIntentSummary),
+		Reason:    providerkit.ObjectString(providerkit.RawFields(env.Payload), contracts.CodewhaleApprovalFieldIntentSummary),
 		InputJson: string(toolInput),
 		Options:   agent.AllowDenyOptions(),
 	}
 	if isCodewhaleCommandTool(toolName) {
-		arguments, _ := providerkit.RawObject(toolInput)
-		permission.Command = providerkit.ObjectString(arguments, "command")
+		permission.Command = providerkit.ObjectString(providerkit.RawFields(toolInput), "command")
 	}
 	return permission, true
 }
 
-// codewhaleQuestions reads a stored question: a `user_input.required` event
-// whose header states the `request_user_input` tool. It reports false for
-// any other payload.
+// codewhaleQuestions reads a stored question: a routable `user_input.required`
+// event whose header specifies the `request_user_input` tool. It reports false
+// for any payload that resolveControlReply cannot route.
 //
-// A question needs its id, because the runtime matches an answer by it, and
-// its text: the sentence, or the header when it states only that. A record
-// without either is dropped. The header is stated only when it adds words,
-// and an option with no label is dropped.
-func codewhaleQuestions(payload []byte) ([]*leapmuxv1.ControlQuestion, bool) {
-	if codewhaleStoredEventName(payload) != contracts.CodewhaleEventUserInputRequired ||
+// A question needs a non-blank id, because the runtime matches an answer by it
+// and answersFromResponse rejects blank IDs, and its text: the sentence, or
+// the header when it states only that. A record without either is dropped. The
+// header is stated only when it adds words, and an option with no label is
+// dropped.
+func codewhaleQuestions(payload []byte, env codewhaleEnvelope) ([]*leapmuxv1.ControlQuestion, bool) {
+	if env.Event != contracts.CodewhaleEventUserInputRequired ||
+		env.ThreadID == "" ||
 		agent.ControlToolName(payload) != contracts.CodewhaleToolRequestUserInput {
 		return nil, false
 	}
+	userInput, ok := parseUserInputEventPayload(env.Payload)
+	if !ok {
+		return nil, false
+	}
 	questions := []*leapmuxv1.ControlQuestion{}
-	for _, record := range codewhaleQuestionRecords(payload) {
-		id := providerkit.ObjectString(record, contracts.CodewhaleQuestionFieldID)
-		header := providerkit.ObjectString(record, contracts.CodewhaleQuestionFieldHeader)
-		text := providerkit.ObjectString(record, contracts.CodewhaleQuestionFieldQuestion)
+	for _, record := range storedRequestQuestions(payload, userInput.Request) {
+		text := record.Question
 		if text == "" {
-			text = header
+			text = record.Header
 		}
-		if id == "" || text == "" {
+		if strings.TrimSpace(record.ID) == "" || text == "" {
 			continue
 		}
 		question := &leapmuxv1.ControlQuestion{
-			Id:          id,
+			Id:          record.ID,
 			Question:    text,
-			Options:     codewhaleQuestionOptions(record[contracts.CodewhaleQuestionFieldOptions]),
-			MultiSelect: providerkit.RawBool(record[contracts.CodewhaleQuestionFieldMultiSelect]),
+			Options:     codewhaleQuestionOptions(record.Options),
+			MultiSelect: record.MultiSelect,
 		}
-		if header != text {
-			question.Header = header
+		if record.Header != text {
+			question.Header = record.Header
 		}
 		questions = append(questions, question)
 	}
 	return questions, true
 }
 
-// codewhaleQuestionRecords reads the question records of a stored question,
-// in the runtime's order. The shared header's `request.input.questions` is
-// what the Worker stored for the control to answer, so it wins whenever it
-// states a list, even an empty one. The stored event's
-// `payload.request.questions` is the fallback. A record that is no object is
-// dropped.
-func codewhaleQuestionRecords(payload []byte) []map[string]json.RawMessage {
-	header, _ := providerkit.RawObject(agent.ControlToolInput(payload))
-	raw := header[contracts.CodewhaleQuestionFieldQuestions]
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil || elements == nil {
-		eventPayload, _ := providerkit.RawObject(codewhaleStoredEvent(payload)[contracts.CodewhaleEnvelopeFieldPayload])
-		request, _ := providerkit.RawObject(eventPayload[contracts.CodewhaleUserInputFieldRequest])
-		elements = nil
-		_ = json.Unmarshal(request[contracts.CodewhaleQuestionFieldQuestions], &elements)
-	}
-	records := make([]map[string]json.RawMessage, 0, len(elements))
-	for _, element := range elements {
-		if record, ok := providerkit.RawObject(element); ok {
-			records = append(records, record)
-		}
-	}
-	return records
-}
-
 // codewhaleQuestionOptions reads the options of one question. An option with
 // no label has nothing to choose, so it is dropped. An option states no
 // value, so its answer sends its label.
 func codewhaleQuestionOptions(raw json.RawMessage) []*leapmuxv1.QuestionOption {
-	var elements []json.RawMessage
-	_ = json.Unmarshal(raw, &elements)
+	elements, _ := providerkit.RawArray(raw)
 	options := []*leapmuxv1.QuestionOption{}
 	for _, element := range elements {
 		option, ok := providerkit.RawObject(element)
@@ -217,7 +191,7 @@ func codewhaleQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswe
 	if decision.GetCancelled() {
 		return agent.ControlAnswer{Content: agent.DenyResponse(input.RequestID, decision.GetFeedback())}, nil
 	}
-	answers := []map[string]string{}
+	answers := []userInputAnswer{}
 	for i, question := range questions {
 		answer := agent.QuestionAnswerAt(decision, i)
 		for position, value := range agent.QuestionAnswerValues(question, answer) {
@@ -227,31 +201,8 @@ func codewhaleQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswe
 			if position >= len(answer.GetSelected()) {
 				label = contracts.CodewhaleAnswerLabelOther
 			}
-			answers = append(answers, codewhaleAnswer(question.GetId(), label, value))
+			answers = append(answers, userInputAnswer{ID: question.GetId(), Label: label, Value: value})
 		}
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(agent.ControlToolInput(input.Request.Payload), &fields); err != nil {
-		return agent.ControlAnswer{}, fmt.Errorf("read the Codewhale question input: %w", err)
-	}
-	encoded, err := json.Marshal(answers)
-	if err != nil {
-		return agent.ControlAnswer{}, fmt.Errorf("encode the Codewhale answers: %w", err)
-	}
-	fields[codewhaleUpdatedInputAnswers] = encoded
-	updated, err := json.Marshal(fields)
-	if err != nil {
-		return agent.ControlAnswer{}, fmt.Errorf("encode the Codewhale question input: %w", err)
-	}
-	return agent.ControlAnswer{Content: agent.AllowResponse(input.RequestID, updated)}, nil
-}
-
-// codewhaleAnswer is one answer of the runtime's list, keyed by the
-// contract's field names, which the Worker forwards as they stand.
-func codewhaleAnswer(id, label, value string) map[string]string {
-	return map[string]string{
-		contracts.CodewhaleAnswerFieldID:    id,
-		contracts.CodewhaleAnswerFieldLabel: label,
-		contracts.CodewhaleAnswerFieldValue: value,
-	}
+	return providerkit.AllowWithToolAnswers(input.RequestID, agent.ControlToolInput(input.Request.Payload), answers)
 }

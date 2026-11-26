@@ -136,6 +136,10 @@ func newAgent(opts agent.Options, sink agent.ProviderServices, clock quartz.Cloc
 		workingDir: opts.WorkingDir,
 		clock:      clock,
 		settings:   codewhaleSettings{outputStyle: style},
+		replies: providerkit.NativeReplyLedger{
+			Provider: "Codewhale",
+			AgentID:  opts.AgentID,
+		},
 	}
 }
 

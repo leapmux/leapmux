@@ -1,8 +1,6 @@
 package qoder
 
 import (
-	"encoding/json"
-
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -56,19 +54,9 @@ func (qoderProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 // is the display name when Qoder states one as text, even an empty one, and
 // the server's own name otherwise.
 func qoderElicitation(payload []byte) (*leapmuxv1.ElicitationPrompt, bool) {
-	var envelope struct {
-		Request json.RawMessage `json:"request"`
-	}
-	var request map[string]json.RawMessage
-	if json.Unmarshal(payload, &envelope) != nil || json.Unmarshal(envelope.Request, &request) != nil {
+	request := providerkit.RawFields(providerkit.RawFields(payload)["request"])
+	if providerkit.ObjectString(request, "subtype") != contracts.QoderControlRequestSubtypeElicitation {
 		return nil, false
-	}
-	if subtype, _ := providerkit.RawString(request["subtype"]); subtype != contracts.QoderControlRequestSubtypeElicitation {
-		return nil, false
-	}
-	text := func(key string) string {
-		value, _ := providerkit.RawString(request[key])
-		return value
 	}
 	mode, ok := providerkit.RawString(request["mode"])
 	if !ok {
@@ -76,15 +64,15 @@ func qoderElicitation(payload []byte) (*leapmuxv1.ElicitationPrompt, bool) {
 	}
 	server, ok := providerkit.RawString(request["display_name"])
 	if !ok {
-		server = text("mcp_server_name")
+		server = providerkit.ObjectString(request, "mcp_server_name")
 	}
 	prompt := &leapmuxv1.ElicitationPrompt{
 		Mode:        mode,
-		Message:     text("message"),
+		Message:     providerkit.ObjectString(request, "message"),
 		Server:      server,
-		Url:         text("url"),
-		Title:       text("title"),
-		Description: text("description"),
+		Url:         providerkit.ObjectString(request, "url"),
+		Title:       providerkit.ObjectString(request, "title"),
+		Description: providerkit.ObjectString(request, "description"),
 	}
 	if schema := request["requested_schema"]; providerkit.RawPresent(schema) {
 		prompt.SchemaJson = string(schema)

@@ -482,14 +482,9 @@ func validControlRequestMethod(method string, params controlParams) bool {
 		return false
 	}
 	if params.ApprovalID != "" {
-		switch method {
-		case contracts.MuseMethodApprovalRequest, contracts.MuseMethodApprovalRequested, contracts.MuseMethodApprovalUpdated:
-			return true
-		default:
-			return false
-		}
+		return isMuseApprovalMethod(method)
 	}
-	return params.UserInputID != "" && (method == contracts.MuseMethodUserInputRequest || method == contracts.MuseMethodUserInputRequested)
+	return params.UserInputID != "" && isMuseUserInputMethod(method)
 }
 
 func nativeControlReply(request controlParams, raw []byte) (string, map[string]any, error) {
@@ -685,18 +680,24 @@ func nativeReplyFields(envelope map[string]json.RawMessage) (map[string]json.Raw
 	return result, nil
 }
 
+const maxMuseQuestionTextRunes = 500
+
 type nativeQuestionOption struct {
-	Label string
+	Label       string
+	Description string
+	Preview     string
 }
 
 type nativeQuestion struct {
-	ID        string                 `json:"id"`
-	Options   []nativeQuestionOption `json:"options"`
+	ID        string
+	Header    string
+	Question  string
+	Options   []nativeQuestionOption
 	Selection struct {
-		Mode string `json:"mode"`
-		Min  *int   `json:"minSelections"`
-		Max  *int   `json:"maxSelections"`
-	} `json:"selection"`
+		Mode string
+		Min  *int
+		Max  *int
+	}
 }
 
 func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
@@ -713,7 +714,7 @@ func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
 		}
 		id, idOK := providerkit.RawString(fields["id"])
 		text, textOK := providerkit.RawString(fields["question"])
-		_, headerOK := providerkit.RawString(fields["header"])
+		header, headerOK := providerkit.RawString(fields["header"])
 		selection, selectionOK := providerkit.RawObject(fields["selection"])
 		mode, modeOK := providerkit.RawString(selection["mode"])
 		options, optionsOK := providerkit.RawArray(fields["options"])
@@ -723,7 +724,7 @@ func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
 		if mode != contracts.MuseQuestionSelectionModeSingle && mode != contracts.MuseQuestionSelectionModeMultiple {
 			return nil, false
 		}
-		question := nativeQuestion{ID: id}
+		question := nativeQuestion{ID: id, Header: header, Question: text}
 		question.Selection.Mode = mode
 		labels := make(map[string]bool, len(options))
 		for _, raw := range options {
@@ -733,7 +734,12 @@ func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
 				return nil, false
 			}
 			labels[label] = true
-			question.Options = append(question.Options, nativeQuestionOption{Label: label})
+			preview, _ := providerkit.RawObject(option["preview"])
+			question.Options = append(question.Options, nativeQuestionOption{
+				Label:       label,
+				Description: providerkit.ObjectString(option, "description"),
+				Preview:     providerkit.ObjectString(preview, "content"),
+			})
 		}
 		var minOK, maxOK bool
 		question.Selection.Min, minOK = readSelectionCount(selection, "minSelections")
@@ -813,7 +819,7 @@ func validQuestionAnswers(nativeQuestions []nativeQuestion, answers []json.RawMe
 		}
 		if note, exists := fields["note"]; exists {
 			text, ok := providerkit.RawString(note)
-			if !ok || utf8.RuneCountInString(text) > 500 {
+			if !ok || utf8.RuneCountInString(text) > maxMuseQuestionTextRunes {
 				return false
 			}
 		}
@@ -857,5 +863,5 @@ func validQuestionAnswers(nativeQuestions []nativeQuestion, answers []json.RawMe
 
 func validQuestionText(raw json.RawMessage) bool {
 	text, ok := providerkit.RawString(raw)
-	return ok && strings.TrimSpace(text) != "" && utf8.RuneCountInString(text) <= 500
+	return ok && agent.TrimJavaScriptSpace(text) != "" && utf8.RuneCountInString(text) <= maxMuseQuestionTextRunes
 }

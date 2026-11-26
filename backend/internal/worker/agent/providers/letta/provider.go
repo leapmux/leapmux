@@ -49,12 +49,6 @@ func (lettaProvider) IsInterrupt(content string) bool {
 	return isLettaRawInterrupt([]byte(content))
 }
 
-// PlanModeControl reports none: Letta has no plan-mode tool. `UpdatePlan` is a
-// to-do-style tool, not a plan approval flow.
-func (lettaProvider) PlanModeControl(string) agent.PlanModeControlKind {
-	return agent.PlanModeControlNone
-}
-
 // ResolveControlResponse turns the neutral answer into the bytes that Letta
 // Code reads: the flat approval_response payload for a permission, and the
 // question response for a question.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -39,11 +40,44 @@ func (a *Agent) finishSessionMutation() {
 }
 
 func (a *Agent) flushQueuedOutput() {
-	if queue := agent.OutputQueueFor(a.sink); queue != nil {
-		if err := queue.FlushOwnerAfterReady(a.publicationOutputOwner()); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+	owner := a.publicationOutputOwner()
+	queues := a.snapshotPublicationQueues()
+	if root := agent.OutputQueueFor(a.sink); root != nil && !slices.Contains(queues, root) {
+		queues = append(queues, root)
+	}
+	for _, queue := range queues {
+		if err := queue.FlushOwnerAfterReady(owner); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
 			slog.Debug("retain Kimi output after a state mutation", "error", err)
 		}
+		a.untrackPublicationQueueIfIdle(queue, owner)
 	}
+}
+
+func (a *Agent) trackPublicationQueue(queue *agent.OutputQueue) {
+	a.publicationQueuesMu.Lock()
+	if a.publicationQueues == nil {
+		a.publicationQueues = make(map[*agent.OutputQueue]struct{})
+	}
+	a.publicationQueues[queue] = struct{}{}
+	a.publicationQueuesMu.Unlock()
+}
+
+func (a *Agent) untrackPublicationQueueIfIdle(queue *agent.OutputQueue, owner *agent.OutputOwner) {
+	a.publicationQueuesMu.Lock()
+	if !queue.HasOwner(owner) {
+		delete(a.publicationQueues, queue)
+	}
+	a.publicationQueuesMu.Unlock()
+}
+
+func (a *Agent) snapshotPublicationQueues() []*agent.OutputQueue {
+	a.publicationQueuesMu.Lock()
+	defer a.publicationQueuesMu.Unlock()
+	queues := make([]*agent.OutputQueue, 0, len(a.publicationQueues))
+	for queue := range a.publicationQueues {
+		queues = append(queues, queue)
+	}
+	return queues
 }
 
 func (a *Agent) publicationOutputOwner() *agent.OutputOwner {
@@ -74,18 +108,28 @@ func (a *Agent) queueRegistryWrite(writer agent.BackgroundTaskServices, label st
 
 // queueProviderWrite releases provider state before a queued write invokes observers.
 func (a *Agent) queueProviderWrite(label string, write func() error) error {
-	queue := agent.OutputQueueFor(a.sink)
+	return a.queueOutputWrite(agent.OutputQueueFor(a.sink), label, write)
+}
+
+// queueOutputWrite appends a lock-safe provider write directly onto queue.
+// Both the root queue and child transcript queues drain via flushQueuedOutput
+// once dispatchMu and sessionMu unlock.
+func (a *Agent) queueOutputWrite(queue *agent.OutputQueue, label string, write func() error) error {
 	if queue == nil || write == nil {
 		return errors.New("the Kimi provider write has no output queue or operation")
 	}
+	owner := a.publicationOutputOwner()
 	dispatch, session := a.dispatchMu.mutex(), a.sessionMu.mutex()
-	queue.Append(agent.OutputWrite{Owner: a.publicationOutputOwner(), ScopeID: "kimi-provider-output", Label: label, Run: func() error {
+	queue.Append(agent.OutputWrite{Owner: owner, ScopeID: "kimi-provider-output", Label: label, Run: func() error {
 		if err := kimiRegistryPublicationLockError(dispatch, session); err != nil {
 			return err
 		}
 		return write()
 	}})
-	if err := queue.Flush(); err != nil {
+	a.trackPublicationQueue(queue)
+	err := queue.Flush()
+	a.untrackPublicationQueueIfIdle(queue, owner)
+	if err != nil {
 		return &agent.PendingOutputError{Err: err}
 	}
 	return nil

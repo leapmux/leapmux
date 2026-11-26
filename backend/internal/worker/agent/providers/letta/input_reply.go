@@ -21,30 +21,13 @@ type inputReply struct {
 	approvalRunID string
 }
 
-// beginInputReply reserves the turn and its receipt before any native frame
-// can report an already accepted input. The client message ID groups the
-// model runs of this input across tool calls and retries.
-func (a *Agent) beginInputReply(scope runtimeScope, requestID, clientID string) (agent.NativeInputReceipt, error) {
-	a.Mu.Lock()
-	if a.StoppedLocked() {
-		a.Mu.Unlock()
-		return agent.NativeInputReceipt{}, errAgentStopped
-	}
-	if scope.AgentID != a.agentID || scope.ConversationID != a.conversationID {
-		a.Mu.Unlock()
-		return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
-	}
-	if a.turnActive {
-		a.Mu.Unlock()
-		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
-	}
+// beginInputReplyLocked reserves the receipt for one input under Agent.Mu
+// before any native frame can report an already accepted input. The client
+// message ID groups the model runs of this input across tool calls and retries.
+func (a *Agent) beginInputReplyLocked(scope runtimeScope, requestID, clientID string) agent.NativeInputReceipt {
 	receipt := agent.NativeInputReceipt{SessionID: scope.ConversationID, InputID: clientID, TurnID: clientID}
 	a.inputReply = &inputReply{scope: scope, requestID: requestID, receipt: receipt}
-	a.turnActive = true
-	seq := a.NextTurnSeq()
-	a.Mu.Unlock()
-	a.sink.SetTurnState(agent.TurnState{Active: true}, seq)
-	return receipt, nil
+	return receipt
 }
 
 func (r *inputReply) matches(scope *runtimeScope) bool {
@@ -142,18 +125,14 @@ func (a *Agent) replyTextReceipt(scope *runtimeScope, runID string) agent.Native
 	return agent.NativeInputReceipt{}
 }
 
-func (a *Agent) inputPermissionTurnID(raw []byte, toolID string) string {
-	var frame struct {
-		Runtime    *runtimeScope `json:"runtime"`
-		SubagentID string        `json:"subagent_id"`
-	}
-	if toolID == "" || json.Unmarshal(raw, &frame) != nil || frame.SubagentID != "" {
+func (a *Agent) inputPermissionTurnID(scope *runtimeScope, subagentID, toolID string) string {
+	if toolID == "" || subagentID != "" {
 		return ""
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	reply := a.inputReply
-	if !reply.matches(frame.Runtime) {
+	if !reply.matches(scope) {
 		return ""
 	}
 	runID := reply.approvalRunID

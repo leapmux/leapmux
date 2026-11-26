@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -18,6 +20,11 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+type childNameKey struct {
+	parentSessionID string
+	name            string
+}
+
 type nativeChildDescriptor struct {
 	ID     string `json:"childId"`
 	Mode   string `json:"mode"`
@@ -26,10 +33,15 @@ type nativeChildDescriptor struct {
 	Parent string `json:"-"`
 }
 type nativeChild struct {
-	descriptor nativeChildDescriptor
-	agentID    string
-	spawnID    string
-	active     bool
+	descriptor      nativeChildDescriptor
+	agentID         string
+	spawnID         string
+	active          bool
+	nativeTurnEpoch uint64
+	sendMu          sync.Mutex
+	steerMu         sync.Mutex
+	// Mu protects pendingSteers.
+	pendingSteers []*pendingSteer
 }
 
 func (a *Agent) beginChild(stream *sessionStream, raw []byte) error {
@@ -87,11 +99,26 @@ func (a *Agent) beginOwnedChild(stream *sessionStream, descriptor nativeChildDes
 		return err
 	}
 	a.Mu.Lock()
-	a.childCatalog[descriptor.ID] = descriptor
+	a.registerCatalogChildLocked(descriptor)
 	a.children[descriptor.ID] = child
 	delete(a.pendingWorkflowChildren, descriptor.ID)
 	a.Mu.Unlock()
 	return nil
+}
+
+// registerCatalogChildLocked records descriptor in childCatalog and its
+// (parentSessionID, name) secondary index. The caller holds Mu.
+func (a *Agent) registerCatalogChildLocked(descriptor nativeChildDescriptor) {
+	if a.childCatalog == nil {
+		a.childCatalog = map[string]nativeChildDescriptor{}
+	}
+	a.childCatalog[descriptor.ID] = descriptor
+	if descriptor.Name != "" {
+		if a.childCatalogByName == nil {
+			a.childCatalogByName = map[childNameKey]string{}
+		}
+		a.childCatalogByName[childNameKey{parentSessionID: descriptor.Parent, name: descriptor.Name}] = descriptor.ID
+	}
 }
 
 // A continuable result identifies the exact child created by this exact native call.
@@ -196,6 +223,9 @@ func (a *Agent) bindChildResult(stream *sessionStream, callID string, raw []byte
 func (a *Agent) setChildActive(id string, active bool) {
 	a.Mu.Lock()
 	if child := a.children[id]; child != nil {
+		if active {
+			child.nativeTurnEpoch++
+		}
 		child.active = active
 	}
 	a.Mu.Unlock()
@@ -216,8 +246,11 @@ func (a *Agent) resolveCatalogChildLocked(parentSessionID, target string) (strin
 	if slash := strings.LastIndexByte(target, '/'); slash >= 0 {
 		leafName = target[slash+1:]
 	}
-	for id, descriptor := range a.childCatalog {
-		if descriptor.Parent == parentSessionID && descriptor.Name != "" && descriptor.Name == leafName {
+	if leafName == "" {
+		return "", nativeChildDescriptor{}, false
+	}
+	if id, ok := a.childCatalogByName[childNameKey{parentSessionID: parentSessionID, name: leafName}]; ok {
+		if descriptor, known := a.childCatalog[id]; known && descriptor.Parent == parentSessionID && descriptor.Name == leafName {
 			return id, descriptor, true
 		}
 	}
@@ -246,6 +279,9 @@ func (a *Agent) childTurnState(id string, active bool, completion agent.MessageC
 			return fmt.Errorf("DeepSeek Harness has an invalid child completion %q", completion)
 		}
 	}
+	if active {
+		child.nativeTurnEpoch++
+	}
 	child.active = active
 	childAgentID := child.agentID
 	continuable := child.descriptor.Mode == "continuable"
@@ -254,25 +290,24 @@ func (a *Agent) childTurnState(id string, active bool, completion agent.MessageC
 		turnSeq = a.NextTurnSeq()
 	}
 	a.Mu.Unlock()
-	if active {
-		if err := a.sink.ReviveBackgroundTask(id); err != nil {
-			return err
+	var err error
+	if a.sink != nil {
+		if active {
+			if err = a.sink.ReviveBackgroundTask(id); err == nil {
+				err = a.sink.UpdateBackgroundTaskStatus(id, bgtask.StatusRunning, "")
+			}
+		} else {
+			err = a.sink.CloseBackgroundTask(id, status)
 		}
-		if err := a.sink.UpdateBackgroundTaskStatus(id, bgtask.StatusRunning, ""); err != nil {
-			return err
+		if continuable && childAgentID != "" {
+			state := agent.TurnState{}
+			if active {
+				state = agent.TurnState{Active: true, Steerable: true}
+			}
+			providerkit.PublishTurnStateTo(a.sink.ChildSink(childAgentID), state, turnSeq)
 		}
-		if a.sink != nil && continuable && childAgentID != "" {
-			providerkit.PublishTurnStateTo(a.sink.ChildSink(childAgentID), agent.TurnState{Active: true, Steerable: true}, turnSeq)
-		}
-		return nil
 	}
-	if err := a.sink.CloseBackgroundTask(id, status); err != nil {
-		return err
-	}
-	if a.sink != nil && continuable && childAgentID != "" {
-		providerkit.PublishTurnStateTo(a.sink.ChildSink(childAgentID), agent.TurnState{}, turnSeq)
-	}
-	return nil
+	return err
 }
 
 func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
@@ -304,11 +339,28 @@ func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Att
 		return inputReceipt, fmt.Errorf("DeepSeek Harness cannot send input after its native process stops")
 	}
 	child := a.children[childKey]
-	active := child != nil && child.active
-	a.Mu.Unlock()
 	if child == nil || child.descriptor.Mode != "continuable" {
+		a.Mu.Unlock()
 		return inputReceipt, agent.ErrChildOperationUnsupported
 	}
+	a.Mu.Unlock()
+
+	child.sendMu.Lock()
+	defer child.sendMu.Unlock()
+	if delivery == "steer" {
+		child.steerMu.Lock()
+		defer child.steerMu.Unlock()
+	}
+
+	a.Mu.Lock()
+	if a.streamFailure != nil || a.StoppedLocked() {
+		a.Mu.Unlock()
+		return inputReceipt, fmt.Errorf("DeepSeek Harness cannot send input after its native process stops")
+	}
+	active := child.active
+	parentSessionID := child.descriptor.Parent
+	childAgentID := child.agentID
+	a.Mu.Unlock()
 	if delivery == "queue" && active {
 		return inputReceipt, agent.ErrAgentBusy
 	}
@@ -322,52 +374,102 @@ func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Att
 		}
 		parts = append(parts, map[string]any{"type": "image", "mediaType": attachment.MIMEType, "data": base64.StdEncoding.EncodeToString(attachment.Data), "name": attachment.Filename})
 	}
-	childSink := a.sink.ChildSink(child.agentID)
+	childSink := a.sink.ChildSink(childAgentID)
 	requestID := uuid.NewString()
 	var submission *harnessReplySubmission
 	if trackReply {
 		inputReceipt = agent.NativeInputReceipt{SessionID: childKey, InputID: requestID}
 		submission = a.registerReplySubmission(childSink, inputReceipt, steer)
 	}
+	var startEpoch uint64
 	if delivery == "queue" {
 		a.Mu.Lock()
+		if a.streamFailure != nil || a.StoppedLocked() {
+			a.Mu.Unlock()
+			if submission != nil {
+				a.takeReplySubmissionEchoed(submission)
+			}
+			return agent.NativeInputReceipt{}, fmt.Errorf("DeepSeek Harness cannot send input after its native process stops")
+		}
+		if child.active {
+			a.Mu.Unlock()
+			if submission != nil {
+				a.takeReplySubmissionEchoed(submission)
+			}
+			return agent.NativeInputReceipt{}, agent.ErrAgentBusy
+		}
 		child.active = true
+		startEpoch = child.nativeTurnEpoch
 		seq := a.NextTurnSeq()
 		a.Mu.Unlock()
-		if child.agentID != "" {
+		if childAgentID != "" {
 			childSink.SetTurnState(agent.TurnState{Active: true, Steerable: true}, seq)
 		}
+	}
+	var pending *pendingSteer
+	if steer != nil {
+		pending = newPendingSteer(requestID, *steer)
+		a.Mu.Lock()
+		child.pendingSteers = append(child.pendingSteers, pending)
+		a.Mu.Unlock()
 	}
 	var receipt struct {
 		ID string `json:"messageId"`
 	}
-	err := a.rpc.request(a.Context(), "subagents/prompt", map[string]any{"parentSessionId": child.descriptor.Parent, "childSessionId": childKey, "mode": "continuable", "delivery": delivery, "requestId": requestID, "content": parts}, &receipt)
+	err := a.rpc.request(a.Context(), "subagents/prompt", map[string]any{"parentSessionId": parentSessionID, "childSessionId": childKey, "mode": "continuable", "delivery": delivery, "requestId": requestID, "content": parts}, &receipt)
 	if err == nil && receipt.ID == "" {
 		err = fmt.Errorf("DeepSeek Harness did not confirm the child prompt")
 	}
 	if err == nil {
+		if pending != nil {
+			a.Mu.Lock()
+			if pending.itemID == "" {
+				pending.itemID = receipt.ID
+			}
+			a.Mu.Unlock()
+		}
 		return inputReceipt, nil
 	}
 	if submission != nil {
-		if a.replySubmissionEchoed(submission) {
+		if a.takeReplySubmissionEchoed(submission) {
+			if pending != nil {
+				a.forgetPendingSteer(steerTarget{sessionID: childKey, isChild: true}, pending)
+			}
 			return inputReceipt, nil
 		}
 		inputReceipt = agent.NativeInputReceipt{}
 	}
-	var native *remoteFailure
-	if errors.As(err, &native) {
-		if delivery == "queue" {
-			a.Mu.Lock()
-			child.active = false
-			seq := a.NextTurnSeq()
-			a.Mu.Unlock()
-			if child.agentID != "" {
-				childSink.SetTurnState(agent.TurnState{}, seq)
-			}
+	if pending != nil {
+		a.Mu.Lock()
+		delivered := pending.delivered
+		child.pendingSteers = slices.DeleteFunc(child.pendingSteers, func(candidate *pendingSteer) bool { return candidate == pending })
+		a.Mu.Unlock()
+		if delivered {
+			return inputReceipt, nil
 		}
+	}
+	if delivery == "queue" {
+		a.clearOptimisticChildTurnState(child, childSink, startEpoch)
+	}
+	if isDefinitePromptRefusal(err) {
 		return inputReceipt, err
 	}
 	return inputReceipt, fmt.Errorf("%w: DeepSeek Harness did not confirm the child prompt: %w", agent.ErrDeliveryUncertain, err)
+}
+
+func (a *Agent) clearOptimisticChildTurnState(child *nativeChild, childSink agent.ProviderServices, startEpoch uint64) {
+	a.Mu.Lock()
+	if !child.active || child.nativeTurnEpoch != startEpoch {
+		a.Mu.Unlock()
+		return
+	}
+	child.active = false
+	seq := a.NextTurnSeq()
+	childAgentID := child.agentID
+	a.Mu.Unlock()
+	if childAgentID != "" && childSink != nil {
+		childSink.SetTurnState(agent.TurnState{}, seq)
+	}
 }
 
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
@@ -383,25 +485,52 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	a.Mu.Lock()
 	child := a.children[childKey]
-	var active bool
-	var mode, parent string
+	var mode string
 	if child != nil {
-		active = child.active
 		mode = child.descriptor.Mode
-		parent = child.descriptor.Parent
 	}
 	a.Mu.Unlock()
 	if child == nil || mode != "continuable" {
 		return agent.ErrChildOperationUnsupported
 	}
+
+	child.steerMu.Lock()
+	defer child.steerMu.Unlock()
+
+	a.Mu.Lock()
+	active := child.active
+	parent := child.descriptor.Parent
+	childAgentID := child.agentID
+	steers := slices.Clone(child.pendingSteers)
+	a.Mu.Unlock()
+
+	if active {
+		err := a.rpc.call(a.Context(), "subagents/interruptByUser", map[string]any{"childSessionId": childKey}, nil)
+		if providerkit.IsHTTPStatus(err, http.StatusNotFound) {
+			// DeepSeek Harness 0.2.0–0.2.1 exposed subagents/interruptByParent before renaming it to subagents/interruptByUser.
+			err = a.rpc.call(a.Context(), "subagents/interruptByParent", map[string]any{"childSessionId": childKey, "parentSessionId": parent, "mode": "continuable"}, nil)
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	var failures error
+	var childSink agent.ProviderServices
+	if a.sink != nil && childAgentID != "" {
+		childSink = a.sink.ChildSink(childAgentID)
+	}
+	childTarget := steerTarget{sessionID: childKey, isChild: true, sink: childSink}
+	for _, steer := range steers {
+		failures = errors.Join(failures, a.removePendingSteer(childTarget, steer))
+	}
+
 	if !active {
 		a.dispatchMu.Lock()
-		defer a.dispatchMu.Unlock()
 		a.Mu.Lock()
 		current := a.children[childKey]
 		stillIdle := current != nil && !current.active && !a.StoppedLocked()
 		var childStreams []*sessionStream
-		var childAgentID string
 		if stillIdle {
 			childAgentID = current.agentID
 			for _, stream := range a.sortedStreamsLocked() {
@@ -411,23 +540,16 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 			}
 		}
 		a.Mu.Unlock()
-		if !stillIdle {
-			return nil
+		if stillIdle {
+			for _, stream := range childStreams {
+				failures = errors.Join(failures, a.finishPendingTools(stream, agent.MessageCompletionInterrupted))
+				providerkit.ResetSpansAndProgress(a.streamSink(stream))
+			}
+			if len(childStreams) == 0 && childAgentID != "" && a.sink != nil {
+				providerkit.ResetSpansAndProgress(a.sink.ChildSink(childAgentID))
+			}
 		}
-		var failures error
-		for _, stream := range childStreams {
-			failures = errors.Join(failures, a.finishPendingTools(stream, agent.MessageCompletionInterrupted))
-			providerkit.ResetSpansAndProgress(a.streamSink(stream))
-		}
-		if len(childStreams) == 0 && childAgentID != "" {
-			providerkit.ResetSpansAndProgress(a.sink.ChildSink(childAgentID))
-		}
-		return failures
+		a.dispatchMu.Unlock()
 	}
-	err := a.rpc.call(a.Context(), "subagents/interruptByUser", map[string]any{"childSessionId": childKey}, nil)
-	if providerkit.IsHTTPStatus(err, http.StatusNotFound) {
-		// DeepSeek Harness 0.2.0–0.2.1 exposed subagents/interruptByParent before renaming it to subagents/interruptByUser.
-		return a.rpc.call(a.Context(), "subagents/interruptByParent", map[string]any{"childSessionId": childKey, "parentSessionId": parent, "mode": "continuable"}, nil)
-	}
-	return err
+	return failures
 }

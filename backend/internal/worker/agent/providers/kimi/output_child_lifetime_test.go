@@ -11,7 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -420,5 +422,148 @@ func TestKimiChildCleanupWaitsForMediaAndInactivity(t *testing.T) {
 			assert.False(t, events[len(events)-2].active)
 			assert.True(t, events[len(events)-1].registryFinal)
 		})
+	}
+}
+
+type kimiProgressResetCounterSink struct {
+	agent.ProviderServices
+	mu     sync.Mutex
+	resets map[string]int
+}
+
+type kimiChildProgressResetCounterSink struct {
+	agent.ProviderServices
+	id     string
+	parent *kimiProgressResetCounterSink
+}
+
+func (s *kimiChildProgressResetCounterSink) ReportProgress(update agent.ProgressUpdate) {
+	if update.Operation == agent.ProgressModelReset {
+		s.parent.mu.Lock()
+		s.parent.resets[s.id]++
+		s.parent.mu.Unlock()
+	}
+	s.ProviderServices.ReportProgress(update)
+}
+
+func (s *kimiChildProgressResetCounterSink) AcquireChildSink(childID string) agent.ChildSinkLease {
+	return s.parent.wrapLease(childID, s.ProviderServices.AcquireChildSink(childID))
+}
+
+func (s *kimiChildProgressResetCounterSink) AcquireChildStateSink(childID string) agent.ChildSinkLease {
+	return s.parent.wrapLease(childID, s.ProviderServices.AcquireChildStateSink(childID))
+}
+
+func (s *kimiProgressResetCounterSink) wrapLease(childID string, lease agent.ChildSinkLease) agent.ChildSinkLease {
+	if lease.Sink == nil {
+		return lease
+	}
+	lease.Sink = agent.DecorateProviderServices(lease.Sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		return &kimiChildProgressResetCounterSink{ProviderServices: direct, id: childID, parent: s}
+	})
+	return lease
+}
+
+func (s *kimiProgressResetCounterSink) AcquireChildSink(childID string) agent.ChildSinkLease {
+	return s.wrapLease(childID, s.ProviderServices.AcquireChildSink(childID))
+}
+
+func (s *kimiProgressResetCounterSink) AcquireChildStateSink(childID string) agent.ChildSinkLease {
+	return s.wrapLease(childID, s.ProviderServices.AcquireChildStateSink(childID))
+}
+
+func (s *kimiProgressResetCounterSink) resetCount(childID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resets[childID]
+}
+
+func TestKimiChildLifetimeDoesNotStackModelProgressResetWrappers(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	counter := &kimiProgressResetCounterSink{resets: make(map[string]int)}
+	rig.agent.sink = agent.NewModelProgressResetSink(agent.DecorateProviderServices(rig.agent.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		counter.ProviderServices = direct
+		return counter
+	}))
+
+	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"parent","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
+	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"agent-0","task_id":"nested","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-1"}`))
+
+	parentRow, ok := rig.sink.BackgroundTask("session_1/agent-0")
+	require.True(t, ok)
+	nestedRow, ok := rig.sink.BackgroundTask("session_1/agent-1")
+	require.True(t, ok)
+
+	childWriter := rig.agent.run("agent-0").childLifetime.writer
+	nestedWriter := rig.agent.run("agent-1").childLifetime.writer
+
+	require.NoError(t, childWriter.PublishControlRequest(agent.ControlRequest{RequestID: "req-child", Payload: []byte(`{}`)}))
+	require.NoError(t, nestedWriter.PublishControlRequest(agent.ControlRequest{RequestID: "req-nested", Payload: []byte(`{}`)}))
+
+	assert.Equal(t, 1, counter.resetCount(parentRow.ChildAgentID), "child lifetime must not stack duplicate model-progress-reset wrappers")
+	assert.Equal(t, 1, counter.resetCount(nestedRow.ChildAgentID), "nested child lifetime must not stack duplicate model-progress-reset wrappers")
+}
+
+type kimiPublicationSpyServices struct {
+	agent.ProviderServices
+	seen []agent.TranscriptPublication
+}
+
+func (s *kimiPublicationSpyServices) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	s.seen = append(s.seen, content.Publication)
+	return nil
+}
+
+func (s *kimiPublicationSpyServices) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	s.seen = append(s.seen, content.Publication)
+	return true, nil
+}
+
+func (s *kimiPublicationSpyServices) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	s.seen = append(s.seen, content.Publication)
+	return nil
+}
+
+func TestKimiLeasedChildServicesCapturesOnlyWhenPublicationIsAbsent(t *testing.T) {
+	t.Parallel()
+	spy := &kimiPublicationSpyServices{}
+	base := agent.NewProviderServices(&agenttest.Sink{})
+	capturedPub := agent.CaptureTranscript(base, agent.MessageContent{AgentSessionID: "session_1"}, agent.SpanInfo{}).FrozenContent().Publication
+	require.NotNil(t, capturedPub)
+	existingPub := agent.CaptureTranscript(base, agent.MessageContent{AgentSessionID: "session_2"}, agent.SpanInfo{}).FrozenContent().Publication
+	require.NotNil(t, existingPub)
+	require.NotSame(t, capturedPub, existingPub)
+
+	var captureCalls int
+	leased := &kimiLeasedChildServices{
+		ProviderServices: spy,
+		capture: func(content agent.MessageContent, _ agent.SpanInfo) agent.MessageContent {
+			captureCalls++
+			content.Publication = capturedPub
+			return content
+		},
+	}
+
+	require.NoError(t, leased.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}))
+	written, err := leased.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{})
+	require.NoError(t, err)
+	assert.True(t, written)
+	require.NoError(t, leased.PersistTurnEnd(agent.MessageContent{}, agent.SpanInfo{}))
+	assert.Equal(t, 3, captureCalls, "each persist method captures when Publication is nil")
+
+	require.NoError(t, leased.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Publication: existingPub}, agent.SpanInfo{}))
+	written, err = leased.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Publication: existingPub})
+	require.NoError(t, err)
+	assert.True(t, written)
+	require.NoError(t, leased.PersistTurnEnd(agent.MessageContent{Publication: existingPub}, agent.SpanInfo{}))
+	assert.Equal(t, 3, captureCalls, "each persist method skips capture when Publication is already set")
+
+	require.Len(t, spy.seen, 6)
+	for i := range 3 {
+		assert.Same(t, capturedPub, spy.seen[i])
+	}
+	for i := 3; i < 6; i++ {
+		assert.Same(t, existingPub, spy.seen[i])
 	}
 }

@@ -2,7 +2,6 @@ package kimi
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -50,12 +49,6 @@ const (
 	kimiControlOptionPlanRejectPrefix = "plan_reject:"
 )
 
-// kimiText reads a string field, or "" for a value of another type.
-func kimiText(fields map[string]json.RawMessage, key string) string {
-	value, _ := providerkit.RawString(fields[key])
-	return value
-}
-
 // kimiObjects reads an array field and keeps its object elements. A value
 // that is no array reads as none.
 func kimiObjects(fields map[string]json.RawMessage, key string) []map[string]json.RawMessage {
@@ -72,12 +65,15 @@ func kimiObjects(fields map[string]json.RawMessage, key string) []map[string]jso
 	return objects
 }
 
-// kimiControlFrame reads the nested request of a stored interaction frame of
-// one interaction kind, and the frame itself. It returns false for any other
-// payload, and for a frame whose request is no object.
+// kimiControlFrame reads the nested request of a pending stored interaction
+// frame of one interaction kind, and the frame itself. It returns false for
+// any other payload, for a non-pending status, and for a frame whose request
+// is no object.
 func kimiControlFrame(payload []byte, kind string) (frame, request map[string]json.RawMessage, ok bool) {
 	frame = providerkit.RawFields(payload)
-	if kimiText(frame, "type") != contracts.KimiFrameInteraction || kimiText(frame, "kind") != kind {
+	if providerkit.ObjectString(frame, "type") != contracts.KimiFrameInteraction ||
+		providerkit.ObjectString(frame, "kind") != kind ||
+		providerkit.ObjectString(frame, "status") != kimiInteractionPending {
 		return nil, nil, false
 	}
 	request = providerkit.RawFields(frame["request"])
@@ -119,9 +115,9 @@ func kimiQuestions(request map[string]json.RawMessage) []*leapmuxv1.ControlQuest
 	records := kimiObjects(request, "questions")
 	questions := make([]*leapmuxv1.ControlQuestion, 0, len(records))
 	for _, record := range records {
-		id := kimiText(record, "id")
-		header := kimiText(record, "header")
-		text := kimiText(record, "question")
+		id := providerkit.ObjectString(record, "id")
+		header := providerkit.ObjectString(record, "header")
+		text := providerkit.ObjectString(record, "question")
 		if text == "" {
 			text = header
 		}
@@ -149,47 +145,38 @@ func kimiQuestionOptions(record map[string]json.RawMessage) []*leapmuxv1.Questio
 	records := kimiObjects(record, "options")
 	options := make([]*leapmuxv1.QuestionOption, 0, len(records))
 	for _, option := range records {
-		value := kimiText(option, "id")
-		label := kimiText(option, "label")
+		value := providerkit.ObjectString(option, "id")
+		label := providerkit.ObjectString(option, "label")
 		if value == "" || label == "" {
 			continue
 		}
 		options = append(options, &leapmuxv1.QuestionOption{
 			Value:       &value,
 			Label:       label,
-			Description: kimiText(option, "description"),
+			Description: providerkit.ObjectString(option, "description"),
 		})
 	}
 	return options
-}
-
-// kimiApprovalAgent is the agent that an approval belongs to: `main`, or a
-// subagent's `agent-N`. The server puts the native agent tag in `agent_id`,
-// and an absent tag is the main agent's.
-func kimiApprovalAgent(frame map[string]json.RawMessage) string {
-	if id := kimiText(frame, "agent_id"); id != "" {
-		return id
-	}
-	return kimiMainAgentID
 }
 
 // kimiApprovalPrompt reads one approval: the main agent's plan review as the
 // plan approval, and every other approval as a permission.
 func kimiApprovalPrompt(frame, request map[string]json.RawMessage) *leapmuxv1.ControlPrompt {
 	display := providerkit.RawFields(request["tool_input_display"])
-	displayKind := kimiText(display, "kind")
-	if displayKind == contracts.KimiDisplayPlanReview && kimiApprovalAgent(frame) == kimiMainAgentID {
+	displayKind := providerkit.ObjectString(display, "kind")
+	agentID := providerkit.ObjectString(frame, "agent_id")
+	if displayKind == contracts.KimiDisplayPlanReview && (agentID == "" || agentID == kimiMainAgentID) {
 		plan := &leapmuxv1.PlanPrompt{Choices: kimiPlanChoices(display)}
-		if text := kimiText(display, "plan"); strings.TrimSpace(text) != "" {
+		if text := providerkit.ObjectString(display, "plan"); agent.TrimJavaScriptSpace(text) != "" {
 			plan.Text = text
 		}
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: plan}}
 	}
 	permission := &leapmuxv1.PermissionPrompt{
-		Title:            kimiText(request, "tool_name"),
-		Reason:           kimiText(request, "action"),
-		Command:          kimiText(display, "command"),
-		WorkingDirectory: kimiText(display, "cwd"),
+		Title:            providerkit.ObjectString(request, "tool_name"),
+		Reason:           providerkit.ObjectString(request, "action"),
+		Command:          providerkit.ObjectString(display, "command"),
+		WorkingDirectory: providerkit.ObjectString(display, "cwd"),
 		Options:          kimiPermissionOptions(displayKind, display),
 	}
 	// The display is the whole statement of the call: the server sends no
@@ -197,7 +184,7 @@ func kimiApprovalPrompt(frame, request map[string]json.RawMessage) *leapmuxv1.Co
 	// which reads as text, and the arguments keep the rest of the display.
 	args := request["tool_input_display"]
 	if displayKind == contracts.KimiDisplayPlanReview {
-		if text := kimiText(display, "plan"); strings.TrimSpace(text) != "" {
+		if text := providerkit.ObjectString(display, "plan"); agent.TrimJavaScriptSpace(text) != "" {
 			permission.Text = text
 			args = kimiWithout(display, "plan")
 		}
@@ -232,14 +219,14 @@ func kimiWithout(fields map[string]json.RawMessage, key string) json.RawMessage 
 func kimiPlanChoices(display map[string]json.RawMessage) []*leapmuxv1.PlanChoice {
 	var choices []*leapmuxv1.PlanChoice
 	for _, option := range kimiObjects(display, "options") {
-		label := kimiText(option, "label")
+		label := providerkit.ObjectString(option, "label")
 		if label == "" {
 			continue
 		}
 		choices = append(choices, &leapmuxv1.PlanChoice{
 			Id:          label,
 			Label:       "Approve: " + label,
-			Description: kimiText(option, "description"),
+			Description: providerkit.ObjectString(option, "description"),
 			Effect:      leapmuxv1.PlanChoiceEffect_PLAN_CHOICE_EFFECT_APPROVE,
 		})
 	}
@@ -398,8 +385,9 @@ func kimiQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, er
 }
 
 // kimiAnswer is the server's answer to one question: its answer values
-// (agent.QuestionAnswerValues) in the server's own shape. The values list the
-// selected option IDs first, and the typed text last where the answer keeps
+// (agent.QuestionAnswerValues) in the server's own shape. QuestionDecisionOf
+// already verified every selected option against the question. The values list
+// the selected option IDs first, and the typed text last where the answer keeps
 // it, so the two parts split at the count of the selection:
 //
 //   - A multiple-choice question takes options and text together, which
@@ -407,8 +395,6 @@ func kimiQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, er
 //   - A single-choice question takes an option or the text. Its values never
 //     keep the text beside an option.
 //   - A question with neither is skipped.
-//
-// A selection that the question does not offer is dropped.
 func kimiAnswer(question *leapmuxv1.ControlQuestion, answer *leapmuxv1.QuestionAnswer) map[string]any {
 	values := agent.QuestionAnswerValues(question, answer)
 	selected := values[:len(answer.GetSelected())]
@@ -416,19 +402,13 @@ func kimiAnswer(question *leapmuxv1.ControlQuestion, answer *leapmuxv1.QuestionA
 	if len(values) > len(selected) {
 		text = values[len(selected)]
 	}
-	picked := make([]string, 0, len(selected))
-	for _, value := range selected {
-		if slices.ContainsFunc(question.GetOptions(), func(option *leapmuxv1.QuestionOption) bool { return agent.QuestionOptionValue(option) == value }) {
-			picked = append(picked, value)
-		}
-	}
 	switch {
-	case question.GetMultiSelect() && len(picked) > 0 && text != "":
-		return map[string]any{"kind": contracts.KimiAnswerKindMultiWithOther, "option_ids": picked, "other_text": text}
-	case question.GetMultiSelect() && len(picked) > 0:
-		return map[string]any{"kind": contracts.KimiAnswerKindMulti, "option_ids": picked}
-	case !question.GetMultiSelect() && len(picked) > 0:
-		return map[string]any{"kind": contracts.KimiAnswerKindSingle, "option_id": picked[0]}
+	case question.GetMultiSelect() && len(selected) > 0 && text != "":
+		return map[string]any{"kind": contracts.KimiAnswerKindMultiWithOther, "option_ids": selected, "other_text": text}
+	case question.GetMultiSelect() && len(selected) > 0:
+		return map[string]any{"kind": contracts.KimiAnswerKindMulti, "option_ids": selected}
+	case !question.GetMultiSelect() && len(selected) > 0:
+		return map[string]any{"kind": contracts.KimiAnswerKindSingle, "option_id": selected[0]}
 	case text != "":
 		return map[string]any{"kind": contracts.KimiAnswerKindOther, "text": text}
 	default:

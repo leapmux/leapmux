@@ -40,8 +40,10 @@ type Agent struct {
 	// Without it, a tool result could precede its opener and leave the card active indefinitely.
 	dispatchMu kimiPublicationMutex
 	// Queued provider writes share one readiness owner across dispatch and session mutations.
-	publicationOnce  sync.Once
-	publicationOwner *agent.OutputOwner
+	publicationOnce     sync.Once
+	publicationOwner    *agent.OutputOwner
+	publicationQueuesMu sync.Mutex
+	publicationQueues   map[*agent.OutputQueue]struct{}
 	// The launch stamp is immutable. dispatchMu protects the warning fingerprints.
 	serverLaunchedAt      time.Time
 	storedConfigWarnings  map[kimiConfigWarningKey]struct{}
@@ -168,16 +170,36 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	// the native turn header waits in the server's queue and runs next, which delivers
 	// it all the same.
 	reply, submission, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
-	if err != nil && (submission == nil || !a.hasObservedPrompt(submission)) {
+	receipt, _, err := a.settlePromptSubmission(submission, reply, err)
+	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
 	if reply.Status == kimiPromptBlocked {
 		a.PublishTurnActive()
+	}
+	return receipt, nil
+}
+
+// settlePromptSubmission reconciles POST /prompts with native stream proof.
+// When the stream already echoed the submission's random prompt ID, execution
+// is proved even if the HTTP reply failed. A blocked reply that never executed
+// retires its exact reply tracker. The returned bool reports whether the
+// submission is already settled (recovered from an error or blocked), so a
+// caller such as SteerInput skips post-submit follow-ups.
+func (a *Agent) settlePromptSubmission(submission *kimiPromptSubmission, reply kimiPromptReply, err error) (agent.NativeInputReceipt, bool, error) {
+	if err != nil {
+		if submission != nil && a.hasObservedPrompt(submission) {
+			return submission.receipt(), true, nil
+		}
+		return agent.NativeInputReceipt{}, false, err
+	}
+	if reply.Status == kimiPromptBlocked {
 		if !a.hasObservedPrompt(submission) {
 			a.retireKimiInput(submission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
 		}
+		return submission.receipt(), true, nil
 	}
-	return submission.receipt(), nil
+	return submission.receipt(), false, nil
 }
 
 // submitPrompt reserves a native identity before it posts the prompt.
@@ -270,23 +292,12 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 		return agent.NativeInputReceipt{}, err
 	}
 	reply, submission, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
+	receipt, settled, err := a.settlePromptSubmission(submission, reply, err)
 	if err != nil {
-		if submission != nil && errors.Is(err, agent.ErrDeliveryUncertain) && a.hasObservedPrompt(submission) {
-			return submission.receipt(), nil
-		}
 		return agent.NativeInputReceipt{}, err
 	}
-	receipt := submission.receipt()
-	if reply.Status == kimiPromptBlocked {
-		if !a.hasObservedPrompt(submission) {
-			a.retireKimiInput(submission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
-		}
-		return receipt, nil
-	}
-	if reply.Status != kimiPromptQueued {
-		// The turn ended before the prompt arrived, so the prompt started the next
-		// turn. The text reached the agent either way, and its native header moves the
-		// flag for the new turn.
+	if settled || reply.Status != kimiPromptQueued {
+		// Already observed executing, blocked, or launched as the next turn.
 		return receipt, nil
 	}
 	if err := kimiCheckID("prompt", reply.PromptID); err != nil {

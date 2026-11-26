@@ -16,26 +16,22 @@ type AnthropicContent struct {
 	HasToolUse bool
 }
 
-// ReadAnthropicContent reads the blocks of an Anthropic content array. A
-// block that is not an object is skipped.
+// ReadAnthropicContent reads the blocks of an Anthropic content array using
+// exact key matching, as JavaScript extractors do. A block that is not an
+// object is skipped.
 func ReadAnthropicContent(blocks []json.RawMessage) AnthropicContent {
 	var content AnthropicContent
 	for _, raw := range blocks {
-		var block struct {
-			Type string          `json:"type"`
-			Text json.RawMessage `json:"text"`
-		}
-		if json.Unmarshal(raw, &block) != nil {
+		fields, ok := RawObject(raw)
+		if !ok {
 			continue
 		}
-		switch block.Type {
+		switch ObjectString(fields, "type") {
 		case "tool_use":
 			content.HasToolUse = true
 		case "text":
 			content.HasText = true
-			var text string
-			_ = json.Unmarshal(block.Text, &text)
-			content.Texts = append(content.Texts, text)
+			content.Texts = append(content.Texts, ObjectString(fields, "text"))
 		}
 	}
 	return content

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/coder/websocket"
@@ -40,6 +41,9 @@ type sessionStream struct {
 	// replay holds transient snapshot replay state while replayChildSnapshot runs.
 	// Non-nil only during replay; only the Remote reader accesses it under dispatchMu.
 	replay *childSnapshotReplay
+	// inbox mirrors the native next-step and next-turn inbox lists so agent/inbox/spliced
+	// cancellations identify which pending steers were removed. Only the Remote reader accesses it.
+	inbox map[string][]inboxItem
 }
 
 type childSnapshotReplay struct {
@@ -323,6 +327,7 @@ func (a *Agent) handleFrame(raw []byte) error {
 				return err
 			}
 		}
+		stream.seedInbox(item.Projections.Values)
 		if err := a.applyProjections(stream, item.Projections.Values, true); err != nil {
 			return err
 		}
@@ -371,13 +376,13 @@ func (a *Agent) handleRemoteEvent(raw []byte) error {
 		a.Mu.Lock()
 		control, ok := a.controls[frame.EventID]
 		published := ok && control.published
-		delete(a.controls, frame.EventID)
+		a.deleteControlLocked(frame.EventID)
 		if ok && control.publicationDone != nil {
 			control.publicationOnce.Do(func() { close(control.publicationDone) })
 		}
 		a.Mu.Unlock()
 		if published {
-			control.sink.CancelControlRequest(frame.EventID)
+			control.sink.CancelControlRequestInstance(frame.EventID, control.instanceID)
 		}
 	case "emit":
 		if frame.Event == "api-session/status" && len(frame.Args) == 2 {
@@ -439,19 +444,23 @@ func (a *Agent) reportStreamFailure(err error) {
 	a.failureStopDone = stopDone
 	streams := a.sortedStreamsLocked()
 	controls := make(map[string]*nativeControl, len(a.controls))
+	controlIDs := make([]string, 0, len(a.controls))
 	for id, control := range a.controls {
 		if control.published {
 			controls[id] = control
+			controlIDs = append(controlIDs, id)
 		}
 		if control.publicationDone != nil {
 			control.publicationOnce.Do(func() { close(control.publicationDone) })
 		}
 	}
-	clear(a.controls)
+	slices.Sort(controlIDs)
+	a.clearControlsLocked()
 	a.Mu.Unlock()
 	cleanupError := a.closeStreamsAndWorkflows(streams, agent.MessageCompletionError, true)
-	for id, control := range controls {
-		control.sink.CancelControlRequest(id)
+	for _, id := range controlIDs {
+		control := controls[id]
+		control.sink.CancelControlRequestInstance(id, control.instanceID)
 	}
 	a.Mu.Lock()
 	a.streamFailure = errors.Join(err, cleanupError)

@@ -131,6 +131,14 @@ func RenameDirOrOSRefusal(t *testing.T, old, new string) (renamed bool, refused 
 	return false, false
 }
 
+// MustJSON marshals value to JSON and fails the test immediately on error.
+func MustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	require.NoError(t, err)
+	return raw
+}
+
 // JSONEscaped answers value as JSON encodes it inside a string, quotes
 // excluded, so an assertion can look for value inside marshaled JSON content:
 // a Windows path holds backslashes that the encoding doubles, and the raw

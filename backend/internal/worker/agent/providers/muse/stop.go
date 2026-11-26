@@ -70,7 +70,7 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 			if identity.ApprovalID == "" || identity.UserInputID != "" {
 				return fmt.Errorf("the Muse approval answer has an invalid identity")
 			}
-			identity.Requirement = json.RawMessage(paramsRawField(message.Params, "requirementId"))
+			identity.Requirement = providerkit.RawFields(message.Params)["requirementId"]
 		} else if identity.UserInputID == "" || identity.ApprovalID != "" {
 			return fmt.Errorf("the Muse question answer has an invalid identity")
 		}
@@ -117,12 +117,4 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 	default:
 		return fmt.Errorf("the Muse raw input method %q is unsupported", message.Method)
 	}
-}
-
-func paramsRawField(raw []byte, key string) []byte {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
-		return nil
-	}
-	return fields[key]
 }

@@ -80,34 +80,46 @@ func TestLettaReadControlRequest_AQuestionRequestReadsEachQuestionWithItsOptionL
 	}}}, agenttest.ControlPromptOf(lettaProvider{}, []byte(lettaPromptQuestionRequest)))
 }
 
-func TestLettaReadControlRequest_AQuestionRequestThatHoldsNoQuestionAsksNone(t *testing.T) {
-	for _, payload := range []string{
-		`{"type":"ask_user","tool_input":{}}`,
-		`{"type":"ask_user"}`,
-		`{"type":"ask_user","tool_input":[{"question":"In a list?"}]}`,
-		`{"type":"ask_user","tool_input":{"questions":"nope"}}`,
-		`{"type":"ask_user","tool_input":{"questions":null}}`,
+// Any ask_user payload that lettaResolveControlResponse refuses — missing
+// tool_call_id, empty or invalid questions, blank or duplicate question text,
+// or non-object elements — reads as unrecognized so the UI never offers an
+// unanswerable prompt.
+func TestLettaReadControlRequest_UnanswerableQuestionRequestIsUnrecognized(t *testing.T) {
+	for name, payload := range map[string]string{
+		"empty tool input":        `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{}}`,
+		"missing tool input":      `{"type":"ask_user","tool_call_id":"ask-1"}`,
+		"list tool input":         `{"type":"ask_user","tool_call_id":"ask-1","tool_input":[{"question":"In a list?"}]}`,
+		"non-array questions":     `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":"nope"}}`,
+		"null questions":          `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":null}}`,
+		"empty questions":         `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":[]}}`,
+		"missing tool call ID":    `{"type":"ask_user","tool_input":{"questions":[{"question":"Pick?"}]}}`,
+		"empty tool call ID":      `{"type":"ask_user","tool_call_id":"","tool_input":{"questions":[{"question":"Pick?"}]}}`,
+		"blank question":          `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":[{"question":"   "}]}}`,
+		"non-string question":     `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":[{"question":5}]}}`,
+		"non-object question":     `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":[null,{"question":"Pick?"}]}}`,
+		"string question element": `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":["plain text",{"question":"Pick?"}]}}`,
+		"duplicate question":      `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":[{"question":"Same?"},{"question":"Same?"}]}}`,
+		"wrong-case question key": `{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":[{"Question":"Pick?"}]}}`,
 	} {
-		got := agenttest.ControlPromptOf(lettaProvider{}, []byte(payload))
-		require.NotNil(t, got.GetQuestion(), payload)
-		assert.Empty(t, got.GetQuestion().GetQuestions(), payload)
+		t.Run(name, func(t *testing.T) {
+			got := agenttest.ControlPromptOf(lettaProvider{}, []byte(payload))
+			agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), got, payload)
+		})
 	}
 }
 
 // Letta's options are `{label, description}` objects; a bare string is read
-// as its label. An option with no label, or one that is no text, is dropped,
-// and so is a question that is no object. A question's text that is no text
-// reads as empty, and only a real true opens the multiple-choice control.
-func TestLettaReadControlRequest_AQuestionRequestReadsWhatTheControlCanDraw(t *testing.T) {
-	got := agenttest.ControlPromptOf(lettaProvider{}, []byte(`{"type":"ask_user","tool_input":{"questions":[
-		null, "plain text", ["a list"],
+// as its label. An option with no label, or one that is not text, is dropped,
+// and only a boolean true opens the multiple-choice control.
+func TestLettaReadControlRequest_AQuestionRequestFiltersMalformedOptions(t *testing.T) {
+	got := agenttest.ControlPromptOf(lettaProvider{}, []byte(`{"type":"ask_user","tool_call_id":"ask-1","tool_input":{"questions":[
 		{"question":"Pick?","multiSelect":"yes","options":["Plain",{"label":""},{"label":7},{"description":"no label"},null,3,{"label":"Labeled"}]},
-		{"question":5,"options":"none"}
+		{"question":"Free text?","options":"none"}
 	]}}`))
 	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
 		Questions: []*leapmuxv1.ControlQuestion{
 			{Question: "Pick?", Options: []*leapmuxv1.QuestionOption{lettaLabelOption("Plain"), lettaLabelOption("Labeled")}},
-			{Question: ""},
+			{Question: "Free text?"},
 		},
 	}}}, got)
 }
@@ -138,10 +150,31 @@ func TestLettaReadControlRequest_APermissionStatesItsToolInputAndLeapMuxsAllowAn
 }
 
 func TestLettaReadControlRequest_APermissionWithNoToolNameIsTitledTool(t *testing.T) {
-	for _, toolName := range []any{"", nil, 7} {
+	for _, toolName := range []any{"", nil} {
 		got := agenttest.ControlPromptOf(lettaProvider{}, lettaPermissionPayload(t, toolName, map[string]any{})).GetPermission()
 		require.NotNil(t, got, "%v", toolName)
 		assert.Equal(t, "Tool", got.GetTitle(), "%v", toolName)
+	}
+}
+
+func TestLettaReadControlRequest_PayloadWithNonTextFieldIsUnrecognized(t *testing.T) {
+	for _, field := range []string{"type", "requestId", "tool_name", "tool_call_id"} {
+		t.Run(field, func(t *testing.T) {
+			request := map[string]any{
+				"type":         "permission",
+				"requestId":    "perm-1",
+				"tool_name":    "Bash",
+				"tool_call_id": "call-1",
+				"tool_input":   map[string]any{},
+			}
+			request[field] = 7
+			payload, err := json.Marshal(request)
+			require.NoError(t, err)
+			agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(lettaProvider{}, payload))
+		})
+	}
+	for _, raw := range []string{`not json`, `null`, `[]`, `"text"`} {
+		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(lettaProvider{}, []byte(raw)), raw)
 	}
 }
 

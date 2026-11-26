@@ -521,3 +521,161 @@ func TestNativeParentInputMatcherChecksThePayloadVersionIndependently(t *testing
 		}
 	}
 }
+
+func TestResolveNativeChildLineageCoversMissingAndAmbiguousEvidence(t *testing.T) {
+	t.Parallel()
+	scenario := nativeParentInputCases(t)[0]
+
+	// Records[2]=spawn, Records[3]=binding, Records[4]=attestation.
+	for _, tc := range []struct {
+		name  string
+		index int
+	}{
+		{name: "missing spawn", index: 2},
+		{name: "missing binding", index: 3},
+		{name: "missing attestation", index: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			omitted, err := decodeNativeRecord(scenario.Records[tc.index], scenario.ParentSessionID)
+			require.NoError(t, err)
+			log, drain, target := parentInputSubject(t, scenario, func(raw json.RawMessage) json.RawMessage {
+				record, err := decodeNativeRecord(raw, scenario.ParentSessionID)
+				require.NoError(t, err)
+				if record.ID == omitted.ID {
+					return nil
+				}
+				return raw
+			})
+			proved, proofErr := initialChildInputProof(log, target)
+			require.NoError(t, proofErr)
+			assert.False(t, proved)
+			assert.Equal(t, nativeParentInputPending, matchNativeParentInput(log, drain, target).Status)
+		})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		index int
+	}{
+		{name: "ambiguous spawn", index: 2},
+		{name: "ambiguous binding", index: 3},
+		{name: "ambiguous attestation", index: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			log, drain, target := parentInputSubject(t, scenario, nil)
+			dup := rewriteNativeInputJSON(t, scenario.Records[tc.index], json.RawMessage(`"dup-lineage-id"`), "id")
+			dup = rewriteNativeInputJSON(t, dup, json.RawMessage(fmt.Sprintf("%d", log.contiguousThrough.Sequence+1)), "sequence")
+			require.NoError(t, log.add(dup))
+
+			proved, proofErr := initialChildInputProof(log, target)
+			require.Error(t, proofErr)
+			assert.False(t, proved)
+			assert.Equal(t, nativeParentInputInvalid, matchNativeParentInput(log, drain, target).Status)
+		})
+	}
+
+	t.Run("mismatched spawn parent session", func(t *testing.T) {
+		t.Parallel()
+		spawnRecord, err := decodeNativeRecord(scenario.Records[2], scenario.ParentSessionID)
+		require.NoError(t, err)
+		log, drain, target := parentInputSubject(t, scenario, func(raw json.RawMessage) json.RawMessage {
+			record, err := decodeNativeRecord(raw, scenario.ParentSessionID)
+			require.NoError(t, err)
+			if record.ID == spawnRecord.ID {
+				return rewriteNativeInputJSON(t, raw, json.RawMessage(`"other-parent"`), "payload", "record", "parent_session_id")
+			}
+			return raw
+		})
+		proved, proofErr := initialChildInputProof(log, target)
+		require.Error(t, proofErr)
+		assert.False(t, proved)
+		assert.Equal(t, nativeParentInputInvalid, matchNativeParentInput(log, drain, target).Status)
+	})
+
+	for _, tc := range []struct {
+		name  string
+		index int
+	}{
+		{name: "invalid spawn envelope", index: 2},
+		{name: "invalid binding envelope", index: 3},
+		{name: "invalid attestation envelope", index: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			targetRecord, err := decodeNativeRecord(scenario.Records[tc.index], scenario.ParentSessionID)
+			require.NoError(t, err)
+			log, drain, target := parentInputSubject(t, scenario, func(raw json.RawMessage) json.RawMessage {
+				record, err := decodeNativeRecord(raw, scenario.ParentSessionID)
+				require.NoError(t, err)
+				if record.ID == targetRecord.ID {
+					return rewriteNativeInputJSON(t, raw, json.RawMessage(`0`), "payload_schema_version")
+				}
+				return raw
+			})
+			proved, proofErr := initialChildInputProof(log, target)
+			require.Error(t, proofErr)
+			assert.False(t, proved)
+			assert.Equal(t, nativeParentInputInvalid, matchNativeParentInput(log, drain, target).Status)
+		})
+	}
+}
+
+func TestNativeInputArgumentsFailureChecksOptionalInterruptFlag(t *testing.T) {
+	t.Parallel()
+	source := nativeInputSource{CommandID: "cmd-1", SubagentID: "sub-1", InputKind: contracts.MuseParentInputSendMessage}
+	spawn := nativeInputControl{AgentPath: "worker/child"}
+
+	for _, tc := range []struct {
+		name        string
+		raw         string
+		wantFailure string
+	}{
+		{name: "absent interrupt", raw: `{"command_id":"cmd-1","message":"hi"}`},
+		{name: "true interrupt", raw: `{"command_id":"cmd-1","message":"hi","interrupt":true}`},
+		{name: "false interrupt", raw: `{"command_id":"cmd-1","message":"hi","interrupt":false}`},
+		{name: "null interrupt", raw: `{"command_id":"cmd-1","message":"hi","interrupt":null}`, wantFailure: "The native parent input interrupt option is invalid."},
+		{name: "string interrupt", raw: `{"command_id":"cmd-1","message":"hi","interrupt":"true"}`, wantFailure: "The native parent input interrupt option is invalid."},
+		{name: "numeric interrupt", raw: `{"command_id":"cmd-1","message":"hi","interrupt":1}`, wantFailure: "The native parent input interrupt option is invalid."},
+		{name: "null optional subagent_id", raw: `{"command_id":"cmd-1","message":"hi","subagent_id":null}`, wantFailure: "A native input argument has an invalid string value."},
+		{name: "numeric optional artifact_ref", raw: `{"command_id":"cmd-1","message":"hi","artifact_ref":123}`, wantFailure: "A native input argument has an invalid string value."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.wantFailure, nativeInputArgumentsFailure(tc.raw, source, spawn))
+		})
+	}
+}
+
+func TestMatchNativeParentInputRejectsInvalidSnapshotSourceAndBody(t *testing.T) {
+	t.Parallel()
+	scenario := nativeParentInputCases(t)[0]
+	drainIdentity, err := decodeNativeRecord(scenario.Original, scenario.ParentSessionID)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name  string
+		path  []string
+		value json.RawMessage
+	}{
+		{name: "absent source", path: []string{"payload", "event", "delivery_snapshot", "source"}},
+		{name: "null source", path: []string{"payload", "event", "delivery_snapshot", "source"}, value: json.RawMessage(`null`)},
+		{name: "absent body", path: []string{"payload", "event", "delivery_snapshot", "body"}},
+		{name: "null body", path: []string{"payload", "event", "delivery_snapshot", "body"}, value: json.RawMessage(`null`)},
+		{name: "numeric body", path: []string{"payload", "event", "delivery_snapshot", "body"}, value: json.RawMessage(`42`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			log, drain, target := parentInputSubject(t, scenario, func(raw json.RawMessage) json.RawMessage {
+				record, err := decodeNativeRecord(raw, scenario.ParentSessionID)
+				require.NoError(t, err)
+				if record.ID == drainIdentity.ID {
+					return rewriteNativeInputJSON(t, raw, tc.value, tc.path...)
+				}
+				return raw
+			})
+			assert.Equal(t, nativeParentInputInvalid, matchNativeParentInput(log, drain, target).Status)
+		})
+	}
+}

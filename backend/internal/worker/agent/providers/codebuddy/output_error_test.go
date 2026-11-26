@@ -118,7 +118,7 @@ func TestPendingControlResponseRejectsMalformedInnerData(t *testing.T) {
 		t.Run(inner, func(t *testing.T) {
 			a := newOfflineAgent(t, &agenttest.Sink{})
 			response := make(chan codebuddyControlResult, 1)
-			a.pendingControl["request-1"] = response
+			a.pendingControl["request-1"] = pendingControlWaiter{ch: response}
 			a.HandleOutput([]byte(`{"type":"control_response","response":{"request_id":"request-1","subtype":"success","response":` + inner + `}}`))
 			got := <-response
 			assert.True(t, got.Answered)
@@ -202,7 +202,7 @@ func TestMalformedControlResponsePreservesTheNativeFailure(t *testing.T) {
 	t.Parallel()
 	a := newOfflineAgent(t, &agenttest.Sink{})
 	response := make(chan codebuddyControlResult, 1)
-	a.pendingControl["request-1"] = response
+	a.pendingControl["request-1"] = pendingControlWaiter{ch: response}
 	a.HandleOutput([]byte(`{"type":"control_response","response":{"request_id":"request-1","subtype":"error","error":"Native refusal.","response":{"mode":7}}}`))
 	got := <-response
 	assert.False(t, got.Success)

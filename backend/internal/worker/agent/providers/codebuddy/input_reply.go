@@ -1,6 +1,7 @@
 package codebuddy
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,16 @@ func newInputTurnID() (string, error) {
 	return hex.EncodeToString(value[:]), nil
 }
 
+// codebuddyTurn tracks one active turn's input reply and mid-turn steers.
+// Agent.mu protects every field.
+type codebuddyTurn struct {
+	reply         *inputReply
+	inFlightSteer *codebuddyPendingSteer
+	pendingSteers []*codebuddyPendingSteer
+	ended         bool
+	replyRetained bool
+}
+
 // inputReply follows one ordinary input. Agent.mu protects it.
 type inputReply struct {
 	receipt      agent.NativeInputReceipt
@@ -38,6 +49,7 @@ type inputReply struct {
 }
 
 type codebuddyPendingSteer struct {
+	turn       *codebuddyTurn
 	sessionID  string
 	turnID     string
 	resolution agent.SteerResolution
@@ -67,6 +79,33 @@ func (e *codebuddyEarlySteer) finish(accepted bool) error {
 	e.accepted = accepted
 	e.ready.Store(true)
 	return e.publish()
+}
+
+func (a *Agent) activeTurnLocked() *codebuddyTurn {
+	if !a.active {
+		return nil
+	}
+	if a.turn == nil {
+		a.turn = &codebuddyTurn{}
+	}
+	return a.turn
+}
+
+func (a *Agent) turnReplyLocked() *inputReply {
+	if a.turn == nil {
+		return nil
+	}
+	return a.turn.reply
+}
+
+func (a *Agent) awaitingInputEchoLocked() bool {
+	if a.turn == nil {
+		return false
+	}
+	if a.turn.reply != nil && !a.turn.reply.admitted {
+		return true
+	}
+	return len(a.turn.pendingSteers) > 0 || a.turn.inFlightSteer != nil
 }
 
 func (r *inputReply) matches(sessionID string, requestID json.RawMessage) bool {
@@ -102,20 +141,33 @@ func (r *inputReply) outcome(result resultMessage, interrupted bool) leapmuxv1.A
 // mid-turn steers in FIFO order at the exact transcript position where
 // CodeBuddy injected them.
 func (a *Agent) consumeInputEcho(raw []byte) bool {
-	var echo struct {
-		UUID            string          `json:"uuid"`
-		IsReplay        bool            `json:"isReplay"`
-		SessionID       string          `json:"session_id"`
-		RequestID       json.RawMessage `json:"_requestId"`
-		ParentToolUseID string          `json:"parent_tool_use_id"`
-	}
-	if json.Unmarshal(raw, &echo) != nil || !echo.IsReplay || echo.ParentToolUseID != "" {
+	// Reject non-replay user frames (including multi-MB tool results) before
+	// decoding JSON. Inside a tool result string, quotes are escaped as
+	// \"isReplay\", so this substring appears only on a replay envelope key.
+	if !bytes.Contains(raw, []byte(`"isReplay"`)) {
 		return false
 	}
-	echoRequestID, _ := providerkit.RawString(echo.RequestID)
+	fields, ok := providerkit.RawObject(raw)
+	if !ok || !providerkit.RawBool(fields["isReplay"]) {
+		return false
+	}
+	if parentRaw := fields["parent_tool_use_id"]; providerkit.RawPresent(parentRaw) {
+		if parentID, ok := providerkit.RawString(parentRaw); !ok || parentID != "" {
+			return false
+		}
+	}
+	echoUUID := providerkit.ObjectString(fields, "uuid")
+	echoSessionID := providerkit.ObjectString(fields, "session_id")
+	echoRequestIDRaw := fields["_requestId"]
+	echoRequestID, _ := providerkit.RawString(echoRequestIDRaw)
 
 	a.mu.Lock()
-	if reply := a.inputReply; reply.matches(echo.SessionID, echo.RequestID) && !reply.admitted {
+	if !a.awaitingInputEchoLocked() {
+		a.mu.Unlock()
+		return true
+	}
+	turn := a.turn
+	if reply := turn.reply; reply.matches(echoSessionID, echoRequestIDRaw) && !reply.admitted {
 		reply.admitted = true
 		a.mu.Unlock()
 		return true
@@ -123,16 +175,16 @@ func (a *Agent) consumeInputEcho(raw []byte) bool {
 
 	var matched *codebuddyPendingSteer
 	var inFlight *codebuddyPendingSteer
-	for i, candidate := range a.pendingSteers {
-		if codebuddySteerMatchesEcho(candidate, echo.SessionID, echoRequestID) {
+	for i, candidate := range turn.pendingSteers {
+		if codebuddySteerMatchesEcho(candidate, echoSessionID, echoRequestID) {
 			matched = candidate
-			a.pendingSteers = append(a.pendingSteers[:i], a.pendingSteers[i+1:]...)
+			turn.pendingSteers = append(turn.pendingSteers[:i], turn.pendingSteers[i+1:]...)
 			break
 		}
 	}
-	if matched == nil && a.inFlightSteer != nil && a.inFlightSteer.early == nil &&
-		codebuddySteerMatchesEcho(a.inFlightSteer, echo.SessionID, echoRequestID) {
-		inFlight = a.inFlightSteer
+	if matched == nil && turn.inFlightSteer != nil && turn.inFlightSteer.early == nil &&
+		codebuddySteerMatchesEcho(turn.inFlightSteer, echoSessionID, echoRequestID) {
+		inFlight = turn.inFlightSteer
 	}
 	if matched == nil && inFlight == nil {
 		a.mu.Unlock()
@@ -140,9 +192,9 @@ func (a *Agent) consumeInputEcho(raw []byte) bool {
 	}
 
 	var receipt agent.NativeInputReceipt
-	reply := a.inputReply
-	if reply != nil && reply.admitted && reply.matches(echo.SessionID, echo.RequestID) {
-		nativeInputID := echo.UUID
+	reply := turn.reply
+	if reply != nil && reply.admitted && reply.matches(echoSessionID, echoRequestIDRaw) {
+		nativeInputID := echoUUID
 		if nativeInputID == "" {
 			if generated, err := newInputTurnID(); err == nil {
 				nativeInputID = generated
@@ -150,7 +202,7 @@ func (a *Agent) consumeInputEcho(raw []byte) bool {
 		}
 		if nativeInputID != "" {
 			receipt = agent.NativeInputReceipt{
-				SessionID: echo.SessionID,
+				SessionID: echoSessionID,
 				InputID:   nativeInputID,
 				TurnID:    reply.receipt.TurnID,
 			}
@@ -165,7 +217,7 @@ func (a *Agent) consumeInputEcho(raw []byte) bool {
 		resolution := matched.resolution
 		resolution.Outcome = agent.SteerOutcomeEchoed
 		resolution.Receipt = receipt
-		a.retainCodebuddySteerResolution(resolution)
+		a.reportCodebuddySteerError(agent.RetainSteerResolution(a.sink, resolution))
 		return true
 	}
 
@@ -184,7 +236,7 @@ func (a *Agent) consumeInputEcho(raw []byte) bool {
 	}
 	early.publish = publish
 	a.mu.Lock()
-	if a.inFlightSteer != inFlight {
+	if a.turn != turn || turn.ended || turn.inFlightSteer != inFlight {
 		a.mu.Unlock()
 		a.reportCodebuddySteerError(early.finish(false))
 		return true
@@ -203,22 +255,35 @@ func codebuddySteerMatchesEcho(steer *codebuddyPendingSteer, sessionID, requestI
 
 func (a *Agent) finishInFlightSteer(steer *codebuddyPendingSteer, accepted bool) {
 	a.mu.Lock()
-	if a.inFlightSteer != steer {
+	turn := steer.turn
+	if turn == nil || turn.inFlightSteer != steer {
 		a.mu.Unlock()
 		return
 	}
-	a.inFlightSteer = nil
+	turn.inFlightSteer = nil
 	early := steer.early
 	steer.early = nil
-	if accepted && early == nil {
-		a.pendingSteers = append(a.pendingSteers, steer)
+	ended := turn.ended
+	replyRetained := turn.replyRetained
+	if accepted && !ended && early == nil {
+		turn.pendingSteers = append(turn.pendingSteers, steer)
 	}
-	if accepted && early != nil && early.receipt.InputID != "" && early.reply != nil && a.inputReply == early.reply {
+	if accepted && !ended && early != nil && early.receipt.InputID != "" && early.reply != nil && turn.reply == early.reply {
 		early.reply.steers = append(early.reply.steers, early.receipt)
 	}
 	a.mu.Unlock()
 	if early != nil {
-		a.reportCodebuddySteerError(early.finish(accepted))
+		err := early.finish(accepted)
+		a.reportCodebuddySteerError(err)
+		if accepted && ended && !replyRetained && early.receipt.InputID != "" && agent.OutputRetained(err) {
+			a.retireSteerReceipt(early.receipt)
+		}
+		return
+	}
+	if accepted && ended {
+		resolution := steer.resolution
+		resolution.Outcome = agent.SteerOutcomeUncertain
+		a.reportCodebuddySteerError(agent.RetainSteerResolution(a.sink, resolution))
 	}
 }
 
@@ -230,19 +295,8 @@ func (a *Agent) resolvePendingSteers(steers []*codebuddyPendingSteer, outcome ag
 	for _, steer := range steers {
 		resolution := steer.resolution
 		resolution.Outcome = outcome
-		a.retainCodebuddySteerResolution(resolution)
+		a.reportCodebuddySteerError(agent.RetainSteerResolution(a.sink, resolution))
 	}
-}
-
-func (a *Agent) retainCodebuddySteerResolution(resolution agent.SteerResolution) {
-	write := a.sink.CaptureSteerResolution(resolution)
-	publish, err := agent.ReserveTranscriptSequence(a.sink, "record CodeBuddy steer outcome", func(agent.TranscriptSequence) error {
-		return write()
-	})
-	if err == nil {
-		err = publish()
-	}
-	a.reportCodebuddySteerError(err)
 }
 
 func (a *Agent) reportCodebuddySteerError(err error) {
@@ -259,8 +313,12 @@ func (a *Agent) retireInputReply(reply *inputReply) {
 		slog.Warn("CodeBuddy could not retire the input reply", "agent_id", a.AgentID(), "error", err)
 	}
 	for _, steerReceipt := range reply.steers {
-		if err := a.sink.RetireNativeInputTurn(steerReceipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED); !agent.OutputRetained(err) {
-			slog.Warn("CodeBuddy could not retire the steer reply", "agent_id", a.AgentID(), "error", err)
-		}
+		a.retireSteerReceipt(steerReceipt)
+	}
+}
+
+func (a *Agent) retireSteerReceipt(receipt agent.NativeInputReceipt) {
+	if err := a.sink.RetireNativeInputTurn(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED); !agent.OutputRetained(err) {
+		slog.Warn("CodeBuddy could not retire the steer reply", "agent_id", a.AgentID(), "error", err)
 	}
 }

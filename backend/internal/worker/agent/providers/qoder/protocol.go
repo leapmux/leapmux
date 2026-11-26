@@ -129,10 +129,22 @@ type systemInitMessage struct {
 	Capabilities []string `json:"capabilities"`
 }
 
-// assistantMessage is the part of an assistant line the worker reads.
-type assistantMessage struct {
-	ParentToolUseID *string `json:"parent_tool_use_id"`
-	SessionID       string  `json:"session_id"`
+// qoderToolBlock is one tool_use or tool_result block inside message.content.
+type qoderToolBlock struct {
+	Type    string          `json:"type"`
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input"`
+	CallID  string          `json:"tool_use_id"`
+	IsError bool            `json:"is_error"`
+}
+
+// qoderNativeFrame is the envelope of an assistant or user frame that the worker inspects.
+type qoderNativeFrame struct {
+	Type            string          `json:"type"`
+	SessionID       json.RawMessage `json:"session_id"`
+	Aborted         json.RawMessage `json:"aborted"`
+	ParentToolUseID json.RawMessage `json:"parent_tool_use_id"`
 	Message         struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`

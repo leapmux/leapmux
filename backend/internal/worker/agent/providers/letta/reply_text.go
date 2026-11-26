@@ -1,10 +1,9 @@
 package letta
 
 import (
-	"encoding/json"
-
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // ReplyText reads the top-level text that the browser's lettaExtractRow reads
@@ -12,23 +11,18 @@ import (
 // envelope that the shared reader refused as malformed, which Letta still
 // draws as text.
 func (lettaProvider) ReplyText(message agent.MessageContent) (string, bool) {
-	var frame struct {
-		Type        string          `json:"type"`
-		MessageType string          `json:"message_type"`
-		Text        json.RawMessage `json:"text"`
-	}
-	if json.Unmarshal(message.Original, &frame) != nil {
+	frame, ok := providerkit.RawObject(message.Original)
+	if !ok {
 		return "", false
 	}
-	switch {
-	case frame.Type == contracts.AssembledMessageType:
-	case frame.Type == contracts.LettaMessageTurnFinished:
+	switch providerkit.ObjectString(frame, "type") {
+	case contracts.AssembledMessageType:
+	case contracts.LettaMessageTurnFinished:
 		return "", false
-	case frame.MessageType == contracts.LettaDeltaKindAssistantMessage:
 	default:
-		return "", false
+		if providerkit.ObjectString(frame, contracts.LettaDeltaFieldMessageType) != contracts.LettaDeltaKindAssistantMessage {
+			return "", false
+		}
 	}
-	var text string
-	_ = json.Unmarshal(frame.Text, &text)
-	return text, true
+	return providerkit.ObjectString(frame, "text"), true
 }

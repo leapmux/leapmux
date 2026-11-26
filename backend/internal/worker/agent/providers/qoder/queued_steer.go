@@ -3,6 +3,7 @@ package qoder
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/google/uuid"
 
@@ -11,31 +12,44 @@ import (
 
 // prepareQueuedSteer records the attempt before stdin can reach Qoder. The
 // native command can start before the Worker handles the write's return.
-func (a *Agent) prepareQueuedSteer(request agent.SteerRequest) (string, error) {
+func (a *Agent) prepareQueuedSteer(request agent.SteerRequest) (string, *inputReply, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !a.active {
-		return "", agent.ErrNoActiveTurn
+		return "", nil, agent.ErrNoActiveTurn
 	}
 	if request.AttemptID == "" {
-		return "", nil
+		return "", nil, nil
 	}
 	if a.sessionID == "" {
-		return "", fmt.Errorf("the Qoder session is not initialized")
+		return "", nil, fmt.Errorf("the Qoder session is not initialized")
 	}
 	id, err := uuid.NewRandom()
 	if err != nil {
-		return "", fmt.Errorf("create the Qoder steer command ID: %w", err)
+		return "", nil, fmt.Errorf("create the Qoder steer command ID: %w", err)
 	}
 	commandID := id.String()
 	if a.queuedSteers == nil {
 		a.queuedSteers = make(map[string]*inputReply)
 	}
-	a.queuedSteers[commandID] = &inputReply{
+	steer := &inputReply{
 		receipt: agent.NativeInputReceipt{SessionID: a.sessionID, InputID: commandID, TurnID: commandID},
 		steer:   &agent.SteerResolution{InputID: request.InputID, AttemptID: request.AttemptID},
 	}
-	return commandID, nil
+	a.queuedSteers[commandID] = steer
+	return commandID, steer, nil
+}
+
+// forgetQueuedSteer drops an unsent steer so exit teardown never reports it as uncertain.
+func (a *Agent) forgetQueuedSteer(commandID string, steer *inputReply) {
+	if commandID == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.queuedSteers[commandID] == steer {
+		delete(a.queuedSteers, commandID)
+	}
+	a.mu.Unlock()
 }
 
 // handleQueuedSteer moves a started steer into the reply slot. Completion of
@@ -82,12 +96,23 @@ func (a *Agent) retireQueuedSteers() {
 	queued := a.queuedSteers
 	a.queuedSteers = nil
 	a.mu.Unlock()
-	for _, reply := range queued {
-		a.resolveQueuedSteer(reply, agent.SteerOutcomeUncertain)
+	if len(queued) == 0 {
+		return
+	}
+	commandIDs := make([]string, 0, len(queued))
+	for commandID := range queued {
+		commandIDs = append(commandIDs, commandID)
+	}
+	slices.Sort(commandIDs)
+	for _, commandID := range commandIDs {
+		a.resolveQueuedSteer(queued[commandID], agent.SteerOutcomeUncertain)
 	}
 }
 
 func (a *Agent) resolveQueuedSteer(reply *inputReply, outcome agent.SteerOutcome) bool {
+	if a.sink == nil {
+		return false
+	}
 	resolution := *reply.steer
 	resolution.Outcome = outcome
 	if outcome == agent.SteerOutcomeEchoed {

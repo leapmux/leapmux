@@ -157,3 +157,20 @@ func TestElicitationChoiceDecisionAcceptsWithTheChoice(t *testing.T) {
 	assert.Equal(t, `{"a":1}`, got.GetContentJson())
 	assert.Equal(t, "session", got.GetAcceptChoiceKey())
 }
+
+func TestCanUseToolPayload(t *testing.T) {
+	t.Parallel()
+	got := CanUseToolPayload(t, "req-1", "Bash", map[string]any{"command": "ls"})
+	assert.JSONEq(t, `{
+		"type":"control_request",
+		"request_id":"req-1",
+		"request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"call-1","input":{"command":"ls"}}
+	}`, string(got))
+
+	nilInput := CanUseToolPayload(t, "req-2", "Read", nil)
+	assert.JSONEq(t, `{
+		"type":"control_request",
+		"request_id":"req-2",
+		"request":{"subtype":"can_use_tool","tool_name":"Read","tool_use_id":"call-1","input":null}
+	}`, string(nilInput))
+}

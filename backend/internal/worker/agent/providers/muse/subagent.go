@@ -264,6 +264,8 @@ func (*Agent) ChildSteerPolicy() agent.SteerPolicy {
 type museChildInputCommand struct {
 	inputID        string
 	steerAttemptID string
+	proved         bool
+	provedReceipt  agent.NativeInputReceipt
 }
 
 func (a *Agent) childInput(key string, input agent.ChildInput, steer bool, steerAttemptID string) (agent.NativeInputReceipt, error) {
@@ -281,14 +283,16 @@ func (a *Agent) childInput(key string, input agent.ChildInput, steer bool, steer
 		a.requestChildView(id)
 		return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 	}
-	text := input.Content
+	var body strings.Builder
+	body.WriteString(input.Content)
 	for _, attachment := range agent.ClassifyAttachments(input.Attachments) {
 		if attachment.Kind != contracts.AttachmentMediaKindText {
 			return agent.NativeInputReceipt{}, fmt.Errorf("the Muse host child messages accept text attachments only")
 		}
-		text += "\n\n" + providerkit.BuildInlineTextAttachmentBlock(attachment)
+		body.WriteString("\n\n")
+		body.WriteString(providerkit.BuildInlineTextAttachmentBlock(attachment))
 	}
-	text = strings.TrimSpace(text)
+	text := strings.TrimSpace(body.String())
 	if text == "" {
 		return agent.NativeInputReceipt{}, fmt.Errorf("the Muse child message is empty")
 	}
@@ -305,6 +309,7 @@ func (a *Agent) childInput(key string, input agent.ChildInput, steer bool, steer
 	// even when the result is drained. Reading that drained result again does
 	// not change eligibility, so the input queue must retain the native refusal.
 	params := map[string]any{"sessionId": child.parentSessionID, "subagentId": child.subagentID, "body": text}
+	var tracked *museChildInputCommand
 	commandID, err := a.commandChild(key, method, input.InputID, params, func(commandID string) error {
 		a.stateMu.Lock()
 		defer a.stateMu.Unlock()
@@ -313,19 +318,39 @@ func (a *Agent) childInput(key string, input agent.ChildInput, steer bool, steer
 		}
 		if !steer || steerAttemptID != "" {
 			if child.childInputCommands == nil {
-				child.childInputCommands = make(map[string]museChildInputCommand)
+				child.childInputCommands = make(map[string]*museChildInputCommand)
 			}
-			child.childInputCommands[commandID] = museChildInputCommand{inputID: input.InputID, steerAttemptID: steerAttemptID}
+			tracked = &museChildInputCommand{inputID: input.InputID, steerAttemptID: steerAttemptID}
+			child.childInputCommands[commandID] = tracked
 		}
 		return nil
 	})
-	if err != nil {
+	var proved bool
+	var provedReceipt agent.NativeInputReceipt
+	if tracked != nil {
 		a.stateMu.Lock()
-		delete(child.childInputCommands, commandID)
+		proved = tracked.proved
+		provedReceipt = tracked.provedReceipt
+		if err != nil && !proved && child.childInputCommands[commandID] == tracked {
+			delete(child.childInputCommands, commandID)
+		}
 		a.stateMu.Unlock()
+	}
+	if err != nil {
+		if proved {
+			delete(a.uncertainChildCommands, key)
+			a.requestChildView(id)
+			if steer {
+				return agent.NativeInputReceipt{}, nil
+			}
+			return provedReceipt, nil
+		}
 		return agent.NativeInputReceipt{}, err
 	}
 	a.requestChildView(id)
+	if proved && !steer {
+		return provedReceipt, nil
+	}
 	return agent.NativeInputReceipt{SessionID: id, InputID: commandID}, nil
 }
 

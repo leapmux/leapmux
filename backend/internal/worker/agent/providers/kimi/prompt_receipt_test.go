@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -284,4 +285,409 @@ func TestKimiChildPromptWithoutReadinessRetainsNoServiceCapture(t *testing.T) {
 			assert.Nil(t, submission.readyCapture.TranscriptWriter(), "a prompt without readiness must not retain services in its history")
 		})
 	}
+}
+
+func newKimiTestRigWithSink(t *testing.T, decorate func(agent.ProviderServices) agent.ProviderServices) (*kimiTestRig, *kimiOutputRig) {
+	t.Helper()
+	fake, server := newFakeKap(t)
+	sink := &agenttest.ControlSink{}
+	services := agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
+	if decorate != nil {
+		services = decorate(services)
+	}
+	a, opts := newUnconnectedKimiAgent(t, agent.Options{}, services)
+	require.NoError(t, a.connect(a.Context(), server.URL, fakeKapToken, opts, 30*time.Second))
+	t.Cleanup(a.closeStream)
+	require.NoError(t, a.openStartupSession(opts, 30*time.Second))
+	main := a.run(kimiMainAgentID)
+	waitFor(t, func() bool {
+		return main.conversationRecovery.Load() == nil && !agent.OutputQueueFor(a.sink).HasPending()
+	}, "the initial native conversation page and its output complete")
+	rig := &kimiTestRig{agent: a, fake: fake, sink: sink}
+	return rig, &kimiOutputRig{agent: a, sink: sink}
+}
+
+type kimiChildReplyEventLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *kimiChildReplyEventLog) record(event string) {
+	l.mu.Lock()
+	l.events = append(l.events, event)
+	l.mu.Unlock()
+}
+
+func (l *kimiChildReplyEventLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
+}
+
+type kimiOrderedChildReplySink struct {
+	agent.ProviderServices
+	log *kimiChildReplyEventLog
+}
+
+func (s *kimiOrderedChildReplySink) BindNativeInputTurn(receipt agent.NativeInputReceipt, turnID string) error {
+	s.log.record("bind:" + turnID)
+	return s.ProviderServices.BindNativeInputTurn(receipt, turnID)
+}
+
+func (s *kimiOrderedChildReplySink) PublishNativeReplyTurn(turn agent.NativeReplyTurn) error {
+	s.log.record("publish_reply:" + turn.TurnID)
+	return s.ProviderServices.PublishNativeReplyTurn(turn)
+}
+
+func (s *kimiOrderedChildReplySink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	s.log.record("message")
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func (s *kimiOrderedChildReplySink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	s.log.record("turn_end")
+	return s.ProviderServices.PersistTurnEnd(content, span)
+}
+
+func (s *kimiOrderedChildReplySink) SetTurnState(state agent.TurnState, seq uint64) {
+	if !state.Active {
+		s.log.record("turn_inactive")
+	}
+	s.ProviderServices.SetTurnState(state, seq)
+}
+
+func TestKimiChildReplyWritesStayOrderedWithChildTranscriptAndTurnState(t *testing.T) {
+	t.Parallel()
+	log := &kimiChildReplyEventLog{}
+	rig, native := newKimiTestRigWithSink(t, func(services agent.ProviderServices) agent.ProviderServices {
+		return agent.DecorateProviderServices(services, func(direct agent.ProviderServices) agent.ProviderServices {
+			return &kimiChildReplySpyRoot{ProviderServices: direct, log: log}
+		})
+	})
+	seedKimiConversationChildInvocation(t, rig)
+	log.mu.Lock()
+	log.events = nil
+	log.mu.Unlock()
+
+	rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
+		return map[string]any{"prompt_id": decodePrompt(t, request).PromptID, "status": "queued"}
+	}})
+	result, err := rig.agent.SendChildInput("session_1/agent-0", agent.ChildInput{Content: "Child prompt"})
+	require.NoError(t, err)
+	receipt := result.NativeReceipt
+
+	// Hold the root output queue with an unrelated write so any child reply write
+	// mistakenly staged on the root queue is visibly blocked behind it while the
+	// child queue continues draining.
+	var releaseRoot atomic.Bool
+	rootQueue := agent.OutputQueueFor(rig.agent.sink)
+	require.NotNil(t, rootQueue)
+	rootQueue.Append(agent.OutputWrite{Owner: agent.NewOutputOwner(), Label: "hold root queue", Run: func() error {
+		if !releaseRoot.Load() {
+			return agent.ErrOutputInFlight
+		}
+		return nil
+	}})
+
+	native.startPublicTurn(t, "agent-0", "child-turn", 0)
+	native.conversationAgentFrame(t, "agent-0", fmt.Sprintf(`{"type":"item.ended","turn_id":"child-turn","item":{"type":"user_message","item_id":%q,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Child prompt","prompt_ids":[%q],"placement":"opener","origin":{"kind":"user"},"attachments":[],"skills":[]}}`, receipt.InputID, receipt.InputID))
+	native.conversationAgentFrame(t, "agent-0", `{"type":"item.ended","turn_id":"child-turn","item":{"type":"assistant_message","item_id":"child-answer","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Child answer."}}`)
+	native.endPublicTurn(t, "agent-0", "child-turn", 0, "completed")
+
+	events := log.snapshot()
+	assert.Equal(t, []string{"bind:child-turn", "message", "turn_end", "turn_inactive"}, events,
+		"BindNativeInputTurn must enqueue directly on the child queue before child transcript rows and SetTurnState(Active:false)")
+
+	releaseRoot.Store(true)
+	awaitKimiTestOutput(t, rig.agent.sink)
+}
+
+type kimiChildReplySpyRoot struct {
+	agent.ProviderServices
+	log *kimiChildReplyEventLog
+}
+
+func (r *kimiChildReplySpyRoot) wrapLease(lease agent.ChildSinkLease) agent.ChildSinkLease {
+	if lease.Sink == nil {
+		return lease
+	}
+	lease.Sink = agent.DecorateProviderServices(lease.Sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		return &kimiOrderedChildReplySink{ProviderServices: direct, log: r.log}
+	})
+	return lease
+}
+
+func (r *kimiChildReplySpyRoot) AcquireChildSink(childID string) agent.ChildSinkLease {
+	return r.wrapLease(r.ProviderServices.AcquireChildSink(childID))
+}
+
+func (r *kimiChildReplySpyRoot) AcquireChildStateSink(childID string) agent.ChildSinkLease {
+	return r.wrapLease(r.ProviderServices.AcquireChildStateSink(childID))
+}
+
+type kimiCountingTurnEndSink struct {
+	agent.ProviderServices
+	turnEnds atomic.Int64
+	reads    atomic.Int64
+}
+
+func (s *kimiCountingTurnEndSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	s.turnEnds.Add(1)
+	return s.ProviderServices.PersistTurnEnd(content, span)
+}
+
+func (s *kimiCountingTurnEndSink) ReadMessageByIdempotencyKey(sessionID, key string) (*agent.StoredMessage, error) {
+	s.reads.Add(1)
+	return s.ProviderServices.ReadMessageByIdempotencyKey(sessionID, key)
+}
+
+func TestKimiPublishExactReplySkipsDuplicateProjectionWhenSnapshotMatches(t *testing.T) {
+	t.Parallel()
+	counter := &kimiCountingTurnEndSink{}
+	rig, native := newKimiTestRigWithSink(t, func(services agent.ProviderServices) agent.ProviderServices {
+		return agent.DecorateProviderServices(services, func(direct agent.ProviderServices) agent.ProviderServices {
+			counter.ProviderServices = direct
+			return counter
+		})
+	})
+
+	rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
+		return map[string]any{"prompt_id": decodePrompt(t, request).PromptID, "status": "running"}
+	}})
+	receipt, err := rig.agent.SendInput("Ask something.", nil)
+	require.NoError(t, err)
+
+	userText := "Ask something."
+	assistantText := "Exact answer."
+	snapshot := kimiConversationTurn{
+		kimiConversationTurnHeader: kimiConversationTurnHeader{
+			TurnID:    "t0",
+			Ordinal:   ptrInt64(0),
+			Kind:      contracts.KimiConversationTurnKindAgent,
+			Status:    contracts.KimiConversationStatusEnded,
+			Outcome:   contracts.KimiConversationOutcomeCompleted,
+			StartedAt: "2026-11-18T00:00:00Z",
+			EndedAt:   "2026-11-18T00:00:01Z",
+			Steps:     []kimiConversationStep{},
+		},
+		Items: []kimiConversationItem{
+			{
+				Type: contracts.KimiConversationItemKindUserMessage, ItemID: receipt.InputID,
+				Status: contracts.KimiConversationStatusEnded, Outcome: contracts.KimiConversationOutcomeCompleted,
+				CreatedAt: "2026-11-18T00:00:00Z", Text: &userText, PromptIDs: []string{receipt.InputID}, Placement: "opener",
+				Origin: json.RawMessage(`{"kind":"user"}`), Attachments: []json.RawMessage{}, Skills: []json.RawMessage{},
+			},
+			{
+				Type: contracts.KimiConversationItemKindAssistantMessage, ItemID: "reply-1",
+				Status: contracts.KimiConversationStatusEnded, Outcome: contracts.KimiConversationOutcomeCompleted,
+				CreatedAt: "2026-11-18T00:00:00Z", Text: &assistantText,
+			},
+		},
+	}
+	releaseREST := make(chan struct{})
+	enteredREST := make(chan struct{})
+	rig.fake.reply("GET "+kimiSessionPath(rig.sessionID(), "/agents/main/turns"), fakeKapReply{
+		BeforeReply: func() { close(enteredREST); <-releaseREST },
+		Data:        map[string]any{"turns": []kimiConversationTurn{snapshot}, "has_more": false},
+	})
+
+	native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	native.conversationFrame(t, fmt.Sprintf(`{"type":"item.ended","turn_id":"t0","item":{"type":"user_message","item_id":%q,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Ask something.","prompt_ids":[%q],"placement":"opener","origin":{"kind":"user"},"attachments":[],"skills":[]}}`, receipt.InputID, receipt.InputID))
+	native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{"type":"assistant_message","item_id":"reply-1","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Exact answer."}}`)
+	native.conversationFrame(t, `{"type":"turn.ended","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","ended_at":"2026-11-18T00:00:01Z","steps":[]}}`)
+
+	<-enteredREST
+	readsBeforeREST := counter.reads.Load()
+	turnEndsBeforeREST := counter.turnEnds.Load()
+	close(releaseREST)
+	waitFor(t, rig.agent.transcriptRecoveryWork.Idle, "the exact reply lookup completes")
+
+	assert.Equal(t, readsBeforeREST, counter.reads.Load(), "an unchanged REST snapshot must not re-read idempotency keys")
+	assert.Equal(t, turnEndsBeforeREST, counter.turnEnds.Load(), "an unchanged REST snapshot must not re-project a duplicate turn end")
+	turns := rig.sink.NativeReplyTurns()
+	require.Len(t, turns, 1)
+	assert.Equal(t, []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: 1}}, turns[0].Inputs)
+}
+
+func TestKimiPublishExactReplyProjectsNewItemsFromRESTSnapshot(t *testing.T) {
+	t.Parallel()
+	rig, native := newKimiPublicPromptRig(t)
+	rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
+		return map[string]any{"prompt_id": decodePrompt(t, request).PromptID, "status": "running"}
+	}})
+	receipt, err := rig.agent.SendInput("Ask something.", nil)
+	require.NoError(t, err)
+
+	userText := "Ask something."
+	assistantText := "Recovered from REST."
+	snapshot := kimiConversationTurn{
+		kimiConversationTurnHeader: kimiConversationTurnHeader{
+			TurnID:    "t0",
+			Ordinal:   ptrInt64(0),
+			Kind:      contracts.KimiConversationTurnKindAgent,
+			Status:    contracts.KimiConversationStatusEnded,
+			Outcome:   contracts.KimiConversationOutcomeCompleted,
+			StartedAt: "2026-11-18T00:00:00Z",
+			EndedAt:   "2026-11-18T00:00:01Z",
+			Steps:     []kimiConversationStep{},
+		},
+		Items: []kimiConversationItem{
+			{
+				Type: contracts.KimiConversationItemKindUserMessage, ItemID: receipt.InputID,
+				Status: contracts.KimiConversationStatusEnded, Outcome: contracts.KimiConversationOutcomeCompleted,
+				CreatedAt: "2026-11-18T00:00:00Z", Text: &userText, PromptIDs: []string{receipt.InputID}, Placement: "opener",
+				Origin: json.RawMessage(`{"kind":"user"}`), Attachments: []json.RawMessage{}, Skills: []json.RawMessage{},
+			},
+			{
+				Type: contracts.KimiConversationItemKindAssistantMessage, ItemID: "rest-only",
+				Status: contracts.KimiConversationStatusEnded, Outcome: contracts.KimiConversationOutcomeCompleted,
+				CreatedAt: "2026-11-18T00:00:00Z", Text: &assistantText,
+			},
+		},
+	}
+	rig.fake.reply("GET "+kimiSessionPath(rig.sessionID(), "/agents/main/turns"), fakeKapReply{
+		Data: map[string]any{"turns": []kimiConversationTurn{snapshot}, "has_more": false},
+	})
+
+	// Live stream missed the assistant item; REST snapshot supplies it.
+	native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	native.conversationFrame(t, fmt.Sprintf(`{"type":"item.ended","turn_id":"t0","item":{"type":"user_message","item_id":%q,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Ask something.","prompt_ids":[%q],"placement":"opener","origin":{"kind":"user"},"attachments":[],"skills":[]}}`, receipt.InputID, receipt.InputID))
+	native.conversationFrame(t, `{"type":"turn.ended","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","ended_at":"2026-11-18T00:00:01Z","steps":[]}}`)
+
+	waitFor(t, rig.agent.transcriptRecoveryWork.Idle, "the exact reply lookup completes")
+	turns := rig.sink.NativeReplyTurns()
+	require.Len(t, turns, 1)
+	require.Len(t, turns[0].Items, 1)
+	assert.Equal(t, int64(2), turns[0].Items[0].Ordinal)
+	var found bool
+	for _, msg := range rig.sink.Messages() {
+		if text, ok := (kimiProvider{}).ReplyText(agent.MessageContent{Original: msg.Content}); ok && text == assistantText {
+			found = true
+		}
+	}
+	assert.True(t, found, "new items introduced by the REST snapshot must still be projected")
+}
+
+func ptrInt64(v int64) *int64 { return &v }
+
+func TestKimiQueueOutputWriteTracksDrainsAndRejectsNilInputs(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newOfflineKimiAgent(t, sink)
+
+	// Nil queue, nil callback, and nil-queue reply sink return errors without tracking.
+	require.Error(t, a.queueOutputWrite(nil, "nil queue", func() error { return nil }))
+	secondary := agent.OutputQueueFor(agent.NewProviderServices(&agenttest.Sink{}))
+	require.NotNil(t, secondary)
+	require.Error(t, a.queueOutputWrite(secondary, "nil write", nil))
+	require.Error(t, a.queueKimiReplyWrite(nil, "nil reply sink", func(agent.ProviderServices) error { return nil }))
+	assert.Empty(t, a.snapshotPublicationQueues())
+
+	// While dispatchMu is held, a secondary queue write stays pending and tracked,
+	// then drains and untracks when finishDispatch runs.
+	var ran atomic.Bool
+	a.dispatchMu.Lock()
+	err := a.queueOutputWrite(secondary, "deferred secondary write", func() error {
+		ran.Store(true)
+		return nil
+	})
+	var pendingErr *agent.PendingOutputError
+	require.ErrorAs(t, err, &pendingErr)
+	assert.False(t, ran.Load())
+	assert.Contains(t, a.snapshotPublicationQueues(), secondary)
+	a.finishDispatch()
+	assert.True(t, ran.Load(), "finishDispatch must flush tracked secondary queues")
+	assert.Empty(t, a.snapshotPublicationQueues(), "idle secondary queue must be untracked after drain")
+
+	// When another owner is at the head of the secondary queue, flushQueuedOutput
+	// leaves it tracked; once that head drains while sessionMu is held, our write
+	// becomes head and finishSessionMutation flushes and untracks the queue.
+	blockerOwner := agent.NewOutputOwner()
+	var releaseBlocker, secondRan atomic.Bool
+	secondary.Append(agent.OutputWrite{Owner: blockerOwner, Label: "hold secondary", Run: func() error {
+		if !releaseBlocker.Load() {
+			return agent.ErrOutputInFlight
+		}
+		return nil
+	}})
+	a.sessionMu.Lock()
+	err = a.queueOutputWrite(secondary, "blocked secondary write", func() error {
+		secondRan.Store(true)
+		return nil
+	})
+	require.ErrorAs(t, err, &pendingErr)
+	a.flushQueuedOutput()
+	assert.False(t, secondRan.Load())
+	assert.Contains(t, a.snapshotPublicationQueues(), secondary, "blocked queue stays tracked until its owner drains")
+
+	releaseBlocker.Store(true)
+	require.ErrorIs(t, secondary.FlushOwnerAfterReady(blockerOwner), agent.ErrOutputInFlight)
+	assert.False(t, secondRan.Load(), "write still waits while sessionMu is held")
+	assert.Contains(t, a.snapshotPublicationQueues(), secondary)
+
+	a.finishSessionMutation()
+	assert.True(t, secondRan.Load(), "finishSessionMutation must flush the now-head write on the tracked secondary queue")
+	assert.Empty(t, a.snapshotPublicationQueues())
+}
+
+func TestKimiPublishExactReplyProjectsWhenPublicationNotCompleted(t *testing.T) {
+	t.Parallel()
+	rig, native := newKimiPublicPromptRig(t)
+	rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
+		return map[string]any{"prompt_id": decodePrompt(t, request).PromptID, "status": "running"}
+	}})
+	receipt, err := rig.agent.SendInput("Ask something.", nil)
+	require.NoError(t, err)
+
+	userText := "Ask something."
+	assistantText := "Exact answer."
+	snapshot := kimiConversationTurn{
+		kimiConversationTurnHeader: kimiConversationTurnHeader{
+			TurnID:    "t0",
+			Ordinal:   ptrInt64(0),
+			Kind:      contracts.KimiConversationTurnKindAgent,
+			Status:    contracts.KimiConversationStatusEnded,
+			Outcome:   contracts.KimiConversationOutcomeCompleted,
+			StartedAt: "2026-11-18T00:00:00Z",
+			EndedAt:   "2026-11-18T00:00:01Z",
+			Steps:     []kimiConversationStep{},
+		},
+		Items: []kimiConversationItem{
+			{
+				Type: contracts.KimiConversationItemKindUserMessage, ItemID: receipt.InputID,
+				Status: contracts.KimiConversationStatusEnded, Outcome: contracts.KimiConversationOutcomeCompleted,
+				CreatedAt: "2026-11-18T00:00:00Z", Text: &userText, PromptIDs: []string{receipt.InputID}, Placement: "opener",
+				Origin: json.RawMessage(`{"kind":"user"}`), Attachments: []json.RawMessage{}, Skills: []json.RawMessage{},
+			},
+			{
+				Type: contracts.KimiConversationItemKindAssistantMessage, ItemID: "reply-1",
+				Status: contracts.KimiConversationStatusEnded, Outcome: contracts.KimiConversationOutcomeCompleted,
+				CreatedAt: "2026-11-18T00:00:00Z", Text: &assistantText,
+			},
+		},
+	}
+
+	// Deliver turn frames without a REST reply so publication is populated, then
+	// simulate an uncompleted publication with released item bodies matching snapshot.
+	native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	native.conversationFrame(t, fmt.Sprintf(`{"type":"item.ended","turn_id":"t0","item":{"type":"user_message","item_id":%q,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Ask something.","prompt_ids":[%q],"placement":"opener","origin":{"kind":"user"},"attachments":[],"skills":[]}}`, receipt.InputID, receipt.InputID))
+	native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{"type":"assistant_message","item_id":"reply-1","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Exact answer."}}`)
+
+	rig.agent.dispatchMu.Lock()
+	run := rig.agent.run(kimiMainAgentID)
+	turn := run.conversation.document.turns["t0"]
+	turn.replaceHeader(snapshot.kimiConversationTurnHeader)
+	for _, item := range turn.items {
+		item.releaseBody()
+	}
+	pub := run.conversation.turns["t0"]
+	require.False(t, pub.completed)
+	require.NoError(t, rig.agent.publishExactReply(run, pub, rig.sessionID(), snapshot))
+	assert.True(t, pub.completed, "an uncompleted publication must still project even when snapshot matches document")
+	rig.agent.finishDispatch()
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	turns := rig.sink.NativeReplyTurns()
+	require.Len(t, turns, 1)
+	assert.Equal(t, []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: 1}}, turns[0].Inputs)
 }

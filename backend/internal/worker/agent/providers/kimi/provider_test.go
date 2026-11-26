@@ -121,3 +121,26 @@ func TestKimiClassifiesNativeCompactionBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestKimiControlRequestKey(t *testing.T) {
+	t.Parallel()
+	p := kimiProvider{}
+
+	key, ok := p.ControlRequestKey([]byte(`{"type":"interaction","interaction_id":"approval_1"}`), "session_1")
+	assert.True(t, ok)
+	assert.Equal(t, "approval_1", key)
+
+	for name, payload := range map[string]string{
+		"empty interaction_id":      `{"interaction_id":""}`,
+		"missing interaction_id":    `{"type":"interaction"}`,
+		"non-string interaction_id": `{"interaction_id":42}`,
+		"malformed JSON":            `{not json`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			key, ok := p.ControlRequestKey([]byte(payload), "session_1")
+			assert.False(t, ok)
+			assert.Empty(t, key)
+		})
+	}
+}

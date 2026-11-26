@@ -183,3 +183,14 @@ func PromptPermissionOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
 func QuestionAnswer(custom string, selected ...string) *leapmuxv1.QuestionAnswer {
 	return &leapmuxv1.QuestionAnswer{Selected: selected, CustomText: custom}
 }
+
+// CanUseToolPayload builds a stored Claude-shaped can_use_tool control_request
+// payload as published by providers such as CodeBuddy and Qoder.
+func CanUseToolPayload(t *testing.T, requestID, toolName string, input any) []byte {
+	t.Helper()
+	return MustJSON(t, map[string]any{
+		"type":       "control_request",
+		"request_id": requestID,
+		"request":    map[string]any{"subtype": "can_use_tool", "tool_name": toolName, "tool_use_id": "call-1", "input": input},
+	})
+}

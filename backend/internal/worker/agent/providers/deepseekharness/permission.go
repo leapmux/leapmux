@@ -90,7 +90,7 @@ func (a *Agent) deliverControlOutcome(id string, control *nativeControl, outcome
 	publish := false
 	if current {
 		if err == nil {
-			delete(a.controls, id)
+			a.deleteControlLocked(id)
 		} else if uncertain {
 			control.published = false
 		} else {
@@ -104,7 +104,7 @@ func (a *Agent) deliverControlOutcome(id string, control *nativeControl, outcome
 	}
 	a.Mu.Unlock()
 	if current && published && (automatic && err == nil || uncertain) {
-		control.sink.CancelControlRequest(id)
+		control.sink.CancelControlRequestInstance(id, control.instanceID)
 	}
 	if current && publish {
 		if publicationErr := a.publishRegisteredControl(id, control); publicationErr != nil {

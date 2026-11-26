@@ -127,6 +127,13 @@ func AskUserQuestionAnswers(input agent.ControlAnswerInput, toolInput json.RawMe
 			answers[key] = ""
 		}
 	}
+	return AllowWithToolAnswers(input.RequestID, toolInput, answers)
+}
+
+// AllowWithToolAnswers builds an allow control answer whose updatedInput copies
+// toolInput and sets its `answers` field to the JSON encoding of answers.
+// A toolInput that is not a JSON object starts from an empty object.
+func AllowWithToolAnswers(requestID string, toolInput json.RawMessage, answers any) (agent.ControlAnswer, error) {
 	fields, ok := RawObject(toolInput)
 	if !ok {
 		fields = map[string]json.RawMessage{}
@@ -140,5 +147,5 @@ func AskUserQuestionAnswers(input agent.ControlAnswerInput, toolInput json.RawMe
 	if err != nil {
 		return agent.ControlAnswer{}, err
 	}
-	return agent.ControlAnswer{Content: agent.AllowResponse(input.RequestID, updated)}, nil
+	return agent.ControlAnswer{Content: agent.AllowResponse(requestID, updated)}, nil
 }

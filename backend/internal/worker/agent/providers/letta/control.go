@@ -65,8 +65,7 @@ const (
 // under: the `requestId` that it writes into the payload (onControlRequest,
 // postQuestionRequest).
 func (lettaProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
-	fields, _ := providerkit.RawObject(payload)
-	requestID, _ := providerkit.RawString(fields[lettaControlFieldRequestID])
+	requestID := providerkit.StringField(payload, lettaControlFieldRequestID)
 	return requestID, requestID != ""
 }
 
@@ -76,7 +75,7 @@ func (lettaProvider) ControlRequestKey(payload []byte, _ string) (string, bool) 
 // A request for the question tool is a permission like any other: it asks
 // whether the tool may run, and Strict mode asks it. The questions follow as a
 // receipt after the reader allows the call.
-func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
+func (a *Agent) onControlRequest(scope *runtimeScope, subagentID string, body []byte, requestID string) {
 	var req lettaControlRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		slog.Debug("letta: bad control request", "agent_id", a.AgentID(), "error", err)
@@ -114,7 +113,7 @@ func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
 	if err != nil {
 		return
 	}
-	a.registerPermission(requestID, payloadBytes, req.ToolName != "", a.inputPermissionTurnID(line, req.ToolCallID))
+	a.registerPermission(requestID, payloadBytes, req.ToolName != "", a.inputPermissionTurnID(scope, subagentID, req.ToolCallID))
 }
 
 // lettaQuestionRequestID is the request id of the question that one call posts.
@@ -178,27 +177,17 @@ func (a *Agent) postQuestionRequest(tool *lettaTool, delta *lettaDelta) {
 	}
 }
 
-// lettaQuestionTexts returns the text of each question, in order. It reports
-// false when the list is empty, when a question has no text, and when two
-// questions share one text, because an answer is keyed by that text.
+// lettaQuestionTexts returns the text of each question, in order. It shares
+// the validation rules of readLettaQuestions so prompt reading and answer
+// resolution agree on every question payload.
 func lettaQuestionTexts(questions json.RawMessage) ([]string, bool) {
-	var list []struct {
-		Question string `json:"question"`
-	}
-	if json.Unmarshal(questions, &list) != nil || len(list) == 0 {
+	parsed, ok := readLettaQuestions(questions)
+	if !ok {
 		return nil, false
 	}
-	seen := make(map[string]struct{}, len(list))
-	texts := make([]string, 0, len(list))
-	for _, question := range list {
-		if strings.TrimSpace(question.Question) == "" {
-			return nil, false
-		}
-		if _, repeated := seen[question.Question]; repeated {
-			return nil, false
-		}
-		seen[question.Question] = struct{}{}
-		texts = append(texts, question.Question)
+	texts := make([]string, len(parsed))
+	for i, question := range parsed {
+		texts[i] = question.GetQuestion()
 	}
 	return texts, true
 }
@@ -222,7 +211,7 @@ func lettaResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 	}
 
 	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	if !ok {
+	if !ok || (behavior != contracts.ControlAnswerBehaviorAllow && behavior != contracts.ControlAnswerBehaviorDeny) {
 		var resolution agent.ControlResponseResolution
 		resolution.Refuse(agent.RefusalNoDecision)
 		return resolution
@@ -329,7 +318,7 @@ func lettaAnswersFor(texts []string, content []byte) (map[string]string, bool) {
 	answers := make(map[string]string, len(texts))
 	for _, text := range texts {
 		answer, _ := given[text].(string)
-		if strings.TrimSpace(answer) == "" {
+		if agent.TrimJavaScriptSpace(answer) == "" {
 			return nil, false
 		}
 		answers[text] = answer
@@ -360,7 +349,7 @@ func lettaQuestionNotification(data []byte) (string, error) {
 			return "", errors.New("the Letta question response does not answer every question")
 		}
 		for _, text := range texts {
-			if strings.TrimSpace(response.FieldAnswers[text]) == "" {
+			if agent.TrimJavaScriptSpace(response.FieldAnswers[text]) == "" {
 				return "", errors.New("the Letta question response does not answer every question")
 			}
 		}

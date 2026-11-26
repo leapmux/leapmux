@@ -45,7 +45,7 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 	a.mu.Lock()
 	_, ownTool := a.turnToolCalls[request.ToolUseID]
 	record.rootPermission = request.Subtype == contracts.CodebuddyControlRequestSubtypeCanUseTool && request.AgentID == "" && ownTool
-	if reply := a.inputReply; record.rootPermission && reply != nil {
+	if reply := a.turnReplyLocked(); record.rootPermission && reply != nil {
 		if _, owned := reply.tools[request.ToolUseID]; owned {
 			record.inputReceipt = reply.receipt
 		}
@@ -58,7 +58,10 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 		return
 	}
 	if record.rootPermission && request.ToolName != "" && request.ToolName != "AskUserQuestion" && (codebuddyProvider{}).PlanModeControl(request.ToolName) == agent.PlanModeControlNone {
-		record.automaticReply, _ = json.Marshal(map[string]any{"type": frameTypeControlResponse, "response": map[string]any{"subtype": "success", "request_id": envelope.RequestID, "response": contracts.CodebuddyCanUseToolAnswer{Allowed: true, UpdatedInput: request.Input}}})
+		record.automaticReply = agent.ControlResponseEnvelope(envelope.RequestID, contracts.CodebuddyCanUseToolAnswer{
+			Allowed:      true,
+			UpdatedInput: request.Input,
+		})
 	}
 	a.controls[envelope.RequestID] = record
 	bypass := a.canBypassControlLocked(record)

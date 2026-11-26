@@ -3,7 +3,6 @@ package codebuddy
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 
@@ -71,19 +70,12 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 		if !open {
 			continue
 		}
-		frame, err := json.Marshal(map[string]any{
-			"type": frameTypeControlResponse,
-			"response": map[string]any{
-				"subtype":    "success",
-				"request_id": requestID,
-				"response":   contracts.CodebuddyCanUseToolAnswer{Allowed: false, Reason: codebuddyInterruptedPermissionReason, Interrupt: true},
-			},
+		frame := agent.ControlResponseEnvelope(requestID, contracts.CodebuddyCanUseToolAnswer{
+			Allowed:   false,
+			Reason:    codebuddyInterruptedPermissionReason,
+			Interrupt: true,
 		})
-		if err != nil {
-			slog.Error("codebuddy: encode the interrupt refusal", "agent_id", a.AgentID(), "error", err)
-			return refused, err
-		}
-		err = a.Process.SendRawInput(frame, agent.StopContext{})
+		err := a.Process.SendRawInput(frame, agent.StopContext{})
 		a.finishControlWrite(requestID, record, err, true, false)
 		if err != nil {
 			return refused, err

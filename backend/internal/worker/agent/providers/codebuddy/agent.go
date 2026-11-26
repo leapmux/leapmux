@@ -37,7 +37,7 @@ type Agent struct {
 	outputStyles               []string
 	catalogRefresh             providerkit.CoalescingWork
 	active                     bool
-	inputReply                 *inputReply
+	turn                       *codebuddyTurn
 	compactionLive             bool
 	manualCompaction           bool
 	assistantTextStreamed      bool
@@ -66,18 +66,15 @@ type Agent struct {
 
 	// pendingControl routes a control_response to the caller waiting on its
 	// request id. See sendControlAndWait.
-	pendingControlMu        sync.Mutex
-	pendingControl          map[string]chan<- codebuddyControlResult
-	pendingControlObservers map[string]func(codebuddyControlResult, error)
-	steerDispatchMu         sync.Mutex
-	inFlightSteer           *codebuddyPendingSteer
-	pendingSteers           []*codebuddyPendingSteer
-	tasks                   codebuddyTaskIndex
-	archiveMu               sync.Mutex
-	archiveJobs             map[string]*codebuddyArchiveJob
-	archiveChildJobs        map[string]*codebuddyArchiveJob
-	archiveStopped          bool
-	archiveRetries          sync.WaitGroup
+	pendingControlMu sync.Mutex
+	pendingControl   map[string]pendingControlWaiter
+	steerDispatchMu  sync.Mutex
+	tasks            codebuddyTaskIndex
+	archiveMu        sync.Mutex
+	archiveJobs      map[string]*codebuddyArchiveJob
+	archiveChildJobs map[string]*codebuddyArchiveJob
+	archiveStopped   bool
+	archiveRetries   sync.WaitGroup
 
 	// directory holds the startup settings file of the process, or is nil for a
 	// process that starts with no settings. Wait removes it once the process
@@ -116,6 +113,13 @@ type codebuddyControlResult struct {
 	SteerReason string
 }
 
+// pendingControlWaiter holds the response channel and optional inline observer
+// for one in-flight control request.
+type pendingControlWaiter struct {
+	ch      chan<- codebuddyControlResult
+	observe func(codebuddyControlResult, error)
+}
+
 // codebuddyModelInfo is one get_available_models entry.
 type codebuddyModelInfo struct {
 	ID          string `json:"modelId"`
@@ -142,49 +146,73 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 }
 
 func (a *Agent) setTurnActive(active bool) {
+	if !active {
+		a.finishTurn(nil, agent.SteerOutcomeUncertain, false)
+		return
+	}
+	a.mu.Lock()
+	if !a.active {
+		a.turnToolCalls = nil
+		a.interruptRequests = nil
+		a.turn = &codebuddyTurn{}
+	}
+	a.active = true
+	a.activityRev++
+	seq := a.turnOrder.NextTurnSeq()
+	steerable := !a.manualCompaction
+	a.mu.Unlock()
+	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: true, Steerable: steerable}, seq)
+}
+
+func (a *Agent) finishTurn(settledReply *inputReply, steerOutcome agent.SteerOutcome, resetSpans bool) {
 	a.mu.Lock()
 	var retired []string
 	var unfinished *inputReply
 	var unconfirmedSteers []*codebuddyPendingSteer
-	if active && !a.active {
-		a.turnToolCalls = nil
-		a.interruptRequests = nil
-	}
-	a.active = active
-	endCompaction := !active && a.manualCompaction
-	if !active {
-		unfinished, a.inputReply = a.inputReply, nil
-		unconfirmedSteers, a.pendingSteers = a.pendingSteers, nil
-		a.closeModelStreamLocked("")
-		a.lastDiagnostic = nil
-		if endCompaction {
-			a.manualCompaction = false
-			a.compactionLive = false
+	a.active = false
+	endCompaction := a.manualCompaction
+	if turn := a.turn; turn != nil {
+		a.turn = nil
+		turn.ended = true
+		if settledReply != nil && turn.reply == settledReply {
+			turn.replyRetained = true
+			turn.reply = nil
 		}
-		for id, record := range a.controls {
-			if record.rootPermission {
-				delete(a.controls, id)
-				if record.published {
-					retired = append(retired, id)
-				}
-				record.publicationOnce.Do(func() { close(record.publicationDone) })
+		unfinished, turn.reply = turn.reply, nil
+		unconfirmedSteers, turn.pendingSteers = turn.pendingSteers, nil
+	}
+	a.closeModelStreamLocked("")
+	a.lastDiagnostic = nil
+	if endCompaction {
+		a.manualCompaction = false
+		a.compactionLive = false
+	}
+	for id, record := range a.controls {
+		if record.rootPermission {
+			delete(a.controls, id)
+			if record.published {
+				retired = append(retired, id)
 			}
+			record.publicationOnce.Do(func() { close(record.publicationDone) })
 		}
-		a.permissionInterruptPending = false
 	}
+	a.permissionInterruptPending = false
 	a.activityRev++
 	seq := a.turnOrder.NextTurnSeq()
-	steerable := active && !a.manualCompaction
 	a.mu.Unlock()
-	a.resolvePendingSteers(unconfirmedSteers, agent.SteerOutcomeUncertain)
+
+	a.resolvePendingSteers(unconfirmedSteers, steerOutcome)
 	a.retireInputReply(unfinished)
+	if resetSpans {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	if endCompaction {
 		providerkit.EndCompaction(a.sink)
 	}
 	for _, id := range retired {
 		a.sink.CancelControlRequest(id)
 	}
-	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: steerable}, seq)
+	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: false, Steerable: false}, seq)
 }
 
 // SendInput delivers one user message over stdin. The write IS the delivery.
@@ -214,6 +242,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		a.mu.Unlock()
 		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
+	turn := &codebuddyTurn{}
 	if !manualCompaction && a.sessionID != "" {
 		turnID, err := newInputTurnID()
 		if err != nil {
@@ -221,9 +250,10 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 			return agent.NativeInputReceipt{}, err
 		}
 		receipt = agent.NativeInputReceipt{SessionID: a.sessionID, InputID: turnID, TurnID: turnID}
-		a.inputReply = &inputReply{receipt: receipt}
+		turn.reply = &inputReply{receipt: receipt}
 		meta = &inputMeta{ConversationRequestID: turnID}
 	}
+	a.turn = turn
 	a.active = true
 	a.manualCompaction = manualCompaction
 	if manualCompaction {
@@ -293,15 +323,16 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 	defer a.steerDispatchMu.Unlock()
 
 	a.mu.Lock()
-	active := a.active
+	turn := a.activeTurnLocked()
 	sessionID := a.sessionID
 	var turnID string
-	if a.inputReply != nil && a.inputReply.receipt.SessionID == sessionID {
-		turnID = a.inputReply.receipt.TurnID
+	if turn != nil && turn.reply != nil && turn.reply.receipt.SessionID == sessionID {
+		turnID = turn.reply.receipt.TurnID
 	}
 	var tracked *codebuddyPendingSteer
-	if active && request.InputID != "" && request.AttemptID != "" {
+	if turn != nil && request.InputID != "" && request.AttemptID != "" {
 		tracked = &codebuddyPendingSteer{
+			turn:      turn,
 			sessionID: sessionID,
 			turnID:    turnID,
 			resolution: agent.SteerResolution{
@@ -309,10 +340,10 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 				AttemptID: request.AttemptID,
 			},
 		}
-		a.inFlightSteer = tracked
+		turn.inFlightSteer = tracked
 	}
 	a.mu.Unlock()
-	if !active {
+	if turn == nil {
 		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	if tracked != nil {

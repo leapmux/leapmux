@@ -154,8 +154,8 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 	return pending
 }
 
-func museInputTurnOutcome(terminal string) leapmuxv1.AgentInputTurnOutcome {
-	switch terminal {
+func museInputTurnOutcome(outcome string) leapmuxv1.AgentInputTurnOutcome {
+	switch outcome {
 	case contracts.MuseTurnOutcomeCompleted:
 		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
 	case contracts.MuseTurnOutcomeCancelled:

@@ -68,7 +68,7 @@ func TestUncertainControlDeliveryPreventsAnotherAnswer(t *testing.T) {
 			frame := []byte(`{"frame":"approval","approval_id":"approval","decision":"allow"}`)
 			if question {
 				path = routeUserInput + "/" + testThreadID + "/question"
-				frame = mustJSON(t, codewhaleReplyFrame{Frame: contracts.CodewhaleReplyFrameUserInput, ThreadID: testThreadID, InputID: "question"})
+				frame = agenttest.MustJSON(t, codewhaleReplyFrame{Frame: contracts.CodewhaleReplyFrameUserInput, ThreadID: testThreadID, InputID: "question"})
 			}
 			rt.handle(http.MethodPost, path, func(w http.ResponseWriter, _ *http.Request) {
 				connection, _, err := http.NewResponseController(w).Hijack()
@@ -173,7 +173,7 @@ func userInputEvent(seq uint64, inputID string) []byte {
 // builds.
 func neutralResponse(t *testing.T, requestID string, response map[string]any) []byte {
 	t.Helper()
-	return mustJSON(t, map[string]any{
+	return agenttest.MustJSON(t, map[string]any{
 		"type":     "control_response",
 		"response": map[string]any{"subtype": "success", "request_id": requestID, "response": response},
 	})
@@ -366,11 +366,16 @@ func TestQuestionAnswerWithAnUnaddressedAnswerIsWithheld(t *testing.T) {
 	a.HandleOutput(userInputEvent(5, "q1"))
 	published := sink.LastPublishedControl()
 	for name, response := range map[string]map[string]any{
-		"an answer with no id": {"behavior": "allow", "updatedInput": map[string]any{"answers": []map[string]any{{"label": "Red", "value": "Red"}}}},
-		"no answers at all":    {"behavior": "allow", "updatedInput": map[string]any{}},
-		"answers of no shape":  {"behavior": "allow", "updatedInput": map[string]any{"answers": 7}},
+		"an answer with no id":    {"behavior": "allow", "updatedInput": map[string]any{"answers": []map[string]any{{"label": "Red", "value": "Red"}}}},
+		"an answer with blank id": {"behavior": "allow", "updatedInput": map[string]any{"answers": []map[string]any{{"id": "   ", "label": "Red", "value": "Red"}}}},
+		"null answers":            {"behavior": "allow", "updatedInput": map[string]any{"answers": nil}},
+		"null entry in answers":   {"behavior": "allow", "updatedInput": map[string]any{"answers": []any{nil}}},
+		"non-object entry":        {"behavior": "allow", "updatedInput": map[string]any{"answers": []any{"bad"}}},
+		"non-object updatedInput": {"behavior": "allow", "updatedInput": "bad"},
+		"no answers at all":       {"behavior": "allow", "updatedInput": map[string]any{}},
+		"answers of no shape":     {"behavior": "allow", "updatedInput": map[string]any{"answers": 7}},
 		// Only codewhaleQuestionAnswer builds an answer, and it builds the
-		// runtime's own list, so no other shape names a question.
+		// runtime's own list, so no other shape identifies a question.
 		"a map by question text": {"behavior": "allow", "updatedInput": map[string]any{"answers": map[string]any{"Which color?": "Red"}}},
 	} {
 		res := agenttest.ResolveAnswer(codewhaleProvider{}, published.Payload, published.RequestID,
@@ -394,8 +399,8 @@ func TestControlRequestKeyIsTheKeyOfEachPublication(t *testing.T) {
 }
 
 // The resolution withholds an answer that states no decision, and a stored
-// request that holds no runtime event, because neither names a route.
-func TestControlResponseThatNamesNoRouteIsWithheld(t *testing.T) {
+// request that holds no runtime event, because neither specifies a route.
+func TestControlResponseWithoutRouteIsWithheld(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
 	a.HandleOutput(approvalEvent(2, "ap1", "call_1", contracts.CodewhaleToolBash))
@@ -409,7 +414,7 @@ func TestControlResponseThatNamesNoRouteIsWithheld(t *testing.T) {
 	res = agenttest.ResolveAnswer(codewhaleProvider{}, stored, "approval:ap1",
 		agent.ControlAnswer{Content: neutralResponse(t, "approval:ap1", map[string]any{"behavior": "allow"})})
 	require.False(t, res.Withhold, "%v", res.Refusal())
-	// A stored payload that holds no runtime event names no route.
+	// A stored payload that holds no runtime event specifies no route.
 	res = agenttest.ResolveAnswer(codewhaleProvider{}, []byte(`{"request_id":"approval:ap1","request":{"tool_name":"bash"}}`), "approval:ap1",
 		agent.ControlAnswer{Content: neutralResponse(t, "approval:ap1", map[string]any{"behavior": "allow"})})
 	assert.True(t, res.Withhold)
@@ -668,18 +673,21 @@ func TestAControlResponseToAStoredEventItCannotAddressIsWithheld(t *testing.T) {
 	t.Parallel()
 	const requestID = "approval:ap1"
 	allow := neutralResponse(t, requestID, map[string]any{"behavior": "allow", "updatedInput": map[string]any{"answers": []any{}}})
-	stored := func(event []byte) []byte {
-		payload, err := buildControlPayload(requestID, codewhaleControlHeader{ToolName: "bash"}, event)
+	stored := func(toolName string, event []byte) []byte {
+		payload, err := buildControlPayload(requestID, codewhaleControlHeader{ToolName: toolName}, event)
 		require.NoError(t, err)
 		return payload
 	}
-	for name, event := range map[string][]byte{
-		"an approval with no id":     runtimeEvent(2, contracts.CodewhaleEventApprovalRequired, testTurnID, "", map[string]any{"tool_name": "bash"}),
-		"a question with no id":      runtimeEvent(2, contracts.CodewhaleEventUserInputRequired, testTurnID, "", map[string]any{"request": map[string]any{}}),
-		"a question with no thread":  []byte(`{"seq":2,"event":"user_input.required","payload":{"id":"q1"}}`),
-		"an event that asks nothing": runtimeEvent(2, contracts.CodewhaleEventSandboxDenied, testTurnID, "", map[string]any{}),
+	for name, tc := range map[string]struct {
+		toolName string
+		event    []byte
+	}{
+		"an approval with no id":     {contracts.CodewhaleToolBash, runtimeEvent(2, contracts.CodewhaleEventApprovalRequired, testTurnID, "", map[string]any{"tool_name": "bash"})},
+		"a question with no id":      {contracts.CodewhaleToolRequestUserInput, runtimeEvent(2, contracts.CodewhaleEventUserInputRequired, testTurnID, "", map[string]any{"request": map[string]any{}})},
+		"a question with no thread":  {contracts.CodewhaleToolRequestUserInput, []byte(`{"seq":2,"event":"user_input.required","payload":{"id":"q1"}}`)},
+		"an event that asks nothing": {contracts.CodewhaleToolBash, runtimeEvent(2, contracts.CodewhaleEventSandboxDenied, testTurnID, "", map[string]any{})},
 	} {
-		res := agenttest.ResolveAnswer(codewhaleProvider{}, stored(event), requestID, agent.ControlAnswer{Content: allow})
+		res := agenttest.ResolveAnswer(codewhaleProvider{}, stored(tc.toolName, tc.event), requestID, agent.ControlAnswer{Content: allow})
 		assert.True(t, res.Withhold, name)
 		assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest, name)
 	}
@@ -687,8 +695,64 @@ func TestAControlResponseToAStoredEventItCannotAddressIsWithheld(t *testing.T) {
 
 func TestDeclinedAnswersSkipAQuestionWithNoID(t *testing.T) {
 	t.Parallel()
-	request := mustJSON(t, map[string]any{"questions": []map[string]any{{"id": "a", "question": "A?"}, {"question": "No id?"}}})
+	request := agenttest.MustJSON(t, map[string]any{"questions": []any{
+		map[string]any{"id": "a", "question": "A?"},
+		map[string]any{"question": "No id?"},
+		map[string]any{"id": "   ", "question": "Blank id?"},
+		nil,
+		"not-an-object",
+	}})
 	assert.Equal(t, []userInputAnswer{{ID: "a", Label: contracts.CodewhaleAnswerLabelOther, Value: "No."}}, declinedAnswers(request, "No."))
 	assert.Empty(t, declinedAnswers(nil, "No."), "a request with no questions declines nothing")
 	assert.Empty(t, declinedAnswers([]byte(`not json`), "No."))
+}
+
+func TestQuestionDeclineUsesHeaderQuestionsAndRejectsWrongTool(t *testing.T) {
+	t.Parallel()
+	event := userInputEvent(5, "q1")
+	headerOnly, err := buildControlPayload("user_input:q1", codewhaleControlHeader{
+		ToolName: contracts.CodewhaleToolRequestUserInput,
+		Input:    agenttest.MustJSON(t, map[string]any{"questions": []map[string]any{{"id": "only", "question": "Only?"}}}),
+	}, event)
+	require.NoError(t, err)
+	deny := neutralResponse(t, "user_input:q1", map[string]any{"behavior": "deny", "message": "Stop"})
+	res := agenttest.ResolveAnswer(codewhaleProvider{}, headerOnly, "user_input:q1", agent.ControlAnswer{Content: deny})
+	require.False(t, res.Withhold, "%v", res.Refusal())
+	var frame codewhaleReplyFrame
+	require.NoError(t, json.Unmarshal(res.Content, &frame))
+	assert.Equal(t, []userInputAnswer{{ID: "only", Label: contracts.CodewhaleAnswerLabelOther, Value: "Stop"}}, frame.Answers)
+
+	headerEmpty, err := buildControlPayload("user_input:q1", codewhaleControlHeader{
+		ToolName: contracts.CodewhaleToolRequestUserInput,
+		Input:    agenttest.MustJSON(t, map[string]any{"questions": []any{}}),
+	}, event)
+	require.NoError(t, err)
+	res = agenttest.ResolveAnswer(codewhaleProvider{}, headerEmpty, "user_input:q1", agent.ControlAnswer{Content: deny})
+	require.False(t, res.Withhold, "%v", res.Refusal())
+	frame = codewhaleReplyFrame{}
+	require.NoError(t, json.Unmarshal(res.Content, &frame))
+	assert.Empty(t, frame.Answers)
+
+	headerWithoutQuestions, err := buildControlPayload("user_input:q1", codewhaleControlHeader{
+		ToolName: contracts.CodewhaleToolRequestUserInput,
+		Input:    json.RawMessage(`{}`),
+	}, event)
+	require.NoError(t, err)
+	res = agenttest.ResolveAnswer(codewhaleProvider{}, headerWithoutQuestions, "user_input:q1", agent.ControlAnswer{Content: deny})
+	require.False(t, res.Withhold, "%v", res.Refusal())
+	frame = codewhaleReplyFrame{}
+	require.NoError(t, json.Unmarshal(res.Content, &frame))
+	assert.Equal(t, []userInputAnswer{
+		{ID: "color", Label: contracts.CodewhaleAnswerLabelOther, Value: "Stop"},
+		{ID: "sizes", Label: contracts.CodewhaleAnswerLabelOther, Value: "Stop"},
+	}, frame.Answers)
+
+	wrongTool, err := buildControlPayload("user_input:q1", codewhaleControlHeader{
+		ToolName: contracts.CodewhaleToolBash,
+		Input:    agenttest.MustJSON(t, map[string]any{"questions": testQuestions}),
+	}, event)
+	require.NoError(t, err)
+	res = agenttest.ResolveAnswer(codewhaleProvider{}, wrongTool, "user_input:q1", agent.ControlAnswer{Content: deny})
+	assert.True(t, res.Withhold)
+	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest)
 }

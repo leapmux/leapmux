@@ -598,3 +598,117 @@ func TestJobRegisteredAndSettledTrackShellBackgroundTasks(t *testing.T) {
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, sink.PersistedNotifications())
 }
+
+func TestSnapshotSeedInboxAndRootInboxSpliceCancellation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("snapshot seeds next-step and next-turn and canceled splices settle root steers", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		tracked := &pendingSteer{
+			requestID: "req-step",
+			itemID:    "item-step",
+			request:   agent.SteerRequest{InputID: "in-step", AttemptID: "att-step", Content: "step steer"},
+		}
+		legacy := &pendingSteer{
+			requestID: "req-turn",
+			request:   agent.SteerRequest{InputID: "in-turn", Content: "turn steer"},
+		}
+		a.pendingSteers = []*pendingSteer{tracked, legacy}
+		a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "req-step"}, &tracked.request)
+
+		snapshot := `{"type":"item","streamId":"root","value":{"type":"snapshot","cursor":0,"records":[],"hasMore":false,"projections":{"values":{"inbox":{"next-step":[{"id":" item-step ","source":{"rpcId":" req-step "}}],"next-turn":[{"id":" item-turn ","source":{"rpcId":" req-turn "}}]}}}}}`
+		require.NoError(t, a.handleFrame([]byte(snapshot)))
+
+		// Cancel the seeded next-step item (default target "") to drop tracked steer.
+		require.NoError(t, a.handleFrame([]byte(`{"type":"item","streamId":"root","value":{"type":"event","event":{"type":"agent/inbox/spliced","seq":1,"time":1001,"data":{"start":0,"removedCount":1,"inserted":[],"outcome":"canceled"}}}}`)))
+		assert.Equal(t, []agent.SteerResolution{{
+			InputID: "in-step", AttemptID: "att-step", Outcome: agent.SteerOutcomeDropped,
+		}}, sink.SteerResolutions())
+		a.dispatchMu.Lock()
+		assert.NotContains(t, a.replySubmissions, "req-step")
+		a.dispatchMu.Unlock()
+
+		// Cancel the seeded next-turn item (matched by RPCID even though legacy.itemID is empty).
+		require.NoError(t, a.handleFrame([]byte(`{"type":"item","streamId":"root","value":{"type":"event","event":{"type":"agent/inbox/spliced","seq":2,"time":1002,"data":{"target":"next-turn","start":0,"removedCount":5,"inserted":[],"outcome":"canceled"}}}}`)))
+		require.Len(t, sink.RequeuedInputs(), 1)
+		assert.Equal(t, legacy.request, sink.RequeuedInputs()[0].Request)
+		assert.Empty(t, a.pendingSteers)
+	})
+
+	t.Run("malformed inbox projection and out-of-range or unknown target splices are tolerated", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		// Malformed inbox projection does not fail snapshot handling.
+		require.NoError(t, a.handleFrame([]byte(`{"type":"item","streamId":"root","value":{"type":"snapshot","cursor":0,"records":[],"hasMore":false,"projections":{"values":{"inbox":"not-an-object"}}}}`)))
+		assert.Nil(t, a.streams["root"].inbox)
+
+		// Unknown target and invalid start/removedCount do not panic or fail.
+		for seq, data := range []string{
+			`{"target":"unknown-queue","start":0,"removedCount":1,"inserted":[],"outcome":"canceled"}`,
+			`{"target":"next-step","start":-1,"removedCount":1,"inserted":[],"outcome":"canceled"}`,
+			`{"target":"next-step","start":0,"removedCount":-1,"inserted":[],"outcome":"canceled"}`,
+			`{"target":"next-step","start":5,"removedCount":1,"inserted":[],"outcome":"canceled"}`,
+		} {
+			frame := `{"type":"item","streamId":"root","value":{"type":"event","event":{"type":"agent/inbox/spliced","seq":` + strconv.Itoa(seq+1) + `,"time":1000,"data":` + data + `}}}`
+			require.NoError(t, a.handleFrame([]byte(frame)), data)
+		}
+		// Malformed splice data returns an error.
+		err := a.handleFrame([]byte(`{"type":"item","streamId":"root","value":{"type":"event","event":{"type":"agent/inbox/spliced","seq":10,"time":1000,"data":"not-json-object"}}}`))
+		require.Error(t, err)
+	})
+
+	t.Run("replay ignores canceled splice and settle failure preserves inbox for retry", func(t *testing.T) {
+		t.Parallel()
+		cause := errors.New("requeue failed")
+		sink := &agenttest.Sink{RequeueErr: cause}
+		a := newOfflineAgent(t, sink)
+		stream := a.streams["root"]
+		steer := &pendingSteer{
+			requestID: "req-retry",
+			itemID:    "item-retry",
+			request:   agent.SteerRequest{InputID: "in-retry", Content: "retry steer"},
+		}
+		a.pendingSteers = []*pendingSteer{steer}
+		stream.inbox = map[string][]inboxItem{
+			inboxTargetNextStep: {{ID: "item-retry", RPCID: "req-retry"}},
+		}
+
+		// While replay is active, canceled splice updates inbox without dropping steer.
+		stream.replay = &childSnapshotReplay{}
+		require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"agent/inbox/spliced","seq":1,"time":1000,"data":{"target":"next-step","start":0,"removedCount":1,"inserted":[],"outcome":"canceled"}}`)))
+		stream.replay = nil
+		assert.Len(t, a.pendingSteers, 1)
+		assert.Empty(t, sink.RequeuedInputs())
+		assert.Empty(t, stream.inbox[inboxTargetNextStep])
+
+		// Restore inbox and test settle failure preserves inbox mirror and lastSeq so replay succeeds.
+		stream.inbox[inboxTargetNextStep] = []inboxItem{{ID: "item-retry", RPCID: "req-retry"}}
+		cancelEvent := []byte(`{"type":"agent/inbox/spliced","seq":2,"time":1001,"data":{"target":"next-step","start":0,"removedCount":1,"inserted":[],"outcome":"canceled"}}`)
+		require.ErrorIs(t, a.handleSessionEvent(stream, cancelEvent), cause)
+		assert.Equal(t, int64(1), stream.lastSeq, "failed settle must not advance lastSeq")
+		require.Len(t, stream.inbox[inboxTargetNextStep], 1, "failed settle must preserve inbox mirror for retry")
+
+		sink.RequeueErr = nil
+		require.NoError(t, a.handleSessionEvent(stream, cancelEvent))
+		assert.Equal(t, int64(2), stream.lastSeq)
+		assert.Empty(t, stream.inbox[inboxTargetNextStep])
+		assert.Empty(t, a.pendingSteers)
+		require.Len(t, sink.RequeuedInputs(), 1)
+		assert.Equal(t, steer.request, sink.RequeuedInputs()[0].Request)
+	})
+}
+
+func TestDiscardOutputAdvancesCursorWithoutPersistingSessionEvents(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.DiscardOutput()
+
+	stream := a.streams["root"]
+	require.NoError(t, a.handleSessionEvent(stream, []byte(`{"type":"assistant/message","seq":5,"time":1000,"data":{"message":{"content":[{"type":"text","text":"Discarded"}]}}}`)))
+	assert.Equal(t, int64(5), stream.lastSeq)
+	assert.Empty(t, sink.Messages())
+}

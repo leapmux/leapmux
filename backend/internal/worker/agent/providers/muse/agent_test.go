@@ -310,3 +310,77 @@ func TestMuseRetriedInputForgetsAConfirmedRefusal(t *testing.T) {
 	assert.Equal(t, ids[0], ids[1])
 	assert.NotEqual(t, ids[0], ids[2])
 }
+
+func TestMuseSteerReturnsNilWhenEchoPrecedesRPCFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		retire bool
+		reply  agenttest.RPCReply
+	}{
+		{name: "uncertain acknowledgement after echo", reply: agenttest.RPCReply{Result: json.RawMessage(`{}`)}},
+		{name: "rpc refusal after echo", reply: agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"late failure"}`)}},
+		{name: "host retire and rpc failure after echo", retire: true, reply: agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"late failure"}`)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			const activeTurn = "active-turn"
+			a.startTurn("session", activeTurn)
+			var commandID string
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+				require.Equal(t, methodTurnSteer, method)
+				var params struct {
+					CommandID string `json:"commandId"`
+				}
+				require.NoError(t, json.Unmarshal(raw, &params))
+				commandID = params.CommandID
+				feed(t, a, contracts.MuseMethodItemCompleted, map[string]any{
+					"sessionId": "session",
+					"item": map[string]any{
+						"itemId": "steer-echo", "kind": contracts.MuseItemKindUserMessage, "commandId": commandID,
+						"turnId": activeTurn, "revision": 1, "status": contracts.MuseItemStatusCompleted, "text": "Update.",
+					},
+				})
+				if tc.retire {
+					a.retireHost(agent.MessageCompletionInterrupted)
+				}
+				return tc.reply
+			}})
+			receipt, err := a.SteerInput(agent.SteerRequest{Content: "Update.", InputID: "input", AttemptID: "attempt"})
+			require.NoError(t, err)
+			assert.Empty(t, receipt)
+			assert.Empty(t, a.inFlightSteers)
+			require.Equal(t, []agent.SteerResolution{{
+				InputID: "input", AttemptID: "attempt", Outcome: agent.SteerOutcomeEchoed,
+				Receipt: agent.NativeInputReceipt{SessionID: "session", InputID: commandID, TurnID: activeTurn},
+			}}, sink.SteerResolutions())
+		})
+	}
+}
+
+func TestMuseSteerStillFailsWhenHostRetiresUnechoedBeforeRPCFailure(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	a.startTurn("session", "active-turn")
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+		require.Equal(t, methodTurnSteer, method)
+		a.retireHost(agent.MessageCompletionInterrupted)
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	}})
+	_, err := a.SteerInput(agent.SteerRequest{Content: "Update.", InputID: "input", AttemptID: "attempt"})
+	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+	assert.Empty(t, a.inFlightSteers)
+	require.Equal(t, []agent.SteerResolution{{
+		InputID: "input", AttemptID: "attempt", Outcome: agent.SteerOutcomeUncertain,
+	}}, sink.SteerResolutions())
+}
+
+func TestMuseInputTurnOutcomeMapsFinalStatuses(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, museInputTurnOutcome(contracts.MuseTurnOutcomeCompleted))
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED, museInputTurnOutcome(contracts.MuseTurnOutcomeCancelled))
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED, museInputTurnOutcome(contracts.MuseTurnOutcomeFailed))
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, museInputTurnOutcome(""))
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, museInputTurnOutcome("unknown"))
+}

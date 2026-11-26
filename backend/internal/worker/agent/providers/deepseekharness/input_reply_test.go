@@ -3,6 +3,7 @@ package deepseekharness
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -121,8 +122,11 @@ func TestHarnessExactReplyRequiresAProvedEnd(t *testing.T) {
 		{"other turn ends", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":7,"reason":{"kind":"completed"}}`, 0, true},
 		{"another turn starts", `{"turn":8}`, `{"turn":8}`, "turn/start", `{"turn":9}`, 0, true},
 		{"unknown reason", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":8,"reason":{"kind":"future"}}`, 0, true},
-		{"interrupted", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":8,"reason":{"kind":"aborted"}}`, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED, false},
-		{"failed", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":8,"reason":{"kind":"error"}}`, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED, false},
+		{"max-tokens", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":8,"reason":{"kind":"max-tokens"}}`, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, false},
+		{"interrupted via aborted", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":8,"reason":{"kind":"aborted"}}`, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED, false},
+		{"interrupted via interrupted", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":8,"reason":{"kind":"interrupted"}}`, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED, false},
+		{"failed via error", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":8,"reason":{"kind":"error"}}`, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED, false},
+		{"failed via blocked", `{"turn":8}`, `{"turn":8}`, "turn/end", `{"turn":8,"reason":{"kind":"blocked"}}`, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sink := &agenttest.Sink{}
@@ -180,7 +184,8 @@ func TestHarnessSteerBindsToTheTurnThatActuallyConsumesIt(t *testing.T) {
 func TestHarnessExactReplyOwnsControlInEitherStreamOrder(t *testing.T) {
 	for _, controlFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("control first=%t", controlFirst), func(t *testing.T) {
-			sink := &agenttest.ControlSink{}
+			base := &agenttest.Sink{}
+			sink := newHarnessRecordedChildControlSink(base)
 			a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
 			a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "input"}, nil)
 			applyReplyEvent(t, a, 1, "turn/start", `{"turn":8}`)
@@ -202,13 +207,22 @@ func TestHarnessExactReplyOwnsControlInEitherStreamOrder(t *testing.T) {
 			if !controlFirst {
 				publishApproval("owned", "call")
 			}
-			published := sink.PublishedControls()
+			sink.mu.Lock()
+			published := append([]agent.ControlRequest(nil), sink.published...)
+			sink.mu.Unlock()
 			require.Len(t, published, 2)
 			assert.Empty(t, published[0].NativeTurnID)
+			assert.Empty(t, published[0].NativeInputIDs)
 			require.NotEmpty(t, published[1].InstanceID)
-			assert.Equal(t, []agent.NativeControlInputs{{
-				SessionID: "native-root", RequestID: "owned", InstanceID: published[1].InstanceID, InputIDs: []string{"input"},
-			}}, sink.NativeControlInputBindings())
+			if controlFirst {
+				assert.Empty(t, published[1].NativeInputIDs)
+				assert.Equal(t, []agent.NativeControlInputs{{
+					SessionID: "native-root", RequestID: "owned", InstanceID: published[1].InstanceID, InputIDs: []string{"input"},
+				}}, sink.NativeControlInputBindings())
+			} else {
+				assert.Equal(t, []string{"input"}, published[1].NativeInputIDs)
+				assert.Empty(t, sink.NativeControlInputBindings())
+			}
 		})
 	}
 }
@@ -247,6 +261,7 @@ func TestHarnessChildReplyAndControlOwnership(t *testing.T) {
 		lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{}),
 	}
 
+	var mu sync.Mutex
 	var receivedRequestID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -263,7 +278,9 @@ func TestHarnessChildReplyAndControlOwnership(t *testing.T) {
 		}
 		assert.Equal(t, "/api/subagents/prompt", r.URL.Path)
 		assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		mu.Lock()
 		receivedRequestID = request.Payload.Args.Request.RequestID
+		mu.Unlock()
 		assert.Equal(t, "native-child", request.Payload.Args.Request.ChildSessionID)
 		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 			"type": "server-response", "rpcId": request.ID,
@@ -278,7 +295,10 @@ func TestHarnessChildReplyAndControlOwnership(t *testing.T) {
 
 	result, err := a.SendChildInput("native-child", agent.ChildInput{Content: "Check child."})
 	require.NoError(t, err)
-	require.Equal(t, agent.NativeInputReceipt{SessionID: "native-child", InputID: receivedRequestID}, result.NativeReceipt)
+	mu.Lock()
+	gotRequestID := receivedRequestID
+	mu.Unlock()
+	require.Equal(t, agent.NativeInputReceipt{SessionID: "native-child", InputID: gotRequestID}, result.NativeReceipt)
 
 	applyChildEvent := func(seq int, kind, data string) {
 		t.Helper()
@@ -288,14 +308,14 @@ func TestHarnessChildReplyAndControlOwnership(t *testing.T) {
 		))))
 	}
 	applyChildEvent(1, "turn/start", `{"turn":2}`)
-	applyChildEvent(2, "user/message", harnessInputEcho(receivedRequestID))
+	applyChildEvent(2, "user/message", harnessInputEcho(gotRequestID))
 	applyChildEvent(3, "assistant/message", `{"turn":2,"message":{"content":[{"type":"text","text":"Child reply."}]}}`)
 	applyChildEvent(4, "turn/end", `{"turn":2,"reason":{"kind":"completed"}}`)
 
 	require.Equal(t, []agent.NativeReplyTurn{{
 		SessionID: "native-child", TurnID: "2",
 		Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
-		Inputs:  []agent.NativeReplyBoundary{{InputID: receivedRequestID, AfterOrdinal: 1}},
+		Inputs:  []agent.NativeReplyBoundary{{InputID: gotRequestID, AfterOrdinal: 1}},
 		Items:   []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "session-event:3:block:0"}},
 	}}, childSink.NativeReplyTurns())
 	assert.Empty(t, rootSink.NativeReplyTurns())
@@ -362,6 +382,7 @@ func TestHarnessChildSteerAndControlBindToChildSink(t *testing.T) {
 				ready:           make(chan struct{}),
 			}
 
+			var steerMu sync.Mutex
 			var steerReqID string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var request struct {
@@ -377,7 +398,9 @@ func TestHarnessChildSteerAndControlBindToChildSink(t *testing.T) {
 				}
 				assert.Equal(t, "/api/subagents/prompt", r.URL.Path)
 				assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				steerMu.Lock()
 				steerReqID = request.Payload.Args.Request.RequestID
+				steerMu.Unlock()
 				assert.Equal(t, "steer", request.Payload.Args.Request.Delivery)
 				assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 					"type": "server-response", "rpcId": request.ID,
@@ -404,7 +427,10 @@ func TestHarnessChildSteerAndControlBindToChildSink(t *testing.T) {
 				InputID: "queue-child-steer", AttemptID: "attempt-1", Content: "Steer child.",
 			})
 			require.NoError(t, err)
-			applyChildEvent(3, "user/message", harnessInputEcho(steerReqID))
+			steerMu.Lock()
+			gotSteerReqID := steerReqID
+			steerMu.Unlock()
+			applyChildEvent(3, "user/message", harnessInputEcho(gotSteerReqID))
 
 			publishChildApproval := func(id, callID string) {
 				raw := fmt.Sprintf(
@@ -429,20 +455,26 @@ func TestHarnessChildSteerAndControlBindToChildSink(t *testing.T) {
 			assert.Empty(t, rootSink.NativeControlInputBindings())
 			require.Len(t, childRecorded.published, 1)
 			assert.Equal(t, "child-perm", childRecorded.published[0].RequestID)
-			require.Equal(t, []agent.NativeControlInputs{{
-				SessionID: "native-child", RequestID: "child-perm",
-				InstanceID: childRecorded.published[0].InstanceID,
-				InputIDs:   []string{steerReqID},
-			}}, childRecorded.NativeControlInputBindings())
+			if controlFirst {
+				assert.Empty(t, childRecorded.published[0].NativeInputIDs)
+				require.Equal(t, []agent.NativeControlInputs{{
+					SessionID: "native-child", RequestID: "child-perm",
+					InstanceID: childRecorded.published[0].InstanceID,
+					InputIDs:   []string{gotSteerReqID},
+				}}, childRecorded.NativeControlInputBindings())
+			} else {
+				assert.Equal(t, []string{gotSteerReqID}, childRecorded.published[0].NativeInputIDs)
+				assert.Empty(t, childRecorded.NativeControlInputBindings())
+			}
 
 			require.Equal(t, []agent.SteerResolution{{
 				InputID: "queue-child-steer", AttemptID: "attempt-1", Outcome: agent.SteerOutcomeEchoed,
-				Receipt: agent.NativeInputReceipt{SessionID: "native-child", InputID: steerReqID, TurnID: "3"},
+				Receipt: agent.NativeInputReceipt{SessionID: "native-child", InputID: gotSteerReqID, TurnID: "3"},
 			}}, childBase.SteerResolutions())
 			require.Equal(t, []agent.NativeReplyTurn{{
 				SessionID: "native-child", TurnID: "3",
 				Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
-				Inputs:  []agent.NativeReplyBoundary{{InputID: steerReqID, AfterOrdinal: 1}},
+				Inputs:  []agent.NativeReplyBoundary{{InputID: gotSteerReqID, AfterOrdinal: 1}},
 				Items:   []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "session-event:5:block:0"}},
 			}}, childBase.NativeReplyTurns())
 		})
@@ -517,6 +549,7 @@ func TestHarnessSendInputForSessionReturnsReceiptAndTracksReply(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newOfflineAgent(t, sink)
+	var reqMu sync.Mutex
 	var requestID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -532,7 +565,9 @@ func TestHarnessSendInputForSessionReturnsReceiptAndTracksReply(t *testing.T) {
 		}
 		assert.Equal(t, "/api/session/prompt", r.URL.Path)
 		assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		reqMu.Lock()
 		requestID = request.Payload.Args.Request.ID
+		reqMu.Unlock()
 		assert.Equal(t, "native-root", request.Payload.Args.Request.Session)
 		assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 			"type": "server-response", "rpcId": request.ID,
@@ -547,16 +582,144 @@ func TestHarnessSendInputForSessionReturnsReceiptAndTracksReply(t *testing.T) {
 
 	receipt, err := a.SendInputForSession("native-root", "Check the result.", nil)
 	require.NoError(t, err)
-	require.NotEmpty(t, requestID)
-	assert.Equal(t, agent.NativeInputReceipt{SessionID: "native-root", InputID: requestID}, receipt)
+	reqMu.Lock()
+	gotRequestID := requestID
+	reqMu.Unlock()
+	require.NotEmpty(t, gotRequestID)
+	assert.Equal(t, agent.NativeInputReceipt{SessionID: "native-root", InputID: gotRequestID}, receipt)
 
 	applyReplyEvent(t, a, 1, "turn/start", `{"turn":12}`)
-	applyReplyEvent(t, a, 2, "user/message", harnessInputEcho(requestID))
+	applyReplyEvent(t, a, 2, "user/message", harnessInputEcho(gotRequestID))
 	applyReplyEvent(t, a, 3, "assistant/message", `{"turn":12,"message":{"content":[{"type":"text","text":"Session reply."}]}}`)
 	applyReplyEvent(t, a, 4, "turn/end", `{"turn":12,"reason":{"kind":"completed"}}`)
 	require.Equal(t, []agent.NativeReplyTurn{{
 		SessionID: "native-root", TurnID: "12", Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
-		Inputs: []agent.NativeReplyBoundary{{InputID: requestID, AfterOrdinal: 1}},
+		Inputs: []agent.NativeReplyBoundary{{InputID: gotRequestID, AfterOrdinal: 1}},
 		Items:  []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "session-event:3:block:0"}},
 	}}, sink.NativeReplyTurns())
+}
+
+func TestStopRetiresUnfinishedRepliesAndRootAndChildSteers(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	done := make(chan struct{})
+	close(done)
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+		AgentID: "deepseek-stop-retire", ProviderName: "dsh", Ctx: a.Context(), Cancel: func() {}, ProcessDone: done, Stdin: agenttest.NopStdin(io.Discard),
+	})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child",
+		AgentSessionID:   "native-child",
+		Title:            "Child",
+	})
+	require.NoError(t, err)
+	childSink := sink.Child(childID)
+
+	a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "root-steer-req"}, &agent.SteerRequest{
+		InputID: "root-steer-input", AttemptID: "root-attempt",
+	})
+	a.registerReplySubmission(a.sink.ChildSink(childID), agent.NativeInputReceipt{SessionID: "native-child", InputID: "child-steer-req"}, &agent.SteerRequest{
+		InputID: "child-steer-input", AttemptID: "child-attempt",
+	})
+	a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "root-turn-input"}, nil)
+	a.registerReplySubmission(nil, agent.NativeInputReceipt{SessionID: "native-root", InputID: "nil-sink-steer"}, &agent.SteerRequest{
+		InputID: "nil-input", AttemptID: "nil-attempt",
+	})
+	a.Mu.Lock()
+	a.pendingSteers = []*pendingSteer{{requestID: "root-steer-req", itemID: "item-root"}}
+	a.Mu.Unlock()
+	applyReplyEvent(t, a, 1, "turn/start", `{"turn":4}`)
+	applyReplyEvent(t, a, 2, "user/message", harnessInputEcho("root-turn-input"))
+
+	a.Stop()
+
+	a.Mu.Lock()
+	assert.Empty(t, a.pendingSteers, "Stop must clear pending root steers")
+	a.Mu.Unlock()
+	assert.Equal(t, []agent.SteerResolution{{
+		InputID: "root-steer-input", AttemptID: "root-attempt", Outcome: agent.SteerOutcomeUncertain,
+	}}, sink.SteerResolutions(), "Stop must retire unechoed root steers as uncertain")
+	assert.Equal(t, []agent.SteerResolution{{
+		InputID: "child-steer-input", AttemptID: "child-attempt", Outcome: agent.SteerOutcomeUncertain,
+	}}, childSink.SteerResolutions(), "Stop must retire unechoed child steers as uncertain")
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+		sink.NativeReplyRetirements()[agent.NativeInputReceipt{SessionID: "native-root", InputID: "root-turn-input", TurnID: "4"}],
+		"Stop must retire active reply turns")
+
+	// A subsequent Wait must not duplicate retirements.
+	require.NoError(t, a.Wait())
+	assert.Len(t, sink.SteerResolutions(), 1)
+	assert.Len(t, childSink.SteerResolutions(), 1)
+}
+
+func TestReplyToolInputsSnapshotImmutabilityPruningAndUnboundCounter(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
+
+	a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "in-1"}, nil)
+	applyReplyEvent(t, a, 1, "turn/start", `{"turn":10}`)
+	applyReplyEvent(t, a, 2, "user/message", harnessInputEcho("in-1"))
+	applyReplyEvent(t, a, 3, "tool/call", `{"turn":10,"name":"bash","callId":"call-1"}`)
+	applyReplyEvent(t, a, 4, "tool/call", `{"turn":10,"name":"read","callId":"call-2"}`)
+
+	a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "in-2"}, nil)
+	applyReplyEvent(t, a, 5, "user/message", harnessInputEcho("in-2"))
+	applyReplyEvent(t, a, 6, "tool/call", `{"turn":10,"name":"edit","callId":"call-3"}`)
+
+	a.dispatchMu.Lock()
+	assert.Equal(t, []string{"in-1"}, a.replyToolInputs("native-root", "call-1"))
+	assert.Equal(t, []string{"in-1"}, a.replyToolInputs("native-root", "call-2"))
+	assert.Equal(t, []string{"in-1", "in-2"}, a.replyToolInputs("native-root", "call-3"))
+	a.dispatchMu.Unlock()
+
+	// tool/result must prune toolInputs for that callID without touching sibling calls.
+	applyReplyEvent(t, a, 7, "tool/result", `{"turn":10,"message":{"role":"tool","toolCallId":"call-1","content":[],"isError":false}}`)
+	a.dispatchMu.Lock()
+	assert.Nil(t, a.replyToolInputs("native-root", "call-1"))
+	assert.Equal(t, []string{"in-1"}, a.replyToolInputs("native-root", "call-2"))
+	assert.Equal(t, []string{"in-1", "in-2"}, a.replyToolInputs("native-root", "call-3"))
+	a.dispatchMu.Unlock()
+
+	// Publish an unbound control before its tool/call, then bind and cancel to check counter returns to zero.
+	assert.Zero(t, a.unboundControls.Load())
+	raw := fmt.Sprintf(
+		`{"type":"item","streamId":"events","value":{"type":"waterfall","event":%q,"eventId":"ctrl-unbound","agentId":"native-root","request":{"toolName":"bash","callId":"call-future"}}}`,
+		contracts.DeepseekHarnessControlEventApproval,
+	)
+	require.NoError(t, a.handleFrame([]byte(raw)))
+	assert.Equal(t, int32(1), a.unboundControls.Load())
+
+	applyReplyEvent(t, a, 8, "tool/call", `{"turn":10,"name":"bash","callId":"call-future"}`)
+	assert.Zero(t, a.unboundControls.Load())
+}
+
+func TestUserQuestionsWaitCallIDBindsReplyControlOwnership(t *testing.T) {
+	t.Parallel()
+	base := &agenttest.Sink{}
+	sink := newHarnessRecordedChildControlSink(base)
+	a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
+
+	a.registerReplySubmission(a.sink, agent.NativeInputReceipt{SessionID: "native-root", InputID: "in-q"}, nil)
+	applyReplyEvent(t, a, 1, "turn/start", `{"turn":11}`)
+	applyReplyEvent(t, a, 2, "user/message", harnessInputEcho("in-q"))
+
+	raw := fmt.Sprintf(
+		`{"type":"item","streamId":"events","value":{"type":"waterfall","event":%q,"eventId":"q-wait","agentId":"native-root","request":{"wait":{"callId":"wait-call-1"},"questions":[{"id":"q1","question":"Continue?","options":[{"label":"Yes"}]}]}}}`,
+		contracts.DeepseekHarnessControlEventUserQuestions,
+	)
+	require.NoError(t, a.handleFrame([]byte(raw)))
+	assert.Equal(t, int32(1), a.unboundControls.Load())
+
+	applyReplyEvent(t, a, 3, "tool/call", `{"turn":11,"name":"ask_user_question","callId":"wait-call-1"}`)
+	assert.Zero(t, a.unboundControls.Load())
+	sink.mu.Lock()
+	require.Len(t, sink.published, 1)
+	instanceID := sink.published[0].InstanceID
+	sink.mu.Unlock()
+	assert.Equal(t, []agent.NativeControlInputs{{
+		SessionID: "native-root", RequestID: "q-wait", InstanceID: instanceID, InputIDs: []string{"in-q"},
+	}}, sink.NativeControlInputBindings())
 }

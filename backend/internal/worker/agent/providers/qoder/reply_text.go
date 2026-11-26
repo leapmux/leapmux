@@ -1,7 +1,6 @@
 package qoder
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -14,11 +13,19 @@ import (
 // nothing between them. A frame with a tool_use block is a tool call, and
 // one with no text block is a thinking or empty row; neither is a reply.
 func (qoderProvider) ReplyText(message agent.MessageContent) (string, bool) {
-	var frame providerkit.AnthropicMessage
-	if json.Unmarshal(message.Original, &frame) != nil || frame.Type != contracts.QoderFrameKindAssistant {
+	frame, ok := providerkit.RawObject(message.Original)
+	if !ok || providerkit.ObjectString(frame, "type") != contracts.QoderFrameKindAssistant {
 		return "", false
 	}
-	blocks := providerkit.ReadAnthropicContent(frame.Message.Content)
+	inner, ok := providerkit.RawObject(frame["message"])
+	if !ok {
+		return "", false
+	}
+	rawBlocks, ok := providerkit.RawArray(inner["content"])
+	if !ok {
+		return "", false
+	}
+	blocks := providerkit.ReadAnthropicContent(rawBlocks)
 	if blocks.HasToolUse || !blocks.HasText {
 		return "", false
 	}

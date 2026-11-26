@@ -60,11 +60,9 @@ type Agent struct {
 	// event, never around an HTTP request: a handler that needs a request runs it
 	// on its own goroutine.
 	dispatchMu sync.Mutex
-	// replyStarts and replyTurns retain exact ordinary replies across the
-	// HTTP response and event stream. They are guarded by dispatchMu.
-	replyStarts       int
-	replyTurns        map[string]*codewhalePendingReply
-	replyStreamClosed bool
+	// replies retains exact ordinary replies across the HTTP response and event
+	// stream. It is guarded by dispatchMu.
+	replies providerkit.NativeReplyLedger
 	// steerMu serializes native steer requests and their receipt identification.
 	steerMu      sync.Mutex
 	approvalWork providerkit.CoalescingWork
@@ -329,9 +327,15 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 	if len(images) > 0 {
 		return agent.NativeInputReceipt{}, fmt.Errorf("the Codewhale runtime cannot add an image to a running turn; send it as a new message")
 	}
-	before, baselineOK := readTurnItemIDs(a.store, turnID)
-	if !baselineOK {
-		slog.Debug("codewhale could not read the native steer baseline", "agent_id", a.AgentID(), "turn_id", turnID)
+	// A control reply or untracked caller already holds a transcript row and carries no dispatch attempt.
+	tracked := request.InputID != "" && request.AttemptID != ""
+	var before map[string]bool
+	var baselineOK bool
+	if tracked {
+		before, baselineOK = readTurnItemIDs(a.store, turnID)
+		if !baselineOK {
+			slog.Debug("codewhale could not read the native steer baseline", "agent_id", a.AgentID(), "turn_id", turnID)
+		}
 	}
 	a.dispatchMu.Lock()
 	a.Mu.Lock()
@@ -344,6 +348,11 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 		a.Mu.Unlock()
 		a.dispatchMu.Unlock()
 		return agent.NativeInputReceipt{}, &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
+	}
+	if !tracked {
+		a.Mu.Unlock()
+		a.dispatchMu.Unlock()
+		return agent.NativeInputReceipt{}, a.settleUntrackedSteerReply(steerKey{turnID: turnID, input: strings.TrimSpace(prompt)}, a.steerTurn(threadID, turnID, prompt))
 	}
 	ticket := a.steers.begin(agent.SteerResolution{
 		InputID: request.InputID, AttemptID: request.AttemptID,

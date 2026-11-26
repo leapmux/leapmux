@@ -94,7 +94,8 @@ func TestKimiConversationStateRejectsForeignOwnersAndAtomicSnapshotFailures(t *t
 	require.ErrorContains(t, err, "owner")
 	var turns []kimiConversationTurn
 	require.NoError(t, json.Unmarshal([]byte(`[`+kimiConversationTestTurn+`,{"turn_id":"turn-2","ordinal":1,"kind":"agent","status":"ended","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[{"type":"assistant_message","item_id":"bad","status":"ended","created_at":"2026-11-18T00:00:00Z"}]}]`), &turns))
-	require.Error(t, state.replaceSnapshot(turns))
+	_, err = state.replaceSnapshot(turns)
+	require.Error(t, err)
 	assert.Same(t, previous, state.turns["turn-1"])
 	assert.NotContains(t, state.turns, "turn-2")
 	applyKimiConversationTestFrame(t, state, `{"type":"turns.removed","turn_ids":["turn-1"]}`)
@@ -175,4 +176,88 @@ func TestKimiConversationLiveStringsCannotExceedTheNativeFrameLimit(t *testing.T
 			assert.True(t, strings.HasSuffix(*body, finalRune))
 		})
 	}
+}
+
+func TestKimiConversationStateReplaceSnapshotReportsChangesAndMaintainsToolIndex(t *testing.T) {
+	t.Parallel()
+	parseTurns := func(t *testing.T, raw string) []kimiConversationTurn {
+		t.Helper()
+		var turns []kimiConversationTurn
+		require.NoError(t, json.Unmarshal([]byte(raw), &turns))
+		return turns
+	}
+
+	baseJSON := `[{"turn_id":"turn-1","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[` +
+		`{"type":"assistant_message","item_id":"msg-1","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Hello"},` +
+		`{"type":"tool_call","item_id":"call-1","step_index":1,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash"}` +
+		`]}]`
+
+	state := newKimiConversationState("session_1", "main")
+	changed, err := state.replaceSnapshot(parseTurns(t, baseJSON))
+	require.NoError(t, err)
+	assert.True(t, changed, "initial snapshot changes empty state")
+	assert.Equal(t, map[string]map[string]struct{}{"call-1": {"turn-1": {}}}, state.toolCallTurns, "only tool calls enter toolCallTurns")
+
+	// Still-retained item bodies report changed=true even when digests match.
+	changed, err = state.replaceSnapshot(parseTurns(t, baseJSON))
+	require.NoError(t, err)
+	assert.True(t, changed, "unreleased item bodies require projection")
+
+	// Releasing item bodies makes an identical snapshot a no-op.
+	for _, item := range state.turns["turn-1"].items {
+		item.releaseBody()
+	}
+	changed, err = state.replaceSnapshot(parseTurns(t, baseJSON))
+	require.NoError(t, err)
+	assert.False(t, changed, "identical snapshot with released bodies reports no change")
+
+	// Reordering the same two items reports changed=true.
+	reorderedJSON := `[{"turn_id":"turn-1","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[` +
+		`{"type":"tool_call","item_id":"call-1","step_index":1,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash"},` +
+		`{"type":"assistant_message","item_id":"msg-1","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Hello"}` +
+		`]}]`
+	changed, err = state.replaceSnapshot(parseTurns(t, reorderedJSON))
+	require.NoError(t, err)
+	assert.True(t, changed, "reordered items report change")
+
+	// Pending projection flags on a turn or item force changed=true.
+	for _, item := range state.turns["turn-1"].items {
+		item.releaseBody()
+	}
+	state.turns["turn-1"].projectionPending = true
+	changed, err = state.replaceSnapshot(parseTurns(t, reorderedJSON))
+	require.NoError(t, err)
+	assert.True(t, changed, "pending turn projection reports change")
+
+	state.turns["turn-1"].items["call-1"].projectionPending = true
+	changed, err = state.replaceSnapshot(parseTurns(t, reorderedJSON))
+	require.NoError(t, err)
+	assert.True(t, changed, "pending item projection reports change")
+
+	// An atomic failure preserves both turns and toolCallTurns.
+	badJSON := `[{"turn_id":"turn-1","ordinal":0,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[{"type":"tool_call","item_id":"call-new","step_index":1,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash"}]},` +
+		`{"turn_id":"turn-2","ordinal":1,"kind":"agent","status":"ended","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[{"type":"assistant_message","item_id":"bad","status":"ended","created_at":"2026-11-18T00:00:00Z"}]}]`
+	changed, err = state.replaceSnapshot(parseTurns(t, badJSON))
+	require.Error(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, map[string]map[string]struct{}{"call-1": {"turn-1": {}}}, state.toolCallTurns)
+
+	// Removing all turns reports changed=true and clears toolCallTurns.
+	changed, err = state.replaceSnapshot(nil)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Empty(t, state.toolCallTurns)
+
+	// Lazy ensureToolCallIndex rebuilds from pre-populated turns when toolCallTurns is nil.
+	lazy := newKimiConversationState("session_1", "main")
+	lazy.turns["turn-1"] = &kimiConversationTurnState{
+		items: map[string]*kimiConversationItemState{
+			"call-lazy": {identity: kimiConversationItemIdentity{itemID: "call-lazy", kind: contracts.KimiConversationItemKindToolCall}},
+			"msg-lazy":  {identity: kimiConversationItemIdentity{itemID: "msg-lazy", kind: contracts.KimiConversationItemKindAssistantMessage}},
+		},
+	}
+	assert.Nil(t, lazy.toolCallTurns)
+	applyKimiConversationTestFrame(t, lazy, `{"type":"item.removed","turn_id":"turn-1","item_id":"call-lazy"}`)
+	assert.NotNil(t, lazy.toolCallTurns)
+	assert.Empty(t, lazy.toolCallTurns)
 }

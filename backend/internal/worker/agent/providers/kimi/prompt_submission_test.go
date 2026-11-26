@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -205,4 +206,92 @@ func TestKimiUnjoinedChildActivityStaysIndependentFromLaterParentInvocation(t *t
 			assert.True(t, kimiPromptObserved(rig.agent, promptID))
 		})
 	}
+}
+
+func TestKimiObservedEchoRecoversLateRefusalInSteerAndChildInput(t *testing.T) {
+	t.Parallel()
+
+	t.Run("SteerInput recovers when WS already echoed the prompt before a late HTTP refusal", func(t *testing.T) {
+		t.Parallel()
+		rig, native := newKimiPublicPromptRig(t)
+		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
+		rig.fake.setBusy(rig.sessionID(), true)
+		path := "POST " + kimiSessionPath(rig.sessionID(), "/prompts")
+		rig.fake.reply(path, fakeKapReply{
+			Code: 40001, Msg: "late refusal",
+			BeforeReply: func() {
+				requests := rig.fake.requestsTo(path)
+				require.Len(t, requests, 1)
+				promptID := decodePrompt(t, requests[0]).PromptID
+				native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":`+kimiPublicPromptItem(t, promptID, "steer", promptID)+`}`)
+			},
+		})
+		receipt, err := rig.agent.SteerInput(agent.SteerRequest{Content: "Steered prompt."})
+		require.NoError(t, err)
+		promptID := decodePrompt(t, rig.fake.requestsTo(path)[0]).PromptID
+		assert.Equal(t, agent.NativeInputReceipt{SessionID: rig.sessionID(), InputID: promptID}, receipt)
+		assert.True(t, kimiPromptObserved(rig.agent, promptID))
+		for _, route := range rig.fake.routes() {
+			assert.NotContains(t, route, ":steer")
+		}
+	})
+
+	t.Run("SendChildInput recovers when WS already echoed the prompt before a late HTTP refusal", func(t *testing.T) {
+		t.Parallel()
+		rig, native := newKimiChildPromptRig(t)
+		path := "POST " + kimiSessionPath(rig.sessionID(), "/prompts")
+		rig.fake.reply(path, fakeKapReply{
+			Code: 40001, Msg: "late refusal",
+			BeforeReply: func() {
+				requests := rig.fake.requestsTo(path)
+				require.Len(t, requests, 1)
+				promptID := decodePrompt(t, requests[0]).PromptID
+				deliverKimiChildPromptTurn(t, native, kimiTestChildPromptTurn{id: "child-own", ordinal: 1, promptID: promptID, outcome: "completed"})
+			},
+		})
+		result, err := rig.agent.SendChildInput("session_1/agent-0", agent.ChildInput{Content: "Child prompt."})
+		require.NoError(t, err)
+		promptID := decodePrompt(t, rig.fake.requestsTo(path)[0]).PromptID
+		assert.Equal(t, agent.NativeInputReceipt{SessionID: rig.sessionID(), InputID: promptID}, result.NativeReceipt)
+		assert.True(t, kimiPromptObserved(rig.agent, promptID))
+	})
+
+	t.Run("SteerInput retires a blocked prompt without calling steer", func(t *testing.T) {
+		t.Parallel()
+		rig, _ := newKimiPublicPromptRig(t)
+		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
+		rig.fake.setBusy(rig.sessionID(), true)
+		path := "POST " + kimiSessionPath(rig.sessionID(), "/prompts")
+		rig.fake.reply(path, fakeKapReply{DataFor: func(request fakeKapRequest) any {
+			return map[string]any{"prompt_id": decodePrompt(t, request).PromptID, "status": kimiPromptBlocked}
+		}})
+		receipt, err := rig.agent.SteerInput(agent.SteerRequest{Content: "Blocked steer."})
+		require.NoError(t, err)
+		assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+			receipt: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED,
+		}, rig.sink.NativeReplyRetirements())
+		for _, route := range rig.fake.routes() {
+			assert.NotContains(t, route, ":steer")
+		}
+	})
+
+	t.Run("SteerInput keeps an already-observed prompt alive when HTTP reports blocked", func(t *testing.T) {
+		t.Parallel()
+		rig, native := newKimiPublicPromptRig(t)
+		rig.startPublicMainTurn(t, "t0", 0, `{"kind":"user"}`)
+		rig.fake.setBusy(rig.sessionID(), true)
+		path := "POST " + kimiSessionPath(rig.sessionID(), "/prompts")
+		rig.fake.reply(path, fakeKapReply{DataFor: func(request fakeKapRequest) any {
+			promptID := decodePrompt(t, request).PromptID
+			native.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":`+kimiPublicPromptItem(t, promptID, "steer", promptID)+`}`)
+			return map[string]any{"prompt_id": promptID, "status": kimiPromptBlocked}
+		}})
+		receipt, err := rig.agent.SteerInput(agent.SteerRequest{Content: "Observed before blocked."})
+		require.NoError(t, err)
+		assert.True(t, kimiPromptObserved(rig.agent, receipt.InputID))
+		assert.Empty(t, rig.sink.NativeReplyRetirements(), "an already-observed prompt must not be retired as failed")
+		for _, route := range rig.fake.routes() {
+			assert.NotContains(t, route, ":steer")
+		}
+	})
 }

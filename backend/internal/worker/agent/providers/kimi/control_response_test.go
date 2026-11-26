@@ -236,10 +236,16 @@ func TestKimiResolveASubagentPlan(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			res := resolve(t, "approval_4", kimiStoredSubagentPlan, browserAnswer(t, "approval_4", tc.behavior, tc.fields), nil)
-			require.False(t, res.Withhold)
-			assert.Equal(t, agent.PlanModeControlNone, res.PlanModeControl, "the main agent does not leave plan mode")
-			assert.Equal(t, tc.native, nativeResponse(t, res.Content), "no permission mode rides the answer")
+			for _, plan := range []*leapmuxv1.PlanApprovalSettings{
+				nil,
+				{PermissionMode: contracts.KimiModeYolo},
+				{ClearContext: true, PermissionMode: contracts.KimiModeAuto},
+			} {
+				res := resolve(t, "approval_4", kimiStoredSubagentPlan, browserAnswer(t, "approval_4", tc.behavior, tc.fields), plan)
+				require.False(t, res.Withhold)
+				assert.Equal(t, agent.PlanModeControlNone, res.PlanModeControl, "the main agent does not leave plan mode")
+				assert.Equal(t, tc.native, nativeResponse(t, res.Content), "no permission mode rides the answer")
+			}
 		})
 	}
 
@@ -285,15 +291,20 @@ func TestKimiResolveGoalStart(t *testing.T) {
 	assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected"}, nativeResponse(t, res.Content))
 }
 
-// A refusal carries no plan settings, and the resolution adds no default mode
-// of a plan exit to it.
+// A refusal adds no permission mode of a plan exit, even when plan approval
+// settings are supplied beside the refusal.
 func TestKimiResolveAPlainRefusalOfThePlan(t *testing.T) {
 	t.Parallel()
-	res := resolve(t, "approval_2", kimiStoredPlan, browserAnswer(t, "approval_2", "deny", map[string]any{"message": "Too broad."}), nil)
-	require.False(t, res.Withhold)
-	assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected", "feedback": "Too broad."}, nativeResponse(t, res.Content),
-		"a refusal switches no mode")
-	assert.Equal(t, agent.PlanModeControlExit, res.PlanModeControl, "the answer is the plan exit's own")
+	for _, plan := range []*leapmuxv1.PlanApprovalSettings{
+		nil,
+		{PermissionMode: contracts.KimiModeAuto},
+	} {
+		res := resolve(t, "approval_2", kimiStoredPlan, browserAnswer(t, "approval_2", "deny", map[string]any{"message": "Too broad."}), plan)
+		require.False(t, res.Withhold)
+		assert.Equal(t, map[string]any{"kind": "approval", "decision": "rejected", "feedback": "Too broad."}, nativeResponse(t, res.Content),
+			"a refusal switches no mode")
+		assert.Equal(t, agent.PlanModeControlExit, res.PlanModeControl, "the answer is the plan exit's own")
+	}
 }
 
 func TestKimiResolveQuestion(t *testing.T) {

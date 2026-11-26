@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // codewhaleFinalItemEvents are the events that end an item (ITEM_FINAL_EVENTS
@@ -16,16 +17,31 @@ var codewhaleFinalItemEvents = map[string]bool{
 	contracts.CodewhaleEventItemCanceled:    true,
 }
 
+// codewhaleReplyHead reads only the top-level discriminator fields so non-reply
+// rows exit without allocating a map. contract_tags_test.go pins its tags.
+type codewhaleReplyHead struct {
+	Event json.RawMessage `json:"event"`
+	Kind  json.RawMessage `json:"kind"`
+}
+
 // ReplyText reads the reply that the browser's codewhaleMessageText reads: the
 // detail of an agent_message item that a final item event carries, or the
 // text block of an assistant message in a subagent's own transcript.
 func (codewhaleProvider) ReplyText(message agent.MessageContent) (string, bool) {
-	var frame map[string]json.RawMessage
-	if json.Unmarshal(message.Original, &frame) != nil {
+	var head codewhaleReplyHead
+	if json.Unmarshal(message.Original, &head) != nil {
 		return "", false
 	}
-	var event string
-	if json.Unmarshal(frame[contracts.CodewhaleEnvelopeFieldEvent], &event) == nil && event != "" {
+	headEvent, _ := providerkit.RawString(head.Event)
+	headKind, _ := providerkit.RawString(head.Kind)
+	if !codewhaleFinalItemEvents[headEvent] && headKind != contracts.CodewhaleTranscriptKindMessage {
+		return "", false
+	}
+	frame, ok := providerkit.RawObject(message.Original)
+	if !ok {
+		return "", false
+	}
+	if event := providerkit.ObjectString(frame, contracts.CodewhaleEnvelopeFieldEvent); event != "" {
 		return codewhaleItemReply(event, frame[contracts.CodewhaleEnvelopeFieldPayload])
 	}
 	return codewhaleChildReply(frame)
@@ -36,47 +52,47 @@ func codewhaleItemReply(event string, payload json.RawMessage) (string, bool) {
 	if !codewhaleFinalItemEvents[event] {
 		return "", false
 	}
-	var body map[string]json.RawMessage
-	var item map[string]json.RawMessage
-	if json.Unmarshal(payload, &body) != nil || json.Unmarshal(body[contracts.CodewhaleItemFieldItem], &item) != nil || item == nil {
+	body, ok := providerkit.RawObject(payload)
+	if !ok {
 		return "", false
 	}
-	var kind, detail string
-	_ = json.Unmarshal(item[contracts.CodewhaleItemFieldKind], &kind)
-	if kind != contracts.CodewhaleItemKindAgentMessage {
+	item, ok := providerkit.RawObject(body[contracts.CodewhaleItemFieldItem])
+	if !ok {
 		return "", false
 	}
-	_ = json.Unmarshal(item[contracts.CodewhaleItemFieldDetail], &detail)
-	return detail, true
+	if providerkit.ObjectString(item, contracts.CodewhaleItemFieldKind) != contracts.CodewhaleItemKindAgentMessage {
+		return "", false
+	}
+	return providerkit.ObjectString(item, contracts.CodewhaleItemFieldDetail), true
 }
 
 // codewhaleChildReply reads the text block of an assistant message in a
-// subagent's transcript: a message record with an index and exactly one
-// block.
+// subagent's transcript: a message record with a finite numeric index and
+// exactly one block.
 func codewhaleChildReply(frame map[string]json.RawMessage) (string, bool) {
-	var kind string
-	var index float64
-	if json.Unmarshal(frame[contracts.CodewhaleTranscriptFieldKind], &kind) != nil || kind != contracts.CodewhaleTranscriptKindMessage ||
-		json.Unmarshal(frame[contracts.CodewhaleTranscriptFieldIndex], &index) != nil {
+	if providerkit.ObjectString(frame, contracts.CodewhaleTranscriptFieldKind) != contracts.CodewhaleTranscriptKindMessage {
 		return "", false
 	}
-	var message map[string]json.RawMessage
-	var blocks []json.RawMessage
-	if json.Unmarshal(frame[contracts.CodewhaleTranscriptFieldMessage], &message) != nil ||
-		json.Unmarshal(message[contracts.CodewhaleTranscriptFieldContent], &blocks) != nil || len(blocks) != 1 {
+	if _, ok := providerkit.RawFloat64(frame[contracts.CodewhaleTranscriptFieldIndex]); !ok {
 		return "", false
 	}
-	var role string
-	_ = json.Unmarshal(message[contracts.CodewhaleTranscriptFieldRole], &role)
-	var block map[string]json.RawMessage
-	if role != contracts.CodewhaleTranscriptRoleAssistant || json.Unmarshal(blocks[0], &block) != nil {
+	message, ok := providerkit.RawObject(frame[contracts.CodewhaleTranscriptFieldMessage])
+	if !ok {
 		return "", false
 	}
-	var blockType, text string
-	_ = json.Unmarshal(block[contracts.CodewhaleBlockFieldType], &blockType)
-	if blockType != contracts.CodewhaleBlockTypeText {
+	if providerkit.ObjectString(message, contracts.CodewhaleTranscriptFieldRole) != contracts.CodewhaleTranscriptRoleAssistant {
 		return "", false
 	}
-	_ = json.Unmarshal(block[contracts.CodewhaleBlockFieldText], &text)
-	return text, true
+	blocks, ok := providerkit.RawArray(message[contracts.CodewhaleTranscriptFieldContent])
+	if !ok || len(blocks) != 1 {
+		return "", false
+	}
+	block, ok := providerkit.RawObject(blocks[0])
+	if !ok {
+		return "", false
+	}
+	if providerkit.ObjectString(block, contracts.CodewhaleBlockFieldType) != contracts.CodewhaleBlockTypeText {
+		return "", false
+	}
+	return providerkit.ObjectString(block, contracts.CodewhaleBlockFieldText), true
 }

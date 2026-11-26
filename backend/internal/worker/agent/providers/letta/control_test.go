@@ -311,7 +311,15 @@ func TestControlRequestKeyIsTheKeyOfEachPublication(t *testing.T) {
 	a.HandleOutput(permissionFrame("", contracts.LettaToolBash, "other"))
 	require.Equal(t, 2, sink.PublishedControlCount())
 	agenttest.AssertPublishedControlKeys(t, lettaProvider{}, sink)
-	for _, payload := range []string{`{"type":"permission"}`, `{"type":"permission","requestId":""}`, `{"type":"permission","requestId":7}`} {
+	for _, payload := range []string{
+		`{"type":"permission"}`,
+		`{"type":"permission","requestId":""}`,
+		`{"type":"permission","requestId":7}`,
+		`{"type":"permission","RequestId":"perm-1"}`,
+		`null`,
+		`[]`,
+		`not json`,
+	} {
 		key, ok := lettaProvider{}.ControlRequestKey([]byte(payload), "")
 		assert.False(t, ok, payload)
 		assert.Empty(t, key, payload)
@@ -911,4 +919,74 @@ func TestEachInputBuildsItsOwnClientToolset(t *testing.T) {
 	first["base"] = "codex"
 
 	assert.Equal(t, map[string]any{"include": []string{"AskUserQuestion"}}, lettaClientToolset())
+}
+
+// Valid JSON without an explicit allow or deny behavior must be refused with
+// RefusalNoDecision instead of falling through to deny or dismissed.
+func TestResolveControlResponseRefusesMissingOrUnknownBehavior(t *testing.T) {
+	t.Parallel()
+	permissionPayload := []byte(`{"type":"permission","requestId":"perm-1","tool_name":"Bash","tool_call_id":"call-1","tool_input":{}}`)
+	qReq := questionRequest(t)
+
+	for _, target := range []struct {
+		kind      string
+		requestID string
+		payload   []byte
+	}{
+		{kind: "permission", requestID: "perm-1", payload: permissionPayload},
+		{kind: "question", requestID: qReq.RequestID, payload: qReq.Payload},
+	} {
+		// Responses that carry a matching request_id go through ResolveAnswer.
+		for name, inner := range map[string]string{
+			"missing behavior": `{}`,
+			"empty behavior":   `{"behavior":""}`,
+			"unknown behavior": `{"behavior":"ask"}`,
+			"uppercase allow":  `{"behavior":"ALLOW"}`,
+		} {
+			t.Run(target.kind+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				resp := fmt.Sprintf(`{"response":{"request_id":%q,"response":%s}}`, target.requestID, inner)
+				resolution := agenttest.ResolveAnswer(lettaProvider{}, target.payload, target.requestID, agent.ControlAnswer{Content: []byte(resp)})
+				assert.True(t, resolution.Withhold)
+				assert.EqualError(t, resolution.Refusal(), agent.RefusalNoDecision)
+			})
+		}
+		// Responses without any request_id pin the provider's own guard directly.
+		for name, resp := range map[string]string{
+			"empty object":   `{}`,
+			"malformed json": `not json`,
+		} {
+			t.Run(target.kind+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				ctx := agenttest.ControlResponseContextOf(target.payload, target.requestID, agent.ControlAnswer{Content: []byte(resp)})
+				resolution := lettaProvider{}.ResolveControlResponse(ctx)
+				assert.True(t, resolution.Withhold)
+				assert.EqualError(t, resolution.Refusal(), agent.RefusalNoDecision)
+			})
+		}
+	}
+}
+
+// Answer blankness uses JavaScript whitespace rules (agent.TrimJavaScriptSpace),
+// matching agent.QuestionDecisionOf: U+0085 (NEXT LINE) is non-blank, while
+// U+FEFF (BOM) is blank.
+func TestQuestionAnswerMatchesJavaScriptWhitespace(t *testing.T) {
+	t.Parallel()
+	request := questionRequest(t)
+
+	// U+0085 is non-blank in JavaScript and accepted by QuestionDecisionOf.
+	nelResolution := resolveQuestion(t, request, contracts.ControlAnswerBehaviorAllow, map[string]string{"Which color do you prefer?": "\u0085"})
+	require.False(t, nelResolution.Withhold, "U+0085 must be accepted as a nonempty answer: %v", nelResolution.Refusal())
+	notification, err := lettaQuestionNotification(nelResolution.Content)
+	require.NoError(t, err)
+	assert.Contains(t, notification, "\u0085")
+
+	// U+FEFF is blank in JavaScript and rejected by QuestionDecisionOf.
+	bomResolution := resolveQuestion(t, request, contracts.ControlAnswerBehaviorAllow, map[string]string{"Which color do you prefer?": "\uFEFF"})
+	assert.True(t, bomResolution.Withhold, "U+FEFF must be rejected as a blank answer")
+	assert.EqualError(t, bomResolution.Refusal(), lettaRefusalIncompleteAnswers)
+
+	bomDirect := `{"type":"ask_user_question_response","version":2,"toolCallId":"ask-1","questions":` + lettaColorQuestions + `,"status":"answered","answers":{"Which color do you prefer?":"\uFEFF"}}`
+	_, err = lettaQuestionNotification([]byte(bomDirect))
+	assert.Error(t, err, "lettaQuestionNotification must reject a U+FEFF-only answer")
 }

@@ -156,6 +156,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	}
 	var commandID string
 	var receipt agent.NativeInputReceipt
+	var reply *inputReply
 	if a.sessionID != "" {
 		id, err := uuid.NewRandom()
 		if err != nil {
@@ -164,7 +165,8 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		}
 		commandID = id.String()
 		receipt = agent.NativeInputReceipt{SessionID: a.sessionID, InputID: commandID, TurnID: commandID}
-		a.inputReply = &inputReply{receipt: receipt}
+		reply = &inputReply{receipt: receipt}
+		a.inputReply = reply
 	}
 	a.active = true
 	a.activityRev++
@@ -173,12 +175,12 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 
 	raw, err := marshalUserFrame(userContent, commandID)
 	if err != nil {
-		a.setTurnActive(false)
+		a.abandonInputReply(reply)
 		return agent.NativeInputReceipt{}, err
 	}
 	if err := a.SendRawInput(agent.RawInput{Data: raw}); err != nil {
-		a.setTurnActive(false)
-		return agent.NativeInputReceipt{}, providerkit.ClassifyJSONRPCDeliveryError("user", err)
+		a.abandonInputReply(reply)
+		return agent.NativeInputReceipt{}, err
 	}
 	return receipt, nil
 }
@@ -261,22 +263,22 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
-	commandID, err := a.prepareQueuedSteer(request)
+	commandID, steer, err := a.prepareQueuedSteer(request)
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
 	raw, err := marshalUserFrame(userContent, commandID)
 	if err != nil {
-		a.mu.Lock()
-		delete(a.queuedSteers, commandID)
-		a.mu.Unlock()
+		a.forgetQueuedSteer(commandID, steer)
 		return agent.NativeInputReceipt{}, err
 	}
-	err = a.SendRawInput(agent.RawInput{Data: raw})
-	if err != nil && commandID != "" {
-		return agent.NativeInputReceipt{}, providerkit.ClassifyJSONRPCDeliveryError("steer", err)
+	if err := a.SendRawInput(agent.RawInput{Data: raw}); err != nil {
+		if !errors.Is(err, agent.ErrDeliveryUncertain) {
+			a.forgetQueuedSteer(commandID, steer)
+		}
+		return agent.NativeInputReceipt{}, err
 	}
-	return agent.NativeInputReceipt{}, err
+	return agent.NativeInputReceipt{}, nil
 }
 
 // Interrupt aborts the running turn with Qoder's own interrupt control request.

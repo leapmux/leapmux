@@ -211,3 +211,61 @@ func TestKimiConversationProjectionRejectsIdentityAndOperationMismatches(t *test
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, agent.ErrOutputInFlight))
 }
+
+func TestKimiConversationResolveLatestViewHandlesSupplementalCases(t *testing.T) {
+	t.Parallel()
+	record := contracts.KimiConversationRecord{
+		Type: contracts.KimiConversationRecordKindItem, SessionID: "native", AgentID: "main", TurnID: "turn-1", Role: contracts.KimiConversationRecordRoleItem,
+		Item: json.RawMessage(`{"type":"assistant_message","item_id":"answer-1","step_index":1,"status":"running","created_at":"2026-11-18T00:00:00Z","text":"Prefix"}`),
+	}
+	raw, err := encodeKimiConversationRecord(record)
+	require.NoError(t, err)
+	original, err := decodeKimiConversationRecord(raw)
+	require.NoError(t, err)
+
+	// Empty supplemental returns original with an initialized map.
+	got, fields, err := original.resolveLatestView(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Prefix", *got.item.Text)
+	assert.NotNil(t, fields)
+	assert.Empty(t, fields)
+
+	// Unrelated supplemental fields return original and preserve those fields.
+	got, fields, err = original.resolveLatestView([]byte(`{"media":{"retained":true}}`))
+	require.NoError(t, err)
+	assert.Equal(t, "Prefix", *got.item.Text)
+	assert.JSONEq(t, `{"retained":true}`, string(fields["media"]))
+
+	// Valid newer view with matching native identity replaces original.
+	newer := record
+	newer.Item = json.RawMessage(`{"type":"assistant_message","item_id":"answer-1","step_index":1,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Final"}`)
+	newerRaw, err := encodeKimiConversationRecord(newer)
+	require.NoError(t, err)
+	supplemental, err := json.Marshal(map[string]json.RawMessage{contracts.KimiConversationSupplementRoot: newerRaw})
+	require.NoError(t, err)
+	got, _, err = original.resolveLatestView(supplemental)
+	require.NoError(t, err)
+	assert.Equal(t, "Final", *got.item.Text)
+
+	// Malformed or foreign-identity supplemental values return an error.
+	foreign := record
+	foreign.Item = json.RawMessage(`{"type":"assistant_message","item_id":"other-item","step_index":1,"status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","text":"Wrong"}`)
+	foreignRaw, err := encodeKimiConversationRecord(foreign)
+	require.NoError(t, err)
+	foreignSupplemental, err := json.Marshal(map[string]json.RawMessage{contracts.KimiConversationSupplementRoot: foreignRaw})
+	require.NoError(t, err)
+
+	for name, bad := range map[string][]byte{
+		"non-JSON supplemental": []byte(`{bad`),
+		"null supplemental":     []byte(`null`),
+		"array supplemental":    []byte(`[]`),
+		"malformed latest view": []byte(`{"` + contracts.KimiConversationSupplementRoot + `":"not a record"}`),
+		"foreign latest view":   foreignSupplemental,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := original.resolveLatestView(bad)
+			require.Error(t, err)
+		})
+	}
+}

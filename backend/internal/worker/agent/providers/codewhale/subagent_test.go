@@ -351,7 +351,7 @@ var agentStartInput = map[string]any{"action": "start", "prompt": "Count the fil
 // transcriptLine is one record of a child transcript file.
 func transcriptLine(t *testing.T, index int, role string, blocks ...map[string]any) string {
 	t.Helper()
-	return string(mustJSON(t, map[string]any{"kind": "message", "index": index, "message": map[string]any{"role": role, "content": blocks}})) + "\n"
+	return string(agenttest.MustJSON(t, map[string]any{"kind": "message", "index": index, "message": map[string]any{"role": role, "content": blocks}})) + "\n"
 }
 
 // appendTranscript appends to the child's transcript file, creating it.
@@ -531,7 +531,7 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	require.Eventually(t, func() bool { return !a.sink.OutputQueue().HasPending() }, 30*time.Second, time.Millisecond)
 	var reports []string
 	for _, notification := range sink.LeapMuxNotifications() {
-		reports = append(reports, string(mustJSON(t, notification)))
+		reports = append(reports, string(agenttest.MustJSON(t, notification)))
 	}
 	require.Len(t, reports, 1, "the child's summary is reported into the parent once")
 	assert.Contains(t, reports[0], "There are 3 files.")
@@ -1431,10 +1431,10 @@ func (s *workflowUpsertGateServices) UpsertBackgroundTask(upsert bgtask.Upsert) 
 func TestCodewhaleAgentToolActionAliases(t *testing.T) {
 	t.Parallel()
 	for _, action := range []string{"", "start", "spawn", "run"} {
-		assert.True(t, toolSpawnsSubagent(contracts.CodewhaleToolAgent, mustJSON(t, map[string]any{"action": action, "prompt": "x"})), "spawn alias %q", action)
+		assert.True(t, toolSpawnsSubagent(contracts.CodewhaleToolAgent, agenttest.MustJSON(t, map[string]any{"action": action, "prompt": "x"})), "spawn alias %q", action)
 	}
 	for _, action := range []string{"wait", "join", "await", "block"} {
-		assert.False(t, toolSpawnsSubagent(contracts.CodewhaleToolAgent, mustJSON(t, map[string]any{"action": action})), "wait alias %q", action)
+		assert.False(t, toolSpawnsSubagent(contracts.CodewhaleToolAgent, agenttest.MustJSON(t, map[string]any{"action": action})), "wait alias %q", action)
 	}
 
 	for _, startAction := range []string{"", "spawn", "run"} {

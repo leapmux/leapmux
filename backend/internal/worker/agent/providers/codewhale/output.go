@@ -501,13 +501,13 @@ func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 		delete(a.openGeneratedItems, item.Kind)
 	}
 	content := agent.MessageContent{Original: env.raw, Completion: completion}
-	var reply *codewhalePendingReply
+	var reply *providerkit.NativeReplyEntry
 	if item.Kind == contracts.CodewhaleItemKindAgentMessage && env.TurnID != "" {
-		reply = a.codewhaleReplyForTurn(env.TurnID)
+		reply = a.replies.Turn(env.TurnID)
 		if reply != nil {
 			if item.ID == "" || item.TurnID != "" && item.TurnID != env.TurnID ||
 				env.ItemID != "" && env.ItemID != item.ID {
-				reply.unproved = true
+				reply.MarkUnproved()
 				reply = nil
 			} else {
 				content.AgentSessionID = a.currentThreadID()
@@ -525,9 +525,9 @@ func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 				slog.Error("codewhale persist streamed text", "agent_id", a.AgentID(), "error", err)
 			}
 			if persisted {
-				reply.recordItem(content.IdempotencyKey, err)
+				reply.RecordItem(content.IdempotencyKey, err)
 			} else if !agent.OutputRetained(err) {
-				reply.unproved = true
+				reply.MarkUnproved()
 			}
 		} else if err := providerkit.PersistGenerationScopes(&a.generationBuffer, a.sink, []string{item.ID}, completion, a.IsDiscardingOutput()); err != nil {
 			slog.Error("codewhale persist streamed text", "agent_id", a.AgentID(), "error", err)
@@ -544,7 +544,7 @@ func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 		slog.Error("codewhale persist message", "agent_id", a.AgentID(), "kind", item.Kind, "error", err)
 	}
 	if reply != nil {
-		reply.recordItem(content.IdempotencyKey, err)
+		reply.RecordItem(content.IdempotencyKey, err)
 	}
 }
 

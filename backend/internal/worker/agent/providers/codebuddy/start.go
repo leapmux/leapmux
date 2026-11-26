@@ -114,7 +114,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		"--include-partial-messages",
 		"--replay-user-messages",
 		"--setting-sources", "user",
-		"--permission-mode", permissionModeFlag(opts.PermissionMode()),
+		"--permission-mode", opts.PermissionMode(),
 	}
 	if swarm {
 		baseArgs = append(baseArgs, "--swarm")
@@ -180,7 +180,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		effort:         effort,
 		thinkingChoice: thinking,
 		permissionMode: permissionModeWire(opts.PermissionMode()),
-		pendingControl: make(map[string]chan<- codebuddyControlResult),
+		pendingControl: make(map[string]pendingControlWaiter),
 		directory:      directory,
 	}
 	if err := a.StartCmd(); err != nil {
@@ -262,11 +262,6 @@ func writeStartupSettings(ctx context.Context, dirs *agentdir.Dirs, settings cod
 		return nil, nil, errors.Join(fmt.Errorf("write CodeBuddy startup settings: %w", err), dir.Close())
 	}
 	return dir, []string{"--settings", path}, nil
-}
-
-// permissionModeFlag maps LeapMux's wire mode onto the flag vocabulary.
-func permissionModeFlag(mode string) string {
-	return mode
 }
 
 // permissionModeWire normalizes a stored mode onto the wire vocabulary.

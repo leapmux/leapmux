@@ -212,7 +212,7 @@ func (a *Agent) handleAssistant(raw []byte) {
 		if msg.SessionID != "" && a.sessionID == "" {
 			a.sessionID = msg.SessionID
 		}
-		reply := a.inputReply
+		reply := a.turnReplyLocked()
 		root := msg.ParentToolUseID == nil || *msg.ParentToolUseID == ""
 		ownsOutput := root && reply.owns(msg.SessionID, msg.RequestID)
 		for _, block := range msg.Message.Content {
@@ -262,7 +262,7 @@ func (a *Agent) handleResult(raw []byte) {
 		slog.Warn("codebuddy: malformed result", "agent_id", a.AgentID(), "error", decodeErr)
 	} else {
 		a.mu.Lock()
-		reply := a.inputReply
+		reply := a.turnReplyLocked()
 		foreign := reply != nil && reply.admitted && result.SessionID != "" && requestID != "" &&
 			!reply.matches(result.SessionID, result.RequestID)
 		a.mu.Unlock()
@@ -289,7 +289,7 @@ func (a *Agent) handleResult(raw []byte) {
 	a.permissionInterruptPending = false
 	sessionID := a.sessionID
 	interrupted := stopRequested && (result.statesAbortedTurn() || permissionStop && codebuddyPermissionInterruptedResult(result))
-	reply := a.inputReply
+	reply := a.turnReplyLocked()
 	outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 	if decodeErr == nil {
 		outcome = reply.outcome(result, interrupted)
@@ -351,20 +351,15 @@ func (a *Agent) handleResult(raw []byte) {
 		foregroundStatus = bgtask.StatusFailed
 	}
 	a.closeForegroundChildren(foregroundStatus)
-	var droppedSteers []*codebuddyPendingSteer
-	a.mu.Lock()
-	if content.NativeTurnID != "" && agent.OutputRetained(err) && a.inputReply == reply {
-		a.inputReply = nil
+	var settledReply *inputReply
+	if content.NativeTurnID != "" && agent.OutputRetained(err) {
+		settledReply = reply
 	}
+	steerOutcome := agent.SteerOutcomeUncertain
 	if decodeErr == nil {
-		droppedSteers, a.pendingSteers = a.pendingSteers, nil
+		steerOutcome = agent.SteerOutcomeDropped
 	}
-	a.mu.Unlock()
-	a.resolvePendingSteers(droppedSteers, agent.SteerOutcomeDropped)
-	if interrupted {
-		providerkit.ResetSpansAndProgress(a.sink)
-	}
-	a.setTurnActive(false)
+	a.finishTurn(settledReply, steerOutcome, interrupted)
 	a.mu.Lock()
 	refreshStyles := a.outputStyles != nil
 	a.mu.Unlock()
@@ -501,7 +496,7 @@ func (a *Agent) backfillMissingAssistantText(result resultMessage) {
 	}
 	a.mu.Lock()
 	streamed := a.assistantTextStreamed
-	if reply := a.inputReply; reply != nil {
+	if reply := a.turnReplyLocked(); reply != nil {
 		if reply.owns(result.SessionID, result.RequestID) {
 			streamed = reply.streamedText || (a.compactionLive && streamed)
 		} else {
@@ -617,8 +612,7 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 	}
 	reqID := envelope.Response.RequestID
 	a.pendingControlMu.Lock()
-	ch, ok := a.pendingControl[reqID]
-	observe := a.pendingControlObservers[reqID]
+	waiter, ok := a.pendingControl[reqID]
 	a.pendingControlMu.Unlock()
 	if !ok {
 		return false
@@ -667,15 +661,15 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		result.Steered = inner.Steered
 		result.SteerReason = inner.Reason
 	}
-	if observe != nil {
+	if waiter.observe != nil {
 		var respErr error
 		if !result.Success {
 			respErr = errString(result.Error)
 		}
-		observe(result, respErr)
+		waiter.observe(result, respErr)
 	}
 	select {
-	case ch <- result:
+	case waiter.ch <- result:
 	default:
 	}
 	return true
@@ -710,18 +704,14 @@ func (a *Agent) sendControlAndWaitObserved(requestBody string, timeout time.Dura
 	requestID := shortID()
 	ch := make(chan codebuddyControlResult, 1)
 	a.pendingControlMu.Lock()
-	a.pendingControl[requestID] = ch
-	if observe != nil {
-		if a.pendingControlObservers == nil {
-			a.pendingControlObservers = make(map[string]func(codebuddyControlResult, error))
-		}
-		a.pendingControlObservers[requestID] = observe
+	if a.pendingControl == nil {
+		a.pendingControl = make(map[string]pendingControlWaiter)
 	}
+	a.pendingControl[requestID] = pendingControlWaiter{ch: ch, observe: observe}
 	a.pendingControlMu.Unlock()
 	defer func() {
 		a.pendingControlMu.Lock()
 		delete(a.pendingControl, requestID)
-		delete(a.pendingControlObservers, requestID)
 		a.pendingControlMu.Unlock()
 	}()
 
@@ -855,7 +845,7 @@ func (a *Agent) persistRaw(raw []byte) {
 	var reply *inputReply
 	if decoded && frame.ParentToolUseID == "" && frame.Type == contracts.CodebuddyFrameKindAssistant {
 		a.mu.Lock()
-		if current := a.inputReply; current.owns(frame.SessionID, frame.RequestID) {
+		if current := a.turnReplyLocked(); current.owns(frame.SessionID, frame.RequestID) {
 			reply = current
 			content.AgentSessionID, content.NativeTurnID = reply.receipt.SessionID, reply.receipt.TurnID
 		}

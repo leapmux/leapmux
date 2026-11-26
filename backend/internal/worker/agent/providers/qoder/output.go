@@ -443,28 +443,40 @@ func (a *Agent) handlePlanModeChanged(raw []byte) {
 // handleAssistant retains the native frame and marks its turn active.
 func (a *Agent) handleAssistant(raw []byte) {
 	a.notificationState("").retry.Resolve(a.sink)
-	var msg assistantMessage
+	frame, blocks, parsed := parseNativeToolFrame(raw)
 	var reply *inputReply
-	if json.Unmarshal(raw, &msg) == nil {
+	var sessionID string
+	if parsed {
+		explicitSession, _ := providerkit.RawString(frame.SessionID)
+		parentID, hasParentStr := providerkit.RawString(frame.ParentToolUseID)
+		root := !providerkit.RawPresent(frame.ParentToolUseID) || (hasParentStr && parentID == "")
 		a.mu.Lock()
-		if msg.SessionID != "" && a.sessionID == "" {
-			a.sessionID = msg.SessionID
+		if explicitSession != "" && a.sessionID == "" {
+			a.sessionID = explicitSession
 		}
-		root := msg.ParentToolUseID == nil || *msg.ParentToolUseID == ""
-		if current := a.inputReply; root && current.owns(msg.SessionID) && current.result == nil {
+		sessionID = explicitSession
+		if sessionID == "" {
+			sessionID = a.sessionID
+		}
+		if current := a.inputReply; root && current.owns(explicitSession) && current.result == nil {
 			reply = current
-			reply.observeToolCalls(msg.Message.Content)
 		}
 		a.mu.Unlock()
+	} else {
+		sessionID = a.nativeSessionID()
 	}
 	a.markTurnActiveFromOutput()
-	stored, opened := a.persistNativeToolFrame(a.sink, "", raw)
+	nativeContent := qoderMessageContentFrom(raw, sessionID, frame.Type, parsed && providerkit.RawBool(frame.Aborted))
+	var stored bool
+	var opened int
+	if parsed {
+		stored, opened = a.persistParsedNativeToolFrame(a.sink, "", raw, sessionID, frame.Type, nativeContent, blocks)
+	}
 	if !stored {
-		content := qoderMessageContent(raw, a.nativeSessionID())
 		if reply != nil {
-			content.NativeTurnID = reply.receipt.TurnID
+			nativeContent.NativeTurnID = reply.receipt.TurnID
 		}
-		if retained := a.persistMessageTo(a.sink, content); reply != nil && !retained {
+		if retained := a.persistMessageTo(a.sink, nativeContent); reply != nil && !retained {
 			a.mu.Lock()
 			reply.incomplete = true
 			a.mu.Unlock()
@@ -512,23 +524,36 @@ func (a *Agent) handleResult(raw []byte) {
 	a.setTurnActive(false)
 }
 
-// persistInputResult writes the native result with the tool count and stop
-// outcome. A proved command can also attach its input identity and outcome.
+// persistInputResult writes the native result with the tool count, stop
+// outcome, and post-turn quota refresh. A proved command can also attach its
+// input identity and outcome.
 func (a *Agent) persistInputResult(result inputResult, receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) bool {
+	retained := a.persistTurnEndResult(result, receipt, outcome)
+	// A turn spends credits, so the account quota is read again.
+	a.requestUsageRefresh()
+	return retained
+}
+
+// persistTurnEndResult persists the native result without requesting a post-turn
+// quota refresh, so exit teardown can flush a held result cleanly.
+func (a *Agent) persistTurnEndResult(result inputResult, receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) bool {
 	a.mu.Lock()
 	clear(a.rootStreamKinds)
 	a.mu.Unlock()
-	a.sink.ReportProgress(agent.ResetModelProgress())
-	a.finishNotifications(a.sink, "", result.interrupted)
-	if result.interrupted {
-		a.closeOpenToolsForTarget(a.sink, "", agent.MessageCompletionInterrupted, false)
-	}
 	// Qoder's `result` carries no num_tool_uses field, so the Worker counts the
 	// tool calls of the turn itself. The count restarts here for the next turn.
 	a.Mu.Lock()
 	toolUses := a.TurnToolUses
 	a.TurnToolUses = 0
 	a.Mu.Unlock()
+	if a.sink == nil {
+		return false
+	}
+	a.sink.ReportProgress(agent.ResetModelProgress())
+	a.finishNotifications(a.sink, "", result.interrupted)
+	if result.interrupted {
+		a.closeOpenToolsForTarget(a.sink, "", agent.MessageCompletionInterrupted, false)
+	}
 	sessionID := receipt.SessionID
 	if sessionID == "" {
 		sessionID = a.nativeSessionID()
@@ -547,8 +572,6 @@ func (a *Agent) persistInputResult(result inputResult, receipt agent.NativeInput
 		providerkit.ResetSpansAndProgress(a.sink)
 	}
 	a.broadcastContextUsage(result.raw)
-	// A turn spends credits, so the account quota is read again.
-	a.requestUsageRefresh()
 	return agent.OutputRetained(err)
 }
 
@@ -582,18 +605,33 @@ func (a *Agent) persistMessageTo(target agent.ProviderServices, content agent.Me
 // qoderMessageContent preserves the native flag on an aborted assistant frame.
 // Qoder sends this frame before the result, including when it cuts a text block.
 func qoderMessageContent(raw []byte, sessionID string) agent.MessageContent {
-	if explicit := providerkit.StringField(raw, "session_id"); explicit != "" {
+	fields := providerkit.RawFields(raw)
+	if explicit := providerkit.ObjectString(fields, "session_id"); explicit != "" {
 		sessionID = explicit
 	}
+	return qoderMessageContentFrom(raw, sessionID, providerkit.ObjectString(fields, "type"), providerkit.RawBool(fields["aborted"]))
+}
+
+func qoderMessageContentFrom(raw []byte, sessionID, frameType string, aborted bool) agent.MessageContent {
 	content := agent.MessageContent{Original: raw, AgentSessionID: sessionID}
-	var frame struct {
-		Type    string `json:"type"`
-		Aborted bool   `json:"aborted"`
-	}
-	if json.Unmarshal(raw, &frame) == nil && frame.Type == contracts.QoderFrameKindAssistant && frame.Aborted {
+	if frameType == contracts.QoderFrameKindAssistant && aborted {
 		content.Completion = agent.MessageCompletionInterrupted
 	}
 	return content
+}
+
+func parseNativeToolFrame(raw []byte) (qoderNativeFrame, []qoderToolBlock, bool) {
+	var frame qoderNativeFrame
+	if json.Unmarshal(raw, &frame) != nil {
+		return qoderNativeFrame{}, nil, false
+	}
+	var blocks []qoderToolBlock
+	if bytes.HasPrefix(bytes.TrimSpace(frame.Message.Content), []byte("[")) {
+		if json.Unmarshal(frame.Message.Content, &blocks) != nil {
+			blocks = nil
+		}
+	}
+	return frame, blocks, true
 }
 
 func (a *Agent) nativeSessionID() string {
@@ -607,32 +645,23 @@ func (a *Agent) nativeSessionID() string {
 // it. The function reports whether it stored the frame, and how many tool calls
 // the frame opened.
 func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, childID string, raw []byte) (stored bool, opened int) {
-	var frame struct {
-		Type      string `json:"type"`
-		SessionID string `json:"session_id"`
-		Message   struct {
-			Content []struct {
-				Type    string          `json:"type"`
-				ID      string          `json:"id"`
-				Name    string          `json:"name"`
-				Input   json.RawMessage `json:"input"`
-				CallID  string          `json:"tool_use_id"`
-				IsError bool            `json:"is_error"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if json.Unmarshal(raw, &frame) != nil {
+	frame, blocks, ok := parseNativeToolFrame(raw)
+	if !ok {
 		return false, 0
 	}
-	sessionID := frame.SessionID
+	sessionID, _ := providerkit.RawString(frame.SessionID)
 	if sessionID == "" {
 		sessionID = a.nativeSessionID()
 	}
-	nativeContent := qoderMessageContent(raw, sessionID)
+	nativeContent := qoderMessageContentFrom(raw, sessionID, frame.Type, providerkit.RawBool(frame.Aborted))
+	return a.persistParsedNativeToolFrame(target, childID, raw, sessionID, frame.Type, nativeContent, blocks)
+}
+
+func (a *Agent) persistParsedNativeToolFrame(target agent.ProviderServices, childID string, raw []byte, sessionID, frameType string, nativeContent agent.MessageContent, blocks []qoderToolBlock) (stored bool, opened int) {
 	var clonedRaw []byte
-	for _, block := range frame.Message.Content {
+	for _, block := range blocks {
 		content := nativeContent
-		if frame.Type == contracts.QoderFrameKindAssistant && block.Type == "tool_use" && block.ID != "" && block.Name != "" {
+		if frameType == contracts.QoderFrameKindAssistant && block.Type == "tool_use" && block.ID != "" && block.Name != "" {
 			stored = true
 			opened++
 			if target == a.sink && block.Name == "Agent" && qoderToolInputRunsInBackground(block.Input) {
@@ -649,7 +678,7 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, childID st
 			if err := providerkit.OpenToolSpan(target, content, block.ID, block.Name, spawns); err != nil {
 				slog.Error("Persist Qoder tool request", "agent_id", a.AgentID(), "tool_call_id", block.ID, "error", err)
 			}
-		} else if frame.Type == contracts.QoderFrameKindUser && block.Type == "tool_result" && block.CallID != "" {
+		} else if frameType == contracts.QoderFrameKindUser && block.Type == "tool_result" && block.CallID != "" {
 			stored = true
 			entry, wasOpen, alreadyClosed := a.completeNativeToolEntry(childID, block.CallID)
 			if alreadyClosed {
@@ -745,12 +774,19 @@ func (a *Agent) closeOpenToolsForTarget(target agent.ProviderServices, childID s
 	})
 }
 
-// finishStream closes remaining open root and child tool spans, open task and
-// workflow background rows, and resets spans and progress on process exit.
+// finishStream flushes any held input result, closes remaining open root and
+// child tool spans, closes open task and workflow background rows, resets spans
+// and progress, and retires queued steers on process exit.
 func (a *Agent) finishStream() {
 	a.finishOnce.Do(func() {
 		a.outputMu.Lock()
 		defer a.outputMu.Unlock()
+		a.mu.Lock()
+		var unfinished *inputReply
+		unfinished, a.inputReply = a.inputReply, nil
+		a.mu.Unlock()
+		a.finishUnprovedInputOnExit(unfinished)
+
 		completion := a.ProcessExitCompletion()
 		taskStatus := agent.IncompleteTaskStatus(completion)
 		a.closeOpenToolsForTarget(a.sink, "", completion, true)

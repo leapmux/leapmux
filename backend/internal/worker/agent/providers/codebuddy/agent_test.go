@@ -88,7 +88,7 @@ func newCodebuddySteerAgent(t *testing.T, clock quartz.Clock, answer func(string
 		sink:           agent.NewProviderServices(&agenttest.Sink{}),
 		sessionID:      "session-1",
 		active:         true,
-		pendingControl: make(map[string]chan<- codebuddyControlResult),
+		pendingControl: make(map[string]pendingControlWaiter),
 	}
 	peer.agent.Store(a)
 	t.Cleanup(func() {
@@ -213,7 +213,7 @@ func TestCodebuddySteerInputWithAFailedWriteIsUncertain(t *testing.T) {
 		sink:           agent.NewProviderServices(&agenttest.Sink{}),
 		sessionID:      "session-1",
 		active:         true,
-		pendingControl: make(map[string]chan<- codebuddyControlResult),
+		pendingControl: make(map[string]pendingControlWaiter),
 	}
 	t.Cleanup(func() {
 		close(processDone)

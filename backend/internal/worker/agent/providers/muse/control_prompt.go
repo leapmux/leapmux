@@ -2,6 +2,7 @@ package muse
 
 import (
 	"encoding/json"
+	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -62,7 +63,7 @@ func (museProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmux
 			}}}
 		}
 	}
-	if permission, ok := museApprovalPrompt(method, params); ok {
+	if permission, _, ok := museApprovalPrompt(method, params); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
 	}
 	return agent.UnrecognizedControlPrompt()
@@ -87,16 +88,13 @@ func museQuestionPrompts(params map[string]json.RawMessage) []*leapmuxv1.Control
 	if !ok {
 		return nil
 	}
-	records, _ := providerkit.RawArray(params["questions"])
 	questions := make([]*leapmuxv1.ControlQuestion, 0, len(native))
-	for i, read := range native {
-		record, _ := providerkit.RawObject(records[i])
-		elements, _ := providerkit.RawArray(record["options"])
+	for _, read := range native {
 		question := &leapmuxv1.ControlQuestion{
 			Id:          read.ID,
-			Header:      providerkit.ObjectString(record, "header"),
-			Question:    providerkit.ObjectString(record, "question"),
-			Options:     museQuestionOptions(elements),
+			Header:      read.Header,
+			Question:    read.Question,
+			Options:     museQuestionOptions(read.Options),
 			MultiSelect: read.Selection.Mode == contracts.MuseQuestionSelectionModeMultiple,
 		}
 		if question.MultiSelect {
@@ -118,20 +116,17 @@ func int32Of(count *int) *int32 {
 	return &narrowed
 }
 
-// museQuestionOptions reads what the prompt shows of each option of one
-// question that readNativeQuestions validated. Each option's value is its
-// label, which Muse matches.
-func museQuestionOptions(elements []json.RawMessage) []*leapmuxv1.QuestionOption {
-	options := make([]*leapmuxv1.QuestionOption, 0, len(elements))
-	for _, raw := range elements {
-		option, _ := providerkit.RawObject(raw)
-		label := providerkit.ObjectString(option, "label")
-		preview, _ := providerkit.RawObject(option["preview"])
+// museQuestionOptions converts validated native options into prompt options.
+// Each option's value is its label, which Muse matches.
+func museQuestionOptions(nativeOptions []nativeQuestionOption) []*leapmuxv1.QuestionOption {
+	options := make([]*leapmuxv1.QuestionOption, 0, len(nativeOptions))
+	for _, option := range nativeOptions {
+		label := option.Label
 		options = append(options, &leapmuxv1.QuestionOption{
 			Value:       &label,
 			Label:       label,
-			Description: providerkit.ObjectString(option, "description"),
-			Preview:     providerkit.ObjectString(preview, "content"),
+			Description: option.Description,
+			Preview:     option.Preview,
 		})
 	}
 	return options
@@ -180,20 +175,20 @@ func museChoiceScope(scope string) (mapped leapmuxv1.PermissionScope, known bool
 // decision, for the session or in the workspace, is an always option with
 // that scope. It reports false for another method, and for a choice list
 // that is invalid or that holds a choice of an unknown decision or scope.
-func museApprovalPrompt(method string, params map[string]json.RawMessage) (*leapmuxv1.PermissionPrompt, bool) {
+func museApprovalPrompt(method string, params map[string]json.RawMessage) (*leapmuxv1.PermissionPrompt, []nativeApprovalChoice, bool) {
 	if !isMuseApprovalMethod(method) {
-		return nil, false
+		return nil, nil, false
 	}
 	choices, ok := readApprovalChoices(params["availableChoices"])
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 	options := make([]*leapmuxv1.PermissionOption, 0, len(choices))
 	for _, choice := range choices {
 		scope, knownScope := museChoiceScope(choice.Scope)
 		allow := isMuseAllowDecision(choice.Decision)
 		if !knownScope || !allow && !isMuseRejectDecision(choice.Decision) {
-			return nil, false
+			return nil, nil, false
 		}
 		remembered := scope != leapmuxv1.PermissionScope_PERMISSION_SCOPE_UNSPECIFIED
 		var kind leapmuxv1.PermissionOptionKind
@@ -214,7 +209,7 @@ func museApprovalPrompt(method string, params map[string]json.RawMessage) (*leap
 	if title == "" {
 		title = providerkit.ObjectString(subject, "toolName")
 	}
-	return &leapmuxv1.PermissionPrompt{Title: title, Command: providerkit.ObjectString(subject, "command"), Options: options}, true
+	return &leapmuxv1.PermissionPrompt{Title: title, Command: providerkit.ObjectString(subject, "command"), Options: options}, choices, true
 }
 
 // AnswerControlRequest builds Muse's answer as a JSON-RPC result, which
@@ -249,11 +244,12 @@ func musePermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, 
 		return agent.ControlAnswer{}, err
 	}
 	method, params, _ := museMethodParams(input.Request.Payload)
-	if _, native := museApprovalPrompt(method, params); !native {
+	_, choices, native := museApprovalPrompt(method, params)
+	if !native {
 		return agent.ControlAnswer{}, agent.InvalidControlDecision("Muse states no approval that this answers")
 	}
 	if feedback := decision.GetFeedback(); feedback != "" {
-		return museRefusalWithFeedback(params, option.GetOptionId(), feedback, input.RequestID)
+		return museRefusalWithFeedback(choices, option.GetOptionId(), feedback, input.RequestID)
 	}
 	return agent.ControlAnswer{Content: agent.JSONRPCResult(input.RequestID, map[string]any{"choiceId": option.GetOptionId()})}, nil
 }
@@ -262,15 +258,10 @@ func musePermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, 
 // native choice that the user chose, when it accepts feedback. A refusal that
 // is remembered keeps its scope. The feedback goes as the user typed it.
 //
-// A refusal that Muse cannot take fails: the choice list is invalid, the
-// chosen choice takes no feedback, or Muse offers no such choice. A prompt
-// offers Muse's own choices alone (museApprovalPrompt), so LeapMux's own deny
-// is no choice here.
-func museRefusalWithFeedback(params map[string]json.RawMessage, optionID, feedback, requestID string) (agent.ControlAnswer, error) {
-	choices, ok := readApprovalChoices(params["availableChoices"])
-	if !ok {
-		return agent.ControlAnswer{}, agent.InvalidControlDecision("the native Muse approval choices are invalid")
-	}
+// A refusal that Muse cannot take fails: the chosen choice takes no feedback,
+// or Muse offers no such choice. A prompt offers Muse's own choices alone
+// (museApprovalPrompt), so LeapMux's own deny is no choice here.
+func museRefusalWithFeedback(choices []nativeApprovalChoice, optionID, feedback, requestID string) (agent.ControlAnswer, error) {
 	for _, choice := range choices {
 		if choice.ID != optionID {
 			continue
@@ -287,12 +278,11 @@ func museRefusalWithFeedback(params map[string]json.RawMessage, optionID, feedba
 // question, in the order of the prompt:
 //
 //   - A selection states its labels (a multiple selection) or its one label,
-//     and the typed text beside it as the note.
-//   - A question with no selection states its typed text as the free text,
-//     an empty text included, which Muse tells apart from a cancel.
+//     and any non-whitespace typed text beside it as the note.
+//   - A question with no selection states its typed text as the free text.
 //
-// The text goes as the user typed it. A cancel states the reason, an empty
-// one included.
+// Both free text and notes stay within Muse's 500-rune limit, and text goes
+// as the user typed it. A cancel states the reason, an empty one included.
 func museQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	decision, questions, err := agent.QuestionDecisionOf(input)
 	if err != nil {
@@ -308,13 +298,19 @@ func museQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, er
 		entry := map[string]any{"questionId": question.GetId()}
 		switch selected := answer.GetSelected(); {
 		case len(selected) == 0:
+			if utf8.RuneCountInString(typed) > maxMuseQuestionTextRunes {
+				return agent.ControlAnswer{}, agent.InvalidControlDecision("question %d free text exceeds %d characters", i+1, maxMuseQuestionTextRunes)
+			}
 			entry["freeText"] = typed
 		case question.GetMultiSelect():
 			entry["selectedLabels"] = selected
 		default:
 			entry["selectedLabel"] = selected[0]
 		}
-		if len(answer.GetSelected()) > 0 && typed != "" {
+		if len(answer.GetSelected()) > 0 && agent.TrimJavaScriptSpace(typed) != "" {
+			if utf8.RuneCountInString(typed) > maxMuseQuestionTextRunes {
+				return agent.ControlAnswer{}, agent.InvalidControlDecision("question %d note exceeds %d characters", i+1, maxMuseQuestionTextRunes)
+			}
 			entry["note"] = typed
 		}
 		answers = append(answers, entry)

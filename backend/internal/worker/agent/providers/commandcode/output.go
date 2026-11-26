@@ -111,7 +111,6 @@ func (a *Agent) handleMethod(line *providerkit.ParsedLine) {
 		a.startTurn(envelope.Params.TurnID)
 	case contracts.CommandCodeMethodTurnCompleted:
 		a.completeTurnWithTeardown(line.Raw, envelope.Params.TurnID, envelope.Params.StopReason, nil, false)
-		a.finishCommandCodeNativeReply(envelope.Params.TurnID, envelope.Params.StopReason)
 	}
 }
 
@@ -266,7 +265,7 @@ func (a *Agent) endLiveCompaction() bool {
 	live := a.compactionLive
 	a.compactionLive, a.compacting = false, false
 	a.Mu.Unlock()
-	if live {
+	if live && a.sink != nil {
 		providerkit.EndCompaction(a.sink)
 	}
 	return live
@@ -316,11 +315,18 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	started, uses, usage := a.turnStarted, a.TurnToolUses, maps.Clone(a.usage)
 	a.Mu.Unlock()
 	if !active {
+		if !teardown {
+			a.finishCommandCodeNativeReply(turnID, stopReason)
+		}
 		return
 	}
 	a.finishPendingRunError(raw)
 	a.retryResolution.Reset()
-	a.pendingSteers = nil
+	if teardown {
+		a.markPendingCommandCodeSteersUncertain()
+	} else {
+		a.pendingSteers = nil
+	}
 	completion := agent.MessageCompletionComplete
 	if stopReason == "interrupted" {
 		completion = agent.MessageCompletionInterrupted
@@ -346,8 +352,11 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	}
 	a.closeChildrenMatching(childCloseStatus, func(child *childState) bool { return !child.background })
 	a.endUnfinishedCompaction(compactionFailure)
-	duration := max(int64(0), a.clock.Now().Sub(started).Milliseconds())
-	metadata, err := json.Marshal(map[string]any{contracts.MessageMetadataFieldDurationMs: duration, contracts.SessionInfoKeyContextUsage: usage})
+	metadataFields := map[string]any{contracts.SessionInfoKeyContextUsage: usage}
+	if duration := providerkit.TurnDurationMillis(started, a.clock.Now()); duration != nil {
+		metadataFields[contracts.MessageMetadataFieldDurationMs] = *duration
+	}
+	metadata, err := json.Marshal(metadataFields)
 	if err != nil {
 		slog.Warn("encode Command Code turn metadata", "agent_id", a.AgentID(), "error", err)
 	}
@@ -356,12 +365,17 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	content = agent.WithToolUseCount(content, uses)
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("persist the Command Code turn end", "agent_id", a.AgentID(), "error", err)
-		if reply := a.nativeReplies[turnID]; reply != nil && !agent.OutputRetained(err) {
-			reply.unproved = true
+		if !agent.OutputRetained(err) {
+			a.replies.MarkUnproved(turnID)
 		}
 	}
 	if closeTools {
 		providerkit.ResetSpansAndProgress(a.sink)
+	}
+	if teardown {
+		a.retireCommandCodeRepliesAfterExit()
+	} else {
+		a.finishCommandCodeNativeReply(turnID, stopReason)
 	}
 	a.Mu.Lock()
 	if a.turnID == turnID {
@@ -392,21 +406,12 @@ func (a *Agent) closeUnfinishedTools(completion agent.MessageCompletion) {
 func (a *Agent) finishStream() {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
-	a.replyStreamClosed = true
+	a.replies.CloseStream()
 	completion := a.ProcessExitCompletion()
-	if a.IsDiscardingOutput() {
-		a.closeUnfinishedTools(completion)
-		if a.sink != nil {
-			a.closeChildrenMatching(agent.IncompleteTaskStatus(completion), nil)
-			providerkit.ResetSpansAndProgress(a.sink)
-		}
-		return
-	}
-	defer a.retireCommandCodeRepliesAfterExit()
-	a.flushPendingRunError()
+	discarding := a.IsDiscardingOutput()
 	a.Mu.Lock()
 	turnID := a.turnID
-	compacting := a.compacting
+	wasCompacting := a.compacting || a.manualCompaction != nil
 	a.compacting = false
 	var compactionFailure error
 	if a.manualCompaction != nil {
@@ -415,7 +420,34 @@ func (a *Agent) finishStream() {
 		a.manualCompaction.finish()
 		a.manualCompaction = nil
 	}
+	if discarding {
+		a.turnID = ""
+	}
 	a.Mu.Unlock()
+	if discarding {
+		a.pendingRunError = nil
+		a.retryResolution.Reset()
+		a.pendingSteers = nil
+		a.endLiveCompaction()
+		if a.sink != nil {
+			_ = providerkit.FlushGeneration(&a.generation, a.sink, completion, true)
+		} else {
+			for _, scopeID := range a.generation.ScopeIDs() {
+				a.generation.Discard(scopeID)
+			}
+		}
+		a.closeUnfinishedTools(completion)
+		if a.sink != nil {
+			a.closeChildrenMatching(agent.IncompleteTaskStatus(completion), nil)
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
+		a.retireCommandCodeRepliesAfterExit()
+		if a.sink != nil && (turnID != "" || wasCompacting) {
+			a.PublishTurnActive()
+		}
+		return
+	}
+	a.flushPendingRunError()
 	if turnID != "" {
 		stopReason := "run_error"
 		if completion == agent.MessageCompletionInterrupted {
@@ -426,17 +458,20 @@ func (a *Agent) finishStream() {
 		if err == nil {
 			a.completeTurnWithTeardown(raw, turnID, stopReason, compactionFailure, true)
 		}
+		a.retireCommandCodeRepliesAfterExit()
 	} else {
+		a.markPendingCommandCodeSteersUncertain()
 		a.endUnfinishedCompaction(compactionFailure)
 		a.closeUnfinishedTools(completion)
 		if a.sink != nil {
 			providerkit.ResetSpansAndProgress(a.sink)
 		}
-	}
-	if a.sink != nil {
-		if compacting && turnID == "" {
+		a.retireCommandCodeRepliesAfterExit()
+		if a.sink != nil && wasCompacting {
 			a.PublishTurnActive()
 		}
+	}
+	if a.sink != nil {
 		a.closeChildrenMatching(agent.IncompleteTaskStatus(completion), nil)
 	}
 }

@@ -123,19 +123,7 @@ func translateQoderCanUseTool(content []byte) ([]byte, bool) {
 		answer.Message = message
 		answer.Reason = message
 	}
-	out := map[string]any{
-		"type": frameTypeControlResponse,
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": requestID,
-			"response":   answer,
-		},
-	}
-	raw, err := json.Marshal(out)
-	if err != nil {
-		return nil, false
-	}
-	return raw, true
+	return agent.ControlResponseEnvelope(requestID, answer), true
 }
 
 // ListStoredSessions reads Qoder's own transcripts. See sessions.go.
@@ -175,27 +163,6 @@ func (qoderProvider) PlanApprovalOptions(mode string) map[string]string {
 	return map[string]string{agent.OptionIDPermissionMode: mode}
 }
 
-// IsSelfDisplayingControlTool reports false: Qoder echoes no control answer
-// back into its output stream as a tool_result.
-func (qoderProvider) IsSelfDisplayingControlTool(string) bool { return false }
-
-// TurnEndToolUses reads the tool-use count of a result frame.
-func (qoderProvider) TurnEndToolUses(content []byte) (int32, bool) {
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(content, &probe); err != nil {
-		return 0, false
-	}
-	raw, present := probe["num_tool_uses"]
-	if !present {
-		return 0, false
-	}
-	var count int32
-	if err := json.Unmarshal(raw, &count); err != nil {
-		return 0, false
-	}
-	return count, true
-}
-
 // ChildCapabilities states what a child tab offers.
 //
 // AcceptsMessages reports false: the Agent implements InputSteerer for the
@@ -206,5 +173,3 @@ func (qoderProvider) TurnEndToolUses(content []byte) (int32, bool) {
 func (qoderProvider) ChildCapabilities(options optionmap.Map) agent.ChildCapabilities {
 	return agent.ChildCapabilities{AcceptsInterrupt: options[qoderOptionChildKind] == qoderChildKindTask}
 }
-
-// controlRequestSubtype extracts the subtype of a control request payload.

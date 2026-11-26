@@ -233,15 +233,22 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 	}
 	finished := item.Item.Status != contracts.MuseItemStatusInProgress
 	modelTool := open && item.Item.Kind == contracts.MuseItemKindToolCall && current
-	a.stateMu.Unlock()
+	var steerReport agent.SteerResolution
+	var steerMatched bool
 	if current && item.Item.Kind == contracts.MuseItemKindUserMessage && item.Item.Status == contracts.MuseItemStatusCompleted &&
 		!item.Item.Retracted && item.Item.TurnID != nil {
-		report, matched := a.steerLedger.TakeEcho(agent.NativeInputReceipt{
+		steerReport, steerMatched = a.steerLedger.TakeEcho(agent.NativeInputReceipt{
 			SessionID: item.SessionID, InputID: item.Item.CommandID, TurnID: *item.Item.TurnID,
 		})
-		if matched {
-			retainMuseSteerResolution(state.sink, report)
+		if steerMatched {
+			if inFlight := a.inFlightSteers[museSteerKey{sessionID: item.SessionID, commandID: item.Item.CommandID}]; inFlight != nil {
+				inFlight.echoed = true
+			}
 		}
+	}
+	a.stateMu.Unlock()
+	if steerMatched {
+		retainMuseSteerResolution(state.sink, steerReport)
 	}
 	if modelTool && a.flushRetryNotices(state) {
 		state.retry.Resolve(state.sink)

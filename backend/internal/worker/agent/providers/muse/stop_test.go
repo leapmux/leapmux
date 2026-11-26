@@ -278,3 +278,29 @@ func TestMuseIdleChildInterruptClosesCrossTurnTools(t *testing.T) {
 	}
 	assert.True(t, foundClosing, "idle InterruptChild must persist an interrupted closing row for cross-turn open tools")
 }
+
+func TestMuseRawInputApprovalDecideValidatesRequirementID(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		params string
+	}{
+		{name: "missing requirementId", params: `{"sessionId":"session","approvalId":"approval","choiceId":"allow"}`},
+		{name: "null requirementId", params: `{"sessionId":"session","approvalId":"approval","choiceId":"allow","requirementId":null}`},
+		{name: "wrong-case RequirementId", params: `{"sessionId":"session","approvalId":"approval","choiceId":"allow","RequirementId":{"approvalId":"approval","sourceIndex":0}}`},
+		{name: "mismatched approvalId in requirementId", params: `{"sessionId":"session","approvalId":"approval","choiceId":"allow","requirementId":{"approvalId":"other","sourceIndex":0}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _ := testAgent(t)
+			writes := 0
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(string, json.RawMessage) agenttest.RPCReply {
+				writes++
+				return agenttest.RPCReply{}
+			}})
+			raw := []byte(`{"jsonrpc":"2.0","id":"muse:approval:[\"session\",\"approval\",0]","method":"approval/decide","params":` + tc.params + `}`)
+			require.Error(t, a.SendRawInput(agent.RawInput{Data: raw, Stop: agent.NewStopContext(nil)}))
+			assert.Zero(t, writes)
+		})
+	}
+}

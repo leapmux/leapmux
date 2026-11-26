@@ -167,6 +167,7 @@ func TestKimiReadControlRequest_ReadsAPlanReviewWithNoPlanTextAndNoOptions(t *te
 	t.Parallel()
 	for _, display := range []map[string]any{
 		{"kind": contracts.KimiDisplayPlanReview, "plan": " "},
+		{"kind": contracts.KimiDisplayPlanReview, "plan": "\uFEFF"},
 		{"kind": contracts.KimiDisplayPlanReview, "options": "not a list"},
 	} {
 		agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{
@@ -176,6 +177,11 @@ func TestKimiReadControlRequest_ReadsAPlanReviewWithNoPlanTextAndNoOptions(t *te
 			},
 		}}}, agenttest.ControlPromptOf(kimiProvider{}, kimiApprovalPayload(t, contracts.KimiToolExitPlanMode, display, nil, nil)))
 	}
+	// U+0085 (NEXT LINE) is not JavaScript white space, so the browser keeps it as non-empty plan text.
+	got := agenttest.ControlPromptOf(kimiProvider{}, kimiApprovalPayload(t, contracts.KimiToolExitPlanMode, map[string]any{
+		"kind": contracts.KimiDisplayPlanReview, "plan": "\u0085",
+	}, nil, nil))
+	assert.Equal(t, "\u0085", got.GetPlan().GetText())
 }
 
 // A subagent's plan review is the subagent's own. The plan approval would
@@ -209,11 +215,21 @@ func TestKimiReadControlRequest_ReadsASubagentPlanReviewAsAPermissionWithThePlan
 
 func TestKimiReadControlRequest_KeepsTheWholeDisplayOfASubagentPlanThatStatesNoText(t *testing.T) {
 	t.Parallel()
+	for _, blank := range []string{"  ", "\uFEFF"} {
+		got := agenttest.ControlPromptOf(kimiProvider{}, kimiApprovalPayload(t, contracts.KimiToolExitPlanMode, map[string]any{
+			"kind": contracts.KimiDisplayPlanReview, "plan": blank, "options": []any{map[string]any{"label": "Option A"}},
+		}, map[string]any{"agent_id": "agent-0"}, nil))
+		assert.Empty(t, got.GetPermission().GetText(), "%q", blank)
+		wantJSON, err := json.Marshal(map[string]any{"kind": "plan_review", "plan": blank, "options": []any{map[string]any{"label": "Option A"}}})
+		require.NoError(t, err)
+		assert.JSONEq(t, string(wantJSON), got.GetPermission().GetInputJson())
+	}
+	// U+0085 is not JavaScript white space, so a subagent plan containing only it reads as text.
 	got := agenttest.ControlPromptOf(kimiProvider{}, kimiApprovalPayload(t, contracts.KimiToolExitPlanMode, map[string]any{
-		"kind": contracts.KimiDisplayPlanReview, "plan": "  ", "options": []any{map[string]any{"label": "Option A"}},
+		"kind": contracts.KimiDisplayPlanReview, "plan": "\u0085", "options": []any{map[string]any{"label": "Option A"}},
 	}, map[string]any{"agent_id": "agent-0"}, nil))
-	assert.Empty(t, got.GetPermission().GetText())
-	assert.JSONEq(t, `{"kind":"plan_review","plan":"  ","options":[{"label":"Option A"}]}`, got.GetPermission().GetInputJson())
+	assert.Equal(t, "\u0085", got.GetPermission().GetText())
+	assert.JSONEq(t, `{"kind":"plan_review","options":[{"label":"Option A"}]}`, got.GetPermission().GetInputJson())
 }
 
 func TestKimiReadControlRequest_ReadsTheAgentTagAndDefaultsAnAbsentTagToTheMainAgent(t *testing.T) {
@@ -303,9 +319,14 @@ func TestKimiReadControlRequest_ReadsAnyOtherPayloadAsUnrecognized(t *testing.T)
 	for _, payload := range []string{
 		`{}`,
 		`{"type":"event.approval.requested"}`,
-		`{"type":"interaction","kind":"approval","request":"not an object"}`,
-		`{"type":"interaction","kind":"question","request":null}`,
-		`{"type":"interaction","kind":"other","request":{}}`,
+		`{"type":"interaction","kind":"approval","status":"pending","request":"not an object"}`,
+		`{"type":"interaction","kind":"question","status":"pending","request":null}`,
+		`{"type":"interaction","kind":"other","status":"pending","request":{}}`,
+		`{"type":"interaction","kind":"approval","status":"ended","request":{"tool_name":"Bash"}}`,
+		`{"type":"interaction","kind":"approval","status":"resolved","request":{"tool_name":"Bash"}}`,
+		`{"type":"interaction","kind":"approval","request":{"tool_name":"Bash"}}`,
+		`{"type":"interaction","kind":"question","status":"ended","request":{"questions":[]}}`,
+		`{"type":"interaction","kind":"question","request":{"questions":[]}}`,
 		`not json`,
 	} {
 		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(kimiProvider{}, []byte(payload)), payload)
@@ -608,13 +629,7 @@ func TestKimiAnswer_AnswersEachKindThatTheServerTakes(t *testing.T) {
 		// QuestionDecisionOf refuses a choice beside text for a single choice.
 		// When both still reach this, the choice is the answer.
 		{"a choice beside text", single, []string{"a"}, "typed", map[string]any{"kind": "single", "option_id": "a"}},
-		// A selection that the question does not offer is dropped.
-		{"an unknown choice", single, []string{"z"}, "", map[string]any{"kind": "skipped"}},
-		{"an unknown choice before a known one", single, []string{"z", "b"}, "", map[string]any{"kind": "single", "option_id": "b"}},
-		{"an unknown choice among several", multi, []string{"z", "b"}, "", map[string]any{"kind": "multi", "option_ids": []string{"b"}}},
-		{"an unknown choice beside text", multi, []string{"z"}, "typed", map[string]any{"kind": "other", "text": "typed"}},
 		{"a question with no options", &leapmuxv1.ControlQuestion{Id: "q_0", Question: "Q"}, nil, "", map[string]any{"kind": "skipped"}},
-		{"a choice of a question with no options", &leapmuxv1.ControlQuestion{Id: "q_0", Question: "Q", MultiSelect: true}, []string{"x"}, "", map[string]any{"kind": "skipped"}},
 		// An option that states no value sends its label.
 		{"a choice by its label", &leapmuxv1.ControlQuestion{Id: "q_0", Question: "Q", Options: []*leapmuxv1.QuestionOption{{Label: "A"}}}, []string{"A"}, "", map[string]any{"kind": "single", "option_id": "A"}},
 	} {
@@ -646,22 +661,30 @@ func TestKimiAnswerControlRequest_AnswersTheWorkspaceTrustQuestion(t *testing.T)
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "the question offers its own two answers only")
 }
 
-// A payload that is no Kimi request reads as unrecognized, so no decision
-// answers it, and a permission decision drawn for it anyway answers nothing.
+// A payload that is no pending Kimi request reads as unrecognized, so no
+// decision answers it, and a permission decision drawn for it anyway answers
+// nothing.
 func TestKimiAnswerControlRequest_AnswersNoUnrecognizedRequest(t *testing.T) {
 	t.Parallel()
-	payload := []byte(`{"request":{"tool_name":"Bash","input":{"command":"ls"}}}`)
-	for _, decision := range []*leapmuxv1.ControlDecision{
-		agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
-		agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "No."),
+	for name, payload := range map[string][]byte{
+		"non-interaction payload": []byte(`{"request":{"tool_name":"Bash","input":{"command":"ls"}}}`),
+		"ended approval":          []byte(`{"type":"interaction","kind":"approval","status":"ended","request":{"tool_name":"Bash"}}`),
 	} {
-		_, err := agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, decision)
-		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
-		_, err = kimiProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
-			Request: agent.NewControlRequestInput(payload), RequestID: kimiTestRequestID,
-			Prompt: agent.GenericPermissionPrompt(), Decision: decision,
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			for _, decision := range []*leapmuxv1.ControlDecision{
+				agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
+				agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "No."),
+			} {
+				_, err := agenttest.AnswerControl(kimiProvider{}, payload, kimiTestRequestID, decision)
+				assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+				_, err = kimiProvider{}.AnswerControlRequest(agent.ControlAnswerInput{
+					Request: agent.NewControlRequestInput(payload), RequestID: kimiTestRequestID,
+					Prompt: agent.GenericPermissionPrompt(), Decision: decision,
+				})
+				assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+			}
 		})
-		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 	}
 }
 

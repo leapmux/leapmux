@@ -256,39 +256,15 @@ func firstChildRun(log *nativeLog, through nativePosition) (string, error) {
 }
 
 func initialChildInputProof(log *nativeLog, target nativeParentInputTarget) (bool, error) {
-	spawn, control, count := selectNativeInputControl(log, contracts.MuseParentInputSpawnAccepted, func(value nativeInputControl) bool {
-		return value.SubagentID == target.SubagentID
-	})
-	if count == 0 {
+	_, status, reason := resolveNativeChildLineage(log, target)
+	switch status {
+	case nativeParentInputMatched:
+		return true, nil
+	case nativeParentInputPending:
 		return false, nil
+	default:
+		return false, fmt.Errorf("%s", reason)
 	}
-	if count != 1 || control.ParentSessionID != target.ParentSessionID {
-		return false, fmt.Errorf("the Muse initial child spawn is ambiguous")
-	}
-	binding, _, count := selectNativeInputControl(log, contracts.MuseParentInputChildSessionBound, func(value nativeInputControl) bool {
-		return value.SubagentID == target.SubagentID && value.ChildSessionID == target.ChildSessionID
-	})
-	if count == 0 {
-		return false, nil
-	}
-	if count != 1 {
-		return false, fmt.Errorf("the Muse initial child binding is ambiguous")
-	}
-	attestation, _, count := selectNativeInputControl(log, contracts.MuseParentInputStartAttested, func(value nativeInputControl) bool {
-		return value.SubagentID == target.SubagentID && value.SubagentSessionID == target.ChildSessionID && value.RunStream == contracts.MuseParentInputRun+"/"+target.RunID
-	})
-	if count == 0 {
-		return false, nil
-	}
-	if count != 1 {
-		return false, fmt.Errorf("the Muse initial child attestation is ambiguous")
-	}
-	for _, evidence := range []nativeInputEvidence{spawn, binding, attestation} {
-		if failure := nativeInputEvidenceFailure(log, evidence); failure != "" {
-			return false, fmt.Errorf("%s", failure)
-		}
-	}
-	return true, nil
 }
 
 // A nil match without a pending reason proves the initial child input.
@@ -420,8 +396,8 @@ func (a *Agent) proveChildInputMarker(ctx context.Context, id string, state *ses
 		match, pending, proofErr := resolveChildInputMarker(parent.log, target, marker, initialRun)
 		var needed *nativeSourceRange
 		if proofErr == nil && match != nil {
-			_, tracked := state.childInputCommands[match.Receipt.InputID]
-			if match.Status == nativeParentInputMatched || tracked {
+			tracked := state.childInputCommands[match.Receipt.InputID]
+			if match.Status == nativeParentInputMatched || tracked != nil {
 				pending, needed = unfinishedChildTextBeforeInput(id, state, marker)
 			}
 		}
@@ -471,13 +447,13 @@ func (a *Agent) proveChildInputMarker(ctx context.Context, id string, state *ses
 
 func (a *Agent) retainProvedChildInput(id string, state *sessionState, receipt agent.NativeInputReceipt) error {
 	a.stateMu.Lock()
-	tracked, found := state.childInputCommands[receipt.InputID]
+	tracked := state.childInputCommands[receipt.InputID]
 	current := a.currentSessionState(id, state)
 	a.stateMu.Unlock()
 	if !current {
 		return agent.ErrChildRouteNotReady
 	}
-	if !found {
+	if tracked == nil {
 		return nil
 	}
 	var err error
@@ -492,6 +468,8 @@ func (a *Agent) retainProvedChildInput(id string, state *sessionState, receipt a
 		return err
 	}
 	a.stateMu.Lock()
+	tracked.proved = true
+	tracked.provedReceipt = receipt
 	if state.childInputCommands[receipt.InputID] == tracked {
 		delete(state.childInputCommands, receipt.InputID)
 	}
@@ -504,7 +482,19 @@ func (a *Agent) retireChildInputCommands(id string, state *sessionState) {
 	pending := state.childInputCommands
 	state.childInputCommands = nil
 	a.stateMu.Unlock()
-	for commandID, input := range pending {
+	if len(pending) == 0 {
+		return
+	}
+	commandIDs := make([]string, 0, len(pending))
+	for commandID := range pending {
+		commandIDs = append(commandIDs, commandID)
+	}
+	slices.Sort(commandIDs)
+	for _, commandID := range commandIDs {
+		input := pending[commandID]
+		if input == nil {
+			continue
+		}
 		if input.steerAttemptID != "" {
 			retainMuseSteerResolution(state.sink, agent.SteerResolution{
 				InputID: input.inputID, AttemptID: input.steerAttemptID, Outcome: agent.SteerOutcomeUncertain,

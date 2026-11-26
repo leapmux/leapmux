@@ -107,13 +107,10 @@ func newLettaCommand(typ string, requestID string) lettaCommand {
 	}
 }
 
-// Session and store layout. A local-backend agent record is a flat JSON file
-// under $LETTA_LOCAL_BACKEND_DIR/agents/, and a conversation is a directory
-// under conversations/. The reader opens them read-only.
+// Session and store layout. A conversation is a directory under
+// $LETTA_LOCAL_BACKEND_DIR/conversations/. The reader opens them read-only.
 const (
 	lettaBackendDirEnv    = "LETTA_LOCAL_BACKEND_DIR"
-	lettaHomeEnv          = "LETTA_HOME"
-	lettaAgentsDir        = "agents"
 	lettaConversationsDir = "conversations"
 )
 

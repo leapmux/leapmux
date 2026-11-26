@@ -3,8 +3,10 @@ package commandcode
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 const (
@@ -99,20 +101,11 @@ type imageSource struct {
 }
 
 func nativeText(raw json.RawMessage) string {
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(raw, &blocks) != nil {
+	blocks, ok := providerkit.RawArray(raw)
+	if !ok {
 		return ""
 	}
-	var text string
-	for _, block := range blocks {
-		if block.Type == "text" {
-			text += block.Text
-		}
-	}
-	return text
+	return strings.Join(providerkit.ReadAnthropicContent(blocks).Texts, "")
 }
 
 func eventFromFrame(raw []byte) (*nativeEvent, error) {

@@ -1,7 +1,6 @@
 package codebuddy
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,13 +20,7 @@ const codebuddyTestRequestID = "approval:ap1"
 // Worker publishes it.
 func codebuddyToolPayload(t *testing.T, toolName string, input any) []byte {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{
-		"type":       "control_request",
-		"request_id": "approval:ap1",
-		"request":    map[string]any{"subtype": "can_use_tool", "tool_name": toolName, "tool_use_id": "call-1", "input": input},
-	})
-	require.NoError(t, err)
-	return payload
+	return agenttest.CanUseToolPayload(t, codebuddyTestRequestID, toolName, input)
 }
 
 func TestCodebuddyReadControlRequest_AskUserQuestionReadsEachQuestionAndItsOptions(t *testing.T) {
