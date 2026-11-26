@@ -149,7 +149,7 @@ Before you begin, ensure you have the following installed:
 
 - **Go** 1.27.4 or later
 - **Node.js** 26 or later
-- **Bun** 1.4.4 or later - JavaScript runtime and package manager
+- **Bun** 1.4.5 or later - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)
