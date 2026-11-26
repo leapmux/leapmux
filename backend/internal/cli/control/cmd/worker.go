@@ -136,11 +136,12 @@ func newWorkerCommand() *cobra.Command {
 				Run:      runWorkerPinsGet,
 			}),
 			cli.NewLeaf(cli.Leaf{
-				Use:     "remove <worker>",
-				Aliases: []string{"rm"},
-				Short:   "Forget a worker's pinned key, so the next connection pins it again",
-				Args:    map[string]string{"worker": pinnedWorkerArgHelp},
-				Mutates: true,
+				Use:         "remove <worker>",
+				Aliases:     []string{"rm"},
+				Short:       "Forget a worker's pinned key, so the next connection pins it again",
+				Args:        map[string]string{"worker": pinnedWorkerArgHelp},
+				Mutates:     true,
+				Destructive: true,
 				Examples: []cli.Example{
 					{Comment: "Forget the key of a worker that was reinstalled.", Command: "leapmux worker pins remove 5f2c9a1d"},
 				},
@@ -157,8 +158,8 @@ type workerRow struct {
 	// Name is what the worker reports about itself. An offline worker
 	// reports nothing, so its name is empty.
 	Name         string `json:"name,omitempty" table:"NAME"`
-	Online       bool   `json:"online" table:"ONLINE"`
-	LastSeenAt   string `json:"last_seen_at,omitempty" table:"LAST SEEN"`
+	Online       bool   `json:"online" table:"ONLINE,state"`
+	LastSeenAt   string `json:"last_seen_at,omitempty" table:"LAST SEEN,dim"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	RegisteredBy string `json:"registered_by,omitempty"`
 	// AutoRegistered prints when false too: absent and false are different
@@ -206,7 +207,7 @@ func runWorkerList(inv *cli.Invocation) (any, error) {
 
 // listAllWorkers reads every page of the caller's workers, over whichever
 // transport the client uses.
-func listAllWorkers(ctx context.Context, c *control.Client) ([]*leapmuxv1.Worker, error) {
+func listAllWorkers(ctx context.Context, c control.Peer) ([]*leapmuxv1.Worker, error) {
 	return readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.Worker, *leapmuxv1.PageResponse, error) {
 		var resp leapmuxv1.ListWorkersResponse
 		err := hubCallUnary(ctx, c, leapmuxv1connect.WorkerManagementServiceListWorkersProcedure, &leapmuxv1.ListWorkersRequest{Page: page}, &resp)
@@ -306,10 +307,11 @@ func runWorkerKeyCreate(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClient(hub)
+	c, err := control.NewClientForHub(hub)
 	if err != nil {
 		return nil, err
 	}
+	attachErrOut(c, inv)
 	ctx, cancel := rpcDeadline(inv.Context)
 	defer cancel()
 	resp, err := c.WorkerManagementService().CreateRegistrationKey(ctx, &leapmuxv1.CreateRegistrationKeyRequest{})
@@ -378,10 +380,11 @@ func runWorkerDeregister(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClient(hub)
+	c, err := control.NewClientForHub(hub)
 	if err != nil {
 		return nil, err
 	}
+	attachErrOut(c, inv)
 	ctx, cancel := rpcDeadline(inv.Context)
 	defer cancel()
 	if _, err := c.WorkerManagementService().DeregisterWorker(ctx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: target.ID}); err != nil {
@@ -402,10 +405,11 @@ func runWorkerKeyExtend(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClient(hub)
+	c, err := control.NewClientForHub(hub)
 	if err != nil {
 		return nil, err
 	}
+	attachErrOut(c, inv)
 	ctx, cancel := rpcDeadline(inv.Context)
 	defer cancel()
 	resp, err := c.WorkerManagementService().ExtendRegistrationKey(ctx, &leapmuxv1.ExtendRegistrationKeyRequest{RegistrationKey: key})
@@ -424,10 +428,11 @@ func runWorkerKeyRevoke(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClient(hub)
+	c, err := control.NewClientForHub(hub)
 	if err != nil {
 		return nil, err
 	}
+	attachErrOut(c, inv)
 	ctx, cancel := rpcDeadline(inv.Context)
 	defer cancel()
 	if _, err := c.WorkerManagementService().RevokeRegistrationKey(ctx, &leapmuxv1.RevokeRegistrationKeyRequest{RegistrationKey: key}); err != nil {
@@ -452,10 +457,11 @@ func runWorkerKeyEmail(inv *cli.Invocation) (any, error) {
 	if cmdLine == "" {
 		cmdLine = "leapmux daemon worker register --hub " + hub + " --registration-key " + key
 	}
-	c, err := control.NewClient(hub)
+	c, err := control.NewClientForHub(hub)
 	if err != nil {
 		return nil, err
 	}
+	attachErrOut(c, inv)
 	ctx, cancel := rpcDeadline(inv.Context)
 	defer cancel()
 	if _, err := c.WorkerManagementService().EmailRegistrationInstructions(ctx, &leapmuxv1.EmailRegistrationInstructionsRequest{
@@ -482,8 +488,8 @@ type pinRow struct {
 	X25519PublicKey string `json:"x25519_public_key"`
 	MlkemPublicKey  string `json:"mlkem_public_key"`
 	SlhdsaPublicKey string `json:"slhdsa_public_key"`
-	FirstSeenAt     string `json:"first_seen_at,omitempty" table:"FIRST SEEN"`
-	LastUsedAt      string `json:"last_used_at,omitempty" table:"LAST USED"`
+	FirstSeenAt     string `json:"first_seen_at,omitempty" table:"FIRST SEEN,dim"`
+	LastUsedAt      string `json:"last_used_at,omitempty" table:"LAST USED,dim"`
 }
 
 func (p pinRow) QuietLines() []string { return []string{p.WorkerID} }

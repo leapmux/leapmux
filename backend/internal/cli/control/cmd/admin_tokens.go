@@ -22,7 +22,7 @@ type CredentialLifetime struct {
 	OwnerDeleted bool   `json:"owner_deleted"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	LastUsedAt   string `json:"last_used_at,omitempty"`
-	ExpiresAt    string `json:"expires_at,omitempty" table:"EXPIRES"`
+	ExpiresAt    string `json:"expires_at,omitempty" table:"EXPIRES,dim"`
 	RevokedAt    string `json:"revoked_at,omitempty"`
 }
 
@@ -94,7 +94,7 @@ func (r adminDelegationTokenListResult) QuietLines() []string {
 	return out
 }
 
-func resolveAdminAPITokenID(ctx context.Context, c *control.Client, raw string) (string, error) {
+func resolveAdminAPITokenID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveAdminIDPrefix(ctx, raw, "API token", func(ctx context.Context) ([]cli.Candidate, error) {
 		tokens, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminAPIToken, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminUserService().ListAPITokens(ctx, &leapmuxv1.ListAPITokensRequest{
@@ -114,7 +114,7 @@ func resolveAdminAPITokenID(ctx context.Context, c *control.Client, raw string) 
 	})
 }
 
-func resolveAdminDelegationTokenID(ctx context.Context, c *control.Client, raw string) (string, error) {
+func resolveAdminDelegationTokenID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveAdminIDPrefix(ctx, raw, "delegation token", func(ctx context.Context) ([]cli.Candidate, error) {
 		tokens, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminDelegationToken, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminUserService().ListDelegationTokens(ctx, &leapmuxv1.ListDelegationTokensRequest{

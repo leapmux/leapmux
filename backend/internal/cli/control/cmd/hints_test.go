@@ -169,3 +169,86 @@ func TestControlVersionMismatchReportsTheWorkerBuildOrItsAbsence(t *testing.T) {
 		})
 	}
 }
+
+// RIPPLE-11: hints must never suggest `leapmux auth login --hub unix:...` or
+// `npipe:...`, and `usesDirectHub` must include `worker` so direct-hub worker
+// subcommands get Hub version diagnostics on CodeUnimplemented.
+func TestAddHubHints_OmitsLocalSocketURLAndCoversWorkerDirectHub(t *testing.T) {
+	t.Run("explicit unix hub omits socket URL from auth login hint", func(t *testing.T) {
+		isolateCLIEnv(t)
+		root := cli.Group("control", "Control",
+			cli.NewLeaf(cli.Leaf{
+				Use:   "probe",
+				Short: "Probe",
+				Run: func(*cli.Invocation) (any, error) {
+					return nil, connect.NewError(connect.CodeUnauthenticated, "expired")
+				},
+			}))
+		root.PersistentFlags().String("hub", "", "hub")
+		addHubHints(root)
+
+		err := cli.Run(context.Background(), root, []string{"probe", "--hub", "unix:/tmp/solo.sock"}, strings.NewReader(""), io.Discard, io.Discard)
+		got := cli.FromError(err)
+		assert.Equal(t, cli.CodeNotLoggedIn, got.Code)
+		assert.Equal(t, []string{`run "leapmux auth login --hub <url>" to sign in again`}, got.Hints)
+	})
+
+	t.Run("tab socket env omits socket URL from auth login hint", func(t *testing.T) {
+		isolateCLIEnv(t)
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "unix:/tmp/tab.sock")
+		t.Setenv("LEAPMUX_HUB", "unix:/tmp/solo.sock")
+		root := cli.Group("control", "Control",
+			cli.NewLeaf(cli.Leaf{
+				Use:   "probe",
+				Short: "Probe",
+				Run: func(*cli.Invocation) (any, error) {
+					return nil, connect.NewError(connect.CodeUnauthenticated, "expired")
+				},
+			}))
+		addHubHints(root)
+
+		err := cli.Run(context.Background(), root, []string{"probe"}, strings.NewReader(""), io.Discard, io.Discard)
+		got := cli.FromError(err)
+		assert.Equal(t, cli.CodeNotLoggedIn, got.Code)
+		assert.Equal(t, []string{`run "leapmux auth login --hub <url>" to sign in again`}, got.Hints)
+	})
+
+	t.Run("worker direct-hub command reports Hub build on unimplemented", func(t *testing.T) {
+		url := startAdminHub(t, &fakeAdminHub{versionHandler: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"version":"2.3.4","formatted":"2.3.4 · hub-commit"}`)
+		}})
+		liveCredentialFor(t, url)
+		f := runControl(t, "worker", "key", "create", "--hub", url).requireFailure(t, cli.CodeVersionMismatch)
+		hints := strings.Join(f.Hints, "\n")
+		assert.Contains(t, hints, "CLI build "+version.Format())
+		assert.Contains(t, hints, "Hub build 2.3.4 · hub-commit")
+	})
+
+	t.Run("tab socket env omits --hub from version mismatch hint", func(t *testing.T) {
+		isolateCLIEnv(t)
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "unix:/tmp/tab.sock")
+		root := cli.Group("control", "Control",
+			cli.NewLeaf(cli.Leaf{
+				Use:   "probe",
+				Short: "Probe",
+				Run: func(*cli.Invocation) (any, error) {
+					return nil, connect.NewError(connect.CodeUnimplemented, "no such method")
+				},
+			}))
+		addHubHints(root)
+
+		err := cli.Run(context.Background(), root, []string{"probe"}, strings.NewReader(""), io.Discard, io.Discard)
+		got := cli.FromError(err)
+		assert.Equal(t, cli.CodeVersionMismatch, got.Code)
+		assert.Equal(t, []string{`run "leapmux version" to compare the CLI with the hub, and upgrade the older one`}, got.Hints)
+	})
+
+	t.Run("withHubVersion handles unsupported peer without panicking", func(t *testing.T) {
+		refusal := connect.NewError(connect.CodeUnimplemented, "unsupported")
+		got := withHubVersion(t.Context(), nil, refusal)
+		ce := cli.FromError(got)
+		assert.Equal(t, cli.CodeVersionMismatch, ce.Code)
+		assert.Contains(t, ce.Hints, "Hub build unavailable")
+	})
+}

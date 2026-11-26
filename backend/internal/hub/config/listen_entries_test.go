@@ -164,6 +164,40 @@ func TestListenEntries_DefaultPerPlatform(t *testing.T) {
 	}
 }
 
+func TestListenEntries_EmptyDataDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		cfg := &Config{}
+		local, err := cfg.LocalListenURLs()
+		require.NoError(t, err)
+		require.Len(t, local, 1)
+		assert.True(t, strings.HasPrefix(local[0], "npipe:leapmux-hub-"))
+		return
+	}
+
+	t.Run("empty listen without data directory returns error", func(t *testing.T) {
+		cfg := &Config{}
+		_, err := cfg.ListenEntries()
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "data directory is required")
+		_, err = cfg.LocalListenURLs()
+		require.Error(t, err)
+	})
+
+	t.Run("TCP-only listen without data directory returns error", func(t *testing.T) {
+		cfg := &Config{Listen: []string{":8080"}}
+		_, err := cfg.ListenEntries()
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "data directory is required")
+	})
+
+	t.Run("explicit local listen succeeds without data directory", func(t *testing.T) {
+		cfg := &Config{Listen: []string{"unix:/tmp/explicit.sock"}}
+		entries, err := cfg.ListenEntries()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"unix:/tmp/explicit.sock"}, entries)
+	})
+}
+
 // TestPrimaryTCPListen pins what a browser-facing URL names: the first TCP
 // address of the bind set, the launcher's default for an empty list, and ""
 // for a local-only set (there is no TCP address to name).

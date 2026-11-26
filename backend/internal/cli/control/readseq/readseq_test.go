@@ -420,6 +420,241 @@ func TestSequencer_WaitReturnsAfterEveryRead(t *testing.T) {
 	assert.Equal(t, int32(2), returned.Load(), "both reads returned before Wait did")
 }
 
+// Wait must not deadlock when the feed exits early while an unread result fills
+// results (cap 1), another read goroutine is trying to deliver its result, and
+// the shared context stays live.
+func TestSequencer_WaitDoesNotDeadlockWithUnreadResultAndLiveContext(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	firstDone := make(chan struct{})
+	secondInFlight := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	readCount := 0
+	seq := New(Hooks[int, int, int]{
+		Handle: func(context.Context, int) bool { return true },
+		NextRead: func(context.Context) (Read[int], bool) {
+			readCount++
+			n := readCount
+			return func(context.Context) int {
+				if n == 1 {
+					defer close(firstDone)
+					return 1
+				}
+				close(secondInFlight)
+				<-releaseSecond
+				return 2
+			}, true
+		},
+		Apply: func(context.Context, int) bool { return true },
+		Send:  func(context.Context, int) bool { return true },
+	})
+
+	require.True(t, seq.RequestRead(ctx))
+	<-firstDone
+	// Abandon read 1 without draining its buffered result from seq.Results(),
+	// then start read 2 so its delivery blocks on the full results channel.
+	require.True(t, seq.Abandon(ctx))
+	require.True(t, seq.RequestRead(ctx))
+	<-secondInFlight
+	close(releaseSecond)
+
+	waitDone := make(chan struct{})
+	go func() {
+		seq.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-ctx.Done():
+		t.Fatal("Wait deadlocked while results buffer was full and context stayed live")
+	}
+}
+
+// Complete must drain only the inputs already queued when it begins, so
+// continuous Push traffic cannot starve Apply or grow held changes without limit.
+func TestSequencer_CompleteDrainsOnlyAlreadyQueuedInputs(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	var seq *Sequencer[testInput, string, testResult]
+	handled := 0
+	applied := false
+	var sent []string
+
+	seq = New(Hooks[testInput, string, testResult]{
+		Handle: func(ctx context.Context, in testInput) bool {
+			handled++
+			// Simulate continuous producer traffic arriving while Complete drains.
+			if handled < 100 {
+				seq.Push(ctx, change(fmt.Sprintf("extra-%d", handled)))
+			}
+			return seq.Forward(ctx, in.change)
+		},
+		NextRead: func(context.Context) (Read[testResult], bool) {
+			return func(context.Context) testResult { return testResult{value: "snap"} }, true
+		},
+		Apply: func(context.Context, testResult) bool {
+			applied = true
+			return true
+		},
+		Send: func(_ context.Context, c string) bool {
+			sent = append(sent, c)
+			return true
+		},
+	})
+	t.Cleanup(seq.Wait)
+
+	require.True(t, seq.RequestRead(ctx))
+	var res Result[testResult]
+	select {
+	case res = <-seq.Results():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for read result")
+	}
+	require.True(t, seq.Push(ctx, change("queued-1")))
+	require.True(t, seq.Push(ctx, change("queued-2")))
+
+	require.True(t, seq.Complete(ctx, res))
+	assert.True(t, applied)
+	assert.Equal(t, 2, handled, "Complete must drain only the 2 inputs already queued at entry")
+	assert.Equal(t, []string{"queued-1", "queued-2"}, sent)
+}
+
+func TestSequencer_WaitIsIdempotentAndCancelsBlockedReadWithLiveContext(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	started := make(chan struct{})
+	var canceled atomic.Int32
+	seq := New(Hooks[int, int, int]{
+		Handle: func(context.Context, int) bool { return true },
+		NextRead: func(context.Context) (Read[int], bool) {
+			return func(readCtx context.Context) int {
+				select {
+				case <-started:
+				default:
+					close(started)
+				}
+				<-readCtx.Done()
+				canceled.Add(1)
+				return 0
+			}, true
+		},
+		Apply: func(context.Context, int) bool { return true },
+		Send:  func(context.Context, int) bool { return true },
+	})
+
+	// Wait on an idle sequencer with no reads started is a no-op, and calling it
+	// twice must not block or panic.
+	idle := New(Hooks[int, int, int]{
+		Handle:   func(context.Context, int) bool { return true },
+		NextRead: func(context.Context) (Read[int], bool) { return nil, true },
+		Apply:    func(context.Context, int) bool { return true },
+		Send:     func(context.Context, int) bool { return true },
+	})
+	idle.Wait()
+	idle.Wait()
+
+	require.True(t, seq.RequestRead(ctx))
+	<-started
+
+	// Caller context stays live; Wait must cancel readCtx directly.
+	waitDone := make(chan struct{})
+	go func() {
+		seq.Wait()
+		seq.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-ctx.Done():
+		t.Fatal("Wait blocked while a read waited on readCtx.Done()")
+	}
+	assert.Equal(t, int32(1), canceled.Load(), "Wait must cancel the in-flight read even when caller ctx is live")
+
+	// Starting a read after Wait receives an already-canceled context and Wait returns cleanly.
+	require.True(t, seq.Abandon(ctx))
+	require.True(t, seq.RequestRead(ctx))
+	seq.Wait()
+	assert.Equal(t, int32(2), canceled.Load())
+}
+
+func TestSequencer_AbandonWhenIdleThenRequestRead(t *testing.T) {
+	f := newTestFeed(t)
+	// Abandon with no read in flight and no held changes must succeed and leave
+	// the sequencer ready to start a new read.
+	require.True(t, f.take(abandon()))
+	assert.Empty(t, f.log)
+
+	require.True(t, f.take(request()))
+	f.requireStarted(1)
+	f.answer(1, "after-idle-abandon")
+	require.True(t, f.complete())
+	assert.Equal(t, []string{"read:after-idle-abandon"}, f.log)
+	f.requireNoRead()
+}
+
+func TestSequencer_CompleteWithEmptyQueueAndStaleEpoch(t *testing.T) {
+	f := newTestFeed(t)
+	require.True(t, f.take(request()))
+	f.requireStarted(1)
+	f.answer(1, "empty-queue")
+
+	// Complete with empty Inputs and empty held slice applies the result cleanly.
+	assert.Len(t, f.seq.Inputs(), 0)
+	require.True(t, f.complete())
+	assert.Equal(t, []string{"read:empty-queue"}, f.log)
+
+	// Stale epoch must return true immediately without draining queued inputs.
+	require.True(t, f.take(request()))
+	f.requireStarted(2)
+	f.answer(2, "stale")
+	staleResult := f.nextResult()
+	require.True(t, f.take(abandon()))
+	f.queue(change("untouched"))
+
+	require.True(t, f.seq.Complete(f.ctx, staleResult))
+	assert.Len(t, f.seq.Inputs(), 1, "stale Complete must not drain queued inputs")
+	assert.Equal(t, []string{"read:empty-queue"}, f.log)
+}
+
+func TestSequencer_CompleteStopsWhenFlushFails(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	var seq *Sequencer[testInput, string, testResult]
+	reads := 0
+	applied := 0
+	seq = New(Hooks[testInput, string, testResult]{
+		Handle: func(ctx context.Context, in testInput) bool {
+			if in.request {
+				return seq.RequestRead(ctx)
+			}
+			return seq.Forward(ctx, in.change)
+		},
+		NextRead: func(context.Context) (Read[testResult], bool) {
+			reads++
+			return func(context.Context) testResult { return testResult{value: "snap"} }, true
+		},
+		Apply: func(context.Context, testResult) bool {
+			applied++
+			return true
+		},
+		Send: func(context.Context, string) bool {
+			return false
+		},
+	})
+	t.Cleanup(seq.Wait)
+
+	require.True(t, seq.RequestRead(ctx))
+	require.True(t, seq.Forward(ctx, "held-change"))
+	require.True(t, seq.RequestRead(ctx)) // sets readAgain
+
+	var res Result[testResult]
+	select {
+	case res = <-seq.Results():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for read result")
+	}
+
+	assert.False(t, seq.Complete(ctx, res), "Complete must return false when flushing a held change fails")
+	assert.Equal(t, 1, applied)
+	assert.Equal(t, 1, reads, "a failed flush must not start the follow-up read")
+}
+
 func TestNew_PanicsWithoutEveryHook(t *testing.T) {
 	full := Hooks[int, int, int]{
 		Handle:   func(context.Context, int) bool { return true },

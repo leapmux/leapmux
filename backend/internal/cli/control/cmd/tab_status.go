@@ -65,9 +65,10 @@ func newTabStatusCommand() *cobra.Command {
 			Run:      runTabStatusSet,
 		}),
 		cli.NewLeaf(cli.Leaf{
-			Use:     "clear <tab> [key]...",
-			Short:   "Remove one or more status entries from a tab",
-			Mutates: true,
+			Use:         "clear <tab> [key]...",
+			Short:       "Remove one or more status entries from a tab",
+			Mutates:     true,
+			Destructive: true,
 			Args: map[string]string{
 				"key": "One or more status keys to clear (default: the default key, or --all for every key).",
 			},
@@ -141,7 +142,7 @@ type tabStatusResult struct {
 // tabStatusRow is a tab's status in a result.
 type tabStatusRow struct {
 	Key             string  `json:"key,omitempty" table:"KEY"`
-	Text            string  `json:"text" table:"STATUS"`
+	Text            string  `json:"text" table:"STATUS,state"`
 	ProgressPercent *uint32 `json:"progress_percent,omitempty" table:"PROGRESS %"`
 	Tone            string  `json:"tone" table:"TONE"`
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 )
 
@@ -31,21 +32,35 @@ var ErrInterrupted = errors.New("interrupted")
 // that waits on the network observes the context, so an interrupt ends it
 // cleanly instead of leaving its connections to the process exit.
 func WithInterrupt(parent context.Context) (context.Context, func()) {
+	return withInterrupt(parent, signal.Notify, signal.Stop)
+}
+
+func withInterrupt(
+	parent context.Context,
+	notify func(chan<- os.Signal, ...os.Signal),
+	stopSignal func(chan<- os.Signal),
+) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(parent)
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	notify(signals, os.Interrupt, syscall.SIGTERM)
 	done := make(chan struct{})
+	var stopOnce sync.Once
 	go func() {
 		select {
 		case <-signals:
+			// Restore default signal delivery immediately so a second
+			// interrupt terminates the process instead of hanging.
+			stopSignal(signals)
 			cancel(ErrInterrupted)
 		case <-done:
 		}
 	}()
 	return ctx, func() {
-		signal.Stop(signals)
-		close(done)
-		cancel(nil)
+		stopOnce.Do(func() {
+			stopSignal(signals)
+			close(done)
+			cancel(nil)
+		})
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,7 +30,7 @@ func TestStartupFailureKeepsReasonWhenLogCannotBeRead(t *testing.T) {
 		Process: lifecycle.ProcessStatus{State: lifecycle.ProcessFailed},
 		Attempt: lifecycle.AttemptStatus{Error: &reason, LogPath: new(t.TempDir())},
 	}
-	err := reportStartupFailure("worker", lifecycle.Paths{}, status)
+	err := reportStartupFailure(io.Discard, "worker", status)
 	require.ErrorContains(t, err, reason)
 }
 

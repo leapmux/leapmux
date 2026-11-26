@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/atomicfile"
 )
@@ -67,7 +68,7 @@ func TestNativeServiceCLIConfiguration(t *testing.T) {
 				environment := nativeServiceCLIEnvironment(account)
 				run := func(verb string) {
 					t.Helper()
-					args := []string{mode.String(), verb, "--config", configuration, "--data-dir", root}
+					args := []string{"daemon", mode.String(), verb, "--config", configuration, "--data-dir", root}
 					if verb == "enable" {
 						args = append(args, "--startup="+string(startup), "--yes")
 					}
@@ -104,16 +105,19 @@ func TestNativeServiceCLIConfiguration(t *testing.T) {
 				assert.False(t, native.Running, "enable must not start the application")
 				assert.Empty(t, native.Failure, "fresh configuration must not report an application failure")
 				assert.NoFileExists(t, lifecycle.PathsOf(root).RuntimeRecord)
-				statusCommand := exec.CommandContext(ctx, binary, mode.String(), "status", "--config", configuration, "--data-dir", root, "--json")
+				statusCommand := exec.CommandContext(ctx, binary, "daemon", mode.String(), "status", "--config", configuration, "--data-dir", root, "--json")
 				statusCommand.Dir, statusCommand.Env = root, environment
 				var statusOutput, statusDiagnostic bytes.Buffer
 				statusCommand.Stdout, statusCommand.Stderr = &statusOutput, &statusDiagnostic
 				statusErr := statusCommand.Run()
 				var exit *exec.ExitError
 				require.ErrorAs(t, statusErr, &exit, statusDiagnostic.String())
-				assert.Equal(t, 3, exit.ExitCode(), "fresh enabled configuration reports the stopped exit code: %s", statusDiagnostic.String())
-				var status lifecycle.Status
-				require.NoError(t, json.Unmarshal(statusOutput.Bytes(), &status), statusOutput.String())
+				assert.Equal(t, cli.ExitStopped, exit.ExitCode(), "fresh enabled configuration reports the stopped exit code: %s", statusDiagnostic.String())
+				var envelope struct {
+					Data lifecycle.Status `json:"data"`
+				}
+				require.NoError(t, json.Unmarshal(statusOutput.Bytes(), &envelope), statusOutput.String())
+				status := envelope.Data
 				assert.True(t, status.Configured)
 				assert.Equal(t, lifecycle.ProcessStopped, status.Process.State)
 				run("disable")

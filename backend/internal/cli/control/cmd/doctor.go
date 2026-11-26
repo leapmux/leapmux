@@ -149,25 +149,26 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 	ctx, cancel := context.WithTimeout(inv.Context, 5*time.Second)
 	defer cancel()
 
-	if c.IsWorkerIPC() {
+	switch hc := c.(type) {
+	case *control.WorkerIPCClient:
 		addCheck(doctorCheck{
 			Name:   "connection",
 			Status: "ok",
 			Detail: "connected through local tab IPC socket",
 		})
-	} else {
+	case *control.HubClient:
 		addCheck(doctorCheck{
 			Name:   "connection",
 			Status: "ok",
-			Detail: "hub " + c.HubURL,
+			Detail: "hub " + hc.HubURL,
 		})
-		user, warning, outcome, checkErr := hubCheck(c)
+		user, warning, outcome, checkErr := hubCheck(hc)
 		switch outcome {
 		case hubCheckConfirmed:
 			detail := fmt.Sprintf("authenticated as %s (id %s)", user.GetUsername(), cli.ShortID(user.GetId()))
 			status := "ok"
 			fix := ""
-			if creds, cerr := control.LoadCredentials(c.HubURL); cerr == nil && creds != nil {
+			if creds, cerr := control.LoadCredentials(hc.HubURL); cerr == nil && creds != nil {
 				if creds.Scope != "" {
 					detail += fmt.Sprintf(", scopes=%s", creds.Scope)
 				}
@@ -182,7 +183,7 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 				}
 				if !creds.RefreshExpiresAt.IsZero() && time.Until(creds.RefreshExpiresAt) <= 24*time.Hour {
 					status = "warn"
-					fix = fmt.Sprintf(`refresh soon with "leapmux auth login --hub %s"`, c.HubURL)
+					fix = fmt.Sprintf(`refresh soon with "leapmux auth login --hub %s"`, hc.HubURL)
 				}
 			}
 			addCheck(doctorCheck{
@@ -193,7 +194,7 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 			})
 			if user.GetIsAdmin() {
 				var netResp leapmuxv1.GetListenStatusResponse
-				if netErr := hubCallUnary(ctx, c, leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure,
+				if netErr := hubCallUnary(ctx, hc, leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure,
 					&leapmuxv1.GetListenStatusRequest{}, &netResp); netErr == nil {
 					var addrs []string
 					for _, b := range netResp.GetBound() {
@@ -214,14 +215,14 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 				Name:   "auth",
 				Status: "warn",
 				Detail: warning,
-				Fix:    fmt.Sprintf(`check that %s is reachable, or run "leapmux auth status --hub %s"`, c.HubURL, c.HubURL),
+				Fix:    fmt.Sprintf(`check that %s is reachable, or run "leapmux auth status --hub %s"`, hc.HubURL, hc.HubURL),
 			})
 		default:
 			addCheck(doctorCheck{
 				Name:   "auth",
 				Status: "fail",
 				Detail: checkErr.Error(),
-				Fix:    fmt.Sprintf(`run "leapmux auth login --hub %s"`, c.HubURL),
+				Fix:    fmt.Sprintf(`run "leapmux auth login --hub %s"`, hc.HubURL),
 			})
 		}
 	}
@@ -258,7 +259,7 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 	}
 
 	// 4. TOFU pin store check (when not inside Worker IPC).
-	if !c.IsWorkerIPC() {
+	if _, isHub := c.(*control.HubClient); isHub {
 		pins, pinErr := openPinStore(inv.Command)
 		if pinErr != nil {
 			addCheck(doctorCheck{
@@ -364,7 +365,7 @@ func checkLocalDaemons(ctx context.Context) doctorCheck {
 	}
 }
 
-func probeDoctorWorkers(ctx context.Context, c *control.Client, workers []*leapmuxv1.Worker) []doctorWorkerCheck {
+func probeDoctorWorkers(ctx context.Context, c control.Peer, workers []*leapmuxv1.Worker) []doctorWorkerCheck {
 	results := make([]doctorWorkerCheck, len(workers))
 	var g errgroup.Group
 	g.SetLimit(8)

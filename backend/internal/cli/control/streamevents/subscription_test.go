@@ -51,6 +51,7 @@ func (h *fakeHandle) Cancel() {
 }
 
 func (h *fakeHandle) Done() <-chan struct{} { return h.done }
+func (h *fakeHandle) EndErr() error         { return nil }
 
 // fakeTransport is an in-memory Transport implementation. Tests
 // drive `pushFrame` to deliver synthetic WatchEventsResponse frames
@@ -1450,7 +1451,7 @@ func TestSubscription_UpdateAfterCancelReturnsClosed(t *testing.T) {
 	err := sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
 	})
-	require.ErrorIs(t, err, errSubscriptionClosed)
+	require.ErrorIs(t, err, ErrSubscriptionClosed)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened),
 		"Update after Cancel must not re-open a stream (no orphan)")
 }
@@ -2035,20 +2036,25 @@ func TestSubscriptionReplayIdentityReportsExhaustionOutsideItsMutex(t *testing.T
 	subscription.mu.Unlock()
 	previousLogger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
-	var warnings int
+	var warnings, rejections int
 	slog.SetDefault(slog.New(&subscriptionLockLogHandler{inspect: func(record slog.Record) {
-		if record.Message != "streamevents: LOOKUP_FAILED retry budget exhausted" {
+		switch record.Message {
+		case "streamevents: LOOKUP_FAILED retry budget exhausted":
+			warnings++
+		case "streamevents: agent watch rejected":
+			rejections++
+		default:
 			return
 		}
-		warnings++
 		unlocked := subscription.mu.TryLock()
-		assert.True(t, unlocked, "a synchronous log handler must receive the warning outside the subscription mutex")
+		assert.True(t, unlocked, "a synchronous log handler must receive %q outside the subscription mutex", record.Message)
 		if unlocked {
 			subscription.mu.Unlock()
 		}
 	}}))
 	pushLookupFailed(transport, "agent")
 	assert.Equal(t, 1, warnings)
+	assert.Equal(t, 1, rejections)
 	assert.True(t, subscription.retryExhaustedLogged)
 }
 
@@ -2186,7 +2192,7 @@ func (t *endingTransport) OpenWatchEvents(context.Context, *leapmuxv1.WatchEvent
 }
 
 // EndErr reports the reason that the handle of the current stream gives,
-// nil for a handle that gives none, and nil after Cancel retired the stream.
+// nil when the handle reports no error, and nil after Cancel retired the stream.
 func TestSubscription_EndErrReportsTheReasonOfTheHandle(t *testing.T) {
 	refused := errors.New("the worker refused the watch")
 	tr := &endingTransport{err: refused}
@@ -2203,5 +2209,280 @@ func TestSubscription_EndErrReportsTheReasonOfTheHandle(t *testing.T) {
 	sub = NewSubscription(plain, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
 	t.Cleanup(sub.Cancel)
 	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
-	assert.NoError(t, sub.EndErr(), "a handle that reports no reason gives none")
+	assert.NoError(t, sub.EndErr(), "a running stream with no end error returns nil")
+
+	// A fresh Update after a failed stream replaces the handle and clears EndErr.
+	tr2 := &fakeTransport{}
+	tr2Sub := NewSubscription(tr2, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(tr2Sub.Cancel)
+	endedDone := make(chan struct{})
+	close(endedDone)
+	tr2Sub.mu.Lock()
+	tr2Sub.handle = &endingHandle{fakeHandle: fakeHandle{cancel: func() {}, done: endedDone}, err: refused}
+	tr2Sub.mu.Unlock()
+	require.ErrorIs(t, tr2Sub.EndErr(), refused)
+	require.NoError(t, tr2Sub.Update(context.Background(), notifyInterest("a-1")))
+	assert.NoError(t, tr2Sub.EndErr(), "a fresh stream after a failed one starts with no end error")
+}
+
+// TestSubscription_OpeningAckCallbackCanCallCancelWithoutDeadlock pins SCAN-19:
+// WithUpdateAck runs outside every lock, including when the opening ack arrives
+// before OpenWatchEvents returns.
+func TestSubscription_OpeningAckCallbackCanCallCancelWithoutDeadlock(t *testing.T) {
+	tr := &openingAckTransport{}
+	var sub *Subscription
+	called := make(chan struct{})
+	sub = NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil,
+		WithUpdateAck(func(*leapmuxv1.WatchUpdateAck) {
+			sub.Cancel()
+			close(called)
+		}))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sub.Update(context.Background(), notifyInterest("a-1"))
+	}()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("Update deadlocked when onUpdateAck called Cancel on an opening ack")
+	}
+	select {
+	case <-called:
+	case <-ctx.Done():
+		t.Fatal("onUpdateAck did not run")
+	}
+}
+
+// blockingRetryTransport blocks the second OpenWatchEvents call until ctx is
+// cancelled, reproducing a LOOKUP_FAILED retry stuck in OpenWatchEvents.
+type blockingRetryTransport struct {
+	fakeTransport
+	secondStarted chan struct{}
+}
+
+func (t *blockingRetryTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
+	onFrame func(*leapmuxv1.WatchEventsResponse),
+) (Handle, error) {
+	if atomic.LoadInt32(&t.callsOpened) >= 1 {
+		close(t.secondStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return t.fakeTransport.OpenWatchEvents(ctx, req, onFrame)
+}
+
+// TestSubscription_CancelUnblocksRetryStuckInOpenWatchEvents pins TRAPS-3:
+// Cancel must cancel the subscription's lifecycle context before taking
+// lifecycleMu so a retry blocked inside OpenWatchEvents unblocks promptly.
+func TestSubscription_CancelUnblocksRetryStuckInOpenWatchEvents(t *testing.T) {
+	tr := &blockingRetryTransport{secondStarted: make(chan struct{})}
+	clk := &armCountingClock{Mock: testutil.NewQuartzMock(t)}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil, WithClock(clk))
+	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
+
+	require.NoError(t, sub.Update(context.Background(), notifyInterest("a-1")))
+
+	// Arm a LOOKUP_FAILED retry, then drop the handle so the retry's Update
+	// takes the OpenWatchEvents path rather than revising the live handle.
+	pushLookupFailed(&tr.fakeTransport, "a-1")
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	tr.mu.Lock()
+	h := tr.handle
+	tr.mu.Unlock()
+	h.Cancel()
+	<-h.Done()
+
+	clk.Advance(delay).MustWait(ctx)
+
+	select {
+	case <-tr.secondStarted:
+	case <-ctx.Done():
+		t.Fatal("retry did not reach OpenWatchEvents")
+	}
+
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		sub.Cancel()
+	}()
+	select {
+	case <-cancelDone:
+	case <-ctx.Done():
+		t.Fatal("Cancel blocked waiting for a retry stuck in OpenWatchEvents")
+	}
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+}
+
+// TestSubscription_NilCursorsDoNotPanic pins TRAPS-5: passing nil agent or
+// terminal cursors must not panic when agent or terminal frames arrive.
+func TestSubscription_NilCursorsDoNotPanic(t *testing.T) {
+	tr := &fakeTransport{}
+	var agentCount, termCount, resetCount int
+	sub := NewSubscription(tr, nil, nil,
+		func(*leapmuxv1.AgentEvent) { agentCount++ },
+		func(*leapmuxv1.TerminalEvent) { termCount++ },
+		func(string) { resetCount++ })
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
+		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-1"}},
+	}))
+
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+			AgentId: "a-1",
+			Event:   &leapmuxv1.AgentEvent_MessagesRetracted{MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{3}}},
+		}},
+	})
+	pushAgentMessage(tr, "a-1", 4)
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				IsSnapshot: true,
+				Data:       []byte("snap"),
+				EndOffset:  4,
+			}},
+		}},
+	})
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:      []byte("live"),
+				EndOffset: 8,
+			}},
+		}},
+	})
+
+	assert.Equal(t, 2, agentCount)
+	assert.Equal(t, 2, termCount)
+	assert.Equal(t, 1, resetCount)
+}
+
+func TestSubscription_UpdateRejectsNilRequestAndNilAgentEntry(t *testing.T) {
+	tr := &fakeTransport{}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(sub.Cancel)
+
+	require.ErrorContains(t, sub.Update(t.Context(), nil), "watch interest is absent")
+	require.ErrorContains(t, sub.Update(t.Context(), &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{nil},
+	}), "watch agent entry is absent")
+	assert.Zero(t, atomic.LoadInt32(&tr.callsOpened))
+}
+
+func TestSubscription_DispatchUpdateAckSingleLockStaleTerminalAndConcurrentRejections(t *testing.T) {
+	tr := &fakeTransport{}
+	clk := &armCountingClock{Mock: testutil.NewQuartzMock(t)}
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
+
+	var ackCount atomic.Int32
+	var concurrentPhase atomic.Bool
+	var sub *Subscription
+	checkOutsideLock := func(where string) {
+		if concurrentPhase.Load() {
+			sub.mu.Lock()
+			_ = sub.generation
+			sub.mu.Unlock()
+			return
+		}
+		unlocked := sub.mu.TryLock()
+		assert.True(t, unlocked, "%s must run outside s.mu", where)
+		if unlocked {
+			sub.mu.Unlock()
+		}
+	}
+	sub = NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil,
+		WithClock(clk),
+		WithUpdateAck(func(*leapmuxv1.WatchUpdateAck) {
+			checkOutsideLock("onUpdateAck")
+			ackCount.Add(1)
+		}),
+	)
+	sub.retry = fastRetry()
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(t.Context(), &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-1"}},
+	}))
+	require.NoError(t, sub.Update(t.Context(), &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-2"}},
+	}))
+	currentID := tr.lastUpdate().GetUpdateId()
+
+	previousLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	var termRejectLogs atomic.Int32
+	slog.SetDefault(slog.New(&subscriptionLockLogHandler{inspect: func(record slog.Record) {
+		if record.Message == "streamevents: terminal watch rejected" {
+			checkOutsideLock("rejection logging")
+			termRejectLogs.Add(1)
+		}
+	}}))
+
+	// Nil ack and stale/future/zero update IDs must neither log nor notify nor arm.
+	sub.dispatchUpdateAck(nil)
+	for _, staleID := range []uint64{0, currentID - 1, currentID + 1} {
+		tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+			Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+				UpdateId: staleID,
+				RejectedTerminals: []*leapmuxv1.WatchRejection{{
+					EntityId: "t-2",
+					Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+				}},
+			}},
+		})
+	}
+	assert.Zero(t, termRejectLogs.Load())
+	assert.Zero(t, ackCount.Load())
+	assert.Zero(t, clk.armCount())
+
+	// Current ack for dropped terminal logs and notifies, but arms no retry.
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+			UpdateId: currentID,
+			RejectedTerminals: []*leapmuxv1.WatchRejection{{
+				EntityId: "t-1",
+				Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+			}},
+		}},
+	})
+	assert.Equal(t, int32(1), termRejectLogs.Load())
+	assert.Equal(t, int32(1), ackCount.Load())
+	assert.Zero(t, clk.armCount())
+
+	// Concurrent current acks for the wanted terminal coalesce to a single retry timer.
+	concurrentPhase.Store(true)
+	const workers = 6
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+				Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+					UpdateId: currentID,
+					RejectedTerminals: []*leapmuxv1.WatchRejection{{
+						EntityId: "t-2",
+						Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+					}},
+				}},
+			})
+		}()
+	}
+	wg.Wait()
+
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	assert.Equal(t, 1, clk.armCount(), "concurrent rejections must coalesce into one retry timer")
+	assert.Equal(t, int32(1+workers), ackCount.Load())
+	assert.Equal(t, int32(1+workers), termRejectLogs.Load())
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 }

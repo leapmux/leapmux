@@ -70,7 +70,7 @@ type gitCommitRow struct {
 	ShortHash   string `json:"short_hash" table:"HASH"`
 	AuthorName  string `json:"author_name" table:"AUTHOR"`
 	AuthorEmail string `json:"author_email,omitempty"`
-	AuthoredAt  string `json:"authored_at" table:"DATE"`
+	AuthoredAt  string `json:"authored_at" table:"DATE,dim"`
 	Subject     string `json:"subject" table:"SUBJECT"`
 }
 

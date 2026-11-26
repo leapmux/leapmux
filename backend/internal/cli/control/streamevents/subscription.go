@@ -24,10 +24,6 @@ import (
 // subscribe failure — not surface it as an error to the user.
 var ErrSubscriptionClosed = errors.New("streamevents: subscription is closed")
 
-// errSubscriptionClosed aliases ErrSubscriptionClosed for in-package use so the
-// retry path's errors.Is reads as a local sentinel.
-var errSubscriptionClosed = ErrSubscriptionClosed
-
 // Subscription owns the cursor map plus one in-flight Transport
 // subscription. Callers can `Update(req)` to revise the entry list on
 // the same stream; `Cancel()` to stop; `Done()` to wait for the
@@ -287,9 +283,9 @@ func prepareReplayEntries(req, previous *leapmuxv1.WatchEventsRequest, fresh boo
 }
 
 // applyFreshOpen installs the handle and starts the successful opening's retry epoch.
-// It processes a retained exact ACK after it resets that epoch and releases s.mu.
+// It returns any retained exact ACK so the caller can dispatch it outside every lock.
 // A transport reconnect that bypasses Update establishes no new retry epoch.
-func (s *Subscription) applyFreshOpen(h Handle, req *leapmuxv1.WatchEventsRequest) {
+func (s *Subscription) applyFreshOpen(h Handle, req *leapmuxv1.WatchEventsRequest) *leapmuxv1.WatchUpdateAck {
 	s.mu.Lock()
 	s.generation++
 	s.handle = h
@@ -301,16 +297,7 @@ func (s *Subscription) applyFreshOpen(h Handle, req *leapmuxv1.WatchEventsReques
 	ack := s.openingAck
 	s.openingAck = nil
 	s.mu.Unlock()
-	if ack != nil {
-		s.dispatchUpdateAck(ack)
-	}
-}
-
-// applyRevision records requested interest before transport can deliver its ACK.
-// The caller holds s.mu and restores the previous interest after a failed transmission.
-// A revision leaves the retry budget and generation unchanged.
-func (s *Subscription) applyRevision(req *leapmuxv1.WatchEventsRequest) {
-	s.lastReq = proto.Clone(req).(*leapmuxv1.WatchEventsRequest)
+	return ack
 }
 
 // Update opens (if needed) or revises the WatchEvents stream with `req`
@@ -321,6 +308,17 @@ func (s *Subscription) applyRevision(req *leapmuxv1.WatchEventsRequest) {
 // dropped and a fresh stream is opened. Without that, reconnect loops that
 // wait on Done then call Update would revise a retired correlation id forever.
 func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsRequest) error {
+	openingAck, err := s.updateLocked(ctx, req)
+	if err != nil {
+		return err
+	}
+	if openingAck != nil {
+		s.dispatchUpdateAck(openingAck)
+	}
+	return nil
+}
+
+func (s *Subscription) updateLocked(ctx context.Context, req *leapmuxv1.WatchEventsRequest) (*leapmuxv1.WatchUpdateAck, error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
@@ -331,14 +329,14 @@ func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsReq
 	// started (closed=false, the open is legit) or fully returned (closed=true,
 	// the open is an orphan).
 	if s.closed {
-		return errSubscriptionClosed
+		return nil, ErrSubscriptionClosed
 	}
 	if req == nil {
-		return errors.New("streamevents: watch interest is absent")
+		return nil, errors.New("streamevents: watch interest is absent")
 	}
 	for _, entry := range req.GetAgents() {
 		if entry == nil {
-			return errors.New("streamevents: watch agent entry is absent")
+			return nil, errors.New("streamevents: watch agent entry is absent")
 		}
 	}
 	req = proto.Clone(req).(*leapmuxv1.WatchEventsRequest)
@@ -364,10 +362,10 @@ func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsReq
 	previousRequest, previousInflight := s.lastReq, s.inflightUpdateId
 	if err := s.assignUpdateId(req); err != nil {
 		s.mu.Unlock()
-		return err
+		return nil, err
 	}
 	prepareReplayEntries(req, previousRequest, handle == nil)
-	s.applyRevision(req)
+	s.lastReq = proto.Clone(req).(*leapmuxv1.WatchEventsRequest)
 	if handle == nil {
 		s.opening = true
 		s.openingAck = nil
@@ -381,10 +379,9 @@ func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsReq
 			s.opening = false
 			s.openingAck = nil
 			s.mu.Unlock()
-			return fmt.Errorf("open watch events: %w", err)
+			return nil, fmt.Errorf("open watch events: %w", err)
 		}
-		s.applyFreshOpen(h, req)
-		return nil
+		return s.applyFreshOpen(h, req), nil
 	}
 	if err := handle.Update(req); err != nil {
 		// Roll back the inflight id: assignUpdateId bumped it before the send,
@@ -396,15 +393,19 @@ func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsReq
 		s.inflightUpdateId = previousInflight
 		s.lastReq = previousRequest
 		s.mu.Unlock()
-		return fmt.Errorf("update watch events: %w", err)
+		return nil, fmt.Errorf("update watch events: %w", err)
 	}
-	return nil
+	return nil, nil
 }
 
 // Cancel stops the in-flight subscription, if any. Safe to call from
 // any goroutine; idempotent. After Cancel returns, Update always refuses
-// with errSubscriptionClosed for the life of the Subscription.
+// with ErrSubscriptionClosed for the life of the Subscription.
 func (s *Subscription) Cancel() {
+	// Cancel retryCtx before taking lifecycleMu so a LOOKUP_FAILED retry
+	// blocked inside OpenWatchEvents unblocks and releases lifecycleMu
+	// promptly. CancelFunc is safe to call concurrently and repeatedly.
+	s.retryCancel()
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.closed {
@@ -414,16 +415,12 @@ func (s *Subscription) Cancel() {
 
 	// Bump the generation so in-flight LOOKUP_FAILED retry goroutines see the
 	// subscription has moved on when their timer fires, and refund their slot
-	// instead of re-opening a stream on a torn-down subscription. Cancel the
-	// retryCtx so an armed retry wakes immediately instead of lingering for up
-	// to lookupRetryMaxInterval after shutdown (a fresh-open does NOT cancel
-	// retryCtx — only Cancel does).
+	// instead of re-opening a stream on a torn-down subscription.
 	s.mu.Lock()
 	s.generation++
 	handle := s.handle
 	s.handle = nil
 	s.mu.Unlock()
-	s.retryCancel()
 	if handle != nil {
 		handle.Cancel()
 		<-handle.Done()
@@ -449,16 +446,15 @@ func (s *Subscription) Done() <-chan struct{} {
 // error that the Worker answered, or the failure of the transport. Read it
 // after Done closes and before the next Update or Cancel, which replace the
 // stream. It returns nil while the stream runs, after an end without an
-// error, after Cancel, and for a transport whose handle reports no reason.
+// error, and after Cancel.
 func (s *Subscription) EndErr() error {
 	s.mu.Lock()
 	handle := s.handle
 	s.mu.Unlock()
-	reporter, ok := handle.(endReporter)
-	if !ok {
+	if handle == nil {
 		return nil
 	}
-	return reporter.EndErr()
+	return handle.EndErr()
 }
 
 // dispatch updates cursors and sends typed events to the caller's handlers.
@@ -477,23 +473,13 @@ func (s *Subscription) dispatch(resp *leapmuxv1.WatchEventsResponse) {
 	}
 }
 
-// logRejections logs each rejection at Debug and returns the entity_ids of the
-// ones carrying LOOKUP_FAILED — the one reason that arms a retry. The agent and
-// terminal rejection lists share this shape; the kind labels the log line. The
-// caller then gates the retry on whether any rejected entity is still in the
-// current interest (mirroring the frontend's shouldRetryRejection+tabExists),
-// so a LOOKUP_FAILED for an entity the CLI already stopped caring about does
-// not burn the shared budget.
-func logRejections(kind string, rejections []*leapmuxv1.WatchRejection) []string {
-	var lookupFailed []string
+// logRejections logs each rejection at Debug. The agent and terminal rejection
+// lists share this shape; kind labels the log line.
+func logRejections(kind string, rejections []*leapmuxv1.WatchRejection) {
 	for _, r := range rejections {
 		slog.Debug("streamevents: "+kind+" watch rejected",
 			"entity_id", r.GetEntityId(), "reason", r.GetReason().String())
-		if r.GetReason() == leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED {
-			lookupFailed = append(lookupFailed, r.GetEntityId())
-		}
 	}
-	return lookupFailed
 }
 
 // wantAgent reports whether agentID is in req's current agent interest. Mirrors
@@ -546,22 +532,9 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 	if ack == nil {
 		return
 	}
-	s.mu.Lock()
-	if ack.GetUpdateId() == 0 || s.inflightUpdateId == 0 || ack.GetUpdateId() != s.inflightUpdateId {
-		s.mu.Unlock()
-		return
-	}
-	if s.opening {
-		s.openingAck = proto.Clone(ack).(*leapmuxv1.WatchUpdateAck)
-		s.mu.Unlock()
-		return
-	}
-	s.mu.Unlock()
-	logRejections("agent", ack.GetRejectedAgents())
-	logRejections("terminal", ack.GetRejectedTerminals())
 	// Pending actions deferred until after s.mu is released, so the lock is held
-	// for the shortest scope and neither the slog.Warn nor the retry goroutine
-	// (whose Update may block in OpenWatchEvents) runs under it.
+	// for the shortest scope and neither the slog calls nor the retry goroutine
+	// (whose Update may block in OpenWatchEvents) nor onUpdateAck runs under it.
 	var (
 		armed    bool
 		armGen   uint64
@@ -570,12 +543,17 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 		logOnce  bool
 		attempts int
 		// acknowledgesCurrent is set once the ack answers the interest in
-		// force, so the deferred call hands it to onUpdateAck.
+		// force, so the deferred call logs its rejections and hands it to
+		// onUpdateAck.
 		acknowledgesCurrent bool
 	)
 	s.mu.Lock()
 	defer func() {
 		s.mu.Unlock()
+		if acknowledgesCurrent {
+			logRejections("agent", ack.GetRejectedAgents())
+			logRejections("terminal", ack.GetRejectedTerminals())
+		}
 		if armed {
 			go s.armLookupRetry(s.retryCtx, delay, armGen)
 		}
@@ -584,13 +562,15 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 				"attempts", attempts)
 		}
 		if acknowledgesCurrent && s.onUpdateAck != nil {
-			s.onUpdateAck(proto.Clone(ack).(*leapmuxv1.WatchUpdateAck))
+			s.onUpdateAck(ack)
 		}
 	}()
-	// Repeat the exact current-ID check after the external log handlers return.
-	// A newer revision can replace the interest while those handlers run.
 	ackId := ack.GetUpdateId()
 	if ackId == 0 || s.inflightUpdateId == 0 || ackId != s.inflightUpdateId {
+		return
+	}
+	if s.opening {
+		s.openingAck = proto.Clone(ack).(*leapmuxv1.WatchUpdateAck)
 		return
 	}
 	acknowledgesCurrent = true
@@ -710,13 +690,13 @@ func (s *Subscription) armLookupRetry(retryCtx context.Context, delay time.Durat
 	if req == nil {
 		return
 	}
-	if err := s.Update(context.Background(), req); err != nil {
-		// errSubscriptionClosed is expected when Cancel won the race after
-		// the generation check passed; the re-open was correctly refused.
-		// Surface every other failure: this is the recovery path the budget
-		// drives, and a silent drop would mask the transport error that
-		// doomed the retry.
-		if !errors.Is(err, errSubscriptionClosed) {
+	if err := s.Update(retryCtx, req); err != nil {
+		// ErrSubscriptionClosed (or a cancelled retryCtx) is expected when
+		// Cancel won the race after the generation check passed; the re-open
+		// was correctly refused or aborted. Surface every other failure: this
+		// is the recovery path the budget drives, and a silent drop would mask
+		// the transport error that doomed the retry.
+		if !errors.Is(err, ErrSubscriptionClosed) && retryCtx.Err() == nil {
 			slog.Warn("streamevents: LOOKUP_FAILED retry Update failed",
 				"err", err)
 		}
@@ -730,12 +710,14 @@ func (s *Subscription) dispatchAgentEvent(ae *leapmuxv1.AgentEvent) {
 	if ae == nil {
 		return
 	}
-	if retraction := ae.GetMessagesRetracted(); retraction != nil {
-		s.agents.recordRetraction(ae.GetAgentId(), retraction.GetSeqs())
-	} else if msg := ae.GetAgentMessage(); msg != nil {
-		if seq := msg.GetSeq(); seq >= 0 {
-			if !s.agents.Advance(ae.GetAgentId(), seq) {
-				return
+	if s.agents != nil {
+		if retraction := ae.GetMessagesRetracted(); retraction != nil {
+			s.agents.recordRetraction(ae.GetAgentId(), retraction.GetSeqs())
+		} else if msg := ae.GetAgentMessage(); msg != nil {
+			if seq := msg.GetSeq(); seq >= 0 {
+				if !s.agents.Advance(ae.GetAgentId(), seq) {
+					return
+				}
 			}
 		}
 	}
@@ -779,7 +761,9 @@ func (s *Subscription) acceptTerminalData(event *leapmuxv1.TerminalEvent, data *
 		return nil
 	}
 	if data.GetIsSnapshot() {
-		s.terminals.replace(id, end)
+		if s.terminals != nil {
+			s.terminals.replace(id, end)
+		}
 		if s.onCursorReset != nil {
 			s.onCursorReset(id)
 		}
@@ -788,6 +772,9 @@ func (s *Subscription) acceptTerminalData(event *leapmuxv1.TerminalEvent, data *
 	start := end - int64(len(data.GetData()))
 	if start < 0 {
 		return nil
+	}
+	if s.terminals == nil {
+		return event
 	}
 	previous, advanced := s.terminals.advanceFrom(id, end)
 	if !advanced {

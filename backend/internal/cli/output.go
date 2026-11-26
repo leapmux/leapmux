@@ -1,9 +1,10 @@
 package cli
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 )
 
@@ -22,6 +23,8 @@ const (
 	FormatNDJSON
 	// FormatTSV prints tab-separated columns without padding or ANSI escapes.
 	FormatTSV
+	// FormatQuiet prints only the ids of a result, one per line.
+	FormatQuiet
 )
 
 // ParseFormat parses --format text|json|ndjson|tsv.
@@ -46,8 +49,6 @@ type Printer struct {
 	Out    io.Writer
 	Err    io.Writer
 	Format Format
-	// Quiet prints only the ids of a result, one per line.
-	Quiet bool
 	// Wide disables table cell truncation.
 	Wide bool
 	// NoHeader omits the header row from table and TSV output.
@@ -56,6 +57,9 @@ type Printer struct {
 	Fields []string
 	// Color controls ANSI styling on interactive TTYs.
 	Color ColorMode
+	// StateClassifier maps values in `,state` table columns to a StateTone.
+	// When nil, Printer falls back to SetDefaultStateClassifier.
+	StateClassifier StateClassifier
 	// oneLineResult is the default text form for an ordinary mutation.
 	oneLineResult bool
 }
@@ -69,25 +73,29 @@ func (p *Printer) Result(v any) error {
 	if isNil(v) {
 		return nil
 	}
-	if p.Quiet {
-		return writeIDs(p.Out, v)
-	}
 	switch p.Format {
+	case FormatQuiet:
+		return writeIDs(p.Out, v)
 	case FormatJSON:
-		if len(p.Fields) > 0 {
-			return writeEnvelope(p.Out, "data", projectValueFields(v, p.Fields))
-		}
-		return writeEnvelope(p.Out, "data", v)
+		return p.writeJSONData(v)
 	case FormatNDJSON:
 		return writeNDJSON(p.Out, v, p.Fields)
 	case FormatTSV:
 		return renderTSV(p.Out, v, p.tableOpts())
 	default:
+		opts := p.tableOpts()
 		if p.oneLineResult && len(p.Fields) == 0 {
-			return renderSingleLine(p.Out, v)
+			return renderSingleLine(p.Out, v, opts)
 		}
-		return renderTextOpts(p.Out, v, p.tableOpts())
+		return renderTextOpts(p.Out, v, opts)
 	}
+}
+
+func (p *Printer) writeJSONData(v any) error {
+	if len(p.Fields) > 0 {
+		v = projectValueFields(v, p.Fields)
+	}
+	return writeEnvelope(p.Out, "data", v)
 }
 
 func (p *Printer) tableOpts() tableOptions {
@@ -96,7 +104,7 @@ func (p *Printer) tableOpts() tableOptions {
 		noHeader:  p.NoHeader,
 		fields:    p.Fields,
 		termWidth: TerminalWidth(p.Out),
-		style:     newStyler(p.Out, p.Color),
+		style:     newStylerWithClassifier(p.Out, p.Color, p.StateClassifier),
 	}
 }
 
@@ -105,45 +113,30 @@ func (p *Printer) tableOpts() tableOptions {
 // it is one unwrapped JSON object per line. In text it is the event's TextLine
 // when the event has one, and compact JSON otherwise.
 func (p *Printer) Event(v any) error {
-	if p.Format == FormatJSON {
-		if len(p.Fields) > 0 {
-			return writeEnvelope(p.Out, "data", projectValueFields(v, p.Fields))
-		}
-		return writeEnvelope(p.Out, "data", v)
-	}
-	if p.Format == FormatNDJSON {
+	switch p.Format {
+	case FormatJSON:
+		return p.writeJSONData(v)
+	case FormatNDJSON:
 		if len(p.Fields) > 0 {
 			v = projectValueFields(v, p.Fields)
 		}
-		raw, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		raw = append(raw, '\n')
-		_, err = p.Out.Write(raw)
-		return err
-	}
-	if p.Quiet {
+		return writeJSONLine(p.Out, v)
+	case FormatQuiet:
 		return writeIDs(p.Out, v)
-	}
-	if p.Format == FormatTSV {
-		return renderTSVEvent(p.Out, v, p.tableOpts())
-	}
-	if line, ok := v.(TextLiner); ok {
-		text := line.TextLine()
-		if strings.Contains(text, "\n") {
-			_, err := fmt.Fprintln(p.Out, SanitizeTerminalText(text))
+	case FormatTSV:
+		return renderTSVEvent(p.Out, v, tableOptions{fields: p.Fields})
+	default:
+		if line, ok := v.(TextLiner); ok {
+			text := line.TextLine()
+			if strings.Contains(text, "\n") {
+				_, err := fmt.Fprintln(p.Out, SanitizeTerminalText(text))
+				return err
+			}
+			_, err := fmt.Fprintln(p.Out, SanitizeSingleLine(text))
 			return err
 		}
-		_, err := fmt.Fprintln(p.Out, SanitizeSingleLine(text))
-		return err
+		return writeJSONLine(p.Out, v)
 	}
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(p.Out, string(raw))
-	return err
 }
 
 // Notice prints one line of prose for a person on stderr: progress, or a
@@ -162,8 +155,8 @@ func (p *Printer) Failure(e *Error) {
 	if e == nil {
 		return
 	}
-	st := newStyler(p.Err, p.Color)
-	if p.Format != FormatText || p.Quiet {
+	st := newStylerWithClassifier(p.Err, p.Color, p.StateClassifier)
+	if p.Format != FormatText {
 		st.enabled = false
 	}
 	_, _ = fmt.Fprintf(p.Err, "%s %s: %s\n", st.errorPrefix(), SanitizeSingleLine(string(e.Code)), SanitizeTerminalText(e.Message))
@@ -180,7 +173,7 @@ func (p *Printer) Failure(e *Error) {
 	}
 	if len(e.Candidates) > 0 {
 		_, _ = fmt.Fprintln(p.Err, "candidates:")
-		_ = writeTableOpts(indentWriter(p.Err, "  "), sliceOf(e.Candidates), tableOptions{style: st})
+		_ = writeTableOpts(indentWriter(p.Err, "  "), toNode(reflect.ValueOf(e.Candidates)), tableOptions{style: st})
 	}
 	for _, hint := range e.Hints {
 		_, _ = fmt.Fprintf(p.Err, "%s %s\n", st.hintPrefix(), SanitizeTerminalText(hint))
@@ -195,6 +188,19 @@ type errorEnvelope struct {
 	Retryable  bool          `json:"retryable"`
 	Candidates []Candidate   `json:"candidates,omitempty"`
 	Receipt    *RetryReceipt `json:"receipt,omitempty"`
+}
+
+// TableOptions holds rendering options passed to an OptionsTextRenderer so
+// custom table views honor --wide, --no-header, --color, and terminal width.
+type TableOptions struct {
+	opts tableOptions
+}
+
+// OptionsTextRenderer is an optional alternative to TextRenderer for values
+// that embed aligned tables and want to honor --wide, --no-header, --color,
+// and TTY column width.
+type OptionsTextRenderer interface {
+	RenderTextWithOptions(w io.Writer, opts TableOptions) error
 }
 
 // TextRenderer is a result that renders its own text form. Implement it only
@@ -224,17 +230,6 @@ type QuietRenderer interface {
 	QuietLines() []string
 }
 
-// writeEnvelope writes {"<key>": v} as one line of compact JSON.
-func writeEnvelope(w io.Writer, key string, v any) error {
-	raw, err := json.Marshal(map[string]any{key: v})
-	if err != nil {
-		return err
-	}
-	raw = append(raw, '\n')
-	_, err = w.Write(raw)
-	return err
-}
-
 // indentWriter prefixes each line that w receives with prefix.
 func indentWriter(w io.Writer, prefix string) io.Writer {
 	return &prefixWriter{w: w, prefix: prefix, atLineStart: true}
@@ -247,16 +242,49 @@ type prefixWriter struct {
 }
 
 func (p *prefixWriter) Write(b []byte) (int, error) {
-	var sb strings.Builder
-	for _, c := range b {
-		if p.atLineStart && c != '\n' {
-			sb.WriteString(p.prefix)
+	written := 0
+	for len(b) > 0 {
+		if p.atLineStart {
+			if b[0] == '\n' {
+				n, err := p.w.Write(b[:1])
+				written += n
+				if err != nil {
+					return written, err
+				}
+				if n < 1 {
+					return written, io.ErrShortWrite
+				}
+				b = b[1:]
+				continue
+			}
+			if p.prefix != "" {
+				n, err := io.WriteString(p.w, p.prefix)
+				if err != nil {
+					return written, err
+				}
+				if n < len(p.prefix) {
+					return written, io.ErrShortWrite
+				}
+			}
+			p.atLineStart = false
 		}
-		sb.WriteByte(c)
-		p.atLineStart = c == '\n'
+		idx := bytes.IndexByte(b, '\n')
+		chunk := b
+		if idx >= 0 {
+			chunk = b[:idx+1]
+		}
+		n, err := p.w.Write(chunk)
+		written += n
+		if idx >= 0 && n == len(chunk) {
+			p.atLineStart = true
+		}
+		if err != nil {
+			return written, err
+		}
+		if n < len(chunk) {
+			return written, io.ErrShortWrite
+		}
+		b = b[len(chunk):]
 	}
-	if _, err := io.WriteString(p.w, sb.String()); err != nil {
-		return 0, err
-	}
-	return len(b), nil
+	return written, nil
 }

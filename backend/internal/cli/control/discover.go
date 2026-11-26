@@ -3,9 +3,9 @@ package control
 import (
 	"context"
 	"os"
-	"os/user"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/leapmux/leapmux/locallisten"
@@ -14,7 +14,9 @@ import (
 const localHubProbeTimeout = 150 * time.Millisecond
 
 // DiscoverLocalHub probes local solo, dev, and standalone Hub IPC endpoints
-// with a fast liveness check so commands work out of the box after `leapmux up`.
+// concurrently under one shared deadline so commands work out of the box after
+// `leapmux up`. Priority order is deterministic: solo, then dev, then
+// standalone.
 //
 // On Unix, solo and dev Hubs bind `<config-parent>/{solo,dev}/hub/hub.sock`
 // (and standalone Hub binds `<config-parent>/hub/hub.sock`), staying isolated
@@ -26,9 +28,47 @@ func DiscoverLocalHub() string {
 		return ""
 	}
 	parent := filepath.Dir(dir)
-	for _, candidate := range localHubCandidates(parent) {
-		if isLocalIPCLive(candidate) {
-			return candidate
+	candidates := localHubCandidates(parent)
+	if len(candidates) == 0 {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), localHubProbeTimeout)
+	defer cancel()
+	if len(candidates) == 1 {
+		if isLocalIPCLive(ctx, candidates[0]) {
+			return candidates[0]
+		}
+		return ""
+	}
+
+	type probeResult struct {
+		index int
+		live  bool
+	}
+	results := make(chan probeResult, len(candidates))
+	var wg sync.WaitGroup
+	for i, candidate := range candidates {
+		wg.Go(func() {
+			results <- probeResult{index: i, live: isLocalIPCLive(ctx, candidate)}
+		})
+	}
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+
+	done := make([]bool, len(candidates))
+	live := make([]bool, len(candidates))
+	next := 0
+	for range candidates {
+		r := <-results
+		done[r.index] = true
+		live[r.index] = r.live
+		for next < len(candidates) && done[next] {
+			if live[next] {
+				return candidates[next]
+			}
+			next++
 		}
 	}
 	return ""
@@ -41,8 +81,8 @@ func localHubCandidates(configParent string) []string {
 		if os.Getenv("LEAPMUX_CONTROL_CONFIG_DIR") != "" {
 			return nil
 		}
-		if u, err := user.Current(); err == nil && u.Uid != "" {
-			return []string{"npipe:leapmux-hub-" + u.Uid}
+		if addr, err := locallisten.DefaultHubAddress(""); err == nil && addr != "" {
+			return []string{addr}
 		}
 		return nil
 	}
@@ -61,30 +101,31 @@ func localHubCandidates(configParent string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, root := range roots {
-		for _, sock := range []string{
-			filepath.Join(root, "solo", "hub", "hub.sock"),
-			filepath.Join(root, "dev", "hub", "hub.sock"),
-			filepath.Join(root, "hub", "hub.sock"),
+		for _, dataDir := range []string{
+			filepath.Join(root, "solo", "hub"),
+			filepath.Join(root, "dev", "hub"),
+			filepath.Join(root, "hub"),
 		} {
+			sock := locallisten.DefaultHubSocketPath(dataDir)
 			if seen[sock] {
 				continue
 			}
 			seen[sock] = true
 			if _, err := os.Stat(sock); err == nil {
-				out = append(out, "unix:"+sock)
+				if addr, err := locallisten.DefaultHubAddress(dataDir); err == nil {
+					out = append(out, addr)
+				}
 			}
 		}
 	}
 	return out
 }
 
-func isLocalIPCLive(addr string) bool {
+func isLocalIPCLive(ctx context.Context, addr string) bool {
 	dial, err := locallisten.Dialer(addr)
 	if err != nil {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), localHubProbeTimeout)
-	defer cancel()
 	conn, err := dial(ctx)
 	if err != nil {
 		return false

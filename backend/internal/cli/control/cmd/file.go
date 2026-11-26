@@ -13,7 +13,9 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // readLimitUsage is the help text of the --limit flag of `file read` and
@@ -127,7 +129,7 @@ type fileInfo struct {
 	Path        string `json:"path"`
 	IsDir       bool   `json:"is_dir" table:"DIR"`
 	Size        int64  `json:"size" table:"SIZE"`
-	ModTime     string `json:"mod_time,omitempty" table:"MODIFIED"`
+	ModTime     string `json:"mod_time,omitempty" table:"MODIFIED,dim"`
 	Permissions string `json:"permissions,omitempty" table:"MODE"`
 	Hidden      bool   `json:"hidden,omitempty"`
 }
@@ -228,9 +230,15 @@ func (r fileListResult) QuietLines() []string {
 
 func localCwdFallback(inv *cli.Invocation) (string, bool) {
 	if s, serr := openSession(inv); serr == nil {
-		hubURL := s.c.HubURL
+		isLocal := false
+		switch c := s.c.(type) {
+		case *control.WorkerIPCClient:
+			isLocal = true
+		case *control.HubClient:
+			isLocal = locallisten.IsLocal(c.HubURL)
+		}
 		s.Close()
-		if strings.HasPrefix(hubURL, "unix:") || strings.HasPrefix(hubURL, "npipe:") {
+		if isLocal {
 			if cwd, gerr := os.Getwd(); gerr == nil && cwd != "" {
 				return cwd, true
 			}

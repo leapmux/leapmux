@@ -201,3 +201,177 @@ func TestCheckTree_RequireFlagGroupsAndTargetCompletion(t *testing.T) {
 	})
 	assert.Empty(t, r2.failures, r2.all())
 }
+
+func TestCheckTree_DoesNotMutateLiveFlagsAndRejectsDisallowedInheritedFlags(t *testing.T) {
+	var worktreeVal string
+	leaf := cli.NewLeaf(cli.Leaf{
+		Use:      "close <tab>",
+		Short:    "Close a tab",
+		Mutates:  true,
+		Args:     map[string]string{"tab": "A tab id."},
+		Examples: []cli.Example{{Command: "tool tab close 87a19d5f --worktree keep --json"}},
+		Flags: func(fs *pflag.FlagSet) {
+			fs.StringVar(&worktreeVal, "worktree", "default", "what happens to the worktree")
+		},
+		Run: noop,
+	})
+	root := cli.Group("tool", "A tool", cli.Group("tab", "Tabs", leaf))
+	root.PersistentFlags().Bool("json", false, "print JSON")
+	root.PersistentFlags().String("hub", "", "hub URL")
+
+	r := &recorder{}
+	CheckTree(r, root, rules)
+	assert.Empty(t, r.failures, r.all())
+
+	// Parsing examples must not mutate live flag values or Changed bits.
+	assert.Equal(t, "default", worktreeVal)
+	assert.False(t, leaf.Flags().Lookup("worktree").Changed)
+	assert.False(t, root.PersistentFlags().Lookup("json").Changed)
+	assert.Equal(t, "false", root.PersistentFlags().Lookup("json").Value.String())
+
+	// Examples that pass an inherited flag disallowed on the leaf must fail.
+	offline := cli.NewLeaf(cli.Leaf{
+		Use:      "status",
+		Short:    "Show local status",
+		Examples: []cli.Example{{Command: "tool local status --hub https://hub.example"}},
+		Run:      noop,
+	})
+	localGroup := cli.Group("local", "Local commands", offline)
+	cli.DisallowInheritedFlags(localGroup, "hub")
+	root2 := cli.Group("tool", "A tool", localGroup)
+	root2.PersistentFlags().String("hub", "", "hub URL")
+
+	r2 := &recorder{}
+	CheckTree(r2, root2, TreeRules{})
+	assert.Contains(t, r2.all(), "does not parse")
+}
+
+func TestCheckTree_ExampleRepeatedFlagsShorthandDisallowedAndTypedValues(t *testing.T) {
+	t.Run("repeated flags parse cleanly without mutating live slices", func(t *testing.T) {
+		var liveTags []string
+		leaf := cli.NewLeaf(cli.Leaf{
+			Use:   "tag <item>",
+			Short: "Tag an item",
+			Args:  map[string]string{"item": "Item id."},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.StringArrayVar(&liveTags, "tag", nil, "tag to attach")
+				fs.StringSlice("label", nil, "comma-separated labels")
+				fs.Int("count", 1, "repeat count")
+				fs.Uint("port", 8080, "port number")
+				fs.Float64("ratio", 0.5, "sample ratio")
+				fs.BoolP("force", "f", false, "force write")
+			},
+			Examples: []cli.Example{
+				{Command: "tool item tag i1 --tag a --tag b --label x,y --label z --count 2 --port 9000 --ratio 1.25 -f"},
+			},
+			Run: noop,
+		})
+		root := cli.Group("tool", "A tool", cli.Group("item", "Items", leaf))
+		r := &recorder{}
+		CheckTree(r, root, TreeRules{})
+		assert.Empty(t, r.failures, r.all())
+		assert.Empty(t, liveTags, "parsing repeated flags must not mutate live slice")
+	})
+
+	t.Run("rejects shorthand of disallowed inherited flag and allows local override", func(t *testing.T) {
+		bad := cli.NewLeaf(cli.Leaf{
+			Use:      "status",
+			Short:    "Show status",
+			Examples: []cli.Example{{Command: "tool local status -q"}},
+			Run:      noop,
+		})
+		goodOverride := cli.NewLeaf(cli.Leaf{
+			Use:   "connect",
+			Short: "Connect locally",
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("hub", "", "local hub URL")
+			},
+			Examples: []cli.Example{{Command: "tool local connect --hub https://hub.example"}},
+			Run:      noop,
+		})
+		localGroup := cli.Group("local", "Local commands", bad, goodOverride)
+		cli.DisallowInheritedFlags(localGroup, "quiet", "hub")
+		root := cli.Group("tool", "A tool", localGroup)
+		root.PersistentFlags().BoolP("quiet", "q", false, "quiet output")
+		root.PersistentFlags().String("hub", "", "hub URL")
+
+		r := &recorder{}
+		CheckTree(r, root, TreeRules{})
+		assert.Contains(t, r.all(), "tool local status")
+		assert.Contains(t, r.all(), "does not parse")
+		assert.NotContains(t, r.all(), "tool local connect")
+	})
+
+	t.Run("rejects invalid typed flag values in examples", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			register func(*pflag.FlagSet)
+			example  string
+		}{
+			"invalid bool":  {func(fs *pflag.FlagSet) { fs.Bool("dry", false, "dry run") }, "tool tab close 1 --dry=nope"},
+			"invalid int":   {func(fs *pflag.FlagSet) { fs.Int("limit", 1, "row limit") }, "tool tab close 1 --limit=abc"},
+			"invalid uint":  {func(fs *pflag.FlagSet) { fs.Uint("port", 80, "port number") }, "tool tab close 1 --port=-1"},
+			"invalid float": {func(fs *pflag.FlagSet) { fs.Float64("ratio", 1, "sample ratio") }, "tool tab close 1 --ratio=nanx"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				r := check(cli.Leaf{
+					Use:      "close <tab>",
+					Short:    "Close a tab",
+					Args:     map[string]string{"tab": "A tab id."},
+					Flags:    tc.register,
+					Examples: []cli.Example{{Command: tc.example}},
+				})
+				assert.Contains(t, r.all(), "does not parse")
+			})
+		}
+	})
+
+	t.Run("flags mentioning one of: require SetEnum, and empty summary/help/tree fail", func(t *testing.T) {
+		rNoEnum := check(cli.Leaf{
+			Use:   "close <tab>",
+			Short: "Close a tab",
+			Args:  map[string]string{"tab": "A tab id."},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("mode", "", "mode, one of: fast, slow")
+			},
+			Examples: []cli.Example{{Command: "tool tab close 1"}},
+		})
+		assert.Contains(t, rNoEnum.all(), `mentions "one of:" in usage without cli.SetEnum`)
+
+		rWithEnum := check(cli.Leaf{
+			Use:   "close <tab>",
+			Short: "Close a tab",
+			Args:  map[string]string{"tab": "A tab id."},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("mode", "", "mode, one of: fast, slow")
+				cli.SetEnum(fs, "mode", "fast", "slow")
+			},
+			Examples: []cli.Example{{Command: "tool tab close 1"}},
+		})
+		assert.Empty(t, rWithEnum.failures, rWithEnum.all())
+
+		rEmpty := check(cli.Leaf{
+			Use:   "close <tab>",
+			Short: "",
+			Args:  map[string]string{"tab": "A tab id."},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("mode", "", "")
+			},
+			Examples: []cli.Example{{Command: "tool tab close 1"}},
+		})
+		assert.Contains(t, rEmpty.all(), "has no summary")
+		assert.Contains(t, rEmpty.all(), "has no help")
+
+		rNoLeaves := &recorder{}
+		CheckTree(rNoLeaves, cli.Group("tool", "Empty root"), TreeRules{})
+		assert.Contains(t, rNoLeaves.all(), "the walk must find the leaves of the tree")
+	})
+}
+
+func TestFlagsHelp(t *testing.T) {
+	help := FlagsHelp(t, func(fs *pflag.FlagSet) {
+		fs.String("mode", "", "execution mode")
+		cli.SetEnum(fs, "mode", "fast", "safe")
+	})
+	assert.Contains(t, help, "--mode string")
+	assert.Contains(t, help, "execution mode (one of: fast, safe)")
+}

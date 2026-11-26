@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"sync"
 	"testing"
+	"weak"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -68,7 +70,7 @@ func TestDescribeArgs_ALeafsOwnDescriptionWins(t *testing.T) {
 	assert.Equal(t, "The tree's words.", ArgsOf(plain)[0].Help)
 }
 
-func TestFlagUsages_StatesWhatTheDeclarationAdds(t *testing.T) {
+func TestFlagSections_StatesWhatTheDeclarationAdds(t *testing.T) {
 	fs := pflag.NewFlagSet("x", pflag.ContinueOnError)
 	// A leaf lists its flags in the order it declares them (NewLeaf turns
 	// the sorting off), so the help reads in the order the author chose.
@@ -84,14 +86,21 @@ func TestFlagUsages_StatesWhatTheDeclarationAdds(t *testing.T) {
 	fs.BoolP("quiet", "q", false, "print ids only")
 	fs.Bool("help", false, "help")
 
-	assert.Equal(t, ""+
+	assert.Equal(t, "\n\nFlags:\n"+
 		"      --type string    the type of the tab (one of: agent, terminal)\n"+
 		"      --worker string  the worker (default: $LEAPMUX_CONTROL_WORKER_ID)\n"+
 		"      --name string    the name (required)\n"+
 		"      --option string  an option (repeatable)\n"+
 		"      --limit int      page size (default: 50)\n"+
 		"  -q, --quiet          print ids only",
-		flagUsages(fs), "the help flag is left out, because every command has it")
+		flagSections(fs), "the help flag is left out, because every command has it")
+}
+
+func TestArgSpecUsage(t *testing.T) {
+	assert.Equal(t, "<agent>", ArgSpec{Name: "agent", Required: true}.Usage())
+	assert.Equal(t, "[agent]", ArgSpec{Name: "agent"}.Usage())
+	assert.Equal(t, "<agent>...", ArgSpec{Name: "agent", Required: true, Variadic: true}.Usage())
+	assert.Equal(t, "[agent]...", ArgSpec{Name: "agent", Variadic: true}.Usage())
 }
 
 func TestDescribe_ListsEveryCommandWithItsDeclaration(t *testing.T) {
@@ -178,4 +187,258 @@ func TestInvocation_StringArrayPanicsOnAFlagThatIsNoList(t *testing.T) {
 
 	assert.PanicsWithValue(t, `cli: set declares no flag "missing"`, func() { inv.StringArray("missing") })
 	assert.PanicsWithValue(t, `cli: flag "one" of set is not a list`, func() { inv.StringArray("one") })
+}
+
+func TestExecute_RejectsEmptyFieldsFlag(t *testing.T) {
+	for _, value := range []string{"", "   ", ",", " , ", ",,,"} {
+		t.Run("rejects "+value, func(t *testing.T) {
+			code, _, stderr := execute(t, testTree(&[]testInvocation{}), "workspace", "list", "--fields", value)
+			assert.Equal(t, ExitUsage, code)
+			assert.Contains(t, stderr, "--fields is empty")
+		})
+	}
+	var seen []testInvocation
+	code, _, stderr := execute(t, testTree(&seen), "workspace", "list", "--fields", "id, state")
+	assert.Equal(t, ExitOK, code, "stderr: %s", stderr)
+}
+
+func TestMarkLocalOnly_AndDefensiveMetadataCopies(t *testing.T) {
+	noop := func(*Invocation) (any, error) { return nil, nil }
+	inExamples := []Example{{Command: "tool local status"}}
+	inArgs := map[string]string{"id": "Original arg help."}
+	inNext := []string{"tool local logs"}
+
+	grandchild := NewLeaf(Leaf{Use: "deep", Short: "Deep leaf", Run: noop})
+	subGroup := Group("sub", "Nested local group", grandchild)
+	leaf := NewLeaf(Leaf{
+		Use:      "status [id]",
+		Short:    "Show status",
+		Examples: inExamples,
+		Args:     inArgs,
+		Next:     inNext,
+		Run:      noop,
+	})
+	group := Group("local", "Local group", leaf, subGroup)
+	other := NewLeaf(Leaf{Use: "remote", Short: "Remote leaf", Run: noop})
+	root := Group("tool", "Root", group, other)
+
+	// Mutating caller input slices and maps after NewLeaf must not alter stored metadata.
+	inExamples[0].Command = "caller-mutated"
+	inArgs["id"] = "caller-mutated"
+	inNext[0] = "caller-mutated"
+	assert.Equal(t, "tool local status", ExamplesOf(leaf)[0].Command)
+	assert.Equal(t, "Original arg help.", ArgsOf(leaf)[0].Help)
+	assert.Equal(t, "tool local logs", NextOf(leaf)[0])
+
+	assert.False(t, IsLocalOnly(nil))
+	assert.False(t, IsLocalOnly(group))
+	assert.False(t, IsLocalOnly(leaf))
+	assert.False(t, IsLocalOnly(grandchild))
+
+	MarkLocalOnly(group)
+	assert.True(t, IsLocalOnly(group))
+	assert.True(t, IsLocalOnly(leaf), "direct children inherit local-only status")
+	assert.True(t, IsLocalOnly(grandchild), "multi-level descendants inherit local-only status")
+	assert.False(t, IsLocalOnly(other))
+	assert.False(t, IsLocalOnly(root))
+
+	// Mutating slices returned by ExamplesOf and NextOf must not affect stored metadata.
+	examples := ExamplesOf(leaf)
+	require.Len(t, examples, 1)
+	examples[0].Command = "mutated"
+	assert.Equal(t, "tool local status", ExamplesOf(leaf)[0].Command)
+
+	next := NextOf(leaf)
+	require.Len(t, next, 1)
+	next[0] = "mutated"
+	assert.Equal(t, "tool local logs", NextOf(leaf)[0])
+
+	// Nil-command calls across metadata helpers return zero values without panicking.
+	assert.Empty(t, CommandGroupOf(nil))
+	assert.Empty(t, footerOf(nil))
+	assert.Equal(t, defaultAbbreviationNote, abbreviationNoteOf(nil))
+	assert.False(t, IsInheritedFlagDisallowed(nil, "hub"))
+	assert.Nil(t, ExamplesOf(nil))
+	assert.Nil(t, ArgsOf(nil))
+	assert.False(t, IsMutating(nil))
+	assert.False(t, IsDestructive(nil))
+	assert.False(t, IsQuietUnsupported(nil))
+	assert.Nil(t, NextOf(nil))
+	assert.NotPanics(t, func() {
+		MarkLocalOnly(nil)
+		SetFooter(nil, "ignored")
+		SetAbbreviationNote(nil, "ignored")
+		SetCommandGroup(nil, "ignored")
+		DisallowInheritedFlags(nil, "hub")
+		DescribeArgs(nil, map[string]string{"id": "ignored"})
+		DescribeArgs(root, nil)
+	})
+}
+
+func TestCommandMeta_CleanupAndConcurrentAccess(t *testing.T) {
+	cmd := &cobra.Command{Use: "ephemeral"}
+	SetFooter(cmd, "temporary footer")
+	MarkLocalOnly(cmd)
+	assert.Equal(t, "temporary footer", footerOf(cmd))
+	assert.True(t, IsLocalOnly(cmd))
+
+	// cleanupCommandMeta removes the weak-pointer entry so later reads return zero values.
+	cleanupCommandMeta(weak.Make(cmd))
+	assert.Empty(t, footerOf(cmd))
+	assert.False(t, IsLocalOnly(cmd))
+
+	// Concurrent edits, reads, and cleanups must be data-race free.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			local := &cobra.Command{Use: "worker"}
+			wp := weak.Make(local)
+			for range 25 {
+				SetCommandGroup(local, "Ops")
+				_ = CommandGroupOf(local)
+				MarkLocalOnly(local)
+				_ = IsLocalOnly(local)
+				cleanupCommandMeta(wp)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestDisallowInheritedFlags_WhitespaceAndLocalOverride(t *testing.T) {
+	noop := func(*Invocation) (any, error) { return nil, nil }
+	override := NewLeaf(Leaf{
+		Use:   "override",
+		Short: "Local hub override",
+		Flags: func(fs *pflag.FlagSet) {
+			fs.String("hub", "", "local hub")
+		},
+		Run: noop,
+	})
+	plain := NewLeaf(Leaf{Use: "plain", Short: "Plain child", Run: noop})
+	parent := Group("local", "Local commands", override, plain)
+
+	// Empty lists and whitespace-only names are no-ops.
+	DisallowInheritedFlags(parent)
+	DisallowInheritedFlags(parent, "", "   ")
+	assert.False(t, IsInheritedFlagDisallowed(plain, ""))
+
+	// Leading/trailing spaces are trimmed; descendants inherit, local flags override.
+	DisallowInheritedFlags(parent, " hub ", "  quiet")
+	assert.True(t, IsInheritedFlagDisallowed(parent, "hub"))
+	assert.True(t, IsInheritedFlagDisallowed(plain, "hub"))
+	assert.True(t, IsInheritedFlagDisallowed(plain, "quiet"))
+	assert.False(t, IsInheritedFlagDisallowed(override, "hub"), "local flag of the same name is not disallowed")
+	assert.True(t, IsInheritedFlagDisallowed(override, "quiet"))
+}
+
+func TestInvocation_VariadicChangedAndDurationPanics(t *testing.T) {
+	cmd := &cobra.Command{Use: "run <target> [items...]"}
+	cmd.Flags().String("mode", "fast", "run mode")
+	require.NoError(t, cmd.Flags().Parse([]string{"--mode", "slow"}))
+
+	inv := &Invocation{
+		Command: cmd,
+		Args:    []string{"t1", "a", "b"},
+		specs:   ParseArgSpecs(cmd.Use),
+	}
+	assert.Equal(t, []string{"a", "b"}, inv.Variadic("items"))
+	assert.True(t, inv.HasArg("items"))
+	assert.True(t, inv.Changed("mode"))
+	assert.False(t, inv.Changed("missing"))
+	assert.Panics(t, func() { inv.Variadic("missing") })
+	assert.PanicsWithValue(t, `cli: run declares no flag "missing"`, func() { inv.Duration("missing") })
+	assert.Panics(t, func() { inv.Duration("mode") })
+
+	emptyVariadic := &Invocation{
+		Command: cmd,
+		Args:    []string{"t1"},
+		specs:   ParseArgSpecs(cmd.Use),
+	}
+	assert.Nil(t, emptyVariadic.Variadic("items"))
+	assert.False(t, emptyVariadic.HasArg("items"))
+
+	unsetCmd := &cobra.Command{Use: "run"}
+	unsetCmd.Flags().String("mode", "fast", "run mode")
+	require.NoError(t, unsetCmd.Flags().Parse(nil))
+	assert.False(t, (&Invocation{Command: unsetCmd}).Changed("mode"))
+}
+
+func TestFlagAnnotations_NilPanicsAndStringSliceEnumCompletion(t *testing.T) {
+	assert.Nil(t, EnumOf(nil))
+	assert.Empty(t, FlagGroupOf(nil))
+
+	fs := pflag.NewFlagSet("x", pflag.ContinueOnError)
+	assert.Panics(t, func() { MarkRequired(fs, "missing") })
+	assert.Panics(t, func() { SetEnum(fs, "missing", "a") })
+	assert.Panics(t, func() { SetEnvDefault(fs, "missing", "ENV") })
+	assert.Panics(t, func() { SetFlagGroup(fs, "missing", "Grp") })
+
+	leaf := NewLeaf(Leaf{
+		Use:   "filter",
+		Short: "Filter items",
+		Flags: func(fs *pflag.FlagSet) {
+			fs.StringSlice("states", nil, "states to include")
+			SetEnum(fs, "states", "idle", "working", "waiting")
+		},
+		Run: func(*Invocation) (any, error) { return nil, nil },
+	})
+	fn, ok := leaf.GetFlagCompletionFunc("states")
+	require.True(t, ok)
+
+	vals, dir := fn(leaf, nil, "idle,w")
+	assert.Equal(t, []string{"idle,working", "idle,waiting"}, vals)
+	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, dir)
+
+	vals, _ = fn(leaf, nil, "i")
+	assert.Equal(t, []string{"idle"}, vals)
+}
+
+func TestExecute_PrinterFlagConflictsAndRequiredPlural(t *testing.T) {
+	t.Run("rejects conflicting output flags and invalid enum values", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			args []string
+			want string
+		}{
+			{"json and format text", []string{"workspace", "list", "--json", "--format", "text"}, "--json and --format text cannot be used together"},
+			{"json and format tsv", []string{"workspace", "list", "--json", "--format", "tsv"}, "--json and --format tsv cannot be used together"},
+			{"json and quiet", []string{"workspace", "list", "--json", "--quiet"}, "--json and --quiet cannot be used together"},
+			{"format tsv and quiet", []string{"workspace", "list", "--format", "tsv", "-q"}, "--format and --quiet cannot be used together"},
+			{"invalid format", []string{"workspace", "list", "--format", "yaml"}, "--format must be one of"},
+			{"invalid color", []string{"workspace", "list", "--color", "rainbow"}, "--color must be one of"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				code, _, stderr := execute(t, testTree(&[]testInvocation{}), tc.args...)
+				assert.Equal(t, ExitUsage, code)
+				assert.Contains(t, stderr, tc.want)
+			})
+		}
+
+		// --json combined with --format json is consistent and allowed.
+		code, stdout, stderr := execute(t, testTree(&[]testInvocation{}), "workspace", "list", "--json", "--format", "json")
+		assert.Equal(t, ExitOK, code, stderr)
+		assert.Contains(t, stdout, `"data"`)
+	})
+
+	t.Run("multiple missing required flags use plural message", func(t *testing.T) {
+		root := Group("tool", "Root",
+			NewLeaf(Leaf{
+				Use:   "create",
+				Short: "Create item",
+				Flags: func(fs *pflag.FlagSet) {
+					fs.String("name", "", "item name")
+					MarkRequired(fs, "name")
+					fs.String("owner", "", "item owner")
+					MarkRequired(fs, "owner")
+				},
+				Run: func(*Invocation) (any, error) { return nil, nil },
+			}),
+		)
+		code, _, stderr := execute(t, root, "create")
+		assert.Equal(t, ExitUsage, code)
+		assert.Contains(t, stderr, "missing required flags --name, --owner")
+	})
 }

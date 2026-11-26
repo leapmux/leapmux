@@ -58,7 +58,7 @@ func TestFileListResult_RenderTextAndQuiet(t *testing.T) {
 	assert.Contains(t, textBuf.String(), "unreadable: /src/app/secret (permission denied)", "unreadable directory must be rendered")
 
 	var quietBuf bytes.Buffer
-	qp := &cli.Printer{Out: &quietBuf, Err: &bytes.Buffer{}, Quiet: true}
+	qp := &cli.Printer{Out: &quietBuf, Err: &bytes.Buffer{}, Format: cli.FormatQuiet}
 	require.NoError(t, qp.Result(res))
 	assert.Equal(t, "/src/app/main.go\n/src/app/internal\n/src/app/internal/cli.go\n", quietBuf.String())
 }
@@ -319,7 +319,7 @@ func TestPhase0_B14_ValidationAndCompletion(t *testing.T) {
 // (keys), tileSplitResult (new tile ID), and refuse -q on version/whoami.
 func TestPhase0_B08_QuietLines(t *testing.T) {
 	var buf bytes.Buffer
-	p := &cli.Printer{Out: &buf, Err: &bytes.Buffer{}, Quiet: true}
+	p := &cli.Printer{Out: &buf, Err: &bytes.Buffer{}, Format: cli.FormatQuiet}
 	require.NoError(t, p.Result(agentResult{ID: "agent-1", InputID: "input-9"}))
 	assert.Equal(t, "input-9\n", buf.String(), "agent send -q must print input_id when present")
 
@@ -487,7 +487,7 @@ func TestReportControlRequests_NoEmptyNoticeInJSONOrQuiet(t *testing.T) {
 	assert.Empty(t, errBuf.String(), "--json must not print empty-state stderr prose")
 
 	errBuf.Reset()
-	qp := &cli.Printer{Out: &bytes.Buffer{}, Err: &errBuf, Quiet: true}
+	qp := &cli.Printer{Out: &bytes.Buffer{}, Err: &errBuf, Format: cli.FormatQuiet}
 	_, err = reportControlRequests(qp, controlRequestList{}, nil, 1)
 	require.NoError(t, err)
 	assert.Empty(t, errBuf.String(), "-q must not print empty-state stderr prose")

@@ -42,13 +42,17 @@ func runLayoutWatch(inv *cli.Invocation) (any, error) {
 		}
 		workspaceIDs = []string{ws.ID}
 	}
-	if s.c.IsWorkerIPC() {
-		return nil, runLayoutWatchLocal(s.ctx, s.c, workspaceIDs, inv.Printer)
+	switch c := s.c.(type) {
+	case *control.WorkerIPCClient:
+		return nil, runLayoutWatchLocal(s.ctx, c, workspaceIDs, inv.Printer)
+	case *control.HubClient:
+		return nil, runLayoutWatchHub(s.ctx, c, workspaceIDs, inv.Printer)
+	default:
+		return nil, fmt.Errorf("unsupported control peer %T", s.c)
 	}
-	return nil, runLayoutWatchHub(s.ctx, s.c, workspaceIDs, inv.Printer)
 }
 
-func runLayoutWatchHub(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
+func runLayoutWatchHub(ctx context.Context, c *control.HubClient, workspaceIDs []string, p *cli.Printer) error {
 	stream, err := c.OpenUserEvents(ctx, workspaceIDs)
 	if err != nil {
 		return err
@@ -68,7 +72,7 @@ func runLayoutWatchHub(ctx context.Context, c *control.Client, workspaceIDs []st
 	}
 }
 
-func runLayoutWatchLocal(ctx context.Context, c *control.Client, workspaceIDs []string, p *cli.Printer) error {
+func runLayoutWatchLocal(ctx context.Context, c *control.WorkerIPCClient, workspaceIDs []string, p *cli.Printer) error {
 	err := streamWatchUserLocal(ctx, c, workspaceIDs, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
 		return false, p.Event(layoutWatchEvent{data: eventToJSON(evt)})
 	})

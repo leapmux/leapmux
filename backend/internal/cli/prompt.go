@@ -26,13 +26,49 @@ func ReadLine(ctx context.Context, in io.Reader) (string, error) {
 	}
 	done := make(chan answer, 1)
 	go func() {
-		line, err := bufio.NewReader(in).ReadString('\n')
-		done <- answer{strings.TrimRight(line, "\r\n"), err}
+		line, err := readLine(in)
+		done <- answer{line, err}
 	}()
 	select {
 	case a := <-done:
 		return a.line, a.err
 	case <-ctx.Done():
 		return "", context.Cause(ctx)
+	}
+}
+
+// readLine reads one line from in without over-reading past '\n' into a
+// throwaway buffer, so sequential ReadLine calls on the same reader keep the
+// remaining bytes intact.
+func readLine(in io.Reader) (string, error) {
+	if br, ok := in.(*bufio.Reader); ok {
+		line, err := br.ReadString('\n')
+		return strings.TrimRight(line, "\r\n"), err
+	}
+	var buf []byte
+	if br, ok := in.(io.ByteReader); ok {
+		for {
+			b, err := br.ReadByte()
+			if err != nil {
+				return strings.TrimRight(string(buf), "\r\n"), err
+			}
+			if b == '\n' {
+				return strings.TrimRight(string(buf), "\r\n"), nil
+			}
+			buf = append(buf, b)
+		}
+	}
+	var one [1]byte
+	for {
+		n, err := in.Read(one[:])
+		if n > 0 {
+			if one[0] == '\n' {
+				return strings.TrimRight(string(buf), "\r\n"), nil
+			}
+			buf = append(buf, one[0])
+		}
+		if err != nil {
+			return strings.TrimRight(string(buf), "\r\n"), err
+		}
 	}
 }

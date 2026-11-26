@@ -261,6 +261,97 @@ func TestTerminalCursor_ResetThenTrack(t *testing.T) {
 	assert.Equal(t, int64(25), c.Get("t-1"))
 }
 
+func TestAgentCursor_UpdateEnforcesAndPrunesRetractions(t *testing.T) {
+	c := NewAgentCursor()
+	c.Track("a-1", 10)
+	c.recordRetraction("a-1", []int64{12, 15})
+
+	// Update must not advance to a retracted sequence.
+	assert.Equal(t, int64(10), c.Update("a-1", 12))
+	assert.Equal(t, int64(10), c.Get("a-1"))
+
+	// Advancing to a non-retracted sequence before 12 succeeds without clearing 12/15.
+	assert.Equal(t, int64(11), c.Update("a-1", 11))
+	assert.Equal(t, int64(11), c.Update("a-1", 12))
+
+	// Advancing past 12 prunes 12 while keeping 15 fenced.
+	assert.Equal(t, int64(13), c.Update("a-1", 13))
+	assert.Equal(t, int64(13), c.Update("a-1", 15))
+
+	// Advancing past 15 prunes the entire fence entry for a-1.
+	assert.Equal(t, int64(16), c.Update("a-1", 16))
+	c.mu.Lock()
+	_, hasFence := c.retracted["a-1"]
+	c.mu.Unlock()
+	assert.False(t, hasFence, "retraction fence must be removed once cursor passes every retracted seq")
+}
+
+func TestAgentCursor_UpdateLowerEqualAndEmptyWithActiveFence(t *testing.T) {
+	c := NewAgentCursor()
+	c.Track("a-1", 10)
+	c.recordRetraction("a-1", []int64{15})
+
+	assert.Equal(t, int64(0), c.Update("", 20))
+	assert.Equal(t, int64(10), c.Update("a-1", 5), "lower seq does not regress")
+	assert.Equal(t, int64(10), c.Update("a-1", 10), "equal seq stays unchanged")
+	assert.Equal(t, int64(10), c.Update("a-1", 15), "retracted seq stays fenced")
+	assert.Equal(t, int64(16), c.Update("a-1", 16), "seq above retracted advances and prunes")
+	assert.Equal(t, int64(16), c.Get("a-1"))
+}
+
+func TestAgentCursor_RecordRetractionMinTrackingAndIgnoredSeqs(t *testing.T) {
+	c := NewAgentCursor()
+	c.Track("a-1", 10)
+	// Empty id, non-positive seqs, and seqs at or below cursor create no fence.
+	c.recordRetraction("", []int64{20})
+	c.recordRetraction("a-1", []int64{-1, 0, 5, 10})
+	c.mu.Lock()
+	assert.Empty(t, c.retracted)
+	c.mu.Unlock()
+
+	// Recording a lower retracted seq after a higher one lowers fence.min.
+	c.recordRetraction("a-1", []int64{20})
+	c.recordRetraction("a-1", []int64{12})
+	assert.Equal(t, int64(15), c.Update("a-1", 15))
+	c.mu.Lock()
+	fence := c.retracted["a-1"]
+	require.NotNil(t, fence)
+	assert.Equal(t, int64(20), fence.min, "pruning 12 must raise fence.min to the next retracted seq")
+	_, stillHas12 := fence.seqs[12]
+	_, stillHas20 := fence.seqs[20]
+	c.mu.Unlock()
+	assert.False(t, stillHas12)
+	assert.True(t, stillHas20)
+}
+
+func TestAgentCursor_ResetClearsRetractionFence(t *testing.T) {
+	c := NewAgentCursor()
+	c.Track("a-1", 10)
+	c.recordRetraction("a-1", []int64{12, 15})
+	c.Reset("a-1")
+
+	assert.Equal(t, int64(0), c.Get("a-1"))
+	assert.Equal(t, int64(12), c.Update("a-1", 12), "previously retracted seq is accepted after Reset")
+	assert.True(t, c.Advance("a-1", 15), "Advance accepts previously retracted seq after Reset")
+}
+
+func TestAgentCursor_AdvanceEnforcesAndPrunesRetractions(t *testing.T) {
+	c := NewAgentCursor()
+	c.Track("a-1", 10)
+	c.recordRetraction("a-1", []int64{12, 15})
+
+	assert.False(t, c.Advance("a-1", 12))
+	assert.True(t, c.Advance("a-1", 11))
+	assert.False(t, c.Advance("a-1", 12))
+	assert.True(t, c.Advance("a-1", 13))
+	assert.False(t, c.Advance("a-1", 15))
+	assert.True(t, c.Advance("a-1", 16))
+	c.mu.Lock()
+	_, hasFence := c.retracted["a-1"]
+	c.mu.Unlock()
+	assert.False(t, hasFence)
+}
+
 // TestAgentCursor_Snapshot_NilRestrictReturnsAllSorted asserts the
 // no-restrict snapshot output is sorted by agent_id. Sort order is
 // part of the cursor's documented contract (cursor.go:122) — tests

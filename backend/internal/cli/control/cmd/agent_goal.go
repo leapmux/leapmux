@@ -181,7 +181,7 @@ func newAgentTodosCommand() *cobra.Command {
 
 type agentTodoRow struct {
 	ID          string `json:"id,omitempty" table:"ID"`
-	Status      string `json:"status" table:"STATUS"`
+	Status      string `json:"status" table:"STATUS,state"`
 	Content     string `json:"content" table:"CONTENT"`
 	ActiveForm  string `json:"active_form,omitempty" table:"ACTIVE"`
 	Description string `json:"description,omitempty"`
@@ -258,7 +258,7 @@ func newAgentTasksCommand() *cobra.Command {
 type agentTaskRow struct {
 	ID            string `json:"id" table:"ID,short"`
 	Kind          string `json:"kind" table:"KIND"`
-	Status        string `json:"status" table:"STATUS"`
+	Status        string `json:"status" table:"STATUS,state"`
 	Title         string `json:"title" table:"TITLE"`
 	ChildAgentID  string `json:"child_agent_id,omitempty" table:"CHILD,short"`
 	GroupLabel    string `json:"group_label,omitempty" table:"GROUP"`

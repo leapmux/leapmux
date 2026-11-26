@@ -845,7 +845,7 @@ func runFileOpen(inv *cli.Invocation) (any, error) {
 }
 
 // registerFileTabPayload keeps the path encrypted and returns the committed tab.
-func registerFileTabPayload(ctx context.Context, c *control.Client, workerID string, creation *leapmuxv1.TabCreation, filePath, workingDir string) (*leapmuxv1.PublishedTab, error) {
+func registerFileTabPayload(ctx context.Context, c control.Peer, workerID string, creation *leapmuxv1.TabCreation, filePath, workingDir string) (*leapmuxv1.PublishedTab, error) {
 	request := &leapmuxv1.RegisterTabPayloadRequest{Creation: creation, Payload: &leapmuxv1.TabPayload{WorkingDir: workingDir, Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: filePath}}}}
 	var response leapmuxv1.RegisterTabPayloadResponse
 	if err := callInnerRPCBest(ctx, c, workerID, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, request, &response); err != nil {

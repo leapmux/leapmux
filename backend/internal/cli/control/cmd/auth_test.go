@@ -6,10 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -83,11 +86,14 @@ func TestIsolateCLIEnv_CutsTheWorkerSpawnedEnvironment(t *testing.T) {
 		}
 		assert.NotEmpty(t, os.Getenv("LEAPMUX_CONTROL_CONFIG_DIR"), "the credential store is still isolated")
 
-		// The point of clearing the socket: the client follows --hub rather than the
-		// inherited worker, so a verb reaches the test's server.
+		// The point of clearing the socket: NewClientFromEnv does not capture
+		// an inherited worker socket, and NewClientOrAnonymous returns a direct
+		// HubClient for the requested hub.
 		c, err := control.NewClientOrAnonymous("https://hub.example")
 		require.NoError(t, err)
-		assert.False(t, c.IsWorkerIPC(), "an inherited worker socket must not capture the client")
+		assert.Equal(t, "https://hub.example", c.HubURL)
+		_, envErr := control.NewClientFromEnv("")
+		require.Error(t, envErr, "an inherited worker socket must not capture NewClientFromEnv")
 	})
 }
 
@@ -240,6 +246,7 @@ func TestRunAuthLogin_CleansUpAnUnreadableCredentialFile(t *testing.T) {
 
 	path, err := control.CredentialsPath(srv.URL)
 	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 	require.NoError(t, os.WriteFile(path, []byte("{not credential json"), 0o600))
 
 	o := runControl(t, "auth", "login", "--hub", srv.URL, "--device-code")
@@ -1422,4 +1429,168 @@ func TestRunAuthLogin_ComputesTheDefaultDeviceNameWhenItRuns(t *testing.T) {
 	login, _, err := tree.Find([]string{"auth", "login"})
 	require.NoError(t, err)
 	assert.Empty(t, login.Flags().Lookup("device-name").DefValue, "the declared default must not read this machine")
+}
+
+type localSoloAuthHub struct {
+	leapmuxv1connect.UnimplementedAuthServiceHandler
+	leapmuxv1connect.UnimplementedUserServiceHandler
+	changedPassword string
+}
+
+func (h *localSoloAuthHub) GetCurrentUser(context.Context, *leapmuxv1.GetCurrentUserRequest) (*leapmuxv1.GetCurrentUserResponse, error) {
+	return &leapmuxv1.GetCurrentUserResponse{
+		SessionReport: &leapmuxv1.SessionReport{
+			User: &leapmuxv1.User{Id: "u-solo", Username: "solo", IsAdmin: true},
+		},
+	}, nil
+}
+
+func (h *localSoloAuthHub) ListMyAPITokens(context.Context, *leapmuxv1.ListMyAPITokensRequest) (*leapmuxv1.ListMyAPITokensResponse, error) {
+	return &leapmuxv1.ListMyAPITokensResponse{
+		Tokens: []*leapmuxv1.MyAPIToken{{Id: "tok-solo", InstallationName: "local"}},
+	}, nil
+}
+
+func (h *localSoloAuthHub) ChangePassword(_ context.Context, req *leapmuxv1.ChangePasswordRequest) (*leapmuxv1.ChangePasswordResponse, error) {
+	h.changedPassword = req.GetNewPassword()
+	return &leapmuxv1.ChangePasswordResponse{
+		User: &leapmuxv1.User{Id: "u-solo", Username: "solo"},
+	}, nil
+}
+
+// RIPPLE-4: auth status, auth credentials, and auth change-password work over a
+// local solo Hub IPC socket without stored credentials.
+func TestRunAuth_LocalIPCHubWorksWithoutStoredCredentials(t *testing.T) {
+	isolateCLIEnv(t)
+
+	hub := &localSoloAuthHub{}
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, hub)
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, hub)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
+	sockURL := hubtransporttest.NewSocketServer(t, "solo-auth", mux)
+
+	status := runControl(t, "auth", "status", "--hub", sockURL).Data(t)
+	assert.Equal(t, sockURL, status["hub_url"])
+	assert.Equal(t, "solo", status["username"])
+	assert.Equal(t, "u-solo", status["user_id"])
+	assert.Equal(t, true, status["hub_checked"])
+	assert.Equal(t, true, status["is_admin"])
+
+	creds := credentialRows(t, runControl(t, "auth", "credentials", "--hub", sockURL).ok(t))
+	require.Len(t, creds, 1)
+	assert.Equal(t, "tok-solo", creds[0]["id"])
+
+	pwOut := runControl(t, "auth", "change-password", "--hub", sockURL, "--password", "new-secret-pw").Data(t)
+	assert.Equal(t, true, pwOut["changed"])
+	assert.Equal(t, "solo", pwOut["username"])
+	assert.Equal(t, "new-secret-pw", hub.changedPassword)
+}
+
+// RIPPLE-5: `auth login` without --hub or LEAPMUX_HUB ignores an
+// auto-discovered local solo IPC socket and asks for --hub <url>, while an
+// explicit --hub unix:... still reports the unix-origin error.
+func TestRunAuthLogin_IgnoresAutoDiscoveredLocalSoloSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain socket discovery applies only to non-Windows hosts")
+	}
+	isolateCLIEnv(t)
+
+	root, err := os.MkdirTemp("", "lmxlogin-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	cfgDir := filepath.Join(root, "control")
+	soloDir := filepath.Join(root, "solo", "hub")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o700))
+	require.NoError(t, os.MkdirAll(soloDir, 0o700))
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+
+	soloSock := filepath.Join(soloDir, "hub.sock")
+	ln, err := net.Listen("unix", soloSock)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	require.Equal(t, "unix:"+soloSock, control.DiscoverLocalHub())
+
+	f := runControl(t, "auth", "login").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "no hub selected", f.Message)
+	assert.Equal(t, []string{"pass --hub <url> to choose the hub to sign in to"}, f.Hints)
+
+	// Explicit --hub unix:... keeps the local-origin error and --device-code hint.
+	fExplicit := runControl(t, "auth", "login", "--hub", "unix:"+soloSock).requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, fExplicit.Message, "unix:")
+	assert.Contains(t, strings.Join(fExplicit.Hints, "\n"), "--device-code")
+}
+
+func TestRunAuthStatus_LocalIPCHubUnreachableAndRefused(t *testing.T) {
+	t.Run("unreachable local socket without credentials reports local-hub warning", func(t *testing.T) {
+		isolateCLIEnv(t)
+		downSock := locallistentest.UniqueListenURL(t, "solo-down")
+
+		data := runControl(t, "auth", "status", "--hub", downSock).Data(t)
+		assert.Equal(t, downSock, data["hub_url"])
+		assert.Equal(t, false, data["hub_checked"])
+		assert.Equal(t, "the local hub could not be reached to confirm this session", data["warning"])
+	})
+
+	t.Run("local socket refusal hints --device-code", func(t *testing.T) {
+		isolateCLIEnv(t)
+		mux := http.NewServeMux()
+		mux.HandleFunc("/leapmux.v1.AuthService/GetCurrentUser", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":"unauthenticated","message":"rejected"}`))
+		})
+		sockURL := hubtransporttest.NewSocketServer(t, "solo-refused", mux)
+
+		f := runControl(t, "auth", "status", "--hub", sockURL).requireFailure(t, cli.CodeNotLoggedIn)
+		assert.Equal(t, []string{`run "leapmux auth login --hub ` + sockURL + ` --device-code" to sign in again`}, f.Hints)
+	})
+}
+
+func TestRunWhoami_HubClientRefusedAndUnreachable(t *testing.T) {
+	t.Run("refused credential returns not_logged_in", func(t *testing.T) {
+		isolateCLIEnv(t)
+		srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/leapmux.v1.AuthService/GetCurrentUser":
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":"unauthenticated"}`))
+			case "/oauth/token":
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		liveCredentialFor(t, srv.URL)
+
+		runControl(t, "whoami", "--hub", srv.URL).requireFailure(t, cli.CodeNotLoggedIn)
+	})
+
+	t.Run("unreachable hub falls back to cached identity with warning", func(t *testing.T) {
+		isolateCLIEnv(t)
+		srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		srv.Close()
+		liveCredentialFor(t, srv.URL)
+
+		data := runControl(t, "whoami", "--hub", srv.URL).Data(t)
+		assert.Equal(t, srv.URL, data["hub_url"])
+		assert.Equal(t, "u-local", data["user_id"])
+		assert.Equal(t, "local-name", data["username"])
+		assert.Contains(t, data["warning"], "could not be reached")
+	})
 }

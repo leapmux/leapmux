@@ -1,8 +1,11 @@
 package control
 
 import (
+	"context"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -36,7 +39,7 @@ func TestDeleteCredentials_SweepsWhatAnInterruptedWriteLeft(t *testing.T) {
 
 	require.NoError(t, DeleteCredentials(hubURL))
 
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(filepath.Dir(path))
 	require.NoError(t, err)
 	assert.Empty(t, entries, "no copy of the credential may survive a logout")
 
@@ -61,12 +64,32 @@ func TestDeleteCredentials_LeavesAnotherHubsFilesAlone(t *testing.T) {
 	require.NoError(t, DeleteCredentials("https://one.example"))
 
 	var names []string
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(filepath.Dir(other))
 	require.NoError(t, err)
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
 	assert.ElementsMatch(t, []string{filepath.Base(other), filepath.Base(other) + ".tmp99"}, names)
+}
+
+func TestCredentialsPath_LivesUnderCredentialsSubdirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+	hubURL := "https://sub.example"
+	require.NoError(t, SaveCredentials(hubURL, CredentialFile{
+		HubURL: hubURL, AccessToken: "lmx_a_sub", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	// Unrelated JSON files in ConfigDir root must never appear in ListCredentialFiles.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.json"), []byte(`{"hub_url":"https://rogue.example"}`), 0o600))
+
+	path, err := CredentialsPath(hubURL)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "credentials"), filepath.Dir(path))
+
+	files, err := ListCredentialFiles()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, hubURL, files[0].HubURL)
 }
 
 // TestListCredentialFiles_IgnoresAnInterruptedWrite pins why the sweep has
@@ -121,4 +144,78 @@ func TestSaveCredentials_WritesUTC(t *testing.T) {
 	assert.True(t, loaded.ExpiresAt.Equal(creds.ExpiresAt),
 		"normalizing the zone keeps the instant")
 	assert.True(t, loaded.RefreshExpiresAt.Equal(creds.RefreshExpiresAt))
+}
+
+func TestListCredentialFiles_MissingDirCorruptJSONSubdirAndEmptyHubURL(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+
+	// Missing credentials/ directory returns nil slice and no error.
+	files, err := ListCredentialFiles()
+	require.NoError(t, err)
+	assert.Nil(t, files)
+
+	// LoadCredentials on missing file returns ErrNotLoggedIn.
+	_, err = LoadCredentials("https://missing.example")
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	// Save one valid credential and place invalid/non-credential entries beside it.
+	hubURL := "https://valid.example"
+	require.NoError(t, SaveCredentials(hubURL, CredentialFile{
+		HubURL:      hubURL,
+		AccessToken: "lmx_valid",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}))
+	credsDir := filepath.Join(dir, credentialsDirName)
+	require.NoError(t, os.Mkdir(filepath.Join(credsDir, "nested.json"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(credsDir, "notes.txt"), []byte("ignore"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(credsDir, "corrupt.json"), []byte("{not json"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(credsDir, "empty-hub.json"), []byte(`{"access_token":"tok"}`), 0o600))
+
+	files, err = ListCredentialFiles()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, hubURL, files[0].HubURL)
+	assert.Equal(t, "lmx_valid", files[0].AccessToken)
+
+	// LoadCredentials on a corrupt credential file reports the path under credentials/.
+	path, err := CredentialsPath(hubURL)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("{broken"), 0o600))
+	_, err = LoadCredentials(hubURL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse credentials")
+	assert.Contains(t, err.Error(), path)
+}
+
+func TestIsLocalIPCLive_InvalidAddrAndCanceledContext(t *testing.T) {
+	assert.False(t, isLocalIPCLive(t.Context(), "https://not-a-local-socket.example"))
+
+	if runtime.GOOS == "windows" {
+		return
+	}
+	dir, err := os.MkdirTemp("", "lmxlive-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	sockPath := filepath.Join(dir, "hub.sock")
+	ln, err := net.Listen("unix", sockPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	assert.True(t, isLocalIPCLive(t.Context(), "unix:"+sockPath))
+
+	canceledCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	assert.False(t, isLocalIPCLive(canceledCtx, "unix:"+sockPath),
+		"an already-canceled context must fail the liveness probe")
 }

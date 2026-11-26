@@ -4,7 +4,8 @@ use re
 use str
 
 # Cobra's final :N field uses bits 1 for an error, 2 to omit a space,
-# and 4 to suppress filename completion.
+# 4 to suppress filename completion, 8 for file-extension filtering,
+# and 16 for directory filtering.
 fn leapmux-completion-flag {|directive flag|
     >= (% $directive (* $flag 2)) $flag
 }
@@ -21,7 +22,10 @@ fn leapmux-complete {|command @args|
     var status = $lines[-1]
     if (not (re:match '^:[0-9]+$' $status)) { return }
     var directive = (num $status[1..])
-    if (leapmux-completion-flag $directive 1) { return }
+    # A Cobra error produces no suggestions. LeapMux does not emit file
+    # extension or directory filter directives, so reject them instead of
+    # inserting filter patterns as arguments.
+    if (or (> $directive 63) (leapmux-completion-flag $directive 1) (leapmux-completion-flag $directive 8) (leapmux-completion-flag $directive 16)) { return }
 
     var seed = $args[-1]
     var flag-prefix = ''

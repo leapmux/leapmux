@@ -57,7 +57,7 @@ type agentSessionRow struct {
 	ID string `json:"id" table:"ID"`
 	// UpdatedAt is the session's last activity, in UTC, or empty when the
 	// provider's store recorded none.
-	UpdatedAt string `json:"updated_at,omitempty" table:"UPDATED"`
+	UpdatedAt string `json:"updated_at,omitempty" table:"UPDATED,dim"`
 	// Title is the session's summary. It is empty when the provider stores
 	// none.
 	Title string `json:"title,omitempty" table:"TITLE"`
@@ -121,7 +121,7 @@ func runAgentSessions(inv *cli.Invocation) (any, error) {
 	for _, session := range resp.GetSessions() {
 		rows = append(rows, agentSessionRowOf(session))
 	}
-	if len(rows) == 0 && inv.Printer.Format == cli.FormatText && !inv.Printer.Quiet {
+	if len(rows) == 0 && inv.Printer.Format == cli.FormatText {
 		inv.Printer.Notice("%s has no session to resume in %s", agentProviderName(resolved), dir)
 	}
 	return agentSessionList{Sessions: rows}, nil

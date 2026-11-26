@@ -47,7 +47,7 @@ type screenFeedSource struct {
 // workerScreenFeedSource watches through c the terminals of the Worker
 // workerID. A transport that does not open reports the Worker offline, as
 // the notify watch of `events` does.
-func workerScreenFeedSource(c *control.Client, workerID string) screenFeedSource {
+func workerScreenFeedSource(c control.Peer, workerID string) screenFeedSource {
 	notify := workerFeedSourceOf(c, workerID)
 	return screenFeedSource{openTransport: notify.openTransport, clock: notify.clock}
 }

@@ -108,6 +108,7 @@ absolute path on the worker; the worker finds its repository.`,
 				Aliases:          []string{"rm"},
 				Short:            "Check out another branch, then delete this one",
 				Mutates:          true,
+				Destructive:      true,
 				QuietUnsupported: true,
 				Examples: []cli.Example{
 					{Command: "leapmux git branch delete fix-login --switch-to main --dir ~/src/app"},

@@ -5,6 +5,7 @@ package clitest
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -174,11 +175,23 @@ func checkExample(t TestingT, root, leaf *cobra.Command, ex cli.Example) {
 	if !assert.Truef(t, reached, "an example of %s does not run it with full command names: %s", path, ex.Command) {
 		return
 	}
-	// Find leaves the flags and the arguments in rest. Parse them on a new
-	// set that holds the leaf's own flags and the flags it inherits.
+	// Find leaves the flags and the arguments in rest. Clone the allowed flag
+	// specs into a fresh set with throwaway values so parsing an example never
+	// mutates the live flags attached to the command tree.
 	flags := pflag.NewFlagSet(path, pflag.ContinueOnError)
-	flags.AddFlagSet(leaf.Flags())
-	flags.AddFlagSet(leaf.InheritedFlags())
+	addClone := func(f *pflag.Flag) {
+		if flags.Lookup(f.Name) != nil {
+			return
+		}
+		flags.AddFlag(cloneFlagForExample(f))
+	}
+	leaf.LocalFlags().VisitAll(addClone)
+	leaf.InheritedFlags().VisitAll(func(f *pflag.Flag) {
+		if cli.IsInheritedFlagDisallowed(leaf, f.Name) {
+			return
+		}
+		addClone(f)
+	})
 	if flags.Lookup("help") == nil {
 		flags.BoolP("help", "h", false, "")
 	}
@@ -187,6 +200,48 @@ func checkExample(t TestingT, root, leaf *cobra.Command, ex cli.Example) {
 	}
 	if leaf.Args != nil {
 		assert.NoErrorf(t, leaf.Args(leaf, flags.Args()), "an example of %s has the wrong arguments: %s", path, ex.Command)
+	}
+}
+
+type exampleFlagValue struct {
+	flagType string
+	val      string
+}
+
+func (v *exampleFlagValue) String() string { return v.val }
+func (v *exampleFlagValue) Type() string   { return v.flagType }
+
+func (v *exampleFlagValue) Set(s string) error {
+	switch v.flagType {
+	case "bool":
+		if _, err := strconv.ParseBool(s); err != nil {
+			return err
+		}
+	case "int", "int8", "int16", "int32", "int64":
+		if _, err := strconv.ParseInt(s, 0, 64); err != nil {
+			return err
+		}
+	case "uint", "uint8", "uint16", "uint32", "uint64":
+		if _, err := strconv.ParseUint(s, 0, 64); err != nil {
+			return err
+		}
+	case "float32", "float64":
+		if _, err := strconv.ParseFloat(s, 64); err != nil {
+			return err
+		}
+	}
+	v.val = s
+	return nil
+}
+
+func cloneFlagForExample(f *pflag.Flag) *pflag.Flag {
+	return &pflag.Flag{
+		Name:        f.Name,
+		Shorthand:   f.Shorthand,
+		Usage:       f.Usage,
+		Value:       &exampleFlagValue{flagType: f.Value.Type()},
+		DefValue:    f.DefValue,
+		NoOptDefVal: f.NoOptDefVal,
 	}
 }
 

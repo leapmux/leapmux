@@ -23,7 +23,7 @@ import (
 // transports — the worker-side ControlIPC router proxies hub.* calls
 // to the hub on our behalf, keeping the wire-level transport
 // invisible to the resolver.
-func resolveDeps(c *control.Client) resolve.Deps {
+func resolveDeps(c control.Peer) resolve.Deps {
 	return resolve.Deps{
 		LocateTab: func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
 			var resp leapmuxv1.LocateTabResponse
@@ -62,7 +62,7 @@ func resolveDeps(c *control.Client) resolve.Deps {
 
 // targetListing wires resolve.Canonical to the hub's list calls and to the
 // Workers that know each tab's title and each Worker's name.
-func targetListing(c *control.Client, deps resolve.Deps) resolve.Listing {
+func targetListing(c control.Peer, deps resolve.Deps) resolve.Listing {
 	return resolve.Listing{
 		Tabs: func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
 			return listTabsInWorkspaces(ctx, c, nil)
@@ -111,11 +111,23 @@ func targetListing(c *control.Client, deps resolve.Deps) resolve.Listing {
 		LocateTab: func(ctx context.Context, tabID string) (*leapmuxv1.WorkspaceTab, error) {
 			return deps.LocateTab(ctx, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, tabID)
 		},
+		ParentAgent: func(ctx context.Context, workerID, selfAgentID string) (string, error) {
+			var resp leapmuxv1.ListAgentsResponse
+			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{selfAgentID}}, &resp); err != nil {
+				return "", err
+			}
+			for _, a := range resp.GetAgents() {
+				if a.GetId() == selfAgentID {
+					return a.GetParentAgentId(), nil
+				}
+			}
+			return "", nil
+		},
 	}
 }
 
 // listTabsInWorkspaces lists visible tabs. Nil selects every readable workspace.
-func listTabsInWorkspaces(ctx context.Context, c *control.Client, workspaceIDs []string) ([]*leapmuxv1.WorkspaceTab, error) {
+func listTabsInWorkspaces(ctx context.Context, c control.Peer, workspaceIDs []string) ([]*leapmuxv1.WorkspaceTab, error) {
 	var resp leapmuxv1.ListTabsResponse
 	if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceListTabsProcedure, &leapmuxv1.ListTabsRequest{WorkspaceIds: workspaceIDs}, &resp); err != nil {
 		return nil, err
@@ -139,7 +151,7 @@ const detailFanoutLimit = 8
 // served concurrently. The hub's rows hold only the placement of a tab. Its
 // title and its state live on the Worker. A Worker that cannot answer leaves
 // its tabs out, so a list still prints the tabs of the Workers that can.
-func fetchTabDetails(ctx context.Context, c *control.Client, tabs []*leapmuxv1.WorkspaceTab) map[string]tabDetail {
+func fetchTabDetails(ctx context.Context, c control.Peer, tabs []*leapmuxv1.WorkspaceTab) map[string]tabDetail {
 	details, _ := fetchTabDetailsAndWorkers(ctx, c, tabs, false)
 	return details
 }
@@ -147,7 +159,7 @@ func fetchTabDetails(ctx context.Context, c *control.Client, tabs []*leapmuxv1.W
 // fetchTabDetailsAndWorkers opens ONE Noise_NK E2EE channel per Worker and
 // fetches agent details, terminal details, viewer payloads (concurrently), and
 // optionally the Worker's display name on that single channel.
-func fetchTabDetailsAndWorkers(ctx context.Context, c *control.Client, tabs []*leapmuxv1.WorkspaceTab, includeWorkerNames bool) (map[string]tabDetail, map[string]string) {
+func fetchTabDetailsAndWorkers(ctx context.Context, c control.Peer, tabs []*leapmuxv1.WorkspaceTab, includeWorkerNames bool) (map[string]tabDetail, map[string]string) {
 	type workerTabs struct {
 		agents, terminals []string
 		viewers           []*leapmuxv1.TabIdent
@@ -287,7 +299,7 @@ func fileTabBasename(name string) string {
 // fetchWorkerNames asks each Worker for its name, all Workers at once. The
 // hub does not store a Worker's name; the Worker reports it. A Worker that
 // cannot answer has no entry.
-func fetchWorkerNames(ctx context.Context, c *control.Client, workerIDs []string) map[string]string {
+func fetchWorkerNames(ctx context.Context, c control.Peer, workerIDs []string) map[string]string {
 	var mu sync.Mutex
 	out := map[string]string{}
 	var g errgroup.Group

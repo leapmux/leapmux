@@ -21,8 +21,8 @@ func SanitizeSingleLine(s string) string {
 }
 
 func sanitizeTerminal(s string, singleLine bool) string {
-	if s == "" {
-		return ""
+	if isCleanASCII(s, singleLine) {
+		return s
 	}
 	var b strings.Builder
 	b.Grow(len(s))
@@ -64,6 +64,24 @@ func sanitizeTerminal(s string, singleLine bool) string {
 	return b.String()
 }
 
+func isCleanASCII(s string, singleLine bool) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 0x20 && c < 0x7f {
+			continue
+		}
+		if !singleLine && (c == '\n' || c == '\t') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isECMA48Final(b byte) bool {
+	return b >= 0x30 && b <= 0x7e
+}
+
 // skipEscapeSequence advances past one ESC-initiated ANSI/VT sequence starting at i.
 func skipEscapeSequence(s string, i int) int {
 	if i+1 >= len(s) {
@@ -75,14 +93,19 @@ func skipEscapeSequence(s string, i int) int {
 		return skipCSIBody(s, i+2)
 	case ']', 'P', '_', '^', 'X': // OSC, DCS, APC, PM, SOS: terminated by BEL, ESC \, or 8-bit ST
 		return skipStringSequenceBody(s, i+2)
-	case '(', ')', '*', '+', '-', '.', '/': // Charset designation: 3-byte sequence
-		if i+2 < len(s) {
+	case '(', ')', '*', '+', '-', '.', '/': // Charset designation: ESC <intermediate> <final(0x30..0x7E)>
+		if i+2 < len(s) && isECMA48Final(s[i+2]) {
 			return i + 3
 		}
-		return len(s)
-	default:
-		// 2-byte Fe/Fp/Fs sequence.
 		return i + 2
+	default:
+		// 2-byte Fe/Fp/Fs sequence: ESC followed by a final byte (0x30..0x7E).
+		if isECMA48Final(next) {
+			return i + 2
+		}
+		// Bare ESC before a non-final byte (such as '\n', a UTF-8 lead byte,
+		// or another ESC): strip only the ESC so the next byte parses normally.
+		return i + 1
 	}
 }
 

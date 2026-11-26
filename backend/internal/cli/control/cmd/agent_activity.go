@@ -62,7 +62,7 @@ type activityFeedSource struct {
 }
 
 // workerActivitySource reads the activity of agents on workerID through c.
-func workerActivitySource(c *control.Client, workerID string) activityFeedSource {
+func workerActivitySource(c control.Peer, workerID string) activityFeedSource {
 	return activityFeedSource{
 		openTransport: func(ctx context.Context) (streamevents.Transport, func(), error) {
 			t, err := newWorkerWatchTransport(ctx, c, workerID)
@@ -286,7 +286,7 @@ func (f *activityFeed) connect(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err != nil && !subscribed {
+		if (err != nil && !subscribed) || refusedForGood(err) {
 			f.seq.Push(ctx, activityInput{event: activityEvent{kind: activityFailed, err: err}})
 			return
 		}
@@ -339,7 +339,8 @@ func (f *activityFeed) subscribeOnce(ctx context.Context, delivered *atomic.Bool
 	onSubscribed()
 	select {
 	case <-ctx.Done():
+		return nil
 	case <-sub.Done():
+		return inBandError(sub.EndErr())
 	}
-	return nil
 }

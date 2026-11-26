@@ -472,3 +472,65 @@ func TestRunWorkerInfoReportsAnOfflineWorkerOverTheHub(t *testing.T) {
 	out = runControl(t, "worker", "get", "--hub", srv.URL, workerB).ok(t)
 	assert.Equal(t, workerB, envelopeData(t, out)["id"])
 }
+
+type localSoloWorkerHub struct {
+	leapmuxv1connect.UnimplementedWorkerManagementServiceHandler
+}
+
+func (localSoloWorkerHub) CreateRegistrationKey(context.Context, *leapmuxv1.CreateRegistrationKeyRequest) (*leapmuxv1.CreateRegistrationKeyResponse, error) {
+	return &leapmuxv1.CreateRegistrationKeyResponse{
+		RegistrationKey: "lmx_reg_solo",
+		ExpiresAt:       timestamppb.New(time.Now().Add(5 * time.Minute)),
+	}, nil
+}
+
+func (localSoloWorkerHub) ExtendRegistrationKey(context.Context, *leapmuxv1.ExtendRegistrationKeyRequest) (*leapmuxv1.ExtendRegistrationKeyResponse, error) {
+	return &leapmuxv1.ExtendRegistrationKeyResponse{
+		ExpiresAt: timestamppb.New(time.Now().Add(10 * time.Minute)),
+	}, nil
+}
+
+func (localSoloWorkerHub) RevokeRegistrationKey(context.Context, *leapmuxv1.RevokeRegistrationKeyRequest) (*leapmuxv1.RevokeRegistrationKeyResponse, error) {
+	return &leapmuxv1.RevokeRegistrationKeyResponse{}, nil
+}
+
+func (localSoloWorkerHub) EmailRegistrationInstructions(context.Context, *leapmuxv1.EmailRegistrationInstructionsRequest) (*leapmuxv1.EmailRegistrationInstructionsResponse, error) {
+	return &leapmuxv1.EmailRegistrationInstructionsResponse{}, nil
+}
+
+func (localSoloWorkerHub) ListWorkers(context.Context, *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
+	return &leapmuxv1.ListWorkersResponse{
+		Workers: []*leapmuxv1.Worker{{Id: fullTestID("worker-solo"), Online: true}},
+	}, nil
+}
+
+func (localSoloWorkerHub) DeregisterWorker(context.Context, *leapmuxv1.DeregisterWorkerRequest) (*leapmuxv1.DeregisterWorkerResponse, error) {
+	return &leapmuxv1.DeregisterWorkerResponse{}, nil
+}
+
+// RIPPLE-4: direct-hub worker management commands work over a local solo Hub
+// IPC socket without stored credentials.
+func TestRunWorkerDirectCommands_LocalIPCHubWorksWithoutStoredCredentials(t *testing.T) {
+	isolateCLIEnv(t)
+
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, localSoloWorkerHub{})
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
+	sockURL := hubtransporttest.NewSocketServer(t, "solo-worker", mux)
+
+	created := runControl(t, "worker", "key", "create", "--hub", sockURL).Data(t)
+	assert.Equal(t, "lmx_reg_solo", created["key"])
+
+	extended := runControl(t, "worker", "key", "extend", "--hub", sockURL, "lmx_reg_solo").Data(t)
+	assert.Equal(t, "lmx_reg_solo", extended["key"])
+
+	emailed := runControl(t, "worker", "key", "email", "--hub", sockURL, "lmx_reg_solo").Data(t)
+	assert.Equal(t, true, emailed["sent"])
+
+	revoked := runControl(t, "worker", "key", "revoke", "--hub", sockURL, "lmx_reg_solo").Data(t)
+	assert.Equal(t, true, revoked["revoked"])
+
+	deregistered := runControl(t, "worker", "deregister", "--hub", sockURL, fullTestID("worker-solo")).Data(t)
+	assert.Equal(t, true, deregistered["deregistered"])
+}

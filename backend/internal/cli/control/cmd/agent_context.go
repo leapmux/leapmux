@@ -30,9 +30,10 @@ var (
 
 func newAgentClearCommand() *cobra.Command {
 	return cli.NewLeaf(cli.Leaf{
-		Use:     "clear <agent>",
-		Short:   "Clear an agent's context, and continue in a fresh session",
-		Mutates: true,
+		Use:         "clear <agent>",
+		Short:       "Clear an agent's context, and continue in a fresh session",
+		Mutates:     true,
+		Destructive: true,
 		Long: `Clear an agent's context. The command queues a clear. When the agent reads
 it, the Worker stops the agent's process and starts the provider again in a
 fresh session, in the same tab. The transcript keeps the earlier messages.

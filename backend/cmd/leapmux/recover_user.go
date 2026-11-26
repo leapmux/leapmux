@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,12 +22,35 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// newBootstrapCreateAdminCommand builds `leapmux recover bootstrap
-// create-admin`. It creates an administrator when no live administrator
-// exists — the one identity operation that cannot require an authenticated
-// admin to already exist. It refuses once any admin exists; every later
-// user (admin included) is created online through
-// `leapmux control admin user create`.
+type recoverCreateAdminResult struct {
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	IsAdmin     bool   `json:"is_admin"`
+}
+
+func (r recoverCreateAdminResult) RenderText(w io.Writer) error {
+	_, err := fmt.Fprintf(w, "Created administrator %q (id: %s)\n", r.Username, r.ID)
+	return err
+}
+
+type recoverResetPasswordResult struct {
+	ID              string `json:"id"`
+	Username        string `json:"username"`
+	SessionsRevoked bool   `json:"sessions_revoked"`
+	PasskeysRevoked bool   `json:"passkeys_revoked"`
+}
+
+func (r recoverResetPasswordResult) RenderText(w io.Writer) error {
+	_, err := fmt.Fprintf(w, "Password reset for user %q (id: %s). All sessions and passkeys revoked.\n", r.Username, r.ID)
+	return err
+}
+
+// newBootstrapCreateAdminCommand builds `leapmux recover create-admin`. It
+// creates an administrator when no live administrator exists — the one
+// identity operation that cannot require an authenticated admin to already
+// exist. It refuses once any admin exists; every later user (admin included)
+// is created online through `leapmux admin user create`.
 func newBootstrapCreateAdminCommand() *cobra.Command {
 	var pw, displayName string
 	return recoverStoreLeaf(recoverSpec{
@@ -48,43 +73,43 @@ func newBootstrapCreateAdminCommand() *cobra.Command {
 			}
 			return nil
 		},
-	}, func(inv *cli.Invocation, _ *config.Config, st store.Store) error {
+	}, func(inv *cli.Invocation, _ *config.Config, st store.Store) (any, error) {
 		ctx := inv.Context
 		if _, err := st.Users().GetFirstAdmin(ctx); err == nil {
-			return cli.Newf(cli.CodeConflict, "an administrator already exists").
+			return nil, cli.Newf(cli.CodeConflict, "an administrator already exists").
 				WithHint("create every later user online: leapmux admin user create --admin")
 		} else if !errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("look up existing admins: %w", err)
+			return nil, fmt.Errorf("look up existing admins: %w", err)
 		}
 
-		pwValue, err := control.RequirePassword(ctx, pw, "Password: ")
+		pwValue, err := control.RequirePassword(ctx, pw, "Password: ", os.Stdin, inv.Printer.Err)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		slug, err := validate.SanitizeSlug("username", inv.Arg("username"))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		// Every creation path refuses a reserved system username, and this
 		// one is offline, so nothing else stands behind it. A row named
 		// "solo" in a non-solo database BECOMES the administrator if the
-		// same data dir is later opened with `leapmux solo` — the solo rung
+		// same data dir is later opened with `leapmux daemon solo` — the solo rung
 		// runs before the email gate and before the admin gate, so that
 		// row's identity is handed out against the password this command
 		// set, and with no credential at all when it set none.
 		if usernames.IsReservedSystem(slug) {
-			return fmt.Errorf("%q is a reserved username", slug)
+			return nil, fmt.Errorf("%q is a reserved username", slug)
 		}
 		if err := validate.ValidatePassword(pwValue); err != nil {
-			return err
+			return nil, err
 		}
 		dispName, err := validate.SanitizeDisplayName(displayName, slug)
 		if err != nil {
-			return fmt.Errorf("display name: %w", err)
+			return nil, fmt.Errorf("display name: %w", err)
 		}
 		hash, err := password.Hash(pwValue)
 		if err != nil {
-			return fmt.Errorf("hash password: %w", err)
+			return nil, fmt.Errorf("hash password: %w", err)
 		}
 
 		user, err := service.CreateUser(ctx, st, service.CreateUserParams{
@@ -99,20 +124,24 @@ func newBootstrapCreateAdminCommand() *cobra.Command {
 			// unique email index skips a blank one. So a conflict here can
 			// only be the username.
 			if errors.Is(err, store.ErrConflict) {
-				return &service.FieldTakenError{Field: "username", Value: slug}
+				return nil, &service.FieldTakenError{Field: "username", Value: slug}
 			}
-			return err
+			return nil, err
 		}
-		_, err = fmt.Fprintf(inv.Printer.Out, "Created administrator %q (id: %s)\n", slug, user.ID)
-		return err
+		return recoverCreateAdminResult{
+			ID:          user.ID,
+			Username:    slug,
+			DisplayName: dispName,
+			IsAdmin:     true,
+		}, nil
 	})
 }
 
-// newPasswordResetCommand builds `leapmux recover password reset`. It resets
+// newPasswordResetCommand builds `leapmux recover reset-password`. It resets
 // a user's password with the hub stopped — the break-glass path for a hub
 // whose only admin forgot their password.
 //
-// `leapmux control admin user reset-password` is the online twin, and it is
+// `leapmux admin user reset-password` is the online twin, and it is
 // the one to reach for while the hub serves: it goes through the
 // administrator gate, and it tears the user's credentials down in the
 // serving hub's process instead of leaving that to the revocation watcher's
@@ -123,10 +152,11 @@ func newPasswordResetCommand() *cobra.Command {
 	var sel *leapmuxv1.UserSelector
 	return recoverExistingStoreLeaf(recoverSpec{
 		Leaf: cli.Leaf{
-			Use:     "reset-password <user>",
-			Short:   "Reset a user's password and revoke all their sessions",
-			Mutates: true,
-			Args:    map[string]string{"user": control.UserArgumentHelp},
+			Use:         "reset-password <user>",
+			Short:       "Reset a user's password and revoke all their sessions",
+			Mutates:     true,
+			Destructive: true,
+			Args:        map[string]string{"user": control.UserArgumentHelp},
 			Examples: []cli.Example{
 				{Comment: "Reset the password of alice; the command prompts for the new password.", Command: "leapmux recover reset-password alice"},
 				{Comment: "Select the user by id.", Command: "leapmux recover reset-password id:0193c0de-7a1b-7c2d-8e3f-4a5b6c7d8e9f"},
@@ -139,32 +169,32 @@ func newPasswordResetCommand() *cobra.Command {
 			sel, err = control.ParseUserArgument(inv.Arg("user"))
 			return err
 		},
-	}, func(inv *cli.Invocation, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
+	}, func(inv *cli.Invocation, _ *config.Config, st store.Store, _ *keystore.Keystore) (any, error) {
 		ctx := inv.Context
 		user, err := resolveUser(ctx, st, sel, inv.Arg("user"))
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		pwValue, err := control.RequirePassword(ctx, pw, "New password: ")
+		pwValue, err := control.RequirePassword(ctx, pw, "New password: ", os.Stdin, inv.Printer.Err)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if err := validate.ValidatePassword(pwValue); err != nil {
-			return err
+			return nil, err
 		}
 
 		hash, err := password.Hash(pwValue)
 		if err != nil {
-			return fmt.Errorf("hash password: %w", err)
+			return nil, fmt.Errorf("hash password: %w", err)
 		}
 
 		// Mint once and refuse a blank id rather than letting the credential
 		// revocation below report success having revoked nothing.
 		revokeUID, err := mintResolvedUserID(user)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		err = st.RunInUserAuthTransaction(ctx, revokeUID, func(tx store.Store) error {
@@ -194,10 +224,14 @@ func newPasswordResetCommand() *cobra.Command {
 			return nil
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		_, err = fmt.Fprintf(inv.Printer.Out, "Password reset for user %q (id: %s). All sessions and passkeys revoked.\n", user.Username, user.ID)
-		return err
+		return recoverResetPasswordResult{
+			ID:              user.ID,
+			Username:        user.Username,
+			SessionsRevoked: true,
+			PasskeysRevoked: true,
+		}, nil
 	})
 }

@@ -26,6 +26,13 @@ func (c ContextConfig) IsEmpty() bool {
 	return c.Hub == "" && c.Worker == "" && c.Workspace == "" && c.Provider == ""
 }
 
+func (c *ContextConfig) trim() {
+	c.Hub = strings.TrimSpace(c.Hub)
+	c.Worker = strings.TrimSpace(c.Worker)
+	c.Workspace = strings.TrimSpace(c.Workspace)
+	c.Provider = strings.TrimSpace(c.Provider)
+}
+
 // ContextPath returns the path to context.json under ConfigDir.
 func ContextPath() (string, error) {
 	dir, err := ConfigDir()
@@ -53,20 +60,14 @@ func LoadContext() (ContextConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return ContextConfig{}, fmt.Errorf("parse context %s: %w", path, err)
 	}
-	cfg.Hub = strings.TrimSpace(cfg.Hub)
-	cfg.Worker = strings.TrimSpace(cfg.Worker)
-	cfg.Workspace = strings.TrimSpace(cfg.Workspace)
-	cfg.Provider = strings.TrimSpace(cfg.Provider)
+	cfg.trim()
 	return cfg, nil
 }
 
 // SaveContext writes context.json atomically (mode 0600), or removes it when
 // every field is empty.
 func SaveContext(cfg ContextConfig) error {
-	cfg.Hub = strings.TrimSpace(cfg.Hub)
-	cfg.Worker = strings.TrimSpace(cfg.Worker)
-	cfg.Workspace = strings.TrimSpace(cfg.Workspace)
-	cfg.Provider = strings.TrimSpace(cfg.Provider)
+	cfg.trim()
 	if cfg.IsEmpty() {
 		return ClearContext()
 	}
@@ -90,6 +91,12 @@ func ClearContext() error {
 	if err != nil {
 		return err
 	}
+	return removeAtomicFile(path)
+}
+
+// removeAtomicFile removes path (ignoring os.ErrNotExist) and sweeps any
+// temporary files left behind by an interrupted atomic write.
+func removeAtomicFile(path string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}

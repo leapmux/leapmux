@@ -563,7 +563,7 @@ func requestTargets(s *session, inputs []string) ([]tabTarget, error) {
 // failure's, so a script never reads a partial list as a complete one.
 func reportControlRequests(p *cli.Printer, result controlRequestList, failures []error, agents int) (any, error) {
 	if len(failures) == 0 {
-		if len(result.Requests) == 0 && p.Format == cli.FormatText && !p.Quiet {
+		if len(result.Requests) == 0 && p.Format == cli.FormatText {
 			p.Notice("no agent waits for an answer")
 		}
 		return result, nil

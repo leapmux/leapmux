@@ -19,7 +19,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hubrpc"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -244,8 +243,6 @@ func runControlLive(t *testing.T, args ...string) *liveRun {
 	root := NewCommand()
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &liveRun{out: newLineSink(), errOut: newLineSink(), cancel: cancel, code: make(chan int, 1)}
-	prevErr := control.Err
-	control.Err = run.errOut
 	finished := make(chan struct{})
 	go func() {
 		run.code <- cli.Execute(ctx, root, args, strings.NewReader(""), run.out, run.errOut)
@@ -258,7 +255,6 @@ func runControlLive(t *testing.T, args ...string) *liveRun {
 		case <-time.After(10 * time.Second):
 			t.Error("the command did not stop")
 		}
-		control.Err = prevErr
 	})
 	return run
 }

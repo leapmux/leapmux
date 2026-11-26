@@ -142,7 +142,7 @@ func completeSkillNames(_ *cobra.Command, _ cli.ArgSpec, prefix string) ([]strin
 
 type skillRow struct {
 	Name             string   `json:"name" table:"SKILL"`
-	State            string   `json:"state" table:"STATE"`
+	State            string   `json:"state" table:"STATE,state"`
 	Enabled          *bool    `json:"enabled,omitempty" table:"ENABLED,optional"`
 	InstalledVersion string   `json:"installed_version,omitempty" table:"INSTALLED,optional"`
 	BundledVersion   string   `json:"bundled_version" table:"BUNDLED"`

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,34 +19,44 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
-// Client is the CLI's connection to a hub. It holds the credential
-// (Bearer token), HTTP client (which handles unix:/npipe: hub URLs),
-// and ConnectRPC service clients for the hub-side RPCs.
+// Peer is the sealed sum of the two transports a CLI command can talk to:
+// a direct *HubClient or an agent-spawned *WorkerIPCClient.
 //
-// Construct with NewClient; in agent-spawned mode (LEAPMUX_CONTROL_*
-// env vars set) use NewLocalClient instead.
+// Commands that talk only to the hub take *HubClient; commands or helpers
+// that talk only to the local tab socket take *WorkerIPCClient. Dual-transport
+// helpers accept Peer and switch on the concrete type so calling a hub-only
+// method on a worker-IPC client (or ControlIPCService on a hub client) is a
+// compile error rather than a runtime check.
+type Peer interface {
+	ConnectURL() string
+	ApplyAuth(headers http.Header)
+	AuthInterceptor() connect.ClientInterceptor
+	controlPeer()
+}
+
+// HubClient is the CLI's direct connection to a hub, over http(s) or the hub's
+// own unix:/npipe: IPC listener. It holds the credential (Bearer token), HTTP
+// and WebSocket clients, TOFU pin store, and ConnectRPC service clients for
+// hub-side RPCs.
 //
 // HubURL is the user-visible address (`https://hub.example` or a
-// `unix:`/`npipe:` IPC URL). connectURL is what ConnectRPC actually
-// sees as the base URL: identical to HubURL for hub-bound clients,
-// but rewritten to `http://localhost` for local-IPC clients because
-// net/http rejects any URL whose scheme isn't http(s) — the socket dial
-// is wired into the transport, so the host portion is just a
-// placeholder. Package hubtransport builds both, and decides which
-// protocol each one speaks.
-type Client struct {
+// `unix:`/`npipe:` IPC URL). connectURL is what ConnectRPC sees as the base
+// URL: identical to HubURL for remote hubs, or a placeholder `http://localhost`
+// for local-IPC hubs because net/http rejects non-http(s) schemes while the
+// custom dialer dials the real socket.
+type HubClient struct {
 	HubURL string
 	// bearer is the access token presented on every call.
 	//
 	// UNEXPORTED, and that is the mechanism rather than a style choice: a
 	// refresh replaces it mid-flight while a stream on another goroutine
-	// reads it, so every access must hold bearerMu. A comment asking callers
-	// to use currentBearer and setBearer is a rule somebody can forget; an
-	// unexported field is one the compiler keeps. Tests reach it through
+	// reads it, so every access must hold bearerMu. Tests reach it through
 	// ApplyAuth, which is what a transport sees anyway.
 	bearer string
 	// accessExpiresAt is the stored expiry of the token in bearer, so the
@@ -59,39 +68,36 @@ type Client struct {
 	bearerMu        sync.RWMutex
 	HTTPClient      *http.Client
 	WSClient        *http.Client // HTTP/1.1 client for the /ws/channel and /ws/userevents upgrades
-	// StreamHTTPClient carries a Connect SERVER STREAM, so it holds no overall
-	// timeout. It is set for a worker-IPC client only, because that is the one
-	// transport whose streams do not ride a WebSocket: `layout watch` over
-	// local IPC and `agent messages --follow` both open
-	// ControlIPCService.StreamInner, which runs on this HTTP client rather
-	// than on WSClient. An http.Client timeout covers the BODY read, and a
-	// stream's body ends only when the stream does, so the timed HTTPClient
-	// severed both of them after exactly 60 seconds.
-	StreamHTTPClient *http.Client
-	// Pins is the per-hub TOFU pin store. Read it through pinStore, which
-	// opens it on first use; a test may set the field directly instead.
-	Pins       *PinStore
-	pinsOnce   sync.Once
-	pinsErr    error
-	UserID     string
-	Username   string
-	connectURL string
-	// peer identifies what the transport talks to. The URL scheme alone
-	// cannot: a `unix:`/`npipe:` URL may address either the hub's own IPC
-	// listener or a worker's per-agent IPC server, and the two consume
-	// DIFFERENT auth headers (the hub reads Authorization: Bearer; the
-	// worker's IPC server reads X-LeapMux-Token). Keying ApplyAuth off the
-	// peer rather than the scheme is what lets `--hub unix:.../hub.sock`
-	// work.
-	peer peerKind
-	// promptAllowed reports whether this client may run a ceremony that
-	// blocks on a person: today, the browser step-up. The constructor
-	// decides it ONCE, so every call of one command answers alike.
-	//
-	// A worker-spawned client is never allowed one. It runs inside an
-	// agent, where there is no terminal and nobody to read a URL.
+	// pins is the per-hub TOFU pin store, opened on first use by pinStore.
+	pins          *PinStore
+	pinsOnce      sync.Once
+	pinsErr       error
+	UserID        string
+	Username      string
+	connectURL    string
+	errOutMu      sync.RWMutex
+	errOut        io.Writer
 	promptAllowed bool
 }
+
+func (*HubClient) controlPeer() {}
+
+// WorkerIPCClient is the CLI's connection to the worker-local per-agent IPC
+// socket spawned inside a LeapMux tab. It authenticates with X-LeapMux-Token
+// and exposes only ControlIPCService RPCs.
+type WorkerIPCClient struct {
+	SocketURL  string
+	token      string
+	HTTPClient *http.Client
+	// StreamHTTPClient carries a Connect SERVER STREAM, so it holds no overall
+	// timeout: `layout watch` over local IPC and `agent messages --follow` both
+	// open ControlIPCService.StreamInner, which runs on this HTTP client rather
+	// than on a WebSocket.
+	StreamHTTPClient *http.Client
+	connectURL       string
+}
+
+func (*WorkerIPCClient) controlPeer() {}
 
 // noPromptEnv refuses every prompt that waits for a person, whatever the
 // terminal detection says: the browser step-up and the password prompt
@@ -105,9 +111,14 @@ type Client struct {
 const noPromptEnv = "LEAPMUX_CONTROL_NO_PROMPT"
 
 // promptsAllowed reports whether this process may open a prompt that ends
-// only when a person acts.
+// only when a person acts on os.Stdin.
 func promptsAllowed() bool {
-	return os.Getenv(noPromptEnv) == "" && isInteractive()
+	return promptsAllowedFor(os.Stdin)
+}
+
+// promptsAllowedFor reports whether this process may open a prompt on in.
+func promptsAllowedFor(in *os.File) bool {
+	return os.Getenv(noPromptEnv) == "" && cli.IsTerminalFile(in)
 }
 
 // noPromptReason states WHY this process may not prompt, so a refusal can
@@ -119,41 +130,54 @@ func noPromptReason() string {
 	return "stdin is not a terminal"
 }
 
-// peerKind distinguishes the two transports a Client can carry.
-type peerKind int
-
-const (
-	// peerHub is the hub itself, over http(s) or its unix:/npipe: listener.
-	peerHub peerKind = iota
-	// peerWorkerIPC is the worker-local per-agent IPC server.
-	peerWorkerIPC
-)
-
 // ConnectURL returns the base URL ConnectRPC clients should use.
-// Equal to HubURL for hub-bound clients; equal to a placeholder
-// `http://localhost` for local-IPC clients (the h2c transport dials
-// the real unix/npipe socket regardless of host).
-func (c *Client) ConnectURL() string {
+// Equal to HubURL for remote hubs; equal to a placeholder `http://localhost`
+// for local-IPC hubs (the h2c transport dials the real unix/npipe socket).
+func (c *HubClient) ConnectURL() string {
 	return c.connectURL
+}
+
+// SetErrOut sets the writer that interactive ceremonies (such as browser
+// step-up) write prompts to. Passing nil resets to os.Stderr.
+func (c *HubClient) SetErrOut(w io.Writer) {
+	c.errOutMu.Lock()
+	c.errOut = w
+	c.errOutMu.Unlock()
+}
+
+// errWriter returns the configured error writer, defaulting to os.Stderr.
+func (c *HubClient) errWriter() io.Writer {
+	c.errOutMu.RLock()
+	w := c.errOut
+	c.errOutMu.RUnlock()
+	if w != nil {
+		return w
+	}
+	return os.Stderr
 }
 
 // newHubClient builds a hub-bound client for hubURL, carrying creds when
 // the caller holds them and running anonymously when creds is nil.
 //
-// Both constructors below route through it, so a field added to Client
+// Both constructors below route through it, so a field added to HubClient
 // reaches both. The two differ ONLY in how they treat a credential that
 // does not load, which is the difference each one documents.
-func newHubClient(hubURL string, creds *CredentialFile) (*Client, error) {
-	httpClient, wsClient, connectURL, err := buildHTTPClients(hubURL)
+//
+// Both HTTP clients come from one hubtransport.Endpoint, so they share its
+// connection pools and its h2c verdict. The WebSocket client is never nil,
+// including for a remote hub: a nil one made coder/websocket fall back to
+// http.DefaultClient, which carries no timeout of its own and shares the
+// process-global pool with every other caller in the program.
+func newHubClient(hubURL string, creds *CredentialFile) (*HubClient, error) {
+	endpoint, err := hubtransport.New(hubURL)
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{
+	c := &HubClient{
 		HubURL:        hubURL,
-		HTTPClient:    httpClient,
-		WSClient:      wsClient,
-		connectURL:    connectURL,
-		peer:          peerHub,
+		HTTPClient:    endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout),
+		WSClient:      endpoint.WebSocketClient(),
+		connectURL:    endpoint.BaseURL(),
 		promptAllowed: promptsAllowed(),
 	}
 	if creds != nil {
@@ -173,25 +197,25 @@ func newHubClient(hubURL string, creds *CredentialFile) (*Client, error) {
 // `control admin ...` verb, which reports the failure under the
 // not_logged_in code — a message that states neither the file nor the
 // cause.
-func (c *Client) pinStore() (*PinStore, error) {
+func (c *HubClient) pinStore() (*PinStore, error) {
 	// The preset test is INSIDE the Once, so two concurrent opens read the
 	// field through the same happens-before edge. Reading it first as a
 	// fast path is a data race with the Once body that writes it.
 	c.pinsOnce.Do(func() {
-		if c.Pins != nil {
+		if c.pins != nil {
 			return
 		}
-		c.Pins, c.pinsErr = NewPinStore(c.HubURL)
+		c.pins, c.pinsErr = NewPinStore(c.HubURL)
 	})
 	if c.pinsErr != nil {
 		return nil, c.pinsErr
 	}
-	return c.Pins, nil
+	return c.pins, nil
 }
 
 // NewClient constructs a hub client from the on-disk credentials for
 // hubURL. Returns ErrNotLoggedIn if no credentials exist.
-func NewClient(hubURL string) (*Client, error) {
+func NewClient(hubURL string) (*HubClient, error) {
 	creds, err := LoadCredentials(hubURL)
 	if err != nil {
 		return nil, err
@@ -211,12 +235,22 @@ func NewClient(hubURL string) (*Client, error) {
 // but cannot be read or parsed is a fault the operator must see: running
 // anonymously instead turns a broken file into an "unauthenticated" reply
 // from the hub, which points at the login rather than at the file.
-func NewClientOrAnonymous(hubURL string) (*Client, error) {
+func NewClientOrAnonymous(hubURL string) (*HubClient, error) {
 	creds, err := LoadCredentials(hubURL)
 	if err != nil && !errors.Is(err, ErrNotLoggedIn) {
 		return nil, err
 	}
 	return newHubClient(hubURL, creds)
+}
+
+// NewClientForHub constructs a hub client for hubURL, allowing anonymous access
+// on local IPC sockets (where a solo Hub authenticates the local socket as the
+// solo user) and requiring stored credentials on remote HTTP(S) hubs.
+func NewClientForHub(hubURL string) (*HubClient, error) {
+	if locallisten.IsLocal(hubURL) {
+		return NewClientOrAnonymous(hubURL)
+	}
+	return NewClient(hubURL)
 }
 
 // NewClientFromEnv chooses the transport of a command. The order of
@@ -227,29 +261,28 @@ func NewClientOrAnonymous(hubURL string) (*Client, error) {
 //  2. The tab's own socket, LEAPMUX_CONTROL_SOCK, inside a LeapMux tab.
 //  3. LEAPMUX_HUB.
 //  4. The default hub of the stored credentials (see DefaultHub).
-func NewClientFromEnv(explicitHub string) (*Client, error) {
+//
+// The returned Peer is either a *HubClient or a *WorkerIPCClient.
+func NewClientFromEnv(explicitHub string) (Peer, error) {
 	if explicitHub != "" {
-		if strings.HasPrefix(explicitHub, "unix:") || strings.HasPrefix(explicitHub, "npipe:") {
-			return NewClientOrAnonymous(explicitHub)
-		}
-		return NewClient(explicitHub)
+		return NewClientForHub(explicitHub)
 	}
 	if sock := os.Getenv(controlenv.SocketVariable); sock != "" {
 		return NewLocalClient(sock, os.Getenv(controlenv.TokenVariable))
 	}
-	hub, err := DefaultHub()
+	hub, creds, err := resolveDefaultHub(true)
 	if err != nil {
 		return nil, err
 	}
-	if strings.HasPrefix(hub, "unix:") || strings.HasPrefix(hub, "npipe:") {
-		return NewClientOrAnonymous(hub)
+	if creds != nil {
+		return newHubClient(hub, creds)
 	}
-	return NewClient(hub)
+	return NewClientForHub(hub)
 }
 
 // NewLocalClient targets a per-agent local IPC socket. The token is
 // presented via the X-LeapMux-Token header on every request.
-func NewLocalClient(socketURL, token string) (*Client, error) {
+func NewLocalClient(socketURL, token string) (*WorkerIPCClient, error) {
 	if socketURL == "" || token == "" {
 		return nil, errors.New("local IPC socket and token required")
 	}
@@ -257,57 +290,83 @@ func NewLocalClient(socketURL, token string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{
-		HubURL:     socketURL,
-		bearer:     token,
+	return &WorkerIPCClient{
+		SocketURL:  socketURL,
+		token:      token,
 		HTTPClient: endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout),
 		// Both lanes come from ONE endpoint, so the timed unary calls and the
 		// untimed streams share its connection pool and its protocol verdict.
 		StreamHTTPClient: endpoint.StreamClient(),
 		connectURL:       endpoint.BaseURL(),
-		peer:             peerWorkerIPC,
 	}, nil
 }
 
-// IsWorkerIPC reports whether this client was spawned inside an agent and
-// talks to the worker-local IPC server — the "am I a worker-spawned
-// agent" question. It is NOT "is the URL a socket": a hub reached over
-// its own `unix:`/`npipe:` listener is a hub peer (Bearer auth), not a
-// worker peer.
-func (c *Client) IsWorkerIPC() bool {
-	return c.peer == peerWorkerIPC
+// ConnectURL returns the placeholder HTTP base URL ConnectRPC uses over the
+// worker IPC socket transport.
+func (c *WorkerIPCClient) ConnectURL() string {
+	return c.connectURL
 }
 
-// applyAuthTo stamps the credential header the PEER consumes through set.
-// Worker-IPC peers read X-LeapMux-Token; hub peers read Authorization:
-// Bearer — including a hub addressed by a unix:/npipe: URL, whose listener
-// is the hub's own and expects the same Bearer as its http(s) face.
-//
-// It takes a setter rather than a header so the one decision serves both
-// header shapes this package touches: http.Header on a hand-built form
-// post, and the *connect.Header that carries Connect request metadata.
-func (c *Client) applyAuthTo(set func(key, value string)) {
-	bearer := c.currentBearer()
-	if bearer == "" {
+func (c *WorkerIPCClient) applyAuthTo(set func(key, value string)) {
+	if c.token == "" {
 		return
 	}
-	if c.IsWorkerIPC() {
-		set("X-LeapMux-Token", bearer)
+	set("X-LeapMux-Token", c.token)
+}
+
+// ApplyAuth stamps the X-LeapMux-Token header consumed by the worker IPC server.
+func (c *WorkerIPCClient) ApplyAuth(headers http.Header) {
+	c.applyAuthTo(headers.Set)
+}
+
+func (c *WorkerIPCClient) newConnectClient(httpClient *http.Client) *connect.Client {
+	return connect.NewClient(connecthttp.NewTransport(httpClient, c.connectURL,
+		connecthttp.WithReadMaxBytes(0)), c.AuthInterceptor())
+}
+
+// ControlIPCService returns a ConnectRPC client for unary calls to the
+// worker-local IPC service.
+func (c *WorkerIPCClient) ControlIPCService() (leapmuxv1connect.ControlIPCServiceClient, error) {
+	return c.controlIPCService(c.HTTPClient)
+}
+
+// ControlIPCStreamService is ControlIPCService for a SERVER STREAM.
+//
+// StreamInner's body ends only when the stream does, and an http.Client
+// timeout covers the body read — so the timed client severed `layout watch`
+// over local IPC and `agent messages --follow` after exactly 60 seconds, with
+// a transport error rather than an end of stream. This client holds no
+// overall timeout; the caller's context is what ends the subscription.
+func (c *WorkerIPCClient) ControlIPCStreamService() (leapmuxv1connect.ControlIPCServiceClient, error) {
+	return c.controlIPCService(c.StreamHTTPClient)
+}
+
+func (c *WorkerIPCClient) controlIPCService(httpClient *http.Client) (leapmuxv1connect.ControlIPCServiceClient, error) {
+	if httpClient == nil {
+		return nil, errors.New("ControlIPCService: this client carries no HTTP client for that lane")
+	}
+	return leapmuxv1connect.NewControlIPCServiceClient(c.newConnectClient(httpClient)), nil
+}
+
+// applyAuthTo stamps Authorization: Bearer through set when c holds a bearer.
+func (c *HubClient) applyAuthTo(set func(key, value string)) {
+	bearer := c.currentBearer()
+	if bearer == "" {
 		return
 	}
 	set("Authorization", "Bearer "+bearer)
 }
 
-// ApplyAuth stamps the credential header the PEER consumes. Exported so
+// ApplyAuth stamps Authorization: Bearer for a hub request. Exported so
 // callers outside this package can apply the same auth shape to a
 // hand-constructed request (the same rationale as AuthInterceptor).
-func (c *Client) ApplyAuth(headers http.Header) {
+func (c *HubClient) ApplyAuth(headers http.Header) {
 	c.applyAuthTo(headers.Set)
 }
 
 // currentBearer reads the access token under the lock a refresh writes it
 // under.
-func (c *Client) currentBearer() string {
+func (c *HubClient) currentBearer() string {
 	c.bearerMu.RLock()
 	defer c.bearerMu.RUnlock()
 	return c.bearer
@@ -316,7 +375,7 @@ func (c *Client) currentBearer() string {
 // setBearer adopts a rotated access token and its expiry. The two move
 // together, so the cached expiry can never describe a different token from
 // the one the header carries.
-func (c *Client) setBearer(bearer string, expiresAt time.Time) {
+func (c *HubClient) setBearer(bearer string, expiresAt time.Time) {
 	c.bearerMu.Lock()
 	defer c.bearerMu.Unlock()
 	c.bearer = bearer
@@ -329,78 +388,27 @@ func (c *Client) setBearer(bearer string, expiresAt time.Time) {
 // An UNKNOWN expiry (the zero value) answers true, so a client that never
 // learned one still consults the file. That is what keeps this a pure
 // short-circuit: it can skip a read, never a renewal.
-func (c *Client) bearerNeedsRenewal() bool {
+func (c *HubClient) bearerNeedsRenewal() bool {
 	c.bearerMu.RLock()
 	defer c.bearerMu.RUnlock()
 	return c.accessExpiresAt.IsZero() || time.Until(c.accessExpiresAt) <= refreshSkew
 }
 
 // newConnectClient applies the shared authentication and response-size policy.
-// The caller chooses the HTTP client because subscriptions need no overall timeout.
-func (c *Client) newConnectClient(httpClient *http.Client) *connect.Client {
+func (c *HubClient) newConnectClient(httpClient *http.Client) *connect.Client {
 	return connect.NewClient(connecthttp.NewTransport(httpClient, c.connectURL,
 		connecthttp.WithReadMaxBytes(0)), c.AuthInterceptor())
 }
 
 // WorkspaceService returns a ConnectRPC client for the hub-side
 // WorkspaceService. An interceptor injects the auth headers.
-func (c *Client) WorkspaceService() leapmuxv1connect.WorkspaceServiceClient {
+func (c *HubClient) WorkspaceService() leapmuxv1connect.WorkspaceServiceClient {
 	return leapmuxv1connect.NewWorkspaceServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // WorkerManagementService returns a ConnectRPC client for ListWorkers.
-func (c *Client) WorkerManagementService() leapmuxv1connect.WorkerManagementServiceClient {
+func (c *HubClient) WorkerManagementService() leapmuxv1connect.WorkerManagementServiceClient {
 	return leapmuxv1connect.NewWorkerManagementServiceClient(c.newConnectClient(c.HTTPClient))
-}
-
-// UserCRDT returns a ConnectRPC client for the unary SubmitOps and
-// UpdatePresence calls. The user-event subscription (formerly the
-// `WatchUser` streaming RPC) lives on `/ws/userevents` — see
-// `OpenUserEvents`. An interceptor injects the auth headers.
-func (c *Client) UserCRDT() leapmuxv1connect.UserCRDTClient {
-	return leapmuxv1connect.NewUserCRDTClient(c.newConnectClient(c.HTTPClient))
-}
-
-// ChannelService returns a ConnectRPC client for OpenChannel /
-// GetWorkerHandshakeParams when the CLI runs an E2EE inner RPC
-// directly (rare; most callers use OpenE2EEChannel below).
-func (c *Client) ChannelService() leapmuxv1connect.ChannelServiceClient {
-	return leapmuxv1connect.NewChannelServiceClient(c.newConnectClient(c.HTTPClient))
-}
-
-// ControlIPCService returns a ConnectRPC client for the worker-local
-// IPC service. Only valid for clients constructed via NewLocalClient
-// (worker-spawned agents).
-//
-// The restriction is ENFORCED, not merely documented, matching
-// OpenUserEvents and OpenE2EEChannel which both refuse the wrong transport.
-// Every caller already checks IsWorkerIPC() first, so this is a guard against a
-// future one that forgets: a hub-bound client here would aim worker-namespace
-// CallInner requests at the hub's connect URL, which answers 404 rather than
-// anything a caller could diagnose.
-func (c *Client) ControlIPCService() (leapmuxv1connect.ControlIPCServiceClient, error) {
-	return c.controlIPCService(c.HTTPClient)
-}
-
-// ControlIPCStreamService is ControlIPCService for a SERVER STREAM.
-//
-// StreamInner's body ends only when the stream does, and an http.Client
-// timeout covers the body read — so the timed client severed `layout watch`
-// over local IPC and `agent messages --follow` after exactly 60 seconds, with
-// a transport error rather than an end of stream. This client holds no
-// overall timeout; the caller's context is what ends the subscription.
-func (c *Client) ControlIPCStreamService() (leapmuxv1connect.ControlIPCServiceClient, error) {
-	return c.controlIPCService(c.StreamHTTPClient)
-}
-
-func (c *Client) controlIPCService(httpClient *http.Client) (leapmuxv1connect.ControlIPCServiceClient, error) {
-	if !c.IsWorkerIPC() {
-		return nil, errors.New("ControlIPCService is only valid for worker-IPC clients constructed via NewLocalClient")
-	}
-	if httpClient == nil {
-		return nil, errors.New("ControlIPCService: this client carries no HTTP client for that lane")
-	}
-	return leapmuxv1connect.NewControlIPCServiceClient(c.newConnectClient(httpClient)), nil
 }
 
 // UserEventsStream is a read-only WebSocket subscription to the hub's
@@ -452,14 +460,8 @@ func (s *UserEventsStream) Close() error {
 // OpenUserEvents opens a `/ws/userevents` WebSocket subscription against
 // this hub. The Authorization header carries the bearer; the bearer
 // implies the user, so the request sends no user_id. The returned stream's first
-// event is always `UserMaterialized` (the bootstrap snapshot). Only valid
-// for non-local clients — local-IPC clients should use the worker's
-// per-agent delegation bearer to reach the hub directly (the worker is
-// not in this path).
-func (c *Client) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*UserEventsStream, error) {
-	if c.IsWorkerIPC() {
-		return nil, errors.New("OpenUserEvents is only valid for hub-bound clients; use the agent-spawned hub URL + delegation bearer to subscribe directly")
-	}
+// event is always `UserMaterialized` (the bootstrap snapshot).
+func (c *HubClient) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*UserEventsStream, error) {
 	// A long-lived subscription must not open on a token that is about to
 	// lapse: the WebSocket carries no retry, so it would simply close. The
 	// renewal and the read are ONE call, so a later caller cannot do the
@@ -480,10 +482,7 @@ func (c *Client) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*Us
 // OpenE2EEChannel opens a Noise_NK E2EE channel to the named worker
 // via the hub relay. Uses the credential's bearer token and the
 // per-hub TOFU pin store.
-func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, workerID string) (*tunnel.Channel, error) {
-	if c.IsWorkerIPC() {
-		return nil, errors.New("OpenE2EEChannel is only valid for hub-bound clients")
-	}
+func (c *HubClient) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, workerID string) (*tunnel.Channel, error) {
 	// A nil *PinStore would still satisfy tunnel.KeyPinStore as a typed-nil
 	// interface, so tunnel.OpenChannel's `pinStore != nil` guard would call
 	// straight into a nil receiver. Open the store here and report a failure
@@ -519,7 +518,7 @@ func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, work
 // (its CLI credentials, and the passkey and password surface the browser
 // drives). Not an Admin* client: every procedure on it acts on the account
 // the bearer belongs to.
-func (c *Client) UserService() leapmuxv1connect.UserServiceClient {
+func (c *HubClient) UserService() leapmuxv1connect.UserServiceClient {
 	return leapmuxv1connect.NewUserServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
@@ -529,14 +528,8 @@ func (c *Client) UserService() leapmuxv1connect.UserServiceClient {
 // hub, and the interceptor beneath it makes the check self-healing -- a
 // stale access token rotates on the way through, and a revoked one ends in
 // invalid_grant with the credential file already deleted.
-func (c *Client) AuthService() leapmuxv1connect.AuthServiceClient {
+func (c *HubClient) AuthService() leapmuxv1connect.AuthServiceClient {
 	return leapmuxv1connect.NewAuthServiceClient(c.newConnectClient(c.HTTPClient))
-}
-
-// SystemService returns a ConnectRPC client for what the hub reports about
-// itself: the public system information and the timeout configuration.
-func (c *Client) SystemService() leapmuxv1connect.SystemServiceClient {
-	return leapmuxv1connect.NewSystemServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminSettingsService returns a ConnectRPC client for the hub's
@@ -545,13 +538,13 @@ func (c *Client) SystemService() leapmuxv1connect.SystemServiceClient {
 // hubrpc.Registry table is a typing device, not a security boundary
 // (any worker-spawned agent can call whatever it lists), so no admin
 // procedure is registered there.
-func (c *Client) AdminSettingsService() leapmuxv1connect.AdminSettingsServiceClient {
+func (c *HubClient) AdminSettingsService() leapmuxv1connect.AdminSettingsServiceClient {
 	return leapmuxv1connect.NewAdminSettingsServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminUserService returns a ConnectRPC client for AdminUserService
 // (users, sessions, api-tokens, delegation-tokens).
-func (c *Client) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
+func (c *HubClient) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
 	return leapmuxv1connect.NewAdminUserServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
@@ -562,22 +555,22 @@ func (c *Client) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
 // and ownership rather than a role decides what each caller sees. Only two
 // verbs need an administrator -- a hub-wide registration and a vouch -- and
 // each says so in its own handler.
-func (c *Client) AppService() leapmuxv1connect.AppServiceClient {
+func (c *HubClient) AppService() leapmuxv1connect.AppServiceClient {
 	return leapmuxv1connect.NewAppServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminWorkerService returns a ConnectRPC client for AdminWorkerService
 // (cross-user worker administration and registration keys).
-func (c *Client) AdminWorkerService() leapmuxv1connect.AdminWorkerServiceClient {
+func (c *HubClient) AdminWorkerService() leapmuxv1connect.AdminWorkerServiceClient {
 	return leapmuxv1connect.NewAdminWorkerServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminIdPService returns a ConnectRPC client for AdminIdPService.
-func (c *Client) AdminIdPService() leapmuxv1connect.AdminIdPServiceClient {
+func (c *HubClient) AdminIdPService() leapmuxv1connect.AdminIdPServiceClient {
 	return leapmuxv1connect.NewAdminIdPServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminNetworkService returns a ConnectRPC client for AdminNetworkService.
-func (c *Client) AdminNetworkService() leapmuxv1connect.AdminNetworkServiceClient {
+func (c *HubClient) AdminNetworkService() leapmuxv1connect.AdminNetworkServiceClient {
 	return leapmuxv1connect.NewAdminNetworkServiceClient(c.newConnectClient(c.HTTPClient))
 }

@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -58,9 +60,9 @@ func TestNativeConfigurationRejectsUndisplayedPreview(t *testing.T) {
 			output, err := os.CreateTemp(t.TempDir(), "closed-output-")
 			require.NoError(t, err)
 			require.NoError(t, output.Close())
-			original := os.Stdout
-			os.Stdout = output
-			defer func() { os.Stdout = original }()
+			original := os.Stderr
+			os.Stderr = output
+			defer func() { os.Stderr = original }()
 			args := []string{"--data-dir", root, "--startup=boot", "--yes"}
 			err = runLifecycleWithController("hub", verb, factory, args...)
 			require.Error(t, err)
@@ -91,6 +93,18 @@ func TestIncompletePromptAnswersNeverAuthorize(t *testing.T) {
 	}
 }
 
+type signalingBlockingReader struct {
+	entered chan struct{}
+	once    sync.Once
+	unblock chan struct{}
+}
+
+func (r *signalingBlockingReader) Read([]byte) (int, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-r.unblock
+	return 0, io.EOF
+}
+
 // An interrupt ends a prompt that waits for a person. It is no answer: the
 // prompt returns the cause, so the command stops instead of reporting a
 // declined configuration.
@@ -108,14 +122,26 @@ func TestPromptsEndOnAnInterrupt(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			reader, writer := io.Pipe()
-			t.Cleanup(func() { _ = writer.Close() })
+			reader := &signalingBlockingReader{
+				entered: make(chan struct{}),
+				unblock: make(chan struct{}),
+			}
+			t.Cleanup(func() { close(reader.unblock) })
 			ctx, cancel := context.WithCancelCause(t.Context())
 			done := make(chan error, 1)
 			go func() { done <- prompt(ctx, reader) }()
+			select {
+			case <-reader.entered:
+			case <-time.After(30 * time.Second):
+				t.Fatal("prompt did not enter Read")
+			}
 			cancel(cli.ErrInterrupted)
-			err := <-done
-			require.ErrorIs(t, err, cli.ErrInterrupted)
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, cli.ErrInterrupted)
+			case <-time.After(30 * time.Second):
+				t.Fatal("prompt did not return after interrupt")
+			}
 		})
 	}
 }
@@ -235,4 +261,53 @@ func TestConsentAndNoninteractiveSetup(t *testing.T) {
 		assert.NoFileExists(t, dataDir+"/.lifecycle/service.yaml",
 			"the refusal changed nothing")
 	})
+}
+
+func TestNoPromptEnvRefusesInteractiveSetup(t *testing.T) {
+	originalInteractive := isInteractiveInput
+	isInteractiveInput = func() bool { return true }
+	t.Cleanup(func() { isInteractiveInput = originalInteractive })
+
+	t.Run("empty env allows interactive input", func(t *testing.T) {
+		t.Setenv(lifecycleNoPromptEnv, "")
+		require.NoError(t, requireInteractiveInput("--startup=login or --startup=boot", "--yes"))
+	})
+
+	for _, val := range []string{"1", "true", "0"} {
+		t.Run("non-empty env value "+val+" refuses interactive prompting", func(t *testing.T) {
+			t.Setenv(lifecycleNoPromptEnv, val)
+			err := requireInteractiveInput("--startup=login or --startup=boot", "--yes")
+			require.Error(t, err)
+			assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+			assert.Contains(t, err.Error(), lifecycleNoPromptEnv)
+			assert.Contains(t, err.Error(), "--startup")
+			assert.Contains(t, err.Error(), "--yes")
+		})
+	}
+
+	for _, verb := range []string{"enable", "start", "restart"} {
+		t.Run(verb+" refuses without reading stdin or mutating", func(t *testing.T) {
+			t.Setenv(lifecycleNoPromptEnv, "1")
+			root := t.TempDir()
+			manager := &nativeStartRecorder{t: t}
+			runners := testCLIRunners(t)
+			runners.modes.controller = nativeRecorderController(manager)
+			var stdout, stderr bytes.Buffer
+			code := runCLI(
+				t.Context(),
+				[]string{"daemon", "hub", verb, "--data-dir", root},
+				strings.NewReader("1\ny\n"),
+				&stdout,
+				&stderr,
+				runners,
+			)
+			assert.Equal(t, cli.ExitUsage, code)
+			assert.Contains(t, stderr.String(), lifecycleNoPromptEnv)
+			assert.Contains(t, stderr.String(), "--startup")
+			assert.Contains(t, stderr.String(), "--yes")
+			assert.Empty(t, stdout.String())
+			assert.Empty(t, manager.installs)
+			assert.Empty(t, manager.starts)
+		})
+	}
 }

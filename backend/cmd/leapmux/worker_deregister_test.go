@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -190,4 +192,117 @@ func TestWorkerDeregisterRefusedTokenHintsTheManualRemoval(t *testing.T) {
 	assert.Equal(t, cli.CodeNotLoggedIn, failure.Code, failure.Message)
 	assert.Equal(t, []string{"remove this Worker in the Worker list of the Hub, then delete " + cfg.StatePath()}, failure.Hints)
 	assert.FileExists(t, cfg.StatePath(), "an unconfirmed deregistration keeps the credentials")
+}
+
+func TestWorkerRegisterAndDeregisterJSONAndQuietFlags(t *testing.T) {
+	t.Run("quiet flag is rejected on register and deregister", func(t *testing.T) {
+		reg := runTestCLI(t, "daemon", "worker", "register", "--hub", "https://hub.example", "--registration-key", "key", "-q")
+		assert.Equal(t, cli.ExitUsage, reg.code)
+
+		dereg := runTestCLI(t, "daemon", "worker", "deregister", "--data-dir", t.TempDir(), "-q")
+		assert.Equal(t, cli.ExitUsage, dereg.code)
+	})
+
+	t.Run("register and deregister emit valid JSON envelopes without prose", func(t *testing.T) {
+		env := startRegisterEnv(t)
+		dataDir := t.TempDir()
+
+		var regOut, regErr bytes.Buffer
+		regCode := runCLI(
+			t.Context(),
+			[]string{"daemon", "worker", "register", "--hub", env.url, "--registration-key", env.key, "--data-dir", dataDir, "--json"},
+			strings.NewReader(""),
+			&regOut,
+			&regErr,
+			defaultCLIRunners(),
+		)
+		require.Equal(t, cli.ExitOK, regCode, regErr.String())
+		var regEnv struct {
+			Data workerRegisterResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(regOut.Bytes(), &regEnv), regOut.String())
+		assert.Equal(t, "registered", regEnv.Data.Status)
+		assert.NotEmpty(t, regEnv.Data.WorkerID)
+		assert.Equal(t, env.url, regEnv.Data.HubURL)
+
+		var deregOut, deregErr bytes.Buffer
+		deregCode := runCLI(
+			t.Context(),
+			[]string{"daemon", "worker", "deregister", "--data-dir", dataDir, "--json"},
+			strings.NewReader(""),
+			&deregOut,
+			&deregErr,
+			defaultCLIRunners(),
+		)
+		require.Equal(t, cli.ExitOK, deregCode, deregErr.String())
+		var deregEnv struct {
+			Data workerDeregisterResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(deregOut.Bytes(), &deregEnv), deregOut.String())
+		assert.Equal(t, "deregistered", deregEnv.Data.Status)
+		assert.Equal(t, regEnv.Data.WorkerID, deregEnv.Data.WorkerID)
+	})
+
+	t.Run("deregister --json on unregistered worker reports not_registered and suppresses banner", func(t *testing.T) {
+		original := printModeBanner
+		var banners []string
+		printModeBanner = func(mode string) { banners = append(banners, mode) }
+		t.Cleanup(func() { printModeBanner = original })
+
+		dataDir := t.TempDir()
+		var stdout, stderr bytes.Buffer
+		code := runCLI(
+			t.Context(),
+			[]string{"daemon", "worker", "deregister", "--data-dir", dataDir, "--json"},
+			strings.NewReader(""),
+			&stdout,
+			&stderr,
+			defaultCLIRunners(),
+		)
+		require.Equal(t, cli.ExitOK, code, stderr.String())
+		assert.Empty(t, banners, "--json must suppress the mode banner")
+		var env struct {
+			Data workerDeregisterResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(stdout.Bytes(), &env), stdout.String())
+		assert.Equal(t, "not_registered", env.Data.Status)
+		assert.Empty(t, env.Data.WorkerID)
+		assert.Empty(t, env.Data.HubURL)
+		assert.NotEmpty(t, env.Data.StatePath)
+	})
+
+	t.Run("empty required flags and non-positive timeouts fail with ExitUsage", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			args    []string
+			wantErr string
+		}{
+			{
+				name:    "empty hub",
+				args:    []string{"daemon", "worker", "register", "--hub", "", "--registration-key", "key"},
+				wantErr: "--hub is empty",
+			},
+			{
+				name:    "empty registration key",
+				args:    []string{"daemon", "worker", "register", "--hub", "https://hub.example", "--registration-key", ""},
+				wantErr: "--registration-key is empty",
+			},
+			{
+				name:    "register non-positive timeout",
+				args:    []string{"daemon", "worker", "register", "--hub", "https://hub.example", "--registration-key", "key", "--timeout", "0s"},
+				wantErr: "--timeout must be positive",
+			},
+			{
+				name:    "deregister non-positive timeout",
+				args:    []string{"daemon", "worker", "deregister", "--data-dir", t.TempDir(), "--timeout", "-1s"},
+				wantErr: "--timeout must be positive",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				o := runTestCLI(t, tc.args...)
+				assert.Equal(t, cli.ExitUsage, o.code)
+				assert.Contains(t, o.stderr, tc.wantErr)
+			})
+		}
+	})
 }

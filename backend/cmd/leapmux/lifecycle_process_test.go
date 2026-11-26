@@ -436,7 +436,7 @@ func TestWorkerRunRefusesRegistrationFlags(t *testing.T) {
 			// while the corrected parser must refuse before reaching it.
 			require.NoError(t, os.Mkdir(filepath.Join(cfg.DataDir, "worker.db"), 0o700))
 			result := invokeLifecycleCLI(t, t.TempDir(), "worker", "run", "--data-dir", cfg.DataDir, flag, "registration-only")
-			require.Equal(t, 1, result.exitCode)
+			require.Equal(t, cli.ExitUsage, result.exitCode)
 			assert.Contains(t, result.stderr, "belongs to `leapmux daemon worker register`")
 			assert.NoFileExists(t, lifecycle.PathsOf(mustCanonicalDir(t, cfg.DataDir)).RuntimeRecord)
 		})

@@ -1,6 +1,6 @@
 ---
 title: "Control Command Reference"
-description: "Every leapmux control command with its arguments, flags, and examples, generated from the command tree of the binary."
+description: "Every control command of leapmux with its arguments, flags, and examples, generated from the command tree of the binary."
 type: docs
 weight: 2
 sidebar:

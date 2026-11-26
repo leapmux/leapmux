@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
@@ -125,7 +126,7 @@ func (s *session) worktreeRepoDir(workerID string, selector *leapmuxv1.GitWorktr
 	if selector.GetBranch() == "" {
 		return "", nil
 	}
-	if s.c.IsWorkerIPC() && workerID == os.Getenv(controlenv.WorkerIDVariable) {
+	if _, isIPC := s.c.(*control.WorkerIPCClient); isIPC && workerID == os.Getenv(controlenv.WorkerIDVariable) {
 		if dir := workingDirEnv(); dir != "" {
 			return dir, nil
 		}
@@ -169,7 +170,8 @@ func runGitWorktreeGet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	if request.GetSelf() {
-		if !s.c.IsWorkerIPC() || workerID != os.Getenv(controlenv.WorkerIDVariable) {
+		_, isIPC := s.c.(*control.WorkerIPCClient)
+		if !isIPC || workerID != os.Getenv(controlenv.WorkerIDVariable) {
 			return nil, cli.Usagef("self requires a calling tab on the selected worker")
 		}
 	} else {

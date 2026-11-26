@@ -35,54 +35,107 @@ const (
 	KindWorker
 )
 
-// String returns the noun that a message uses for the kind.
-func (k Kind) String() string {
-	switch k {
-	case KindAgent:
-		return "agent"
-	case KindTerminal:
-		return "terminal"
-	case KindTile:
-		return "tile"
-	case KindWorkspace:
-		return "workspace"
-	case KindWorker:
-		return "worker"
-	default:
-		return "tab"
-	}
+// kindSpec holds the static metadata of one Kind so every descriptor lookup
+// stays in one table.
+type kindSpec struct {
+	noun        string
+	article     string
+	tabType     leapmuxv1.TabType
+	isTab       bool
+	namedForm   string
+	extraForms  []string
+	selfMeaning string
+	selfHost    string
+	listCommand string
 }
+
+var defaultKindSpec = kindSpec{
+	noun:        "tab",
+	article:     "A",
+	selfMeaning: "the tab of the tab that runs this command",
+	selfHost:    "tab",
+}
+
+var kindSpecs = [...]kindSpec{
+	KindTab: {
+		noun:        "tab",
+		article:     "A",
+		isTab:       true,
+		namedForm:   titlePrefix + "<title>",
+		extraForms:  []string{`"title:<title>" or a bare case-insensitive title`},
+		selfMeaning: "the tab that runs this command",
+		selfHost:    "tab",
+		listCommand: "leapmux tab list",
+	},
+	KindAgent: {
+		noun:        "agent",
+		article:     "An",
+		tabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		isTab:       true,
+		namedForm:   titlePrefix + "<title>",
+		extraForms:  []string{`"title:<title>" or a bare case-insensitive title or --name slug`, `"parent" for the calling agent's parent`},
+		selfMeaning: "the agent tab that runs this command",
+		selfHost:    "agent tab",
+		listCommand: "leapmux agent list",
+	},
+	KindTerminal: {
+		noun:        "terminal",
+		article:     "A",
+		tabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		isTab:       true,
+		namedForm:   titlePrefix + "<title>",
+		extraForms:  []string{`"title:<title>" or a bare case-insensitive title`},
+		selfMeaning: "the terminal that runs this command",
+		selfHost:    "terminal",
+		listCommand: "leapmux terminal list",
+	},
+	KindTile: {
+		noun:        "tile",
+		article:     "A",
+		selfMeaning: "the tile of the tab that runs this command",
+		selfHost:    "tab",
+		listCommand: "leapmux layout get",
+	},
+	KindWorkspace: {
+		noun:        "workspace",
+		article:     "A",
+		namedForm:   titlePrefix + "<title>",
+		extraForms:  []string{`"title:<title>" or a bare case-insensitive title`},
+		selfMeaning: "the workspace of the tab that runs this command",
+		selfHost:    "tab",
+		listCommand: "leapmux workspace list",
+	},
+	KindWorker: {
+		noun:        "worker",
+		article:     "A",
+		namedForm:   namePrefix + "<name>",
+		extraForms:  []string{`"name:<name>" or a bare case-insensitive worker name`},
+		selfMeaning: "the worker of the tab that runs this command",
+		selfHost:    "tab",
+		listCommand: "leapmux worker list",
+	},
+}
+
+func (k Kind) spec() kindSpec {
+	if k >= 0 && int(k) < len(kindSpecs) {
+		return kindSpecs[k]
+	}
+	return defaultKindSpec
+}
+
+// String returns the noun that a message uses for the kind.
+func (k Kind) String() string { return k.spec().noun }
 
 // TabType returns the tab type that the kind requires, or UNSPECIFIED for a
 // kind that accepts every tab or is not a tab.
-func (k Kind) TabType() leapmuxv1.TabType {
-	switch k {
-	case KindAgent:
-		return leapmuxv1.TabType_TAB_TYPE_AGENT
-	case KindTerminal:
-		return leapmuxv1.TabType_TAB_TYPE_TERMINAL
-	default:
-		return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED
-	}
-}
+func (k Kind) TabType() leapmuxv1.TabType { return k.spec().tabType }
 
 // IsTab reports whether the kind identifies a tab.
-func (k Kind) IsTab() bool {
-	return k == KindTab || k == KindAgent || k == KindTerminal
-}
+func (k Kind) IsTab() bool { return k.spec().isTab }
 
 // namedForm is the form that selects an object of the kind by its title or
 // its name, or "" for a kind that has neither.
-func (k Kind) namedForm() string {
-	switch {
-	case k.IsTab(), k == KindWorkspace:
-		return titlePrefix + "<title>"
-	case k == KindWorker:
-		return namePrefix + "<name>"
-	default:
-		return ""
-	}
-}
+func (k Kind) namedForm() string { return k.spec().namedForm }
 
 // Help is one sentence about the forms that a target of the kind accepts,
 // for the help of an argument. Canonical reads exactly these forms.
@@ -98,26 +151,13 @@ func (k Kind) HelpWithoutSelf() string {
 
 // forms lists the forms of a target of the kind, except "self".
 func (k Kind) forms() []string {
-	article := "A"
-	if k == KindAgent {
-		article = "An"
-	}
+	spec := k.spec()
 	forms := []string{
-		fmt.Sprintf("%s %s id", article, k),
+		fmt.Sprintf("%s %s id", spec.article, spec.noun),
 		fmt.Sprintf("a unique prefix of %d or more characters of one", MinPrefixLength),
 		`"id:<id>" for a literal id`,
 	}
-	switch {
-	case k == KindAgent:
-		forms = append(forms, `"title:<title>" or a bare case-insensitive title or --name slug`, `"parent" for the calling agent's parent`)
-	case k.IsTab():
-		forms = append(forms, `"title:<title>" or a bare case-insensitive title`)
-	case k == KindWorkspace:
-		forms = append(forms, `"title:<title>" or a bare case-insensitive title`)
-	case k == KindWorker:
-		forms = append(forms, `"name:<name>" or a bare case-insensitive worker name`)
-	}
-	return forms
+	return append(forms, spec.extraForms...)
 }
 
 // joinWithOr joins the available selector forms with commas and a final "or".
@@ -127,29 +167,20 @@ func joinWithOr(items []string) string {
 }
 
 // selfMeaning states what "self" selects for the kind.
-func (k Kind) selfMeaning() string {
-	switch k {
-	case KindTab:
-		return "the tab that runs this command"
-	case KindAgent:
-		return "the agent tab that runs this command"
-	case KindTerminal:
-		return "the terminal that runs this command"
-	default:
-		return fmt.Sprintf("the %s of the tab that runs this command", k)
-	}
-}
+func (k Kind) selfMeaning() string { return k.spec().selfMeaning }
 
 // The forms of a target that are not an id.
 const (
 	// SelfTarget selects the caller's own object: the tab, tile, workspace
 	// or Worker of the LeapMux tab that runs the command.
 	SelfTarget = "self"
+	// ParentTarget selects the calling agent's parent agent on the same Worker.
+	ParentTarget = "parent"
 	// literalIDPrefix selects a full id, including one that spells a reserved word.
 	literalIDPrefix = "id:"
 	// titlePrefix selects a tab or a workspace by its exact title.
 	titlePrefix = "title:"
-	// namePrefix selects a Worker by its exact name.
+	// namePrefix selects a Worker by its exact name, or an agent by its exact title.
 	namePrefix = "name:"
 )
 
@@ -163,6 +194,9 @@ type Target struct {
 	// Self reports that the target is the caller's own object, selected by
 	// the word "self" or by a command that defaulted to it.
 	Self bool
+	// Parent reports that the target is the calling agent's parent agent on
+	// the calling Worker, selected by the word "parent".
+	Parent bool
 	// Tab is the hub's row for a tab target, when the resolution read it.
 	// It is nil for a full id, which costs no call, and for a quake
 	// terminal, which has no row.
@@ -184,12 +218,16 @@ type Listing struct {
 	Tiles func(ctx context.Context) (map[string]string, error)
 	// Workers lists every Worker.
 	Workers func(ctx context.Context) ([]*leapmuxv1.Worker, error)
-	// WorkerNames returns known names keyed by id. An absent key means the
-	// caller could not read that name.
+	// WorkerNames returns known names keyed by id. An absent key for an
+	// online Worker means the caller could not read that name; offline
+	// Workers cannot be queried for a live name.
 	WorkerNames func(ctx context.Context, workers []*leapmuxv1.Worker) map[string]string
 	// LocateTab finds the hub's row for one tab, for "self" on a tile or a
 	// workspace.
 	LocateTab func(ctx context.Context, tabID string) (*leapmuxv1.WorkspaceTab, error)
+	// ParentAgent returns the parent agent id of selfAgentID on workerID,
+	// or "" when that agent has no parent.
+	ParentAgent func(ctx context.Context, workerID, selfAgentID string) (string, error)
 	// Getenv reads the environment. Nil reads os.Getenv.
 	Getenv func(string) string
 }
@@ -233,7 +271,8 @@ func (l Listing) SelfTabID(kind Kind) string {
 //   - A unique prefix of an id, of at least MinPrefixLength characters.
 //   - "id:<id>" for a literal id that may be short or spell a reserved word.
 //   - "title:<exact title>" for a tab or a workspace.
-//   - "name:<exact name>" for a Worker.
+//   - "name:<exact name>" for a Worker or an agent.
+//   - "parent" for the calling agent's parent (when kind accepts an agent).
 //   - "self" for the caller's own object.
 //
 // A short form that matches nothing fails with not_found, and one that
@@ -250,6 +289,8 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 		return Target{}, cli.Usagef("the %s is empty", kind)
 	case input == SelfTarget:
 		return l.self(ctx, kind)
+	case strings.EqualFold(input, ParentTarget) && (kind == KindAgent || kind == KindTab):
+		return l.parent(ctx)
 	case strings.HasPrefix(input, literalIDPrefix):
 		return Target{}, cli.Usagef(`"id:" needs an id after the colon`)
 	case strings.HasPrefix(selector, titlePrefix):
@@ -257,20 +298,56 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 	case strings.HasPrefix(selector, namePrefix):
 		return l.byName(ctx, kind, strings.TrimPrefix(selector, namePrefix))
 	case len(input) < MinPrefixLength:
-		// Allow short (1-3 char) bare case-insensitive titles, agent --name
-		// slugs (e.g. "qa", "api"), and worker names before rejecting the input
-		// as too short for an ID prefix.
-		if got, handled, err := l.byShortBareName(ctx, kind, input); handled {
-			return got, err
-		}
-		e := cli.Usagef("%q is too short for a %s id prefix; type at least %d characters", input, kind, MinPrefixLength).
-			WithHint(`use "id:<id>" to select a literal id`)
 		if named := kind.namedForm(); named != "" {
-			return Target{}, e.WithHint(`use "self" for your own %s, or %q`, kind, named)
+			// Allow short (1-3 char) bare case-insensitive titles, agent --name
+			// slugs (e.g. "qa", "api"), and worker names before reporting not found.
+			if got, handled, err := l.byShortBareName(ctx, kind, input); handled {
+				return got, err
+			}
+			return Target{}, cli.Newf(cli.CodeNotFound, "no %s matches %q (and it is shorter than the %d-character id prefix minimum)", kind, input, MinPrefixLength).
+				WithHint(`use "id:<id>" to select a literal id`).
+				WithHint(`use "self" for your own %s, or %q`, kind, named)
 		}
-		return Target{}, e.WithHint(`use "self" for your own %s`, kind)
+		return Target{}, cli.Usagef("%q is too short for a %s id prefix; type at least %d characters", input, kind, MinPrefixLength).
+			WithHint(`use "id:<id>" to select a literal id`).
+			WithHint(`use "self" for your own %s`, kind)
 	}
 	return l.byPrefix(ctx, kind, input)
+}
+
+func (l Listing) parent(ctx context.Context) (Target, error) {
+	selfID := l.SelfTabID(KindAgent)
+	workerID := l.getenv(controlenv.WorkerIDVariable)
+	if selfID == "" || workerID == "" {
+		return Target{}, cli.Usagef(`"parent" selects the parent of the calling agent, and this shell does not run inside a LeapMux agent tab`).
+			WithHint("give an explicit agent id instead")
+	}
+	if l.ParentAgent == nil {
+		return Target{}, cli.Newf(cli.CodeUnavailable, `"parent" lookup is unavailable`).
+			WithHint("give an explicit agent id instead")
+	}
+	parentID, err := l.ParentAgent(ctx, workerID, selfID)
+	if err != nil {
+		return Target{}, err
+	}
+	if parentID == "" {
+		return Target{}, cli.Newf(cli.CodeNotFound, "agent %s has no parent agent", selfID)
+	}
+	return Target{ID: parentID, Parent: true}, nil
+}
+
+func (l Listing) tabTitles(ctx context.Context, tabs []*leapmuxv1.WorkspaceTab) map[string]string {
+	if l.TabTitles == nil || len(tabs) == 0 {
+		return nil
+	}
+	return l.TabTitles(ctx, tabs)
+}
+
+func (l Listing) workerNames(ctx context.Context, workers []*leapmuxv1.Worker) map[string]string {
+	if l.WorkerNames == nil || len(workers) == 0 {
+		return nil
+	}
+	return l.WorkerNames(ctx, workers)
 }
 
 func (l Listing) byShortBareName(ctx context.Context, kind Kind, input string) (Target, bool, error) {
@@ -292,17 +369,7 @@ func (l Listing) byShortBareName(ctx context.Context, kind Kind, input string) (
 		if err != nil {
 			return Target{}, true, err
 		}
-		var matches []cli.Candidate
-		for _, w := range workspaces {
-			if strings.EqualFold(w.GetTitle(), input) {
-				matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "workspace", Title: w.GetTitle()})
-			}
-		}
-		if len(matches) == 0 {
-			return Target{}, false, nil
-		}
-		got, err := pick(kind, fmt.Sprintf("title %q", input), matches)
-		return got, true, err
+		return bareWorkspaceTitleMatch(workspaces, input)
 	case kind == KindWorker:
 		if l.Workers == nil || l.WorkerNames == nil {
 			return Target{}, false, nil
@@ -332,13 +399,19 @@ func ExplicitID(kind Kind, selector string) string {
 	return ""
 }
 
+// IsGeneratedID reports whether s has the length and ASCII alphabet of a
+// generated LeapMux id.
+func IsGeneratedID(s string) bool {
+	return len(s) == id.GeneratedLength && isGeneratedIDAlphabet(s)
+}
+
 // isCompleteTargetID recognizes the direct forms. A UUID-shaped tab id is
 // distinct from a 36-character prefix of a generated id, and a 48-character
 // string only qualifies as a generated id when every byte is an ASCII
 // identifier character (alphanumeric, '-', or '_'), so a 48-character title
 // with spaces or punctuation still resolves by title.
 func isCompleteTargetID(kind Kind, input string) bool {
-	if len(input) == id.GeneratedLength && isGeneratedIDAlphabet(input) {
+	if IsGeneratedID(input) {
 		return true
 	}
 	return kind.IsTab() && len(input) == 36 && uuid.Validate(input) == nil
@@ -388,20 +461,8 @@ func (l Listing) self(ctx context.Context, kind Kind) (Target, error) {
 }
 
 func notInsideTab(kind Kind) error {
-	return cli.Usagef(`"self" selects your own %s, and this shell does not run inside a LeapMux %s`, kind, selfHost(kind)).
+	return cli.Usagef(`"self" selects your own %s, and this shell does not run inside a LeapMux %s`, kind, kind.spec().selfHost).
 		WithHint("give the %s's id instead", kind)
-}
-
-// selfHost is the kind of tab that "self" of kind needs.
-func selfHost(kind Kind) string {
-	switch kind {
-	case KindAgent:
-		return "agent tab"
-	case KindTerminal:
-		return "terminal"
-	default:
-		return "tab"
-	}
 }
 
 func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target, error) {
@@ -428,7 +489,11 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 				return got, err
 			}
 		}
-		return Target{}, l.tabMatchError(ctx, kind, "id prefix or title "+prefix, matches)
+		var titles map[string]string
+		if len(matches) > 1 {
+			titles = l.tabTitles(ctx, matches)
+		}
+		return Target{}, tabMatchErrorWithTitles(kind, "id prefix or title "+prefix, matches, titles)
 	case kind == KindWorkspace:
 		workspaces, err := l.Workspaces(ctx)
 		if err != nil {
@@ -444,13 +509,8 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 			}
 		}
 		if len(matches) == 0 {
-			for _, w := range workspaces {
-				if strings.EqualFold(w.GetTitle(), prefix) {
-					matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "workspace", Title: w.GetTitle()})
-				}
-			}
-			if len(matches) > 0 {
-				return pick(kind, fmt.Sprintf("title %q", prefix), matches)
+			if got, handled, err := bareWorkspaceTitleMatch(workspaces, prefix); handled {
+				return got, err
 			}
 		}
 		return pick(kind, "id prefix or title "+prefix, matches)
@@ -475,12 +535,14 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 			return Target{}, err
 		}
 		var matches []cli.Candidate
+		var matchedWorkers []*leapmuxv1.Worker
 		for _, w := range workers {
 			if w.GetId() == prefix {
 				return Target{ID: prefix}, nil
 			}
 			if strings.HasPrefix(w.GetId(), prefix) {
 				matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "worker"})
+				matchedWorkers = append(matchedWorkers, w)
 			}
 		}
 		if len(matches) == 0 && l.WorkerNames != nil {
@@ -489,7 +551,7 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 			}
 		}
 		if len(matches) > 1 && l.WorkerNames != nil {
-			names := l.WorkerNames(ctx, workers)
+			names := l.workerNames(ctx, matchedWorkers)
 			for i := range matches {
 				matches[i].Title = names[matches[i].ID]
 			}
@@ -498,29 +560,74 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 	}
 }
 
-// bareTabTitleMatch falls back to a case-insensitive title match when no ID
-// prefix matched. It returns handled=true when one or more tabs matched (or
-// when missing Worker metadata blocks a unique match).
-func (l Listing) bareTabTitleMatch(ctx context.Context, kind Kind, tabs []*leapmuxv1.WorkspaceTab, input string) (Target, bool, error) {
-	if len(tabs) == 0 {
+func bareWorkspaceTitleMatch(workspaces []*leapmuxv1.Workspace, input string) (Target, bool, error) {
+	var matches []cli.Candidate
+	for _, w := range workspaces {
+		if strings.EqualFold(w.GetTitle(), input) {
+			matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "workspace", Title: w.GetTitle()})
+		}
+	}
+	if len(matches) == 0 {
 		return Target{}, false, nil
 	}
-	titles := l.TabTitles(ctx, tabs)
+	got, err := pick(KindWorkspace, fmt.Sprintf("title %q", input), matches)
+	return got, true, err
+}
+
+func (l Listing) matchTabsByTitle(ctx context.Context, tabs []*leapmuxv1.WorkspaceTab, title string, fold bool) ([]*leapmuxv1.WorkspaceTab, map[string]string, int) {
+	titles := l.tabTitles(ctx, tabs)
 	var matches []*leapmuxv1.WorkspaceTab
 	unread := 0
 	for _, t := range tabs {
 		actual, known := titles[t.GetTab().GetTabId()]
 		if !known {
 			unread++
-		} else if strings.EqualFold(actual, input) {
+			continue
+		}
+		if fold && strings.EqualFold(actual, title) || !fold && actual == title {
 			matches = append(matches, t)
 		}
 	}
+	return matches, titles, unread
+}
+
+func (l Listing) matchWorkersByName(ctx context.Context, workers []*leapmuxv1.Worker, name string, fold bool) ([]cli.Candidate, int) {
+	names := l.workerNames(ctx, workers)
+	var matches []cli.Candidate
+	unread := 0
+	for _, w := range workers {
+		actual, known := names[w.GetId()]
+		if !known {
+			// Offline Workers cannot be queried for a live name, so they do
+			// not block resolving an online Worker by name.
+			if w.GetOnline() {
+				unread++
+			}
+			continue
+		}
+		if fold && strings.EqualFold(actual, name) || !fold && actual == name {
+			matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "worker", Title: actual})
+		}
+	}
+	return matches, unread
+}
+
+// bareTabTitleMatch falls back to a case-insensitive title match when no ID
+// prefix matched. It returns handled=false when zero tabs matched so a bare
+// input that was actually a wrong ID prefix or a global control-request handle
+// still yields not_found instead of a spurious unavailable error when
+// unrelated tabs have unread metadata. When one tab matches while unread
+// metadata remains, it fails with unavailable rather than guessing uniqueness.
+func (l Listing) bareTabTitleMatch(ctx context.Context, kind Kind, tabs []*leapmuxv1.WorkspaceTab, input string) (Target, bool, error) {
+	if len(tabs) == 0 {
+		return Target{}, false, nil
+	}
+	matches, titles, unread := l.matchTabsByTitle(ctx, tabs, input, true)
 	if len(matches) == 0 {
 		return Target{}, false, nil
 	}
 	what := fmt.Sprintf("title %q", input)
-	if unread > 0 && len(matches) < 2 {
+	if unread > 0 && len(matches) == 1 {
 		return Target{}, true, incompleteMetadataError(what, kind, unread)
 	}
 	if len(matches) == 1 {
@@ -530,27 +637,19 @@ func (l Listing) bareTabTitleMatch(ctx context.Context, kind Kind, tabs []*leapm
 }
 
 // bareWorkerNameMatch falls back to a case-insensitive Worker name match when
-// no ID prefix matched.
+// no ID prefix matched. Like bareTabTitleMatch, zero matches return
+// handled=false so a wrong ID prefix still yields not_found even when
+// another online Worker's metadata could not be read.
 func (l Listing) bareWorkerNameMatch(ctx context.Context, workers []*leapmuxv1.Worker, input string) (Target, bool, error) {
 	if len(workers) == 0 {
 		return Target{}, false, nil
 	}
-	names := l.WorkerNames(ctx, workers)
-	var matches []cli.Candidate
-	unread := 0
-	for _, w := range workers {
-		actual, known := names[w.GetId()]
-		if !known {
-			unread++
-		} else if strings.EqualFold(actual, input) {
-			matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "worker", Title: actual})
-		}
-	}
+	matches, unread := l.matchWorkersByName(ctx, workers, input, true)
 	if len(matches) == 0 {
 		return Target{}, false, nil
 	}
 	what := fmt.Sprintf("name %q", input)
-	if unread > 0 && len(matches) < 2 {
+	if unread > 0 && len(matches) == 1 {
 		return Target{}, true, incompleteMetadataError(what, KindWorker, unread)
 	}
 	got, err := pick(KindWorker, what, matches)
@@ -567,17 +666,7 @@ func (l Listing) byTitle(ctx context.Context, kind Kind, title string) (Target, 
 		if err != nil {
 			return Target{}, err
 		}
-		titles := l.TabTitles(ctx, tabs)
-		var matches []*leapmuxv1.WorkspaceTab
-		unread := 0
-		for _, t := range tabs {
-			actual, known := titles[t.GetTab().GetTabId()]
-			if !known {
-				unread++
-			} else if actual == title {
-				matches = append(matches, t)
-			}
-		}
+		matches, titles, unread := l.matchTabsByTitle(ctx, tabs, title, false)
 		what := fmt.Sprintf("title %q", title)
 		if unread > 0 && len(matches) < 2 {
 			return Target{}, incompleteMetadataError(what, kind, unread)
@@ -619,17 +708,7 @@ func (l Listing) byName(ctx context.Context, kind Kind, name string) (Target, er
 	if err != nil {
 		return Target{}, err
 	}
-	names := l.WorkerNames(ctx, workers)
-	var matches []cli.Candidate
-	unread := 0
-	for _, w := range workers {
-		actual, known := names[w.GetId()]
-		if !known {
-			unread++
-		} else if actual == name {
-			matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "worker", Title: name})
-		}
-	}
+	matches, unread := l.matchWorkersByName(ctx, workers, name, false)
 	what := fmt.Sprintf("name %q", name)
 	if unread > 0 && len(matches) < 2 {
 		return Target{}, incompleteMetadataError(what, kind, unread)
@@ -668,16 +747,6 @@ func (l Listing) tabsOf(ctx context.Context, kind Kind) ([]*leapmuxv1.WorkspaceT
 	return out, nil
 }
 
-// tabMatchError reports a short form that matched no tab or more than one.
-// It asks the Workers for titles only when it has candidates to list.
-func (l Listing) tabMatchError(ctx context.Context, kind Kind, what string, matches []*leapmuxv1.WorkspaceTab) error {
-	var titles map[string]string
-	if len(matches) > 1 {
-		titles = l.TabTitles(ctx, matches)
-	}
-	return tabMatchErrorWithTitles(kind, what, matches, titles)
-}
-
 func tabMatchErrorWithTitles(kind Kind, what string, matches []*leapmuxv1.WorkspaceTab, titles map[string]string) error {
 	candidates := make([]cli.Candidate, 0, len(matches))
 	for _, t := range matches {
@@ -712,21 +781,4 @@ func pick(kind Kind, what string, matches []cli.Candidate) (Target, error) {
 	return Target{}, e
 }
 
-func (k Kind) listCommand() string {
-	switch k {
-	case KindTab:
-		return "leapmux tab list"
-	case KindAgent:
-		return "leapmux agent list"
-	case KindTerminal:
-		return "leapmux terminal list"
-	case KindWorkspace:
-		return "leapmux workspace list"
-	case KindWorker:
-		return "leapmux worker list"
-	case KindTile:
-		return "leapmux layout get"
-	default:
-		return ""
-	}
-}
+func (k Kind) listCommand() string { return k.spec().listCommand }

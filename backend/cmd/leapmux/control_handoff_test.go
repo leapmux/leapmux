@@ -9,9 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
@@ -95,9 +97,28 @@ func TestControlHandoffHandsAControlCommandToTheWorkerCLI(t *testing.T) {
 		{"agent", "a-command-of-a-newer-release", "--a-flag-of-a-newer-release"},
 		{"ag", "ls"},
 		{"--help", "tab", "list"},
+		{"--hub", "https://hub.example", "tab", "list"},
+		{"--format", "json", "tab", "list"},
+		{"-qw", "tab", "list"},
+		{"-q=true", "tab", "list"},
 		{"help", "tab", "list"},
+		{"help", "ag"},
+		{"help", "w"},
+		{"w"},
+		{"t"},
+		{"-"},
 		{"__complete", "tab", ""},
+		{"__complete", "help", "tab", ""},
+		{"__complete", "--hub", "https://hub.example", "tab", ""},
 		{"__completeNoDesc", "worker", ""},
+		{"new-control-cmd"},
+		{"new-control-cmd", "list"},
+		{"help", "new-control-cmd"},
+		{"--new-global-flag", "tab", "list"},
+		{"--new-global-flag=1", "tab", "list"},
+		{"-x", "tab", "list"},
+		{"-qx", "tab", "list"},
+		{"-=foo", "tab", "list"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
@@ -133,16 +154,31 @@ func TestControlHandoffLeavesEveryOtherCommandHere(t *testing.T) {
 		{"recover", "db", "path"},
 		{"version"},
 		{"--version"},
+		{"-v"},
 		{"commands", "--json"},
 		{"completion", "zsh"},
 		{"help"},
 		{"help", "daemon"},
+		{"help", "da"},
+		{"help", "c"},
+		{"help", "help"},
+		{"help", "help", "tab"},
+		{"help", "-h"},
 		{"--help"},
+		{"-h"},
+		{"--hub", "https://hub.example", "daemon", "solo", "status"},
+		{"--hub=https://hub.example", "recover", "db", "path"},
+		{"--format", "json", "version"},
+		{"-qw", "commands"},
+		{"--hub"},
+		{"--format"},
+		{""},
+		{"__complete"},
 		{"__complete", "tab"},
+		{"__completeNoDesc", "tab"},
 		{"__complete", "daemon", ""},
+		{"__complete", "help", "daemon", ""},
 		{"c", "tab", "list"},
-		{"controlx", "tab"},
-		{"--unknown-flag", "tab", "list"},
 		{"--", "tab"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -363,20 +399,29 @@ func TestControlHandoffReadsTheEnvironmentAsOSGetenvDoes(t *testing.T) {
 	})
 }
 
-// Every local-only command name exists in the root command tree (except help,
-// which Cobra installs on prepare).
+// Every local-only command exists in the root command tree and is marked via
+// cli.MarkLocalOnly, while control commands are not marked local-only.
 func TestLocalOnlyCommandsExistInRootTree(t *testing.T) {
 	t.Parallel()
 	root := newRootCommand(testCLIRunners(t))
-	for name := range localOnlyTopLevel {
-		if name == "help" {
-			continue
-		}
-		found, rest, err := root.Find([]string{name})
-		require.NoError(t, err, "local-only command %q must exist", name)
-		assert.Empty(t, rest)
-		assert.Equal(t, name, found.Name())
+	wantLocal := map[string]bool{
+		"daemon":     true,
+		"up":         true,
+		"down":       true,
+		"recover":    true,
+		"version":    true,
+		"commands":   true,
+		"completion": true,
+		"help":       true,
 	}
+	seenLocal := map[string]bool{}
+	for _, child := range root.Commands() {
+		assert.Equal(t, wantLocal[child.Name()], cli.IsLocalOnly(child), "local-only marking for %q", child.Name())
+		if cli.IsLocalOnly(child) {
+			seenLocal[child.Name()] = true
+		}
+	}
+	assert.Equal(t, wantLocal, seenLocal)
 }
 
 // The marker served the process that a hand-off started. A process that it
@@ -386,9 +431,62 @@ func TestLocalOnlyCommandsExistInRootTree(t *testing.T) {
 func TestHandOffControlCommandClearsTheMarker(t *testing.T) {
 	t.Setenv(controlHandoffMarker, "1")
 
-	_, handled := handOffControlCommand([]string{"version"})
+	_, handled := handOffControlCommand([]string{"version"}, nil)
 
 	assert.False(t, handled)
 	_, present := os.LookupEnv(controlHandoffMarker)
 	assert.False(t, present)
+}
+
+func TestControlHandoffSkipsTreeBuildWhenTargetIsSelf(t *testing.T) {
+	t.Parallel()
+	h := newHandoffHarness(t)
+	treeBuilds := 0
+	handoff := controlHandoff{
+		environ:    tabEnv(h.self),
+		executable: func() (string, error) { return h.self, nil },
+		exec: func(target string, argv, env []string) (int, error) {
+			t.Fatal("self target must not exec")
+			return 0, nil
+		},
+		root: func() *cobra.Command {
+			treeBuilds++
+			return newRootCommand(defaultCLIRunners())
+		},
+		stderr: &h.stderr,
+	}
+
+	_, handled := handoff.run([]string{"tab", "list"})
+	assert.False(t, handled)
+	assert.Zero(t, treeBuilds, "self target must not build the command tree")
+	assert.Empty(t, h.stderr.String())
+
+	t.Run("missing tab context or marker also skips tree build", func(t *testing.T) {
+		t.Parallel()
+		for name, env := range map[string][]string{
+			"no tab env": nil,
+			"marker set": tabEnv(h.target, controlHandoffMarker+"=1"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				builds := 0
+				ho := controlHandoff{
+					environ:    env,
+					executable: func() (string, error) { return h.self, nil },
+					exec: func(string, []string, []string) (int, error) {
+						t.Fatal("must not exec")
+						return 0, nil
+					},
+					root: func() *cobra.Command {
+						builds++
+						return newRootCommand(defaultCLIRunners())
+					},
+					stderr: &bytes.Buffer{},
+				}
+				_, ok := ho.run([]string{"tab", "list"})
+				assert.False(t, ok)
+				assert.Zero(t, builds)
+			})
+		}
+	})
 }

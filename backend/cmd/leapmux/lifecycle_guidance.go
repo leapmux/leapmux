@@ -8,26 +8,27 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
 // printModeBanner prints the LeapMux banner of a mode to stderr. Every
-// `leapmux <mode>` command prints it once, after its flags parse. A test
+// `leapmux daemon <mode>` command prints it once, after its flags parse. A test
 // replaces it to observe which commands print it.
 var printModeBanner = logging.PrintBanner
 
 // openLifecycleCommand loads a lifecycle command and prints the banner.
 //
-// A load failure and --help print no banner. Neither does `status --json`,
-// because a script reads its output.
-func openLifecycleCommand(line lifecycleCommandLine) (configuration *lifecycleConfiguration, options lifecycleOptions, err error) {
+// A load failure and --help print no banner. Neither does structured output
+// (--json, --format json/ndjson/tsv), because a script reads its output.
+func openLifecycleCommand(printer *cli.Printer, line lifecycleCommandLine) (configuration *lifecycleConfiguration, options lifecycleOptions, err error) {
 	configuration, options, err = line.load()
 	if err != nil {
 		return nil, options, err
 	}
-	if !options.json {
+	if printer == nil || printer.Format == cli.FormatText {
 		printModeBanner(line.mode())
 	}
 	return configuration, options, nil
@@ -98,26 +99,34 @@ func printNextCommandsTo(w io.Writer, selection instanceSelection, verbs ...stri
 	printInstanceCommands(w, selection, shellquote.ForOS(runtime.GOOS), exec.LookPath, verbs...)
 }
 
-// printSelectedNextCommands prints the next commands for the instance that a
+// selectedNextCommands resolves the instance selection and the verbs to print
+// next. A saved service adds the verbs in serviceVerbs. A failed lookup of the
+// executable returns nil, because the command already succeeded.
+func selectedNextCommands(mode, configFile, dataDirectory string, newController nativeControllerFactory, verbs, serviceVerbs []string) (*instanceSelection, []string) {
+	selection, configured, err := commandSelection(mode, configFile, dataDirectory, newController)
+	if err != nil {
+		return nil, nil
+	}
+	outVerbs := append([]string(nil), verbs...)
+	if configured {
+		outVerbs = append(outVerbs, serviceVerbs...)
+	}
+	return &selection, outVerbs
+}
+
+// printSelectedNextCommandsTo prints the next commands for the instance that a
 // command selected. A saved service adds the verbs in serviceVerbs. A failed
 // lookup of the executable prints nothing, because the command already
 // succeeded.
-func printSelectedNextCommands(mode, configFile, dataDirectory string, newController nativeControllerFactory, verbs, serviceVerbs []string) {
-	printSelectedNextCommandsTo(os.Stdout, mode, configFile, dataDirectory, newController, verbs, serviceVerbs)
-}
-
 func printSelectedNextCommandsTo(w io.Writer, mode, configFile, dataDirectory string, newController nativeControllerFactory, verbs, serviceVerbs []string) {
 	if w == io.Discard {
 		return
 	}
-	selection, configured, err := commandSelection(mode, configFile, dataDirectory, newController)
-	if err != nil {
+	selection, allVerbs := selectedNextCommands(mode, configFile, dataDirectory, newController, verbs, serviceVerbs)
+	if selection == nil {
 		return
 	}
-	if configured {
-		verbs = append(append([]string(nil), verbs...), serviceVerbs...)
-	}
-	printNextCommandsTo(w, selection, verbs...)
+	printNextCommandsTo(w, *selection, allVerbs...)
 }
 
 // printInstanceCommands prints the exact commands that act on one instance,
@@ -162,20 +171,6 @@ func instanceCommandProgram(executable string, lookPath func(string) (string, er
 		return executable
 	}
 	return "leapmux"
-}
-
-// printAccessHint states where to open a ready instance. A new dev instance
-// waits for its first administrator, whom the browser creates there. A
-// Worker, and an instance without a TCP address, report no URL.
-func printAccessHint(w io.Writer, status lifecycle.Status) {
-	if status.URL == nil {
-		return
-	}
-	if status.Readiness != nil && *status.Readiness == lifecycle.ReadinessReadyForSetup {
-		_, _ = fmt.Fprintf(w, "Open %s in your browser to create the first administrator.\n", *status.URL)
-		return
-	}
-	_, _ = fmt.Fprintf(w, "Open %s in your browser.\n", *status.URL)
 }
 
 // statusNextCommands suggests what to run after a status report: start for

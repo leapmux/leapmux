@@ -207,11 +207,105 @@ func TestScanFlag(t *testing.T) {
 		{"--nope", false, false},
 		{"-x", false, false},
 		{"-lx", false, false},
+		{"-=foo", false, false},
 	}
 	for _, tc := range cases {
 		consumesNext, known := scanFlag(send, tc.token)
 		assert.Equal(t, tc.known, known, "%s known", tc.token)
 		assert.Equal(t, tc.consumesNext, consumesNext, "%s consumes the next argument", tc.token)
+	}
+}
+
+func TestMatchSubcommand_RejectsEmptyToken(t *testing.T) {
+	single := Group("tool", "Root",
+		NewLeaf(Leaf{Use: "only", Short: "Only leaf", Run: func(*Invocation) (any, error) { return nil, nil }}),
+	)
+	prepare(single)
+	_, err := matchSubcommand(single, "")
+	require.Error(t, err)
+	assert.Equal(t, CodeUsage, FromError(err).Code)
+	assert.Contains(t, FromError(err).Message, `unknown command ""`)
+	assert.Nil(t, TopLevelCommand(single, []string{""}))
+
+	multi := testTree(&[]testInvocation{})
+	prepare(multi)
+	_, err = matchSubcommand(multi, "")
+	require.Error(t, err)
+	assert.Equal(t, CodeUsage, FromError(err).Code)
+	assert.Contains(t, FromError(err).Message, `unknown command ""`)
+}
+
+func TestExecute_HelpExpandsAbbreviationsAndFailsOnUnknown(t *testing.T) {
+	t.Run("expands subcommand abbreviations under help", func(t *testing.T) {
+		code, stdout, stderr := execute(t, testTree(&[]testInvocation{}), "help", "works", "l")
+		assert.Equal(t, ExitOK, code, "stderr: %s", stderr)
+		assert.Empty(t, stderr)
+		assert.Contains(t, stdout, "Usage:\n  tool workspace list [flags]\n")
+	})
+
+	t.Run("prints help of help", func(t *testing.T) {
+		code, stdout, stderr := execute(t, testTree(&[]testInvocation{}), "help", "help")
+		assert.Equal(t, ExitOK, code, "stderr: %s", stderr)
+		assert.Empty(t, stderr)
+		assert.Contains(t, stdout, "Print the help of a command")
+	})
+
+	t.Run("prints root help when called with no args", func(t *testing.T) {
+		code, stdout, stderr := execute(t, testTree(&[]testInvocation{}), "help")
+		assert.Equal(t, ExitOK, code, "stderr: %s", stderr)
+		assert.Empty(t, stderr)
+		assert.Contains(t, stdout, "Usage:\n  tool <command>\n")
+	})
+
+	t.Run("rejects unknown help topic with usage error and JSON envelope", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"help", "nonexistent", "--json"},
+			{"help", "--json", "--", "nonexistent"},
+			{"help", "workspace", "list", "extra", "--json"},
+		} {
+			code, stdout, stderr := execute(t, testTree(&[]testInvocation{}), args...)
+			assert.Equal(t, ExitUsage, code, "args=%v", args)
+			assert.Contains(t, stderr, "error: usage:", "args=%v", args)
+			var env struct {
+				Error *Error `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(stdout), &env), "args=%v stdout=%s", args, stdout)
+			require.NotNil(t, env.Error, "args=%v", args)
+			assert.Equal(t, CodeUsage, env.Error.Code, "args=%v", args)
+		}
+	})
+
+	t.Run("rejects ambiguous prefix under help", func(t *testing.T) {
+		code, stdout, stderr := execute(t, testTree(&[]testInvocation{}), "help", "wor")
+		assert.Equal(t, ExitUsage, code)
+		assert.Empty(t, stdout)
+		assert.Contains(t, stderr, `ambiguous command "wor"`)
+	})
+}
+
+func TestInspectCommandLine_ShortFlagClustersForQuiet(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string
+		quiet bool
+	}{
+		{"-q alone", []string{"send", "-q"}, true},
+		{"-qw cluster", []string{"send", "-qw"}, true},
+		{"-wq cluster", []string{"send", "-wq"}, true},
+		{"-lq cluster with local bool", []string{"send", "-lq"}, true},
+		{"-nq stops at value-taking -n", []string{"send", "-nq"}, false},
+		{"-qn sets quiet before value-taking -n", []string{"send", "-qn", "2"}, true},
+		{"-wq=false disables quiet", []string{"send", "-q", "-wq=false"}, false},
+		{"-q after unknown flag still works", []string{"send", "--bogus", "-wq"}, true},
+		{"unknown shorthand before q does not set quiet", []string{"send", "-xq"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testTree(&[]testInvocation{})
+			prepare(root)
+			_, opts, _ := inspectCommandLine(root, tc.args)
+			assert.Equal(t, tc.quiet, opts.quiet)
+		})
 	}
 }
 
@@ -234,7 +328,7 @@ func TestExecute_AGroupAlonePrintsItsHelp(t *testing.T) {
 	assert.Empty(t, stderr)
 	assert.Contains(t, stdout, "Usage:\n  tool workspace <command>\n")
 	assert.Contains(t, stdout, "\n  rename ")
-	assert.Contains(t, stdout, abbreviationNote)
+	assert.Contains(t, stdout, defaultAbbreviationNote)
 }
 
 // Every summary of a command list starts in one column, two spaces past the
@@ -367,7 +461,7 @@ func TestExecute_PrintsTheHelpOfALeaf(t *testing.T) {
 	assert.NotContains(t, stdout, "\nFlags:\n", "a leaf whose one flag is --help prints no Flags: section")
 	assert.Contains(t, stdout, "\nGlobal Flags:\n")
 	assert.Contains(t, stdout, "--hub string")
-	assert.NotContains(t, stdout, abbreviationNote, "a leaf has no command name to shorten")
+	assert.NotContains(t, stdout, defaultAbbreviationNote, "a leaf has no command name to shorten")
 
 	_, stdout, _ = execute(t, testTree(&[]testInvocation{}), "worker", "key", "--help")
 	assert.Contains(t, stdout, "--name string  the name of the key (required)")
@@ -429,4 +523,220 @@ func TestNewLeaf_HandlesSignals(t *testing.T) {
 	assert.Equal(t, parent, got, "a leaf that handles the signals runs under the context of the caller")
 	require.ErrorIs(t, err, failure)
 	require.NotErrorAs(t, err, &status)
+}
+
+func TestDisallowInheritedFlags_GroupRejectionAndCompletionFiltering(t *testing.T) {
+	newTree := func() *cobra.Command {
+		noop := func(*Invocation) (any, error) { return map[string]any{"ok": true}, nil }
+		localHubLeaf := NewLeaf(Leaf{
+			Use:   "connect",
+			Short: "Connect with local hub",
+			Flags: func(fs *pflag.FlagSet) {
+				fs.StringP("hub", "H", "", "local hub URL")
+			},
+			Run: noop,
+		})
+		nestedSub := Group("sub", "Nested daemon group",
+			NewLeaf(Leaf{Use: "check", Short: "Check nested status", Run: noop}),
+		)
+		daemon := Group("daemon", "Manage local daemon",
+			NewLeaf(Leaf{Use: "status", Short: "Show daemon status", Run: noop}),
+			localHubLeaf,
+			nestedSub,
+		)
+		DisallowInheritedFlags(daemon, "hub", "quiet")
+		root := Group("tool", "A tool",
+			daemon,
+			Group("workspace", "Manage workspaces",
+				NewLeaf(Leaf{Use: "list", Short: "List workspaces", Run: noop}),
+			),
+		)
+		root.PersistentFlags().StringP("hub", "H", "", "hub URL")
+		AddOutputFlags(root)
+		return root
+	}
+
+	t.Run("group and nested subgroup reject disallowed inherited long and short flags", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"daemon", "--hub", "https://example.com"},
+			{"daemon", "-H", "https://example.com"},
+			{"daemon", "-q"},
+			{"daemon", "sub", "--hub", "https://example.com"},
+			{"daemon", "sub", "-q"},
+			{"daemon", "sub", "check", "--hub", "https://example.com"},
+			{"daemon", "sub", "check", "-q"},
+		} {
+			code, stdout, stderr := execute(t, newTree(), args...)
+			assert.Equal(t, ExitUsage, code, "args=%v", args)
+			assert.Empty(t, stdout, "args=%v", args)
+			assert.Contains(t, stderr, "unknown flag:", "args=%v", args)
+		}
+	})
+
+	t.Run("__complete filters disallowed long and short flags on group, nested group, and leaf", func(t *testing.T) {
+		for _, compCmd := range []string{cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd} {
+			for _, prefix := range [][]string{{"daemon"}, {"daemon", "sub"}, {"daemon", "status"}, {"daemon", "sub", "check"}} {
+				args := append(append([]string{compCmd}, prefix...), "--")
+				code, stdout, stderr := execute(t, newTree(), args...)
+				require.Equal(t, ExitOK, code, "args=%v stderr=%s", args, stderr)
+				assert.NotContains(t, stdout, "--hub", "args=%v", args)
+				assert.NotContains(t, stdout, "--quiet", "args=%v", args)
+				assert.Contains(t, stdout, "--json", "args=%v", args)
+				assert.Contains(t, stdout, "\n:", "args=%v", args)
+
+				shortArgs := append(append([]string{compCmd}, prefix...), "-")
+				code, stdout, stderr = execute(t, newTree(), shortArgs...)
+				require.Equal(t, ExitOK, code, "args=%v stderr=%s", shortArgs, stderr)
+				for line := range strings.SplitSeq(strings.TrimRight(stdout, "\n"), "\n") {
+					cand, _, _ := strings.Cut(line, "\t")
+					assert.NotEqual(t, "-q", cand, "args=%v must filter disallowed shorthand -q", shortArgs)
+					assert.NotEqual(t, "-H", cand, "args=%v must filter disallowed shorthand -H", shortArgs)
+					assert.NotEqual(t, "--quiet", cand, "args=%v", shortArgs)
+					assert.NotEqual(t, "--hub", cand, "args=%v", shortArgs)
+				}
+			}
+		}
+	})
+
+	t.Run("__complete keeps local flag and local shorthand matching disallowed inherited flag", func(t *testing.T) {
+		for _, compCmd := range []string{cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd} {
+			code, stdout, stderr := execute(t, newTree(), compCmd, "daemon", "connect", "--")
+			require.Equal(t, ExitOK, code, "cmd=%s stderr=%s", compCmd, stderr)
+			assert.Contains(t, stdout, "--hub", "cmd=%s", compCmd)
+			assert.NotContains(t, stdout, "--quiet", "cmd=%s", compCmd)
+
+			code, stdout, stderr = execute(t, newTree(), compCmd, "daemon", "connect", "-")
+			require.Equal(t, ExitOK, code, "cmd=%s stderr=%s", compCmd, stderr)
+			var candidates []string
+			for line := range strings.SplitSeq(strings.TrimRight(stdout, "\n"), "\n") {
+				cand, _, _ := strings.Cut(line, "\t")
+				candidates = append(candidates, cand)
+			}
+			assert.Contains(t, candidates, "-H", "cmd=%s must keep local -H shorthand", compCmd)
+			assert.NotContains(t, candidates, "-q", "cmd=%s must still filter disallowed -q", compCmd)
+			assert.NotContains(t, candidates, "--quiet", "cmd=%s must still filter disallowed --quiet", compCmd)
+		}
+	})
+
+	t.Run("__complete still offers inherited flags on commands that allow them", func(t *testing.T) {
+		code, stdout, stderr := execute(t, newTree(), cobra.ShellCompRequestCmd, "workspace", "list", "--")
+		require.Equal(t, ExitOK, code, "stderr=%s", stderr)
+		assert.Contains(t, stdout, "--hub")
+		assert.Contains(t, stdout, "--quiet")
+	})
+
+	t.Run("disallowedFlagsForCompletion stops after -- and filterCompletionOutput handles equals and no trailing newline", func(t *testing.T) {
+		root := newTree()
+		prepare(root)
+		assert.Nil(t, disallowedFlagsForCompletion(root, []string{cobra.ShellCompRequestCmd, "daemon", "--", "--hub"}))
+		assert.Nil(t, disallowedFlagsForCompletion(root, []string{cobra.ShellCompRequestCmd}))
+
+		disallowed := map[string]bool{"--hub": true, "-q": true}
+		raw := []byte("--hub=\thub url\n-q\tquiet\n--json\tjson\n:4")
+		assert.Equal(t, "--json\tjson\n:4", string(filterCompletionOutput(raw, disallowed)))
+		assert.Equal(t, raw, filterCompletionOutput(raw, nil))
+		assert.Empty(t, filterCompletionOutput(nil, disallowed))
+	})
+}
+
+func TestSetAbbreviationNote_OverridesGroupHelpNote(t *testing.T) {
+	root := testTree(&[]testInvocation{})
+	custom := "Short prefixes and aliases (ws, ls) work at every level."
+	SetAbbreviationNote(root, custom)
+
+	subCustom := "Workspace-specific abbreviation note."
+	ws, _, err := root.Find([]string{"workspace"})
+	require.NoError(t, err)
+	SetAbbreviationNote(ws, subCustom)
+
+	code, stdout, stderr := execute(t, root, "--help")
+	require.Equal(t, ExitOK, code, stderr)
+	assert.Contains(t, stdout, custom)
+	assert.NotContains(t, stdout, defaultAbbreviationNote)
+
+	code, stdout, stderr = execute(t, root, "workspace")
+	require.Equal(t, ExitOK, code, stderr)
+	assert.Contains(t, stdout, subCustom)
+	assert.NotContains(t, stdout, custom)
+
+	code, stdout, stderr = execute(t, root, "worker")
+	require.Equal(t, ExitOK, code, stderr)
+	assert.Contains(t, stdout, custom)
+	assert.NotContains(t, stdout, subCustom)
+
+	code, stdout, stderr = execute(t, root, "workspace", "list", "--help")
+	require.Equal(t, ExitOK, code, stderr)
+	assert.NotContains(t, stdout, custom)
+	assert.NotContains(t, stdout, subCustom)
+}
+
+func TestInspectCommandLine_ErrorPrinterFormatColorAndQuiet(t *testing.T) {
+	cases := []struct {
+		name           string
+		args           []string
+		wantFormat     Format
+		wantColor      ColorMode
+		wantQuiet      bool
+		wantResolvedFm Format
+	}{
+		{
+			name:           "--json=false resets FormatJSON to FormatText",
+			args:           []string{"send", "--format", "json", "--json=false"},
+			wantFormat:     FormatText,
+			wantResolvedFm: FormatText,
+		},
+		{
+			name:           "--json=false preserves non-JSON format",
+			args:           []string{"send", "--format", "ndjson", "--json=false"},
+			wantFormat:     FormatNDJSON,
+			wantResolvedFm: FormatNDJSON,
+		},
+		{
+			name:           "--color always and --quiet resolve to FormatQuiet",
+			args:           []string{"send", "--color", "always", "--quiet"},
+			wantFormat:     FormatText,
+			wantColor:      ColorAlways,
+			wantQuiet:      true,
+			wantResolvedFm: FormatQuiet,
+		},
+		{
+			name:           "--color=never and --quiet=false",
+			args:           []string{"send", "--quiet=true", "--quiet=false", "--color=never"},
+			wantFormat:     FormatText,
+			wantColor:      ColorNever,
+			wantQuiet:      false,
+			wantResolvedFm: FormatText,
+		},
+		{
+			name:           "-q=false clears quiet",
+			args:           []string{"send", "-q", "-q=false"},
+			wantFormat:     FormatText,
+			wantQuiet:      false,
+			wantResolvedFm: FormatText,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testTree(&[]testInvocation{})
+			prepare(root)
+			_, opts, _ := inspectCommandLine(root, tc.args)
+			assert.Equal(t, tc.wantFormat, opts.format)
+			assert.Equal(t, tc.wantColor, opts.color)
+			assert.Equal(t, tc.wantQuiet, opts.quiet)
+			assert.Equal(t, tc.wantResolvedFm, opts.resolvedFormat())
+		})
+	}
+}
+
+func TestIsDestructiveSuggestion_RequiresExplicitDestructiveFlag(t *testing.T) {
+	noop := func(*Invocation) (any, error) { return nil, nil }
+	root := Group("tool", "Root",
+		Group("item", "Items",
+			NewLeaf(Leaf{Use: "delete <id>", Short: "Delete without destructive marker", Run: noop}),
+		),
+	)
+	// Edit distance 2 ("delat" vs "delete") is suggested when Destructive is false.
+	code, _, stderr := execute(t, root, "item", "delat")
+	assert.Equal(t, ExitUsage, code)
+	assert.Contains(t, stderr, "did you mean delete?")
 }

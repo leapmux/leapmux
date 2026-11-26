@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 )
@@ -28,15 +27,14 @@ type Spinner struct {
 // StartSpinner begins a live progress spinner on p.Err when appropriate.
 // Always call Stop before printing the final stdout result.
 func StartSpinner(p *Printer, label string) *Spinner {
-	s := &Spinner{label: label, started: time.Now()}
-	if p == nil || p.Err == nil || p.Quiet || p.Format != FormatText || !isTerminalWriter(p.Err) {
-		return s
-	}
-	if p.Color == ColorNever || (p.Color == ColorAuto && os.Getenv("NO_COLOR") != "") {
+	s := &Spinner{}
+	if p == nil || p.Err == nil || p.Format != FormatText || !isTerminalWriter(p.Err) || !ColorEnabled(p.Err, p.Color) {
 		return s
 	}
 	s.w = p.Err
 	s.active = true
+	s.label = SanitizeSingleLine(label)
+	s.started = time.Now()
 	s.done = make(chan struct{})
 	s.closed = make(chan struct{})
 	go s.run()
@@ -48,8 +46,9 @@ func (s *Spinner) Update(label string) {
 	if s == nil || !s.active {
 		return
 	}
+	clean := SanitizeSingleLine(label)
 	s.mu.Lock()
-	s.label = label
+	s.label = clean
 	s.mu.Unlock()
 }
 
@@ -59,12 +58,10 @@ func (s *Spinner) Stop() {
 		return
 	}
 	s.mu.Lock()
-	if s.stopped {
-		s.mu.Unlock()
-		return
+	if !s.stopped {
+		s.stopped = true
+		close(s.done)
 	}
-	s.stopped = true
-	close(s.done)
 	s.mu.Unlock()
 	<-s.closed
 }
@@ -76,7 +73,7 @@ func (s *Spinner) run() {
 	frame := 0
 	render := func() {
 		s.mu.Lock()
-		label := SanitizeSingleLine(s.label)
+		label := s.label
 		s.mu.Unlock()
 		elapsed := time.Since(s.started).Truncate(time.Second)
 		line := fmt.Sprintf("%s %s (%s)", spinnerFrames[frame%len(spinnerFrames)], label, elapsed)

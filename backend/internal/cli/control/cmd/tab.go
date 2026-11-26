@@ -93,7 +93,7 @@ type tabRow struct {
 	Provider string `json:"provider,omitempty" table:"PROVIDER"`
 	// State is the agent's activity state ("idle", "working",
 	// "waiting_for_user") or the terminal's status ("ready", "exited").
-	State string `json:"state,omitempty" table:"STATE"`
+	State string `json:"state,omitempty" table:"STATE,state"`
 	// Worker is the Worker's name, when the Worker reported one.
 	Worker      string `json:"worker,omitempty" table:"WORKER"`
 	WorkerID    string `json:"worker_id"`

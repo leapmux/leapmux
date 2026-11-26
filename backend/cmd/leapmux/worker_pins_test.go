@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,10 +67,18 @@ func TestCrossWorkerPins_GetAndRemove(t *testing.T) {
 	assert.Contains(t, o.stdout, "WORKER ID")
 	assert.NotContains(t, o.stdout, "X25519", "the table leaves out the keys")
 
+	o = pins("list", "-q")
+	require.Equal(t, cli.ExitOK, o.code, o.stderr)
+	assert.Equal(t, "sibling-a\nsibling-b\n", o.stdout)
+
 	o = pins("get", "sibling-a", "--json")
 	require.Equal(t, cli.ExitOK, o.code, o.stderr)
 	assert.Contains(t, o.stdout, `"worker_id":"sibling-a"`)
 	assert.Contains(t, o.stdout, `"x25519_public_key"`)
+
+	o = pins("get", "sibling-a", "-q")
+	require.Equal(t, cli.ExitOK, o.code, o.stderr)
+	assert.Equal(t, "sibling-a\n", o.stdout)
 
 	o = pins("get", "sibling-c")
 	assert.Equal(t, cli.ExitNotFound, o.code)
@@ -81,10 +90,74 @@ func TestCrossWorkerPins_GetAndRemove(t *testing.T) {
 	o = pins("remove", "sibling-a", "--json")
 	require.Equal(t, cli.ExitOK, o.code, o.stderr)
 	assert.JSONEq(t, `{"data":{"removed":"sibling-a"}}`, o.stdout)
+
+	o = pins("remove", "sibling-b", "-q")
+	require.Equal(t, cli.ExitOK, o.code, o.stderr)
+	assert.Equal(t, "sibling-b\n", o.stdout)
+
 	reopened, err := crossworker.NewPinStore(dataDir)
 	require.NoError(t, err)
 	stored, err := reopened.Snapshot(t.Context())
 	require.NoError(t, err)
-	assert.NotContains(t, stored, "sibling-a")
-	assert.Contains(t, stored, "sibling-b")
+	assert.Empty(t, stored)
+}
+
+func TestCrossWorkerPinsExplicitDataDirIgnoresMalformedDefaultConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	// Write a malformed default worker.yaml in the default config directory.
+	defaultCfgDir := filepath.Join(home, ".config", "leapmux")
+	require.NoError(t, os.MkdirAll(defaultCfgDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(defaultCfgDir, "worker.yaml"), []byte(":::not valid yaml::: ["), 0o600))
+
+	dataDir := filepath.Join(home, "explicit-worker-data")
+	store, err := crossworker.NewPinStore(dataDir)
+	require.NoError(t, err)
+	commit, err := store.Resolve(t.Context(), "sibling-z", []byte{1}, []byte{2}, []byte{3})
+	require.NoError(t, err)
+	require.NoError(t, commit(t.Context()))
+
+	o := runTestCLI(t, "daemon", "worker", "cross-worker-pins", "list", "-q", "--data-dir", "~/explicit-worker-data")
+	require.Equal(t, cli.ExitOK, o.code, o.stderr)
+	assert.Equal(t, "sibling-z\n", o.stdout)
+}
+
+func TestCrossWorkerPinsEmptyStoreTextGetAndExplicitConfig(t *testing.T) {
+	t.Run("empty pin store emits empty JSON array and empty quiet output", func(t *testing.T) {
+		dataDir := t.TempDir()
+
+		o := runTestCLI(t, "daemon", "worker", "cross-worker-pins", "list", "--data-dir", dataDir, "--json")
+		require.Equal(t, cli.ExitOK, o.code, o.stderr)
+		assert.JSONEq(t, `{"data":{"pins":[]}}`, o.stdout)
+
+		o = runTestCLI(t, "daemon", "worker", "cross-worker-pins", "list", "--data-dir", dataDir, "-q")
+		require.Equal(t, cli.ExitOK, o.code, o.stderr)
+		assert.Empty(t, o.stdout)
+	})
+
+	t.Run("text get prints the pinned keys", func(t *testing.T) {
+		dataDir := t.TempDir()
+		store, err := crossworker.NewPinStore(dataDir)
+		require.NoError(t, err)
+		commit, err := store.Resolve(t.Context(), "sibling-text", []byte{1, 2, 3}, []byte{4, 5, 6}, []byte{7, 8, 9})
+		require.NoError(t, err)
+		require.NoError(t, commit(t.Context()))
+
+		o := runTestCLI(t, "daemon", "worker", "cross-worker-pins", "get", "sibling-text", "--data-dir", dataDir)
+		require.Equal(t, cli.ExitOK, o.code, o.stderr)
+		assert.Contains(t, o.stdout, "sibling-text")
+		assert.Contains(t, o.stdout, "x25519_public_key")
+	})
+
+	t.Run("explicit malformed config still fails even when data-dir is also given", func(t *testing.T) {
+		dir := t.TempDir()
+		badCfg := filepath.Join(dir, "bad-worker.yaml")
+		require.NoError(t, os.WriteFile(badCfg, []byte(":::not valid yaml::: ["), 0o600))
+
+		o := runTestCLI(t, "daemon", "worker", "cross-worker-pins", "list", "--data-dir", dir, "--config", badCfg)
+		assert.NotEqual(t, cli.ExitOK, o.code)
+		assert.NotEmpty(t, o.stderr)
+	})
 }

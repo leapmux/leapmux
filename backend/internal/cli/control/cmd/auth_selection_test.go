@@ -34,3 +34,45 @@ func TestAuthUseChoosesOnlyAStoredHub(t *testing.T) {
 	assert.Equal(t, first, runControl(t, "auth", "status", "--hub", first).Data(t)["hub_url"])
 	assert.Equal(t, second, runControl(t, "auth", "status").Data(t)["hub_url"])
 }
+
+func TestAuthUseOverridesContextHubAndLogoutClearsDefault(t *testing.T) {
+	isolateCLIEnv(t)
+	const hubA = "https://hub-a.example.test"
+	const hubB = "https://hub-b.example.test"
+	for _, hub := range []string{hubA, hubB} {
+		require.NoError(t, control.SaveCredentials(hub, control.CredentialFile{
+			HubURL: hub, AccessToken: "tok", UserID: "u-1", ExpiresAt: time.Now().Add(time.Hour),
+		}))
+	}
+
+	// Set hub A and a default worker via context use.
+	runControl(t, "context", "use", "--hub", hubA, "--worker", "build-box").ok(t)
+	assert.Equal(t, hubA, runControl(t, "auth", "status").Data(t)["hub_url"])
+
+	// auth use B must override context.json's hub while keeping other context defaults.
+	runControl(t, "auth", "use", hubB).ok(t)
+	assert.Equal(t, hubB, runControl(t, "auth", "status").Data(t)["hub_url"])
+	cfg, err := control.LoadContext()
+	require.NoError(t, err)
+	assert.Equal(t, hubB, cfg.Hub)
+	assert.Equal(t, "build-box", cfg.Worker)
+
+	// Logging out of a non-default hub must leave context.json's default hub intact.
+	runControl(t, "auth", "logout", "--hub", hubA).ok(t)
+	cfg, err = control.LoadContext()
+	require.NoError(t, err)
+	assert.Equal(t, hubB, cfg.Hub)
+	assert.Equal(t, "build-box", cfg.Worker)
+	require.NoError(t, control.SaveCredentials(hubA, control.CredentialFile{
+		HubURL: hubA, AccessToken: "tok", UserID: "u-1", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	// Logging out of the active default hub clears context.json's hub while
+	// keeping other saved context fields, so the sole remaining hub becomes default.
+	runControl(t, "auth", "logout", "--hub", hubB).ok(t)
+	cfg, err = control.LoadContext()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Hub)
+	assert.Equal(t, "build-box", cfg.Worker)
+	assert.Equal(t, hubA, runControl(t, "auth", "status").Data(t)["hub_url"])
+}

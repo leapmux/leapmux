@@ -140,7 +140,7 @@ type workspaceRow struct {
 	Title     string `json:"title" table:"TITLE"`
 	Archived  bool   `json:"archived,omitempty"`
 	CreatedBy string `json:"created_by,omitempty"`
-	CreatedAt string `json:"created_at,omitempty" table:"CREATED"`
+	CreatedAt string `json:"created_at,omitempty" table:"CREATED,dim"`
 }
 
 func workspaceRowOf(ws *leapmuxv1.Workspace) workspaceRow {
@@ -450,7 +450,7 @@ type workspaceDeleteResult struct {
 // workerCleanup is the outcome of one Worker's cleanup.
 type workerCleanup struct {
 	WorkerID string `json:"worker_id" table:"WORKER,short"`
-	Status   string `json:"status" table:"STATUS"`
+	Status   string `json:"status" table:"STATUS,state"`
 	Error    string `json:"error,omitempty" table:"ERROR"`
 }
 
@@ -521,7 +521,7 @@ type cleanupCaller func(ctx context.Context, workerID string, tabs []*leapmuxv1.
 // cliCleanupCaller wires runWorkspaceCleanupFanout to the production
 // transport: every worker_id gets its own E2EE channel and a
 // CleanupWorkspace inner-RPC.
-func cliCleanupCaller(c *control.Client) cleanupCaller {
+func cliCleanupCaller(c control.Peer) cleanupCaller {
 	return func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		req := &leapmuxv1.CleanupWorkspaceRequest{Tabs: tabs}
 		var resp leapmuxv1.CleanupWorkspaceResponse

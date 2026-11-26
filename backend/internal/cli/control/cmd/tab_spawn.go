@@ -76,7 +76,7 @@ type openAgentResult struct {
 // tabID is the id of the new tab. The Worker takes a repeated creation of one
 // tab id as the same creation, so the caller chooses it: a fresh id, or one
 // that a request id derives.
-func resolveTabCreation(ctx context.Context, c *control.Client, tabID, workspaceID, tileID string, spec positionSpec) (*leapmuxv1.TabCreation, error) {
+func resolveTabCreation(ctx context.Context, c control.Peer, tabID, workspaceID, tileID string, spec positionSpec) (*leapmuxv1.TabCreation, error) {
 	placement := &leapmuxv1.TabPlacement{WorkspaceId: workspaceID, RelativeTabId: spec.refID}
 	switch spec.kind {
 	case positionFirst:
@@ -126,7 +126,7 @@ func validateTabPublication(creation *leapmuxv1.TabCreation, kind leapmuxv1.TabT
 // openAgentAndAddTab asks the Worker to create and publish an agent. A successful
 // reply supplies the committed placement. The Worker commits any initial message
 // with the agent, so a retry cannot change it or queue it twice.
-func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, args openAgentArgs) (*openAgentResult, error) {
+func openAgentAndAddTab(ctx context.Context, c control.Peer, w workerCall, args openAgentArgs) (*openAgentResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, cli.Usagef("an agent needs a workspace and a worker")
 	}
@@ -200,7 +200,7 @@ type openTerminalResult struct {
 }
 
 // openTerminalAndAddTab returns the placement committed by the Worker operation.
-func openTerminalAndAddTab(ctx context.Context, c *control.Client, w workerCall, args openTerminalArgs) (*openTerminalResult, error) {
+func openTerminalAndAddTab(ctx context.Context, c control.Peer, w workerCall, args openTerminalArgs) (*openTerminalResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, cli.Usagef("a terminal needs a workspace and a worker")
 	}

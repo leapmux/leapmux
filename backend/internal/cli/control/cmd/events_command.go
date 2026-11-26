@@ -143,7 +143,7 @@ type eventsOptions struct {
 
 // eventsOptionsOf reads the flags of `events`, before anything is sent.
 func eventsOptionsOf(inv *cli.Invocation) (eventsOptions, error) {
-	if inv.Printer.Quiet {
+	if inv.Printer.Format == cli.FormatQuiet {
 		return eventsOptions{}, cli.Usagef("--quiet does not apply to events, which have no single id").
 			WithHint("use --json, or the text form")
 	}

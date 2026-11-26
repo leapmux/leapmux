@@ -59,7 +59,7 @@ func decodeWatchFrame(logger *slog.Logger, transportName string, payload []byte)
 // `--follow` consumer just went quiet -- or resubscribed into the same rejection
 // forever -- with nothing to diagnose from. The Transport contract signals
 // termination through a reason-less `done` channel, so each handle also records
-// the reason for Subscription.EndErr (see endReporter). The log keeps it for a
+// the reason for Handle.EndErr and Subscription.EndErr. The log keeps it for a
 // caller that does not read it, and mirrors both the malformed-frame log above
 // and crossworker.Client.StreamInner, which surfaces the identical envelope.
 func logEndingStreamError(logger *slog.Logger, transportName string, rpcErr *leapmuxv1.RpcError) {
@@ -70,20 +70,12 @@ func logEndingStreamError(logger *slog.Logger, transportName string, rpcErr *lea
 // Handle is a live WatchEvents subscription on one transport stream.
 // Revisions ride Update; retirement is Cancel.
 //
-// A handle can also report why its stream ended, through EndErr (see
-// endReporter). Both transports of this package do; Subscription.EndErr
-// returns nil for a handle that does not.
+// EndErr returns the error that ended the stream, or nil while it runs and
+// after an end that reported none.
 type Handle interface {
 	Update(*leapmuxv1.WatchEventsRequest) error
 	Cancel()
 	Done() <-chan struct{}
-}
-
-// endReporter is a Handle that reports why its stream ended. It is a separate
-// interface, so a Handle that a test writes needs no such method.
-type endReporter interface {
-	// EndErr returns the error that ended the stream, or nil while it runs
-	// and after an end that reported none.
 	EndErr() error
 }
 
@@ -108,7 +100,7 @@ func (r *endReason) record(err error) {
 	}
 }
 
-// EndErr implements endReporter.
+// EndErr returns the recorded end error, or nil when none was recorded.
 func (r *endReason) EndErr() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -175,16 +167,20 @@ func NewChannelTransport(ch channelLike, logger *slog.Logger) *ChannelTransport 
 
 type channelHandle struct {
 	*endReason
-	ch     channelLike
-	reqID  uint64
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   <-chan struct{}
+	ch        channelLike
+	reqID     uint64
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      <-chan struct{}
+	cancelled atomic.Bool
 }
 
 func (h *channelHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
 	// A trailing Update after Cancel/Done silently drops on the wire; surface
 	// it so the caller knows the revision did not land (see localIPCHandle).
+	if h.cancelled.Load() {
+		return errHandleClosed
+	}
 	select {
 	case <-h.done:
 		return errHandleClosed
@@ -198,16 +194,19 @@ func (h *channelHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
 }
 
 func (h *channelHandle) Cancel() {
+	if h.cancelled.Swap(true) {
+		return
+	}
+	// Stop the local stream before the remote cancellation runs, so a
+	// concurrent Update fails immediately and teardown does not wait for
+	// CancelStream's round trip.
+	h.cancel()
 	// Detach from the stream ctx so a Done-raced cancel still reaches the worker.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.ctx), 5*time.Second)
 	defer cancel()
 	if err := h.ch.CancelStream(ctx, h.reqID); err != nil {
 		slog.Debug("channelHandle.Cancel: CancelStream failed", "error", err)
 	}
-	// Wake the done goroutine: CancelStream retires the worker side and the
-	// local demux registration, but this transport's lifecycle is keyed off
-	// ctx, which nothing else cancels for a client-initiated retire.
-	h.cancel()
 }
 
 func (h *channelHandle) Done() <-chan struct{} { return h.done }
@@ -238,20 +237,24 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 				return
 			}
 			if rpcErr := msg.GetError(); rpcErr != nil {
-				logEndingStreamError(transportLogger(t.logger), "channel", rpcErr)
+				logEndingStreamError(t.logger, "channel", rpcErr)
 				reason.record(channelwire.ErrorOf(rpcErr))
 				cancel()
 				return
 			}
-			if msg.GetEnd() && len(msg.GetPayload()) == 0 {
-				cancel()
+			if len(msg.GetPayload()) == 0 {
+				if msg.GetEnd() {
+					cancel()
+				}
 				return
 			}
 			resp, ok := decodeWatchFrame(t.logger, "channel", msg.GetPayload())
-			if !ok {
-				return
+			if ok {
+				onFrame(resp)
 			}
-			onFrame(resp)
+			if msg.GetEnd() {
+				cancel()
+			}
 		},
 	})
 	if err != nil {
@@ -267,7 +270,7 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 			reason.record(fmt.Errorf("%w: %w", errChannelClosed, context.Cause(t.channel.Context())))
 		case resp := <-respCh:
 			if rpcErr := resp.GetError(); rpcErr != nil {
-				logEndingStreamError(transportLogger(t.logger), "channel", rpcErr)
+				logEndingStreamError(t.logger, "channel", rpcErr)
 				reason.record(channelwire.ErrorOf(rpcErr))
 			}
 		}
@@ -307,7 +310,7 @@ type localIPCHandle struct {
 	*endReason
 	client      leapmuxv1connect.ControlIPCServiceClient
 	clientReqID string
-	parentCtx   context.Context
+	ctx         context.Context
 	cancel      context.CancelFunc
 	done        <-chan struct{}
 	cancelled   atomic.Bool
@@ -331,7 +334,7 @@ func (h *localIPCHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
 	if err != nil {
 		return fmt.Errorf("marshal WatchEventsRequest: %w", err)
 	}
-	_, err = h.client.UpdateStream(h.parentCtx, &leapmuxv1.UpdateStreamRequest{
+	_, err = h.client.UpdateStream(h.ctx, &leapmuxv1.UpdateStreamRequest{
 		ClientRequestId: h.clientReqID,
 		Action:          &leapmuxv1.UpdateStreamRequest_Payload{Payload: payload},
 	})
@@ -345,8 +348,8 @@ func (h *localIPCHandle) Cancel() {
 	// Stop the local stream before the remote cancellation can end it. Its
 	// receive loop must recognize this shutdown even while cleanup waits.
 	h.cancel()
-	// Detach from parentCtx so a cancelled parent still retires the worker stream.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.parentCtx), 5*time.Second)
+	// Detach from ctx so a cancelled stream still retires the worker stream.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.ctx), 5*time.Second)
 	defer cancel()
 	if _, err := h.client.UpdateStream(ctx, &leapmuxv1.UpdateStreamRequest{
 		ClientRequestId: h.clientReqID,
@@ -389,6 +392,7 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer cancel()
 		defer func() { _ = stream.Close() }()
 		for {
 			msg, err := stream.Receive()
@@ -396,14 +400,14 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 				if errors.Is(err, io.EOF) || ctx.Err() != nil {
 					break
 				}
-				transportLogger(t.logger).Error("streamevents: subscription ended with a transport error",
+				t.logger.Error("streamevents: subscription ended with a transport error",
 					"transport", "local-ipc", "error", err)
 				reason.record(err)
 				return
 			}
 			env := msg
 			if rpcErr := env.GetError(); rpcErr != nil {
-				logEndingStreamError(transportLogger(t.logger), "local-ipc", rpcErr)
+				logEndingStreamError(t.logger, "local-ipc", rpcErr)
 				reason.record(channelwire.ErrorOf(rpcErr))
 				return
 			}
@@ -423,15 +427,11 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 			}
 		}
 	}()
-	go func() {
-		<-done
-		cancel()
-	}()
 	return &localIPCHandle{
 		endReason:   reason,
 		client:      t.client,
 		clientReqID: clientReqID,
-		parentCtx:   parentCtx,
+		ctx:         ctx,
 		cancel:      cancel,
 		done:        done,
 	}, nil

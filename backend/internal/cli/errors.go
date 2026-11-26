@@ -20,7 +20,7 @@ import (
 )
 
 // Code identifies the cause of a failure. A script branches on it, so each
-// value names a cause, never the step that failed.
+// value identifies a cause, never the step that failed.
 type Code string
 
 // The codes of the error envelope. ExitCode maps each one to the exit status
@@ -193,6 +193,9 @@ func Usagef(format string, args ...any) *Error {
 // Wrap builds an error with code whose message is msg followed by the
 // message of cause. errors.Is still matches the cause.
 func Wrap(code Code, cause error, msg string) *Error {
+	if cause == nil {
+		return &Error{Code: code, Message: msg}
+	}
 	text := cause.Error()
 	if msg != "" {
 		text = msg + ": " + text
@@ -205,6 +208,12 @@ func Wrap(code Code, cause error, msg string) *Error {
 // import that package.
 type Classifier interface {
 	CLIError() *Error
+}
+
+// HintProvider attaches hints to an error chain without taking over its
+// classification or discarding outer wrapped context.
+type HintProvider interface {
+	CLIHints() []string
 }
 
 // ErrNotLoggedIn marks a failure to load a credential. The control client
@@ -227,15 +236,13 @@ func FromError(err error) *Error {
 	if err == nil {
 		return nil
 	}
-	var e *Error
-	if errors.As(err, &e) {
+	out := classifyError(err)
+	return attachProvidedHints(out, err)
+}
+
+func classifyError(err error) *Error {
+	if e := extractEnvelope(err); e != nil {
 		return e
-	}
-	var classifier Classifier
-	if errors.As(err, &classifier) {
-		if classified := classifier.CLIError(); classified != nil {
-			return classified
-		}
 	}
 	if errors.Is(err, ErrNotLoggedIn) {
 		return Wrap(CodeNotLoggedIn, err, "").
@@ -264,14 +271,86 @@ func FromError(err error) *Error {
 	return Wrap(CodeInternal, err, "")
 }
 
+func attachProvidedHints(e *Error, err error) *Error {
+	hints := collectProvidedHints(err)
+	if len(hints) == 0 {
+		return e
+	}
+	clone := *e
+	clone.Hints = append([]string(nil), e.Hints...)
+	out := &clone
+	for _, hint := range hints {
+		out = out.WithHint("%s", hint)
+	}
+	return out
+}
+
+func collectProvidedHints(err error) []string {
+	if err == nil {
+		return nil
+	}
+	var out []string
+	if hp, ok := err.(HintProvider); ok {
+		out = append(out, hp.CLIHints()...)
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		out = append(out, collectProvidedHints(u.Unwrap())...)
+	case interface{ Unwrap() []error }:
+		for _, child := range u.Unwrap() {
+			out = append(out, collectProvidedHints(child)...)
+		}
+	}
+	return out
+}
+
+// extractEnvelope walks err from outermost to innermost in the same order as
+// errors.As, returning the first *Error or non-nil Classifier envelope.
+func extractEnvelope(err error) *Error {
+	if err == nil {
+		return nil
+	}
+	if e, ok := err.(*Error); ok {
+		return e
+	}
+	if c, ok := err.(Classifier); ok {
+		if classified := c.CLIError(); classified != nil {
+			return classified
+		}
+	}
+	if as, ok := err.(interface{ As(any) bool }); ok {
+		var e *Error
+		if as.As(&e) && e != nil {
+			return e
+		}
+		var c Classifier
+		if as.As(&c) && c != nil {
+			if classified := c.CLIError(); classified != nil {
+				return classified
+			}
+		}
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return extractEnvelope(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, child := range u.Unwrap() {
+			if e := extractEnvelope(child); e != nil {
+				return e
+			}
+		}
+	}
+	return nil
+}
+
 // fromConnect maps a Connect error to its envelope. err is the whole chain,
 // so the message keeps the context that callers wrapped around the Connect
 // error.
 //
 // It adds no hint. The next step depends on the command: a refused
-// credential of `leapmux control` asks for `auth login`, and a refused
-// registration key of `leapmux worker register` asks for a new key. The
-// tree of each command adds its own.
+// credential asks for `leapmux auth login`, and a refused registration key
+// of `leapmux daemon worker register` asks for a new key. The tree of each
+// command adds its own.
 func fromConnect(err error, connectErr *connect.Error) *Error {
 	// A Connect error prints its own code before its message. The envelope
 	// states a code of its own, so the message keeps the peer's words alone.

@@ -647,6 +647,14 @@ func TestResolve_UnlocatableTabIsFatalWhenAFieldNeededIt(t *testing.T) {
 		"the cause stays reachable, so a caller need not match on the message")
 	assert.Contains(t, err.Error(), "--workspace",
 		"and it still gives the flag that would satisfy what the miss left empty")
+
+	cliErr := cli.FromError(err)
+	require.Equal(t, cli.CodeUsage, cliErr.Code)
+	assert.ErrorIs(t, cliErr, resolve.ErrTabNotLocatable,
+		"CLIError must preserve ErrTabNotLocatable through cli.FromError")
+	var missingErr *resolve.MissingInputError
+	assert.ErrorAs(t, cliErr, &missingErr,
+		"CLIError must preserve *MissingInputError through cli.FromError")
 }
 
 // A LocateTab failure that is NOT "no such tab" stays fatal. A transport error
@@ -921,4 +929,87 @@ func TestResolve_AmbientIDsThatDisagreeAreNotCrossChecked(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, calls, "the worker id was already supplied, so the hub is not asked")
 	assert.Equal(t, "worker-from-env", got.WorkerID, "the ambient value stands")
+}
+
+func TestResolve_SequentialMergeConflictOrderingAcrossMultipleAxes(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-from-tab", "tile-from-tab", "worker-from-tab"), nil
+		},
+		locateTile: func(context.Context, string) (string, error) {
+			return "ws-from-tile", nil
+		},
+		getWorkspace: func(context.Context, string) error { return nil },
+	}.toDeps()
+
+	_, err := resolve.Resolve(t.Context(), deps,
+		resolve.Need{WorkspaceID: true, TileID: true, WorkerID: true},
+		resolve.Inputs{
+			TabID:               "tab-1",
+			TileID:              "tile-typed",
+			WorkspaceID:         "ws-typed",
+			WorkerID:            "worker-typed",
+			ExplicitTabID:       true,
+			ExplicitTileID:      true,
+			ExplicitWorkspaceID: true,
+			ExplicitWorkerID:    true,
+		},
+	)
+	re := usageError(t, err)
+	assert.Equal(t,
+		`conflicting inputs: `+
+			`tile_id="tile-from-tab" via the tab's placement vs tile_id="tile-typed" via --tile; `+
+			`worker_id="worker-from-tab" via the tab's placement vs worker_id="worker-typed" via --worker; `+
+			`workspace_id="ws-from-tab" via the tab's placement vs workspace_id="ws-from-tile" via the tile's workspace vs workspace_id="ws-typed" via --workspace`,
+		re.Message,
+	)
+}
+
+func TestResolve_EnvOnlyDisagreementConflicts(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-A", "tile-env", "worker-A"), nil
+		},
+		locateTile: func(context.Context, string) (string, error) {
+			return "ws-B", nil
+		},
+	}.toDeps()
+
+	_, err := resolve.Resolve(t.Context(), deps,
+		resolve.Need{WorkspaceID: true},
+		resolve.Inputs{
+			TabID:  "tab-env",
+			TileID: "tile-env",
+		},
+	)
+	re := usageError(t, err)
+	assert.Equal(t,
+		`conflicting inputs: workspace_id="ws-A" via the tab's placement vs workspace_id="ws-B" via the tile's workspace`,
+		re.Message,
+	)
+}
+
+func TestResolve_ExplicitUpgradeShadowsEnvDisagreement(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-other", "tile-other", "worker-A"), nil
+		},
+		locateTile: func(context.Context, string) (string, error) {
+			return "ws-1", nil
+		},
+		getWorkspace: func(context.Context, string) error { return nil },
+	}.toDeps()
+
+	got, err := resolve.Resolve(t.Context(), deps,
+		resolve.Need{WorkspaceID: true, TileID: true},
+		resolve.Inputs{
+			TabID:          "tab-env",
+			WorkspaceID:    "ws-1",
+			TileID:         "tile-typed",
+			ExplicitTileID: true,
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "ws-1", got.WorkspaceID)
+	assert.Equal(t, "tile-typed", got.TileID)
 }

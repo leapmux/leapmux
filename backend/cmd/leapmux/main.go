@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
@@ -51,15 +53,23 @@ func main() {
 		}
 		os.Exit(0)
 	}
-	// Inside a LeapMux tab, the CLI of the tab's Worker runs a `leapmux
-	// control` command (see controlHandoff). The hand-off comes before the
-	// command tree parses the arguments: a command for another version can
-	// hold a name or a flag that this version refuses.
-	if code, handled := handOffControlCommand(os.Args[1:]); handled {
+	// Inside a LeapMux tab, the CLI of the tab's Worker runs control commands
+	// (see controlHandoff). The hand-off comes before the command tree parses
+	// the arguments: a command for another version can hold a name or a flag
+	// that this version refuses. Reuse the command tree if the hand-off builds
+	// it and decides not to exec.
+	var cachedRoot *cobra.Command
+	getRoot := func() *cobra.Command {
+		if cachedRoot == nil {
+			cachedRoot = newRootCommand(defaultCLIRunners())
+		}
+		return cachedRoot
+	}
+	if code, handled := handOffControlCommand(os.Args[1:], getRoot); handled {
 		os.Exit(code)
 	}
 	logging.Setup()
-	os.Exit(runCLI(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, defaultCLIRunners()))
+	os.Exit(cli.Execute(context.Background(), getRoot(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
 // reportEntryFailure prints the failure of an entry point that runs before

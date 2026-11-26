@@ -25,7 +25,7 @@ type workerPrivateOutput struct {
 // ctx ends, calling onEvent for each received event.
 type workerPrivateSource func(ctx context.Context, onEvent func(*leapmuxv1.WorkerPrivateEvent)) error
 
-func workerPrivateSourceOf(c *control.Client, workerID string) workerPrivateSource {
+func workerPrivateSourceOf(c control.Peer, workerID string) workerPrivateSource {
 	return func(ctx context.Context, onEvent func(*leapmuxv1.WorkerPrivateEvent)) error {
 		payload, err := proto.Marshal(&leapmuxv1.WatchWorkerPrivateEventsRequest{})
 		if err != nil {

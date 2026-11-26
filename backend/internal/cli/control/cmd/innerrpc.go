@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -22,7 +23,7 @@ import (
 // Clients that use local interprocess communication (IPC) call CallInner on the agent's socket.
 //
 // Hub clients require workerID. The caller resolves it from the target first.
-func callInnerRPC(ctx context.Context, c *control.Client, workerID, method string, in proto.Message, out proto.Message) error {
+func callInnerRPC(ctx context.Context, c control.Peer, workerID, method string, in proto.Message, out proto.Message) error {
 	return callInnerRPCBest(ctx, c, workerID, method, in, out)
 }
 
@@ -75,7 +76,7 @@ func (e *codedRPCError) Unwrap() error { return e.Cause }
 
 // callInnerRPCBest selects the same transport as callInnerRPC and returns errors without emitting them.
 // Workspace deletion combines failures before producing one result envelope.
-func callInnerRPCBest(ctx context.Context, c *control.Client, workerID, method string, in proto.Message, out proto.Message) error {
+func callInnerRPCBest(ctx context.Context, c control.Peer, workerID, method string, in proto.Message, out proto.Message) error {
 	// Validate serialization before a malformed request can start a Noise_NK handshake.
 	if _, err := proto.Marshal(in); err != nil {
 		return &codedRPCError{Code: "marshal_failed", Cause: err}
@@ -93,7 +94,8 @@ func callInnerRPCBest(ctx context.Context, c *control.Client, workerID, method s
 //
 // Each call supplies its context, so callers control cancellation independently for separate RPCs.
 type workerCall struct {
-	c        *control.Client
+	hub      *control.HubClient
+	ipc      *control.WorkerIPCClient
 	workerID string
 	// ch holds the shared channel. A nil channel selects local IPC or the per-call fallback for a hub client.
 	ch *tunnel.Channel
@@ -116,7 +118,7 @@ func (w workerCall) withVersion(ctx context.Context, method string, err error) e
 		peer += " " + w.workerID
 	}
 	var ipcError *codedRPCError
-	if w.c.IsWorkerIPC() && errors.As(err, &ipcError) && ipcError.Code == "rpc_failed" {
+	if w.ipc != nil && errors.As(err, &ipcError) && ipcError.Code == "rpc_failed" {
 		// An IPC refusal before dispatch came from the local socket.
 		peer = "Worker IPC"
 		w.workerID = ""
@@ -135,14 +137,17 @@ func (w workerCall) withVersion(ctx context.Context, method string, err error) e
 
 func (w workerCall) call(ctx context.Context, method string, in, out proto.Message) error {
 	if w.ch == nil && w.perCallChannel {
-		return callInnerRPCBest(ctx, w.c, w.workerID, method, in, out)
+		return callInnerRPCBest(ctx, w.hub, w.workerID, method, in, out)
 	}
 	payload, err := proto.Marshal(in)
 	if err != nil {
 		return &codedRPCError{Code: "marshal_failed", Cause: err}
 	}
+	if w.ipc != nil {
+		return localIPCCallInnerBest(ctx, w.ipc, w.workerID, method, payload, out)
+	}
 	if w.ch == nil {
-		return localIPCCallInnerBest(ctx, w.c, w.workerID, method, payload, out)
+		return &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
 	}
 	resp, err := w.ch.CallRPC(ctx, method, payload)
 	if err != nil {
@@ -182,19 +187,23 @@ func channelRPCError(err error) *codedRPCError {
 //
 // The channel lives until body returns, not until ctx ends. Each call in body takes its own context.
 // The body can finish related cleanup with a separate context after ctx ends.
-func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, body func(w workerCall) error) error {
-	if c.IsWorkerIPC() {
-		return body(workerCall{c: c, workerID: workerID})
+func withWorkerChannel(ctx context.Context, p control.Peer, workerID string, body func(w workerCall) error) error {
+	switch c := p.(type) {
+	case *control.WorkerIPCClient:
+		return body(workerCall{ipc: c, workerID: workerID})
+	case *control.HubClient:
+		if workerID == "" {
+			return &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
+		}
+		ch, err := c.OpenE2EEChannel(ctx, context.WithoutCancel(ctx), workerID)
+		if err != nil {
+			return withHubVersion(ctx, c, &codedRPCError{Code: "channel_open_failed", Cause: err})
+		}
+		defer ch.Close()
+		return body(workerCall{hub: c, workerID: workerID, ch: ch})
+	default:
+		return fmt.Errorf("unsupported control peer %T", p)
 	}
-	if workerID == "" {
-		return &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
-	}
-	ch, err := c.OpenE2EEChannel(ctx, context.WithoutCancel(ctx), workerID)
-	if err != nil {
-		return withHubVersion(ctx, c, &codedRPCError{Code: "channel_open_failed", Cause: err})
-	}
-	defer ch.Close()
-	return body(workerCall{c: c, workerID: workerID, ch: ch})
 }
 
 // withBestEffortWorkerChannel is withWorkerChannel for sequences that must run
@@ -207,16 +216,23 @@ func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, 
 //
 // The channel closes when body returns, so every call of the sequence must run inside body.
 // Unlike withWorkerChannel, the end of ctx also ends the channel, because no caller runs a rollback after ctx ended.
-func withBestEffortWorkerChannel(ctx context.Context, c *control.Client, workerID string, body func(w workerCall) error) error {
-	if c.IsWorkerIPC() || workerID == "" {
-		return body(workerCall{c: c, workerID: workerID})
+func withBestEffortWorkerChannel(ctx context.Context, p control.Peer, workerID string, body func(w workerCall) error) error {
+	switch c := p.(type) {
+	case *control.WorkerIPCClient:
+		return body(workerCall{ipc: c, workerID: workerID})
+	case *control.HubClient:
+		if workerID == "" {
+			return body(workerCall{hub: c, workerID: workerID, perCallChannel: true})
+		}
+		ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
+		if err != nil {
+			return body(workerCall{hub: c, workerID: workerID, perCallChannel: true})
+		}
+		defer ch.Close()
+		return body(workerCall{hub: c, workerID: workerID, ch: ch})
+	default:
+		return fmt.Errorf("unsupported control peer %T", p)
 	}
-	ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
-	if err != nil {
-		return body(workerCall{c: c, workerID: workerID, perCallChannel: true})
-	}
-	defer ch.Close()
-	return body(workerCall{c: c, workerID: workerID, ch: ch})
 }
 
 // localIPCCallInnerBest routes a call in the worker namespace through the agent's socket.
@@ -224,7 +240,7 @@ func withBestEffortWorkerChannel(ctx context.Context, c *control.Client, workerI
 // The request carries no workspace, because controlipc.Router.CallInner selects the handler by method alone.
 // Calls to another worker use a DELEGATION bearer token, which that worker validates.
 // Local calls require no additional token because the caller already holds the agent's socket.
-func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, method string, payload []byte, out proto.Message) error {
+func localIPCCallInnerBest(ctx context.Context, c *control.WorkerIPCClient, workerID, method string, payload []byte, out proto.Message) error {
 	ipc, err := c.ControlIPCService()
 	if err != nil {
 		return &codedRPCError{Code: "invalid_request", Cause: err}

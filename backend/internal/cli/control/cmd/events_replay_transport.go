@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	"connectrpc.com/connect/v2"
@@ -14,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/tunnel"
 )
@@ -66,8 +68,9 @@ func (s *session) receiveSemanticWatch(ctx context.Context, workerID string, req
 func (s *session) receiveSemanticHistory(ctx context.Context, workerID, procedure string, payload []byte,
 	forward func([]byte, *leapmuxv1.RpcError, bool) error,
 ) error {
-	if s.c.IsWorkerIPC() {
-		client, err := s.c.ControlIPCStreamService()
+	switch c := s.c.(type) {
+	case *control.WorkerIPCClient:
+		client, err := c.ControlIPCStreamService()
 		if err != nil {
 			return err
 		}
@@ -88,15 +91,18 @@ func (s *session) receiveSemanticHistory(ctx context.Context, workerID, procedur
 				return err
 			}
 		}
+	case *control.HubClient:
+		openCtx, cancelOpen := rpcDeadline(ctx)
+		ch, err := c.OpenE2EEChannel(openCtx, ctx, workerID)
+		cancelOpen()
+		if err != nil {
+			return err
+		}
+		defer ch.Close()
+		return readEncryptedSemanticWatch(ctx, ch, procedure, payload, forward)
+	default:
+		return fmt.Errorf("unsupported control peer %T", s.c)
 	}
-	openCtx, cancelOpen := rpcDeadline(ctx)
-	ch, err := s.c.OpenE2EEChannel(openCtx, ctx, workerID)
-	cancelOpen()
-	if err != nil {
-		return err
-	}
-	defer ch.Close()
-	return readEncryptedSemanticWatch(ctx, ch, procedure, payload, forward)
 }
 
 func readEncryptedSemanticWatch(ctx context.Context, ch semanticWatchChannel, procedure string, payload []byte,

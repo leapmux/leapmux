@@ -33,14 +33,18 @@ import (
 // an `internal/hubrpc.Registry` entry, which the worker-side ControlIPC
 // bridge also reads — one place to add or rename a hub method, and a
 // renamed one fails to compile here.
-func hubCallUnary(ctx context.Context, c *control.Client, procedure string, in proto.Message, out proto.Message) error {
-	if !c.IsWorkerIPC() {
+func hubCallUnary(ctx context.Context, p control.Peer, procedure string, in proto.Message, out proto.Message) error {
+	switch c := p.(type) {
+	case *control.HubClient:
 		return withHubVersion(ctx, c, hubCallDirect(ctx, c, procedure, in, out))
+	case *control.WorkerIPCClient:
+		return withHubVersion(ctx, c, hubCallLocalIPC(ctx, c, procedure, in, out))
+	default:
+		return fmt.Errorf("unsupported control peer %T", p)
 	}
-	return withHubVersion(ctx, c, hubCallLocalIPC(ctx, c, procedure, in, out))
 }
 
-func hubCallLocalIPC(ctx context.Context, c *control.Client, procedure string, in proto.Message, out proto.Message) error {
+func hubCallLocalIPC(ctx context.Context, c *control.WorkerIPCClient, procedure string, in proto.Message, out proto.Message) error {
 	payload, err := proto.Marshal(in)
 	if err != nil {
 		return fmt.Errorf("marshal %s request: %w", procedure, err)
@@ -74,7 +78,7 @@ func hubCallLocalIPC(ctx context.Context, c *control.Client, procedure string, i
 // transport. The shared `hubrpc.Registry` lookup handles the typed
 // dispatch; we contribute the transport and the session-auth interceptor
 // that `c.WorkspaceService()` & friends would otherwise apply.
-func hubCallDirect(ctx context.Context, c *control.Client, procedure string, in proto.Message, out proto.Message) error {
+func hubCallDirect(ctx context.Context, c *control.HubClient, procedure string, in proto.Message, out proto.Message) error {
 	desc, err := hubrpc.Lookup(procedure)
 	if err != nil {
 		return fmt.Errorf("unsupported hub method: %w", err)

@@ -38,7 +38,7 @@ func callingTabID() string {
 
 // callingWorkspace resolves the calling tab's current workspace. A missing
 // anchor or a confirmed absent tab leaves nothing for the guard to protect.
-func callingWorkspace(ctx context.Context, c *control.Client) (string, error) {
+func callingWorkspace(ctx context.Context, c control.Peer) (string, error) {
 	self := callingTabID()
 	if self == "" {
 		return "", nil
@@ -71,7 +71,7 @@ func errSelfTargetRefused(detail string) error {
 // guardWorkspaceDelete blocks `workspace delete` when the calling
 // tab lives inside the target workspace and --allow-self was not passed.
 // Returns nil to proceed, or an emitted error envelope to abort.
-func guardWorkspaceDelete(ctx context.Context, c *control.Client, targetWorkspaceID string, allowSelf bool) error {
+func guardWorkspaceDelete(ctx context.Context, c control.Peer, targetWorkspaceID string, allowSelf bool) error {
 	if allowSelf || targetWorkspaceID == "" {
 		return nil
 	}

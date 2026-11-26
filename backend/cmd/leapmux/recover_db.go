@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 
@@ -14,6 +13,49 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
+type recoverDBPathResult struct {
+	Path string `json:"path"`
+}
+
+func (r recoverDBPathResult) RenderText(w io.Writer) error {
+	_, err := fmt.Fprintln(w, r.Path)
+	return err
+}
+
+type recoverDBVersionResult struct {
+	CurrentVersion int64 `json:"current_version"`
+	LatestVersion  int64 `json:"latest_version"`
+}
+
+func (r recoverDBVersionResult) RenderText(w io.Writer) error {
+	_, err := fmt.Fprintf(w, "Current schema version: %d\nLatest available version: %d\n", r.CurrentVersion, r.LatestVersion)
+	return err
+}
+
+type recoverDBMigrateResult struct {
+	PreviousVersion int64  `json:"previous_version"`
+	LatestVersion   int64  `json:"latest_version"`
+	TargetVersion   *int64 `json:"target_version,omitempty"`
+	CurrentVersion  int64  `json:"current_version"`
+	AlreadyLatest   bool   `json:"already_latest"`
+}
+
+func (r recoverDBMigrateResult) RenderText(w io.Writer) error {
+	if _, err := fmt.Fprintf(w, "Current schema version: %d\nLatest available version: %d\n", r.PreviousVersion, r.LatestVersion); err != nil {
+		return err
+	}
+	if r.TargetVersion != nil {
+		_, err := fmt.Fprintf(w, "Migrating to version %d...\nMigration complete. Current version: %d\n", *r.TargetVersion, r.CurrentVersion)
+		return err
+	}
+	if r.AlreadyLatest {
+		_, err := fmt.Fprintln(w, "Already at latest version.")
+		return err
+	}
+	_, err := fmt.Fprintf(w, "Migrating to latest version %d...\nMigration complete. Current version: %d\n", r.LatestVersion, r.CurrentVersion)
+	return err
+}
+
 func newDBPathCommand() *cobra.Command {
 	return recoverConfigLeaf(recoverSpec{Leaf: cli.Leaf{
 		Use:   "path",
@@ -22,22 +64,9 @@ func newDBPathCommand() *cobra.Command {
 		Examples: []cli.Example{
 			{Command: "leapmux recover db path"},
 		},
-	}}, func(inv *cli.Invocation, cfg *config.Config) error {
-		_, err := fmt.Fprintln(inv.Printer.Out, cfg.SQLiteDBPath())
-		return err
+	}}, func(_ *cli.Invocation, cfg *config.Config) (any, error) {
+		return recoverDBPathResult{Path: cfg.SQLiteDBPath()}, nil
 	})
-}
-
-func printSchemaVersions(ctx context.Context, out io.Writer, m store.Migrator) (current, latest int64, err error) {
-	current, err = m.CurrentVersion(ctx)
-	if err != nil {
-		return 0, 0, fmt.Errorf("get current version: %w", err)
-	}
-	latest = m.LatestVersion()
-	if _, err := fmt.Fprintf(out, "Current schema version: %d\nLatest available version: %d\n", current, latest); err != nil {
-		return 0, 0, err
-	}
-	return current, latest, nil
 }
 
 func newDBMigrateCommand() *cobra.Command {
@@ -62,46 +91,48 @@ func newDBMigrateCommand() *cobra.Command {
 			}
 			return nil
 		},
-	}, func(inv *cli.Invocation, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
-		ctx, out := inv.Context, inv.Printer.Out
+	}, func(inv *cli.Invocation, _ *config.Config, st store.Store, _ *keystore.Keystore) (any, error) {
+		ctx := inv.Context
 		m := st.Migrator()
 
-		current, latest, err := printSchemaVersions(ctx, out, m)
+		current, err := m.CurrentVersion(ctx)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("get current version: %w", err)
 		}
+		latest := m.LatestVersion()
 
+		res := recoverDBMigrateResult{
+			PreviousVersion: current,
+			LatestVersion:   latest,
+			CurrentVersion:  current,
+		}
 		if inv.Changed("to") {
-			if _, err := fmt.Fprintf(out, "Migrating to version %d...\n", target); err != nil {
-				return err
-			}
+			t := target
+			res.TargetVersion = &t
 			if err := m.MigrateTo(ctx, target); err != nil {
-				return fmt.Errorf("migrate to version %d: %w", target, err)
+				return nil, fmt.Errorf("migrate to version %d: %w", target, err)
 			}
 		} else {
 			if current == latest {
 				// Still run m.Migrate so MigratorWithBuiltIns reconciles built-in
 				// rows even when no schema migration is pending.
 				if err := m.Migrate(ctx); err != nil {
-					return fmt.Errorf("migrate: %w", err)
+					return nil, fmt.Errorf("migrate: %w", err)
 				}
-				_, err := fmt.Fprintln(out, "Already at latest version.")
-				return err
-			}
-			if _, err := fmt.Fprintf(out, "Migrating to latest version %d...\n", latest); err != nil {
-				return err
+				res.AlreadyLatest = true
+				return res, nil
 			}
 			if err := m.Migrate(ctx); err != nil {
-				return fmt.Errorf("migrate: %w", err)
+				return nil, fmt.Errorf("migrate: %w", err)
 			}
 		}
 
 		newVersion, err := m.CurrentVersion(ctx)
 		if err != nil {
-			return fmt.Errorf("get new version: %w", err)
+			return nil, fmt.Errorf("get new version: %w", err)
 		}
-		_, err = fmt.Fprintf(out, "Migration complete. Current version: %d\n", newVersion)
-		return err
+		res.CurrentVersion = newVersion
+		return res, nil
 	})
 }
 
@@ -112,8 +143,15 @@ func newDBVersionCommand() *cobra.Command {
 		Examples: []cli.Example{
 			{Command: "leapmux recover db version"},
 		},
-	}}, func(inv *cli.Invocation, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
-		_, _, err := printSchemaVersions(inv.Context, inv.Printer.Out, st.Migrator())
-		return err
+	}}, func(inv *cli.Invocation, _ *config.Config, st store.Store, _ *keystore.Keystore) (any, error) {
+		m := st.Migrator()
+		current, err := m.CurrentVersion(inv.Context)
+		if err != nil {
+			return nil, fmt.Errorf("get current version: %w", err)
+		}
+		return recoverDBVersionResult{
+			CurrentVersion: current,
+			LatestVersion:  m.LatestVersion(),
+		}, nil
 	})
 }

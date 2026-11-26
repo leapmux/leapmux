@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
@@ -96,10 +97,11 @@ func (s *session) resolveCheckpointTab(selector string, saved *eventCheckpoint) 
 		tabType, _ := resolve.ParseTabType(saved.TabType)
 		return tabTarget{ID: saved.TabID, Type: tabType, WorkerID: saved.WorkerID}, nil
 	}
-	if !s.c.IsWorkerIPC() || strings.TrimSpace(selector) != resolve.SelfTarget {
+	ipcClient, isIPC := s.c.(*control.WorkerIPCClient)
+	if !isIPC || strings.TrimSpace(selector) != resolve.SelfTarget {
 		return s.resolveTab(resolve.KindTab, selector, resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true}})
 	}
-	ipc, err := s.c.ControlIPCService()
+	ipc, err := ipcClient.ControlIPCService()
 	if err != nil {
 		return tabTarget{}, err
 	}

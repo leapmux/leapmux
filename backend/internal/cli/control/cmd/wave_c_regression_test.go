@@ -71,6 +71,24 @@ func TestResolveAdminIDPrefix_SupportsNameTitleAndBareFallback(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, cli.CodeAmbiguousTarget, cli.FromError(err).Code)
 	assert.Len(t, cli.FromError(err).Candidates, 2)
+
+	// A 48-character title with spaces does not match resolve.IsGeneratedID, so it resolves via listing.
+	const title48 = "Deploy Bot With Spaces Exactly 48 Chars Long Now"
+	require.Len(t, title48, 48)
+	candidates = append(candidates, cli.Candidate{ID: fullTestID("app-long"), Kind: "app", Title: title48})
+	callsBefore := listCalls
+	got, err = resolveAdminIDPrefix(context.Background(), title48, "app", list)
+	require.NoError(t, err)
+	assert.Equal(t, fullTestID("app-long"), got)
+	assert.Equal(t, callsBefore+1, listCalls)
+
+	// A valid 36-character UUID skips listing directly.
+	const rawUUID = "87a19d5f-4838-4e34-9f0f-56130f0a62b1"
+	callsBefore = listCalls
+	got, err = resolveAdminIDPrefix(context.Background(), rawUUID, "app", list)
+	require.NoError(t, err)
+	assert.Equal(t, rawUUID, got)
+	assert.Equal(t, callsBefore, listCalls)
 }
 
 func TestAgentAnswerOverIPC_OmittedRequestAndGlobalHandleWithText(t *testing.T) {

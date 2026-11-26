@@ -30,7 +30,7 @@ func TestForegroundConsumesPreparedConfigurationSnapshot(t *testing.T) {
 			require.NoError(t, err)
 			replacement := []byte("[malformed after preparation")
 			require.NoError(t, os.WriteFile(path, replacement, 0o600))
-			runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: modeRole(mode), DataDir: configuration.dataDirectory, Execution: lifecycle.ExecutionForeground})
+			runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: configuration.role, DataDir: configuration.dataDirectory, Execution: lifecycle.ExecutionForeground})
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = runtime.Finish(nil) })
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -105,7 +105,7 @@ func TestPreparedConfigurationPinsCanonicalDirectoryAfterAliasRetarget(t *testin
 				require.NotNil(t, registration.WorkerID)
 				assert.Equal(t, "worker-1", *registration.WorkerID, "observation must read the leased canonical directory")
 			}
-			runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: modeRole(mode), DataDir: configuration.dataDirectory, Execution: lifecycle.ExecutionForeground})
+			runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: configuration.role, DataDir: configuration.dataDirectory, Execution: lifecycle.ExecutionForeground})
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = runtime.Finish(nil) })
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)

@@ -423,7 +423,7 @@ func (c terminalFollowChunk) TextLine() string { return c.Text }
 // retained screen, supporting both --raw bytes, plain text chunks, and --json /
 // --format ndjson structured chunk events.
 func followTerminalOutput(inv *cli.Invocation, s *session, got tabTarget, info *leapmuxv1.TerminalInfo, opts screenReadOptions) error {
-	if inv.Printer != nil && inv.Printer.Quiet {
+	if inv.Printer != nil && inv.Printer.Format == cli.FormatQuiet {
 		return cli.Usagef("--quiet cannot be used with --follow").
 			WithHint("use --json or --format ndjson for structured streaming, or omit --follow")
 	}

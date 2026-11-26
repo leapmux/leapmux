@@ -13,24 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	hubservice "github.com/leapmux/leapmux/internal/hub/service"
-	"github.com/leapmux/leapmux/internal/util/id"
 )
-
-func isGeneratedIDChar(c byte) bool {
-	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' || c == '_'
-}
-
-func isGeneratedIDChars(s string) bool {
-	if len(s) != id.GeneratedLength {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if !isGeneratedIDChar(s[i]) {
-			return false
-		}
-	}
-	return true
-}
 
 // resolveAdminIDPrefix resolves an admin entity target that may be a full ID,
 // an explicit "id:<literal>" value, a "name:<name>"/"title:<title>" selector,
@@ -52,7 +35,7 @@ func resolveAdminIDPrefix(ctx context.Context, raw, kind string, list func(conte
 	if title, ok := strings.CutPrefix(trimmed, "title:"); ok {
 		return resolveAdminByTitle(ctx, title, "title:", kind, list)
 	}
-	if isGeneratedIDChars(trimmed) || (len(trimmed) == 36 && uuid.Validate(trimmed) == nil) {
+	if resolve.IsGeneratedID(trimmed) || (len(trimmed) == 36 && uuid.Validate(trimmed) == nil) {
 		return trimmed, nil
 	}
 	if trimmed == "" {
@@ -143,12 +126,12 @@ func parseAdminUserSelectorDirect(raw string) (sel *leapmuxv1.UserSelector, pref
 	}
 	if literal, ok := strings.CutPrefix(trimmed, "id:"); ok {
 		literal = strings.TrimSpace(literal)
-		if isGeneratedIDChars(literal) || (len(literal) == 36 && uuid.Validate(literal) == nil) || len(literal) < resolve.MinPrefixLength {
+		if resolve.IsGeneratedID(literal) || (len(literal) == 36 && uuid.Validate(literal) == nil) || len(literal) < resolve.MinPrefixLength {
 			return sel, "", false, nil
 		}
 		return sel, literal, true, nil
 	}
-	if isGeneratedIDChars(trimmed) || (len(trimmed) == 36 && uuid.Validate(trimmed) == nil) {
+	if resolve.IsGeneratedID(trimmed) || (len(trimmed) == 36 && uuid.Validate(trimmed) == nil) {
 		return hubservice.SelectUserByID(trimmed), "", false, nil
 	}
 	if len(trimmed) >= resolve.MinPrefixLength {
@@ -171,7 +154,7 @@ func isAdminUserNotFound(err error) bool {
 // first (costing zero extra RPCs for exact usernames and exact IDs). Only when
 // the Hub reports NotFound and the input is eligible as a user ID prefix does
 // it scan AdminUserService.ListUsers and retry with the resolved full ID.
-func callWithAdminUserSelector[T any](ctx context.Context, c *control.Client, raw string, call func(*leapmuxv1.UserSelector) (T, error)) (T, error) {
+func callWithAdminUserSelector[T any](ctx context.Context, c *control.HubClient, raw string, call func(*leapmuxv1.UserSelector) (T, error)) (T, error) {
 	var zero T
 	sel, prefix, allowPrefixFallback, err := parseAdminUserSelectorDirect(raw)
 	if err != nil {
@@ -193,14 +176,14 @@ func callWithAdminUserSelector[T any](ctx context.Context, c *control.Client, ra
 
 // callWithOptionalAdminUserSelector behaves like callWithAdminUserSelector when
 // f has a --user value set, and invokes call(nil) directly when --user is unset.
-func callWithOptionalAdminUserSelector[T any](ctx context.Context, c *control.Client, f *userFilterFlags, call func(*leapmuxv1.UserSelector) (T, error)) (T, error) {
+func callWithOptionalAdminUserSelector[T any](ctx context.Context, c *control.HubClient, f *userFilterFlags, call func(*leapmuxv1.UserSelector) (T, error)) (T, error) {
 	if f.Selector() == nil {
 		return call(nil)
 	}
 	return callWithAdminUserSelector(ctx, c, f.User, call)
 }
 
-func matchAdminUserIDPrefix(ctx context.Context, c *control.Client, prefix string) (string, error) {
+func matchAdminUserIDPrefix(ctx context.Context, c *control.HubClient, prefix string) (string, error) {
 	if c == nil {
 		return "", nil
 	}

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -177,7 +178,7 @@ func newAdminUserCreate() *cobra.Command {
 			if err != nil {
 				return nil, err
 			}
-			entered, err := control.RequirePassword(inv.Context, password, "Password: ")
+			entered, err := control.RequirePassword(inv.Context, password, "Password: ", os.Stdin, errOutOf(inv))
 			if err != nil {
 				return nil, cli.Wrap(cli.CodeUsage, err, "")
 			}
@@ -357,7 +358,7 @@ func newAdminUserResetPassword() *cobra.Command {
 			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
 				return nil, err
 			}
-			entered, err := control.RequirePassword(inv.Context, pw, "New password: ")
+			entered, err := control.RequirePassword(inv.Context, pw, "New password: ", os.Stdin, errOutOf(inv))
 			if err != nil {
 				return nil, cli.Wrap(cli.CodeUsage, err, "")
 			}
@@ -394,7 +395,7 @@ func (p adminSessionPage) QuietLines() []string {
 	return out
 }
 
-func resolveAdminSessionID(ctx context.Context, c *control.Client, raw string) (string, error) {
+func resolveAdminSessionID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveAdminIDPrefix(ctx, raw, "session", func(ctx context.Context) ([]cli.Candidate, error) {
 		sessions, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminSession, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminUserService().ListSessions(ctx, &leapmuxv1.ListSessionsRequest{Page: page})
@@ -420,7 +421,7 @@ type adminSessionRow struct {
 	UserAgent    string `json:"user_agent"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	LastActiveAt string `json:"last_active_at,omitempty"`
-	ExpiresAt    string `json:"expires_at,omitempty" table:"EXPIRES"`
+	ExpiresAt    string `json:"expires_at,omitempty" table:"EXPIRES,dim"`
 }
 
 func adminSessionRowOf(s *leapmuxv1.AdminSession) adminSessionRow {

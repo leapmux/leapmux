@@ -23,7 +23,7 @@ import (
 // completionTimeout limits the time a shell waits on Hub or pin-store reads.
 const completionTimeout = 750 * time.Millisecond
 
-func controlClientForCompletion(cmd *cobra.Command) (*control.Client, error) {
+func controlClientForCompletion(cmd *cobra.Command) (control.Peer, error) {
 	if blankTargetFlag(cmd, "hub") {
 		return nil, cli.Usagef("--hub is empty")
 	}
@@ -256,7 +256,7 @@ func completeWindows(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]st
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
-func completionWorkerID(ctx context.Context, cmd *cobra.Command, c *control.Client) (string, error) {
+func completionWorkerID(ctx context.Context, cmd *cobra.Command, c control.Peer) (string, error) {
 	if f := cmd.Flags().Lookup(workerFlag); f != nil && f.Changed {
 		t, err := resolve.Canonical(ctx, targetListing(c, resolveDeps(c)), resolve.KindWorker, strings.TrimSpace(f.Value.String()))
 		if err != nil {
@@ -389,6 +389,24 @@ func completeGitWorktrees(cmd *cobra.Command, word string) ([]string, cobra.Shel
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
+func resolveCompletionAgent(ctx context.Context, c control.Peer, agentArg string) (tabID, workerID string, ok bool) {
+	deps := resolveDeps(c)
+	t, err := resolve.Canonical(ctx, targetListing(c, deps), resolve.KindAgent, agentArg)
+	if err != nil {
+		return "", "", false
+	}
+	got, err := resolve.Resolve(ctx, deps, resolve.Need{TabID: true, WorkerID: true}, resolve.Inputs{
+		TabID:         t.ID,
+		ExplicitTabID: !t.Self && !t.Parent,
+		WorkerID:      strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)),
+		FixedTabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+	})
+	if err != nil || got.WorkerID == "" {
+		return "", "", false
+	}
+	return got.TabID, got.WorkerID, true
+}
+
 func completeAgentOptionChoices(cmd *cobra.Command, args []string, flagName, word string) ([]string, cobra.ShellCompDirective) {
 	c, err := controlClientForCompletion(cmd)
 	if err != nil {
@@ -400,24 +418,18 @@ func completeAgentOptionChoices(cmd *cobra.Command, args []string, flagName, wor
 	if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
 		agentArg = args[0]
 	}
-	t, err := resolve.Canonical(ctx, targetListing(c, resolveDeps(c)), resolve.KindAgent, agentArg)
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	got, err := resolve.Resolve(ctx, resolveDeps(c), resolve.Need{TabID: true, WorkerID: true}, resolve.Inputs{
-		TabID: t.ID, ExplicitTabID: !t.Self, WorkerID: strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)), FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-	})
-	if err != nil || got.WorkerID == "" {
+	tabID, workerID, ok := resolveCompletionAgent(ctx, c, agentArg)
+	if !ok {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	var resp leapmuxv1.ListAgentsResponse
-	if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{got.TabID}}, &resp); err != nil {
+	if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{tabID}}, &resp); err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	wantKey := strings.ReplaceAll(flagName, "-", "_")
 	var out []string
 	for _, a := range resp.GetAgents() {
-		if a.GetId() != got.TabID {
+		if a.GetId() != tabID {
 			continue
 		}
 		for _, g := range a.GetOptionGroups() {
@@ -446,18 +458,12 @@ func completePendingRequestsForAgent(cmd *cobra.Command, agentArg, word string) 
 	}
 	ctx, cancel := completionContext()
 	defer cancel()
-	t, err := resolve.Canonical(ctx, targetListing(c, resolveDeps(c)), resolve.KindAgent, agentArg)
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	got, err := resolve.Resolve(ctx, resolveDeps(c), resolve.Need{TabID: true, WorkerID: true}, resolve.Inputs{
-		TabID: t.ID, ExplicitTabID: !t.Self, WorkerID: strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)), FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-	})
-	if err != nil || got.WorkerID == "" {
+	tabID, workerID, ok := resolveCompletionAgent(ctx, c, agentArg)
+	if !ok {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	var resp leapmuxv1.ListControlRequestsResponse
-	if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure, &leapmuxv1.ListControlRequestsRequest{AgentId: got.TabID}, &resp); err != nil {
+	if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure, &leapmuxv1.ListControlRequestsRequest{AgentId: tabID}, &resp); err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	var out []string
@@ -478,18 +484,12 @@ func completeQueuedInputsForAgent(cmd *cobra.Command, agentArg, word string) ([]
 	}
 	ctx, cancel := completionContext()
 	defer cancel()
-	t, err := resolve.Canonical(ctx, targetListing(c, resolveDeps(c)), resolve.KindAgent, agentArg)
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	got, err := resolve.Resolve(ctx, resolveDeps(c), resolve.Need{TabID: true, WorkerID: true}, resolve.Inputs{
-		TabID: t.ID, ExplicitTabID: !t.Self, WorkerID: strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)), FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-	})
-	if err != nil || got.WorkerID == "" {
+	tabID, workerID, ok := resolveCompletionAgent(ctx, c, agentArg)
+	if !ok {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	var resp leapmuxv1.ListAgentInputQueueResponse
-	if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, &leapmuxv1.ListAgentInputQueueRequest{AgentId: got.TabID}, &resp); err != nil {
+	if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, &leapmuxv1.ListAgentInputQueueRequest{AgentId: tabID}, &resp); err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	items := resp.GetSnapshot().GetItems()

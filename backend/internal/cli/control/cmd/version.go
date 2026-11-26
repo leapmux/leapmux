@@ -105,7 +105,7 @@ func runVersionWithOverride(inv *cli.Invocation, override func() string) (any, e
 	}
 	out := versionResult{CLI: cliBuild}
 	if explicitHub(inv.Command) == "" && os.Getenv(controlenv.SocketVariable) != "" {
-		c, err := control.NewClientFromEnv("")
+		c, err := control.NewLocalClient(os.Getenv(controlenv.SocketVariable), os.Getenv(controlenv.TokenVariable))
 		if err != nil {
 			out.HubError = err.Error()
 			return out, nil

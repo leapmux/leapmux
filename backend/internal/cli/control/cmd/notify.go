@@ -75,10 +75,11 @@ func newNotificationCommand() *cobra.Command {
 			Run:   runNotificationList,
 		}),
 		cli.NewLeaf(cli.Leaf{
-			Use:     "clear [notification-id]...",
-			Aliases: []string{"rm"},
-			Short:   "Remove one or more notifications from a Worker and dismiss their toasts",
-			Mutates: true,
+			Use:         "clear [notification-id]...",
+			Aliases:     []string{"rm"},
+			Short:       "Remove one or more notifications from a Worker and dismiss their toasts",
+			Mutates:     true,
+			Destructive: true,
 			Args: map[string]string{
 				"notification-id": "One or more IDs returned by notify or notification list (or pass --all).",
 			},

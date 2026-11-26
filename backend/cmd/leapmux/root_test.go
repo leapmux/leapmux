@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/clitest"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func TestRunCLIExplicitRouting(t *testing.T) {
@@ -203,15 +206,11 @@ func TestRunCLI_TopLevelAbbreviation(t *testing.T) {
 		assert.Equal(t, 0, o.code, o.stderr)
 		var env struct {
 			Data struct {
-				OK      bool   `json:"ok"`
-				Command string `json:"command"`
-				Message string `json:"message"`
+				Path string `json:"path"`
 			} `json:"data"`
 		}
 		require.NoError(t, json.Unmarshal([]byte(o.stdout), &env), "stdout: %s", o.stdout)
-		assert.True(t, env.Data.OK)
-		assert.Equal(t, "leapmux recover db path", env.Data.Command)
-		assert.Equal(t, filepath.Join(dataDir, "hub.db"), env.Data.Message)
+		assert.Equal(t, filepath.Join(dataDir, "hub.db"), env.Data.Path)
 	})
 
 	t.Run("abbreviated guide dispatches", func(t *testing.T) {
@@ -414,6 +413,46 @@ func TestCompletion_PrintsAScriptForEachShell(t *testing.T) {
 	assert.Equal(t, cli.ExitUsage, o.code)
 	assert.Contains(t, o.stderr, `unknown shell "tcsh"`)
 	assert.Contains(t, o.stderr, "bash, zsh, fish, powershell, elvish, nushell")
+
+	t.Run("structured json output returns valid json envelope", func(t *testing.T) {
+		o := runTestCLI(t, "completion", "bash", "--json")
+		require.Equal(t, cli.ExitOK, o.code, o.stderr)
+		var env struct {
+			Data completionScript `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(o.stdout), &env), o.stdout)
+		assert.Equal(t, "bash", env.Data.Shell)
+		assert.Contains(t, env.Data.Script, "__start_leapmux")
+	})
+
+	t.Run("ndjson output emits an unwrapped script object", func(t *testing.T) {
+		o := runTestCLI(t, "completion", "zsh", "--format", "ndjson")
+		require.Equal(t, cli.ExitOK, o.code, o.stderr)
+		var script completionScript
+		require.NoError(t, json.Unmarshal([]byte(o.stdout), &script), o.stdout)
+		assert.Equal(t, "zsh", script.Shell)
+		assert.Contains(t, script.Script, "#compdef leapmux")
+	})
+
+	t.Run("unknown shell with --json emits a usage error envelope", func(t *testing.T) {
+		o := runTestCLI(t, "completion", "tcsh", "--json")
+		assert.Equal(t, cli.ExitUsage, o.code)
+		var env struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(o.stdout), &env), o.stdout)
+		assert.Equal(t, string(cli.CodeUsage), env.Error.Code)
+		assert.Contains(t, env.Error.Message, `unknown shell "tcsh"`)
+	})
+
+	t.Run("quiet flag is rejected", func(t *testing.T) {
+		o := runTestCLI(t, "completion", "bash", "-q")
+		assert.Equal(t, cli.ExitUsage, o.code)
+		assert.Contains(t, o.stderr, "--quiet")
+	})
 }
 
 // The completion asks the binary for its candidates, so a prefix completes
@@ -437,6 +476,144 @@ func TestCompletionElvishUsesTheLiveResolver(t *testing.T) {
 	completed := runTestCLI(t, "__complete", "completion", "el")
 	require.Equal(t, 0, completed.code, completed.stderr)
 	assert.Equal(t, "elvish\n:4\n", completed.stdout)
+}
+
+func TestCompletionElvishRejectsUnsupportedDirectives(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub completer uses a POSIX shell script")
+	}
+	elvishBin, err := exec.LookPath("elvish")
+	if err != nil {
+		t.Skip("elvish is unavailable")
+	}
+	generated := runTestCLI(t, "completion", "elvish")
+	require.Equal(t, cli.ExitOK, generated.code, generated.stderr)
+
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "completion.elv")
+	require.NoError(t, os.WriteFile(scriptPath, []byte(generated.stdout), 0o600))
+
+	// Stub executable prints canned __complete responses keyed by the first arg.
+	stubPath := filepath.Join(dir, "stub-leapmux")
+	testutil.WriteExecutable(t, stubPath, `#!/bin/sh
+case "$2" in
+  err)        printf 'bad\n:1\n' ;;
+  ext)        printf 'go\n:8\n' ;;
+  dir)        printf 'subdir\n:16\n' ;;
+  extdir)     printf 'go\n:24\n' ;;
+  overflow)   printf 'bad\n:64\n' ;;
+  malformed)  printf 'bad\n:nope\n' ;;
+  exitfail)   printf 'bad\n:0\n'; exit 1 ;;
+  ok)         printf 'alpha\tFirst\nbeta\n:0\n' ;;
+  nospace)    printf 'item\tDesc\n:2\n' ;;
+  flagval)    printf 'ready\tReady state\n:4\n' ;;
+  empty_nof)  printf ':4\n' ;;
+  empty_file) printf ':0\n' ;;
+esac
+`)
+
+	harness := `
+use str
+var edit: = (ns [
+  &completion:=(ns [&arg-completer=[&]])
+  &complex-candidate~={|stem &display='' &code-suffix=''| put [&stem=$stem &display=$display &suffix=$code-suffix] }
+  &complete-filename~={|seed| put [&stem='FILE:'$seed &display='FILE:'$seed &code-suffix=' '] }
+])
+eval &ns=(ns [&edit:=$edit:]) (slurp < $args[0])
+var stub = $args[1]
+var fn = $edit:completion:arg-completer[leapmux]
+var lmx-registered = (has-key $edit:completion:arg-completer lmx)
+put [
+  &lmx_registered=$lmx-registered
+  &err=[($fn $stub err '')]
+  &ext=[($fn $stub ext '')]
+  &dir=[($fn $stub dir '')]
+  &extdir=[($fn $stub extdir '')]
+  &overflow=[($fn $stub overflow '')]
+  &malformed=[($fn $stub malformed '')]
+  &exitfail=[($fn $stub exitfail '')]
+  &ok=[($fn $stub ok '')]
+  &nospace=[($fn $stub nospace '')]
+  &flagval=[($fn $stub flagval '--until=re')]
+  &empty_nof=[($fn $stub empty_nof '')]
+  &empty_file=[($fn $stub empty_file 'foo')]
+] | to-json
+`
+	cmd := exec.CommandContext(testutil.DeadlineContext(t), elvishBin, "-c", harness, scriptPath, stubPath)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+
+	type candidate struct {
+		Stem    string `json:"stem"`
+		Display string `json:"display"`
+		Suffix  string `json:"suffix"`
+	}
+	var got struct {
+		LmxRegistered bool        `json:"lmx_registered"`
+		Err           []candidate `json:"err"`
+		Ext           []candidate `json:"ext"`
+		Dir           []candidate `json:"dir"`
+		ExtDir        []candidate `json:"extdir"`
+		Overflow      []candidate `json:"overflow"`
+		Malformed     []candidate `json:"malformed"`
+		ExitFail      []candidate `json:"exitfail"`
+		OK            []candidate `json:"ok"`
+		NoSpace       []candidate `json:"nospace"`
+		FlagVal       []candidate `json:"flagval"`
+		EmptyNoF      []candidate `json:"empty_nof"`
+		EmptyFile     []candidate `json:"empty_file"`
+	}
+	require.NoError(t, json.Unmarshal(out, &got), "%s", out)
+	assert.True(t, got.LmxRegistered)
+	assert.Empty(t, got.Err, "error directive :1 must produce no candidates")
+	assert.Empty(t, got.Ext, "file-extension filter directive :8 must produce no candidates")
+	assert.Empty(t, got.Dir, "directory filter directive :16 must produce no candidates")
+	assert.Empty(t, got.ExtDir, "combined filter directive :24 must produce no candidates")
+	assert.Empty(t, got.Overflow, "directive > 63 must produce no candidates")
+	assert.Empty(t, got.Malformed, "non-numeric directive must produce no candidates")
+	assert.Empty(t, got.ExitFail, "failing __complete command must produce no candidates")
+	assert.Equal(t, []candidate{
+		{Stem: "alpha", Display: "alpha  First", Suffix: " "},
+		{Stem: "beta", Display: "beta", Suffix: " "},
+	}, got.OK)
+	assert.Equal(t, []candidate{
+		{Stem: "item", Display: "item  Desc", Suffix: ""},
+	}, got.NoSpace)
+	assert.Equal(t, []candidate{
+		{Stem: "--until=ready", Display: "--until=ready  Ready state", Suffix: " "},
+	}, got.FlagVal)
+	assert.Empty(t, got.EmptyNoF, "directive :4 must suppress filename completion")
+	assert.Len(t, got.EmptyFile, 1, "directive :0 with no candidates falls back to filename completion")
+}
+
+func TestCommandsFlagValidationAndQuietRejection(t *testing.T) {
+	t.Run("quiet flag is rejected", func(t *testing.T) {
+		o := runTestCLI(t, "commands", "-q")
+		assert.Equal(t, cli.ExitUsage, o.code)
+		assert.Contains(t, o.stderr, "--quiet")
+	})
+
+	t.Run("negative depth is rejected", func(t *testing.T) {
+		o := runTestCLI(t, "commands", "--depth", "-1")
+		assert.Equal(t, cli.ExitUsage, o.code)
+		assert.Contains(t, o.stderr, "--depth must be >= 0")
+	})
+
+	t.Run("compact json omits descriptions and examples", func(t *testing.T) {
+		o := runTestCLI(t, "commands", "agent", "send", "--compact", "--json")
+		require.Equal(t, cli.ExitOK, o.code, o.stderr)
+		var env struct {
+			Data cli.CommandTree `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(o.stdout), &env), o.stdout)
+		require.Len(t, env.Data.Commands, 1)
+		send := env.Data.Commands[0]
+		assert.Equal(t, "agent send", send.Path)
+		assert.Empty(t, send.Examples)
+		for _, f := range send.Flags {
+			assert.True(t, f.Required, "compact mode omits optional flags, got %q", f.Name)
+		}
+	})
 }
 
 func TestCompletionListsGuideTopicIDsAndTitles(t *testing.T) {
@@ -542,7 +719,7 @@ func TestRootCommandTree_Snapshot(t *testing.T) {
 		"notify", "notification", "file", "git", "worktree", "tile", "window",
 		"layout", "worker", "tunnel", "whoami", "auth", "context", "settings",
 		"doctor", "up", "down", "daemon", "admin", "recover", "rpc", "guide",
-		"version", "commands", "completion",
+		"skill", "version", "commands", "completion",
 	} {
 		assert.True(t, topLevel[wantTop], "expected top-level command %q in binary tree", wantTop)
 	}
@@ -661,11 +838,13 @@ var controlReferenceGroups = []controlReferenceGroup{
 	},
 }
 
-func renderControlReferenceIndex(globalFlags []cli.FlagInfo, hasPartialGlobal bool) (string, error) {
+const controlSharedFlagsIntro = "Every control command takes these output flags, and every online command takes `--hub` (offline commands such as `guide`, `context show`, and `context clear` do not contact a Hub). Commands marked as not supporting `-q` / `--quiet` reject `--quiet` with exit code 2."
+
+func renderControlReferenceIndex(globalFlags []cli.FlagInfo) (string, error) {
 	var out bytes.Buffer
 	out.WriteString(`---
 title: "Control Command Reference"
-description: "Every leapmux control command with its arguments, flags, and examples, generated from the command tree of the binary."
+description: "Every control command of leapmux with its arguments, flags, and examples, generated from the command tree of the binary."
 type: docs
 weight: 2
 sidebar:
@@ -691,7 +870,7 @@ sidebar:
 | Rotate an OAuth/OIDC provider client secret | ` + "`leapmux admin idp rotate-secret <idp> --client-secret <secret>`" + ` |
 
 `)
-	if err := cli.WriteSharedFlags(&out, globalFlags, hasPartialGlobal); err != nil {
+	if err := cli.WriteSharedFlags(&out, globalFlags, controlSharedFlagsIntro); err != nil {
 		return "", err
 	}
 	out.WriteString("## Command groups\n\n{{< cards >}}\n")
@@ -735,7 +914,8 @@ func TestControlReference_IsCurrent(t *testing.T) {
 		"completion": true,
 		"help":       true,
 	}
-	tree := cli.Describe(newRootCommand(testCLIRunners(t)))
+	root := newRootCommand(testCLIRunners(t))
+	tree := cli.Describe(root)
 
 	// Verify every non-excluded top-level command in the binary belongs to
 	// exactly one group in controlReferenceGroups.
@@ -764,13 +944,13 @@ func TestControlReference_IsCurrent(t *testing.T) {
 		require.Contains(t, assigned, top, "top-level command %q is not assigned to any group in controlReferenceGroups", top)
 	}
 
-	globalFlags, hasPartialGlobal := cli.SharedGlobalFlags(tree, exclude)
+	globalFlags := cli.SharedGlobalFlags(root, exclude)
 
 	type generatedFile struct {
 		name    string
 		content string
 	}
-	indexContent, err := renderControlReferenceIndex(globalFlags, hasPartialGlobal)
+	indexContent, err := renderControlReferenceIndex(globalFlags)
 	require.NoError(t, err)
 	files := []generatedFile{{name: "_index.md", content: indexContent}}
 	expectedNames := map[string]bool{"_index.md": true}
@@ -783,13 +963,43 @@ func TestControlReference_IsCurrent(t *testing.T) {
 	}
 
 	// The pages are published, so a value that a flag reads from this machine
-	// must never reach any of them.
-	localValues := []string{os.Getenv("USER"), os.Getenv("USERNAME"), hostname(t)}
+	// must never reach any of them. Check concrete home paths and path-scoped
+	// usernames/hostnames so common words such as "admin", "user", "worker",
+	// "hub", "git", "dev", or "root" do not trigger false positives.
+	var localMarkers []string
+	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
+		localMarkers = append(localMarkers, home)
+		if slash := filepath.ToSlash(home); slash != home {
+			localMarkers = append(localMarkers, slash)
+		}
+		if base := filepath.Base(home); len(base) >= 2 {
+			localMarkers = append(localMarkers,
+				"/Users/"+base,
+				"/home/"+base,
+				`C:\Users\`+base,
+				"C:/Users/"+base,
+			)
+		}
+	}
+	for _, u := range []string{os.Getenv("USER"), os.Getenv("USERNAME")} {
+		if len(u) >= 2 {
+			localMarkers = append(localMarkers,
+				"/Users/"+u,
+				"/home/"+u,
+				`C:\Users\`+u,
+				"C:/Users/"+u,
+			)
+		}
+	}
+	if host := hostname(t); len(host) >= 3 {
+		localMarkers = append(localMarkers, "://"+host+"/", "://"+host+":", "@"+host)
+		if strings.ContainsAny(host, ".-0123456789") {
+			localMarkers = append(localMarkers, host)
+		}
+	}
 	for _, f := range files {
-		for _, local := range localValues {
-			if len(local) >= 3 {
-				require.NotContains(t, f.content, local, "generated page %s holds a value of this machine", f.name)
-			}
+		for _, local := range localMarkers {
+			require.NotContains(t, f.content, local, "generated page %s holds a value of this machine", f.name)
 		}
 	}
 

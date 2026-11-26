@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
@@ -52,11 +54,12 @@ type whoamiResult struct {
 }
 
 func runWhoami(inv *cli.Invocation) (any, error) {
-	c, err := newClient(inv)
+	p, err := newClient(inv)
 	if err != nil {
 		return nil, err
 	}
-	if c.IsWorkerIPC() {
+	switch c := p.(type) {
+	case *control.WorkerIPCClient:
 		ipc, err := c.ControlIPCService()
 		if err != nil {
 			return nil, err
@@ -65,7 +68,7 @@ func runWhoami(inv *cli.Invocation) (any, error) {
 		defer cancel()
 		resp, err := ipc.Whoami(ctx, &leapmuxv1.WhoamiRequest{})
 		if err != nil {
-			return nil, (workerCall{c: c}).withVersion(ctx, "", err)
+			return nil, (workerCall{ipc: c}).withVersion(ctx, "", err)
 		}
 		out := whoamiResult{
 			HubURL:   resp.GetHubUrl(),
@@ -136,35 +139,37 @@ func runWhoami(inv *cli.Invocation) (any, error) {
 			}
 		}
 		return out, nil
+	case *control.HubClient:
+		/*
+			The hub check, for the same reason `auth status` runs one: printing the
+			client's cached identity answers what the credential FILE says, and a
+			revoked credential's file keeps its username until something asks the
+			hub. hubCheckSession (shared with `auth status`) settles it -- confirmed
+			answers carry the hub's own username and admin flag; a refusal is an
+			honest not-logged-in; an unreachable or account:read-less credential
+			falls back to the cached identity with a warning that states what was
+			not verified.
+		*/
+		report, warning, outcome, err := hubCheckSession(c)
+		switch outcome {
+		case hubCheckRefused, hubCheckFailed:
+			return nil, err
+		case hubCheckLocalFallback:
+			return whoamiResult{HubURL: c.HubURL, UserID: c.UserID, Username: c.Username, Warning: warning}, nil
+		case hubCheckConfirmed:
+			// The hub's own answer prints below.
+		}
+		user := report.GetUser()
+		isAdmin := user.GetIsAdmin()
+		return whoamiResult{
+			HubURL:             c.HubURL,
+			UserID:             user.GetId(),
+			Username:           user.GetUsername(),
+			DisplayName:        user.GetDisplayName(),
+			IsAdmin:            &isAdmin,
+			ElevationExpiresAt: formatTime(report.GetElevationExpiresAt()),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported control peer %T", p)
 	}
-
-	/*
-		The hub check, for the same reason `auth status` runs one: printing the
-		client's cached identity answers what the credential FILE says, and a
-		revoked credential's file keeps its username until something asks the
-		hub. hubCheckSession (shared with `auth status`) settles it -- confirmed
-		answers carry the hub's own username and admin flag; a refusal is an
-		honest not-logged-in; an unreachable or account:read-less credential
-		falls back to the cached identity with a warning that states what was
-		not verified.
-	*/
-	report, warning, outcome, err := hubCheckSession(c)
-	switch outcome {
-	case hubCheckRefused, hubCheckFailed:
-		return nil, err
-	case hubCheckLocalFallback:
-		return whoamiResult{HubURL: c.HubURL, UserID: c.UserID, Username: c.Username, Warning: warning}, nil
-	case hubCheckConfirmed:
-		// The hub's own answer prints below.
-	}
-	user := report.GetUser()
-	isAdmin := user.GetIsAdmin()
-	return whoamiResult{
-		HubURL:             c.HubURL,
-		UserID:             user.GetId(),
-		Username:           user.GetUsername(),
-		DisplayName:        user.GetDisplayName(),
-		IsAdmin:            &isAdmin,
-		ElevationExpiresAt: formatTime(report.GetElevationExpiresAt()),
-	}, nil
 }

@@ -19,7 +19,7 @@ import (
 // adminCompletionClient builds a short-lived admin client for shell completion.
 // Admin commands never run inside a LeapMux tab, so completion degrades cleanly
 // to no candidates when LEAPMUX_CONTROL_SOCK is set or no Hub is configured.
-func adminCompletionClient(cmd *cobra.Command) (*control.Client, context.Context, context.CancelFunc, bool) {
+func adminCompletionClient(cmd *cobra.Command) (*control.HubClient, context.Context, context.CancelFunc, bool) {
 	if os.Getenv(controlenv.SocketVariable) != "" || blankTargetFlag(cmd, "hub") {
 		return nil, nil, nil, false
 	}
@@ -28,7 +28,7 @@ func adminCompletionClient(cmd *cobra.Command) (*control.Client, context.Context
 		return nil, nil, nil, false
 	}
 	c, err := control.NewClientOrAnonymous(hub)
-	if err != nil || c.IsWorkerIPC() {
+	if err != nil {
 		return nil, nil, nil, false
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), completionTimeout)

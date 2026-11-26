@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -13,10 +14,21 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// abbreviationNote is the last line of every group's help.
-const abbreviationNote = "Any command name can be shortened as far as it stays unambiguous. A later\n" +
-	"release can make an ad-hoc prefix ambiguous, so scripts use full names or\n" +
-	"documented aliases (such as ag, term, ws, ls, rm, mv)."
+// errorPrinterOpts holds the output format preferences scanned from the raw
+// command line so failures before Cobra finishes parsing still print in the
+// format that the caller requested.
+type errorPrinterOpts struct {
+	format Format
+	color  ColorMode
+	quiet  bool
+}
+
+func (o errorPrinterOpts) resolvedFormat() Format {
+	if o.format == FormatText && o.quiet {
+		return FormatQuiet
+	}
+	return o.format
+}
 
 // Execute runs root with args and returns the exit status of the process.
 //
@@ -24,12 +36,6 @@ const abbreviationNote = "Any command name can be shortened as far as it stays u
 // so the rule for a short form is the same at every level. Every failure,
 // from a flag that does not parse to a refusal of the hub, reaches the
 // caller as one error, and Execute prints it once.
-type errorPrinterOpts struct {
-	format Format
-	color  ColorMode
-	quiet  bool
-}
-
 func Execute(ctx context.Context, root *cobra.Command, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	opts, err := run(ctx, root, args, stdin, stdout, stderr)
 	if err == nil {
@@ -42,9 +48,8 @@ func Execute(ctx context.Context, root *cobra.Command, args []string, stdin io.R
 	printer := &Printer{
 		Out:    stdout,
 		Err:    stderr,
-		Format: opts.format,
+		Format: opts.resolvedFormat(),
 		Color:  opts.color,
-		Quiet:  opts.quiet,
 	}
 	e := FromError(err)
 	printer.Failure(e)
@@ -66,9 +71,87 @@ func run(ctx context.Context, root *cobra.Command, args []string, stdin io.Reade
 	}
 	root.SetArgs(expanded)
 	root.SetIn(stdin)
-	root.SetOut(stdout)
 	root.SetErr(stderr)
+
+	if disallowed := disallowedFlagsForCompletion(root, expanded); len(disallowed) > 0 {
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		execErr := root.ExecuteContext(ctx)
+		filtered := filterCompletionOutput(buf.Bytes(), disallowed)
+		if len(filtered) > 0 {
+			if _, werr := stdout.Write(filtered); werr != nil && execErr == nil {
+				return opts, werr
+			}
+		}
+		return opts, execErr
+	}
+
+	root.SetOut(stdout)
 	return opts, root.ExecuteContext(ctx)
+}
+
+// disallowedFlagsForCompletion returns the flag completion tokens (--name and
+// -s) that must be omitted when expanded is a Cobra shell completion request
+// targeting a command with disallowed inherited flags.
+func disallowedFlagsForCompletion(root *cobra.Command, expanded []string) map[string]bool {
+	if len(expanded) < 2 || !slices.Contains(shellCompletionRequests, expanded[0]) {
+		return nil
+	}
+	trimmed := expanded[1 : len(expanded)-1]
+	if slices.Contains(trimmed, "--") {
+		return nil
+	}
+	target, _, err := root.Find(trimmed)
+	if err != nil || target == nil {
+		return nil
+	}
+	var disallowed map[string]bool
+	target.InheritedFlags().VisitAll(func(f *pflag.Flag) {
+		if !IsInheritedFlagDisallowed(target, f.Name) {
+			return
+		}
+		if disallowed == nil {
+			disallowed = map[string]bool{}
+		}
+		disallowed["--"+f.Name] = true
+		if f.Shorthand != "" && target.LocalFlags().ShorthandLookup(f.Shorthand) == nil {
+			disallowed["-"+f.Shorthand] = true
+		}
+	})
+	return disallowed
+}
+
+// filterCompletionOutput removes lines whose completion candidate (before any
+// tab description) matches disallowed, preserving the final ":<directive>" line.
+func filterCompletionOutput(raw []byte, disallowed map[string]bool) []byte {
+	if len(raw) == 0 || len(disallowed) == 0 {
+		return raw
+	}
+	lines := strings.Split(string(raw), "\n")
+	hasTrailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
+	if hasTrailingNewline {
+		lines = lines[:len(lines)-1]
+	}
+	directiveIdx := -1
+	if len(lines) > 0 && strings.HasPrefix(lines[len(lines)-1], ":") {
+		directiveIdx = len(lines) - 1
+	}
+	var out strings.Builder
+	out.Grow(len(raw))
+	for i, line := range lines {
+		if i != directiveIdx {
+			candidate, _, _ := strings.Cut(line, "\t")
+			candidate = strings.TrimSuffix(candidate, "=")
+			if disallowed[candidate] {
+				continue
+			}
+		}
+		out.WriteString(line)
+		if i < len(lines)-1 || hasTrailingNewline {
+			out.WriteByte('\n')
+		}
+	}
+	return []byte(out.String())
 }
 
 // prepare applies the settings that every command of the tree shares. It is
@@ -105,6 +188,26 @@ func prepare(root *cobra.Command) {
 		if cmd.Name() == "help" {
 			cmd.Short = "Print the help of a command"
 			cmd.Long = "Print the help of a command, as its --help flag does."
+			cmd.Run = nil
+			cmd.RunE = func(_ *cobra.Command, args []string) error {
+				if len(args) == 0 {
+					return root.Help()
+				}
+				cur := root
+				for _, token := range args {
+					if !cur.HasSubCommands() {
+						return Usagef("unknown help topic %q for %q", token, cur.CommandPath()).
+							WithHint(`run "%s --help" for usage`, cur.CommandPath())
+					}
+					next, err := matchSubcommand(cur, token)
+					if err != nil {
+						return err
+					}
+					cur = next
+				}
+				cur.InitDefaultHelpFlag()
+				return cur.Help()
+			}
 		}
 	}
 	root.InitDefaultVersionFlag()
@@ -123,6 +226,9 @@ func prepare(root *cobra.Command) {
 			// A group run alone prints its help. It is not a failure: the
 			// caller asked what the group holds.
 			cmd.RunE = func(cmd *cobra.Command, args []string) error {
+				if err := validateAllowedFlags(cmd); err != nil {
+					return err
+				}
 				if len(args) > 0 {
 					return unknownCommand(cmd, args[0])
 				}
@@ -145,6 +251,13 @@ func walk(cmd *cobra.Command, fn func(*cobra.Command)) {
 // expanded.
 var shellCompletionRequests = []string{cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd}
 
+func completionScanRange(args []string) (start, end int) {
+	if len(args) > 0 && slices.Contains(shellCompletionRequests, args[0]) {
+		return 1, len(args) - 1
+	}
+	return 0, len(args)
+}
+
 // inspectCommandLine expands abbreviations and finds the requested error
 // format even when a command name or flag fails to parse.
 //
@@ -156,12 +269,13 @@ var shellCompletionRequests = []string{cobra.ShellCompRequestCmd, cobra.ShellCom
 // name ends path expansion, the scan still reads flags up to "--".
 func inspectCommandLine(root *cobra.Command, args []string) (expanded []string, opts errorPrinterOpts, pathError error) {
 	out := slices.Clone(args)
-	start, end := 0, len(out)
-	if len(out) > 0 && slices.Contains(shellCompletionRequests, out[0]) {
-		start, end = 1, len(out)-1
-	}
+	start, end := completionScanRange(out)
 	root.InitDefaultHelpCmd()
 	cur := root
+	// flagsCur is the command whose flags Cobra parses against: cur normally,
+	// or the help command after top-level "help".
+	flagsCur := root
+	inHelp := false
 	expandPath := true
 	for i := start; i < end; i++ {
 		a := out[i]
@@ -169,7 +283,7 @@ func inspectCommandLine(root *cobra.Command, args []string) (expanded []string, 
 			break
 		}
 		if strings.HasPrefix(a, "-") && a != "-" {
-			consumesNext, known := scanFlag(cur, a)
+			consumesNext, known := scanFlag(flagsCur, a)
 			if !known {
 				// Let Cobra report the unknown flag and leave the rest of the
 				// path alone. Later output flags still control error formatting.
@@ -179,7 +293,7 @@ func inspectCommandLine(root *cobra.Command, args []string) (expanded []string, 
 			if consumesNext && i+1 < end {
 				nextVal = out[i+1]
 			}
-			applyErrorPrinterFlag(&opts, a, nextVal, consumesNext)
+			applyErrorPrinterFlag(flagsCur, &opts, a, nextVal, consumesNext)
 			if consumesNext {
 				i++
 			}
@@ -195,12 +309,22 @@ func inspectCommandLine(root *cobra.Command, args []string) (expanded []string, 
 			continue
 		}
 		out[i] = next.Name()
+		if !inHelp && cur == root && next.Name() == "help" {
+			// "help <command>..." resolves <command>... from root, while flags
+			// on the command line still belong to the help command.
+			inHelp = true
+			flagsCur = next
+			continue
+		}
 		cur = next
+		if !inHelp {
+			flagsCur = next
+		}
 	}
 	return out, opts, pathError
 }
 
-func applyErrorPrinterFlag(opts *errorPrinterOpts, token, nextVal string, consumesNext bool) {
+func applyErrorPrinterFlag(cmd *cobra.Command, opts *errorPrinterOpts, token, nextVal string, consumesNext bool) {
 	switch {
 	case token == "--json":
 		opts.format = FormatJSON
@@ -228,19 +352,48 @@ func applyErrorPrinterFlag(opts *errorPrinterOpts, token, nextVal string, consum
 		if mode, err := ParseColorMode(strings.TrimPrefix(token, "--color=")); err == nil {
 			opts.color = mode
 		}
-	case token == "--quiet" || token == "-q":
+	case token == "--quiet":
 		opts.quiet = true
 	case strings.HasPrefix(token, "--quiet="):
 		if q, err := strconv.ParseBool(strings.TrimPrefix(token, "--quiet=")); err == nil {
 			opts.quiet = q
+		}
+	case strings.HasPrefix(token, "-") && !strings.HasPrefix(token, "--"):
+		applyShortErrorPrinterFlags(cmd, opts, strings.TrimPrefix(token, "-"))
+	}
+}
+
+func applyShortErrorPrinterFlags(cmd *cobra.Command, opts *errorPrinterOpts, cluster string) {
+	for i, r := range cluster {
+		if r == '=' {
+			return
+		}
+		f := lookupShorthand(cmd, string(r))
+		if f == nil {
+			return
+		}
+		if r == 'q' && f.Name == "quiet" {
+			rest := cluster[i+utf8.RuneLen(r):]
+			if val, ok := strings.CutPrefix(rest, "="); ok {
+				if q, err := strconv.ParseBool(val); err == nil {
+					opts.quiet = q
+				}
+				return
+			}
+			opts.quiet = true
+			continue
+		}
+		if f.NoOptDefVal == "" {
+			// The rest of the cluster is this flag's value, not more short flags.
+			return
 		}
 	}
 }
 
 // TopLevelCommand returns the child of root that args act on. It resolves a
 // name as inspectCommandLine does, so a unique prefix counts. It looks through
-// the help command and through a shell completion request: "help control tab"
-// and a completion of "control tab" act on control, as "control tab" does.
+// the help command and through a shell completion request: "help tab list"
+// and a completion of "tab list" act on tab, as "tab list" does.
 //
 // It returns nil when args reach no child of root:
 //
@@ -252,10 +405,7 @@ func applyErrorPrinterFlag(opts *errorPrinterOpts, token, nextVal string, consum
 // It reads nothing after the first name, so an argument or a flag that only
 // another version of a command knows cannot change the answer.
 func TopLevelCommand(root *cobra.Command, args []string) *cobra.Command {
-	start, end := 0, len(args)
-	if len(args) > 0 && slices.Contains(shellCompletionRequests, args[0]) {
-		start, end = 1, len(args)-1
-	}
+	start, end := completionScanRange(args)
 	root.InitDefaultHelpCmd()
 	// flagsOf is the command whose flags the next flag token belongs to: root,
 	// or the help command after "help".
@@ -308,6 +458,9 @@ func scanFlag(cmd *cobra.Command, a string) (consumesNext, known bool) {
 	cluster := strings.TrimPrefix(a, "-")
 	for i, r := range cluster {
 		if r == '=' {
+			if i == 0 {
+				return false, false
+			}
 			return false, true
 		}
 		f := lookupShorthand(cmd, string(r))
@@ -323,32 +476,31 @@ func scanFlag(cmd *cobra.Command, a string) (consumesNext, known bool) {
 	return false, true
 }
 
-func lookupFlag(cmd *cobra.Command, name string) *pflag.Flag {
-	if f := cmd.Flags().Lookup(name); f != nil {
+func lookupInChain(cmd *cobra.Command, lookup func(*pflag.FlagSet) *pflag.Flag) *pflag.Flag {
+	if f := lookup(cmd.Flags()); f != nil {
 		return f
 	}
 	for c := cmd; c != nil; c = c.Parent() {
-		if f := c.PersistentFlags().Lookup(name); f != nil {
+		if f := lookup(c.PersistentFlags()); f != nil {
 			return f
 		}
 	}
 	return nil
 }
 
+func lookupFlag(cmd *cobra.Command, name string) *pflag.Flag {
+	return lookupInChain(cmd, func(fs *pflag.FlagSet) *pflag.Flag { return fs.Lookup(name) })
+}
+
 func lookupShorthand(cmd *cobra.Command, short string) *pflag.Flag {
-	if f := cmd.Flags().ShorthandLookup(short); f != nil {
-		return f
-	}
-	for c := cmd; c != nil; c = c.Parent() {
-		if f := c.PersistentFlags().ShorthandLookup(short); f != nil {
-			return f
-		}
-	}
-	return nil
+	return lookupInChain(cmd, func(fs *pflag.FlagSet) *pflag.Flag { return fs.ShorthandLookup(short) })
 }
 
 // matchSubcommand resolves token against the subcommands of cmd.
 func matchSubcommand(cmd *cobra.Command, token string) (*cobra.Command, error) {
+	if token == "" {
+		return nil, unknownCommand(cmd, token)
+	}
 	for _, sub := range cmd.Commands() {
 		if sub.Name() == token || sub.HasAlias(token) {
 			return sub, nil
@@ -385,7 +537,7 @@ func unknownCommand(cmd *cobra.Command, token string) error {
 	var suggestions []string
 	for _, name := range raw {
 		sub := findSubcommandByName(cmd, name)
-		if isDestructiveSuggestion(sub, name) && levenshteinDistance(token, name) > destructiveIntentThreshold {
+		if isDestructiveSuggestion(sub) && levenshteinDistance(token, name) > destructiveIntentThreshold {
 			continue
 		}
 		suggestions = append(suggestions, name)
@@ -405,15 +557,8 @@ func findSubcommandByName(cmd *cobra.Command, name string) *cobra.Command {
 	return nil
 }
 
-func isDestructiveSuggestion(sub *cobra.Command, name string) bool {
-	if sub != nil && IsDestructive(sub) {
-		return true
-	}
-	switch name {
-	case "delete", "close", "deregister", "revoke", "remove", "reset", "purge-expired", "clear":
-		return true
-	}
-	return false
+func isDestructiveSuggestion(sub *cobra.Command) bool {
+	return sub != nil && IsDestructive(sub)
 }
 
 // levenshteinDistance computes the rune edit distance between a and b.
@@ -468,7 +613,7 @@ Next:
 {{.}}{{end}}{{if .HasAvailableSubCommands}}
 
 Run "{{.CommandPath}} <command> --help" for the help of a command.
-` + abbreviationNote + `{{end}}{{with index .Annotations "` + annotationFooter + `"}}
+{{abbreviationNoteOf .}}{{end}}{{with footerOf .}}
 
 {{.}}{{end}}
 `

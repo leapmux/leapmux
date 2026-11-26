@@ -89,7 +89,7 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 //
 // The error of the lookup is never emitted as it is: this function decides how
 // to report it, so the command prints one envelope.
-func maybePreflightWorker(ctx context.Context, c *control.Client, workerID string) error {
+func maybePreflightWorker(ctx context.Context, c control.Peer, workerID string) error {
 	if workerID == "" {
 		return nil
 	}

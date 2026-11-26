@@ -57,6 +57,10 @@ type Sequencer[I, C, R any] struct {
 	hooks   Hooks[I, C, R]
 	inputs  chan I
 	results chan Result[R]
+	// waitCtx ends when Wait begins, canceling every in-flight read and
+	// unblocking any result delivery even if the caller's context stays live.
+	waitCtx context.Context
+	waitEnd context.CancelFunc
 	// reads counts the goroutines of the reads.
 	reads sync.WaitGroup
 	// epoch identifies the reads whose results still apply.
@@ -74,10 +78,13 @@ func New[I, C, R any](hooks Hooks[I, C, R]) *Sequencer[I, C, R] {
 	if hooks.Handle == nil || hooks.NextRead == nil || hooks.Apply == nil || hooks.Send == nil {
 		panic("readseq: New needs every hook")
 	}
+	waitCtx, waitEnd := context.WithCancel(context.Background())
 	return &Sequencer[I, C, R]{
 		hooks:   hooks,
 		inputs:  make(chan I, inputBuffer),
 		results: make(chan Result[R], 1),
+		waitCtx: waitCtx,
+		waitEnd: waitEnd,
 	}
 }
 
@@ -131,11 +138,15 @@ func (s *Sequencer[I, C, R]) begin(ctx context.Context) bool {
 	}
 	s.reading = true
 	epoch := s.epoch
+	readCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.waitCtx, cancel)
 	s.reads.Go(func() {
-		value := read(ctx)
+		defer stop()
+		defer cancel()
+		value := read(readCtx)
 		select {
 		case s.results <- Result[R]{epoch: epoch, value: value}:
-		case <-ctx.Done():
+		case <-readCtx.Done():
 		}
 	})
 	return true
@@ -155,14 +166,16 @@ func (s *Sequencer[I, C, R]) Complete(ctx context.Context, result Result[R]) boo
 	if result.epoch != s.epoch {
 		return true
 	}
-	for drained := false; !drained; {
+	// Drain only the inputs already queued at entry so continuous Push traffic
+	// cannot starve Apply or grow held changes without limit.
+	for n := len(s.inputs); n > 0; n-- {
 		select {
 		case in := <-s.inputs:
 			if !s.hooks.Handle(ctx, in) {
 				return false
 			}
 		default:
-			drained = true
+			n = 0
 		}
 	}
 	if result.epoch != s.epoch {
@@ -203,7 +216,10 @@ func (s *Sequencer[I, C, R]) flush(ctx context.Context) bool {
 	return true
 }
 
-// Wait waits until the goroutine of every read returned. A goroutine that
-// cannot hand its result over waits until the context of the read ends. The
-// loop defers Wait, so the loop ends after every read that it started.
-func (s *Sequencer[I, C, R]) Wait() { s.reads.Wait() }
+// Wait cancels any in-flight reads and waits until every read goroutine
+// returns. The loop defers Wait, so the loop ends after every read that it
+// started without deadlocking when an unread result fills the results buffer.
+func (s *Sequencer[I, C, R]) Wait() {
+	s.waitEnd()
+	s.reads.Wait()
+}

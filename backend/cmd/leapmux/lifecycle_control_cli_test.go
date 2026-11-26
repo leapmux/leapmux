@@ -17,7 +17,7 @@ import (
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
-// The `leapmux` binary serves `leapmux control`, so a solo or dev run states
+// The `leapmux` binary serves control commands, so a solo or dev run states
 // its own executable for the Worker that it starts. That Worker links it for
 // the processes that it spawns.
 func TestCombinedRunStatesItsOwnExecutableAsTheControlCLI(t *testing.T) {

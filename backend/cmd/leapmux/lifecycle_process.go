@@ -56,7 +56,7 @@ func runHubForeground(ctx context.Context, runtime *lifecycle.Runtime, cfg *hubc
 
 // runWorkerForeground runs the worker under the started runtime. The
 // saved registration is the only credential source; registration lives
-// in `leapmux worker register`.
+// in `leapmux daemon worker register`.
 func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, cfg *workerconfig.Config) (result error) {
 	if err := cfg.ValidateRuntime(); err != nil {
 		return fmt.Errorf("validate runtime configuration: %w", err)
@@ -143,7 +143,7 @@ func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, cfg *w
 	return reregistrationAdvice(err)
 }
 
-// controlCLIExecutable returns this binary, which serves `leapmux control`, so
+// controlCLIExecutable returns this binary, which serves control commands, so
 // the Worker that it runs links it for the processes that the Worker spawns
 // (see worker.RunConfig.ControlCLI). Under `go run`, the binary is the build
 // that `go run` made, which is the code that the Worker runs, and the Worker

@@ -165,18 +165,23 @@ func (c *Cursor[Entry]) Snapshot(restrict map[string]struct{}) []Entry {
 	return out
 }
 
+type retractionFence struct {
+	seqs map[int64]struct{}
+	min  int64
+}
+
 // AgentCursor records the highest delivered sequence and fences ahead-of-cursor
 // retractions. An older replay page can have read those rows before deletion.
 type AgentCursor struct {
 	*Cursor[*leapmuxv1.WatchAgentEntry]
-	retracted map[string]map[int64]struct{}
+	retracted map[string]*retractionFence
 }
 
 // NewAgentCursor returns an empty cursor seeded with no agents.
 func NewAgentCursor() *AgentCursor {
 	return &AgentCursor{
 		Cursor:    NewCursor(AgentWatchEntry),
-		retracted: make(map[string]map[int64]struct{}),
+		retracted: make(map[string]*retractionFence),
 	}
 }
 
@@ -192,11 +197,64 @@ func (c *AgentCursor) recordRetraction(id string, sequences []int64) {
 			continue
 		}
 		if fence == nil {
-			fence = make(map[int64]struct{})
+			fence = &retractionFence{
+				seqs: make(map[int64]struct{}),
+				min:  sequence,
+			}
 			c.retracted[id] = fence
 		}
-		fence[sequence] = struct{}{}
+		fence.seqs[sequence] = struct{}{}
+		if sequence < fence.min {
+			fence.min = sequence
+		}
 	}
+}
+
+func (c *AgentCursor) pruneRetractionsLocked(id string, fence *retractionFence, value int64) {
+	var nextMin int64
+	hasNextMin := false
+	for sequence := range fence.seqs {
+		if sequence < value {
+			delete(fence.seqs, sequence)
+			continue
+		}
+		if !hasNextMin || sequence < nextMin {
+			nextMin = sequence
+			hasNextMin = true
+		}
+	}
+	if !hasNextMin {
+		delete(c.retracted, id)
+		return
+	}
+	fence.min = nextMin
+}
+
+// Update records value for id iff it advances the counter and is not fenced by
+// a prior retraction. Returns the cursor value after the update.
+func (c *AgentCursor) Update(id string, value int64) int64 {
+	if id == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var fence *retractionFence
+	if len(c.retracted) > 0 {
+		fence = c.retracted[id]
+		if fence != nil {
+			if _, deleted := fence.seqs[value]; deleted {
+				return c.values[id]
+			}
+		}
+	}
+	cur, advanced := c.advanceLocked(id, value)
+	if !advanced {
+		return cur
+	}
+	if fence != nil && value > fence.min {
+		c.pruneRetractionsLocked(id, fence, value)
+	}
+	return value
 }
 
 // Advance admits a new message unless a retraction already removed it.
@@ -206,20 +264,20 @@ func (c *AgentCursor) Advance(id string, value int64) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	fence := c.retracted[id]
-	if _, deleted := fence[value]; deleted {
-		return false
+	var fence *retractionFence
+	if len(c.retracted) > 0 {
+		fence = c.retracted[id]
+		if fence != nil {
+			if _, deleted := fence.seqs[value]; deleted {
+				return false
+			}
+		}
 	}
 	if _, advanced := c.advanceLocked(id, value); !advanced {
 		return false
 	}
-	for sequence := range fence {
-		if sequence < value {
-			delete(fence, sequence)
-		}
-	}
-	if len(fence) == 0 {
-		delete(c.retracted, id)
+	if fence != nil && value > fence.min {
+		c.pruneRetractionsLocked(id, fence, value)
 	}
 	return true
 }

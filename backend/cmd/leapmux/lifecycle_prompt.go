@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"golang.org/x/term"
-
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -96,9 +94,24 @@ func readTrimmedLine(ctx context.Context, in io.Reader) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-// requireInteractiveInput refuses missing setup options before reading a pipe.
+// lifecycleNoPromptEnv disables interactive prompts regardless of terminal
+// detection, matching LEAPMUX_CONTROL_NO_PROMPT in internal/cli/control.
+// Presence is the whole test: any non-empty value refuses prompting.
+const lifecycleNoPromptEnv = "LEAPMUX_CONTROL_NO_PROMPT"
+
+// isInteractiveInput reports whether standard input is an interactive terminal.
+// Tests replace it to exercise interactive prompt flows without a PTY.
+var isInteractiveInput = func() bool {
+	return cli.IsTerminalFD(os.Stdin.Fd())
+}
+
+// requireInteractiveInput refuses missing setup options when interactive
+// prompting is disabled via LEAPMUX_CONTROL_NO_PROMPT or stdin is not a TTY.
 func requireInteractiveInput(missingOptions ...string) error {
-	if term.IsTerminal(int(os.Stdin.Fd())) {
+	if os.Getenv(lifecycleNoPromptEnv) != "" {
+		return cli.Usagef("%s disables interactive prompts; pass %s", lifecycleNoPromptEnv, strings.Join(missingOptions, " and "))
+	}
+	if isInteractiveInput() {
 		return nil
 	}
 	return cli.Usagef("noninteractive setup requires %s", strings.Join(missingOptions, " and "))

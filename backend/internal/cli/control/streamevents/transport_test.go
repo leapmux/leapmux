@@ -109,7 +109,7 @@ func (f *fakeChannel) Context() context.Context   { return f.ctx }
 func TestChannelTransportRegistersStreamBeforeSendingRequest(t *testing.T) {
 	fc := &fakeChannel{
 		ctx:          context.Background(),
-		streamOnSend: &leapmuxv1.InnerStreamMessage{},
+		streamOnSend: &leapmuxv1.InnerStreamMessage{Payload: validWatchFramePayload(t)},
 	}
 	transport := NewChannelTransport(fc, nil)
 	frames := 0
@@ -137,9 +137,8 @@ func TestChannelTransport_DropsFramesAfterTeardown(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fc.cb)
 
-	// A frame BEFORE teardown is delivered (empty payload unmarshals to a default
-	// WatchEventsResponse).
-	fc.cb(&leapmuxv1.InnerStreamMessage{})
+	payload := validWatchFramePayload(t)
+	fc.cb(&leapmuxv1.InnerStreamMessage{Payload: payload})
 	require.Equal(t, 1, frames)
 
 	// Tear down and wait for Done() (the goroutine sets `closed` before closing done).
@@ -147,7 +146,7 @@ func TestChannelTransport_DropsFramesAfterTeardown(t *testing.T) {
 	<-handle.Done()
 
 	// A late frame the demux still had in flight must be dropped, not delivered.
-	fc.cb(&leapmuxv1.InnerStreamMessage{})
+	fc.cb(&leapmuxv1.InnerStreamMessage{Payload: payload})
 	require.Equal(t, 1, frames, "onFrame must not run after Done()")
 }
 
@@ -173,7 +172,7 @@ func TestChannelTransport_TeardownNotBlockedByInFlightFrame(t *testing.T) {
 
 	// Deliver a frame on a separate goroutine; its onFrame blocks inside the cb,
 	// standing in for the channel demux goroutine stuck writing to a paused pipe.
-	go fc.cb(&leapmuxv1.InnerStreamMessage{})
+	go fc.cb(&leapmuxv1.InnerStreamMessage{Payload: validWatchFramePayload(t)})
 	<-entered // the cb is now inside onFrame
 
 	// Teardown must finish even though a frame is wedged in onFrame.
@@ -371,7 +370,7 @@ func TestChannelTransport_LogsMalformedFrame(t *testing.T) {
 	require.Equal(t, slog.LevelWarn, h.records[0].Level)
 
 	// The stream survived the bad frame: a subsequent valid frame still delivers.
-	fc.cb(&leapmuxv1.InnerStreamMessage{})
+	fc.cb(&leapmuxv1.InnerStreamMessage{Payload: validWatchFramePayload(t)})
 	require.Equal(t, 1, frames, "a valid frame after a malformed one must still deliver")
 }
 
@@ -841,15 +840,6 @@ func TestTwoTransportsOnOneRouterKeepTheirStreams(t *testing.T) {
 	}
 }
 
-// endErrOf returns what the handle reports as the reason that its stream
-// ended. Both transports of this package report one.
-func endErrOf(t *testing.T, handle Handle) error {
-	t.Helper()
-	reporter, ok := handle.(endReporter)
-	require.True(t, ok, "a handle of this package reports why its stream ended")
-	return reporter.EndErr()
-}
-
 // The first error that ends a stream is its reason. A later failure, such as
 // the close of a channel after the Worker refused the watch, does not replace
 // it, and a nil error records nothing.
@@ -890,11 +880,11 @@ func TestChannelTransport_EndErrReportsWhyTheStreamEnded(t *testing.T) {
 	t.Run("an error frame", func(t *testing.T) {
 		fc := &fakeChannel{ctx: context.Background()}
 		handle := open(t, fc)
-		assert.NoError(t, endErrOf(t, handle), "a running stream has no end reason")
+		assert.NoError(t, handle.EndErr(), "a running stream has no end reason")
 		fc.cb(&leapmuxv1.InnerStreamMessage{Error: &leapmuxv1.RpcError{Code: 7, Message: "only the owner can watch"}})
 		waitDone(t, handle)
 		var refusal *channelwire.RPCError
-		require.ErrorAs(t, endErrOf(t, handle), &refusal)
+		require.ErrorAs(t, handle.EndErr(), &refusal)
 		assert.EqualValues(t, 7, refusal.Code)
 		assert.Equal(t, "only the owner can watch", refusal.Message)
 	})
@@ -904,7 +894,7 @@ func TestChannelTransport_EndErrReportsWhyTheStreamEnded(t *testing.T) {
 		fc.respCh <- channelwire.NewErrorResponse(14, "the worker is shutting down")
 		waitDone(t, handle)
 		var refusal *channelwire.RPCError
-		require.ErrorAs(t, endErrOf(t, handle), &refusal)
+		require.ErrorAs(t, handle.EndErr(), &refusal)
 		assert.EqualValues(t, 14, refusal.Code)
 	})
 	t.Run("a channel that closes", func(t *testing.T) {
@@ -914,7 +904,7 @@ func TestChannelTransport_EndErrReportsWhyTheStreamEnded(t *testing.T) {
 		cause := errors.New("the hub dropped the relay")
 		closeChannel(cause)
 		waitDone(t, handle)
-		err := endErrOf(t, handle)
+		err := handle.EndErr()
 		assert.ErrorIs(t, err, errChannelClosed)
 		assert.ErrorIs(t, err, cause, "the reason keeps the cause of the channel's end")
 	})
@@ -923,14 +913,14 @@ func TestChannelTransport_EndErrReportsWhyTheStreamEnded(t *testing.T) {
 		handle := open(t, fc)
 		fc.respCh <- &leapmuxv1.InnerRpcResponse{}
 		waitDone(t, handle)
-		assert.NoError(t, endErrOf(t, handle))
+		assert.NoError(t, handle.EndErr())
 	})
 	t.Run("a cancel", func(t *testing.T) {
 		fc := &fakeChannel{ctx: context.Background()}
 		handle := open(t, fc)
 		handle.Cancel()
 		waitDone(t, handle)
-		assert.NoError(t, endErrOf(t, handle), "the caller's own cancel is no failure")
+		assert.NoError(t, handle.EndErr(), "the caller's own cancel is no failure")
 	})
 }
 
@@ -944,7 +934,7 @@ func TestLocalIPCTransport_EndErrReportsWhyTheStreamEnded(t *testing.T) {
 		t.Cleanup(handle.Cancel)
 		waitDone(t, handle)
 		var refusal *channelwire.RPCError
-		require.ErrorAs(t, endErrOf(t, handle), &refusal)
+		require.ErrorAs(t, handle.EndErr(), &refusal)
 		assert.EqualValues(t, 7, refusal.Code)
 	})
 	for _, mode := range []string{"remote failure", "explicit cancellation"} {
@@ -968,12 +958,268 @@ func TestLocalIPCTransport_EndErrReportsWhyTheStreamEnded(t *testing.T) {
 			if mode == "remote failure" {
 				close(handler.finish)
 				waitDone(t, handle)
-				assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(endErrOf(t, handle)), "the reason keeps the code of the failure")
+				assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(handle.EndErr()), "the reason keeps the code of the failure")
 				return
 			}
 			handle.Cancel()
 			waitDone(t, handle)
-			assert.NoError(t, endErrOf(t, handle), "the caller's own cancel is no failure")
+			assert.NoError(t, handle.EndErr(), "the caller's own cancel is no failure")
 		})
 	}
+}
+
+func validWatchFramePayload(t *testing.T) []byte {
+	t.Helper()
+	payload, err := proto.Marshal(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: 1}},
+	})
+	require.NoError(t, err)
+	return payload
+}
+
+// blockingCancelChannel pauses CancelStream so a test can observe concurrent
+// Cancel/Update ordering on channelHandle.
+type blockingCancelChannel struct {
+	*fakeChannel
+	cancelStarted chan struct{}
+	cancelRelease chan struct{}
+}
+
+func (c *blockingCancelChannel) CancelStream(ctx context.Context, reqID uint64) error {
+	err := c.fakeChannel.CancelStream(ctx, reqID)
+	close(c.cancelStarted)
+	<-c.cancelRelease
+	return err
+}
+
+func TestChannelTransport_CancelIsIdempotentAndCancelsBeforeRemoteRPC(t *testing.T) {
+	fc := &blockingCancelChannel{
+		fakeChannel:   &fakeChannel{ctx: context.Background()},
+		cancelStarted: make(chan struct{}),
+		cancelRelease: make(chan struct{}),
+	}
+	handle, err := NewChannelTransport(fc, nil).OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		handle.Cancel()
+	}()
+
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-fc.cancelStarted:
+	case <-ctx.Done():
+		t.Fatal("CancelStream was not called")
+	}
+
+	// Done must already close and Update must already fail before CancelStream finishes.
+	waitDone(t, handle)
+	assert.ErrorIs(t, handle.Update(&leapmuxv1.WatchEventsRequest{}), errHandleClosed)
+	// A second Cancel must be a no-op and send no second CancelStream.
+	handle.Cancel()
+
+	close(fc.cancelRelease)
+	select {
+	case <-cancelDone:
+	case <-ctx.Done():
+		t.Fatal("Cancel did not return after CancelStream finished")
+	}
+	assert.Equal(t, []uint64{1}, fc.cancelledStreams, "double Cancel must send CancelStream once")
+}
+
+func TestChannelTransport_HandlesEndWithPayloadAndEmptyNonEndFrames(t *testing.T) {
+	payload := validWatchFramePayload(t)
+
+	t.Run("End with payload delivers frame and ends stream", func(t *testing.T) {
+		fc := &fakeChannel{ctx: context.Background()}
+		frames := 0
+		handle, err := NewChannelTransport(fc, nil).OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+			frames++
+		})
+		require.NoError(t, err)
+
+		fc.cb(&leapmuxv1.InnerStreamMessage{Payload: payload, End: true})
+		waitDone(t, handle)
+		assert.Equal(t, 1, frames, "final payload must reach onFrame before the stream ends")
+	})
+
+	t.Run("empty non-End frame is skipped without ending stream", func(t *testing.T) {
+		fc := &fakeChannel{ctx: context.Background()}
+		frames := 0
+		handle, err := NewChannelTransport(fc, nil).OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+			frames++
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { handle.Cancel(); <-handle.Done() })
+
+		fc.cb(&leapmuxv1.InnerStreamMessage{Payload: nil, End: false})
+		assert.Zero(t, frames, "an empty non-End frame must not invoke onFrame")
+		select {
+		case <-handle.Done():
+			t.Fatal("an empty non-End frame must not end the stream")
+		default:
+		}
+		fc.cb(&leapmuxv1.InnerStreamMessage{Payload: payload})
+		assert.Equal(t, 1, frames, "a subsequent non-empty frame still delivers")
+	})
+
+	t.Run("empty End frame ends stream without invoking onFrame", func(t *testing.T) {
+		fc := &fakeChannel{ctx: context.Background()}
+		frames := 0
+		handle, err := NewChannelTransport(fc, nil).OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+			frames++
+		})
+		require.NoError(t, err)
+
+		fc.cb(&leapmuxv1.InnerStreamMessage{Payload: nil, End: true})
+		waitDone(t, handle)
+		assert.Zero(t, frames)
+		assert.NoError(t, handle.EndErr())
+	})
+
+	t.Run("malformed payload with End still ends stream after logging warning", func(t *testing.T) {
+		fc := &fakeChannel{ctx: context.Background()}
+		logs := &capturingHandler{}
+		frames := 0
+		handle, err := NewChannelTransport(fc, slog.New(logs)).OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+			frames++
+		})
+		require.NoError(t, err)
+
+		fc.cb(&leapmuxv1.InnerStreamMessage{Payload: []byte{0xff, 0xff, 0xff}, End: true})
+		waitDone(t, handle)
+		assert.Zero(t, frames)
+		records := logs.snapshot()
+		require.Len(t, records, 1)
+		assert.Equal(t, slog.LevelWarn, records[0].Level)
+	})
+}
+
+func TestChannelTransport_UpdateAfterRemoteStreamEndReturnsError(t *testing.T) {
+	fc := &fakeChannel{ctx: context.Background()}
+	handle, err := NewChannelTransport(fc, nil).OpenWatchEvents(t.Context(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+
+	fc.respCh <- &leapmuxv1.InnerRpcResponse{}
+	waitDone(t, handle)
+
+	assert.ErrorIs(t, handle.Update(&leapmuxv1.WatchEventsRequest{}), errHandleClosed)
+	assert.Empty(t, fc.streamRequests)
+}
+
+type blockingUpdateIPCHandler struct {
+	leapmuxv1connect.UnimplementedControlIPCServiceHandler
+	updateStarted chan struct{}
+	updateCtxErr  chan error
+	endStream     chan struct{}
+}
+
+func (h *blockingUpdateIPCHandler) StreamInner(ctx context.Context, _ *leapmuxv1.StreamInnerRequest, stream leapmuxv1connect.ControlIPCServiceStreamInnerServerStream) error {
+	payload, err := proto.Marshal(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: 1}}})
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(&leapmuxv1.InnerStreamMessage{Payload: payload}); err != nil {
+		return err
+	}
+	select {
+	case <-h.endStream:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *blockingUpdateIPCHandler) UpdateStream(ctx context.Context, req *leapmuxv1.UpdateStreamRequest) (*leapmuxv1.UpdateStreamResponse, error) {
+	if req.GetCancel() != nil {
+		return &leapmuxv1.UpdateStreamResponse{}, nil
+	}
+	close(h.updateStarted)
+	<-ctx.Done()
+	h.updateCtxErr <- ctx.Err()
+	return nil, ctx.Err()
+}
+
+// TestLocalIPCTransport_CancelAbortsInFlightUpdate pins WRAPPERS-13:
+// localIPCHandle.Update must pass the stream's cancellable ctx to UpdateStream
+// so Cancel aborts an in-flight revision even while parentCtx stays alive.
+func TestLocalIPCTransport_CancelAbortsInFlightUpdate(t *testing.T) {
+	handler := &blockingUpdateIPCHandler{
+		updateStarted: make(chan struct{}),
+		updateCtxErr:  make(chan error, 1),
+		endStream:     make(chan struct{}),
+	}
+	client := startIPCHandler(t, handler)
+	handle, err := NewLocalIPCTransport(client, "worker", nil).OpenWatchEvents(t.Context(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+
+	updateErr := make(chan error, 1)
+	go func() {
+		updateErr <- handle.Update(&leapmuxv1.WatchEventsRequest{})
+	}()
+
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-handler.updateStarted:
+	case <-ctx.Done():
+		t.Fatal("UpdateStream did not start")
+	}
+
+	handle.Cancel()
+
+	select {
+	case err := <-updateErr:
+		require.Error(t, err, "Cancel must abort the in-flight UpdateStream")
+	case <-ctx.Done():
+		t.Fatal("UpdateStream stayed blocked after handle.Cancel")
+	}
+	select {
+	case srvErr := <-handler.updateCtxErr:
+		assert.ErrorIs(t, srvErr, context.Canceled)
+	case <-ctx.Done():
+		t.Fatal("server UpdateStream handler did not observe cancellation")
+	}
+	waitDone(t, handle)
+}
+
+func TestLocalIPCTransport_RemoteStreamEndAbortsInFlightUpdateAndRejectsLaterUpdate(t *testing.T) {
+	handler := &blockingUpdateIPCHandler{
+		updateStarted: make(chan struct{}),
+		updateCtxErr:  make(chan error, 1),
+		endStream:     make(chan struct{}),
+	}
+	client := startIPCHandler(t, handler)
+	handle, err := NewLocalIPCTransport(client, "worker", nil).OpenWatchEvents(t.Context(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+
+	updateErr := make(chan error, 1)
+	go func() {
+		updateErr <- handle.Update(&leapmuxv1.WatchEventsRequest{})
+	}()
+
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-handler.updateStarted:
+	case <-ctx.Done():
+		t.Fatal("UpdateStream did not start")
+	}
+
+	close(handler.endStream)
+
+	select {
+	case err := <-updateErr:
+		require.Error(t, err, "remote stream end must abort an in-flight UpdateStream")
+	case <-ctx.Done():
+		t.Fatal("UpdateStream stayed blocked after remote stream end")
+	}
+	select {
+	case srvErr := <-handler.updateCtxErr:
+		assert.ErrorIs(t, srvErr, context.Canceled)
+	case <-ctx.Done():
+		t.Fatal("server UpdateStream handler did not observe stream-end cancellation")
+	}
+	waitDone(t, handle)
+	assert.ErrorIs(t, handle.Update(&leapmuxv1.WatchEventsRequest{}), errHandleClosed)
 }

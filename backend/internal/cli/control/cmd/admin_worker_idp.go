@@ -86,7 +86,7 @@ func (r adminWorkerListResult) QuietLines() []string {
 	return out
 }
 
-func resolveAdminWorkerID(ctx context.Context, c *control.Client, raw string) (string, error) {
+func resolveAdminWorkerID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveAdminIDPrefix(ctx, raw, "worker", func(ctx context.Context) ([]cli.Candidate, error) {
 		workers, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminWorker, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminWorkerService().ListWorkers(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
@@ -106,7 +106,7 @@ func resolveAdminWorkerID(ctx context.Context, c *control.Client, raw string) (s
 	})
 }
 
-func resolveAdminRegKeyID(ctx context.Context, c *control.Client, raw string) (string, error) {
+func resolveAdminRegKeyID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveAdminIDPrefix(ctx, raw, "registration key", func(ctx context.Context) ([]cli.Candidate, error) {
 		keys, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminRegistrationKey, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminWorkerService().ListRegistrationKeys(ctx, &leapmuxv1.ListRegistrationKeysRequest{
@@ -126,7 +126,7 @@ func resolveAdminRegKeyID(ctx context.Context, c *control.Client, raw string) (s
 	})
 }
 
-func resolveAdminIdPID(ctx context.Context, c *control.Client, raw string) (string, error) {
+func resolveAdminIdPID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveAdminIDPrefix(ctx, raw, "sign-in provider", func(ctx context.Context) ([]cli.Candidate, error) {
 		resp, err := c.AdminIdPService().ListOAuthProviders(ctx, &leapmuxv1.ListOAuthProvidersRequest{})
 		if err != nil {
@@ -148,10 +148,10 @@ type adminWorkerRow struct {
 	RegisteredBy   string `json:"registered_by"`
 	Username       string `json:"username" table:"USERNAME"`
 	OwnerDeleted   bool   `json:"owner_deleted"`
-	Status         string `json:"status" table:"STATUS"`
+	Status         string `json:"status" table:"STATUS,state"`
 	AutoRegistered bool   `json:"auto_registered"`
 	CreatedAt      string `json:"created_at,omitempty"`
-	LastSeenAt     string `json:"last_seen_at,omitempty" table:"LAST SEEN"`
+	LastSeenAt     string `json:"last_seen_at,omitempty" table:"LAST SEEN,dim"`
 }
 
 func (r adminWorkerRow) QuietLines() []string { return []string{r.ID} }
@@ -294,8 +294,8 @@ type adminRegistrationKeyRow struct {
 	CreatedBy      string `json:"created_by"`
 	Username       string `json:"username" table:"USERNAME"`
 	CreatorDeleted bool   `json:"creator_deleted"`
-	CreatedAt      string `json:"created_at,omitempty" table:"CREATED"`
-	ExpiresAt      string `json:"expires_at,omitempty" table:"EXPIRES"`
+	CreatedAt      string `json:"created_at,omitempty" table:"CREATED,dim"`
+	ExpiresAt      string `json:"expires_at,omitempty" table:"EXPIRES,dim"`
 }
 
 func adminRegistrationKeyRowOf(k *leapmuxv1.AdminRegistrationKey) adminRegistrationKeyRow {

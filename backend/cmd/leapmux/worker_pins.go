@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/leapmux/leapmux/internal/cli"
+	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
@@ -45,7 +46,7 @@ Worker's new keys, remove its pin. The next verified connection pins the new key
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"pins": crossWorkerPinRows(pins)}, nil
+			return crossWorkerPinList{Pins: crossWorkerPinRows(pins)}, nil
 		}),
 		newPinStoreLeaf(cli.Leaf{
 			Use:   "get <worker-id>",
@@ -62,11 +63,12 @@ Worker's new keys, remove its pin. The next verified connection pins the new key
 			return pin, nil
 		}),
 		newPinStoreLeaf(cli.Leaf{
-			Use:     "remove <worker-id>",
-			Aliases: []string{"rm"},
-			Short:   "Remove the pinned keys of one sibling Worker",
-			Mutates: true,
-			Args:    map[string]string{"worker-id": pinStoreWorkerIDHelp},
+			Use:         "remove <worker-id>",
+			Aliases:     []string{"rm"},
+			Short:       "Remove the pinned keys of one sibling Worker",
+			Mutates:     true,
+			Destructive: true,
+			Args:        map[string]string{"worker-id": pinStoreWorkerIDHelp},
 			Examples: []cli.Example{
 				{Command: "leapmux daemon worker cross-worker-pins remove 0193c0de-7a1b-7c2d-8e3f-4a5b6c7d8e9f"},
 			},
@@ -78,7 +80,7 @@ Worker's new keys, remove its pin. The next verified connection pins the new key
 			if err := store.Remove(ctx, id); err != nil {
 				return nil, fmt.Errorf("remove the pin of %s: %w", id, err)
 			}
-			return map[string]any{"removed": id}, nil
+			return crossWorkerPinRemoved{Removed: id}, nil
 		}),
 	)
 	return group
@@ -99,11 +101,21 @@ func newPinStoreLeaf(leaf cli.Leaf, run func(context.Context, *cli.Invocation, *
 		flags.Register(fs)
 	}
 	leaf.Run = func(inv *cli.Invocation) (any, error) {
-		cfg, err := flags.Load(inv.Command.Flags())
-		if err != nil {
-			return nil, err
+		fs := inv.Command.Flags()
+		var dataDir string
+		if fs.Changed("data-dir") && !fs.Changed("config") {
+			if raw := fs.Lookup("data-dir").Value.String(); raw != "" {
+				dataDir = internalconfig.ExpandHome(raw)
+			}
 		}
-		store, err := crossworker.NewPinStore(cfg.DataDir)
+		if dataDir == "" {
+			cfg, err := flags.Load(fs)
+			if err != nil {
+				return nil, err
+			}
+			dataDir = cfg.DataDir
+		}
+		store, err := crossworker.NewPinStore(dataDir)
 		if err != nil {
 			return nil, fmt.Errorf("open the pin store: %w", err)
 		}
@@ -114,16 +126,40 @@ func newPinStoreLeaf(leaf cli.Leaf, run func(context.Context, *cli.Invocation, *
 	return cli.NewLeaf(leaf)
 }
 
+type crossWorkerPinList struct {
+	Pins []crossWorkerPin `json:"pins"`
+}
+
+func (l crossWorkerPinList) QuietLines() []string {
+	lines := make([]string, len(l.Pins))
+	for i, pin := range l.Pins {
+		lines[i] = pin.WorkerID
+	}
+	return lines
+}
+
+type crossWorkerPinRemoved struct {
+	Removed string `json:"removed"`
+}
+
+func (r crossWorkerPinRemoved) QuietLines() []string {
+	return []string{r.Removed}
+}
+
 // crossWorkerPin is one pinned sibling Worker, as the pin store commands
 // print it. The table of `list` leaves out the keys, which are too long for
 // a column; `get` and --json print them.
 type crossWorkerPin struct {
 	WorkerID        string    `json:"worker_id" table:"WORKER ID"`
-	FirstSeenAt     time.Time `json:"first_seen_at" table:"FIRST SEEN"`
-	LastUsedAt      time.Time `json:"last_used_at" table:"LAST USED"`
+	FirstSeenAt     time.Time `json:"first_seen_at" table:"FIRST SEEN,dim"`
+	LastUsedAt      time.Time `json:"last_used_at" table:"LAST USED,dim"`
 	X25519PublicKey string    `json:"x25519_public_key"`
 	MlkemPublicKey  string    `json:"mlkem_public_key"`
 	SlhdsaPublicKey string    `json:"slhdsa_public_key"`
+}
+
+func (p crossWorkerPin) QuietLines() []string {
+	return []string{p.WorkerID}
 }
 
 func newCrossWorkerPin(id string, entry tofupins.Entry) crossWorkerPin {

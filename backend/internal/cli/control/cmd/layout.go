@@ -403,7 +403,7 @@ type layoutTab struct {
 	ID       string `json:"id" table:"ID,short"`
 	Type     string `json:"type" table:"TYPE"`
 	Title    string `json:"title,omitempty" table:"TITLE"`
-	State    string `json:"state,omitempty" table:"STATE"`
+	State    string `json:"state,omitempty" table:"STATE,state"`
 	Position string `json:"position,omitempty"`
 }
 

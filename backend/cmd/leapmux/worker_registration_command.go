@@ -25,7 +25,7 @@ const (
 // requires a stopped worker, so it waits for no shutdown.
 const defaultDeregisterTimeout = 30 * time.Second
 
-// workerRegisterOptions holds the flags of `leapmux worker register`.
+// workerRegisterOptions holds the flags of `leapmux daemon worker register`.
 //
 // The Hub URL and the registration key are flags only, never configuration
 // keys or environment variables. A URL from a file or the environment could
@@ -46,7 +46,7 @@ type workerCredentialOptions struct {
 	timeout    time.Duration
 }
 
-// newWorkerRegisterCommand builds `leapmux worker register`.
+// newWorkerRegisterCommand builds `leapmux daemon worker register`.
 func newWorkerRegisterCommand(filesFor func(*config.Config) workerRegistrationFiles) *cobra.Command {
 	var flags *workerRegisterFlags
 	return cli.NewLeaf(cli.Leaf{
@@ -57,7 +57,8 @@ func newWorkerRegisterCommand(filesFor func(*config.Config) workerRegistrationFi
 The command saves an attempt record before it sends the first request. When
 the command fails or stops after the Hub accepted the key, run the same command
 again: it finishes that registration instead of using a second key.`,
-		Mutates: true,
+		Mutates:          true,
+		QuietUnsupported: true,
 		Examples: []cli.Example{
 			{Comment: "Register with the key from the Register worker dialog of the Hub.", Command: "leapmux daemon worker register --hub https://hub.example.com --registration-key KEY"},
 			{Comment: "Register an instance in a data directory of its own.", Command: "leapmux daemon worker register --hub unix:/run/leapmux/hub.sock --registration-key KEY --data-dir /srv/leapmux-worker"},
@@ -68,12 +69,19 @@ again: it finishes that registration instead of using a second key.`,
 			if err != nil {
 				return nil, err
 			}
-			return nil, registerWorker(inv.Context, cfg, options, filesFor(cfg))
+			res, err := registerWorker(inv.Context, inv.Printer, cfg, options, filesFor(cfg))
+			if err != nil {
+				return nil, err
+			}
+			if inv.Printer != nil && inv.Printer.Format != cli.FormatText {
+				return res, nil
+			}
+			return nil, nil
 		},
 	})
 }
 
-// newWorkerDeregisterCommand builds `leapmux worker deregister`.
+// newWorkerDeregisterCommand builds `leapmux daemon worker deregister`.
 func newWorkerDeregisterCommand(filesFor func(*config.Config) workerRegistrationFiles) *cobra.Command {
 	var flags *workerCredentialFlags
 	return cli.NewLeaf(cli.Leaf{
@@ -84,7 +92,9 @@ func newWorkerDeregisterCommand(filesFor func(*config.Config) workerRegistration
 The Worker must be stopped. The Hub deletes the Worker first, and only then
 does the command remove the saved credentials, so a failed request leaves the
 registration usable.`,
-		Mutates: true,
+		Mutates:          true,
+		Destructive:      true,
+		QuietUnsupported: true,
 		Examples: []cli.Example{
 			{Command: "leapmux daemon worker deregister"},
 			{Comment: "Deregister an instance in a data directory of its own.", Command: "leapmux daemon worker deregister --data-dir /srv/leapmux-worker"},
@@ -95,12 +105,19 @@ registration usable.`,
 			if err != nil {
 				return nil, err
 			}
-			return nil, deregisterWorker(inv.Context, cfg, options, filesFor(cfg))
+			res, err := deregisterWorker(inv.Context, inv.Printer, cfg, options, filesFor(cfg))
+			if err != nil {
+				return nil, err
+			}
+			if inv.Printer != nil && inv.Printer.Format != cli.FormatText {
+				return res, nil
+			}
+			return nil, nil
 		},
 	})
 }
 
-// workerRegisterFlags is what the registration of `leapmux worker register`
+// workerRegisterFlags is what the registration of `leapmux daemon worker register`
 // binds: the flags every credential command takes, plus the Hub URL and the
 // registration key.
 type workerRegisterFlags struct {

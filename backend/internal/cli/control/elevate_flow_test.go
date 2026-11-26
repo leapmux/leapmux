@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -252,7 +253,7 @@ func (s *browserStub) authorizeURL() string {
 // elevatableBrowserClient is elevatableClient for a credential whose token id
 // lets a loopback step-up specify its target: the shape a login through the
 // browser leaves on disk.
-func elevatableBrowserClient(t *testing.T, hubURL string, expiresAt time.Time) *Client {
+func elevatableBrowserClient(t *testing.T, hubURL string, expiresAt time.Time) *HubClient {
 	t.Helper()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 	require.NoError(t, SaveCredentials(hubURL, CredentialFile{
@@ -272,7 +273,7 @@ func elevatableBrowserClient(t *testing.T, hubURL string, expiresAt time.Time) *
 
 // elevatableClient builds a client for the stub hub that is allowed to
 // prompt, which is what a terminal-attached process would be.
-func elevatableClient(t *testing.T, hubURL string) *Client {
+func elevatableClient(t *testing.T, hubURL string) *HubClient {
 	t.Helper()
 	seedCredentials(t, hubURL, time.Now().Add(time.Hour))
 	c, err := NewClient(hubURL)
@@ -310,15 +311,14 @@ func (b *syncBuffer) Bytes() []byte {
 	return append([]byte(nil), b.buf.Bytes()...)
 }
 
-// captureErr swaps Err for a buffer and returns it. Nothing in this package
-// writes to stdout (TestPackageNeverWritesStdout), so Err is the one stream
-// that the prose of a ceremony reaches.
-func captureErr(t *testing.T) *syncBuffer {
-	t.Helper()
+// captureClientErr attaches a buffer to each client's error writer and returns
+// it. Nothing in this package writes to stdout (TestPackageNeverWritesStdout),
+// so errOut is the one stream that the prose of a ceremony reaches.
+func captureClientErr(clients ...*HubClient) *syncBuffer {
 	errOut := &syncBuffer{}
-	prev := Err
-	Err = errOut
-	t.Cleanup(func() { Err = prev })
+	for _, c := range clients {
+		c.SetErrOut(errOut)
+	}
 	return errOut
 }
 
@@ -327,7 +327,7 @@ func captureErr(t *testing.T) *syncBuffer {
 // Stdout carries the envelope of whichever verb opened the step-up -- the
 // interceptor runs under ANY unary call -- so four lines of prose there would
 // stop `leapmux control admin settings set … --json | jq` from parsing on the
-// first run after the window lapses. The prompt therefore goes to Err, and
+// first run after the window lapses. The prompt therefore goes to errOut, and
 // TestPackageNeverWritesStdout keeps every other write off stdout.
 func TestElevate_PrintsThePromptToErr(t *testing.T) {
 	hub := newElevationHub(t)
@@ -336,7 +336,7 @@ func TestElevate_PrintsThePromptToErr(t *testing.T) {
 	hub.grant["expires_in"] = 0
 
 	c := elevatableClient(t, hub.server.URL)
-	errOut := captureErr(t)
+	errOut := captureClientErr(c)
 
 	require.Error(t, c.Elevate(context.Background()))
 
@@ -357,7 +357,7 @@ func TestElevate_RefusesWhenNobodyCanAnswerThePrompt(t *testing.T) {
 	hub := newElevationHub(t)
 	c := elevatableClient(t, hub.server.URL)
 	c.promptAllowed = false
-	errOut := captureErr(t)
+	errOut := captureClientErr(c)
 
 	require.ErrorIs(t, c.Elevate(context.Background()), ErrElevationNeedsAPerson)
 
@@ -405,7 +405,7 @@ func TestNewClient_RefusesToPromptWithoutATerminal(t *testing.T) {
 func TestElevate_CollapsesConcurrentCeremonies(t *testing.T) {
 	hub := newElevationHub(t)
 	c := elevatableClient(t, hub.server.URL)
-	captureErr(t)
+	captureClientErr(c)
 
 	var wg sync.WaitGroup
 	errs := make([]error, 4)
@@ -440,7 +440,7 @@ func TestElevate_ReportsATransportFailureRatherThanAnEmptyOAuthError(t *testing.
 		_, _ = w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
 	}
 	c := elevatableClient(t, hub.server.URL)
-	captureErr(t)
+	captureClientErr(c)
 
 	err := c.Elevate(context.Background())
 	require.Error(t, err)
@@ -464,7 +464,7 @@ func TestElevate_KeepsPollingWhileTheHubSaysPending(t *testing.T) {
 		}
 	}
 	c := elevatableClient(t, hub.server.URL)
-	captureErr(t)
+	captureClientErr(c)
 
 	require.NoError(t, c.Elevate(context.Background()))
 	_, polls := hub.counts()
@@ -478,7 +478,7 @@ func TestElevate_ReportsACredentialTheHubWillNotElevate(t *testing.T) {
 	hub := newElevationHub(t)
 	hub.startStatus = http.StatusBadRequest
 	c := elevatableClient(t, hub.server.URL)
-	errOut := captureErr(t)
+	errOut := captureClientErr(c)
 
 	assert.ErrorIs(t, c.Elevate(context.Background()), ErrElevationUnsupported)
 	assert.Empty(t, errOut.String(), "no prompt for a credential that cannot be elevated")
@@ -491,7 +491,7 @@ func TestElevate_PresentsTheCredentialItAsksFor(t *testing.T) {
 	hub.grant["expires_in"] = 0
 
 	c := elevatableClient(t, hub.server.URL)
-	captureErr(t)
+	captureClientErr(c)
 	require.Error(t, c.Elevate(context.Background()))
 
 	assert.Equal(t, "Bearer lmx_a_access_0", hub.presentedCredential())
@@ -525,7 +525,7 @@ func TestElevate_KeepsOneCeremonyForEachCredential(t *testing.T) {
 	}
 	second.onStart = func() { close(secondStarted) }
 
-	client := func(hubURL string) *Client {
+	client := func(hubURL string) *HubClient {
 		require.NoError(t, SaveCredentials(hubURL, CredentialFile{
 			HubURL:       hubURL,
 			AccessToken:  "lmx_a_access_0",
@@ -538,7 +538,7 @@ func TestElevate_KeepsOneCeremonyForEachCredential(t *testing.T) {
 		return c
 	}
 	a, b := client(first.server.URL), client(second.server.URL)
-	captureErr(t)
+	captureClientErr(a, b)
 
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- a.Elevate(context.Background()) }()
@@ -575,7 +575,7 @@ func TestElevate_RecordsTheLabelALoginRecords(t *testing.T) {
 	hub.grant["expires_in"] = 0
 
 	c := elevatableClient(t, hub.server.URL)
-	captureErr(t)
+	captureClientErr(c)
 	require.Error(t, c.Elevate(context.Background()))
 
 	assert.Equal(t, DefaultDeviceName(), hub.presentedDeviceName())
@@ -593,11 +593,14 @@ func TestElevate_FallsBackToTheLoopbackCeremonyWhenTheHubDemandsABrowser(t *test
 	hub.startBody = browserStepUpRefusal
 	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
 	stub := stubBrowser(t, approve)
-	captureErr(t)
+	errOut := captureClientErr(c)
 
 	require.NoError(t, c.Elevate(context.Background()))
 
 	assert.Equal(t, 1, stub.callsMade(), "the person sees exactly one detour")
+	prompt := errOut.String()
+	assert.Contains(t, prompt, "verify your identity")
+	assert.Contains(t, prompt, stub.authorizeURL(), "the loopback authorize URL must be printed to the configured error writer")
 	u, err := url.Parse(stub.authorizeURL())
 	require.NoError(t, err)
 	require.Equal(t, "/oauth/authorize", u.Path)
@@ -622,7 +625,7 @@ func TestElevate_RunsTheDeviceCeremonyWhenTheHubGrantsIt(t *testing.T) {
 	hub := newElevationHub(t)
 	c := elevatableClient(t, hub.server.URL)
 	stub := stubBrowser(t, approve)
-	captureErr(t)
+	captureClientErr(c)
 
 	require.NoError(t, c.Elevate(context.Background()))
 
@@ -679,7 +682,7 @@ func TestElevate_RefreshesTheExpiredBearerOnlyAfterApproval(t *testing.T) {
 				c.setBearer(creds.AccessToken, creds.ExpiresAt)
 				return tc.callback(state)
 			})
-			captureErr(t)
+			captureClientErr(c)
 
 			err := c.Elevate(context.Background())
 
@@ -718,7 +721,7 @@ func TestElevate_RepairsTheBearerAndPostsAgainAfterA401(t *testing.T) {
 	}
 	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
 	stub := stubBrowser(t, approve)
-	captureErr(t)
+	captureClientErr(c)
 
 	require.NoError(t, c.Elevate(context.Background()))
 
@@ -745,7 +748,7 @@ func TestElevate_ReportsTheHubsRefusalOfTheCode(t *testing.T) {
 	}
 	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
 	stub := stubBrowser(t, approve)
-	captureErr(t)
+	captureClientErr(c)
 
 	err := c.Elevate(context.Background())
 	require.Error(t, err)
@@ -761,7 +764,7 @@ func TestElevate_ReportsTheHubsRefusalOfTheCode(t *testing.T) {
 // may only need repair, and mapping it to the sign-in message hides that.
 func TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt(t *testing.T) {
 	hubURL := "https://hub.example"
-	c := &Client{HubURL: hubURL}
+	c := &HubClient{HubURL: hubURL}
 
 	t.Run("a missing credential file says sign in again", func(t *testing.T) {
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
@@ -775,6 +778,7 @@ func TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 		path, err := CredentialsPath(hubURL)
 		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 		require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
 
 		err = c.elevateViaLoopback(context.Background(), loopbackauth.Start)

@@ -277,10 +277,10 @@ type queueItemRow struct {
 	// every other input.
 	Sender *messageSender `json:"sender,omitempty" table:"FROM"`
 	// State is a token of AgentInputState, such as "queued" or "failed".
-	State string `json:"state" table:"STATE"`
+	State string `json:"state" table:"STATE,state"`
 	// ScheduledAt is the UTC time before which the agent does not read the
 	// input, or empty for an input that the agent reads as soon as it can.
-	ScheduledAt string `json:"scheduled_at,omitempty" table:"SCHEDULED"`
+	ScheduledAt string `json:"scheduled_at,omitempty" table:"SCHEDULED,dim"`
 	// Text is the beginning of the input's text.
 	Text        string               `json:"text" table:"TEXT"`
 	Attachments []queueAttachmentRow `json:"attachments,omitempty"`
@@ -523,7 +523,7 @@ func runAgentQueueList(inv *cli.Invocation) (any, error) {
 		for _, item := range queue.GetItems() {
 			rows = append(rows, queueItemRowOf(item))
 		}
-		if hold := queueHold(q.agent.ID, queue); hold != "" && inv.Printer.Format == cli.FormatText && !inv.Printer.Quiet {
+		if hold := queueHold(q.agent.ID, queue); hold != "" && inv.Printer.Format == cli.FormatText {
 			inv.Printer.Notice("%s", hold)
 		}
 		reason := pauseReasonOf(queue)

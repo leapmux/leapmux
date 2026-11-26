@@ -52,7 +52,7 @@ import (
 // The refusal holds even with an explicit --hub. That flag would send the
 // call with the user's stored credential for that hub, so an agent could
 // still act as an administrator.
-func requireAdminClient(inv *cli.Invocation) (*control.Client, error) {
+func requireAdminClient(inv *cli.Invocation) (*control.HubClient, error) {
 	if os.Getenv(controlenv.SocketVariable) != "" {
 		return nil, cli.Usagef("admin commands do not run inside a LeapMux tab").
 			WithHint("run the command in a shell outside LeapMux, or unset " + controlenv.SocketVariable + " in this shell first")
@@ -71,10 +71,7 @@ func requireAdminClient(inv *cli.Invocation) (*control.Client, error) {
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeNotLoggedIn, err, "")
 	}
-	if c.IsWorkerIPC() {
-		return nil, cli.Usagef("admin commands talk to the hub directly and cannot run over the worker IPC transport")
-	}
-	return c, nil
+	return attachErrOut(c, inv), nil
 }
 
 // requireNonEmptyArg trims and returns the positional argument name, refusing

@@ -221,7 +221,7 @@ Read its output with "terminal read", or wait for it with "terminal wait".`
 type terminalListRow struct {
 	ID          string `json:"id" table:"ID,short"`
 	Title       string `json:"title,omitempty" table:"TITLE"`
-	Status      string `json:"status,omitempty" table:"STATUS"`
+	Status      string `json:"status,omitempty" table:"STATUS,state"`
 	Size        string `json:"size,omitempty" table:"SIZE"`
 	WorkingDir  string `json:"working_dir,omitempty" table:"DIR"`
 	Worker      string `json:"worker,omitempty" table:"WORKER"`

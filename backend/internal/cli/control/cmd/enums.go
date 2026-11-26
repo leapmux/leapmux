@@ -190,10 +190,10 @@ type agentRow struct {
 	Provider string `json:"provider" table:"PROVIDER"`
 	// State is what the agent does: "idle", "working" or
 	// "waiting_for_user". `agent wait` waits for it.
-	State string `json:"state,omitempty" table:"STATE"`
+	State string `json:"state,omitempty" table:"STATE,state"`
 	// Status is the lifecycle of the agent's process: "active",
 	// "inactive", "starting" or "startup_failed".
-	Status           string                  `json:"status" table:"STATUS"`
+	Status           string                  `json:"status" table:"STATUS,state"`
 	Model            string                  `json:"model,omitempty" table:"MODEL"`
 	Effort           string                  `json:"effort,omitempty"`
 	PermissionMode   string                  `json:"permission_mode,omitempty"`

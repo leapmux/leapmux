@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/cli"
@@ -31,11 +32,21 @@ import (
 //  5. The registered state is durably published, and only then is the
 //     pending record removed. A failure in between leaves the pending
 //     record as the recovery material of the NEXT run.
-func registerWorker(ctx context.Context, cfg *config.Config, commandOptions workerRegisterOptions, files workerRegistrationFiles) error {
+type workerRegisterResult struct {
+	Status    string `json:"status"`
+	WorkerID  string `json:"worker_id"`
+	HubURL    string `json:"hub_url"`
+	StatePath string `json:"state_path"`
+}
+
+func registerWorker(ctx context.Context, printer *cli.Printer, cfg *config.Config, commandOptions workerRegisterOptions, files workerRegistrationFiles) (*workerRegisterResult, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	printModeBanner("worker")
+	out := lifecycleProseOut(printer)
+	if printer == nil || printer.Format == cli.FormatText {
+		printModeBanner("worker")
+	}
 	logging.Setup()
 
 	// Parse the endpoint before anything is written. A pending record for a
@@ -44,12 +55,12 @@ func registerWorker(ctx context.Context, cfg *config.Config, commandOptions work
 	// reused pending record must name the same URL (checked below).
 	endpoint, err := hubtransport.New(commandOptions.hubURL)
 	if err != nil {
-		return fmt.Errorf("hub URL %q: %w", commandOptions.hubURL, err)
+		return nil, fmt.Errorf("hub URL %q: %w", commandOptions.hubURL, err)
 	}
 	defer endpoint.CloseIdleConnections()
 
 	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("validate config: %w", err)
+		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
 	// The data lease and the operation lock together are what the
@@ -58,16 +69,16 @@ func registerWorker(ctx context.Context, cfg *config.Config, commandOptions work
 	// every other lifecycle command out of this transaction.
 	canonical, err := lifecycle.CanonicalDir(cfg.DataDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	lease, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
 	if err != nil {
-		return fmt.Errorf("acquire the data directory: %w", err)
+		return nil, fmt.Errorf("acquire the data directory: %w", err)
 	}
 	release, err := lifecycle.OperationLock(canonical)
 	if err != nil {
 		_ = lease.Close()
-		return err
+		return nil, err
 	}
 	defer release()
 	defer func() { _ = lease.Close() }()
@@ -78,41 +89,46 @@ func registerWorker(ctx context.Context, cfg *config.Config, commandOptions work
 	// registration.
 	state, stateErr := files.LoadState()
 	if stateErr != nil {
-		return fmt.Errorf("load state: %w", stateErr)
+		return nil, fmt.Errorf("load state: %w", stateErr)
 	}
 	if state != nil && !state.Registered() {
-		return fmt.Errorf("the saved registration is incomplete; preserve %s and recover its registration before registering again", cfg.StatePath())
+		return nil, fmt.Errorf("the saved registration is incomplete; preserve %s and recover its registration before registering again", cfg.StatePath())
 	}
 	if state != nil {
 		pending, pendingErr := files.LoadPendingRegistration()
 		if pendingErr != nil {
-			return pendingErr
+			return nil, pendingErr
 		}
 		if pending != nil {
 			if err := pendingAgreesWithState(cfg, pending, state); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		copies, err := atomicfile.TempFiles(cfg.PendingPath())
 		if err != nil {
-			return fmt.Errorf("inspect interrupted registration copies: %w", err)
+			return nil, fmt.Errorf("inspect interrupted registration copies: %w", err)
 		}
 		interrupted := pending != nil || len(copies) != 0
 		if interrupted {
 			// A prior rename may have succeeded before its directory flush failed.
 			// Reconfirm durable credentials before deleting recovery material.
 			if err := files.SaveState(state); err != nil {
-				return fmt.Errorf("confirm durable saved credentials: %w", err)
+				return nil, fmt.Errorf("confirm durable saved credentials: %w", err)
 			}
 		}
 		if err := files.RemovePendingRegistration(); err != nil {
-			return fmt.Errorf("finish the interrupted registration's cleanup: %w", err)
+			return nil, fmt.Errorf("finish the interrupted registration's cleanup: %w", err)
 		}
 		if interrupted {
-			printWorkerRegistration(cfg)
-			return nil
+			printWorkerRegistration(out, cfg)
+			return &workerRegisterResult{
+				Status:    "registered",
+				WorkerID:  state.WorkerID,
+				HubURL:    state.HubURL,
+				StatePath: cfg.StatePath(),
+			}, nil
 		}
-		return alreadyRegisteredError(state)
+		return nil, alreadyRegisteredError(state)
 	}
 
 	// Load or durably publish the pending attempt record. A record from
@@ -120,12 +136,12 @@ func registerWorker(ctx context.Context, cfg *config.Config, commandOptions work
 	// identity and keypair are what the hub may already have committed.
 	pending, err := files.LoadPendingRegistration()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if pending == nil {
 		attemptID, err := lifecycle.NewAttemptID()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		pending = &config.PendingRegistration{
 			AttemptID: attemptID,
@@ -133,28 +149,28 @@ func registerWorker(ctx context.Context, cfg *config.Config, commandOptions work
 			RegKey:    commandOptions.registrationKey,
 		}
 		if _, err := pending.GenerateKeypair(); err != nil {
-			return fmt.Errorf("generate the worker keypair: %w", err)
+			return nil, fmt.Errorf("generate the worker keypair: %w", err)
 		}
 		// Durable publication before the first network request. A
 		// failure here means zero requests left this machine.
 		if err := files.SavePendingRegistration(pending); err != nil {
-			return fmt.Errorf("publish the pending registration: %w", err)
+			return nil, fmt.Errorf("publish the pending registration: %w", err)
 		}
 	} else if pending.HubURL != commandOptions.hubURL || pending.RegKey != commandOptions.registrationKey {
 		// Never silently replace a conflicting pending identity: the
 		// operator must decide whether the old attempt is abandoned.
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"a pending registration for hub %s already exists in %s; it belongs to an attempt that may already have succeeded -- rerun the same command to recover it, or delete the file to abandon it",
 			pending.HubURL, cfg.PendingPath())
 	}
 
 	compositeKey, err := pending.CompositeKeypair()
 	if err != nil {
-		return fmt.Errorf("restore the pending keypair: %w", err)
+		return nil, fmt.Errorf("restore the pending keypair: %w", err)
 	}
 	opts, err := hub.RegistrationOptionsFromKeypair(pending.AttemptID, pending.RegKey, compositeKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	opts.Deadline = commandOptions.timeout
@@ -165,7 +181,7 @@ func registerWorker(ctx context.Context, cfg *config.Config, commandOptions work
 			// The registration key is the credential of this call.
 			failure = failure.WithHint("generate a new registration key in the Register worker dialog of the Hub, and run the command with it")
 		}
-		return failure
+		return nil, failure
 	}
 
 	// Publish the complete registered state BEFORE removing the pending
@@ -180,34 +196,39 @@ func registerWorker(ctx context.Context, cfg *config.Config, commandOptions work
 	if err := files.SaveState(state); err != nil {
 		// The Hub committed registration, but durable local publication is
 		// unconfirmed. Keep the pending record so the next run can recover.
-		return fmt.Errorf("save state: %w", err)
+		return nil, fmt.Errorf("save state: %w", err)
 	}
 	if err := files.RemovePendingRegistration(); err != nil {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"the worker registered and its credentials were saved, but the pending record %s could not be removed: %w; rerun `leapmux daemon worker register` to finish the cleanup",
 			cfg.PendingPath(), err)
 	}
 
-	printWorkerRegistration(cfg)
-	printWorkerNextCommands(cfg, commandOptions.configFile, []string{"start", "status"}, nil)
-	return nil
+	printWorkerRegistration(out, cfg)
+	printWorkerNextCommands(out, cfg, commandOptions.configFile, []string{"start", "status"}, nil)
+	return &workerRegisterResult{
+		Status:    "registered",
+		WorkerID:  state.WorkerID,
+		HubURL:    state.HubURL,
+		StatePath: cfg.StatePath(),
+	}, nil
 }
 
-func printWorkerRegistration(cfg *config.Config) {
-	fmt.Println("Worker registered.")
-	fmt.Printf("Credentials saved to %s\n", cfg.StatePath())
+func printWorkerRegistration(w io.Writer, cfg *config.Config) {
+	_, _ = fmt.Fprintln(w, "Worker registered.")
+	_, _ = fmt.Fprintf(w, "Credentials saved to %s\n", cfg.StatePath())
 }
 
 // printWorkerNextCommands prints the commands that act on this Worker next,
 // selected by its configuration file and its data directory. A saved service
 // adds serviceVerbs. A data directory that cannot be resolved prints nothing,
 // because the credential command already succeeded.
-func printWorkerNextCommands(cfg *config.Config, configFile string, verbs, serviceVerbs []string) {
+func printWorkerNextCommands(w io.Writer, cfg *config.Config, configFile string, verbs, serviceVerbs []string) {
 	dataDirectory, err := lifecycle.CanonicalDir(cfg.DataDir)
 	if err != nil {
 		return
 	}
-	printSelectedNextCommands("worker", configFile, dataDirectory, nativeController, verbs, serviceVerbs)
+	printSelectedNextCommandsTo(w, "worker", configFile, dataDirectory, nativeController, verbs, serviceVerbs)
 }
 
 // pendingAgreesWithState checks that a surviving pending record and a

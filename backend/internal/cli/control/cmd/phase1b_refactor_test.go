@@ -92,7 +92,7 @@ func TestPhase1B_AdminRowTablesRenderCleanHeadersAndQuietLines(t *testing.T) {
 			}
 
 			var quiet bytes.Buffer
-			pq := &cli.Printer{Out: &quiet, Err: &bytes.Buffer{}, Quiet: true}
+			pq := &cli.Printer{Out: &quiet, Err: &bytes.Buffer{}, Format: cli.FormatQuiet}
 			require.NoError(t, pq.Result(tc.result))
 			assert.Equal(t, tc.wantQuiet[0]+"\n", quiet.String())
 		})

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -34,7 +33,6 @@ type lifecycleOptions struct {
 	timeout         time.Duration
 	startup         lifecycle.StartupKind
 	yes             bool
-	json            bool
 	environmentFile string
 	logFollow       bool
 	logLines        int
@@ -55,6 +53,9 @@ type lifecycleFlags struct {
 	worker     *workerconfig.Flags
 	solo       *hubconfig.Flags
 	soloConfig solo.Config
+	// runtimeFlags lists the mode-owned runtime flag names that may be saved
+	// into ServiceSpec.RuntimeArguments (excluding config and data-dir).
+	runtimeFlags map[string]bool
 	// managed is the selection of `run --service-spec`, which only the
 	// service definition passes.
 	managed         managedRunSelection
@@ -85,12 +86,16 @@ func registerLifecycleFlags(mode, verb string, fs *pflag.FlagSet) (*lifecycleFla
 	if err != nil {
 		return nil, err
 	}
-	f := &lifecycleFlags{mode: mode, verb: verb, role: role}
+	f := &lifecycleFlags{mode: mode, verb: verb, role: role, runtimeFlags: make(map[string]bool)}
 	// nil keeps every mode flag of the loader.
 	var modeFlags []string
 	if selectsOnly(verb) {
 		modeFlags = instanceSelectionFlags
 	}
+	existingFlags := make(map[string]bool)
+	fs.VisitAll(func(fl *pflag.Flag) {
+		existingFlags[fl.Name] = true
+	})
 	switch role {
 	case lifecycle.RoleHub:
 		f.hub = hubconfig.NewFlags(hubconfig.LoadOptions{CLIFlags: modeFlags})
@@ -98,12 +103,6 @@ func registerLifecycleFlags(mode, verb string, fs *pflag.FlagSet) (*lifecycleFla
 	case lifecycle.RoleWorker:
 		f.worker = workerconfig.NewFlags(workerconfig.LoadOptions{CLIFlags: modeFlags})
 		f.worker.Register(fs)
-		// A person may try a registration flag on a runtime command. The
-		// command accepts it only to refuse it with the command it belongs
-		// to, so help omits it.
-		for _, name := range workerRegistrationFlags {
-			internalconfig.HiddenFunc(fs, name, "", func(string) error { return nil })
-		}
 	case lifecycle.RoleSolo, lifecycle.RoleDev:
 		f.soloConfig = solo.Config{DevMode: role == lifecycle.RoleDev, CLIFlags: modeFlags}
 		// Solo's worker-scoped extras are flags too. A command that only
@@ -115,11 +114,23 @@ func registerLifecycleFlags(mode, verb string, fs *pflag.FlagSet) (*lifecycleFla
 		f.solo = solo.Flags(f.soloConfig)
 		f.solo.Register(fs)
 	}
+	fs.VisitAll(func(fl *pflag.Flag) {
+		if existingFlags[fl.Name] || fl.Name == "config" || fl.Name == "data-dir" {
+			return
+		}
+		f.runtimeFlags[fl.Name] = true
+	})
+	if role == lifecycle.RoleWorker {
+		// A person may try a registration flag on a runtime command. The
+		// command accepts it only to refuse it with the command it belongs
+		// to, so help omits it.
+		for _, name := range workerRegistrationFlags {
+			internalconfig.HiddenFunc(fs, name, "", func(string) error { return nil })
+		}
+	}
 	if timeout, ok := verbTimeout(verb); ok {
 		fs.Var(internalconfig.NewDurationFlag(&f.options.timeout, timeout), "timeout", "maximum wait for the operation; "+internalconfig.UnitSyntax)
 	}
-	// --json is inherited as a persistent flag from the root command, so
-	// status reads it from the command's flag set in load().
 	if verb == "logs" {
 		fs.BoolVarP(&f.options.logFollow, "follow", "f", false, "follow new log lines until interrupted")
 		fs.IntVarP(&f.options.logLines, "lines", "n", defaultLogsLines, "number of trailing log lines to print (0 = all)")
@@ -167,16 +178,8 @@ func loadLifecycleCommand(mode, verb string, args []string) (*lifecycleConfigura
 // errManagedRunSelected before it loads anything: the saved specification
 // supplies every setting.
 func (f *lifecycleFlags) load(fs *pflag.FlagSet) (*lifecycleConfiguration, lifecycleOptions, error) {
-	if jf := fs.Lookup("json"); jf != nil && jf.Value.String() == "true" {
-		f.options.json = true
-	}
-	if ff := fs.Lookup("format"); ff != nil {
-		if v := strings.ToLower(strings.TrimSpace(ff.Value.String())); v == "json" || v == "ndjson" {
-			f.options.json = true
-		}
-	}
 	if _, ok := verbTimeout(f.verb); ok && f.options.timeout <= 0 {
-		return nil, f.options, fmt.Errorf("--timeout must be positive")
+		return nil, f.options, cli.Usagef("--timeout must be positive")
 	}
 	// An empty --startup= is a value the command line gave, so it fails as
 	// any other unknown startup kind does; only an absent flag leaves the
@@ -214,7 +217,7 @@ func (f *lifecycleFlags) load(fs *pflag.FlagSet) (*lifecycleConfiguration, lifec
 	return configuration, f.options, err
 }
 
-// workerRegistrationFlags are the flags of `leapmux worker register` that a
+// workerRegistrationFlags are the flags of `leapmux daemon worker register` that a
 // person may also try on a runtime command. The runtime commands accept them
 // only to refuse them with the command they belong to; help omits them.
 var workerRegistrationFlags = []string{"hub", "registration-key"}
@@ -231,7 +234,7 @@ func refuseWorkerRegistrationFlags(fs *pflag.FlagSet) error {
 		}
 	})
 	if refused != "" {
-		return fmt.Errorf("--%s belongs to `leapmux daemon worker register`; this command uses the saved registration", refused)
+		return cli.Usagef("--%s belongs to `leapmux daemon worker register`; this command uses the saved registration", refused)
 	}
 	return nil
 }
@@ -344,8 +347,7 @@ func (f *lifecycleFlags) loadConfiguration(fs *pflag.FlagSet) (*lifecycleConfigu
 	configuration.explicitFlags = make(map[string]bool)
 	fs.Visit(func(value *pflag.Flag) {
 		configuration.explicitFlags[value.Name] = true
-		switch value.Name {
-		case "config", "data-dir", "timeout", "startup", "yes", "json", "environment-file", "service-spec":
+		if !f.runtimeFlags[value.Name] {
 			return
 		}
 		if list, ok := value.Value.(interface{ Get() []string }); ok {

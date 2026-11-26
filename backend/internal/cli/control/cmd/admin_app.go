@@ -72,7 +72,7 @@ func (r adminAppListResult) QuietLines() []string {
 	return out
 }
 
-func resolveAdminAppID(ctx context.Context, c *control.Client, raw string) (string, error) {
+func resolveAdminAppID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveAdminIDPrefix(ctx, raw, "app", func(ctx context.Context) ([]cli.Candidate, error) {
 		apps, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.App, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AppService().ListApps(ctx, &leapmuxv1.ListAppsRequest{

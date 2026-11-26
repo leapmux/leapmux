@@ -75,12 +75,38 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	require.NoError(t, err)
 	old := os.Stdout
 	os.Stdout = w
+
+	type readResult struct {
+		out []byte
+		err error
+	}
+	readCh := make(chan readResult, 1)
+	go func() {
+		out, readErr := io.ReadAll(r)
+		readCh <- readResult{out: out, err: readErr}
+	}()
+
+	wClosed := false
+	drained := false
+	defer func() {
+		os.Stdout = old
+		if !wClosed {
+			_ = w.Close()
+		}
+		if !drained {
+			<-readCh
+		}
+		_ = r.Close()
+	}()
+
 	fnErr := fn()
-	require.NoError(t, w.Close())
 	os.Stdout = old
-	out, err := io.ReadAll(r)
-	require.NoError(t, err)
-	return string(out), fnErr
+	wClosed = true
+	require.NoError(t, w.Close())
+	res := <-readCh
+	drained = true
+	require.NoError(t, res.err)
+	return string(res.out), fnErr
 }
 
 // runModeCommand runs `leapmux daemon <mode> <args...>` with the shipped

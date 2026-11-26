@@ -4,37 +4,41 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
+	"sync"
 
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/cli"
 )
 
-// AuthInterceptor adds the Authorization (or X-LeapMux-Token) header
-// to every outgoing request. Exported so callers outside this package
-// (e.g. cmd's hubrpc dispatch) can apply the same auth shape to a
-// generically-constructed connect.NewClient.
-//
-// Wraps both unary AND streaming clients, which is the point: connect v2 has
-// one interceptor for every RPC shape, so a header that reached only the
-// unary path would silently vanish from `StreamInner`, `OpenChannel`, and
-// friends -- the IPC server (or hub) then responds 401 and the CLI surfaces
-// it as "unauthenticated: HTTP status 401 Unauthorized". The streaming path
-// matters here because the hub's user-event stream (hubrpc.WatchUserStream,
-// which `layout watch` reads over local IPC) and any future server-streaming
-// RPC flow through it.
-func (c *Client) AuthInterceptor() connect.ClientInterceptor {
+// AuthInterceptor adds the Authorization header to every outgoing request on c
+// (unary or streaming) and replays refused unary calls after refreshing or
+// elevating the credential.
+func (c *HubClient) AuthInterceptor() connect.ClientInterceptor {
 	return (&authInterceptor{client: c}).intercept
+}
+
+// AuthInterceptor stamps X-LeapMux-Token on every outgoing worker-IPC request,
+// unary or streaming.
+func (c *WorkerIPCClient) AuthInterceptor() connect.ClientInterceptor {
+	return func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				ctx, info = connect.NewClientContext(ctx)
+			}
+			c.applyAuthTo(info.RequestHeader().Set)
+			return next(ctx, spec)
+		}
+	}
 }
 
 // authInterceptor stamps c.ApplyAuth on every outgoing connect call,
 // unary or streaming, and replays a refused unary call after a repair
 // that can fix it.
-type authInterceptor struct{ client *Client }
+type authInterceptor struct{ client *HubClient }
 
 // unaryRepair is one repair the interceptor can apply to a refused unary
 // call: the test that recognizes the refusal, and the action that removes
@@ -130,14 +134,33 @@ type unaryReplayStream struct {
 	info    *connect.CallInfo
 	open    func() (connect.ClientStream, error)
 	repairs []unaryRepair
-	stream  connect.ClientStream
 	sent    any
+
+	mu     sync.Mutex
+	stream connect.ClientStream
+	closed bool
 }
 
-func (s *unaryReplayStream) SendHeaders() error { return s.stream.SendHeaders() }
-func (s *unaryReplayStream) Send(msg any) error { s.sent = msg; return s.stream.Send(msg) }
-func (s *unaryReplayStream) CloseSend() error   { return s.stream.CloseSend() }
-func (s *unaryReplayStream) Close() error       { return s.stream.Close() }
+func (s *unaryReplayStream) currentStream() connect.ClientStream {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stream
+}
+
+func (s *unaryReplayStream) SendHeaders() error { return s.currentStream().SendHeaders() }
+func (s *unaryReplayStream) Send(msg any) error { s.sent = msg; return s.currentStream().Send(msg) }
+func (s *unaryReplayStream) CloseSend() error   { return s.currentStream().CloseSend() }
+
+func (s *unaryReplayStream) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	stream := s.stream
+	s.mu.Unlock()
+	if stream == nil {
+		return nil
+	}
+	return stream.Close()
+}
 
 // Receive replays the call while some unused repair matches the refusal.
 // Each repair runs AT MOST ONCE, in any order, and the call is replayed
@@ -162,7 +185,8 @@ func (s *unaryReplayStream) Close() error       { return s.stream.Close() }
 // that follows reports the truth.
 func (s *unaryReplayStream) Receive(res any) error {
 	for {
-		err := s.stream.Receive(res)
+		stream := s.currentStream()
+		err := stream.Receive(res)
 		if err == nil {
 			return nil
 		}
@@ -178,51 +202,100 @@ func (s *unaryReplayStream) Receive(res any) error {
 			if errors.Is(repairErr, ErrCredentialsNotSaved) {
 				return connect.NewError(bearerErrorCode(repairErr), repairErr.Error()).WithCause(repairErr)
 			}
+			// An anonymous client, a worker-IPC client, or a credential without
+			// a refresh token has nothing to renew: return the hub's own
+			// refusal directly instead of attaching a repair-failed hint.
+			if errors.Is(repairErr, errNothingToRefresh) {
+				return err
+			}
 			// Keep the hub's own refusal as the primary error, and attach why
 			// the step-up prompt could not run so headless callers see both the
 			// refusal and how to resolve it.
 			if errors.Is(repairErr, ErrElevationNeedsAPerson) {
 				return &hintedError{
-					err:  err,
-					hint: fmt.Sprintf("cannot open an interactive verification prompt (%s); run this command in an interactive terminal", noPromptReason()),
+					err:       err,
+					repairErr: repairErr,
+					hint:      fmt.Sprintf("cannot open an interactive verification prompt (%s); run this command in an interactive terminal", noPromptReason()),
 				}
 			}
 			return &hintedError{
-				err:  err,
-				hint: fmt.Sprintf("automatic session repair failed: %v", repairErr),
+				err:       err,
+				repairErr: repairErr,
+				hint:      fmt.Sprintf("automatic session repair failed: %v", repairErr),
 			}
 		}
-		_ = s.stream.Close()
+		_ = stream.Close()
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return err
+		}
+		s.mu.Unlock()
 		next, openErr := s.open()
 		if openErr != nil {
 			return openErr
 		}
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			_ = next.Close()
+			return err
+		}
 		s.stream = next
+		s.mu.Unlock()
 		if msg, ok := res.(proto.Message); ok {
 			// Discard the failed attempt's partial response before sending
 			// the retry. The retry can fail before its decoder runs.
 			proto.Reset(msg)
 		}
-		if sendErr := s.stream.Send(s.sent); sendErr != nil {
+		if sendErr := next.Send(s.sent); sendErr != nil {
 			return sendErr
 		}
-		if closeErr := s.stream.CloseSend(); closeErr != nil {
+		if closeErr := next.CloseSend(); closeErr != nil {
 			return closeErr
 		}
 	}
 }
 
-// hintedError preserves the wrapped RPC error (including connect.CodeOf) while
-// attaching an actionable hint when rendered through cli.FromError.
+// hintedError preserves the wrapped RPC error (including connect.CodeOf) and
+// any repair error while attaching an actionable hint when rendered through
+// cli.FromError.
 type hintedError struct {
-	err  error
-	hint string
+	err       error
+	repairErr error
+	hint      string
 }
 
-func (h *hintedError) Error() string { return h.err.Error() }
-func (h *hintedError) Unwrap() error { return h.err }
-func (h *hintedError) CLIError() *cli.Error {
-	return cli.FromError(h.err).WithHint("%s", h.hint)
+var _ cli.HintProvider = (*hintedError)(nil)
+
+func (h *hintedError) Error() string {
+	if h == nil || h.err == nil {
+		return ""
+	}
+	return h.err.Error()
+}
+
+func (h *hintedError) Unwrap() []error {
+	if h == nil {
+		return nil
+	}
+	switch {
+	case h.err != nil && h.repairErr != nil:
+		return []error{h.err, h.repairErr}
+	case h.err != nil:
+		return []error{h.err}
+	case h.repairErr != nil:
+		return []error{h.repairErr}
+	default:
+		return nil
+	}
+}
+
+func (h *hintedError) CLIHints() []string {
+	if h == nil || h.hint == "" {
+		return nil
+	}
+	return []string{h.hint}
 }
 
 // clearHeader drops every entry h holds. It is the connect.Header
@@ -231,20 +304,4 @@ func clearHeader(h *connect.Header) {
 	for key := range h.All() {
 		h.Delete(key)
 	}
-}
-
-// buildHTTPClients returns the unary client, the WebSocket client, and the
-// base URL ConnectRPC should target for hubURL.
-//
-// Both clients come from one hubtransport.Endpoint, so they share its
-// connection pools and its h2c verdict. The WebSocket client is never nil,
-// including for a remote hub: a nil one made coder/websocket fall back to
-// http.DefaultClient, which carries no timeout of its own and shares the
-// process-global pool with every other caller in the program.
-func buildHTTPClients(hubURL string) (*http.Client, *http.Client, string, error) {
-	endpoint, err := hubtransport.New(hubURL)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	return endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout), endpoint.WebSocketClient(), endpoint.BaseURL(), nil
 }

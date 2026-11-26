@@ -8,7 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // eventsOptionsFor parses args as the flags of `events`, and reads them as
@@ -79,6 +81,14 @@ func TestEventsOptionsOf(t *testing.T) {
 		assert.Equal(t, cli.CodeUsage, e.Code)
 		assert.Equal(t, "--workspace is empty", e.Message)
 	})
+	t.Run("quiet format is rejected", func(t *testing.T) {
+		cmd := newEventsCommand()
+		_, err := eventsOptionsOf(&cli.Invocation{Command: cmd, Printer: &cli.Printer{Format: cli.FormatQuiet}})
+		e := cli.FromError(err)
+		require.NotNil(t, e)
+		assert.Equal(t, cli.CodeUsage, e.Code)
+		assert.Contains(t, e.Message, "--quiet does not apply to events")
+	})
 }
 
 // The help lists every kind of the vocabulary with its meaning, one bullet
@@ -96,4 +106,27 @@ func TestEventsLongHelp_ListsEveryKind(t *testing.T) {
 		want[i] = "  - " + k.name + ": " + k.help
 	}
 	assert.Equal(t, want, bullets)
+}
+
+func TestResolveEventScope_SupportsParentTab(t *testing.T) {
+	hub := &recordingHub{}
+	agents := []*leapmuxv1.AgentInfo{
+		{Id: "parent-agent-1", Title: "Parent", WorkerId: "worker-A"},
+		{Id: "child-agent-1", Title: "Child", ParentAgentId: "parent-agent-1", WorkerId: "worker-A"},
+	}
+	startSpawnIPC(t, hub, phase2aAgentDispatcher{agents: agents})
+	t.Setenv(controlenv.TabIDVariable, "child-agent-1")
+	t.Setenv(controlenv.TabTypeVariable, "agent")
+	t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+	cmd := newEventsCommand()
+	inv := &cli.Invocation{Context: t.Context(), Command: cmd, Printer: &cli.Printer{}}
+	s, err := openStreamSession(inv)
+	require.NoError(t, err)
+	defer s.Close()
+
+	wsID, tabID, err := resolveEventScope(s, eventsOptions{tab: "parent"})
+	require.NoError(t, err)
+	assert.Empty(t, wsID)
+	assert.Equal(t, "parent-agent-1", tabID)
 }

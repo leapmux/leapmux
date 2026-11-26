@@ -13,9 +13,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // fakeAgentMessagesTransport is an in-memory streamevents.Transport
@@ -65,6 +68,7 @@ func (h *fakeAgentMessagesHandle) Update(req *leapmuxv1.WatchEventsRequest) erro
 }
 func (h *fakeAgentMessagesHandle) Cancel()               { h.cancel() }
 func (h *fakeAgentMessagesHandle) Done() <-chan struct{} { return h.done }
+func (h *fakeAgentMessagesHandle) EndErr() error         { return nil }
 
 func (t *fakeAgentMessagesTransport) push(seq int64) {
 	t.mu.Lock()
@@ -650,6 +654,286 @@ func TestDrainBacklog_PagesPastAnAlreadyRetractedRow(t *testing.T) {
 	assert.Equal(t, []int64{15, 19}, fetchedAfter)
 	assert.Equal(t, []int64{20}, emitted)
 	assert.Equal(t, int64(20), cursor.Get("a-1"))
+}
+
+// endingFollowTransport opens a handle whose stream ends with a scripted error.
+type endingFollowTransport struct {
+	mu      sync.Mutex
+	onFrame func(*leapmuxv1.WatchEventsResponse)
+	calls   []*leapmuxv1.WatchEventsRequest
+	handle  *endingFollowHandle
+	opened  chan struct{}
+}
+
+type endingFollowHandle struct {
+	mu     sync.Mutex
+	endErr error
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (h *endingFollowHandle) Update(*leapmuxv1.WatchEventsRequest) error { return nil }
+func (h *endingFollowHandle) Cancel()                                    { h.cancel() }
+func (h *endingFollowHandle) Done() <-chan struct{}                      { return h.done }
+func (h *endingFollowHandle) EndErr() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.endErr
+}
+
+func (t *endingFollowTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
+	onFrame func(*leapmuxv1.WatchEventsResponse),
+) (streamevents.Handle, error) {
+	ctx, cancel := context.WithCancel(parentCtx)
+	done := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(done)
+	}()
+	h := &endingFollowHandle{cancel: cancel, done: done}
+	t.mu.Lock()
+	t.calls = append(t.calls, req)
+	t.onFrame = onFrame
+	t.handle = h
+	t.mu.Unlock()
+	select {
+	case t.opened <- struct{}{}:
+	default:
+	}
+	return h, nil
+}
+
+func (t *endingFollowTransport) endWith(err error) {
+	t.mu.Lock()
+	h := t.handle
+	t.mu.Unlock()
+	h.mu.Lock()
+	h.endErr = err
+	h.mu.Unlock()
+	h.cancel()
+}
+
+func TestTailAgentMessages_ReturnsImmediatelyOnPermanentRefusal(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	tr := &endingFollowTransport{opened: make(chan struct{}, 2)}
+	opens := 0
+	openTransport := func(context.Context) (*workerWatchTransport, error) {
+		opens++
+		return &workerWatchTransport{transport: tr, close: func() {}}, nil
+	}
+	drain := func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
+		return nil, false, nil
+	}
+	var stdout, stderr bytes.Buffer
+	em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: &stdout, Err: &stderr}}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, drain, em, clock)
+	}()
+
+	select {
+	case <-tr.opened:
+	case <-ctx.Done():
+		t.Fatal("subscription did not open")
+	}
+	tr.endWith(&channelwire.RPCError{Code: 7, Message: "only the worker owner can watch events"})
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.Equal(t, cli.CodePermissionDenied, cli.FromError(err).Code)
+	case <-ctx.Done():
+		t.Fatal("tailAgentMessagesWith did not stop on permanent refusal")
+	}
+	assert.Equal(t, 1, opens, "a permanent refusal must not reopen the transport")
+	_, running := clock.Peek()
+	assert.False(t, running, "a permanent refusal must not arm a reconnect timer")
+}
+
+func TestTailAgentMessages_ReopensTransportAfterChannelEndAndResumesCursor(t *testing.T) {
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	defer cancel()
+	clock := testutil.NewQuartzMock(t)
+	newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
+	defer newTimer.Close()
+
+	first := &endingFollowTransport{opened: make(chan struct{}, 1)}
+	second := &endingFollowTransport{opened: make(chan struct{}, 1)}
+	var closedFirst atomic.Bool
+	var opens atomic.Int32
+	openTransport := func(context.Context) (*workerWatchTransport, error) {
+		switch opens.Add(1) {
+		case 1:
+			return &workerWatchTransport{transport: first, close: func() { closedFirst.Store(true) }}, nil
+		default:
+			return &workerWatchTransport{transport: second, close: func() {}}, nil
+		}
+	}
+	drain := func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
+		return nil, false, nil
+	}
+	var stdout, stderr bytes.Buffer
+	em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: &stdout, Err: &stderr}}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, drain, em, clock)
+	}()
+
+	select {
+	case <-first.opened:
+	case <-ctx.Done():
+		t.Fatal("first subscription did not open")
+	}
+	first.mu.Lock()
+	first.onFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+			AgentId: "a-1",
+			Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: 12}},
+		}},
+	})
+	first.mu.Unlock()
+	// Simulate the E2EE channel closing transiently.
+	first.endWith(errors.New("the channel to the worker closed"))
+
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	assert.True(t, closedFirst.Load(), "the dead transport must be closed before reconnecting")
+	clock.Advance(delay).MustWait(ctx)
+
+	select {
+	case <-second.opened:
+	case <-ctx.Done():
+		t.Fatal("second subscription did not open on a fresh transport")
+	}
+	second.mu.Lock()
+	require.Len(t, second.calls, 1)
+	req := second.calls[0]
+	second.mu.Unlock()
+	require.Len(t, req.GetAgents(), 1)
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, req.GetAgents()[0].GetReplay())
+	assert.Equal(t, int64(12), req.GetAgents()[0].GetCursorSeq())
+
+	cancel()
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("tailAgentMessagesWith did not exit on cancel")
+	}
+}
+
+func TestTailAgentMessages_ReconnectOpenTransportFailureTransientAndPermanent(t *testing.T) {
+	t.Run("transient open error backs off and retries until fresh transport opens", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+		defer cancel()
+		clock := testutil.NewQuartzMock(t)
+		newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
+		defer newTimer.Close()
+
+		first := &endingFollowTransport{opened: make(chan struct{}, 1)}
+		third := &endingFollowTransport{opened: make(chan struct{}, 1)}
+		var opens atomic.Int32
+		openTransport := func(context.Context) (*workerWatchTransport, error) {
+			switch opens.Add(1) {
+			case 1:
+				return &workerWatchTransport{transport: first, close: func() {}}, nil
+			case 2:
+				return nil, errors.New("worker offline temporarily")
+			default:
+				return &workerWatchTransport{transport: third, close: func() {}}, nil
+			}
+		}
+		drain := func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
+			return nil, false, nil
+		}
+		var stdout, stderr bytes.Buffer
+		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatText, Out: &stdout, Err: &stderr}}
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, drain, em, clock)
+		}()
+
+		select {
+		case <-first.opened:
+		case <-ctx.Done():
+			t.Fatal("first subscription did not open")
+		}
+		first.endWith(errors.New("channel closed"))
+
+		// First reconnect backoff after first stream ended.
+		d1 := testutil.WaitForTimer(t, ctx, newTimer)
+		clock.Advance(d1).MustWait(ctx)
+		// Second openTransport fails transiently and arms a second backoff timer.
+		d2 := testutil.WaitForTimer(t, ctx, newTimer)
+		assert.Equal(t, 2*d1, d2)
+		clock.Advance(d2).MustWait(ctx)
+
+		select {
+		case <-third.opened:
+		case <-ctx.Done():
+			t.Fatal("third transport did not open after transient reconnect error")
+		}
+		assert.Equal(t, int32(3), opens.Load())
+		assert.Contains(t, stderr.String(), "connecting to agent a-1 failed, retrying")
+
+		cancel()
+		select {
+		case err := <-errCh:
+			require.NoError(t, err)
+		case <-testutil.DeadlineContext(t).Done():
+			t.Fatal("tailAgentMessagesWith did not exit on cancel")
+		}
+	})
+
+	t.Run("permanent open error on reconnect stops without arming a timer", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		clock := testutil.NewQuartzMock(t)
+		newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
+		defer newTimer.Close()
+
+		first := &endingFollowTransport{opened: make(chan struct{}, 1)}
+		var opens atomic.Int32
+		openTransport := func(context.Context) (*workerWatchTransport, error) {
+			if opens.Add(1) == 1 {
+				return &workerWatchTransport{transport: first, close: func() {}}, nil
+			}
+			return nil, &channelwire.RPCError{Code: 7, Message: "permission revoked"}
+		}
+		drain := func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
+			return nil, false, nil
+		}
+		var stdout, stderr bytes.Buffer
+		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: &stdout, Err: &stderr}}
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, drain, em, clock)
+		}()
+
+		select {
+		case <-first.opened:
+		case <-ctx.Done():
+			t.Fatal("first subscription did not open")
+		}
+		first.endWith(errors.New("channel closed"))
+
+		d1 := testutil.WaitForTimer(t, ctx, newTimer)
+		clock.Advance(d1).MustWait(ctx)
+
+		select {
+		case err := <-errCh:
+			require.Error(t, err)
+			assert.Equal(t, cli.CodePermissionDenied, cli.FromError(err).Code)
+		case <-ctx.Done():
+			t.Fatal("tailAgentMessagesWith did not stop on permanent open error")
+		}
+		assert.Equal(t, int32(2), opens.Load())
+		_, running := clock.Peek()
+		assert.False(t, running)
+	})
 }
 
 func splitNonEmpty(s string) []string {

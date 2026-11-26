@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // fakeListing serves a fixed set of objects, and counts the list calls so a
@@ -209,16 +210,21 @@ func TestCanonical_APrefixThatMatchesNothingIsNotFound(t *testing.T) {
 	assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
 }
 
-func TestCanonical_AShortPrefixIsAUsageError(t *testing.T) {
+func TestCanonical_ShortBareMissReturnsNotFoundForNamedKindsAndUsageForTile(t *testing.T) {
 	f := sampleListing()
 	for _, input := range []string{"8", "87a"} {
 		_, err := resolve.Canonical(context.Background(), f.listing(), resolve.KindTab, input)
-		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code, input)
+		e := cli.FromError(err)
+		assert.Equal(t, cli.CodeNotFound, e.Code, input)
+		assert.Equal(t, cli.ExitNotFound, e.ExitCode(), input)
+		assert.Contains(t, e.Message, "4-character id prefix minimum", input)
 	}
-	// A tile has no title fallback, so a short tile prefix still fails before any call.
+	// A tile has no title fallback, so a short tile prefix still fails as usage before any call.
 	fTile := sampleListing()
 	_, err := resolve.Canonical(context.Background(), fTile.listing(), resolve.KindTile, "87")
-	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	e := cli.FromError(err)
+	assert.Equal(t, cli.CodeUsage, e.Code)
+	assert.Equal(t, cli.ExitUsage, e.ExitCode())
 	assert.Zero(t, fTile.calls, "a short tile prefix fails before any call")
 }
 
@@ -228,23 +234,81 @@ func TestCanonical_ShortBareSlugResolvesDirectly(t *testing.T) {
 	got, err := resolve.Canonical(context.Background(), f.listing(), resolve.KindAgent, "qa")
 	require.NoError(t, err)
 	assert.Equal(t, "87a19d5f-aaaa", got.ID)
+
+	f.workspaces[0].Title = "ops"
+	got, err = resolve.Canonical(context.Background(), f.listing(), resolve.KindWorkspace, "OPS")
+	require.NoError(t, err)
+	assert.Equal(t, "1aszUbNsWorkspaceOne", got.ID)
+
+	f.workerNames["hQrS3iDtWorkerOne"] = "ci"
+	got, err = resolve.Canonical(context.Background(), f.listing(), resolve.KindWorker, "CI")
+	require.NoError(t, err)
+	assert.Equal(t, "hQrS3iDtWorkerOne", got.ID)
+}
+
+func TestKind_OutOfRangeFallsBackToDefaultSpec(t *testing.T) {
+	for _, kind := range []resolve.Kind{resolve.Kind(-1), resolve.Kind(99)} {
+		assert.Equal(t, "tab", kind.String())
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, kind.TabType())
+		assert.False(t, kind.IsTab())
+		assert.Equal(t,
+			`A tab id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, or "self" for the tab of the tab that runs this command.`,
+			kind.Help())
+		assert.Equal(t,
+			`A tab id, a unique prefix of 4 or more characters of one, or "id:<id>" for a literal id.`,
+			kind.HelpWithoutSelf())
+		_, err := resolve.Canonical(t.Context(), sampleListing().listing(), kind, "self")
+		require.ErrorContains(t, err, `no "self" for kind`)
+	}
 }
 
 // The hint of a short prefix offers the named form of the kind, and only a
 // form that the kind accepts: a tile has no title, and a worker has a name.
 func TestCanonical_AShortPrefixHintsTheFormsOfItsKind(t *testing.T) {
 	f := sampleListing()
-	for kind, want := range map[resolve.Kind]string{
-		resolve.KindTab:       `use "self" for your own tab, or "title:<title>"`,
-		resolve.KindAgent:     `use "self" for your own agent, or "title:<title>"`,
-		resolve.KindWorkspace: `use "self" for your own workspace, or "title:<title>"`,
-		resolve.KindWorker:    `use "self" for your own worker, or "name:<name>"`,
-		resolve.KindTile:      `use "self" for your own tile`,
+	for _, tc := range []struct {
+		kind     resolve.Kind
+		wantCode cli.Code
+		wantExit int
+		wantHint string
+	}{
+		{resolve.KindTab, cli.CodeNotFound, cli.ExitNotFound, `use "self" for your own tab, or "title:<title>"`},
+		{resolve.KindAgent, cli.CodeNotFound, cli.ExitNotFound, `use "self" for your own agent, or "title:<title>"`},
+		{resolve.KindTerminal, cli.CodeNotFound, cli.ExitNotFound, `use "self" for your own terminal, or "title:<title>"`},
+		{resolve.KindWorkspace, cli.CodeNotFound, cli.ExitNotFound, `use "self" for your own workspace, or "title:<title>"`},
+		{resolve.KindWorker, cli.CodeNotFound, cli.ExitNotFound, `use "self" for your own worker, or "name:<name>"`},
+		{resolve.KindTile, cli.CodeUsage, cli.ExitUsage, `use "self" for your own tile`},
 	} {
-		_, err := resolve.Canonical(context.Background(), f.listing(), kind, "87")
+		_, err := resolve.Canonical(context.Background(), f.listing(), tc.kind, "87")
 		e := cli.FromError(err)
-		assert.Equal(t, cli.CodeUsage, e.Code, "%s", kind)
-		assert.Equal(t, []string{`use "id:<id>" to select a literal id`, want}, e.Hints, "%s", kind)
+		assert.Equal(t, tc.wantCode, e.Code, "%s", tc.kind)
+		assert.Equal(t, tc.wantExit, e.ExitCode(), "%s", tc.kind)
+		assert.Equal(t, []string{`use "id:<id>" to select a literal id`, tc.wantHint}, e.Hints, "%s", tc.kind)
+	}
+}
+
+func TestIsGeneratedID(t *testing.T) {
+	generated := id.Generate()
+	require.Len(t, generated, id.GeneratedLength)
+
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "real generated id", input: generated, want: true},
+		{name: "all allowed ASCII characters", input: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg-_xyz", want: true},
+		{name: "empty", input: "", want: false},
+		{name: "too short", input: strings.Repeat("a", id.GeneratedLength-1), want: false},
+		{name: "too long", input: strings.Repeat("a", id.GeneratedLength+1), want: false},
+		{name: "UUID", input: "87a19d5f-4838-4e34-9f0f-56130f0a62b1", want: false},
+		{name: "48 chars with space", input: strings.Repeat("a", 23) + " " + strings.Repeat("b", 24), want: false},
+		{name: "48 chars with punctuation", input: strings.Repeat("a", 47) + ".", want: false},
+		{name: "48 bytes with non-ASCII UTF-8", input: strings.Repeat("a", 46) + "é", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolve.IsGeneratedID(tc.input))
+		})
 	}
 }
 
@@ -353,16 +417,151 @@ func TestCanonical_ATitleDoesNotSelectATileOrAWorker(t *testing.T) {
 	}
 }
 
-func TestCanonical_ANameSelectsAWorkerOnly(t *testing.T) {
-	got, err := resolve.Canonical(context.Background(), sampleListing().listing(), resolve.KindWorker, "name:laptop")
+func TestCanonical_ANameSelectsAWorkerOrAnAgent(t *testing.T) {
+	f := sampleListing()
+	got, err := resolve.Canonical(context.Background(), f.listing(), resolve.KindWorker, "name:laptop")
 	require.NoError(t, err)
 	assert.Equal(t, "hQrSxxxxWorkerTwo", got.ID)
 
-	_, err = resolve.Canonical(context.Background(), sampleListing().listing(), resolve.KindWorker, "name:nope")
+	_, err = resolve.Canonical(context.Background(), f.listing(), resolve.KindWorker, "name:nope")
 	assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
 
-	_, err = resolve.Canonical(context.Background(), sampleListing().listing(), resolve.KindTab, "name:build-box")
+	_, err = resolve.Canonical(context.Background(), f.listing(), resolve.KindWorker, "name:")
 	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+
+	f.titles["87a19d5f-aaaa"] = "reviewer"
+	got, err = resolve.Canonical(context.Background(), f.listing(), resolve.KindAgent, "name:reviewer")
+	require.NoError(t, err)
+	assert.Equal(t, "87a19d5f-aaaa", got.ID)
+
+	_, err = resolve.Canonical(context.Background(), f.listing(), resolve.KindAgent, "name:")
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+
+	for _, kind := range []resolve.Kind{resolve.KindTab, resolve.KindTerminal, resolve.KindTile, resolve.KindWorkspace} {
+		_, err = resolve.Canonical(context.Background(), f.listing(), kind, "name:build-box")
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code, kind.String())
+	}
+}
+
+func TestCanonical_NilMetadataCallbacksDoNotPanic(t *testing.T) {
+	t.Run("byTitle with nil TabTitles", func(t *testing.T) {
+		f := sampleListing()
+		listing := f.listing()
+		listing.TabTitles = nil
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "title:CLI Design")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+	})
+	t.Run("byName with nil WorkerNames", func(t *testing.T) {
+		f := sampleListing()
+		listing := f.listing()
+		listing.WorkerNames = nil
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindWorker, "name:build-box")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+	})
+	t.Run("ambiguous tab prefix with nil TabTitles", func(t *testing.T) {
+		f := sampleListing()
+		listing := f.listing()
+		listing.TabTitles = nil
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindTab, "87a1")
+		e := cli.FromError(err)
+		require.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		require.Len(t, e.Candidates, 2)
+		assert.Empty(t, e.Candidates[0].Title)
+	})
+}
+
+func TestCanonical_BareFallbackMetadataUnavailability(t *testing.T) {
+	t.Run("unique bare tab match fails unavailable when another tab's metadata is unread", func(t *testing.T) {
+		f := sampleListing()
+		listing := f.listing()
+		listing.TabTitles = func(context.Context, []*leapmuxv1.WorkspaceTab) map[string]string {
+			return map[string]string{"87a19d5f-aaaa": "CLI Design"}
+		}
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "cli design")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+	})
+	t.Run("zero bare tab matches still yield not_found when unread metadata exists", func(t *testing.T) {
+		f := sampleListing()
+		listing := f.listing()
+		listing.TabTitles = func(context.Context, []*leapmuxv1.WorkspaceTab) map[string]string {
+			return map[string]string{"87a19d5f-aaaa": "CLI Design"}
+		}
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "UnreachableTitle")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+	})
+	t.Run("explicit title selector fails unavailable on zero matches when metadata is unread", func(t *testing.T) {
+		f := sampleListing()
+		listing := f.listing()
+		listing.TabTitles = func(context.Context, []*leapmuxv1.WorkspaceTab) map[string]string {
+			return map[string]string{"87a19d5f-aaaa": "CLI Design"}
+		}
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "title:UnreachableTitle")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+	})
+	t.Run("unique bare worker match fails unavailable when another online worker's metadata is unread", func(t *testing.T) {
+		f := sampleListing()
+		delete(f.workerNames, "hQrSxxxxWorkerTwo")
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "build-box")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+	})
+	t.Run("zero bare worker matches still yield not_found when unread metadata exists", func(t *testing.T) {
+		f := sampleListing()
+		delete(f.workerNames, "hQrSxxxxWorkerTwo")
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "missing-box")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+	})
+	t.Run("explicit name selector fails unavailable on zero matches when online worker metadata is unread", func(t *testing.T) {
+		f := sampleListing()
+		delete(f.workerNames, "hQrSxxxxWorkerTwo")
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "name:missing-box")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+	})
+}
+
+func TestCanonical_OfflineWorkersDoNotBlockOnlineWorkerNameResolution(t *testing.T) {
+	f := &fakeListing{
+		workers: []*leapmuxv1.Worker{
+			{Id: "hQrS3iDtWorkerOne", Online: true},
+			{Id: "hQrSxxxxOfflineTwo", Online: false},
+		},
+		workerNames: map[string]string{"hQrS3iDtWorkerOne": "build-box"},
+	}
+
+	got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "name:build-box")
+	require.NoError(t, err)
+	assert.Equal(t, "hQrS3iDtWorkerOne", got.ID)
+
+	got, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "BUILD-BOX")
+	require.NoError(t, err)
+	assert.Equal(t, "hQrS3iDtWorkerOne", got.ID)
+
+	_, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "missing-box")
+	assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+}
+
+func TestCanonical_AmbiguousWorkerPrefixQueriesOnlyMatchedWorkers(t *testing.T) {
+	f := sampleListing()
+	f.workers = append(f.workers, &leapmuxv1.Worker{Id: "zzzzUnmatchedWorker", Online: true})
+	var queried []string
+	listing := f.listing()
+	listing.WorkerNames = func(_ context.Context, workers []*leapmuxv1.Worker) map[string]string {
+		for _, w := range workers {
+			queried = append(queried, w.GetId())
+		}
+		return f.workerNames
+	}
+
+	_, err := resolve.Canonical(t.Context(), listing, resolve.KindWorker, "hQrS")
+	require.Equal(t, cli.CodeAmbiguousTarget, cli.FromError(err).Code)
+	assert.ElementsMatch(t, []string{"hQrS3iDtWorkerOne", "hQrSxxxxWorkerTwo"}, queried)
 }
 
 func TestCanonical_AWorkerPrefixListsItsNamesWhenAmbiguous(t *testing.T) {
@@ -431,5 +630,105 @@ func TestCanonical_Self(t *testing.T) {
 		f.env = map[string]string{"LEAPMUX_CONTROL_TAB_ID": "term-1", "LEAPMUX_CONTROL_TAB_TYPE": "terminal"}
 		_, err := resolve.Canonical(context.Background(), f.listing(), resolve.KindAgent, "self")
 		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	})
+}
+
+func TestCanonical_Parent(t *testing.T) {
+	t.Run("resolves the calling agent's parent for agent and tab kinds", func(t *testing.T) {
+		for _, tc := range []struct {
+			kind  resolve.Kind
+			input string
+		}{
+			{resolve.KindAgent, "parent"},
+			{resolve.KindAgent, "PARENT"},
+			{resolve.KindAgent, " parent "},
+			{resolve.KindTab, "parent"},
+			{resolve.KindTab, "\tPaReNt\n"},
+		} {
+			f := sampleListing()
+			f.env = map[string]string{
+				"LEAPMUX_CONTROL_TAB_ID":    "child-1",
+				"LEAPMUX_CONTROL_TAB_TYPE":  "agent",
+				"LEAPMUX_CONTROL_WORKER_ID": "worker-A",
+			}
+			listing := f.listing()
+			listing.ParentAgent = func(_ context.Context, workerID, selfAgentID string) (string, error) {
+				assert.Equal(t, "worker-A", workerID)
+				assert.Equal(t, "child-1", selfAgentID)
+				return "parent-1", nil
+			}
+			got, err := resolve.Canonical(t.Context(), listing, tc.kind, tc.input)
+			require.NoError(t, err)
+			assert.Equal(t, "parent-1", got.ID)
+			assert.True(t, got.Parent)
+			assert.False(t, got.Self)
+		}
+	})
+	t.Run("is a usage error outside an agent tab", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			env  map[string]string
+		}{
+			{
+				name: "terminal tab",
+				env:  map[string]string{"LEAPMUX_CONTROL_TAB_ID": "term-1", "LEAPMUX_CONTROL_TAB_TYPE": "terminal", "LEAPMUX_CONTROL_WORKER_ID": "worker-A"},
+			},
+			{
+				name: "missing worker id",
+				env:  map[string]string{"LEAPMUX_CONTROL_TAB_ID": "child-1", "LEAPMUX_CONTROL_TAB_TYPE": "agent"},
+			},
+			{
+				name: "empty environment",
+				env:  map[string]string{},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := sampleListing()
+				f.env = tc.env
+				listing := f.listing()
+				listing.ParentAgent = func(context.Context, string, string) (string, error) {
+					t.Fatal("ParentAgent must not run without calling agent and worker env")
+					return "", nil
+				}
+				_, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "parent")
+				assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+			})
+		}
+	})
+	t.Run("is unavailable when ParentAgent is nil", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{"LEAPMUX_CONTROL_TAB_ID": "child-1", "LEAPMUX_CONTROL_TAB_TYPE": "agent", "LEAPMUX_CONTROL_WORKER_ID": "worker-A"}
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "parent")
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+	})
+	t.Run("is not_found when the calling agent has no parent", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{"LEAPMUX_CONTROL_TAB_ID": "root-1", "LEAPMUX_CONTROL_TAB_TYPE": "agent", "LEAPMUX_CONTROL_WORKER_ID": "worker-A"}
+		listing := f.listing()
+		listing.ParentAgent = func(context.Context, string, string) (string, error) { return "", nil }
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "parent")
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+	})
+	t.Run("propagates lookup error", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{"LEAPMUX_CONTROL_TAB_ID": "child-1", "LEAPMUX_CONTROL_TAB_TYPE": "agent", "LEAPMUX_CONTROL_WORKER_ID": "worker-A"}
+		listing := f.listing()
+		listing.ParentAgent = func(context.Context, string, string) (string, error) { return "", errors.New("worker down") }
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "parent")
+		require.ErrorContains(t, err, "worker down")
+	})
+	t.Run("does not treat parent as relational for non-agent kinds", func(t *testing.T) {
+		f := sampleListing()
+		f.workerNames["hQrS3iDtWorkerOne"] = "parent"
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "parent")
+		require.NoError(t, err)
+		assert.Equal(t, "hQrS3iDtWorkerOne", got.ID)
+		assert.False(t, got.Parent)
+
+		f.titles["87a1ffff-bbbb"] = "parent"
+		got, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindTerminal, "parent")
+		require.NoError(t, err)
+		assert.Equal(t, "87a1ffff-bbbb", got.ID)
+		assert.False(t, got.Parent)
 	})
 }

@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
@@ -61,7 +62,7 @@ type agentSearchHit struct {
 	WorkerID  string `json:"worker_id,omitempty"`
 	Seq       int64  `json:"seq" table:"SEQ"`
 	Source    string `json:"source" table:"SOURCE"`
-	CreatedAt string `json:"created_at,omitempty" table:"TIME"`
+	CreatedAt string `json:"created_at,omitempty" table:"TIME,dim"`
 	Snippet   string `json:"snippet" table:"SNIPPET"`
 }
 
@@ -177,7 +178,7 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 		// local IPC worker only if listing workers is unavailable.
 		workers, err := listAllWorkers(s.ctx, s.c)
 		if err != nil {
-			if s.c.IsWorkerIPC() {
+			if _, isIPC := s.c.(*control.WorkerIPCClient); isIPC {
 				if wid, werr := s.workerScope(); werr == nil && wid != "" {
 					targets[wid] = nil
 				}
@@ -265,7 +266,7 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 			return nil, cli.Wrap(cli.CodeWorkerOffline, lastErr, fmt.Sprintf("agent search failed on all %d workers", len(failedWorkers)))
 		}
 		sort.Strings(failedWorkers)
-		if !inv.Printer.Quiet && inv.Printer.Format == cli.FormatText {
+		if inv.Printer.Format == cli.FormatText {
 			inv.Printer.Notice("warning: skipped unreachable worker(s): %s", strings.Join(failedWorkers, "; "))
 		}
 	}

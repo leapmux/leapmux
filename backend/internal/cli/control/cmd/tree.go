@@ -53,7 +53,7 @@ type treeTab struct {
 	Type            string    `json:"type" table:"TYPE"`
 	Title           string    `json:"title,omitempty" table:"TITLE"`
 	Provider        string    `json:"provider,omitempty" table:"PROVIDER"`
-	State           string    `json:"state,omitempty" table:"STATE"`
+	State           string    `json:"state,omitempty" table:"STATE,state"`
 	Branch          string    `json:"branch,omitempty" table:"BRANCH"`
 	Dirty           bool      `json:"dirty,omitempty"`
 	Worker          string    `json:"worker,omitempty" table:"WORKER"`
@@ -553,7 +553,7 @@ type treeWorkerData struct {
 // fetchTreeWorkerData opens ONE Noise_NK E2EE channel per Worker and gathers
 // agent info (with descendants), terminal info, running processes, viewer
 // titles, worker names, and pending control request handles concurrently.
-func fetchTreeWorkerData(ctx context.Context, c *control.Client, tabs []*leapmuxv1.WorkspaceTab) treeWorkerData {
+func fetchTreeWorkerData(ctx context.Context, c control.Peer, tabs []*leapmuxv1.WorkspaceTab) treeWorkerData {
 	type workerTabs struct {
 		agents, terminals []string
 		viewers           []*leapmuxv1.TabIdent

@@ -94,6 +94,34 @@ func TestExecute_ErrorPathHonorsFormatColorAndQuiet(t *testing.T) {
 		assert.Contains(t, stdout.String(), `"not_found"`, "args=%v", args)
 	}
 
+	// --color=always styles text errors on stderr; --color=never suppresses ANSI;
+	// -q / --quiet resolves to FormatQuiet, suppressing ANSI even with --color=always.
+	{
+		var stdout, stderr bytes.Buffer
+		code := Execute(t.Context(), newTree(), []string{"fail", "--color=always"}, strings.NewReader(""), &stdout, &stderr)
+		assert.Equal(t, ExitNotFound, code)
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), ansiBoldRed+"error:"+ansiReset)
+	}
+	{
+		var stdout, stderr bytes.Buffer
+		code := Execute(t.Context(), newTree(), []string{"fail", "--color=never"}, strings.NewReader(""), &stdout, &stderr)
+		assert.Equal(t, ExitNotFound, code)
+		assert.Empty(t, stdout.String())
+		assert.NotContains(t, stderr.String(), "\x1b[")
+	}
+	for _, args := range [][]string{
+		{"fail", "-q", "--color=always"},
+		{"fail", "--quiet", "--color=always"},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := Execute(t.Context(), newTree(), args, strings.NewReader(""), &stdout, &stderr)
+		assert.Equal(t, ExitNotFound, code, "args=%v", args)
+		assert.Empty(t, stdout.String(), "args=%v must not emit JSON on stdout", args)
+		assert.Contains(t, stderr.String(), "error: not_found: no such item", "args=%v", args)
+		assert.NotContains(t, stderr.String(), "\x1b[", "args=%v quiet format suppresses ANSI on stderr", args)
+	}
+
 	// Global --format and --color flags must have enum completions registered.
 	root := newTree()
 	fn, ok := root.GetFlagCompletionFunc("format")
@@ -121,7 +149,7 @@ func (r sampleQuietResult) QuietLines() []string { return r.Keys }
 
 func TestPrinter_QuietUsesQuietRenderer(t *testing.T) {
 	var out bytes.Buffer
-	p := &Printer{Out: &out, Err: &bytes.Buffer{}, Quiet: true}
+	p := &Printer{Out: &out, Err: &bytes.Buffer{}, Format: FormatQuiet}
 	require.NoError(t, p.Result(sampleQuietResult{WorkerID: "w-1", Keys: []string{"k1", "k2"}}))
 	assert.Equal(t, "k1\nk2\n", out.String())
 }

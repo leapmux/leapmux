@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -66,9 +65,6 @@ func runTree(t *testing.T, tree *cobra.Command, stdin string, args ...string) cl
 		root.AddCommand(tree)
 	}
 	var out, errOut bytes.Buffer
-	prevErr := control.Err
-	control.Err = &errOut
-	defer func() { control.Err = prevErr }()
 	code := cli.Execute(context.Background(), root, args, strings.NewReader(stdin), &out, &errOut)
 	return cliOutcome{Stdout: out.String(), Stderr: errOut.String(), Code: code}
 }

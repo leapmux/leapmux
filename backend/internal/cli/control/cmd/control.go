@@ -8,6 +8,7 @@ package cmd
 
 import (
 	"context"
+	"io"
 	"os"
 	"strings"
 
@@ -22,6 +23,27 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
+func init() {
+	cli.SetDefaultStateClassifier(leapmuxStateClassifier)
+}
+
+// leapmuxStateClassifier maps LeapMux agent, terminal, worker, and health
+// state tokens to their table cell tones.
+func leapmuxStateClassifier(value string) cli.StateTone {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "idle", "ready", "active", "online", "ok", "pass", "running", "completed":
+		return cli.StateToneGreen
+	case "working", "starting", "pending", "warn", "queued", "dispatching":
+		return cli.StateToneYellow
+	case "waiting_for_user":
+		return cli.StateToneMagenta
+	case "error", "exited", "startup_failed", "failed", "offline", "fail", "closed", "canceled":
+		return cli.StateToneRed
+	default:
+		return cli.StateToneNone
+	}
+}
+
 // guideFooter is the last line of each group's help. It points an agent that
 // reads the help at the guide, as Herdr's help does.
 const guideFooter = `An agent that drives LeapMux reads "leapmux guide" first (or "leapmux guide --topics"); skip if a LeapMux skill is already in your context.`
@@ -30,6 +52,7 @@ const guideFooter = `An agent that drives LeapMux reads "leapmux guide" first (o
 // root (used by `leapmux`). versionOverride optionally overrides the CLI
 // version string reported by `leapmux version` (for binary tests).
 func Attach(root *cobra.Command, versionOverride func() string) {
+	cli.SetDefaultStateClassifier(leapmuxStateClassifier)
 	controlCmds := []*cobra.Command{
 		newTreeCommand(),
 		newWorkspaceCommand(),
@@ -108,23 +131,46 @@ func hubURLFor(cmd *cobra.Command) (string, error) {
 	return control.DefaultHub()
 }
 
+// errOutOf returns inv.Printer.Err when available, or nil so control helpers
+// fall back to os.Stderr.
+func errOutOf(inv *cli.Invocation) io.Writer {
+	if inv != nil && inv.Printer != nil {
+		return inv.Printer.Err
+	}
+	return nil
+}
+
+// attachErrOut wires inv.Printer.Err into c so interactive ceremonies (such as
+// browser step-up) write to the invocation's error stream rather than a global.
+func attachErrOut(c *control.HubClient, inv *cli.Invocation) *control.HubClient {
+	if c != nil {
+		if w := errOutOf(inv); w != nil {
+			c.SetErrOut(w)
+		}
+	}
+	return c
+}
+
 // newClient builds the client of an invocation, with the precedence that
 // control.NewClientFromEnv states. When connecting outside a tab by
 // auto-discovering a local solo/dev Hub, it prints a one-line stderr notice
 // in text mode so the operator knows which Hub answered.
-func newClient(inv *cli.Invocation) (*control.Client, error) {
+func newClient(inv *cli.Invocation) (control.Peer, error) {
 	explicit := explicitHub(inv.Command)
 	c, err := control.NewClientFromEnv(explicit)
 	if err != nil {
 		return nil, err
 	}
-	if !c.IsWorkerIPC() && explicit == "" && strings.TrimSpace(os.Getenv("LEAPMUX_HUB")) == "" &&
-		inv.Printer != nil && inv.Printer.Format == cli.FormatText && !inv.Printer.Quiet {
-		hubURL := c.HubURL
-		if strings.HasPrefix(hubURL, "unix:") || strings.HasPrefix(hubURL, "npipe:") {
-			saved, _ := control.LoadContext()
-			if saved.Hub != hubURL {
-				inv.Printer.Notice("using discovered local Hub %s (override with --hub or LEAPMUX_HUB)", hubURL)
+	if hub, ok := c.(*control.HubClient); ok {
+		attachErrOut(hub, inv)
+		if explicit == "" && strings.TrimSpace(os.Getenv("LEAPMUX_HUB")) == "" &&
+			inv.Printer != nil && inv.Printer.Format == cli.FormatText {
+			hubURL := hub.HubURL
+			if strings.HasPrefix(hubURL, "unix:") || strings.HasPrefix(hubURL, "npipe:") {
+				saved, _ := control.LoadContext()
+				if saved.Hub != hubURL {
+					inv.Printer.Notice("using discovered local Hub %s (override with --hub or LEAPMUX_HUB)", hubURL)
+				}
 			}
 		}
 	}
@@ -135,7 +181,7 @@ func newClient(inv *cli.Invocation) (*control.Client, error) {
 // limits its calls, and the cache of the tabs it located.
 type session struct {
 	inv    *cli.Invocation
-	c      *control.Client
+	c      control.Peer
 	ctx    context.Context
 	cancel context.CancelFunc
 	// located caches the hub's row of each tab that the session resolved,
@@ -246,9 +292,6 @@ func (s *session) resolveTab(kind resolve.Kind, input string, need resolve.Need)
 	if input == "" {
 		input = resolve.SelfTarget
 	}
-	if strings.EqualFold(strings.TrimSpace(input), "parent") && (kind == resolve.KindAgent || kind == resolve.KindTab) {
-		return s.resolveParentAgent(need)
-	}
 	listing := s.listing()
 	if s.hasTargetWorkspaceScope() {
 		ws, err := s.resolveOne(resolve.KindWorkspace, stringFlag(s.inv, "workspace"))
@@ -267,11 +310,15 @@ func (s *session) resolveTab(kind resolve.Kind, input string, need resolve.Need)
 		s.located[t.ID] = t.Tab
 	}
 	need.TabID = true
+	fixedType := kind.TabType()
+	if t.Parent && fixedType == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+		fixedType = leapmuxv1.TabType_TAB_TYPE_AGENT
+	}
 	got, err := resolve.Resolve(s.ctx, s.deps(), need, resolve.Inputs{
 		TabID:         t.ID,
-		ExplicitTabID: !t.Self,
+		ExplicitTabID: !t.Self && !t.Parent,
 		WorkerID:      strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)),
-		FixedTabType:  kind.TabType(),
+		FixedTabType:  fixedType,
 	})
 	if err != nil {
 		return tabTarget{}, err
@@ -314,56 +361,6 @@ func (s *session) hasTargetWorkspaceScope() bool {
 // narrowed to one workspace.
 func addTargetWorkspaceFlag(fs *pflag.FlagSet) {
 	fs.String("workspace", "", `narrow target lookup to this workspace (an id, a prefix, "title:<title>" or "self")`)
-}
-
-// resolveParentAgent resolves the "parent" relational selector to the calling
-// agent's parent agent on the same Worker.
-func (s *session) resolveParentAgent(need resolve.Need) (tabTarget, error) {
-	selfID := (resolve.Listing{}).SelfTabID(resolve.KindAgent)
-	workerID := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
-	if selfID == "" || workerID == "" {
-		return tabTarget{}, cli.Usagef(`"parent" selects the parent of the calling agent, and this shell does not run inside a LeapMux agent tab`).
-			WithHint("give an explicit agent id instead")
-	}
-	var resp leapmuxv1.ListAgentsResponse
-	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{selfID}}, &resp); err != nil {
-		return tabTarget{}, err
-	}
-	var parentID string
-	for _, a := range resp.GetAgents() {
-		if a.GetId() == selfID {
-			parentID = a.GetParentAgentId()
-			break
-		}
-	}
-	if parentID == "" {
-		return tabTarget{}, cli.Newf(cli.CodeNotFound, "agent %s has no parent agent", selfID)
-	}
-	if !need.WorkspaceID && !need.TileID && !need.Want.WorkspaceID && !need.Want.TileID {
-		return tabTarget{
-			ID:       parentID,
-			Type:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-			WorkerID: workerID,
-		}, nil
-	}
-	need.TabID = true
-	got, err := resolve.Resolve(s.ctx, s.deps(), need, resolve.Inputs{
-		TabID:         parentID,
-		ExplicitTabID: true,
-		WorkerID:      workerID,
-		FixedTabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
-	})
-	if err != nil {
-		return tabTarget{}, err
-	}
-	return tabTarget{
-		ID:          got.TabID,
-		Type:        got.TabType,
-		WorkerID:    got.WorkerID,
-		WorkspaceID: got.WorkspaceID,
-		TileID:      got.TileID,
-		Row:         got.Tab,
-	}, nil
 }
 
 // resolveChildAgents resolves the "children" relational selector to all direct
@@ -484,7 +481,7 @@ func (s *session) autoSelectSoleWorker() (string, error) {
 // archivedWorkspaceIDs returns the set of workspace IDs assigned to an
 // archived sidebar section. If the Hub does not answer ListSections (for
 // example, in minimal mock hubs), it returns an empty set.
-func archivedWorkspaceIDs(ctx context.Context, c *control.Client) map[string]bool {
+func archivedWorkspaceIDs(ctx context.Context, c control.Peer) map[string]bool {
 	var resp leapmuxv1.ListSectionsResponse
 	if err := hubCallUnary(ctx, c, leapmuxv1connect.SectionServiceListSectionsProcedure, &leapmuxv1.ListSectionsRequest{}, &resp); err != nil {
 		return nil

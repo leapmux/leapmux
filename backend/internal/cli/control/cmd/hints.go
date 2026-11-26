@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"os"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -12,6 +13,8 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -52,7 +55,7 @@ func addHubHints(root *cobra.Command) {
 func usesDirectHub(cmd *cobra.Command) bool {
 	for parent := cmd.Parent(); parent != nil; parent = cmd.Parent() {
 		if parent.Parent() == nil {
-			return cmd.Name() == "admin" || cmd.Name() == "auth"
+			return cmd.Name() == "admin" || cmd.Name() == "auth" || cmd.Name() == "worker"
 		}
 		cmd = parent
 	}
@@ -95,20 +98,24 @@ func httpHubBuild(ctx context.Context, hub string) string {
 	return build.Version
 }
 
-func withHubVersion(ctx context.Context, c *control.Client, err error) error {
+func withHubVersion(ctx context.Context, p control.Peer, err error) error {
 	var ipcError *codedRPCError
-	if c.IsWorkerIPC() && errors.As(err, &ipcError) && ipcError.Code == "rpc_failed" {
-		return (workerCall{c: c}).withVersion(ctx, "", err)
+	if ipc, ok := p.(*control.WorkerIPCClient); ok && errors.As(err, &ipcError) && ipcError.Code == "rpc_failed" {
+		return (workerCall{ipc: ipc}).withVersion(ctx, "", err)
 	}
 	return withPeerVersion(ctx, err, "Hub", func(ctx context.Context) string {
-		if !c.IsWorkerIPC() {
+		switch c := p.(type) {
+		case *control.HubClient:
 			return httpHubBuild(ctx, c.HubURL)
-		}
-		var response leapmuxv1.GetSystemInfoResponse
-		if err := hubCallLocalIPC(ctx, c, leapmuxv1connect.SystemServiceGetSystemInfoProcedure, &leapmuxv1.GetSystemInfoRequest{}, &response); err != nil {
+		case *control.WorkerIPCClient:
+			var response leapmuxv1.GetSystemInfoResponse
+			if err := hubCallLocalIPC(ctx, c, leapmuxv1connect.SystemServiceGetSystemInfoProcedure, &leapmuxv1.GetSystemInfoRequest{}, &response); err != nil {
+				return ""
+			}
+			return version.FormatBuild(response.GetBuild())
+		default:
 			return ""
 		}
-		return version.FormatBuild(response.GetBuild())
 	})
 }
 
@@ -122,16 +129,29 @@ func withHubHint(cmd *cobra.Command, err error) error {
 		return err
 	}
 	hub := "<url>"
+	isLocal := false
 	if cmd != nil {
-		if resolved, lookupErr := hubURLFor(cmd); lookupErr == nil && resolved != "" {
+		if explicit := explicitHub(cmd); explicit != "" {
+			hub = explicit
+			isLocal = locallisten.IsLocal(explicit)
+		} else if os.Getenv(controlenv.SocketVariable) != "" {
+			isLocal = true
+		} else if resolved, lookupErr := hubURLFor(cmd); lookupErr == nil && resolved != "" {
 			hub = resolved
+			isLocal = locallisten.IsLocal(resolved)
 		}
 	}
 	out := cli.FromError(err)
 	switch out.Code {
 	case cli.CodeNotLoggedIn:
+		if isLocal {
+			return out.WithHint(`run "leapmux auth login --hub <url>" to sign in again`)
+		}
 		return out.WithHint(`run "leapmux auth login --hub %s" to sign in again`, hub)
 	case cli.CodeVersionMismatch:
+		if isLocal && hub == "<url>" {
+			return out.WithHint(`run "leapmux version" to compare the CLI with the hub, and upgrade the older one`)
+		}
 		return out.WithHint(`run "leapmux version --hub %s" to compare the CLI with the hub, and upgrade the older one`, hub)
 	default:
 		return out

@@ -1164,4 +1164,199 @@ func TestRecoverEncryptionKey_CorruptKeyFileReportsParseErrorAndAbsentVersionFai
 			require.NoErrorf(t, err, "db migrate at latest must restore built-in client %s", clientID)
 		}
 	})
+
+	t.Run("expands tilde in --config and --data-dir", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		dataDir := filepath.Join(home, "custom-hub-data")
+		require.NoError(t, os.MkdirAll(dataDir, 0o700))
+
+		// Without --config: --data-dir ~/... expands home.
+		out, err := runRecoverOutput(t, "db", "path", "--data-dir", "~/custom-hub-data")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(dataDir, "hub.db")+"\n", out)
+
+		// With --config ~/...: os.Stat and config load see the expanded path.
+		cfgDir := filepath.Join(home, "cfg")
+		require.NoError(t, os.MkdirAll(cfgDir, 0o700))
+		cfgDataDir := filepath.Join(home, "from-cfg")
+		cfgPath := filepath.Join(cfgDir, "hub.yaml")
+		require.NoError(t, os.WriteFile(cfgPath, []byte("data_dir: "+filepath.ToSlash(cfgDataDir)+"\n"), 0o600))
+
+		out, err = runRecoverOutput(t, "db", "path", "--config", "~/cfg/hub.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(cfgDataDir, "hub.db")+"\n", out)
+
+		// With both --config ~/... and --data-dir ~/...: --data-dir override expands home.
+		overrideDir := filepath.Join(home, "override-data")
+		out, err = runRecoverOutput(t, "db", "path", "--config", "~/cfg/hub.yaml", "--data-dir", "~/override-data")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(overrideDir, "hub.db")+"\n", out)
+	})
+}
+
+func TestRecoverCommandsTypedJSONResults(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. db path
+	out, err := runRecoverOutput(t, "db", "path", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var pathEnv struct {
+		Data recoverDBPathResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &pathEnv), out)
+	assert.Equal(t, filepath.Join(dir, "hub.db"), pathEnv.Data.Path)
+
+	// 2. create-admin (also bootstraps keystore + DB)
+	out, err = runRecoverOutput(t, "create-admin", "alice", "--password", "SecretPass123!", "--display-name", "Alice Admin", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var adminEnv struct {
+		Data recoverCreateAdminResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &adminEnv), out)
+	assert.NotEmpty(t, adminEnv.Data.ID)
+	assert.Equal(t, "alice", adminEnv.Data.Username)
+	assert.Equal(t, "Alice Admin", adminEnv.Data.DisplayName)
+	assert.True(t, adminEnv.Data.IsAdmin)
+
+	// 3. reset-password
+	out, err = runRecoverOutput(t, "reset-password", "alice", "--password", "NewSecretPass456!", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var resetEnv struct {
+		Data recoverResetPasswordResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &resetEnv), out)
+	assert.Equal(t, adminEnv.Data.ID, resetEnv.Data.ID)
+	assert.Equal(t, "alice", resetEnv.Data.Username)
+	assert.True(t, resetEnv.Data.SessionsRevoked)
+	assert.True(t, resetEnv.Data.PasskeysRevoked)
+
+	// 4. db version
+	out, err = runRecoverOutput(t, "db", "version", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var verEnv struct {
+		Data recoverDBVersionResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &verEnv), out)
+	assert.Greater(t, verEnv.Data.CurrentVersion, int64(0))
+	assert.Equal(t, verEnv.Data.LatestVersion, verEnv.Data.CurrentVersion)
+
+	// 5. db migrate (already at latest)
+	out, err = runRecoverOutput(t, "db", "migrate", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var migEnv struct {
+		Data recoverDBMigrateResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &migEnv), out)
+	assert.True(t, migEnv.Data.AlreadyLatest)
+	assert.Equal(t, verEnv.Data.LatestVersion, migEnv.Data.CurrentVersion)
+	assert.Nil(t, migEnv.Data.TargetVersion)
+
+	// 5b. db migrate --to <latest> reports explicit target_version
+	out, err = runRecoverOutput(t, "db", "migrate", "--to", strconv.FormatInt(verEnv.Data.LatestVersion, 10), "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var migToEnv struct {
+		Data recoverDBMigrateResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &migToEnv), out)
+	require.NotNil(t, migToEnv.Data.TargetVersion)
+	assert.Equal(t, verEnv.Data.LatestVersion, *migToEnv.Data.TargetVersion)
+	assert.Equal(t, verEnv.Data.LatestVersion, migToEnv.Data.CurrentVersion)
+	assert.False(t, migToEnv.Data.AlreadyLatest)
+
+	// 6. encryption-key rotate
+	out, err = runRecoverOutput(t, "encryption-key", "rotate", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var rotEnv struct {
+		Data recoverKeyRotateResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &rotEnv), out)
+	assert.Equal(t, uint32(2), rotEnv.Data.Version)
+	assert.Equal(t, filepath.Join(dir, "encryption.key"), rotEnv.Data.KeyPath)
+
+	// 7. encryption-key reencrypt
+	out, err = runRecoverOutput(t, "encryption-key", "reencrypt", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var reencEnv struct {
+		Data recoverKeyReencryptResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &reencEnv), out)
+	assert.Equal(t, uint32(2), reencEnv.Data.ActiveVersion)
+	assert.GreaterOrEqual(t, reencEnv.Data.RowsUpdated, int64(0))
+
+	// 8. encryption-key remove
+	out, err = runRecoverOutput(t, "encryption-key", "remove", "1", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var remEnv struct {
+		Data recoverKeyRemoveResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &remEnv), out)
+	assert.Equal(t, uint32(1), remEnv.Data.RemovedVersion)
+	assert.Equal(t, filepath.Join(dir, "encryption.key"), remEnv.Data.KeyPath)
+
+	// 9. encryption-key rotate-pepper
+	out, err = runRecoverOutput(t, "encryption-key", "rotate-pepper", "--yes", "--data-dir", dir, "--json")
+	require.NoError(t, err)
+	var pepEnv struct {
+		Data recoverPepperRotateResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &pepEnv), out)
+	assert.True(t, pepEnv.Data.Rotated)
+	assert.Equal(t, filepath.Join(dir, "encryption.key"), pepEnv.Data.KeyPath)
+
+	// 10. quiet flag is rejected across recover commands
+	for _, args := range [][]string{
+		{"recover", "db", "path", "--data-dir", dir, "-q"},
+		{"recover", "db", "version", "--data-dir", dir, "-q"},
+	} {
+		o := runTestCLI(t, args...)
+		assert.Equal(t, cli.ExitUsage, o.code, "args=%v", args)
+		assert.Contains(t, o.stderr, "--quiet")
+	}
+}
+
+func TestRecoverCommandsRenderTextFormatting(t *testing.T) {
+	dir := t.TempDir()
+
+	// Seed keystore and an unmigrated SQLite DB to test the non-latest migration path.
+	_, err := keystore.LoadOrGenerate(filepath.Join(dir, "encryption.key"))
+	require.NoError(t, err)
+	sqlDB, err := sqlite.OpenDB(filepath.Join(dir, "hub.db"), sqlitedb.Config{})
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	out, err := runRecoverOutput(t, "db", "migrate", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Current schema version: 0\n")
+	assert.Contains(t, out, "Migrating to latest version ")
+	assert.Contains(t, out, "Migration complete. Current version: ")
+
+	out, err = runRecoverOutput(t, "create-admin", "alice", "--password", "SecretPass123!", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, `Created administrator "alice" (id: `)
+
+	out, err = runRecoverOutput(t, "reset-password", "alice", "--password", "NewSecretPass456!", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, `Password reset for user "alice" (id: `)
+	assert.Contains(t, out, "All sessions and passkeys revoked.")
+
+	out, err = runRecoverOutput(t, "encryption-key", "rotate", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Added encryption key version 2.")
+
+	out, err = runRecoverOutput(t, "encryption-key", "reencrypt", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Re-encrypted ")
+	assert.Contains(t, out, "to key version 2.")
+
+	out, err = runRecoverOutput(t, "encryption-key", "remove", "1", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Removed encryption key version 1.")
+
+	out, err = runRecoverOutput(t, "encryption-key", "rotate-pepper", "--yes", "--data-dir", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Regenerated the token pepper.")
+	assert.Contains(t, out, "Restart the Hub to apply the new pepper.")
 }

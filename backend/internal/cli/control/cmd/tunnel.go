@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
@@ -185,7 +186,8 @@ func parsePort(raw string, allowZero bool) (uint16, error) {
 type tunnelDialer func(ctx context.Context, host string, port uint16) (net.Conn, error)
 
 func openTunnelChannel(inv *cli.Invocation, s *session) (*tunnel.Channel, string, error) {
-	if s.c.IsWorkerIPC() {
+	hub, ok := s.c.(*control.HubClient)
+	if !ok {
 		return nil, "", cli.Usagef("tunnel commands require a direct Hub connection and cannot run over a tab's local IPC socket").
 			WithHint("run from a shell outside LeapMux, or pass --hub <url>")
 	}
@@ -196,7 +198,7 @@ func openTunnelChannel(inv *cli.Invocation, s *session) (*tunnel.Channel, string
 		return nil, "", err
 	}
 	openCtx, cancelOpen := rpcDeadline(s.ctx)
-	ch, err := s.c.OpenE2EEChannel(openCtx, s.ctx, workerID)
+	ch, err := hub.OpenE2EEChannel(openCtx, s.ctx, workerID)
 	cancelOpen()
 	if err != nil {
 		return nil, "", err

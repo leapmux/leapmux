@@ -4,7 +4,9 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
+	"github.com/mattn/go-isatty"
 	"golang.org/x/term"
 )
 
@@ -12,7 +14,7 @@ import (
 type ColorMode int
 
 const (
-	// ColorAuto emits ANSI color only on interactive TTYs (and honors NO_COLOR / CLICOLOR_FORCE).
+	// ColorAuto emits ANSI color only on interactive TTYs (and honors NO_COLOR / TERM=dumb / CLICOLOR_FORCE).
 	ColorAuto ColorMode = iota
 	// ColorAlways emits ANSI color regardless of TTY detection.
 	ColorAlways
@@ -34,16 +36,26 @@ func ParseColorMode(raw string) (ColorMode, error) {
 	}
 }
 
+// IsTerminalFD reports whether fd refers to an interactive terminal,
+// including Cygwin and MSYS2 pseudo-terminals on Windows.
+func IsTerminalFD(fd uintptr) bool {
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// IsTerminalFile reports whether f is a non-nil file attached to an
+// interactive terminal.
+func IsTerminalFile(f *os.File) bool {
+	return f != nil && IsTerminalFD(f.Fd())
+}
+
 func isTerminalWriter(w io.Writer) bool {
 	f, ok := w.(*os.File)
-	if !ok || f == nil {
-		return false
-	}
-	return term.IsTerminal(int(f.Fd()))
+	return ok && IsTerminalFile(f)
 }
 
 // ColorEnabled reports whether ANSI styling should be emitted to w under mode.
-// NO_COLOR disables color under auto; CLICOLOR_FORCE enables it under auto.
+// NO_COLOR and TERM=dumb disable color under auto; CLICOLOR_FORCE enables it
+// under auto otherwise.
 func ColorEnabled(w io.Writer, mode ColorMode) bool {
 	switch mode {
 	case ColorAlways:
@@ -51,7 +63,7 @@ func ColorEnabled(w io.Writer, mode ColorMode) bool {
 	case ColorNever:
 		return false
 	default:
-		if os.Getenv("NO_COLOR") != "" {
+		if os.Getenv("NO_COLOR") != "" || strings.EqualFold(os.Getenv("TERM"), "dumb") {
 			return false
 		}
 		if f := os.Getenv("CLICOLOR_FORCE"); f != "" && f != "0" {
@@ -74,6 +86,42 @@ func TerminalWidth(w io.Writer) int {
 	return width
 }
 
+// StateTone selects the ANSI style applied to a cell in a `,state` table column.
+type StateTone int
+
+const (
+	StateToneNone StateTone = iota
+	StateToneGreen
+	StateToneYellow
+	StateToneRed
+	StateToneMagenta
+	StateToneCyan
+	StateToneDim
+)
+
+// StateClassifier maps a `,state` table cell value to a StateTone.
+type StateClassifier func(value string) StateTone
+
+var (
+	defaultStateClassifierMu sync.RWMutex
+	defaultStateClassifier   StateClassifier
+)
+
+// SetDefaultStateClassifier registers the fallback StateClassifier used when a
+// Printer leaves StateClassifier nil.
+func SetDefaultStateClassifier(fn StateClassifier) {
+	defaultStateClassifierMu.Lock()
+	defaultStateClassifier = fn
+	defaultStateClassifierMu.Unlock()
+}
+
+func getDefaultStateClassifier() StateClassifier {
+	defaultStateClassifierMu.RLock()
+	fn := defaultStateClassifier
+	defaultStateClassifierMu.RUnlock()
+	return fn
+}
+
 const (
 	ansiReset       = "\x1b[0m"
 	ansiDim         = "\x1b[2m"
@@ -86,11 +134,18 @@ const (
 )
 
 type styler struct {
-	enabled bool
+	enabled    bool
+	classifier StateClassifier
 }
 
-func newStyler(w io.Writer, mode ColorMode) styler {
-	return styler{enabled: ColorEnabled(w, mode)}
+func newStylerWithClassifier(w io.Writer, mode ColorMode, classifier StateClassifier) styler {
+	if classifier == nil {
+		classifier = getDefaultStateClassifier()
+	}
+	return styler{
+		enabled:    ColorEnabled(w, mode),
+		classifier: classifier,
+	}
 }
 
 func (s styler) wrap(code, text string) string {
@@ -106,20 +161,24 @@ func (s styler) errorPrefix() string { return s.wrap(ansiBoldRed, "error:") }
 
 func (s styler) hintPrefix() string { return s.wrap(ansiCyan, "hint:") }
 
-// stateBadge colors known agent, terminal, worker, and health state tokens.
+// stateBadge styles a `,state` cell value using the configured StateClassifier.
 func (s styler) stateBadge(text string) string {
-	if !s.enabled {
+	if !s.enabled || s.classifier == nil {
 		return text
 	}
-	switch strings.ToLower(strings.TrimSpace(text)) {
-	case "idle", "ready", "active", "online", "ok", "pass", "running", "completed":
+	switch s.classifier(text) {
+	case StateToneGreen:
 		return s.wrap(ansiGreen, text)
-	case "working", "starting", "pending", "warn", "queued", "dispatching":
+	case StateToneYellow:
 		return s.wrap(ansiYellow, text)
-	case "waiting_for_user":
-		return s.wrap(ansiBoldMagenta, text)
-	case "error", "exited", "startup_failed", "failed", "offline", "fail", "closed", "canceled":
+	case StateToneRed:
 		return s.wrap(ansiRed, text)
+	case StateToneMagenta:
+		return s.wrap(ansiBoldMagenta, text)
+	case StateToneCyan:
+		return s.wrap(ansiCyan, text)
+	case StateToneDim:
+		return s.wrap(ansiDim, text)
 	default:
 		return text
 	}

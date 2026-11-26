@@ -24,7 +24,7 @@ These selectors and flags repeat across commands on this page.
 | `--output-schema string` | validate the reply against a JSON Schema (file path, inline JSON object, or "-" for stdin); requires --wait |
 | `--schema-retries int` | with --output-schema, maximum corrective follow-up turns on validation failure (0-10) (default: 2) |
 | `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
-| `<request>` | The request's handle, as "agent requests" prints it, or a unique prefix of it. |
+| `[request]` | The request's handle, as "agent requests" prints it, or a unique prefix of it. |
 | `<input>` | A queued input's id, as "agent queue list" prints it, or a unique prefix of it. |
 
 ## `leapmux agent`

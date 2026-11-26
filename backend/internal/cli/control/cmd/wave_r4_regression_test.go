@@ -271,6 +271,31 @@ func TestParseAdminUserSelectorDirect_AndNotFoundCheck(t *testing.T) {
 	assert.Equal(t, fullID, sel.GetId())
 	assert.False(t, fallback, "full 48-char ID must be sent directly by ID")
 
+	// A 48-character string with non-ID characters (dots/spaces) is not a generated ID.
+	const nonID48 = "user.with.dots.and.exact.length.of.48.characters"
+	require.Len(t, nonID48, 48)
+	sel, prefix, fallback, err = parseAdminUserSelectorDirect(nonID48)
+	require.NoError(t, err)
+	assert.Equal(t, nonID48, sel.GetUsername())
+	assert.Equal(t, nonID48, prefix)
+	assert.True(t, fallback)
+
+	const userUUID = "87a19d5f-4838-4e34-9f0f-56130f0a62b1"
+	sel, _, fallback, err = parseAdminUserSelectorDirect(userUUID)
+	require.NoError(t, err)
+	assert.Equal(t, userUUID, sel.GetId())
+	assert.False(t, fallback)
+
+	sel, _, fallback, err = parseAdminUserSelectorDirect("id:" + fullID)
+	require.NoError(t, err)
+	assert.Equal(t, fullID, sel.GetId())
+	assert.False(t, fallback)
+
+	sel, _, fallback, err = parseAdminUserSelectorDirect("id:ab")
+	require.NoError(t, err)
+	assert.Equal(t, "ab", sel.GetId())
+	assert.False(t, fallback)
+
 	assert.True(t, isAdminUserNotFound(connect.NewError(connect.CodeNotFound, "missing")))
 	assert.True(t, isAdminUserNotFound(cli.Newf(cli.CodeNotFound, "missing")))
 	assert.False(t, isAdminUserNotFound(connect.NewError(connect.CodePermissionDenied, "denied")))

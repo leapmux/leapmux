@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
@@ -25,6 +26,7 @@ type fakeWatchTransport struct {
 	requests []*leapmuxv1.WatchEventsRequest
 	onFrame  func(*leapmuxv1.WatchEventsResponse)
 	end      context.CancelFunc
+	handle   *fakeWatchHandle
 	// done closes when the newest subscription ended.
 	done chan struct{}
 	// opened receives one value for each open that succeeded.
@@ -51,15 +53,19 @@ func (t *fakeWatchTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1
 		<-ctx.Done()
 		close(done)
 	}()
+	h := &fakeWatchHandle{cancel: cancel, done: done}
 	t.requests = append(t.requests, req)
 	t.onFrame = onFrame
 	t.end = cancel
+	t.handle = h
 	t.done = done
 	t.opened <- struct{}{}
-	return &fakeWatchHandle{cancel: cancel, done: done}, nil
+	return h, nil
 }
 
 type fakeWatchHandle struct {
+	mu     sync.Mutex
+	endErr error
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -67,6 +73,22 @@ type fakeWatchHandle struct {
 func (h *fakeWatchHandle) Update(*leapmuxv1.WatchEventsRequest) error { return nil }
 func (h *fakeWatchHandle) Cancel()                                    { h.cancel() }
 func (h *fakeWatchHandle) Done() <-chan struct{}                      { return h.done }
+func (h *fakeWatchHandle) EndErr() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.endErr
+}
+
+func (t *fakeWatchTransport) endStreamWithErr(err error) {
+	t.mu.Lock()
+	h := t.handle
+	end := t.end
+	t.mu.Unlock()
+	h.mu.Lock()
+	h.endErr = err
+	h.mu.Unlock()
+	end()
+}
 
 // push delivers resp on the newest subscription.
 func (t *fakeWatchTransport) push(resp *leapmuxv1.WatchEventsResponse) {
@@ -417,4 +439,22 @@ func TestActivityFeed_StopsWithItsContext(t *testing.T) {
 
 	cancel()
 	receive(t, testutil.DeadlineContext(t), done)
+}
+
+func TestActivityFeed_EndsOnPermanentStreamRefusal(t *testing.T) {
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	defer cancel()
+	clock := testutil.NewQuartzMock(t)
+	tr, reads := newFakeWatchTransport(), newLevelReads()
+	events := startTestFeed(t, ctx, tr, reads, clock, "a-1")
+	receive(t, ctx, tr.opened)
+
+	// Simulate an in-band PermissionDenied stream refusal after open.
+	tr.endStreamWithErr(&channelwire.RPCError{Code: 7, Message: "only the worker owner can watch events"})
+
+	ev := receive(t, ctx, events)
+	assert.Equal(t, activityFailed, ev.kind)
+	assert.Equal(t, cli.CodePermissionDenied, cli.FromError(ev.err).Code)
+	_, running := clock.Peek()
+	assert.False(t, running, "a permanent refusal must not arm a reconnect timer")
 }

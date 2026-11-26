@@ -25,16 +25,18 @@ def leapmux-completion-text [value: string] {
 }
 
 def leapmux-complete [place: record] {
+    let raw_bin = ($place.command | %first | %default '')
+    let command = if $raw_bin == '' { 'leapmux' } else { leapmux-completion-word $raw_bin }
     let args = ($place.command | %skip 1 | %each {|raw|
         let word = (leapmux-completion-word $raw)
-        if $word =~ '^--[^=]+=' {
+        if $word == $raw and $word =~ '^--[^=]+=' {
             let parts = ($word | %split row --number 2 '=')
             $parts.0 + '=' + (leapmux-completion-word $parts.1)
         } else { $word }
     })
     if ($args | %is-empty) { return [] }
 
-    let response = (try { ^leapmux __complete ...$args | %complete } catch { null })
+    let response = (try { ^($command) __complete ...$args | %complete } catch { null })
     if $response == null or $response.exit_code != 0 { return [] }
     let lines = ($response.stdout | %lines)
     let status = ($lines | %last)

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -490,7 +493,7 @@ func TestNativeStartupSelectionPreservesPrecedenceAndReadErrors(t *testing.T) {
 			calls++
 			return lifecycle.ServiceSpec{Startup: test.saved}, test.readErr
 		}}
-		selection, err := selectNativeStartup(t.Context(), controller, test.requested, true)
+		selection, err := selectNativeStartup(t.Context(), &bytes.Buffer{}, strings.NewReader(""), controller, test.requested, true)
 		assert.Equal(t, 1, calls)
 		if test.failure {
 			require.Error(t, err)
@@ -654,4 +657,573 @@ func TestNativeRestartRejectsBrokenEnvironmentBeforeStopping(t *testing.T) {
 		t.Fatal("invalid desired runtime data stopped the current instance")
 	default:
 	}
+}
+
+// desiredSpec derives the specification an enable or start proposes:
+// this executable, this configuration, this account, and the chosen
+// startup kind.
+func desiredSpec(mode string, startup lifecycle.StartupKind, dataDir string, configArgs []string) (lifecycle.ServiceSpec, error) {
+	args := append([]string{"--data-dir", dataDir}, configArgs...)
+	configuration, options, err := loadLifecycleCommand(mode, "start", args)
+	if err != nil {
+		return lifecycle.ServiceSpec{}, err
+	}
+	return serviceSpecFromConfiguration(configuration, options, startup)
+}
+
+func waitForReadiness(ctx context.Context, mode, canonical string, timeout time.Duration) error {
+	return waitForReadinessObserved(ctx, mode, canonical, timeout, "", lifecycle.ExecutionForeground, func(ctx context.Context) (lifecycle.Status, error) {
+		return lifecycle.Observe(ctx, canonical)
+	})
+}
+
+func waitForReadinessObserved(parent context.Context, mode, _ string, timeout time.Duration, previousAttempt string, expectedExecution lifecycle.ExecutionKind, observe func(context.Context) (lifecycle.Status, error)) error {
+	_, err := waitForReadinessWithOutput(parent, readinessWaitOptions{
+		out:               os.Stdout,
+		mode:              mode,
+		timeout:           timeout,
+		previousAttempt:   previousAttempt,
+		expectedExecution: expectedExecution,
+		observe:           observe,
+	})
+	return err
+}
+
+func TestPersistentRootFlagsDoNotLeakIntoRuntimeArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "up with format json and color never",
+			args: []string{"up", "--startup", "login", "--yes", "--format", "json", "--color", "never", "--wide", "--no-header"},
+		},
+		{
+			name: "daemon solo start with json and fields",
+			args: []string{"daemon", "solo", "start", "--startup", "login", "--yes", "--json", "--fields", "status"},
+		},
+		{
+			name: "daemon hub enable with format tsv and color never",
+			args: []string{"daemon", "hub", "enable", "--startup", "login", "--yes", "--format", "tsv", "--color", "never"},
+		},
+		{
+			name: "daemon worker enable with format ndjson and wide",
+			args: []string{"daemon", "worker", "enable", "--startup", "boot", "--yes", "--format", "ndjson", "--wide", "--no-header", "--fields", "status"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := mustCanonicalDir(t, t.TempDir())
+			manager := &nativeStartRecorder{t: t}
+			runners := testCLIRunners(t)
+			runners.modes.controller = nativeRecorderController(manager)
+			var stdout, stderr bytes.Buffer
+			args := append(append([]string(nil), tc.args...), "--data-dir", root, "--log-level", "debug")
+			code := runCLI(t.Context(), args, strings.NewReader(""), &stdout, &stderr, runners)
+			require.Equal(t, cli.ExitOK, code, "stderr: %s stdout: %s", stderr.String(), stdout.String())
+
+			saved, err := lifecycle.ReadServiceSpec(lifecycle.PathsOf(root).ServiceSpec)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"--log-level", "debug"}, saved.RuntimeArguments)
+		})
+	}
+
+	t.Run("repeatable slice and boolean runtime flags survive while root flags are excluded", func(t *testing.T) {
+		workerRoot := mustCanonicalDir(t, t.TempDir())
+		workerMgr := &nativeStartRecorder{t: t}
+		workerRunners := testCLIRunners(t)
+		workerRunners.modes.controller = nativeRecorderController(workerMgr)
+		var stdout, stderr bytes.Buffer
+		workerArgs := []string{
+			"daemon", "worker", "enable",
+			"--data-dir", workerRoot,
+			"--startup", "login",
+			"--yes",
+			"--format", "json",
+			"--color", "never",
+			"--wide",
+			"--no-header",
+			"--fields", "status",
+			"--use-login-shell=false",
+			"--log-level", "warn",
+		}
+		code := runCLI(t.Context(), workerArgs, strings.NewReader(""), &stdout, &stderr, workerRunners)
+		require.Equal(t, cli.ExitOK, code, "stderr: %s stdout: %s", stderr.String(), stdout.String())
+
+		savedWorker, err := lifecycle.ReadServiceSpec(lifecycle.PathsOf(workerRoot).ServiceSpec)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"--use-login-shell=false", "--log-level", "warn"}, savedWorker.RuntimeArguments)
+
+		hubRoot := mustCanonicalDir(t, t.TempDir())
+		hubMgr := &nativeStartRecorder{t: t}
+		hubRunners := testCLIRunners(t)
+		hubRunners.modes.controller = nativeRecorderController(hubMgr)
+		stdout.Reset()
+		stderr.Reset()
+		hubArgs := []string{
+			"daemon", "hub", "enable",
+			"--data-dir", hubRoot,
+			"--startup", "login",
+			"--yes",
+			"--format", "tsv",
+			"--color", "never",
+			"--listen", "127.0.0.1:4401",
+			"--listen", "127.0.0.1:4402",
+		}
+		code = runCLI(t.Context(), hubArgs, strings.NewReader(""), &stdout, &stderr, hubRunners)
+		require.Equal(t, cli.ExitOK, code, "stderr: %s stdout: %s", stderr.String(), stdout.String())
+
+		savedHub, err := lifecycle.ReadServiceSpec(lifecycle.PathsOf(hubRoot).ServiceSpec)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"--listen", "127.0.0.1:4401", "--listen", "127.0.0.1:4402"}, savedHub.RuntimeArguments)
+	})
+}
+
+func TestFormatTSVSuppressesModeBanner(t *testing.T) {
+	original := printModeBanner
+	var banners []string
+	printModeBanner = func(mode string) { banners = append(banners, mode) }
+	t.Cleanup(func() { printModeBanner = original })
+
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantCode    int
+		wantBanners []string
+	}{
+		{
+			name:        "status with format tsv suppresses banner",
+			args:        []string{"daemon", "hub", "status", "--format", "tsv"},
+			wantCode:    cli.ExitStopped,
+			wantBanners: nil,
+		},
+		{
+			name:        "status with format ndjson suppresses banner",
+			args:        []string{"daemon", "hub", "status", "--format", "ndjson"},
+			wantCode:    cli.ExitStopped,
+			wantBanners: nil,
+		},
+		{
+			name:        "stop with format tsv suppresses banner",
+			args:        []string{"daemon", "hub", "stop", "--format", "tsv"},
+			wantCode:    cli.ExitOK,
+			wantBanners: nil,
+		},
+		{
+			name:        "disable with format json suppresses banner",
+			args:        []string{"daemon", "hub", "disable", "--format", "json"},
+			wantCode:    cli.ExitOK,
+			wantBanners: nil,
+		},
+		{
+			name:        "status with text format emits banner",
+			args:        []string{"daemon", "hub", "status"},
+			wantCode:    cli.ExitStopped,
+			wantBanners: []string{"hub"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			banners = nil
+			root := mustCanonicalDir(t, t.TempDir())
+			manager := &nativeStartRecorder{t: t}
+			runners := testCLIRunners(t)
+			runners.modes.controller = nativeRecorderController(manager)
+			var stdout, stderr bytes.Buffer
+			code := runCLI(t.Context(), append(append([]string(nil), tc.args...), "--data-dir", root), strings.NewReader(""), &stdout, &stderr, runners)
+			assert.Equal(t, tc.wantCode, code, stderr.String())
+			assert.Equal(t, tc.wantBanners, banners)
+		})
+	}
+}
+
+func TestWaitForReadinessRoutesTimeoutAndFailureToProvidedWriter(t *testing.T) {
+	t.Run("timeout stops spinner and writes to out", func(t *testing.T) {
+		var buf bytes.Buffer
+		beforeCalled := false
+		outStdout := testutil.CaptureStdout(t, func() {
+			_, err := waitForReadinessWithOutput(t.Context(), readinessWaitOptions{
+				out: &buf,
+				beforePrint: func() {
+					assert.Empty(t, buf.String(), "beforePrint must run before timeout prose is written")
+					beforeCalled = true
+				},
+				mode:              "hub",
+				timeout:           time.Millisecond,
+				expectedExecution: lifecycle.ExecutionService,
+				observe: func(ctx context.Context) (lifecycle.Status, error) {
+					<-ctx.Done()
+					return lifecycle.Status{}, ctx.Err()
+				},
+			})
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+		})
+		assert.True(t, beforeCalled)
+		assert.Empty(t, outStdout, "timeout prose must not write to os.Stdout")
+		assert.Contains(t, buf.String(), "Startup wait expired")
+	})
+
+	t.Run("failure writes to out instead of os.Stdout", func(t *testing.T) {
+		var buf bytes.Buffer
+		reason := "bind failed"
+		outStdout := testutil.CaptureStdout(t, func() {
+			_, err := waitForReadinessWithOutput(t.Context(), readinessWaitOptions{
+				out:               &buf,
+				mode:              "hub",
+				timeout:           30 * time.Second,
+				expectedExecution: lifecycle.ExecutionService,
+				observe: func(context.Context) (lifecycle.Status, error) {
+					return lifecycle.Status{
+						Process: lifecycle.ProcessStatus{State: lifecycle.ProcessFailed},
+						Attempt: lifecycle.AttemptStatus{Error: &reason},
+					}, nil
+				},
+			})
+			require.ErrorContains(t, err, reason)
+		})
+		assert.Empty(t, outStdout, "failure report must not write to os.Stdout")
+		assert.Contains(t, buf.String(), "Hub failed to start.")
+	})
+}
+
+func TestDecliningPromptApplyReportsUnchangedInJSON(t *testing.T) {
+	t.Setenv(lifecycleNoPromptEnv, "")
+	originalInteractive := isInteractiveInput
+	isInteractiveInput = func() bool { return true }
+	t.Cleanup(func() { isInteractiveInput = originalInteractive })
+
+	for _, verb := range []string{"enable", "start"} {
+		t.Run(verb, func(t *testing.T) {
+			root := mustCanonicalDir(t, t.TempDir())
+			manager := &nativeStartRecorder{t: t}
+			runners := testCLIRunners(t)
+			runners.modes.controller = nativeRecorderController(manager)
+			var stdout, stderr bytes.Buffer
+			code := runCLI(
+				t.Context(),
+				[]string{"daemon", "hub", verb, "--data-dir", root, "--startup", "login", "--json"},
+				strings.NewReader("n\n"),
+				&stdout,
+				&stderr,
+				runners,
+			)
+			require.Equal(t, cli.ExitOK, code, stderr.String())
+			var env struct {
+				Data lifecycleActionResult `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(stdout.Bytes(), &env), stdout.String())
+			assert.Equal(t, "hub", env.Data.Mode)
+			assert.Equal(t, verb, env.Data.Verb)
+			assert.Equal(t, "unchanged", env.Data.Status)
+			assert.Equal(t, lifecycle.StartupLogin, env.Data.Startup)
+			assert.Empty(t, manager.installs)
+			assert.Empty(t, manager.starts)
+			assert.Contains(t, stderr.String(), "Configuration unchanged")
+		})
+
+		t.Run(verb+" text mode writes decline to stderr and keeps stdout empty", func(t *testing.T) {
+			root := mustCanonicalDir(t, t.TempDir())
+			manager := &nativeStartRecorder{t: t}
+			runners := testCLIRunners(t)
+			runners.modes.controller = nativeRecorderController(manager)
+			var stdout, stderr bytes.Buffer
+			code := runCLI(
+				t.Context(),
+				[]string{"daemon", "hub", verb, "--data-dir", root, "--startup", "login"},
+				strings.NewReader("n\n"),
+				&stdout,
+				&stderr,
+				runners,
+			)
+			require.Equal(t, cli.ExitOK, code, stderr.String())
+			assert.Empty(t, stdout.String())
+			assert.Contains(t, stderr.String(), "Configuration unchanged")
+			assert.Empty(t, manager.installs)
+			assert.Empty(t, manager.starts)
+		})
+	}
+}
+
+func TestLifecycleActionResultRenderText(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result lifecycleActionResult
+		want   string
+	}{
+		{
+			name:   "unchanged renders nothing",
+			result: lifecycleActionResult{Mode: "hub", Verb: "enable", Status: "unchanged", Startup: lifecycle.StartupLogin},
+			want:   "",
+		},
+		{
+			name:   "started ready with url",
+			result: lifecycleActionResult{Mode: "solo", Verb: "start", Status: "started", URL: "http://127.0.0.1:4327", readiness: lifecycle.ReadinessReady},
+			want:   "Solo started.\nOpen http://127.0.0.1:4327 in your browser.\n",
+		},
+		{
+			name:   "started ready for setup with url",
+			result: lifecycleActionResult{Mode: "dev", Verb: "start", Status: "started", URL: "http://127.0.0.1:4327", readiness: lifecycle.ReadinessReadyForSetup},
+			want:   "Dev started.\nOpen http://127.0.0.1:4327 in your browser to create the first administrator.\n",
+		},
+		{
+			name:   "restarted without url",
+			result: lifecycleActionResult{Mode: "worker", Verb: "restart", Status: "restarted"},
+			want:   "Worker started.\n",
+		},
+		{
+			name:   "stopped",
+			result: lifecycleActionResult{Mode: "solo", Verb: "stop", Status: "stopped"},
+			want:   "Stopped.\n",
+		},
+		{
+			name:   "not_running",
+			result: lifecycleActionResult{Mode: "solo", Verb: "stop", Status: "not_running"},
+			want:   "Not running.\n",
+		},
+		{
+			name:   "configured",
+			result: lifecycleActionResult{Mode: "hub", Verb: "enable", Status: "configured", Startup: lifecycle.StartupBoot},
+			want:   "Configured. Hub starts automatically at boot.\n",
+		},
+		{
+			name:   "disabled",
+			result: lifecycleActionResult{Mode: "hub", Verb: "disable", Status: "disabled"},
+			want:   "Startup configuration removed. Application data, worker credentials, and logs are preserved.\n",
+		},
+		{
+			name:   "not_configured",
+			result: lifecycleActionResult{Mode: "hub", Verb: "disable", Status: "not_configured"},
+			want:   "No startup configuration.\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			require.NoError(t, tc.result.RenderText(&buf))
+			assert.Equal(t, tc.want, buf.String())
+		})
+	}
+}
+
+func TestUpAndDownExecutionTextJSONAndQuietRejection(t *testing.T) {
+	t.Run("up starts solo in text and json modes", func(t *testing.T) {
+		root := mustCanonicalDir(t, t.TempDir())
+		manager := &nativeStartRecorder{t: t, accessURL: "http://127.0.0.1:4330"}
+		runners := testCLIRunners(t)
+		runners.modes.controller = nativeRecorderController(manager)
+
+		var stdout, stderr bytes.Buffer
+		code := runCLI(t.Context(), []string{"up", "--data-dir", root, "--startup", "login", "--yes"}, strings.NewReader(""), &stdout, &stderr, runners)
+		require.Equal(t, cli.ExitOK, code, stderr.String())
+		assert.Contains(t, stdout.String(), "Solo started.\nOpen http://127.0.0.1:4330 in your browser.\n")
+
+		rootJSON := mustCanonicalDir(t, t.TempDir())
+		managerJSON := &nativeStartRecorder{t: t, accessURL: "http://127.0.0.1:4331"}
+		runnersJSON := testCLIRunners(t)
+		runnersJSON.modes.controller = nativeRecorderController(managerJSON)
+		var jsonOut, jsonErr bytes.Buffer
+		code = runCLI(t.Context(), []string{"up", "--data-dir", rootJSON, "--startup", "login", "--yes", "--json"}, strings.NewReader(""), &jsonOut, &jsonErr, runnersJSON)
+		require.Equal(t, cli.ExitOK, code, jsonErr.String())
+		var env struct {
+			Data lifecycleActionResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(jsonOut.Bytes(), &env), jsonOut.String())
+		assert.Equal(t, "solo", env.Data.Mode)
+		assert.Equal(t, "start", env.Data.Verb)
+		assert.Equal(t, "started", env.Data.Status)
+		assert.Equal(t, "http://127.0.0.1:4331", env.Data.URL)
+	})
+
+	t.Run("down stops a running solo instance in text and json modes", func(t *testing.T) {
+		for _, asJSON := range []bool{false, true} {
+			name := "text"
+			if asJSON {
+				name = "json"
+			}
+			t.Run(name, func(t *testing.T) {
+				root := mustCanonicalDir(t, t.TempDir())
+				rt, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{
+					Mode:      lifecycle.RoleSolo,
+					DataDir:   root,
+					Execution: lifecycle.ExecutionForeground,
+				})
+				require.NoError(t, err)
+				rt.SetReadiness(lifecycle.ReadinessReady)
+
+				stopDone := make(chan error, 1)
+				stopCtx, cancelStop := context.WithCancel(t.Context())
+				defer cancelStop()
+				go func() {
+					select {
+					case <-rt.StopSignal():
+						stopDone <- rt.Finish(nil)
+					case <-stopCtx.Done():
+						stopDone <- rt.Finish(nil)
+					}
+				}()
+
+				manager := &nativeStartRecorder{t: t}
+				runners := testCLIRunners(t)
+				runners.modes.controller = nativeRecorderController(manager)
+				args := []string{"down", "--data-dir", root}
+				if asJSON {
+					args = append(args, "--json")
+				}
+				var stdout, stderr bytes.Buffer
+				code := runCLI(t.Context(), args, strings.NewReader(""), &stdout, &stderr, runners)
+				require.Equal(t, cli.ExitOK, code, stderr.String())
+				require.NoError(t, <-stopDone)
+
+				if asJSON {
+					var env struct {
+						Data lifecycleActionResult `json:"data"`
+					}
+					require.NoError(t, json.Unmarshal(stdout.Bytes(), &env), stdout.String())
+					assert.Equal(t, "solo", env.Data.Mode)
+					assert.Equal(t, "stop", env.Data.Verb)
+					assert.Equal(t, "stopped", env.Data.Status)
+					require.NotNil(t, env.Data.Stopped)
+					assert.True(t, *env.Data.Stopped)
+				} else {
+					assert.True(t, strings.HasPrefix(stdout.String(), "Stopped.\n"), stdout.String())
+				}
+			})
+		}
+	})
+
+	t.Run("quiet flag is rejected on up, down, and lifecycle status", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"up", "-q"},
+			{"down", "-q"},
+			{"daemon", "hub", "status", "-q"},
+		} {
+			o := runTestCLI(t, args...)
+			assert.Equal(t, cli.ExitUsage, o.code, "args=%v", args)
+			assert.Contains(t, o.stderr, "--quiet")
+		}
+	})
+}
+
+func TestLifecycleVerbsReturnTypedJSONAndKeepStdoutClean(t *testing.T) {
+	t.Run("enable start restart stop disable JSON envelopes", func(t *testing.T) {
+		root := mustCanonicalDir(t, t.TempDir())
+		manager := &nativeStartRecorder{t: t, accessURL: "http://127.0.0.1:4327"}
+		runners := testCLIRunners(t)
+		runners.modes.controller = nativeRecorderController(manager)
+
+		runJSON := func(args ...string) (lifecycleActionResult, string) {
+			t.Helper()
+			var stdout, stderr bytes.Buffer
+			code := runCLI(t.Context(), args, strings.NewReader(""), &stdout, &stderr, runners)
+			require.Equal(t, cli.ExitOK, code, "args=%v stderr=%s stdout=%s", args, stderr.String(), stdout.String())
+			var env struct {
+				Data lifecycleActionResult `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(stdout.Bytes(), &env), "stdout must be pure JSON: %s", stdout.String())
+			return env.Data, stderr.String()
+		}
+
+		// enable
+		en, enErr := runJSON("daemon", "hub", "enable", "--data-dir", root, "--startup", "login", "--yes", "--json")
+		assert.Equal(t, "hub", en.Mode)
+		assert.Equal(t, "enable", en.Verb)
+		assert.Equal(t, "configured", en.Status)
+		assert.Equal(t, lifecycle.StartupLogin, en.Startup)
+		assert.Empty(t, enErr)
+
+		// start
+		st, stErr := runJSON("daemon", "hub", "start", "--data-dir", root, "--yes", "--json")
+		assert.Equal(t, "hub", st.Mode)
+		assert.Equal(t, "start", st.Verb)
+		assert.Equal(t, "started", st.Status)
+		assert.Equal(t, lifecycle.StartupLogin, st.Startup)
+		assert.Equal(t, "http://127.0.0.1:4327", st.URL)
+		assert.Nil(t, st.Stopped)
+		assert.Empty(t, stErr)
+
+		// stop (not running because Start's cleanup hasn't finished? Wait: Start started a runtime; stop it cleanly)
+		stopRoot := mustCanonicalDir(t, t.TempDir())
+		stopRes, _ := runJSON("daemon", "hub", "stop", "--data-dir", stopRoot, "--json")
+		assert.Equal(t, "hub", stopRes.Mode)
+		assert.Equal(t, "stop", stopRes.Verb)
+		assert.Equal(t, "not_running", stopRes.Status)
+		require.NotNil(t, stopRes.Stopped)
+		assert.False(t, *stopRes.Stopped)
+
+		// restart on a fresh configured directory (not running -> starts cleanly, no mid-restart prose on stdout)
+		restartRoot := mustCanonicalDir(t, t.TempDir())
+		restartMgr := &nativeStartRecorder{t: t, accessURL: "http://127.0.0.1:4328"}
+		restartRunners := testCLIRunners(t)
+		restartRunners.modes.controller = nativeRecorderController(restartMgr)
+		var restartOut, restartErr bytes.Buffer
+		code := runCLI(
+			t.Context(),
+			[]string{"daemon", "hub", "restart", "--data-dir", restartRoot, "--startup", "boot", "--yes", "--json"},
+			strings.NewReader(""),
+			&restartOut,
+			&restartErr,
+			restartRunners,
+		)
+		require.Equal(t, cli.ExitOK, code, restartErr.String())
+		var restartEnv struct {
+			Data lifecycleActionResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(restartOut.Bytes(), &restartEnv), restartOut.String())
+		assert.Equal(t, "hub", restartEnv.Data.Mode)
+		assert.Equal(t, "restart", restartEnv.Data.Verb)
+		assert.Equal(t, "restarted", restartEnv.Data.Status)
+		assert.Equal(t, lifecycle.StartupBoot, restartEnv.Data.Startup)
+		assert.Equal(t, "http://127.0.0.1:4328", restartEnv.Data.URL)
+		require.NotNil(t, restartEnv.Data.Stopped)
+		assert.False(t, *restartEnv.Data.Stopped)
+
+		// disable (no startup configuration)
+		disNone, _ := runJSON("daemon", "hub", "disable", "--data-dir", stopRoot, "--json")
+		assert.Equal(t, "hub", disNone.Mode)
+		assert.Equal(t, "disable", disNone.Verb)
+		assert.Equal(t, "not_configured", disNone.Status)
+
+		// disable (configured service removed)
+		disRoot := mustCanonicalDir(t, t.TempDir())
+		_, _ = runJSON("daemon", "hub", "enable", "--data-dir", disRoot, "--startup", "boot", "--yes", "--json")
+		disRemoved, _ := runJSON("daemon", "hub", "disable", "--data-dir", disRoot, "--json")
+		assert.Equal(t, "hub", disRemoved.Mode)
+		assert.Equal(t, "disable", disRemoved.Verb)
+		assert.Equal(t, "disabled", disRemoved.Status)
+		assert.Equal(t, lifecycle.StartupBoot, disRemoved.Startup)
+	})
+
+	t.Run("restart text mode routes mid-restart stop progress to stderr", func(t *testing.T) {
+		root := mustCanonicalDir(t, t.TempDir())
+		manager := &nativeStartRecorder{t: t, accessURL: "http://127.0.0.1:4329"}
+		runners := testCLIRunners(t)
+		runners.modes.controller = nativeRecorderController(manager)
+		var stdout, stderr bytes.Buffer
+		code := runCLI(
+			t.Context(),
+			[]string{"daemon", "hub", "restart", "--data-dir", root, "--startup", "login", "--yes"},
+			strings.NewReader(""),
+			&stdout,
+			&stderr,
+			runners,
+		)
+		require.Equal(t, cli.ExitOK, code, stderr.String())
+		assert.Contains(t, stderr.String(), "Not running.")
+		assert.NotContains(t, stdout.String(), "Not running.")
+		assert.Contains(t, stdout.String(), "Hub started.\nOpen http://127.0.0.1:4329 in your browser.\n")
+	})
+}
+
+func TestStatusReportWritesToProvidedStdoutWriter(t *testing.T) {
+	root := mustCanonicalDir(t, t.TempDir())
+	manager := &nativeStartRecorder{t: t}
+	runners := testCLIRunners(t)
+	runners.modes.controller = nativeRecorderController(manager)
+	var stdout, stderr bytes.Buffer
+	rawStdout := testutil.CaptureStdout(t, func() {
+		code := runCLI(t.Context(), []string{"daemon", "hub", "status", "--data-dir", root}, strings.NewReader(""), &stdout, &stderr, runners)
+		assert.Equal(t, cli.ExitStopped, code, stderr.String())
+	})
+	assert.Empty(t, rawStdout, "status report must not write directly to os.Stdout")
+	assert.Contains(t, stdout.String(), "Hub: Stopped")
+	assert.Contains(t, stdout.String(), "Commands for this instance:")
 }

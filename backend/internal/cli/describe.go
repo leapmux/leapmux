@@ -67,35 +67,45 @@ func Describe(root *cobra.Command) CommandTree {
 
 // DescribeFiltered lists commands matching opts.
 func DescribeFiltered(root *cobra.Command, opts DescribeOptions) CommandTree {
-	prefix := strings.TrimSpace(opts.Prefix)
-	prefixWords := len(strings.Fields(prefix))
-	var out []CommandInfo
-	var visit func(*cobra.Command)
-	visit = func(cmd *cobra.Command) {
+	prefixFields := strings.Fields(opts.Prefix)
+	prefix := strings.Join(prefixFields, " ")
+	prefixWords := len(prefixFields)
+	out := []CommandInfo{}
+	var visit func(cmd *cobra.Command, path string, depth int)
+	visit = func(cmd *cobra.Command, path string, depth int) {
 		if cmd.Hidden || cmd.Name() == "help" {
 			return
 		}
 		if cmd != root {
-			info := describeOne(cmd)
-			include := true
-			if prefix != "" && info.Path != prefix && !strings.HasPrefix(info.Path, prefix+" ") {
-				include = false
-			}
-			if include && opts.Depth > 0 && len(strings.Fields(info.Path))-prefixWords > opts.Depth {
-				include = false
-			}
-			if include {
+			matchesPrefix := prefix == "" || path == prefix || strings.HasPrefix(path, prefix+" ")
+			if !matchesPrefix {
+				// Prune any subtree that cannot reach prefix as a descendant.
+				if !strings.HasPrefix(prefix, path+" ") {
+					return
+				}
+			} else {
+				if opts.Depth > 0 && depth-prefixWords > opts.Depth {
+					return
+				}
+				info := describeOne(cmd)
 				if opts.Compact {
 					info = compactCommandInfo(info)
 				}
 				out = append(out, info)
 			}
+			if opts.Depth > 0 && depth-prefixWords >= opts.Depth {
+				return
+			}
 		}
 		for _, child := range cmd.Commands() {
-			visit(child)
+			childPath := child.Name()
+			if path != "" {
+				childPath = path + " " + childPath
+			}
+			visit(child, childPath, depth+1)
 		}
 	}
-	visit(root)
+	visit(root, "", 0)
 	return CommandTree{Commands: out}
 }
 
@@ -124,7 +134,7 @@ func describeOne(cmd *cobra.Command) CommandInfo {
 		Usage:            cmd.UseLine(),
 		Group:            cmd.HasSubCommands(),
 		Mutates:          IsMutating(cmd),
-		QuietUnsupported: cmd.Annotations[annotationQuietUnsupported] == "true",
+		QuietUnsupported: IsQuietUnsupported(cmd),
 		Aliases:          cmd.Aliases,
 	}
 	if !info.Group {
@@ -138,7 +148,7 @@ func describeOne(cmd *cobra.Command) CommandInfo {
 		info.Flags = append(info.Flags, describeFlag(f, false))
 	})
 	cmd.InheritedFlags().VisitAll(func(f *pflag.Flag) {
-		if f.Hidden || f.Name == "help" || disallowedInheritedFlag(cmd, f.Name) {
+		if f.Hidden || f.Name == "help" || IsInheritedFlagDisallowed(cmd, f.Name) {
 			return
 		}
 		info.Flags = append(info.Flags, describeFlag(f, true))
@@ -214,13 +224,11 @@ func describeFlag(f *pflag.Flag, global bool) FlagInfo {
 		Usage:     f.Usage,
 		Global:    global,
 		Required:  slices.Equal(f.Annotations[annotationRequired], []string{"true"}),
-		Enum:      f.Annotations[annotationEnum],
+		Enum:      EnumOf(f),
+		Group:     FlagGroupOf(f),
 	}
 	if env := f.Annotations[annotationEnvDefault]; len(env) > 0 {
 		info.EnvDefault = env[0]
-	}
-	if group := f.Annotations[annotationGroup]; len(group) > 0 {
-		info.Group = group[0]
 	}
 	if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" && f.DefValue != "[]" {
 		info.Default = f.DefValue

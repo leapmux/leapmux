@@ -217,7 +217,8 @@ func TestLocalIPCCall_KeepsTheCodeOfAnInBandRefusal(t *testing.T) {
 	startSpawnIPC(t, &recordingHub{}, inBandErrorDispatcher{code: codes.NotFound, message: "no such terminal"})
 	c, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
-	require.True(t, c.IsWorkerIPC(), "the spawn harness must select the local-IPC transport")
+	_, isIPC := c.(*control.WorkerIPCClient)
+	require.True(t, isIPC, "the spawn harness must select the local-IPC transport")
 
 	var resp leapmuxv1.ListAvailableShellsResponse
 	err = callInnerRPCBest(t.Context(), c, "worker-A",
@@ -259,7 +260,8 @@ func TestWorkerRefusal_EmitsOneEnvelopeOnBothTransports(t *testing.T) {
 	startSpawnIPC(t, &recordingHub{}, inBandErrorDispatcher{code: codes.NotFound, message: message})
 	c, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
-	require.True(t, c.IsWorkerIPC(), "the spawn harness must select the local-IPC transport")
+	_, isIPC := c.(*control.WorkerIPCClient)
+	require.True(t, isIPC, "the spawn harness must select the local-IPC transport")
 	var resp leapmuxv1.ListAvailableShellsResponse
 	ipcErr := callInnerRPCBest(t.Context(), c, "worker-A",
 		leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, &leapmuxv1.ListAvailableShellsRequest{}, &resp)
@@ -322,4 +324,91 @@ func TestRpcDeadline_HonoursParentCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("child context did not honour parent cancellation")
 	}
+}
+
+func TestPeerDispatch_HubClientWorkerIPCAndUnsupportedPeer(t *testing.T) {
+	t.Run("hubCallUnary rejects unsupported peer", func(t *testing.T) {
+		var out leapmuxv1.ListWorkspacesResponse
+		err := hubCallUnary(t.Context(), nil, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, &leapmuxv1.ListWorkspacesRequest{}, &out)
+		require.ErrorContains(t, err, "unsupported control peer")
+	})
+
+	t.Run("withWorkerChannel handles HubClient empty workerID and unsupported peer", func(t *testing.T) {
+		hubClient, err := control.NewClientOrAnonymous("https://hub.example.test")
+		require.NoError(t, err)
+
+		err = withWorkerChannel(t.Context(), hubClient, "", func(workerCall) error {
+			t.Fatal("body must not run without workerID")
+			return nil
+		})
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+
+		err = withWorkerChannel(t.Context(), nil, "worker-A", func(workerCall) error {
+			t.Fatal("body must not run for unsupported peer")
+			return nil
+		})
+		require.ErrorContains(t, err, "unsupported control peer")
+	})
+
+	t.Run("withBestEffortWorkerChannel routes WorkerIPCClient, HubClient fallback, and rejects unsupported peer", func(t *testing.T) {
+		startSpawnIPC(t, &recordingHub{}, inBandErrorDispatcher{code: codes.NotFound, message: "missing"})
+		ipcPeer, err := control.NewClientFromEnv("")
+		require.NoError(t, err)
+		_, ok := ipcPeer.(*control.WorkerIPCClient)
+		require.True(t, ok)
+
+		var ipcBodyCalled bool
+		err = withBestEffortWorkerChannel(t.Context(), ipcPeer, "worker-A", func(w workerCall) error {
+			ipcBodyCalled = true
+			assert.NotNil(t, w.ipc)
+			assert.Nil(t, w.hub)
+			return nil
+		})
+		require.NoError(t, err)
+		assert.True(t, ipcBodyCalled)
+
+		hubClient, err := control.NewClientOrAnonymous("https://hub.example.test")
+		require.NoError(t, err)
+		var hubCallErr error
+		err = withBestEffortWorkerChannel(t.Context(), hubClient, "", func(w workerCall) error {
+			assert.True(t, w.perCallChannel)
+			assert.Nil(t, w.ipc)
+			hubCallErr = w.Call(t.Context(), leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, &leapmuxv1.ListAvailableShellsRequest{}, nil)
+			return nil
+		})
+		require.NoError(t, err)
+		require.Error(t, hubCallErr)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(hubCallErr).Code)
+
+		err = withBestEffortWorkerChannel(t.Context(), nil, "worker-A", func(workerCall) error {
+			t.Fatal("body must not run for unsupported peer")
+			return nil
+		})
+		require.ErrorContains(t, err, "unsupported control peer")
+	})
+
+	t.Run("workerCall without channel or ipc fails with invalid_request", func(t *testing.T) {
+		err := (workerCall{}).Call(t.Context(), leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, &leapmuxv1.ListAvailableShellsRequest{}, nil)
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	})
+
+	t.Run("newWorkerWatchTransport validates HubClient workerID and peer type", func(t *testing.T) {
+		hubClient, err := control.NewClientOrAnonymous("https://hub.example.test")
+		require.NoError(t, err)
+		_, err = newWorkerWatchTransport(t.Context(), hubClient, "")
+		require.ErrorContains(t, err, "worker_id required for hub-bound mode")
+
+		_, err = newWorkerWatchTransport(t.Context(), nil, "worker-A")
+		require.ErrorContains(t, err, "unsupported control peer")
+
+		startSpawnIPC(t, &recordingHub{}, nil)
+		ipcPeer, err := control.NewClientFromEnv("")
+		require.NoError(t, err)
+		wt, err := newWorkerWatchTransport(t.Context(), ipcPeer, "")
+		require.NoError(t, err)
+		require.NotNil(t, wt)
+		wt.close()
+	})
 }

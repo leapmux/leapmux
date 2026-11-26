@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"io"
@@ -25,6 +26,10 @@ your browser.
 Start a local instance with "leapmux up" (or "leapmux daemon solo start").
 Drive workspaces, agents, terminals, files, and layouts directly with
 "leapmux <command>" (or the short "lmx" alias).`
+	cli.SetAbbreviationNote(root,
+		"Any command name can be shortened as far as it stays unambiguous. A later\n"+
+			"release can make an ad-hoc prefix ambiguous, so scripts use full names or\n"+
+			"documented aliases (such as ag, term, ws, ls, rm, mv).")
 	cmdcontrol.Attach(root, runners.version)
 	localCmds := []*cobra.Command{
 		newDaemonCommand(runners.modes),
@@ -36,9 +41,15 @@ Drive workspaces, agents, terminals, files, and layouts directly with
 	}
 	for _, c := range localCmds {
 		cli.DisallowInheritedFlags(c, "hub")
+		cli.MarkLocalOnly(c)
 	}
 	root.AddCommand(localCmds...)
 	assignRootCommandGroups(root)
+	for _, child := range root.Commands() {
+		if child.Name() == "version" || child.Name() == "help" {
+			cli.MarkLocalOnly(child)
+		}
+	}
 	return root
 }
 
@@ -46,6 +57,7 @@ Drive workspaces, agents, terminals, files, and layouts directly with
 // commands so `leapmux --help` reads cleanly by workflow rather than one flat
 // list of 28 commands.
 func assignRootCommandGroups(root *cobra.Command) {
+	root.InitDefaultHelpCmd()
 	groups := map[string]string{
 		"tree":         "Daily Work",
 		"agent":        "Daily Work",
@@ -80,6 +92,7 @@ func assignRootCommandGroups(root *cobra.Command) {
 		"version":      "Meta",
 		"commands":     "Meta",
 		"completion":   "Meta",
+		"help":         "Meta",
 	}
 	for _, child := range root.Commands() {
 		if grp, ok := groups[child.Name()]; ok {
@@ -107,7 +120,7 @@ func newCommandsCommand(root *cobra.Command) *cobra.Command {
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.Int("depth", 0, "limit command path depth relative to the prefix (0 prints every depth)")
-			fs.Bool("compact", false, "omit flags and examples for compact agent discovery")
+			fs.Bool("compact", false, "omit descriptions, examples, and optional flags for compact agent discovery")
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
 			depth, err := inv.Command.Flags().GetInt("depth")
@@ -166,9 +179,24 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 			return out, cobra.ShellCompDirectiveNoFileComp
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
-			return nil, writeCompletion(root, inv.Arg("shell"), inv.Printer.Out)
+			shell := inv.Arg("shell")
+			var buf bytes.Buffer
+			if err := writeCompletion(root, shell, &buf); err != nil {
+				return nil, err
+			}
+			return completionScript{Shell: shell, Script: buf.String()}, nil
 		},
 	})
+}
+
+type completionScript struct {
+	Shell  string `json:"shell"`
+	Script string `json:"script"`
+}
+
+func (c completionScript) RenderText(w io.Writer) error {
+	_, err := io.WriteString(w, c.Script)
+	return err
 }
 
 func writeCompletion(root *cobra.Command, shell string, w io.Writer) error {

@@ -369,19 +369,23 @@ func runRPC(inv *cli.Invocation) (any, error) {
 // calls any hub procedure. The socket of a tab relays only the procedures of
 // hubrpc.Registry, so the command refuses another one before it sends
 // anything, instead of reporting the relay's refusal.
-func callHubProcedure(ctx context.Context, c *control.Client, p rpcProcedure, in, out proto.Message) error {
-	if c.IsWorkerIPC() {
-		if _, relayed := hubrpc.Registry[p.path]; !relayed {
-			return cli.Usagef("the socket of this LeapMux tab does not relay %s to the hub", p.name()).
+func callHubProcedure(ctx context.Context, p control.Peer, proc rpcProcedure, in, out proto.Message) error {
+	switch c := p.(type) {
+	case *control.WorkerIPCClient:
+		if _, relayed := hubrpc.Registry[proc.path]; !relayed {
+			return cli.Usagef("the socket of this LeapMux tab does not relay %s to the hub", proc.name()).
 				WithHint(`pass --hub <url> to call it with your own login; "leapmux rpc --help" lists the procedures that the socket relays`)
 		}
-		return withHubVersion(ctx, c, hubCallLocalIPC(ctx, c, p.path, in, out))
+		return withHubVersion(ctx, c, hubCallLocalIPC(ctx, c, proc.path, in, out))
+	case *control.HubClient:
+		client := connect.NewClient(
+			connecthttp.NewTransport(c.HTTPClient, c.ConnectURL(), connecthttp.WithReadMaxBytes(0)),
+			c.AuthInterceptor(),
+		)
+		return withHubVersion(ctx, c, client.CallUnary(ctx, connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: proc.path}, in, out))
+	default:
+		return fmt.Errorf("unsupported control peer %T", p)
 	}
-	client := connect.NewClient(
-		connecthttp.NewTransport(c.HTTPClient, c.ConnectURL(), connecthttp.WithReadMaxBytes(0)),
-		c.AuthInterceptor(),
-	)
-	return withHubVersion(ctx, c, client.CallUnary(ctx, connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: p.path}, in, out))
 }
 
 // callWorkerProcedure resolves the Worker workerInput and calls the Worker

@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/quartz"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -675,6 +677,10 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 	}
 }
 
+// agentMessagesReconnectTimerTag identifies the reconnect timer of
+// `agent messages --follow` to a test clock.
+const agentMessagesReconnectTimerTag = "agent-messages-reconnect"
+
 // tailAgentMessages streams `WatchEvents` for a single agent and
 // prints each `AgentChatMessage` as one stream event. On
 // transport disconnect it reconnects with capped exponential backoff,
@@ -684,47 +690,9 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 //
 // Each line contains a rendered chat message or the sequence numbers
 // removed by a live retraction.
-func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID string,
+func tailAgentMessages(ctx context.Context, c control.Peer, workerID, agentID string,
 	startSeq int64, em *lineEmitter,
 ) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	cursor := streamevents.NewAgentCursor()
-	cursor.Track(agentID, startSeq)
-	// terminals cursor stays empty — we don't subscribe terminals here.
-	terminals := streamevents.NewTerminalCursor()
-
-	transport, err := newWorkerWatchTransport(ctx, c, workerID)
-	if err != nil {
-		return err
-	}
-	defer transport.close()
-
-	// Render one message to stdout. The subscription callback and the reconnect-drain
-	// loop both emit; lineEmitter serializes them so lines can't interleave.
-	emitMsg := func(m *leapmuxv1.AgentChatMessage) error {
-		msg := renderAgentMessage(m)
-		msg.rawText, msg.fullText, msg.markdown = em.rawText, em.fullText, em.markdown
-		return em.emit(msg)
-	}
-
-	// Track whether this subscription delivered a record before reconnecting.
-	var delivered atomic.Bool
-	onAgent := func(ae *leapmuxv1.AgentEvent) {
-		emitted, err := em.emitFollowEvent(ae)
-		if err != nil {
-			cancel()
-			return
-		}
-		if emitted {
-			delivered.Store(true)
-		}
-	}
-	onCursorReset := func(_ string) { /* not relevant for agent-only follow */ }
-	sub := streamevents.NewSubscription(transport.transport, cursor, terminals, onAgent, nil, onCursorReset)
-	defer sub.Cancel()
-
 	// Reconnect backlog drain: page ListAgentMessages forward from the cursor. A
 	// still-zero cursor (no message seen yet) drains from the very beginning via the
 	// OLDEST anchor; once the cursor has advanced, page forward via AFTER from it.
@@ -748,17 +716,88 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 		}
 		return resp.GetMessages(), resp.GetHasMore(), nil
 	}
+	openTransport := func(ctx context.Context) (*workerWatchTransport, error) {
+		return newWorkerWatchTransport(ctx, c, workerID)
+	}
+	return tailAgentMessagesWith(ctx, agentID, startSeq, openTransport, drainFetch, em, quartz.NewReal())
+}
 
-	// Reconnect loop. Each iteration opens a fresh subscription
-	// using the latest cursor value, then waits for it to terminate
-	// (either via ctx cancellation or the transport ending). We back
-	// off briefly between reconnects so a worker that's flapping
-	// doesn't pin the CLI's CPU.
+func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
+	openTransport func(context.Context) (*workerWatchTransport, error),
+	drainFetch messagePager, em *lineEmitter, clock quartz.Clock,
+) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cursor := streamevents.NewAgentCursor()
+	cursor.Track(agentID, startSeq)
+	// terminals cursor stays empty — we don't subscribe terminals here.
+	terminals := streamevents.NewTerminalCursor()
+
+	// Render one message to stdout. The subscription callback and the reconnect-drain
+	// loop both emit; lineEmitter serializes them so lines can't interleave.
+	emitMsg := func(m *leapmuxv1.AgentChatMessage) error {
+		msg := renderAgentMessage(m)
+		msg.rawText, msg.fullText, msg.markdown = em.rawText, em.fullText, em.markdown
+		return em.emit(msg)
+	}
+
+	// Track whether this subscription delivered a record before reconnecting.
+	var delivered atomic.Bool
+	onAgent := func(ae *leapmuxv1.AgentEvent) {
+		emitted, err := em.emitFollowEvent(ae)
+		if err != nil {
+			cancel()
+			return
+		}
+		if emitted {
+			delivered.Store(true)
+		}
+	}
+	onCursorReset := func(_ string) { /* not relevant for agent-only follow */ }
+
+	var (
+		transport *workerWatchTransport
+		sub       *streamevents.Subscription
+	)
+	closeCurrent := func() {
+		if sub != nil {
+			sub.Cancel()
+			sub = nil
+		}
+		if transport != nil {
+			transport.close()
+			transport = nil
+		}
+	}
+	defer closeCurrent()
+
+	var err error
+	transport, err = openTransport(ctx)
+	if err != nil {
+		return inBandError(err)
+	}
+	sub = streamevents.NewSubscription(transport.transport, cursor, terminals, onAgent, nil, onCursorReset)
+
+	// Reconnect loop. Each iteration drains any missed backlog, opens a fresh
+	// transport when the prior stream ended, subscribes using the latest cursor
+	// value, and waits for the stream to end. Permanent refusals return
+	// immediately instead of retrying forever.
 	const (
 		initialBackoff = 250 * time.Millisecond
 		maxBackoff     = 8 * time.Second
 	)
 	backoff := newReconnectBackoff(initialBackoff, maxBackoff)
+	waitBackoff := func(didWork bool) bool {
+		timer := clock.NewTimer(backoff.afterSession(didWork), agentMessagesReconnectTimerTag)
+		select {
+		case <-ctx.Done():
+			timer.Stop(agentMessagesReconnectTimerTag)
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
 	for {
 		// Before each subscription, bridge the gap that the capped WatchEvents replay
 		// cannot cover. The replay sends at most contracts.MessagePageLimit messages.
@@ -778,6 +817,27 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 				return err
 			}
 			return nil
+		}
+		if transport == nil {
+			transport, err = openTransport(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					if err := em.Err(); err != nil {
+						return err
+					}
+					return nil
+				}
+				err = inBandError(err)
+				if refusedForGood(err) {
+					return err
+				}
+				em.printer.Notice("connecting to agent %s failed, retrying: %v", agentID, err)
+				if !waitBackoff(drained) {
+					return nil
+				}
+				continue
+			}
+			sub = streamevents.NewSubscription(transport.transport, cursor, terminals, onAgent, nil, onCursorReset)
 		}
 		req := &leapmuxv1.WatchEventsRequest{
 			Agents: []*leapmuxv1.WatchAgentEntry{
@@ -808,9 +868,14 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 			if errors.Is(err, streamevents.ErrSubscriptionClosed) {
 				return nil
 			}
-			// A failed subscribe is retried below, so it is a notice on
-			// stderr rather than the command's failure.
+			err = inBandError(err)
+			if refusedForGood(err) {
+				return err
+			}
+			// A failed subscribe is retried below on a fresh transport, so it is a
+			// notice on stderr rather than the command's failure.
 			em.printer.Notice("subscribing to agent %s failed, retrying: %v", agentID, err)
+			closeCurrent()
 		} else {
 			// Block until the subscription's transport ends
 			// (channel closed, RPC error, ctx cancelled).
@@ -821,6 +886,16 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 				}
 				return nil
 			case <-sub.Done():
+				endErr := inBandError(sub.EndErr())
+				if refusedForGood(endErr) {
+					return endErr
+				}
+				if endErr != nil {
+					em.printer.Notice("subscription to agent %s ended, reconnecting: %v", agentID, endErr)
+				}
+				// Tear down the ended subscription and transport so the next
+				// iteration opens a fresh channel instead of retrying on a dead one.
+				closeCurrent()
 			}
 		}
 		if ctx.Err() != nil {
@@ -834,10 +909,8 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 		// delivered OR a backlog the pre-subscribe drain forwarded: a transport that
 		// drains history but drops the subscription before any frame is still moving
 		// messages, so it shouldn't be treated as a flap.
-		select {
-		case <-ctx.Done():
+		if !waitBackoff(delivered.Load() || drained) {
 			return nil
-		case <-time.After(backoff.afterSession(delivered.Load() || drained)):
 		}
 	}
 }
@@ -851,8 +924,9 @@ type workerWatchTransport struct {
 	close     func()
 }
 
-func newWorkerWatchTransport(ctx context.Context, c *control.Client, workerID string) (*workerWatchTransport, error) {
-	if c.IsWorkerIPC() {
+func newWorkerWatchTransport(ctx context.Context, p control.Peer, workerID string) (*workerWatchTransport, error) {
+	switch c := p.(type) {
+	case *control.WorkerIPCClient:
 		// Local-IPC mode: route via ControlIPCService.StreamInner.
 		// workerID may be empty; the router resolves the spawning
 		// worker from the bearer scope, mirroring the existing
@@ -868,20 +942,23 @@ func newWorkerWatchTransport(ctx context.Context, c *control.Client, workerID st
 			transport: streamevents.NewLocalIPCTransport(ipc, workerID, slog.Default()),
 			close:     func() {},
 		}, nil
+	case *control.HubClient:
+		if workerID == "" {
+			return nil, errors.New("worker_id required for hub-bound mode")
+		}
+		ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
+		if err != nil {
+			return nil, err
+		}
+		return &workerWatchTransport{
+			transport: streamevents.NewChannelTransport(ch, slog.Default()),
+			close: func() {
+				ch.Close()
+			},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported control peer %T", p)
 	}
-	if workerID == "" {
-		return nil, errors.New("worker_id required for hub-bound mode")
-	}
-	ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
-	if err != nil {
-		return nil, err
-	}
-	return &workerWatchTransport{
-		transport: streamevents.NewChannelTransport(ch, slog.Default()),
-		close: func() {
-			ch.Close()
-		},
-	}, nil
 }
 
 // lineEmitter serializes stream writes under one mutex, so the concurrent

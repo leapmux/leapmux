@@ -10,13 +10,13 @@ import (
 )
 
 func init() {
-	cobra.AddTemplateFunc("flagUsages", flagUsages)
 	cobra.AddTemplateFunc("inheritedFlagUsages", inheritedFlagUsages)
 	cobra.AddTemplateFunc("flagSections", flagSections)
 	cobra.AddTemplateFunc("argUsages", argUsages)
-	cobra.AddTemplateFunc("commandColumn", commandColumn)
 	cobra.AddTemplateFunc("commandSections", commandSections)
 	cobra.AddTemplateFunc("nextHints", nextHints)
+	cobra.AddTemplateFunc("footerOf", footerOf)
+	cobra.AddTemplateFunc("abbreviationNoteOf", abbreviationNoteOf)
 	// A group lists its commands in the order that it declares them: the
 	// order a reader needs, not the alphabet.
 	cobra.EnableCommandSorting = false
@@ -25,33 +25,12 @@ func init() {
 // inheritedFlagUsages formats the inherited flags of cmd, omitting any flag
 // that cmd (or an ancestor) marked disallowed.
 func inheritedFlagUsages(cmd *cobra.Command) string {
-	var rows []flagRow
-	width := 0
-	cmd.InheritedFlags().VisitAll(func(f *pflag.Flag) {
-		if f.Hidden || f.Name == "help" || disallowedInheritedFlag(cmd, f.Name) {
-			return
-		}
-		info := describeFlag(f, true)
-		names := info.Names()
-		if info.Shorthand == "" {
-			names = "    " + names
-		}
-		rows = append(rows, flagRow{names: names, usage: info.Text(), group: info.Group})
-		width = max(width, utf8.RuneCountInString(names))
+	rows, width := flagRowsFiltered(cmd.InheritedFlags(), true, func(f *pflag.Flag) bool {
+		return IsInheritedFlagDisallowed(cmd, f.Name)
 	})
 	var sb strings.Builder
 	writeFlagRows(&sb, rows, width)
-	return strings.TrimRight(sb.String(), "\n")
-}
-
-// flagUsages formats the flags of fs for a help text, one line each: its
-// names, the type of its value, and FlagInfo.Text. The help flag is left out,
-// because every command has it.
-func flagUsages(fs *pflag.FlagSet) string {
-	rows, width := flagRows(fs)
-	var sb strings.Builder
-	writeFlagRows(&sb, rows, width)
-	return strings.TrimRight(sb.String(), "\n")
+	return sb.String()
 }
 
 // flagSections formats the flags of fs as the sections of a help text: the
@@ -60,7 +39,7 @@ func flagUsages(fs *pflag.FlagSet) string {
 // sections read as one table. Each section starts with a blank line; a set
 // with no flag to show prints nothing.
 func flagSections(fs *pflag.FlagSet) string {
-	rows, width := flagRows(fs)
+	rows, width := flagRowsFiltered(fs, false, nil)
 	var order []string
 	byGroup := map[string][]flagRow{}
 	for _, r := range rows {
@@ -76,9 +55,6 @@ func flagSections(fs *pflag.FlagSet) string {
 		}
 		fmt.Fprintf(&sb, "\n\n%s:\n", header)
 		writeFlagRows(&sb, rows, width)
-		trimmed := strings.TrimRight(sb.String(), "\n")
-		sb.Reset()
-		sb.WriteString(trimmed)
 	}
 	write("Flags", byGroup[""])
 	for _, group := range order {
@@ -90,14 +66,14 @@ func flagSections(fs *pflag.FlagSet) string {
 // flagRow is one flag in a help text.
 type flagRow struct{ names, usage, group string }
 
-func flagRows(fs *pflag.FlagSet) ([]flagRow, int) {
+func flagRowsFiltered(fs *pflag.FlagSet, global bool, skip func(*pflag.Flag) bool) ([]flagRow, int) {
 	var rows []flagRow
 	width := 0
 	fs.VisitAll(func(f *pflag.Flag) {
-		if f.Hidden || f.Name == "help" {
+		if f.Hidden || f.Name == "help" || (skip != nil && skip(f)) {
 			return
 		}
-		info := describeFlag(f, false)
+		info := describeFlag(f, global)
 		names := info.Names()
 		if info.Shorthand == "" {
 			// Align the long names under those of the flags with a
@@ -111,8 +87,11 @@ func flagRows(fs *pflag.FlagSet) ([]flagRow, int) {
 }
 
 func writeFlagRows(sb *strings.Builder, rows []flagRow, width int) {
-	for _, r := range rows {
-		fmt.Fprintf(sb, "  %s%s  %s\n", r.names, strings.Repeat(" ", width-utf8.RuneCountInString(r.names)), r.usage)
+	for i, r := range rows {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		fmt.Fprintf(sb, "  %s%s  %s", r.names, strings.Repeat(" ", width-utf8.RuneCountInString(r.names)), r.usage)
 	}
 }
 
@@ -127,13 +106,7 @@ func argUsages(cmd *cobra.Command) string {
 		if spec.Help == "" {
 			continue
 		}
-		name := "<" + spec.Name + ">"
-		if !spec.Required {
-			name = "[" + spec.Name + "]"
-		}
-		if spec.Variadic {
-			name += "..."
-		}
+		name := spec.Usage()
 		rows = append(rows, row{name: name, help: spec.Help})
 		width = max(width, utf8.RuneCountInString(name))
 	}
@@ -142,20 +115,6 @@ func argUsages(cmd *cobra.Command) string {
 		fmt.Fprintf(&sb, "  %s%s  %s\n", r.name, strings.Repeat(" ", width-utf8.RuneCountInString(r.name)), r.help)
 	}
 	return strings.TrimRight(sb.String(), "\n")
-}
-
-// commandColumn is the width of the name column in the command list of cmd:
-// the longest name that the list prints, and two spaces. Every summary then
-// starts at one column, and the longest name keeps the same gap as the
-// others.
-func commandColumn(cmd *cobra.Command) int {
-	width := 0
-	for _, child := range cmd.Commands() {
-		if child.IsAvailableCommand() || child.Name() == "help" {
-			width = max(width, len(child.Name()))
-		}
-	}
-	return width + 2
 }
 
 // commandSections renders the subcommands of cmd either as task-grouped
@@ -196,21 +155,10 @@ func commandSections(cmd *cobra.Command) string {
 	}
 	var order []string
 	byGroup := map[string][]entry{}
-	hasMeta := false
-	for _, e := range entries {
-		if e.group == "Meta" {
-			hasMeta = true
-			break
-		}
-	}
 	for _, e := range entries {
 		grp := e.group
 		if grp == "" {
-			if e.name == "help" && hasMeta {
-				grp = "Meta"
-			} else {
-				grp = "Other"
-			}
+			grp = "Other"
 		}
 		if _, seen := byGroup[grp]; !seen {
 			order = append(order, grp)

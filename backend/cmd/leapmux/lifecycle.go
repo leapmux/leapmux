@@ -81,54 +81,32 @@ func newDaemonCommand(deps modeDependencies) *cobra.Command {
 // newUpCommand builds `leapmux up`, a top-level shortcut for
 // `leapmux daemon solo start`.
 func newUpCommand(deps modeDependencies) *cobra.Command {
-	var flags *lifecycleFlags
-	return cli.NewLeaf(cli.Leaf{
-		Use:              "up",
-		Short:            "Start the local solo LeapMux daemon (shortcut for daemon solo start)",
-		Mutates:          true,
-		QuietUnsupported: true,
-		Examples: []cli.Example{
+	return newLifecycleLeaf(
+		"up",
+		"Start the local solo LeapMux daemon (shortcut for daemon solo start)",
+		"solo",
+		"start",
+		[]cli.Example{
 			{Command: "leapmux up"},
 			{Comment: "Start at login without a prompt.", Command: "leapmux up --startup login --yes"},
 		},
-		Flags: func(fs *pflag.FlagSet) {
-			var err error
-			flags, err = registerLifecycleFlags("solo", "start", fs)
-			if err != nil {
-				panic(fmt.Sprintf("leapmux up: %v", err))
-			}
-		},
-		Run: func(inv *cli.Invocation) (any, error) {
-			line := lifecycleCommandLine{flags: flags, set: inv.Command.Flags()}
-			return nil, runLifecycleVerb(inv.Context, inv.Printer, line, deps)
-		},
-	})
+		deps,
+	)
 }
 
 // newDownCommand builds `leapmux down`, a top-level shortcut for
 // `leapmux daemon solo stop`.
 func newDownCommand(deps modeDependencies) *cobra.Command {
-	var flags *lifecycleFlags
-	return cli.NewLeaf(cli.Leaf{
-		Use:              "down",
-		Short:            "Stop the local solo LeapMux daemon (shortcut for daemon solo stop)",
-		Mutates:          true,
-		QuietUnsupported: true,
-		Examples: []cli.Example{
+	return newLifecycleLeaf(
+		"down",
+		"Stop the local solo LeapMux daemon (shortcut for daemon solo stop)",
+		"solo",
+		"stop",
+		[]cli.Example{
 			{Command: "leapmux down"},
 		},
-		Flags: func(fs *pflag.FlagSet) {
-			var err error
-			flags, err = registerLifecycleFlags("solo", "stop", fs)
-			if err != nil {
-				panic(fmt.Sprintf("leapmux down: %v", err))
-			}
-		},
-		Run: func(inv *cli.Invocation) (any, error) {
-			line := lifecycleCommandLine{flags: flags, set: inv.Command.Flags()}
-			return nil, runLifecycleVerb(inv.Context, inv.Printer, line, deps)
-		},
-	})
+		deps,
+	)
 }
 
 // newModeCommand builds `leapmux daemon <mode>`: the lifecycle commands, plus
@@ -150,12 +128,17 @@ func newModeCommand(mode string, deps modeDependencies) *cobra.Command {
 
 // newLifecycleCommand builds `leapmux daemon <mode> <verb>`.
 func newLifecycleCommand(mode, verb string, deps modeDependencies) *cobra.Command {
+	return newLifecycleLeaf(verb, lifecycleSummary(mode, verb), mode, verb, lifecycleExamples(mode, verb), deps)
+}
+
+func newLifecycleLeaf(use, short, mode, verb string, examples []cli.Example, deps modeDependencies) *cobra.Command {
 	var flags *lifecycleFlags
 	return cli.NewLeaf(cli.Leaf{
-		Use:      verb,
-		Short:    lifecycleSummary(mode, verb),
-		Mutates:  verb != "status" && verb != "logs",
-		Examples: lifecycleExamples(mode, verb),
+		Use:         use,
+		Short:       short,
+		Mutates:     verb != "status" && verb != "logs",
+		Destructive: verb == "stop" || verb == "disable",
+		Examples:    examples,
 		// `run` shuts down gracefully on its own handler of the signals.
 		HandlesSignals:   verb == "run",
 		QuietUnsupported: true,
@@ -163,20 +146,73 @@ func newLifecycleCommand(mode, verb string, deps modeDependencies) *cobra.Comman
 			var err error
 			flags, err = registerLifecycleFlags(mode, verb, fs)
 			if err != nil {
-				panic(fmt.Sprintf("leapmux daemon %s %s: %v", mode, verb, err))
+				panic(fmt.Sprintf("leapmux %s (%s %s): %v", use, mode, verb, err))
 			}
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
 			line := lifecycleCommandLine{flags: flags, set: inv.Command.Flags()}
-			return nil, runLifecycleVerb(inv.Context, inv.Printer, line, deps)
+			return runLifecycleVerb(inv.Context, inv.Printer, inv.Stdin, line, deps)
 		},
 	})
 }
 
 type lifecycleActionResult struct {
-	Mode   string `json:"mode"`
-	Verb   string `json:"verb"`
-	Status string `json:"status"`
+	Mode    string                `json:"mode"`
+	Verb    string                `json:"verb"`
+	Status  string                `json:"status"`
+	Startup lifecycle.StartupKind `json:"startup,omitempty"`
+	URL     string                `json:"url,omitempty"`
+	Stopped *bool                 `json:"stopped,omitempty"`
+
+	readiness     string
+	nextSelection *instanceSelection
+	nextVerbs     []string
+}
+
+func (r lifecycleActionResult) RenderText(w io.Writer) error {
+	switch r.Status {
+	case "unchanged":
+		return nil
+	case "started", "restarted":
+		if _, err := fmt.Fprintf(w, "%s started.\n", capitalize(r.Mode)); err != nil {
+			return err
+		}
+		if r.URL != "" {
+			if r.readiness == lifecycle.ReadinessReadyForSetup {
+				if _, err := fmt.Fprintf(w, "Open %s in your browser to create the first administrator.\n", r.URL); err != nil {
+					return err
+				}
+			} else {
+				if _, err := fmt.Fprintf(w, "Open %s in your browser.\n", r.URL); err != nil {
+					return err
+				}
+			}
+		}
+	case "stopped":
+		if _, err := fmt.Fprintln(w, "Stopped."); err != nil {
+			return err
+		}
+	case "not_running":
+		if _, err := fmt.Fprintln(w, "Not running."); err != nil {
+			return err
+		}
+	case "configured":
+		if _, err := fmt.Fprintf(w, "Configured. %s starts automatically at %s.\n", capitalize(r.Mode), r.Startup); err != nil {
+			return err
+		}
+	case "disabled":
+		if _, err := fmt.Fprintln(w, "Startup configuration removed. Application data, worker credentials, and logs are preserved."); err != nil {
+			return err
+		}
+	case "not_configured":
+		if _, err := fmt.Fprintln(w, "No startup configuration."); err != nil {
+			return err
+		}
+	}
+	if r.nextSelection != nil && len(r.nextVerbs) > 0 {
+		printNextCommandsTo(w, *r.nextSelection, r.nextVerbs...)
+	}
+	return nil
 }
 
 func lifecycleProseOut(printer *cli.Printer) io.Writer {
@@ -189,41 +225,38 @@ func lifecycleProseOut(printer *cli.Printer) io.Writer {
 	return os.Stdout
 }
 
+func lifecycleErrOut(printer *cli.Printer) io.Writer {
+	if printer != nil && printer.Err != nil {
+		return printer.Err
+	}
+	return os.Stderr
+}
+
 // runLifecycleVerb runs the verb of line. An end of ctx, such as an
 // interrupt, ends every wait of the verb. `run` handles its shutdown signals
 // itself, so it runs under the context of deps instead.
-func runLifecycleVerb(ctx context.Context, printer *cli.Printer, line lifecycleCommandLine, deps modeDependencies) error {
-	out := lifecycleProseOut(printer)
-	var err error
+func runLifecycleVerb(ctx context.Context, printer *cli.Printer, in io.Reader, line lifecycleCommandLine, deps modeDependencies) (any, error) {
+	if in == nil {
+		in = os.Stdin
+	}
 	switch line.verb() {
 	case "start", "restart":
-		err = executeNativeStart(ctx, printer, out, line, deps.controller)
+		return executeNativeStart(ctx, printer, in, line, deps.controller)
 	case "stop":
-		err = stopLifecycleInstance(ctx, out, line, deps.controller)
+		return stopLifecycleInstance(ctx, printer, line, deps.controller)
 	case "status":
-		return executeModeStatus(ctx, printer, line, deps.controller)
+		return nil, executeModeStatus(ctx, printer, line, deps.controller)
 	case "logs":
-		return runLifecycleLogs(ctx, printer, line, deps)
+		return nil, runLifecycleLogs(ctx, printer, line)
 	case "enable":
-		err = enableLifecycleService(ctx, out, line, deps.controller)
+		return enableLifecycleService(ctx, printer, in, line, deps.controller)
 	case "disable":
-		err = disableLifecycleService(ctx, out, line, deps.controller)
+		return disableLifecycleService(ctx, printer, line, deps.controller)
 	case "run":
-		return runLifecycleForeground(line, deps.foreground)
+		return nil, runLifecycleForeground(line, deps.foreground)
 	default:
-		return fmt.Errorf("leapmux daemon %s has no command %q", line.mode(), line.verb())
+		return nil, fmt.Errorf("leapmux daemon %s has no command %q", line.mode(), line.verb())
 	}
-	if err != nil {
-		return err
-	}
-	if printer != nil && printer.Format != cli.FormatText {
-		return printer.Result(lifecycleActionResult{
-			Mode:   line.mode(),
-			Verb:   line.verb(),
-			Status: "ok",
-		})
-	}
-	return nil
 }
 
 // lifecycleExamples gives the examples of `leapmux daemon <mode> <verb>`.
@@ -300,15 +333,6 @@ func modeSummary(mode string) string {
 	}
 }
 
-// modeRole parses the mode into its lifecycle role.
-func modeRole(mode string) lifecycle.Role {
-	role, err := lifecycle.ParseRole(mode)
-	if err != nil {
-		return lifecycle.RoleDev
-	}
-	return role
-}
-
 type runInvocation struct {
 	Context     context.Context
 	OnReady     func()
@@ -377,7 +401,7 @@ func runLifecycleForeground(line lifecycleCommandLine, invocation runInvocation)
 	if managed != nil {
 		runtime, err = lifecycle.StartServiceRuntime(*managed)
 	} else {
-		runtime, err = lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: modeRole(mode), DataDir: dataDir, Execution: execution})
+		runtime, err = lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: configuration.role, DataDir: dataDir, Execution: execution})
 	}
 	if err != nil {
 		return err
@@ -453,40 +477,47 @@ const (
 // stopLifecycleInstance stops the running instance and waits for the FULL
 // shutdown, including the database close. An already stopped instance
 // succeeds.
-func stopLifecycleInstance(ctx context.Context, out io.Writer, line lifecycleCommandLine, newController nativeControllerFactory) error {
+func stopLifecycleInstance(ctx context.Context, printer *cli.Printer, line lifecycleCommandLine, newController nativeControllerFactory) (lifecycleActionResult, error) {
 	mode := line.mode()
-	configuration, options, err := openLifecycleCommand(line)
+	configuration, options, err := openLifecycleCommand(printer, line)
 	if err != nil {
-		return err
+		return lifecycleActionResult{}, err
 	}
 	release, err := lifecycle.OperationLock(configuration.dataDirectory)
 	if err != nil {
-		return err
+		return lifecycleActionResult{}, err
 	}
 	defer release()
 	ctx, cancel := context.WithTimeout(ctx, options.timeout)
 	defer cancel()
-	if err := stopLifecycleInstanceWithController(ctx, out, configuration, newController); err != nil {
-		return err
+	stopped, err := stopLifecycleInstanceWithController(ctx, lifecycleErrOut(printer), configuration, newController)
+	if err != nil {
+		return lifecycleActionResult{}, err
 	}
-	printSelectedNextCommandsTo(out, mode, configuration.configurationFile, configuration.dataDirectory, newController, []string{"start"}, []string{"disable"})
-	return nil
+	status := "not_running"
+	if stopped {
+		status = "stopped"
+	}
+	nextSel, nextVerbs := selectedNextCommands(mode, configuration.configurationFile, configuration.dataDirectory, newController, []string{"start"}, []string{"disable"})
+	return lifecycleActionResult{
+		Mode:          mode,
+		Verb:          "stop",
+		Status:        status,
+		Stopped:       &stopped,
+		nextSelection: nextSel,
+		nextVerbs:     nextVerbs,
+	}, nil
 }
 
-func stopLifecycleInstanceWithController(ctx context.Context, out io.Writer, configuration *lifecycleConfiguration, newController nativeControllerFactory) error {
+func stopLifecycleInstanceWithController(ctx context.Context, errOut io.Writer, configuration *lifecycleConfiguration, newController nativeControllerFactory) (bool, error) {
 	active, err := stopLifecycleEvidence(ctx, configuration, newController)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			_, _ = fmt.Fprintf(out, "Shutdown could not be confirmed. See `leapmux daemon %s status`.\n", configuration.role)
+		if errors.Is(err, context.DeadlineExceeded) && errOut != nil {
+			_, _ = fmt.Fprintf(errOut, "Shutdown could not be confirmed. See `leapmux daemon %s status`.\n", configuration.role)
 		}
-		return err
+		return active, err
 	}
-	if active {
-		_, _ = fmt.Fprintln(out, "Stopped.")
-	} else {
-		_, _ = fmt.Fprintln(out, "Not running.")
-	}
-	return nil
+	return active, nil
 }
 
 func stopLifecycleEvidence(ctx context.Context, configuration *lifecycleConfiguration, newController nativeControllerFactory) (bool, error) {
@@ -552,42 +583,45 @@ func capitalize(word string) string {
 }
 
 // printStatusReport renders the status model for the terminal.
-func printStatusReport(mode string, status lifecycle.Status, diagnosticExcerpt string) {
-	fmt.Printf("%s: %s\n", capitalize(mode), capitalize(status.Process.State))
-	fmt.Printf("Configured:    %t\n", status.Configured)
-	if status.Startup != nil {
-		fmt.Printf("Startup:       %s\n", capitalize(string(*status.Startup)))
+func printStatusReport(w io.Writer, mode string, status lifecycle.Status, diagnosticExcerpt string) {
+	if w == nil {
+		w = os.Stdout
 	}
-	printStatusValue("Execution", status.Execution)
-	printStatusValue("PID", status.Process.PID)
-	printStatusValue("Started at", status.Process.StartedAt)
-	printStatusValue("Readiness", status.Readiness)
-	printStatusValue("URL", status.URL)
+	_, _ = fmt.Fprintf(w, "%s: %s\n", capitalize(mode), capitalize(status.Process.State))
+	_, _ = fmt.Fprintf(w, "Configured:    %t\n", status.Configured)
+	if status.Startup != nil {
+		_, _ = fmt.Fprintf(w, "Startup:       %s\n", capitalize(string(*status.Startup)))
+	}
+	printStatusValue(w, "Execution", status.Execution)
+	printStatusValue(w, "PID", status.Process.PID)
+	printStatusValue(w, "Started at", status.Process.StartedAt)
+	printStatusValue(w, "Readiness", status.Readiness)
+	printStatusValue(w, "URL", status.URL)
 	if status.Registration.State != lifecycle.RegistrationNotApplicable {
-		fmt.Printf("Registration:  %s\n", capitalize(status.Registration.State))
-		printStatusValue("Worker ID", status.Registration.WorkerID)
-		printStatusValue("Hub", status.Registration.HubURL)
+		_, _ = fmt.Fprintf(w, "Registration:  %s\n", capitalize(status.Registration.State))
+		printStatusValue(w, "Worker ID", status.Registration.WorkerID)
+		printStatusValue(w, "Hub", status.Registration.HubURL)
 	}
 	if status.Connection.State != lifecycle.ConnectionNotApplicable {
-		fmt.Printf("Connection:    %s\n", capitalize(status.Connection.State))
-		printStatusValue("Last error", status.Connection.LastError)
+		_, _ = fmt.Fprintf(w, "Connection:    %s\n", capitalize(status.Connection.State))
+		printStatusValue(w, "Last error", status.Connection.LastError)
 	}
-	printStatusValue("Attempt", status.Attempt.ID)
-	printStatusValue("Attempt start", status.Attempt.StartedAt)
-	printStatusValue("Ended at", status.Attempt.EndedAt)
-	printStatusValue("Exit code", status.Attempt.ExitCode)
-	printStatusValue("Reason", status.Attempt.Error)
+	printStatusValue(w, "Attempt", status.Attempt.ID)
+	printStatusValue(w, "Attempt start", status.Attempt.StartedAt)
+	printStatusValue(w, "Ended at", status.Attempt.EndedAt)
+	printStatusValue(w, "Exit code", status.Attempt.ExitCode)
+	printStatusValue(w, "Reason", status.Attempt.Error)
 	for _, d := range status.Diagnostics {
-		fmt.Printf("\n%s:\n%s\n", d.Title, d.Body)
+		_, _ = fmt.Fprintf(w, "\n%s:\n%s\n", d.Title, d.Body)
 	}
 	if diagnosticExcerpt != "" {
-		fmt.Printf("\n%s\n", diagnosticExcerpt)
+		_, _ = fmt.Fprintf(w, "\n%s\n", diagnosticExcerpt)
 	}
-	printStatusValue("Full log", status.Attempt.LogPath)
+	printStatusValue(w, "Full log", status.Attempt.LogPath)
 }
 
-func printStatusValue[T any](label string, value *T) {
+func printStatusValue[T any](w io.Writer, label string, value *T) {
 	if value != nil {
-		fmt.Printf("%-14s%v\n", label+":", *value)
+		_, _ = fmt.Fprintf(w, "%-14s%v\n", label+":", *value)
 	}
 }

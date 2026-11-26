@@ -124,7 +124,7 @@ type replyReader struct {
 
 // workerReplyReader reads the queue and the transcript of agentID on
 // workerID through c.
-func workerReplyReader(c *control.Client, workerID, agentID string) replyReader {
+func workerReplyReader(c control.Peer, workerID, agentID string) replyReader {
 	call := func(ctx context.Context, method string, in, out proto.Message) error {
 		ctx, cancel := rpcDeadline(ctx)
 		defer cancel()
@@ -556,7 +556,7 @@ const (
 	sendDeliveryPreempt
 )
 
-func applySendDeliveryMode(ctx context.Context, c *control.Client, t tabTarget, inputID string, mode sendDeliveryMode) error {
+func applySendDeliveryMode(ctx context.Context, c control.Peer, t tabTarget, inputID string, mode sendDeliveryMode) error {
 	switch mode {
 	case sendDeliverySteer:
 		rCtx, cancel := rpcDeadline(ctx)
@@ -661,7 +661,7 @@ func newInputWhileWaiting(agentID string) error {
 
 // enqueueAgentInput sends one EnqueueAgentInput request for the agent t,
 // and returns the Worker acknowledgment.
-func enqueueAgentInput(ctx context.Context, c *control.Client, t tabTarget, request *leapmuxv1.EnqueueAgentInputRequest) (*leapmuxv1.EnqueueAgentInputResponse, error) {
+func enqueueAgentInput(ctx context.Context, c control.Peer, t tabTarget, request *leapmuxv1.EnqueueAgentInputRequest) (*leapmuxv1.EnqueueAgentInputResponse, error) {
 	ctx, cancel := rpcDeadline(ctx)
 	defer cancel()
 	var resp leapmuxv1.EnqueueAgentInputResponse

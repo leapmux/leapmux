@@ -1,6 +1,6 @@
 // Package resolve owns the `leapmux control` CLI's target resolution.
 //
-// A command names its object with a positional target (see Canonical in
+// A command identifies its object with a positional target (see Canonical in
 // target.go), and the placement of a new object with the scope flags
 // --workspace, --tile and --worker. Canonical turns each of those into a full
 // id. Resolve then derives what the command still lacks -- the Worker of a
@@ -42,7 +42,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -346,14 +345,6 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 				return fmt.Errorf("locate tab %s: %w", in.TabID, err)
 			}
 			locatedTab = tab
-			// Each derivation inherits the priority of its source
-			// input: when the user typed the tab, downstream
-			// workspace_id / tile_id / worker_id share that priority
-			// and win over env-derived values; otherwise the whole
-			// chain is env-derived and yields to any explicit flag.
-			agg.put(fieldWorkspaceID, tab.GetWorkspaceId(), sourceTabID, in.ExplicitTabID)
-			agg.put(fieldTileID, tab.GetTileId(), sourceTabID, in.ExplicitTabID)
-			agg.put(fieldWorkerID, tab.GetWorkerId(), sourceTabID, in.ExplicitTabID)
 			return nil
 		})
 	}
@@ -374,19 +365,33 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		})
 	}
 
+	var tileWorkspace string
 	if in.TileID != "" && deps.LocateTile != nil {
 		g.Go(func() error {
 			ws, err := deps.LocateTile(gctx, in.TileID)
 			if err != nil {
 				return fmt.Errorf("locate tile %s: %w", in.TileID, err)
 			}
-			agg.put(fieldWorkspaceID, ws, sourceTileID, in.ExplicitTileID)
+			tileWorkspace = ws
 			return nil
 		})
 	}
 
 	if err := g.Wait(); err != nil {
 		return Resolved{}, err
+	}
+
+	// Merge derivation results sequentially now that every goroutine exited.
+	// Each derivation inherits the priority of its source input: when the
+	// user typed the tab or tile, downstream values share that priority and
+	// win over env-derived values; otherwise they yield to any explicit flag.
+	if locatedTab != nil {
+		agg.put(fieldWorkspaceID, locatedTab.GetWorkspaceId(), sourceTabID, in.ExplicitTabID)
+		agg.put(fieldTileID, locatedTab.GetTileId(), sourceTabID, in.ExplicitTabID)
+		agg.put(fieldWorkerID, locatedTab.GetWorkerId(), sourceTabID, in.ExplicitTabID)
+	}
+	if tileWorkspace != "" {
+		agg.put(fieldWorkspaceID, tileWorkspace, sourceTileID, in.ExplicitTileID)
 	}
 
 	// Cross-check every multi-source field for agreement. A
@@ -445,15 +450,16 @@ func (e *MissingInputError) Error() string { return e.Message }
 
 func (e *MissingInputError) Unwrap() error { return e.cause }
 
-// CLIError reports the failure as a usage error.
+// CLIError reports the failure as a usage error while preserving the
+// underlying MissingInputError and its cause in the error chain.
 func (e *MissingInputError) CLIError() *cli.Error {
-	return cli.Usagef("%s", e.Message)
+	return cli.Wrap(cli.CodeUsage, e, "")
 }
 
 // --- internals: aggregation and conflict detection ---
 
 // field is an enum of derivable fields. We track sources per-field
-// so the conflict error can name the contradicting inputs.
+// so the conflict error can identify the contradicting inputs.
 type field int
 
 const (
@@ -501,7 +507,6 @@ type sourceEntry struct {
 }
 
 type aggregator struct {
-	mu      sync.Mutex
 	sources map[field]map[string]sourceEntry // field -> value -> first reporter
 }
 
@@ -518,8 +523,6 @@ func (a *aggregator) put(f field, value string, src source, explicit bool) {
 	if value == "" {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.sources[f] == nil {
 		a.sources[f] = make(map[string]sourceEntry, 2)
 	}
@@ -538,8 +541,6 @@ func (a *aggregator) put(f field, value string, src source, explicit bool) {
 // explicit exists), conflicts() already rejected disagreements so
 // any remaining entry is unambiguous.
 func (a *aggregator) value(f field) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	values := a.sources[f]
 	for v, info := range values {
 		if info.explicit {
@@ -564,8 +565,6 @@ func (a *aggregator) value(f field) string {
 // is silently shadowed. That's the "I'm sitting in a terminal spawn
 // but I want to operate on a different tile" case.
 func (a *aggregator) conflicts() []string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	var out []string
 	for f, values := range a.sources {
 		if len(values) <= 1 {
@@ -579,24 +578,22 @@ func (a *aggregator) conflicts() []string {
 				envVals = append(envVals, v)
 			}
 		}
+		var conflicting []string
 		switch {
 		case len(explicitVals) > 1:
-			parts := make([]string, 0, len(explicitVals))
-			for _, v := range explicitVals {
-				parts = append(parts, fmt.Sprintf("%s=%q via %s", f.String(), v, values[v].src))
-			}
-			sort.Strings(parts)
-			out = append(out, strings.Join(parts, " vs "))
+			conflicting = explicitVals
 		case len(explicitVals) == 1:
 			// Explicit shadows every env-derived disagreement.
+			continue
 		default:
-			parts := make([]string, 0, len(envVals))
-			for _, v := range envVals {
-				parts = append(parts, fmt.Sprintf("%s=%q via %s", f.String(), v, values[v].src))
-			}
-			sort.Strings(parts)
-			out = append(out, strings.Join(parts, " vs "))
+			conflicting = envVals
 		}
+		parts := make([]string, 0, len(conflicting))
+		for _, v := range conflicting {
+			parts = append(parts, fmt.Sprintf("%s=%q via %s", f.String(), v, values[v].src))
+		}
+		sort.Strings(parts)
+		out = append(out, strings.Join(parts, " vs "))
 	}
 	sort.Strings(out)
 	return out

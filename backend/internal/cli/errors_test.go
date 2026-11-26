@@ -111,6 +111,72 @@ func TestFromError(t *testing.T) {
 		got := FromError(nilClassifier{})
 		assert.Equal(t, CodeInternal, got.Code)
 	})
+	t.Run("outer classifier wins over wrapped Error", func(t *testing.T) {
+		inner := Newf(CodeInternal, "inner failure")
+		got := FromError(wrappingClassifier{err: inner})
+		assert.Equal(t, CodeWorkerOffline, got.Code)
+		assert.Equal(t, "outer offline", got.Message)
+	})
+	t.Run("outer Error wins over wrapped classifier", func(t *testing.T) {
+		outer := Wrap(CodeConflict, classified{}, "outer conflict")
+		got := FromError(outer)
+		assert.Same(t, outer, got)
+		assert.Equal(t, CodeConflict, got.Code)
+	})
+	t.Run("nil classifier falls through to wrapped Error", func(t *testing.T) {
+		inner := Newf(CodeNotFound, "missing")
+		got := FromError(wrappingNilClassifier{err: inner})
+		assert.Same(t, inner, got)
+	})
+	t.Run("HintProvider attaches hints without dropping outer context", func(t *testing.T) {
+		rpcErr := connect.NewError(connect.CodeUnauthenticated, "token expired")
+		wrapped := fmt.Errorf("locate tab t1: %w", stubHintProvider{err: rpcErr, hints: []string{"re-authenticate"}})
+		got := FromError(wrapped)
+		assert.Equal(t, CodeNotLoggedIn, got.Code)
+		assert.Equal(t, "locate tab t1: token expired", got.Message)
+		assert.Equal(t, []string{"re-authenticate"}, got.Hints)
+		assert.ErrorIs(t, got, rpcErr)
+	})
+	t.Run("HintProvider collects multiple hints across nested and joined errors", func(t *testing.T) {
+		inner := stubHintProvider{err: errors.New("boom"), hints: []string{"inner hint", "shared hint"}}
+		outer := stubHintProvider{err: inner, hints: []string{"outer hint", "shared hint"}}
+		joined := errors.Join(outer, stubHintProvider{err: errors.New("other"), hints: []string{"joined hint"}})
+		got := FromError(joined)
+		assert.Equal(t, CodeInternal, got.Code)
+		assert.Equal(t, []string{"outer hint", "shared hint", "inner hint", "shared hint", "joined hint"}, got.Hints)
+	})
+	t.Run("HintProvider clones shared Error without mutating original", func(t *testing.T) {
+		shared := Newf(CodeConflict, "stale state")
+		shared.Hints = make([]string, 1, 4)
+		shared.Hints[0] = "original hint"
+
+		wrapped := stubHintProvider{err: shared, hints: []string{"extra hint"}}
+		got1 := FromError(wrapped)
+		got2 := FromError(wrapped)
+
+		assert.NotSame(t, shared, got1)
+		assert.Equal(t, []string{"original hint"}, shared.Hints, "shared Error must not be mutated")
+		assert.Equal(t, []string{"original hint", "extra hint"}, got1.Hints)
+		assert.Equal(t, []string{"original hint", "extra hint"}, got2.Hints)
+
+		emptyProvider := stubHintProvider{err: shared, hints: nil}
+		assert.Same(t, shared, FromError(emptyProvider), "empty HintProvider returns the original Error")
+	})
+	t.Run("extractEnvelope handles errors.Join and custom As methods", func(t *testing.T) {
+		joinedErr := errors.Join(errors.New("plain"), Newf(CodeNotFound, "missing in second branch"))
+		gotJoined := FromError(joinedErr)
+		assert.Equal(t, CodeNotFound, gotJoined.Code)
+		assert.Equal(t, "missing in second branch", gotJoined.Message)
+
+		asErr := customAsError{targetErr: Newf(CodeConflict, "from As Error")}
+		assert.Equal(t, CodeConflict, FromError(asErr).Code)
+
+		asClassifier := customAsError{targetClassifier: classified{}}
+		assert.Equal(t, CodeWorkerOffline, FromError(asClassifier).Code)
+
+		asNilClassifier := customAsError{targetClassifier: nilClassifier{}}
+		assert.Equal(t, CodeInternal, FromError(asNilClassifier).Code)
+	})
 	t.Run("maps a refused dial to unavailable", func(t *testing.T) {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
@@ -163,12 +229,73 @@ type nilClassifier struct{}
 func (nilClassifier) Error() string    { return "nil classifier" }
 func (nilClassifier) CLIError() *Error { return nil }
 
+type wrappingClassifier struct{ err error }
+
+func (w wrappingClassifier) Error() string    { return "wrapping classifier: " + w.err.Error() }
+func (w wrappingClassifier) Unwrap() error    { return w.err }
+func (w wrappingClassifier) CLIError() *Error { return Newf(CodeWorkerOffline, "outer offline") }
+
+type wrappingNilClassifier struct{ err error }
+
+func (w wrappingNilClassifier) Error() string    { return "wrapping nil classifier: " + w.err.Error() }
+func (w wrappingNilClassifier) Unwrap() error    { return w.err }
+func (w wrappingNilClassifier) CLIError() *Error { return nil }
+
+type stubHintProvider struct {
+	err   error
+	hints []string
+}
+
+func (s stubHintProvider) Error() string      { return s.err.Error() }
+func (s stubHintProvider) Unwrap() error      { return s.err }
+func (s stubHintProvider) CLIHints() []string { return s.hints }
+
+type customAsError struct {
+	targetErr        *Error
+	targetClassifier Classifier
+}
+
+func (c customAsError) Error() string { return "custom as error" }
+
+func (c customAsError) As(target any) bool {
+	if c.targetErr != nil {
+		if dst, ok := target.(**Error); ok {
+			*dst = c.targetErr
+			return true
+		}
+	}
+	if c.targetClassifier != nil {
+		if dst, ok := target.(*Classifier); ok {
+			*dst = c.targetClassifier
+			return true
+		}
+	}
+	return false
+}
+
+func TestError_StringAndWithReceipt(t *testing.T) {
+	receipt := &RetryReceipt{
+		RequestID:    "req-1",
+		Disposition:  "uncertain",
+		QueryCommand: "leapmux tab list",
+		RetryCommand: "leapmux tab open --request-id req-1",
+	}
+	e := Newf(CodeTimeout, "wait timed out").WithReceipt(receipt)
+	assert.Equal(t, "timeout: wait timed out", e.Error())
+	assert.Same(t, receipt, e.Receipt)
+}
+
 func TestWrapKeepsTheCauseAndPrefixesTheMessage(t *testing.T) {
 	cause := errors.New("boom")
 	got := Wrap(CodeConflict, cause, "submit batch")
 	assert.Equal(t, "submit batch: boom", got.Message)
 	assert.ErrorIs(t, got, cause)
 	assert.Equal(t, "boom", Wrap(CodeConflict, cause, "").Message)
+
+	nilWrapped := Wrap(CodeConflict, nil, "no cause")
+	assert.Equal(t, CodeConflict, nilWrapped.Code)
+	assert.Equal(t, "no cause", nilWrapped.Message)
+	assert.Nil(t, nilWrapped.Unwrap())
 }
 
 // timeoutError is a net.Error that reports a timeout.

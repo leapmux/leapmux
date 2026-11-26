@@ -780,7 +780,7 @@ type agentListCompactRow struct {
 	ID               string                  `json:"id" table:"ID,short"`
 	Title            string                  `json:"title" table:"TITLE"`
 	Provider         string                  `json:"provider" table:"PROVIDER"`
-	State            string                  `json:"state,omitempty" table:"STATE"`
+	State            string                  `json:"state,omitempty" table:"STATE,state"`
 	Status           string                  `json:"status"`
 	Model            string                  `json:"model,omitempty" table:"MODEL"`
 	Effort           string                  `json:"effort,omitempty"`

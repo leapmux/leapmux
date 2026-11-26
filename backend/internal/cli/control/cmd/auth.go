@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -124,7 +125,7 @@ func newAuthCommand() *cobra.Command {
 }
 
 func runAuthChangePassword(inv *cli.Invocation) (any, error) {
-	pw, err := control.RequirePassword(inv.Context, stringFlag(inv, "password"), "New password: ")
+	pw, err := control.RequirePassword(inv.Context, stringFlag(inv, "password"), "New password: ", os.Stdin, errOutOf(inv))
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
@@ -132,10 +133,11 @@ func runAuthChangePassword(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClient(hub)
+	c, err := control.NewClientForHub(hub)
 	if err != nil {
-		return nil, cli.Wrap(cli.CodeNotLoggedIn, err, "")
+		return nil, err
 	}
+	attachErrOut(c, inv)
 	ctx, cancel := rpcDeadline(inv.Context)
 	defer cancel()
 	resp, err := c.UserService().ChangePassword(ctx, &leapmuxv1.ChangePasswordRequest{NewPassword: pw})
@@ -184,6 +186,9 @@ func runAuthLogout(inv *cli.Invocation) (any, error) {
 	if err := control.DeleteCredentials(hub); err != nil {
 		return nil, err
 	}
+	if err := control.ClearDefaultHubIf(hub); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -193,7 +198,7 @@ type credentialRow struct {
 	Username string `json:"username" table:"USER"`
 	UserID   string `json:"user_id"`
 	Scope    string `json:"scope,omitempty"`
-	Expires  string `json:"expires,omitempty" table:"EXPIRES"`
+	Expires  string `json:"expires,omitempty" table:"EXPIRES,dim"`
 	// Default marks the hub that a command uses without --hub.
 	Default bool `json:"default" table:"DEFAULT"`
 }
@@ -261,10 +266,11 @@ func runAuthCredentials(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClient(hub)
+	c, err := control.NewClientForHub(hub)
 	if err != nil {
 		return nil, err
 	}
+	attachErrOut(c, inv)
 	// Every page, not the first: an omitted limit resolves to a default on
 	// the hub, and a credential the listing never printed is one the operator
 	// cannot see to revoke. readAllPages keys the rows by id, so a keyset
@@ -310,7 +316,7 @@ type accountCredential struct {
 	// does not revoke the device they work from.
 	Current    bool   `json:"current" table:"CURRENT"`
 	CreatedAt  string `json:"created_at,omitempty"`
-	LastUsedAt string `json:"last_used_at,omitempty" table:"LAST USED"`
+	LastUsedAt string `json:"last_used_at,omitempty" table:"LAST USED,dim"`
 	// RefreshExpires and Expires: the fixed-lifetime kind carries no
 	// refresh deadline, so its whole life is reported in Expires instead.
 	// Exactly one of the two is ever set, so a credential with neither is
@@ -354,7 +360,38 @@ func runAuthStatus(inv *cli.Invocation) (any, error) {
 	}
 	creds, err := control.LoadCredentials(hub)
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, control.ErrNotLoggedIn) || !locallisten.IsLocal(hub) {
+			return nil, err
+		}
+		// A local solo or dev Hub authenticates its local IPC socket without a
+		// stored credential file, so confirm the session directly with the Hub.
+		c, clientErr := control.NewClientOrAnonymous(hub)
+		if clientErr != nil {
+			return nil, clientErr
+		}
+		attachErrOut(c, inv)
+		user, warning, outcome, checkErr := hubCheck(c)
+		switch outcome {
+		case hubCheckRefused, hubCheckFailed:
+			return nil, checkErr
+		case hubCheckLocalFallback:
+			if warning == hubUnconfirmedWarning {
+				warning = "the local hub could not be reached to confirm this session"
+			}
+			return authStatus{
+				HubURL:  hub,
+				Warning: warning,
+			}, nil
+		default:
+			isAdmin := user.GetIsAdmin()
+			return authStatus{
+				HubURL:     hub,
+				UserID:     user.GetId(),
+				Username:   user.GetUsername(),
+				IsAdmin:    &isAdmin,
+				HubChecked: true,
+			}, nil
+		}
 	}
 	status := authStatus{
 		HubURL:         creds.HubURL,
@@ -383,10 +420,11 @@ func runAuthStatus(inv *cli.Invocation) (any, error) {
 		    useful offline, and the warning states exactly what was not
 		    verified.
 	*/
-	c, err := control.NewClient(hub)
+	c, err := control.NewClientForHub(hub)
 	if err != nil {
 		return nil, err
 	}
+	attachErrOut(c, inv)
 	user, warning, outcome, err := hubCheck(c)
 	switch outcome {
 	case hubCheckRefused, hubCheckFailed:
@@ -487,12 +525,12 @@ const (
 // lacks the account:read permission GetCurrentUser requires (a credential
 // minted with `auth login --scope`). The identity fields it would confirm
 // come from the file instead.
-func hubCheck(c *control.Client) (user *leapmuxv1.User, warning string, outcome hubCheckOutcome, err error) {
+func hubCheck(c *control.HubClient) (user *leapmuxv1.User, warning string, outcome hubCheckOutcome, err error) {
 	report, warning, outcome, err := hubCheckSession(c)
 	return report.GetUser(), warning, outcome, err
 }
 
-func hubCheckSession(c *control.Client) (report *leapmuxv1.SessionReport, warning string, outcome hubCheckOutcome, err error) {
+func hubCheckSession(c *control.HubClient) (report *leapmuxv1.SessionReport, warning string, outcome hubCheckOutcome, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hubCheckTimeout)
 	defer cancel()
 	me, callErr := c.AuthService().GetCurrentUser(ctx,
@@ -501,9 +539,13 @@ func hubCheckSession(c *control.Client) (report *leapmuxv1.SessionReport, warnin
 	case callErr == nil:
 		return me.GetSessionReport(), "", hubCheckConfirmed, nil
 	case hubRefusedCredential(callErr):
+		loginHint := fmt.Sprintf(`run "leapmux auth login --hub %s" to sign in again`, c.HubURL)
+		if locallisten.IsLocal(c.HubURL) {
+			loginHint = fmt.Sprintf(`run "leapmux auth login --hub %s --device-code" to sign in again`, c.HubURL)
+		}
 		return nil, "", hubCheckRefused,
 			cli.Wrap(cli.CodeNotLoggedIn, callErr, "the hub refused this credential").
-				WithHint(`run "leapmux auth login --hub %s" to sign in again`, c.HubURL)
+				WithHint("%s", loginHint)
 	case connect.CodeOf(callErr) == connect.CodePermissionDenied:
 		return nil, "this credential lacks the account:read permission, so the hub could not confirm it; " +
 			hubUnconfirmedTail, hubCheckLocalFallback, nil

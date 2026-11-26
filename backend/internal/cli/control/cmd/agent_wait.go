@@ -98,7 +98,7 @@ type agentWaitRow struct {
 	ID string `json:"id" table:"AGENT,short"`
 	// State is the last state that the wait observed: a token of
 	// AgentActivityState, "closed", or "unknown".
-	State string `json:"state" table:"STATE"`
+	State string `json:"state" table:"STATE,state"`
 	// Reached reports whether the agent reached a requested state during the wait.
 	Reached bool `json:"reached" table:"REACHED"`
 }

@@ -31,7 +31,7 @@ type workerFeedSource struct {
 }
 
 // workerFeedSourceOf reads the Worker workerID through c.
-func workerFeedSourceOf(c *control.Client, workerID string) workerFeedSource {
+func workerFeedSourceOf(c control.Peer, workerID string) workerFeedSource {
 	return workerFeedSource{
 		openTransport: func(ctx context.Context) (streamevents.Transport, func(), error) {
 			t, err := newWorkerWatchTransport(ctx, c, workerID)

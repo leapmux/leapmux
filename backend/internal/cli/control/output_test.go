@@ -15,12 +15,12 @@ import (
 
 // TestPackageNeverWritesStdout keeps the JSON contract structural.
 //
-// The client runs under every `leapmux control` command, and stdout carries
+// The client runs under every leapmux control command, and stdout carries
 // that command's result. A line of prose there -- the browser step-up that an
 // interceptor opens in the middle of an ordinary verb, say -- stops
-// `leapmux control ... --json | jq` from parsing. So the package prints to
-// Err alone, and this test fails the first reference to stdout or to a
-// function that prints to it.
+// `leapmux ... --json | jq` from parsing. So the package writes prose only to
+// an injected error writer (defaulting to os.Stderr), and this test fails the
+// first reference to stdout or to a function that prints to it.
 func TestPackageNeverWritesStdout(t *testing.T) {
 	forbidden := map[string]bool{
 		"os.Stdout":   true,
@@ -46,12 +46,12 @@ func TestPackageNeverWritesStdout(t *testing.T) {
 			}
 			if pkg, ok := sel.X.(*ast.Ident); ok && forbidden[pkg.Name+"."+sel.Sel.Name] {
 				assert.Failf(t, "the package writes to stdout",
-					"%s uses %s.%s; print to Err instead", fset.Position(sel.Pos()), pkg.Name, sel.Sel.Name)
+					"%s uses %s.%s; write to errOut or os.Stderr instead", fset.Position(sel.Pos()), pkg.Name, sel.Sel.Name)
 			}
 			return true
 		})
 	}
 	require.NotZero(t, scanned, "the scan must find the package's sources")
-	_, err = os.Stat("output.go")
+	_, err = os.Stat("client.go")
 	require.NoError(t, err, "the scan runs in the package directory")
 }

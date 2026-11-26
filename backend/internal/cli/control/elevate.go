@@ -39,10 +39,7 @@ import (
 // always "1" and only its presence is meaningful.
 //
 // The name is owned by contracts/headers.json and generated for the hub, this
-// CLI, and the browser alike -- which keeps the ORIGINAL intent of the old
-// hand copy: the CLI still depends on no hub-internal package (generated/
-// is not one), and the two programs can still be upgraded separately while
-// the wire spelling can no longer drift between them.
+// CLI, and the browser alike, so the wire spelling cannot drift between them.
 const ElevationRequiredHeader = contracts.ElevationRequiredHeader
 
 // ErrElevationUnsupported reports a credential the hub will not elevate: a
@@ -96,13 +93,14 @@ var elevateFlight singleflight.Group
 // when the hub reports it granted.
 //
 // Elevate waits for approval until the ceremony expires. It prints the
-// browser address to Err and includes a code for a device-code ceremony.
+// browser address to the client's configured error writer (defaulting to
+// os.Stderr) and includes a code for a device-code ceremony.
 // A process with nobody at a keyboard gets ErrElevationNeedsAPerson at once.
 //
-// Err, never Out: a restricted verb prints its JSON envelope to Out in the same
-// invocation, and four lines of prose in that stream stop `... | jq` from
+// Never stdout: a restricted verb prints its JSON envelope to stdout in the
+// same invocation, and four lines of prose in that stream stop `... | jq` from
 // parsing on the first run after the window lapses.
-func (c *Client) Elevate(ctx context.Context) error {
+func (c *HubClient) Elevate(ctx context.Context) error {
 	key, keyErr := CredentialsPath(c.HubURL)
 	if keyErr != nil {
 		// A hub address with no derivable credential path collapses on the
@@ -132,7 +130,7 @@ var errStepUpNeedsSignIn = errors.New("no token id is recorded for this credenti
 // The CLI asks the Hub to start a device-code ceremony. If the Hub replies
 // that the credential requires browser step-up, the CLI starts the loopback
 // ceremony on this machine.
-func (c *Client) elevateOnce(ctx context.Context) error {
+func (c *HubClient) elevateOnce(ctx context.Context) error {
 	if !c.promptAllowed {
 		return ErrElevationNeedsAPerson
 	}
@@ -153,11 +151,12 @@ func (c *Client) elevateOnce(ctx context.Context) error {
 	if creds, err := LoadCredentials(c.HubURL); err == nil {
 		pollClientID = creds.ClientIDOrBuiltIn()
 	}
-	_, _ = fmt.Fprintln(Err, "This command needs you to verify your identity.")
-	_, _ = fmt.Fprintln(Err, "  1. Visit", grant.VerificationURI)
-	_, _ = fmt.Fprintln(Err, "  2. Enter the code:", grant.UserCode)
+	errOut := c.errWriter()
+	_, _ = fmt.Fprintln(errOut, "This command needs you to verify your identity.")
+	_, _ = fmt.Fprintln(errOut, "  1. Visit", grant.VerificationURI)
+	_, _ = fmt.Fprintln(errOut, "  2. Enter the code:", grant.UserCode)
 	if grant.VerificationURIComplete != "" {
-		_, _ = fmt.Fprintln(Err, "Or open:", grant.VerificationURIComplete)
+		_, _ = fmt.Fprintln(errOut, "Or open:", grant.VerificationURIComplete)
 	}
 
 	if err := grant.Poll(ctx, func(ctx context.Context) error {
@@ -171,7 +170,7 @@ func (c *Client) elevateOnce(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
+func (c *HubClient) startElevation(ctx context.Context) (*DeviceGrant, error) {
 	form := url.Values{"installation_name": {DefaultDeviceName()}}
 	// The credential itself is the right to ASK. What it cannot do is
 	// approve, which needs a browser session that proves a factor.
@@ -227,7 +226,7 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 // the login flow's poll without the credential handling: a step-up mints
 // nothing, so there is nothing to persist. The hub answers `{"elevated":true}`
 // once the window is stamped.
-func (c *Client) pollElevation(ctx context.Context, deviceCode, clientID string) error {
+func (c *HubClient) pollElevation(ctx context.Context, deviceCode, clientID string) error {
 	form := url.Values{
 		"grant_type":  {GrantTypeDeviceCode},
 		"client_id":   {clientID},
@@ -248,7 +247,7 @@ func (c *Client) pollElevation(ctx context.Context, deviceCode, clientID string)
 // elevateViaLoopback runs the browser step-up of a credential the hub
 // refuses to verify through the device ceremony. The person at the browser
 // is on THIS machine, so the redirect comes back to a loopback listener here.
-func (c *Client) elevateViaLoopback(
+func (c *HubClient) elevateViaLoopback(
 	ctx context.Context, start func(loopbackauth.Request) (*loopbackauth.Flow, error),
 ) error {
 	creds, err := LoadCredentials(c.HubURL)
@@ -277,9 +276,10 @@ func (c *Client) elevateViaLoopback(
 	defer flow.Close()
 
 	authorizeURL := flow.AuthorizeURL()
-	_, _ = fmt.Fprintln(Err, "This command needs you to verify your identity.")
-	_, _ = fmt.Fprintln(Err, "Open this URL in your browser:")
-	_, _ = fmt.Fprintln(Err, " ", authorizeURL)
+	errOut := c.errWriter()
+	_, _ = fmt.Fprintln(errOut, "This command needs you to verify your identity.")
+	_, _ = fmt.Fprintln(errOut, "Open this URL in your browser:")
+	_, _ = fmt.Fprintln(errOut, " ", authorizeURL)
 	_ = OpenBrowser(authorizeURL)
 
 	code, err := flow.Wait(ctx)
@@ -296,7 +296,7 @@ func (c *Client) elevateViaLoopback(
 
 // redeemStepUpCode exchanges the loopback step-up's code for the window.
 // A step-up mints nothing, so the answer is the confirmation alone.
-func (c *Client) redeemStepUpCode(ctx context.Context, flow *loopbackauth.Flow, code string) error {
+func (c *HubClient) redeemStepUpCode(ctx context.Context, flow *loopbackauth.Flow, code string) error {
 	resp, err := c.postStepUpRedemption(ctx, flow, code)
 	if err != nil {
 		return err
@@ -335,7 +335,7 @@ func (c *Client) redeemStepUpCode(ctx context.Context, flow *loopbackauth.Flow, 
 
 // postStepUpRedemption performs one redemption attempt, presenting the
 // bearer this client holds.
-func (c *Client) postStepUpRedemption(ctx context.Context, flow *loopbackauth.Flow, code string) (*http.Response, error) {
+func (c *HubClient) postStepUpRedemption(ctx context.Context, flow *loopbackauth.Flow, code string) (*http.Response, error) {
 	return loopbackauth.PostForm(ctx, c.HTTPClient,
 		locallisten.JoinPath(c.connectURL, "/oauth/token"),
 		flow.TokenForm(code), c.ApplyAuth)

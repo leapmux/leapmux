@@ -18,7 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 )
 
-func updateSettingJSON(ctx context.Context, c *control.Client, key string, value any) (*leapmuxv1.SettingValue, error) {
+func updateSettingJSON(ctx context.Context, c *control.HubClient, key string, value any) (*leapmuxv1.SettingValue, error) {
 	doc, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
@@ -27,7 +27,7 @@ func updateSettingJSON(ctx context.Context, c *control.Client, key string, value
 	return updated, err
 }
 
-func updateOneSetting(ctx context.Context, c *control.Client, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
+func updateOneSetting(ctx context.Context, c *control.HubClient, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
 	resp, err := c.AdminSettingsService().UpdateSettings(ctx, &leapmuxv1.UpdateSettingsRequest{
 		Writes: []*leapmuxv1.SettingWrite{write},
 	})
@@ -41,7 +41,7 @@ func updateOneSetting(ctx context.Context, c *control.Client, write *leapmuxv1.S
 	return value, slices.Contains(resp.GetRestartKeys(), write.GetKey()), nil
 }
 
-func resetOneSetting(ctx context.Context, c *control.Client, key string) (*leapmuxv1.SettingValue, bool, error) {
+func resetOneSetting(ctx context.Context, c *control.HubClient, key string) (*leapmuxv1.SettingValue, bool, error) {
 	resp, err := c.AdminSettingsService().ResetSettings(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{key},
 	})
@@ -62,11 +62,11 @@ func onlySettingValue(values []*leapmuxv1.SettingValue) (*leapmuxv1.SettingValue
 	return values[0], nil
 }
 
-func adminUpdateSetting(ctx context.Context, c *control.Client, key string, partial map[string]any) (*leapmuxv1.SettingValue, error) {
+func adminUpdateSetting(ctx context.Context, c *control.HubClient, key string, partial map[string]any) (*leapmuxv1.SettingValue, error) {
 	return updateSettingJSON(ctx, c, key, partial)
 }
 
-func adminUpdateSettingScalar[T bool | int64 | float64 | string](ctx context.Context, c *control.Client, key string, value T) (*leapmuxv1.SettingValue, error) {
+func adminUpdateSettingScalar[T bool | int64 | float64 | string](ctx context.Context, c *control.HubClient, key string, value T) (*leapmuxv1.SettingValue, error) {
 	return updateSettingJSON(ctx, c, key, value)
 }
 
@@ -146,7 +146,7 @@ type captchaState struct {
 	altchaAlgorithm string
 }
 
-func readCaptchaState(ctx context.Context, c *control.Client) (captchaState, error) {
+func readCaptchaState(ctx context.Context, c *control.HubClient) (captchaState, error) {
 	out := captchaState{
 		selected:        captcha.ProviderAltcha,
 		siteKeySet:      map[string]bool{},

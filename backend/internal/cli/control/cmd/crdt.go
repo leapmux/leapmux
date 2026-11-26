@@ -56,7 +56,7 @@ type CRDTBootstrap struct {
 // RPC using the agent's per-user delegation bearer).
 // Tenancy is the authenticated session, implied by the bearer -- no
 // user_id is sent on the wire.
-func crdtBootstrap(ctx context.Context, c *control.Client, workspaceIDs []string) (*CRDTBootstrap, error) {
+func crdtBootstrap(ctx context.Context, c control.Peer, workspaceIDs []string) (*CRDTBootstrap, error) {
 	initial, err := fetchMaterialized(ctx, c, workspaceIDs)
 	if err != nil {
 		return nil, err
@@ -80,7 +80,7 @@ func crdtBootstrap(ctx context.Context, c *control.Client, workspaceIDs []string
 //
 // hubCallUnary selects the transport, so both transports share one error
 // rule: a local-IPC failure keeps its code, as a hub-transport failure does.
-func fetchMaterialized(ctx context.Context, c *control.Client, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
+func fetchMaterialized(ctx context.Context, c control.Peer, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
 	req := &leapmuxv1.GetMaterializedRequest{WorkspaceIds: workspaceIDs}
 	var resp leapmuxv1.GetMaterializedResponse
 	if err := hubCallUnary(ctx, c, leapmuxv1connect.UserCRDTGetMaterializedProcedure, req, &resp); err != nil {
@@ -101,7 +101,7 @@ func fetchMaterialized(ctx context.Context, c *control.Client, workspaceIDs []st
 // uses the unary GetMaterialized instead.
 func streamWatchUserLocal(
 	ctx context.Context,
-	c *control.Client,
+	c *control.WorkerIPCClient,
 	workspaceIDs []string,
 	onEvent func(*leapmuxv1.WatchUserEvent) (stop bool, err error),
 ) error {
@@ -167,7 +167,7 @@ func streamWatchUserLocal(
 // bootstrap-time epoch.
 func crdtSubmitBatch(
 	ctx context.Context,
-	c *control.Client,
+	c control.Peer,
 	bs *CRDTBootstrap,
 	workspaceID string,
 	batch *leapmuxv1.OpBatch,
@@ -200,7 +200,7 @@ func crdtSubmitBatch(
 // transport routing.
 type crdtCall struct {
 	ctx         context.Context
-	c           *control.Client
+	c           control.Peer
 	bs          *CRDTBootstrap
 	workspaceID string
 }
@@ -221,7 +221,7 @@ func (s *session) openCRDT(workspaceID string, otherWorkspaceIDs ...string) (*cr
 
 // openCRDTCallOn is openCRDT for a caller that holds a client and a context
 // without a session.
-func openCRDTCallOn(ctx context.Context, c *control.Client, workspaceID string, otherWorkspaceIDs ...string) (*crdtCall, error) {
+func openCRDTCallOn(ctx context.Context, c control.Peer, workspaceID string, otherWorkspaceIDs ...string) (*crdtCall, error) {
 	workspaceIDs := []string{workspaceID}
 	for _, otherWorkspaceID := range otherWorkspaceIDs {
 		if otherWorkspaceID != "" && !slices.Contains(workspaceIDs, otherWorkspaceID) {

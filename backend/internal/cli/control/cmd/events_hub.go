@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync/atomic"
 
@@ -22,31 +23,37 @@ type hubSessionFunc func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserE
 // hubUserEvents subscribes to the user events of workspaceIDs, or of every
 // workspace when it is empty, over the transport of c: the hub's
 // `/ws/userevents` WebSocket, or the socket of the tab that runs the CLI.
-func hubUserEvents(c *control.Client, workspaceIDs []string) hubSessionFunc {
-	if c.IsWorkerIPC() {
+func hubUserEvents(p control.Peer, workspaceIDs []string) hubSessionFunc {
+	switch c := p.(type) {
+	case *control.WorkerIPCClient:
 		return func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserEvent) error) error {
 			return streamWatchUserLocal(ctx, c, workspaceIDs, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
 				return false, onEvent(evt)
 			})
 		}
-	}
-	return func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserEvent) error) error {
-		stream, err := c.OpenUserEvents(ctx, workspaceIDs)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = stream.Close() }()
-		for {
-			evt, err := stream.Recv()
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
+	case *control.HubClient:
+		return func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserEvent) error) error {
+			stream, err := c.OpenUserEvents(ctx, workspaceIDs)
 			if err != nil {
 				return err
 			}
-			if err := onEvent(evt); err != nil {
-				return err
+			defer func() { _ = stream.Close() }()
+			for {
+				evt, err := stream.Recv()
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				if err := onEvent(evt); err != nil {
+					return err
+				}
 			}
+		}
+	default:
+		return func(context.Context, func(*leapmuxv1.WatchUserEvent) error) error {
+			return fmt.Errorf("unsupported control peer %T", p)
 		}
 	}
 }

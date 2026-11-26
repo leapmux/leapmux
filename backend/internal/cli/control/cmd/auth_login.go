@@ -29,7 +29,14 @@ import (
 // rung yields to a presented lmx_ bearer, so a credential minted here binds
 // its scope there.
 func runAuthLogin(inv *cli.Invocation) (any, error) {
-	hub, err := hubURLFor(inv.Command)
+	hub := explicitHub(inv.Command)
+	var err error
+	if hub == "" {
+		// Do not auto-discover a local solo/dev IPC socket: a solo Hub needs no
+		// browser login, and discovering its unix:/npipe: socket would report a
+		// confusing local-origin error instead of asking for --hub <url>.
+		hub, err = control.ConfiguredDefaultHub()
+	}
 	if noHub := (*control.NoHubError)(nil); errors.As(err, &noHub) {
 		// The no-hub hint suggests a login, which is this command.
 		return nil, cli.Usagef("no hub selected").WithHint("pass --hub <url> to choose the hub to sign in to")

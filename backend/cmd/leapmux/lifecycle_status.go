@@ -125,23 +125,24 @@ var (
 // disconnected worker remains running and returns exit code 0.
 func executeModeStatus(ctx context.Context, printer *cli.Printer, line lifecycleCommandLine, newController nativeControllerFactory) error {
 	mode := line.mode()
-	configuration, options, err := openLifecycleCommand(line)
+	configuration, options, err := openLifecycleCommand(printer, line)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, options.timeout)
 	defer cancel()
 	status, observeErr := observeLifecycleModeWithController(ctx, configuration, newController)
-	if options.json || (printer != nil && printer.Format != cli.FormatText) {
+	if printer != nil && printer.Format != cli.FormatText {
 		// The report is the result of the command, so it takes the envelope
 		// of every other --json result: {"data": <status>} (or ndjson/tsv).
 		if err := printer.Result(status); err != nil {
 			return err
 		}
 	} else {
-		printStatusReport(mode, status, "")
+		out := lifecycleProseOut(printer)
+		printStatusReport(out, mode, status, "")
 		verbs, serviceVerbs := statusNextCommands(status)
-		printSelectedNextCommands(mode, configuration.configurationFile, configuration.dataDirectory, newController, verbs, serviceVerbs)
+		printSelectedNextCommandsTo(out, mode, configuration.configurationFile, configuration.dataDirectory, newController, verbs, serviceVerbs)
 	}
 	if observeErr != nil || status.Process.State == lifecycle.ProcessFailed {
 		return errUnresponsiveExit

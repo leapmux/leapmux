@@ -125,12 +125,12 @@ func (s *crdtSubmitTestHub) SubmitOps(ctx context.Context, request *leapmuxv1.Su
 	return s.respond()
 }
 
-func newCRDTSubmitTestClient(t *testing.T, response *leapmuxv1.SubmitOpsResponse) (*control.Client, <-chan *leapmuxv1.SubmitOpsRequest) {
+func newCRDTSubmitTestClient(t *testing.T, response *leapmuxv1.SubmitOpsResponse) (*control.HubClient, <-chan *leapmuxv1.SubmitOpsRequest) {
 	t.Helper()
 	return newCRDTSubmitTestClientWithResponder(t, func() (*leapmuxv1.SubmitOpsResponse, error) { return response, nil })
 }
 
-func newCRDTSubmitTestClientWithResponder(t *testing.T, respond func() (*leapmuxv1.SubmitOpsResponse, error)) (*control.Client, <-chan *leapmuxv1.SubmitOpsRequest) {
+func newCRDTSubmitTestClientWithResponder(t *testing.T, respond func() (*leapmuxv1.SubmitOpsResponse, error)) (*control.HubClient, <-chan *leapmuxv1.SubmitOpsRequest) {
 	t.Helper()
 	isolateCLIEnv(t)
 	hub := &crdtSubmitTestHub{requests: make(chan *leapmuxv1.SubmitOpsRequest, 2), respond: respond}
@@ -195,7 +195,7 @@ func (s *scriptedIPC) streamRequests() []*leapmuxv1.StreamInnerRequest {
 
 // startScriptedIPC serves ipc on a local socket and returns a worker-IPC
 // client for it, the client a worker-spawned agent holds.
-func startScriptedIPC(t *testing.T, ipc *scriptedIPC) *control.Client {
+func startScriptedIPC(t *testing.T, ipc *scriptedIPC) *control.WorkerIPCClient {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses unix sockets; npipe variant exercised elsewhere")
@@ -208,7 +208,6 @@ func startScriptedIPC(t *testing.T, ipc *scriptedIPC) *control.Client {
 	socketURL := hubtransporttest.NewSocketServer(t, "crdt-ipc", mux)
 	c, err := control.NewLocalClient(socketURL, "ipc-token")
 	require.NoError(t, err)
-	require.True(t, c.IsWorkerIPC())
 	return c
 }
 

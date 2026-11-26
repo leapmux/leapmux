@@ -1,18 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -65,7 +64,7 @@ type recoverSpec struct {
 // recoverConfigLeaf builds a recover command that reads the configuration of
 // the instance and opens no database. The command takes --config and
 // --data-dir after its own flags.
-func recoverConfigLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *config.Config) error) *cobra.Command {
+func recoverConfigLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *config.Config) (any, error)) *cobra.Command {
 	var selection recoverSelection
 	leaf := spec.Leaf
 	leaf.QuietUnsupported = true
@@ -86,26 +85,7 @@ func recoverConfigLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *conf
 		if err != nil {
 			return nil, err
 		}
-		if inv.Printer != nil && inv.Printer.Format != cli.FormatText {
-			var buf bytes.Buffer
-			origOut := inv.Printer.Out
-			inv.Printer.Out = &buf
-			runErr := run(inv, cfg)
-			inv.Printer.Out = origOut
-			if runErr != nil {
-				return nil, runErr
-			}
-			return struct {
-				OK      bool   `json:"ok"`
-				Command string `json:"command"`
-				Message string `json:"message,omitempty"`
-			}{
-				OK:      true,
-				Command: inv.Command.CommandPath(),
-				Message: strings.TrimSpace(buf.String()),
-			}, nil
-		}
-		return nil, run(inv, cfg)
+		return run(inv, cfg)
 	}
 	return cli.NewLeaf(leaf)
 }
@@ -133,24 +113,25 @@ func (r *recoverSelection) register(fs *pflag.FlagSet) {
 // it selects the SQLite database in the data directory.
 func (r *recoverSelection) load() (*config.Config, error) {
 	if r.configFile == "" {
-		dataDir := r.dataDir
+		dataDir := internalconfig.ExpandHome(r.dataDir)
 		if dataDir == "" {
 			dataDir = config.DefaultHubDataDir()
 		}
 		return &config.Config{DataDir: dataDir}, nil
 	}
+	configFile := internalconfig.ExpandHome(r.configFile)
 	// The loader skips an absent file without a word, which is right for a
 	// default path and wrong for a path that the operator typed: a typo would
 	// open the SQLite database of the data directory instead.
-	if _, err := os.Stat(r.configFile); err != nil {
-		return nil, cli.Usagef("cannot read the configuration file %s: %v", r.configFile, err)
+	if _, err := os.Stat(configFile); err != nil {
+		return nil, cli.Usagef("cannot read the configuration file %s: %v", configFile, err)
 	}
-	cfg, err := config.LoadWithOptions([]string{"--config", r.configFile}, config.LoadOptions{})
+	cfg, err := config.LoadWithOptions([]string{"--config", configFile}, config.LoadOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("load config from %s: %w", r.configFile, err)
+		return nil, fmt.Errorf("load config from %s: %w", configFile, err)
 	}
 	if r.dataDir != "" {
-		cfg.DataDir = r.dataDir
+		cfg.DataDir = internalconfig.ExpandHome(r.dataDir)
 	}
 	return cfg, nil
 }
@@ -173,22 +154,22 @@ func loadExistingKeystore(keyPath string) (*keystore.Keystore, error) {
 // recoverStoreLeaf builds a recover command that loads or generates
 // encryption.key, opens and migrates the database (with built-in seeding), and
 // calls run. Use this solely for first-run bootstrap (`recover create-admin`).
-func recoverStoreLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *config.Config, st store.Store) error) *cobra.Command {
-	return recoverConfigLeaf(spec, func(inv *cli.Invocation, cfg *config.Config) error {
+func recoverStoreLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *config.Config, st store.Store) (any, error)) *cobra.Command {
+	return recoverConfigLeaf(spec, func(inv *cli.Invocation, cfg *config.Config) (any, error) {
 		// The hub creates the data dir at startup; recover commands run
 		// before (or instead of) it, so create it here for the same
 		// out-of-the-box behavior (Validate is MkdirAll + storage checks,
 		// exactly what NewServer runs).
 		if err := cfg.Validate(); err != nil {
-			return fmt.Errorf("validate config: %w", err)
+			return nil, fmt.Errorf("validate config: %w", err)
 		}
 		ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
 		if err != nil {
-			return fmt.Errorf("load encryption keystore: %w", err)
+			return nil, fmt.Errorf("load encryption keystore: %w", err)
 		}
 		st, err := storeopen.Open(inv.Context, cfg, ks)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer func() { _ = st.Close() }()
 		return run(inv, cfg, st)
@@ -199,18 +180,18 @@ func recoverStoreLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *confi
 // store without running migrations or seeding built-in rows, and loads
 // encryption.key via loadExistingKeystore so a missing key file fails loudly
 // instead of generating a new key that cannot decrypt existing rows.
-func recoverExistingStoreLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *config.Config, st store.Store, ks *keystore.Keystore) error) *cobra.Command {
-	return recoverConfigLeaf(spec, func(inv *cli.Invocation, cfg *config.Config) error {
+func recoverExistingStoreLeaf(spec recoverSpec, run func(inv *cli.Invocation, cfg *config.Config, st store.Store, ks *keystore.Keystore) (any, error)) *cobra.Command {
+	return recoverConfigLeaf(spec, func(inv *cli.Invocation, cfg *config.Config) (any, error) {
 		if err := cfg.Validate(); err != nil {
-			return fmt.Errorf("validate config: %w", err)
+			return nil, fmt.Errorf("validate config: %w", err)
 		}
 		ks, err := loadExistingKeystore(cfg.EncryptionKeyFilePath())
 		if err != nil {
-			return err
+			return nil, err
 		}
 		st, err := storeopen.OpenWithoutMigrate(inv.Context, cfg, ks)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer func() { _ = st.Close() }()
 		return run(inv, cfg, st, ks)
