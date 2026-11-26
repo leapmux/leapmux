@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -513,4 +515,167 @@ func TestSendChildInputIgnoresCorruptArchiveAndClosesOnBoundTurnEnd(t *testing.T
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "bound child onTurnEnd must close the row")
 	assert.True(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "PROBE_RECOVERY_JOB2"),
 		"bound child stream must persist Job 2 output")
+}
+
+func TestSendChildInputKeepsActiveTailWhenChildConnectionFails(t *testing.T) {
+	a, sink, clock, dir, work := droidArchiveHarness(t)
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path,
+		droidArchiveStart(archiveChildID, work),
+		`{"type":"message","id":"assistant-1","message":{"role":"assistant","content":[{"type":"text","text":"TAIL_BEFORE_FAIL"}]}}`,
+	)
+	a.HandleOutput([]byte(droidTaskCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
+	testutil.RequireEventually(t, func() bool {
+		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "TAIL_BEFORE_FAIL")
+	}, "initial archive row appears")
+
+	a.disarmChildTurn(archiveChildID)
+	ready := make(chan struct{})
+	close(ready)
+	a.childConnMu.Lock()
+	a.childConns = map[string]*droidChildConnection{
+		archiveChildID: {ready: ready, err: errors.New("child connection failed")},
+	}
+	a.childConnMu.Unlock()
+
+	err := agenttest.SendChildInput(a, archiveChildID, agent.ChildInput{Content: "follow up"})
+	require.ErrorContains(t, err, "child connection failed")
+
+	a.tailMu.Lock()
+	tail := a.childTails[archiveChildID]
+	a.tailMu.Unlock()
+	require.NotNil(t, tail)
+	tail.mu.Lock()
+	assert.False(t, tail.finished, "active tail must stay running when childConnection fails")
+	tail.mu.Unlock()
+	select {
+	case <-tail.stopped:
+		t.Fatal("tail.stopped must stay open when childConnection fails")
+	default:
+	}
+
+	appendDroidArchive(t, path,
+		`{"type":"message","id":"assistant-2","message":{"role":"assistant","content":[{"type":"text","text":"TAIL_STILL_RUNNING"}]}}`,
+	)
+	advanceDroidArchive(t, clock)
+	testutil.RequireEventually(t, func() bool {
+		return archiveRowsContain(childArchiveRows(sink, archiveChildID), "TAIL_STILL_RUNNING")
+	}, "tail must keep projecting archive records after a failed childConnection")
+}
+
+type onChildSinkHook struct {
+	agent.ProviderServices
+	once sync.Once
+	fn   func()
+}
+
+func (s *onChildSinkHook) ChildSink(childID string) agent.ProviderServices {
+	s.once.Do(s.fn)
+	return s.ProviderServices.ChildSink(childID)
+}
+
+func TestSendChildInputFlushesPreBindArchiveRecordInStopChildTail(t *testing.T) {
+	fixture := newDroidProcessFixture(t, "")
+	t.Setenv(droidHomeEnv, fixture.home)
+	a, sink := fixture.root, fixture.sink
+	clock := testutil.NewQuartzMock(t)
+	a.clock = clock
+
+	work := a.workingDir
+	dir := filepath.Join(fixture.home, ".factory", "sessions", droidSanitizeCwd(work))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	path := filepath.Join(dir, droidChildConnectionSessionID+".jsonl")
+	appendDroidArchive(t, path,
+		droidArchiveStart(droidChildConnectionSessionID, work),
+		`{"type":"message","id":"assistant-1","message":{"role":"assistant","content":[{"type":"text","text":"PRE_BIND_INITIAL"}]}}`,
+	)
+
+	// Start an active archive tail for the registered child.
+	a.dispatchMu.Lock()
+	if a.childAgents == nil {
+		a.childAgents = make(map[string]string)
+	}
+	row, ok := sink.BackgroundTask(droidChildConnectionSessionID)
+	require.True(t, ok)
+	a.childAgents[droidChildConnectionSessionID] = row.ChildAgentID
+	a.dispatchMu.Unlock()
+	a.startChildTail(droidChildConnectionSessionID)
+	testutil.RequireEventually(t, func() bool {
+		return archiveRowsContain(childArchiveRows(sink, droidChildConnectionSessionID), "PRE_BIND_INITIAL")
+	}, "initial archive row appears")
+
+	// Append an unread record inside ChildSink (strictly after pollChildTail and before stopChildTail).
+	a.sink = agent.DecorateProviderServices(a.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		return &onChildSinkHook{
+			ProviderServices: direct,
+			fn: func() {
+				appendDroidArchive(t, path,
+					`{"type":"message","id":"assistant-during-connect","message":{"role":"assistant","content":[{"type":"text","text":"FLUSHED_BY_STOP_CHILD_TAIL"}]}}`,
+				)
+			},
+		}
+	})
+
+	require.NoError(t, agenttest.SendChildInput(a, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"}))
+	assert.True(t, archiveRowsContain(childArchiveRows(sink, droidChildConnectionSessionID), "FLUSHED_BY_STOP_CHILD_TAIL"),
+		"stopChildTail during SendChildInput must flush records appended while childConnection ran")
+	a.tailMu.Lock()
+	tail := a.childTails[droidChildConnectionSessionID]
+	a.tailMu.Unlock()
+	require.NotNil(t, tail)
+	tail.mu.Lock()
+	assert.True(t, tail.finished)
+	tail.mu.Unlock()
+	select {
+	case <-tail.stopped:
+	default:
+		t.Fatal("tail.stopped must be closed after SendChildInput")
+	}
+}
+
+func TestSendChildInputErrorDoesNotReviveBackgroundTask(t *testing.T) {
+	t.Parallel()
+	root, child, rootSink, _, _, childStdin := newBoundChildReplyHarness(t)
+	require.NoError(t, rootSink.CloseBackgroundTask(steerChildID, bgtask.StatusSucceeded))
+	childStdin.respond = func(request droidEnvelope) {
+		if request.Method == droidMethodAddUserMessage {
+			answerDroidInput(t, child, request.ID, true)
+		}
+	}
+
+	_, err := root.SendChildInput(steerChildID, agent.ChildInput{Content: "refused by child"})
+	require.ErrorContains(t, err, "input refused")
+	assert.Empty(t, rootSink.RevivedTasks(), "a failed bound sendNativeInput must not call ReviveBackgroundTask")
+	row, ok := rootSink.BackgroundTask(steerChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}
+
+func TestSteerChildInputUnidentifiedAndPartialReturnsRPCError(t *testing.T) {
+	t.Parallel()
+	cases := map[string]agent.SteerRequest{
+		"unidentified":   {Content: "no id"},
+		"InputID only":   {InputID: "in-only", Content: "partial 1"},
+		"AttemptID only": {AttemptID: "att-only", Content: "partial 2"},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root, child, _, childSink, _, childStdin := newBoundChildReplyHarness(t)
+			child.startTurn()
+			childStdin.respond = func(request droidEnvelope) {
+				if request.Method == droidMethodAddUserMessage {
+					answerDroidInput(t, child, request.ID, true)
+				}
+			}
+
+			_, err := root.SteerChildInput(steerChildID, req)
+			require.ErrorContains(t, err, "input refused")
+			child.dispatchMu.Lock()
+			assert.Empty(t, child.pendingSteers)
+			child.dispatchMu.Unlock()
+			assert.Empty(t, childSink.SteerResolutions())
+		})
+	}
 }

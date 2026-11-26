@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 func (a *Agent) prepareIdentifiedPiSteer(sessionID string, request agent.SteerRequest, payload map[string]any, text string) (piInputDispatch, error) {
@@ -68,7 +69,7 @@ func (a *Agent) takeIdentifiedPiSteer(inputID string) (agent.SteerResolution, bo
 }
 
 func (a *Agent) retainPiSteerResolution(resolution agent.SteerResolution) {
-	if err := agent.RetainSteerResolution(a.sink, resolution); !agent.OutputRetained(err) {
+	if err := agent.RetainSteerResolution(a.orderedSink(), resolution); !agent.OutputRetained(err) {
 		slog.Error("record Pi steer resolution", "agent_id", a.AgentID(), "input_id", resolution.InputID, "error", err)
 	}
 }
@@ -76,17 +77,7 @@ func (a *Agent) retainPiSteerResolution(resolution agent.SteerResolution) {
 // observePiSteerEcho closes a completed segment before the next native user
 // message. Steers read together, or while a tool-use segment is open, share its
 // result from their respective input positions.
-func (a *Agent) observePiSteerEcho(raw []byte) bool {
-	var header struct {
-		Message map[string]json.RawMessage `json:"message"`
-	}
-	if json.Unmarshal(raw, &header) != nil {
-		return false
-	}
-	var inputID string
-	if encoded, found := header.Message[piSteerMessageIDField]; found {
-		_ = json.Unmarshal(encoded, &inputID)
-	}
+func (a *Agent) observePiSteerEcho(inputID string) bool {
 	a.Mu.Lock()
 	var completed *piReplyRun
 	sessionID := a.sessionHandleLocked()
@@ -128,15 +119,21 @@ func (a *Agent) observePiSteerEcho(raw []byte) bool {
 
 func (a *Agent) updatePiAssistantBoundary(raw []byte, finished bool) {
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	reply := a.piReplyRunLocked()
-	if reply == nil {
+	active := a.piReplyRunLocked() != nil
+	a.Mu.Unlock()
+	if !active {
 		return
 	}
 	var envelope struct {
 		Message piAgentEndMessage `json:"message"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil || envelope.Message.Role != contracts.PiRoleAssistant {
+		return
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	reply := a.piReplyRunLocked()
+	if reply == nil {
 		return
 	}
 	reply.stop = ""
@@ -146,10 +143,17 @@ func (a *Agent) updatePiAssistantBoundary(raw []byte, finished bool) {
 }
 
 func (a *Agent) dropIdentifiedPiSteers() {
+	a.resolveIdentifiedPiSteers(agent.SteerOutcomeDropped)
+}
+
+func (a *Agent) resolveIdentifiedPiSteers(outcome agent.SteerOutcome) {
 	a.Mu.Lock()
 	pending := a.identifiedSteers
 	a.identifiedSteers = nil
 	a.Mu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
 	ids := make([]string, 0, len(pending))
 	for inputID := range pending {
 		ids = append(ids, inputID)
@@ -157,7 +161,12 @@ func (a *Agent) dropIdentifiedPiSteers() {
 	slices.Sort(ids)
 	for _, inputID := range ids {
 		resolution := pending[inputID]
-		resolution.Outcome = agent.SteerOutcomeDropped
+		resolution.Outcome = outcome
+		resolution.Receipt = agent.NativeInputReceipt{}
 		a.retainPiSteerResolution(resolution)
 	}
+}
+
+func piSteerMessageInputID(message map[string]json.RawMessage) string {
+	return providerkit.ObjectString(message, piSteerMessageIDField)
 }

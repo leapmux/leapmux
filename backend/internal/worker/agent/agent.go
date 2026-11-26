@@ -1227,6 +1227,9 @@ type SteerPreparer interface {
 }
 
 // SteerEchoReporter declares whether the provider writes steer rows at its echo.
+// When SteerRowAtEcho returns true, SteerInput, SteerInputForSession, and
+// SteerChildInput must return an empty NativeInputReceipt and report any native
+// receipt through SteerResolution when the echo arrives.
 // The answer is constant and takes no lock.
 type SteerEchoReporter interface{ SteerRowAtEcho() bool }
 

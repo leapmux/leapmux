@@ -35,7 +35,6 @@ func (a *Agent) registerControl(record *droidPendingControl) {
 	bypass := a.canBypassControlLocked(record)
 	if bypass {
 		record.ready = true
-		record.publicationOnce.Do(func() { close(record.publicationDone) })
 	}
 	a.Mu.Unlock()
 	if bypass {
@@ -126,9 +125,11 @@ func (a *Agent) approvePendingPermissions() {
 	}
 }
 
+var errDroidControlNotPending = fmt.Errorf("%w: the Droid control request is no longer pending", agent.ErrControlRequestNotPending)
+
 // SendRawInput keeps one native RPC answer in flight for each current request.
 // Answers to a bound child process route to the matching child by control
-// instance ID (or unique RPC ID when no instance ID is supplied).
+// instance ID.
 func (a *Agent) SendRawInput(input agent.RawInput) error {
 	raw, stop := input.Data, input.Stop
 	if isDroidRawInterrupt(raw) {
@@ -138,31 +139,12 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 	if json.Unmarshal(raw, &env) != nil || env.Type != droidTypeResponse {
 		return a.Process.SendRawInput(raw, stop)
 	}
-	a.Mu.Lock()
-	record, rpcMatch := a.findControlLocked(env.ID, input.ControlInstanceID)
-	a.Mu.Unlock()
-	if record == nil {
-		child, ambiguous := a.childControllingRequest(env.ID, input.ControlInstanceID)
-		if ambiguous {
-			return fmt.Errorf("the Droid control request matches more than one active child")
-		}
-		if child != nil {
-			return child.SendRawInput(input)
-		}
-		if rpcMatch != nil {
-			return agent.ControlInstanceRefusal(rpcMatch.instanceID, input.ControlInstanceID)
-		}
-		child, ambiguous = a.childControllingRequest(env.ID, "")
-		if ambiguous {
-			if input.ControlInstanceID == "" {
-				return agent.ErrControlInstanceUnstated
-			}
-			return fmt.Errorf("the Droid control request matches more than one active child")
-		}
-		if child != nil {
-			return child.SendRawInput(input)
-		}
-		return fmt.Errorf("the Droid control request is no longer pending")
+	record, child, err := a.routeControlAnswer(env.ID, input.ControlInstanceID)
+	if err != nil {
+		return err
+	}
+	if child != nil {
+		return child.SendRawInput(input)
 	}
 	select {
 	case <-record.publicationDone:
@@ -177,11 +159,11 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 		if current != nil && current.instanceID != input.ControlInstanceID {
 			return agent.ErrControlInstanceReplaced
 		}
-		return fmt.Errorf("the Droid control request is no longer pending")
+		return errDroidControlNotPending
 	}
 	if !record.published || record.answering || a.stopped || a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("the Droid control request is no longer pending")
+		return errDroidControlNotPending
 	}
 	if record.sessionID != a.sessionID {
 		a.Mu.Unlock()
@@ -189,9 +171,49 @@ func (a *Agent) SendRawInput(input agent.RawInput) error {
 	}
 	record.answering = true
 	a.Mu.Unlock()
-	err := a.Process.SendRawInput(raw, stop)
+	err = a.Process.SendRawInput(raw, stop)
 	a.finishControlAnswer(record, err, false)
 	return err
+}
+
+func (a *Agent) routeControlAnswer(rpcID, instanceID string) (*droidPendingControl, *Agent, error) {
+	a.Mu.Lock()
+	exact, rpcMatch := a.findControlLocked(rpcID, instanceID)
+	a.Mu.Unlock()
+	if exact != nil {
+		return exact, nil, nil
+	}
+	a.childConnMu.Lock()
+	children := make([]*Agent, 0, len(a.childConns))
+	for _, connection := range a.childConns {
+		select {
+		case <-connection.ready:
+			if connection.agent != nil {
+				children = append(children, connection.agent)
+			}
+		default:
+		}
+	}
+	a.childConnMu.Unlock()
+	var matchedInstanceID string
+	if rpcMatch != nil {
+		matchedInstanceID = rpcMatch.instanceID
+	}
+	for _, child := range children {
+		child.Mu.Lock()
+		cExact, cRPC := child.findControlLocked(rpcID, instanceID)
+		child.Mu.Unlock()
+		if cExact != nil {
+			return nil, child, nil
+		}
+		if cRPC != nil && matchedInstanceID == "" {
+			matchedInstanceID = cRPC.instanceID
+		}
+	}
+	if matchedInstanceID != "" {
+		return nil, nil, agent.ControlInstanceRefusal(matchedInstanceID, instanceID)
+	}
+	return nil, nil, errDroidControlNotPending
 }
 
 func (a *Agent) findControlLocked(rpcID, instanceID string) (exact, rpcMatch *droidPendingControl) {
@@ -209,36 +231,6 @@ func (a *Agent) findControlLocked(rpcID, instanceID string) (exact, rpcMatch *dr
 	return nil, rpcMatch
 }
 
-func (a *Agent) childControllingRequest(rpcID, instanceID string) (*Agent, bool) {
-	a.childConnMu.Lock()
-	children := make([]*Agent, 0, len(a.childConns))
-	for _, connection := range a.childConns {
-		select {
-		case <-connection.ready:
-			if connection.agent != nil {
-				children = append(children, connection.agent)
-			}
-		default:
-		}
-	}
-	a.childConnMu.Unlock()
-	var match *Agent
-	for _, child := range children {
-		child.Mu.Lock()
-		exact, rpcMatch := child.findControlLocked(rpcID, instanceID)
-		found := exact != nil || (instanceID == "" && rpcMatch != nil)
-		child.Mu.Unlock()
-		if !found {
-			continue
-		}
-		if match != nil {
-			return nil, true
-		}
-		match = child
-	}
-	return match, false
-}
-
 func (a *Agent) finishControlAnswer(record *droidPendingControl, err error, automatic bool) {
 	a.Mu.Lock()
 	current := a.controls[record.requestID] == record
@@ -248,8 +240,10 @@ func (a *Agent) finishControlAnswer(record *droidPendingControl, err error, auto
 	if current {
 		if err == nil {
 			delete(a.controls, record.requestID)
+			record.publicationOnce.Do(func() { close(record.publicationDone) })
 		} else if uncertain {
 			record.published = false
+			record.publicationOnce.Do(func() { close(record.publicationDone) })
 		} else {
 			record.answering = false
 			record.automaticFailed = record.automaticFailed || automatic

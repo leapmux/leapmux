@@ -245,107 +245,185 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	trackReply := !steer && isPrompt
 	identifySteer := steer && isPrompt && bridgeReady && steerReq.InputID != "" && steerReq.AttemptID != ""
 	payload := promptPayload(content, attachments)
+	if identifySteer {
+		return a.sendIdentifiedSteerLocked(sessionID, *steerReq, payload)
+	}
 	if steer {
-		payload["streamingBehavior"] = streamingBehaviorSteer
-	} else if !trackReply {
-		payload["streamingBehavior"] = streamingBehaviorFollowUp
+		return a.sendLegacySteerLocked(payload)
 	}
+	return a.sendPromptLocked(sessionID, trackReply, payload)
+}
 
-	var resolution agent.SteerResolution
-	if identifySteer {
-		resolution = a.prepareOMPSteer(sessionID, *steerReq, payload)
-		receipt = resolution.Receipt
-	} else if trackReply {
-		receipt = newOMPReceipt(sessionID)
-	}
-	var observe func(json.RawMessage)
-	if trackReply {
-		observe = func(raw json.RawMessage) { a.observeReplyAdmission(receipt, raw) }
-	} else if identifySteer {
-		observe = func(raw json.RawMessage) { a.observeOMPSteerAdmission(receipt.InputID, raw) }
-	}
-	pending, err := a.beginPrompt(payload, receipt.InputID, observe)
-	if err != nil {
-		return agent.NativeInputReceipt{}, err
-	}
-	// release undoes the record below for a prompt that no run takes.
-	var release func()
-	var ticket providerkit.SteerTicket
-	if identifySteer {
-		a.registerOMPSteer(resolution)
-		a.beginSteer(pending.id)
-		release = func() {
-			a.dropSteer(pending.id)
-			a.takeOMPSteer(pending.id)
-		}
-	} else if steer {
-		ticket = a.steers.Add(payload["message"].(string))
-		// The request ID is known before the write, so an early native result can resolve this steer.
-		a.steers.SetID(ticket, pending.id)
-		a.beginSteer(pending.id)
-		release = func() {
-			a.dropSteer(pending.id)
-			a.steers.Forget(ticket)
-			a.steers.Settle(a.sink)
-		}
-	} else {
-		a.armTurn(pending.id)
-		if trackReply {
-			a.registerReplyPrompt(receipt)
-		}
-		release = func() { a.disarmTurn(pending.id) }
-	}
-	refuse := func() {
-		if trackReply {
-			a.takeReplyPrompt(receipt.InputID)
-		}
-		release()
-	}
-	if err := pending.write(); err != nil {
-		refuse()
-		return agent.NativeInputReceipt{}, err
-	}
+type ompAckStatus uint8
 
+const (
+	ompAckReceived ompAckStatus = iota
+	ompAckTimedOut
+	ompAckProcessExited
+)
+
+func (a *Agent) awaitPromptAck(pending *pendingPrompt) (promptAck, ompAckStatus) {
 	timer := a.Clock().NewTimer(promptAckTimeout, ompPromptAckTimerTag)
 	defer timer.Stop(ompPromptAckTimerTag)
 	select {
 	case result := <-pending.ack:
+		return result, ompAckReceived
+	case <-timer.C:
+		return promptAck{}, ompAckTimedOut
+	case <-a.ProcessDone():
+		return promptAck{}, ompAckProcessExited
+	}
+}
+
+func (a *Agent) sendIdentifiedSteerLocked(sessionID string, req agent.SteerRequest, payload map[string]any) (agent.NativeInputReceipt, error) {
+	payload["streamingBehavior"] = streamingBehaviorSteer
+	resolution := a.prepareOMPSteer(sessionID, req, payload)
+	receipt := resolution.Receipt
+	observe := func(raw json.RawMessage) { a.observeOMPSteerAdmission(receipt.InputID, raw) }
+	pending, err := a.beginPrompt(payload, receipt.InputID, observe)
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	a.registerOMPSteer(resolution)
+	a.beginSteer(pending.id)
+	release := func() {
+		a.dropSteer(pending.id)
+		a.takeOMPSteer(pending.id)
+	}
+	if err := pending.write(); err != nil {
+		release()
+		return agent.NativeInputReceipt{}, err
+	}
+	result, status := a.awaitPromptAck(pending)
+	switch status {
+	case ompAckTimedOut:
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: omp did not acknowledge the prompt within %s", agent.ErrDeliveryUncertain, promptAckTimeout)
+	case ompAckProcessExited:
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: %w", agent.ErrDeliveryUncertain, a.ProcessExitError())
+	default:
 		if result.err != nil {
 			var refusal *commandError
-			if !identifySteer || errors.As(result.err, &refusal) {
-				refuse()
+			if errors.As(result.err, &refusal) {
+				release()
+				return agent.NativeInputReceipt{}, fmt.Errorf("deliver the prompt to omp: %w", result.err)
 			}
-			if trackReply && isOMPBusyRefusal(result.err) {
-				return agent.NativeInputReceipt{}, agent.ErrAgentBusy
-			}
+			return agent.NativeInputReceipt{}, fmt.Errorf("%w: deliver the prompt to omp: %w", agent.ErrDeliveryUncertain, result.err)
+		}
+		if !promptInvokesAgent(result.data) {
+			// Local commands such as /fast can change settings without a model-change event.
+			a.stateRefresh.schedule(a)
+			release()
+		} else {
+			a.acceptSteer(pending.id)
+		}
+		return receipt, nil
+	}
+}
+
+func (a *Agent) sendLegacySteerLocked(payload map[string]any) (agent.NativeInputReceipt, error) {
+	payload["streamingBehavior"] = streamingBehaviorSteer
+	pending, err := a.beginPrompt(payload, "", nil)
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	ticket := a.steers.Add(payload["message"].(string))
+	// The request ID is known before the write, so an early native result can resolve this steer.
+	a.steers.SetID(ticket, pending.id)
+	a.beginSteer(pending.id)
+	release := func() {
+		a.dropSteer(pending.id)
+		a.steers.Forget(ticket)
+		a.steers.Settle(a.sink)
+	}
+	if err := pending.write(); err != nil {
+		release()
+		return agent.NativeInputReceipt{}, err
+	}
+	result, status := a.awaitPromptAck(pending)
+	switch status {
+	case ompAckTimedOut:
+		release()
+		return agent.NativeInputReceipt{}, fmt.Errorf("%w: omp did not acknowledge the prompt within %s", agent.ErrDeliveryUncertain, promptAckTimeout)
+	case ompAckProcessExited:
+		release()
+		return agent.NativeInputReceipt{}, a.ProcessExitError()
+	default:
+		if result.err != nil {
+			release()
 			return agent.NativeInputReceipt{}, fmt.Errorf("deliver the prompt to omp: %w", result.err)
 		}
-		switch {
-		case !promptInvokesAgent(result.data):
+		if !promptInvokesAgent(result.data) {
 			// Local commands such as /fast can change settings without a model-change event.
 			a.stateRefresh.schedule(a)
 			// A local slash command. omp answered it itself, and no run takes it.
 			// omp runs a built-in command before it reads the streaming behavior,
 			// so a steer can be one too.
-			if steer && !identifySteer {
-				a.dropSteer(pending.id)
-				a.steers.Echo(ticket)
-				a.steers.Settle(a.sink)
-			} else {
-				release()
-			}
-		case steer:
+			a.dropSteer(pending.id)
+			a.steers.Echo(ticket)
+			a.steers.Settle(a.sink)
+		} else {
 			a.acceptSteer(pending.id)
 		}
-		return receipt, nil
-	case <-timer.C:
-		if !identifySteer {
-			refuse()
+		return agent.NativeInputReceipt{}, nil
+	}
+}
+
+func (a *Agent) sendPromptLocked(sessionID string, trackReply bool, payload map[string]any) (agent.NativeInputReceipt, error) {
+	var receipt agent.NativeInputReceipt
+	var observe func(json.RawMessage)
+	if trackReply {
+		receipt = newOMPReceipt(sessionID)
+		observe = func(raw json.RawMessage) { a.observeReplyAdmission(receipt, raw) }
+	} else {
+		payload["streamingBehavior"] = streamingBehaviorFollowUp
+	}
+	pending, err := a.beginPrompt(payload, receipt.InputID, observe)
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	a.armTurn(pending.id)
+	if trackReply {
+		a.registerReplyPrompt(receipt)
+	}
+	refuse := func() {
+		if trackReply {
+			a.takeReplyPrompt(receipt.InputID)
 		}
+		a.disarmTurn(pending.id)
+	}
+	if err := pending.write(); err != nil {
+		refuse()
+		return agent.NativeInputReceipt{}, err
+	}
+	result, status := a.awaitPromptAck(pending)
+	switch status {
+	case ompAckTimedOut:
+		refuse()
 		return agent.NativeInputReceipt{}, fmt.Errorf("%w: omp did not acknowledge the prompt within %s", agent.ErrDeliveryUncertain, promptAckTimeout)
-	case <-a.ProcessDone():
+	case ompAckProcessExited:
 		refuse()
 		return agent.NativeInputReceipt{}, a.ProcessExitError()
+	default:
+		if result.err != nil {
+			if trackReply && isOMPBusyRefusal(result.err) {
+				a.takeReplyPrompt(receipt.InputID)
+				a.Mu.Lock()
+				if a.turn.armedBy == pending.id {
+					a.turn.armedBy = ""
+				}
+				a.Mu.Unlock()
+				a.PublishTurnActive()
+				return agent.NativeInputReceipt{}, agent.ErrAgentBusy
+			}
+			refuse()
+			return agent.NativeInputReceipt{}, fmt.Errorf("deliver the prompt to omp: %w", result.err)
+		}
+		if !promptInvokesAgent(result.data) {
+			// Local commands such as /fast can change settings without a model-change event.
+			a.stateRefresh.schedule(a)
+			a.disarmTurn(pending.id)
+		}
+		return receipt, nil
 	}
 }
 

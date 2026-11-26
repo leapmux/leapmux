@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -236,4 +237,64 @@ func TestPiCancelledRetryWithOpenToolClosesToolBeforeDivider(t *testing.T) {
 	assert.Empty(t, a.toolStates)
 	assert.True(t, a.closedSpans.WasClosed("tc-retry"))
 	a.Mu.Unlock()
+}
+
+func TestPiSettleHeldTurnAtEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("abandoned replyPending on non-native settlement retires UNPROVED", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.sessionFile = "session"
+		pending := agent.NativeInputReceipt{SessionID: "session", InputID: "pending-1", TurnID: "pending-1"}
+		a.replyPending = pending
+
+		a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
+
+		a.Mu.Lock()
+		assert.Empty(t, a.replyPending)
+		a.Mu.Unlock()
+		assert.Empty(t, sink.NativeReplyTurns())
+		assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+			pending: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+		}, sink.NativeReplyRetirements())
+	})
+
+	t.Run("session mismatch on replyRun during native settlement retires UNPROVED", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.sessionFile = "session-old"
+		receipt := agent.NativeInputReceipt{SessionID: "session-old", InputID: "in-1", TurnID: "in-1"}
+		a.replyRun = newPiReplyRun(receipt, false)
+		a.HandleOutput([]byte(`{"type":"agent_start"}`))
+		a.HandleOutput(piSuccessfulReplyEnd)
+		a.Mu.Lock()
+		a.sessionFile = "session-new"
+		a.Mu.Unlock()
+		a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+
+		assert.Empty(t, sink.NativeReplyTurns())
+		assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+			receipt: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+		}, sink.NativeReplyRetirements())
+	})
+
+	t.Run("native settlement with nil held divider and active replyRun retires UNPROVED", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.sessionFile = "session"
+		receipt := agent.NativeInputReceipt{SessionID: "session", InputID: "in-1", TurnID: "in-1"}
+		a.replyRun = newPiReplyRun(receipt, false)
+		a.HandleOutput([]byte(`{"type":"agent_start"}`))
+		// Settle directly without an agent_end (held == nil).
+		a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+
+		assert.Empty(t, sink.NativeReplyTurns())
+		assert.Equal(t, map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome{
+			receipt: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
+		}, sink.NativeReplyRetirements())
+	})
 }

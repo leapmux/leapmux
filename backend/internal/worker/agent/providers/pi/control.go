@@ -1,14 +1,13 @@
 package pi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // ControlRequestKey reads the key that the agent publishes a dialog under:
@@ -16,13 +15,8 @@ import (
 // (handlePiExtensionUIRequest). It is no JSON-RPC id, so it takes no
 // canonical form.
 func (piProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
-	var request struct {
-		ID string `json:"id"`
-	}
-	if json.Unmarshal(payload, &request) != nil || request.ID == "" {
-		return "", false
-	}
-	return request.ID, true
+	id := providerkit.StringField(payload, "id")
+	return id, id != ""
 }
 
 // rememberOpenDialog records a published dialog that Pi waits on.
@@ -109,11 +103,11 @@ func (a *Agent) settleOpenDialogs(scope piInterruptScope, stop agent.StopContext
 // directly, because SendRawInput reads a response as the reader's own answer to a
 // question.
 func (a *Agent) cancelOpenDialog(id string, stop agent.StopContext) error {
-	response, err := json.Marshal(map[string]any{"type": contracts.PiEventExtensionUIResponse, "id": id, "cancelled": true})
+	answer, err := piCancelResponse(id).answer()
 	if err != nil {
 		return fmt.Errorf("encode the Pi cancellation for dialog %s: %w", id, err)
 	}
-	if err := a.Process.SendRawInput(response, stop); err != nil {
+	if err := a.Process.SendRawInput(answer.Content, stop); err != nil {
 		return fmt.Errorf("send the Pi cancellation for dialog %s: %w", id, err)
 	}
 	return nil

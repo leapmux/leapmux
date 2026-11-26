@@ -29,25 +29,11 @@ func (d piQuestionDialog) view() piDialogView {
 // the prompt does (readPiSourceQuestion): a question that the dialog cannot
 // have asked is skipped, and a dialog that two questions match matches none.
 func piQuestionIndex(dialog piQuestionDialog, args json.RawMessage) (int, bool) {
-	var input struct {
-		Questions []json.RawMessage `json:"questions"`
-	}
-	if json.Unmarshal(args, &input) != nil {
+	matched := matchPiSourceQuestion(dialog.view(), args)
+	if matched == nil {
 		return 0, false
 	}
-	view := dialog.view()
-	matched := -1
-	for index, raw := range input.Questions {
-		question := readPiSourceQuestion(index, raw)
-		if question == nil || !question.matches(view) {
-			continue
-		}
-		if matched >= 0 {
-			return 0, false
-		}
-		matched = index
-	}
-	return matched, matched >= 0
+	return matched.index, true
 }
 
 type piQuestionKey struct {

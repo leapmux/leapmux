@@ -94,6 +94,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 		clock:           quartz.NewReal(),
 		launchOpts:      opts,
 		launch:          launchConfig,
+		onTurnEnd:       launchConfig.onTurnEnd,
 		cleanupSettings: cleanupSettings,
 	}
 	if err := a.StartCmd(); err != nil {

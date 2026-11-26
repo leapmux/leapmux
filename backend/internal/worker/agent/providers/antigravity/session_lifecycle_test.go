@@ -461,9 +461,12 @@ func TestAntigravityRetiredCompactionCannotPublishToReplacement(t *testing.T) {
 	a, sink := testAgent(t)
 	a.sink.AdoptNativeSession(a.root.id)
 	release, unblock := newTestGate(t)
-	gated := &delayedCompactionSink{ProviderServices: a.root.sink, entered: make(chan struct{}, 1), release: release}
 	old := a.root
-	old.sink = gated
+	var gated *delayedCompactionSink
+	old.sink = agent.DecorateProviderServices(old.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		gated = &delayedCompactionSink{ProviderServices: direct, entered: make(chan struct{}, 1), release: release}
+		return gated
+	})
 	done := make(chan error, 1)
 	go func() {
 		update := updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{compactInputStep("execution")})
@@ -500,8 +503,11 @@ func TestAntigravityRetiredCompactionOutcomeKeepsItsSession(t *testing.T) {
 	a, _ := testAgent(t)
 	old := a.root
 	a.sink.AdoptNativeSession(old.id)
-	sink := &compactionNoticeSessionSink{ProviderServices: old.sink}
-	old.sink = sink
+	var sink *compactionNoticeSessionSink
+	old.sink = agent.DecorateProviderServices(old.sink, func(direct agent.ProviderServices) agent.ProviderServices {
+		sink = &compactionNoticeSessionSink{ProviderServices: direct}
+		return sink
+	})
 	a.beginManualCompaction(old, "execution")
 	a.Mu.Lock()
 	a.generation++

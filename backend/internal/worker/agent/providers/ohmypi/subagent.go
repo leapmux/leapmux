@@ -105,6 +105,11 @@ func (a *Agent) sendChildInput(childKey string, request agent.SteerRequest, stee
 	_, err = wait(a.APITimeout())
 	var refused *commandError
 	if err != nil && !errors.As(err, &refused) {
+		if !steer {
+			// Ordinary sends return an empty receipt on ErrDeliveryUncertain, so
+			// forget the unrecorded input ID rather than publishing an orphan reply.
+			a.forgetOMPChildInput(child.conv, receipt.InputID)
+		}
 		// A lost acknowledgement cannot establish whether native input was accepted.
 		return agent.NativeInputReceipt{}, fmt.Errorf("%w: send the Oh My Pi child message: %w", agent.ErrDeliveryUncertain, err)
 	}
@@ -164,11 +169,12 @@ func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
 type subagentState struct {
 	// id is omp's agent id, "ScoutOne". A subagent of a subagent has the id
 	// "<parent id>.<name>".
-	id      string
-	rowKey  string
-	childID string
-	title   string
-	conv    *conversation
+	id         string
+	rowKey     string
+	childID    string
+	title      string
+	parentSink agent.ProviderServices
+	conv       *conversation
 	// description is the description that the row shows: the label of the task
 	// once omp states one, and the first line of the task before that. An
 	// unchanged label is not written again.
@@ -352,10 +358,13 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 	} else if found && status.IsFinished() {
 		providerkit.LogRegistryRefusal("ohmypi", "revive", a.sink.ReviveBackgroundTask(rowKey))
 	}
-	state := &subagentState{id: payload.ID, rowKey: rowKey, childID: childID, title: title, description: description}
+	state := &subagentState{id: payload.ID, rowKey: rowKey, childID: childID, title: title, parentSink: parentSink, description: description}
 	if childID != "" {
-		state.conv = newConversation(a.sink.ChildSink(childID), childID)
-		state.conv.sessionFile = payload.SessionFile
+		if childSink := parentSink.ChildSink(childID); childSink != nil {
+			state.conv = newConversation(childSink, childID)
+			state.conv.parentSink = parentSink
+			state.conv.sessionFile = payload.SessionFile
+		}
 	}
 	row := state.rowUpsert()
 	a.Mu.Lock()
@@ -407,7 +416,11 @@ func (a *Agent) finishSubagent(state *subagentState, status bgtask.Status) {
 	}
 	providerkit.LogRegistryRefusal("ohmypi", "close", a.sink.CloseBackgroundTask(state.rowKey, status))
 	if state.childID != "" {
-		a.sink.CleanupChildAgent(state.childID)
+		ownerSink := state.parentSink
+		if ownerSink == nil {
+			ownerSink = a.sink
+		}
+		ownerSink.CleanupChildAgent(state.childID)
 	}
 }
 
@@ -524,8 +537,8 @@ func (a *Agent) handleSubagentProgress(raw []byte) {
 // line of a string. An absent field, a blank string, and a value of another type
 // state no label.
 func taskLabel(raw json.RawMessage) string {
-	var description string
-	if len(raw) == 0 || json.Unmarshal(raw, &description) != nil {
+	description, ok := providerkit.RawString(raw)
+	if !ok {
 		return ""
 	}
 	return firstLine(description)
@@ -562,40 +575,16 @@ func (a *Agent) handleSubagentEvent(raw []byte) {
 	if json.Unmarshal(event, &head) != nil {
 		return
 	}
+	if a.dispatchConversationEvent(state.conv, head.Type, event) {
+		return
+	}
 	switch head.Type {
 	case contracts.OhMyPiEventAgentStart:
 		a.startChildRun(state.conv)
 	case contracts.OhMyPiEventAgentEnd:
 		a.endChildRun(state.conv, event)
-	case "agent_pause":
+	case ompEventAgentPause:
 		a.pauseChildRun(state.conv, event)
-	case contracts.OhMyPiEventMessageEnd:
-		a.handleMessageEnd(state.conv, event)
-	case contracts.OhMyPiEventMessageStart:
-		a.observeOMPAssistantBoundary(state.conv, event, false)
-	case contracts.OhMyPiEventTurnEnd:
-		a.observeOMPAssistantBoundary(state.conv, event, true)
-	case contracts.OhMyPiEventToolExecutionStart:
-		a.handleToolStart(state.conv, event)
-	case contracts.OhMyPiEventToolExecutionUpdate:
-		a.handleToolUpdate(state.conv, event)
-	case contracts.OhMyPiEventToolExecutionEnd:
-		a.handleToolEnd(state.conv, event)
-	case contracts.OhMyPiEventAutoCompactionStart:
-		trigger := providerkit.StringField(event, "reason")
-		if trigger == "" {
-			trigger = "auto"
-		}
-		a.beginCompaction(state.conv, trigger)
-	case contracts.OhMyPiEventManualCompactionStart:
-		a.beginCompaction(state.conv, "manual")
-	case contracts.OhMyPiEventAutoCompactionEnd, contracts.OhMyPiEventManualCompactionEnd:
-		a.persistCompactionEnd(state.conv, event)
-	case contracts.OhMyPiEventTtsrTriggered:
-		a.Mu.Lock()
-		state.conv.ttsrPending = true
-		a.Mu.Unlock()
-		a.persistConversationNotification(state.conv, event)
 	case contracts.OhMyPiEventAutoRetryStart, contracts.OhMyPiEventAutoRetryEnd,
 		contracts.OhMyPiEventNotice, contracts.OhMyPiEventExtensionError, contracts.OhMyPiEventCommandOutput:
 		a.persistConversationNotification(state.conv, event)
@@ -663,7 +652,7 @@ func (a *Agent) endChildRun(c *conversation, raw []byte) {
 	if interrupted {
 		a.persistIncompleteTools(c, agent.MessageCompletionInterrupted)
 	}
-	content := agentEndContent(raw, usageSnapshot{}, turnDurationMs(startedAt, endedAt))
+	content := agentEndContent(raw, usageSnapshot{}, providerkit.TurnDurationMillis(startedAt, endedAt))
 	if err := c.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 		slog.Warn("omp persist subagent agent_end", "agent_id", a.AgentID(), "child_agent_id", c.childID, "error", err)
 	}
@@ -681,7 +670,11 @@ func (a *Agent) persistChildPrompt(c *conversation, content json.RawMessage) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	if err := a.sink.PersistChildPrompt(c.childID, text); err != nil {
+	ownerSink := c.parentSink
+	if ownerSink == nil {
+		ownerSink = a.sink
+	}
+	if err := ownerSink.PersistChildPrompt(c.childID, text); err != nil {
 		slog.Warn("omp persist subagent prompt", "agent_id", a.AgentID(), "child_agent_id", c.childID, "error", err)
 	}
 }

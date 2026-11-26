@@ -356,7 +356,7 @@ func (a *Agent) watchTurnReply(sessionID, requestID string, replies <-chan hubRe
 	current := a.sessionID == sessionID && a.turn.active && a.turn.requestID == requestID
 	a.Mu.Unlock()
 	if current {
-		a.endTurn(agent.MessageCompletionError, runEndRow(sessionID, runReasonError, failure.Error()))
+		a.endTurn(agent.MessageCompletionError, runEndRow(sessionID, runReasonError, failure.Error()), endTurnOptions{})
 	}
 }
 
@@ -438,11 +438,9 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 			err = ctx.Err()
 		}
 	}
-	var receipt agent.NativeInputReceipt
 	if tracked != nil {
 		a.Mu.Lock()
 		if err == nil || tracked.admitted {
-			receipt = tracked.resolution.Receipt
 			err = nil
 		} else {
 			a.steerProofs.forget(tracked)
@@ -461,7 +459,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 		a.turn.steersPending++
 	}
 	a.Mu.Unlock()
-	return receipt, nil
+	return agent.NativeInputReceipt{}, nil
 }
 
 // beginInputTurn marks a new turn active and publishes it.

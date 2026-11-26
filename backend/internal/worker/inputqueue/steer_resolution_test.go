@@ -189,15 +189,188 @@ func TestResolveSteerUncertainPreventsAdvanceAutoResume(t *testing.T) {
 	assert.True(t, snapshot.Paused, "Advance must not auto-resume after ResolveSteer marks an earlier steer uncertain")
 }
 
-func TestConfirmedNativeReceiptAcceptsInsteadOfHoldingForEchoAfterTurnEnd(t *testing.T) {
+func TestRowAtEchoSteerWithNativeReceiptFailsUncertainInsteadOfBypassingHoldForEcho(t *testing.T) {
 	t.Parallel()
-	_, store := newStoreFixture(t)
+	for name, receipt := range map[string]agent.NativeInputReceipt{
+		"full receipt": {SessionID: "session", InputID: "native-1", TurnID: "turn-1"},
+		"session only": {SessionID: "session"},
+		"input only":   {InputID: "native-1"},
+		"turn only":    {TurnID: "turn-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			dispatcher := &recordingDispatcher{
+				steering:     true,
+				policy:       agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: false},
+				steerReceipt: receipt,
+			}
+			observer := &recordingObserver{}
+			manager := NewManager(store, dispatcher, observer)
+			t.Cleanup(manager.StopAndWait)
+
+			_, err := manager.TurnStarted(t.Context(), "agent-1", true)
+			require.NoError(t, err)
+			_, err = store.Enqueue(t.Context(), NewItem{
+				ID: "s1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "steer with receipt",
+			})
+			require.NoError(t, err)
+
+			snapshot, err := manager.Steer(t.Context(), "agent-1", "s1")
+			require.NoError(t, err)
+			assert.True(t, snapshot.Paused, "a RowAtEcho steer returning a synchronous receipt must pause the queue as uncertain instead of bypassing holdForEcho")
+			assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, snapshot.PauseReason)
+			assert.False(t, snapshot.ActiveTurn)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
+			assert.Contains(t, snapshot.Items[0].Error, "synchronous native input receipt")
+
+			observer.mu.Lock()
+			assert.Empty(t, observer.accepted)
+			observer.mu.Unlock()
+			var count int
+			require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages`).Scan(&count))
+			assert.Zero(t, count)
+		})
+	}
+}
+
+func TestRowAtEchoSteerControlRepliesAcceptNativeReceiptDirectly(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
+	} {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			receipt := agent.NativeInputReceipt{SessionID: "session", InputID: "native-reply", TurnID: "turn-1"}
+			dispatcher := &recordingDispatcher{
+				steering:     true,
+				policy:       agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: false},
+				steerReceipt: receipt,
+			}
+			observer := &recordingObserver{}
+			manager := NewManager(store, dispatcher, observer)
+			t.Cleanup(manager.StopAndWait)
+
+			_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+			require.NoError(t, err)
+			_, err = store.Enqueue(t.Context(), NewItem{
+				ID: "reply-1", AgentID: "agent-1", Kind: kind, Text: "answer",
+			})
+			require.NoError(t, err)
+
+			snapshot, err := manager.Steer(t.Context(), "agent-1", "reply-1")
+			require.NoError(t, err)
+			assert.False(t, snapshot.Paused)
+			assert.Empty(t, snapshot.Items)
+
+			observer.mu.Lock()
+			require.Len(t, observer.accepted, 1)
+			assert.Equal(t, "reply-1", observer.accepted[0].ID)
+			observer.mu.Unlock()
+
+			var session, nativeID, turn string
+			require.NoError(t, database.QueryRowContext(t.Context(), `
+				SELECT m.agent_session_id, m.native_input_id, binding.native_turn_id
+				FROM messages m JOIN native_agent_inputs binding USING (agent_id, agent_session_id, native_input_id)
+				WHERE m.id = 'reply-1'`).Scan(&session, &nativeID, &turn))
+			assert.Equal(t, receipt, agent.NativeInputReceipt{SessionID: session, InputID: nativeID, TurnID: turn})
+		})
+	}
+}
+
+func TestRowAtEchoSteerWithNativeReceiptAndTurnEndTiming(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ErrTurnEnded requeues even when receipt is non-empty", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		dispatcher := &recordingDispatcher{
+			steering:     true,
+			policy:       agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: false},
+			steerReceipt: agent.NativeInputReceipt{SessionID: "session", InputID: "native-1", TurnID: "turn-1"},
+			steerFail:    ErrTurnEnded,
+		}
+		observer := &recordingObserver{}
+		manager := NewManager(store, dispatcher, observer)
+		t.Cleanup(manager.StopAndWait)
+
+		_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+		require.NoError(t, err)
+		_, err = store.Enqueue(t.Context(), NewItem{
+			ID: "s1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "late steer",
+		})
+		require.NoError(t, err)
+
+		snapshot, err := manager.Steer(t.Context(), "agent-1", "s1")
+		require.NoError(t, err)
+		assert.False(t, snapshot.Paused)
+		require.Len(t, snapshot.Items, 1)
+		assert.Equal(t, "s1", snapshot.Items[0].ID)
+		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+
+		observer.mu.Lock()
+		assert.Empty(t, observer.accepted)
+		observer.mu.Unlock()
+		var count int
+		require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages`).Scan(&count))
+		assert.Zero(t, count)
+	})
+
+	t.Run("TurnEnded during steer with nil error and non-empty receipt marks uncertain", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		dispatcher := &recordingDispatcher{
+			steering:     true,
+			policy:       agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: false},
+			steerReceipt: agent.NativeInputReceipt{SessionID: "session", InputID: "native-1", TurnID: "turn-1"},
+		}
+		observer := &recordingObserver{}
+		manager := NewManager(store, dispatcher, observer)
+		t.Cleanup(manager.StopAndWait)
+
+		_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+		require.NoError(t, err)
+		_, err = store.Enqueue(t.Context(), NewItem{
+			ID: "s1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "raced steer",
+		})
+		require.NoError(t, err)
+		dispatcher.onSteer = func(DispatchItem) {
+			_, terr := manager.TurnEnded(t.Context(), "agent-1")
+			require.NoError(t, terr)
+		}
+
+		snapshot, err := manager.Steer(t.Context(), "agent-1", "s1")
+		require.NoError(t, err)
+		assert.True(t, snapshot.Paused)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, snapshot.PauseReason)
+		assert.False(t, snapshot.ActiveTurn)
+		require.Len(t, snapshot.Items, 1)
+		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
+		assert.Contains(t, snapshot.Items[0].Error, "synchronous native input receipt")
+
+		observer.mu.Lock()
+		assert.Empty(t, observer.accepted)
+		observer.mu.Unlock()
+		var count int
+		require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages`).Scan(&count))
+		assert.Zero(t, count)
+	})
+}
+
+func TestConfirmedNativeReceiptAcceptsNonRowAtEchoSteerAfterTurnEnd(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	receipt := agent.NativeInputReceipt{SessionID: "session", InputID: "native-1", TurnID: "turn-1"}
 	dispatcher := &recordingDispatcher{
 		steering:     true,
-		policy:       agent.SteerPolicy{RowAtEcho: true, SurvivesTurnEnd: false},
-		steerReceipt: agent.NativeInputReceipt{SessionID: "session", InputID: "native-1", TurnID: "turn-1"},
+		policy:       agent.SteerPolicy{RowAtEcho: false, SurvivesTurnEnd: false},
+		steerReceipt: receipt,
 	}
-	manager := NewManager(store, dispatcher, &recordingObserver{})
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
 	t.Cleanup(manager.StopAndWait)
 
 	_, err := manager.TurnStarted(t.Context(), "agent-1", true)
@@ -213,7 +386,71 @@ func TestConfirmedNativeReceiptAcceptsInsteadOfHoldingForEchoAfterTurnEnd(t *tes
 
 	snapshot, err := manager.Steer(t.Context(), "agent-1", "s1")
 	require.NoError(t, err)
-	assert.Empty(t, snapshot.Items, "a steer confirmed by a NativeReceipt must be accepted, not parked in AWAITING_ECHO")
+	assert.Empty(t, snapshot.Items, "a non-RowAtEcho steer confirmed by a NativeReceipt must be accepted instead of requeued")
+	assert.False(t, snapshot.ActiveTurn)
+
+	observer.mu.Lock()
+	require.Len(t, observer.accepted, 1)
+	assert.Equal(t, "s1", observer.accepted[0].ID)
+	observer.mu.Unlock()
+
+	var session, nativeID, turn string
+	require.NoError(t, database.QueryRowContext(t.Context(), `
+		SELECT m.agent_session_id, m.native_input_id, binding.native_turn_id
+		FROM messages m JOIN native_agent_inputs binding USING (agent_id, agent_session_id, native_input_id)
+		WHERE m.id = 's1'`).Scan(&session, &nativeID, &turn))
+	assert.Equal(t, receipt, agent.NativeInputReceipt{SessionID: session, InputID: nativeID, TurnID: turn})
+}
+
+func TestPartialNativeReceiptRequeuesNonRowAtEchoSteerAfterTurnEnd(t *testing.T) {
+	t.Parallel()
+	for name, receipt := range map[string]agent.NativeInputReceipt{
+		"session only": {SessionID: "session"},
+		"input only":   {InputID: "native-1"},
+		"turn only":    {TurnID: "turn-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			dispatcher := &recordingDispatcher{
+				steering:     true,
+				policy:       agent.SteerPolicy{RowAtEcho: false, SurvivesTurnEnd: false},
+				steerReceipt: receipt,
+			}
+			observer := &recordingObserver{}
+			manager := NewManager(store, dispatcher, observer)
+			t.Cleanup(manager.StopAndWait)
+
+			// Pause so the post-steer idle drain leaves the requeued item observable.
+			_, err := manager.SetPaused(t.Context(), "agent-1", true)
+			require.NoError(t, err)
+			_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+			require.NoError(t, err)
+			_, err = store.Enqueue(t.Context(), NewItem{
+				ID: "s1", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "partial receipt steer",
+			})
+			require.NoError(t, err)
+			dispatcher.onSteer = func(DispatchItem) {
+				_, terr := manager.TurnEnded(t.Context(), "agent-1")
+				require.NoError(t, terr)
+			}
+
+			snapshot, err := manager.Steer(t.Context(), "agent-1", "s1")
+			require.NoError(t, err)
+			assert.False(t, snapshot.ActiveTurn)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, "s1", snapshot.Items[0].ID)
+			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+			assert.Empty(t, dispatcher.dispatches())
+
+			observer.mu.Lock()
+			assert.Empty(t, observer.accepted)
+			observer.mu.Unlock()
+			var count int
+			require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages`).Scan(&count))
+			assert.Zero(t, count)
+		})
+	}
 }
 
 func TestWaitForRetiredDispatchWaitsForAdvanceAndPreempt(t *testing.T) {

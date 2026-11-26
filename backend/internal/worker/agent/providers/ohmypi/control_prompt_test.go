@@ -29,7 +29,7 @@ var ompAskRequest = map[string]any{
 		}},
 		map[string]any{"id": "langs", "question": "Which languages?", "header": "Languages", "multi": true, "options": []any{
 			map[string]any{"label": "Go"},
-			map[string]any{"label": "Rust Recommended", "markup": "<label><strong>Rust</strong> Recommended</label>"},
+			map[string]any{"label": "Rust Recommended", "displayLabel": "Rust", "description": "Recommended"},
 		}},
 	},
 }
@@ -193,16 +193,20 @@ func TestReadControlRequest_TheBridgeRequestKeepsTheFormContextBesideItsQuestion
 	}))[0])
 }
 
-func TestReadControlRequest_TheBridgeRequestReadsEachOptionFromItsMarkup(t *testing.T) {
-	questions := readOmpQuestions(t, ompAskQuestion(map[string]any{
-		"id": "style", "question": "Choose a style", "allowCustomText": true,
-		"options": []any{map[string]any{
-			"value": "0", "label": "Alpha Fast const x = 1; x",
-			"markup": `<label><input type="radio" name="style" value="alpha"><strong>Alpha</strong> <span>Fast</span> <pre>const x = 1;` + "\n" + `x</pre><script>DROP_SCRIPT_MARKER</script></label>`,
-		}},
-	}))
+func TestReadControlRequest_TheBridgeRequestReadsStructuredOptionPresentation(t *testing.T) {
+	parsed, err := readAskChoiceQuestions(`<form><fieldset><legend>Choose a style</legend><label><input type="radio" name="style" value="alpha"><strong>Alpha</strong> <span>Fast</span> <pre>const x = 1;` + "\n" + `x</pre><script>DROP_SCRIPT_MARKER</script></label></fieldset></form>`)
+	require.NoError(t, err)
+	raw, err := json.Marshal(contracts.OhMyPiAskRequest{
+		Type:      contracts.OhMyPiAskTypeRequest,
+		ID:        "ask-1",
+		Questions: parsed,
+	})
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(raw, &payload))
+	questions := readOmpQuestions(t, payload)
 	agenttest.RequireProto(t, &leapmuxv1.ControlQuestion{
-		Id: "style", Question: "Choose a style", AllowCustomText: proto.Bool(true),
+		Id: "style", Question: "Choose a style", AllowCustomText: proto.Bool(false),
 		Options: []*leapmuxv1.QuestionOption{{Value: proto.String("0"), Label: "Alpha", Description: "Fast", Preview: "```\nconst x = 1;\nx\n```"}},
 	}, questions[0])
 	assert.NotContains(t, protojson.Format(questions[0]), "DROP_SCRIPT_MARKER")
@@ -218,8 +222,8 @@ func TestReadControlRequest_TheBridgeRequestReadsRichMetadataAndDropsMalformedOp
 	}, readOmpQuestions(t, ompAskQuestion(map[string]any{
 		"id": "db", "question": "Which database?", "header": "Storage",
 		"options": []any{
-			map[string]any{"value": "0", "label": "SQLite Single file · Recommended", "markup": "<label><strong>SQLite</strong> Single file · Recommended</label>"},
-			map[string]any{"value": "1", "label": "PostgreSQL SELECT 1", "markup": "<label><strong>PostgreSQL</strong><pre>SELECT 1</pre></label>"},
+			map[string]any{"value": "0", "label": "SQLite Single file · Recommended", "displayLabel": "SQLite", "description": "Single file · Recommended"},
+			map[string]any{"value": "1", "label": "PostgreSQL SELECT 1", "displayLabel": "PostgreSQL", "preview": "```\nSELECT 1\n```"},
 			map[string]any{"label": ""},
 			map[string]any{"label": 7},
 			"bad",
@@ -238,8 +242,8 @@ func TestReadControlRequest_TheBridgeRequestKeepsARecommendationOfALabelAndDrops
 	}, readOmpQuestions(t, ompAskQuestion(map[string]any{
 		"id": "a", "question": "Q?",
 		"options": []any{
-			map[string]any{"value": "0", "label": "x", "markup": "<label>x<pre> \n </pre></label>"},
-			map[string]any{"value": "1", "label": "y Recommended", "markup": "<label><strong>y</strong> Recommended</label>"},
+			map[string]any{"value": "0", "label": "x", "preview": " \n "},
+			map[string]any{"value": "1", "label": "y Recommended", "displayLabel": "y", "description": "Recommended"},
 		},
 	}))[0])
 }
@@ -247,20 +251,29 @@ func TestReadControlRequest_TheBridgeRequestKeepsARecommendationOfALabelAndDrops
 // The bridge adds a suffix to the label of the second option with the same
 // text, so the two read apart.
 func TestReadControlRequest_TheBridgeRequestKeepsTheSuffixOfARepeatedLabel(t *testing.T) {
+	parsed, err := readAskChoiceQuestions(`<form><fieldset><legend>Targets</legend>` +
+		`<label>Shared<input type=checkbox name=targets value=a></label>` +
+		`<label>Shared<input type=checkbox name=targets value=b></label>` +
+		`<label><strong>Alpha</strong> Fast<input type=checkbox name=targets value=c></label>` +
+		`<label><strong>Alpha</strong> Fast<input type=checkbox name=targets value=d></label>` +
+		`</fieldset></form>`)
+	require.NoError(t, err)
+	raw, err := json.Marshal(contracts.OhMyPiAskRequest{
+		Type:      contracts.OhMyPiAskTypeRequest,
+		ID:        "ask-suffix",
+		Questions: parsed,
+	})
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(raw, &payload))
 	agenttest.RequireProto(t, &leapmuxv1.ControlQuestion{
-		Id: "targets", Question: "Targets",
+		Id: "targets", Question: "Targets", MultiSelect: true, AllowEmpty: true, AllowCustomText: proto.Bool(true),
 		Options: []*leapmuxv1.QuestionOption{
 			ompOption("0", "Shared"), ompOption("1", "Shared (2)"),
-			{Value: proto.String("2"), Label: "Alpha (2)", Description: "Fast"},
+			{Value: proto.String("2"), Label: "Alpha", Description: "Fast"},
+			{Value: proto.String("3"), Label: "Alpha (2)", Description: "Fast"},
 		},
-	}, readOmpQuestions(t, ompAskQuestion(map[string]any{
-		"id": "targets", "question": "Targets",
-		"options": []any{
-			map[string]any{"value": "0", "label": "Shared", "markup": "<label>Shared<input type=checkbox></label>"},
-			map[string]any{"value": "1", "label": "Shared (2)", "markup": "<label>Shared<input type=checkbox></label>"},
-			map[string]any{"value": "2", "label": "Alpha Fast (2)", "markup": "<label><strong>Alpha</strong> Fast</label>"},
-		},
-	}))[0])
+	}, readOmpQuestions(t, payload)[0])
 }
 
 // An option with no value, or an empty one, is the bridge's by its native
@@ -281,8 +294,8 @@ func TestReadControlRequest_TheBridgeRequestSelectsAnOptionWithNoValueByItsNativ
 		"options": []any{
 			map[string]any{"label": "plain"},
 			map[string]any{"label": "empty value", "value": ""},
-			map[string]any{"label": "Rich Fast", "markup": "<label><strong>Rich</strong> Fast</label>"},
-			map[string]any{"label": "Rich Slow", "value": 3, "markup": "<label><strong>Rich</strong> Slow</label>"},
+			map[string]any{"label": "Rich Fast", "displayLabel": "Rich", "description": "Fast"},
+			map[string]any{"label": "Rich Slow", "value": 3, "displayLabel": "Rich", "description": "Slow"},
 			map[string]any{"label": "same", "value": "same"},
 		},
 	}))[0])
@@ -883,4 +896,108 @@ func TestAnswerControlRequest_TheBridgeClearsAnInitialSelectionThatTheUserClears
 	r.emit(askStart("optional-languages"),
 		nativeAskDialog(t, "d2", "select", "(1 selected) Languages", "Go", "Rust", askOtherOption, "✔ Done selecting"))
 	assert.Equal(t, "✔ Done selecting", r.waitForDialogAnswers(2)[1]["value"])
+}
+
+func TestOMPAskPlanAndApprovalFeedbackUseJavaScriptWhitespace(t *testing.T) {
+	t.Parallel()
+	// U+0085 (NEL) is non-whitespace in JS trim; newAskPlan must accept it when AllowCustomText is true.
+	plan, err := newAskPlan([]contracts.OhMyPiAskQuestion{{
+		ID:              "q1",
+		Question:        "Pick",
+		AllowCustomText: true,
+		Options:         []contracts.OhMyPiAskOption{{Label: "A", Value: "a"}},
+	}}, []contracts.OhMyPiAskQuestionAnswer{{ID: "q1", Custom: "\u0085"}})
+	require.NoError(t, err)
+	require.NotNil(t, plan)
+	first, err := plan.respond(dialogHeader{Method: contracts.OhMyPiDialogMethodSelect, Title: "Pick", Options: []string{"A", askOtherOption}})
+	require.NoError(t, err)
+	assert.Equal(t, askOtherOption, first)
+	second, err := plan.respond(dialogHeader{Method: contracts.OhMyPiDialogMethodInput, Title: "Pick"})
+	require.NoError(t, err)
+	assert.Equal(t, "\u0085", second)
+
+	// U+0085 feedback on Deny keeps FollowUp; U+FEFF feedback drops FollowUp.
+	approvalPayload := mustJSON(t, map[string]any{
+		"type":    contracts.OhMyPiEventExtensionUIRequest,
+		"id":      "ap-1",
+		"method":  contracts.OhMyPiDialogMethodSelect,
+		"title":   "Allow tool: bash",
+		"options": []any{"Approve", "Deny"},
+	})
+	nelAnswer, err := agenttest.AnswerControl(ompProvider{}, []byte(approvalPayload), "ap-1",
+		agenttest.PermissionDecision("Deny", "\u0085"))
+	require.NoError(t, err)
+	assert.Equal(t, "\u0085", nelAnswer.FollowUp)
+
+	bomAnswer, err := agenttest.AnswerControl(ompProvider{}, []byte(approvalPayload), "ap-1",
+		agenttest.PermissionDecision("Deny", "\uFEFF"))
+	require.NoError(t, err)
+	assert.Empty(t, bomAnswer.FollowUp)
+}
+
+func TestReadControlRequest_AskOptionsBoundaries(t *testing.T) {
+	t.Parallel()
+	questions := readOmpQuestions(t, ompAskQuestion(map[string]any{
+		"id":       "q1",
+		"question": "Choose",
+		"options": []any{
+			map[string]any{
+				"label":        "Native",
+				"value":        "0",
+				"displayLabel": 123,
+				"description":  true,
+				"preview":      []any{"not", "a", "string"},
+			},
+			map[string]any{
+				"label":   "BOM preview",
+				"value":   "1",
+				"preview": "\uFEFF",
+			},
+			map[string]any{
+				"label":   "NEL preview",
+				"value":   "2",
+				"preview": "\u0085",
+			},
+		},
+	}))
+	require.Len(t, questions, 1)
+	require.Len(t, questions[0].GetOptions(), 3)
+
+	nonString := questions[0].GetOptions()[0]
+	assert.Equal(t, "Native", nonString.GetLabel())
+	assert.Empty(t, nonString.GetDescription())
+	assert.Empty(t, nonString.GetPreview())
+
+	bom := questions[0].GetOptions()[1]
+	assert.Empty(t, bom.GetPreview(), "U+FEFF is blank in JS whitespace and must be dropped")
+
+	nel := questions[0].GetOptions()[2]
+	assert.Equal(t, "\u0085", nel.GetPreview(), "U+0085 is non-whitespace in JS and must be kept")
+}
+
+func TestReadControlRequest_ApprovalArgsHandlesAbsentAndMalformedSource(t *testing.T) {
+	t.Parallel()
+	payload := ompJSON(t, ompApproval("Allow tool: bash\nCommand: echo from-title"))
+
+	t.Run("source returns false", func(t *testing.T) {
+		t.Parallel()
+		input := agent.NewControlRequestInput(payload)
+		input.Source = func() (agent.MessageContent, bool) { return agent.MessageContent{}, false }
+		perm := ompProvider{}.ReadControlRequest(input).GetPermission()
+		require.NotNil(t, perm)
+		assert.Empty(t, perm.GetInputJson())
+		assert.Equal(t, "echo from-title", perm.GetCommand())
+	})
+
+	t.Run("source returns malformed JSON", func(t *testing.T) {
+		t.Parallel()
+		input := agent.NewControlRequestInput(payload)
+		input.Source = func() (agent.MessageContent, bool) {
+			return agent.MessageContent{Original: []byte(`{not-json`)}, true
+		}
+		perm := ompProvider{}.ReadControlRequest(input).GetPermission()
+		require.NotNil(t, perm)
+		assert.Empty(t, perm.GetInputJson())
+		assert.Equal(t, "echo from-title", perm.GetCommand())
+	})
 }

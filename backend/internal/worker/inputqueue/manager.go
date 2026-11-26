@@ -1032,9 +1032,22 @@ func (m *Manager) finishSteerLocked(c *coordinator, ctx context.Context, prepare
 		}
 		return snapshot, steerFailed, steerDrainIfIdle, nil
 	}
-	// A native receipt confirms acceptance even if the target turn ended
-	// while dispatch waited. Sending that input again would duplicate it.
-	confirmedAdmission := result.NativeReceipt.SessionID != "" && result.NativeReceipt.InputID != ""
+	rowAtEchoSteer := policy.RowAtEcho && !controlReplyKind(prepared.Item.Kind)
+	hasNativeReceipt := result.NativeReceipt.SessionID != "" || result.NativeReceipt.InputID != "" || result.NativeReceipt.TurnID != ""
+	if !turnEnded && rowAtEchoSteer && hasNativeReceipt {
+		snapshot, storeErr := m.recordDispatchFailure(c, ctx, prepared, &DeliveryError{
+			Outcome: DispatchUncertain,
+			Err:     fmt.Errorf("RowAtEcho steer returned a synchronous native input receipt"),
+		})
+		if storeErr != nil {
+			return snapshot, steerFailed, steerDrainNone, storeErr
+		}
+		return snapshot, steerFailed, steerDrainIfIdle, nil
+	}
+	// For non-RowAtEcho providers, a native receipt confirms acceptance even if
+	// the target turn ended while dispatch waited. Sending that input again
+	// would duplicate it.
+	confirmedAdmission := !rowAtEchoSteer && result.NativeReceipt.SessionID != "" && result.NativeReceipt.InputID != ""
 	if !turnEnded && !policy.SurvivesTurnEnd && !confirmedAdmission {
 		current, storeErr := m.store.Snapshot(ctx, agentID)
 		if storeErr != nil {
@@ -1057,9 +1070,7 @@ func (m *Manager) finishSteerLocked(c *coordinator, ctx context.Context, prepare
 	// A control reply's row is LeapMux's own record, accepted at the steer:
 	// a provider may repeat a steered answer at its own echo long after the
 	// model call that holds it, and the answer's row must not wait for that.
-	// A steer that already returned a NativeReceipt is also confirmed and
-	// accepts directly so the receipt is recorded instead of discarded.
-	if policy.RowAtEcho && !controlReplyKind(prepared.Item.Kind) && !confirmedAdmission {
+	if rowAtEchoSteer {
 		snapshot, persisted, err = m.holdForEcho(c, ctx, prepared)
 	} else {
 		snapshot, persisted, err = m.acceptDispatch(c, ctx, prepared, result)

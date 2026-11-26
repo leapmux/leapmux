@@ -2,6 +2,8 @@ package droid
 
 import (
 	"log/slog"
+	"maps"
+	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -67,7 +69,8 @@ func (a *Agent) releaseEndedOutput(target droidOutputTarget) {
 func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
-	for sessionID, state := range a.outputStates {
+	for _, sessionID := range slices.Sorted(maps.Keys(a.outputStates)) {
+		state := a.outputStates[sessionID]
 		target, known := a.outputTargetFor(sessionID)
 		if !known {
 			target = droidOutputTarget{state: state, childSessionID: sessionID}
@@ -80,7 +83,17 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 		a.flushPendingOutput(target)
 		a.releaseEndedOutput(target)
 	}
-	for _, reply := range a.nativeReplies {
-		a.retireDroidReply(reply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	for _, turnID := range slices.Sorted(maps.Keys(a.nativeReplies)) {
+		if reply := a.nativeReplies[turnID]; reply != nil {
+			a.retireDroidReply(reply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+		}
+	}
+	if len(a.pendingSteers) > 0 {
+		sink := a.orderedSink()
+		for _, messageID := range slices.Sorted(maps.Keys(a.pendingSteers)) {
+			steer := a.pendingSteers[messageID]
+			delete(a.pendingSteers, messageID)
+			a.reportDroidSteer(sink, steer, agent.SteerOutcomeUncertain, agent.NativeInputReceipt{})
+		}
 	}
 }

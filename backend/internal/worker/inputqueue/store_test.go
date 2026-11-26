@@ -187,8 +187,94 @@ func TestStorePrepareSteerForEchoReservesNoSequence(t *testing.T) {
 	var sequence int64
 	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT message_seq_hwm FROM agents WHERE id = ?`, "agent-1").Scan(&sequence))
 	assert.Zero(t, sequence)
-	_, _, err := store.Accept(t.Context(), prepared, DispatchResult{Steering: true})
+	_, _, err := store.Accept(t.Context(), prepared, DispatchResult{
+		StartsTurn: true,
+		Steering:   true,
+		NativeReceipt: agent.NativeInputReceipt{
+			SessionID: "s1",
+			InputID:   "i1",
+			TurnID:    "t1",
+		},
+	})
 	assert.ErrorIs(t, err, ErrConflict)
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT message_seq_hwm FROM agents WHERE id = ?`, "agent-1").Scan(&sequence))
+	assert.Zero(t, sequence)
+	var msgCount int
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages`).Scan(&msgCount))
+	assert.Zero(t, msgCount)
+	var bindingCount int
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM native_agent_inputs`).Scan(&bindingCount))
+	assert.Zero(t, bindingCount)
+	item, _, found, err := store.getItem(t.Context(), database, "agent-1", "steer", false)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, item.State)
+}
+
+func TestStoreAcceptRejectsNonDispatchingItemAndNegativeReservedSeq(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-dispatching item", func(t *testing.T) {
+		t.Parallel()
+		for _, state := range []leapmuxv1.AgentInputState{
+			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED,
+			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED,
+			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN,
+			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO,
+		} {
+			t.Run(state.String(), func(t *testing.T) {
+				t.Parallel()
+				database, store := newStoreFixture(t)
+				_, err := store.Enqueue(t.Context(), NewItem{
+					ID: "in-1", AgentID: "agent-1",
+					Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello",
+				})
+				require.NoError(t, err)
+				prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
+				require.NoError(t, err)
+				require.NotNil(t, prepared)
+				_, err = database.ExecContext(t.Context(), `UPDATE agent_input_queue_items SET state = ? WHERE id = ?`, state, "in-1")
+				require.NoError(t, err)
+				before, err := store.Snapshot(t.Context(), "agent-1")
+				require.NoError(t, err)
+
+				_, _, err = store.Accept(t.Context(), *prepared, DispatchResult{StartsTurn: true})
+				assert.ErrorIs(t, err, ErrConflict)
+				after, err := store.Snapshot(t.Context(), "agent-1")
+				require.NoError(t, err)
+				assert.Equal(t, before, after)
+				var msgCount int
+				require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages`).Scan(&msgCount))
+				assert.Zero(t, msgCount)
+			})
+		}
+	})
+
+	t.Run("negative ReservedSeq", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		_, err := store.Enqueue(t.Context(), NewItem{
+			ID: "in-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello",
+		})
+		require.NoError(t, err)
+		prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
+		require.NoError(t, err)
+		require.NotNil(t, prepared)
+
+		negative := *prepared
+		negative.ReservedSeq = -1
+		_, _, err = store.Accept(t.Context(), negative, DispatchResult{StartsTurn: true})
+		assert.ErrorIs(t, err, ErrConflict)
+
+		var msgCount int
+		require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages`).Scan(&msgCount))
+		assert.Zero(t, msgCount)
+		item, _, found, err := store.getItem(t.Context(), database, "agent-1", "in-1", false)
+		require.NoError(t, err)
+		require.True(t, found)
+		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, item.State)
+	})
 }
 
 func TestStoreHoldForEchoKeepsTheItemAndWritesNoRow(t *testing.T) {

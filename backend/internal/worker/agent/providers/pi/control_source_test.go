@@ -81,6 +81,16 @@ func TestPiQuestionIndexSkipsAQuestionThatTheDialogCannotAsk(t *testing.T) {
 	assert.False(t, matches)
 	_, matches = piQuestionIndex(piQuestionDialog{Method: "select", Title: "Choose", Options: []string{"1. A — first", "2. Other"}}, json.RawMessage(`not json`))
 	assert.False(t, matches)
+
+	dialog := piQuestionDialog{Method: "select", Title: "Choose", Options: []string{"1. A — first", "2. Other"}}
+	for name, rawArgs := range map[string]json.RawMessage{
+		"nil args":   nil,
+		"empty args": {},
+	} {
+		idx, ok := piQuestionIndex(dialog, rawArgs)
+		assert.False(t, ok, name)
+		assert.Zero(t, idx, name)
+	}
 }
 
 func TestPiControlSourceRejectsAmbiguousAndChangedTools(t *testing.T) {

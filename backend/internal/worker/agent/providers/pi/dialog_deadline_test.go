@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -133,12 +134,15 @@ func TestPiExtensionUIRequestHeaderDeadline(t *testing.T) {
 		{timeout: 30000, want: 30 * time.Second},
 		{timeout: 1.5, want: 1500 * time.Microsecond},
 		{timeout: 1e300, want: 0},
-		{timeout: maxPiDialogTimeoutMillis, want: 0},
+		{timeout: providerkit.MaxDialogTimeoutMillis, want: 0},
+		{timeout: math.NaN(), want: 0},
+		{timeout: math.Inf(1), want: 0},
+		{timeout: math.Inf(-1), want: 0},
 	} {
 		assert.Equal(t, tc.want, piExtensionUIRequestHeader{Timeout: tc.timeout}.deadline(), tc.timeout)
 	}
 	// Just below the largest wait that a time.Duration holds, the conversion
 	// stays positive: it does not overflow into a negative wait, which would
 	// read as no deadline.
-	assert.Positive(t, piExtensionUIRequestHeader{Timeout: maxPiDialogTimeoutMillis - 1}.deadline())
+	assert.Positive(t, piExtensionUIRequestHeader{Timeout: providerkit.MaxDialogTimeoutMillis - 1}.deadline())
 }

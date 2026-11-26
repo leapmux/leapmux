@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -167,18 +167,22 @@ func (a *Agent) takeReplyPromptLocked(id string) *ompReplyPrompt {
 func (a *Agent) persistOMPReplyText(c *conversation, content agent.MessageContent) error {
 	var reply *ompReplyPrompt
 	var item agent.NativeReplyItem
-	text, _ := (ompProvider{}).ReplyText(content)
-	if strings.TrimSpace(text) != "" {
-		a.Mu.Lock()
-		if reply = a.conversationReplyLocked(c); reply != nil {
-			reply.ordinal++
-			ordinal := reply.ordinal
-			content.AgentSessionID = reply.receipt.SessionID
-			content.NativeTurnID = reply.receipt.TurnID
-			content.IdempotencyKey = fmt.Sprintf("omp-reply:%s:%d", reply.receipt.TurnID, ordinal)
-			item = agent.NativeReplyItem{Ordinal: ordinal, MessageKey: content.IdempotencyKey}
+	a.Mu.Lock()
+	hasReply := a.conversationReplyLocked(c) != nil
+	a.Mu.Unlock()
+	if hasReply {
+		if _, ok := agent.ReplyText(ompProvider{}, content); ok {
+			a.Mu.Lock()
+			if reply = a.conversationReplyLocked(c); reply != nil {
+				reply.ordinal++
+				ordinal := reply.ordinal
+				content.AgentSessionID = reply.receipt.SessionID
+				content.NativeTurnID = reply.receipt.TurnID
+				content.IdempotencyKey = fmt.Sprintf("omp-reply:%s:%d", reply.receipt.TurnID, ordinal)
+				item = agent.NativeReplyItem{Ordinal: ordinal, MessageKey: content.IdempotencyKey}
+			}
+			a.Mu.Unlock()
 		}
-		a.Mu.Unlock()
 	}
 	err := c.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
 	if reply != nil {
@@ -201,7 +205,7 @@ func (a *Agent) noteUncommittedReply(c *conversation) {
 	}
 	for _, id := range c.generation.ScopeIDs() {
 		kind, text, open := c.generation.ScopeSnapshot(id)
-		if open && kind == agent.AssembledMessageKindText && strings.TrimSpace(text) != "" {
+		if open && kind == agent.AssembledMessageKindText && agent.TrimJavaScriptSpace(text) != "" {
 			a.Mu.Lock()
 			if reply := a.replyOutputLocked(); reply != nil {
 				reply.unproved = true
@@ -251,8 +255,7 @@ func (a *Agent) publishOMPReply(reply *ompReplyPrompt, outcome leapmuxv1.AgentIn
 
 func (a *Agent) publishOMPReplyTo(sink agent.ProviderServices, reply *ompReplyPrompt, outcome leapmuxv1.AgentInputTurnOutcome) {
 	receipt := reply.receipt
-	writer := agent.NewOrderedProviderServices(agent.OutputQueueFor(sink), sink)
-	err := writer.PublishNativeReplyTurn(agent.NativeReplyTurn{
+	err := sink.PublishNativeReplyTurn(agent.NativeReplyTurn{
 		SessionID: receipt.SessionID, TurnID: receipt.TurnID, Outcome: outcome, Items: reply.items,
 		Inputs: reply.inputs,
 	})
@@ -275,8 +278,7 @@ func (a *Agent) retireOMPReplyInputsOn(sink agent.ProviderServices, reply *ompRe
 }
 
 func (a *Agent) retireOMPReply(sink agent.ProviderServices, receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) {
-	writer := agent.NewOrderedProviderServices(agent.OutputQueueFor(sink), sink)
-	if err := writer.RetireNativeInputTurn(receipt, outcome); !agent.OutputRetained(err) {
+	if err := sink.RetireNativeInputTurn(receipt, outcome); !agent.OutputRetained(err) {
 		slog.Warn("Store the Oh My Pi reply outcome", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -288,10 +290,21 @@ func (a *Agent) retireOpenReplies(unreadOutcome agent.SteerOutcome) {
 	a.replyPrompts, a.replyAwaiting, a.replyOutput = nil, nil, nil
 	a.identifiedSteers = nil
 	a.Mu.Unlock()
-	for _, reply := range replies {
-		a.retireOMPReplyInputs(reply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	replyIDs := make([]string, 0, len(replies))
+	for id := range replies {
+		replyIDs = append(replyIDs, id)
 	}
-	for _, steer := range steers {
+	slices.Sort(replyIDs)
+	for _, id := range replyIDs {
+		a.retireOMPReplyInputs(replies[id], leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
+	}
+	steerIDs := make([]string, 0, len(steers))
+	for id := range steers {
+		steerIDs = append(steerIDs, id)
+	}
+	slices.Sort(steerIDs)
+	for _, id := range steerIDs {
+		steer := steers[id]
 		steer.Outcome = unreadOutcome
 		steer.Receipt = agent.NativeInputReceipt{}
 		a.reportOMPSteer(steer)

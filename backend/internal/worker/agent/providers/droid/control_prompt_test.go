@@ -77,7 +77,7 @@ func TestReadControlRequest_DroidStatesTheReasonOfADroidShieldRefusal(t *testing
 		Title:   "Execute",
 		Command: "git push",
 		Reason:  "the diff may hold a secret",
-		Options: agent.AllowDenyOptions(),
+		Options: []*leapmuxv1.PermissionOption{{OptionId: contracts.ControlAnswerOptionDeny, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE}},
 	}}}, got)
 }
 
@@ -137,13 +137,13 @@ func TestReadControlRequest_DroidStatesTheOfferedOptionsWithTheirKinds(t *testin
 	}
 }
 
-// Droid states each option as a wire value and no label, so the prompt names
+// Droid states each option as a wire value and no label, so the prompt labels
 // every option in words: a button and a saved answer read the words, and
 // never a token such as proceed_auto_run_low. The once pair carries no name,
 // because a client words it as its Allow and Deny buttons. A value that this
 // build does not know keeps the value, which is the only word Droid states
 // for it.
-func TestReadControlRequest_DroidNamesEachOptionInWords(t *testing.T) {
+func TestReadControlRequest_DroidLabelsEachOptionInWords(t *testing.T) {
 	t.Parallel()
 	for value, want := range map[string]string{
 		contracts.DroidPermissionOptionProceedOnce:                "",
@@ -160,7 +160,6 @@ func TestReadControlRequest_DroidNamesEachOptionInWords(t *testing.T) {
 		contracts.DroidPermissionOptionProceedNewSessionLow:       "Allow in a new session at autonomy level Low",
 		contracts.DroidPermissionOptionProceedNewSessionMedium:    "Allow in a new session at autonomy level Medium",
 		contracts.DroidPermissionOptionProceedNewSessionHigh:      "Allow in a new session at autonomy level High",
-		contracts.DroidPermissionOptionProceedEdit:                "Allow with an edited spec",
 		contracts.DroidPermissionOptionProceedReportFalsePositive: "Allow and report a false positive",
 		"proceed_later_tier":                                      "proceed_later_tier",
 	} {
@@ -184,6 +183,31 @@ func TestReadControlRequest_DroidAddsARefusalWhenNoOptionCancels(t *testing.T) {
 	require.Len(t, options, 3)
 	assert.Equal(t, contracts.ControlAnswerOptionDeny, options[2].GetOptionId())
 	assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, options[2].GetKind())
+}
+
+func TestReadControlRequest_DroidOnlyUnsupportedInvalidOrNonArrayOptionsOffersSingleDeny(t *testing.T) {
+	t.Parallel()
+	cases := map[string]any{
+		"only proceed_edit":        []any{contracts.DroidPermissionOptionProceedEdit},
+		"only invalid and dropped": []any{"", 7, nil, true, contracts.DroidPermissionOptionProceedEdit},
+		"non-array string":         contracts.DroidPermissionOptionProceedOnce,
+		"non-array number":         42,
+		"non-array object":         map[string]any{"value": contracts.DroidPermissionOptionProceedOnce},
+	}
+	for name, rawOptions := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			permission := agenttest.ControlPromptOf(droidProvider{}, droidJSON(t, map[string]any{
+				"type":    contracts.DroidRequestTypePermission,
+				"toolUse": map[string]any{"name": "Edit"},
+				"options": rawOptions,
+			})).GetPermission()
+			require.NotNil(t, permission)
+			require.Len(t, permission.GetOptions(), 1)
+			assert.Equal(t, contracts.ControlAnswerOptionDeny, permission.GetOptions()[0].GetOptionId())
+			assert.Equal(t, leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE, permission.GetOptions()[0].GetKind())
+		})
+	}
 }
 
 func droidQuestionPrompt(questions ...*leapmuxv1.ControlQuestion) *leapmuxv1.ControlPrompt {
@@ -419,20 +443,16 @@ func TestAnswerControlRequest_DroidRefusesFeedbackBesideAnOptionThatDoesNotRefus
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "an option that Droid did not offer")
 }
 
-// A request that offers no option takes the shared Allow and Deny, as does a
-// payload that the reader does not recognize.
-func TestAnswerControlRequest_DroidRequestWithNoOptionsTakesTheSharedAnswers(t *testing.T) {
+// A request that offers no option takes only Deny, because Droid refuses an
+// unoffered approval while cancel needs no offer.
+func TestAnswerControlRequest_DroidRequestWithNoOptionsTakesOnlyDeny(t *testing.T) {
 	payload := permissionRequestPayload(t, "Edit", "edit")
-	got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-request","response":{"behavior":"allow","updatedInput":{}}}}`, string(got.Content))
+	_, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
+	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 
-	got, err = agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "No."))
+	got, err := agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, "No."))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"droid-request","response":{"behavior":"deny","message":"No."}}}`, string(got.Content))
-
-	_, err = agenttest.AnswerControl(droidProvider{}, payload, droidTestRequestID, agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, "a note"))
-	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
 
 	// A payload outside the permission channel reads as unrecognized, so no
 	// decision answers it.

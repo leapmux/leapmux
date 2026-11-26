@@ -49,6 +49,7 @@ func (a *Agent) finishPiProcessExit() {
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
 	a.closeOpenBgTasks(agent.IncompleteTaskStatus(completion))
+	a.resolveIdentifiedPiSteers(agent.SteerOutcomeUncertain)
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	providerkit.ResetSpansAndProgress(a.sink)
 }

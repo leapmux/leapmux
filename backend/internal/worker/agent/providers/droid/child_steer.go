@@ -47,6 +47,7 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	if err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
+	a.stopChildTail(childKey)
 	receipt, err := child.sendNativeInput(&childKey, input.Content, input.Attachments, droidInputDispatch{
 		mode: droidInputOrdinary,
 	})
@@ -61,11 +62,7 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 // SteerChildInput injects a steered input into an active bound child process
 // and settles the queue item at Droid's native user echo or discard.
 func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
-	mode := droidInputSteer
-	if request.AttemptID == "" {
-		mode = droidInputChildSteer
-	}
-	return agent.NativeInputReceipt{}, a.steerChild(childKey, request, mode)
+	return agent.NativeInputReceipt{}, a.steerChild(childKey, request, droidInputSteer)
 }
 
 // ChildSteerPolicy holds the steer row until echo and retains accepted child

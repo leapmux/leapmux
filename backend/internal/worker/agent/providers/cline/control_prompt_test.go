@@ -106,6 +106,22 @@ func TestClineReadControlRequest_StatesTheCommandsOfACommandApproval(t *testing.
 		"", 3, nil, []any{"ls"}, map[string]any{"command": "", "args": []any{"", 7, "only"}},
 	}})).GetPermission()
 	assert.Equal(t, "only", got.GetCommand(), "an element that states nothing, and an empty part, is no command")
+
+	for _, tc := range []struct {
+		name  string
+		entry map[string]any
+	}{
+		{name: "args missing", entry: map[string]any{"command": "ls"}},
+		{name: "args null", entry: map[string]any{"command": "ls", "args": nil}},
+		{name: "args string", entry: map[string]any{"command": "ls", "args": "-la"}},
+		{name: "args number", entry: map[string]any{"command": "ls", "args": 42}},
+		{name: "args object", entry: map[string]any{"command": "ls", "args": map[string]any{"flag": true}}},
+	} {
+		got = agenttest.ControlPromptOf(clineProvider{}, clinePromptApprovalOf(t, contracts.ClineToolRunCommands, map[string]any{
+			"commands": []any{tc.entry},
+		})).GetPermission()
+		assert.Equal(t, "ls", got.GetCommand(), tc.name)
+	}
 }
 
 // An empty command line is no command, so the decision row draws the

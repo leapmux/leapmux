@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -274,7 +273,7 @@ func (a *Agent) handleAssistantFinished(event hubEvent) {
 	if t == nil {
 		return
 	}
-	if strings.TrimSpace(finished.Text) != "" {
+	if agent.TrimJavaScriptSpace(finished.Text) != "" {
 		a.resolveLeadRetry(t)
 	}
 	a.flushReasoning(t, event.SessionID)
@@ -290,7 +289,7 @@ func (a *Agent) handleAssistantFinished(event hubEvent) {
 	a.Mu.Unlock()
 	sink := a.sinkFor(t)
 	sink.ReportProgress(agent.CompleteModelProgress(t.progressScope("text")))
-	if strings.TrimSpace(finished.Text) == "" {
+	if agent.TrimJavaScriptSpace(finished.Text) == "" {
 		return
 	}
 	a.persistReplyRow(t, event.Raw, completion)
@@ -474,7 +473,7 @@ func (a *Agent) flushPending(t *transcript, sessionID string, completion agent.M
 	t.reasoning.Reset()
 	t.reasoningFlushed = false
 	a.Mu.Unlock()
-	if strings.TrimSpace(text) == "" {
+	if agent.TrimJavaScriptSpace(text) == "" {
 		return
 	}
 	a.persistReplyRow(t, eventRow(sessionID, contracts.ClineEventAssistantFinished, map[string]any{"text": text}), completion)
@@ -489,14 +488,22 @@ func (a *Agent) persistRow(t *transcript, row []byte, completion agent.MessageCo
 }
 
 func (a *Agent) persistReplyRow(t *transcript, row []byte, completion agent.MessageCompletion) {
-	content := agent.MessageContent{Original: row, Completion: completion}
-	_, hasReplyText := (clineProvider{}).ReplyText(content)
-	a.persistTranscriptRow(t, content, hasReplyText)
+	a.persistTranscriptRow(t, agent.MessageContent{Original: row, Completion: completion}, true)
 }
 
-func (a *Agent) persistTranscriptRow(t *transcript, content agent.MessageContent, hasReplyText bool) {
+func (a *Agent) persistTranscriptRow(t *transcript, content agent.MessageContent, checkReplyText bool) {
 	if a.IsDiscardingOutput() {
 		return
+	}
+	hasReplyText := false
+	if checkReplyText {
+		a.Mu.Lock()
+		reply := a.turn.inputReply
+		check := t == a.out.lead && reply.ownsOutput(a.sessionID) && !reply.autonomous
+		a.Mu.Unlock()
+		if check {
+			_, hasReplyText = agent.ReplyText(clineProvider{}, content)
+		}
 	}
 	a.Mu.Lock()
 	reply := a.turn.inputReply
@@ -575,18 +582,8 @@ func trimRunEnd(raw []byte) []byte {
 	}
 	delete(payload, "snapshot")
 	if result, ok := payload["result"]; ok {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(result, &fields) == nil {
-			delete(fields, "messages")
-			delete(fields, "toolCalls")
-			if model, ok := fields["model"]; ok {
-				var info map[string]json.RawMessage
-				if json.Unmarshal(model, &info) == nil {
-					delete(info, "info")
-					fields["model"], _ = json.Marshal(info)
-				}
-			}
-			payload["result"], _ = json.Marshal(fields)
+		if trimmed, _, ok := trimAgentResult(result); ok {
+			payload["result"] = trimmed
 		}
 	}
 	envelope[contracts.ClineEventFieldPayload], _ = json.Marshal(payload)
@@ -620,10 +617,17 @@ func completionOf(reason string, interrupted bool) agent.MessageCompletion {
 func (a *Agent) handleRunEnded(event hubEvent) {
 	var end runEnd
 	_ = json.Unmarshal(event.Payload, &end)
-	nativeEnd := nativeRunEnd{event: event, reason: end.Reason, result: readInputResult(end.Result)}
+	nativeEnd := nativeRunEnd{
+		sessionID:  event.SessionID,
+		eventName:  event.Event,
+		eventID:    event.EventID,
+		trimmedRaw: trimRunEnd(event.Raw),
+		reason:     end.Reason,
+		result:     readInputResult(end.Result),
+	}
 	a.Mu.Lock()
 	if previous := a.detachedReply; previous != nil && previous.receipt.SessionID == event.SessionID && nativeEnd.result.reason != "" &&
-		(previous.end == nil || previous.end.event.EventID == event.EventID) {
+		(previous.end == nil || previous.end.eventID == event.EventID) {
 		if previous.end == nil {
 			previous.end = &nativeEnd
 		}
@@ -652,17 +656,20 @@ func (a *Agent) handleRunEnded(event hubEvent) {
 		}
 		interrupted := a.turn.interruptRequested
 		a.Mu.Unlock()
-		a.endTurnWithOutcome(completionOf(end.Reason, interrupted), trimRunEnd(event.Raw), outcome)
+		a.endTurn(completionOf(end.Reason, interrupted), nativeEnd.trimmedRaw, endTurnOptions{outcome: outcome})
 		return
 	}
 	if reply := a.turn.inputReply; reply.ownsOutput(event.SessionID) && nativeEnd.result.reason != "" && !reply.resultSeen {
 		if reply.end == nil {
 			reply.end = &nativeEnd
-		} else if reply.end.event.EventID != event.EventID {
-			reply.ambiguous = true
+			a.Mu.Unlock()
+			return
 		}
-		a.Mu.Unlock()
-		return
+		if reply.end.eventID == event.EventID {
+			a.Mu.Unlock()
+			return
+		}
+		reply.ambiguous = true
 	}
 	a.Mu.Unlock()
 	a.finishNativeRun(nativeEnd)
@@ -675,7 +682,13 @@ func (a *Agent) finishNativeRun(end nativeRunEnd) {
 	outcome := end.outcome(a.turn.inputReply)
 	interrupted := a.turn.interruptRequested
 	a.Mu.Unlock()
-	a.endTurnWithOutcome(completionOf(end.reason, interrupted), trimRunEnd(end.event.Raw), outcome)
+	a.endTurn(completionOf(end.reason, interrupted), end.trimmedRaw, endTurnOptions{outcome: outcome})
+}
+
+type endTurnOptions struct {
+	outcome   leapmuxv1.AgentInputTurnOutcome
+	successor *inputReply
+	teardown  bool
 }
 
 // endTurn ends the running turn: it withdraws the turn's requests, persists
@@ -691,25 +704,11 @@ func (a *Agent) finishNativeRun(end nativeRunEnd) {
 // A mode change that waited for the turn keeps the flag set with a settling
 // turn, and a goroutine applies the change and then clears it (afterTurn). The
 // input queue holds the next message until the session runs in its new mode.
-func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
-	a.endTurnWithOutcome(completion, row, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED)
-}
-
-func (a *Agent) endTurnWithTeardown(completion agent.MessageCompletion, row []byte, teardown bool) {
-	a.endTurnWithState(completion, row, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED, nil, teardown)
-}
-
-func (a *Agent) endTurnWithOutcome(completion agent.MessageCompletion, row []byte, outcome leapmuxv1.AgentInputTurnOutcome) {
-	a.endTurnWithSuccessor(completion, row, outcome, nil)
-}
-
-// endTurnWithSuccessor keeps the queue active when Cline has already submitted
-// another input. The previous command can return its result during that run.
-func (a *Agent) endTurnWithSuccessor(completion agent.MessageCompletion, row []byte, outcome leapmuxv1.AgentInputTurnOutcome, successor *inputReply) {
-	a.endTurnWithState(completion, row, outcome, successor, false)
-}
-
-func (a *Agent) endTurnWithState(completion agent.MessageCompletion, row []byte, outcome leapmuxv1.AgentInputTurnOutcome, successor *inputReply, teardown bool) {
+// When opts.successor is non-nil, the queue stays active because Cline has
+// already submitted another input while the previous command can still return
+// its result during that run.
+func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte, opts endTurnOptions) {
+	outcome, successor, teardown := opts.outcome, opts.successor, opts.teardown
 	a.leadRetry.Reset()
 	endedAt := a.clock.Now()
 	a.Mu.Lock()
@@ -742,7 +741,7 @@ func (a *Agent) endTurnWithState(completion agent.MessageCompletion, row []byte,
 		content := agent.MessageContent{
 			Original:   row,
 			Completion: completion,
-			Metadata:   rowMetadata(usage, turnDurationMs(turn.startedAt, endedAt)),
+			Metadata:   rowMetadata(usage, providerkit.TurnDurationMillis(turn.startedAt, endedAt)),
 		}
 		a.Mu.Lock()
 		toolUses := a.turn.toolUses
@@ -875,16 +874,6 @@ func rowMetadata(usage map[string]any, durationMs *int64) []byte {
 		return nil
 	}
 	return encoded
-}
-
-// turnDurationMs measures one turn, or nil for a turn with no start or a clock
-// that moved backwards.
-func turnDurationMs(startedAt, endedAt time.Time) *int64 {
-	if startedAt.IsZero() || endedAt.Before(startedAt) {
-		return nil
-	}
-	ms := endedAt.Sub(startedAt).Milliseconds()
-	return &ms
 }
 
 // lastPlanText returns the lead's last answer, which is the plan when the

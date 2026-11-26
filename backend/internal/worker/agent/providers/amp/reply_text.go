@@ -24,7 +24,7 @@ func (ampProvider) ReplyText(message agent.MessageContent) (string, bool) {
 	}
 	var texts []string
 	for _, text := range blocks.Texts {
-		if strings.TrimSpace(text) != "" {
+		if agent.TrimJavaScriptSpace(text) != "" {
 			texts = append(texts, text)
 		}
 	}

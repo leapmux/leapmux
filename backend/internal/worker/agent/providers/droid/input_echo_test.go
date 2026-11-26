@@ -91,20 +91,118 @@ func TestQueuedMessagesDiscardedReportsPendingSteers(t *testing.T) {
 	t.Parallel()
 	a, sink, requests, _ := newDroidInputHarness(t)
 	a.startTurn()
+	type sentSteer struct {
+		messageID string
+		report    agent.SteerResolution
+	}
+	var sent []sentSteer
 	for index, text := range []string{"first", "second"} {
 		done := make(chan error, 1)
 		go func() { done <- agenttest.SteerInput(a, testDroidSteer(index+1, text)) }()
 		request := receiveDroidInput(t, requests)
+		var params addUserMessageParams
+		require.NoError(t, json.Unmarshal(request.Params, &params))
+		require.NotEmpty(t, params.MessageID)
+		sent = append(sent, sentSteer{
+			messageID: params.MessageID,
+			report:    testDroidSteerReport(index+1, agent.SteerOutcomeDropped, agent.NativeInputReceipt{}),
+		})
 		answerDroidInput(t, a, request.ID, false)
 		require.NoError(t, <-done)
 	}
+	want := []agent.SteerResolution{sent[0].report, sent[1].report}
+	if sent[0].messageID > sent[1].messageID {
+		want = []agent.SteerResolution{sent[1].report, sent[0].report}
+	}
 	a.HandleOutput(droidAuditNotification(t, "", []byte(`{"type":"queued_messages_discarded","text":"first\nsecond"}`)))
-	assert.ElementsMatch(t, []agent.SteerResolution{
-		testDroidSteerReport(1, agent.SteerOutcomeDropped, agent.NativeInputReceipt{}),
-		testDroidSteerReport(2, agent.SteerOutcomeDropped, agent.NativeInputReceipt{}),
-	}, sink.SteerResolutions())
+	assert.Equal(t, want, sink.SteerResolutions())
+	a.dispatchMu.Lock()
+	assert.Empty(t, a.pendingSteers)
+	a.dispatchMu.Unlock()
 	assert.Empty(t, sink.PersistedNotifications())
 	assert.Empty(t, sink.Messages())
+}
+
+func TestOnQueuedMessagesDiscardedSelectiveNonMatchingAndChildTarget(t *testing.T) {
+	t.Parallel()
+
+	t.Run("selective requestId drops only matching steer", func(t *testing.T) {
+		t.Parallel()
+		a, sink, requests, _ := newDroidInputHarness(t)
+		a.startTurn()
+		var sent []droidEnvelope
+		for index, text := range []string{"first", "second"} {
+			done := make(chan error, 1)
+			go func() { done <- agenttest.SteerInput(a, testDroidSteer(index+1, text)) }()
+			request := receiveDroidInput(t, requests)
+			sent = append(sent, request)
+			answerDroidInput(t, a, request.ID, false)
+			require.NoError(t, <-done)
+		}
+
+		payload := fmt.Sprintf(`{"type":"queued_messages_discarded","requestId":%q,"text":"first"}`, sent[0].ID)
+		a.HandleOutput(droidAuditNotification(t, "", []byte(payload)))
+		assert.Equal(t, []agent.SteerResolution{
+			testDroidSteerReport(1, agent.SteerOutcomeDropped, agent.NativeInputReceipt{}),
+		}, sink.SteerResolutions())
+		assert.Empty(t, sink.PersistedNotifications())
+		a.dispatchMu.Lock()
+		assert.Len(t, a.pendingSteers, 1)
+		a.dispatchMu.Unlock()
+
+		// The remaining pending steer still settles cleanly on echo.
+		a.HandleOutput(droidAuditNotification(t, "", droidInputEcho(t, sent[1])))
+		assert.Equal(t, []agent.SteerResolution{
+			testDroidSteerReport(1, agent.SteerOutcomeDropped, agent.NativeInputReceipt{}),
+			testDroidSteerEcho(t, sent[1], 2),
+		}, sink.SteerResolutions())
+	})
+
+	t.Run("non-matching requestId persists notification and keeps pending steer", func(t *testing.T) {
+		t.Parallel()
+		a, sink, requests, _ := newDroidInputHarness(t)
+		a.startTurn()
+		done := make(chan error, 1)
+		go func() { done <- agenttest.SteerInput(a, testDroidSteer(1, "keep me")) }()
+		request := receiveDroidInput(t, requests)
+		answerDroidInput(t, a, request.ID, false)
+		require.NoError(t, <-done)
+
+		payload := `{"type":"queued_messages_discarded","requestId":"unrelated-request","text":"other"}`
+		a.HandleOutput(droidAuditNotification(t, "", []byte(payload)))
+		assert.Empty(t, sink.SteerResolutions())
+		a.dispatchMu.Lock()
+		assert.Len(t, a.pendingSteers, 1)
+		a.dispatchMu.Unlock()
+		require.Len(t, sink.PersistedNotifications(), 1)
+		assert.JSONEq(t, payload, string(sink.PersistedNotifications()[0].Content))
+	})
+
+	t.Run("child target persists notification to child without dropping root steer", func(t *testing.T) {
+		t.Parallel()
+		a, sink, requests, _ := newDroidInputHarness(t)
+		a.startTurn()
+		done := make(chan error, 1)
+		go func() { done <- agenttest.SteerInput(a, testDroidSteer(1, "root steer")) }()
+		request := receiveDroidInput(t, requests)
+		answerDroidInput(t, a, request.ID, false)
+		require.NoError(t, <-done)
+
+		a.HandleOutput([]byte(droidChildAvailable))
+		row, ok := sink.BackgroundTask("child-1")
+		require.True(t, ok)
+
+		payload := `{"type":"queued_messages_discarded","text":"child queued"}`
+		a.HandleOutput(droidAuditNotification(t, "child-1", []byte(payload)))
+		assert.Empty(t, sink.SteerResolutions())
+		assert.Empty(t, sink.PersistedNotifications())
+		a.dispatchMu.Lock()
+		assert.Len(t, a.pendingSteers, 1)
+		a.dispatchMu.Unlock()
+		childNotifs := sink.Child(row.ChildAgentID).PersistedNotifications()
+		require.Len(t, childNotifs, 1)
+		assert.JSONEq(t, payload, string(childNotifs[0].Content))
+	})
 }
 
 func TestQueueSnapshotDoesNotSettlePendingSteer(t *testing.T) {

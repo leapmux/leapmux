@@ -415,13 +415,19 @@ func (a *Agent) finishCascadeOutput(state *cascadeState, completion agent.Messag
 	active := a.cascadeInstalledLocked(state) && state.turnPhase == cascadeTurnActive
 	a.Mu.Unlock()
 	if active {
-		return a.endTurnWithTeardown(state, completion, true)
+		if err := a.endTurnWithTeardown(state, completion, true); err != nil {
+			a.finishInputReplies(state, false, completion)
+			return err
+		}
+		return nil
 	}
 	if !a.IsDiscardingOutput() {
 		if err := a.flushOpenSteps(state, completion, true); err != nil {
+			a.finishInputReplies(state, false, completion)
 			return err
 		}
 	}
+	a.finishInputReplies(state, false, completion)
 	providerkit.ResetSpansAndProgress(state.sink)
 	return nil
 }
@@ -435,7 +441,6 @@ func (a *Agent) finishCascades(states []*cascadeState, completion agent.MessageC
 			if err := a.finishCascadeOutput(state, completion); err != nil {
 				slog.Error("antigravity finish child output", "agent_id", a.AgentID(), "error", err)
 			}
-			a.finishInputReplies(state, false, completion)
 			a.closeChildRow(state, status)
 			a.Mu.Lock()
 			seq := a.NextTurnSeq()
@@ -449,7 +454,6 @@ func (a *Agent) finishCascades(states []*cascadeState, completion agent.MessageC
 		if err := a.finishCascadeOutput(root, completion); err != nil {
 			slog.Error("antigravity finish root output", "agent_id", a.AgentID(), "error", err)
 		}
-		a.finishInputReplies(root, false, completion)
 	}
 }
 

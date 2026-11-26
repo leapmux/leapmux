@@ -2,6 +2,7 @@ package ohmypi
 
 import (
 	"log/slog"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -74,9 +75,7 @@ func (a *Agent) observeOMPChildUserMessage(c *conversation, inputID string) {
 }
 
 func (a *Agent) finishOMPChildReplyAtYield(c *conversation, env agentEndEnvelope, end bool) {
-	yielded := env.Yielded != nil && *env.Yielded ||
-		end && env.Yielded == nil && (env.IsTerminal == nil || *env.IsTerminal)
-	if !yielded {
+	if !env.yielded(end) {
 		return
 	}
 	a.Mu.Lock()
@@ -123,7 +122,13 @@ func (a *Agent) retireOMPChildInputs(c *conversation) {
 	if reply != nil {
 		a.retireOMPReplyInputsOn(c.sink, reply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 	}
-	for _, input := range pending {
+	inputIDs := make([]string, 0, len(pending))
+	for inputID := range pending {
+		inputIDs = append(inputIDs, inputID)
+	}
+	slices.Sort(inputIDs)
+	for _, inputID := range inputIDs {
+		input := pending[inputID]
 		if input.steer.InputID == "" {
 			a.retireOMPReply(c.sink, input.receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 			continue

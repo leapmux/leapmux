@@ -511,3 +511,159 @@ func TestResolveControlResponseRefusesAnUnknownRequestType(t *testing.T) {
 	require.True(t, resolution.Withhold)
 	assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableRequest)
 }
+
+func TestDroidControlPromptAndResolverConsistency(t *testing.T) {
+	t.Parallel()
+	t.Run("proceed_edit is not offered and is refused", func(t *testing.T) {
+		t.Parallel()
+		payload := permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit,
+			contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionProceedEdit, contracts.DroidPermissionOptionCancel)
+		prompt := agenttest.ControlPromptOf(droidProvider{}, payload)
+		require.NotNil(t, prompt.GetPermission())
+		var optionIDs []string
+		for _, opt := range prompt.GetPermission().GetOptions() {
+			optionIDs = append(optionIDs, opt.GetOptionId())
+		}
+		assert.Equal(t, []string{contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionCancel}, optionIDs)
+		_, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1",
+			agenttest.PermissionDecision(contracts.DroidPermissionOptionProceedEdit, ""))
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	})
+
+	t.Run("confirmationType classifies plan in both ReadControlRequest and resolver", func(t *testing.T) {
+		t.Parallel()
+		payload := permissionRequestPayload(t, "CustomReview", contracts.DroidConfirmationTypeExitSpecMode,
+			contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionProceedAutoRunHigh, contracts.DroidPermissionOptionCancel)
+		prompt := agenttest.ControlPromptOf(droidProvider{}, payload)
+		require.NotNil(t, prompt.GetPlan())
+		answer, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1",
+			agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true, PermissionMode: contracts.DroidModeAutoHigh}))
+		require.NoError(t, err)
+		resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-1", answer)
+		require.NoError(t, resolution.Refusal())
+		assert.Equal(t, agent.PlanModeControlExit, resolution.PlanModeControl)
+		_, raw := replyResult(t, resolution)
+		assert.JSONEq(t, `{"selectedOption":"proceed_auto_run_high"}`, string(raw))
+	})
+
+	t.Run("custom tool with propose_mission confirmationType classifies as plan", func(t *testing.T) {
+		t.Parallel()
+		payload, err := json.Marshal(map[string]any{
+			"type":             contracts.DroidRequestTypePermission,
+			"requestId":        "droid-perm-mission",
+			"rpcId":            "rpc-mission",
+			"toolUse":          map[string]any{"type": "tool_use", "id": "m1", "name": "CustomProposal", "input": map[string]any{}},
+			"confirmationType": contracts.DroidConfirmationTypeProposeMission,
+			"details":          map[string]any{"type": contracts.DroidConfirmationTypeProposeMission, "proposal": "# Proposal"},
+			"options":          []string{contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionProceedAutoRunHigh, contracts.DroidPermissionOptionCancel},
+		})
+		require.NoError(t, err)
+
+		prompt := agenttest.ControlPromptOf(droidProvider{}, payload)
+		require.NotNil(t, prompt.GetPlan())
+		assert.Equal(t, "# Proposal", prompt.GetPlan().GetText())
+
+		withMode, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-mission",
+			agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true, PermissionMode: contracts.DroidModeAutoHigh}))
+		require.NoError(t, err)
+		refused := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-mission", withMode)
+		assert.True(t, refused.Withhold)
+		assert.Equal(t, agent.PlanModeControlExit, refused.PlanModeControl)
+		assert.EqualError(t, refused.Refusal(), "this Factory Droid confirmation cannot apply the selected plan permission mode")
+
+		withoutMode, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-mission",
+			agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: true}))
+		require.NoError(t, err)
+		approved := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-mission", withoutMode)
+		require.NoError(t, approved.Refusal())
+		assert.Equal(t, agent.PlanModeControlExit, approved.PlanModeControl)
+		id, raw := replyResult(t, approved)
+		assert.Equal(t, "rpc-mission", id)
+		assert.JSONEq(t, `{"selectedOption":"proceed_once"}`, string(raw))
+	})
+
+	t.Run("plan tool names with non-plan confirmationType stay permissions", func(t *testing.T) {
+		t.Parallel()
+		for _, toolName := range []string{contracts.DroidToolExitSpecMode, contracts.DroidToolProposeMission} {
+			for _, confirmationType := range []string{contracts.DroidConfirmationTypeEdit, ""} {
+				t.Run(toolName+"/"+confirmationType, func(t *testing.T) {
+					t.Parallel()
+					payload := permissionRequestPayload(t, toolName, confirmationType,
+						contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionCancel)
+					prompt := agenttest.ControlPromptOf(droidProvider{}, payload)
+					require.NotNil(t, prompt.GetPermission())
+					assert.Nil(t, prompt.GetPlan())
+					assert.Equal(t, toolName, prompt.GetPermission().GetTitle())
+
+					answer, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1",
+						agenttest.PermissionDecision(contracts.DroidPermissionOptionProceedOnce, ""))
+					require.NoError(t, err)
+					resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-1", answer)
+					require.NoError(t, resolution.Refusal())
+					assert.Equal(t, agent.PlanModeControlNone, resolution.PlanModeControl)
+					_, raw := replyResult(t, resolution)
+					assert.JSONEq(t, `{"selectedOption":"proceed_once"}`, string(raw))
+				})
+			}
+		}
+	})
+
+	t.Run("empty options offers only deny and resolves empty feedback to cancel", func(t *testing.T) {
+		t.Parallel()
+		payload := permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit)
+		options := agenttest.ControlPromptOf(droidProvider{}, payload).GetPermission().GetOptions()
+		require.Len(t, options, 1)
+		assert.Equal(t, contracts.ControlAnswerOptionDeny, options[0].GetOptionId())
+		_, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1",
+			agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""))
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+
+		denyAnswer, err := agenttest.AnswerControl(droidProvider{}, payload, "droid-perm-1",
+			agenttest.PermissionDecision(contracts.ControlAnswerOptionDeny, ""))
+		require.NoError(t, err)
+		resolution := agenttest.ResolveAnswer(droidProvider{}, payload, "droid-perm-1", denyAnswer)
+		require.NoError(t, resolution.Refusal())
+		_, raw := replyResult(t, resolution)
+		assert.JSONEq(t, `{"selectedOption":"cancel"}`, string(raw))
+		assert.Empty(t, resolution.FollowUp)
+	})
+}
+
+func TestDecodeControlInnerResponseAndMalformedInnerRefusal(t *testing.T) {
+	t.Parallel()
+	assert.JSONEq(t, `{}`, string(agent.DecodeControlInnerResponse([]byte(`{"response":{"request_id":"droid-perm-1"}}`))))
+	assert.JSONEq(t, `{}`, string(agent.DecodeControlInnerResponse([]byte(`{"response":{"request_id":"droid-perm-1","response":{}}}`))))
+	assert.JSONEq(t, `{}`, string(agent.DecodeControlInnerResponse([]byte(`not json`))))
+	assert.Equal(t, `"not-an-object"`, string(agent.DecodeControlInnerResponse([]byte(`{"response":{"request_id":"droid-perm-1","response":"not-an-object"}}`))))
+
+	offered := []string{contracts.DroidPermissionOptionProceedOnce, contracts.DroidPermissionOptionCancel}
+	allowed, err := droidPermissionReply(offered, true, json.RawMessage(`{}`), "")
+	require.NoError(t, err)
+	assert.Equal(t, contracts.DroidPermissionOptionProceedOnce, allowed.SelectedOption)
+
+	denied, err := droidPermissionReply(offered, false, json.RawMessage(`{}`), "")
+	require.NoError(t, err)
+	assert.Equal(t, contracts.DroidPermissionOptionCancel, denied.SelectedOption)
+
+	for _, malformed := range []string{`"not-an-object"`, `[]`, `123`, `{"selectedOption":42}`} {
+		_, err := droidPermissionReply(offered, true, json.RawMessage(malformed), "")
+		assert.EqualError(t, err, agent.RefusalUnreadableAnswer, malformed)
+	}
+
+	questions := []droidStoredQuestion{{Index: 1, Question: "Which color?"}}
+	for _, malformed := range []string{`"not-an-object"`, `[]`, `123`} {
+		_, err := droidAnswersInQuestionOrder(questions, json.RawMessage(malformed))
+		assert.EqualError(t, err, agent.RefusalUnreadableAnswer, malformed)
+	}
+
+	// Through droidResolveControlResponse, an unreadable selectedOption inside an
+	// allow envelope is refused as unreadable rather than silently defaulted.
+	permReq := permissionRequestPayload(t, "Edit", contracts.DroidConfirmationTypeEdit, offered...)
+	resolution := droidResolveControlResponse(agent.ControlResponseContext{
+		RequestID:       "droid-perm-1",
+		RequestPayload:  permReq,
+		ResponseContent: []byte(`{"response":{"request_id":"droid-perm-1","response":{"behavior":"allow","selectedOption":7}}}`),
+	})
+	assert.True(t, resolution.Withhold)
+	assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableAnswer)
+}

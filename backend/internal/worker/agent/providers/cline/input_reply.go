@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // inputReply follows one explicit lead input. The receipt is set before the
@@ -33,26 +34,56 @@ func (r *inputReply) ownsOutput(sessionID string) bool {
 }
 
 type nativeRunEnd struct {
-	event  hubEvent
-	reason string
-	result inputResult
+	sessionID  string
+	eventName  string
+	eventID    string
+	trimmedRaw []byte
+	reason     string
+	result     inputResult
 }
 
 // inputResult identifies the AgentResult that Cline serializes in both the
-// native run end and the command reply. Keep only its digest and finish reason.
+// native run end and the command reply. Keep only its canonical digest and
+// finish reason.
 type inputResult struct {
 	reason string
 	digest [sha256.Size]byte
 }
 
-func readInputResult(raw json.RawMessage) inputResult {
-	var result struct {
-		FinishReason string `json:"finishReason"`
+// trimAgentResult drops conversation history, tool calls, and static model
+// metadata from an AgentResult JSON object so both persisted turn-end rows and
+// canonical result digests skip unbounded replay payloads.
+func trimAgentResult(raw json.RawMessage) (json.RawMessage, string, bool) {
+	fields, ok := providerkit.RawObject(raw)
+	if !ok {
+		return nil, "", false
 	}
-	if json.Unmarshal(raw, &result) != nil || result.FinishReason == "" {
+	finishReason := providerkit.ObjectString(fields, "finishReason")
+	delete(fields, "messages")
+	delete(fields, "toolCalls")
+	if model, ok := providerkit.RawObject(fields["model"]); ok {
+		delete(model, "info")
+		if encoded, err := json.Marshal(model); err == nil {
+			fields["model"] = encoded
+		}
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return nil, "", false
+	}
+	return encoded, finishReason, true
+}
+
+func readInputResult(raw json.RawMessage) inputResult {
+	trimmed, reason, ok := trimAgentResult(raw)
+	if !ok || reason == "" {
 		return inputResult{}
 	}
-	return inputResult{reason: result.FinishReason, digest: sha256.Sum256(raw)}
+	digest, err := agent.JSONCanonicalDigest(trimmed)
+	if err != nil {
+		return inputResult{}
+	}
+	return inputResult{reason: reason, digest: digest}
 }
 
 // recordInputResult pairs the command reply with the native run end, in
@@ -84,11 +115,11 @@ func (a *Agent) recordInputResult(sessionID, requestID string, result inputResul
 }
 
 func (end nativeRunEnd) outcome(reply *inputReply) leapmuxv1.AgentInputTurnOutcome {
-	if !reply.ownsOutput(end.event.SessionID) || !reply.resultSeen ||
+	if !reply.ownsOutput(end.sessionID) || !reply.resultSeen ||
 		end.result.reason == "" || end.reason != end.result.reason || reply.result != end.result {
 		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 	}
-	switch end.event.Event {
+	switch end.eventName {
 	case contracts.ClineEventRunCompleted:
 		switch end.reason {
 		case contracts.ClineRunReasonCompleted, contracts.ClineRunReasonMaxIterations:

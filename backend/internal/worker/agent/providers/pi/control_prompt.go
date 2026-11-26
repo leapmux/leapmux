@@ -56,15 +56,12 @@ var piPlanActions = []string{
 type piControlPayload map[string]json.RawMessage
 
 func readPiControlPayload(payload []byte) piControlPayload {
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(payload, &fields)
-	return fields
+	return providerkit.RawFields(payload)
 }
 
 // text returns the string field key, or "" when it is absent or no string.
 func (p piControlPayload) text(key string) string {
-	value, _ := providerkit.RawString(p[key])
-	return value
+	return providerkit.ObjectString(p, key)
 }
 
 func (p piControlPayload) method() string { return p.text("method") }
@@ -103,20 +100,34 @@ func (p piControlPayload) isPlanApproval() bool {
 	return true
 }
 
-// planOptions returns the options of a select, and false unless each one is
-// a non-blank string that no other option repeats.
-func (p piControlPayload) planOptions() ([]string, bool) {
+// strictStringOptions decodes a JSON array where every element is a string.
+func strictStringOptions(raw json.RawMessage) ([]string, bool) {
 	var elements []json.RawMessage
-	if json.Unmarshal(p["options"], &elements) != nil {
+	if json.Unmarshal(raw, &elements) != nil {
 		return nil, false
 	}
 	options := make([]string, 0, len(elements))
 	for _, element := range elements {
 		option, ok := providerkit.RawString(element)
-		if !ok || strings.TrimSpace(option) == "" || slices.Contains(options, option) {
+		if !ok {
 			return nil, false
 		}
 		options = append(options, option)
+	}
+	return options, true
+}
+
+// planOptions returns the options of a select, and false unless each one is
+// a non-blank string that no other option repeats.
+func (p piControlPayload) planOptions() ([]string, bool) {
+	options, ok := strictStringOptions(p["options"])
+	if !ok {
+		return nil, false
+	}
+	for i, option := range options {
+		if strings.TrimSpace(option) == "" || slices.Contains(options[:i], option) {
+			return nil, false
+		}
 	}
 	return options, true
 }
@@ -125,17 +136,7 @@ func (p piControlPayload) planOptions() ([]string, bool) {
 // another type is dropped: Pi sends only strings, but the stored payload is
 // read as untrusted.
 func (p piControlPayload) selectOptions() []string {
-	var elements []json.RawMessage
-	if json.Unmarshal(p["options"], &elements) != nil {
-		return nil
-	}
-	options := make([]string, 0, len(elements))
-	for _, element := range elements {
-		if option, ok := providerkit.RawString(element); ok {
-			options = append(options, option)
-		}
-	}
-	return options
+	return providerkit.RawStrings(p["options"])
 }
 
 // ReadControlRequest reads Pi's extension_ui_request into a question, the
@@ -154,7 +155,7 @@ func (piProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1
 	case payload.isQuestion():
 		return &leapmuxv1.ControlPrompt{
 			Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-				Questions: piQuestions(payload, piQuestionFromSource(payload, piSourceFrame(input))),
+				Questions: piQuestions(payload, piQuestionFromSource(payload, providerkit.ReadSourceObject(input))),
 			}},
 			// The composer's text is the custom answer: no question of Pi's
 			// refuses typed text.
@@ -231,25 +232,6 @@ func piDialogVariant(method string) leapmuxv1.DialogVariant {
 	}
 }
 
-// piSourceFrame reads the transcript row that the request came from, as one
-// JSON object, or nil when the request states no row. The Worker points a
-// question at the start frame of its ask_user_question call. That frame is
-// never a notification, so it never sits inside a notification thread.
-func piSourceFrame(input agent.ControlRequestInput) map[string]json.RawMessage {
-	if input.Source == nil {
-		return nil
-	}
-	row, ok := input.Source()
-	if !ok {
-		return nil
-	}
-	var frame map[string]json.RawMessage
-	if json.Unmarshal(row.Original, &frame) != nil {
-		return nil
-	}
-	return frame
-}
-
 // piSourceOption is one option of a question, as the arguments of the
 // ask_user_question call state it.
 type piSourceOption struct {
@@ -309,15 +291,22 @@ func piQuestionFromSource(dialog piControlPayload, frame map[string]json.RawMess
 	if tool, _ := providerkit.RawString(frame["toolName"]); tool != contracts.PiToolAskUserQuestion {
 		return nil
 	}
-	var args map[string]json.RawMessage
-	if json.Unmarshal(frame["args"], &args) != nil {
+	args := frame["args"]
+	if len(args) == 0 {
+		args = frame["input"]
+	}
+	return matchPiSourceQuestion(dialog.dialogView(), args)
+}
+
+func matchPiSourceQuestion(view piDialogView, rawArgs json.RawMessage) *piSourceQuestion {
+	args := providerkit.RawFields(rawArgs)
+	if args == nil {
 		return nil
 	}
 	var questions []json.RawMessage
 	if json.Unmarshal(args["questions"], &questions) != nil {
 		return nil
 	}
-	view := dialog.dialogView()
 	var match *piSourceQuestion
 	for index, raw := range questions {
 		question := readPiSourceQuestion(index, raw)
@@ -395,15 +384,19 @@ type piDialogView struct {
 // dialogView reads what matches compares of the request.
 func (p piControlPayload) dialogView() piDialogView {
 	view := piDialogView{method: p.method(), title: p.text("title"), placeholder: p.text("placeholder"), optionsOK: true}
+	if len(p["options"]) == 0 {
+		return view
+	}
+	options, ok := strictStringOptions(p["options"])
+	if ok {
+		view.options = options
+		return view
+	}
+	// Match existing behavior: non-array options yield empty options with optionsOK=true;
+	// only an array containing a non-string element sets optionsOK=false.
 	var offered []json.RawMessage
-	_ = json.Unmarshal(p["options"], &offered)
-	for _, raw := range offered {
-		option, ok := providerkit.RawString(raw)
-		if !ok {
-			view.optionsOK = false
-			break
-		}
-		view.options = append(view.options, option)
+	if json.Unmarshal(p["options"], &offered) == nil {
+		view.optionsOK = false
 	}
 	return view
 }
@@ -551,7 +544,7 @@ func piQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, erro
 		question = questions[0]
 	}
 	value := piQuestionAnswerValue(question, agent.QuestionAnswerAt(decision, 0))
-	if readPiControlPayload(input.Request.Payload).method() == contracts.PiDialogMethodSelect && strings.TrimSpace(value) == "" {
+	if readPiControlPayload(input.Request.Payload).method() == contracts.PiDialogMethodSelect && agent.TrimJavaScriptSpace(value) == "" {
 		return piCancelResponse(input.RequestID).answer()
 	}
 	return piValueResponse(input.RequestID, value).answer()
@@ -629,7 +622,7 @@ func piPlanAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 		return piValueResponse(input.RequestID, decision.GetChoiceId()).answer()
 	default:
 		answer, err := piValueResponse(input.RequestID, contracts.PiPlanActionStay).answer()
-		if err == nil && strings.TrimSpace(feedback) != "" {
+		if err == nil && agent.TrimJavaScriptSpace(feedback) != "" {
 			answer.FollowUp = feedback
 		}
 		return answer, err

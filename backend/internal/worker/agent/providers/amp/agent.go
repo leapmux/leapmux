@@ -32,7 +32,6 @@ import (
 type Agent struct {
 	agentID string
 	sink    agent.ProviderServices
-	steers  providerkit.SteerLedger
 	launch  launchConfig
 	bridge  *permissionBridge
 	// dir is the agent's private directory, whose path launch.stateDir holds.
@@ -118,7 +117,18 @@ type Agent struct {
 	lastStderr string
 
 	shellPollerWG sync.WaitGroup
-	discard       atomic.Bool
+	replyWorkWG   sync.WaitGroup
+	exportWG      sync.WaitGroup
+	exportGen     atomic.Uint64
+	exportMu      sync.Mutex
+	activeExports map[string]*ampInFlightExport
+
+	steerWorkMu      sync.Mutex
+	steerWorkQueue   []func()
+	steerWorkRunning bool
+	steerWorkWG      sync.WaitGroup
+
+	discard atomic.Bool
 	// done closes when Stop finishes.
 	done     chan struct{}
 	stopOnce sync.Once
@@ -157,6 +167,9 @@ type turnState struct {
 	// toolUses counts the tool results of the turn. The turn-end row carries it
 	// together with the calls that the turn outlived (see endTurn).
 	toolUses int
+	// untrackedFrames counts assistant frames persisted before a post-turn steer
+	// echo installed turn.reply.
+	untrackedFrames int
 }
 
 // openTool is one tool call that started and did not end.
@@ -247,11 +260,7 @@ var _ agent.SteerSurvivor = (*Agent)(nil)
 // SteerInput adds a message to the running turn. Amp queues it on its server
 // and inserts it at the turn's next interruption point, after the running tool.
 func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
-	requestID := ""
-	if request.InputID != "" && request.AttemptID != "" {
-		requestID = id.Generate()
-	}
-	return a.sendInput(nil, request.Content, request.Attachments, &request, requestID)
+	return a.sendInput(nil, request.Content, request.Attachments, &request, id.Generate())
 }
 
 // sendInput writes one user line.
@@ -266,7 +275,7 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 // write, so the queue holds the next message behind this one from the moment
 // it leaves.
 func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer *agent.SteerRequest, requestID string) (agent.NativeInputReceipt, error) {
-	line, texts, err := buildUserLine(content, attachments, steer != nil, requestID)
+	line, err := buildUserLine(content, attachments, steer != nil, requestID)
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
@@ -295,32 +304,27 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 			return agent.NativeInputReceipt{}, agent.ErrSteeringUnsupported
 		}
 		var resolution agent.SteerResolution
-		var baseline *ampThreadExport
-		if requestID == "" {
-			baseline, err = a.steerBaseline()
-			if err != nil {
-				return agent.NativeInputReceipt{}, err
-			}
-		} else {
+		if steer.InputID != "" && steer.AttemptID != "" {
 			resolution = agent.SteerResolution{
 				InputID: steer.InputID, AttemptID: steer.AttemptID,
 				Receipt: agent.NativeInputReceipt{SessionID: threadID, InputID: ampNativeInputID(requestID)},
 			}
 		}
-		submission, err := a.rememberSteer(proc, threadID, ampEchoKey(texts), baseline, resolution)
+		submission, err := a.rememberSteer(proc, threadID, resolution)
 		if err != nil {
 			return agent.NativeInputReceipt{}, err
 		}
-		if err := proc.writeLine(line); err != nil && a.forgetUnconsumedSteer(submission) {
+		if err := proc.writeLine(line); err != nil && (submission == nil || a.forgetUnconsumedSteer(submission)) {
 			return agent.NativeInputReceipt{}, err
 		}
-		return resolution.Receipt, nil
+		a.bumpExportGen()
+		return agent.NativeInputReceipt{}, nil
 	}
 	if active {
 		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 
-	proc, err = a.processForTurn(proc, requestID != "")
+	proc, err = a.processForTurn(proc)
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
@@ -329,6 +333,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.disarmTurn()
 		return agent.NativeInputReceipt{}, err
 	}
+	a.bumpExportGen()
 	a.lockMode(proc)
 	return receipt, nil
 }
@@ -340,7 +345,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 // is on its way out, and Amp's server refuses a second executor on the same
 // thread ("already open and active in another Amp"). So the new process starts
 // only once the old one is gone.
-func (a *Agent) processForTurn(proc *ampProcess, trackReply bool) (*ampProcess, error) {
+func (a *Agent) processForTurn(proc *ampProcess) (*ampProcess, error) {
 	if proc != nil && !proc.ending() {
 		// A new turn in a running process: start checks the workspace for a
 		// new process, and this checks it for the turn.
@@ -361,14 +366,18 @@ func (a *Agent) processForTurn(proc *ampProcess, trackReply bool) (*ampProcess, 
 	if active {
 		return nil, agent.ErrAgentBusy
 	}
-	if threadID == "" && trackReply {
+	if err := a.checkWorkspace(); err != nil {
+		return nil, err
+	}
+	var settingsPath string
+	if threadID == "" {
 		var err error
-		threadID, err = a.createReplyThread(config)
+		threadID, settingsPath, err = a.createReplyThread(config)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return a.start(threadID, config)
+	return a.startWithSettings(threadID, config, settingsPath)
 }
 
 // start starts one process for threadID, or for a new thread in mode when
@@ -377,16 +386,20 @@ func (a *Agent) processForTurn(proc *ampProcess, trackReply bool) (*ampProcess, 
 // It checks the workspace first, because a process loads the workspace's
 // settings and plugins as soon as it starts (see checkWorkspace).
 func (a *Agent) start(threadID string, config threadConfiguration) (*ampProcess, error) {
-	if err := a.checkUncertainThread(threadID); err != nil {
+	if err := a.checkWorkspace(); err != nil {
 		return nil, err
 	}
-	if err := a.checkWorkspace(); err != nil {
+	return a.startWithSettings(threadID, config, "")
+}
+
+func (a *Agent) startWithSettings(threadID string, config threadConfiguration, settingsPath string) (*ampProcess, error) {
+	if err := a.checkUncertainThread(threadID); err != nil {
 		return nil, err
 	}
 	if a.startFn != nil {
 		return a.startFn(threadID, config)
 	}
-	return a.startProcess(threadID, config)
+	return a.startProcess(threadID, config, settingsPath)
 }
 
 // awaitExit waits for a process that is on its way out, and for its exit
@@ -607,6 +620,9 @@ func (a *Agent) stop() {
 	}
 	a.drainAndResetOpenTools(completion)
 	a.outputMu.Unlock()
+	a.steerWorkWG.Wait()
+	a.replyWorkWG.Wait()
+	a.exportWG.Wait()
 	a.retireStoppedTrackedSteers()
 	a.closeAllShellRows(shellStatus)
 	providerkit.RemoveAgentDir("amp", a.agentID, a.dir)

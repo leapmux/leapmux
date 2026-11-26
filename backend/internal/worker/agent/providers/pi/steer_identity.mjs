@@ -4,46 +4,70 @@ import { AgentSession } from '@earendil-works/pi-coding-agent'
 const bridge = Symbol.for('leapmux.pi.steerIdentity')
 
 function attachInputIdentity() {
-  const prompt = AgentSession.prototype.prompt
-  if (AgentSession.prototype[bridge] === configuration.capability)
+  const existing = AgentSession.prototype[bridge]
+  if (existing && typeof existing === 'object') {
+    existing.config = configuration
     return
+  }
+  const state = { config: configuration }
+  const prompt = AgentSession.prototype.prompt
   const owner = new AsyncLocalStorage()
   const linked = new WeakSet()
   const marker = Symbol('leapmux prompt identity')
   function tag(session, message) {
     const active = owner.getStore()
-    if (active?.session !== session || !active.input || active.input.used || message.role !== 'user')
+    if (
+      active?.session !== session ||
+      !active.input ||
+      active.input.used ||
+      !message ||
+      typeof message !== 'object' ||
+      message.role !== 'user'
+    ) {
       return message
+    }
     active.input.used = true
-    return { ...message, [configuration.messageField]: active.input.id }
+    message[state.config.messageField] = active.input.id
+    return message
   }
-  AgentSession.prototype.prompt = function (text, options) {
+  AgentSession.prototype.prompt = function (text, options, ...rest) {
+    const config = state.config
     let input = options?.[marker]
-    if (!input && options?.source === 'rpc' && options.streamingBehavior === 'steer' && text.startsWith(configuration.prefix)) {
-      const boundary = text.indexOf('\n', configuration.prefix.length)
-      const id = boundary < 0 ? '' : text.slice(configuration.prefix.length, boundary)
-      if (id.length === configuration.idLength && /^[A-Za-z0-9]+$/.test(id)) {
+    if (
+      !input &&
+      typeof text === 'string' &&
+      options?.source === 'rpc' &&
+      options.streamingBehavior === 'steer' &&
+      text.startsWith(config.prefix)
+    ) {
+      const boundary = text.indexOf('\n', config.prefix.length)
+      const id = boundary < 0 ? '' : text.slice(config.prefix.length, boundary)
+      if (id.length === config.idLength && /^[A-Za-z0-9]+$/.test(id)) {
         input = { id, used: false }
         options = { ...options, [marker]: input }
         text = text.slice(boundary + 1)
       }
     }
-    if (input && !linked.has(this)) {
+    if (input) {
       const session = this
-      if (typeof session.agent?.steer !== 'function' || typeof session.agent.prompt !== 'function')
+      const currentAgent = session.agent
+      if (!currentAgent || typeof currentAgent.steer !== 'function' || typeof currentAgent.prompt !== 'function')
         throw new Error('Pi does not expose a queue for steer identity.')
-      const steer = session.agent.steer.bind(session.agent)
-      const run = session.agent.prompt.bind(session.agent)
-      session.agent.steer = message => steer(tag(session, message))
-      session.agent.prompt = (messages, ...rest) => run(
-        Array.isArray(messages) ? messages.map(message => tag(session, message)) : messages, ...rest,
-      )
-      linked.add(this)
+      if (!linked.has(currentAgent)) {
+        const steer = currentAgent.steer.bind(currentAgent)
+        const run = currentAgent.prompt.bind(currentAgent)
+        currentAgent.steer = (message, ...steerRest) => steer(tag(session, message), ...steerRest)
+        currentAgent.prompt = (messages, ...promptRest) => run(
+          Array.isArray(messages) ? messages.map(message => tag(session, message)) : tag(session, messages),
+          ...promptRest,
+        )
+        linked.add(currentAgent)
+      }
     }
     // Start a fresh scope for extension-generated inputs, including nested prompts.
-    return owner.run({ session: this, input }, () => prompt.call(this, text, options))
+    return owner.run({ session: this, input }, () => prompt.call(this, text, options, ...rest))
   }
-  Object.defineProperty(AgentSession.prototype, bridge, { value: configuration.capability })
+  Object.defineProperty(AgentSession.prototype, bridge, { value: state, configurable: true, writable: true })
 }
 
 export default function (pi) {

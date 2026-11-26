@@ -349,3 +349,43 @@ func TestPiIdleInterruptSerializedWithHandleOutput(t *testing.T) {
 		a.Stop()
 	})
 }
+
+func TestPiStopAndWaitResolvePendingIdentifiedSteersOnce(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Stop resolves pending identifiedSteers as uncertain with empty receipt and Wait does not duplicate", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.identifiedSteers = map[string]agent.SteerResolution{
+			"native-b": {InputID: "in-b", AttemptID: "att-b", Receipt: agent.NativeInputReceipt{SessionID: "sess", InputID: "native-b"}},
+			"native-a": {InputID: "in-a", AttemptID: "att-a", Receipt: agent.NativeInputReceipt{SessionID: "sess", InputID: "native-a"}},
+		}
+		a.SimulateExitForTest()
+		a.Stop()
+		_ = a.Wait()
+
+		assert.Equal(t, []agent.SteerResolution{
+			{InputID: "in-a", AttemptID: "att-a", Outcome: agent.SteerOutcomeUncertain},
+			{InputID: "in-b", AttemptID: "att-b", Outcome: agent.SteerOutcomeUncertain},
+		}, sink.SteerResolutions())
+	})
+
+	t.Run("Wait resolves pending identifiedSteers as uncertain with empty receipt and Stop does not duplicate", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.identifiedSteers = map[string]agent.SteerResolution{
+			"native-2": {InputID: "in-2", AttemptID: "att-2", Receipt: agent.NativeInputReceipt{SessionID: "sess", InputID: "native-2"}},
+			"native-1": {InputID: "in-1", AttemptID: "att-1", Receipt: agent.NativeInputReceipt{SessionID: "sess", InputID: "native-1"}},
+		}
+		a.SimulateExitForTest()
+		_ = a.Wait()
+		a.Stop()
+
+		assert.Equal(t, []agent.SteerResolution{
+			{InputID: "in-1", AttemptID: "att-1", Outcome: agent.SteerOutcomeUncertain},
+			{InputID: "in-2", AttemptID: "att-2", Outcome: agent.SteerOutcomeUncertain},
+		}, sink.SteerResolutions())
+	})
+}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // RawKind distinguishes an absent field from JSON null and other values.
@@ -101,6 +103,20 @@ func RawObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
 func RawFields(raw json.RawMessage) map[string]json.RawMessage {
 	fields, _ := RawObject(raw)
 	return fields
+}
+
+// ReadSourceObject reads the transcript row linked to a control request as a
+// JSON object map, or returns nil when no source row exists or its original
+// content is not a JSON object.
+func ReadSourceObject(input agent.ControlRequestInput) map[string]json.RawMessage {
+	if input.Source == nil {
+		return nil
+	}
+	row, ok := input.Source()
+	if !ok {
+		return nil
+	}
+	return RawFields(row.Original)
 }
 
 // RawArray reads a JSON array into its elements. Any other value, JSON null

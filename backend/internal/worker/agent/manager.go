@@ -656,9 +656,21 @@ func (m *Manager) SteerInput(agentID string, request SteerRequest) (NativeInputR
 	}
 	receipt, err := steerer.SteerInput(request)
 	if err == nil {
+		if reporter, ok := p.(SteerEchoReporter); ok {
+			receipt, err = validateSteerReceipt(reporter.SteerRowAtEcho(), receipt)
+		}
+	}
+	if err == nil {
 		observeGoalCommand(p, GoalDeliverySteer, request.Content)
 	}
 	return receipt, err
+}
+
+func validateSteerReceipt(rowAtEcho bool, receipt NativeInputReceipt) (NativeInputReceipt, error) {
+	if rowAtEcho && (receipt.SessionID != "" || receipt.InputID != "" || receipt.TurnID != "") {
+		return NativeInputReceipt{}, fmt.Errorf("%w: SteerRowAtEcho provider returned a synchronous native input receipt", ErrDeliveryUncertain)
+	}
+	return receipt, nil
 }
 
 // SteerPolicy reads the running provider's constant steering declarations.
@@ -698,6 +710,11 @@ func SteerInputToSession(provider Agent, sessionID string, request SteerRequest)
 		return NativeInputReceipt{}, ErrSteeringUnsupported
 	}
 	receipt, err := steerer.SteerInputForSession(sessionID, request)
+	if err == nil {
+		if reporter, ok := provider.(SteerEchoReporter); ok {
+			receipt, err = validateSteerReceipt(reporter.SteerRowAtEcho(), receipt)
+		}
+	}
 	if err == nil {
 		observeGoalCommand(provider, GoalDeliverySteer, request.Content)
 	}
@@ -835,7 +852,11 @@ func (m *Manager) SteerChildInput(rootAgentID, childKey string, request SteerReq
 	if !ok {
 		return NativeInputReceipt{}, ErrChildOperationUnsupported
 	}
-	return steerer.SteerChildInput(childKey, request)
+	receipt, err := steerer.SteerChildInput(childKey, request)
+	if err == nil {
+		receipt, err = validateSteerReceipt(steerer.ChildSteerPolicy().RowAtEcho, receipt)
+	}
+	return receipt, err
 }
 
 // ChildSteerPolicy reads the owner's declarations for its child queues.

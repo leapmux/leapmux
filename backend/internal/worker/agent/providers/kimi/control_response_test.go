@@ -377,18 +377,70 @@ func TestKimiResolveQuestion(t *testing.T) {
 func TestKimiResolveWithholdsWhatItCannotRead(t *testing.T) {
 	t.Parallel()
 
+	allow := []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow"}}}`)
 	for name, tc := range map[string]struct {
 		stored  string
 		content []byte
+		refusal string
 	}{
-		"no decision":                      {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{}}}`)},
-		"an unknown behavior":              {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"maybe"}}}`)},
-		"a stored request of another kind": {`{"type":"tool.call.started","interaction_id":"approval_1"}`, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow"}}}`)},
-		"fields of the wrong type":         {kimiStoredApproval, []byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow","scope":7}}}`)},
+		"no decision": {
+			kimiStoredApproval,
+			[]byte(`{"response":{"request_id":"approval_1","response":{}}}`),
+			agent.RefusalNoDecision,
+		},
+		"an unknown behavior": {
+			kimiStoredApproval,
+			[]byte(`{"response":{"request_id":"approval_1","response":{"behavior":"maybe"}}}`),
+			agent.RefusalNoDecision,
+		},
+		"fields of the wrong type": {
+			kimiStoredApproval,
+			[]byte(`{"response":{"request_id":"approval_1","response":{"behavior":"allow","scope":7}}}`),
+			agent.RefusalUnreadableAnswer,
+		},
+		"a stored request of another kind": {
+			`{"type":"tool.call.started","interaction_id":"approval_1"}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"absent inner request": {
+			`{"type":"interaction","kind":"approval","status":"pending","interaction_id":"approval_1"}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"null inner request": {
+			`{"type":"interaction","kind":"approval","status":"pending","interaction_id":"approval_1","request":null}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"resolved status": {
+			`{"type":"interaction","kind":"approval","status":"resolved","interaction_id":"approval_1","request":{"tool_name":"Bash"}}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"empty status": {
+			`{"type":"interaction","kind":"approval","status":"","interaction_id":"approval_1","request":{"tool_name":"Bash"}}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
+		"unknown interaction kind": {
+			`{"type":"interaction","kind":"unknown","status":"pending","interaction_id":"approval_1","request":{"tool_name":"Bash"}}`,
+			allow,
+			agent.RefusalUnreadableRequest,
+		},
 	} {
 		res := resolve(t, "approval_1", tc.stored, tc.content, nil)
-		assert.True(t, res.Withhold, name)
+		require.True(t, res.Withhold, name)
+		assert.EqualError(t, res.Refusal(), tc.refusal, name)
 	}
+
+	// Malformed JSON ResponseContent has no request_id, so invoke
+	// ResolveControlResponse directly to pin Kimi's own guard.
+	malformed := kimiProvider{}.ResolveControlResponse(agenttest.ControlResponseContextOf(
+		[]byte(kimiStoredApproval), "approval_1", agent.ControlAnswer{Content: []byte(`{not json`)},
+	))
+	require.True(t, malformed.Withhold)
+	assert.EqualError(t, malformed.Refusal(), agent.RefusalNoDecision)
 }
 
 func TestKimiPlanExitMode(t *testing.T) {

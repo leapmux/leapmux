@@ -175,8 +175,7 @@ func decodeProviderSettings(data []byte) (storedProviderSettings, error) {
 		return storedProviderSettings{}, errors.New("the file holds no JSON object")
 	}
 	// A JSON number, as JavaScript compares it: `1.0` is 1 too.
-	var version float64
-	if raw, present := envelope["version"]; !present || json.Unmarshal(raw, &version) != nil || version != 1 {
+	if version, ok := providerkit.RawFloat64(envelope["version"]); !ok || version != 1 {
 		return storedProviderSettings{}, errors.New("`version` is not 1")
 	}
 	stored := storedProviderSettings{models: make(map[string]string)}

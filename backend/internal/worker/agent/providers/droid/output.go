@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -20,13 +21,7 @@ import (
 // marker for Droid. The browser interrupts through the InterruptAgent call; the
 // frame is for a caller of SendAgentRawMessage.
 func isDroidRawInterrupt(content []byte) bool {
-	var head struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(content, &head); err != nil {
-		return false
-	}
-	return head.Type == "interrupt"
+	return providerkit.StringField(content, "type") == "interrupt"
 }
 
 // HandleOutput feeds one stdout line into the dispatcher.
@@ -733,9 +728,12 @@ func (a *Agent) commitAssistantMessage(target droidOutputTarget, messageID strin
 			continue
 		}
 		key := droidMessageWriteKey(messageID, block.index)
-		retained := a.enqueueOutput(target, agent.MessageContent{Original: block.raw, IdempotencyKey: key}, agent.SpanInfo{}, droidOutputMessage)
+		content := agent.MessageContent{Original: block.raw, IdempotencyKey: key}
+		retained := a.enqueueOutput(target, content, agent.SpanInfo{}, droidOutputMessage)
 		if reply != nil && block.kind == agent.AssembledMessageKindText {
-			reply.recordText(key, retained)
+			if _, visible := agent.ReplyText(droidProvider{}, content); visible {
+				reply.recordText(key, retained)
+			}
 		}
 	}
 	return true
@@ -1047,6 +1045,9 @@ func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 	active := a.turnActive
 	a.Mu.Unlock()
 	if active {
+		if a.currentReply != nil {
+			a.retireDroidReply(a.currentReply, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+		}
 		a.endTurn()
 		if a.onTurnEnd != nil {
 			a.onTurnEnd(bgtask.StatusFailed)

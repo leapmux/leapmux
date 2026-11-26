@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -158,7 +159,7 @@ func TestPiQuestionWriteFailureCannotRestoreClearedState(t *testing.T) {
 		done <- a.SendRawInput(agent.RawInput{Data: []byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`)})
 	}()
 	<-writer.entered
-	a.discardIncompletePiTools()
+	a.discardIncompletePiToolsWithStatus(bgtask.StatusStopped)
 	close(writer.release)
 	require.Error(t, <-done)
 	assert.Empty(t, a.questionDialogs)

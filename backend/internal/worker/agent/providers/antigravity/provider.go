@@ -3,6 +3,7 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -51,19 +52,48 @@ func (antigravityProvider) PlanApprovalOptions(permissionMode string) map[string
 	return map[string]string{agent.OptionIDPermissionMode: permissionMode}
 }
 
-func (antigravityProvider) ControlResponseRequestID(content []byte) string {
-	var response struct {
-		CascadeID   string `json:"cascadeId"`
-		Interaction struct {
-			TrajectoryID string `json:"trajectoryId"`
-			StepIndex    int    `json:"stepIndex"`
-		} `json:"interaction"`
+type antigravityControlReply struct {
+	cascadeID      string
+	interactionRaw json.RawMessage
+	address        antigravityAddress
+}
+
+func decodeAntigravityControlReply(data []byte) (antigravityControlReply, error) {
+	var envelope struct {
+		CascadeID   string          `json:"cascadeId"`
+		Interaction json.RawMessage `json:"interaction"`
 	}
-	if err := json.Unmarshal(content, &response); err == nil {
-		address := antigravityAddress{cascadeID: response.CascadeID, trajectoryID: response.Interaction.TrajectoryID, stepIndex: response.Interaction.StepIndex}
-		if address.valid() {
-			return address.requestID()
-		}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.CascadeID == "" {
+		return antigravityControlReply{}, errors.New("the Antigravity control answer is malformed")
+	}
+	if _, ok := providerkit.RawObject(envelope.Interaction); !ok {
+		return antigravityControlReply{}, errors.New("the Antigravity control answer has no interaction object")
+	}
+	var address struct {
+		TrajectoryID string `json:"trajectoryId"`
+		StepIndex    *int   `json:"stepIndex"`
+	}
+	if err := json.Unmarshal(envelope.Interaction, &address); err != nil || address.StepIndex == nil {
+		return antigravityControlReply{}, errors.New("the Antigravity control answer has a malformed interaction address")
+	}
+	parsed := antigravityAddress{
+		cascadeID:    envelope.CascadeID,
+		trajectoryID: address.TrajectoryID,
+		stepIndex:    *address.StepIndex,
+	}
+	if !parsed.valid() {
+		return antigravityControlReply{}, errors.New("the Antigravity control answer states no valid step address")
+	}
+	return antigravityControlReply{
+		cascadeID:      envelope.CascadeID,
+		interactionRaw: envelope.Interaction,
+		address:        parsed,
+	}, nil
+}
+
+func (antigravityProvider) ControlResponseRequestID(content []byte) string {
+	if reply, err := decodeAntigravityControlReply(content); err == nil {
+		return reply.address.requestID()
 	}
 	return agent.ProviderDefaults{}.ControlResponseRequestID(content)
 }
@@ -108,11 +138,7 @@ func (p antigravityProvider) ResolveControlResponse(ctx agent.ControlResponseCon
 		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
-	var response struct {
-		CascadeID   string         `json:"cascadeId"`
-		Interaction map[string]any `json:"interaction"`
-	}
-	if err := json.Unmarshal(ctx.ResponseContent, &response); err != nil || response.CascadeID == "" || response.Interaction == nil {
+	if _, err := decodeAntigravityControlReply(ctx.ResponseContent); err != nil {
 		// AnswerControlRequest answers each request of the language server
 		// natively. So this guard refuses only an answer that it did not
 		// build, such as the shared envelope, which the language server

@@ -69,8 +69,18 @@ func TestReadControlRequest_AntigravityRoutesAPlanReviewToThePlan(t *testing.T) 
 	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{
 		Text: "# Complete native plan\n\n1. Inspect the source.",
 	}}}, agenttest.ControlPromptOf(antigravityProvider{}, antigravityPlanReviewPayload(t, "# Complete native plan\n\n1. Inspect the source.")))
-	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}},
-		agenttest.ControlPromptOf(antigravityProvider{}, antigravityJSON(t, map[string]any{"request": map[string]any{"tool_name": contracts.AntigravityControlToolPlanReview}})))
+	for _, payload := range []string{
+		`{"request":{"tool_name":"AntigravityPlanReview"}}`,
+		`{"request":{"tool_name":"AntigravityPlanReview","input":"not-an-object"}}`,
+		`{"request":{"tool_name":"AntigravityPlanReview","input":[]}}`,
+		`{"request":{"tool_name":"AntigravityPlanReview","input":null}}`,
+		`{"request":{"tool_name":"AntigravityPlanReview","input":{"planContent":123}}}`,
+		`{"request":{"tool_name":"AntigravityPlanReview","input":{"planContent":{}}}}`,
+		`{"request":{"tool_name":"AntigravityPlanReview","input":{"planContent":null}}}`,
+	} {
+		agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}},
+			agenttest.ControlPromptOf(antigravityProvider{}, []byte(payload)), payload)
+	}
 }
 
 func TestReadControlRequest_AntigravityReadsAPermissionForItsResource(t *testing.T) {
@@ -123,7 +133,12 @@ func TestReadControlRequest_AntigravityReadsAnotherInteractionAsAPermission(t *t
 // publishes, and an answer would guess what its step asks, so it reads as
 // unrecognized.
 func TestReadControlRequest_AntigravityAnotherPayloadIsUnrecognized(t *testing.T) {
-	for _, payload := range []string{`{}`, `not json`, `{"requestedInteraction":"permission"}`, `{"requestedInteraction":null}`, `{"request":{"tool_name":"run_command"}}`} {
+	for _, payload := range []string{
+		`{}`, `not json`, `"text"`, `[1]`, `null`, `42`,
+		`{"requestedInteraction":"permission"}`, `{"requestedInteraction":null}`,
+		`{"request":"plan"}`, `{"request":[]}`, `{"request":null}`,
+		`{"request":{"tool_name":"run_command"}}`,
+	} {
 		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(antigravityProvider{}, []byte(payload)), payload)
 	}
 	for name, payload := range antigravityPayloadsWithNoInteraction(t) {

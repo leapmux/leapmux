@@ -379,7 +379,7 @@ func (b *permissionBridge) answer(requestID, instanceID string, decision helperD
 	pending, ok := b.pending[requestID]
 	if !ok {
 		b.mu.Unlock()
-		return fmt.Errorf("the Amp permission request %s no longer waits for an answer", requestID)
+		return fmt.Errorf("%w: the Amp permission request %s no longer waits for an answer", agent.ErrControlRequestNotPending, requestID)
 	}
 	if err := agent.ControlInstanceRefusal(pending.instanceID, instanceID); err != nil {
 		b.mu.Unlock()

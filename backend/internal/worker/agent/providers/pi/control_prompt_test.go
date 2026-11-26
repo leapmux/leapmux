@@ -751,3 +751,216 @@ func TestPiDialogResponse_EncodesEachAnswerShape(t *testing.T) {
 		assert.JSONEq(t, tc.want, string(got.Content), name)
 	}
 }
+
+func TestReadControlRequest_QuestionSourceFallsBackToInputField(t *testing.T) {
+	t.Parallel()
+	payload := []byte(`{"type":"extension_ui_request","id":"select","method":"select","title":"[Mode] Choose","options":["1. A — first","2. B — second","3. Type something."]}`)
+	frame := []byte(`{"type":"tool_execution_start","toolCallId":"q-1","toolName":"ask_user_question","input":{"questions":[{"question":"Choose","header":"Mode","options":[{"label":"A","description":"first","preview":"preview-a"},{"label":"B","description":"second"}]}]}}`)
+	input := agent.NewControlRequestInput(payload)
+	input.Source = func() (agent.MessageContent, bool) { return agent.MessageContent{Original: frame}, true }
+	prompt := piProvider{}.ReadControlRequest(input)
+	require.Len(t, prompt.GetQuestion().GetQuestions(), 1)
+	q := prompt.GetQuestion().GetQuestions()[0]
+	assert.Equal(t, "Mode", q.GetHeader())
+	require.Len(t, q.GetOptions(), 2)
+	assert.Equal(t, "preview-a", q.GetOptions()[0].GetPreview())
+}
+
+func TestAnswerControlRequest_UsesJavaScriptWhitespaceForNELAndBOM(t *testing.T) {
+	t.Parallel()
+	// U+0085 (NEL) is non-whitespace in JS trim; U+FEFF (BOM) is whitespace in JS trim.
+	selectPayload := map[string]any{"type": "extension_ui_request", "id": "req-1", "method": "select", "title": "Pick", "options": []any{"A"}}
+	nelAnswer, err := answerPi(t, selectPayload, nil, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{CustomText: "\u0085"}))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"extension_ui_response","id":"req-1","value":"\u0085"}`, string(nelAnswer.Content))
+
+	planPayload := piPlanMenu("Proposed plan ready. What next?", []any{"Implement here", "Start fresh and implement", "Stay in Plan mode"})
+	planNEL, err := answerPi(t, planPayload, nil, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: false, Feedback: "\u0085"}))
+	require.NoError(t, err)
+	assert.Equal(t, "\u0085", planNEL.FollowUp)
+
+	planBOM, err := answerPi(t, planPayload, nil, agenttest.PlanDecision(&leapmuxv1.PlanDecision{Approve: false, Feedback: "\uFEFF"}))
+	require.NoError(t, err)
+	assert.Empty(t, planBOM.FollowUp)
+}
+
+func TestPiStrictStringOptionsAndDialogView(t *testing.T) {
+	t.Parallel()
+
+	t.Run("strictStringOptions", func(t *testing.T) {
+		t.Parallel()
+		opts, ok := strictStringOptions(json.RawMessage(`["A","B"]`))
+		assert.True(t, ok)
+		assert.Equal(t, []string{"A", "B"}, opts)
+
+		opts, ok = strictStringOptions(json.RawMessage(`[]`))
+		assert.True(t, ok)
+		assert.Empty(t, opts)
+
+		opts, ok = strictStringOptions(json.RawMessage(`null`))
+		assert.True(t, ok)
+		assert.Empty(t, opts)
+
+		for name, raw := range map[string]string{
+			"non-string element": `["A", 42]`,
+			"null element":       `["A", null]`,
+			"string non-array":   `"bad"`,
+			"object non-array":   `{}`,
+			"absent":             ``,
+		} {
+			opts, ok := strictStringOptions(json.RawMessage(raw))
+			assert.False(t, ok, name)
+			assert.Nil(t, opts, name)
+		}
+	})
+
+	t.Run("dialogView", func(t *testing.T) {
+		t.Parallel()
+		withNonString := readPiControlPayload([]byte(`{"type":"extension_ui_request","method":"select","title":"Pick","options":["A",42]}`)).dialogView()
+		assert.False(t, withNonString.optionsOK)
+		assert.Empty(t, withNonString.options)
+
+		for name, optionsJSON := range map[string]string{
+			"string non-array": `"bad"`,
+			"object non-array": `{}`,
+			"null":             `null`,
+			"empty array":      `[]`,
+		} {
+			view := readPiControlPayload([]byte(`{"type":"extension_ui_request","method":"select","title":"Pick","options":` + optionsJSON + `}`)).dialogView()
+			assert.True(t, view.optionsOK, name)
+			assert.Empty(t, view.options, name)
+		}
+	})
+}
+
+func TestPiPlanOptionsValidation(t *testing.T) {
+	t.Parallel()
+
+	whitespace := readPiControlPayload(piJSON(t, piPlanMenu("Proposed plan ready. What next?", []any{
+		"Implement here", "Start fresh and implement", "Stay in Plan mode", "  \t\n ",
+	})))
+	_, ok := whitespace.planOptions()
+	assert.False(t, ok, "whitespace-only option must be rejected")
+	assert.False(t, whitespace.isPlanApproval())
+
+	absent := readPiControlPayload([]byte(`{"type":"extension_ui_request","id":"plan","method":"select","title":"Proposed plan ready. What next?"}`))
+	_, ok = absent.planOptions()
+	assert.False(t, ok, "absent options must be rejected")
+	assert.False(t, absent.isPlanApproval())
+
+	nullOpts := readPiControlPayload([]byte(`{"type":"extension_ui_request","id":"plan","method":"select","title":"Proposed plan ready. What next?","options":null}`))
+	opts, _ := nullOpts.planOptions()
+	assert.Empty(t, opts)
+	assert.False(t, nullOpts.isPlanApproval(), "null options must not match plan approval")
+}
+
+func TestReadControlRequest_QuestionSourceFallbackOnMissingOrNonObjectSource(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"type":"extension_ui_request","id":"select","method":"select","title":"[Mode] Choose","options":["1. A — first","2. B — second","3. Type something."]}`)
+
+	for name, source := range map[string]func() (agent.MessageContent, bool){
+		"source returns false": func() (agent.MessageContent, bool) {
+			return agent.MessageContent{Original: []byte(`{"type":"tool_execution_start"}`)}, false
+		},
+		"array json": func() (agent.MessageContent, bool) {
+			return agent.MessageContent{Original: []byte(`[{"type":"tool_execution_start"}]`)}, true
+		},
+		"string json": func() (agent.MessageContent, bool) {
+			return agent.MessageContent{Original: []byte(`"not-an-object"`)}, true
+		},
+		"malformed json": func() (agent.MessageContent, bool) {
+			return agent.MessageContent{Original: []byte(`{bad`)}, true
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			input := agent.NewControlRequestInput(payload)
+			input.Source = source
+			prompt := piProvider{}.ReadControlRequest(input)
+			require.Len(t, prompt.GetQuestion().GetQuestions(), 1)
+			q := prompt.GetQuestion().GetQuestions()[0]
+			assert.Equal(t, "[Mode] Choose", q.GetQuestion(), "must fall back to dialog title")
+			assert.Empty(t, q.GetHeader())
+			require.Len(t, q.GetOptions(), 3, "dialog-only fallback retains all three raw select options")
+			assert.Equal(t, "1. A — first", q.GetOptions()[0].GetLabel())
+		})
+	}
+}
+
+func TestPiQuestionFromSource_ArgsAndInputPrecedence(t *testing.T) {
+	t.Parallel()
+
+	dialog := readPiControlPayload([]byte(`{"type":"extension_ui_request","id":"select","method":"select","title":"[Mode] Choose","options":["1. A — first","2. Type something."]}`))
+
+	t.Run("args wins over input when both are present", func(t *testing.T) {
+		t.Parallel()
+		frame := map[string]json.RawMessage{
+			"type":     json.RawMessage(`"tool_execution_start"`),
+			"toolName": json.RawMessage(`"ask_user_question"`),
+			"args":     json.RawMessage(`{"questions":[{"question":"Choose","header":"Mode","options":[{"label":"A","description":"first","preview":"from-args"}]}]}`),
+			"input":    json.RawMessage(`{"questions":[{"question":"Choose","header":"Mode","options":[{"label":"A","description":"first","preview":"from-input"}]}]}`),
+		}
+		got := piQuestionFromSource(dialog, frame)
+		require.NotNil(t, got)
+		require.Len(t, got.options, 1)
+		assert.Equal(t, "from-args", got.options[0].preview)
+	})
+
+	t.Run("explicit null args does not fall back to input", func(t *testing.T) {
+		t.Parallel()
+		frame := map[string]json.RawMessage{
+			"type":     json.RawMessage(`"tool_execution_start"`),
+			"toolName": json.RawMessage(`"ask_user_question"`),
+			"args":     json.RawMessage(`null`),
+			"input":    json.RawMessage(`{"questions":[{"question":"Choose","header":"Mode","options":[{"label":"A","description":"first"}]}]}`),
+		}
+		assert.Nil(t, piQuestionFromSource(dialog, frame))
+	})
+
+	t.Run("neither args nor input returns nil", func(t *testing.T) {
+		t.Parallel()
+		frame := map[string]json.RawMessage{
+			"type":     json.RawMessage(`"tool_execution_start"`),
+			"toolName": json.RawMessage(`"ask_user_question"`),
+		}
+		assert.Nil(t, piQuestionFromSource(dialog, frame))
+	})
+}
+
+func TestAnswerControlRequest_SelectWhitespaceCancelsAndRejectsBlankCustomText(t *testing.T) {
+	t.Parallel()
+
+	selectPayload := map[string]any{
+		"type":    "extension_ui_request",
+		"id":      "req-1",
+		"method":  "select",
+		"title":   "Pick",
+		"options": []any{"\uFEFF", " ", "\u0085"},
+	}
+
+	for name, option := range map[string]string{
+		"BOM option":   "\uFEFF",
+		"space option": " ",
+	} {
+		t.Run(name+" cancels select dialog", func(t *testing.T) {
+			t.Parallel()
+			got, err := answerPi(t, selectPayload, nil, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{option}}))
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"type":"extension_ui_response","id":"req-1","cancelled":true}`, string(got.Content))
+		})
+	}
+
+	t.Run("NEL option sends value", func(t *testing.T) {
+		t.Parallel()
+		got, err := answerPi(t, selectPayload, nil, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"\u0085"}}))
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"type":"extension_ui_response","id":"req-1","value":"\u0085"}`, string(got.Content))
+	})
+
+	t.Run("BOM custom text is rejected as invalid decision", func(t *testing.T) {
+		t.Parallel()
+		_, err := answerPi(t, selectPayload, nil, agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{CustomText: "\uFEFF"}))
+		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision)
+	})
+}

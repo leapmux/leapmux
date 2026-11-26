@@ -3,6 +3,7 @@ package ohmypi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync"
@@ -665,13 +666,16 @@ func TestOhMyPiIdleInterruptSerializedWithHandleFrame(t *testing.T) {
 		t.Parallel()
 		for range 5 {
 			r := newRig(t)
-			gate := &ompGateSink{
-				ProviderServices: r.agent.sink,
-				entered:          make(chan struct{}),
-				release:          make(chan struct{}),
-				d1Canceled:       make(chan struct{}),
-			}
-			r.agent.sink = gate
+			var gate *ompGateSink
+			r.agent.sink = agent.DecorateProviderServices(r.agent.sink, func(base agent.ProviderServices) agent.ProviderServices {
+				gate = &ompGateSink{
+					ProviderServices: base,
+					entered:          make(chan struct{}),
+					release:          make(chan struct{}),
+					d1Canceled:       make(chan struct{}),
+				}
+				return gate
+			})
 			// Publish an idle dialog so Interrupt signals d1Canceled right before entering the idle cleanup section.
 			r.emit(`{"type":"extension_ui_request","id":"dlg-idle","method":"confirm","title":"Continue?"}`)
 
@@ -722,4 +726,280 @@ func TestOhMyPiIdleInterruptSerializedWithHandleFrame(t *testing.T) {
 		wg.Wait()
 		r.agent.Stop()
 	})
+}
+
+func TestSendIdentifiedSteerLockedPaths(t *testing.T) {
+	t.Parallel()
+
+	enableBridge := func(r *rig) {
+		r.agent.steerBridge = ompSteerBridge{Capability: "steer-ready", Prefix: "steer-prefix:"}
+		r.emit(`{"type":"available_commands_update","commands":[{"name":"steer-ready","source":"extension"}]}`,
+			`{"type":"agent_start"}`)
+	}
+
+	t.Run("timeout returns ErrDeliveryUncertain and preserves identifiedSteers", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		enableBridge(r)
+		r.awaitStatsRead()
+		ctx := testutil.DeadlineContext(t)
+		ack := r.clock.Trap().NewTimer(ompPromptAckTimerTag)
+		defer ack.Close()
+		r.respond(func(command recordedCommand) *rigReply {
+			if command.Type == CommandPrompt {
+				return &rigReply{Skip: true}
+			}
+			return nil
+		})
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- agenttest.SteerInput(r.agent, agent.SteerRequest{
+				Content: "Slow steer.", InputID: "steer-to", AttemptID: "att-to",
+			})
+		}()
+		assert.Equal(t, promptAckTimeout, testutil.WaitForTimer(t, ctx, ack))
+		r.clock.Advance(promptAckTimeout).MustWait(ctx)
+
+		err := <-errCh
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.ErrorContains(t, err, "within 10s")
+
+		cmds := r.commandsOfType(CommandPrompt)
+		require.Len(t, cmds, 1)
+		r.agent.Mu.Lock()
+		_, kept := r.agent.identifiedSteers[cmds[0].ID]
+		r.agent.Mu.Unlock()
+		assert.True(t, kept, "timeout must preserve identifiedSteers so a late echo can resolve it")
+
+		r.emit(fmt.Sprintf(`{"type":"message_end","message":{"role":"user","steering":true,"leapmuxInputId":%q}}`, cmds[0].ID))
+		resolutions := r.sink.SteerResolutions()
+		require.Len(t, resolutions, 1)
+		assert.Equal(t, agent.SteerOutcomeEchoed, resolutions[0].Outcome)
+		assert.Equal(t, "steer-to", resolutions[0].InputID)
+	})
+
+	t.Run("explicit commandError refusal removes identifiedSteers and drops steer", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		enableBridge(r)
+		r.respond(func(command recordedCommand) *rigReply {
+			if command.Type == CommandPrompt {
+				return &rigReply{Error: "steer rejected"}
+			}
+			return nil
+		})
+
+		err := agenttest.SteerInput(r.agent, agent.SteerRequest{
+			Content: "Refused steer.", InputID: "steer-ref", AttemptID: "att-ref",
+		})
+		var refused *commandError
+		require.ErrorAs(t, err, &refused)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+
+		r.agent.Mu.Lock()
+		assert.Empty(t, r.agent.identifiedSteers)
+		assert.Empty(t, r.agent.turn.steers)
+		assert.Zero(t, r.agent.turn.pendingSteers)
+		r.agent.Mu.Unlock()
+
+		r.emit(`{"type":"agent_end","isTerminal":false,"messages":[]}`)
+		assert.False(t, r.agent.PublishTurnActive().Active)
+	})
+
+	t.Run("non-commandError ack error returns ErrDeliveryUncertain and preserves identifiedSteers", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		enableBridge(r)
+		r.respond(func(command recordedCommand) *rigReply {
+			if command.Type == CommandPrompt {
+				// Invalid type for "success" causes parseResponse to return a JSON decode error, not *commandError.
+				return &rigReply{
+					Skip:   true,
+					Before: []string{fmt.Sprintf(`{"type":"response","id":%q,"command":"prompt","success":"not-a-bool"}`, command.ID)},
+				}
+			}
+			return nil
+		})
+
+		err := agenttest.SteerInput(r.agent, agent.SteerRequest{
+			Content: "Malformed ack steer.", InputID: "steer-bad-ack", AttemptID: "att-bad-ack",
+		})
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+
+		cmds := r.commandsOfType(CommandPrompt)
+		require.Len(t, cmds, 1)
+		r.agent.Mu.Lock()
+		_, kept := r.agent.identifiedSteers[cmds[0].ID]
+		r.agent.Mu.Unlock()
+		assert.True(t, kept, "non-refusal ack error must preserve identifiedSteers")
+	})
+
+	t.Run("write failure releases identifiedSteers and drops steer", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		enableBridge(r)
+		require.NoError(t, r.stdinW.Close())
+
+		err := agenttest.SteerInput(r.agent, agent.SteerRequest{
+			Content: "Write fail steer.", InputID: "steer-wf", AttemptID: "att-wf",
+		})
+		require.ErrorContains(t, err, "write omp prompt")
+
+		r.agent.Mu.Lock()
+		assert.Empty(t, r.agent.identifiedSteers)
+		assert.Empty(t, r.agent.turn.steers)
+		assert.Zero(t, r.agent.turn.pendingSteers)
+		r.agent.Mu.Unlock()
+	})
+
+	t.Run("local command (agentInvoked false) emits echoed resolution, completed reply, and drops steer", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		enableBridge(r)
+		r.respond(func(command recordedCommand) *rigReply {
+			if command.Type == CommandPrompt {
+				return &rigReply{Data: json.RawMessage(`{"agentInvoked":false}`)}
+			}
+			return nil
+		})
+
+		require.NoError(t, agenttest.SteerInput(r.agent, agent.SteerRequest{
+			Content: "Handled by local hook.", InputID: "steer-local", AttemptID: "att-local",
+		}))
+
+		cmds := r.commandsOfType(CommandPrompt)
+		require.Len(t, cmds, 1)
+		expectedReceipt := agent.NativeInputReceipt{
+			SessionID: r.agent.sessionFile,
+			InputID:   cmds[0].ID,
+			TurnID:    cmds[0].ID,
+		}
+		assert.Equal(t, []agent.SteerResolution{{
+			InputID:   "steer-local",
+			AttemptID: "att-local",
+			Outcome:   agent.SteerOutcomeEchoed,
+			Receipt:   expectedReceipt,
+		}}, r.sink.SteerResolutions())
+		assert.Equal(t, []agent.NativeReplyTurn{{
+			SessionID: expectedReceipt.SessionID,
+			TurnID:    expectedReceipt.TurnID,
+			Outcome:   leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+			Inputs:    []agent.NativeReplyBoundary{{InputID: expectedReceipt.InputID, AfterOrdinal: 1}},
+		}}, r.sink.NativeReplyTurns())
+
+		r.agent.Mu.Lock()
+		assert.Empty(t, r.agent.identifiedSteers)
+		assert.Empty(t, r.agent.turn.steers)
+		assert.Zero(t, r.agent.turn.pendingSteers)
+		r.agent.Mu.Unlock()
+	})
+}
+
+func TestSendLegacySteerLockedFailurePaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("write failure releases turn steer and legacy ledger", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(`{"type":"agent_start"}`)
+		require.NoError(t, r.stdinW.Close())
+
+		err := agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "write fail"})
+		require.ErrorContains(t, err, "write omp prompt")
+		assert.Empty(t, r.agent.steers.Pending())
+		r.agent.Mu.Lock()
+		assert.Empty(t, r.agent.turn.steers)
+		assert.Zero(t, r.agent.turn.pendingSteers)
+		r.agent.Mu.Unlock()
+	})
+
+	t.Run("timeout returns ErrDeliveryUncertain and releases turn steer and legacy ledger", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(`{"type":"agent_start"}`)
+		r.awaitStatsRead()
+		ctx := testutil.DeadlineContext(t)
+		ack := r.clock.Trap().NewTimer(ompPromptAckTimerTag)
+		defer ack.Close()
+		r.respond(func(command recordedCommand) *rigReply {
+			if command.Type == CommandPrompt {
+				return &rigReply{Skip: true}
+			}
+			return nil
+		})
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "timed out"})
+		}()
+		assert.Equal(t, promptAckTimeout, testutil.WaitForTimer(t, ctx, ack))
+		r.clock.Advance(promptAckTimeout).MustWait(ctx)
+
+		require.ErrorIs(t, <-errCh, agent.ErrDeliveryUncertain)
+		assert.Empty(t, r.agent.steers.Pending())
+		r.agent.Mu.Lock()
+		assert.Empty(t, r.agent.turn.steers)
+		assert.Zero(t, r.agent.turn.pendingSteers)
+		r.agent.Mu.Unlock()
+	})
+
+	t.Run("process exit returns exit error and releases turn steer and legacy ledger", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(`{"type":"agent_start"}`)
+		r.respond(func(command recordedCommand) *rigReply {
+			if command.Type == CommandPrompt {
+				return &rigReply{Skip: true}
+			}
+			return nil
+		})
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "exit steer"})
+		}()
+		r.waitForCommand(CommandPrompt, 1)
+		require.NoError(t, r.stdinR.Close())
+
+		err := <-errCh
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+		assert.Empty(t, r.agent.steers.Pending())
+		r.agent.Mu.Lock()
+		assert.Empty(t, r.agent.turn.steers)
+		assert.Zero(t, r.agent.turn.pendingSteers)
+		r.agent.Mu.Unlock()
+	})
+}
+
+func TestSendInputSteerRoutingFallsBackToLegacyWhenBridgeReady(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		req  agent.SteerRequest
+	}{
+		{name: "slash command", req: agent.SteerRequest{Content: "/status", InputID: "i1", AttemptID: "a1"}},
+		{name: "leading-space slash command", req: agent.SteerRequest{Content: "  /status", InputID: "i2", AttemptID: "a2"}},
+		{name: "empty InputID", req: agent.SteerRequest{Content: "guide", InputID: "", AttemptID: "a3"}},
+		{name: "empty AttemptID", req: agent.SteerRequest{Content: "guide", InputID: "i4", AttemptID: ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.agent.steerBridge = ompSteerBridge{Capability: "steer-ready", Prefix: "steer-prefix:"}
+			r.emit(`{"type":"available_commands_update","commands":[{"name":"steer-ready","source":"extension"}]}`,
+				`{"type":"agent_start"}`)
+
+			require.NoError(t, agenttest.SteerInput(r.agent, tc.req))
+			cmds := r.commandsOfType(CommandPrompt)
+			require.Len(t, cmds, 1)
+			assert.Equal(t, tc.req.Content, cmds[0].Payload["message"], "fallback steer must not carry steerBridge.Prefix")
+			assert.Equal(t, streamingBehaviorSteer, cmds[0].Payload["streamingBehavior"])
+			r.agent.Mu.Lock()
+			assert.Empty(t, r.agent.identifiedSteers)
+			r.agent.Mu.Unlock()
+			assert.Len(t, r.agent.steers.Pending(), 1)
+		})
+	}
 }

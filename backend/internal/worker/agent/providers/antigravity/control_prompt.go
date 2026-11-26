@@ -68,12 +68,17 @@ func antigravityPermissionOptions() []*leapmuxv1.PermissionOption {
 // the interaction that its step requests, so LeapMux cannot know what such a
 // step asks, and an answer would guess.
 func (antigravityProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	raw, interaction, interacts := antigravityInteraction(input.Payload)
+	fields, ok := providerkit.RawObject(input.Payload)
+	if !ok {
+		return agent.UnrecognizedControlPrompt()
+	}
+	raw := fields["requestedInteraction"]
+	interaction, interacts := providerkit.RawObject(raw)
 	if ask, ok := providerkit.RawObject(interaction["askQuestion"]); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{Questions: antigravityQuestions(ask)}}}
 	}
-	if agent.ControlToolName(input.Payload) == contracts.AntigravityControlToolPlanReview {
-		review, _ := providerkit.RawObject(agent.ControlToolInput(input.Payload))
+	if request, ok := providerkit.RawObject(fields["request"]); ok && providerkit.ObjectString(request, "tool_name") == contracts.AntigravityControlToolPlanReview {
+		review, _ := providerkit.RawObject(request["input"])
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{
 			Text: providerkit.ObjectString(review, contracts.AntigravityControlPayloadPlanContent),
 		}}}

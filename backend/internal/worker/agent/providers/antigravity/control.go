@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -20,9 +19,17 @@ import (
 
 const antigravityMaxPlanBytes = 1 << 20
 
+type antigravityControlKind uint8
+
+const (
+	antigravityControlPermission antigravityControlKind = iota + 1
+	antigravityControlQuestion
+	antigravityControlPlan
+)
+
 // antigravityControl is one request that the Worker publishes for a cascade:
 // one interaction that a waiting step requests, or the plan review that the
-// Worker raises itself (kind "plan").
+// Worker raises itself (antigravityControlPlan).
 type antigravityControl struct {
 	requestID    string
 	instanceID   string
@@ -30,7 +37,7 @@ type antigravityControl struct {
 	trajectoryID string
 	executionID  string
 	stepIndex    int
-	kind         string
+	kind         antigravityControlKind
 	// payload is the request that the Worker stores and shows.
 	payload []byte
 	// interaction and completedInteractions identify the interaction of the
@@ -47,6 +54,8 @@ type antigravityControl struct {
 	published        bool
 	publicationOwner *agent.OutputOwner
 	publication      *agent.OutputTicket
+	steerOwner       *agent.OutputOwner
+	steerBinding     *agent.OutputTicket
 }
 
 // newInteractionControl builds the control that answers the interaction that
@@ -87,7 +96,7 @@ func newInteractionControl(cascadeID, trajectoryID string, index int, step antig
 		stepIndex:   index, kind: kind, payload: payload,
 		interaction: step.RequestedInteraction, completedInteractions: len(step.CompletedInteractions),
 	}
-	if kind == "permission" {
+	if kind == antigravityControlPermission {
 		// The prompt reads a permission leniently (ReadControlRequest), so a
 		// permission that the policy cannot read is still published, for the
 		// user to answer.
@@ -109,41 +118,84 @@ func (c *antigravityControl) answersSameInteraction(other *antigravityControl) b
 		c.completedInteractions == other.completedInteractions && agent.JSONCanonicalEqual(c.interaction, other.interaction)
 }
 
+func (c *antigravityControl) matchesStep(trajectoryID string, index int, step antigravityStep) bool {
+	return c != nil && c.trajectoryID == trajectoryID && c.stepIndex == index &&
+		c.executionID == step.Metadata.ExecutionID &&
+		c.completedInteractions == len(step.CompletedInteractions) &&
+		agent.JSONCanonicalEqual(c.interaction, step.RequestedInteraction)
+}
+
 // registerInteraction registers the interaction that a waiting step requests.
 // A repeated frame of a registered interaction retries what its control has
 // not done yet. Any other interaction replaces the step's control, because the
 // language server no longer waits for an answer to the earlier one.
 func (a *Agent) registerInteraction(state *cascadeState, index int, step antigravityStep) {
 	a.Mu.Lock()
-	control, err := newInteractionControl(state.id, state.trajectoryID, index, step)
-	if err != nil {
-		a.Mu.Unlock()
-		a.refuseInteraction(state, index, err)
-		return
-	}
+	trajectoryID := state.trajectoryID
 	existing := state.controls[index]
-	if existing.answersSameInteraction(control) {
-		automatic := existing.kind == "permission" && a.autoAnswerLocked(a.mode, existing.permission)
-		retryPublication := existing.publication != nil || !automatic && !existing.approvalClaimed
-		retryApproval := automatic && !existing.approvalClaimed
-		a.Mu.Unlock()
-		if retryPublication {
-			a.publishControl(state, existing)
-		}
-		if retryApproval {
-			a.queuePermissionApprovals()
-		}
-		return
-	}
-	state.controls[index] = control
-	automatic := control.kind == "permission" && a.autoAnswerLocked(a.mode, control.permission)
+	mode := a.mode
 	a.Mu.Unlock()
-	a.retireControl(state, existing)
-	if automatic {
-		a.queuePermissionApprovals()
+	if existing.matchesStep(trajectoryID, index, step) {
+		automatic := existing.kind == antigravityControlPermission && a.autoAnswer(mode, existing.permission)
+		a.Mu.Lock()
+		if state.controls[index] == existing && a.mode == mode {
+			retryPublication := existing.publication != nil || existing.steerBinding != nil || !automatic && !existing.approvalClaimed
+			retryApproval := automatic && !existing.approvalClaimed
+			a.Mu.Unlock()
+			if retryPublication {
+				a.publishControl(state, existing)
+			}
+			if retryApproval {
+				a.queuePermissionApprovals()
+			}
+			return
+		}
+		a.Mu.Unlock()
+	}
+
+	var control *antigravityControl
+	var err error
+	for {
+		a.Mu.Lock()
+		trajectoryID = state.trajectoryID
+		mode = a.mode
+		a.Mu.Unlock()
+		if control == nil || control.trajectoryID != trajectoryID {
+			control, err = newInteractionControl(state.id, trajectoryID, index, step)
+			if err != nil {
+				a.refuseInteraction(state, index, err)
+				return
+			}
+		}
+		automatic := control.kind == antigravityControlPermission && a.autoAnswer(mode, control.permission)
+		a.Mu.Lock()
+		if state.trajectoryID != trajectoryID || a.mode != mode {
+			a.Mu.Unlock()
+			continue
+		}
+		existing = state.controls[index]
+		if existing.answersSameInteraction(control) {
+			retryPublication := existing.publication != nil || existing.steerBinding != nil || !automatic && !existing.approvalClaimed
+			retryApproval := automatic && !existing.approvalClaimed
+			a.Mu.Unlock()
+			if retryPublication {
+				a.publishControl(state, existing)
+			}
+			if retryApproval {
+				a.queuePermissionApprovals()
+			}
+			return
+		}
+		state.controls[index] = control
+		a.Mu.Unlock()
+		a.retireControl(state, existing)
+		if automatic {
+			a.queuePermissionApprovals()
+			return
+		}
+		a.publishControl(state, control)
 		return
 	}
-	a.publishControl(state, control)
 }
 
 // refuseInteraction handles a waiting step that LeapMux cannot answer. It
@@ -165,7 +217,7 @@ func (a *Agent) controlCurrentLocked(state *cascadeState, control *antigravityCo
 	if a.IsDiscardingOutput() || state.closed || a.cascades[state.id] != state || state.generation != a.generation {
 		return false
 	}
-	if control.kind == "plan" {
+	if control.kind == antigravityControlPlan {
 		return state.planControl == control
 	}
 	return state.controls[control.stepIndex] == control && state.trajectoryID == control.trajectoryID
@@ -191,12 +243,22 @@ func (a *Agent) stepControlLocked(state *cascadeState, trajectoryID string, step
 }
 
 // publishControl publishes the control's request once, while the control is
-// current. A failed publication stays in the output queue, which retries it.
+// current. Publication and steer-input binding run as separate queued writes
+// so a transient binding failure retries only the binding and never republishes
+// or drops cancellation of an already-published control.
 func (a *Agent) publishControl(state *cascadeState, control *antigravityControl) {
 	queue := state.sink.OutputQueue()
 	a.Mu.Lock()
-	if control.published || !a.controlCurrentLocked(state, control) {
+	if !a.controlCurrentLocked(state, control) {
 		a.Mu.Unlock()
+		return
+	}
+	if control.published {
+		retryBinding := control.steerBinding != nil
+		a.Mu.Unlock()
+		if retryBinding {
+			a.flushControlPublications(queue)
+		}
 		return
 	}
 	if control.publication != nil {
@@ -209,38 +271,55 @@ func (a *Agent) publishControl(state *cascadeState, control *antigravityControl)
 		NativeTurnID: control.executionID,
 	}
 	owner := agent.NewOutputOwner()
+	bindOwner := agent.NewOutputOwner()
 	control.publicationOwner = owner
-	control.publication = queue.Append(agent.OutputWrite{
-		Owner: owner, ScopeID: request.RequestID, RetainedBytes: len(request.Payload), Label: "publish the Antigravity control request",
-		Run: func() error {
-			a.Mu.Lock()
-			current := a.controlCurrentLocked(state, control)
-			a.Mu.Unlock()
-			if !current {
-				a.finishControlPublication(control, owner, false)
+	control.steerOwner = bindOwner
+	tickets := queue.Append(
+		agent.OutputWrite{
+			Owner: owner, ScopeID: request.RequestID, RetainedBytes: len(request.Payload), Label: "publish the Antigravity control request",
+			Run: func() error {
+				a.Mu.Lock()
+				current := a.controlCurrentLocked(state, control)
+				a.Mu.Unlock()
+				if !current {
+					a.finishControlPublication(control, owner, false)
+					return nil
+				}
+				if err := state.sink.PublishControlRequest(request); err != nil {
+					return err
+				}
+				a.Mu.Lock()
+				current = a.controlCurrentLocked(state, control)
+				if control.publicationOwner == owner {
+					control.publicationOwner = nil
+					control.publication = nil
+					control.published = current
+				}
+				a.Mu.Unlock()
+				if !current {
+					state.sink.CancelControlRequestInstance(request.RequestID, request.InstanceID)
+				}
 				return nil
-			}
-			if err := state.sink.PublishControlRequest(request); err != nil {
-				return err
-			}
-			a.Mu.Lock()
-			current = a.controlCurrentLocked(state, control)
-			if current {
-				control.published = true
-			}
-			a.Mu.Unlock()
-			if current {
+			},
+		},
+		agent.OutputWrite{
+			Owner: bindOwner, ScopeID: request.RequestID, Label: "bind an Antigravity control to its steers",
+			Run: func() error {
 				if err := a.setSteerControlInputs(state, control, false); err != nil {
 					return err
 				}
-			}
-			a.finishControlPublication(control, owner, current)
-			if !current {
-				state.sink.CancelControlRequestInstance(request.RequestID, request.InstanceID)
-			}
-			return nil
+				a.Mu.Lock()
+				if control.steerOwner == bindOwner {
+					control.steerOwner = nil
+					control.steerBinding = nil
+				}
+				a.Mu.Unlock()
+				return nil
+			},
 		},
-	})[0]
+	)
+	control.publication = tickets[0]
+	control.steerBinding = tickets[1]
 	a.Mu.Unlock()
 	a.flushControlPublications(queue)
 }
@@ -313,10 +392,15 @@ func (a *Agent) retireControl(state *cascadeState, control *antigravityControl) 
 	}
 	a.Mu.Lock()
 	owner, pending, published := control.publicationOwner, control.publication, control.published
+	steerOwner, steerBinding := control.steerOwner, control.steerBinding
 	control.publicationOwner, control.publication = nil, nil
+	control.steerOwner, control.steerBinding = nil, nil
 	a.Mu.Unlock()
 	if owner != nil && pending != nil {
 		pending.Queue().ClearOwner(owner)
+	}
+	if steerOwner != nil && steerBinding != nil {
+		steerBinding.Queue().ClearOwner(steerOwner)
 	}
 	if published {
 		state.sink.CancelControlRequestInstance(control.requestID, control.instanceID)
@@ -358,7 +442,7 @@ func knownPermissionAction(action string) bool {
 	}
 }
 
-func (a *Agent) autoAnswerLocked(mode string, permission *permissionInteraction) bool {
+func (a *Agent) autoAnswer(mode string, permission *permissionInteraction) bool {
 	if permission == nil || !knownPermissionAction(permission.Resource.Action) {
 		return false
 	}
@@ -372,24 +456,32 @@ func (a *Agent) autoAnswerLocked(mode string, permission *permissionInteraction)
 	}
 }
 
-func pathWithinWorkspace(workspace, target string) bool {
-	if workspace == "" || target == "" {
-		return false
+func resolveWithinDirectory(base, target string) (string, error) {
+	if base == "" || target == "" {
+		return "", errors.New("path is empty")
 	}
 	resolved, err := resolveExistingPath(target)
 	if err != nil {
-		return false
+		return "", err
 	}
-	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	resolvedBase, err := filepath.EvalSymlinks(base)
 	if err != nil {
-		return false
+		return "", err
 	}
-	resolvedWorkspace, err = filepath.Abs(resolvedWorkspace)
+	resolvedBase, err = filepath.Abs(resolvedBase)
 	if err != nil {
-		return false
+		return "", err
 	}
-	relative, err := filepath.Rel(resolvedWorkspace, resolved)
-	return err == nil && relative != "." && filepath.IsLocal(relative)
+	relative, err := filepath.Rel(resolvedBase, resolved)
+	if err != nil || relative == "." || !filepath.IsLocal(relative) {
+		return "", fmt.Errorf("path %q is outside %q", target, base)
+	}
+	return resolved, nil
+}
+
+func pathWithinWorkspace(workspace, target string) bool {
+	_, err := resolveWithinDirectory(workspace, target)
+	return err == nil
 }
 
 func resolveExistingPath(path string) (string, error) {
@@ -455,10 +547,10 @@ func (a *Agent) approvePendingPermissions() {
 		var manual []manualRequest
 		for _, state := range a.cascades {
 			for _, candidate := range state.controls {
-				if candidate.kind != "permission" || candidate.approvalClaimed || !a.controlCurrentLocked(state, candidate) {
+				if candidate.kind != antigravityControlPermission || candidate.approvalClaimed || !a.controlCurrentLocked(state, candidate) {
 					continue
 				}
-				if !a.autoAnswerLocked(a.mode, candidate.permission) {
+				if !a.autoAnswer(a.mode, candidate.permission) {
 					manual = append(manual, manualRequest{state: state, control: candidate})
 					continue
 				}
@@ -482,7 +574,7 @@ func (a *Agent) approvePendingPermissions() {
 			a.Mu.Unlock()
 			return
 		}
-		if !a.controlCurrentLocked(next, control) || control.approvalClaimed || !a.autoAnswerLocked(a.mode, control.permission) {
+		if !a.controlCurrentLocked(next, control) || control.approvalClaimed || !a.autoAnswer(a.mode, control.permission) {
 			a.Mu.Unlock()
 			continue
 		}
@@ -523,31 +615,21 @@ func (a *Agent) approvePendingPermissions() {
 //     the language server took no answer from a step whose control LeapMux
 //     retired meanwhile: agent.ErrControlRequestNotPending.
 func (a *Agent) executeControlReply(data []byte, instanceID string) error {
-	var reply struct {
-		CascadeID   string         `json:"cascadeId"`
-		Interaction map[string]any `json:"interaction"`
-	}
-	if err := json.Unmarshal(data, &reply); err != nil || reply.CascadeID == "" || reply.Interaction == nil {
-		return fmt.Errorf("the Antigravity control answer is malformed")
-	}
-	var address struct {
-		TrajectoryID string `json:"trajectoryId"`
-		StepIndex    int    `json:"stepIndex"`
-	}
-	interactionBytes, err := json.Marshal(reply.Interaction)
+	reply, err := decodeAntigravityControlReply(data)
 	if err != nil {
+		return err
+	}
+	var interaction map[string]any
+	if err := json.Unmarshal(reply.interactionRaw, &interaction); err != nil {
 		return fmt.Errorf("the Antigravity control answer has a malformed interaction: %w", err)
 	}
-	if err := json.Unmarshal(interactionBytes, &address); err != nil {
-		return fmt.Errorf("the Antigravity control answer has a malformed interaction address: %w", err)
-	}
 	a.Mu.Lock()
-	state, known := a.cascades[reply.CascadeID]
+	state, known := a.cascades[reply.cascadeID]
 	if !known {
 		a.Mu.Unlock()
-		return fmt.Errorf("%w: Antigravity CLI runs no cascade %q", agent.ErrControlRequestNotPending, reply.CascadeID)
+		return fmt.Errorf("%w: Antigravity CLI runs no cascade %q", agent.ErrControlRequestNotPending, reply.cascadeID)
 	}
-	control := a.stepControlLocked(state, address.TrajectoryID, address.StepIndex)
+	control := a.stepControlLocked(state, reply.address.trajectoryID, reply.address.stepIndex)
 	if control == nil || a.streamCtx.Err() != nil {
 		a.Mu.Unlock()
 		return fmt.Errorf("%w: the step of Antigravity CLI waits for no answer", agent.ErrControlRequestNotPending)
@@ -558,15 +640,15 @@ func (a *Agent) executeControlReply(data []byte, instanceID string) error {
 	}
 	generationCtx := a.streamCtx
 	a.Mu.Unlock()
-	err = a.rpc.handleInteraction(generationCtx, reply.CascadeID, reply.Interaction)
+	err = a.rpc.handleInteraction(generationCtx, reply.cascadeID, interaction)
 	a.Mu.Lock()
-	pending := control != nil && a.cascades[reply.CascadeID] == state && state.generation == a.generation &&
-		!state.closed && state.trajectoryID == address.TrajectoryID && state.controls[address.StepIndex] == control
+	pending := a.cascades[reply.cascadeID] == state && state.generation == a.generation &&
+		!state.closed && state.trajectoryID == reply.address.trajectoryID && state.controls[reply.address.stepIndex] == control
 	a.Mu.Unlock()
 	if err != nil {
-		slog.Warn("antigravity answer interaction failed", "agent_id", a.AgentID(), "cascade_id", reply.CascadeID, "trajectory_id", address.TrajectoryID, "step_index", address.StepIndex, "pending", pending, "error", err)
+		slog.Warn("antigravity answer interaction failed", "agent_id", a.AgentID(), "cascade_id", reply.cascadeID, "trajectory_id", reply.address.trajectoryID, "step_index", reply.address.stepIndex, "pending", pending, "error", err)
 	} else {
-		slog.Info("antigravity interaction answered", "agent_id", a.AgentID(), "cascade_id", reply.CascadeID, "trajectory_id", address.TrajectoryID, "step_index", address.StepIndex)
+		slog.Info("antigravity interaction answered", "agent_id", a.AgentID(), "cascade_id", reply.cascadeID, "trajectory_id", reply.address.trajectoryID, "step_index", reply.address.stepIndex)
 	}
 	if isInputNotRegistered(err) && !pending {
 		return fmt.Errorf("%w: the step of Antigravity CLI took no answer: %w", agent.ErrControlRequestNotPending, err)
@@ -636,7 +718,7 @@ func (a *Agent) maybePublishPlan(state *cascadeState) {
 		return
 	}
 	superseded := state.planControl
-	control := &antigravityControl{requestID: requestID, instanceID: id.Generate(), cascadeID: state.id, kind: "plan", payload: payload}
+	control := &antigravityControl{requestID: requestID, instanceID: id.Generate(), cascadeID: state.id, kind: antigravityControlPlan, payload: payload}
 	state.planControl = control
 	a.Mu.Unlock()
 	a.retireControl(state, superseded)
@@ -645,16 +727,9 @@ func (a *Agent) maybePublishPlan(state *cascadeState) {
 
 func (a *Agent) readPlanFile(cascadeID, path string) ([]byte, error) {
 	base := filepath.Join(a.homeDir, ".gemini", "antigravity-cli", "brain", cascadeID)
-	resolvedBase, err := filepath.EvalSymlinks(base)
+	resolved, err := resolveWithinDirectory(base, path)
 	if err != nil {
-		return nil, err
-	}
-	resolved, err := resolveExistingPath(path)
-	if err != nil {
-		return nil, err
-	}
-	if !strings.HasPrefix(resolved, filepath.Clean(resolvedBase)+string(filepath.Separator)) {
-		return nil, fmt.Errorf("the plan path is outside brain/%s", cascadeID)
+		return nil, fmt.Errorf("the plan path is outside brain/%s: %w", cascadeID, err)
 	}
 	file, err := os.Open(resolved)
 	if err != nil {

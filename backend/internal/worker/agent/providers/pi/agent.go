@@ -271,30 +271,63 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 		return dispatch, agent.ErrAgentBusy
 	}
 	if instructions, compact := piCompactInstruction(content); compact && !steer {
-		if len(attachments) > 0 {
-			return dispatch, fmt.Errorf("pi compaction does not accept attachments")
-		}
-		payload := map[string]any{}
-		if instructions != "" {
-			payload["customInstructions"] = instructions
-		}
-		wait, err := a.beginPiCommand(CommandCompact, payload)
-		if err != nil {
-			return dispatch, err
-		}
-		dispatch.wait = func() error {
-			_, err := wait(0)
-			if err != nil {
-				a.endPiCompaction()
-			}
-			// Compaction ends without agent_end. Publish the idle turn after the
-			// native compact response so queued input can proceed.
-			a.PublishTurnActive()
-			return err
-		}
-		return dispatch, nil
+		return a.preparePiCompact(instructions, attachments)
 	}
 
+	payload, text := piPromptPayload(content, attachments, steer)
+	if steer {
+		if identifiedSteer && !a.isPiExtensionCommand(text) {
+			return a.prepareIdentifiedPiSteer(sessionID, *steerReq, payload, text)
+		}
+		return a.prepareLegacyPiSteer(payload, text)
+	}
+	if a.isPiExtensionCommand(text) {
+		return a.preparePiExtensionCommand(payload)
+	}
+	if sessionID != "" {
+		receipt, err := a.sendPiReplyPrompt(sessionID, payload)
+		dispatch.receipt = receipt
+		return dispatch, err
+	}
+
+	// Pi answers preflight with started, queued, or handled. It sends no second reply.
+	// The stdin write confirms delivery, so the response wait runs separately.
+	return dispatch, a.sendPiCommandDetached(CommandPrompt, payload, func(raw json.RawMessage, err error) {
+		if err != nil {
+			a.handlePiPromptFailure(err)
+		} else if piPromptDisposition(raw) == "handled" {
+			a.PublishTurnActive()
+		}
+	})
+}
+
+func (a *Agent) preparePiCompact(instructions string, attachments []*leapmuxv1.Attachment) (piInputDispatch, error) {
+	var dispatch piInputDispatch
+	if len(attachments) > 0 {
+		return dispatch, fmt.Errorf("pi compaction does not accept attachments")
+	}
+	payload := map[string]any{}
+	if instructions != "" {
+		payload["customInstructions"] = instructions
+	}
+	wait, err := a.beginPiCommand(CommandCompact, payload)
+	if err != nil {
+		return dispatch, err
+	}
+	dispatch.wait = func() error {
+		_, err := wait(0)
+		if err != nil {
+			a.endPiCompaction()
+		}
+		// Compaction ends without agent_end. Publish the idle turn after the
+		// native compact response so queued input can proceed.
+		a.PublishTurnActive()
+		return err
+	}
+	return dispatch, nil
+}
+
+func piPromptPayload(content string, attachments []*leapmuxv1.Attachment, steer bool) (map[string]any, string) {
 	classified := agent.ClassifyAttachments(attachments)
 
 	var messageBuilder strings.Builder
@@ -321,8 +354,9 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 		}
 	}
 
+	text := messageBuilder.String()
 	payload := map[string]any{
-		"message": messageBuilder.String(),
+		"message": text,
 	}
 	if len(images) > 0 {
 		payload["images"] = images
@@ -332,62 +366,49 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 	} else {
 		payload["streamingBehavior"] = StreamingBehaviorFollowUp
 	}
-	if steer {
-		if identifiedSteer {
-			return a.prepareIdentifiedPiSteer(sessionID, *steerReq, payload, messageBuilder.String())
-		}
-		ticket := a.steers.Add(messageBuilder.String())
-		wait, err := a.beginPiCommand(CommandPrompt, payload)
-		if err != nil {
-			a.forgetPiSteer(ticket)
-			return dispatch, err
-		}
-		dispatch.wait = func() error {
-			raw, err := wait(a.APITimeout())
-			if err != nil {
-				a.forgetPiSteer(ticket)
-				var refusal *piCommandRefusal
-				if errors.As(err, &refusal) {
-					return err
-				}
-				return fmt.Errorf("%w: Pi did not confirm steer delivery: %v", agent.ErrDeliveryUncertain, err)
-			}
-			if piPromptDisposition(raw) == "handled" {
-				a.steers.Echo(ticket)
-				a.steers.Settle(a.orderedSink())
-			}
-			return nil
-		}
-		return dispatch, nil
-	}
-	if a.isPiExtensionCommand(messageBuilder.String()) {
-		wait, err := a.beginPiCommand(CommandPrompt, payload)
-		if err != nil {
-			return dispatch, err
-		}
-		dispatch.wait = func() error {
-			_, err := wait(0)
-			// Commands can finish without agent_end. Settle this dispatch before returning.
-			a.PublishTurnActive()
-			return err
-		}
-		return dispatch, nil
-	}
-	if sessionID != "" {
-		receipt, err := a.sendPiReplyPrompt(sessionID, payload)
-		dispatch.receipt = receipt
+	return payload, text
+}
+
+func (a *Agent) prepareLegacyPiSteer(payload map[string]any, text string) (piInputDispatch, error) {
+	var dispatch piInputDispatch
+	ticket := a.steers.Add(text)
+	wait, err := a.beginPiCommand(CommandPrompt, payload)
+	if err != nil {
+		a.forgetPiSteer(ticket)
 		return dispatch, err
 	}
-
-	// Pi answers preflight with started, queued, or handled. It sends no second reply.
-	// The stdin write confirms delivery, so the response wait runs separately.
-	return dispatch, a.sendPiCommandDetached(CommandPrompt, payload, func(raw json.RawMessage, err error) {
+	dispatch.wait = func() error {
+		raw, err := wait(a.APITimeout())
 		if err != nil {
-			a.handlePiPromptFailure(err)
-		} else if piPromptDisposition(raw) == "handled" {
-			a.PublishTurnActive()
+			a.forgetPiSteer(ticket)
+			var refusal *piCommandRefusal
+			if errors.As(err, &refusal) {
+				return err
+			}
+			return fmt.Errorf("%w: Pi did not confirm steer delivery: %v", agent.ErrDeliveryUncertain, err)
 		}
-	})
+		if piPromptDisposition(raw) == "handled" {
+			a.steers.Echo(ticket)
+			a.steers.Settle(a.orderedSink())
+		}
+		return nil
+	}
+	return dispatch, nil
+}
+
+func (a *Agent) preparePiExtensionCommand(payload map[string]any) (piInputDispatch, error) {
+	var dispatch piInputDispatch
+	wait, err := a.beginPiCommand(CommandPrompt, payload)
+	if err != nil {
+		return dispatch, err
+	}
+	dispatch.wait = func() error {
+		_, err := wait(0)
+		// Commands can finish without agent_end. Settle this dispatch before returning.
+		a.PublishTurnActive()
+		return err
+	}
+	return dispatch, nil
 }
 
 func (a *Agent) forgetPiSteer(ticket providerkit.SteerTicket) {

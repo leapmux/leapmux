@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -33,7 +34,6 @@ func (a *Agent) registerControl(requestID string, control *pendingControl) {
 	automatic := a.canApproveControlLocked(control)
 	if automatic {
 		control.ready = true
-		control.publicationOnce.Do(func() { close(control.publicationDone) })
 	}
 	a.Mu.Unlock()
 	if automatic {
@@ -125,20 +125,31 @@ func (a *Agent) approvePendingPermissions() error {
 	for requestID, control := range publish {
 		a.publishRegisteredControl(requestID, control)
 	}
-	var failures []error
+	var (
+		wg       sync.WaitGroup
+		failMu   sync.Mutex
+		failures []error
+	)
 	for requestID, control := range claimed {
-		a.Mu.Lock()
-		current := a.controls[requestID] == control && control.sessionID == a.sessionID && !a.StoppedLocked()
-		a.Mu.Unlock()
-		if !current {
-			continue
-		}
-		err := a.respondApproval(contracts.ClineApprovalReply{ApprovalId: requestID, Approved: true})
-		a.finishControlAnswer(requestID, control, err)
-		if err != nil {
-			failures = append(failures, err)
-		}
+		wg.Add(1)
+		go func(requestID string, control *pendingControl) {
+			defer wg.Done()
+			a.Mu.Lock()
+			current := a.controls[requestID] == control && control.sessionID == a.sessionID && !a.StoppedLocked()
+			a.Mu.Unlock()
+			if !current {
+				return
+			}
+			err := a.respondApproval(contracts.ClineApprovalReply{ApprovalId: requestID, Approved: true})
+			a.finishControlAnswer(requestID, control, err)
+			if err != nil {
+				failMu.Lock()
+				failures = append(failures, err)
+				failMu.Unlock()
+			}
+		}(requestID, control)
 	}
+	wg.Wait()
 	return errors.Join(failures...)
 }
 
@@ -207,9 +218,11 @@ func (a *Agent) finishControlAnswer(requestID string, control *pendingControl, e
 	if current {
 		if gone {
 			delete(a.controls, requestID)
+			control.publicationOnce.Do(func() { close(control.publicationDone) })
 		} else if err == nil || uncertain {
 			control.answered = true
 			control.published = false
+			control.publicationOnce.Do(func() { close(control.publicationDone) })
 		} else {
 			control.answering = false
 			control.automaticFailed = control.automaticFailed || automatic

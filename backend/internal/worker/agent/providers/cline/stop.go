@@ -98,7 +98,7 @@ func (a *Agent) endRunlessTurnLocked(completion agent.MessageCompletion, reason 
 	noRun, sessionID := a.turn.hasNoRun(), a.sessionID
 	a.Mu.Unlock()
 	if noRun {
-		a.endTurn(completion, runEndRow(sessionID, reason, ""))
+		a.endTurn(completion, runEndRow(sessionID, reason, ""), endTurnOptions{})
 	}
 }
 
@@ -218,7 +218,7 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion, message string)
 		if completion == agent.MessageCompletionInterrupted {
 			reason = runReasonAborted
 		}
-		a.endTurnWithTeardown(completion, runEndRow(sessionID, reason, message), true)
+		a.endTurn(completion, runEndRow(sessionID, reason, message), endTurnOptions{teardown: true})
 	} else {
 		a.withdrawAllControls()
 		a.settleSpawns(completion)

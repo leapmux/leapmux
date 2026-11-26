@@ -6,7 +6,6 @@ import (
 	"maps"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -125,9 +124,9 @@ func (a *Agent) handleLine(proc *ampProcess, line *providerkit.ParsedLine) {
 	case contracts.AmpLineTypeSystem:
 		a.handleSystemLine(proc, line.Raw)
 	case contracts.AmpLineTypeAssistant:
-		a.handleAssistantLine(line.Raw)
+		a.handleAssistantLine(proc, line.Raw)
 	case contracts.AmpLineTypeUser:
-		a.handleUserLine(line.Raw)
+		a.handleUserLine(proc, line.Raw)
 	case contracts.AmpLineTypeResult:
 		a.handleResultLine(proc, line.Raw)
 	default:
@@ -188,7 +187,7 @@ func (a *Agent) handleSystemLine(proc *ampProcess, raw []byte) {
 // Nothing here feeds the live generation counter. A message arrives only when
 // it is complete, at the same moment as the row that shows it, and each row
 // resets that counter, so no count could stay visible.
-func (a *Agent) handleAssistantLine(raw []byte) {
+func (a *Agent) handleAssistantLine(proc *ampProcess, raw []byte) {
 	var line ampLine
 	if err := json.Unmarshal(raw, &line); err != nil || line.Message == nil {
 		slog.Warn("amp assistant line decode failed", "agent_id", a.agentID, "error", err)
@@ -248,15 +247,28 @@ func (a *Agent) handleAssistantLine(raw []byte) {
 		a.retainReplyFrame(reply, frame, replyWriteFailed || err != nil)
 	}
 
+	a.bumpExportGen()
 	a.mu.Lock()
 	if a.turn.active {
 		a.turn.assistantMessages++
+		if reply == nil {
+			a.turn.untrackedFrames++
+		}
 	}
+	frameCount := 0
+	if reply != nil {
+		frameCount = len(reply.frames)
+	}
+	pendingSteer := a.pendingTrackedSteerLocked(line.SessionID)
 	a.mu.Unlock()
-	ended := line.Message.StopReason != nil && *line.Message.StopReason == stopReasonEndTurn &&
-		a.nativeSteeredTurnEnd(line.SessionID, reply)
-	a.noteLiveAssistant(line.SessionID, line.Message, reply, frame, ended)
-	if ended {
+	isEndTurn := line.Message.StopReason != nil && *line.Message.StopReason == stopReasonEndTurn
+	if isEndTurn && (pendingSteer || a.hasPendingSteerWork()) {
+		a.noteLiveAssistant(line.SessionID, reply, frame, false)
+		a.verifySteeredTurnEndAsync(proc, line.SessionID, reply, frameCount)
+		return
+	}
+	a.noteLiveAssistant(line.SessionID, reply, frame, isEndTurn)
+	if isEndTurn {
 		a.finishTurn(agent.MessageCompletionComplete, nil)
 	}
 }
@@ -268,9 +280,9 @@ func (a *Agent) handleAssistantLine(raw []byte) {
 func assistantBlockKept(block ampBlock) bool {
 	switch block.Type {
 	case contracts.AmpBlockTypeText:
-		return strings.TrimSpace(block.Text) != ""
+		return agent.TrimJavaScriptSpace(block.Text) != ""
 	case contracts.AmpBlockTypeThinking:
-		return strings.TrimSpace(block.Thinking) != ""
+		return agent.TrimJavaScriptSpace(block.Thinking) != ""
 	case blockTypeRedactedThinking:
 		return false
 	default:
@@ -306,15 +318,14 @@ func (a *Agent) noteAssistantText(text string) {
 	a.mu.Unlock()
 }
 
-// handleUserLine closes tool results and reports a prompt that Amp read.
-// The queue writes a steer's row at this echo. Ordinary prompt echoes write no row.
-func (a *Agent) handleUserLine(raw []byte) {
+// handleUserLine closes tool results and schedules async export reconciliation
+// for a prompt echo when tracked steers are pending.
+func (a *Agent) handleUserLine(proc *ampProcess, raw []byte) {
 	rows, err := splitBlocks(raw)
 	if err != nil {
 		slog.Warn("amp user line split failed", "agent_id", a.agentID, "error", err)
 		return
 	}
-	var texts []string
 	hasPrompt, valid := false, true
 	for _, row := range rows {
 		switch row.block.Type {
@@ -326,15 +337,13 @@ func (a *Agent) handleUserLine(raw []byte) {
 				valid = false
 				continue
 			}
-			text, ok := providerkit.RawString(fields["text"])
-			if !ok {
+			if _, ok := providerkit.RawString(fields["text"]); !ok {
 				valid = false
 				continue
 			}
-			texts = append(texts, text)
 			hasPrompt = true
 		case blockTypeImage:
-			// An image-only steer has an empty text key but still needs its echo.
+			// An image-only steer has no text block but still needs its echo.
 			hasPrompt = true
 		default:
 			valid = false
@@ -345,23 +354,8 @@ func (a *Agent) handleUserLine(raw []byte) {
 			SessionID string `json:"session_id"`
 		}
 		if json.Unmarshal(raw, &echo) == nil {
-			a.observeSteeredInput(echo.SessionID)
+			a.observeSteeredInputAsync(proc, echo.SessionID)
 		}
-	}
-	if !valid || !hasPrompt {
-		return
-	}
-	key := ampEchoKey(texts)
-	for _, pending := range a.steers.PendingEntries() {
-		if pending.Key == key {
-			// Publish the new turn before any concurrent ledger drain can report this echo.
-			a.ensureTurn()
-			a.noteSteerEcho(pending.Ticket)
-			break
-		}
-	}
-	if a.steers.EchoKey(key) {
-		a.steers.Settle(a.sink)
 	}
 }
 
@@ -397,9 +391,8 @@ func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 	if err := json.Unmarshal(raw, &line); err != nil {
 		slog.Warn("amp result line decode failed", "agent_id", a.agentID, "error", err)
 	}
-	a.prepareSteerRecovery()
 	ended := false
-	a.endTurn(false, func(turn turnState) (agent.MessageCompletion, []byte) {
+	a.endTurnWithRecovery(false, true, func(turn turnState) (agent.MessageCompletion, []byte) {
 		ended = true
 		switch {
 		case turn.interruptRequested && !line.statesFailure():
@@ -413,6 +406,9 @@ func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 			return agent.MessageCompletionComplete, raw
 		}
 	})
+	if !ended {
+		a.prepareSteerRecovery()
+	}
 	if !ended && line.IsError && !answersSignal(proc, line) {
 		a.sink.PersistLeapMuxNotification(map[string]any{
 			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
@@ -441,6 +437,7 @@ func (a *Agent) openToolCall(block ampBlock, content agent.MessageContent) {
 	a.nextOrder++
 	a.tools[block.ID] = tool
 	a.mu.Unlock()
+	a.bumpExportGen()
 	// A permission request can arrive before the agent reads this line. The
 	// request waits for the call to appear.
 	a.bridge.noteToolCall()
@@ -507,6 +504,10 @@ func (a *Agent) finishTurn(completion agent.MessageCompletion, resultLine []byte
 // settle edge that spends the turn's tool count (see
 // agent.TranscriptServices.PersistTurnEnd).
 func (a *Agent) endTurn(closeOnTeardown bool, decide func(turn turnState) (agent.MessageCompletion, []byte)) {
+	a.endTurnWithRecovery(closeOnTeardown, false, decide)
+}
+
+func (a *Agent) endTurnWithRecovery(closeOnTeardown, prepareRecovery bool, decide func(turn turnState) (agent.MessageCompletion, []byte)) {
 	endedAt := a.now()
 	a.mu.Lock()
 	if !a.turn.active {
@@ -516,6 +517,10 @@ func (a *Agent) endTurn(closeOnTeardown bool, decide func(turn turnState) (agent
 	turn := a.turn
 	completion, resultLine := decide(turn)
 	a.turn = turnState{}
+	a.finishReplySteersLocked(turn.reply, completion)
+	if prepareRecovery && !a.discarding() && !a.stopped && a.hasRecoverableSteerLocked() {
+		a.reconciling = true
+	}
 	closeOpen := closeOnTeardown || completion == agent.MessageCompletionInterrupted
 	var open []*openTool
 	if closeOpen {
@@ -541,7 +546,7 @@ func (a *Agent) endTurn(closeOnTeardown bool, decide func(turn turnState) (agent
 		content := agent.MessageContent{
 			Original:   resultLine,
 			Completion: completion,
-			Metadata:   turnMetadata(usage, turnDurationMs(turn, endedAt)),
+			Metadata:   turnMetadata(usage, providerkit.TurnDurationMillis(turn.startedAt, endedAt)),
 		}
 		// The turn made each call it outlived as well, so the count holds them beside
 		// the calls that ended with a result: a stop that ended a running command
@@ -554,6 +559,7 @@ func (a *Agent) endTurn(closeOnTeardown bool, decide func(turn turnState) (agent
 		providerkit.ResetSpansAndProgress(a.sink)
 	}
 	a.PublishTurnActive()
+	a.bumpExportGen()
 	a.completeInputReply(turn.reply, completion)
 }
 
@@ -646,15 +652,6 @@ func turnMetadata(usage map[string]any, durationMs *int64) []byte {
 		return nil
 	}
 	return encoded
-}
-
-// turnDurationMs measures one turn, or nil for a clock that moved backwards.
-func turnDurationMs(turn turnState, endedAt time.Time) *int64 {
-	if turn.startedAt.IsZero() || endedAt.Before(turn.startedAt) {
-		return nil
-	}
-	ms := endedAt.Sub(turn.startedAt).Milliseconds()
-	return &ms
 }
 
 // successResultLine is the `result` of a turn that ended inside a process.

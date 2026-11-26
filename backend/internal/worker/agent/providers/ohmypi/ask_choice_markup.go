@@ -1,11 +1,9 @@
 package ohmypi
 
 import (
-	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
-	"golang.org/x/net/html/atom"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -17,50 +15,20 @@ type choicePresentation struct {
 	label, description, preview string
 }
 
-// choiceDisambiguation matches the suffix that the bridge adds to the second
-// and each later option with the same label text: " (2)", " (3)", and so on
-// (askHTMLField.nativeQuestion).
-var choiceDisambiguation = regexp.MustCompile(`^ \((?:[2-9]|[1-9]\d+)\)$`)
-
-// backtickRun matches one run of backticks.
-var backtickRun = regexp.MustCompile("`+")
-
-// choiceMarkupContext is the element that a label's markup is parsed inside.
-// A <template> parses any element where it stands, as an HTML parser does
-// for a fragment that states no context of its own.
-func choiceMarkupContext() *html.Node {
-	return &html.Node{Type: html.ElementNode, Data: atom.Template.String(), DataAtom: atom.Template}
-}
-
-// readChoiceMarkup reads the presentation of one option from the label HTML
-// that the bridge keeps beside it (contracts.OhMyPiAskOption.Markup).
-// fallback is the option's own label, which the bridge answers omp with.
+// readChoicePresentation extracts the presentation of one option directly from
+// its parsed <label> HTML node. fallback is used when label is nil or yields no
+// visible title. disambiguationSuffix (for example " (2)") is appended to the
+// resulting label.
 //
 //   - A label that opens with <strong> or <b> takes that element's text as
 //     its title, and the rest of its text as the description.
 //   - Any other label takes its text as the title, and states no description.
 //   - Each <pre> of the label is a code block of the preview, and its text
 //     is no part of the title or the description.
-//   - A title keeps the suffix that tells two options with the same text
-//     apart (choiceDisambiguation).
 //
-// Form controls, embedded graphics and elements that show no text are no part
-// of any text. An empty markup, one that holds no <label>, and one that the
-// HTML parser refuses show fallback alone.
-func readChoiceMarkup(markup, fallback string) choicePresentation {
-	plain := choicePresentation{label: fallback}
-	if markup == "" {
-		return plain
-	}
-	nodes, err := html.ParseFragment(strings.NewReader(markup), choiceMarkupContext())
-	if err != nil {
-		return plain
-	}
-	fragment := &html.Node{Type: html.DocumentNode}
-	for _, node := range nodes {
-		fragment.AppendChild(node)
-	}
-	label := firstChoiceLabel(fragment)
+// Form controls, embedded graphics, and elements that show no text are excluded.
+func readChoicePresentation(label *html.Node, fallback, disambiguationSuffix string) choicePresentation {
+	plain := choicePresentation{label: fallback + disambiguationSuffix}
 	if label == nil {
 		return plain
 	}
@@ -80,22 +48,11 @@ func readChoiceMarkup(markup, fallback string) choicePresentation {
 	} else {
 		title = choiceMarkupText(label, omitted)
 	}
-	presentation := choicePresentation{label: fallback, description: description, preview: choiceMarkupPreview(code)}
+	presentation := choicePresentation{label: fallback + disambiguationSuffix, description: description, preview: choiceMarkupPreview(code)}
 	if title != "" {
-		presentation.label = title + choiceMarkupSuffix(choiceMarkupText(label, nil), fallback)
+		presentation.label = title + disambiguationSuffix
 	}
 	return presentation
-}
-
-// firstChoiceLabel returns the first <label> of fragment in document order,
-// or nil when it holds none.
-func firstChoiceLabel(fragment *html.Node) *html.Node {
-	for _, node := range choiceMarkupNodesBelow(fragment, choiceMarkupSkipped) {
-		if node.Type == html.ElementNode && node.Data == "label" {
-			return node
-		}
-	}
-	return nil
 }
 
 // choiceMarkupHeading returns the first child of label that shows anything,
@@ -115,20 +72,6 @@ func choiceMarkupHeading(label *html.Node) *html.Node {
 		return nil
 	}
 	return nil
-}
-
-// choiceMarkupSuffix returns the disambiguation suffix that fallback, the
-// option's label, adds after text, the label's whole text. It returns "" when
-// fallback does not continue text with such a suffix.
-func choiceMarkupSuffix(text, fallback string) string {
-	if text == "" {
-		return ""
-	}
-	suffix, found := strings.CutPrefix(fallback, text)
-	if !found || !choiceDisambiguation.MatchString(suffix) {
-		return ""
-	}
-	return suffix
 }
 
 // choiceMarkupPreview returns the text of each code element as a Markdown
@@ -211,9 +154,16 @@ func choiceMarkupCodeText(root *html.Node) string {
 // close: the fence is one backtick longer than the longest run of backticks
 // in text, and three backticks at least.
 func literalCodeBlock(text string) string {
-	longest := 0
-	for _, run := range backtickRun.FindAllString(text, -1) {
-		longest = max(longest, len(run))
+	longest, run := 0, 0
+	for i := 0; i < len(text); i++ {
+		if text[i] == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
 	}
 	fence := strings.Repeat("`", max(3, longest+1))
 	return fence + "\n" + text + "\n" + fence

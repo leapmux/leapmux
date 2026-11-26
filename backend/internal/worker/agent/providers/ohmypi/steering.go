@@ -75,8 +75,9 @@ func (a *Agent) resolveUnreadOMPSteer(id string, outcome agent.SteerOutcome) {
 
 // observeOMPUserMessage closes a completed assistant reply when another user
 // message arrives. Several inputs may share the same reply when omp reads
-// them together or reads them during tool use.
-func (a *Agent) observeOMPUserMessage(inputID string) {
+// them together or reads them during tool use. It reports whether inputID
+// matched a tracked identified steer.
+func (a *Agent) observeOMPUserMessage(inputID string) bool {
 	a.Mu.Lock()
 	sessionID := a.sessionHandleLocked()
 	reply := a.replyOutputLocked()
@@ -86,15 +87,19 @@ func (a *Agent) observeOMPUserMessage(inputID string) {
 		reply = nil
 	}
 	steer, found := a.identifiedSteers[inputID]
-	found = found && steer.Receipt.SessionID == sessionID
+	found = found && (steer.Receipt.SessionID == sessionID || (a.sessionID != "" && steer.Receipt.SessionID == a.sessionID))
 	if found {
 		delete(a.identifiedSteers, inputID)
 		if reply == nil {
+			if sessionID != "" {
+				steer.Receipt.SessionID = sessionID
+			}
 			reply = newOMPReplyPrompt(steer.Receipt)
 			a.registerReplyPromptLocked(reply)
 			a.replyOutput = reply
 		} else {
 			reply.appendInput(inputID)
+			steer.Receipt.SessionID = reply.receipt.SessionID
 		}
 		reply.steered = true
 		reply.stop = ""
@@ -113,6 +118,7 @@ func (a *Agent) observeOMPUserMessage(inputID string) {
 		a.dropSteer(inputID)
 		a.reportOMPSteer(steer)
 	}
+	return found
 }
 
 func (a *Agent) observeOMPAssistantBoundary(c *conversation, raw []byte, finished bool) {

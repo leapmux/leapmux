@@ -505,3 +505,47 @@ func TestAntigravityTurnTwoInterruptClosesTurnOneToolStepInSortedOrder(t *testin
 	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
 	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
 }
+
+func TestAntigravityManualCheckpointErrorAndCanceledEndCompactionWithoutRow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		status      string
+		wantOutcome string
+	}{
+		{name: "error", status: contracts.AntigravityStepStatusError, wantOutcome: contracts.CompactionEndOutcomeFailed},
+		{name: "canceled", status: contracts.AntigravityStepStatusCanceled, wantOutcome: contracts.CompactionEndOutcomeAborted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			a.sink.AdoptNativeSession(a.root.id)
+			execID := "exec-compact"
+			a.beginManualCompaction(a.root, execID)
+			raw, err := json.Marshal(map[string]any{
+				"type":     contracts.AntigravityStepTypeCheckpoint,
+				"status":   tc.status,
+				"metadata": map[string]any{"executionId": execID},
+			})
+			require.NoError(t, err)
+			step, err := decodeStep(raw)
+			require.NoError(t, err)
+
+			require.NoError(t, a.persistStep(a.root, 0, step, raw))
+			assert.Empty(t, transcriptMessages(sink), "failed or canceled checkpoint must not persist a transcript row")
+			a.Mu.Lock()
+			assert.True(t, a.root.steps[0].consumed)
+			assert.Nil(t, a.root.manualCompactionExecutionID)
+			a.Mu.Unlock()
+
+			notices := sink.LeapMuxNotifications()
+			require.Contains(t, notices, map[string]any{
+				contracts.NotificationFieldType:    contracts.NotificationTypeCompactionEnded,
+				contracts.NotificationFieldOutcome: tc.wantOutcome,
+			})
+			value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			require.True(t, ok)
+			assert.Nil(t, value)
+		})
+	}
+}

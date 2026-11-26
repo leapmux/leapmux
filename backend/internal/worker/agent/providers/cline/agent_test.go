@@ -1,6 +1,7 @@
 package cline
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -393,4 +394,71 @@ func TestSteerInputRefusesWhatCannotJoinTheTurn(t *testing.T) {
 
 	r.agent.Stop()
 	require.ErrorIs(t, agenttest.SteerInput(r.agent, agent.SteerRequest{Content: "Late."}), errAgentStopped)
+}
+
+func TestSteerInputAdmissionTimeoutForgetsProofAndReturnsUncertain(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.startTurn(t, "Hello.")
+	r.agent.sendWait = 20 * time.Millisecond
+	r.hub.handle(commandSessionSendInput, func(fakeCommand) fakeReply {
+		return fakeReply{Payload: map[string]any{"queued": true}}
+	})
+
+	receipt, err := r.agent.SteerInput(agent.SteerRequest{
+		InputID:   "steer-timeout-1",
+		AttemptID: "att-1",
+		Content:   "Steer without admission event.",
+	})
+	assert.Empty(t, receipt)
+	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+	assert.ErrorContains(t, err, context.DeadlineExceeded.Error())
+
+	r.agent.Mu.Lock()
+	assert.Empty(t, r.agent.steerProofs.writes, "timed-out steer must be forgotten from steerProofs")
+	assert.Nil(t, r.agent.steerProofs.admission)
+	r.agent.Mu.Unlock()
+}
+
+func TestSteerInputSucceedsWhenHubReplyFailsAfterAdmission(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.startTurn(t, "Hello.")
+
+	type steerRes struct {
+		receipt agent.NativeInputReceipt
+		err     error
+	}
+	resCh := make(chan steerRes, 1)
+	go func() {
+		receipt, err := r.agent.SteerInput(agent.SteerRequest{
+			InputID:   "steer-admitted-1",
+			AttemptID: "att-1",
+			Content:   "Admitted before reply fails.",
+		})
+		resCh <- steerRes{receipt: receipt, err: err}
+	}()
+
+	steerCmd, ok := r.hub.waitCommand(commandSessionSendInput)
+	require.True(t, ok)
+
+	r.agent.Mu.Lock()
+	seq := r.agent.steerProofs.lastSequence
+	r.agent.Mu.Unlock()
+	feed := func(event string, payload any) {
+		seq++
+		raw, err := json.Marshal(payload)
+		require.NoError(t, err)
+		r.agent.handleEvent(hubEvent{Event: event, SessionID: r.sessionID(), Sequence: seq, Payload: raw})
+	}
+	queued := pendingPrompt("native-p-admitted", "Admitted before reply fails.")
+	feed(eventRunStarted, map[string]string{"requestId": steerCmd.RequestID, "clientId": steerCmd.ClientID})
+	feed(eventPendingPrompts, map[string]any{"prompts": []nativePendingPrompt{queued}})
+
+	// Now fail the hub command reply after native admission already completed.
+	r.hub.reply(steerCmd.RequestID, fakeReply{Code: "internal_error", Message: "reply failed after admission"})
+
+	res := <-resCh
+	require.NoError(t, res.err)
+	assert.Empty(t, res.receipt)
 }

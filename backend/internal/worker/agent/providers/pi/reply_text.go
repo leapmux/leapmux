@@ -2,7 +2,6 @@ package pi
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -100,7 +99,7 @@ func (m piReplyMessage) text(custom bool) (string, bool) {
 	return providerkit.JoinParagraphs(providerkit.ReadAnthropicContent(blocks).Texts), true
 }
 
-// isSubagentNotification reports a subagent notification that names at least
+// isSubagentNotification reports a subagent notification that lists at least
 // one child with its status, which the browser draws as an agent result
 // rather than as text (piSubagentNotifications).
 func (m piReplyMessage) isSubagentNotification() bool {
@@ -147,7 +146,7 @@ func piPlanStatementText(content []byte) (string, bool) {
 	var args struct {
 		Plan string `json:"plan"`
 	}
-	if json.Unmarshal(call.Args, &args) == nil && strings.TrimSpace(args.Plan) != "" {
+	if json.Unmarshal(call.Args, &args) == nil && agent.TrimJavaScriptSpace(args.Plan) != "" {
 		return "", false
 	}
 	result, hasResult := piToolResultOf(call.Result)
@@ -155,9 +154,9 @@ func piPlanStatementText(content []byte) (string, bool) {
 	resultText := ""
 	switch {
 	case hasResult:
-		resultText = strings.TrimSpace(result.text)
+		resultText = agent.TrimJavaScriptSpace(result.text)
 	case hasPartial:
-		resultText = strings.TrimSpace(partial.text)
+		resultText = agent.TrimJavaScriptSpace(partial.text)
 	}
 	if !call.IsError && hasResult && result.statesPlan {
 		return piPlanReadyNotice, true
@@ -186,6 +185,6 @@ func piToolResultOf(raw json.RawMessage) (piToolResult, bool) {
 	_ = json.Unmarshal(details["plan"], &plan)
 	return piToolResult{
 		text:       providerkit.JoinParagraphs(providerkit.ReadAnthropicContent(blocks).Texts),
-		statesPlan: strings.TrimSpace(plan) != "",
+		statesPlan: agent.TrimJavaScriptSpace(plan) != "",
 	}, true
 }

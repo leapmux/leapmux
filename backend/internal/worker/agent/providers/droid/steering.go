@@ -2,6 +2,8 @@ package droid
 
 import (
 	"log/slog"
+	"maps"
+	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -72,7 +74,8 @@ func (a *Agent) onQueuedMessagesDiscarded(payload []byte, target droidOutputTarg
 	if target.childSessionID == "" {
 		requestID := providerkit.StringField(payload, "requestId")
 		dropped := false
-		for messageID, steer := range a.pendingSteers {
+		for _, messageID := range slices.Sorted(maps.Keys(a.pendingSteers)) {
+			steer := a.pendingSteers[messageID]
 			if requestID == "" || requestID == steer.requestID {
 				delete(a.pendingSteers, messageID)
 				a.reportDroidSteer(target.sink, steer, agent.SteerOutcomeDropped, agent.NativeInputReceipt{})

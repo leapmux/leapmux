@@ -128,7 +128,7 @@ func (a *Agent) droidReplyOwningTool(toolID string) *droidNativeReply {
 }
 
 // droidReplyTurnForTools returns a turn only when the same committed reply
-// owns every tool named by the control request.
+// owns every tool identified by the control request.
 func (a *Agent) droidReplyTurnForTools(toolIDs []string) string {
 	if len(toolIDs) == 0 {
 		return ""

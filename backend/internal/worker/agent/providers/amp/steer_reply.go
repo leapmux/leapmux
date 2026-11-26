@@ -3,23 +3,161 @@ package amp
 import (
 	"log/slog"
 	"slices"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// observeSteeredInput uses the native export to identify a user echo. A
-// stdout user message carries content alone, so identical inputs can echo
-// the same bytes for different submissions.
-func (a *Agent) observeSteeredInput(threadID string) {
+// enqueueSteerWork runs fn on a per-agent serialized FIFO worker off outputMu
+// so steer echo observations and steered turn-end checks preserve event order
+// without stalling stdout reading or Interrupt.
+func (a *Agent) enqueueSteerWork(fn func()) bool {
+	a.mu.Lock()
+	if a.stopped {
+		a.mu.Unlock()
+		return false
+	}
+	a.steerWorkWG.Add(1)
+	a.mu.Unlock()
+
+	a.steerWorkMu.Lock()
+	a.steerWorkQueue = append(a.steerWorkQueue, fn)
+	start := !a.steerWorkRunning
+	if start {
+		a.steerWorkRunning = true
+	}
+	a.steerWorkMu.Unlock()
+
+	if start {
+		go a.drainSteerWork()
+	}
+	return true
+}
+
+func (a *Agent) drainSteerWork() {
+	for {
+		a.steerWorkMu.Lock()
+		if len(a.steerWorkQueue) == 0 {
+			a.steerWorkRunning = false
+			a.steerWorkMu.Unlock()
+			return
+		}
+		fn := a.steerWorkQueue[0]
+		a.steerWorkQueue[0] = nil
+		a.steerWorkQueue = a.steerWorkQueue[1:]
+		a.steerWorkMu.Unlock()
+
+		fn()
+		a.steerWorkWG.Done()
+	}
+}
+
+func (a *Agent) hasPendingSteerWork() bool {
+	a.steerWorkMu.Lock()
+	defer a.steerWorkMu.Unlock()
+	return a.steerWorkRunning || len(a.steerWorkQueue) > 0
+}
+
+func (a *Agent) waitSteerWork() {
+	a.steerWorkWG.Wait()
+}
+
+// observeSteeredInputAsync schedules native export reconciliation for a user
+// echo off outputMu while reserving a transcript position so any resolved steer
+// row stays ordered ahead of subsequent assistant rows.
+func (a *Agent) observeSteeredInputAsync(proc *ampProcess, threadID string) {
 	a.mu.Lock()
 	reply := a.turn.reply
+	pending := a.pendingTrackedSteerLocked(threadID)
+	frameCount := 0
+	if reply != nil {
+		frameCount = len(reply.frames)
+	}
+	a.mu.Unlock()
+	if !pending {
+		return
+	}
+	a.bumpExportGen()
+
+	var opsMu sync.Mutex
+	var ops []func() error
+	var ready bool
+	publish, reserveErr := agent.ReserveTranscriptSequence(a.sink, "resolve Amp steer echo", func(agent.TranscriptSequence) error {
+		opsMu.Lock()
+		if !ready {
+			opsMu.Unlock()
+			return agent.ErrOutputInFlight
+		}
+		pendingOps := ops
+		opsMu.Unlock()
+		for len(pendingOps) > 0 {
+			if err := pendingOps[0](); err != nil {
+				return err
+			}
+			pendingOps[0] = nil
+			pendingOps = pendingOps[1:]
+			opsMu.Lock()
+			ops = pendingOps
+			opsMu.Unlock()
+		}
+		return nil
+	})
+	if reserveErr != nil {
+		if !agent.OutputRetained(reserveErr) {
+			slog.Warn("reserve Amp steer echo position", "agent_id", a.agentID, "error", reserveErr)
+		}
+		return
+	}
+
+	var publishOnce sync.Once
+	flushReserved := func() error {
+		opsMu.Lock()
+		ready = true
+		opsMu.Unlock()
+		var err error
+		publishOnce.Do(func() {
+			err = publish()
+		})
+		return err
+	}
+	runReserved := func(resolutions []agent.SteerResolution) bool {
+		captured := make([]func() error, 0, len(resolutions))
+		for _, resolution := range resolutions {
+			captured = append(captured, a.sink.CaptureSteerResolution(resolution))
+		}
+		opsMu.Lock()
+		ops = captured
+		opsMu.Unlock()
+		if err := flushReserved(); !agent.OutputRetained(err) {
+			slog.Warn("retain the Amp steer echo", "agent_id", a.agentID, "error", err)
+			return false
+		}
+		return true
+	}
+
+	if !a.enqueueSteerWork(func() {
+		defer func() { _ = flushReserved() }()
+		a.observeSteeredInputWork(proc, threadID, reply, frameCount, runReserved)
+	}) {
+		_ = flushReserved()
+	}
+}
+
+func (a *Agent) observeSteeredInputWork(
+	proc *ampProcess,
+	threadID string,
+	reply *ampInputReply,
+	frameCount int,
+	runReserved func([]agent.SteerResolution) bool,
+) {
+	a.mu.Lock()
 	pending := a.pendingTrackedSteerLocked(threadID)
 	a.mu.Unlock()
 	if !pending {
 		return
 	}
-	ctx, cancel := a.exportContext()
+	ctx, cancel := a.exportContextForProc(proc)
 	defer cancel()
 	exported, err := a.readInputExport(ctx, threadID)
 	if err != nil {
@@ -27,7 +165,7 @@ func (a *Agent) observeSteeredInput(threadID string) {
 	}
 
 	a.mu.Lock()
-	if a.stopped || threadID != a.threadID || a.turn.reply != reply {
+	if a.stopped || threadID != a.threadID || (reply != nil && a.turn.reply != reply) {
 		a.mu.Unlock()
 		return
 	}
@@ -35,7 +173,7 @@ func (a *Agent) observeSteeredInput(threadID string) {
 	awaiting := make(map[string]*ampSteerSubmission)
 	for _, candidate := range a.nativeSteers {
 		if candidate.threadID == threadID && candidate.resolution.Receipt.InputID != "" &&
-			!candidate.echoed && !candidate.uncertain && candidate.nativeID != "" {
+			candidate.state == ampSteerPending && candidate.nativeID != "" {
 			awaiting[candidate.nativeID] = candidate
 		}
 	}
@@ -43,66 +181,201 @@ func (a *Agent) observeSteeredInput(threadID string) {
 		a.mu.Unlock()
 		return
 	}
-	var echoes []*ampSteerSubmission
-	if reply == nil {
+	var firstSteer *ampSteerSubmission
+	createdReply := false
+	candidateReply := reply
+	if candidateReply == nil {
+		// If a prior async echo already installed turn.reply, reuse it.
+		candidateReply = a.turn.reply
+	}
+	if candidateReply == nil {
 		// The native actor can read a steer in its own turn after the prior
 		// turn has settled. Begin the capture at its first proved input.
 		for _, message := range exported.Messages {
 			if first := awaiting[message.ID]; first != nil {
-				reply = &ampInputReply{receipt: first.resolution.Receipt, startsWithSteer: true}
-				echoes = append(echoes, first)
+				candidateReply = &ampInputReply{receipt: first.resolution.Receipt, startsWithSteer: true}
+				firstSteer = first
+				createdReply = true
 				break
 			}
 		}
 	}
-	if reply == nil || reply.receipt.SessionID != threadID {
+	if candidateReply == nil || candidateReply.receipt.SessionID != threadID {
 		a.mu.Unlock()
 		return
 	}
-	history := exported.replyHistory(reply.receipt.InputID)
-	if history.conflict || !reply.matchesHistoryPrefix(history) {
+	prefixCount := min(frameCount, len(candidateReply.frames))
+	snapshot := ampInputReply{
+		receipt:  candidateReply.receipt,
+		frames:   slices.Clone(candidateReply.frames[:prefixCount]),
+		unproved: candidateReply.unproved,
+	}
+	a.mu.Unlock()
+
+	history := exported.replyHistory(snapshot.receipt.InputID)
+	if history.conflict || !snapshot.matchesHistoryPrefix(history) {
+		return
+	}
+
+	a.mu.Lock()
+	if a.stopped || threadID != a.threadID || (!createdReply && a.turn.reply != candidateReply) ||
+		(createdReply && a.turn.reply != nil) {
 		a.mu.Unlock()
 		return
+	}
+	var echoes []*ampSteerSubmission
+	if firstSteer != nil && firstSteer.state == ampSteerPending {
+		echoes = append(echoes, firstSteer)
 	}
 	for _, boundary := range history.steers {
-		if candidate := awaiting[boundary.inputID]; candidate != nil && boundary.afterFrame == len(reply.frames) {
+		if candidate := awaiting[boundary.inputID]; candidate != nil && candidate.state == ampSteerPending && boundary.afterFrame == frameCount {
 			echoes = append(echoes, candidate)
 		}
 	}
+	startedTurn := false
+	if createdReply && len(echoes) > 0 && !a.turn.active {
+		a.turn = turnState{active: true, startedAt: a.now()}
+		startedTurn = true
+	}
+	a.mu.Unlock()
 	if len(echoes) == 0 {
-		a.mu.Unlock()
 		return
 	}
-	started := !a.turn.active
-	if started {
-		a.turn = turnState{active: true, startedAt: a.now()}
-	}
-	a.turn.reply = reply
-	a.mu.Unlock()
-	if started {
+	if startedTurn {
+		// Publish the active turn before the echo can release the queue.
 		a.PublishTurnActive()
 	}
+
+	resolutions := make([]agent.SteerResolution, 0, len(echoes))
 	for _, submission := range echoes {
-		if a.resolveSteerEcho(submission) && submission.nativeID != reply.receipt.InputID {
+		res := submission.resolution
+		res.Outcome = agent.SteerOutcomeEchoed
+		resolutions = append(resolutions, res)
+	}
+	if !runReserved(resolutions) {
+		if startedTurn {
 			a.mu.Lock()
-			if a.turn.reply == reply {
-				reply.steers = append(reply.steers, submission.resolution.Receipt)
+			if a.turn.active && a.turn.reply == nil && a.turn.untrackedFrames == 0 {
+				a.turn = turnState{}
+				a.mu.Unlock()
+				a.PublishTurnActive()
+			} else {
+				a.mu.Unlock()
 			}
-			a.mu.Unlock()
+		}
+		return
+	}
+
+	a.mu.Lock()
+	for _, submission := range echoes {
+		if submission.state == ampSteerPending {
+			submission.state = ampSteerEchoed
 		}
 	}
+	if createdReply && !a.stopped && threadID == a.threadID && a.turn.reply == nil {
+		if a.turn.untrackedFrames > 0 {
+			candidateReply.unproved = true
+		}
+		a.turn.reply = candidateReply
+	}
+	if a.turn.reply == candidateReply {
+		for _, submission := range echoes {
+			if submission.nativeID != candidateReply.receipt.InputID {
+				candidateReply.steers = append(candidateReply.steers, submission.resolution.Receipt)
+			}
+		}
+	}
+	a.mu.Unlock()
+}
+
+// verifySteeredTurnEndAsync checks off outputMu whether an end_turn message
+// truly ended a steered execution or whether a pending steer continues it.
+func (a *Agent) verifySteeredTurnEndAsync(proc *ampProcess, threadID string, reply *ampInputReply, frameCount int) {
+	a.enqueueSteerWork(func() {
+		a.mu.Lock()
+		if a.stopped || !a.turn.active || a.turn.reply != reply || (reply != nil && len(reply.frames) != frameCount) {
+			a.mu.Unlock()
+			return
+		}
+		pending := a.pendingTrackedSteerLocked(threadID)
+		a.mu.Unlock()
+
+		if pending && reply != nil {
+			ctx, cancel := a.exportContextForProc(proc)
+			history, err := a.readReplyHistory(ctx, reply.receipt)
+			cancel()
+			if err == nil && !history.conflict && reply.matchesHistoryPrefixLen(history, frameCount) {
+				if history.ended && len(history.assistant) == frameCount {
+					a.mu.Lock()
+					if a.turn.reply == reply {
+						reply.settledHistory = &history
+					}
+					a.mu.Unlock()
+				} else {
+					for _, boundary := range history.steers {
+						if boundary.afterFrame >= frameCount {
+							return
+						}
+					}
+					if len(history.assistant) != frameCount {
+						return
+					}
+				}
+			}
+		}
+
+		a.outputMu.Lock()
+		defer a.outputMu.Unlock()
+		a.mu.Lock()
+		stillCurrent := !a.stopped && a.turn.active && a.turn.reply == reply && (reply == nil || len(reply.frames) == frameCount)
+		if stillCurrent {
+			a.finishEchoedSteersLocked(threadID)
+		}
+		a.mu.Unlock()
+		if stillCurrent {
+			a.finishTurn(agent.MessageCompletionComplete, nil)
+		}
+	})
 }
 
 func (a *Agent) pendingTrackedSteerLocked(threadID string) bool {
 	return threadID != "" && threadID == a.threadID && slices.ContainsFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool {
-		return submission.threadID == threadID && submission.resolution.Receipt.InputID != "" && !submission.echoed && !submission.uncertain
+		return submission.threadID == threadID && submission.resolution.Receipt.InputID != "" && submission.state == ampSteerPending
 	})
 }
 
 func (a *Agent) pruneTrackedSteersLocked() {
 	a.nativeSteers = slices.DeleteFunc(a.nativeSteers, func(submission *ampSteerSubmission) bool {
-		return submission.finished && submission.resolution.Receipt.InputID != ""
+		return submission.state == ampSteerFinished && submission.resolution.Receipt.InputID != ""
 	})
+}
+
+func (a *Agent) finishReplySteersLocked(reply *ampInputReply, completion agent.MessageCompletion) {
+	if reply == nil {
+		return
+	}
+	owned := make(map[string]bool, len(reply.steers)+1)
+	if completion == agent.MessageCompletionComplete {
+		if reply.startsWithSteer {
+			owned[reply.receipt.InputID] = true
+		}
+		for _, receipt := range reply.steers {
+			owned[receipt.InputID] = true
+		}
+	} else if !reply.startsWithSteer {
+		for _, receipt := range reply.steers {
+			owned[receipt.InputID] = true
+		}
+	}
+	if len(owned) == 0 {
+		return
+	}
+	for _, submission := range a.nativeSteers {
+		if submission.state == ampSteerEchoed && owned[submission.nativeID] {
+			submission.markFinished()
+		}
+	}
+	a.pruneTrackedSteersLocked()
 }
 
 // Once the agent stops, its recovery reader can no longer finish an
@@ -112,8 +385,8 @@ func (a *Agent) retireStoppedTrackedSteers() {
 	var receipts []agent.NativeInputReceipt
 	for _, submission := range a.nativeSteers {
 		receipt := submission.resolution.Receipt
-		if receipt.InputID != "" && submission.echoed && !submission.finished {
-			submission.finished = true
+		if receipt.InputID != "" && submission.state == ampSteerEchoed {
+			submission.markFinished()
 			receipts = append(receipts, receipt)
 		}
 	}
@@ -126,63 +399,23 @@ func (a *Agent) retireStoppedTrackedSteers() {
 
 func (a *Agent) resolveSteerEcho(submission *ampSteerSubmission) bool {
 	a.mu.Lock()
-	echoed := submission.echoed
+	alreadyEchoed := submission.state == ampSteerEchoed || submission.state == ampSteerFinished
 	a.mu.Unlock()
-	if echoed {
+	if alreadyEchoed {
 		return true
 	}
-	if submission.ticket != 0 {
-		a.steers.Echo(submission.ticket)
-		a.steers.Settle(a.sink)
-	} else {
-		resolution := submission.resolution
-		resolution.Outcome = agent.SteerOutcomeEchoed
-		if err := agent.RetainSteerResolution(a.sink, resolution); !agent.OutputRetained(err) {
-			slog.Warn("retain the Amp steer echo", "agent_id", a.agentID, "error", err)
-			return false
-		}
+	resolution := submission.resolution
+	resolution.Outcome = agent.SteerOutcomeEchoed
+	if err := agent.RetainSteerResolution(a.sink, resolution); !agent.OutputRetained(err) {
+		slog.Warn("retain the Amp steer echo", "agent_id", a.agentID, "error", err)
+		return false
 	}
 	a.mu.Lock()
-	submission.echoed = true
+	if submission.state == ampSteerPending {
+		submission.state = ampSteerEchoed
+	}
 	a.mu.Unlock()
 	return true
-}
-
-// nativeSteeredTurnEnd distinguishes an assistant's stream end from the
-// durable end of an execution. Amp can print end_turn before it reads a
-// queued steer in that same execution.
-func (a *Agent) nativeSteeredTurnEnd(threadID string, reply *ampInputReply) bool {
-	if reply == nil {
-		return true
-	}
-	a.mu.Lock()
-	pending := a.pendingTrackedSteerLocked(threadID)
-	a.mu.Unlock()
-	if !pending && len(reply.steers) == 0 && !reply.startsWithSteer {
-		return true
-	}
-	ctx, cancel := a.exportContext()
-	defer cancel()
-	history, err := a.readReplyHistory(ctx, reply.receipt)
-	if err != nil || history.conflict || !reply.matchesHistoryPrefix(history) {
-		return true
-	}
-	if history.ended && len(history.assistant) == len(reply.frames) {
-		a.mu.Lock()
-		if a.turn.reply == reply {
-			reply.settledHistory = &history
-		}
-		a.mu.Unlock()
-		return true
-	}
-	// A durable steer after the last observed assistant frame links the
-	// following stream output to this execution.
-	for _, boundary := range history.steers {
-		if boundary.afterFrame >= len(reply.frames) {
-			return false
-		}
-	}
-	return len(history.assistant) == len(reply.frames)
 }
 
 type recoveredSteer struct {
@@ -197,7 +430,7 @@ func (a *Agent) recoverTrackedSteers(exported *ampThreadExport, submissions []*a
 	a.mu.Lock()
 	for _, submission := range submissions {
 		if submission.threadID == exported.ID && submission.resolution.Receipt.InputID != "" &&
-			!submission.finished && !submission.uncertain && submission.nativeID != "" {
+			(submission.state == ampSteerPending || submission.state == ampSteerEchoed) && submission.nativeID != "" {
 			tracked[submission.nativeID] = submission
 		}
 	}
@@ -280,7 +513,7 @@ func (a *Agent) recoverSteeredReply(history ampReplyHistory, steers []recoveredS
 	}
 	a.mu.Lock()
 	for _, steer := range steers {
-		steer.submission.finished = true
+		steer.submission.markFinished()
 	}
 	a.pruneTrackedSteersLocked()
 	a.mu.Unlock()

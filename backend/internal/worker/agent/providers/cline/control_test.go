@@ -747,3 +747,67 @@ func TestAnAutomaticAnswerDoesNotStallTheStream(t *testing.T) {
 	<-answered
 	waitFor(t, func() bool { return r.sink.NotificationCount() >= 1 }, "every event after the approval reaches the agent")
 }
+
+func TestClineQuestionAnswerEdgeCases(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		raw    []byte
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "preserves leading and trailing JS whitespace around visible text",
+			raw:    agent.ControlResponseEnvelope("q1", map[string]any{"behavior": "allow", contracts.ClineQuestionAnswerAnswer: "\uFEFF  hello \t "}),
+			want:   "\uFEFF  hello \t ",
+			wantOK: true,
+		},
+		{
+			name: "non-string answer number",
+			raw:  agent.ControlResponseEnvelope("q1", map[string]any{"behavior": "allow", contracts.ClineQuestionAnswerAnswer: 123}),
+		},
+		{
+			name: "non-string answer bool",
+			raw:  agent.ControlResponseEnvelope("q1", map[string]any{"behavior": "allow", contracts.ClineQuestionAnswerAnswer: true}),
+		},
+		{
+			name: "non-string answer object",
+			raw:  agent.ControlResponseEnvelope("q1", map[string]any{"behavior": "allow", contracts.ClineQuestionAnswerAnswer: map[string]any{"v": "a"}}),
+		},
+		{
+			name: "non-string answer array",
+			raw:  agent.ControlResponseEnvelope("q1", map[string]any{"behavior": "allow", contracts.ClineQuestionAnswerAnswer: []string{"a"}}),
+		},
+		{
+			name: "null answer",
+			raw:  agent.ControlResponseEnvelope("q1", map[string]any{"behavior": "allow", contracts.ClineQuestionAnswerAnswer: nil}),
+		},
+		{
+			name: "non-object inner response string",
+			raw:  []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"q1","response":"not-an-object"}}`),
+		},
+		{
+			name: "non-object inner response array",
+			raw:  []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"q1","response":[]}}`),
+		},
+		{
+			name: "non-object inner response null",
+			raw:  []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"q1","response":null}}`),
+		},
+		{
+			name: "empty input",
+			raw:  nil,
+		},
+		{
+			name: "invalid json",
+			raw:  []byte(`{invalid`),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := questionAnswer(tc.raw)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

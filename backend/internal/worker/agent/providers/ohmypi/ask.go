@@ -214,7 +214,7 @@ func (a *Agent) answerAsk(data []byte) error {
 		// A handed-off call's first dialog is gone: the reader cancelled it, omp
 		// withdrew it, or it was never published. omp ignores an answer to it.
 		a.Mu.Unlock()
-		return fmt.Errorf("the question %q is no longer open", answer.ID)
+		return fmt.Errorf("%w: the question %q is no longer open", agent.ErrControlRequestNotPending, answer.ID)
 	}
 	plan, err := newAskPlan(call.questions, answer.Answers)
 	if err != nil {
@@ -251,7 +251,7 @@ func (a *Agent) cancelAsk(requestID string, data []byte, stop agent.StopContext)
 	}
 	if call.handOff || call.plan != nil {
 		a.Mu.Unlock()
-		return true, fmt.Errorf("the question %q is no longer open", requestID)
+		return true, fmt.Errorf("%w: the question %q is no longer open", agent.ErrControlRequestNotPending, requestID)
 	}
 	call.handOff = true
 	a.Mu.Unlock()
@@ -364,7 +364,7 @@ func newAskPlan(questions []contracts.OhMyPiAskQuestion, answers []contracts.OhM
 			}
 			desired[value] = true
 		}
-		custom := strings.TrimSpace(answer.Custom) != ""
+		custom := agent.TrimJavaScriptSpace(answer.Custom) != ""
 		if custom && !question.AllowCustomText {
 			return nil, fmt.Errorf("question %q accepts selected options only", question.ID)
 		}

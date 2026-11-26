@@ -114,6 +114,8 @@ type conversation struct {
 	// sink is the transcript the conversation writes to: the agent's own sink, or
 	// the child sink of a subagent.
 	sink agent.ProviderServices
+	// parentSink owns child creation, prompt persistence, and cleanup for this child.
+	parentSink agent.ProviderServices
 	// childID is the child agent of a subagent's conversation, and empty for the
 	// session's own.
 	childID string
@@ -354,6 +356,11 @@ func (a *Agent) takePendingSteer() {
 	a.Mu.Unlock()
 }
 
+func (env agentEndEnvelope) yielded(end bool) bool {
+	return env.Yielded != nil && *env.Yielded ||
+		end && env.Yielded == nil && (env.IsTerminal == nil || *env.IsTerminal)
+}
+
 // handleAgentEnd ends the session's turn and persists its divider. An end with
 // `isTerminal: false` that a pending steer continues only ends the run: the turn
 // stays open for the run that the steer starts. See agentEndEnvelope.
@@ -363,8 +370,7 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 	if decodeErr != nil {
 		slog.Warn("omp agent_end decode failed", "agent_id", a.AgentID(), "error", decodeErr)
 	}
-	yielded := decodeErr == nil && (env.Yielded != nil && *env.Yielded ||
-		env.Yielded == nil && (env.IsTerminal == nil || *env.IsTerminal))
+	yielded := decodeErr == nil && env.yielded(true)
 	endedAt := a.Clock().Now()
 	a.Mu.Lock()
 	a.rootConversationLocked().ttsrPending = false
@@ -403,7 +409,7 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 		a.ResetCumulativeOutput()
 	}
 
-	content := agentEndContent(raw, a.currentUsageSnapshot(), turnDurationMs(turn.startedAt, endedAt))
+	content := agentEndContent(raw, a.currentUsageSnapshot(), providerkit.TurnDurationMillis(turn.startedAt, endedAt))
 	if turn.interruptRequested {
 		content.Completion = agent.MessageCompletionInterrupted
 	}
@@ -417,17 +423,6 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 		providerkit.ResetSpansAndProgress(a.sink)
 	}
 	a.refreshSessionStatsAsync()
-}
-
-// turnDurationMs measures one turn in milliseconds, or nil for a turn whose start
-// this worker never saw and for a clock that moved backwards. The browser draws
-// no time for an absent field, and "(0ms)" for a real zero.
-func turnDurationMs(startedAt, endedAt time.Time) *int64 {
-	if startedAt.IsZero() || endedAt.Before(startedAt) {
-		return nil
-	}
-	ms := endedAt.Sub(startedAt).Milliseconds()
-	return &ms
 }
 
 // handleMessageUpdate adds one streamed delta of the session's assistant message
@@ -629,12 +624,14 @@ func (a *Agent) handleMessageEnd(c *conversation, raw []byte) {
 			}
 			return
 		}
-		a.observeOMPUserMessage(message.SteerInputID)
-		if message.SteerInputID != "" {
+		if a.observeOMPUserMessage(message.SteerInputID) {
 			return
 		}
 		if message.Steering {
 			a.takePendingSteer()
+		}
+		if message.SteerInputID != "" {
+			return
 		}
 		if text, valid := steerEchoText(message.Content); valid && a.steers.EchoKey(text) {
 			a.steers.Settle(a.sink)
@@ -757,15 +754,21 @@ func steerEchoText(content json.RawMessage) (string, bool) {
 	if json.Unmarshal(content, &blocks) != nil || blocks == nil {
 		return "", false
 	}
+	parts := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		if block == nil || block.Type != contentBlockText && block.Type != contentBlockImage {
 			return "", false
 		}
-		if block.Type == contentBlockText && block.Text == nil {
-			return "", false
+		if block.Type == contentBlockText {
+			if block.Text == nil {
+				return "", false
+			}
+			if *block.Text != "" {
+				parts = append(parts, *block.Text)
+			}
 		}
 	}
-	return messageText(content), true
+	return strings.Join(parts, "\n"), true
 }
 
 func messageText(content json.RawMessage) string {

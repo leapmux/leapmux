@@ -3,6 +3,7 @@ package amp
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -50,11 +51,51 @@ type ampReplyFrame struct {
 }
 
 func ampReplyFrameDigest(blocks []ampBlock) ([sha256.Size]byte, error) {
-	encoded, err := json.Marshal(blocks)
-	if err != nil {
-		return [sha256.Size]byte{}, err
+	hasher := sha256.New()
+	writeString := func(s string) {
+		var lenBuf [8]byte
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(s)))
+		_, _ = hasher.Write(lenBuf[:])
+		_, _ = hasher.Write([]byte(s))
 	}
-	return agent.JSONCanonicalDigest(encoded)
+	writeRaw := func(raw json.RawMessage) error {
+		if len(raw) == 0 {
+			_, _ = hasher.Write([]byte{0})
+			return nil
+		}
+		digest, err := agent.JSONCanonicalDigest(raw)
+		if err != nil {
+			return err
+		}
+		_, _ = hasher.Write([]byte{1})
+		_, _ = hasher.Write(digest[:])
+		return nil
+	}
+	var countBuf [8]byte
+	binary.BigEndian.PutUint64(countBuf[:], uint64(len(blocks)))
+	_, _ = hasher.Write(countBuf[:])
+	for _, block := range blocks {
+		writeString(block.Type)
+		writeString(block.Text)
+		writeString(block.Thinking)
+		writeString(block.ID)
+		writeString(block.Name)
+		writeString(block.ToolUseID)
+		if block.IsError {
+			_, _ = hasher.Write([]byte{1})
+		} else {
+			_, _ = hasher.Write([]byte{0})
+		}
+		if err := writeRaw(block.Input); err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		if err := writeRaw(block.Content); err != nil {
+			return [sha256.Size]byte{}, err
+		}
+	}
+	var sum [sha256.Size]byte
+	hasher.Sum(sum[:0])
+	return sum, nil
 }
 
 func (a *Agent) captureReplyFrame(threadID string) (*ampInputReply, int) {
@@ -146,11 +187,6 @@ func isAmpExportToolResult(message ampExportMessage) bool {
 	return true
 }
 
-func (history ampReplyHistory) blocksTool(toolUseID string) bool {
-	_, ok := history.toolFrame(toolUseID)
-	return ok
-}
-
 func (history ampReplyHistory) toolFrame(toolUseID string) (int, bool) {
 	for i, assistant := range history.assistant {
 		for _, raw := range assistant.Content {
@@ -195,10 +231,15 @@ func (reply *ampInputReply) project(history ampReplyHistory) (agent.NativeReplyT
 }
 
 func (reply *ampInputReply) matchesHistoryPrefix(history ampReplyHistory) bool {
-	if reply.unproved || !history.present || len(history.assistant) < len(reply.frames) {
+	return reply.matchesHistoryPrefixLen(history, len(reply.frames))
+}
+
+func (reply *ampInputReply) matchesHistoryPrefixLen(history ampReplyHistory, frameCount int) bool {
+	if reply.unproved || !history.present || len(reply.frames) < frameCount || len(history.assistant) < frameCount {
 		return false
 	}
-	for i, live := range reply.frames {
+	for i := 0; i < frameCount; i++ {
+		live := reply.frames[i]
 		message := history.assistant[i]
 		if message.State.Type != "complete" {
 			return false
@@ -223,15 +264,19 @@ func (a *Agent) readReplyHistory(ctx context.Context, receipt agent.NativeInputR
 	return exported.replyHistory(receipt.InputID), nil
 }
 
-func (a *Agent) readInputExport(ctx context.Context, threadID string) (*ampThreadExport, error) {
-	raw, err := a.exportThread(ctx, threadID)
-	if err != nil {
-		return nil, err
+func (a *Agent) launchReplyWork(fn func()) bool {
+	a.mu.Lock()
+	if a.stopped {
+		a.mu.Unlock()
+		return false
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return parseThreadExport(raw, threadID)
+	a.replyWorkWG.Add(1)
+	a.mu.Unlock()
+	go func() {
+		defer a.replyWorkWG.Done()
+		fn()
+	}()
+	return true
 }
 
 func (a *Agent) completeInputReply(reply *ampInputReply, completion agent.MessageCompletion) {
@@ -240,7 +285,7 @@ func (a *Agent) completeInputReply(reply *ampInputReply, completion agent.Messag
 	}
 	if completion != agent.MessageCompletionComplete {
 		if !reply.startsWithSteer {
-			a.retireInputReply(reply.receipt)
+			a.retireReplyInputs(reply)
 		}
 		return
 	}
@@ -250,7 +295,9 @@ func (a *Agent) completeInputReply(reply *ampInputReply, completion agent.Messag
 	}
 	// Keep history reads off the output reader. Later native turns can start
 	// while this submission waits for its own export to become visible.
-	go a.publishInputReply(reply)
+	if !a.launchReplyWork(func() { a.publishInputReply(reply) }) {
+		a.retireReplyInputs(reply)
+	}
 }
 
 func (a *Agent) publishInputReply(reply *ampInputReply) {
@@ -314,18 +361,20 @@ func (a *Agent) bindReplyPermission(ctx context.Context, control agent.ControlRe
 		return
 	}
 	receipt := reply.receipt
-	steers := make(map[string]bool, len(reply.steers))
-	for _, steer := range reply.steers {
-		steers[steer.InputID] = true
-	}
 	a.mu.Unlock()
-	go func() {
+	a.launchReplyWork(func() {
 		for attempt := 0; attempt < ampExportAttempts && ctx.Err() == nil; attempt++ {
 			history, err := a.readReplyHistory(ctx, receipt)
 			if err != nil || history.conflict || history.ended {
 				return
 			}
 			if frame, matched := history.toolFrame(toolUseID); matched {
+				a.mu.Lock()
+				steers := make(map[string]bool, len(reply.steers))
+				for _, steer := range reply.steers {
+					steers[steer.InputID] = true
+				}
+				a.mu.Unlock()
 				inputIDs := []string{receipt.InputID}
 				for _, boundary := range history.steers {
 					if steers[boundary.inputID] && boundary.afterFrame <= frame {
@@ -343,7 +392,7 @@ func (a *Agent) bindReplyPermission(ctx context.Context, control agent.ControlRe
 				return
 			}
 		}
-	}()
+	})
 }
 
 func replyTextMessageKey(receipt agent.NativeInputReceipt, frame, block int) string {

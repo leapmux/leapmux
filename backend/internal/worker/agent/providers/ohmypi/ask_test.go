@@ -255,7 +255,7 @@ func TestAskRefusesAnAnswerToNoOpenQuestion(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	err := r.agent.SendRawInput(agent.RawInput{Data: askAnswer(t, "gone", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"0"}})})
-	assert.ErrorContains(t, err, "no longer open")
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
 
 	r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
 	answer := askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"0"}})
@@ -312,7 +312,7 @@ func TestAskCancellationEndsTheBridge(t *testing.T) {
 	assert.Equal(t, true, answers[0]["cancelled"])
 
 	err := r.agent.SendRawInput(agent.RawInput{Data: askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"0"}})})
-	assert.ErrorContains(t, err, "no longer open")
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
 	r.emit(askEnd("call_1"))
 	assert.Empty(t, r.sink.CanceledControls(), "the reader closed the request already")
 }
@@ -348,7 +348,7 @@ func TestAskWithdrawnByOmp(t *testing.T) {
 		`{"type":"extension_ui_request","id":"c","method":"cancel","targetId":"158b2ba4525bfb89"}`)
 	assert.Equal(t, []string{"158b2ba4525bfb89"}, r.sink.CanceledControls())
 	err := r.agent.SendRawInput(agent.RawInput{Data: askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"0"}})})
-	assert.ErrorContains(t, err, "no longer open", "omp no longer waits for the answer")
+	require.ErrorIs(t, err, agent.ErrControlRequestNotPending, "omp no longer waits for the answer")
 }
 
 func TestAskAPublishFailureCancelsTheDialog(t *testing.T) {
@@ -589,4 +589,144 @@ func TestAskPlanRequiresTheExactNativeCustomInputTitle(t *testing.T) {
 			assert.Equal(t, "Zig", value, "a refused shape does not consume the pending answer")
 		})
 	}
+}
+
+func TestCancelAskBoundaries(t *testing.T) {
+	t.Parallel()
+	cancelFrame := []byte(`{"type":"extension_ui_response","id":"158b2ba4525bfb89","cancelled":true}`)
+
+	t.Run("already cancelled returns ErrControlRequestNotPending", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
+		require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: cancelFrame}))
+		err := r.agent.SendRawInput(agent.RawInput{Data: cancelFrame})
+		require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+	})
+
+	t.Run("already answered returns ErrControlRequestNotPending", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
+		answer := askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"0"}})
+		require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: answer}))
+		err := r.agent.SendRawInput(agent.RawInput{Data: cancelFrame})
+		require.ErrorIs(t, err, agent.ErrControlRequestNotPending)
+	})
+
+	t.Run("definite write failure resets handOff so the question stays open", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
+		r.agent.SetStoppedForTest(true)
+		err := r.agent.SendRawInput(agent.RawInput{Data: cancelFrame})
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+		r.agent.SetStoppedForTest(false)
+
+		r.agent.Mu.Lock()
+		call := r.agent.asks.byRequest("158b2ba4525bfb89")
+		require.NotNil(t, call)
+		assert.False(t, call.handOff, "definite write failure must reset call.handOff")
+		r.agent.Mu.Unlock()
+
+		answer := askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"1"}})
+		require.NoError(t, r.agent.SendRawInput(agent.RawInput{Data: answer}))
+		answers := r.waitForDialogAnswers(1)
+		assert.Equal(t, "PostgreSQL", answers[0]["value"])
+	})
+
+	t.Run("ErrDeliveryUncertain keeps handOff set", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
+		r.agent.SetStdinForTest(partialDialogStdin{})
+		err := r.agent.SendRawInput(agent.RawInput{Data: cancelFrame})
+		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+
+		r.agent.Mu.Lock()
+		call := r.agent.asks.byRequest("158b2ba4525bfb89")
+		require.NotNil(t, call)
+		assert.True(t, call.handOff, "uncertain cancel delivery must keep call.handOff")
+		r.agent.Mu.Unlock()
+
+		require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: cancelFrame}), agent.ErrControlRequestNotPending)
+		answer := askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"0"}})
+		require.ErrorIs(t, r.agent.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlRequestNotPending)
+	})
+}
+
+func TestNewAskPlanValidationAndJavaScriptWhitespace(t *testing.T) {
+	t.Parallel()
+	strictSingle := []contracts.OhMyPiAskQuestion{{
+		ID:              "q1",
+		Question:        "Pick one",
+		AllowCustomText: false,
+		Options:         []contracts.OhMyPiAskOption{{Value: "0", Label: "A"}, {Value: "1", Label: "B"}},
+	}}
+
+	t.Run("U+FEFF BOM with AllowCustomText false and valid selection succeeds", func(t *testing.T) {
+		t.Parallel()
+		plan, err := newAskPlan(strictSingle, []contracts.OhMyPiAskQuestionAnswer{{ID: "q1", Selected: []string{"0"}, Custom: "\uFEFF"}})
+		require.NoError(t, err)
+		val, err := plan.respond(dialogHeader{Method: contracts.OhMyPiDialogMethodSelect, Title: "Pick one", Options: []string{"A", "B"}})
+		require.NoError(t, err)
+		assert.Equal(t, "A", val)
+	})
+
+	t.Run("U+FEFF BOM alone on required single-select has no answer", func(t *testing.T) {
+		t.Parallel()
+		allowCustom := []contracts.OhMyPiAskQuestion{{
+			ID:              "q1",
+			Question:        "Pick one",
+			AllowCustomText: true,
+			Options:         []contracts.OhMyPiAskOption{{Value: "0", Label: "A"}},
+		}}
+		_, err := newAskPlan(allowCustom, []contracts.OhMyPiAskQuestionAnswer{{ID: "q1", Custom: "\uFEFF"}})
+		require.ErrorContains(t, err, "has no answer")
+	})
+
+	t.Run("U+0085 NEL with AllowCustomText false is rejected as custom text", func(t *testing.T) {
+		t.Parallel()
+		_, err := newAskPlan(strictSingle, []contracts.OhMyPiAskQuestionAnswer{{ID: "q1", Selected: []string{"0"}, Custom: "\u0085"}})
+		require.ErrorContains(t, err, "accepts selected options only")
+	})
+
+	t.Run("empty questions list returns an error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newAskPlan(nil, nil)
+		require.ErrorContains(t, err, "no questions")
+	})
+
+	t.Run("duplicate option value returns an error", func(t *testing.T) {
+		t.Parallel()
+		dupOpts := []contracts.OhMyPiAskQuestion{{
+			ID:       "q1",
+			Question: "Pick",
+			Options:  []contracts.OhMyPiAskOption{{Value: "same", Label: "A"}, {Value: "same", Label: "B"}},
+		}}
+		_, err := newAskPlan(dupOpts, []contracts.OhMyPiAskQuestionAnswer{{ID: "q1", Selected: []string{"same"}}})
+		require.ErrorContains(t, err, "repeats an option value")
+	})
+
+	t.Run("duplicate Selected value returns an error", func(t *testing.T) {
+		t.Parallel()
+		multi := []contracts.OhMyPiAskQuestion{{
+			ID:       "q1",
+			Question: "Pick",
+			Multi:    true,
+			Options:  []contracts.OhMyPiAskOption{{Value: "0", Label: "A"}, {Value: "1", Label: "B"}},
+		}}
+		_, err := newAskPlan(multi, []contracts.OhMyPiAskQuestionAnswer{{ID: "q1", Selected: []string{"0", "0"}}})
+		require.ErrorContains(t, err, `selects option "0" twice`)
+	})
+
+	t.Run("unknown question ID returns an error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newAskPlan(strictSingle, []contracts.OhMyPiAskQuestionAnswer{
+			{ID: "q1", Selected: []string{"0"}},
+			{ID: "extra", Selected: []string{"0"}},
+		})
+		require.ErrorContains(t, err, "a question the form did not ask")
+	})
 }

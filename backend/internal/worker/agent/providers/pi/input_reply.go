@@ -124,7 +124,9 @@ func (a *Agent) handlePiReplyResponse(line *providerkit.ParsedLine) bool {
 		return true
 	}
 	a.retirePiReply(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
-	a.PublishTurnActive()
+	if disposition != "queued" {
+		a.PublishTurnActive()
+	}
 	return true
 }
 
@@ -146,6 +148,12 @@ func (a *Agent) piReplyControlReceipt() agent.NativeInputReceipt {
 }
 
 func (a *Agent) preparePiReplyRow(content *agent.MessageContent) (*piReplyRun, agent.NativeReplyItem) {
+	a.Mu.Lock()
+	active := a.piReplyRunLocked() != nil
+	a.Mu.Unlock()
+	if !active {
+		return nil, agent.NativeReplyItem{}
+	}
 	if _, text := agent.ReplyText(piProvider{}, *content); !text {
 		return nil, agent.NativeReplyItem{}
 	}

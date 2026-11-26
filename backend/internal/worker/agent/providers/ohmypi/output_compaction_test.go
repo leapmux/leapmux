@@ -67,7 +67,9 @@ func TestCompactionPublicationsKeepTheirAdmissionOrder(t *testing.T) {
 	entered, released := make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(released) })
 	defer release()
-	r.agent.sink = &blockedCompactionEndWriter{ProviderServices: r.agent.sink, entered: entered, released: released}
+	r.agent.sink = agent.DecorateProviderServices(r.agent.sink, func(base agent.ProviderServices) agent.ProviderServices {
+		return &blockedCompactionEndWriter{ProviderServices: base, entered: entered, released: released}
+	})
 	r.respond(func(command recordedCommand) *rigReply {
 		if command.Type == contracts.OhMyPiCommandCompact {
 			return &rigReply{Skip: true}
@@ -124,16 +126,18 @@ func TestCompactContextAllowsAReentrantPublication(t *testing.T) {
 		}
 		return nil
 	})
-	r.agent.sink = &reentrantCompactionWriter{ProviderServices: r.agent.sink, call: func() {
-		go func() { result <- r.agent.CompactContext() }()
-		select {
-		case err := <-result:
-			assert.ErrorIs(t, err, agent.ErrAgentBusy)
-			completedInCallback <- true
-		case <-ctx.Done():
-			completedInCallback <- false
-		}
-	}}
+	r.agent.sink = agent.DecorateProviderServices(r.agent.sink, func(base agent.ProviderServices) agent.ProviderServices {
+		return &reentrantCompactionWriter{ProviderServices: base, call: func() {
+			go func() { result <- r.agent.CompactContext() }()
+			select {
+			case err := <-result:
+				assert.ErrorIs(t, err, agent.ErrAgentBusy)
+				completedInCallback <- true
+			case <-ctx.Done():
+				completedInCallback <- false
+			}
+		}}
+	})
 	require.NoError(t, r.agent.CompactContext())
 	completed := <-completedInCallback
 	if !completed {

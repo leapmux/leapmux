@@ -660,6 +660,21 @@ func TestRawInputStatesTheBehaviorOfAnAnswerItCannotRead(t *testing.T) {
 	assert.Contains(t, err.Error(), "amp-permission-00000000-1")
 }
 
+func TestIsUserLine(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isUserLine([]byte(`{"type":"user"}`)))
+	for name, raw := range map[string]string{
+		"numeric type":   `{"type":123}`,
+		"null type":      `{"type":null}`,
+		"empty type":     `{"type":""}`,
+		"assistant type": `{"type":"assistant"}`,
+		"missing type":   `{}`,
+		"invalid json":   `{bad`,
+	} {
+		assert.False(t, isUserLine([]byte(raw)), name)
+	}
+}
+
 // A connection with the wrong secret learns nothing and publishes nothing.
 func TestPermissionBridgeRefusesAWrongSecret(t *testing.T) {
 	t.Parallel()

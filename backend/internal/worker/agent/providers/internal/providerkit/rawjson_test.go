@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 func TestParsedLineHasIDRejectsWhitespaceAndNull(t *testing.T) {
@@ -92,6 +94,7 @@ func TestStringField(t *testing.T) {
 }
 
 func TestRawObject(t *testing.T) {
+	t.Parallel()
 	fields, ok := RawObject(json.RawMessage(`{"a":1,"b":"x"}`))
 	require.True(t, ok)
 	assert.JSONEq(t, `1`, string(fields["a"]))
@@ -102,6 +105,42 @@ func TestRawObject(t *testing.T) {
 		_, ok := RawObject(json.RawMessage(raw))
 		assert.False(t, ok, raw)
 	}
+}
+
+func TestReadSourceObject(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, ReadSourceObject(agent.ControlRequestInput{}))
+	assert.Nil(t, ReadSourceObject(agent.ControlRequestInput{
+		Source: func() (agent.MessageContent, bool) {
+			return agent.MessageContent{Original: []byte(`{"tool":"ask"}`)}, false
+		},
+	}))
+	for name, original := range map[string][]byte{
+		"nil":       nil,
+		"empty":     []byte(""),
+		"null":      []byte("null"),
+		"array":     []byte(`[1,2]`),
+		"malformed": []byte(`{`),
+	} {
+		assert.Nil(t, ReadSourceObject(agent.ControlRequestInput{
+			Source: func() (agent.MessageContent, bool) {
+				return agent.MessageContent{Original: original}, true
+			},
+		}), name)
+	}
+	empty := ReadSourceObject(agent.ControlRequestInput{
+		Source: func() (agent.MessageContent, bool) {
+			return agent.MessageContent{Original: []byte(`{}`)}, true
+		},
+	})
+	assert.NotNil(t, empty, "an empty JSON object reads as a non-nil empty map")
+	assert.Empty(t, empty)
+	fields := ReadSourceObject(agent.ControlRequestInput{
+		Source: func() (agent.MessageContent, bool) {
+			return agent.MessageContent{Original: []byte(`{"tool":"ask"}`)}, true
+		},
+	})
+	assert.Equal(t, "ask", ObjectString(fields, "tool"))
 }
 
 func TestRawObjectOrEmpty(t *testing.T) {

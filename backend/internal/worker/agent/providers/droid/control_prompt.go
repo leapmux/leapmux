@@ -58,11 +58,15 @@ func (droidProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmu
 // A Droid Shield refusal states why Droid blocked the call in
 // `details.reason`. An Execute call states its command, as `command` or
 // `cmd`.
+func droidIsPlanConfirmation(confirmationType string) bool {
+	return confirmationType == contracts.DroidConfirmationTypeExitSpecMode ||
+		confirmationType == contracts.DroidConfirmationTypeProposeMission
+}
+
 func droidPermissionRequestPrompt(fields map[string]json.RawMessage) *leapmuxv1.ControlPrompt {
 	confirmationType := providerkit.ObjectString(fields, "confirmationType")
 	details, _ := providerkit.RawObject(fields["details"])
-	switch confirmationType {
-	case contracts.DroidConfirmationTypeExitSpecMode, contracts.DroidConfirmationTypeProposeMission:
+	if droidIsPlanConfirmation(confirmationType) {
 		key := "plan"
 		if confirmationType == contracts.DroidConfirmationTypeProposeMission {
 			key = "proposal"
@@ -103,14 +107,13 @@ func droidPermissionRequestPrompt(fields map[string]json.RawMessage) *leapmuxv1.
 }
 
 // droidOfferedOptions reads the option values that a stored permission
-// request offers, in Droid's order. A value that is no text, or that is
-// empty, is dropped.
+// request offers, in Droid's order. Values that are non-string, empty, or
+// unsupported (`proceed_edit`, which requires `editedSpecContent`) are dropped.
 func droidOfferedOptions(fields map[string]json.RawMessage) []string {
-	var elements []json.RawMessage
-	_ = json.Unmarshal(fields["options"], &elements)
-	offered := make([]string, 0, len(elements))
-	for _, element := range elements {
-		if value, ok := providerkit.RawString(element); ok && value != "" {
+	raw := providerkit.RawStrings(fields["options"])
+	offered := make([]string, 0, len(raw))
+	for _, value := range raw {
+		if value != "" && value != contracts.DroidPermissionOptionProceedEdit {
 			offered = append(offered, value)
 		}
 	}
@@ -157,9 +160,6 @@ var droidOptionNames = map[string]string{
 	contracts.DroidPermissionOptionProceedNewSessionLow:    "Allow in a new session at autonomy level Low",
 	contracts.DroidPermissionOptionProceedNewSessionMedium: "Allow in a new session at autonomy level Medium",
 	contracts.DroidPermissionOptionProceedNewSessionHigh:   "Allow in a new session at autonomy level High",
-	// Droid requires `editedSpecContent` beside this option and implements
-	// that spec.
-	contracts.DroidPermissionOptionProceedEdit: "Allow with an edited spec",
 	// Droid Shield: Droid proceeds once and reports its findings as a false
 	// positive.
 	contracts.DroidPermissionOptionProceedReportFalsePositive: "Allow and report a false positive",
@@ -170,11 +170,19 @@ var droidOptionNames = map[string]string{
 //   - Droid's offered options, each with its kind and its words
 //     (droidOptionNames). An option of another kind that this build does not
 //     know takes its value as its name, the only word that Droid states.
-//   - LeapMux's allow and deny, when Droid offers none.
+//   - LeapMux's deny when Droid offers no supported option (Droid refuses any
+//     unoffered approval, while cancel needs no offer).
 //   - LeapMux's deny after Droid's options, when they include no `cancel`.
 //     Droid still accepts a refusal there: droidPermissionReply turns a deny
 //     into `cancel`, which needs no offer.
 func droidPermissionOptions(offered []string) []*leapmuxv1.PermissionOption {
+	refusal := &leapmuxv1.PermissionOption{
+		OptionId: contracts.ControlAnswerOptionDeny,
+		Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE,
+	}
+	if len(offered) == 0 {
+		return []*leapmuxv1.PermissionOption{refusal}
+	}
 	options := make([]*leapmuxv1.PermissionOption, 0, len(offered)+1)
 	for _, value := range offered {
 		option := &leapmuxv1.PermissionOption{OptionId: value, Kind: droidOptionKind(value), Name: droidOptionNames[value]}
@@ -183,7 +191,7 @@ func droidPermissionOptions(offered []string) []*leapmuxv1.PermissionOption {
 		}
 		options = append(options, option)
 	}
-	return agent.WithRefusal(options, &leapmuxv1.PermissionOption{OptionId: contracts.ControlAnswerOptionDeny, Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE})
+	return agent.WithRefusal(options, refusal)
 }
 
 // droidQuestion is one question of a stored question request, as Droid
@@ -218,13 +226,7 @@ func droidQuestionsOf(fields map[string]json.RawMessage) []droidQuestion {
 			multiSelect: providerkit.RawBool(record[contracts.DroidAskUserFieldMultiSelect]),
 		}
 		question.index, question.hasIndex = providerkit.RawWholeNumber(record[contracts.DroidAskUserFieldIndex])
-		var options []json.RawMessage
-		_ = json.Unmarshal(record[contracts.DroidAskUserFieldOptions], &options)
-		for _, option := range options {
-			if label, ok := providerkit.RawString(option); ok {
-				question.options = append(question.options, label)
-			}
-		}
+		question.options = append(question.options, providerkit.RawStrings(record[contracts.DroidAskUserFieldOptions])...)
 		questions = append(questions, question)
 	}
 	return questions
@@ -286,18 +288,13 @@ func (droidProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent
 	}
 }
 
-// droidPermissionAnswer answers a permission prompt. A prompt of LeapMux's
-// allow and deny, for a request that offers no options, takes the shared
-// answers. Only a permission request reads as a permission
-// (ReadControlRequest), so the answer refuses a permission decision about any
-// other request.
+// droidPermissionAnswer answers a permission prompt. Only a permission request
+// reads as a permission (ReadControlRequest), so the answer refuses a
+// permission decision about any other request.
 func droidPermissionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
 	fields, _ := providerkit.RawObject(input.Request.Payload)
 	if providerkit.ObjectString(fields, "type") != contracts.DroidRequestTypePermission {
 		return agent.ControlAnswer{}, agent.InvalidControlDecision("Factory Droid asks no permission for this request")
-	}
-	if len(droidOfferedOptions(fields)) == 0 {
-		return agent.AnswerAllowDeny(input)
 	}
 	decision, option, err := agent.PermissionDecisionOf(input)
 	if err != nil {

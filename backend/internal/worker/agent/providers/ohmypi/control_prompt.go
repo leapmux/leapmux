@@ -61,14 +61,12 @@ var dialogShapes = map[string]dialogShape{
 type ompControlPayload map[string]json.RawMessage
 
 func readOmpControlPayload(payload []byte) ompControlPayload {
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(payload, &fields)
-	return fields
+	return providerkit.RawFields(payload)
 }
 
 // text returns the string field key, or "" when it is absent or no string.
 func (p ompControlPayload) text(key string) string {
-	return rawText(p[key])
+	return providerkit.ObjectString(p, key)
 }
 
 func (p ompControlPayload) method() string { return p.text("method") }
@@ -83,6 +81,14 @@ func (p ompControlPayload) isAskRequest() bool {
 	return p.text(contracts.OhMyPiAskEnvelopeType) == contracts.OhMyPiAskTypeRequest
 }
 
+// isApprovalWithOptions reports whether the select request is omp's tool
+// approval given already-decoded string options.
+func (p ompControlPayload) isApprovalWithOptions(options []string) bool {
+	return strings.HasPrefix(p.text("title"), contracts.OhMyPiApprovalDialogTitlePrefix) &&
+		slices.Contains(options, contracts.OhMyPiApprovalDialogApprove) &&
+		slices.Contains(options, contracts.OhMyPiApprovalDialogDeny)
+}
+
 // isApproval reports whether the request is omp's tool approval: a `select`
 // whose title starts with the approval prefix and whose options hold both
 // Approve and Deny. The title may state no tool name, and the options may
@@ -91,33 +97,13 @@ func (p ompControlPayload) isApproval() bool {
 	if !p.isExtensionUIRequest() || p.method() != contracts.OhMyPiDialogMethodSelect {
 		return false
 	}
-	options := p.stringOptions()
-	return strings.HasPrefix(p.text("title"), contracts.OhMyPiApprovalDialogTitlePrefix) &&
-		slices.Contains(options, contracts.OhMyPiApprovalDialogApprove) &&
-		slices.Contains(options, contracts.OhMyPiApprovalDialogDeny)
-}
-
-// isDialogQuestion reports whether the request is a `select` that is no
-// approval: one that an extension raised, or an `ask` select that the bridge
-// handed over because it could not follow its shape.
-func (p ompControlPayload) isDialogQuestion() bool {
-	return p.isExtensionUIRequest() && p.method() == contracts.OhMyPiDialogMethodSelect && !p.isApproval()
+	return p.isApprovalWithOptions(p.stringOptions())
 }
 
 // stringOptions returns the string options of a select. An option of another
 // type is dropped.
 func (p ompControlPayload) stringOptions() []string {
-	var elements []json.RawMessage
-	if json.Unmarshal(p["options"], &elements) != nil {
-		return nil
-	}
-	options := make([]string, 0, len(elements))
-	for _, element := range elements {
-		if option, ok := providerkit.RawString(element); ok {
-			options = append(options, option)
-		}
-	}
-	return options
+	return providerkit.RawStrings(p["options"])
 }
 
 // rawText reads a JSON string, or "" for any other value.
@@ -132,23 +118,25 @@ func rawText(raw json.RawMessage) string {
 // permission.
 func (ompProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	payload := readOmpControlPayload(input.Payload)
-	switch {
-	case payload.isAskRequest():
+	if payload.isAskRequest() {
 		return questionPrompt(askQuestions(payload[contracts.OhMyPiAskEnvelopeQuestions]))
-	case payload.isDialogQuestion():
+	}
+	if payload.isExtensionUIRequest() && payload.method() == contracts.OhMyPiDialogMethodSelect {
+		options := payload.stringOptions()
+		if payload.isApprovalWithOptions(options) {
+			return &leapmuxv1.ControlPrompt{
+				Kind: &leapmuxv1.ControlPrompt_Permission{Permission: approvalPrompt(payload, input)},
+				// The composer's text explains a Deny, and the Worker sends it
+				// after the answer.
+				EditorPurpose: leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_FEEDBACK,
+			}
+		}
 		return questionPrompt([]*leapmuxv1.ControlQuestion{{
 			Question: cmp.Or(payload.text("title"), selectDefaultTitle),
-			Options:  selectQuestionOptions(payload),
+			Options:  selectQuestionOptions(payload, options),
 			// omp takes one of the select's own options as its value.
 			AllowCustomText: proto.Bool(false),
 		}})
-	case payload.isApproval():
-		return &leapmuxv1.ControlPrompt{
-			Kind: &leapmuxv1.ControlPrompt_Permission{Permission: approvalPrompt(payload, input)},
-			// The composer's text explains a Deny, and the Worker sends it
-			// after the answer.
-			EditorPurpose: leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_FEEDBACK,
-		}
 	}
 	if dialog := dialogPrompt(payload); dialog != nil {
 		return &leapmuxv1.ControlPrompt{
@@ -213,11 +201,11 @@ func askQuestions(raw json.RawMessage) []*leapmuxv1.ControlQuestion {
 // askOptions reads the options of one question record. An option that is no
 // object or states no label is dropped.
 //
-// The option's markup, the HTML of its form label, states what the option
-// shows (readChoiceMarkup). An answer selects the option by the value that
-// the bridge matches (askOptionValue): the record's value, or the record's
-// own label when the value is absent or empty. The prompt states that value
-// when the record states one, or when it differs from the label that the
+// DisplayLabel, Description, and Preview carry the structured presentation
+// extracted from the HTML form label. An answer selects the option by the
+// value that the bridge matches (askOptionValue): the record's value, or the
+// record's own label when the value is absent or empty. The prompt states that
+// value when the record states one, or when it differs from the label that the
 // option shows. A preview that is all white space states none.
 func askOptions(record map[string]json.RawMessage) []*leapmuxv1.QuestionOption {
 	elements, _ := providerkit.RawArray(record[contracts.OhMyPiAskQuestionOptions])
@@ -229,13 +217,19 @@ func askOptions(record map[string]json.RawMessage) []*leapmuxv1.QuestionOption {
 			continue
 		}
 		native := contracts.OhMyPiAskOption{Label: label, Value: rawText(fields[contracts.OhMyPiAskOptionValue])}
-		presentation := readChoiceMarkup(rawText(fields[contracts.OhMyPiAskOptionMarkup]), label)
-		option := &leapmuxv1.QuestionOption{Label: presentation.label, Description: presentation.description}
-		if value := askOptionValue(native); native.Value != "" || value != presentation.label {
+		displayLabel := rawText(fields[contracts.OhMyPiAskOptionDisplayLabel])
+		if displayLabel == "" {
+			displayLabel = label
+		}
+		option := &leapmuxv1.QuestionOption{
+			Label:       displayLabel,
+			Description: rawText(fields[contracts.OhMyPiAskOptionDescription]),
+		}
+		if value := askOptionValue(native); native.Value != "" || value != displayLabel {
 			option.Value = proto.String(value)
 		}
-		if agent.TrimJavaScriptSpace(presentation.preview) != "" {
-			option.Preview = presentation.preview
+		if preview := rawText(fields[contracts.OhMyPiAskOptionPreview]); agent.TrimJavaScriptSpace(preview) != "" {
+			option.Preview = preview
 		}
 		options = append(options, option)
 	}
@@ -279,10 +273,9 @@ func askInitialSelections(record map[string]json.RawMessage, options []*leapmuxv
 
 // selectQuestionOptions reads the options of a select, with the description
 // that omp sends beside each one in `optionDetails`, matched by position.
-func selectQuestionOptions(payload ompControlPayload) []*leapmuxv1.QuestionOption {
+func selectQuestionOptions(payload ompControlPayload, labels []string) []*leapmuxv1.QuestionOption {
 	var details []json.RawMessage
 	_ = json.Unmarshal(payload["optionDetails"], &details)
-	labels := payload.stringOptions()
 	options := make([]*leapmuxv1.QuestionOption, 0, len(labels))
 	for i, label := range labels {
 		option := &leapmuxv1.QuestionOption{Label: label}
@@ -310,7 +303,7 @@ func approvalOptions() []*leapmuxv1.PermissionOption {
 	}
 }
 
-// approvalPrompt reads a tool approval. The first line of its title names
+// approvalPrompt reads a tool approval. The first line of its title identifies
 // the tool. The further lines state the call's details, the command of a
 // `bash` call last, and omp's extension wrapper can append a section of
 // safety checks below them.
@@ -329,9 +322,9 @@ func approvalPrompt(payload ompControlPayload, input agent.ControlRequestInput) 
 		Command: command,
 		Options: approvalOptions(),
 	}
-	if args, ok := approvalArgs(input, toolName); ok {
+	if args, fields, ok := approvalArgs(input, toolName); ok {
 		permission.InputJson = string(args)
-		if argCommand := rawText(providerkit.RawFields(args)["command"]); argCommand != "" {
+		if argCommand := rawText(fields["command"]); argCommand != "" {
 			permission.Command = argCommand
 		}
 	}
@@ -341,24 +334,21 @@ func approvalPrompt(payload ompControlPayload, input agent.ControlRequestInput) 
 // approvalArgs returns the arguments of the call that an approval asks
 // about, from the call's own start frame, and false when the request's
 // source is no start frame of the tool or states no arguments object.
-func approvalArgs(input agent.ControlRequestInput, toolName string) (json.RawMessage, bool) {
-	if input.Source == nil {
-		return nil, false
+func approvalArgs(input agent.ControlRequestInput, toolName string) (json.RawMessage, map[string]json.RawMessage, bool) {
+	frame := providerkit.ReadSourceObject(input)
+	if frame == nil {
+		return nil, nil, false
 	}
-	row, ok := input.Source()
-	if !ok {
-		return nil, false
-	}
-	frame := providerkit.RawFields(row.Original)
 	if rawText(frame["type"]) != contracts.OhMyPiEventToolExecutionStart ||
 		rawText(frame[contracts.OhMyPiFrameFieldToolName]) != toolName {
-		return nil, false
+		return nil, nil, false
 	}
 	args := frame[contracts.OhMyPiFrameFieldArgs]
-	if providerkit.RawFields(args) == nil {
-		return nil, false
+	fields := providerkit.RawFields(args)
+	if fields == nil {
+		return nil, nil, false
 	}
-	return args, true
+	return args, fields, true
 }
 
 // splitApprovalCommand splits the details of an approval title into the
@@ -530,7 +520,7 @@ func approvalAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, error)
 	}
 	feedback := decision.GetFeedback()
 	answer, err := valueResponse(input.RequestID, option.GetOptionId())
-	if err == nil && strings.TrimSpace(feedback) != "" {
+	if err == nil && agent.TrimJavaScriptSpace(feedback) != "" {
 		answer.FollowUp = feedback
 	}
 	return answer, err

@@ -76,6 +76,32 @@ func TestDecodeControlBehavior(t *testing.T) {
 	assert.Empty(t, message)
 }
 
+func TestDecodeControlInnerResponse(t *testing.T) {
+	t.Parallel()
+
+	assert.JSONEq(t, `{"behavior":"allow","scope":"session"}`, string(DecodeControlInnerResponse([]byte(
+		`{"response":{"request_id":"req-1","response":{"behavior":"allow","scope":"session"}}}`,
+	))))
+
+	for name, content := range map[string][]byte{
+		"nil":                     nil,
+		"empty":                   {},
+		"whitespace":              []byte("   "),
+		"malformed json":          []byte(`not json`),
+		"absent outer response":   []byte(`{}`),
+		"absent inner response":   []byte(`{"response":{}}`),
+		"wrong-type outer string": []byte(`{"response":"bad"}`),
+		"null outer response":     []byte(`{"response":null}`),
+		"null inner response":     []byte(`{"response":{"response":null}}`),
+		"padded null inner":       []byte(`{"response":{"response": null }}`),
+	} {
+		assert.Equal(t, `{}`, string(DecodeControlInnerResponse(content)), name)
+	}
+
+	assert.Equal(t, `[1,2]`, string(DecodeControlInnerResponse([]byte(`{"response":{"response":[1,2]}}`))))
+	assert.Equal(t, `42`, string(DecodeControlInnerResponse([]byte(`{"response":{"response":42}}`))))
+}
+
 func TestDecodeControlChoice(t *testing.T) {
 	t.Parallel()
 

@@ -1973,19 +1973,8 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
 	seq := item.ReservedSeq
-	if !found || item.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING || seq != prepared.ReservedSeq {
+	if !found || item.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING || seq != prepared.ReservedSeq || seq <= 0 {
 		return AcceptedTranscript{}, Snapshot{}, ErrConflict
-	}
-	if seq <= 0 {
-		// A RowAtEcho steer reserves no sequence at prepare time, so a steer
-		// confirmed immediately by a NativeReceipt reserves its sequence here.
-		if !prepared.Steering || result.NativeReceipt.SessionID == "" || result.NativeReceipt.InputID == "" {
-			return AcceptedTranscript{}, Snapshot{}, ErrConflict
-		}
-		seq, err = reserveMessageSeq(ctx, q.tx, item.AgentID)
-		if err != nil {
-			return AcceptedTranscript{}, Snapshot{}, err
-		}
 	}
 	if s.beforeAcceptWrite != nil {
 		s.beforeAcceptWrite()

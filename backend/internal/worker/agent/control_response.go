@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -236,6 +237,24 @@ func DecodeControlUpdatedInput(content []byte) map[string]any {
 		return nil
 	}
 	return updated
+}
+
+// DecodeControlInnerResponse returns the raw inner response object carried by
+// the neutral control-response envelope, or "{}" when absent or unreadable.
+func DecodeControlInnerResponse(content []byte) json.RawMessage {
+	var envelope struct {
+		Response struct {
+			Response json.RawMessage `json:"response"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(content, &envelope) != nil {
+		return json.RawMessage(`{}`)
+	}
+	trimmed := bytes.TrimSpace(envelope.Response.Response)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return json.RawMessage(`{}`)
+	}
+	return envelope.Response.Response
 }
 
 // DecodeControlBehavior decodes the neutral approve/reject control-response envelope

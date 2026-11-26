@@ -20,6 +20,45 @@ var notificationEvents = func() map[string]struct{} {
 	return events
 }()
 
+const ompEventAgentPause = "agent_pause"
+
+// dispatchConversationEvent handles session events shared between the root
+// conversation and child subagent conversations.
+func (a *Agent) dispatchConversationEvent(c *conversation, eventType string, raw []byte) bool {
+	switch eventType {
+	case contracts.OhMyPiEventMessageEnd:
+		a.handleMessageEnd(c, raw)
+	case contracts.OhMyPiEventMessageStart:
+		a.observeOMPAssistantBoundary(c, raw, false)
+	case contracts.OhMyPiEventTurnEnd:
+		a.observeOMPAssistantBoundary(c, raw, true)
+	case contracts.OhMyPiEventToolExecutionStart:
+		a.handleToolStart(c, raw)
+	case contracts.OhMyPiEventToolExecutionUpdate:
+		a.handleToolUpdate(c, raw)
+	case contracts.OhMyPiEventToolExecutionEnd:
+		a.handleToolEnd(c, raw)
+	case contracts.OhMyPiEventAutoCompactionStart:
+		trigger := providerkit.StringField(raw, "reason")
+		if trigger == "" {
+			trigger = "auto"
+		}
+		a.beginCompaction(c, trigger)
+	case contracts.OhMyPiEventManualCompactionStart:
+		a.beginCompaction(c, "manual")
+	case contracts.OhMyPiEventAutoCompactionEnd, contracts.OhMyPiEventManualCompactionEnd:
+		a.persistCompactionEnd(c, raw)
+	case contracts.OhMyPiEventTtsrTriggered:
+		a.Mu.Lock()
+		c.ttsrPending = true
+		a.Mu.Unlock()
+		a.persistConversationNotification(c, raw)
+	default:
+		return false
+	}
+	return true
+}
+
 // handleFrame dispatches one frame of the session's own stream. A response that a
 // caller waited for, and every rpc_chunk frame, never reach it: interceptFrame
 // consumed them.
@@ -28,6 +67,9 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 	defer a.outputMu.Unlock()
 	slog.Debug("omp frame", "agent_id", a.AgentID(), "type", line.Type, "len", len(line.Raw))
 	root := a.rootConversation()
+	if a.dispatchConversationEvent(root, line.Type, line.Raw) {
+		return
+	}
 	switch line.Type {
 	case contracts.OhMyPiEventReady:
 		a.handleReady(line.Raw)
@@ -41,18 +83,10 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 		a.handleAgentEnd(line.Raw)
 	case contracts.OhMyPiEventAvailableCommandsUpdate:
 		a.observeOMPSteerCapability(line.Raw)
-	case "agent_pause":
+	case ompEventAgentPause:
 		a.observeOMPPause(root, line.Raw)
 	case contracts.OhMyPiEventMessageUpdate:
 		a.handleMessageUpdate(root, line.Raw)
-	case contracts.OhMyPiEventMessageEnd:
-		a.handleMessageEnd(root, line.Raw)
-	case contracts.OhMyPiEventToolExecutionStart:
-		a.handleToolStart(root, line.Raw)
-	case contracts.OhMyPiEventToolExecutionUpdate:
-		a.handleToolUpdate(root, line.Raw)
-	case contracts.OhMyPiEventToolExecutionEnd:
-		a.handleToolEnd(root, line.Raw)
 	case contracts.OhMyPiEventExtensionUIRequest:
 		a.handleExtensionUIRequest(line.Raw)
 	case contracts.OhMyPiEventGoalUpdated:
@@ -72,21 +106,6 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 		a.handleSubagentEvent(line.Raw)
 	case contracts.OhMyPiEventHostToolCall, contracts.OhMyPiEventHostUriRequest:
 		a.refuseHostCall(line.Type, line.Raw)
-	case contracts.OhMyPiEventAutoCompactionStart:
-		trigger := providerkit.StringField(line.Raw, "reason")
-		if trigger == "" {
-			trigger = "auto"
-		}
-		a.beginCompaction(root, trigger)
-	case contracts.OhMyPiEventManualCompactionStart:
-		a.beginCompaction(root, "manual")
-	case contracts.OhMyPiEventAutoCompactionEnd, contracts.OhMyPiEventManualCompactionEnd:
-		a.persistCompactionEnd(root, line.Raw)
-	case contracts.OhMyPiEventTtsrTriggered:
-		a.Mu.Lock()
-		root.ttsrPending = true
-		a.Mu.Unlock()
-		a.persistConversationNotification(root, line.Raw)
 	case contracts.OhMyPiEventCacheWarmingStart, contracts.OhMyPiEventCacheWarmingEnd:
 		// Cache warming changes no conversation state or transcript row.
 	case contracts.OhMyPiEventRetryFallbackApplied:
@@ -94,10 +113,6 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 		a.persistConversationNotification(root, line.Raw)
 	case contracts.OhMyPiEventTurnStart:
 		// Starting a native turn may deliver more user messages before a model call.
-	case contracts.OhMyPiEventTurnEnd:
-		a.observeOMPAssistantBoundary(root, line.Raw, true)
-	case contracts.OhMyPiEventMessageStart:
-		a.observeOMPAssistantBoundary(root, line.Raw, false)
 	case contracts.OhMyPiEventToolStreamUpdate:
 		// A preview of an `edit` call's arguments while the model writes them.
 		// The tool_execution_* frames carry the call itself.

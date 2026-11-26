@@ -3,12 +3,57 @@ package cline
 import (
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"slices"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+type runStartedPayload struct {
+	RequestID string `json:"requestId"`
+	ClientID  string `json:"clientId"`
+}
+
+type pendingPromptsPayload struct {
+	Prompts []nativePendingPrompt `json:"prompts"`
+}
+
+type pendingPromptSubmittedPayload struct {
+	Prompt nativePendingPrompt `json:"prompt"`
+}
+
+type decodedSteerEvent struct {
+	runStarted *runStartedPayload
+	prompts    *pendingPromptsPayload
+	submitted  *pendingPromptSubmittedPayload
+}
+
+func isSteerProofEvent(name string) bool {
+	return name == eventRunStarted || name == eventPendingPrompts || name == eventPendingPromptSubmitted
+}
+
+func decodeSteerEvent(event hubEvent) decodedSteerEvent {
+	var decoded decodedSteerEvent
+	switch event.Event {
+	case eventRunStarted:
+		var start *runStartedPayload
+		if json.Unmarshal(event.Payload, &start) == nil && start != nil {
+			decoded.runStarted = start
+		}
+	case eventPendingPrompts:
+		var payload pendingPromptsPayload
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			decoded.prompts = &payload
+		}
+	case eventPendingPromptSubmitted:
+		var payload pendingPromptSubmittedPayload
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			decoded.submitted = &payload
+		}
+	}
+	return decoded
+}
 
 type nativePendingPrompt struct {
 	ID         string   `json:"id"`
@@ -92,14 +137,19 @@ func consecutiveSteerEvents(earlier, later int64) bool {
 	return earlier > 0 && later > earlier && later-earlier == 1
 }
 
-func (proofs *steerProofs) observe(event hubEvent, clientID string) (observation steerObservation) {
-	if last := proofs.lastSequence; last > 0 && !consecutiveSteerEvents(last, event.Sequence) {
-		// The log sequence is global. A gap can hide a queue mutation,
-		// including a second enqueue that kept an existing native ID.
-		proofs.discardObserved(&observation)
-		observation.sequenceGap = true
+func (proofs *steerProofs) observe(event hubEvent, decoded decodedSteerEvent, clientID string) (observation steerObservation) {
+	if event.Sequence == 0 && !isSteerProofEvent(event.Event) {
+		return observation
 	}
-	proofs.lastSequence = event.Sequence
+	if event.Sequence > 0 {
+		if last := proofs.lastSequence; last > 0 && !consecutiveSteerEvents(last, event.Sequence) {
+			// The log sequence is global. A gap can hide a queue mutation,
+			// including a second enqueue that kept an existing native ID.
+			proofs.discardObserved(&observation)
+			observation.sequenceGap = true
+		}
+		proofs.lastSequence = event.Sequence
+	}
 	if pair := proofs.admission; pair != nil && (event.Event != eventPendingPrompts || !consecutiveSteerEvents(pair.sequence, event.Sequence)) {
 		observation.uncertain(pair.dispatch)
 		observation.uncertainRun = true
@@ -111,13 +161,10 @@ func (proofs *steerProofs) observe(event hubEvent, clientID string) (observation
 	}
 	switch event.Event {
 	case eventRunStarted:
-		var start struct {
-			RequestID string `json:"requestId"`
-			ClientID  string `json:"clientId"`
-		}
-		if json.Unmarshal(event.Payload, &start) != nil {
+		if decoded.runStarted == nil {
 			return observation
 		}
+		start := decoded.runStarted
 		if own := proofs.writes[start.RequestID]; own != nil && own.resolution.Receipt.SessionID == event.SessionID {
 			delete(proofs.writes, start.RequestID)
 			if event.Sequence > 0 && clientID != "" && start.ClientID == clientID {
@@ -128,14 +175,11 @@ func (proofs *steerProofs) observe(event hubEvent, clientID string) (observation
 			}
 		}
 	case eventPendingPrompts:
-		proofs.observeQueue(event, &observation)
+		proofs.observeQueue(event, decoded.prompts, &observation)
 	case eventPendingPromptSubmitted:
 		if pair := proofs.submission; pair != nil {
 			proofs.submission = nil
-			var submitted struct {
-				Prompt nativePendingPrompt `json:"prompt"`
-			}
-			if json.Unmarshal(event.Payload, &submitted) != nil || submitted.Prompt.ID != pair.promptID || !submitted.Prompt.matches(pair.dispatch.input) {
+			if decoded.submitted == nil || decoded.submitted.Prompt.ID != pair.promptID || !decoded.submitted.Prompt.matches(pair.dispatch.input) {
 				observation.uncertain(pair.dispatch)
 			} else {
 				resolution := pair.dispatch.resolution
@@ -147,17 +191,18 @@ func (proofs *steerProofs) observe(event hubEvent, clientID string) (observation
 	return observation
 }
 
-func (proofs *steerProofs) observeQueue(event hubEvent, observation *steerObservation) {
-	var payload struct {
-		Prompts []nativePendingPrompt `json:"prompts"`
-	}
+func (proofs *steerProofs) observeQueue(event hubEvent, payload *pendingPromptsPayload, observation *steerObservation) {
 	admission := proofs.admission
 	proofs.admission = nil
-	valid := json.Unmarshal(event.Payload, &payload) == nil && payload.Prompts != nil && event.Sequence > 0
-	next := make(map[string]struct{}, len(payload.Prompts))
+	valid := payload != nil && payload.Prompts != nil && event.Sequence > 0
+	var prompts []nativePendingPrompt
+	if payload != nil {
+		prompts = payload.Prompts
+	}
+	next := make(map[string]struct{}, len(prompts))
 	matched := make(map[string]bool, len(proofs.pending))
 	added := 0
-	for _, prompt := range payload.Prompts {
+	for _, prompt := range prompts {
 		if _, repeated := next[prompt.ID]; prompt.ID == "" || repeated {
 			valid = false
 		}
@@ -173,8 +218,8 @@ func (proofs *steerProofs) observeQueue(event hubEvent, observation *steerObserv
 	var owner *steerDispatch
 	var ownerID string
 	if admission != nil {
-		if valid && removed == 0 && len(payload.Prompts) > 0 && payload.Prompts[0].matches(admission.dispatch.input) {
-			owner, ownerID = admission.dispatch, payload.Prompts[0].ID
+		if valid && removed == 0 && len(prompts) > 0 && prompts[0].matches(admission.dispatch.input) {
+			owner, ownerID = admission.dispatch, prompts[0].ID
 			owner.admitted = true
 			owner.finishAdmission()
 		} else {
@@ -182,7 +227,8 @@ func (proofs *steerProofs) observeQueue(event hubEvent, observation *steerObserv
 			observation.uncertainRun = true
 		}
 	}
-	for promptID, pending := range proofs.pending {
+	for _, promptID := range slices.Sorted(maps.Keys(proofs.pending)) {
+		pending := proofs.pending[promptID]
 		_, present := next[promptID]
 		if valid && admission == nil && removed == 1 && added == 0 && !present {
 			proofs.submission = &steerEventPair{sequence: event.Sequence, promptID: promptID, dispatch: pending}
@@ -212,8 +258,8 @@ func (proofs *steerProofs) observeQueue(event hubEvent, observation *steerObserv
 
 func (proofs *steerProofs) reset() []agent.SteerResolution {
 	var observation steerObservation
-	for _, pending := range proofs.writes {
-		observation.uncertain(pending)
+	for _, requestID := range slices.Sorted(maps.Keys(proofs.writes)) {
+		observation.uncertain(proofs.writes[requestID])
 	}
 	proofs.discardObserved(&observation)
 	*proofs = steerProofs{}
@@ -221,8 +267,8 @@ func (proofs *steerProofs) reset() []agent.SteerResolution {
 }
 
 func (proofs *steerProofs) discardObserved(observation *steerObservation) {
-	for _, pending := range proofs.pending {
-		observation.uncertain(pending)
+	for _, promptID := range slices.Sorted(maps.Keys(proofs.pending)) {
+		observation.uncertain(proofs.pending[promptID])
 	}
 	if proofs.admission != nil {
 		observation.uncertain(proofs.admission.dispatch)
@@ -234,12 +280,12 @@ func (proofs *steerProofs) discardObserved(observation *steerObservation) {
 	proofs.admission, proofs.submission, proofs.pending, proofs.queue = nil, nil, nil, nil
 }
 
-func (a *Agent) observeSteerEvent(event hubEvent) bool {
+func (a *Agent) observeSteerEvent(event hubEvent, decoded decodedSteerEvent) bool {
 	if event.SessionID == "" {
 		return false
 	}
 	a.Mu.Lock()
-	observation := a.steerProofs.observe(event, a.clientID)
+	observation := a.steerProofs.observe(event, decoded, a.clientID)
 	reply := a.turn.inputReply
 	if reply != nil && (observation.uncertainRun || (observation.sequenceGap && (reply.autonomous || reply.agentDone))) {
 		reply.ambiguous = true
@@ -271,11 +317,9 @@ func (a *Agent) bindSubmittedSteer(receipt *agent.NativeInputReceipt) {
 				reply.ambiguous = true
 			} else {
 				receipt.TurnID = reply.receipt.TurnID
-				if !reply.autonomous {
-					reply.steers = append(reply.steers, agent.NativeReplyBoundary{
-						InputID: receipt.InputID, AfterOrdinal: int64(len(reply.items)) + 1,
-					})
-				}
+				reply.steers = append(reply.steers, agent.NativeReplyBoundary{
+					InputID: receipt.InputID, AfterOrdinal: int64(len(reply.items)) + 1,
+				})
 			}
 		}
 		a.Mu.Unlock()
@@ -292,8 +336,7 @@ func (a *Agent) bindSubmittedSteer(receipt *agent.NativeInputReceipt) {
 	reason, interrupted := a.turn.leadDoneReason, a.turn.interruptRequested
 	a.Mu.Unlock()
 	a.retireDetachedReply()
-	a.endTurnWithSuccessor(completionOf(reason, interrupted), runEndRow(receipt.SessionID, reason, ""),
-		leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED, drained)
+	a.endTurn(completionOf(reason, interrupted), runEndRow(receipt.SessionID, reason, ""), endTurnOptions{successor: drained})
 	a.publishDetachedReply()
 }
 

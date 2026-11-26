@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -96,7 +97,8 @@ func (state *cascadeState) settleInputReplies(nativeIdle bool, completion agent.
 	var settlements []inputReplySettlement
 	var unproved []*inputReply
 	byExecution := make(map[string][]*inputReply)
-	for inputID, reply := range state.inputReplies {
+	for _, inputID := range slices.Sorted(maps.Keys(state.inputReplies)) {
+		reply := state.inputReplies[inputID]
 		// An interrupt leaves unread steers in Antigravity's queue. A later
 		// prompt can start the execution that consumes them.
 		if nativeIdle && reply.steered && reply.executionID == "" && !reply.conflicting {
@@ -114,7 +116,8 @@ func (state *cascadeState) settleInputReplies(nativeIdle bool, completion agent.
 			receipts: unproved, outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED,
 		})
 	}
-	for _, replies := range byExecution {
+	for _, executionID := range slices.Sorted(maps.Keys(byExecution)) {
+		replies := byExecution[executionID]
 		slices.SortFunc(replies, func(left, right *inputReply) int { return cmp.Compare(left.inputIndex, right.inputIndex) })
 		turn, outcome := state.projectInputReply(replies[0], completion)
 		if outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED {

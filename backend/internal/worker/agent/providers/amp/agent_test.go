@@ -3,6 +3,7 @@ package amp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -140,15 +141,30 @@ func TestARefusedMessageStartsNoProcess(t *testing.T) {
 
 func TestAFailedStartDisarmsNothingAndReportsTheError(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.agent.createThreadFn = func(context.Context, threadConfiguration) (string, error) {
-		return "", errors.New("amp: command not found")
-	}
-	_, err := h.agent.SendInput("go", nil)
-	require.ErrorContains(t, err, "command not found")
-	assert.False(t, h.turnActive(), "the agent armed no turn for a message that never left")
-	assert.Empty(t, h.sink.TurnActives(), "the agent published no turn for a message that never left")
-	assert.False(t, h.agent.modeLocked, "a thread that never existed keeps a mutable mode")
+	t.Run("thread creation failure", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.agent.createThreadFn = func(context.Context, threadConfiguration) (string, error) {
+			return "", errors.New("amp: command not found")
+		}
+		_, err := h.agent.SendInput("go", nil)
+		require.ErrorContains(t, err, "command not found")
+		assert.False(t, h.turnActive(), "the agent armed no turn for a message that never left")
+		assert.Empty(t, h.sink.TurnActives(), "the agent published no turn for a message that never left")
+		assert.False(t, h.agent.modeLocked, "a thread that never existed keeps a mutable mode")
+	})
+	t.Run("process start failure", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.agent.startFn = func(string, threadConfiguration) (*ampProcess, error) {
+			return nil, errors.New("amp: failed to exec")
+		}
+		_, err := h.agent.SendInput("go", nil)
+		require.ErrorContains(t, err, "failed to exec")
+		assert.False(t, h.turnActive(), "the agent armed no turn for a message whose process did not start")
+		assert.Empty(t, h.sink.TurnActives(), "the agent published no turn for a message whose process did not start")
+		assert.True(t, h.agent.modeLocked, "creating the thread fixed its mode on Amp")
+	})
 }
 
 // A message whose write fails never reached Amp, so the agent releases the turn
@@ -762,67 +778,277 @@ func TestDescribeExitStatesTheStderr(t *testing.T) {
 
 func TestSteerEchoAtTheUserLine(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	fp := h.send("first")
-	h.feed(fp, initLine("T-1"))
-	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
-	assert.Empty(t, h.sink.SteerEchoReports())
+	h := newHarness(t, withResume("T-1"))
+	lead, err := h.agent.SendInput("first", nil)
+	require.NoError(t, err)
+	fp := h.nextProc()
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "second"}))
+	steer := steerReceiptFromLine(t, fp, 1, "T-1")
+	var consumed atomic.Bool
+	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
+		if !consumed.Load() {
+			return []byte(`{"id":"` + threadID + `","messages":[{"protocolMessageID":"` + lead.InputID + `","role":"user"}]}`), nil
+		}
+		return []byte(`{"id":"` + threadID + `","messages":[{"protocolMessageID":"` + lead.InputID + `","role":"user"},{"protocolMessageID":"` + steer.InputID + `","role":"user","meta":{"steer":true}}]}`), nil
+	}
+	assert.Empty(t, h.sink.SteerResolutions())
 	// The native echo shape comes from .tmp/verify-c29/amp/run1.
-	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"unrelated"}]}}`)
-	assert.Empty(t, h.sink.SteerEchoReports())
-	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"second"}]}}`)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
+	h.feed(fp, `{"type":"user","session_id":"T-1","message":{"role":"user","content":[{"type":"text","text":"unrelated"}]}}`)
+	h.agent.waitSteerWork()
+	assert.Empty(t, h.sink.SteerResolutions())
+	consumed.Store(true)
+	h.feed(fp, `{"type":"user","session_id":"T-1","message":{"role":"user","content":[{"type":"text","text":"second"}]}}`)
+	h.agent.waitSteerWork()
+	assert.Equal(t, []agent.SteerResolution{{InputID: "q-1", AttemptID: "att-1", Outcome: agent.SteerOutcomeEchoed, Receipt: steer}}, h.sink.SteerResolutions())
+}
+
+type steerLifecycleSink struct {
+	agent.ProviderServices
+	mu     sync.Mutex
+	events []string
+}
+
+func (s *steerLifecycleSink) SetTurnState(state agent.TurnState, seq uint64) {
+	s.mu.Lock()
+	s.events = append(s.events, fmt.Sprintf("turn_active:%t", state.Active))
+	s.mu.Unlock()
+	s.ProviderServices.SetTurnState(state, seq)
+}
+
+func (s *steerLifecycleSink) CaptureSteerResolution(resolution agent.SteerResolution) func() error {
+	write := s.ProviderServices.CaptureSteerResolution(resolution)
+	return func() error {
+		if err := write(); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.events = append(s.events, "steer-resolution:"+resolution.InputID)
+		s.mu.Unlock()
+		return nil
+	}
+}
+
+func (s *steerLifecycleSink) lifecycle() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.events...)
 }
 
 func TestSteerAfterEndTurnIsNotRunTwice(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	h := newHarness(t, withResume("T-1"))
+	lifecycleSink := &steerLifecycleSink{ProviderServices: h.agent.sink}
+	h.agent.sink = lifecycleSink
+	var steerID atomic.Value
+	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
+		id, _ := steerID.Load().(string)
+		if id == "" {
+			return []byte(`{"id":"` + threadID + `","messages":[]}`), nil
+		}
+		return []byte(`{"id":"` + threadID + `","messages":[{"protocolMessageID":"` + id + `","role":"user","meta":{"steer":true}}]}`), nil
+	}
 	fp := h.send("first")
-	h.feed(fp, initLine("T-1"))
 	fp.stdin.mu.Lock()
 	fp.stdin.beforeWrite = func() { h.feed(fp, textLine("first answer", stopReasonEndTurn)) }
 	fp.stdin.mu.Unlock()
-	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "second"}))
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "second"}))
+	steer := steerReceiptFromLine(t, fp, 1, "T-1")
+	h.agent.waitSteerWork()
+	steerID.Store(steer.InputID)
 	require.False(t, h.turnActive())
 	survivor, ok := any(h.agent).(agent.SteerSurvivor)
 	require.True(t, ok)
 	assert.True(t, survivor.SteerSurvivesTurnEnd())
-	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"second"}]}}`)
+	h.feed(fp, `{"type":"user","session_id":"T-1","message":{"role":"user","content":[{"type":"text","text":"second"}]}}`)
+	h.agent.waitSteerWork()
 	assert.True(t, h.turnActive(), "the echoed steer must hold the queue until its answer ends")
-	lifecycle := h.sink.TurnLifecycle()
+	lifecycle := lifecycleSink.lifecycle()
+	matched := false
 	for i, event := range lifecycle {
-		if event == "steer-echoed:1" {
+		if strings.HasPrefix(event, "steer-resolution:") {
+			matched = true
 			require.Positive(t, i)
 			assert.Equal(t, "turn_active:true", lifecycle[i-1], "publish the active turn before the echo can release the queue")
 		}
 	}
+	assert.True(t, matched, "steer-resolution lifecycle event must be observed")
 	h.feed(fp, textLine("second answer", stopReasonEndTurn))
+	h.agent.waitSteerWork()
 	assert.Len(t, fp.lines(), 2)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
+	assert.Equal(t, []agent.SteerResolution{{InputID: "q-1", AttemptID: "att-1", Outcome: agent.SteerOutcomeEchoed, Receipt: steer}}, h.sink.SteerResolutions())
+}
+
+func TestAmpSteerWriteFailuresAndPartialIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tracked steer write failure removes unconsumed submission", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		fp := h.send("initial")
+		fp.stdin.mu.Lock()
+		fp.stdin.closed = true
+		fp.stdin.mu.Unlock()
+
+		_, err := h.agent.SteerInput(agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "steer"})
+		require.ErrorContains(t, err, "deliver the message to amp")
+		h.agent.mu.Lock()
+		count := len(h.agent.nativeSteers)
+		h.agent.mu.Unlock()
+		assert.Zero(t, count, "unconsumed tracked steer must be removed after write failure")
+	})
+
+	t.Run("untracked steer write failure returns error without panicking", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		fp := h.send("initial")
+		fp.stdin.mu.Lock()
+		fp.stdin.closed = true
+		fp.stdin.mu.Unlock()
+
+		_, err := h.agent.SteerInput(agent.SteerRequest{Content: "untracked steer"})
+		require.ErrorContains(t, err, "deliver the message to amp")
+		h.agent.mu.Lock()
+		count := len(h.agent.nativeSteers)
+		h.agent.mu.Unlock()
+		assert.Zero(t, count)
+	})
+
+	t.Run("tracked steer write failure after submission was already claimed returns nil", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		fp := h.send("initial")
+		fp.stdin.mu.Lock()
+		fp.stdin.beforeWrite = func() {
+			h.agent.mu.Lock()
+			require.Len(t, h.agent.nativeSteers, 1)
+			h.agent.nativeSteers[0].nativeID = "M-claimed"
+			h.agent.mu.Unlock()
+			fp.stdin.mu.Lock()
+			fp.stdin.closed = true
+			fp.stdin.mu.Unlock()
+		}
+		fp.stdin.mu.Unlock()
+
+		receipt, err := h.agent.SteerInput(agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "claimed"})
+		require.NoError(t, err)
+		assert.Empty(t, receipt)
+		h.agent.mu.Lock()
+		require.Len(t, h.agent.nativeSteers, 1)
+		assert.Equal(t, "M-claimed", h.agent.nativeSteers[0].nativeID)
+		h.agent.mu.Unlock()
+	})
+
+	t.Run("partial identity InputID-only and AttemptID-only send untracked", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		fp := h.send("initial")
+
+		_, err := h.agent.SteerInput(agent.SteerRequest{InputID: "q-only", Content: "steer-1"})
+		require.NoError(t, err)
+		_, err = h.agent.SteerInput(agent.SteerRequest{AttemptID: "att-only", Content: "steer-2"})
+		require.NoError(t, err)
+		assert.Len(t, fp.lines(), 3)
+		h.agent.mu.Lock()
+		count := len(h.agent.nativeSteers)
+		h.agent.mu.Unlock()
+		assert.Zero(t, count, "partial identity steers must not register tracked submissions")
+	})
+
+	t.Run("rememberSteer on exited process returns ErrNoActiveTurn", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		exited := newFakeProc(h.agent.agentID, true)
+		exited.exit()
+		h.agent.mu.Lock()
+		h.agent.proc = exited.ampProcess
+		h.agent.turn = turnState{active: true}
+		h.agent.mu.Unlock()
+
+		sub, err := h.agent.rememberSteer(exited.ampProcess, "T-1", agent.SteerResolution{
+			InputID: "q-1", AttemptID: "att-1",
+			Receipt: agent.NativeInputReceipt{SessionID: "T-1", InputID: "M-1"},
+		})
+		h.agent.mu.Lock()
+		h.agent.proc = nil
+		h.agent.mu.Unlock()
+		exited.Stop()
+		assert.ErrorIs(t, err, agent.ErrNoActiveTurn)
+		assert.Nil(t, sub)
+	})
+}
+
+func TestAmpCreateReplyThreadRacingStop(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	h.agent.createThreadFn = func(context.Context, threadConfiguration) (string, error) {
+		close(entered)
+		<-release
+		return testCreatedThreadID, nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := h.agent.SendInput("go", nil)
+		errCh <- err
+	}()
+
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("createThreadFn did not start")
+	}
+	h.agent.Stop()
+	close(release)
+
+	assert.ErrorIs(t, <-errCh, errAgentStopped)
+	h.agent.mu.Lock()
+	threadID := h.agent.threadID
+	locked := h.agent.modeLocked
+	h.agent.mu.Unlock()
+	assert.Empty(t, threadID)
+	assert.False(t, locked)
+	assert.Empty(t, h.startedThreads())
+	assert.Empty(t, h.sink.SessionIDs())
 }
 
 func TestSteerEchoWithAnImageOnlyMessage(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	fp := h.send("first")
-	h.feed(fp, initLine("T-1"))
-	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: "", Attachments: []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}}))
-	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.test/image"}}]}}`)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
+	h := newHarness(t, withResume("T-1"))
+	lead, err := h.agent.SendInput("first", nil)
+	require.NoError(t, err)
+	fp := h.nextProc()
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "", Attachments: []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}}))
+	steer := steerReceiptFromLine(t, fp, 1, "T-1")
+	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
+		return []byte(`{"id":"` + threadID + `","messages":[{"protocolMessageID":"` + lead.InputID + `","role":"user"},{"protocolMessageID":"` + steer.InputID + `","role":"user","meta":{"steer":true}}]}`), nil
+	}
+	h.feed(fp, `{"type":"user","session_id":"T-1","message":{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.test/image"}}]}}`)
+	h.agent.waitSteerWork()
+	assert.Equal(t, []agent.SteerResolution{{InputID: "q-1", AttemptID: "att-1", Outcome: agent.SteerOutcomeEchoed, Receipt: steer}}, h.sink.SteerResolutions())
 }
 
 func TestSteerIgnoresAMalformedEmptyEcho(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	fp := h.send("first")
-	h.feed(fp, initLine("T-1"))
-	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{Content: ""}))
-	for _, content := range []string{`[]`, `[{"type":"text"}]`, `[{"type":"text","text":null}]`, `[{"type":"text","text":7}]`} {
-		h.feed(fp, `{"type":"user","message":{"role":"user","content":`+content+`}}`)
+	h := newHarness(t, withResume("T-1"))
+	lead, err := h.agent.SendInput("first", nil)
+	require.NoError(t, err)
+	fp := h.nextProc()
+	require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: ""}))
+	steer := steerReceiptFromLine(t, fp, 1, "T-1")
+	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
+		return []byte(`{"id":"` + threadID + `","messages":[{"protocolMessageID":"` + lead.InputID + `","role":"user"},{"protocolMessageID":"` + steer.InputID + `","role":"user","meta":{"steer":true}}]}`), nil
 	}
-	assert.Empty(t, h.sink.SteerEchoReports())
-	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":""}]}}`)
-	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
+	for _, content := range []string{`[{"type":"text"}]`, `[{"type":"text","text":null}]`, `[{"type":"text","text":7}]`} {
+		h.feed(fp, `{"type":"user","session_id":"T-1","message":{"role":"user","content":`+content+`}}`)
+	}
+	h.agent.waitSteerWork()
+	assert.Empty(t, h.sink.SteerResolutions())
+	h.feed(fp, `{"type":"user","session_id":"T-1","message":{"role":"user","content":[{"type":"text","text":""}]}}`)
+	h.agent.waitSteerWork()
+	assert.Equal(t, []agent.SteerResolution{{InputID: "q-1", AttemptID: "att-1", Outcome: agent.SteerOutcomeEchoed, Receipt: steer}}, h.sink.SteerResolutions())
 }
 
 func TestAmpIdleInterruptAndIdleProcessExitCloseOpenToolsAndResetSpans(t *testing.T) {

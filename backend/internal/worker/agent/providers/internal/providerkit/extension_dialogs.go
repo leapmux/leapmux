@@ -3,7 +3,21 @@ package providerkit
 import (
 	"encoding/json"
 	"math"
+	"time"
 )
+
+// MaxDialogTimeoutMillis is the largest dialog timeout in milliseconds that a
+// time.Duration can represent without overflow.
+const MaxDialogTimeoutMillis = float64(math.MaxInt64 / int64(time.Millisecond))
+
+// DialogTimeoutDuration converts a dialog timeout in milliseconds to a
+// time.Duration, returning 0 for non-positive, NaN, or overflowing values.
+func DialogTimeoutDuration(timeoutMillis float64) time.Duration {
+	if !(timeoutMillis > 0 && timeoutMillis < MaxDialogTimeoutMillis) {
+		return 0
+	}
+	return time.Duration(timeoutMillis * float64(time.Millisecond))
+}
 
 // DialogTimeoutMillis reads the wait after which a runtime answers a dialog
 // itself, as the dialog's `timeout` field states it: a JSON number of

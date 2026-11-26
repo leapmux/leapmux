@@ -66,25 +66,25 @@ func lineBlocks(t *testing.T, line []byte) []map[string]any {
 
 func TestBuildUserLineText(t *testing.T) {
 	t.Parallel()
-	line, _, err := buildUserLine("hello", nil, false, "")
+	line, err := buildUserLine("hello", nil, false, "")
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`, string(line))
 
-	line, _, err = buildUserLine("", nil, false, "")
+	line, err = buildUserLine("", nil, false, "")
 	require.NoError(t, err)
 	assert.Equal(t, []map[string]any{{"type": "text", "text": ""}}, lineBlocks(t, line), "an empty message is one empty text block")
 }
 
 func TestBuildUserLineSteer(t *testing.T) {
 	t.Parallel()
-	line, _, err := buildUserLine("also this", nil, true, "")
+	line, err := buildUserLine("also this", nil, true, "")
 	require.NoError(t, err)
 	assert.Equal(t, true, decodeLine(t, line)["steer"])
 }
 
 func TestBuildUserLineTextAttachment(t *testing.T) {
 	t.Parallel()
-	line, _, err := buildUserLine("read it", []*leapmuxv1.Attachment{{Filename: "notes.md", Data: []byte("# Notes")}}, false, "")
+	line, err := buildUserLine("read it", []*leapmuxv1.Attachment{{Filename: "notes.md", Data: []byte("# Notes")}}, false, "")
 	require.NoError(t, err)
 	blocks := lineBlocks(t, line)
 	require.Len(t, blocks, 2)
@@ -95,7 +95,7 @@ func TestBuildUserLineTextAttachment(t *testing.T) {
 
 func TestBuildUserLineAttachmentOnly(t *testing.T) {
 	t.Parallel()
-	line, _, err := buildUserLine("", []*leapmuxv1.Attachment{{Filename: "a.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}, false, "")
+	line, err := buildUserLine("", []*leapmuxv1.Attachment{{Filename: "a.png", MimeType: "image/png", Data: pngBytes(t, 1, 1)}}, false, "")
 	require.NoError(t, err)
 	blocks := lineBlocks(t, line)
 	require.Len(t, blocks, 1, "no empty text block precedes an attachment")
@@ -107,7 +107,7 @@ func TestBuildUserLineAttachmentOnly(t *testing.T) {
 func TestBuildUserLineImageTakesTheTypeOfItsBytes(t *testing.T) {
 	t.Parallel()
 	data := pngBytes(t, 3, 2)
-	line, _, err := buildUserLine("look", []*leapmuxv1.Attachment{{Filename: "shot.jpg", MimeType: "image/jpeg", Data: data}}, false, "")
+	line, err := buildUserLine("look", []*leapmuxv1.Attachment{{Filename: "shot.jpg", MimeType: "image/jpeg", Data: data}}, false, "")
 	require.NoError(t, err)
 	blocks := lineBlocks(t, line)
 	require.Len(t, blocks, 2)
@@ -130,22 +130,22 @@ func TestBuildUserLineImageCount(t *testing.T) {
 		}
 		return out
 	}
-	_, _, err := buildUserLine("four", images(maxImagesPerLine), false, "")
+	_, err := buildUserLine("four", images(maxImagesPerLine), false, "")
 	require.NoError(t, err)
-	_, _, err = buildUserLine("five", images(maxImagesPerLine+1), false, "")
+	_, err = buildUserLine("five", images(maxImagesPerLine+1), false, "")
 	assert.ErrorContains(t, err, "holds 5 images, and Amp takes at most 4")
 }
 
 func TestBuildUserLineSize(t *testing.T) {
 	t.Parallel()
 	// This text fills the line.
-	_, _, err := buildUserLine(strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead), nil, false, "")
+	_, err := buildUserLine(strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead), nil, false, "")
 	require.NoError(t, err)
-	_, _, err = buildUserLine(strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead+1), nil, false, "")
+	_, err = buildUserLine(strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead+1), nil, false, "")
 	assert.ErrorContains(t, err, "too large for Amp")
 
 	// A multi-byte character counts as its UTF-8 bytes, as Amp counts it.
-	_, _, err = buildUserLine(strings.Repeat("é", (maxLineContentBytes-emptyTextLineOverhead)/2+1), nil, false, "")
+	_, err = buildUserLine(strings.Repeat("é", (maxLineContentBytes-emptyTextLineOverhead)/2+1), nil, false, "")
 	assert.ErrorContains(t, err, "too large for Amp")
 }
 
@@ -159,9 +159,9 @@ const emptyTextLineOverhead = 27
 func TestBuildUserLineMeasuresHTMLCharactersAsJavaScriptDoes(t *testing.T) {
 	t.Parallel()
 	text := strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead-3) + "<&>"
-	_, _, err := buildUserLine(text, nil, false, "")
+	_, err := buildUserLine(text, nil, false, "")
 	require.NoError(t, err)
-	_, _, err = buildUserLine(text+"x", nil, false, "")
+	_, err = buildUserLine(text+"x", nil, false, "")
 	assert.ErrorContains(t, err, fmt.Sprintf("it holds %d bytes as JSON", maxLineContentBytes+1))
 }
 
@@ -170,9 +170,9 @@ func TestBuildUserLineMeasuresHTMLCharactersAsJavaScriptDoes(t *testing.T) {
 func TestBuildUserLineMeasuresLineSeparatorsAsJavaScriptDoes(t *testing.T) {
 	t.Parallel()
 	text := strings.Repeat("x", maxLineContentBytes-emptyTextLineOverhead-6) + "\u2028\u2029"
-	_, _, err := buildUserLine(text, nil, false, "")
+	_, err := buildUserLine(text, nil, false, "")
 	require.NoError(t, err)
-	_, _, err = buildUserLine(text+"x", nil, false, "")
+	_, err = buildUserLine(text+"x", nil, false, "")
 	assert.ErrorContains(t, err, fmt.Sprintf("it holds %d bytes as JSON", maxLineContentBytes+1))
 }
 
@@ -191,15 +191,15 @@ func TestBuildUserLineRefusesImagesThatOverflowTogether(t *testing.T) {
 	t.Parallel()
 	picture := &leapmuxv1.Attachment{Filename: "a.png", MimeType: "image/png", Data: paddedPNG(t, 450_000)}
 	require.NoError(t, validateAttachment(agent.ClassifyAttachments([]*leapmuxv1.Attachment{picture})[0]))
-	_, _, err := buildUserLine("both", []*leapmuxv1.Attachment{picture, picture}, false, "")
+	_, err := buildUserLine("both", []*leapmuxv1.Attachment{picture, picture}, false, "")
 	assert.ErrorContains(t, err, "Remove an image or shorten the text")
 }
 
 func TestBuildUserLineRefusesPDFAndBinary(t *testing.T) {
 	t.Parallel()
-	_, _, err := buildUserLine("", []*leapmuxv1.Attachment{{Filename: "spec.pdf", Data: []byte("%PDF-1.7")}}, false, "")
+	_, err := buildUserLine("", []*leapmuxv1.Attachment{{Filename: "spec.pdf", Data: []byte("%PDF-1.7")}}, false, "")
 	assert.ErrorContains(t, err, "Amp does not support PDF attachments: spec.pdf")
-	_, _, err = buildUserLine("", []*leapmuxv1.Attachment{{Filename: "blob.bin", Data: []byte{0xff, 0xfe, 0x00}}}, false, "")
+	_, err = buildUserLine("", []*leapmuxv1.Attachment{{Filename: "blob.bin", Data: []byte{0xff, 0xfe, 0x00}}}, false, "")
 	assert.ErrorContains(t, err, "Amp does not support binary attachments: blob.bin")
 }
 
@@ -286,7 +286,7 @@ func TestImageWithAnUnreadableHeaderPassesToAmp(t *testing.T) {
 	require.False(t, ok, "the header cannot be read")
 	assert.NoError(t, validateAttachment(agent.ClassifyAttachments(attachments)[0]))
 
-	line, _, err := buildUserLine("", attachments, false, "")
+	line, err := buildUserLine("", attachments, false, "")
 	require.NoError(t, err)
 	blocks := lineBlocks(t, line)
 	require.Len(t, blocks, 1)
@@ -347,12 +347,17 @@ func TestWebPWiderThanAmpTakesIsRefused(t *testing.T) {
 	assert.ErrorContains(t, validateAttachment(classified[0]), "is 8001x1 pixels")
 }
 
-func TestBuildUserLineReturnsItsTextBlocks(t *testing.T) {
+func TestBuildUserLineEncodesTextAndAttachmentBlocks(t *testing.T) {
 	t.Parallel()
-	_, texts, err := buildUserLine("prompt", []*leapmuxv1.Attachment{{Filename: "notes.md", Data: []byte("# Notes")}}, true, "")
+	line, err := buildUserLine("prompt", []*leapmuxv1.Attachment{{Filename: "notes.md", Data: []byte("# Notes")}}, true, "req-1")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"prompt", "<attached-file name=\"notes.md\" mime-type=\"text/markdown\">\n# Notes\n</attached-file>"}, texts)
-	assert.Equal(t, "first\x00second", ampEchoKey([]string{"first", "second"}))
-	assert.Equal(t, "\x00second", ampEchoKey([]string{"", "second"}))
-	assert.Empty(t, ampEchoKey(nil))
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(line, &decoded))
+	assert.Equal(t, true, decoded["steer"])
+	assert.Equal(t, "req-1", decoded["request_id"])
+	msg := decoded["message"].(map[string]any)
+	content := msg["content"].([]any)
+	require.Len(t, content, 2)
+	assert.Equal(t, "prompt", content[0].(map[string]any)["text"])
+	assert.Equal(t, "<attached-file name=\"notes.md\" mime-type=\"text/markdown\">\n# Notes\n</attached-file>", content[1].(map[string]any)["text"])
 }

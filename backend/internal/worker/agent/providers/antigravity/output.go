@@ -162,7 +162,7 @@ func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigr
 	text, thinking := step.PlannerResponse.visibleContent()
 	recovered := text != "" || thinking != "" ||
 		step.Status == contracts.AntigravityStepStatusDone && len(step.PlannerResponse.ToolCalls) > 0
-	scope := fmt.Sprintf("antigravity:%s:%d", state.id, index)
+	scope := stepMessageKey(state.id, index)
 	a.Mu.Lock()
 	if !a.cascadeCurrentLocked(state) || state.closed {
 		a.Mu.Unlock()
@@ -211,7 +211,7 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	manualCheckpoint := step.Type == contracts.AntigravityStepTypeCheckpoint && step.Metadata.ExecutionID != "" &&
 		state.manualCompactionExecutionID != nil && *state.manualCompactionExecutionID == step.Metadata.ExecutionID
 	spanID := ""
-	if record != nil && isToolStep(step) {
+	if isToolStep(step) {
 		spanID = record.spanID
 	}
 	a.Mu.Unlock()
@@ -363,7 +363,7 @@ func (a *Agent) finalizeStep(state *cascadeState, index int, step antigravitySte
 		state.sink.ReportProgress(agent.CompleteOutputProgress(spanID))
 	}
 	if step.Type == contracts.AntigravityStepTypePlannerResponse {
-		state.sink.ReportProgress(agent.CompleteModelProgress(fmt.Sprintf("antigravity:%s:%d", state.id, index)))
+		state.sink.ReportProgress(agent.CompleteModelProgress(stepMessageKey(state.id, index)))
 	}
 	if step.Type == contracts.AntigravityStepTypeInvokeSubagent {
 		a.linkSubagentResults(state, index, step)
@@ -787,7 +787,6 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 		if err := a.finishCascadeOutput(state, agent.MessageCompletionError); err != nil {
 			slog.Error("antigravity finish failed child stream", "agent_id", a.AgentID(), "error", err)
 		}
-		a.finishInputReplies(state, false, agent.MessageCompletionError)
 		a.closeChildRow(state, bgtask.StatusFailed)
 		providerkit.PublishSteerableTurnActiveTo(state.sink, false, seq)
 	}

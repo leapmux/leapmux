@@ -286,3 +286,79 @@ func TestTurnStartPublishesSteeringAvailability(t *testing.T) {
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED,
 	}, sink.TurnKinds())
 }
+
+func TestSteerInputWhenIdleReturnsErrNoActiveTurn(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newSteerAgent(t)
+
+	_, err := a.SteerInput(agent.SteerRequest{
+		InputID:   "input-idle",
+		AttemptID: "attempt-idle",
+		Content:   "steer while idle",
+	})
+	require.ErrorIs(t, err, agent.ErrNoActiveTurn)
+	assert.Empty(t, stdin.frames())
+	assert.False(t, a.PublishTurnActive().Active)
+	a.dispatchMu.Lock()
+	assert.Empty(t, a.pendingSteers)
+	a.dispatchMu.Unlock()
+	assert.Empty(t, sink.SteerResolutions())
+}
+
+func TestSteerInputPartialIdentityDoesNotRegisterPendingSteer(t *testing.T) {
+	t.Parallel()
+	cases := map[string]agent.SteerRequest{
+		"InputID only":   {InputID: "input-only", Content: "partial steer 1"},
+		"AttemptID only": {AttemptID: "attempt-only", Content: "partial steer 2"},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSteerAgent(t)
+			_, err := a.SendInput("Start turn.", nil)
+			require.NoError(t, err)
+
+			_, err = a.SteerInput(req)
+			require.NoError(t, err)
+			a.dispatchMu.Lock()
+			assert.Empty(t, a.pendingSteers)
+			a.dispatchMu.Unlock()
+
+			a.finishOutput(agent.MessageCompletionError)
+			assert.Empty(t, sink.SteerResolutions())
+		})
+	}
+}
+
+func TestSteerInputUnidentifiedRPCFailureReturnsError(t *testing.T) {
+	t.Parallel()
+	cases := map[string]agent.SteerRequest{
+		"empty identity": {Content: "unidentified steer"},
+		"InputID only":   {InputID: "input-only", Content: "partial input"},
+		"AttemptID only": {AttemptID: "attempt-only", Content: "partial attempt"},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, requests, _ := newDroidInputHarness(t)
+			a.startTurn()
+
+			errCh := make(chan error, 1)
+			go func() {
+				_, err := a.SteerInput(req)
+				errCh <- err
+			}()
+			sent := receiveDroidInput(t, requests)
+			answerDroidInput(t, a, sent.ID, true)
+
+			// If droidSteerResolvedAfterInputFailure were called for an untracked
+			// steer, missing map entry would falsely treat the steer as resolved.
+			require.ErrorContains(t, <-errCh, "input refused")
+			assert.True(t, a.PublishTurnActive().Active)
+			a.dispatchMu.Lock()
+			assert.Empty(t, a.pendingSteers)
+			a.dispatchMu.Unlock()
+			assert.Empty(t, sink.SteerResolutions())
+		})
+	}
+}

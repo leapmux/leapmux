@@ -110,6 +110,7 @@ type Agent struct {
 type droidLaunch struct {
 	spec          launch.Spec
 	shutdownGrace time.Duration
+	onTurnEnd     func(bgtask.Status)
 }
 
 var (
@@ -240,14 +241,16 @@ type droidInputMode uint8
 const (
 	droidInputOrdinary droidInputMode = iota
 	droidInputSteer
-	// A child queue writes at acceptance. Child sinks do not report steer echoes.
-	droidInputChildSteer
 )
 
 type droidInputDispatch struct {
 	mode         droidInputMode
 	queueInputID string
 	attemptID    string
+}
+
+func (d droidInputDispatch) tracksSteer() bool {
+	return d.mode == droidInputSteer && d.queueInputID != "" && d.attemptID != ""
 }
 
 // sendNativeInput writes one droid.add_user_message request.
@@ -317,14 +320,14 @@ func (a *Agent) sendNativeInput(expected *string, content string, attachments []
 		reply = a.beginDroidReply(receipt, id)
 		a.startTurn()
 	}
-	if dispatch.mode == droidInputSteer {
+	if dispatch.tracksSteer() {
 		a.beginDroidSteer(params, id, dispatch)
 	}
 	if err := a.requestInput(id, params); err != nil {
 		if reply != nil && a.droidReplyEchoedAfterInputFailure(reply) {
 			return receipt, nil
 		}
-		if dispatch.mode == droidInputSteer && a.droidSteerResolvedAfterInputFailure(params.MessageID) {
+		if dispatch.tracksSteer() && a.droidSteerResolvedAfterInputFailure(params.MessageID) {
 			// The native event resolves delivery even if its report still waits for storage.
 			return receipt, nil
 		}

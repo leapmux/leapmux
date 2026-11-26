@@ -4,12 +4,12 @@ import { Agent } from '@oh-my-pi/pi-agent-core'
 
 const bridge = Symbol.for('leapmux.ohmypi.steerIdentity')
 
-function readIdentity(text, prefix) {
+function readIdentity(text, prefix, idLength) {
   if (typeof text !== 'string' || !text.startsWith(prefix))
     return
   const boundary = text.indexOf('\n', prefix.length)
   const id = boundary < 0 ? '' : text.slice(prefix.length, boundary)
-  if (id.length === configuration.idLength && /^[A-Za-z0-9]+$/.test(id))
+  if (id.length === idLength && /^[A-Za-z0-9]+$/.test(id))
     return { id, text: text.slice(boundary + 1) }
 }
 
@@ -19,49 +19,66 @@ function installIdentityBridge() {
   const agentPrompt = Agent?.prototype.prompt
   if (typeof input !== 'function' || typeof prompt !== 'function' || typeof agentPrompt !== 'function')
     return false
-  if (AgentSession.prototype[bridge] === configuration.capability)
+  const existing = AgentSession.prototype[bridge]
+  if (existing && typeof existing === 'object') {
+    existing.config = configuration
     return true
+  }
 
+  const state = { config: configuration }
   const transport = Symbol('leapmux input identity')
   const prompts = new AsyncLocalStorage()
-  ExtensionRunner.prototype.emitInput = async function (text, images, source) {
-    const identity = source === 'rpc' && readIdentity(text, configuration.prefix)
+  ExtensionRunner.prototype.emitInput = async function (text, images, source, ...rest) {
+    const config = state.config
+    const identity = source === 'rpc' && readIdentity(text, config.prefix, config.idLength)
     if (!identity)
-      return input.call(this, text, images, source)
+      return input.call(this, text, images, source, ...rest)
 
-    const result = await input.call(this, identity.text, images, source)
-    if (result.handled)
+    const result = await input.call(this, identity.text, images, source, ...rest)
+    if (!result || result.handled)
       return result
 
     // Native RPC passes this array to prompt after running every input hook.
     // The symbol belongs to the array, outside the model's image or text data.
+    const hadImages = (result.images ?? images) !== undefined
     const forwarded = [...(result.images ?? images ?? [])]
-    Object.defineProperty(forwarded, transport, { value: identity.id })
+    Object.defineProperty(forwarded, transport, { value: { id: identity.id, restoreUndefined: !hadImages } })
     return { ...result, text: result.text ?? identity.text, images: forwarded }
   }
 
   function tagUserMessage(message, owner) {
-    if (!owner.tagged && message?.role === 'user' && message.attribution === 'user') {
+    if (!owner.tagged && message && typeof message === 'object' && message.role === 'user' && message.attribution === 'user') {
       owner.tagged = true
-      message[configuration.messageField] = owner.id
+      message[state.config.messageField] = owner.id
     }
   }
 
-  AgentSession.prototype.prompt = function (text, options) {
+  AgentSession.prototype.prompt = function (text, options, ...rest) {
+    const config = state.config
     if (options?.streamingBehavior !== 'steer')
-      return prompts.run(null, () => prompt.call(this, text, options))
+      return prompts.run(null, () => prompt.call(this, text, options, ...rest))
     // steer_subagent calls the child's prompt directly and bypasses RPC input hooks.
-    const child = options.throwOnDrop && readIdentity(text, configuration.childPrefix)
-    const id = child?.id ?? options.images?.[transport]
+    const child = options.throwOnDrop && readIdentity(text, config.childPrefix, config.idLength)
+    const carried = options.images?.[transport]
+    const id = child?.id ?? carried?.id
     if (!id)
-      return prompts.run(null, () => prompt.call(this, text, options))
+      return prompts.run(null, () => prompt.call(this, text, options, ...rest))
     const owner = { id, agent: this.agent, tagged: false }
-    const onPromptQueued = (messages) => {
-      for (const message of messages)
-        tagUserMessage(message, owner)
-      options.onPromptQueued?.(messages)
+    const nextOptions = {
+      ...options,
+      onPromptQueued(messages, ...queueRest) {
+        if (Array.isArray(messages)) {
+          for (const message of messages)
+            tagUserMessage(message, owner)
+        } else {
+          tagUserMessage(messages, owner)
+        }
+        return options.onPromptQueued?.call(this, messages, ...queueRest)
+      },
     }
-    return prompts.run(owner, () => prompt.call(this, child?.text ?? text, { ...options, onPromptQueued }))
+    if (carried?.restoreUndefined)
+      nextOptions.images = undefined
+    return prompts.run(owner, () => prompt.call(this, child?.text ?? text, nextOptions, ...rest))
   }
 
   Agent.prototype.prompt = function (messages, ...options) {
@@ -73,7 +90,7 @@ function installIdentityBridge() {
     }
     return agentPrompt.call(this, messages, ...options)
   }
-  Object.defineProperty(AgentSession.prototype, bridge, { value: configuration.capability })
+  Object.defineProperty(AgentSession.prototype, bridge, { value: state, configurable: true, writable: true })
   return true
 }
 

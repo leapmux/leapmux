@@ -203,6 +203,22 @@ func (a *Agent) pollChildTail(sessionID string) {
 	}
 }
 
+// stopChildTail flushes any pre-bind records from the initial archive tail and
+// stops the tail so a bound child process owns every subsequent turn exclusively.
+func (a *Agent) stopChildTail(sessionID string) {
+	a.tailMu.Lock()
+	tail := a.childTails[sessionID]
+	a.tailMu.Unlock()
+	if tail == nil {
+		return
+	}
+	tail.poll()
+	tail.mu.Lock()
+	tail.finished = true
+	tail.mu.Unlock()
+	tail.stop()
+}
+
 // probeResumeSpawnArchive captures the child archive EOF outside dispatchMu
 // when Task({resume}) arrives so Job 2 output flushed before
 // child_session_available is not skipped.

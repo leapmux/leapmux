@@ -34,10 +34,11 @@ func (a *Agent) handleEvent(event hubEvent) {
 		a.declineForeignRequest(event, "The session ended.")
 		return
 	}
-	ownSteerStart := a.observeSteerEvent(event)
+	decoded := decodeSteerEvent(event)
+	ownSteerStart := a.observeSteerEvent(event, decoded)
 	switch event.Event {
 	case eventRunStarted:
-		a.handleRunStarted(event, ownSteerStart)
+		a.handleRunStarted(event, decoded.runStarted, ownSteerStart)
 	case eventSessionUpdated:
 		a.handleSessionUpdated(event)
 	case eventIterationStarted:
@@ -47,9 +48,9 @@ func (a *Agent) handleEvent(event hubEvent) {
 			a.discardUnflushedReasoning(t)
 		}
 	case eventPendingPrompts:
-		a.handlePendingPrompts(event)
+		a.handlePendingPrompts(event, decoded.prompts)
 	case eventPendingPromptSubmitted:
-		a.handlePendingPromptSubmitted(event)
+		a.handlePendingPromptSubmitted(event, decoded.submitted)
 	case eventReasoningDelta:
 		a.handleReasoningDelta(event.Payload)
 	case eventAssistantDelta:
@@ -113,13 +114,9 @@ func (a *Agent) handleEvent(event hubEvent) {
 // handleRunStarted confirms the send that started the run.
 // Cline sends another run.started for each steer. An active turn keeps its identity.
 // A run that another client starts creates a turn that takes no steer.
-func (a *Agent) handleRunStarted(event hubEvent, ownSteer bool) {
-	var started *struct {
-		RequestID string `json:"requestId"`
-		ClientID  string `json:"clientId"`
-	}
-	if err := json.Unmarshal(event.Payload, &started); err != nil || started == nil {
-		slog.Debug("cline ignored a malformed run start", "agent_id", a.AgentID(), "error", err)
+func (a *Agent) handleRunStarted(event hubEvent, started *runStartedPayload, ownSteer bool) {
+	if started == nil {
+		slog.Debug("cline ignored a malformed run start", "agent_id", a.AgentID())
 		return
 	}
 	a.Mu.Lock()
@@ -235,7 +232,7 @@ func (a *Agent) handleSessionIdle(sessionID string) {
 	if reason == "" {
 		reason = runReasonCompleted
 	}
-	a.endTurnWithOutcome(completionOf(reason, turn.interruptRequested), runEndRow(sessionID, reason, ""), outcome)
+	a.endTurn(completionOf(reason, turn.interruptRequested), runEndRow(sessionID, reason, ""), endTurnOptions{outcome: outcome})
 }
 
 // dispatchToolStarted opens one tool call where its output belongs.
@@ -382,13 +379,8 @@ func (a *Agent) handleSessionNotice(event hubEvent) {
 }
 
 // handlePendingPrompts replaces the steer count with the native queue snapshot.
-func (a *Agent) handlePendingPrompts(event hubEvent) {
-	var payload struct {
-		Prompts []struct {
-			Delivery string `json:"delivery"`
-		} `json:"prompts"`
-	}
-	if json.Unmarshal(event.Payload, &payload) != nil {
+func (a *Agent) handlePendingPrompts(event hubEvent, payload *pendingPromptsPayload) {
+	if payload == nil {
 		return
 	}
 	count := 0
@@ -407,13 +399,8 @@ func (a *Agent) handlePendingPrompts(event hubEvent) {
 }
 
 // handlePendingPromptSubmitted removes one steer after the native model reads it.
-func (a *Agent) handlePendingPromptSubmitted(event hubEvent) {
-	var payload struct {
-		Prompt struct {
-			Delivery string `json:"delivery"`
-		} `json:"prompt"`
-	}
-	if json.Unmarshal(event.Payload, &payload) != nil || payload.Prompt.Delivery != deliverySteer {
+func (a *Agent) handlePendingPromptSubmitted(event hubEvent, payload *pendingPromptSubmittedPayload) {
+	if payload == nil || payload.Prompt.Delivery != deliverySteer {
 		return
 	}
 	a.Mu.Lock()

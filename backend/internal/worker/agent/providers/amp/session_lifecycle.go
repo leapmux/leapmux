@@ -7,6 +7,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -16,27 +17,24 @@ import (
 
 // createReplyThread makes the first input's native session available before
 // dispatch. Amp's stream prints its init only after inference has started.
-// The caller holds sendMu.
-func (a *Agent) createReplyThread(config threadConfiguration) (string, error) {
-	if err := a.checkWorkspace(); err != nil {
-		return "", err
-	}
-	var threadID string
+// The caller holds sendMu and has already checked the workspace.
+func (a *Agent) createReplyThread(config threadConfiguration) (string, string, error) {
+	var threadID, settingsPath string
 	var err error
 	if a.createThreadFn != nil {
 		threadID, err = a.createThreadFn(a.ctx, config)
 	} else {
-		threadID, err = a.runCreateThread(config)
+		threadID, settingsPath, err = a.runCreateThread(config)
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	a.settingsMu.Lock()
 	defer a.settingsMu.Unlock()
 	a.mu.Lock()
 	if a.stopped {
 		a.mu.Unlock()
-		return "", errAgentStopped
+		return "", "", errAgentStopped
 	}
 	a.threadID = threadID
 	a.awaitThreadInit = true
@@ -46,18 +44,32 @@ func (a *Agent) createReplyThread(config threadConfiguration) (string, error) {
 	a.sink.UpdateSessionID(threadID)
 	a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
 	a.sink.BroadcastStatusActive(threadID)
-	return threadID, nil
+	return threadID, settingsPath, nil
 }
 
-func (a *Agent) runCreateThread(config threadConfiguration) (string, error) {
+func (a *Agent) runCreateThread(config threadConfiguration) (string, string, error) {
 	settingsPath, err := a.launch.writeSettings(a.userSettingsFile())
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	args := []string{"threads", "new", "--mode", config.mode, "--settings-file", settingsPath}
 	if config.fast {
 		args = append(args, "--fast")
 	}
+	output, err := a.runCLI(a.ctx, args, a.launch.opts.EffectiveAPITimeout(), 8<<10)
+	if err != nil {
+		return "", "", fmt.Errorf("create the Amp thread: %w", err)
+	}
+	threadID, err := threadIDFromCreateOutput(output)
+	if err != nil {
+		return "", "", err
+	}
+	return threadID, settingsPath, nil
+}
+
+// runCLI runs one short-lived Amp CLI subcommand with the resolved launch spec
+// and environment shared by conversation processes.
+func (a *Agent) runCLI(ctx context.Context, args []string, timeout time.Duration, maxOutput int) ([]byte, error) {
 	opts := a.launch.opts
 	locator := ampLocator
 	if a.launch.spec.Program != "" {
@@ -66,16 +78,12 @@ func (a *Agent) runCreateThread(config threadConfiguration) (string, error) {
 			return spec, launch.Found
 		})
 	}
-	output, err := providerkit.RunCLI(a.ctx, providerkit.CLIRun{
+	return providerkit.RunCLI(ctx, providerkit.CLIRun{
 		Locator: locator, Label: "Amp", Shell: opts.Shell, LoginShell: opts.LoginShell,
 		Args: args, WorkingDir: opts.WorkingDir, StripEnvKeys: ampIdentityEnvKeys,
 		SetEnv: a.launch.setEnv(), Env: a.launch.processEnv,
-		Timeout: opts.EffectiveAPITimeout(), MaxOutput: 8 << 10,
+		Timeout: timeout, MaxOutput: maxOutput,
 	})
-	if err != nil {
-		return "", fmt.Errorf("create the Amp thread: %w", err)
-	}
-	return threadIDFromCreateOutput(output)
 }
 
 func threadIDFromCreateOutput(output []byte) (string, error) {

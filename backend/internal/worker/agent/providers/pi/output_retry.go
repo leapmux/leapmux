@@ -56,7 +56,7 @@ func (a *Agent) settleHeldPiTurnAt(completion agent.MessageCompletion, settledAt
 		a.persistIncompletePiTools(agent.MessageCompletionInterrupted)
 	}
 	if held != nil {
-		content := piAgentEndContent(held.raw, a.currentPiUsageSnapshot(), piTurnDurationMs(startedAt, settledAt))
+		content := piAgentEndContent(held.raw, a.currentPiUsageSnapshot(), providerkit.TurnDurationMillis(startedAt, settledAt))
 		if interrupted {
 			content.Completion = agent.MessageCompletionInterrupted
 		}

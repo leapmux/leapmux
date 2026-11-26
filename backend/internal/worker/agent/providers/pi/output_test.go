@@ -672,21 +672,6 @@ func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoRetry(t *testing.T) {
 	}
 }
 
-func TestPiTurnDurationMs(t *testing.T) {
-	t.Parallel()
-
-	base := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
-
-	assert.Nil(t, piTurnDurationMs(time.Time{}, base), "an unobserved start has nothing to measure")
-	assert.Nil(t, piTurnDurationMs(base, base.Add(-time.Second)), "a backwards clock reports nothing")
-
-	require.NotNil(t, piTurnDurationMs(base, base))
-	assert.Equal(t, int64(0), *piTurnDurationMs(base, base))
-
-	require.NotNil(t, piTurnDurationMs(base, base.Add(1500*time.Millisecond)))
-	assert.Equal(t, int64(1500), *piTurnDurationMs(base, base.Add(1500*time.Millisecond)))
-}
-
 func TestHandlePiOutput_MessageUpdate_OtherDeltaTypesIgnored(t *testing.T) {
 	t.Parallel()
 

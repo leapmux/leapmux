@@ -146,10 +146,8 @@ func clineCommandText(element json.RawMessage) string {
 	if program, _ := providerkit.RawString(command["command"]); program != "" {
 		parts = append(parts, program)
 	}
-	var arguments []json.RawMessage
-	_ = json.Unmarshal(command["args"], &arguments)
-	for _, argument := range arguments {
-		if text, _ := providerkit.RawString(argument); text != "" {
+	for _, text := range providerkit.RawStrings(command["args"]) {
+		if text != "" {
 			parts = append(parts, text)
 		}
 	}
@@ -183,12 +181,8 @@ func clineQuestions(payload []byte) ([]*leapmuxv1.ControlQuestion, bool) {
 	}
 	question := &leapmuxv1.ControlQuestion{Question: text}
 	if len(arguments) > 1 {
-		var labels []json.RawMessage
-		_ = json.Unmarshal(arguments[1], &labels)
-		for _, raw := range labels {
-			if label, ok := providerkit.RawString(raw); ok {
-				question.Options = append(question.Options, &leapmuxv1.QuestionOption{Value: &label, Label: label})
-			}
+		for _, label := range providerkit.RawStrings(arguments[1]) {
+			question.Options = append(question.Options, &leapmuxv1.QuestionOption{Value: &label, Label: label})
 		}
 	}
 	return []*leapmuxv1.ControlQuestion{question}, true

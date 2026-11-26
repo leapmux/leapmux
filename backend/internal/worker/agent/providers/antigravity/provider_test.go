@@ -59,9 +59,19 @@ func TestAntigravityControlResponseMatchesTheCascade(t *testing.T) {
 		`{"cascadeId":"cascade","interaction":{"trajectoryId":"","stepIndex":2}}`,
 		`{"cascadeId":"","interaction":{"trajectoryId":"trajectory","stepIndex":2}}`,
 		`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":-1}}`,
+		`{"cascadeId":"cas:cade","interaction":{"trajectoryId":"trajectory","stepIndex":2}}`,
+		`{"cascadeId":"cascade","interaction":{"trajectoryId":"traj:ectory","stepIndex":2}}`,
+		`{"cascadeId":"cascade","interaction":null}`,
+		`{"cascadeId":"cascade","interaction":"not-an-object"}`,
+		`{"cascadeId":"cascade","interaction":[]}`,
+		`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":1.5}}`,
+		`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":"2"}}`,
 	} {
 		assert.Empty(t, provider.ControlResponseRequestID([]byte(content)), content)
 	}
+	// stepIndex 0 is valid and must be read back.
+	stepZero := []byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":0,"permission":{"allow":true}}}`)
+	assert.Equal(t, "antigravity:cascade:trajectory:0", provider.ControlResponseRequestID(stepZero))
 }
 
 // The key of a stored interaction is the address of its step, so a payload of
@@ -111,6 +121,26 @@ func TestAntigravityRefusesAnAnswerThatIsNotNative(t *testing.T) {
 	payload := antigravityInteractionPayload(t, map[string]any{"permission": map[string]any{}})
 	for _, content := range [][]byte{agent.AllowResponse(requestID, json.RawMessage(`{}`)), agent.DenyResponse(requestID, "")} {
 		resolution := agenttest.ResolveAnswer(antigravityProvider{}, payload, requestID, agent.ControlAnswer{Content: content})
+		assert.True(t, resolution.Withhold, string(content))
+		assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableAnswer, string(content))
+	}
+	malformed := [][]byte{
+		[]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":null,"permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":-1,"permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":1.5,"permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"trajectory","stepIndex":"4","permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"","interaction":{"trajectoryId":"trajectory","stepIndex":4,"permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"cas:cade","interaction":{"trajectoryId":"trajectory","stepIndex":4,"permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"","stepIndex":4,"permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"cascade","interaction":{"trajectoryId":"traj:ectory","stepIndex":4,"permission":{"allow":true}}}`),
+		[]byte(`{"cascadeId":"cascade","interaction":null}`),
+		[]byte(`{"cascadeId":"cascade","interaction":"not-an-object"}`),
+		[]byte(`{"cascadeId":"cascade","interaction":[]}`),
+		[]byte(`{"cascadeId":"cascade","interaction":42}`),
+	}
+	for _, content := range malformed {
+		resolution := antigravityProvider{}.ResolveControlResponse(agenttest.ControlResponseContextOf(payload, requestID, agent.ControlAnswer{Content: content}))
 		assert.True(t, resolution.Withhold, string(content))
 		assert.EqualError(t, resolution.Refusal(), agent.RefusalUnreadableAnswer, string(content))
 	}

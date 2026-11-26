@@ -1,7 +1,10 @@
 package amp
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -340,19 +343,6 @@ func TestTurnEndStatesTheTurnDuration(t *testing.T) {
 	usage, ok := metadata[contracts.SessionInfoKeyContextUsage].(map[string]any)
 	require.True(t, ok, "the turn end carries the last context reading")
 	assert.EqualValues(t, 300, usage[contracts.ContextUsageFieldContextTokens])
-}
-
-func TestTurnDurationMs(t *testing.T) {
-	t.Parallel()
-	start := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	assert.Nil(t, turnDurationMs(turnState{}, start), "a turn with no start has no duration")
-	assert.Nil(t, turnDurationMs(turnState{startedAt: start}, start.Add(-time.Millisecond)), "a clock that moved backwards states no duration")
-	zero := turnDurationMs(turnState{startedAt: start}, start)
-	require.NotNil(t, zero)
-	assert.Zero(t, *zero)
-	long := turnDurationMs(turnState{startedAt: start}, start.Add(90*time.Minute))
-	require.NotNil(t, long)
-	assert.EqualValues(t, 90*60*1000, *long)
 }
 
 func TestTurnMetadata(t *testing.T) {
@@ -918,5 +908,117 @@ func TestTurnFrames(t *testing.T) {
 		h := newHarness(t)
 		h.feed(nil, tc.Line)
 		return h.sink.TurnActives()
+	})
+}
+
+func TestAmpHandleResultLineRecoveryFlag(t *testing.T) {
+	t.Parallel()
+
+	t.Run("active result with pending steer keeps turn active via reconciling while Steerable becomes false", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		fp := h.send("first")
+		h.feed(fp, initLine("T-1"))
+		require.True(t, h.agent.PublishTurnActive().Steerable)
+		require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "pending"}))
+
+		h.feed(fp, errorResult("Model Provider Overloaded"))
+		h.agent.mu.Lock()
+		reconciling := h.agent.reconciling
+		turnActive := h.agent.turn.active
+		h.agent.mu.Unlock()
+		assert.True(t, reconciling)
+		assert.False(t, turnActive)
+
+		state := h.agent.PublishTurnActive()
+		assert.True(t, state.Active, "reconciling must keep Active true")
+		assert.False(t, state.Steerable, "Steerable must be false while reconciling")
+	})
+
+	t.Run("idle result with pending steer prepares recovery", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		fp := h.send("first")
+		require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "pending"}))
+		h.agent.finishTurn(agent.MessageCompletionInterrupted, nil)
+		require.False(t, h.turnActive())
+
+		h.feed(fp, `{"type":"result","subtype":"success","is_error":false,"session_id":"T-1"}`)
+		h.agent.mu.Lock()
+		reconciling := h.agent.reconciling
+		h.agent.mu.Unlock()
+		assert.True(t, reconciling, "result while idle with a pending steer must prepare recovery")
+		state := h.agent.PublishTurnActive()
+		assert.True(t, state.Active)
+		assert.False(t, state.Steerable)
+	})
+
+	t.Run("discarding keeps reconciling false for active and idle results", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		fp := h.send("first")
+		require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "pending"}))
+		h.agent.DiscardOutput()
+
+		h.agent.handleResultLine(fp.ampProcess, []byte(`{"type":"result","subtype":"success","is_error":false,"session_id":"T-1"}`))
+		h.agent.mu.Lock()
+		reconcilingActive := h.agent.reconciling
+		h.agent.mu.Unlock()
+		assert.False(t, reconcilingActive)
+
+		h.agent.handleResultLine(fp.ampProcess, []byte(`{"type":"result","subtype":"success","is_error":false,"session_id":"T-1"}`))
+		h.agent.mu.Lock()
+		reconcilingIdle := h.agent.reconciling
+		h.agent.mu.Unlock()
+		assert.False(t, reconcilingIdle)
+	})
+}
+
+func TestAmpHandleUserLineEmptyContentAndUnknownBlock(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty content array triggers steer echo observation", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		lead, err := h.agent.SendInput("first", nil)
+		require.NoError(t, err)
+		fp := h.nextProc()
+		require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: ""}))
+		steer := steerReceiptFromLine(t, fp, 1, "T-1")
+		h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
+			return []byte(fmt.Sprintf(`{"id":%q,"messages":[
+				{"protocolMessageID":%q,"role":"user"},
+				{"protocolMessageID":%q,"role":"user","meta":{"steer":true}}
+			]}`, threadID, lead.InputID, steer.InputID)), nil
+		}
+
+		h.feed(fp, `{"type":"user","session_id":"T-1","message":{"role":"user","content":[]}}`)
+		h.agent.waitSteerWork()
+		assert.Equal(t, []agent.SteerResolution{{
+			InputID: "q-1", AttemptID: "att-1", Outcome: agent.SteerOutcomeEchoed, Receipt: steer,
+		}}, h.sink.SteerResolutions())
+	})
+
+	t.Run("unknown block type prevents steer echo observation", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, withResume("T-1"))
+		lead, err := h.agent.SendInput("first", nil)
+		require.NoError(t, err)
+		fp := h.nextProc()
+		require.NoError(t, agenttest.SteerInput(h.agent, agent.SteerRequest{InputID: "q-1", AttemptID: "att-1", Content: "steer"}))
+		steer := steerReceiptFromLine(t, fp, 1, "T-1")
+		var exportCalls atomic.Int32
+		h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
+			exportCalls.Add(1)
+			return []byte(fmt.Sprintf(`{"id":%q,"messages":[
+				{"protocolMessageID":%q,"role":"user"},
+				{"protocolMessageID":%q,"role":"user","meta":{"steer":true}}
+			]}`, threadID, lead.InputID, steer.InputID)), nil
+		}
+
+		h.feed(fp, `{"type":"user","session_id":"T-1","message":{"role":"user","content":[{"type":"text","text":"steer"},{"type":"unknown_block"}]}}`)
+		h.agent.waitSteerWork()
+		assert.Zero(t, exportCalls.Load())
+		assert.Empty(t, h.sink.SteerResolutions())
 	})
 }

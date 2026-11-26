@@ -25,5 +25,5 @@ func (antigravityProvider) ReplyText(message agent.MessageContent) (string, bool
 	_ = json.Unmarshal(frame.PlannerResponse.ModifiedResponse, &planner.ModifiedResponse)
 	_ = json.Unmarshal(frame.PlannerResponse.Response, &planner.Response)
 	text, _ := planner.visibleContent()
-	return text, true
+	return text, text != ""
 }

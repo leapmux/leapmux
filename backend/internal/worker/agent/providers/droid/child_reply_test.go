@@ -39,6 +39,14 @@ func (s *droidChildControlSink) ChildSink(childID string) agent.ProviderServices
 	return agent.NewProviderServices(s.childControlSink(childID))
 }
 
+func (s *droidChildControlSink) AcquireChildSink(childID string) agent.ChildSinkLease {
+	return agent.ChildSinkLease{Sink: s.ChildSink(childID)}
+}
+
+func (s *droidChildControlSink) AcquireChildStateSink(childID string) agent.ChildSinkLease {
+	return agent.ChildSinkLease{Sink: s.ChildSink(childID)}
+}
+
 func newBoundChildReplyHarness(t *testing.T) (*Agent, *Agent, *droidChildControlSink, *agenttest.ControlSink, *bufferStdin, *bufferStdin) {
 	t.Helper()
 	root, _, rootStdin := newSteerAgent(t)
@@ -206,4 +214,66 @@ func TestDroidRootRoutesChildControlAnswersByInstanceID(t *testing.T) {
 	}))
 	assert.Empty(t, rootStdin.frames(), "answering the child's control instance must not write to the root stdin")
 	require.Len(t, childStdin.frames(), 1, "answering the child's control instance must write to the child stdin")
+}
+
+func TestDroidSendRawInputControlInstanceAndNotPendingErrors(t *testing.T) {
+	t.Parallel()
+	root, child1, rootSink, _, rootStdin, child1Stdin := newBoundChildReplyHarness(t)
+	child2, _, child2Stdin := newSteerAgent(t)
+	const secondChildID = "63bf9b7b-5e82-4932-83c0-a2bf1caa2fce"
+	child2AgentID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask, SpawnSpanID: "droid-tool-task-2",
+		ProviderChildKey: secondChildID, AgentSessionID: secondChildID, Title: "Second child",
+	})
+	require.NoError(t, err)
+	child2.sink = agent.NewModelProgressResetSink(root.sink.ChildSink(child2AgentID))
+	child2.Mu.Lock()
+	child2.sessionID = secondChildID
+	child2.Mu.Unlock()
+	ready := make(chan struct{})
+	close(ready)
+	root.childConnMu.Lock()
+	root.childConns[secondChildID] = &droidChildConnection{ready: ready, agent: child2}
+	root.childConnMu.Unlock()
+
+	perm, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "type": droidTypeRequest, "id": "rpc-dup", "method": droidMethodRequestPermission,
+		"params": map[string]any{
+			"toolUses": []map[string]any{{
+				"toolUse":          map[string]any{"type": "tool_use", "id": "c-call", "name": "Edit", "input": map[string]any{}},
+				"confirmationType": contracts.DroidConfirmationTypeEdit,
+				"details":          map[string]any{"type": contracts.DroidConfirmationTypeEdit},
+			}},
+			"options": []map[string]any{{"label": "Allow", "value": contracts.DroidPermissionOptionProceedOnce}},
+		},
+	})
+	require.NoError(t, err)
+	child1.HandleOutput(perm)
+	child2.HandleOutput(perm)
+
+	answer, err := json.Marshal(droidResponseEnvelope("rpc-dup", contracts.DroidPermissionResult{
+		SelectedOption: contracts.DroidPermissionOptionProceedOnce,
+	}))
+	require.NoError(t, err)
+	assert.ErrorIs(t, root.SendRawInput(agent.RawInput{Data: answer}), agent.ErrControlInstanceUnstated)
+	assert.ErrorIs(t, root.SendRawInput(agent.RawInput{Data: answer, ControlInstanceID: "stale-id"}), agent.ErrControlInstanceReplaced)
+
+	missing, err := json.Marshal(droidResponseEnvelope("rpc-missing", contracts.DroidPermissionResult{
+		SelectedOption: contracts.DroidPermissionOptionProceedOnce,
+	}))
+	require.NoError(t, err)
+	assert.ErrorIs(t, root.SendRawInput(agent.RawInput{Data: missing}), agent.ErrControlRequestNotPending)
+	assert.Empty(t, rootStdin.frames(), "refused calls must not write to root stdin")
+	assert.Empty(t, child1Stdin.frames(), "refused calls must not write to child1 stdin")
+	assert.Empty(t, child2Stdin.frames(), "refused calls must not write to child2 stdin")
+
+	child2Reqs := rootSink.childControlSink(child2AgentID).PublishedControls()
+	require.Len(t, child2Reqs, 1)
+	require.NoError(t, root.SendRawInput(agent.RawInput{
+		Data:              answer,
+		ControlInstanceID: child2Reqs[0].InstanceID,
+	}))
+	assert.Empty(t, rootStdin.frames())
+	assert.Empty(t, child1Stdin.frames())
+	require.Len(t, child2Stdin.frames(), 1)
 }

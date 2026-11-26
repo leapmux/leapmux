@@ -47,7 +47,7 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 	}
 	allow := behavior == contracts.ControlAnswerBehaviorAllow
 	var fields contracts.KimiDecisionFields
-	if err := json.Unmarshal(kimiInnerResponse(ctx.ResponseContent), &fields); err != nil {
+	if err := json.Unmarshal(agent.DecodeControlInnerResponse(ctx.ResponseContent), &fields); err != nil {
 		result.Refuse(agent.RefusalUnreadableAnswer)
 		return result
 	}
@@ -241,16 +241,6 @@ func kimiAllOffered(offered, picked []string) bool {
 		}
 	}
 	return true
-}
-
-// kimiInnerResponse returns the inner response object of the neutral envelope,
-// or an empty object.
-func kimiInnerResponse(content []byte) json.RawMessage {
-	var envelope kimiControlEnvelope
-	if json.Unmarshal(content, &envelope) != nil || len(envelope.Response.Response) == 0 {
-		return json.RawMessage(`{}`)
-	}
-	return envelope.Response.Response
 }
 
 // kimiControlResponseContent wraps the server's body in the shared envelope,

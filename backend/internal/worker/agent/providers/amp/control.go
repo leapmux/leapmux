@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // toolCallWait limits how long a permission request waits for its tool call to
@@ -234,8 +235,5 @@ func (a *Agent) answerPermission(requestID, instanceID, behavior, message string
 // isUserLine reports whether data is a JSON object of the user line type, the
 // one line that Amp's stdin takes.
 func isUserLine(data []byte) bool {
-	var head struct {
-		Type string `json:"type"`
-	}
-	return json.Unmarshal(data, &head) == nil && head.Type == contracts.AmpLineTypeUser
+	return providerkit.StringField(data, "type") == contracts.AmpLineTypeUser
 }

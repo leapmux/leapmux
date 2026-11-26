@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Factory Droid's control channel: the server asks the worker for permission
@@ -256,13 +257,8 @@ func (a *Agent) respond(id string, result any) {
 // under: the `requestId` that it writes into the payload (onRequestPermission,
 // onAskUser).
 func (droidProvider) ControlRequestKey(payload []byte, _ string) (string, bool) {
-	var request struct {
-		RequestID string `json:"requestId"`
-	}
-	if json.Unmarshal(payload, &request) != nil || request.RequestID == "" {
-		return "", false
-	}
-	return request.RequestID, true
+	id := providerkit.StringField(payload, "requestId")
+	return id, id != ""
 }
 
 // droidStoredRequest is the part of a published control request that the reply
@@ -318,14 +314,16 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 		return resolution
 	}
 	allow := behavior == contracts.ControlAnswerBehaviorAllow
-	decision := droidInnerResponse(ctx.ResponseContent)
+	decision := agent.DecodeControlInnerResponse(ctx.ResponseContent)
 
 	var resolution agent.ControlResponseResolution
 	var result any
 	var err error
 	switch request.Type {
 	case contracts.DroidRequestTypePermission:
-		resolution.PlanModeControl = (droidProvider{}).PlanModeControl(request.ToolUse.Name)
+		if droidIsPlanConfirmation(request.ConfirmationType) {
+			resolution.PlanModeControl = agent.PlanModeControlExit
+		}
 		var approvalOption string
 		if allow && resolution.PlanModeControl == agent.PlanModeControlExit && !ctx.PlanApproval.GetClearContext() {
 			approvalOption, err = droidPlanApprovalOption(request, ctx.PlanApproval.GetPermissionMode())
@@ -377,7 +375,7 @@ func droidPlanApprovalOption(request droidStoredRequest, mode string) (string, e
 	if mode == "" {
 		return "", nil
 	}
-	if request.ToolUse.Name != contracts.DroidToolExitSpecMode || request.ConfirmationType != contracts.DroidConfirmationTypeExitSpecMode {
+	if request.ConfirmationType != contracts.DroidConfirmationTypeExitSpecMode {
 		return "", errors.New("this Factory Droid confirmation cannot apply the selected plan permission mode")
 	}
 	switch mode {
@@ -520,21 +518,6 @@ func droidResponseEnvelope(id string, result any) droidEnvelope {
 	}
 	env.Result = raw
 	return env
-}
-
-// droidInnerResponse returns the neutral inner response object, where
-// AnswerControlRequest writes the fields a Droid answer takes beside the
-// behavior.
-func droidInnerResponse(content []byte) json.RawMessage {
-	var envelope struct {
-		Response struct {
-			Response json.RawMessage `json:"response"`
-		} `json:"response"`
-	}
-	if json.Unmarshal(content, &envelope) != nil || len(envelope.Response.Response) == 0 {
-		return json.RawMessage(`{}`)
-	}
-	return envelope.Response.Response
 }
 
 // droidOptionValues reads the `value` of each offered option. Droid's options

@@ -3,43 +3,17 @@ package ohmypi
 import (
 	_ "embed"
 	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 
-	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 //go:embed steer_identity.mjs
 var ompSteerIdentityProgram []byte
 
-const ompSteerIdentityField = "leapmuxInputId"
-
-type ompSteerBridge struct {
-	Capability   string `json:"capability"`
-	Prefix       string `json:"prefix"`
-	ChildPrefix  string `json:"childPrefix"`
-	MessageField string `json:"messageField"`
-	IDLength     int    `json:"idLength"`
-}
+type ompSteerBridge = providerkit.SteerIdentityBridge
 
 func writeOMPSteerBridge(directory string) (string, ompSteerBridge, error) {
-	nonce := id.Generate()
-	bridge := ompSteerBridge{
-		Capability: "leapmux-steer-proof-" + nonce, Prefix: "leapmux-steer:" + nonce + ":",
-		ChildPrefix:  "leapmux-child-input:" + nonce + ":",
-		MessageField: ompSteerIdentityField, IDLength: len(nonce),
-	}
-	config, err := json.Marshal(bridge)
-	if err != nil {
-		return "", ompSteerBridge{}, fmt.Errorf("encode the Oh My Pi steer identity configuration: %w", err)
-	}
-	module := fmt.Appendf(nil, "const configuration = %s\n", config)
-	path := filepath.Join(directory, "leapmux-steer-identity.mjs")
-	if err := os.WriteFile(path, append(module, ompSteerIdentityProgram...), 0o600); err != nil {
-		return "", ompSteerBridge{}, fmt.Errorf("write the Oh My Pi steer identity extension: %w", err)
-	}
-	return path, bridge, nil
+	return providerkit.WriteSteerIdentityBridge(directory, "Oh My Pi", ompSteerIdentityProgram, true)
 }
 
 func (a *Agent) observeOMPSteerCapability(raw []byte) {

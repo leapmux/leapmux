@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -285,7 +284,7 @@ func (a *Agent) withdrawAllControls() {
 }
 
 // errUnknownControl refuses an answer to a request the agent no longer holds.
-var errUnknownControl = errors.New("the Cline request no longer waits for an answer")
+var errUnknownControl = fmt.Errorf("%w: the Cline request no longer waits for an answer", agent.ErrControlRequestNotPending)
 
 // SendRawInput delivers a control answer. The answer is the native reply that
 // the provider's ResolveControlResponse built from the neutral answer of
@@ -566,29 +565,15 @@ func planExitMode(picked string) string {
 	return contracts.ClinePermissionModeAct
 }
 
-// innerResponse returns the inner response object of the neutral envelope,
-// or an empty object.
-func innerResponse(content []byte) json.RawMessage {
-	var envelope struct {
-		Response struct {
-			Response json.RawMessage `json:"response"`
-		} `json:"response"`
-	}
-	if json.Unmarshal(content, &envelope) != nil || len(envelope.Response.Response) == 0 {
-		return json.RawMessage(`{}`)
-	}
-	return envelope.Response.Response
-}
-
 // questionAnswer reads the answer to a question from the inner response of
 // the neutral envelope, and reports whether it states one.
 func questionAnswer(content []byte) (string, bool) {
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(innerResponse(content), &fields) != nil {
+	if json.Unmarshal(agent.DecodeControlInnerResponse(content), &fields) != nil {
 		return "", false
 	}
 	var answer string
-	if json.Unmarshal(fields[contracts.ClineQuestionAnswerAnswer], &answer) != nil || strings.TrimSpace(answer) == "" {
+	if json.Unmarshal(fields[contracts.ClineQuestionAnswerAnswer], &answer) != nil || agent.TrimJavaScriptSpace(answer) == "" {
 		return "", false
 	}
 	return answer, true

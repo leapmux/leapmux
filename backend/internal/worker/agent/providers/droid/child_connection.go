@@ -59,13 +59,14 @@ func (a *Agent) childConnection(childKey, childAgentID string) (*Agent, error) {
 	childOpts.AgentID = childAgentID
 	childOpts.ResumeSessionID = childKey
 	childSink := a.sink.ChildSink(childAgentID)
-	started, startErr := startProcess(a.Context(), childOpts, childSink, a.launch)
+	childLaunch := a.launch
+	childLaunch.onTurnEnd = func(status bgtask.Status) {
+		a.closeBoundChildTurn(childKey, status)
+	}
+	started, startErr := startProcess(a.Context(), childOpts, childSink, childLaunch)
 	var child *Agent
 	if startErr == nil {
 		child = started.(*Agent)
-		child.onTurnEnd = func(status bgtask.Status) {
-			a.closeBoundChildTurn(childKey, status)
-		}
 	}
 	a.childConnMu.Lock()
 	if a.childClosing && child != nil {
@@ -161,7 +162,7 @@ func (a *Agent) childHasActiveBoundConnection(childKey string) bool {
 		connection.agent.Mu.Unlock()
 		return active
 	default:
-		return true
+		return false
 	}
 }
 
