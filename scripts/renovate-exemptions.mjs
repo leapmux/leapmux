@@ -343,7 +343,7 @@ export function activeExemptions(authorized, { base, selected } = {}) {
 
 /**
  * The lockfiles of the prepared authorized map: those that the bun shim, the cargo shim,
- * and the Tauri planner resolve. Required CI builds the exemptions of every dependency
+ * and the Tauri planner resolve. The dependency-age job builds the exemptions of every dependency
  * lockfile itself, Go included.
  */
 export const PREPARED_LOCKFILES = Object.freeze(DEPENDENCY_LOCKFILES.filter(entry => ['npm', 'crates'].includes(entry.ecosystem)).map(entry => entry.path))

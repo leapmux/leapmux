@@ -3,7 +3,7 @@ import { ecosystemOfAdvisory } from './renovate-ecosystems.mjs'
 import { dependencyLockfile } from './renovate-lockfile-versions.mjs'
 
 // The open Dependabot alerts decide which packages may take an authorized security fix,
-// for the nightly prepare step and for Required CI alike.
+// for both the Renovate preparation step and the dependency-age job.
 
 const REPOSITORY_API_PATH = '/repos/leapmux/leapmux'
 const ALERTS_API_PATH = `${REPOSITORY_API_PATH}/dependabot/alerts`

@@ -134,7 +134,7 @@ tasks:
       - bun scripts/check-dependency-age.mjs {{.CLI_ARGS}}
 
   check-renovate-protection:
-    desc: Verify effective main protection before publishing
+    desc: Audit effective main protection and ruleset bypass actors
     cmds:
       - node scripts/check-renovate-protection.mjs {{.CLI_ARGS}}
 

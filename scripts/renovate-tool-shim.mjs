@@ -13,7 +13,7 @@ import process from 'node:process'
 //   full update, a selective update leaves the blocking crates at their versions. A
 //   failed check restores Cargo.lock and fails the call.
 // Every other call passes through unchanged, including a cargo subcommand that can also
-// write Cargo.lock, such as generate-lockfile or add. Required CI checks every lockfile
+// write Cargo.lock, such as generate-lockfile or add. The dependency-age job checks every lockfile
 // version that a Renovate branch adds, whichever call wrote it.
 // This module loads Renovate's code only for a call above, because every bun call of a
 // post-upgrade task, such as each `bun scripts/task-state.mjs`, passes through it.

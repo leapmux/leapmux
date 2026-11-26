@@ -1,0 +1,193 @@
+name: Publish container images
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version. Leave empty to publish the dev tags.
+        type: string
+        default: ''
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04${{ matrix.arch == 'arm64' && '-arm' || '' }}
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+
+    concurrency:
+      group: compiled-go-docker-${{ matrix.variant }}-${{ matrix.arch }}
+      cancel-in-progress: false
+      queue: max
+
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [alpine, ubuntu]
+        arch: [amd64, arm64]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.version != '' && format('refs/tags/v{0}', inputs.version) || github.sha }}
+          persist-credentials: false
+
+      - name: Setup Docker build
+        id: setup
+        uses: ./.github/actions/setup-docker-build
+        with:
+          variant: ${{ matrix.variant }}
+          arch: ${{ matrix.arch }}
+          save-caches: 'true'
+          version-override: ${{ inputs.version }}
+
+      # The writer passes no fallback: a missed exact key starts the Go
+      # cache mount from empty. The save follows the build action, whose
+      # export runs only after the image passed its runtime tests, and the
+      # pruner follows the save and verifies the stored replacement before
+      # its post step deletes older archives.
+      - name: Restore the Docker Go build outputs
+        id: go-cache
+        uses: ./.github/actions/build-output-cache
+        with:
+          kind: docker-go
+          key: ${{ steps.setup.outputs.cache-key }}
+          writer: ${{ steps.setup.outputs.writes-shared }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (per-arch)
+        id: build
+        uses: ./.github/actions/build-docker-image
+        with:
+          variant: ${{ matrix.variant }}
+          arch: ${{ matrix.arch }}
+          builder: ${{ steps.setup.outputs.builder }}
+          go-modcache: ${{ steps.setup.outputs.go-modcache }}
+          cache-path: ${{ steps.setup.outputs.cache-path }}
+          writes-shared: ${{ steps.setup.outputs.writes-shared }}
+          write-snapshot: ${{ steps.go-cache.outputs.save-required }}
+          build-args: ${{ steps.setup.outputs.build-args }}
+          outputs: type=image,"name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true
+          save-caches: 'true'
+
+      - name: Save the Docker Go build outputs snapshot
+        id: go-cache-save
+        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.save-required == 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: docker-go
+          key: ${{ steps.setup.outputs.cache-key }}
+
+      - name: Replace older Docker Go build caches
+        # A capacity skip published nothing, so it must not request a remote
+        # deletion.
+        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache-save.outputs.result == 'ready'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
+
+      - name: Upload image digest
+        uses: ./.github/actions/upload-docker-digest
+        with:
+          digest: ${{ steps.build.outputs.digest }}
+          variant: ${{ matrix.variant }}
+          arch: ${{ matrix.arch }}
+          artifact-name: digest-${{ matrix.variant }}-${{ matrix.arch }}
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: alpine
+            suffix: ''
+          - variant: ubuntu
+            suffix: '-ubuntu'
+
+    steps:
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-${{ matrix.variant }}-*
+          path: ${{ runner.temp }}/digests/${{ matrix.variant }}
+          merge-multiple: true
+
+      - name: Publish multi-architecture image
+        shell: bash
+        env:
+          DIGEST_DIR: ${{ runner.temp }}/digests/${{ matrix.variant }}
+          VERSION: ${{ inputs.version }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          image="$REGISTRY/$IMAGE_NAME"
+          digests=()
+          for arch in amd64 arm64; do
+            digest="$(cat "$DIGEST_DIR/$arch")"
+            if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid image digest for $arch."
+              exit 1
+            fi
+            digests+=("$image@$digest")
+          done
+          if [ -z "$VERSION" ]; then
+            tags=(-t "$image:dev$SUFFIX")
+          else
+            tags=(-t "$image:$VERSION$SUFFIX" -t "$image:${VERSION%%.*}$SUFFIX" -t "$image:latest$SUFFIX")
+          fi
+          docker buildx imagetools create "${tags[@]}" "${digests[@]}"
+
+  prune:
+    needs: merge
+    if: github.repository == 'leapmux/leapmux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/load-versions
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Delete expired untagged container versions
+        # The tagged images have already been published. A cleanup failure
+        # must not prevent the release from publishing its other artifacts.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prune-container-versions.mjs

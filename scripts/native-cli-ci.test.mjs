@@ -115,7 +115,6 @@ describe('native CLI per-commit verification', () => {
       const position = job.steps.indexOf(checks[0])
       expect(position).toBeGreaterThan(job.steps.findIndex(step => step.run === 'task build'))
       expect(position).toBeLessThan(job.steps.findIndex(step => step.id === 'go-cache-save'))
-      expect(workflow.jobs['required-ci'].needs).toContain(name)
       if (name === 'windows')
         expect(checks[0].shell).toBe('pwsh')
     }

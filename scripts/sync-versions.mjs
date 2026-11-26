@@ -115,12 +115,11 @@ export const CLAIMS = [
   runnerClaim('desktop-artifacts.yaml', 'UBUNTU_RUNNER', 'ubuntu', MATRIX_RUNNER_SUFFIX),
   runnerClaim('desktop-artifacts.yaml', 'MACOS_RUNNER', 'macos'),
   runnerClaim('desktop-artifacts.yaml', 'WINDOWS_RUNNER', 'windows'),
-  runnerClaim('docker.yaml', 'UBUNTU_RUNNER', 'ubuntu', ARM64_SUFFIX),
-  runnerClaim('docker.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
   runnerClaim('notice.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
+  runnerClaim('publish-container.yaml', 'UBUNTU_RUNNER', 'ubuntu', ARM64_SUFFIX),
+  runnerClaim('publish-container.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
   runnerClaim('publish-site.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
   runnerClaim('release.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
-  runnerClaim('release.yaml', 'UBUNTU_RUNNER', 'ubuntu', ARM64_SUFFIX),
   runnerClaim('renovate.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
 ]
 

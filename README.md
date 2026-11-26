@@ -642,7 +642,7 @@ It fails also if a vendored override's license identifier differs from the upstr
 
 ### Dependency updates with Renovate
 
-The Renovate workflow runs every day at **03:17 Asia/Seoul** (`17 18 * * *` in UTC).
+The Renovate workflow runs every Friday at **03:17 Asia/Seoul**.
 GitHub can start a scheduled run a few hours late. The run creates the same updates at any hour.
 Each run creates and maintains routine branches, lockfile maintenance, and security fixes.
 `renovate.json` defines the update groups. Each toolchain or tool pin in `versions.env` gets its own branch.
@@ -652,19 +652,19 @@ Each run creates and maintains routine branches, lockfile maintenance, and secur
   Renovate proposes a security fix once the patched version is two hours old.
   Within those two hours, Renovate stops the whole run when the artifacts of a new security branch fail, so a younger fix waits for the next run.
 - Routine updates require each new dependency version to have a release timestamp and be at least seven days old.
-  `Required CI` rejects a pull request whose lockfiles add a younger version, whoever opens it.
+  The `dependency-age` check fails on any pull request whose lockfiles add a younger version.
   To take a younger version, wait until it is old enough, and then run the check again.
   Renovate already holds a new bun or cargo version to the age while it writes a branch.
   cargo resolves through a local copy of the crates.io index that leaves out every younger version.
-  A lockfile maintenance update has no release timestamp of its own. The tool shims and `Required CI` check the versions it adds.
-  A young Go module that `go mod tidy` adds appears only in `Required CI`, after Renovate opens the PR.
+  A lockfile maintenance update has no release timestamp of its own. The tool shims and the `dependency-age` job check the versions it adds.
+  Only the `dependency-age` job detects a young Go module that `go mod tidy` adds after Renovate opens the PR.
 - A security PR may add the advisory's patched version and the versions that it pins exactly, and its PR comments say so.
   Only a package that an open Dependabot alert reports, in the lockfile that the alert gives, may take such a fix.
   A security PR also takes a new version of a pin in a workflow, and no check covers that pin: a tag records no publication time that its author cannot change.
   Check the release date of such a pin before you merge.
   `versions.env` holds no pin that a Dependabot alert can match, and a test enforces this, so a lockfile check covers every such dependency.
-- Every merge needs a human review and the `Required CI` and `NOTICE` checks.
-  Renovate never approves or merges a pull request (PR).
+- Renovate never approves or merges a pull request (PR).
+  The `main` ruleset controls whether GitHub requires review and status checks before merging.
 
 The Dependency Dashboard lists the updates and security alerts that Renovate did not propose under **Skipped Dependencies**, with the reason for each.
 
@@ -674,7 +674,7 @@ Warnings, security advisories, and release notes go into bot-owned PR comments.
 A dry run renders no PR, so it captures none.
 
 Dependabot alerts supply the vulnerability findings.
-`Required CI` reads the open alerts of a security branch with its job token, which has the `vulnerability-alerts: read` permission.
+The `dependency-age` job reads the open alerts of a security branch with its job token, which has the `vulnerability-alerts: read` permission.
 Keep the dependency graph and Dependabot alerts enabled.
 Keep Dependabot's automatic security-update PRs disabled.
 See [Renovate's security-update requirements](https://docs.renovatebot.com/configuration-options/#vulnerabilityalerts).
@@ -715,8 +715,8 @@ Administration stays read-only, so the App cannot change rulesets.
 
 Never send a private key or a token through chat, and never commit one.
 A dry run uses a read-only installation token.
-A publishing run checks the `main` rules with that token, then requests a separate write token.
-Neither token can bypass the rules.
+A publishing run reads security alerts with that token, then requests a separate write token.
+GitHub applies the active branch protection rules when Renovate publishes updates.
 
 The release workflow pushes its version commits and its tag with `RELEASE_ADMIN_TOKEN`.
 That token is a secret in the [release-admin environment](https://github.com/leapmux/leapmux/settings/environments).
@@ -733,20 +733,19 @@ Approve the environment only for an intentional release. Never dispatch a releas
 
 #### Protection, suspension, and recovery
 
-An active ruleset on `refs/heads/main` requires one review, dismisses stale approvals, and requires approval of the latest push by another person.
-It also requires `Required CI` and `NOTICE` from GitHub Actions (application ID `15368`).
-Only the repository administrator role may bypass it.
-Keep the existing deletion, force-push, and linear-history rules.
+The optional `Renovate review and CI` ruleset for `refs/heads/main` requires one review, dismisses stale approvals, and requires approval of the latest push by another person.
+It also requires the individual Linux, macOS, Windows, Docker, `dependency-age`, and `NOTICE` checks from GitHub Actions (application ID `15368`).
+Run `task check-renovate-protection -- --print-ruleset` to list the exact check names.
+Only the repository administrator role may bypass this ruleset.
+Renovate publishes with or without the ruleset enabled.
 
-GitHub hides bypass actors from App tokens.
-An administrator therefore records the verified rulesets in the repository variable `RENOVATE_PROTECTION_SNAPSHOT`.
-A publishing run stops before it requests a write token when the live rules differ from that snapshot.
-After any protection change, refresh the snapshot:
+When the ruleset is active, an administrator can capture the effective rules for a manual audit.
+GitHub hides bypass actors from App tokens, so an audit with an App token uses the snapshot to verify those actors.
 
 ```bash
 mkdir -p .tmp
 task snapshot-renovate-protection > .tmp/renovate-protection-snapshot.json
-gh variable set RENOVATE_PROTECTION_SNAPSHOT --repo leapmux/leapmux < .tmp/renovate-protection-snapshot.json
+GH_TOKEN="$(gh auth token)" RENOVATE_PROTECTION_SNAPSHOT="$(cat .tmp/renovate-protection-snapshot.json)" task check-renovate-protection
 ```
 
 The capture command uses your `gh` authentication and only reads.
@@ -754,7 +753,7 @@ It rejects any bypass actor other than repository administrators.
 
 Two repository variables control the workflow:
 
-- `RENOVATE_ENABLED=true` enables the daily run. Set it to `false` to suspend Renovate.
+- `RENOVATE_ENABLED=true` enables the Friday run. Set it to `false` to suspend scheduled runs.
 - `RENOVATE_PUBLISH_READY=true` permits publishing.
   Set it to `false` also to block manual publication while you repair credentials or protection.
 
@@ -834,6 +833,10 @@ task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
 ```
 
 The image uses a multi-stage build (buf, Bun, Go). `versions.env` at the repository root holds the versions of the tools and the base images.
+
+After GitHub Actions publishes both image variants, it deletes untagged versions from `ghcr.io/leapmux/leapmux` that were last updated more than seven days ago.
+It preserves tagged versions and every manifest that a tagged or recent version needs.
+Each run deletes up to 300 versions, oldest first, and stops early if it reaches the GitHub API request budget.
 
 ### Tool versions
 

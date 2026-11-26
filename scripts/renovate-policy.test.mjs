@@ -196,7 +196,7 @@ describe('renovate policy with the pinned engine', () => {
   })
   it('keeps every pin that a Dependabot alert can match out of versions.env, so that a lockfile check covers each such dependency', async () => {
     // An alert rule forces vulnerabilityAlerts over every packageRule, so Renovate takes a
-    // security fix of such a pin at the age of a security fix, and Required CI checks no
+    // security fix of such a pin at the age of a security fix, and the dependency-age job checks no
     // pin in versions.env. Such a dependency belongs in a lockfile.
     const { githubEcosystemToDatasource } = await engine('util/vulnerability/ecosystem.js')
     const alertable = new Set(Object.values(githubEcosystemToDatasource).flat())
@@ -586,7 +586,7 @@ describe('renovate policy with the pinned engine', () => {
     expect(result.release.version).toBe('2.0.0')
     expect(result.pendingChecks).toBe(false)
   })
-  it('creates routine and lockfile branches on every daily run despite a delayed start', () => {
+  it('allows routine and lockfile branches whenever the workflow runs', () => {
     const maintenance = mergeChildConfig(config(), config().lockFileMaintenance)
     // GitHub starts the 03:17 Seoul trigger about four hours late. In Seoul these
     // instants are Monday 07:20, Thursday 07:45, and Saturday 15:00. Each one
@@ -607,10 +607,15 @@ describe('renovate policy with the pinned engine', () => {
       expect(packageRule.schedule, `packageRules[${index}]`).toBeUndefined()
     for (const manager of policy.enabledManagers)
       expect(policy[manager]?.schedule, manager).toBeUndefined()
+  })
+  it('schedules one run a week at 03:17 on Friday in Seoul', () => {
     const workflow = Bun.YAML.parse(readFileSync(resolve(root, '.github/workflows/renovate.yaml'), 'utf8'))
-    const now = DateTime.fromISO('2026-10-26T18:17:00Z')
-    expect(cronMatches(workflow.on.schedule[0].cron, now, 'UTC')).toBe(true)
-    expect(now.setZone(policy.timezone).toFormat('yyyy-MM-dd HH:mm')).toBe('2026-10-27 03:17')
+    expect(workflow.on.schedule).toHaveLength(1)
+    const [{ cron, timezone = 'UTC' }] = workflow.on.schedule
+    const friday = DateTime.fromISO('2026-11-27T03:17:00+09:00', { setZone: true })
+    expect(cronMatches(cron, friday, timezone)).toBe(true)
+    for (let days = 1; days < 7; days++)
+      expect(cronMatches(cron, friday.plus({ days }), timezone)).toBe(false)
   })
   it('renders capitalized dependency titles shorter than 72 characters', async () => {
     for (const [manager, packageFile, depName] of [

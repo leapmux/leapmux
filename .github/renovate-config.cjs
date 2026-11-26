@@ -16,8 +16,8 @@ module.exports = async () => {
   const { prHeader, prBodyTemplate } = configureDetailsCapture(trusted, config.prBodyTemplate)
   // run-renovate.mjs writes the bun and cargo shims, which hold resolution to the release
   // age, and gives their directory in LEAPMUX_TOOL_SHIMS. A run that it did not start, such
-  // as the configuration validator, runs no tool through them. Required CI checks the
-  // lockfiles of every pull request either way.
+  // as the configuration validator, runs no tool through them. The dependency-age
+  // job checks the lockfiles of every pull request either way.
   const shims = process.env.LEAPMUX_TOOL_SHIMS
   if (shims !== undefined && (!path.isAbsolute(shims) || ['bun', 'cargo'].some(tool => !fs.existsSync(path.join(shims, tool)))))
     throw new Error(`LEAPMUX_TOOL_SHIMS must give a directory that holds the bun and cargo shims: ${shims}`)

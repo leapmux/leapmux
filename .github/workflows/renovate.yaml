@@ -2,8 +2,8 @@ name: Renovate
 
 on:
   schedule:
-    # 18:17 UTC is 03:17 Asia/Seoul on the following day.
-    - cron: '17 18 * * *'
+    - cron: '17 3 * * 5'
+      timezone: Asia/Seoul
   workflow_dispatch:
     inputs:
       mode:
@@ -104,13 +104,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.read.outputs.token }}
         run: task prepare-renovate
-
-      - name: Verify main protection before publishing
-        if: inputs.mode == 'publish' || github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ steps.read.outputs.token }}
-          RENOVATE_PROTECTION_SNAPSHOT: ${{ vars.RENOVATE_PROTECTION_SNAPSHOT }}
-        run: task check-renovate-protection
 
       - name: Create publishing installation token
         if: inputs.mode == 'publish' || github.event_name == 'schedule'

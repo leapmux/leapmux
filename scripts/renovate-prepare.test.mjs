@@ -396,7 +396,7 @@ describe('prepareAuthorized', () => {
       },
     })
     expect(injected.calls.sort()).toEqual(['crates:tauri-plugin-x', 'npm:fixed-pkg'])
-    // Only the lockfile of an alert is read. Required CI computes the Go exemptions itself.
+    // Only the lockfile of an alert is read. The dependency-age job computes the Go exemptions itself.
     expect(paths.sort()).toEqual(['desktop/rust/Cargo.lock', 'frontend/bun.lock'])
   })
   it('authorizes a fix only in the lockfile that the alert reports, from that lockfile\'s base versions', async () => {

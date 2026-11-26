@@ -16,9 +16,18 @@ const checkRequirements = Object.freeze({
   strict_required_status_checks_policy: true,
   do_not_enforce_on_create: false,
 })
-const requiredChecks = Object.freeze(['Required CI', 'NOTICE'].map(context => Object.freeze({ context, integration_id: 15368 })))
+const requiredChecks = Object.freeze([
+  'linux (amd64)',
+  'linux (arm64, -arm)',
+  'macos',
+  'windows',
+  'docker (alpine)',
+  'docker (ubuntu)',
+  'dependency-age',
+  'NOTICE',
+].map(context => Object.freeze({ context, integration_id: 15368 })))
 
-/** Apply only after the reviewed implementation and both required checks reach main. */
+/** Enable this ruleset once GitHub reports every required check on pull requests. */
 export const RENOVATE_MAIN_RULESET = {
   name: 'Renovate review and CI',
   target: 'branch',

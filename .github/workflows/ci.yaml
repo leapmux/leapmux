@@ -573,20 +573,6 @@ jobs:
         # In the base worktree, HEAD is the base commit.
         run: task -d "$BASE_CHECKOUT" check-dependency-age -- --base HEAD --head "$PR_MERGE_SHA" --head-ref "$HEAD_REF"
 
-  required-ci:
-    name: Required CI
-    if: always()
-    needs: [linux, macos, windows, docker, dependency-age]
-    runs-on: ubuntu-24.04
-    permissions: {}
-    steps:
-      - name: Check required results
-        env:
-          RESULTS: ${{ toJSON(needs) }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          node -e 'const jobs = JSON.parse(process.env.RESULTS); for (const [job, value] of Object.entries(jobs)) { if (value.result !== "success" && !(job === "docker" && process.env.EVENT_NAME === "push" && value.result === "skipped")) { console.error(`${job}: ${value.result}`); process.exitCode = 1; } }'
-
   desktop-artifacts:
     # Build, sign, and notarize the binaries that get attached to the
     # auto-generated prerelease. Runs only on push-to-main; PR runs do not

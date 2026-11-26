@@ -8,142 +8,15 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
 jobs:
-  build:
-    runs-on: ubuntu-24.04${{ matrix.arch == 'arm64' && '-arm' || '' }}
+  publish:
+    uses: ./.github/workflows/publish-container.yaml
+    # Hold the package until all per-architecture uploads, tags, and cleanup finish.
+    concurrency:
+      group: publish-container
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       packages: write
       actions: write
-
-    concurrency:
-      group: compiled-go-docker-${{ matrix.variant }}-${{ matrix.arch }}
-      cancel-in-progress: false
-      queue: max
-
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [alpine, ubuntu]
-        arch: [amd64, arm64]
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Docker build
-        id: setup
-        uses: ./.github/actions/setup-docker-build
-        with:
-          variant: ${{ matrix.variant }}
-          arch: ${{ matrix.arch }}
-          save-caches: 'true'
-
-      # The writer passes no fallback: a missed exact key starts the Go
-      # cache mount from empty. The save follows the build action, whose
-      # export runs only after the image passed its runtime tests, and the
-      # pruner follows the save and verifies the stored replacement before
-      # its post step deletes older archives.
-      - name: Restore the Docker Go build outputs
-        id: go-cache
-        uses: ./.github/actions/build-output-cache
-        with:
-          kind: docker-go
-          key: ${{ steps.setup.outputs.cache-key }}
-          writer: ${{ steps.setup.outputs.writes-shared }}
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push (per-arch)
-        id: build
-        uses: ./.github/actions/build-docker-image
-        with:
-          variant: ${{ matrix.variant }}
-          arch: ${{ matrix.arch }}
-          builder: ${{ steps.setup.outputs.builder }}
-          go-modcache: ${{ steps.setup.outputs.go-modcache }}
-          cache-path: ${{ steps.setup.outputs.cache-path }}
-          writes-shared: ${{ steps.setup.outputs.writes-shared }}
-          write-snapshot: ${{ steps.go-cache.outputs.save-required }}
-          build-args: ${{ steps.setup.outputs.build-args }}
-          outputs: type=image,"name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true
-          # This workflow runs only on pushes to main.
-          save-caches: 'true'
-
-      - name: Save the Docker Go build outputs snapshot
-        id: go-cache-save
-        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.save-required == 'true'
-        uses: ./.github/actions/save-cache-snapshot
-        with:
-          kind: docker-go
-          key: ${{ steps.setup.outputs.cache-key }}
-
-      - name: Replace older Docker Go build caches
-        # A capacity skip published nothing, so it must not request a remote
-        # deletion.
-        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache-save.outputs.result == 'ready'
-        uses: ./.github/actions/prune-build-cache
-        with:
-          key: ${{ steps.setup.outputs.cache-key }}
-          prefix: ${{ steps.setup.outputs.cache-prefix }}
-
-      - name: Upload image digest
-        uses: ./.github/actions/upload-docker-digest
-        with:
-          digest: ${{ steps.build.outputs.digest }}
-          variant: ${{ matrix.variant }}
-          arch: ${{ matrix.arch }}
-          artifact-name: digest-${{ matrix.variant }}-${{ matrix.arch }}
-
-  merge:
-    needs: build
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: alpine
-            suffix: ''
-          - variant: ubuntu
-            suffix: '-ubuntu'
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download digests
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: digest-${{ matrix.variant }}-*
-          path: ${{ runner.temp }}/digests/${{ matrix.variant }}
-          merge-multiple: true
-
-      - name: Create multi-arch manifest
-        run: |
-          DIGESTS=()
-          for f in ${{ runner.temp }}/digests/${{ matrix.variant }}/*; do
-            DIGESTS+=("${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$(cat "$f")")
-          done
-          TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev${{ matrix.suffix }}"
-          docker buildx imagetools create -t "$TAG" "${DIGESTS[@]}"

@@ -271,11 +271,9 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(new Set(groups).size).toBe(3)
     expect(ci.jobs.linux.concurrency.group).toContain(expression('matrix.arch'))
     expect(ci.jobs.docker.permissions).toEqual({ contents: 'read' })
-    const docker = yaml('.github/workflows/docker.yaml').jobs.build
-    const release = yaml('.github/workflows/release.yaml').jobs.docker
-    expect(docker.concurrency).toEqual(release.concurrency)
+    const docker = yaml('.github/workflows/publish-container.yaml').jobs.build
     expect(docker.concurrency).toEqual({ 'group': `compiled-go-docker-${expression('matrix.variant')}-${expression('matrix.arch')}`, 'cancel-in-progress': false, 'queue': 'max' })
-    for (const job of [docker, release]) expect(job.permissions.actions).toBe('write')
+    expect(docker.permissions.actions).toBe('write')
   })
 
   for (const [file, stepName] of [
@@ -408,8 +406,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(buildSteps.indexOf(exportStep)).toBeGreaterThan(testIndex)
     for (const [file, jobName, reader] of [
       ['ci.yaml', 'docker', true],
-      ['docker.yaml', 'build', false],
-      ['release.yaml', 'docker', false],
+      ['publish-container.yaml', 'build', false],
     ]) {
       const steps = yaml(`.github/workflows/${file}`).jobs[jobName].steps
       const setupIndex = steps.findIndex(step => step.uses === './.github/actions/setup-docker-build')
@@ -492,13 +489,8 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       expect(existsSync(join(dir, 'digests'))).toBe(false)
     }
     expect(action[1].with['retention-days']).toBe(1)
-    for (const [file, prefix, job] of [
-      ['docker.yaml', 'digest', 'build'],
-      ['release.yaml', 'release-digest', 'docker'],
-    ]) {
-      const caller = yaml(`.github/workflows/${file}`).jobs[job].steps.find(step => step.uses === './.github/actions/upload-docker-digest')
-      expect(caller.with['artifact-name']).toBe(`${prefix}-\${{ matrix.variant }}-\${{ matrix.arch }}`)
-    }
+    const caller = yaml('.github/workflows/publish-container.yaml').jobs.build.steps.find(step => step.uses === './.github/actions/upload-docker-digest')
+    expect(caller.with['artifact-name']).toBe(`digest-${expression('matrix.variant')}-${expression('matrix.arch')}`)
   })
 
   it('continues credential cleanup after a keychain deletion failure', () => {
@@ -1144,7 +1136,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
 })
 
 describe('renovate workflow and protection', () => {
-  it('builds the proposed Hugo and Hextra site before Required CI can succeed', () => {
+  it('requires the proposed Hugo and Hextra site to build on Linux amd64', () => {
     const linux = yaml('.github/workflows/ci.yaml').jobs.linux
     const site = linux.steps.find(step => step.run === 'task site')
     expect(site).toBeDefined()
@@ -1177,10 +1169,7 @@ describe('renovate workflow and protection', () => {
       'Validate Renovate renderers',
     ])
       expect(position(name)).toBeLessThan(position('Create read-only installation token'))
-    expect(position('Verify main protection before publishing')).toBeLessThan(position('Create publishing installation token'))
-    const protection = steps.find(step => step.name === 'Verify main protection before publishing')
-    expect(protection.env.RENOVATE_PROTECTION_SNAPSHOT).toBe(expression('vars.RENOVATE_PROTECTION_SNAPSHOT'))
-    expect(steps.filter(step => step.env?.RENOVATE_PROTECTION_SNAPSHOT)).toEqual([protection])
+    expect(position('Prepare active security alerts')).toBeLessThan(position('Create publishing installation token'))
     expect(steps.find(step => step.uses === './.github/actions/setup-build').with['setup-desktop']).toBe('false')
     const read = steps.find(step => step.id === 'read')
     const write = steps.find(step => step.id === 'write')
@@ -1235,6 +1224,11 @@ describe('renovate workflow and protection', () => {
     const diagnostics = steps.find(step => step.name === 'Upload timing and diagnostic records')
     expect(diagnostics.if).toBe('always()')
     expect(diagnostics.with.path.split('\n')).toContain('.tmp/renovate-shims/invocations.jsonl')
+  })
+  it('publishes without depending on GitHub branch protection or a snapshot', () => {
+    const steps = yaml('.github/workflows/renovate.yaml').jobs.renovate.steps
+    expect(steps.some(step => step.run?.includes('check-renovate-protection'))).toBe(false)
+    expect(steps.some(step => step.env?.RENOVATE_PROTECTION_SNAPSHOT)).toBe(false)
   })
   it('rejects publishing before activation and rejects every ref except upstream main', () => {
     const step = yaml('.github/workflows/renovate.yaml').jobs.renovate.steps[0]
@@ -1357,7 +1351,6 @@ describe('renovate workflow and protection', () => {
       deps: ['install-renovate-packages'],
       cmds: ['bun scripts/check-dependency-age.mjs {{.CLI_ARGS}}'],
     })
-    expect(ci.jobs['required-ci'].needs).toContain('dependency-age')
   })
   /**
    * Commit `baseFiles` on main in `directory`, commit `headFiles` on the
@@ -1438,7 +1431,7 @@ describe('renovate workflow and protection', () => {
       expect(raw(file)).not.toContain('RELEASE_ADMIN_TOKEN')
     expect(release.steps.find(step => step.name === 'Create GitHub Release (draft)').env.GH_TOKEN).toBe(expression('secrets.GITHUB_TOKEN'))
   })
-  it('reports required checks for failures and cancellations and builds both container variants', () => {
+  it('builds both container variants and reports NOTICE on every pull request and push', () => {
     const ci = yaml('.github/workflows/ci.yaml')
     expect(ci.jobs.docker.strategy.matrix.variant).toEqual(['alpine', 'ubuntu'])
     for (const step of ci.jobs.docker.steps.filter(step => String(step.uses).includes('docker-build') || String(step.uses).includes('build-docker-image')))
@@ -1453,35 +1446,6 @@ describe('renovate workflow and protection', () => {
     })
     for (const file of ['Taskfile.yaml', ...workflowFiles])
       expect(raw(file), file).not.toMatch(/\bbunx\b|wrangler-action/)
-    const required = ci.jobs['required-ci']
-    expect(required.name).toBe('Required CI')
-    expect(required.if).toBe('always()')
-    expect(required.needs).toEqual([
-      'linux',
-      'macos',
-      'windows',
-      'docker',
-      'dependency-age',
-    ])
-    for (const result of [
-      'success',
-      'failure',
-      'cancelled',
-      'skipped',
-    ]) {
-      const needs = Object.fromEntries(required.needs.map(job => [
-        job,
-        {
-          result: job === 'linux'
-            ? result
-            : 'success',
-        },
-      ]))
-      expect(runShell(required.steps[0].run, fixture(), {
-        RESULTS: JSON.stringify(needs),
-        EVENT_NAME: 'pull_request',
-      }).status === 0).toBe(result === 'success')
-    }
     const notice = yaml('.github/workflows/notice.yaml')
     expect(notice.on.pull_request.paths).toBeUndefined()
     expect(notice.on.push.paths).toBeUndefined()

@@ -297,7 +297,7 @@ describe('runner claims', () => {
 
   it('keeps the expression of a suffixed label', () => {
     const line = `    runs-on: ubuntu-24.04${arm64Suffix}`
-    const claim = claimed('docker.yaml', 'UBUNTU_RUNNER', line)
+    const claim = claimed('publish-container.yaml', 'UBUNTU_RUNNER', line)
     expect(claim).toBeDefined()
     const { content, drifts } = applyClaim(claim, `${line}\n`, '26.04')
     expect(content).toBe(`    runs-on: ubuntu-26.04${arm64Suffix}\n`)

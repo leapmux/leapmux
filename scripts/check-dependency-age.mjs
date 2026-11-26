@@ -11,7 +11,7 @@ import { describeAge, isPublishedBy, releaseAgeMs } from './renovate-release-age
 
 // Renovate checks the release age only for the version that it selects. bun install and
 // cargo update resolve transitive versions themselves, and a person can run them too, so
-// Required CI checks every version that a pull request adds to a lockfile. Renovate's own
+// The dependency-age job checks every version that a pull request adds to a lockfile. Renovate's own
 // selection holds a pin in versions.env or in a workflow to the age. A security fix of a
 // workflow pin skips the routine age, and nothing here checks such a pin.
 
@@ -251,7 +251,7 @@ export function annotations(violations) {
 
 /**
  * Run the check for command-line arguments and return the exit code. A violation prints
- * one annotation per line and returns 1, which fails Required CI. A skipped security fix
+ * one annotation per line and returns 1, which fails the dependency-age job. A skipped security fix
  * prints a warning annotation. The other options are the options of checkDependencyAge.
  */
 export async function main(argv, { stdout = process.stdout, stderr = process.stderr, ...options } = {}) {

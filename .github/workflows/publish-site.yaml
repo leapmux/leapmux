@@ -117,7 +117,7 @@ jobs:
 
       - name: Install the locked site tools
         # site/bun.lock locks wrangler and its whole tree, and the release-age check of
-        # Required CI covers that lockfile. Install scripts stay disabled in the job that
+        # The dependency-age job covers that lockfile. Install scripts stay disabled in the job that
         # holds the Cloudflare token.
         working-directory: site
         run: bun install --frozen-lockfile --ignore-scripts

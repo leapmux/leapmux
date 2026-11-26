@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'bun:test'
 import { checkProtection, createProtectionSnapshot, RENOVATE_MAIN_RULESET, verifyRepository } from './check-renovate-protection.mjs'
 
@@ -26,7 +27,7 @@ function fixture() {
     ruleset_id: 2,
     parameters: {
       strict_required_status_checks_policy: true,
-      required_status_checks: ['Required CI', 'NOTICE'].map(context => ({ context, integration_id: 15368 })),
+      required_status_checks: structuredClone(RENOVATE_MAIN_RULESET.rules.find(rule => rule.type === 'required_status_checks').parameters.required_status_checks),
     },
   })
   return { effective, rulesets }
@@ -64,6 +65,24 @@ function protectionRequest({ effective, rulesets }, hideActors = true) {
 }
 
 describe('checkProtection', () => {
+  it('requires each pull request check without an aggregate job', () => {
+    const ci = Bun.YAML.parse(readFileSync(new URL('../.github/workflows/ci.yaml', import.meta.url), 'utf8'))
+    const notice = Bun.YAML.parse(readFileSync(new URL('../.github/workflows/notice.yaml', import.meta.url), 'utf8'))
+    const linux = ci.jobs.linux.strategy.matrix.include.map(variant => `linux (${Object.values(variant).filter(Boolean).join(', ')})`)
+    const docker = ci.jobs.docker.strategy.matrix.variant.map(variant => `docker (${variant})`)
+    const names = [
+      ...linux,
+      ci.jobs.macos.name ?? 'macos',
+      ci.jobs.windows.name ?? 'windows',
+      ...docker,
+      ci.jobs['dependency-age'].name ?? 'dependency-age',
+      notice.jobs.check.name,
+    ]
+    const rule = RENOVATE_MAIN_RULESET.rules.find(rule => rule.type === 'required_status_checks')
+    expect(rule.parameters.required_status_checks).toEqual(names.map(context => ({ context, integration_id: 15368 })))
+    expect(ci.jobs['required-ci']).toBeUndefined()
+  })
+
   it('rejects checks that permit stale base revisions', () => {
     for (const value of [false, undefined]) {
       const { effective, rulesets } = fixture()
@@ -142,6 +161,14 @@ describe('checkProtection', () => {
       const { effective, rulesets } = fixture()
       rulesets[0].bypass_actors.push(actor)
       expect(() => checkProtection(effective, rulesets)).toThrow()
+    }
+  })
+  it('rejects protection when any individual status check is missing', () => {
+    const checks = fixture().effective[4].parameters.required_status_checks
+    for (const [index, check] of checks.entries()) {
+      const { effective, rulesets } = fixture()
+      effective[4].parameters.required_status_checks.splice(index, 1)
+      expect(() => checkProtection(effective, rulesets)).toThrow(`main lacks the strict ${check.context} check`)
     }
   })
   it('reads all effective sources and refuses failed API reads without writes', async () => {
