@@ -34,7 +34,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/docker/go-connections v0.8.2](#githubcomdockergo-connections-v082)
 - [github.com/docker/go-units v0.5.0](#githubcomdockergo-units-v050)
 - [github.com/dustin/go-humanize v1.1.0](#githubcomdustingo-humanize-v110)
-- [github.com/ebitengine/purego v0.11.2](#githubcomebitenginepurego-v0112)
+- [github.com/ebitengine/purego v0.11.3](#githubcomebitenginepurego-v0113)
 - [github.com/felixge/httpsnoop v1.1.0](#githubcomfelixgehttpsnoop-v110)
 - [github.com/fsnotify/fsnotify v1.10.1](#githubcomfsnotifyfsnotify-v1101)
 - [github.com/fxamacker/cbor/v2 v2.10.0](#githubcomfxamackercborv2-v2100)
@@ -3024,7 +3024,7 @@ SOFTWARE.
 <http://www.opensource.org/licenses/mit-license.php>
 ```
 
-### github.com/ebitengine/purego v0.11.2
+### github.com/ebitengine/purego v0.11.3
 
 ```
                                  Apache License
