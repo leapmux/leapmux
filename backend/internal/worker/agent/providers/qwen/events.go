@@ -187,7 +187,7 @@ func (a *Agent) answerDrain(line *providerkit.ParsedLine) {
 				AttemptID: item.attemptID,
 				Outcome:   agent.SteerOutcomeEchoed,
 			})
-			a.retainQwenSteerWrite(write)
+			a.RetainSteerWrite("record Qwen steer outcome", write)
 		}
 	}
 	a.resolveQwenTrackedSteers(dropped, agent.SteerOutcomeDropped)
@@ -199,23 +199,11 @@ func (a *Agent) answerDrain(line *providerkit.ParsedLine) {
 
 func (a *Agent) resolveQwenTrackedSteers(items []steerItem, outcome agent.SteerOutcome) {
 	for _, item := range items {
-		a.retainQwenSteerWrite(a.Sink().CaptureSteerResolution(agent.SteerResolution{
+		a.RetainSteerWrite("record Qwen steer outcome", a.Sink().CaptureSteerResolution(agent.SteerResolution{
 			InputID:   item.inputID,
 			AttemptID: item.attemptID,
 			Outcome:   outcome,
 		}))
-	}
-}
-
-func (a *Agent) retainQwenSteerWrite(write func() error) {
-	publish, err := agent.ReserveTranscriptSequence(a.Sink(), "record Qwen steer outcome", func(agent.TranscriptSequence) error {
-		return write()
-	})
-	if err == nil {
-		err = publish()
-	}
-	if err != nil && !agent.OutputRetained(err) {
-		slog.Error("record Qwen steer outcome", "agent_id", a.AgentID(), "error", err)
 	}
 }
 

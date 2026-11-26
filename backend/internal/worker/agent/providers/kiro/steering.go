@@ -4,48 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
-	"sync"
-	"sync/atomic"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-type kiroSteerState struct {
-	mu       sync.Mutex
-	inFlight *kiroSteerDispatch
-	pending  map[string]*kiroSteerDispatch
-}
-
-type kiroSteerDispatch struct {
-	sessionID  string
-	resolution agent.SteerResolution
-	early      map[string]*kiroEarlySteer
-}
-
-type kiroEarlySteer struct {
-	write    func() error
-	publish  func() error
-	accepted bool
-	ready    atomic.Bool
-}
-
-func (e *kiroEarlySteer) run(agent.TranscriptSequence) error {
-	if !e.ready.Load() {
-		return agent.ErrOutputInFlight
-	}
-	if !e.accepted {
-		return nil
-	}
-	return e.write()
-}
-
-func (e *kiroEarlySteer) finish(accepted bool) error {
-	e.accepted = accepted
-	e.ready.Store(true)
-	return e.publish()
-}
+const (
+	kiroSteerWriteLabel      = "record Kiro steer outcome"
+	kiroEarlySteerWriteLabel = "record early Kiro steer outcome"
+)
 
 // kiroSteerReply is Kiro's answer to a steer.
 type kiroSteerReply struct {
@@ -82,20 +50,13 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 			_, err = readKiroSteerReply(raw)
 			return err
 		}
-		dispatch := &kiroSteerDispatch{
-			sessionID: sessionID,
-			resolution: agent.SteerResolution{
-				InputID: request.InputID, AttemptID: request.AttemptID,
-			},
+		dispatch, err := a.steers.Begin(sessionID, agent.SteerResolution{
+			InputID: request.InputID, AttemptID: request.AttemptID,
+		})
+		if err != nil {
+			return err
 		}
-		a.steers.mu.Lock()
-		if a.steers.inFlight != nil {
-			a.steers.mu.Unlock()
-			return agent.ErrAgentBusy
-		}
-		a.steers.inFlight = dispatch
-		a.steers.mu.Unlock()
-		defer a.cancelKiroSteer(dispatch)
+		defer a.steers.Cancel(&a.Base, kiroSteerWriteLabel, dispatch)
 
 		var replyErr error
 		_, err = a.SendRequestObserved(kiroSteerMethod, params, a.APITimeout(), func(raw json.RawMessage, err error) {
@@ -125,54 +86,12 @@ func readKiroSteerReply(raw json.RawMessage) (kiroSteerReply, error) {
 	return reply, nil
 }
 
-func (a *Agent) acceptKiroSteerReply(dispatch *kiroSteerDispatch, raw json.RawMessage) error {
+func (a *Agent) acceptKiroSteerReply(dispatch *acp.SteerEchoDispatch, raw json.RawMessage) error {
 	reply, err := readKiroSteerReply(raw)
 	if err != nil {
 		return err
 	}
-	if reply.MessageID == "" {
-		return fmt.Errorf("%w: Kiro queued a steer without a message ID", agent.ErrDeliveryUncertain)
-	}
-
-	a.steers.mu.Lock()
-	if a.steers.inFlight != dispatch {
-		a.steers.mu.Unlock()
-		return fmt.Errorf("%w: the Kiro steer reply arrived after its dispatch ended", agent.ErrDeliveryUncertain)
-	}
-	if a.steers.pending[reply.MessageID] != nil {
-		a.steers.mu.Unlock()
-		return fmt.Errorf("%w: Kiro reused a pending steer message ID", agent.ErrDeliveryUncertain)
-	}
-	a.steers.inFlight = nil
-	early := dispatch.early
-	dispatch.early = nil
-	if early[reply.MessageID] == nil {
-		if a.steers.pending == nil {
-			a.steers.pending = make(map[string]*kiroSteerDispatch)
-		}
-		a.steers.pending[reply.MessageID] = dispatch
-	}
-	a.steers.mu.Unlock()
-
-	for id, event := range early {
-		a.reportKiroSteerWrite(event.finish(id == reply.MessageID))
-	}
-	return nil
-}
-
-func (a *Agent) cancelKiroSteer(dispatch *kiroSteerDispatch) {
-	a.steers.mu.Lock()
-	if a.steers.inFlight != dispatch {
-		a.steers.mu.Unlock()
-		return
-	}
-	a.steers.inFlight = nil
-	early := dispatch.early
-	dispatch.early = nil
-	a.steers.mu.Unlock()
-	for _, event := range early {
-		a.reportKiroSteerWrite(event.finish(false))
-	}
+	return a.steers.Accept(&a.Base, "Kiro", kiroSteerWriteLabel, dispatch, reply.MessageID)
 }
 
 // handleSteeringInjected runs on the reader at Kiro's model input boundary.
@@ -182,7 +101,7 @@ func (a *Agent) handleSteeringInjected(messageID string) {
 		return
 	}
 	a.FlushBufferedOutput(agent.MessageCompletionComplete)
-	a.resolveKiroSteer(messageID, agent.SteerOutcomeEchoed)
+	a.steers.Resolve(&a.Base, kiroSteerWriteLabel, kiroEarlySteerWriteLabel, messageID, agent.SteerOutcomeEchoed)
 }
 
 func (a *Agent) handleSteeringCleared(raw json.RawMessage) {
@@ -191,88 +110,10 @@ func (a *Agent) handleSteeringCleared(raw json.RawMessage) {
 		return
 	}
 	for _, id := range cleared {
-		a.resolveKiroSteer(id, agent.SteerOutcomeDropped)
+		a.steers.Resolve(&a.Base, kiroSteerWriteLabel, kiroEarlySteerWriteLabel, id, agent.SteerOutcomeDropped)
 	}
-}
-
-func (a *Agent) resolveKiroSteer(messageID string, outcome agent.SteerOutcome) {
-	if messageID == "" {
-		return
-	}
-	sessionID := a.CurrentSessionID()
-	a.steers.mu.Lock()
-	dispatch := a.steers.pending[messageID]
-	if dispatch != nil && dispatch.sessionID != sessionID {
-		a.steers.mu.Unlock()
-		return
-	}
-	if dispatch != nil {
-		delete(a.steers.pending, messageID)
-	}
-	inFlight := a.steers.inFlight
-	if dispatch == nil && (inFlight == nil || inFlight.sessionID != sessionID || inFlight.early[messageID] != nil) {
-		a.steers.mu.Unlock()
-		return
-	}
-	a.steers.mu.Unlock()
-
-	if dispatch != nil {
-		write := a.captureKiroSteer(dispatch, messageID, outcome)
-		a.retainKiroSteerWrite(write)
-		return
-	}
-
-	event := &kiroEarlySteer{write: a.captureKiroSteer(inFlight, messageID, outcome)}
-	publish, err := agent.ReserveTranscriptSequence(a.Sink(), "record early Kiro steer outcome", event.run)
-	if err != nil {
-		a.reportKiroSteerWrite(err)
-		return
-	}
-	event.publish = publish
-	a.steers.mu.Lock()
-	if a.steers.inFlight != inFlight {
-		a.steers.mu.Unlock()
-		a.reportKiroSteerWrite(event.finish(false))
-		return
-	}
-	if inFlight.early == nil {
-		inFlight.early = make(map[string]*kiroEarlySteer)
-	}
-	inFlight.early[messageID] = event
-	a.steers.mu.Unlock()
-}
-
-func (a *Agent) captureKiroSteer(dispatch *kiroSteerDispatch, messageID string, outcome agent.SteerOutcome) func() error {
-	report := dispatch.resolution
-	report.Outcome = outcome
-	if outcome == agent.SteerOutcomeEchoed {
-		return a.CaptureRootSteer(dispatch.sessionID, messageID, report)
-	}
-	return a.Sink().CaptureSteerResolution(report)
-}
-
-func (a *Agent) retainKiroSteerWrite(write func() error) {
-	publish, err := agent.ReserveTranscriptSequence(a.Sink(), "record Kiro steer outcome", func(agent.TranscriptSequence) error {
-		return write()
-	})
-	if err == nil {
-		err = publish()
-	}
-	a.reportKiroSteerWrite(err)
 }
 
 func (a *Agent) dropPendingSteers() {
-	a.steers.mu.Lock()
-	pending := a.steers.pending
-	a.steers.pending = nil
-	a.steers.mu.Unlock()
-	for id, dispatch := range pending {
-		a.retainKiroSteerWrite(a.captureKiroSteer(dispatch, id, agent.SteerOutcomeDropped))
-	}
-}
-
-func (a *Agent) reportKiroSteerWrite(err error) {
-	if err != nil && !agent.OutputRetained(err) {
-		slog.Error("record Kiro steer outcome", "agent_id", a.AgentID(), "error", err)
-	}
+	a.steers.DropPending(&a.Base, kiroSteerWriteLabel, agent.SteerOutcomeDropped)
 }

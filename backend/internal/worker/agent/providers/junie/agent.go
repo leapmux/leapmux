@@ -66,6 +66,8 @@ const junieSteerMethod = "_session/steering"
 // no-op.
 func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessage) {
 	if providerkit.RawBool(metadata["lastRequestComplete"]) {
-		a.EndAgentTurnWithoutRow()
+		if a.steerReplies.consumeStartedNewTurn() {
+			a.EndAgentTurnWithoutRow()
+		}
 	}
 }

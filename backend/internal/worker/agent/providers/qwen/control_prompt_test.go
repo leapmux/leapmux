@@ -36,18 +36,6 @@ const qwenComposerPermission = `{"jsonrpc":"2.0","id":3,"method":"session/reques
 	"toolCall":{"toolCallId":"c","kind":"execute","title":"Run","rawInput":{"command":"ls"}},
 	"options":[{"optionId":"allow-1","name":"Allow","kind":"allow_once"},{"optionId":"reject-1","name":"Reject","kind":"reject_once"}]}}`
 
-func qwenAnswer(custom string, selected ...string) *leapmuxv1.QuestionAnswer {
-	return &leapmuxv1.QuestionAnswer{Selected: selected, CustomText: custom}
-}
-
-func qwenOptionIDs(options []*leapmuxv1.PermissionOption) []string {
-	ids := make([]string, 0, len(options))
-	for _, option := range options {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 // qwenPlanWith is a plan approval whose tool call states toolCall.
 func qwenPlanWith(toolCall string) string {
 	return `{"method":"session/request_permission","params":{"toolCall":` + toolCall + `}}`
@@ -106,7 +94,7 @@ func TestReadControlRequest_QwenReadsEveryOtherRequestThroughTheBaseReader(t *te
 	permission := agenttest.ControlPromptOf(qwenProvider{}, []byte(shellPermissionPayload)).GetPermission()
 	require.NotNil(t, permission)
 	assert.Equal(t, "touch x", permission.GetCommand())
-	assert.Equal(t, []string{"proceed_once", "cancel"}, qwenOptionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{"proceed_once", "cancel"}, agenttest.PermissionOptionIDs(permission.GetOptions()))
 
 	const command = "npm test -- --runInBand"
 	permission = agenttest.ControlPromptOf(qwenProvider{}, []byte(`{"method":"session/request_permission","params":{"toolCall":{"toolCallId":"c","kind":"execute","title":"Shell",
@@ -120,11 +108,11 @@ func TestReadControlRequest_QwenReadsEveryOtherRequestThroughTheBaseReader(t *te
 
 	permission = agenttest.ControlPromptOf(qwenProvider{}, []byte(`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"},
 		"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`)).GetPermission()
-	assert.Equal(t, []string{"once", "reject"}, qwenOptionIDs(permission.GetOptions()), "a request that states its options keeps them")
+	assert.Equal(t, []string{"once", "reject"}, agenttest.PermissionOptionIDs(permission.GetOptions()), "a request that states its options keeps them")
 
 	permission = agenttest.ControlPromptOf(qwenProvider{}, []byte(`{"method":"session/request_permission","params":{"options":[{"optionId":"proceed_once","name":"Allow","kind":"allow_once"}],
 		"toolCall":{"toolCallId":"e","kind":"edit","_meta":{"toolName":"edit"}}}}`)).GetPermission()
-	assert.Equal(t, []string{"proceed_once", acp.CancelOptionID}, qwenOptionIDs(permission.GetOptions()), "a request with no reject option gains LeapMux's cancel")
+	assert.Equal(t, []string{"proceed_once", acp.CancelOptionID}, agenttest.PermissionOptionIDs(permission.GetOptions()), "a request with no reject option gains LeapMux's cancel")
 
 	for _, payload := range []string{`{"method":"x"}`, `{}`, `not json`} {
 		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(qwenProvider{}, []byte(payload)), payload)
@@ -187,22 +175,22 @@ func TestAnswerControlRequest_QwenQuestionSelectsTheSubmitOptionWithTheAnswers(t
 	}{
 		{
 			name:    "keys each answer by the question index",
-			answers: []*leapmuxv1.QuestionAnswer{qwenAnswer("", "Blue"), qwenAnswer("", "Cache", "Metrics")},
+			answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Blue"), agenttest.QuestionAnswer("", "Cache", "Metrics")},
 			want:    `{"0":"Blue","1":"Cache, Metrics"}`,
 		},
 		{
 			name:    "sends typed words as the answer",
-			answers: []*leapmuxv1.QuestionAnswer{qwenAnswer("  Green  "), qwenAnswer("", "Cache")},
+			answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("  Green  "), agenttest.QuestionAnswer("", "Cache")},
 			want:    `{"0":"Green","1":"Cache"}`,
 		},
 		{
 			name:    "sends the typed words of a multiple choice as one more entry after the chosen options",
-			answers: []*leapmuxv1.QuestionAnswer{qwenAnswer("", "Red"), qwenAnswer(" Logs ", "Cache", "Metrics")},
+			answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Red"), agenttest.QuestionAnswer(" Logs ", "Cache", "Metrics")},
 			want:    `{"0":"Red","1":"Cache, Metrics, Logs"}`,
 		},
 		{
 			name:    "sends the typed words of a multiple choice with no option chosen",
-			answers: []*leapmuxv1.QuestionAnswer{qwenAnswer("", "Red"), qwenAnswer("Logs")},
+			answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Red"), agenttest.QuestionAnswer("Logs")},
 			want:    `{"0":"Red","1":"Logs"}`,
 		},
 	} {
@@ -215,8 +203,8 @@ func TestAnswerControlRequest_QwenQuestionSelectsTheSubmitOptionWithTheAnswers(t
 	}
 	// The browser sends an answer only when every question has one.
 	for name, answers := range map[string][]*leapmuxv1.QuestionAnswer{
-		"a blank question":  {qwenAnswer("  Green  "), qwenAnswer("   ")},
-		"an empty question": {qwenAnswer(""), qwenAnswer("", "Cache")},
+		"a blank question":  {agenttest.QuestionAnswer("  Green  "), agenttest.QuestionAnswer("   ")},
+		"an empty question": {agenttest.QuestionAnswer(""), agenttest.QuestionAnswer("", "Cache")},
 		"nothing":           nil,
 	} {
 		_, err := agenttest.AnswerControl(qwenProvider{}, []byte(qwenQuestionPayload), "jsonrpc:3", agenttest.QuestionDecision(answers...))
@@ -227,7 +215,7 @@ func TestAnswerControlRequest_QwenQuestionSelectsTheSubmitOptionWithTheAnswers(t
 // An option whose value is empty states nothing, so its question is omitted.
 func TestAnswerControlRequest_QwenQuestionSelectionThatJoinsToNothingStatesNoAnswer(t *testing.T) {
 	payload := `{"params":{"options":[{"optionId":"submit","kind":"allow_once"}],"toolCall":{"_meta":{"qwenInteractionKind":"user_question","qwenQuestions":[{"question":"Q","options":[{"label":""}]}]}}}}`
-	got, err := agenttest.AnswerControl(qwenProvider{}, []byte(payload), "r", agenttest.QuestionDecision(qwenAnswer("", "")))
+	got, err := agenttest.AnswerControl(qwenProvider{}, []byte(payload), "r", agenttest.QuestionDecision(agenttest.QuestionAnswer("", "")))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"r","result":{"outcome":{"outcome":"selected","optionId":"submit"},"answers":{}}}`, string(got.Content))
 }
@@ -235,7 +223,7 @@ func TestAnswerControlRequest_QwenQuestionSelectionThatJoinsToNothingStatesNoAns
 // An option with an empty id is no answer that Qwen can read, so the reply
 // takes the next allow option, and Qwen's own id when none is left.
 func TestAnswerControlRequest_QwenQuestionPicksTheSubmitOption(t *testing.T) {
-	answer := agenttest.QuestionDecision(qwenAnswer("", "Red"), qwenAnswer("", "Cache"))
+	answer := agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Red"), agenttest.QuestionAnswer("", "Cache"))
 	for _, tc := range []struct {
 		name, options, want string
 	}{
@@ -274,26 +262,26 @@ func TestAnswerControlRequest_QwenQuestionCancelSelectsTheCancelOption(t *testin
 
 func TestAnswerControlRequest_QwenQuestionRefusesAnAnswerThatThePromptDoesNotOffer(t *testing.T) {
 	for name, decision := range map[string]*leapmuxv1.ControlDecision{
-		"an unknown value":          agenttest.QuestionDecision(qwenAnswer("", "Green")),
-		"two values for one choice": agenttest.QuestionDecision(qwenAnswer("", "Red", "Blue")),
+		"an unknown value":          agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Green")),
+		"two values for one choice": agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Red", "Blue")),
 		// Qwen takes one string for a single choice, so it cannot be an option
 		// and typed words at once.
-		"an option and typed words for one choice": agenttest.QuestionDecision(qwenAnswer("Green", "Red")),
-		"an answer for no question":                agenttest.QuestionDecision(qwenAnswer(""), qwenAnswer(""), qwenAnswer("x")),
+		"an option and typed words for one choice": agenttest.QuestionDecision(agenttest.QuestionAnswer("Green", "Red")),
+		"an answer for no question":                agenttest.QuestionDecision(agenttest.QuestionAnswer(""), agenttest.QuestionAnswer(""), agenttest.QuestionAnswer("x")),
 		"a decision of another kind":               agenttest.PermissionDecision("proceed_once", ""),
 	} {
 		_, err := agenttest.AnswerControl(qwenProvider{}, []byte(qwenQuestionPayload), "jsonrpc:3", decision)
 		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, name)
 	}
 	_, err := agenttest.AnswerControl(qwenProvider{}, []byte(`{"params":{"toolCall":{"_meta":{"qwenInteractionKind":"user_question","qwenQuestions":[]}}}}`), "r",
-		agenttest.QuestionDecision(qwenAnswer("", "Red")))
+		agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Red")))
 	assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, "an answer for a question that the dialog did not ask")
 }
 
 // Qwen forwards its own question reply unchanged, under the native id.
 func TestAnswerControlRequest_QwenQuestionReplyPassesTheResolution(t *testing.T) {
 	payload := qwenQuestionPayloadWith(`[{"optionId":"proceed_once","name":"Submit","kind":"allow_once"},{"optionId":"cancel","name":"Cancel","kind":"reject_once"}]`)
-	got, err := agenttest.AnswerControl(qwenProvider{}, []byte(payload), "jsonrpc:3", agenttest.QuestionDecision(qwenAnswer("", "Blue"), qwenAnswer("", "Cache")))
+	got, err := agenttest.AnswerControl(qwenProvider{}, []byte(payload), "jsonrpc:3", agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Blue"), agenttest.QuestionAnswer("", "Cache")))
 	require.NoError(t, err)
 	resolved := agenttest.ResolveAnswer(qwenProvider{}, []byte(payload), "jsonrpc:3", got)
 	require.False(t, resolved.Withhold)

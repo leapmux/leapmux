@@ -57,7 +57,7 @@ func TestReadControlRequest_ReasonixPlanGateIsAPlanWithNoText(t *testing.T) {
 }
 
 // Only the exact native metadata on a permission request is the gate. A
-// title that names the tool is a lookalike, and the base reads it as an
+// title that identifies the tool is a lookalike, and the base reads it as an
 // ordinary permission.
 func TestReadControlRequest_ReasonixRecognizesOnlyTheExactGate(t *testing.T) {
 	t.Parallel()
@@ -75,17 +75,9 @@ func TestReadControlRequest_ReasonixRecognizesOnlyTheExactGate(t *testing.T) {
 	} {
 		permission := agenttest.ControlPromptOf(Registration().Plugin, []byte(payload)).GetPermission()
 		require.NotNil(t, permission, name)
-		assert.Equal(t, []string{"allow_once", "reject_once"}, reasonixOptionIDs(permission.GetOptions()), name)
+		assert.Equal(t, []string{"allow_once", "reject_once"}, agenttest.PermissionOptionIDs(permission.GetOptions()), name)
 	}
 	agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(`{}`)))
-}
-
-func reasonixOptionIDs(options []*leapmuxv1.PermissionOption) []string {
-	ids := make([]string, 0, len(options))
-	for _, option := range options {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
 }
 
 // Every other request is the base protocol's: the command of a shell call,
@@ -99,7 +91,7 @@ func TestReadControlRequest_ReasonixReadsEveryOtherRequestThroughTheBase(t *test
 	require.NotNil(t, shell)
 	assert.Equal(t, "touch x", shell.GetCommand())
 	assert.Equal(t, "execute", shell.GetTitle(), "a call with no title is titled by its kind")
-	assert.Equal(t, []string{"allow_once", acp.CancelOptionID}, reasonixOptionIDs(shell.GetOptions()),
+	assert.Equal(t, []string{"allow_once", acp.CancelOptionID}, agenttest.PermissionOptionIDs(shell.GetOptions()),
 		"a request with no reject option still offers a refusal")
 
 	agenttest.RequireProto(t, &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: &leapmuxv1.PermissionPrompt{
@@ -216,4 +208,16 @@ func TestAnswerControlRequest_ReasonixAnswersAnElicitationThroughTheBase(t *test
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:3","response":{
 		"action":"accept","content":{"count":0,"enabled":false,"color":"b"}}}}`, string(got.Content))
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":3,"result":{"action":"accept","content":{"count":0,"enabled":false,"color":"b"}}}`, string(agenttest.ResolveAnswer(Registration().Plugin, []byte(payload), reasonixTestRequestID, got).Content))
+}
+
+func TestReadControlRequest_ReasonixPlanGateMissingRequiredOptionsFallsBackToPermission(t *testing.T) {
+	t.Parallel()
+	missingReject := withJSON(t, reasonixPlanGate, func(decoded map[string]any) {
+		decoded["params"].(map[string]any)["options"] = []any{
+			map[string]any{"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+		}
+	})
+	prompt := agenttest.ControlPromptOf(Registration().Plugin, []byte(missingReject))
+	require.NotNil(t, prompt.GetPermission(), "exit_plan_mode without both allow_once and reject_once must fall back to a permission prompt")
+	assert.Nil(t, prompt.GetPlan())
 }

@@ -37,14 +37,6 @@ const familyDaemonOptionsRequest = `{"method":"session/request_permission","para
 	"toolCall":{"toolCallId":"c","kind":"other","title":"Write"},
 	"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"always","kind":"allow_always","name":"Always allow"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`
 
-func familyOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
-	var ids []string
-	for _, option := range prompt.GetPermission().GetOptions() {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 // The question bridge publishes the daemon's own event, and this reader turns
 // it back into a question. The two must agree exactly, or the banner never
 // opens.
@@ -74,7 +66,7 @@ func TestFamilyReadControlRequest_ANonQuestionIsNoQuestion(t *testing.T) {
 
 	got := agenttest.ControlPromptOf(FamilyProvider{}, []byte(`{"method":"requestPermission","params":{"toolCall":{"toolCallId":"tc-1"}}}`))
 	assert.Nil(t, got.GetQuestion())
-	assert.Equal(t, []string{openCodeOptionOnce, openCodeOptionReject}, familyOptionIDs(got), "a permission request is a permission")
+	assert.Equal(t, []string{openCodeOptionOnce, openCodeOptionReject}, agenttest.PromptPermissionOptionIDs(got), "a permission request is a permission")
 }
 
 func TestFamilyReadControlRequest_AShellPermissionStatesItsCommandAndItsArguments(t *testing.T) {
@@ -120,7 +112,7 @@ func TestFamilyReadControlRequest_KeepsTheOptionsThatTheRequestOffers(t *testing
 	prompt := agenttest.ControlPromptOf(FamilyProvider{}, []byte(familyDaemonOptionsRequest))
 	permission := prompt.GetPermission()
 	require.NotNil(t, permission)
-	assert.Equal(t, []string{"once", "always", "reject"}, familyOptionIDs(prompt))
+	assert.Equal(t, []string{"once", "always", "reject"}, agenttest.PromptPermissionOptionIDs(prompt))
 	assert.Equal(t, []leapmuxv1.PermissionOptionKind{
 		leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE,
 		leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS,
@@ -128,14 +120,14 @@ func TestFamilyReadControlRequest_KeepsTheOptionsThatTheRequestOffers(t *testing
 	}, []leapmuxv1.PermissionOptionKind{permission.GetOptions()[0].GetKind(), permission.GetOptions()[1].GetKind(), permission.GetOptions()[2].GetKind()})
 	assert.Equal(t, "Always allow", permission.GetOptions()[1].GetName())
 
-	assert.Equal(t, []string{"allow-1", "reject-1"}, familyOptionIDs(agenttest.ControlPromptOf(FamilyProvider{}, []byte(familyPermissionRequest))))
+	assert.Equal(t, []string{"allow-1", "reject-1"}, agenttest.PromptPermissionOptionIDs(agenttest.ControlPromptOf(FamilyProvider{}, []byte(familyPermissionRequest))))
 }
 
 // The composer can still refuse a request that offers no reject option, with
 // the protocol's cancelled outcome, so the prompt offers that refusal.
 func TestFamilyReadControlRequest_AListWithNoRejectOptionGainsTheCancel(t *testing.T) {
 	got := agenttest.ControlPromptOf(FamilyProvider{}, []byte(`{"params":{"toolCall":{"toolCallId":"c","title":"Write"},"options":[{"optionId":"once","kind":"allow_once"}]}}`))
-	assert.Equal(t, []string{"once", acp.CancelOptionID}, familyOptionIDs(got))
+	assert.Equal(t, []string{"once", acp.CancelOptionID}, agenttest.PromptPermissionOptionIDs(got))
 }
 
 // The daemon states the arguments as it received them, a string included.
@@ -197,7 +189,7 @@ func TestFamilyReadControlRequest_AnAbsentOrMalformedToolCall(t *testing.T) {
 	require.NotNil(t, got.GetPermission(), "a tool call of the wrong shape is still a permission request")
 	assert.Empty(t, got.GetPermission().GetTitle(), "a title of the wrong type reads as absent")
 	assert.Empty(t, got.GetPermission().GetCommand())
-	assert.Equal(t, []string{openCodeOptionOnce, openCodeOptionReject}, familyOptionIDs(got))
+	assert.Equal(t, []string{openCodeOptionOnce, openCodeOptionReject}, agenttest.PromptPermissionOptionIDs(got))
 }
 
 func TestFamilyReadControlRequest_AnElicitationIsAForm(t *testing.T) {

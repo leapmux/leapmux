@@ -38,18 +38,6 @@ const grokFolderTrustPayload = `{"jsonrpc":"2.0","id":5,"method":"_x.ai/folder_t
 // grokPlanPayload is Grok's plan approval with the native id 5.
 const grokPlanPayload = `{"jsonrpc":"2.0","id":5,"method":"_x.ai/exit_plan_mode","params":{"sessionId":"s","toolCallId":"c","planContent":"Do the thing."}}`
 
-func grokAnswer(custom string, selected ...string) *leapmuxv1.QuestionAnswer {
-	return &leapmuxv1.QuestionAnswer{Selected: selected, CustomText: custom}
-}
-
-func grokOptionIDs(options []*leapmuxv1.PermissionOption) []string {
-	ids := make([]string, 0, len(options))
-	for _, option := range options {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 // grokResultOf reads the JSON-RPC result of content, and checks that it
 // answers requestID.
 func grokResultOf(t *testing.T, content []byte, requestID string) string {
@@ -102,7 +90,7 @@ func TestReadControlRequest_GrokFolderTrustIsAPermissionWithItsTwoAnswers(t *tes
 
 	permission = agenttest.ControlPromptOf(grokProvider{}, []byte(`{"method":"_x.ai/folder_trust/request","params":{}}`)).GetPermission()
 	assert.Equal(t, "Trust this workspace", permission.GetTitle())
-	assert.Equal(t, []string{"trust", "reject"}, grokOptionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{"trust", "reject"}, agenttest.PermissionOptionIDs(permission.GetOptions()))
 
 	permission = agenttest.ControlPromptOf(grokProvider{}, []byte(`{"method":"_x.ai/folder_trust/request","params":{"workspace":"/w","configKinds":["mcp","",7,null,"hooks"]}}`)).GetPermission()
 	assert.Contains(t, permission.GetReason(), "(mcp, hooks)", "only the kinds that are words")
@@ -117,7 +105,7 @@ func TestReadControlRequest_GrokToolPermissionReadsThroughTheBaseReader(t *testi
 		"options":[{"optionId":"allow-once","name":"Yes, proceed","kind":"allow_once"},{"optionId":"reject-once","name":"No","kind":"reject_once"}]}}`)).GetPermission()
 	require.NotNil(t, permission)
 	assert.Equal(t, "ls", permission.GetCommand())
-	assert.Equal(t, []string{"allow-once", "reject-once"}, grokOptionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{"allow-once", "reject-once"}, agenttest.PermissionOptionIDs(permission.GetOptions()))
 
 	// Grok presents the normalized input with a `variant` tag, beside the name in
 	// `_meta`. With no option list, only LeapMux's cancel answers it.
@@ -127,7 +115,7 @@ func TestReadControlRequest_GrokToolPermissionReadsThroughTheBaseReader(t *testi
 	require.NotNil(t, permission)
 	assert.Equal(t, command, permission.GetCommand())
 	assert.Equal(t, "Execute", permission.GetTitle())
-	assert.Equal(t, []string{acp.CancelOptionID}, grokOptionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{acp.CancelOptionID}, agenttest.PermissionOptionIDs(permission.GetOptions()))
 
 	// The arguments carry the whole call, the command included.
 	permission = agenttest.ControlPromptOf(grokProvider{}, []byte(`{"method":"session/request_permission","params":{"toolCall":{"toolCallId":"command","kind":"execute","title":"Run command",
@@ -137,7 +125,7 @@ func TestReadControlRequest_GrokToolPermissionReadsThroughTheBaseReader(t *testi
 
 	permission = agenttest.ControlPromptOf(grokProvider{}, []byte(`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"},
 		"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`)).GetPermission()
-	assert.Equal(t, []string{"once", "reject"}, grokOptionIDs(permission.GetOptions()), "a request that states its options keeps them")
+	assert.Equal(t, []string{"once", "reject"}, agenttest.PermissionOptionIDs(permission.GetOptions()), "a request that states its options keeps them")
 }
 
 func TestReadControlRequest_GrokReadsAnUnknownRequestAsUnrecognized(t *testing.T) {
@@ -193,7 +181,7 @@ func TestReadControlRequest_GrokQuestionDialog(t *testing.T) {
 }
 
 func TestAnswerControlRequest_GrokQuestionStatesGrokReply(t *testing.T) {
-	extras := grokAnswer("", "Metrics")
+	extras := agenttest.QuestionAnswer("", "Metrics")
 	for _, tc := range []struct {
 		name    string
 		answers []*leapmuxv1.QuestionAnswer
@@ -201,22 +189,22 @@ func TestAnswerControlRequest_GrokQuestionStatesGrokReply(t *testing.T) {
 	}{
 		{
 			name:    "keys each answer by the question text, with the chosen labels",
-			answers: []*leapmuxv1.QuestionAnswer{grokAnswer("", "Redis"), grokAnswer("", "Caching", "Metrics")},
+			answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Redis"), agenttest.QuestionAnswer("", "Caching", "Metrics")},
 			want:    `{"outcome":"accepted","answers":{"Which database?":["Redis"],"Which extras?":["Caching","Metrics"]}}`,
 		},
 		{
 			name:    "sends the notes beside a chosen option, and the preview of a single choice",
-			answers: []*leapmuxv1.QuestionAnswer{grokAnswer(" Use version 16 ", "Postgres (Recommended)"), extras},
+			answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer(" Use version 16 ", "Postgres (Recommended)"), extras},
 			want:    `{"outcome":"accepted","answers":{"Which database?":["Postgres (Recommended)"],"Which extras?":["Metrics"]},"annotations":{"Which database?":{"preview":"CREATE TABLE t ()","notes":"Use version 16"}}}`,
 		},
 		{
 			name:    "answers a typed answer alone with the free-text label",
-			answers: []*leapmuxv1.QuestionAnswer{grokAnswer("SQLite"), extras},
+			answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("SQLite"), extras},
 			want:    `{"outcome":"accepted","answers":{"Which database?":["Other"],"Which extras?":["Metrics"]},"annotations":{"Which database?":{"notes":"SQLite"}}}`,
 		},
 		{
 			name:    "sends no annotation for a single choice that carries no preview",
-			answers: []*leapmuxv1.QuestionAnswer{grokAnswer("", "Redis"), extras},
+			answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Redis"), extras},
 			want:    `{"outcome":"accepted","answers":{"Which database?":["Redis"],"Which extras?":["Metrics"]}}`,
 		},
 	} {
@@ -234,8 +222,8 @@ func TestAnswerControlRequest_GrokQuestionStatesGrokReply(t *testing.T) {
 // space is no answer, so the Worker refuses an answer that leaves one open.
 func TestAnswerControlRequest_GrokQuestionRefusesAQuestionLeftOpen(t *testing.T) {
 	for name, answers := range map[string][]*leapmuxv1.QuestionAnswer{
-		"an empty question":         {grokAnswer(""), grokAnswer("", "Metrics")},
-		"white space alone":         {grokAnswer("", "Redis"), grokAnswer("   ")},
+		"an empty question":         {agenttest.QuestionAnswer(""), agenttest.QuestionAnswer("", "Metrics")},
+		"white space alone":         {agenttest.QuestionAnswer("", "Redis"), agenttest.QuestionAnswer("   ")},
 		"no answer to any question": nil,
 	} {
 		_, err := agenttest.AnswerControl(grokProvider{}, []byte(grokQuestionPayload), "jsonrpc:0", agenttest.QuestionDecision(answers...))
@@ -247,7 +235,7 @@ func TestAnswerControlRequest_GrokQuestionRefusesAQuestionLeftOpen(t *testing.T)
 // with one option chosen.
 func TestAnswerControlRequest_GrokQuestionSendsNoPreviewForAMultipleChoice(t *testing.T) {
 	payload := `{"method":"_x.ai/ask_user_question","params":{"questions":[{"question":"Which?","multiSelect":true,"options":[{"label":"A","preview":"a()"},{"label":"B"}]}]}}`
-	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:0", agenttest.QuestionDecision(grokAnswer("", "A")))
+	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:0", agenttest.QuestionDecision(agenttest.QuestionAnswer("", "A")))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"outcome":"accepted","answers":{"Which?":["A"]}}`, grokResultOf(t, got.Content, `"jsonrpc:0"`))
 }
@@ -256,7 +244,7 @@ func TestAnswerControlRequest_GrokQuestionSendsNoPreviewForAMultipleChoice(t *te
 // prototype key in the browser is an ordinary key.
 func TestAnswerControlRequest_GrokQuestionKeepsAnAnswerToAQuestionWordedLikeAPrototypeKey(t *testing.T) {
 	payload := `{"method":"_x.ai/ask_user_question","params":{"questions":[{"question":"__proto__","options":[{"label":"Yes"}]}]}}`
-	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:0", agenttest.QuestionDecision(grokAnswer("", "Yes")))
+	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:0", agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Yes")))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"outcome":"accepted","answers":{"__proto__":["Yes"]}}`, grokResultOf(t, got.Content, `"jsonrpc:0"`))
 }
@@ -267,7 +255,7 @@ func TestAnswerControlRequest_GrokQuestionWithARepeatedTextKeepsTheLaterAnswer(t
 	payload := `{"method":"_x.ai/ask_user_question","params":{"questions":[
 		{"question":"Pick","options":[{"label":"A","preview":"a()"},{"label":"B"}]},
 		{"question":"Pick","options":[{"label":"C"}]}]}}`
-	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:0", agenttest.QuestionDecision(grokAnswer("", "A"), grokAnswer("", "C")))
+	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:0", agenttest.QuestionDecision(agenttest.QuestionAnswer("", "A"), agenttest.QuestionAnswer("", "C")))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"outcome":"accepted","answers":{"Pick":["C"]},"annotations":{"Pick":{"preview":"a()"}}}`, grokResultOf(t, got.Content, `"jsonrpc:0"`))
 }
@@ -276,13 +264,13 @@ func TestAnswerControlRequest_GrokQuestionWithARepeatedTextKeepsTheLaterAnswer(t
 // value.
 func TestAnswerControlRequest_GrokQuestionSendsTheValueOfAnOption(t *testing.T) {
 	payload := `{"method":"_x.ai/ask_user_question","params":{"questions":[{"question":"Pick","options":[{"label":"Alpha","value":"a","preview":"p"}]}]}}`
-	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:0", agenttest.QuestionDecision(grokAnswer("", "a")))
+	got, err := agenttest.AnswerControl(grokProvider{}, []byte(payload), "jsonrpc:0", agenttest.QuestionDecision(agenttest.QuestionAnswer("", "a")))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"outcome":"accepted","answers":{"Pick":["a"]},"annotations":{"Pick":{"preview":"p"}}}`, grokResultOf(t, got.Content, `"jsonrpc:0"`))
 }
 
 func TestAnswerControlRequest_GrokQuestionSendsTheWholeReplyUnderTheWorkerRequestID(t *testing.T) {
-	got, err := agenttest.AnswerControl(grokProvider{}, []byte(grokQuestionPayload), "jsonrpc:0", agenttest.QuestionDecision(grokAnswer("", "Redis"), grokAnswer("", "Metrics")))
+	got, err := agenttest.AnswerControl(grokProvider{}, []byte(grokQuestionPayload), "jsonrpc:0", agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Redis"), agenttest.QuestionAnswer("", "Metrics")))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"jsonrpc:0","result":{"outcome":"accepted","answers":{"Which database?":["Redis"],"Which extras?":["Metrics"]}}}`, string(got.Content))
 }
@@ -300,9 +288,9 @@ func TestAnswerControlRequest_GrokQuestionCancelSendsTheCancelledOutcome(t *test
 
 func TestAnswerControlRequest_GrokQuestionRefusesAnAnswerThatThePromptDoesNotOffer(t *testing.T) {
 	for name, decision := range map[string]*leapmuxv1.ControlDecision{
-		"an unknown value":           agenttest.QuestionDecision(grokAnswer("", "MySQL")),
-		"two values for one choice":  agenttest.QuestionDecision(grokAnswer("", "Redis", "Postgres (Recommended)")),
-		"an answer for no question":  agenttest.QuestionDecision(grokAnswer(""), grokAnswer(""), grokAnswer("x")),
+		"an unknown value":           agenttest.QuestionDecision(agenttest.QuestionAnswer("", "MySQL")),
+		"two values for one choice":  agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Redis", "Postgres (Recommended)")),
+		"an answer for no question":  agenttest.QuestionDecision(agenttest.QuestionAnswer(""), agenttest.QuestionAnswer(""), agenttest.QuestionAnswer("x")),
 		"a decision of another kind": agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
 	} {
 		_, err := agenttest.AnswerControl(grokProvider{}, []byte(grokQuestionPayload), "jsonrpc:0", decision)

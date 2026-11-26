@@ -15,7 +15,7 @@ import (
 // ResolveControlResponse, so the prompt and the answer agree about which
 // request is a plan.
 func (reasonixProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	if isPlanApproval(input.Payload) {
+	if isReasonixPlanPrompt(input.Payload) {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{}}}
 	}
 	return acp.ReadBaseControlRequest(input)
@@ -27,7 +27,7 @@ func (reasonixProvider) ReadControlRequest(input agent.ControlRequestInput) *lea
 // it queues the feedback of a refusal as a message, so the answer itself
 // states no follow-up. Every other request takes the base protocol's answer.
 func (reasonixProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
-	if isPlanApproval(input.Request.Payload) {
+	if isReasonixPlanPrompt(input.Request.Payload) {
 		return agent.AnswerNeutralPlan(input)
 	}
 	return acp.AnswerBaseControlRequest(input, nil)

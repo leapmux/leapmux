@@ -2,7 +2,6 @@ package fastagent
 
 import (
 	"encoding/json"
-	"math"
 	"regexp"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -22,13 +21,12 @@ var fastagentArchiveHistoryFile = regexp.MustCompile(`^history_[^/\\\x00\r\n]+\.
 // is an ACP frame, whose text reaches the transcript only in an assembled
 // envelope.
 func (fastagentProvider) ReplyText(message agent.MessageContent) (string, bool) {
-	var supplement map[string]json.RawMessage
-	if json.Unmarshal(message.Supplemental, &supplement) != nil {
+	supplement, ok := providerkit.RawObject(message.Supplemental)
+	if !ok {
 		return "", false
 	}
-	var meta map[string]json.RawMessage
-	if json.Unmarshal(supplement[contracts.FastagentArchiveNamespace], &meta) != nil || meta == nil ||
-		!validFastagentArchiveIdentity(meta, message.AgentSessionID) {
+	meta, ok := providerkit.RawObject(supplement[contracts.FastagentArchiveNamespace])
+	if !ok || !validFastagentArchiveIdentity(meta, message.AgentSessionID) {
 		return "", false
 	}
 	field, _ := providerkit.RawString(meta[contracts.FastagentArchiveField])
@@ -44,8 +42,8 @@ func (fastagentProvider) ReplyText(message agent.MessageContent) (string, bool) 
 	if !fastagentArchiveIndex(meta[contracts.FastagentArchiveIndex]) {
 		return "", false
 	}
-	var block map[string]json.RawMessage
-	if json.Unmarshal(message.Original, &block) != nil {
+	block, ok := providerkit.RawObject(message.Original)
+	if !ok {
 		return "", false
 	}
 	blockType, _ := providerkit.RawString(block["type"])
@@ -101,9 +99,6 @@ func validFastagentArchiveIdentity(meta map[string]json.RawMessage, agentSession
 // accepts: a JSON number that is a non-negative safe integer of JavaScript,
 // whatever its spelling (2, 2.0 or 2e0).
 func fastagentArchiveIndex(raw json.RawMessage) bool {
-	var value float64
-	if providerkit.RawKindOf(raw) != providerkit.RawValue || json.Unmarshal(raw, &value) != nil {
-		return false
-	}
-	return value >= 0 && value <= 1<<53-1 && value == math.Trunc(value)
+	value, ok := providerkit.RawWholeNumber(raw)
+	return ok && value >= 0
 }

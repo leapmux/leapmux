@@ -185,11 +185,11 @@ func qwenDiscreteMessage(metadata map[string]json.RawMessage) bool {
 }
 
 // chunkMessageID keeps each discrete model response separate from the surrounding reply.
-func (a *Agent) chunkMessageID(kind agent.AssembledMessageKind, metadata map[string]json.RawMessage) string {
-	if kind != agent.AssembledMessageKindText {
+func (a *Agent) chunkMessageID(info acp.UpdateMessageInfo) string {
+	if info.UpdateType != contracts.ACPUpdateAgentMessageChunk {
 		return ""
 	}
-	if !qwenDiscreteMessage(metadata) {
+	if !qwenDiscreteMessage(info.UpdateMeta) {
 		return "qwen:reply"
 	}
 	a.stateMu.Lock()

@@ -1368,3 +1368,44 @@ func TestGrokWakeOriginAndWorkflowRevival(t *testing.T) {
 		assert.Equal(t, bgtask.StatusRunning, row.Status)
 	})
 }
+
+type failOnceBindChildSink struct {
+	agent.ProviderServices
+	failedOnce *bool
+}
+
+func (s *failOnceBindChildSink) BindChildSessionID(sessionID string) error {
+	if !*s.failedOnce {
+		*s.failedOnce = true
+		return assert.AnError
+	}
+	return s.ProviderServices.BindChildSessionID(sessionID)
+}
+
+type failOnceChildSpawnerSink struct {
+	*agenttest.ControlSink
+	failedOnce bool
+}
+
+func (s *failOnceChildSpawnerSink) ChildSink(childAgentID string) agent.ProviderServices {
+	return &failOnceBindChildSink{
+		ProviderServices: s.ControlSink.ChildSink(childAgentID),
+		failedOnce:       &s.failedOnce,
+	}
+}
+
+func TestGrokSteerChildRetriesTransientBindFailure(t *testing.T) {
+	t.Parallel()
+	a, baseSink, _ := newGrokAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{"result":{"kind":"accepted","messageId":"msg-retry"}}`)}
+	})
+	a.SetSinkForTest(agent.NewProviderServices(&failOnceChildSpawnerSink{ControlSink: baseSink}))
+
+	a.HandleOutput(spawnCall(t, "spawn-retry", "Retry child", "Run task", true))
+	// Initial BindAttachedChildSession fails transiently once inside handleSubagentSpawned.
+	a.HandleOutput(spawned(t, "child-retry", "Retry child", map[string]any{"agentAddress": "aa1.retry"}))
+
+	receipt, err := a.SteerChildInput("spawn-retry", agent.SteerRequest{InputID: "in-1", Content: "continue"})
+	require.NoError(t, err)
+	assert.Equal(t, "msg-retry", receipt.InputID)
+}

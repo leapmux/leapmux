@@ -208,3 +208,53 @@ func TestGooseEarlySteerUserChunkCommitsWhenSteerRPCReturns(t *testing.T) {
 		},
 	}, sink.SteerResolutions()[0])
 }
+
+func TestGooseFailedEarlySteerDoesNotStripLeadNativeInputID(t *testing.T) {
+	t.Parallel()
+	a, sink, finishPrompt := newGooseSteerPeer(t, func(a *Agent, id int64, _ json.RawMessage) {
+		// Unrelated or early steered chunk arrives while RPC is in flight, then RPC fails.
+		a.HandleOutput(gooseSessionUpdateFrame(t, "goose-session", map[string]any{
+			"sessionUpdate": "user_message_chunk",
+			"messageId":     "steer_unrelated",
+			"content":       map[string]any{"type": "text", "text": "Unrelated."},
+			"_meta":         map[string]any{"goose": map[string]any{"messageId": "steer_unrelated", "steer": true}},
+		}))
+		a.Deliver(id, agenttest.JSONRPCResponse(id, agenttest.RPCReply{
+			Error: json.RawMessage(`{"code":-32600,"message":"no active run"}`),
+		}))
+	})
+
+	lead, err := a.SendInput("Lead prompt.", nil)
+	require.NoError(t, err)
+	a.HandleOutput(gooseSessionUpdateFrame(t, "goose-session", map[string]any{
+		"sessionUpdate": "session_info_update",
+		"_meta":         map[string]any{"goose": map[string]any{"activeRunId": "run-1"}},
+	}))
+	_, err = a.SteerInput(agent.SteerRequest{
+		InputID:   "queue-steer-fail",
+		AttemptID: "attempt-fail",
+		Content:   "Will fail.",
+	})
+	require.ErrorIs(t, err, agent.ErrNoActiveTurn)
+
+	a.HandleOutput(gooseSessionUpdateFrame(t, "goose-session", map[string]any{
+		"sessionUpdate": "agent_message_chunk",
+		"messageId":     "assistant-after",
+		"content":       map[string]any{"type": "text", "text": "Exclusive lead reply."},
+	}))
+	finishPrompt(json.RawMessage(`{"stopReason":"end_turn"}`))
+	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
+
+	var foundText, foundEnd bool
+	for _, msg := range sink.Messages() {
+		if msg.TurnEnd {
+			foundEnd = true
+			assert.Equal(t, lead.InputID, msg.NativeInputID, "failed early steer must not strip NativeInputID from lead TurnEnd")
+		} else if msg.NativeTurnID == lead.TurnID {
+			foundText = true
+			assert.Equal(t, lead.InputID, msg.NativeInputID, "failed early steer must not strip NativeInputID from lead text")
+		}
+	}
+	assert.True(t, foundText)
+	assert.True(t, foundEnd)
+}

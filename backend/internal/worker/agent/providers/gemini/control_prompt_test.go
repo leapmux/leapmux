@@ -268,3 +268,36 @@ func TestAnswerControlRequest_GeminiAnswersAnElicitationThroughTheBase(t *testin
 	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:4","response":{"action":"decline"}}}`, string(got.Content))
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"result":{"action":"decline"}}`, string(agenttest.ResolveAnswer(Registration().Plugin, payload, geminiTestRequestID, got).Content))
 }
+
+func TestReadControlRequest_GeminiPlanFallsBackWhenOptionsChanged(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  "session/request_permission",
+		"params": map[string]any{
+			"sessionId": "native-root",
+			"toolCall":  geminiTestToolCall(),
+			"options": []any{
+				map[string]any{"optionId": "approve_v2", "name": "Approve", "kind": "allow_once"},
+				map[string]any{"optionId": "reject_v2", "name": "Reject", "kind": "reject_once"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	prompt := geminiRead(agent.NewControlRequestInput(payload))
+	require.NotNil(t, prompt.GetPermission(), "renamed plan options must fall back to a permission prompt so the user can choose offered options")
+	got, err := agenttest.AnswerControl(Registration().Plugin, payload, geminiTestRequestID, agenttest.PermissionDecision("approve_v2", ""))
+	require.NoError(t, err)
+	resolved := agenttest.ResolveAnswer(Registration().Plugin, payload, geminiTestRequestID, got)
+	require.NoError(t, resolved.Refusal())
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"result":{"outcome":{"outcome":"selected","optionId":"approve_v2"}}}`, string(resolved.Content))
+}
+
+func TestGeminiConfigureHandlesNilServicesWithoutPanic(t *testing.T) {
+	t.Parallel()
+	a := &Agent{}
+	require.NotPanics(t, func() {
+		_ = a.configure(t.Context(), agent.Options{}, nil)
+	})
+}

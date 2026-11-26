@@ -25,22 +25,12 @@ const (
 	createPlanRejectLabel  = "Reject"
 )
 
-// readCursorRequest reads the JSON-RPC method and params of a control
-// request. Each is read on its own, and a value of the wrong type reads as
-// absent.
-func readCursorRequest(payload []byte) (method string, params map[string]json.RawMessage) {
-	fields, _ := providerkit.RawObject(payload)
-	method, _ = providerkit.RawString(fields["method"])
-	params, _ = providerkit.RawObject(fields["params"])
-	return method, params
-}
-
 // ReadControlRequest reads Cursor's two requests of its own, a question and a
 // plan to create. Every other request is the Agent Client Protocol's, and the
 // base reads it. The three methods exclude each other, so the order of the
 // checks changes no prompt.
 func (cursorProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	method, params := readCursorRequest(input.Payload)
+	method, params := acp.ReadControlRequestEnvelope(input.Payload)
 	switch method {
 	case contracts.CursorMethodAskQuestion:
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
@@ -62,8 +52,8 @@ func (cursorProvider) ReadControlRequest(input agent.ControlRequestInput) *leapm
 //     takes typed text, but its ACP adapter copies the selected option ids and
 //     drops the text.
 func cursorQuestions(params map[string]json.RawMessage) []*leapmuxv1.ControlQuestion {
-	var elements []json.RawMessage
-	if json.Unmarshal(params["questions"], &elements) != nil {
+	elements, ok := providerkit.RawArray(params["questions"])
+	if !ok {
 		return nil
 	}
 	questions := make([]*leapmuxv1.ControlQuestion, 0, len(elements))
@@ -95,8 +85,8 @@ func cursorQuestions(params map[string]json.RawMessage) []*leapmuxv1.ControlQues
 // dropped. Its value is its id, else its label, so two options with the same
 // label still send different answers.
 func cursorQuestionOptions(raw json.RawMessage) []*leapmuxv1.QuestionOption {
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil {
+	elements, ok := providerkit.RawArray(raw)
+	if !ok {
 		return nil
 	}
 	options := make([]*leapmuxv1.QuestionOption, 0, len(elements))
@@ -150,7 +140,7 @@ func createPlanPermission(params map[string]json.RawMessage) *leapmuxv1.Permissi
 // answers every other request. The method of the request decides, as it does
 // for the prompt.
 func (cursorProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
-	method, _ := readCursorRequest(input.Request.Payload)
+	method, _ := acp.ReadControlRequestEnvelope(input.Request.Payload)
 	switch method {
 	case contracts.CursorMethodAskQuestion:
 		return answerCursorQuestion(input)

@@ -329,11 +329,6 @@ func (b *Base) routeToChild(rowKey string, header acpUpdateHeader, update acpSes
 		if b.childSessionRow(update.SessionID) != rowKey {
 			return childRouteBlocked
 		}
-		if identify := b.hooks.ChildSessionUpdateIdentity; identify != nil {
-			if identity := identify(update.SessionID, rowKey, header.SessionUpdate, update.Meta); identity != "" {
-				header.MessageID = identity
-			}
-		}
 	}
 	if header.SessionUpdate == contracts.ACPUpdateUserMessageChunk && b.hooks.ChildUserMessages {
 		child.persistAgentMessage(header.Content)
@@ -342,7 +337,7 @@ func (b *Base) routeToChild(rowKey string, header acpUpdateHeader, update acpSes
 	// A child renders conversation updates only.
 	// The session's mode and model belong to the main conversation, as do its command set and usage.
 	// Discard an update that reports those fields instead of applying it to the parent.
-	child.handleUpdate(header, update.Update)
+	child.handleUpdate(header, update.Update, update.SessionID, rowKey, update.Meta)
 	return childRouteAccepted
 }
 

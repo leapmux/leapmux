@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -233,12 +234,23 @@ func recordGrokChildPermissions(t *testing.T, a *Agent, childSession string) *ag
 	})
 	require.True(t, a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: grokTestSession, SessionID: childSession, RowKey: rowKey}))
 	child := &agenttest.ControlSink{}
-	a.HooksForTest().ChildPermissionOwner = func(sessionID string) (agent.ControlServices, error) {
-		owner, err := a.grokChildPermissionOwner(sessionID)
-		require.NoError(t, err)
-		assert.NotNil(t, owner)
-		assert.Equal(t, childSession, sessionID)
-		return child, nil
+	baseOwner := a.HooksForTest().ControlOwner
+	a.HooksForTest().ControlOwner = func(sessionID string, line *providerkit.ParsedLine, needsTurn bool) (acp.ControlOwnerResolution, error) {
+		res, err := baseOwner(sessionID, line, needsTurn)
+		if err != nil {
+			return res, err
+		}
+		resolved := res.SessionID
+		if resolved == "" {
+			resolved = sessionID
+		}
+		if resolved != "" && !a.IsCurrentSession(resolved) {
+			assert.False(t, res.Refuse)
+			assert.NotNil(t, res.Sink)
+			assert.Equal(t, childSession, resolved)
+			res.Sink = child
+		}
+		return res, nil
 	}
 	return child
 }
@@ -651,4 +663,32 @@ func TestGrokElicitCompleteOfAnotherServerChangesNothing(t *testing.T) {
 		"params": map[string]any{"sessionId": grokTestSession, "serverName": "other", "elicitationId": "flow-7"},
 	}))
 	assert.Empty(t, sink.CanceledControls(), "a foreign completion changes nothing")
+}
+
+func TestGrokCompleteToolOutputWithEmptySessionClearsUnboundCheck(t *testing.T) {
+	t.Parallel()
+	a, baseSink, _ := newGrokAgent(t, agent.Options{}, nil)
+	a.SetSinkForTest(agent.NewProviderServices(&failOnceChildSpawnerSink{ControlSink: baseSink}))
+
+	// Spawn a child whose BindChildSessionID fails once so its child sink stays unbound (MessageSessionID == "").
+	a.HandleOutput(spawnCall(t, "spawn-unbound", "Unbound child", "Run task", true))
+	a.HandleOutput(spawned(t, "child-unbound", "Unbound child", map[string]any{"agentAddress": "aa1.unbound"}))
+
+	// Record permission checks with the same toolCallID on both bound root and unbound child.
+	a.HandleOutput(notification(t, grokTestSession, map[string]any{
+		"sessionUpdate": "pending_interaction", "tool_call_id": "call_shared", "kind": "permission",
+	}))
+	a.HandleOutput(notification(t, "child-unbound", map[string]any{
+		"sessionUpdate": "pending_interaction", "tool_call_id": "call_shared", "kind": "permission",
+	}))
+
+	// acp.conversation passes sink.MessageSessionID() == "" for the unbound child sink.
+	a.HooksForTest().ToolOutputComplete("", "call_shared")
+
+	a.stateMu.Lock()
+	_, childPresent := a.controls.checks[controlKey{sessionID: "child-unbound", toolCallID: "call_shared"}]
+	_, rootPresent := a.controls.checks[controlKey{sessionID: grokTestSession, toolCallID: "call_shared"}]
+	a.stateMu.Unlock()
+	assert.False(t, childPresent, "completing tool output on an unbound sink must clear its pending permission check")
+	assert.True(t, rootPresent, "bound root session's permission check with the same toolCallID must remain open")
 }

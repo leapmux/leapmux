@@ -379,8 +379,8 @@ func TestReplyReconciliationRunsBetweenTextAndTurnEnd(t *testing.T) {
 		go func() { flushed <- queue.Flush() }()
 		synctest.Wait()
 		calls := 0
-		b.hooks.CaptureReplyReconciliation = func() func() error {
-			return func() error {
+		b.hooks.CaptureReplyReconciliation = func() func(agent.MessageCompletion, bool) error {
+			return func(agent.MessageCompletion, bool) error {
 				calls++
 				assert.Equal(t, []string{"text:Final answer."}, assembledTexts(t, sink.Messages()))
 				assert.Empty(t, turnEndContents(sink))

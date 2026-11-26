@@ -1,8 +1,11 @@
 package kiro
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -822,6 +825,75 @@ func TestKiroClearContextDropsPendingSteers(t *testing.T) {
 	reports := sink.SteerResolutions()
 	require.Len(t, reports, 1)
 	assert.Equal(t, agent.SteerOutcomeDropped, reports[0].Outcome)
+}
+
+func TestKiroFailedEarlySteerDoesNotStripLeadNativeInputID(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	readPipe, writePipe := io.Pipe()
+	a := &Agent{}
+	sink := &agenttest.ControlSink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.AttachPeerForTest(ctx, cancel, writePipe, "test-agent", kiroTestSession)
+	*a.HooksForTest() = a.configure(agent.Options{})
+
+	promptIDCh := make(chan int64, 1)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		scanner := bufio.NewScanner(readPipe)
+		for scanner.Scan() {
+			var req struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &req) != nil || len(req.ID) == 0 {
+				continue
+			}
+			var id int64
+			if json.Unmarshal(req.ID, &id) != nil {
+				continue
+			}
+			switch req.Method {
+			case acp.MethodSessionPrompt:
+				promptIDCh <- id
+			case kiroSteerMethod:
+				// Emit an unrelated early steering_injected while the steer RPC is in flight, then reject the RPC.
+				a.HandleOutput(kiroSteerInfo(t, "steering_injected", map[string]any{"messageId": "unrelated-steer"}))
+				a.Deliver(id, agenttest.JSONRPCResponse(id, agenttest.RPCReply{
+					Result: json.RawMessage(`{"queued":false,"dropped":"no_active_turn"}`),
+				}))
+			}
+		}
+	})
+	t.Cleanup(func() {
+		cancel()
+		_ = writePipe.Close()
+		_ = readPipe.Close()
+		wg.Wait()
+	})
+
+	lead, err := a.SendInput("Lead prompt.", nil)
+	require.NoError(t, err)
+	promptID := <-promptIDCh
+	_, err = a.SteerInput(kiroTestSteer("rejected steer"))
+	require.ErrorIs(t, err, agent.ErrNoActiveTurn)
+
+	a.HandleOutput(messageChunk(t, "Exclusive Kiro reply.", map[string]any{"replayId": "reply-1"}))
+	a.Deliver(promptID, agenttest.JSONRPCResponse(promptID, agenttest.RPCReply{Result: json.RawMessage(`{"stopReason":"end_turn"}`)}))
+	waitForIdle(t, a)
+
+	var foundText, foundEnd bool
+	for _, msg := range sink.Messages() {
+		if msg.TurnEnd {
+			foundEnd = true
+			assert.Equal(t, lead.InputID, msg.NativeInputID, "rejected early steer must not strip NativeInputID from lead TurnEnd")
+		} else if msg.NativeTurnID == lead.TurnID {
+			foundText = true
+			assert.Equal(t, lead.InputID, msg.NativeInputID, "rejected early steer must not strip NativeInputID from lead text")
+		}
+	}
+	assert.True(t, foundText)
+	assert.True(t, foundEnd)
 }
 
 // kiroAssembledTexts returns the assembled assistant text rows.

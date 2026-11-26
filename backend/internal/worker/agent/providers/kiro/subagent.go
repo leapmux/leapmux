@@ -7,6 +7,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -37,9 +38,9 @@ type childState struct {
 // belongs to. The spawn's own updates belong to the parent, where the row of
 // the spawn is drawn.
 func (a *Agent) childUpdateRoute(_ string, metadata map[string]json.RawMessage) string {
-	fields := kiroFields(metadata[contracts.KiroMetaNamespace])
-	subtask := fieldString(fields, contracts.KiroMetaAgentSubtaskId)
-	if subtask == "" || fieldString(fields, contracts.KiroMetaKind) == contracts.KiroKindAgentSubtask {
+	fields := providerkit.RawFields(metadata[contracts.KiroMetaNamespace])
+	subtask := providerkit.ObjectString(fields, contracts.KiroMetaAgentSubtaskId)
+	if subtask == "" || providerkit.ObjectString(fields, contracts.KiroMetaKind) == contracts.KiroKindAgentSubtask {
 		return ""
 	}
 	a.stateMu.Lock()
@@ -77,8 +78,8 @@ func spawnObservation(toolCallID string, input kiroSpawnInput, spawns bool) *acp
 // child transcript open at once, with the prompt, so the child tab opens on
 // what was asked before the child says anything.
 func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
-	fields := kiroFields(metaNamespace(tc.Meta))
-	if fieldString(fields, contracts.KiroMetaKind) != contracts.KiroKindAgentSubtask {
+	fields := providerkit.RawFields(metaNamespace(tc.Meta))
+	if providerkit.ObjectString(fields, contracts.KiroMetaKind) != contracts.KiroKindAgentSubtask {
 		return nil
 	}
 	var input kiroSpawnInput
@@ -97,7 +98,7 @@ func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObser
 		}
 		return obs
 	}
-	subtask := fieldString(fields, contracts.KiroMetaAgentSubtaskId)
+	subtask := providerkit.ObjectString(fields, contracts.KiroMetaAgentSubtaskId)
 	a.stateMu.Lock()
 	if a.children.rowBySubtask == nil {
 		a.children.rowBySubtask = make(map[string]string)

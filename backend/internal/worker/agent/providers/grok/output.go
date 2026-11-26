@@ -9,6 +9,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -165,16 +166,13 @@ func grokIsCancelledTurnEnd(frame json.RawMessage) bool {
 }
 
 func grokSteerTurnOutcome(reason string) leapmuxv1.AgentInputTurnOutcome {
-	switch reason {
-	case contracts.ACPStopReasonEndTurn, "max_tokens", "max_turn_requests", "refusal":
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
-	case contracts.ACPStopReasonCancelled:
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
-	case "error":
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
-	default:
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
+	if outcome := acp.StopReasonOutcome(reason); outcome != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+		return outcome
 	}
+	if reason == "error" {
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
+	}
+	return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 }
 
 // handleResponseCompleted broadcasts the token counts of one model call. The

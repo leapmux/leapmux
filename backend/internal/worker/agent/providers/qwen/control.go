@@ -7,6 +7,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -90,43 +91,13 @@ func isPlanApproval(payload json.RawMessage) bool {
 //   - Reject: `cancel`. Qwen's reply has no field for a reason, so a reason the
 //     reader typed follows as a message of its own.
 func resolvePlanApproval(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
-	result := agent.DefaultControlResponseResolution(ctx)
-	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
-	id, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
-	switch {
-	case !ok:
-		result.Refuse(agent.RefusalNoDecision)
-		return result
-	case !found:
-		result.Refuse(agent.RefusalUnreadableRequest)
-		return result
-	}
-	var option string
-	switch behavior {
-	case contracts.ControlAnswerBehaviorAllow:
-		option = contracts.QwenPermissionOptionProceedOnce
-		if ctx.PlanApproval.GetPermissionMode() == contracts.QwenModeAutoEdit {
-			option = contracts.QwenPermissionOptionProceedAlways
-		}
-		result.PlanModeControl = agent.PlanModeControlExit
-	case contracts.ControlAnswerBehaviorDeny:
-		option = contracts.QwenPermissionOptionCancel
-		result.FollowUp = agent.FeedbackFollowUp(message)
-	default:
-		result.Refuse(agent.RefusalNoDecision)
-		return result
-	}
-	content, err := json.Marshal(struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Result  any             `json:"result"`
-	}{JSONRPC: "2.0", ID: id, Result: map[string]any{
-		"outcome": map[string]string{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": option},
-	}})
-	if err != nil {
-		result.Refuse(agent.RefusalUnencodableReply)
-		return result
-	}
-	result.Content = content
-	return result
+	return acp.ResolvePlanPermission(ctx, acp.PlanPermissionResolver{
+		AllowOption: func(ctx agent.ControlResponseContext) string {
+			if ctx.PlanApproval.GetPermissionMode() == contracts.QwenModeAutoEdit {
+				return contracts.QwenPermissionOptionProceedAlways
+			}
+			return contracts.QwenPermissionOptionProceedOnce
+		},
+		DenyOption: contracts.QwenPermissionOptionCancel,
+	})
 }

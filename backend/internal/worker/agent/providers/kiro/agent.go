@@ -36,7 +36,7 @@ type Agent struct {
 	usageRefresh chan struct{}
 	usageDone    chan struct{}
 	usageStarted bool
-	steers       kiroSteerState
+	steers       acp.SteerEchoTracker
 
 	// goalRestoreMu orders the restore of a recovered goal run against the
 	// retirement of the session that the run belongs to. restoreGoalRun holds
@@ -205,8 +205,8 @@ func (a *Agent) finishCompaction(id uint64, response json.RawMessage, err error)
 	}
 	summarized := a.compaction.summarized
 	a.compaction = compactionState{lastID: a.compaction.lastID}
-	sessionID := a.CurrentSessionID()
 	a.stateMu.Unlock()
+	sessionID := a.CurrentSessionID()
 	defer a.EndAgentTurnWithoutRow()
 	// Every end of the manual compaction ends its live state first: Kiro
 	// answers with a bare result and sends no end frame of its own, so this

@@ -93,6 +93,10 @@ func (b *Base) beginAgentTurn(turnID string) bool {
 		b.endPromptOutput(turn)
 		return true
 	}
+	return b.startIdleAgentTurnLocked(turnID)
+}
+
+func (b *Base) startIdleAgentTurnLocked(turnID string) bool {
 	b.promptActive = true
 	b.promptOutputDrained = false
 	b.agentTurnActive = true
@@ -144,22 +148,7 @@ func (b *Base) AdmitAgentTurn() bool {
 		b.turnMu.Unlock()
 		return false
 	}
-	b.promptActive = true
-	b.promptOutputDrained = false
-	b.agentTurnActive = true
-	sessionID := b.sessionID
-	b.Mu.Unlock()
-	turn := b.takeUnownedOutputLocked()
-	b.preparePriorTextLocked(&turn)
-	target := b.openRootTranscriptLocked(sessionID, true, nil, agent.NativeInputReceipt{})
-	b.rootTarget, b.promptTarget = target, target
-	b.turnMu.Unlock()
-	b.persistUnownedText(turn)
-	if err := target.prepare(); err != nil {
-		slog.Error("prepare ACP root transcript", "error", err)
-	}
-	b.notePromptActive()
-	return true
+	return b.startIdleAgentTurnLocked("")
 }
 
 // endPromptOutput stores the text of the running prompt that the boundary took,
@@ -235,8 +224,8 @@ func (b *Base) endAgentTurn(end acpAgentTurnEnd) {
 	if b.agentTurnQueued {
 		if len(end.frame) > 0 {
 			end.frame = append(json.RawMessage(nil), end.frame...)
-			b.queuedAgentTurnEnd = &end
 		}
+		b.queuedAgentTurnEnd = &end
 		b.Mu.Unlock()
 		b.turnMu.Unlock()
 		return
@@ -245,6 +234,10 @@ func (b *Base) endAgentTurn(end acpAgentTurnEnd) {
 	sessionID := b.sessionID
 	stopped := b.StoppedLocked() || b.interruptRequested || b.isCancelledTurnEnd(end.frame) ||
 		end.outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	outcome := end.outcome
+	if stopped && outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED {
+		outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	}
 	b.agentTurnActive = false
 	b.Mu.Unlock()
 	if !active {
@@ -257,18 +250,20 @@ func (b *Base) endAgentTurn(end acpAgentTurnEnd) {
 	b.Mu.Unlock()
 	b.turnMu.Unlock()
 	textCompletion, incomplete := b.turnOutputCompletions(stopped)
+	wroteOutcome := false
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agent.TranscriptServices, count int) {
 		content := agent.MessageContent{Original: end.frame}
-		if end.turnID != "" && end.outcome != 0 {
+		if end.turnID != "" && outcome != 0 {
 			content = turn.endingAdmission.tagReply(content)
-			content.InputTurnOutcome = end.outcome
+			content.InputTurnOutcome = outcome
+			wroteOutcome = true
 		}
 		b.persistPromptResponseTo(writer, content, count, sessionID, stopped)
 	})
 	if stopped {
 		b.releaseAwaitedTerminals()
 	}
-	if end.turnID == "" || end.outcome == 0 {
+	if !wroteOutcome {
 		b.retireSharedInputs(turn.endingAdmission, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED)
 	}
 	b.endTurn(sessionID)
@@ -301,11 +296,17 @@ func (b *Base) EndAgentTurnWithoutRow() {
 		if b.dropPromptBoundaryLocked() {
 			text := b.takeBufferedTextLocked()
 			text.sessionID = sessionID
+			if b.IsDiscardingOutput() {
+				b.turnMu.Unlock()
+				text.releaseTranscriptAdmissions()
+				return
+			}
 			text.textProgressCompleted = true
 			b.reserveBufferedTextLocked(&text)
 			b.turnMu.Unlock()
 			b.completeBufferedTextProgress(text)
-			b.main().persistBufferedText(text, agent.MessageCompletionComplete)
+			textCompletion, _ := b.turnOutputCompletions(stopped)
+			b.main().persistBufferedText(text, textCompletion)
 			return
 		}
 		turn := b.drainTurnLocked(!stopped)
@@ -388,10 +389,7 @@ func (b *Base) endTurn(sessionID string) {
 	if !current {
 		return
 	}
-	if end, queued := b.takeQueuedAgentTurn(sessionID); queued {
-		if end != nil {
-			b.endAgentTurn(*end)
-		}
+	if b.handoffQueuedAgentTurn(sessionID) {
 		return
 	}
 	if b.schedulePendingFollowUp(sessionID) {
@@ -418,9 +416,7 @@ func (b *Base) endTurn(sessionID string) {
 		}
 	}
 	if !b.clearActivePromptForSession(sessionID) {
-		if end, queued := b.takeQueuedAgentTurn(sessionID); queued && end != nil {
-			b.endAgentTurn(*end)
-		}
+		b.handoffQueuedAgentTurn(sessionID)
 	}
 }
 
@@ -518,7 +514,7 @@ func (b *Base) continueWithPromptForBatch(sessionID, content string, attachments
 	if b.hooks.PromptPrepared != nil {
 		b.hooks.PromptPrepared()
 	}
-	err := b.sendOwnedPromptDetachedLocked(sessionID, target, content, attachments, releaseOperation)
+	_, err := b.sendOwnedPromptDetachedLocked(sessionID, target, content, attachments, releaseOperation)
 	if err != nil {
 		b.finishUnsentPrompt(sessionID)
 	}

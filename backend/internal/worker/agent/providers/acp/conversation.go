@@ -76,7 +76,7 @@ func (c *conversation) agentID() string {
 // handleUpdate renders one session update of this conversation. It returns
 // false for an update type that only the main session carries, so the caller
 // can apply it to the session state.
-func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessage) bool {
+func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessage, sessionID, rowKey string, notificationMeta map[string]json.RawMessage) bool {
 	updateType, status, content := header.SessionUpdate, header.Status, header.Content
 	// State updates never split or enter the conversation's transcript.
 	// The base applies their state separately, including the stored native mode record.
@@ -84,17 +84,15 @@ func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessa
 		return false
 	}
 	messageID := header.MessageID
-	if c.b.hooks.ChunkMessageID != nil && (updateType == contracts.ACPUpdateAgentMessageChunk || updateType == contracts.ACPUpdateAgentThoughtChunk) {
-		kind := agent.AssembledMessageKindText
-		if updateType == contracts.ACPUpdateAgentThoughtChunk {
-			kind = agent.AssembledMessageKindReasoning
-		}
-		if providerID := c.b.hooks.ChunkMessageID(kind, header.Meta); providerID != "" {
-			messageID = providerID
-		}
-	}
-	if c.childSink == nil && updateType == contracts.ACPUpdateAgentMessageChunk && c.b.hooks.RootAssistantMessageID != nil {
-		if providerID := c.b.hooks.RootAssistantMessageID(update); providerID != "" {
+	if c.b.hooks.UpdateMessageID != nil {
+		if providerID := c.b.hooks.UpdateMessageID(UpdateMessageInfo{
+			SessionID:        sessionID,
+			RowKey:           rowKey,
+			UpdateType:       updateType,
+			UpdateMeta:       header.Meta,
+			NotificationMeta: notificationMeta,
+			Raw:              update,
+		}); providerID != "" {
 			messageID = providerID
 		}
 	}
@@ -195,21 +193,21 @@ func (c *conversation) flushTextBuffer(kind agent.AssembledMessageKind) {
 		admission.release()
 		return
 	}
-	c.persistFinishedTextTo(admission, kind, messageID, text, agent.MessageCompletionComplete)
+	c.persistFinishedTextTo(admission, kind, messageID, "", false, text, agent.MessageCompletionComplete)
 }
 
-func (c *conversation) persistFinishedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+func (c *conversation) persistFinishedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, key string, keyResolved bool, text string, completion agent.MessageCompletion) {
 	c.completeTextProgress(kind)
-	c.persistSelectedTextTo(admission, kind, messageID, text, completion)
+	c.persistSelectedTextTo(admission, kind, messageID, key, keyResolved, text, completion)
 }
 
 func (c *conversation) completeTextProgress(kind agent.AssembledMessageKind) {
 	c.sink().ReportProgress(agent.CompleteModelProgress("acp:" + acpTextProgressScope(kind)))
 }
 
-func (c *conversation) persistSelectedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+func (c *conversation) persistSelectedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, key string, keyResolved bool, text string, completion agent.MessageCompletion) {
 	defer admission.release()
-	c.persistAssembledTextTo(admission, kind, messageID, text, completion)
+	c.persistAssembledTextTo(admission, kind, messageID, key, keyResolved, text, completion)
 }
 
 // persistAssembledText stores one assembled text segment.
@@ -221,17 +219,21 @@ func (c *conversation) persistSelectedTextTo(admission *acpTranscriptAdmission, 
 // column that holds the agent's own bytes -- and the interrupted path already used
 // this envelope, so the completed path had a second shape for the same content.
 func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
-	c.persistAssembledTextTo(nil, kind, messageID, text, completion)
+	c.persistAssembledTextTo(nil, kind, messageID, "", false, text, completion)
 }
 
-func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) (agent.MessageContent, func() []byte, error) {
+func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, messageID, key string, keyResolved bool, text string, completion agent.MessageCompletion) (agent.MessageContent, func() []byte, error) {
 	raw, err := agent.MarshalAssembledMessage(kind, text, completion)
 	if err != nil {
 		return agent.MessageContent{}, nil, err
 	}
 	template := agent.MessageContent{Original: raw}
-	if kind == agent.AssembledMessageKindText && messageID != "" && c.b.hooks.AssistantTextKey != nil {
-		template.IdempotencyKey = c.b.hooks.AssistantTextKey(messageID)
+	if kind == agent.AssembledMessageKindText {
+		if keyResolved {
+			template.IdempotencyKey = key
+		} else if messageID != "" && c.b.hooks.AssistantTextKey != nil {
+			template.IdempotencyKey = c.b.hooks.AssistantTextKey(messageID)
+		}
 	}
 	selectText := c.b.hooks.SegmentText
 	prepare := func() []byte {
@@ -259,11 +261,11 @@ func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, me
 	return template, prepare, nil
 }
 
-func (c *conversation) persistAssembledTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+func (c *conversation) persistAssembledTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, key string, keyResolved bool, text string, completion agent.MessageCompletion) {
 	if text == "" {
 		return
 	}
-	template, prepare, err := c.preparedAssembledText(kind, messageID, text, completion)
+	template, prepare, err := c.preparedAssembledText(kind, messageID, key, keyResolved, text, completion)
 	if err == nil {
 		err = agent.PersistPreparedMessage(admission.transcript(c.sink()), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, admission.tagReply(template), agent.SpanInfo{}, prepare)
 	}

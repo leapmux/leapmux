@@ -8,6 +8,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 type grokChildReplyState struct {
@@ -94,7 +95,22 @@ func (a *Agent) observeGrokChildUpdate(sessionID, rowKey, updateType string, met
 	return ""
 }
 
-func (a *Agent) admitGrokChildSteer(child linkedSubagent, sink agent.ProviderServices, text string) grokChildSteerSubmission {
+func (a *Agent) prepareGrokChildJournal(childSession string) (string, sessionstore.JournalCursor) {
+	if childSession == "" {
+		return "", sessionstore.JournalCursor{}
+	}
+	replies := &a.steerReplies
+	replies.mu.Lock()
+	state := replies.children[childSession]
+	skip := replies.closed || state == nil || state.live.promptID == "" || state.active != nil
+	replies.mu.Unlock()
+	if skip {
+		return "", sessionstore.JournalCursor{}
+	}
+	return replies.findJournal(childSession)
+}
+
+func (a *Agent) admitGrokChildSteerWithJournal(child linkedSubagent, sink agent.ProviderServices, text, group string, baseline sessionstore.JournalCursor) grokChildSteerSubmission {
 	replies := &a.steerReplies
 	replies.mu.Lock()
 	state := replies.children[child.childSession]
@@ -110,16 +126,31 @@ func (a *Agent) admitGrokChildSteer(child linkedSubagent, sink agent.ProviderSer
 		}
 		return addGrokChildSubmission(state, current, text)
 	}
+	if group != "" {
+		current := &grokSteerReply{
+			sessionID: child.childSession, promptID: promptID, turnID: promptID, group: group,
+			childMessages: true, baseline: baseline,
+		}
+		state.sink, state.active = sink, current
+		defer replies.mu.Unlock()
+		return addGrokChildSubmission(state, current, text)
+	}
 	replies.mu.Unlock()
 
-	group, baseline := replies.findJournal(child.childSession)
+	group, baseline = replies.findJournal(child.childSession)
 	if group == "" {
 		return grokChildSteerSubmission{}
 	}
 	replies.mu.Lock()
 	defer replies.mu.Unlock()
-	if replies.closed || replies.children[child.childSession] != state || state.live.promptID != promptID || state.active != nil {
+	if replies.closed || replies.children[child.childSession] != state || state.live.promptID != promptID {
 		return grokChildSteerSubmission{}
+	}
+	if current := state.active; current != nil {
+		if current.promptID != promptID {
+			return grokChildSteerSubmission{}
+		}
+		return addGrokChildSubmission(state, current, text)
 	}
 	current := &grokSteerReply{
 		sessionID: child.childSession, promptID: promptID, turnID: promptID, group: group,

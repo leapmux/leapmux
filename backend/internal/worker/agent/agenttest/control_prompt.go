@@ -164,3 +164,22 @@ func ElicitationChoiceDecision(content, choiceKey string) *leapmuxv1.ControlDeci
 func DialogDecision(action leapmuxv1.DialogAction, value string) *leapmuxv1.ControlDecision {
 	return &leapmuxv1.ControlDecision{Kind: &leapmuxv1.ControlDecision_Dialog{Dialog: &leapmuxv1.DialogDecision{Action: action, Value: value}}}
 }
+
+// PermissionOptionIDs returns the option IDs of options in order.
+func PermissionOptionIDs(options []*leapmuxv1.PermissionOption) []string {
+	ids := make([]string, 0, len(options))
+	for _, option := range options {
+		ids = append(ids, option.GetOptionId())
+	}
+	return ids
+}
+
+// PromptPermissionOptionIDs returns the permission option IDs of prompt in order.
+func PromptPermissionOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
+	return PermissionOptionIDs(prompt.GetPermission().GetOptions())
+}
+
+// QuestionAnswer builds a QuestionAnswer with custom text and selected labels.
+func QuestionAnswer(custom string, selected ...string) *leapmuxv1.QuestionAnswer {
+	return &leapmuxv1.QuestionAnswer{Selected: selected, CustomText: custom}
+}

@@ -3,10 +3,11 @@ package dirac
 import (
 	"encoding/json"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
 var _ agent.SteerEchoReporter = (*Agent)(nil)
@@ -43,24 +44,25 @@ func (a *Agent) registerDiracSteer(sessionID string, request agent.SteerRequest)
 	return steer
 }
 
-func (a *Agent) cancelDiracSteer(steer *diracPendingSteer) {
+func (a *Agent) cancelDiracSteer(steer *diracPendingSteer) bool {
 	if steer == nil {
-		return
+		return false
 	}
 	a.steers.mu.Lock()
 	defer a.steers.mu.Unlock()
 	for i, candidate := range a.steers.unassigned {
 		if candidate == steer {
 			a.steers.unassigned = append(a.steers.unassigned[:i], a.steers.unassigned[i+1:]...)
-			return
+			return true
 		}
 	}
 	for id, candidate := range a.steers.byMessageID {
 		if candidate == steer {
 			delete(a.steers.byMessageID, id)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 func (a *Agent) popUnassignedDiracSteerLocked(sessionID string) *diracPendingSteer {
@@ -107,57 +109,54 @@ func (a *Agent) handleSteeringStatus(params json.RawMessage) {
 		}
 		a.steers.mu.Unlock()
 	case "sent":
-		a.steers.mu.Lock()
-		steer := a.steers.byMessageID[payload.SteeringMessageID]
-		if steer != nil {
-			delete(a.steers.byMessageID, payload.SteeringMessageID)
-			if steer.sessionID != sessionID {
-				steer = nil
-			}
-		} else {
-			steer = a.popUnassignedDiracSteerLocked(sessionID)
-		}
-		a.steers.mu.Unlock()
+		steer := a.takeDiracSteer(sessionID, payload.SteeringMessageID)
 		if steer == nil {
 			return
 		}
 		a.FlushBufferedOutput(agent.MessageCompletionComplete)
 		report := steer.resolution
 		report.Outcome = agent.SteerOutcomeEchoed
-		a.retainDiracSteerWrite(a.CaptureRootSteer(sessionID, payload.SteeringMessageID, report))
+		a.RetainSteerWrite("record Dirac steer outcome", a.CaptureRootSteer(sessionID, payload.SteeringMessageID, report))
+	case "":
+	default:
+		steer := a.takeDiracSteer(sessionID, payload.SteeringMessageID)
+		if steer == nil {
+			return
+		}
+		report := steer.resolution
+		report.Outcome = agent.SteerOutcomeDropped
+		a.RetainSteerWrite("record Dirac steer outcome", a.Sink().CaptureSteerResolution(report))
 	}
 }
 
-func (a *Agent) handleDiracPromptEnded(error, bool) acp.PromptEnding {
-	a.resolvePendingDiracSteers(agent.SteerOutcomeDropped)
-	return acp.PromptEnding{}
+func (a *Agent) takeDiracSteer(sessionID, messageID string) *diracPendingSteer {
+	a.steers.mu.Lock()
+	defer a.steers.mu.Unlock()
+	steer := a.steers.byMessageID[messageID]
+	if steer != nil {
+		delete(a.steers.byMessageID, messageID)
+		if steer.sessionID != sessionID {
+			return nil
+		}
+		return steer
+	}
+	return a.popUnassignedDiracSteerLocked(sessionID)
 }
 
 func (a *Agent) resolvePendingDiracSteers(outcome agent.SteerOutcome) {
 	a.steers.mu.Lock()
 	pending := a.steers.unassigned
 	a.steers.unassigned = nil
-	for _, steer := range a.steers.byMessageID {
-		pending = append(pending, steer)
-	}
+	byID := a.steers.byMessageID
 	a.steers.byMessageID = nil
 	a.steers.mu.Unlock()
 
+	for _, id := range slices.Sorted(maps.Keys(byID)) {
+		pending = append(pending, byID[id])
+	}
 	for _, steer := range pending {
 		report := steer.resolution
 		report.Outcome = outcome
-		a.retainDiracSteerWrite(a.Sink().CaptureSteerResolution(report))
-	}
-}
-
-func (a *Agent) retainDiracSteerWrite(write func() error) {
-	publish, err := agent.ReserveTranscriptSequence(a.Sink(), "record Dirac steer outcome", func(agent.TranscriptSequence) error {
-		return write()
-	})
-	if err == nil {
-		err = publish()
-	}
-	if err != nil && !agent.OutputRetained(err) {
-		slog.Error("record Dirac steer outcome", "agent_id", a.AgentID(), "error", err)
+		a.RetainSteerWrite("record Dirac steer outcome", a.Sink().CaptureSteerResolution(report))
 	}
 }

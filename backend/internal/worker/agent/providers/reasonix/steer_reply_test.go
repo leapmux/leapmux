@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -116,7 +117,7 @@ func TestReasonixSteerReceiptAndJournalReconciliation(t *testing.T) {
 
 	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
 	require.NotNil(t, reconcile)
-	require.NoError(t, reconcile())
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
 
 	turns := sink.NativeReplyTurns()
 	require.Len(t, turns, 1)
@@ -169,7 +170,7 @@ func TestReasonixUnappliedSteerRetiresAsUnproved(t *testing.T) {
 
 	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
 	require.NotNil(t, reconcile)
-	require.NoError(t, reconcile())
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
 
 	assert.Empty(t, sink.NativeReplyTurns())
 	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
@@ -223,7 +224,7 @@ func TestReasonixSteerTracksWhenTranscriptDoesNotExistYet(t *testing.T) {
 
 	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
 	require.NotNil(t, reconcile)
-	require.NoError(t, reconcile())
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
 	require.Len(t, sink.NativeReplyTurns(), 1)
 	assert.Equal(t, keyAfter, sink.NativeReplyTurns()[0].Items[0].MessageKey)
 }
@@ -394,7 +395,7 @@ func TestReasonixV4FramedStoreSteerAndQueuedFollowupReconciliation(t *testing.T)
 
 	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
 	require.NotNil(t, reconcile)
-	require.NoError(t, reconcile())
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
 
 	turns := sink.NativeReplyTurns()
 	require.Len(t, turns, 2)
@@ -439,13 +440,14 @@ func TestReasonixSteerCapturesFinalTextFlushedAfterCaptureReplyReconciliation(t 
 	})
 	require.NoError(t, err)
 
-	// ACP captures reply reconciliation in captureRootSnapshotLocked BEFORE
-	// finishRootSnapshot persists the turn's final buffered assistant text.
+	// ACP allocates the final assistant text key in captureRootSnapshotLocked
+	// BEFORE calling CaptureReplyReconciliation, and prepares/persists the text
+	// BEFORE running the queued reconciliation callback.
+	keyAfter := a.reasonixAssistantTextKey("reasonix:reply")
+	require.NotEmpty(t, keyAfter)
 	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
 	require.NotNil(t, reconcile)
 
-	keyAfter := a.reasonixAssistantTextKey("reasonix:reply")
-	require.NotEmpty(t, keyAfter, "final buffered text flushed after capture must still get a tracked key")
 	rawAfter, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, "Included the changelog summary.", agent.MessageCompletionComplete)
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
@@ -461,7 +463,7 @@ func TestReasonixSteerCapturesFinalTextFlushedAfterCaptureReplyReconciliation(t 
 		{"id": "m-3", "role": "assistant", "content": "Included the changelog summary."},
 	}, false)
 
-	require.NoError(t, reconcile())
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
 	turns := sink.NativeReplyTurns()
 	require.Len(t, turns, 1)
 	require.Len(t, turns[0].Items, 1)
@@ -522,9 +524,6 @@ func TestReasonixLegacyReplaceAppendEventsJSONLSteerReconciliation(t *testing.T)
 	})
 	require.NoError(t, err)
 
-	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
-	require.NotNil(t, reconcile)
-
 	keyBefore := a.reasonixAssistantTextKey("reasonix:reply")
 	rawBefore, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, "Before steer.", agent.MessageCompletionComplete)
 	require.NoError(t, err)
@@ -536,6 +535,8 @@ func TestReasonixLegacyReplaceAppendEventsJSONLSteerReconciliation(t *testing.T)
 	a.reasonixAssistantTextPrepared("reasonix:reply", keyBefore, "Before steer.")
 
 	keyAfter := a.reasonixAssistantTextKey("reasonix:reply")
+	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
+	require.NotNil(t, reconcile)
 	rawAfter, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, "After steer.", agent.MessageCompletionComplete)
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
@@ -566,7 +567,7 @@ func TestReasonixLegacyReplaceAppendEventsJSONLSteerReconciliation(t *testing.T)
 		},
 	})
 
-	require.NoError(t, reconcile())
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
 	turns := sink.NativeReplyTurns()
 	require.Len(t, turns, 1)
 	require.Len(t, turns[0].Items, 1)
@@ -584,4 +585,345 @@ func TestExtractReasonixSteerTextStripsLeadingWorkspaceAndLanguageBlocks(t *test
 
 	_, ok = extractReasonixSteerText("hey model "+reasonixMidTurnSteerPrefix+"\nnot a steer", "")
 	assert.False(t, ok)
+}
+
+func TestReasonixPrefixDivergenceRetiresUnprovedInsteadOfMisSlicing(t *testing.T) {
+	t.Parallel()
+	homeDir := t.TempDir()
+	const sessionID = "reasonix-prefix-drift"
+	writeReasonixEventsJSONL(t, homeDir, sessionID, []map[string]any{
+		{"id": "m-1", "role": "user", "origin": "user", "content": "Original first prompt."},
+		{"id": "m-2", "role": "assistant", "content": "Original first reply."},
+	})
+
+	a, _ := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent { return &Agent{} },
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(method string) agenttest.RPCReply {
+			if method == reasonixSteerMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"itemId":"item-drift","disposition":"steer_accepted"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		},
+	)
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest(sessionID)
+	a.SetSteerMethodForTest(reasonixSteerMethod)
+	a.SetPromptActiveForTest(true)
+	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
+
+	receipt, err := a.SteerInput(agent.SteerRequest{InputID: "q-drift", Content: "Steer text."})
+	require.NoError(t, err)
+
+	keyAfter := a.reasonixAssistantTextKey("reasonix:reply")
+	rawAfter, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, "After steer.", agent.MessageCompletionComplete)
+	require.NoError(t, err)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+		Original: rawAfter, AgentSessionID: sessionID, IdempotencyKey: keyAfter,
+	}, agent.SpanInfo{}))
+	a.reasonixAssistantTextPrepared("reasonix:reply", keyAfter, "After steer.")
+
+	// Simulate history compaction rewriting prefix entries [0..1] while total length > cursor.
+	writeReasonixEventsJSONL(t, homeDir, sessionID, []map[string]any{
+		{"id": "summary-1", "role": "assistant", "content": "Compacted summary."},
+		{"id": "m-other", "role": "user", "origin": "user", "content": "Different prompt."},
+		{"id": "m-3", "role": "user", "origin": "user", "content": reasonixMidTurnSteerPrefix + "\nSteer text.", "raw_content": "Steer text."},
+		{"id": "m-4", "role": "assistant", "content": "After steer."},
+	})
+
+	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
+	require.NotNil(t, reconcile)
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
+
+	assert.Empty(t, sink.NativeReplyTurns(), "rewritten prefix before cursor must not prove steer attribution")
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, sink.NativeReplyRetirements()[receipt])
+}
+
+func TestReasonixUnmatchedOrdinaryUserMessageStopsEarlierSteerAttribution(t *testing.T) {
+	t.Parallel()
+	homeDir := t.TempDir()
+	const sessionID = "reasonix-ordinary-barrier"
+	writeReasonixEventsJSONL(t, homeDir, sessionID, []map[string]any{
+		{"id": "m-1", "role": "user", "origin": "user", "content": "Initial."},
+	})
+
+	a, _ := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent { return &Agent{} },
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(method string) agenttest.RPCReply {
+			if method == reasonixSteerMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"itemId":"item-barrier","disposition":"steer_accepted"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		},
+	)
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest(sessionID)
+	a.SetSteerMethodForTest(reasonixSteerMethod)
+	a.SetPromptActiveForTest(true)
+	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
+
+	_, err := a.SteerInput(agent.SteerRequest{InputID: "q-barrier", Content: "Steer one."})
+	require.NoError(t, err)
+
+	persist := func(text string) string {
+		key := a.reasonixAssistantTextKey("reasonix:reply")
+		raw, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, text, agent.MessageCompletionComplete)
+		require.NoError(t, err)
+		require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+			Original: raw, AgentSessionID: sessionID, IdempotencyKey: key,
+		}, agent.SpanInfo{}))
+		a.reasonixAssistantTextPrepared("reasonix:reply", key, text)
+		return key
+	}
+	keySteer := persist("Reply to steer.")
+	_ = persist("Reply to later unmatched user.")
+
+	writeReasonixEventsJSONL(t, homeDir, sessionID, []map[string]any{
+		{"id": "m-1", "role": "user", "origin": "user", "content": "Initial."},
+		{"id": "m-2", "role": "user", "origin": "user", "content": reasonixMidTurnSteerPrefix + "\nSteer one.", "raw_content": "Steer one."},
+		{"id": "m-3", "role": "assistant", "content": "Reply to steer."},
+		{"id": "m-4", "role": "user", "origin": "user", "content": "Unmatched later ordinary user turn."},
+		{"id": "m-5", "role": "assistant", "content": "Reply to later unmatched user."},
+	})
+
+	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
+	require.NotNil(t, reconcile)
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
+
+	turns := sink.NativeReplyTurns()
+	require.Len(t, turns, 1)
+	require.Len(t, turns[0].Items, 1, "steer must not claim assistant replies after an unmatched ordinary user message")
+	assert.Equal(t, keySteer, turns[0].Items[0].MessageKey)
+}
+
+func TestReasonixMatchAnswersAllowsWhitespaceBeyondSixtyFourBytes(t *testing.T) {
+	t.Parallel()
+	assistants := []reasonixJournalAssistant{{index: 1, id: "m-1", text: "Hello world"}}
+	answers := []reasonixACPAnswer{
+		{key: "k1", text: "Hello "},
+		{key: "k2", text: "world" + strings.Repeat(" ", 80)},
+	}
+	got := matchReasonixAnswersToJournal(assistants, answers)
+	assert.Equal(t, [][]string{{"k1", "k2"}}, got)
+}
+
+func TestReasonixV4RetractIgnoresEmptyIDs(t *testing.T) {
+	t.Parallel()
+	messages := []reasonixJournalMessage{
+		{ID: "", Role: "user", Content: "keep id-less"},
+		{ID: "m-1", Role: "assistant", Content: "remove me"},
+	}
+	applyReasonixSessionEvent(&messages, "message/retract", []byte(`{"messageIds":["","m-1"]}`))
+	require.Len(t, messages, 1)
+	assert.Equal(t, "keep id-less", messages[0].Content)
+}
+
+func TestReasonixRetiredTurnSkipsQueuedReconciliation(t *testing.T) {
+	t.Parallel()
+	homeDir := t.TempDir()
+	const sessionID = "reasonix-no-double-retire"
+	writeReasonixEventsJSONL(t, homeDir, sessionID, []map[string]any{
+		{"id": "m-1", "role": "user", "origin": "user", "content": "Initial."},
+	})
+	a, _ := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent { return &Agent{} },
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(method string) agenttest.RPCReply {
+			if method == reasonixSteerMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"itemId":"item-once","disposition":"steer_accepted"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		},
+	)
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest(sessionID)
+	a.SetSteerMethodForTest(reasonixSteerMethod)
+	a.SetPromptActiveForTest(true)
+	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
+
+	_, err := a.SteerInput(agent.SteerRequest{InputID: "q-once", Content: "Steer once."})
+	require.NoError(t, err)
+	keyAfter := a.reasonixAssistantTextKey("reasonix:reply")
+	rawAfter, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, "After.", agent.MessageCompletionComplete)
+	require.NoError(t, err)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+		Original: rawAfter, AgentSessionID: sessionID, IdempotencyKey: keyAfter,
+	}, agent.SpanInfo{}))
+	a.reasonixAssistantTextPrepared("reasonix:reply", keyAfter, "After.")
+	writeReasonixEventsJSONL(t, homeDir, sessionID, []map[string]any{
+		{"id": "m-1", "role": "user", "origin": "user", "content": "Initial."},
+		{"id": "m-2", "role": "user", "origin": "user", "content": reasonixMidTurnSteerPrefix + "\nSteer once.", "raw_content": "Steer once."},
+		{"id": "m-3", "role": "assistant", "content": "After."},
+	})
+
+	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
+	require.NotNil(t, reconcile)
+	// Context clear retires the turn before the queued reconciliation runs.
+	a.retireReasonixSteers(agent.NewProviderServices(sink))
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
+
+	assert.Empty(t, sink.NativeReplyTurns(), "queued reconciliation must not publish a turn already retired by ClearProviderState")
+}
+
+func TestReasonixCapturingTurnDoesNotAttributeNextTurnText(t *testing.T) {
+	t.Parallel()
+	homeDir := t.TempDir()
+	const sessionID = "reasonix-capture-isolation"
+	writeReasonixEventsJSONL(t, homeDir, sessionID, nil)
+
+	a, _ := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent { return &Agent{} },
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(method string) agenttest.RPCReply {
+			if method == reasonixSteerMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"itemId":"item-turn1","disposition":"steer_accepted"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		},
+	)
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest(sessionID)
+	a.SetSteerMethodForTest(reasonixSteerMethod)
+	a.SetPromptActiveForTest(true)
+	a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
+
+	_, err := a.SteerInput(agent.SteerRequest{InputID: "q-turn1", Content: "Steer turn 1."})
+	require.NoError(t, err)
+	reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
+	require.NotNil(t, reconcile)
+
+	// CaptureReplyReconciliation immediately detaches Turn 1's active steer
+	// state because ACP pre-allocates the final assistant text key first.
+	assert.Empty(t, a.reasonixAssistantTextKey("reasonix:reply"), "Turn 2 text must not be attributed to Turn 1 after capture")
+	require.NoError(t, reconcile(agent.MessageCompletionComplete, false))
+}
+
+func TestReasonixInterruptedOrErroredTurnDoesNotPublishCompleted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		completion  agent.MessageCompletion
+		discard     bool
+		wantOutcome leapmuxv1.AgentInputTurnOutcome
+	}{
+		{"interrupted", agent.MessageCompletionInterrupted, false, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED},
+		{"errored", agent.MessageCompletionError, false, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED},
+		{"discarded", agent.MessageCompletionComplete, true, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			homeDir := t.TempDir()
+			const sessionID = "reasonix-non-complete"
+			writeReasonixEventsJSONL(t, homeDir, sessionID, nil)
+
+			a, _ := acptest.NewAgentForRPCWithResponder(t,
+				func() *Agent { return &Agent{} },
+				func(a *Agent) *acp.Base { return &a.Base },
+				func(method string) agenttest.RPCReply {
+					if method == reasonixSteerMethod {
+						return agenttest.RPCReply{Result: json.RawMessage(`{"itemId":"item-nc","disposition":"steer_accepted"}`)}
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				},
+			)
+			sink := &agenttest.Sink{}
+			a.SetSinkForTest(agent.NewProviderServices(sink))
+			a.SetSessionIDForTest(sessionID)
+			a.SetSteerMethodForTest(reasonixSteerMethod)
+			a.SetPromptActiveForTest(true)
+			a.storeQuery = agent.StoredSessionQuery{HomeDir: homeDir}
+
+			receipt, err := a.SteerInput(agent.SteerRequest{InputID: "q-nc", Content: "Steer."})
+			require.NoError(t, err)
+			key := a.reasonixAssistantTextKey("reasonix:reply")
+			raw, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, "Pre-tool text.", agent.MessageCompletionComplete)
+			require.NoError(t, err)
+			require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+				Original: raw, AgentSessionID: sessionID, IdempotencyKey: key,
+			}, agent.SpanInfo{}))
+			a.reasonixAssistantTextPrepared("reasonix:reply", key, "Pre-tool text.")
+			writeReasonixEventsJSONL(t, homeDir, sessionID, []map[string]any{
+				{"id": "m-1", "role": "user", "origin": "user", "content": reasonixMidTurnSteerPrefix + "\nSteer.", "raw_content": "Steer."},
+				{"id": "m-2", "role": "assistant", "content": "Pre-tool text."},
+			})
+
+			reconcile := a.captureReasonixSteerCompletion(agent.NewProviderServices(sink))
+			require.NotNil(t, reconcile)
+			require.NoError(t, reconcile(tc.completion, tc.discard))
+
+			assert.Empty(t, sink.NativeReplyTurns(), "non-complete or discarded turn must not publish COMPLETED")
+			assert.Equal(t, tc.wantOutcome, sink.NativeReplyRetirements()[receipt])
+		})
+	}
+}
+
+func TestReasonixSteerAdmitRejectsSessionMismatch(t *testing.T) {
+	t.Parallel()
+	var replies reasonixSteerReplies
+	require.True(t, replies.admit(reasonixSteerInput{receipt: agent.NativeInputReceipt{SessionID: "s1", InputID: "i1"}}, 0, reasonixMessagesDigest(nil)))
+	assert.False(t, replies.admit(reasonixSteerInput{receipt: agent.NativeInputReceipt{SessionID: "s2", InputID: "i2"}}, 0, reasonixMessagesDigest(nil)))
+}
+
+func writeRawReasonixEventLines(t *testing.T, lines []map[string]any) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "session.events.jsonl")
+	var out []byte
+	for _, line := range lines {
+		raw, err := json.Marshal(line)
+		require.NoError(t, err)
+		out = append(out, raw...)
+		out = append(out, '\n')
+	}
+	require.NoError(t, os.WriteFile(path, out, 0o600))
+	return path
+}
+
+func TestReasonixEventsBranchMessagesKeepsFirstDuplicateMessageID(t *testing.T) {
+	t.Parallel()
+	path := writeRawReasonixEventLines(t, []map[string]any{
+		{"schema_version": 2, "type": "message", "id": "m-1", "parent": "", "head": "main", "msgs": []map[string]any{{"id": "m-1", "role": "assistant", "content": "first"}}},
+		{"schema_version": 2, "type": "message", "id": "m-1", "parent": "", "head": "main", "msgs": []map[string]any{{"id": "m-1", "role": "assistant", "content": "second"}}},
+	})
+	msgs, err := readReasonixEventsBranchMessages(t.Context(), path)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "first", msgs[0].Content)
+}
+
+func TestReasonixEventsBranchMessagesRedactionOverridesLaterPatch(t *testing.T) {
+	t.Parallel()
+	path := writeRawReasonixEventLines(t, []map[string]any{
+		{"schema_version": 2, "type": "message", "id": "m-1", "parent": "", "head": "main", "msgs": []map[string]any{{"id": "m-1", "role": "assistant", "content": "original"}}},
+		{"schema_version": 2, "type": "redact", "targets": map[string]any{"m-1": []map[string]any{{"id": "m-1", "role": "assistant", "content": "redacted"}}}},
+		{"schema_version": 2, "type": "patch", "target": "m-1", "msgs": []map[string]any{{"id": "m-1", "role": "assistant", "content": "patched"}}},
+	})
+	msgs, err := readReasonixEventsBranchMessages(t.Context(), path)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "redacted", msgs[0].Content)
+}
+
+func TestReasonixEventsBranchMessagesRejectsCycle(t *testing.T) {
+	t.Parallel()
+	path := writeRawReasonixEventLines(t, []map[string]any{
+		{"schema_version": 2, "type": "message", "id": "m-1", "parent": "m-2", "head": "main", "msgs": []map[string]any{{"id": "m-1", "role": "user", "content": "a"}}},
+		{"schema_version": 2, "type": "message", "id": "m-2", "parent": "m-1", "head": "main", "msgs": []map[string]any{{"id": "m-2", "role": "assistant", "content": "b"}}},
+	})
+	_, err := readReasonixEventsBranchMessages(t.Context(), path)
+	require.Error(t, err)
+}
+
+func TestReasonixEventsBranchMessagesRejectsMixedSchemas(t *testing.T) {
+	t.Parallel()
+	path := writeRawReasonixEventLines(t, []map[string]any{
+		{"schema_version": 1, "type": "replace", "messages": []map[string]any{{"role": "user", "content": "linear"}}},
+		{"schema_version": 2, "type": "message", "id": "m-1", "parent": "", "head": "main", "msgs": []map[string]any{{"id": "m-1", "role": "assistant", "content": "dag"}}},
+	})
+	_, err := readReasonixEventsBranchMessages(t.Context(), path)
+	require.Error(t, err)
 }

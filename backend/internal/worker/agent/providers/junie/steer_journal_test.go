@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,11 +21,11 @@ func TestJunieSteerAdmissionUsesOneFreshJournalRecord(t *testing.T) {
 		{receipt: agent.NativeInputReceipt{InputID: "leapmux-first"}, text: "Check the new shipment."},
 		{receipt: agent.NativeInputReceipt{InputID: "leapmux-second"}, text: "Check the new shipment."},
 	}
-	matched, ok := readJunieSteerAdmissions(junieCursor([]byte(baseline)), []byte(withBoth), inputs)
+	matched, ok := readJunieSteerAdmissions(sessionstore.NewJournalCursor([]byte(baseline)), []byte(withBoth), inputs)
 	require.True(t, ok)
 	assert.Equal(t, inputs[0].receipt, matched["first"])
 	assert.Equal(t, inputs[1].receipt, matched["second"])
-	_, ok = readJunieSteerAdmissions(junieCursor([]byte(baseline)), []byte(withFirst), inputs)
+	_, ok = readJunieSteerAdmissions(sessionstore.NewJournalCursor([]byte(baseline)), []byte(withFirst), inputs)
 	assert.False(t, ok, "an acknowledged batch can still be missing an append")
 
 	for name, journal := range map[string]string{
@@ -36,7 +37,7 @@ func TestJunieSteerAdmissionUsesOneFreshJournalRecord(t *testing.T) {
 		"ordinary input": strings.Replace(withFirst, "RealtimeFollowUpAttachment", "ModelForLaunchAttachment", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, ok := readJunieSteerAdmissions(junieCursor([]byte(baseline)), []byte(journal), inputs[:1])
+			_, ok := readJunieSteerAdmissions(sessionstore.NewJournalCursor([]byte(baseline)), []byte(journal), inputs[:1])
 			assert.False(t, ok)
 		})
 	}
@@ -48,7 +49,7 @@ func TestJunieTaskReplyRequiresTheCompletedCurrentTask(t *testing.T) {
 	const task = `{"kind":"TaskStartedEvent","taskId":"task-261123-060032-ae58"}` + "\n"
 	const commit = `{"kind":"UserMessagesCommittedToHistory","userMessageIds":["first","second"]}` + "\n"
 	const result = `{"kind":"SessionA2uxEvent","taskId":"task-261123-060032-ae58","event":{"state":"COMPLETED","agentEvent":{"kind":"ResultBlockUpdatedEvent","agent":{"kind":"MainAgent","id":"main"},"stepId":"341b2f54-9073-44f4-a776-3fb86f2200ef","cancelled":false,"result":"The shipment is ready."}}}` + "\n"
-	cursor := junieCursor([]byte(baseline))
+	cursor := sessionstore.NewJournalCursor([]byte(baseline))
 	journal := baseline + task + commit + result
 	replies, ok := readJunieTaskReplies(cursor, []byte(journal))
 	require.True(t, ok)
@@ -74,4 +75,28 @@ func TestJunieTaskReplyRequiresTheCompletedCurrentTask(t *testing.T) {
 			assert.False(t, ok && matchJunieAnswers(replies, []junieACPAnswer{{text: "The shipment is ready."}}))
 		})
 	}
+}
+
+func TestJunieJournalSkipsUnrelatedEventsWithCollidingShapes(t *testing.T) {
+	t.Parallel()
+	const baseline = `{"kind":"TaskStartedEvent","taskId":"task-261123-060030-ah1k"}` + "\n"
+	// An unrelated event mentioning target kind names with an incompatible "event" or "prompt" type.
+	const colliding = `{"kind":"LogEvent","prompt":["UserPromptEvent","TaskStartedEvent","ResultBlockUpdatedEvent"],"event":"not-an-object"}` + "\n"
+	const first = `{"kind":"UserPromptEvent","requestId":"first","prompt":"Check the new shipment.","customAttachments":[{"kind":"RealtimeFollowUpAttachment"}]}` + "\n"
+	const task = `{"kind":"TaskStartedEvent","taskId":"task-261123-060032-ae58"}` + "\n"
+	const commit = `{"kind":"UserMessagesCommittedToHistory","userMessageIds":["first"]}` + "\n"
+	const result = `{"kind":"SessionA2uxEvent","taskId":"task-261123-060032-ae58","event":{"state":"COMPLETED","agentEvent":{"kind":"ResultBlockUpdatedEvent","agent":{"kind":"MainAgent","id":"main"},"stepId":"341b2f54-9073-44f4-a776-3fb86f2200ef","cancelled":false,"result":"Done."}}}` + "\n"
+
+	cursor := sessionstore.NewJournalCursor([]byte(baseline))
+	journal := []byte(baseline + colliding + first + task + commit + result)
+	inputs := []junieSteerInput{{receipt: agent.NativeInputReceipt{InputID: "leapmux-first"}, text: "Check the new shipment."}}
+
+	matched, ok := readJunieSteerAdmissions(cursor, journal, inputs)
+	require.True(t, ok, "unrelated event with colliding field shape must not abort admission scan")
+	assert.Equal(t, inputs[0].receipt, matched["first"])
+
+	replies, ok := readJunieTaskReplies(cursor, journal)
+	require.True(t, ok, "unrelated event with colliding field shape must not abort task reply scan")
+	require.Len(t, replies, 1)
+	assert.Equal(t, "Done.", replies[0].text)
 }

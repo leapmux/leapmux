@@ -24,14 +24,6 @@ func copilotPermissionFrame(t *testing.T, request any) []byte {
 	return copilotStoredFrame(t, contracts.CopilotEventPermissionRequested, map[string]any{"requestId": "native-1", "permissionRequest": request})
 }
 
-func copilotOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
-	var ids []string
-	for _, option := range prompt.GetPermission().GetOptions() {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 // copilotTestSession is the session of each stored frame (copilotStoredFrame).
 const copilotTestSession = "session-1"
 
@@ -267,7 +259,7 @@ func TestCopilotReadControlRequest_OffersTheSingleApprovalAloneWhereNoRuleIsExpr
 		"not an object",
 	} {
 		got := agenttest.ControlPromptOf(copilotPlugin(t), copilotPermissionFrame(t, request))
-		assert.Equal(t, []string{"once", "reject"}, copilotOptionIDs(got), "%v", request)
+		assert.Equal(t, []string{"once", "reject"}, agenttest.PromptPermissionOptionIDs(got), "%v", request)
 	}
 }
 

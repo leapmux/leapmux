@@ -47,7 +47,7 @@ func (kiroProvider) Classify(content json.RawMessage) agent.NotificationClassifi
 	if json.Unmarshal(content, &update) != nil || update.SessionUpdate != contracts.ACPUpdateSessionInfoUpdate {
 		return agent.NotificationClassification{}
 	}
-	kind := fieldString(kiroFields(update.Meta[contracts.KiroMetaNamespace]), contracts.KiroMetaKind)
+	kind := providerkit.ObjectString(providerkit.RawFields(update.Meta[contracts.KiroMetaNamespace]), contracts.KiroMetaKind)
 	if kind != contracts.KiroKindSummarizationCompleted && kind != contracts.KiroKindSummarizationFailed {
 		return agent.NotificationClassification{}
 	}

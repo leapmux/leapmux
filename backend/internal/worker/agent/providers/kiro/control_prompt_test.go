@@ -44,18 +44,6 @@ const kiroQuestionPayload = `{"jsonrpc":"2.0","id":4,"method":"_kiro/userInput",
 	{"title":"Postgres","description":"pg","recommended":true,"subOptionsLabel":"Extras","subOptions":[{"title":"PostGIS","description":"geo"},{"title":"pgvector"}]},
 	{"title":"SQLite","recommended":false}]}}`
 
-func kiroAnswer(custom string, selected ...string) *leapmuxv1.QuestionAnswer {
-	return &leapmuxv1.QuestionAnswer{Selected: selected, CustomText: custom}
-}
-
-func kiroOptionIDs(options []*leapmuxv1.PermissionOption) []string {
-	ids := make([]string, 0, len(options))
-	for _, option := range options {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 func kiroValue(value string) *string { return &value }
 
 func kiroOption(id string, kind leapmuxv1.PermissionOptionKind, name string, scope leapmuxv1.PermissionScope) *leapmuxv1.PermissionOption {
@@ -100,7 +88,7 @@ func TestReadControlRequest_KiroAddsTheWiderScopesAfterEachOfItsOwnAlwaysOptions
 func TestReadControlRequest_KiroLeavesTheWorkspaceScopeOutWithNoWorkspaceRoot(t *testing.T) {
 	for _, kiroMeta := range []string{`null`, `{}`, `{"consent":{}}`, `{"consent":{"workspaceRoot":"  "}}`, `{"consent":"/w"}`, `{"consent":{"workspaceRoot":7}}`} {
 		permission := agenttest.ControlPromptOf(kiroProvider{}, []byte(kiroPermissionWith(kiroAlwaysOptions, kiroMeta))).GetPermission()
-		assert.Equal(t, []string{"accept", "always-accept", "always-accept-user", "reject", "always-reject", "always-reject-user"}, kiroOptionIDs(permission.GetOptions()), kiroMeta)
+		assert.Equal(t, []string{"accept", "always-accept", "always-accept-user", "reject", "always-reject", "always-reject-user"}, agenttest.PermissionOptionIDs(permission.GetOptions()), kiroMeta)
 	}
 }
 
@@ -112,7 +100,7 @@ func TestReadControlRequest_KiroAddsNothingForItsIDUnderAnotherKind(t *testing.T
 	assert.Len(t, permission.GetOptions(), 2)
 
 	permission = agenttest.ControlPromptOf(kiroProvider{}, []byte(kiroPermissionWith(`[{"optionId":"accept","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Deny","kind":"reject_once"}]`, `{"consent":{"workspaceRoot":"/w"}}`))).GetPermission()
-	assert.Equal(t, []string{"accept", "reject"}, kiroOptionIDs(permission.GetOptions()), "a request with no always option keeps its options")
+	assert.Equal(t, []string{"accept", "reject"}, agenttest.PermissionOptionIDs(permission.GetOptions()), "a request with no always option keeps its options")
 	assert.Empty(t, permission.GetOptions()[0].GetScope())
 }
 
@@ -128,7 +116,7 @@ func TestReadControlRequest_KiroStatesTheSessionScopeOfAnAlwaysDenyAlone(t *test
 // cancel, which the base reader adds, after the wider scopes.
 func TestReadControlRequest_KiroKeepsTheCancelOfARequestWithNoRejectOption(t *testing.T) {
 	permission := agenttest.ControlPromptOf(kiroProvider{}, []byte(kiroPermissionWith(`[{"optionId":"always-accept","kind":"allow_always"}]`, `{}`))).GetPermission()
-	assert.Equal(t, []string{"always-accept", "always-accept-user", acp.CancelOptionID}, kiroOptionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{"always-accept", "always-accept-user", acp.CancelOptionID}, agenttest.PermissionOptionIDs(permission.GetOptions()))
 }
 
 func TestReadControlRequest_KiroShellPermissionStatesItsCommandAndEveryScope(t *testing.T) {
@@ -136,7 +124,7 @@ func TestReadControlRequest_KiroShellPermissionStatesItsCommandAndEveryScope(t *
 	require.NotNil(t, permission)
 	assert.Equal(t, "echo v3-shell", permission.GetTitle())
 	assert.Equal(t, "echo v3-shell", permission.GetCommand(), "Kiro states the command in its own metadata")
-	assert.Contains(t, kiroOptionIDs(permission.GetOptions()), "always-accept-workspace")
+	assert.Contains(t, agenttest.PermissionOptionIDs(permission.GetOptions()), "always-accept-workspace")
 	assert.Empty(t, permission.GetReason())
 
 	// Kiro's request states the call as its title alone, and the command in its
@@ -146,7 +134,7 @@ func TestReadControlRequest_KiroShellPermissionStatesItsCommandAndEveryScope(t *
 		"_meta":{"kiro":{"toolId":"run_command","command":"`+command+`"}}}}`)).GetPermission()
 	assert.Equal(t, command, permission.GetCommand())
 	assert.Equal(t, command, permission.GetTitle())
-	assert.Equal(t, []string{acp.CancelOptionID}, kiroOptionIDs(permission.GetOptions()),
+	assert.Equal(t, []string{acp.CancelOptionID}, agenttest.PermissionOptionIDs(permission.GetOptions()),
 		"the protocol answers a call with no options only with the cancelled outcome")
 }
 
@@ -180,7 +168,7 @@ func TestReadControlRequest_KiroTurnReviewStatesTheFilesThatItHolds(t *testing.T
 		assert.Equal(t, bare, agenttest.ControlPromptOf(kiroProvider{}, []byte(kiroTurnApprovalPayload(kiroMeta))).GetPermission().GetReason(), kiroMeta)
 	}
 
-	// A turn review states no command, even when its metadata names one.
+	// A turn review states no command, even when its metadata specifies one.
 	permission = agenttest.ControlPromptOf(kiroProvider{}, []byte(kiroTurnApprovalPayload(`{"type":"turn_approval","command":"rm -rf /"}`))).GetPermission()
 	assert.Empty(t, permission.GetCommand())
 }
@@ -191,7 +179,7 @@ func TestReadControlRequest_KiroReadsAnUnknownRequestAsUnrecognized(t *testing.T
 	}
 	permission := agenttest.ControlPromptOf(kiroProvider{}, []byte(`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"},
 		"options":[{"optionId":"once","kind":"allow_once","name":"Allow once"},{"optionId":"reject","kind":"reject_once","name":"Reject"}]}}`)).GetPermission()
-	assert.Equal(t, []string{"once", "reject"}, kiroOptionIDs(permission.GetOptions()), "a request that states its options keeps them")
+	assert.Equal(t, []string{"once", "reject"}, agenttest.PermissionOptionIDs(permission.GetOptions()), "a request that states its options keeps them")
 }
 
 func TestReadControlRequest_KiroReadsItsOwnElicitationMethod(t *testing.T) {
@@ -271,21 +259,21 @@ func TestAnswerControlRequest_KiroQuestionStatesTheAnswerAsKiroWritesIt(t *testi
 		answers []*leapmuxv1.QuestionAnswer
 		want    string
 	}{
-		{name: "answers the title of a chosen option", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "SQLite")}, want: "SQLite"},
-		{name: "states the sub-options that the reader kept", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "Postgres"), kiroAnswer("", "PostGIS")}, want: "Postgres [pgvector]"},
-		{name: "states every sub-option of an unanswered list", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "Postgres")}, want: "Postgres [PostGIS, pgvector]"},
-		{name: "states every sub-option of an empty list", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "Postgres"), kiroAnswer("")}, want: "Postgres [PostGIS, pgvector]"},
-		{name: "states no sub-option when every one is left out", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "Postgres"), kiroAnswer("", "PostGIS", "pgvector")}, want: "Postgres []"},
-		{name: "reads no sub-option list of an option that is not chosen", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "SQLite"), kiroAnswer("", "PostGIS")}, want: "SQLite"},
-		{name: "answers the typed text of the main question", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer(" MySQL ")}, want: "MySQL"},
+		{name: "answers the title of a chosen option", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "SQLite")}, want: "SQLite"},
+		{name: "states the sub-options that the reader kept", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Postgres"), agenttest.QuestionAnswer("", "PostGIS")}, want: "Postgres [pgvector]"},
+		{name: "states every sub-option of an unanswered list", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Postgres")}, want: "Postgres [PostGIS, pgvector]"},
+		{name: "states every sub-option of an empty list", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Postgres"), agenttest.QuestionAnswer("")}, want: "Postgres [PostGIS, pgvector]"},
+		{name: "states no sub-option when every one is left out", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Postgres"), agenttest.QuestionAnswer("", "PostGIS", "pgvector")}, want: "Postgres []"},
+		{name: "reads no sub-option list of an option that is not chosen", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "SQLite"), agenttest.QuestionAnswer("", "PostGIS")}, want: "SQLite"},
+		{name: "answers the typed text of the main question", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer(" MySQL ")}, want: "MySQL"},
 		// A sub-option question is a multiple choice, which takes a selection
 		// AND typed text: the text is one more kept entry.
-		{name: "keeps two sub-options and the typed text", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "Postgres"), kiroAnswer(" TimescaleDB ")}, want: "Postgres [PostGIS, pgvector, TimescaleDB]"},
-		{name: "keeps the typed text beside a left-out sub-option", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "Postgres"), kiroAnswer("TimescaleDB", "PostGIS")}, want: "Postgres [pgvector, TimescaleDB]"},
-		{name: "keeps the typed text when every sub-option is left out", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "Postgres"), kiroAnswer("TimescaleDB", "PostGIS", "pgvector")}, want: "Postgres [TimescaleDB]"},
+		{name: "keeps two sub-options and the typed text", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Postgres"), agenttest.QuestionAnswer(" TimescaleDB ")}, want: "Postgres [PostGIS, pgvector, TimescaleDB]"},
+		{name: "keeps the typed text beside a left-out sub-option", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Postgres"), agenttest.QuestionAnswer("TimescaleDB", "PostGIS")}, want: "Postgres [pgvector, TimescaleDB]"},
+		{name: "keeps the typed text when every sub-option is left out", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "Postgres"), agenttest.QuestionAnswer("TimescaleDB", "PostGIS", "pgvector")}, want: "Postgres [TimescaleDB]"},
 		// A client saves the text to the question that shows, which can belong to
 		// an option that the reader did not choose; Kiro takes one answer.
-		{name: "lets typed text on another option's question win over the chosen option", answers: []*leapmuxv1.QuestionAnswer{kiroAnswer("", "SQLite"), kiroAnswer("Use MySQL instead")}, want: "Use MySQL instead"},
+		{name: "lets typed text on another option's question win over the chosen option", answers: []*leapmuxv1.QuestionAnswer{agenttest.QuestionAnswer("", "SQLite"), agenttest.QuestionAnswer("Use MySQL instead")}, want: "Use MySQL instead"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := agenttest.AnswerControl(kiroProvider{}, []byte(kiroQuestionPayload), "jsonrpc:4", agenttest.QuestionDecision(tc.answers...))
@@ -314,8 +302,8 @@ func TestAnswerControlRequest_KiroQuestionDismissesAQuestionWithNoAnswer(t *test
 	}
 	for name, decision := range map[string]*leapmuxv1.ControlDecision{
 		"nothing chosen or typed": agenttest.QuestionDecision(),
-		"only whitespace typed":   agenttest.QuestionDecision(kiroAnswer("  ")),
-		"typed on a later page":   agenttest.QuestionDecision(kiroAnswer("  "), kiroAnswer("Later page")),
+		"only whitespace typed":   agenttest.QuestionDecision(agenttest.QuestionAnswer("  ")),
+		"typed on a later page":   agenttest.QuestionDecision(agenttest.QuestionAnswer("  "), agenttest.QuestionAnswer("Later page")),
 	} {
 		_, err := agenttest.AnswerControl(kiroProvider{}, []byte(kiroQuestionPayload), "jsonrpc:4", decision)
 		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, name)
@@ -341,13 +329,13 @@ func TestAnswerControlRequest_KiroQuestionRefusesAnAnswerThatThePromptDoesNotOff
 	for name, decision := range map[string]*leapmuxv1.ControlDecision{
 		// The browser ignored a left-out value that the list does not hold; the
 		// neutral decision refuses it, as it refuses every unknown value.
-		"a left-out value that the list does not hold": agenttest.QuestionDecision(kiroAnswer("", "Postgres"), kiroAnswer("", "Not a sub-option")),
-		"two options for the one question":             agenttest.QuestionDecision(kiroAnswer("", "Postgres", "SQLite")),
+		"a left-out value that the list does not hold": agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Postgres"), agenttest.QuestionAnswer("", "Not a sub-option")),
+		"two options for the one question":             agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Postgres", "SQLite")),
 		// Kiro takes one answer, so the main question cannot be an option and
 		// typed text at once.
-		"an option and typed text for the one question": agenttest.QuestionDecision(kiroAnswer("MySQL", "SQLite")),
-		"the label rather than the value":               agenttest.QuestionDecision(kiroAnswer("", "Postgres (recommended)")),
-		"an answer for a question it does not ask":      agenttest.QuestionDecision(kiroAnswer(""), kiroAnswer(""), kiroAnswer("Unused")),
+		"an option and typed text for the one question": agenttest.QuestionDecision(agenttest.QuestionAnswer("MySQL", "SQLite")),
+		"the label rather than the value":               agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Postgres (recommended)")),
+		"an answer for a question it does not ask":      agenttest.QuestionDecision(agenttest.QuestionAnswer(""), agenttest.QuestionAnswer(""), agenttest.QuestionAnswer("Unused")),
 		"a decision of another kind":                    agenttest.PermissionDecision(contracts.ControlAnswerOptionAllow, ""),
 	} {
 		_, err := agenttest.AnswerControl(kiroProvider{}, []byte(kiroQuestionPayload), "jsonrpc:4", decision)

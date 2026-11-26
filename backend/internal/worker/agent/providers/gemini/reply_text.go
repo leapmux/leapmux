@@ -3,6 +3,7 @@ package gemini
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -21,11 +22,8 @@ var geminiReplyRecordTypes = []string{"gemini", "info", "warning", "error"}
 // is an ACP frame, whose text reaches the transcript only in an assembled
 // envelope.
 func (geminiProvider) ReplyText(message agent.MessageContent) (string, bool) {
-	if _, isTool := decodeFinishedGeminiTool(message.Original); isTool {
-		return "", false
-	}
-	var record map[string]json.RawMessage
-	if json.Unmarshal(message.Original, &record) != nil {
+	record, ok := providerkit.RawObject(message.Original)
+	if !ok || isFinishedGeminiToolRecord(record) {
 		return "", false
 	}
 	id, _ := providerkit.RawString(record["id"])
@@ -33,12 +31,22 @@ func (geminiProvider) ReplyText(message agent.MessageContent) (string, bool) {
 	if id == "" || !slices.Contains(geminiReplyRecordTypes, recordType) {
 		return "", false
 	}
-	var supplement map[string]json.RawMessage
-	_ = json.Unmarshal(message.Supplemental, &supplement)
+	supplement := providerkit.RawFields(message.Supplemental)
 	if part, _ := providerkit.RawString(supplement[contracts.GeminiSupplementMessagePart]); part != "" && part != contracts.GeminiMessagePartContent {
 		return "", false
 	}
 	return geminiContentText(record["content"])
+}
+
+func isFinishedGeminiToolRecord(record map[string]json.RawMessage) bool {
+	name, _ := providerkit.RawString(record["name"])
+	if name == "" {
+		return false
+	}
+	id, _ := providerkit.RawString(record["id"])
+	status, _ := providerkit.RawString(record["status"])
+	return strings.HasPrefix(id, name+"__") && len(id) > len(name)+2 &&
+		(status == "success" || status == "error")
 }
 
 // geminiContentText reads a record's content as the browser's
@@ -49,19 +57,19 @@ func geminiContentText(content json.RawMessage) (string, bool) {
 	if text, ok := providerkit.RawString(content); ok {
 		return text, true
 	}
-	var parts []json.RawMessage
-	if providerkit.RawKindOf(content) != providerkit.RawValue || json.Unmarshal(content, &parts) != nil {
+	parts, ok := providerkit.RawArray(content)
+	if !ok {
 		return "", false
 	}
-	var text string
+	var text strings.Builder
 	for _, raw := range parts {
-		var part map[string]json.RawMessage
-		if json.Unmarshal(raw, &part) != nil || providerkit.RawBool(part["thought"]) {
+		part, ok := providerkit.RawObject(raw)
+		if !ok || providerkit.RawBool(part["thought"]) {
 			continue
 		}
 		if value, ok := providerkit.RawString(part["text"]); ok {
-			text += value
+			text.WriteString(value)
 		}
 	}
-	return text, true
+	return text.String(), true
 }

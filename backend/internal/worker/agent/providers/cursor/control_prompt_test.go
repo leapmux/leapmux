@@ -171,7 +171,7 @@ func TestReadControlRequest_CursorReadsEveryOtherRequestThroughTheBase(t *testin
 	assert.Equal(t, "Run command", permission.GetTitle())
 	assert.Equal(t, command, permission.GetCommand())
 	assert.JSONEq(t, string(encodedInput), permission.GetInputJson())
-	assert.Equal(t, []string{acp.CancelOptionID}, cursorOptionIDs(permission.GetOptions()),
+	assert.Equal(t, []string{acp.CancelOptionID}, agenttest.PermissionOptionIDs(permission.GetOptions()),
 		"the protocol answers a call with no options only with the cancelled outcome")
 
 	elicitation := agenttest.ControlPromptOf(Registration().Plugin, []byte(`{"jsonrpc":"2.0","id":7,"method":"elicitation/create","params":{"mode":"form","message":"Sign in"}}`)).GetElicitation()
@@ -181,14 +181,6 @@ func TestReadControlRequest_CursorReadsEveryOtherRequestThroughTheBase(t *testin
 	for _, payload := range []string{`{"method":"cursor/update_todos","params":{}}`, `{"method":7}`, `not json`, `{}`} {
 		agenttest.RequireProto(t, agent.UnrecognizedControlPrompt(), agenttest.ControlPromptOf(Registration().Plugin, []byte(payload)), payload)
 	}
-}
-
-func cursorOptionIDs(options []*leapmuxv1.PermissionOption) []string {
-	ids := make([]string, 0, len(options))
-	for _, option := range options {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
 }
 
 // Approve sends the empty input that Cursor's plan button sends, even when the

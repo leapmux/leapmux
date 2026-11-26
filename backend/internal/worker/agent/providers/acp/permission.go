@@ -43,40 +43,41 @@ func (b *Base) PublishSessionControlRequest(line *providerkit.ParsedLine, cancel
 		b.refuseControlRequest(line, sessionID, cancelAnswer)
 		return
 	}
-	if line.Method == acpMethodSessionRequestPermission && b.hooks.ResolvePermissionSession != nil {
-		resolved, err := b.hooks.ResolvePermissionSession(sessionID, line)
+	needsTurn := cancelAnswer != nil || !b.hooks.AnswerlessControlsOutliveTurns
+	var sink agent.ControlServices = b.sink
+	owner := providerkit.ControlRequestOwner{SessionID: b.agentSessionOfControlRequest(sessionID)}
+	if b.hooks.ControlOwner != nil {
+		resolved, err := b.hooks.ControlOwner(sessionID, line, needsTurn)
 		if err != nil {
-			slog.Warn("resolve the native permission session", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
+			slog.Warn("resolve the control request owner", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
 			b.replyToRefusedControlRequest(line, cancelAnswer, err.Error())
 			return
 		}
-		if resolved != sessionID && !b.ServesSession(resolved) {
-			b.refuseControlRequest(line, resolved, cancelAnswer)
-			return
+		if resolved.SessionID != "" && resolved.SessionID != sessionID {
+			if !b.ServesSession(resolved.SessionID) {
+				b.refuseControlRequest(line, resolved.SessionID, cancelAnswer)
+				return
+			}
+			sessionID = resolved.SessionID
+			owner.SessionID = b.agentSessionOfControlRequest(sessionID)
 		}
-		sessionID = resolved
-	}
-	var sink agent.ControlServices = b.sink
-	owner := providerkit.ControlRequestOwner{SessionID: b.agentSessionOfControlRequest(sessionID)}
-	if line.Method == acpMethodSessionRequestPermission && sessionID != "" && !b.IsCurrentSession(sessionID) && b.hooks.ChildPermissionOwner != nil {
-		child, err := b.hooks.ChildPermissionOwner(sessionID)
-		if err != nil {
-			slog.Warn("resolve the child permission owner", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
-		}
-		if err != nil || child == nil {
+		if resolved.Refuse {
 			b.refuseControlRequest(line, sessionID, cancelAnswer)
 			return
 		}
-		sink = child
-		owner.SessionID = sessionID
+		if resolved.Sink != nil {
+			sink = resolved.Sink
+			if sessionID != "" {
+				owner.SessionID = sessionID
+			}
+		}
+		if needsTurn && resolved.TurnID != "" {
+			owner.TurnID = resolved.TurnID
+			owner.InputIDs = resolved.InputIDs
+		}
 	}
-	if cancelAnswer != nil || !b.hooks.AnswerlessControlsOutliveTurns {
-		if resolve := b.hooks.NativeControlReplyOwner; resolve != nil {
-			owner.TurnID, owner.InputIDs = resolve(owner.SessionID, line)
-		}
-		if owner.TurnID == "" {
-			owner.TurnID = b.controlRequestTurnID(sessionID, line)
-		}
+	if needsTurn && owner.TurnID == "" {
+		owner.TurnID = b.controlRequestTurnID(sessionID, line)
 	}
 	b.storeTextBeforeControlRequest(sessionID)
 	if b.hooks.ControlRequestObserver != nil {

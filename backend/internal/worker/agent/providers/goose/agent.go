@@ -44,7 +44,7 @@ type Agent struct {
 	// standalone "Resuming subagent <id>" notice and whose matching ACK has
 	// not been consumed yet.
 	pendingResumeAcks map[string]bool
-	steers            gooseSteerState
+	steers            acp.SteerEchoTracker
 }
 
 // This assertion makes a missing Agent method a compile error.

@@ -112,3 +112,32 @@ func TestQwenStoppedPromptDropsUndrainedTrackedSteerToQueue(t *testing.T) {
 	}, sink.SteerResolutions()[0])
 	assert.Empty(t, sink.Notifications(), "a tracked queue steer returns to the queue instead of being discarded")
 }
+
+func TestQwenAgentTurnEndDropsUndrainedTrackedSteer(t *testing.T) {
+	t.Parallel()
+	a, sink, requests := newQwenAgent(t, nil, nil)
+	require.True(t, a.BeginAgentTurn())
+
+	require.NoError(t, agenttest.SteerInput(a, agent.SteerRequest{
+		InputID:   "queue-steer-agent-turn",
+		AttemptID: "attempt-agent-turn",
+		Content:   "Follow up on agent turn.",
+	}))
+	a.EndAgentTurn(json.RawMessage(`{"method":"_qwencode/end_turn","params":{"sessionId":"qwen-session"}}`))
+
+	require.Len(t, sink.SteerResolutions(), 1)
+	assert.Equal(t, agent.SteerResolution{
+		InputID:   "queue-steer-agent-turn",
+		AttemptID: "attempt-agent-turn",
+		Outcome:   agent.SteerOutcomeDropped,
+	}, sink.SteerResolutions()[0])
+	assert.NotContains(t, rawLines(requests()), `"method":"session/prompt"`, "tracked steer must return to the queue, not bypass it as an untracked follow-up")
+}
+
+func TestQwenReadControlRequestChecksElicitationBeforeQuestionMeta(t *testing.T) {
+	t.Parallel()
+	payload := `{"jsonrpc":"2.0","id":5,"method":"elicitation/create","params":{"message":"Sign in","toolCall":{"_meta":{"qwenInteractionKind":"user_question"}}}}`
+	got := agenttest.ControlPromptOf(qwenProvider{}, []byte(payload))
+	require.NotNil(t, got.GetElicitation(), "elicitation/create must read as a form even when params carries toolCall._meta")
+	assert.Equal(t, "Sign in", got.GetElicitation().GetMessage())
+}

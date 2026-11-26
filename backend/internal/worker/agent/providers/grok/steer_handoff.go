@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 const grokInterjectionFallbackPrefix = "interject-fallback-"
@@ -16,7 +17,7 @@ const grokInterjectionFallbackPrefix = "interject-fallback-"
 // native prompt before it can verify the new prompt's journal input.
 type grokSteerHandoff struct {
 	sessionID, predecessorID, group string
-	baseline                        grokJournalBaseline
+	baseline                        sessionstore.JournalCursor
 	input                           grokSteerAdmission
 	done                            chan struct{}
 }
@@ -91,10 +92,12 @@ func (a *Agent) acceptGrokSteerSuccessor(sessionID, promptID, text string, agent
 	replies.takeHandoff()
 	if !replies.closed && replies.active == nil && agentInitiated && handoff.input.echoed &&
 		handoff.input.payload.text == text && isGrokInterjectionFallback(promptID) {
+		input := handoff.input
+		input.afterStream = 0
 		replies.active = &grokSteerReply{
 			sessionID: sessionID, promptID: promptID, turnID: promptID, group: handoff.group,
-			predecessorID: handoff.predecessorID, baseline: handoff.baseline,
-			inputs: []grokSteerAdmission{handoff.input},
+			predecessorID: handoff.predecessorID, agentInitiated: true, baseline: handoff.baseline,
+			inputs: []grokSteerAdmission{input},
 		}
 		replies.mu.Unlock()
 		return

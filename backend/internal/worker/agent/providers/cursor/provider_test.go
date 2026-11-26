@@ -171,3 +171,27 @@ func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
 }
+
+func TestResolveControlResponse_CursorCreatePlanRefusesInvalidNeutralEnvelope(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		payload  string
+		response string
+	}{
+		"unknown behavior": {
+			payload:  `{"jsonrpc":"2.0","id":7,"method":"cursor/create_plan","params":{}}`,
+			response: `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:7","response":{"behavior":"maybe"}}}`,
+		},
+		"missing request id": {
+			payload:  `{"jsonrpc":"2.0","method":"cursor/create_plan","params":{}}`,
+			response: `{"type":"control_response","response":{"subtype":"success","request_id":"jsonrpc:7","response":{"behavior":"allow"}}}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			res := agenttest.ResolveAnswerPastTheKeyCheck(cursorProvider{}, []byte(tc.payload), "jsonrpc:7", agentapi.ControlAnswer{Content: []byte(tc.response)})
+			assert.True(t, res.Withhold, "invalid neutral create_plan response must be withheld")
+			assert.Error(t, res.Refusal())
+		})
+	}
+}

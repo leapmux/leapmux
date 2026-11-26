@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
 const nativeAdmissionInterval = 20 * time.Millisecond
@@ -42,51 +43,45 @@ type kiloPromptPart struct {
 	Filename string  `json:"filename,omitempty"`
 }
 
-func kiloPreparedParts(params json.RawMessage, sessionID string) ([]kiloPromptPart, error) {
-	var request struct {
-		SessionID string `json:"sessionId"`
-		Prompt    []struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			Data     string `json:"data"`
-			MIME     string `json:"mimeType"`
-			Resource *struct {
-				URI  string  `json:"uri"`
-				Text *string `json:"text"`
-				Blob string  `json:"blob"`
-				MIME string  `json:"mimeType"`
-			} `json:"resource"`
-		} `json:"prompt"`
-	}
-	if err := json.Unmarshal(params, &request); err != nil {
-		return nil, err
-	}
-	if request.SessionID != sessionID || sessionID == "" {
+func kiloPreparedParts(prepared acp.PreparedPrompt, sessionID string) ([]kiloPromptPart, error) {
+	if prepared.SessionID != sessionID || sessionID == "" {
 		return nil, agent.ErrInputSessionChanged
 	}
 	var parts []kiloPromptPart
 	var text strings.Builder
-	for _, block := range request.Prompt {
-		switch block.Type {
+	for _, block := range prepared.Blocks {
+		blockType, _ := block["type"].(string)
+		switch blockType {
 		case "text":
-			text.WriteString(block.Text)
-			parts = append(parts, kiloPromptPart{Type: "text", Text: &block.Text})
+			blockText, _ := block["text"].(string)
+			text.WriteString(blockText)
+			parts = append(parts, kiloPromptPart{Type: "text", Text: &blockText})
 		case "image":
-			if block.Data == "" || block.MIME == "" {
+			data, _ := block["data"].(string)
+			mime, _ := block["mimeType"].(string)
+			if data == "" || mime == "" {
 				return nil, nil
 			}
-			parts = append(parts, kiloPromptPart{Type: "file", URL: "data:" + block.MIME + ";base64," + block.Data, MIME: block.MIME, Filename: "image"})
+			parts = append(parts, kiloPromptPart{Type: "file", URL: "data:" + mime + ";base64," + data, MIME: mime, Filename: "image"})
 		case "resource":
-			resource := block.Resource
-			if resource == nil || strings.HasPrefix(resource.URI, "file:") {
+			resource, ok := block["resource"].(map[string]any)
+			if !ok || resource == nil {
 				return nil, nil
 			}
-			if resource.Text != nil {
-				body := "[" + resource.URI + "]\n" + *resource.Text
+			uri, _ := resource["uri"].(string)
+			if strings.HasPrefix(uri, "file:") {
+				return nil, nil
+			}
+			if resText, hasText := resource["text"].(string); hasText {
+				body := "[" + uri + "]\n" + resText
 				text.WriteString(body)
 				parts = append(parts, kiloPromptPart{Type: "text", Text: &body})
-			} else if resource.Blob != "" && resource.MIME != "" {
-				parts = append(parts, kiloPromptPart{Type: "file", URL: "data:" + resource.MIME + ";base64," + resource.Blob, MIME: resource.MIME, Filename: "file"})
+			} else if blob, _ := resource["blob"].(string); blob != "" {
+				mime, _ := resource["mimeType"].(string)
+				if mime == "" {
+					return nil, nil
+				}
+				parts = append(parts, kiloPromptPart{Type: "file", URL: "data:" + mime + ";base64," + blob, MIME: mime, Filename: "file"})
 			} else {
 				return nil, nil
 			}
@@ -101,18 +96,18 @@ func kiloPreparedParts(params json.RawMessage, sessionID string) ([]kiloPromptPa
 	return parts, nil
 }
 
-func (a *Agent) prepareNativePrompt(receipt agent.NativeInputReceipt, params json.RawMessage) (func(func(json.RawMessage, error)) error, error) {
+func (a *Agent) prepareNativePrompt(receipt agent.NativeInputReceipt, prepared acp.PreparedPrompt) (func(func(json.RawMessage, error)) error, error) {
 	options := a.SettingsSnapshot().ConfirmedOptions()
 	return a.prepareNativePromptFor(kiloReplyTarget{
 		receipt: receipt, rootSessionID: receipt.SessionID, transcript: a.Sink(),
 		flush: func(ids map[string]bool) { a.FlushNativeReplyOutput(receipt.SessionID, ids) },
-	}, params, kiloPromptSettings{
+	}, prepared, kiloPromptSettings{
 		modelID: options[agent.OptionIDModel], primaryAgent: options[agent.OptionIDPrimaryAgent], variant: options[agent.OptionIDEffort],
 	})
 }
 
-func (a *Agent) prepareNativePromptFor(target kiloReplyTarget, params json.RawMessage, settings kiloPromptSettings) (func(func(json.RawMessage, error)) error, error) {
-	parts, err := kiloPreparedParts(params, target.receipt.SessionID)
+func (a *Agent) prepareNativePromptFor(target kiloReplyTarget, prepared acp.PreparedPrompt, settings kiloPromptSettings) (func(func(json.RawMessage, error)) error, error) {
+	parts, err := kiloPreparedParts(prepared, target.receipt.SessionID)
 	if err != nil || len(parts) == 0 {
 		return nil, err
 	}
@@ -160,11 +155,17 @@ func (a *Agent) submitNativePrompt(target kiloReplyTarget, messageID string, raw
 	defer cancel()
 	select {
 	case <-a.daemonReady:
+		if a.daemonFailed.Load() {
+			return errors.New("the Kilo daemon is unavailable")
+		}
 	case <-ctx.Done():
 		return fmt.Errorf("wait for the Kilo daemon: %w", ctx.Err())
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if a.CurrentSessionID() != target.rootSessionID || a.IsStopped() {
+		return agent.ErrInputSessionChanged
 	}
 	a.nativeReplies.add(messageID, receipt)
 	results := make(chan kiloPromptResult, 1)

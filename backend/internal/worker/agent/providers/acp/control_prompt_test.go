@@ -22,21 +22,13 @@ const fullPermission = `{"jsonrpc":"2.0","id":7,"method":"session/request_permis
 		{"optionId":"never","kind":"reject_always","name":"Never"}
 	]}}`
 
-func optionIDs(options []*leapmuxv1.PermissionOption) []string {
-	ids := make([]string, 0, len(options))
-	for _, option := range options {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 func TestReadControlRequest_ReadsTheToolCallAndTheOptionsOfAPermission(t *testing.T) {
 	permission := agenttest.ControlPromptOf(Provider{}, []byte(fullPermission)).GetPermission()
 	require.NotNil(t, permission)
 	assert.Equal(t, "Run", permission.GetTitle())
 	assert.JSONEq(t, `{"command":"ls -al"}`, permission.GetInputJson())
 	assert.Equal(t, "ls -al", permission.GetCommand(), "an execute call states its command")
-	assert.Equal(t, []string{"always", "once", "no", "never"}, optionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{"always", "once", "no", "never"}, agenttest.PermissionOptionIDs(permission.GetOptions()))
 	assert.Equal(t, []leapmuxv1.PermissionOptionKind{
 		leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS,
 		leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE,
@@ -55,7 +47,7 @@ func TestReadControlRequest_ReadsOptionsWithNoToolCall(t *testing.T) {
 	assert.Empty(t, permission.GetTitle())
 	assert.Empty(t, permission.GetCommand())
 	assert.Empty(t, permission.GetInputJson())
-	assert.Equal(t, []string{"once", "reject"}, optionIDs(permission.GetOptions()))
+	assert.Equal(t, []string{"once", "reject"}, agenttest.PermissionOptionIDs(permission.GetOptions()))
 }
 
 // wantCancelOption is LeapMux's cancel option, as a client reads it.
@@ -143,8 +135,8 @@ func TestReadControlRequest_MergesTheArgumentsOfTheToolCallRow(t *testing.T) {
 }
 
 func TestPermissionToolSpanID(t *testing.T) {
-	assert.Equal(t, "call-1", PermissionToolSpanID([]byte(fullPermission)))
-	assert.Empty(t, PermissionToolSpanID([]byte(`{"params":{"options":[]}}`)))
+	assert.Equal(t, "call-1", permissionToolSpanID([]byte(fullPermission)))
+	assert.Empty(t, permissionToolSpanID([]byte(`{"params":{"options":[]}}`)))
 }
 
 func TestReadControlRequest_AnElicitationIsAForm(t *testing.T) {
@@ -276,4 +268,16 @@ func TestAnswerBaseControlRequest_AnswersAnElicitationAndRefusesAnotherKind(t *t
 
 func TestSelectedOptionResult(t *testing.T) {
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"jsonrpc:7","result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}`, string(SelectedOptionResult("jsonrpc:7", "allow-once")))
+}
+
+func TestWithRefusalDoesNotMutateCallerBackingArray(t *testing.T) {
+	sentinel := &leapmuxv1.PermissionOption{OptionId: "sentinel", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS}
+	backing := []*leapmuxv1.PermissionOption{
+		{OptionId: "allow", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE},
+		sentinel,
+	}
+	got := WithRefusal(backing[:1])
+	require.Len(t, got, 2)
+	assert.Equal(t, CancelOptionID, got[1].GetOptionId())
+	assert.Same(t, sentinel, backing[1], "WithRefusal must not overwrite caller backing array")
 }

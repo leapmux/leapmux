@@ -121,15 +121,20 @@ type acpTurnSnapshot struct {
 	answeredPrompt                                        *acpTurnSnapshot
 	sessionID                                             string
 	interrupted                                           bool
+	stopped                                               bool
 	cleanup                                               func()
-	reconciliation                                        func() error
+	reconciliation                                        func(agent.MessageCompletion, bool) error
 	cleanupCaptured                                       bool
 	hasPromptBoundary                                     bool
+	deferredOpenTools                                     map[string]struct{}
 	textProgressCompleted                                 bool
+	textReservationFailed                                 bool
 	thoughtAdmission, assistantAdmission, endingAdmission *acpTranscriptAdmission
 	rootTargets                                           []*acpTranscriptTarget
 	textBatch                                             *agent.CapturedTranscriptBatch
 	assistantMessageID                                    string
+	assistantTextKey                                      string
+	assistantTextKeyResolved                              bool
 	thoughtMessageID                                      string
 	assistantText                                         string
 	thoughtText                                           string
@@ -557,6 +562,8 @@ func (o *acpTurnOutput) drainPromptTurnLocked(keepTools bool) (snapshot acpTurnS
 	snapshot.completedToolUses = boundary.completedToolUses
 	if !keepTools {
 		snapshot.incompleteTools = o.drainIncompleteToolsLocked(boundary.openTools)
+	} else {
+		snapshot.deferredOpenTools = boundary.openTools
 	}
 	snapshot.endingAdmission = boundary.target.reserve()
 	snapshot.rootTargets = appendRootTarget(nil, boundary.target)

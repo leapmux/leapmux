@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 // grokInterjectMethod steers a running turn. Grok does not advertise it in its
@@ -77,6 +78,12 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 	if err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
+	var preSessionID, preGroup string
+	var preBaseline sessionstore.JournalCursor
+	if request.InputID != "" {
+		preSessionID = a.CurrentSessionID()
+		preGroup, preBaseline = a.prepareGrokJournal(preSessionID)
+	}
 	var receipt agent.NativeInputReceipt
 	err = a.WithSessionID(func(sessionID string) error {
 		nativeID := uuid.NewString()
@@ -101,7 +108,11 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 			for _, image := range images {
 				payload.images = append(payload.images, grokImageFingerprint(image.MIMEType, image.Filename, image.Data))
 			}
-			tracked = a.admitGrokSteer(receipt, payload)
+			group, baseline := preGroup, preBaseline
+			if sessionID != preSessionID {
+				group, baseline = "", sessionstore.JournalCursor{}
+			}
+			tracked = a.admitGrokSteerWithJournal(receipt, payload, group, baseline)
 		}
 		if _, err := a.SendRequest(grokInterjectMethod, raw, a.APITimeout()); err != nil {
 			a.forgetGrokSteer(nativeID)

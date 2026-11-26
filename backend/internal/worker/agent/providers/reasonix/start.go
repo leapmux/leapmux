@@ -43,14 +43,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				},
 				PermissionAllowsBypass: permissionAllowsBypass,
 				Sink:                   transcript,
-				ChunkMessageID:         a.reasonixChunkMessageID,
+				UpdateMessageID:        a.reasonixUpdateMessageID,
 				AssistantTextKey:       a.reasonixAssistantTextKey,
 				AssistantTextPrepared:  a.reasonixAssistantTextPrepared,
-				CaptureReplyReconciliation: func() func() error {
-					return a.captureReasonixSteerCompletion(agent.DirectProviderServices(sink))
+				CaptureReplyReconciliation: func() func(agent.MessageCompletion, bool) error {
+					return a.captureReasonixSteerCompletion(agent.DirectProviderServices(a.Sink()))
 				},
 				ClearProviderState: func() {
-					a.retireReasonixSteers(agent.DirectProviderServices(sink))
+					a.retireReasonixSteers(a.Sink())
 					transcript.Reset()
 					a.resetPlanDraft()
 				},

@@ -55,18 +55,6 @@ var kiroAlwaysDenyRules = [...]kiroAlwaysRule{
 	{optionID: contracts.KiroScopedPermissionOptionAlwaysRejectUser, name: "Always deny everywhere", scope: leapmuxv1.PermissionScope_PERMISSION_SCOPE_USER},
 }
 
-// kiroControlRequest is the method and the params of one control request. A
-// member of the wrong type reads as absent.
-type kiroControlRequest struct {
-	method string
-	params map[string]json.RawMessage
-}
-
-func readKiroControlRequest(payload []byte) kiroControlRequest {
-	fields := providerkit.RawFields(payload)
-	return kiroControlRequest{method: fieldString(fields, "method"), params: providerkit.RawFields(fields["params"])}
-}
-
 // ReadControlRequest reads Kiro's own dialogs, and every other request through
 // the base reader:
 //
@@ -81,14 +69,14 @@ func readKiroControlRequest(payload []byte) kiroControlRequest {
 // The standard `elicitation/create` still reads as a form, and any other
 // request reads as unrecognized, as the base reader reads it.
 func (kiroProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	request := readKiroControlRequest(input.Payload)
-	switch request.method {
+	method, params := acp.ReadControlRequestEnvelope(input.Payload)
+	switch method {
 	case contracts.KiroMethodUserInput:
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-			Questions: kiroUserInputQuestions(fieldString(request.params, "question"), request.params["options"]),
+			Questions: kiroUserInputQuestions(providerkit.ObjectString(params, "question"), params["options"]),
 		}}}
 	case contracts.KiroMethodMcpElicitation:
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: kiroElicitation(request)}}
+		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: acp.ElicitationFromParams(providerkit.RawFields(params["elicitation"]))}}
 	}
 	if elicitation, ok := acp.ReadElicitation(input.Payload); ok {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
@@ -98,27 +86,8 @@ func (kiroProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmux
 		// As the base reader reads it (acp.ReadBaseControlRequest).
 		return agent.UnrecognizedControlPrompt()
 	}
-	completeKiroPermission(permission, kiroFields(providerkit.RawFields(request.params["_meta"])[contracts.KiroMetaNamespace]))
+	completeKiroPermission(permission, providerkit.RawFields(providerkit.RawFields(params["_meta"])[contracts.KiroMetaNamespace]))
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Permission{Permission: permission}}
-}
-
-// kiroElicitation reads the MCP form or URL that `_kiro/mcp/elicitation` asks
-// for. Kiro states no server, title or description for it.
-func kiroElicitation(request kiroControlRequest) *leapmuxv1.ElicitationPrompt {
-	elicitation := providerkit.RawFields(request.params["elicitation"])
-	mode, ok := providerkit.RawString(elicitation["mode"])
-	if !ok {
-		mode = contracts.MCPElicitationModeForm
-	}
-	prompt := &leapmuxv1.ElicitationPrompt{
-		Mode:    mode,
-		Message: fieldString(elicitation, "message"),
-		Url:     fieldString(elicitation, "url"),
-	}
-	if schema := elicitation["requestedSchema"]; providerkit.RawPresent(schema) {
-		prompt.SchemaJson = string(schema)
-	}
-	return prompt
 }
 
 // completeKiroPermission adds what only Kiro states to a permission that the
@@ -131,11 +100,11 @@ func kiroElicitation(request kiroControlRequest) *leapmuxv1.ElicitationPrompt {
 //     command that the base reader found is what the call runs, so it wins.
 func completeKiroPermission(permission *leapmuxv1.PermissionPrompt, meta map[string]json.RawMessage) {
 	permission.Options = kiroPermissionOptions(permission.GetOptions(), meta)
-	if fieldString(meta, "type") == kiroTurnApproval {
+	if providerkit.ObjectString(meta, "type") == kiroTurnApproval {
 		permission.Reason = kiroTurnApprovalReason(kiroTurnApprovalFiles(meta))
 		return
 	}
-	if command := fieldString(meta, "command"); command != "" && permission.GetCommand() == "" {
+	if command := providerkit.ObjectString(meta, "command"); command != "" && permission.GetCommand() == "" {
 		permission.Command = command
 	}
 }
@@ -162,7 +131,7 @@ func kiroPermissionOptions(options []*leapmuxv1.PermissionOption, meta map[strin
 		return options
 	}
 	wider := allow != nil
-	workspace := strings.TrimSpace(fieldString(providerkit.RawFields(meta[contracts.KiroMetaConsent]), "workspaceRoot")) != ""
+	workspace := strings.TrimSpace(providerkit.ObjectString(providerkit.RawFields(meta[contracts.KiroMetaConsent]), "workspaceRoot")) != ""
 	expanded := make([]*leapmuxv1.PermissionOption, 0, len(options)+4)
 	for _, option := range options {
 		switch option {
@@ -213,13 +182,13 @@ func kiroAlwaysRuleOptions(own *leapmuxv1.PermissionOption, rules []kiroAlwaysRu
 // kiroTurnApprovalFiles reads the files of one turn review, the path of each.
 // An element that is no object, or that states no path, is dropped.
 func kiroTurnApprovalFiles(meta map[string]json.RawMessage) []string {
-	var elements []json.RawMessage
-	if json.Unmarshal(meta["files"], &elements) != nil {
+	elements, ok := providerkit.RawArray(meta["files"])
+	if !ok {
 		return nil
 	}
 	var files []string
 	for _, element := range elements {
-		if path := fieldString(providerkit.RawFields(element), "path"); path != "" {
+		if path := providerkit.ObjectString(providerkit.RawFields(element), "path"); path != "" {
 			files = append(files, path)
 		}
 	}
@@ -253,8 +222,8 @@ type kiroUserInputOption struct {
 // an option as its title alone, a bare string. An option that states no title
 // is dropped, and an option is recommended only when Kiro states true.
 func kiroUserInputOptions(raw json.RawMessage) []kiroUserInputOption {
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil {
+	elements, ok := providerkit.RawArray(raw)
+	if !ok {
 		return nil
 	}
 	var options []kiroUserInputOption
@@ -266,36 +235,30 @@ func kiroUserInputOptions(raw json.RawMessage) []kiroUserInputOption {
 			continue
 		}
 		fields := providerkit.RawFields(element)
-		title := fieldString(fields, "title")
+		title := providerkit.ObjectString(fields, "title")
 		if title == "" {
 			continue
 		}
 		options = append(options, kiroUserInputOption{
 			title:           title,
-			description:     fieldString(fields, "description"),
+			description:     providerkit.ObjectString(fields, "description"),
 			recommended:     providerkit.RawBool(fields["recommended"]),
-			subOptionsLabel: fieldString(fields, "subOptionsLabel"),
+			subOptionsLabel: providerkit.ObjectString(fields, "subOptionsLabel"),
 			subOptions:      kiroUserInputOptions(fields["subOptions"]),
 		})
 	}
 	return options
 }
 
-// kiroQuestionOption is one option in the neutral model. The value is Kiro's
-// own title, which the answer states.
-func kiroQuestionOption(option kiroUserInputOption) *leapmuxv1.QuestionOption {
-	title := option.title
-	label := title
-	if option.recommended {
-		label += kiroRecommendedSuffix
-	}
-	return &leapmuxv1.QuestionOption{Value: &title, Label: label, Description: option.description}
-}
-
 func kiroQuestionOptions(options []kiroUserInputOption) []*leapmuxv1.QuestionOption {
 	converted := make([]*leapmuxv1.QuestionOption, 0, len(options))
 	for _, option := range options {
-		converted = append(converted, kiroQuestionOption(option))
+		title := option.title
+		label := title
+		if option.recommended {
+			label += kiroRecommendedSuffix
+		}
+		converted = append(converted, &leapmuxv1.QuestionOption{Value: &title, Label: label, Description: option.description})
 	}
 	return converted
 }

@@ -73,6 +73,7 @@ type steerItem struct {
 	inputID     string
 	attemptID   string
 	sessionID   string
+	token       uint64
 }
 
 // steerQueue holds the steered messages that Qwen did not pull yet. Guarded
@@ -84,7 +85,18 @@ type steerItem struct {
 // further tool batch never asks, so the base sends what is left as the next
 // prompt.
 type steerQueue struct {
-	items []steerItem
+	nextToken uint64
+	items     []steerItem
+}
+
+func (q *steerQueue) removeToken(token uint64) bool {
+	for i, item := range q.items {
+		if item.token == token {
+			q.items = append(q.items[:i], q.items[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // qwenMaxDrainItems is the most items Qwen reads from one drain. It reads the
@@ -119,28 +131,44 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 	}
 	sessionID := a.CurrentSessionID()
 	a.stateMu.Lock()
+	a.steer.nextToken++
+	token := a.steer.nextToken
 	a.steer.items = append(a.steer.items, steerItem{
 		content:     content,
 		attachments: attachments,
 		inputID:     request.InputID,
 		attemptID:   request.AttemptID,
 		sessionID:   sessionID,
+		token:       token,
 	})
 	a.stateMu.Unlock()
+	if !a.PromptActive() || a.CurrentSessionID() != sessionID {
+		a.stateMu.Lock()
+		removed := a.steer.removeToken(token)
+		a.stateMu.Unlock()
+		if removed {
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
+		}
+	}
 	return agent.NativeInputReceipt{}, nil
 }
 
 // followUpPrompt gives the base the input that the ended turn never read. A
 // turn that the reader stopped takes it with it: the input was for that turn,
-// and the transcript states that it never reached Qwen.
+// and the transcript states that it never reached Qwen. Tracked queue steers
+// always return to the worker queue via SteerOutcomeDropped instead of
+// starting an untracked follow-up prompt.
 func (a *Agent) followUpPrompt(sessionID string, stopped bool) (string, []*leapmuxv1.Attachment, bool) {
-	a.stateMu.Lock()
 	if a.CurrentSessionID() != sessionID {
-		a.stateMu.Unlock()
 		return "", nil, false
 	}
+	a.stateMu.Lock()
+	tracked := a.steer.takeTracked()
 	items := a.steer.take(0)
 	a.stateMu.Unlock()
+	if len(tracked) > 0 {
+		a.resolveQwenTrackedSteers(tracked, agent.SteerOutcomeDropped)
+	}
 	if len(items) == 0 {
 		return "", nil, false
 	}

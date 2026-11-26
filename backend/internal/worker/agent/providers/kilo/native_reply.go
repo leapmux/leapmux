@@ -8,17 +8,29 @@ import (
 	"log/slog"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // The daemon and ACP output have separate readers. A daemon response can
 // finish before the matching ACP text reaches the transcript.
 const nativeReplyOutputTimeout = 3 * time.Second
+
+// nativePermissionLookupTimeout caps the synchronous daemon read performed on
+// the ACP reader goroutine when attributing a permission request to a native turn.
+const nativePermissionLookupTimeout = 250 * time.Millisecond
+
+// One native assistant message can produce several assembled transcript rows.
+// The prefix identifies the native message and the suffix distinguishes its rows.
+func kiloAssistantTextKey(messageID string) string {
+	return "kilo-reply:" + strconv.Quote(messageID) + ":" + id.Generate()
+}
 
 type kiloNativeMessage struct {
 	Info struct {
@@ -57,10 +69,22 @@ type kiloReplyTarget struct {
 	flush         func(map[string]bool)
 }
 
+type kiloToolOwnerKey struct {
+	sessionID  string
+	toolCallID string
+}
+
+type kiloExpectedReply struct {
+	messageID string
+	text      string
+}
+
 type kiloNativeReplies struct {
-	mu     sync.Mutex
-	inputs map[string]agent.NativeInputReceipt
-	text   map[string][]kiloReplySegment
+	mu          sync.Mutex
+	inputs      map[string]agent.NativeInputReceipt
+	text        map[string][]kiloReplySegment
+	toolOwners  map[kiloToolOwnerKey]string
+	textChanged chan struct{}
 }
 
 func (r *kiloNativeReplies) add(messageID string, receipt agent.NativeInputReceipt) {
@@ -78,8 +102,28 @@ func (r *kiloNativeReplies) remove(messageID string) {
 	defer r.mu.Unlock()
 	delete(r.inputs, messageID)
 	if len(r.inputs) == 0 {
-		r.inputs, r.text = nil, nil
+		r.inputs, r.text, r.toolOwners = nil, nil, nil
 	}
+}
+
+func (r *kiloNativeReplies) pruneText(messageIDs map[string]bool) {
+	if len(messageIDs) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id := range messageIDs {
+		delete(r.text, id)
+	}
+}
+
+func (r *kiloNativeReplies) textSignal() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.textChanged == nil {
+		r.textChanged = make(chan struct{})
+	}
+	return r.textChanged
 }
 
 func (r *kiloNativeReplies) recordText(messageID, key, text string) {
@@ -94,24 +138,41 @@ func (r *kiloNativeReplies) recordText(messageID, key, text string) {
 		}
 	}
 	r.text[messageID] = append(r.text[messageID], kiloReplySegment{key: key, text: text})
+	if r.textChanged != nil {
+		close(r.textChanged)
+		r.textChanged = nil
+	}
 }
 
-func (r *kiloNativeReplies) replyItems(messages []kiloNativeMessage) ([]agent.NativeReplyItem, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var items []agent.NativeReplyItem
-	for _, message := range messages {
-		var native, captured strings.Builder
+func kiloExpectedReplies(messages []kiloNativeMessage) []kiloExpectedReply {
+	expected := make([]kiloExpectedReply, len(messages))
+	for i, message := range messages {
+		var native strings.Builder
 		for _, part := range message.Parts {
 			if part.Type == "text" && !part.Ignored {
 				native.WriteString(part.Text)
 			}
 		}
-		for _, segment := range r.text[message.Info.ID] {
+		expected[i] = kiloExpectedReply{messageID: message.Info.ID, text: native.String()}
+	}
+	return expected
+}
+
+func (r *kiloNativeReplies) replyItems(messages []kiloNativeMessage) ([]agent.NativeReplyItem, bool) {
+	return r.replyItemsExpected(kiloExpectedReplies(messages))
+}
+
+func (r *kiloNativeReplies) replyItemsExpected(expected []kiloExpectedReply) ([]agent.NativeReplyItem, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var items []agent.NativeReplyItem
+	for _, entry := range expected {
+		var captured strings.Builder
+		for _, segment := range r.text[entry.messageID] {
 			captured.WriteString(segment.text)
 			items = append(items, agent.NativeReplyItem{Ordinal: int64(len(items)) + 2, MessageKey: segment.key})
 		}
-		if native.String() != captured.String() {
+		if entry.text != captured.String() {
 			return nil, false
 		}
 	}
@@ -157,13 +218,26 @@ func (a *Agent) nativePermissionTurnID(sessionID, toolCallID string) string {
 	a.nativeReplies.mu.Lock()
 	var active bool
 	for _, receipt := range a.nativeReplies.inputs {
-		active = active || receipt.SessionID == sessionID
+		if receipt.SessionID == sessionID {
+			active = true
+			break
+		}
 	}
-	a.nativeReplies.mu.Unlock()
 	if !active {
+		a.nativeReplies.mu.Unlock()
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(a.Context(), nativeReplyOutputTimeout)
+	if cached, found := a.nativeReplies.toolOwners[kiloToolOwnerKey{sessionID: sessionID, toolCallID: toolCallID}]; found {
+		receipt := a.nativeReplies.inputs[cached]
+		a.nativeReplies.mu.Unlock()
+		if cached == "" || receipt.SessionID != sessionID {
+			return ""
+		}
+		return receipt.TurnID
+	}
+	a.nativeReplies.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(a.Context(), nativePermissionLookupTimeout)
 	defer cancel()
 	messages, _, err := a.readNativeMessagePage(ctx, sessionID, "")
 	if err != nil {
@@ -174,6 +248,7 @@ func (a *Agent) nativePermissionTurnID(sessionID, toolCallID string) string {
 
 func (r *kiloNativeReplies) permissionTurnID(sessionID, toolCallID string, messages []kiloNativeMessage) string {
 	var owner string
+	ambiguous := false
 	for _, message := range messages {
 		if message.Info.SessionID != sessionID || message.Info.Role != "assistant" || message.Info.ID == "" {
 			continue
@@ -181,19 +256,35 @@ func (r *kiloNativeReplies) permissionTurnID(sessionID, toolCallID string, messa
 		for _, part := range message.Parts {
 			if part.Type == "tool" && part.CallID == toolCallID {
 				if owner != "" || message.Info.ParentID == "" {
-					return ""
+					ambiguous = true
+					break
 				}
 				owner = message.Info.ParentID
 			}
 		}
+		if ambiguous {
+			break
+		}
 	}
-	return r.turnID(sessionID, owner)
-}
-
-func (a *Agent) nativeReplyHistory(ctx context.Context, sessionID, inputID, finalID string) ([]kiloNativeMessage, error) {
-	return kiloReplyHistory(sessionID, inputID, finalID, func(before string) ([]kiloNativeMessage, string, error) {
-		return a.readNativeMessagePage(ctx, sessionID, before)
-	})
+	if ambiguous {
+		owner = ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.inputs) > 0 && (owner != "" || ambiguous) {
+		if r.toolOwners == nil {
+			r.toolOwners = make(map[kiloToolOwnerKey]string)
+		}
+		r.toolOwners[kiloToolOwnerKey{sessionID: sessionID, toolCallID: toolCallID}] = owner
+	}
+	if owner == "" {
+		return ""
+	}
+	receipt := r.inputs[owner]
+	if receipt.SessionID != sessionID {
+		return ""
+	}
+	return receipt.TurnID
 }
 
 func (a *Agent) readNativeMessagePage(ctx context.Context, sessionID, before string) ([]kiloNativeMessage, string, error) {
@@ -260,7 +351,9 @@ func (a *Agent) publishNativeReply(target kiloReplyTarget, inputID, finalID stri
 	receipt := target.receipt
 	ctx, cancel := context.WithTimeout(a.Context(), nativeReplyOutputTimeout)
 	defer cancel()
-	messages, err := a.nativeReplyHistory(ctx, receipt.SessionID, inputID, finalID)
+	messages, err := kiloReplyHistory(receipt.SessionID, inputID, finalID, func(before string) ([]kiloNativeMessage, string, error) {
+		return a.readNativeMessagePage(ctx, receipt.SessionID, before)
+	})
 	if err != nil {
 		return err
 	}
@@ -268,14 +361,16 @@ func (a *Agent) publishNativeReply(target kiloReplyTarget, inputID, finalID stri
 	for _, message := range messages {
 		messageIDs[message.Info.ID] = true
 	}
+	expected := kiloExpectedReplies(messages)
 	ticker := a.Clock().NewTicker(nativeAdmissionInterval)
 	defer ticker.Stop()
 	for {
 		if a.CurrentSessionID() != target.rootSessionID || a.IsDiscardingOutput() {
 			return agent.ErrInputSessionChanged
 		}
+		changed := a.nativeReplies.textSignal()
 		target.flush(messageIDs)
-		if items, ready := a.nativeReplies.replyItems(messages); ready {
+		if items, ready := a.nativeReplies.replyItemsExpected(expected); ready {
 			err := target.transcript.PublishNativeReplyTurn(agent.NativeReplyTurn{
 				SessionID: receipt.SessionID, TurnID: receipt.TurnID,
 				Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
@@ -283,11 +378,13 @@ func (a *Agent) publishNativeReply(target kiloReplyTarget, inputID, finalID stri
 				Items:   items,
 			})
 			if agent.OutputRetained(err) {
+				a.nativeReplies.pruneText(messageIDs)
 				return nil
 			}
 			return err
 		}
 		select {
+		case <-changed:
 		case <-ticker.C:
 		case <-ctx.Done():
 			return fmt.Errorf("the Kilo transcript did not confirm all native reply text: %w", ctx.Err())

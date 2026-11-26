@@ -13,34 +13,30 @@ func (b *Base) queueTurnOutputCleanup(cleanup func()) {
 	if cleanup == nil {
 		return
 	}
-	queue := agent.OutputQueueFor(b.sink)
-	if queue == nil {
-		cleanup()
-		return
-	}
-	queue.Append(agent.OutputWrite{Label: "clear completed ACP output state", Run: func() error {
+	b.queueOutputCallback("clear completed ACP output state", "complete ACP output before state cleanup", func() error {
 		cleanup()
 		return nil
-	}})
-	if err := queue.Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
-		slog.Error("complete ACP output before state cleanup", "agent_id", b.AgentID(), "error", err)
-	}
+	})
 }
 
 func (b *Base) queueReplyReconciliation(reconcile func() error) {
 	if reconcile == nil {
 		return
 	}
+	b.queueOutputCallback("reconcile ACP reply ownership", "reconcile ACP reply ownership", reconcile)
+}
+
+func (b *Base) queueOutputCallback(label, errorLog string, run func() error) {
 	queue := agent.OutputQueueFor(b.sink)
 	if queue == nil {
-		if err := reconcile(); err != nil {
-			slog.Error("reconcile ACP reply ownership", "agent_id", b.AgentID(), "error", err)
+		if err := run(); err != nil {
+			slog.Error(errorLog, "agent_id", b.AgentID(), "error", err)
 		}
 		return
 	}
-	queue.Append(agent.OutputWrite{Label: "reconcile ACP reply ownership", Run: reconcile})
-	if err := queue.Flush(); err != nil && !agent.OutputRetained(err) {
-		slog.Error("reconcile ACP reply ownership", "agent_id", b.AgentID(), "error", err)
+	queue.Append(agent.OutputWrite{Label: label, Run: run})
+	if err := queue.Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) && !agent.OutputRetained(err) {
+		slog.Error(errorLog, "agent_id", b.AgentID(), "error", err)
 	}
 }
 
@@ -138,11 +134,11 @@ func (c *conversation) persistBufferedText(turn acpTurnSnapshot, completion agen
 	if turn.textProgressCompleted {
 		persist = c.persistSelectedTextTo
 	}
-	if turn.thoughtText != "" && (turn.textBatch == nil || turn.thoughtAdmission.captured()) {
-		persist(turn.thoughtAdmission, agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, completion)
+	if turn.thoughtText != "" && (turn.thoughtAdmission.captured() || (turn.textBatch == nil && !turn.textReservationFailed)) {
+		persist(turn.thoughtAdmission, agent.AssembledMessageKindReasoning, turn.thoughtMessageID, "", false, turn.thoughtText, completion)
 	}
-	if turn.assistantText != "" && (turn.textBatch == nil || turn.assistantAdmission.captured()) {
-		persist(turn.assistantAdmission, agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, completion)
+	if turn.assistantText != "" && (turn.assistantAdmission.captured() || (turn.textBatch == nil && !turn.textReservationFailed)) {
+		persist(turn.assistantAdmission, agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantTextKey, turn.assistantTextKeyResolved, turn.assistantText, completion)
 	}
 	if turn.textBatch == nil {
 		return
@@ -152,11 +148,11 @@ func (c *conversation) persistBufferedText(turn acpTurnSnapshot, completion agen
 	err := turn.textBatch.Prepare(func() []agent.CapturedTranscriptOperation {
 		const source = leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
 		var operations []agent.CapturedTranscriptOperation
-		appendText := func(kind agent.AssembledMessageKind, messageID, text string, admission *acpTranscriptAdmission) {
+		appendText := func(kind agent.AssembledMessageKind, messageID, key string, keyResolved bool, text string, admission *acpTranscriptAdmission) {
 			if text == "" || admission.captured() {
 				return
 			}
-			template, prepare, err := c.preparedAssembledText(kind, messageID, text, completion)
+			template, prepare, err := c.preparedAssembledText(kind, messageID, key, keyResolved, text, completion)
 			if err != nil {
 				slog.Error("prepare buffered ACP text", "agent_id", c.b.AgentID(), "error", err)
 				return
@@ -172,8 +168,8 @@ func (c *conversation) persistBufferedText(turn acpTurnSnapshot, completion agen
 				operations = append(operations, capture.MessageOperation(source))
 			}
 		}
-		appendText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, turn.thoughtAdmission)
-		appendText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, turn.assistantAdmission)
+		appendText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, "", false, turn.thoughtText, turn.thoughtAdmission)
+		appendText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantTextKey, turn.assistantTextKeyResolved, turn.assistantText, turn.assistantAdmission)
 		return operations
 	})
 	if err != nil && !agent.OutputRetained(err) {

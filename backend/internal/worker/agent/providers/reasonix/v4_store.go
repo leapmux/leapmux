@@ -1,6 +1,7 @@
 package reasonix
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -138,8 +140,35 @@ func reasonixV4ContentRoot(sessionDir, configured string) string {
 	return root
 }
 
+var reasonixV4DecoderPool sync.Pool
+
+func acquireReasonixV4Decoder() (*zstd.Decoder, error) {
+	if pooled := reasonixV4DecoderPool.Get(); pooled != nil {
+		return pooled.(*zstd.Decoder), nil
+	}
+	return zstd.NewReader(nil,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxMemory(reasonixV4MaxFrameBytes),
+	)
+}
+
+func releaseReasonixV4Decoder(decoder *zstd.Decoder) {
+	if decoder != nil {
+		reasonixV4DecoderPool.Put(decoder)
+	}
+}
+
+func isReasonixMessageEventKind(kind string) bool {
+	switch kind {
+	case "message/complete", "message/upsert", "message/retract", "history/replace", "legacy/import":
+		return true
+	default:
+		return false
+	}
+}
+
 func readReasonixV4FramesMessages(ctx context.Context, framesPath, contentRoot string) ([]reasonixJournalMessage, error) {
-	file, err := os.Open(framesPath)
+	file, _, err := openReasonixRegularFile(framesPath, "Reasonix v4 event log")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -147,22 +176,15 @@ func readReasonixV4FramesMessages(ctx context.Context, framesPath, contentRoot s
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("the Reasonix v4 event log is not a regular file")
-	}
 
-	decoder, err := zstd.NewReader(nil,
-		zstd.WithDecoderConcurrency(1),
-		zstd.WithDecoderMaxMemory(reasonixV4MaxFrameBytes),
-	)
+	decoder, err := acquireReasonixV4Decoder()
 	if err != nil {
 		return nil, fmt.Errorf("create Reasonix v4 decoder: %w", err)
 	}
-	defer decoder.Close()
+	defer releaseReasonixV4Decoder(decoder)
+
+	reader := bufio.NewReaderSize(file, 32<<10)
+	var compressedBuf, rawBuf []byte
 
 	type pendingBatch struct {
 		commitID   string
@@ -172,17 +194,20 @@ func readReasonixV4FramesMessages(ctx context.Context, framesPath, contentRoot s
 		digest     hash.Hash
 	}
 	var (
-		pending  *pendingBatch
-		messages []reasonixJournalMessage
+		pending *pendingBatch
+		replay  reasonixMessageReplay
 	)
 
 	for {
-		raw, complete, readErr := readReasonixV4Frame(ctx, file, decoder)
+		var raw []byte
+		var complete bool
+		var readErr error
+		raw, compressedBuf, rawBuf, complete, readErr = readReasonixV4Frame(ctx, reader, decoder, compressedBuf, rawBuf)
 		if readErr != nil {
 			return nil, readErr
 		}
 		if !complete {
-			return messages, nil
+			return replay.messages, nil
 		}
 		var rec reasonixV4Record
 		if err := json.Unmarshal(raw, &rec); err != nil {
@@ -221,55 +246,68 @@ func readReasonixV4FramesMessages(ctx context.Context, framesPath, contentRoot s
 				return nil, fmt.Errorf("the Reasonix v4 batch %s checksum mismatched", pending.commitID)
 			}
 			for _, ev := range pending.events {
+				if !isReasonixMessageEventKind(ev.Kind) {
+					continue
+				}
 				payload, resolveErr := resolveReasonixV4Payload(contentRoot, ev.Payload, ev.PayloadRef)
 				if resolveErr != nil {
 					return nil, resolveErr
 				}
-				applyReasonixSessionEvent(&messages, ev.Kind, payload)
+				replay.apply(ev.Kind, payload)
 			}
 			pending = nil
 		}
 	}
 }
 
-func readReasonixV4Frame(ctx context.Context, reader io.Reader, decoder *zstd.Decoder) ([]byte, bool, error) {
+func readReasonixV4Frame(ctx context.Context, reader io.Reader, decoder *zstd.Decoder, compressedBuf, rawBuf []byte) ([]byte, []byte, []byte, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, false, err
+		return nil, compressedBuf, rawBuf, false, err
 	}
 	var header [reasonixV4FrameHeaderBytes]byte
 	if _, err := io.ReadFull(reader, header[:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, false, nil
+			return nil, compressedBuf, rawBuf, false, nil
 		}
-		return nil, false, err
+		return nil, compressedBuf, rawBuf, false, err
 	}
 	if [4]byte(header[:4]) != reasonixV4FrameMagic {
-		return nil, false, fmt.Errorf("invalid Reasonix v4 frame magic")
+		return nil, compressedBuf, rawBuf, false, fmt.Errorf("invalid Reasonix v4 frame magic")
 	}
 	compressedBytes := int(binary.BigEndian.Uint32(header[4:8]))
 	rawBytes := int(binary.BigEndian.Uint32(header[8:12]))
 	if compressedBytes <= 0 || compressedBytes > reasonixV4MaxFrameBytes || rawBytes <= 0 || rawBytes > reasonixV4MaxFrameBytes {
-		return nil, false, fmt.Errorf("invalid Reasonix v4 frame sizes compressed=%d raw=%d", compressedBytes, rawBytes)
+		return nil, compressedBuf, rawBuf, false, fmt.Errorf("invalid Reasonix v4 frame sizes compressed=%d raw=%d", compressedBytes, rawBytes)
 	}
-	compressed := make([]byte, compressedBytes)
-	if _, err := io.ReadFull(reader, compressed); err != nil {
+	if cap(compressedBuf) < compressedBytes {
+		compressedBuf = make([]byte, compressedBytes)
+	} else {
+		compressedBuf = compressedBuf[:compressedBytes]
+	}
+	if _, err := io.ReadFull(reader, compressedBuf); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, false, nil
+			return nil, compressedBuf, rawBuf, false, nil
 		}
-		return nil, false, err
+		return nil, compressedBuf, rawBuf, false, err
 	}
-	raw, err := decoder.DecodeAll(compressed, make([]byte, 0, rawBytes))
+	if cap(rawBuf) < rawBytes {
+		rawBuf = make([]byte, 0, rawBytes)
+	} else {
+		rawBuf = rawBuf[:0]
+	}
+	raw, err := decoder.DecodeAll(compressedBuf, rawBuf)
 	if err != nil {
-		return nil, false, fmt.Errorf("decode Reasonix v4 frame: %w", err)
+		return nil, compressedBuf, rawBuf, false, fmt.Errorf("decode Reasonix v4 frame: %w", err)
 	}
+	rawBuf = raw
 	if len(raw) != rawBytes {
-		return nil, false, fmt.Errorf("the Reasonix v4 frame decoded %d bytes, expected %d", len(raw), rawBytes)
+		return nil, compressedBuf, rawBuf, false, fmt.Errorf("the Reasonix v4 frame decoded %d bytes, expected %d", len(raw), rawBytes)
 	}
-	return raw, true, nil
+	return raw, compressedBuf, rawBuf, true, nil
 }
 
 func readReasonixV3EventsJSONL(ctx context.Context, eventsPath, contentRoot string) ([]reasonixJournalMessage, error) {
-	file, err := os.Open(eventsPath)
+	file, info, err := openReasonixRegularFile(eventsPath, "Reasonix v3 event log")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -277,29 +315,25 @@ func readReasonixV3EventsJSONL(ctx context.Context, eventsPath, contentRoot stri
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("the Reasonix v3 event log is not a regular file")
-	}
-	var messages []reasonixJournalMessage
+	var replay reasonixMessageReplay
 	_, err = readReasonixJSONL(ctx, file, 0, info.Size(), func(raw json.RawMessage, _ int64, _ int) error {
 		var commit reasonixV3Commit
 		if json.Unmarshal(raw, &commit) != nil || commit.RecordType != "commit" {
 			return nil
 		}
 		for _, ev := range commit.Events {
+			if !isReasonixMessageEventKind(ev.Kind) {
+				continue
+			}
 			payload, resolveErr := resolveReasonixV4Payload(contentRoot, ev.Payload, ev.PayloadRef)
 			if resolveErr != nil {
 				return resolveErr
 			}
-			applyReasonixSessionEvent(&messages, ev.Kind, payload)
+			replay.apply(ev.Kind, payload)
 		}
 		return nil
 	})
-	return messages, err
+	return replay.messages, err
 }
 
 func resolveReasonixV4Payload(contentRoot string, inline []byte, ref *reasonixV4ContentRef) ([]byte, error) {
@@ -345,12 +379,31 @@ func isReasonixSHA256Hex(digest string) bool {
 	return true
 }
 
-func applyReasonixSessionEvent(messages *[]reasonixJournalMessage, kind string, payload []byte) {
+type reasonixMessageReplay struct {
+	messages []reasonixJournalMessage
+	byID     map[string]int
+}
+
+func (r *reasonixMessageReplay) rebuildIndex() {
+	if len(r.messages) == 0 {
+		r.byID = nil
+		return
+	}
+	r.byID = make(map[string]int, len(r.messages))
+	for i, msg := range r.messages {
+		if msg.ID != "" {
+			r.byID[msg.ID] = i
+		}
+	}
+}
+
+func (r *reasonixMessageReplay) apply(kind string, payload []byte) {
 	if len(payload) == 0 {
 		return
 	}
 	switch kind {
-	case "message/complete":
+	case "message/complete", "message/upsert":
+		overwrite := kind == "message/upsert"
 		var body struct {
 			Message *reasonixJournalMessage `json:"message"`
 		}
@@ -358,29 +411,18 @@ func applyReasonixSessionEvent(messages *[]reasonixJournalMessage, kind string, 
 			return
 		}
 		if body.Message.ID != "" {
-			for _, existing := range *messages {
-				if existing.ID == body.Message.ID {
-					return
+			if idx, exists := r.byID[body.Message.ID]; exists {
+				if overwrite {
+					r.messages[idx] = *body.Message
 				}
+				return
 			}
-		}
-		*messages = append(*messages, *body.Message)
-	case "message/upsert":
-		var body struct {
-			Message *reasonixJournalMessage `json:"message"`
-		}
-		if json.Unmarshal(payload, &body) != nil || body.Message == nil || body.Message.Role == "" {
-			return
-		}
-		if body.Message.ID != "" {
-			for i := range *messages {
-				if (*messages)[i].ID == body.Message.ID {
-					(*messages)[i] = *body.Message
-					return
-				}
+			if r.byID == nil {
+				r.byID = make(map[string]int)
 			}
+			r.byID[body.Message.ID] = len(r.messages)
 		}
-		*messages = append(*messages, *body.Message)
+		r.messages = append(r.messages, *body.Message)
 	case "message/retract":
 		var body struct {
 			MessageIDs []string `json:"messageIds"`
@@ -390,11 +432,17 @@ func applyReasonixSessionEvent(messages *[]reasonixJournalMessage, kind string, 
 		}
 		removed := make(map[string]bool, len(body.MessageIDs))
 		for _, id := range body.MessageIDs {
-			removed[id] = true
+			if id != "" {
+				removed[id] = true
+			}
 		}
-		*messages = slices.DeleteFunc(*messages, func(m reasonixJournalMessage) bool {
-			return removed[m.ID]
+		if len(removed) == 0 {
+			return
+		}
+		r.messages = slices.DeleteFunc(r.messages, func(m reasonixJournalMessage) bool {
+			return m.ID != "" && removed[m.ID]
 		})
+		r.rebuildIndex()
 	case "history/replace", "legacy/import":
 		var body struct {
 			Messages []reasonixJournalMessage `json:"messages"`
@@ -416,6 +464,14 @@ func applyReasonixSessionEvent(messages *[]reasonixJournalMessage, kind string, 
 			}
 			replaced = append(replaced, m)
 		}
-		*messages = replaced
+		r.messages = replaced
+		r.rebuildIndex()
 	}
+}
+
+func applyReasonixSessionEvent(messages *[]reasonixJournalMessage, kind string, payload []byte) {
+	replay := reasonixMessageReplay{messages: *messages}
+	replay.rebuildIndex()
+	replay.apply(kind, payload)
+	*messages = replay.messages
 }

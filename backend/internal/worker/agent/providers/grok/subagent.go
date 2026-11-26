@@ -2,6 +2,7 @@ package grok
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -662,37 +663,36 @@ func validateGrokChildMessage(content string, attachments []*leapmuxv1.Attachmen
 // SteerChildInput sends one literal human message to the active native child.
 // The session lock keeps a context clear from replacing the address's owner.
 func (a *Agent) SteerChildInput(childKey string, request agent.SteerRequest) (agent.NativeInputReceipt, error) {
-	return a.steerGrokChild(childKey, request.Content, request.Attachments, true)
-}
-
-func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
-
-func (a *Agent) steerGrokChild(childKey, content string, attachments []*leapmuxv1.Attachment, captureReply bool) (agent.NativeInputReceipt, error) {
+	content, attachments := request.Content, request.Attachments
 	if err := validateGrokChildMessage(content, attachments); err != nil {
 		return agent.NativeInputReceipt{}, err
 	}
+	root := a.CurrentSessionID()
+	_, target, found := a.ownedChild(root, childKey)
+	if !found || target.agentAddress == "" {
+		return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
+	}
 	var sink agent.ProviderServices
-	var target linkedSubagent
-	if captureReply {
-		root := a.CurrentSessionID()
-		_, child, found := a.ownedChild(root, childKey)
-		if !found || child.agentAddress == "" {
-			return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
-		}
-		target = child
-		err := a.WithChildTranscript(acp.ChildSessionTarget{RootSessionID: root, SessionID: child.childSession, RowKey: child.rowKey},
-			func(services agent.ProviderServices) error {
-				sink = services
-				return nil
-			})
-		if err != nil {
-			return agent.NativeInputReceipt{}, err
+	childTarget := acp.ChildSessionTarget{RootSessionID: root, SessionID: target.childSession, RowKey: target.rowKey}
+	captureSink := func(services agent.ProviderServices) error {
+		sink = services
+		return nil
+	}
+	err := a.WithChildTranscript(childTarget, captureSink)
+	if errors.Is(err, agent.ErrChildRouteNotReady) {
+		if bindErr := a.BindAttachedChildSession(childTarget); bindErr == nil {
+			err = a.WithChildTranscript(childTarget, captureSink)
 		}
 	}
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	preGroup, preBaseline := a.prepareGrokChildJournal(target.childSession)
+
 	var receipt agent.NativeInputReceipt
-	err := a.WithSessionID(func(sessionID string) error {
+	err = a.WithSessionID(func(sessionID string) error {
 		_, child, found := a.ownedChild(sessionID, childKey)
-		if !found || child.agentAddress == "" || captureReply && child != target {
+		if !found || child.agentAddress == "" || child != target {
 			return agent.ErrChildRouteNotReady
 		}
 		params, err := json.Marshal(map[string]any{
@@ -702,10 +702,7 @@ func (a *Agent) steerGrokChild(childKey, content string, attachments []*leapmuxv
 		if err != nil {
 			return fmt.Errorf("encode the Grok subagent message: %w", err)
 		}
-		var submission grokChildSteerSubmission
-		if captureReply {
-			submission = a.admitGrokChildSteer(child, sink, content)
-		}
+		submission := a.admitGrokChildSteerWithJournal(child, sink, content, preGroup, preBaseline)
 		var resultErr error
 		var tracked bool
 		_, err = a.SendRequestObserved(grokSubagentMessageMethod, params, a.APITimeout(), func(raw json.RawMessage, replyErr error) {
@@ -714,7 +711,7 @@ func (a *Agent) steerGrokChild(childKey, content string, attachments []*leapmuxv
 			}
 			nativeID, err := grokChildMessageResult(raw)
 			resultErr = err
-			if err == nil && captureReply {
+			if err == nil {
 				receipt = agent.NativeInputReceipt{SessionID: child.childSession, InputID: nativeID}
 				tracked = a.settleGrokChildSubmission(submission, nativeID)
 			}
@@ -730,7 +727,7 @@ func (a *Agent) steerGrokChild(childKey, content string, attachments []*leapmuxv
 			a.settleGrokChildSubmission(submission, "")
 			return resultErr
 		}
-		if captureReply && !tracked {
+		if !tracked {
 			a.retireGrokSteerFrom(sink, receipt)
 		}
 		return nil
@@ -740,6 +737,8 @@ func (a *Agent) steerGrokChild(childKey, content string, attachments []*leapmuxv
 	}
 	return receipt, nil
 }
+
+func (*Agent) ChildSteerPolicy() agent.SteerPolicy { return agent.SteerPolicy{} }
 
 func grokChildMessageResult(raw json.RawMessage) (string, error) {
 	uncertain := func() error {
@@ -752,8 +751,8 @@ func grokChildMessageResult(raw json.RawMessage) (string, error) {
 	if json.Unmarshal(raw, &envelope) != nil {
 		return "", uncertain()
 	}
-	if providerkit.RawPresent(envelope.Error) && providerkit.RawKindOf(envelope.Error) != providerkit.RawNull {
-		if providerkit.RawPresent(envelope.Result) && providerkit.RawKindOf(envelope.Result) != providerkit.RawNull {
+	if providerkit.RawPresent(envelope.Error) {
+		if providerkit.RawPresent(envelope.Result) {
 			return "", uncertain()
 		}
 		text, ok := providerkit.RawString(envelope.Error)

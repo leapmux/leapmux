@@ -77,7 +77,9 @@ func TestDetachedPromptPreparesTheInputForItsSelectedTransport(t *testing.T) {
 	b.hooks.PromptParams = func(params map[string]any) { params["ext"] = "prepared metadata" }
 	failure := errors.New("the selected transport refused submission")
 	var request json.RawMessage
-	send := func(params json.RawMessage) error {
+	send := func(prepared PreparedPrompt) error {
+		params, err := prepared.MarshalParams()
+		require.NoError(t, err)
 		request = params
 		return failure
 	}
@@ -180,4 +182,27 @@ func TestPromptPreparationReceivesTheOriginalClassifiedAudio(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRootPromptTransportReceivesTypedPreparedPromptLazily(t *testing.T) {
+	t.Parallel()
+	out := &agenttest.Stdin{}
+	b, _ := newACPTurnBase(t, out)
+
+	var seen PreparedPrompt
+	b.hooks.RootPromptTransport = func(_ agent.NativeInputReceipt, prepared PreparedPrompt) (func(func(json.RawMessage, error)) error, error) {
+		seen = prepared
+		return nil, nil // Fall back to ACP, exercising MarshalParams.
+	}
+
+	attachments := []*leapmuxv1.Attachment{{Filename: "pic.png", MimeType: "image/png", Data: []byte{1, 2, 3}}}
+	_, err := b.SendInput("describe", attachments)
+	require.NoError(t, err)
+
+	assert.Equal(t, "session-1", seen.SessionID)
+	assert.Nil(t, seen.params, "RootPromptTransport must receive typed blocks without eager JSON marshaling")
+	require.Len(t, seen.Blocks, 2)
+	assert.Equal(t, "text", seen.Blocks[0]["type"])
+	assert.Equal(t, "image", seen.Blocks[1]["type"])
+	assert.Contains(t, out.String(), `"method":"session/prompt"`, "returning nil sender falls back to ACP MarshalParams")
 }

@@ -165,3 +165,64 @@ func TestKiloSteerFailedWriteReleasesItsTurn(t *testing.T) {
 	a.FinishPromptRequestForTest("session-1", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 	assert.False(t, a.PromptActive(), "a failed detached write leaves no turn behind")
 }
+
+func TestKiloNativePromptDoesNotHoldSessionLockWhileWaitingForDaemon(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	a := newAgent(false)
+	a.AttachPeerForTest(ctx, cancel, &agenttest.Stdin{}, "test-agent", "session-1")
+	*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
+	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, a.ApplyPermissionModeStartup(&acp.SessionResult{
+		CurrentModelID: "openai/gpt-5",
+		Models:         []acp.ModelInfo{{ModelID: "openai/gpt-5", Name: "GPT-5"}},
+	}, agent.Options{}, "", ""))
+	a.SetPromptActiveForTest(true)
+
+	// Start a native SteerInput that blocks on <-a.daemonReady.
+	steerDone := make(chan error, 1)
+	go func() {
+		_, err := a.SteerInput(agent.SteerRequest{InputID: "in-1", Content: "steer while daemon starting"})
+		steerDone <- err
+	}()
+
+	// Wait until beginKiloSteer has recorded the pending steer and entered submitNativePrompt.
+	testutil.RequireEventually(t, func() bool {
+		a.steers.mu.Lock()
+		defer a.steers.mu.Unlock()
+		return a.steers.pending == 1
+	})
+
+	// Verify WithSessionID (sessionMu.RLock) is NOT blocked by daemon wait.
+	sessionAcquired := make(chan struct{})
+	go func() {
+		_ = a.WithSessionID(func(string) error {
+			close(sessionAcquired)
+			return nil
+		})
+	}()
+
+	select {
+	case <-sessionAcquired:
+	case <-time.After(300 * time.Millisecond):
+		cancel()
+		t.Fatal("WithSessionID blocked on sessionMu while submitNativePrompt waited for daemonReady")
+	}
+	// DaemonUnavailable must unblock submitNativePrompt immediately with an error.
+	a.DaemonUnavailable()
+	err := <-steerDone
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unavailable")
+}
+
+func TestKiloDaemonReadyIsIdempotent(t *testing.T) {
+	t.Parallel()
+	a := newAgent(false)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	assert.NotPanics(t, func() {
+		a.DaemonReady(ctx)
+		a.DaemonReady(ctx)
+	})
+}

@@ -210,16 +210,12 @@ func (g *reasonixToolGraph) selectedHead() *reasonixToolHead {
 	return nil
 }
 
-// records reads back the messages the pending tool calls wait for.
-//
-// It walks the selected branch from its leaf and reads one line for each tool
-// call it answers, so a session with a thousand messages and two pending calls
-// reads two lines.
-func (g *reasonixToolGraph) records(file *os.File, pending map[string][]byte) (map[string]json.RawMessage, error) {
-	out := make(map[string]json.RawMessage)
+// walkSelectedBranch walks the selected branch from its leaf to the root,
+// applying any redaction override for each node.
+func (g *reasonixToolGraph) walkSelectedBranch(visit func(node reasonixToolNode) error) error {
 	head := g.selectedHead()
 	if head == nil {
-		return out, nil
+		return nil
 	}
 	seen := make(map[string]struct{})
 	for id := head.leaf; id != ""; {
@@ -227,7 +223,7 @@ func (g *reasonixToolGraph) records(file *os.File, pending map[string][]byte) (m
 			// A cycle describes no branch, so nothing on it is a record of the
 			// session. This is not the "one unreadable event" case, where the rest
 			// of the branch still stands.
-			return nil, fmt.Errorf("the Reasonix session graph contains a cycle")
+			return fmt.Errorf("the Reasonix session graph contains a cycle")
 		}
 		seen[id] = struct{}{}
 		node, exists := g.nodes[id]
@@ -238,36 +234,56 @@ func (g *reasonixToolGraph) records(file *os.File, pending map[string][]byte) (m
 		if redacted, exists := g.redactions[id]; exists {
 			node = redacted
 		}
+		if err := visit(node); err != nil {
+			return err
+		}
 		id = parent
+	}
+	return nil
+}
+
+// records reads back the messages the pending tool calls wait for.
+//
+// It walks the selected branch from its leaf and reads one line for each tool
+// call it answers, so a session with a thousand messages and two pending calls
+// reads two lines.
+func (g *reasonixToolGraph) records(file *os.File, pending map[string][]byte) (map[string]json.RawMessage, error) {
+	out := make(map[string]json.RawMessage)
+	err := g.walkSelectedBranch(func(node reasonixToolNode) error {
 		if node.toolID == "" {
-			continue
+			return nil
 		}
 		if _, wanted := pending[node.toolID]; !wanted {
-			continue
+			return nil
 		}
 		if _, found := out[node.toolID]; found {
-			continue
+			return nil
 		}
 		raw, err := readReasonixMessageAt(file, node.at)
 		// A log that Reasonix rewrote in place leaves the stored offsets pointing
 		// at other bytes. The tool-call id of what comes back is what states that
 		// the line is still the one the graph recorded.
 		if err != nil || reasonixToolCallID(raw) != node.toolID {
-			continue
+			return nil
 		}
 		out[node.toolID] = raw
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
-// readReasonixMessageAt reads one message back out of the line that carries it.
-func readReasonixMessageAt(file *os.File, at reasonixMessageLocation) (json.RawMessage, error) {
+// readReasonixRawMessageAt reads one raw message and any attached image blobs
+// out of the line that carries it.
+func readReasonixRawMessageAt(file *os.File, at reasonixMessageLocation) (json.RawMessage, json.RawMessage, error) {
 	if at.length <= 0 || at.length > agent.LiveMaxMessageSize() {
-		return nil, fmt.Errorf("a Reasonix event line has an unusable length")
+		return nil, nil, fmt.Errorf("a Reasonix event line has an unusable length")
 	}
 	line := make([]byte, at.length)
 	if _, err := file.ReadAt(line, at.offset); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var event struct {
 		Messages       []json.RawMessage            `json:"msgs"`
@@ -276,7 +292,7 @@ func readReasonixMessageAt(file *os.File, at reasonixMessageLocation) (json.RawM
 		ImageBlobs     json.RawMessage              `json:"image_blobs"`
 	}
 	if err := json.Unmarshal(line, &event); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	messages := event.Messages
 	switch {
@@ -286,9 +302,18 @@ func readReasonixMessageAt(file *os.File, at reasonixMessageLocation) (json.RawM
 		messages = event.LegacyMessages
 	}
 	if at.index < 0 || at.index >= len(messages) {
-		return nil, fmt.Errorf("a Reasonix event line no longer holds message %d", at.index)
+		return nil, nil, fmt.Errorf("a Reasonix event line no longer holds message %d", at.index)
 	}
-	return restoreReasonixRecordImages(file.Name(), messages[at.index], event.ImageBlobs, at.index), nil
+	return messages[at.index], event.ImageBlobs, nil
+}
+
+// readReasonixMessageAt reads one message back out of the line that carries it.
+func readReasonixMessageAt(file *os.File, at reasonixMessageLocation) (json.RawMessage, error) {
+	msg, imageBlobs, err := readReasonixRawMessageAt(file, at)
+	if err != nil {
+		return nil, err
+	}
+	return restoreReasonixRecordImages(file.Name(), msg, imageBlobs, at.index), nil
 }
 
 // reasonixEventCache keeps one event log's branch graph between reads.
@@ -358,52 +383,86 @@ func (c *reasonixEventCache) read(ctx context.Context, path string, file *os.Fil
 	return out, readErr
 }
 
-func (c *reasonixEventCache) applyLine(raw json.RawMessage, offset int64, length int) error {
+func normalizeReasonixEventSchema(schema int) int {
+	// Native 2.x records can change schema when images or an agent composition appear.
+	// They share one replace/append history. Schema 2 uses a separate branch graph.
+	if schema == 3 || schema == 4 || schema == 5 {
+		return 1
+	}
+	return schema
+}
+
+func applyReasonixEventLine(
+	raw json.RawMessage,
+	offset int64,
+	length int,
+	schema *int,
+	graph *reasonixToolGraph,
+	count *int,
+	onReplace func(),
+	onLinearMessage func(index int, message json.RawMessage, at reasonixMessageLocation),
+) error {
 	var event reasonixToolEvent
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return err
 	}
-	// Native 2.x records can change schema when images or an agent composition appear.
-	// They share one replace/append history. Schema 2 uses a separate branch graph.
-	schema := event.Schema
-	if schema == 3 || schema == 4 || schema == 5 {
-		schema = 1
+	lineSchema := normalizeReasonixEventSchema(event.Schema)
+	if *schema == 0 {
+		*schema = lineSchema
 	}
-	if c.schema == 0 {
-		c.schema = schema
-	}
-	if schema != c.schema {
+	if lineSchema != *schema {
 		return fmt.Errorf("the Reasonix event log changes schema within one file")
 	}
 	at := reasonixMessageLocation{offset: offset, length: length}
-	switch c.schema {
+	switch *schema {
 	case 2:
-		return c.graph.apply(event, at)
+		return graph.apply(event, at)
 	case 1:
 		switch event.Type {
 		case "replace":
-			clear(c.legacy)
-			c.count = 0
+			if onReplace != nil {
+				onReplace()
+			}
+			*count = 0
 		case "append":
-			if event.MessageIndex != c.count {
+			if event.MessageIndex != *count {
 				return fmt.Errorf("the Reasonix append position does not match its history")
 			}
 		default:
 			// Same trade-off as the schema-2 reader above: one unknown event type
 			// must not cost the reader every tool result in the session.
-			slog.Debug("Skip an unsupported Reasonix event type", "schema", c.schema, "type", event.Type)
+			slog.Debug("Skip an unsupported Reasonix event type", "schema", *schema, "type", event.Type)
 			return nil
 		}
 		for index, message := range event.LegacyMessages {
-			if id := reasonixToolCallID(message); id != "" {
+			if onLinearMessage != nil {
 				entry := at
 				entry.index = index
-				c.legacy[id] = entry
+				onLinearMessage(index, message, entry)
 			}
 		}
-		c.count += len(event.LegacyMessages)
+		*count += len(event.LegacyMessages)
 		return nil
 	default:
-		return fmt.Errorf("unsupported Reasonix event schema %d", c.schema)
+		return fmt.Errorf("unsupported Reasonix event schema %d", *schema)
 	}
+}
+
+func (c *reasonixEventCache) applyLine(raw json.RawMessage, offset int64, length int) error {
+	return applyReasonixEventLine(
+		raw,
+		offset,
+		length,
+		&c.schema,
+		c.graph,
+		&c.count,
+		func() {
+			clear(c.legacy)
+		},
+		func(_ int, message json.RawMessage, entry reasonixMessageLocation) {
+			if id := reasonixToolCallID(message); id != "" {
+				c.legacy[id] = entry
+			}
+		},
+	)
 }

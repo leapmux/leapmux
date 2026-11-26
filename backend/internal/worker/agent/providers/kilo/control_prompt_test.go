@@ -14,14 +14,6 @@ import (
 // through the family's own methods. These cases state what Kilo's plugin
 // promised in the browser, against kiloProvider itself.
 
-func kiloOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
-	var ids []string
-	for _, option := range prompt.GetPermission().GetOptions() {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 func TestReadControlRequest_RecognizesAQuestionAndNothingElse(t *testing.T) {
 	assert.NotNil(t, agenttest.ControlPromptOf(kiloProvider{}, []byte(`{"type":"question.asked","properties":{"questions":[]}}`)).GetQuestion())
 	assert.Nil(t, agenttest.ControlPromptOf(kiloProvider{}, []byte(`{"method":"requestPermission","params":{"toolCall":{"toolCallId":"tc-1"}}}`)).GetQuestion())
@@ -39,7 +31,7 @@ func TestReadControlRequest_AShellPermissionStatesItsCommand(t *testing.T) {
 
 // Kilo's daemon answers a request with no option list with its own two ids.
 func TestReadControlRequest_ARequestWithNoOptionsOffersTheDaemonPair(t *testing.T) {
-	assert.Equal(t, []string{"once", "reject"}, kiloOptionIDs(agenttest.ControlPromptOf(kiloProvider{}, []byte(`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"}}}`))))
+	assert.Equal(t, []string{"once", "reject"}, agenttest.PromptPermissionOptionIDs(agenttest.ControlPromptOf(kiloProvider{}, []byte(`{"params":{"toolCall":{"toolCallId":"c","kind":"other","title":"Write"}}}`))))
 }
 
 func TestAnswerControlRequest_SelectsTheChosenOption(t *testing.T) {

@@ -102,7 +102,7 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 			return qwenAgentRowKey(a.CurrentSessionID(), childUpdateRoute(updateType, metadata))
 		},
 		SessionMetadataHandler:     a.handleSessionMetadata,
-		ChunkMessageID:             a.chunkMessageID,
+		UpdateMessageID:            a.chunkMessageID,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		ControlRequestObserver:     a.observeControlRequest,

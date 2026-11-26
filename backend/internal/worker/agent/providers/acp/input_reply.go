@@ -40,11 +40,6 @@ func (b *Base) controlRequestTurnID(sessionID string, line *providerkit.ParsedLi
 		params, _ := providerkit.RawObject(line.Params)
 		toolCallID = providerkit.StringField(params["toolCall"], contracts.ACPSupplementIdentityToolCallID)
 	}
-	if toolCallID != "" && b.hooks.NativePermissionTurnID != nil {
-		if turnID := b.hooks.NativePermissionTurnID(sessionID, toolCallID); turnID != "" {
-			return turnID
-		}
-	}
 	b.turnMu.Lock()
 	defer b.turnMu.Unlock()
 	target := b.rootTarget
@@ -72,14 +67,21 @@ func (b *Base) controlRequestTurnID(sessionID string, line *providerkit.ParsedLi
 func (b *Base) RootReplyTurnID(sessionID string) string {
 	b.turnMu.Lock()
 	defer b.turnMu.Unlock()
-	target, request := b.rootTarget, b.rootPromptRequest
-	if target == nil || target.sessionID != sessionID || !target.receiptStarted {
-		return ""
-	}
-	if target.agentInitiated || request != nil && request.target == target && request.answered == nil && !request.nativeReplyManaged {
+	if target := b.liveRootReplyTargetLocked(sessionID); target != nil {
 		return target.inputReceipt.TurnID
 	}
 	return ""
+}
+
+func (b *Base) liveRootReplyTargetLocked(sessionID string) *acpTranscriptTarget {
+	target, request := b.rootTarget, b.rootPromptRequest
+	if target == nil || target.sessionID != sessionID || !target.receiptStarted || target.inputReceipt.TurnID == "" {
+		return nil
+	}
+	if target.agentInitiated || request != nil && request.target == target && request.answered == nil && !request.nativeReplyManaged {
+		return target
+	}
+	return nil
 }
 
 // CaptureRootSteer records a provider-confirmed echo in the current root
@@ -87,17 +89,24 @@ func (b *Base) RootReplyTurnID(sessionID string) string {
 // returned write at the echo's transcript position.
 func (b *Base) CaptureRootSteer(sessionID, nativeInputID string, resolution agent.SteerResolution) func() error {
 	b.turnMu.Lock()
-	target, request := b.rootTarget, b.rootPromptRequest
-	sharesTurn := target != nil && target.sessionID == sessionID && target.receiptStarted &&
-		target.inputReceipt.TurnID != "" && (target.agentInitiated ||
-		request != nil && request.target == target && request.answered == nil && !request.nativeReplyManaged)
-	if sharesTurn {
-		target.sharingReply = true
-		resolution.Receipt = agent.NativeInputReceipt{
-			SessionID: sessionID, InputID: nativeInputID, TurnID: target.inputReceipt.TurnID,
-		}
-	}
+	target := b.liveRootReplyTargetLocked(sessionID)
 	b.turnMu.Unlock()
+	return b.captureRootSteerForTarget(target, sessionID, nativeInputID, resolution)
+}
+
+func (b *Base) captureRootSteerForTarget(target *acpTranscriptTarget, sessionID, nativeInputID string, resolution agent.SteerResolution) func() error {
+	sharesTurn := false
+	if target != nil {
+		b.turnMu.Lock()
+		if target.sessionID == sessionID && target.receiptStarted && target.inputReceipt.TurnID != "" {
+			target.sharingReply = true
+			resolution.Receipt = agent.NativeInputReceipt{
+				SessionID: sessionID, InputID: nativeInputID, TurnID: target.inputReceipt.TurnID,
+			}
+			sharesTurn = true
+		}
+		b.turnMu.Unlock()
+	}
 
 	write := b.sink.CaptureSteerResolution(resolution)
 	if !sharesTurn {
@@ -111,6 +120,24 @@ func (b *Base) CaptureRootSteer(sessionID, nativeInputID string, resolution agen
 		target.steerReceipts = append(target.steerReceipts, resolution.Receipt)
 		target.mu.Unlock()
 		return nil
+	}
+}
+
+// RetainSteerWrite orders a captured steer-resolution write in the root
+// transcript sequence and logs unexpected delivery failures.
+func (b *Base) RetainSteerWrite(label string, write func() error) {
+	publish, err := agent.ReserveTranscriptSequence(b.sink, label, func(agent.TranscriptSequence) error {
+		return write()
+	})
+	if err == nil {
+		err = publish()
+	}
+	b.reportSteerWrite(label, err)
+}
+
+func (b *Base) reportSteerWrite(label string, err error) {
+	if err != nil && !errors.Is(err, agent.ErrOutputInFlight) && !agent.OutputRetained(err) {
+		slog.Error(label, "agent_id", b.AgentID(), "error", err)
 	}
 }
 
@@ -131,7 +158,7 @@ type acpInputReplyProof struct {
 	shared     bool
 }
 
-func proveACPInputReply(request *acpRootPromptRequest, turn acpTurnSnapshot, response json.RawMessage, err error) acpInputReplyProof {
+func proveACPInputReply(request *acpRootPromptRequest, turn acpTurnSnapshot, response json.RawMessage, err error, stopped bool) acpInputReplyProof {
 	if request == nil || request.nativeReplyManaged || request.target == nil || request.target.inputReceipt.TurnID == "" {
 		return acpInputReplyProof{}
 	}
@@ -148,19 +175,36 @@ func proveACPInputReply(request *acpRootPromptRequest, turn acpTurnSnapshot, res
 		}
 		return proof
 	}
-	switch acpPromptStopReason(response) {
-	case contracts.ACPStopReasonEndTurn, "max_tokens", "max_turn_requests", "refusal":
-		proof.outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
-	case contracts.ACPStopReasonCancelled:
-		proof.outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
-	default:
+	outcome := StopReasonOutcome(acpStopReason(response))
+	if stopped && (outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED ||
+		outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED) {
+		outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	}
+	if outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
 		return proof
 	}
+	proof.outcome = outcome
 	proof.retirement = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 	return proof
 }
 
-func acpPromptStopReason(response json.RawMessage) string {
+// StopReasonOutcome maps standard ACP stopReason values to their input-turn
+// outcome. Unrecognized reasons return AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED.
+func StopReasonOutcome(reason string) leapmuxv1.AgentInputTurnOutcome {
+	switch reason {
+	case contracts.ACPStopReasonEndTurn, "max_tokens", "max_turn_requests", "refusal":
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
+	case contracts.ACPStopReasonCancelled:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
+	default:
+		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
+	}
+}
+
+func acpStopReason(response json.RawMessage) string {
+	if len(response) == 0 {
+		return ""
+	}
 	var body struct {
 		Role       string          `json:"role"`
 		Content    json.RawMessage `json:"content"`
@@ -171,12 +215,19 @@ func acpPromptStopReason(response json.RawMessage) string {
 	}
 	if body.Role == contracts.ACPRoleResult {
 		if content, ok := providerkit.RawObject(body.Content); ok {
-			reason, _ := providerkit.RawString(content["stopReason"])
-			return reason
+			if reason, _ := providerkit.RawString(content["stopReason"]); reason != "" {
+				return reason
+			}
 		}
 	}
-	reason, _ := providerkit.RawString(body.StopReason)
-	return reason
+	if reason, _ := providerkit.RawString(body.StopReason); reason != "" {
+		return reason
+	}
+	if content, ok := providerkit.RawObject(body.Content); ok {
+		reason, _ := providerkit.RawString(content["stopReason"])
+		return reason
+	}
+	return ""
 }
 
 func (proof acpInputReplyProof) endRecord(response json.RawMessage) agent.MessageContent {
@@ -208,12 +259,18 @@ func (b *Base) retireSharedInputs(admission *acpTranscriptAdmission, outcome lea
 		target.mu.Lock()
 		receipts := slices.Clone(target.steerReceipts)
 		target.mu.Unlock()
+		var remaining []agent.NativeInputReceipt
+		var errs []error
 		for _, receipt := range receipts {
 			if err := writer.RetireNativeInputTurn(receipt, outcome); err != nil {
-				return err
+				remaining = append(remaining, receipt)
+				errs = append(errs, err)
 			}
 		}
-		return nil
+		target.mu.Lock()
+		target.steerReceipts = remaining
+		target.mu.Unlock()
+		return errors.Join(errs...)
 	})
 }
 

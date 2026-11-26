@@ -2,7 +2,6 @@ package grok
 
 import (
 	"context"
-	"encoding/json"
 	"path/filepath"
 	"runtime"
 
@@ -112,9 +111,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 			a.observeControlRequest(sessionID, line)
 			a.observeGrokSteerControl(sessionID)
 		},
-		NativeControlReplyOwner:  a.grokSteerControlOwner,
-		ResolvePermissionSession: a.resolveGrokPermissionSession,
-		ChildPermissionOwner:     a.grokChildPermissionOwner,
+		ControlOwner: a.grokControlOwner,
 		// Folder trust is Grok's one request with no cancel answer, and it asks
 		// about the repository rather than the turn. See grokControlCancelAnswer.
 		AnswerlessControlsOutliveTurns: true,
@@ -132,6 +129,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 			if stopped {
 				a.clearPermissionChecks(a.CurrentSessionID())
 			}
+			a.finishLingeringPromptSteer()
 			a.retryResolution.Reset()
 			a.stateMu.Lock()
 			a.chunkStreamStart = 0
@@ -148,15 +146,12 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		// The first chunk of a new model request drops the text that the
 		// previous request left buffered, which a retry discarded (see
 		// observeNotificationMetadata).
-		SessionNotificationMetadata: func(updateType string, metadata map[string]json.RawMessage) {
-			a.observeNotificationMetadata(updateType, metadata)
-			a.observeGrokReplyModel(updateType, metadata)
-		},
-		RootAssistantMessageID:     a.takeGrokAssistantStream,
-		AssistantTextKey:           a.grokAssistantTextKey,
-		ChildSessionUpdateIdentity: a.observeGrokChildUpdate,
-		ClearProviderState:         a.clearProviderState,
-		BeforeWaitCleanup:          a.finishGrokSteerJobs,
+		SessionNotificationMetadata: a.observeNotificationMetadata,
+		UpdateMessageID:             a.grokUpdateMessageID,
+		AssistantTextKey:            a.grokAssistantTextKey,
+		CaptureReplyReconciliation:  a.captureGrokSteerReconciliation,
+		ClearProviderState:          a.clearProviderState,
+		BeforeWaitCleanup:           a.finishGrokSteerJobs,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +23,7 @@ func TestJuniePermissionUsesTheInputsCommittedWhenItOpened(t *testing.T) {
 	t.Parallel()
 	selector := junieControlSelector{toolCallID: juniePermissionStep}
 	journal := junieControlTaskLine + junieControlInputs + juniePermissionEvent + junieLaterInputs
-	task, ok := readJunieControlTask(junieCursor(nil), []byte(journal), selector)
+	task, ok := readJunieControlTask(sessionstore.NewJournalCursor(nil), []byte(journal), selector)
 	require.True(t, ok)
 	assert.Equal(t, "task-261123-071734-r1h9", task.id)
 	assert.Equal(t, []string{"first", "second"}, task.inputIDs)
@@ -36,7 +37,7 @@ func TestJuniePermissionUsesTheInputsCommittedWhenItOpened(t *testing.T) {
 		"no consumption": junieControlTaskLine + juniePermissionEvent,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, ok := readJunieControlTask(junieCursor(nil), []byte(wrong), selector)
+			_, ok := readJunieControlTask(sessionstore.NewJournalCursor(nil), []byte(wrong), selector)
 			assert.False(t, ok)
 		})
 	}
@@ -50,7 +51,7 @@ func TestJunieControlTaskMatchesTheWholeNativeForm(t *testing.T) {
 	selector, ok := junieControlSelectorOf(&providerkit.ParsedLine{Method: "elicitation/create", Params: json.RawMessage(rawForm)})
 	require.True(t, ok)
 	journal := junieControlTaskLine + junieControlInputs + size + color + junieLaterInputs
-	task, ok := readJunieControlTask(junieCursor(nil), []byte(journal), selector)
+	task, ok := readJunieControlTask(sessionstore.NewJournalCursor(nil), []byte(journal), selector)
 	require.True(t, ok)
 	assert.Equal(t, "task-261123-071734-r1h9", task.id)
 	assert.Equal(t, []string{"first", "second"}, task.inputIDs)
@@ -64,7 +65,7 @@ func TestJunieControlTaskMatchesTheWholeNativeForm(t *testing.T) {
 		"different inputs": junieControlTaskLine + junieControlInputs + size + junieLaterInputs + color,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, ok := readJunieControlTask(junieCursor(nil), []byte(wrong), selector)
+			_, ok := readJunieControlTask(sessionstore.NewJournalCursor(nil), []byte(wrong), selector)
 			assert.False(t, ok)
 		})
 	}

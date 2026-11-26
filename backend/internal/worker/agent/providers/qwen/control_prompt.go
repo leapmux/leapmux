@@ -29,7 +29,6 @@ const (
 // about, in the compact form that the request itself states: its `_meta` and
 // its arguments. A member that is no object reads as absent.
 type qwenPermissionToolCall struct {
-	rawMeta  json.RawMessage
 	meta     map[string]json.RawMessage
 	rawInput map[string]json.RawMessage
 }
@@ -37,7 +36,6 @@ type qwenPermissionToolCall struct {
 func readQwenPermissionToolCall(payload []byte) qwenPermissionToolCall {
 	toolCall := acp.PermissionToolCall(payload)
 	return qwenPermissionToolCall{
-		rawMeta:  toolCall["_meta"],
 		meta:     providerkit.RawFields(toolCall["_meta"]),
 		rawInput: providerkit.RawFields(toolCall[contracts.ACPSupplementRequestRawInput]),
 	}
@@ -80,14 +78,14 @@ func (c qwenPermissionToolCall) plan() string {
 //
 // The standard `elicitation/create` reads as a form before either.
 func (qwenProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
+	if elicitation, ok := acp.ReadElicitation(input.Payload); ok {
+		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
+	}
 	toolCall := readQwenPermissionToolCall(input.Payload)
 	if toolCall.asksQuestion() {
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
 			Questions: toolCall.questions(),
 		}}}
-	}
-	if elicitation, ok := acp.ReadElicitation(input.Payload); ok {
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: elicitation}}
 	}
 	// isPlanApproval is the one plan predicate: the resolution of an answer
 	// reads the same request through it, so a request reads as a plan

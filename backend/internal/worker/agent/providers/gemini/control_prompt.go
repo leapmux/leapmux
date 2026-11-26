@@ -1,14 +1,25 @@
 package gemini
 
 import (
-	"encoding/json"
-
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+func geminiOffersPlanOptions(payload []byte) bool {
+	var hasAllow, hasDeny bool
+	for _, option := range acp.PermissionOptions(payload) {
+		switch option.GetOptionId() {
+		case "proceed_once":
+			hasAllow = true
+		case "cancel":
+			hasDeny = true
+		}
+	}
+	return hasAllow && hasDeny
+}
 
 // ReadControlRequest reads Gemini CLI's plan approval as a plan. Gemini asks
 // for it as a permission for its exit_plan_mode call, whose title states the
@@ -19,7 +30,7 @@ import (
 // link and the answer agree about which request is a plan.
 func (geminiProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
 	callID, planPath, _, plan := geminiPlanPermission(input.Payload)
-	if !plan {
+	if !plan || !geminiOffersPlanOptions(input.Payload) {
 		return acp.ReadBaseControlRequest(input)
 	}
 	return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{
@@ -37,8 +48,8 @@ func geminiPlanSourceText(input agent.ControlRequestInput, callID, planPath stri
 	if !ok || !geminiPlanSourceMatches(source.Original, callID, planPath) {
 		return ""
 	}
-	var supplement map[string]json.RawMessage
-	if json.Unmarshal(source.Supplemental, &supplement) != nil {
+	supplement, ok := providerkit.RawObject(source.Supplemental)
+	if !ok {
 		return ""
 	}
 	path, _ := providerkit.RawString(supplement[contracts.GeminiSupplementPlanPath])
@@ -56,7 +67,7 @@ func geminiPlanSourceText(input agent.ControlRequestInput, callID, planPath stri
 // it queues the feedback of a refusal as a message, so the answer itself
 // states no follow-up. Every other request takes the base protocol's answer.
 func (geminiProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.ControlAnswer, error) {
-	if _, _, _, plan := geminiPlanPermission(input.Request.Payload); plan {
+	if _, _, _, plan := geminiPlanPermission(input.Request.Payload); plan && geminiOffersPlanOptions(input.Request.Payload) {
 		return agent.AnswerNeutralPlan(input)
 	}
 	return acp.AnswerBaseControlRequest(input, nil)

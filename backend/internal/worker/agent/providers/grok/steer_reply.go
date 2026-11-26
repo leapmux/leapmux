@@ -15,7 +15,9 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 type grokSteerReplies struct {
@@ -28,7 +30,6 @@ type grokSteerReplies struct {
 	handoff          *grokSteerHandoff
 	children         map[string]*grokChildReplyState
 	live             grokLiveModel
-	nextText         string
 }
 
 type grokLiveModel struct {
@@ -43,8 +44,9 @@ type grokLiveModel struct {
 type grokSteerReply struct {
 	sessionID, promptID, turnID, group string
 	predecessorID                      string
+	agentInitiated                     bool
 	childMessages                      bool
-	baseline                           grokJournalBaseline
+	baseline                           sessionstore.JournalCursor
 	inputs                             []grokSteerAdmission
 	streams                            []grokSteerStream
 	cancelControlProbe                 context.CancelFunc
@@ -52,8 +54,22 @@ type grokSteerReply struct {
 	invalid                            bool
 }
 
-func (a *Agent) admitGrokSteer(receipt agent.NativeInputReceipt, payload grokInterjectionPayload) *grokSteerReply {
-	promptID, turnID := a.grokSteerScope(receipt.SessionID)
+func (a *Agent) prepareGrokJournal(sessionID string) (string, sessionstore.JournalCursor) {
+	if sessionID == "" {
+		return "", sessionstore.JournalCursor{}
+	}
+	replies := &a.steerReplies
+	replies.mu.Lock()
+	skip := replies.closed || (replies.active != nil && replies.active.sessionID == sessionID)
+	replies.mu.Unlock()
+	if skip {
+		return "", sessionstore.JournalCursor{}
+	}
+	return replies.findJournal(sessionID)
+}
+
+func (a *Agent) admitGrokSteerWithJournal(receipt agent.NativeInputReceipt, payload grokInterjectionPayload, group string, baseline sessionstore.JournalCursor) *grokSteerReply {
+	promptID, turnID, agentInitiated := a.grokSteerScope(receipt.SessionID)
 	if turnID == "" || promptID == "" {
 		return nil
 	}
@@ -72,35 +88,52 @@ func (a *Agent) admitGrokSteer(receipt agent.NativeInputReceipt, payload grokInt
 		current.inputs = append(current.inputs, grokSteerAdmission{id: receipt.InputID, payload: payload, afterStream: replies.live.boundaryOf(promptID)})
 		return current
 	}
+	if group != "" {
+		current := &grokSteerReply{
+			sessionID: receipt.SessionID, turnID: turnID, promptID: promptID, group: group,
+			agentInitiated: agentInitiated, baseline: baseline,
+			inputs: []grokSteerAdmission{{id: receipt.InputID, payload: payload, afterStream: replies.live.boundaryOf(promptID)}},
+		}
+		replies.active = current
+		replies.mu.Unlock()
+		return current
+	}
 	replies.mu.Unlock()
 
-	group, baseline := replies.findJournal(receipt.SessionID)
-	currentPrompt, currentTurn := a.grokSteerScope(receipt.SessionID)
+	group, baseline = replies.findJournal(receipt.SessionID)
+	currentPrompt, currentTurn, currentAgent := a.grokSteerScope(receipt.SessionID)
 	if group == "" || currentPrompt != promptID || currentTurn != turnID {
 		return nil
 	}
 	replies.mu.Lock()
 	defer replies.mu.Unlock()
-	if replies.closed || replies.active != nil {
+	if replies.closed {
 		return nil
+	}
+	if current := replies.active; current != nil {
+		if current.turnID != turnID || current.sessionID != receipt.SessionID || current.promptID != promptID {
+			return nil
+		}
+		current.inputs = append(current.inputs, grokSteerAdmission{id: receipt.InputID, payload: payload, afterStream: replies.live.boundaryOf(promptID)})
+		return current
 	}
 	current := &grokSteerReply{
 		sessionID: receipt.SessionID, turnID: turnID, promptID: promptID, group: group,
-		baseline: baseline,
-		inputs:   []grokSteerAdmission{{id: receipt.InputID, payload: payload, afterStream: replies.live.boundaryOf(promptID)}},
+		agentInitiated: currentAgent, baseline: baseline,
+		inputs: []grokSteerAdmission{{id: receipt.InputID, payload: payload, afterStream: replies.live.boundaryOf(promptID)}},
 	}
 	replies.active = current
 	return current
 }
 
-func (replies *grokSteerReplies) findJournal(sessionID string) (group string, baseline grokJournalBaseline) {
+func (replies *grokSteerReplies) findJournal(sessionID string) (group string, baseline sessionstore.JournalCursor) {
 	for _, dir := range grokSessionGroups(filepath.Join(replies.home, "sessions"), replies.workingDir) {
-		data, err := readGrokUpdates(replies.home, filepath.Base(dir), sessionID)
+		b, err := readGrokJournalBaseline(replies.home, filepath.Base(dir), sessionID)
 		if err == nil {
 			if group != "" {
-				return "", grokJournalBaseline{}
+				return "", sessionstore.JournalCursor{}
 			}
-			group, baseline = filepath.Base(dir), grokBaseline(data)
+			group, baseline = filepath.Base(dir), b
 		}
 	}
 	return group, baseline
@@ -116,12 +149,12 @@ func (a *Agent) grokActivePrompt(sessionID string) (promptID string, agentInitia
 	return promptID, promptID != "" && promptID == a.turns.agentTurn
 }
 
-func (a *Agent) grokSteerScope(sessionID string) (promptID, turnID string) {
-	promptID, agentInitiated := a.grokActivePrompt(sessionID)
+func (a *Agent) grokSteerScope(sessionID string) (promptID, turnID string, agentInitiated bool) {
+	promptID, agentInitiated = a.grokActivePrompt(sessionID)
 	if agentInitiated {
-		return promptID, promptID
+		return promptID, promptID, true
 	}
-	return promptID, a.RootReplyTurnID(sessionID)
+	return promptID, a.RootReplyTurnID(sessionID), false
 }
 
 // Grok's prompt ID owns the controls of agent-initiated and child turns. The
@@ -216,25 +249,37 @@ func readGrokReplyModel(sessionID, updateType string, metadata map[string]json.R
 	return grokLiveModel{promptID: promptID, start: start, eventSeq: seq}, true
 }
 
-func (a *Agent) observeGrokReplyModel(updateType string, metadata map[string]json.RawMessage) {
-	sessionID := a.CurrentSessionID()
-	model, ok := readGrokReplyModel(sessionID, updateType, metadata)
-	if !ok {
-		return
+func (a *Agent) grokUpdateMessageID(info acp.UpdateMessageInfo) string {
+	if info.RowKey != "" {
+		if info.SessionID == "" {
+			return ""
+		}
+		return a.observeGrokChildUpdate(info.SessionID, info.RowKey, info.UpdateType, info.NotificationMeta)
 	}
-
+	sessionID := info.SessionID
+	if sessionID == "" {
+		sessionID = a.CurrentSessionID()
+	}
+	model, ok := readGrokReplyModel(sessionID, info.UpdateType, info.NotificationMeta)
 	replies := &a.steerReplies
 	replies.mu.Lock()
 	defer replies.mu.Unlock()
+	if !ok {
+		if replies.active != nil && info.UpdateType == contracts.ACPUpdateAgentMessageChunk {
+			replies.active.invalid = true
+		}
+		return ""
+	}
 	replies.live = model
 	current := replies.active
 	if current == nil || current.sessionID != sessionID || current.promptID != model.promptID {
-		return
+		return ""
 	}
 	current.recordModel(model)
-	if updateType == contracts.ACPUpdateAgentMessageChunk {
-		replies.nextText = grokStreamMessageID(sessionID, model.promptID, model.start)
+	if info.UpdateType == contracts.ACPUpdateAgentMessageChunk {
+		return grokStreamMessageID(sessionID, model.promptID, model.start)
 	}
+	return ""
 }
 
 func (current *grokSteerReply) recordModel(model grokLiveModel) {
@@ -247,18 +292,6 @@ const grokStreamMessagePrefix = "grok-stream:"
 
 func grokStreamMessageID(sessionID, promptID string, start int64) string {
 	return grokStreamMessagePrefix + sessionID + ":" + promptID + ":" + strconv.FormatInt(start, 10)
-}
-
-func (a *Agent) takeGrokAssistantStream(json.RawMessage) string {
-	replies := &a.steerReplies
-	replies.mu.Lock()
-	defer replies.mu.Unlock()
-	messageID := replies.nextText
-	replies.nextText = ""
-	if replies.active != nil && messageID == "" {
-		replies.active.invalid = true
-	}
-	return messageID
 }
 
 func (a *Agent) grokAssistantTextKey(messageID string) string {
@@ -291,7 +324,7 @@ func (a *Agent) grokAssistantTextKey(messageID string) string {
 // Prove the cohort that preceded the stream asking for approval. A late
 // journal append can bind the inputs while the current request is still open.
 func (a *Agent) observeGrokSteerControl(sessionID string) {
-	promptID, turnID := a.grokSteerScope(sessionID)
+	promptID, turnID, _ := a.grokSteerScope(sessionID)
 	sink := a.Sink()
 	replies := &a.steerReplies
 	replies.mu.Lock()
@@ -345,22 +378,50 @@ func (current *grokSteerReply) snapshot() grokSteerReply {
 	return snapshot
 }
 
-func (a *Agent) finishGrokSteerReply(sessionID, promptID string, outcome leapmuxv1.AgentInputTurnOutcome) {
+// captureGrokSteerReconciliation captures the active LeapMux prompt's steer
+// batch after captureRootSnapshotLocked has allocated the final buffered
+// assistant text key, retiring the batch if the prompt ends without a
+// turn_completed notification.
+func (a *Agent) captureGrokSteerReconciliation() func(agent.MessageCompletion, bool) error {
 	replies := &a.steerReplies
 	replies.mu.Lock()
 	current := replies.active
-	if replies.closed || current == nil || current.sessionID != sessionID || current.promptID != promptID {
+	if replies.closed || current == nil || current.agentInitiated {
 		replies.mu.Unlock()
-		return
+		return nil
 	}
 	replies.mu.Unlock()
+	return func(_ agent.MessageCompletion, _ bool) error {
+		replies.mu.Lock()
+		if replies.closed || replies.active != current {
+			replies.mu.Unlock()
+			return nil
+		}
+		a.detachAndPublishGrokSteerLocked(current, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED)
+		return nil
+	}
+}
 
-	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+func (a *Agent) finishLingeringPromptSteer() {
+	a.stateMu.Lock()
+	running := a.turns.running
+	a.stateMu.Unlock()
+	replies := &a.steerReplies
 	replies.mu.Lock()
-	if replies.closed || replies.active != current {
+	current := replies.active
+	if replies.closed || current == nil || current.agentInitiated || current.promptID == running {
 		replies.mu.Unlock()
 		return
 	}
+	sessionID, promptID := current.sessionID, current.promptID
+	replies.mu.Unlock()
+	a.finishGrokSteerReply(sessionID, promptID, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED)
+}
+
+// detachAndPublishGrokSteerLocked detaches current, unlocks replies.mu, and
+// starts asynchronous proof publication if any inputs remain.
+func (a *Agent) detachAndPublishGrokSteerLocked(current *grokSteerReply, outcome leapmuxv1.AgentInputTurnOutcome) {
+	replies := &a.steerReplies
 	replies.active = nil
 	if current.cancelControlProbe != nil {
 		current.cancelControlProbe()
@@ -381,26 +442,45 @@ func (a *Agent) finishGrokSteerReply(sessionID, promptID string, outcome leapmux
 	}()
 }
 
+func (a *Agent) finishGrokSteerReply(sessionID, promptID string, outcome leapmuxv1.AgentInputTurnOutcome) {
+	replies := &a.steerReplies
+	replies.mu.Lock()
+	current := replies.active
+	if replies.closed || current == nil || current.sessionID != sessionID || current.promptID != promptID {
+		replies.mu.Unlock()
+		return
+	}
+	replies.mu.Unlock()
+
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+	replies.mu.Lock()
+	if replies.closed || replies.active != current {
+		replies.mu.Unlock()
+		return
+	}
+	a.detachAndPublishGrokSteerLocked(current, outcome)
+}
+
 func (a *Agent) awaitGrokSteerProof(ctx context.Context, proof grokSteerReply) map[string]int {
 	if proof.invalid || len(proof.streams) == 0 {
 		return nil
 	}
+	poller := newGrokJournalPoller(a.steerReplies.home, proof.group, proof.baseline, grokJournalScope{
+		sessionID: proof.sessionID, predecessorID: proof.predecessorID, promptID: proof.promptID, childMessages: proof.childMessages,
+	})
 	deadline := a.Clock().NewTimer(a.APITimeout(), "grok-interjection-proof")
 	defer deadline.Stop()
 	for {
-		data, err := readGrokUpdates(a.steerReplies.home, proof.group, proof.sessionID)
-		if err == nil {
-			rows, ok := readGrokConsumptions(proof.baseline, data, grokJournalScope{
-				sessionID: proof.sessionID, predecessorID: proof.predecessorID, promptID: proof.promptID, childMessages: proof.childMessages,
-			})
-			if !ok {
-				return nil
-			}
-			matched, err := matchGrokConsumptions(proof.inputs, proof.streams, rows)
-			if err == nil {
+		rows, changed, err := poller.poll()
+		if errors.Is(err, errGrokJournalInvalid) {
+			return nil
+		}
+		if err == nil && changed {
+			matched, matchErr := matchGrokConsumptions(proof.inputs, proof.streams, rows)
+			if matchErr == nil {
 				return matched
 			}
-			if !errors.Is(err, errGrokConsumptionIncomplete) {
+			if !errors.Is(matchErr, errGrokConsumptionIncomplete) {
 				return nil
 			}
 		}
@@ -481,7 +561,6 @@ func (a *Agent) abandonGrokSteerReplies() {
 	children := replies.children
 	replies.children = nil
 	replies.live = grokLiveModel{}
-	replies.nextText = ""
 	if current != nil && current.cancelControlProbe != nil {
 		current.cancelControlProbe()
 	}

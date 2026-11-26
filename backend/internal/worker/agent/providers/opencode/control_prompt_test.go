@@ -62,14 +62,6 @@ func nativeResolved(t *testing.T, payload, requestID string, answer agent.Contro
 	return string(resolved.Content)
 }
 
-func nativeOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
-	var ids []string
-	for _, option := range prompt.GetPermission().GetOptions() {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 func TestReadControlRequest_AShellPermissionStatesItsCommandAndKeepsEmptyMetadata(t *testing.T) {
 	payload := []byte(`{"type":"permission.asked","data":{"action":"shell","resources":["printf hello"],"save":[],"metadata":{"timeout":0,"quiet":false,"note":""}}}`)
 	original := bytes.Clone(payload)
@@ -125,8 +117,8 @@ func TestReadControlRequest_OffersTheNativeDecisions(t *testing.T) {
 		OptionId: "always", Kind: leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ALWAYS, Name: "Always allow",
 		Scope: leapmuxv1.PermissionScope_PERMISSION_SCOPE_PROJECT,
 	}, got[1]), "%v", got[1])
-	assert.Equal(t, []string{"once", "always", "reject"}, nativeOptionIDs(agenttest.ControlPromptOf(opencodeProvider{}, []byte(nativeSavablePermission))))
-	assert.Equal(t, []string{"once", "reject"}, nativeOptionIDs(agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"permission.asked","data":{"action":"read","resources":["/a.ts"],"save":"pwd *"}}`))),
+	assert.Equal(t, []string{"once", "always", "reject"}, agenttest.PromptPermissionOptionIDs(agenttest.ControlPromptOf(opencodeProvider{}, []byte(nativeSavablePermission))))
+	assert.Equal(t, []string{"once", "reject"}, agenttest.PromptPermissionOptionIDs(agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"permission.asked","data":{"action":"read","resources":["/a.ts"],"save":"pwd *"}}`))),
 		"a save list of the wrong type states nothing to save")
 }
 
@@ -136,7 +128,7 @@ func TestReadControlRequest_AMemberOfTheWrongTypeReadsAsAbsent(t *testing.T) {
 	assert.Empty(t, permission.GetTitle())
 	assert.Empty(t, permission.GetReason())
 	assert.Equal(t, `{"resources":["a"]}`, permission.GetInputJson(), "a resource that is no string drops, and metadata that is no object reads as none")
-	assert.Equal(t, []string{"once", "reject"}, nativeOptionIDs(agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"permission.asked","data":{}}`))))
+	assert.Equal(t, []string{"once", "reject"}, agenttest.PromptPermissionOptionIDs(agenttest.ControlPromptOf(opencodeProvider{}, []byte(`{"type":"permission.asked","data":{}}`))))
 }
 
 // The registry publishes no other request, and the resolver refuses an answer

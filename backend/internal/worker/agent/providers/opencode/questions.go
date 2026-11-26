@@ -519,6 +519,7 @@ type openCodeQuestions struct {
 	// ready runs once the daemon address is known, before the event stream
 	// opens, with the context of the bridge. It may be nil.
 	ready          func(context.Context)
+	unavailable    func()
 	questionTurnID func(context.Context, string, string) string
 	questionOwner  func(string) (agent.ControlServices, error)
 
@@ -588,6 +589,9 @@ func (q *openCodeQuestions) Begin(ctx context.Context, clock quartz.Clock, agent
 		if err != nil {
 			slog.Warn("No OpenCode question server; questions stay unanswerable",
 				"agent_id", agentID, "pid", pid, "error", err)
+			if q.unavailable != nil {
+				q.unavailable()
+			}
 			return
 		}
 		q.mu.Lock()

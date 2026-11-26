@@ -27,17 +27,18 @@ type FamilyBase struct {
 	Questions openCodeQuestions
 	// MemberEvents receives native session metadata. Set it before the daemon reader starts.
 	MemberEvents func(eventType string, properties json.RawMessage)
-	// AssistantTextKey identifies a member's assembled root text rows.
-	AssistantTextKey       func(messageID string) string
-	AssistantTextPrepared  func(messageID, key, text string)
-	RootPromptTransport    func(agent.NativeInputReceipt, json.RawMessage) (func(func(json.RawMessage, error)) error, error)
-	QuestionTurnID         func(ctx context.Context, sessionID, assistantID string) string
-	NativePermissionTurnID func(sessionID, toolCallID string) string
+	// ConfigureHooks lets a family member adjust the ACP hooks built by
+	// FamilyHooks before the process starts. Set it before the start. It may be nil.
+	ConfigureHooks func(hooks *acp.Hooks)
+	QuestionTurnID func(ctx context.Context, sessionID, assistantID string) string
 	// DaemonReady runs once the address of the daemon's HTTP server is known,
 	// so ReadDaemon can reach it. Its context ends with the daemon bridge. It
 	// runs before the bridge reads events, so it must not wait. Set it before
 	// the start. It may be nil.
 	DaemonReady func(ctx context.Context)
+	// DaemonUnavailable runs if daemon discovery fails so callers waiting on
+	// DaemonReady can unblock immediately instead of waiting for a timeout.
+	DaemonUnavailable func()
 	// TurnEnded runs after each prompt ends, also after a failure or a stop. Set
 	// it before the start. It may be nil.
 	TurnEnded func()
@@ -88,8 +89,23 @@ func (b *FamilyBase) configureQuestions(sink agent.ControlServices) {
 	b.Questions.Configure(sink)
 	b.Questions.observe = b.handleDaemonEvent
 	b.Questions.ready = b.DaemonReady
+	b.Questions.unavailable = b.DaemonUnavailable
 	b.Questions.questionTurnID = b.QuestionTurnID
 	b.Questions.questionOwner = b.sessionControlOwner
+}
+
+func (b *FamilyBase) controlOwner(sessionID string, _ *providerkit.ParsedLine, _ bool) (acp.ControlOwnerResolution, error) {
+	if sessionID == "" || b.IsCurrentSession(sessionID) {
+		return acp.ControlOwnerResolution{}, nil
+	}
+	child, err := b.sessionControlOwner(sessionID)
+	if err != nil {
+		slog.Warn("resolve the child permission owner", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
+	}
+	if err != nil || child == nil {
+		return acp.ControlOwnerResolution{Refuse: true}, nil
+	}
+	return acp.ControlOwnerResolution{Sink: child}, nil
 }
 
 func (b *FamilyBase) sessionControlOwner(sessionID string) (agent.ControlServices, error) {

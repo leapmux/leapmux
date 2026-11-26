@@ -18,37 +18,42 @@ import (
 // the turn. The id carries a prefix that no runtime's option id uses.
 const CancelOptionID = "leapmux:cancel"
 
+// ReadControlRequestEnvelope decodes the JSON-RPC method and params object of
+// a stored control request payload.
+func ReadControlRequestEnvelope(payload []byte) (string, map[string]json.RawMessage) {
+	fields := providerkit.RawFields(payload)
+	method, _ := providerkit.RawString(fields["method"])
+	return method, providerkit.RawFields(fields["params"])
+}
+
 // permissionParams reads the params of a session/request_permission. Each
 // field is decoded on its own, so a malformed option list leaves the tool
 // call readable.
 func permissionParams(payload []byte) map[string]json.RawMessage {
-	var request struct {
-		Params map[string]json.RawMessage `json:"params"`
-	}
-	_ = json.Unmarshal(payload, &request)
-	return request.Params
+	_, params := ReadControlRequestEnvelope(payload)
+	return params
 }
 
 // PermissionToolCall returns the tool call that a permission request states,
 // in its compact form, or nil for a request that states none.
 func PermissionToolCall(payload []byte) map[string]json.RawMessage {
-	var toolCall map[string]json.RawMessage
-	if json.Unmarshal(permissionParams(payload)["toolCall"], &toolCall) != nil {
+	toolCall, ok := providerkit.RawObject(permissionParams(payload)["toolCall"])
+	if !ok {
 		return nil
 	}
 	return toolCall
 }
 
-// PermissionToolSpanID is the id of the tool call that a permission request
+// permissionToolSpanID is the id of the tool call that a permission request
 // is about, or "".
-func PermissionToolSpanID(payload []byte) string {
+func permissionToolSpanID(payload []byte) string {
 	id, _ := providerkit.RawString(PermissionToolCall(payload)["toolCallId"])
 	return id
 }
 
-// OptionKind maps an option kind of the protocol onto the neutral kinds.
+// optionKind maps an option kind of the protocol onto the neutral kinds.
 // Any other kind is OTHER.
-func OptionKind(kind string) leapmuxv1.PermissionOptionKind {
+func optionKind(kind string) leapmuxv1.PermissionOptionKind {
 	switch kind {
 	case contracts.ACPPermissionKindAllowOnce:
 		return leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_ALLOW_ONCE
@@ -69,14 +74,14 @@ func OptionKind(kind string) leapmuxv1.PermissionOptionKind {
 // option of an unknown kind keeps its runtime label, or its kind as the label
 // when it states none.
 func PermissionOptions(payload []byte) []*leapmuxv1.PermissionOption {
-	var elements []json.RawMessage
-	if json.Unmarshal(permissionParams(payload)["options"], &elements) != nil {
+	elements, ok := providerkit.RawArray(permissionParams(payload)["options"])
+	if !ok {
 		return nil
 	}
 	var options []*leapmuxv1.PermissionOption
 	for _, raw := range elements {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		fields, ok := providerkit.RawObject(raw)
+		if !ok {
 			continue
 		}
 		// The runtime accepts only the id of an option that it offered, so an
@@ -87,7 +92,7 @@ func PermissionOptions(payload []byte) []*leapmuxv1.PermissionOption {
 		}
 		kind, _ := providerkit.RawString(fields["kind"])
 		name, _ := providerkit.RawString(fields["name"])
-		option := &leapmuxv1.PermissionOption{OptionId: id, Kind: OptionKind(kind), Name: name}
+		option := &leapmuxv1.PermissionOption{OptionId: id, Kind: optionKind(kind), Name: name}
 		if option.Kind == leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_OTHER && name == "" {
 			option.Name = kind
 		}
@@ -96,11 +101,11 @@ func PermissionOptions(payload []byte) []*leapmuxv1.PermissionOption {
 	return options
 }
 
-// ResolveToolCall merges a permission's compact tool call with the request
+// resolveToolCall merges a permission's compact tool call with the request
 // row of the same call: the row's fields, overlaid by every field that the
 // compact call states, with the two rawInput objects merged. A row of
 // another call leaves the compact call alone.
-func ResolveToolCall(toolCall map[string]json.RawMessage, request map[string]json.RawMessage) map[string]json.RawMessage {
+func resolveToolCall(toolCall map[string]json.RawMessage, request map[string]json.RawMessage) map[string]json.RawMessage {
 	id, _ := providerkit.RawString(toolCall["toolCallId"])
 	requestID, _ := providerkit.RawString(request["toolCallId"])
 	if request == nil || id == "" || requestID != id {
@@ -112,9 +117,9 @@ func ResolveToolCall(toolCall map[string]json.RawMessage, request map[string]jso
 			resolved[key] = value
 		}
 	}
-	var previous, current map[string]json.RawMessage
-	if json.Unmarshal(request[contracts.ACPSupplementRequestRawInput], &previous) == nil && previous != nil &&
-		json.Unmarshal(toolCall[contracts.ACPSupplementRequestRawInput], &current) == nil && current != nil {
+	previous, prevOK := providerkit.RawObject(request[contracts.ACPSupplementRequestRawInput])
+	current, currOK := providerkit.RawObject(toolCall[contracts.ACPSupplementRequestRawInput])
+	if prevOK && currOK {
 		merged := maps.Clone(previous)
 		maps.Copy(merged, current)
 		encoded, err := json.Marshal(merged)
@@ -139,10 +144,9 @@ func ReadPermissionPrompt(input agent.ControlRequestInput) *leapmuxv1.Permission
 	}
 	toolCall := compact
 	if compact != nil {
-		if row, ok := input.SpanRequest(PermissionToolSpanID(input.Payload)); ok {
-			var request map[string]json.RawMessage
-			if json.Unmarshal(row.Original, &request) == nil {
-				toolCall = ResolveToolCall(compact, request)
+		if row, ok := input.SpanRequest(permissionToolSpanID(input.Payload)); ok {
+			if request, ok := providerkit.RawObject(row.Original); ok {
+				toolCall = resolveToolCall(compact, request)
 			}
 		}
 	}
@@ -156,8 +160,7 @@ func ReadPermissionPrompt(input agent.ControlRequestInput) *leapmuxv1.Permission
 		permission.InputJson = string(raw)
 	}
 	if kind == contracts.ACPToolKindExecute {
-		var rawInput map[string]json.RawMessage
-		if json.Unmarshal(toolCall[contracts.ACPSupplementRequestRawInput], &rawInput) == nil {
+		if rawInput, ok := providerkit.RawObject(toolCall[contracts.ACPSupplementRequestRawInput]); ok {
 			permission.Command, _ = providerkit.RawString(rawInput["command"])
 		}
 	}
@@ -178,7 +181,7 @@ func WithRefusal(options []*leapmuxv1.PermissionOption) []*leapmuxv1.PermissionO
 	if slices.ContainsFunc(options, agent.IsRefusalOption) {
 		return options
 	}
-	return append(options, &leapmuxv1.PermissionOption{
+	return append(slices.Clip(options), &leapmuxv1.PermissionOption{
 		OptionId: CancelOptionID,
 		Kind:     leapmuxv1.PermissionOptionKind_PERMISSION_OPTION_KIND_REJECT_ONCE,
 		Name:     "Cancel",
@@ -203,8 +206,7 @@ func ReadElicitation(payload []byte) (*leapmuxv1.ElicitationPrompt, bool) {
 // params, for a runtime that relays one under another method.
 func ElicitationFromParams(params map[string]json.RawMessage) *leapmuxv1.ElicitationPrompt {
 	text := func(key string) string {
-		value, _ := providerkit.RawString(params[key])
-		return value
+		return providerkit.ObjectString(params, key)
 	}
 	mode, ok := providerkit.RawString(params["mode"])
 	if !ok {
@@ -267,13 +269,13 @@ func AnswerBaseControlRequest(input agent.ControlAnswerInput, rejectReason Rejec
 	case *leapmuxv1.ControlPrompt_Elicitation:
 		return agent.AnswerElicitation(input, nil)
 	case *leapmuxv1.ControlPrompt_Permission:
-		return AnswerPermission(input, rejectReason)
+		return answerPermission(input, rejectReason)
 	default:
 		return agent.ControlAnswer{}, agent.InvalidControlDecision("the Agent Client Protocol states no %T prompt", input.Prompt.GetKind())
 	}
 }
 
-// AnswerPermission answers a permission prompt in the protocol's own reply:
+// answerPermission answers a permission prompt in the protocol's own reply:
 //
 //   - An option of the prompt is selected as it is: the protocol reads
 //     nothing else. A provider that offers an option of its own rewrites the
@@ -281,7 +283,7 @@ func AnswerBaseControlRequest(input agent.ControlAnswerInput, rejectReason Rejec
 //   - CancelOptionID answers with the `cancelled` outcome.
 //   - A refusal's feedback rides in the provider's own field through
 //     rejectReason, or else follows the answer as a message.
-func AnswerPermission(input agent.ControlAnswerInput, rejectReason RejectReason) (agent.ControlAnswer, error) {
+func answerPermission(input agent.ControlAnswerInput, rejectReason RejectReason) (agent.ControlAnswer, error) {
 	decision, option, err := agent.PermissionDecisionOf(input)
 	if err != nil {
 		return agent.ControlAnswer{}, err
@@ -311,4 +313,71 @@ func SelectedOptionResult(requestID, optionID string) []byte {
 	return agent.JSONRPCResult(requestID, map[string]any{
 		"outcome": map[string]any{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": optionID},
 	})
+}
+
+// IsJSONRPCReply reports whether content is a JSON-RPC result or error
+// envelope rather than a neutral control decision envelope.
+func IsJSONRPCReply(content []byte) bool {
+	reply, ok := providerkit.RawObject(content)
+	if !ok {
+		return false
+	}
+	_, hasResult := reply["result"]
+	_, hasError := reply["error"]
+	return hasResult || hasError
+}
+
+// PlanPermissionResolver configures neutral plan allow/deny translation onto
+// an ACP permission selection reply.
+type PlanPermissionResolver struct {
+	AllowOption func(ctx agent.ControlResponseContext) string
+	DenyOption  string
+	// ValidateOption checks whether optionID is valid for the request and
+	// refuses result if not, returning false.
+	ValidateOption func(ctx agent.ControlResponseContext, optionID string, result *agent.ControlResponseResolution) bool
+}
+
+// ResolvePlanPermission translates a neutral plan approval/rejection decision
+// into a JSON-RPC selected-option reply for ACP runtimes whose plan gate is a
+// session/request_permission prompt.
+func ResolvePlanPermission(ctx agent.ControlResponseContext, resolver PlanPermissionResolver) agent.ControlResponseResolution {
+	result := agent.DefaultControlResponseResolution(ctx)
+	_, behavior, feedback, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
+	id, _, found := agent.ExtractJSONRPCID(ctx.RequestPayload)
+	switch {
+	case !ok:
+		result.Refuse(agent.RefusalNoDecision)
+		return result
+	case !found:
+		result.Refuse(agent.RefusalUnreadableRequest)
+		return result
+	}
+	var option string
+	switch behavior {
+	case contracts.ControlAnswerBehaviorAllow:
+		option = resolver.AllowOption(ctx)
+		result.PlanModeControl = agent.PlanModeControlExit
+	case contracts.ControlAnswerBehaviorDeny:
+		option = resolver.DenyOption
+		result.FollowUp = agent.FeedbackFollowUp(feedback)
+	default:
+		result.Refuse(agent.RefusalNoDecision)
+		return result
+	}
+	if resolver.ValidateOption != nil && !resolver.ValidateOption(ctx, option, &result) {
+		return result
+	}
+	content, err := json.Marshal(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  any             `json:"result"`
+	}{JSONRPC: "2.0", ID: id, Result: map[string]any{
+		"outcome": map[string]string{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": option},
+	}})
+	if err != nil {
+		result.Refuse(agent.RefusalUnencodableReply)
+		return result
+	}
+	result.Content = content
+	return result
 }

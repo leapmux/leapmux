@@ -9,6 +9,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 func grokConsumptionRow(sessionID string, sequence, when int, text string) string {
@@ -21,7 +22,7 @@ func TestGrokConsumptionReadsOnlyTheUnchangedCompleteSuffix(t *testing.T) {
 	const session = "native-session"
 	old := grokConsumptionRow(session, 1, 10, "a prior interjection")
 	newRow := grokConsumptionRow(session, 4, 20, "a new interjection")
-	baseline := grokBaseline([]byte(old))
+	baseline := sessionstore.NewJournalCursor([]byte(old))
 	rows, ok := readGrokConsumptions(baseline, []byte(old+newRow+newRow[:17]), grokJournalScope{sessionID: session})
 	require.True(t, ok)
 	assert.Equal(t, []grokConsumption{{payload: grokInterjectionPayload{text: "a new interjection"}, eventTime: 20, eventSeq: 4}}, rows)
@@ -112,7 +113,7 @@ func TestGrokSteerJournalKeepsAnImageOnlyEventTogether(t *testing.T) {
 		}},
 	}
 	receiving := []grokSteerStream{{start: 10, eventSeq: 3}}
-	baseline := grokBaseline(nil)
+	baseline := sessionstore.NewJournalCursor(nil)
 	rows, ok := readGrokConsumptions(baseline, []byte(text+first+second[:len(second)-1]), grokJournalScope{sessionID: session})
 	require.True(t, ok)
 	require.Len(t, rows, 1)
@@ -140,7 +141,7 @@ func TestGrokSteerJournalRejectsImagesOutsideTheirEvent(t *testing.T) {
 		"missing bytes": text + grokImageConsumptionRow(session, 2, 9, "chart.png", "image/png", ""),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, ok := readGrokConsumptions(grokBaseline(nil), []byte(data), grokJournalScope{sessionID: session})
+			_, ok := readGrokConsumptions(sessionstore.NewJournalCursor(nil), []byte(data), grokJournalScope{sessionID: session})
 			assert.False(t, ok)
 		})
 	}
@@ -211,7 +212,7 @@ func TestGrokChildSteerJournalProvesOnlyTheReceivingPromptBatch(t *testing.T) {
 	first := grokChildMessageJournalRow(session, 5, 19, text)
 	end := grokEndJournalRow(session, 9, prompt)
 	later := grokChildMessageJournalRow(session, 10, 29, text)
-	baseline := grokBaseline([]byte(old))
+	baseline := sessionstore.NewJournalCursor([]byte(old))
 	scope := grokJournalScope{sessionID: session, promptID: prompt, childMessages: true}
 	inputs := []grokSteerAdmission{
 		{id: "first-receipt", payload: grokInterjectionPayload{text: text}, echoed: true},
@@ -253,7 +254,7 @@ func TestGrokSuccessorProofRequiresThePredecessorEndAndAllInputParts(t *testing.
 	const session = "native-session"
 	const old = "predecessor"
 	const next = "successor"
-	baseline := grokBaseline(nil)
+	baseline := sessionstore.NewJournalCursor(nil)
 	oldInput := grokOrdinaryUserJournalRow(session, 2, 10, 0, `{"type":"text","text":"the preceding prompt"}`)
 	end := grokEndJournalRow(session, 4, old)
 	text := grokOrdinaryUserJournalRow(session, 5, 19, 1, `{"type":"text","text":""}`)
@@ -282,4 +283,18 @@ func TestGrokSuccessorProofRequiresThePredecessorEndAndAllInputParts(t *testing.
 
 	_, err = matchGrokConsumptions(inputs, []grokSteerStream{{start: 20, eventSeq: 6}}, rows)
 	require.ErrorIs(t, err, errGrokConsumptionIncomplete, "all parts must precede the receiving stream")
+}
+
+func TestGrokConsumptionSkipsUnrelatedUpdatesWithArrayContent(t *testing.T) {
+	t.Parallel()
+	const session = "native-session"
+	// Include an unescaped "interjection" key inside rawInput so the substring
+	// pre-filter selects this tool_call_update whose content is an array.
+	toolRow := fmt.Sprintf(`{"method":"session/update","params":{"sessionId":%q,"_meta":{"eventId":%q,"agentTimestampMs":15},"update":{"sessionUpdate":"tool_call_update","rawInput":{"interjection":true},"content":[{"type":"content","content":{"type":"text","text":"output"}}]}}}`+"\n",
+		session, session+"-2")
+	interjectionRow := grokConsumptionRow(session, 3, 20, "real steer")
+	rows, ok := readGrokConsumptions(sessionstore.NewJournalCursor(nil), []byte(toolRow+interjectionRow), grokJournalScope{sessionID: session})
+	require.True(t, ok, "unrelated tool_call_update with array content must not abort journal proof")
+	require.Len(t, rows, 1)
+	assert.Equal(t, "real steer", rows[0].payload.text)
 }

@@ -734,7 +734,7 @@ func TestZCodeAnswerControlRequest_AnswersANonAllowOptionIDWithADeny(t *testing.
 func TestZCodeAnswerControlRequest_AnOptionAnswerResolvesToTheOptionsOwnResponse(t *testing.T) {
 	t.Parallel()
 	stored := storeZCodeControlRequest(t, contracts.ZCodeMethodRequestPermission, zcodePermissionParams, "req-1")
-	require.Equal(t, []string{"allow_once", "allow_always", "deny"}, zcodeOptionIDs(agenttest.ControlPromptOf(zcodeProvider{}, stored)))
+	require.Equal(t, []string{"allow_once", "allow_always", "deny"}, agenttest.PromptPermissionOptionIDs(agenttest.ControlPromptOf(zcodeProvider{}, stored)))
 
 	got, err := agenttest.AnswerControl(zcodeProvider{}, stored, zcodeTestRequestID, agenttest.PermissionDecision("allow_always", ""))
 	require.NoError(t, err)
@@ -780,14 +780,6 @@ func TestZCodeAnswerControlRequest_RefusesAPermissionDecisionThatThePromptDoesNo
 		_, err := agenttest.AnswerControl(zcodeProvider{}, payload, zcodeTestRequestID, decision)
 		assert.ErrorIs(t, err, agent.ErrInvalidControlDecision, name)
 	}
-}
-
-func zcodeOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
-	var ids []string
-	for _, option := range prompt.GetPermission().GetOptions() {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
 }
 
 // --- workspace trust ---

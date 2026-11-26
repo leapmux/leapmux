@@ -279,9 +279,13 @@ func (b *Base) reserveBufferedTextLocked(turn *acpTurnSnapshot) {
 	if (turn.thoughtText == "" || turn.thoughtAdmission.captured()) && (turn.assistantText == "" || turn.assistantAdmission.captured()) {
 		return
 	}
+	if agent.OutputQueueFor(b.sink) == nil {
+		return
+	}
 	batch, err := agent.ReserveCapturedTranscriptBatch(b.sink)
 	if err != nil {
 		slog.Error("reserve buffered ACP text", "agent_id", b.AgentID(), "error", err)
+		turn.textReservationFailed = true
 		return
 	}
 	turn.textBatch = batch
@@ -309,13 +313,13 @@ func (b *Base) finishRootSnapshot(turn acpTurnSnapshot, textCompletion, toolComp
 	count := turn.completedToolUses + len(turn.incompleteTools)
 	if b.IsDiscardingOutput() {
 		if turn.textBatch.Discard() {
-			if err := agent.OutputQueueFor(b.sink).Flush(); err != nil && !agent.OutputRetained(err) {
+			if err := agent.OutputQueueFor(b.sink).Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) && !agent.OutputRetained(err) {
 				slog.Error("release discarded ACP text", "agent_id", b.AgentID(), "error", err)
 			}
 		}
 		turn.releaseTranscriptAdmissions()
 		b.finishRootTargets(turn, reason, textCompletion, true)
-		b.queueReplyReconciliation(turn.reconciliation)
+		b.queueReplyReconciliation(bindReplyReconciliation(turn.reconciliation, textCompletion, true))
 		if !turn.hasPromptBoundary {
 			b.ResetCumulativeOutput()
 			b.sink.ReportProgress(agent.ResetProgress())
@@ -326,12 +330,21 @@ func (b *Base) finishRootSnapshot(turn acpTurnSnapshot, textCompletion, toolComp
 	main.persistBufferedText(turn, textCompletion)
 	main.persistIncompleteTools(turn.incompleteTools, toolCompletion)
 	b.clearCompletedTerminals()
-	b.queueReplyReconciliation(turn.reconciliation)
+	b.queueReplyReconciliation(bindReplyReconciliation(turn.reconciliation, textCompletion, false))
 	if ending != nil {
 		ending(turn.endingAdmission.transcript(b.sink), count)
 	}
 	b.finishRootTargets(turn, reason, textCompletion, false)
 	return count
+}
+
+func bindReplyReconciliation(reconcile func(agent.MessageCompletion, bool) error, completion agent.MessageCompletion, discard bool) func() error {
+	if reconcile == nil {
+		return nil
+	}
+	return func() error {
+		return reconcile(completion, discard)
+	}
 }
 
 // The caller holds turnMu and Mu. Capture provider state before any sink call
@@ -340,6 +353,10 @@ func (b *Base) captureRootSnapshotLocked(turn *acpTurnSnapshot, allTurns bool) {
 	turn.sessionID = b.sessionID
 	turn.interrupted = b.interruptRequested
 	turn.cleanupCaptured = true
+	turn.assistantTextKeyResolved = true
+	if turn.assistantText != "" && turn.assistantMessageID != "" && b.hooks.AssistantTextKey != nil {
+		turn.assistantTextKey = b.hooks.AssistantTextKey(turn.assistantMessageID)
+	}
 	if capture := b.hooks.CaptureTurnOutputCleanup; capture != nil && (allTurns || !b.agentTurnQueued) {
 		turn.cleanup = capture()
 	}
@@ -357,9 +374,15 @@ func (b *Base) detachRootPrompt(keepTools bool) acpTurnSnapshot {
 
 func (b *Base) takeRootPromptLocked(keepTools bool) acpTurnSnapshot {
 	if answered := b.takeAnsweredPromptLocked(); answered != nil {
-		if !keepTools {
-			extra := b.drainOpenToolsOnlyLocked()
-			answered.incompleteTools = append(answered.incompleteTools, extra.incompleteTools...)
+		if !keepTools && !answered.stopped {
+			if answered.hasPromptBoundary {
+				if len(answered.deferredOpenTools) > 0 {
+					answered.incompleteTools = append(answered.incompleteTools, b.drainIncompleteToolsLocked(answered.deferredOpenTools)...)
+				}
+			} else {
+				extra := b.drainOpenToolsOnlyLocked()
+				answered.incompleteTools = append(answered.incompleteTools, extra.incompleteTools...)
+			}
 		}
 		return *answered
 	}
@@ -472,36 +495,43 @@ func (b *Base) ownsRootPromptEndLocked(sessionID string, target *acpTranscriptTa
 	return (request != nil && request.answered != nil) || (b.promptTarget == target && !b.promptOutputDrained)
 }
 
-func (b *Base) observeRootPromptResponse(request *acpRootPromptRequest) {
+func (b *Base) observeRootPromptResponse(request *acpRootPromptRequest, response json.RawMessage) {
 	// This runs on the reader without sessionMu. Session replacement keeps the
 	// output and session identity together under turnMu while the reader can
 	// still deliver the response that replacement is waiting for.
 	b.sessionUpdates.mu.Lock()
 	defer b.sessionUpdates.mu.Unlock()
 	if b.sessionUpdates.buffering {
-		b.sessionUpdates.pending = append(b.sessionUpdates.pending, bufferedSessionUpdate{sessionID: request.sessionID, promptResponse: request})
+		b.sessionUpdates.pending = append(b.sessionUpdates.pending, bufferedSessionUpdate{
+			sessionID:         request.sessionID,
+			promptResponse:    request,
+			promptResponseRaw: append(json.RawMessage(nil), response...),
+		})
 		return
 	}
-	b.captureRootPromptResponse(request)
+	b.captureRootPromptResponse(request, response)
 }
 
 // The caller holds sessionUpdates.mu. The reader can accept the next text
 // only after the old progress scope completes.
-func (b *Base) captureRootPromptResponse(request *acpRootPromptRequest) {
+func (b *Base) captureRootPromptResponse(request *acpRootPromptRequest, response json.RawMessage) {
 	b.turnMu.Lock()
 	if request.answered != nil || !b.ownsRootPromptEndLocked(request.sessionID, request.target, request) {
 		b.turnMu.Unlock()
 		return
 	}
 	b.Mu.Lock()
-	stopped := b.StoppedLocked() || b.interruptRequested
+	stopped := b.StoppedLocked() || b.interruptRequested || b.isCancelledTurnEnd(response)
 	b.Mu.Unlock()
 	turn := b.snapshotRootPromptLocked(!stopped)
+	turn.stopped = stopped
 	b.reserveBufferedTextLocked(&turn)
 	turn.textProgressCompleted = true
 	request.answered = &turn
 	b.turnMu.Unlock()
-	b.completeBufferedTextProgress(turn)
+	if !b.IsDiscardingOutput() {
+		b.completeBufferedTextProgress(turn)
+	}
 }
 
 func (b *Base) completeBufferedTextProgress(turn acpTurnSnapshot) {
@@ -514,16 +544,23 @@ func (b *Base) completeBufferedTextProgress(turn acpTurnSnapshot) {
 	}
 }
 
-func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTranscriptTarget, content string, attachments []*leapmuxv1.Attachment, releaseOperation func()) error {
-	params, err := b.prepareDetachedPromptLocked(sessionID, content, attachments, target)
+func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTranscriptTarget, content string, attachments []*leapmuxv1.Attachment, releaseOperation func()) (func() error, error) {
+	prepared, err := b.prepareDetachedPromptLocked(sessionID, content, attachments, target)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var nativeSender func(func(json.RawMessage, error)) error
 	if b.hooks.RootPromptTransport != nil && target != nil && target.inputReceipt.InputID != "" {
-		nativeSender, err = b.hooks.RootPromptTransport(target.inputReceipt, params)
+		nativeSender, err = b.hooks.RootPromptTransport(target.inputReceipt, prepared)
 		if err != nil {
-			return err
+			return nil, err
+		}
+	}
+	var params json.RawMessage
+	if nativeSender == nil {
+		params, err = prepared.MarshalParams()
+		if err != nil {
+			return nil, err
 		}
 	}
 	request := &acpRootPromptRequest{sessionID: sessionID, target: target, nativeReplyManaged: nativeSender != nil}
@@ -535,10 +572,10 @@ func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTransc
 		b.finishOwnedPromptRequest(sessionID, target, request, response, err)
 	}
 	if nativeSender != nil {
-		return nativeSender(handle)
+		return func() error { return nativeSender(handle) }, nil
 	}
 	observation := providerkit.DetachedRequestObservation{
-		Response: func(json.RawMessage) { b.observeRootPromptResponse(request) },
+		Response: func(response json.RawMessage) { b.observeRootPromptResponse(request, response) },
 	}
 	if target != nil && target.inputReceipt.TurnID != "" {
 		observation.BeforeWrite = func() { b.startInputReply(request) }
@@ -551,7 +588,7 @@ func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTransc
 		b.turnMu.Unlock()
 		b.persistUnownedText(preceding)
 	}
-	return err
+	return nil, err
 }
 
 func (b *Base) finishUnsentPrompt(sessionID string) {
@@ -561,10 +598,7 @@ func (b *Base) finishUnsentPrompt(sessionID string) {
 	b.finishRootSnapshot(turn, agent.MessageCompletionError, agent.MessageCompletionError, RootTranscriptPromptNotSent, nil)
 	// This request never ran. Do not ask the provider for another continuation
 	// of the same failed write. A queued native turn still keeps its ownership.
-	if end, queued := b.takeQueuedAgentTurn(sessionID); queued {
-		if end != nil {
-			b.endAgentTurn(*end)
-		}
+	if b.handoffQueuedAgentTurn(sessionID) {
 		return
 	}
 	b.clearActivePromptForSession(sessionID)

@@ -1,30 +1,69 @@
 package junie
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 const junieSteerAnswerPrefix = "junie-task-answer:"
 
 type junieSteerReplies struct {
-	mu     sync.Mutex
-	active *junieSteerTurn
+	mu              sync.Mutex
+	active          *junieSteerTurn
+	activeFlag      atomic.Bool
+	startedNewTurns int
+}
+
+func (replies *junieSteerReplies) hasActiveSession(sessionID string) bool {
+	if !replies.activeFlag.Load() {
+		return false
+	}
+	replies.mu.Lock()
+	defer replies.mu.Unlock()
+	return replies.active != nil && replies.active.sessionID == sessionID
+}
+
+func (replies *junieSteerReplies) noteStartedNewTurn(opened bool) {
+	replies.mu.Lock()
+	defer replies.mu.Unlock()
+	if opened {
+		replies.startedNewTurns = 1
+		return
+	}
+	replies.startedNewTurns++
+}
+
+// consumeStartedNewTurn decrements the pending startedNewTurn count and
+// reports whether no further queued turns remain (so the agent turn may end).
+func (replies *junieSteerReplies) consumeStartedNewTurn() bool {
+	replies.mu.Lock()
+	defer replies.mu.Unlock()
+	if replies.startedNewTurns > 1 {
+		replies.startedNewTurns--
+		return false
+	}
+	replies.startedNewTurns = 0
+	return true
 }
 
 // A single ACP prompt can contain several tasks of Junie's own. Each task
 // supplies the exact subset of acknowledged steers that the model read.
 type junieSteerTurn struct {
 	sessionID string
-	cursor    junieJournalCursor
+	cursor    sessionstore.JournalCursor
 	inputs    []junieSteerInput
 	answers   []junieACPAnswer
 }
@@ -47,7 +86,7 @@ type junieSteerInput struct {
 // input for the next turn.
 func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	var receipt agent.NativeInputReceipt
-	if request.Content == "" {
+	if request.Content == "" && len(request.Attachments) == 0 {
 		return receipt, nil
 	}
 	a.steerDispatchMu.Lock()
@@ -63,12 +102,16 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 		if err != nil {
 			return fmt.Errorf("encode the Junie steer: %w", err)
 		}
-		var cursor junieJournalCursor
-		home := junieHome(agent.StoredSessionQuery{HomeDir: a.homeDir})
+		var cursor sessionstore.JournalCursor
 		track := false
 		if request.InputID != "" {
-			if data, readErr := readJunieEvents(home, sessionID); readErr == nil {
-				cursor, track = junieCursor(data), true
+			if a.steerReplies.hasActiveSession(sessionID) {
+				track = true
+			} else {
+				home := junieHome(agent.StoredSessionQuery{HomeDir: a.homeDir})
+				if data, readErr := readJunieEvents(home, sessionID); readErr == nil {
+					cursor, track = sessionstore.NewJournalCursor(data), true
+				}
 			}
 		}
 		var malformedReply error
@@ -78,34 +121,36 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 			}
 			reply, ok := providerkit.RawObject(response)
 			if !ok || reply == nil {
-				malformedReply = fmt.Errorf("the Junie steer reply must be an object")
+				malformedReply = fmt.Errorf("%w: the Junie steer reply must be an object", agent.ErrDeliveryUncertain)
 				return
 			}
 			outcome, _ := providerkit.RawString(reply["outcome"])
 			if outcome == "startedNewTurn" {
-				a.BeginAgentTurn()
+				a.steerReplies.noteStartedNewTurn(a.BeginAgentTurn())
 			}
 			if !track || (outcome != "injected" && outcome != "startedNewTurn") {
 				return
 			}
-			receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: id.Generate()}
-			a.steerReplies.admit(junieSteerInput{receipt: receipt, text: request.Content}, cursor)
+			candidate := agent.NativeInputReceipt{SessionID: sessionID, InputID: id.Generate()}
+			if a.steerReplies.admit(junieSteerInput{receipt: candidate, text: request.Content}, cursor) {
+				receipt = candidate
+			}
 		})
 		if err != nil {
-			return err
+			if providerkit.HasJSONRPCErrorCode(err, -32600, -32602) {
+				return agent.ErrNoActiveTurn
+			}
+			return providerkit.ClassifyJSONRPCDeliveryError(junieSteerMethod, err)
 		}
 		return malformedReply
 	})
-	if providerkit.HasJSONRPCErrorCode(err, -32600, -32602) {
-		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
-	}
 	if err != nil {
-		return agent.NativeInputReceipt{}, providerkit.ClassifyJSONRPCDeliveryError(junieSteerMethod, err)
+		return agent.NativeInputReceipt{}, err
 	}
 	return receipt, nil
 }
 
-func (replies *junieSteerReplies) admit(input junieSteerInput, cursor junieJournalCursor) {
+func (replies *junieSteerReplies) admit(input junieSteerInput, cursor sessionstore.JournalCursor) bool {
 	replies.mu.Lock()
 	defer replies.mu.Unlock()
 	if replies.active == nil {
@@ -113,16 +158,44 @@ func (replies *junieSteerReplies) admit(input junieSteerInput, cursor junieJourn
 			sessionID: input.receipt.SessionID,
 			cursor:    cursor,
 		}
+		replies.activeFlag.Store(true)
 	}
-	if replies.active.sessionID == input.receipt.SessionID {
-		replies.active.inputs = append(replies.active.inputs, input)
+	if replies.active.sessionID != input.receipt.SessionID {
+		return false
+	}
+	replies.active.inputs = append(replies.active.inputs, input)
+	return true
+}
+
+func (a *Agent) retireJunieSteers() {
+	a.steerReplies.mu.Lock()
+	turn := a.steerReplies.active
+	a.steerReplies.active = nil
+	a.steerReplies.activeFlag.Store(false)
+	a.steerReplies.startedNewTurns = 0
+	a.steerReplies.mu.Unlock()
+	if turn == nil {
+		return
+	}
+	sink := a.Sink()
+	for _, input := range turn.inputs {
+		if err := sink.RetireNativeInputTurn(input.receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED); !agent.OutputRetained(err) {
+			slog.Warn("retire the Junie steer on context clear", "agent_id", a.AgentID(), "input_id", input.receipt.InputID, "error", err)
+		}
 	}
 }
 
 // Junie emits a whole answer in a final_answer chunk. The journal may record
 // completion after that chunk arrives. Retain its position and compare the
 // saved row with the corresponding completed task after ACP drains output.
-func (a *Agent) junieSteerAnswerID(update json.RawMessage) string {
+func (a *Agent) junieSteerAnswerID(info acp.UpdateMessageInfo) string {
+	if info.RowKey != "" || info.UpdateType != contracts.ACPUpdateAgentMessageChunk {
+		return ""
+	}
+	update := info.Raw
+	if !a.steerReplies.activeFlag.Load() || !bytes.Contains(update, []byte(`"final_answer"`)) {
+		return ""
+	}
 	var frame struct {
 		Meta struct {
 			Junie struct {
@@ -163,6 +236,7 @@ func (a *Agent) captureJunieSteerCompletion(sink agent.ProviderServices) func() 
 	a.steerReplies.mu.Lock()
 	turn := a.steerReplies.active
 	a.steerReplies.active = nil
+	a.steerReplies.activeFlag.Store(false)
 	a.steerReplies.mu.Unlock()
 	if turn == nil {
 		return nil
@@ -181,9 +255,8 @@ func (a *Agent) readJunieSteerProof(turn *junieSteerTurn) junieSteerProof {
 	if err != nil {
 		return junieSteerProof{}
 	}
-	admissions, admitted := readJunieSteerAdmissions(turn.cursor, data, turn.inputs)
-	replies, complete := readJunieTaskReplies(turn.cursor, data)
-	if !admitted || !complete || !matchJunieAnswers(replies, turn.answers) {
+	admissions, replies, ok := readJunieSteerProofEvents(turn.cursor, data, turn.inputs)
+	if !ok || !matchJunieAnswers(replies, turn.answers) {
 		return junieSteerProof{}
 	}
 	return junieSteerProof{admissions: admissions, replies: replies}

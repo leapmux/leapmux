@@ -40,8 +40,11 @@ func TestChildSessionUpdateIdentityObservesOnlyTheAcceptedNativeRoute(t *testing
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: target.RowKey, ChildAgentKey: target.RowKey, ChildAgentSessionID: target.SessionID, Title: "Native child", Status: bgtask.StatusRunning})
 	require.True(t, b.AttachChildSession(target))
 	var observed []string
-	b.hooks.ChildSessionUpdateIdentity = func(sessionID, rowKey, updateType string, metadata map[string]json.RawMessage) string {
-		observed = append(observed, sessionID, rowKey, updateType, string(metadata["stream"]))
+	b.hooks.UpdateMessageID = func(info UpdateMessageInfo) string {
+		if info.RowKey == "" || info.SessionID == "" {
+			return ""
+		}
+		observed = append(observed, info.SessionID, info.RowKey, info.UpdateType, string(info.NotificationMeta["stream"]))
 		return "native-message"
 	}
 	update := acpSessionUpdate{

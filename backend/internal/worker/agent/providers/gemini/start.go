@@ -43,11 +43,19 @@ func (a *Agent) configure(ctx context.Context, opts agent.Options, services agen
 			ProviderServices: controls,
 			query:            query,
 			currentSession:   a.CurrentSessionID,
-			onSession:        func(sessionID string) { a.startChildTranscript(services, query, sessionID) },
+			onSession: func(sessionID string) {
+				sink := a.Sink()
+				if sink == nil {
+					sink = services
+				}
+				a.startChildTranscript(sink, query, sessionID)
+			},
 		}
 	})
 	transcript := newGeminiToolTranscript(ctx, wrapped, query, a.observeNativeMode)
-	controls.transcript = transcript
+	if controls != nil {
+		controls.transcript = transcript
+	}
 	return acp.Hooks{
 		WithBypassPermission:   func(claim func()) { a.WithOptionValue(agent.OptionIDPermissionMode, contracts.GeminiModeYolo, claim) },
 		PermissionAllowsBypass: permissionAllowsBypass,

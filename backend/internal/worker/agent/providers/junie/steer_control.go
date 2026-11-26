@@ -8,8 +8,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
+
+func (a *Agent) junieControlOwner(sessionID string, line *providerkit.ParsedLine, needsTurn bool) (acp.ControlOwnerResolution, error) {
+	if !needsTurn {
+		return acp.ControlOwnerResolution{}, nil
+	}
+	turnID, inputIDs := a.junieSteerControlOwner(sessionID, line)
+	return acp.ControlOwnerResolution{TurnID: turnID, InputIDs: inputIDs}, nil
+}
 
 func (a *Agent) junieSteerControlOwner(sessionID string, line *providerkit.ParsedLine) (string, []string) {
 	selector, ok := junieControlSelectorOf(line)
@@ -29,11 +39,7 @@ func (a *Agent) junieSteerControlOwner(sessionID string, line *providerkit.Parse
 	if err != nil {
 		return "", nil
 	}
-	admissions, ok := readJunieSteerAdmissions(cursor, data, inputs)
-	if !ok {
-		return "", nil
-	}
-	task, ok := readJunieControlTask(cursor, data, selector)
+	admissions, task, ok := readJunieControlEvents(cursor, data, inputs, selector)
 	if !ok || a.CurrentSessionID() != sessionID {
 		return "", nil
 	}
@@ -60,7 +66,7 @@ func junieControlSelectorOf(line *providerkit.ParsedLine) (junieControlSelector,
 	case "session/request_permission":
 		params, _ := providerkit.RawObject(line.Params)
 		id := providerkit.StringField(params["toolCall"], "toolCallId")
-		return junieControlSelector{toolCallID: id}, validJunieControlStep(id)
+		return junieControlSelector{toolCallID: id}, validJunieStepID(id)
 	case "elicitation/create":
 		var form junieACPForm
 		if json.Unmarshal(line.Params, &form) != nil || form.Mode != "form" ||
@@ -73,7 +79,7 @@ func junieControlSelectorOf(line *providerkit.ParsedLine) (junieControlSelector,
 	}
 }
 
-func validJunieControlStep(stepID string) bool {
+func validJunieStepID(stepID string) bool {
 	parsed, err := uuid.Parse(stepID)
 	return err == nil && parsed.String() == stepID
 }
@@ -83,16 +89,135 @@ type junieControlTask struct {
 	inputIDs []string
 }
 
-func readJunieControlTask(cursor junieJournalCursor, data []byte, selector junieControlSelector) (junieControlTask, bool) {
-	appended, ok := cursor.appended(data)
+type junieControlTaskParser struct {
+	selector       junieControlSelector
+	task           junieControlTask
+	terminalInputs []string
+	questions      map[string]juniePendingQuestion
+	questionOrder  []string
+}
+
+func (p *junieControlTaskParser) observe(event *junieSteerJournalEvent) {
+	switch event.Kind {
+	case "TaskStartedEvent", "TaskState":
+		p.task = junieControlTask{}
+		p.terminalInputs, p.questions, p.questionOrder = nil, nil, nil
+		if event.Kind == "TaskStartedEvent" {
+			p.task.id = event.TaskID
+		}
+	case "UserMessagesCommittedToHistory":
+		p.task.inputIDs = event.CommittedInputIDs
+	case "SessionA2uxEvent":
+		body := event.Event.Payload
+		if event.TaskID != p.task.id || body.Agent.Kind != "MainAgent" || body.Agent.ID != "main" {
+			return
+		}
+		switch body.Kind {
+		case "TerminalBlockUpdatedEvent":
+			if p.selector.toolCallID != "" && body.StepID == p.selector.toolCallID {
+				pending := body.Status == "IN_PROGRESS" &&
+					(event.Event.State == "IN_PROGRESS" || event.Event.State == "INPUT_REQUIRED")
+				if !pending {
+					p.terminalInputs = nil
+				} else if len(p.terminalInputs) == 0 {
+					p.terminalInputs = p.task.inputIDs
+				}
+			}
+		case "AskAsyncRequestUpdatedEvent":
+			if p.selector.form == nil || !validJunieStepID(body.StepID) || !validJunieStepID(body.Request.ID) {
+				return
+			}
+			if event.Event.State != "INPUT_REQUIRED" || body.Status != "IN_PROGRESS" {
+				delete(p.questions, body.StepID)
+				p.questionOrder = slices.DeleteFunc(p.questionOrder, func(step string) bool { return step == body.StepID })
+				return
+			}
+			if p.questions == nil {
+				p.questions = make(map[string]juniePendingQuestion)
+			}
+			prior, exists := p.questions[body.StepID]
+			if !exists {
+				p.questionOrder = append(p.questionOrder, body.StepID)
+			}
+			inputIDs := p.task.inputIDs
+			if exists && prior.question.ID == body.Request.ID {
+				inputIDs = prior.inputIDs
+			}
+			p.questions[body.StepID] = juniePendingQuestion{question: body.Request, inputIDs: inputIDs}
+		}
+	}
+}
+
+func (p *junieControlTaskParser) result() (junieControlTask, bool) {
+	if !junieTaskIDPattern.MatchString(p.task.id) {
+		return junieControlTask{}, false
+	}
+	if p.selector.form != nil {
+		inputIDs, ok := p.selector.form.matchInputIDs(p.questions, p.questionOrder)
+		return junieControlTask{id: p.task.id, inputIDs: inputIDs}, ok
+	}
+	return junieControlTask{id: p.task.id, inputIDs: p.terminalInputs}, len(p.terminalInputs) > 0
+}
+
+// readJunieControlEvents verifies the journal prefix once and extracts both
+// steer admissions and the active control task in a single pass.
+func readJunieControlEvents(cursor sessionstore.JournalCursor, data []byte, inputs []junieSteerInput, selector junieControlSelector) (map[string]agent.NativeInputReceipt, junieControlTask, bool) {
+	appended, ok := cursor.AppendedBytes(data)
+	if !ok {
+		return nil, junieControlTask{}, false
+	}
+	admissions := newJunieAdmissionParser(inputs)
+	control := junieControlTaskParser{selector: selector}
+	for line := range bytes.SplitSeq(appended, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		if !bytes.Contains(line, []byte(`"UserPromptEvent"`)) &&
+			!bytes.Contains(line, []byte(`"TaskStartedEvent"`)) &&
+			!bytes.Contains(line, []byte(`"TaskState"`)) &&
+			!bytes.Contains(line, []byte(`"UserMessagesCommittedToHistory"`)) &&
+			!bytes.Contains(line, []byte(`"TerminalBlockUpdatedEvent"`)) &&
+			!bytes.Contains(line, []byte(`"AskAsyncRequestUpdatedEvent"`)) {
+			continue
+		}
+		kind, valid := decodeJunieEventKind(line)
+		if !valid {
+			return nil, junieControlTask{}, false
+		}
+		switch kind {
+		case "UserPromptEvent", "TaskStartedEvent", "TaskState", "UserMessagesCommittedToHistory", "SessionA2uxEvent":
+		default:
+			continue
+		}
+		var event junieSteerJournalEvent
+		if json.Unmarshal(line, &event) != nil {
+			return nil, junieControlTask{}, false
+		}
+		if kind == "UserPromptEvent" {
+			if !admissions.observe(&event) {
+				return nil, junieControlTask{}, false
+			}
+			continue
+		}
+		control.observe(&event)
+	}
+	if len(admissions.matched) != len(inputs) {
+		return nil, junieControlTask{}, false
+	}
+	task, matched := control.result()
+	return admissions.matched, task, matched
+}
+
+func readJunieControlTask(cursor sessionstore.JournalCursor, data []byte, selector junieControlSelector) (junieControlTask, bool) {
+	appended, ok := cursor.AppendedBytes(data)
 	if !ok {
 		return junieControlTask{}, false
 	}
-	var task junieControlTask
-	var terminalInputs []string
-	var questions map[string]juniePendingQuestion
-	var questionOrder []string
+	control := junieControlTaskParser{selector: selector}
 	for line := range bytes.SplitSeq(appended, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
 		if !bytes.Contains(line, []byte(`"TaskStartedEvent"`)) &&
 			!bytes.Contains(line, []byte(`"TaskState"`)) &&
 			!bytes.Contains(line, []byte(`"UserMessagesCommittedToHistory"`)) &&
@@ -100,67 +225,22 @@ func readJunieControlTask(cursor junieJournalCursor, data []byte, selector junie
 			!bytes.Contains(line, []byte(`"AskAsyncRequestUpdatedEvent"`)) {
 			continue
 		}
+		kind, valid := decodeJunieEventKind(line)
+		if !valid {
+			return junieControlTask{}, false
+		}
+		switch kind {
+		case "TaskStartedEvent", "TaskState", "UserMessagesCommittedToHistory", "SessionA2uxEvent":
+		default:
+			continue
+		}
 		var event junieSteerJournalEvent
 		if json.Unmarshal(line, &event) != nil {
 			return junieControlTask{}, false
 		}
-		switch event.Kind {
-		case "TaskStartedEvent", "TaskState":
-			task = junieControlTask{}
-			terminalInputs, questions, questionOrder = nil, nil, nil
-			if event.Kind == "TaskStartedEvent" {
-				task.id = event.TaskID
-			}
-		case "UserMessagesCommittedToHistory":
-			task.inputIDs = event.CommittedInputIDs
-		case "SessionA2uxEvent":
-			body := event.Event.Payload
-			if event.TaskID != task.id || body.Agent.Kind != "MainAgent" || body.Agent.ID != "main" {
-				continue
-			}
-			switch body.Kind {
-			case "TerminalBlockUpdatedEvent":
-				if selector.toolCallID != "" && body.StepID == selector.toolCallID {
-					pending := body.Status == "IN_PROGRESS" &&
-						(event.Event.State == "IN_PROGRESS" || event.Event.State == "INPUT_REQUIRED")
-					if !pending {
-						terminalInputs = nil
-					} else if len(terminalInputs) == 0 {
-						terminalInputs = task.inputIDs
-					}
-				}
-			case "AskAsyncRequestUpdatedEvent":
-				if selector.form == nil || !validJunieControlStep(body.StepID) || !validJunieControlStep(body.Request.ID) {
-					continue
-				}
-				if event.Event.State != "INPUT_REQUIRED" || body.Status != "IN_PROGRESS" {
-					delete(questions, body.StepID)
-					questionOrder = slices.DeleteFunc(questionOrder, func(step string) bool { return step == body.StepID })
-					continue
-				}
-				if questions == nil {
-					questions = make(map[string]juniePendingQuestion)
-				}
-				prior, exists := questions[body.StepID]
-				if !exists {
-					questionOrder = append(questionOrder, body.StepID)
-				}
-				inputIDs := task.inputIDs
-				if exists && prior.question.ID == body.Request.ID {
-					inputIDs = prior.inputIDs
-				}
-				questions[body.StepID] = juniePendingQuestion{question: body.Request, inputIDs: inputIDs}
-			}
-		}
+		control.observe(&event)
 	}
-	if !junieTaskIDPattern.MatchString(task.id) {
-		return junieControlTask{}, false
-	}
-	if selector.form != nil {
-		inputIDs, ok := selector.form.matchInputIDs(questions, questionOrder)
-		return junieControlTask{id: task.id, inputIDs: inputIDs}, ok
-	}
-	return junieControlTask{id: task.id, inputIDs: terminalInputs}, len(terminalInputs) > 0
+	return control.result()
 }
 
 type juniePendingQuestion struct {

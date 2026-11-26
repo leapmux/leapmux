@@ -40,17 +40,28 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 		defer release()
 		a.finishKiloSteer(sessionID, response, err, true)
 	}
-	err = a.SendPromptDetachedUsing(sessionID, request.Content, request.Attachments, func(params json.RawMessage) error {
-		send, err := a.prepareNativePrompt(receipt, params)
+	var nativeSend func(func(json.RawMessage, error)) error
+	err = a.SendPromptDetachedUsing(sessionID, request.Content, request.Attachments, func(prepared acp.PreparedPrompt) error {
+		send, err := a.prepareNativePrompt(receipt, prepared)
 		if err != nil {
 			return err
 		}
 		if send == nil {
 			receipt = agent.NativeInputReceipt{}
+			params, err := prepared.MarshalParams()
+			if err != nil {
+				return err
+			}
 			return a.SendDetachedRequest(acp.MethodSessionPrompt, params, providerkit.DetachedRequestOptions{}, finish)
 		}
-		return send(finish)
+		nativeSend = send
+		return nil
 	})
+	if err == nil && nativeSend != nil {
+		// Run native HTTP submission after SendPromptDetachedUsing releases
+		// sessionMu so Interrupt, ClearContext, and prompt completions do not stall.
+		err = nativeSend(finish)
+	}
 	if err != nil {
 		release()
 		a.finishKiloSteer(sessionID, nil, err, false)

@@ -59,48 +59,47 @@ func (p cursorProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 	res := p.Provider.ResolveControlResponse(ctx)
 	// Without this guard an empty payload would reach providerkit.WarnUnmarshal below and log a
 	// failure for a request that carried nothing to parse.
-	if len(ctx.RequestPayload) == 0 {
+	if len(ctx.RequestPayload) == 0 || acp.IsJSONRPCReply(ctx.ResponseContent) {
 		return res
 	}
-	if transformed, ok := transformCursorControlResponse(ctx); ok {
-		res.Content = transformed
-	}
-	return res
+	return resolveCursorCreatePlan(ctx, res)
 }
 
 // cursorPlanCancelAnswer rejects a plan that the reader never answered.
 //
 // Cursor keeps the turn blocked until the create-plan request has an outcome, and its
 // outcome vocabulary has no word for a withdrawal. A rejection with no reason is what
-// transformCursorControlResponse already sends for a bare refusal, so a stop leaves
+// resolveCursorCreatePlan already sends for a bare refusal, so a stop leaves
 // the same record a refusal does.
 func cursorPlanCancelAnswer() any {
 	return map[string]any{"outcome": map[string]any{"outcome": cursorPlanOutcomeRejected}}
 }
 
-// transformCursorControlResponse rewrites the neutral approve/reject envelope for a
-// Cursor create-plan control request into the ACP outcome Cursor expects on its stdin, returning
-// ok=false (and the caller forwards the response unchanged) when the bytes aren't a create-plan
-// decision, or when the stored request states no id to answer.
-func transformCursorControlResponse(ctx agent.ControlResponseContext) ([]byte, bool) {
+// resolveCursorCreatePlan rewrites the neutral approve/reject envelope for a
+// Cursor create-plan control request into the ACP outcome Cursor expects on its
+// stdin, refusing malformed or unanswerable neutral create-plan decisions so
+// neutral LeapMux bytes never reach Cursor's stdin.
+func resolveCursorCreatePlan(ctx agent.ControlResponseContext, res agent.ControlResponseResolution) agent.ControlResponseResolution {
 	var req struct {
 		Method string `json:"method"`
 	}
 	if !providerkit.WarnUnmarshal(ctx.RequestPayload, &req, "cursor control response method") {
-		return nil, false
+		return res
 	}
 	if req.Method != contracts.CursorMethodCreatePlan {
-		return nil, false
+		return res
 	}
 
 	_, behavior, message, ok := agent.DecodeControlBehavior(ctx.ResponseContent)
 	if !ok {
-		return nil, false
+		res.Refuse(agent.RefusalNoDecision)
+		return res
 	}
 
 	idRaw, _, ok := agent.ExtractJSONRPCID(ctx.RequestPayload)
 	if !ok {
-		return nil, false
+		res.Refuse(agent.RefusalUnreadableRequest)
+		return res
 	}
 
 	outcome := cursorPlanOutcomeAccepted
@@ -113,7 +112,8 @@ func transformCursorControlResponse(ctx agent.ControlResponseContext) ([]byte, b
 		// to "" by DecodeControlBehavior, so a bare rejection carries no reason.
 		reason = message
 	default:
-		return nil, false
+		res.Refuse(agent.RefusalNoDecision)
+		return res
 	}
 
 	outcomeBody := map[string]interface{}{
@@ -129,7 +129,9 @@ func transformCursorControlResponse(ctx agent.ControlResponseContext) ([]byte, b
 		"result":  map[string]interface{}{"outcome": outcomeBody},
 	})
 	if err != nil {
-		return nil, false
+		res.Refuse(agent.RefusalUnencodableReply)
+		return res
 	}
-	return encoded, true
+	res.Content = encoded
+	return res
 }

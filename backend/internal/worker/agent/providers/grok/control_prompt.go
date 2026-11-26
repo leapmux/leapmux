@@ -3,6 +3,7 @@ package grok
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -33,26 +34,6 @@ func grokFolderTrustOptions() []*leapmuxv1.PermissionOption {
 	}
 }
 
-// grokControlRequest is the method and the params of one control request. A
-// member of the wrong type reads as absent: a method that is no string matches
-// no method, and params that are no object hold no field.
-type grokControlRequest struct {
-	method string
-	params map[string]json.RawMessage
-}
-
-func readGrokControlRequest(payload []byte) grokControlRequest {
-	fields := providerkit.RawFields(payload)
-	method, _ := providerkit.RawString(fields["method"])
-	return grokControlRequest{method: method, params: providerkit.RawFields(fields["params"])}
-}
-
-// param reads one string field of the params, or "".
-func (r grokControlRequest) param(key string) string {
-	value, _ := providerkit.RawString(r.params[key])
-	return value
-}
-
 // ReadControlRequest reads Grok's own dialogs, and every other request through
 // the base reader:
 //
@@ -66,26 +47,26 @@ func (r grokControlRequest) param(key string) string {
 // Every tool permission is the standard Agent Client Protocol request, and the
 // standard `elicitation/create` still reads as a form.
 func (grokProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmuxv1.ControlPrompt {
-	request := readGrokControlRequest(input.Payload)
-	switch request.method {
+	method, params := acp.ReadControlRequestEnvelope(input.Payload)
+	switch method {
 	case contracts.GrokMethodAskUserQuestion:
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Question{Question: &leapmuxv1.QuestionPrompt{
-			Questions:               providerkit.QuestionsFromWire(request.params["questions"]),
+			Questions:               providerkit.QuestionsFromWire(params["questions"]),
 			PreservesSelectionNotes: true,
 		}}}
 	case contracts.GrokMethodMcpElicit:
-		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: grokElicitation(request)}}
+		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Elicitation{Elicitation: grokElicitation(params)}}
 	case contracts.GrokMethodExitPlanMode:
 		// Grok sends the plan's Markdown, or null for an empty plan. The prompt
 		// then states no plan text, as the plan file holds none either.
 		return &leapmuxv1.ControlPrompt{Kind: &leapmuxv1.ControlPrompt_Plan{Plan: &leapmuxv1.PlanPrompt{
-			Text: request.param("planContent"),
+			Text: providerkit.ObjectString(params, "planContent"),
 		}}}
 	case contracts.GrokMethodFolderTrust:
 		// resolveGrokFolderTrust sends Grok the decision alone, so a typed
 		// reason would reach nobody: the editor takes none.
 		return &leapmuxv1.ControlPrompt{
-			Kind:          &leapmuxv1.ControlPrompt_Permission{Permission: grokFolderTrustPermission(request)},
+			Kind:          &leapmuxv1.ControlPrompt_Permission{Permission: grokFolderTrustPermission(params)},
 			EditorPurpose: leapmuxv1.ControlEditorPurpose_CONTROL_EDITOR_PURPOSE_NONE,
 		}
 	default:
@@ -95,18 +76,18 @@ func (grokProvider) ReadControlRequest(input agent.ControlRequestInput) *leapmux
 
 // grokElicitation reads the MCP form or URL that `_x.ai/mcp/elicit` asks for.
 // Grok states no title or description for it.
-func grokElicitation(request grokControlRequest) *leapmuxv1.ElicitationPrompt {
-	mode, ok := providerkit.RawString(request.params["mode"])
+func grokElicitation(params map[string]json.RawMessage) *leapmuxv1.ElicitationPrompt {
+	mode, ok := providerkit.RawString(params["mode"])
 	if !ok {
 		mode = contracts.MCPElicitationModeForm
 	}
 	prompt := &leapmuxv1.ElicitationPrompt{
 		Mode:    mode,
-		Message: request.param("message"),
-		Server:  request.param("serverName"),
-		Url:     request.param("url"),
+		Message: providerkit.ObjectString(params, "message"),
+		Server:  providerkit.ObjectString(params, "serverName"),
+		Url:     providerkit.ObjectString(params, "url"),
 	}
-	if schema := request.params["requestedSchema"]; providerkit.RawPresent(schema) {
+	if schema := params["requestedSchema"]; providerkit.RawPresent(schema) {
 		prompt.SchemaJson = string(schema)
 	}
 	return prompt
@@ -116,23 +97,16 @@ func grokElicitation(request grokControlRequest) *leapmuxv1.ElicitationPrompt {
 // configuration may load. The title states the workspace, else the working
 // directory. The reason lists each kind of configuration that the repository
 // holds; an element that is no string, or an empty one, is no kind.
-func grokFolderTrustPermission(request grokControlRequest) *leapmuxv1.PermissionPrompt {
-	workspace := request.param("workspace")
+func grokFolderTrustPermission(params map[string]json.RawMessage) *leapmuxv1.PermissionPrompt {
+	workspace := providerkit.ObjectString(params, "workspace")
 	if workspace == "" {
-		workspace = request.param("cwd")
+		workspace = providerkit.ObjectString(params, "cwd")
 	}
 	title := "Trust this workspace"
 	if workspace != "" {
 		title = "Trust the workspace " + workspace
 	}
-	var elements []json.RawMessage
-	_ = json.Unmarshal(request.params["configKinds"], &elements)
-	var kinds []string
-	for _, element := range elements {
-		if kind, ok := providerkit.RawString(element); ok && kind != "" {
-			kinds = append(kinds, kind)
-		}
-	}
+	kinds := slices.DeleteFunc(providerkit.RawStrings(params["configKinds"]), func(s string) bool { return s == "" })
 	found := ""
 	if len(kinds) > 0 {
 		found = fmt.Sprintf(" (%s)", strings.Join(kinds, ", "))
@@ -160,7 +134,7 @@ func (grokProvider) AnswerControlRequest(input agent.ControlAnswerInput) (agent.
 	case *leapmuxv1.ControlPrompt_Plan:
 		return agent.AnswerNeutralPlan(input)
 	}
-	if readGrokControlRequest(input.Request.Payload).method == contracts.GrokMethodFolderTrust && input.Decision.GetPermission().GetFeedback() != "" {
+	if method, _ := acp.ReadControlRequestEnvelope(input.Request.Payload); method == contracts.GrokMethodFolderTrust && input.Decision.GetPermission().GetFeedback() != "" {
 		// resolveGrokFolderTrust sends the decision alone.
 		return agent.ControlAnswer{}, agent.InvalidControlDecision("Grok's folder trust takes no reason")
 	}

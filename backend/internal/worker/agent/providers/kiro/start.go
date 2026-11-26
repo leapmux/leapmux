@@ -118,7 +118,7 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		// Two answers of the model can arrive in one turn with no update
 		// between them: the plan mode's last answer, and the first answer of
 		// the mode that runs the plan. Each chunk states its answer.
-		ChunkMessageID: chunkMessageID,
+		UpdateMessageID: chunkMessageID,
 		// A subagent streams in the parent session, and each update of it
 		// carries the id of its subtask.
 		ChildUpdateRoute: a.childUpdateRoute,

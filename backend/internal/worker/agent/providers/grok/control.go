@@ -9,6 +9,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -159,6 +160,33 @@ func (a *Agent) resolveGrokPermissionSession(sessionID string, line *providerkit
 	return owner, nil
 }
 
+func (a *Agent) grokControlOwner(sessionID string, line *providerkit.ParsedLine, needsTurn bool) (acp.ControlOwnerResolution, error) {
+	resolved, err := a.resolveGrokPermissionSession(sessionID, line)
+	if err != nil {
+		return acp.ControlOwnerResolution{}, err
+	}
+	res := acp.ControlOwnerResolution{SessionID: resolved}
+	if resolved != "" && !a.IsCurrentSession(resolved) {
+		child, err := a.grokChildPermissionOwner(resolved)
+		if err != nil {
+			slog.Warn("resolve the child permission owner", "agent_id", a.AgentID(), "session_id", resolved, "error", err)
+		}
+		if err != nil || child == nil {
+			res.Refuse = true
+			return res, nil
+		}
+		res.Sink = child
+	}
+	if needsTurn {
+		effective := resolved
+		if effective == "" {
+			effective = a.CurrentSessionID()
+		}
+		res.TurnID, res.InputIDs = a.grokSteerControlOwner(effective, line)
+	}
+	return res, nil
+}
+
 func (a *Agent) grokChildPermissionOwner(sessionID string) (agent.ControlServices, error) {
 	owner, found := a.SessionOwner(sessionID)
 	if !found || owner.MessageSessionID() != sessionID {
@@ -305,5 +333,28 @@ func (a *Agent) clearPermissionChecks(sessionID string) {
 // completeToolOutput ends the badge of a tool call that reached its final
 // update: the call is over, whatever the classifier asked about it.
 func (a *Agent) completeToolOutput(sessionID, toolCallID string) {
-	a.clearPermissionCheck(controlKey{sessionID: sessionID, toolCallID: toolCallID})
+	if toolCallID == "" {
+		return
+	}
+	if sessionID != "" {
+		a.clearPermissionCheck(controlKey{sessionID: sessionID, toolCallID: toolCallID})
+		return
+	}
+	// An unbound sink reports an empty MessageSessionID. Clear open checks for
+	// this toolCallID whose session owner also reports an empty session ID so
+	// stale checks cannot leak or cause permission-session ambiguity.
+	a.stateMu.Lock()
+	var keys []controlKey
+	for key := range a.controls.checks {
+		if key.toolCallID == toolCallID {
+			keys = append(keys, key)
+		}
+	}
+	a.stateMu.Unlock()
+	for _, key := range keys {
+		owner, ok := a.SessionOwner(key.sessionID)
+		if !ok || owner.MessageSessionID() == "" {
+			a.clearPermissionCheck(key)
+		}
+	}
 }

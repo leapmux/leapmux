@@ -93,7 +93,10 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		PromptParams:           diracPromptParams,
 		ExtraMethod:            a.handleExtraMethod,
 		SessionMetadataHandler: a.observeDiracNotice,
-		PromptEnded:            a.handleDiracPromptEnded,
+		PromptEnded: func(error, bool) acp.PromptEnding {
+			a.resolvePendingDiracSteers(agent.SteerOutcomeDropped)
+			return acp.PromptEnding{}
+		},
 		ClearProviderState: func() {
 			a.resolvePendingDiracSteers(agent.SteerOutcomeUncertain)
 			a.clearChildState()

@@ -542,9 +542,10 @@ func TestPromptWithNothingBufferedStoresNothingAtItsStart(t *testing.T) {
 	assert.Empty(t, sink.ProgressUpdates())
 }
 
-// The reader can hand a chunk to the base while a prompt starts. The chunk goes
-// either to the segment before the prompt or to the prompt, and never to both
-// or to neither.
+// The reader can hand a chunk to the base while a prompt starts. Each chunk
+// lands in at most three segments (before claiming the prompt, between claim
+// and stdin dispatch in startInputReply, or in the prompt itself) and never in
+// more than one or in none.
 func TestPromptStartKeepsEachConcurrentChunkOnce(t *testing.T) {
 	t.Parallel()
 	const chunks = 200
@@ -564,7 +565,7 @@ func TestPromptStartKeepsEachConcurrentChunkOnce(t *testing.T) {
 
 	texts := assembledTexts(t, sink.Messages())
 	require.NotEmpty(t, texts)
-	assert.LessOrEqual(t, len(texts), 2, "one segment before the prompt at most, and the prompt's own")
+	assert.LessOrEqual(t, len(texts), 3, "at most pre-claim, pre-dispatch, and prompt segments")
 	stored := ""
 	for _, text := range texts {
 		segment, isText := strings.CutPrefix(text, "text:")

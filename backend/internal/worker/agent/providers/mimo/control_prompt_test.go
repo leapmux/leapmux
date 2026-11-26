@@ -74,14 +74,6 @@ func mustMiMoJSON(t *testing.T, value any) string {
 	return string(encoded)
 }
 
-func mimoOptionIDs(prompt *leapmuxv1.ControlPrompt) []string {
-	var ids []string
-	for _, option := range prompt.GetPermission().GetOptions() {
-		ids = append(ids, option.GetOptionId())
-	}
-	return ids
-}
-
 // The three answers, in the order of MiMo's own prompt, and the two that a
 // request without a kept `always` offers.
 var (
@@ -122,7 +114,7 @@ func TestReadControlRequest_OffersNoAlwaysForADelete(t *testing.T) {
 		"permission": "bash_delete", "patterns": []any{"rm -f x"}, "always": []any{"rm *"},
 		"metadata": map[string]any{"command": "rm -f x"},
 	}))).GetPermission()
-	assert.Equal(t, []string{"once", "reject"}, mimoOptionIDs(agenttest.PermissionPrompt(permission)))
+	assert.Equal(t, []string{"once", "reject"}, agenttest.PromptPermissionOptionIDs(agenttest.PermissionPrompt(permission)))
 	assert.JSONEq(t, `{"command":"rm -f x"}`, permission.GetInputJson(), "a request that offers no always states no always list")
 }
 
@@ -139,7 +131,7 @@ func TestReadControlRequest_OffersNoAlwaysWithoutAPattern(t *testing.T) {
 		properties := map[string]any{"permission": "external_directory", "patterns": []any{"/etc/*"}, "metadata": map[string]any{}}
 		maps.Copy(properties, fields)
 		permission := agenttest.ControlPromptOf(mimoProvider{}, []byte(mimoPermissionRequest(t, properties))).GetPermission()
-		assert.Equal(t, []string{"once", "reject"}, mimoOptionIDs(agenttest.PermissionPrompt(permission)), name)
+		assert.Equal(t, []string{"once", "reject"}, agenttest.PromptPermissionOptionIDs(agenttest.PermissionPrompt(permission)), name)
 		assert.Equal(t, `{"patterns":["/etc/*"]}`, permission.GetInputJson(), name)
 	}
 }

@@ -65,34 +65,11 @@ const kiroMetaReplayID = "replayId"
 
 // chunkMessageID reads the answer that one chunk belongs to, from the `_meta` of
 // the update. It is "" for a chunk that states none.
-func chunkMessageID(_ agent.AssembledMessageKind, metadata map[string]json.RawMessage) string {
-	return fieldString(kiroFields(metadata[contracts.KiroMetaNamespace]), kiroMetaReplayID)
-}
-
-// kiroFields reads the `_meta.kiro` object of one update into its fields. It is
-// nil for an update that carries none.
-func kiroFields(raw json.RawMessage) map[string]json.RawMessage {
-	return providerkit.RawFields(raw)
-}
-
-// fieldString reads one string field, or "" for a field that is absent or not a
-// string.
-func fieldString(fields map[string]json.RawMessage, key string) string {
-	var value string
-	if raw, ok := fields[key]; ok {
-		_ = json.Unmarshal(raw, &value)
+func chunkMessageID(info acp.UpdateMessageInfo) string {
+	if info.UpdateType != contracts.ACPUpdateAgentMessageChunk && info.UpdateType != contracts.ACPUpdateAgentThoughtChunk {
+		return ""
 	}
-	return value
-}
-
-// fieldBool reads one boolean field, or false for a field that is absent or
-// not a boolean.
-func fieldBool(fields map[string]json.RawMessage, key string) bool {
-	var value bool
-	if raw, ok := fields[key]; ok {
-		_ = json.Unmarshal(raw, &value)
-	}
-	return value
+	return providerkit.ObjectString(providerkit.RawFields(info.UpdateMeta[contracts.KiroMetaNamespace]), kiroMetaReplayID)
 }
 
 // turnState follows the turns of the main session. Guarded by Agent.stateMu.
@@ -129,7 +106,7 @@ type turnState struct {
 // the update persists where the reader can see what a later build states.
 func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool {
 	raw := metadata[contracts.KiroMetaNamespace]
-	fields := kiroFields(raw)
+	fields := providerkit.RawFields(raw)
 	if updateType != "session_info_update" {
 		// Kiro copies the kiro metadata of the prompt into every chunk of its
 		// turn, so a main-session text chunk with none at all is the answer of
@@ -149,7 +126,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		a.observeConversationUpdate(fields)
 		return false
 	}
-	kind := fieldString(fields, contracts.KiroMetaKind)
+	kind := providerkit.ObjectString(fields, contracts.KiroMetaKind)
 	switch kind {
 	case kiroKindTurnStart:
 		a.handleTurnStart(fields)
@@ -171,7 +148,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 	case kiroKindRecap:
 		a.reportRecap(raw)
 	case kiroKindSteeringInjected:
-		a.handleSteeringInjected(fieldString(fields, "messageId"))
+		a.handleSteeringInjected(providerkit.ObjectString(fields, "messageId"))
 	case kiroKindSteeringCleared:
 		a.handleSteeringCleared(fields["messageIds"])
 	default:
@@ -196,7 +173,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 // session states beside its conversation: the mark of a turn that Kiro
 // started.
 func (a *Agent) observeConversationUpdate(fields map[string]json.RawMessage) {
-	if fieldBool(fields, kiroMetaAgentInitiated) {
+	if providerkit.RawBool(fields[kiroMetaAgentInitiated]) {
 		a.beginAgentTurn()
 	}
 }
@@ -220,7 +197,7 @@ func (a *Agent) handleTurnStart(fields map[string]json.RawMessage) {
 		a.turns.startExecutionID = kiroExecutionID(fields, "-turn-start")
 	}
 	a.stateMu.Unlock()
-	if !a.PromptActive() || fieldBool(fields, kiroMetaAgentInitiated) {
+	if !a.PromptActive() || providerkit.RawBool(fields[kiroMetaAgentInitiated]) {
 		a.beginAgentTurn()
 	}
 }
@@ -245,7 +222,7 @@ func (a *Agent) beginAgentTurn() {
 }
 
 func kiroExecutionID(fields map[string]json.RawMessage, suffix string) string {
-	id, matched := strings.CutSuffix(fieldString(fields, "messageId"), suffix)
+	id, matched := strings.CutSuffix(providerkit.ObjectString(fields, "messageId"), suffix)
 	if !matched {
 		return ""
 	}
@@ -260,7 +237,7 @@ func kiroExecutionID(fields map[string]json.RawMessage, suffix string) string {
 // browser plugin reads its stop reason into the divider, as it reads the
 // prompt response of a turn that LeapMux started.
 func (a *Agent) handleTurnEnd(fields map[string]json.RawMessage, update json.RawMessage) {
-	stopReason := fieldString(fields, contracts.KiroMetaStopReason)
+	stopReason := providerkit.ObjectString(fields, contracts.KiroMetaStopReason)
 	executionID := kiroExecutionID(fields, "-turn-end")
 	a.stateMu.Lock()
 	agentTurn := a.turns.agentTurn
@@ -309,16 +286,10 @@ func (a *Agent) handleTurnEnd(fields map[string]json.RawMessage, update json.Raw
 }
 
 func kiroTurnOutcome(stopReason string) leapmuxv1.AgentInputTurnOutcome {
-	switch stopReason {
-	case contracts.ACPStopReasonEndTurn, kiroStopMaxTokens:
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
-	case contracts.ACPStopReasonCancelled:
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED
-	case kiroStopError:
+	if stopReason == kiroStopError {
 		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED
-	default:
-		return leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
 	}
+	return acp.StopReasonOutcome(stopReason)
 }
 
 // logTurnCompletion logs the credits that one turn used. Kiro bills in
@@ -432,6 +403,9 @@ func (a *Agent) handleDisplayError(raw json.RawMessage) {
 func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	a.requestUsageRefresh()
 	a.stateMu.Lock()
+	if !a.turns.agentTurn {
+		a.turns.startExecutionID = ""
+	}
 	held := a.turns.heldError
 	a.turns.heldError = ""
 	frame := a.turns.heldEndFrame

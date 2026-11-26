@@ -127,7 +127,7 @@ func TestGrokAgentTurnAfterALeapMuxPromptWaitsForItsEnd(t *testing.T) {
 	// processed the response of LeapMux's prompt.
 	a.HandleOutput(queueChanged(t, grokTestSession, "subagent-completed-bg-1"))
 	assert.False(t, a.AgentTurnActive(), "the agent turn waits for the prompt's end")
-	promptID, turnID := a.grokSteerScope(grokTestSession)
+	promptID, turnID, _ := a.grokSteerScope(grokTestSession)
 	assert.Equal(t, "subagent-completed-bg-1", promptID)
 	assert.Equal(t, promptID, turnID)
 	controlTurn, _ := a.grokSteerControlOwner(grokTestSession, nil)

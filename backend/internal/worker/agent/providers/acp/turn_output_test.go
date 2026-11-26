@@ -280,9 +280,9 @@ func chunkIDBase(t *testing.T) (*Base, *agenttest.Sink) {
 	t.Helper()
 	var stdin bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&stdin))
-	b.hooks.ChunkMessageID = func(_ agent.AssembledMessageKind, metadata map[string]json.RawMessage) string {
+	b.hooks.UpdateMessageID = func(info UpdateMessageInfo) string {
 		var id string
-		_ = json.Unmarshal(metadata["messageId"], &id)
+		_ = json.Unmarshal(info.UpdateMeta["messageId"], &id)
 		return id
 	}
 	return b, sink
@@ -461,7 +461,7 @@ func TestACPSpecMessageIDAbsentIsOneRow(t *testing.T) {
 func TestACPHookMessageIDWinsOverSpecID(t *testing.T) {
 	var stdin bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&stdin))
-	b.hooks.ChunkMessageID = func(agent.AssembledMessageKind, map[string]json.RawMessage) string { return "hook-message" }
+	b.hooks.UpdateMessageID = func(UpdateMessageInfo) string { return "hook-message" }
 	b.handleACPUpdate(specChunkUpdate(t, "agent_message_chunk", "First ", "m1"))
 	b.handleACPUpdate(specChunkUpdate(t, "agent_message_chunk", "answer.", "m2"))
 	b.main().flushAssistantBuffer()
@@ -471,7 +471,7 @@ func TestACPHookMessageIDWinsOverSpecID(t *testing.T) {
 func TestACPHookMessageIDFallsBackToSpecID(t *testing.T) {
 	var stdin bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&stdin))
-	b.hooks.ChunkMessageID = func(agent.AssembledMessageKind, map[string]json.RawMessage) string { return "" }
+	b.hooks.UpdateMessageID = func(UpdateMessageInfo) string { return "" }
 	b.handleACPUpdate(specChunkUpdate(t, "agent_message_chunk", "First.", "m1"))
 	b.handleACPUpdate(specChunkUpdate(t, "agent_message_chunk", "Second.", "m2"))
 	b.main().flushAssistantBuffer()
@@ -594,7 +594,7 @@ func TestSegmentTextNotCalledForAChild(t *testing.T) {
 	raw := specChunkUpdate(t, "agent_message_chunk", "child answer", "child-message")
 	var header acpUpdateHeader
 	require.NoError(t, json.Unmarshal(raw, &header))
-	assert.True(t, conversation.handleUpdate(header, raw))
+	assert.True(t, conversation.handleUpdate(header, raw, "", "", nil))
 	conversation.flushAssistantBuffer()
 	assert.Zero(t, calls)
 	assert.Empty(t, root.Messages())

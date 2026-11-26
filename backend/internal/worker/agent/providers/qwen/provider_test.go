@@ -200,17 +200,17 @@ func TestQwenAttachmentPolicyRejectsGenericBinary(t *testing.T) {
 }
 
 // A request that Qwen marks as a question dialog reads as a question even when
-// its tool call names the plan tool, and AnswerControlRequest answers it with
+// its tool call identifies the plan tool, and AnswerControlRequest answers it with
 // Qwen's own reply. The resolution forwards that reply: read as a plan
 // decision, it would be refused.
-func TestQwenForwardsTheQuestionReplyOfARequestThatNamesThePlanTool(t *testing.T) {
+func TestQwenForwardsTheQuestionReplyOfARequestIdentifyingThePlanTool(t *testing.T) {
 	t.Parallel()
-	payload := questionNamingThePlanTool(t)
+	payload := questionIdentifyingThePlanTool(t)
 	require.False(t, isPlanApproval(json.RawMessage(payload)), "the question marker decides the kind")
 	require.NotNil(t, agenttest.ControlPromptOf(qwenProvider{}, []byte(payload)).GetQuestion(), "the question marker decides the prompt")
 
 	answer, err := agenttest.AnswerControl(qwenProvider{}, []byte(payload), qwenStoredRequestID,
-		agenttest.QuestionDecision(qwenAnswer("", "Red"), qwenAnswer("", "Cache")))
+		agenttest.QuestionDecision(agenttest.QuestionAnswer("", "Red"), agenttest.QuestionAnswer("", "Cache")))
 	require.NoError(t, err)
 	result := agenttest.ResolveAnswer(qwenProvider{}, []byte(payload), qwenStoredRequestID, answer)
 
@@ -229,9 +229,9 @@ func TestQwenForwardsAnOrdinaryPermissionAndAQuestion(t *testing.T) {
 		"the answers of a question survive the forward")
 }
 
-// questionNamingThePlanTool is the plan approval with Qwen's question marker
+// questionIdentifyingThePlanTool is the plan approval with Qwen's question marker
 // added: a question dialog whose tool call states `exit_plan_mode`.
-func questionNamingThePlanTool(t *testing.T) string {
+func questionIdentifyingThePlanTool(t *testing.T) string {
 	t.Helper()
 	payload := strings.Replace(planApprovalPayload, `"_meta":{"toolName":"exit_plan_mode"}`,
 		`"_meta":{"toolName":"exit_plan_mode","qwenInteractionKind":"user_question","qwenQuestions":`+qwenQuestions+`}`, 1)
@@ -242,7 +242,7 @@ func questionNamingThePlanTool(t *testing.T) string {
 func TestQwenIsPlanApproval(t *testing.T) {
 	t.Parallel()
 	assert.True(t, isPlanApproval(json.RawMessage(planApprovalPayload)))
-	assert.False(t, isPlanApproval(json.RawMessage(questionNamingThePlanTool(t))), "a question dialog is no plan approval")
+	assert.False(t, isPlanApproval(json.RawMessage(questionIdentifyingThePlanTool(t))), "a question dialog is no plan approval")
 	assert.False(t, isPlanApproval(json.RawMessage(shellPermissionPayload)))
 	assert.False(t, isPlanApproval(json.RawMessage(`{"method":"session/request_permission"}`)))
 	assert.False(t, isPlanApproval(json.RawMessage(`{"method":"_x/other","params":{"toolCall":{"_meta":{"toolName":"exit_plan_mode"}}}}`)))

@@ -68,13 +68,13 @@ var _ agent.SteerPreparer = (*Agent)(nil)
 // that arrive while a session has a pending prompt.
 func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
 	content, attachments := request.Content, request.Attachments
-	if content == "" {
-		return agent.NativeInputReceipt{}, nil
-	}
 	// The whisper carries text alone, so the queue keeps an attachment-bearing
 	// input for the next turn.
 	if err := providerkit.TextOnlySteer("Dirac", attachments); err != nil {
 		return agent.NativeInputReceipt{}, err
+	}
+	if content == "" {
+		return agent.NativeInputReceipt{}, nil
 	}
 	var tracked *diracPendingSteer
 	err := a.WithActivePromptSession(func(sessionID string) error {
@@ -96,10 +96,12 @@ func (a *Agent) SteerInput(request agent.SteerRequest) (agent.NativeInputReceipt
 		return agent.NativeInputReceipt{}, err
 	}
 	// The turn can end while the whisper writes; a whisper into an ended turn
-	// reaches nothing.
+	// reaches nothing. If Dirac already popped and settled tracked (echoed or
+	// dropped), do not return ErrNoActiveTurn and cause a duplicate dispatch.
 	if !a.PromptActive() {
-		a.cancelDiracSteer(tracked)
-		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
+		if tracked == nil || a.cancelDiracSteer(tracked) {
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
+		}
 	}
 	return agent.NativeInputReceipt{}, nil
 }

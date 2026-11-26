@@ -34,7 +34,8 @@ import (
 const (
 	MethodInitialize                  = "initialize"
 	acpMethodSessionUpdate            = "session/update"
-	acpMethodSessionRequestPermission = "session/request_permission"
+	MethodSessionRequestPermission    = "session/request_permission"
+	acpMethodSessionRequestPermission = MethodSessionRequestPermission
 	MethodSessionCancel               = "session/cancel"
 	// An agent sends this JSON-RPC notification to withdraw a request.
 	// The providers use two spellings:
@@ -352,6 +353,11 @@ type acpUpdateHeader struct {
 }
 
 func (b *Base) handleACPUpdate(update json.RawMessage) {
+	b.handleACPUpdateWithMeta(acpSessionUpdate{SessionID: b.CurrentSessionID(), Update: update})
+}
+
+func (b *Base) handleACPUpdateWithMeta(wrapper acpSessionUpdate) {
+	update := wrapper.Update
 	var header acpUpdateHeader
 	if err := json.Unmarshal(update, &header); err != nil {
 		slog.Warn("acp session update unmarshal header failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
@@ -376,7 +382,11 @@ func (b *Base) handleACPUpdate(update json.RawMessage) {
 	if header.Role == contracts.ACPRoleResult {
 		return
 	}
-	if b.main().handleUpdate(header, update) {
+	sessionID := wrapper.SessionID
+	if sessionID == "" {
+		sessionID = b.CurrentSessionID()
+	}
+	if b.main().handleUpdate(header, update, sessionID, "", wrapper.Meta) {
 		return
 	}
 

@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -74,16 +77,50 @@ func TestKiloReplyRequiresCompleteTranscriptTextForEachNativeMessage(t *testing.
 
 func TestKiloNativePromptPreservesThePreparedBlocksAndSession(t *testing.T) {
 	t.Parallel()
-	parts, err := kiloPreparedParts(json.RawMessage(`{"sessionId":"session","prompt":[{"type":"text","text":""},{"type":"image","data":"AAE=","mimeType":"image/png"}]}`), "session")
+	parts, err := kiloPreparedParts(acp.PreparedPrompt{
+		SessionID: "session",
+		Blocks: []map[string]any{
+			{"type": "text", "text": ""},
+			{"type": "image", "data": "AAE=", "mimeType": "image/png"},
+		},
+	}, "session")
 	require.NoError(t, err)
 	raw, err := json.Marshal(parts)
 	require.NoError(t, err)
 	assert.JSONEq(t, `[{"type":"text","text":""},{"type":"file","url":"data:image/png;base64,AAE=","mime":"image/png","filename":"image"}]`, string(raw))
-	_, err = kiloPreparedParts(json.RawMessage(`{"sessionId":"different","prompt":[{"type":"text","text":"input"}]}`), "session")
+	_, err = kiloPreparedParts(acp.PreparedPrompt{
+		SessionID: "different",
+		Blocks:    []map[string]any{{"type": "text", "text": "input"}},
+	}, "session")
 	assert.ErrorIs(t, err, agent.ErrInputSessionChanged)
-	slashParts, err := kiloPreparedParts(json.RawMessage(`{"sessionId":"session","prompt":[{"type":"text","text":" /compact"}]}`), "session")
+	slashParts, err := kiloPreparedParts(acp.PreparedPrompt{
+		SessionID: "session",
+		Blocks:    []map[string]any{{"type": "text", "text": " /compact"}},
+	}, "session")
 	require.NoError(t, err)
 	assert.Empty(t, slashParts)
+
+	resourceParts, err := kiloPreparedParts(acp.PreparedPrompt{
+		SessionID: "session",
+		Blocks: []map[string]any{
+			{"type": "resource", "resource": map[string]any{"uri": "note.txt", "text": "hello"}},
+			{"type": "resource", "resource": map[string]any{"uri": "doc.pdf", "blob": "AA==", "mimeType": "application/pdf"}},
+		},
+	}, "session")
+	require.NoError(t, err)
+	raw, err = json.Marshal(resourceParts)
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"type":"text","text":"[note.txt]\nhello"},{"type":"file","url":"data:application/pdf;base64,AA==","mime":"application/pdf","filename":"file"}]`, string(raw))
+
+	for _, fallbackBlock := range []map[string]any{
+		{"type": "resource", "resource": map[string]any{"uri": "file:///etc/hosts", "text": "x"}},
+		{"type": "resource", "resource": map[string]any{"uri": "doc.bin", "blob": "AA=="}},
+		{"type": "audio", "data": "AA=="},
+	} {
+		fallback, err := kiloPreparedParts(acp.PreparedPrompt{SessionID: "session", Blocks: []map[string]any{fallbackBlock}}, "session")
+		require.NoError(t, err)
+		assert.Nil(t, fallback)
+	}
 }
 
 func TestKiloPermissionResolvesOnlyOneTrackedToolOwner(t *testing.T) {
@@ -96,4 +133,70 @@ func TestKiloPermissionResolvesOnlyOneTrackedToolOwner(t *testing.T) {
 	assert.Empty(t, replies.permissionTurnID("session", "call", []kiloNativeMessage{owned, other}))
 	assert.Empty(t, replies.permissionTurnID("session", "call", []kiloNativeMessage{other}))
 	assert.Empty(t, replies.permissionTurnID("other-session", "call", []kiloNativeMessage{owned}))
+}
+
+func TestKiloAssignsSeparateTranscriptKeysToSegmentsOfOneAssistantMessage(t *testing.T) {
+	t.Parallel()
+	a := newAgent(false)
+	hooks := opencode.FamilyHooks(&a.FamilyBase)
+	require.NotNil(t, hooks.AssistantTextKey)
+	first := hooks.AssistantTextKey("msg_assistant")
+	second := hooks.AssistantTextKey("msg_assistant")
+	other := hooks.AssistantTextKey("msg_assistant_later")
+	assert.Regexp(t, `^kilo-reply:"msg_assistant":[A-Za-z0-9]{48}$`, first)
+	assert.Regexp(t, `^kilo-reply:"msg_assistant":[A-Za-z0-9]{48}$`, second)
+	assert.Regexp(t, `^kilo-reply:"msg_assistant_later":[A-Za-z0-9]{48}$`, other)
+	assert.NotEqual(t, first, second)
+}
+
+func TestKiloNativeRepliesPruneConsumedTextAndSignalWaiters(t *testing.T) {
+	t.Parallel()
+	var replies kiloNativeReplies
+	replies.add("input-1", agent.NativeInputReceipt{SessionID: "session", InputID: "r1"})
+	replies.add("input-2", agent.NativeInputReceipt{SessionID: "session", InputID: "r2"})
+
+	changed := replies.textSignal()
+	replies.recordText("msg-1", "k1", "hello")
+	select {
+	case <-changed:
+	default:
+		t.Fatal("recordText must close textChanged signal channel")
+	}
+
+	replies.recordText("msg-2", "k2", "world")
+	replies.pruneText(map[string]bool{"msg-1": true})
+
+	replies.mu.Lock()
+	_, hasMsg1 := replies.text["msg-1"]
+	_, hasMsg2 := replies.text["msg-2"]
+	replies.mu.Unlock()
+	assert.False(t, hasMsg1, "consumed message text must be pruned even while another native input remains active")
+	assert.True(t, hasMsg2)
+}
+
+func TestKiloConfigureHooksResolvesPermissionTurnOwner(t *testing.T) {
+	t.Parallel()
+	a := newAgent(false)
+	a.SetSessionIDForTest("session-1")
+	a.nativeReplies.add("msg-1", agent.NativeInputReceipt{SessionID: "session-1", TurnID: "turn-1"})
+	a.nativeReplies.toolOwners = map[kiloToolOwnerKey]string{
+		{sessionID: "session-1", toolCallID: "call-1"}: "msg-1",
+	}
+
+	hooks := opencode.FamilyHooks(&a.FamilyBase)
+	require.NotNil(t, hooks.ControlOwner)
+
+	permLine := providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"session-1","toolCall":{"toolCallId":"call-1"}}}`))
+	res, err := hooks.ControlOwner("session-1", permLine, true)
+	require.NoError(t, err)
+	assert.Equal(t, "turn-1", res.TurnID)
+
+	resNoTurn, err := hooks.ControlOwner("session-1", permLine, false)
+	require.NoError(t, err)
+	assert.Empty(t, resNoTurn.TurnID)
+
+	otherLine := providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":2,"method":"elicitation/create","params":{"sessionId":"session-1"}}`))
+	resOther, err := hooks.ControlOwner("session-1", otherLine, true)
+	require.NoError(t, err)
+	assert.Empty(t, resOther.TurnID)
 }
