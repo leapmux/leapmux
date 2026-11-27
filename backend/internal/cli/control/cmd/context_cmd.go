@@ -31,20 +31,19 @@ func newContextCommand() *cobra.Command {
 		QuietUnsupported: true,
 		Examples: []cli.Example{
 			{Command: "leapmux context use --worker build-box --workspace \"Release 1.4\""},
-			{Comment: "Clear a single saved default by passing an empty string.", Command: `leapmux context use --provider ""`},
 		},
 		Flags: func(fs *pflag.FlagSet) {
-			fs.String("hub", "", "default hub URL (pass \"\" to clear)")
-			fs.String("worker", "", "default worker id or name (pass \"\" to clear)")
-			fs.String("workspace", "", "default workspace id or title (pass \"\" to clear)")
-			fs.String("provider", "", "default agent provider (pass \"\" to clear)")
+			fs.String("hub", "", "default hub URL")
+			fs.String("worker", "", "default worker id or name")
+			fs.String("workspace", "", "default workspace id or title")
+			fs.String("provider", "", "default agent provider")
+		},
+		FlagComplete: map[string]cobra.CompletionFunc{
+			"hub":      completeHubFlag,
+			"provider": completeProviderFlag,
 		},
 		Run: runContextUse,
 	})
-	if useCmd.Annotations == nil {
-		useCmd.Annotations = map[string]string{}
-	}
-	useCmd.Annotations[allowBlankScopeFlagsAnnotation] = "true"
 
 	clearCmd := cli.NewLeaf(cli.Leaf{
 		Use:              "clear",
@@ -104,11 +103,7 @@ func (r contextShowResult) RenderText(w io.Writer) error {
 	return nil
 }
 
-func runContextShow(_ *cli.Invocation) (any, error) {
-	cfg, err := control.LoadContext()
-	if err != nil {
-		return nil, err
-	}
+func contextShowResultOf(cfg control.ContextConfig) contextShowResult {
 	path, _ := control.ContextPath()
 	return contextShowResult{
 		Hub:       cfg.Hub,
@@ -116,7 +111,15 @@ func runContextShow(_ *cli.Invocation) (any, error) {
 		Workspace: cfg.Workspace,
 		Provider:  cfg.Provider,
 		Path:      path,
-	}, nil
+	}
+}
+
+func runContextShow(_ *cli.Invocation) (any, error) {
+	cfg, err := control.LoadContext()
+	if err != nil {
+		return nil, err
+	}
+	return contextShowResultOf(cfg), nil
 }
 
 func runContextUse(inv *cli.Invocation) (any, error) {
@@ -128,28 +131,37 @@ func runContextUse(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	if f := inv.Command.LocalNonPersistentFlags().Lookup("hub"); f != nil && f.Changed {
-		cfg.Hub = strings.TrimSpace(f.Value.String())
+		v := strings.TrimSpace(f.Value.String())
+		if v == "" {
+			return nil, cli.Usagef("--hub is empty")
+		}
+		cfg.Hub = control.CanonicalHubURL(v)
 	}
 	if inv.Changed("worker") {
-		cfg.Worker = strings.TrimSpace(stringFlag(inv, "worker"))
+		v := strings.TrimSpace(stringFlag(inv, "worker"))
+		if v == "" {
+			return nil, cli.Usagef("--worker is empty")
+		}
+		cfg.Worker = v
 	}
 	if inv.Changed("workspace") {
-		cfg.Workspace = strings.TrimSpace(stringFlag(inv, "workspace"))
+		v := strings.TrimSpace(stringFlag(inv, "workspace"))
+		if v == "" {
+			return nil, cli.Usagef("--workspace is empty")
+		}
+		cfg.Workspace = v
 	}
 	if inv.Changed("provider") {
-		cfg.Provider = strings.TrimSpace(stringFlag(inv, "provider"))
+		v := strings.TrimSpace(stringFlag(inv, "provider"))
+		if v == "" {
+			return nil, cli.Usagef("--provider is empty")
+		}
+		cfg.Provider = v
 	}
 	if err := control.SaveContext(cfg); err != nil {
 		return nil, err
 	}
-	path, _ := control.ContextPath()
-	return contextShowResult{
-		Hub:       cfg.Hub,
-		Worker:    cfg.Worker,
-		Workspace: cfg.Workspace,
-		Provider:  cfg.Provider,
-		Path:      path,
-	}, nil
+	return contextShowResultOf(cfg), nil
 }
 
 func runContextClear(inv *cli.Invocation) (any, error) {
@@ -158,8 +170,7 @@ func runContextClear(inv *cli.Invocation) (any, error) {
 		if err := control.ClearContext(); err != nil {
 			return nil, err
 		}
-		path, _ := control.ContextPath()
-		return contextShowResult{Path: path}, nil
+		return contextShowResultOf(control.ContextConfig{}), nil
 	}
 	cfg, err := control.LoadContext()
 	if err != nil {
@@ -182,12 +193,5 @@ func runContextClear(inv *cli.Invocation) (any, error) {
 	if err := control.SaveContext(cfg); err != nil {
 		return nil, err
 	}
-	path, _ := control.ContextPath()
-	return contextShowResult{
-		Hub:       cfg.Hub,
-		Worker:    cfg.Worker,
-		Workspace: cfg.Workspace,
-		Provider:  cfg.Provider,
-		Path:      path,
-	}, nil
+	return contextShowResultOf(cfg), nil
 }

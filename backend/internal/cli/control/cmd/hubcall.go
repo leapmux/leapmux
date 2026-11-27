@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
@@ -76,16 +74,12 @@ func hubCallLocalIPC(ctx context.Context, c *control.WorkerIPCClient, procedure 
 
 // hubCallDirect dispatches a hub-bound RPC over the direct ConnectRPC
 // transport. The shared `hubrpc.Registry` lookup handles the typed
-// dispatch; we contribute the transport and the session-auth interceptor
-// that `c.WorkspaceService()` & friends would otherwise apply.
+// dispatch; `c.ConnectClient()` supplies the transport and session-auth
+// interceptor that `c.WorkspaceService()` and friends apply.
 func hubCallDirect(ctx context.Context, c *control.HubClient, procedure string, in proto.Message, out proto.Message) error {
 	desc, err := hubrpc.Lookup(procedure)
 	if err != nil {
 		return fmt.Errorf("unsupported hub method: %w", err)
 	}
-	client := connect.NewClient(
-		connecthttp.NewTransport(c.HTTPClient, c.ConnectURL(), connecthttp.WithReadMaxBytes(0)),
-		c.AuthInterceptor(),
-	)
-	return desc.Invoke(ctx, client, in, out)
+	return desc.Invoke(ctx, c.ConnectClient(), in, out)
 }

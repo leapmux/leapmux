@@ -400,6 +400,12 @@ func (c *HubClient) newConnectClient(httpClient *http.Client) *connect.Client {
 		connecthttp.WithReadMaxBytes(0)), c.AuthInterceptor())
 }
 
+// ConnectClient returns a ConnectRPC client using c.HTTPClient with the shared
+// authentication and response-size policy.
+func (c *HubClient) ConnectClient() *connect.Client {
+	return c.newConnectClient(c.HTTPClient)
+}
+
 // WorkspaceService returns a ConnectRPC client for the hub-side
 // WorkspaceService. An interceptor injects the auth headers.
 func (c *HubClient) WorkspaceService() leapmuxv1connect.WorkspaceServiceClient {

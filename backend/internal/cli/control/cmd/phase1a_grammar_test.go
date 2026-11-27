@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,6 +67,7 @@ func TestPhase1A_RemovedCommandsAreRejected(t *testing.T) {
 }
 
 type phase1aWorker struct {
+	mu                   sync.Mutex
 	sentNotifications    []*leapmuxv1.NotifyRequest
 	clearedNotifications []string
 	listedNotifications  []*leapmuxv1.UserNotification
@@ -81,6 +83,8 @@ type phase1aWorker struct {
 }
 
 func (w *phase1aWorker) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	switch req.GetMethod() {
 	case leapmuxv1connect.WorkerPrivateServiceNotifyProcedure:
 		var in leapmuxv1.NotifyRequest
@@ -200,13 +204,13 @@ func TestPhase1A_NotificationSendAndVariadicClear(t *testing.T) {
 	// Variadic clear of two IDs.
 	batch := runControl(t, "notification", "clear", "n-1", "n-2").Data(t)
 	assert.Equal(t, []any{"n-1", "n-2"}, batch["cleared"])
-	assert.Equal(t, []string{"n-1", "n-2"}, w.clearedNotifications)
+	assert.ElementsMatch(t, []string{"n-1", "n-2"}, w.clearedNotifications)
 
 	// Clear --all enumerates and clears every notification.
 	w.clearedNotifications = nil
 	all := runControl(t, "notification", "clear", "--all").Data(t)
 	assert.Equal(t, []any{"n-1", "n-2"}, all["cleared"])
-	assert.Equal(t, []string{"n-1", "n-2"}, w.clearedNotifications)
+	assert.ElementsMatch(t, []string{"n-1", "n-2"}, w.clearedNotifications)
 }
 
 func TestPhase1A_GitBranchInspectAndWorktreeDefaultSelf(t *testing.T) {

@@ -90,6 +90,9 @@ func newWorkspaceCommand() *cobra.Command {
 			Flags: func(fs *pflag.FlagSet) {
 				fs.String("section", "", `destination active section (default: "In progress")`)
 			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"section": completeSectionFlag,
+			},
 			Complete: completeTargets,
 			Run:      runWorkspaceUnarchive,
 		}),
@@ -109,6 +112,11 @@ func newWorkspaceCommand() *cobra.Command {
 				fs.Bool("last", false, "put the workspace last in the section")
 				fs.String("before", "", "put the workspace before this workspace in the section")
 				fs.String("after", "", "put the workspace after this workspace in the section")
+			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"section": completeSectionFlag,
+				"before":  completeWorkspacePositionFlag,
+				"after":   completeWorkspacePositionFlag,
 			},
 			Complete: completeTargets,
 			Run:      runWorkspaceMove,

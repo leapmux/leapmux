@@ -64,6 +64,51 @@ func (c *CredentialFile) ClientIDOrBuiltIn() string {
 	return c.ClientID
 }
 
+// CanonicalHubURL returns the normalized form of raw for storage and display.
+// Surrounding whitespace is trimmed. Local IPC URLs (unix:/npipe:) are returned
+// verbatim after trimming because socket paths are case- and slash-sensitive.
+// Parseable URLs with a host have their scheme and host lowercased and trailing
+// slashes stripped from the path; other inputs fall back to stripping trailing
+// slashes.
+func CanonicalHubURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || locallisten.IsLocal(trimmed) {
+		return trimmed
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(trimmed, "/")
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Path = strings.TrimRight(u.Path, "/")
+	if u.RawPath != "" {
+		u.RawPath = strings.TrimRight(u.RawPath, "/")
+	}
+	return u.String()
+}
+
+// SameHubURL reports whether a and b identify the same hub. Remote HTTP(S) URLs
+// compare case-insensitively on scheme and host, ignore trailing path slashes,
+// and match by HubHost key; local IPC socket URLs compare verbatim after
+// trimming whitespace.
+func SameHubURL(a, b string) bool {
+	ca := CanonicalHubURL(a)
+	cb := CanonicalHubURL(b)
+	if ca == "" || cb == "" {
+		return false
+	}
+	if ca == cb {
+		return true
+	}
+	if locallisten.IsLocal(ca) || locallisten.IsLocal(cb) {
+		return false
+	}
+	ha, errA := HubHost(ca)
+	hb, errB := HubHost(cb)
+	return errA == nil && errB == nil && ha == hb
+}
+
 // HubHost extracts a collision-free filesystem key for hubURL, preserving
 // scheme, hostname, port, and any non-root base path.
 func HubHost(hubURL string) (string, error) {
@@ -336,7 +381,7 @@ func SetDefaultHub(hub string) error {
 	if err != nil {
 		return err
 	}
-	cfg.Hub = strings.TrimSpace(hub)
+	cfg.Hub = CanonicalHubURL(hub)
 	if err := SaveContext(cfg); err != nil {
 		return err
 	}
@@ -358,7 +403,7 @@ func ClearDefaultHubIf(hub string) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Hub == hub {
+	if SameHubURL(cfg.Hub, hub) {
 		cfg.Hub = ""
 		if err := SaveContext(cfg); err != nil {
 			return err
@@ -368,7 +413,7 @@ func ClearDefaultHubIf(hub string) error {
 	if err != nil {
 		return err
 	}
-	if chosen == hub {
+	if SameHubURL(chosen, hub) {
 		dir, err := ConfigDir()
 		if err != nil {
 			return err

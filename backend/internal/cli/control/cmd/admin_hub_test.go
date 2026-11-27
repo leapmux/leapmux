@@ -581,7 +581,7 @@ func TestAdminSettingsReset_IgnoresTheRestartClassOfAnotherKey(t *testing.T) {
 	assert.NotContains(t, data, "note_restart")
 }
 
-// `rate-limit reset --operation X` resets the settings key of that operation
+// `rate-limit reset <operation>` resets the settings key of that operation
 // alone, and prints the value that the hub answers for it.
 func TestAdminRateLimitReset_ResetsTheKeyOfTheOperation(t *testing.T) {
 	key, err := rateLimitOperation("elevation")
@@ -879,7 +879,7 @@ func TestAdminCaptchaSet_KeepsANonZeroTuningValue(t *testing.T) {
 // (DefaultAltchaSettings) rather than the default of the family the
 // invocation leaves in place. That is only correct while no family sets an
 // expiry of its own, so the loop states that condition. A family that ever
-// does makes the fixed lookup in RunAdminCaptchaSet wrong, and this fails
+// does makes the fixed lookup in newAdminCaptchaSet wrong, and this fails
 // then rather than storing another family's expiry in silence.
 //
 // The substitution itself is not decoration: the key refuses anything
@@ -1147,7 +1147,7 @@ func TestAdminUserResetPassword_ARefusalCarriesTheHubsCode(t *testing.T) {
 // The pre-dial half of this verb -- the <user> check that must answer
 // before the password prompt -- is pinned by
 // TestAdminUserResetPassword_RefusesAnEmptyUserBeforeItPrompts, which needs
-// no hub because BeforeDial runs before the dial.
+// no hub because the <user> check runs before requireAdminClient.
 
 // Removing a provider that is the last login method of an account needs
 // --force, and the hub can enforce that only when the flag reaches the
@@ -1210,7 +1210,10 @@ func TestAdminAPITokenIssue_AddressesTheOwnerByEitherHandle(t *testing.T) {
 			hub := &fakeAdminHub{}
 			url := startAdminHub(t, hub)
 
-			runControl(t, "admin", "api-token", "issue", tc.user, "--hub", url, "--installation-name", "ci-bot").ok(t)
+			out := runControl(t, "admin", "api-token", "issue", tc.user, "--hub", url, "--installation-name", "ci-bot").ok(t)
+
+			data := envelopeData(t, out)
+			assert.Equal(t, []any{}, data["granted_scopes"], "empty granted_scopes must marshal as [], not null")
 
 			issued := hub.takeIssuedTokens()
 			require.Len(t, issued, 1)
@@ -1289,4 +1292,272 @@ func TestAdminUserGrantAdmin_TakesNoForce(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.True(t, calls[0].GetIsAdmin())
 	assert.False(t, calls[0].GetForce())
+}
+
+// Passing --provider for the already-active provider with no tuning flags is
+// an idempotent no-op rather than a bogus "nothing to set" error.
+func TestAdminCaptchaSet_CurrentProviderWithoutTuningFlagsIsIdempotent(t *testing.T) {
+	hub := &fakeAdminHub{values: captchaHubValues("altcha", `{"algorithm":"SCRYPT"}`)}
+	url := startAdminHub(t, hub)
+
+	out := runControl(t, "admin", "captcha", "set", "--hub", url, "--provider", "altcha").ok(t)
+	data := envelopeData(t, out)
+	assert.Equal(t, false, data["updated"])
+	assert.Equal(t, "altcha", data["provider"])
+	assert.Equal(t, false, data["activated"])
+	assert.Empty(t, hub.takeUpdatesMany(), "an idempotent no-op writes nothing")
+}
+
+// Resetting ALTCHA alone never needs to inspect which provider is selected,
+// so it must skip ListSettings completely.
+func TestAdminCaptchaReset_AltchaSkipsStateRead(t *testing.T) {
+	hub := &fakeAdminHub{}
+	url := startAdminHub(t, hub)
+
+	runControl(t, "admin", "captcha", "reset", "--hub", url, "--provider", "altcha").ok(t)
+	assert.Equal(t, [][]string{{captcha.AltchaKey.Name()}}, hub.takeResets())
+	assert.Zero(t, hub.listCallCount(), "resetting altcha needs no ListSettings read")
+}
+
+type adminPrefixTestHub struct {
+	leapmuxv1connect.UnimplementedAdminUserServiceHandler
+	leapmuxv1connect.UnimplementedAdminWorkerServiceHandler
+
+	mu                 sync.Mutex
+	usersPages         map[string]*leapmuxv1.ListUsersResponse
+	listUsersErr       error
+	listUsersLimits    []int32
+	getUserErr         error
+	workers            []*leapmuxv1.AdminWorker
+	getWorkerCalls     int
+	apiTokensLive      []*leapmuxv1.AdminAPIToken
+	apiTokensAll       []*leapmuxv1.AdminAPIToken
+	apiTokenListReqs   []bool
+	delegationLive     []*leapmuxv1.AdminDelegationToken
+	delegationAll      []*leapmuxv1.AdminDelegationToken
+	delegationListReqs []bool
+	regKeysLive        []*leapmuxv1.AdminRegistrationKey
+	regKeysAll         []*leapmuxv1.AdminRegistrationKey
+	regKeyListReqs     []bool
+	revokedAPIToken    string
+	revokedDelegation  string
+	revokedRegKey      string
+}
+
+func (h *adminPrefixTestHub) GetUser(_ context.Context, req *leapmuxv1.GetUserRequest) (*leapmuxv1.GetUserResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.getUserErr != nil {
+		return nil, h.getUserErr
+	}
+	for _, page := range h.usersPages {
+		for _, u := range page.GetUsers() {
+			if u.GetId() == req.GetUser().GetId() || u.GetUsername() == req.GetUser().GetUsername() {
+				return &leapmuxv1.GetUserResponse{User: u}, nil
+			}
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, "user not found")
+}
+
+func (h *adminPrefixTestHub) ListUsers(_ context.Context, req *leapmuxv1.ListUsersRequest) (*leapmuxv1.ListUsersResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.listUsersLimits = append(h.listUsersLimits, req.GetPage().GetLimit())
+	if h.listUsersErr != nil {
+		return nil, h.listUsersErr
+	}
+	if resp, ok := h.usersPages[req.GetPage().GetCursor()]; ok {
+		return resp, nil
+	}
+	return &leapmuxv1.ListUsersResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListWorkers(_ context.Context, _ *leapmuxv1.AdminWorkerServiceListWorkersRequest) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: h.workers}, nil
+}
+
+func (h *adminPrefixTestHub) GetWorker(_ context.Context, _ *leapmuxv1.AdminWorkerServiceGetWorkerRequest) (*leapmuxv1.AdminWorkerServiceGetWorkerResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.getWorkerCalls++
+	return nil, connect.NewError(connect.CodeInternal, "unexpected GetWorker RPC after prefix listing")
+}
+
+func (h *adminPrefixTestHub) ListAPITokens(_ context.Context, req *leapmuxv1.ListAPITokensRequest) (*leapmuxv1.ListAPITokensResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.apiTokenListReqs = append(h.apiTokenListReqs, req.GetIncludeRevoked())
+	if req.GetIncludeRevoked() {
+		return &leapmuxv1.ListAPITokensResponse{Tokens: h.apiTokensAll}, nil
+	}
+	return &leapmuxv1.ListAPITokensResponse{Tokens: h.apiTokensLive}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeAPIToken(_ context.Context, req *leapmuxv1.RevokeAPITokenRequest) (*leapmuxv1.RevokeAPITokenResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedAPIToken = req.GetId()
+	return &leapmuxv1.RevokeAPITokenResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListDelegationTokens(_ context.Context, req *leapmuxv1.ListDelegationTokensRequest) (*leapmuxv1.ListDelegationTokensResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.delegationListReqs = append(h.delegationListReqs, req.GetIncludeRevoked())
+	if req.GetIncludeRevoked() {
+		return &leapmuxv1.ListDelegationTokensResponse{Tokens: h.delegationAll}, nil
+	}
+	return &leapmuxv1.ListDelegationTokensResponse{Tokens: h.delegationLive}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeDelegationToken(_ context.Context, req *leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest) (*leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedDelegation = req.GetId()
+	return &leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListRegistrationKeys(_ context.Context, req *leapmuxv1.ListRegistrationKeysRequest) (*leapmuxv1.ListRegistrationKeysResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.regKeyListReqs = append(h.regKeyListReqs, req.GetIncludeExpired())
+	if req.GetIncludeExpired() {
+		return &leapmuxv1.ListRegistrationKeysResponse{Keys: h.regKeysAll}, nil
+	}
+	return &leapmuxv1.ListRegistrationKeysResponse{Keys: h.regKeysLive}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeRegistrationKey(_ context.Context, req *leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest) (*leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedRegKey = req.GetId()
+	return &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse{}, nil
+}
+
+func startAdminPrefixTestHub(t *testing.T, hub *adminPrefixTestHub) string {
+	t.Helper()
+	isolateCLIEnv(t)
+	mux := http.NewServeMux()
+	server := connect.NewServer()
+	leapmuxv1connect.RegisterAdminUserServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAdminWorkerServiceHandler(server, hub)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	srv := hubtransporttest.NewServer(t, mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func TestAdminWorkerGet_PrefixSkipsRedundantGetWorkerRPC(t *testing.T) {
+	workerID := fullTestID("wrk-pref")
+	hub := &adminPrefixTestHub{
+		workers: []*leapmuxv1.AdminWorker{
+			{Id: workerID, OwnerUsername: "alice", Status: leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE},
+		},
+	}
+	url := startAdminPrefixTestHub(t, hub)
+
+	data := envelopeData(t, runControl(t, "admin", "worker", "get", workerID[:8], "--hub", url).ok(t))
+	assert.Equal(t, workerID, data["id"])
+	assert.Equal(t, "alice", data["username"])
+	assert.Zero(t, hub.getWorkerCalls, "prefix resolution already fetched the worker row")
+}
+
+func TestAdminRevokeResolvers_QueryLiveFirstThenFallBackToHistorical(t *testing.T) {
+	liveAPI := fullTestID("apilive1")
+	deadAPI := fullTestID("apilive2")
+	onlyDeadAPI := fullTestID("apidead1")
+
+	liveDel := fullTestID("dellive1")
+	deadDel := fullTestID("dellive2")
+
+	liveKey := fullTestID("keylive1")
+	deadKey := fullTestID("keylive2")
+
+	hub := &adminPrefixTestHub{
+		apiTokensLive:  []*leapmuxv1.AdminAPIToken{{Id: liveAPI, InstallationName: "ci"}},
+		apiTokensAll:   []*leapmuxv1.AdminAPIToken{{Id: liveAPI, InstallationName: "ci"}, {Id: deadAPI}, {Id: onlyDeadAPI, InstallationName: "retired-runner"}},
+		delegationLive: []*leapmuxv1.AdminDelegationToken{{Id: liveDel, Username: "alice"}},
+		delegationAll:  []*leapmuxv1.AdminDelegationToken{{Id: liveDel, Username: "alice"}, {Id: deadDel, Username: "alice"}},
+		regKeysLive:    []*leapmuxv1.AdminRegistrationKey{{Id: liveKey, CreatorUsername: "alice"}},
+		regKeysAll:     []*leapmuxv1.AdminRegistrationKey{{Id: liveKey, CreatorUsername: "alice"}, {Id: deadKey, CreatorUsername: "alice"}},
+	}
+	url := startAdminPrefixTestHub(t, hub)
+
+	// Live API token matches on first pass without colliding with deadAPI.
+	runControl(t, "admin", "api-token", "revoke", liveAPI[:7], "--hub", url).ok(t)
+	assert.Equal(t, liveAPI, hub.revokedAPIToken)
+	assert.Equal(t, []bool{false}, hub.apiTokenListReqs)
+
+	// Historical-only API token falls back to IncludeRevoked=true.
+	hub.apiTokenListReqs = nil
+	runControl(t, "admin", "api-token", "revoke", onlyDeadAPI[:7], "--hub", url).ok(t)
+	assert.Equal(t, onlyDeadAPI, hub.revokedAPIToken)
+	assert.Equal(t, []bool{false, true}, hub.apiTokenListReqs)
+
+	// name: and title: selectors miss pass 1 without failing, fall back to
+	// pass 2, and revoke the historical-only token.
+	for _, selector := range []string{"name:retired-runner", "title:retired-runner"} {
+		hub.apiTokenListReqs = nil
+		hub.revokedAPIToken = ""
+		runControl(t, "admin", "api-token", "revoke", selector, "--hub", url).ok(t)
+		assert.Equal(t, onlyDeadAPI, hub.revokedAPIToken, "selector %q must revoke the historical token", selector)
+		assert.Equal(t, []bool{false, true}, hub.apiTokenListReqs, "selector %q must query live then historical", selector)
+	}
+
+	// Nonexistent name: and title: selectors run both passes and return
+	// not_found without calling RevokeAPIToken.
+	for _, selector := range []string{"name:nonexistent", "title:nonexistent"} {
+		hub.apiTokenListReqs = nil
+		hub.revokedAPIToken = ""
+		runControl(t, "admin", "api-token", "revoke", selector, "--hub", url).requireFailure(t, cli.CodeNotFound)
+		assert.Equal(t, []bool{false, true}, hub.apiTokenListReqs, "selector %q must query live then historical", selector)
+		assert.Empty(t, hub.revokedAPIToken, "selector %q must not call RevokeAPIToken", selector)
+	}
+
+	// Delegation token and registration key query live first too.
+	runControl(t, "admin", "delegation-token", "revoke", liveDel[:7], "--hub", url).ok(t)
+	assert.Equal(t, liveDel, hub.revokedDelegation)
+	assert.Equal(t, []bool{false}, hub.delegationListReqs)
+
+	runControl(t, "admin", "worker", "reg-key", "revoke", liveKey[:7], "--hub", url).ok(t)
+	assert.Equal(t, liveKey, hub.revokedRegKey)
+	assert.Equal(t, []bool{false}, hub.regKeyListReqs)
+}
+
+func TestMatchAdminUserIDPrefix_UsesMaxPageLimitDeduplicatesAndPropagatesErrors(t *testing.T) {
+	userID := fullTestID("usr-dup1")
+	t.Run("deduplicates across pages and uses MaxPageLimit", func(t *testing.T) {
+		hub := &adminPrefixTestHub{
+			usersPages: map[string]*leapmuxv1.ListUsersResponse{
+				"": {
+					Users: []*leapmuxv1.AdminUser{{Id: userID, Username: "alice"}},
+					Page:  &leapmuxv1.PageResponse{NextCursor: "p2"},
+				},
+				"p2": {
+					// Same user repeated across keyset boundary must not cause false ambiguity.
+					Users: []*leapmuxv1.AdminUser{{Id: userID, Username: "alice"}},
+				},
+			},
+		}
+		url := startAdminPrefixTestHub(t, hub)
+
+		data := envelopeData(t, runControl(t, "admin", "user", "get", userID[:8], "--hub", url).ok(t))
+		assert.Equal(t, userID, data["id"])
+		require.Len(t, hub.listUsersLimits, 2)
+		assert.EqualValues(t, contracts.MaxPageLimit, hub.listUsersLimits[0])
+		assert.EqualValues(t, contracts.MaxPageLimit, hub.listUsersLimits[1])
+	})
+
+	t.Run("propagates ListUsers errors instead of swallowing as not found", func(t *testing.T) {
+		hub := &adminPrefixTestHub{
+			listUsersErr: connect.NewError(connect.CodePermissionDenied, "missing admin:read"),
+		}
+		url := startAdminPrefixTestHub(t, hub)
+
+		f := runControl(t, "admin", "user", "get", "usr-pref", "--hub", url).requireFailure(t, cli.CodePermissionDenied)
+		assert.Contains(t, f.Message, "missing admin:read")
+	})
 }

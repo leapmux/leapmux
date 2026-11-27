@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -71,8 +72,13 @@ absolute path on the worker; the worker finds its repository.`,
 			},
 			Flags: writeFlags,
 			Run: func(inv *cli.Invocation) (any, error) {
-				return runGitWrite(inv, leapmuxv1connect.WorkerGitServiceCheckoutBranchProcedure,
-					&leapmuxv1.CheckoutBranchRequest{Path: stringFlag(inv, "dir"), Branch: inv.Arg("branch")}, &leapmuxv1.CheckoutBranchResponse{})
+				branch, err := requireNonEmptyArg(inv, "branch")
+				if err != nil {
+					return nil, err
+				}
+				return runGitWrite(inv, leapmuxv1connect.WorkerGitServiceCheckoutBranchProcedure, func(dir string) proto.Message {
+					return &leapmuxv1.CheckoutBranchRequest{Path: dir, Branch: branch}
+				}, &leapmuxv1.CheckoutBranchResponse{})
 			},
 		}),
 		cli.Group("branch", "List, create, inspect and delete branches",
@@ -98,9 +104,21 @@ absolute path on the worker; the worker finds its repository.`,
 					writeFlags(fs)
 					fs.String("base", "", "the branch to start from (default: the current branch)")
 				},
+				FlagComplete: map[string]cobra.CompletionFunc{
+					"base": completeGitBranchFlag,
+				},
 				Run: func(inv *cli.Invocation) (any, error) {
-					return runGitWrite(inv, leapmuxv1connect.WorkerGitServiceCreateBranchProcedure,
-						&leapmuxv1.CreateBranchRequest{Path: stringFlag(inv, "dir"), NewBranch: inv.Arg("name"), BaseBranch: stringFlag(inv, "base")}, &leapmuxv1.CreateBranchResponse{})
+					name, err := requireNonEmptyArg(inv, "name")
+					if err != nil {
+						return nil, err
+					}
+					base := strings.TrimSpace(stringFlag(inv, "base"))
+					if inv.Changed("base") && base == "" {
+						return nil, cli.Usagef("--base is empty")
+					}
+					return runGitWrite(inv, leapmuxv1connect.WorkerGitServiceCreateBranchProcedure, func(dir string) proto.Message {
+						return &leapmuxv1.CreateBranchRequest{Path: dir, NewBranch: name, BaseBranch: base}
+					}, &leapmuxv1.CreateBranchResponse{})
 				},
 			}),
 			cli.NewLeaf(cli.Leaf{
@@ -119,8 +137,17 @@ absolute path on the worker; the worker finds its repository.`,
 					cli.MarkRequired(fs, "switch-to")
 				},
 				Run: func(inv *cli.Invocation) (any, error) {
-					return runGitWrite(inv, leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure,
-						&leapmuxv1.DeleteBranchRequest{Path: stringFlag(inv, "dir"), BranchToDelete: inv.Arg("name"), SwitchToBranch: stringFlag(inv, "switch-to")}, &leapmuxv1.DeleteBranchResponse{})
+					name, err := requireNonEmptyArg(inv, "name")
+					if err != nil {
+						return nil, err
+					}
+					switchTo := strings.TrimSpace(stringFlag(inv, "switch-to"))
+					if switchTo == "" {
+						return nil, cli.Usagef("--switch-to is empty")
+					}
+					return runGitWrite(inv, leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure, func(dir string) proto.Message {
+						return &leapmuxv1.DeleteBranchRequest{Path: dir, BranchToDelete: name, SwitchToBranch: switchTo}
+					}, &leapmuxv1.DeleteBranchResponse{})
 				},
 			}),
 			cli.NewLeaf(cli.Leaf{
@@ -145,8 +172,9 @@ absolute path on the worker; the worker finds its repository.`,
 			},
 			Flags: writeFlags,
 			Run: func(inv *cli.Invocation) (any, error) {
-				return runGitWrite(inv, leapmuxv1connect.WorkerGitServicePushBranchProcedure,
-					&leapmuxv1.PushBranchRequest{WorkingDir: stringFlag(inv, "dir")}, &leapmuxv1.PushBranchResponse{})
+				return runGitWrite(inv, leapmuxv1connect.WorkerGitServicePushBranchProcedure, func(dir string) proto.Message {
+					return &leapmuxv1.PushBranchRequest{WorkingDir: dir}
+				}, &leapmuxv1.PushBranchResponse{})
 			},
 		}),
 		cli.NewLeaf(cli.Leaf{
@@ -163,6 +191,9 @@ absolute path on the worker; the worker finds its repository.`,
 				fs.Bool("staged", false, "show staged changes (--cached)")
 				fs.String("base", "", "diff against this base ref (such as main or HEAD~1)")
 				fs.Int64("limit", 0, readLimitUsage)
+			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"base": completeGitBranchFlag,
 			},
 			Run: runGitDiff,
 		}),
@@ -207,17 +238,68 @@ func workingDirEnv() string {
 	return os.Getenv(controlenv.WorkingDirVariable)
 }
 
-// missingDirError returns the error for an empty directory flag.
-//
-// It tells "no flag and no env var" (give the user both options) apart from
-// "an explicit empty flag". A single message for both told a user who typed
-// `--dir=` inside a spawn that $LEAPMUX_CONTROL_WORKING_DIR was not set,
-// which is false there and sends them to look at the wrong thing.
-func missingDirError(flagName string) error {
-	if workingDirEnv() == "" {
-		return cli.Usagef("%s is required, because $%s is not set", flagName, controlenv.WorkingDirVariable)
+// isTabEnvWorker reports whether workerID refers to the tab environment's own
+// worker. When $LEAPMUX_CONTROL_WORKER_ID is set, workerID must match it;
+// otherwise an explicit --worker flag targets another worker.
+func isTabEnvWorker(workerID string, explicitWorker bool) bool {
+	envWorkerID := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
+	if envWorkerID != "" {
+		return workerID == envWorkerID
 	}
-	return cli.Usagef("%s is empty", flagName)
+	return !explicitWorker
+}
+
+// tabWorkingDirForWorker returns $LEAPMUX_CONTROL_WORKING_DIR when workerID
+// matches the calling tab's worker, or "" when targeting another worker.
+func tabWorkingDirForWorker(workerID string, explicitWorker bool) string {
+	if !isTabEnvWorker(workerID, explicitWorker) {
+		return ""
+	}
+	return strings.TrimSpace(workingDirEnv())
+}
+
+// checkGitDirInput validates --dir before opening a session. When --dir is
+// omitted and $LEAPMUX_CONTROL_WORKING_DIR is unset or blank, no worker can
+// supply a default directory, so validation fails before dialing.
+func checkGitDirInput(inv *cli.Invocation) error {
+	if inv.Changed("dir") {
+		if strings.TrimSpace(stringFlag(inv, "dir")) == "" {
+			return cli.Usagef("--dir is empty")
+		}
+		return nil
+	}
+	rawEnv := workingDirEnv()
+	if strings.TrimSpace(rawEnv) == "" {
+		if rawEnv != "" {
+			return cli.Usagef("--dir is empty")
+		}
+		return cli.Usagef("--dir is required, because $%s is not set", controlenv.WorkingDirVariable)
+	}
+	return nil
+}
+
+// resolveGitDir resolves the directory of a git read on workerID: an explicit
+// --dir flag, or $LEAPMUX_CONTROL_WORKING_DIR only when workerID matches the
+// calling tab's worker.
+func (s *session) resolveGitDir(workerID string) (string, error) {
+	if s.inv.Changed("dir") {
+		dir := strings.TrimSpace(stringFlag(s.inv, "dir"))
+		if dir == "" {
+			return "", cli.Usagef("--dir is empty")
+		}
+		return dir, nil
+	}
+	explicitWorker := s.inv.Changed(workerFlag)
+	if dir := tabWorkingDirForWorker(workerID, explicitWorker); dir != "" {
+		return dir, nil
+	}
+	if !isTabEnvWorker(workerID, explicitWorker) {
+		return "", cli.Usagef("--dir is required when targeting another worker")
+	}
+	if workingDirEnv() != "" {
+		return "", cli.Usagef("--dir is empty")
+	}
+	return "", cli.Usagef("--dir is required, because $%s is not set", controlenv.WorkingDirVariable)
 }
 
 // gitBranchInspectResult is the result of `git branch inspect`.
@@ -240,14 +322,12 @@ type gitBranchInspectResult struct {
 }
 
 func runGitBranchInspect(inv *cli.Invocation) (any, error) {
-	dir, err := dirOf(inv)
-	if err != nil {
-		return nil, err
-	}
 	var resp leapmuxv1.InspectBranchDeletionResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerGitServiceInspectBranchDeletionProcedure, &leapmuxv1.InspectBranchDeletionRequest{
-		Path:           dir,
-		BranchNameHint: inv.Arg("branch"),
+	if err := callOnWorkerWithDir(inv, leapmuxv1connect.WorkerGitServiceInspectBranchDeletionProcedure, func(dir string) proto.Message {
+		return &leapmuxv1.InspectBranchDeletionRequest{
+			Path:           dir,
+			BranchNameHint: inv.Arg("branch"),
+		}
 	}, &resp); err != nil {
 		return nil, err
 	}
@@ -275,12 +355,19 @@ func runGitBranchInspect(inv *cli.Invocation) (any, error) {
 	}, nil
 }
 
-// dirOf returns the directory of a git read: --dir, else the directory of
+// dirOf returns the directory of a git read: --dir, or the directory of
 // the tab that runs the command.
+//
+// It distinguishes "no flag and no env var" from "an explicit empty flag", so
+// a user who passes `--dir=` inside a tab is not told that
+// $LEAPMUX_CONTROL_WORKING_DIR is unset.
 func dirOf(inv *cli.Invocation) (string, error) {
-	dir := workingDir(inv)
+	dir := strings.TrimSpace(workingDir(inv))
 	if dir == "" {
-		return "", missingDirError("--dir")
+		if inv.Changed("dir") || workingDirEnv() != "" {
+			return "", cli.Usagef("--dir is empty")
+		}
+		return "", cli.Usagef("--dir is required, because $%s is not set", controlenv.WorkingDirVariable)
 	}
 	return dir, nil
 }
@@ -316,32 +403,25 @@ type gitFileStatus struct {
 }
 
 func runGitStatus(inv *cli.Invocation) (any, error) {
-	dir, err := dirOf(inv)
-	if err != nil {
-		return nil, err
-	}
-	s, err := openSession(inv)
+	s, workerID, dir, err := openWorkerSessionWithDir(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, err := s.workerScope()
-	if err != nil {
-		return nil, err
-	}
-	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-		return nil, err
-	}
-	// `git status` issues TWO inner-RPCs (GetGitInfo + GetGitFileStatus)
-	// against the same worker. Share one Noise_NK channel across both
-	// so the handshake cost is paid once.
+	// `git status` issues two inner RPCs (GetGitInfo and GetGitFileStatus)
+	// against the same worker. Share one Noise_NK channel and run both calls
+	// concurrently so the handshake and round-trip latency are paid once.
 	var info leapmuxv1.GetGitInfoResponse
 	var files leapmuxv1.GetGitFileStatusResponse
 	if err := withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
-		if err := w.Call(s.ctx, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, &leapmuxv1.GetGitInfoRequest{Path: dir}, &info); err != nil {
-			return err
-		}
-		return w.Call(s.ctx, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{Path: dir}, &files)
+		g, gctx := errgroup.WithContext(s.ctx)
+		g.Go(func() error {
+			return w.Call(gctx, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, &leapmuxv1.GetGitInfoRequest{Path: dir}, &info)
+		})
+		g.Go(func() error {
+			return w.Call(gctx, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{Path: dir}, &files)
+		})
+		return g.Wait()
 	}); err != nil {
 		return nil, err
 	}
@@ -381,6 +461,25 @@ func runGitStatus(inv *cli.Invocation) (any, error) {
 	return out, nil
 }
 
+// openWorkerSession opens a control session, resolves the target worker, and
+// runs the worker preflight check. The caller closes the returned session.
+func openWorkerSession(inv *cli.Invocation) (*session, string, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, "", err
+	}
+	workerID, err := s.workerScope()
+	if err != nil {
+		s.Close()
+		return nil, "", err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
+		s.Close()
+		return nil, "", err
+	}
+	return s, workerID, nil
+}
+
 // callOnWorker resolves the worker of a command that runs on one worker, and makes the
 // call.
 func callOnWorker(inv *cli.Invocation, method string, req, resp proto.Message) error {
@@ -389,22 +488,54 @@ func callOnWorker(inv *cli.Invocation, method string, req, resp proto.Message) e
 }
 
 func callOnWorkerWithID(inv *cli.Invocation, method string, req, resp proto.Message) (string, error) {
-	s, err := openSession(inv)
+	s, workerID, err := openWorkerSession(inv)
 	if err != nil {
 		return "", err
 	}
 	defer s.Close()
-	workerID, err := s.workerScope()
-	if err != nil {
-		return "", err
-	}
-	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-		return "", err
-	}
 	return workerID, callInnerRPC(s.ctx, s.c, workerID, method, req, resp)
 }
 
-// gitBranchList is the result of `git branches`.
+// openWorkerSessionWithDir validates --dir before dialing, opens a session and
+// resolves the target worker, resolves the directory for that worker, and runs
+// the worker preflight check. The caller closes the returned session.
+func openWorkerSessionWithDir(inv *cli.Invocation) (*session, string, string, error) {
+	if err := checkGitDirInput(inv); err != nil {
+		return nil, "", "", err
+	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, "", "", err
+	}
+	workerID, err := s.workerScope()
+	if err != nil {
+		s.Close()
+		return nil, "", "", err
+	}
+	dir, err := s.resolveGitDir(workerID)
+	if err != nil {
+		s.Close()
+		return nil, "", "", err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
+		s.Close()
+		return nil, "", "", err
+	}
+	return s, workerID, dir, nil
+}
+
+// callOnWorkerWithDir validates --dir before dialing, resolves the target
+// worker and its git directory, and makes the inner RPC built from dir.
+func callOnWorkerWithDir(inv *cli.Invocation, method string, build func(dir string) proto.Message, resp proto.Message) error {
+	s, workerID, dir, err := openWorkerSessionWithDir(inv)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return callInnerRPC(s.ctx, s.c, workerID, method, build(dir), resp)
+}
+
+// gitBranchList is the result of `git branch list`.
 type gitBranchList struct {
 	Current  string      `json:"current,omitempty"`
 	Attached string      `json:"attached,omitempty"`
@@ -425,59 +556,15 @@ type gitBranch struct {
 }
 
 func runGitBranches(inv *cli.Invocation) (any, error) {
-	dir, err := dirOf(inv)
-	if err != nil {
-		return nil, err
-	}
 	var resp leapmuxv1.ListGitBranchesResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure, &leapmuxv1.ListGitBranchesRequest{Path: dir}, &resp); err != nil {
+	if err := callOnWorkerWithDir(inv, leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure, func(dir string) proto.Message {
+		return &leapmuxv1.ListGitBranchesRequest{Path: dir}
+	}, &resp); err != nil {
 		return nil, err
 	}
 	out := gitBranchList{Current: resp.GetCurrentBranch(), Attached: resp.GetAttachedBranch(), Branches: make([]gitBranch, 0, len(resp.GetBranches()))}
 	for _, b := range resp.GetBranches() {
 		out.Branches = append(out.Branches, gitBranch{Name: b.GetName(), Remote: b.GetIsRemote()})
-	}
-	return out, nil
-}
-
-// gitWorktreeList is the result of `git worktrees`.
-type gitWorktreeList struct {
-	Worktrees []GitWorktreeRow `json:"worktrees"`
-}
-
-func (l gitWorktreeList) QuietLines() []string {
-	out := make([]string, 0, len(l.Worktrees))
-	for _, w := range l.Worktrees {
-		out = append(out, w.Path)
-	}
-	return out
-}
-
-// GitWorktreeRow is the display row shared by worktree listing and lookup.
-type GitWorktreeRow struct {
-	Path       string `json:"path" table:"PATH"`
-	Branch     string `json:"branch" table:"BRANCH"`
-	Main       bool   `json:"main" table:"MAIN"`
-	Locked     bool   `json:"locked" table:"LOCKED"`
-	LockReason string `json:"lock_reason,omitempty"`
-}
-
-func gitWorktreeOf(worktree *leapmuxv1.GitWorktreeEntry) GitWorktreeRow {
-	return GitWorktreeRow{Path: worktree.GetPath(), Branch: worktree.GetBranch(), Main: worktree.GetIsMain(), Locked: worktree.GetLocked(), LockReason: worktree.GetLockReason()}
-}
-
-func runGitWorktrees(inv *cli.Invocation) (any, error) {
-	dir, err := dirOf(inv)
-	if err != nil {
-		return nil, err
-	}
-	var resp leapmuxv1.ListGitWorktreesResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, &leapmuxv1.ListGitWorktreesRequest{Path: dir}, &resp); err != nil {
-		return nil, err
-	}
-	out := gitWorktreeList{Worktrees: make([]GitWorktreeRow, 0, len(resp.GetWorktrees()))}
-	for _, w := range resp.GetWorktrees() {
-		out.Worktrees = append(out.Worktrees, gitWorktreeOf(w))
 	}
 	return out, nil
 }
@@ -503,7 +590,10 @@ func (f fileContent) RenderText(w io.Writer) error {
 // "<ref>:<rel-path>" with "git rev-parse --verify", and reads that blob
 // with "git cat-file --batch".
 func runGitRead(inv *cli.Invocation) (any, error) {
-	path := inv.Arg("path")
+	path, err := requireNonEmptyArg(inv, "path")
+	if err != nil {
+		return nil, err
+	}
 	limit, err := inv.Command.Flags().GetInt64("limit")
 	if err != nil {
 		return nil, err
@@ -535,13 +625,15 @@ type gitWriteResult struct {
 	OK  bool   `json:"ok"`
 }
 
-// runGitWrite makes one git write on the worker of --worker.
-func runGitWrite(inv *cli.Invocation, method string, req, resp proto.Message) (any, error) {
+// runGitWrite makes one git write on the worker of --worker. It rejects a
+// whitespace-only --dir while preserving literal path spaces (for example,
+// a directory whose name ends with a space).
+func runGitWrite(inv *cli.Invocation, method string, build func(dir string) proto.Message, resp proto.Message) (any, error) {
 	dir := stringFlag(inv, "dir")
 	if strings.TrimSpace(dir) == "" {
 		return nil, cli.Usagef("--dir is empty")
 	}
-	if err := callOnWorker(inv, method, req, resp); err != nil {
+	if err := callOnWorker(inv, method, build(dir), resp); err != nil {
 		return nil, err
 	}
 	return gitWriteResult{Dir: dir, OK: true}, nil

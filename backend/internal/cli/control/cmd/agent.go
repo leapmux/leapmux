@@ -42,6 +42,9 @@ func newAgentCommand() *cobra.Command {
 				fs.String("parent", "", `list only the direct child subagents of this parent agent (an id, prefix, title, or "self")`)
 				fs.Bool("all", false, "include inactive or non-active agent process statuses in the table")
 			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"provider": completeProviderFlag,
+			},
 			Run: runAgentList,
 		}),
 		cli.NewLeaf(cli.Leaf{
@@ -115,6 +118,13 @@ request id and other arguments fails with conflict.`,
 				addGitSetupFlags(fs)
 				addPlacementFlags(fs)
 			},
+			// agent open has no target agent, so --model, --effort, and
+			// --permission-mode intentionally register no option completer.
+			FlagComplete: mergeFlagCompletions(
+				map[string]cobra.CompletionFunc{"provider": completeProviderFlag},
+				gitSetupFlagCompletions(),
+				tabPositionFlagCompletions(),
+			),
 			Run: runAgentOpen,
 		}),
 		cli.NewLeaf(cli.Leaf{
@@ -302,6 +312,9 @@ An agent cannot answer its own requests.`,
 				addPlanApprovalFlags(fs)
 				addTargetWorkspaceFlag(fs)
 			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"permission-mode": completeAgentOptionFlag("permission-mode"),
+			},
 			Complete: completeOtherAgents,
 			Run:      runAgentApprove,
 		}),
@@ -384,6 +397,9 @@ An agent cannot answer its own requests.`,
 				addPlanApprovalFlags(fs)
 				addTargetWorkspaceFlag(fs)
 			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"permission-mode": completeAgentOptionFlag("permission-mode"),
+			},
 			Complete: completeOtherAgents,
 			Run:      runAgentAnswer,
 		}),
@@ -418,8 +434,9 @@ An agent cannot answer its own requests.`,
 				fs.StringArray("option", nil, `provider option as key=value; repeat it for more than one; "agent get --options" lists them`)
 				addTargetWorkspaceFlag(fs)
 			},
-			Complete: completeTargets,
-			Run:      runAgentSet,
+			FlagComplete: agentOptionFlagCompletions(),
+			Complete:     completeTargets,
+			Run:          runAgentSet,
 		}),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "messages [agent]",

@@ -435,10 +435,10 @@ func (p *workerQueuePool) channelFor(ctx context.Context, hub *control.HubClient
 	p.mu.Unlock()
 
 	openCtx, cancelOpen := rpcDeadline(ctx)
-	ch, err := hub.OpenE2EEChannel(openCtx, context.WithoutCancel(ctx), workerID)
+	ch, err := openHubE2EEChannel(openCtx, context.WithoutCancel(ctx), hub, workerID)
 	cancelOpen()
 	if err != nil {
-		return nil, withHubVersion(ctx, hub, &codedRPCError{Code: "channel_open_failed", Cause: err})
+		return nil, err
 	}
 
 	p.mu.Lock()

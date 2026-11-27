@@ -17,7 +17,7 @@ These selectors and flags repeat across commands on this page.
 
 | Selector / Flag | Description |
 |---|---|
-| `--user string` | filter by user: a username, "id:&lt;id&gt;", or "username:&lt;name&gt;" (empty = all users) |
+| `--user string` | filter by user: username, "id:&lt;id&gt;", "username:&lt;name&gt;", or user ID prefix (omit for all users) |
 | `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
 | `<idp>` | A sign-in provider id or unique prefix, as "leapmux admin idp list" prints it. |
 | `<operation>` | One of: elevation, email_change, login_anonymous, oauth_anonymous, solo_password_setup. |
@@ -690,7 +690,7 @@ leapmux admin idp add [flags]
 
 | Flag | Description |
 |---|---|
-| `--type string` | provider type (one of: github, google, apple, oidc; required) |
+| `--type string` | provider type (one of: apple, github, google, oidc; required) |
 | `--name string` | display name (defaults to the preset name) |
 | `--client-id string` | OAuth client ID |
 | `--client-secret string` | OAuth client secret |

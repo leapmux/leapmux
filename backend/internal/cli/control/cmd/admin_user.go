@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -97,33 +96,18 @@ func (r adminUserListResult) QuietLines() []string {
 // userFilterFlags binds the optional --user owner filter of an admin listing,
 // where an absent flag means "every user".
 type userFilterFlags struct {
-	User     string
-	selector *leapmuxv1.UserSelector
-	resolved bool
-}
-
-func (f *userFilterFlags) Selector() *leapmuxv1.UserSelector {
-	if !f.resolved {
-		panic("userFilterFlags.Selector called before resolve")
-	}
-	return f.selector
+	User string
 }
 
 func (f *userFilterFlags) bind(fs *pflag.FlagSet) {
-	fs.StringVar(&f.User, "user", "", `filter by user: a username, "id:<id>", or "username:<name>" (empty = all users)`)
+	fs.StringVar(&f.User, "user", "", `filter by user: username, "id:<id>", "username:<name>", or user ID prefix (omit for all users)`)
 }
 
-func (f *userFilterFlags) resolve(inv *cli.Invocation) error {
+func (f *userFilterFlags) parse(inv *cli.Invocation) (adminUserTarget, error) {
 	if !inv.Changed("user") {
-		f.selector, f.resolved = nil, true
-		return nil
+		return adminUserTarget{}, nil
 	}
-	sel, _, _, err := parseAdminUserSelectorDirect(f.User)
-	if err != nil {
-		return err
-	}
-	f.selector, f.resolved = sel, true
-	return nil
+	return parseAdminUserTarget(f.User)
 }
 
 // newAdminUserGet builds `admin user get`.
@@ -137,14 +121,15 @@ func newAdminUserGet() *cobra.Command {
 		},
 		Complete: completeAdminUsers,
 		Run: func(inv *cli.Invocation) (any, error) {
-			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+			user, err := parseAdminUserTarget(inv.Arg("user"))
+			if err != nil {
 				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.GetUserResponse, error) {
+			resp, err := callWithAdminUserTarget(inv.Context, c, user, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.GetUserResponse, error) {
 				return c.AdminUserService().GetUser(inv.Context, &leapmuxv1.GetUserRequest{User: sel})
 			})
 			if err != nil {
@@ -157,7 +142,7 @@ func newAdminUserGet() *cobra.Command {
 
 // newAdminUserCreate builds `admin user create`.
 func newAdminUserCreate() *cobra.Command {
-	var password, displayName, email string
+	var displayName, email string
 	var emailVerified, admin bool
 	return cli.NewLeaf(cli.Leaf{
 		Use:     "create <username>",
@@ -167,7 +152,7 @@ func newAdminUserCreate() *cobra.Command {
 			{Command: "leapmux admin user create alice --email alice@example.com"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
-			fs.StringVar(&password, "password", "", "password (prompted for when omitted, so it stays out of the shell history)")
+			fs.String("password", "", "password (prompted for when omitted, so it stays out of the shell history)")
 			fs.StringVar(&displayName, "display-name", "", "display name")
 			fs.StringVar(&email, "email", "", "email address")
 			fs.BoolVar(&emailVerified, "email-verified", false, "mark email as verified")
@@ -178,11 +163,11 @@ func newAdminUserCreate() *cobra.Command {
 			if err != nil {
 				return nil, err
 			}
-			entered, err := control.RequirePassword(inv.Context, password, "Password: ", os.Stdin, errOutOf(inv))
-			if err != nil {
-				return nil, cli.Wrap(cli.CodeUsage, err, "")
-			}
 			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			entered, err := requirePasswordFromInv(inv, "password", "Password: ")
 			if err != nil {
 				return nil, err
 			}
@@ -200,7 +185,7 @@ func newAdminUserCreate() *cobra.Command {
 
 // newAdminUserUpdate builds `admin user update`.
 func newAdminUserUpdate() *cobra.Command {
-	var displayName, email, emailVerified string
+	var displayName, email string
 	var clearPendingEmail bool
 	return cli.NewLeaf(cli.Leaf{
 		Use:     "update <user>",
@@ -212,7 +197,7 @@ func newAdminUserUpdate() *cobra.Command {
 		Flags: func(fs *pflag.FlagSet) {
 			fs.StringVar(&displayName, "display-name", "", "new display name")
 			fs.StringVar(&email, "email", "", "new email address")
-			fs.StringVar(&emailVerified, "email-verified", "", "mark email as verified")
+			fs.String("email-verified", "", "mark email as verified")
 			cli.SetEnum(fs, "email-verified", "true", "false")
 			fs.BoolVar(&clearPendingEmail, "clear-pending-email", false, "clear any in-flight email verification (token + attempt counter)")
 		},
@@ -225,24 +210,23 @@ func newAdminUserUpdate() *cobra.Command {
 			if inv.Changed("email") {
 				req.Email = &email
 			}
-			if inv.Changed("email-verified") {
-				b, err := parseBoolFlag(emailVerified, "email-verified")
-				if err != nil {
-					return nil, cli.Wrap(cli.CodeUsage, err, "")
-				}
-				req.EmailVerified = &b
+			verified, err := parseOptionalBoolFlag(inv, "email-verified")
+			if err != nil {
+				return nil, err
 			}
+			req.EmailVerified = verified
 			if req.DisplayName == nil && req.Email == nil && req.EmailVerified == nil && !clearPendingEmail {
 				return nil, cli.Usagef("no fields to update (use --display-name, --email, --email-verified, or --clear-pending-email)")
 			}
-			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+			user, err := parseAdminUserTarget(inv.Arg("user"))
+			if err != nil {
 				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.UpdateUserResponse, error) {
+			resp, err := callWithAdminUserTarget(inv.Context, c, user, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.UpdateUserResponse, error) {
 				req.User = sel
 				return c.AdminUserService().UpdateUser(inv.Context, req)
 			})
@@ -272,14 +256,15 @@ func newAdminUserDelete() *cobra.Command {
 		},
 		Complete: completeAdminUsers,
 		Run: func(inv *cli.Invocation) (any, error) {
-			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+			user, err := parseAdminUserTarget(inv.Arg("user"))
+			if err != nil {
 				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			if _, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.DeleteUserResponse, error) {
+			if _, err := callWithAdminUserTarget(inv.Context, c, user, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.DeleteUserResponse, error) {
 				return c.AdminUserService().DeleteUser(inv.Context, &leapmuxv1.DeleteUserRequest{
 					User: sel, Force: force,
 				})
@@ -310,14 +295,15 @@ func newAdminUserSetAdmin(admin bool, use, short string, examples []cli.Example)
 		},
 		Complete: completeAdminUsers,
 		Run: func(inv *cli.Invocation) (any, error) {
-			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+			user, err := parseAdminUserTarget(inv.Arg("user"))
+			if err != nil {
 				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.SetUserAdminResponse, error) {
+			resp, err := callWithAdminUserTarget(inv.Context, c, user, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.SetUserAdminResponse, error) {
 				return c.AdminUserService().SetUserAdmin(inv.Context, &leapmuxv1.SetUserAdminRequest{
 					User: sel, IsAdmin: admin, Force: force,
 				})
@@ -341,7 +327,6 @@ func (r adminResetPasswordResult) QuietLines() []string { return []string{r.User
 
 // newAdminUserResetPassword builds `admin user reset-password`.
 func newAdminUserResetPassword() *cobra.Command {
-	var pw string
 	return cli.NewLeaf(cli.Leaf{
 		Use:         "reset-password <user>",
 		Short:       "Set a user's password and revoke every credential they hold",
@@ -351,22 +336,23 @@ func newAdminUserResetPassword() *cobra.Command {
 			{Comment: "Prompt for the new password.", Command: "leapmux admin user reset-password alice"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
-			fs.StringVar(&pw, "password", "", "new password (prompted for when omitted, so it stays out of the shell history)")
+			fs.String("password", "", "new password (prompted for when omitted, so it stays out of the shell history)")
 		},
 		Complete: completeAdminUsers,
 		Run: func(inv *cli.Invocation) (any, error) {
-			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
-				return nil, err
-			}
-			entered, err := control.RequirePassword(inv.Context, pw, "New password: ", os.Stdin, errOutOf(inv))
+			user, err := parseAdminUserTarget(inv.Arg("user"))
 			if err != nil {
-				return nil, cli.Wrap(cli.CodeUsage, err, "")
+				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ResetPasswordResponse, error) {
+			entered, err := requirePasswordFromInv(inv, "password", "New password: ")
+			if err != nil {
+				return nil, err
+			}
+			resp, err := callWithAdminUserTarget(inv.Context, c, user, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ResetPasswordResponse, error) {
 				return c.AdminUserService().ResetPassword(inv.Context, &leapmuxv1.ResetPasswordRequest{
 					User: sel, Password: entered,
 				})
@@ -396,20 +382,16 @@ func (p adminSessionPage) QuietLines() []string {
 }
 
 func resolveAdminSessionID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
-	return resolveAdminIDPrefix(ctx, raw, "session", func(ctx context.Context) ([]cli.Candidate, error) {
-		sessions, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminSession, *leapmuxv1.PageResponse, error) {
+	return resolvePagedAdminID(ctx, "session", raw, false,
+		func(ctx context.Context, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminSession, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminUserService().ListSessions(ctx, &leapmuxv1.ListSessionsRequest{Page: page})
 			return resp.GetSessions(), resp.GetPage(), err
-		}, (*leapmuxv1.AdminSession).GetId)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]cli.Candidate, 0, len(sessions))
-		for _, s := range sessions {
-			out = append(out, cli.Candidate{ID: s.GetId(), Kind: "session", Title: s.GetUsername()})
-		}
-		return out, nil
-	})
+		},
+		(*leapmuxv1.AdminSession).GetId,
+		func(s *leapmuxv1.AdminSession) cli.Candidate {
+			return cli.Candidate{ID: s.GetId(), Kind: "session", Title: s.GetUsername()}
+		},
+	)
 }
 
 type adminSessionRow struct {
@@ -466,67 +448,51 @@ func newAdminSessionList() *cobra.Command {
 			if err := page.validate(); err != nil {
 				return nil, err
 			}
-			if err := owner.resolve(inv); err != nil {
+			ownerTarget, err := owner.parse(inv)
+			if err != nil {
 				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			if owner.Selector() != nil {
-				resp, err := callWithAdminUserSelector(inv.Context, c, owner.User, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ListUserSessionsResponse, error) {
-					return c.AdminUserService().ListUserSessions(inv.Context, &leapmuxv1.ListUserSessionsRequest{
+			return callWithAdminUserTarget(inv.Context, c, ownerTarget, func(sel *leapmuxv1.UserSelector) (adminSessionPage, error) {
+				if sel != nil {
+					resp, err := c.AdminUserService().ListUserSessions(inv.Context, &leapmuxv1.ListUserSessionsRequest{
 						Page: page.request(), User: sel,
 					})
+					if err != nil {
+						return adminSessionPage{}, err
+					}
+					return adminSessionPage{
+						Sessions: adminSessionRowsOf(resp.GetSessions()), NextCursor: resp.GetPage().GetNextCursor(),
+					}, nil
+				}
+				resp, err := c.AdminUserService().ListSessions(inv.Context, &leapmuxv1.ListSessionsRequest{
+					Page: page.request(),
 				})
 				if err != nil {
-					return nil, err
+					return adminSessionPage{}, err
 				}
 				return adminSessionPage{
 					Sessions: adminSessionRowsOf(resp.GetSessions()), NextCursor: resp.GetPage().GetNextCursor(),
 				}, nil
-			}
-			resp, err := c.AdminUserService().ListSessions(inv.Context, &leapmuxv1.ListSessionsRequest{
-				Page: page.request(),
 			})
-			if err != nil {
-				return nil, err
-			}
-			return adminSessionPage{
-				Sessions: adminSessionRowsOf(resp.GetSessions()), NextCursor: resp.GetPage().GetNextCursor(),
-			}, nil
 		},
 	})
 }
 
 // newAdminSessionRevoke builds `admin session revoke`.
 func newAdminSessionRevoke() *cobra.Command {
-	return cli.NewLeaf(cli.Leaf{
-		Use:         "revoke <session>",
-		Short:       "Revoke a session",
-		Mutates:     true,
-		Destructive: true,
-		Examples: []cli.Example{
-			{Command: "leapmux admin session revoke 4f1aC2"},
-		},
-		Complete: completeAdminSessions,
-		Run: func(inv *cli.Invocation) (any, error) {
-			id, err := requireNonEmptyArg(inv, "session")
-			if err != nil {
-				return nil, err
-			}
-			c, err := requireAdminClient(inv)
-			if err != nil {
-				return nil, err
-			}
-			resolved, err := resolveAdminSessionID(inv.Context, c, id)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := c.AdminUserService().RevokeSession(inv.Context, &leapmuxv1.RevokeSessionRequest{Id: resolved}); err != nil {
-				return nil, err
-			}
-			return adminRevocationResult{Revoked: resolved}, nil
+	return newAdminRevokeLeaf(adminRevokeLeafConfig{
+		argName:  "session",
+		short:    "Revoke a session",
+		example:  "leapmux admin session revoke 4f1aC2",
+		complete: completeAdminSessions,
+		resolve:  resolveAdminSessionID,
+		revoke: func(ctx context.Context, c *control.HubClient, id string) error {
+			_, err := c.AdminUserService().RevokeSession(ctx, &leapmuxv1.RevokeSessionRequest{Id: id})
+			return err
 		},
 	})
 }
@@ -544,14 +510,15 @@ func newAdminSessionRevokeUser() *cobra.Command {
 		},
 		Complete: completeAdminUsers,
 		Run: func(inv *cli.Invocation) (any, error) {
-			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+			user, err := parseAdminUserTarget(inv.Arg("user"))
+			if err != nil {
 				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.RevokeUserSessionsResponse, error) {
+			resp, err := callWithAdminUserTarget(inv.Context, c, user, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.RevokeUserSessionsResponse, error) {
 				return c.AdminUserService().RevokeUserSessions(inv.Context, &leapmuxv1.RevokeUserSessionsRequest{
 					User: sel,
 				})

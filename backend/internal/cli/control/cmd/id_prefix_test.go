@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -101,4 +102,43 @@ func TestLookupByIDPrefix(t *testing.T) {
 	assert.False(t, ok, "a non-exact prefix shorter than minHandlePrefixLength never matches")
 	assert.Empty(t, got)
 	assert.Empty(t, matches)
+}
+
+func TestLookupByIDPrefixMin(t *testing.T) {
+	items := []string{"abc", "abcd-1", "abcd-2", "wxyz-9"}
+	identity := func(id string) string { return id }
+
+	t.Run("minLen 4", func(t *testing.T) {
+		got, ambiguous, ok := lookupByIDPrefixMin(items, "wxy", 4, identity)
+		assert.False(t, ok)
+		assert.Empty(t, got)
+		assert.Nil(t, ambiguous)
+
+		got, ambiguous, ok = lookupByIDPrefixMin(items, "abc", 4, identity)
+		assert.True(t, ok)
+		assert.Equal(t, "abc", got)
+		assert.Nil(t, ambiguous)
+
+		got, ambiguous, ok = lookupByIDPrefixMin(items, "wxyz", 4, identity)
+		assert.True(t, ok)
+		assert.Equal(t, "wxyz-9", got)
+		assert.Nil(t, ambiguous)
+
+		got, ambiguous, ok = lookupByIDPrefixMin(items, "abcd", 4, identity)
+		assert.False(t, ok)
+		assert.Empty(t, got)
+		assert.Equal(t, []string{"abcd-1", "abcd-2"}, ambiguous)
+	})
+
+	t.Run("minLen math.MaxInt disables prefix matching", func(t *testing.T) {
+		got, ambiguous, ok := lookupByIDPrefixMin(items, "wxyz", math.MaxInt, identity)
+		assert.False(t, ok)
+		assert.Empty(t, got)
+		assert.Nil(t, ambiguous)
+
+		got, ambiguous, ok = lookupByIDPrefixMin(items, "wxyz-9", math.MaxInt, identity)
+		assert.True(t, ok)
+		assert.Equal(t, "wxyz-9", got)
+		assert.Nil(t, ambiguous)
+	})
 }

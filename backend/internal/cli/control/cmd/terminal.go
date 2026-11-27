@@ -78,6 +78,11 @@ func newTerminalCommand() *cobra.Command {
 				addGitSetupFlags(fs)
 				addPlacementFlags(fs)
 			},
+			FlagComplete: mergeFlagCompletions(
+				map[string]cobra.CompletionFunc{"shell": completeShellFlag},
+				gitSetupFlagCompletions(),
+				tabPositionFlagCompletions(),
+			),
 			Run: runTerminalOpen,
 		}),
 		cli.NewLeaf(cli.Leaf{

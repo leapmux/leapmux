@@ -251,15 +251,15 @@ func TestEventsStream_SnapshotAndTimeout(t *testing.T) {
 }
 
 func TestWorktreeGet_AcceptsUnifiedSelectors(t *testing.T) {
-	s1, err := parseWorktreeSelector("/repo/wt-a", true)
+	s1, err := parseWorktreeSelector("/repo/wt-a")
 	require.NoError(t, err)
 	assert.Equal(t, "/repo/wt-a", s1.GetPath())
 
-	s2, err := parseWorktreeSelector("path:/repo/wt-b", true)
+	s2, err := parseWorktreeSelector("path:/repo/wt-b")
 	require.NoError(t, err)
 	assert.Equal(t, "/repo/wt-b", s2.GetPath())
 
-	s3, err := parseWorktreeSelector("branch:feat/cli", true)
+	s3, err := parseWorktreeSelector("branch:feat/cli")
 	require.NoError(t, err)
 	assert.Equal(t, "feat/cli", s3.GetBranch())
 }

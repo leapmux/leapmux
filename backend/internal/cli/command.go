@@ -130,6 +130,11 @@ type Leaf struct {
 	// Complete completes the positional argument at position i, whose
 	// declaration is spec. Nil completes nothing.
 	Complete func(cmd *cobra.Command, spec ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective)
+	// FlagComplete registers completion functions for flags declared on this
+	// leaf, keyed by flag name. NewLeaf panics if a key does not match a flag
+	// declared on this leaf or collides with another registration (such as
+	// SetEnum).
+	FlagComplete map[string]cobra.CompletionFunc
 }
 
 // NewLeaf builds the cobra command for l.
@@ -169,6 +174,18 @@ func NewLeaf(l Leaf) *cobra.Command {
 		l.Flags(cmd.Flags())
 	}
 	registerEnumCompletionsForSet(cmd, cmd.Flags())
+	for _, name := range slices.Sorted(maps.Keys(l.FlagComplete)) {
+		fn := l.FlagComplete[name]
+		if cmd.Flags().Lookup(name) == nil {
+			panic(fmt.Sprintf("cli: %q registers completion for undeclared flag %q", l.Use, name))
+		}
+		if fn == nil {
+			panic(fmt.Sprintf("cli: %q registers nil completion for flag %q", l.Use, name))
+		}
+		if err := cmd.RegisterFlagCompletionFunc(name, fn); err != nil {
+			panic(fmt.Sprintf("cli: %q failed to register completion for flag %q: %v", l.Use, name, err))
+		}
+	}
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if err := validateAllowedFlags(cmd); err != nil {
 			return err

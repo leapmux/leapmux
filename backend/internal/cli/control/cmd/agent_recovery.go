@@ -22,6 +22,9 @@ func newAgentRecoveriesCommand() *cobra.Command {
 			fs.String("provider", "", "filter recovery targets by agent provider")
 			addWorkerFlag(fs)
 		},
+		FlagComplete: map[string]cobra.CompletionFunc{
+			"provider": completeProviderFlag,
+		},
 		Run: runAgentRecoveries,
 	})
 }

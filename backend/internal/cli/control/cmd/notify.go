@@ -1,16 +1,18 @@
 package cmd
 
 import (
+	"cmp"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
-	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // notifyLong is the help of `notify`.
@@ -234,6 +236,12 @@ func runNotificationList(inv *cli.Invocation) (any, error) {
 	return notificationListResult{WorkerID: workerID, Notifications: rows}, nil
 }
 
+type notificationClearResult struct {
+	ID       string `json:"id"`
+	WorkerID string `json:"worker_id"`
+	Cleared  bool   `json:"cleared"`
+}
+
 type notificationClearBatchResult struct {
 	WorkerID string   `json:"worker_id"`
 	Cleared  []string `json:"cleared"`
@@ -253,7 +261,7 @@ func parseNotificationSelector(raw string) (value string, literal bool, err erro
 		}
 		return rest, true, nil
 	}
-	return trimmed, len(trimmed) == id.GeneratedLength, nil
+	return trimmed, resolve.IsGeneratedID(trimmed), nil
 }
 
 func resolveNotificationID(items []*leapmuxv1.UserNotification, raw string) (string, error) {
@@ -264,29 +272,24 @@ func resolveNotificationID(items []*leapmuxv1.UserNotification, raw string) (str
 	if literal {
 		return value, nil
 	}
-	var matches []*leapmuxv1.UserNotification
-	for _, n := range items {
-		if n.GetId() == value {
-			return n.GetId(), nil
-		}
-		if len(value) >= resolve.MinPrefixLength && strings.HasPrefix(n.GetId(), value) {
-			matches = append(matches, n)
-		}
+	matched, ambiguous, ok := lookupByIDPrefixMin(items, value, resolve.MinPrefixLength, (*leapmuxv1.UserNotification).GetId)
+	if ok {
+		return matched.GetId(), nil
 	}
-	switch len(matches) {
-	case 1:
-		return matches[0].GetId(), nil
-	case 0:
+	if len(ambiguous) == 0 {
 		return "", cli.Newf(cli.CodeNotFound, "no notification matches %q", raw).
 			WithHint(`list recent notifications with "leapmux notification list"`)
-	default:
-		e := cli.Newf(cli.CodeAmbiguousTarget, "%d notifications match %q", len(matches), value).
-			WithHint("type more characters of the notification ID, or the full ID")
-		for _, m := range matches {
-			e.Candidates = append(e.Candidates, cli.Candidate{ID: m.GetId(), Kind: "notification", Title: m.GetTitle()})
-		}
-		return "", e
 	}
+	e := cli.Newf(cli.CodeAmbiguousTarget, "%d notifications match %q", len(ambiguous), value).
+		WithHint("type more characters of the notification ID, or the full ID")
+	e.Candidates = make([]cli.Candidate, 0, len(ambiguous))
+	for _, m := range ambiguous {
+		e.Candidates = append(e.Candidates, cli.Candidate{ID: m.GetId(), Kind: "notification", Title: m.GetTitle()})
+	}
+	slices.SortFunc(e.Candidates, func(a, b cli.Candidate) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return "", e
 }
 
 func runNotificationClear(inv *cli.Invocation) (any, error) {
@@ -298,55 +301,24 @@ func runNotificationClear(inv *cli.Invocation) (any, error) {
 	if !all && len(ids) == 0 {
 		return nil, cli.Usagef("pass one or more notification IDs, or --all")
 	}
-	if !all && len(ids) == 1 {
-		noticeID, literal, err := parseNotificationSelector(ids[0])
+	needList := all
+	for _, raw := range ids {
+		_, exact, err := parseNotificationSelector(raw)
 		if err != nil {
 			return nil, err
 		}
-		if literal {
-			var response leapmuxv1.ClearNotificationResponse
-			workerID, err := callOnWorkerWithID(inv, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, &leapmuxv1.ClearNotificationRequest{Id: noticeID}, &response)
-			if err != nil {
-				return nil, err
-			}
-			return struct {
-				ID       string `json:"id"`
-				WorkerID string `json:"worker_id"`
-				Cleared  bool   `json:"cleared"`
-			}{noticeID, workerID, response.GetCleared()}, nil
-		}
+		needList = needList || !exact
 	}
-	s, err := openSession(inv)
+	s, workerID, err := openWorkerSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, err := s.workerScope()
-	if err != nil {
-		return nil, err
-	}
-	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-		return nil, err
-	}
-	needList := all
-	if !needList {
-		for _, raw := range ids {
-			_, literal, err := parseNotificationSelector(raw)
-			if err != nil {
-				return nil, err
-			}
-			if !literal {
-				needList = true
-				break
-			}
-		}
-	}
-	var singleResult *struct {
-		ID       string `json:"id"`
-		WorkerID string `json:"worker_id"`
-		Cleared  bool   `json:"cleared"`
-	}
-	cleared := make([]string, 0, len(ids))
+
+	var (
+		resolvedIDs  []string
+		clearedFlags []bool
+	)
 	err = withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
 		var listed []*leapmuxv1.UserNotification
 		if needList {
@@ -356,12 +328,20 @@ func runNotificationClear(inv *cli.Invocation) (any, error) {
 			}
 			listed = listResp.GetNotifications()
 		}
-		var resolvedIDs []string
+		seen := make(map[string]struct{}, len(ids))
+		addID := func(nid string) {
+			if nid == "" {
+				return
+			}
+			if _, dup := seen[nid]; dup {
+				return
+			}
+			seen[nid] = struct{}{}
+			resolvedIDs = append(resolvedIDs, nid)
+		}
 		if all {
 			for _, n := range listed {
-				if nid := n.GetId(); nid != "" {
-					resolvedIDs = append(resolvedIDs, nid)
-				}
+				addID(n.GetId())
 			}
 		} else {
 			for _, raw := range ids {
@@ -369,32 +349,42 @@ func runNotificationClear(inv *cli.Invocation) (any, error) {
 				if err != nil {
 					return err
 				}
-				resolvedIDs = append(resolvedIDs, nid)
+				addID(nid)
 			}
 		}
-		for _, noticeID := range resolvedIDs {
-			var response leapmuxv1.ClearNotificationResponse
-			if err := w.Call(s.ctx, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, &leapmuxv1.ClearNotificationRequest{Id: noticeID}, &response); err != nil {
-				return err
-			}
-			if !all && len(resolvedIDs) == 1 {
-				singleResult = &struct {
-					ID       string `json:"id"`
-					WorkerID string `json:"worker_id"`
-					Cleared  bool   `json:"cleared"`
-				}{noticeID, workerID, response.GetCleared()}
-			}
-			if response.GetCleared() {
-				cleared = append(cleared, noticeID)
-			}
+		clearedFlags = make([]bool, len(resolvedIDs))
+		g, gctx := errgroup.WithContext(s.ctx)
+		g.SetLimit(detailFanoutLimit)
+		for i, noticeID := range resolvedIDs {
+			g.Go(func() error {
+				var response leapmuxv1.ClearNotificationResponse
+				if err := w.Call(gctx, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, &leapmuxv1.ClearNotificationRequest{Id: noticeID}, &response); err != nil {
+					return err
+				}
+				clearedFlags[i] = response.GetCleared()
+				return nil
+			})
 		}
-		return nil
+		return g.Wait()
 	})
+	cleared := make([]string, 0, len(resolvedIDs))
+	for i, ok := range clearedFlags {
+		if ok {
+			cleared = append(cleared, resolvedIDs[i])
+		}
+	}
 	if err != nil {
+		if len(cleared) > 0 {
+			return nil, cli.FromError(err).WithHint("already cleared: %s", strings.Join(cleared, ", "))
+		}
 		return nil, err
 	}
-	if singleResult != nil {
-		return *singleResult, nil
+	if !all && len(ids) == 1 && len(resolvedIDs) == 1 {
+		return notificationClearResult{
+			ID:       resolvedIDs[0],
+			WorkerID: workerID,
+			Cleared:  clearedFlags[0],
+		}, nil
 	}
 	return notificationClearBatchResult{WorkerID: workerID, Cleared: cleared}, nil
 }

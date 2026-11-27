@@ -496,3 +496,130 @@ func TestDiscoverLocalHub_AllDeadOrMissingAndStandaloneFallback(t *testing.T) {
 	require.NoError(t, os.Remove(devSock))
 	assert.Equal(t, "unix:"+hubSock, control.DiscoverLocalHub())
 }
+
+func TestCanonicalHubURL(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "whitespace only", in: "  \t\n ", want: ""},
+		{name: "lowercase scheme and host and strip root slash", in: "  HTTPS://HUB.EXAMPLE.COM/  ", want: "https://hub.example.com"},
+		{name: "strip multiple trailing slashes on base path", in: "https://HUB.EXAMPLE.COM:8443/App///", want: "https://hub.example.com:8443/App"},
+		{name: "percent-encoded path with trailing slashes preserves raw path", in: "https://HUB.EXAMPLE.COM/team%2Fdev///", want: "https://hub.example.com/team%2Fdev"},
+		{name: "ipv6 literal host lowercased", in: "HTTP://[2001:DB8::1]:8080/", want: "http://[2001:db8::1]:8080"},
+		{name: "unix socket preserves case and path", in: "  unix:/tmp/MyHub/Hub.sock  ", want: "unix:/tmp/MyHub/Hub.sock"},
+		{name: "npipe preserves case and slashes", in: "  npipe://./pipe/LeapMux-Hub  ", want: "npipe://./pipe/LeapMux-Hub"},
+		{name: "hostless string falls back to trimming trailing slashes", in: "hub.example///", want: "hub.example"},
+		{name: "unparseable url falls back to trimming trailing slashes", in: "://bad///", want: "://bad"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, control.CanonicalHubURL(tc.in))
+		})
+	}
+}
+
+func TestSameHubURL(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{name: "both empty", a: "", b: "", want: false},
+		{name: "one whitespace", a: "   ", b: "https://hub.example", want: false},
+		{name: "host case and trailing slash", a: "https://HUB.EXAMPLE/", b: "https://hub.example", want: true},
+		{name: "scheme case and surrounding whitespace", a: "  HTTPS://HUB.EXAMPLE///  ", b: "https://hub.example", want: true},
+		{name: "base path trailing slash", a: "https://hub.example/base/", b: "https://hub.example/base", want: true},
+		{name: "different schemes stay distinct", a: "http://hub.example", b: "https://hub.example", want: false},
+		{name: "explicit http port 80 stays distinct", a: "http://hub.example:80", b: "http://hub.example", want: false},
+		{name: "explicit https port 443 stays distinct", a: "https://hub.example:443", b: "https://hub.example", want: false},
+		{name: "different ports stay distinct", a: "https://hub.example:8443", b: "https://hub.example:9443", want: false},
+		{name: "different paths stay distinct", a: "https://hub.example/a", b: "https://hub.example/b", want: false},
+		{name: "path case stays distinct", a: "https://hub.example/App", b: "https://hub.example/app", want: false},
+		{name: "identical unix socket", a: "  unix:/tmp/hub.sock ", b: "unix:/tmp/hub.sock", want: true},
+		{name: "unix socket case stays distinct", a: "unix:/tmp/Hub.sock", b: "unix:/tmp/hub.sock", want: false},
+		{name: "unix socket slash vs underscore stays distinct", a: "unix:/tmp/a/b.sock", b: "unix:/tmp/a_b.sock", want: false},
+		{name: "unix socket vs remote stays distinct", a: "unix:/tmp/hub.sock", b: "https://hub.example", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, control.SameHubURL(tc.a, tc.b))
+			assert.Equal(t, tc.want, control.SameHubURL(tc.b, tc.a), "SameHubURL must be symmetric")
+		})
+	}
+}
+
+func TestSetDefaultHub_CanonicalizesStoredURL(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+
+	require.NoError(t, control.SetDefaultHub("  HTTPS://HUB.EXAMPLE.COM/  "))
+	cfg, err := control.LoadContext()
+	require.NoError(t, err)
+	assert.Equal(t, "https://hub.example.com", cfg.Hub)
+
+	require.NoError(t, control.SetDefaultHub("  unix:/tmp/MyHub/hub.sock  "))
+	cfg, err = control.LoadContext()
+	require.NoError(t, err)
+	assert.Equal(t, "unix:/tmp/MyHub/hub.sock", cfg.Hub)
+}
+
+func TestClearDefaultHubIf_MatchesCanonicalDifferencesInContextAndLegacy(t *testing.T) {
+	t.Run("non-canonical input clears canonical context and legacy file", func(t *testing.T) {
+		cfgDir := t.TempDir()
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+		require.NoError(t, control.SaveContext(control.ContextConfig{
+			Hub:    "https://hub.example",
+			Worker: "w-1",
+		}))
+		legacyPath := filepath.Join(cfgDir, "default-hub")
+		require.NoError(t, os.WriteFile(legacyPath, []byte("https://hub.example\n"), 0o600))
+
+		require.NoError(t, control.ClearDefaultHubIf("HTTPS://HUB.EXAMPLE/"))
+
+		cfg, err := control.LoadContext()
+		require.NoError(t, err)
+		assert.Empty(t, cfg.Hub)
+		assert.Equal(t, "w-1", cfg.Worker)
+		_, statErr := os.Stat(legacyPath)
+		assert.True(t, os.IsNotExist(statErr), "matching legacy default-hub must be removed")
+	})
+
+	t.Run("canonical input clears non-canonical context and legacy file", func(t *testing.T) {
+		cfgDir := t.TempDir()
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+		require.NoError(t, control.SaveContext(control.ContextConfig{
+			Hub:    "https://HUB.EXAMPLE/",
+			Worker: "w-1",
+		}))
+		legacyPath := filepath.Join(cfgDir, "default-hub")
+		require.NoError(t, os.WriteFile(legacyPath, []byte("HTTPS://HUB.EXAMPLE///\n"), 0o600))
+
+		require.NoError(t, control.ClearDefaultHubIf("https://hub.example"))
+
+		cfg, err := control.LoadContext()
+		require.NoError(t, err)
+		assert.Empty(t, cfg.Hub)
+		assert.Equal(t, "w-1", cfg.Worker)
+		_, statErr := os.Stat(legacyPath)
+		assert.True(t, os.IsNotExist(statErr), "matching legacy default-hub must be removed")
+	})
+
+	t.Run("different scheme preserves context and legacy file", func(t *testing.T) {
+		cfgDir := t.TempDir()
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+		require.NoError(t, control.SaveContext(control.ContextConfig{Hub: "https://hub.example"}))
+		legacyPath := filepath.Join(cfgDir, "default-hub")
+		require.NoError(t, os.WriteFile(legacyPath, []byte("https://hub.example\n"), 0o600))
+
+		require.NoError(t, control.ClearDefaultHubIf("http://hub.example"))
+
+		cfg, err := control.LoadContext()
+		require.NoError(t, err)
+		assert.Equal(t, "https://hub.example", cfg.Hub)
+		_, statErr := os.Stat(legacyPath)
+		assert.NoError(t, statErr)
+	})
+}

@@ -97,7 +97,8 @@ func newFileCommand() *cobra.Command {
 				cli.SetFlagGroup(fs, "dir", "Git & Directory")
 				addPlacementFlags(fs)
 			},
-			Run: runFileOpen,
+			FlagComplete: tabPositionFlagCompletions(),
+			Run:          runFileOpen,
 		}),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "set <tab>",
@@ -228,23 +229,51 @@ func (r fileListResult) QuietLines() []string {
 	return paths
 }
 
-func localCwdFallback(inv *cli.Invocation) (string, bool) {
-	if s, serr := openSession(inv); serr == nil {
-		isLocal := false
-		switch c := s.c.(type) {
-		case *control.WorkerIPCClient:
-			isLocal = true
-		case *control.HubClient:
-			isLocal = locallisten.IsLocal(c.HubURL)
+// checkOptionalPathArg rejects an explicit blank [path] before opening a session.
+func checkOptionalPathArg(inv *cli.Invocation) error {
+	if inv.HasArg("path") && strings.TrimSpace(inv.Arg("path")) == "" {
+		return cli.Usagef("<path> is empty")
+	}
+	return nil
+}
+
+// resolveFileDirArg resolves the optional [path] argument of a file directory
+// command on the already-open session s targeting workerID.
+func (s *session) resolveFileDirArg(inv *cli.Invocation, workerID string) (string, error) {
+	if inv.HasArg("path") {
+		p := strings.TrimSpace(inv.Arg("path"))
+		if p == "" {
+			return "", cli.Usagef("<path> is empty")
 		}
-		s.Close()
-		if isLocal {
-			if cwd, gerr := os.Getwd(); gerr == nil && cwd != "" {
-				return cwd, true
-			}
+		return p, nil
+	}
+	explicitWorker := inv.Changed(workerFlag)
+	if wd := tabWorkingDirForWorker(workerID, explicitWorker); wd != "" {
+		return wd, nil
+	}
+	if s.canUseLocalCwdFallback(inv, isTabEnvWorker(workerID, explicitWorker)) {
+		if cwd, err := os.Getwd(); err == nil && cwd != "" {
+			return cwd, nil
 		}
 	}
-	return "", false
+	return "", cli.Usagef("<path> is required (pass a directory path or run inside a tab)")
+}
+
+func (s *session) canUseLocalCwdFallback(inv *cli.Invocation, sameEnvWorker bool) bool {
+	switch c := s.c.(type) {
+	case *control.WorkerIPCClient:
+		return sameEnvWorker
+	case *control.HubClient:
+		if !locallisten.IsLocal(c.HubURL) || inv.Changed(workerFlag) || !sameEnvWorker {
+			return false
+		}
+		if ctxCfg, err := control.LoadContext(); err == nil && strings.TrimSpace(ctxCfg.Worker) != "" {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func runFileList(inv *cli.Invocation) (any, error) {
@@ -252,20 +281,23 @@ func runFileList(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := inv.Arg("path")
-	if path == "" {
-		path = workingDirEnv()
-		if path == "" {
-			if cwd, ok := localCwdFallback(inv); ok {
-				path = cwd
-			}
-		}
-		if path == "" {
-			return nil, cli.Usagef("missing <path>: pass a directory path, or run inside a LeapMux tab")
-		}
+	if maxDepth < 0 {
+		return nil, cli.Usagef("--max-depth must be non-negative")
+	}
+	if err := checkOptionalPathArg(inv); err != nil {
+		return nil, err
+	}
+	s, workerID, err := openWorkerSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	path, err := s.resolveFileDirArg(inv, workerID)
+	if err != nil {
+		return nil, err
 	}
 	var resp leapmuxv1.ListDirectoryResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
+	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     path,
 		MaxDepth: clampInt32(maxDepth),
 		DirsOnly: boolFlag(inv, "dirs-only"),
@@ -300,10 +332,18 @@ func runFileRoots(inv *cli.Invocation) (any, error) {
 	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure, &leapmuxv1.ListFilesystemRootsRequest{}, &resp); err != nil {
 		return nil, err
 	}
-	return rootList{Roots: resp.GetRoots()}, nil
+	roots := resp.GetRoots()
+	if roots == nil {
+		roots = []string{}
+	}
+	return rootList{Roots: roots}, nil
 }
 
 func runFileRead(inv *cli.Invocation) (any, error) {
+	path, err := requireNonEmptyArg(inv, "path")
+	if err != nil {
+		return nil, err
+	}
 	offset, err := inv.Command.Flags().GetInt64("offset")
 	if err != nil {
 		return nil, err
@@ -319,15 +359,19 @@ func runFileRead(inv *cli.Invocation) (any, error) {
 		return nil, cli.Usagef("--limit must not be negative")
 	}
 	var resp leapmuxv1.ReadFileResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{Path: inv.Arg("path"), Offset: offset, Limit: limit}, &resp); err != nil {
+	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{Path: path, Offset: offset, Limit: limit}, &resp); err != nil {
 		return nil, err
 	}
 	return fileContent{Path: resp.GetPath(), TotalSize: resp.GetTotalSize(), ModTime: resp.GetModTime(), Content: string(resp.GetContent())}, nil
 }
 
 func runFileStat(inv *cli.Invocation) (any, error) {
+	path, err := requireNonEmptyArg(inv, "path")
+	if err != nil {
+		return nil, err
+	}
 	var resp leapmuxv1.StatFileResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceStatFileProcedure, &leapmuxv1.StatFileRequest{Path: inv.Arg("path")}, &resp); err != nil {
+	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceStatFileProcedure, &leapmuxv1.StatFileRequest{Path: path}, &resp); err != nil {
 		return nil, err
 	}
 	return fileInfoOf(resp.GetInfo()), nil

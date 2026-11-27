@@ -185,21 +185,24 @@ func parsePort(raw string, allowZero bool) (uint16, error) {
 // Overridable in tests to exercise forward and connect without a live Hub.
 type tunnelDialer func(ctx context.Context, host string, port uint16) (net.Conn, error)
 
-func openTunnelChannel(inv *cli.Invocation, s *session) (*tunnel.Channel, string, error) {
+func openTunnelChannel(s *session) (*tunnel.Channel, string, error) {
 	hub, ok := s.c.(*control.HubClient)
 	if !ok {
 		return nil, "", cli.Usagef("tunnel commands require a direct Hub connection and cannot run over a tab's local IPC socket").
 			WithHint("run from a shell outside LeapMux, or pass --hub <url>")
 	}
-	bounded := s.bounded()
-	workerID, err := bounded.workerScope()
-	bounded.Close()
+	timed := s.bounded()
+	defer timed.Close()
+	workerID, err := timed.workerScope()
 	if err != nil {
 		return nil, "", err
 	}
+	if err := maybePreflightWorker(timed.ctx, timed.c, workerID); err != nil {
+		return nil, "", err
+	}
 	openCtx, cancelOpen := rpcDeadline(s.ctx)
-	ch, err := hub.OpenE2EEChannel(openCtx, s.ctx, workerID)
-	cancelOpen()
+	defer cancelOpen()
+	ch, err := openHubE2EEChannel(openCtx, s.ctx, hub, workerID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -216,7 +219,7 @@ func runTunnelForward(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	ch, workerID, err := openTunnelChannel(inv, s)
+	ch, workerID, err := openTunnelChannel(s)
 	if err != nil {
 		return nil, err
 	}
@@ -272,14 +275,17 @@ func serveTunnelForward(
 	notice func(string, ...any),
 ) error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var wg sync.WaitGroup
+	var noticeMu sync.Mutex
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
 	}()
 
-	var wg sync.WaitGroup
-	defer wg.Wait()
 	for {
 		localConn, err := ln.Accept()
 		if err != nil {
@@ -295,7 +301,9 @@ func serveTunnelForward(
 			dialCancel()
 			if err != nil {
 				if notice != nil && ctx.Err() == nil {
+					noticeMu.Lock()
 					notice("tunnel dial %s failed: %v", net.JoinHostPort(targetHost, strconv.Itoa(int(targetPort))), err)
+					noticeMu.Unlock()
 				}
 				return
 			}
@@ -315,7 +323,7 @@ func runTunnelConnect(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	ch, _, err := openTunnelChannel(inv, s)
+	ch, _, err := openTunnelChannel(s)
 	if err != nil {
 		return nil, err
 	}

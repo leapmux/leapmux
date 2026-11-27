@@ -63,6 +63,11 @@ or override individual settings (--model, --effort, --permission-mode, --option,
 			addGitSetupFlags(fs)
 			addPlacementFlags(fs)
 		},
+		FlagComplete: mergeFlagCompletions(
+			agentOptionFlagCompletions(),
+			gitSetupFlagCompletions(),
+			tabPositionFlagCompletions(),
+		),
 		Complete: completeTargets,
 		Run:      runAgentFork,
 	})

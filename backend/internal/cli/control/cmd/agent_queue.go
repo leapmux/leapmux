@@ -119,6 +119,10 @@ queue list --json" states the segment of each input as reorder_segment.`,
 				fs.Bool("last", false, "move the input to the last place of its segment")
 				addTargetWorkspaceFlag(fs)
 			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"before": completeQueueInputPositionFlag,
+				"after":  completeQueueInputPositionFlag,
+			},
 			Complete: completeQueueArgs,
 			Run:      runAgentQueueMove,
 		}),

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"math"
 	"strings"
 	"time"
 
@@ -229,6 +230,57 @@ func (s *session) resolveOptionalWorker(arg string) (string, error) {
 	return s.workerScope()
 }
 
+// resolveWorkerForGet resolves the optional [worker] argument and returns any
+// hub worker record and display name that resolution already fetched, so
+// runWorkerGet avoids redundant GetWorker and GetWorkerSystemInfo RPCs.
+func (s *session) resolveWorkerForGet(arg string) (workerID string, worker *leapmuxv1.Worker, name string, nameQueried bool, err error) {
+	if strings.TrimSpace(arg) == "" {
+		workerID, err = s.workerScope()
+		return workerID, nil, "", false, err
+	}
+	var (
+		listedWorkers []*leapmuxv1.Worker
+		fetchedNames  map[string]string
+		queriedNames  map[string]struct{}
+	)
+	listing := s.listing()
+	rawWorkers := listing.Workers
+	listing.Workers = func(ctx context.Context) ([]*leapmuxv1.Worker, error) {
+		workers, listErr := rawWorkers(ctx)
+		if listErr == nil {
+			listedWorkers = workers
+		}
+		return workers, listErr
+	}
+	rawNames := listing.WorkerNames
+	listing.WorkerNames = func(ctx context.Context, workers []*leapmuxv1.Worker) map[string]string {
+		names := rawNames(ctx, workers)
+		if fetchedNames == nil {
+			fetchedNames = map[string]string{}
+			queriedNames = map[string]struct{}{}
+		}
+		for _, w := range workers {
+			queriedNames[w.GetId()] = struct{}{}
+		}
+		for id, n := range names {
+			fetchedNames[id] = n
+		}
+		return names
+	}
+	target, err := resolve.Canonical(s.ctx, listing, resolve.KindWorker, arg)
+	if err != nil {
+		return "", nil, "", false, err
+	}
+	for _, w := range listedWorkers {
+		if w.GetId() == target.ID {
+			worker = w
+			break
+		}
+	}
+	_, nameQueried = queriedNames[target.ID]
+	return target.ID, worker, fetchedNames[target.ID], nameQueried, nil
+}
+
 // runWorkerGet prints the hub's row of one worker, which the hub answers
 // for an offline worker too.
 func runWorkerGet(inv *cli.Invocation) (any, error) {
@@ -237,19 +289,21 @@ func runWorkerGet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, err := s.resolveOptionalWorker(inv.Arg("worker"))
+	workerID, worker, name, nameQueried, err := s.resolveWorkerForGet(inv.Arg("worker"))
 	if err != nil {
 		return nil, err
 	}
-	var resp leapmuxv1.GetWorkerResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure, &leapmuxv1.GetWorkerRequest{WorkerId: workerID}, &resp); err != nil {
-		return nil, err
+	if worker == nil {
+		var resp leapmuxv1.GetWorkerResponse
+		if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure, &leapmuxv1.GetWorkerRequest{WorkerId: workerID}, &resp); err != nil {
+			return nil, err
+		}
+		worker = resp.GetWorker()
 	}
-	name := ""
-	if resp.GetWorker().GetOnline() {
+	if worker.GetOnline() && !nameQueried {
 		name = fetchWorkerNames(s.ctx, s.c, []string{workerID})[workerID]
 	}
-	return workerRowOf(resp.GetWorker(), name), nil
+	return workerRowOf(worker, name), nil
 }
 
 // workerInfo is what a worker reports about itself.
@@ -303,18 +357,12 @@ func (r registrationKey) QuietLines() []string { return []string{r.Key} }
 // scope, which the bridge of a tab's socket does not carry, so the command
 // always talks to the hub directly.
 func runWorkerKeyCreate(inv *cli.Invocation) (any, error) {
-	hub, err := hubURLFor(inv.Command)
+	s, c, err := openDirectHubSession(inv)
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClientForHub(hub)
-	if err != nil {
-		return nil, err
-	}
-	attachErrOut(c, inv)
-	ctx, cancel := rpcDeadline(inv.Context)
-	defer cancel()
-	resp, err := c.WorkerManagementService().CreateRegistrationKey(ctx, &leapmuxv1.CreateRegistrationKeyRequest{})
+	defer s.Close()
+	resp, err := c.WorkerManagementService().CreateRegistrationKey(s.ctx, &leapmuxv1.CreateRegistrationKeyRequest{})
 	if err != nil {
 		return nil, err
 	}
@@ -332,18 +380,9 @@ func runWorkerPing(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	var workerID string
-	if inv.HasArg("worker") {
-		target, err := s.resolveOne(resolve.KindWorker, inv.Arg("worker"))
-		if err != nil {
-			return nil, err
-		}
-		workerID = target.ID
-	} else {
-		workerID, err = s.workerScope()
-		if err != nil {
-			return nil, err
-		}
+	workerID, err := s.resolveOptionalWorker(inv.Arg("worker"))
+	if err != nil {
+		return nil, err
 	}
 	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
 		return nil, err
@@ -367,7 +406,7 @@ func runWorkerPing(inv *cli.Invocation) (any, error) {
 }
 
 func runWorkerDeregister(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
+	s, c, err := openDirectHubSession(inv)
 	if err != nil {
 		return nil, err
 	}
@@ -376,18 +415,7 @@ func runWorkerDeregister(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	hub, err := hubURLFor(inv.Command)
-	if err != nil {
-		return nil, err
-	}
-	c, err := control.NewClientForHub(hub)
-	if err != nil {
-		return nil, err
-	}
-	attachErrOut(c, inv)
-	ctx, cancel := rpcDeadline(inv.Context)
-	defer cancel()
-	if _, err := c.WorkerManagementService().DeregisterWorker(ctx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: target.ID}); err != nil {
+	if _, err := c.WorkerManagementService().DeregisterWorker(s.ctx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: target.ID}); err != nil {
 		return nil, err
 	}
 	return struct {
@@ -397,22 +425,16 @@ func runWorkerDeregister(inv *cli.Invocation) (any, error) {
 }
 
 func runWorkerKeyExtend(inv *cli.Invocation) (any, error) {
-	key := strings.TrimSpace(inv.Arg("key"))
-	if key == "" {
-		return nil, cli.Usagef("<key> is empty")
-	}
-	hub, err := hubURLFor(inv.Command)
+	key, err := requireNonEmptyArg(inv, "key")
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClientForHub(hub)
+	s, c, err := openDirectHubSession(inv)
 	if err != nil {
 		return nil, err
 	}
-	attachErrOut(c, inv)
-	ctx, cancel := rpcDeadline(inv.Context)
-	defer cancel()
-	resp, err := c.WorkerManagementService().ExtendRegistrationKey(ctx, &leapmuxv1.ExtendRegistrationKeyRequest{RegistrationKey: key})
+	defer s.Close()
+	resp, err := c.WorkerManagementService().ExtendRegistrationKey(s.ctx, &leapmuxv1.ExtendRegistrationKeyRequest{RegistrationKey: key})
 	if err != nil {
 		return nil, err
 	}
@@ -420,22 +442,16 @@ func runWorkerKeyExtend(inv *cli.Invocation) (any, error) {
 }
 
 func runWorkerKeyRevoke(inv *cli.Invocation) (any, error) {
-	key := strings.TrimSpace(inv.Arg("key"))
-	if key == "" {
-		return nil, cli.Usagef("<key> is empty")
-	}
-	hub, err := hubURLFor(inv.Command)
+	key, err := requireNonEmptyArg(inv, "key")
 	if err != nil {
 		return nil, err
 	}
-	c, err := control.NewClientForHub(hub)
+	s, c, err := openDirectHubSession(inv)
 	if err != nil {
 		return nil, err
 	}
-	attachErrOut(c, inv)
-	ctx, cancel := rpcDeadline(inv.Context)
-	defer cancel()
-	if _, err := c.WorkerManagementService().RevokeRegistrationKey(ctx, &leapmuxv1.RevokeRegistrationKeyRequest{RegistrationKey: key}); err != nil {
+	defer s.Close()
+	if _, err := c.WorkerManagementService().RevokeRegistrationKey(s.ctx, &leapmuxv1.RevokeRegistrationKeyRequest{RegistrationKey: key}); err != nil {
 		return nil, err
 	}
 	return struct {
@@ -445,26 +461,20 @@ func runWorkerKeyRevoke(inv *cli.Invocation) (any, error) {
 }
 
 func runWorkerKeyEmail(inv *cli.Invocation) (any, error) {
-	key := strings.TrimSpace(inv.Arg("key"))
-	if key == "" {
-		return nil, cli.Usagef("<key> is empty")
-	}
-	hub, err := hubURLFor(inv.Command)
+	key, err := requireNonEmptyArg(inv, "key")
 	if err != nil {
 		return nil, err
 	}
+	s, c, err := openDirectHubSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
 	cmdLine := strings.TrimSpace(stringFlag(inv, "command"))
 	if cmdLine == "" {
-		cmdLine = "leapmux daemon worker register --hub " + hub + " --registration-key " + key
+		cmdLine = "leapmux daemon worker register --hub " + c.HubURL + " --registration-key " + key
 	}
-	c, err := control.NewClientForHub(hub)
-	if err != nil {
-		return nil, err
-	}
-	attachErrOut(c, inv)
-	ctx, cancel := rpcDeadline(inv.Context)
-	defer cancel()
-	if _, err := c.WorkerManagementService().EmailRegistrationInstructions(ctx, &leapmuxv1.EmailRegistrationInstructionsRequest{
+	if _, err := c.WorkerManagementService().EmailRegistrationInstructions(s.ctx, &leapmuxv1.EmailRegistrationInstructionsRequest{
 		RegistrationKey: key,
 		Command:         cmdLine,
 	}); err != nil {
@@ -527,77 +537,80 @@ func (l pinList) QuietLines() []string {
 	return out
 }
 
-func runWorkerPinsList(inv *cli.Invocation) (any, error) {
+// withPinStore opens the invocation's pin store and runs fn under a context
+// limited by pinOpTimeout.
+func withPinStore(inv *cli.Invocation, fn func(context.Context, *control.PinStore) (any, error)) (any, error) {
 	pins, err := openPinStore(inv.Command)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(inv.Context, pinOpTimeout)
 	defer cancel()
-	entries, err := pins.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rows := make([]pinRow, 0, len(entries))
-	for _, p := range entries {
-		rows = append(rows, pinRowOf(p))
-	}
-	return pinList{Pins: rows}, nil
+	return fn(ctx, pins)
 }
 
-// findPin returns the one pin whose worker id is input or starts with it.
+func runWorkerPinsList(inv *cli.Invocation) (any, error) {
+	return withPinStore(inv, func(ctx context.Context, pins *control.PinStore) (any, error) {
+		entries, err := pins.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]pinRow, 0, len(entries))
+		for _, p := range entries {
+			rows = append(rows, pinRowOf(p))
+		}
+		return pinList{Pins: rows}, nil
+	})
+}
+
 // pinnedWorkerArgHelp describes the <worker> argument of the pin commands.
 // A pin belongs to the local credential store, not to the hub, so these
 // commands match only the ids that the store holds.
 const pinnedWorkerArgHelp = `A worker id, or a unique prefix of 4 or more characters of one, as "leapmux worker pins list" prints it.`
 
+// findPin returns the pin matching input by exact worker ID, or by unique
+// prefix when input does not use "id:".
 func findPin(ctx context.Context, pins *control.PinStore, input string) (control.PinListEntry, error) {
 	input = strings.TrimSpace(input)
+	minLen := resolve.MinPrefixLength
 	if rest, ok := strings.CutPrefix(input, "id:"); ok {
 		input = strings.TrimSpace(rest)
 		if input == "" {
 			return control.PinListEntry{}, cli.Usagef(`"id:" needs a worker id after the colon`)
 		}
+		minLen = math.MaxInt
 	}
 	entries, err := pins.List(ctx)
 	if err != nil {
 		return control.PinListEntry{}, err
 	}
-	var matches []cli.Candidate
-	var found control.PinListEntry
-	for _, p := range entries {
-		if p.WorkerID == input {
-			return p, nil
-		}
-		if len(input) >= resolve.MinPrefixLength && strings.HasPrefix(p.WorkerID, input) {
-			matches = append(matches, cli.Candidate{ID: p.WorkerID, Kind: "worker"})
-			found = p
-		}
-	}
-	switch len(matches) {
-	case 1:
+	found, ambiguous, ok := lookupByIDPrefixMin(entries, input, minLen, func(p control.PinListEntry) string {
+		return p.WorkerID
+	})
+	if ok {
 		return found, nil
-	case 0:
+	}
+	if len(ambiguous) == 0 {
 		return control.PinListEntry{}, cli.Newf(cli.CodeNotFound, "no worker key is pinned for %q", input).
 			WithHint(`list pinned workers with "leapmux worker pins list"`)
 	}
-	e := cli.Newf(cli.CodeAmbiguousTarget, "%d pinned workers match %q", len(matches), input)
-	e.Candidates = matches
+	candidates := make([]cli.Candidate, 0, len(ambiguous))
+	for _, p := range ambiguous {
+		candidates = append(candidates, cli.Candidate{ID: p.WorkerID, Kind: "worker"})
+	}
+	e := cli.Newf(cli.CodeAmbiguousTarget, "%d pinned workers match %q", len(candidates), input)
+	e.Candidates = candidates
 	return control.PinListEntry{}, e
 }
 
 func runWorkerPinsGet(inv *cli.Invocation) (any, error) {
-	pins, err := openPinStore(inv.Command)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(inv.Context, pinOpTimeout)
-	defer cancel()
-	p, err := findPin(ctx, pins, inv.Arg("worker"))
-	if err != nil {
-		return nil, err
-	}
-	return pinRowOf(p), nil
+	return withPinStore(inv, func(ctx context.Context, pins *control.PinStore) (any, error) {
+		p, err := findPin(ctx, pins, inv.Arg("worker"))
+		if err != nil {
+			return nil, err
+		}
+		return pinRowOf(p), nil
+	})
 }
 
 // pinRemoveResult is the result of `worker pins remove`.
@@ -610,18 +623,14 @@ func (r pinRemoveResult) QuietLines() []string { return []string{r.WorkerID} }
 
 // runWorkerPinsRemove drops a pin so the next verified channel can pin its key.
 func runWorkerPinsRemove(inv *cli.Invocation) (any, error) {
-	pins, err := openPinStore(inv.Command)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(inv.Context, pinOpTimeout)
-	defer cancel()
-	p, err := findPin(ctx, pins, inv.Arg("worker"))
-	if err != nil {
-		return nil, err
-	}
-	if err := pins.Remove(ctx, p.WorkerID); err != nil {
-		return nil, err
-	}
-	return pinRemoveResult{WorkerID: p.WorkerID, Removed: true}, nil
+	return withPinStore(inv, func(ctx context.Context, pins *control.PinStore) (any, error) {
+		p, err := findPin(ctx, pins, inv.Arg("worker"))
+		if err != nil {
+			return nil, err
+		}
+		if err := pins.Remove(ctx, p.WorkerID); err != nil {
+			return nil, err
+		}
+		return pinRemoveResult{WorkerID: p.WorkerID, Removed: true}, nil
+	})
 }

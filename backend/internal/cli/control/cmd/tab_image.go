@@ -37,8 +37,9 @@ func newTabOpenImageLeaf() *cobra.Command {
 			cli.SetFlagGroup(fs, "dir", "Git & Directory")
 			addPlacementFlags(fs)
 		},
-		Complete: completeTargets,
-		Run:      runTabOpenImage,
+		FlagComplete: tabPositionFlagCompletions(),
+		Complete:     completeTargets,
+		Run:          runTabOpenImage,
 	})
 }
 

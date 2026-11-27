@@ -1,6 +1,11 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +16,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 // startNotifyWorker serves w as the Worker of the tab that runs the command,
@@ -36,7 +43,7 @@ func requireOneNotify(t *testing.T, w *privateCommandWorker) (*leapmuxv1.NotifyR
 
 // The command goes to the Worker of the tab that runs it, and the router
 // stamps that tab from the control token: the CLI sends no tab, so it cannot
-// name another one.
+// specify another one.
 func TestNotifyOverIPC_SendsTheNotificationToTheTabsWorker(t *testing.T) {
 	w := &privateCommandWorker{}
 	startNotifyWorker(t, w)
@@ -192,7 +199,7 @@ func TestNotify_RefusesAnInvalidCommandLine(t *testing.T) {
 	}
 }
 
-// Outside a tab, nothing names a Worker, so the command asks for --worker.
+// Outside a tab, nothing identifies a Worker, so the command asks for --worker.
 func TestNotify_NeedsAWorkerOutsideATab(t *testing.T) {
 	w := &privateCommandWorker{}
 	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, w)
@@ -213,4 +220,267 @@ func TestNotifyOverIPC_ReportsTheWorkersRefusal(t *testing.T) {
 
 	f := runControl(t, "notify", "A long title").requireFailure(t, cli.CodeInvalidArgument)
 	assert.Contains(t, f.Message, "the limit is 256 bytes")
+}
+
+func TestNotificationClear_ValidatesAllSelectorsBeforeDialing(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		message string
+	}{
+		{"prefix followed by empty id", []string{"notification", "clear", "abcd", ""}, "the notification ID is empty"},
+		{"prefix followed by bare id colon", []string{"notification", "clear", "abcd", "id:"}, `"id:" needs a notification ID after the colon`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &privateCommandWorker{}
+			hub := startNotifyWorker(t, w)
+
+			f := runControl(t, tc.args...).requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, tc.message)
+			assert.Empty(t, w.recorded(), "invalid selectors must fail before contacting the Worker")
+			assert.Empty(t, hub.called(), "invalid selectors must fail before contacting the Hub")
+		})
+	}
+}
+
+func TestNotificationClear_DeduplicatesResolvedIDsInOrder(t *testing.T) {
+	w := &privateCommandWorker{answers: map[string]proto.Message{
+		leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure: &leapmuxv1.ListNotificationsResponse{
+			Notifications: []*leapmuxv1.UserNotification{
+				{Id: "aaaa1111", Title: "One"},
+				{Id: "bbbb2222", Title: "Two"},
+			},
+		},
+		leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure: &leapmuxv1.ClearNotificationResponse{Cleared: true},
+	}}
+	startNotifyWorker(t, w)
+
+	data := runControl(t, "notification", "clear", "aaaa", "aaaa1111", "bbbb", "id:aaaa1111").Data(t)
+	assert.Equal(t, map[string]any{
+		"worker_id": "worker-A",
+		"cleared":   []any{"aaaa1111", "bbbb2222"},
+	}, data)
+
+	var clearedIDs []string
+	for _, call := range w.recorded() {
+		if call.method == leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure {
+			clearedIDs = append(clearedIDs, call.request.(*leapmuxv1.ClearNotificationRequest).GetId())
+		}
+	}
+	assert.ElementsMatch(t, []string{"aaaa1111", "bbbb2222"}, clearedIDs)
+	assert.Len(t, clearedIDs, 2, "duplicate selectors must dispatch ClearNotification only once per ID")
+}
+
+type clearBatchDispatcher struct {
+	onClear func(ctx context.Context, id string) (*leapmuxv1.ClearNotificationResponse, *privateCommandRefusal)
+}
+
+func (d *clearBatchDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	if req.GetMethod() != leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure {
+		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+		return
+	}
+	var in leapmuxv1.ClearNotificationRequest
+	if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+		_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+		return
+	}
+	resp, refusal := d.onClear(ctx, in.GetId())
+	if refusal != nil {
+		_ = rw.SendError(int32(refusal.code), refusal.message)
+		return
+	}
+	writeProtoResponse(rw, resp)
+}
+
+func TestNotificationClear_ReportsPartialClearsOnMidBatchFailure(t *testing.T) {
+	// Submit detailFanoutLimit+1 IDs so errgroup's limit guarantees at least
+	// one successful ClearNotification completes before the failing ID starts.
+	failID := fmt.Sprintf("notif-fail-%02d", detailFanoutLimit+1)
+	args := []string{"notification", "clear"}
+	for i := 1; i <= detailFanoutLimit; i++ {
+		args = append(args, fmt.Sprintf("id:notif-ok-%02d", i))
+	}
+	args = append(args, "id:"+failID)
+
+	disp := &clearBatchDispatcher{
+		onClear: func(_ context.Context, noticeID string) (*leapmuxv1.ClearNotificationResponse, *privateCommandRefusal) {
+			if noticeID == failID {
+				return nil, &privateCommandRefusal{code: codes.Internal, message: "worker storage error"}
+			}
+			return &leapmuxv1.ClearNotificationResponse{Cleared: true}, nil
+		},
+	}
+	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
+
+	f := runControl(t, args...).requireFailure(t, cli.CodeInternal)
+	assert.Contains(t, f.Message, "worker storage error")
+
+	var partialHint string
+	for _, h := range f.Hints {
+		if strings.HasPrefix(h, "already cleared: ") {
+			partialHint = h
+			break
+		}
+	}
+	require.NotEmpty(t, partialHint, "hints must report notifications already cleared before failure: %v", f.Hints)
+	assert.Contains(t, partialHint, "notif-ok-")
+	assert.NotContains(t, partialHint, failID)
+}
+
+func TestNotificationClear_DispatchesConcurrentlyAndPreservesOrder(t *testing.T) {
+	var inFlight atomic.Int32
+	concurrentObserved := make(chan struct{})
+	var once sync.Once
+
+	disp := &clearBatchDispatcher{
+		onClear: func(ctx context.Context, _ string) (*leapmuxv1.ClearNotificationResponse, *privateCommandRefusal) {
+			if inFlight.Add(1) >= 2 {
+				once.Do(func() { close(concurrentObserved) })
+			}
+			select {
+			case <-concurrentObserved:
+			case <-ctx.Done():
+				return nil, &privateCommandRefusal{code: codes.Canceled, message: ctx.Err().Error()}
+			}
+			return &leapmuxv1.ClearNotificationResponse{Cleared: true}, nil
+		},
+	}
+	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
+
+	data := runControl(t, "notification", "clear", "id:n-01", "id:n-02", "id:n-03", "id:n-04").Data(t)
+	assert.Equal(t, map[string]any{
+		"worker_id": "worker-A",
+		"cleared":   []any{"n-01", "n-02", "n-03", "n-04"},
+	}, data)
+}
+
+func TestNotificationSelector_GeneratedIDAlphabetAndSortedAmbiguity(t *testing.T) {
+	validFull := fullTestID("notif-1")
+	val, literal, err := parseNotificationSelector(validFull)
+	require.NoError(t, err)
+	assert.Equal(t, validFull, val)
+	assert.True(t, literal)
+
+	invalidAlphabet := strings.Repeat("a", id.GeneratedLength-1) + "!"
+	val, literal, err = parseNotificationSelector(invalidAlphabet)
+	require.NoError(t, err)
+	assert.Equal(t, invalidAlphabet, val)
+	assert.False(t, literal, "a 48-byte string with non-ID characters must not skip prefix/list resolution")
+
+	items := []*leapmuxv1.UserNotification{
+		{Id: "abcd-z", Title: "Z"},
+		{Id: "abcd-a", Title: "A"},
+		{Id: "abcd-m", Title: "M"},
+	}
+	_, err = resolveNotificationID(items, "abcd")
+	require.Error(t, err)
+	cliErr := cli.FromError(err)
+	require.Equal(t, cli.CodeAmbiguousTarget, cliErr.Code)
+	require.Len(t, cliErr.Candidates, 3)
+	assert.Equal(t, []cli.Candidate{
+		{ID: "abcd-a", Kind: "notification", Title: "A"},
+		{ID: "abcd-m", Kind: "notification", Title: "M"},
+		{ID: "abcd-z", Kind: "notification", Title: "Z"},
+	}, cliErr.Candidates)
+}
+
+func TestResolveNotificationID_NotFoundAndShortPrefix(t *testing.T) {
+	items := []*leapmuxv1.UserNotification{
+		{Id: "abcd-1", Title: "One"},
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "missing ID", raw: "zzzz-9"},
+		{name: "three-character non-exact prefix", raw: "abc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := resolveNotificationID(items, tc.raw)
+			require.Error(t, err)
+			cliErr := cli.FromError(err)
+			assert.Equal(t, cli.CodeNotFound, cliErr.Code)
+			assert.Contains(t, cliErr.Message, fmt.Sprintf("no notification matches %q", tc.raw))
+			assert.Contains(t, cliErr.Hints, `list recent notifications with "leapmux notification list"`)
+		})
+	}
+}
+
+func TestNotificationClear_EdgeCases(t *testing.T) {
+	t.Run("single literal id returning Cleared false skips ListNotifications", func(t *testing.T) {
+		w := &privateCommandWorker{answers: map[string]proto.Message{
+			leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure: &leapmuxv1.ClearNotificationResponse{Cleared: false},
+		}}
+		startNotifyWorker(t, w)
+
+		data := runControl(t, "notification", "clear", "id:missing-1").Data(t)
+		assert.Equal(t, map[string]any{
+			"id":        "missing-1",
+			"worker_id": "worker-A",
+			"cleared":   false,
+		}, data)
+
+		calls := w.recorded()
+		require.Len(t, calls, 1)
+		assert.Equal(t, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, calls[0].method)
+		assert.True(t, proto.Equal(&leapmuxv1.ClearNotificationRequest{Id: "missing-1"}, calls[0].request))
+	})
+
+	t.Run("batch with mixed Cleared true and false reports only cleared IDs", func(t *testing.T) {
+		disp := &clearBatchDispatcher{
+			onClear: func(_ context.Context, noticeID string) (*leapmuxv1.ClearNotificationResponse, *privateCommandRefusal) {
+				return &leapmuxv1.ClearNotificationResponse{Cleared: noticeID != "n-02"}, nil
+			},
+		}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+		t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
+
+		data := runControl(t, "notification", "clear", "id:n-01", "id:n-02", "id:n-03").Data(t)
+		assert.Equal(t, map[string]any{
+			"worker_id": "worker-A",
+			"cleared":   []any{"n-01", "n-03"},
+		}, data)
+	})
+
+	t.Run("failing batch with zero cleared notifications omits already cleared hint", func(t *testing.T) {
+		disp := &clearBatchDispatcher{
+			onClear: func(_ context.Context, noticeID string) (*leapmuxv1.ClearNotificationResponse, *privateCommandRefusal) {
+				if noticeID == "n-01" {
+					return &leapmuxv1.ClearNotificationResponse{Cleared: false}, nil
+				}
+				return nil, &privateCommandRefusal{code: codes.Internal, message: "worker storage error"}
+			},
+		}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+		t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
+
+		f := runControl(t, "notification", "clear", "id:n-01", "id:n-02").requireFailure(t, cli.CodeInternal)
+		assert.Contains(t, f.Message, "worker storage error")
+		for _, hint := range f.Hints {
+			assert.False(t, strings.HasPrefix(hint, "already cleared:"), "unexpected partial-clear hint: %v", f.Hints)
+		}
+	})
+
+	t.Run("clear all with empty ListNotifications returns empty cleared array without ClearNotification calls", func(t *testing.T) {
+		w := &privateCommandWorker{answers: map[string]proto.Message{
+			leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure: &leapmuxv1.ListNotificationsResponse{},
+		}}
+		startNotifyWorker(t, w)
+
+		out := runControl(t, "notification", "clear", "--all")
+		assert.Contains(t, out.Stdout, `"cleared":[]`)
+		assert.Equal(t, map[string]any{
+			"worker_id": "worker-A",
+			"cleared":   []any{},
+		}, out.Data(t))
+
+		calls := w.recorded()
+		require.Len(t, calls, 1)
+		assert.Equal(t, leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, calls[0].method)
+	})
 }

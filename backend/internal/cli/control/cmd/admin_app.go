@@ -73,23 +73,19 @@ func (r adminAppListResult) QuietLines() []string {
 }
 
 func resolveAdminAppID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
-	return resolveAdminIDPrefix(ctx, raw, "app", func(ctx context.Context) ([]cli.Candidate, error) {
-		apps, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.App, *leapmuxv1.PageResponse, error) {
+	return resolvePagedAdminID(ctx, "app", raw, true,
+		func(ctx context.Context, page *leapmuxv1.PageRequest) ([]*leapmuxv1.App, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AppService().ListApps(ctx, &leapmuxv1.ListAppsRequest{
 				IncludeRevoked: true,
 				Page:           page,
 			})
 			return resp.GetApps(), resp.GetPage(), err
-		}, (*leapmuxv1.App).GetClientId)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]cli.Candidate, 0, len(apps))
-		for _, app := range apps {
-			out = append(out, cli.Candidate{ID: app.GetClientId(), Kind: "app", Title: app.GetClientName()})
-		}
-		return out, nil
-	})
+		},
+		(*leapmuxv1.App).GetClientId,
+		func(app *leapmuxv1.App) cli.Candidate {
+			return cli.Candidate{ID: app.GetClientId(), Kind: "app", Title: app.GetClientName()}
+		},
+	)
 }
 
 // AppRegistrationRow contains the fields an admin can read repeatedly.
@@ -124,9 +120,9 @@ func appRegistrationRowOf(app *leapmuxv1.App) AppRegistrationRow {
 		ClientURI:           app.GetClientUri(),
 		Visibility:          enumToken(app.GetVisibility()),
 		ClientType:          enumToken(app.GetClientType()),
-		RedirectURIs:        app.GetRedirectUris(),
+		RedirectURIs:        nonNilStrings(app.GetRedirectUris()),
 		Scopes:              scopeTokensOf(app.GetScopes()),
-		GrantTypes:          app.GetGrantTypes(),
+		GrantTypes:          nonNilStrings(app.GetGrantTypes()),
 		ElevationAllowed:    app.GetElevationAllowed(),
 		RegistrationSource:  app.GetRegistrationSource(),
 		Verified:            app.GetVerified(),
@@ -145,7 +141,7 @@ func scopeTokensOf(wire []leapmuxv1.Scope) []string {
 	if !ok {
 		return []string{}
 	}
-	return set.SortedTokens()
+	return nonNilStrings(set.SortedTokens())
 }
 
 type adminAppRegisterResult struct {
@@ -247,6 +243,9 @@ func newAdminAppUpdate() *cobra.Command {
 			if err != nil {
 				return nil, err
 			}
+			if !anyLocalFlagChanged(inv) {
+				return nil, cli.Usagef("nothing to update (pass at least one flag)")
+			}
 			var parsedScopes []leapmuxv1.Scope
 			if inv.Changed("scope") {
 				parsedScopes, err = parseAppScopes(scope)
@@ -290,7 +289,11 @@ func newAdminAppUpdate() *cobra.Command {
 	})
 }
 
-func newAdminAppSetElevation(allowed bool, use, short string, examples []cli.Example) *cobra.Command {
+func newAdminAppToggleLeaf(
+	use, short string,
+	examples []cli.Example,
+	apply func(ctx context.Context, c *control.HubClient, clientID string) (*leapmuxv1.App, error),
+) *cobra.Command {
 	return cli.NewLeaf(cli.Leaf{
 		Use:      use,
 		Short:    short,
@@ -310,43 +313,34 @@ func newAdminAppSetElevation(allowed bool, use, short string, examples []cli.Exa
 			if err != nil {
 				return nil, err
 			}
-			resp, err := c.AppService().SetAppElevationAllowed(inv.Context,
-				&leapmuxv1.SetAppElevationAllowedRequest{ClientId: resolved, Allowed: allowed})
+			app, err := apply(inv.Context, c, resolved)
 			if err != nil {
 				return nil, err
 			}
-			return appRegistrationRowOf(resp.GetApp()), nil
+			return appRegistrationRowOf(app), nil
 		},
 	})
 }
 
+func newAdminAppSetElevation(allowed bool, use, short string, examples []cli.Example) *cobra.Command {
+	return newAdminAppToggleLeaf(use, short, examples, func(ctx context.Context, c *control.HubClient, clientID string) (*leapmuxv1.App, error) {
+		resp, err := c.AppService().SetAppElevationAllowed(ctx,
+			&leapmuxv1.SetAppElevationAllowedRequest{ClientId: clientID, Allowed: allowed})
+		if err != nil {
+			return nil, err
+		}
+		return resp.GetApp(), nil
+	})
+}
+
 func newAdminAppSetVerified(verified bool, use, short string, examples []cli.Example) *cobra.Command {
-	return cli.NewLeaf(cli.Leaf{
-		Use:      use,
-		Short:    short,
-		Examples: examples,
-		Mutates:  true,
-		Complete: completeAdminApps,
-		Run: func(inv *cli.Invocation) (any, error) {
-			clientID, err := requireNonEmptyArg(inv, "app")
-			if err != nil {
-				return nil, err
-			}
-			c, err := requireAdminClient(inv)
-			if err != nil {
-				return nil, err
-			}
-			resolved, err := resolveAdminAppID(inv.Context, c, clientID)
-			if err != nil {
-				return nil, err
-			}
-			resp, err := c.AppService().VerifyApp(inv.Context,
-				&leapmuxv1.VerifyAppRequest{ClientId: resolved, Verified: verified})
-			if err != nil {
-				return nil, err
-			}
-			return appRegistrationRowOf(resp.GetApp()), nil
-		},
+	return newAdminAppToggleLeaf(use, short, examples, func(ctx context.Context, c *control.HubClient, clientID string) (*leapmuxv1.App, error) {
+		resp, err := c.AppService().VerifyApp(ctx,
+			&leapmuxv1.VerifyAppRequest{ClientId: clientID, Verified: verified})
+		if err != nil {
+			return nil, err
+		}
+		return resp.GetApp(), nil
 	})
 }
 

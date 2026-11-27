@@ -174,6 +174,43 @@ func TestAdminVerbs_RefuseAMissingArgumentBeforeTheDial(t *testing.T) {
 	}
 }
 
+func TestAdminVerbs_RefuseAnEmptyArgumentBeforeTheDial(t *testing.T) {
+	isolateCLIEnv(t)
+	t.Setenv("LEAPMUX_CONTROL_SOCK", workerIPCSock)
+	leaves := adminLeaves(t)
+
+	for _, c := range adminCases() {
+		leaf := leaves[c.name()]
+		var required []cli.ArgSpec
+		for _, spec := range cli.ArgsOf(leaf) {
+			if spec.Required {
+				required = append(required, spec)
+			}
+		}
+		if len(required) == 0 {
+			continue
+		}
+		for pos, spec := range required {
+			blanks := []string{"", "   "}
+			if spec.Name == "value" {
+				// Whitespace-only <value> is stored as a JSON string; only "" is rejected.
+				blanks = []string{""}
+			}
+			for _, blank := range blanks {
+				t.Run(fmt.Sprintf("%s/arg%d/%q", c.name(), pos, blank), func(t *testing.T) {
+					callArgs := append([]string{"admin"}, c.path...)
+					posArgs := append([]string{}, c.args...)
+					posArgs[pos] = blank
+					callArgs = append(callArgs, posArgs...)
+					f := runControl(t, append(callArgs, "--hub", unreachableHub)...).requireFailure(t, cli.CodeUsage)
+					assert.NotContains(t, f.Message, "admin commands do not run inside a LeapMux tab",
+						"empty positional argument %d (%s) must be rejected before requireAdminClient", pos, spec.Name)
+				})
+			}
+		}
+	}
+}
+
 func TestAdminCaptchaSet_HubAloneIsAnEmptyInvocation(t *testing.T) {
 	isolateCLIEnv(t)
 	f := runControl(t, "admin", "captcha", "set", "--hub", unreachableHub).requireFailure(t, cli.CodeUsage)

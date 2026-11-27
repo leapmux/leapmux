@@ -63,7 +63,7 @@ type fileSearchMatch struct {
 type fileSearchResult struct {
 	Path      string            `json:"path"`
 	Hits      []fileSearchMatch `json:"matches"`
-	Truncated bool              `json:"truncated,omitempty"`
+	Truncated bool              `json:"truncated"`
 }
 
 func (r fileSearchResult) RenderText(w io.Writer) error {
@@ -93,17 +93,8 @@ func runFileSearch(inv *cli.Invocation) (any, error) {
 	if pattern == "" {
 		return nil, cli.Usagef("pattern is empty")
 	}
-	path := inv.Arg("path")
-	if path == "" {
-		path = workingDirEnv()
-		if path == "" {
-			if cwd, ok := localCwdFallback(inv); ok {
-				path = cwd
-			}
-		}
-		if path == "" {
-			return nil, cli.Usagef("missing [path]: pass a directory path, or run inside a LeapMux tab")
-		}
+	if err := checkOptionalPathArg(inv); err != nil {
+		return nil, err
 	}
 	limit, err := inv.Command.Flags().GetInt("limit")
 	if err != nil {
@@ -112,8 +103,17 @@ func runFileSearch(inv *cli.Invocation) (any, error) {
 	if limit <= 0 || limit > 1000 {
 		return nil, cli.Usagef("--limit must be between 1 and 1000")
 	}
+	s, workerID, err := openWorkerSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	path, err := s.resolveFileDirArg(inv, workerID)
+	if err != nil {
+		return nil, err
+	}
 	var resp leapmuxv1.SearchFilesResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceSearchFilesProcedure, &leapmuxv1.SearchFilesRequest{
+	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerFileServiceSearchFilesProcedure, &leapmuxv1.SearchFilesRequest{
 		Path:       path,
 		Pattern:    pattern,
 		Glob:       stringFlag(inv, "glob"),
@@ -141,7 +141,7 @@ func runFileSearch(inv *cli.Invocation) (any, error) {
 type fileGlobResult struct {
 	Path      string   `json:"path"`
 	Paths     []string `json:"paths"`
-	Truncated bool     `json:"truncated,omitempty"`
+	Truncated bool     `json:"truncated"`
 }
 
 func (r fileGlobResult) RenderText(w io.Writer) error {
@@ -167,17 +167,8 @@ func runFileGlob(inv *cli.Invocation) (any, error) {
 	if pattern == "" {
 		return nil, cli.Usagef("pattern is empty")
 	}
-	path := inv.Arg("path")
-	if path == "" {
-		path = workingDirEnv()
-		if path == "" {
-			if cwd, ok := localCwdFallback(inv); ok {
-				path = cwd
-			}
-		}
-		if path == "" {
-			return nil, cli.Usagef("missing [path]: pass a directory path, or run inside a LeapMux tab")
-		}
+	if err := checkOptionalPathArg(inv); err != nil {
+		return nil, err
 	}
 	limit, err := inv.Command.Flags().GetInt("limit")
 	if err != nil {
@@ -186,8 +177,17 @@ func runFileGlob(inv *cli.Invocation) (any, error) {
 	if limit <= 0 || limit > 2000 {
 		return nil, cli.Usagef("--limit must be between 1 and 2000")
 	}
+	s, workerID, err := openWorkerSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	path, err := s.resolveFileDirArg(inv, workerID)
+	if err != nil {
+		return nil, err
+	}
 	var resp leapmuxv1.GlobFilesResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerFileServiceGlobFilesProcedure, &leapmuxv1.GlobFilesRequest{
+	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerFileServiceGlobFilesProcedure, &leapmuxv1.GlobFilesRequest{
 		Path:    path,
 		Pattern: pattern,
 		Limit:   clampInt32(limit),

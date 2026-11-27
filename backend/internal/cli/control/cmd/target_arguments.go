@@ -50,8 +50,6 @@ func configureControlTree(cmd *cobra.Command) {
 	}
 }
 
-const allowBlankScopeFlagsAnnotation = "leapmux_allow_blank_scope_flags"
-
 // An omitted selector can have a contextual default. A supplied blank value
 // must fail before any request, even if another selector comes first.
 func rejectBlankTargets(cmd *cobra.Command, specs []cli.ArgSpec, args []string) error {
@@ -62,9 +60,6 @@ func rejectBlankTargets(cmd *cobra.Command, specs []cli.ArgSpec, args []string) 
 		if _, isTarget := targetArguments[spec.Name]; (isTarget || spec.Name == "input") && strings.TrimSpace(value) == "" {
 			return cli.Usagef("the %s is empty", spec.Name)
 		}
-	}
-	if cmd.Annotations[allowBlankScopeFlagsAnnotation] == "true" {
-		return nil
 	}
 	for _, name := range scopeTargetFlags {
 		if blankTargetFlag(cmd, name) {

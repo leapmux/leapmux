@@ -111,8 +111,8 @@ func TestEditDistance(t *testing.T) {
 		{"kitten", "sitting", 3},
 		{"漢字", "漢", 1},
 	} {
-		assert.Equal(t, tc.want, editDistance(tc.a, tc.b), "%q %q", tc.a, tc.b)
-		assert.Equal(t, tc.want, editDistance(tc.b, tc.a), "the distance is symmetric")
+		assert.Equal(t, tc.want, cli.LevenshteinDistance(tc.a, tc.b), "%q %q", tc.a, tc.b)
+		assert.Equal(t, tc.want, cli.LevenshteinDistance(tc.b, tc.a), "the distance is symmetric")
 	}
 }
 

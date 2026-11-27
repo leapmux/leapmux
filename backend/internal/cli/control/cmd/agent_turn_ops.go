@@ -28,6 +28,9 @@ func newAgentRetryTurnCommand() *cobra.Command {
 			fs.String("model", "", "model id from the retry offer (default: auto-read from live session info)")
 			addTargetWorkspaceFlag(fs)
 		},
+		FlagComplete: map[string]cobra.CompletionFunc{
+			"model": completeAgentOptionFlag("model"),
+		},
 		Complete: completeTargets,
 		Run:      runAgentRetryTurn,
 	})

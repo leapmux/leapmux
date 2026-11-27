@@ -475,46 +475,62 @@ func TestRunWorkerInfoReportsAnOfflineWorkerOverTheHub(t *testing.T) {
 
 type localSoloWorkerHub struct {
 	leapmuxv1connect.UnimplementedWorkerManagementServiceHandler
+
+	mu        sync.Mutex
+	emailReqs []*leapmuxv1.EmailRegistrationInstructionsRequest
 }
 
-func (localSoloWorkerHub) CreateRegistrationKey(context.Context, *leapmuxv1.CreateRegistrationKeyRequest) (*leapmuxv1.CreateRegistrationKeyResponse, error) {
+func (*localSoloWorkerHub) CreateRegistrationKey(context.Context, *leapmuxv1.CreateRegistrationKeyRequest) (*leapmuxv1.CreateRegistrationKeyResponse, error) {
 	return &leapmuxv1.CreateRegistrationKeyResponse{
 		RegistrationKey: "lmx_reg_solo",
 		ExpiresAt:       timestamppb.New(time.Now().Add(5 * time.Minute)),
 	}, nil
 }
 
-func (localSoloWorkerHub) ExtendRegistrationKey(context.Context, *leapmuxv1.ExtendRegistrationKeyRequest) (*leapmuxv1.ExtendRegistrationKeyResponse, error) {
+func (*localSoloWorkerHub) ExtendRegistrationKey(context.Context, *leapmuxv1.ExtendRegistrationKeyRequest) (*leapmuxv1.ExtendRegistrationKeyResponse, error) {
 	return &leapmuxv1.ExtendRegistrationKeyResponse{
 		ExpiresAt: timestamppb.New(time.Now().Add(10 * time.Minute)),
 	}, nil
 }
 
-func (localSoloWorkerHub) RevokeRegistrationKey(context.Context, *leapmuxv1.RevokeRegistrationKeyRequest) (*leapmuxv1.RevokeRegistrationKeyResponse, error) {
+func (*localSoloWorkerHub) RevokeRegistrationKey(context.Context, *leapmuxv1.RevokeRegistrationKeyRequest) (*leapmuxv1.RevokeRegistrationKeyResponse, error) {
 	return &leapmuxv1.RevokeRegistrationKeyResponse{}, nil
 }
 
-func (localSoloWorkerHub) EmailRegistrationInstructions(context.Context, *leapmuxv1.EmailRegistrationInstructionsRequest) (*leapmuxv1.EmailRegistrationInstructionsResponse, error) {
+func (h *localSoloWorkerHub) EmailRegistrationInstructions(_ context.Context, req *leapmuxv1.EmailRegistrationInstructionsRequest) (*leapmuxv1.EmailRegistrationInstructionsResponse, error) {
+	h.mu.Lock()
+	h.emailReqs = append(h.emailReqs, &leapmuxv1.EmailRegistrationInstructionsRequest{
+		RegistrationKey: req.GetRegistrationKey(),
+		Command:         req.GetCommand(),
+	})
+	h.mu.Unlock()
 	return &leapmuxv1.EmailRegistrationInstructionsResponse{}, nil
 }
 
-func (localSoloWorkerHub) ListWorkers(context.Context, *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
+func (h *localSoloWorkerHub) emailRequests() []*leapmuxv1.EmailRegistrationInstructionsRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]*leapmuxv1.EmailRegistrationInstructionsRequest(nil), h.emailReqs...)
+}
+
+func (*localSoloWorkerHub) ListWorkers(context.Context, *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
 	return &leapmuxv1.ListWorkersResponse{
 		Workers: []*leapmuxv1.Worker{{Id: fullTestID("worker-solo"), Online: true}},
 	}, nil
 }
 
-func (localSoloWorkerHub) DeregisterWorker(context.Context, *leapmuxv1.DeregisterWorkerRequest) (*leapmuxv1.DeregisterWorkerResponse, error) {
+func (*localSoloWorkerHub) DeregisterWorker(context.Context, *leapmuxv1.DeregisterWorkerRequest) (*leapmuxv1.DeregisterWorkerResponse, error) {
 	return &leapmuxv1.DeregisterWorkerResponse{}, nil
 }
 
-// RIPPLE-4: direct-hub worker management commands work over a local solo Hub
-// IPC socket without stored credentials.
+// Direct-hub worker management commands work over a local solo Hub IPC socket
+// without stored credentials.
 func TestRunWorkerDirectCommands_LocalIPCHubWorksWithoutStoredCredentials(t *testing.T) {
 	isolateCLIEnv(t)
 
+	hub := &localSoloWorkerHub{}
 	connectServer := connect.NewServer()
-	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, localSoloWorkerHub{})
+	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, hub)
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	sockURL := hubtransporttest.NewSocketServer(t, "solo-worker", mux)
@@ -527,10 +543,200 @@ func TestRunWorkerDirectCommands_LocalIPCHubWorksWithoutStoredCredentials(t *tes
 
 	emailed := runControl(t, "worker", "key", "email", "--hub", sockURL, "lmx_reg_solo").Data(t)
 	assert.Equal(t, true, emailed["sent"])
+	emailReqs := hub.emailRequests()
+	require.Len(t, emailReqs, 1)
+	assert.Equal(t, "lmx_reg_solo", emailReqs[0].GetRegistrationKey())
+	assert.Equal(t, "leapmux daemon worker register --hub "+sockURL+" --registration-key lmx_reg_solo", emailReqs[0].GetCommand())
 
 	revoked := runControl(t, "worker", "key", "revoke", "--hub", sockURL, "lmx_reg_solo").Data(t)
 	assert.Equal(t, true, revoked["revoked"])
 
 	deregistered := runControl(t, "worker", "deregister", "--hub", sockURL, fullTestID("worker-solo")).Data(t)
 	assert.Equal(t, true, deregistered["deregistered"])
+}
+
+type recordingDirectWorkerHub struct {
+	leapmuxv1connect.UnimplementedWorkerManagementServiceHandler
+
+	workers []*leapmuxv1.Worker
+
+	mu             sync.Mutex
+	deregisteredID string
+	listCalls      int
+}
+
+func (h *recordingDirectWorkerHub) ListWorkers(context.Context, *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
+	h.mu.Lock()
+	h.listCalls++
+	h.mu.Unlock()
+	return &leapmuxv1.ListWorkersResponse{Workers: h.workers}, nil
+}
+
+func (h *recordingDirectWorkerHub) DeregisterWorker(_ context.Context, req *leapmuxv1.DeregisterWorkerRequest) (*leapmuxv1.DeregisterWorkerResponse, error) {
+	h.mu.Lock()
+	h.deregisteredID = req.GetWorkerId()
+	h.mu.Unlock()
+	return &leapmuxv1.DeregisterWorkerResponse{}, nil
+}
+
+// worker deregister resolves prefixes and executes DeregisterWorker against the
+// same direct Hub even when LEAPMUX_CONTROL_SOCK points to a different Hub.
+func TestRunWorkerDeregister_ResolvesAndDeregistersAgainstSameHub(t *testing.T) {
+	ipcHub := &recordingHub{workers: workerRows("worker-shared-ipc")}
+	startSpawnIPC(t, ipcHub, nil)
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+
+	directHub := &recordingDirectWorkerHub{
+		workers: []*leapmuxv1.Worker{{Id: "worker-shared-direct", Online: false}},
+	}
+	cs := connect.NewServer()
+	leapmuxv1connect.RegisterWorkerManagementServiceHandler(cs, directHub)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, cs, connecthttp.WithReadMaxBytes(0))
+	srv := hubtransporttest.NewServer(t, mux)
+	t.Cleanup(srv.Close)
+
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL:      srv.URL,
+		AccessToken: "lmx_a_at_direct",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}))
+	t.Setenv("LEAPMUX_HUB", srv.URL)
+
+	data := runControl(t, "worker", "deregister", "worker-shared").Data(t)
+	assert.Equal(t, map[string]any{"id": "worker-shared-direct", "deregistered": true}, data)
+	assert.Equal(t, "worker-shared-direct", directHub.deregisteredID)
+	assert.Equal(t, 1, directHub.listCalls)
+	assert.Empty(t, ipcHub.called(), "worker deregister must not resolve through the tab's local IPC socket")
+}
+
+// worker get reuses the Hub worker row and Worker display name fetched during
+// prefix or name resolution instead of making redundant RPCs.
+func TestRunWorkerGet_ReusesResolvedWorkerAndName(t *testing.T) {
+	t.Run("by name skips GetWorker and second GetWorkerSystemInfo", func(t *testing.T) {
+		disp := &systemInfoDispatcher{info: sampleWorkerSystemInfo()}
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{{
+			Id:           "worker-named-1",
+			Online:       true,
+			RegisteredBy: "u-1",
+		}}}
+		h := startHubChannelHarness(t, hub, disp)
+
+		data := runControl(t, "worker", "get", "--hub", h.url, "name:build-box").Data(t)
+		assert.Equal(t, "worker-named-1", data["id"])
+		assert.Equal(t, "build-box", data["name"])
+		assert.Equal(t, true, data["online"])
+		assert.Equal(t, "u-1", data["registered_by"])
+		assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceListWorkersProcedure}, hub.called(),
+			"name resolution already loaded the worker row; GetWorker must not run")
+		assert.Equal(t, []string{leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure}, disp.called(),
+			"name resolution already queried GetWorkerSystemInfo once")
+		assert.Equal(t, 1, h.channelOpens(), "must reuse the resolved name without opening a second E2EE channel")
+	})
+
+	t.Run("by prefix skips GetWorker and queries name once when online", func(t *testing.T) {
+		disp := &systemInfoDispatcher{info: sampleWorkerSystemInfo()}
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{{
+			Id:     "worker-prefix-1",
+			Online: true,
+		}}}
+		h := startHubChannelHarness(t, hub, disp)
+
+		data := runControl(t, "worker", "get", "--hub", h.url, "worker-pref").Data(t)
+		assert.Equal(t, "worker-prefix-1", data["id"])
+		assert.Equal(t, "build-box", data["name"])
+		assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceListWorkersProcedure}, hub.called(),
+			"prefix resolution already loaded the worker row; GetWorker must not run")
+		assert.Equal(t, []string{leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure}, disp.called())
+		assert.Equal(t, 1, h.channelOpens())
+	})
+
+	t.Run("by prefix skips GetWorker and GetWorkerSystemInfo when offline", func(t *testing.T) {
+		disp := &systemInfoDispatcher{info: sampleWorkerSystemInfo()}
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{{
+			Id:     "worker-off-1",
+			Online: false,
+		}}}
+		h := startHubChannelHarness(t, hub, disp)
+
+		data := runControl(t, "worker", "get", "--hub", h.url, "worker-off").Data(t)
+		assert.Equal(t, "worker-off-1", data["id"])
+		assert.Equal(t, false, data["online"])
+		assert.NotContains(t, data, "name")
+		assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceListWorkersProcedure}, hub.called())
+		assert.Empty(t, disp.called())
+		assert.Equal(t, 0, h.channelOpens())
+	})
+
+	t.Run("omitted worker resolves via workerScope and fetches worker and name once", func(t *testing.T) {
+		disp := &systemInfoDispatcher{info: sampleWorkerSystemInfo()}
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{{
+			Id:     "worker-scoped-1",
+			Online: true,
+		}}}
+		h := startHubChannelHarness(t, hub, disp)
+		t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-scoped-1")
+
+		data := runControl(t, "worker", "get", "--hub", h.url).Data(t)
+		assert.Equal(t, "worker-scoped-1", data["id"])
+		assert.Equal(t, "build-box", data["name"])
+		assert.Equal(t, true, data["online"])
+		assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called())
+		assert.Equal(t, []string{leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure}, disp.called())
+		assert.Equal(t, 1, h.channelOpens())
+	})
+}
+
+func TestFindPin_IDPrefixRequiresExactMatch(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	const hub = "http://127.0.0.1:4327"
+	pins, err := control.NewPinStore(hub)
+	require.NoError(t, err)
+
+	commit, err := pins.Resolve(t.Context(), "worker-alpha-1234", []byte{1}, []byte{2}, []byte{3})
+	require.NoError(t, err)
+	require.NoError(t, commit(t.Context()))
+
+	got, err := findPin(t.Context(), pins, "worker-alpha")
+	require.NoError(t, err)
+	assert.Equal(t, "worker-alpha-1234", got.WorkerID)
+
+	_, err = findPin(t.Context(), pins, "wor")
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+
+	_, err = findPin(t.Context(), pins, "id:worker-alpha")
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+
+	gotExact, err := findPin(t.Context(), pins, "id:worker-alpha-1234")
+	require.NoError(t, err)
+	assert.Equal(t, "worker-alpha-1234", gotExact.WorkerID)
+
+	_, err = findPin(t.Context(), pins, "id:")
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+
+	commit2, err := pins.Resolve(t.Context(), "worker-alpha-5678", []byte{4}, []byte{5}, []byte{6})
+	require.NoError(t, err)
+	require.NoError(t, commit2(t.Context()))
+
+	_, err = findPin(t.Context(), pins, "worker-alpha")
+	require.Error(t, err)
+	ambiguousErr := cli.FromError(err)
+	assert.Equal(t, cli.CodeAmbiguousTarget, ambiguousErr.Code)
+	assert.Equal(t, []cli.Candidate{
+		{ID: "worker-alpha-1234", Kind: "worker"},
+		{ID: "worker-alpha-5678", Kind: "worker"},
+	}, ambiguousErr.Candidates)
+}
+
+func TestRunWorkerKeyCommands_RejectEmptyKeyBeforeDialing(t *testing.T) {
+	isolateCLIEnv(t)
+	for _, verb := range []string{"extend", "revoke", "email"} {
+		t.Run(verb, func(t *testing.T) {
+			f := runControl(t, "worker", "key", verb, "   ").requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, "<key> is empty")
+		})
+	}
 }

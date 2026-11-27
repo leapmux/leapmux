@@ -170,14 +170,11 @@ func (p *persistentWorkerChannel) open(ctx context.Context) (workerCall, error) 
 	case *control.WorkerIPCClient:
 		opened = workerCall{ipc: c, workerID: p.workerID}
 	case *control.HubClient:
-		if p.workerID == "" {
-			return workerCall{}, &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
-		}
 		openCtx, cancel := rpcDeadline(ctx)
-		ch, err := c.OpenE2EEChannel(openCtx, context.WithoutCancel(openCtx), p.workerID)
+		ch, err := openHubE2EEChannel(openCtx, context.WithoutCancel(openCtx), c, p.workerID)
 		cancel()
 		if err != nil {
-			return workerCall{}, withHubVersion(ctx, c, &codedRPCError{Code: "channel_open_failed", Cause: err})
+			return workerCall{}, err
 		}
 		opened = workerCall{hub: c, workerID: p.workerID, ch: ch}
 	default:

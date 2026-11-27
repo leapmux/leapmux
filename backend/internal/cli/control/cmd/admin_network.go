@@ -54,7 +54,23 @@ func (r adminNetworkStatusResult) RenderText(w io.Writer) error {
 	return r.RenderTextWithOptions(w, cli.TableOptions{})
 }
 
+func joinSanitized(addrs []string) string {
+	clean := make([]string, len(addrs))
+	for i, addr := range addrs {
+		clean[i] = strings.TrimSpace(cli.SanitizeSingleLine(addr))
+	}
+	return strings.Join(clean, ", ")
+}
+
 func (r adminNetworkStatusResult) RenderTextWithOptions(w io.Writer, opts cli.TableOptions) error {
+	wrote := false
+	writeSeparator := func() error {
+		if !wrote {
+			return nil
+		}
+		_, err := fmt.Fprintln(w)
+		return err
+	}
 	if len(r.Bound) > 0 {
 		if _, err := fmt.Fprintln(w, "TCP listeners:"); err != nil {
 			return err
@@ -62,27 +78,34 @@ func (r adminNetworkStatusResult) RenderTextWithOptions(w io.Writer, opts cli.Ta
 		if err := cli.WriteTableWithOptions(w, r.Bound, opts); err != nil {
 			return err
 		}
+		wrote = true
 	}
-	if len(r.LocalIPCAddresses) > 0 {
-		clean := make([]string, len(r.LocalIPCAddresses))
-		for i, addr := range r.LocalIPCAddresses {
-			clean[i] = cli.SanitizeSingleLine(addr)
-		}
-		if _, err := fmt.Fprintf(w, "\nLocal IPC: %s\n", strings.Join(clean, ", ")); err != nil {
+	if len(r.BaseTCPAddresses) > 0 || len(r.LocalIPCAddresses) > 0 || len(r.ConfiguredExtra) > 0 {
+		if err := writeSeparator(); err != nil {
 			return err
 		}
-	}
-	if len(r.ConfiguredExtra) > 0 {
-		clean := make([]string, len(r.ConfiguredExtra))
-		for i, addr := range r.ConfiguredExtra {
-			clean[i] = cli.SanitizeSingleLine(addr)
+		if len(r.BaseTCPAddresses) > 0 {
+			if _, err := fmt.Fprintf(w, "Base TCP addresses: %s\n", joinSanitized(r.BaseTCPAddresses)); err != nil {
+				return err
+			}
 		}
-		if _, err := fmt.Fprintf(w, "Extra listen addresses: %s\n", strings.Join(clean, ", ")); err != nil {
-			return err
+		if len(r.LocalIPCAddresses) > 0 {
+			if _, err := fmt.Fprintf(w, "Local IPC: %s\n", joinSanitized(r.LocalIPCAddresses)); err != nil {
+				return err
+			}
 		}
+		if len(r.ConfiguredExtra) > 0 {
+			if _, err := fmt.Fprintf(w, "Extra listen addresses: %s\n", joinSanitized(r.ConfiguredExtra)); err != nil {
+				return err
+			}
+		}
+		wrote = true
 	}
 	if len(r.Interfaces) > 0 {
-		if _, err := fmt.Fprintln(w, "\nInterfaces:"); err != nil {
+		if err := writeSeparator(); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(w, "Interfaces:"); err != nil {
 			return err
 		}
 		for _, iface := range r.Interfaces {

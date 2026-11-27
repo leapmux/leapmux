@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
@@ -22,8 +24,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
-// An admin call reports the hub's refusal VERBATIM, through
-// control.EmitErrorWith, and adds nothing of its own.
+// An admin call reports the hub's refusal verbatim, through cli.FromError,
+// and adds nothing of its own.
 //
 // The CLI used to append a remedy of its own to any PermissionDenied when
 // the local credential file recorded no admin scope. The file cannot decide
@@ -64,14 +66,141 @@ func requireAdminClient(inv *cli.Invocation) (*control.HubClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Validate the hub URL before loading credentials so a malformed address
+	// fails with cli.CodeUsage instead of looking like a credential error.
+	if _, err := control.HubHost(hub); err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
+	if _, err := hubtransport.New(hub); err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
 	// Anonymous fallback supports a solo hub's local IPC socket. A TCP address
-	// needs a session. The hub enforces the admin gate, so a credential-less
+	// needs a session. The hub enforces the admin check, so a credential-less
 	// call against any other connection answers unauthenticated.
+	// NewClientOrAnonymous already handles ErrNotLoggedIn; any remaining error
+	// is an unreadable or corrupt credential file and must surface as-is.
 	c, err := control.NewClientOrAnonymous(hub)
 	if err != nil {
-		return nil, cli.Wrap(cli.CodeNotLoggedIn, err, "")
+		return nil, err
 	}
+	noticeDiscoveredLocalHub(inv, explicitHub(inv.Command), hub)
 	return attachErrOut(c, inv), nil
+}
+
+// nonNilStrings returns an empty non-nil slice when s is nil so JSON output
+// renders [] instead of null.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// parseBoolFlag parses a tri-state string flag ("true"/"false").
+func parseBoolFlag(raw, name string) (bool, error) {
+	b, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New(name + " must be 'true' or 'false'")
+	}
+	return b, nil
+}
+
+// parseOptionalBoolFlag reads a string-encoded boolean flag when explicitly
+// passed on the command line, rejecting empty or invalid values with
+// cli.CodeUsage.
+func parseOptionalBoolFlag(inv *cli.Invocation, name string) (*bool, error) {
+	if !inv.Changed(name) {
+		return nil, nil
+	}
+	b, err := parseBoolFlag(stringFlag(inv, name), name)
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
+	return &b, nil
+}
+
+type adminRevokeLeafConfig struct {
+	argName  string
+	short    string
+	example  string
+	complete func(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective)
+	resolve  func(ctx context.Context, c *control.HubClient, raw string) (string, error)
+	revoke   func(ctx context.Context, c *control.HubClient, id string) error
+}
+
+func newAdminRevokeLeaf(cfg adminRevokeLeafConfig) *cobra.Command {
+	return cli.NewLeaf(cli.Leaf{
+		Use:         "revoke <" + cfg.argName + ">",
+		Short:       cfg.short,
+		Mutates:     true,
+		Destructive: true,
+		Examples: []cli.Example{
+			{Command: cfg.example},
+		},
+		Complete: cfg.complete,
+		Run: func(inv *cli.Invocation) (any, error) {
+			id, err := requireNonEmptyArg(inv, cfg.argName)
+			if err != nil {
+				return nil, err
+			}
+			c, err := requireAdminClient(inv)
+			if err != nil {
+				return nil, err
+			}
+			resolved, err := cfg.resolve(inv.Context, c, id)
+			if err != nil {
+				return nil, err
+			}
+			if err := cfg.revoke(inv.Context, c, resolved); err != nil {
+				return nil, err
+			}
+			return adminRevocationResult{Revoked: resolved}, nil
+		},
+	})
+}
+
+func updateSettingJSON(ctx context.Context, c *control.HubClient, key string, value any) (*leapmuxv1.SettingValue, error) {
+	doc, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	updated, _, err := updateOneSetting(ctx, c, &leapmuxv1.SettingWrite{Key: key, PartialJson: string(doc)})
+	return updated, err
+}
+
+func updateOneSetting(ctx context.Context, c *control.HubClient, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
+	resp, err := c.AdminSettingsService().UpdateSettings(ctx, &leapmuxv1.UpdateSettingsRequest{
+		Writes: []*leapmuxv1.SettingWrite{write},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	value, err := onlySettingValue(resp.GetValues())
+	if err != nil {
+		return nil, false, err
+	}
+	return value, slices.Contains(resp.GetRestartKeys(), write.GetKey()), nil
+}
+
+func resetOneSetting(ctx context.Context, c *control.HubClient, key string) (*leapmuxv1.SettingValue, bool, error) {
+	resp, err := c.AdminSettingsService().ResetSettings(ctx, &leapmuxv1.ResetSettingsRequest{
+		Keys: []string{key},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	value, err := onlySettingValue(resp.GetValues())
+	if err != nil {
+		return nil, false, err
+	}
+	return value, slices.Contains(resp.GetRestartKeys(), key), nil
+}
+
+func onlySettingValue(values []*leapmuxv1.SettingValue) (*leapmuxv1.SettingValue, error) {
+	if len(values) != 1 {
+		return nil, fmt.Errorf("the hub answered %d setting values for one key", len(values))
+	}
+	return values[0], nil
 }
 
 // requireNonEmptyArg trims and returns the positional argument name, refusing
@@ -262,11 +391,12 @@ func newAdminSettingsList() *cobra.Command {
 }
 
 // parseSettingValue accepts a JSON document or a bare scalar, quoting the
-// scalar on the caller's behalf.
-func parseSettingValue(raw string) (json.RawMessage, error) {
+// scalar on the caller's behalf. resetCmd is the command shown when raw is
+// empty.
+func parseSettingValue(raw, resetCmd string) (json.RawMessage, error) {
 	if raw == "" {
-		return nil, errors.New(
-			`<value> is empty; pass '""' to store the empty string, or run "leapmux admin settings reset <key>" to restore the default`)
+		return nil, fmt.Errorf(
+			`<value> is empty; pass '""' to store the empty string, or run %q to restore the default`, resetCmd)
 	}
 	if strings.HasPrefix(raw, "{") || strings.HasPrefix(raw, "[") {
 		if !json.Valid([]byte(raw)) {
@@ -300,7 +430,10 @@ func newAdminSettingsGet() *cobra.Command {
 		},
 		Complete: completeAdminSettingsKeys,
 		Run: func(inv *cli.Invocation) (any, error) {
-			key := inv.Arg("key")
+			key, err := requireNonEmptyArg(inv, "key")
+			if err != nil {
+				return nil, err
+			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
@@ -379,7 +512,11 @@ func newAdminSettingsSet() *cobra.Command {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
-			value, err := parseSettingValue(inv.Arg("value"))
+			key, err := requireNonEmptyArg(inv, "key")
+			if err != nil {
+				return nil, err
+			}
+			value, err := parseSettingValue(inv.Arg("value"), "leapmux admin settings reset <key>")
 			if err != nil {
 				return nil, cli.Wrap(cli.CodeUsage, err, "")
 			}
@@ -388,7 +525,7 @@ func newAdminSettingsSet() *cobra.Command {
 				return nil, err
 			}
 			updated, restart, err := updateOneSetting(inv.Context, c, &leapmuxv1.SettingWrite{
-				Key: inv.Arg("key"), PartialJson: string(value),
+				Key: key, PartialJson: string(value),
 			})
 			if err != nil {
 				return nil, err
@@ -419,6 +556,10 @@ func newAdminSettingsSetSecret() *cobra.Command {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
+			key, err := requireNonEmptyArg(inv, "key")
+			if err != nil {
+				return nil, err
+			}
 			raw := strings.TrimSpace(inv.Arg("json"))
 			if !strings.HasPrefix(raw, "{") || !json.Valid([]byte(raw)) {
 				return nil, cli.Usagef(`<json> must be a JSON object of the secret fields, for example {"password":"..."}`)
@@ -428,7 +569,7 @@ func newAdminSettingsSetSecret() *cobra.Command {
 				return nil, err
 			}
 			updated, restart, err := updateOneSetting(inv.Context, c, &leapmuxv1.SettingWrite{
-				Key: inv.Arg("key"), SecretPartialJson: inv.Arg("json"),
+				Key: key, SecretPartialJson: inv.Arg("json"),
 			})
 			if err != nil {
 				return nil, err
@@ -452,11 +593,15 @@ func newAdminSettingsReset() *cobra.Command {
 		},
 		Complete: completeAdminSettingsKeys,
 		Run: func(inv *cli.Invocation) (any, error) {
+			key, err := requireNonEmptyArg(inv, "key")
+			if err != nil {
+				return nil, err
+			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			value, restart, err := resetOneSetting(inv.Context, c, inv.Arg("key"))
+			value, restart, err := resetOneSetting(inv.Context, c, key)
 			if err != nil {
 				return nil, err
 			}

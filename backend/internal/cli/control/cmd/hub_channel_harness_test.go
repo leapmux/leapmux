@@ -72,6 +72,16 @@ type hubChannelHarness struct {
 // --hub. disp answers the worker calls of harnessWorkerProcedures.
 func startHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher) *hubChannelHarness {
 	t.Helper()
+	return startHubChannelHarnessWithMode(t, hub, disp, false)
+}
+
+func startLocalHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher) *hubChannelHarness {
+	t.Helper()
+	return startHubChannelHarnessWithMode(t, hub, disp, true)
+}
+
+func startHubChannelHarnessWithMode(t *testing.T, hub *recordingHub, disp controlipc.LocalDispatcher, localSocket bool) *hubChannelHarness {
+	t.Helper()
 	clearRemoteEnv(t)
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 	t.Setenv("LEAPMUX_CONTROL_TOKEN", "")
@@ -96,7 +106,11 @@ func startHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.Loc
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	mux.HandleFunc(contracts.WSRouteChannel, h.relayFrames)
-	h.url = hubtransporttest.NewServer(t, mux).URL
+	if localSocket {
+		h.url = hubtransporttest.NewSocketServer(t, "local-hub-ch", mux)
+	} else {
+		h.url = hubtransporttest.NewServer(t, mux).URL
+	}
 
 	require.NoError(t, control.SaveCredentials(h.url, control.CredentialFile{
 		HubURL: h.url, AccessToken: "lmx_test_secret", UserID: hubChannelUser,

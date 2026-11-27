@@ -36,8 +36,17 @@ func normalizeIDHandle(raw, noun string) (string, error) {
 // the caller words its own not-found and ambiguous errors. An exact id wins
 // over a prefix that it shares with another id.
 func lookupByIDPrefix[T any](items []T, handle string, idOf func(T) string) (T, []T, bool) {
+	return lookupByIDPrefixMin(items, handle, minHandlePrefixLength, idOf)
+}
+
+// lookupByIDPrefixMin finds the item whose id equals handle, or else the one
+// item whose id starts with handle when len(handle) >= minLen. An exact id
+// wins over a prefix that it shares with another id. When no item or several
+// items match, it reports ok=false; ambiguous holds the prefix matches when
+// two or more items share the prefix, and nil otherwise.
+func lookupByIDPrefixMin[T any](items []T, handle string, minLen int, idOf func(T) string) (match T, ambiguous []T, ok bool) {
 	var matches []T
-	allowPrefix := len(handle) >= minHandlePrefixLength
+	allowPrefix := len(handle) >= minLen
 	for _, item := range items {
 		id := idOf(item)
 		if id == handle {

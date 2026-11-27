@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 func init() {
@@ -86,6 +87,7 @@ func Attach(root *cobra.Command, versionOverride func() string) {
 	root.AddCommand(controlCmds...)
 	flags := root.PersistentFlags()
 	flags.String("hub", "", "hub URL (default: tab socket, else $LEAPMUX_HUB, else context/default credential, else local solo/dev Hub)")
+	_ = root.RegisterFlagCompletionFunc("hub", completeHubFlag)
 	cli.AddOutputFlags(root)
 	for _, c := range controlCmds {
 		configureTargetArguments(c)
@@ -152,6 +154,25 @@ func attachErrOut(c *control.HubClient, inv *cli.Invocation) *control.HubClient 
 	return c
 }
 
+// noticeDiscoveredLocalHub writes a one-line stderr notice in text mode when a
+// command connected to an auto-discovered local Hub IPC socket rather than an
+// explicit --hub flag, LEAPMUX_HUB, or a saved context default.
+func noticeDiscoveredLocalHub(inv *cli.Invocation, explicit, hubURL string) {
+	if explicit != "" || strings.TrimSpace(os.Getenv("LEAPMUX_HUB")) != "" {
+		return
+	}
+	if inv == nil || inv.Printer == nil || inv.Printer.Format != cli.FormatText {
+		return
+	}
+	if !locallisten.IsLocal(hubURL) {
+		return
+	}
+	saved, _ := control.LoadContext()
+	if !control.SameHubURL(saved.Hub, hubURL) {
+		_ = inv.Printer.Notice("using discovered local Hub %s (override with --hub or LEAPMUX_HUB)", hubURL)
+	}
+}
+
 // newClient builds the client of an invocation, with the precedence that
 // control.NewClientFromEnv states. When connecting outside a tab by
 // auto-discovering a local solo/dev Hub, it prints a one-line stderr notice
@@ -164,16 +185,7 @@ func newClient(inv *cli.Invocation) (control.Peer, error) {
 	}
 	if hub, ok := c.(*control.HubClient); ok {
 		attachErrOut(hub, inv)
-		if explicit == "" && strings.TrimSpace(os.Getenv("LEAPMUX_HUB")) == "" &&
-			inv.Printer != nil && inv.Printer.Format == cli.FormatText {
-			hubURL := hub.HubURL
-			if strings.HasPrefix(hubURL, "unix:") || strings.HasPrefix(hubURL, "npipe:") {
-				saved, _ := control.LoadContext()
-				if saved.Hub != hubURL {
-					_ = inv.Printer.Notice("using discovered local Hub %s (override with --hub or LEAPMUX_HUB)", hubURL)
-				}
-			}
-		}
+		noticeDiscoveredLocalHub(inv, explicit, hub.HubURL)
 	}
 	return c, nil
 }
@@ -198,6 +210,23 @@ func openSession(inv *cli.Invocation) (*session, error) {
 	}
 	ctx, cancel := rpcDeadline(inv.Context)
 	return &session{inv: inv, c: c, ctx: ctx, cancel: cancel, located: map[string]*leapmuxv1.WorkspaceTab{}}, nil
+}
+
+// newCompletionSession wraps an already-opened peer and deadline-limited
+// context in a session so shell completion can reuse session resolution
+// helpers without re-dialing.
+func newCompletionSession(ctx context.Context, cmd *cobra.Command, c control.Peer) *session {
+	var inv *cli.Invocation
+	if cmd != nil {
+		inv = &cli.Invocation{Command: cmd, Context: ctx}
+	}
+	return &session{
+		inv:     inv,
+		c:       c,
+		ctx:     ctx,
+		cancel:  func() {},
+		located: map[string]*leapmuxv1.WorkspaceTab{},
+	}
 }
 
 // openStreamSession builds the client and a context that only the process
@@ -347,12 +376,7 @@ func (s *session) hasTargetWorkspaceScope() bool {
 	if s.inv == nil || s.inv.Command == nil || !s.inv.Changed("workspace") {
 		return false
 	}
-	path := strings.TrimSpace(s.inv.Command.CommandPath())
-	// Strip root binary name (e.g. "leapmux " or "lmx ").
-	if idx := strings.IndexByte(path, ' '); idx >= 0 {
-		path = strings.TrimSpace(path[idx+1:])
-	}
-	switch path {
+	switch commandSubPath(s.inv.Command) {
 	case "tab move", "tab open-image", "tab list",
 		"agent open", "agent fork", "agent list", "agent open-tab",
 		"terminal open", "terminal list",
@@ -559,6 +583,36 @@ func addWorkerFlag(fs *pflag.FlagSet) {
 	cli.SetEnvDefault(fs, workerFlag, controlenv.WorkerIDVariable)
 }
 
+// explicitOrTabWorker resolves a worker from the explicit --worker flag,
+// $LEAPMUX_CONTROL_WORKER_ID, or the worker hosting $LEAPMUX_CONTROL_TAB_ID.
+// It returns ("", nil) when none of those sources identifies a worker.
+func (s *session) explicitOrTabWorker() (string, error) {
+	if s.inv != nil && s.inv.Command != nil && s.inv.Changed(workerFlag) {
+		input := s.inv.Command.Flag(workerFlag).Value.String()
+		if strings.TrimSpace(input) == "" {
+			return "", cli.Usagef("--worker is empty")
+		}
+		t, err := s.resolveOne(resolve.KindWorker, input)
+		if err != nil {
+			return "", err
+		}
+		return t.ID, nil
+	}
+	if envWorkerID := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)); envWorkerID != "" {
+		return envWorkerID, nil
+	}
+	if tabID := strings.TrimSpace(os.Getenv(controlenv.TabIDVariable)); tabID != "" {
+		tab, err := s.deps().LocateTab(s.ctx, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, tabID)
+		if err == nil && tab.GetWorkerId() != "" {
+			return tab.GetWorkerId(), nil
+		}
+		if err != nil && !errors.Is(err, resolve.ErrTabNotLocatable) {
+			return "", err
+		}
+	}
+	return "", nil
+}
+
 // workerScope resolves the --worker flag of a command that runs on one
 // worker. Resolution order when --worker is omitted:
 //  1. $LEAPMUX_CONTROL_WORKER_ID (inside a LeapMux tab)
@@ -566,36 +620,18 @@ func addWorkerFlag(fs *pflag.FlagSet) {
 //  3. context.json's saved worker
 //  4. The sole online Worker on the account (when outside a tab)
 func (s *session) workerScope() (string, error) {
-	input := ""
-	if s.inv.Changed(workerFlag) {
-		input = s.inv.Command.Flag(workerFlag).Value.String()
-		if strings.TrimSpace(input) == "" {
-			return "", cli.Usagef("--worker is empty")
+	workerID, err := s.explicitOrTabWorker()
+	if err != nil || workerID != "" {
+		return workerID, err
+	}
+	if ctxCfg, err := control.LoadContext(); err == nil && strings.TrimSpace(ctxCfg.Worker) != "" {
+		t, err := s.resolveOne(resolve.KindWorker, strings.TrimSpace(ctxCfg.Worker))
+		if err != nil {
+			return "", err
 		}
+		return t.ID, nil
 	}
-	envWorkerID := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
-	if input == "" && envWorkerID == "" {
-		if tabID := strings.TrimSpace(os.Getenv(controlenv.TabIDVariable)); tabID != "" {
-			tab, err := s.deps().LocateTab(s.ctx, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, tabID)
-			if err == nil && tab.GetWorkerId() != "" {
-				return tab.GetWorkerId(), nil
-			}
-			if err != nil && !errors.Is(err, resolve.ErrTabNotLocatable) {
-				return "", err
-			}
-		}
-		if ctxCfg, err := control.LoadContext(); err == nil && strings.TrimSpace(ctxCfg.Worker) != "" {
-			input = strings.TrimSpace(ctxCfg.Worker)
-		}
-	}
-	if input == "" && envWorkerID == "" {
-		return s.autoSelectSoleWorker()
-	}
-	t, err := s.resolveOne(resolve.KindWorker, input)
-	if err != nil {
-		return "", err
-	}
-	return t.ID, nil
+	return s.autoSelectSoleWorker()
 }
 
 // autoSelectSoleWorker returns the only online Worker when outside a tab, or

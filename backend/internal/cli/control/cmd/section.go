@@ -67,6 +67,10 @@ func newSectionCommand() *cobra.Command {
 				fs.String("before", "", "put the section before this section (id, prefix, or name)")
 				fs.String("after", "", "put the section after this section (id, prefix, or name)")
 			},
+			FlagComplete: map[string]cobra.CompletionFunc{
+				"before": completeSectionPositionFlag,
+				"after":  completeSectionPositionFlag,
+			},
 			Complete: completeSections,
 			Run:      runSectionMove,
 		}),
@@ -455,7 +459,7 @@ func completeSections(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) (
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	ctx, cancel := completionContext()
+	ctx, cancel := completionContext(cmd)
 	defer cancel()
 	var resp leapmuxv1.ListSectionsResponse
 	if err := hubCallUnary(ctx, c, leapmuxv1connect.SectionServiceListSectionsProcedure, &leapmuxv1.ListSectionsRequest{}, &resp); err != nil {
@@ -466,7 +470,7 @@ func completeSections(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) (
 	for _, sec := range resp.GetSections() {
 		name := sec.GetName()
 		if lower == "" || strings.HasPrefix(strings.ToLower(name), lower) || strings.HasPrefix(sec.GetId(), toComplete) {
-			out = append(out, name+"\t"+cli.ShortID(sec.GetId())+" ("+enumToken(sec.GetSidebar())+")")
+			out = append(out, formatCompletionCandidate(name, cli.ShortID(sec.GetId())+" ("+enumToken(sec.GetSidebar())+")"))
 		}
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp

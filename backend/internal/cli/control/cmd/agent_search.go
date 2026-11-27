@@ -50,6 +50,9 @@ across every online worker in parallel.`,
 				cli.SetFlagGroup(fs, name, "Match")
 			}
 		},
+		FlagComplete: map[string]cobra.CompletionFunc{
+			"provider": completeProviderFlag,
+		},
 		Run: runAgentSearch,
 	})
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/locallisten"
@@ -52,8 +53,8 @@ func runAuthLogin(inv *cli.Invocation) (any, error) {
 	scopeFlag := stringFlag(inv, "scope")
 	ctx := inv.Context
 
-	// Every input is validated BEFORE the destructive cleanup below: a
-	// refused flag must not cost the machine its working credential.
+	// Validate every flag before starting the login flow so invalid input fails
+	// immediately without opening a browser or requesting a device code.
 	scope, scopeErr := requestedScope(scopeFlag)
 	if scopeErr != nil {
 		return nil, scopeErr
@@ -68,6 +69,12 @@ func runAuthLogin(inv *cli.Invocation) (any, error) {
 		return nil, cli.Usagef("a unix: or npipe: hub URL gives the browser no hub origin to visit").
 			WithHint("pass --device-code to sign in through the hub's public origin")
 	}
+
+	ep, err := hubtransport.New(hub)
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
+	defer ep.CloseIdleConnections()
 
 	// Read any existing credential BEFORE starting the new flow, but do NOT
 	// revoke or delete it until the new login succeeds and is atomically saved.
@@ -89,9 +96,9 @@ func runAuthLogin(inv *cli.Invocation) (any, error) {
 	var result *loginResult
 	var loginErr error
 	if deviceCode {
-		result, loginErr = runDeviceCodeLogin(ctx, inv.Printer, hub, deviceName, scope)
+		result, loginErr = runDeviceCodeLogin(ctx, inv.Printer, ep, hub, deviceName, scope)
 	} else {
-		result, loginErr = runLocalRedirectLogin(ctx, inv.Printer, hub, deviceName, scope)
+		result, loginErr = runLocalRedirectLogin(ctx, inv.Printer, ep, hub, deviceName, scope)
 	}
 	if loginErr != nil {
 		return nil, loginErr
@@ -101,7 +108,7 @@ func runAuthLogin(inv *cli.Invocation) (any, error) {
 	// safely persisted on disk.
 	switch {
 	case prevCreds != nil:
-		if revokeErr := revokeBearer(hub, prevCreds.AccessToken, prevCreds.ClientIDOrBuiltIn()); revokeErr != nil {
+		if revokeErr := revokeBearer(ctx, ep, hub, prevCreds.AccessToken, prevCreds.ClientIDOrBuiltIn()); revokeErr != nil {
 			msg := fmt.Sprintf("could not revoke previous login (%s on %s): %v; %s", prevCreds.Username, prevCreds.HubURL, revokeErr, disconnectInPreferences)
 			_ = inv.Printer.Notice("warning: %s", msg)
 			result.Warning = joinWarnings(result.Warning, msg)
@@ -128,10 +135,8 @@ func joinWarnings(a, b string) string {
 // The login prompts are prose for a person, so they go to stderr. stdout
 // holds only the result, and `auth login --json | jq` parses it.
 
-func runLocalRedirectLogin(ctx context.Context, p *cli.Printer, hubURL, deviceName, scope string) (*loginResult, error) {
-	// The socket-hub refusal this flow needs already ran in runAuthLogin,
-	// before the destructive cleanup: a refused flag must not cost the
-	// machine its working credential.
+func runLocalRedirectLogin(ctx context.Context, p *cli.Printer, ep *hubtransport.Endpoint, hubURL, deviceName, scope string) (*loginResult, error) {
+	// runAuthLogin already rejected unix:/npipe: hub URLs before calling here.
 	flow, err := loopbackauth.Start(loopbackauth.Request{
 		HubBaseURL:       hubURL,
 		App:              control.CLIApp(control.ControlCLIClientID),
@@ -160,14 +165,12 @@ func runLocalRedirectLogin(ctx context.Context, p *cli.Printer, hubURL, deviceNa
 	default:
 		return nil, cli.Wrap(cli.CodeInternal, err, "the browser authorization callback failed")
 	}
-	return exchangeAuthorizationCode(ctx, hubURL, flow.TokenForm(code), scope)
+	return exchangeAuthorizationCode(ctx, ep, hubURL, flow.TokenForm(code), scope)
 }
 
-func runDeviceCodeLogin(ctx context.Context, p *cli.Printer, hubURL, deviceName, scope string) (*loginResult, error) {
-	hc, baseURL, err := cliHTTPClient(hubURL)
-	if err != nil {
-		return nil, cli.Wrap(cli.CodeUsage, err, "")
-	}
+func runDeviceCodeLogin(ctx context.Context, p *cli.Printer, ep *hubtransport.Endpoint, hubURL, deviceName, scope string) (*loginResult, error) {
+	hc := ep.UnaryClient(hubtransport.DefaultUnaryTimeout)
+	baseURL := ep.BaseURL()
 	// Only an ASK. The activation page decides, and the token response below
 	// reports what was actually granted -- which is not always what was asked
 	// for, because the person at the browser may hold an account that cannot
@@ -247,11 +250,9 @@ func tryExchangeDeviceCode(ctx context.Context, hc *http.Client, baseURL, hubURL
 // (RFC 6749 section 4.1.3 makes redirect_uri REQUIRED and identical to the one
 // the authorization used), so the hub can refuse a code intercepted at one
 // registered address and redeemed as though it came from another.
-func exchangeAuthorizationCode(ctx context.Context, hubURL string, form url.Values, requestedScope string) (*loginResult, error) {
-	hc, baseURL, err := cliHTTPClient(hubURL)
-	if err != nil {
-		return nil, cli.Wrap(cli.CodeUsage, err, "")
-	}
+func exchangeAuthorizationCode(ctx context.Context, ep *hubtransport.Endpoint, hubURL string, form url.Values, requestedScope string) (*loginResult, error) {
+	hc := ep.UnaryClient(hubtransport.DefaultUnaryTimeout)
+	baseURL := ep.BaseURL()
 	resp, err := loopbackauth.PostForm(ctx, hc, locallisten.JoinPath(baseURL, "/oauth/token"), form)
 	if err != nil {
 		return nil, err
@@ -275,8 +276,8 @@ type loginResult struct {
 }
 
 // persistTokenResponse writes the freshly minted credential and returns the
-// result of the login. Existing credentials are retired up front in
-// runAuthLogin after the replacement token is persisted.
+// result of the login. runAuthLogin revokes any previous credential after
+// this write succeeds.
 func persistTokenResponse(hubURL string, body io.Reader, clientID, requestedScope string) (*loginResult, error) {
 	var out struct {
 		control.TokenResponseBody

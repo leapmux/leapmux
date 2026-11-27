@@ -283,7 +283,7 @@ func gitSetup(inv *cli.Invocation) (*leapmuxv1.GitSetup, error) {
 	case "--worktree":
 		return &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateWorktree{CreateWorktree: &leapmuxv1.GitCreateWorktree{Branch: value, BaseBranch: base}}}, nil
 	case "--use-worktree":
-		selector, err := parseWorktreeSelector(rawValue, true)
+		selector, err := parseWorktreeSelector(rawValue)
 		if err != nil {
 			return nil, err
 		}

@@ -19,32 +19,51 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
-func TestContextUse_ClearsScopeFlagsWithEmptyString(t *testing.T) {
+func TestContextUse_RejectsEmptyFlagsAndClearRemovesFields(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 	t.Setenv("LEAPMUX_CONTROL_TOKEN", "")
 	t.Setenv("LEAPMUX_HUB", "")
 
-	// Save all four defaults first.
+	// Save all four defaults first (including canonicalizing trailing slash on --hub).
 	o := runControl(t, "context", "use",
-		"--hub", "https://hub.example.com",
+		"--hub", "https://hub.example.com/",
 		"--worker", "build-box",
 		"--workspace", "Release 1.4",
 		"--provider", "claude",
 	)
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
 
-	// Clearing --hub, --worker, --workspace, and --provider via "" must succeed
-	// instead of being rejected by rejectBlankTargets.
-	o = runControl(t, "context", "use",
-		"--hub", "",
-		"--worker", "",
-		"--workspace", "",
-		"--provider", "",
-	)
-	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-
 	cfg, err := control.LoadContext()
+	require.NoError(t, err)
+	assert.Equal(t, "https://hub.example.com", cfg.Hub)
+	assert.Equal(t, "build-box", cfg.Worker)
+	assert.Equal(t, "Release 1.4", cfg.Workspace)
+	assert.Equal(t, "claude", cfg.Provider)
+
+	// Passing an empty or whitespace-only value to any `context use` flag fails
+	// with CodeUsage and preserves the saved defaults.
+	for _, flag := range []string{"--hub", "--worker", "--workspace", "--provider"} {
+		for _, empty := range []string{"", "   "} {
+			o = runControl(t, "context", "use", flag, empty)
+			o.requireFailure(t, cli.CodeUsage)
+		}
+	}
+
+	cfg, err = control.LoadContext()
+	require.NoError(t, err)
+	assert.Equal(t, "https://hub.example.com", cfg.Hub)
+	assert.Equal(t, "build-box", cfg.Worker)
+	assert.Equal(t, "Release 1.4", cfg.Workspace)
+	assert.Equal(t, "claude", cfg.Provider)
+
+	// `context clear --field` clears each saved field individually.
+	for _, field := range []string{"hub", "worker", "workspace", "provider"} {
+		o = runControl(t, "context", "clear", "--field", field)
+		require.Equal(t, cli.ExitOK, o.Code, "field=%s stderr: %s", field, o.Stderr)
+	}
+
+	cfg, err = control.LoadContext()
 	require.NoError(t, err)
 	assert.Empty(t, cfg.Hub)
 	assert.Empty(t, cfg.Worker)
@@ -255,48 +274,47 @@ func TestEventsAccountReplay_AllBacklogCaughtUp(t *testing.T) {
 	assert.True(t, r.allBacklogCaughtUp(), "stopped worker counts as finished for snapshot drain")
 }
 
-func TestParseAdminUserSelectorDirect_AndNotFoundCheck(t *testing.T) {
-	sel, prefix, fallback, err := parseAdminUserSelectorDirect("id:Ab3dE9")
+func TestParseAdminUserTarget_AndNotFoundCheck(t *testing.T) {
+	got, err := parseAdminUserTarget("id:Ab3dE9")
 	require.NoError(t, err)
-	assert.Equal(t, "Ab3dE9", sel.GetId())
-	assert.Equal(t, "Ab3dE9", prefix)
-	assert.True(t, fallback)
+	assert.True(t, got.isSet())
+	assert.Equal(t, "Ab3dE9", got.selector.GetId())
+	assert.Equal(t, "Ab3dE9", got.prefix)
 
-	sel, _, fallback, err = parseAdminUserSelectorDirect("username:alice")
+	got, err = parseAdminUserTarget("username:alice")
 	require.NoError(t, err)
-	assert.Equal(t, "alice", sel.GetUsername())
-	assert.False(t, fallback, "explicit username: must never trigger ID prefix scan")
+	assert.Equal(t, "alice", got.selector.GetUsername())
+	assert.Empty(t, got.prefix, "explicit username: must never trigger ID prefix scan")
 
 	fullID := fullTestID("user-alpha")
-	sel, _, fallback, err = parseAdminUserSelectorDirect(fullID)
+	got, err = parseAdminUserTarget(fullID)
 	require.NoError(t, err)
-	assert.Equal(t, fullID, sel.GetId())
-	assert.False(t, fallback, "full 48-char ID must be sent directly by ID")
+	assert.Equal(t, fullID, got.selector.GetId())
+	assert.Empty(t, got.prefix, "full 48-char ID must be sent directly by ID")
 
 	// A 48-character string with non-ID characters (dots/spaces) is not a generated ID.
 	const nonID48 = "user.with.dots.and.exact.length.of.48.characters"
 	require.Len(t, nonID48, 48)
-	sel, prefix, fallback, err = parseAdminUserSelectorDirect(nonID48)
+	got, err = parseAdminUserTarget(nonID48)
 	require.NoError(t, err)
-	assert.Equal(t, nonID48, sel.GetUsername())
-	assert.Equal(t, nonID48, prefix)
-	assert.True(t, fallback)
+	assert.Equal(t, nonID48, got.selector.GetUsername())
+	assert.Equal(t, nonID48, got.prefix)
 
 	const userUUID = "87a19d5f-4838-4e34-9f0f-56130f0a62b1"
-	sel, _, fallback, err = parseAdminUserSelectorDirect(userUUID)
+	got, err = parseAdminUserTarget(userUUID)
 	require.NoError(t, err)
-	assert.Equal(t, userUUID, sel.GetId())
-	assert.False(t, fallback)
+	assert.Equal(t, userUUID, got.selector.GetId())
+	assert.Empty(t, got.prefix)
 
-	sel, _, fallback, err = parseAdminUserSelectorDirect("id:" + fullID)
+	got, err = parseAdminUserTarget("id:" + fullID)
 	require.NoError(t, err)
-	assert.Equal(t, fullID, sel.GetId())
-	assert.False(t, fallback)
+	assert.Equal(t, fullID, got.selector.GetId())
+	assert.Empty(t, got.prefix)
 
-	sel, _, fallback, err = parseAdminUserSelectorDirect("id:ab")
+	got, err = parseAdminUserTarget("id:ab")
 	require.NoError(t, err)
-	assert.Equal(t, "ab", sel.GetId())
-	assert.False(t, fallback)
+	assert.Equal(t, "ab", got.selector.GetId())
+	assert.Empty(t, got.prefix)
 
 	assert.True(t, isAdminUserNotFound(connect.NewError(connect.CodeNotFound, "missing")))
 	assert.True(t, isAdminUserNotFound(cli.Newf(cli.CodeNotFound, "missing")))

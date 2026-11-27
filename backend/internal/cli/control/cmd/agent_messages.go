@@ -950,14 +950,11 @@ func newWorkerWatchTransport(ctx context.Context, p control.Peer, workerID strin
 			close:     func() {},
 		}, nil
 	case *control.HubClient:
-		if workerID == "" {
-			return nil, errors.New("worker_id required for hub-bound mode")
-		}
 		openCtx, cancelOpen := rpcDeadline(ctx)
-		ch, err := c.OpenE2EEChannel(openCtx, context.WithoutCancel(ctx), workerID)
+		ch, err := openHubE2EEChannel(openCtx, context.WithoutCancel(ctx), c, workerID)
 		cancelOpen()
 		if err != nil {
-			return nil, &codedRPCError{Code: "channel_open_failed", Cause: err}
+			return nil, err
 		}
 		return &workerWatchTransport{
 			transport: streamevents.NewChannelTransport(ch, slog.Default()),

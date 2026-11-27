@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 
@@ -13,7 +14,9 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // gitReadDispatcher answers ReadGitFile with resp, and records each request
@@ -113,4 +116,245 @@ func TestRunGitRead_EmitsWhetherTheFileExistsAtTheRef(t *testing.T) {
 		"content":    "",
 		"total_size": float64(0),
 	}, o.Data(t))
+}
+
+func TestGitCommands_ValidateArgumentsBeforeDialing(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "git read empty path", args: []string{"git", "read", ""}},
+		{name: "git read blank path", args: []string{"git", "read", "   "}},
+		{name: "git checkout blank branch", args: []string{"git", "checkout", " ", "--dir", "/repo"}},
+		{name: "git checkout blank dir", args: []string{"git", "checkout", "main", "--dir", " "}},
+		{name: "git branch create blank name", args: []string{"git", "branch", "create", " ", "--dir", "/repo"}},
+		{name: "git branch create blank base", args: []string{"git", "branch", "create", "feat", "--base", " ", "--dir", "/repo"}},
+		{name: "git branch delete blank name", args: []string{"git", "branch", "delete", " ", "--switch-to", "main", "--dir", "/repo"}},
+		{name: "git branch delete blank switch-to", args: []string{"git", "branch", "delete", "foo", "--switch-to", " ", "--dir", "/repo"}},
+		{name: "git push blank dir", args: []string{"git", "push", "--dir", " "}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := &recordingHub{workers: workerRows("worker-A")}
+			disp := &gitTestDispatcher{}
+			startSpawnIPC(t, hub, disp)
+			t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+			runControl(t, tc.args...).requireFailure(t, cli.CodeUsage)
+			assert.Empty(t, hub.called(), "local validation must fail before dialing the hub")
+			assert.Empty(t, disp.calledMethods(), "local validation must fail before dialing the worker")
+		})
+	}
+}
+
+type gitTestDispatcher struct {
+	mu           sync.Mutex
+	methods      []string
+	checkoutReqs []*leapmuxv1.CheckoutBranchRequest
+	infoArrived  chan struct{}
+	filesArrived chan struct{}
+}
+
+func (d *gitTestDispatcher) calledMethods() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.methods...)
+}
+
+func (d *gitTestDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	d.mu.Lock()
+	d.methods = append(d.methods, req.GetMethod())
+	d.mu.Unlock()
+
+	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerGitServiceCheckoutBranchProcedure:
+		var in leapmuxv1.CheckoutBranchRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		d.mu.Lock()
+		d.checkoutReqs = append(d.checkoutReqs, &in)
+		d.mu.Unlock()
+		writeProtoResponse(w, &leapmuxv1.CheckoutBranchResponse{})
+	case leapmuxv1connect.WorkerGitServiceGetGitDiffProcedure:
+		writeProtoResponse(w, &leapmuxv1.GetGitDiffResponse{
+			Diff:      "+line\n",
+			Truncated: false,
+			TotalSize: 6,
+		})
+	case leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure:
+		if d.infoArrived != nil && d.filesArrived != nil {
+			close(d.infoArrived)
+			select {
+			case <-d.filesArrived:
+			case <-ctx.Done():
+				_ = w.SendError(int32(codes.Canceled), ctx.Err().Error())
+				return
+			}
+		}
+		writeProtoResponse(w, &leapmuxv1.GetGitInfoResponse{
+			IsGitRepo:        true,
+			RepoRoot:         "/repo",
+			MainWorktreeRoot: "/repo",
+			CurrentBranch:    "main",
+		})
+	case leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure:
+		if d.infoArrived != nil && d.filesArrived != nil {
+			close(d.filesArrived)
+			select {
+			case <-d.infoArrived:
+			case <-ctx.Done():
+				_ = w.SendError(int32(codes.Canceled), ctx.Err().Error())
+				return
+			}
+		}
+		writeProtoResponse(w, &leapmuxv1.GetGitFileStatusResponse{
+			RepoRoot: "/repo",
+			Status: &leapmuxv1.GitRepoStatus{
+				Branch:   "main",
+				Toplevel: "/repo",
+				Ahead:    1,
+			},
+			Files: []*leapmuxv1.GitFileStatusEntry{
+				{Path: "main.go", UnstagedStatus: leapmuxv1.GitFileStatusCode_GIT_FILE_STATUS_CODE_MODIFIED},
+			},
+		})
+	default:
+		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+	}
+}
+
+func TestGitWrite_PreservesLiteralDirAndTrimsBranch(t *testing.T) {
+	disp := &gitTestDispatcher{}
+	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+	t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+	data := runControl(t, "git", "checkout", " main ", "--dir", "/repo/literal dir ").Data(t)
+	assert.Equal(t, "/repo/literal dir ", data["dir"])
+	assert.Equal(t, true, data["ok"])
+	require.Len(t, disp.checkoutReqs, 1)
+	assert.Equal(t, "/repo/literal dir ", disp.checkoutReqs[0].GetPath())
+	assert.Equal(t, "main", disp.checkoutReqs[0].GetBranch())
+}
+
+func TestGitDiff_JSONEmitsFalseTruncated(t *testing.T) {
+	disp := &gitTestDispatcher{}
+	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+	t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+	out := runControl(t, "git", "diff", "--dir", "/repo")
+	data := out.Data(t)
+	truncated, hasKey := data["truncated"]
+	require.True(t, hasKey, "truncated must be present in JSON output: %s", out.Stdout)
+	assert.Equal(t, false, truncated)
+}
+
+func TestRunGitStatus_RunsBothRPCsConcurrentlyOnOneChannel(t *testing.T) {
+	disp := &gitTestDispatcher{
+		infoArrived:  make(chan struct{}),
+		filesArrived: make(chan struct{}),
+	}
+	hub := &recordingHub{workers: []*leapmuxv1.Worker{{Id: "worker-A", Online: true}}}
+	h := startHubChannelHarness(t, hub, disp)
+	h.dispatcher.Handle(leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, channel.Registration{}, disp.DispatchWith)
+	h.dispatcher.Handle(leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, channel.Registration{}, disp.DispatchWith)
+
+	data := runControl(t, "git", "status", "--hub", h.url, "--worker", "worker-A", "--dir", "/repo").Data(t)
+	assert.Equal(t, 1, h.channelOpens())
+	assert.Equal(t, "main", data["branch"])
+	assert.Equal(t, float64(1), data["ahead"])
+	files, ok := data["files"].([]any)
+	require.True(t, ok)
+	require.Len(t, files, 1)
+}
+
+func TestGitReadCommands_DoNotUseTabWorkingDirForAnotherWorkerOverIPC(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "git status", args: []string{"git", "status", "--worker", "worker-B"}},
+		{name: "git diff", args: []string{"git", "diff", "--worker", "worker-B"}},
+		{name: "git log", args: []string{"git", "log", "--worker", "worker-B"}},
+		{name: "git branch list", args: []string{"git", "branch", "list", "--worker", "worker-B"}},
+		{name: "git branch inspect", args: []string{"git", "branch", "inspect", "--worker", "worker-B"}},
+		{name: "worktree list", args: []string{"worktree", "list", "--worker", "worker-B"}},
+		{name: "worktree inspect", args: []string{"worktree", "inspect", "--worker", "worker-B"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := &recordingHub{workers: workerRows("worker-A", "worker-B")}
+			disp := &gitTestDispatcher{}
+			startSpawnIPC(t, hub, disp)
+			t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+			t.Setenv(controlenv.WorkingDirVariable, "/local/tab")
+
+			failure := runControl(t, tc.args...).requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, failure.Message, "--dir is required when targeting another worker")
+			assert.Empty(t, disp.calledMethods())
+		})
+	}
+}
+
+func TestGitReadCommands_CheckGitDirInputBeforeDialing(t *testing.T) {
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{name: "git status", args: []string{"git", "status"}},
+		{name: "git diff", args: []string{"git", "diff"}},
+		{name: "git log", args: []string{"git", "log"}},
+		{name: "git branch list", args: []string{"git", "branch", "list"}},
+		{name: "git branch inspect", args: []string{"git", "branch", "inspect"}},
+		{name: "worktree list", args: []string{"worktree", "list"}},
+		{name: "worktree inspect", args: []string{"worktree", "inspect"}},
+	}
+
+	for _, cmdCase := range commands {
+		t.Run(cmdCase.name, func(t *testing.T) {
+			t.Run("explicit blank --dir overrides env", func(t *testing.T) {
+				hub := &recordingHub{workers: workerRows("worker-A")}
+				disp := &gitTestDispatcher{}
+				startSpawnIPC(t, hub, disp)
+				t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+				t.Setenv(controlenv.WorkingDirVariable, "/local/tab")
+
+				args := append(append([]string(nil), cmdCase.args...), "--dir", "  ")
+				failure := runControl(t, args...).requireFailure(t, cli.CodeUsage)
+				assert.Contains(t, failure.Message, "--dir is empty")
+				assert.Empty(t, hub.called())
+				assert.Empty(t, disp.calledMethods())
+			})
+
+			t.Run("whitespace-only env with no --dir", func(t *testing.T) {
+				hub := &recordingHub{workers: workerRows("worker-A")}
+				disp := &gitTestDispatcher{}
+				startSpawnIPC(t, hub, disp)
+				t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+				t.Setenv(controlenv.WorkingDirVariable, "   ")
+
+				failure := runControl(t, cmdCase.args...).requireFailure(t, cli.CodeUsage)
+				assert.Contains(t, failure.Message, "--dir is empty")
+				assert.Empty(t, hub.called())
+				assert.Empty(t, disp.calledMethods())
+			})
+
+			t.Run("unset env with no --dir", func(t *testing.T) {
+				hub := &recordingHub{workers: workerRows("worker-A")}
+				disp := &gitTestDispatcher{}
+				startSpawnIPC(t, hub, disp)
+				t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+				t.Setenv(controlenv.WorkingDirVariable, "")
+				require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
+
+				failure := runControl(t, cmdCase.args...).requireFailure(t, cli.CodeUsage)
+				assert.Contains(t, failure.Message, "--dir is required, because $LEAPMUX_CONTROL_WORKING_DIR is not set")
+				assert.Empty(t, hub.called())
+				assert.Empty(t, disp.calledMethods())
+			})
+		})
+	}
 }

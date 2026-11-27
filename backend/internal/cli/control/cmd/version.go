@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -110,18 +111,35 @@ func runVersionWithOverride(inv *cli.Invocation, override func() string) (any, e
 			out.HubError = err.Error()
 			return out, nil
 		}
-		ctx, cancel := context.WithTimeout(inv.Context, hubVersionTimeout)
-		defer cancel()
-		var sysResp leapmuxv1.GetSystemInfoResponse
-		if err := hubCallLocalIPC(ctx, c, leapmuxv1connect.SystemServiceGetSystemInfoProcedure, &leapmuxv1.GetSystemInfoRequest{}, &sysResp); err != nil {
-			out.HubError = err.Error()
+		var (
+			sysResp    leapmuxv1.GetSystemInfoResponse
+			sysErr     error
+			workerResp leapmuxv1.GetWorkerSystemInfoResponse
+			workerErr  error
+			wg         sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			hubCtx, cancel := context.WithTimeout(inv.Context, hubVersionTimeout)
+			defer cancel()
+			sysErr = hubCallLocalIPC(hubCtx, c, leapmuxv1connect.SystemServiceGetSystemInfoProcedure, &leapmuxv1.GetSystemInfoRequest{}, &sysResp)
+		}()
+		go func() {
+			defer wg.Done()
+			workerCtx, cancel := context.WithTimeout(inv.Context, hubVersionTimeout)
+			defer cancel()
+			workerErr = callInnerRPCBest(workerCtx, c, "", leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &workerResp)
+		}()
+		wg.Wait()
+		if sysErr != nil {
+			out.HubError = sysErr.Error()
 		} else if sysResp.GetBuild() != nil {
 			b := buildInfoOf(sysResp.GetBuild())
 			out.Hub = &b
 		}
-		var workerResp leapmuxv1.GetWorkerSystemInfoResponse
-		if err := callInnerRPCBest(ctx, c, "", leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &workerResp); err != nil {
-			out.WorkerError = err.Error()
+		if workerErr != nil {
+			out.WorkerError = workerErr.Error()
 		} else if workerResp.GetBuild() != nil {
 			b := buildInfoOf(workerResp.GetBuild())
 			out.Worker = &b
@@ -144,13 +162,7 @@ func runVersionWithOverride(inv *cli.Invocation, override func() string) (any, e
 
 // cliBuildInfo is this binary's build.
 func cliBuildInfo() buildInfo {
-	return buildInfo{
-		Version:   version.Value,
-		Commit:    version.CommitHash,
-		Branch:    version.Branch,
-		BuildTime: version.BuildTime,
-		Formatted: version.Format(),
-	}
+	return buildInfoOf(version.BuildInfoProto())
 }
 
 // buildInfoOf renders a build that another binary reports. A nil build
@@ -178,6 +190,7 @@ func fetchHubVersion(ctx context.Context, hubURL string) (buildInfo, error) {
 	if err != nil {
 		return buildInfo{}, err
 	}
+	defer endpoint.CloseIdleConnections()
 	client := endpoint.UnaryClient(hubVersionTimeout)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, locallisten.JoinPath(endpoint.BaseURL(), "/version"), nil)
 	if err != nil {
@@ -189,19 +202,11 @@ func fetchHubVersion(ctx context.Context, hubURL string) (buildInfo, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return buildInfo{}, &hubVersionStatusError{status: resp.Status}
+		return buildInfo{}, fmt.Errorf("hub /version returned %s", resp.Status)
 	}
 	var body buildInfo
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return buildInfo{}, err
 	}
 	return body, nil
-}
-
-type hubVersionStatusError struct {
-	status string
-}
-
-func (e *hubVersionStatusError) Error() string {
-	return "hub /version returned " + e.status
 }

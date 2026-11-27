@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/hub/service"
 )
 
 // CredentialLifetime holds the identity, owner, and timestamps of each
@@ -51,7 +52,7 @@ func adminAPITokenRowOf(token *leapmuxv1.AdminAPIToken) adminAPITokenRow {
 		CredentialLifetime: tokenLifecycle(token.GetId(), token.GetUserId(), token.GetUsername(), token.GetOwnerDeleted(),
 			token.GetCreatedAt(), token.GetLastUsedAt(), token.GetExpiresAt(), token.GetRevokedAt()),
 		ClientID: token.GetClientId(), ClientName: token.GetClientName(),
-		InstallationName: token.GetInstallationName(), GrantedScopes: token.GetGrantedScopes(),
+		InstallationName: token.GetInstallationName(), GrantedScopes: nonNilStrings(token.GetGrantedScopes()),
 	}
 }
 
@@ -95,43 +96,35 @@ func (r adminDelegationTokenListResult) QuietLines() []string {
 }
 
 func resolveAdminAPITokenID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
-	return resolveAdminIDPrefix(ctx, raw, "API token", func(ctx context.Context) ([]cli.Candidate, error) {
-		tokens, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminAPIToken, *leapmuxv1.PageResponse, error) {
+	return resolveLiveThenAllPagedAdminID(ctx, "API token", raw, true,
+		func(ctx context.Context, includeRevoked bool, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminAPIToken, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminUserService().ListAPITokens(ctx, &leapmuxv1.ListAPITokensRequest{
-				IncludeRevoked: true,
+				IncludeRevoked: includeRevoked,
 				Page:           page,
 			})
 			return resp.GetTokens(), resp.GetPage(), err
-		}, (*leapmuxv1.AdminAPIToken).GetId)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]cli.Candidate, 0, len(tokens))
-		for _, t := range tokens {
-			out = append(out, cli.Candidate{ID: t.GetId(), Kind: "api-token", Title: t.GetInstallationName()})
-		}
-		return out, nil
-	})
+		},
+		(*leapmuxv1.AdminAPIToken).GetId,
+		func(t *leapmuxv1.AdminAPIToken) cli.Candidate {
+			return cli.Candidate{ID: t.GetId(), Kind: "api-token", Title: t.GetInstallationName()}
+		},
+	)
 }
 
 func resolveAdminDelegationTokenID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
-	return resolveAdminIDPrefix(ctx, raw, "delegation token", func(ctx context.Context) ([]cli.Candidate, error) {
-		tokens, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminDelegationToken, *leapmuxv1.PageResponse, error) {
+	return resolveLiveThenAllPagedAdminID(ctx, "delegation token", raw, false,
+		func(ctx context.Context, includeRevoked bool, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminDelegationToken, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminUserService().ListDelegationTokens(ctx, &leapmuxv1.ListDelegationTokensRequest{
-				IncludeRevoked: true,
+				IncludeRevoked: includeRevoked,
 				Page:           page,
 			})
 			return resp.GetTokens(), resp.GetPage(), err
-		}, (*leapmuxv1.AdminDelegationToken).GetId)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]cli.Candidate, 0, len(tokens))
-		for _, t := range tokens {
-			out = append(out, cli.Candidate{ID: t.GetId(), Kind: "delegation-token", Title: t.GetUsername()})
-		}
-		return out, nil
-	})
+		},
+		(*leapmuxv1.AdminDelegationToken).GetId,
+		func(t *leapmuxv1.AdminDelegationToken) cli.Candidate {
+			return cli.Candidate{ID: t.GetId(), Kind: "delegation-token", Title: t.GetUsername()}
+		},
+	)
 }
 
 // newAdminAPITokenList builds `admin api-token list`.
@@ -158,14 +151,15 @@ func newAdminAPITokenList() *cobra.Command {
 			if err := page.validate(); err != nil {
 				return nil, err
 			}
-			if err := owner.resolve(inv); err != nil {
+			ownerTarget, err := owner.parse(inv)
+			if err != nil {
 				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := callWithOptionalAdminUserSelector(inv.Context, c, &owner, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ListAPITokensResponse, error) {
+			resp, err := callWithAdminUserTarget(inv.Context, c, ownerTarget, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ListAPITokensResponse, error) {
 				return c.AdminUserService().ListAPITokens(inv.Context, &leapmuxv1.ListAPITokensRequest{
 					User: sel, ClientId: clientID,
 					IncludeRevoked: includeRevoked, Page: page.request(),
@@ -219,11 +213,15 @@ func newAdminAPITokenIssue() *cobra.Command {
 		},
 		Complete: completeAdminUsers,
 		Run: func(inv *cli.Invocation) (any, error) {
-			if _, err := control.ParseUserArgument(inv.Arg("user")); err != nil {
+			user, err := parseAdminUserTarget(inv.Arg("user"))
+			if err != nil {
 				return nil, err
 			}
 			if strings.TrimSpace(installationName) == "" {
 				return nil, cli.Usagef("--installation-name is empty")
+			}
+			if ttlSeconds < 0 || ttlSeconds > service.MaxAPITokenTTLSeconds {
+				return nil, cli.Usagef("--ttl must be between 0 and %d (got %d)", service.MaxAPITokenTTLSeconds, ttlSeconds)
 			}
 			scopeList, err := splitScopeFlag(scopeFlag)
 			if err != nil {
@@ -233,7 +231,7 @@ func newAdminAPITokenIssue() *cobra.Command {
 			if err != nil {
 				return nil, err
 			}
-			resp, err := callWithAdminUserSelector(inv.Context, c, inv.Arg("user"), func(sel *leapmuxv1.UserSelector) (*leapmuxv1.IssueAPITokenResponse, error) {
+			resp, err := callWithAdminUserTarget(inv.Context, c, user, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.IssueAPITokenResponse, error) {
 				return c.AdminUserService().IssueAPIToken(inv.Context, &leapmuxv1.IssueAPITokenRequest{
 					User: sel, ClientId: clientID,
 					InstallationName: installationName,
@@ -245,7 +243,7 @@ func newAdminAPITokenIssue() *cobra.Command {
 			}
 			return adminAPITokenIssueResult{
 				TokenID: resp.GetTokenId(), AccessToken: resp.GetAccessToken(), RefreshToken: resp.GetRefreshToken(),
-				ClientID: resp.GetClientId(), GrantedScopes: resp.GetGrantedScopes(),
+				ClientID: resp.GetClientId(), GrantedScopes: nonNilStrings(resp.GetGrantedScopes()),
 				Note: "Capture the tokens now. They cannot be retrieved later.",
 			}, nil
 		},
@@ -254,32 +252,15 @@ func newAdminAPITokenIssue() *cobra.Command {
 
 // newAdminAPITokenRevoke builds `admin api-token revoke`.
 func newAdminAPITokenRevoke() *cobra.Command {
-	return cli.NewLeaf(cli.Leaf{
-		Use:         "revoke <token>",
-		Short:       "Revoke an API token",
-		Mutates:     true,
-		Destructive: true,
-		Examples: []cli.Example{
-			{Command: "leapmux admin api-token revoke 7Qx2Lm"},
-		},
-		Complete: completeAdminAPITokens,
-		Run: func(inv *cli.Invocation) (any, error) {
-			id, err := requireNonEmptyArg(inv, "token")
-			if err != nil {
-				return nil, err
-			}
-			c, err := requireAdminClient(inv)
-			if err != nil {
-				return nil, err
-			}
-			resolved, err := resolveAdminAPITokenID(inv.Context, c, id)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := c.AdminUserService().RevokeAPIToken(inv.Context, &leapmuxv1.RevokeAPITokenRequest{Id: resolved}); err != nil {
-				return nil, err
-			}
-			return adminRevocationResult{Revoked: resolved}, nil
+	return newAdminRevokeLeaf(adminRevokeLeafConfig{
+		argName:  "token",
+		short:    "Revoke an API token",
+		example:  "leapmux admin api-token revoke 7Qx2Lm",
+		complete: completeAdminAPITokens,
+		resolve:  resolveAdminAPITokenID,
+		revoke: func(ctx context.Context, c *control.HubClient, id string) error {
+			_, err := c.AdminUserService().RevokeAPIToken(ctx, &leapmuxv1.RevokeAPITokenRequest{Id: id})
+			return err
 		},
 	})
 }
@@ -305,14 +286,15 @@ func newAdminDelegationTokenList() *cobra.Command {
 			if err := page.validate(); err != nil {
 				return nil, err
 			}
-			if err := owner.resolve(inv); err != nil {
+			ownerTarget, err := owner.parse(inv)
+			if err != nil {
 				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := callWithOptionalAdminUserSelector(inv.Context, c, &owner, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ListDelegationTokensResponse, error) {
+			resp, err := callWithAdminUserTarget(inv.Context, c, ownerTarget, func(sel *leapmuxv1.UserSelector) (*leapmuxv1.ListDelegationTokensResponse, error) {
 				return c.AdminUserService().ListDelegationTokens(inv.Context, &leapmuxv1.ListDelegationTokensRequest{
 					User: sel, IncludeRevoked: includeRevoked, Page: page.request(),
 				})
@@ -331,32 +313,15 @@ func newAdminDelegationTokenList() *cobra.Command {
 
 // newAdminDelegationTokenRevoke builds `admin delegation-token revoke`.
 func newAdminDelegationTokenRevoke() *cobra.Command {
-	return cli.NewLeaf(cli.Leaf{
-		Use:         "revoke <token>",
-		Short:       "Revoke a delegation token",
-		Mutates:     true,
-		Destructive: true,
-		Examples: []cli.Example{
-			{Command: "leapmux admin delegation-token revoke 7Qx2Lm"},
-		},
-		Complete: completeAdminDelegationTokens,
-		Run: func(inv *cli.Invocation) (any, error) {
-			id, err := requireNonEmptyArg(inv, "token")
-			if err != nil {
-				return nil, err
-			}
-			c, err := requireAdminClient(inv)
-			if err != nil {
-				return nil, err
-			}
-			resolved, err := resolveAdminDelegationTokenID(inv.Context, c, id)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := c.AdminUserService().RevokeDelegationToken(inv.Context, &leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: resolved}); err != nil {
-				return nil, err
-			}
-			return adminRevocationResult{Revoked: resolved}, nil
+	return newAdminRevokeLeaf(adminRevokeLeafConfig{
+		argName:  "token",
+		short:    "Revoke a delegation token",
+		example:  "leapmux admin delegation-token revoke 7Qx2Lm",
+		complete: completeAdminDelegationTokens,
+		resolve:  resolveAdminDelegationTokenID,
+		revoke: func(ctx context.Context, c *control.HubClient, id string) error {
+			_, err := c.AdminUserService().RevokeDelegationToken(ctx, &leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: id})
+			return err
 		},
 	})
 }
@@ -364,7 +329,7 @@ func newAdminDelegationTokenRevoke() *cobra.Command {
 // splitScopeFlag splits a --scope value into its tokens.
 func splitScopeFlag(raw string) ([]string, error) {
 	tokens := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
 	})
 	if raw != "" && len(tokens) == 0 {
 		return nil, cli.Usagef("--scope carried no permission names; pass real tokens or omit the flag for the default")

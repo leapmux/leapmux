@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +35,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
-// adminRun runs `leapmux control admin <args...> --json` against a hub that
+// adminRun runs `leapmux admin <args...> --json` against a hub that
 // nobody listens on. A verb that passes its own checks then fails at the
 // dial with unavailable, so a test reads which check refused it.
 func adminRun(t *testing.T, args ...string) cliOutcome {
@@ -51,34 +53,40 @@ func TestAdminUserUpdateNoFields(t *testing.T) {
 // TestParseSettingValue pins the scalar coercion the old offline verb
 // accepted: JSON documents pass through, and the CLI quotes bare scalars.
 func TestParseSettingValue(t *testing.T) {
-	v, err := parseSettingValue("3600")
+	const adminReset = "leapmux admin settings reset <key>"
+	v, err := parseSettingValue("3600", adminReset)
 	require.NoError(t, err)
 	assert.JSONEq(t, "3600", string(v))
 
-	v, err = parseSettingValue("true")
+	v, err = parseSettingValue("true", adminReset)
 	require.NoError(t, err)
 	assert.JSONEq(t, "true", string(v))
 
-	v, err = parseSettingValue(`{"port":465}`)
+	v, err = parseSettingValue(`{"port":465}`, adminReset)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"port":465}`, string(v))
 
-	v, err = parseSettingValue("dark")
+	v, err = parseSettingValue("dark", adminReset)
 	require.NoError(t, err)
 	assert.JSONEq(t, `"dark"`, string(v))
 
 	// An empty VALUE is refused, but the empty STRING is a legal value for
 	// some keys, so the message must state both ways to reach it.
-	_, err = parseSettingValue("")
+	_, err = parseSettingValue("", adminReset)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `pass '""' to store the empty string`)
-	assert.Contains(t, err.Error(), "settings reset <key>")
+	assert.Contains(t, err.Error(), `"leapmux admin settings reset <key>"`)
 
-	v, err = parseSettingValue("[1,2]")
+	_, err = parseSettingValue("", "leapmux settings reset <key>")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"leapmux settings reset <key>"`)
+	assert.NotContains(t, err.Error(), "admin settings reset")
+
+	v, err = parseSettingValue("[1,2]", adminReset)
 	require.NoError(t, err)
 	assert.JSONEq(t, "[1,2]", string(v))
 
-	v, err = parseSettingValue(`"dark"`)
+	v, err = parseSettingValue(`"dark"`, adminReset)
 	require.NoError(t, err)
 	assert.JSONEq(t, `"dark"`, string(v), "an already-quoted JSON string must not be wrapped again")
 
@@ -87,14 +95,14 @@ func TestParseSettingValue(t *testing.T) {
 	// the hub answered with a type error that never mentioned the missing
 	// brace, and for a string-valued key it accepted the malformed text and
 	// STORED it. An operator who really means a literal brace quotes it.
-	_, err = parseSettingValue("{not-json")
+	_, err = parseSettingValue("{not-json", adminReset)
 	require.Error(t, err, "an object-looking value that is not valid JSON must be refused here, not sent")
 	assert.Contains(t, err.Error(), "not valid JSON")
 
-	_, err = parseSettingValue(`[1,2`)
+	_, err = parseSettingValue(`[1,2`, adminReset)
 	require.Error(t, err, "an array-looking value that is not valid JSON must be refused too")
 
-	v, err = parseSettingValue(`"{literal-brace}"`)
+	v, err = parseSettingValue(`"{literal-brace}"`, adminReset)
 	require.NoError(t, err, "quoting is how an operator asks for a literal brace")
 	assert.JSONEq(t, `"{literal-brace}"`, string(v))
 }
@@ -130,13 +138,14 @@ func TestAdminRateLimitSet_RefusesUnknownOperation(t *testing.T) {
 // normalized to the JSON literal. Passing the token through made the hub
 // answer with a decode error that specifies a line the operator never typed.
 func TestParseSettingValue_NormalizesEveryBooleanSpelling(t *testing.T) {
+	const resetCmd = "leapmux admin settings reset <key>"
 	for _, raw := range []string{"true", "TRUE", "True", "t", "T"} {
-		v, err := parseSettingValue(raw)
+		v, err := parseSettingValue(raw, resetCmd)
 		require.NoError(t, err)
 		assert.JSONEq(t, `true`, string(v), "%q must ship the JSON literal", raw)
 	}
 	for _, raw := range []string{"false", "FALSE", "False", "f", "F"} {
-		v, err := parseSettingValue(raw)
+		v, err := parseSettingValue(raw, resetCmd)
 		require.NoError(t, err)
 		assert.JSONEq(t, `false`, string(v), "%q must ship the JSON literal", raw)
 	}
@@ -146,8 +155,9 @@ func TestParseSettingValue_NormalizesEveryBooleanSpelling(t *testing.T) {
 // bare digit stays a number — testing bool first turned
 // `settings set <int_key> 1` into `true`.
 func TestParseSettingValue_DigitsStayNumbers(t *testing.T) {
+	const resetCmd = "leapmux admin settings reset <key>"
 	for _, raw := range []string{"0", "1", "42", "-7", "0.5"} {
-		v, err := parseSettingValue(raw)
+		v, err := parseSettingValue(raw, resetCmd)
 		require.NoError(t, err)
 		assert.JSONEq(t, raw, string(v), "%q must ship as a number", raw)
 	}
@@ -157,7 +167,7 @@ func TestParseSettingValue_DigitsStayNumbers(t *testing.T) {
 	// the hub answer with a decode error that specifies a character the
 	// operator typed for a different reason. They belong on the string path.
 	for _, raw := range []string{"NaN", "Infinity", "-Inf", "infinity", "0x1p-2", "1_000"} {
-		v, err := parseSettingValue(raw)
+		v, err := parseSettingValue(raw, resetCmd)
 		require.NoErrorf(t, err, "%q", raw)
 		quoted, mErr := json.Marshal(raw)
 		require.NoError(t, mErr)
@@ -389,7 +399,7 @@ func TestSettingDescriptionText_PointsAtTheVerbThatCanWriteTheKey(t *testing.T) 
 // TestTokenRowsCarryTheOwnerDeletedFlag pins a field the two inline row
 // loops both dropped.
 //
-// `--user-id` on the token listings deliberately resolves through
+// `--user id:<id>` on the token listings deliberately resolves through
 // GetByIDIncludeDeleted so an operator can enumerate a soft-deleted
 // account's still-live tokens and revoke them. The hub populates
 // owner_deleted for exactly that, and neither loop printed it — so the
@@ -428,8 +438,8 @@ func TestTokenRowsCarryTheOwnerDeletedFlag(t *testing.T) {
 
 // TestCaptchaSetRefusesAnAlgorithmBeforeTheDial pins that a bad
 // --algorithm answers with the algorithm, not with a connection error.
-// The check has to sit in BeforeDial, because an operator's typo must not
-// need a hub.
+// The check has to run before requireAdminClient, because an operator's typo
+// must not need a hub.
 func TestCaptchaSetRefusesAnAlgorithmBeforeTheDial(t *testing.T) {
 	f := adminRun(t, "captcha", "set", "--algorithm", "SHA-999").requireFailure(t, cli.CodeUsage)
 	assert.Contains(t, f.Message, "unsupported captcha algorithm")
@@ -440,10 +450,10 @@ func TestCaptchaSetRefusesAnAlgorithmBeforeTheDial(t *testing.T) {
 	adminRun(t, "captcha", "set", "--algorithm", "SCRYPT").requireFailure(t, cli.CodeUnavailable)
 }
 
-// TestUserArgumentRefusalsHappenBeforeTheDial pins the gap that userTarget
-// closes.
+// TestUserArgumentRefusalsHappenBeforeTheDial pins pre-dial <user> validation
+// through control.ParseUserArgument.
 //
-// Nine verbs address exactly ONE user, and the hub holds the same rule --
+// Eight verbs address exactly one user, and the hub holds the same rule --
 // but it can only answer over a connection the operator did not need. An
 // empty <user> must state the argument, not the transport.
 func TestUserArgumentRefusalsHappenBeforeTheDial(t *testing.T) {
@@ -517,11 +527,11 @@ func TestUserFilterFlagsBind(t *testing.T) {
 	require.NoError(t, fs.Parse([]string{"--user", "id:usr_1"}))
 	assert.Equal(t, "id:usr_1", f.User)
 	require.NotNil(t, fs.Lookup("user"))
-	assert.Contains(t, fs.Lookup("user").Usage, "empty = all users")
+	assert.Contains(t, fs.Lookup("user").Usage, "omit for all users")
 }
 
-// TestUserFilterFlagsSelector pins the selector that resolve builds for --user:
-// nil when unset, or the parsed UserSelector otherwise.
+// TestUserFilterFlagsSelector pins the target that parse builds for --user:
+// unset when omitted, or the parsed UserSelector otherwise.
 func TestUserFilterFlagsSelector(t *testing.T) {
 	newInv := func(args ...string) (*userFilterFlags, *cli.Invocation) {
 		f := &userFilterFlags{}
@@ -535,25 +545,35 @@ func TestUserFilterFlagsSelector(t *testing.T) {
 	}
 
 	none, inv := newInv()
-	require.NoError(t, none.resolve(inv))
-	assert.Nil(t, none.Selector())
+	got, err := none.parse(inv)
+	require.NoError(t, err)
+	assert.False(t, got.isSet())
+	assert.Nil(t, got.selector)
+	assert.Empty(t, got.prefix)
 
 	byID, inv := newInv("--user", "id:usr_1")
-	require.NoError(t, byID.resolve(inv))
-	assert.Equal(t, "usr_1", byID.Selector().GetId())
-	assert.Empty(t, byID.Selector().GetUsername(), "an id filter carries no username")
+	got, err = byID.parse(inv)
+	require.NoError(t, err)
+	assert.True(t, got.isSet())
+	assert.Equal(t, "usr_1", got.selector.GetId())
+	assert.Empty(t, got.selector.GetUsername(), "an id filter carries no username")
+	assert.Equal(t, "usr_1", got.prefix)
 
 	byName, inv := newInv("--user", "amy")
-	require.NoError(t, byName.resolve(inv))
-	assert.Equal(t, "amy", byName.Selector().GetUsername())
-	assert.Empty(t, byName.Selector().GetId(), "a username filter carries no id")
-}
+	got, err = byName.parse(inv)
+	require.NoError(t, err)
+	assert.True(t, got.isSet())
+	assert.Equal(t, "amy", got.selector.GetUsername())
+	assert.Empty(t, got.selector.GetId(), "a username filter carries no id")
+	assert.Empty(t, got.prefix, "a 3-char handle is below MinPrefixLength so it does not trigger prefix fallback")
 
-// A nil filter means every user, so a listing that forgot to resolve its flags
-// must fail loudly. Sending nil would print every user's rows for a command
-// that asked for one user's.
-func TestUserFilterFlagsSelectorPanicsBeforeResolve(t *testing.T) {
-	assert.Panics(t, func() { (&userFilterFlags{User: "id:usr_1"}).Selector() })
+	byLongName, inv := newInv("--user", "alice")
+	got, err = byLongName.parse(inv)
+	require.NoError(t, err)
+	assert.True(t, got.isSet())
+	assert.Equal(t, "alice", got.selector.GetUsername())
+	assert.Empty(t, got.selector.GetId())
+	assert.Equal(t, "alice", got.prefix)
 }
 
 // TestUserTarget_ReadsAUsernameOrAnID pins the selector that a verb
@@ -577,7 +597,7 @@ func TestUserTarget_ReadsAUsernameOrAnID(t *testing.T) {
 	}
 }
 
-// An empty explicit --user value builds no selector, so no listing silently
+// An empty explicit --user value builds no target, so no listing silently
 // widens to all users when a script passed an empty variable.
 func TestUserFilterFlags_BuildNoSelectorForEmptyUser(t *testing.T) {
 	filter := &userFilterFlags{}
@@ -587,8 +607,9 @@ func TestUserFilterFlags_BuildNoSelectorForEmptyUser(t *testing.T) {
 		Flags: func(fs *pflag.FlagSet) { filter.bind(fs) },
 	})
 	require.NoError(t, cmd.Flags().Parse([]string{"--user", ""}))
-	require.Error(t, filter.resolve(&cli.Invocation{Command: cmd}))
-	assert.Panics(t, func() { filter.Selector() }, "a refused value resolves nothing")
+	got, err := filter.parse(&cli.Invocation{Command: cmd})
+	require.Error(t, err)
+	assert.False(t, got.isSet(), "a refused value produces an unset target")
 }
 
 // TestOnlySettingValue pins the count check on a single-key reply. The hub
@@ -1074,5 +1095,189 @@ func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 				"the hub's wording reaches the operator once and unchanged; the CLI adds nothing")
 			assert.NotContains(t, envErr, "hints", "the CLI appends no remedy of its own")
 		})
+	}
+}
+
+func TestRequireAdminClient_ClassifiesBadURLAndCorruptCredentials(t *testing.T) {
+	for _, bad := range []string{"not-a-url", "ftp://hub.example", "unix:", "http://:8080"} {
+		t.Run("bad_url_"+bad, func(t *testing.T) {
+			isolateCLIEnv(t)
+			runControl(t, "admin", "settings", "list", "--hub", bad).requireFailure(t, cli.CodeUsage)
+		})
+	}
+
+	t.Run("corrupt credential file surfaces as internal", func(t *testing.T) {
+		isolateCLIEnv(t)
+		path, err := control.CredentialsPath("https://hub.example")
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		require.NoError(t, os.WriteFile(path, []byte("{corrupt"), 0o600))
+
+		f := runControl(t, "admin", "settings", "list", "--hub", "https://hub.example").requireFailure(t, cli.CodeInternal)
+		assert.Contains(t, f.Message, path)
+	})
+}
+
+func TestAdminNetworkStatusRenderText_NoLeadingBlankLineAndShowsBaseTCP(t *testing.T) {
+	t.Run("no bound listeners omits leading blank line", func(t *testing.T) {
+		var buf bytes.Buffer
+		res := adminNetworkStatusResult{
+			BaseTCPAddresses:  []string{"127.0.0.1:4327\n"},
+			LocalIPCAddresses: []string{"unix:/tmp/hub.sock"},
+			ConfiguredExtra:   []string{"100.64.0.1:4327"},
+			Interfaces: []adminNetworkInterfaceRow{
+				{Name: "lo0", Up: true, Addresses: []adminNetworkInterfaceAddr{{IP: "127.0.0.1", Loopback: true}}},
+			},
+		}
+		require.NoError(t, res.RenderText(&buf))
+		out := buf.String()
+		assert.False(t, strings.HasPrefix(out, "\n"), "output must not start with a blank line: %q", out)
+		assert.Contains(t, out, "Base TCP addresses: 127.0.0.1:4327\n")
+		assert.Contains(t, out, "Local IPC: unix:/tmp/hub.sock\n")
+		assert.Contains(t, out, "Extra listen addresses: 100.64.0.1:4327\n")
+		assert.Contains(t, out, "\nInterfaces:\n")
+	})
+
+	t.Run("interfaces only omits leading blank line", func(t *testing.T) {
+		var buf bytes.Buffer
+		res := adminNetworkStatusResult{
+			Interfaces: []adminNetworkInterfaceRow{
+				{Name: "eth0", Up: false, Addresses: []adminNetworkInterfaceAddr{{IP: "10.0.0.2"}}},
+			},
+		}
+		require.NoError(t, res.RenderText(&buf))
+		assert.True(t, strings.HasPrefix(buf.String(), "Interfaces:\n"))
+	})
+}
+
+func TestAdminAppUpdate_RefusesNoFlagsBeforeDial(t *testing.T) {
+	f := adminRun(t, "app", "update", "lmx_app_1").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "nothing to update (pass at least one flag)", f.Message)
+}
+
+func TestAdminJSONSlicesMarshalAsEmptyArrayNotNull(t *testing.T) {
+	appJSON, err := json.Marshal(appRegistrationRowOf(&leapmuxv1.App{ClientId: "c1"}))
+	require.NoError(t, err)
+	assert.Contains(t, string(appJSON), `"redirect_uris":[]`)
+	assert.Contains(t, string(appJSON), `"scopes":[]`)
+	assert.Contains(t, string(appJSON), `"grant_types":[]`)
+
+	tokJSON, err := json.Marshal(adminAPITokenRowOf(&leapmuxv1.AdminAPIToken{Id: "t1"}))
+	require.NoError(t, err)
+	assert.Contains(t, string(tokJSON), `"granted_scopes":[]`)
+}
+
+func TestSplitScopeFlag_HandlesCRLF(t *testing.T) {
+	got, err := splitScopeFlag("workspace:read\r\nfile:read\rgit:read")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"workspace:read", "file:read", "git:read"}, got)
+
+	_, err = splitScopeFlag("\r\n \t ")
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+}
+
+func TestAdminValidationBeforeDial_FlagsAndRanges(t *testing.T) {
+	// IdP validation (TRAPS-9, DESIGN-20, SWEEP-7)
+	adminRun(t, "idp", "add", "--type", "github", "--trust-email", "").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "idp", "add", "--type", "bogus").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "idp", "add", "--type", "github", "--response-mode", "fragment").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "idp", "add", "--type", "github", "--response-mode", "").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "idp", "add", "--type", "github", "--response-mode", "form_post").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "idp", "add", "--type", "oidc", "--response-mode", "form_post", "--trust-email", "true").requireFailure(t, cli.CodeUnavailable)
+	f := adminRun(t, "idp", "rotate-secret", "p1", "--client-secret", "   ").requireFailure(t, cli.CodeUsage)
+	assert.Equal(t, "--client-secret is empty", f.Message)
+
+	// User update optional boolean flag validation
+	adminRun(t, "user", "update", "amy", "--email-verified", "").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "user", "update", "amy", "--email-verified", "invalid").requireFailure(t, cli.CodeUsage)
+
+	// Worker status enum validation (DESIGN-20)
+	adminRun(t, "worker", "list", "--status", "").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "worker", "list", "--status", "bogus").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "worker", "list", "--status", "all").requireFailure(t, cli.CodeUnavailable)
+
+	// Captcha reset empty --provider (SCAN-5)
+	adminRun(t, "captcha", "reset", "--provider", "").requireFailure(t, cli.CodeUsage)
+
+	// Negative / out-of-range numeric flags (TRAPS-15)
+	adminRun(t, "api-token", "issue", "amy", "--installation-name", "ci", "--ttl", "-1").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "api-token", "issue", "amy", "--installation-name", "ci", "--ttl", fmt.Sprintf("%d", service.MaxAPITokenTTLSeconds+1)).requireFailure(t, cli.CodeUsage)
+	adminRun(t, "captcha", "set", "--cost", "-1").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "captcha", "set", "--memory-cost", "-1").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "captcha", "set", "--parallelism", "-1").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "captcha", "set", "--expires", "-1").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "captcha", "set", "--provider", "recaptcha_v3", "--min-score", "-0.1").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "captcha", "set", "--provider", "recaptcha_v3", "--min-score", "1.5").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "captcha", "set", "--provider", "recaptcha_v3", "--min-score", "NaN").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "rate-limit", "set", "elevation", "--max-attempts", "-1").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "rate-limit", "set", "elevation", "--max-attempts", "1001").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "rate-limit", "set", "elevation", "--max-attempts", "1000").requireFailure(t, cli.CodeUnavailable)
+	adminRun(t, "rate-limit", "set", "elevation", "--window", "-1").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "rate-limit", "set", "elevation", "--window", "30").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "rate-limit", "set", "elevation", "--window", "59").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "rate-limit", "set", "elevation", "--window", "60").requireFailure(t, cli.CodeUnavailable)
+	adminRun(t, "rate-limit", "set", "elevation", "--window", "86400").requireFailure(t, cli.CodeUnavailable)
+	adminRun(t, "rate-limit", "set", "elevation", "--window", "86401").requireFailure(t, cli.CodeUsage)
+	adminRun(t, "rate-limit", "set", "elevation", "--window", "90000").requireFailure(t, cli.CodeUsage)
+}
+
+func TestAdminUserPasswordCommands_CheckClientBeforePrompting(t *testing.T) {
+	for _, args := range [][]string{
+		{"admin", "user", "create", "amy"},
+		{"admin", "user", "reset-password", "amy"},
+	} {
+		t.Run("inside tab "+strings.Join(args, " "), func(t *testing.T) {
+			isolateCLIEnv(t)
+			t.Setenv("LEAPMUX_CONTROL_SOCK", workerIPCSock)
+			f := runControl(t, args...).requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, "admin commands do not run inside a LeapMux tab")
+		})
+		t.Run("no hub "+strings.Join(args, " "), func(t *testing.T) {
+			isolateCLIEnv(t)
+			f := runControl(t, args...).requireFailure(t, cli.CodeNotLoggedIn)
+			assert.Equal(t, "no hub selected", f.Message)
+		})
+	}
+}
+
+func TestResolveAdminTarget_IDOnlyEntitiesDoNotMatchOwnerUsername(t *testing.T) {
+	id1 := fullTestID("wrk-aaaa")
+	id2 := fullTestID("wrk-aaab")
+	list := func(_ context.Context) ([]cli.Candidate, error) {
+		return []cli.Candidate{
+			{ID: id1, Kind: "worker", Title: "alice"},
+			{ID: id2, Kind: "worker", Title: "bob"},
+		}, nil
+	}
+
+	// Bare username must NOT resolve to a worker owned by alice.
+	got, err := resolveAdminTarget(t.Context(), "alice", "worker", false, list)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", got, "unmatched bare owner username falls through rather than selecting the worker")
+
+	// Explicit name:/title: selectors are rejected for ID-only entities.
+	_, err = resolveAdminTarget(t.Context(), "name:alice", "worker", false, list)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+
+	_, err = resolveAdminTarget(t.Context(), "title:alice", "worker", false, list)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+
+	// Ambiguous ID prefix still carries Title as display context.
+	_, err = resolveAdminTarget(t.Context(), id1[:7], "worker", false, list)
+	require.Error(t, err)
+	ce := cli.FromError(err)
+	assert.Equal(t, cli.CodeAmbiguousTarget, ce.Code)
+	require.Len(t, ce.Candidates, 2)
+	assert.Equal(t, "alice", ce.Candidates[0].Title)
+}
+
+func TestCaptchaTuningSpecs_SortedByFlagName(t *testing.T) {
+	require.NotEmpty(t, captchaTuningSpecs)
+	for i := 1; i < len(captchaTuningSpecs); i++ {
+		assert.Less(t, captchaTuningSpecs[i-1].flagName, captchaTuningSpecs[i].flagName,
+			"captchaTuningSpecs must stay strictly sorted by flagName so foreign-flag refusals are deterministic")
 	}
 }

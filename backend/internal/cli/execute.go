@@ -537,7 +537,7 @@ func unknownCommand(cmd *cobra.Command, token string) error {
 	var suggestions []string
 	for _, name := range raw {
 		sub := findSubcommandByName(cmd, name)
-		if isDestructiveSuggestion(sub) && levenshteinDistance(token, name) > destructiveIntentThreshold {
+		if isDestructiveSuggestion(sub) && LevenshteinDistance(token, name) > destructiveIntentThreshold {
 			continue
 		}
 		suggestions = append(suggestions, name)
@@ -561,8 +561,9 @@ func isDestructiveSuggestion(sub *cobra.Command) bool {
 	return sub != nil && IsDestructive(sub)
 }
 
-// levenshteinDistance computes the rune edit distance between a and b.
-func levenshteinDistance(a, b string) int {
+// LevenshteinDistance computes the rune edit distance between a and b: the
+// fewest insertions, deletions, and substitutions of one rune that turn a into b.
+func LevenshteinDistance(a, b string) int {
 	ar, br := []rune(a), []rune(b)
 	if len(ar) == 0 {
 		return len(br)
@@ -582,7 +583,7 @@ func levenshteinDistance(a, b string) int {
 			if ar[i-1] == br[j-1] {
 				cost = 0
 			}
-			curr[j] = min(prev[j]+1, min(curr[j-1]+1, prev[j-1]+cost))
+			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
 		}
 		prev, curr = curr, prev
 	}

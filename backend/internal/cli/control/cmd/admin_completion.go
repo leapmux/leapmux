@@ -5,7 +5,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -31,20 +30,58 @@ func adminCompletionClient(cmd *cobra.Command) (*control.HubClient, context.Cont
 	if err != nil {
 		return nil, nil, nil, false
 	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), completionTimeout)
+	ctx, cancel := completionContext(cmd)
 	return c, ctx, cancel, true
 }
 
-func formatCompletionCandidate(value, desc string) string {
-	if desc == "" {
-		return value
+type completionItem struct {
+	value string
+	desc  string
+}
+
+func completeAdminItems(
+	cmd *cobra.Command,
+	toComplete string,
+	fetch func(ctx context.Context, c *control.HubClient) ([]completionItem, error),
+) ([]string, cobra.ShellCompDirective) {
+	c, ctx, cancel, ok := adminCompletionClient(cmd)
+	if !ok {
+		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return value + "\t" + strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
+	defer cancel()
+	items, err := fetch(ctx, c)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		val := cli.SanitizeSingleLine(item.value)
+		if val != "" && strings.HasPrefix(val, toComplete) {
+			out = append(out, formatCompletionCandidate(val, item.desc))
 		}
-		return r
-	}, desc)
+	}
+	slices.Sort(out)
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeAdminList[T any](
+	cmd *cobra.Command,
+	toComplete string,
+	list func(ctx context.Context, c *control.HubClient) ([]T, error),
+	itemOf func(T) (value, desc string),
+) ([]string, cobra.ShellCompDirective) {
+	return completeAdminItems(cmd, toComplete, func(ctx context.Context, c *control.HubClient) ([]completionItem, error) {
+		rows, err := list(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]completionItem, 0, len(rows))
+		for _, row := range rows {
+			val, desc := itemOf(row)
+			items = append(items, completionItem{value: val, desc: desc})
+		}
+		return items, nil
+	})
 }
 
 func completeRateLimitOperations(_ *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -52,7 +89,7 @@ func completeRateLimitOperations(_ *cobra.Command, _ cli.ArgSpec, toComplete str
 	for _, op := range ratelimit.KnownOperations() {
 		s := string(op)
 		if strings.HasPrefix(s, toComplete) {
-			out = append(out, s)
+			out = append(out, formatCompletionCandidate(s, ""))
 		}
 	}
 	slices.Sort(out)
@@ -60,189 +97,108 @@ func completeRateLimitOperations(_ *cobra.Command, _ cli.ArgSpec, toComplete str
 }
 
 func completeAdminSettingsKeys(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AdminSettingsService().ListSettings(ctx, &leapmuxv1.ListSettingsRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	summaries := map[string]string{}
-	for _, d := range resp.GetDescriptors() {
-		summaries[d.GetKey()] = d.GetSummary()
-	}
-	var out []string
-	for _, v := range resp.GetValues() {
-		if strings.HasPrefix(v.GetKey(), toComplete) {
-			out = append(out, formatCompletionCandidate(v.GetKey(), summaries[v.GetKey()]))
+	return completeAdminItems(cmd, toComplete, func(ctx context.Context, c *control.HubClient) ([]completionItem, error) {
+		resp, err := c.AdminSettingsService().ListSettings(ctx, &leapmuxv1.ListSettingsRequest{})
+		if err != nil {
+			return nil, err
 		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+		summaries := make(map[string]string, len(resp.GetDescriptors()))
+		for _, d := range resp.GetDescriptors() {
+			summaries[d.GetKey()] = d.GetSummary()
+		}
+		items := make([]completionItem, 0, len(resp.GetValues()))
+		for _, v := range resp.GetValues() {
+			items = append(items, completionItem{value: v.GetKey(), desc: summaries[v.GetKey()]})
+		}
+		return items, nil
+	})
 }
 
 func completeAdminUsers(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AdminUserService().ListUsers(ctx, &leapmuxv1.ListUsersRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var out []string
-	for _, u := range resp.GetUsers() {
-		if strings.HasPrefix(u.GetUsername(), toComplete) {
-			out = append(out, formatCompletionCandidate(u.GetUsername(), u.GetDisplayName()))
+	return completeAdminItems(cmd, toComplete, func(ctx context.Context, c *control.HubClient) ([]completionItem, error) {
+		resp, err := c.AdminUserService().ListUsers(ctx, &leapmuxv1.ListUsersRequest{})
+		if err != nil {
+			return nil, err
 		}
-		idForm := "id:" + u.GetId()
-		if strings.HasPrefix(idForm, toComplete) {
-			out = append(out, formatCompletionCandidate(idForm, u.GetUsername()))
+		items := make([]completionItem, 0, len(resp.GetUsers())*2)
+		for _, u := range resp.GetUsers() {
+			if u.GetUsername() != "" {
+				items = append(items, completionItem{value: u.GetUsername(), desc: u.GetDisplayName()})
+			}
+			if u.GetId() != "" {
+				items = append(items, completionItem{value: "id:" + u.GetId(), desc: u.GetUsername()})
+			}
 		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+		return items, nil
+	})
 }
 
 func completeAdminSessions(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AdminUserService().ListSessions(ctx, &leapmuxv1.ListSessionsRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var out []string
-	for _, s := range resp.GetSessions() {
-		if strings.HasPrefix(s.GetId(), toComplete) {
-			out = append(out, formatCompletionCandidate(s.GetId(), s.GetUsername()))
-		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+	return completeAdminList(cmd, toComplete,
+		func(ctx context.Context, c *control.HubClient) ([]*leapmuxv1.AdminSession, error) {
+			resp, err := c.AdminUserService().ListSessions(ctx, &leapmuxv1.ListSessionsRequest{})
+			return resp.GetSessions(), err
+		},
+		func(s *leapmuxv1.AdminSession) (string, string) { return s.GetId(), s.GetUsername() },
+	)
 }
 
 func completeAdminWorkers(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AdminWorkerService().ListWorkers(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var out []string
-	for _, w := range resp.GetWorkers() {
-		if strings.HasPrefix(w.GetId(), toComplete) {
-			out = append(out, formatCompletionCandidate(w.GetId(), w.GetOwnerUsername()))
-		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+	return completeAdminList(cmd, toComplete,
+		func(ctx context.Context, c *control.HubClient) ([]*leapmuxv1.AdminWorker, error) {
+			resp, err := c.AdminWorkerService().ListWorkers(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{})
+			return resp.GetWorkers(), err
+		},
+		func(w *leapmuxv1.AdminWorker) (string, string) { return w.GetId(), w.GetOwnerUsername() },
+	)
 }
 
 func completeAdminRegKeys(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AdminWorkerService().ListRegistrationKeys(ctx, &leapmuxv1.ListRegistrationKeysRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var out []string
-	for _, k := range resp.GetKeys() {
-		if strings.HasPrefix(k.GetId(), toComplete) {
-			out = append(out, formatCompletionCandidate(k.GetId(), k.GetCreatorUsername()))
-		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+	return completeAdminList(cmd, toComplete,
+		func(ctx context.Context, c *control.HubClient) ([]*leapmuxv1.AdminRegistrationKey, error) {
+			resp, err := c.AdminWorkerService().ListRegistrationKeys(ctx, &leapmuxv1.ListRegistrationKeysRequest{})
+			return resp.GetKeys(), err
+		},
+		func(k *leapmuxv1.AdminRegistrationKey) (string, string) { return k.GetId(), k.GetCreatorUsername() },
+	)
 }
 
 func completeAdminApps(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AppService().ListApps(ctx, &leapmuxv1.ListAppsRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var out []string
-	for _, app := range resp.GetApps() {
-		if strings.HasPrefix(app.GetClientId(), toComplete) {
-			out = append(out, formatCompletionCandidate(app.GetClientId(), app.GetClientName()))
-		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+	return completeAdminList(cmd, toComplete,
+		func(ctx context.Context, c *control.HubClient) ([]*leapmuxv1.App, error) {
+			resp, err := c.AppService().ListApps(ctx, &leapmuxv1.ListAppsRequest{})
+			return resp.GetApps(), err
+		},
+		func(app *leapmuxv1.App) (string, string) { return app.GetClientId(), app.GetClientName() },
+	)
 }
 
 func completeAdminIdPs(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AdminIdPService().ListOAuthProviders(ctx, &leapmuxv1.ListOAuthProvidersRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var out []string
-	for _, p := range resp.GetProviders() {
-		if strings.HasPrefix(p.GetId(), toComplete) {
-			out = append(out, formatCompletionCandidate(p.GetId(), p.GetName()))
-		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+	return completeAdminList(cmd, toComplete,
+		func(ctx context.Context, c *control.HubClient) ([]*leapmuxv1.AdminOAuthProvider, error) {
+			resp, err := c.AdminIdPService().ListOAuthProviders(ctx, &leapmuxv1.ListOAuthProvidersRequest{})
+			return resp.GetProviders(), err
+		},
+		func(p *leapmuxv1.AdminOAuthProvider) (string, string) { return p.GetId(), p.GetName() },
+	)
 }
 
 func completeAdminAPITokens(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AdminUserService().ListAPITokens(ctx, &leapmuxv1.ListAPITokensRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var out []string
-	for _, tok := range resp.GetTokens() {
-		if strings.HasPrefix(tok.GetId(), toComplete) {
-			out = append(out, formatCompletionCandidate(tok.GetId(), tok.GetInstallationName()))
-		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+	return completeAdminList(cmd, toComplete,
+		func(ctx context.Context, c *control.HubClient) ([]*leapmuxv1.AdminAPIToken, error) {
+			resp, err := c.AdminUserService().ListAPITokens(ctx, &leapmuxv1.ListAPITokensRequest{})
+			return resp.GetTokens(), err
+		},
+		func(tok *leapmuxv1.AdminAPIToken) (string, string) { return tok.GetId(), tok.GetInstallationName() },
+	)
 }
 
 func completeAdminDelegationTokens(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	c, ctx, cancel, ok := adminCompletionClient(cmd)
-	if !ok {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	defer cancel()
-	resp, err := c.AdminUserService().ListDelegationTokens(ctx, &leapmuxv1.ListDelegationTokensRequest{})
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	var out []string
-	for _, tok := range resp.GetTokens() {
-		if strings.HasPrefix(tok.GetId(), toComplete) {
-			out = append(out, formatCompletionCandidate(tok.GetId(), tok.GetUsername()))
-		}
-	}
-	slices.Sort(out)
-	return out, cobra.ShellCompDirectiveNoFileComp
+	return completeAdminList(cmd, toComplete,
+		func(ctx context.Context, c *control.HubClient) ([]*leapmuxv1.AdminDelegationToken, error) {
+			resp, err := c.AdminUserService().ListDelegationTokens(ctx, &leapmuxv1.ListDelegationTokensRequest{})
+			return resp.GetTokens(), err
+		},
+		func(tok *leapmuxv1.AdminDelegationToken) (string, string) { return tok.GetId(), tok.GetUsername() },
+	)
 }

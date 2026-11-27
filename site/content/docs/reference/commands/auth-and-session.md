@@ -166,16 +166,13 @@ leapmux context use [flags]
 
 | Flag | Description |
 |---|---|
-| `--hub string` | default hub URL (pass "" to clear) |
-| `--worker string` | default worker id or name (pass "" to clear) |
-| `--workspace string` | default workspace id or title (pass "" to clear) |
-| `--provider string` | default agent provider (pass "" to clear) |
+| `--hub string` | default hub URL |
+| `--worker string` | default worker id or name |
+| `--workspace string` | default workspace id or title |
+| `--provider string` | default agent provider |
 
 ```sh
 leapmux context use --worker build-box --workspace "Release 1.4"
-
-# Clear a single saved default by passing an empty string.
-leapmux context use --provider ""
 ```
 
 ### `leapmux context clear`

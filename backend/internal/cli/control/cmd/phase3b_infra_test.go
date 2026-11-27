@@ -344,23 +344,6 @@ func TestSettingsWorkerPingQuakePSAndGitStatus(t *testing.T) {
 	startPhase3BIPC(t,
 		func(method string, body []byte) (proto.Message, error) {
 			switch method {
-			case leapmuxv1connect.UserServiceListUserSettingsProcedure:
-				return &leapmuxv1.ListUserSettingsResponse{
-					Descriptors: []*leapmuxv1.SettingDescriptor{{Key: "appearance", Summary: "Theme preferences"}},
-					Values:      []*leapmuxv1.SettingValue{{Key: "appearance", Customized: true, EffectiveJson: `{"theme":"dark"}`, ValueJson: `{"theme":"dark"}`}},
-				}, nil
-			case leapmuxv1connect.UserServiceUpdateUserSettingProcedure:
-				var req leapmuxv1.UpdateUserSettingRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
-				return &leapmuxv1.UpdateUserSettingResponse{
-					Value: &leapmuxv1.SettingValue{Key: req.GetKey(), Customized: true, EffectiveJson: req.GetPartialJson(), ValueJson: req.GetPartialJson()},
-				}, nil
-			case leapmuxv1connect.UserServiceResetUserSettingProcedure:
-				var req leapmuxv1.ResetUserSettingRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
-				return &leapmuxv1.ResetUserSettingResponse{
-					Value: &leapmuxv1.SettingValue{Key: req.GetKey(), Customized: false, EffectiveJson: `{"theme":"system"}`},
-				}, nil
 			case leapmuxv1connect.WorkerManagementServiceListWorkersProcedure:
 				return &leapmuxv1.ListWorkersResponse{Workers: []*leapmuxv1.Worker{{Id: "worker-A", Online: true}}}, nil
 			case leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure:
@@ -482,16 +465,6 @@ func TestSettingsWorkerPingQuakePSAndGitStatus(t *testing.T) {
 			}
 		},
 	)
-
-	// Settings
-	sList := runControl(t, "settings", "list").Data(t)
-	assert.Len(t, sList["settings"], 1)
-	sGet := runControl(t, "settings", "get", "appearance").Data(t)
-	assert.Equal(t, "appearance", sGet["key"])
-	sSet := runControl(t, "settings", "set", "appearance", `{"theme":"light"}`).Data(t)
-	assert.Equal(t, true, sSet["customized"])
-	sReset := runControl(t, "settings", "reset", "appearance").Data(t)
-	assert.Equal(t, false, sReset["customized"])
 
 	// Worker ping
 	ping := runControl(t, "worker", "ping", "worker-A").Data(t)

@@ -55,7 +55,7 @@ func addHubHints(root *cobra.Command) {
 func usesDirectHub(cmd *cobra.Command) bool {
 	for parent := cmd.Parent(); parent != nil; parent = cmd.Parent() {
 		if parent.Parent() == nil {
-			return cmd.Name() == "admin" || cmd.Name() == "auth" || cmd.Name() == "worker"
+			return cmd.Name() == "admin" || cmd.Name() == "auth" || cmd.Name() == "settings" || cmd.Name() == "worker"
 		}
 		cmd = parent
 	}

@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -217,7 +216,7 @@ func closeProcedures(path string) []string {
 	var found []candidate
 	for _, name := range callableProcedures() {
 		lower := strings.ToLower(name)
-		distance := editDistance(want, lower)
+		distance := cli.LevenshteinDistance(want, lower)
 		if _, method, _ := strings.Cut(lower, "/"); method == wantMethod {
 			distance = min(distance, 1)
 		}
@@ -231,29 +230,6 @@ func closeProcedures(path string) []string {
 		names = append(names, c.name)
 	}
 	return names
-}
-
-// editDistance is the Levenshtein distance between a and b: the fewest
-// insertions, deletions and substitutions of one rune that turn a into b.
-func editDistance(a, b string) int {
-	ar, br := []rune(a), []rune(b)
-	prev := make([]int, len(br)+1)
-	cur := make([]int, len(br)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(ar); i++ {
-		cur[0] = i
-		for j := 1; j <= len(br); j++ {
-			cost := 1
-			if ar[i-1] == br[j-1] {
-				cost = 0
-			}
-			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
-		}
-		prev, cur = cur, prev
-	}
-	return prev[len(br)]
 }
 
 // completeProcedures completes the procedure of `rpc` from the declared
@@ -378,11 +354,7 @@ func callHubProcedure(ctx context.Context, p control.Peer, proc rpcProcedure, in
 		}
 		return withHubVersion(ctx, c, hubCallLocalIPC(ctx, c, proc.path, in, out))
 	case *control.HubClient:
-		client := connect.NewClient(
-			connecthttp.NewTransport(c.HTTPClient, c.ConnectURL(), connecthttp.WithReadMaxBytes(0)),
-			c.AuthInterceptor(),
-		)
-		return withHubVersion(ctx, c, client.CallUnary(ctx, connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: proc.path}, in, out))
+		return withHubVersion(ctx, c, c.ConnectClient().CallUnary(ctx, connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: proc.path}, in, out))
 	default:
 		return fmt.Errorf("unsupported control peer %T", p)
 	}

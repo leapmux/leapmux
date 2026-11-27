@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +37,9 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/pkce"
+	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
@@ -329,7 +335,7 @@ func TestRunAuthLogout_RevokesAndRemovesCreds(t *testing.T) {
 func TestRunAuthLogout_WarnsWhereToFinishTheJob(t *testing.T) {
 	isolateCLIEnv(t)
 	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/oauth/revoke", r.URL.Path)
+		assert.Equal(t, "/oauth/revoke", r.URL.Path)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
@@ -375,7 +381,7 @@ func TestRunAuthLogout_SucceedsWhenTheRowIsAlreadyGone(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			isolateCLIEnv(t)
 			srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, "/oauth/revoke", r.URL.Path)
+				assert.Equal(t, "/oauth/revoke", r.URL.Path)
 				w.WriteHeader(status)
 			}))
 			t.Cleanup(srv.Close)
@@ -428,9 +434,8 @@ func TestRunAuthLogout_ToleratesMissingCreds(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
 
-	// No revoke endpoint hit when there are no creds; an unreachable
-	// hub URL is fine because revokeBearer swallows transport errors
-	// (logout is best-effort on the server side).
+	// No revoke endpoint is called when no credential file exists, so an
+	// unreachable hub URL still succeeds without a warning.
 	out := runControl(t, "auth", "logout", "--hub", "http://127.0.0.1:1").ok(t)
 	var env struct {
 		Data map[string]string `json:"data"`
@@ -522,6 +527,26 @@ func TestRunAuthList_PrintsAllConfiguredHubs(t *testing.T) {
 	}
 	assert.Equal(t, "alice", byHub["https://a.example"]["username"])
 	assert.Equal(t, "bob", byHub["https://b.example"]["username"])
+
+	t.Run("matches non-canonical default hub from context", func(t *testing.T) {
+		isolateCLIEnv(t)
+		require.NoError(t, control.SaveCredentials("https://hub.example", control.CredentialFile{
+			HubURL: "https://hub.example", Username: "alice", ExpiresAt: time.Now().Add(time.Hour),
+		}))
+		require.NoError(t, control.SaveCredentials("https://other.example", control.CredentialFile{
+			HubURL: "https://other.example", Username: "bob", ExpiresAt: time.Now().Add(time.Hour),
+		}))
+		require.NoError(t, control.SaveContext(control.ContextConfig{Hub: "HTTPS://HUB.EXAMPLE/"}))
+
+		rows := credentialRows(t, runControl(t, "auth", "list").ok(t))
+		require.Len(t, rows, 2)
+		byHub := map[string]map[string]any{}
+		for _, r := range rows {
+			byHub[r["hub_url"].(string)] = r
+		}
+		assert.Equal(t, true, byHub["https://hub.example"]["default"])
+		assert.Equal(t, false, byHub["https://other.example"]["default"])
+	})
 }
 
 // TestRunAuthList_ToleratesMissingConfigDir covers the first-run
@@ -646,7 +671,7 @@ func TestRunAuthLogin_DeviceCodeFlowSurfacesAccessDenied(t *testing.T) {
 
 // TestRunAuthLogin_DeviceCodeFlowDialsSocketHub pins the socket-login
 // hole the HTTP-only tests cannot see: http.DefaultClient cannot dial
-// a unix:/npipe: hub URL, so without cliHTTPClient the device-code
+// a unix:/npipe: hub URL, so without hubtransport the device-code
 // flow silently cannot log in against a hub reached over its IPC
 // listener. Serving the RFC 8628 endpoints on a locallisten socket
 // and driving --hub unix:… --device-code proves the CLI actually
@@ -713,7 +738,7 @@ func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, 1, authHits, "device-authorization must arrive on the socket — DefaultClient cannot dial it")
 	assert.Equal(t, 1, tokenHits, "the token poll must also arrive on the socket")
-	assert.Equal(t, "localhost", seenHost, "cliHTTPClient dials the socket against the placeholder http://localhost origin")
+	assert.Equal(t, "localhost", seenHost, "hubtransport dials the socket against the placeholder http://localhost origin")
 }
 
 // TestRunAuthLogin_LocalRedirectRefusesSocketURL pins the other socket
@@ -813,7 +838,7 @@ func TestRunAuthLogin_LocalRedirectLoginWithOpenBrowserReplaced(t *testing.T) {
 
 // TestRunAuthLogin_DeviceCodeFlowSocketUnreachable pins the error
 // path of the same socket dial: when the unix:/npipe: path has no
-// listener, the CLI must still use cliHTTPClient (so the failure is a
+// listener, the CLI must still use hubtransport (so the failure is a
 // dial error that reports the hub as unavailable) rather than
 // http.DefaultClient's "unsupported protocol scheme" rejection, which
 // is what a missing socket client looks like.
@@ -822,7 +847,7 @@ func TestRunAuthLogin_DeviceCodeFlowSocketUnreachable(t *testing.T) {
 	sockURL := locallistentest.UniqueListenURL(t, "cli-auth-down")
 	f := runControl(t, "auth", "login", "--hub", sockURL, "--device-code").requireFailure(t, cli.CodeUnavailable)
 	assert.NotContains(t, f.Message, "unsupported protocol scheme",
-		"a scheme error means DefaultClient saw the unix:/npipe: URL; cliHTTPClient must dial it")
+		"a scheme error means DefaultClient saw the unix:/npipe: URL; hubtransport must dial it")
 	assert.True(t, f.Retryable, "a hub that is down now may be up on the next try")
 }
 
@@ -844,7 +869,7 @@ func TestRunAuthLogin_UnsupportedHubSchemeIsReportedAtTheFlag(t *testing.T) {
 // TestRevokeBearer_NoOpOnEmptyBearer covers the safe-rerun path of
 // `auth logout` when no credentials existed in the first place.
 func TestRevokeBearer_NoOpOnEmptyBearer(t *testing.T) {
-	require.NoError(t, revokeBearer("https://hub.example", "", oauthapp.ControlCLIClientID))
+	require.NoError(t, revokeBearer(context.Background(), nil, "https://hub.example", "", oauthapp.ControlCLIClientID))
 }
 
 // TestRevokeBearer_SendsAuthorizationHeader pins the wire format so
@@ -862,20 +887,18 @@ func TestRevokeBearer_SendsAuthorizationHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	require.NoError(t, revokeBearer(srv.URL, "lmx_a_secret", oauthapp.ControlCLIClientID))
+	require.NoError(t, revokeBearer(context.Background(), nil, srv.URL, "lmx_a_secret", oauthapp.ControlCLIClientID))
 	assert.Equal(t, "Bearer lmx_a_secret", gotAuth)
 	assert.Contains(t, gotForm, "token=lmx_a_secret")
-	// The public client names itself, per RFC 7009 section 2.1, so the hub
+	// The public client identifies itself per RFC 7009 section 2.1 so the hub
 	// can bind the revocation to the app the credential was issued to.
 	assert.Contains(t, gotForm, "client_id="+oauthapp.ControlCLIClientID)
 }
 
-// TestRevokeBearer_PropagatesNetworkError documents that
-// transport-level failures are surfaced to the caller — `auth logout`
-// chooses to swallow this error itself, but the helper must still
-// report it so future callers can react.
+// TestRevokeBearer_PropagatesNetworkError verifies that transport failures
+// return an error so callers like `auth logout` can report a warning.
 func TestRevokeBearer_PropagatesNetworkError(t *testing.T) {
-	err := revokeBearer("http://127.0.0.1:1", "lmx_a_secret", oauthapp.ControlCLIClientID)
+	err := revokeBearer(context.Background(), nil, "http://127.0.0.1:1", "lmx_a_secret", oauthapp.ControlCLIClientID)
 	require.Error(t, err)
 }
 
@@ -897,6 +920,7 @@ func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
 		"the listing prints the GRANT, so a reader can see what each app can do")
 	assert.Equal(t, true, rows[0]["current"], "the credential making the request must be marked")
 	assert.Equal(t, false, rows[1]["current"])
+	assert.Equal(t, []any{}, rows[1]["granted_scopes"], "empty granted_scopes must marshal as [], not null")
 	// An unset timestamp leaves the key out, never prints the Unix epoch.
 	assert.NotContains(t, rows[0], "last_used_at")
 }
@@ -1082,7 +1106,10 @@ func currentUserServer(t *testing.T, username string, isAdmin bool) *httptest.Se
 		body, err := proto.Marshal(&leapmuxv1.GetCurrentUserResponse{
 			SessionReport: &leapmuxv1.SessionReport{User: &leapmuxv1.User{Id: "u-hub", Username: username, IsAdmin: isAdmin}},
 		})
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/proto")
 		_, _ = w.Write(body)
 	}))
@@ -1258,6 +1285,7 @@ func TestRunWhoami_FallsBackWhenTheCredentialLacksAccountRead(t *testing.T) {
 
 	data := envelopeData(t, out)
 	assert.Equal(t, "local-name", data["username"])
+	assert.Contains(t, data, "is_admin", "is_admin key must be present on fallback")
 	assert.Nil(t, data["is_admin"],
 		"is_admin stays present on the fallback as null -- the one value this ending cannot know")
 	assert.Contains(t, data["warning"], "account:read")
@@ -1303,10 +1331,9 @@ func TestRunAuthLogin_RotatesExistingCredentialAfterSuccess(t *testing.T) {
 	assert.Equal(t, "lmx_rotated_tok", loaded.AccessToken)
 }
 
-// TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin pins the ORDER around
-// the up-front cleanup: every input is validated first, so a flag the CLI
-// refuses must not cost the machine its working credential. The scope below
-// is exactly the value splitScopeFlag exists to refuse.
+// TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin verifies that a refused
+// flag fails before any network call and leaves the existing credential
+// untouched. The scope below is the empty-token form splitScopeFlag rejects.
 func TestRunAuthLogin_RefusedFlagKeepsTheExistingLogin(t *testing.T) {
 	isolateCLIEnv(t)
 
@@ -1409,10 +1436,11 @@ func TestRunAuthLogin_ComputesTheDefaultDeviceNameWhenItRuns(t *testing.T) {
 		var sent string
 		srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/oauth/device-authorization" {
-				require.NoError(t, r.ParseForm())
-				mu.Lock()
-				sent = r.PostForm.Get("installation_name")
-				mu.Unlock()
+				if assert.NoError(t, r.ParseForm()) {
+					mu.Lock()
+					sent = r.PostForm.Get("installation_name")
+					mu.Unlock()
+				}
 			}
 			http.Error(w, "refused", http.StatusInternalServerError)
 		}))
@@ -1458,8 +1486,8 @@ func (h *localSoloAuthHub) ChangePassword(_ context.Context, req *leapmuxv1.Chan
 	}, nil
 }
 
-// RIPPLE-4: auth status, auth credentials, and auth change-password work over a
-// local solo Hub IPC socket without stored credentials.
+// auth status, auth credentials, and auth change-password work over a local
+// solo Hub IPC socket without stored credentials.
 func TestRunAuth_LocalIPCHubWorksWithoutStoredCredentials(t *testing.T) {
 	isolateCLIEnv(t)
 
@@ -1488,9 +1516,9 @@ func TestRunAuth_LocalIPCHubWorksWithoutStoredCredentials(t *testing.T) {
 	assert.Equal(t, "new-secret-pw", hub.changedPassword)
 }
 
-// RIPPLE-5: `auth login` without --hub or LEAPMUX_HUB ignores an
-// auto-discovered local solo IPC socket and asks for --hub <url>, while an
-// explicit --hub unix:... still reports the unix-origin error.
+// `auth login` without --hub or LEAPMUX_HUB ignores an auto-discovered local
+// solo IPC socket and asks for --hub <url>, while an explicit --hub unix:...
+// still reports the unix-origin error.
 func TestRunAuthLogin_IgnoresAutoDiscoveredLocalSoloSocket(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix domain socket discovery applies only to non-Windows hosts")
@@ -1591,6 +1619,553 @@ func TestRunWhoami_HubClientRefusedAndUnreachable(t *testing.T) {
 		assert.Equal(t, srv.URL, data["hub_url"])
 		assert.Equal(t, "u-local", data["user_id"])
 		assert.Equal(t, "local-name", data["username"])
+		assert.Contains(t, data, "is_admin")
+		assert.Nil(t, data["is_admin"])
 		assert.Contains(t, data["warning"], "could not be reached")
 	})
+
+	t.Run("unreachable anonymous local hub uses local-hub warning", func(t *testing.T) {
+		isolateCLIEnv(t)
+		downSock := locallistentest.UniqueListenURL(t, "whoami-down")
+
+		data := runControl(t, "whoami", "--hub", downSock).Data(t)
+		assert.Equal(t, downSock, data["hub_url"])
+		assert.Contains(t, data, "is_admin")
+		assert.Nil(t, data["is_admin"])
+		assert.Equal(t, localHubUnreachableWarning, data["warning"])
+	})
+}
+
+func TestRunWhoami_OverTabIPCDoesNotCallGetCurrentUserAndEnrichesConcurrently(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses unix sockets; npipe variant exercised elsewhere")
+	}
+	clearRemoteEnv(t)
+
+	locateArrived := make(chan struct{})
+	workerArrived := make(chan struct{})
+	var (
+		mu         sync.Mutex
+		procedures []string
+	)
+	hub := &whoamiConcurrentHub{
+		onCall: func(ctx context.Context, proc string) ([]byte, error) {
+			mu.Lock()
+			procedures = append(procedures, proc)
+			mu.Unlock()
+			switch proc {
+			case leapmuxv1connect.WorkspaceServiceLocateTabProcedure:
+				close(locateArrived)
+				select {
+				case <-workerArrived:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				return proto.Marshal(&leapmuxv1.LocateTabResponse{
+					Tab: &leapmuxv1.WorkspaceTab{
+						WorkspaceId: "ws-1",
+						TileId:      "tile-1",
+						WorkerId:    "worker-A",
+						Tab:         &leapmuxv1.TabIdent{TabId: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+					},
+				})
+			case leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:
+				return proto.Marshal(&leapmuxv1.GetWorkspaceResponse{
+					Workspace: &leapmuxv1.Workspace{Id: "ws-1", Title: "Concurrent Workspace"},
+				})
+			default:
+				return nil, connect.NewError(connect.CodePermissionDenied, "unexpected procedure: "+proc)
+			}
+		},
+	}
+	var workerOnce sync.Once
+	worker := &whoamiConcurrentWorker{
+		onDispatch: func(ctx context.Context, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+			workerOnce.Do(func() { close(workerArrived) })
+			select {
+			case <-locateArrived:
+			case <-ctx.Done():
+				_ = rw.SendError(4, ctx.Err().Error())
+				return
+			}
+			switch {
+			case strings.HasSuffix(req.GetMethod(), "/GetWorkerSystemInfo"):
+				writeProtoResponse(rw, &leapmuxv1.GetWorkerSystemInfoResponse{Name: "laptop"})
+			case strings.HasSuffix(req.GetMethod(), "/ListAgents"):
+				writeProtoResponse(rw, &leapmuxv1.ListAgentsResponse{
+					Agents: []*leapmuxv1.AgentInfo{{
+						Id:            "agent-1",
+						Title:         "Builder",
+						WorkingDir:    "/repo",
+						AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+						GitStatus:     &leapmuxv1.GitRepoStatus{Branch: "main"},
+					}},
+				})
+			default:
+				_ = rw.SendError(12, "unimplemented: "+req.GetMethod())
+			}
+		},
+	}
+
+	sockURL := shortIPCSocket(t)
+	rawToken := controlipc.MintToken()
+	srv, err := controlipc.Listen(controlipc.Options{
+		SocketURL: sockURL,
+		Token:     rawToken,
+		TokenInfo: controlipc.TokenInfo{
+			UserID:   userid.MustNew("u-spawn"),
+			WorkerID: "worker-A",
+			TabID:    "agent-1",
+			TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+		},
+		Router: &controlipc.Router{
+			WorkerID:        "worker-A",
+			UserID:          userid.MustNew("u-spawn"),
+			Hub:             hub,
+			LocalDispatcher: worker,
+			Sources:         spawnTabSources{},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Close() })
+	t.Setenv("LEAPMUX_CONTROL_SOCK", sockURL)
+	t.Setenv("LEAPMUX_CONTROL_TOKEN", rawToken)
+
+	data := runControl(t, "whoami").Data(t)
+	assert.Contains(t, data, "is_admin")
+	assert.Nil(t, data["is_admin"])
+	assert.Equal(t, "ws-1", data["workspace_id"])
+	assert.Equal(t, "Concurrent Workspace", data["workspace_title"])
+	assert.Equal(t, "tile-1", data["tile_id"])
+	assert.Equal(t, "laptop", data["worker_name"])
+	assert.Equal(t, "Builder", data["tab_title"])
+	assert.Equal(t, "/repo", data["working_dir"])
+	assert.Equal(t, "main", data["git_branch"])
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.NotContains(t, procedures, leapmuxv1connect.AuthServiceGetCurrentUserProcedure,
+		"whoami over tab IPC must not call AuthService/GetCurrentUser")
+}
+
+func TestRunWhoami_OverTabIPCWithEmptyWorkerID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses unix sockets; npipe variant exercised elsewhere")
+	}
+
+	t.Run("locates tab first then enriches workspace and worker concurrently", func(t *testing.T) {
+		clearRemoteEnv(t)
+
+		var (
+			locateDone         atomic.Bool
+			workerCalls        atomic.Int32
+			workerBeforeLocate atomic.Bool
+			workspaceArrived   = make(chan struct{})
+			workerArrived      = make(chan struct{})
+			workerOnce         sync.Once
+		)
+		hub := &whoamiConcurrentHub{
+			onCall: func(ctx context.Context, proc string) ([]byte, error) {
+				switch proc {
+				case leapmuxv1connect.WorkspaceServiceLocateTabProcedure:
+					if workerCalls.Load() > 0 {
+						workerBeforeLocate.Store(true)
+					}
+					locateDone.Store(true)
+					return proto.Marshal(&leapmuxv1.LocateTabResponse{
+						Tab: &leapmuxv1.WorkspaceTab{
+							WorkspaceId: "ws-empty-wk",
+							TileId:      "tile-empty-wk",
+							WorkerId:    "worker-A",
+							Tab:         &leapmuxv1.TabIdent{TabId: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+						},
+					})
+				case leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:
+					close(workspaceArrived)
+					select {
+					case <-workerArrived:
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+					return proto.Marshal(&leapmuxv1.GetWorkspaceResponse{
+						Workspace: &leapmuxv1.Workspace{Id: "ws-empty-wk", Title: "Located Workspace"},
+					})
+				default:
+					return nil, connect.NewError(connect.CodePermissionDenied, "unexpected procedure: "+proc)
+				}
+			},
+		}
+		worker := &whoamiConcurrentWorker{
+			onDispatch: func(ctx context.Context, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+				workerCalls.Add(1)
+				if !locateDone.Load() {
+					workerBeforeLocate.Store(true)
+				}
+				workerOnce.Do(func() { close(workerArrived) })
+				select {
+				case <-workspaceArrived:
+				case <-ctx.Done():
+					_ = rw.SendError(4, ctx.Err().Error())
+					return
+				}
+				switch {
+				case strings.HasSuffix(req.GetMethod(), "/GetWorkerSystemInfo"):
+					writeProtoResponse(rw, &leapmuxv1.GetWorkerSystemInfoResponse{Name: "located-worker"})
+				case strings.HasSuffix(req.GetMethod(), "/ListAgents"):
+					writeProtoResponse(rw, &leapmuxv1.ListAgentsResponse{
+						Agents: []*leapmuxv1.AgentInfo{{
+							Id:            "agent-1",
+							Title:         "Located Agent",
+							WorkingDir:    "/located",
+							AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+							GitStatus:     &leapmuxv1.GitRepoStatus{Branch: "feat/empty-worker"},
+						}},
+					})
+				default:
+					_ = rw.SendError(12, "unimplemented: "+req.GetMethod())
+				}
+			},
+		}
+
+		sockURL := shortIPCSocket(t)
+		rawToken := controlipc.MintToken()
+		srv, err := controlipc.Listen(controlipc.Options{
+			SocketURL: sockURL,
+			Token:     rawToken,
+			TokenInfo: controlipc.TokenInfo{
+				UserID:   userid.MustNew("u-spawn"),
+				WorkerID: "",
+				TabID:    "agent-1",
+				TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+			},
+			Router: &controlipc.Router{
+				WorkerID:        "worker-A",
+				UserID:          userid.MustNew("u-spawn"),
+				Hub:             hub,
+				LocalDispatcher: worker,
+				Sources:         spawnTabSources{},
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = srv.Close() })
+		t.Setenv("LEAPMUX_CONTROL_SOCK", sockURL)
+		t.Setenv("LEAPMUX_CONTROL_TOKEN", rawToken)
+
+		data := runControl(t, "whoami").Data(t)
+		assert.False(t, workerBeforeLocate.Load(), "LocateTab must complete before any Worker RPC")
+		assert.GreaterOrEqual(t, workerCalls.Load(), int32(2), "Worker details must be queried after LocateTab")
+		assert.Equal(t, "ws-empty-wk", data["workspace_id"])
+		assert.Equal(t, "Located Workspace", data["workspace_title"])
+		assert.Equal(t, "tile-empty-wk", data["tile_id"])
+		assert.Equal(t, "located-worker", data["worker_name"])
+		assert.Equal(t, "Located Agent", data["tab_title"])
+		assert.Equal(t, "/located", data["working_dir"])
+		assert.Equal(t, "feat/empty-worker", data["git_branch"])
+	})
+
+	t.Run("returns base fields and skips worker calls when LocateTab fails", func(t *testing.T) {
+		clearRemoteEnv(t)
+
+		var (
+			mu          sync.Mutex
+			procedures  []string
+			workerCalls atomic.Int32
+		)
+		hub := &whoamiConcurrentHub{
+			onCall: func(_ context.Context, proc string) ([]byte, error) {
+				mu.Lock()
+				procedures = append(procedures, proc)
+				mu.Unlock()
+				return nil, connect.NewError(connect.CodeUnavailable, "hub unavailable")
+			},
+		}
+		worker := &whoamiConcurrentWorker{
+			onDispatch: func(_ context.Context, _ *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+				workerCalls.Add(1)
+				_ = rw.SendError(13, "unexpected worker call")
+			},
+		}
+
+		sockURL := shortIPCSocket(t)
+		rawToken := controlipc.MintToken()
+		srv, err := controlipc.Listen(controlipc.Options{
+			SocketURL: sockURL,
+			Token:     rawToken,
+			TokenInfo: controlipc.TokenInfo{
+				UserID:   userid.MustNew("u-spawn"),
+				WorkerID: "",
+				TabID:    "agent-1",
+				TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+			},
+			Router: &controlipc.Router{
+				WorkerID:        "worker-A",
+				UserID:          userid.MustNew("u-spawn"),
+				Hub:             hub,
+				LocalDispatcher: worker,
+				Sources:         spawnTabSources{},
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = srv.Close() })
+		t.Setenv("LEAPMUX_CONTROL_SOCK", sockURL)
+		t.Setenv("LEAPMUX_CONTROL_TOKEN", rawToken)
+
+		out := runControl(t, "whoami")
+		require.Equal(t, cli.ExitOK, out.Code, out.Stderr)
+		data := out.Data(t)
+		assert.Equal(t, "u-spawn", data["user_id"])
+		assert.Equal(t, "agent-1", data["tab_id"])
+		assert.Equal(t, "agent", data["tab_type"])
+		assert.NotContains(t, data, "workspace_id")
+		assert.NotContains(t, data, "workspace_title")
+		assert.NotContains(t, data, "worker_name")
+		assert.NotContains(t, data, "tab_title")
+		assert.Zero(t, workerCalls.Load(), "LocateTab failure must make zero Worker calls")
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, []string{leapmuxv1connect.WorkspaceServiceLocateTabProcedure}, procedures)
+	})
+}
+
+type whoamiConcurrentHub struct {
+	onCall func(ctx context.Context, proc string) ([]byte, error)
+}
+
+func (h *whoamiConcurrentHub) CallInner(ctx context.Context, _ userid.UserID, procedure string, _ []byte) ([]byte, error) {
+	return h.onCall(ctx, procedure)
+}
+
+type whoamiConcurrentWorker struct {
+	onDispatch func(ctx context.Context, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter)
+}
+
+func (w *whoamiConcurrentWorker) DispatchWith(ctx context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	w.onDispatch(ctx, req, rw)
+}
+
+func TestRunAuthUse_NormalizesStoredHubURL(t *testing.T) {
+	isolateCLIEnv(t)
+	require.NoError(t, control.SaveCredentials("https://hub.example", control.CredentialFile{
+		HubURL: "https://hub.example", Username: "alice", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, control.SaveCredentials("https://other.example", control.CredentialFile{
+		HubURL: "https://other.example", Username: "bob", ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	useData := runControl(t, "auth", "use", "https://HUB.EXAMPLE/").Data(t)
+	assert.Equal(t, "https://hub.example", useData["hub_url"])
+
+	rows := credentialRows(t, runControl(t, "auth", "list").ok(t))
+	require.Len(t, rows, 2)
+	byHub := map[string]map[string]any{}
+	for _, r := range rows {
+		byHub[r["hub_url"].(string)] = r
+	}
+	assert.Equal(t, true, byHub["https://hub.example"]["default"])
+	assert.Equal(t, false, byHub["https://other.example"]["default"])
+
+	runControl(t, "auth", "logout", "--hub", "https://HUB.EXAMPLE/").ok(t)
+	cfg, err := control.LoadContext()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Hub, "auth logout with non-canonical hub URL must still clear the default hub")
+}
+
+func TestRunAuthLogout_CorruptCredentialFileWarnsAndDeletes(t *testing.T) {
+	isolateCLIEnv(t)
+	hub := "https://corrupt.example"
+	path, err := control.CredentialsPath(hub)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte("{corrupt"), 0o600))
+
+	data := runControl(t, "auth", "logout", "--hub", hub).Data(t)
+	assert.Equal(t, hub, data["hub_url"])
+	assert.Contains(t, data["warning"], "could not be read")
+	assert.Contains(t, data["warning"], "Preferences › Apps › Connected apps")
+
+	_, err = control.LoadCredentials(hub)
+	assert.ErrorIs(t, err, control.ErrNotLoggedIn, "corrupt credential file must be deleted on logout")
+}
+
+func TestRunAuthChangePassword_ChecksHubBeforePromptAndRespectsStdin(t *testing.T) {
+	t.Run("missing credentials fail before password prompt", func(t *testing.T) {
+		isolateCLIEnv(t)
+		runControl(t, "auth", "change-password", "--hub", "https://no-creds.example").
+			requireFailure(t, cli.CodeNotLoggedIn)
+	})
+
+	t.Run("non-file stdin returns clean usage error without doubled prefix", func(t *testing.T) {
+		isolateCLIEnv(t)
+		liveCredentialFor(t, "https://pw.example")
+		f := runControl(t, "auth", "change-password", "--hub", "https://pw.example").
+			requireFailure(t, cli.CodeUsage)
+		assert.Equal(t, "--password is required (stdin is not a terminal)", f.Message)
+		assert.NotContains(t, f.Message, "usage:")
+	})
+
+	t.Run("non-terminal os.File stdin returns clean usage error without doubled prefix", func(t *testing.T) {
+		isolateCLIEnv(t)
+		liveCredentialFor(t, "https://pw-pipe.example")
+		r, w, err := os.Pipe()
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_ = r.Close()
+			_ = w.Close()
+		})
+		var stdout, stderr bytes.Buffer
+		code := cli.Execute(
+			context.Background(),
+			NewCommand(),
+			[]string{"auth", "change-password", "--hub", "https://pw-pipe.example", "--json"},
+			r, &stdout, &stderr,
+		)
+		out := cliOutcome{Stdout: stdout.String(), Stderr: stderr.String(), Code: code}
+		f := out.requireFailure(t, cli.CodeUsage)
+		assert.True(t, strings.HasPrefix(f.Message, "--password is required"), "got: %s", f.Message)
+		assert.NotContains(t, f.Message, "usage:")
+	})
+
+	t.Run("canceled context returns cancel cause instead of non-terminal usage error", func(t *testing.T) {
+		root := NewCommand()
+		cmd, _, err := root.Find([]string{"auth", "change-password"})
+		require.NoError(t, err)
+
+		cause := errors.New("prompt canceled by caller")
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(cause)
+
+		inv := &cli.Invocation{
+			Command: cmd,
+			Context: ctx,
+			Stdin:   strings.NewReader(""),
+			Printer: &cli.Printer{Out: io.Discard, Err: io.Discard, Format: cli.FormatText},
+		}
+
+		pw, err := requirePasswordFromInv(inv, "password", "New password: ")
+		assert.Empty(t, pw)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, cause)
+		assert.NotEqual(t, cli.CodeUsage, cli.FromError(err).Code)
+	})
+}
+
+func TestOpenDirectHubSession_OmitsRPCDeadline(t *testing.T) {
+	isolateCLIEnv(t)
+	hub := "https://direct-session.example"
+	liveCredentialFor(t, hub)
+
+	root := NewCommand()
+	cmd, _, err := root.Find([]string{"auth", "credentials"})
+	require.NoError(t, err)
+	require.NoError(t, root.PersistentFlags().Set("hub", hub))
+
+	var stderr bytes.Buffer
+	inv := &cli.Invocation{
+		Command: cmd,
+		Context: context.Background(),
+		Printer: &cli.Printer{Out: io.Discard, Err: &stderr, Format: cli.FormatText},
+	}
+
+	s, c, err := openDirectHubSession(inv)
+	require.NoError(t, err)
+	t.Cleanup(s.Close)
+
+	assert.Equal(t, hub, c.HubURL)
+	_, hasDeadline := s.ctx.Deadline()
+	assert.False(t, hasDeadline, "openDirectHubSession must not impose a 30s rpcDeadline on interactive/step-up flows")
+	s.Close()
+	assert.ErrorIs(t, s.ctx.Err(), context.Canceled)
+}
+
+func TestNoticeDiscoveredLocalHub(t *testing.T) {
+	localHub := "unix:/tmp/solo/hub/hub.sock"
+
+	t.Run("emits notice in text mode for auto-discovered local hub", func(t *testing.T) {
+		isolateCLIEnv(t)
+		var stderr bytes.Buffer
+		inv := &cli.Invocation{
+			Printer: &cli.Printer{Out: io.Discard, Err: &stderr, Format: cli.FormatText},
+		}
+		noticeDiscoveredLocalHub(inv, "", localHub)
+		assert.Contains(t, stderr.String(), "using discovered local Hub "+localHub+" (override with --hub or LEAPMUX_HUB)")
+	})
+
+	t.Run("skips notice in non-text mode, explicit hub, LEAPMUX_HUB, remote hub, or matching saved context", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			format   cli.Format
+			explicit string
+			envHub   string
+			savedHub string
+			hubURL   string
+		}{
+			{name: "json format", format: cli.FormatJSON, hubURL: localHub},
+			{name: "explicit --hub", format: cli.FormatText, explicit: localHub, hubURL: localHub},
+			{name: "LEAPMUX_HUB set", format: cli.FormatText, envHub: localHub, hubURL: localHub},
+			{name: "remote hub", format: cli.FormatText, hubURL: "https://hub.example"},
+			{name: "saved context matches", format: cli.FormatText, savedHub: localHub, hubURL: localHub},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				isolateCLIEnv(t)
+				if tc.envHub != "" {
+					t.Setenv("LEAPMUX_HUB", tc.envHub)
+				}
+				if tc.savedHub != "" {
+					require.NoError(t, control.SaveContext(control.ContextConfig{Hub: tc.savedHub}))
+				}
+				var stderr bytes.Buffer
+				inv := &cli.Invocation{
+					Printer: &cli.Printer{Out: io.Discard, Err: &stderr, Format: tc.format},
+				}
+				noticeDiscoveredLocalHub(inv, tc.explicit, tc.hubURL)
+				assert.Empty(t, stderr.String())
+			})
+		}
+	})
+}
+
+func TestAuthCommands_NoticeAutoDiscoveredLocalHubInTextMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain socket discovery applies only to non-Windows hosts")
+	}
+	isolateCLIEnv(t)
+
+	root, err := os.MkdirTemp("", "lmxnot-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	cfgDir := filepath.Join(root, "control")
+	soloDir := filepath.Join(root, "solo", "hub")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o700))
+	require.NoError(t, os.MkdirAll(soloDir, 0o700))
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+
+	soloSock := filepath.Join(soloDir, "hub.sock")
+	sockURL := "unix:" + soloSock
+	hub := &localSoloAuthHub{}
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, hub)
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, hub)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
+	ln, err := locallisten.Listen(sockURL)
+	require.NoError(t, err)
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(ln) }()
+	require.NoError(t, locallisten.WaitReady(context.Background(), sockURL))
+
+	for _, args := range [][]string{
+		{"auth", "status"},
+		{"auth", "credentials"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := cli.Execute(context.Background(), NewCommand(), args, strings.NewReader(""), &stdout, &stderr)
+			require.Equal(t, cli.ExitOK, code, "stderr: %s", stderr.String())
+			assert.Contains(t, stderr.String(), "using discovered local Hub "+sockURL)
+		})
+	}
 }

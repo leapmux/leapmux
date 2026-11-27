@@ -2,13 +2,14 @@ package cmd
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
 func newSettingsCommand() *cobra.Command {
@@ -97,13 +98,13 @@ func userSettingRowOf(v *leapmuxv1.SettingValue, d *leapmuxv1.SettingDescriptor)
 }
 
 func runSettingsList(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
+	s, hc, err := openDirectHubSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	var resp leapmuxv1.ListUserSettingsResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.UserServiceListUserSettingsProcedure, &leapmuxv1.ListUserSettingsRequest{}, &resp); err != nil {
+	resp, err := hc.UserService().ListUserSettings(s.ctx, &leapmuxv1.ListUserSettingsRequest{})
+	if err != nil {
 		return nil, err
 	}
 	byDescr := map[string]*leapmuxv1.SettingDescriptor{}
@@ -118,17 +119,17 @@ func runSettingsList(inv *cli.Invocation) (any, error) {
 }
 
 func runSettingsGet(inv *cli.Invocation) (any, error) {
-	key := strings.TrimSpace(inv.Arg("key"))
-	if key == "" {
-		return nil, cli.Usagef("<key> is empty")
+	key, err := requireNonEmptyArg(inv, "key")
+	if err != nil {
+		return nil, err
 	}
-	s, err := openSession(inv)
+	s, hc, err := openDirectHubSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	var resp leapmuxv1.ListUserSettingsResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.UserServiceListUserSettingsProcedure, &leapmuxv1.ListUserSettingsRequest{}, &resp); err != nil {
+	resp, err := hc.UserService().ListUserSettings(s.ctx, &leapmuxv1.ListUserSettingsRequest{})
+	if err != nil {
 		return nil, err
 	}
 	var descr *leapmuxv1.SettingDescriptor
@@ -148,67 +149,72 @@ func runSettingsGet(inv *cli.Invocation) (any, error) {
 }
 
 func runSettingsSet(inv *cli.Invocation) (any, error) {
-	key := strings.TrimSpace(inv.Arg("key"))
-	if key == "" {
-		return nil, cli.Usagef("<key> is empty")
+	key, err := requireNonEmptyArg(inv, "key")
+	if err != nil {
+		return nil, err
 	}
-	value, err := parseSettingValue(inv.Arg("value"))
+	value, err := parseSettingValue(inv.Arg("value"), "leapmux settings reset <key>")
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
-	s, err := openSession(inv)
+	s, hc, err := openDirectHubSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	var resp leapmuxv1.UpdateUserSettingResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.UserServiceUpdateUserSettingProcedure, &leapmuxv1.UpdateUserSettingRequest{
+	resp, err := hc.UserService().UpdateUserSetting(s.ctx, &leapmuxv1.UpdateUserSettingRequest{
 		Key:         key,
 		PartialJson: string(value),
-	}, &resp); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	return userSettingRowOf(resp.GetValue(), nil), nil
 }
 
 func runSettingsReset(inv *cli.Invocation) (any, error) {
-	key := strings.TrimSpace(inv.Arg("key"))
-	if key == "" {
-		return nil, cli.Usagef("<key> is empty")
+	key, err := requireNonEmptyArg(inv, "key")
+	if err != nil {
+		return nil, err
 	}
-	s, err := openSession(inv)
+	s, hc, err := openDirectHubSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	var resp leapmuxv1.ResetUserSettingResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.UserServiceResetUserSettingProcedure, &leapmuxv1.ResetUserSettingRequest{
+	resp, err := hc.UserService().ResetUserSetting(s.ctx, &leapmuxv1.ResetUserSettingRequest{
 		Key: key,
-	}, &resp); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	return userSettingRowOf(resp.GetValue(), nil), nil
 }
 
 func completeUserSettingsKeys(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	if spec.Name != "key" {
+	if spec.Name != "key" || blankTargetFlag(cmd, "hub") {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	c, err := controlClientForCompletion(cmd)
+	hub, err := hubURLFor(cmd)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	ctx, cancel := completionContext()
+	hc, err := control.NewClientForHub(hub)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	ctx, cancel := completionContext(cmd)
 	defer cancel()
-	var resp leapmuxv1.ListUserSettingsResponse
-	if err := hubCallUnary(ctx, c, leapmuxv1connect.UserServiceListUserSettingsProcedure, &leapmuxv1.ListUserSettingsRequest{}, &resp); err != nil {
+	resp, err := hc.UserService().ListUserSettings(ctx, &leapmuxv1.ListUserSettingsRequest{})
+	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	var out []string
 	for _, d := range resp.GetDescriptors() {
 		if strings.HasPrefix(d.GetKey(), toComplete) {
-			out = append(out, d.GetKey()+"\t"+d.GetSummary())
+			out = append(out, formatCompletionCandidate(d.GetKey(), d.GetSummary()))
 		}
 	}
+	slices.Sort(out)
 	return out, cobra.ShellCompDirectiveNoFileComp
 }

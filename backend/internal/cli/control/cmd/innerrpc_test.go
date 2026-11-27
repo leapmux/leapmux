@@ -398,7 +398,8 @@ func TestPeerDispatch_HubClientWorkerIPCAndUnsupportedPeer(t *testing.T) {
 		hubClient, err := control.NewClientOrAnonymous("https://hub.example.test")
 		require.NoError(t, err)
 		_, err = newWorkerWatchTransport(t.Context(), hubClient, "")
-		require.ErrorContains(t, err, "worker_id required for hub-bound mode")
+		require.ErrorContains(t, err, "worker_id is required")
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
 
 		_, err = newWorkerWatchTransport(t.Context(), nil, "worker-A")
 		require.ErrorContains(t, err, "unsupported control peer")

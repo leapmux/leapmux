@@ -40,6 +40,62 @@ func TestNewLeaf_RefusesTheDescriptionOfAnUndeclaredArgument(t *testing.T) {
 	})
 }
 
+func TestNewLeaf_FlagCompletePanicsOnUndeclaredNilOrCollision(t *testing.T) {
+	noop := func(*Invocation) (any, error) { return nil, nil }
+	dummy := func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return []string{"alpha"}, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	assert.PanicsWithValue(t, `cli: "list" registers completion for undeclared flag "missing"`, func() {
+		NewLeaf(Leaf{
+			Use:          "list",
+			Short:        "List",
+			FlagComplete: map[string]cobra.CompletionFunc{"missing": dummy},
+			Run:          noop,
+		})
+	})
+
+	assert.PanicsWithValue(t, `cli: "list" registers nil completion for flag "provider"`, func() {
+		NewLeaf(Leaf{
+			Use:   "list",
+			Short: "List",
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("provider", "", "provider")
+			},
+			FlagComplete: map[string]cobra.CompletionFunc{"provider": nil},
+			Run:          noop,
+		})
+	})
+
+	assert.Panics(t, func() {
+		NewLeaf(Leaf{
+			Use:   "set",
+			Short: "Set",
+			Flags: func(fs *pflag.FlagSet) {
+				fs.String("provider", "", "provider")
+				SetEnum(fs, "provider", "altcha", "turnstile")
+			},
+			FlagComplete: map[string]cobra.CompletionFunc{"provider": dummy},
+			Run:          noop,
+		})
+	}, "FlagComplete must panic when colliding with SetEnum")
+
+	leaf := NewLeaf(Leaf{
+		Use:   "list",
+		Short: "List",
+		Flags: func(fs *pflag.FlagSet) {
+			fs.String("provider", "", "provider")
+		},
+		FlagComplete: map[string]cobra.CompletionFunc{"provider": dummy},
+		Run:          noop,
+	})
+	fn, ok := leaf.GetFlagCompletionFunc("provider")
+	require.True(t, ok)
+	vals, dir := fn(leaf, nil, "")
+	assert.Equal(t, []string{"alpha"}, vals)
+	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, dir)
+}
+
 func TestInvocation_RefusesAnUndeclaredArgumentName(t *testing.T) {
 	inv := &Invocation{Command: &cobra.Command{Use: "get"}, specs: ParseArgSpecs("get [tab]")}
 	assert.Panics(t, func() { inv.Arg("agent") })

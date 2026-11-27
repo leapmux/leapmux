@@ -43,6 +43,9 @@ A session's title is empty when the provider stores none.`,
 			addWorkerFlag(fs)
 			addWorkingDirFlag(fs, "the directory that the sessions ran in")
 		},
+		FlagComplete: map[string]cobra.CompletionFunc{
+			"provider": completeProviderFlag,
+		},
 		Run: runAgentSessions,
 	})
 }

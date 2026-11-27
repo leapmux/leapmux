@@ -69,8 +69,9 @@ func newTabCommand() *cobra.Command {
 				fs.String("workspace", "", "destination workspace; without --tile, the tab lands on its first tile")
 				addPositionFlags(fs, "put the tab")
 			},
-			Complete: completeTargets,
-			Run:      runTabMove,
+			FlagComplete: tabPositionFlagCompletions(),
+			Complete:     completeTargets,
+			Run:          runTabMove,
 		}),
 		newTabRevealLeafFor(resolve.KindTab, "tab"),
 		newTabOpenImageLeaf(),

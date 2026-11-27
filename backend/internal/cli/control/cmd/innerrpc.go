@@ -181,6 +181,20 @@ func channelRPCError(err error) *codedRPCError {
 	return &codedRPCError{Code: "rpc_failed", Cause: err}
 }
 
+// openHubE2EEChannel opens a Noise_NK E2EE channel to workerID over hub,
+// classifying empty worker IDs, channel-open failures (including offline
+// workers), and CLI/Hub version mismatches uniformly.
+func openHubE2EEChannel(openCtx, lifeCtx context.Context, hub *control.HubClient, workerID string) (*tunnel.Channel, error) {
+	if workerID == "" {
+		return nil, &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
+	}
+	ch, err := hub.OpenE2EEChannel(openCtx, lifeCtx, workerID)
+	if err != nil {
+		return nil, withHubVersion(openCtx, hub, &codedRPCError{Code: "channel_open_failed", Cause: err})
+	}
+	return ch, nil
+}
+
 // withWorkerChannel opens one E2EE channel to workerID and gives body a workerCall bound to that channel.
 // It closes the channel when body returns. Calls within body share one Noise_NK handshake.
 // Local IPC clients use the agent's socket without opening a channel.
@@ -192,12 +206,9 @@ func withWorkerChannel(ctx context.Context, p control.Peer, workerID string, bod
 	case *control.WorkerIPCClient:
 		return body(workerCall{ipc: c, workerID: workerID})
 	case *control.HubClient:
-		if workerID == "" {
-			return &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
-		}
-		ch, err := c.OpenE2EEChannel(ctx, context.WithoutCancel(ctx), workerID)
+		ch, err := openHubE2EEChannel(ctx, context.WithoutCancel(ctx), c, workerID)
 		if err != nil {
-			return withHubVersion(ctx, c, &codedRPCError{Code: "channel_open_failed", Cause: err})
+			return err
 		}
 		defer ch.Close()
 		return body(workerCall{hub: c, workerID: workerID, ch: ch})

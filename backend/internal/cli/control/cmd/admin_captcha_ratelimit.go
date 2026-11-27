@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
+	"math"
 	"slices"
 	"strings"
 
@@ -17,58 +17,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 )
-
-func updateSettingJSON(ctx context.Context, c *control.HubClient, key string, value any) (*leapmuxv1.SettingValue, error) {
-	doc, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	updated, _, err := updateOneSetting(ctx, c, &leapmuxv1.SettingWrite{Key: key, PartialJson: string(doc)})
-	return updated, err
-}
-
-func updateOneSetting(ctx context.Context, c *control.HubClient, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
-	resp, err := c.AdminSettingsService().UpdateSettings(ctx, &leapmuxv1.UpdateSettingsRequest{
-		Writes: []*leapmuxv1.SettingWrite{write},
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	value, err := onlySettingValue(resp.GetValues())
-	if err != nil {
-		return nil, false, err
-	}
-	return value, slices.Contains(resp.GetRestartKeys(), write.GetKey()), nil
-}
-
-func resetOneSetting(ctx context.Context, c *control.HubClient, key string) (*leapmuxv1.SettingValue, bool, error) {
-	resp, err := c.AdminSettingsService().ResetSettings(ctx, &leapmuxv1.ResetSettingsRequest{
-		Keys: []string{key},
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	value, err := onlySettingValue(resp.GetValues())
-	if err != nil {
-		return nil, false, err
-	}
-	return value, slices.Contains(resp.GetRestartKeys(), key), nil
-}
-
-func onlySettingValue(values []*leapmuxv1.SettingValue) (*leapmuxv1.SettingValue, error) {
-	if len(values) != 1 {
-		return nil, fmt.Errorf("the hub answered %d setting values for one key", len(values))
-	}
-	return values[0], nil
-}
-
-func adminUpdateSetting(ctx context.Context, c *control.HubClient, key string, partial map[string]any) (*leapmuxv1.SettingValue, error) {
-	return updateSettingJSON(ctx, c, key, partial)
-}
-
-func adminUpdateSettingScalar[T bool | int64 | float64 | string](ctx context.Context, c *control.HubClient, key string, value T) (*leapmuxv1.SettingValue, error) {
-	return updateSettingJSON(ctx, c, key, value)
-}
 
 func defaultIfZero[T int64 | float64](passed, def T) T {
 	if passed == 0 {
@@ -115,26 +63,87 @@ func newAdminCaptchaShow() *cobra.Command {
 	})
 }
 
-var captchaFlagProviders = map[string][]string{
-	"algorithm":   {captcha.ProviderAlias(captcha.ProviderAltcha)},
-	"cost":        {captcha.ProviderAlias(captcha.ProviderAltcha)},
-	"memory-cost": {captcha.ProviderAlias(captcha.ProviderAltcha)},
-	"parallelism": {captcha.ProviderAlias(captcha.ProviderAltcha)},
-	"expires":     {captcha.ProviderAlias(captcha.ProviderAltcha)},
-	"site-key":    {captcha.ProviderAlias(captcha.ProviderRecaptchaV3), captcha.ProviderAlias(captcha.ProviderTurnstile)},
-	"min-score":   {captcha.ProviderAlias(captcha.ProviderRecaptchaV3)},
-	"secret":      {captcha.ProviderAlias(captcha.ProviderRecaptchaV3), captcha.ProviderAlias(captcha.ProviderTurnstile)},
+type captchaTuningSpec struct {
+	flagName  string
+	providers []string
+	jsonKey   string
+	secret    bool
+	value     func(o *captchaSetOptions, family captcha.AltchaSettings) any
 }
 
-func refuseProviderForeignFlags(inv *cli.Invocation, target captcha.Provider) error {
+// captchaTuningSpecs is sorted alphabetically by flagName so foreign-flag
+// refusals report the same flag first on every run.
+var captchaTuningSpecs = []captchaTuningSpec{
+	{
+		flagName:  "algorithm",
+		providers: []string{captcha.ProviderAlias(captcha.ProviderAltcha)},
+		jsonKey:   "algorithm",
+		value:     func(o *captchaSetOptions, _ captcha.AltchaSettings) any { return o.algorithm },
+	},
+	{
+		flagName:  "cost",
+		providers: []string{captcha.ProviderAlias(captcha.ProviderAltcha)},
+		jsonKey:   "cost",
+		value: func(o *captchaSetOptions, family captcha.AltchaSettings) any {
+			return defaultIfZero(o.cost, family.Cost)
+		},
+	},
+	{
+		flagName:  "expires",
+		providers: []string{captcha.ProviderAlias(captcha.ProviderAltcha)},
+		jsonKey:   "challenge_expiry_seconds",
+		value: func(o *captchaSetOptions, _ captcha.AltchaSettings) any {
+			return defaultIfZero(o.expires, captcha.DefaultAltchaSettings().ChallengeExpirySeconds)
+		},
+	},
+	{
+		flagName:  "memory-cost",
+		providers: []string{captcha.ProviderAlias(captcha.ProviderAltcha)},
+		jsonKey:   "memory_cost",
+		value: func(o *captchaSetOptions, family captcha.AltchaSettings) any {
+			return defaultIfZero(o.memoryCost, family.MemoryCost)
+		},
+	},
+	{
+		flagName:  "min-score",
+		providers: []string{captcha.ProviderAlias(captcha.ProviderRecaptchaV3)},
+		jsonKey:   "min_score",
+		value: func(o *captchaSetOptions, _ captcha.AltchaSettings) any {
+			return defaultIfZero(o.minScore, captcha.DefaultRecaptchaV3Settings().MinScore)
+		},
+	},
+	{
+		flagName:  "parallelism",
+		providers: []string{captcha.ProviderAlias(captcha.ProviderAltcha)},
+		jsonKey:   "parallelism",
+		value: func(o *captchaSetOptions, family captcha.AltchaSettings) any {
+			return defaultIfZero(o.parallelism, family.Parallelism)
+		},
+	},
+	{
+		flagName:  "secret",
+		providers: []string{captcha.ProviderAlias(captcha.ProviderRecaptchaV3), captcha.ProviderAlias(captcha.ProviderTurnstile)},
+		jsonKey:   "secret_key",
+		secret:    true,
+		value:     func(o *captchaSetOptions, _ captcha.AltchaSettings) any { return o.secret },
+	},
+	{
+		flagName:  "site-key",
+		providers: []string{captcha.ProviderAlias(captcha.ProviderRecaptchaV3), captcha.ProviderAlias(captcha.ProviderTurnstile)},
+		jsonKey:   "site_key",
+		value:     func(o *captchaSetOptions, _ captcha.AltchaSettings) any { return o.siteKey },
+	},
+}
+
+func refuseCaptchaForeignFlags(inv *cli.Invocation, target captcha.Provider) error {
 	alias := captcha.ProviderAlias(target)
-	for _, name := range slices.Sorted(maps.Keys(captchaFlagProviders)) {
-		if !inv.Changed(name) || slices.Contains(captchaFlagProviders[name], alias) {
+	for _, spec := range captchaTuningSpecs {
+		if !inv.Changed(spec.flagName) || slices.Contains(spec.providers, alias) {
 			continue
 		}
 		return cli.Usagef(
 			"--%s applies only to %s; the target provider is %s",
-			name, strings.Join(captchaFlagProviders[name], " and "), alias)
+			spec.flagName, strings.Join(spec.providers, " and "), alias)
 	}
 	return nil
 }
@@ -196,11 +205,179 @@ func readCaptchaState(ctx context.Context, c *control.HubClient) (captchaState, 
 	return out, nil
 }
 
+type captchaSetOptions struct {
+	provider, algorithm, siteKey, secret   string
+	minScore                               float64
+	cost, memoryCost, parallelism, expires int64
+}
+
+func (o *captchaSetOptions) bind(fs *pflag.FlagSet) {
+	fs.StringVar(&o.provider, "provider", "", "provider alias; omit to tune the active provider")
+	cli.SetEnum(fs, "provider", captcha.SupportedProviders()...)
+	cli.SetFlagGroup(fs, "provider", "Provider")
+
+	fs.StringVar(&o.algorithm, "algorithm", "", "ALTCHA algorithm")
+	cli.SetEnum(fs, "algorithm", captcha.SupportedAltchaAlgorithms()...)
+	fs.Int64Var(&o.cost, "cost", 0, "algorithm cost parameter; 0 restores the default")
+	fs.Int64Var(&o.memoryCost, "memory-cost", 0, "algorithm memory cost; 0 restores the default")
+	fs.Int64Var(&o.parallelism, "parallelism", 0, "algorithm parallelism; 0 restores the default")
+	fs.Int64Var(&o.expires, "expires", 0, "challenge expiry seconds; 0 restores the default")
+	for _, name := range []string{"algorithm", "cost", "memory-cost", "parallelism", "expires"} {
+		cli.SetFlagGroup(fs, name, "ALTCHA")
+	}
+
+	fs.StringVar(&o.siteKey, "site-key", "", "provider site key")
+	fs.StringVar(&o.secret, "secret", "", "provider secret (stored encrypted)")
+	fs.Float64Var(&o.minScore, "min-score", 0, "recaptcha_v3 minimum score (0 < v <= 1); 0 restores the default")
+	for _, name := range []string{"site-key", "secret", "min-score"} {
+		cli.SetFlagGroup(fs, name, "External Providers")
+	}
+}
+
+func (o *captchaSetOptions) validateLocal(inv *cli.Invocation) (*captcha.Provider, error) {
+	if !anyLocalFlagChanged(inv) {
+		return nil, cli.Usagef("nothing to set (pass --provider or a tuning flag)")
+	}
+	if inv.Changed("secret") && o.secret == "" {
+		return nil, cli.Usagef("--secret must not be empty; an empty secret fails every verification")
+	}
+	if inv.Changed("site-key") && o.siteKey == "" {
+		return nil, cli.Usagef("--site-key must not be empty; an empty site key fails every verification")
+	}
+	if inv.Changed("algorithm") {
+		if err := captcha.ValidateAltchaAlgorithm(o.algorithm); err != nil {
+			return nil, cli.Wrap(cli.CodeUsage, err, "")
+		}
+	}
+	for _, f := range []struct {
+		name string
+		val  int64
+	}{
+		{"cost", o.cost},
+		{"memory-cost", o.memoryCost},
+		{"parallelism", o.parallelism},
+		{"expires", o.expires},
+	} {
+		if inv.Changed(f.name) && f.val < 0 {
+			return nil, cli.Usagef("--%s must be 0 (default) or positive (got %d)", f.name, f.val)
+		}
+	}
+	if inv.Changed("min-score") && (o.minScore < 0 || o.minScore > 1 || math.IsNaN(o.minScore)) {
+		return nil, cli.Usagef("--min-score must be 0 (default) or between 0 (exclusive) and 1 (got %g)", o.minScore)
+	}
+	if !inv.Changed("provider") {
+		return nil, nil
+	}
+	p, err := captcha.ParseProvider(o.provider)
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "")
+	}
+	if err := refuseCaptchaForeignFlags(inv, p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (o *captchaSetOptions) planWrites(
+	inv *cli.Invocation,
+	state captchaState,
+	explicitTarget *captcha.Provider,
+) (target captcha.Provider, switching bool, writes []*leapmuxv1.SettingWrite, err error) {
+	target = state.selected
+	if explicitTarget != nil {
+		target = *explicitTarget
+	}
+	if err := refuseCaptchaForeignFlags(inv, target); err != nil {
+		return target, false, nil, err
+	}
+	switching = target != state.selected
+
+	if target != captcha.ProviderAltcha {
+		row := captcha.DescriptorFor(target).Name()
+		var missing, flags []string
+		if !inv.Changed("site-key") && !state.siteKeySet[row] {
+			missing, flags = append(missing, "site key"), append(flags, "--site-key")
+		}
+		if !inv.Changed("secret") && !state.secretSet[row] {
+			missing, flags = append(missing, "secret"), append(flags, "--secret")
+		}
+		if len(missing) > 0 {
+			return target, switching, nil, cli.Usagef(
+				"%s has no stored %s; pass %s in this invocation",
+				captcha.ProviderAlias(target),
+				strings.Join(missing, " and "), strings.Join(flags, " and "))
+		}
+	}
+
+	alg := state.altchaAlgorithm
+	if inv.Changed("algorithm") {
+		alg = o.algorithm
+	}
+	family, err := captcha.DefaultAltchaSettingsFor(alg)
+	if err != nil {
+		family = captcha.DefaultAltchaSettings()
+	}
+
+	doc := map[string]any{}
+	secretDoc := map[string]any{}
+	for _, spec := range captchaTuningSpecs {
+		if !inv.Changed(spec.flagName) {
+			continue
+		}
+		if spec.secret {
+			secretDoc[spec.jsonKey] = spec.value(o, family)
+		} else {
+			doc[spec.jsonKey] = spec.value(o, family)
+		}
+	}
+
+	addWrite := func(key string, public, secret json.RawMessage) {
+		if len(public) == 0 && len(secret) == 0 {
+			return
+		}
+		writes = append(writes, &leapmuxv1.SettingWrite{
+			Key:               key,
+			PartialJson:       string(public),
+			SecretPartialJson: string(secret),
+		})
+	}
+	var publicJSON, secretJSON json.RawMessage
+	if len(doc) > 0 {
+		if publicJSON, err = json.Marshal(doc); err != nil {
+			return target, switching, nil, err
+		}
+	}
+	if len(secretDoc) > 0 {
+		if secretJSON, err = json.Marshal(secretDoc); err != nil {
+			return target, switching, nil, err
+		}
+	}
+	addWrite(captcha.DescriptorFor(target).Name(), publicJSON, secretJSON)
+
+	if switching {
+		alias, err := json.Marshal(captcha.ProviderAlias(target))
+		if err != nil {
+			return target, switching, nil, err
+		}
+		enabled, err := json.Marshal(true)
+		if err != nil {
+			return target, switching, nil, err
+		}
+		addWrite(captcha.CaptchaSelectedKey.Name(), alias, nil)
+		addWrite(captcha.CaptchaEnabledKey.Name(), enabled, nil)
+	}
+	return target, switching, writes, nil
+}
+
+type adminCaptchaSetResult struct {
+	Updated   bool   `json:"updated"`
+	Provider  string `json:"provider"`
+	Activated bool   `json:"activated"`
+}
+
 // newAdminCaptchaSet builds `admin captcha set`.
 func newAdminCaptchaSet() *cobra.Command {
-	var provider, algorithm, siteKey, secret string
-	var minScore float64
-	var cost, memoryCost, parallelism, expires int64
+	var opts captchaSetOptions
 	return cli.NewLeaf(cli.Leaf{
 		Use:              "set",
 		Short:            "Change the captcha settings, or switch the provider",
@@ -209,53 +386,11 @@ func newAdminCaptchaSet() *cobra.Command {
 		Examples: []cli.Example{
 			{Command: "leapmux admin captcha set --provider turnstile --site-key 0x4AAA --secret s3cr3t"},
 		},
-		Flags: func(fs *pflag.FlagSet) {
-			fs.StringVar(&provider, "provider", "", "provider alias; omit to tune the active provider")
-			cli.SetEnum(fs, "provider", captcha.SupportedProviders()...)
-			cli.SetFlagGroup(fs, "provider", "Provider")
-
-			fs.StringVar(&algorithm, "algorithm", "", "ALTCHA algorithm")
-			cli.SetEnum(fs, "algorithm", captcha.SupportedAltchaAlgorithms()...)
-			fs.Int64Var(&cost, "cost", 0, "algorithm cost parameter; 0 restores the default")
-			fs.Int64Var(&memoryCost, "memory-cost", 0, "algorithm memory cost; 0 restores the default")
-			fs.Int64Var(&parallelism, "parallelism", 0, "algorithm parallelism; 0 restores the default")
-			fs.Int64Var(&expires, "expires", 0, "challenge expiry seconds; 0 restores the default")
-			for _, name := range []string{"algorithm", "cost", "memory-cost", "parallelism", "expires"} {
-				cli.SetFlagGroup(fs, name, "ALTCHA")
-			}
-
-			fs.StringVar(&siteKey, "site-key", "", "provider site key")
-			fs.StringVar(&secret, "secret", "", "provider secret (stored encrypted)")
-			fs.Float64Var(&minScore, "min-score", 0, "recaptcha_v3 minimum score (0 < v <= 1); 0 restores the default")
-			for _, name := range []string{"site-key", "secret", "min-score"} {
-				cli.SetFlagGroup(fs, name, "External Providers")
-			}
-		},
+		Flags: opts.bind,
 		Run: func(inv *cli.Invocation) (any, error) {
-			if !anyLocalFlagChanged(inv) {
-				return nil, cli.Usagef("nothing to set (pass --provider or a tuning flag)")
-			}
-			if inv.Changed("secret") && secret == "" {
-				return nil, cli.Usagef("--secret must not be empty; an empty secret fails every verification")
-			}
-			if inv.Changed("site-key") && siteKey == "" {
-				return nil, cli.Usagef("--site-key must not be empty; an empty site key fails every verification")
-			}
-			if inv.Changed("algorithm") {
-				if err := captcha.ValidateAltchaAlgorithm(algorithm); err != nil {
-					return nil, cli.Wrap(cli.CodeUsage, err, "")
-				}
-			}
-			var explicitTarget *captcha.Provider
-			if inv.Changed("provider") {
-				p, err := captcha.ParseProvider(provider)
-				if err != nil {
-					return nil, cli.Wrap(cli.CodeUsage, err, "")
-				}
-				if err := refuseProviderForeignFlags(inv, p); err != nil {
-					return nil, err
-				}
-				explicitTarget = &p
+			explicitTarget, err := opts.validateLocal(inv)
+			if err != nil {
+				return nil, err
 			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
@@ -265,122 +400,20 @@ func newAdminCaptchaSet() *cobra.Command {
 			if err != nil {
 				return nil, err
 			}
-			current := state.selected
-			target := current
-			if explicitTarget != nil {
-				target = *explicitTarget
-			}
-			if err := refuseProviderForeignFlags(inv, target); err != nil {
+			target, switching, writes, err := opts.planWrites(inv, state, explicitTarget)
+			if err != nil {
 				return nil, err
 			}
-			switching := target != current
-
-			if target != captcha.ProviderAltcha {
-				row := captcha.DescriptorFor(target).Name()
-				var missing, flags []string
-				if !inv.Changed("site-key") && !state.siteKeySet[row] {
-					missing, flags = append(missing, "site key"), append(flags, "--site-key")
-				}
-				if !inv.Changed("secret") && !state.secretSet[row] {
-					missing, flags = append(missing, "secret"), append(flags, "--secret")
-				}
-				if len(missing) > 0 {
-					return nil, cli.Usagef(
-						"%s has no stored %s; pass %s in this invocation",
-						captcha.ProviderAlias(target),
-						strings.Join(missing, " and "), strings.Join(flags, " and "))
-				}
-			}
-
-			alg := state.altchaAlgorithm
-			if inv.Changed("algorithm") {
-				alg = algorithm
-			}
-			family, err := captcha.DefaultAltchaSettingsFor(alg)
-			if err != nil {
-				family = captcha.DefaultAltchaSettings()
-			}
-
-			writes := []*leapmuxv1.SettingWrite{}
-			addWrite := func(key string, public, secret json.RawMessage) {
-				if len(public) == 0 && len(secret) == 0 {
-					return
-				}
-				writes = append(writes, &leapmuxv1.SettingWrite{
-					Key:               key,
-					PartialJson:       string(public),
-					SecretPartialJson: string(secret),
-				})
-			}
-			marshal := func(v any) (json.RawMessage, error) { return json.Marshal(v) }
-
-			doc := map[string]any{}
-			if inv.Changed("algorithm") {
-				doc["algorithm"] = algorithm
-			}
-			if inv.Changed("cost") {
-				doc["cost"] = defaultIfZero(cost, family.Cost)
-			}
-			if inv.Changed("memory-cost") {
-				doc["memory_cost"] = defaultIfZero(memoryCost, family.MemoryCost)
-			}
-			if inv.Changed("parallelism") {
-				doc["parallelism"] = defaultIfZero(parallelism, family.Parallelism)
-			}
-			if inv.Changed("expires") {
-				doc["challenge_expiry_seconds"] = defaultIfZero(expires, captcha.DefaultAltchaSettings().ChallengeExpirySeconds)
-			}
-			if inv.Changed("site-key") {
-				doc["site_key"] = siteKey
-			}
-			if inv.Changed("min-score") {
-				doc["min_score"] = defaultIfZero(minScore, captcha.DefaultRecaptchaV3Settings().MinScore)
-			}
-			secretDoc := map[string]any{}
-			if inv.Changed("secret") {
-				secretField := "secret_key"
-				if target == captcha.ProviderAltcha {
-					secretField = "hmac_key"
-				}
-				secretDoc[secretField] = secret
-			}
-			var publicJSON, secretJSON json.RawMessage
-			if len(doc) > 0 {
-				if publicJSON, err = marshal(doc); err != nil {
-					return nil, err
-				}
-			}
-			if len(secretDoc) > 0 {
-				if secretJSON, err = marshal(secretDoc); err != nil {
-					return nil, err
-				}
-			}
-			addWrite(captcha.DescriptorFor(target).Name(), publicJSON, secretJSON)
-
-			if switching {
-				alias, err := marshal(captcha.ProviderAlias(target))
-				if err != nil {
-					return nil, err
-				}
-				enabled, err := marshal(true)
-				if err != nil {
-					return nil, err
-				}
-				addWrite(captcha.CaptchaSelectedKey.Name(), alias, nil)
-				addWrite(captcha.CaptchaEnabledKey.Name(), enabled, nil)
-			}
 			if len(writes) == 0 {
-				return nil, cli.Usagef("nothing to set (pass --provider or a tuning flag)")
+				// The caller passed --provider for the already-active provider
+				// with no tuning flags; return an idempotent no-op.
+				return adminCaptchaSetResult{Updated: false, Provider: captcha.ProviderAlias(target), Activated: false}, nil
 			}
 			if _, err := c.AdminSettingsService().UpdateSettings(inv.Context,
 				&leapmuxv1.UpdateSettingsRequest{Writes: writes}); err != nil {
 				return nil, err
 			}
-			return struct {
-				Updated   bool   `json:"updated"`
-				Provider  string `json:"provider"`
-				Activated bool   `json:"activated"`
-			}{Updated: true, Provider: captcha.ProviderAlias(target), Activated: switching}, nil
+			return adminCaptchaSetResult{Updated: true, Provider: captcha.ProviderAlias(target), Activated: switching}, nil
 		},
 	})
 }
@@ -397,7 +430,7 @@ func newAdminCaptchaSetEnabled(enabled bool, use, short string, examples []cli.E
 			if err != nil {
 				return nil, err
 			}
-			if _, err := adminUpdateSettingScalar(inv.Context, c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
+			if _, err := updateSettingJSON(inv.Context, c, captcha.CaptchaEnabledKey.Name(), enabled); err != nil {
 				return nil, err
 			}
 			return map[string]bool{captcha.CaptchaEnabledKey.Name(): enabled}, nil
@@ -428,7 +461,7 @@ func newAdminCaptchaReset() *cobra.Command {
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
 			var target *captcha.Provider
-			if provider != "" {
+			if inv.Changed("provider") {
 				p, err := captcha.ParseProvider(provider)
 				if err != nil {
 					return nil, cli.Wrap(cli.CodeUsage, err, "")
@@ -442,12 +475,14 @@ func newAdminCaptchaReset() *cobra.Command {
 			keys := captchaSettingKeys()
 			if target != nil {
 				keys = []string{captcha.DescriptorFor(*target).Name()}
-				state, err := readCaptchaState(inv.Context, c)
-				if err != nil {
-					return nil, err
-				}
-				if state.selected == *target && *target != captcha.ProviderAltcha {
-					keys = append([]string{captcha.CaptchaSelectedKey.Name()}, keys...)
+				if *target != captcha.ProviderAltcha {
+					state, err := readCaptchaState(inv.Context, c)
+					if err != nil {
+						return nil, err
+					}
+					if state.selected == *target {
+						keys = append([]string{captcha.CaptchaSelectedKey.Name()}, keys...)
+					}
 				}
 			}
 			resp, err := c.AdminSettingsService().ResetSettings(inv.Context,
@@ -544,6 +579,12 @@ func newAdminRateLimitSet() *cobra.Command {
 			if !inv.Changed("max-attempts") && !inv.Changed("window") {
 				return nil, cli.Usagef("pass --max-attempts, --window, or both")
 			}
+			if inv.Changed("max-attempts") && (maxAttempts < 0 || maxAttempts > 1000) {
+				return nil, cli.Usagef("--max-attempts must be 0 (default) or between 1 and 1000 (got %d)", maxAttempts)
+			}
+			if inv.Changed("window") && (window < 0 || (window > 0 && (window < 60 || window > 86400))) {
+				return nil, cli.Usagef("--window must be 0 (default) or between 60 and 86400 (got %d)", window)
+			}
 			c, err := requireAdminClient(inv)
 			if err != nil {
 				return nil, err
@@ -556,7 +597,7 @@ func newAdminRateLimitSet() *cobra.Command {
 			if inv.Changed("window") {
 				doc["window_seconds"] = defaultIfZero(window, def.WindowSeconds)
 			}
-			value, err := adminUpdateSetting(inv.Context, c, key, doc)
+			value, err := updateSettingJSON(inv.Context, c, key, doc)
 			if err != nil {
 				return nil, err
 			}
@@ -581,7 +622,7 @@ func newAdminRateLimitSetEnabled(enabled bool, use, short string, examples []cli
 			if err != nil {
 				return nil, err
 			}
-			value, err := adminUpdateSetting(inv.Context, c, key, map[string]any{"enabled": enabled})
+			value, err := updateSettingJSON(inv.Context, c, key, map[string]any{"enabled": enabled})
 			if err != nil {
 				return nil, err
 			}
