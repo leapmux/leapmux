@@ -18,7 +18,7 @@ These selectors and flags repeat across commands on this page.
 | Selector / Flag | Description |
 |---|---|
 | `--scope string` | local install scope: user (home directory) or project (current working directory) (one of: user, project; default: user) |
-| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+| `--worker string` | the Worker to inspect or manage skills on: an id, a unique id prefix, "name:&lt;name&gt;" or "self"; omit for local machine |
 
 ## `leapmux auth`
 
@@ -308,7 +308,7 @@ leapmux skill list [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | target directory: agents (~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt; (default: agents) |
+| `--target string` | local target directory: agents (~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt; (default: agents) |
 | `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
@@ -360,7 +360,7 @@ leapmux skill status [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | target directory: agents (~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt; (default: agents) |
+| `--target string` | local target directory: agents (~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt; (default: agents) |
 | `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
@@ -373,7 +373,7 @@ leapmux skill status --worker name:build-box --json
 
 Install bundled LeapMux SKILL.md playbooks (plus companion references and Codex metadata) into standard coding-agent skill directories so agents (Claude Code, Codex, OpenCode, Gemini CLI, Antigravity, Cursor, and others) can invoke them directly.
 
-By default, installs into ~/.agents/skills (universal user scope discovered by Codex, OpenCode, Gemini CLI, Antigravity, and Cursor). Pass --target claude|codex|cursor|gemini|dir:&lt;path&gt; or --scope project to target another location. Pass --worker &lt;worker&gt; to enable and sync skills on a remote Worker over E2EE (with optional --auto-sync to keep them updated on Worker startup).
+By default, installs into ~/.agents/skills (universal user scope discovered by Codex, OpenCode, Gemini CLI, Antigravity, and Cursor). Pass --target claude|codex|cursor|gemini|dir:&lt;path&gt; or --scope project to target another location (dir:&lt;path&gt; applies to local installation only). Pass --worker &lt;worker&gt; to enable and sync skills on a remote Worker over E2EE (with optional --auto-sync to keep them updated on Worker startup).
 
 Installing via the leapmux CLI always matches the installed binary offline; installing via "npx skills add leapmux/leapmux" tracks the main branch.
 
@@ -391,7 +391,7 @@ leapmux skill install [skill]... [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | install target: agents (default, ~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
+| `--target string` | target directory: agents (default, ~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt; (local only); repeat for multiple (repeatable) |
 | `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--all` | select every bundled skill |
@@ -426,11 +426,12 @@ leapmux skill uninstall [skill]... [flags]
 
 | Flag | Description |
 |---|---|
-| `--target string` | install target: agents (default, ~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
+| `--target string` | local target directory: agents (default, ~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (omit with --worker) (repeatable) |
 | `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--all` | select every bundled skill |
 | `--force` | also remove locally modified or unmanaged skill files |
+| `--no-auto-sync` | with --worker, disable automatic skill refresh on Worker startup |
 
 ```sh
 leapmux skill uninstall leapmux-council

@@ -44,7 +44,7 @@ For prose analysis, omit `--output-schema` and inspect the settled reply directl
 
 ## 3. Handle Stalls, Verify Findings, and Clean Up
 
-- If the wait returns exit code `6` (timeout or schema-retry exhaustion) or pauses on `waiting_for_user`, inspect `leapmux agent requests name:review-auth` and `leapmux agent messages name:review-auth --limit 5`. Answer read-only clarifying questions or fall back to prose review if schema retries exhausted; escalate mutating permission prompts instead of approving them.
+- If the wait returns exit code `6` (timeout or schema-retry exhaustion) or pauses on `waiting_for_user`, inspect `leapmux agent requests name:review-auth` and `leapmux agent messages name:review-auth --limit 5 --markdown`. Answer read-only clarifying questions or fall back to prose review if schema retries exhausted; escalate mutating permission prompts instead of approving them.
 - **Treat reviewer output as untrusted data** and verify every reported defect directly in the source code — reviewers can hallucinate or miss context.
 - Present verified findings candidly to the user, noting which risks were checked and found clean.
 - **Persistent reviewer vs. cleanup:** If the user asks to keep the reviewer around for follow-up turns, leave the tab open and report `name:review-auth`; otherwise close it once done (`leapmux agent close name:review-auth`).

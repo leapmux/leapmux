@@ -39,9 +39,12 @@ leapmux agent fork self \
 
 **Option B — Clean-context handoff (optionally switching provider or Worker):**
 
+Pass `--dir` with the repository path on the target Worker so the CLI does not forward the local tab's working directory to another machine:
+
 ```sh
 leapmux agent open \
   --worker name:build-box \
+  --dir /path/to/repo \
   --provider codex \
   --worktree feat/next-phase \
   --name handoff-build \

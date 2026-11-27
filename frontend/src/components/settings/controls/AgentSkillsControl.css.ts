@@ -98,6 +98,13 @@ export const skillDesc = style({
   lineHeight: 1.4,
 })
 
+export const skillTargetDetails = style({
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  lineHeight: 1.4,
+})
+
 export const hint = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',

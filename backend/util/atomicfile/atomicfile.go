@@ -98,14 +98,32 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 // the publication step: the atomic writer passes the platform replace,
 // the durable one passes its write-through variant. The operations run
 // through the package's seam in one order for both.
-func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func(oldpath, newpath string) error) (err error) {
+func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func(oldpath, newpath string) error) error {
 	f, err := ops.createTemp(filepath.Dir(path), filepath.Base(path)+tempSuffix, mode)
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
+	return finishTemporaryWrite(f, data, mode,
+		func() error { return replace(tmp, path) },
+		func() error { return ops.remove(tmp) },
+	)
+}
+
+// finishTemporaryWrite completes an atomic write against an already-opened
+// temporary file. It applies mode, writes data, syncs, closes, and commits
+// through publish. On any failure before commit it closes f (unless close was
+// already attempted) and deletes the temporary file through removeTmp, joining
+// every cleanup error except os.ErrNotExist into the returned error.
+func finishTemporaryWrite(
+	f *os.File,
+	data []byte,
+	mode os.FileMode,
+	publish func() error,
+	removeTmp func() error,
+) (err error) {
 	// One cleanup for EVERY failure path below, including the ones that
-	// return before WriteFile closes the file. A leftover temporary file
+	// return before the writer closes the file. A leftover temporary file
 	// holds the same secret the destination holds, at the same mode,
 	// under a name no listing of the destination shows.
 	committed := false
@@ -117,14 +135,14 @@ func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func
 		if !closeAttempted {
 			err = errors.Join(err, ops.close(f))
 		}
-		if removeErr := ops.remove(tmp); !errors.Is(removeErr, os.ErrNotExist) {
+		if removeErr := removeTmp(); !errors.Is(removeErr, os.ErrNotExist) {
 			err = errors.Join(err, removeErr)
 		}
 	}()
 
-	// os.CreateTemp always creates at 0600, so WriteFile applies a mode
-	// that must be wider (or narrower) here rather than after the rename,
-	// where a reader could see the file at the wrong mode.
+	// Temporary files start at 0600, so the writer applies a mode that must
+	// be wider (or narrower) here rather than after the rename, where a
+	// reader could see the file at the wrong mode.
 	if err := ops.chmod(f, mode); err != nil {
 		return err
 	}
@@ -138,7 +156,7 @@ func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func
 	if err := ops.close(f); err != nil {
 		return err
 	}
-	if err := replace(tmp, path); err != nil {
+	if err := publish(); err != nil {
 		return err
 	}
 	committed = true

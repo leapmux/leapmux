@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/cli"
 )
@@ -374,4 +376,142 @@ func TestFlagsHelp(t *testing.T) {
 	})
 	assert.Contains(t, help, "--mode string")
 	assert.Contains(t, help, "execution mode (one of: fast, safe)")
+}
+
+func TestCloneCommandFlags(t *testing.T) {
+	buildTree := func() (*cobra.Command, *cobra.Command, *cobra.Command, *int) {
+		liveLimit := 10
+		leaf := cli.NewLeaf(cli.Leaf{
+			Use:   "run",
+			Short: "Run a check",
+			Flags: func(fs *pflag.FlagSet) {
+				fs.IntVarP(&liveLimit, "limit", "n", 10, "row limit")
+				fs.Uint("port", 8080, "port number")
+				fs.Float64("ratio", 0.5, "sample ratio")
+				fs.Duration("timeout", time.Minute, "wait timeout")
+				fs.Bool("dry", false, "dry run")
+				fs.String("dir", "", "working directory")
+				fs.String("optval", "", "optional value")
+				fs.Lookup("optval").NoOptDefVal = "default"
+			},
+			Examples: []cli.Example{{Command: "tool local run"}},
+			Run:      noop,
+		})
+		override := cli.NewLeaf(cli.Leaf{
+			Use:   "connect",
+			Short: "Connect with local hub",
+			Flags: func(fs *pflag.FlagSet) {
+				fs.StringP("host", "h", "", "target host")
+				fs.String("hub", "", "local hub URL")
+			},
+			Examples: []cli.Example{{Command: "tool local connect"}},
+			Run:      noop,
+		})
+		localGroup := cli.Group("local", "Local commands", leaf, override)
+		cli.DisallowInheritedFlags(localGroup, "hub", "quiet")
+		root := cli.Group("tool", "A tool", localGroup)
+		root.PersistentFlags().Bool("json", false, "print JSON")
+		root.PersistentFlags().String("hub", "", "hub URL")
+		root.PersistentFlags().BoolP("quiet", "q", false, "quiet output")
+		return root, leaf, override, &liveLimit
+	}
+
+	t.Run("handles nil command", func(t *testing.T) {
+		fs := CloneCommandFlags(nil, false)
+		require.NotNil(t, fs)
+		assert.NoError(t, fs.Parse(nil))
+	})
+
+	t.Run("clones allowed flags without mutating live values and rejects disallowed inherited flags", func(t *testing.T) {
+		root, leaf, override, liveLimit := buildTree()
+
+		fs := CloneCommandFlags(leaf, false)
+		require.NoError(t, fs.Parse([]string{"--limit", "25", "--port", "9090", "--ratio", "0.75", "--timeout", "15m", "--dry", "--json", "--optval", "--help"}))
+		assert.Equal(t, 10, *liveLimit)
+		assert.False(t, leaf.Flags().Lookup("limit").Changed)
+		assert.False(t, root.PersistentFlags().Lookup("json").Changed)
+
+		assert.NoError(t, CloneCommandFlags(leaf, false).Parse([]string{"-h"}))
+		assert.Error(t, CloneCommandFlags(leaf, false).Parse([]string{"--hub", "https://hub.example"}))
+		assert.Error(t, CloneCommandFlags(leaf, false).Parse([]string{"-q"}))
+		assert.Error(t, CloneCommandFlags(leaf, true).Parse([]string{"--hub", "https://hub.example"}))
+		assert.Error(t, CloneCommandFlags(leaf, true).Parse([]string{"-q"}))
+
+		// Local override of a disallowed inherited flag and local -h shorthand both stay usable.
+		overrideFlags := CloneCommandFlags(override, false)
+		assert.NoError(t, overrideFlags.Parse([]string{"--hub", "https://hub.example", "-h", "example.com", "--help"}))
+	})
+
+	t.Run("respects NoOptDefVal and rejects missing trailing arguments", func(t *testing.T) {
+		_, leaf, _, _ := buildTree()
+
+		// --optval must not swallow --json as its value because NoOptDefVal is set.
+		fs := CloneCommandFlags(leaf, false)
+		require.NoError(t, fs.Parse([]string{"--optval", "--json"}))
+		assert.Equal(t, "default", fs.Lookup("optval").Value.String())
+		assert.Equal(t, "true", fs.Lookup("json").Value.String())
+
+		assert.Error(t, CloneCommandFlags(leaf, false).Parse([]string{"--limit"}))
+		assert.Error(t, CloneCommandFlags(leaf, true).Parse([]string{"--limit"}))
+		assert.Error(t, CloneCommandFlags(leaf, true).Parse([]string{"--dir"}))
+	})
+
+	t.Run("handles placeholders according to allowPlaceholders", func(t *testing.T) {
+		_, leaf, _, _ := buildTree()
+
+		placeholderArgs := [][]string{
+			{"--limit", "<n>"},
+			{"--limit", "$LIMIT"},
+			{"--limit", "${LIMIT}"},
+			{"--port", "<port>"},
+			{"--ratio", "<ratio>"},
+			{"--timeout", "<duration>"},
+			{"--timeout", "$TIMEOUT"},
+			{"--dir", "<path>"},
+			{"--optval=<val>"},
+		}
+		for _, args := range placeholderArgs {
+			assert.NoError(t, CloneCommandFlags(leaf, true).Parse(args), "allowPlaceholders=true should accept %v", args)
+		}
+
+		// When allowPlaceholders is false, typed flags reject placeholders.
+		for _, args := range [][]string{
+			{"--limit", "<n>"},
+			{"--limit", "$LIMIT"},
+			{"--port", "<port>"},
+			{"--ratio", "<ratio>"},
+			{"--timeout", "<duration>"},
+		} {
+			assert.Error(t, CloneCommandFlags(leaf, false).Parse(args), "allowPlaceholders=false should reject %v", args)
+		}
+
+		// Bool flags never accept placeholders, and malformed placeholders fail on typed flags.
+		for _, args := range [][]string{
+			{"--dry=<bool>"},
+			{"--dry=$DRY"},
+			{"--limit", "<>"},
+			{"--limit", "< >"},
+			{"--limit", "$"},
+			{"--limit", "$ "},
+		} {
+			assert.Error(t, CloneCommandFlags(leaf, true).Parse(args), "should reject %v", args)
+		}
+	})
+
+	t.Run("rejects invalid typed values in both modes", func(t *testing.T) {
+		_, leaf, _, _ := buildTree()
+
+		invalidArgs := [][]string{
+			{"--dry=nope"},
+			{"--limit", "abc"},
+			{"--port", "-1"},
+			{"--ratio", "not-a-float"},
+			{"--timeout", "forever"},
+		}
+		for _, allow := range []bool{false, true} {
+			for _, args := range invalidArgs {
+				assert.Error(t, CloneCommandFlags(leaf, allow).Parse(args), "allowPlaceholders=%v should reject %v", allow, args)
+			}
+		}
+	})
 }

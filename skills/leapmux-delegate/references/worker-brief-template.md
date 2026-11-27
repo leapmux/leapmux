@@ -1,4 +1,4 @@
-# Delegated Worker Brief Template & Recovery Checklist
+# Delegated Agent Brief Template & Recovery Checklist
 
 Write one file per delegated agent and pass it with `leapmux agent open --file <path>`.
 
@@ -33,9 +33,9 @@ Report:
 
 When `leapmux agent wait` returns exit code `6` (timeout or closed) or an agent stops making progress:
 
-1. Check live status: `leapmux agent tree`
+1. Check live status: `leapmux agent list`
 2. Check pending prompts: `leapmux agent requests <agent>`
-3. Read recent output: `leapmux agent messages <agent> --limit 5`
+3. Read recent output: `leapmux agent messages <agent> --limit 5 --markdown`
 4. Decide the next step:
    - Pending question you can answer → `leapmux agent answer <agent> ...`
    - Pending destructive/out-of-scope permission → escalate to the user

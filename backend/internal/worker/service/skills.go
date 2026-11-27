@@ -33,7 +33,7 @@ func (svc *Service) handleUpdateWorkerSkills(_ context.Context, _ channel.Caller
 		_ = sender.SendError(int32(code), err.Error())
 		return
 	}
-	sendProtoResponse(sender, &leapmuxv1.UpdateWorkerSkillsResponse{State: resp})
+	sendProtoResponse(sender, resp)
 }
 
 // SyncConfiguredSkills refreshes enabled skills on Worker startup when
@@ -54,7 +54,7 @@ func (svc *Service) SyncConfiguredSkills() {
 		return
 	}
 	for _, target := range st.Targets {
-		dir, err := skills.ResolveTargetDir(svc.HomeDir, target)
+		dir, err := skills.ResolveStandardTargetDir(svc.HomeDir, target)
 		if err != nil {
 			slog.Warn("resolve worker skill target failed", "target", target, "error", err)
 			continue
@@ -65,7 +65,7 @@ func (svc *Service) SyncConfiguredSkills() {
 			continue
 		}
 		for _, o := range outcomes {
-			if o.Action != "unchanged" {
+			if o.Action != skills.ActionUnchanged {
 				slog.Info("synced worker skill on startup", "skill", o.Name, "action", o.Action, "path", o.Path)
 			}
 		}
@@ -83,67 +83,155 @@ func (svc *Service) buildWorkerSkillsResponse() (*leapmuxv1.GetWorkerSkillsRespo
 }
 
 func (svc *Service) buildWorkerSkillsResponseForState(st skills.WorkerState) *leapmuxv1.GetWorkerSkillsResponse {
-	primaryTarget := skills.TargetAgents
-	if len(st.Targets) > 0 {
-		primaryTarget = st.Targets[0]
+	targets := st.Targets
+	if len(targets) == 0 {
+		targets = []skills.Target{skills.TargetAgents}
 	}
-	primaryDir := ""
-	if svc.HomeDir != "" {
-		if d, err := skills.ResolveTargetDir(svc.HomeDir, primaryTarget); err == nil {
-			primaryDir = d
+
+	type resolvedTarget struct {
+		target   skills.Target
+		dir      string
+		statuses []skills.SkillStatus
+	}
+	resolved := make([]resolvedTarget, 0, len(targets))
+	targetNames := make([]string, 0, len(targets))
+	for _, t := range targets {
+		targetNames = append(targetNames, string(t))
+		var dir string
+		if svc.HomeDir != "" {
+			if d, err := skills.ResolveStandardTargetDir(svc.HomeDir, t); err == nil {
+				dir = d
+			}
 		}
+		var statuses []skills.SkillStatus
+		if dir != "" {
+			statuses = skills.InspectAll(dir)
+		}
+		resolved = append(resolved, resolvedTarget{
+			target:   t,
+			dir:      dir,
+			statuses: statuses,
+		})
 	}
+
+	primaryDir := resolved[0].dir
+	bundledVersion := skills.BundledVersion()
 	cat := skills.Catalog()
 	rows := make([]*leapmuxv1.WorkerSkillStatus, 0, len(cat))
-	for _, s := range cat {
-		var disk skills.SkillStatus
-		if primaryDir != "" {
-			disk = skills.InspectOne(primaryDir, s)
-		} else {
-			disk = skills.SkillStatus{
-				Name:           s.Name,
-				Description:    s.Description,
-				State:          skills.StateNotInstalled,
-				BundledVersion: skills.BundledVersion(),
+	for i, s := range cat {
+		states := make([]skills.State, 0, len(resolved))
+		targetStatuses := make([]*leapmuxv1.WorkerSkillTargetStatus, 0, len(resolved))
+		var primaryInstalledVersion, primaryPath string
+		for idx, rt := range resolved {
+			var disk skills.SkillStatus
+			if i < len(rt.statuses) {
+				disk = rt.statuses[i]
+			} else {
+				disk = skills.SkillStatus{
+					Name:           s.Name,
+					Description:    s.Description,
+					State:          skills.StateNotInstalled,
+					BundledVersion: bundledVersion,
+				}
+			}
+			states = append(states, disk.State)
+			targetStatuses = append(targetStatuses, &leapmuxv1.WorkerSkillTargetStatus{
+				Target:           string(rt.target),
+				State:            string(disk.State),
+				InstalledVersion: disk.InstalledVersion,
+				Path:             disk.Path,
+			})
+			if idx == 0 {
+				primaryInstalledVersion = disk.InstalledVersion
+				primaryPath = disk.Path
 			}
 		}
 		rows = append(rows, &leapmuxv1.WorkerSkillStatus{
 			Name:             s.Name,
 			Description:      s.Description,
 			Enabled:          slices.Contains(st.Enabled, s.Name),
-			State:            string(disk.State),
-			InstalledVersion: disk.InstalledVersion,
-			BundledVersion:   disk.BundledVersion,
-			Path:             disk.Path,
+			State:            string(skills.AggregateState(states)),
+			InstalledVersion: primaryInstalledVersion,
+			BundledVersion:   bundledVersion,
+			Path:             primaryPath,
+			References:       s.References,
+			Targets:          targetStatuses,
 		})
 	}
 	return &leapmuxv1.GetWorkerSkillsResponse{
 		AutoSync:         st.AutoSync,
-		Targets:          st.Targets,
+		Targets:          targetNames,
 		PrimarySkillsDir: primaryDir,
 		Skills:           rows,
 	}
 }
 
-func (svc *Service) updateWorkerSkills(r *leapmuxv1.UpdateWorkerSkillsRequest) (*leapmuxv1.GetWorkerSkillsResponse, codes.Code, error) {
+func rawSkillTargets(names []string) []skills.Target {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]skills.Target, len(names))
+	for i, name := range names {
+		out[i] = skills.Target(name)
+	}
+	return out
+}
+
+func workerSkillsErrorCode(err error) codes.Code {
+	switch {
+	case errors.Is(err, skills.ErrUnknownSkill):
+		return codes.NotFound
+	case errors.Is(err, skills.ErrInvalidWorkerStateUpdate),
+		errors.Is(err, skills.ErrInvalidTarget):
+		return codes.InvalidArgument
+	case errors.Is(err, skills.ErrSkillModified),
+		errors.Is(err, skills.ErrSkillUnmanaged),
+		errors.Is(err, skills.ErrUnsafeSymlink):
+		return codes.Aborted
+	default:
+		return codes.Internal
+	}
+}
+
+func (svc *Service) updateWorkerSkills(r *leapmuxv1.UpdateWorkerSkillsRequest) (*leapmuxv1.UpdateWorkerSkillsResponse, codes.Code, error) {
 	if svc.HomeDir == "" || svc.DataDir == "" {
 		return nil, codes.FailedPrecondition, fmt.Errorf("worker home or data directory is not configured")
 	}
+	var autoSync *bool
+	if r != nil {
+		autoSync = r.AutoSync
+	}
 	svc.skillsMu.Lock()
 	defer svc.skillsMu.Unlock()
-	next, err := skills.ApplyWorkerStateUpdate(svc.DataDir, svc.HomeDir, skills.WorkerStateUpdate{
-		AutoSync:            r.AutoSync,
-		Targets:             r.GetTargets(),
+	next, outcomes, err := skills.ApplyWorkerStateUpdate(svc.DataDir, svc.HomeDir, skills.WorkerStateUpdate{
+		AutoSync:            autoSync,
 		UpdateEnabledSkills: r.GetUpdateEnabledSkills(),
 		EnabledSkills:       r.GetEnabledSkills(),
+		AddSkills:           r.GetAddSkills(),
+		RemoveSkills:        r.GetRemoveSkills(),
+		AddAllSkills:        r.GetAddAllSkills(),
+		RemoveAllSkills:     r.GetRemoveAllSkills(),
+		Targets:             rawSkillTargets(r.GetTargets()),
+		AddTargets:          rawSkillTargets(r.GetAddTargets()),
+		RemoveTargets:       rawSkillTargets(r.GetRemoveTargets()),
 		SyncNow:             r.GetSyncNow(),
 		Force:               r.GetForce(),
+		StrictConflicts:     r.GetStrictConflicts(),
 	})
 	if err != nil {
-		if errors.Is(err, skills.ErrInvalidWorkerStateUpdate) {
-			return nil, codes.InvalidArgument, err
-		}
-		return nil, codes.Internal, err
+		return nil, workerSkillsErrorCode(err), err
 	}
-	return svc.buildWorkerSkillsResponseForState(next), codes.OK, nil
+	protoOutcomes := make([]*leapmuxv1.WorkerSkillOutcome, 0, len(outcomes))
+	for _, o := range outcomes {
+		protoOutcomes = append(protoOutcomes, &leapmuxv1.WorkerSkillOutcome{
+			Name:   o.Name,
+			Target: string(o.Target),
+			Action: string(o.Action),
+			Path:   o.Path,
+		})
+	}
+	return &leapmuxv1.UpdateWorkerSkillsResponse{
+		State:    svc.buildWorkerSkillsResponseForState(next),
+		Outcomes: protoOutcomes,
+	}, codes.OK, nil
 }

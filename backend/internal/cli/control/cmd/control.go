@@ -30,18 +30,20 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
-// leapmuxStateClassifier maps LeapMux agent, terminal, worker, and health
-// state tokens to their table cell tones.
+// leapmuxStateClassifier maps LeapMux agent, terminal, worker, skill, and
+// health state tokens to their table cell tones.
 func leapmuxStateClassifier(value string) cli.StateTone {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "idle", "ready", "active", "online", "ok", "pass", "running", "completed":
+	case "idle", "ready", "active", "online", "ok", "pass", "running", "completed", "up_to_date":
 		return cli.StateToneGreen
-	case "working", "starting", "pending", "warn", "queued", "dispatching":
+	case "working", "starting", "pending", "warn", "queued", "dispatching", "outdated", "modified":
 		return cli.StateToneYellow
 	case "waiting_for_user":
 		return cli.StateToneMagenta
-	case "error", "exited", "startup_failed", "failed", "offline", "fail", "closed", "canceled":
+	case "error", "exited", "startup_failed", "failed", "offline", "fail", "closed", "canceled", "unmanaged":
 		return cli.StateToneRed
+	case "not_installed":
+		return cli.StateToneDim
 	default:
 		return cli.StateToneNone
 	}

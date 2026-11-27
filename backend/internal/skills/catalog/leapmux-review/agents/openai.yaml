@@ -1,4 +1,0 @@
-interface:
-  display_name: "LeapMux Review"
-  short_description: "Spawn a read-only contrasting LeapMux reviewer agent"
-  default_prompt: "Use the leapmux-review skill to get an independent read-only second opinion from a contrasting provider."

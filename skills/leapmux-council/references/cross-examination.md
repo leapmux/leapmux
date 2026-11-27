@@ -31,8 +31,8 @@ Send both in parallel and wait once:
 leapmux agent send "$C1" --file .tmp/council-r2-a.md
 leapmux agent send "$C2" --file .tmp/council-r2-b.md
 leapmux agent wait "$C1" "$C2" --timeout 15m
-leapmux agent messages "$C1" --limit 2
-leapmux agent messages "$C2" --limit 2
+leapmux agent messages "$C1" --limit 2 --markdown
+leapmux agent messages "$C2" --limit 2 --markdown
 ```
 
 ## Synthesis Checklist

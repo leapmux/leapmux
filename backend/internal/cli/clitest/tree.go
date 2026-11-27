@@ -4,9 +4,11 @@
 package clitest
 
 import (
+	"io"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/spf13/cobra"
@@ -178,23 +180,7 @@ func checkExample(t TestingT, root, leaf *cobra.Command, ex cli.Example) {
 	// Find leaves the flags and the arguments in rest. Clone the allowed flag
 	// specs into a fresh set with throwaway values so parsing an example never
 	// mutates the live flags attached to the command tree.
-	flags := pflag.NewFlagSet(path, pflag.ContinueOnError)
-	addClone := func(f *pflag.Flag) {
-		if flags.Lookup(f.Name) != nil {
-			return
-		}
-		flags.AddFlag(cloneFlagForExample(f))
-	}
-	leaf.LocalFlags().VisitAll(addClone)
-	leaf.InheritedFlags().VisitAll(func(f *pflag.Flag) {
-		if cli.IsInheritedFlagDisallowed(leaf, f.Name) {
-			return
-		}
-		addClone(f)
-	})
-	if flags.Lookup("help") == nil {
-		flags.BoolP("help", "h", false, "")
-	}
+	flags := CloneCommandFlags(leaf, false)
 	if !assert.NoErrorf(t, flags.Parse(rest), "an example of %s does not parse: %s", path, ex.Command) {
 		return
 	}
@@ -203,15 +189,64 @@ func checkExample(t TestingT, root, leaf *cobra.Command, ex cli.Example) {
 	}
 }
 
-type exampleFlagValue struct {
-	flagType string
-	val      string
+// CloneCommandFlags returns a fresh FlagSet containing cmd's local flags,
+// every non-disallowed inherited flag, and a fallback --help/-h flag. Each
+// cloned flag writes into a throwaway value so parsing never mutates cmd.
+//
+// When allowPlaceholders is true, non-bool flags accept documentation
+// placeholders (<...> and $..., such as <n>, <path>, or $A1) in addition to
+// valid typed values.
+func CloneCommandFlags(cmd *cobra.Command, allowPlaceholders bool) *pflag.FlagSet {
+	name := ""
+	if cmd != nil {
+		name = cmd.CommandPath()
+	}
+	flags := pflag.NewFlagSet(name, pflag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	if cmd == nil {
+		return flags
+	}
+	addClone := func(f *pflag.Flag) {
+		if flags.Lookup(f.Name) != nil {
+			return
+		}
+		clone := cloneFlag(f, allowPlaceholders)
+		if clone.Shorthand != "" && flags.ShorthandLookup(clone.Shorthand) != nil {
+			clone.Shorthand = ""
+		}
+		flags.AddFlag(clone)
+	}
+	cmd.LocalFlags().VisitAll(addClone)
+	cmd.InheritedFlags().VisitAll(func(f *pflag.Flag) {
+		if cli.IsInheritedFlagDisallowed(cmd, f.Name) {
+			return
+		}
+		addClone(f)
+	})
+	if flags.Lookup("help") == nil {
+		if flags.ShorthandLookup("h") == nil {
+			flags.BoolP("help", "h", false, "")
+		} else {
+			flags.Bool("help", false, "")
+		}
+	}
+	return flags
 }
 
-func (v *exampleFlagValue) String() string { return v.val }
-func (v *exampleFlagValue) Type() string   { return v.flagType }
+type clonedFlagValue struct {
+	flagType          string
+	val               string
+	allowPlaceholders bool
+}
 
-func (v *exampleFlagValue) Set(s string) error {
+func (v *clonedFlagValue) String() string { return v.val }
+func (v *clonedFlagValue) Type() string   { return v.flagType }
+
+func (v *clonedFlagValue) Set(s string) error {
+	if v.allowPlaceholders && v.flagType != "bool" && isDocPlaceholder(s) {
+		v.val = s
+		return nil
+	}
 	switch v.flagType {
 	case "bool":
 		if _, err := strconv.ParseBool(s); err != nil {
@@ -229,17 +264,30 @@ func (v *exampleFlagValue) Set(s string) error {
 		if _, err := strconv.ParseFloat(s, 64); err != nil {
 			return err
 		}
+	case "duration":
+		if _, err := time.ParseDuration(s); err != nil {
+			return err
+		}
 	}
 	v.val = s
 	return nil
 }
 
-func cloneFlagForExample(f *pflag.Flag) *pflag.Flag {
+// isDocPlaceholder reports whether s is a documentation placeholder such as
+// <path>, <n>, $A1, or ${LIMIT}.
+func isDocPlaceholder(s string) bool {
+	if len(s) >= 3 && s[0] == '<' && s[len(s)-1] == '>' {
+		return strings.TrimSpace(s[1:len(s)-1]) != ""
+	}
+	return len(s) >= 2 && s[0] == '$' && strings.TrimSpace(s[1:]) != ""
+}
+
+func cloneFlag(f *pflag.Flag, allowPlaceholders bool) *pflag.Flag {
 	return &pflag.Flag{
 		Name:        f.Name,
 		Shorthand:   f.Shorthand,
 		Usage:       f.Usage,
-		Value:       &exampleFlagValue{flagType: f.Value.Type()},
+		Value:       &clonedFlagValue{flagType: f.Value.Type(), allowPlaceholders: allowPlaceholders},
 		DefValue:    f.DefValue,
 		NoOptDefVal: f.NoOptDefVal,
 	}

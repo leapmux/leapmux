@@ -146,6 +146,7 @@ function fixture(platform = hostPlatform) {
     'generate-sqlc-hub': ['backend/internal/hub/store/sqlite/generated/db/querier.go', 'backend/internal/hub/store/postgres/generated/db/querier.go', 'backend/internal/hub/store/mysql/generated/db/querier.go'],
     'generate-sqlc-worker': ['backend/internal/worker/generated/db/querier.go'],
     'embed-frontend': ['backend/internal/hub/generated/frontend/embed.go', 'backend/internal/hub/generated/frontend/public/index.html', 'backend/internal/hub/generated/frontend/public/app.js'],
+    'embed-skills': ['backend/internal/skills/generated/catalog/embed.go', 'backend/internal/skills/generated/catalog/files/leapmux/SKILL.md'],
     'build-backend': [
       platform.os === 'windows'
         ? 'leapmux.exe'
@@ -234,6 +235,8 @@ for (const path of outputs[task] ?? []) {
     'backend/go.sum',
     'go.work',
     'backend/internal/hub/frontend.embed',
+    'backend/internal/skills/catalog.embed',
+    'skills/leapmux/SKILL.md',
     'backend/internal/hub/store/sqlite/db/migrations/001.sql',
     'backend/internal/worker/db/migrations/001.sql',
   ])
@@ -748,6 +751,34 @@ describe('task build cache', () => {
     expect(run(dir, target)).toEqual([target])
     write(dir, nushellCompletion, '# revised Nushell completion')
     expect(run(dir, target)).toEqual([target])
+  })
+
+  it.each([
+    'build-backend',
+    'build-backend-docker',
+    'lint-backend',
+    'build-desktop-sidecar',
+  ])('re-embeds skills and invalidates %s when a skill source changes', (target) => {
+    const dir = fixture()
+    cpSync(join(root, 'scripts/sync-generated.mjs'), join(dir, 'scripts/sync-generated.mjs'))
+    const file = join(dir, 'Taskfile.yaml')
+    const config = Bun.YAML.parse(readFileSync(file, 'utf8'))
+    const production = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    config.tasks['embed-skills'].cmds = production.tasks['embed-skills'].cmds
+    writeFileSync(file, Bun.YAML.stringify(config))
+    write(dir, 'versions.env', '')
+    write(dir, 'backend/internal/skills/catalog.embed', 'package catalog\n\nimport "embed"\n\n//go:embed files\nvar FS embed.FS\n')
+    write(dir, 'skills/leapmux/SKILL.md', '# original skill\n')
+    expect(run(dir, target)).toContain(target)
+    expect(readFileSync(join(dir, 'backend/internal/skills/generated/catalog/files/leapmux/SKILL.md'), 'utf8')).toBe('# original skill\n')
+    expect(run(dir, target)).toEqual([])
+    write(dir, 'skills/leapmux/SKILL.md', '# revised skill\n')
+    expect(run(dir, target)).toEqual([target])
+    expect(readFileSync(join(dir, 'backend/internal/skills/generated/catalog/files/leapmux/SKILL.md'), 'utf8')).toBe('# revised skill\n')
+    expect(run(dir, target)).toEqual([])
+    write(dir, 'backend/internal/skills/catalog.embed', 'package catalog\n\nimport "embed"\n\n// Revised comment\n//go:embed files\nvar FS embed.FS\n')
+    expect(run(dir, target)).toEqual([target])
+    expect(run(dir, target)).toEqual([])
   })
 
   it('exports the Docker target and CGO options to the Go compiler', () => {

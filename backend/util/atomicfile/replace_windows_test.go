@@ -42,6 +42,30 @@ func TestDestCannotReplace_MissingPath(t *testing.T) {
 		"a missing destination is not a permanent refusal")
 }
 
+func TestDestCannotReplaceInRoot(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = root.Close() })
+
+	require.NoError(t, root.Mkdir("subdir", 0o700))
+	assert.True(t, destCannotReplaceInRoot(root, "subdir"),
+		"a directory at the destination can never succeed, so it must not be retried")
+
+	require.NoError(t, root.WriteFile("readonly.json", []byte("one"), 0o600))
+	require.NoError(t, root.Chmod("readonly.json", 0o400))
+	t.Cleanup(func() { _ = root.Chmod("readonly.json", 0o600) })
+	assert.True(t, destCannotReplaceInRoot(root, "readonly.json"),
+		"a read-only destination is permanent and must not be retried")
+
+	require.NoError(t, root.WriteFile("writable.json", []byte("one"), 0o600))
+	assert.False(t, destCannotReplaceInRoot(root, "writable.json"),
+		"a sharing conflict on a writable file is transient and must be retried")
+
+	assert.False(t, destCannotReplaceInRoot(root, "absent"),
+		"a missing destination is not a permanent refusal")
+}
+
 func TestIsSharingConflict_RecognizesTheWindowsReplaceErrors(t *testing.T) {
 
 	assert.True(t, isSharingConflict(&os.LinkError{Err: windows.ERROR_ACCESS_DENIED}))

@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
-import type { GetWorkerSkillsResponse } from '~/generated/proto/leapmux/v1/worker_system_pb'
+import type { GetWorkerSkillsResponse, WorkerSkillStatus } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { workerSystem } from '~/api/workerRpc'
 import { formatErrorMessage } from '~/lib/errors'
@@ -30,6 +30,33 @@ function stateLabel(state: string): string {
     default:
       return 'Not installed'
   }
+}
+
+interface SkillStateSummary {
+  badge: string
+  targetDetails: string | null
+}
+
+function summarizeSkillState(skill: Pick<WorkerSkillStatus, 'state' | 'targets'>): SkillStateSummary {
+  const label = stateLabel(skill.state)
+  const targets = skill.targets ?? []
+  if (targets.length <= 1) {
+    return { badge: label, targetDetails: null }
+  }
+  const distinctStates = new Set(targets.map(t => t.state))
+  if (distinctStates.size <= 1) {
+    return { badge: label, targetDetails: null }
+  }
+  const matching = targets.filter(t => t.state === skill.state)
+  const others = targets.filter(t => t.state !== skill.state)
+  const badge = matching.length > 0 && matching.length < targets.length
+    ? `${label} (${matching.map(t => t.target).join(', ')})`
+    : label
+  const showDetails = matching.length === 0 || others.some(t => t.state !== 'up_to_date')
+  const targetDetails = showDetails
+    ? others.map(t => `${t.target}: ${stateLabel(t.state)}`).join(' · ')
+    : null
+  return { badge, targetDetails }
 }
 
 /**
@@ -151,41 +178,38 @@ export const AgentSkillsControl: Component = () => {
   }
 
   function toggleSkill(name: string, enabled: boolean): void {
-    const current = skillsState()
-    if (!current)
-      return
-    const next = current.skills
-      .filter((s) => {
-        if (s.name === name)
-          return enabled
-        return s.enabled
+    if (enabled) {
+      void applyUpdate({
+        addSkills: [name],
+        syncNow: true,
       })
-      .map(s => s.name)
-    void applyUpdate({
-      updateEnabledSkills: true,
-      enabledSkills: next,
-      syncNow: true,
-    })
+    }
+    else {
+      void applyUpdate({
+        removeSkills: [name],
+      })
+    }
   }
 
   function toggleTarget(targetId: string, checked: boolean): void {
+    if (checked) {
+      void applyUpdate({
+        addTargets: [targetId],
+        syncNow: true,
+      })
+      return
+    }
     const current = skillsState()
     if (!current)
       return
-    const set = new Set(current.targets)
-    if (checked) {
-      set.add(targetId)
-    }
-    else if (set.size > 1) {
-      set.delete(targetId)
-    }
-    else {
+    const remaining = new Set(current.targets)
+    remaining.delete(targetId)
+    if (remaining.size === 0) {
       // Keep at least one target directory selected.
       return
     }
     void applyUpdate({
-      targets: Array.from(set),
-      syncNow: true,
+      removeTargets: [targetId],
     })
   }
 
@@ -264,25 +288,40 @@ export const AgentSkillsControl: Component = () => {
 
             <div class={styles.skillList}>
               <For each={state().skills}>
-                {skill => (
-                  <div class={styles.skillRow} data-testid={`agent-skill-row-${skill.name}`}>
-                    <div class={styles.skillBody}>
-                      <div class={styles.skillHeader}>
-                        <span class={styles.skillName}>{skill.name}</span>
-                        <span class={styles.skillState}>{stateLabel(skill.state)}</span>
+                {(skill) => {
+                  const summary = summarizeSkillState(skill)
+                  return (
+                    <div class={styles.skillRow} data-testid={`agent-skill-row-${skill.name}`}>
+                      <div class={styles.skillBody}>
+                        <div class={styles.skillHeader}>
+                          <span class={styles.skillName}>{skill.name}</span>
+                          <span class={styles.skillState} data-testid={`agent-skill-state-${skill.name}`}>
+                            {summary.badge}
+                          </span>
+                        </div>
+                        <span class={styles.skillDesc}>{skill.description}</span>
+                        <Show when={summary.targetDetails}>
+                          {details => (
+                            <span
+                              class={styles.skillTargetDetails}
+                              data-testid={`agent-skill-targets-${skill.name}`}
+                            >
+                              {details()}
+                            </span>
+                          )}
+                        </Show>
                       </div>
-                      <span class={styles.skillDesc}>{skill.description}</span>
+                      <input
+                        type="checkbox"
+                        aria-label={`Enable ${skill.name} skill`}
+                        checked={skill.enabled}
+                        disabled={saving()}
+                        onChange={e => toggleSkill(skill.name, e.currentTarget.checked)}
+                        data-testid={`agent-skill-toggle-${skill.name}`}
+                      />
                     </div>
-                    <input
-                      type="checkbox"
-                      aria-label={`Enable ${skill.name} skill`}
-                      checked={skill.enabled}
-                      disabled={saving()}
-                      onChange={e => toggleSkill(skill.name, e.currentTarget.checked)}
-                      data-testid={`agent-skill-toggle-${skill.name}`}
-                    />
-                  </div>
-                )}
+                  )
+                }}
               </For>
             </div>
 

@@ -1,12 +1,13 @@
 # Review JSON Schemas (`--output-schema`)
 
-Save one of the schemas below to a file (for example `.tmp/review-schema.json`) and pass it to `leapmux agent open --wait --output-schema .tmp/review-schema.json`.
+Save one of the schemas below to a file (for example `.tmp/review-schema.json`) and pass it with a prompt file to `leapmux agent open --wait --output-schema .tmp/review-schema.json --file .tmp/review-brief.md` (`--output-schema` requires `--message` or `--file`).
 
 ## Code Diff Review Schema
 
 ```json
 {
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "verdict": { "type": "string", "enum": ["approve", "changes_requested"] },
     "summary": { "type": "string" },
@@ -15,6 +16,7 @@ Save one of the schemas below to a file (for example `.tmp/review-schema.json`) 
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "severity": { "type": "string", "enum": ["high", "medium", "low"] },
           "location": { "type": "string" },
@@ -34,6 +36,7 @@ Save one of the schemas below to a file (for example `.tmp/review-schema.json`) 
 ```json
 {
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "verdict": { "type": "string", "enum": ["ready", "revise", "rethink"] },
     "strongest_points": { "type": "array", "items": { "type": "string" } },
@@ -41,6 +44,7 @@ Save one of the schemas below to a file (for example `.tmp/review-schema.json`) 
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "severity": { "type": "string", "enum": ["high", "medium", "low"] },
           "topic": { "type": "string" },
@@ -61,12 +65,14 @@ Save one of the schemas below to a file (for example `.tmp/review-schema.json`) 
 ```json
 {
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "risk_level": { "type": "string", "enum": ["none", "low", "medium", "high", "critical"] },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
           "category": { "type": "string" },

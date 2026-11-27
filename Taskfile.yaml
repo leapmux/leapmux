@@ -601,7 +601,7 @@ tasks:
 
   prepare-backend:
     desc: Prepare backend for builds
-    deps: [generate-proto, generate-contracts, generate-sqlc, embed-frontend]
+    deps: [generate-proto, generate-contracts, generate-sqlc, embed-frontend, embed-skills]
 
   embed-frontend:
     desc: Embed frontend assets in the backend
@@ -626,6 +626,30 @@ tasks:
         --copy backend/internal/hub/frontend.embed frontend/embed.go
         --copy frontend/.output/public frontend/public
         --out frontend backend/internal/hub/generated/frontend
+      - *record_artifacts
+
+  embed-skills:
+    desc: Embed curated Agent Skills in the backend
+    sources:
+      - versions.env
+      - scripts/task-state.mjs
+      - backend/internal/skills/catalog.embed
+      - skills/**/*
+      - scripts/sync-generated.mjs
+    vars:
+      OUTPUTS: &outputs_embed_skills
+        - backend/internal/skills/generated/catalog/embed.go
+        - backend/internal/skills/generated/catalog/files/**/*
+    generates: *outputs_embed_skills
+    status: *artifact_status
+    cmds:
+      - *forget_artifacts
+      # Preserve identical files so Go sees only real changes.
+      - >-
+        bun scripts/sync-generated.mjs
+        --copy backend/internal/skills/catalog.embed catalog/embed.go
+        --copy skills catalog/files
+        --out catalog backend/internal/skills/generated/catalog
       - *record_artifacts
 
   prepare-desktop:
@@ -745,6 +769,7 @@ tasks:
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
+      - backend/internal/skills/generated/catalog/files/**/*
       - proto/**/*
       - buf.gen.yaml
       - buf.yaml
@@ -785,6 +810,7 @@ tasks:
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
+      - backend/internal/skills/generated/catalog/files/**/*
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
@@ -873,6 +899,7 @@ tasks:
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
+      - backend/internal/skills/generated/catalog/files/**/*
       - leapmux
     vars:
       GO_CONTEXT:
@@ -1009,6 +1036,7 @@ tasks:
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
+      - backend/internal/skills/generated/catalog/files/**/*
       - leapmux
     vars:
       GO_CONTEXT:
@@ -1121,6 +1149,7 @@ tasks:
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
+      - backend/internal/skills/generated/catalog/files/**/*
       - leapmux.exe
     vars:
       GO_CONTEXT:
@@ -1542,6 +1571,7 @@ tasks:
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
+      - backend/internal/skills/generated/catalog/files/**/*
       - .golangci.yml
       - backend/go.mod
       - backend/go.sum
@@ -1592,6 +1622,7 @@ tasks:
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
+      - backend/internal/skills/generated/catalog/files/**/*
       - .golangci.yml
       - desktop/**/*.go
       - exclude: desktop/go/bin/**/*
@@ -1701,6 +1732,7 @@ tasks:
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
+      - backend/internal/skills/generated/catalog/files/**/*
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
