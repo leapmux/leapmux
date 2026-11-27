@@ -85,6 +85,27 @@ func TestTerminalSendOverIPC_SendsTheBytesOfAFile(t *testing.T) {
 	})
 }
 
+func TestTerminalSendOverIPC_DashReadsStdinAndDoubleDashSendsLiteralDash(t *testing.T) {
+	t.Run("bare dash reads stdin", func(t *testing.T) {
+		id := fullTestID("term-1")
+		w := &terminalWorker{}
+		startTerminalWorker(t, w, id)
+
+		data := runControlIn(t, "from stdin", "terminal", "send", id, "-", "--json").Data(t)
+		assert.Equal(t, map[string]any{"id": id, "text_bytes": 10.0}, data)
+		requireOneInput(t, w, &leapmuxv1.SendInputRequest{TerminalId: id, Data: []byte("from stdin")})
+	})
+	t.Run("dash after double dash sends literal dash", func(t *testing.T) {
+		id := fullTestID("term-1")
+		w := &terminalWorker{}
+		startTerminalWorker(t, w, id)
+
+		data := runControlIn(t, "ignored stdin", "terminal", "send", "--json", id, "--", "-").Data(t)
+		assert.Equal(t, map[string]any{"id": id, "text_bytes": 1.0}, data)
+		requireOneInput(t, w, &leapmuxv1.SendInputRequest{TerminalId: id, Data: []byte("-")})
+	})
+}
+
 // A command line that sends nothing, or a key that the Worker cannot encode,
 // fails as a usage error before any request reaches the Worker.
 func TestTerminalSendOverIPC_Refusals(t *testing.T) {
@@ -234,4 +255,91 @@ func TestWrapWords(t *testing.T) {
 	assert.Equal(t, "one two\nthree", wrapWords("one two\nthree", 7), "a line exactly as wide as the width fits")
 	assert.Equal(t, "a\nverylongword\nb", wrapWords("a verylongword b", 5), "a word longer than the width stands alone")
 	assert.Equal(t, "日本 語", wrapWords("日本 語", 4), "the width counts runes, not bytes")
+}
+
+func TestTerminalRunWaitOverIPC_PreSendBaselineAndReceipts(t *testing.T) {
+	t.Run("populates request_id on success and captures baseline before send", func(t *testing.T) {
+		id := fullTestID("term-run-ok")
+		w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, "$ "))
+		startWatchedTerminalWorker(t, w, id)
+		waitWatch := onWatched(t, w, func(_ *leapmuxv1.WatchEventsRequest) {
+			w.push(id, dataEvent("echo PASS\r\nPASS\r\n", 19, false))
+		})
+
+		data := runControl(t, "terminal", "run", id, "echo PASS", "--wait", "--regex", "^PASS$", "--request-id", "run-req-1").Data(t)
+		waitWatch()
+		assert.Equal(t, true, data["reached"])
+		assert.Equal(t, "PASS", data["line"])
+		assert.Equal(t, "run-req-1", data["request_id"])
+
+		called := w.called()
+		listIdx := -1
+		sendIdx := -1
+		for i, method := range called {
+			if method == "/leapmux.v1.WorkerTerminalService/ListTerminals" && listIdx < 0 {
+				listIdx = i
+			}
+			if method == "/leapmux.v1.WorkerTerminalService/SendInput" && sendIdx < 0 {
+				sendIdx = i
+			}
+		}
+		require.NotEqual(t, -1, listIdx, "ListTerminals must be called")
+		require.NotEqual(t, -1, sendIdx, "SendInput must be called")
+		assert.Less(t, listIdx, sendIdx, "baseline ListTerminals must run before SendInput")
+	})
+
+	t.Run("timeout attaches structured receipt and notices", func(t *testing.T) {
+		id := fullTestID("term-run-to")
+		w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, "$ "))
+		startWatchedTerminalWorker(t, w, id)
+
+		o := runControl(t, "terminal", "run", id, "sleep 10", "--wait", "--text", "DONE", "--timeout", "100ms", "--request-id", "run-req-to")
+		assert.Equal(t, cli.ExitWaitEnded, o.Code, "stderr: %s", o.Stderr)
+		data := o.envelope(t).Data
+		assert.Equal(t, false, data["reached"])
+		assert.Equal(t, "run-req-to", data["request_id"])
+		rec, ok := data["receipt"].(map[string]any)
+		require.True(t, ok, "timeout must attach structured receipt: %#v", data)
+		assert.Equal(t, dispositionInProgress, rec["disposition"])
+		assert.Equal(t, "run-req-to", rec["request_id"])
+		assert.Contains(t, rec["retry_command"], "--request-id run-req-to")
+		assert.Contains(t, o.Stderr, "disposition: in_progress (request_id: run-req-to)")
+		assert.Contains(t, o.Stderr, "safe retry:")
+	})
+
+	t.Run("exited shell omits in_progress receipt and safe retry", func(t *testing.T) {
+		id := fullTestID("term-run-ex")
+		w := &terminalWorker{
+			info: &leapmuxv1.TerminalInfo{
+				TerminalId: id,
+				Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
+				Cols:       80,
+				Rows:       24,
+			},
+		}
+		startTerminalWorker(t, w, id)
+
+		o := runControl(t, "terminal", "run", id, "make test", "--wait", "--text", "PASS", "--request-id", "run-req-ex")
+		assert.Equal(t, cli.ExitWaitEnded, o.Code, "stderr: %s", o.Stderr)
+		data := o.envelope(t).Data
+		assert.Equal(t, false, data["reached"])
+		assert.Equal(t, "run-req-ex", data["request_id"])
+		_, hasReceipt := data["receipt"]
+		assert.False(t, hasReceipt, "an already exited shell must not carry an in_progress receipt")
+		assert.NotContains(t, o.Stderr, "disposition: in_progress")
+		assert.NotContains(t, o.Stderr, "safe retry:")
+	})
+
+	t.Run("pre-send error on wait path wraps not_sent receipt", func(t *testing.T) {
+		id := fullTestID("term-run-nf")
+		w := &terminalWorker{} // returns empty ListTerminals -> not_found before SendInput
+		startTerminalWorker(t, w, id)
+
+		o := runControl(t, "terminal", "run", id, "make test", "--wait", "--text", "PASS", "--request-id", "run-req-nf")
+		f := o.requireFailure(t, cli.CodeNotFound)
+		require.NotNil(t, f.Receipt)
+		assert.Equal(t, dispositionNotSent, f.Receipt.Disposition)
+		assert.Equal(t, "run-req-nf", f.Receipt.RequestID)
+		assert.Empty(t, w.recordedInputs(), "SendInput must not run when baseline ListTerminals fails")
+	})
 }

@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"time"
+	"context"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -37,10 +37,7 @@ func newQuakeReadLeaf() *cobra.Command {
 			{Command: "leapmux terminal quake read --dir ~/src/app --lines 50"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
-			fs.Int("lines", 0, "print only the last N lines")
-			fs.Bool("scrollback", false, "also print the lines above the screen")
-			fs.Bool("raw", false, "print the retained bytes as they are, with their escape sequences")
-			fs.BoolP("follow", "f", false, "stream live output until Ctrl-C or shell exit")
+			addTerminalReadFlags(fs)
 			addWorkingDirFlag(fs, "the directory whose quake terminal to read")
 			addWorkerFlag(fs)
 		},
@@ -87,83 +84,76 @@ func newQuakeSendLeaf() *cobra.Command {
 	})
 }
 
-func (s *session) resolveQuakeTerminal(dir string, createIfMissing bool) (string, *leapmuxv1.TerminalInfo, error) {
-	workerID, info, _, err := s.resolveQuakeTerminalWithInit(dir, createIfMissing, "")
-	return workerID, info, err
-}
-
-func (s *session) resolveQuakeTerminalWithInit(dir string, createIfMissing bool, initialCmd string) (string, *leapmuxv1.TerminalInfo, bool, error) {
-	workerID, err := s.workerScope()
-	if err != nil {
-		return "", nil, false, err
-	}
-	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-		return "", nil, false, err
-	}
+// lookupQuakeTerminalOn queries the Worker over an open channel for the quake
+// terminal of dir. It returns nil without an error when none is open.
+func lookupQuakeTerminalOn(ctx context.Context, w workerCall, dir string) (*leapmuxv1.TerminalInfo, error) {
 	var resp leapmuxv1.ListTerminalsResponse
-	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
+	if err := w.Call(ctx, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		QuakeWorkingDirs: []string{dir},
 	}, &resp); err != nil {
-		return "", nil, false, err
+		return nil, err
 	}
 	for _, info := range resp.GetTerminals() {
 		if info.GetQuake() {
-			return workerID, info, false, nil
+			return info, nil
 		}
 	}
-	if !createIfMissing {
-		return "", nil, false, cli.Newf(cli.CodeNotFound, "no quake terminal is open for %s on worker %s", dir, cli.ShortID(workerID)).
+	return nil, nil
+}
+
+// resolveQuakeTerminal resolves the Worker and looks up the existing quake
+// terminal for dir without creating one.
+func (s *session) resolveQuakeTerminal(dir string) (string, *leapmuxv1.TerminalInfo, error) {
+	workerID, err := s.workerScope()
+	if err != nil {
+		return "", nil, err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
+		return "", nil, err
+	}
+	var info *leapmuxv1.TerminalInfo
+	if err := withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
+		var lookupErr error
+		info, lookupErr = lookupQuakeTerminalOn(s.ctx, w, dir)
+		return lookupErr
+	}); err != nil {
+		return "", nil, err
+	}
+	if info == nil {
+		return "", nil, cli.Newf(cli.CodeNotFound, "no quake terminal is open for %s on worker %s", dir, cli.ShortID(workerID)).
 			WithHint(`start it with "leapmux terminal quake open --dir %s" or "leapmux terminal quake run <command>"`, dir)
 	}
+	return workerID, info, nil
+}
+
+// ensureQuakeTerminalOn returns the existing quake terminal for dir or opens a
+// new one over the shared channel w. created is true when OpenTerminal started
+// a new shell (so initialCmd ran on startup); it is false when the terminal
+// already existed or OpenTerminal adopted a shell started concurrently.
+func ensureQuakeTerminalOn(ctx context.Context, w workerCall, dir, initialCmd string) (info *leapmuxv1.TerminalInfo, created bool, err error) {
+	info, err = lookupQuakeTerminalOn(ctx, w, dir)
+	if err != nil {
+		return nil, false, err
+	}
+	if info != nil {
+		return info, false, nil
+	}
 	var openResp leapmuxv1.OpenTerminalResponse
-	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+	if err := w.Call(ctx, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir:     dir,
 		InitialCommand: initialCmd,
 		Target:         &leapmuxv1.OpenTerminalRequest_Quake{Quake: &leapmuxv1.QuakeTerminalTarget{}},
 	}, &openResp); err != nil {
-		return "", nil, false, err
+		return nil, false, err
 	}
-	return workerID, &leapmuxv1.TerminalInfo{
+	info = &leapmuxv1.TerminalInfo{
 		TerminalId: openResp.GetTerminalId(),
 		Title:      openResp.GetTitle(),
 		WorkingDir: dir,
 		Quake:      true,
-	}, !openResp.GetAdopted(), nil
-}
-
-// waitForQuakeTerminalReady polls ListTerminals on workerID until a newly
-// opened quake terminal transitions out of STARTING so SendInput does not race
-// shell PTY registration.
-func (s *session) waitForQuakeTerminalReady(workerID, dir, terminalID string) error {
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var resp leapmuxv1.ListTerminalsResponse
-		if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
-			QuakeWorkingDirs: []string{dir},
-		}, &resp); err == nil {
-			for _, info := range resp.GetTerminals() {
-				if info.GetTerminalId() == terminalID {
-					switch info.GetStatus() {
-					case leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY:
-						return nil
-					case leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:
-						return cli.Newf(cli.CodeInternal, "quake terminal %s exited before becoming ready", cli.ShortID(terminalID))
-					case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
-						return cli.Newf(cli.CodeInternal, "quake terminal %s failed to start", cli.ShortID(terminalID))
-					case leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED,
-						leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:
-						// Still starting; keep polling until ready or context deadline.
-					}
-				}
-			}
-		}
-		select {
-		case <-s.ctx.Done():
-			return s.ctx.Err()
-		case <-ticker.C:
-		}
+		Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
 	}
+	return info, !openResp.GetAdopted(), nil
 }
 
 func runQuakeGet(inv *cli.Invocation) (any, error) {
@@ -176,7 +166,7 @@ func runQuakeGet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	_, info, err := s.resolveQuakeTerminal(dir, false)
+	_, info, err := s.resolveQuakeTerminal(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -188,39 +178,14 @@ func runQuakeRead(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	opts, err := screenReadOptionsOf(inv)
-	if err != nil {
-		return nil, err
-	}
-	follow := boolFlag(inv, "follow")
-	if follow {
-		s, err := openStreamSession(inv)
+	return executeTerminalRead(inv, func(s *session) (tabTarget, *leapmuxv1.TerminalInfo, error) {
+		workerID, info, err := s.resolveQuakeTerminal(dir)
 		if err != nil {
-			return nil, err
-		}
-		defer s.Close()
-		bounded := s.bounded()
-		workerID, info, err := bounded.resolveQuakeTerminal(dir, false)
-		bounded.Close()
-		if err != nil {
-			return nil, err
+			return tabTarget{}, nil, err
 		}
 		target := tabTarget{ID: info.GetTerminalId(), Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, WorkerID: workerID}
-		return nil, followTerminalOutput(inv, s, target, info, opts)
-	}
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-	_, info, err := s.resolveQuakeTerminal(dir, false)
-	if err != nil {
-		return nil, err
-	}
-	if opts.raw {
-		return rawScreenOf(info), nil
-	}
-	return renderScreen(info, opts)
+		return target, info, nil
+	})
 }
 
 func runQuakeRun(inv *cli.Invocation) (any, error) {
@@ -237,24 +202,35 @@ func runQuakeRun(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, info, created, err := s.resolveQuakeTerminalWithInit(dir, true, command)
+	workerID, err := s.workerScope()
 	if err != nil {
 		return nil, err
 	}
-	if created {
-		// InitialCommand already queued the command atomically on startup.
-		return terminalRunResult{ID: info.GetTerminalId(), Command: command}, nil
-	}
-	req := &leapmuxv1.SendInputRequest{
-		TerminalId: info.GetTerminalId(),
-		Data:       []byte(command),
-		Paste:      true,
-		Keys:       []string{"enter"},
-	}
-	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, req, nil); err != nil {
+	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
 		return nil, err
 	}
-	return terminalRunResult{ID: info.GetTerminalId(), Command: command}, nil
+	var terminalID string
+	if err := withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
+		info, created, err := ensureQuakeTerminalOn(s.ctx, w, dir, command)
+		if err != nil {
+			return err
+		}
+		terminalID = info.GetTerminalId()
+		if created {
+			// InitialCommand already queued the command atomically on startup.
+			return nil
+		}
+		req := &leapmuxv1.SendInputRequest{
+			TerminalId: terminalID,
+			Data:       []byte(command),
+			Paste:      true,
+			Keys:       []string{"enter"},
+		}
+		return w.Call(s.ctx, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, req, nil)
+	}); err != nil {
+		return nil, err
+	}
+	return terminalRunResult{ID: terminalID, Command: command}, nil
 }
 
 func runQuakeSend(inv *cli.Invocation) (any, error) {
@@ -262,44 +238,38 @@ func runQuakeSend(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	text, hasText, err := optionalInputBytes(inv, "text")
+	text, keys, paste, err := terminalSendPayload(inv)
 	if err != nil {
 		return nil, err
-	}
-	keys, err := terminalKeyNames(inv)
-	if err != nil {
-		return nil, err
-	}
-	paste := boolFlag(inv, "paste")
-	switch {
-	case !hasText && len(keys) == 0:
-		return nil, cli.Usagef("missing <text>").
-			WithHint(`give the text as an argument, as "-" to read stdin, or with --file, or press a key with --key`)
-	case paste && !hasText:
-		return nil, cli.Usagef("--paste needs a text")
 	}
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, info, created, err := s.resolveQuakeTerminalWithInit(dir, true, "")
+	workerID, err := s.workerScope()
 	if err != nil {
 		return nil, err
 	}
-	if created {
-		if err := s.waitForQuakeTerminalReady(workerID, dir, info.GetTerminalId()); err != nil {
-			return nil, err
-		}
-	}
-	req := &leapmuxv1.SendInputRequest{
-		TerminalId: info.GetTerminalId(),
-		Data:       text,
-		Paste:      paste,
-		Keys:       keys,
-	}
-	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, req, nil); err != nil {
+	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
 		return nil, err
 	}
-	return terminalSendResult{ID: info.GetTerminalId(), TextBytes: len(text), Paste: paste, Keys: keys}, nil
+	var terminalID string
+	if err := withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
+		info, _, err := ensureQuakeTerminalOn(s.ctx, w, dir, "")
+		if err != nil {
+			return err
+		}
+		terminalID = info.GetTerminalId()
+		req := &leapmuxv1.SendInputRequest{
+			TerminalId: terminalID,
+			Data:       text,
+			Paste:      paste,
+			Keys:       keys,
+		}
+		return w.Call(s.ctx, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, req, nil)
+	}); err != nil {
+		return nil, err
+	}
+	return terminalSendResult{ID: terminalID, TextBytes: len(text), Paste: paste, Keys: keys}, nil
 }

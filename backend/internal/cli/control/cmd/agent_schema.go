@@ -301,7 +301,7 @@ func sendAndWaitWithSchema(s *session, req sendAndWaitRequest) (agentReplyResult
 			break
 		}
 		if s.inv != nil && s.inv.Printer != nil {
-			s.inv.Printer.Notice("reply failed --output-schema validation (attempt %d/%d); requesting correction", attempt+1, spec.maxRetries+1)
+			_ = s.inv.Printer.Notice("reply failed --output-schema validation (attempt %d/%d); requesting correction", attempt+1, spec.maxRetries+1)
 		}
 		curMsg = userMessage{text: schemaCorrectionPrompt(valErr, spec)}
 		curRequestID = schemaRetryRequestID(req.requestID, attempt+1)

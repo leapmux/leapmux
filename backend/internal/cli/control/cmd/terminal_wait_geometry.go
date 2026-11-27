@@ -1,6 +1,10 @@
 package cmd
 
 import (
+	"fmt"
+
+	xterm "github.com/gitpod-io/xterm-go"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 )
@@ -11,146 +15,223 @@ type terminalScreenPosition struct {
 	revision uint64
 }
 
-func (w *screenWatch) replayScreenTimeline(data *leapmuxv1.TerminalData, observe func() (bool, error)) error {
+// terminalScreenPositionFromTimeline returns the position at the end of
+// timeline using endOffset as the byte offset.
+func terminalScreenPositionFromTimeline(timeline *leapmuxv1.TerminalScreenTimeline, endOffset int64) terminalScreenPosition {
+	geometry := timeline.GetBase()
+	if changes := timeline.GetChanges(); len(changes) != 0 {
+		geometry = changes[len(changes)-1]
+	}
+	return terminalScreenPosition{
+		epoch:    geometry.GetEpoch(),
+		offset:   endOffset,
+		revision: geometry.GetRevision(),
+	}
+}
+
+// startsNewEpoch reports whether geometry opens a fresh screen epoch distinct
+// from p.
+func (p terminalScreenPosition) startsNewEpoch(geometry *leapmuxv1.TerminalScreenGeometry) bool {
+	return geometry.GetEpoch() != "" && geometry.GetEpoch() != p.epoch &&
+		geometry.GetRevision() == 1 && geometry.GetOffset() >= 0
+}
+
+// nextGeometry validates a sequential geometry revision within the current
+// epoch and returns the updated position.
+func (p terminalScreenPosition) nextGeometry(geometry *leapmuxv1.TerminalScreenGeometry) (terminalScreenPosition, bool) {
+	if p.epoch == "" || geometry.GetEpoch() != p.epoch || geometry.GetOffset() != p.offset ||
+		geometry.GetRevision() == 0 || geometry.GetRevision() != p.revision+1 {
+		return terminalScreenPosition{}, false
+	}
+	return terminalScreenPosition{
+		epoch:    geometry.GetEpoch(),
+		offset:   geometry.GetOffset(),
+		revision: geometry.GetRevision(),
+	}, true
+}
+
+// applyLiveGeometry validates a live geometry update against p. When ok is
+// true and stale is true, the update is an older or duplicate revision that
+// the caller should skip without advancing p.
+func (p terminalScreenPosition) applyLiveGeometry(geometry *leapmuxv1.TerminalScreenGeometry) (next terminalScreenPosition, stale bool, ok bool) {
+	if p.startsNewEpoch(geometry) {
+		return terminalScreenPosition{
+			epoch:    geometry.GetEpoch(),
+			offset:   geometry.GetOffset(),
+			revision: 1,
+		}, false, true
+	}
+	if p.epoch != "" && geometry.GetEpoch() == p.epoch && geometry.GetRevision() <= p.revision {
+		return p, true, true
+	}
+	next, ok = p.nextGeometry(geometry)
+	return next, false, ok
+}
+
+// advanceOutput validates non-timeline terminal data against p and returns
+// the updated position.
+func (p terminalScreenPosition) advanceOutput(data *leapmuxv1.TerminalData) (terminalScreenPosition, bool) {
+	end, output := data.GetEndOffset(), data.GetData()
+	if data.GetScreenEpoch() != p.epoch || data.GetGeometryRevision() != p.revision {
+		return terminalScreenPosition{}, false
+	}
+	if p.epoch != "" && (data.GetIsSnapshot() || end < p.offset || end-p.offset != int64(len(output))) {
+		return terminalScreenPosition{}, false
+	}
+	p.offset = end
+	return p, true
+}
+
+func (e *screenEmulator) replayScreenTimeline(data *leapmuxv1.TerminalData, observe func() (bool, error)) error {
 	timeline := data.GetScreenTimeline()
 	if timeline.GetHistoryTruncated() {
-		return w.screenHistoryUnavailable()
+		return e.screenHistoryUnavailable()
 	}
 	base := timeline.GetBase()
 	start, end := timeline.GetStartOffset(), data.GetEndOffset()
 	remaining := data.GetData()
 	if base.GetEpoch() == "" || base.GetRevision() == 0 || base.GetOffset() < 0 || base.GetOffset() > start ||
 		start < 0 || end < start || end-start != int64(len(remaining)) {
-		return cli.Newf(cli.CodeInternal, "the worker returned an invalid screen timeline for terminal %s", w.id)
+		return cli.Newf(cli.CodeInternal, "the worker returned an invalid screen timeline for terminal %s", e.id)
 	}
 	from := terminalScreenPosition{epoch: base.GetEpoch(), offset: start, revision: base.GetRevision()}
 	replacement := data.GetIsSnapshot()
 	if replacement {
-		if w.position.epoch != "" && w.position.offset != 0 && !w.scrollback {
-			return w.screenHistoryUnavailable()
+		if e.position.epoch != "" && e.position.offset != 0 && (e.boundary == nil || !e.boundary.scrollback) {
+			return e.screenHistoryUnavailable()
 		}
-		cols, rows, err := renderDimensions(w.id, base.GetCols(), base.GetRows())
+		cols, rows, err := renderDimensions(e.id, base.GetCols(), base.GetRows())
 		if err != nil {
 			return err
 		}
-		w.cols, w.rows = cols, rows
-		if err := w.reset(timeline.GetModePrefix()); err != nil {
+		e.cols, e.rows = cols, rows
+		if err := e.reset(timeline.GetModePrefix()); err != nil {
 			return err
 		}
-		w.position = from
-	} else if from != w.position || int(base.GetCols()) != w.cols || int(base.GetRows()) != w.rows || len(timeline.GetModePrefix()) != 0 {
-		return w.screenHistoryUnavailable()
+		e.position = from
+	} else if from != e.position || int(base.GetCols()) != e.cols || int(base.GetRows()) != e.rows || len(timeline.GetModePrefix()) != 0 {
+		return e.screenHistoryUnavailable()
 	}
+	observedTail := false
 	for _, change := range timeline.GetChanges() {
 		offset := change.GetOffset()
-		if offset < w.position.offset || offset > end {
-			return cli.Newf(cli.CodeInternal, "the worker returned a resize outside the screen timeline for terminal %s", w.id)
+		if offset < e.position.offset || offset > end {
+			return cli.Newf(cli.CodeInternal, "the worker returned a resize outside the screen timeline for terminal %s", e.id)
 		}
-		length := int(offset - w.position.offset)
-		if err := w.write(remaining[:length]); err != nil {
+		length := int(offset - e.position.offset)
+		if err := e.write(remaining[:length]); err != nil {
 			return err
 		}
 		remaining = remaining[length:]
-		w.position.offset = offset
+		e.position.offset = offset
+		observedTail = false
 		if !replacement && length != 0 && observe != nil {
 			if done, err := observe(); done || err != nil {
 				return err
 			}
 		}
-		if err := w.applyScreenGeometry(change, !replacement); err != nil {
+		if err := e.applyScreenGeometry(change, !replacement); err != nil {
 			return err
 		}
 		if !replacement && observe != nil {
 			if done, err := observe(); done || err != nil {
 				return err
 			}
+			observedTail = true
 		}
 	}
-	if err := w.write(remaining); err != nil {
-		return err
+	if len(remaining) > 0 {
+		if err := e.write(remaining); err != nil {
+			return err
+		}
+		observedTail = false
 	}
-	w.position.offset = end
+	e.position.offset = end
 	if replacement {
-		w.followInitialViewport()
+		if e.boundary != nil {
+			e.boundary.followInitialViewport(e.term)
+		}
+		observedTail = false
+	}
+	if !observedTail && observe != nil {
+		if _, err := observe(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (w *screenWatch) applyLiveScreenGeometry(geometry *leapmuxv1.TerminalScreenGeometry) error {
-	if geometry.GetEpoch() != "" && geometry.GetEpoch() != w.position.epoch && geometry.GetRevision() == 1 && geometry.GetOffset() >= 0 {
-		cols, rows, err := renderDimensions(w.id, geometry.GetCols(), geometry.GetRows())
+func (e *screenEmulator) applyLiveScreenGeometry(geometry *leapmuxv1.TerminalScreenGeometry) error {
+	if e.position.startsNewEpoch(geometry) {
+		cols, rows, err := renderDimensions(e.id, geometry.GetCols(), geometry.GetRows())
 		if err != nil {
 			return err
 		}
-		w.cols, w.rows = cols, rows
-		w.position = terminalScreenPosition{epoch: geometry.GetEpoch(), offset: geometry.GetOffset(), revision: 1}
-		return w.reset(nil)
+		e.cols, e.rows = cols, rows
+		e.position = terminalScreenPosition{epoch: geometry.GetEpoch(), offset: geometry.GetOffset(), revision: 1}
+		return e.reset(nil)
 	}
-	return w.applyScreenGeometry(geometry, true)
+	return e.applyScreenGeometry(geometry, true)
 }
 
-func (w *screenWatch) applyScreenGeometry(geometry *leapmuxv1.TerminalScreenGeometry, preserveBoundary bool) (err error) {
-	if w.position.epoch == "" || geometry.GetEpoch() != w.position.epoch || geometry.GetOffset() != w.position.offset ||
-		geometry.GetRevision() == 0 || geometry.GetRevision() != w.position.revision+1 {
-		return w.screenHistoryUnavailable()
+func (e *screenEmulator) applyScreenGeometry(geometry *leapmuxv1.TerminalScreenGeometry, preserveBoundary bool) (err error) {
+	next, ok := e.position.nextGeometry(geometry)
+	if !ok {
+		return e.screenHistoryUnavailable()
 	}
-	cols, rows, err := renderDimensions(w.id, geometry.GetCols(), geometry.GetRows())
+	cols, rows, err := renderDimensions(e.id, geometry.GetCols(), geometry.GetRows())
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = cli.Newf(cli.CodeInternal, "the terminal emulator failed to resize terminal %s: %v", w.id, r)
-		}
-	}()
-	if cols != w.cols || rows != w.rows {
-		if preserveBoundary {
-			if err := w.resizeScreenKeepingBoundary(cols, rows); err != nil {
+	defer recoverTerminalEmulator(fmt.Sprintf("resize terminal %s", e.id), &err)
+	if cols != e.cols || rows != e.rows {
+		if preserveBoundary && e.boundary != nil {
+			if err := e.boundary.resize(e.term, e.id, cols, rows); err != nil {
 				return err
 			}
 		} else {
-			w.term.Resize(cols, rows)
+			e.term.Resize(cols, rows)
 		}
-		w.cols, w.rows = cols, rows
+		e.cols, e.rows = cols, rows
 	}
-	w.position.revision = geometry.GetRevision()
+	e.position = next
 	return nil
 }
 
-// resizeScreenKeepingBoundary follows the first row of the wrapped line. The
-// row that held the boundary can disappear while its cells move to that row.
-func (w *screenWatch) resizeScreenKeepingBoundary(cols, rows int) error {
-	if w.scrollback || w.normal.Lines.Length() == 0 {
-		w.term.Resize(cols, rows)
-		w.follow(w.term.NormalBuffer(), 0)
+// resize follows the first row of the wrapped line across a resize. The row
+// that held the boundary can disappear while its cells move to that row.
+func (b *screenBoundary) resize(term *xterm.Terminal, id string, cols, rows int) error {
+	if b.scrollback || b.normal == nil || b.normal.Lines.Length() == 0 {
+		term.Resize(cols, rows)
+		b.follow(term.NormalBuffer(), 0)
 		return nil
 	}
-	lines := w.normal.Lines
-	anchor := w.boundary
+	lines := b.normal.Lines
+	anchor := b.row
 	if anchor >= lines.Length() || lines.Get(anchor) == nil {
-		return w.screenHistoryUnavailable()
+		return screenHistoryUnavailableError(id)
 	}
 	for anchor > 0 && lines.Get(anchor).IsWrapped {
 		anchor--
 	}
-	cells := w.boundaryColumn
-	for y := anchor; y < w.boundary; y++ {
+	cells := b.column
+	for y := anchor; y < b.row; y++ {
 		cells += wrappedRowLength(lines.Get(y), lines.Get(y+1))
 	}
-	marker := w.normal.AddMarker(anchor)
+	marker := b.normal.AddMarker(anchor)
 	defer marker.Dispose()
-	w.term.Resize(cols, rows)
-	normal := w.term.NormalBuffer()
-	if normal != w.normal {
-		return w.screenHistoryUnavailable()
+	term.Resize(cols, rows)
+	normal := term.NormalBuffer()
+	if normal != b.normal {
+		return screenHistoryUnavailableError(id)
 	}
 	if marker.IsDisposed {
 		if normal.Lines.Length() != 0 && normal.Lines.Get(0).IsWrapped {
 			// Part of the boundary's logical line survived a trim. The marker
 			// no longer tells us which cells of that line preceded the wait.
-			return w.screenHistoryUnavailable()
+			return screenHistoryUnavailableError(id)
 		}
-		w.follow(normal, 0)
+		b.follow(normal, 0)
 		return nil
 	}
 	row := marker.Line
@@ -166,27 +247,41 @@ func (w *screenWatch) resizeScreenKeepingBoundary(cols, rows int) error {
 		cells -= width
 		row++
 	}
-	w.follow(normal, row)
-	w.boundaryColumn = min(cells, cols)
+	b.follow(normal, row)
+	b.column = min(cells, cols)
 	return nil
 }
 
-func (w *screenWatch) screenHistoryUnavailable() error {
-	return cli.Newf(cli.CodeUnavailable, "the worker could not supply enough screen history to render terminal %s", w.id)
+func screenHistoryUnavailableError(id string) error {
+	return cli.Newf(cli.CodeUnavailable, "the worker could not supply enough screen history to render terminal %s", id)
 }
 
-func (w *screenWatch) consumeScreenOutput(data *leapmuxv1.TerminalData, observe func() (bool, error)) error {
+func (e *screenEmulator) screenHistoryUnavailable() error {
+	return screenHistoryUnavailableError(e.id)
+}
+
+func (e *screenEmulator) consumeScreenOutput(data *leapmuxv1.TerminalData, observe func() (bool, error)) error {
 	if data.GetScreenTimeline().GetBase() != nil {
-		return w.replayScreenTimeline(data, observe)
+		return e.replayScreenTimeline(data, observe)
 	}
-	end, output := data.GetEndOffset(), data.GetData()
-	if data.GetScreenEpoch() != w.position.epoch || data.GetGeometryRevision() != w.position.revision ||
-		w.position.epoch != "" && (data.GetIsSnapshot() || end < w.position.offset || end-w.position.offset != int64(len(output))) {
-		return w.screenHistoryUnavailable()
+	next, ok := e.position.advanceOutput(data)
+	if !ok {
+		return e.screenHistoryUnavailable()
 	}
-	w.position.offset = end
+	e.position = next
+	var err error
 	if data.GetIsSnapshot() {
-		return w.reset(output)
+		err = e.reset(data.GetData())
+	} else {
+		err = e.write(data.GetData())
 	}
-	return w.write(output)
+	if err != nil {
+		return err
+	}
+	if observe != nil {
+		if _, err := observe(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

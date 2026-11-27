@@ -313,17 +313,19 @@ func (s *WorkerManagementService) ListWorkers(
 	}, nil
 }
 
-func (s *WorkerManagementService) GetWorkerEnrollmentRevision(ctx context.Context, _ *leapmuxv1.GetWorkerEnrollmentRevisionRequest) (*leapmuxv1.GetWorkerEnrollmentRevisionResponse, error) {
+func (s *WorkerManagementService) GetWorkerInventory(ctx context.Context, _ *leapmuxv1.GetWorkerInventoryRequest) (*leapmuxv1.GetWorkerInventoryResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	inventory, err := s.store.Workers().InventoryState(ctx, user.ID)
+	snap, err := s.store.Workers().InventorySnapshot(ctx, user.ID)
 	if err != nil {
-		return nil, storeConnectError(err, "read Worker enrollment revision")
+		return nil, storeConnectError(err, "read Worker inventory")
 	}
-	return &leapmuxv1.GetWorkerEnrollmentRevisionResponse{
-		OwnerUserId: user.ID.String(), Revision: inventory.Revision, ActiveWorkers: inventory.ActiveWorkers,
+	return &leapmuxv1.GetWorkerInventoryResponse{
+		OwnerUserId: user.ID.String(),
+		Revision:    snap.Revision,
+		WorkerIds:   snap.WorkerIDs,
 	}, nil
 }
 

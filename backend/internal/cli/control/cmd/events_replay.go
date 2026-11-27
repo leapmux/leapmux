@@ -5,123 +5,191 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
-	"strings"
 	"time"
+
+	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
+
+type semanticHistoryCursor struct {
+	journalID   string
+	tabStreamID string
+	sequence    int64
+	cursor      []byte
+}
+
+func (c semanticHistoryCursor) position() *eventHistoryPosition {
+	return &eventHistoryPosition{JournalID: c.journalID, Sequence: c.sequence, Cursor: c.cursor}
+}
+
+func (c semanticHistoryCursor) decodeRecord(tab scopedTab, sequence, observedUnixMillis int64, cursor []byte,
+	fact *leapmuxv1.SemanticTabFact, handle string, high int64,
+) (streamEvent, semanticHistoryCursor, error) {
+	if sequence <= c.sequence || sequence-c.sequence != 1 || len(cursor) == 0 {
+		return streamEvent{}, c, invalidSemanticEventSequence()
+	}
+	event, ok := checkpointFactEvent(fact, handle, tab)
+	if !ok {
+		return streamEvent{}, c, invalidSemanticEventSequence()
+	}
+	event.Time = time.UnixMilli(observedUnixMillis).UTC()
+	event.JournalID = c.journalID
+	event.TabStreamID = c.tabStreamID
+	event.Sequence = &sequence
+	event.Replayed = new(sequence <= high)
+	next := c
+	next.sequence = sequence
+	next.cursor = cursor
+	return event, next, nil
+}
+
+func (c semanticHistoryCursor) decodeGap(base streamEvent, gap *leapmuxv1.SemanticWatchGap,
+	filter kindFilter, tabType leapmuxv1.TabType,
+) (streamEvent, semanticHistoryCursor, error) {
+	reason, message := semanticGapDescription(gap.GetReason())
+	resume := gap.GetResumeAfterSequence()
+	cursor := gap.GetCursor()
+	if reason == "" || gap.GetAfterSequence() != c.sequence || resume <= c.sequence || len(cursor) == 0 {
+		return streamEvent{}, c, invalidSemanticEventSequence()
+	}
+	after := c.sequence
+	event := base
+	event.Kind = kindStreamGap
+	event.JournalID = c.journalID
+	event.TabStreamID = c.tabStreamID
+	event.Sequence = &resume
+	event.AfterSequence = &after
+	event.GapReason = reason
+	event.Lost = eventCheckpointKinds(filter, tabType)
+	event.Summary = fmt.Sprintf("%s after sequence %d", message, after)
+	next := c
+	next.sequence = resume
+	next.cursor = cursor
+	return event, next, nil
+}
+
+func waitReplayRetry(ctx context.Context, clock quartz.Clock, delay time.Duration) bool {
+	if clock == nil {
+		clock = quartz.NewReal()
+	}
+	timer := clock.NewTimer(delay, "events-replay-retry")
+	defer timer.Stop("events-replay-retry")
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
 
 type checkpointedEvents struct {
 	opts    eventsOptions
 	tab     scopedTab
-	printer *cli.Printer
+	printer *eventPrinter
+	clock   quartz.Clock
 	kinds   []string
 	state   *eventCheckpoint
 	save    func(*eventCheckpoint) error
-	printed int
+	dirty   bool
 }
 
-func (s *session) runCheckpointedEvents(opts eventsOptions) error {
-	checkpoint, err := openEventCheckpoint(opts.checkpoint)
+func (s *session) runCheckpointedEvents(ctx context.Context, clock quartz.Clock, opts eventsOptions) error {
+	checkpoint, state, err := openCheckedEventCheckpoint(opts.checkpoint, tabCheckpointScope)
 	if err != nil {
 		return err
 	}
 	defer checkpoint.close()
-	state, err := checkpoint.read()
+	callCtx, callCancel := rpcDeadline(ctx)
+	callSession := &session{inv: s.inv, c: s.c, ctx: callCtx, cancel: callCancel, located: s.located}
+	target, err := callSession.resolveCheckpointTab(opts.tab, state)
+	callSession.Close()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	kinds, err := validateTabCheckpointFilter(opts.filter, target.Type)
 	if err != nil {
 		return err
 	}
-	if state != nil && state.Scope != "" {
-		return cli.Newf(cli.CodeConflict, "the event checkpoint belongs to a layout stream")
-	}
-	bounded := s.bounded()
-	target, err := bounded.resolveCheckpointTab(opts.tab, state)
-	bounded.Close()
-	if err != nil {
-		return err
-	}
-	if target.Type != leapmuxv1.TabType_TAB_TYPE_AGENT && target.Type != leapmuxv1.TabType_TAB_TYPE_TERMINAL {
-		return cli.Usagef("--checkpoint requires an agent or terminal tab")
-	}
-	kinds := eventCheckpointKinds(opts.filter, target.Type)
 	if state != nil {
-		if target.ID != state.TabID || target.WorkerID != state.WorkerID || tabTypeName(target.Type) != state.TabType {
+		if target.ID != state.Tab.TabID || target.WorkerID != state.Tab.WorkerID || tabTypeName(target.Type) != state.Tab.TabType {
 			return cli.Newf(cli.CodeConflict, "the event checkpoint belongs to a different tab or Worker")
 		}
-		if !slices.Equal(kinds, state.Filter) {
-			return cli.Newf(cli.CodeConflict, "the event checkpoint uses a different --kind selection").
-				WithHint("use the saved kind selection or another checkpoint file")
+		if err := verifyCheckpointFilter(state, kinds); err != nil {
+			return err
 		}
 	}
 	replay := checkpointedEvents{
-		opts: opts, tab: scopedTab{ID: target.ID, Type: target.Type, WorkerID: target.WorkerID},
-		printer: s.inv.Printer, kinds: kinds, state: state, save: checkpoint.save,
+		opts:    opts,
+		tab:     scopedTab{ID: target.ID, Type: target.Type, WorkerID: target.WorkerID},
+		printer: newEventPrinter(s.inv.Printer, opts.filter, opts.limit),
+		clock:   clock,
+		kinds:   kinds,
+		state:   state,
+		save:    checkpoint.save,
 	}
+	defer func() { _ = replay.flush() }()
 	backoff := newReconnectBackoff(activityReconnectInitial, activityReconnectMax)
-	for s.ctx.Err() == nil {
+	for ctx.Err() == nil {
 		before := replay.state
-		retry, err := replay.runAttempt(s)
-		if s.ctx.Err() != nil {
-			return nil
+		retry, err := replay.runAttempt(ctx, s)
+		if ctx.Err() != nil {
+			return replay.flush()
 		}
 		if !retry {
-			return err
+			if err != nil {
+				return err
+			}
+			return replay.flush()
+		}
+		if flushErr := replay.flush(); flushErr != nil {
+			return flushErr
 		}
 		failure := eventReplayTransportError(err)
 		if replay.opts.noReconnect || !failure.Retryable() {
 			return failure
 		}
-		event := replay.notice(kindStreamUnavailable)
-		event.Code, event.Message, event.Retrying = string(failure.Code), failure.Message, boolPtr(true)
-		event.Summary = failure.Message
-		if err := replay.print(event); err != nil {
+		event := unavailableEvent(replay.notice(kindStreamUnavailable), failure, true)
+		if _, err := replay.printer.printCheckpointed(event); err != nil {
 			return err
 		}
-		timer := time.NewTimer(backoff.afterSession(before != replay.state))
-		select {
-		case <-s.ctx.Done():
-			timer.Stop()
+		if !waitReplayRetry(ctx, replay.nowClock(), backoff.afterSession(before != replay.state)) {
 			return nil
-		case <-timer.C:
 		}
 	}
-	return nil
+	return replay.flush()
 }
 
 func (s *session) resolveCheckpointTab(selector string, saved *eventCheckpoint) (tabTarget, error) {
-	if saved != nil && resolve.ExplicitID(resolve.KindTab, selector) == saved.TabID {
-		tabType, _ := resolve.ParseTabType(saved.TabType)
-		return tabTarget{ID: saved.TabID, Type: tabType, WorkerID: saved.WorkerID}, nil
+	if saved != nil && saved.Tab != nil && resolve.ExplicitID(resolve.KindTab, selector) == saved.Tab.TabID {
+		tabType, _ := resolve.ParseTabType(saved.Tab.TabType)
+		return tabTarget{ID: saved.Tab.TabID, Type: tabType, WorkerID: saved.Tab.WorkerID}, nil
 	}
-	ipcClient, isIPC := s.c.(*control.WorkerIPCClient)
-	if !isIPC || strings.TrimSpace(selector) != resolve.SelfTarget {
-		return s.resolveTab(resolve.KindTab, selector, resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true}})
-	}
-	ipc, err := ipcClient.ControlIPCService()
-	if err != nil {
-		return tabTarget{}, err
-	}
-	identity, err := ipc.Whoami(s.ctx, &leapmuxv1.WhoamiRequest{})
-	if err != nil {
-		return tabTarget{}, err
-	}
-	if identity.GetTabId() == "" || identity.GetWorkerId() == "" {
-		return tabTarget{}, cli.Usagef("--tab self requires a local agent or terminal tab")
-	}
-	return tabTarget{ID: identity.GetTabId(), Type: identity.GetTabType(), WorkerID: identity.GetWorkerId(), Self: true}, nil
+	return s.resolveTab(resolve.KindTab, selector, resolve.Need{
+		WorkerID: true,
+		Want:     resolve.Wants{TabType: true},
+	})
 }
 
-func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
-	ctx, cancel := context.WithCancel(s.ctx)
+func (r *checkpointedEvents) nowClock() quartz.Clock {
+	if r.clock == nil {
+		r.clock = quartz.NewReal()
+	}
+	return r.clock
+}
+
+func (r *checkpointedEvents) runAttempt(parentCtx context.Context, s *session) (retry bool, err error) {
+	ctx, cancel := context.WithCancel(parentCtx)
 	frames := make(chan eventFrame, 32)
 	done := make(chan struct{})
 	request := &leapmuxv1.WatchSemanticEventsRequest{Tab: &leapmuxv1.TabIdent{TabType: r.tab.Type, TabId: r.tab.ID}}
 	if r.state != nil {
-		request.AfterCursor = r.state.Cursor
+		request.AfterCursor = r.state.Tab.Position.Cursor
 	}
 	go func() {
 		defer close(done)
@@ -135,12 +203,13 @@ func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
 		cancel()
 		<-done
 	}()
-	opening := time.NewTimer(defaultInnerRPCTimeout)
-	defer opening.Stop()
+	clock := r.nowClock()
+	opening := clock.NewTimer(defaultInnerRPCTimeout, "events-replay-open")
+	defer opening.Stop("events-replay-open")
 	var heartbeat <-chan time.Time
 	if r.opts.heartbeat > 0 {
-		ticker := time.NewTicker(r.opts.heartbeat)
-		defer ticker.Stop()
+		ticker := clock.NewTicker(r.opts.heartbeat, "events-replay-heartbeat")
+		defer ticker.Stop("events-replay-heartbeat")
 		heartbeat = ticker.C
 	}
 	var after, high int64
@@ -148,14 +217,14 @@ func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return false, nil
+			return false, r.flush()
 		case <-opening.C:
 			return true, cli.Newf(cli.CodeUnavailable, "the Worker did not open the event history stream in time")
 		case <-heartbeat:
 			if ready {
 				event := r.notice(kindStreamHeartbeat)
 				event.Summary = "watching " + tabTypeName(r.tab.Type) + " event history"
-				if err := r.print(event); err != nil {
+				if _, err := r.printer.printCheckpointed(event); err != nil {
 					return false, err
 				}
 			}
@@ -170,7 +239,7 @@ func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
 				if err := r.acceptReady(start); err != nil {
 					return false, err
 				}
-				opening.Stop()
+				opening.Stop("events-replay-open")
 				ready = true
 				after, high = start.GetAfterSequence(), start.GetHighWaterSequence()
 				if r.opts.snapshot && after >= high {
@@ -185,6 +254,9 @@ func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
 				if !frame.end {
 					return false, invalidSemanticEventSequence()
 				}
+				if err := r.flush(); err != nil {
+					return false, err
+				}
 				return false, r.acceptRetirement(retired, after, high)
 			}
 			next, err := r.acceptFrame(frame.response, after, high)
@@ -192,24 +264,31 @@ func (r *checkpointedEvents) runAttempt(s *session) (retry bool, err error) {
 				return false, err
 			}
 			after = next
+			if after >= high {
+				if err := r.flush(); err != nil {
+					return false, err
+				}
+			}
 			if r.opts.snapshot && after >= high {
 				return false, nil
 			}
-			if r.opts.limit > 0 && r.printed >= r.opts.limit {
-				return false, nil
+			if r.printer.limitReached() {
+				return false, r.flush()
 			}
 		}
 	}
 }
 
 func (r *checkpointedEvents) acceptRetirement(retired *leapmuxv1.SemanticWatchRetired, after, high int64) error {
-	if retired.GetFinalSequence() != after || after < high || r.state.Sequence != after {
+	tab := r.state.Tab
+	if retired.GetFinalSequence() != after || after < high || tab.Position.Sequence != after {
 		return invalidSemanticEventSequence()
 	}
 	event := r.notice(kindStreamRetired)
-	event.JournalID, event.TabStreamID, event.Sequence = r.state.JournalID, r.state.TabStreamID, &after
+	event.JournalID, event.TabStreamID, event.Sequence = tab.Position.JournalID, tab.TabStreamID, &after
 	event.Summary = "the Worker finished this tab's event history"
-	return r.print(event)
+	_, err := r.printer.printCheckpointed(event)
+	return err
 }
 
 func (r *checkpointedEvents) acceptReady(ready *leapmuxv1.SemanticWatchReady) error {
@@ -220,22 +299,36 @@ func (r *checkpointedEvents) acceptReady(ready *leapmuxv1.SemanticWatchReady) er
 		return invalidSemanticEventSequence()
 	}
 	start := &eventCheckpoint{
-		Version: eventCheckpointVersion, WorkerID: r.tab.WorkerID, TabID: r.tab.ID,
-		TabType: tabTypeName(r.tab.Type), JournalID: ready.GetJournalId(), TabStreamID: ready.GetTabStreamId(),
-		Filter: r.kinds, Sequence: after, Cursor: ready.GetCursor(),
+		Version: eventCheckpointVersion,
+		Scope:   tabCheckpointScope,
+		Filter:  r.kinds,
+		Tab: &tabEventCheckpoint{
+			WorkerID:    r.tab.WorkerID,
+			TabID:       r.tab.ID,
+			TabType:     tabTypeName(r.tab.Type),
+			TabStreamID: ready.GetTabStreamId(),
+			Position: &eventHistoryPosition{
+				JournalID: ready.GetJournalId(),
+				Sequence:  after,
+				Cursor:    ready.GetCursor(),
+			},
+		},
 	}
 	if state := r.state; state != nil {
-		if start.JournalID != state.JournalID || start.TabStreamID != state.TabStreamID ||
-			start.Sequence != state.Sequence || !bytes.Equal(start.Cursor, state.Cursor) {
+		savedTab := state.Tab
+		if start.Tab.Position.JournalID != savedTab.Position.JournalID ||
+			start.Tab.TabStreamID != savedTab.TabStreamID ||
+			start.Tab.Position.Sequence != savedTab.Position.Sequence ||
+			!bytes.Equal(start.Tab.Position.Cursor, savedTab.Position.Cursor) {
 			return invalidSemanticEventSequence()
 		}
 	} else if after != ready.GetHighWaterSequence() {
 		return invalidSemanticEventSequence()
 	}
 	event := r.notice(kindStreamReady)
-	event.JournalID, event.TabStreamID, event.Sequence = start.JournalID, start.TabStreamID, &after
+	event.JournalID, event.TabStreamID, event.Sequence = start.Tab.Position.JournalID, start.Tab.TabStreamID, &after
 	event.Summary = "watching " + tabTypeName(r.tab.Type) + " event history"
-	if err := r.print(event); err != nil {
+	if _, err := r.printer.printCheckpointed(event); err != nil {
 		return err
 	}
 	if r.state == nil {
@@ -243,75 +336,77 @@ func (r *checkpointedEvents) acceptReady(ready *leapmuxv1.SemanticWatchReady) er
 			return err
 		}
 		r.state = start
+		r.dirty = false
 	}
 	return nil
 }
 
 func (r *checkpointedEvents) acceptFrame(frame *leapmuxv1.WatchSemanticEventsResponse, after, high int64) (int64, error) {
+	savedTab := r.state.Tab
+	cur := semanticHistoryCursor{
+		journalID:   savedTab.Position.JournalID,
+		tabStreamID: savedTab.TabStreamID,
+		sequence:    after,
+		cursor:      savedTab.Position.Cursor,
+	}
 	var event streamEvent
-	var cursor []byte
-	var sequence int64
-	printRecord := true
-	count := false
+	var nextCur semanticHistoryCursor
+	var err error
+	isGap := false
 	switch {
 	case frame.GetRecord() != nil:
 		record := frame.GetRecord()
-		sequence, cursor = record.GetSequence(), record.GetCursor()
-		if sequence <= after || sequence-after != 1 {
-			return after, invalidSemanticEventSequence()
-		}
-		decoded, ok := checkpointFactEvent(record.GetFact(), record.GetCurrentRequestHandle(), r.tab)
-		if !ok {
-			return after, invalidSemanticEventSequence()
-		}
-		event = decoded
-		event.Time = time.UnixMilli(record.GetObservedUnixMillis()).UTC()
-		event.Replayed = boolPtr(sequence <= high)
-		printRecord = r.opts.filter.selects(decoded.Kind)
-		count = printRecord
+		event, nextCur, err = cur.decodeRecord(r.tab, record.GetSequence(), record.GetObservedUnixMillis(),
+			record.GetCursor(), record.GetFact(), record.GetCurrentRequestHandle(), high)
 	case frame.GetGap() != nil:
-		gap := frame.GetGap()
-		sequence, cursor = gap.GetResumeAfterSequence(), gap.GetCursor()
-		reason, message := semanticGapDescription(gap.GetReason())
-		if reason == "" || gap.GetAfterSequence() != after || sequence <= after {
-			return after, invalidSemanticEventSequence()
-		}
-		event = r.notice(kindStreamGap)
-		event.GapReason, event.AfterSequence = reason, &after
-		event.Lost = eventCheckpointKinds(kindFilter{}, r.tab.Type)
-		event.Summary = fmt.Sprintf("%s after sequence %d", message, after)
+		isGap = true
+		event, nextCur, err = cur.decodeGap(r.notice(kindStreamGap), frame.GetGap(), r.opts.filter, r.tab.Type)
 	default:
 		return after, invalidSemanticEventSequence()
 	}
-	if len(cursor) == 0 {
-		return after, invalidSemanticEventSequence()
+	if err != nil {
+		return after, err
 	}
-	event.Sequence = &sequence
-	event.JournalID, event.TabStreamID = r.state.JournalID, r.state.TabStreamID
-	if printRecord {
-		if err := r.print(event); err != nil {
-			return after, err
-		}
-	}
+	tabCopy := *savedTab
+	posCopy := *savedTab.Position
+	posCopy.Sequence, posCopy.Cursor = nextCur.sequence, nextCur.cursor
+	tabCopy.Position = &posCopy
 	next := *r.state
-	next.Sequence, next.Cursor = sequence, cursor
+	next.Tab = &tabCopy
+	if !isGap && !r.opts.filter.selects(event.Kind) {
+		r.state = &next
+		r.dirty = true
+		return next.Tab.Position.Sequence, nil
+	}
+	selected, err := r.printer.printCheckpointed(event)
+	if err != nil {
+		return after, err
+	}
 	if err := r.save(&next); err != nil {
 		return after, err
 	}
 	r.state = &next
-	if count {
-		r.printed++
+	r.dirty = false
+	if !isGap && selected {
+		r.printer.recordCounted()
 	}
-	return sequence, nil
+	return next.Tab.Position.Sequence, nil
 }
 
-func (r *checkpointedEvents) print(event streamEvent) error {
-	return printCheckpointEvent(r.printer, r.opts.filter, event)
+func (r *checkpointedEvents) flush() error {
+	if !r.dirty || r.state == nil {
+		return nil
+	}
+	if err := r.save(r.state); err != nil {
+		return err
+	}
+	r.dirty = false
+	return nil
 }
 
 func (r *checkpointedEvents) notice(kind string) streamEvent {
 	event := tabStreamEvent(kind, r.tab)
-	event.Source, event.Time = "worker", time.Now().UTC()
+	event.Source, event.Time = "worker", r.nowClock().Now().UTC()
 	return event
 }
 

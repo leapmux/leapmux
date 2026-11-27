@@ -129,20 +129,20 @@ func TestTabClose_WorktreeDiscardFailureAndBatchRenderText(t *testing.T) {
 }
 
 func TestTerminalChunkSanitizer_HandlesSplitSequences(t *testing.T) {
-	var s terminalChunkSanitizer
+	s := cli.NewTerminalSanitizer()
 	// Split 8-bit C1 CSI and split DCS across two chunks.
-	out1 := s.write([]byte("hello\xc2\x9b31"))
-	out2 := s.write([]byte("mworld\x1bPpayload"))
-	out3 := s.write([]byte("more\x1b\\!"))
-	rem := s.flush()
+	out1 := s.Write([]byte("hello\xc2\x9b31"))
+	out2 := s.Write([]byte("mworld\x1bPpayload"))
+	out3 := s.Write([]byte("more\x1b\\!"))
+	rem := s.Flush()
 	assert.Equal(t, "helloworld!", out1+out2+out3+rem)
 
 	// Split long OSC (>256 bytes) across chunks.
-	var s2 terminalChunkSanitizer
+	s2 := cli.NewTerminalSanitizer()
 	longPayload := strings.Repeat("A", 300)
-	a := s2.write([]byte("pre\x1b]52;c;" + longPayload))
-	b := s2.write([]byte("end\x07post"))
-	assert.Equal(t, "prepost", a+b+s2.flush())
+	a := s2.Write([]byte("pre\x1b]52;c;" + longPayload))
+	b := s2.Write([]byte("end\x07post"))
+	assert.Equal(t, "prepost", a+b+s2.Flush())
 }
 
 // siblingDirtyWorktreeWorker simulates InspectLastTabClose's sibling fast path
@@ -218,12 +218,14 @@ func TestEventsAccountReplay_AllBacklogCaughtUp(t *testing.T) {
 	k2 := workerHistoryKey{id: "w-2", tabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL}
 	r := &accountReplay{
 		hubExpected: true,
-		hubLive:     false,
-		hub: &layoutEventReplay{
-			state:      &eventCheckpoint{Sequence: 3},
+		hubState:    replaySourceState{live: false},
+		hub: &layoutPageConsumer{
+			position:   &eventHistoryPosition{Sequence: 3},
 			replayHigh: 5,
 		},
 		state: &eventCheckpoint{
+			Version: eventCheckpointVersion,
+			Scope:   accountCheckpointScope,
 			Account: &accountEventCheckpoint{
 				Workers: map[string]accountWorkerPositions{
 					"w-1": {"agent": {Sequence: 10}},
@@ -232,18 +234,18 @@ func TestEventsAccountReplay_AllBacklogCaughtUp(t *testing.T) {
 			},
 		},
 		workers: map[workerHistoryKey]*accountWorkerWatch{
-			k1: {key: k1, live: true, high: 10},
+			k1: {key: k1, replaySourceState: replaySourceState{live: true, high: 10}},
 		},
 	}
 	assert.False(t, r.allBacklogCaughtUp(), "pending hub backlog must not be marked caught up")
 
-	r.hubLive = true
+	r.hubState.live = true
 	assert.False(t, r.allBacklogCaughtUp(), "hub sequence below replayHigh must keep snapshot running")
 
-	r.hub.state.Sequence = 5
+	r.hub.position.Sequence = 5
 	assert.True(t, r.allBacklogCaughtUp(), "hub caught up + all workers caught up means backlog drained")
 
-	r.workers[k2] = &accountWorkerWatch{key: k2, live: false, high: 4}
+	r.workers[k2] = &accountWorkerWatch{key: k2, replaySourceState: replaySourceState{live: false, high: 4}}
 	assert.False(t, r.allBacklogCaughtUp(), "worker not yet live must keep snapshot running")
 
 	r.workers[k2].live = true

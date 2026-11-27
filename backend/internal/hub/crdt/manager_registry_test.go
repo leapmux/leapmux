@@ -593,6 +593,90 @@ func TestRegistryLayoutEventWakeSurvivesIdleEviction(t *testing.T) {
 	}
 }
 
+// WorkerInventoryWake lives on the Registry rather than the Manager, so a
+// waiter wakes on BroadcastWorkersChanged before any Manager loads, across
+// SweepIdle eviction, and on Shutdown.
+func TestRegistryWorkerInventoryWakeSurvivesUnloadedAndEviction(t *testing.T) {
+	var factoryCalls atomic.Int32
+	userID := registryUserID(10)
+	otherUserID := registryUserID(11)
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		factoryCalls.Add(1)
+		m := crdt.NewManager(owner, newFakeJournal(), allowAll{}, nil, time.Now)
+		if err := m.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return m, nil
+	}, nil, crdt.WithManagerIdleTTL(time.Millisecond))
+	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
+
+	// 1. Nil registry and blank userID return nil.
+	var nilReg *crdt.Registry
+	assert.Nil(t, nilReg.WorkerInventoryWake(userID.String()))
+	assert.Nil(t, registry.WorkerInventoryWake(""))
+
+	// 2. Wake before any manager is loaded, without invoking the factory.
+	chBeforeA := registry.WorkerInventoryWake(userID.String())
+	chBeforeB := registry.WorkerInventoryWake(userID.String())
+	otherCh := registry.WorkerInventoryWake(otherUserID.String())
+	require.NotNil(t, chBeforeA)
+	assert.Equal(t, chBeforeA, chBeforeB, "concurrent callers share one wake channel")
+
+	registry.BroadcastWorkersChanged(userID.String())
+	assert.Zero(t, factoryCalls.Load(), "BroadcastWorkersChanged must not bootstrap a manager")
+	select {
+	case <-chBeforeA:
+	default:
+		t.Fatal("WorkerInventoryWake did not close on BroadcastWorkersChanged before manager load")
+	}
+	select {
+	case <-otherCh:
+		t.Fatal("BroadcastWorkersChanged woke a different user's channel")
+	default:
+	}
+
+	// Subsequent call returns a fresh open channel.
+	chNext := registry.WorkerInventoryWake(userID.String())
+	select {
+	case <-chNext:
+		t.Fatal("WorkerInventoryWake returned an already-closed channel after prior wake")
+	default:
+	}
+
+	// 3. Load a manager, capture a wake channel, evict the manager, then broadcast.
+	_, err := registry.Get(t.Context(), userID.String())
+	require.NoError(t, err)
+	require.Equal(t, int32(1), factoryCalls.Load())
+	chAcrossEvict := registry.WorkerInventoryWake(userID.String())
+	require.Eventually(t, func() bool {
+		registry.SweepIdle()
+		_, loaded := registry.Loaded(userID.String())
+		return !loaded
+	}, 2*time.Second, 2*time.Millisecond, "manager must be evicted by SweepIdle")
+
+	registry.BroadcastWorkersChanged(userID.String())
+	assert.Equal(t, int32(1), factoryCalls.Load(), "BroadcastWorkersChanged must not re-bootstrap an evicted manager")
+	select {
+	case <-chAcrossEvict:
+	default:
+		t.Fatal("WorkerInventoryWake did not close across SweepIdle eviction")
+	}
+
+	// 4. Shutdown closes any pending wake channel.
+	chShutdown := registry.WorkerInventoryWake(userID.String())
+	registry.Shutdown(5 * time.Second)
+	select {
+	case <-chShutdown:
+	default:
+		t.Fatal("WorkerInventoryWake did not close on Shutdown")
+	}
+	select {
+	case <-otherCh:
+	default:
+		t.Fatal("other user's WorkerInventoryWake did not close on Shutdown")
+	}
+}
+
 type nonAdvancingOutbox struct {
 	lists atomic.Int32
 }

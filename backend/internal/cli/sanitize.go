@@ -5,6 +5,265 @@ import (
 	"unicode/utf8"
 )
 
+type sanitizerState uint8
+
+const (
+	sanStateGround sanitizerState = iota
+	sanStateC2
+	sanStateESC
+	sanStateESCIntermediate
+	sanStateCSIParams
+	sanStateCSIIntermediates
+	sanStateString
+	sanStateStringESC
+	sanStateStringC2
+)
+
+// TerminalSanitizer is a single-pass streaming escape and control sanitizer.
+// It holds only O(1) parser state plus up to 3 trailing bytes of a split
+// UTF-8 rune, so arbitrarily large OSC, DCS, APC, PM, and SOS payloads never
+// buffer or leak to output.
+type TerminalSanitizer struct {
+	state      sanitizerState
+	singleLine bool
+	pending    []byte
+	pendingBuf [4]byte
+}
+
+// NewTerminalSanitizer returns a streaming sanitizer that preserves newlines
+// and tabs while stripping escape sequences, carriage returns, control
+// characters, and Unicode bidirectional (BiDi) overrides.
+func NewTerminalSanitizer() *TerminalSanitizer {
+	s := &TerminalSanitizer{}
+	s.pending = s.pendingBuf[:0]
+	return s
+}
+
+// NewSingleLineTerminalSanitizer returns a streaming sanitizer that strips
+// escape sequences, control characters, and BiDi overrides and replaces
+// carriage returns, newlines, and tabs with spaces.
+func NewSingleLineTerminalSanitizer() *TerminalSanitizer {
+	s := &TerminalSanitizer{singleLine: true}
+	s.pending = s.pendingBuf[:0]
+	return s
+}
+
+// Reset clears parser state and pending UTF-8 bytes while retaining buffer
+// capacity and single-line mode.
+func (s *TerminalSanitizer) Reset() {
+	s.state = sanStateGround
+	s.pending = s.pending[:0]
+}
+
+// Write consumes one chunk of raw terminal bytes and returns the sanitized
+// output that is complete as of this chunk.
+func (s *TerminalSanitizer) Write(chunk []byte) string {
+	if len(chunk) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	out.Grow(len(chunk))
+	for _, b := range chunk {
+		s.step(&out, b)
+	}
+	return out.String()
+}
+
+// Flush finalizes any incomplete trailing UTF-8 sequence at EOF and returns
+// parser state to ground. Truncated escape sequences are discarded.
+func (s *TerminalSanitizer) Flush() string {
+	if s.state != sanStateC2 && len(s.pending) == 0 {
+		s.state = sanStateGround
+		return ""
+	}
+	var out strings.Builder
+	s.flushTo(&out)
+	return out.String()
+}
+
+func (s *TerminalSanitizer) flushTo(out *strings.Builder) {
+	if s.state == sanStateC2 {
+		out.WriteRune(utf8.RuneError)
+	}
+	s.drainPendingUTF8(out)
+	s.state = sanStateGround
+}
+
+func (s *TerminalSanitizer) step(out *strings.Builder, b byte) {
+reprocess:
+	switch s.state {
+	case sanStateGround:
+		if len(s.pending) > 0 {
+			if b >= 0x80 && b <= 0xbf {
+				s.pending = append(s.pending, b)
+				for len(s.pending) > 0 && utf8.FullRune(s.pending) {
+					s.emitPendingRune(out)
+				}
+				return
+			}
+			s.drainPendingUTF8(out)
+		}
+		if b == 0x1b {
+			s.state = sanStateESC
+			return
+		}
+		if b == 0xc2 {
+			s.state = sanStateC2
+			return
+		}
+		if b < 0x80 {
+			if b >= 0x20 && b < 0x7f {
+				out.WriteByte(b)
+			} else if b == '\n' || b == '\r' || b == '\t' {
+				if s.singleLine {
+					out.WriteByte(' ')
+				} else if b != '\r' {
+					out.WriteByte(b)
+				}
+			}
+			return
+		}
+		if b < 0xc2 || b > 0xf4 {
+			out.WriteRune(utf8.RuneError)
+			return
+		}
+		s.pending = append(s.pending, b)
+
+	case sanStateC2:
+		switch {
+		case b == 0x9b: // 8-bit C1 CSI
+			s.state = sanStateCSIParams
+		case b == 0x90 || b == 0x98 || b == 0x9d || b == 0x9e || b == 0x9f: // 8-bit C1 DCS/SOS/OSC/PM/APC
+			s.state = sanStateString
+		case b >= 0x80 && b <= 0x9f: // Other 8-bit C1 control
+			s.state = sanStateGround
+		case b >= 0xa0 && b <= 0xbf: // Valid 2-byte UTF-8 rune U+00A0..U+00BF
+			s.state = sanStateGround
+			if r := rune(b); !isUnsafeTerminalRune(r) {
+				out.WriteRune(r)
+			}
+		default:
+			out.WriteRune(utf8.RuneError)
+			s.state = sanStateGround
+			goto reprocess
+		}
+
+	case sanStateESC:
+		switch {
+		case b == '[':
+			s.state = sanStateCSIParams
+		case b == ']' || b == 'P' || b == '_' || b == '^' || b == 'X':
+			s.state = sanStateString
+		case b >= 0x20 && b <= 0x2f: // ECMA-48 intermediate bytes (includes charset and ESC # / ESC %)
+			s.state = sanStateESCIntermediate
+		case b >= 0x30 && b <= 0x7e: // 2-byte Fe/Fp/Fs final byte
+			s.state = sanStateGround
+		case b == 0x1b:
+			// Stay in sanStateESC for the new ESC.
+		default:
+			s.state = sanStateGround
+			goto reprocess
+		}
+
+	case sanStateESCIntermediate:
+		switch {
+		case b >= 0x20 && b <= 0x2f:
+			// Additional ECMA-48 intermediate byte.
+		case b >= 0x30 && b <= 0x7e:
+			s.state = sanStateGround
+		case b == 0x1b:
+			s.state = sanStateESC
+		default:
+			s.state = sanStateGround
+			goto reprocess
+		}
+
+	case sanStateCSIParams:
+		switch {
+		case b >= 0x30 && b <= 0x3f:
+			// Parameter byte.
+		case b >= 0x20 && b <= 0x2f:
+			s.state = sanStateCSIIntermediates
+		case b >= 0x40 && b <= 0x7e:
+			s.state = sanStateGround
+		case b == 0x1b:
+			s.state = sanStateESC
+		default:
+			s.state = sanStateGround
+			goto reprocess
+		}
+
+	case sanStateCSIIntermediates:
+		switch {
+		case b >= 0x20 && b <= 0x2f:
+			// Intermediate byte.
+		case b >= 0x40 && b <= 0x7e:
+			s.state = sanStateGround
+		case b == 0x1b:
+			s.state = sanStateESC
+		default:
+			s.state = sanStateGround
+			goto reprocess
+		}
+
+	case sanStateString:
+		switch b {
+		case 0x07: // BEL terminates OSC/string sequences
+			s.state = sanStateGround
+		case 0x1b:
+			s.state = sanStateStringESC
+		case 0xc2:
+			s.state = sanStateStringC2
+		}
+
+	case sanStateStringESC:
+		switch b {
+		case '\\': // 7-bit ST (ESC \)
+			s.state = sanStateGround
+		case 0x07:
+			s.state = sanStateGround
+		case 0x1b:
+			// Stay in sanStateStringESC so ESC ESC \ still terminates.
+		case 0xc2:
+			s.state = sanStateStringC2
+		default:
+			// Inner ESC <non-\> stays inside the string sequence.
+			s.state = sanStateString
+		}
+
+	case sanStateStringC2:
+		switch b {
+		case 0x9c: // 8-bit ST (U+009C)
+			s.state = sanStateGround
+		case 0x07:
+			s.state = sanStateGround
+		case 0x1b:
+			s.state = sanStateStringESC
+		case 0xc2:
+			// Stay in sanStateStringC2.
+		default:
+			s.state = sanStateString
+		}
+	}
+}
+
+func (s *TerminalSanitizer) emitPendingRune(out *strings.Builder) {
+	r, size := utf8.DecodeRune(s.pending)
+	if r == utf8.RuneError && size == 1 {
+		out.WriteRune(utf8.RuneError)
+	} else if !isUnsafeTerminalRune(r) {
+		out.WriteRune(r)
+	}
+	copy(s.pending, s.pending[size:])
+	s.pending = s.pending[:len(s.pending)-size]
+}
+
+func (s *TerminalSanitizer) drainPendingUTF8(out *strings.Builder) {
+	for len(s.pending) > 0 {
+		s.emitPendingRune(out)
+	}
+}
+
 // SanitizeTerminalText removes terminal escape sequences, control characters,
 // and Unicode bidirectional (BiDi) overrides from untrusted text before it is
 // written to a human-readable terminal stream. Newlines and tabs are preserved
@@ -24,44 +283,16 @@ func sanitizeTerminal(s string, singleLine bool) string {
 	if isCleanASCII(s, singleLine) {
 		return s
 	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		if s[i] == 0x1b {
-			i = skipEscapeSequence(s, i)
-			continue
-		}
-		// 8-bit C1 CSI (U+009B, UTF-8 0xC2 0x9B), string sequences (DCS/SOS/OSC/PM/APC),
-		// or other C1 controls (U+0080..U+009F).
-		if s[i] == 0xc2 && i+1 < len(s) && s[i+1] >= 0x80 && s[i+1] <= 0x9f {
-			switch s[i+1] {
-			case 0x9b:
-				i = skipCSIBody(s, i+2)
-				continue
-			case 0x90, 0x98, 0x9d, 0x9e, 0x9f:
-				i = skipStringSequenceBody(s, i+2)
-				continue
-			default:
-				i += 2
-				continue
-			}
-		}
-		r, size := utf8.DecodeRuneInString(s[i:])
-		i += size
-		if r == '\n' || r == '\r' || r == '\t' {
-			if singleLine {
-				b.WriteByte(' ')
-			} else if r != '\r' {
-				b.WriteRune(r)
-			}
-			continue
-		}
-		if isUnsafeTerminalRune(r) {
-			continue
-		}
-		b.WriteRune(r)
+	var ts TerminalSanitizer
+	ts.singleLine = singleLine
+	ts.pending = ts.pendingBuf[:0]
+	var out strings.Builder
+	out.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		ts.step(&out, s[i])
 	}
-	return b.String()
+	ts.flushTo(&out)
+	return out.String()
 }
 
 func isCleanASCII(s string, singleLine bool) bool {
@@ -76,64 +307,6 @@ func isCleanASCII(s string, singleLine bool) bool {
 		return false
 	}
 	return true
-}
-
-func isECMA48Final(b byte) bool {
-	return b >= 0x30 && b <= 0x7e
-}
-
-// skipEscapeSequence advances past one ESC-initiated ANSI/VT sequence starting at i.
-func skipEscapeSequence(s string, i int) int {
-	if i+1 >= len(s) {
-		return i + 1
-	}
-	next := s[i+1]
-	switch next {
-	case '[': // CSI: ESC [ params intermediates final(0x40..0x7E)
-		return skipCSIBody(s, i+2)
-	case ']', 'P', '_', '^', 'X': // OSC, DCS, APC, PM, SOS: terminated by BEL, ESC \, or 8-bit ST
-		return skipStringSequenceBody(s, i+2)
-	case '(', ')', '*', '+', '-', '.', '/': // Charset designation: ESC <intermediate> <final(0x30..0x7E)>
-		if i+2 < len(s) && isECMA48Final(s[i+2]) {
-			return i + 3
-		}
-		return i + 2
-	default:
-		// 2-byte Fe/Fp/Fs sequence: ESC followed by a final byte (0x30..0x7E).
-		if isECMA48Final(next) {
-			return i + 2
-		}
-		// Bare ESC before a non-final byte (such as '\n', a UTF-8 lead byte,
-		// or another ESC): strip only the ESC so the next byte parses normally.
-		return i + 1
-	}
-}
-
-func skipStringSequenceBody(s string, j int) int {
-	for j < len(s) {
-		if s[j] == 0x07 {
-			return j + 1
-		}
-		if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
-			return j + 2
-		}
-		if s[j] == 0xc2 && j+1 < len(s) && s[j+1] == 0x9c {
-			return j + 2
-		}
-		j++
-	}
-	return j
-}
-
-func skipCSIBody(s string, j int) int {
-	for j < len(s) {
-		c := s[j]
-		j++
-		if c >= 0x40 && c <= 0x7e {
-			break
-		}
-	}
-	return j
 }
 
 func isUnsafeTerminalRune(r rune) bool {

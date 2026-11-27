@@ -200,12 +200,14 @@ func (svc *Service) replayTerminalCatchUp(
 	row terminalRecord,
 ) {
 	termID := interest.GetTerminalId()
-	// The frontend's after_offset tells us how far it has already
+	// The subscriber's after_offset tells us how far it has already
 	// processed; ScreenSnapshotSince returns an incremental delta when the
 	// offset is inside the retained ring, or a full-state snapshot (with
 	// is_snapshot=true) when the subscriber has fallen behind or is
-	// cold-subscribing. A caller that is caught up gets (nil, _, false)
-	// and no event is sent.
+	// cold-subscribing. When ScreenGeometry is false, we still send one
+	// catch-up TerminalData frame with replay_complete=true even when data
+	// is empty so non-emulator subscribers can order catch-up before live
+	// chunks.
 	var screen *leapmuxv1.TerminalData
 	if interest.GetScreenGeometry() {
 		replay, ok := svc.Terminals.ScreenReplaySince(termID, interest.GetScreenEpoch(), interest.GetAfterOffset(), interest.GetAfterGeometryRevision())
@@ -220,19 +222,35 @@ func (svc *Service) replayTerminalCatchUp(
 			screen = &leapmuxv1.TerminalData{Data: row.Screen, EndOffset: int64(len(row.Screen)), IsSnapshot: true,
 				ScreenTimeline: &leapmuxv1.TerminalScreenTimeline{}}
 		}
-	} else if data, endOffset, isSnapshot := svc.Terminals.ScreenSnapshotSince(termID, interest.GetAfterOffset()); len(data) > 0 {
-		screen = &leapmuxv1.TerminalData{Data: data, EndOffset: endOffset, IsSnapshot: isSnapshot}
+	} else {
+		data, endOffset, isSnapshot := svc.Terminals.ScreenSnapshotSince(termID, interest.GetAfterOffset())
+		if len(data) == 0 && endOffset == 0 && !isSnapshot && !svc.Terminals.HasTerminal(termID) {
+			storedEnd := int64(len(row.Screen))
+			if interest.GetAfterOffset() == storedEnd {
+				data = nil
+				endOffset = storedEnd
+				isSnapshot = false
+			} else {
+				data = row.Screen
+				endOffset = storedEnd
+				isSnapshot = true
+			}
+		}
+		screen = &leapmuxv1.TerminalData{
+			Data:           data,
+			EndOffset:      endOffset,
+			IsSnapshot:     isSnapshot,
+			ReplayComplete: true,
+		}
 	}
-	if screen != nil {
-		sink.send(&leapmuxv1.WatchEventsResponse{
-			Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
-				TerminalEvent: &leapmuxv1.TerminalEvent{
-					TerminalId: termID,
-					Event:      &leapmuxv1.TerminalEvent_Data{Data: screen},
-				},
+	sink.send(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
+			TerminalEvent: &leapmuxv1.TerminalEvent{
+				TerminalId: termID,
+				Event:      &leapmuxv1.TerminalEvent_Data{Data: screen},
 			},
-		})
-	}
+		},
+	})
 
 	// Replay current startup status so a subscriber that joins after
 	// READY / STARTUP_FAILED was broadcast still converges (the prior

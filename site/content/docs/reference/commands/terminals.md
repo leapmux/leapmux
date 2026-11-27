@@ -22,7 +22,6 @@ These selectors and flags repeat across commands on this page.
 | `--exit` | wait until the shell of the terminal ends, and print its exit code |
 | `--regex string` | wait until a line of the terminal matches this regular expression, in RE2 syntax |
 | `--change` | wait until the visible screen text changes, and print the updated screen |
-| `--after-offset int` | with --change, return immediately if screen_end_offset already exceeds this byte offset |
 | `--timeout duration` | stop waiting after this long, such as 90s or 10m; 0 waits without a limit (default: 0s) |
 | `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
 | `--dir string` | the directory whose quake terminal to act on (default: $LEAPMUX_CONTROL_WORKING_DIR) |
@@ -97,7 +96,6 @@ leapmux terminal open [flags]
 | `--text string` | wait until a line of the terminal holds this text |
 | `--regex string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--change` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--after-offset int` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--scrollback` | also search the retained scrollback from before the wait |
 | `--timeout duration` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--dir string` | working directory of the terminal (default: $LEAPMUX_CONTROL_WORKING_DIR) |
@@ -177,7 +175,7 @@ Run a command in a terminal: send the command line and press Enter, in one reque
 
 The command line arrives as a paste, as "terminal send --paste" sends it. A line editor that enabled bracketed paste therefore inserts it as it is: an abbreviation, an automatic closing bracket or a vi key binding cannot change it. A program without bracketed paste reads it as typed text. To type the command key by key in any case, run "terminal send &lt;terminal&gt; &lt;command&gt; --key enter".
 
-By default the command returns as soon as the input is written. Pass --wait with --exit, --text, or --regex to wait until that condition holds, or read output later with "terminal read".
+By default the command returns as soon as the input is written. Pass --wait with --exit, --text, --regex, or --change to wait until that condition holds, or read output later with "terminal read".
 
 _Mutates state._
 
@@ -199,7 +197,7 @@ leapmux terminal run <terminal> [command] [flags]
 | `--text string` | wait until a line of the terminal holds this text |
 | `--regex string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--change` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--after-offset int` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--after-offset int` | with --change, return immediately if screen_end_offset already exceeds this byte offset |
 | `--scrollback` | also search the retained scrollback from before the wait |
 | `--timeout duration` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
@@ -341,7 +339,7 @@ leapmux terminal wait <terminal> [flags]
 | `--text string` | wait until a line of the terminal holds this text |
 | `--regex string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--change` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--after-offset int` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--after-offset int` | with --change, return immediately if screen_end_offset already exceeds this byte offset |
 | `--scrollback` | also search the retained scrollback from before the wait |
 | `--timeout duration` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |

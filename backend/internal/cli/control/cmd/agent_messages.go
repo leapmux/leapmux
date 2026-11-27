@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -834,7 +835,7 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 				if refusedForGood(err) {
 					return err
 				}
-				em.printer.Notice("connecting to agent %s failed, retrying: %v", agentID, err)
+				_ = em.printer.Notice("connecting to agent %s failed, retrying: %v", agentID, err)
 				if !waitBackoff(drained) {
 					return em.Err()
 				}
@@ -874,7 +875,7 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 			}
 			// A failed subscribe is retried below on a fresh transport, so it is a
 			// notice on stderr rather than the command's failure.
-			em.printer.Notice("subscribing to agent %s failed, retrying: %v", agentID, err)
+			_ = em.printer.Notice("subscribing to agent %s failed, retrying: %v", agentID, err)
 			closeCurrent()
 		} else {
 			// Block until the subscription's transport ends
@@ -888,7 +889,7 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 					return endErr
 				}
 				if endErr != nil {
-					em.printer.Notice("subscription to agent %s ended, reconnecting: %v", agentID, endErr)
+					_ = em.printer.Notice("subscription to agent %s ended, reconnecting: %v", agentID, endErr)
 				}
 				// Tear down the ended subscription and transport so the next
 				// iteration opens a fresh channel instead of retrying on a dead one.
@@ -915,7 +916,18 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 // or the local IPC socket.
 type workerWatchTransport struct {
 	transport streamevents.Transport
+	caller    workerCall
 	close     func()
+}
+
+// Call invokes an inner Worker RPC over the transport's existing connection,
+// reusing the open E2EE channel in hub-bound mode instead of performing a
+// second handshake.
+func (t *workerWatchTransport) Call(ctx context.Context, method string, req, resp proto.Message) error {
+	if t == nil {
+		return &codedRPCError{Code: "invalid_request", Cause: errors.New("watch transport is nil")}
+	}
+	return t.caller.Call(ctx, method, req, resp)
 }
 
 func newWorkerWatchTransport(ctx context.Context, p control.Peer, workerID string) (*workerWatchTransport, error) {
@@ -934,6 +946,7 @@ func newWorkerWatchTransport(ctx context.Context, p control.Peer, workerID strin
 		}
 		return &workerWatchTransport{
 			transport: streamevents.NewLocalIPCTransport(ipc, workerID, slog.Default()),
+			caller:    workerCall{ipc: c, workerID: workerID},
 			close:     func() {},
 		}, nil
 	case *control.HubClient:
@@ -948,6 +961,7 @@ func newWorkerWatchTransport(ctx context.Context, p control.Peer, workerID strin
 		}
 		return &workerWatchTransport{
 			transport: streamevents.NewChannelTransport(ch, slog.Default()),
+			caller:    workerCall{hub: c, workerID: workerID, ch: ch},
 			close: func() {
 				ch.Close()
 			},

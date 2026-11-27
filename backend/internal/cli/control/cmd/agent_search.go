@@ -265,7 +265,7 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 			for _, f := range failures {
 				labels = append(labels, fmt.Sprintf("%s (%v)", cli.ShortID(f.workerID), f.err))
 			}
-			inv.Printer.Notice("warning: skipped unreachable worker(s): %s", strings.Join(labels, "; "))
+			_ = inv.Printer.Notice("warning: skipped unreachable worker(s): %s", strings.Join(labels, "; "))
 		}
 	}
 

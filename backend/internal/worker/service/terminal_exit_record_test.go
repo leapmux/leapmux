@@ -155,3 +155,111 @@ func TestApplyTabArchiveState_StatesTheExitCodeOnRecordInTheClosedEvent(t *testi
 		})
 	}
 }
+
+// derivedTerminalStatusEvent with reportExit=false populates ExitCode on
+// TerminalStatusChange when status is EXITED and the manager holds the exit
+// code, and leaves ExitCode nil when the exit code is unknown or the terminal
+// is not exited.
+func TestDerivedTerminalStatusEvent_PopulatesExitCodeWhenKnown(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, d, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+
+	const id = "tm-status-exit-code"
+	dir := t.TempDir()
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: id, WorkingDir: dir, Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	row, err := svc.terminalCatalog().get(ctx, id)
+	require.NoError(t, err)
+
+	// DB-only terminal (not held by manager): EXITED with nil ExitCode.
+	ev := svc.derivedTerminalStatusEvent(&row, false)
+	sc := ev.GetStatusChange()
+	require.NotNil(t, sc)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, sc.GetStatus())
+	assert.Nil(t, sc.ExitCode, "unknown exit code must remain nil")
+
+	// Live running terminal: READY with nil ExitCode.
+	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
+		ID: id, Shell: testutil.TestShell(), WorkingDir: dir, Cols: 80, Rows: 24,
+	}, svc.makeTerminalOutputFn(id), svc.makeTerminalExitFn()))
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
+
+	ev = svc.derivedTerminalStatusEvent(&row, false)
+	sc = ev.GetStatusChange()
+	require.NotNil(t, sc)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, sc.GetStatus())
+	assert.Nil(t, sc.ExitCode)
+
+	// Exited terminal held in memory: EXITED with known non-zero ExitCode.
+	exitTerminalAndWait(t, svc, d, id, " 7")
+	ev = svc.derivedTerminalStatusEvent(&row, false)
+	sc = ev.GetStatusChange()
+	require.NotNil(t, sc)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, sc.GetStatus())
+	require.NotNil(t, sc.ExitCode, "known exit code must be populated on TerminalStatusChange")
+	assert.Equal(t, int32(7), *sc.ExitCode)
+
+	// After removal from manager, ExitCode is unknown again and must be nil.
+	svc.Terminals.RemoveTerminal(id)
+	ev = svc.derivedTerminalStatusEvent(&row, false)
+	sc = ev.GetStatusChange()
+	require.NotNil(t, sc)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, sc.GetStatus())
+	assert.Nil(t, sc.ExitCode)
+}
+
+// broadcastTerminalStatusAfterStartup delivers TerminalStatusChange.ExitCode
+// when the shell already exited and is held by the manager, and leaves it nil
+// when the terminal is not held by the manager.
+func TestBroadcastTerminalStatusAfterStartup_PopulatesExitCodeWhenKnown(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, d, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+
+	const heldID = "tm-broadcast-exit-known"
+	dir := t.TempDir()
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: heldID, WorkingDir: dir, Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
+		ID: heldID, Shell: testutil.TestShell(), WorkingDir: dir, Cols: 80, Rows: 24,
+	}, svc.makeTerminalOutputFn(heldID), svc.makeTerminalExitFn()))
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, heldID)
+	exitTerminalAndWait(t, svc, d, heldID, " 9")
+
+	wHeld := newTestWriter()
+	watchTerminal(svc, heldID, wHeld)
+	svc.broadcastTerminalStatusAfterStartup(heldID)
+
+	var heldChange *leapmuxv1.TerminalStatusChange
+	for _, frame := range wHeld.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if proto.Unmarshal(frame.GetPayload(), &resp) == nil && resp.GetTerminalEvent().GetStatusChange() != nil {
+			heldChange = resp.GetTerminalEvent().GetStatusChange()
+		}
+	}
+	require.NotNil(t, heldChange)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, heldChange.GetStatus())
+	require.NotNil(t, heldChange.ExitCode)
+	assert.Equal(t, int32(9), *heldChange.ExitCode)
+
+	const unknownID = "tm-broadcast-exit-unknown"
+	wUnknown := newTestWriter()
+	watchTerminal(svc, unknownID, wUnknown)
+	svc.broadcastTerminalStatusAfterStartup(unknownID)
+
+	var unknownChange *leapmuxv1.TerminalStatusChange
+	for _, frame := range wUnknown.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if proto.Unmarshal(frame.GetPayload(), &resp) == nil && resp.GetTerminalEvent().GetStatusChange() != nil {
+			unknownChange = resp.GetTerminalEvent().GetStatusChange()
+		}
+	}
+	require.NotNil(t, unknownChange)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, unknownChange.GetStatus())
+	assert.Nil(t, unknownChange.ExitCode)
+}

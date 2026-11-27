@@ -3,25 +3,19 @@ package service
 import (
 	"context"
 	"errors"
-	"time"
 
 	"connectrpc.com/connect/v2"
-	"github.com/coder/quartz"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/seqcursor"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-const (
-	layoutEventPageLimit      = 128
-	layoutEventWaitLimit      = 15 * time.Second
-	layoutEventDeadlineMargin = 250 * time.Millisecond
-	layoutEventRecheck        = 2 * time.Second
-)
+const layoutEventPageLimit = 128
 
 func (s *WorkspaceService) ReadLayoutEvents(ctx context.Context, req *leapmuxv1.ReadLayoutEventsRequest) (*leapmuxv1.ReadLayoutEventsResponse, error) {
 	user, err := auth.MustGetUser(ctx)
@@ -29,88 +23,67 @@ func (s *WorkspaceService) ReadLayoutEvents(ctx context.Context, req *leapmuxv1.
 		return nil, err
 	}
 	workspaceID, cursor := req.GetWorkspaceId(), req.GetAfterCursor()
-	events := s.store.LayoutEvents()
 	if len(cursor) == 0 {
-		return s.readInitialLayoutCursor(ctx, events, user, workspaceID)
+		return readInitialLayoutCursor(ctx, s.store, user, workspaceID)
 	}
 	after, ok := layoutCursorPosition(cursor)
 	if !ok {
 		return nil, invalidLayoutCursor()
 	}
-	clk := s.clk()
-	wait := capLayoutEventWait(ctx, clk, time.Duration(req.GetWaitMillis())*time.Millisecond)
-	var expiryCh <-chan time.Time
-	var recheckCh <-chan time.Time
-	if wait > 0 {
-		expiry := clk.NewTimer(wait)
-		defer expiry.Stop()
-		expiryCh = expiry.C
-		// Production runs a single Hub instance whose writers all signal
-		// s.registry.SignalLayoutEvents. Keep the periodic fallback ticker only
-		// when no registry is attached (store-only tests).
-		if s.registry == nil {
-			recheck := clk.NewTicker(layoutEventRecheck)
-			defer recheck.Stop()
-			recheckCh = recheck.C
-		}
-	}
-	var lifecycleErr error
-	drainTried := s.registry == nil
-	for {
-		var changed <-chan struct{}
-		if s.registry != nil {
-			changed = s.registry.LayoutEventWake(user.ID.String())
-		}
-		response, ownerLifecyclePending, err := readLayoutEventPage(ctx, events, user.ID, workspaceID, cursor, after)
-		if err != nil || response.GetEnd() != nil {
-			return response, err
-		}
-		progress := response.GetGap() != nil || response.GetScannedSequence() > after
-		if !drainTried && ownerLifecyclePending {
-			drainTried = true
-			drained := s.registry.StartLifecycleDrain(user.ID.String())
-			// Committed pages can return while lifecycle recovery runs. A
-			// busy account must still recover pending lifecycle mutations.
-			if progress {
-				return response, nil
-			}
-			select {
-			case <-drained.Done():
-				lifecycleErr = drained.Err()
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			// A failed outbox entry cannot hide an already committed page.
-			// Read again because the drain can commit before it reports a fault.
-			continue
-		}
-		if progress {
-			return response, nil
-		}
-		if lifecycleErr != nil {
-			return nil, wrappedConnectError(connect.CodeUnavailable, lifecycleErr)
-		}
-		if wait == 0 {
-			return response, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-expiryCh:
-			return response, nil
-		case <-changed:
-			drainTried = false
-		case <-recheckCh:
-		}
-	}
+	return readLayoutEventPageWithDrain(ctx, s.store.LayoutEvents(), s.registry, user.ID, workspaceID, cursor, after)
 }
 
-func (s *WorkspaceService) readInitialLayoutCursor(ctx context.Context, events store.LayoutEventStore, user *auth.UserInfo, workspaceID string) (*leapmuxv1.ReadLayoutEventsResponse, error) {
+func readLayoutEventPageWithDrain(
+	ctx context.Context,
+	events store.LayoutEventStore,
+	registry *crdt.Registry,
+	owner userid.UserID,
+	workspaceID string,
+	cursor []byte,
+	after int64,
+) (*leapmuxv1.ReadLayoutEventsResponse, error) {
+	response, ownerLifecyclePending, err := readLayoutEventPage(ctx, events, owner, workspaceID, cursor, after)
+	if err != nil || response.GetEnd() != nil {
+		return response, err
+	}
+	progress := response.GetGap() != nil || response.GetScannedSequence() > after
+	if registry == nil || !ownerLifecyclePending {
+		return response, nil
+	}
+	drained := registry.StartLifecycleDrain(owner.String())
+	// Committed pages can return while lifecycle recovery runs. A busy account
+	// must still recover pending lifecycle mutations.
+	if progress {
+		return response, nil
+	}
+	select {
+	case <-drained.Done():
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	lifecycleErr := drained.Err()
+	// A failed outbox entry cannot hide an already committed page. Read again
+	// because the drain can commit before it reports a fault.
+	response, _, err = readLayoutEventPage(ctx, events, owner, workspaceID, cursor, after)
+	if err != nil || response.GetEnd() != nil {
+		return response, err
+	}
+	if response.GetGap() != nil || response.GetScannedSequence() > after {
+		return response, nil
+	}
+	if lifecycleErr != nil {
+		return nil, wrappedConnectError(connect.CodeUnavailable, lifecycleErr)
+	}
+	return response, nil
+}
+
+func readInitialLayoutCursor(ctx context.Context, st store.Store, user *auth.UserInfo, workspaceID string) (*leapmuxv1.ReadLayoutEventsResponse, error) {
 	if workspaceID != "" {
-		if _, err := loadWorkspaceForRead(ctx, s.store, workspaceID, user); err != nil {
+		if _, err := loadWorkspaceForRead(ctx, st, workspaceID, user); err != nil {
 			return nil, err
 		}
 	}
+	events := st.LayoutEvents()
 	state, err := events.ReadHead(ctx, user.ID, workspaceID)
 	if errors.Is(err, store.ErrNotFound) {
 		if err := ensureLayoutEventHead(ctx, events, user.ID); err != nil {
@@ -125,25 +98,6 @@ func (s *WorkspaceService) readInitialLayoutCursor(ctx context.Context, events s
 		return nil, connect.NewError(connect.CodeNotFound, "workspace not found")
 	}
 	return layoutPageStart(state.Head, user.ID, workspaceID, state.Head.HighSequence), nil
-}
-
-// capLayoutEventWait limits long-poll waiting to layoutEventWaitLimit and leaves
-// a margin before the request's context deadline (including the unary timeout
-// interceptor's default) so an idle poll returns an empty page instead of
-// failing with DeadlineExceeded.
-func capLayoutEventWait(ctx context.Context, clk quartz.Clock, requested time.Duration) time.Duration {
-	if requested <= 0 {
-		return 0
-	}
-	wait := min(requested, layoutEventWaitLimit)
-	if dl, ok := ctx.Deadline(); ok {
-		remaining := dl.Sub(clk.Now()) - layoutEventDeadlineMargin
-		if remaining <= 0 {
-			return 0
-		}
-		wait = min(wait, remaining)
-	}
-	return wait
 }
 
 func readLayoutEventPage(ctx context.Context, events store.LayoutEventStore, owner userid.UserID, workspaceID string, cursor []byte, after int64) (*leapmuxv1.ReadLayoutEventsResponse, bool, error) {

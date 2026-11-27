@@ -105,7 +105,21 @@ func streamWatchUserLocal(
 	workspaceIDs []string,
 	onEvent func(*leapmuxv1.WatchUserEvent) (stop bool, err error),
 ) error {
-	req := &leapmuxv1.WatchUserRequest{WorkspaceIds: workspaceIDs}
+	return streamWatchUserLocalWithOptions(ctx, c, channelwire.UserEventsOptions{WorkspaceIDs: workspaceIDs}, onEvent)
+}
+
+func streamWatchUserLocalWithOptions(
+	ctx context.Context,
+	c *control.WorkerIPCClient,
+	opts channelwire.UserEventsOptions,
+	onEvent func(*leapmuxv1.WatchUserEvent) (stop bool, err error),
+) error {
+	req := &leapmuxv1.WatchUserRequest{
+		WorkspaceIds:      opts.WorkspaceIDs,
+		Topics:            opts.Topics,
+		LayoutWorkspaceId: opts.LayoutWorkspaceID,
+		LayoutAfterCursor: opts.LayoutAfterCursor,
+	}
 	payload, err := proto.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal watchuser: %w", err)

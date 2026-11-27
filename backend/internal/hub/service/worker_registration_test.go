@@ -2285,3 +2285,43 @@ func registrationKeyID(t *testing.T, env *regKeyEnv, key string) string {
 	require.NoError(t, err)
 	return row.ID
 }
+
+func TestWorkerManagementService_GetWorkerInventory(t *testing.T) {
+	t.Parallel()
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	adminID := env.adminID(t)
+
+	inv0, err := env.mgmtClient.GetWorkerInventory(authedReq(t.Context(), &leapmuxv1.GetWorkerInventoryRequest{}, token))
+	require.NoError(t, err)
+	assert.Equal(t, adminID, inv0.GetOwnerUserId())
+	assert.Zero(t, inv0.GetRevision())
+	assert.Empty(t, inv0.GetWorkerIds())
+
+	registerOne := func() string {
+		keyResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(t.Context(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		require.NoError(t, err)
+		regResp, err := env.registerWithKeys(t, keyResp.GetRegistrationKey(), workerkeystest.Keys(0x41))
+		require.NoError(t, err)
+		return regResp.GetWorkerId()
+	}
+
+	w1 := registerOne()
+	w2 := registerOne()
+	wantIDs := []string{w1, w2}
+	slices.Sort(wantIDs)
+
+	inv2, err := env.mgmtClient.GetWorkerInventory(authedReq(t.Context(), &leapmuxv1.GetWorkerInventoryRequest{}, token))
+	require.NoError(t, err)
+	assert.Equal(t, adminID, inv2.GetOwnerUserId())
+	assert.Equal(t, int64(2), inv2.GetRevision())
+	assert.Equal(t, wantIDs, inv2.GetWorkerIds())
+
+	_, err = env.mgmtClient.DeregisterWorker(authedReq(t.Context(), &leapmuxv1.DeregisterWorkerRequest{WorkerId: w1}, token))
+	require.NoError(t, err)
+
+	invAfterDereg, err := env.mgmtClient.GetWorkerInventory(authedReq(t.Context(), &leapmuxv1.GetWorkerInventoryRequest{}, token))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), invAfterDereg.GetRevision())
+	assert.Equal(t, []string{w2}, invAfterDereg.GetWorkerIds())
+}

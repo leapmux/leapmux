@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -16,7 +17,166 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/readseq"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
+	"github.com/leapmux/leapmux/tunnel"
 )
+
+type watchRejectionDisposition uint8
+
+const (
+	watchRejectionRetry watchRejectionDisposition = iota
+	watchRejectionNotFound
+	watchRejectionFailed
+)
+
+func classifyWatchRejection(noun, id string, reason leapmuxv1.WatchRejectionReason) (watchRejectionDisposition, error) {
+	switch reason {
+	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED:
+		return watchRejectionRetry, nil
+	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND:
+		return watchRejectionNotFound, nil
+	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_FORBIDDEN:
+		return watchRejectionFailed, cli.Newf(cli.CodePermissionDenied, "the credential may not watch %s %s", noun, id)
+	default:
+		// The protocol reads an unknown reason as durable.
+		return watchRejectionFailed, cli.Newf(cli.CodeInternal, "the Worker refused to watch %s %s (%s)", noun, id, reason.String())
+	}
+}
+
+type sharedWorkerChannelEntry struct {
+	workerID string
+	ch       *tunnel.Channel
+	refs     int
+	opening  chan struct{}
+	openErr  error
+}
+
+// sharedWorkerChannels multiplexes concurrent streams and unary calls to the
+// same Worker over one ref-counted Noise_NK E2EE channel in hub-bound mode.
+// Each consumer acquires a reference and releases it independently; closing a
+// single refused or stopped stream leaves sibling streams on the same channel
+// undisturbed.
+type sharedWorkerChannels struct {
+	hub  *control.HubClient
+	open func(opCtx, lifeCtx context.Context, workerID string) (*tunnel.Channel, error)
+
+	mu      sync.Mutex
+	entries map[string]*sharedWorkerChannelEntry
+}
+
+func newSharedWorkerChannels(p control.Peer) *sharedWorkerChannels {
+	hub, ok := p.(*control.HubClient)
+	if !ok {
+		return nil
+	}
+	return &sharedWorkerChannels{
+		hub:     hub,
+		open:    hub.OpenE2EEChannel,
+		entries: make(map[string]*sharedWorkerChannelEntry),
+	}
+}
+
+func (p *sharedWorkerChannels) acquire(ctx context.Context, workerID string) (*tunnel.Channel, func(), error) {
+	if workerID == "" {
+		return nil, nil, errors.New("worker_id required for hub-bound mode")
+	}
+	p.mu.Lock()
+	for {
+		entry := p.entries[workerID]
+		if entry != nil && entry.ch != nil {
+			if entry.ch.Context().Err() == nil {
+				entry.refs++
+				p.mu.Unlock()
+				return entry.ch, p.releaseFunc(entry), nil
+			}
+			// Detach a dead channel so existing holders can still release it
+			// without interfering with the fresh channel we open below.
+			delete(p.entries, workerID)
+			entry = nil
+		}
+		if entry != nil && entry.opening != nil {
+			wait := entry.opening
+			p.mu.Unlock()
+			select {
+			case <-wait:
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			}
+			p.mu.Lock()
+			if entry.openErr != nil {
+				err := entry.openErr
+				p.mu.Unlock()
+				return nil, nil, err
+			}
+			continue
+		}
+		entry = &sharedWorkerChannelEntry{workerID: workerID, opening: make(chan struct{})}
+		p.entries[workerID] = entry
+		p.mu.Unlock()
+
+		openCtx, cancelOpen := rpcDeadline(ctx)
+		// Channel lifetime is governed by ref-counting, not any single
+		// consumer's stream context, so stopping one stream does not tear down
+		// sibling streams sharing the same Worker channel.
+		ch, err := p.open(openCtx, context.Background(), workerID)
+		cancelOpen()
+
+		p.mu.Lock()
+		if err != nil {
+			if p.entries[workerID] == entry {
+				delete(p.entries, workerID)
+			}
+			// Do not poison sibling waiters with this caller's own context
+			// cancellation; let them retry the open with their own context.
+			if ctx.Err() != nil {
+				close(entry.opening)
+				entry.opening = nil
+				p.mu.Unlock()
+				return nil, nil, ctx.Err()
+			}
+			wrapped := &codedRPCError{Code: "channel_open_failed", Cause: err}
+			entry.openErr = wrapped
+			close(entry.opening)
+			entry.opening = nil
+			p.mu.Unlock()
+			return nil, nil, wrapped
+		}
+		if ctx.Err() != nil {
+			if p.entries[workerID] == entry {
+				delete(p.entries, workerID)
+			}
+			close(entry.opening)
+			entry.opening = nil
+			p.mu.Unlock()
+			ch.Close()
+			return nil, nil, ctx.Err()
+		}
+		entry.ch = ch
+		entry.refs = 1
+		close(entry.opening)
+		entry.opening = nil
+		p.mu.Unlock()
+		return ch, p.releaseFunc(entry), nil
+	}
+}
+
+func (p *sharedWorkerChannels) releaseFunc(entry *sharedWorkerChannelEntry) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			p.mu.Lock()
+			entry.refs--
+			shouldClose := entry.refs == 0
+			if shouldClose && p.entries[entry.workerID] == entry {
+				delete(p.entries, entry.workerID)
+			}
+			ch := entry.ch
+			p.mu.Unlock()
+			if shouldClose && ch != nil {
+				ch.Close()
+			}
+		})
+	}
+}
 
 // workerFeedSource is what the notify watch of one Worker reads.
 type workerFeedSource struct {
@@ -30,23 +190,56 @@ type workerFeedSource struct {
 	clock quartz.Clock
 }
 
-// workerFeedSourceOf reads the Worker workerID through c.
+// workerFeedSourceOf reads the Worker workerID through c, reusing the active
+// watch session's E2EE channel for ListAgents reads.
 func workerFeedSourceOf(c control.Peer, workerID string) workerFeedSource {
+	return workerFeedSourceWithChannels(c, workerID, nil)
+}
+
+// workerFeedSourceWithChannels reads the Worker workerID through c, sharing one
+// E2EE channel per Worker across WatchEvents, ListAgents, and
+// WatchWorkerPrivateEvents when channels is non-nil.
+func workerFeedSourceWithChannels(c control.Peer, workerID string, channels *sharedWorkerChannels) workerFeedSource {
+	var active atomic.Pointer[workerWatchTransport]
 	return workerFeedSource{
 		openTransport: func(ctx context.Context) (streamevents.Transport, func(), error) {
+			if channels != nil {
+				ch, releaseChannel, err := channels.acquire(ctx, workerID)
+				if err != nil {
+					return nil, nil, err
+				}
+				t := &workerWatchTransport{
+					transport: streamevents.NewChannelTransport(ch, slog.Default()),
+					caller:    workerCall{hub: channels.hub, workerID: workerID, ch: ch},
+					close:     releaseChannel,
+				}
+				active.Store(t)
+				release := func() {
+					active.CompareAndSwap(t, nil)
+					t.close()
+				}
+				return t.transport, release, nil
+			}
 			t, err := newWorkerWatchTransport(ctx, c, workerID)
 			if err != nil {
-				// The code of a channel that does not open: the Worker is
-				// offline, unless the hub refused the caller.
-				return nil, nil, &codedRPCError{Code: "channel_open_failed", Cause: err}
+				return nil, nil, err
 			}
-			return t.transport, t.close, nil
+			active.Store(t)
+			release := func() {
+				active.CompareAndSwap(t, nil)
+				t.close()
+			}
+			return t.transport, release, nil
 		},
 		readAgents: func(ctx context.Context, agentIDs []string) (map[string]*leapmuxv1.AgentInfo, error) {
+			t := active.Load()
+			if t == nil {
+				return nil, errWatchEnded
+			}
 			ctx, cancel := rpcDeadline(ctx)
 			defer cancel()
 			var resp leapmuxv1.ListAgentsResponse
-			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
+			if err := t.Call(ctx, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
 				&leapmuxv1.ListAgentsRequest{TabIds: agentIDs}, &resp); err != nil {
 				return nil, err
 			}
@@ -125,7 +318,9 @@ type feedOutput struct {
 	// the watch, and the feed delivers.
 	first bool
 	// err is why the watch is down or refused.
-	err              error
+	err error
+	// retrying reports whether the feed will try to reconnect after feedDown.
+	retrying         bool
 	rejection        *leapmuxv1.WatchRejection
 	rejectedTerminal bool
 }
@@ -231,6 +426,7 @@ const (
 	inputTerminal
 	inputAck
 	inputDown
+	inputStopped
 	inputRefused
 )
 
@@ -283,10 +479,11 @@ func (f *workerFeed) connect(ctx context.Context) {
 			f.input(ctx, feedInput{kind: inputRefused, session: session, err: err})
 			return
 		}
-		if !f.input(ctx, feedInput{kind: inputDown, session: session, err: err}) {
+		if f.noReconnect {
+			f.input(ctx, feedInput{kind: inputStopped, session: session, err: err})
 			return
 		}
-		if f.noReconnect {
+		if !f.input(ctx, feedInput{kind: inputDown, session: session, err: err}) {
 			return
 		}
 		timer := f.source.clock.NewTimer(backoff.afterSession(delivered), feedReconnectTimerTag)
@@ -412,7 +609,7 @@ func (q *feedSequencer) run(ctx context.Context) {
 			}
 		case <-ackDeadline:
 			q.ackTimer = nil
-			if !q.send(ctx, feedOutput{kind: feedDown, err: errNoWatchAck}) {
+			if !q.send(ctx, feedOutput{kind: feedDown, err: errNoWatchAck, retrying: true}) {
 				return
 			}
 		}
@@ -458,7 +655,13 @@ func (q *feedSequencer) input(ctx context.Context, in feedInput) bool {
 		// and nothing that it holds waits for a read any more.
 		q.stopAckTimer()
 		q.firstOwed = false
-		return q.seq.Abandon(ctx) && q.send(ctx, feedOutput{kind: feedDown, err: in.err})
+		return q.seq.Abandon(ctx) && q.send(ctx, feedOutput{kind: feedDown, err: in.err, retrying: true})
+	case inputStopped:
+		q.stopAckTimer()
+		q.firstOwed = false
+		q.seq.Abandon(ctx)
+		q.send(ctx, feedOutput{kind: feedDown, err: in.err, retrying: false})
+		return false
 	case inputRefused:
 		q.stopAckTimer()
 		q.seq.Abandon(ctx)
@@ -474,7 +677,7 @@ func (q *feedSequencer) input(ctx context.Context, in feedInput) bool {
 func (q *feedSequencer) nextRead(ctx context.Context) (readseq.Read[feedLevelRead], bool) {
 	interest := q.f.currentInterest()
 	for id := range q.read {
-		if !slices.Contains(interest.agents, id) {
+		if _, ok := slices.BinarySearch(interest.agents, id); !ok {
 			// An agent that left the interest is read again if it returns.
 			delete(q.read, id)
 		}

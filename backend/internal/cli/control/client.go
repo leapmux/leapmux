@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -421,6 +422,35 @@ type UserEventsStream struct {
 	cancel context.CancelFunc
 }
 
+// tooManyConnectionsError wraps a WebSocket close error whose reason is
+// contracts.CloseReasonTooManyConnections so cli.FromError classifies it as
+// CodeUnavailable (retryable) while keeping the underlying CloseError reachable
+// through errors.As.
+type tooManyConnectionsError struct {
+	err error
+}
+
+func (e *tooManyConnectionsError) Error() string { return e.err.Error() }
+
+func (e *tooManyConnectionsError) Unwrap() error { return e.err }
+
+func (e *tooManyConnectionsError) CLIError() *cli.Error {
+	return cli.Newf(cli.CodeUnavailable, "the Hub rejected the connection: too many open connections")
+}
+
+var _ cli.Classifier = (*tooManyConnectionsError)(nil)
+
+func wrapHubConnectionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var closeErr websocket.CloseError
+	if errors.As(err, &closeErr) && closeErr.Reason == contracts.CloseReasonTooManyConnections {
+		return &tooManyConnectionsError{err: err}
+	}
+	return err
+}
+
 // Recv reads the next event from the stream. Returns io.EOF when the
 // peer closes cleanly, and returns any other transport error verbatim.
 func (s *UserEventsStream) Recv() (*leapmuxv1.WatchUserEvent, error) {
@@ -434,7 +464,7 @@ func (s *UserEventsStream) Recv() (*leapmuxv1.WatchUserEvent, error) {
 		if channelwire.IsUserEventsCloseError(err) {
 			return nil, io.EOF
 		}
-		return nil, err
+		return nil, wrapHubConnectionError(err)
 	}
 	var evt leapmuxv1.WatchUserEvent
 	if err := proto.Unmarshal(payload, &evt); err != nil {
@@ -462,6 +492,12 @@ func (s *UserEventsStream) Close() error {
 // implies the user, so the request sends no user_id. The returned stream's first
 // event is always `UserMaterialized` (the bootstrap snapshot).
 func (c *HubClient) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*UserEventsStream, error) {
+	return c.OpenUserEventsWithOptions(ctx, channelwire.UserEventsOptions{WorkspaceIDs: workspaceIDs})
+}
+
+// OpenUserEventsWithOptions opens a `/ws/userevents` WebSocket subscription
+// with explicit topic, workspace, and cursor options.
+func (c *HubClient) OpenUserEventsWithOptions(ctx context.Context, opts channelwire.UserEventsOptions) (*UserEventsStream, error) {
 	// A long-lived subscription must not open on a token that is about to
 	// lapse: the WebSocket carries no retry, so it would simply close. The
 	// renewal and the read are ONE call, so a later caller cannot do the
@@ -471,10 +507,10 @@ func (c *HubClient) OpenUserEvents(ctx context.Context, workspaceIDs []string) (
 		return nil, err
 	}
 	dialCtx, dialCancel := context.WithCancel(ctx)
-	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.connectURL, bearer, workspaceIDs, nil, 0)
+	ws, err := channelwire.OpenUserEventsWSWithOptions(dialCtx, c.WSClient, c.connectURL, bearer, opts)
 	if err != nil {
 		dialCancel()
-		return nil, err
+		return nil, wrapHubConnectionError(err)
 	}
 	return &UserEventsStream{ws: ws, ctx: dialCtx, cancel: dialCancel}, nil
 }
@@ -498,7 +534,7 @@ func (c *HubClient) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, w
 	if err != nil {
 		return nil, err
 	}
-	return tunnel.OpenChannel(operationCtx, c.connectURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(operationCtx, c.connectURL, workerID, &tunnel.OpenChannelOptions{
 		HTTPClient:          c.HTTPClient,
 		WebSocketHTTPClient: c.WSClient,
 		LifetimeContext:     lifetimeCtx,
@@ -512,6 +548,10 @@ func (c *HubClient) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, w
 		ExpectedUserID: c.UserID,
 		KeyPin:         pins,
 	})
+	if err != nil {
+		return nil, wrapHubConnectionError(err)
+	}
+	return ch, nil
 }
 
 // UserService returns a ConnectRPC client for the caller's OWN account

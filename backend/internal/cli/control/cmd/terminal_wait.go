@@ -7,15 +7,19 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/quartz"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
 )
 
 // terminalWaitLong is the help of `terminal wait`.
@@ -78,8 +82,8 @@ func newTerminalWaitLeaf() *cobra.Command {
 			{Comment: "Look for a completed build in the terminal's retained output.", Command: "leapmux terminal wait 4cbb3f34 --text 'Build complete' --scrollback"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
-			addTerminalWaitConditionFlags(fs)
-			for _, name := range []string{"exit", "text", "regex", "change", "after-offset", "scrollback", "timeout"} {
+			addTerminalWaitConditionFlags(fs, true)
+			for _, name := range terminalWaitFlagNames(true) {
 				cli.SetFlagGroup(fs, name, "Wait")
 			}
 			addTargetWorkspaceFlag(fs)
@@ -90,25 +94,76 @@ func newTerminalWaitLeaf() *cobra.Command {
 	})
 }
 
+// terminalWaitFlagNames returns the wait condition flag names registered by
+// addTerminalWaitConditionFlags.
+func terminalWaitFlagNames(includeAfterOffset bool) []string {
+	if includeAfterOffset {
+		return []string{"exit", "text", "regex", "change", "after-offset", "scrollback", "timeout"}
+	}
+	return []string{"exit", "text", "regex", "change", "scrollback", "timeout"}
+}
+
 // addTerminalWaitConditionFlags registers --exit, --text, --regex, --change,
-// --after-offset, --scrollback, and --timeout for `terminal wait`,
-// `terminal open --wait`, and `terminal run --wait`.
-func addTerminalWaitConditionFlags(fs *pflag.FlagSet) {
+// --scrollback, and --timeout, plus --after-offset when includeAfterOffset is
+// true.
+func addTerminalWaitConditionFlags(fs *pflag.FlagSet, includeAfterOffset bool) {
 	fs.Bool("exit", false, "wait until the shell of the terminal ends, and print its exit code")
 	fs.String("text", "", "wait until a line of the terminal holds this text")
 	fs.String("regex", "", "wait until a line of the terminal matches this regular expression, in RE2 syntax")
 	fs.Bool("change", false, "wait until the visible screen text changes, and print the updated screen")
-	fs.Int64("after-offset", 0, "with --change, return immediately if screen_end_offset already exceeds this byte offset")
+	if includeAfterOffset {
+		fs.Int64("after-offset", 0, "with --change, return immediately if screen_end_offset already exceeds this byte offset")
+	}
 	fs.Bool("scrollback", false, "also search the retained scrollback from before the wait")
 	fs.Duration("timeout", 0, "stop waiting after this long, such as 90s or 10m; 0 waits without a limit")
 }
 
+// optionalTerminalWaitSpec parses --wait and its condition flags for commands
+// where waiting is optional (`terminal open`, `terminal run`).
+func optionalTerminalWaitSpec(inv *cli.Invocation, includeAfterOffset bool) (wait bool, spec terminalWaitSpec, err error) {
+	if !boolFlag(inv, "wait") {
+		for _, name := range terminalWaitFlagNames(includeAfterOffset) {
+			if inv.Changed(name) {
+				return false, terminalWaitSpec{}, cli.Usagef("--%s needs --wait", name)
+			}
+		}
+		return false, terminalWaitSpec{}, nil
+	}
+	spec, err = terminalWaitSpecOf(inv)
+	if err != nil {
+		return false, terminalWaitSpec{}, err
+	}
+	return true, spec, nil
+}
+
+// refuseSelfTerminalExitWait refuses --exit when target is the calling
+// terminal, because its shell cannot end while the wait runs in it.
+func refuseSelfTerminalExitWait(target tabTarget, selfID string, spec terminalWaitSpec) error {
+	if spec.mode == terminalWaitExit && (target.Self || target.ID == selfID) {
+		return cli.Usagef("terminal %s is the calling terminal, whose shell cannot end while the wait runs in it", target.ID).
+			WithHint("wait from another tab, or for another terminal")
+	}
+	return nil
+}
+
+// terminalWaitMode selects what condition a terminal wait evaluates.
+type terminalWaitMode uint8
+
+const (
+	terminalWaitText terminalWaitMode = iota
+	terminalWaitExit
+	terminalWaitChange
+)
+
 // terminalWaitSpec states one wait for a terminal.
 type terminalWaitSpec struct {
-	// exit waits for the shell to end.
-	exit bool
-	// change waits for visible screen text to differ from the start snapshot.
-	change bool
+	// mode selects whether the wait checks for matching text, shell exit, or a
+	// visible screen change.
+	mode terminalWaitMode
+	// preOpenBaseline treats the baseline before opening a new terminal as an
+	// empty screen, so `terminal open --wait --change` returns immediately when
+	// the new terminal already printed visible text before terminalInfo ran.
+	preOpenBaseline bool
 	// hasAfterOffset reports whether --after-offset was supplied with --change.
 	hasAfterOffset bool
 	// afterOffset is the byte offset from a prior read/wait.
@@ -123,6 +178,9 @@ type terminalWaitSpec struct {
 	condition string
 	// timeout ends the wait after this long. Zero waits without a limit.
 	timeout time.Duration
+	// requestID and retryCommand carry retry metadata from `terminal run --wait`.
+	requestID    string
+	retryCommand string
 }
 
 // terminalWaitSpecOf reads the flags of `terminal wait`, and refuses a
@@ -132,9 +190,10 @@ func terminalWaitSpecOf(inv *cli.Invocation) (terminalWaitSpec, error) {
 	if err != nil {
 		return terminalWaitSpec{}, err
 	}
+	hasExit := boolFlag(inv, "exit")
+	hasChange := boolFlag(inv, "change")
+	hasText, hasRegex := inv.Changed("text"), inv.Changed("regex")
 	spec := terminalWaitSpec{
-		exit:           boolFlag(inv, "exit"),
-		change:         boolFlag(inv, "change"),
 		hasAfterOffset: inv.Changed("after-offset"),
 		timeout:        timeout,
 		scrollback:     boolFlag(inv, "scrollback"),
@@ -149,17 +208,16 @@ func terminalWaitSpecOf(inv *cli.Invocation) (terminalWaitSpec, error) {
 		}
 		spec.afterOffset = v
 	}
-	hasText, hasRegex := inv.Changed("text"), inv.Changed("regex")
 	modeCount := 0
-	for _, set := range []bool{spec.exit, spec.change, hasText, hasRegex} {
+	for _, set := range []bool{hasExit, hasChange, hasText, hasRegex} {
 		if set {
 			modeCount++
 		}
 	}
 	switch {
-	case spec.hasAfterOffset && !spec.change:
+	case spec.hasAfterOffset && !hasChange:
 		return terminalWaitSpec{}, cli.Usagef("--after-offset needs --change")
-	case spec.exit && (hasText || hasRegex):
+	case hasExit && (hasText || hasRegex):
 		return terminalWaitSpec{}, cli.Usagef("--exit takes no --text and no --regex").
 			WithHint("a wait for text already ends with exit status 6 when the shell ends first")
 	case modeCount > 1:
@@ -168,16 +226,21 @@ func terminalWaitSpecOf(inv *cli.Invocation) (terminalWaitSpec, error) {
 	case spec.scrollback && !hasText && !hasRegex:
 		return terminalWaitSpec{}, cli.Usagef("--scrollback needs --text or --regex")
 	case hasText:
+		spec.mode = terminalWaitText
 		text := stringFlag(inv, "text")
 		spec.match, err = textMatcher(text)
 		spec.condition = fmt.Sprintf("the text %q", text)
 	case hasRegex:
+		spec.mode = terminalWaitText
 		pattern := stringFlag(inv, "regex")
 		spec.match, err = regexMatcher(pattern)
 		spec.condition = fmt.Sprintf("a line that matches %q", pattern)
-	case spec.change:
+	case hasChange:
+		spec.mode = terminalWaitChange
 		spec.condition = "a screen change"
-	case !spec.exit:
+	case hasExit:
+		spec.mode = terminalWaitExit
+	default:
 		return terminalWaitSpec{}, cli.Usagef("missing the condition to wait for").
 			WithHint("pass --exit, --text <text>, --regex <pattern>, or --change")
 	}
@@ -225,7 +288,8 @@ const terminalStatusUnknown = "unknown"
 
 // terminalWaitResult is the result of `terminal wait`.
 type terminalWaitResult struct {
-	ID string `json:"id"`
+	ID        string `json:"id"`
+	RequestID string `json:"request_id,omitempty"`
 	// Status is the last status of the shell that the wait observed: a token
 	// of TerminalStatus, such as "ready" or "exited", or "unknown".
 	Status string `json:"status"`
@@ -236,7 +300,8 @@ type terminalWaitResult struct {
 	// ScreenEndOffset is the byte offset of the terminal stream at completion
 	// (pass to --after-offset on the next `terminal wait --change`).
 	ScreenEndOffset int64 `json:"screen_end_offset,omitempty"`
-	// Screen holds the sanitized visible screen text for --change.
+	// Screen holds the visible screen text for --change. RenderText sanitizes
+	// it before writing to a terminal.
 	Screen string `json:"screen,omitempty"`
 	// ExitCode is the exit code of the shell, when the wait saw the shell
 	// end with one. A shell that a signal ended reports -1.
@@ -245,24 +310,29 @@ type terminalWaitResult struct {
 	Line string `json:"line,omitempty"`
 	// StartupError states why the shell failed to start.
 	StartupError string `json:"startup_error,omitempty"`
-	// exit and change select the text form.
-	exit   bool
-	change bool
+	// Receipt carries recovery metadata when a keyed wait times out.
+	Receipt *cli.RetryReceipt `json:"receipt,omitempty"`
+	// mode selects the text form.
+	mode terminalWaitMode
 }
 
 // RenderText prints the exit code of a wait for exit, the updated screen for
 // --change, or the line that met a wait for text, and nothing otherwise.
 func (r terminalWaitResult) RenderText(w io.Writer) error {
 	var err error
-	switch {
-	case r.exit && r.ExitCode != nil:
-		_, err = fmt.Fprintln(w, *r.ExitCode)
-	case r.change && r.Reached:
-		if r.Screen != "" {
+	switch r.mode {
+	case terminalWaitExit:
+		if r.ExitCode != nil {
+			_, err = fmt.Fprintln(w, *r.ExitCode)
+		}
+	case terminalWaitChange:
+		if r.Reached && r.Screen != "" {
 			_, err = fmt.Fprintln(w, cli.SanitizeTerminalText(r.Screen))
 		}
-	case !r.exit && !r.change && r.Reached:
-		_, err = fmt.Fprintln(w, cli.SanitizeTerminalText(r.Line))
+	case terminalWaitText:
+		if r.Reached {
+			_, err = fmt.Fprintln(w, cli.SanitizeTerminalText(r.Line))
+		}
 	}
 	return err
 }
@@ -293,7 +363,15 @@ type terminalWaiter struct {
 }
 
 func newTerminalWaiter(id string, spec terminalWaitSpec) *terminalWaiter {
-	return &terminalWaiter{spec: spec, result: terminalWaitResult{ID: id, Status: terminalStatusUnknown, exit: spec.exit, change: spec.change}}
+	return &terminalWaiter{
+		spec: spec,
+		result: terminalWaitResult{
+			ID:        id,
+			RequestID: spec.requestID,
+			Status:    terminalStatusUnknown,
+			mode:      spec.mode,
+		},
+	}
 }
 
 // deadline starts the timeout of the wait. The channel is nil for a wait
@@ -310,25 +388,19 @@ func (w *terminalWaiter) deadline(clock quartz.Clock) (<-chan time.Time, func())
 // that ended, unless the Worker holds no record of the exit. done reports that
 // the wait ended.
 func (w *terminalWaiter) record(info *leapmuxv1.TerminalInfo) (terminalWaitOutcome, bool) {
-	if info.GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED {
-		return w.shellEnded(exitCodeOf(info))
-	}
-	return w.status(info.GetStatus(), info.GetStartupError())
+	return w.status(info.GetStatus(), info.GetStartupError(), exitCodeOf(info))
 }
 
-// status takes a status of the shell from a status change. done reports that
-// the wait ended.
-func (w *terminalWaiter) status(status leapmuxv1.TerminalStatus, startupError string) (terminalWaitOutcome, bool) {
+// status takes a status of the shell from a status change or terminal record.
+// done reports that the wait ended.
+func (w *terminalWaiter) status(status leapmuxv1.TerminalStatus, startupError string, exitCode *int32) (terminalWaitOutcome, bool) {
 	if status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED {
 		return 0, false
 	}
 	w.result.Status = enumToken(status)
 	switch status {
 	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:
-		// A status change states no exit code. A wait for exit therefore reads
-		// the record of the terminal instead of passing EXITED here (see
-		// awaitShellExit), and a wait for text ends without the code.
-		return w.shellEnded(nil)
+		return w.shellEnded(exitCode)
 	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
 		w.result.StartupError = startupError
 		return terminalWaitStartupFailed, true
@@ -346,52 +418,26 @@ func (w *terminalWaiter) event(te *leapmuxv1.TerminalEvent) (terminalWaitOutcome
 		// clean exit.
 		return w.shellEnded(e.Closed.ExitCode)
 	case *leapmuxv1.TerminalEvent_StatusChange:
-		return w.status(e.StatusChange.GetStatus(), e.StatusChange.GetStartupError())
+		return w.status(e.StatusChange.GetStatus(), e.StatusChange.GetStartupError(), e.StatusChange.ExitCode)
 	default:
 		return 0, false
 	}
 }
 
 // shellEnded takes the end of the shell, with its exit code when the wait
-// saw it. It meets a wait for exit, and ends a wait for text without its
-// condition.
+// saw it. It meets a wait for exit, and ends a wait for text or screen change
+// without its condition.
 func (w *terminalWaiter) shellEnded(code *int32) (terminalWaitOutcome, bool) {
 	w.result.Status = enumToken(leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED)
 	if code != nil {
-		w.result.ExitCode = code
+		v := *code
+		w.result.ExitCode = &v
 	}
-	if w.spec.exit {
+	if w.spec.mode == terminalWaitExit {
 		w.result.Reached = true
 		return terminalWaitHeld, true
 	}
 	return terminalWaitShellEnded, true
-}
-
-// screenChanged checks the screen after it changed, and ends a wait for
-// text when a line matches.
-func (w *terminalWaiter) screenChanged(screen *screenWatch) (terminalWaitOutcome, bool, error) {
-	line, ok, err := screen.check()
-	if err != nil || !ok {
-		return 0, false, err
-	}
-	w.result.Line, w.result.Reached = line, true
-	return terminalWaitHeld, true, nil
-}
-
-// output feeds one chunk of the terminal to the screen, and checks it. A
-// chunk that replaces the whole state resets the screen first.
-func (w *terminalWaiter) output(screen *screenWatch, data *leapmuxv1.TerminalData) (terminalWaitOutcome, bool, error) {
-	var outcome terminalWaitOutcome
-	var done bool
-	err := screen.consumeScreenOutput(data, func() (bool, error) {
-		var checkErr error
-		outcome, done, checkErr = w.screenChanged(screen)
-		return done, checkErr
-	})
-	if done || err != nil {
-		return outcome, done, err
-	}
-	return w.screenChanged(screen)
 }
 
 // runTerminalWait waits until the terminal meets the condition of the
@@ -414,22 +460,35 @@ func runTerminalWait(inv *cli.Invocation) (any, error) {
 	return waitTerminalWithInfo(inv, s, t, info, spec)
 }
 
-// waitTerminalForTarget reads the terminal's current info on a bounded call
-// and runs the wait condition against it (shared by `terminal open --wait` and
-// `terminal run --wait`).
+// waitTerminalForTarget reads the terminal's current info on a time-limited
+// call and runs the wait condition against it (used by `terminal open --wait`).
 func waitTerminalForTarget(inv *cli.Invocation, s *session, t tabTarget, spec terminalWaitSpec) (any, error) {
-	bounded := s.bounded()
-	info, err := bounded.terminalInfo(t)
-	bounded.Close()
+	callSession := s.bounded()
+	info, err := callSession.terminalInfo(t)
+	callSession.Close()
 	if err != nil {
 		return nil, err
 	}
 	return waitTerminalWithInfo(inv, s, t, info, spec)
 }
 
+// readTerminalInfo fetches the TerminalInfo for terminalID using call.
+func readTerminalInfo(ctx context.Context, call func(context.Context, string, proto.Message, proto.Message) error, terminalID string) (*leapmuxv1.TerminalInfo, error) {
+	var resp leapmuxv1.ListTerminalsResponse
+	if err := call(ctx, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, &resp); err != nil {
+		return nil, err
+	}
+	for _, info := range resp.GetTerminals() {
+		if info.GetTerminalId() == terminalID {
+			return info, nil
+		}
+	}
+	return nil, cli.Newf(cli.CodeNotFound, "the worker has no terminal %s", terminalID)
+}
+
 func waitTerminalWithInfo(inv *cli.Invocation, s *session, t tabTarget, info *leapmuxv1.TerminalInfo, spec terminalWaitSpec) (any, error) {
 	spinMsg := fmt.Sprintf("waiting for terminal %s", cli.ShortID(t.ID))
-	if spec.exit {
+	if spec.mode == terminalWaitExit {
 		spinMsg += " to exit"
 	} else if spec.condition != "" {
 		spinMsg += " (" + spec.condition + ")"
@@ -439,12 +498,10 @@ func waitTerminalWithInfo(inv *cli.Invocation, s *session, t tabTarget, info *le
 	var result terminalWaitResult
 	var outcome terminalWaitOutcome
 	var err error
-	if spec.exit {
+	if spec.mode == terminalWaitExit {
 		result, outcome, err = waitForShellExit(s, t, info, spec)
-	} else if spec.change {
-		result, outcome, err = waitForScreenChange(s, t, info, spec)
 	} else {
-		result, outcome, err = waitForScreenText(s, t, info, spec)
+		result, outcome, err = waitForScreen(s, t, info, spec)
 	}
 	spin.Stop()
 	if err != nil {
@@ -456,8 +513,8 @@ func waitTerminalWithInfo(inv *cli.Invocation, s *session, t tabTarget, info *le
 	// Every path to an ended shell reads a record or a TerminalClosed, and both
 	// state the exit code whenever the Worker holds a record of it. Only a
 	// Worker that was killed while the shell ran holds none.
-	if spec.exit && result.ExitCode == nil {
-		inv.Printer.Notice("the Worker holds no record of the exit code of the shell of terminal %s, because it did not see the shell end, so no exit code prints", t.ID)
+	if spec.mode == terminalWaitExit && result.ExitCode == nil {
+		_ = inv.Printer.Notice("the Worker holds no record of the exit code of the shell of terminal %s, because it did not see the shell end, so no exit code prints", t.ID)
 	}
 	return result, nil
 }
@@ -466,17 +523,16 @@ func waitTerminalWithInfo(inv *cli.Invocation, s *session, t tabTarget, info *le
 // the exit of the calling terminal is refused: the wait runs in that shell,
 // so the shell cannot end while it runs.
 func terminalWaitTarget(s *session, input string, spec terminalWaitSpec) (tabTarget, *leapmuxv1.TerminalInfo, error) {
-	bounded := s.bounded()
-	defer bounded.Close()
-	t, err := bounded.resolveTab(resolve.KindTerminal, input, resolve.Need{WorkerID: true})
+	callSession := s.bounded()
+	defer callSession.Close()
+	t, err := callSession.resolveTab(resolve.KindTerminal, input, resolve.Need{WorkerID: true})
 	if err != nil {
 		return tabTarget{}, nil, err
 	}
-	if spec.exit && (t.Self || t.ID == bounded.listing().SelfTabID(resolve.KindTerminal)) {
-		return tabTarget{}, nil, cli.Usagef("terminal %s is the calling terminal, whose shell cannot end while the wait runs in it", t.ID).
-			WithHint("wait from another tab, or for another terminal")
+	if err := refuseSelfTerminalExitWait(t, callSession.listing().SelfTabID(resolve.KindTerminal), spec); err != nil {
+		return tabTarget{}, nil, err
 	}
-	info, err := bounded.terminalInfo(t)
+	info, err := callSession.terminalInfo(t)
 	if err != nil {
 		return tabTarget{}, nil, err
 	}
@@ -489,9 +545,9 @@ func terminalWaitTarget(s *session, input string, spec terminalWaitSpec) (tabTar
 // It watches the terminal in notify mode, which carries the exit and the
 // status changes but no bytes. A notify watch replays nothing, so after the
 // Worker acknowledges each subscription, the wait reads the record of the
-// terminal again: a shell that ended before the watch, or during a gap
-// between two subscriptions, then still ends the wait, with the exit code
-// that the record states.
+// terminal again over the active watch transport: a shell that ended before
+// the watch, or during a gap between two subscriptions, then still ends the
+// wait, with the exit code that the record states.
 func waitForShellExit(s *session, t tabTarget, info *leapmuxv1.TerminalInfo, spec terminalWaitSpec) (terminalWaitResult, terminalWaitOutcome, error) {
 	w := newTerminalWaiter(t.ID, spec)
 	if outcome, done := w.record(info); done {
@@ -501,14 +557,36 @@ func waitForShellExit(s *session, t tabTarget, info *leapmuxv1.TerminalInfo, spe
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer cancel()
+	var activeTransport atomic.Pointer[workerWatchTransport]
+	source := workerFeedSource{
+		openTransport: func(openCtx context.Context) (streamevents.Transport, func(), error) {
+			wt, err := newWorkerWatchTransport(openCtx, s.c, t.WorkerID)
+			if err != nil {
+				return nil, nil, &codedRPCError{Code: "channel_open_failed", Cause: err}
+			}
+			activeTransport.Store(wt)
+			release := func() {
+				activeTransport.CompareAndSwap(wt, nil)
+				wt.close()
+			}
+			return wt.transport, release, nil
+		},
+		clock: quartz.NewReal(),
+	}
 	out := make(chan feedOutput, 16)
-	feed := newWorkerFeed(t.WorkerID, workerFeedSourceOf(s.c, t.WorkerID), out)
+	feed := newWorkerFeed(t.WorkerID, source, out)
 	feed.setInterest(watchInterest{terminals: []string{t.ID}})
 	feed.start(ctx, &wg)
-	readStatus := func() (*leapmuxv1.TerminalInfo, error) {
-		bounded := s.bounded()
-		defer bounded.Close()
-		return bounded.terminalInfo(t)
+	readStatus := func(readCtx context.Context) (*leapmuxv1.TerminalInfo, error) {
+		callCtx, cancelCall := rpcDeadline(readCtx)
+		defer cancelCall()
+		call := func(c context.Context, method string, in, out proto.Message) error {
+			if wt := activeTransport.Load(); wt != nil {
+				return wt.Call(c, method, in, out)
+			}
+			return callInnerRPC(c, s.c, t.WorkerID, method, in, out)
+		}
+		return readTerminalInfo(callCtx, call, t.ID)
 	}
 	return awaitShellExit(ctx, quartz.NewReal(), out, readStatus, w)
 }
@@ -523,22 +601,38 @@ type terminalStatusRead struct {
 // ends, the timeout passes, or the watch fails. readStatus reads the record
 // of the terminal. The wait runs it after each first acknowledgement of a
 // subscription, and after a status change to EXITED.
-func awaitShellExit(ctx context.Context, clock quartz.Clock, feed <-chan feedOutput, readStatus func() (*leapmuxv1.TerminalInfo, error), w *terminalWaiter) (terminalWaitResult, terminalWaitOutcome, error) {
+func awaitShellExit(ctx context.Context, clock quartz.Clock, feed <-chan feedOutput, readStatus func(context.Context) (*leapmuxv1.TerminalInfo, error), w *terminalWaiter) (terminalWaitResult, terminalWaitOutcome, error) {
 	deadline, stop := w.deadline(clock)
 	defer stop()
+	readCtx, cancelReads := context.WithCancel(ctx)
+	readTrigger := make(chan struct{}, 1)
 	reads := make(chan terminalStatusRead, 1)
-	// readRecord reads the record of the terminal on a goroutine of its own.
-	// The read waits on the Worker, and the events of the watch keep arriving
-	// meanwhile. An exit is final, so the order of the read and an event does
-	// not matter.
-	readRecord := func() {
-		go func() {
-			info, err := readStatus()
+	var readWG sync.WaitGroup
+	defer readWG.Wait()
+	defer cancelReads()
+	// Serialize status reads on one tracked goroutine derived from ctx so
+	// watch events keep arriving while a read waits on the Worker and no
+	// goroutine outlives awaitShellExit.
+	readWG.Go(func() {
+		for {
+			select {
+			case <-readCtx.Done():
+				return
+			case <-readTrigger:
+			}
+			info, err := readStatus(readCtx)
 			select {
 			case reads <- terminalStatusRead{info: info, err: err}:
-			case <-ctx.Done():
+			case <-readCtx.Done():
+				return
 			}
-		}()
+		}
+	})
+	readRecord := func() {
+		select {
+		case readTrigger <- struct{}{}:
+		default:
+		}
 	}
 	for {
 		select {
@@ -560,11 +654,12 @@ func awaitShellExit(ctx context.Context, clock quartz.Clock, feed <-chan feedOut
 					readRecord()
 				}
 			case feedTerminalEvent:
-				// A status change to EXITED states no exit code, and the
-				// TerminalClosed of the same exit can arrive after it. The
-				// record states the code, so the wait reads it instead of
-				// ending without one.
-				if out.terminal.GetStatusChange().GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED {
+				// When a status change to EXITED carries exit_code, finish
+				// immediately without an extra ListTerminals round trip. Only
+				// fall back to reading the record when exit_code is absent.
+				if sc := out.terminal.GetStatusChange(); sc != nil &&
+					sc.GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED &&
+					sc.ExitCode == nil {
 					readRecord()
 					continue
 				}
@@ -588,121 +683,104 @@ func awaitShellExit(ctx context.Context, clock quartz.Clock, feed <-chan feedOut
 	}
 }
 
-// waitForScreenText waits until a line of the terminal t matches. info is
-// the record of the terminal when the wait began: its size, the bytes that
-// replay its screen, and the offset where the watch of its output resumes.
-func waitForScreenText(s *session, t tabTarget, info *leapmuxv1.TerminalInfo, spec terminalWaitSpec) (terminalWaitResult, terminalWaitOutcome, error) {
-	w := newTerminalWaiter(t.ID, spec)
-	screen, err := newScreenWatch(info, spec.match, spec.scrollback)
-	if err != nil {
-		return w.result, 0, err
-	}
-	defer screen.dispose()
-	terminalOutcome, terminalEnded := w.record(info)
-	// The screen when the wait begins counts. A shell that already ended
-	// shows nothing new, so the wait for text ends without its condition.
-	if outcome, done, err := w.screenChanged(screen); err != nil || done {
-		return w.result, outcome, err
-	}
-	if terminalEnded {
-		return w.result, terminalOutcome, nil
-	}
-	ctx, cancel := context.WithCancel(s.ctx)
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	defer cancel()
-	items := make(chan screenFeedItem, 16)
-	startScreenFeed(ctx, &wg, workerScreenFeedSource(s.c, t.WorkerID), t.ID, screen.position, items)
-	return awaitScreenText(ctx, quartz.NewReal(), items, screen, w)
-}
-
-// awaitScreenText feeds the output of the terminal to screen until a line
-// matches, the shell ends, the timeout passes, or the watch fails.
-func awaitScreenText(ctx context.Context, clock quartz.Clock, items <-chan screenFeedItem, screen *screenWatch, w *terminalWaiter) (terminalWaitResult, terminalWaitOutcome, error) {
-	deadline, stop := w.deadline(clock)
-	defer stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return w.result, 0, context.Cause(ctx)
-		case <-deadline:
-			return w.result, terminalWaitTimedOut, nil
-		case item := <-items:
-			if item.kind != screenFeedEvent {
-				return w.result, 0, item.err
-			}
-			var outcome terminalWaitOutcome
-			var done bool
-			var err error
-			if data := item.event.GetData(); data != nil {
-				outcome, done, err = w.output(screen, data)
-			} else if geometry := item.event.GetScreenGeometry(); geometry != nil {
-				if err = screen.applyLiveScreenGeometry(geometry); err == nil {
-					outcome, done, err = w.screenChanged(screen)
-				}
-			} else {
-				outcome, done = w.event(item.event)
-			}
-			if err != nil || done {
-				return w.result, outcome, err
-			}
-		}
-	}
-}
-
-// waitForScreenChange waits without polling until the visible screen text of
-// terminal t differs from its initial snapshot, or returns immediately when
-// --after-offset is supplied and the stream offset has already advanced past it.
-func waitForScreenChange(s *session, t tabTarget, info *leapmuxv1.TerminalInfo, spec terminalWaitSpec) (terminalWaitResult, terminalWaitOutcome, error) {
-	w := newTerminalWaiter(t.ID, spec)
-	screen, err := newScreenWatch(info, nil, false)
-	if err != nil {
-		return w.result, 0, err
-	}
-	defer screen.dispose()
-	terminalOutcome, terminalEnded := w.record(info)
-	initialScreen, err := screen.snapshotVisibleText()
-	if err != nil {
-		return w.result, 0, err
-	}
-	w.result.ScreenEndOffset = screen.position.offset
-	w.result.Screen = initialScreen
-	if spec.hasAfterOffset && screen.position.offset > spec.afterOffset {
-		w.result.Reached = true
-		w.result.Changed = true
-		return w.result, terminalWaitHeld, nil
-	}
-	if terminalEnded {
-		return w.result, terminalOutcome, nil
-	}
-	ctx, cancel := context.WithCancel(s.ctx)
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	defer cancel()
-	items := make(chan screenFeedItem, 16)
-	startScreenFeed(ctx, &wg, workerScreenFeedSource(s.c, t.WorkerID), t.ID, screen.position, items)
-	return awaitScreenChange(ctx, quartz.NewReal(), items, screen, w, initialScreen)
-}
-
-// awaitScreenChange consumes live terminal stream items until the visible
-// rendered screen differs from initialScreen, the shell ends, or timeout fires.
-func awaitScreenChange(ctx context.Context, clock quartz.Clock, items <-chan screenFeedItem, screen *screenWatch, w *terminalWaiter, initialScreen string) (terminalWaitResult, terminalWaitOutcome, error) {
-	deadline, stop := w.deadline(clock)
-	defer stop()
-	checkDiff := func() (bool, error) {
-		cur, err := screen.snapshotVisibleText()
-		if err != nil {
+// screenTextCheck returns a check callback that matches lines on watch and
+// records the matching line in w.result.
+func screenTextCheck(watch *screenWatch, w *terminalWaiter) func() (bool, error) {
+	return func() (bool, error) {
+		line, ok, err := watch.check()
+		if err != nil || !ok {
 			return false, err
 		}
-		w.result.ScreenEndOffset = screen.position.offset
+		w.result.Line, w.result.Reached = line, true
+		return true, nil
+	}
+}
+
+// screenChangeCheck returns a check callback that compares the visible screen
+// of em against initialLines and records the updated screen in w.result.
+func screenChangeCheck(em *screenEmulator, w *terminalWaiter, initialLines []string) func() (bool, error) {
+	return func() (bool, error) {
+		w.result.ScreenEndOffset = em.position.offset
+		cur, changed, err := em.diffVisibleScreen(initialLines)
+		if err != nil || !changed {
+			return false, err
+		}
 		w.result.Screen = cur
-		if cur != initialScreen {
+		w.result.Reached = true
+		w.result.Changed = true
+		return true, nil
+	}
+}
+
+// waitForScreen waits until terminal t meets a screen condition: a matching
+// line for --text/--regex, or a visible screen change for --change. info is
+// the record of the terminal when the wait began: its size, the bytes that
+// replay its screen, and the offset where the watch of its output resumes.
+func waitForScreen(s *session, t tabTarget, info *leapmuxv1.TerminalInfo, spec terminalWaitSpec) (terminalWaitResult, terminalWaitOutcome, error) {
+	w := newTerminalWaiter(t.ID, spec)
+	var em *screenEmulator
+	var check func() (bool, error)
+	switch spec.mode {
+	case terminalWaitChange:
+		var err error
+		em, err = newScreenEmulator(info)
+		if err != nil {
+			return w.result, 0, err
+		}
+		defer em.dispose()
+		terminalOutcome, terminalEnded := w.record(info)
+		initialLines, err := em.visibleLines()
+		if err != nil {
+			return w.result, 0, err
+		}
+		w.result.ScreenEndOffset = em.position.offset
+		w.result.Screen = strings.Join(initialLines, "\n")
+		if spec.preOpenBaseline && len(initialLines) > 0 ||
+			!spec.preOpenBaseline && spec.hasAfterOffset && em.position.offset > spec.afterOffset {
 			w.result.Reached = true
 			w.result.Changed = true
-			return true, nil
+			return w.result, terminalWaitHeld, nil
 		}
-		return false, nil
+		if terminalEnded {
+			return w.result, terminalOutcome, nil
+		}
+		check = screenChangeCheck(em, w, initialLines)
+	case terminalWaitText:
+		watch, err := newScreenWatch(info, spec.match, spec.scrollback)
+		if err != nil {
+			return w.result, 0, err
+		}
+		defer watch.dispose()
+		em = &watch.screenEmulator
+		check = screenTextCheck(watch, w)
+		terminalOutcome, terminalEnded := w.record(info)
+		// The screen when the wait begins counts. A shell that already ended
+		// shows nothing new, so the wait for text ends without its condition.
+		if matched, err := check(); err != nil {
+			return w.result, 0, err
+		} else if matched {
+			return w.result, terminalWaitHeld, nil
+		}
+		if terminalEnded {
+			return w.result, terminalOutcome, nil
+		}
+	default:
+		return w.result, 0, cli.Newf(cli.CodeInternal, "unexpected screen wait mode %d for terminal %s", spec.mode, t.ID)
 	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer cancel()
+	items := make(chan screenFeedItem, 16)
+	startScreenFeed(ctx, &wg, workerScreenFeedSource(s.c, t.WorkerID), t.ID, em.position, items)
+	return awaitScreen(ctx, quartz.NewReal(), items, em, w, check)
+}
+
+// awaitScreen feeds the output of the terminal to em until check reports that
+// the condition held, the shell ends, the timeout passes, or the watch fails.
+func awaitScreen(ctx context.Context, clock quartz.Clock, items <-chan screenFeedItem, em *screenEmulator, w *terminalWaiter, check func() (bool, error)) (terminalWaitResult, terminalWaitOutcome, error) {
+	deadline, stop := w.deadline(clock)
+	defer stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -710,29 +788,26 @@ func awaitScreenChange(ctx context.Context, clock quartz.Clock, items <-chan scr
 		case <-deadline:
 			return w.result, terminalWaitTimedOut, nil
 		case item := <-items:
-			if item.kind != screenFeedEvent {
-				return w.result, 0, item.err
+			if item.event == nil {
+				return w.result, 0, screenFeedError(w.result.ID, item)
 			}
-			var changed bool
 			var outcome terminalWaitOutcome
 			var done bool
 			var err error
 			if data := item.event.GetData(); data != nil {
-				err = screen.consumeScreenOutput(data, func() (bool, error) {
-					c, cErr := checkDiff()
-					changed = c
-					return c, cErr
+				err = em.consumeScreenOutput(data, func() (bool, error) {
+					matched, checkErr := check()
+					if matched {
+						outcome, done = terminalWaitHeld, true
+					}
+					return matched, checkErr
 				})
-				if err == nil && !changed {
-					changed, err = checkDiff()
-				}
-				if changed {
-					return w.result, terminalWaitHeld, nil
-				}
 			} else if geometry := item.event.GetScreenGeometry(); geometry != nil {
-				if err = screen.applyLiveScreenGeometry(geometry); err == nil {
-					if changed, err = checkDiff(); changed {
-						return w.result, terminalWaitHeld, nil
+				if err = em.applyLiveScreenGeometry(geometry); err == nil {
+					var matched bool
+					matched, err = check()
+					if matched {
+						outcome, done = terminalWaitHeld, true
 					}
 				}
 			} else {
@@ -748,35 +823,83 @@ func awaitScreenChange(ctx context.Context, clock quartz.Clock, items <-chan scr
 	}
 }
 
+// screenFeedError maps a non-event screenFeedItem to the error that
+// `terminal wait` reports.
+func screenFeedError(terminalID string, item screenFeedItem) error {
+	if item.rejected != nil {
+		return terminalRejection(item.rejected)
+	}
+	if item.overflow {
+		return cli.Newf(cli.CodeUnavailable,
+			"terminal %s produced too much screen output before replay finished", terminalID).
+			WithExitCode(cli.ExitWaitEnded)
+	}
+	return item.err
+}
+
+// terminalRejection is the error that one rejected terminal of an
+// acknowledgement becomes. It is nil for a rejection that the subscription
+// retries by itself.
+//
+// A terminal that the Worker no longer holds closed during the wait, so the
+// wait ended without its condition: the error exits 6, as `agent send --wait`
+// does for an agent that closed.
+func terminalRejection(rejection *leapmuxv1.WatchRejection) error {
+	id := rejection.GetEntityId()
+	disp, err := classifyWatchRejection("terminal", id, rejection.GetReason())
+	switch disp {
+	case watchRejectionRetry:
+		return nil
+	case watchRejectionNotFound:
+		return cli.Newf(cli.CodeNotFound, "terminal %s closed during the wait", id).
+			WithExitCode(cli.ExitWaitEnded)
+	default:
+		return err
+	}
+}
+
 // terminalWaitEnded reports a wait whose condition did not hold: it prints
 // the result, says why on stderr, and returns exit status 6. The result
 // prints in each case, so a script reads the status of the terminal either
 // way.
 func terminalWaitEnded(p *cli.Printer, result terminalWaitResult, outcome terminalWaitOutcome, spec terminalWaitSpec) error {
+	if outcome == terminalWaitTimedOut && spec.requestID != "" {
+		result.Receipt = &cli.RetryReceipt{
+			RequestID:    spec.requestID,
+			Disposition:  dispositionInProgress,
+			RetryCommand: spec.retryCommand,
+		}
+	}
 	if err := p.Result(result); err != nil {
 		return err
 	}
 	switch outcome {
 	case terminalWaitTimedOut:
-		if spec.exit {
-			p.Notice("the wait ended after %s, before the shell of terminal %s ended", spec.timeout, result.ID)
+		if spec.mode == terminalWaitExit {
+			_ = p.Notice("the wait ended after %s, before the shell of terminal %s ended", spec.timeout, result.ID)
 		} else {
-			p.Notice("the wait ended after %s, before terminal %s showed %s", spec.timeout, result.ID, spec.condition)
+			_ = p.Notice("the wait ended after %s, before terminal %s showed %s", spec.timeout, result.ID, spec.condition)
 		}
 	case terminalWaitShellEnded:
 		if result.ExitCode != nil {
-			p.Notice("the shell of terminal %s exited with code %d before the terminal showed %s", result.ID, *result.ExitCode, spec.condition)
+			_ = p.Notice("the shell of terminal %s exited with code %d before the terminal showed %s", result.ID, *result.ExitCode, spec.condition)
 		} else {
-			p.Notice("the shell of terminal %s ended before the terminal showed %s", result.ID, spec.condition)
+			_ = p.Notice("the shell of terminal %s ended before the terminal showed %s", result.ID, spec.condition)
 		}
 	case terminalWaitStartupFailed:
 		if result.StartupError != "" {
-			p.Notice("the shell of terminal %s failed to start: %s", result.ID, result.StartupError)
+			_ = p.Notice("the shell of terminal %s failed to start: %s", result.ID, result.StartupError)
 		} else {
-			p.Notice("the shell of terminal %s failed to start", result.ID)
+			_ = p.Notice("the shell of terminal %s failed to start", result.ID)
 		}
 	case terminalWaitHeld:
 		// A wait whose condition held does not end here.
+	}
+	if result.Receipt != nil {
+		_ = p.Notice("disposition: %s (request_id: %s)", result.Receipt.Disposition, result.Receipt.RequestID)
+		if result.Receipt.RetryCommand != "" {
+			_ = p.Notice("safe retry: %s", result.Receipt.RetryCommand)
+		}
 	}
 	return &cli.ExitStatus{Code: cli.ExitWaitEnded}
 }

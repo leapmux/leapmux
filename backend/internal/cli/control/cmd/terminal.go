@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // The `terminal` group mirrors the `agent` group: a target resolves to the
@@ -66,8 +69,8 @@ func newTerminalCommand() *cobra.Command {
 					cli.SetFlagGroup(fs, name, "Terminal")
 				}
 				fs.Bool("wait", false, "wait after opening until --exit, --text, --regex, or --change holds")
-				addTerminalWaitConditionFlags(fs)
-				for _, name := range []string{"wait", "exit", "text", "regex", "change", "after-offset", "scrollback", "timeout"} {
+				addTerminalWaitConditionFlags(fs, false)
+				for _, name := range []string{"wait", "exit", "text", "regex", "change", "scrollback", "timeout"} {
 					cli.SetFlagGroup(fs, name, "Wait")
 				}
 				addWorkingDirFlag(fs, "working directory of the terminal")
@@ -116,7 +119,7 @@ func newTerminalCommand() *cobra.Command {
 					cli.SetFlagGroup(fs, name, "Command")
 				}
 				fs.Bool("wait", false, "wait after running until --exit, --text, --regex, or --change holds")
-				addTerminalWaitConditionFlags(fs)
+				addTerminalWaitConditionFlags(fs, true)
 				for _, name := range []string{"wait", "exit", "text", "regex", "change", "after-offset", "scrollback", "timeout"} {
 					cli.SetFlagGroup(fs, name, "Wait")
 				}
@@ -138,10 +141,7 @@ func newTerminalCommand() *cobra.Command {
 				{Comment: "Follow live terminal output until Ctrl-C or shell exit.", Command: "leapmux terminal read 4cbb3f34 --follow"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				fs.Int("lines", 0, "print only the last N lines")
-				fs.Bool("scrollback", false, "also print the lines above the screen")
-				fs.Bool("raw", false, "print the retained bytes as they are, with their escape sequences")
-				fs.BoolP("follow", "f", false, "stream live output until Ctrl-C or shell exit")
+				addTerminalReadFlags(fs)
 				addTargetWorkspaceFlag(fs)
 			},
 			Complete: completeTargets,
@@ -344,23 +344,36 @@ func exitCodeOf(t *leapmuxv1.TerminalInfo) *int32 {
 	return &code
 }
 
-// terminalInfo reads the Worker's record of the terminal t. It reuses
-// ListTerminals with a single tab id rather than a GetTerminal RPC, since
-// the Worker already filters by id.
+// terminalInfoOn reads the Worker's record of terminalID over an open channel.
+// It reuses ListTerminals with a single tab id rather than a GetTerminal RPC,
+// since the Worker already filters by id.
+func terminalInfoOn(ctx context.Context, w workerCall, terminalID string) (*leapmuxv1.TerminalInfo, error) {
+	var resp leapmuxv1.ListTerminalsResponse
+	if err := w.Call(ctx, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, &resp); err != nil {
+		return nil, err
+	}
+	for _, info := range resp.GetTerminals() {
+		if info.GetTerminalId() == terminalID {
+			return info, nil
+		}
+	}
+	return nil, cli.Newf(cli.CodeNotFound, "the worker has no terminal %s", terminalID)
+}
+
+// terminalInfo reads the Worker's record of the terminal t.
 func (s *session) terminalInfo(t tabTarget) (*leapmuxv1.TerminalInfo, error) {
 	if err := maybePreflightWorker(s.ctx, s.c, t.WorkerID); err != nil {
 		return nil, err
 	}
-	var resp leapmuxv1.ListTerminalsResponse
-	if err := callInnerRPC(s.ctx, s.c, t.WorkerID, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{t.ID}}, &resp); err != nil {
+	var info *leapmuxv1.TerminalInfo
+	if err := withWorkerChannel(s.ctx, s.c, t.WorkerID, func(w workerCall) error {
+		var err error
+		info, err = terminalInfoOn(s.ctx, w, t.ID)
+		return err
+	}); err != nil {
 		return nil, err
 	}
-	for _, info := range resp.GetTerminals() {
-		if info.GetTerminalId() == t.ID {
-			return info, nil
-		}
-	}
-	return nil, cli.Newf(cli.CodeNotFound, "the worker has no terminal %s", t.ID)
+	return info, nil
 }
 
 func runTerminalGet(inv *cli.Invocation) (any, error) {
@@ -418,6 +431,9 @@ func runTerminalResize(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
+		return nil, err
+	}
 	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, &leapmuxv1.ResizeTerminalRequest{TerminalId: got.ID, Cols: cols, Rows: rows}, nil); err != nil {
 		return nil, err
 	}
@@ -440,23 +456,31 @@ func runTerminalRestart(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	replace := boolFlag(inv, "replace")
-	if replace && got.ID == callingTabID() && !boolFlag(inv, allowSelfFlag) {
+	isSelfTerminal := got.Self || got.ID == s.listing().SelfTabID(resolve.KindTerminal) ||
+		(strings.TrimSpace(os.Getenv(controlenv.TerminalIDVariable)) == "" && got.ID == callingTabID())
+	if replace && isSelfTerminal && !boolFlag(inv, allowSelfFlag) {
 		return nil, errSelfTargetRefused("refusing to replace the shell of the calling tab " + got.ID)
 	}
-	info, err := s.terminalInfo(got)
-	if err != nil {
+	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
 		return nil, err
 	}
-	req := &leapmuxv1.RestartTerminalRequest{
-		TerminalId: got.ID, Cols: info.GetCols(), Rows: info.GetRows(), InitialCommand: command,
-	}
-	if replace {
-		req.ReplaceShellInstanceId = info.GetShellInstanceId()
-		if req.GetReplaceShellInstanceId() == "" {
-			return nil, cli.Newf(cli.CodeConflict, "terminal %s has no running shell to replace", got.ID)
+	var req *leapmuxv1.RestartTerminalRequest
+	if err := withWorkerChannel(s.ctx, s.c, got.WorkerID, func(w workerCall) error {
+		info, err := terminalInfoOn(s.ctx, w, got.ID)
+		if err != nil {
+			return err
 		}
-	}
-	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, req, nil); err != nil {
+		req = &leapmuxv1.RestartTerminalRequest{
+			TerminalId: got.ID, Cols: info.GetCols(), Rows: info.GetRows(), InitialCommand: command,
+		}
+		if replace {
+			req.ReplaceShellInstanceId = info.GetShellInstanceId()
+			if req.GetReplaceShellInstanceId() == "" {
+				return cli.Newf(cli.CodeConflict, "terminal %s has no running shell to replace", got.ID)
+			}
+		}
+		return w.Call(s.ctx, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, req, nil)
+	}); err != nil {
 		return nil, err
 	}
 	return terminalSizeResult{ID: got.ID, Cols: req.GetCols(), Rows: req.GetRows()}, nil
@@ -489,7 +513,11 @@ func runTerminalShells(inv *cli.Invocation) (any, error) {
 	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, &leapmuxv1.ListAvailableShellsRequest{}, &resp); err != nil {
 		return nil, err
 	}
-	return shellList{Shells: resp.GetShells(), DefaultShell: resp.GetDefaultShell()}, nil
+	shells := resp.GetShells()
+	if shells == nil {
+		shells = []string{}
+	}
+	return shellList{Shells: shells, DefaultShell: resp.GetDefaultShell()}, nil
 }
 
 // newQuakeLeaf builds one verb of `terminal quake`, which shows, hides or
@@ -520,9 +548,9 @@ func newQuakeLeaf(verb, short string, action leapmuxv1.QuakePanelAction) *cobra.
 			addWorkerFlag(fs)
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
-			dir := workingDir(inv)
-			if dir == "" {
-				return nil, missingDirError("--dir")
+			dir, err := dirOf(inv)
+			if err != nil {
+				return nil, err
 			}
 			s, err := openSession(inv)
 			if err != nil {

@@ -289,6 +289,40 @@ func (c *pgConn) withTransaction(ctx context.Context, fn func(tx *pgConn) error)
 	})
 }
 
+// withReadSnapshotTransaction runs fn inside a read-only REPEATABLE READ
+// transaction so multiple SELECTs observe one consistent MVCC snapshot even
+// under PostgreSQL's default READ COMMITTED isolation. An already-open
+// transaction runs fn on the current connection.
+func (c *pgConn) withReadSnapshotTransaction(ctx context.Context, fn func(tx *pgConn) error) error {
+	if c.inTx() {
+		return fn(c)
+	}
+	return store.RetryOnConflict(ctx, isRetryableConflict, func() error {
+		pgxTx, err := c.shared.pool.BeginTx(ctx, pgx.TxOptions{
+			IsoLevel:   pgx.RepeatableRead,
+			AccessMode: pgx.ReadOnly,
+		})
+		if err != nil {
+			return fmt.Errorf("begin read snapshot transaction: %w", err)
+		}
+		defer func() { _ = pgxTx.Rollback(ctx) }()
+
+		txConn := &pgConn{
+			shared: c.shared,
+			ks:     c.ks,
+			exec:   pgxTx,
+			q:      c.q.WithTx(pgxTx),
+		}
+		if err := fn(txConn); err != nil {
+			return err
+		}
+		if err := pgxTx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit read snapshot transaction: %w", err)
+		}
+		return nil
+	})
+}
+
 // runTransaction is one attempt: begin, run, commit, and roll back whatever
 // the attempt left behind.
 func (c *pgConn) runTransaction(ctx context.Context, adminMembershipLocked bool, fn func(tx *pgConn) error) error {

@@ -1,268 +1,478 @@
 package cmd
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
+	"github.com/coder/quartz"
+
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
-const layoutReplayWait = 10 * time.Second
-
-type layoutEventReplay struct {
-	opts       eventsOptions
-	printer    *cli.Printer
-	workspace  string
-	kinds      []string
-	state      *eventCheckpoint
-	save       func(*eventCheckpoint) error
-	ready      bool
-	replayHigh int64
-	printed    int
+// validateLayoutPageHeader validates the header fields of page against saved
+// (when non-nil) or requires a fresh tail start when saved is nil.
+func validateLayoutPageHeader(page *leapmuxv1.ReadLayoutEventsResponse, saved *eventHistoryPosition) (*eventHistoryPosition, error) {
+	pos := &eventHistoryPosition{
+		JournalID: page.GetJournalId(),
+		Sequence:  page.GetAfterSequence(),
+		Cursor:    page.GetCursor(),
+	}
+	high, scanned := page.GetHighWaterSequence(), page.GetScannedSequence()
+	if !pos.valid() || pos.Sequence > scanned || scanned > high || len(page.GetScannedCursor()) == 0 {
+		return nil, inconsistentLayoutPage()
+	}
+	if saved != nil {
+		if !sameHistoryPosition(saved, pos) {
+			return nil, inconsistentLayoutPage()
+		}
+	} else if pos.Sequence != high {
+		return nil, inconsistentLayoutPage()
+	}
+	return pos, nil
 }
 
-func (s *session) runLayoutCheckpointedEvents(opts eventsOptions) error {
-	checkpoint, err := openEventCheckpoint(opts.checkpoint)
+// layoutPageConsumer decodes, prints, and checkpoints ReadLayoutEventsResponse
+// pages. Both layoutEventReplay and accountReplay compose it so Hub replay does
+// not inherit single-source snapshot exit or mutate shared limit state.
+type layoutPageConsumer struct {
+	workspace  string
+	filter     kindFilter
+	printer    *eventPrinter
+	clock      quartz.Clock
+	position   *eventHistoryPosition
+	replayHigh int64
+	dirty      bool
+	persist    func(*eventHistoryPosition) error
+}
+
+func (c *layoutPageConsumer) nowClock() quartz.Clock {
+	if c.clock == nil {
+		c.clock = quartz.NewReal()
+	}
+	return c.clock
+}
+
+func (c *layoutPageConsumer) notice(kind string) streamEvent {
+	return streamEvent{Kind: kind, Time: c.nowClock().Now().UTC(), Source: "hub", WorkspaceID: c.workspace}
+}
+
+func (c *layoutPageConsumer) caughtUp() bool {
+	return c.position != nil && c.position.Sequence >= c.replayHigh
+}
+
+func (c *layoutPageConsumer) advanceInMemory(sequence int64, cursor []byte) {
+	next := *c.position
+	next.Sequence, next.Cursor = sequence, cursor
+	c.position = &next
+	c.dirty = true
+}
+
+func (c *layoutPageConsumer) saveNow(sequence int64, cursor []byte) error {
+	next := *c.position
+	next.Sequence, next.Cursor = sequence, cursor
+	if err := c.persist(&next); err != nil {
+		return err
+	}
+	c.position = &next
+	c.dirty = false
+	return nil
+}
+
+func (c *layoutPageConsumer) flush() error {
+	if !c.dirty || c.position == nil {
+		return nil
+	}
+	if err := c.persist(c.position); err != nil {
+		return err
+	}
+	c.dirty = false
+	return nil
+}
+
+// consumePage validates and consumes one Hub layout page after ready admission.
+// It returns endReached when a workspace stream ends cleanly, limitReached when
+// --limit has been satisfied, or an error on protocol/output/save failure.
+func (c *layoutPageConsumer) consumePage(page *leapmuxv1.ReadLayoutEventsResponse) (endReached, limitReached bool, err error) {
+	if _, err := validateLayoutPageHeader(page, c.position); err != nil {
+		return false, false, err
+	}
+	after, high, scanned := page.GetAfterSequence(), page.GetHighWaterSequence(), page.GetScannedSequence()
+	if end := page.GetEnd(); end != nil {
+		if c.workspace == "" || end.GetFinalSequence() != after || high != after || scanned != after ||
+			len(page.GetRecords()) != 0 || page.GetGap() != nil {
+			return false, false, inconsistentLayoutPage()
+		}
+		return true, false, c.flush()
+	}
+	if gap := page.GetGap(); gap != nil {
+		resume := gap.GetResumeAfterSequence()
+		if len(page.GetRecords()) != 0 || scanned != after || resume <= after || resume > high || len(gap.GetCursor()) == 0 {
+			return false, false, inconsistentLayoutPage()
+		}
+		event := c.notice(kindStreamGap)
+		event.JournalID, event.Sequence, event.AfterSequence = c.position.JournalID, &resume, &after
+		event.GapReason, event.Lost = "retention", layoutCheckpointKinds(c.filter)
+		event.Summary = fmt.Sprintf("Hub layout events expired after sequence %d", after)
+		if _, err := c.printer.printCheckpointed(event); err != nil {
+			return false, false, err
+		}
+		if err := c.saveNow(resume, gap.GetCursor()); err != nil {
+			return false, false, err
+		}
+		return false, false, nil
+	}
+	for _, record := range page.GetRecords() {
+		sequence := record.GetSequence()
+		event, ok := retainedLayoutEvent(record.GetFact(), c.filter)
+		if !ok || sequence <= after || sequence > scanned || len(record.GetCursor()) == 0 {
+			return false, false, inconsistentLayoutPage()
+		}
+		event.Time = time.UnixMilli(record.GetObservedUnixMillis()).UTC()
+		event.JournalID, event.Sequence, event.Replayed = c.position.JournalID, &sequence, new(sequence <= c.replayHigh)
+		if event.Kind == kindStreamGap {
+			event.WorkspaceID, event.AfterSequence = c.workspace, &after
+		}
+		if c.filter.selects(event.Kind) || event.Kind == kindStreamGap {
+			selected, err := c.printer.printCheckpointed(event)
+			if err != nil {
+				return false, false, err
+			}
+			if err := c.saveNow(sequence, record.GetCursor()); err != nil {
+				return false, false, err
+			}
+			if selected && event.Kind != kindStreamGap {
+				if c.printer.recordCounted() {
+					return false, true, nil
+				}
+			}
+		} else {
+			c.advanceInMemory(sequence, record.GetCursor())
+		}
+		after = sequence
+	}
+	if scanned > after {
+		c.advanceInMemory(scanned, page.GetScannedCursor())
+	}
+	if err := c.flush(); err != nil {
+		return false, false, err
+	}
+	return false, false, nil
+}
+
+type layoutEventReplay struct {
+	opts      eventsOptions
+	printer   *eventPrinter
+	clock     quartz.Clock
+	workspace string
+	kinds     []string
+	state     *eventCheckpoint
+	save      func(*eventCheckpoint) error
+	ready     bool
+	consumer  *layoutPageConsumer
+}
+
+func (s *session) runLayoutCheckpointedEvents(ctx context.Context, clock quartz.Clock, opts eventsOptions) error {
+	checkpoint, state, err := openCheckedEventCheckpoint(opts.checkpoint, layoutCheckpointScope)
 	if err != nil {
 		return err
 	}
 	defer checkpoint.close()
-	state, err := checkpoint.read()
+	workspaceID, err := s.resolveLayoutCheckpointWorkspace(ctx, opts.workspace, state)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
-	if state != nil && state.Scope != layoutCheckpointScope {
-		return cli.Newf(cli.CodeConflict, "the event checkpoint belongs to an exact tab")
-	}
-	workspaceID, err := s.resolveLayoutCheckpointWorkspace(opts.workspace, state)
+	kinds, err := validateLayoutCheckpointFilter(opts.filter)
 	if err != nil {
 		return err
-	}
-	kinds := make([]string, 0)
-	streamSelected := false
-	for _, kind := range eventKinds {
-		if !opts.filter.selects(kind.name) {
-			continue
-		}
-		if kind.source == sourceHub {
-			kinds = append(kinds, kind.name)
-		}
-		if kind.source == sourceWorker && opts.filter.selected != nil {
-			return cli.Usagef("layout checkpoints only support Hub and stream event kinds").
-				WithHint("use an account checkpoint or pass --tab for Worker events")
-		}
-		if kind.source == sourceStream && kind.name != kindStreamRetired {
-			streamSelected = true
-		}
-	}
-	if len(kinds) == 0 && !streamSelected {
-		return cli.Usagef("the selected event kinds are unavailable in a Hub layout checkpoint")
 	}
 	if state != nil {
-		if state.WorkspaceID != workspaceID {
+		if state.Layout.WorkspaceID != workspaceID {
 			return cli.Newf(cli.CodeConflict, "the event checkpoint belongs to a different layout scope")
 		}
-		if !slices.Equal(kinds, state.Filter) {
-			return cli.Newf(cli.CodeConflict, "the event checkpoint uses a different --kind selection").
-				WithHint("use the saved kind selection or another checkpoint file")
+		if err := verifyCheckpointFilter(state, kinds); err != nil {
+			return err
 		}
 	}
 	replay := layoutEventReplay{
-		opts: opts, printer: s.inv.Printer, workspace: workspaceID, kinds: kinds, state: state, save: checkpoint.save,
+		opts:      opts,
+		printer:   newEventPrinter(s.inv.Printer, opts.filter, opts.limit),
+		clock:     clock,
+		workspace: workspaceID,
+		kinds:     kinds,
+		state:     state,
+		save:      checkpoint.save,
 	}
-	return replay.run(s)
+	return replay.run(ctx, s)
 }
 
-func (s *session) resolveLayoutCheckpointWorkspace(selector string, saved *eventCheckpoint) (string, error) {
+func (s *session) resolveLayoutCheckpointWorkspace(ctx context.Context, selector string, saved *eventCheckpoint) (string, error) {
 	if selector == "" {
 		return "", nil
 	}
-	if saved != nil && saved.WorkspaceID != "" && resolve.ExplicitID(resolve.KindWorkspace, selector) == saved.WorkspaceID {
-		return saved.WorkspaceID, nil
+	if saved != nil && saved.Layout != nil && saved.Layout.WorkspaceID != "" &&
+		resolve.ExplicitID(resolve.KindWorkspace, selector) == saved.Layout.WorkspaceID {
+		return saved.Layout.WorkspaceID, nil
 	}
-	bounded := s.bounded()
-	defer bounded.Close()
-	target, err := bounded.resolveOne(resolve.KindWorkspace, selector)
+	callCtx, callCancel := rpcDeadline(ctx)
+	callSession := &session{inv: s.inv, c: s.c, ctx: callCtx, cancel: callCancel, located: s.located}
+	defer callSession.Close()
+	target, err := callSession.resolveOne(resolve.KindWorkspace, selector)
 	return target.ID, err
 }
 
-func (r *layoutEventReplay) run(s *session) error {
-	backoff := newReconnectBackoff(activityReconnectInitial, activityReconnectMax)
-	nextHeartbeat := time.Now().Add(r.opts.heartbeat)
-	for s.ctx.Err() == nil {
-		request := &leapmuxv1.ReadLayoutEventsRequest{WorkspaceId: r.workspace}
-		if r.state != nil {
-			request.AfterCursor = r.state.Cursor
-		}
-		if r.ready {
-			wait := layoutReplayWait
-			if r.opts.heartbeat > 0 {
-				wait = min(wait, max(time.Until(nextHeartbeat), 0))
-			}
-			request.WaitMillis = uint32(wait.Milliseconds())
-		}
-		ctx, cancel := rpcDeadline(s.ctx)
-		page := new(leapmuxv1.ReadLayoutEventsResponse)
-		err := hubCallUnary(ctx, s.c, leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure, request, page)
-		cancel()
-		if s.ctx.Err() != nil {
-			return nil
-		}
-		if err != nil {
-			failure := cli.FromError(err)
-			if r.opts.noReconnect || !failure.Retryable() {
-				return failure
-			}
-			event := r.notice(kindStreamUnavailable)
-			event.Code, event.Message, event.Summary, event.Retrying = string(failure.Code), failure.Message, failure.Message, boolPtr(true)
-			if err := r.print(event); err != nil {
-				return err
-			}
-			timer := time.NewTimer(backoff.afterSession(false))
-			select {
-			case <-timer.C:
-			case <-s.ctx.Done():
-				timer.Stop()
+func (r *layoutEventReplay) nowClock() quartz.Clock {
+	if r.clock == nil {
+		r.clock = quartz.NewReal()
+	}
+	return r.clock
+}
+
+func (r *layoutEventReplay) flush() error {
+	if r.consumer == nil {
+		return nil
+	}
+	return r.consumer.flush()
+}
+
+func (r *layoutEventReplay) readInitialPage(ctx context.Context, s *session) (*leapmuxv1.ReadLayoutEventsResponse, error) {
+	request := &leapmuxv1.ReadLayoutEventsRequest{WorkspaceId: r.workspace}
+	if r.state != nil {
+		request.AfterCursor = r.state.Layout.Position.Cursor
+	}
+	callCtx, cancel := rpcDeadline(ctx)
+	defer cancel()
+	page := new(leapmuxv1.ReadLayoutEventsResponse)
+	err := hubCallUnary(callCtx, s.c, leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure, request, page)
+	return page, err
+}
+
+type layoutStreamFrame struct {
+	page *leapmuxv1.ReadLayoutEventsResponse
+	err  error
+}
+
+func (r *layoutEventReplay) streamPages(ctx context.Context, s *session, heartbeat <-chan time.Time) (finished, retry, delivered bool, err error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	frames := make(chan layoutStreamFrame, 32)
+	done := make(chan struct{})
+	sessionFn := hubUserEventsWithOptions(s.c, channelwire.UserEventsOptions{
+		Topics:            []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL},
+		LayoutWorkspaceID: r.workspace,
+		LayoutAfterCursor: r.state.Layout.Position.Cursor,
+	})
+	go func() {
+		defer close(done)
+		streamErr := sessionFn(streamCtx, func(evt *leapmuxv1.WatchUserEvent) error {
+			page := evt.GetLayoutEvents()
+			if page == nil {
 				return nil
 			}
-			continue
+			select {
+			case frames <- layoutStreamFrame{page: page}:
+				return nil
+			case <-streamCtx.Done():
+				return streamCtx.Err()
+			}
+		})
+		select {
+		case frames <- layoutStreamFrame{err: streamErr}:
+		case <-streamCtx.Done():
 		}
-		backoff = newReconnectBackoff(activityReconnectInitial, activityReconnectMax)
-		finished, err := r.acceptPage(page)
-		if err != nil || finished {
-			return err
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return true, false, delivered, r.flush()
+		case <-heartbeat:
+			if r.ready {
+				if err := r.emitHeartbeat(); err != nil {
+					return false, false, delivered, err
+				}
+			}
+		case frame := <-frames:
+			if frame.page == nil {
+				if frame.err == nil {
+					return false, true, delivered, errHubStreamEnded
+				}
+				return false, true, delivered, frame.err
+			}
+			delivered = true
+			donePage, err := r.acceptPage(frame.page)
+			if err != nil {
+				return false, false, delivered, err
+			}
+			if donePage {
+				return true, false, delivered, r.flush()
+			}
 		}
-		if r.opts.heartbeat > 0 && !time.Now().Before(nextHeartbeat) {
-			event := r.notice(kindStreamHeartbeat)
-			event.Summary = "watching Hub layout history"
-			if err := r.print(event); err != nil {
+	}
+}
+
+func (r *layoutEventReplay) run(ctx context.Context, s *session) error {
+	defer func() { _ = r.flush() }()
+	clock := r.nowClock()
+	backoff := newReconnectBackoff(activityReconnectInitial, activityReconnectMax)
+	var heartbeat <-chan time.Time
+	if r.opts.heartbeat > 0 {
+		ticker := clock.NewTicker(r.opts.heartbeat, "events-layout-heartbeat")
+		defer ticker.Stop("events-layout-heartbeat")
+		heartbeat = ticker.C
+	}
+	for ctx.Err() == nil {
+		if !r.ready {
+			page, err := r.readInitialPage(ctx, s)
+			if ctx.Err() != nil {
+				return r.flush()
+			}
+			if err != nil {
+				if err := r.handleRetryableError(ctx, clock, &backoff, false, err); err != nil {
+					return err
+				}
+				continue
+			}
+			backoff = newReconnectBackoff(activityReconnectInitial, activityReconnectMax)
+			finished, err := r.acceptPage(page)
+			if err != nil {
 				return err
 			}
-			nextHeartbeat = time.Now().Add(r.opts.heartbeat)
+			if finished {
+				return r.flush()
+			}
 		}
+		finished, retry, delivered, err := r.streamPages(ctx, s, heartbeat)
+		if ctx.Err() != nil {
+			return r.flush()
+		}
+		if finished {
+			return err
+		}
+		if !retry {
+			return err
+		}
+		if flushErr := r.flush(); flushErr != nil {
+			return flushErr
+		}
+		if err := r.handleRetryableError(ctx, clock, &backoff, delivered, err); err != nil {
+			return err
+		}
+	}
+	return r.flush()
+}
+
+func (r *layoutEventReplay) handleRetryableError(ctx context.Context, clock quartz.Clock, backoff *reconnectBackoff, delivered bool, err error) error {
+	failure := cli.FromError(err)
+	if r.opts.noReconnect || !failure.Retryable() {
+		return failure
+	}
+	event := unavailableEvent(r.notice(kindStreamUnavailable), failure, true)
+	if _, err := r.printer.printCheckpointed(event); err != nil {
+		return err
+	}
+	if !waitReplayRetry(ctx, clock, backoff.afterSession(delivered)) {
+		return nil
 	}
 	return nil
 }
 
+func (r *layoutEventReplay) emitHeartbeat() error {
+	event := r.notice(kindStreamHeartbeat)
+	event.Summary = "watching Hub layout history"
+	_, err := r.printer.printCheckpointed(event)
+	return err
+}
+
 func (r *layoutEventReplay) acceptPage(page *leapmuxv1.ReadLayoutEventsResponse) (bool, error) {
-	after, high, scanned := page.GetAfterSequence(), page.GetHighWaterSequence(), page.GetScannedSequence()
-	if page.GetJournalId() == "" || after < 0 || after > scanned || scanned > high ||
-		len(page.GetCursor()) == 0 || len(page.GetScannedCursor()) == 0 {
-		return false, inconsistentLayoutPage()
-	}
-	if r.state != nil {
-		if r.state.JournalID != page.GetJournalId() || r.state.Sequence != after || !bytes.Equal(r.state.Cursor, page.GetCursor()) {
-			return false, inconsistentLayoutPage()
-		}
-	} else if after != high {
-		return false, inconsistentLayoutPage()
-	}
 	if !r.ready {
-		event := r.notice(kindStreamReady)
-		event.JournalID, event.Sequence = page.GetJournalId(), &after
-		event.Summary = "watching Hub layout history"
-		if err := r.print(event); err != nil {
+		var saved *eventHistoryPosition
+		if r.state != nil {
+			saved = r.state.Layout.Position
+		}
+		pos, err := validateLayoutPageHeader(page, saved)
+		if err != nil {
 			return false, err
 		}
-		r.ready, r.replayHigh = true, high
+		after, high := pos.Sequence, page.GetHighWaterSequence()
+		event := r.notice(kindStreamReady)
+		event.JournalID, event.Sequence = pos.JournalID, &after
+		event.Summary = "watching Hub layout history"
+		if _, err := r.printer.printCheckpointed(event); err != nil {
+			return false, err
+		}
 		if r.state == nil {
 			initial := &eventCheckpoint{
-				Version: eventCheckpointVersion, Scope: layoutCheckpointScope, WorkspaceID: r.workspace,
-				JournalID: page.GetJournalId(), Filter: r.kinds, Sequence: after, Cursor: page.GetCursor(),
+				Version: eventCheckpointVersion,
+				Scope:   layoutCheckpointScope,
+				Filter:  r.kinds,
+				Layout: &layoutEventCheckpoint{
+					WorkspaceID: r.workspace,
+					Position: &eventHistoryPosition{
+						JournalID: pos.JournalID,
+						Sequence:  after,
+						Cursor:    pos.Cursor,
+					},
+				},
 			}
 			if err := r.save(initial); err != nil {
 				return false, err
 			}
 			r.state = initial
 		}
-		if r.opts.snapshot && after >= high {
+		r.ready = true
+		r.consumer = &layoutPageConsumer{
+			workspace:  r.workspace,
+			filter:     r.opts.filter,
+			printer:    r.printer,
+			clock:      r.nowClock(),
+			position:   pos,
+			replayHigh: high,
+			persist: func(nextPos *eventHistoryPosition) error {
+				layoutCopy := *r.state.Layout
+				layoutCopy.Position = &eventHistoryPosition{
+					JournalID: nextPos.JournalID,
+					Sequence:  nextPos.Sequence,
+					Cursor:    nextPos.Cursor,
+				}
+				next := *r.state
+				next.Layout = &layoutCopy
+				if err := r.save(&next); err != nil {
+					return err
+				}
+				r.state = &next
+				return nil
+			},
+		}
+		if r.opts.snapshot && r.consumer.caughtUp() {
 			return true, nil
 		}
 	}
-	if end := page.GetEnd(); end != nil {
-		if r.workspace == "" || end.GetFinalSequence() != after || high != after || scanned != after ||
-			len(page.GetRecords()) != 0 || page.GetGap() != nil {
-			return false, inconsistentLayoutPage()
-		}
+	endReached, limitReached, err := r.consumer.consumePage(page)
+	if err != nil {
+		return false, err
+	}
+	if endReached || limitReached {
 		return true, nil
 	}
-	if gap := page.GetGap(); gap != nil {
-		resume := gap.GetResumeAfterSequence()
-		if len(page.GetRecords()) != 0 || scanned != after || resume <= after || resume > high || len(gap.GetCursor()) == 0 {
-			return false, inconsistentLayoutPage()
-		}
-		event := r.notice(kindStreamGap)
-		event.JournalID, event.Sequence, event.AfterSequence = r.state.JournalID, &resume, &after
-		event.GapReason, event.Lost = "retention", lostKinds(sourceHub, true)
-		event.Summary = fmt.Sprintf("Hub layout events expired after sequence %d", after)
-		if err := r.print(event); err != nil {
-			return false, err
-		}
-		return false, r.savePosition(resume, gap.GetCursor())
-	}
-	for _, record := range page.GetRecords() {
-		sequence := record.GetSequence()
-		event, ok := retainedLayoutEvent(record.GetFact())
-		if !ok || sequence <= after || sequence > scanned || len(record.GetCursor()) == 0 {
-			return false, inconsistentLayoutPage()
-		}
-		event.Time = time.UnixMilli(record.GetObservedUnixMillis()).UTC()
-		event.JournalID, event.Sequence, event.Replayed = r.state.JournalID, &sequence, boolPtr(sequence <= r.replayHigh)
-		event.Source = "hub"
-		selected := r.opts.filter.selects(event.Kind)
-		if event.Kind == kindStreamGap {
-			event.WorkspaceID, event.AfterSequence = r.workspace, &after
-		}
-		if selected || event.Kind == kindStreamGap {
-			if err := r.print(event); err != nil {
-				return false, err
-			}
-		}
-		if err := r.savePosition(sequence, record.GetCursor()); err != nil {
-			return false, err
-		}
-		if selected && event.Kind != kindStreamGap {
-			r.printed++
-		}
-		if r.opts.limit > 0 && r.printed >= r.opts.limit {
-			return true, nil
-		}
-		after = sequence
-	}
-	if scanned > after {
-		if err := r.savePosition(scanned, page.GetScannedCursor()); err != nil {
-			return false, err
-		}
-		after = scanned
-	}
-	if r.opts.snapshot && after >= r.replayHigh {
+	if r.opts.snapshot && r.consumer.caughtUp() {
 		return true, nil
 	}
 	return false, nil
 }
 
-func (r *layoutEventReplay) savePosition(sequence int64, cursor []byte) error {
-	next := *r.state
-	next.Sequence, next.Cursor = sequence, cursor
-	if err := r.save(&next); err != nil {
-		return err
-	}
-	r.state = &next
-	return nil
-}
-
-func (r *layoutEventReplay) print(event streamEvent) error {
-	return printCheckpointEvent(r.printer, r.opts.filter, event)
-}
-
 func (r *layoutEventReplay) notice(kind string) streamEvent {
-	return streamEvent{Kind: kind, Time: time.Now().UTC(), Source: "hub", WorkspaceID: r.workspace}
+	return streamEvent{Kind: kind, Time: r.nowClock().Now().UTC(), Source: "hub", WorkspaceID: r.workspace}
 }
 
 var errInvalidLayoutHistory = errors.New("the Hub sent an inconsistent layout event position")
@@ -271,11 +481,14 @@ func inconsistentLayoutPage() error {
 	return cli.Wrap(cli.CodeInternal, errInvalidLayoutHistory, "")
 }
 
-func retainedLayoutEvent(fact *leapmuxv1.LayoutEventFact) (streamEvent, bool) {
+func retainedLayoutEvent(fact *leapmuxv1.LayoutEventFact, filter kindFilter) (streamEvent, bool) {
 	if fact.GetLoss() != nil {
 		return streamEvent{
-			Kind: kindStreamGap, GapReason: "unreadable_lifecycle", Lost: lostKinds(sourceHub, true),
-			Summary: "the Hub could not read a stored workspace lifecycle change",
+			Kind:      kindStreamGap,
+			Source:    "hub",
+			GapReason: "unreadable_lifecycle",
+			Lost:      layoutCheckpointKinds(filter),
+			Summary:   "the Hub could not read a stored workspace lifecycle change",
 		}, true
 	}
 	if workspace := fact.GetWorkspace(); workspace != nil {

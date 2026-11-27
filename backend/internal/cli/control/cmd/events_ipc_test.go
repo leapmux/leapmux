@@ -33,10 +33,16 @@ type fakeUserEvents struct {
 	sessions chan *fakeHubSession
 	// workspaceIDs receives the filter of each subscription.
 	workspaceIDs chan []string
+	// requests receives the full WatchUserRequest of each subscription.
+	requests chan *leapmuxv1.WatchUserRequest
 }
 
 func newFakeUserEvents() *fakeUserEvents {
-	return &fakeUserEvents{sessions: make(chan *fakeHubSession, 8), workspaceIDs: make(chan []string, 8)}
+	return &fakeUserEvents{
+		sessions:     make(chan *fakeHubSession, 8),
+		workspaceIDs: make(chan []string, 8),
+		requests:     make(chan *leapmuxv1.WatchUserRequest, 8),
+	}
 }
 
 func (f *fakeUserEvents) StreamHub(ctx context.Context, _ userid.UserID, procedure string, payload []byte, onPayload func([]byte) error) error {
@@ -48,6 +54,9 @@ func (f *fakeUserEvents) StreamHub(ctx context.Context, _ userid.UserID, procedu
 		return err
 	}
 	f.workspaceIDs <- req.GetWorkspaceIds()
+	if f.requests != nil {
+		f.requests <- &req
+	}
 	s := &fakeHubSession{steps: make(chan hubStep, 32)}
 	f.sessions <- s
 	for {
@@ -97,20 +106,63 @@ func (c watchRevisions) OnClientFrame(payload []byte) {
 
 func (watchRevisions) OnCancel() {}
 
-// eventsWorker is a fake Worker for `events`: it serves notify watches and
-// answers ListAgents from its rows. mu guards agents.
+// fakePrivateIPCStream is one WatchWorkerPrivateEvents stream served by eventsWorker.
+type fakePrivateIPCStream struct {
+	frames chan []byte
+	fail   chan *leapmuxv1.RpcError
+}
+
+func (p *fakePrivateIPCStream) sendEvent(evt *leapmuxv1.WorkerPrivateEvent) {
+	raw, err := proto.Marshal(evt)
+	if err != nil {
+		panic(err)
+	}
+	p.frames <- raw
+}
+
+// eventsWorker is a fake Worker for `events`: it serves notify watches,
+// private-event streams, and answers ListAgents from its rows. mu guards agents.
 type eventsWorker struct {
-	mu      sync.Mutex
-	agents  map[string]*leapmuxv1.AgentInfo
-	watches chan *fakeWatch
+	mu             sync.Mutex
+	agents         map[string]*leapmuxv1.AgentInfo
+	watches        chan *fakeWatch
+	privateStreams chan *fakePrivateIPCStream
 }
 
 func newEventsWorker(rows ...*leapmuxv1.AgentInfo) *eventsWorker {
-	w := &eventsWorker{agents: map[string]*leapmuxv1.AgentInfo{}, watches: make(chan *fakeWatch, 8)}
+	w := &eventsWorker{
+		agents:         map[string]*leapmuxv1.AgentInfo{},
+		watches:        make(chan *fakeWatch, 8),
+		privateStreams: make(chan *fakePrivateIPCStream, 8),
+	}
 	for _, row := range rows {
 		w.agents[row.GetId()] = row
 	}
 	return w
+}
+
+func (w *eventsWorker) servePrivate(ctx context.Context, send func(*leapmuxv1.InnerStreamMessage) error) {
+	stream := &fakePrivateIPCStream{
+		frames: make(chan []byte, 32),
+		fail:   make(chan *leapmuxv1.RpcError, 1),
+	}
+	select {
+	case w.privateStreams <- stream:
+	default:
+	}
+	for {
+		select {
+		case raw := <-stream.frames:
+			if send(&leapmuxv1.InnerStreamMessage{Payload: raw}) != nil {
+				return
+			}
+		case rpcErr := <-stream.fail:
+			_ = send(channelwire.NewStreamError(rpcErr.GetCode(), rpcErr.GetMessage()))
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (w *eventsWorker) setAgent(row *leapmuxv1.AgentInfo) {
@@ -190,6 +242,8 @@ func (w *eventsWorker) DispatchWith(ctx context.Context, _ channel.Caller, req *
 	switch req.GetMethod() {
 	case leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure:
 		w.serveWatch(ctx, req.GetPayload(), rw.SendStream, rw.BindStream)
+	case leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure:
+		w.servePrivate(ctx, rw.SendStream)
 	case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
 		writeProtoResponse(rw, w.listAgents(req.GetPayload()))
 	default:
@@ -215,16 +269,24 @@ func (s siblingWorkers) StreamInner(ctx context.Context, target string, _ userid
 	onMsg func(*leapmuxv1.InnerStreamMessage) error, bindCtrl func(channel.StreamController),
 ) error {
 	w := s.workers[target]
-	if w == nil || req.GetMethod() != leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure {
+	if w == nil {
 		return fmt.Errorf("unexpected stream %s on %s", req.GetMethod(), target)
 	}
-	w.serveWatch(ctx, req.GetPayload(),
-		onMsg,
-		func(ctrl channel.StreamController) (func(), bool) {
-			bindCtrl(ctrl)
-			return func() {}, true
-		})
-	return nil
+	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure:
+		w.serveWatch(ctx, req.GetPayload(),
+			onMsg,
+			func(ctrl channel.StreamController) (func(), bool) {
+				bindCtrl(ctrl)
+				return func() {}, true
+			})
+		return nil
+	case leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure:
+		w.servePrivate(ctx, onMsg)
+		return nil
+	default:
+		return fmt.Errorf("unexpected stream %s on %s", req.GetMethod(), target)
+	}
 }
 
 // liveRun is one `leapmux control …` run whose output a test reads line by
@@ -252,7 +314,7 @@ func runControlLive(t *testing.T, args ...string) *liveRun {
 		cancel()
 		select {
 		case <-finished:
-		case <-time.After(10 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Error("the command did not stop")
 		}
 	})
@@ -543,4 +605,39 @@ func TestEventsOverIPC_FailsWhenTheHubStreamFailsFirst(t *testing.T) {
 	failure := receive(t, ctx, run.out.lines)
 	assert.Contains(t, failure, `"code":"unavailable"`)
 	assert.Contains(t, failure, "the hub is unreachable")
+}
+
+func TestEventsOverIPC_PrivateEventsAndMalformedFrame(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	workerA := newEventsWorker()
+	userEvents := startEventsIPC(t, workerA, newEventsWorker())
+
+	run := runControlLive(t, "events", "--json", "--reconnect=false")
+	hub := receive(t, ctx, userEvents.sessions)
+	hub.send(snapshotEvent([]string{"ws-1"}, fileTabRecord("file-1", "ws-1", "worker-A")))
+
+	priv := receive(t, ctx, workerA.privateStreams)
+	ready := run.next(t, ctx)
+	require.Equal(t, kindStreamReady, ready.Kind)
+
+	priv.sendEvent(&leapmuxv1.WorkerPrivateEvent{
+		Event: &leapmuxv1.WorkerPrivateEvent_TabRenamed{
+			TabRenamed: &leapmuxv1.TabRenamed{TabId: "file-1", Title: "main.go"},
+		},
+	})
+	renamed := run.next(t, ctx)
+	assert.Equal(t, kindTabRenamed, renamed.Kind)
+	assert.Equal(t, "main.go", renamed.Title)
+
+	// A corrupted protobuf frame must surface as stream.unavailable rather than
+	// being dropped silently.
+	priv.frames <- []byte{0xff, 0xff, 0xff}
+	unavail := run.next(t, ctx)
+	assert.Equal(t, kindStreamUnavailable, unavail.Kind)
+	assert.Equal(t, string(cli.CodeInternal), unavail.Code)
+	require.NotNil(t, unavail.Retrying)
+	assert.False(t, *unavail.Retrying)
+
+	run.cancel()
+	assert.Equal(t, cli.ExitOK, receive(t, ctx, run.code))
 }

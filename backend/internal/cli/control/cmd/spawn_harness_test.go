@@ -65,7 +65,7 @@ type recordingHub struct {
 	systemBuild       *leapmuxv1.BuildInfo
 	readLayoutEvents  func(*leapmuxv1.ReadLayoutEventsRequest) (*leapmuxv1.ReadLayoutEventsResponse, error)
 	workerEnrollment  func() int64
-	workerActiveCount func() int64
+	workerInventory   func() *leapmuxv1.GetWorkerInventoryResponse
 	// listWorkerPages, when non-nil, makes the stub answer ListWorkers one
 	// page at a time: the cursor "" reads the first page, and the cursor
 	// "page-N" reads page N. Each page but the last carries the next cursor.
@@ -142,13 +142,16 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 	h.procedures = append(h.procedures, procedure)
 	h.mu.Unlock()
 	switch {
-	case procedure == leapmuxv1connect.WorkerManagementServiceGetWorkerEnrollmentRevisionProcedure && h.workerEnrollment != nil:
-		active := int64(len(h.workers))
-		if h.workerActiveCount != nil {
-			active = h.workerActiveCount()
+	case procedure == leapmuxv1connect.WorkerManagementServiceGetWorkerInventoryProcedure && (h.workerInventory != nil || h.workerEnrollment != nil):
+		if h.workerInventory != nil {
+			return proto.Marshal(h.workerInventory())
 		}
-		return proto.Marshal(&leapmuxv1.GetWorkerEnrollmentRevisionResponse{
-			OwnerUserId: "u-spawn", Revision: h.workerEnrollment(), ActiveWorkers: active,
+		ids := make([]string, 0, len(h.workers))
+		for _, w := range h.workers {
+			ids = append(ids, w.GetId())
+		}
+		return proto.Marshal(&leapmuxv1.GetWorkerInventoryResponse{
+			OwnerUserId: "u-spawn", Revision: h.workerEnrollment(), WorkerIds: ids,
 		})
 	case procedure == leapmuxv1connect.WorkspaceServiceReadLayoutEventsProcedure && h.readLayoutEvents != nil:
 		request := new(leapmuxv1.ReadLayoutEventsRequest)

@@ -44,8 +44,6 @@ func extractPrimaryList(v any) (reflect.Value, bool) {
 		soleIsList   bool
 		objListCount int
 		objList      reflect.Value
-		anyListCount int
-		anyList      reflect.Value
 	)
 	recordField := func(fv reflect.Value) {
 		visibleCount++
@@ -60,8 +58,6 @@ func extractPrimaryList(v any) (reflect.Value, bool) {
 		} else {
 			soleIsList = false
 		}
-		anyList = lv
-		anyListCount++
 		if isObjectListValue(lv) {
 			objList = lv
 			objListCount++
@@ -102,9 +98,6 @@ func extractPrimaryList(v any) (reflect.Value, bool) {
 	}
 	if objListCount == 1 {
 		return objList, true
-	}
-	if anyListCount == 1 {
-		return anyList, true
 	}
 	return reflect.Value{}, false
 }

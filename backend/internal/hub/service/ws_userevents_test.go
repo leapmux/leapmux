@@ -29,6 +29,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
@@ -1192,4 +1193,742 @@ func TestUserEventsHandler_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
 			metrics.UserEventsSubscribeTotal.WithLabelValues(none.Mode().Label(), none.Reason().Label()))
 	}(), connectsBefore+1,
 		"a refused connect is still a connect outcome; the series is a complete partition")
+}
+
+type scopedAPIBearer struct {
+	tv           *auth.TokenValidator
+	sessionCache *auth.AuthContextRegistry
+	tokenID      string
+	secret       string
+}
+
+func (b scopedAPIBearer) authHeader() http.Header {
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, b.tokenID, b.secret))
+	return hdr
+}
+
+func newScopedAPIBearer(t *testing.T, st store.Store, userID, grantedScopes string) scopedAPIBearer {
+	t.Helper()
+	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	_, sessionCache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{
+		SessionHasher:  hubtestutil.TestSecretHasher(),
+		Store:          st,
+		TokenValidator: tv,
+	})
+	t.Cleanup(sessionCache.Stop)
+
+	tokenID := id.Generate()
+	secret := auth.MintAccessSecret()
+	expiresAt := time.Now().Add(time.Hour)
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:               tokenID,
+		UserID:           userid.MustNew(userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "scoped-test",
+		GrantedScopes:    grantedScopes,
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
+		SecretHash:       tv.HashSecret(secret),
+		ExpiresAt:        &expiresAt,
+	}))
+	return scopedAPIBearer{tv: tv, sessionCache: sessionCache, tokenID: tokenID, secret: secret}
+}
+
+func readWatchUserEvent(t *testing.T, ctx context.Context, conn *websocket.Conn) *leapmuxv1.WatchUserEvent {
+	t.Helper()
+	payload, err := channelwire.ReadFramedBytes(ctx, conn)
+	require.NoError(t, err)
+	evt := &leapmuxv1.WatchUserEvent{}
+	require.NoError(t, proto.Unmarshal(payload, evt))
+	return evt
+}
+
+func TestUserEventsHandler_WorkersOnlyTopic(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "workers-topic-owner")
+	bearer := newScopedAPIBearer(t, st, user.ID, "worker:read")
+
+	var factoryCalls int
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		factoryCalls++
+		mgr := crdt.NewManager(want, newMemJournal(), allowAllAuth{}, nil, time.Now)
+		require.NoError(t, mgr.Bootstrap(ctx))
+		return mgr, nil
+	}, nil, crdt.WithManagerIdleTTL(0))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	handler := service.NewUserEventsHandler(
+		st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+	).WithTokenValidator(bearer.tv)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	// Default (no topics) requires workspace:read, so a worker:read-only token gets 403.
+	_, resp, err := websocket.Dial(ctx, channelwire.UserEventsURL(srv.URL, nil, nil, 0), &websocket.DialOptions{
+		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+		HTTPHeader:   bearer.authHeader(),
+	})
+	require.Error(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	// Explicit topics=workers requires only worker:read and skips CRDT bootstrap completely.
+	url := channelwire.UserEventsURLWithOptions(srv.URL, channelwire.UserEventsOptions{
+		Topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS},
+	})
+	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+		HTTPHeader:   bearer.authHeader(),
+	})
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+	// BroadcastWorkersChanged wakes the lightweight subscriber immediately without
+	// any UserMaterialized frame preceding it.
+	evtCh := make(chan *leapmuxv1.WatchUserEvent, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		payload, readErr := channelwire.ReadFramedBytes(ctx, conn)
+		if readErr != nil {
+			errCh <- readErr
+			return
+		}
+		evt := &leapmuxv1.WatchUserEvent{}
+		if uErr := proto.Unmarshal(payload, evt); uErr != nil {
+			errCh <- uErr
+			return
+		}
+		evtCh <- evt
+	}()
+
+	// Wait until the handler has registered its wake channel, or signal once after a brief yield.
+	// Signal repeatedly until received would hide missed wakes; instead poll until the first wake lands.
+	require.Eventually(t, func() bool {
+		registry.BroadcastWorkersChanged(user.ID)
+		select {
+		case evt := <-evtCh:
+			assert.Nil(t, evt.GetInitial(), "workers-only topic must never emit UserMaterialized")
+			assert.NotNil(t, evt.GetWorkersChanged())
+			return true
+		case readErr := <-errCh:
+			t.Errorf("unexpected read error: %v", readErr)
+			return true
+		default:
+			return false
+		}
+	}, 5*time.Second, 5*time.Millisecond)
+
+	assert.Zero(t, factoryCalls, "workers-only topic must not bootstrap a CRDT manager")
+
+	// Revoking the API bearer closes the lightweight subscription promptly.
+	bearer.sessionCache.EvictBearer(auth.NewBearerRef(auth.BearerKindAPI, bearer.tokenID))
+	readCtx, readCancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer readCancel()
+	for {
+		_, err = channelwire.ReadFramedBytes(readCtx, conn)
+		if err != nil {
+			break
+		}
+	}
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestUserEventsHandler_LayoutJournalTopic(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "layout-ws-owner")
+	owner := userid.MustNew(user.ID)
+	bearer := newScopedAPIBearer(t, st, user.ID, "workspace:read")
+
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(want, service.NewCRDTJournal(st), service.NewCRDTAuthChecker(st), nil, time.Now)
+		if err := mgr.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return mgr, nil
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(service.NewLifecycleOutboxReader(st)))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	wsSvc := service.NewWorkspaceService(st, registry, nil)
+	handler := service.NewUserEventsHandler(
+		st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+	).WithTokenValidator(bearer.tv)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	authedCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
+
+	// 1. Account-wide stream: initial cursor + live create/rename/delete pushed immediately via LayoutEventWake.
+	acctURL := channelwire.UserEventsURLWithOptions(srv.URL, channelwire.UserEventsOptions{
+		Topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL},
+	})
+	conn, _, err := websocket.Dial(ctx, acctURL, &websocket.DialOptions{
+		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+		HTTPHeader:   bearer.authHeader(),
+	})
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+	initialEvt := readWatchUserEvent(t, ctx, conn)
+	assert.Nil(t, initialEvt.GetInitial(), "layout_journal must not send UserMaterialized")
+	initialPage := initialEvt.GetLayoutEvents()
+	require.NotNil(t, initialPage)
+	require.NotEmpty(t, initialPage.GetCursor())
+	assert.Zero(t, initialPage.GetAfterSequence())
+	assert.Empty(t, initialPage.GetRecords())
+
+	created, err := wsSvc.CreateWorkspace(authedCtx, &leapmuxv1.CreateWorkspaceRequest{Title: "Alpha"})
+	require.NoError(t, err)
+	wsID := created.GetWorkspaceId()
+
+	createEvt := readWatchUserEvent(t, ctx, conn)
+	require.NotNil(t, createEvt.GetLayoutEvents())
+	require.Len(t, createEvt.GetLayoutEvents().GetRecords(), 1)
+	assert.Equal(t, leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_CREATE,
+		createEvt.GetLayoutEvents().GetRecords()[0].GetFact().GetWorkspace().GetOperation())
+	assert.Equal(t, "Alpha", createEvt.GetLayoutEvents().GetRecords()[0].GetFact().GetWorkspace().GetTitle())
+
+	_, err = wsSvc.RenameWorkspace(authedCtx, &leapmuxv1.RenameWorkspaceRequest{WorkspaceId: wsID, Title: "Beta"})
+	require.NoError(t, err)
+
+	renameEvt := readWatchUserEvent(t, ctx, conn)
+	require.NotNil(t, renameEvt.GetLayoutEvents())
+	require.Len(t, renameEvt.GetLayoutEvents().GetRecords(), 1)
+	assert.Equal(t, leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_RENAME,
+		renameEvt.GetLayoutEvents().GetRecords()[0].GetFact().GetWorkspace().GetOperation())
+	assert.Equal(t, "Beta", renameEvt.GetLayoutEvents().GetRecords()[0].GetFact().GetWorkspace().GetTitle())
+
+	// 2. Scoped workspace stream: delete delivers the delete record, then End, then closes cleanly.
+	scopedURL := channelwire.UserEventsURLWithOptions(srv.URL, channelwire.UserEventsOptions{
+		Topics:            []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL},
+		LayoutWorkspaceID: wsID,
+	})
+	scopedConn, _, err := websocket.Dial(ctx, scopedURL, &websocket.DialOptions{
+		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+		HTTPHeader:   bearer.authHeader(),
+	})
+	require.NoError(t, err)
+	defer func() { _ = scopedConn.Close(websocket.StatusNormalClosure, "") }()
+
+	scopedInit := readWatchUserEvent(t, ctx, scopedConn)
+	require.NotNil(t, scopedInit.GetLayoutEvents())
+
+	_, err = wsSvc.DeleteWorkspace(authedCtx, &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: wsID})
+	require.NoError(t, err)
+
+	delEvt := readWatchUserEvent(t, ctx, scopedConn)
+	require.NotNil(t, delEvt.GetLayoutEvents())
+	require.Len(t, delEvt.GetLayoutEvents().GetRecords(), 1)
+	assert.Equal(t, leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_DELETE,
+		delEvt.GetLayoutEvents().GetRecords()[0].GetFact().GetWorkspace().GetOperation())
+
+	endEvt := readWatchUserEvent(t, ctx, scopedConn)
+	require.NotNil(t, endEvt.GetLayoutEvents().GetEnd())
+
+	_, err = channelwire.ReadFramedBytes(ctx, scopedConn)
+	require.Error(t, err)
+	assert.Equal(t, websocket.StatusNormalClosure, websocket.CloseStatus(err))
+
+	// 3. Gap handling: prune past initial cursor and reconnect with stale cursor.
+	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+		return tx.LayoutEvents().PruneThrough(ctx, owner, 2)
+	}))
+	gapURL := channelwire.UserEventsURLWithOptions(srv.URL, channelwire.UserEventsOptions{
+		Topics:            []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL},
+		LayoutAfterCursor: initialPage.GetCursor(),
+	})
+	gapConn, _, err := websocket.Dial(ctx, gapURL, &websocket.DialOptions{
+		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+		HTTPHeader:   bearer.authHeader(),
+	})
+	require.NoError(t, err)
+	defer func() { _ = gapConn.Close(websocket.StatusNormalClosure, "") }()
+
+	gapEvt := readWatchUserEvent(t, ctx, gapConn)
+	require.NotNil(t, gapEvt.GetLayoutEvents().GetGap())
+	assert.Equal(t, int64(2), gapEvt.GetLayoutEvents().GetGap().GetResumeAfterSequence())
+
+	// After the gap frame advances the cursor to sequence 2, the remaining record (sequence 3 = delete) arrives.
+	postGapEvt := readWatchUserEvent(t, ctx, gapConn)
+	require.NotNil(t, postGapEvt.GetLayoutEvents())
+	require.Len(t, postGapEvt.GetLayoutEvents().GetRecords(), 1)
+	assert.Equal(t, int64(3), postGapEvt.GetLayoutEvents().GetRecords()[0].GetSequence())
+}
+
+func TestUserEventsHandler_WorkersAndLayoutJournalMultiplexed(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "mux-ws-owner")
+	owner := userid.MustNew(user.ID)
+	wsOnlyBearer := newScopedAPIBearer(t, st, user.ID, "workspace:read")
+	bothBearer := newScopedAPIBearer(t, st, user.ID, "workspace:read worker:read")
+
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(want, service.NewCRDTJournal(st), service.NewCRDTAuthChecker(st), nil, time.Now)
+		if err := mgr.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return mgr, nil
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(service.NewLifecycleOutboxReader(st)))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	wsSvc := service.NewWorkspaceService(st, registry, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	authedCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
+
+	created, err := wsSvc.CreateWorkspace(authedCtx, &leapmuxv1.CreateWorkspaceRequest{Title: "Mux"})
+	require.NoError(t, err)
+	wsID := created.GetWorkspaceId()
+
+	// Explicit workers + layout_journal requires BOTH workspace:read AND worker:read.
+	wsOnlySrv := httptest.NewServer(service.NewUserEventsHandler(
+		st, hubtestutil.TestSecretHasher(), registry, wsOnlyBearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+	).WithTokenValidator(wsOnlyBearer.tv))
+	t.Cleanup(wsOnlySrv.Close)
+
+	muxOpts := channelwire.UserEventsOptions{
+		Topics: []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+		},
+		LayoutWorkspaceID: wsID,
+	}
+	_, resp, err := websocket.Dial(ctx, channelwire.UserEventsURLWithOptions(wsOnlySrv.URL, muxOpts), &websocket.DialOptions{
+		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+		HTTPHeader:   wsOnlyBearer.authHeader(),
+	})
+	require.Error(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	// With both scopes, one WebSocket multiplexes both topics and stays open for workers even after workspace End.
+	srv := httptest.NewServer(service.NewUserEventsHandler(
+		st, hubtestutil.TestSecretHasher(), registry, bothBearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+	).WithTokenValidator(bothBearer.tv))
+	t.Cleanup(srv.Close)
+
+	conn, _, err := websocket.Dial(ctx, channelwire.UserEventsURLWithOptions(srv.URL, muxOpts), &websocket.DialOptions{
+		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+		HTTPHeader:   bothBearer.authHeader(),
+	})
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+	// Initial layout cursor frame arrives first.
+	initEvt := readWatchUserEvent(t, ctx, conn)
+	require.NotNil(t, initEvt.GetLayoutEvents())
+
+	// Worker change arrives on the same WebSocket.
+	registry.BroadcastWorkersChanged(user.ID)
+	workerEvt := readWatchUserEvent(t, ctx, conn)
+	require.NotNil(t, workerEvt.GetWorkersChanged())
+
+	// Workspace delete produces delete record + End frame, but does NOT close the WS because workers is still subscribed.
+	_, err = wsSvc.DeleteWorkspace(authedCtx, &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: wsID})
+	require.NoError(t, err)
+
+	delEvt := readWatchUserEvent(t, ctx, conn)
+	require.NotNil(t, delEvt.GetLayoutEvents())
+	require.Len(t, delEvt.GetLayoutEvents().GetRecords(), 1)
+	assert.Equal(t, leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_DELETE,
+		delEvt.GetLayoutEvents().GetRecords()[0].GetFact().GetWorkspace().GetOperation())
+
+	endEvt := readWatchUserEvent(t, ctx, conn)
+	require.NotNil(t, endEvt.GetLayoutEvents().GetEnd())
+
+	// WorkersChanged still arrives after layout_journal ended.
+	registry.BroadcastWorkersChanged(user.ID)
+	workerEvtAfterEnd := readWatchUserEvent(t, ctx, conn)
+	require.NotNil(t, workerEvtAfterEnd.GetWorkersChanged())
+}
+
+func TestUserEventsHandler_RejectsInvalidTopicsAndLayoutCursor(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "bad-query-owner")
+	bearer := newScopedAPIBearer(t, st, user.ID, "workspace:read worker:read")
+
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(want, newMemJournal(), allowAllAuth{}, nil, time.Now)
+		require.NoError(t, mgr.Bootstrap(ctx))
+		return mgr, nil
+	}, nil, crdt.WithManagerIdleTTL(0))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	handler := service.NewUserEventsHandler(
+		st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+	).WithTokenValidator(bearer.tv)
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"unknown topic", "topics=bogus"},
+		{"invalid base64 layout cursor", "topics=layout_journal&layout_after_cursor=***invalid***"},
+		{"layout workspace without layout topic", "topics=workers&layout_workspace_id=ws-1"},
+		{"resume cursor without crdt topic", "topics=workers&resume_after_hlc=100.0.c&resume_epoch=1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://example.test/ws/userevents?"+tc.query, nil)
+			req.Header = bearer.authHeader()
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+}
+
+func TestUserEventsHandler_CRDTAndLayoutJournalMultiplexed(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "crdt-layout-mux-owner")
+	owner := userid.MustNew(user.ID)
+	bearer := newScopedAPIBearer(t, st, user.ID, "workspace:read")
+
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(want, service.NewCRDTJournal(st), service.NewCRDTAuthChecker(st), nil, time.Now)
+		if err := mgr.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return mgr, nil
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(service.NewLifecycleOutboxReader(st)))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	wsSvc := service.NewWorkspaceService(st, registry, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	authedCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
+
+	t.Run("streams initial layout cursor and live layout records alongside CRDT bootstrap and batches", func(t *testing.T) {
+		handler := service.NewUserEventsHandler(
+			st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+		).WithTokenValidator(bearer.tv)
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		wsURL := channelwire.UserEventsURLWithOptions(srv.URL, channelwire.UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+			},
+		})
+		conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+			Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+			HTTPHeader:   bearer.authHeader(),
+		})
+		require.NoError(t, err)
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+		// CRDT bootstrap always arrives before pumpLayoutJournal starts.
+		firstEvt := readWatchUserEvent(t, ctx, conn)
+		require.NotNil(t, firstEvt.GetInitial(), "combined crdt+layout_journal must send UserMaterialized first")
+
+		// Initial layout cursor arrives next with no records.
+		layoutInit := readWatchUserEvent(t, ctx, conn)
+		require.NotNil(t, layoutInit.GetLayoutEvents())
+		require.NotEmpty(t, layoutInit.GetLayoutEvents().GetCursor())
+		assert.Empty(t, layoutInit.GetLayoutEvents().GetRecords())
+
+		// A workspace creation produces both a CRDT batch and a live layout journal record on the same WebSocket.
+		created, err := wsSvc.CreateWorkspace(authedCtx, &leapmuxv1.CreateWorkspaceRequest{Title: "Combined"})
+		require.NoError(t, err)
+
+		var gotCRDTBatch, gotLayoutCreate bool
+		for !gotCRDTBatch || !gotLayoutCreate {
+			evt := readWatchUserEvent(t, ctx, conn)
+			if evt.GetBatch() != nil {
+				gotCRDTBatch = true
+			}
+			if le := evt.GetLayoutEvents(); le != nil {
+				for _, rec := range le.GetRecords() {
+					wsChange := rec.GetFact().GetWorkspace()
+					if wsChange != nil &&
+						wsChange.GetWorkspaceId() == created.GetWorkspaceId() &&
+						wsChange.GetOperation() == leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_CREATE &&
+						wsChange.GetTitle() == "Combined" {
+						gotLayoutCreate = true
+					}
+				}
+			}
+		}
+		assert.True(t, gotCRDTBatch)
+		assert.True(t, gotLayoutCreate)
+	})
+
+	t.Run("layout error closes combined socket with StatusPolicyViolation and tears down cleanly", func(t *testing.T) {
+		handler, served := servedOnce(service.NewUserEventsHandler(
+			st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+		).WithTokenValidator(bearer.tv))
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		wsURL := channelwire.UserEventsURLWithOptions(srv.URL, channelwire.UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+			},
+			LayoutWorkspaceID: "ws-does-not-exist",
+		})
+		conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+			Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+			HTTPHeader:   bearer.authHeader(),
+		})
+		require.NoError(t, err)
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+		// CRDT bootstrap is written before pumpLayoutJournal runs; the layout error closes the socket next.
+		firstEvt := readWatchUserEvent(t, ctx, conn)
+		require.NotNil(t, firstEvt.GetInitial())
+
+		_, err = channelwire.ReadFramedBytes(ctx, conn)
+		require.Error(t, err)
+		assert.Equal(t, websocket.StatusPolicyViolation, websocket.CloseStatus(err))
+
+		select {
+		case <-served:
+		case <-ctx.Done():
+			t.Fatal("ServeHTTP did not exit after pumpLayoutJournal closed on error")
+		}
+	})
+}
+
+func TestUserEventsHandler_LayoutJournalRejectsInvalidWorkspaceAndCursor(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "layout-reject-owner")
+	owner := userid.MustNew(user.ID)
+	bearer := newScopedAPIBearer(t, st, user.ID, "workspace:read")
+
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(want, service.NewCRDTJournal(st), service.NewCRDTAuthChecker(st), nil, time.Now)
+		if err := mgr.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return mgr, nil
+	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(service.NewLifecycleOutboxReader(st)))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	wsSvc := service.NewWorkspaceService(st, registry, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	authedCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
+
+	wsA, err := wsSvc.CreateWorkspace(authedCtx, &leapmuxv1.CreateWorkspaceRequest{Title: "Scope A"})
+	require.NoError(t, err)
+	wsB, err := wsSvc.CreateWorkspace(authedCtx, &leapmuxv1.CreateWorkspaceRequest{Title: "Scope B"})
+	require.NoError(t, err)
+
+	scopeACursorResp, err := wsSvc.ReadLayoutEvents(authedCtx, &leapmuxv1.ReadLayoutEventsRequest{
+		WorkspaceId: wsA.GetWorkspaceId(),
+	})
+	require.NoError(t, err)
+	validScopeACursor := scopeACursorResp.GetCursor()
+	require.NotEmpty(t, validScopeACursor)
+
+	tamperedSigCursor := append([]byte(nil), validScopeACursor...)
+	tamperedSigCursor[len(tamperedSigCursor)-1] ^= 0xff
+
+	handler := service.NewUserEventsHandler(
+		st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+	).WithTokenValidator(bearer.tv)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	for _, tc := range []struct {
+		name string
+		opts channelwire.UserEventsOptions
+	}{
+		{
+			name: "nonexistent layout_workspace_id",
+			opts: channelwire.UserEventsOptions{
+				Topics:            []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL},
+				LayoutWorkspaceID: "ws-nonexistent",
+			},
+		},
+		{
+			name: "valid-base64 invalid-signature layout_after_cursor",
+			opts: channelwire.UserEventsOptions{
+				Topics:            []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL},
+				LayoutWorkspaceID: wsA.GetWorkspaceId(),
+				LayoutAfterCursor: tamperedSigCursor,
+			},
+		},
+		{
+			name: "valid-base64 wrong-scope layout_after_cursor",
+			opts: channelwire.UserEventsOptions{
+				Topics:            []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL},
+				LayoutWorkspaceID: wsB.GetWorkspaceId(),
+				LayoutAfterCursor: validScopeACursor,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wsURL := channelwire.UserEventsURLWithOptions(srv.URL, tc.opts)
+			conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+				Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+				HTTPHeader:   bearer.authHeader(),
+			})
+			require.NoError(t, err)
+			defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+			_, err = channelwire.ReadFramedBytes(ctx, conn)
+			require.Error(t, err)
+			assert.Equal(t, websocket.StatusPolicyViolation, websocket.CloseStatus(err))
+		})
+	}
+}
+
+func TestUserEventsHandler_LightweightLifecycleDrainDeliversWorkersAndEvents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("drains pending offline mutation while still delivering workers_changed", func(t *testing.T) {
+		t.Parallel()
+		st := hubtestutil.OpenTestStore(t)
+		user := storetest.SeedUser(t, st, "lightweight-drain-owner")
+		owner := userid.MustNew(user.ID)
+		wsID := storetest.SeedWorkspace(t, st, user.ID, "Before")
+		bearer := newScopedAPIBearer(t, st, user.ID, "workspace:read worker:read")
+
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		authedCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
+
+		// Write an initial cursor and an offline workspace rename so lifecycle_outbox has a pending row.
+		offline := service.NewWorkspaceService(st, nil, nil)
+		start, err := offline.ReadLayoutEvents(authedCtx, &leapmuxv1.ReadLayoutEventsRequest{WorkspaceId: wsID})
+		require.NoError(t, err)
+		_, err = offline.RenameWorkspace(authedCtx, &leapmuxv1.RenameWorkspaceRequest{
+			WorkspaceId: wsID,
+			Title:       "Drained Title",
+		})
+		require.NoError(t, err)
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var enterOnce, releaseOnce sync.Once
+		unblock := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(unblock)
+
+		registry := crdt.NewRegistry(func(bootCtx context.Context, want userid.UserID) (*crdt.Manager, error) {
+			enterOnce.Do(func() { close(entered) })
+			select {
+			case <-release:
+			case <-bootCtx.Done():
+				return nil, bootCtx.Err()
+			}
+			mgr := crdt.NewManager(want, service.NewCRDTJournal(st), service.NewCRDTAuthChecker(st), nil, time.Now)
+			if err := mgr.Bootstrap(bootCtx); err != nil {
+				return nil, err
+			}
+			return mgr, nil
+		}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(service.NewLifecycleOutboxReader(st)))
+		t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+		handler := service.NewUserEventsHandler(
+			st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+		).WithTokenValidator(bearer.tv)
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		wsURL := channelwire.UserEventsURLWithOptions(srv.URL, channelwire.UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+			},
+			LayoutWorkspaceID: wsID,
+			LayoutAfterCursor: start.GetCursor(),
+		})
+		conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+			Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+			HTTPHeader:   bearer.authHeader(),
+		})
+		require.NoError(t, err)
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+		// Wait until serveLightweightTopics starts the lifecycle drain and blocks on it.
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("serveLightweightTopics did not start the pending lifecycle drain")
+		}
+
+		// BroadcastWorkersChanged must still be delivered while waiting for the drain to finish.
+		registry.BroadcastWorkersChanged(user.ID)
+		workerEvt := readWatchUserEvent(t, ctx, conn)
+		require.NotNil(t, workerEvt.GetWorkersChanged(), "workers_changed must arrive during an active lifecycle drain")
+
+		// Release the drain and verify the drained offline rename arrives as a layout record.
+		unblock()
+		layoutEvt := readWatchUserEvent(t, ctx, conn)
+		require.NotNil(t, layoutEvt.GetLayoutEvents())
+		require.Len(t, layoutEvt.GetLayoutEvents().GetRecords(), 1)
+		wsChange := layoutEvt.GetLayoutEvents().GetRecords()[0].GetFact().GetWorkspace()
+		require.NotNil(t, wsChange)
+		assert.Equal(t, leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_RENAME, wsChange.GetOperation())
+		assert.Equal(t, "Drained Title", wsChange.GetTitle())
+	})
+
+	t.Run("closes with StatusTryAgainLater when pending lifecycle drain fails", func(t *testing.T) {
+		t.Parallel()
+		st := hubtestutil.OpenTestStore(t)
+		user := storetest.SeedUser(t, st, "lightweight-drain-err-owner")
+		owner := userid.MustNew(user.ID)
+		wsID := storetest.SeedWorkspace(t, st, user.ID, "Before")
+		bearer := newScopedAPIBearer(t, st, user.ID, "workspace:read")
+
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		authedCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
+
+		offline := service.NewWorkspaceService(st, nil, nil)
+		start, err := offline.ReadLayoutEvents(authedCtx, &leapmuxv1.ReadLayoutEventsRequest{WorkspaceId: wsID})
+		require.NoError(t, err)
+		_, err = offline.RenameWorkspace(authedCtx, &leapmuxv1.RenameWorkspaceRequest{
+			WorkspaceId: wsID,
+			Title:       "Unreachable Title",
+		})
+		require.NoError(t, err)
+
+		registry := crdt.NewRegistry(func(context.Context, userid.UserID) (*crdt.Manager, error) {
+			return nil, errors.New("manager bootstrap unavailable")
+		}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(service.NewLifecycleOutboxReader(st)))
+		t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+		handler := service.NewUserEventsHandler(
+			st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest(),
+		).WithTokenValidator(bearer.tv)
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		wsURL := channelwire.UserEventsURLWithOptions(srv.URL, channelwire.UserEventsOptions{
+			Topics:            []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL},
+			LayoutWorkspaceID: wsID,
+			LayoutAfterCursor: start.GetCursor(),
+		})
+		conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+			Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+			HTTPHeader:   bearer.authHeader(),
+		})
+		require.NoError(t, err)
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+		_, err = channelwire.ReadFramedBytes(ctx, conn)
+		require.Error(t, err)
+		assert.Equal(t, websocket.StatusTryAgainLater, websocket.CloseStatus(err))
+	})
 }

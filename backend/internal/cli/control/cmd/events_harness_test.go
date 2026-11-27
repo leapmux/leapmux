@@ -99,136 +99,6 @@ func (h *fakeHub) session(ctx context.Context, onEvent func(*leapmuxv1.WatchUser
 	}
 }
 
-// recordingWatch is a streamevents.Transport that records each subscription
-// and each revision of its interest, and lets a test push frames into the
-// newest subscription.
-type recordingWatch struct {
-	mu sync.Mutex
-	// openErrs fails the next opens, one error each.
-	openErrs []error
-	// requests holds the opening request and each revision of the newest
-	// subscription, in order.
-	requests []*leapmuxv1.WatchEventsRequest
-	onFrame  func(*leapmuxv1.WatchEventsResponse)
-	handle   *recordingHandle
-	// opened receives the opening request of each subscription, and revised
-	// each revision.
-	opened  chan *leapmuxv1.WatchEventsRequest
-	revised chan *leapmuxv1.WatchEventsRequest
-	// cancelled receives one value for each subscription that the feed
-	// cancelled.
-	cancelled chan struct{}
-}
-
-func newRecordingWatch() *recordingWatch {
-	return &recordingWatch{
-		opened:    make(chan *leapmuxv1.WatchEventsRequest, 16),
-		revised:   make(chan *leapmuxv1.WatchEventsRequest, 16),
-		cancelled: make(chan struct{}, 16),
-	}
-}
-
-func (w *recordingWatch) OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
-	onFrame func(*leapmuxv1.WatchEventsResponse),
-) (streamevents.Handle, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if len(w.openErrs) > 0 {
-		err := w.openErrs[0]
-		w.openErrs = w.openErrs[1:]
-		return nil, err
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	h := &recordingHandle{watch: w, cancel: cancel, done: make(chan struct{})}
-	go func() {
-		<-ctx.Done()
-		close(h.done)
-	}()
-	w.requests = []*leapmuxv1.WatchEventsRequest{req}
-	w.onFrame = onFrame
-	w.handle = h
-	w.opened <- req
-	return h, nil
-}
-
-// recordingHandle is the handle of one recordingWatch subscription.
-type recordingHandle struct {
-	watch  *recordingWatch
-	cancel context.CancelFunc
-	done   chan struct{}
-	// endErr is what EndErr reports once the stream ended.
-	mu     sync.Mutex
-	endErr error
-	// cancelledByFeed reports that Cancel ran.
-	cancelledByFeed bool
-}
-
-func (h *recordingHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
-	select {
-	case <-h.done:
-		return context.Canceled
-	default:
-	}
-	h.watch.mu.Lock()
-	h.watch.requests = append(h.watch.requests, req)
-	h.watch.mu.Unlock()
-	h.watch.revised <- req
-	return nil
-}
-
-func (h *recordingHandle) Cancel() {
-	h.mu.Lock()
-	first := !h.cancelledByFeed
-	h.cancelledByFeed = true
-	h.mu.Unlock()
-	h.cancel()
-	if first {
-		h.watch.cancelled <- struct{}{}
-	}
-}
-
-func (h *recordingHandle) Done() <-chan struct{} { return h.done }
-
-func (h *recordingHandle) EndErr() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.endErr
-}
-
-// push delivers resp on the newest subscription.
-func (w *recordingWatch) push(resp *leapmuxv1.WatchEventsResponse) {
-	w.mu.Lock()
-	onFrame := w.onFrame
-	w.mu.Unlock()
-	onFrame(resp)
-}
-
-// lastRequest is the interest in force on the newest subscription.
-func (w *recordingWatch) lastRequest() *leapmuxv1.WatchEventsRequest {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.requests[len(w.requests)-1]
-}
-
-// ack acknowledges the interest in force, with the rejections given.
-func (w *recordingWatch) ack(rejectedAgents ...*leapmuxv1.WatchRejection) {
-	w.push(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{
-		UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: w.lastRequest().GetUpdateId(), RejectedAgents: rejectedAgents},
-	}})
-}
-
-// endStream ends the newest subscription with err as its reason, as a
-// dropped connection does.
-func (w *recordingWatch) endStream(err error) {
-	w.mu.Lock()
-	h := w.handle
-	w.mu.Unlock()
-	h.mu.Lock()
-	h.endErr = err
-	h.mu.Unlock()
-	h.cancel()
-}
-
 // agentReads answers the readAgents of a feed from the channel that the test
 // feeds, and reports each read as it starts.
 type agentReads struct {
@@ -269,10 +139,31 @@ func agentLevelRow(id string, status leapmuxv1.AgentStatus, activity leapmuxv1.A
 	return &leapmuxv1.AgentInfo{Id: id, Status: status, PublishedActivityState: activity}
 }
 
+// fakePrivateStep is one step of a fake WatchWorkerPrivateEvents session.
+type fakePrivateStep struct {
+	event *leapmuxv1.WorkerPrivateEvent
+	end   bool
+	err   error
+}
+
+// fakePrivateSession is one WatchWorkerPrivateEvents subscription that a test drives.
+type fakePrivateSession struct {
+	steps chan fakePrivateStep
+}
+
+func (s *fakePrivateSession) send(evt *leapmuxv1.WorkerPrivateEvent) {
+	s.steps <- fakePrivateStep{event: evt}
+}
+
+func (s *fakePrivateSession) end(err error) {
+	s.steps <- fakePrivateStep{end: true, err: err}
+}
+
 // fakeWorkerSide is what the stream reads of one Worker in a test.
 type fakeWorkerSide struct {
-	watch *recordingWatch
-	reads *agentReads
+	watch           *fakeWatchTransport
+	reads           *agentReads
+	privateSessions chan *fakePrivateSession
 	// openErr, when set, fails every open of the transport.
 	mu      sync.Mutex
 	openErr error
@@ -296,10 +187,13 @@ type streamHarness struct {
 
 // streamHarnessOptions changes the stream that startStreamHarness runs.
 type streamHarnessOptions struct {
-	workspace string
-	kinds     []string
-	limit     int
-	heartbeat time.Duration
+	workspace   string
+	tabID       string
+	kinds       []string
+	limit       int
+	heartbeat   time.Duration
+	noReconnect bool
+	withPrivate bool
 	// beforeRun runs before the stream starts, to install traps on the
 	// clock. A trap that it installs closes before the stream stops, so a
 	// call that it holds cannot keep the stream from stopping.
@@ -329,21 +223,27 @@ func startStreamHarness(t *testing.T, opts streamHarnessOptions) *streamHarness 
 		cancel()
 		select {
 		case <-stopped:
-		case <-time.After(10 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Error("the stream did not stop with its context")
 		}
 	})
 	if opts.beforeRun != nil {
 		opts.beforeRun(h.clock)
 	}
-	stream := newEventStream(eventStreamConfig{
-		printer:      &eventPrinter{p: &cli.Printer{Out: h.out, Err: h.errOut, Format: cli.FormatJSON}, filter: filter, limit: opts.limit},
+	cfg := eventStreamConfig{
+		printer:      newEventPrinter(&cli.Printer{Out: h.out, Err: h.errOut, Format: cli.FormatJSON}, filter, opts.limit),
 		clock:        h.clock,
 		workspace:    opts.workspace,
+		tabID:        opts.tabID,
 		heartbeat:    opts.heartbeat,
+		noReconnect:  opts.noReconnect,
 		hubSession:   h.hub.session,
 		workerSource: h.workerSource,
-	})
+	}
+	if opts.withPrivate {
+		cfg.privateSource = h.privateSource
+	}
+	stream := newEventStream(cfg)
 	go func() {
 		h.done <- stream.run(ctx)
 		close(stopped)
@@ -368,10 +268,33 @@ func (h *streamHarness) worker(workerID string) *fakeWorkerSide {
 	defer h.mu.Unlock()
 	w := h.workers[workerID]
 	if w == nil {
-		w = &fakeWorkerSide{watch: newRecordingWatch(), reads: newAgentReads()}
+		w = &fakeWorkerSide{
+			watch:           newFakeWatchTransport(),
+			reads:           newAgentReads(),
+			privateSessions: make(chan *fakePrivateSession, 8),
+		}
 		h.workers[workerID] = w
 	}
 	return w
+}
+
+func (h *streamHarness) privateSource(workerID string) workerPrivateSource {
+	w := h.worker(workerID)
+	return func(ctx context.Context, onEvent func(*leapmuxv1.WorkerPrivateEvent)) error {
+		sess := &fakePrivateSession{steps: make(chan fakePrivateStep, 32)}
+		w.privateSessions <- sess
+		for {
+			select {
+			case step := <-sess.steps:
+				if step.end {
+					return step.err
+				}
+				onEvent(step.event)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
 }
 
 func (h *streamHarness) workerSource(workerID string) workerFeedSource {
@@ -453,6 +376,10 @@ func agentTabRecord(tabID, workspaceID, workerID string) *leapmuxv1.TabRecord {
 
 func terminalTabRecord(tabID, workspaceID, workerID string) *leapmuxv1.TabRecord {
 	return tabRecordOn(leapmuxv1.TabType_TAB_TYPE_TERMINAL, tabID, workspaceID, workerID)
+}
+
+func fileTabRecord(tabID, workspaceID, workerID string) *leapmuxv1.TabRecord {
+	return tabRecordOn(leapmuxv1.TabType_TAB_TYPE_FILE, tabID, workspaceID, workerID)
 }
 
 // snapshotEvent is the initial frame of a hub session: the workspaces, each

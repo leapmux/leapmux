@@ -17,6 +17,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"google.golang.org/grpc/codes"
 
 	"github.com/leapmux/leapmux/internal/terminput"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -423,6 +424,28 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			keys, err := terminput.ParseKeys(r.GetKeys())
 			if err != nil {
 				sendInvalidArgument(sender, err.Error())
+				return
+			}
+
+			// Wait for any in-flight PTY startup before reserving an idempotency
+			// receipt so a caller whose ctx expires during startup wait does not
+			// leave an in-flight receipt blocking its own retry with the same
+			// request_id.
+			if err := svc.TerminalStartup.WaitForStartup(ctx, terminalID); err != nil {
+				switch {
+				case errors.Is(err, context.Canceled):
+					_ = sender.SendError(int32(codes.Canceled), err.Error())
+				case errors.Is(err, context.DeadlineExceeded):
+					_ = sender.SendError(int32(codes.DeadlineExceeded), err.Error())
+				case errors.Is(err, errStartupFailed),
+					errors.Is(err, errStartupWaitClosed),
+					errors.Is(err, errStartupWaitArchived),
+					errors.Is(err, errStartupWaitShutdown):
+					sendFailedPrecondition(sender, err.Error())
+				default:
+					slog.Error("failed to wait for terminal startup", "terminal_id", terminalID, "error", err)
+					sendInternalError(sender, fmt.Sprintf("send input: %v", err))
+				}
 				return
 			}
 
@@ -1305,12 +1328,17 @@ func (svc *Service) derivedTerminalStatusEvent(t *terminalRecord, reportExit boo
 			TerminalId: t.ID, Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: state.exitCode}},
 		}
 	}
+	var exitCode *int32
+	if state.status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED {
+		exitCode = state.exitCode
+	}
 	return &leapmuxv1.TerminalEvent{
 		TerminalId: t.ID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{
 			Status:         state.status,
 			StartupError:   state.startupError,
 			StartupMessage: state.startupMessage,
+			ExitCode:       exitCode,
 		}},
 	}
 }

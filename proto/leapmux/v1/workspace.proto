@@ -81,7 +81,6 @@ service WorkspaceService {
 message ReadLayoutEventsRequest {
   string workspace_id = 1;
   bytes after_cursor = 2;
-  uint32 wait_millis = 3;
 }
 
 message ReadLayoutEventsResponse {

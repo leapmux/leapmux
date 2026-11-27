@@ -38,7 +38,7 @@ test('replays a bell that rang between CLI processes and checkpoints it', async 
   }
   if (process.platform !== 'win32')
     expect(await first.finished, first.diagnostic()).toEqual({ code: 0, signal: null })
-  const before = JSON.parse(readFileSync(checkpoint, 'utf8')) as { sequence: number }
+  const before = JSON.parse(readFileSync(checkpoint, 'utf8')) as { tab: { position: { sequence: number } } }
 
   // The Worker sees BEL before it reports the output that follows it.
   expect(await sendActiveTerminalInput(page, 'printf "\\aREPLAY_%s\\n" BELL\r')).toBe(true)
@@ -61,9 +61,9 @@ test('replays a bell that rang between CLI processes and checkpoints it', async 
     if (sequence === undefined)
       throw new Error('the replayed bell has no sequence')
     replayedSequence = sequence
-    expect(replayedSequence).toBeGreaterThan(before.sequence)
-    const after = JSON.parse(readFileSync(checkpoint, 'utf8')) as { sequence: number }
-    expect(after.sequence).toBe(replayedSequence)
+    expect(replayedSequence).toBeGreaterThan(before.tab.position.sequence)
+    const after = JSON.parse(readFileSync(checkpoint, 'utf8')) as { tab: { position: { sequence: number } } }
+    expect(after.tab.position.sequence).toBe(replayedSequence)
   }
   finally {
     resumed.child.kill()
@@ -88,8 +88,8 @@ test('replays a bell that rang between CLI processes and checkpoints it', async 
     if (liveSequence === undefined)
       throw new Error('the live notification has no sequence')
     expect(liveSequence).toBeGreaterThan(replayedSequence)
-    const after = JSON.parse(readFileSync(checkpoint, 'utf8')) as { sequence: number }
-    expect(after.sequence).toBe(liveSequence)
+    const after = JSON.parse(readFileSync(checkpoint, 'utf8')) as { tab: { position: { sequence: number } } }
+    expect(after.tab.position.sequence).toBe(liveSequence)
   }
   finally {
     live.child.kill()
@@ -173,8 +173,8 @@ test('replays a closed tab to its final Worker position', async ({ authenticated
       tab_id: tabId,
       sequence: expect.any(Number),
     })
-    const saved = JSON.parse(readFileSync(checkpoint, 'utf8')) as { sequence: number }
-    expect(saved.sequence).toBe(events[3]?.sequence)
+    const saved = JSON.parse(readFileSync(checkpoint, 'utf8')) as { tab: { position: { sequence: number } } }
+    expect(saved.tab.position.sequence).toBe(events[3]?.sequence)
   }
   finally {
     resumed.child.kill()

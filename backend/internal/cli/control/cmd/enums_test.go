@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
@@ -212,4 +214,115 @@ func TestGitStatusOf(t *testing.T) {
 	assert.Equal(t, "main", got.Branch)
 	assert.Equal(t, int32(1), got.Ahead)
 	assert.Equal(t, []string{"modified", "untracked"}, got.Changes)
+
+	// Any non-zero field keeps the status even when Branch and Toplevel are empty.
+	partialCases := []struct {
+		name  string
+		input *leapmuxv1.GitRepoStatus
+		check func(t *testing.T, s *gitStatus)
+	}{
+		{
+			name:  "origin url only",
+			input: &leapmuxv1.GitRepoStatus{OriginUrl: "https://example.com/repo.git"},
+			check: func(t *testing.T, s *gitStatus) { assert.Equal(t, "https://example.com/repo.git", s.OriginURL) },
+		},
+		{
+			name:  "ahead only",
+			input: &leapmuxv1.GitRepoStatus{Ahead: 2},
+			check: func(t *testing.T, s *gitStatus) { assert.Equal(t, int32(2), s.Ahead) },
+		},
+		{
+			name:  "behind only",
+			input: &leapmuxv1.GitRepoStatus{Behind: 3},
+			check: func(t *testing.T, s *gitStatus) { assert.Equal(t, int32(3), s.Behind) },
+		},
+		{
+			name:  "worktree flag only",
+			input: &leapmuxv1.GitRepoStatus{IsWorktree: true},
+			check: func(t *testing.T, s *gitStatus) { assert.True(t, s.IsWorktree) },
+		},
+		{
+			name:  "change flags only",
+			input: &leapmuxv1.GitRepoStatus{Modified: true, Conflicted: true, Stashed: true},
+			check: func(t *testing.T, s *gitStatus) {
+				assert.Equal(t, []string{"modified", "conflicted", "stashed"}, s.Changes)
+			},
+		},
+	}
+	for _, tc := range partialCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := gitStatusOf(tc.input)
+			require.NotNil(t, s)
+			tc.check(t, s)
+		})
+	}
+}
+
+func TestGitStatus_TSVAndJSONRendering(t *testing.T) {
+	row := terminalRow{
+		ID:     "term-1",
+		Title:  "Shell",
+		Status: "ready",
+		Cols:   80,
+		Rows:   24,
+		Git: gitStatusOf(&leapmuxv1.GitRepoStatus{
+			Branch:     "feat/cli",
+			Ahead:      2,
+			Behind:     1,
+			Toplevel:   "/repo",
+			Modified:   true,
+			Untracked:  true,
+			IsWorktree: true,
+		}),
+	}
+
+	var tsvBuf bytes.Buffer
+	pTSV := &cli.Printer{Out: &tsvBuf, Err: &bytes.Buffer{}, Format: cli.FormatTSV}
+	require.NoError(t, pTSV.Result(row))
+	assert.Contains(t, tsvBuf.String(), "git\tfeat/cli +2/-1 (modified, untracked) [worktree]\n")
+	assert.NotContains(t, tsvBuf.String(), "git\t-\n")
+
+	var jsonBuf bytes.Buffer
+	pJSON := &cli.Printer{Out: &jsonBuf, Err: &bytes.Buffer{}, Format: cli.FormatJSON}
+	require.NoError(t, pJSON.Result(row))
+	var env struct {
+		Data struct {
+			Git gitStatus `json:"git"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(jsonBuf.Bytes(), &env))
+	assert.Equal(t, "feat/cli", env.Data.Git.Branch)
+	assert.Equal(t, int32(2), env.Data.Git.Ahead)
+	assert.Equal(t, int32(1), env.Data.Git.Behind)
+	assert.Equal(t, []string{"modified", "untracked"}, env.Data.Git.Changes)
+	assert.True(t, env.Data.Git.IsWorktree)
+}
+
+func TestGitStatus_TextValue(t *testing.T) {
+	cases := []struct {
+		name string
+		in   gitStatus
+		want string
+	}{
+		{name: "empty", in: gitStatus{}, want: ""},
+		{name: "branch only", in: gitStatus{Branch: "main"}, want: "main"},
+		{name: "ahead only", in: gitStatus{Branch: "main", Ahead: 3}, want: "main +3"},
+		{name: "behind only", in: gitStatus{Branch: "main", Behind: 2}, want: "main -2"},
+		{name: "ahead and behind", in: gitStatus{Branch: "main", Ahead: 1, Behind: 4}, want: "main +1/-4"},
+		{name: "detached head falls back to toplevel", in: gitStatus{Toplevel: "/repo/work", Changes: []string{"modified"}}, want: "/repo/work (modified)"},
+		{name: "origin url fallback when branch and toplevel empty", in: gitStatus{OriginURL: "https://example.com/r.git"}, want: "https://example.com/r.git"},
+		{name: "changes only", in: gitStatus{Changes: []string{"added", "deleted"}}, want: "(added, deleted)"},
+		{name: "worktree only", in: gitStatus{IsWorktree: true}, want: "[worktree]"},
+		{
+			name: "all components",
+			in:   gitStatus{Branch: "feat/x", Ahead: 2, Behind: 1, Changes: []string{"modified", "stashed"}, IsWorktree: true},
+			want: "feat/x +2/-1 (modified, stashed) [worktree]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.in.TextValue())
+			assert.Equal(t, tc.want, (&tc.in).TextValue())
+		})
+	}
 }

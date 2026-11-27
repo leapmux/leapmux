@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
@@ -106,13 +107,26 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) }, s.conn.queryError)
 }
 
-func (s *workerStore) InventoryState(ctx context.Context, owner userid.UserID) (store.WorkerInventoryState, error) {
+func (s *workerStore) InventorySnapshot(ctx context.Context, owner userid.UserID) (store.WorkerInventorySnapshot, error) {
 	userID, ok := userid.OwnerFilter(owner)
 	if !ok {
-		return store.WorkerInventoryState{}, store.ErrNotFound
+		return store.WorkerInventorySnapshot{}, store.ErrNotFound
 	}
-	row, err := s.conn.q.GetWorkerEnrollmentRevision(ctx, gendb.GetWorkerEnrollmentRevisionParams{UserID: userID})
-	return store.WorkerInventoryState{Revision: row.Revision, ActiveWorkers: row.ActiveWorkers}, s.conn.queryError(err)
+	var snap store.WorkerInventorySnapshot
+	err := s.conn.withTransaction(ctx, func(tx *mysqlConn) error {
+		rev, err := tx.q.GetWorkerEnrollmentRevision(ctx, userID)
+		if err != nil {
+			return tx.queryError(err)
+		}
+		ids, err := tx.q.ListActiveWorkerIDsByUserID(ctx, userID)
+		if err != nil {
+			return tx.queryError(err)
+		}
+		slices.Sort(ids)
+		snap = store.WorkerInventorySnapshot{Revision: rev, WorkerIDs: ids}
+		return nil
+	})
+	return snap, err
 }
 
 func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) (store.Page[store.WorkerWithOwner], error) {

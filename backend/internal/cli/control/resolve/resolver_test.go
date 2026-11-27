@@ -1013,3 +1013,208 @@ func TestResolve_ExplicitUpgradeShadowsEnvDisagreement(t *testing.T) {
 	assert.Equal(t, "ws-1", got.WorkspaceID)
 	assert.Equal(t, "tile-typed", got.TileID)
 }
+
+func TestResolve_SkipsLocateTabWhenTabTypeAndWorkerIDAreSupplied(t *testing.T) {
+	t.Run("skips Hub LocateTab when SelfIdentity supplies TabType and WorkerID", func(t *testing.T) {
+		listing := resolve.Listing{
+			Getenv: envOf(nil),
+			LocateTab: func(context.Context, string) (*leapmuxv1.WorkspaceTab, error) {
+				return nil, errors.New("hub unavailable")
+			},
+			SelfIdentity: func(context.Context) (resolve.SelfInfo, error) {
+				return resolve.SelfInfo{
+					TabID:    "tab-self",
+					TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+					WorkerID: "worker-local",
+				}, nil
+			},
+		}
+
+		target, err := resolve.Canonical(t.Context(), listing, resolve.KindTab, resolve.SelfTarget)
+		require.NoError(t, err)
+		assert.Equal(t, "tab-self", target.ID)
+		assert.True(t, target.Self)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, target.TabType)
+		assert.Equal(t, "worker-local", target.WorkerID)
+
+		locateCalls := 0
+		deps := stubDeps{
+			locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+				locateCalls++
+				return nil, errors.New("hub unavailable")
+			},
+		}.toDeps()
+
+		got, err := resolve.Resolve(t.Context(), deps,
+			resolve.Need{TabID: true, WorkerID: true, Want: resolve.Wants{TabType: true}},
+			resolve.Inputs{
+				TabID:         target.ID,
+				ExplicitTabID: !target.Self,
+				WorkerID:      target.WorkerID,
+				TabType:       target.TabType,
+			},
+		)
+		require.NoError(t, err)
+		assert.Zero(t, locateCalls, "Hub LocateTab must be skipped when TabType and WorkerID are already known")
+		assert.Equal(t, "tab-self", got.TabID)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+		assert.Equal(t, "worker-local", got.WorkerID)
+		assert.Nil(t, got.Tab)
+	})
+
+	t.Run("still calls Hub LocateTab when WorkspaceID or TileID is needed", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			need resolve.Need
+		}{
+			{
+				name: "required WorkspaceID",
+				need: resolve.Need{TabID: true, WorkspaceID: true, WorkerID: true, Want: resolve.Wants{TabType: true}},
+			},
+			{
+				name: "wanted WorkspaceID",
+				need: resolve.Need{TabID: true, WorkerID: true, Want: resolve.Wants{WorkspaceID: true, TabType: true}},
+			},
+			{
+				name: "required TileID",
+				need: resolve.Need{TabID: true, TileID: true, WorkerID: true, Want: resolve.Wants{TabType: true}},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				locateCalls := 0
+				deps := stubDeps{
+					locateTab: func(_ context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
+						locateCalls++
+						assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, tabType,
+							"known TabType must not constrain LocateTab when FixedTabType is unspecified")
+						assert.Equal(t, "tab-self", tabID)
+						return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-local"), nil
+					},
+				}.toDeps()
+
+				got, err := resolve.Resolve(t.Context(), deps, tc.need, resolve.Inputs{
+					TabID:    "tab-self",
+					WorkerID: "worker-local",
+					TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+				})
+				require.NoError(t, err)
+				assert.Equal(t, 1, locateCalls)
+				assert.Equal(t, "ws-1", got.WorkspaceID)
+				assert.Equal(t, "tile-1", got.TileID)
+				assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+			})
+		}
+	})
+
+	t.Run("still calls Hub LocateTab when TabID or WorkerID is explicit or WorkerID is empty", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			in   resolve.Inputs
+		}{
+			{
+				name: "explicit tab id",
+				in: resolve.Inputs{
+					TabID:         "tab-1",
+					ExplicitTabID: true,
+					WorkerID:      "worker-A",
+					TabType:       leapmuxv1.TabType_TAB_TYPE_AGENT,
+				},
+			},
+			{
+				name: "explicit worker id",
+				in: resolve.Inputs{
+					TabID:            "tab-1",
+					WorkerID:         "worker-A",
+					ExplicitWorkerID: true,
+					TabType:          leapmuxv1.TabType_TAB_TYPE_AGENT,
+				},
+			},
+			{
+				name: "empty worker id",
+				in: resolve.Inputs{
+					TabID:   "tab-1",
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				locateCalls := 0
+				deps := stubDeps{
+					locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+						locateCalls++
+						return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A"), nil
+					},
+				}.toDeps()
+
+				got, err := resolve.Resolve(t.Context(), deps,
+					resolve.Need{TabID: true, WorkerID: true, Want: resolve.Wants{TabType: true}},
+					tc.in,
+				)
+				require.NoError(t, err)
+				assert.Equal(t, 1, locateCalls)
+				assert.Equal(t, "worker-A", got.WorkerID)
+				assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+			})
+		}
+	})
+
+	t.Run("skips Hub LocateTab when FixedTabType satisfies Want.TabType", func(t *testing.T) {
+		locateCalls := 0
+		deps := stubDeps{
+			locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+				locateCalls++
+				return nil, errors.New("should not be called")
+			},
+		}.toDeps()
+
+		got, err := resolve.Resolve(t.Context(), deps,
+			resolve.Need{TabID: true, WorkerID: true, Want: resolve.Wants{TabType: true}},
+			resolve.Inputs{
+				TabID:        "agent-1",
+				WorkerID:     "worker-A",
+				FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+			},
+		)
+		require.NoError(t, err)
+		assert.Zero(t, locateCalls)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+	})
+}
+
+func TestResolve_FixedTabTypeAndTabTypeConflict(t *testing.T) {
+	_, err := resolve.Resolve(t.Context(), resolve.Deps{},
+		resolve.Need{TabID: true, WorkerID: true},
+		resolve.Inputs{
+			TabID:        "term-1",
+			WorkerID:     "worker-A",
+			FixedTabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+			TabType:      leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		},
+	)
+	re := usageError(t, err)
+	assert.Contains(t, re.Message, "conflicting inputs")
+	assert.Contains(t, re.Message, "terminal")
+	assert.Contains(t, re.Message, "agent")
+}
+
+func TestResolve_PreservesLocalTabTypeOnToleratedUnlocatableTab(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+			return nil, fmt.Errorf("%w: quake terminal", resolve.ErrTabNotLocatable)
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(t.Context(), deps,
+		resolve.Need{TabID: true, WorkerID: true, Want: resolve.Wants{WorkspaceID: true, TabType: true}},
+		resolve.Inputs{
+			TabID:    "quake-1",
+			WorkerID: "worker-A",
+			TabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "quake-1", got.TabID)
+	assert.Equal(t, "worker-A", got.WorkerID)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, got.TabType)
+	assert.Nil(t, got.Tab)
+}

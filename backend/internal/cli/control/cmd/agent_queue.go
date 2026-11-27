@@ -519,7 +519,7 @@ func runAgentQueueList(inv *cli.Invocation) (any, error) {
 			rows = append(rows, queueItemRowOf(item))
 		}
 		if hold := queueHold(q.agent.ID, queue); hold != "" && inv.Printer.Format == cli.FormatText {
-			inv.Printer.Notice("%s", hold)
+			_ = inv.Printer.Notice("%s", hold)
 		}
 		reason := pauseReasonOf(queue)
 		var recInfo *queueRecoveryInfo
@@ -963,7 +963,7 @@ func runAgentQueueSetPaused(inv *cli.Invocation, paused bool) (any, error) {
 		queue := resp.GetSnapshot()
 		if !paused {
 			if hold := queueHold(q.agent.ID, queue); hold != "" {
-				inv.Printer.Notice("%s", hold)
+				_ = inv.Printer.Notice("%s", hold)
 			}
 		}
 		reason := pauseReasonOf(queue)

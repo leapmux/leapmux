@@ -46,6 +46,8 @@ type streamEvent struct {
 	// or "startup_failed") and of terminal.status ("starting", "ready",
 	// "startup_failed" or "exited").
 	Status string `json:"status,omitempty"`
+	// TabStatus is the status pill update of tab.status.
+	TabStatus *tabStatusReport `json:"tab_status,omitempty"`
 	// Error is why an agent or a terminal failed to start.
 	Error string `json:"error,omitempty"`
 	// Request is the handle of the request of agent.request and
@@ -126,11 +128,19 @@ type todoCounts struct {
 	InProgress int `json:"in_progress"`
 }
 
+func (c todoCounts) TextValue() string {
+	return fmt.Sprintf("%d/%d (%d in progress)", c.Completed, c.Total, c.InProgress)
+}
+
 // taskCounts counts the background tasks of an agent. Active counts the
 // tasks that did not end yet.
 type taskCounts struct {
 	Total  int `json:"total"`
 	Active int `json:"active"`
+}
+
+func (c taskCounts) TextValue() string {
+	return fmt.Sprintf("%d/%d active", c.Active, c.Total)
 }
 
 // progressReport is a progress report of a program in a terminal.
@@ -139,6 +149,10 @@ type progressReport struct {
 	// report that clears the progress.
 	State   string `json:"state,omitempty"`
 	Percent int32  `json:"percent"`
+}
+
+func (r progressReport) TextValue() string {
+	return progressSummary(r)
 }
 
 // scopeCounts counts what the stream watches.
@@ -151,6 +165,54 @@ type scopeCounts struct {
 	WorkersLive int  `json:"workers_live"`
 	HubLive     bool `json:"hub_live"`
 }
+
+func (c scopeCounts) TextValue() string {
+	hub := "down"
+	if c.HubLive {
+		hub = "live"
+	}
+	return fmt.Sprintf("ws=%d tabs=%d workers=%d/%d hub=%s", c.Workspaces, c.Tabs, c.WorkersLive, c.Workers, hub)
+}
+
+// tabStatusReport is the status pill update of a tab.status event.
+type tabStatusReport struct {
+	Text            string  `json:"text,omitempty"`
+	Tone            string  `json:"tone,omitempty"`
+	ProgressPercent *uint32 `json:"progress_percent,omitempty"`
+	Cleared         bool    `json:"cleared,omitempty"`
+}
+
+func (r tabStatusReport) TextValue() string {
+	if r.Cleared {
+		return "cleared"
+	}
+	var b strings.Builder
+	b.WriteString(r.Text)
+	if r.ProgressPercent != nil {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "(%d%%)", *r.ProgressPercent)
+	}
+	if r.Tone != "" {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "[%s]", r.Tone)
+	}
+	if b.Len() == 0 {
+		return "set"
+	}
+	return b.String()
+}
+
+var (
+	_ cli.TextValuer = todoCounts{}
+	_ cli.TextValuer = taskCounts{}
+	_ cli.TextValuer = progressReport{}
+	_ cli.TextValuer = scopeCounts{}
+	_ cli.TextValuer = tabStatusReport{}
+)
 
 // eventTimeLayout is the time of a text line: RFC 3339 with milliseconds
 // and the offset of the local time zone.
@@ -169,12 +231,14 @@ func (e streamEvent) TextLine() string {
 		{"workspace", e.WorkspaceID},
 		{"tab", e.TabID},
 		{"worker", e.WorkerID},
-		{"source", e.Source},
 	} {
 		if id.value == "" {
 			continue
 		}
 		fmt.Fprintf(&b, " %s=%s", id.key, cli.ShortID(id.value))
+	}
+	if e.Source != "" {
+		fmt.Fprintf(&b, " source=%s", e.Source)
 	}
 	if e.Sequence != nil {
 		fmt.Fprintf(&b, " sequence=%d", *e.Sequence)
@@ -198,12 +262,23 @@ func (e streamEvent) TextLine() string {
 	return b.String()
 }
 
+// unavailableEvent completes base as a stream.unavailable notice for err.
+func unavailableEvent(base streamEvent, err error, retrying bool) streamEvent {
+	e := cli.FromError(inBandError(err))
+	base.Kind = kindStreamUnavailable
+	base.Code = string(e.Code)
+	base.Message = e.Message
+	base.Retrying = new(retrying)
+	if retrying {
+		base.Summary = e.Message + "; retrying"
+	} else {
+		base.Summary = e.Message + "; the stream does not try again"
+	}
+	return base
+}
+
 // tokenWords is an enum token as words: "waiting_for_user" is
 // "waiting for user".
 func tokenWords(token string) string {
 	return strings.ReplaceAll(token, "_", " ")
 }
-
-// boolPtr returns a pointer to v, for an optional field that must state
-// false too.
-func boolPtr(v bool) *bool { return &v }

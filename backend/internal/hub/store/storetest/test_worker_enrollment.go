@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"slices"
 	"sync"
 	"testing"
 
@@ -17,17 +18,32 @@ func (s *Suite) testWorkerEnrollmentRevision(t *testing.T) {
 	st := s.NewStore(t)
 	owner := userid.MustNew(SeedUser(t, st, "worker-membership-owner").ID)
 	other := userid.MustNew(SeedUser(t, st, "worker-membership-stranger").ID)
-	revision := func(account userid.UserID) int64 {
-		position, err := st.Workers().InventoryState(ctx, account)
+	snapshot := func(account userid.UserID) store.WorkerInventorySnapshot {
+		snap, err := st.Workers().InventorySnapshot(ctx, account)
 		require.NoError(t, err)
-		return position.Revision
+		return snap
 	}
-	assert.Zero(t, revision(owner))
+
+	_, err := st.Workers().InventorySnapshot(ctx, userid.UserID{})
+	require.ErrorIs(t, err, store.ErrNotFound)
+
+	initial := snapshot(owner)
+	assert.Zero(t, initial.Revision)
+	assert.Empty(t, initial.WorkerIDs)
+
 	worker := SeedWorker(t, st, owner.String())
-	assert.Equal(t, int64(1), revision(owner))
-	assert.Zero(t, revision(other))
+	enrolled := snapshot(owner)
+	assert.Equal(t, int64(1), enrolled.Revision)
+	assert.Equal(t, []string{worker.ID}, enrolled.WorkerIDs)
+	otherSnap := snapshot(other)
+	assert.Zero(t, otherSnap.Revision)
+	assert.Empty(t, otherSnap.WorkerIDs)
+
 	require.NoError(t, st.Workers().UpdateLastSeen(ctx, worker.ID))
-	assert.Equal(t, int64(1), revision(owner))
+	afterHeartbeat := snapshot(owner)
+	assert.Equal(t, int64(1), afterHeartbeat.Revision)
+	assert.Equal(t, []string{worker.ID}, afterHeartbeat.WorkerIDs)
+
 	changed, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{ID: worker.ID, RegisteredBy: owner})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), changed)
@@ -36,12 +52,14 @@ func (s *Suite) testWorkerEnrollmentRevision(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, absent.Rows)
-	removed, err := st.Workers().InventoryState(ctx, owner)
-	require.NoError(t, err)
-	assert.Zero(t, removed.ActiveWorkers)
-	assert.Equal(t, int64(1), revision(owner), "an empty listing still proves the Worker came and went")
+	removed := snapshot(owner)
+	assert.Empty(t, removed.WorkerIDs)
+	assert.Equal(t, int64(1), removed.Revision, "an empty listing still proves the Worker came and went")
+
 	require.NoError(t, st.Workers().MarkDeleted(ctx, worker.ID))
-	assert.Equal(t, int64(1), revision(owner), "the acknowledgement does not change the active inventory")
+	deleted := snapshot(owner)
+	assert.Equal(t, int64(1), deleted.Revision, "the acknowledgement does not change the active inventory")
+	assert.Empty(t, deleted.WorkerIDs)
 
 	var rolledBackID string
 	require.ErrorIs(t, st.RunInTransaction(ctx, func(tx store.Store) error {
@@ -50,17 +68,24 @@ func (s *Suite) testWorkerEnrollmentRevision(t *testing.T) {
 	}), assert.AnError)
 	_, err = st.Workers().GetByID(ctx, rolledBackID)
 	require.ErrorIs(t, err, store.ErrNotFound)
-	assert.Equal(t, int64(1), revision(owner))
+	afterRollback := snapshot(owner)
+	assert.Equal(t, int64(1), afterRollback.Revision)
+	assert.Empty(t, afterRollback.WorkerIDs)
+
 	require.Error(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 		ID: worker.ID, RegisteredBy: owner, AuthTokenHash: FixtureSecretHash("duplicate"), PublicKeys: WorkerKeys(0x42),
 	}))
-	assert.Equal(t, int64(1), revision(owner))
+	afterDup := snapshot(owner)
+	assert.Equal(t, int64(1), afterDup.Revision)
+	assert.Empty(t, afterDup.WorkerIDs)
 
 	const writers = 4
 	var group sync.WaitGroup
 	results := make(chan error, writers)
-	for range writers {
+	wantIDs := make([]string, writers)
+	for i := range writers {
 		workerID := id.Generate()
+		wantIDs[i] = workerID
 		params := store.CreateWorkerParams{
 			ID: workerID, RegisteredBy: owner, AuthTokenHash: FixtureSecretHash(workerID), PublicKeys: WorkerKeys(0x42),
 		}
@@ -71,6 +96,11 @@ func (s *Suite) testWorkerEnrollmentRevision(t *testing.T) {
 	for err := range results {
 		require.NoError(t, err)
 	}
-	assert.Equal(t, int64(1+writers), revision(owner))
-	assert.Zero(t, revision(other))
+	slices.Sort(wantIDs)
+	afterConcurrent := snapshot(owner)
+	assert.Equal(t, int64(1+writers), afterConcurrent.Revision)
+	assert.Equal(t, wantIDs, afterConcurrent.WorkerIDs)
+	otherFinal := snapshot(other)
+	assert.Zero(t, otherFinal.Revision)
+	assert.Empty(t, otherFinal.WorkerIDs)
 }

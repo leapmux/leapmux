@@ -23,9 +23,10 @@ import (
 // places the tabs, and the stream prints JSON into its buffers.
 type directStream struct {
 	*eventStream
-	feed   *workerFeed
-	out    bytes.Buffer
-	errOut bytes.Buffer
+	cliPrinter *cli.Printer
+	feed       *workerFeed
+	out        bytes.Buffer
+	errOut     bytes.Buffer
 }
 
 // The tabs of a directStream: an agent and a terminal on worker-A in ws-1.
@@ -39,8 +40,9 @@ func newDirectStream(t *testing.T, kinds ...string) *directStream {
 	filter, err := parseKindFilter(kinds)
 	require.NoError(t, err)
 	d := &directStream{feed: &workerFeed{workerID: "worker-A"}}
+	d.cliPrinter = &cli.Printer{Out: &d.out, Err: &d.errOut, Format: cli.FormatJSON}
 	d.eventStream = newEventStream(eventStreamConfig{
-		printer: &eventPrinter{p: &cli.Printer{Out: &d.out, Err: &d.errOut, Format: cli.FormatJSON}, filter: filter},
+		printer: newEventPrinter(d.cliPrinter, filter, 0),
 		clock:   testutil.NewQuartzMock(t),
 	})
 	d.state = crdt.NewState("u-1")
@@ -52,7 +54,7 @@ func newDirectStream(t *testing.T, kinds ...string) *directStream {
 		directTerminal: {ID: directTerminal, Type: leapmuxv1.TabType_TAB_TYPE_TERMINAL, WorkspaceID: "ws-1", WorkerID: "worker-A"},
 	}
 	d.feeds["worker-A"] = &feedState{
-		feed: d.feed, settled: true, health: sourceHealth{live: true, everLive: true},
+		workerID: "worker-A", feed: d.feed, settled: true, health: sourceHealth{live: true, everLive: true},
 		interest: watchInterest{agents: []string{directAgent}, terminals: []string{directTerminal}},
 	}
 	return d
@@ -108,10 +110,10 @@ func oneofFields(m proto.Message, name string) []string {
 	return out
 }
 
-// TestEventMapping_EveryAgentEventHasADecision pins the mapping of each arm
-// of AgentEvent: the kind that it prints, or "" for an arm that prints
-// nothing. The case list must hold every arm, so a new arm fails here until
-// someone decides its kind.
+// TestEventMapping_EveryAgentEventHasADecision pins the mapping of each branch
+// of AgentEvent: the kind that it prints, or "" for a branch that prints
+// nothing. The case list must hold every branch, so a new branch fails here
+// until someone decides its kind.
 func TestEventMapping_EveryAgentEventHasADecision(t *testing.T) {
 	ready := leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY
 	cases := map[string]struct {
@@ -139,8 +141,8 @@ func TestEventMapping_EveryAgentEventHasADecision(t *testing.T) {
 		"background_tasks_changed": {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_BackgroundTasksChanged{BackgroundTasksChanged: &leapmuxv1.AgentBackgroundTaskSnapshot{}}}, kindAgentBackgroundTasks},
 		"activity_changed":         {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_ActivityChanged{ActivityChanged: &leapmuxv1.AgentActivityChanged{State: idle}}}, kindAgentActivity},
 	}
-	arms := oneofFields(&leapmuxv1.AgentEvent{}, "event")
-	assert.ElementsMatch(t, arms, slices.Collect(maps.Keys(cases)), "every arm of AgentEvent needs a decision here")
+	branches := oneofFields(&leapmuxv1.AgentEvent{}, "event")
+	assert.ElementsMatch(t, branches, slices.Collect(maps.Keys(cases)), "every branch of AgentEvent needs a decision here")
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			d := newDirectStream(t)
@@ -170,7 +172,7 @@ func TestEventMapping_EveryTerminalEventHasADecision(t *testing.T) {
 	}{
 		"data":            {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{Data: []byte("ls\n")}}}, ""},
 		"screen_geometry": {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_ScreenGeometry{ScreenGeometry: &leapmuxv1.TerminalScreenGeometry{Cols: 120, Rows: 40}}}, ""},
-		"closed":          {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: int32Ptr(3)}}}, kindTerminalExit},
+		"closed":          {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: proto.Int32(3)}}}, kindTerminalExit},
 		"status_change":   {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{Status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY}}}, kindTerminalStatus},
 		"bell":            {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Bell{Bell: &leapmuxv1.TerminalBell{}}}, kindTerminalBell},
 		"notification":    {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Notification{Notification: &leapmuxv1.TerminalNotification{Body: "done"}}}, kindTerminalNotification},
@@ -178,7 +180,7 @@ func TestEventMapping_EveryTerminalEventHasADecision(t *testing.T) {
 		"progress":        {&leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Progress{Progress: &leapmuxv1.TerminalProgress{State: leapmuxv1.TerminalProgress_STATE_NORMAL, Percent: 5}}}, kindTerminalProgress},
 	}
 	assert.ElementsMatch(t, oneofFields(&leapmuxv1.TerminalEvent{}, "event"), slices.Collect(maps.Keys(cases)),
-		"every arm of TerminalEvent needs a decision here")
+		"every branch of TerminalEvent needs a decision here")
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			d := newDirectStream(t)
@@ -197,17 +199,17 @@ func TestEventMapping_EveryTerminalEventHasADecision(t *testing.T) {
 	}
 }
 
-// TestEventMapping_EveryHubFrameHasADecision pins what each arm of
-// WatchUserEvent does on its own. The CRDT arms print tab events only at
+// TestEventMapping_EveryHubFrameHasADecision pins what each branch of
+// WatchUserEvent does on its own. The CRDT branches print tab events only at
 // batch_end, which the projection tests cover.
 func TestEventMapping_EveryHubFrameHasADecision(t *testing.T) {
 	printsAlone := map[string]string{
 		"initial": "", "batch": "", "entity_materialized": "", "entity_removed": "", "batch_end": "",
-		"presence": "", "delta": "", "workers_changed": "",
+		"presence": "", "delta": "", "workers_changed": "", "layout_events": "",
 		"created": kindWorkspaceCreated, "renamed": kindWorkspaceRenamed, "deleted": kindWorkspaceDeleted,
 	}
 	assert.ElementsMatch(t, oneofFields(&leapmuxv1.WatchUserEvent{}, "event"), slices.Collect(maps.Keys(printsAlone)),
-		"every arm of WatchUserEvent needs a decision here")
+		"every branch of WatchUserEvent needs a decision here")
 
 	d := newDirectStream(t)
 	d.workspace = ""
@@ -464,7 +466,7 @@ func TestEventMapping_TerminalEvents(t *testing.T) {
 	} {
 		d.terminal(t, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Progress{Progress: p}})
 	}
-	d.terminal(t, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: int32Ptr(0)}}})
+	d.terminal(t, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: proto.Int32(0)}}})
 	status(leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, "")
 	status(leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, "zsh: not found")
 
@@ -540,4 +542,107 @@ func TestEventMapping_Rejections(t *testing.T) {
 	assert.Equal(t, string(cli.CodePermissionDenied), got[1].Code)
 	assert.Contains(t, got[1].Message, "terminal tm-1")
 	assert.Equal(t, string(cli.CodeInternal), got[2].Code, "the protocol reads an unknown reason as durable")
+}
+
+func TestEventMapping_PrivateEvents(t *testing.T) {
+	t.Run("tab status deduplicates identical replays and formats empty text with progress", func(t *testing.T) {
+		d := newDirectStream(t)
+		send := func(st *leapmuxv1.TabStatus) {
+			require.NoError(t, d.onPrivateEvent(workerPrivateOutput{
+				workerID: "worker-A",
+				event: &leapmuxv1.WorkerPrivateEvent{
+					Event: &leapmuxv1.WorkerPrivateEvent_TabStatusChanged{
+						TabStatusChanged: &leapmuxv1.TabStatusChanged{TabId: directAgent, Status: st},
+					},
+				},
+			}))
+		}
+		fifty := uint32(50)
+		seventy := uint32(70)
+		send(&leapmuxv1.TabStatus{Text: "Building", ProgressPercent: &fifty, Tone: leapmuxv1.TabStatusTone_TAB_STATUS_TONE_UNSPECIFIED})
+		send(&leapmuxv1.TabStatus{Text: "Building", ProgressPercent: &fifty, Tone: leapmuxv1.TabStatusTone_TAB_STATUS_TONE_UNSPECIFIED})
+		send(&leapmuxv1.TabStatus{Text: "Building", ProgressPercent: &fifty, Tone: leapmuxv1.TabStatusTone_TAB_STATUS_TONE_WARNING})
+		send(&leapmuxv1.TabStatus{Text: "", ProgressPercent: &seventy})
+		send(nil)
+		send(nil)
+
+		got := d.events(t)
+		require.Len(t, got, 4, "unchanged status replays and duplicate clears print nothing")
+		for i, ev := range got {
+			assert.Empty(t, ev.Status, "tab.status[%d] must populate TabStatus rather than Status", i)
+			require.NotNil(t, ev.TabStatus, "tab.status[%d] must populate TabStatus", i)
+		}
+		assert.Equal(t, "Building (50%)", got[0].Summary)
+		assert.Equal(t, &tabStatusReport{Text: "Building", ProgressPercent: &fifty}, got[0].TabStatus)
+		assert.Equal(t, "Building (50%)", got[1].Summary, "a tone change emits")
+		assert.Equal(t, &tabStatusReport{Text: "Building", Tone: "warning", ProgressPercent: &fifty}, got[1].TabStatus)
+		assert.Equal(t, "(70%)", got[2].Summary, "empty text with progress omits the leading space")
+		assert.Equal(t, &tabStatusReport{ProgressPercent: &seventy}, got[2].TabStatus)
+		assert.Equal(t, &tabStatusReport{Cleared: true}, got[3].TabStatus)
+		assert.Equal(t, "status cleared", got[3].Summary)
+
+		// Closing and re-opening resets tracked status.
+		d.forgetTab(directAgent)
+		send(nil)
+		require.Len(t, d.events(t), 1)
+	})
+
+	t.Run("notification summary avoids leading colon when title is empty", func(t *testing.T) {
+		d := newDirectStream(t)
+		notify := func(id, title, body string) {
+			require.NoError(t, d.onPrivateEvent(workerPrivateOutput{
+				workerID: "worker-A",
+				event: &leapmuxv1.WorkerPrivateEvent{
+					Event: &leapmuxv1.WorkerPrivateEvent_UserNotification{
+						UserNotification: &leapmuxv1.UserNotification{Id: id, Title: title, Body: body},
+					},
+				},
+			}))
+		}
+		notify("n-1", "", "Body only")
+		notify("n-2", "Title only", "")
+		notify("n-3", "Build", "Done")
+
+		got := d.events(t)
+		require.Len(t, got, 3)
+		assert.Equal(t, "Body only", got[0].Summary)
+		assert.Equal(t, "Title only", got[1].Summary)
+		assert.Equal(t, "Build: Done", got[2].Summary)
+	})
+
+	t.Run("destinationless notifications are rejected when workspace or tab scope is set", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			workspace string
+			tabID     string
+			wantCount int
+		}{
+			{"unscoped accepts destinationless", "", "", 2},
+			{"workspace scope rejects destinationless", "ws-1", "", 0},
+			{"tab scope rejects destinationless", "", directAgent, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				d := newDirectStream(t)
+				d.workspace = tc.workspace
+				d.tabID = tc.tabID
+				require.NoError(t, d.onPrivateEvent(workerPrivateOutput{
+					workerID: "worker-A",
+					event: &leapmuxv1.WorkerPrivateEvent{
+						Event: &leapmuxv1.WorkerPrivateEvent_UserNotification{
+							UserNotification: &leapmuxv1.UserNotification{Id: "n-1", Title: "Global"},
+						},
+					},
+				}))
+				require.NoError(t, d.onPrivateEvent(workerPrivateOutput{
+					workerID: "worker-A",
+					event: &leapmuxv1.WorkerPrivateEvent{
+						Event: &leapmuxv1.WorkerPrivateEvent_UserNotificationCleared{
+							UserNotificationCleared: &leapmuxv1.UserNotificationCleared{Id: "n-1"},
+						},
+					},
+				}))
+				assert.Len(t, d.events(t), tc.wantCount)
+			})
+		}
+	})
 }

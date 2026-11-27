@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -17,27 +17,23 @@ import (
 	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
-const eventCheckpointVersion = 1
-const maxEventCheckpointBytes = contracts.MaxMessageSize
-const eventCheckpointLockDirectory = ".leapmux-event-locks"
-const layoutCheckpointScope = "layout"
+const (
+	eventCheckpointVersion       = 1
+	maxEventCheckpointBytes      = contracts.MaxMessageSize
+	eventCheckpointLockDirectory = ".leapmux-event-locks"
+	tabCheckpointScope           = "tab"
+	layoutCheckpointScope        = "layout"
+	accountCheckpointScope       = "account"
+)
 
 type eventCheckpoint struct {
-	Version     int                     `json:"version"`
-	WorkerID    string                  `json:"worker_id,omitempty"`
-	TabType     string                  `json:"tab_type,omitempty"`
-	TabID       string                  `json:"tab_id,omitempty"`
-	JournalID   string                  `json:"journal_id"`
-	TabStreamID string                  `json:"tab_stream_id,omitempty"`
-	Filter      []string                `json:"kinds"`
-	Sequence    int64                   `json:"sequence"`
-	Cursor      []byte                  `json:"cursor"`
-	Scope       string                  `json:"scope,omitempty"`
-	WorkspaceID string                  `json:"workspace_id,omitempty"`
-	Account     *accountEventCheckpoint `json:"account,omitempty"`
+	Version int                     `json:"version"`
+	Scope   string                  `json:"scope"`
+	Filter  []string                `json:"kinds"`
+	Tab     *tabEventCheckpoint     `json:"tab,omitempty"`
+	Layout  *layoutEventCheckpoint  `json:"layout,omitempty"`
+	Account *accountEventCheckpoint `json:"account,omitempty"`
 }
-
-const accountCheckpointScope = "account"
 
 type eventHistoryPosition struct {
 	JournalID string `json:"journal_id"`
@@ -47,6 +43,30 @@ type eventHistoryPosition struct {
 
 func (p *eventHistoryPosition) valid() bool {
 	return p != nil && p.JournalID != "" && p.Sequence >= 0 && len(p.Cursor) != 0
+}
+
+type tabEventCheckpoint struct {
+	WorkerID    string                `json:"worker_id"`
+	TabType     string                `json:"tab_type"`
+	TabID       string                `json:"tab_id"`
+	TabStreamID string                `json:"tab_stream_id"`
+	Position    *eventHistoryPosition `json:"position"`
+}
+
+func (p *tabEventCheckpoint) valid() bool {
+	return p != nil &&
+		(p.TabType == "agent" || p.TabType == "terminal") &&
+		p.WorkerID != "" && p.TabID != "" && p.TabStreamID != "" &&
+		p.Position.valid()
+}
+
+type layoutEventCheckpoint struct {
+	WorkspaceID string                `json:"workspace_id,omitempty"`
+	Position    *eventHistoryPosition `json:"position"`
+}
+
+func (p *layoutEventCheckpoint) valid() bool {
+	return p != nil && p.Position.valid()
 }
 
 type accountWorkerPositions map[string]*eventHistoryPosition
@@ -124,7 +144,48 @@ func openEventCheckpoint(path string) (*eventCheckpointFile, error) {
 	return &eventCheckpointFile{path: path, lock: lock}, nil
 }
 
-func (f *eventCheckpointFile) close() { _ = f.lock.Close() }
+func (f *eventCheckpointFile) close() {
+	_ = filelock.Unlock(f.lock)
+	_ = f.lock.Close()
+}
+
+func checkpointScopeLabel(scope string) string {
+	switch scope {
+	case tabCheckpointScope:
+		return "a tab stream"
+	case layoutCheckpointScope:
+		return "a layout stream"
+	case accountCheckpointScope:
+		return "an account stream"
+	default:
+		return "a different event scope"
+	}
+}
+
+func openCheckedEventCheckpoint(path, expectedScope string) (*eventCheckpointFile, *eventCheckpoint, error) {
+	file, err := openEventCheckpoint(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	state, err := file.read()
+	if err != nil {
+		file.close()
+		return nil, nil, err
+	}
+	if state != nil && state.Scope != expectedScope {
+		file.close()
+		return nil, nil, cli.Newf(cli.CodeConflict, "the event checkpoint belongs to %s", checkpointScopeLabel(state.Scope))
+	}
+	return file, state, nil
+}
+
+func verifyCheckpointFilter(saved *eventCheckpoint, kinds []string) error {
+	if saved == nil || slices.Equal(kinds, saved.Filter) {
+		return nil
+	}
+	return cli.Newf(cli.CodeConflict, "the event checkpoint uses a different --kind selection").
+		WithHint("use the saved kind selection or another checkpoint file")
+}
 
 func (f *eventCheckpointFile) read() (*eventCheckpoint, error) {
 	info, err := os.Lstat(f.path)
@@ -175,21 +236,13 @@ func (state eventCheckpoint) valid() bool {
 	if state.Version != eventCheckpointVersion || state.Filter == nil {
 		return false
 	}
-	if state.Scope == accountCheckpointScope {
-		return state.Account.valid() && state.WorkerID == "" && state.TabID == "" &&
-			state.TabType == "" && state.TabStreamID == "" && state.WorkspaceID == "" &&
-			state.JournalID == "" && state.Sequence == 0 && len(state.Cursor) == 0
-	}
-	if state.Account != nil || state.JournalID == "" || state.Sequence < 0 || len(state.Cursor) == 0 {
-		return false
-	}
 	switch state.Scope {
-	case "":
-		return (state.TabType == "agent" || state.TabType == "terminal") &&
-			state.WorkerID != "" && state.TabID != "" && state.TabStreamID != "" &&
-			state.WorkspaceID == ""
+	case tabCheckpointScope:
+		return state.Tab.valid() && state.Layout == nil && state.Account == nil
 	case layoutCheckpointScope:
-		return state.WorkerID == "" && state.TabID == "" && state.TabType == "" && state.TabStreamID == ""
+		return state.Layout.valid() && state.Tab == nil && state.Account == nil
+	case accountCheckpointScope:
+		return state.Account.valid() && state.Tab == nil && state.Layout == nil
 	default:
 		return false
 	}
@@ -209,39 +262,10 @@ func (f *eventCheckpointFile) save(state *eventCheckpoint) error {
 	return nil
 }
 
-// eventCheckpointKinds spells the selected facts in the vocabulary's order.
-// Equivalent flags share a checkpoint. Changing what may be skipped requires
-// a different checkpoint, even when the cursor itself remains valid.
+// eventCheckpointKinds spells the selected retained facts for tabType in the
+// vocabulary's order. Equivalent flags share a checkpoint. Changing what may
+// be skipped requires a different checkpoint, even when the cursor itself
+// remains valid.
 func eventCheckpointKinds(filter kindFilter, tabType leapmuxv1.TabType) []string {
-	family := tabTypeName(tabType)
-	result := make([]string, 0)
-	for _, kind := range eventKinds {
-		if kindFamily(kind.name) == family && filter.selects(kind.name) {
-			result = append(result, kind.name)
-		}
-	}
-	return result
-}
-
-type eventOutputWriter struct{ io.Writer }
-
-func (w eventOutputWriter) Write(data []byte) (int, error) {
-	n, err := w.Writer.Write(data)
-	if n != len(data) && err == nil {
-		err = io.ErrShortWrite
-	}
-	return n, err
-}
-
-func printCheckpointEvent(printer *cli.Printer, filter kindFilter, event streamEvent) error {
-	if !filter.selects(event.Kind) && event.Kind != kindStreamHeartbeat {
-		if kindFamily(event.Kind) == "stream" {
-			_, err := fmt.Fprintln(eventOutputWriter{printer.Err}, event.TextLine())
-			return err
-		}
-		return nil
-	}
-	strict := *printer
-	strict.Out = eventOutputWriter{printer.Out}
-	return strict.Event(event)
+	return filter.retainedKinds(tabReplayJournal(tabType))
 }

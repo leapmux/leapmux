@@ -188,6 +188,13 @@ const (
 // one matches too many ids to be useful.
 const MinPrefixLength = 4
 
+// SelfInfo holds the calling tab's identity from a local Worker IPC Whoami RPC.
+type SelfInfo struct {
+	TabID    string
+	TabType  leapmuxv1.TabType
+	WorkerID string
+}
+
 // Target is a target that Canonical resolved to a full id.
 type Target struct {
 	ID string
@@ -197,6 +204,13 @@ type Target struct {
 	// Parent reports that the target is the calling agent's parent agent on
 	// the calling Worker, selected by the word "parent".
 	Parent bool
+	// TabType is the tab's known type when resolution determined it without
+	// querying the Hub, such as from SelfIdentity or the ambient environment.
+	TabType leapmuxv1.TabType
+	// WorkerID is the tab's hosting Worker id when resolution determined it
+	// without querying the Hub, such as from SelfIdentity or the ambient
+	// environment.
+	WorkerID string
 	// Tab is the hub's row for a tab target, when the resolution read it.
 	// It is nil for a full id, which costs no call, and for a quake
 	// terminal, which has no row.
@@ -228,6 +242,10 @@ type Listing struct {
 	// ParentAgent returns the parent agent id of selfAgentID on workerID,
 	// or "" when that agent has no parent.
 	ParentAgent func(ctx context.Context, workerID, selfAgentID string) (string, error)
+	// SelfIdentity optionally returns the calling tab's identity from a local
+	// Worker IPC Whoami RPC when environment variables are absent or incomplete,
+	// or when the caller needs TabType and WorkerID without calling the Hub.
+	SelfIdentity func(ctx context.Context) (SelfInfo, error)
 	// Getenv reads the environment. Nil reads os.Getenv.
 	Getenv func(string) string
 }
@@ -247,19 +265,39 @@ func (l Listing) getenv(key string) string {
 // LEAPMUX_CONTROL_TAB_ID does not: in a quake panel, the tab id identifies a
 // neighbouring tab.
 func (l Listing) SelfTabID(kind Kind) string {
+	tabID, _, _, _ := l.envSelfTab(kind)
+	return tabID
+}
+
+// envSelfTab reads the calling tab's identity from environment variables.
+// explicitMismatch is true when the environment identifies a tab whose type
+// contradicts kind (for example, LEAPMUX_CONTROL_TAB_TYPE=terminal when
+// resolving KindAgent).
+func (l Listing) envSelfTab(kind Kind) (tabID string, tabType leapmuxv1.TabType, workerID string, explicitMismatch bool) {
+	workerID = l.getenv(controlenv.WorkerIDVariable)
 	if kind == KindTerminal {
 		if id := l.getenv(controlenv.TerminalIDVariable); id != "" {
-			return id
+			return id, leapmuxv1.TabType_TAB_TYPE_TERMINAL, workerID, false
 		}
 	}
-	id := l.getenv(controlenv.TabIDVariable)
+	tabID = l.getenv(controlenv.TabIDVariable)
+	envType, _ := ParseTabType(l.getenv(controlenv.TabTypeVariable))
 	if want := kind.TabType(); want != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
-		got, _ := ParseTabType(l.getenv(controlenv.TabTypeVariable))
-		if got != want {
-			return ""
+		if envType != want {
+			mismatch := tabID != "" && envType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED
+			return "", leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, workerID, mismatch
 		}
 	}
-	return id
+	return tabID, envType, workerID, false
+}
+
+// matchesTabKind reports whether tabType is a concrete tab type accepted by kind.
+func matchesTabKind(kind Kind, tabType leapmuxv1.TabType) bool {
+	if tabType == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+		return false
+	}
+	want := kind.TabType()
+	return want == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED || tabType == want
 }
 
 // Canonical resolves the target input of kind to a full id.
@@ -316,8 +354,23 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 }
 
 func (l Listing) parent(ctx context.Context) (Target, error) {
-	selfID := l.SelfTabID(KindAgent)
-	workerID := l.getenv(controlenv.WorkerIDVariable)
+	selfID, _, workerID, explicitMismatch := l.envSelfTab(KindAgent)
+	if !explicitMismatch && (selfID == "" || workerID == "") && l.SelfIdentity != nil {
+		info, err := l.SelfIdentity(ctx)
+		if err != nil {
+			return Target{}, err
+		}
+		info.TabID = strings.TrimSpace(info.TabID)
+		info.WorkerID = strings.TrimSpace(info.WorkerID)
+		if info.TabID != "" && matchesTabKind(KindAgent, info.TabType) {
+			if selfID == "" {
+				selfID = info.TabID
+			}
+			if workerID == "" {
+				workerID = info.WorkerID
+			}
+		}
+	}
 	if selfID == "" || workerID == "" {
 		return Target{}, cli.Usagef(`"parent" selects the parent of the calling agent, and this shell does not run inside a LeapMux agent tab`).
 			WithHint("give an explicit agent id instead")
@@ -333,7 +386,12 @@ func (l Listing) parent(ctx context.Context) (Target, error) {
 	if parentID == "" {
 		return Target{}, cli.Newf(cli.CodeNotFound, "agent %s has no parent agent", selfID)
 	}
-	return Target{ID: parentID, Parent: true}, nil
+	return Target{
+		ID:       parentID,
+		Parent:   true,
+		TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+		WorkerID: workerID,
+	}, nil
 }
 
 func (l Listing) tabTitles(ctx context.Context, tabs []*leapmuxv1.WorkspaceTab) map[string]string {
@@ -434,11 +492,27 @@ func (l Listing) self(ctx context.Context, kind Kind) (Target, error) {
 	switch kind {
 	case KindWorker:
 		if id := l.getenv(controlenv.WorkerIDVariable); id != "" {
-			return Target{ID: id, Self: true}, nil
+			return Target{ID: id, Self: true, WorkerID: id}, nil
+		}
+		if l.SelfIdentity != nil {
+			info, err := l.SelfIdentity(ctx)
+			if err != nil {
+				return Target{}, err
+			}
+			if id := strings.TrimSpace(info.WorkerID); id != "" {
+				return Target{ID: id, Self: true, WorkerID: id}, nil
+			}
 		}
 		return Target{}, notInsideTab(kind)
 	case KindTile, KindWorkspace:
 		tabID := l.SelfTabID(KindTab)
+		if tabID == "" && l.SelfIdentity != nil {
+			info, err := l.SelfIdentity(ctx)
+			if err != nil {
+				return Target{}, err
+			}
+			tabID = strings.TrimSpace(info.TabID)
+		}
 		if tabID == "" {
 			return Target{}, notInsideTab(kind)
 		}
@@ -451,13 +525,60 @@ func (l Listing) self(ctx context.Context, kind Kind) (Target, error) {
 		}
 		return Target{ID: tab.GetWorkspaceId(), Self: true}, nil
 	case KindTab, KindAgent, KindTerminal:
-		id := l.SelfTabID(kind)
-		if id == "" {
-			return Target{}, notInsideTab(kind)
-		}
-		return Target{ID: id, Self: true}, nil
+		return l.selfTab(ctx, kind)
 	}
 	return Target{}, fmt.Errorf("resolve: no %q for kind %d", SelfTarget, kind)
+}
+
+func (l Listing) selfTab(ctx context.Context, kind Kind) (Target, error) {
+	tabID, tabType, workerID, explicitMismatch := l.envSelfTab(kind)
+	if explicitMismatch {
+		return Target{}, notInsideTab(kind)
+	}
+	// When environment variables already identify the calling tab (for example,
+	// LEAPMUX_CONTROL_TERMINAL_ID in a quake panel or an explicit env override),
+	// keep that tab ID and only supplement missing metadata from SelfIdentity
+	// when SelfIdentity agrees on the tab ID (or for WorkerID).
+	if tabID != "" {
+		if (tabType == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED || workerID == "") && l.SelfIdentity != nil {
+			info, err := l.SelfIdentity(ctx)
+			if err != nil {
+				return Target{}, err
+			}
+			infoTabID := strings.TrimSpace(info.TabID)
+			if tabType == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED && infoTabID == tabID && matchesTabKind(kind, info.TabType) {
+				tabType = info.TabType
+			}
+			if workerID == "" {
+				workerID = strings.TrimSpace(info.WorkerID)
+			}
+		}
+		return Target{ID: tabID, Self: true, TabType: tabType, WorkerID: workerID}, nil
+	}
+	if l.SelfIdentity != nil {
+		info, err := l.SelfIdentity(ctx)
+		if err != nil {
+			return Target{}, err
+		}
+		info.TabID = strings.TrimSpace(info.TabID)
+		info.WorkerID = strings.TrimSpace(info.WorkerID)
+		if info.TabID != "" {
+			if !matchesTabKind(kind, info.TabType) {
+				return Target{}, notInsideTab(kind)
+			}
+			resolvedWorkerID := info.WorkerID
+			if resolvedWorkerID == "" {
+				resolvedWorkerID = workerID
+			}
+			return Target{
+				ID:       info.TabID,
+				Self:     true,
+				TabType:  info.TabType,
+				WorkerID: resolvedWorkerID,
+			}, nil
+		}
+	}
+	return Target{}, notInsideTab(kind)
 }
 
 func notInsideTab(kind Kind) error {

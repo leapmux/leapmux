@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -1211,6 +1212,13 @@ func (r *startupRegistry[S]) status(id string) (status S, startupError, startupM
 	return snap.status, snap.startupError, snap.startupMessage, true
 }
 
+// WaitForStartup blocks while a startup for id is in flight and returns nil
+// once startup succeeds or when no startup is tracked. It fails if startup
+// fails, is interrupted by close/archive/shutdown, or ctx ends.
+func (r *startupRegistry[S]) WaitForStartup(ctx context.Context, id string) error {
+	return r.waitForStartup(ctx, id)
+}
+
 func newAgentStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.AgentStatus] {
 	return newStartupRegistry(
 		clock,
@@ -1232,7 +1240,70 @@ func newTerminalStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.T
 var (
 	errStartupEntryChanged = errors.New("terminal startup changed during resize")
 	errStartupClaimsClosed = errors.New("terminal resize refused during shutdown")
+	errStartupFailed       = errors.New("terminal startup failed")
+	errStartupWaitShutdown = errors.New("terminal startup interrupted by shutdown")
+	errStartupWaitClosed   = errors.New("terminal closed during startup")
+	errStartupWaitArchived = errors.New("terminal archived during startup")
 )
+
+func startupFailedError(msg string) error {
+	if msg == "" {
+		return errStartupFailed
+	}
+	return fmt.Errorf("%w: %s", errStartupFailed, msg)
+}
+
+// waitForStartup blocks while a startup entry for id is in flight. It returns
+// nil once no startup holds id (either it already finished or none was active),
+// returns ctx.Err() if ctx ends while waiting, and returns a descriptive error
+// when startup fails or is stopped by close, archive, or worker shutdown.
+func (r *startupCore) waitForStartup(ctx context.Context, id string) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r.mu.Lock()
+		if r.claimsClosed {
+			r.mu.Unlock()
+			return errStartupWaitShutdown
+		}
+		h := r.entries[id]
+		if h == nil {
+			r.mu.Unlock()
+			return nil
+		}
+		if h.failed {
+			msg := h.startupError
+			r.mu.Unlock()
+			return startupFailedError(msg)
+		}
+		done := h.done
+		r.mu.Unlock()
+		if done == nil {
+			return nil
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.claimsClosedCh:
+			return errStartupWaitShutdown
+		}
+		r.mu.Lock()
+		closed := h.closeRaced
+		archived := h.archiveStopped
+		shutdown := h.shutdownStopped || r.claimsClosed
+		r.mu.Unlock()
+		switch {
+		case shutdown:
+			return errStartupWaitShutdown
+		case closed:
+			return errStartupWaitClosed
+		case archived:
+			return errStartupWaitArchived
+		}
+	}
+}
 
 // withTerminalResize captures one startup owner before any physical I/O.
 // An operation with no startup owner cannot mutate a later startup's dimensions.

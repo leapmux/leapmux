@@ -79,7 +79,12 @@ func (s *HubEventStreamer) watchUser(ctx context.Context, userID userid.UserID, 
 		return fmt.Errorf("delegation bearer: %w", err)
 	}
 
-	ws, err := channelwire.OpenUserEventsWS(ctx, s.HTTPClient, s.ConnectURL, bearer, req.GetWorkspaceIds(), nil, 0)
+	ws, err := channelwire.OpenUserEventsWSWithOptions(ctx, s.HTTPClient, s.ConnectURL, bearer, channelwire.UserEventsOptions{
+		WorkspaceIDs:      req.GetWorkspaceIds(),
+		Topics:            req.GetTopics(),
+		LayoutWorkspaceID: req.GetLayoutWorkspaceId(),
+		LayoutAfterCursor: req.GetLayoutAfterCursor(),
+	})
 	if err != nil {
 		return err
 	}

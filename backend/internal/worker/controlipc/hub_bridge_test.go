@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -93,10 +94,15 @@ func recordRequestProto(next http.Handler) http.Handler {
 type userEventsHandler struct {
 	gotAuth  chan string
 	gotProto chan string
+	gotQuery chan url.Values
 }
 
 func newUserEventsHandler() *userEventsHandler {
-	return &userEventsHandler{gotAuth: make(chan string, 1), gotProto: make(chan string, 1)}
+	return &userEventsHandler{
+		gotAuth:  make(chan string, 1),
+		gotProto: make(chan string, 1),
+		gotQuery: make(chan url.Values, 1),
+	}
 }
 
 func (h *userEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +112,10 @@ func (h *userEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	select {
 	case h.gotProto <- r.Proto:
+	default:
+	}
+	select {
+	case h.gotQuery <- r.URL.Query():
 	default:
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -257,4 +267,41 @@ func TestHubBridgesDoNotShareOneClient(t *testing.T) {
 	assert.Zero(t, streamer.HTTPClient.Timeout, "a subscription must not be bounded by a client timeout")
 	assert.Equal(t, endpoint.BaseURL(), bridge.ConnectURL)
 	assert.Equal(t, endpoint.BaseURL(), streamer.ConnectURL)
+}
+
+func TestHubEventStreamer_ForwardsTopicsAndLayoutCursor(t *testing.T) {
+	hubURL, _, events := startHub(t, hubtransporttest.NewHTTP1Server)
+	streamer := controlipc.NewHubEventStreamer(mustEndpoint(t, hubURL), stubDelegation{})
+
+	wantCursor := []byte{0x01, 0x02, 0xfe, 0xff}
+	payload, err := proto.Marshal(&leapmuxv1.WatchUserRequest{
+		WorkspaceIds: []string{"ws-a", "ws-b"},
+		Topics: []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+		},
+		LayoutWorkspaceId: "ws-layout",
+		LayoutAfterCursor: wantCursor,
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	err = streamer.StreamHub(ctx, userid.MustNew("u-1"), hubrpc.WatchUserStream, payload, func([]byte) error {
+		return nil
+	})
+	require.NoError(t, err)
+
+	q := <-events.gotQuery
+	topics, err := channelwire.ParseUserEventsTopicsFromQuery(q)
+	require.NoError(t, err)
+	assert.Equal(t, []leapmuxv1.UserEventTopic{
+		leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+		leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+	}, topics)
+	assert.Equal(t, "ws-layout", channelwire.ParseLayoutWorkspaceIDFromQuery(q))
+	gotCursor, err := channelwire.ParseLayoutCursorFromQuery(q)
+	require.NoError(t, err)
+	assert.Equal(t, wantCursor, gotCursor)
+	assert.Equal(t, "ws-a,ws-b", q.Get(contracts.WSParamWorkspaceIDs))
 }

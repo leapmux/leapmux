@@ -514,7 +514,7 @@ func requestTargets(s *session, inputs []string) ([]tabTarget, error) {
 func reportControlRequests(p *cli.Printer, result controlRequestList, failures []error, agents int) (any, error) {
 	if len(failures) == 0 {
 		if len(result.Requests) == 0 && p.Format == cli.FormatText {
-			p.Notice("no agent waits for an answer")
+			_ = p.Notice("no agent waits for an answer")
 		}
 		return result, nil
 	}
@@ -525,7 +525,7 @@ func reportControlRequests(p *cli.Printer, result controlRequestList, failures [
 		return nil, err
 	}
 	for _, failure := range failures {
-		p.Notice("%s", cli.FromError(failure).Message)
+		_ = p.Notice("%s", cli.FromError(failure).Message)
 	}
 	return nil, &cli.ExitStatus{Code: cli.FromError(failures[0]).ExitCode()}
 }

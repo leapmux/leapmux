@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
-	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -420,61 +419,6 @@ func bootLayoutTestManager(ctx context.Context, st store.Store, owner userid.Use
 	return manager, nil
 }
 
-func TestReadLayoutEventsCapsWaitBeforeContextDeadline(t *testing.T) {
-	t.Parallel()
-	st := hubtestutil.OpenTestStore(t)
-	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-deadline-owner").ID)
-	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
-	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
-		return bootLayoutTestManager(ctx, st, owner)
-	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
-	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
-	mClock := quartz.NewMock(t)
-	mClock.Set(time.Now())
-	svc := NewWorkspaceService(st, registry, nil).WithClock(mClock)
-
-	start, err := svc.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{})
-	require.NoError(t, err)
-
-	// Client asks for 15s wait under a 5s context deadline (modeling the unary
-	// timeout interceptor's default). With a registry attached, no 2s recheck
-	// ticker is started, so advancing 4.75s in one step hits the capped expiry
-	// timer directly with zero wall-clock wait.
-	const budget = 5 * time.Second
-	deadline := mClock.Now().Add(budget)
-	shortCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-
-	trap := mClock.Trap().NewTimer()
-	defer trap.Close()
-
-	type pollResult struct {
-		page *leapmuxv1.ReadLayoutEventsResponse
-		err  error
-	}
-	resCh := make(chan pollResult, 1)
-	go func() {
-		page, err := svc.ReadLayoutEvents(shortCtx, &leapmuxv1.ReadLayoutEventsRequest{
-			AfterCursor: start.GetCursor(),
-			WaitMillis:  15_000,
-		})
-		resCh <- pollResult{page: page, err: err}
-	}()
-
-	call, err := trap.Wait(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, budget-layoutEventDeadlineMargin, call.Duration)
-	require.NoError(t, call.Release(t.Context()))
-
-	mClock.Advance(budget - layoutEventDeadlineMargin).MustWait(t.Context())
-
-	res := <-resCh
-	require.NoError(t, res.err)
-	assert.Empty(t, res.page.GetRecords())
-	assert.Equal(t, start.GetAfterSequence(), res.page.GetScannedSequence())
-	assert.NoError(t, shortCtx.Err(), "handler must return before the request deadline fires")
-}
-
 func TestReadLayoutEventsSkipsLifecycleDrainWhenNoOutboxPending(t *testing.T) {
 	t.Parallel()
 	st := hubtestutil.OpenTestStore(t)
@@ -498,57 +442,6 @@ func TestReadLayoutEventsSkipsLifecycleDrainWhenNoOutboxPending(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, page.GetRecords())
 	assert.Zero(t, boots.Load(), "idle layout poll with no pending lifecycle outbox must not bootstrap CRDT manager")
-}
-
-func TestReadLayoutEventsWakesImmediatelyWithoutLoadedManagerOrTicker(t *testing.T) {
-	t.Parallel()
-	st := hubtestutil.OpenTestStore(t)
-	owner := userid.MustNew(storetest.SeedUser(t, st, "layout-wake-owner").ID)
-	ctx := auth.WithUser(t.Context(), &auth.UserInfo{ID: owner})
-
-	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
-		return bootLayoutTestManager(ctx, st, owner)
-	}, nil, crdt.WithManagerIdleTTL(0), crdt.WithLifecycleOutbox(NewLifecycleOutboxReader(st)))
-	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
-
-	mClock := quartz.NewMock(t)
-	svc := NewWorkspaceService(st, registry, nil).WithClock(mClock)
-	start, err := svc.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{})
-	require.NoError(t, err)
-	_, loaded := registry.Loaded(owner.String())
-	require.False(t, loaded, "precondition: no CRDT manager is loaded yet")
-
-	// Mock clock never advances, so only Registry.LayoutEventWake can wake the
-	// long poll (no 2s fallback ticker is created when registry != nil).
-	timerTrap := mClock.Trap().NewTimer()
-	defer timerTrap.Close()
-
-	type pollResult struct {
-		page *leapmuxv1.ReadLayoutEventsResponse
-		err  error
-	}
-	resCh := make(chan pollResult, 1)
-	go func() {
-		page, err := svc.ReadLayoutEvents(ctx, &leapmuxv1.ReadLayoutEventsRequest{
-			AfterCursor: start.GetCursor(),
-			WaitMillis:  10_000,
-		})
-		resCh <- pollResult{page: page, err: err}
-	}()
-
-	call, err := timerTrap.Wait(t.Context())
-	require.NoError(t, err)
-	require.NoError(t, call.Release(t.Context()))
-
-	// Create a workspace after the long poll is parked; the wake channel on
-	// Registry must deliver the event immediately without advancing the clock.
-	_, err = svc.CreateWorkspace(ctx, &leapmuxv1.CreateWorkspaceRequest{Title: "Woken"})
-	require.NoError(t, err)
-
-	res := <-resCh
-	require.NoError(t, res.err)
-	require.Len(t, res.page.GetRecords(), 1)
-	assert.Equal(t, "Woken", res.page.GetRecords()[0].GetFact().GetWorkspace().GetTitle())
 }
 
 func TestRegistryShutdownCancelsAndJoinsLifecycleDrains(t *testing.T) {

@@ -230,7 +230,7 @@ func runTunnelForward(inv *cli.Invocation) (any, error) {
 	defer func() { _ = ln.Close() }()
 
 	targetAddr := net.JoinHostPort(spec.TargetHost, strconv.Itoa(int(spec.TargetPort)))
-	inv.Printer.Notice("Forwarding %s -> %s via worker %s (Ctrl-C to stop)",
+	_ = inv.Printer.Notice("Forwarding %s -> %s via worker %s (Ctrl-C to stop)",
 		ln.Addr().String(), targetAddr, cli.ShortID(workerID))
 
 	// Tie forwarding lifetime to both the CLI signal context AND the underlying
@@ -250,7 +250,9 @@ func runTunnelForward(inv *cli.Invocation) (any, error) {
 	dial := func(ctx context.Context, host string, port uint16) (net.Conn, error) {
 		return tunnel.DialTunnelContext(ctx, ch, host, uint32(port))
 	}
-	err = serveTunnelForward(fwdCtx, ln, spec.TargetHost, spec.TargetPort, dial, inv.Printer.Notice)
+	err = serveTunnelForward(fwdCtx, ln, spec.TargetHost, spec.TargetPort, dial, func(format string, args ...any) {
+		_ = inv.Printer.Notice(format, args...)
+	})
 	if err == nil && s.ctx.Err() == nil {
 		select {
 		case <-channelDied:

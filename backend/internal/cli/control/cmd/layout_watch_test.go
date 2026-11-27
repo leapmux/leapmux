@@ -1,12 +1,20 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"testing"
 
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
 )
 
 // TestOpKindName_ClassifiesEveryCrdtOpBody pins that `layout watch` renders
@@ -189,4 +197,155 @@ func TestOpTargetSummary_PrintsTheCLITabTypeToken(t *testing.T) {
 		got := opTargetSummary(&leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: "ws-1"}}})
 		assert.Equal(t, map[string]any{"workspace_id": "ws-1", "type": "create_workspace"}, got)
 	})
+}
+
+func TestLayoutWatchEvent_TextLineAndTSV(t *testing.T) {
+	cases := []struct {
+		name string
+		evt  *leapmuxv1.WatchUserEvent
+		want string
+	}{
+		{
+			"materialized",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Initial{Initial: &leapmuxv1.UserMaterialized{
+				CurrentEpoch: 4,
+				Workspaces:   map[string]*leapmuxv1.WorkspaceContentsRecord{"ws-1": {}, "ws-2": {}},
+				MaxHlc:       &leapmuxv1.HLC{Physical: 100, Logical: 2, ClientId: "c1"},
+			}}},
+			"materialized workspaces=2 epoch=4",
+		},
+		{
+			"batch with ops",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Batch{Batch: &leapmuxv1.OpBatch{
+				BatchId: "batch-1234567890",
+				Ops: []*leapmuxv1.CrdtOp{
+					{Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{}}},
+				},
+			}}},
+			"batch batch-12 (1 ops: set_tab_register)",
+		},
+		{
+			"entity materialized tab",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_EntityMaterialized{EntityMaterialized: &leapmuxv1.EntityMaterialized{
+				Entity: &leapmuxv1.EntityMaterialized_Tab{Tab: &leapmuxv1.TabRecord{TabId: "tab-1234567890"}},
+			}}},
+			"entity_materialized tab tab-1234",
+		},
+		{
+			"entity removed node",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_EntityRemoved{EntityRemoved: &leapmuxv1.EntityRemoved{
+				Entity: &leapmuxv1.EntityRemoved_NodeId{NodeId: "node-1234567890"},
+			}}},
+			"entity_removed node node-123",
+		},
+		{
+			"resume delta",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Delta{Delta: &leapmuxv1.ResumeDelta{
+				CurrentEpoch: 9,
+				Frames: []*leapmuxv1.WatchUserEvent{
+					{Event: &leapmuxv1.WatchUserEvent_BatchEnd{BatchEnd: &leapmuxv1.BatchEnd{}}},
+				},
+			}}},
+			"resume_delta frames=1 epoch=9",
+		},
+		{
+			"batch end with HLC",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_BatchEnd{BatchEnd: &leapmuxv1.BatchEnd{
+				AtHlc: &leapmuxv1.HLC{Physical: 500, Logical: 3},
+			}}},
+			"batch_end hlc=500:3",
+		},
+		{
+			"batch end without HLC",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_BatchEnd{BatchEnd: &leapmuxv1.BatchEnd{}}},
+			"batch_end",
+		},
+		{
+			"workspace created",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Created{Created: &leapmuxv1.WorkspaceCreated{WorkspaceId: "ws-1234567890", Title: "Alpha"}}},
+			`workspace_created ws-12345 "Alpha"`,
+		},
+		{
+			"workspace deleted",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Deleted{Deleted: &leapmuxv1.WorkspaceDeleted{WorkspaceId: "ws-1234567890"}}},
+			"workspace_deleted ws-12345",
+		},
+		{
+			"presence",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Presence{Presence: &leapmuxv1.PresenceUpdate{WorkspaceId: "ws-1234567890", ActiveClientId: "client-999999"}}},
+			"presence workspace=ws-12345 client=client-9",
+		},
+		{
+			"workers changed",
+			&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_WorkersChanged{WorkersChanged: &leapmuxv1.WorkersChanged{}}},
+			"workers_changed",
+		},
+		{
+			"nil event never prints <nil>",
+			nil,
+			"unknown",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := layoutWatchEvent{event: tc.evt}
+			line := ev.TextLine()
+			assert.Equal(t, tc.want, line)
+			assert.NotContains(t, line, "<nil>")
+
+			var tsvBuf bytes.Buffer
+			p := &cli.Printer{Out: &tsvBuf, Err: &bytes.Buffer{}, Format: cli.FormatTSV}
+			require.NoError(t, p.Event(ev))
+			assert.Equal(t, tc.want+"\n", tsvBuf.String(), "TSV must render readable text rather than dashes for nested fields")
+
+			raw, err := json.Marshal(ev)
+			require.NoError(t, err)
+			wantJSON, err := json.Marshal(eventToJSON(tc.evt))
+			require.NoError(t, err)
+			assert.JSONEq(t, string(wantJSON), string(raw))
+		})
+	}
+}
+
+func TestLayoutWatch_ExplicitMissingWorkspaceFailsBeforeSubscribing(t *testing.T) {
+	userEvents := newFakeUserEvents()
+	hub := &recordingHub{}
+	startSpawnIPC(t, hub, newEventsWorker(), func(r *controlipc.Router) {
+		r.HubStreams = userEvents
+	})
+	// recordingHub returns PermissionDenied for GetWorkspace when materialized is nil;
+	// verify layout watch rejects id:missing before opening WatchUser.
+	o := runControl(t, "layout", "watch", "id:missing", "--json")
+	require.NotEqual(t, cli.ExitOK, o.Code)
+	select {
+	case ids := <-userEvents.workspaceIDs:
+		t.Fatalf("layout watch subscribed to WatchUser with %v before verifying the workspace", ids)
+	default:
+	}
+
+	// Verify NotFound specifically when the Hub answers GetWorkspace with NotFound.
+	notFoundHub := &getWorkspaceErrorHub{err: connect.NewError(connect.CodeNotFound, "workspace not found")}
+	startSpawnIPC(t, &recordingHub{}, newEventsWorker(), func(r *controlipc.Router) {
+		r.Hub = notFoundHub
+		r.HubStreams = userEvents
+	})
+	o2 := runControl(t, "layout", "watch", "id:missing", "--json")
+	o2.requireFailure(t, cli.CodeNotFound)
+	select {
+	case ids := <-userEvents.workspaceIDs:
+		t.Fatalf("layout watch subscribed to WatchUser with %v after GetWorkspace failed", ids)
+	default:
+	}
+}
+
+type getWorkspaceErrorHub struct {
+	recordingHub
+	err error
+}
+
+func (h *getWorkspaceErrorHub) CallInner(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error) {
+	if procedure == leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure {
+		return nil, h.err
+	}
+	return h.recordingHub.CallInner(ctx, userID, procedure, payload)
 }

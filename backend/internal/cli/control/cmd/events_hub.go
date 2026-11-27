@@ -9,6 +9,7 @@ import (
 
 	"github.com/coder/quartz"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
@@ -24,16 +25,23 @@ type hubSessionFunc func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserE
 // workspace when it is empty, over the transport of c: the hub's
 // `/ws/userevents` WebSocket, or the socket of the tab that runs the CLI.
 func hubUserEvents(p control.Peer, workspaceIDs []string) hubSessionFunc {
+	return hubUserEventsWithOptions(p, channelwire.UserEventsOptions{WorkspaceIDs: workspaceIDs})
+}
+
+// hubUserEventsWithOptions subscribes to the hub's `/ws/userevents` stream
+// with explicit topic, workspace, and layout journal options over either the
+// direct hub WebSocket or the local-IPC tab socket.
+func hubUserEventsWithOptions(p control.Peer, opts channelwire.UserEventsOptions) hubSessionFunc {
 	switch c := p.(type) {
 	case *control.WorkerIPCClient:
 		return func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserEvent) error) error {
-			return streamWatchUserLocal(ctx, c, workspaceIDs, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
+			return streamWatchUserLocalWithOptions(ctx, c, opts, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
 				return false, onEvent(evt)
 			})
 		}
 	case *control.HubClient:
 		return func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserEvent) error) error {
-			stream, err := c.OpenUserEvents(ctx, workspaceIDs)
+			stream, err := c.OpenUserEventsWithOptions(ctx, opts)
 			if err != nil {
 				return err
 			}
@@ -84,13 +92,10 @@ var errHubEndedFirst = cli.Newf(cli.CodeUnavailable, "the hub ended the stream b
 //
 // The first session must deliver: a failure before its first event ends the
 // stream, so a command that cannot reach the hub fails at once. After that,
-// a session that ends reports down and subscribes again after the backoff of
-// every CLI watch, unless the hub refused the stream for good.
-func runHubSource(ctx context.Context, session hubSessionFunc, clock quartz.Clock, out chan<- hubInput) {
-	runHubSourcePolicy(ctx, session, clock, true, out)
-}
-
-func runHubSourcePolicy(ctx context.Context, session hubSessionFunc, clock quartz.Clock, reconnect bool, out chan<- hubInput) {
+// when reconnect is true, a session that ends reports down and subscribes again
+// after the backoff of every CLI watch, unless the hub refused the stream for
+// good. When reconnect is false, any disconnect ends the stream.
+func runHubSource(ctx context.Context, session hubSessionFunc, clock quartz.Clock, reconnect bool, out chan<- hubInput) {
 	send := func(in hubInput) bool {
 		select {
 		case out <- in:

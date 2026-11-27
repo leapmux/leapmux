@@ -4,6 +4,7 @@ package channelwire
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -261,6 +262,52 @@ func HTTPToWS(rawURL string) string {
 	return rawURL
 }
 
+// Go-only query parameters for /ws/userevents topic selection and layout
+// journal streaming. Browser clients consume the default CRDT+workers feed
+// without these parameters, so they stay Go-owned here rather than in a
+// cross-language contract.
+const (
+	wsParamTopics            = "topics"
+	wsParamLayoutWorkspaceID = "layout_workspace_id"
+	wsParamLayoutAfterCursor = "layout_after_cursor"
+)
+
+// UserEventsOptions configures a /ws/userevents WebSocket subscription.
+type UserEventsOptions struct {
+	WorkspaceIDs      []string
+	Topics            []leapmuxv1.UserEventTopic
+	LayoutWorkspaceID string
+	LayoutAfterCursor []byte
+	ResumeCursor      *leapmuxv1.HLC
+	ResumeEpoch       int64
+}
+
+func encodeUserEventTopic(topic leapmuxv1.UserEventTopic) string {
+	switch topic {
+	case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT:
+		return "crdt"
+	case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS:
+		return "workers"
+	case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL:
+		return "layout_journal"
+	default:
+		return fmt.Sprintf("unknown(%d)", topic)
+	}
+}
+
+func parseUserEventTopic(name string) (leapmuxv1.UserEventTopic, bool) {
+	switch name {
+	case "crdt":
+		return leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT, true
+	case "workers":
+		return leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS, true
+	case "layout_journal":
+		return leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL, true
+	default:
+		return leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED, false
+	}
+}
+
 // UserEventsURL builds the per-user WebSocket URL the hub serves at
 // /ws/userevents. baseURL is an http(s) URL; it is rewritten to ws(s)
 // via HTTPToWS. workspaceIDs is optional — when non-empty it scopes the
@@ -276,9 +323,38 @@ func HTTPToWS(rawURL string) string {
 // lagging floor decideResume actually gates on -- NOT compaction_watermark,
 // which always equals max_hlc and would reject every cursor).
 func UserEventsURL(baseURL string, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) string {
+	return UserEventsURLWithOptions(baseURL, UserEventsOptions{
+		WorkspaceIDs: workspaceIDs,
+		ResumeCursor: cursor,
+		ResumeEpoch:  epoch,
+	})
+}
+
+// UserEventsURLWithOptions builds the /ws/userevents WebSocket URL with
+// optional topic selection, workspace filters, layout journal cursor, and CRDT
+// resume cursor.
+func UserEventsURLWithOptions(baseURL string, opts UserEventsOptions) string {
 	q := url.Values{}
-	if len(workspaceIDs) > 0 {
-		q.Set(contracts.WSParamWorkspaceIDs, strings.Join(workspaceIDs, ","))
+	if len(opts.WorkspaceIDs) > 0 {
+		q.Set(contracts.WSParamWorkspaceIDs, strings.Join(opts.WorkspaceIDs, ","))
+	}
+	if len(opts.Topics) > 0 {
+		names := make([]string, 0, len(opts.Topics))
+		seen := make(map[string]bool, len(opts.Topics))
+		for _, topic := range opts.Topics {
+			name := encodeUserEventTopic(topic)
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+		q.Set(wsParamTopics, strings.Join(names, ","))
+	}
+	if opts.LayoutWorkspaceID != "" {
+		q.Set(wsParamLayoutWorkspaceID, opts.LayoutWorkspaceID)
+	}
+	if len(opts.LayoutAfterCursor) > 0 {
+		q.Set(wsParamLayoutAfterCursor, base64.RawURLEncoding.EncodeToString(opts.LayoutAfterCursor))
 	}
 	// Gate on the DECODER's own accept rule, not the weaker all-zero test.
 	// hlcIsZero only rejects {0,0,""}, but DecodeResumeHLC rejects any
@@ -287,15 +363,62 @@ func UserEventsURL(baseURL string, workspaceIDs []string, cursor *leapmuxv1.HLC,
 	// onto the URL and then 400'd by the hub -- an error where the intent was to
 	// omit the cursor and degrade to a full snapshot. Asking the decoder keeps
 	// the encode and decode sides one rule instead of two that must agree.
-	if resumeCursorEncodable(cursor) {
-		q.Set(contracts.WSParamResumeAfterHLC, EncodeResumeHLC(cursor))
-		q.Set(contracts.WSParamResumeEpoch, strconv.FormatInt(epoch, 10))
+	if resumeCursorEncodable(opts.ResumeCursor) {
+		q.Set(contracts.WSParamResumeAfterHLC, EncodeResumeHLC(opts.ResumeCursor))
+		q.Set(contracts.WSParamResumeEpoch, strconv.FormatInt(opts.ResumeEpoch, 10))
 	}
 	qs := q.Encode()
 	if qs == "" {
 		return HTTPToWS(baseURL) + contracts.WSRouteUserEvents
 	}
 	return HTTPToWS(baseURL) + contracts.WSRouteUserEvents + "?" + qs
+}
+
+// ParseUserEventsTopicsFromQuery parses the optional comma-separated `topics`
+// query parameter. Absent or empty returns (nil, nil), signalling the default
+// subscription set. Unknown or blank topic tokens return an error.
+func ParseUserEventsTopicsFromQuery(q url.Values) ([]leapmuxv1.UserEventTopic, error) {
+	raw := strings.TrimSpace(q.Get(wsParamTopics))
+	if raw == "" {
+		return nil, nil
+	}
+	var topics []leapmuxv1.UserEventTopic
+	seen := make(map[leapmuxv1.UserEventTopic]bool)
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			return nil, fmt.Errorf("empty topic in %s", wsParamTopics)
+		}
+		topic, ok := parseUserEventTopic(name)
+		if !ok {
+			return nil, fmt.Errorf("unknown user event topic %q", name)
+		}
+		if !seen[topic] {
+			seen[topic] = true
+			topics = append(topics, topic)
+		}
+	}
+	return topics, nil
+}
+
+// ParseLayoutWorkspaceIDFromQuery returns the optional layout journal workspace
+// scope parameter from a /ws/userevents URL query.
+func ParseLayoutWorkspaceIDFromQuery(q url.Values) string {
+	return strings.TrimSpace(q.Get(wsParamLayoutWorkspaceID))
+}
+
+// ParseLayoutCursorFromQuery decodes the optional base64 RawURLEncoding
+// `layout_after_cursor` query parameter. Absent or empty returns (nil, nil).
+func ParseLayoutCursorFromQuery(q url.Values) ([]byte, error) {
+	raw := q.Get(wsParamLayoutAfterCursor)
+	if raw == "" {
+		return nil, nil
+	}
+	cursor, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("malformed %s: %w", wsParamLayoutAfterCursor, err)
+	}
+	return cursor, nil
 }
 
 // EncodeResumeHLC renders an HLC as the "<physical>.<logical>.<client_id>"
@@ -597,24 +720,42 @@ const UserEventsReadLimit = 16 * 1024 * 1024
 // may be nil; pass one when the caller's transport requires
 // unix/npipe dialers or shared HTTP/2 settings.
 func OpenUserEventsWS(ctx context.Context, httpClient *http.Client, hubURL, bearer string, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
+	return OpenUserEventsWSWithOptions(ctx, httpClient, hubURL, bearer, UserEventsOptions{
+		WorkspaceIDs: workspaceIDs,
+		ResumeCursor: cursor,
+		ResumeEpoch:  epoch,
+	})
+}
+
+// OpenUserEventsWSWithOptions dials /ws/userevents on `hubURL` with the
+// supplied bearer token and subscription options.
+func OpenUserEventsWSWithOptions(ctx context.Context, httpClient *http.Client, hubURL, bearerToken string, opts UserEventsOptions) (*websocket.Conn, error) {
 	header := http.Header{}
-	if bearer != "" {
-		header.Set("Authorization", "Bearer "+bearer)
+	if bearerToken != "" {
+		header.Set("Authorization", "Bearer "+bearerToken)
 	}
-	return OpenUserEventsWSWithHeader(ctx, httpClient, hubURL, header, workspaceIDs, cursor, epoch)
+	return openUserEventsWSWithHeaderAndOptions(ctx, httpClient, hubURL, header, opts)
 }
 
 // OpenUserEventsWSWithHeader is OpenUserEventsWS for callers whose authentication
 // is already represented by HTTP headers, such as the desktop cookie jar.
 func OpenUserEventsWSWithHeader(ctx context.Context, httpClient *http.Client, hubURL string, header http.Header, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
-	opts := &websocket.DialOptions{
+	return openUserEventsWSWithHeaderAndOptions(ctx, httpClient, hubURL, header, UserEventsOptions{
+		WorkspaceIDs: workspaceIDs,
+		ResumeCursor: cursor,
+		ResumeEpoch:  epoch,
+	})
+}
+
+func openUserEventsWSWithHeaderAndOptions(ctx context.Context, httpClient *http.Client, hubURL string, header http.Header, opts UserEventsOptions) (*websocket.Conn, error) {
+	dialOpts := &websocket.DialOptions{
 		Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
 		HTTPHeader:   header.Clone(),
 	}
 	if httpClient != nil {
-		opts.HTTPClient = httpClient
+		dialOpts.HTTPClient = httpClient
 	}
-	ws, _, err := websocket.Dial(ctx, UserEventsURL(hubURL, workspaceIDs, cursor, epoch), opts)
+	ws, _, err := websocket.Dial(ctx, UserEventsURLWithOptions(hubURL, opts), dialOpts)
 	if err != nil {
 		return nil, fmt.Errorf("dial /ws/userevents: %w", err)
 	}

@@ -18,7 +18,8 @@ import (
 )
 
 // fakeWatchTransport is a streamevents.Transport that records each
-// subscription and lets a test push frames into the newest one.
+// subscription and each revision of its interest, and lets a test push frames
+// into the newest one.
 type fakeWatchTransport struct {
 	mu sync.Mutex
 	// openErrs fails the next opens, one error each.
@@ -29,14 +30,21 @@ type fakeWatchTransport struct {
 	handle   *fakeWatchHandle
 	// done closes when the newest subscription ended.
 	done chan struct{}
-	// opened receives one value for each open that succeeded.
-	opened chan struct{}
-	// updated receives one value for each Update call on a handle.
-	updated chan struct{}
+	// opened receives the opening request for each open that succeeded.
+	opened chan *leapmuxv1.WatchEventsRequest
+	// updated receives the request for each Update call on a handle.
+	updated chan *leapmuxv1.WatchEventsRequest
+	// cancelled receives one value for each subscription that the caller
+	// cancelled via Handle.Cancel.
+	cancelled chan struct{}
 }
 
 func newFakeWatchTransport() *fakeWatchTransport {
-	return &fakeWatchTransport{opened: make(chan struct{}, 8), updated: make(chan struct{}, 8)}
+	return &fakeWatchTransport{
+		opened:    make(chan *leapmuxv1.WatchEventsRequest, 16),
+		updated:   make(chan *leapmuxv1.WatchEventsRequest, 64),
+		cancelled: make(chan struct{}, 16),
+	}
 }
 
 func (t *fakeWatchTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
@@ -61,32 +69,52 @@ func (t *fakeWatchTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1
 	t.end = cancel
 	t.handle = h
 	t.done = done
-	t.opened <- struct{}{}
+	t.opened <- req
 	return h, nil
 }
 
 type fakeWatchHandle struct {
-	transport *fakeWatchTransport
-	mu        sync.Mutex
-	endErr    error
-	cancel    context.CancelFunc
-	done      chan struct{}
+	transport       *fakeWatchTransport
+	mu              sync.Mutex
+	endErr          error
+	cancelledByFeed bool
+	cancel          context.CancelFunc
+	done            chan struct{}
 }
 
 func (h *fakeWatchHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
+	select {
+	case <-h.done:
+		return context.Canceled
+	default:
+	}
 	h.transport.mu.Lock()
 	h.transport.requests = append(h.transport.requests, req)
 	updated := h.transport.updated
 	h.transport.mu.Unlock()
 	if updated != nil {
 		select {
-		case updated <- struct{}{}:
+		case updated <- req:
 		default:
 		}
 	}
 	return nil
 }
-func (h *fakeWatchHandle) Cancel()               { h.cancel() }
+
+func (h *fakeWatchHandle) Cancel() {
+	h.mu.Lock()
+	first := !h.cancelledByFeed
+	h.cancelledByFeed = true
+	h.mu.Unlock()
+	h.cancel()
+	if first && h.transport.cancelled != nil {
+		select {
+		case h.transport.cancelled <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func (h *fakeWatchHandle) Done() <-chan struct{} { return h.done }
 func (h *fakeWatchHandle) EndErr() error {
 	h.mu.Lock()
@@ -125,10 +153,7 @@ func (t *fakeWatchTransport) ack(rejected ...*leapmuxv1.WatchRejection) {
 
 // endStream ends the newest subscription, as a dropped connection does.
 func (t *fakeWatchTransport) endStream() {
-	t.mu.Lock()
-	end := t.end
-	t.mu.Unlock()
-	end()
+	t.endStreamWithErr(nil)
 }
 
 func (t *fakeWatchTransport) lastRequest() *leapmuxv1.WatchEventsRequest {

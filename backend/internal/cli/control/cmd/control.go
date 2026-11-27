@@ -8,6 +8,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -169,7 +170,7 @@ func newClient(inv *cli.Invocation) (control.Peer, error) {
 			if strings.HasPrefix(hubURL, "unix:") || strings.HasPrefix(hubURL, "npipe:") {
 				saved, _ := control.LoadContext()
 				if saved.Hub != hubURL {
-					inv.Printer.Notice("using discovered local Hub %s (override with --hub or LEAPMUX_HUB)", hubURL)
+					_ = inv.Printer.Notice("using discovered local Hub %s (override with --hub or LEAPMUX_HUB)", hubURL)
 				}
 			}
 		}
@@ -314,11 +315,16 @@ func (s *session) resolveTab(kind resolve.Kind, input string, need resolve.Need)
 	if t.Parent && fixedType == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
 		fixedType = leapmuxv1.TabType_TAB_TYPE_AGENT
 	}
+	workerID := t.WorkerID
+	if workerID == "" {
+		workerID = strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
+	}
 	got, err := resolve.Resolve(s.ctx, s.deps(), need, resolve.Inputs{
 		TabID:         t.ID,
 		ExplicitTabID: !t.Self && !t.Parent,
-		WorkerID:      strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)),
+		WorkerID:      workerID,
 		FixedTabType:  fixedType,
+		TabType:       t.TabType,
 	})
 	if err != nil {
 		return tabTarget{}, err
@@ -507,11 +513,16 @@ func (s *session) resolveVariadicAgentTargets(inputs []string, need resolve.Need
 		if t.Tab != nil {
 			s.located[t.ID] = t.Tab
 		}
+		workerID := t.WorkerID
+		if workerID == "" {
+			workerID = envWorkerID
+		}
 		got, err := resolve.Resolve(s.ctx, deps, need, resolve.Inputs{
 			TabID:         t.ID,
 			ExplicitTabID: !t.Self && !t.Parent,
-			WorkerID:      envWorkerID,
+			WorkerID:      workerID,
 			FixedTabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+			TabType:       t.TabType,
 		})
 		if err != nil {
 			return nil, err
@@ -551,8 +562,9 @@ func addWorkerFlag(fs *pflag.FlagSet) {
 // workerScope resolves the --worker flag of a command that runs on one
 // worker. Resolution order when --worker is omitted:
 //  1. $LEAPMUX_CONTROL_WORKER_ID (inside a LeapMux tab)
-//  2. context.json's saved worker
-//  3. The sole online Worker on the account (when outside a tab)
+//  2. The Worker of $LEAPMUX_CONTROL_TAB_ID (when inside a tab without a worker id)
+//  3. context.json's saved worker
+//  4. The sole online Worker on the account (when outside a tab)
 func (s *session) workerScope() (string, error) {
 	input := ""
 	if s.inv.Changed(workerFlag) {
@@ -561,12 +573,22 @@ func (s *session) workerScope() (string, error) {
 			return "", cli.Usagef("--worker is empty")
 		}
 	}
-	if input == "" && os.Getenv(controlenv.WorkerIDVariable) == "" {
-		if ctxCfg, err := control.LoadContext(); err == nil && ctxCfg.Worker != "" {
-			input = ctxCfg.Worker
+	envWorkerID := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
+	if input == "" && envWorkerID == "" {
+		if tabID := strings.TrimSpace(os.Getenv(controlenv.TabIDVariable)); tabID != "" {
+			tab, err := s.deps().LocateTab(s.ctx, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, tabID)
+			if err == nil && tab.GetWorkerId() != "" {
+				return tab.GetWorkerId(), nil
+			}
+			if err != nil && !errors.Is(err, resolve.ErrTabNotLocatable) {
+				return "", err
+			}
+		}
+		if ctxCfg, err := control.LoadContext(); err == nil && strings.TrimSpace(ctxCfg.Worker) != "" {
+			input = strings.TrimSpace(ctxCfg.Worker)
 		}
 	}
-	if input == "" && os.Getenv(controlenv.WorkerIDVariable) == "" {
+	if input == "" && envWorkerID == "" {
 		return s.autoSelectSoleWorker()
 	}
 	t, err := s.resolveOne(resolve.KindWorker, input)

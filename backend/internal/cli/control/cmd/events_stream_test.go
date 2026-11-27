@@ -125,7 +125,7 @@ func TestEventStream_ATabThatOpensJoinsTheStream(t *testing.T) {
 	assert.Equal(t, "worker-A", opened.WorkerID)
 	assert.False(t, opened.Reconciled)
 
-	revision := receive(t, h.ctx, a.watch.revised)
+	revision := receive(t, h.ctx, a.watch.updated)
 	assert.Equal(t, []string{"ag-1", "ag-2"}, watchedAgents(t, revision), "the same stream carries the new tab")
 	a.watch.ack()
 	assert.Equal(t, []string{"ag-2"}, receive(t, h.ctx, a.reads.started), "only the new agent needs a read")
@@ -168,7 +168,7 @@ func TestEventStream_ATabThatClosesLeavesTheStream(t *testing.T) {
 	assert.Equal(t, kindTabClosed, closed.Kind)
 	assert.Equal(t, "ag-2", closed.TabID)
 	assert.Equal(t, "ws-1", closed.WorkspaceID)
-	assert.Equal(t, []string{"ag-1"}, watchedAgents(t, receive(t, h.ctx, a.watch.revised)))
+	assert.Equal(t, []string{"ag-1"}, watchedAgents(t, receive(t, h.ctx, a.watch.updated)))
 	a.watch.ack()
 
 	a.watch.push(turnEndFrame("ag-2"))
@@ -242,7 +242,7 @@ func TestEventStream_AWorkerStreamThatDropsPrintsAGap(t *testing.T) {
 	h.requireReady()
 	dropped := h.clock.Now()
 
-	a.watch.endStream(connect.NewError(connect.CodeUnavailable, "worker disconnected"))
+	a.watch.endStreamWithErr(connect.NewError(connect.CodeUnavailable, "worker disconnected"))
 	down := h.next()
 	assert.Equal(t, kindStreamUnavailable, down.Kind)
 	assert.Equal(t, "worker", down.Source)
@@ -295,7 +295,7 @@ func TestEventStream_AGapWhoseReadFailsLosesTheStateToo(t *testing.T) {
 	h.bringLive(a, agentLevelRow("ag-1", statusActive, idle))
 	h.requireReady()
 
-	a.watch.endStream(nil)
+	a.watch.endStreamWithErr(nil)
 	assert.Equal(t, "the worker ended the watch", h.next().Message, "a stream that ended without a reason")
 	h.clock.Advance(testutil.WaitForTimer(t, h.ctx, reconnect)).MustWait(h.ctx)
 	receive(t, h.ctx, a.watch.opened)
@@ -355,7 +355,7 @@ func TestEventStream_TheHubStreamThatDropsPrintsAGap(t *testing.T) {
 		"workspace.deleted ws-2 ",
 	}, got, "a workspace opens before its tabs, and closes after them")
 
-	assert.Equal(t, []string{"ag-1", "ag-3"}, watchedAgents(t, receive(t, h.ctx, a.watch.revised)))
+	assert.Equal(t, []string{"ag-1", "ag-3"}, watchedAgents(t, receive(t, h.ctx, a.watch.updated)))
 	a.watch.ack()
 	assert.Equal(t, []string{"ag-3"}, receive(t, h.ctx, a.reads.started))
 	a.reads.answer(agentLevelRow("ag-3", statusActive, waiting))
@@ -406,7 +406,7 @@ func TestEventStream_AWorkerOutageOfSeveralSessionsPrintsOneUnavailable(t *testi
 	h.requireReady()
 	dropped := h.clock.Now()
 
-	a.watch.endStream(connect.NewError(connect.CodeUnavailable, "worker disconnected"))
+	a.watch.endStreamWithErr(connect.NewError(connect.CodeUnavailable, "worker disconnected"))
 	assert.Equal(t, kindStreamUnavailable, h.next().Kind)
 	a.mu.Lock()
 	a.openErr = errors.New("dial unix: connection refused")
@@ -583,8 +583,10 @@ func TestEventStream_AFilterSendsTheStreamEventsThatItDropsToStderr(t *testing.T
 	hub := h.session()
 	hub.send(snapshotEvent([]string{"ws-1"}, agentTabRecord("ag-1", "ws-1", "worker-A"), terminalTabRecord("tm-1", "ws-1", "worker-A")))
 	a := h.worker("worker-A")
-	receive(t, h.ctx, a.watch.opened)
-	h.bringLive(a, agentLevelRow("ag-1", statusActive, idle))
+	req := receive(t, h.ctx, a.watch.opened)
+	assert.Empty(t, req.GetAgents(), "terminal-only filter does not watch agents")
+	assert.Equal(t, []string{"tm-1"}, watchedTerminals(t, req))
+	h.bringLive(a)
 	notice := h.nextNotice()
 	assert.Contains(t, notice, " stream.ready watching 1 workspace and 2 tabs on 1 worker")
 
@@ -645,7 +647,7 @@ func TestEventStream_StopsWithItsContext(t *testing.T) {
 // The text form prints one line per event, as TextLine states it.
 func TestEventStream_TheTextFormPrintsOneLinePerEvent(t *testing.T) {
 	d := newDirectStream(t)
-	d.printer.p.Format = cli.FormatText
+	d.cliPrinter.Format = cli.FormatText
 	d.agent(t, &leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}}})
 	line := strings.TrimSuffix(d.out.String(), "\n")
 	assert.NotContains(t, line, "\n")
@@ -679,4 +681,191 @@ func TestEventStream_AWatchThatStopsBeforeItSettledDoesNotHoldReadyBack(t *testi
 	scope := h.requireReady()
 	assert.Equal(t, 1, scope.Workers)
 	assert.Equal(t, 1, scope.WorkersLive)
+}
+
+func TestEventStream_HeartbeatDoesNotPrintBeforeReady(t *testing.T) {
+	var ticker *quartz.Trap
+	h := startStreamHarness(t, streamHarnessOptions{heartbeat: 30 * time.Second, beforeRun: func(clock *quartz.Mock) {
+		ticker = clock.Trap().NewTicker(eventHeartbeatTimerTag)
+		t.Cleanup(ticker.Close)
+	}})
+	assert.Equal(t, 30*time.Second, testutil.WaitForTimer(t, h.ctx, ticker))
+	// Advance before snapshot/stream.ready: must not emit stream.heartbeat.
+	h.clock.Advance(30 * time.Second).MustWait(h.ctx)
+	h.session().send(snapshotEvent([]string{"ws-1"}))
+	ready := h.requireReady()
+	assert.Equal(t, 1, ready.Workspaces)
+
+	h.clock.Advance(30 * time.Second).MustWait(h.ctx)
+	assert.Equal(t, kindStreamHeartbeat, h.next().Kind)
+}
+
+func TestEventStream_NoReconnectReportsRetryingFalseOnWorkerDisconnect(t *testing.T) {
+	h := startStreamHarness(t, streamHarnessOptions{noReconnect: true})
+	h.session().send(snapshotEvent([]string{"ws-1"}, terminalTabRecord("tm-1", "ws-1", "worker-A")))
+	a := h.worker("worker-A")
+	receive(t, h.ctx, a.watch.opened)
+	h.bringLive(a)
+	h.requireReady()
+
+	a.watch.endStreamWithErr(connect.NewError(connect.CodeUnavailable, "worker stopped"))
+	down := h.next()
+	assert.Equal(t, kindStreamUnavailable, down.Kind)
+	assert.Equal(t, "worker-A", down.WorkerID)
+	require.NotNil(t, down.Retrying)
+	assert.False(t, *down.Retrying)
+}
+
+func TestEventStream_EarlyLiveAgentEventDoesNotSuppressOtherFieldInAgentLevel(t *testing.T) {
+	t.Run("early activity does not suppress initial status", func(t *testing.T) {
+		d := newDirectStream(t)
+		d.tabs["ag-2"] = scopedTab{ID: "ag-2", Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkspaceID: "ws-1", WorkerID: "worker-A"}
+		track := d.agentTrack("ag-2")
+		track.announceStatus = true
+		track.announceActivity = true
+
+		d.agent(t, &leapmuxv1.AgentEvent{
+			AgentId: "ag-2",
+			Event:   &leapmuxv1.AgentEvent_ActivityChanged{ActivityChanged: &leapmuxv1.AgentActivityChanged{State: working}},
+		})
+		require.NoError(t, d.agentLevel("ag-2", agentLevelRow("ag-2", statusActive, idle), false))
+
+		got := d.events(t)
+		require.Equal(t, []string{kindAgentActivity, kindAgentStatus}, kindsOf(got))
+		assert.Equal(t, "working", got[0].State)
+		assert.Equal(t, "active", got[1].Status)
+	})
+
+	t.Run("early status does not suppress initial activity", func(t *testing.T) {
+		d := newDirectStream(t)
+		d.tabs["ag-2"] = scopedTab{ID: "ag-2", Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkspaceID: "ws-1", WorkerID: "worker-A"}
+		track := d.agentTrack("ag-2")
+		track.announceStatus = true
+		track.announceActivity = true
+
+		d.agent(t, &leapmuxv1.AgentEvent{
+			AgentId: "ag-2",
+			Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: &leapmuxv1.AgentStatusChange{Status: statusStarting}},
+		})
+		require.NoError(t, d.agentLevel("ag-2", agentLevelRow("ag-2", statusActive, working), false))
+
+		got := d.events(t)
+		require.Equal(t, []string{kindAgentStatus, kindAgentActivity}, kindsOf(got))
+		assert.Equal(t, "starting", got[0].Status)
+		assert.Equal(t, "working", got[1].State)
+	})
+}
+
+func TestEventStream_KindFilterSkipsUnneededWorkerFeeds(t *testing.T) {
+	t.Run("workspace-only opens no worker watch and emits ready immediately", func(t *testing.T) {
+		h := startStreamHarness(t, streamHarnessOptions{kinds: []string{"workspace"}, withPrivate: true})
+		h.session().send(snapshotEvent([]string{"ws-1"},
+			agentTabRecord("ag-1", "ws-1", "worker-A"),
+			terminalTabRecord("tm-1", "ws-1", "worker-B"),
+		))
+		notice := h.nextNotice()
+		assert.Contains(t, notice, " stream.ready watching 1 workspace and 2 tabs on 0 workers")
+		select {
+		case <-h.worker("worker-A").watch.opened:
+			t.Fatal("workspace-only filter opened a worker watch")
+		case <-h.worker("worker-A").privateSessions:
+			t.Fatal("workspace-only filter opened a private stream")
+		default:
+		}
+	})
+
+	t.Run("agent-only skips private feed", func(t *testing.T) {
+		h := startStreamHarness(t, streamHarnessOptions{kinds: []string{"agent"}, withPrivate: true})
+		h.session().send(snapshotEvent([]string{"ws-1"}, agentTabRecord("ag-1", "ws-1", "worker-A")))
+		a := h.worker("worker-A")
+		receive(t, h.ctx, a.watch.opened)
+		h.bringLive(a, agentLevelRow("ag-1", statusActive, idle))
+		assert.Contains(t, h.nextNotice(), " stream.ready ")
+		select {
+		case <-a.privateSessions:
+			t.Fatal("agent-only filter opened a private stream")
+		default:
+		}
+	})
+}
+
+func TestEventStream_PrivateFeedOnFileOnlyWorkerAndOutageRecovery(t *testing.T) {
+	var reconnect *quartz.Trap
+	h := startStreamHarness(t, streamHarnessOptions{
+		withPrivate: true,
+		beforeRun: func(clock *quartz.Mock) {
+			reconnect = trapNewTimer(t, clock, privateReconnectTimerTag)
+		},
+	})
+	hub := h.session()
+	hub.send(snapshotEvent([]string{"ws-1"}, fileTabRecord("file-1", "ws-1", "worker-F")))
+	f := h.worker("worker-F")
+	priv1 := receive(t, h.ctx, f.privateSessions)
+	scope := h.requireReady()
+	assert.Equal(t, &scopeCounts{Workspaces: 1, Tabs: 1, Workers: 1, WorkersLive: 1, HubLive: true}, scope)
+	select {
+	case <-f.watch.opened:
+		t.Fatal("file-only worker should not open WatchEvents")
+	default:
+	}
+
+	priv1.send(&leapmuxv1.WorkerPrivateEvent{
+		Event: &leapmuxv1.WorkerPrivateEvent_TabRenamed{
+			TabRenamed: &leapmuxv1.TabRenamed{TabId: "file-1", Title: "README.md"},
+		},
+	})
+	renamed := h.next()
+	assert.Equal(t, kindTabRenamed, renamed.Kind)
+	assert.Equal(t, "file-1", renamed.TabID)
+	assert.Equal(t, "README.md", renamed.Title)
+
+	// Private stream outage emits stream.unavailable, backs off, wakes on
+	// WorkersChanged, and emits stream.gap on recovery.
+	priv1.end(connect.NewError(connect.CodeUnavailable, "private stream lost"))
+	down := h.next()
+	assert.Equal(t, kindStreamUnavailable, down.Kind)
+	assert.Equal(t, "worker-F", down.WorkerID)
+	require.NotNil(t, down.Retrying)
+	assert.True(t, *down.Retrying)
+
+	testutil.WaitForTimer(t, h.ctx, reconnect)
+	hub.send(workersChangedEvent())
+	priv2 := receive(t, h.ctx, f.privateSessions)
+	priv2.send(&leapmuxv1.WorkerPrivateEvent{
+		Event: &leapmuxv1.WorkerPrivateEvent_TabRenamed{
+			TabRenamed: &leapmuxv1.TabRenamed{TabId: "file-1", Title: "CHANGELOG.md"},
+		},
+	})
+	gap := h.next()
+	assert.Equal(t, kindStreamGap, gap.Kind)
+	assert.Equal(t, "worker-F", gap.WorkerID)
+	assert.Equal(t, privateLostKinds(), gap.Lost)
+	assert.Equal(t, []string{"file-1"}, gap.TabIDs)
+	assert.Equal(t, "CHANGELOG.md", h.next().Title)
+}
+
+func TestEventStream_LayoutOnlyBatchSkipsReprojection(t *testing.T) {
+	h := startStreamHarness(t, streamHarnessOptions{})
+	hub := h.session()
+	hub.send(snapshotEvent([]string{"ws-1"}, terminalTabRecord("tm-1", "ws-1", "worker-A")))
+	a := h.worker("worker-A")
+	receive(t, h.ctx, a.watch.opened)
+	h.bringLive(a)
+	h.requireReady()
+
+	ratioOp := &leapmuxv1.CrdtOp{
+		OpId:         "ratio-1",
+		CanonicalHlc: testHLC(20),
+		Body: &leapmuxv1.CrdtOp_SetNodeRegister{
+			SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+				NodeId: rootOf("ws-1"),
+				Field:  &leapmuxv1.SetNodeRegisterOp_Ratios{Ratios: &leapmuxv1.DoubleList{Values: []float64{0.4, 0.6}}},
+			},
+		},
+	}
+	hub.send(batchEvent(ratioOp))
+	hub.send(batchEndEvent())
+	a.watch.push(bellFrame("tm-1"))
+	assert.Equal(t, kindTerminalBell, h.next().Kind)
+	h.requireQuiet()
 }

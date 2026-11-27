@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect/v2"
-	"github.com/coder/quartz"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -28,20 +27,6 @@ type WorkspaceService struct {
 	store           store.Store
 	registry        *crdt.Registry
 	reconcileNudger workspaceReconcileNudger
-	clock           quartz.Clock
-}
-
-// WithClock overrides the clock used for layout-event long-poll waits.
-func (s *WorkspaceService) WithClock(clock quartz.Clock) *WorkspaceService {
-	s.clock = clock
-	return s
-}
-
-func (s *WorkspaceService) clk() quartz.Clock {
-	if s.clock != nil {
-		return s.clock
-	}
-	return quartz.NewReal()
 }
 
 type workspaceReconcileNudger interface {
@@ -66,7 +51,6 @@ func NewWorkspaceService(
 		store:           st,
 		registry:        registry,
 		reconcileNudger: reconcileNudger,
-		clock:           quartz.NewReal(),
 	}
 }
 

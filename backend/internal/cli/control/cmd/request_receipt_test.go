@@ -326,7 +326,7 @@ func TestRetryCommandBuilders_IncludeAllSchemaWorkspaceAndTerminalWaitFlags(t *t
 
 	t.Run("terminal run includes change and after-offset", func(t *testing.T) {
 		inv := captureTestInvocation(t, "run <terminal> [command]", func(fs *pflag.FlagSet) {
-			addTerminalWaitConditionFlags(fs)
+			addTerminalWaitConditionFlags(fs, true)
 		}, "tm-1", "make test", "--change", "--after-offset", "1024", "--timeout", "1m")
 
 		got := buildTerminalRunRetryCmd(inv, "tm-1", "make test", true, "req-tm")
@@ -644,26 +644,54 @@ func TestAgentRequestStatus_CanonicalTransitionAndUserMessageRowPreservesReplies
 }
 
 func TestTerminalRunWaitOverIPC_ExitStatusPrintsReceiptNoticesAndKeepsExitSix(t *testing.T) {
-	id := fullTestID("term-wait-rec")
-	w := &terminalWorker{
-		info: &leapmuxv1.TerminalInfo{
-			TerminalId: id,
-			Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
-			Cols:       80,
-			Rows:       24,
-		},
-	}
-	startTerminalWorker(t, w, id)
+	t.Run("timeout prints in_progress receipt and keeps exit six", func(t *testing.T) {
+		id := fullTestID("term-wait-to")
+		w := &terminalWorker{
+			info: &leapmuxv1.TerminalInfo{
+				TerminalId: id,
+				Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
+				Cols:       80,
+				Rows:       24,
+			},
+		}
+		startTerminalWorker(t, w, id)
 
-	o := runControl(t, "terminal", "run", id, "make test", "--wait", "--text", "PASS", "--request-id", "term-req-1")
-	assert.Equal(t, cli.ExitWaitEnded, o.Code, "stderr: %s", o.Stderr)
-	assert.Contains(t, o.Stdout, `"reached":false`)
-	assert.Contains(t, o.Stderr, "disposition: in_progress (request_id: term-req-1)")
-	assert.Contains(t, o.Stderr, "safe retry: leapmux terminal run "+id+" --wait --text PASS --request-id term-req-1 'make test'")
+		o := runControl(t, "terminal", "run", id, "make test", "--wait", "--text", "PASS", "--timeout", "1ms", "--request-id", "term-req-1")
+		assert.Equal(t, cli.ExitWaitEnded, o.Code, "stderr: %s", o.Stderr)
+		assert.Contains(t, o.Stdout, `"reached":false`)
+		assert.Contains(t, o.Stdout, `"request_id":"term-req-1"`)
+		assert.Contains(t, o.Stdout, `"disposition":"in_progress"`)
+		assert.Contains(t, o.Stderr, "disposition: in_progress (request_id: term-req-1)")
+		assert.Contains(t, o.Stderr, "safe retry: leapmux terminal run "+id+" --wait --text PASS --timeout 1ms --request-id term-req-1 'make test'")
 
-	inputs := w.recordedInputs()
-	require.Len(t, inputs, 1)
-	assert.Equal(t, "term-req-1", inputs[0].GetRequestId())
+		inputs := w.recordedInputs()
+		require.Len(t, inputs, 1)
+		assert.Equal(t, "term-req-1", inputs[0].GetRequestId())
+	})
+
+	t.Run("exited shell keeps exit six without in_progress receipt", func(t *testing.T) {
+		id := fullTestID("term-wait-rec")
+		w := &terminalWorker{
+			info: &leapmuxv1.TerminalInfo{
+				TerminalId: id,
+				Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
+				Cols:       80,
+				Rows:       24,
+			},
+		}
+		startTerminalWorker(t, w, id)
+
+		o := runControl(t, "terminal", "run", id, "make test", "--wait", "--text", "PASS", "--request-id", "term-req-exited")
+		assert.Equal(t, cli.ExitWaitEnded, o.Code, "stderr: %s", o.Stderr)
+		assert.Contains(t, o.Stdout, `"reached":false`)
+		assert.Contains(t, o.Stdout, `"request_id":"term-req-exited"`)
+		assert.NotContains(t, o.Stderr, "disposition: in_progress")
+		assert.NotContains(t, o.Stderr, "safe retry:")
+
+		inputs := w.recordedInputs()
+		require.Len(t, inputs, 1)
+		assert.Equal(t, "term-req-exited", inputs[0].GetRequestId())
+	})
 }
 
 func TestAgentRequestStatus_NotFoundFailedAndCompletedEmptyReplies(t *testing.T) {

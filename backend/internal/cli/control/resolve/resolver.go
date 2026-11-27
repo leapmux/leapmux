@@ -110,9 +110,11 @@ type Wants struct {
 	WorkspaceID bool
 	TileID      bool
 	WorkerID    bool
-	// TabType is filled only by LocateTab, and it is not a Need field because
-	// no caller can supply it: a command that switches on the tab's kind must
-	// say so here or read UNSPECIFIED.
+	// TabType is filled by LocateTab unless the caller already supplied
+	// FixedTabType or TabType (for example, from SelfIdentity or the ambient
+	// environment). It is not a Need field because no CLI flag supplies it: a
+	// command that switches on the tab's kind must say so here or read
+	// UNSPECIFIED.
 	TabType bool
 }
 
@@ -131,14 +133,19 @@ type Wants struct {
 //     silently.
 //
 // What is left is the case worth skipping: every field the caller reads is
-// already present and came from the ambient environment, which is exactly what
-// a command run inside a tab spawn holds. That call's four outputs were
-// discarded, and a transport failure on it failed a command whose inputs were
-// complete.
+// already present and came from the ambient environment or a local Worker IPC
+// Whoami call, which is what a command run inside a tab spawn holds. That
+// call's outputs were discarded, and a transport failure on it failed a command
+// whose inputs were complete.
 func wantsTabPlacement(need Need, in Inputs) bool {
-	// TabType comes ONLY from the hub -- no flag supplies it -- so a caller that
-	// switches on it always needs the call.
-	if in.ExplicitTabID || need.Want.TabType {
+	if in.ExplicitTabID {
+		return true
+	}
+	// TabType comes from the hub unless the command pinned FixedTabType or
+	// resolved TabType locally (from SelfIdentity or the ambient environment).
+	knownTabType := in.FixedTabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED ||
+		in.TabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED
+	if need.Want.TabType && !knownTabType {
 		return true
 	}
 	for _, f := range []struct {
@@ -162,13 +169,16 @@ func wantsTabPlacement(need Need, in Inputs) bool {
 // resolves a short form first. Empty strings mean "not supplied".
 // FixedTabType is the tab type that the command's group implies (`agent
 // ...`, `terminal ...`), or UNSPECIFIED for `tab ...`, where LocateTab
-// matches any type.
+// matches any type. TabType is an already-known tab type (for example from
+// SelfIdentity or the ambient environment) when FixedTabType is unspecified;
+// it satisfies Wants.TabType without constraining LocateTab.
 type Inputs struct {
 	TabID        string
 	TileID       string
 	WorkspaceID  string
 	WorkerID     string
 	FixedTabType leapmuxv1.TabType
+	TabType      leapmuxv1.TabType
 
 	// Explicit* mark which input the user typed on the command line, as
 	// opposed to a default from the LEAPMUX_CONTROL_* environment. When a
@@ -280,6 +290,12 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	in.TileID = strings.TrimSpace(in.TileID)
 	in.WorkspaceID = strings.TrimSpace(in.WorkspaceID)
 	in.WorkerID = strings.TrimSpace(in.WorkerID)
+	if in.FixedTabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED &&
+		in.TabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED &&
+		in.FixedTabType != in.TabType {
+		return Resolved{}, cli.Usagef("conflicting inputs: tab_type=%q via the tab vs tab_type=%q via the command",
+			TabTypeWireName(in.TabType), TabTypeWireName(in.FixedTabType))
+	}
 	tabType := in.FixedTabType
 
 	// agg accumulates derivations from every source. A field with
@@ -402,11 +418,16 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		return Resolved{}, cli.Usagef("conflicting inputs: %s", strings.Join(conflicts, "; "))
 	}
 
-	// If LocateTab matched a tab_id-only lookup, the response's
-	// type wins over the (still-unspecified) caller hint.
+	// If LocateTab matched a tab_id-only lookup, the response's type wins over
+	// the (still-unspecified) caller hint; otherwise keep any known TabType
+	// supplied locally (for example, from SelfIdentity or the ambient environment).
 	outTabType := tabType
 	if outTabType == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
-		outTabType = locatedTab.GetTab().GetTabType()
+		if locatedType := locatedTab.GetTab().GetTabType(); locatedType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+			outTabType = locatedType
+		} else {
+			outTabType = in.TabType
+		}
 	}
 	out := Resolved{
 		TabID:       in.TabID,

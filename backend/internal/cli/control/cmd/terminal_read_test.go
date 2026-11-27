@@ -179,6 +179,18 @@ func TestRenderScreen_ScrollbackAndLines(t *testing.T) {
 	// are gone.
 	short := render(t, screenOf(20, 10, "one\r\ntwo\r\n"), screenReadOptions{lines: 1})
 	assert.Equal(t, []string{"two"}, short.Lines)
+
+	// --lines on an empty screen returns a non-nil empty slice.
+	emptyLines := render(t, screenOf(20, 5, ""), screenReadOptions{lines: 5})
+	assert.Equal(t, []string{}, emptyLines.Lines)
+
+	// --lines preserves internal blank lines while skipping trailing blanks.
+	withInternalBlank := render(t, screenOf(20, 6, "a\r\n\r\nb\r\n\r\n"), screenReadOptions{lines: 2})
+	assert.Equal(t, []string{"", "b"}, withInternalBlank.Lines)
+
+	// --lines with large scrollback returns only the last N non-empty lines.
+	big := render(t, screenOf(20, 5, numberedLines(contracts.TerminalScrollbackLines+20)), screenReadOptions{scrollback: true, lines: 3})
+	assert.Equal(t, []string{"line 1018", "line 1019", "line 1020"}, big.Lines)
 }
 
 // The scrollback keeps at most the 1000 lines that the browser keeps.
@@ -237,10 +249,10 @@ func TestRenderScreen_RefusesASizeItCannotRender(t *testing.T) {
 	assert.EqualValues(t, 1, narrow.Cols)
 }
 
-// renderSize is the one size check of `terminal read` and `terminal wait`.
+// renderDimensions is the one size check of `terminal read` and `terminal wait`.
 // Both commands refuse the same sizes with the same message, and only the
 // read adds its hint, because only the read has --raw.
-func TestRenderSize(t *testing.T) {
+func TestRenderDimensions(t *testing.T) {
 	for name, tc := range map[string]struct {
 		info       *leapmuxv1.TerminalInfo
 		cols, rows int
@@ -261,7 +273,7 @@ func TestRenderSize(t *testing.T) {
 		"the largest values of the fields": {info: screenOf(math.MaxUint32, math.MaxUint32, ""), refusal: "too large to render"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			cols, rows, err := renderSize(tc.info)
+			cols, rows, err := renderDimensions(tc.info.GetTerminalId(), tc.info.GetCols(), tc.info.GetRows())
 			if tc.refusal == "" {
 				require.NoError(t, err)
 				assert.Equal(t, tc.cols, cols)
@@ -275,9 +287,6 @@ func TestRenderSize(t *testing.T) {
 			assert.Empty(t, e.Hints, "a refusal without hints carries none")
 			assert.Zero(t, cols)
 			assert.Zero(t, rows)
-
-			_, _, hinted := renderSize(tc.info, "first", "second")
-			assert.Equal(t, []string{"first", "second"}, cli.FromError(hinted).Hints)
 
 			_, readErr := renderScreen(tc.info, screenReadOptions{})
 			_, waitErr := newScreenWatch(tc.info, func(string) bool { return false }, false)

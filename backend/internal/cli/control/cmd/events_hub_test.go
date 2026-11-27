@@ -17,6 +17,10 @@ import (
 
 // startHubSource runs runHubSource over a fakeHub and returns what it sends.
 func startHubSource(t *testing.T, clock *quartz.Mock) (context.Context, *fakeHub, <-chan hubInput, <-chan struct{}) {
+	return startHubSourceWithPolicy(t, clock, true)
+}
+
+func startHubSourceWithPolicy(t *testing.T, clock *quartz.Mock, reconnect bool) (context.Context, *fakeHub, <-chan hubInput, <-chan struct{}) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
 	hub := newFakeHub()
@@ -24,7 +28,7 @@ func startHubSource(t *testing.T, clock *quartz.Mock) (context.Context, *fakeHub
 	stopped := make(chan struct{})
 	var once sync.Once
 	go func() {
-		runHubSource(ctx, hub.session, clock, out)
+		runHubSource(ctx, hub.session, clock, reconnect, out)
 		once.Do(func() { close(stopped) })
 	}()
 	t.Cleanup(func() {
@@ -98,5 +102,18 @@ func TestHubSource_ARefusalForGoodIsFatal(t *testing.T) {
 	session.end(revoked)
 	in := receive(t, ctx, out)
 	require.ErrorIs(t, in.fatal, revoked)
+	receive(t, ctx, stopped)
+}
+
+func TestHubSource_NoReconnectEndsOnDisconnect(t *testing.T) {
+	ctx, hub, out, stopped := startHubSourceWithPolicy(t, testutil.NewQuartzMock(t), false)
+	session := receive(t, ctx, hub.sessions)
+	session.send(snapshotEvent([]string{"ws-1"}))
+	receive(t, ctx, out)
+	drop := errors.New("connection reset by peer")
+	session.end(drop)
+	in := receive(t, ctx, out)
+	require.ErrorIs(t, in.fatal, drop)
+	assert.False(t, in.down)
 	receive(t, ctx, stopped)
 }

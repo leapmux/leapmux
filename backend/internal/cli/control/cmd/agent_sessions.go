@@ -112,7 +112,7 @@ func runAgentSessions(inv *cli.Invocation) (any, error) {
 		})
 	}
 	if len(rows) == 0 && inv.Printer.Format == cli.FormatText {
-		inv.Printer.Notice("%s has no session to resume in %s", agentProviderName(resolved), dir)
+		_ = inv.Printer.Notice("%s has no session to resume in %s", agentProviderName(resolved), dir)
 	}
 	return agentSessionList{Sessions: rows}, nil
 }

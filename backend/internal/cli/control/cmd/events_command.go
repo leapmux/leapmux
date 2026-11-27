@@ -90,18 +90,21 @@ its cursor. Use journal_id, tab_stream_id and sequence to deduplicate.
 The Worker reports gaps when it cannot supply retained history. A replayed
 agent request has a request_instance that correlates it with its end. It
 has a request handle only while that exact instance still needs an answer.
-With --checkpoint, --limit counts only the printed tab events. This mode
-follows the tab across workspace moves and does not take --workspace.
+With --checkpoint, --limit counts only the printed non-stream events. A --tab
+checkpoint follows the tab across workspace moves and does not take --workspace.
 After the Worker retires an agent or terminal, resume with its full ID
 and the same checkpoint. The stream exits after stream.retired confirms
 the final Worker position. Closing a subagent transcript keeps its
 history open. A terminal's shell can also exit while its tab stays open.
 
-Use --checkpoint without --tab or --workspace to resume account events.
-The checkpoint stores a separate position for each selected Worker event
-family and for the Hub layout when selected. A membership change can
-leave a gap in Worker history. The stream reports the gap before
-recording the new inventory.
+Use --checkpoint without --tab or --workspace to resume account events when
+--kind selects Worker event families (or when --kind is omitted). The
+checkpoint stores a separate position for each selected Worker event family
+and for the Hub layout when selected. A membership change can leave a gap in
+Worker history. The stream reports the gap before recording the new inventory.
+When --kind selects only Hub layout kinds (workspace.* or tab.*), an unscoped
+--checkpoint uses a Hub-wide layout checkpoint so a workspace:read credential
+works without worker:read.
 
 Use --workspace with --checkpoint to resume that workspace's committed
 Hub events. Resume with the same scope and kinds. For a deleted
@@ -141,12 +144,41 @@ type eventsOptions struct {
 	checkpoint string
 }
 
+// checkpointDispatch selects which checkpoint scope runs for opts. Unscoped
+// Hub-only kind selections stay on layout so credentials with only
+// workspace:read do not require worker:read.
+func checkpointDispatch(opts eventsOptions) string {
+	if opts.tab != "" {
+		return tabCheckpointScope
+	}
+	if opts.workspace == "" && len(accountWorkerKinds(opts.filter)) != 0 {
+		return accountCheckpointScope
+	}
+	return layoutCheckpointScope
+}
+
+// withClockTimeout returns a context canceled after d on clock. Using
+// clock.AfterFunc instead of context.WithTimeout lets tests drive replay
+// timeouts deterministically with quartz.Mock.
+func withClockTimeout(parent context.Context, clock quartz.Clock, d time.Duration, tag string) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return parent, func() {}
+	}
+	if clock == nil {
+		clock = quartz.NewReal()
+	}
+	ctx, cancel := context.WithCancelCause(parent)
+	timer := clock.AfterFunc(d, func() {
+		cancel(context.DeadlineExceeded)
+	}, tag)
+	return ctx, func() {
+		timer.Stop(tag)
+		cancel(nil)
+	}
+}
+
 // eventsOptionsOf reads the flags of `events`, before anything is sent.
 func eventsOptionsOf(inv *cli.Invocation) (eventsOptions, error) {
-	if inv.Printer.Format == cli.FormatQuiet {
-		return eventsOptions{}, cli.Usagef("--quiet does not apply to events, which have no single id").
-			WithHint("use --json, or the text form")
-	}
 	kinds, err := inv.Command.Flags().GetStringSlice("kind")
 	if err != nil {
 		return eventsOptions{}, cli.Wrap(cli.CodeUsage, err, "read --kind")
@@ -189,8 +221,8 @@ func eventsOptionsOf(inv *cli.Invocation) (eventsOptions, error) {
 		tab:         stringFlag(inv, "tab"),
 	}
 	if inv.Changed("checkpoint") {
-		opts.checkpoint = inv.Command.Flag("checkpoint").Value.String()
-		if opts.checkpoint == "" || opts.tab != "" && opts.workspace != "" {
+		opts.checkpoint = strings.TrimSpace(inv.Command.Flag("checkpoint").Value.String())
+		if opts.checkpoint == "" || (opts.tab != "" && opts.workspace != "") {
 			return eventsOptions{}, cli.Usagef("--checkpoint requires a file and accepts one scope")
 		}
 	}
@@ -209,18 +241,17 @@ func runEvents(inv *cli.Invocation) (any, error) {
 	}
 	defer s.Close()
 	if opts.checkpoint != "" {
-		if opts.timeout > 0 {
-			var timeoutCancel context.CancelFunc
-			s.ctx, timeoutCancel = context.WithTimeout(s.ctx, opts.timeout)
-			defer timeoutCancel()
+		clock := quartz.NewReal()
+		ctx, cancel := withClockTimeout(s.ctx, clock, opts.timeout, eventTimeoutTimerTag)
+		defer cancel()
+		switch checkpointDispatch(opts) {
+		case tabCheckpointScope:
+			return nil, s.runCheckpointedEvents(ctx, clock, opts)
+		case accountCheckpointScope:
+			return nil, s.runAccountCheckpointedEvents(ctx, clock, opts)
+		default:
+			return nil, s.runLayoutCheckpointedEvents(ctx, clock, opts)
 		}
-		if opts.tab != "" {
-			return nil, s.runCheckpointedEvents(opts)
-		}
-		if opts.workspace == "" && len(accountWorkerKinds(opts.filter)) != 0 {
-			return nil, s.runAccountCheckpointedEvents(opts)
-		}
-		return nil, s.runLayoutCheckpointedEvents(opts)
 	}
 	workspaceID, tabID, err := resolveEventScope(s, opts)
 	if err != nil {
@@ -230,8 +261,9 @@ func runEvents(inv *cli.Invocation) (any, error) {
 	if workspaceID != "" {
 		workspaceIDs = []string{workspaceID}
 	}
+	channels := newSharedWorkerChannels(s.c)
 	stream := newEventStream(eventStreamConfig{
-		printer:     &eventPrinter{p: inv.Printer, filter: opts.filter, limit: opts.limit},
+		printer:     newEventPrinter(inv.Printer, opts.filter, opts.limit),
 		clock:       quartz.NewReal(),
 		workspace:   workspaceID,
 		tabID:       tabID,
@@ -241,10 +273,10 @@ func runEvents(inv *cli.Invocation) (any, error) {
 		noReconnect: opts.noReconnect,
 		hubSession:  hubUserEvents(s.c, workspaceIDs),
 		workerSource: func(workerID string) workerFeedSource {
-			return workerFeedSourceOf(s.c, workerID)
+			return workerFeedSourceWithChannels(s.c, workerID, channels)
 		},
 		privateSource: func(workerID string) workerPrivateSource {
-			return workerPrivateSourceOf(s.c, workerID)
+			return workerPrivateSourceOf(s.c, workerID, channels)
 		},
 	})
 	return nil, stream.run(s.ctx)
@@ -256,23 +288,23 @@ func resolveEventScope(s *session, opts eventsOptions) (workspaceID, tabID strin
 	if opts.workspace == "" && opts.tab == "" {
 		return "", "", nil
 	}
-	bounded := s.bounded()
-	defer bounded.Close()
+	callSession := s.bounded()
+	defer callSession.Close()
 	if opts.workspace != "" {
-		workspace, err := bounded.resolveOne(resolve.KindWorkspace, opts.workspace)
+		workspace, err := callSession.resolveOne(resolve.KindWorkspace, opts.workspace)
 		if err != nil {
 			return "", "", err
 		}
 		workspaceID = workspace.ID
 	}
 	if opts.tab != "" {
-		listing := bounded.listing()
+		listing := callSession.listing()
 		if workspaceID != "" {
 			listing.Tabs = func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
 				return listTabsInWorkspaces(ctx, s.c, []string{workspaceID})
 			}
 		}
-		tab, err := resolve.Canonical(bounded.ctx, listing, resolve.KindTab, opts.tab)
+		tab, err := resolve.Canonical(callSession.ctx, listing, resolve.KindTab, opts.tab)
 		if err != nil {
 			return "", "", err
 		}

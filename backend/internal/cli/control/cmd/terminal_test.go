@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"connectrpc.com/connect/v2"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -15,8 +19,23 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
 )
+
+type terminalPSCrossWorker struct {
+	call func(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest) ([]byte, error)
+}
+
+func (w *terminalPSCrossWorker) CallInner(ctx context.Context, target string, userID userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error) {
+	return w.call(ctx, target, userID, req)
+}
+
+func (*terminalPSCrossWorker) StreamInner(context.Context, string, userid.UserID, *leapmuxv1.InnerRpcRequest, func(*leapmuxv1.InnerStreamMessage) error, func(channel.StreamController)) error {
+	return connect.NewError(connect.CodeUnimplemented, "unexpected stream")
+}
 
 // shellsDispatcher answers the one worker-local inner RPC
 // `terminal shells` makes and records every method it was asked for,
@@ -60,7 +79,19 @@ type terminalWorker struct {
 	refuseInput string
 }
 
-func (w *terminalWorker) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+func (w *terminalWorker) DispatchWith(ctx context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	if req.GetMethod() == leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure {
+		var in leapmuxv1.WatchEventsRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		sendWatchFrame(rw, &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{
+			UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: in.GetUpdateId()},
+		}})
+		<-ctx.Done()
+		return
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	switch req.GetMethod() {
@@ -167,9 +198,9 @@ func startTerminalWorker(t *testing.T, w *terminalWorker, terminalID string) {
 // TestRunTerminalShells_InsideWorkerSpawn is the end-to-end regression
 // test for a worker-scoped command run from inside a worker-spawned
 // agent. The spawn injects LEAPMUX_CONTROL_WORKER_ID into every agent
-// process (controlipc.EnvVars), which BindEntityFlags picks up as the
-// --worker-id default -- so this is the default state of every
-// `leapmux control` invocation an agent makes, not an exotic one.
+// process (controlenv.WorkerIDVariable), which workerScope picks up as the
+// default --worker -- so this is the default state of every
+// `leapmux` invocation an agent makes, not an exotic one.
 //
 // Both hub round-trips that used to hang off that value target
 // WorkerManagementService: the resolver's GetWorker existence leg
@@ -276,4 +307,380 @@ func TestTerminalGetOverIPC_PrintsTheExitCode(t *testing.T) {
 	data := runControl(t, "terminal", "get", id).Data(t)
 	assert.Equal(t, "exited", data["status"])
 	assert.Equal(t, float64(2), data["exit_code"])
+}
+
+func TestRunTerminalRestart_RefusesQuakeSelfTarget(t *testing.T) {
+	const quakeID = "quake-self-term"
+	w := &terminalWorker{info: &leapmuxv1.TerminalInfo{
+		TerminalId: quakeID, ShellInstanceId: "sh-1", Cols: 80, Rows: 24, Quake: true,
+	}}
+	startTerminalWorker(t, w, quakeID)
+	t.Setenv("LEAPMUX_CONTROL_TAB_ID", "other-tab")
+	t.Setenv("LEAPMUX_CONTROL_TERMINAL_ID", quakeID)
+
+	refusal := runControl(t, "terminal", "restart", quakeID, "--replace").requireFailure(t, cli.CodeSelfTargetRefused)
+	assert.Contains(t, refusal.Message, quakeID)
+
+	w.mu.Lock()
+	assert.Empty(t, w.restarts, "refused self-replace inside quake terminal must not call RestartTerminal")
+	w.mu.Unlock()
+}
+
+type emptyShellsDispatcher struct{}
+
+func (*emptyShellsDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	if req.GetMethod() != leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure {
+		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+		return
+	}
+	writeProtoResponse(w, &leapmuxv1.ListAvailableShellsResponse{})
+}
+
+func TestRunTerminalShells_EmptyEncodesJSONArray(t *testing.T) {
+	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, &emptyShellsDispatcher{})
+	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
+
+	o := runControl(t, "terminal", "shells")
+	data := o.Data(t)
+	shells, ok := data["shells"].([]any)
+	require.True(t, ok, "shells must encode as JSON array, not null: %s", o.Stdout)
+	assert.Empty(t, shells)
+}
+
+func TestRunTerminalResize_PreflightsUnknownWorker(t *testing.T) {
+	id := fullTestID("term-ghost-wk")
+	ghostWorker := fullTestID("worker-ghost")
+	w := &terminalWorker{info: &leapmuxv1.TerminalInfo{TerminalId: id, Cols: 80, Rows: 24}}
+	startSpawnIPC(t, &recordingHub{
+		workers: workerRows("worker-A"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: id},
+			WorkerId:    ghostWorker,
+			WorkspaceId: "ws-1",
+		},
+	}, w)
+
+	f := runControl(t, "terminal", "resize", id, "100", "40").requireFailure(t, cli.CodeNotFound)
+	assert.Contains(t, f.Message, ghostWorker)
+	w.mu.Lock()
+	assert.Empty(t, w.resizes, "rejected worker must not receive ResizeTerminal")
+	w.mu.Unlock()
+}
+
+func TestTerminalOpen_RejectsAfterOffsetFlag(t *testing.T) {
+	clearRemoteEnv(t)
+	o := runControl(t, "terminal", "open", "--wait", "--change", "--after-offset", "10", "--hub", "https://stub.invalid")
+	f := o.requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "after-offset")
+}
+
+func TestTerminalAttach_RejectsStructuredOutputFlags(t *testing.T) {
+	clearRemoteEnv(t)
+	for _, flagArgs := range [][]string{
+		{"--json"},
+		{"--format", "ndjson"},
+		{"--format", "tsv"},
+		{"--fields", "id"},
+		{"--quiet"},
+	} {
+		t.Run(strings.Join(flagArgs, " "), func(t *testing.T) {
+			args := append([]string{"terminal", "attach", fullTestID("term-1"), "--hub", "https://stub.invalid"}, flagArgs...)
+			o := runControlText(t, args...)
+			assert.Equal(t, cli.ExitUsage, o.Code, "stderr: %s", o.Stderr)
+		})
+	}
+}
+
+func TestTerminalAttach_ExitedAndStartupFailedShortCircuit(t *testing.T) {
+	t.Run("exited terminal prints screen once and exits zero", func(t *testing.T) {
+		id := fullTestID("term-exited")
+		w := &terminalWorker{info: &leapmuxv1.TerminalInfo{
+			TerminalId: id,
+			Cols:       80,
+			Rows:       24,
+			Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
+			Screen:     []byte("final output\n"),
+		}}
+		startTerminalWorker(t, w, id)
+
+		o := runControlText(t, "terminal", "attach", id)
+		require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
+		assert.Equal(t, "final output\n", o.Stdout)
+	})
+
+	t.Run("startup_failed terminal returns error immediately", func(t *testing.T) {
+		id := fullTestID("term-failed")
+		w := &terminalWorker{info: &leapmuxv1.TerminalInfo{
+			TerminalId:   id,
+			Cols:         80,
+			Rows:         24,
+			Status:       leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,
+			StartupError: "shell binary missing",
+		}}
+		startTerminalWorker(t, w, id)
+
+		o := runControlText(t, "terminal", "attach", id)
+		assert.Equal(t, cli.ExitFailure, o.Code)
+		assert.Contains(t, o.Stderr, "shell binary missing")
+	})
+}
+
+func TestTerminalPS_ValidationDeduplicationAndEmptyJSON(t *testing.T) {
+	t.Run("rejects --all combined with positional targets", func(t *testing.T) {
+		clearRemoteEnv(t)
+		f := runControl(t, "terminal", "ps", "--all", fullTestID("term-1"), "--hub", "https://stub.invalid").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "not both")
+	})
+
+	t.Run("deduplicates targets, preflights workers, and returns non-null empty array", func(t *testing.T) {
+		t1 := fullTestID("term-ps-1")
+		t2 := fullTestID("term-ps-2")
+		var (
+			mu           sync.Mutex
+			requestedIDs [][]string
+		)
+		disp := funcDispatcher(func(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+			if req.GetMethod() != leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure {
+				_ = rw.SendError(int32(codes.Unimplemented), req.GetMethod())
+				return
+			}
+			var in leapmuxv1.InspectTerminalProcessesRequest
+			if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+				_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+				return
+			}
+			mu.Lock()
+			requestedIDs = append(requestedIDs, append([]string(nil), in.GetTerminalIds()...))
+			mu.Unlock()
+			writeProtoResponse(rw, &leapmuxv1.InspectTerminalProcessesResponse{})
+		})
+		cross := &terminalPSCrossWorker{
+			call: func(_ context.Context, _ string, _ userid.UserID, req *leapmuxv1.InnerRpcRequest) ([]byte, error) {
+				if req.GetMethod() != leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure {
+					return nil, connect.NewError(connect.CodeUnimplemented, req.GetMethod())
+				}
+				var in leapmuxv1.InspectTerminalProcessesRequest
+				if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+					return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+				}
+				mu.Lock()
+				requestedIDs = append(requestedIDs, append([]string(nil), in.GetTerminalIds()...))
+				mu.Unlock()
+				return proto.Marshal(&leapmuxv1.InspectTerminalProcessesResponse{})
+			},
+		}
+		hub := &recordingHub{
+			workers: workerRows("worker-A", "worker-B"),
+			tabs: []*leapmuxv1.WorkspaceTab{
+				{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: t1}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+				{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: t2}, WorkerId: "worker-B", WorkspaceId: "ws-1"},
+			},
+		}
+		startSpawnIPC(t, hub, disp, func(r *controlipc.Router) { r.CrossWorker = cross })
+
+		// Positional duplicates using prefixes resolve via a single cached ListTabs call.
+		o := runControl(t, "terminal", "ps", t1[:12], t1[:12], t2[:12])
+		data := o.Data(t)
+		procs, ok := data["processes"].([]any)
+		require.True(t, ok, "processes must encode as [] not null: %s", o.Stdout)
+		assert.Empty(t, procs)
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, requestedIDs, 2, "each worker gets one InspectTerminalProcesses call")
+		var allSent []string
+		for _, batch := range requestedIDs {
+			allSent = append(allSent, batch...)
+		}
+		slices.Sort(allSent)
+		assert.Equal(t, []string{t1, t2}, allSent, "duplicate terminal IDs must be deduplicated")
+
+		listTabsCalls := 0
+		for _, m := range hub.called() {
+			if m == leapmuxv1connect.WorkspaceServiceListTabsProcedure {
+				listTabsCalls++
+			}
+		}
+		assert.Equal(t, 1, listTabsCalls, "positional resolution must reuse one cached ListTabs call")
+	})
+
+	t.Run("preflight rejects unknown worker", func(t *testing.T) {
+		t1 := fullTestID("term-ps-ghost")
+		ghost := fullTestID("worker-ghost")
+		var called atomic.Int32
+		disp := funcDispatcher(func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+			called.Add(1)
+			writeProtoResponse(rw, &leapmuxv1.InspectTerminalProcessesResponse{})
+		})
+		hub := &recordingHub{
+			workers: workerRows("worker-A"),
+			locateTab: &leapmuxv1.WorkspaceTab{
+				Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: t1},
+				WorkerId:    ghost,
+				WorkspaceId: "ws-1",
+			},
+		}
+		startSpawnIPC(t, hub, disp)
+
+		f := runControl(t, "terminal", "ps", t1).requireFailure(t, cli.CodeNotFound)
+		assert.Contains(t, f.Message, ghost)
+		assert.Zero(t, called.Load())
+	})
+}
+
+type funcDispatcher func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter)
+
+func (f funcDispatcher) DispatchWith(ctx context.Context, c channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	f(ctx, c, req, rw)
+}
+
+func TestResolveTab_SelfSkipsLocateTabWhenTabTypeAndWorkerIDKnown(t *testing.T) {
+	hub := &recordingHub{workers: workerRows("worker-A")}
+	startSpawnIPC(t, hub, &creationPublicationDispatcher{})
+	tabID := fullTestID("self-term")
+	t.Setenv("LEAPMUX_CONTROL_TAB_ID", tabID)
+	t.Setenv("LEAPMUX_CONTROL_TAB_TYPE", "terminal")
+	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
+
+	s, err := openSession(&cli.Invocation{Context: t.Context(), Command: &cobra.Command{}})
+	require.NoError(t, err)
+	defer s.Close()
+
+	got, err := s.resolveTab(resolve.KindTab, resolve.SelfTarget, resolve.Need{
+		WorkerID: true,
+		Want:     resolve.Wants{TabType: true},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, tabID, got.ID)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, got.Type)
+	assert.Equal(t, "worker-A", got.WorkerID)
+	assert.True(t, got.Self)
+	assert.NotContains(t, hub.called(), leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
+		"resolveTab must pass Target.TabType and WorkerID so LocateTab is skipped on self")
+}
+
+func TestQuakeOpen_MissingDirReturnsUsageError(t *testing.T) {
+	clearRemoteEnv(t)
+	t.Setenv("LEAPMUX_CONTROL_WORKING_DIR", "")
+	f := runControl(t, "terminal", "quake", "open", "--hub", "https://stub.invalid").requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "--dir")
+}
+
+func TestTerminalPS_AllWorkspaceDefaultsTruncationAndQuiet(t *testing.T) {
+	t.Run("--all defaults empty process names, reports truncated_extra, and formats quiet lines", func(t *testing.T) {
+		t1 := fullTestID("term-ps-all-1")
+		t2 := fullTestID("term-ps-all-2")
+		var (
+			mu           sync.Mutex
+			requestedIDs []string
+		)
+		disp := funcDispatcher(func(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+			if req.GetMethod() != leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure {
+				_ = rw.SendError(int32(codes.Unimplemented), req.GetMethod())
+				return
+			}
+			var in leapmuxv1.InspectTerminalProcessesRequest
+			if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+				_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+				return
+			}
+			mu.Lock()
+			requestedIDs = append([]string(nil), in.GetTerminalIds()...)
+			mu.Unlock()
+			writeProtoResponse(rw, &leapmuxv1.InspectTerminalProcessesResponse{
+				Terminals: []*leapmuxv1.TerminalProcesses{
+					{
+						TerminalId: t1,
+						Processes: []*leapmuxv1.TerminalProcess{
+							{Pid: 101, Name: ""},
+							{Pid: 202, Name: "go"},
+						},
+						TotalCount: 5,
+					},
+					{
+						TerminalId: t2,
+						Processes: []*leapmuxv1.TerminalProcess{
+							{Pid: 303, Name: "zsh"},
+						},
+						TotalCount: 1,
+					},
+				},
+			})
+		})
+		hub := &recordingHub{
+			workers: workerRows("worker-A"),
+			tabs: []*leapmuxv1.WorkspaceTab{
+				{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: t1}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+				{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: t2}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			},
+		}
+		startSpawnIPC(t, hub, disp)
+
+		data := runControl(t, "terminal", "ps", "--all").Data(t)
+		mu.Lock()
+		gotIDs := append([]string(nil), requestedIDs...)
+		mu.Unlock()
+		assert.Equal(t, []string{t1, t2}, gotIDs)
+
+		procs, ok := data["processes"].([]any)
+		require.True(t, ok)
+		require.Len(t, procs, 3)
+		assert.Equal(t, map[string]any{"terminal_id": t1, "pid": float64(101), "name": "(unknown)"}, procs[0])
+		assert.Equal(t, map[string]any{"terminal_id": t1, "pid": float64(202), "name": "go"}, procs[1])
+		assert.Equal(t, map[string]any{"terminal_id": t2, "pid": float64(303), "name": "zsh"}, procs[2])
+
+		trunc, ok := data["truncated_extra"].(map[string]any)
+		require.True(t, ok, "truncated_extra must be present when TotalCount > len(Processes)")
+		assert.Equal(t, map[string]any{t1: float64(3)}, trunc)
+
+		quiet := runControlText(t, "terminal", "ps", "--all", "-q")
+		require.Equal(t, cli.ExitOK, quiet.Code, "stderr: %s", quiet.Stderr)
+		wantLines := []string{
+			t1 + "\t101\t(unknown)",
+			t1 + "\t202\tgo",
+			t2 + "\t303\tzsh",
+		}
+		assert.Equal(t, strings.Join(wantLines, "\n")+"\n", quiet.Stdout)
+		assert.Equal(t, wantLines, (terminalPSResult{
+			Processes: []terminalProcessRow{
+				{TerminalID: t1, PID: 101, Name: "(unknown)"},
+				{TerminalID: t1, PID: 202, Name: "go"},
+				{TerminalID: t2, PID: 303, Name: "zsh"},
+			},
+		}).QuietLines())
+	})
+
+	t.Run("--workspace implies --all with no positional targets", func(t *testing.T) {
+		t1 := fullTestID("term-ps-ws")
+		disp := funcDispatcher(func(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+			if req.GetMethod() != leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure {
+				_ = rw.SendError(int32(codes.Unimplemented), req.GetMethod())
+				return
+			}
+			writeProtoResponse(rw, &leapmuxv1.InspectTerminalProcessesResponse{
+				Terminals: []*leapmuxv1.TerminalProcesses{
+					{
+						TerminalId: t1,
+						Processes:  []*leapmuxv1.TerminalProcess{{Pid: 404, Name: "make"}},
+						TotalCount: 1,
+					},
+				},
+			})
+		})
+		hub := &recordingHub{
+			workers:    workerRows("worker-A"),
+			workspaces: []*leapmuxv1.Workspace{{Id: "ws-1", CreatedBy: "u-spawn", Title: "Alpha"}},
+			tabs: []*leapmuxv1.WorkspaceTab{
+				{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: t1}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			},
+		}
+		startSpawnIPC(t, hub, disp)
+		t.Setenv("LEAPMUX_CONTROL_TAB_ID", "")
+
+		data := runControl(t, "terminal", "ps", "--workspace", "ws-1").Data(t)
+		procs, ok := data["processes"].([]any)
+		require.True(t, ok)
+		assert.Equal(t, []any{map[string]any{"terminal_id": t1, "pid": float64(404), "name": "make"}}, procs)
+		assert.NotContains(t, data, "truncated_extra")
+	})
 }

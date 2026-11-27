@@ -51,11 +51,16 @@ const (
 // node is a result, converted to an ordered tree that keeps the column
 // declarations of each list.
 type node struct {
-	kind    nodeKind
-	scalar  string
-	fields  []nodeField
-	items   []node
-	columns []column
+	kind       nodeKind
+	scalar     string
+	fields     []nodeField
+	items      []node
+	columns    []column
+	objectList bool
+}
+
+func (n node) isObjectList() bool {
+	return n.objectList || len(n.columns) > 0 || (len(n.items) > 0 && n.items[0].kind == nodeObject)
 }
 
 type nodeField struct {
@@ -175,7 +180,11 @@ func toNode(v reflect.Value) node {
 			}
 			return node{kind: nodeScalar, scalar: base64.StdEncoding.EncodeToString(v.Bytes())}
 		}
-		out := node{kind: nodeList, columns: columnsOf(v.Type().Elem())}
+		out := node{
+			kind:       nodeList,
+			columns:    columnsOf(v.Type().Elem()),
+			objectList: isObjectListValue(v),
+		}
 		for i := range v.Len() {
 			out.items = append(out.items, toNode(v.Index(i)))
 		}
@@ -408,6 +417,9 @@ func decodeJSONNode(dec *json.Decoder) (node, error) {
 				}
 				out.items = append(out.items, child)
 			}
+			if len(out.items) > 0 && out.items[0].kind == nodeObject {
+				out.objectList = true
+			}
 			_, err := dec.Token()
 			return out, err
 		}
@@ -513,7 +525,8 @@ func columnsOf(elem reflect.Type) []column {
 // primaryListField finds the sole list-of-objects (or table-tagged) field inside
 // a wrapper struct such as paginated lists, notification lists, queue lists, or
 // search results, so --format tsv, --format ndjson, and --fields operate on the
-// rows even when sibling metadata fields are present.
+// rows even when sibling metadata fields are present. Scalar slices alongside
+// sibling fields are never unwrapped; single-field wrappers still unwrap.
 func primaryListField(n node) (nodeField, bool) {
 	if n.kind != nodeObject {
 		return nodeField{}, false
@@ -527,20 +540,7 @@ func primaryListField(n node) (nodeField, bool) {
 		if f.value.kind != nodeList {
 			continue
 		}
-		// Prefer lists of objects (or lists with table columns declared on the element type).
-		if len(f.value.columns) > 0 || (len(f.value.items) > 0 && f.value.items[0].kind == nodeObject) {
-			candidate = f
-			count++
-		}
-	}
-	if count == 1 {
-		return candidate, true
-	}
-	// Fallback: if there is exactly one list field of any kind alongside scalars
-	// (e.g., an empty slice of structs whose element type had no table tags).
-	count = 0
-	for _, f := range n.fields {
-		if f.value.kind == nodeList {
+		if f.value.isObjectList() {
 			candidate = f
 			count++
 		}
@@ -567,9 +567,9 @@ func isListValue(rv reflect.Value) (reflect.Value, bool) {
 	return reflect.Value{}, false
 }
 
-// isObjectListValue reports whether a slice/array value holds objects or
-// table-tagged structs, matching primaryListField's preference rule without
-// building a node tree for every element.
+// isObjectListValue reports whether a slice/array value holds objects (structs
+// or maps, including empty slices of structs or maps), matching
+// primaryListField's rule without building a node tree for every element.
 func isObjectListValue(lv reflect.Value) bool {
 	elemType := indirectType(lv.Type().Elem())
 	switch elemType.Kind() {
@@ -583,9 +583,9 @@ func isObjectListValue(lv reflect.Value) bool {
 		if elemType.Implements(textValuerType) || reflect.PointerTo(elemType).Implements(textValuerType) {
 			return false
 		}
-		return lv.Len() > 0
+		return true
 	case reflect.Map:
-		return lv.Len() > 0
+		return true
 	case reflect.Interface:
 		if lv.Len() == 0 {
 			return false

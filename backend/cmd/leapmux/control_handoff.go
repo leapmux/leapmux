@@ -79,7 +79,7 @@ func handOffControlCommand(args []string, root func() *cobra.Command) (int, bool
 	// The marker served this process. A process that this one starts, such as
 	// a command that a control command runs, decides for itself.
 	if err := os.Unsetenv(controlHandoffMarker); err != nil {
-		(&cli.Printer{Err: os.Stderr}).Notice("warning: cannot clear %s: %v", controlHandoffMarker, err)
+		_ = (&cli.Printer{Err: os.Stderr}).Notice("warning: cannot clear %s: %v", controlHandoffMarker, err)
 	}
 	return code, handled
 }
@@ -148,7 +148,7 @@ func (h controlHandoff) isSelf(info fs.FileInfo) bool {
 // warn states on stderr why the hand-off cannot run, and that this process
 // runs the command instead.
 func (h controlHandoff) warn(err error) {
-	(&cli.Printer{Err: h.stderr}).Notice("warning: %v. This leapmux runs the command, and its version can differ from the Worker's.", err)
+	_ = (&cli.Printer{Err: h.stderr}).Notice("warning: %v. This leapmux runs the command, and its version can differ from the Worker's.", err)
 }
 
 // actsOnControl reports whether args act on a control command (see

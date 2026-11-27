@@ -64,6 +64,19 @@ type Printer struct {
 	oneLineResult bool
 }
 
+// completeWriter turns a short write with a nil error into io.ErrShortWrite.
+type completeWriter struct {
+	w io.Writer
+}
+
+func (cw completeWriter) Write(p []byte) (int, error) {
+	n, err := cw.w.Write(p)
+	if err == nil && n != len(p) {
+		return n, io.ErrShortWrite
+	}
+	return n, err
+}
+
 // Result prints the result of a command. A nil result prints nothing.
 //
 // Every result is an object: a struct, or a map with string keys. A list
@@ -73,29 +86,30 @@ func (p *Printer) Result(v any) error {
 	if isNil(v) {
 		return nil
 	}
+	out := completeWriter{w: p.Out}
 	switch p.Format {
 	case FormatQuiet:
-		return writeIDs(p.Out, v)
+		return writeIDs(out, v)
 	case FormatJSON:
-		return p.writeJSONData(v)
+		return p.writeJSONData(out, v)
 	case FormatNDJSON:
-		return writeNDJSON(p.Out, v, p.Fields)
+		return writeNDJSON(out, v, p.Fields)
 	case FormatTSV:
-		return renderTSV(p.Out, v, p.tableOpts())
+		return renderTSV(out, v, p.tableOpts())
 	default:
 		opts := p.tableOpts()
 		if p.oneLineResult && len(p.Fields) == 0 {
-			return renderSingleLine(p.Out, v, opts)
+			return renderSingleLine(out, v, opts)
 		}
-		return renderTextOpts(p.Out, v, opts)
+		return renderTextOpts(out, v, opts)
 	}
 }
 
-func (p *Printer) writeJSONData(v any) error {
+func (p *Printer) writeJSONData(w io.Writer, v any) error {
 	if len(p.Fields) > 0 {
 		v = projectValueFields(v, p.Fields)
 	}
-	return writeEnvelope(p.Out, "data", v)
+	return writeEnvelope(w, "data", v)
 }
 
 func (p *Printer) tableOpts() tableOptions {
@@ -113,38 +127,43 @@ func (p *Printer) tableOpts() tableOptions {
 // it is one unwrapped JSON object per line. In text it is the event's TextLine
 // when the event has one, and compact JSON otherwise.
 func (p *Printer) Event(v any) error {
+	out := completeWriter{w: p.Out}
 	switch p.Format {
 	case FormatJSON:
-		return p.writeJSONData(v)
+		return p.writeJSONData(out, v)
 	case FormatNDJSON:
 		if len(p.Fields) > 0 {
 			v = projectValueFields(v, p.Fields)
 		}
-		return writeJSONLine(p.Out, v)
+		return writeJSONLine(out, v)
 	case FormatQuiet:
-		return writeIDs(p.Out, v)
+		return writeIDs(out, v)
 	case FormatTSV:
-		return renderTSVEvent(p.Out, v, tableOptions{fields: p.Fields})
+		return renderTSVEvent(out, v, tableOptions{fields: p.Fields})
 	default:
 		if line, ok := v.(TextLiner); ok {
 			text := line.TextLine()
 			if strings.Contains(text, "\n") {
-				_, err := fmt.Fprintln(p.Out, SanitizeTerminalText(text))
+				_, err := fmt.Fprintln(out, SanitizeTerminalText(text))
 				return err
 			}
-			_, err := fmt.Fprintln(p.Out, SanitizeSingleLine(text))
+			_, err := fmt.Fprintln(out, SanitizeSingleLine(text))
 			return err
 		}
-		return writeJSONLine(p.Out, v)
+		return writeJSONLine(out, v)
 	}
 }
 
 // Notice prints one line of prose for a person on stderr: progress, or a
 // warning. It never reaches stdout, so it cannot corrupt a result that a
 // script parses.
-func (p *Printer) Notice(format string, args ...any) {
+func (p *Printer) Notice(format string, args ...any) error {
+	if p == nil || p.Err == nil {
+		return nil
+	}
 	msg := SanitizeTerminalText(fmt.Sprintf(format, args...))
-	_, _ = fmt.Fprintln(p.Err, msg)
+	_, err := fmt.Fprintln(completeWriter{w: p.Err}, msg)
+	return err
 }
 
 // Failure prints e. In text it is "error: <code>: <message>" on stderr with

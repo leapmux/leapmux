@@ -79,16 +79,11 @@ func newWSAuthenticator(
 	}
 }
 
-// authenticate resolves the caller via the shared HTTP auth ladder so both
-// browser endpoints use the same credential checks. The token validator
-// is optional (nil accepts cookie auth only), and the caller wires it after
-// construction, so this reads it at call time.
-//
-// It also checks the endpoint's required scope. Browser sessions and Solo's
-// synthetic user carry an unscoped grant and pass this check. API credentials,
-// including the control CLI's credentials, must hold the endpoint's required
-// scope.
-func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
+// authenticateUser resolves the caller via the shared HTTP auth ladder without
+// checking the endpoint's default requiredScope. Callers whose required scopes
+// depend on request parameters (such as /ws/userevents topics) call this and
+// then requireScopes.
+func (a wsAuthenticator) authenticateUser(r *http.Request) (*auth.UserInfo, error) {
 	// PER REQUEST, because the answer is: a trusted proxy that verified HTTPS
 	// for this connection turns the secure cookie name on whatever the setting
 	// says, and the handshake must read the same name the Connect procedures
@@ -97,7 +92,7 @@ func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 	if a.secureCookie != nil {
 		secureCookie = a.secureCookie(r.Context())
 	}
-	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
+	return auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
 		SessionHasher: a.sessionHasher,
 		Store:         a.store,
 		Validator:     a.tokenValidator,
@@ -109,12 +104,34 @@ func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 		// procedure admit exactly the same solo callers.
 		SoloGate: a.authLease.registry.SoloGate(),
 	})
+}
+
+func requireScopes(user *auth.UserInfo, scopes ...leapmuxv1.Scope) error {
+	for _, scope := range scopes {
+		if !user.Scopes.Allows(scope) {
+			token, _ := authscope.Token(scope)
+			return fmt.Errorf("%w: this credential was not granted %s", auth.ErrHTTPForbidden, token)
+		}
+	}
+	return nil
+}
+
+// authenticate resolves the caller via the shared HTTP auth ladder so both
+// browser endpoints use the same credential checks. The token validator
+// is optional (nil accepts cookie auth only), and the caller wires it after
+// construction, so this reads it at call time.
+//
+// It also checks the endpoint's required scope. Browser sessions and Solo's
+// synthetic user carry an unscoped grant and pass this check. API credentials,
+// including the control CLI's credentials, must hold the endpoint's required
+// scope.
+func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
+	user, err := a.authenticateUser(r)
 	if err != nil {
 		return nil, err
 	}
-	if !user.Scopes.Allows(a.requiredScope) {
-		token, _ := authscope.Token(a.requiredScope)
-		return nil, fmt.Errorf("%w: this credential was not granted %s", auth.ErrHTTPForbidden, token)
+	if err := requireScopes(user, a.requiredScope); err != nil {
+		return nil, err
 	}
 	return user, nil
 }

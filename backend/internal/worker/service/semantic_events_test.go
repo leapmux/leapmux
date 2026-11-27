@@ -974,3 +974,34 @@ func TestPopulateSemanticRequestHandles_BatchesMultipleAgentsInOnePage(t *testin
 	assert.Empty(t, frames[2].GetRecord().GetCurrentRequestHandle(), "archived agent must not expose an answer handle")
 	assert.Empty(t, frames[3].GetRecord().GetCurrentRequestHandle(), "unreadable prompt kind must not expose an answer handle")
 }
+
+type budgetedSemanticWriter struct {
+	*testResponseWriter
+	budget int
+}
+
+func (w *budgetedSemanticWriter) MaxPayloadBudget() int { return w.budget }
+
+func TestSendSemanticWatchFrame_OversizeReturnsFailedPrecondition(t *testing.T) {
+	t.Parallel()
+	writer := &budgetedSemanticWriter{
+		testResponseWriter: newTestWriter(),
+		budget:             8,
+	}
+	frame := &leapmuxv1.WatchSemanticEventsResponse{
+		Event: &leapmuxv1.WatchSemanticEventsResponse_Ready{
+			Ready: &leapmuxv1.SemanticWatchReady{
+				Cursor: []byte("0123456789abcdef0123456789abcdef"),
+			},
+		},
+	}
+
+	ok := sendSemanticWatchFrame(writer, frame, false)
+	assert.False(t, ok)
+
+	messages := writer.streamsSnapshot()
+	require.Len(t, messages, 1)
+	assert.True(t, messages[0].GetEnd())
+	assert.Equal(t, int32(codes.FailedPrecondition), messages[0].GetError().GetCode())
+	assert.Contains(t, messages[0].GetError().GetMessage(), "payload limit")
+}

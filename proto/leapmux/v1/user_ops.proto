@@ -5,6 +5,7 @@ import "google/protobuf/timestamp.proto";
 import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
 import "leapmux/v1/user_crdt.proto";
+import "leapmux/v1/workspace.proto";
 
 // UserCRDT carries unary CRDT mutations + presence heartbeats for the
 // authenticated user. The user-scoped event subscription is delivered
@@ -219,11 +220,21 @@ message BatchRejection {
   string               offending_op_id = 2;
 }
 
+// UserEventTopic selects which event families a `/ws/userevents` subscription
+// delivers. An empty list defaults to CRDT + WORKERS (preserving existing
+// browser and live-CLI behavior).
+enum UserEventTopic {
+  USER_EVENT_TOPIC_UNSPECIFIED = 0;
+  USER_EVENT_TOPIC_CRDT = 1;
+  USER_EVENT_TOPIC_WORKERS = 2;
+  USER_EVENT_TOPIC_LAYOUT_JOURNAL = 3;
+}
+
 // WatchUserRequest carries the per-user subscription parameters for the
 // `/ws/userevents` WebSocket (and the local-IPC `hub./ws/userevents` tunnel
-// that proxies into it). The hub always sends UserMaterialized as the
-// first event; reconnects re-bootstrap and clients dedup echoed
-// batches by batch_id. The authenticated session implies the user.
+// that proxies into it). When topics includes CRDT (or is empty), the hub
+// always sends UserMaterialized (or ResumeDelta) as the first event; when CRDT
+// is omitted, no CRDT bootstrap or op traffic is sent.
 message WatchUserRequest {
   // Subscribe filter — empty means "every workspace caller can read".
   //
@@ -234,6 +245,9 @@ message WatchUserRequest {
   // up-front rejection is a delegation bearer naming a workspace outside its
   // pinned scope.
   repeated string workspace_ids = 1;
+  repeated UserEventTopic topics = 2;
+  bytes layout_after_cursor = 3;
+  string layout_workspace_id = 4;
 }
 
 // GetMaterializedRequest mirrors WatchUserRequest but for the one-shot
@@ -268,7 +282,9 @@ message WatchUserEvent {
     // Terminates one committed batch's catch-up sequence. See BatchEnd.
     BatchEnd             batch_end           = 10;
     // The user's worker list changed. See WorkersChanged.
-    WorkersChanged       workers_changed     = 11;
+    WorkersChanged           workers_changed     = 11;
+    // A committed layout-journal page for USER_EVENT_TOPIC_LAYOUT_JOURNAL.
+    ReadLayoutEventsResponse layout_events       = 12;
   }
 }
 

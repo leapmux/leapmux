@@ -69,7 +69,7 @@ var Registry = registry(
 	entry[leapmuxv1.RenameWorkspaceRequest, leapmuxv1.RenameWorkspaceResponse](leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure),
 	entry[leapmuxv1.DeleteWorkspaceRequest, leapmuxv1.DeleteWorkspaceResponse](leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure),
 	entry[leapmuxv1.ListWorkersRequest, leapmuxv1.ListWorkersResponse](leapmuxv1connect.WorkerManagementServiceListWorkersProcedure),
-	entry[leapmuxv1.GetWorkerEnrollmentRevisionRequest, leapmuxv1.GetWorkerEnrollmentRevisionResponse](leapmuxv1connect.WorkerManagementServiceGetWorkerEnrollmentRevisionProcedure),
+	entry[leapmuxv1.GetWorkerInventoryRequest, leapmuxv1.GetWorkerInventoryResponse](leapmuxv1connect.WorkerManagementServiceGetWorkerInventoryProcedure),
 	entry[leapmuxv1.GetWorkerRequest, leapmuxv1.GetWorkerResponse](leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure),
 )
 

@@ -185,8 +185,8 @@ service WorkerManagementService {
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
-  // Read a witness for the authenticated account's active Worker inventory.
-  rpc GetWorkerEnrollmentRevision(GetWorkerEnrollmentRevisionRequest) returns (GetWorkerEnrollmentRevisionResponse) {
+  // Read an atomic snapshot of the authenticated account's active Worker inventory.
+  rpc GetWorkerInventory(GetWorkerInventoryRequest) returns (GetWorkerInventoryResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
   // Get a single worker's details. A worker that is deregistering answers
@@ -303,12 +303,12 @@ message ListWorkersResponse {
   PageResponse page = 2;
 }
 
-message GetWorkerEnrollmentRevisionRequest {}
+message GetWorkerInventoryRequest {}
 
-message GetWorkerEnrollmentRevisionResponse {
+message GetWorkerInventoryResponse {
   string owner_user_id = 1;
   int64 revision = 2;
-  int64 active_workers = 3;
+  repeated string worker_ids = 3;
 }
 
 message GetWorkerRequest {

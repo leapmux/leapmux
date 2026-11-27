@@ -63,7 +63,26 @@ func resolveDeps(c control.Peer) resolve.Deps {
 // targetListing wires resolve.Canonical to the hub's list calls and to the
 // Workers that know each tab's title and each Worker's name.
 func targetListing(c control.Peer, deps resolve.Deps) resolve.Listing {
+	var selfIdentity func(ctx context.Context) (resolve.SelfInfo, error)
+	if ipcClient, ok := c.(*control.WorkerIPCClient); ok {
+		selfIdentity = func(ctx context.Context) (resolve.SelfInfo, error) {
+			ipc, err := ipcClient.ControlIPCService()
+			if err != nil {
+				return resolve.SelfInfo{}, err
+			}
+			identity, err := ipc.Whoami(ctx, &leapmuxv1.WhoamiRequest{})
+			if err != nil {
+				return resolve.SelfInfo{}, err
+			}
+			return resolve.SelfInfo{
+				TabID:    identity.GetTabId(),
+				TabType:  identity.GetTabType(),
+				WorkerID: identity.GetWorkerId(),
+			}, nil
+		}
+	}
 	return resolve.Listing{
+		SelfIdentity: selfIdentity,
 		Tabs: func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
 			return listTabsInWorkspaces(ctx, c, nil)
 		},

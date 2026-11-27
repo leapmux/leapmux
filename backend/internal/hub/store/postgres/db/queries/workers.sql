@@ -230,9 +230,12 @@ LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.id = $1;
 
 -- name: GetWorkerEnrollmentRevision :one
-SELECT CAST(COALESCE((SELECT revision FROM worker_enrollment_revisions WHERE user_id = sqlc.arg(user_id)), 0) AS BIGINT) AS revision,
-       CAST((SELECT COUNT(*) FROM workers WHERE registered_by = sqlc.arg(user_id)
-         AND deregistering_at IS NULL AND deleted_at IS NULL) AS BIGINT) AS active_workers;
+SELECT CAST(COALESCE((SELECT revision FROM worker_enrollment_revisions WHERE user_id = sqlc.arg(user_id)), 0) AS BIGINT) AS revision;
+
+-- name: ListActiveWorkerIDsByUserID :many
+SELECT id FROM workers
+WHERE registered_by = sqlc.arg(registered_by) AND deleted_at IS NULL AND deregistering_at IS NULL
+ORDER BY id ASC;
 
 -- name: AdvanceWorkerEnrollment :exec
 INSERT INTO worker_enrollment_revisions (user_id, revision)

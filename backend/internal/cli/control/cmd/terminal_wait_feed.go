@@ -8,30 +8,20 @@ import (
 	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
 )
 
-// screenFeedKind is what one screenFeedItem reports.
-type screenFeedKind int
-
-const (
-	// screenFeedEvent carries one event of the terminal, in stream order.
-	screenFeedEvent screenFeedKind = iota + 1
-	// screenFeedRejected reports that the Worker refused to watch the
-	// terminal for good. err states why.
-	screenFeedRejected
-	// screenFeedFailed ends the feed, because it cannot watch the terminal.
-	// err states why.
-	screenFeedFailed
-)
-
-// screenFeedItem is one output of a screen feed.
+// screenFeedItem is one output of a screen feed. Exactly one field is active:
+//   - event: a live or replayed terminal event in stream order
+//   - rejected: a durable WatchRejection for the watched terminal
+//   - overflow: live output exceeded the pre-replay buffer cap
+//   - err: a stream or transport error that ended the feed
 type screenFeedItem struct {
-	kind  screenFeedKind
-	event *leapmuxv1.TerminalEvent
-	err   error
+	event    *leapmuxv1.TerminalEvent
+	err      error
+	rejected *leapmuxv1.WatchRejection
+	overflow bool
 }
 
 // screenFeedSource is what the content watch of one terminal reads from its
@@ -66,19 +56,34 @@ const screenFeedReconnectTimerTag = "screen-feed-reconnect"
 // again from the offset of the last chunk that it delivered, after a capped
 // backoff, so the Worker replays the bytes that the gap lost, or the whole
 // state when its buffer no longer holds them. When the first subscription
-// fails, the feed sends screenFeedFailed and ends.
+// fails, the feed sends a screenFeedItem with err set and ends.
 func startScreenFeed(ctx context.Context, wg *sync.WaitGroup, source screenFeedSource, terminalID string, position terminalScreenPosition, out chan<- screenFeedItem) {
-	f := &screenFeed{source: source, terminalID: terminalID, position: position, out: out}
+	f := &screenFeed{source: source, terminalID: terminalID, position: position, screenGeometry: true, out: out}
 	wg.Go(func() { f.connect(ctx) })
 }
 
-// screenFeed is the state of one startScreenFeed.
+// startTerminalOutputFeed watches the raw byte stream of terminalID without
+// requesting ScreenTimeline or ScreenGeometry frames, ordering catch-up before
+// live output via TerminalData.ReplayComplete.
+func startTerminalOutputFeed(ctx context.Context, wg *sync.WaitGroup, source screenFeedSource, terminalID string, afterOffset int64, out chan<- screenFeedItem) {
+	f := &screenFeed{
+		source:     source,
+		terminalID: terminalID,
+		position:   terminalScreenPosition{offset: afterOffset},
+		out:        out,
+	}
+	wg.Go(func() { f.connect(ctx) })
+}
+
+// screenFeed is the state of one startScreenFeed or startTerminalOutputFeed.
 type screenFeed struct {
 	source     screenFeedSource
 	terminalID string
-	// position records what the feed handed to the waiter, including geometry.
-	position terminalScreenPosition
-	out      chan<- screenFeedItem
+	// position records what the feed handed to the consumer, including geometry
+	// when screenGeometry is true.
+	position       terminalScreenPosition
+	screenGeometry bool
+	out            chan<- screenFeedItem
 }
 
 // connect keeps one subscription open until ctx ends.
@@ -94,7 +99,7 @@ func (f *screenFeed) connect(ctx context.Context) {
 			return
 		}
 		if (err != nil && !subscribed) || refusedForGood(err) {
-			f.send(ctx, screenFeedItem{kind: screenFeedFailed, err: err})
+			f.send(ctx, screenFeedItem{err: err})
 			return
 		}
 		timer := f.source.clock.NewTimer(backoff.afterSession(delivered), screenFeedReconnectTimerTag)
@@ -118,7 +123,12 @@ func (f *screenFeed) subscribeOnce(ctx context.Context, onSubscribed func()) (bo
 	defer release()
 	streamCtx, stop := context.WithCancel(ctx)
 	frames := make(chan screenFeedItem)
-	forward := screenReplayForwarder{feed: f, position: f.position}
+	var forward terminalReplayForwarder
+	if f.screenGeometry {
+		forward = &screenReplayForwarder{feed: f, position: f.position}
+	} else {
+		forward = &outputReplayForwarder{feed: f, offset: f.position.offset}
+	}
 	var forwarder sync.WaitGroup
 	forwarder.Go(func() {
 		for {
@@ -146,25 +156,27 @@ func (f *screenFeed) subscribeOnce(ctx context.Context, onSubscribed func()) (bo
 			return
 		}
 		delivered.Store(true)
-		offer(screenFeedItem{kind: screenFeedEvent, event: te})
+		offer(screenFeedItem{event: te})
 	}
 	onAck := func(ack *leapmuxv1.WatchUpdateAck) {
 		delivered.Store(true)
 		for _, rejection := range ack.GetRejectedTerminals() {
-			if err := terminalRejection(rejection); err != nil {
-				offer(screenFeedItem{kind: screenFeedRejected, err: err})
+			if rejection.GetReason() == leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED {
+				continue
 			}
+			offer(screenFeedItem{rejected: rejection})
 		}
 	}
-	// The forwarder owns both cursors. A callback can arrive before replay or
-	// block during delivery. Neither case advances the next subscription.
+	// The forwarder owns the replay and live cursors. A callback can arrive
+	// before replay or block during delivery. Neither case advances the next
+	// subscription.
 	sub := streamevents.NewSubscription(transport, streamevents.NewAgentCursor(), streamevents.NewTerminalCursor(), nil, onTerminal, nil,
 		streamevents.WithUpdateAck(onAck), streamevents.WithClock(f.source.clock), streamevents.WithUntrimmedTerminalData())
 	defer func() {
 		stop()
 		forwarder.Wait()
 		sub.Cancel()
-		f.position = forward.position
+		f.position = forward.nextPosition()
 	}()
 	if err := sub.Update(streamCtx, f.interest()); err != nil {
 		return false, err
@@ -183,16 +195,19 @@ func (f *screenFeed) subscribeOnce(ctx context.Context, onSubscribed func()) (bo
 }
 
 // interest is the content watch of the terminal, from the offset that the
-// feed delivered to the waiter.
+// feed delivered to the consumer.
 func (f *screenFeed) interest() *leapmuxv1.WatchEventsRequest {
-	return &leapmuxv1.WatchEventsRequest{Terminals: []*leapmuxv1.WatchTerminalEntry{{
-		TerminalId:            f.terminalID,
-		AfterOffset:           f.position.offset,
-		Mode:                  leapmuxv1.WatchMode_WATCH_MODE_FULL,
-		ScreenGeometry:        true,
-		ScreenEpoch:           f.position.epoch,
-		AfterGeometryRevision: f.position.revision,
-	}}}
+	entry := &leapmuxv1.WatchTerminalEntry{
+		TerminalId:  f.terminalID,
+		AfterOffset: f.position.offset,
+		Mode:        leapmuxv1.WatchMode_WATCH_MODE_FULL,
+	}
+	if f.screenGeometry {
+		entry.ScreenGeometry = true
+		entry.ScreenEpoch = f.position.epoch
+		entry.AfterGeometryRevision = f.position.revision
+	}
+	return &leapmuxv1.WatchEventsRequest{Terminals: []*leapmuxv1.WatchTerminalEntry{entry}}
 }
 
 // send delivers item to the wait. It returns false when ctx ended first.
@@ -202,28 +217,5 @@ func (f *screenFeed) send(ctx context.Context, item screenFeedItem) bool {
 		return true
 	case <-ctx.Done():
 		return false
-	}
-}
-
-// terminalRejection is the error that one rejected terminal of an
-// acknowledgement becomes. It is nil for a rejection that the subscription
-// retries by itself.
-//
-// A terminal that the Worker no longer holds closed during the wait, so the
-// wait ended without its condition: the error exits 6, as `agent send --wait`
-// does for an agent that closed.
-func terminalRejection(rejection *leapmuxv1.WatchRejection) error {
-	id := rejection.GetEntityId()
-	switch rejection.GetReason() {
-	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED:
-		return nil
-	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND:
-		return cli.Newf(cli.CodeNotFound, "terminal %s closed during the wait", id).
-			WithExitCode(cli.ExitWaitEnded)
-	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_FORBIDDEN:
-		return cli.Newf(cli.CodePermissionDenied, "the credential may not watch terminal %s", id)
-	default:
-		// The protocol reads an unknown reason as durable.
-		return cli.Newf(cli.CodeInternal, "the Worker refused to watch terminal %s (%s)", id, rejection.GetReason())
 	}
 }

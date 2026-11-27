@@ -54,7 +54,7 @@ func renderTextOpts(w io.Writer, v any, opts tableOptions) error {
 		if len(opts.fields) > 0 {
 			want := fieldSet(opts.fields)
 			if listField, ok := primaryListField(n); ok {
-				isObjList := len(listField.value.columns) > 0 || (len(listField.value.items) > 0 && listField.value.items[0].kind == nodeObject)
+				isObjList := listField.value.isObjectList()
 				if (isObjList && (!objectHasAllFields(n, want) || nodeListHasAnyField(listField.value, want))) ||
 					(!isObjList && !objectHasAnyField(n, want)) {
 					return writeListOpts(w, listField.value, opts)

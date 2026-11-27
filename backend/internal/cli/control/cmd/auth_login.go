@@ -103,12 +103,12 @@ func runAuthLogin(inv *cli.Invocation) (any, error) {
 	case prevCreds != nil:
 		if revokeErr := revokeBearer(hub, prevCreds.AccessToken, prevCreds.ClientIDOrBuiltIn()); revokeErr != nil {
 			msg := fmt.Sprintf("could not revoke previous login (%s on %s): %v; %s", prevCreds.Username, prevCreds.HubURL, revokeErr, disconnectInPreferences)
-			inv.Printer.Notice("warning: %s", msg)
+			_ = inv.Printer.Notice("warning: %s", msg)
 			result.Warning = joinWarnings(result.Warning, msg)
 		}
 	case prevCorrupt:
 		msg := fmt.Sprintf("the previous credential file did not parse (%v); replaced it, and cannot revoke its old grant so %s if the hub still lists it", prevCorruptErr, disconnectInPreferences)
-		inv.Printer.Notice("warning: %s", msg)
+		_ = inv.Printer.Notice("warning: %s", msg)
 		result.Warning = joinWarnings(result.Warning, msg)
 	}
 	return result, nil
@@ -144,8 +144,8 @@ func runLocalRedirectLogin(ctx context.Context, p *cli.Printer, hubURL, deviceNa
 	defer flow.Close()
 
 	startURL := flow.AuthorizeURL()
-	p.Notice("Open this URL in your browser to authorize the CLI:")
-	p.Notice("  %s", startURL)
+	_ = p.Notice("Open this URL in your browser to authorize the CLI:")
+	_ = p.Notice("  %s", startURL)
 	_ = control.OpenBrowser(startURL)
 
 	spin := cli.StartSpinner(p, "waiting for browser authorization...")
@@ -190,11 +190,11 @@ func runDeviceCodeLogin(ctx context.Context, p *cli.Printer, hubURL, deviceName,
 	if err := json.NewDecoder(resp.Body).Decode(&auth); err != nil {
 		return nil, err
 	}
-	p.Notice("To authorize this CLI, on any device with a browser:")
-	p.Notice("  1. Visit %s", auth.VerificationURI)
-	p.Notice("  2. Enter the code: %s", auth.UserCode)
+	_ = p.Notice("To authorize this CLI, on any device with a browser:")
+	_ = p.Notice("  1. Visit %s", auth.VerificationURI)
+	_ = p.Notice("  2. Enter the code: %s", auth.UserCode)
 	if auth.VerificationURIComplete != "" {
-		p.Notice("Or open: %s", auth.VerificationURIComplete)
+		_ = p.Notice("Or open: %s", auth.VerificationURIComplete)
 	}
 	spin := cli.StartSpinner(p, "waiting for device authorization...")
 	var result *loginResult

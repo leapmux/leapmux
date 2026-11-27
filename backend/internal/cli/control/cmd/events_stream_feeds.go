@@ -10,11 +10,45 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/semanticevents"
 )
 
+func filterSelectsFamily(f kindFilter, family string) bool {
+	if f.selected == nil {
+		return true
+	}
+	for _, k := range eventKinds {
+		if kindFamily(k.name) == family && f.selected[k.name] {
+			return true
+		}
+	}
+	return false
+}
+
+func filterSelectsPrivate(f kindFilter) bool {
+	if f.selected == nil {
+		return true
+	}
+	for _, kind := range privateLostKinds() {
+		if f.selected[kind] {
+			return true
+		}
+	}
+	return false
+}
+
+// syncFeeds gives each Worker that hosts a tab of the scope the watch and
+// private-event subscriptions that the selected kinds need, and stops feeds
+// for any Worker that no longer needs them.
 func (s *eventStream) syncFeeds() {
+	var filter kindFilter
+	if s.printer != nil {
+		filter = s.printer.filter
+	}
+	wantAgents := filterSelectsFamily(filter, "agent")
+	wantTerminals := filterSelectsFamily(filter, "terminal")
+	wantPrivate := s.privateSource != nil && filterSelectsPrivate(filter)
+
 	want := map[string]*watchInterest{}
 	for _, tab := range s.tabs {
 		if tab.WorkerID == "" {
@@ -27,58 +61,101 @@ func (s *eventStream) syncFeeds() {
 		}
 		switch tab.Type {
 		case leapmuxv1.TabType_TAB_TYPE_AGENT:
-			interest.agents = append(interest.agents, tab.ID)
+			if wantAgents {
+				interest.agents = append(interest.agents, tab.ID)
+			}
 		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-			interest.terminals = append(interest.terminals, tab.ID)
+			if wantTerminals {
+				interest.terminals = append(interest.terminals, tab.ID)
+			}
 		case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
-			// A file or an image tab is a viewer: its Worker sends no event
-			// about it.
+			// File and image tabs produce no WatchEvents traffic, but their
+			// Worker stays in want so private events (tab.renamed, tab.status,
+			// notifications) still stream when selected.
 		}
 	}
 	for workerID, fs := range s.feeds {
-		if interest := want[workerID]; interest == nil || interest.empty() {
-			fs.cancel()
+		interest := want[workerID]
+		needWatch := interest != nil && !interest.empty()
+		needPrivate := interest != nil && wantPrivate
+		if !needWatch && !needPrivate {
+			s.stopWatchFeed(fs)
+			s.stopPrivateFeed(fs)
 			delete(s.feeds, workerID)
 		}
 	}
 	for _, workerID := range slices.Sorted(maps.Keys(want)) {
 		interest := want[workerID]
-		if interest.empty() {
+		needWatch := !interest.empty()
+		needPrivate := wantPrivate
+		if !needWatch && !needPrivate {
 			continue
 		}
 		slices.Sort(interest.agents)
 		slices.Sort(interest.terminals)
 		fs := s.feeds[workerID]
 		if fs == nil {
-			s.startFeed(workerID, *interest)
-			continue
+			fs = &feedState{workerID: workerID, settled: true}
+			s.feeds[workerID] = fs
 		}
-		if fs.interest.equal(*interest) {
-			continue
+		switch {
+		case !needWatch && fs.feed != nil:
+			s.stopWatchFeed(fs)
+		case needWatch && fs.feed == nil:
+			s.startWatchFeed(fs, *interest)
+		case needWatch && !fs.interest.equal(*interest):
+			fs.interest = *interest
+			if !fs.refused {
+				fs.feed.setInterest(*interest)
+			}
 		}
-		fs.interest = *interest
-		if !fs.refused {
-			fs.feed.setInterest(*interest)
+		if needPrivate && fs.private == nil {
+			s.startPrivateFeed(fs)
+		} else if !needPrivate && fs.private != nil {
+			s.stopPrivateFeed(fs)
 		}
 	}
 }
 
-// startFeed starts the watch of one Worker.
-func (s *eventStream) startFeed(workerID string, interest watchInterest) {
+// startWatchFeed starts the WatchEvents subscription for one Worker.
+func (s *eventStream) startWatchFeed(fs *feedState, interest watchInterest) {
 	ctx, cancel := context.WithCancel(s.ctx)
-	feed := newWorkerFeed(workerID, s.workerSource(workerID), s.feedOut)
+	feed := newWorkerFeed(fs.workerID, s.workerSource(fs.workerID), s.feedOut)
 	feed.noReconnect = s.noReconnect
 	feed.setInterest(interest)
-	s.feeds[workerID] = &feedState{
-		feed:     feed,
-		cancel:   cancel,
-		interest: interest,
-		started:  s.now(),
-		// A watch that starts after stream.ready cannot hold it back.
-		settled: s.ready,
-	}
+	fs.feed = feed
+	fs.watchCancel = cancel
+	fs.interest = interest
+	fs.health = sourceHealth{}
+	fs.started = s.now()
+	// A watch that starts after stream.ready cannot hold it back.
+	fs.settled = s.ready
+	fs.refused = false
 	feed.start(ctx, s.wg)
-	s.startPrivateFeed(ctx, workerID)
+}
+
+func (s *eventStream) stopWatchFeed(fs *feedState) {
+	if fs.watchCancel != nil {
+		fs.watchCancel()
+	}
+	fs.feed = nil
+	fs.watchCancel = nil
+	fs.interest = watchInterest{}
+	fs.health = sourceHealth{}
+	fs.settled = true
+	fs.refused = false
+}
+
+// workerTabIDs lists the sorted tab IDs in scope hosted by workerID.
+func (s *eventStream) workerTabIDs(workerID string) []string {
+	var ids []string
+	for id, tab := range s.tabs {
+		if tab.WorkerID == workerID {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func (s *eventStream) onFeed(out feedOutput) error {
@@ -95,7 +172,7 @@ func (s *eventStream) onFeed(out feedOutput) error {
 	case feedLevels:
 		return s.onLevels(fs, out)
 	case feedDown:
-		return s.feedDown(fs, out.err)
+		return s.feedDown(fs, out.err, out.retrying)
 	case feedRefused:
 		return s.feedRefused(fs, out.err)
 	case feedRejected:
@@ -106,23 +183,34 @@ func (s *eventStream) onFeed(out feedOutput) error {
 
 // workerEvent is a stream event about the Worker of fs.
 func workerEvent(fs *feedState) streamEvent {
-	return streamEvent{Source: "worker", WorkerID: fs.feed.workerID}
+	workerID := fs.workerID
+	if workerID == "" && fs.feed != nil {
+		workerID = fs.feed.workerID
+	}
+	return streamEvent{Source: "worker", WorkerID: workerID}
 }
 
-// feedDown reports that a Worker's watch cannot deliver now. The watch
-// retries by itself; one stream.unavailable states the outage.
-func (s *eventStream) feedDown(fs *feedState, err error) error {
+// feedDown reports that a Worker's watch cannot deliver now. When retrying is
+// true, the watch retries by itself and one stream.unavailable states the
+// outage. When retrying is false (for example under --reconnect=false), the
+// watch stopped and stream.unavailable reports that it will not try again.
+func (s *eventStream) feedDown(fs *feedState, err error, retrying bool) error {
 	fs.settled = true
 	fs.health.live = false
-	if fs.health.down {
+	if !retrying {
+		fs.refused = true
+	}
+	if fs.health.down && retrying {
 		return s.maybeReady()
 	}
 	// A watch that never delivered lost everything since it started.
-	fs.health.down, fs.health.since = true, fs.started
-	if fs.health.everLive {
-		fs.health.since = s.now()
+	if !fs.health.down {
+		fs.health.down, fs.health.since = true, fs.started
+		if fs.health.everLive {
+			fs.health.since = s.now()
+		}
 	}
-	if err := s.emit(unavailableEvent(workerEvent(fs), err, true)); err != nil {
+	if err := s.emit(unavailableEvent(workerEvent(fs), err, retrying)); err != nil {
 		return err
 	}
 	return s.maybeReady()
@@ -180,12 +268,14 @@ func (s *eventStream) agentLevel(id string, info *leapmuxv1.AgentInfo, reconcile
 		return nil
 	}
 	track := s.agentTrack(id)
-	announce := track.announce
-	track.announce = false
+	announceStatus := track.announceStatus
+	announceActivity := track.announceActivity
+	track.announceStatus = false
+	track.announceActivity = false
 	var events []streamEvent
 	if status := info.GetStatus(); status != leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED {
 		known := track.status != leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED
-		if (!known && announce) || (known && reconcile && status != track.status) {
+		if (!known && announceStatus) || (known && reconcile && status != track.status) {
 			ev := agentStatusEvent(tab, status, info.GetStartupError())
 			ev.Reconciled = known
 			events = append(events, ev)
@@ -196,7 +286,7 @@ func (s *eventStream) agentLevel(id string, info *leapmuxv1.AgentInfo, reconcile
 	}
 	if state := info.GetPublishedActivityState(); state != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED {
 		known := track.activity != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED
-		if (!known && announce) || (known && reconcile && state != track.activity) {
+		if (!known && announceActivity) || (known && reconcile && state != track.activity) {
 			ev := agentActivityEvent(tab, state, nil)
 			ev.Reconciled = known
 			events = append(events, ev)
@@ -241,7 +331,7 @@ func (s *eventStream) onAgentEvent(fs *feedState, ae *leapmuxv1.AgentEvent) erro
 		if state == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED || state == track.activity {
 			return nil
 		}
-		track.activity, track.announce = state, false
+		track.activity, track.announceActivity = state, false
 		var toolCalls *int32
 		if e.ActivityChanged.NumToolUses != nil {
 			n := e.ActivityChanged.GetNumToolUses()
@@ -253,12 +343,10 @@ func (s *eventStream) onAgentEvent(fs *feedState, ae *leapmuxv1.AgentEvent) erro
 		if status == leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED || status == track.status {
 			return nil
 		}
-		track.status, track.announce = status, false
+		track.status, track.announceStatus = status, false
 		return s.emit(agentStatusEvent(tab, status, e.StatusChange.GetStartupError()))
 	case *leapmuxv1.AgentEvent_TurnEnd:
-		ev := tabStreamEvent(kindAgentTurnEnd, tab)
-		ev.Summary = "the turn ended"
-		return s.emit(ev)
+		return s.emit(agentTurnEndEvent(tab))
 	case *leapmuxv1.AgentEvent_ControlRequest:
 		req := e.ControlRequest
 		handle := req.GetClaimToken()
@@ -273,10 +361,8 @@ func (s *eventStream) onAgentEvent(fs *feedState, ae *leapmuxv1.AgentEvent) erro
 	case *leapmuxv1.AgentEvent_ControlCancel:
 		cancel := e.ControlCancel
 		delete(track.requests, cancel.GetClaimToken())
-		ev := tabStreamEvent(kindAgentRequestEnded, tab)
-		ev.Request, ev.RequestID = cancel.GetClaimToken(), cancel.GetRequestId()
-		ev.State = controlResponseStateToken(cancel.GetResponseState())
-		ev.Summary = fmt.Sprintf("request %s ended (%s)", cli.ShortID(cancel.GetClaimToken()), tokenWords(ev.State))
+		ev := agentRequestEndedEvent(tab, cancel.GetRequestId(), cancel.GetClaimToken(), cancel.GetResponseState())
+		ev.Request = cancel.GetClaimToken()
 		return s.emit(ev)
 	case *leapmuxv1.AgentEvent_TodosChanged:
 		items := e.TodosChanged.GetTodos()
@@ -376,23 +462,17 @@ func (s *eventStream) onRejection(fs *feedState, rejection *leapmuxv1.WatchRejec
 		return nil
 	}
 	reason := rejection.GetReason()
-	if reason == leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED || s.rejected[tab.ID] == reason {
-		return nil
-	}
-	s.rejected[tab.ID] = reason
 	noun := "agent"
 	if terminal {
 		noun = "terminal"
 	}
-	var err error
-	switch reason {
-	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND:
+	disposition, err := classifyWatchRejection(noun, tab.ID, reason)
+	if disposition == watchRejectionRetry || s.rejected[tab.ID] == reason {
+		return nil
+	}
+	s.rejected[tab.ID] = reason
+	if disposition == watchRejectionNotFound {
 		err = cli.Newf(cli.CodeNotFound, "the worker holds no %s %s", noun, tab.ID)
-	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_FORBIDDEN:
-		err = cli.Newf(cli.CodePermissionDenied, "the credential may not watch %s %s", noun, tab.ID)
-	default:
-		// The protocol reads an unknown reason as durable.
-		err = cli.Newf(cli.CodeInternal, "the worker refused to watch %s %s (%s)", noun, tab.ID, reason)
 	}
 	ev := tabStreamEvent(kindStreamUnavailable, tab)
 	ev.Source = "worker"
@@ -436,7 +516,7 @@ func (s *eventStream) scopeCounts() *scopeCounts {
 		counts.Workspaces = len(s.tabs)
 	}
 	for _, fs := range s.feeds {
-		if fs.health.live {
+		if fs.isLive() {
 			counts.WorkersLive++
 		}
 	}
@@ -508,18 +588,6 @@ func progressSummary(report progressReport) string {
 	}
 }
 
-// unavailableEvent completes ev as a stream.unavailable for err.
-func unavailableEvent(ev streamEvent, err error, retrying bool) streamEvent {
-	e := cli.FromError(inBandError(err))
-	ev.Kind, ev.Code, ev.Message, ev.Retrying = kindStreamUnavailable, string(e.Code), e.Message, boolPtr(retrying)
-	if retrying {
-		ev.Summary = e.Message + "; retrying"
-	} else {
-		ev.Summary = e.Message + "; the stream does not try again"
-	}
-	return ev
-}
-
 // gapEvent completes ev as the stream.gap of a source that stopped
 // delivering at since and delivers again at until.
 func gapEvent(ev streamEvent, until, since time.Time, lost, tabIDs []string) streamEvent {
@@ -541,88 +609,4 @@ func withError(text, err string) string {
 		return text
 	}
 	return text + ": " + err
-}
-
-// crdtStateOf makes a CRDT state of a snapshot, so the batches that follow
-// apply to it as the hub applies them. The state takes the maps of m, which
-// the stream does not read again.
-func crdtStateOf(m *leapmuxv1.UserMaterialized) *leapmuxv1.UserCrdtState {
-	state := crdt.NewState(m.GetUserId())
-	maps.Copy(state.Nodes, m.GetNodes())
-	maps.Copy(state.Tabs, m.GetTabs())
-	maps.Copy(state.FloatingWindows, m.GetFloatingWindows())
-	maps.Copy(state.Workspaces, m.GetWorkspaces())
-	if m.GetMaxHlc() != nil {
-		state.MaxHlc = m.GetMaxHlc()
-	}
-	state.CurrentEpoch = m.GetCurrentEpoch()
-	return state
-}
-
-// putEntity replaces the record of an entity that entered the scope.
-func putEntity(state *leapmuxv1.UserCrdtState, em *leapmuxv1.EntityMaterialized) {
-	switch e := em.GetEntity().(type) {
-	case *leapmuxv1.EntityMaterialized_Tab:
-		if id := e.Tab.GetTabId(); id != "" {
-			state.Tabs[id] = e.Tab
-		}
-	case *leapmuxv1.EntityMaterialized_Node:
-		if id := e.Node.GetNodeId(); id != "" {
-			state.Nodes[id] = e.Node
-		}
-	case *leapmuxv1.EntityMaterialized_FloatingWindow:
-		if id := e.FloatingWindow.GetWindowId(); id != "" {
-			state.FloatingWindows[id] = e.FloatingWindow
-		}
-	}
-}
-
-// removeEntity drops the record of an entity that left the scope.
-func removeEntity(state *leapmuxv1.UserCrdtState, er *leapmuxv1.EntityRemoved) {
-	switch e := er.GetEntity().(type) {
-	case *leapmuxv1.EntityRemoved_Tab:
-		delete(state.Tabs, e.Tab.GetTabId())
-	case *leapmuxv1.EntityRemoved_NodeId:
-		delete(state.Nodes, e.NodeId)
-	case *leapmuxv1.EntityRemoved_WindowId:
-		delete(state.FloatingWindows, e.WindowId)
-	}
-}
-
-// --- The printer ---
-
-// eventPrinter prints the events that --kind selects on stdout, until
-// --limit printed its last one.
-type eventPrinter struct {
-	p      *cli.Printer
-	filter kindFilter
-	// limit ends the stream after this many events on stdout. Zero prints
-	// without a limit.
-	limit   int
-	printed int
-}
-
-// print prints ev on stdout when --kind selects it. A stream event that
-// --kind does not select prints its text line on stderr instead, so a
-// filter never hides a gap from the person who watches. A heartbeat prints
-// only with --heartbeat, which selects it, and --limit does not count it.
-// print returns errStreamDone after the last event that --limit allows.
-func (e *eventPrinter) print(ev streamEvent) error {
-	if ev.Kind == kindStreamHeartbeat {
-		return e.p.Event(ev)
-	}
-	if !e.filter.selects(ev.Kind) {
-		if kindFamily(ev.Kind) == kindFamily(kindStreamReady) {
-			e.p.Notice("%s", ev.TextLine())
-		}
-		return nil
-	}
-	if err := e.p.Event(ev); err != nil {
-		return err
-	}
-	e.printed++
-	if e.limit > 0 && e.printed >= e.limit {
-		return errStreamDone
-	}
-	return nil
 }

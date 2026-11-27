@@ -243,6 +243,10 @@ message TerminalData {
   // Live bytes carry the geometry in effect when the Worker observed them.
   string screen_epoch = 5;
   uint64 geometry_revision = 6;
+  // True on the single catch-up frame sent when ScreenGeometry is false so
+  // non-emulator subscribers can order catch-up before live chunks even when
+  // data is empty.
+  bool replay_complete = 7;
 }
 
 message TerminalScreenGeometry {
@@ -321,6 +325,7 @@ message TerminalStatusChange {
   string startup_error = 2;   // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
   string startup_message = 3; // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
   GitRepoStatus git_status = 4;
+  optional int32 exit_code = 5; // Populated when status=TERMINAL_STATUS_EXITED and known
 }
 
 message ListAvailableShellsRequest {

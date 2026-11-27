@@ -71,7 +71,7 @@ leapmux events --workspace self --kind agent --snapshot --json
 - Pass `--json` for stable `{"data": ...}` / `{"error": ...}` envelopes, `-q` for bare IDs, and `--fields` for compact output.
 - Pass `--output-schema <file|json>` with `--wait` (and optional `--schema-retries <n>`) on `agent send`, `agent open`, or `agent fork` when you need a schema-validated JSON reply.
 - Put `--` before text starting with `-`: `leapmux agent send "$A" -- "-v"`.
-- `agent send`, `agent open`, `agent fork`, and `terminal run` generate a durable `--request-id` automatically. On transport or wait failures, inspect the reported `disposition` (`not_sent`, `in_progress`, `outcome_unknown`), check `leapmux agent request-status <agent> <request-id>`, and retry safely with `--request-id <id>` instead of sending a duplicate prompt.
+- `agent send`, `agent open`, `agent fork`, and `terminal run` generate a durable `--request-id` automatically. On transport or wait failures, inspect the reported `disposition` (`not_sent`, `in_progress`, `outcome_unknown`) and retry safely with `--request-id <id>` instead of sending a duplicate request. For `agent send`, `agent open`, and `agent fork`, you can also inspect status with `leapmux agent request-status <agent> <request-id>`.
 - Exit codes are semantic: `0` ok, `1` failure, `2` usage, `3` auth, `4` not found, `5` refused (guard or waiting agent), `6` wait ended (timeout, closed, or schema exhausted), `7` unavailable, `8` daemon stopped, `130` interrupted.
 
 ## 5. Safety & Untrusted Peer Input

@@ -494,7 +494,7 @@ Inside a LeapMux tab, the socket of the tab relays these hub procedures alone:
 - leapmux.v1.UserCRDT/SubmitOps
 - leapmux.v1.UserCRDT/UpdatePresence
 - leapmux.v1.WorkerManagementService/GetWorker
-- leapmux.v1.WorkerManagementService/GetWorkerEnrollmentRevision
+- leapmux.v1.WorkerManagementService/GetWorkerInventory
 - leapmux.v1.WorkerManagementService/ListWorkers
 - leapmux.v1.WorkspaceService/CreateWorkspace
 - leapmux.v1.WorkspaceService/DeleteWorkspace

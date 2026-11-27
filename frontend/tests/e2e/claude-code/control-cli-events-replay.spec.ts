@@ -162,8 +162,8 @@ claudeTest('replays a closed agent and withdraws its offline permission request'
     expect(ended?.request_instance).toBe(opened?.request_instance)
     expect(opened?.request).toBeUndefined()
     expect(ended?.request).toBeUndefined()
-    const saved = JSON.parse(readFileSync(checkpoint, 'utf8')) as { sequence: number }
-    expect(saved.sequence).toBe(retired?.sequence)
+    const saved = JSON.parse(readFileSync(checkpoint, 'utf8')) as { tab: { position: { sequence: number } } }
+    expect(saved.tab.position.sequence).toBe(retired?.sequence)
   }
   finally {
     resumed.child.kill()

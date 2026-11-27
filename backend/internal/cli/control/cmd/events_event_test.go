@@ -1,11 +1,16 @@
 package cmd
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/cli"
 )
 
 // The text form is one line: the local time with milliseconds, the kind,
@@ -77,4 +82,63 @@ func TestStreamEvent_JSONHoldsOnlyTheFieldsOfItsKind(t *testing.T) {
 	assert.Equal(t, "unavailable", down["code"])
 	assert.Equal(t, "the worker ended the watch", down["message"])
 	assert.NotContains(t, down, "reconciled")
+}
+
+func TestStreamEvent_SourceIsNotTruncatedByShortID(t *testing.T) {
+	at := time.Date(2026, 11, 19, 10, 0, 1, 0, time.UTC)
+	ev := streamEvent{Kind: kindStreamUnavailable, Time: at, Source: "custom-long-source", Summary: "offline"}
+	assert.Contains(t, ev.TextLine(), " source=custom-long-source ")
+}
+
+func TestStreamEvent_TSVFormatsNestedSummaryStructs(t *testing.T) {
+	at := time.Date(2026, 11, 19, 10, 0, 1, 0, time.UTC)
+	var out bytes.Buffer
+	p := &cli.Printer{Out: &out, Err: io.Discard, Format: cli.FormatTSV}
+
+	pct := uint32(65)
+	require.NoError(t, p.Event(streamEvent{
+		Kind:      kindAgentTodos,
+		Time:      at,
+		Summary:   "2 of 5 done",
+		Todos:     &todoCounts{Total: 5, Completed: 2, InProgress: 1},
+		Tasks:     &taskCounts{Total: 3, Active: 1},
+		Progress:  &progressReport{State: "normal", Percent: 42},
+		Scope:     &scopeCounts{Workspaces: 2, Tabs: 4, Workers: 2, WorkersLive: 1, HubLive: true},
+		TabStatus: &tabStatusReport{Text: "Building", Tone: "warning", ProgressPercent: &pct},
+	}))
+	row := out.String()
+	assert.Contains(t, row, "2/5 (1 in progress)")
+	assert.Contains(t, row, "1/3 active")
+	assert.Contains(t, row, "42%")
+	assert.Contains(t, row, "ws=2 tabs=4 workers=1/2 hub=live")
+	assert.Contains(t, row, "Building (65%) [warning]")
+	assert.Equal(t, "cleared", tabStatusReport{Cleared: true}.TextValue())
+}
+
+func TestEventPrinter_SanitizesStderrNoticesAndGuardsNilErr(t *testing.T) {
+	at := time.Date(2026, 11, 19, 10, 0, 1, 0, time.UTC)
+	filter, err := parseKindFilter([]string{kindTerminalBell})
+	require.NoError(t, err)
+
+	var out, errOut bytes.Buffer
+	ep := newEventPrinter(&cli.Printer{Out: &out, Err: &errOut, Format: cli.FormatJSON}, filter, 1)
+	reached, err := ep.print(streamEvent{
+		Kind: kindStreamUnavailable, Time: at, Source: "hub\x1b[31m", Summary: "down",
+	})
+	require.NoError(t, err)
+	assert.False(t, reached)
+	assert.Empty(t, out.String())
+	assert.NotContains(t, errOut.String(), "\x1b")
+	assert.Contains(t, errOut.String(), "stream.unavailable")
+
+	// Nil Err must not panic.
+	nilErrPrinter := newEventPrinter(&cli.Printer{Out: &out, Err: nil, Format: cli.FormatJSON}, filter, 1)
+	_, err = nilErrPrinter.print(streamEvent{Kind: kindStreamReady, Time: at, Summary: "ready"})
+	require.NoError(t, err)
+
+	// Selected event counts and reaches limit.
+	reached, err = ep.print(streamEvent{Kind: kindTerminalBell, Time: at, Summary: "bell"})
+	require.NoError(t, err)
+	assert.True(t, reached)
+	assert.Equal(t, 1, ep.printed())
 }

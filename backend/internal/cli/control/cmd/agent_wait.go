@@ -345,7 +345,7 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 		},
 		notice: func(format string, args ...any) {
 			spin.Stop()
-			inv.Printer.Notice(format, args...)
+			_ = inv.Printer.Notice(format, args...)
 		},
 		now: time.Now,
 	}
@@ -626,9 +626,9 @@ func agentWaitEnded(p *cli.Printer, result agentWaitResult, outcome agentWaitOut
 		ids = append(ids, row.ID)
 	}
 	if outcome == agentWaitImpossible {
-		p.Notice("the wait ended, because %s closed before reaching %s", agentPhrase(ids), spec.until.description())
+		_ = p.Notice("the wait ended, because %s closed before reaching %s", agentPhrase(ids), spec.until.description())
 	} else {
-		p.Notice("the wait ended after %s, before %s reached %s", spec.timeout, agentPhrase(ids), spec.until.description())
+		_ = p.Notice("the wait ended after %s, before %s reached %s", spec.timeout, agentPhrase(ids), spec.until.description())
 	}
 	return &cli.ExitStatus{Code: cli.ExitWaitEnded}
 }

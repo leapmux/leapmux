@@ -140,17 +140,16 @@ func TestTerminalWait_ChangeAndAfterOffset(t *testing.T) {
 		Screen:          []byte("$ "),
 		ScreenEndOffset: 2,
 	}
-	screen, err := newScreenWatch(info, nil, false)
+	em, err := newScreenEmulator(info)
 	require.NoError(t, err)
-	defer screen.dispose()
-	initial, err := screen.snapshotVisibleText()
+	defer em.dispose()
+	initialLines, err := em.visibleLines()
 	require.NoError(t, err)
-	assert.Equal(t, "$", initial)
+	assert.Equal(t, []string{"$"}, initialLines)
 
 	items := make(chan screenFeedItem, 4)
 	// First chunk: OSC title change only (no visible text change).
 	items <- screenFeedItem{
-		kind: screenFeedEvent,
 		event: &leapmuxv1.TerminalEvent{
 			Event: &leapmuxv1.TerminalEvent_Data{
 				Data: &leapmuxv1.TerminalData{
@@ -162,7 +161,6 @@ func TestTerminalWait_ChangeAndAfterOffset(t *testing.T) {
 	}
 	// Second chunk: visible output arrives.
 	items <- screenFeedItem{
-		kind: screenFeedEvent,
 		event: &leapmuxv1.TerminalEvent{
 			Event: &leapmuxv1.TerminalEvent_Data{
 				Data: &leapmuxv1.TerminalData{
@@ -173,8 +171,8 @@ func TestTerminalWait_ChangeAndAfterOffset(t *testing.T) {
 		},
 	}
 
-	w := newTerminalWaiter("t-1", terminalWaitSpec{change: true, timeout: 5 * time.Second})
-	res, outcome, err := awaitScreenChange(context.Background(), quartz.NewReal(), items, screen, w, initial)
+	w := newTerminalWaiter("t-1", terminalWaitSpec{mode: terminalWaitChange, timeout: 5 * time.Second})
+	res, outcome, err := awaitScreen(context.Background(), quartz.NewReal(), items, em, w, screenChangeCheck(em, w, initialLines))
 	require.NoError(t, err)
 	assert.Equal(t, terminalWaitHeld, outcome)
 	assert.True(t, res.Reached)
@@ -188,7 +186,7 @@ func TestTerminalWait_ChangeAndAfterOffset(t *testing.T) {
 }
 
 func TestTerminalWait_ChangeWithAfterOffsetImmediateReturn(t *testing.T) {
-	// When --after-offset is strictly less than ScreenEndOffset, waitForScreenChange
+	// When --after-offset is strictly less than ScreenEndOffset, waitForScreen
 	// returns immediately with Changed=true without opening any stream.
 	info := &leapmuxv1.TerminalInfo{
 		TerminalId:      "t-1",
@@ -198,8 +196,8 @@ func TestTerminalWait_ChangeWithAfterOffsetImmediateReturn(t *testing.T) {
 		Screen:          []byte("ready\r\n"),
 		ScreenEndOffset: 42,
 	}
-	spec := terminalWaitSpec{change: true, hasAfterOffset: true, afterOffset: 10, timeout: time.Second}
-	res, outcome, err := waitForScreenChange(nil, tabTarget{ID: "t-1"}, info, spec)
+	spec := terminalWaitSpec{mode: terminalWaitChange, hasAfterOffset: true, afterOffset: 10, timeout: time.Second}
+	res, outcome, err := waitForScreen(nil, tabTarget{ID: "t-1"}, info, spec)
 	require.NoError(t, err)
 	assert.Equal(t, terminalWaitHeld, outcome)
 	assert.True(t, res.Reached)

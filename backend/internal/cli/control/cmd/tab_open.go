@@ -612,8 +612,10 @@ func waitNewAgentSettled(inv *cli.Invocation, s *session, agentTarget tabTarget,
 			response, err := workerReplyReader(s.c, agentTarget.WorkerID, agentID).readQueue(ctx, "")
 			return response.GetSnapshot(), err
 		},
-		notice: inv.Printer.Notice,
-		now:    time.Now,
+		notice: func(format string, args ...any) {
+			_ = inv.Printer.Notice(format, args...)
+		},
+		now: time.Now,
 	}
 	waitRes, outcome, err := awaitAgents(waitCtx, quartz.NewReal(), events, queues.blocksWait, spec)
 	if err != nil {
@@ -631,21 +633,11 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 	if err := validateFocusFlags(inv); err != nil {
 		return nil, err
 	}
-	wait := boolFlag(inv, "wait")
-	var waitSpec terminalWaitSpec
-	if !wait {
-		for _, name := range []string{"exit", "text", "regex", "change", "after-offset", "scrollback", "timeout"} {
-			if inv.Changed(name) {
-				return nil, cli.Usagef("--%s needs --wait", name)
-			}
-		}
-	} else {
-		var err error
-		waitSpec, err = terminalWaitSpecOf(inv)
-		if err != nil {
-			return nil, err
-		}
+	wait, waitSpec, err := optionalTerminalWaitSpec(inv, false)
+	if err != nil {
+		return nil, err
 	}
+	waitSpec.preOpenBaseline = true
 	setup, err := gitSetup(inv)
 	if err != nil {
 		return nil, err
@@ -663,33 +655,33 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	bounded := s
+	callSession := s
 	if wait {
-		bounded = s.bounded()
-		defer bounded.Close()
+		callSession = s.bounded()
+		defer callSession.Close()
 	}
-	p, err := bounded.placement()
+	p, err := callSession.placement()
 	if err != nil {
 		return nil, err
 	}
-	if err := bounded.requireWorker(p); err != nil {
+	if err := callSession.requireWorker(p); err != nil {
 		return nil, err
 	}
 	dir := workingDir(inv)
 	if selector := setup.GetUseWorktree(); selector != nil {
-		dir, err = bounded.worktreeRepoDir(p.WorkerID, selector)
+		dir, err = callSession.worktreeRepoDir(p.WorkerID, selector)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if err := maybePreflightWorker(bounded.ctx, s.c, p.WorkerID); err != nil {
+	if err := maybePreflightWorker(callSession.ctx, s.c, p.WorkerID); err != nil {
 		return nil, err
 	}
 	focus := shouldFocusNewTab(inv)
 	var result *openTerminalResult
-	err = withWorkerChannel(bounded.ctx, s.c, p.WorkerID, func(w workerCall) error {
+	err = withWorkerChannel(callSession.ctx, s.c, p.WorkerID, func(w workerCall) error {
 		var err error
-		result, err = openTerminalAndAddTab(bounded.ctx, s.c, w, openTerminalArgs{
+		result, err = openTerminalAndAddTab(callSession.ctx, s.c, w, openTerminalArgs{
 			WorkspaceID:    p.WorkspaceID,
 			WorkerID:       p.WorkerID,
 			TileID:         p.TileID,
@@ -705,7 +697,7 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 			return err
 		}
 		if focus {
-			_ = w.Call(bounded.ctx, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: result.TerminalID}, nil)
+			_ = w.Call(callSession.ctx, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: result.TerminalID}, nil)
 		}
 		return nil
 	})

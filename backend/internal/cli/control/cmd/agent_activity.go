@@ -11,7 +11,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/readseq"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
@@ -232,18 +231,14 @@ func (f *activityFeed) forward(ctx context.Context, ev activityEvent) bool {
 // retries by itself.
 func activityRejection(rejection *leapmuxv1.WatchRejection) (activityEvent, bool) {
 	id := rejection.GetEntityId()
-	switch rejection.GetReason() {
-	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED:
+	disp, err := classifyWatchRejection("agent", id, rejection.GetReason())
+	switch disp {
+	case watchRejectionRetry:
 		return activityEvent{}, false
-	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND:
+	case watchRejectionNotFound:
 		return activityEvent{kind: activityClosed, agentID: id}, true
-	case leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_FORBIDDEN:
-		return activityEvent{kind: activityFailed, agentID: id, err: cli.Newf(cli.CodePermissionDenied,
-			"the credential may not watch agent %s", id)}, true
 	default:
-		// The protocol reads an unknown reason as durable.
-		return activityEvent{kind: activityFailed, agentID: id, err: cli.Newf(cli.CodeInternal,
-			"the Worker refused to watch agent %s (%s)", id, rejection.GetReason())}, true
+		return activityEvent{kind: activityFailed, agentID: id, err: err}, true
 	}
 }
 

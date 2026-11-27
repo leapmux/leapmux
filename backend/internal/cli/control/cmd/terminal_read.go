@@ -3,9 +3,11 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	xterm "github.com/gitpod-io/xterm-go"
+	"github.com/spf13/pflag"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -40,6 +42,15 @@ their escape sequences, so that "less -R" shows them.`, contracts.TerminalScroll
 // screen past the cap fails and points at --raw instead.
 const maxRenderedCells = 4 << 20
 
+// addTerminalReadFlags registers the flags shared by `terminal read` and
+// `terminal quake read`.
+func addTerminalReadFlags(fs *pflag.FlagSet) {
+	fs.Int("lines", 0, "print only the last N lines")
+	fs.Bool("scrollback", false, "also print the lines above the screen")
+	fs.Bool("raw", false, "print the retained bytes as they are, with their escape sequences")
+	fs.BoolP("follow", "f", false, "stream live output until Ctrl-C or shell exit")
+}
+
 // screenReadOptions are the flags of `terminal read`.
 type screenReadOptions struct {
 	// raw prints the retained bytes as they are.
@@ -70,7 +81,9 @@ func screenReadOptionsOf(inv *cli.Invocation) (screenReadOptions, error) {
 	return opts, nil
 }
 
-func runTerminalRead(inv *cli.Invocation) (any, error) {
+// executeTerminalRead runs `terminal read` or `terminal quake read` using
+// resolveTarget to locate the terminal and fetch its initial record.
+func executeTerminalRead(inv *cli.Invocation, resolveTarget func(*session) (tabTarget, *leapmuxv1.TerminalInfo, error)) (any, error) {
 	opts, err := screenReadOptionsOf(inv)
 	if err != nil {
 		return nil, err
@@ -81,14 +94,9 @@ func runTerminalRead(inv *cli.Invocation) (any, error) {
 			return nil, err
 		}
 		defer s.Close()
-		bounded := s.bounded()
-		got, err := bounded.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
-		if err != nil {
-			bounded.Close()
-			return nil, err
-		}
-		info, err := bounded.terminalInfo(got)
-		bounded.Close()
+		callSession := s.bounded()
+		got, info, err := resolveTarget(callSession)
+		callSession.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -99,11 +107,7 @@ func runTerminalRead(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	got, err := s.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
-	if err != nil {
-		return nil, err
-	}
-	info, err := s.terminalInfo(got)
+	_, info, err := resolveTarget(s)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +115,20 @@ func runTerminalRead(inv *cli.Invocation) (any, error) {
 		return rawScreenOf(info), nil
 	}
 	return renderScreen(info, opts)
+}
+
+func runTerminalRead(inv *cli.Invocation) (any, error) {
+	return executeTerminalRead(inv, func(s *session) (tabTarget, *leapmuxv1.TerminalInfo, error) {
+		got, err := s.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
+		if err != nil {
+			return tabTarget{}, nil, err
+		}
+		info, err := s.terminalInfo(got)
+		if err != nil {
+			return tabTarget{}, nil, err
+		}
+		return got, info, nil
+	})
 }
 
 // rawScreen is a terminal's retained bytes. Its text form writes the bytes
@@ -174,60 +192,55 @@ func (r renderedScreen) RenderText(w io.Writer) error {
 // the Worker retains.
 const rawScreenHint = "pass --raw to print the bytes that it retains"
 
-// renderSize returns the size at which the emulator lays out the screen of
-// info. It refuses a terminal that reports no size, and a terminal too large
-// to render: wider or taller than maxTerminalDimension, or with more than
-// maxRenderedCells cells, the scrollback included. Each refusal carries hints.
+// renderDimensions validates the emulator dimensions of terminal id. It
+// refuses a terminal that reports no size, and a terminal too large to render:
+// wider or taller than maxTerminalDimension, or with more than
+// maxRenderedCells cells, the scrollback included.
 //
 // `terminal read` and `terminal wait` both replay a screen, so both check its
 // size here.
-func renderSize(info *leapmuxv1.TerminalInfo, hints ...string) (cols, rows int, err error) {
-	return renderDimensions(info.GetTerminalId(), info.GetCols(), info.GetRows(), hints...)
-}
-
-func renderDimensions(id string, c, r uint32, hints ...string) (cols, rows int, err error) {
-	var refusal *cli.Error
+func renderDimensions(id string, c, r uint32) (cols, rows int, err error) {
 	switch {
 	case c == 0 || r == 0:
-		refusal = cli.Newf(cli.CodeInternal, "the worker reports no size for terminal %s, so its screen has no layout", id)
+		return 0, 0, cli.Newf(cli.CodeInternal, "the worker reports no size for terminal %s, so its screen has no layout", id)
 	// The product is computed only when both sides are within
 	// maxTerminalDimension, so it cannot overflow.
 	case c > maxTerminalDimension || r > maxTerminalDimension ||
 		(int(r)+contracts.TerminalScrollbackLines)*int(c) > maxRenderedCells:
-		refusal = cli.Newf(cli.CodeInternal, "terminal %s is %d columns by %d rows, too large to render", id, c, r)
+		return 0, 0, cli.Newf(cli.CodeInternal, "terminal %s is %d columns by %d rows, too large to render", id, c, r)
 	default:
 		return int(c), int(r), nil
 	}
-	for _, hint := range hints {
-		refusal = refusal.WithHint("%s", hint)
-	}
-	return 0, 0, refusal
 }
 
 // renderScreen replays the retained bytes of info through the emulator at the
 // size that info reports, and reads the text of its rows.
 func renderScreen(info *leapmuxv1.TerminalInfo, opts screenReadOptions) (screen renderedScreen, err error) {
 	id := info.GetTerminalId()
+	// Registered before recoverTerminalEmulator so LIFO runs this second and
+	// attaches rawScreenHint to both recovered panics and normal errors.
+	defer func() {
+		if err != nil {
+			screen = renderedScreen{}
+			if ce := cli.FromError(err); !slices.Contains(ce.Hints, rawScreenHint) {
+				err = ce.WithHint("%s", rawScreenHint)
+			}
+		}
+	}()
 	// The bytes come from whatever the program printed, and the emulator is a
 	// young port. A panic on a sequence that it mishandles fails this one
 	// command with the way out, rather than crash with a stack trace.
-	defer func() {
-		if r := recover(); r != nil {
-			screen = renderedScreen{}
-			err = cli.Newf(cli.CodeInternal, "the terminal emulator failed on the screen of terminal %s: %v", id, r).
-				WithHint("%s", rawScreenHint)
-		}
-	}()
-	watch, err := newScreenWatch(info, nil, opts.scrollback)
+	defer recoverTerminalEmulator("render the terminal screen", &err)
+	em, err := newScreenEmulator(info)
 	if err != nil {
-		return renderedScreen{}, cli.FromError(err).WithHint("%s", rawScreenHint)
+		return renderedScreen{}, err
 	}
-	defer watch.dispose()
-	term := watch.term
+	defer em.dispose()
+	term := em.term
 	return renderedScreen{
 		ID:              id,
-		Cols:            uint32(watch.cols),
-		Rows:            uint32(watch.rows),
+		Cols:            uint32(em.cols),
+		Rows:            uint32(em.rows),
 		ScreenEndOffset: info.GetScreenEndOffset(),
 		AlternateScreen: term.IsAltBufferActive(),
 		// The cursor stands past the last column after the program wrote
@@ -251,6 +264,26 @@ func screenLines(term *xterm.Terminal, opts screenReadOptions) []string {
 		first = 0
 	}
 	end := buf.YBase + term.Rows()
+	if end <= first {
+		return []string{}
+	}
+	if opts.lines > 0 {
+		// Scan backward so a small --lines request over a large scrollback
+		// translates only the trailing rows it prints.
+		lines := make([]string, 0, min(opts.lines, end-first))
+		for y := end - 1; y >= first; y-- {
+			line := strings.TrimRight(buf.TranslateBufferLineToString(y, true, 0, -1), " ")
+			if len(lines) == 0 && line == "" {
+				continue
+			}
+			lines = append(lines, line)
+			if len(lines) == opts.lines {
+				break
+			}
+		}
+		slices.Reverse(lines)
+		return lines
+	}
 	lines := make([]string, 0, end-first)
 	for y := first; y < end; y++ {
 		// TranslateBufferLineToString trims the cells that hold nothing, and
@@ -260,9 +293,6 @@ func screenLines(term *xterm.Terminal, opts screenReadOptions) []string {
 	}
 	for len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
-	}
-	if opts.lines > 0 && len(lines) > opts.lines {
-		lines = lines[len(lines)-opts.lines:]
 	}
 	return lines
 }

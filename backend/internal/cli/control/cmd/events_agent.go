@@ -23,9 +23,7 @@ func checkpointFactEvent(fact *leapmuxv1.SemanticTabFact, handle string, tab sco
 		status := value.AgentStatus
 		return agentStatusEvent(tab, status.GetStatus(), status.GetStartupError()), true
 	case *leapmuxv1.SemanticTabFact_AgentTurnEnd:
-		event := tabStreamEvent(kindAgentTurnEnd, tab)
-		event.Summary = "the turn ended"
-		return event, true
+		return agentTurnEndEvent(tab), true
 	case *leapmuxv1.SemanticTabFact_AgentRequest:
 		request := value.AgentRequest
 		if len(request.GetRequestInstance()) == 0 {
@@ -40,11 +38,9 @@ func checkpointFactEvent(fact *leapmuxv1.SemanticTabFact, handle string, tab sco
 		if len(ended.GetRequestInstance()) == 0 {
 			return streamEvent{}, false
 		}
-		event := tabStreamEvent(kindAgentRequestEnded, tab)
-		event.RequestID = ended.GetRequestId()
-		event.RequestInstance = hex.EncodeToString(ended.GetRequestInstance())
-		event.State = controlResponseStateToken(ended.GetState())
-		event.Summary = fmt.Sprintf("request %s ended (%s)", cli.ShortID(event.RequestInstance), tokenWords(event.State))
+		instance := hex.EncodeToString(ended.GetRequestInstance())
+		event := agentRequestEndedEvent(tab, ended.GetRequestId(), instance, ended.GetState())
+		event.RequestInstance = instance
 		return event, true
 	case *leapmuxv1.SemanticTabFact_AgentTodos:
 		return agentTodoEvent(tab, value.AgentTodos), true
@@ -55,9 +51,23 @@ func checkpointFactEvent(fact *leapmuxv1.SemanticTabFact, handle string, tab sco
 	}
 }
 
+func agentTurnEndEvent(tab scopedTab) streamEvent {
+	event := tabStreamEvent(kindAgentTurnEnd, tab)
+	event.Summary = "the turn ended"
+	return event
+}
+
+func agentRequestEndedEvent(tab scopedTab, requestID, label string, state leapmuxv1.ControlResponseState) streamEvent {
+	event := tabStreamEvent(kindAgentRequestEnded, tab)
+	event.RequestID = requestID
+	event.State = controlResponseStateToken(state)
+	event.Summary = fmt.Sprintf("request %s ended (%s)", cli.ShortID(label), tokenWords(event.State))
+	return event
+}
+
 func agentRequestEventFields(tab scopedTab, prompt string, blocking bool, detail string) streamEvent {
 	event := tabStreamEvent(kindAgentRequest, tab)
-	event.Prompt, event.Blocking, event.Summary = prompt, boolPtr(blocking), prompt
+	event.Prompt, event.Blocking, event.Summary = prompt, new(blocking), prompt
 	if detail != "" {
 		event.Summary += ": " + detail
 	}

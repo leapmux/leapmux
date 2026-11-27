@@ -3,26 +3,30 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"sync"
-	"unicode/utf8"
+	"sync/atomic"
+	"time"
 
+	"github.com/coder/quartz"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
+	"github.com/leapmux/leapmux/internal/terminput"
 )
 
 func newTerminalAttachLeaf() *cobra.Command {
-	return cli.NewLeaf(cli.Leaf{
+	cmd := cli.NewLeaf(cli.Leaf{
 		Use:              "attach [terminal]",
 		Short:            "Attach interactively to a remote terminal over E2EE (detach with Ctrl-])",
 		QuietUnsupported: true,
@@ -43,48 +47,75 @@ without closing the remote shell.`,
 		Complete: completeTargets,
 		Run:      runTerminalAttach,
 	})
+	cli.DisallowInheritedFlags(cmd, "json", "format", "fields")
+	return cmd
 }
 
-func newTerminalPSLeaf() *cobra.Command {
-	return cli.NewLeaf(cli.Leaf{
-		Use:   "ps [terminal...]",
-		Short: "List foreground and background processes running inside one or more terminals",
-		Examples: []cli.Example{
-			{Command: "leapmux terminal ps"},
-			{Command: "leapmux terminal ps 4cbb3f34"},
-			{Comment: "Inspect every terminal in the workspace.", Command: "leapmux terminal ps --all"},
-		},
-		Flags: func(fs *pflag.FlagSet) {
-			fs.Bool("all", false, "inspect every open terminal instead of a single target")
-			fs.String("workspace", "", `inspect terminals in this workspace (implies --all when no targets are given)`)
-		},
-		Complete: completeTargets,
-		Run:      runTerminalPS,
-	})
-}
-
-// parseDetachByte parses a control-key name like "ctrl-]" or "ctrl-b" into its
-// raw ASCII control byte.
+// parseDetachByte parses a single-byte control-key name like "ctrl-]" or
+// "ctrl-b" using terminput and returns its raw byte.
 func parseDetachByte(raw string) (byte, error) {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	if !strings.HasPrefix(s, "ctrl-") || len(s) != 6 {
-		return 0, cli.Usagef("--detach must be a ctrl-<key> sequence such as ctrl-], ctrl-a, or ctrl-b; got %q", raw)
+	trimmed := strings.TrimSpace(raw)
+	key, err := terminput.ParseKey(trimmed)
+	if err != nil {
+		return 0, cli.Usagef("--detach must be a single-byte ctrl-<key> sequence such as ctrl-], ctrl-a, or ctrl-b; got %q", raw)
 	}
-	ch := s[5]
-	switch {
-	case ch >= 'a' && ch <= 'z':
-		return ch - 'a' + 1, nil
-	case ch == ']':
-		return 0x1d, nil
-	case ch == '\\':
-		return 0x1c, nil
-	case ch == '^':
-		return 0x1e, nil
-	case ch == '_':
-		return 0x1f, nil
-	default:
-		return 0, cli.Usagef("unsupported --detach key %q; use ctrl-a..ctrl-z or ctrl-]", raw)
+	encoded := terminput.Input{Keys: []terminput.Key{key}}.Encode(terminput.Modes{})
+	if !strings.HasPrefix(key.String(), "ctrl-") || len(encoded) != 1 {
+		return 0, cli.Usagef("--detach must be a single-byte ctrl-<key> sequence such as ctrl-], ctrl-a, or ctrl-b; got %q", raw)
 	}
+	return encoded[0], nil
+}
+
+// terminalSizeFD selects the file descriptor to query for terminal dimensions.
+// Checking stdout first ensures Windows GetConsoleScreenBufferInfo receives a
+// console output handle rather than a stdin input handle.
+func terminalSizeFD(out io.Writer, fallbackFD int) int {
+	if f, ok := out.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		return int(f.Fd())
+	}
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		return int(os.Stdout.Fd())
+	}
+	return fallbackFD
+}
+
+type attachRPCCall func(ctx context.Context, method string, req, resp proto.Message) error
+
+func syncAttachSize(ctx context.Context, call attachRPCCall, terminalID string, getSize func() (cols, rows int, ok bool)) {
+	cols, rows, ok := getSize()
+	if !ok || cols <= 0 || rows <= 0 {
+		return
+	}
+	rCtx, rCancel := rpcDeadline(ctx)
+	_ = call(rCtx, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, &leapmuxv1.ResizeTerminalRequest{
+		TerminalId: terminalID,
+		Cols:       uint32(cols),
+		Rows:       uint32(rows),
+	}, nil)
+	rCancel()
+}
+
+func sendAttachInput(ctx context.Context, call attachRPCCall, terminalID string, data []byte) error {
+	sendCtx, sendCancel := rpcDeadline(ctx)
+	defer sendCancel()
+	return call(sendCtx, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, &leapmuxv1.SendInputRequest{
+		TerminalId: terminalID,
+		Data:       data,
+	}, nil)
+}
+
+type readDeadliner interface {
+	SetReadDeadline(time.Time) error
+}
+
+type attachSessionDeps struct {
+	openTransport func(ctx context.Context) (*workerWatchTransport, error)
+	fallbackCall  attachRPCCall
+	clock         quartz.Clock
+	// prepareLocalTerminal optionally puts a local TTY into raw mode once the
+	// remote terminal is confirmed live, and returns cleanup, a size reader,
+	// and a resize notification channel.
+	prepareLocalTerminal func() (cleanup func(), getSize func() (cols, rows int, ok bool), winch <-chan os.Signal, err error)
 }
 
 func runTerminalAttach(inv *cli.Invocation) (any, error) {
@@ -98,510 +129,391 @@ func runTerminalAttach(inv *cli.Invocation) (any, error) {
 	}
 	defer s.Close()
 
-	bounded := s.bounded()
-	got, err := bounded.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
-	if err != nil {
-		bounded.Close()
-		return nil, err
+	callSession := s.bounded()
+	got, err := callSession.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
+	if err == nil {
+		err = maybePreflightWorker(callSession.ctx, s.c, got.WorkerID)
 	}
-	info, err := bounded.terminalInfo(got)
-	bounded.Close()
+	callSession.Close()
 	if err != nil {
 		return nil, err
 	}
 
 	out := inv.Command.OutOrStdout()
+	if inv.Printer != nil && inv.Printer.Out != nil {
+		out = inv.Printer.Out
+	}
 	in := inv.Stdin
 	if in == nil {
 		in = os.Stdin
 	}
 
-	// Put local terminal into raw mode when stdin is a real TTY.
-	isTTY := false
-	ttyFD := -1
-	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		isTTY = true
-		ttyFD = int(f.Fd())
-		oldState, rawErr := term.MakeRaw(ttyFD)
-		if rawErr == nil {
-			defer func() { _ = term.Restore(ttyFD, oldState) }()
+	deps := attachSessionDeps{
+		openTransport: func(ctx context.Context) (*workerWatchTransport, error) {
+			return newWorkerWatchTransport(ctx, s.c, got.WorkerID)
+		},
+		fallbackCall: func(ctx context.Context, method string, req, resp proto.Message) error {
+			return callInnerRPC(ctx, s.c, got.WorkerID, method, req, resp)
+		},
+		clock: quartz.NewReal(),
+		prepareLocalTerminal: func() (func(), func() (int, int, bool), <-chan os.Signal, error) {
+			f, ok := in.(*os.File)
+			if !ok || !term.IsTerminal(int(f.Fd())) {
+				return func() {}, nil, nil, nil
+			}
+			ttyFD := int(f.Fd())
+			oldState, rawErr := term.MakeRaw(ttyFD)
+			if rawErr != nil {
+				return nil, nil, nil, cli.Wrap(cli.CodeInternal, rawErr, "put the local terminal into raw mode")
+			}
+			sizeFD := terminalSizeFD(out, ttyFD)
+			winch, stopWinch := notifyResizeSignals()
+			cleanup := func() {
+				stopWinch()
+				_ = term.Restore(ttyFD, oldState)
+			}
+			getSize := func() (int, int, bool) {
+				cols, rows, err := term.GetSize(sizeFD)
+				return cols, rows, err == nil && cols > 0 && rows > 0
+			}
+			return cleanup, getSize, winch, nil
+		},
+	}
+	return nil, runTerminalAttachSession(s.ctx, got.ID, detachByte, in, out, deps)
+}
+
+// runTerminalAttachSession runs an interactive attach session over ONE shared
+// workerWatchTransport tracked in activeTransport so ListTerminals,
+// WatchEvents, ResizeTerminal, and SendInput share a single E2EE channel and
+// survive watch reconnects.
+func runTerminalAttachSession(
+	parentCtx context.Context,
+	terminalID string,
+	detachByte byte,
+	in io.Reader,
+	out io.Writer,
+	deps attachSessionDeps,
+) error {
+	clock := deps.clock
+	if clock == nil {
+		clock = quartz.NewReal()
+	}
+	initialWT, err := deps.openTransport(parentCtx)
+	if err != nil {
+		return err
+	}
+	var activeTransport atomic.Pointer[workerWatchTransport]
+	activeTransport.Store(initialWT)
+
+	// firstOpen tracks ownership of initialWT. Once the feed claims it on its
+	// first openTransport call, the feed's release callback closes initialWT.
+	// If this function returns before the feed claims it, the defer below
+	// closes initialWT.
+	var firstOpen atomic.Bool
+	firstOpen.Store(true)
+	defer func() {
+		if firstOpen.Swap(false) {
+			activeTransport.CompareAndSwap(initialWT, nil)
+			initialWT.close()
 		}
+	}()
+
+	infoCtx, infoCancel := rpcDeadline(parentCtx)
+	info, err := readTerminalInfo(infoCtx, initialWT.Call, terminalID)
+	infoCancel()
+	if err != nil {
+		return err
 	}
 
-	// Write initial retained screen bytes immediately.
-	if len(info.GetScreen()) > 0 {
-		if _, err := out.Write(info.GetScreen()); err != nil {
-			return nil, err
-		}
-	}
-
-	ctx, cancel := context.WithCancel(s.ctx)
-	defer cancel()
-
-	// Open ONE persistent E2EE channel for the entire attach session so
-	// keystrokes and SIGWINCH resizes reuse a single Noise_NK handshake instead
-	// of handshaking per keystroke.
-	var runErr error
-	chErr := withWorkerChannel(ctx, s.c, got.WorkerID, func(w workerCall) error {
-		if isTTY {
-			if cols, rows, sizeErr := term.GetSize(ttyFD); sizeErr == nil && cols > 0 && rows > 0 {
-				syncCtx, syncCancel := rpcDeadline(ctx)
-				_ = w.Call(syncCtx, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, &leapmuxv1.ResizeTerminalRequest{
-					TerminalId: got.ID,
-					Cols:       uint32(cols),
-					Rows:       uint32(rows),
-				}, nil)
-				syncCancel()
+	// Inspect status before entering raw mode or subscribing so an exited
+	// or failed shell never puts the local terminal in raw mode or replays
+	// its screen twice.
+	switch info.GetStatus() {
+	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
+		return terminalStartupFailedError(terminalID, info.GetStartupError())
+	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:
+		if len(info.GetScreen()) > 0 {
+			if _, err := out.Write(info.GetScreen()); err != nil {
+				return err
 			}
 		}
+		return nil
+	default:
+	}
 
-		// Forward SIGWINCH resizes to the remote PTY over the shared channel.
-		var auxWG sync.WaitGroup
-		winch, stopWinch := notifyResizeSignals()
-		defer stopWinch()
-		if winch != nil && isTTY {
-			auxWG.Add(1)
-			go func() {
-				defer auxWG.Done()
+	var (
+		getSize func() (cols, rows int, ok bool)
+		winch   <-chan os.Signal
+	)
+	if deps.prepareLocalTerminal != nil {
+		var cleanup func()
+		cleanup, getSize, winch, err = deps.prepareLocalTerminal()
+		if err != nil {
+			return err
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
+
+	callRPC := func(callCtx context.Context, method string, req, resp proto.Message) error {
+		if wt := activeTransport.Load(); wt != nil {
+			return wt.Call(callCtx, method, req, resp)
+		}
+		if deps.fallbackCall != nil {
+			return deps.fallbackCall(callCtx, method, req, resp)
+		}
+		return errWatchEnded
+	}
+
+	ctx, cancel := context.WithCancel(parentCtx)
+	var auxWG sync.WaitGroup
+	if getSize != nil {
+		syncAttachSize(ctx, callRPC, terminalID, getSize)
+		if winch != nil {
+			auxWG.Go(func() {
 				for {
 					select {
 					case <-ctx.Done():
 						return
 					case <-winch:
-						if cols, rows, sizeErr := term.GetSize(ttyFD); sizeErr == nil && cols > 0 && rows > 0 {
-							rCtx, rCancel := rpcDeadline(ctx)
-							_ = w.Call(rCtx, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, &leapmuxv1.ResizeTerminalRequest{
-								TerminalId: got.ID,
-								Cols:       uint32(cols),
-								Rows:       uint32(rows),
-							}, nil)
-							rCancel()
-						}
+						syncAttachSize(ctx, callRPC, terminalID, getSize)
 					}
 				}
-			}()
+			})
 		}
+	}
 
-		var feedWG sync.WaitGroup
-		items := make(chan screenFeedItem, 32)
-		startPos := terminalScreenPositionFromInfo(info)
-		startScreenFeed(ctx, &feedWG, workerScreenFeedSource(s.c, got.WorkerID), got.ID, startPos, items)
-
-		// Decouple blocking stdin reads from RPC dispatch so channel shutdown
-		// never races with in-flight SendInput calls on w.
-		type stdinChunk struct {
-			data []byte
-			err  error
-		}
-		stdinCh := make(chan stdinChunk, 16)
-		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, rerr := in.Read(buf)
-				if n > 0 {
-					select {
-					case stdinCh <- stdinChunk{data: bytes.Clone(buf[:n])}:
-					case <-ctx.Done():
-						return
-					}
+	feedSource := screenFeedSource{
+		openTransport: func(openCtx context.Context) (streamevents.Transport, func(), error) {
+			var wt *workerWatchTransport
+			if firstOpen.Swap(false) {
+				wt = initialWT
+			} else {
+				var openErr error
+				wt, openErr = deps.openTransport(openCtx)
+				if openErr != nil {
+					return nil, nil, openErr
 				}
-				if rerr != nil {
+				activeTransport.Store(wt)
+			}
+			release := func() {
+				activeTransport.CompareAndSwap(wt, nil)
+				wt.close()
+			}
+			return wt.transport, release, nil
+		},
+		clock: clock,
+	}
+
+	var feedWG sync.WaitGroup
+	items := make(chan screenFeedItem, 32)
+	startTerminalOutputFeed(ctx, &feedWG, feedSource, terminalID, info.GetScreenEndOffset(), items)
+
+	defer func() {
+		cancel()
+		feedWG.Wait()
+		auxWG.Wait()
+	}()
+
+	sendFn := func(sendCtx context.Context, data []byte) error {
+		return sendAttachInput(sendCtx, callRPC, terminalID, data)
+	}
+	return runAttachLoop(ctx, terminalID, info, detachByte, in, out, items, sendFn)
+}
+
+// clearScreenAndHome clears the local viewport and resets the cursor before
+// writing a reconnect snapshot so old bytes do not bleed through.
+const clearScreenAndHome = "\x1b[2J\x1b[H"
+
+// runAttachLoop streams PTY output from items to out while forwarding stdin
+// keystrokes asynchronously via sendInput in strict FIFO order until detach,
+// shell exit, EOF, or context cancellation.
+func runAttachLoop(
+	parentCtx context.Context,
+	terminalID string,
+	info *leapmuxv1.TerminalInfo,
+	detachByte byte,
+	in io.Reader,
+	out io.Writer,
+	items <-chan screenFeedItem,
+	sendInput func(context.Context, []byte) error,
+) error {
+	sawInitialScreen := len(info.GetScreen()) > 0
+	initialEndOffset := info.GetScreenEndOffset()
+	if sawInitialScreen {
+		if _, err := out.Write(info.GetScreen()); err != nil {
+			return err
+		}
+	}
+
+	ctx, cancel := context.WithCancel(parentCtx)
+
+	// Send keystrokes on an ordered background goroutine so SendInput round-trip
+	// latency never stalls incoming PTY output rendering.
+	inputQueue := make(chan []byte, 64)
+	inputErrCh := make(chan error, 1)
+	var senderWG sync.WaitGroup
+	senderWG.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case data, ok := <-inputQueue:
+				if !ok {
+					return
+				}
+				if err := sendInput(ctx, data); err != nil {
 					select {
-					case stdinCh <- stdinChunk{err: rerr}:
-					case <-ctx.Done():
+					case inputErrCh <- err:
+					default:
 					}
 					return
 				}
 			}
-		}()
-
-		defer func() {
-			cancel()
-			feedWG.Wait()
-			auxWG.Wait()
-		}()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case sc := <-stdinCh:
-				if len(sc.data) > 0 {
-					chunk := sc.data
-					if idx := bytes.IndexByte(chunk, detachByte); idx >= 0 {
-						if idx > 0 {
-							sendCtx, sendCancel := rpcDeadline(ctx)
-							_ = w.Call(sendCtx, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, &leapmuxv1.SendInputRequest{
-								TerminalId: got.ID,
-								Data:       chunk[:idx],
-							}, nil)
-							sendCancel()
-						}
-						return nil
-					}
-					sendCtx, sendCancel := rpcDeadline(ctx)
-					err := w.Call(sendCtx, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, &leapmuxv1.SendInputRequest{
-						TerminalId: got.ID,
-						Data:       chunk,
-					}, nil)
-					sendCancel()
-					if err != nil {
-						return err
-					}
-				}
-				if sc.err != nil {
-					if sc.err == io.EOF {
-						return nil
-					}
-					return sc.err
-				}
-			case item := <-items:
-				if item.kind != screenFeedEvent {
-					return item.err
-				}
-				if data := item.event.GetData(); data != nil && len(data.GetData()) > 0 {
-					if _, err := out.Write(data.GetData()); err != nil {
-						return err
-					}
-				}
-				if item.event.GetClosed() != nil {
-					return nil
-				}
-			}
 		}
 	})
-	if chErr != nil {
-		runErr = chErr
-	}
-	return nil, runErr
-}
 
-func terminalScreenPositionFromInfo(info *leapmuxv1.TerminalInfo) terminalScreenPosition {
-	timeline := info.GetScreenTimeline()
-	geometry := timeline.GetBase()
-	if changes := timeline.GetChanges(); len(changes) != 0 {
-		geometry = changes[len(changes)-1]
+	// Decouple blocking stdin reads from the select loop. Interrupting a real
+	// TTY os.Stdin read is not portable because SetReadDeadline returns
+	// os.ErrNoDeadline on TTY devices, so the stdin goroutine is not joined on
+	// teardown; pollable pipes, sockets, and test readers unblock promptly when
+	// SetReadDeadline(time.Now()) fires below.
+	type stdinChunk struct {
+		data []byte
+		err  error
 	}
-	return terminalScreenPosition{
-		offset:   info.GetScreenEndOffset(),
-		epoch:    geometry.GetEpoch(),
-		revision: geometry.GetRevision(),
-	}
-}
-
-// terminalChunkSanitizer buffers incomplete trailing UTF-8 sequences and
-// incomplete ANSI escape sequences across incoming PTY chunks so non-raw
-// `terminal read --follow` never splits a rune or leaks a partial CSI/OSC tail.
-type terminalChunkSanitizer struct {
-	pending []byte
-}
-
-func (ts *terminalChunkSanitizer) write(chunk []byte) string {
-	data := append(ts.pending, chunk...)
-	ts.pending = nil
-	if len(data) == 0 {
-		return ""
-	}
-	cut := len(data)
-	// Hold back an incomplete trailing 7-bit ESC sequence (CSI, OSC, DCS, APC,
-	// PM, SOS, or 3-byte charset designation) or 8-bit C1 sequence.
-	if escIdx := findTrailingIncompleteEscape(data); escIdx >= 0 {
-		cut = escIdx
-	}
-	// Hold back an incomplete trailing UTF-8 rune (at most 3 trailing bytes).
-	if cut > 0 {
-		maxBack := min(3, cut)
-		for back := 1; back <= maxBack; back++ {
-			b := data[cut-back]
-			if utf8.RuneStart(b) {
-				if !utf8.FullRune(data[cut-back : cut]) {
-					cut -= back
+	stdinCh := make(chan stdinChunk, 16)
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, rerr := in.Read(buf)
+			if n > 0 {
+				select {
+				case stdinCh <- stdinChunk{data: bytes.Clone(buf[:n])}:
+				case <-ctx.Done():
+					return
 				}
-				break
 			}
-		}
-	}
-	if cut < len(data) {
-		ts.pending = append(ts.pending[:0], data[cut:]...)
-	}
-	if cut == 0 {
-		return ""
-	}
-	return cli.SanitizeTerminalText(string(data[:cut]))
-}
-
-func (ts *terminalChunkSanitizer) flush() string {
-	if len(ts.pending) == 0 {
-		return ""
-	}
-	rem := ts.pending
-	ts.pending = nil
-	return cli.SanitizeTerminalText(string(rem))
-}
-
-const maxPendingEscapeBytes = 16 * 1024
-
-func findTrailingIncompleteEscape(data []byte) int {
-	start := 0
-	if len(data) > maxPendingEscapeBytes {
-		start = len(data) - maxPendingEscapeBytes
-	}
-	for i := len(data) - 1; i >= start; i-- {
-		if data[i] == 0x1b {
-			if isIncompleteEscape(data[i:]) {
-				return i
-			}
-			return -1
-		}
-		if data[i] == 0xc2 && i+1 < len(data) {
-			switch data[i+1] {
-			case 0x9b: // 8-bit C1 CSI
-				if isIncompleteCSIBody(data[i+2:]) {
-					return i
+			if rerr != nil {
+				if ctx.Err() != nil && errors.Is(rerr, os.ErrDeadlineExceeded) {
+					return
 				}
-				return -1
-			case 0x90, 0x98, 0x9d, 0x9e, 0x9f: // 8-bit C1 DCS/SOS/OSC/PM/APC
-				if isIncompleteStringBody(data[i+2:]) {
-					return i
+				select {
+				case stdinCh <- stdinChunk{err: rerr}:
+				case <-ctx.Done():
 				}
-				return -1
+				return
 			}
 		}
-	}
-	return -1
-}
+	}()
 
-func isIncompleteEscape(seq []byte) bool {
-	if len(seq) == 1 {
-		return true
-	}
-	switch seq[1] {
-	case '[': // CSI ends with 0x40..0x7E.
-		return isIncompleteCSIBody(seq[2:])
-	case ']', 'P', '_', '^', 'X': // OSC, DCS, APC, PM, SOS: BEL, ESC \, or 8-bit ST.
-		return isIncompleteStringBody(seq[2:])
-	case '(', ')', '*', '+', '-', '.', '/': // 3-byte charset designation.
-		return len(seq) < 3
-	default:
-		return false
-	}
-}
+	defer func() {
+		cancel()
+		if dl, ok := in.(readDeadliner); ok {
+			_ = dl.SetReadDeadline(time.Now())
+		}
+		senderWG.Wait()
+	}()
 
-func isIncompleteCSIBody(body []byte) bool {
-	for _, b := range body {
-		if b >= 0x40 && b <= 0x7e {
-			return false
-		}
-	}
-	return true
-}
-
-func isIncompleteStringBody(body []byte) bool {
-	for i := 0; i < len(body); i++ {
-		if body[i] == 0x07 {
-			return false
-		}
-		if body[i] == 0x1b && i+1 < len(body) && body[i+1] == '\\' {
-			return false
-		}
-		if body[i] == 0xc2 && i+1 < len(body) && body[i+1] == 0x9c {
-			return false
-		}
-	}
-	return true
-}
-
-type terminalFollowChunk struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
-	Raw  bool   `json:"raw,omitempty"`
-}
-
-func (c terminalFollowChunk) TextLine() string { return c.Text }
-
-// followTerminalOutput streams live terminal output after printing the initial
-// retained screen, supporting both --raw bytes, plain text chunks, and --json /
-// --format ndjson structured chunk events.
-func followTerminalOutput(inv *cli.Invocation, s *session, got tabTarget, info *leapmuxv1.TerminalInfo, opts screenReadOptions) error {
-	if inv.Printer != nil && inv.Printer.Format == cli.FormatQuiet {
-		return cli.Usagef("--quiet cannot be used with --follow").
-			WithHint("use --json or --format ndjson for structured streaming, or omit --follow")
-	}
-	structured := inv.Printer != nil && (inv.Printer.Format == cli.FormatJSON || inv.Printer.Format == cli.FormatNDJSON)
-	out := inv.Command.OutOrStdout()
-	emitChunk := func(text string) error {
-		if text == "" {
-			return nil
-		}
-		if structured {
-			return inv.Printer.Event(terminalFollowChunk{ID: got.ID, Text: text, Raw: opts.raw})
-		}
-		_, err := io.WriteString(out, text)
-		return err
-	}
-	if opts.raw {
-		if len(info.GetScreen()) > 0 {
-			if structured {
-				if err := emitChunk(string(info.GetScreen())); err != nil {
-					return err
-				}
-			} else if _, err := out.Write(info.GetScreen()); err != nil {
-				return err
-			}
-		}
-	} else {
-		rendered, err := renderScreen(info, opts)
-		if err != nil {
-			return err
-		}
-		if structured {
-			var buf bytes.Buffer
-			if err := rendered.RenderText(&buf); err != nil {
-				return err
-			}
-			if err := emitChunk(buf.String()); err != nil {
-				return err
-			}
-		} else if err := rendered.RenderText(out); err != nil {
-			return err
-		}
-	}
-	if info.GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED {
-		return nil
-	}
-	ctx, cancel := context.WithCancel(s.ctx)
-	defer cancel()
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	items := make(chan screenFeedItem, 32)
-	startPos := terminalScreenPositionFromInfo(info)
-	startScreenFeed(ctx, &wg, workerScreenFeedSource(s.c, got.WorkerID), got.ID, startPos, items)
-	var sanitizer terminalChunkSanitizer
+	initialSnapshotPending := sawInitialScreen
+	receivedOutput := sawInitialScreen
 	for {
 		select {
 		case <-ctx.Done():
-			if !opts.raw {
-				_ = emitChunk(sanitizer.flush())
-			}
 			return nil
-		case item := <-items:
-			if item.kind != screenFeedEvent {
-				if !opts.raw {
-					_ = emitChunk(sanitizer.flush())
-				}
-				return item.err
-			}
-			if data := item.event.GetData(); data != nil && len(data.GetData()) > 0 {
-				chunk := data.GetData()
-				if opts.raw {
-					if structured {
-						if err := emitChunk(string(chunk)); err != nil {
-							return err
+		case sendErr := <-inputErrCh:
+			return sendErr
+		case sc := <-stdinCh:
+			if len(sc.data) > 0 {
+				chunk := sc.data
+				if idx := bytes.IndexByte(chunk, detachByte); idx >= 0 {
+					if idx > 0 {
+						select {
+						case inputQueue <- chunk[:idx]:
+						case sendErr := <-inputErrCh:
+							return sendErr
+						case <-ctx.Done():
+							return nil
 						}
-					} else if _, err := out.Write(chunk); err != nil {
-						return err
+					}
+					// Drain queued keystrokes in order before canceling ctx on detach.
+					close(inputQueue)
+					senderWG.Wait()
+					select {
+					case sendErr := <-inputErrCh:
+						return sendErr
+					default:
+						return nil
+					}
+				}
+				select {
+				case inputQueue <- chunk:
+				case sendErr := <-inputErrCh:
+					return sendErr
+				case <-ctx.Done():
+					return nil
+				}
+			}
+			if sc.err != nil {
+				if errors.Is(sc.err, io.EOF) {
+					close(inputQueue)
+					senderWG.Wait()
+					select {
+					case sendErr := <-inputErrCh:
+						return sendErr
+					default:
+						return nil
+					}
+				}
+				return sc.err
+			}
+		case item := <-items:
+			if done, feedErr := terminalFeedItemStatus(terminalID, item); done {
+				return feedErr
+			}
+			if data := item.event.GetData(); data != nil {
+				chunk := data.GetData()
+				if data.GetIsSnapshot() {
+					skipDuplicate := initialSnapshotPending && data.GetEndOffset() == initialEndOffset
+					initialSnapshotPending = false
+					if !skipDuplicate {
+						if receivedOutput {
+							if _, err := io.WriteString(out, clearScreenAndHome); err != nil {
+								return err
+							}
+						}
+						if len(chunk) > 0 {
+							if _, err := out.Write(chunk); err != nil {
+								return err
+							}
+						}
+						receivedOutput = true
 					}
 				} else {
-					if err := emitChunk(sanitizer.write(chunk)); err != nil {
-						return err
+					if data.GetReplayComplete() || len(chunk) > 0 {
+						initialSnapshotPending = false
 					}
+					if len(chunk) > 0 {
+						receivedOutput = true
+						if _, err := out.Write(chunk); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			if sc := item.event.GetStatusChange(); sc != nil {
+				switch sc.GetStatus() {
+				case leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:
+					return nil
+				case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
+					return terminalStartupFailedError(terminalID, sc.GetStartupError())
+				default:
 				}
 			}
 			if item.event.GetClosed() != nil {
-				if !opts.raw {
-					_ = emitChunk(sanitizer.flush())
-				}
 				return nil
 			}
 		}
 	}
-}
-
-type terminalProcessRow struct {
-	TerminalID string `json:"terminal_id" table:"TERMINAL,short"`
-	PID        int32  `json:"pid" table:"PID"`
-	Name       string `json:"name" table:"PROCESS"`
-}
-
-type terminalPSResult struct {
-	Processes []terminalProcessRow `json:"processes"`
-	Truncated map[string]int32     `json:"truncated_extra,omitempty"`
-}
-
-func (r terminalPSResult) QuietLines() []string {
-	out := make([]string, 0, len(r.Processes))
-	for _, p := range r.Processes {
-		out = append(out, fmt.Sprintf("%s\t%d\t%s", p.TerminalID, p.PID, p.Name))
-	}
-	return out
-}
-
-func runTerminalPS(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-
-	args := inv.Variadic("terminal")
-	all := boolFlag(inv, "all") || (len(args) == 0 && inv.Changed("workspace"))
-	byWorker := map[string][]string{}
-	if all {
-		tabs, err := s.listWorkspaceTabs(leapmuxv1.TabType_TAB_TYPE_TERMINAL)
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range tabs {
-			byWorker[t.GetWorkerId()] = append(byWorker[t.GetWorkerId()], t.GetTab().GetTabId())
-		}
-	} else {
-		if len(args) == 0 {
-			args = []string{""}
-		}
-		for _, arg := range args {
-			got, err := s.resolveTab(resolve.KindTerminal, arg, resolve.Need{WorkerID: true})
-			if err != nil {
-				return nil, err
-			}
-			byWorker[got.WorkerID] = append(byWorker[got.WorkerID], got.ID)
-		}
-	}
-
-	var rows []terminalProcessRow
-	truncated := map[string]int32{}
-	workerIDs := make([]string, 0, len(byWorker))
-	for wk := range byWorker {
-		workerIDs = append(workerIDs, wk)
-	}
-	slices.Sort(workerIDs)
-	for _, wk := range workerIDs {
-		ids := byWorker[wk]
-		var resp leapmuxv1.InspectTerminalProcessesResponse
-		if err := callInnerRPC(s.ctx, s.c, wk, leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, &leapmuxv1.InspectTerminalProcessesRequest{
-			TerminalIds: ids,
-		}, &resp); err != nil {
-			return nil, err
-		}
-		for _, tp := range resp.GetTerminals() {
-			for _, proc := range tp.GetProcesses() {
-				name := proc.GetName()
-				if name == "" {
-					name = "(unknown)"
-				}
-				rows = append(rows, terminalProcessRow{
-					TerminalID: tp.GetTerminalId(),
-					PID:        proc.GetPid(),
-					Name:       name,
-				})
-			}
-			if extra := tp.GetTotalCount() - int32(len(tp.GetProcesses())); extra > 0 {
-				truncated[tp.GetTerminalId()] = extra
-			}
-		}
-	}
-	res := terminalPSResult{Processes: rows}
-	if len(truncated) > 0 {
-		res.Truncated = truncated
-	}
-	return res, nil
 }

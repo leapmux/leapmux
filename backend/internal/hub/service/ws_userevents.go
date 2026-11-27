@@ -151,6 +151,7 @@ func newUserEventsSubscriber(
 	user *auth.UserInfo,
 	clientID string,
 	requested map[string]bool,
+	wantWorkers bool,
 	queuePool *sendq.Pool,
 ) (*crdt.Subscriber, *subscriberQueue) {
 	// 64-deep buffer covers the steady-state burst window after bootstrap.
@@ -185,9 +186,9 @@ func newUserEventsSubscriber(
 		UserID:                user.ID.String(),
 		ClientID:              clientID,
 		RequestedWorkspaceIDs: requested,
-		// This endpoint requires only workspace:read, so the worker-list event
-		// asks for its own scope (see crdt.Subscriber.MayReadWorkers).
-		MayReadWorkers: user.Scopes.Allows(leapmuxv1.Scope_SCOPE_WORKER_READ),
+		// Deliver workers_changed only when the subscription requested worker
+		// notifications AND the credential holds worker:read.
+		MayReadWorkers: wantWorkers && user.Scopes.Allows(leapmuxv1.Scope_SCOPE_WORKER_READ),
 		// Filter is resolved and installed under subscribeExpandMu by
 		// SubscribeWithACL below (see the resolve-then-register TOCTOU it closes).
 		Send: func(evt *crdt.MarshaledEvent) error {
@@ -299,14 +300,34 @@ type userEventsRequest struct {
 	// first connect, which SubscribeWithACL answers with a full snapshot.
 	resumeCursor *leapmuxv1.HLC
 	resumeEpoch  int64
+	// explicitTopics is true when the client passed a non-empty `topics` query
+	// parameter. When false, the request defaults to CRDT + optional Workers
+	// (preserving existing browser and CLI behavior).
+	explicitTopics    bool
+	wantCRDT          bool
+	wantWorkers       bool
+	wantLayoutJournal bool
+	layoutWorkspaceID string
+	layoutAfterCursor []byte
+}
+
+func (r userEventsRequest) requiredScopes() []leapmuxv1.Scope {
+	var scopes []leapmuxv1.Scope
+	if r.wantCRDT || r.wantLayoutJournal {
+		scopes = append(scopes, leapmuxv1.Scope_SCOPE_WORKSPACE_READ)
+	}
+	if r.explicitTopics && r.wantWorkers {
+		scopes = append(scopes, leapmuxv1.Scope_SCOPE_WORKER_READ)
+	}
+	return scopes
 }
 
 // parseUserEventsRequest reads and validates the connect's query parameters.
 //
 // Extracted from ServeHTTP because it is the one part of a 300-line handler
-// that is a pure function of the request, and it carries two rejections whose
-// reasoning matters more than their code. Both failures are 400s the caller
-// reports identically, so the handler is left with one arm rather than two.
+// that is a pure function of the request, and it carries rejections whose
+// reasoning matters more than their code. All failures are 400s the caller
+// reports identically.
 func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 	// Tenancy is the authenticated user. No client-supplied user_id query
 	// parameter: channelwire.UserEventsURL encodes only workspace_ids and the
@@ -314,13 +335,42 @@ func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 	// id would let any authenticated user drive registry.Get (which performs no
 	// authorization) into bootstrapping an arbitrary tenant's CRDT Manager.
 	var req userEventsRequest
-	if raw := r.URL.Query().Get(contracts.WSParamWorkspaceIDs); raw != "" {
+	q := r.URL.Query()
+	if raw := q.Get(contracts.WSParamWorkspaceIDs); raw != "" {
 		for _, w := range strings.Split(raw, ",") {
 			if w = strings.TrimSpace(w); w != "" {
 				req.workspaceIDs = append(req.workspaceIDs, w)
 			}
 		}
 	}
+	topics, err := channelwire.ParseUserEventsTopicsFromQuery(q)
+	if err != nil {
+		return userEventsRequest{}, err
+	}
+	if len(topics) == 0 {
+		req.wantCRDT = true
+		req.wantWorkers = true
+	} else {
+		req.explicitTopics = true
+		for _, topic := range topics {
+			switch topic {
+			case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED:
+			case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT:
+				req.wantCRDT = true
+			case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS:
+				req.wantWorkers = true
+			case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL:
+				req.wantLayoutJournal = true
+			}
+		}
+	}
+	req.layoutWorkspaceID = channelwire.ParseLayoutWorkspaceIDFromQuery(q)
+	layoutAfterCursor, err := channelwire.ParseLayoutCursorFromQuery(q)
+	if err != nil {
+		return userEventsRequest{}, err
+	}
+	req.layoutAfterCursor = layoutAfterCursor
+
 	// Resume cursor: a reconnecting client presents its last-applied HLC plus
 	// the epoch it saw it under. Both params absent is a first connect (the
 	// hub's SubscribeWithACL treats a nil cursor as FALLBACK → full snapshot).
@@ -329,11 +379,17 @@ func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 	// (silent degradation would mask the bug and let a broken client limp along
 	// with full-snapshot reconnects forever). resume_epoch without a matching
 	// resume_after_hlc is likewise malformed.
-	resumeCursor, resumeEpoch, err := channelwire.ParseResumeCursorFromQuery(r.URL.Query())
+	resumeCursor, resumeEpoch, err := channelwire.ParseResumeCursorFromQuery(q)
 	if err != nil {
 		return userEventsRequest{}, err
 	}
 	req.resumeCursor, req.resumeEpoch = resumeCursor, resumeEpoch
+	if !req.wantCRDT && req.resumeCursor != nil {
+		return userEventsRequest{}, errors.New("resume_after_hlc requires the crdt topic")
+	}
+	if !req.wantLayoutJournal && (req.layoutWorkspaceID != "" || len(req.layoutAfterCursor) > 0) {
+		return userEventsRequest{}, errors.New("layout_workspace_id and layout_after_cursor require the layout_journal topic")
+	}
 	// A NARROWED subscription may not present a cursor, and the hub is where
 	// that is enforced -- not the client.
 	//
@@ -368,7 +424,7 @@ func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 }
 
 func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	user, err := h.authenticate(r)
+	user, err := h.authenticateUser(r)
 	if err != nil {
 		writeHTTPAuthError(w, "user events", err)
 		return
@@ -379,6 +435,15 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		countConnectWithoutBootstrap()
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := requireScopes(user, req.requiredScopes()...); err != nil {
+		writeHTTPAuthError(w, "user events", err)
+		return
+	}
+
+	if !req.wantCRDT {
+		h.serveLightweightWebSocket(w, r, user, req)
 		return
 	}
 
@@ -418,7 +483,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// site let a line name an identity the registered subscriber does not have
 	// if the derivation ever grew a condition.
 	clientID := presenceClientID(user)
-	sub, queue := newUserEventsSubscriber(ctx, cancel, user, clientID, req.requested, h.queuePool)
+	sub, queue := newUserEventsSubscriber(ctx, cancel, user, clientID, req.requested, req.wantWorkers, h.queuePool)
 	// Registered BEFORE the unsub below, so LIFO runs it AFTER: a broadcast that
 	// snapshot the subscriber set before it was unregistered can still be inside
 	// Send when unsub returns, and closing first would race that frame's charge.
@@ -671,16 +736,295 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// exactly the reconnect storm this endpoint has to survive.
 	h.keepalive.StartDrainingReads(ctx, wskeepalive.Probe{Conn: wsConn, Cancel: cancel, Attrs: userSubject(userID).logAttrs(endpointUserEvents)})
 
+	var writeMu sync.Mutex
+	var layoutWG sync.WaitGroup
+	if req.wantLayoutJournal {
+		layoutWG.Add(1)
+		go func() {
+			defer layoutWG.Done()
+			if err := h.pumpLayoutJournal(ctx, wsConn, &writeMu, user, req); err != nil {
+				closeForLayoutError(wsConn, err)
+				cancel()
+			}
+		}()
+	}
+	defer layoutWG.Wait()
+
 	for {
 		evt, ok := queue.Next(ctx)
 		if !ok {
 			return
 		}
-		if err := writeUserEvent(ctx, wsConn, evt); err != nil {
+		writeMu.Lock()
+		err := writeUserEvent(ctx, wsConn, evt)
+		writeMu.Unlock()
+		if err != nil {
 			slog.Debug("userevents: write event failed", "user_id", user.ID, "error", err)
+			cancel()
 			return
 		}
 	}
+}
+
+func (h *UserEventsHandler) serveLightweightWebSocket(w http.ResponseWriter, r *http.Request, user *auth.UserInfo, req userEventsRequest) {
+	userID := user.ID.String()
+	wsConn, ok := acceptWebSocket(w, r, endpointUserEvents, contracts.WSSubprotocolUserEventsRelay, channelwire.UserEventsReadLimit, userSubject(userID))
+	if !ok {
+		return
+	}
+	ctx, cleanupLease, outcome := h.authLease.bind(r.Context(), user, wsConn)
+	if outcome != auth.LeaseGranted {
+		return
+	}
+	defer cleanupLease()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer func() {
+		_ = wsConn.Close(websocket.StatusNormalClosure, "")
+	}()
+
+	h.keepalive.StartDrainingReads(ctx, wskeepalive.Probe{Conn: wsConn, Cancel: cancel, Attrs: userSubject(userID).logAttrs(endpointUserEvents)})
+	h.serveLightweightTopics(ctx, wsConn, user, req)
+}
+
+func (h *UserEventsHandler) serveLightweightTopics(ctx context.Context, wsConn *websocket.Conn, user *auth.UserInfo, req userEventsRequest) {
+	userID := user.ID.String()
+	var workerWake <-chan struct{}
+	if req.wantWorkers && h.registry != nil {
+		workerWake = h.registry.WorkerInventoryWake(userID)
+	}
+
+	layoutCursor := req.layoutAfterCursor
+	layoutDone := !req.wantLayoutJournal
+	layoutNeedsRead := req.wantLayoutJournal
+	layoutDrainTried := h.registry == nil
+	var layoutLifecycleErr error
+	var layoutWake <-chan struct{}
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if layoutNeedsRead && !layoutDone {
+			if len(layoutCursor) == 0 {
+				initial, err := readInitialLayoutCursor(ctx, h.store, user, req.layoutWorkspaceID)
+				if err != nil {
+					closeForLayoutError(wsConn, err)
+					return
+				}
+				if err := writeProtoUserEvent(ctx, wsConn, layoutEventsWatchEvent(initial)); err != nil {
+					slog.Debug("userevents: write initial layout cursor failed", "user_id", user.ID, "error", err)
+					return
+				}
+				layoutCursor = initial.GetCursor()
+				continue
+			}
+			if h.registry != nil {
+				layoutWake = h.registry.LayoutEventWake(userID)
+			}
+			after, ok := layoutCursorPosition(layoutCursor)
+			if !ok {
+				closeForLayoutError(wsConn, invalidLayoutCursor())
+				return
+			}
+			page, ownerLifecyclePending, err := readLayoutEventPage(ctx, h.store.LayoutEvents(), user.ID, req.layoutWorkspaceID, layoutCursor, after)
+			if err != nil {
+				closeForLayoutError(wsConn, err)
+				return
+			}
+			if page.GetEnd() != nil {
+				if err := writeProtoUserEvent(ctx, wsConn, layoutEventsWatchEvent(page)); err != nil {
+					slog.Debug("userevents: write layout end failed", "user_id", user.ID, "error", err)
+					return
+				}
+				layoutDone = true
+				layoutNeedsRead = false
+				layoutWake = nil
+				if !req.wantWorkers {
+					return
+				}
+				continue
+			}
+			gap := page.GetGap() != nil
+			progress := gap || page.GetScannedSequence() > after
+			if !layoutDrainTried && ownerLifecyclePending && h.registry != nil {
+				layoutDrainTried = true
+				drained := h.registry.StartLifecycleDrain(userID)
+				if !progress {
+					for draining := true; draining; {
+						select {
+						case <-ctx.Done():
+							return
+						case <-drained.Done():
+							layoutLifecycleErr = drained.Err()
+							draining = false
+						case <-workerWake:
+							workerWake = h.registry.WorkerInventoryWake(userID)
+							if err := writeProtoUserEvent(ctx, wsConn, workersChangedWatchEvent()); err != nil {
+								slog.Debug("userevents: write workers_changed failed", "user_id", user.ID, "error", err)
+								return
+							}
+						}
+					}
+					continue
+				}
+			}
+			if progress {
+				layoutLifecycleErr = nil
+				if err := writeProtoUserEvent(ctx, wsConn, layoutEventsWatchEvent(page)); err != nil {
+					slog.Debug("userevents: write layout events failed", "user_id", user.ID, "error", err)
+					return
+				}
+				if gap {
+					layoutCursor = page.GetGap().GetCursor()
+				} else {
+					layoutCursor = page.GetScannedCursor()
+				}
+				continue
+			}
+			if layoutLifecycleErr != nil {
+				_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
+				return
+			}
+			layoutNeedsRead = false
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-workerWake:
+			workerWake = h.registry.WorkerInventoryWake(userID)
+			if err := writeProtoUserEvent(ctx, wsConn, workersChangedWatchEvent()); err != nil {
+				slog.Debug("userevents: write workers_changed failed", "user_id", user.ID, "error", err)
+				return
+			}
+		case <-layoutWake:
+			layoutWake = nil
+			layoutNeedsRead = true
+			layoutDrainTried = false
+		}
+	}
+}
+
+func (h *UserEventsHandler) pumpLayoutJournal(ctx context.Context, wsConn *websocket.Conn, writeMu *sync.Mutex, user *auth.UserInfo, req userEventsRequest) error {
+	userID := user.ID.String()
+	layoutCursor := req.layoutAfterCursor
+	layoutDrainTried := h.registry == nil
+	var layoutLifecycleErr error
+
+	writeEvent := func(evt *leapmuxv1.WatchUserEvent) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return writeProtoUserEvent(ctx, wsConn, evt)
+	}
+
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if len(layoutCursor) == 0 {
+			initial, err := readInitialLayoutCursor(ctx, h.store, user, req.layoutWorkspaceID)
+			if err != nil {
+				return err
+			}
+			if err := writeEvent(layoutEventsWatchEvent(initial)); err != nil {
+				return nil
+			}
+			layoutCursor = initial.GetCursor()
+			continue
+		}
+		var layoutWake <-chan struct{}
+		if h.registry != nil {
+			layoutWake = h.registry.LayoutEventWake(userID)
+		}
+		after, ok := layoutCursorPosition(layoutCursor)
+		if !ok {
+			return invalidLayoutCursor()
+		}
+		page, ownerLifecyclePending, err := readLayoutEventPage(ctx, h.store.LayoutEvents(), user.ID, req.layoutWorkspaceID, layoutCursor, after)
+		if err != nil {
+			return err
+		}
+		if page.GetEnd() != nil {
+			_ = writeEvent(layoutEventsWatchEvent(page))
+			return nil
+		}
+		gap := page.GetGap() != nil
+		progress := gap || page.GetScannedSequence() > after
+		if !layoutDrainTried && ownerLifecyclePending && h.registry != nil {
+			layoutDrainTried = true
+			drained := h.registry.StartLifecycleDrain(userID)
+			if !progress {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-drained.Done():
+					layoutLifecycleErr = drained.Err()
+				}
+				continue
+			}
+		}
+		if progress {
+			layoutLifecycleErr = nil
+			if err := writeEvent(layoutEventsWatchEvent(page)); err != nil {
+				return nil
+			}
+			if gap {
+				layoutCursor = page.GetGap().GetCursor()
+			} else {
+				layoutCursor = page.GetScannedCursor()
+			}
+			continue
+		}
+		if layoutLifecycleErr != nil {
+			return wrappedConnectError(connect.CodeUnavailable, layoutLifecycleErr)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-layoutWake:
+			layoutDrainTried = false
+		}
+	}
+}
+
+func workersChangedWatchEvent() *leapmuxv1.WatchUserEvent {
+	return &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_WorkersChanged{
+			WorkersChanged: &leapmuxv1.WorkersChanged{},
+		},
+	}
+}
+
+func layoutEventsWatchEvent(page *leapmuxv1.ReadLayoutEventsResponse) *leapmuxv1.WatchUserEvent {
+	return &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_LayoutEvents{
+			LayoutEvents: page,
+		},
+	}
+}
+
+func closeForLayoutError(wsConn *websocket.Conn, err error) {
+	switch connect.CodeOf(err) {
+	case connect.CodeNotFound, connect.CodeFailedPrecondition, connect.CodeInvalidArgument, connect.CodePermissionDenied:
+		reason := err.Error()
+		var ce *connect.Error
+		if errors.As(err, &ce) {
+			reason = ce.Message()
+		}
+		if len(reason) > 123 {
+			reason = reason[:123]
+		}
+		_ = wsConn.Close(websocket.StatusPolicyViolation, reason)
+	default:
+		_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
+	}
+}
+
+func writeProtoUserEvent(ctx context.Context, ws *websocket.Conn, evt *leapmuxv1.WatchUserEvent) error {
+	writeCtx, cancel := context.WithTimeout(ctx, relayWriteTimeout)
+	defer cancel()
+	return channelwire.WriteProtoFrame(writeCtx, ws, evt)
 }
 
 // writeUserEvent serializes evt into a length-prefixed binary frame on

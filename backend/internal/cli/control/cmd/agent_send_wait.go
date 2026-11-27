@@ -916,7 +916,7 @@ func (ws *replyWaitSession) sendAndWaitOne(
 		},
 		notice: func(format string, args ...any) {
 			spin.Stop()
-			s.inv.Printer.Notice(format, args...)
+			_ = s.inv.Printer.Notice(format, args...)
 		},
 	}
 	res, outcome, err := awaitReply(ws.ctx, quartz.NewReal(), ws.events, evaluator, ws.state)
@@ -999,21 +999,21 @@ func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitO
 	}
 	switch {
 	case outcome == replyWaitWaiting:
-		p.Notice("agent %s waits for an answer to a permission prompt; list it with \"leapmux agent requests %s\"", result.ID, result.ID)
+		_ = p.Notice("agent %s waits for an answer to a permission prompt; list it with \"leapmux agent requests %s\"", result.ID, result.ID)
 	case outcome == replyWaitInterrupted:
-		p.Notice("the turn for input %s was interrupted", result.InputID)
+		_ = p.Notice("the turn for input %s was interrupted", result.InputID)
 	case outcome == replyWaitFailed:
-		p.Notice("the turn for input %s failed", result.InputID)
+		_ = p.Notice("the turn for input %s failed", result.InputID)
 	case outcome == replyWaitUnproved:
-		p.Notice("the Worker could not prove the outcome of the turn for input %s", result.InputID)
+		_ = p.Notice("the Worker could not prove the outcome of the turn for input %s", result.InputID)
 	case result.Message == messageQueued:
-		p.Notice("the wait ended after %s. The last queue snapshot for agent %s still held the message", timeout, result.ID)
+		_ = p.Notice("the wait ended after %s. The last queue snapshot for agent %s still held the message", timeout, result.ID)
 	default:
-		p.Notice("the wait ended after %s. Agent %s received the message and the CLI did not observe it settle", timeout, result.ID)
+		_ = p.Notice("the wait ended after %s. Agent %s received the message and the CLI did not observe it settle", timeout, result.ID)
 	}
 	if queryRequestID != "" {
-		p.Notice("disposition: %s (request_id: %s)", disp, queryRequestID)
-		p.Notice("check status: %s", buildAgentRequestStatusCmd(result.ID, queryRequestID))
+		_ = p.Notice("disposition: %s (request_id: %s)", disp, queryRequestID)
+		_ = p.Notice("check status: %s", buildAgentRequestStatusCmd(result.ID, queryRequestID))
 	}
 	return &cli.ExitStatus{Code: cli.ExitWaitEnded}
 }

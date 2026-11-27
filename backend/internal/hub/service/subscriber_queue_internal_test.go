@@ -619,7 +619,7 @@ func TestNewUserEventsSubscriber_OverflowPolicyDiffersByPhase(t *testing.T) {
 	t.Cleanup(cancel)
 
 	pool := roomyPool(t)
-	sub, queue := newUserEventsSubscriber(ctx, cancel, user, "client-1", nil, pool)
+	sub, queue := newUserEventsSubscriber(ctx, cancel, user, "client-1", nil, true, pool)
 	t.Cleanup(queue.Close)
 	require.Equal(t, "client-1", sub.ClientID)
 
@@ -693,10 +693,14 @@ func TestNewUserEventsSubscriber_MayReadWorkersFollowsTheGrant(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 
-			sub, queue := newUserEventsSubscriber(ctx, cancel, user, "client-1", nil, roomyPool(t))
+			sub, queue := newUserEventsSubscriber(ctx, cancel, user, "client-1", nil, true, roomyPool(t))
 			t.Cleanup(queue.Close)
 
 			assert.Equal(t, tc.want, sub.MayReadWorkers)
+
+			subNoWorkers, queueNoWorkers := newUserEventsSubscriber(ctx, cancel, user, "client-2", nil, false, roomyPool(t))
+			t.Cleanup(queueNoWorkers.Close)
+			assert.False(t, subNoWorkers.MayReadWorkers)
 		})
 	}
 }
@@ -720,7 +724,7 @@ func TestAnswerRefusal_RoutesOnTheRefusalNotTheQueuesLaterPhase(t *testing.T) {
 		for _, bound := range []dropBound{dropBoundFrames, dropBoundBytes, dropBoundCapacity} {
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
-			_, queue := newUserEventsSubscriber(ctx, cancel, user, "client-1", nil, roomyPool(t))
+			_, queue := newUserEventsSubscriber(ctx, cancel, user, "client-1", nil, true, roomyPool(t))
 			t.Cleanup(queue.Close)
 			// The writer loop has already handed the bootstrap frame over -- this
 			// is the window the race lives in.

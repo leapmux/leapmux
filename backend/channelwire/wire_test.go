@@ -808,5 +808,90 @@ func TestParseResumeCursorFromQuery(t *testing.T) {
 	}
 }
 
+func TestUserEventsURLWithOptionsAndParsers(t *testing.T) {
+	t.Run("round trips topics, layout workspace, and binary layout cursor", func(t *testing.T) {
+		rawCursor := []byte{0x00, 0xff, 0x10, 0x20, 0xab, 0xcd, 0xef}
+		got := UserEventsURLWithOptions("https://hub.example", UserEventsOptions{
+			WorkspaceIDs: []string{"w1", "w2"},
+			Topics: []leapmuxv1.UserEventTopic{
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS, // duplicate deduped
+			},
+			LayoutWorkspaceID: "ws-layout",
+			LayoutAfterCursor: rawCursor,
+		})
+		u, err := url.Parse(got)
+		require.NoError(t, err)
+		assert.Equal(t, "wss", u.Scheme)
+		assert.Equal(t, contracts.WSRouteUserEvents, u.Path)
+
+		topics, err := ParseUserEventsTopicsFromQuery(u.Query())
+		require.NoError(t, err)
+		assert.Equal(t, []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL,
+		}, topics)
+		assert.Equal(t, "ws-layout", ParseLayoutWorkspaceIDFromQuery(u.Query()))
+
+		decodedCursor, err := ParseLayoutCursorFromQuery(u.Query())
+		require.NoError(t, err)
+		assert.Equal(t, rawCursor, decodedCursor)
+	})
+
+	t.Run("absent topics and layout cursor return nil", func(t *testing.T) {
+		topics, err := ParseUserEventsTopicsFromQuery(url.Values{})
+		require.NoError(t, err)
+		assert.Nil(t, topics)
+
+		cursor, err := ParseLayoutCursorFromQuery(url.Values{})
+		require.NoError(t, err)
+		assert.Nil(t, cursor)
+	})
+
+	t.Run("rejects unknown or empty topic names", func(t *testing.T) {
+		for _, raw := range []string{"unknown", "workers,bogus", "workers,", ",crdt"} {
+			_, err := ParseUserEventsTopicsFromQuery(url.Values{wsParamTopics: {raw}})
+			require.Error(t, err, "topics=%q must fail", raw)
+		}
+	})
+
+	t.Run("rejects invalid base64 layout cursor", func(t *testing.T) {
+		_, err := ParseLayoutCursorFromQuery(url.Values{wsParamLayoutAfterCursor: {"***not-base64***"}})
+		require.Error(t, err)
+	})
+
+	t.Run("round trips crdt topic", func(t *testing.T) {
+		got := UserEventsURLWithOptions("https://hub.example", UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+				leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+			},
+		})
+		u, err := url.Parse(got)
+		require.NoError(t, err)
+		assert.Equal(t, "crdt", u.Query().Get(wsParamTopics))
+
+		topics, err := ParseUserEventsTopicsFromQuery(u.Query())
+		require.NoError(t, err)
+		assert.Equal(t, []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+		}, topics)
+	})
+
+	t.Run("deduplicates and trims whitespace in topics query", func(t *testing.T) {
+		topics, err := ParseUserEventsTopicsFromQuery(url.Values{wsParamTopics: {" crdt , workers , crdt "}})
+		require.NoError(t, err)
+		assert.Equal(t, []leapmuxv1.UserEventTopic{
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT,
+			leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS,
+		}, topics)
+
+		blankTopics, err := ParseUserEventsTopicsFromQuery(url.Values{wsParamTopics: {"   "}})
+		require.NoError(t, err)
+		assert.Nil(t, blankTopics)
+	})
+}
+
 // It lives here rather than in the hub service suite because the function
 // moved to sit beside UserEventsURL, which writes the very keys it reads.

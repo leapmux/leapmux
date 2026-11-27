@@ -13,11 +13,14 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
@@ -289,5 +292,74 @@ func TestAuthInterceptor_RepairFailureAttachesHintAndUnwrapsBoth(t *testing.T) {
 		assert.Equal(t, []error{ErrCredentialRejected}, onlyRepair.Unwrap())
 		assert.Equal(t, []string{"repair failed"}, onlyRepair.CLIHints())
 		assert.True(t, errors.Is(onlyRepair, ErrCredentialRejected))
+	})
+}
+
+func TestWrapHubConnectionError_ClassifiesTooManyConnections(t *testing.T) {
+	t.Run("wraps CloseReasonTooManyConnections as retryable CodeUnavailable", func(t *testing.T) {
+		raw := websocket.CloseError{
+			Code:   websocket.StatusPolicyViolation,
+			Reason: contracts.CloseReasonTooManyConnections,
+		}
+		wrapped := wrapHubConnectionError(raw)
+		require.Error(t, wrapped)
+
+		var closeErr websocket.CloseError
+		require.ErrorAs(t, wrapped, &closeErr)
+		assert.Equal(t, contracts.CloseReasonTooManyConnections, closeErr.Reason)
+
+		cliErr := cli.FromError(wrapped)
+		assert.Equal(t, cli.CodeUnavailable, cliErr.Code)
+		assert.True(t, cliErr.Retryable())
+		assert.Equal(t, "the Hub rejected the connection: too many open connections", cliErr.Message)
+	})
+
+	t.Run("leaves other close reasons untouched", func(t *testing.T) {
+		raw := websocket.CloseError{
+			Code:   websocket.StatusPolicyViolation,
+			Reason: contracts.CloseReasonForbidden,
+		}
+		wrapped := wrapHubConnectionError(raw)
+		assert.Equal(t, raw, wrapped)
+		assert.Equal(t, cli.CodeInternal, cli.FromError(wrapped).Code)
+	})
+
+	t.Run("UserEventsStream Recv classifies too_many_connections from live server", func(t *testing.T) {
+		gotTopics := make(chan []leapmuxv1.UserEventTopic, 1)
+		srv := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			topics, err := channelwire.ParseUserEventsTopicsFromQuery(r.URL.Query())
+			if err == nil {
+				gotTopics <- topics
+			}
+			ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+				Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+			})
+			if err != nil {
+				return
+			}
+			_ = ws.Close(websocket.StatusPolicyViolation, contracts.CloseReasonTooManyConnections)
+		}))
+		t.Cleanup(srv.Close)
+
+		c := &HubClient{
+			HubURL:          srv.URL,
+			WSClient:        srv.Client(),
+			connectURL:      srv.URL,
+			bearer:          "test-token",
+			accessExpiresAt: time.Now().Add(time.Hour),
+		}
+		stream, err := c.OpenUserEventsWithOptions(t.Context(), channelwire.UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS},
+		})
+		require.NoError(t, err)
+		defer func() { _ = stream.Close() }()
+
+		_, err = stream.Recv()
+		require.Error(t, err)
+		cliErr := cli.FromError(err)
+		assert.Equal(t, cli.CodeUnavailable, cliErr.Code)
+		assert.True(t, cliErr.Retryable())
+		assert.Equal(t, "the Hub rejected the connection: too many open connections", cliErr.Message)
+		assert.Equal(t, []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS}, <-gotTopics)
 	})
 }

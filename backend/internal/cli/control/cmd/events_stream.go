@@ -42,7 +42,8 @@ type eventStreamConfig struct {
 	timeout time.Duration
 	// snapshot exits cleanly right after stream.ready prints.
 	snapshot bool
-	// noReconnect stops instead of reconnecting when the Hub disconnects.
+	// noReconnect stops instead of reconnecting when the Hub or a Worker
+	// disconnects.
 	noReconnect bool
 	// hubSession runs one subscription to the hub's user events.
 	hubSession hubSessionFunc
@@ -75,16 +76,20 @@ type eventStream struct {
 
 	// state is the CRDT state of the scope, nil until the first snapshot.
 	state *leapmuxv1.UserCrdtState
+	// projectionDirty reports whether an op or entity transition since the
+	// last BatchEnd could change projected tabs.
+	projectionDirty bool
 	// tabs is the projection of state: each live tab of the scope.
 	tabs map[string]scopedTab
 	// workspaces holds each workspace of the scope that the stream knows.
 	// Only the lifecycle frames and a snapshot change it, so a workspace
 	// that a batch creates is announced once, by its frame with the title.
-	workspaces map[string]bool
-	hub        sourceHealth
-	feeds      map[string]*feedState
-	agents     map[string]*agentTrack
-	terminals  map[string]*terminalTrack
+	workspaces  map[string]bool
+	hub         sourceHealth
+	feeds       map[string]*feedState
+	agents      map[string]*agentTrack
+	terminals   map[string]*terminalTrack
+	tabStatuses map[string]tabStatusState
 	// rejected holds the reason that a Worker gave for each tab that it
 	// refused to watch, so a repeated refusal prints once.
 	rejected map[string]leapmuxv1.WatchRejectionReason
@@ -112,10 +117,13 @@ type sourceHealth struct {
 	since time.Time
 }
 
-// feedState is the notify watch of one Worker.
+// feedState holds the active watch and private-event subscriptions of one
+// Worker.
 type feedState struct {
-	feed   *workerFeed
-	cancel context.CancelFunc
+	workerID string
+
+	feed        *workerFeed
+	watchCancel context.CancelFunc
 	// interest is the agents and terminals of the scope on the Worker.
 	interest watchInterest
 	health   sourceHealth
@@ -124,8 +132,22 @@ type feedState struct {
 	// settled reports that the watch delivered once or printed
 	// stream.unavailable, so stream.ready need not wait for it.
 	settled bool
-	// refused reports that the Worker refused the watch for good.
+	// refused reports that the Worker refused the watch for good, or stopped
+	// without reconnecting.
 	refused bool
+
+	private        *privateFeed
+	privateCancel  context.CancelFunc
+	privateHealth  sourceHealth
+	privateStarted time.Time
+	privateRefused bool
+}
+
+func (fs *feedState) isLive() bool {
+	if fs.feed != nil {
+		return fs.health.live
+	}
+	return fs.private != nil && !fs.privateHealth.down && !fs.privateRefused
 }
 
 // agentTrack is what the stream last printed, or read, for one agent.
@@ -139,9 +161,12 @@ type agentTrack struct {
 	// todos and tasks are the keys of the last to-do list and the last
 	// background tasks, so an unchanged snapshot prints nothing.
 	todos, tasks string
-	// announce marks an agent whose tab joined the scope after stream.ready:
-	// the stream prints its first state, which no reader of the state saw.
-	announce bool
+	// announceStatus and announceActivity mark an agent whose tab joined the
+	// scope after stream.ready: the stream prints each field's first state,
+	// which no reader of the state saw. They are tracked separately so a live
+	// update for one field before the level read does not suppress the other.
+	announceStatus   bool
+	announceActivity bool
 }
 
 // terminalTrack is what the stream last printed for one terminal.
@@ -160,14 +185,16 @@ func newEventStream(cfg eventStreamConfig) *eventStream {
 		feeds:             map[string]*feedState{},
 		agents:            map[string]*agentTrack{},
 		terminals:         map[string]*terminalTrack{},
+		tabStatuses:       map[string]tabStatusState{},
 		rejected:          map[string]leapmuxv1.WatchRejectionReason{},
 	}
 }
 
-// run prints events until ctx ends, --limit printed its last event, or the
-// workspace that --workspace selects is deleted, which all return nil. It
-// returns the failure that ended the hub's stream for good. It stops every
-// goroutine that it started before it returns.
+// run prints events until ctx ends, --timeout expires, --snapshot prints
+// stream.ready, --limit prints its last event, the selected workspace is
+// deleted, or the selected tab closes or leaves the watched workspace. All of
+// those return nil. It returns the failure that ended the Hub stream for good,
+// and stops every goroutine that it started before it returns.
 func (s *eventStream) run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -177,7 +204,7 @@ func (s *eventStream) run(ctx context.Context) error {
 	s.feedOut = make(chan feedOutput, 64)
 	s.privateOut = make(chan workerPrivateOutput, 64)
 	hubIn := make(chan hubInput)
-	wg.Go(func() { runHubSourcePolicy(ctx, s.hubSession, s.clock, !s.noReconnect, hubIn) })
+	wg.Go(func() { runHubSource(ctx, s.hubSession, s.clock, !s.noReconnect, hubIn) })
 
 	var beat <-chan time.Time
 	if s.heartbeat > 0 {
@@ -205,7 +232,9 @@ func (s *eventStream) run(ctx context.Context) error {
 		case priv := <-s.privateOut:
 			err = s.onPrivateEvent(priv)
 		case <-beat:
-			err = s.emit(streamEvent{Kind: kindStreamHeartbeat, Summary: s.heartbeatSummary(), Scope: s.scopeCounts()})
+			if s.ready {
+				err = s.emit(streamEvent{Kind: kindStreamHeartbeat, Summary: s.heartbeatSummary(), Scope: s.scopeCounts()})
+			}
 		}
 		if errors.Is(err, errStreamDone) {
 			return nil
@@ -225,7 +254,14 @@ func (s *eventStream) emit(ev streamEvent) error {
 		return nil
 	}
 	ev.Time = s.now().UTC()
-	return s.printer.print(ev)
+	limitReached, err := s.printer.print(ev)
+	if err != nil {
+		return err
+	}
+	if limitReached {
+		return errStreamDone
+	}
+	return nil
 }
 
 // emitAll prints each event in order, and stops at the first failure.
@@ -289,20 +325,29 @@ func (s *eventStream) onHubEvent(evt *leapmuxv1.WatchUserEvent) error {
 		if s.state != nil {
 			for _, op := range e.Batch.GetOps() {
 				crdt.Apply(s.state, op)
+				if crdt.OpAffectsTabProjection(op) {
+					s.projectionDirty = true
+				}
 			}
 		}
 		return nil
 	case *leapmuxv1.WatchUserEvent_EntityMaterialized:
 		if s.state != nil {
-			putEntity(s.state, e.EntityMaterialized)
+			crdt.ApplyEntityMaterialized(s.state, e.EntityMaterialized)
+			s.projectionDirty = true
 		}
 		return nil
 	case *leapmuxv1.WatchUserEvent_EntityRemoved:
 		if s.state != nil {
-			removeEntity(s.state, e.EntityRemoved)
+			crdt.ApplyEntityRemoved(s.state, e.EntityRemoved)
+			s.projectionDirty = true
 		}
 		return nil
 	case *leapmuxv1.WatchUserEvent_BatchEnd:
+		if !s.projectionDirty {
+			return nil
+		}
+		s.projectionDirty = false
 		return s.reproject()
 	case *leapmuxv1.WatchUserEvent_Created:
 		return s.workspaceCreated(e.Created)
@@ -314,8 +359,11 @@ func (s *eventStream) onHubEvent(evt *leapmuxv1.WatchUserEvent) error {
 		// A Worker registered, connected, disconnected or deregistered. A
 		// Worker that the stream cannot reach may be online now.
 		for _, fs := range s.feeds {
-			if fs.health.down && !fs.refused {
+			if fs.feed != nil && fs.health.down && !fs.refused {
 				fs.feed.wakeUp()
+			}
+			if fs.private != nil && fs.privateHealth.down && !fs.privateRefused {
+				fs.private.wakeUp()
 			}
 		}
 		return nil
@@ -342,7 +390,8 @@ func (s *eventStream) hubLiveAgain() error {
 // stream prints what changed during the gap.
 func (s *eventStream) onSnapshot(m *leapmuxv1.UserMaterialized) error {
 	first := s.state == nil
-	s.state = crdtStateOf(m)
+	s.state = crdt.StateFromMaterialized(m)
+	s.projectionDirty = false
 	snapshotWorkspaces := map[string]bool{}
 	for id := range m.GetWorkspaces() {
 		if s.inScope(id) {
@@ -404,6 +453,7 @@ func (s *eventStream) applyProjection(reconciled bool) error {
 	next := s.project()
 	leftScope := s.tabID != "" && len(s.tabs) != 0 && len(next) == 0
 	events := s.tabEvents(s.tabs, next, reconciled)
+	tabsChanged := len(events) > 0 || !maps.Equal(s.tabs, next)
 	for id := range s.tabs {
 		if _, kept := next[id]; !kept {
 			s.forgetTab(id)
@@ -411,11 +461,15 @@ func (s *eventStream) applyProjection(reconciled bool) error {
 	}
 	for id, tab := range next {
 		if _, held := s.tabs[id]; !held && s.ready && tab.Type == leapmuxv1.TabType_TAB_TYPE_AGENT {
-			s.agentTrack(id).announce = true
+			track := s.agentTrack(id)
+			track.announceStatus = true
+			track.announceActivity = true
 		}
 	}
 	s.tabs = next
-	s.syncFeeds()
+	if tabsChanged {
+		s.syncFeeds()
+	}
 	if err := s.emitAll(events); err != nil {
 		return err
 	}
@@ -442,48 +496,50 @@ func (s *eventStream) inScope(workspaceID string) bool {
 	return s.workspace == "" || workspaceID == s.workspace
 }
 
+func ownedTabsOf(tabs map[string]scopedTab) map[string]crdt.OwnedTab {
+	if len(tabs) == 0 {
+		return nil
+	}
+	out := make(map[string]crdt.OwnedTab, len(tabs))
+	for id, t := range tabs {
+		out[id] = crdt.OwnedTab{TabID: t.ID, TabType: t.Type, WorkspaceID: t.WorkspaceID, WorkerID: t.WorkerID}
+	}
+	return out
+}
+
+func scopedTabFromOwned(t crdt.OwnedTab) scopedTab {
+	return scopedTab{ID: t.TabID, Type: t.TabType, WorkspaceID: t.WorkspaceID, WorkerID: t.WorkerID}
+}
+
 // tabEvents states how the tabs of next differ from the ones of prev, in the
 // order of the tab ids.
-//
-// A tab that left the projection closed when the state still holds its
-// record: a close tombstones the record, and a tab whose tile went away
-// keeps it. A tab whose record left the state moved out of the scope, which
-// only entity_removed does. A snapshot after a gap holds no record of a
-// closed tab, so a reconciled tab that left reads as closed: the snapshot
-// does not say whether it closed or moved to a workspace outside the scope.
 func (s *eventStream) tabEvents(prev, next map[string]scopedTab, reconciled bool) []streamEvent {
-	ids := slices.Sorted(maps.Keys(prev))
-	for id := range next {
-		if _, held := prev[id]; !held {
-			ids = append(ids, id)
-		}
+	transitions := crdt.DiffOwnedTabs(s.state, ownedTabsOf(prev), ownedTabsOf(next), reconciled)
+	if len(transitions) == 0 {
+		return nil
 	}
-	slices.Sort(ids)
-	var out []streamEvent
-	for _, id := range ids {
-		before, wasIn := prev[id]
-		after, isIn := next[id]
-		switch {
-		case !wasIn:
-			ev := tabStreamEvent(kindTabOpened, after)
-			ev.Summary, ev.Reconciled = tabTypeName(after.Type)+" tab", reconciled
+	out := make([]streamEvent, 0, len(transitions))
+	for _, tr := range transitions {
+		switch tr.Kind {
+		case crdt.TabTransitionOpened:
+			ev := tabStreamEvent(kindTabOpened, scopedTabFromOwned(tr.Current))
+			ev.Summary, ev.Reconciled = tabTypeName(tr.Current.TabType)+" tab", tr.Reconciled
 			out = append(out, ev)
-		case !isIn:
-			_, recorded := s.state.GetTabs()[id]
-			if reconciled || recorded {
-				ev := tabStreamEvent(kindTabClosed, before)
-				ev.Summary, ev.Reconciled = tabTypeName(before.Type)+" tab", reconciled
+		case crdt.TabTransitionClosed:
+			ev := tabStreamEvent(kindTabClosed, scopedTabFromOwned(tr.Previous))
+			ev.Summary, ev.Reconciled = tabTypeName(tr.Previous.TabType)+" tab", tr.Reconciled
+			out = append(out, ev)
+		case crdt.TabTransitionMoved:
+			if tr.Current.TabID == "" {
+				ev := tabStreamEvent(kindTabMoved, scopedTabFromOwned(tr.Previous))
+				ev.WorkspaceID, ev.FromWorkspaceID = "", tr.Previous.WorkspaceID
+				ev.Summary = tabTypeName(tr.Previous.TabType) + " tab left the watched workspace"
 				out = append(out, ev)
 				continue
 			}
-			ev := tabStreamEvent(kindTabMoved, before)
-			ev.WorkspaceID, ev.FromWorkspaceID = "", before.WorkspaceID
-			ev.Summary = tabTypeName(before.Type) + " tab left the watched workspace"
-			out = append(out, ev)
-		case before.WorkspaceID != after.WorkspaceID:
-			ev := tabStreamEvent(kindTabMoved, after)
-			ev.FromWorkspaceID, ev.Reconciled = before.WorkspaceID, reconciled
-			ev.Summary = fmt.Sprintf("%s tab from workspace %s", tabTypeName(after.Type), cli.ShortID(before.WorkspaceID))
+			ev := tabStreamEvent(kindTabMoved, scopedTabFromOwned(tr.Current))
+			ev.FromWorkspaceID, ev.Reconciled = tr.Previous.WorkspaceID, tr.Reconciled
+			ev.Summary = fmt.Sprintf("%s tab from workspace %s", tabTypeName(tr.Current.TabType), cli.ShortID(tr.Previous.WorkspaceID))
 			out = append(out, ev)
 		}
 	}
@@ -505,6 +561,7 @@ func tabStreamEvent(kind string, tab scopedTab) streamEvent {
 func (s *eventStream) forgetTab(id string) {
 	delete(s.agents, id)
 	delete(s.terminals, id)
+	delete(s.tabStatuses, id)
 	delete(s.rejected, id)
 }
 
@@ -549,8 +606,3 @@ func (s *eventStream) workspaceDeleted(id string, reconciled bool) error {
 	}
 	return nil
 }
-
-// --- The Workers ---
-
-// syncFeeds gives each Worker that hosts a tab of the scope a watch of
-// exactly those tabs, and stops the watch of a Worker that hosts none.

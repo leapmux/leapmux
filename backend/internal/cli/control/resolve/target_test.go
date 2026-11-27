@@ -18,21 +18,23 @@ import (
 // fakeListing serves a fixed set of objects, and counts the list calls so a
 // test can pin which forms cost a call.
 type fakeListing struct {
-	tabs        []*leapmuxv1.WorkspaceTab
-	titles      map[string]string
-	workspaces  []*leapmuxv1.Workspace
-	tiles       map[string]string
-	workers     []*leapmuxv1.Worker
-	workerNames map[string]string
-	located     *leapmuxv1.WorkspaceTab
-	env         map[string]string
-	listErr     error
-	calls       int
-	titleCalls  int
+	tabs         []*leapmuxv1.WorkspaceTab
+	titles       map[string]string
+	workspaces   []*leapmuxv1.Workspace
+	tiles        map[string]string
+	workers      []*leapmuxv1.Worker
+	workerNames  map[string]string
+	located      *leapmuxv1.WorkspaceTab
+	env          map[string]string
+	selfIdentity func(context.Context) (resolve.SelfInfo, error)
+	listErr      error
+	calls        int
+	titleCalls   int
+	selfCalls    int
 }
 
 func (f *fakeListing) listing() resolve.Listing {
-	return resolve.Listing{
+	l := resolve.Listing{
 		Tabs: func(context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
 			f.calls++
 			return f.tabs, f.listErr
@@ -69,6 +71,13 @@ func (f *fakeListing) listing() resolve.Listing {
 		},
 		Getenv: func(key string) string { return f.env[key] },
 	}
+	if f.selfIdentity != nil {
+		l.SelfIdentity = func(ctx context.Context) (resolve.SelfInfo, error) {
+			f.selfCalls++
+			return f.selfIdentity(ctx)
+		}
+	}
+	return l
 }
 
 func tab(id string, tt leapmuxv1.TabType) *leapmuxv1.WorkspaceTab {
@@ -730,5 +739,313 @@ func TestCanonical_Parent(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "87a1ffff-bbbb", got.ID)
 		assert.False(t, got.Parent)
+	})
+}
+
+func TestCanonical_SelfCarriesEnvTabTypeAndWorkerID(t *testing.T) {
+	t.Run("agent tab populates TabType and WorkerID from env", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{
+			"LEAPMUX_CONTROL_TAB_ID":    "agent-1",
+			"LEAPMUX_CONTROL_TAB_TYPE":  "agent",
+			"LEAPMUX_CONTROL_WORKER_ID": "worker-A",
+		}
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTab, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "agent-1", got.ID)
+		assert.True(t, got.Self)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+		assert.Equal(t, "worker-A", got.WorkerID)
+		assert.Zero(t, f.calls)
+	})
+	t.Run("quake terminal populates TAB_TYPE_TERMINAL and WorkerID from env", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{
+			"LEAPMUX_CONTROL_TERMINAL_ID": "quake-1",
+			"LEAPMUX_CONTROL_WORKER_ID":   "worker-A",
+		}
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTerminal, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "quake-1", got.ID)
+		assert.True(t, got.Self)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, got.TabType)
+		assert.Equal(t, "worker-A", got.WorkerID)
+		assert.Zero(t, f.calls)
+	})
+}
+
+func TestCanonical_SelfIdentity(t *testing.T) {
+	t.Run("resolves self via SelfIdentity when env is unset and LocateTab fails", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			kind resolve.Kind
+			info resolve.SelfInfo
+		}{
+			{
+				name: "KindTab with agent",
+				kind: resolve.KindTab,
+				info: resolve.SelfInfo{TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: "worker-A"},
+			},
+			{
+				name: "KindAgent with agent",
+				kind: resolve.KindAgent,
+				info: resolve.SelfInfo{TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: "worker-A"},
+			},
+			{
+				name: "KindTerminal with terminal",
+				kind: resolve.KindTerminal,
+				info: resolve.SelfInfo{TabID: "term-1", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, WorkerID: "worker-B"},
+			},
+			{
+				name: "KindTab with file tab",
+				kind: resolve.KindTab,
+				info: resolve.SelfInfo{TabID: "file-1", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, WorkerID: "worker-C"},
+			},
+			{
+				name: "KindTab with image tab",
+				kind: resolve.KindTab,
+				info: resolve.SelfInfo{TabID: "img-1", TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, WorkerID: "worker-C"},
+			},
+			{
+				name: "trims whitespace on TabID and WorkerID",
+				kind: resolve.KindAgent,
+				info: resolve.SelfInfo{TabID: "  agent-2\n", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: "\tworker-D "},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := sampleListing()
+				// Leave f.located nil so LocateTab fails if called.
+				f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+					return tc.info, nil
+				}
+				got, err := resolve.Canonical(t.Context(), f.listing(), tc.kind, "self")
+				require.NoError(t, err)
+				assert.Equal(t, strings.TrimSpace(tc.info.TabID), got.ID)
+				assert.True(t, got.Self)
+				assert.Equal(t, tc.info.TabType, got.TabType)
+				assert.Equal(t, strings.TrimSpace(tc.info.WorkerID), got.WorkerID)
+				assert.Equal(t, 1, f.selfCalls)
+				assert.Zero(t, f.calls, "Hub RPCs must not run when SelfIdentity answers")
+			})
+		}
+	})
+
+	t.Run("fails cleanly on kind mismatch or missing identity from SelfIdentity", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			kind resolve.Kind
+			info resolve.SelfInfo
+		}{
+			{
+				name: "KindAgent when SelfIdentity returns terminal",
+				kind: resolve.KindAgent,
+				info: resolve.SelfInfo{TabID: "term-1", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, WorkerID: "worker-A"},
+			},
+			{
+				name: "KindTerminal when SelfIdentity returns agent",
+				kind: resolve.KindTerminal,
+				info: resolve.SelfInfo{TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: "worker-A"},
+			},
+			{
+				name: "KindTab when SelfIdentity returns unspecified tab type",
+				kind: resolve.KindTab,
+				info: resolve.SelfInfo{TabID: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, WorkerID: "worker-A"},
+			},
+			{
+				name: "KindTab when SelfIdentity returns empty tab id",
+				kind: resolve.KindTab,
+				info: resolve.SelfInfo{TabID: "", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: "worker-A"},
+			},
+			{
+				name: "KindWorker when SelfIdentity returns empty worker id",
+				kind: resolve.KindWorker,
+				info: resolve.SelfInfo{TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: ""},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := sampleListing()
+				f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+					return tc.info, nil
+				}
+				_, err := resolve.Canonical(t.Context(), f.listing(), tc.kind, "self")
+				require.Error(t, err)
+				assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+				assert.Equal(t, 1, f.selfCalls)
+				assert.Zero(t, f.calls)
+			})
+		}
+	})
+
+	t.Run("propagates SelfIdentity errors", func(t *testing.T) {
+		f := sampleListing()
+		f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			return resolve.SelfInfo{}, errors.New("ipc socket closed")
+		}
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTab, "self")
+		require.ErrorContains(t, err, "ipc socket closed")
+	})
+
+	t.Run("queries SelfIdentity when env vars are incomplete", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{
+			"LEAPMUX_CONTROL_TAB_ID": "agent-1",
+		}
+		f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			return resolve.SelfInfo{
+				TabID:    "agent-1",
+				TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+				WorkerID: "worker-A",
+			}, nil
+		}
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTab, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "agent-1", got.ID)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+		assert.Equal(t, "worker-A", got.WorkerID)
+		assert.Equal(t, 1, f.selfCalls)
+	})
+
+	t.Run("preserves env WorkerID if SelfIdentity leaves WorkerID empty", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{
+			"LEAPMUX_CONTROL_TAB_ID":    "agent-1",
+			"LEAPMUX_CONTROL_WORKER_ID": "worker-env",
+		}
+		f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			return resolve.SelfInfo{
+				TabID:   "agent-1",
+				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+			}, nil
+		}
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTab, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "agent-1", got.ID)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+		assert.Equal(t, "worker-env", got.WorkerID)
+		assert.Equal(t, 1, f.selfCalls)
+	})
+
+	t.Run("env tab id takes precedence over a differing SelfIdentity tab id", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{
+			"LEAPMUX_CONTROL_TERMINAL_ID": "quake-1",
+		}
+		f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			return resolve.SelfInfo{
+				TabID:    "agent-1",
+				TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+				WorkerID: "worker-A",
+			}, nil
+		}
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTerminal, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "quake-1", got.ID)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, got.TabType)
+		assert.Equal(t, "worker-A", got.WorkerID)
+	})
+
+	t.Run("skips SelfIdentity when env vars already give the complete identity", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{
+			"LEAPMUX_CONTROL_TAB_ID":    "agent-1",
+			"LEAPMUX_CONTROL_TAB_TYPE":  "agent",
+			"LEAPMUX_CONTROL_WORKER_ID": "worker-A",
+		}
+		f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			t.Fatal("SelfIdentity must not run when env vars are complete")
+			return resolve.SelfInfo{}, nil
+		}
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTab, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "agent-1", got.ID)
+		assert.True(t, got.Self)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+		assert.Equal(t, "worker-A", got.WorkerID)
+		assert.Zero(t, f.selfCalls)
+	})
+
+	t.Run("rejects explicit env type mismatch without calling SelfIdentity", func(t *testing.T) {
+		f := sampleListing()
+		f.env = map[string]string{
+			"LEAPMUX_CONTROL_TAB_ID":   "term-1",
+			"LEAPMUX_CONTROL_TAB_TYPE": "terminal",
+		}
+		f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			t.Fatal("SelfIdentity must not run when env already proves a kind mismatch")
+			return resolve.SelfInfo{}, nil
+		}
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "self")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+		assert.Zero(t, f.selfCalls)
+	})
+
+	t.Run("resolves KindWorker, KindTile, and KindWorkspace when env is unset", func(t *testing.T) {
+		f := sampleListing()
+		f.located = tab("agent-1", leapmuxv1.TabType_TAB_TYPE_AGENT)
+		f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			return resolve.SelfInfo{
+				TabID:    "agent-1",
+				TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+				WorkerID: "worker-A",
+			}, nil
+		}
+
+		gotWorker, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "worker-A", gotWorker.ID)
+		assert.Equal(t, "worker-A", gotWorker.WorkerID)
+		assert.True(t, gotWorker.Self)
+		assert.Zero(t, f.calls)
+
+		gotTile, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTile, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "tile-1", gotTile.ID)
+		assert.True(t, gotTile.Self)
+
+		gotWS, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorkspace, "self")
+		require.NoError(t, err)
+		assert.Equal(t, "ws-1", gotWS.ID)
+		assert.True(t, gotWS.Self)
+	})
+
+	t.Run("resolves parent via SelfIdentity when env is unset and rejects non-agent", func(t *testing.T) {
+		f := sampleListing()
+		f.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			return resolve.SelfInfo{
+				TabID:    "child-1",
+				TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+				WorkerID: "worker-A",
+			}, nil
+		}
+		listing := f.listing()
+		listing.ParentAgent = func(_ context.Context, workerID, selfAgentID string) (string, error) {
+			assert.Equal(t, "worker-A", workerID)
+			assert.Equal(t, "child-1", selfAgentID)
+			return "parent-1", nil
+		}
+		got, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "parent")
+		require.NoError(t, err)
+		assert.Equal(t, "parent-1", got.ID)
+		assert.True(t, got.Parent)
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+		assert.Equal(t, "worker-A", got.WorkerID)
+
+		fTerm := sampleListing()
+		fTerm.selfIdentity = func(context.Context) (resolve.SelfInfo, error) {
+			return resolve.SelfInfo{
+				TabID:    "term-1",
+				TabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+				WorkerID: "worker-A",
+			}, nil
+		}
+		termListing := fTerm.listing()
+		termListing.ParentAgent = func(context.Context, string, string) (string, error) {
+			t.Fatal("ParentAgent must not run for a terminal tab")
+			return "", nil
+		}
+		_, err = resolve.Canonical(t.Context(), termListing, resolve.KindAgent, "parent")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
 	})
 }

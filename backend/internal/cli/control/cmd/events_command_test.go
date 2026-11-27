@@ -29,7 +29,7 @@ func TestEventsOptionsOf(t *testing.T) {
 	t.Run("no flag watches every kind of every workspace without a limit", func(t *testing.T) {
 		opts, err := eventsOptionsFor(t)
 		require.NoError(t, err)
-		assert.Nil(t, opts.filter.selected)
+		assert.True(t, opts.filter.all())
 		assert.Zero(t, opts.limit)
 		assert.Zero(t, opts.heartbeat)
 		assert.Empty(t, opts.workspace)
@@ -81,13 +81,20 @@ func TestEventsOptionsOf(t *testing.T) {
 		assert.Equal(t, cli.CodeUsage, e.Code)
 		assert.Equal(t, "--workspace is empty", e.Message)
 	})
-	t.Run("quiet format is rejected", func(t *testing.T) {
-		cmd := newEventsCommand()
-		_, err := eventsOptionsOf(&cli.Invocation{Command: cmd, Printer: &cli.Printer{Format: cli.FormatQuiet}})
+	t.Run("quiet format is marked unsupported on the command", func(t *testing.T) {
+		assert.True(t, cli.IsQuietUnsupported(newEventsCommand()))
+	})
+	t.Run("checkpoint trims surrounding whitespace", func(t *testing.T) {
+		opts, err := eventsOptionsFor(t, "--checkpoint", "  events.json  ")
+		require.NoError(t, err)
+		assert.Equal(t, "events.json", opts.checkpoint)
+	})
+	t.Run("whitespace-only checkpoint is rejected", func(t *testing.T) {
+		_, err := eventsOptionsFor(t, "--checkpoint", "   ")
 		e := cli.FromError(err)
 		require.NotNil(t, e)
 		assert.Equal(t, cli.CodeUsage, e.Code)
-		assert.Contains(t, e.Message, "--quiet does not apply to events")
+		assert.Contains(t, e.Message, "--checkpoint requires a file")
 	})
 }
 

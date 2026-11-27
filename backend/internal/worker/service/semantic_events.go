@@ -420,7 +420,7 @@ func sendSemanticWatchFrame(sender channel.ResponseWriter, frame proto.Message, 
 		return false
 	}
 	if budget := sender.MaxPayloadBudget(); budget != 0 && len(raw) > budget {
-		sendSemanticWatchError(sender, codes.ResourceExhausted, "a semantic event exceeds this connection's payload limit")
+		sendSemanticWatchError(sender, codes.FailedPrecondition, "a semantic event exceeds this connection's payload limit")
 		return false
 	}
 	return sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: raw, End: end}) == nil

@@ -394,9 +394,92 @@ func TestParseFormatParseColorModeAndTerminalWidth(t *testing.T) {
 
 func TestPrinterNoticeGoesToStderr(t *testing.T) {
 	p, out, errOut := newTestPrinter(FormatJSON)
-	p.Notice("open %s", "https://example.invalid")
+	require.NoError(t, p.Notice("open %s", "https://example.invalid"))
 	assert.Empty(t, out.String())
 	assert.Equal(t, "open https://example.invalid\n", errOut.String())
+}
+
+func TestPrinterNotice_NilSafetyAndSanitization(t *testing.T) {
+	var nilPrinter *Printer
+	require.NoError(t, nilPrinter.Notice("ignored"))
+
+	p := &Printer{Out: &bytes.Buffer{}, Err: nil}
+	require.NoError(t, p.Notice("ignored"))
+
+	var errOut bytes.Buffer
+	p = &Printer{Out: &bytes.Buffer{}, Err: &errOut}
+	require.NoError(t, p.Notice("warn: %s", "\x1b[31mred\x1b[0m\u202esafe"))
+	assert.Equal(t, "warn: redsafe\n", errOut.String())
+}
+
+func TestPrinterShortWritesReturnErrShortWrite(t *testing.T) {
+	t.Run("Result fails with io.ErrShortWrite across formats", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			format  Format
+			oneLine bool
+			value   any
+		}{
+			{name: "text", format: FormatText, value: testRow{ID: "id-1", Title: "hello"}},
+			{name: "text one-line", format: FormatText, oneLine: true, value: testRow{ID: "id-1", Title: "hello"}},
+			{name: "json", format: FormatJSON, value: testRow{ID: "id-1", Title: "hello"}},
+			{name: "ndjson", format: FormatNDJSON, value: testRow{ID: "id-1", Title: "hello"}},
+			{name: "tsv", format: FormatTSV, value: testRow{ID: "id-1", Title: "hello"}},
+			{name: "quiet", format: FormatQuiet, value: testRow{ID: "id-1", Title: "hello"}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				qw := &quotaWriter{remaining: 2, failErr: nil}
+				p := &Printer{
+					Out:           qw,
+					Err:           &bytes.Buffer{},
+					Format:        tc.format,
+					oneLineResult: tc.oneLine,
+				}
+				err := p.Result(tc.value)
+				require.ErrorIs(t, err, io.ErrShortWrite)
+			})
+		}
+	})
+
+	t.Run("Event fails with io.ErrShortWrite across formats", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			format Format
+			value  any
+		}{
+			{name: "text single-line", format: FormatText, value: liner("event line")},
+			{name: "text multi-line", format: FormatText, value: liner("line 1\nline 2")},
+			{name: "text json fallback", format: FormatText, value: map[string]string{"k": "value"}},
+			{name: "json", format: FormatJSON, value: testRow{ID: "id-1", Title: "hello"}},
+			{name: "ndjson", format: FormatNDJSON, value: testRow{ID: "id-1", Title: "hello"}},
+			{name: "tsv", format: FormatTSV, value: testRow{ID: "id-1", Title: "hello"}},
+			{name: "quiet", format: FormatQuiet, value: testRow{ID: "id-1", Title: "hello"}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				qw := &quotaWriter{remaining: 2, failErr: nil}
+				p := &Printer{
+					Out:    qw,
+					Err:    &bytes.Buffer{},
+					Format: tc.format,
+				}
+				err := p.Event(tc.value)
+				require.ErrorIs(t, err, io.ErrShortWrite)
+			})
+		}
+	})
+
+	t.Run("Notice fails with io.ErrShortWrite and propagates writer errors", func(t *testing.T) {
+		shortErr := &quotaWriter{remaining: 2, failErr: nil}
+		p := &Printer{Out: &bytes.Buffer{}, Err: shortErr}
+		require.ErrorIs(t, p.Notice("notice payload"), io.ErrShortWrite)
+
+		writeErr := errors.New("broken pipe")
+		failErr := &quotaWriter{remaining: 2, failErr: writeErr}
+		p = &Printer{Out: &bytes.Buffer{}, Err: failErr}
+		require.ErrorIs(t, p.Notice("notice payload"), writeErr)
+	})
 }
 
 func TestShortID(t *testing.T) {
@@ -858,5 +941,224 @@ func TestDefaultColumnHider(t *testing.T) {
 		p, out, _ := newTestPrinter(FormatText)
 		require.NoError(t, p.Result(scalarHiderObject{ID: "a1", Title: "Alpha", Status: "active"}))
 		assert.Equal(t, "id:     a1\ntitle:  Alpha\nstatus: active\n", out.String())
+	})
+}
+
+func TestMultiFieldStructWithScalarSliceIsNotUnwrapped(t *testing.T) {
+	type renderedScreen struct {
+		ID    string   `json:"id"`
+		Cols  int      `json:"cols"`
+		Rows  int      `json:"rows"`
+		Lines []string `json:"lines"`
+	}
+	type sendResult struct {
+		ID        string   `json:"id"`
+		Keys      []string `json:"keys"`
+		TextBytes int      `json:"text_bytes"`
+	}
+	type shellList struct {
+		Shells []string `json:"shells"`
+	}
+	type untaggedRow struct {
+		Name string `json:"name"`
+	}
+
+	screen := renderedScreen{
+		ID:    "term-1",
+		Cols:  80,
+		Rows:  24,
+		Lines: []string{"prompt$ ls", "README.md"},
+	}
+	emptySend := sendResult{
+		ID:        "term-1",
+		Keys:      []string{},
+		TextBytes: 12,
+	}
+
+	t.Run("NDJSON keeps sibling fields and honors --fields for non-empty scalar slice", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatNDJSON)
+		require.NoError(t, p.Result(screen))
+		lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+		require.Len(t, lines, 1, "multi-field struct with []string must emit one object line, not one line per string")
+		assert.JSONEq(t, `{"id":"term-1","cols":80,"rows":24,"lines":["prompt$ ls","README.md"]}`, lines[0])
+
+		out.Reset()
+		p.Fields = []string{"id", "cols"}
+		require.NoError(t, p.Result(screen))
+		assert.JSONEq(t, `{"id":"term-1","cols":80}`, strings.TrimSpace(out.String()))
+	})
+
+	t.Run("NDJSON keeps sibling fields for empty scalar slice", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatNDJSON)
+		require.NoError(t, p.Result(emptySend))
+		assert.JSONEq(t, `{"id":"term-1","keys":[],"text_bytes":12}`, strings.TrimSpace(out.String()))
+	})
+
+	t.Run("TSV keeps sibling fields and honors --fields for non-empty and empty scalar slices", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatTSV)
+		require.NoError(t, p.Result(screen))
+		assert.Equal(t, "id\tterm-1\ncols\t80\nrows\t24\nlines\tprompt$ ls, README.md\n", out.String())
+
+		out.Reset()
+		p.Fields = []string{"id", "rows"}
+		require.NoError(t, p.Result(screen))
+		assert.Equal(t, "id\tterm-1\nrows\t24\n", out.String())
+
+		out.Reset()
+		p.Fields = nil
+		require.NoError(t, p.Result(emptySend))
+		assert.Equal(t, "id\tterm-1\nkeys\t-\ntext_bytes\t12\n", out.String())
+	})
+
+	t.Run("Text with --fields filters sibling fields instead of unwrapping scalar slice", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatText)
+		p.Fields = []string{"id", "cols"}
+		require.NoError(t, p.Result(screen))
+		assert.Equal(t, "id:   term-1\ncols: 80\n", out.String())
+	})
+
+	t.Run("single-field scalar slice wrapper still unwraps in NDJSON and TSV", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatNDJSON)
+		require.NoError(t, p.Result(shellList{Shells: []string{"/bin/zsh", "/bin/bash"}}))
+		assert.Equal(t, "\"/bin/zsh\"\n\"/bin/bash\"\n", out.String())
+
+		pTSV, outTSV, _ := newTestPrinter(FormatTSV)
+		require.NoError(t, pTSV.Result(shellList{Shells: []string{"/bin/zsh", "/bin/bash"}}))
+		assert.Equal(t, "/bin/zsh\n/bin/bash\n", outTSV.String())
+	})
+
+	t.Run("multi-field wrapper with empty struct or map slice still unwraps in NDJSON and TSV", func(t *testing.T) {
+		wrapper := struct {
+			Cursor string        `json:"cursor"`
+			Items  []untaggedRow `json:"items"`
+		}{Cursor: "next", Items: []untaggedRow{}}
+
+		p, out, _ := newTestPrinter(FormatNDJSON)
+		require.NoError(t, p.Result(wrapper))
+		assert.Empty(t, out.String(), "empty []struct list wrapper emits zero NDJSON lines")
+
+		pTSV, outTSV, _ := newTestPrinter(FormatTSV)
+		require.NoError(t, pTSV.Result(wrapper))
+		assert.Empty(t, outTSV.String(), "empty untagged []struct list wrapper emits zero TSV rows")
+
+		mapWrapper := struct {
+			Cursor string           `json:"cursor"`
+			Items  []map[string]any `json:"items"`
+		}{Cursor: "next", Items: []map[string]any{}}
+
+		out.Reset()
+		require.NoError(t, p.Result(mapWrapper))
+		assert.Empty(t, out.String(), "empty []map list wrapper emits zero NDJSON lines")
+
+		outTSV.Reset()
+		require.NoError(t, pTSV.Result(mapWrapper))
+		assert.Empty(t, outTSV.String(), "empty []map list wrapper emits zero TSV rows")
+	})
+
+	t.Run("multi-field wrappers with time.Time, TextValuer, and []any holding them do not unwrap in NDJSON or TSV", func(t *testing.T) {
+		t1 := time.Date(2026, 11, 19, 10, 0, 0, 0, time.FixedZone("KST", 9*3600))
+		t2 := time.Date(2026, 11, 19, 11, 0, 0, 0, time.FixedZone("KST", 9*3600))
+
+		type timedWrapper struct {
+			ID         string      `json:"id"`
+			Timestamps []time.Time `json:"timestamps"`
+		}
+		type valuedWrapper struct {
+			ID      string       `json:"id"`
+			Senders []valuedCell `json:"senders"`
+		}
+		type ptrValuedWrapper struct {
+			ID      string           `json:"id"`
+			Senders []*ptrValuedCell `json:"senders"`
+		}
+		type anyWrapper struct {
+			ID    string `json:"id"`
+			Items []any  `json:"items"`
+		}
+
+		cases := []struct {
+			name       string
+			input      any
+			wantNDJSON string
+			wantTSV    string
+		}{
+			{
+				name: "[]time.Time",
+				input: timedWrapper{
+					ID:         "w-time",
+					Timestamps: []time.Time{t1, t2},
+				},
+				wantNDJSON: `{"id":"w-time","timestamps":["2026-11-19T10:00:00+09:00","2026-11-19T11:00:00+09:00"]}`,
+				wantTSV:    "id\tw-time\ntimestamps\t2026-11-19T01:00:00Z, 2026-11-19T02:00:00Z\n",
+			},
+			{
+				name: "empty []time.Time",
+				input: timedWrapper{
+					ID:         "w-time-empty",
+					Timestamps: []time.Time{},
+				},
+				wantNDJSON: `{"id":"w-time-empty","timestamps":[]}`,
+				wantTSV:    "id\tw-time-empty\ntimestamps\t-\n",
+			},
+			{
+				name: "[]TextValuer value receiver",
+				input: valuedWrapper{
+					ID:      "w-val",
+					Senders: []valuedCell{{Name: "alice", Kind: "human"}, {Name: "bot", Kind: "agent"}},
+				},
+				wantNDJSON: `{"id":"w-val","senders":[{"name":"alice","kind":"human"},{"name":"bot","kind":"agent"}]}`,
+				wantTSV:    "id\tw-val\nsenders\talice (human), bot (agent)\n",
+			},
+			{
+				name: "[]*TextValuer pointer receiver",
+				input: ptrValuedWrapper{
+					ID:      "w-ptr",
+					Senders: []*ptrValuedCell{{Name: "alice"}, {Name: "bob"}},
+				},
+				wantNDJSON: `{"id":"w-ptr","senders":[{"Name":"alice"},{"Name":"bob"}]}`,
+				wantTSV:    "id\tw-ptr\nsenders\tptr:alice, ptr:bob\n",
+			},
+			{
+				name: "[]any holding time.Time",
+				input: anyWrapper{
+					ID:    "w-any-time",
+					Items: []any{t1, t2},
+				},
+				wantNDJSON: `{"id":"w-any-time","items":["2026-11-19T10:00:00+09:00","2026-11-19T11:00:00+09:00"]}`,
+				wantTSV:    "id\tw-any-time\nitems\t2026-11-19T01:00:00Z, 2026-11-19T02:00:00Z\n",
+			},
+			{
+				name: "[]any holding value-receiver TextValuer",
+				input: anyWrapper{
+					ID:    "w-any-val",
+					Items: []any{valuedCell{Name: "alice", Kind: "human"}},
+				},
+				wantNDJSON: `{"id":"w-any-val","items":[{"name":"alice","kind":"human"}]}`,
+				wantTSV:    "id\tw-any-val\nitems\talice (human)\n",
+			},
+			{
+				name: "[]any holding pointer-receiver TextValuer",
+				input: anyWrapper{
+					ID:    "w-any-ptr",
+					Items: []any{&ptrValuedCell{Name: "alice"}},
+				},
+				wantNDJSON: `{"id":"w-any-ptr","items":[{"Name":"alice"}]}`,
+				wantTSV:    "id\tw-any-ptr\nitems\tptr:alice\n",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				pND, outND, _ := newTestPrinter(FormatNDJSON)
+				require.NoError(t, pND.Result(tc.input))
+				lines := strings.Split(strings.TrimSuffix(outND.String(), "\n"), "\n")
+				require.Len(t, lines, 1, "wrapper must emit a single JSON object line in NDJSON")
+				assert.JSONEq(t, tc.wantNDJSON, lines[0])
+
+				pTSV, outTSV, _ := newTestPrinter(FormatTSV)
+				require.NoError(t, pTSV.Result(tc.input))
+				assert.Equal(t, tc.wantTSV, outTSV.String())
+			})
+		}
 	})
 }

@@ -56,6 +56,7 @@ type Registry struct {
 	mu           sync.Mutex
 	managers     map[string]*Manager
 	layoutWakes  map[string]chan struct{}
+	workerWakes  map[string]chan struct{}
 	drains       map[string]*LifecycleDrain
 	factory      ManagerFactory
 	outbox       LifecycleOutboxReader
@@ -101,6 +102,7 @@ func NewRegistry(factory ManagerFactory, logger *slog.Logger, opts ...RegistryOp
 	r := &Registry{
 		managers:     map[string]*Manager{},
 		layoutWakes:  map[string]chan struct{}{},
+		workerWakes:  map[string]chan struct{}{},
 		drains:       map[string]*LifecycleDrain{},
 		factory:      factory,
 		drainTimeout: defaultLifecycleDrainTimeout,
@@ -242,22 +244,48 @@ func (r *Registry) loaded(userID string) (*Manager, bool) {
 	return m, ok
 }
 
-// BroadcastWorkersChanged tells every live /ws/userevents subscriber of userID
-// whose credential holds worker:read that the user's worker list changed (see
+// BroadcastWorkersChanged wakes any WorkerInventoryWake waiters for userID and
+// tells every live /ws/userevents subscriber of userID whose credential holds
+// worker:read that the user's worker list changed (see
 // Manager.BroadcastWorkersChanged).
 //
 // It uses only a manager that is already loaded and never bootstraps one: the
 // registry evicts only a manager with no subscriber (see SweepIdle), so a
-// loaded-only lookup reaches every live subscriber, and a user with no
-// manager has nobody to tell. A caller sends it after the change committed,
-// never inside a store transaction.
+// loaded-only lookup reaches every live subscriber, while WorkerInventoryWake
+// waiters still wake even when no manager is loaded. A caller sends it after
+// the change committed, never inside a store transaction.
 func (r *Registry) BroadcastWorkersChanged(userID string) {
-	if r == nil {
+	if r == nil || userID == "" {
 		return
 	}
-	if m, ok := r.loaded(userID); ok {
+	r.mu.Lock()
+	m := r.managers[userID]
+	if ch := r.workerWakes[userID]; ch != nil {
+		delete(r.workerWakes, userID)
+		close(ch)
+	}
+	r.mu.Unlock()
+	if m != nil {
 		m.BroadcastWorkersChanged()
 	}
+}
+
+// WorkerInventoryWake returns a channel that closes when
+// BroadcastWorkersChanged runs for userID. Capture the channel before reading
+// worker inventory so a concurrent change cannot be missed, even before a
+// Manager is loaded or across idle eviction.
+func (r *Registry) WorkerInventoryWake(userID string) <-chan struct{} {
+	if r == nil || userID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ch := r.workerWakes[userID]
+	if ch == nil {
+		ch = make(chan struct{})
+		r.workerWakes[userID] = ch
+	}
+	return ch
 }
 
 // LayoutEventWake returns a channel that closes when layout facts or pending
@@ -403,6 +431,10 @@ func (r *Registry) Shutdown(timeout time.Duration) {
 	for userID, ch := range r.layoutWakes {
 		close(ch)
 		delete(r.layoutWakes, userID)
+	}
+	for userID, ch := range r.workerWakes {
+		close(ch)
+		delete(r.workerWakes, userID)
 	}
 	r.mu.Unlock()
 

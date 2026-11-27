@@ -53,6 +53,8 @@ func (w *watchedTerminalWorker) DispatchWith(ctx context.Context, _ channel.Call
 		w.reads++
 		w.mu.Unlock()
 		writeProtoResponse(rw, &leapmuxv1.ListTerminalsResponse{Terminals: []*leapmuxv1.TerminalInfo{record}})
+	case leapmuxv1connect.WorkerTerminalServiceSendInputProcedure:
+		writeProtoResponse(rw, &leapmuxv1.SendInputResponse{})
 	case leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure:
 		var in leapmuxv1.WatchEventsRequest
 		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
@@ -126,18 +128,53 @@ func terminalRecord(id string, status leapmuxv1.TerminalStatus, screen string) *
 	}
 }
 
+// onWatched waits for w to acknowledge a watch on a tracked goroutine and runs
+// fn with the watch request. The returned function joins the goroutine and
+// returns the acknowledged request so all test assertions run on the test
+// goroutine.
+func onWatched(t *testing.T, w *watchedTerminalWorker, fn func(*leapmuxv1.WatchEventsRequest)) func() *leapmuxv1.WatchEventsRequest {
+	t.Helper()
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	var (
+		wg  sync.WaitGroup
+		req *leapmuxv1.WatchEventsRequest
+		err error
+	)
+	wg.Go(func() {
+		select {
+		case req = <-w.watched:
+			if fn != nil {
+				fn(req)
+			}
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	})
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+	})
+	return func() *leapmuxv1.WatchEventsRequest {
+		t.Helper()
+		wg.Wait()
+		require.NoError(t, err, "timed out waiting for watch request")
+		require.NotNil(t, req)
+		return req
+	}
+}
+
 func TestTerminalWaitExitOverIPC_PrintsTheExitCode(t *testing.T) {
 	id := fullTestID("term-1")
 	w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, "$ "))
 	startWatchedTerminalWorker(t, w, id)
-	ctx := testutil.DeadlineContext(t)
-	go func() {
-		req := receive(t, ctx, w.watched)
-		assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, req.GetTerminals()[0].GetMode(), "a wait for exit reads no bytes")
+	waitWatch := onWatched(t, w, func(_ *leapmuxv1.WatchEventsRequest) {
 		w.push(id, closedEvent(3))
-	}()
+	})
 
 	o := runControlText(t, "terminal", "wait", id, "--exit")
+	req := waitWatch()
+	require.Len(t, req.GetTerminals(), 1)
+	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, req.GetTerminals()[0].GetMode(), "a wait for exit reads no bytes")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
 	assert.Equal(t, "3\n", o.Stdout, "the text form prints the exit code alone")
 }
@@ -146,13 +183,12 @@ func TestTerminalWaitExitOverIPC_PrintsTheResultAsJSON(t *testing.T) {
 	id := fullTestID("term-1")
 	w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, "$ "))
 	startWatchedTerminalWorker(t, w, id)
-	ctx := testutil.DeadlineContext(t)
-	go func() {
-		receive(t, ctx, w.watched)
+	waitWatch := onWatched(t, w, func(_ *leapmuxv1.WatchEventsRequest) {
 		w.push(id, closedEvent(0))
-	}()
+	})
 
 	data := runControl(t, "terminal", "wait", id, "--exit").Data(t)
+	waitWatch()
 	assert.Equal(t, map[string]any{"id": id, "status": "exited", "reached": true, "exit_code": float64(0)}, data)
 }
 
@@ -215,13 +251,12 @@ func TestTerminalWaitExitOverIPC_ReadsTheCodeAfterAnExitedStatus(t *testing.T) {
 	id := fullTestID("term-1")
 	w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, "$ "), terminalRecord(id, terminalReady, "$ "), exitedRecord(id, 5))
 	startWatchedTerminalWorker(t, w, id)
-	ctx := testutil.DeadlineContext(t)
-	go func() {
-		receive(t, ctx, w.watched)
+	waitWatch := onWatched(t, w, func(_ *leapmuxv1.WatchEventsRequest) {
 		w.push(id, statusEvent(terminalExited, ""))
-	}()
+	})
 
 	o := runControlText(t, "terminal", "wait", id, "--exit")
+	waitWatch()
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
 	assert.Equal(t, "5\n", o.Stdout)
 	assert.Empty(t, o.Stderr)
@@ -320,19 +355,18 @@ func TestTerminalWaitTextOverIPC_MatchesOutputThatArrivesInParts(t *testing.T) {
 	screen := "$ make test\r\n"
 	w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, screen))
 	startWatchedTerminalWorker(t, w, id)
-	ctx := testutil.DeadlineContext(t)
-	go func() {
-		req := receive(t, ctx, w.watched)
-		require.Len(t, req.GetTerminals(), 1)
-		entry := req.GetTerminals()[0]
-		assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, entry.GetMode(), "a wait for text reads the bytes")
-		assert.Equal(t, int64(len(screen)), entry.GetAfterOffset(), "the watch resumes where the record ended")
+	waitWatch := onWatched(t, w, func(_ *leapmuxv1.WatchEventsRequest) {
 		w.push(id, statusEvent(terminalReady, ""))
 		w.push(id, dataEvent("ok  \x1b[32mPA", 30, false))
 		w.push(id, dataEvent("SS\x1b[0m pkg\r\n", 45, false))
-	}()
+	})
 
 	data := runControl(t, "terminal", "wait", id, "--text", "PASS").Data(t)
+	req := waitWatch()
+	require.Len(t, req.GetTerminals(), 1)
+	entry := req.GetTerminals()[0]
+	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, entry.GetMode(), "a wait for text reads the bytes")
+	assert.Equal(t, int64(len(screen)), entry.GetAfterOffset(), "the watch resumes where the record ended")
 	assert.Equal(t, map[string]any{"id": id, "status": "ready", "reached": true, "line": "ok  PASS pkg"}, data)
 }
 
@@ -342,11 +376,7 @@ func TestTerminalWaitTextOverIPCUsesResizeWhileWatching(t *testing.T) {
 	record.Cols, record.Rows = 6, 2
 	w := newWatchedTerminalWorker(record)
 	startWatchedTerminalWorker(t, w, id)
-	ctx := testutil.DeadlineContext(t)
-	go func() {
-		request := receive(t, ctx, w.watched)
-		require.Len(t, request.GetTerminals(), 1)
-		assert.True(t, request.GetTerminals()[0].GetScreenGeometry())
+	waitWatch := onWatched(t, w, func(_ *leapmuxv1.WatchEventsRequest) {
 		for index, cols := range []uint32{6, 12} {
 			w.push(id, &leapmuxv1.TerminalEvent{Event: &leapmuxv1.TerminalEvent_ScreenGeometry{
 				ScreenGeometry: &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: uint64(index + 1), Cols: cols, Rows: 2},
@@ -357,8 +387,11 @@ func TestTerminalWaitTextOverIPCUsesResizeWhileWatching(t *testing.T) {
 		data.GetData().ScreenEpoch, data.GetData().GeometryRevision = "screen", 2
 		w.push(id, data)
 		w.push(id, closedEvent(17))
-	}()
+	})
 	result := runControl(t, "terminal", "wait", id, "--text", "READY").Data(t)
+	request := waitWatch()
+	require.Len(t, request.GetTerminals(), 1)
+	assert.True(t, request.GetTerminals()[0].GetScreenGeometry())
 	assert.Equal(t, true, result["reached"])
 	assert.Contains(t, result["line"], "READY")
 }
@@ -367,14 +400,13 @@ func TestTerminalWaitRegexOverIPC_SkipsTheEchoedCommandLine(t *testing.T) {
 	id := fullTestID("term-1")
 	w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, "$ "))
 	startWatchedTerminalWorker(t, w, id)
-	ctx := testutil.DeadlineContext(t)
-	go func() {
-		receive(t, ctx, w.watched)
+	waitWatch := onWatched(t, w, func(_ *leapmuxv1.WatchEventsRequest) {
 		w.push(id, dataEvent("make; echo DONE\r\n", 20, false))
 		w.push(id, dataEvent("DONE\r\n$ ", 28, false))
-	}()
+	})
 
 	o := runControlText(t, "terminal", "wait", id, "--regex", "^DONE$")
+	waitWatch()
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
 	assert.Equal(t, "DONE\n", o.Stdout)
 }
@@ -383,14 +415,13 @@ func TestTerminalWaitTextOverIPC_ExitsSixWhenTheShellExitsFirst(t *testing.T) {
 	id := fullTestID("term-1")
 	w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, "$ "))
 	startWatchedTerminalWorker(t, w, id)
-	ctx := testutil.DeadlineContext(t)
-	go func() {
-		receive(t, ctx, w.watched)
+	waitWatch := onWatched(t, w, func(_ *leapmuxv1.WatchEventsRequest) {
 		w.push(id, dataEvent("exit\r\n", 8, false))
 		w.push(id, closedEvent(130))
-	}()
+	})
 
 	o := runControl(t, "terminal", "wait", id, "--text", "PASS")
+	waitWatch()
 	assert.Equal(t, cli.ExitWaitEnded, o.Code, "stderr: %s", o.Stderr)
 	assert.Equal(t, map[string]any{"id": id, "status": "exited", "reached": false, "exit_code": float64(130)}, o.envelope(t).Data)
 	assert.Contains(t, o.Stderr, `exited with code 130 before the terminal showed the text "PASS"`)
@@ -425,9 +456,7 @@ func TestTerminalWaitTextOverIPC_ExitsSixWhenTheTerminalCloses(t *testing.T) {
 	id := fullTestID("term-1")
 	w := newWatchedTerminalWorker(terminalRecord(id, terminalReady, "$ "))
 	startWatchedTerminalWorker(t, w, id)
-	ctx := testutil.DeadlineContext(t)
-	go func() {
-		req := receive(t, ctx, w.watched)
+	waitWatch := onWatched(t, w, func(req *leapmuxv1.WatchEventsRequest) {
 		w.mu.Lock()
 		frames := w.streams[0]
 		w.mu.Unlock()
@@ -435,9 +464,10 @@ func TestTerminalWaitTextOverIPC_ExitsSixWhenTheTerminalCloses(t *testing.T) {
 			UpdateId:          req.GetUpdateId(),
 			RejectedTerminals: []*leapmuxv1.WatchRejection{{EntityId: id, Reason: leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND}},
 		}}}
-	}()
+	})
 
 	o := runControl(t, "terminal", "wait", id, "--text", "PASS")
+	waitWatch()
 	f := o.Failure(t)
 	assert.Equal(t, cli.CodeNotFound, f.Code)
 	assert.Equal(t, cli.ExitWaitEnded, o.Code)

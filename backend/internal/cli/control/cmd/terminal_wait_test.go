@@ -3,11 +3,14 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -47,6 +50,15 @@ func matching(t *testing.T, pattern string) func(string) bool {
 	return match
 }
 
+// newTestEmulator starts a screen emulator of cols by rows over screen.
+func newTestEmulator(t *testing.T, cols, rows uint32, screen string) *screenEmulator {
+	t.Helper()
+	em, err := newScreenEmulator(screenInfo(cols, rows, screen))
+	require.NoError(t, err)
+	t.Cleanup(em.dispose)
+	return em
+}
+
 // newTestScreen starts a screen watch of cols by rows over screen.
 func newTestScreen(t *testing.T, cols, rows uint32, screen string, match func(string) bool) *screenWatch {
 	t.Helper()
@@ -68,7 +80,7 @@ func requireCheck(t *testing.T, w *screenWatch) string {
 	return line
 }
 
-func requireWrite(t *testing.T, w *screenWatch, data string) {
+func requireWrite(t *testing.T, w interface{ write([]byte) error }, data string) {
 	t.Helper()
 	require.NoError(t, w.write([]byte(data)))
 }
@@ -96,6 +108,12 @@ func closedEventWithoutCode() *leapmuxv1.TerminalEvent {
 func statusEvent(status leapmuxv1.TerminalStatus, startupError string) *leapmuxv1.TerminalEvent {
 	return &leapmuxv1.TerminalEvent{TerminalId: "t-1", Event: &leapmuxv1.TerminalEvent_StatusChange{
 		StatusChange: &leapmuxv1.TerminalStatusChange{Status: status, StartupError: startupError},
+	}}
+}
+
+func statusEventWithExitCode(status leapmuxv1.TerminalStatus, code int32) *leapmuxv1.TerminalEvent {
+	return &leapmuxv1.TerminalEvent{TerminalId: "t-1", Event: &leapmuxv1.TerminalEvent_StatusChange{
+		StatusChange: &leapmuxv1.TerminalStatusChange{Status: status, ExitCode: &code},
 	}}
 }
 
@@ -147,6 +165,12 @@ func TestNewScreenWatch_RefusesAScreenWithoutASize(t *testing.T) {
 	assert.Contains(t, err.Error(), "no size")
 }
 
+func TestNewScreenWatch_RefusesNilMatcher(t *testing.T) {
+	_, err := newScreenWatch(screenInfo(80, 24, ""), nil, false)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeInternal, cli.FromError(err).Code)
+}
+
 func TestNewScreenWatch_RefusesAScreenTooLargeToRender(t *testing.T) {
 	_, err := newScreenWatch(screenInfo(maxTerminalDimension+1, 24, ""), containing(t, "x"), false)
 	assert.Contains(t, err.Error(), "too large to render")
@@ -168,11 +192,11 @@ func TestTerminalWaiterRecord(t *testing.T) {
 	}{
 		"a wait for exit, a shell that ended with a code": {
 			exitSpec, &leapmuxv1.TerminalInfo{Status: terminalExited, ExitCode: int32Ptr(0)},
-			terminalWaitHeld, true, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(0), exit: true},
+			terminalWaitHeld, true, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(0), mode: terminalWaitExit},
 		},
 		"a wait for exit, a record of an older Worker": {
 			exitSpec, &leapmuxv1.TerminalInfo{Status: terminalExited},
-			terminalWaitHeld, true, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, exit: true},
+			terminalWaitHeld, true, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, mode: terminalWaitExit},
 		},
 		"a wait for text, a shell that a signal ended": {
 			terminalWaitSpec{}, &leapmuxv1.TerminalInfo{Status: terminalExited, ExitCode: int32Ptr(-1)},
@@ -180,11 +204,11 @@ func TestTerminalWaiterRecord(t *testing.T) {
 		},
 		"a running shell": {
 			exitSpec, &leapmuxv1.TerminalInfo{Status: terminalReady},
-			0, false, terminalWaitResult{ID: "t-1", Status: "ready", exit: true},
+			0, false, terminalWaitResult{ID: "t-1", Status: "ready", mode: terminalWaitExit},
 		},
 		"a shell that failed to start": {
 			exitSpec, &leapmuxv1.TerminalInfo{Status: terminalStartupFailed, StartupError: "no shell"},
-			terminalWaitStartupFailed, true, terminalWaitResult{ID: "t-1", Status: "startup_failed", StartupError: "no shell", exit: true},
+			terminalWaitStartupFailed, true, terminalWaitResult{ID: "t-1", Status: "startup_failed", StartupError: "no shell", mode: terminalWaitExit},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -266,10 +290,10 @@ func TestScreenWatch_ReadsALineAboveTheScreenOnce(t *testing.T) {
 	})
 	requireWrite(t, w, "a\r\nb\r\nc\r\nd\r\ne")
 	requireCheck(t, w)
-	assert.Equal(t, []string{"a", "b", "c", "d", "e"}, read, "the first check reads the screen and the rows that scrolled above it")
+	assert.Equal(t, []string{"e", "d", "c", "b", "a"}, read, "the first check reads the screen and the rows that scrolled above it")
 	read = nil
 	requireCheck(t, w)
-	assert.Equal(t, []string{"c", "d", "e"}, read, "the next check reads the screen alone")
+	assert.Equal(t, []string{"e", "d", "c"}, read, "the next check reads the screen alone")
 }
 
 func TestScreenWatch_ReadsTheAlternateScreen(t *testing.T) {
@@ -315,6 +339,28 @@ func TestScreenWatch_ReturnsTheLowestLineThatMatches(t *testing.T) {
 	assert.Equal(t, "ok 2", requireCheck(t, w))
 }
 
+func TestScreenWatch_StopsScanningAfterLowestMatch(t *testing.T) {
+	t.Run("plain lines", func(t *testing.T) {
+		var seen []string
+		w := newTestScreen(t, 20, 4, "top\r\nok 1\r\nok 2\r\ntail", func(line string) bool {
+			seen = append(seen, line)
+			return strings.Contains(line, "ok")
+		})
+		assert.Equal(t, "ok 2", requireCheck(t, w))
+		assert.Equal(t, []string{"tail", "ok 2"}, seen, "scanning stops as soon as the lowest matching line is found")
+	})
+
+	t.Run("wrapped lines", func(t *testing.T) {
+		var seen []string
+		w := newTestScreen(t, 6, 5, "top\r\n0123456789\r\ntail", func(line string) bool {
+			seen = append(seen, line)
+			return strings.Contains(line, "0123456789")
+		})
+		assert.Equal(t, "0123456789", requireCheck(t, w))
+		assert.Equal(t, []string{"", "tail", "0123456789"}, seen)
+	})
+}
+
 func screenItems(items ...screenFeedItem) <-chan screenFeedItem {
 	ch := make(chan screenFeedItem, len(items))
 	for _, item := range items {
@@ -324,11 +370,15 @@ func screenItems(items ...screenFeedItem) <-chan screenFeedItem {
 }
 
 func eventItem(te *leapmuxv1.TerminalEvent) screenFeedItem {
-	return screenFeedItem{kind: screenFeedEvent, event: te}
+	return screenFeedItem{event: te}
 }
 
 func textSpec(t *testing.T, text string) terminalWaitSpec {
 	return terminalWaitSpec{match: containing(t, text), condition: `the text "` + text + `"`}
+}
+
+func awaitScreenText(ctx context.Context, clock quartz.Clock, items <-chan screenFeedItem, screen *screenWatch, w *terminalWaiter) (terminalWaitResult, terminalWaitOutcome, error) {
+	return awaitScreen(ctx, clock, items, &screen.screenEmulator, w, screenTextCheck(screen, w))
 }
 
 func TestAwaitScreenText_EndsWhenTheOutputShowsTheText(t *testing.T) {
@@ -515,12 +565,30 @@ func TestAwaitScreenText_EndsWhenTheShellFailsToStart(t *testing.T) {
 func TestAwaitScreenText_ReturnsTheFailureOfTheFeed(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	spec := textSpec(t, "PASS")
-	for _, kind := range []screenFeedKind{screenFeedFailed, screenFeedRejected} {
+
+	t.Run("transport error", func(t *testing.T) {
 		screen := newTestScreen(t, 80, 24, "", spec.match)
 		cause := errors.New("the worker refused")
-		_, _, err := awaitScreenText(ctx, testutil.NewQuartzMock(t), screenItems(screenFeedItem{kind: kind, err: cause}), screen, newTerminalWaiter("t-1", spec))
+		_, _, err := awaitScreenText(ctx, testutil.NewQuartzMock(t), screenItems(screenFeedItem{err: cause}), screen, newTerminalWaiter("t-1", spec))
 		assert.ErrorIs(t, err, cause)
-	}
+	})
+	t.Run("not found rejection maps to closed during the wait", func(t *testing.T) {
+		screen := newTestScreen(t, 80, 24, "", spec.match)
+		rej := &leapmuxv1.WatchRejection{EntityId: "t-1", Reason: leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND}
+		_, _, err := awaitScreenText(ctx, testutil.NewQuartzMock(t), screenItems(screenFeedItem{rejected: rej}), screen, newTerminalWaiter("t-1", spec))
+		e := cli.FromError(err)
+		assert.Equal(t, cli.CodeNotFound, e.Code)
+		assert.Equal(t, cli.ExitWaitEnded, e.ExitCode())
+		assert.Contains(t, e.Message, "closed during the wait")
+	})
+	t.Run("overflow maps to unavailable with exit wait ended", func(t *testing.T) {
+		screen := newTestScreen(t, 80, 24, "", spec.match)
+		_, _, err := awaitScreenText(ctx, testutil.NewQuartzMock(t), screenItems(screenFeedItem{overflow: true}), screen, newTerminalWaiter("t-1", spec))
+		e := cli.FromError(err)
+		assert.Equal(t, cli.CodeUnavailable, e.Code)
+		assert.Equal(t, cli.ExitWaitEnded, e.ExitCode())
+		assert.Contains(t, e.Message, "too much screen output before replay finished")
+	})
 }
 
 func TestAwaitScreenText_EndsWhenTheTimeoutPasses(t *testing.T) {
@@ -571,10 +639,18 @@ func newStatusReads() *statusReads {
 	return &statusReads{started: make(chan struct{}, 8), answers: make(chan terminalStatusRead, 8)}
 }
 
-func (r *statusReads) read() (*leapmuxv1.TerminalInfo, error) {
-	r.started <- struct{}{}
-	answer := <-r.answers
-	return answer.info, answer.err
+func (r *statusReads) read(ctx context.Context) (*leapmuxv1.TerminalInfo, error) {
+	select {
+	case r.started <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case answer := <-r.answers:
+		return answer.info, answer.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func feedOutputs(outs ...feedOutput) chan feedOutput {
@@ -589,7 +665,7 @@ func terminalFeedEvent(te *leapmuxv1.TerminalEvent) feedOutput {
 	return feedOutput{kind: feedTerminalEvent, terminal: te}
 }
 
-var exitSpec = terminalWaitSpec{exit: true}
+var exitSpec = terminalWaitSpec{mode: terminalWaitExit}
 
 func TestAwaitShellExit_PrintsTheExitCodeOfTheShell(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
@@ -597,7 +673,7 @@ func TestAwaitShellExit_PrintsTheExitCodeOfTheShell(t *testing.T) {
 	result, outcome, err := awaitShellExit(ctx, testutil.NewQuartzMock(t), feed, newStatusReads().read, newTerminalWaiter("t-1", exitSpec))
 	require.NoError(t, err)
 	assert.Equal(t, terminalWaitHeld, outcome)
-	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(3), exit: true}, result)
+	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(3), mode: terminalWaitExit}, result)
 }
 
 // A TerminalClosed with no code is a shell that ended without a record of its
@@ -608,7 +684,7 @@ func TestAwaitShellExit_PrintsNoExitCodeThatTheWorkerDoesNotRecord(t *testing.T)
 	result, outcome, err := awaitShellExit(ctx, testutil.NewQuartzMock(t), feed, newStatusReads().read, newTerminalWaiter("t-1", exitSpec))
 	require.NoError(t, err)
 	assert.Equal(t, terminalWaitHeld, outcome)
-	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, exit: true}, result)
+	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, mode: terminalWaitExit}, result)
 }
 
 // A notify watch replays nothing, so a shell that ended before the Worker
@@ -622,11 +698,11 @@ func TestAwaitShellExit_ReadsTheRecordAfterEachFirstAcknowledgement(t *testing.T
 	}{
 		"a record with the exit code": {
 			&leapmuxv1.TerminalInfo{TerminalId: "t-1", Status: terminalExited, ExitCode: int32Ptr(7)},
-			terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(7), exit: true},
+			terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(7), mode: terminalWaitExit},
 		},
 		"a record with no exit code": {
 			&leapmuxv1.TerminalInfo{TerminalId: "t-1", Status: terminalExited},
-			terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, exit: true},
+			terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, mode: terminalWaitExit},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -647,17 +723,31 @@ func TestAwaitShellExit_ReadsTheRecordAfterEachFirstAcknowledgement(t *testing.T
 // the same exit can arrive after it. The wait reads the record instead of
 // ending without the code.
 func TestAwaitShellExit_ReadsTheRecordAfterAStatusChangeToExited(t *testing.T) {
-	ctx := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
 	reads := newStatusReads()
 	feed := feedOutputs(terminalFeedEvent(statusEvent(terminalExited, "")))
-	go func() {
-		receive(t, ctx, reads.started)
-		reads.answers <- terminalStatusRead{info: &leapmuxv1.TerminalInfo{TerminalId: "t-1", Status: terminalExited, ExitCode: int32Ptr(4)}}
+	var (
+		wg      sync.WaitGroup
+		waitErr error
+	)
+	wg.Go(func() {
+		select {
+		case <-reads.started:
+			reads.answers <- terminalStatusRead{info: &leapmuxv1.TerminalInfo{TerminalId: "t-1", Status: terminalExited, ExitCode: int32Ptr(4)}}
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+	})
+	defer func() {
+		cancel()
+		wg.Wait()
 	}()
 	result, outcome, err := awaitShellExit(ctx, testutil.NewQuartzMock(t), feed, reads.read, newTerminalWaiter("t-1", exitSpec))
+	wg.Wait()
+	require.NoError(t, waitErr)
 	require.NoError(t, err)
 	assert.Equal(t, terminalWaitHeld, outcome)
-	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(4), exit: true}, result)
+	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(4), mode: terminalWaitExit}, result)
 }
 
 // The TerminalClosed that follows the status change can end the wait before
@@ -671,23 +761,73 @@ func TestAwaitShellExit_EndsWithTheCodeWhenAClosedEventFollowsAnExitedStatus(t *
 	result, outcome, err := awaitShellExit(ctx, testutil.NewQuartzMock(t), feed, reads.read, newTerminalWaiter("t-1", exitSpec))
 	require.NoError(t, err)
 	assert.Equal(t, terminalWaitHeld, outcome)
-	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(4), exit: true}, result)
+	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(4), mode: terminalWaitExit}, result)
 }
 
 func TestAwaitShellExit_GoesOnAfterAStatusReadOfARunningShell(t *testing.T) {
-	ctx := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
 	reads := newStatusReads()
 	feed := feedOutputs(feedOutput{kind: feedLevels, first: true})
-	go func() {
-		receive(t, ctx, reads.started)
-		reads.answers <- terminalStatusRead{info: &leapmuxv1.TerminalInfo{TerminalId: "t-1", Status: terminalReady}}
-		feed <- feedOutput{kind: feedDown, err: errWatchEnded}
-		feed <- terminalFeedEvent(closedEvent(0))
+	var (
+		wg      sync.WaitGroup
+		waitErr error
+	)
+	wg.Go(func() {
+		select {
+		case <-reads.started:
+			reads.answers <- terminalStatusRead{info: &leapmuxv1.TerminalInfo{TerminalId: "t-1", Status: terminalReady}}
+			feed <- feedOutput{kind: feedDown, err: errWatchEnded}
+			feed <- terminalFeedEvent(closedEvent(0))
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+	})
+	defer func() {
+		cancel()
+		wg.Wait()
 	}()
 	result, outcome, err := awaitShellExit(ctx, testutil.NewQuartzMock(t), feed, reads.read, newTerminalWaiter("t-1", exitSpec))
+	wg.Wait()
+	require.NoError(t, waitErr)
 	require.NoError(t, err)
 	assert.Equal(t, terminalWaitHeld, outcome)
 	assert.Equal(t, int32Ptr(0), result.ExitCode)
+}
+
+func TestAwaitShellExit_CancelsAndJoinsInFlightStatusReadOnExit(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	started := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
+	readStatus := func(readCtx context.Context) (*leapmuxv1.TerminalInfo, error) {
+		started <- struct{}{}
+		<-readCtx.Done()
+		canceled <- struct{}{}
+		return nil, readCtx.Err()
+	}
+	feed := feedOutputs(feedOutput{kind: feedLevels, first: true})
+	var (
+		wg      sync.WaitGroup
+		waitErr error
+	)
+	wg.Go(func() {
+		select {
+		case <-started:
+			feed <- terminalFeedEvent(closedEvent(9))
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+	})
+	result, outcome, err := awaitShellExit(ctx, testutil.NewQuartzMock(t), feed, readStatus, newTerminalWaiter("t-1", exitSpec))
+	wg.Wait()
+	require.NoError(t, waitErr)
+	require.NoError(t, err)
+	assert.Equal(t, terminalWaitHeld, outcome)
+	assert.Equal(t, int32Ptr(9), result.ExitCode)
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("awaitShellExit returned before canceling and joining the in-flight status read")
+	}
 }
 
 // The events that carry no change of the shell, and the events of agents,
@@ -703,7 +843,7 @@ func TestAwaitShellExit_GoesOnAfterTheEventsThatStateNoExit(t *testing.T) {
 	result, outcome, err := awaitShellExit(ctx, testutil.NewQuartzMock(t), feedOutputs(outs...), reads.read, newTerminalWaiter("t-1", exitSpec))
 	require.NoError(t, err)
 	assert.Equal(t, terminalWaitHeld, outcome)
-	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(5), exit: true}, result)
+	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "exited", Reached: true, ExitCode: int32Ptr(5), mode: terminalWaitExit}, result)
 	assert.Empty(t, reads.started, "no event before the exit started a read of the record")
 }
 
@@ -753,7 +893,7 @@ func TestAwaitShellExit_EndsWhenTheTimeoutPasses(t *testing.T) {
 	clock := testutil.NewQuartzMock(t)
 	newTimer := clock.Trap().NewTimer(terminalWaitTimerTag)
 	defer newTimer.Close()
-	spec := terminalWaitSpec{exit: true, timeout: time.Minute}
+	spec := terminalWaitSpec{mode: terminalWaitExit, timeout: time.Minute}
 	type ended struct {
 		result  terminalWaitResult
 		outcome terminalWaitOutcome
@@ -769,7 +909,7 @@ func TestAwaitShellExit_EndsWhenTheTimeoutPasses(t *testing.T) {
 	got := receive(t, ctx, done)
 	require.NoError(t, got.err)
 	assert.Equal(t, terminalWaitTimedOut, got.outcome)
-	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "ready", exit: true}, got.result)
+	assert.Equal(t, terminalWaitResult{ID: "t-1", Status: "ready", mode: terminalWaitExit}, got.result)
 }
 
 func TestAwaitShellExit_EndsWithItsContext(t *testing.T) {
@@ -785,8 +925,10 @@ func TestTerminalWaitResult_RenderText(t *testing.T) {
 		result terminalWaitResult
 		want   string
 	}{
-		{"an exit code", terminalWaitResult{Reached: true, ExitCode: int32Ptr(3), exit: true}, "3\n"},
-		{"an exit without a code", terminalWaitResult{Reached: true, exit: true}, ""},
+		{"an exit code", terminalWaitResult{Reached: true, ExitCode: int32Ptr(3), mode: terminalWaitExit}, "3\n"},
+		{"an exit without a code", terminalWaitResult{Reached: true, mode: terminalWaitExit}, ""},
+		{"a screen change", terminalWaitResult{Reached: true, Screen: "$ hello", mode: terminalWaitChange}, "$ hello\n"},
+		{"a screen change to an empty screen", terminalWaitResult{Reached: true, mode: terminalWaitChange}, ""},
 		{"a matched line", terminalWaitResult{Reached: true, Line: "--- PASS"}, "--- PASS\n"},
 		{"a wait for text that ended with the shell", terminalWaitResult{ExitCode: int32Ptr(1)}, ""},
 		{"a wait that timed out", terminalWaitResult{}, ""},
@@ -808,7 +950,7 @@ func TestTerminalWaitEnded_SaysWhyOnStderrAndExitsSix(t *testing.T) {
 		spec    terminalWaitSpec
 		want    string
 	}{
-		{"a wait for exit that timed out", terminalWaitResult{ID: "t-1", exit: true}, terminalWaitTimedOut, terminalWaitSpec{exit: true, timeout: time.Minute},
+		{"a wait for exit that timed out", terminalWaitResult{ID: "t-1", mode: terminalWaitExit}, terminalWaitTimedOut, terminalWaitSpec{mode: terminalWaitExit, timeout: time.Minute},
 			"the wait ended after 1m0s, before the shell of terminal t-1 ended"},
 		{"a wait for text that timed out", terminalWaitResult{ID: "t-1"}, terminalWaitTimedOut, terminalWaitSpec{condition: `the text "PASS"`, timeout: time.Minute},
 			`the wait ended after 1m0s, before terminal t-1 showed the text "PASS"`},
@@ -816,9 +958,9 @@ func TestTerminalWaitEnded_SaysWhyOnStderrAndExitsSix(t *testing.T) {
 			`the shell of terminal t-1 exited with code 2 before the terminal showed the text "PASS"`},
 		{"a shell that ended without a code", terminalWaitResult{ID: "t-1"}, terminalWaitShellEnded, terminalWaitSpec{condition: `the text "PASS"`},
 			`the shell of terminal t-1 ended before the terminal showed the text "PASS"`},
-		{"a shell that failed to start", terminalWaitResult{ID: "t-1", StartupError: "no shell"}, terminalWaitStartupFailed, terminalWaitSpec{exit: true},
+		{"a shell that failed to start", terminalWaitResult{ID: "t-1", StartupError: "no shell"}, terminalWaitStartupFailed, terminalWaitSpec{mode: terminalWaitExit},
 			"the shell of terminal t-1 failed to start: no shell"},
-		{"a shell that failed to start without a reason", terminalWaitResult{ID: "t-1"}, terminalWaitStartupFailed, terminalWaitSpec{exit: true},
+		{"a shell that failed to start without a reason", terminalWaitResult{ID: "t-1"}, terminalWaitStartupFailed, terminalWaitSpec{mode: terminalWaitExit},
 			"the shell of terminal t-1 failed to start\n"},
 	}
 	for _, tc := range cases {
@@ -830,6 +972,227 @@ func TestTerminalWaitEnded_SaysWhyOnStderrAndExitsSix(t *testing.T) {
 			assert.Equal(t, cli.ExitWaitEnded, status.Code)
 			assert.Contains(t, errOut.String(), tc.want)
 			assert.True(t, strings.HasSuffix(errOut.String(), "\n"))
+		})
+	}
+}
+
+func TestTerminalWaitEnded_ReceiptOnlyOnTimeout(t *testing.T) {
+	spec := terminalWaitSpec{
+		condition:    `the text "PASS"`,
+		timeout:      time.Minute,
+		requestID:    "req-123",
+		retryCommand: "leapmux terminal run t-1 --wait --text PASS --request-id req-123 'make test'",
+	}
+
+	t.Run("timeout attaches receipt and prints notices", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		err := terminalWaitEnded(&cli.Printer{Format: cli.FormatJSON, Out: &out, Err: &errOut}, terminalWaitResult{ID: "t-1", RequestID: "req-123", Status: "ready"}, terminalWaitTimedOut, spec)
+		var status *cli.ExitStatus
+		require.ErrorAs(t, err, &status)
+		assert.Equal(t, cli.ExitWaitEnded, status.Code)
+		var env struct {
+			Data terminalWaitResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(out.Bytes(), &env))
+		assert.Equal(t, "req-123", env.Data.RequestID)
+		require.NotNil(t, env.Data.Receipt)
+		assert.Equal(t, dispositionInProgress, env.Data.Receipt.Disposition)
+		assert.Equal(t, spec.retryCommand, env.Data.Receipt.RetryCommand)
+		assert.Contains(t, errOut.String(), "disposition: in_progress (request_id: req-123)")
+		assert.Contains(t, errOut.String(), "safe retry: "+spec.retryCommand)
+	})
+
+	for name, outcome := range map[string]terminalWaitOutcome{
+		"shell ended":    terminalWaitShellEnded,
+		"startup failed": terminalWaitStartupFailed,
+	} {
+		t.Run(name+" omits receipt and safe retry", func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			err := terminalWaitEnded(&cli.Printer{Format: cli.FormatJSON, Out: &out, Err: &errOut}, terminalWaitResult{ID: "t-1", RequestID: "req-123", Status: "exited"}, outcome, spec)
+			var status *cli.ExitStatus
+			require.ErrorAs(t, err, &status)
+			assert.Equal(t, cli.ExitWaitEnded, status.Code)
+			var env struct {
+				Data terminalWaitResult `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(out.Bytes(), &env))
+			assert.Equal(t, "req-123", env.Data.RequestID)
+			assert.Nil(t, env.Data.Receipt)
+			assert.NotContains(t, errOut.String(), "disposition:")
+			assert.NotContains(t, errOut.String(), "safe retry:")
+		})
+	}
+}
+
+func TestRecoverTerminalEmulator_ConvertsPanicToInternalError(t *testing.T) {
+	run := func() (err error) {
+		defer recoverTerminalEmulator("read the screen of terminal t-1", &err)
+		panic("bad escape")
+	}
+	err := run()
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeInternal, cli.FromError(err).Code)
+	assert.Contains(t, err.Error(), "the terminal emulator failed to read the screen of terminal t-1: bad escape")
+}
+
+func TestScreenEmulator_DiffVisibleScreen(t *testing.T) {
+	t.Run("unchanged blank screen reports no diff", func(t *testing.T) {
+		em := newTestEmulator(t, 20, 4, "")
+		cur, changed, err := em.diffVisibleScreen(nil)
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Empty(t, cur)
+	})
+
+	t.Run("new line below empty lines reports diff", func(t *testing.T) {
+		em := newTestEmulator(t, 20, 4, "\r\n\r\nhello")
+		cur, changed, err := em.diffVisibleScreen(nil)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, "\n\nhello", cur)
+	})
+
+	t.Run("no-op OSC sequence reports no diff and text change reports diff", func(t *testing.T) {
+		em := newTestEmulator(t, 20, 4, "line1\r\n\r\nline3")
+		initial, err := em.visibleLines()
+		require.NoError(t, err)
+		requireWrite(t, em, "\x1b]0;title\x07")
+		_, changed, err := em.diffVisibleScreen(initial)
+		require.NoError(t, err)
+		assert.False(t, changed)
+
+		requireWrite(t, em, "!")
+		cur, changed, err := em.diffVisibleScreen(initial)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, "line1\n\nline3!", cur)
+	})
+
+	t.Run("clearing a trailing line reports diff", func(t *testing.T) {
+		em := newTestEmulator(t, 20, 4, "a\r\n\r\nb")
+		initial, err := em.visibleLines()
+		require.NoError(t, err)
+		requireWrite(t, em, "\x1b[3;1H\x1b[2K")
+		cur, changed, err := em.diffVisibleScreen(initial)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, "a", cur)
+	})
+}
+
+func TestWaitForScreen_PreOpenBaselineMatchesExistingOutputImmediately(t *testing.T) {
+	info := &leapmuxv1.TerminalInfo{
+		TerminalId:      "t-1",
+		Cols:            80,
+		Rows:            24,
+		Status:          terminalReady,
+		Screen:          []byte("welcome\r\n"),
+		ScreenEndOffset: 9,
+	}
+	spec := terminalWaitSpec{mode: terminalWaitChange, preOpenBaseline: true, timeout: time.Second}
+	res, outcome, err := waitForScreen(nil, tabTarget{ID: "t-1"}, info, spec)
+	require.NoError(t, err)
+	assert.Equal(t, terminalWaitHeld, outcome)
+	assert.True(t, res.Reached)
+	assert.True(t, res.Changed)
+	assert.Equal(t, "ready", res.Status)
+	assert.Equal(t, "welcome", res.Screen)
+	assert.Equal(t, int64(9), res.ScreenEndOffset)
+}
+
+func TestConsumeScreenOutput_SkipsRedundantFinalObserveWhenNoTrailingBytes(t *testing.T) {
+	screen := newTestEmulator(t, 6, 2, "")
+	screen.position = terminalScreenPosition{epoch: "screen", revision: 1}
+	calls := 0
+	err := screen.consumeScreenOutput(&leapmuxv1.TerminalData{
+		Data:      []byte("hi"),
+		EndOffset: 2,
+		ScreenTimeline: &leapmuxv1.TerminalScreenTimeline{
+			Base: &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 1, Cols: 6, Rows: 2},
+			Changes: []*leapmuxv1.TerminalScreenGeometry{
+				{Epoch: "screen", Offset: 2, Revision: 2, Cols: 12, Rows: 2},
+			},
+		},
+	}, func() (bool, error) {
+		calls++
+		return false, nil
+	})
+	require.NoError(t, err)
+	// Once after writing "hi" before the resize, once after the resize; no extra
+	// third call because zero trailing bytes remained after the resize.
+	assert.Equal(t, 2, calls)
+}
+
+func TestAwaitShellExit_ResolvesImmediatelyOnExitedStatusWithExitCode(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	reads := newStatusReads()
+	feed := feedOutputs(terminalFeedEvent(statusEventWithExitCode(terminalExited, 42)))
+	result, outcome, err := awaitShellExit(ctx, testutil.NewQuartzMock(t), feed, reads.read, newTerminalWaiter("t-1", exitSpec))
+	require.NoError(t, err)
+	assert.Equal(t, terminalWaitHeld, outcome)
+	assert.Equal(t, terminalWaitResult{
+		ID:       "t-1",
+		Status:   "exited",
+		Reached:  true,
+		ExitCode: int32Ptr(42),
+		mode:     terminalWaitExit,
+	}, result)
+	assert.Empty(t, reads.started, "StatusChange with exit_code must finish without calling ListTerminals")
+}
+
+func TestAwaitScreen_CapturesExitCodeFromExitedStatusChange(t *testing.T) {
+	t.Run("text wait", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		spec := textSpec(t, "PASS")
+		screen := newTestScreen(t, 80, 24, "$ ", spec.match)
+		items := screenItems(eventItem(statusEventWithExitCode(terminalExited, 42)))
+		result, outcome, err := awaitScreenText(ctx, testutil.NewQuartzMock(t), items, screen, newTerminalWaiter("t-1", spec))
+		require.NoError(t, err)
+		assert.Equal(t, terminalWaitShellEnded, outcome)
+		assert.Equal(t, terminalWaitResult{
+			ID:       "t-1",
+			Status:   "exited",
+			ExitCode: int32Ptr(42),
+		}, result)
+	})
+
+	t.Run("change wait", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		em := newTestEmulator(t, 80, 24, "$ ")
+		initialLines, err := em.visibleLines()
+		require.NoError(t, err)
+		spec := terminalWaitSpec{mode: terminalWaitChange, condition: "a screen change"}
+		w := newTerminalWaiter("t-1", spec)
+		items := screenItems(eventItem(statusEventWithExitCode(terminalExited, 42)))
+		result, outcome, err := awaitScreen(ctx, testutil.NewQuartzMock(t), items, em, w, screenChangeCheck(em, w, initialLines))
+		require.NoError(t, err)
+		assert.Equal(t, terminalWaitShellEnded, outcome)
+		assert.Equal(t, "exited", result.Status)
+		assert.Equal(t, int32Ptr(42), result.ExitCode)
+		assert.False(t, result.Reached)
+	})
+}
+
+func TestTerminalRun_WaitOnlyFlagsRequireWaitBeforeDialing(t *testing.T) {
+	clearRemoteEnv(t)
+	id := fullTestID("term-run-wait")
+	cases := []struct {
+		flag string
+		args []string
+	}{
+		{"exit", []string{"--exit"}},
+		{"text", []string{"--text", "DONE"}},
+		{"regex", []string{"--regex", "^DONE$"}},
+		{"change", []string{"--change"}},
+		{"scrollback", []string{"--scrollback"}},
+		{"timeout", []string{"--timeout", "5s"}},
+		{"after-offset", []string{"--after-offset", "10"}},
+	}
+	for _, tc := range cases {
+		t.Run("--"+tc.flag, func(t *testing.T) {
+			args := append([]string{"terminal", "run", id, "echo hi", "--hub", "https://stub.invalid"}, tc.args...)
+			f := runControl(t, args...).requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, "--"+tc.flag+" needs --wait")
 		})
 	}
 }
