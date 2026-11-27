@@ -14,7 +14,9 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -391,13 +393,25 @@ func TestAwaitReply_EndsWhenTheTimeoutPasses(t *testing.T) {
 	newTimer := clock.Trap().AfterFunc(replyWaitTimerTag)
 	defer newTimer.Close()
 	w := &fakeReplyWorker{queue: queuedSnapshot(0)}
-	e := &replyEvaluator{reader: w.reader(), spec: replyWaitSpec{agentID: "a-1", inputID: "in-1", timeout: time.Minute}, notice: func(string, ...any) {}}
+	baseReader := w.reader()
+	evaluated := make(chan struct{}, 1)
+	reader := baseReader
+	reader.readQueue = func(ctx context.Context, inputID string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
+		resp, err := baseReader.readQueue(ctx, inputID)
+		select {
+		case evaluated <- struct{}{}:
+		default:
+		}
+		return resp, err
+	}
+	e := &replyEvaluator{reader: reader, spec: replyWaitSpec{agentID: "a-1", inputID: "in-1", timeout: time.Minute}, notice: func(string, ...any) {}}
 	done := make(chan replyWaitRun, 1)
 	go func() {
 		result, outcome, err := awaitReply(ctx, clock, make(chan activityEvent), e, working)
 		done <- replyWaitRun{result, outcome, err}
 	}()
 	assert.Equal(t, time.Minute, testutil.WaitForTimer(t, ctx, newTimer))
+	receive(t, ctx, evaluated)
 	clock.Advance(time.Minute).MustWait(ctx)
 
 	got := receive(t, ctx, done)
@@ -438,16 +452,21 @@ func TestAwaitReply_DeadlineCancelsTheAcceptedReplyRead(t *testing.T) {
 
 func TestReplyEvaluatorUsesTheTrackedTurnState(t *testing.T) {
 	for name, test := range map[string]struct {
-		outcome leapmuxv1.AgentInputTurnOutcome
-		waiting bool
-		want    replyStep
+		outcome      leapmuxv1.AgentInputTurnOutcome
+		waiting      bool
+		want         replyStep
+		wantRowReads int
+		wantReplies  []string
 	}{
-		"pending on an idle tab": {want: replyPending},
-		"own prompt":             {waiting: true, want: replyWaitingForUser},
-		"interrupted":            {outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED, want: replyInterrupted},
-		"failed":                 {outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED, want: replyFailed},
+		"pending on an idle tab": {want: replyPending, wantRowReads: 0, wantReplies: nil},
+		"own prompt":             {waiting: true, want: replyWaitingForUser, wantRowReads: 1, wantReplies: []string{"Partial reply"}},
+		"completed":              {outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, want: replySettled, wantRowReads: 1, wantReplies: []string{"Partial reply"}},
+		"interrupted":            {outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED, want: replyInterrupted, wantRowReads: 1, wantReplies: []string{"Partial reply"}},
+		"failed":                 {outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED, want: replyFailed, wantRowReads: 1, wantReplies: []string{"Partial reply"}},
+		"unproved":               {outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, want: replyUnproved, wantRowReads: 1, wantReplies: []string{"Partial reply"}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			rowReads := 0
 			reader := replyReader{
 				readQueue: func(_ context.Context, inputID string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
 					assert.Equal(t, "input", inputID)
@@ -456,6 +475,7 @@ func TestReplyEvaluatorUsesTheTrackedTurnState(t *testing.T) {
 					}, nil
 				},
 				readRowsAfter: func(_ context.Context, afterSeq int64, inputID string) ([]*leapmuxv1.AgentChatMessage, error) {
+					rowReads++
 					assert.EqualValues(t, 10, afterSeq)
 					assert.Equal(t, "input", inputID)
 					return []*leapmuxv1.AgentChatMessage{replyRow(11, "Partial reply")}, nil
@@ -466,7 +486,8 @@ func TestReplyEvaluatorUsesTheTrackedTurnState(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, test.want, verdict.step)
 			assert.Equal(t, messageDelivered, verdict.message)
-			assert.Equal(t, []string{"Partial reply"}, verdict.replies)
+			assert.Equal(t, test.wantRowReads, rowReads)
+			assert.Equal(t, test.wantReplies, verdict.replies)
 		})
 	}
 }
@@ -646,4 +667,413 @@ func TestPageExactInputReply_MidPagingCanonicalTransitionRestartsCleanly(t *test
 	require.Len(t, rows, 2)
 	assert.Equal(t, "canon-1", rows[0].GetId())
 	assert.Equal(t, "canon-2", rows[1].GetId())
+}
+
+func TestAwaitReply_PreservesSettledVerdictAndRealErrorsWhenTimeoutFiresSimultaneously(t *testing.T) {
+	t.Run("settled verdict returned as timeout expires is preserved", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		clock := testutil.NewQuartzMock(t)
+		reader := replyReader{
+			readQueue: func(context.Context, string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
+				// Expire the wait context before returning a settled outcome.
+				clock.Advance(time.Minute).MustWait(ctx)
+				return &leapmuxv1.ListAgentInputQueueResponse{
+					InputReply: &leapmuxv1.AgentInputTurnReply{
+						AcceptedSeq: 10,
+						Outcome:     leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+					},
+				}, nil
+			},
+			readRowsAfter: func(context.Context, int64, string) ([]*leapmuxv1.AgentChatMessage, error) {
+				return []*leapmuxv1.AgentChatMessage{replyRow(11, "Finished just in time.")}, nil
+			},
+		}
+		e := &replyEvaluator{reader: reader, spec: replyWaitSpec{agentID: "a-1", inputID: "in-1", timeout: time.Minute}}
+		result, outcome, err := awaitReply(ctx, clock, make(chan activityEvent), e, working)
+		require.NoError(t, err)
+		assert.Equal(t, replyWaitSettled, outcome)
+		assert.Equal(t, []string{"Finished just in time."}, result.Replies)
+	})
+
+	t.Run("non-context error returned as timeout expires is not discarded", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		clock := testutil.NewQuartzMock(t)
+		removedErr := cli.Newf(cli.CodeNotFound, "removed from queue")
+		reader := replyReader{
+			readQueue: func(context.Context, string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
+				clock.Advance(time.Minute).MustWait(ctx)
+				return nil, removedErr
+			},
+		}
+		e := &replyEvaluator{reader: reader, spec: replyWaitSpec{agentID: "a-1", inputID: "in-1", timeout: time.Minute}}
+		_, _, err := awaitReply(ctx, clock, make(chan activityEvent), e, working)
+		assert.ErrorIs(t, err, removedErr)
+	})
+}
+
+func TestAwaitReply_SkipsTranscriptReadsWhilePending(t *testing.T) {
+	t.Run("exact path skips pending events and reads once on completion", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		var mu sync.Mutex
+		outcome := leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED
+		rowReads := 0
+		queueReads := make(chan struct{}, 8)
+		reader := replyReader{
+			readQueue: func(context.Context, string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
+				mu.Lock()
+				cur := outcome
+				mu.Unlock()
+				queueReads <- struct{}{}
+				return &leapmuxv1.ListAgentInputQueueResponse{
+					InputReply: &leapmuxv1.AgentInputTurnReply{AcceptedSeq: 10, Outcome: cur},
+				}, nil
+			},
+			readRowsAfter: func(context.Context, int64, string) ([]*leapmuxv1.AgentChatMessage, error) {
+				mu.Lock()
+				rowReads++
+				mu.Unlock()
+				return []*leapmuxv1.AgentChatMessage{replyRow(11, "Final exact reply.")}, nil
+			},
+		}
+		events := make(chan activityEvent, 4)
+		e := &replyEvaluator{reader: reader, spec: replyWaitSpec{agentID: "a-1", inputID: "in-1"}}
+		done := make(chan replyWaitRun, 1)
+		go func() {
+			res, out, err := awaitReply(ctx, testutil.NewQuartzMock(t), events, e, working)
+			done <- replyWaitRun{res, out, err}
+		}()
+
+		receive(t, ctx, queueReads)
+		events <- activityEvent{kind: activityInputChanged, agentID: "a-1"}
+		receive(t, ctx, queueReads)
+		events <- activityEvent{kind: activityStatusChange, agentID: "a-1"}
+		receive(t, ctx, queueReads)
+
+		mu.Lock()
+		assert.Equal(t, 0, rowReads, "readRowsAfter must not run during pending exact evaluations")
+		outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED
+		mu.Unlock()
+
+		events <- activityEvent{kind: activityInputChanged, agentID: "a-1"}
+		got := receive(t, ctx, done)
+		require.NoError(t, got.err)
+		assert.Equal(t, replyWaitSettled, got.outcome)
+		assert.Equal(t, []string{"Final exact reply."}, got.result.Replies)
+		mu.Lock()
+		assert.Equal(t, 1, rowReads, "readRowsAfter should run exactly once when completed")
+		mu.Unlock()
+	})
+
+	t.Run("exact path fetches partial replies once on timeout", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		clock := testutil.NewQuartzMock(t)
+		newTimer := clock.Trap().AfterFunc(replyWaitTimerTag)
+		defer newTimer.Close()
+		var mu sync.Mutex
+		rowReads := 0
+		queueReads := make(chan struct{}, 4)
+		reader := replyReader{
+			readQueue: func(context.Context, string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
+				queueReads <- struct{}{}
+				return &leapmuxv1.ListAgentInputQueueResponse{
+					InputReply: &leapmuxv1.AgentInputTurnReply{AcceptedSeq: 10},
+				}, nil
+			},
+			readRowsAfter: func(context.Context, int64, string) ([]*leapmuxv1.AgentChatMessage, error) {
+				mu.Lock()
+				rowReads++
+				mu.Unlock()
+				return []*leapmuxv1.AgentChatMessage{replyRow(11, "Partial exact reply.")}, nil
+			},
+		}
+		events := make(chan activityEvent, 4)
+		e := &replyEvaluator{reader: reader, spec: replyWaitSpec{agentID: "a-1", inputID: "in-1", timeout: time.Minute}}
+		done := make(chan replyWaitRun, 1)
+		go func() {
+			res, out, err := awaitReply(ctx, clock, events, e, working)
+			done <- replyWaitRun{res, out, err}
+		}()
+
+		assert.Equal(t, time.Minute, testutil.WaitForTimer(t, ctx, newTimer))
+		receive(t, ctx, queueReads)
+		events <- activityEvent{kind: activityInputChanged, agentID: "a-1"}
+		receive(t, ctx, queueReads)
+		mu.Lock()
+		assert.Equal(t, 0, rowReads)
+		mu.Unlock()
+
+		clock.Advance(time.Minute).MustWait(ctx)
+		got := receive(t, ctx, done)
+		require.NoError(t, got.err)
+		assert.Equal(t, replyWaitTimedOut, got.outcome)
+		assert.Equal(t, messageDelivered, got.result.Message)
+		assert.Equal(t, []string{"Partial exact reply."}, got.result.Replies)
+		mu.Lock()
+		assert.Equal(t, 1, rowReads, "timeout should fetch partial replies once")
+		mu.Unlock()
+	})
+
+	t.Run("legacy path skips intermediate transcript reads after confirming delivery", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		var mu sync.Mutex
+		activeTurn := true
+		rowReads := 0
+		queueReads := make(chan struct{}, 8)
+		reader := replyReader{
+			readQueue: func(context.Context, string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
+				mu.Lock()
+				at := activeTurn
+				mu.Unlock()
+				queueReads <- struct{}{}
+				return &leapmuxv1.ListAgentInputQueueResponse{
+					Snapshot: &leapmuxv1.AgentInputQueueSnapshot{ActiveTurn: at},
+				}, nil
+			},
+			readRowsAfter: func(context.Context, int64, string) ([]*leapmuxv1.AgentChatMessage, error) {
+				mu.Lock()
+				rowReads++
+				mu.Unlock()
+				return []*leapmuxv1.AgentChatMessage{userMessageRow(4, "in-1"), replyRow(5, "Legacy final reply.")}, nil
+			},
+		}
+		events := make(chan activityEvent, 4)
+		e := &replyEvaluator{reader: reader, spec: replyWaitSpec{agentID: "a-1", inputID: "in-1"}}
+		done := make(chan replyWaitRun, 1)
+		go func() {
+			res, out, err := awaitReply(ctx, testutil.NewQuartzMock(t), events, e, working)
+			done <- replyWaitRun{res, out, err}
+		}()
+
+		// First evaluation confirms inputID in transcript.
+		receive(t, ctx, queueReads)
+		// Subsequent pending events while working/activeTurn must skip readRowsAfter.
+		events <- activityEvent{kind: activityStatusChange, agentID: "a-1"}
+		receive(t, ctx, queueReads)
+		events <- activityEvent{kind: activityInputChanged, agentID: "a-1"}
+		receive(t, ctx, queueReads)
+
+		mu.Lock()
+		assert.Equal(t, 1, rowReads, "only the initial delivery confirmation should have read rows")
+		activeTurn = false
+		mu.Unlock()
+
+		events <- change("a-1", idle)
+		got := receive(t, ctx, done)
+		require.NoError(t, got.err)
+		assert.Equal(t, replyWaitSettled, got.outcome)
+		assert.Equal(t, []string{"Legacy final reply."}, got.result.Replies)
+		mu.Lock()
+		assert.Equal(t, 2, rowReads, "one read to confirm delivery and one final read on settle")
+		mu.Unlock()
+	})
+
+	t.Run("legacy path fetches partial replies once on timeout", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		clock := testutil.NewQuartzMock(t)
+		newTimer := clock.Trap().AfterFunc(replyWaitTimerTag)
+		defer newTimer.Close()
+		var mu sync.Mutex
+		rowReads := 0
+		rows := []*leapmuxv1.AgentChatMessage{userMessageRow(4, "in-1")}
+		queueReads := make(chan struct{}, 8)
+		reader := replyReader{
+			readQueue: func(context.Context, string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
+				queueReads <- struct{}{}
+				return &leapmuxv1.ListAgentInputQueueResponse{
+					Snapshot: &leapmuxv1.AgentInputQueueSnapshot{ActiveTurn: true},
+				}, nil
+			},
+			readRowsAfter: func(context.Context, int64, string) ([]*leapmuxv1.AgentChatMessage, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				rowReads++
+				return rows, nil
+			},
+		}
+		events := make(chan activityEvent, 4)
+		e := &replyEvaluator{reader: reader, spec: replyWaitSpec{agentID: "a-1", inputID: "in-1", timeout: time.Minute}}
+		done := make(chan replyWaitRun, 1)
+		go func() {
+			res, out, err := awaitReply(ctx, clock, events, e, working)
+			done <- replyWaitRun{res, out, err}
+		}()
+
+		assert.Equal(t, time.Minute, testutil.WaitForTimer(t, ctx, newTimer))
+		// First evaluation confirms delivery via readRowsAfter (no reply yet).
+		receive(t, ctx, queueReads)
+		// Second evaluation skips readRowsAfter (sets skippedReplies=true).
+		events <- activityEvent{kind: activityStatusChange, agentID: "a-1"}
+		receive(t, ctx, queueReads)
+
+		mu.Lock()
+		assert.Equal(t, 1, rowReads, "intermediate pending event must skip readRowsAfter")
+		rows = []*leapmuxv1.AgentChatMessage{userMessageRow(4, "in-1"), replyRow(5, "Legacy partial reply.")}
+		mu.Unlock()
+
+		clock.Advance(time.Minute).MustWait(ctx)
+		got := receive(t, ctx, done)
+		require.NoError(t, got.err)
+		assert.Equal(t, replyWaitTimedOut, got.outcome)
+		assert.Equal(t, messageDelivered, got.result.Message)
+		assert.Equal(t, []string{"Legacy partial reply."}, got.result.Replies)
+		mu.Lock()
+		assert.Equal(t, 2, rowReads, "timeout must fetch legacy partial replies once after skipped pending reads")
+		mu.Unlock()
+	})
+}
+
+func TestAwaitReply_InvokesOnActivityCallback(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	w := &fakeReplyWorker{queue: queuedSnapshot(0)}
+	var observed []activityEventKind
+	e := &replyEvaluator{
+		reader: w.reader(),
+		spec: replyWaitSpec{
+			agentID: "a-1",
+			inputID: "in-1",
+			onActivity: func(ev activityEvent) {
+				observed = append(observed, ev.kind)
+			},
+		},
+		notice: func(string, ...any) {},
+	}
+	events := make(chan activityEvent)
+	done := make(chan replyWaitRun, 1)
+	go func() {
+		res, out, err := awaitReply(ctx, testutil.NewQuartzMock(t), events, e, idle)
+		done <- replyWaitRun{res, out, err}
+	}()
+
+	events <- change("a-1", working)
+	w.deliver(&leapmuxv1.AgentInputQueueSnapshot{}, userMessageRow(4, "in-1"), replyRow(5, "Done."))
+	events <- change("a-1", idle)
+
+	got := receive(t, ctx, done)
+	require.NoError(t, got.err)
+	assert.Equal(t, replyWaitSettled, got.outcome)
+	assert.Equal(t, []activityEventKind{activityChange, activityChange}, observed)
+}
+
+func TestFormatSanitizedReplies(t *testing.T) {
+	assert.Equal(t, "", formatSanitizedReplies(nil))
+	assert.Equal(t, "Hello", formatSanitizedReplies([]string{"Hello"}))
+	assert.Equal(t, "First\n\nSecond", formatSanitizedReplies([]string{"First", "Second"}))
+	assert.Equal(t, "clean", formatSanitizedReplies([]string{"\x1b[31mclean\x1b[0m"}))
+}
+
+func TestAgentReplyEnded_UsesStatusRequestIDWhenPresent(t *testing.T) {
+	var out, errOut bytes.Buffer
+	p := &cli.Printer{Out: &out, Err: &errOut, Format: cli.FormatJSON}
+	res := agentReplyResult{
+		ID:              "a-1",
+		InputID:         "retry-input-1",
+		RequestID:       "req-1",
+		statusRequestID: "req-1:schema-retry:1",
+		Message:         messageDelivered,
+		State:           "waiting_for_user",
+		Replies:         []string{},
+	}
+	err := agentReplyEnded(p, res, replyWaitWaiting, time.Minute)
+	var status *cli.ExitStatus
+	require.ErrorAs(t, err, &status)
+	assert.Equal(t, cli.ExitWaitEnded, status.Code)
+	assert.Contains(t, out.String(), `"request_id":"req-1:schema-retry:1"`)
+	assert.Contains(t, out.String(), `leapmux agent request-status a-1 req-1:schema-retry:1`)
+	assert.Contains(t, errOut.String(), "disposition: in_progress (request_id: req-1:schema-retry:1)")
+	assert.Contains(t, errOut.String(), "check status: leapmux agent request-status a-1 req-1:schema-retry:1")
+}
+
+func TestPersistentWorkerChannel_ReusesSingleChannelAndReconnectsOnDrop(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := newQueueWorker(queuedInput(inputAlpha, "Run tests", 1))
+	harness := startHubChannelHarness(t, &recordingHub{
+		workers: workerRows("worker-A"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:      &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: id},
+			TileId:   "root-1",
+			WorkerId: "worker-A", WorkspaceId: "ws-1",
+		},
+	}, w)
+
+	client, err := control.NewClient(harness.url)
+	require.NoError(t, err)
+	ch := newPersistentWorkerChannel(client, "worker-A")
+	defer ch.Close()
+	reader := channelReplyReader(ch, id)
+
+	ctx := testutil.DeadlineContext(t)
+	for range 3 {
+		resp, err := reader.readQueue(ctx, "")
+		require.NoError(t, err)
+		require.Len(t, resp.GetSnapshot().GetItems(), 1)
+	}
+	assert.Equal(t, 1, harness.channelOpens(), "multiple queue reads must share one E2EE channel")
+
+	// Drop the relay websocket and confirm the next read reconnects once cleanly.
+	harness.mu.Lock()
+	for _, ws := range harness.relays {
+		_ = ws.CloseNow()
+	}
+	harness.mu.Unlock()
+	resp, err := reader.readQueue(ctx, "")
+	require.NoError(t, err)
+	require.Len(t, resp.GetSnapshot().GetItems(), 1)
+	assert.Equal(t, 2, harness.channelOpens(), "dropped channel must trigger a single transparent reconnect")
+}
+
+func TestPersistentWorkerChannel_CallOnceDoesNotRetryOnDrop(t *testing.T) {
+	id := fullTestID("ag-callonce")
+	w := newQueueWorker(queuedInput(inputAlpha, "Run tests", 1))
+	harness := startHubChannelHarness(t, &recordingHub{workers: workerRows("worker-A")}, w)
+
+	client, err := control.NewClient(harness.url)
+	require.NoError(t, err)
+	ch := newPersistentWorkerChannel(client, "worker-A")
+	defer ch.Close()
+
+	ctx := testutil.DeadlineContext(t)
+	var queueResp leapmuxv1.ListAgentInputQueueResponse
+	require.NoError(t, ch.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure,
+		&leapmuxv1.ListAgentInputQueueRequest{AgentId: id}, &queueResp))
+	assert.Equal(t, 1, harness.channelOpens())
+
+	// Drop the relay websocket and invoke a mutating RPC via CallOnce.
+	harness.mu.Lock()
+	for _, ws := range harness.relays {
+		_ = ws.CloseNow()
+	}
+	harness.mu.Unlock()
+
+	var ack leapmuxv1.EnqueueAgentInputResponse
+	err = ch.CallOnce(ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure,
+		&leapmuxv1.EnqueueAgentInputRequest{AgentId: id, InputId: "in-once", Text: "mutate"}, &ack)
+	require.Error(t, err)
+	assert.Equal(t, 1, harness.channelOpens(), "CallOnce must not reopen or retry a mutating RPC on transport failure")
+
+	// The failed channel was cleared, so a later read opens a fresh channel cleanly.
+	require.NoError(t, ch.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure,
+		&leapmuxv1.ListAgentInputQueueRequest{AgentId: id}, &queueResp))
+	assert.Equal(t, 2, harness.channelOpens())
+
+	// Closing the channel prevents any later Call or CallOnce from opening a new channel.
+	ch.Close()
+	err = ch.CallOnce(ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure,
+		&leapmuxv1.EnqueueAgentInputRequest{AgentId: id, InputId: "in-after-close", Text: "mutate"}, &ack)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 2, harness.channelOpens())
+}
+
+func TestAwaitReply_RejectsUnexpectedReplyStep(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	e := &replyEvaluator{
+		spec: replyWaitSpec{agentID: "a-1", inputID: "in-1"},
+		evalOverride: func(context.Context, leapmuxv1.AgentActivityState) (replyVerdict, error) {
+			return replyVerdict{step: replyStep(99), message: messageDelivered}, nil
+		},
+	}
+	_, _, err := awaitReply(ctx, testutil.NewQuartzMock(t), make(chan activityEvent), e, working)
+	ce := cli.FromError(err)
+	require.NotNil(t, ce)
+	assert.Equal(t, cli.CodeInternal, ce.Code)
+	assert.Contains(t, ce.Message, "unexpected reply evaluation step 99")
 }

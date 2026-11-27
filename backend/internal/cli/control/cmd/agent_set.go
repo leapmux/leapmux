@@ -27,8 +27,18 @@ type agentSetResult struct {
 // runAgentSet updates --model / --effort / --permission-mode /
 // --option key=value (repeatable).
 func runAgentSet(inv *cli.Invocation) (any, error) {
+	for _, name := range []string{"model", "effort", "permission-mode"} {
+		if inv.Changed(name) && strings.TrimSpace(stringFlag(inv, name)) == "" {
+			return nil, cli.Usagef("--%s is empty", name)
+		}
+	}
 	options := inv.StringArray("option")
-	opts, err := buildAgentSetOptions(stringFlag(inv, "model"), stringFlag(inv, "effort"), stringFlag(inv, "permission-mode"), options)
+	opts, err := buildAgentSetOptions(
+		strings.TrimSpace(stringFlag(inv, "model")),
+		strings.TrimSpace(stringFlag(inv, "effort")),
+		strings.TrimSpace(stringFlag(inv, "permission-mode")),
+		options,
+	)
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
@@ -43,6 +53,9 @@ func runAgentSet(inv *cli.Invocation) (any, error) {
 	defer s.Close()
 	got, err := s.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
 	if err != nil {
+		return nil, err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
 		return nil, err
 	}
 	settings := &leapmuxv1.AgentSettings{Options: opts}
@@ -87,11 +100,23 @@ func appliedFromSettlements(
 // contradictory pair like `--effort high --option effort=low` (or a repeated `--option k=`)
 // can't silently resolve to whichever assignment the loop happens to apply last.
 func buildAgentSetOptions(model, effort, permissionMode string, options []string) (map[string]string, error) {
+	for _, flag := range []struct {
+		name  string
+		value string
+	}{
+		{name: "model", value: model},
+		{name: "effort", value: effort},
+		{name: "permission-mode", value: permissionMode},
+	} {
+		if flag.value != "" && strings.TrimSpace(flag.value) == "" {
+			return nil, fmt.Errorf("--%s is empty", flag.name)
+		}
+	}
 	// Seed the three dedicated flags through the same builder the spawn path uses (spawnOptions),
 	// so the "build an option map from --model/--effort/--permission-mode, omitting empties" rule
 	// lives in one place. The dup check below then also catches an --option that collides with a
 	// dedicated flag, since both land in this one map.
-	out := spawnOptions(model, effort, permissionMode)
+	out := spawnOptions(strings.TrimSpace(model), strings.TrimSpace(effort), strings.TrimSpace(permissionMode))
 	for _, kv := range options {
 		k, v, err := splitKV(kv)
 		if err != nil {
@@ -106,15 +131,17 @@ func buildAgentSetOptions(model, effort, permissionMode string, options []string
 }
 
 func splitKV(s string) (string, string, error) {
-	k, v, ok := strings.Cut(s, "=")
+	rawKey, rawVal, ok := strings.Cut(s, "=")
 	if !ok {
 		return "", "", fmt.Errorf("expected key=value, got %q", s)
 	}
-	// Reject an empty key (`--option =value`) and an empty value (`--option key=`) at parse
-	// time. Without this the empty key persists no axis (the worker drops an unknown id) and the
-	// empty value is a silent no-op (the worker skips an empty value rather than clearing) -- both
-	// would report "applied" with the assignment silently vanished. Failing fast is clearer, and
-	// clearing an option is not supported via the CLI.
+	k := strings.TrimSpace(rawKey)
+	v := strings.TrimSpace(rawVal)
+	// Reject an empty or whitespace-only key (`--option =value`) and value (`--option key=`) at
+	// parse time. Without this the empty key persists no axis (the worker drops an unknown id) and
+	// the empty value is a silent no-op (the worker skips an empty value rather than clearing) --
+	// both would report "applied" with the assignment silently vanished. Failing fast is clearer,
+	// and clearing an option is not supported via the CLI.
 	if k == "" {
 		return "", "", fmt.Errorf("empty option key in %q", s)
 	}

@@ -110,3 +110,38 @@ func TestRunAgentGet_SeparatesCurrentSettingsFromTheCatalog(t *testing.T) {
 		assert.Equal(t, "off", fastModeJSON.Choices[0].Clears[0].Value)
 	}
 }
+
+func TestRunAgentGet_FailsFastOutsideTabWithoutTarget(t *testing.T) {
+	clearRemoteEnv(t)
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+
+	for name, args := range map[string][]string{
+		"omitted agent": {"agent", "get", "--hub", "https://stub.invalid"},
+		"explicit self": {"agent", "get", "self", "--hub", "https://stub.invalid"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := runControl(t, args...).requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, "does not run inside a LeapMux agent tab")
+		})
+	}
+}
+
+func TestRunAgentGet_PreflightsMissingWorkerBeforeDialing(t *testing.T) {
+	id := fullTestID("agent-missing-worker")
+	disp := &tabMetadataDispatcher{}
+	startSpawnIPC(t, &recordingHub{
+		workers: workerRows("worker-other"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: id},
+			TileId:      "root-1",
+			WorkerId:    "worker-missing",
+			WorkspaceId: "ws-1",
+		},
+	}, disp)
+
+	f := runControl(t, "agent", "get", id).requireFailure(t, cli.CodeNotFound)
+	assert.Contains(t, f.Message, "no such worker: worker-missing")
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	assert.Empty(t, disp.agentRequests)
+}

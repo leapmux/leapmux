@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -10,7 +9,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
@@ -68,10 +66,6 @@ type agentSessionList struct {
 	Sessions []agentSessionRow `json:"sessions"`
 }
 
-func agentSessionRowOf(s *leapmuxv1.AgentSessionSummary) agentSessionRow {
-	return agentSessionRow{ID: s.GetSessionId(), UpdatedAt: s.GetUpdatedAt(), Title: s.GetTitle()}
-}
-
 // runAgentSessions lists the sessions of one provider in one directory of one
 // Worker. The provider resolution and the listing share one channel, as they
 // do for `agent open`.
@@ -93,15 +87,7 @@ func runAgentSessions(inv *cli.Invocation) (any, error) {
 	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
 		return nil, err
 	}
-	provider := stringFlag(inv, "provider")
-	if !inv.Changed("provider") {
-		provider = os.Getenv(controlenv.AgentProviderVariable)
-		if provider == "" {
-			if ctxCfg, err := control.LoadContext(); err == nil && ctxCfg.Provider != "" {
-				provider = ctxCfg.Provider
-			}
-		}
-	}
+	provider := defaultProviderInput(inv)
 	var resolved leapmuxv1.AgentProvider
 	var resp leapmuxv1.ListAgentSessionsResponse
 	err = withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
@@ -119,7 +105,11 @@ func runAgentSessions(inv *cli.Invocation) (any, error) {
 	}
 	rows := make([]agentSessionRow, 0, len(resp.GetSessions()))
 	for _, session := range resp.GetSessions() {
-		rows = append(rows, agentSessionRowOf(session))
+		rows = append(rows, agentSessionRow{
+			ID:        session.GetSessionId(),
+			UpdatedAt: session.GetUpdatedAt(),
+			Title:     session.GetTitle(),
+		})
 	}
 	if len(rows) == 0 && inv.Printer.Format == cli.FormatText {
 		inv.Printer.Notice("%s has no session to resume in %s", agentProviderName(resolved), dir)

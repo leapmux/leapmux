@@ -307,7 +307,7 @@ func writeRows(w *bytes.Buffer, indent string, rows [][]string) {
 	}
 	for _, row := range rows {
 		last := len(row)
-		for last > 0 && row[last-1] == "" {
+		for last > 0 && oneLine(row[last-1]) == "" {
 			last--
 		}
 		var line strings.Builder

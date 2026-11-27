@@ -59,8 +59,8 @@ An argument such as `<agent>`, `<tab>`, `<workspace>`, or `<worker>` takes:
   Pass `--workspace <ws>` on tab/agent/terminal commands to disambiguate.
 - `self` for the tab, tile, workspace, or worker running the command.
 - `parent` (in an agent tab, on `agent` or `tab` commands) for the parent agent;
-  `children` (on `agent wait` and `agent requests`) for all direct child
-  subagents.
+  `children` (on multi-agent commands: `agent wait`, `agent requests`,
+  `agent interrupt`, and `agent close`) for all direct child subagents.
 
 A command that only reads defaults to `self` inside a tab: `leapmux agent get`
 shows your own agent. Outside a tab, `leapmux context use --hub ... --worker ...

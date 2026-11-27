@@ -162,3 +162,65 @@ func TestBuildAgentSetOptions_RejectsDuplicateKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "key=value")
 }
+
+func TestSplitKV_TrimsAndRejectsWhitespaceOnly(t *testing.T) {
+	k, v, err := splitKV("  foo = bar  ")
+	require.NoError(t, err)
+	assert.Equal(t, "foo", k)
+	assert.Equal(t, "bar", v)
+
+	_, _, err = splitKV("   =value")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty option key")
+
+	_, _, err = splitKV("key=   ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty option value")
+}
+
+func TestBuildAgentSetOptions_RejectsWhitespaceDedicatedFlagsAndTrimmedDuplicates(t *testing.T) {
+	_, err := buildAgentSetOptions("   ", "high", "", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--model is empty")
+
+	_, err = buildAgentSetOptions("", "high", "", []string{" effort = low "})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "set more than once")
+}
+
+func TestAgentSet_RejectsExplicitEmptyOrWhitespaceDedicatedFlags(t *testing.T) {
+	clearRemoteEnv(t)
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	agID := fullTestID("ag-set-flags")
+
+	for name, args := range map[string][]string{
+		"empty model with effort":          {"agent", "set", agID, "--model", "", "--effort", "high"},
+		"whitespace model with effort":     {"agent", "set", agID, "--model", "   ", "--effort", "high"},
+		"whitespace effort with model":     {"agent", "set", agID, "--model", "sonnet", "--effort", " \t "},
+		"empty permission-mode with model": {"agent", "set", agID, "--model", "sonnet", "--permission-mode", ""},
+		"whitespace option key with model": {"agent", "set", agID, "--model", "sonnet", "--option", "  =val"},
+		"whitespace option val with model": {"agent", "set", agID, "--model", "sonnet", "--option", "key=  "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runControl(t, append(args, "--hub", "https://stub.invalid")...).requireFailure(t, cli.CodeUsage)
+		})
+	}
+}
+
+func TestRunAgentSet_PreflightsMissingWorkerBeforeDialing(t *testing.T) {
+	agID := fullTestID("ag-set-missing-worker")
+	w := &agentOpsDispatcher{}
+	startSpawnIPC(t, &recordingHub{
+		workers: workerRows("worker-other"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agID},
+			TileId:      "root-1",
+			WorkerId:    "worker-missing",
+			WorkspaceId: "ws-1",
+		},
+	}, w)
+
+	f := runControl(t, "agent", "set", agID, "--model", "sonnet").requireFailure(t, cli.CodeNotFound)
+	assert.Contains(t, f.Message, "no such worker: worker-missing")
+	assert.Empty(t, w.recordedCalls())
+}

@@ -58,23 +58,24 @@ func readSendSpec(inv *cli.Invocation, now time.Time) (sendSpec, error) {
 	}
 	var scheduledAt string
 	if inv.Changed("at") {
-		at, relative, err := parseSendAt(stringFlag(inv, "at"), now)
+		sched, err := parseSendAt(stringFlag(inv, "at"), now)
 		if err != nil {
 			return sendSpec{}, err
 		}
-		if relative && explicitRequestID {
+		if sched.Relative && explicitRequestID {
 			return sendSpec{}, cli.Usagef("--request-id needs --at as an RFC 3339 time").
 				WithHint("a duration from now gives another time on each run, so a retry would conflict with the first run")
 		}
-		if relative {
+		if sched.Relative {
 			// A relative --at cannot be idempotently retried with an auto-generated receipt.
 			requestID = ""
 		}
-		if !explicitRequestID && !at.After(now) {
-			return sendSpec{}, cli.Usagef("--at %s is not after now (%s)", timefmt.Format(at), timefmt.Format(now)).
-				WithHint("omit --at to send the message at once")
+		if !explicitRequestID {
+			if err := requireFutureSchedule(sched.At, now, "omit --at to send the message at once"); err != nil {
+				return sendSpec{}, err
+			}
 		}
-		scheduledAt = timefmt.Format(at)
+		scheduledAt = timefmt.Format(sched.At)
 	}
 	paths := inv.StringArray("attach")
 	if len(paths) > contracts.MaxAgentInputAttachmentsPerItem {
@@ -96,6 +97,25 @@ func readSendSpec(inv *cli.Invocation, now time.Time) (sendSpec, error) {
 	return sendSpec{message: userMessage{text: text, attachments: attachments, scheduledAt: scheduledAt}, requestID: requestID, explicitRequestID: explicitRequestID}, nil
 }
 
+// parsedSchedule is a parsed --at value together with whether it was given as
+// a relative duration from now.
+type parsedSchedule struct {
+	At       time.Time
+	Relative bool
+}
+
+// requireFutureSchedule refuses a schedule timestamp that is not after now.
+func requireFutureSchedule(at, now time.Time, hint string) error {
+	if at.After(now) {
+		return nil
+	}
+	e := cli.Usagef("--at %s is not after now (%s)", timefmt.Format(at), timefmt.Format(now))
+	if hint != "" {
+		e = e.WithHint("%s", hint)
+	}
+	return e
+}
+
 // parseSendAt reads --at: an RFC 3339 time, which states its own offset, or
 // "+" and a positive duration from now, such as +10m. It reports whether the
 // value was relative. An absolute timestamp can be in the past when a
@@ -104,32 +124,33 @@ func readSendSpec(inv *cli.Invocation, now time.Time) (sendSpec, error) {
 // The CLI never assumes a time zone. A time without an offset is refused,
 // because the zone of the machine that runs the command and the zone of the
 // Worker can differ.
-func parseSendAt(raw string, now time.Time) (time.Time, bool, error) {
+func parseSendAt(raw string, now time.Time) (parsedSchedule, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return time.Time{}, false, cli.Usagef("--at is empty")
+		return parsedSchedule{}, cli.Usagef("--at is empty")
 	}
-	var at time.Time
 	relative := strings.HasPrefix(value, "+")
 	if relative {
-		d, err := time.ParseDuration(value[1:])
+		dur := value[1:]
+		if strings.HasPrefix(dur, "+") {
+			return parsedSchedule{}, cli.Usagef("--at %q is not a duration such as +10m or +1h30m", raw)
+		}
+		d, err := time.ParseDuration(dur)
 		if err != nil {
-			return time.Time{}, false, cli.Usagef("--at %q is not a duration such as +10m or +1h30m", raw)
+			return parsedSchedule{}, cli.Usagef("--at %q is not a duration such as +10m or +1h30m", raw)
 		}
 		if d <= 0 {
-			return time.Time{}, false, cli.Usagef("--at %q is not after now", raw).
+			return parsedSchedule{}, cli.Usagef("--at %q is not after now", raw).
 				WithHint("omit --at to send the message at once")
 		}
-		at = now.Add(d)
-	} else {
-		parsed, err := time.Parse(time.RFC3339, value)
-		if err != nil {
-			return time.Time{}, false, cli.Usagef("--at %q is neither an RFC 3339 time with its offset nor a duration from now", raw).
-				WithHint("write a time such as 2026-11-20T09:00:00+09:00 or 2026-11-20T00:00:00Z, or a duration such as +10m")
-		}
-		at = parsed
+		return parsedSchedule{At: now.Add(d), Relative: true}, nil
 	}
-	return at, relative, nil
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return parsedSchedule{}, cli.Usagef("--at %q is neither an RFC 3339 time with its offset nor a duration from now", raw).
+			WithHint("write a time such as 2026-11-20T09:00:00+09:00 or 2026-11-20T00:00:00Z, or a duration such as +10m")
+	}
+	return parsedSchedule{At: parsed, Relative: false}, nil
 }
 
 // readAttachments reads the files of --attach, in order. budget is the count

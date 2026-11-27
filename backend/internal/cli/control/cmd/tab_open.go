@@ -346,19 +346,9 @@ func readAgentOpenMessage(inv *cli.Invocation) (*userMessage, error) {
 	var text string
 	switch {
 	case hasFile:
-		path := stringFlag(inv, "file")
-		var data []byte
-		var err error
-		if path == "-" {
-			data, err = readStdinGuarded(inv.Stdin)
-		} else {
-			data, err = os.ReadFile(path)
-		}
+		data, err := readFileOrStdin(inv.Stdin, stringFlag(inv, "file"), "--file")
 		if err != nil {
-			if path == "-" {
-				return nil, err
-			}
-			return nil, cli.Wrap(cli.CodeUsage, err, "read --file")
+			return nil, err
 		}
 		text = string(data)
 		if strings.TrimSpace(text) == "" {
@@ -482,15 +472,7 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 	if err := maybePreflightWorker(bounded.ctx, s.c, p.WorkerID); err != nil {
 		return nil, err
 	}
-	provider := stringFlag(inv, "provider")
-	if !inv.Changed("provider") {
-		provider = os.Getenv(controlenv.AgentProviderVariable)
-		if provider == "" {
-			if ctxCfg, err := control.LoadContext(); err == nil && ctxCfg.Provider != "" {
-				provider = ctxCfg.Provider
-			}
-		}
-	}
+	provider := defaultProviderInput(inv)
 	// Pass initial_message atomically in OpenAgent when there are no attachments
 	// and --wait is not requested. When --attach or --wait is used, send via
 	// EnqueueAgentInput so attachments and exact reply tracking work uniformly.
@@ -557,29 +539,31 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 		if !wait {
 			if _, err := enqueueAgentInput(bounded.ctx, s.c, agentTarget, msg.request(agentTarget.ID, inputID)); err != nil {
 				return nil, wrapRetryReceipt(err, retryStageDuringSend, retryReceipt{
-					RequestID:    requestID,
-					Explicit:     explicitRequestID,
-					QueryCommand: buildAgentRequestStatusCmd(agentTarget.ID, requestID),
-					RetryCommand: buildAgentOpenRetryCmd(inv, requestID),
+					RequestID:      requestID,
+					Explicit:       explicitRequestID,
+					CreatedAgentID: agentTarget.ID,
+					QueryCommand:   buildAgentRequestStatusCmd(agentTarget.ID, requestID),
+					RetryCommand:   buildAgentOpenRetryCmd(inv, requestID),
 				})
 			}
 		} else {
-			var (
-				replyRes agentReplyResult
-				outcome  replyWaitOutcome
-				wErr     error
-			)
-			if schemaSpec != nil {
-				replyRes, outcome, _, wErr = sendAndWaitWithSchema(inv, s, agentTarget, *msg, requestID, inputID, sendDeliveryNormal, boolFlag(inv, "all"), timeout, schemaSpec)
-			} else {
-				replyRes, outcome, wErr = sendAndWait(s, agentTarget, *msg, inputID, boolFlag(inv, "all"), timeout)
-			}
+			replyRes, outcome, msgStage, wErr := sendAndWait(s, sendAndWaitRequest{
+				target:    agentTarget,
+				message:   *msg,
+				requestID: requestID,
+				inputID:   inputID,
+				delivery:  sendDeliveryNormal,
+				all:       boolFlag(inv, "all"),
+				timeout:   timeout,
+				schema:    schemaSpec,
+			})
 			if wErr != nil {
-				return nil, wrapRetryReceipt(wErr, retryStageDuringWait, retryReceipt{
-					RequestID:    requestID,
-					Explicit:     explicitRequestID,
-					QueryCommand: buildAgentRequestStatusCmd(agentTarget.ID, requestID),
-					RetryCommand: buildAgentOpenRetryCmd(inv, requestID),
+				return nil, wrapRetryReceipt(wErr, msgStage, retryReceipt{
+					RequestID:      requestID,
+					Explicit:       explicitRequestID,
+					CreatedAgentID: agentTarget.ID,
+					QueryCommand:   buildAgentRequestStatusCmd(agentTarget.ID, requestID),
+					RetryCommand:   buildAgentOpenRetryCmd(inv, requestID),
 				})
 			}
 			replyRes.RequestID = requestID
@@ -619,9 +603,10 @@ func waitNewAgentSettled(inv *cli.Invocation, s *session, agentTarget tabTarget,
 		timeout:  timeout,
 	}
 	waitCtx, waitCancel := context.WithCancel(s.ctx)
-	defer waitCancel()
 	events := make(chan activityEvent, 16)
-	startActivityFeed(waitCtx, workerActivitySource(s.c, agentTarget.WorkerID), []string{agentTarget.ID}, events)
+	stopFeed := startActivityFeed(waitCtx, workerActivitySource(s.c, agentTarget.WorkerID), []string{agentTarget.ID}, events)
+	defer stopFeed()
+	defer waitCancel()
 	queues := &queueWatch{
 		read: func(ctx context.Context, agentID string) (*leapmuxv1.AgentInputQueueSnapshot, error) {
 			response, err := workerReplyReader(s.c, agentTarget.WorkerID, agentID).readQueue(ctx, "")

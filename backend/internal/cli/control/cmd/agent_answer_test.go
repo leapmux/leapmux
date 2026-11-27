@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -163,7 +166,7 @@ func TestAnswerDecision_Questions(t *testing.T) {
 	got, err = answerDecision(one, answerSpec{options: []string{"1:3"}, texts: []string{"2:Metrics"}})
 	require.NoError(t, err)
 	requireDecision(t, decisionOf(&leapmuxv1.QuestionDecision{Answers: []*leapmuxv1.QuestionAnswer{{Selected: []string{"Traces"}, CustomText: "2:Metrics"}}}), got,
-		"with one question an option may name it, and a text is all text")
+		"with one question an option may specify it, and a text is all text")
 
 	optional := extrasQuestion()
 	optional.AllowEmpty = true
@@ -347,18 +350,120 @@ func TestAnswerDecision_Elicitation(t *testing.T) {
 		requireUsage(t, err, "requires details, zone")
 	})
 
-	numbers := elicitationPrompt(`{"properties":{"ratio":{"type":"number"}}}`)
-	got, err = answerDecision(numbers, answerSpec{fields: []string{"ratio=1e3"}})
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"ratio":1e3}`, got.GetElicitation().GetContentJson())
-	_, err = answerDecision(numbers, answerSpec{fields: []string{"ratio=many"}})
-	requireUsage(t, err, "takes a number")
+	numbers := elicitationPrompt(`{"properties":{"ratio":{"type":"number"},"count":{"type":"integer"}}}`)
+	for _, valid := range []string{"0", "-0", "42", "-3.5", "1e3", "1.5E-2"} {
+		got, err = answerDecision(numbers, answerSpec{fields: []string{"ratio=" + valid}})
+		require.NoError(t, err, "valid JSON number %q", valid)
+		assert.True(t, json.Valid([]byte(got.GetElicitation().GetContentJson())), "marshaled output for %q must be valid JSON", valid)
+	}
+	for _, invalid := range []string{"many", "NaN", "Inf", "-Inf", "+5", ".5", "5.", "1_000", "0x1p2", "05", "-05", " 5 ", "1e400"} {
+		_, err = answerDecision(numbers, answerSpec{fields: []string{"ratio=" + invalid}})
+		requireUsage(t, err, "takes a number")
+	}
+	for _, valid := range []string{"0", "-42", "1000000"} {
+		got, err = answerDecision(numbers, answerSpec{fields: []string{"count=" + valid}})
+		require.NoError(t, err, "valid JSON integer %q", valid)
+		assert.True(t, json.Valid([]byte(got.GetElicitation().GetContentJson())), "marshaled output for %q must be valid JSON", valid)
+	}
+	for _, invalid := range []string{"+5", "05", "-05", "1_000", "0x10", "1.5", " 5 ", "1e3"} {
+		_, err = answerDecision(numbers, answerSpec{fields: []string{"count=" + invalid}})
+		requireUsage(t, err, "takes an integer")
+	}
+
+	t.Run("null default treated as absent", func(t *testing.T) {
+		schema := `{"properties":{"req":{"type":"string","default":null},"opt":{"type":"string","default":null},"ok":{"type":"string","default":"yes"}},"required":["req"]}`
+		_, err := approveDecision(elicitationPrompt(schema), planSettings{})
+		requireUsage(t, err, "requires req")
+
+		got, err := answerDecision(elicitationPrompt(schema), answerSpec{fields: []string{"req=val"}})
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"req":"val","ok":"yes"}`, got.GetElicitation().GetContentJson(), "null default on an optional field is omitted")
+
+		equal := leapmuxv1.ElicitationFieldComparison_ELICITATION_FIELD_COMPARISON_EQUAL
+		notEqual := leapmuxv1.ElicitationFieldComparison_ELICITATION_FIELD_COMPARISON_NOT_EQUAL
+		condPrompt := elicitationPrompt(`{"properties":{` +
+			`"env":{"type":"string","default":null},` +
+			`"details":{"type":"string"},` +
+			`"region":{"type":"string","default":null},` +
+			`"note":{"type":"string","default":null}` +
+			`},"required":["details","region"]}`)
+		condPrompt.GetElicitation().FieldRules = []*leapmuxv1.ElicitationFieldRule{
+			{Key: "details", Conditions: []*leapmuxv1.ElicitationFieldCondition{{Field: "env", Comparison: notEqual, ValueJson: `"prod"`}}},
+			{Key: "region", Conditions: []*leapmuxv1.ElicitationFieldCondition{{Field: "env", Comparison: equal, ValueJson: `"prod"`}}},
+			{Key: "note", Conditions: []*leapmuxv1.ElicitationFieldCondition{{Field: "env", Comparison: equal, ValueJson: `"prod"`}}},
+		}
+		got, err = approveDecision(condPrompt, planSettings{})
+		require.NoError(t, err, "a null default leaves the governing field unset, so neither equal nor not_equal holds")
+		assert.JSONEq(t, `{}`, got.GetElicitation().GetContentJson())
+
+		_, err = answerDecision(condPrompt, answerSpec{fields: []string{"env=prod"}})
+		requireUsage(t, err, "requires region")
+
+		got, err = answerDecision(condPrompt, answerSpec{fields: []string{"env=prod", "region=us-east"}})
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"env":"prod","region":"us-east"}`, got.GetElicitation().GetContentJson(), "an active optional conditional field with null default is omitted")
+	})
+
+	t.Run("large integer enum preserves exact representation", func(t *testing.T) {
+		schema := `{"properties":{"limit":{"type":"integer","enum":[1000000,9007199254740993]},"cap":{"type":"integer","oneOf":[{"const":9007199254740993,"title":"Above 2^53"}]}}}`
+		got, err := answerDecision(elicitationPrompt(schema), answerSpec{fields: []string{"limit=9007199254740993", "cap=9007199254740993"}})
+		require.NoError(t, err)
+		raw := got.GetElicitation().GetContentJson()
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.UseNumber()
+		var decoded map[string]any
+		require.NoError(t, dec.Decode(&decoded))
+		assert.Equal(t, json.Number("9007199254740993"), decoded["limit"], "integer above 2^53 must not lose precision through float64")
+		assert.Equal(t, json.Number("9007199254740993"), decoded["cap"])
+
+		_, err = answerDecision(elicitationPrompt(schema), answerSpec{fields: []string{"limit=9007199254740992"}})
+		requireUsage(t, err, "takes one of 1000000, 9007199254740993")
+	})
+}
+
+func TestIsJSONNumberSyntax(t *testing.T) {
+	for _, valid := range []string{"0", "-0", "0.0", "-0.5", "42", "-42", "1e+10", "1e-10", "1.5E+2", "9007199254740993"} {
+		assert.True(t, isJSONNumberSyntax(valid), "expected valid JSON number: %q", valid)
+	}
+	for _, invalid := range []string{"", "-", "-.", ".5", "5.", "+1", "01", "-01", "1e", "1e+", "1e-", " 1", "1 ", "\t0", "true", "null", `"1"`, "1 2", "NaN", "Inf"} {
+		assert.False(t, isJSONNumberSyntax(invalid), "expected invalid JSON number: %q", invalid)
+	}
+}
+
+func TestOrderedObject(t *testing.T) {
+	keys, vals := orderedObject(json.RawMessage(`{"z":1,"a":"two","m":true}`))
+	assert.Equal(t, []string{"z", "a", "m"}, keys)
+	assert.Equal(t, json.RawMessage(`1`), vals["z"])
+	assert.Equal(t, json.RawMessage(`"two"`), vals["a"])
+	assert.Equal(t, json.RawMessage(`true`), vals["m"])
+
+	keys, vals = orderedObject(json.RawMessage(`{"a":1,"b":2,"a":3}`))
+	assert.Equal(t, []string{"a", "b"}, keys, "duplicate keys appear once in first-seen order")
+	assert.Equal(t, json.RawMessage(`3`), vals["a"], "duplicate keys retain their last value")
+
+	keys, vals = orderedObject(json.RawMessage(`{}`))
+	assert.Empty(t, keys)
+	assert.Empty(t, vals)
+
+	for _, bad := range []string{``, `null`, `[1]`, `"str"`, `{"a":1`, `{"a":1}{}`, `{"a":1} trailing`} {
+		k, v := orderedObject(json.RawMessage(bad))
+		assert.Nil(t, k, bad)
+		assert.Nil(t, v, bad)
+	}
 }
 
 func TestAnswerDecision_Dialog(t *testing.T) {
 	got, err := answerDecision(dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_INPUT), answerSpec{texts: []string{"feature/cli"}})
 	require.NoError(t, err)
 	requireDecision(t, decisionOf(&leapmuxv1.DialogDecision{Action: leapmuxv1.DialogAction_DIALOG_ACTION_SUBMIT, Value: "feature/cli"}), got)
+
+	got, err = answerDecision(dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR), answerSpec{texts: []string{"line 1\nline 2"}})
+	require.NoError(t, err)
+	requireDecision(t, decisionOf(&leapmuxv1.DialogDecision{Action: leapmuxv1.DialogAction_DIALOG_ACTION_SUBMIT, Value: "line 1\nline 2"}), got)
+
+	got, err = answerDecision(dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR), answerSpec{texts: []string{""}})
+	require.NoError(t, err)
+	requireDecision(t, decisionOf(&leapmuxv1.DialogDecision{Action: leapmuxv1.DialogAction_DIALOG_ACTION_SUBMIT, Value: ""}), got)
 
 	_, err = answerDecision(dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_CONFIRM), answerSpec{texts: []string{"yes"}})
 	requireUsage(t, err, "takes no text")
@@ -457,17 +562,45 @@ func TestControlAnswerResultOf(t *testing.T) {
 	assert.Equal(t, cli.CodeUnavailable, e.Code, "an answer that was not sent can be sent again")
 	assert.True(t, e.Retryable())
 
+	// Unconfirmed states must be rejected even when Error is empty.
+	_, err = controlAnswerResultOf("ag-1", "c1", &leapmuxv1.AnswerControlResponse{State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY})
+	e = cli.FromError(err)
+	assert.Equal(t, cli.CodeUnavailable, e.Code, "READY without error text means the answer was not sent")
+	assert.True(t, e.Retryable())
+
+	_, err = controlAnswerResultOf("ag-1", "c1", &leapmuxv1.AnswerControlResponse{State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN})
+	e = cli.FromError(err)
+	assert.Equal(t, cli.CodeInternal, e.Code, "UNCERTAIN without error text is not confirmed")
+	assert.False(t, e.Retryable())
+	assert.Contains(t, e.Message, "uncertain")
+
+	_, err = controlAnswerResultOf("ag-1", "c1", &leapmuxv1.AnswerControlResponse{State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED})
+	e = cli.FromError(err)
+	assert.Equal(t, cli.CodeInternal, e.Code, "UNSPECIFIED without error text is not confirmed")
+	assert.False(t, e.Retryable())
+
 	_, err = controlAnswerResultOf("ag-1", "c1", &leapmuxv1.AnswerControlResponse{State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN, Error: "no receipt"})
 	e = cli.FromError(err)
 	assert.Equal(t, cli.CodeInternal, e.Code)
 	assert.False(t, e.Retryable(), "the Worker never sends a second answer")
 	assert.Contains(t, e.Message, "uncertain")
+
+	for _, state := range []leapmuxv1.ControlResponseState{
+		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED,
+		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED,
+		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING,
+	} {
+		_, err = controlAnswerResultOf("ag-1", "c1", &leapmuxv1.AnswerControlResponse{State: state, Error: "write failed"})
+		e = cli.FromError(err)
+		assert.Equal(t, cli.CodeInternal, e.Code, "non-empty error on %v must fail", state)
+		assert.Contains(t, e.Message, "write failed")
+	}
 }
 
 func TestAgentApproveOverIPC_SendsTheOneTimeApproval(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", permissionPrompt())}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	data := runControl(t, "agent", "approve", id, "claim").Data(t)
 	assert.Equal(t, map[string]any{"id": "claim-1", "agent_id": id, "state": "completed"}, data)
@@ -475,14 +608,249 @@ func TestAgentApproveOverIPC_SendsTheOneTimeApproval(t *testing.T) {
 	require.Len(t, answers, 1)
 	assert.Equal(t, id, answers[0].GetAgentId())
 	assert.Equal(t, "req-claim-1", answers[0].GetRequestId())
-	assert.Equal(t, "claim-1", answers[0].GetClaimToken(), "the answer names the instance that the caller read")
+	assert.Equal(t, "claim-1", answers[0].GetClaimToken(), "the answer identifies the instance that the caller read")
 	assert.Equal(t, "once", answers[0].GetDecision().GetPermission().GetOptionId())
+}
+
+func TestAgentApproveOverIPC_PreflightsWorker(t *testing.T) {
+	id := fullTestID("ag-2")
+	t.Run("missing worker fails before dialing the worker", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", permissionPrompt())}}}
+		startSpawnIPC(t, &recordingHub{
+			// Worker list is non-nil and omits worker-A, so GetWorker returns NotFound.
+			workers: workerRows("worker-B"),
+			locateTab: &leapmuxv1.WorkspaceTab{
+				Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: id},
+				TileId:      "root-1",
+				WorkerId:    "worker-A",
+				WorkspaceId: "ws-1",
+			},
+		}, w)
+
+		f := runControl(t, "agent", "approve", id, "claim-1").requireFailure(t, cli.CodeNotFound)
+		assert.Contains(t, f.Message, "no such worker: worker-A")
+		assert.Equal(t, 0, w.listCallCount(), "worker must not be dialed when preflight fails")
+		assert.Empty(t, w.recordedAnswers())
+	})
+
+	t.Run("delegation bearer denied on GetWorker still succeeds", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", permissionPrompt())}}}
+		startSpawnIPC(t, &recordingHub{
+			// workers == nil causes GetWorker to return PermissionDenied, which maybePreflightWorker tolerates.
+			locateTab: &leapmuxv1.WorkspaceTab{
+				Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: id},
+				TileId:      "root-1",
+				WorkerId:    "worker-A",
+				WorkspaceId: "ws-1",
+			},
+		}, w)
+
+		data := runControl(t, "agent", "approve", id, "claim-1").Data(t)
+		assert.Equal(t, "completed", data["state"])
+	})
+}
+
+func TestMatchGlobalRequestHandle(t *testing.T) {
+	targets := []tabTarget{
+		{ID: "ag-1", Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: "worker-A"},
+		{ID: "ag-2", Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: "worker-B"},
+	}
+	agentIDs := []string{"ag-1", "ag-2"}
+	req1 := pendingRequest("tok-1111aaaa", permissionPrompt())
+	offlineErr := cli.Newf(cli.CodeWorkerOffline, "worker-B is offline")
+
+	t.Run("short prefix fails when another worker could not be queried", func(t *testing.T) {
+		listed := map[string]listedRequestProtos{
+			"ag-1": {requests: []*leapmuxv1.AgentControlRequest{req1}},
+			"ag-2": {err: offlineErr},
+		}
+		_, _, err := matchGlobalRequestHandle("tok-11", targets, agentIDs, listed)
+		e := cli.FromError(err)
+		assert.Equal(t, cli.CodeUnavailable, e.Code)
+		assert.Contains(t, e.Message, "cannot confirm that prefix")
+		assert.Contains(t, e.Message, "worker-B")
+	})
+
+	t.Run("exact full handle still succeeds when another worker failed", func(t *testing.T) {
+		listed := map[string]listedRequestProtos{
+			"ag-1": {requests: []*leapmuxv1.AgentControlRequest{req1}},
+			"ag-2": {err: offlineErr},
+		}
+		gotTarget, gotReq, err := matchGlobalRequestHandle("tok-1111aaaa", targets, agentIDs, listed)
+		require.NoError(t, err)
+		assert.Equal(t, "ag-1", gotTarget.ID)
+		assert.Equal(t, "worker-A", gotTarget.WorkerID)
+		assert.Same(t, req1, gotReq)
+	})
+
+	t.Run("zero matches with a worker failure returns the worker error", func(t *testing.T) {
+		listed := map[string]listedRequestProtos{
+			"ag-1": {requests: nil},
+			"ag-2": {err: offlineErr},
+		}
+		_, _, err := matchGlobalRequestHandle("tok-9999", targets, agentIDs, listed)
+		assert.Equal(t, cli.CodeWorkerOffline, cli.FromError(err).Code)
+	})
+
+	t.Run("ambiguous prefix across workers returns ambiguous_target", func(t *testing.T) {
+		listed := map[string]listedRequestProtos{
+			"ag-1": {requests: []*leapmuxv1.AgentControlRequest{req1}},
+			"ag-2": {requests: []*leapmuxv1.AgentControlRequest{pendingRequest("tok-1111bbbb", planPrompt())}},
+		}
+		_, _, err := matchGlobalRequestHandle("tok-1111", targets, agentIDs, listed)
+		e := cli.FromError(err)
+		assert.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		assert.Len(t, e.Candidates, 2)
+	})
+
+	t.Run("unique prefix succeeds when all workers answer", func(t *testing.T) {
+		listed := map[string]listedRequestProtos{
+			"ag-1": {requests: []*leapmuxv1.AgentControlRequest{req1}},
+			"ag-2": {requests: []*leapmuxv1.AgentControlRequest{pendingRequest("other-9999", planPrompt())}},
+		}
+		gotTarget, gotReq, err := matchGlobalRequestHandle("tok-11", targets, agentIDs, listed)
+		require.NoError(t, err)
+		assert.Equal(t, "ag-1", gotTarget.ID)
+		assert.Same(t, req1, gotReq)
+	})
+
+	t.Run("short prefix below minimum length does not prefix-match globally", func(t *testing.T) {
+		listed := map[string]listedRequestProtos{
+			"ag-1": {requests: []*leapmuxv1.AgentControlRequest{req1}},
+			"ag-2": {requests: nil},
+		}
+		_, _, err := matchGlobalRequestHandle("to", targets, agentIDs, listed)
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+	})
+
+	t.Run("duplicate exact handle across agents returns ambiguous_target", func(t *testing.T) {
+		listed := map[string]listedRequestProtos{
+			"ag-1": {requests: []*leapmuxv1.AgentControlRequest{req1}},
+			"ag-2": {requests: []*leapmuxv1.AgentControlRequest{pendingRequest("tok-1111aaaa", planPrompt())}},
+		}
+		_, _, err := matchGlobalRequestHandle("tok-1111aaaa", targets, agentIDs, listed)
+		e := cli.FromError(err)
+		assert.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		assert.Len(t, e.Candidates, 2)
+	})
+
+	t.Run("short prefix with failing agent lacking worker id reports generic agent error", func(t *testing.T) {
+		noWorkerTargets := []tabTarget{
+			{ID: "ag-1", Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: "worker-A"},
+			{ID: "ag-2", Type: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		}
+		listed := map[string]listedRequestProtos{
+			"ag-1": {requests: []*leapmuxv1.AgentControlRequest{req1}},
+			"ag-2": {err: offlineErr},
+		}
+		_, _, err := matchGlobalRequestHandle("tok-11", noWorkerTargets, agentIDs, listed)
+		e := cli.FromError(err)
+		assert.Equal(t, cli.CodeUnavailable, e.Code)
+		assert.Contains(t, e.Message, "another agent could not be queried")
+	})
+
+	t.Run("findControlRequest strips id: prefix and keeps prefix matching", func(t *testing.T) {
+		requests := []*leapmuxv1.AgentControlRequest{pendingRequest("tok-1111aaaa", permissionPrompt())}
+		got, err := findControlRequest("ag-1", requests, " id: tok-1111 ")
+		require.NoError(t, err)
+		assert.Equal(t, "tok-1111aaaa", got.GetClaimToken())
+
+		_, err = findControlRequest("ag-1", requests, "id: ")
+		requireUsage(t, err, `missing request handle after "id:"`)
+	})
+}
+
+func TestAgentApproveGlobalHandleOverIPC_StripsIDPrefixAndSkipsSecondList(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("tok-global1", permissionPrompt())}}}
+	startSpawnIPC(t, &recordingHub{
+		workers:        workerRows("worker-A"),
+		unlocatableTab: true,
+		tabs: []*leapmuxv1.WorkspaceTab{
+			{
+				Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: id},
+				TileId:      "root-1",
+				WorkerId:    "worker-A",
+				WorkspaceId: "ws-1",
+			},
+		},
+	}, w)
+
+	data := runControl(t, "agent", "approve", "id:tok-global1").Data(t)
+	assert.Equal(t, map[string]any{"id": "tok-global1", "agent_id": id, "state": "completed"}, data)
+	assert.Equal(t, 1, w.listCallCount(), "global handle resolution must reuse the matched request without a second ListControlRequests RPC")
+	require.Len(t, w.recordedAnswers(), 1)
+}
+
+type spyStdinReader struct {
+	readErr error
+	reads   int
+}
+
+func (s *spyStdinReader) Read(_ []byte) (int, error) {
+	s.reads++
+	return 0, s.readErr
+}
+
+func TestAgentAnswerOverIPC_LazyStdinHandling(t *testing.T) {
+	id := fullTestID("ag-2")
+
+	t.Run("does not read stdin when request is dash and --option disables shifting", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", questionPrompt(databaseQuestion()))}}}
+		startAgentWorker(t, id, w)
+
+		spy := &spyStdinReader{readErr: errors.New("stdin must not be read")}
+		var out, errOut bytes.Buffer
+		code := cli.Execute(context.Background(), NewCommand(), []string{"agent", "answer", id, "-", "--option", "1", "--json"}, spy, &out, &errOut)
+		assert.NotEqual(t, cli.ExitOK, code)
+		assert.Equal(t, 0, spy.reads, "stdin must not be drained when --option disables question-text shifting")
+		assert.Contains(t, out.String(), `"code":"not_found"`)
+		assert.Empty(t, w.recordedAnswers())
+	})
+
+	t.Run("lazily reads stdin when request shifts into sole pending question text", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", questionPrompt(databaseQuestion()))}}}
+		startAgentWorker(t, id, w)
+
+		o := runControlIn(t, "Use PostgreSQL", "agent", "answer", id, "-", "--json")
+		require.Equal(t, cli.ExitOK, o.Code, "stderr: %s stdout: %s", o.Stderr, o.Stdout)
+		answers := w.recordedAnswers()
+		require.Len(t, answers, 1)
+		requireDecision(t, decisionOf(&leapmuxv1.QuestionDecision{
+			Answers: []*leapmuxv1.QuestionAnswer{{CustomText: "Use PostgreSQL"}},
+		}), answers[0].GetDecision())
+	})
+
+	t.Run("lazily reads stdin when first arg is global handle and second arg is dash", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("tok-dialog1", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR))}}}
+		startSpawnIPC(t, &recordingHub{
+			workers:        workerRows("worker-A"),
+			unlocatableTab: true,
+			tabs: []*leapmuxv1.WorkspaceTab{
+				{
+					Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: id},
+					TileId:      "root-1",
+					WorkerId:    "worker-A",
+					WorkspaceId: "ws-1",
+				},
+			},
+		}, w)
+
+		o := runControlIn(t, "hello from stdin", "agent", "answer", "tok-dialog1", "-", "--json")
+		require.Equal(t, cli.ExitOK, o.Code, "stderr: %s stdout: %s", o.Stderr, o.Stdout)
+		answers := w.recordedAnswers()
+		require.Len(t, answers, 1)
+		assert.Equal(t, "hello from stdin", answers[0].GetDecision().GetDialog().GetValue())
+
+		f := runControlIn(t, "hello", "agent", "answer", "tok-dialog1", "-", "-", "--json").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, `only one text can be "-"`)
+	})
 }
 
 func TestAgentDenyOverIPC_SendsTheReason(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", planPrompt())}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	runControl(t, "agent", "deny", id, "claim-1", "--message", "Backfill in batches.").Data(t)
 	answers := w.recordedAnswers()
@@ -494,7 +862,7 @@ func TestAgentDenyOverIPC_SendsTheReason(t *testing.T) {
 func TestAgentAnswerOverIPC_SendsOptionsAndText(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", questionPrompt(databaseQuestion(), extrasQuestion()))}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	runControl(t, "agent", "answer", id, "claim-1", "--option", "1:1", "--option", "2:2", "2:Metrics").Data(t)
 	answers := w.recordedAnswers()
@@ -516,7 +884,7 @@ func TestAgentAnswerOverIPC_SendsNoAnswerWhereTheQuestionAllowsIt(t *testing.T) 
 		pendingRequest("claim-1", questionPrompt(optional)),
 		pendingRequest("form-1", elicitationPrompt(`{"properties":{"private":{"type":"boolean","default":false}}}`)),
 	}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	f := runControl(t, "agent", "answer", id, "form-1").requireFailure(t, cli.CodeUsage)
 	assert.Contains(t, f.Message, "fill the form with --field")
@@ -539,7 +907,7 @@ func TestAgentAnswerOverIPC_RefusesAnEmptyOptionOrField(t *testing.T) {
 		pendingRequest("claim-1", questionPrompt(defaulted)),
 		pendingRequest("form-1", elicitationPrompt(`{"properties":{"private":{"type":"boolean","default":false}}}`)),
 	}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	f := runControl(t, "agent", "answer", id, "claim-1", "--option", "").requireFailure(t, cli.CodeUsage)
 	assert.Contains(t, f.Message, `--option ""`)
@@ -551,7 +919,7 @@ func TestAgentAnswerOverIPC_RefusesAnEmptyOptionOrField(t *testing.T) {
 func TestAgentAnswerOverIPC_ReadsTheTextFromStdin(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR))}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	o := runControlIn(t, "line one\nline two\n", "agent", "answer", id, "claim-1", "-")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
@@ -563,12 +931,194 @@ func TestAgentAnswerOverIPC_ReadsTheTextFromStdin(t *testing.T) {
 	assert.Contains(t, f.Message, `only one text`)
 }
 
+func TestAgentAnswerOverIPC_TextFlag(t *testing.T) {
+	id := fullTestID("ag-2")
+
+	t.Run("omitted request on multi-select question with --option and --text", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", questionPrompt(extrasQuestion()))},
+		}}
+		startAgentWorker(t, id, w)
+
+		data := runControl(t, "agent", "answer", id, "--option", "1", "--text", "Also check metrics").Data(t)
+		assert.Equal(t, "3kQ9xZ1b", data["id"])
+		answers := w.recordedAnswers()
+		require.Len(t, answers, 1)
+		requireDecision(t, decisionOf(&leapmuxv1.QuestionDecision{
+			Answers: []*leapmuxv1.QuestionAnswer{{Selected: []string{"Cache"}, CustomText: "Also check metrics"}},
+		}), answers[0].GetDecision())
+	})
+
+	t.Run("omitted request on input dialog with --text", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_INPUT))},
+		}}
+		startAgentWorker(t, id, w)
+
+		data := runControl(t, "agent", "answer", id, "--text", "v2.4.0").Data(t)
+		assert.Equal(t, "3kQ9xZ1b", data["id"])
+		answers := w.recordedAnswers()
+		require.Len(t, answers, 1)
+		requireDecision(t, decisionOf(&leapmuxv1.DialogDecision{
+			Action: leapmuxv1.DialogAction_DIALOG_ACTION_SUBMIT,
+			Value:  "v2.4.0",
+		}), answers[0].GetDecision())
+	})
+
+	t.Run("omitted request reads stdin via --text -", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR))},
+		}}
+		startAgentWorker(t, id, w)
+
+		o := runControlIn(t, "release notes\nfrom stdin\n", "agent", "answer", id, "--text", "-")
+		require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
+		answers := w.recordedAnswers()
+		require.Len(t, answers, 1)
+		assert.Equal(t, "release notes\nfrom stdin\n", answers[0].GetDecision().GetDialog().GetValue())
+	})
+
+	t.Run("explicit request prefix with --text", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {
+				pendingRequest("3kQ9xZ1b", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_INPUT)),
+				pendingRequest("9Lm2Pq7c", permissionPrompt()),
+			},
+		}}
+		startAgentWorker(t, id, w)
+
+		data := runControl(t, "agent", "answer", id, "3kQ9", "--text", "v2.4.0").Data(t)
+		assert.Equal(t, "3kQ9xZ1b", data["id"])
+		answers := w.recordedAnswers()
+		require.Len(t, answers, 1)
+		assert.Equal(t, "v2.4.0", answers[0].GetDecision().GetDialog().GetValue())
+	})
+
+	t.Run("stale handle with --option and --text fails with not_found", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", questionPrompt(extrasQuestion()))},
+		}}
+		startAgentWorker(t, id, w)
+
+		f := runControl(t, "agent", "answer", id, "stale-handle", "--option", "1", "--text", "note").requireFailure(t, cli.CodeNotFound)
+		assert.Contains(t, f.Message, "no pending request stale-handle")
+		assert.Empty(t, w.recordedAnswers())
+	})
+
+	t.Run("stale handle with --text alone does not shift into question text or read stdin", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", questionPrompt(databaseQuestion()))},
+		}}
+		startAgentWorker(t, id, w)
+
+		f := runControl(t, "agent", "answer", id, "stale-handle", "--text", "note").requireFailure(t, cli.CodeNotFound)
+		assert.Contains(t, f.Message, "no pending request stale-handle")
+
+		spy := &spyStdinReader{readErr: errors.New("stdin must not be read")}
+		var out, errOut bytes.Buffer
+		code := cli.Execute(context.Background(), NewCommand(), []string{"agent", "answer", id, "stale-handle", "--text", "-", "--json"}, spy, &out, &errOut)
+		assert.NotEqual(t, cli.ExitOK, code)
+		assert.Equal(t, 0, spy.reads, "stdin must not be read when the explicit request handle is not found")
+		assert.Contains(t, out.String(), `"code":"not_found"`)
+		assert.Empty(t, w.recordedAnswers())
+	})
+
+	t.Run("rejects duplicate stdin dash across --text and positional args", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR))},
+		}}
+		startAgentWorker(t, id, w)
+
+		f := runControlIn(t, "hello", "agent", "answer", id, "--text", "-", "--text", "-", "--json").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, `only one text can be "-"`)
+
+		f = runControlIn(t, "hello", "agent", "answer", id, "3kQ9", "--text", "-", "-", "--json").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, `only one text can be "-"`)
+		assert.Empty(t, w.recordedAnswers())
+	})
+
+	t.Run("repeatable --text answers multiple questions", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", questionPrompt(databaseQuestion(), extrasQuestion()))},
+		}}
+		startAgentWorker(t, id, w)
+
+		runControl(t, "agent", "answer", id, "--text", "1:PostgreSQL", "--text", "2:Metrics").Data(t)
+		answers := w.recordedAnswers()
+		require.Len(t, answers, 1)
+		requireDecision(t, decisionOf(&leapmuxv1.QuestionDecision{Answers: []*leapmuxv1.QuestionAnswer{
+			{CustomText: "PostgreSQL"},
+			{CustomText: "Metrics"},
+		}}), answers[0].GetDecision())
+	})
+
+	t.Run("omitted request on editor dialog with inline --text", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR))},
+		}}
+		startAgentWorker(t, id, w)
+
+		data := runControl(t, "agent", "answer", id, "--text", "line 1\nline 2").Data(t)
+		assert.Equal(t, "3kQ9xZ1b", data["id"])
+		answers := w.recordedAnswers()
+		require.Len(t, answers, 1)
+		requireDecision(t, decisionOf(&leapmuxv1.DialogDecision{
+			Action: leapmuxv1.DialogAction_DIALOG_ACTION_SUBMIT,
+			Value:  "line 1\nline 2",
+		}), answers[0].GetDecision())
+	})
+
+	t.Run("empty --text fails on question without falling back to defaults and submits empty on editor dialog", func(t *testing.T) {
+		defaulted := extrasQuestion()
+		defaulted.InitialSelections = &leapmuxv1.QuestionSelections{Values: []string{"logs"}}
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", questionPrompt(defaulted))},
+		}}
+		startAgentWorker(t, id, w)
+
+		f := runControl(t, "agent", "answer", id, "--text", "").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "the text of question 1 is empty")
+		assert.Empty(t, w.recordedAnswers(), "empty --text must not silently drop and send defaults")
+
+		wDialog := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR))},
+		}}
+		startAgentWorker(t, id, wDialog)
+
+		data := runControl(t, "agent", "answer", id, "--text", "").Data(t)
+		assert.Equal(t, "3kQ9xZ1b", data["id"])
+		answers := wDialog.recordedAnswers()
+		require.Len(t, answers, 1)
+		requireDecision(t, decisionOf(&leapmuxv1.DialogDecision{
+			Action: leapmuxv1.DialogAction_DIALOG_ACTION_SUBMIT,
+			Value:  "",
+		}), answers[0].GetDecision())
+	})
+
+	t.Run("--text - returns internal error when stdin read fails", func(t *testing.T) {
+		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{
+			id: {pendingRequest("3kQ9xZ1b", dialogPrompt(leapmuxv1.DialogVariant_DIALOG_VARIANT_EDITOR))},
+		}}
+		startAgentWorker(t, id, w)
+
+		spy := &spyStdinReader{readErr: errors.New("broken pipe")}
+		var out, errOut bytes.Buffer
+		code := cli.Execute(context.Background(), NewCommand(), []string{"agent", "answer", id, "--text", "-", "--json"}, spy, &out, &errOut)
+		assert.NotEqual(t, cli.ExitOK, code)
+		assert.Equal(t, 1, spy.reads)
+		assert.Contains(t, out.String(), `"code":"internal"`)
+		assert.Contains(t, out.String(), "read stdin")
+		assert.Contains(t, out.String(), "broken pipe")
+		assert.Empty(t, w.recordedAnswers())
+	})
+}
+
 func TestAgentAnswerOverIPC_Refusals(t *testing.T) {
 	id := fullTestID("ag-2")
 	answered := pendingRequest("claim-2", permissionPrompt())
 	answered.ResponseState = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED
 	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", permissionPrompt()), answered}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	t.Run("an unknown handle", func(t *testing.T) {
 		f := runControl(t, "agent", "approve", id, "nope").requireFailure(t, cli.CodeNotFound)

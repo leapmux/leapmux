@@ -128,11 +128,12 @@ func (o cliOutcome) Failure(t *testing.T) cliFailure {
 
 // cliFailure is the body of an {"error": ...} envelope.
 type cliFailure struct {
-	Code       cli.Code        `json:"code"`
-	Message    string          `json:"message"`
-	Hints      []string        `json:"hints"`
-	Retryable  bool            `json:"retryable"`
-	Candidates []cli.Candidate `json:"candidates"`
+	Code       cli.Code          `json:"code"`
+	Message    string            `json:"message"`
+	Hints      []string          `json:"hints"`
+	Retryable  bool              `json:"retryable"`
+	Candidates []cli.Candidate   `json:"candidates"`
+	Receipt    *cli.RetryReceipt `json:"receipt,omitempty"`
 }
 
 // requireFailure asserts that the run failed with code, and returns the

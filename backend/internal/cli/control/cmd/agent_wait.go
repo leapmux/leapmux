@@ -4,17 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
-	"github.com/leapmux/leapmux/internal/worker/controlenv"
+	"github.com/leapmux/leapmux/tunnel"
 )
 
 // waitUntil is the state that `agent wait --until` waits for: a token of
@@ -28,7 +31,7 @@ func (conditions waitConditions) match(state string) (bool, bool) {
 	guardedMatch := false
 	for _, condition := range conditions {
 		if condition.holds(state) {
-			if !condition.needsEmptyQueue() {
+			if !condition.needsEmptyQueue(state) {
 				return true, false
 			}
 			guardedMatch = true
@@ -67,12 +70,18 @@ func parseWaitUntil(token string) (waitUntil, error) {
 		WithHint("accepted values: %s", strings.Join(waitUntilTokens(), ", "))
 }
 
-// needsEmptyQueue reports whether the condition also needs an input queue
-// with nothing that the agent will read by itself. An agent that holds such
-// a message starts a turn soon, so it is neither idle nor settled yet: a
-// starting agent reports idle while its first message waits in the queue.
-func (u waitUntil) needsEmptyQueue() bool {
-	return u == waitUntilSettled || enumToken(leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE) == string(u)
+// needsEmptyQueue reports whether an agent in state also needs an input queue
+// with nothing that the agent will read by itself. An idle agent that holds
+// such a message starts a turn soon, so it is neither idle nor settled yet: a
+// starting agent reports idle while its first message waits in the queue. An
+// agent in waiting_for_user is blocked on a prompt and cannot drain its queue
+// until the user answers, so settled completes without waiting on queued input.
+func (u waitUntil) needsEmptyQueue(state string) bool {
+	idleState := enumToken(leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE)
+	if state != idleState {
+		return false
+	}
+	return u == waitUntilSettled || string(u) == idleState
 }
 
 // holds reports whether an agent in state meets the condition.
@@ -129,6 +138,9 @@ type agentWaitSpec struct {
 	anyAgent bool
 	// timeout ends the wait after this long. Zero waits without a limit.
 	timeout time.Duration
+	// onActivity, when non-nil, runs for each activityLevel or activityChange
+	// observed for a watched, non-closed agent.
+	onActivity func(activityEvent)
 }
 
 // queueWaitProbe reports whether a due input or, when requireInactive is set,
@@ -136,6 +148,24 @@ type agentWaitSpec struct {
 type queueWaitProbe func(ctx context.Context, agentID string, requireInactive bool) (bool, error)
 
 var errAgentWaitExpired = errors.New("the agent wait deadline passed")
+
+// agentWaitHooks holds test seams for runAgentWait. Production leaves it zero.
+var agentWaitHooks struct {
+	clock      quartz.Clock
+	onActivity func(activityEvent)
+}
+
+// isContextCancelError reports whether err is a cancellation or deadline error
+// caused by ctx ending.
+func isContextCancelError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Cause(ctx)) ||
+		connect.CodeOf(err) == connect.CodeCanceled
+}
 
 // agentWaitContext cancels an event wait and any reads it starts. The cause
 // distinguishes this deadline from cancellation of the parent command.
@@ -168,9 +198,12 @@ func awaitAgents(ctx context.Context, clock quartz.Clock, events <-chan activity
 	result := func() agentWaitResult { return agentWaitResult{Agents: slices.Clone(rows)} }
 	idleState := enumToken(leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE)
 wait:
-	for ctx.Err() == nil {
+	for {
 		if outcome, done := agentWaitVerdict(rows, spec.anyAgent); done {
 			return result(), outcome, nil
+		}
+		if ctx.Err() != nil {
+			break wait
 		}
 		select {
 		case <-ctx.Done():
@@ -191,6 +224,9 @@ wait:
 					continue
 				}
 				rows[i].State = agentStateToken(ev.state)
+				if spec.onActivity != nil {
+					spec.onActivity(ev)
+				}
 			case activityInputChanged:
 				// The published state stays the same. Recheck its queue below.
 			case activityClosed:
@@ -208,10 +244,10 @@ wait:
 			}
 			if checkQueue {
 				busy, err := queueBlocksWait(ctx, ev.agentID, rows[i].State == idleState)
-				if ctx.Err() != nil {
-					break wait
-				}
 				if err != nil {
+					if isContextCancelError(ctx, err) {
+						break wait
+					}
 					return result(), 0, err
 				}
 				if busy {
@@ -277,7 +313,8 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 	events := make(chan activityEvent, 16)
 	workerOf := map[string]string{}
 	for _, group := range byWorker {
-		startActivityFeed(ctx, workerActivitySource(s.c, group.workerID), group.agentIDs, events)
+		stopFeed := startActivityFeed(ctx, workerActivitySource(s.c, group.workerID), group.agentIDs, events)
+		defer stopFeed()
 		for _, id := range group.agentIDs {
 			workerOf[id] = group.workerID
 		}
@@ -288,34 +325,23 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 	}
 	spin := cli.StartSpinner(inv.Printer, spinMsg)
 	defer spin.Stop()
-	// Wrap events so live state transitions update the stderr spinner message.
-	spinnedEvents := make(chan activityEvent, 16)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ev := <-events:
-				if ev.kind == activityLevel || ev.kind == activityChange {
-					state := agentStateToken(ev.state)
-					if len(agentIDs) == 1 {
-						spin.Update(fmt.Sprintf("waiting for agent %s (%s; now %s)", cli.ShortID(agentIDs[0]), spec.until.description(), state))
-					} else {
-						spin.Update(fmt.Sprintf("waiting for %s (%s; %s -> %s)", agentPhrase(agentIDs), spec.until.description(), cli.ShortID(ev.agentID), state))
-					}
-				}
-				select {
-				case spinnedEvents <- ev:
-				case <-ctx.Done():
-					return
-				}
-			}
+	extraOnActivity := agentWaitHooks.onActivity
+	spec.onActivity = func(ev activityEvent) {
+		state := agentStateToken(ev.state)
+		if len(agentIDs) == 1 {
+			spin.Update(fmt.Sprintf("waiting for agent %s (%s; now %s)", cli.ShortID(agentIDs[0]), spec.until.description(), state))
+		} else {
+			spin.Update(fmt.Sprintf("waiting for %s (%s; %s -> %s)", agentPhrase(agentIDs), spec.until.description(), cli.ShortID(ev.agentID), state))
 		}
-	}()
+		if extraOnActivity != nil {
+			extraOnActivity(ev)
+		}
+	}
+	queuePool := newWorkerQueuePool(s.c)
+	defer queuePool.close()
 	queues := &queueWatch{
 		read: func(ctx context.Context, agentID string) (*leapmuxv1.AgentInputQueueSnapshot, error) {
-			response, err := workerReplyReader(s.c, workerOf[agentID], agentID).readQueue(ctx, "")
-			return response.GetSnapshot(), err
+			return queuePool.readQueue(ctx, workerOf[agentID], agentID)
 		},
 		notice: func(format string, args ...any) {
 			spin.Stop()
@@ -323,7 +349,11 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 		},
 		now: time.Now,
 	}
-	result, outcome, err := awaitAgents(ctx, quartz.NewReal(), spinnedEvents, queues.blocksWait, spec)
+	waitClock := agentWaitHooks.clock
+	if waitClock == nil {
+		waitClock = quartz.NewReal()
+	}
+	result, outcome, err := awaitAgents(ctx, waitClock, events, queues.blocksWait, spec)
 	spin.Stop()
 	if err != nil {
 		return nil, err
@@ -332,6 +362,128 @@ func runAgentWait(inv *cli.Invocation) (any, error) {
 		return result, nil
 	}
 	return nil, agentWaitEnded(inv.Printer, result, outcome, spec)
+}
+
+// workerQueuePool keeps one open E2EE channel per Worker for repeated
+// ListAgentInputQueue probes during `agent wait`. Local IPC clients reuse the
+// socket directly. On a channel transport failure, the cached channel is closed
+// and reopened once for a retry.
+type workerQueuePool struct {
+	c        control.Peer
+	mu       sync.Mutex
+	channels map[string]*tunnel.Channel
+	closed   bool
+}
+
+func newWorkerQueuePool(c control.Peer) *workerQueuePool {
+	return &workerQueuePool{
+		c:        c,
+		channels: map[string]*tunnel.Channel{},
+	}
+}
+
+func (p *workerQueuePool) readQueue(ctx context.Context, workerID, agentID string) (*leapmuxv1.AgentInputQueueSnapshot, error) {
+	req := &leapmuxv1.ListAgentInputQueueRequest{AgentId: agentID}
+	switch c := p.c.(type) {
+	case *control.WorkerIPCClient:
+		callCtx, cancel := rpcDeadline(ctx)
+		defer cancel()
+		var resp leapmuxv1.ListAgentInputQueueResponse
+		if err := (workerCall{ipc: c, workerID: workerID}).Call(callCtx, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, req, &resp); err != nil {
+			return nil, err
+		}
+		return resp.GetSnapshot(), nil
+	case *control.HubClient:
+		if workerID == "" {
+			return nil, &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
+		}
+		for attempt := range 2 {
+			ch, err := p.channelFor(ctx, c, workerID)
+			if err != nil {
+				return nil, err
+			}
+			callCtx, cancel := rpcDeadline(ctx)
+			var resp leapmuxv1.ListAgentInputQueueResponse
+			err = (workerCall{hub: c, workerID: workerID, ch: ch}).Call(callCtx, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, req, &resp)
+			cancel()
+			if err == nil {
+				return resp.GetSnapshot(), nil
+			}
+			var coded *codedRPCError
+			if attempt == 0 && ctx.Err() == nil && errors.As(err, &coded) && coded.Code == "rpc_failed" {
+				p.dropChannel(workerID, ch)
+				continue
+			}
+			return nil, err
+		}
+		return nil, context.Canceled
+	default:
+		return nil, fmt.Errorf("unsupported control peer %T", p.c)
+	}
+}
+
+func (p *workerQueuePool) channelFor(ctx context.Context, hub *control.HubClient, workerID string) (*tunnel.Channel, error) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, context.Canceled
+	}
+	if ch := p.channels[workerID]; ch != nil {
+		p.mu.Unlock()
+		return ch, nil
+	}
+	p.mu.Unlock()
+
+	openCtx, cancelOpen := rpcDeadline(ctx)
+	ch, err := hub.OpenE2EEChannel(openCtx, context.WithoutCancel(ctx), workerID)
+	cancelOpen()
+	if err != nil {
+		return nil, withHubVersion(ctx, hub, &codedRPCError{Code: "channel_open_failed", Cause: err})
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		ch.Close()
+		return nil, context.Canceled
+	}
+	if existing := p.channels[workerID]; existing != nil {
+		p.mu.Unlock()
+		ch.Close()
+		return existing, nil
+	}
+	p.channels[workerID] = ch
+	p.mu.Unlock()
+	return ch, nil
+}
+
+func (p *workerQueuePool) dropChannel(workerID string, ch *tunnel.Channel) {
+	p.mu.Lock()
+	if p.channels[workerID] == ch {
+		delete(p.channels, workerID)
+		p.mu.Unlock()
+		ch.Close()
+		return
+	}
+	p.mu.Unlock()
+}
+
+func (p *workerQueuePool) close() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
+	channels := make([]*tunnel.Channel, 0, len(p.channels))
+	for _, ch := range p.channels {
+		channels = append(channels, ch)
+	}
+	clear(p.channels)
+	p.mu.Unlock()
+	for _, ch := range channels {
+		ch.Close()
+	}
 }
 
 // queueWatch answers queueWaitProbe from the input queue of each agent, and
@@ -433,34 +585,16 @@ func waitTimeoutFlag(inv *cli.Invocation) (time.Duration, error) {
 // agent is refused: its own turn runs the wait, so the agent cannot settle
 // while the wait runs.
 func resolveWaitTargets(s *session, inputs []string) ([]tabTarget, error) {
-	bounded := s.bounded()
-	defer bounded.Close()
-	targets := make([]tabTarget, 0, len(inputs))
-	for _, input := range inputs {
-		if strings.EqualFold(strings.TrimSpace(input), "children") {
-			children, err := bounded.resolveChildAgents(
-				(resolve.Listing{}).SelfTabID(resolve.KindAgent),
-				strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)),
-			)
-			if err != nil {
-				return nil, err
-			}
-			for _, child := range children {
-				if err := refuseSelfWait(child); err != nil {
-					return nil, err
-				}
-				targets = append(targets, child)
-			}
-			continue
-		}
-		got, err := bounded.resolveTab(resolve.KindAgent, input, resolve.Need{WorkerID: true})
-		if err != nil {
+	timed := s.bounded()
+	defer timed.Close()
+	targets, err := timed.resolveVariadicAgentTargets(inputs, resolve.Need{})
+	if err != nil {
+		return nil, err
+	}
+	for _, target := range targets {
+		if err := refuseSelfWait(target); err != nil {
 			return nil, err
 		}
-		if err := refuseSelfWait(got); err != nil {
-			return nil, err
-		}
-		targets = append(targets, got)
 	}
 	return targets, nil
 }
@@ -481,35 +615,22 @@ func agentWaitEnded(p *cli.Printer, result agentWaitResult, outcome agentWaitOut
 	if err := p.Result(result); err != nil {
 		return err
 	}
+	var ids []string
+	for _, row := range result.Agents {
+		if row.Reached {
+			continue
+		}
+		if outcome == agentWaitImpossible && row.State != agentStateClosed {
+			continue
+		}
+		ids = append(ids, row.ID)
+	}
 	if outcome == agentWaitImpossible {
-		p.Notice("the wait ended, because %s closed before reaching %s", agentsClosed(result), spec.until.description())
+		p.Notice("the wait ended, because %s closed before reaching %s", agentPhrase(ids), spec.until.description())
 	} else {
-		p.Notice("the wait ended after %s, before %s reached %s", spec.timeout, agentsNotReached(result), spec.until.description())
+		p.Notice("the wait ended after %s, before %s reached %s", spec.timeout, agentPhrase(ids), spec.until.description())
 	}
 	return &cli.ExitStatus{Code: cli.ExitWaitEnded}
-}
-
-// agentsNotReached lists the agents of result that did not reach the state.
-func agentsNotReached(result agentWaitResult) string {
-	var ids []string
-	for _, row := range result.Agents {
-		if !row.Reached {
-			ids = append(ids, row.ID)
-		}
-	}
-	return agentPhrase(ids)
-}
-
-// agentsClosed lists the agents of result that closed before they reached
-// the state.
-func agentsClosed(result agentWaitResult) string {
-	var ids []string
-	for _, row := range result.Agents {
-		if !row.Reached && row.State == agentStateClosed {
-			ids = append(ids, row.ID)
-		}
-	}
-	return agentPhrase(ids)
 }
 
 // agentPhrase is "agent <id>" for one agent, and "agents <id>, <id>" for

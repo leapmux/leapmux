@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -88,9 +87,13 @@ func parseSinceFlag(raw string, now time.Time) (string, error) {
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
 		return timefmt.Format(t.UTC()), nil
 	}
-	durRaw := strings.TrimPrefix(v, "-")
-	if d, err := time.ParseDuration(durRaw); err == nil && d > 0 {
-		return timefmt.Format(now.Add(-d).UTC()), nil
+	if !strings.HasPrefix(v, "+") {
+		durRaw := strings.TrimPrefix(v, "-")
+		if !strings.HasPrefix(durRaw, "+") {
+			if d, err := time.ParseDuration(durRaw); err == nil && d > 0 {
+				return timefmt.Format(now.Add(-d).UTC()), nil
+			}
+		}
 	}
 	return "", cli.Usagef("--since %q must be an RFC 3339 timestamp or positive duration (such as 24h or 30m)", raw)
 }
@@ -111,14 +114,9 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var provider leapmuxv1.AgentProvider
-	if raw := strings.TrimSpace(stringFlag(inv, "provider")); raw != "" {
-		p, ok := agentlabels.ParseProvider(raw)
-		if !ok {
-			return nil, cli.Usagef("unknown --provider %q", raw).
-				WithHint("accepted values: %s", strings.Join(allProviderAliases(), ", "))
-		}
-		provider = p
+	provider, err := parseProviderFlag(stringFlag(inv, "provider"))
+	if err != nil {
+		return nil, err
 	}
 	regexMode := boolFlag(inv, "regex")
 	caseSensitive := boolFlag(inv, "case-sensitive")
@@ -201,8 +199,7 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 
 	var mu sync.Mutex
 	var hits []agentSearchHit
-	var failedWorkers []string
-	var lastErr error
+	var failures []workerSearchFailure
 	succeeded := 0
 	truncated := false
 	g, gctx := errgroup.WithContext(s.ctx)
@@ -228,8 +225,7 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 					return err
 				}
 				mu.Lock()
-				failedWorkers = append(failedWorkers, fmt.Sprintf("%s (%v)", cli.ShortID(wid), err))
-				lastErr = err
+				failures = append(failures, workerSearchFailure{workerID: wid, err: err})
 				mu.Unlock()
 				return nil
 			}
@@ -242,7 +238,7 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 				hits = append(hits, agentSearchHit{
 					AgentID:   h.GetAgentId(),
 					Title:     h.GetAgentTitle(),
-					Provider:  agentProviderName(h.GetProvider()),
+					Provider:  agentlabels.CLIAlias(h.GetProvider()),
 					WorkerID:  wid,
 					Seq:       h.GetSeq(),
 					Source:    enumToken(h.GetSource()),
@@ -257,26 +253,23 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	if len(failedWorkers) > 0 {
+	if len(failures) > 0 {
+		sort.Slice(failures, func(i, j int) bool {
+			return failures[i].workerID < failures[j].workerID
+		})
 		if succeeded == 0 {
-			e := cli.FromError(lastErr)
-			if e.Code == cli.CodeUsage || e.Code == cli.CodeInvalidArgument || e.Code == cli.CodePermissionDenied {
-				return nil, lastErr
-			}
-			return nil, cli.Wrap(cli.CodeWorkerOffline, lastErr, fmt.Sprintf("agent search failed on all %d workers", len(failedWorkers)))
+			return nil, selectSearchFailure(failures)
 		}
-		sort.Strings(failedWorkers)
 		if inv.Printer.Format == cli.FormatText {
-			inv.Printer.Notice("warning: skipped unreachable worker(s): %s", strings.Join(failedWorkers, "; "))
+			labels := make([]string, 0, len(failures))
+			for _, f := range failures {
+				labels = append(labels, fmt.Sprintf("%s (%v)", cli.ShortID(f.workerID), f.err))
+			}
+			inv.Printer.Notice("warning: skipped unreachable worker(s): %s", strings.Join(labels, "; "))
 		}
 	}
 
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].CreatedAt != hits[j].CreatedAt {
-			return hits[i].CreatedAt > hits[j].CreatedAt
-		}
-		return hits[i].Seq > hits[j].Seq
-	})
+	sortAgentSearchHits(hits)
 	if len(hits) > limit {
 		hits = hits[:limit]
 		truncated = true
@@ -291,5 +284,65 @@ func runAgentSearch(inv *cli.Invocation) (any, error) {
 	}, nil
 }
 
-// Keep context import used cleanly for future extensions if needed.
-var _ context.Context
+type workerSearchFailure struct {
+	workerID string
+	err      error
+}
+
+// selectSearchFailure picks the returned error deterministically when every
+// worker in a multi-worker search failed. Failures are ordered by worker ID,
+// and client/argument/permission refusals take precedence over offline/transient
+// failures so goroutine scheduling never changes the reported error code.
+func selectSearchFailure(failures []workerSearchFailure) error {
+	ordered := append([]workerSearchFailure(nil), failures...)
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i].workerID < ordered[j].workerID
+	})
+	for _, f := range ordered {
+		code := cli.FromError(f.err).Code
+		if code == cli.CodeUsage || code == cli.CodeInvalidArgument || code == cli.CodePermissionDenied {
+			return f.err
+		}
+	}
+	return cli.Wrap(cli.CodeWorkerOffline, ordered[0].err, fmt.Sprintf("agent search failed on all %d workers", len(ordered)))
+}
+
+// sortAgentSearchHits orders search hits newest first using parsed RFC 3339
+// instants, falling back to string order for unparseable timestamps, with
+// deterministic tie-breakers so concurrent worker responses produce stable
+// pagination under --limit.
+func sortAgentSearchHits(hits []agentSearchHit) {
+	type parsedHit struct {
+		hit   agentSearchHit
+		ts    time.Time
+		valid bool
+	}
+	parsed := make([]parsedHit, len(hits))
+	for i, h := range hits {
+		ts, err := time.Parse(time.RFC3339Nano, h.CreatedAt)
+		parsed[i] = parsedHit{hit: h, ts: ts, valid: err == nil}
+	}
+	sort.Slice(parsed, func(i, j int) bool {
+		a, b := parsed[i], parsed[j]
+		if a.valid != b.valid {
+			return a.valid
+		}
+		if a.valid {
+			if !a.ts.Equal(b.ts) {
+				return a.ts.After(b.ts)
+			}
+		} else if a.hit.CreatedAt != b.hit.CreatedAt {
+			return a.hit.CreatedAt > b.hit.CreatedAt
+		}
+		if a.hit.Seq != b.hit.Seq {
+			return a.hit.Seq > b.hit.Seq
+		}
+		if a.hit.AgentID != b.hit.AgentID {
+			return a.hit.AgentID < b.hit.AgentID
+		}
+		return a.hit.WorkerID < b.hit.WorkerID
+	})
+	for i, p := range parsed {
+		hits[i] = p.hit
+	}
+}

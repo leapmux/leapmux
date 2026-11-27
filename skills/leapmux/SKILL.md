@@ -37,7 +37,8 @@ leapmux agent providers
 Any command accepting `<agent>`, `<tab>`, `<terminal>`, `<workspace>`, or `<worker>` resolves:
 
 - `self` — the calling tab, tile, workspace, or Worker (read-only commands default to `self`)
-- `parent` / `children` — the spawning parent or direct child subagents of the calling agent
+- `parent` — the spawning parent of the calling agent (on `agent` or `tab` commands)
+- `children` — all direct child subagents of the calling agent (on multi-agent commands: `agent wait`, `agent requests`, `agent interrupt`, and `agent close`)
 - Full ID or a unique ID prefix of at least 4 characters (3+ characters for request/queue handles)
 - `name:<slug>` — unique agent slug set with `--name`, or Worker name
 - `title:<title>` — tab or workspace title (bare case-insensitive title/name also works when unique)

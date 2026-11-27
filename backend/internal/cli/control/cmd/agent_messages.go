@@ -43,28 +43,48 @@ func runAgentMessages(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	follow := boolFlag(inv, "follow")
-	rawMode := boolFlag(inv, "raw")
-	fullMode := boolFlag(inv, "full")
-	markdownMode := boolFlag(inv, "markdown")
+	opts := messageFormatOptions{
+		raw:      boolFlag(inv, "raw"),
+		full:     boolFlag(inv, "full"),
+		markdown: boolFlag(inv, "markdown"),
+	}
 	summaryMode := boolFlag(inv, "summary")
-	s, err := openStreamSession(inv)
-	if err != nil {
-		return nil, err
+	if follow && summaryMode {
+		return nil, cli.Usagef("--follow cannot be combined with --summary")
 	}
-	defer s.Close()
-	bounded := s.bounded()
-	defer bounded.Close()
-	got, err := bounded.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
-	if err != nil {
-		return nil, err
+	anchor := stringFlag(inv, "anchor")
+	if inv.Changed("anchor") && strings.TrimSpace(anchor) == "" {
+		return nil, cli.Usagef("invalid --anchor %q: want latest, oldest, before, or after", anchor)
 	}
-	req, err := listMessagesPageRequest(got.ID, stringFlag(inv, "anchor"), cursorSeq, limit)
+	req, err := listMessagesPageRequest("", anchor, cursorSeq, limit)
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
 	if err := followSelectorError(follow, req.GetAnchor()); err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
+	agentArg := inv.Arg("agent")
+	if (strings.TrimSpace(agentArg) == "" || strings.TrimSpace(agentArg) == resolve.SelfTarget) &&
+		(resolve.Listing{}).SelfTabID(resolve.KindAgent) == "" {
+		return nil, cli.Usagef(`"self" selects your own agent, and this shell does not run inside a LeapMux agent tab`).
+			WithHint("give the agent's id instead")
+	}
+
+	s, err := openStreamSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	timed := s.bounded()
+	defer timed.Close()
+	got, err := timed.resolveTab(resolve.KindAgent, agentArg, resolve.Need{WorkerID: true})
+	if err != nil {
+		return nil, err
+	}
+	if err := maybePreflightWorker(timed.ctx, s.c, got.WorkerID); err != nil {
+		return nil, err
+	}
+	req.AgentId = got.ID
 
 	// Page 1: history pulled via ListAgentMessages so the user sees
 	// prior context before the live tail starts. WatchEvents can replay the
@@ -72,57 +92,34 @@ func runAgentMessages(inv *cli.Invocation) (any, error) {
 	// history, capped by contracts.MessagePageLimit. Keep it for the single-page
 	// show-history-first behaviour.
 	var resp leapmuxv1.ListAgentMessagesResponse
-	if err := callInnerRPC(bounded.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
+	if err := callInnerRPC(timed.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
 		return nil, err
-	}
-	renderMsg := func(m *leapmuxv1.AgentChatMessage) agentMessage {
-		msg := renderAgentMessage(m)
-		msg.rawText = rawMode
-		msg.fullText = fullMode
-		msg.markdown = markdownMode
-		return msg
 	}
 	if !follow {
 		rows := make([]agentMessage, 0, len(resp.GetMessages()))
 		for _, m := range resp.GetMessages() {
-			rows = append(rows, renderMsg(m))
+			rows = append(rows, renderAgentMessage(m))
 		}
-		var goal *agentGoalView
-		if snap := resp.GetGoal(); snap != nil && snap.GetGoal() != nil {
-			g := snap.GetGoal()
-			goal = &agentGoalView{
-				AgentID:      got.ID,
-				Objective:    g.GetObjective(),
-				Status:       enumToken(g.GetStatus()),
-				StatusDetail: g.GetStatusDetail(),
-				CreatedAt:    g.GetCreatedAt(),
-				UpdatedAt:    snap.GetGoalUpdatedAt(),
+		format := cli.FormatText
+		if inv.Printer != nil {
+			format = inv.Printer.Format
+		}
+		// Omit summary metadata unless --summary was requested, and never attach
+		// sibling list fields (Todos/BackgroundTasks) under row-oriented formats
+		// (NDJSON/TSV) so Messages stays the sole projected primary list.
+		includeSummary := summaryMode && format != cli.FormatNDJSON && format != cli.FormatTSV
+		var (
+			goal  *agentGoalView
+			todos []agentTodoRow
+			tasks []agentTaskRow
+		)
+		if includeSummary {
+			if snap := resp.GetGoal(); snap != nil && snap.GetGoal() != nil {
+				view := agentGoalViewOf(got.ID, snap)
+				goal = &view
 			}
-		}
-		var todos []agentTodoRow
-		for _, item := range resp.GetTodos().GetTodos() {
-			todos = append(todos, agentTodoRow{
-				ID:          item.GetId(),
-				Status:      enumToken(item.GetStatus()),
-				Content:     item.GetContent(),
-				ActiveForm:  item.GetActiveForm(),
-				Description: item.GetDescription(),
-			})
-		}
-		var tasks []agentTaskRow
-		for _, task := range resp.GetBackgroundTasks().GetTasks() {
-			tasks = append(tasks, agentTaskRow{
-				ID:            task.GetId(),
-				Kind:          enumToken(task.GetKind()),
-				Status:        enumToken(task.GetStatus()),
-				Title:         task.GetTitle(),
-				ChildAgentID:  task.GetChildAgentId(),
-				GroupLabel:    task.GetGroupLabel(),
-				ParentAgentID: task.GetParentAgentId(),
-				ActiveForm:    task.GetActiveForm(),
-				CreatedAt:     task.GetCreatedAt(),
-				EndedAt:       task.GetEndedAt(),
-			})
+			todos = agentTodoRowsOf(resp.GetTodos())
+			tasks = agentTaskRowsOf(resp.GetBackgroundTasks(), false)
 		}
 		return agentMessageList{
 			Messages:        rows,
@@ -131,7 +128,7 @@ func runAgentMessages(inv *cli.Invocation) (any, error) {
 			Goal:            goal,
 			Todos:           todos,
 			BackgroundTasks: tasks,
-			markdown:        markdownMode,
+			opts:            opts,
 			showSummary:     summaryMode,
 		}, nil
 	}
@@ -139,9 +136,9 @@ func runAgentMessages(inv *cli.Invocation) (any, error) {
 	// Follow mode: print page 1, then stream live via WatchEvents. The
 	// lineEmitter serializes every write under one mutex so the
 	// subscription callback and the reconnect-drain loop can't interleave.
-	em := &lineEmitter{printer: inv.Printer, rawText: rawMode, fullText: fullMode, markdown: markdownMode}
+	em := &lineEmitter{printer: inv.Printer, opts: opts}
 	for _, m := range resp.GetMessages() {
-		if err := em.emit(renderMsg(m)); err != nil {
+		if err := em.emitMessage(m); err != nil {
 			return nil, err
 		}
 	}
@@ -264,6 +261,13 @@ func listMessagesPageRequest(agentID, anchor string, cursorSeq int64, limit int)
 	return req, nil
 }
 
+// messageFormatOptions configures how an agentMessage renders in text mode.
+type messageFormatOptions struct {
+	raw      bool
+	full     bool
+	markdown bool
+}
+
 // agentMessage is one message of an agent's transcript.
 type agentMessage struct {
 	ID        string `json:"id"`
@@ -295,25 +299,28 @@ type agentMessage struct {
 	ContentError string `json:"content_error,omitempty"`
 	ContentRaw   []byte `json:"content_raw,omitempty"`
 	SpanLines    any    `json:"span_lines,omitempty"`
-
-	// Display options (not serialized to JSON).
-	rawText  bool
-	fullText bool
-	markdown bool
 }
 
-// TextLine prints the message as "#<seq> <source> [HH:MM:SS] [from <sender>]: <text>".
-// Unless rawText is set, it prefers Worker-extracted ReplyText or human text
-// extracted from the provider JSON before falling back to compact JSON.
+// RenderText prints the message in its default text form.
+func (m agentMessage) RenderText(w io.Writer) error {
+	_, err := fmt.Fprintln(w, cli.SanitizeTerminalText(m.TextLine()))
+	return err
+}
+
+// QuietLines prints the sequence number of the message.
+func (m agentMessage) QuietLines() []string {
+	return []string{strconv.FormatInt(m.Seq, 10)}
+}
+
+// TextLine prints the message in its default compact text form.
 func (m agentMessage) TextLine() string {
-	var body string
-	if m.rawText {
-		body = contentSummaryOpts(m.Content, m.fullText)
-	} else if strings.TrimSpace(m.ReplyText) != "" {
-		body = formatMessageText(m.ReplyText, m.fullText)
-	} else {
-		body = readableMessageContent(m.Content, m.fullText)
-	}
+	return m.formatText(messageFormatOptions{})
+}
+
+// formatText prints the message as "#<seq> <source> [HH:MM:SS] [from <sender>]: <text>"
+// (or as a Markdown section when opts.markdown is set). Unless opts.raw is set, it
+// prefers Worker-extracted ReplyText before falling back to plain text or compact JSON.
+func (m agentMessage) formatText(opts messageFormatOptions) string {
 	header := fmt.Sprintf("#%d %s", m.Seq, m.Source)
 	if ts := formatMessageTime(m.CreatedAt); ts != "" {
 		header += " (" + ts + ")"
@@ -321,17 +328,50 @@ func (m agentMessage) TextLine() string {
 	if m.Sender != nil {
 		header += " from " + m.Sender.TextValue()
 	}
-	if m.markdown {
-		if m.rawText {
+	if m.ContentError != "" {
+		errText := "[content decode error: " + oneLine(m.ContentError) + "]"
+		if opts.markdown {
+			return fmt.Sprintf("### %s\n\n%s", header, errText)
+		}
+		return fmt.Sprintf("%s: %s", header, truncateMessageText(errText, opts.full))
+	}
+	if opts.markdown {
+		if opts.raw {
 			return fmt.Sprintf("### %s\n\n```json\n%s\n```", header, contentSummaryOpts(m.Content, true))
 		}
 		fullBody := strings.TrimSpace(m.ReplyText)
 		if fullBody == "" {
-			fullBody = readableMessageContentRaw(m.Content)
+			if s, ok := m.Content.(string); ok {
+				fullBody = strings.TrimSpace(s)
+			} else {
+				fullBody = contentSummaryOpts(m.Content, true)
+			}
 		}
 		return fmt.Sprintf("### %s\n\n%s", header, fullBody)
 	}
+	var body string
+	if opts.raw {
+		body = contentSummaryOpts(m.Content, opts.full)
+	} else if strings.TrimSpace(m.ReplyText) != "" {
+		body = formatMessageText(m.ReplyText, opts.full)
+	} else {
+		body = contentSummaryOpts(m.Content, opts.full)
+	}
 	return fmt.Sprintf("%s: %s", header, body)
+}
+
+// formattedAgentMessage pairs an agentMessage with its text rendering options
+// while keeping JSON, NDJSON, TSV, and quiet representations identical to agentMessage.
+type formattedAgentMessage struct {
+	agentMessage
+	opts messageFormatOptions
+}
+
+func (m formattedAgentMessage) TextLine() string { return m.formatText(m.opts) }
+
+func (m formattedAgentMessage) RenderText(w io.Writer) error {
+	_, err := fmt.Fprintln(w, cli.SanitizeTerminalText(m.TextLine()))
+	return err
 }
 
 func formatMessageTime(createdAt string) string {
@@ -349,7 +389,10 @@ func formatMessageTime(createdAt string) string {
 const maxSummaryRunes = 200
 
 func formatMessageText(text string, full bool) string {
-	text = strings.Join(strings.Fields(text), " ")
+	return truncateMessageText(oneLine(text), full)
+}
+
+func truncateMessageText(text string, full bool) string {
 	if full {
 		return text
 	}
@@ -359,75 +402,21 @@ func formatMessageText(text string, full bool) string {
 	return text
 }
 
-// readableMessageContent extracts human-readable text from a message payload
-// before falling back to compact JSON.
-func readableMessageContent(content any, full bool) string {
-	if extracted := extractTextFromValue(content); extracted != "" {
-		return formatMessageText(extracted, full)
-	}
-	return contentSummaryOpts(content, full)
-}
-
-func readableMessageContentRaw(content any) string {
-	if extracted := extractTextFromValue(content); extracted != "" {
-		return strings.TrimSpace(extracted)
-	}
-	return contentSummaryOpts(content, true)
-}
-
-func extractTextFromValue(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case map[string]any:
-		for _, key := range []string{"text", "content", "summary", "result"} {
-			if val, ok := x[key]; ok {
-				if extracted := extractTextFromValue(val); extracted != "" {
-					return extracted
-				}
-			}
-		}
-		if msg, ok := x["message"]; ok {
-			if extracted := extractTextFromValue(msg); extracted != "" {
-				return extracted
-			}
-		}
-		return ""
-	case []any:
-		var parts []string
-		for _, elem := range x {
-			switch item := elem.(type) {
-			case string:
-				if strings.TrimSpace(item) != "" {
-					parts = append(parts, item)
-				}
-			case map[string]any:
-				if t, _ := item["type"].(string); t == "" || t == "text" || t == "output_text" || t == "input_text" {
-					if s, ok := item["text"].(string); ok && strings.TrimSpace(s) != "" {
-						parts = append(parts, s)
-					}
-				}
-			}
-		}
-		return strings.Join(parts, "\n")
-	default:
-		return ""
-	}
-}
-
 // contentSummaryOpts compacts a message payload to one line of JSON (or plain text).
 func contentSummaryOpts(content any, full bool) string {
-	var text string
-	if s, ok := content.(string); ok {
-		text = s
-	} else {
-		raw, err := json.Marshal(content)
-		if err != nil {
-			return ""
-		}
-		text = string(raw)
+	if content == nil {
+		return ""
 	}
-	return formatMessageText(text, full)
+	if s, ok := content.(string); ok {
+		return formatMessageText(s, full)
+	}
+	raw, err := json.Marshal(content)
+	if err != nil {
+		return ""
+	}
+	// json.Marshal already emits compact single-line JSON; do not collapse
+	// consecutive spaces inside JSON string literals via oneLine.
+	return truncateMessageText(string(raw), full)
 }
 
 // agentMessageList is the result of `agent messages` without --follow.
@@ -438,7 +427,7 @@ type agentMessageList struct {
 	Goal            *agentGoalView `json:"goal,omitempty"`
 	Todos           []agentTodoRow `json:"todos,omitempty"`
 	BackgroundTasks []agentTaskRow `json:"background_tasks,omitempty"`
-	markdown        bool
+	opts            messageFormatOptions
 	showSummary     bool
 }
 
@@ -451,16 +440,16 @@ func (l agentMessageList) QuietLines() []string {
 	return out
 }
 
-// RenderText prints one TextLine per message (or separated Markdown sections),
+// RenderText prints one formatted message per entry (or separated Markdown sections),
 // plus an optional goal/todos/tasks summary footer when --summary is set.
 func (l agentMessageList) RenderText(w io.Writer) error {
 	for i, m := range l.Messages {
-		if l.markdown && i > 0 {
+		if l.opts.markdown && i > 0 {
 			if _, err := fmt.Fprintln(w); err != nil {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintln(w, cli.SanitizeTerminalText(m.TextLine())); err != nil {
+		if _, err := fmt.Fprintln(w, cli.SanitizeTerminalText(m.formatText(l.opts))); err != nil {
 			return err
 		}
 	}
@@ -681,6 +670,24 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 // `agent messages --follow` to a test clock.
 const agentMessagesReconnectTimerTag = "agent-messages-reconnect"
 
+// drainMessagesRequest builds the ListAgentMessagesRequest for one backlog
+// drain page, requesting Worker-extracted ReplyText for both initial OLDEST
+// drains and AFTER-cursor catch-up pages.
+func drainMessagesRequest(agentID string, afterSeq int64) *leapmuxv1.ListAgentMessagesRequest {
+	req := &leapmuxv1.ListAgentMessagesRequest{
+		AgentId:          agentID,
+		Limit:            contracts.MessagePageLimit,
+		IncludeReplyText: true,
+	}
+	if streamevents.IsResumeCursor(afterSeq) {
+		req.Anchor = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER
+		req.CursorSeq = afterSeq
+	} else {
+		req.Anchor = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST
+	}
+	return req
+}
+
 // tailAgentMessages streams `WatchEvents` for a single agent and
 // prints each `AgentChatMessage` as one stream event. On
 // transport disconnect it reconnects with capped exponential backoff,
@@ -693,38 +700,43 @@ const agentMessagesReconnectTimerTag = "agent-messages-reconnect"
 func tailAgentMessages(ctx context.Context, c control.Peer, workerID, agentID string,
 	startSeq int64, em *lineEmitter,
 ) error {
-	// Reconnect backlog drain: page ListAgentMessages forward from the cursor. A
-	// still-zero cursor (no message seen yet) drains from the very beginning via the
-	// OLDEST anchor; once the cursor has advanced, page forward via AFTER from it.
-	// This replaces the prior AFTER+cursor_seq==0 overload, which leaned on the
-	// worker treating an AFTER bound of 0 as "from the oldest message".
-	drainFetch := func(ctx context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
-		req := &leapmuxv1.ListAgentMessagesRequest{
-			AgentId:          agentID,
-			Limit:            contracts.MessagePageLimit,
-			IncludeReplyText: true,
+	// Reconnect backlog drain: share one E2EE worker channel across all pages of
+	// a drainBacklog run, paging ListAgentMessages forward from the cursor. A
+	// still-zero cursor (no message seen yet) drains from the very beginning via
+	// the OLDEST anchor; once the cursor has advanced, page forward via AFTER.
+	withDrain := func(ctx context.Context, run func(messagePager) error) error {
+		if ctx.Err() != nil {
+			return nil
 		}
-		if streamevents.IsResumeCursor(afterSeq) {
-			req.Anchor = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER
-			req.CursorSeq = afterSeq
-		} else {
-			req.Anchor = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST
-		}
-		var resp leapmuxv1.ListAgentMessagesResponse
-		if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
-			return nil, false, err
-		}
-		return resp.GetMessages(), resp.GetHasMore(), nil
+		openCtx, cancelOpen := rpcDeadline(ctx)
+		defer cancelOpen()
+		var runErr error
+		_ = withWorkerChannel(openCtx, c, workerID, func(w workerCall) error {
+			fetch := func(ctx context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
+				callCtx, cancelCall := rpcDeadline(ctx)
+				defer cancelCall()
+				req := drainMessagesRequest(agentID, afterSeq)
+				var resp leapmuxv1.ListAgentMessagesResponse
+				if err := w.Call(callCtx, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
+					return nil, false, err
+				}
+				return resp.GetMessages(), resp.GetHasMore(), nil
+			}
+			runErr = run(fetch)
+			return nil
+		})
+		return runErr
 	}
 	openTransport := func(ctx context.Context) (*workerWatchTransport, error) {
 		return newWorkerWatchTransport(ctx, c, workerID)
 	}
-	return tailAgentMessagesWith(ctx, agentID, startSeq, openTransport, drainFetch, em, quartz.NewReal())
+	return tailAgentMessagesWith(ctx, agentID, startSeq, openTransport, withDrain, em, quartz.NewReal())
 }
 
 func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 	openTransport func(context.Context) (*workerWatchTransport, error),
-	drainFetch messagePager, em *lineEmitter, clock quartz.Clock,
+	withDrain func(context.Context, func(messagePager) error) error,
+	em *lineEmitter, clock quartz.Clock,
 ) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -733,14 +745,6 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 	cursor.Track(agentID, startSeq)
 	// terminals cursor stays empty — we don't subscribe terminals here.
 	terminals := streamevents.NewTerminalCursor()
-
-	// Render one message to stdout. The subscription callback and the reconnect-drain
-	// loop both emit; lineEmitter serializes them so lines can't interleave.
-	emitMsg := func(m *leapmuxv1.AgentChatMessage) error {
-		msg := renderAgentMessage(m)
-		msg.rawText, msg.fullText, msg.markdown = em.rawText, em.fullText, em.markdown
-		return em.emit(msg)
-	}
 
 	// Track whether this subscription delivered a record before reconnecting.
 	var delivered atomic.Bool
@@ -808,24 +812,23 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 		// and the live stream resumes from the newest message. The drain uses AFTER, so
 		// it does not emit a page 1 message again. A failed fetch returns early. The
 		// next reconnect retries from the last message that the command emitted.
-		drained, drainErr := drainBacklog(ctx, agentID, cursor, drainFetch, emitMsg)
+		var drained bool
+		drainErr := withDrain(ctx, func(fetch messagePager) error {
+			var err error
+			drained, err = drainBacklog(ctx, agentID, cursor, fetch, em.emitMessage)
+			return err
+		})
 		if drainErr != nil {
 			return drainErr
 		}
 		if ctx.Err() != nil {
-			if err := em.Err(); err != nil {
-				return err
-			}
-			return nil
+			return em.Err()
 		}
 		if transport == nil {
 			transport, err = openTransport(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
-					if err := em.Err(); err != nil {
-						return err
-					}
-					return nil
+					return em.Err()
 				}
 				err = inBandError(err)
 				if refusedForGood(err) {
@@ -833,19 +836,19 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 				}
 				em.printer.Notice("connecting to agent %s failed, retrying: %v", agentID, err)
 				if !waitBackoff(drained) {
-					return nil
+					return em.Err()
 				}
 				continue
 			}
 			sub = streamevents.NewSubscription(transport.transport, cursor, terminals, onAgent, nil, onCursorReset)
 		}
+		// A still-zero cursor (page-1 was empty and not an explicit AFTER
+		// resume) subscribes fresh (LATEST); an advanced cursor resumes
+		// AFTER_CURSOR. AgentWatchEntry owns that mapping.
+		entry := streamevents.AgentWatchEntry(agentID, cursor.Get(agentID))
+		entry.IncludeReplyText = true
 		req := &leapmuxv1.WatchEventsRequest{
-			Agents: []*leapmuxv1.WatchAgentEntry{
-				// A still-zero cursor (page-1 was empty and not an explicit AFTER
-				// resume) subscribes fresh (LATEST); an advanced cursor resumes
-				// AFTER_CURSOR. AgentWatchEntry owns that mapping.
-				streamevents.AgentWatchEntry(agentID, cursor.Get(agentID)),
-			},
+			Agents: []*leapmuxv1.WatchAgentEntry{entry},
 		}
 		// Reset before the session opens. For the in-process transport the prior
 		// session has fully drained by sub.Done() (its onAgent runs on the same
@@ -857,16 +860,13 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 		delivered.Store(false)
 		if err := sub.Update(ctx, req); err != nil {
 			if ctx.Err() != nil {
-				if err := em.Err(); err != nil {
-					return err
-				}
-				return nil
+				return em.Err()
 			}
 			// ErrSubscriptionClosed means the Subscription was Cancelled (the
 			// process is shutting down via the deferred Cancel); it is not a
 			// subscribe failure and must not surface to the user as one.
 			if errors.Is(err, streamevents.ErrSubscriptionClosed) {
-				return nil
+				return em.Err()
 			}
 			err = inBandError(err)
 			if refusedForGood(err) {
@@ -881,10 +881,7 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 			// (channel closed, RPC error, ctx cancelled).
 			select {
 			case <-ctx.Done():
-				if err := em.Err(); err != nil {
-					return err
-				}
-				return nil
+				return em.Err()
 			case <-sub.Done():
 				endErr := inBandError(sub.EndErr())
 				if refusedForGood(endErr) {
@@ -899,10 +896,7 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 			}
 		}
 		if ctx.Err() != nil {
-			if err := em.Err(); err != nil {
-				return err
-			}
-			return nil
+			return em.Err()
 		}
 		// Brief backoff before reconnecting -- reset to the floor if this cycle did
 		// real work, else keep climbing. Real work is either a live frame this session
@@ -910,7 +904,7 @@ func tailAgentMessagesWith(ctx context.Context, agentID string, startSeq int64,
 		// drains history but drops the subscription before any frame is still moving
 		// messages, so it shouldn't be treated as a flap.
 		if !waitBackoff(delivered.Load() || drained) {
-			return nil
+			return em.Err()
 		}
 	}
 }
@@ -946,9 +940,11 @@ func newWorkerWatchTransport(ctx context.Context, p control.Peer, workerID strin
 		if workerID == "" {
 			return nil, errors.New("worker_id required for hub-bound mode")
 		}
-		ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
+		openCtx, cancelOpen := rpcDeadline(ctx)
+		ch, err := c.OpenE2EEChannel(openCtx, context.WithoutCancel(ctx), workerID)
+		cancelOpen()
 		if err != nil {
-			return nil, err
+			return nil, &codedRPCError{Code: "channel_open_failed", Cause: err}
 		}
 		return &workerWatchTransport{
 			transport: streamevents.NewChannelTransport(ch, slog.Default()),
@@ -968,12 +964,10 @@ func newWorkerWatchTransport(ctx context.Context, p control.Peer, workerID strin
 // the lock -- the locking discipline stops being every call site's
 // responsibility.
 type lineEmitter struct {
-	mu       sync.Mutex
-	printer  *cli.Printer
-	rawText  bool
-	fullText bool
-	markdown bool
-	err      error
+	mu      sync.Mutex
+	printer *cli.Printer
+	opts    messageFormatOptions
+	err     error
 }
 
 // emit prints one stream event under the lock.
@@ -990,12 +984,18 @@ func (e *lineEmitter) emit(v any) error {
 	return nil
 }
 
+// emitMessage renders and emits one chat message with the emitter's text options.
+func (e *lineEmitter) emitMessage(m *leapmuxv1.AgentChatMessage) error {
+	return e.emit(formattedAgentMessage{
+		agentMessage: renderAgentMessage(m),
+		opts:         e.opts,
+	})
+}
+
 // emitFollowEvent reports whether the event produces a stream record.
 func (e *lineEmitter) emitFollowEvent(event *leapmuxv1.AgentEvent) (bool, error) {
 	if message := event.GetAgentMessage(); message != nil {
-		msg := renderAgentMessage(message)
-		msg.rawText, msg.fullText, msg.markdown = e.rawText, e.fullText, e.markdown
-		return true, e.emit(msg)
+		return true, e.emitMessage(message)
 	}
 	if removed := event.GetMessagesRetracted().GetSeqs(); len(removed) > 0 {
 		return true, e.emit(map[string]any{

@@ -93,14 +93,15 @@ func TestMessageSenderOfRow(t *testing.T) {
 }
 
 func TestAgentMessage_TextLineStatesTheSender(t *testing.T) {
+	replyText := "Run the tests"
 	m := renderAgentMessage(&leapmuxv1.AgentChatMessage{
 		Seq: 12, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content: []byte(`{"content":"Run the tests"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		ReplyText:           &replyText,
 		SupplementalContent: agentMessageSupplement(t, senderJSON(t)), SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 	})
 	assert.Equal(t, `#12 user from agent ag-sende (claude-code): Run the tests`, m.TextLine())
-	m.rawText = true
-	assert.Equal(t, `#12 user from agent ag-sende (claude-code): {"content":"Run the tests"}`, m.TextLine())
+	assert.Equal(t, `#12 user from agent ag-sende (claude-code): {"content":"Run the tests"}`, m.formatText(messageFormatOptions{raw: true}))
 }
 
 // agentMessageInput is a queued agent message from the sender of these tests.
@@ -161,10 +162,12 @@ func (w *messagesWorker) DispatchWith(_ context.Context, _ channel.Caller, req *
 func TestAgentMessagesOverIPC_PrintsTheSenderOfAnAgentMessage(t *testing.T) {
 	id := fullTestID("ag-2")
 	supplement, compression := msgcodec.Compress(agentMessageSupplement(t, senderJSON(t)))
+	helloText := "Hello"
+	runTestsText := "Run the tests"
 	w := &messagesWorker{rows: []*leapmuxv1.AgentChatMessage{
-		{Id: "m-1", Seq: 1, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte(`{"content":"Hello"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE},
+		{Id: "m-1", Seq: 1, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte(`{"content":"Hello"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, ReplyText: &helloText},
 		{
-			Id: "m-2", Seq: 2, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte(`{"content":"Run the tests"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+			Id: "m-2", Seq: 2, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte(`{"content":"Run the tests"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, ReplyText: &runTestsText,
 			SupplementalContent: supplement, SupplementalContentCompression: compression,
 		},
 	}}

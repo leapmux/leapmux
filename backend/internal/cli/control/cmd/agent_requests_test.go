@@ -18,6 +18,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 func int32Ptr(v int32) *int32 { return &v }
@@ -372,7 +373,7 @@ request c2 of agent ag-1: dialog (the agent does not wait for it; answered, pend
     default: no option
     1  PostgreSQL  The default.
     2  SQLite
-`, renderRequests(t, pendingRequest("c1", questionPrompt(extras, database))), "a default names options by number, and an empty one says so")
+`, renderRequests(t, pendingRequest("c1", questionPrompt(extras, database))), "a default lists options by number, and an empty one says so")
 	})
 	t.Run("form field rules", func(t *testing.T) {
 		prompt := elicitationPrompt(`{"properties":{"env":{"type":"string"},"region":{"type":"string","description":"Where it runs."},"token":{"type":"string","default":"t"}},"required":["region"]}`)
@@ -446,6 +447,55 @@ func TestFieldRuleViewsOf(t *testing.T) {
 	assert.Empty(t, fieldRuleViewsOf(nil))
 }
 
+func TestParseConditionScalar(t *testing.T) {
+	v, ok := parseConditionScalar([]byte(`"prod"`))
+	assert.True(t, ok)
+	assert.Equal(t, "prod", v)
+
+	v, ok = parseConditionScalar([]byte(`42`))
+	assert.True(t, ok)
+	assert.Equal(t, 42.0, v)
+
+	v, ok = parseConditionScalar([]byte(`true`))
+	assert.True(t, ok)
+	assert.Equal(t, true, v)
+
+	for _, raw := range []string{`null`, `[]`, `{}`, `bad`, ``} {
+		v, ok := parseConditionScalar([]byte(raw))
+		assert.False(t, ok, raw)
+		assert.Nil(t, v, raw)
+	}
+}
+
+func TestWriteRows_StripsWhitespaceOnlyTrailingCells(t *testing.T) {
+	var buf bytes.Buffer
+	writeRows(&buf, "  ", [][]string{
+		{"1", "alpha", "Description"},
+		{"2", "beta", "  \n\t  "},
+		{"3", "gamma", ""},
+	})
+	assert.Equal(t, "  1  alpha  Description\n  2  beta\n  3  gamma\n", buf.String())
+
+	buf.Reset()
+	writeRows(&buf, "  ", nil)
+	assert.Empty(t, buf.String(), "nil rows write nothing")
+
+	buf.Reset()
+	writeRows(&buf, "  ", [][]string{})
+	assert.Empty(t, buf.String(), "empty rows slice writes nothing")
+
+	buf.Reset()
+	writeRows(&buf, "  ", [][]string{{"   ", "\t\n"}})
+	assert.Equal(t, "  \n", buf.String(), "all-whitespace row trims every cell to indent plus newline")
+
+	buf.Reset()
+	writeRows(&buf, "  ", [][]string{
+		{"1", "  \t ", "desc"},
+		{"2", "\n", "more"},
+	})
+	assert.Equal(t, "  1  desc\n  2  more\n", buf.String(), "all-whitespace interior column takes no horizontal space")
+}
+
 func TestQuestionView_AnswerRule(t *testing.T) {
 	for want, q := range map[string]questionView{
 		"one option or a typed answer":                     {Options: make([]questionOptionView, 1), TypedAnswer: true},
@@ -480,6 +530,16 @@ func TestElicitationFields(t *testing.T) {
 	for _, schema := range []string{``, `not json`, `{"properties":[1]}`, `{}`} {
 		assert.Empty(t, elicitationFields(json.RawMessage(schema), nil), schema)
 	}
+
+	largeNums := elicitationFields(json.RawMessage(`{"properties":{`+
+		`"limit":{"type":"integer","enum":[1000000,2000000,9007199254740993]},`+
+		`"budget":{"type":"integer","oneOf":[{"const":9007199254740993,"title":"Above 2^53"},{"const":null}]},`+
+		`"sizes":{"type":"array","items":{"type":"integer","anyOf":[{"const":9007199254740993}]}}`+
+		`}}`), nil)
+	require.Len(t, largeNums, 3)
+	assert.Equal(t, []string{"1000000", "2000000", "9007199254740993"}, largeNums[0].Enum, "large integers keep exact decimal spelling beyond 2^53")
+	assert.Equal(t, []string{"9007199254740993"}, largeNums[1].Enum)
+	assert.Equal(t, []string{"9007199254740993"}, largeNums[2].Enum)
 }
 
 // fakeWorkerChannels answers listControlRequests' calls from a table, and
@@ -572,9 +632,11 @@ func TestReportControlRequests(t *testing.T) {
 // controlWorker is a fake Worker that holds pending control requests and
 // records each answer. mu guards every field.
 type controlWorker struct {
-	mu       sync.Mutex
-	requests map[string][]*leapmuxv1.AgentControlRequest
-	answers  []*leapmuxv1.AnswerControlRequest
+	mu        sync.Mutex
+	requests  map[string][]*leapmuxv1.AgentControlRequest
+	agents    []*leapmuxv1.AgentInfo
+	answers   []*leapmuxv1.AnswerControlRequest
+	listCalls int
 	// answerResponse is what AnswerControl returns; nil answers COMPLETED.
 	answerResponse *leapmuxv1.AnswerControlResponse
 	// refuseAnswer, when not empty, is the InvalidArgument message that
@@ -586,7 +648,10 @@ func (w *controlWorker) DispatchWith(_ context.Context, _ channel.Caller, req *l
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+		writeProtoResponse(rw, &leapmuxv1.ListAgentsResponse{Agents: w.agents})
 	case leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure:
+		w.listCalls++
 		var in leapmuxv1.ListControlRequestsRequest
 		_ = proto.Unmarshal(req.GetPayload(), &in)
 		writeProtoResponse(rw, &leapmuxv1.ListControlRequestsResponse{Requests: w.requests[in.GetAgentId()]})
@@ -614,23 +679,16 @@ func (w *controlWorker) recordedAnswers() []*leapmuxv1.AnswerControlRequest {
 	return append([]*leapmuxv1.AnswerControlRequest(nil), w.answers...)
 }
 
-// startControlWorker serves w as the Worker of the agent agentID.
-func startControlWorker(t *testing.T, w *controlWorker, agentID string) {
-	t.Helper()
-	startSpawnIPC(t, &recordingHub{
-		workers: workerRows("worker-A"),
-		locateTab: &leapmuxv1.WorkspaceTab{
-			Tab:      &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
-			TileId:   "root-1",
-			WorkerId: "worker-A", WorkspaceId: "ws-1",
-		},
-	}, w)
+func (w *controlWorker) listCallCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.listCalls
 }
 
 func TestAgentRequestsOverIPC_ListsTheRequestsOfAnAgent(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", permissionPrompt())}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	data := runControl(t, "agent", "requests", id).Data(t)
 	requests := data["requests"].([]any)
@@ -652,7 +710,7 @@ func TestAgentRequestsOverIPC_ListsTheRequestsOfAnAgent(t *testing.T) {
 func TestAgentRequestsOverIPC_ListsEveryAgentWithoutAnArgument(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{id: {pendingRequest("claim-1", planPrompt())}}}
-	startControlWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	data := runControl(t, "agent", "requests").Data(t)
 	requests := data["requests"].([]any)
@@ -666,10 +724,85 @@ func TestAgentRequestsOverIPC_ListsEveryAgentWithoutAnArgument(t *testing.T) {
 
 func TestAgentRequestsOverIPC_SaysWhenNoAgentWaits(t *testing.T) {
 	id := fullTestID("ag-2")
-	startControlWorker(t, &controlWorker{}, id)
+	startAgentWorker(t, id, &controlWorker{})
 
 	o := runControlText(t, "agent", "requests", id)
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
 	assert.Empty(t, strings.TrimSpace(o.Stdout))
 	assert.Contains(t, o.Stderr, "no agent waits for an answer")
+}
+
+func TestAgentRequestsOverIPC_ChildrenDeduplicationAndQuietFormat(t *testing.T) {
+	parentID := fullTestID("ag-parent")
+	child1 := fullTestID("ag-child1")
+	child2 := fullTestID("ag-child2")
+	grandchild := fullTestID("ag-grand1")
+
+	hub := &recordingHub{
+		workers: workerRows("worker-A"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: child1},
+			TileId:      "root-1",
+			WorkerId:    "worker-A",
+			WorkspaceId: "ws-1",
+		},
+		tabs: []*leapmuxv1.WorkspaceTab{
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: parentID}, TileId: "root-1", WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: child1}, TileId: "root-1", WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: child2}, TileId: "root-1", WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: grandchild}, TileId: "root-1", WorkerId: "worker-A", WorkspaceId: "ws-1"},
+		},
+	}
+	w := &controlWorker{
+		agents: []*leapmuxv1.AgentInfo{
+			{Id: parentID},
+			{Id: child1, ParentAgentId: parentID},
+			{Id: child2, ParentAgentId: parentID},
+			{Id: grandchild, ParentAgentId: child1},
+		},
+		requests: map[string][]*leapmuxv1.AgentControlRequest{
+			parentID:   {pendingRequest("claim-parent", permissionPrompt())},
+			child1:     {pendingRequest("claim-c1", permissionPrompt())},
+			child2:     {pendingRequest("claim-c2", planPrompt())},
+			grandchild: {pendingRequest("claim-grand", permissionPrompt())},
+		},
+	}
+	startSpawnIPC(t, hub, w)
+	t.Setenv(controlenv.TabIDVariable, parentID)
+	t.Setenv(controlenv.TabTypeVariable, "agent")
+	t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+	// Passing child1 explicitly alongside "children" deduplicates child1,
+	// preserves first-seen order, and excludes parent and grandchild.
+	data := runControl(t, "agent", "requests", child1, "children").Data(t)
+	rows := data["requests"].([]any)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "claim-c1", rows[0].(map[string]any)["id"])
+	assert.Equal(t, child1, rows[0].(map[string]any)["agent_id"])
+	assert.Equal(t, "claim-c2", rows[1].(map[string]any)["id"])
+	assert.Equal(t, child2, rows[1].(map[string]any)["agent_id"])
+	assert.Equal(t, 2, w.listCallCount(), "deduplicated target must be queried once")
+
+	// "children" counts as multi-target in -q even when only one child has a request.
+	wSingle := &controlWorker{
+		agents: []*leapmuxv1.AgentInfo{
+			{Id: parentID},
+			{Id: child1, ParentAgentId: parentID},
+		},
+		requests: map[string][]*leapmuxv1.AgentControlRequest{
+			child1: {pendingRequest("claim-c1", permissionPrompt())},
+		},
+	}
+	startSpawnIPC(t, hub, wSingle)
+	t.Setenv(controlenv.TabIDVariable, parentID)
+	t.Setenv(controlenv.TabTypeVariable, "agent")
+	t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+	o := runControlText(t, "agent", "requests", "children", "-q")
+	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
+	assert.Equal(t, child1+"\tclaim-c1\n", o.Stdout, "children selector keeps <agent_id>\\t<handle> quiet format")
+
+	o = runControlText(t, "agent", "requests", child1, "-q")
+	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
+	assert.Equal(t, "claim-c1\n", o.Stdout, "single explicit agent target prints bare handle")
 }

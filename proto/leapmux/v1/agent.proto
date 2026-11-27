@@ -71,6 +71,9 @@ service WorkerAgentService {
   rpc GetAgentSessionInfo(GetAgentSessionInfoRequest) returns (GetAgentSessionInfoResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
   }
+  rpc GetAgentSnapshot(GetAgentSnapshotRequest) returns (GetAgentSnapshotResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
   rpc SearchAgentMessages(SearchAgentMessagesRequest) returns (SearchAgentMessagesResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
   }
@@ -289,6 +292,9 @@ message OpenAgentRequest {
   TabCreation creation = 8;
   // If present, queue this message in the same transaction as the new agent.
   optional string initial_message = 9;
+  // Optional client-chosen input ID for initial_message. Requires initial_message
+  // when non-blank. When absent or blank, the Worker generates an ID.
+  optional string initial_message_id = 10;
 }
 
 message OpenAgentResponse {
@@ -897,13 +903,14 @@ message AgentChatMessage {
   string agent_session_id = 21;
   // True when this transcript update must not change current live state.
   bool transcript_only = 22;
-  // The text of the agent's reply that this row holds, as the transcript's
-  // quote copies it: without the white space at either end. Set only on a
-  // ListAgentMessages page that asked for it with include_reply_text, and only
-  // on an agent row that holds a reply: a tool call, a reasoning block or a
-  // status row leaves it unset. The Worker reads it through the provider's own
-  // ReplyText, so a client needs no provider code;
-  // testdata/reply_text_conformance.json pins it to the browser's extraction.
+  // Plain text extracted by the Worker without the white space at either end.
+  // Populated only when the request sets include_reply_text (on
+  // ListAgentMessages, GetAgentMessage, GetAgentSpanMessages, or WatchEvents).
+  // For MESSAGE_SOURCE_AGENT rows, the Worker reads the text through the
+  // provider's own ReplyText (pinned to browser extraction by
+  // testdata/reply_text_conformance.json); tool calls, reasoning blocks, and
+  // status rows leave it unset. For MESSAGE_SOURCE_USER rows, the Worker reads
+  // text from LeapMux's own neutral envelope.
   optional string reply_text = 23;
 }
 
@@ -956,8 +963,9 @@ message ListAgentMessagesRequest {
   MessagePageAnchor anchor = 2; // Which page to return; defaults to LATEST.
   int64 cursor_seq = 3;         // Exclusive seq bound for BEFORE/AFTER; ignored for LATEST/OLDEST.
   int32 limit = 4;              // Max messages to return (contracts.MessagePageLimit).
-  // Fill AgentChatMessage.reply_text on each agent row that holds a reply.
-  // The browser extracts the text itself and leaves this unset.
+  // Fill AgentChatMessage.reply_text on each row that holds agent reply text
+  // or neutral user prompt text. The browser extracts text itself and leaves
+  // this unset.
   bool include_reply_text = 5;
   // In an OLDEST page, select the accepted input's own native reply.
   // Exact reply pages use native order and reply_cursor instead of cursor_seq.
@@ -1023,6 +1031,10 @@ message ListAgentMessagesResponse {
 message GetAgentMessageRequest {
   string agent_id = 1;
   int64 seq = 2;
+  // Fill AgentChatMessage.reply_text on a row that holds agent reply text or
+  // neutral user prompt text. The browser extracts text itself and leaves this
+  // unset.
+  bool include_reply_text = 3;
 }
 
 message GetAgentMessageResponse {
@@ -1037,10 +1049,26 @@ message GetAgentSpanMessagesRequest {
   string agent_id = 1;
   string span_id = 2;
   string agent_session_id = 3;
+  // Fill AgentChatMessage.reply_text on each row that holds agent reply text
+  // or neutral user prompt text. The browser extracts text itself and leaves
+  // this unset.
+  bool include_reply_text = 4;
 }
 
 message GetAgentSpanMessagesResponse {
   repeated AgentChatMessage messages = 1;
+}
+
+// GetAgentSnapshot returns an agent's authoritative to-do list,
+// background-task registry, and session goal without loading any messages.
+message GetAgentSnapshotRequest {
+  string agent_id = 1;
+}
+
+message GetAgentSnapshotResponse {
+  AgentTodoSnapshot todos = 1;
+  AgentBackgroundTaskSnapshot background_tasks = 2;
+  AgentGoalSnapshot goal = 3;
 }
 
 // ListMessageMarks returns the seqs of every marked message (scroll-rail jump

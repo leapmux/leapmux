@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
@@ -17,16 +16,13 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/semanticevents"
-	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 // The kinds of a control request, as `agent requests` prints them.
 const (
 	controlKindPermission  = "permission"
 	controlKindPlan        = "plan"
-	controlKindQuestion    = "question"
 	controlKindElicitation = "elicitation"
-	controlKindDialog      = "dialog"
 	// controlKindUnreadable is a request whose payload the Worker cannot
 	// read. It takes no answer.
 	controlKindUnreadable = "unreadable"
@@ -199,52 +195,6 @@ type elicitationView struct {
 	// FieldRules state the fields of the schema that the form keeps hidden,
 	// and the fields that it asks only under conditions.
 	FieldRules []fieldRuleView `json:"field_rules,omitempty"`
-}
-
-// fieldRuleView states how a form treats one field of its schema.
-type fieldRuleView struct {
-	Key string `json:"key"`
-	// Hidden reports a field that the form never shows. Its default is sent
-	// while the field is active.
-	Hidden bool `json:"hidden,omitempty"`
-	// Conditions must all hold, for the answers to earlier fields, for the
-	// form to ask the field. An inactive field is neither sent nor required.
-	Conditions []fieldConditionView `json:"conditions,omitempty"`
-}
-
-type fieldConditionView struct {
-	Field string `json:"field"`
-	// Comparison is "equal" or "not_equal". A list answer is equal when it
-	// holds the value.
-	Comparison string `json:"comparison"`
-	// Value is a string, a number or a boolean.
-	Value json.RawMessage `json:"value"`
-}
-
-// fieldRuleViewsOf projects the field rules of a form. A condition of no
-// known comparison, or whose value is not the JSON of a string, a number or
-// a boolean, states nothing, so it is dropped, as the browser drops it.
-func fieldRuleViewsOf(rules []*leapmuxv1.ElicitationFieldRule) []fieldRuleView {
-	views := make([]fieldRuleView, 0, len(rules))
-	for _, rule := range rules {
-		view := fieldRuleView{Key: rule.GetKey(), Hidden: rule.GetHidden()}
-		for _, condition := range rule.GetConditions() {
-			comparison := enumToken(condition.GetComparison())
-			var value any
-			if comparison == "" || json.Unmarshal([]byte(condition.GetValueJson()), &value) != nil {
-				continue
-			}
-			switch value.(type) {
-			case string, float64, bool:
-			default:
-				continue
-			}
-			compact, _ := json.Marshal(value)
-			view.Conditions = append(view.Conditions, fieldConditionView{Field: condition.GetField(), Comparison: comparison, Value: compact})
-		}
-		views = append(views, view)
-	}
-	return views
 }
 
 type acceptChoiceView struct {
@@ -498,11 +448,7 @@ func runAgentRequests(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	groups, agentIDs := groupAgentsByWorker(targets)
-	listed := listControlRequests(s.ctx, func(workerID string, body func(call workerCaller) error) error {
-		return withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
-			return body(func(method string, in, out proto.Message) error { return w.Call(s.ctx, method, in, out) })
-		})
-	}, groups)
+	listed := listControlRequests(s.ctx, s.workerChannelOpener(), groups)
 	singleExplicit := len(inputs) == 1 && !strings.EqualFold(strings.TrimSpace(inputs[0]), "children")
 	result := controlRequestList{Requests: []controlRequestRow{}, multiTarget: !singleExplicit}
 	var failures []error
@@ -517,32 +463,9 @@ func runAgentRequests(inv *cli.Invocation) (any, error) {
 	return reportControlRequests(inv.Printer, result, failures, len(agentIDs))
 }
 
-// requestTargets resolves the agents of `agent requests`. With no input it
-// lists every agent tab, of one workspace when --workspace gives one.
-// "children" expands to all direct child subagents of the calling agent.
-func requestTargets(s *session, inputs []string) ([]tabTarget, error) {
-	if len(inputs) > 0 {
-		targets := make([]tabTarget, 0, len(inputs))
-		for _, input := range inputs {
-			if strings.EqualFold(strings.TrimSpace(input), "children") {
-				children, err := s.resolveChildAgents(
-					(resolve.Listing{}).SelfTabID(resolve.KindAgent),
-					strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)),
-				)
-				if err != nil {
-					return nil, err
-				}
-				targets = append(targets, children...)
-				continue
-			}
-			got, err := s.resolveTab(resolve.KindAgent, input, resolve.Need{WorkerID: true})
-			if err != nil {
-				return nil, err
-			}
-			targets = append(targets, got)
-		}
-		return targets, nil
-	}
+// listWorkspaceAgentTargets lists every agent tab in the session's workspace
+// scope that has a hosting Worker.
+func (s *session) listWorkspaceAgentTargets() ([]tabTarget, error) {
 	tabs, err := s.listWorkspaceTabs(leapmuxv1.TabType_TAB_TYPE_AGENT)
 	if err != nil {
 		return nil, err
@@ -555,6 +478,33 @@ func requestTargets(s *session, inputs []string) ([]tabTarget, error) {
 		}
 	}
 	return targets, nil
+}
+
+// workerChannelOpener adapts withWorkerChannel to workerChannelFunc.
+func (s *session) workerChannelOpener() workerChannelFunc {
+	return func(workerID string, body func(call workerCaller) error) error {
+		return withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
+			return body(func(method string, in, out proto.Message) error { return w.Call(s.ctx, method, in, out) })
+		})
+	}
+}
+
+// listAgentControlRequestProtos queries every agent in targets for its raw
+// pending control request protos, returning per-agent results and the ordered
+// agent IDs.
+func (s *session) listAgentControlRequestProtos(targets []tabTarget) (map[string]listedRequestProtos, []string) {
+	groups, agentIDs := groupAgentsByWorker(targets)
+	return listControlRequestProtos(s.ctx, s.workerChannelOpener(), groups), agentIDs
+}
+
+// requestTargets resolves the agents of `agent requests`. With no input it
+// lists every agent tab, of one workspace when --workspace gives one.
+// "children" expands to all direct child subagents of the calling agent.
+func requestTargets(s *session, inputs []string) ([]tabTarget, error) {
+	if len(inputs) > 0 {
+		return s.resolveVariadicAgentTargets(inputs, resolve.Need{WorkerID: true})
+	}
+	return s.listWorkspaceAgentTargets()
 }
 
 // reportControlRequests returns the result of `agent requests`. When every
@@ -580,26 +530,33 @@ func reportControlRequests(p *cli.Printer, result controlRequestList, failures [
 	return nil, &cli.ExitStatus{Code: cli.FromError(failures[0]).ExitCode()}
 }
 
-// listedRequests is what one agent's listing gave: its requests, or why it
-// failed.
+// listedRequests is what one agent's listing gave: its projected requests, or
+// why it failed.
 type listedRequests struct {
 	rows []controlRequestRow
 	err  error
 }
 
+// listedRequestProtos is what one agent's listing gave in raw proto form, or
+// why it failed.
+type listedRequestProtos struct {
+	requests []*leapmuxv1.AgentControlRequest
+	err      error
+}
+
 // workerChannelFunc runs body with a caller of one Worker. It is the seam of
-// listControlRequests: production opens the Worker's channel, and a test
+// listControlRequestProtos: production opens the Worker's channel, and a test
 // answers the calls itself.
 type workerChannelFunc func(workerID string, body func(call workerCaller) error) error
 
-// listControlRequests asks each Worker for the pending requests of its
-// agents. Every Worker runs at once, and so does every agent of one Worker:
-// the Worker's channel carries concurrent calls. A failure belongs to its
-// agent, so the other agents still list.
-func listControlRequests(ctx context.Context, open workerChannelFunc, groups []workerAgents) map[string]listedRequests {
+// listControlRequestProtos asks each Worker for the raw pending requests of
+// its agents. Every Worker runs at once, and so does every agent of one
+// Worker: the Worker's channel carries concurrent calls. A failure belongs to
+// its agent, so the other agents still list.
+func listControlRequestProtos(ctx context.Context, open workerChannelFunc, groups []workerAgents) map[string]listedRequestProtos {
 	var mu sync.Mutex
-	out := map[string]listedRequests{}
-	record := func(agentID string, got listedRequests) {
+	out := map[string]listedRequestProtos{}
+	record := func(agentID string, got listedRequestProtos) {
 		mu.Lock()
 		defer mu.Unlock()
 		out[agentID] = got
@@ -615,14 +572,10 @@ func listControlRequests(ctx context.Context, open workerChannelFunc, groups []w
 					agents.Go(func() error {
 						var resp leapmuxv1.ListControlRequestsResponse
 						if err := call(leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure, &leapmuxv1.ListControlRequestsRequest{AgentId: agentID}, &resp); err != nil {
-							record(agentID, listedRequests{err: fmt.Errorf("list the requests of agent %s: %w", agentID, err)})
+							record(agentID, listedRequestProtos{err: fmt.Errorf("list the requests of agent %s: %w", agentID, err)})
 							return nil
 						}
-						rows := make([]controlRequestRow, 0, len(resp.GetRequests()))
-						for _, r := range resp.GetRequests() {
-							rows = append(rows, controlRequestRowOf(agentID, r))
-						}
-						record(agentID, listedRequests{rows: rows})
+						record(agentID, listedRequestProtos{requests: resp.GetRequests()})
 						return nil
 					})
 				}
@@ -632,7 +585,7 @@ func listControlRequests(ctx context.Context, open workerChannelFunc, groups []w
 				// The channel did not open: every agent of the Worker fails
 				// with it.
 				for _, agentID := range group.agentIDs {
-					record(agentID, listedRequests{err: fmt.Errorf("list the requests of agent %s: %w", agentID, err)})
+					record(agentID, listedRequestProtos{err: fmt.Errorf("list the requests of agent %s: %w", agentID, err)})
 				}
 			}
 			return nil
@@ -643,10 +596,29 @@ func listControlRequests(ctx context.Context, open workerChannelFunc, groups []w
 		for _, group := range groups {
 			for _, agentID := range group.agentIDs {
 				if _, ok := out[agentID]; !ok {
-					out[agentID] = listedRequests{err: errors.Join(fmt.Errorf("list the requests of agent %s", agentID), context.Cause(ctx))}
+					out[agentID] = listedRequestProtos{err: errors.Join(fmt.Errorf("list the requests of agent %s", agentID), context.Cause(ctx))}
 				}
 			}
 		}
+	}
+	return out
+}
+
+// listControlRequests asks each Worker for the pending requests of its agents
+// and projects each request into a controlRequestRow.
+func listControlRequests(ctx context.Context, open workerChannelFunc, groups []workerAgents) map[string]listedRequests {
+	raw := listControlRequestProtos(ctx, open, groups)
+	out := make(map[string]listedRequests, len(raw))
+	for agentID, got := range raw {
+		if got.err != nil {
+			out[agentID] = listedRequests{err: got.err}
+			continue
+		}
+		rows := make([]controlRequestRow, 0, len(got.requests))
+		for _, r := range got.requests {
+			rows = append(rows, controlRequestRowOf(agentID, r))
+		}
+		out[agentID] = listedRequests{rows: rows}
 	}
 	return out
 }

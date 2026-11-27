@@ -41,3 +41,17 @@ func readStdinGuarded(r io.Reader) ([]byte, error) {
 	}
 	return data, nil
 }
+
+// readFileOrStdin reads bytes from stdin when path is "-", or from the file at
+// path otherwise. File read failures are wrapped as usage errors that include
+// flagName (for example "--file").
+func readFileOrStdin(stdin io.Reader, path, flagName string) ([]byte, error) {
+	if path == "-" {
+		return readStdinGuarded(stdin)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "read "+flagName)
+	}
+	return data, nil
+}

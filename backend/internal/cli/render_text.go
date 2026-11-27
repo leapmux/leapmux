@@ -30,6 +30,11 @@ func renderTextOpts(w io.Writer, v any, opts tableOptions) error {
 		if handled, err := renderCustomText(w, v, opts); handled {
 			return err
 		}
+		if !isNil(v) {
+			if hider, ok := v.(DefaultColumnHider); ok {
+				opts.hiddenColumns = hider.DefaultHiddenColumns()
+			}
+		}
 	}
 	n := toNode(reflect.ValueOf(v))
 	switch n.kind {

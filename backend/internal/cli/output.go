@@ -230,6 +230,15 @@ type QuietRenderer interface {
 	QuietLines() []string
 }
 
+// DefaultColumnHider is an optional interface for list results that hide one
+// or more default table columns in plain text output when the caller did not
+// pass --fields. It has no effect on --format tsv, --format json,
+// --format ndjson, --quiet, or explicit --fields selection, so TSV column
+// indices stay stable and explicit --fields keep struct-tag styling like ,state.
+type DefaultColumnHider interface {
+	DefaultHiddenColumns() []string
+}
+
 // indentWriter prefixes each line that w receives with prefix.
 func indentWriter(w io.Writer, prefix string) io.Writer {
 	return &prefixWriter{w: w, prefix: prefix, atLineStart: true}

@@ -163,6 +163,9 @@ var agentHandlerCases = []agentHandlerCase{
 	{leapmuxv1connect.WorkerAgentServiceGetAgentSessionInfoProcedure, func(id string) proto.Message {
 		return &leapmuxv1.GetAgentSessionInfoRequest{AgentId: id}
 	}},
+	{leapmuxv1connect.WorkerAgentServiceGetAgentSnapshotProcedure, func(id string) proto.Message {
+		return &leapmuxv1.GetAgentSnapshotRequest{AgentId: id}
+	}},
 	// InterruptAgent is agent-ID-scoped via registerAgentGuarded.
 	{leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, func(id string) proto.Message {
 		return &leapmuxv1.InterruptAgentRequest{AgentId: id}

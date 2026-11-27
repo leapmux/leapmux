@@ -102,42 +102,50 @@ type agentGoalView struct {
 	SupportedActions []string `json:"supported_actions,omitempty"`
 }
 
-func runAgentGoalGet(inv *cli.Invocation) (any, error) {
+func fetchAgentLatestSnapshot(inv *cli.Invocation) (tabTarget, *leapmuxv1.GetAgentSnapshotResponse, error) {
 	s, err := openSession(inv)
 	if err != nil {
-		return nil, err
+		return tabTarget{}, nil, err
 	}
 	defer s.Close()
 	got, err := s.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
 	if err != nil {
-		return nil, err
+		return tabTarget{}, nil, err
 	}
-	var resp leapmuxv1.ListAgentMessagesResponse
-	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure,
-		&leapmuxv1.ListAgentMessagesRequest{
-			AgentId: got.ID,
-			Anchor:  leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST,
-			Limit:   1,
-		}, &resp); err != nil {
-		return nil, err
+	var resp leapmuxv1.GetAgentSnapshotResponse
+	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceGetAgentSnapshotProcedure,
+		&leapmuxv1.GetAgentSnapshotRequest{AgentId: got.ID}, &resp); err != nil {
+		return tabTarget{}, nil, err
 	}
-	snap := resp.GetGoal()
-	view := agentGoalView{AgentID: got.ID}
-	if snap != nil {
-		view.UpdatedAt = snap.GetGoalUpdatedAt()
-		for _, act := range snap.GetSupportedActions() {
-			if tok := enumToken(act); tok != "" {
-				view.SupportedActions = append(view.SupportedActions, tok)
-			}
-		}
-		if g := snap.GetGoal(); g != nil {
-			view.Objective = g.GetObjective()
-			view.Status = enumToken(g.GetStatus())
-			view.StatusDetail = g.GetStatusDetail()
-			view.CreatedAt = g.GetCreatedAt()
+	return got, &resp, nil
+}
+
+func agentGoalViewOf(agentID string, snap *leapmuxv1.AgentGoalSnapshot) agentGoalView {
+	view := agentGoalView{AgentID: agentID}
+	if snap == nil {
+		return view
+	}
+	view.UpdatedAt = snap.GetGoalUpdatedAt()
+	for _, act := range snap.GetSupportedActions() {
+		if tok := enumToken(act); tok != "" {
+			view.SupportedActions = append(view.SupportedActions, tok)
 		}
 	}
-	return view, nil
+	if g := snap.GetGoal(); g != nil {
+		view.Objective = g.GetObjective()
+		view.Status = enumToken(g.GetStatus())
+		view.StatusDetail = g.GetStatusDetail()
+		view.CreatedAt = g.GetCreatedAt()
+	}
+	return view
+}
+
+func runAgentGoalGet(inv *cli.Invocation) (any, error) {
+	got, resp, err := fetchAgentLatestSnapshot(inv)
+	if err != nil {
+		return nil, err
+	}
+	return agentGoalViewOf(got.ID, resp.GetGoal()), nil
 }
 
 type agentGoalActionResult struct {
@@ -203,26 +211,8 @@ func (l agentTodoList) QuietLines() []string {
 	return out
 }
 
-func runAgentTodos(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-	got, err := s.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
-	if err != nil {
-		return nil, err
-	}
-	var resp leapmuxv1.ListAgentMessagesResponse
-	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure,
-		&leapmuxv1.ListAgentMessagesRequest{
-			AgentId: got.ID,
-			Anchor:  leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST,
-			Limit:   1,
-		}, &resp); err != nil {
-		return nil, err
-	}
-	items := resp.GetTodos().GetTodos()
+func agentTodoRowsOf(snap *leapmuxv1.AgentTodoSnapshot) []agentTodoRow {
+	items := snap.GetTodos()
 	rows := make([]agentTodoRow, 0, len(items))
 	for _, item := range items {
 		rows = append(rows, agentTodoRow{
@@ -233,7 +223,15 @@ func runAgentTodos(inv *cli.Invocation) (any, error) {
 			Description: item.GetDescription(),
 		})
 	}
-	return agentTodoList{Todos: rows}, nil
+	return rows
+}
+
+func runAgentTodos(inv *cli.Invocation) (any, error) {
+	_, resp, err := fetchAgentLatestSnapshot(inv)
+	if err != nil {
+		return nil, err
+	}
+	return agentTodoList{Todos: agentTodoRowsOf(resp.GetTodos())}, nil
 }
 
 // --- agent tasks ---
@@ -284,27 +282,8 @@ func (l agentTaskList) QuietLines() []string {
 	return out
 }
 
-func runAgentTasks(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-	got, err := s.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
-	if err != nil {
-		return nil, err
-	}
-	var resp leapmuxv1.ListAgentMessagesResponse
-	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure,
-		&leapmuxv1.ListAgentMessagesRequest{
-			AgentId: got.ID,
-			Anchor:  leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST,
-			Limit:   1,
-		}, &resp); err != nil {
-		return nil, err
-	}
-	activeOnly := boolFlag(inv, "active")
-	items := resp.GetBackgroundTasks().GetTasks()
+func agentTaskRowsOf(snap *leapmuxv1.AgentBackgroundTaskSnapshot, activeOnly bool) []agentTaskRow {
+	items := snap.GetTasks()
 	rows := make([]agentTaskRow, 0, len(items))
 	for _, item := range items {
 		if activeOnly && item.GetStatus() != leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING &&
@@ -324,7 +303,15 @@ func runAgentTasks(inv *cli.Invocation) (any, error) {
 			EndedAt:       item.GetEndedAt(),
 		})
 	}
-	return agentTaskList{Tasks: rows}, nil
+	return rows
+}
+
+func runAgentTasks(inv *cli.Invocation) (any, error) {
+	_, resp, err := fetchAgentLatestSnapshot(inv)
+	if err != nil {
+		return nil, err
+	}
+	return agentTaskList{Tasks: agentTaskRowsOf(resp.GetBackgroundTasks(), boolFlag(inv, "active"))}, nil
 }
 
 // --- agent usage ---
@@ -425,13 +412,13 @@ func (v agentUsageView) RenderText(w io.Writer) error {
 			}
 		}
 	}
-	if ro, ok := v.RetryOffer.(map[string]any); ok {
-		turnID, _ := ro[contracts.TurnRetryOfferFieldTurnId].(string)
-		model, _ := ro[contracts.TurnRetryOfferFieldModel].(string)
-		if turnID != "" || model != "" {
-			if _, err := fmt.Fprintf(w, "retry:    turn=%s model=%s\n", cli.SanitizeSingleLine(turnID), cli.SanitizeSingleLine(model)); err != nil {
-				return err
-			}
+	turnID, model := extractTurnRetryOffer(v.SessionInfo)
+	if turnID == "" && model == "" && v.RetryOffer != nil {
+		turnID, model = extractTurnRetryOffer(map[string]any{contracts.SessionInfoKeyTurnRetryOffer: v.RetryOffer})
+	}
+	if turnID != "" || model != "" {
+		if _, err := fmt.Fprintf(w, "retry:    turn=%s model=%s\n", cli.SanitizeSingleLine(turnID), cli.SanitizeSingleLine(model)); err != nil {
+			return err
 		}
 	}
 	if len(v.SessionInfo) == 0 {
@@ -507,6 +494,35 @@ func extractRateLimitRows(raw any) []string {
 	return out
 }
 
+// parseAgentSessionInfo decodes a raw SessionInfoJson payload into an object
+// map. Empty or whitespace-only input returns an empty map and a nil error.
+func parseAgentSessionInfo(raw string) (map[string]any, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return map[string]any{}, nil
+	}
+	var info map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &info); err != nil {
+		return nil, cli.Wrap(cli.CodeInternal, err, "parse agent session info")
+	}
+	if info == nil {
+		return map[string]any{}, nil
+	}
+	return info, nil
+}
+
+// extractTurnRetryOffer reads the trimmed turn_id and model fields from a
+// parsed session info object's turn_retry_offer entry.
+func extractTurnRetryOffer(info map[string]any) (turnID, model string) {
+	offer, ok := info[contracts.SessionInfoKeyTurnRetryOffer].(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	rawTurnID, _ := offer[contracts.TurnRetryOfferFieldTurnId].(string)
+	rawModel, _ := offer[contracts.TurnRetryOfferFieldModel].(string)
+	return strings.TrimSpace(rawTurnID), strings.TrimSpace(rawModel)
+}
+
 func runAgentUsage(inv *cli.Invocation) (any, error) {
 	s, err := openSession(inv)
 	if err != nil {
@@ -522,9 +538,9 @@ func runAgentUsage(inv *cli.Invocation) (any, error) {
 		&leapmuxv1.GetAgentSessionInfoRequest{AgentId: got.ID}, &resp); err != nil {
 		return nil, err
 	}
-	info := map[string]any{}
-	if raw := strings.TrimSpace(resp.GetSessionInfoJson()); raw != "" {
-		_ = json.Unmarshal([]byte(raw), &info)
+	info, err := parseAgentSessionInfo(resp.GetSessionInfoJson())
+	if err != nil {
+		return nil, err
 	}
 	view := agentUsageView{
 		AgentID:     got.ID,

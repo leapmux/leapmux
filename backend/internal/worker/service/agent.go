@@ -267,55 +267,9 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// gets the latest messages also gets the to-do snapshot -- never the
 			// latest page with an empty to-do list.
 			isLatestPage := plan.mode == messagePageLatest
-			// A snapshot is present only when it is authoritative. The client
-			// overwrites its list only from a present snapshot, so a non-latest
-			// page (no snapshot) and a failed LoadTodos (DB error) both leave the
-			// client's list intact instead of wiping it.
-			var todos *leapmuxv1.AgentTodoSnapshot
+			var snap agentSnapshot
 			if isLatestPage {
-				items, todoErr := svc.Output.LoadTodos(ctx, agentID)
-				if todoErr != nil {
-					slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
-				} else {
-					todos = todoevents.SnapshotToProto(items)
-				}
-			}
-
-			// Background-task registry snapshot, same presence contract as
-			// todos. A CHILD agent (virtual subagent) owns no registry and must
-			// NOT inherit the root's -- otherwise every active sibling task spins
-			// the child's thinking indicator. A child answers a present, empty
-			// snapshot, so the client overwrites with the correct empty set and
-			// never keeps a stale inherited registry; a root loads its own.
-			var backgroundTasks *leapmuxv1.AgentBackgroundTaskSnapshot
-			if isLatestPage {
-				if agentRow.ParentAgentID.Valid {
-					backgroundTasks = bgtask.SnapshotToProto(nil)
-				} else {
-					items, bgErr := svc.Output.LoadBackgroundTasks(ctx, agentID)
-					if bgErr != nil {
-						slog.Warn("failed to load agent_background_tasks", "agent_id", agentID, "error", bgErr)
-					} else {
-						backgroundTasks = bgtask.SnapshotToProto(items)
-					}
-				}
-			}
-
-			// Session goal, same presence contract again. The projection
-			// answers an empty goal for a CHILD agent for the reason the
-			// registry does: a child owns no goal, and its snapshot stays
-			// PRESENT so the client overwrites with the correct empty answer
-			// instead of keeping whatever its previous root put there.
-			//
-			// Projected from agentRow, which the dispatcher already loaded.
-			// Re-reading through LoadGoal would run a second full-row query per
-			// cold chat load for columns that are right here, which is what the
-			// registry branch above avoids by reading agentRow.ParentAgentID.
-			// The supported actions share the guard: computing them for a scroll
-			// page asks the Manager a question nobody reads.
-			var goal *leapmuxv1.AgentGoalSnapshot
-			if isLatestPage {
-				goal = svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(agentRow)).Proto(svc.Output.SupportedGoalActions(agentID))
+				snap = svc.loadAgentSnapshot(ctx, agentRow)
 			}
 
 			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
@@ -385,12 +339,26 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{
 				Messages:        protoMessages,
 				HasMore:         hasMore,
-				Todos:           todos,
+				Todos:           snap.todos,
 				LatestSeq:       latestSeq,
-				BackgroundTasks: backgroundTasks,
-				Goal:            goal,
+				BackgroundTasks: snap.backgroundTasks,
+				Goal:            snap.goal,
 				NextReplyCursor: nextReplyCursor,
 				ReplyCanonical:  replyCanonical,
+			})
+		})
+
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceGetAgentSnapshotProcedure,
+		func(ctx context.Context, _ channel.Caller, _ *leapmuxv1.GetAgentSnapshotRequest, agentRow db.Agent, sender channel.ResponseWriter) {
+			if agentRow.ClosedAt.Valid {
+				sendProtoResponse(sender, &leapmuxv1.GetAgentSnapshotResponse{})
+				return
+			}
+			snap := svc.loadAgentSnapshot(ctx, agentRow)
+			sendProtoResponse(sender, &leapmuxv1.GetAgentSnapshotResponse{
+				Todos:           snap.todos,
+				BackgroundTasks: snap.backgroundTasks,
+				Goal:            snap.goal,
 			})
 		})
 
@@ -427,11 +395,14 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 
-			message, err := messageToProto(&row, agentRow.AgentProvider)
+			message, supplement, err := messageToProtoWithSupplement(&row, agentRow.AgentProvider)
 			if err != nil {
 				slog.Error("prepare the requested transcript message", "agent_id", agentID, "message_id", row.ID, "error", err)
 				sendInternalError(sender, "failed to prepare transcript message")
 				return
+			}
+			if r.GetIncludeReplyText() {
+				message.ReplyText = svc.replyTextOf(message, supplement)
 			}
 			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: message})
 		})
@@ -475,12 +446,15 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 			messages := make([]*leapmuxv1.AgentChatMessage, 0, len(rows))
-			for _, row := range rows {
-				message, err := messageToProto(&row, agentRow.AgentProvider)
+			for i := range rows {
+				message, supplement, err := messageToProtoWithSupplement(&rows[i], agentRow.AgentProvider)
 				if err != nil {
-					slog.Error("prepare the related transcript message", "agent_id", agentRow.ID, "message_id", row.ID, "error", err)
+					slog.Error("prepare the related transcript message", "agent_id", agentRow.ID, "message_id", rows[i].ID, "error", err)
 					sendInternalError(sender, "failed to prepare transcript message")
 					return
+				}
+				if r.GetIncludeReplyText() {
+					message.ReplyText = svc.replyTextOf(message, supplement)
 				}
 				messages = append(messages, message)
 			}
@@ -1219,11 +1193,14 @@ func (svc *Service) replayAgentCatchUp(
 			return
 		}
 		for j := range replayMessages {
-			message, err := messageToProto(&replayMessages[j], dbAgent.AgentProvider)
+			message, supplement, err := messageToProtoWithSupplement(&replayMessages[j], dbAgent.AgentProvider)
 			if err != nil {
 				slog.Error("prepare the replayed transcript message", "agent_id", agentID, "message_id", replayMessages[j].ID, "error", err)
 				sink.fail(err)
 				return
+			}
+			if agentEntry.GetIncludeReplyText() {
+				message.ReplyText = svc.replyTextOf(message, supplement)
 			}
 			broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
@@ -4485,31 +4462,120 @@ func reverseMessages(msgs []db.Message) {
 	}
 }
 
-// replyTextOf reads the reply text of a listed agent row through its
-// provider, from the same content and uncompressed rendering supplement that
-// the browser reads. A row of another source, or one that holds no reply, gives
-// nil. A row whose bytes do not decode gives nil too: the page still lists it,
-// and the caller sees no reply in it.
+type agentSnapshot struct {
+	todos           *leapmuxv1.AgentTodoSnapshot
+	backgroundTasks *leapmuxv1.AgentBackgroundTaskSnapshot
+	goal            *leapmuxv1.AgentGoalSnapshot
+}
+
+// loadAgentSnapshot loads an agent's authoritative to-do list, background-task
+// registry, and session goal. Shared by ListAgentMessages (latest page) and
+// GetAgentSnapshot so both enforce the same presence contract:
+//   - A snapshot is present only when it is authoritative, so a failed DB query
+//     leaves the field nil rather than wiping the client's copy.
+//   - A child agent owns no background-task registry and no goal, so it returns
+//     present empty snapshots for both to overwrite any inherited state.
+func (svc *Service) loadAgentSnapshot(ctx context.Context, agentRow db.Agent) agentSnapshot {
+	agentID := agentRow.ID
+	var snap agentSnapshot
+	if items, todoErr := svc.Output.LoadTodos(ctx, agentID); todoErr != nil {
+		slog.Warn("failed to load agent_todos", "agent_id", agentID, "error", todoErr)
+	} else {
+		snap.todos = todoevents.SnapshotToProto(items)
+	}
+	if agentRow.ParentAgentID.Valid {
+		snap.backgroundTasks = bgtask.SnapshotToProto(nil)
+	} else if items, bgErr := svc.Output.LoadBackgroundTasks(ctx, agentID); bgErr != nil {
+		slog.Warn("failed to load agent_background_tasks", "agent_id", agentID, "error", bgErr)
+	} else {
+		snap.backgroundTasks = bgtask.SnapshotToProto(items)
+	}
+	snap.goal = svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(agentRow)).Proto(svc.Output.SupportedGoalActions(agentID))
+	return snap
+}
+
+// replyTextOf reads plain text from a transcript message:
+//   - MESSAGE_SOURCE_AGENT rows go through the provider's ReplyText, using the
+//     same content and uncompressed rendering supplement that the browser reads.
+//   - MESSAGE_SOURCE_USER rows read LeapMux's own neutral envelope
+//     ({"content": "..."} or untyped {"text": "..."}).
+//   - Other sources, rows without text, and rows whose bytes fail to decode
+//     return nil.
 func (svc *Service) replyTextOf(message *leapmuxv1.AgentChatMessage, supplemental []byte) *string {
-	if message.GetSource() != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
+	switch message.GetSource() {
+	case leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT:
+		if svc.Agents == nil {
+			return nil
+		}
+		content, err := msgcodec.Decompress(message.GetContent(), message.GetContentCompression())
+		if err != nil {
+			slog.Warn("decode the content of a transcript message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
+		stored, err := agent.DecodeMessageSupplement(content, supplemental)
+		if err != nil {
+			slog.Warn("parse the supplement of a transcript message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
+		stored.AgentSessionID = message.GetAgentSessionId()
+		text, ok := agent.ReplyText(svc.Agents.Registry().Plugin(message.GetAgentProvider()), stored)
+		if !ok {
+			return nil
+		}
+		return &text
+
+	case leapmuxv1.MessageSource_MESSAGE_SOURCE_USER:
+		content, err := msgcodec.Decompress(message.GetContent(), message.GetContentCompression())
+		if err != nil {
+			slog.Warn("decode the content of a user transcript message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
+		text, ok := neutralUserMessageText(content)
+		if !ok {
+			return nil
+		}
+		return &text
+
+	default:
 		return nil
 	}
-	content, err := msgcodec.Decompress(message.GetContent(), message.GetContentCompression())
-	if err != nil {
-		slog.Warn("decode the content of a listed message for its reply text", "message_id", message.GetId(), "error", err)
-		return nil
+}
+
+// replyTextOfMessage extracts reply text from a live AgentChatMessage whose
+// rendering supplement may still be compressed on the proto message itself.
+func (svc *Service) replyTextOfMessage(message *leapmuxv1.AgentChatMessage) *string {
+	var supplemental []byte
+	if len(message.GetSupplementalContent()) > 0 {
+		var err error
+		supplemental, err = msgcodec.Decompress(message.GetSupplementalContent(), message.GetSupplementalContentCompression())
+		if err != nil {
+			slog.Warn("decode the supplement of a live transcript message for its reply text", "message_id", message.GetId(), "error", err)
+			return nil
+		}
 	}
-	stored, err := agent.DecodeMessageSupplement(content, supplemental)
-	if err != nil {
-		slog.Warn("parse the supplement of a listed message for its reply text", "message_id", message.GetId(), "error", err)
-		return nil
+	return svc.replyTextOf(message, supplemental)
+}
+
+// neutralUserMessageText extracts plain text from LeapMux's own neutral user
+// envelopes ({"content": "..."} or untyped {"text": "..."}). Typed provider or
+// assembled envelopes (such as {"type": "assembled_message", ...} or provider
+// tool_result echoes) return false so provider wire shapes never leak here.
+func neutralUserMessageText(raw []byte) (string, bool) {
+	var envelope struct {
+		Type    string `json:"type"`
+		Content string `json:"content"`
+		Text    string `json:"text"`
 	}
-	stored.AgentSessionID = message.GetAgentSessionId()
-	text, ok := agent.ReplyText(svc.Agents.Registry().Plugin(message.GetAgentProvider()), stored)
-	if !ok {
-		return nil
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Type != "" {
+		return "", false
 	}
-	return &text
+	if text := agent.TrimJavaScriptSpace(envelope.Content); text != "" {
+		return text, true
+	}
+	if text := agent.TrimJavaScriptSpace(envelope.Text); text != "" {
+		return text, true
+	}
+	return "", false
 }
 
 // messageToProto converts a DB Message to a proto AgentChatMessage.

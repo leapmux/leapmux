@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -1198,7 +1200,7 @@ func TestBroadcast_ReportsATornDownTransportAtDebugAndARealFaultAtWarn(t *testin
 		w.failSends(fmt.Errorf("send channel message: %w", channel.ErrTransportGone))
 		r.setWatches("ch-1", []watchEntry{{id: "e-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
-		r.broadcast("e-1", &leapmuxv1.WatchEventsResponse{}, classContent)
+		r.broadcast("e-1", &leapmuxv1.WatchEventsResponse{}, classContent, nil)
 
 		assert.Contains(t, logs.String(), "broadcast: SendStream failed")
 		assert.NotContains(t, logs.String(), "level=WARN",
@@ -1212,7 +1214,7 @@ func TestBroadcast_ReportsATornDownTransportAtDebugAndARealFaultAtWarn(t *testin
 		w.failSends(fmt.Errorf("write: connection reset"))
 		r.setWatches("ch-1", []watchEntry{{id: "e-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
-		r.broadcast("e-1", &leapmuxv1.WatchEventsResponse{}, classContent)
+		r.broadcast("e-1", &leapmuxv1.WatchEventsResponse{}, classContent, nil)
 
 		assert.Contains(t, logs.String(), "level=WARN",
 			"a transport error on a live connection is still a fault")
@@ -1583,7 +1585,7 @@ func TestTerminalGeometryRequiresAFullOptInWatch(t *testing.T) {
 	}}
 	registry.broadcast("terminal", &leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: event},
-	}, terminalEventClass(event))
+	}, terminalEventClass(event), nil)
 	assert.Empty(t, legacy.streamsSnapshot())
 	require.Len(t, geometry.streamsSnapshot(), 1)
 	assert.Empty(t, notify.streamsSnapshot())
@@ -1603,4 +1605,137 @@ func TestRetire_DropsTheEntityOnceItsLastWatcherGoes(t *testing.T) {
 	assert.Equal(t, 0, r.count("e-1"))
 	assert.False(t, r.hasEntity("e-1"),
 		"the entity entry goes with its last registration")
+}
+
+func TestBroadcast_IncludeReplyTextIsolationAndConcurrency(t *testing.T) {
+	t.Parallel()
+
+	decodeMessages := func(w *testResponseWriter) []*leapmuxv1.AgentChatMessage {
+		var out []*leapmuxv1.AgentChatMessage
+		for _, frame := range w.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			require.NoError(t, proto.Unmarshal(frame.GetPayload(), &resp))
+			if msg := resp.GetAgentEvent().GetAgentMessage(); msg != nil {
+				out = append(out, msg)
+			}
+		}
+		return out
+	}
+
+	t.Run("resolves once per broadcast, isolates watchers, and never mutates input", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewWatcherManager()
+		var resolveCalls atomic.Int64
+		m.resolveReplyText = func(msg *leapmuxv1.AgentChatMessage) *string {
+			resolveCalls.Add(1)
+			if msg.GetId() == "no-reply" {
+				return nil
+			}
+			return new("resolved:" + msg.GetId())
+		}
+
+		watcherA := &testResponseWriter{channelID: "ch-a"}
+		watcherB := &testResponseWriter{channelID: "ch-b"}
+		watcherC := &testResponseWriter{channelID: "ch-c"}
+		watcherNotify := &testResponseWriter{channelID: "ch-notify"}
+		m.agents.setWatches("ch-a", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, includeReplyText: true}}, watcherA)
+		m.agents.setWatches("ch-b", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, includeReplyText: false}}, watcherB)
+		m.agents.setWatches("ch-c", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, includeReplyText: true}}, watcherC)
+		m.agents.setWatches("ch-notify", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, includeReplyText: true}}, watcherNotify)
+
+		origEvent := &leapmuxv1.AgentEvent{
+			AgentId: "agent-1",
+			Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Id: "m-1", Seq: 1}},
+		}
+		m.BroadcastAgentEvent("agent-1", origEvent)
+
+		assert.Equal(t, int64(1), resolveCalls.Load(), "resolveReplyText must run once across multiple opted-in watchers")
+		assert.Nil(t, origEvent.GetAgentMessage().ReplyText, "broadcast must never mutate the caller's event")
+		assert.Empty(t, watcherNotify.streamsSnapshot(), "NOTIFY watcher must not receive content messages")
+
+		msgsA := decodeMessages(watcherA)
+		msgsB := decodeMessages(watcherB)
+		msgsC := decodeMessages(watcherC)
+		require.Len(t, msgsA, 1)
+		require.Len(t, msgsB, 1)
+		require.Len(t, msgsC, 1)
+		require.NotNil(t, msgsA[0].ReplyText)
+		assert.Equal(t, "resolved:m-1", msgsA[0].GetReplyText())
+		assert.Nil(t, msgsB[0].ReplyText, "watcher with include_reply_text=false must receive nil ReplyText")
+		require.NotNil(t, msgsC[0].ReplyText)
+		assert.Equal(t, "resolved:m-1", msgsC[0].GetReplyText())
+
+		// When resolver returns nil, both opted-in watchers still receive the base payload and resolver runs once.
+		m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
+			AgentId: "agent-1",
+			Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Id: "no-reply", Seq: 2}},
+		})
+		assert.Equal(t, int64(2), resolveCalls.Load())
+		msgsA = decodeMessages(watcherA)
+		require.Len(t, msgsA, 2)
+		assert.Nil(t, msgsA[1].ReplyText)
+
+		// When no watcher opts in, resolveReplyText is skipped altogether.
+		m.UnwatchAll("ch-a")
+		m.UnwatchAll("ch-c")
+		m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
+			AgentId: "agent-1",
+			Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Id: "m-3", Seq: 3}},
+		})
+		assert.Equal(t, int64(2), resolveCalls.Load(), "resolveReplyText must not run when no watcher opts in")
+	})
+
+	t.Run("concurrent broadcasts and subscription updates stay race-free and isolated", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewWatcherManager()
+		m.resolveReplyText = func(msg *leapmuxv1.AgentChatMessage) *string {
+			return new("text:" + msg.GetId())
+		}
+
+		watcherA := &testResponseWriter{channelID: "ch-race-a"}
+		watcherB := &testResponseWriter{channelID: "ch-race-b"}
+		watcherToggle := &testResponseWriter{channelID: "ch-race-toggle"}
+		m.agents.setWatches("ch-race-a", []watchEntry{{id: "agent-race", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, includeReplyText: true}}, watcherA)
+		m.agents.setWatches("ch-race-b", []watchEntry{{id: "agent-race", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, includeReplyText: false}}, watcherB)
+
+		const workers = 4
+		const perWorker = 25
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			for i := range workers * perWorker {
+				m.agents.setWatches("ch-race-toggle", []watchEntry{{
+					id:               "agent-race",
+					mode:             leapmuxv1.WatchMode_WATCH_MODE_FULL,
+					includeReplyText: i%2 == 0,
+				}}, watcherToggle)
+			}
+		})
+		for workerIdx := range workers {
+			wg.Go(func() {
+				for j := range perWorker {
+					seq := int64(workerIdx*perWorker + j + 1)
+					id := fmt.Sprintf("msg-%d-%d", workerIdx, j)
+					m.BroadcastAgentEvent("agent-race", &leapmuxv1.AgentEvent{
+						AgentId: "agent-race",
+						Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Id: id, Seq: seq}},
+					})
+				}
+			})
+		}
+		wg.Wait()
+
+		msgsA := decodeMessages(watcherA)
+		msgsB := decodeMessages(watcherB)
+		require.Len(t, msgsA, workers*perWorker)
+		require.Len(t, msgsB, workers*perWorker)
+		for _, msg := range msgsA {
+			require.NotNil(t, msg.ReplyText, "watcher A must receive ReplyText for %s", msg.GetId())
+			assert.Equal(t, "text:"+msg.GetId(), msg.GetReplyText())
+		}
+		for _, msg := range msgsB {
+			assert.Nil(t, msg.ReplyText, "watcher B must receive nil ReplyText for %s", msg.GetId())
+		}
+	})
 }

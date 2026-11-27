@@ -10,12 +10,14 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
@@ -344,14 +346,15 @@ An agent cannot answer its own requests.`,
 numbers the options of each request. When [request] is omitted and the agent
 has exactly one pending request, it answers that request automatically.
 
-  - A question: --option chooses an option, and a text argument is a
-    typed answer. A multiple-choice question takes both: the answer then
-    holds the chosen options and the text. With several questions, write
-    each value as "<question>:<value>", such as --option 2:1 or
-    "1:Use the cache". A question that no --option answers keeps the
-    options that the agent selected for it, which "agent requests" shows
-    as its default. With no value at all, the command sends those
-    defaults, which must answer every question that needs an answer.
+  - A question: --option chooses an option, and --text (or a text argument)
+    gives a typed answer. Use --text when omitting [request] so the typed
+    text is never parsed as a request handle. A multiple-choice question
+    takes both: the answer then holds the chosen options and the text. With
+    several questions, write each value as "<question>:<value>", such as
+    --option 2:1 or --text "1:Use the cache". A question that no --option
+    answers keeps the options that the agent selected for it, which "agent
+    requests" shows as its default. With no value at all, the command sends
+    those defaults, which must answer every question that needs an answer.
   - A permission prompt: --option chooses any option, such as an approval
     for the session. --message gives the reason of a refusing option.
   - A plan: --option chooses one of its choices. --message gives what to
@@ -361,11 +364,13 @@ has exactly one pending request, it answers that request automatically.
     lists with a condition takes a value only when the condition holds,
     and a field that it does not list keeps its default. --option chooses
     an accept choice.
-  - An input or editor dialog: the text.
+  - An input or editor dialog: --text or a text argument.
 
 An agent cannot answer its own requests.`,
 			Examples: []cli.Example{
 				{Comment: "Choose the second option of a question.", Command: "leapmux agent answer 87a19d5f 3kQ9 --option 2"},
+				{Comment: "Choose an option and add typed text without specifying the sole request handle.", Command: `leapmux agent answer 87a19d5f --option 1 --text "Also check metrics"`},
+				{Comment: "Answer an agent's sole pending question or input dialog with typed text.", Command: `leapmux agent answer 87a19d5f --text "v2.4.0"`},
 				{Comment: "Choose two options of a multiple-choice question, and type one more answer.", Command: `leapmux agent answer 87a19d5f 3kQ9 --option 1 --option 3 "Metrics"`},
 				{Comment: "Answer two questions.", Command: `leapmux agent answer 87a19d5f 3kQ9 --option 1:2 "2:Use the staging database"`},
 				{Comment: "Approve a command for the rest of the session.", Command: "leapmux agent answer 87a19d5f 3kQ9 --option 2"},
@@ -373,6 +378,7 @@ An agent cannot answer its own requests.`,
 			},
 			Flags: func(fs *pflag.FlagSet) {
 				fs.StringArray("option", nil, `an option by its number, or "<question>:<number>" with several questions; repeat it for more than one`)
+				fs.StringArray("text", nil, `a typed answer (or "-" to read stdin); repeat for more than one`)
 				fs.StringArray("field", nil, "a form field as <name>=<value>; repeat it for more than one")
 				fs.String("message", "", "the reason of a refusing option or choice, which the agent reads")
 				addPlanApprovalFlags(fs)
@@ -498,19 +504,9 @@ func inputText(inv *cli.Invocation, argName string) (string, error) {
 		if hasArg {
 			return "", cli.Usagef("give the text as an argument or with --file, not both")
 		}
-		path := stringFlag(inv, "file")
-		var data []byte
-		var err error
-		if path == "-" {
-			data, err = readStdinGuarded(inv.Stdin)
-			if err != nil {
-				return "", err
-			}
-		} else {
-			data, err = os.ReadFile(path)
-			if err != nil {
-				return "", cli.Wrap(cli.CodeUsage, err, "read --file")
-			}
+		data, err := readFileOrStdin(inv.Stdin, stringFlag(inv, "file"), "--file")
+		if err != nil {
+			return "", err
 		}
 		return nonEmptyText(string(data))
 	}
@@ -632,13 +628,13 @@ func runAgentSend(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	bounded := s.bounded()
-	defer bounded.Close()
-	got, err := bounded.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
+	reqSession := s.bounded()
+	defer reqSession.Close()
+	got, err := reqSession.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
 	if err != nil {
 		return nil, err
 	}
-	if err := maybePreflightWorker(bounded.ctx, s.c, got.WorkerID); err != nil {
+	if err := maybePreflightWorker(reqSession.ctx, s.c, got.WorkerID); err != nil {
 		return nil, err
 	}
 	inputID := requestScopedID(spec.requestID, requestScopeAgentSend, got.ID)
@@ -655,27 +651,32 @@ func runAgentSend(inv *cli.Invocation) (any, error) {
 		delivery = sendDeliveryPreempt
 	}
 	if !wait {
-		ack, err := enqueueAgentInput(s.ctx, s.c, got, spec.message.request(got.ID, inputID))
-		if err != nil {
-			return nil, wrapRetryReceipt(err, retryStageDuringSend, receipt)
-		}
-		if delivery != sendDeliveryNormal && ack.GetAcceptedSeq() <= 0 {
-			if err := applySendDeliveryMode(s.ctx, s.c, got, inputID, delivery); err != nil {
-				return nil, wrapRetryReceipt(err, retryStageDuringWait, receipt)
+		stage := retryStageDuringSend
+		if err := withWorkerChannel(reqSession.ctx, s.c, got.WorkerID, func(w workerCall) error {
+			var ack leapmuxv1.EnqueueAgentInputResponse
+			if err := w.Call(reqSession.ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, spec.message.request(got.ID, inputID), &ack); err != nil {
+				return err
 			}
+			if delivery != sendDeliveryNormal && ack.GetAcceptedSeq() <= 0 {
+				stage = retryStageDuringWait
+				return applySendDeliveryModeOn(reqSession.ctx, w, got.ID, inputID, delivery)
+			}
+			return nil
+		}); err != nil {
+			return nil, wrapRetryReceipt(err, stage, receipt)
 		}
 		return agentResult{ID: got.ID, InputID: inputID, RequestID: spec.requestID, ScheduledAt: spec.message.scheduledAt}, nil
 	}
-	var (
-		result  agentReplyResult
-		outcome replyWaitOutcome
-		stage   retryStage
-	)
-	if schemaSpec != nil {
-		result, outcome, stage, err = sendAndWaitWithSchema(inv, s, got, spec.message, spec.requestID, inputID, delivery, boolFlag(inv, "all"), timeout, schemaSpec)
-	} else {
-		result, outcome, stage, err = sendAndWaitWithDelivery(s, got, spec.message, inputID, delivery, boolFlag(inv, "all"), timeout)
-	}
+	result, outcome, stage, err := sendAndWait(s, sendAndWaitRequest{
+		target:    got,
+		message:   spec.message,
+		requestID: spec.requestID,
+		inputID:   inputID,
+		delivery:  delivery,
+		all:       boolFlag(inv, "all"),
+		timeout:   timeout,
+		schema:    schemaSpec,
+	})
 	if err != nil {
 		return nil, wrapRetryReceipt(err, stage, receipt)
 	}
@@ -698,34 +699,53 @@ func (r agentBatchResult) QuietLines() []string {
 	return out
 }
 
+func applySendDeliveryModeOn(ctx context.Context, w workerCall, agentID, inputID string, mode sendDeliveryMode) error {
+	switch mode {
+	case sendDeliverySteer:
+		return w.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceSteerQueuedAgentInputProcedure,
+			&leapmuxv1.SteerQueuedAgentInputRequest{AgentId: agentID, InputId: inputID}, nil)
+	case sendDeliveryPreempt:
+		return w.Call(ctx, leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure,
+			&leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: agentID, InputId: inputID}, nil)
+	default:
+		return nil
+	}
+}
+
 func runAgentInterrupt(inv *cli.Invocation) (any, error) {
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	inputs := inv.Variadic("agent")
-	targets := make([]tabTarget, 0, len(inputs))
-	for _, raw := range inputs {
-		got, err := s.resolveTab(resolve.KindAgent, raw, resolve.Need{WorkerID: true})
-		if err != nil {
-			return nil, err
-		}
-		targets = append(targets, got)
+	targets, err := s.resolveVariadicAgentTargets(inv.Variadic("agent"), resolve.Need{WorkerID: true})
+	if err != nil {
+		return nil, err
 	}
 	reason := stringFlag(inv, "reason")
 	groups, orderedIDs := groupAgentsByWorker(targets)
-	for _, g := range groups {
-		if err := withWorkerChannel(s.ctx, s.c, g.workerID, func(w workerCall) error {
-			for _, id := range g.agentIDs {
-				if err := w.Call(s.ctx, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: id, Reason: reason}, nil); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
+	for _, grp := range groups {
+		if err := maybePreflightWorker(s.ctx, s.c, grp.workerID); err != nil {
 			return nil, err
 		}
+	}
+	eg, gctx := errgroup.WithContext(s.ctx)
+	eg.SetLimit(detailFanoutLimit)
+	for _, grp := range groups {
+		grp := grp
+		eg.Go(func() error {
+			return withWorkerChannel(gctx, s.c, grp.workerID, func(w workerCall) error {
+				for _, id := range grp.agentIDs {
+					if err := w.Call(gctx, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: id, Reason: reason}, nil); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		})
+	}
+	if err := eg.Wait(); err != nil {
+		return nil, err
 	}
 	if len(orderedIDs) == 1 {
 		return agentResult{ID: orderedIDs[0]}, nil
@@ -741,6 +761,11 @@ func runAgentInterrupt(inv *cli.Invocation) (any, error) {
 // ListAgents with a single tab id rather than a GetAgent RPC, since the
 // Worker already filters by id.
 func runAgentGet(inv *cli.Invocation) (any, error) {
+	arg := strings.TrimSpace(inv.Arg("agent"))
+	if (arg == "" || arg == resolve.SelfTarget) && (resolve.Listing{}).SelfTabID(resolve.KindAgent) == "" {
+		return nil, cli.Usagef(`"self" selects your own agent, and this shell does not run inside a LeapMux agent tab`).
+			WithHint("give the agent's id instead")
+	}
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
@@ -748,6 +773,9 @@ func runAgentGet(inv *cli.Invocation) (any, error) {
 	defer s.Close()
 	got, err := s.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
 	if err != nil {
+		return nil, err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
 		return nil, err
 	}
 	info, err := s.agentInfo(got)
@@ -774,54 +802,25 @@ func (s *session) agentInfo(t tabTarget) (*leapmuxv1.AgentInfo, error) {
 	return nil, cli.Newf(cli.CodeNotFound, "the worker has no agent %s", t.ID)
 }
 
-// agentListCompactRow omits the redundant STATUS column when every listed
-// agent is active and --all was not passed, while keeping identical JSON keys.
-type agentListCompactRow struct {
-	ID               string                  `json:"id" table:"ID,short"`
-	Title            string                  `json:"title" table:"TITLE"`
-	Provider         string                  `json:"provider" table:"PROVIDER"`
-	State            string                  `json:"state,omitempty" table:"STATE,state"`
-	Status           string                  `json:"status"`
-	Model            string                  `json:"model,omitempty" table:"MODEL"`
-	Effort           string                  `json:"effort,omitempty"`
-	PermissionMode   string                  `json:"permission_mode,omitempty"`
-	Settings         []agentSetting          `json:"settings,omitempty"`
-	WorkerID         string                  `json:"worker_id"`
-	Worker           string                  `json:"worker_name,omitempty" table:"WORKER"`
-	WorkspaceID      string                  `json:"workspace_id,omitempty" table:"WORKSPACE,short"`
-	Branch           string                  `json:"branch,omitempty" table:"BRANCH"`
-	WorkingDir       string                  `json:"working_dir,omitempty"`
-	SessionID        string                  `json:"session_id,omitempty"`
-	ParentAgentID    string                  `json:"parent_agent_id,omitempty"`
-	RootAgentID      string                  `json:"root_agent_id,omitempty"`
-	SpawnSpanID      string                  `json:"spawn_span_id,omitempty"`
-	AcceptsMessages  bool                    `json:"accepts_messages,omitempty"`
-	AcceptsInterrupt bool                    `json:"accepts_interrupt,omitempty"`
-	BackgroundTasks  int32                   `json:"background_tasks,omitempty"`
-	CreatedAt        string                  `json:"created_at,omitempty"`
-	ClosedAt         string                  `json:"closed_at,omitempty"`
-	StartupError     string                  `json:"startup_error,omitempty"`
-	StartupMessage   string                  `json:"startup_message,omitempty"`
-	StartupPrompt    *agentStartupPromptView `json:"startup_prompt,omitempty"`
-	Git              *gitStatus              `json:"git,omitempty"`
-	Options          optionCatalog           `json:"options,omitempty"`
+// agentList is the result of `agent list`.
+type agentList struct {
+	Agents     []agentRow `json:"agents"`
+	hideStatus bool
 }
 
-type agentListCompact struct {
-	Agents []agentListCompactRow `json:"agents"`
+func (l agentList) DefaultHiddenColumns() []string {
+	if l.hideStatus {
+		return []string{"status"}
+	}
+	return nil
 }
 
-func (l agentListCompact) QuietLines() []string {
+func (l agentList) QuietLines() []string {
 	out := make([]string, 0, len(l.Agents))
 	for _, a := range l.Agents {
 		out = append(out, a.ID)
 	}
 	return out
-}
-
-// agentList is the result of `agent list`.
-type agentList struct {
-	Agents []agentRow `json:"agents"`
 }
 
 // runAgentList lists the agent tabs, each joined with the Worker's record:
@@ -831,14 +830,12 @@ func runAgentList(inv *cli.Invocation) (any, error) {
 	if stateFilter != "" && !slices.Contains(enumTokens(leapmuxv1.AgentActivityState(0)), stateFilter) {
 		return nil, cli.Usagef("--state must be one of %s; got %q", strings.Join(enumTokens(leapmuxv1.AgentActivityState(0)), ", "), stateFilter)
 	}
-	var providerFilter leapmuxv1.AgentProvider
-	if raw := strings.TrimSpace(stringFlag(inv, "provider")); raw != "" {
-		p, ok := agentlabels.ParseProvider(raw)
-		if !ok {
-			return nil, cli.Usagef("unknown --provider %q", raw).
-				WithHint("accepted values: %s", strings.Join(allProviderAliases(), ", "))
-		}
-		providerFilter = p
+	providerFilter, err := parseProviderFlag(stringFlag(inv, "provider"))
+	if err != nil {
+		return nil, err
+	}
+	if inv.Changed("parent") && strings.TrimSpace(stringFlag(inv, "parent")) == "" {
+		return nil, cli.Usagef("--parent is empty")
 	}
 	s, err := openSession(inv)
 	if err != nil {
@@ -862,15 +859,43 @@ func runAgentList(inv *cli.Invocation) (any, error) {
 		}
 		tabs = filtered
 	}
+	details, workerNames := fetchTabDetailsAndWorkers(s.ctx, s.c, tabs, true)
 	parentID := ""
 	if inv.Changed("parent") {
-		p, err := s.resolveTab(resolve.KindAgent, stringFlag(inv, "parent"), resolve.Need{})
+		parentInput := stringFlag(inv, "parent")
+		base := s.listing()
+		listing := resolve.Listing{
+			Tabs: func(context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
+				return tabs, nil
+			},
+			TabTitles: func(_ context.Context, _ []*leapmuxv1.WorkspaceTab) map[string]string {
+				titles := make(map[string]string, len(details))
+				for id, d := range details {
+					titles[id] = d.Title
+				}
+				return titles
+			},
+			ParentAgent: func(ctx context.Context, workerID, selfAgentID string) (string, error) {
+				if d := details[selfAgentID]; d.Agent != nil {
+					return d.Agent.GetParentAgentId(), nil
+				}
+				return base.ParentAgent(ctx, workerID, selfAgentID)
+			},
+		}
+		target, err := resolve.Canonical(s.ctx, listing, resolve.KindAgent, parentInput)
+		if err != nil && (inv.Changed("workspace") || inv.Changed("worker")) && cli.FromError(err).Code == cli.CodeNotFound {
+			p, fallbackErr := s.resolveTab(resolve.KindAgent, parentInput, resolve.Need{})
+			if fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			target = resolve.Target{ID: p.ID}
+			err = nil
+		}
 		if err != nil {
 			return nil, err
 		}
-		parentID = p.ID
+		parentID = target.ID
 	}
-	details, workerNames := fetchTabDetailsAndWorkers(s.ctx, s.c, tabs, true)
 	rows := make([]agentRow, 0, len(tabs))
 	for _, t := range tabs {
 		var row agentRow
@@ -909,14 +934,7 @@ func runAgentList(inv *cli.Invocation) (any, error) {
 			}
 		}
 	}
-	if showStatus {
-		return agentList{Agents: rows}, nil
-	}
-	compact := make([]agentListCompactRow, len(rows))
-	for i, r := range rows {
-		compact[i] = agentListCompactRow(r)
-	}
-	return agentListCompact{Agents: compact}, nil
+	return agentList{Agents: rows, hideStatus: !showStatus}, nil
 }
 
 // providerRow is one agent provider that a Worker offers.
@@ -975,6 +993,37 @@ func runAgentProviders(inv *cli.Invocation) (any, error) {
 // inconsistently with the channel it is reusing.
 type providerListerFn func(ctx context.Context, method string, in proto.Message, out proto.Message) error
 
+// defaultProviderInput returns the trimmed provider selection from --provider,
+// falling back when the flag is unset to $LEAPMUX_CONTROL_AGENT_PROVIDER and
+// then the saved control context provider.
+func defaultProviderInput(inv *cli.Invocation) string {
+	if inv.Changed("provider") {
+		return strings.TrimSpace(stringFlag(inv, "provider"))
+	}
+	if env := strings.TrimSpace(os.Getenv(controlenv.AgentProviderVariable)); env != "" {
+		return env
+	}
+	if ctxCfg, err := control.LoadContext(); err == nil {
+		return strings.TrimSpace(ctxCfg.Provider)
+	}
+	return ""
+}
+
+// parseProviderFlag trims raw and parses it into an AgentProvider enum.
+// Empty or whitespace-only input returns AGENT_PROVIDER_UNSPECIFIED and nil.
+func parseProviderFlag(raw string) (leapmuxv1.AgentProvider, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, nil
+	}
+	p, ok := agentlabels.ParseProvider(trimmed)
+	if !ok {
+		return leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, cli.Usagef("unknown --provider %q", trimmed).
+			WithHint("accepted values: %s", strings.Join(allProviderAliases(), ", "))
+	}
+	return p, nil
+}
+
 // resolveProvider turns the user-supplied --provider value (possibly
 // pre-filled from $LEAPMUX_CONTROL_AGENT_PROVIDER) into an
 // AgentProvider enum, querying the worker's installed providers when
@@ -982,11 +1031,11 @@ type providerListerFn func(ctx context.Context, method string, in proto.Message,
 //
 // Three rejection paths, each with a code a script can branch on:
 //
-//   - raw != "" and not a known alias → usage (lists every alias the
+//   - raw trimmed != "" and not a known alias → usage (lists every alias the
 //     parser accepts; the typo is local, no need for an RPC).
-//   - raw == "" and the worker reports zero installed providers →
+//   - raw trimmed == "" and the worker reports zero installed providers →
 //     conflict, with a fix-it hint.
-//   - raw == "" and the worker reports more than one → usage, with the
+//   - raw trimmed == "" and the worker reports more than one → usage, with the
 //     display names of what's installed.
 //
 // The exactly-one case is the silent success path: a worker with a
@@ -994,12 +1043,12 @@ type providerListerFn func(ctx context.Context, method string, in proto.Message,
 // frontend's first-launch UX where the picker auto-selects when only
 // one option is available.
 func resolveProvider(ctx context.Context, raw string, list providerListerFn) (leapmuxv1.AgentProvider, error) {
-	if raw != "" {
-		if p, ok := agentlabels.ParseProvider(raw); ok {
-			return p, nil
-		}
-		return 0, cli.Usagef("unknown --provider %q", raw).
-			WithHint("accepted values: %s", strings.Join(allProviderAliases(), ", "))
+	p, err := parseProviderFlag(raw)
+	if err != nil {
+		return 0, err
+	}
+	if p != leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return p, nil
 	}
 	var resp leapmuxv1.ListAvailableProvidersResponse
 	if err := list(ctx, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, &leapmuxv1.ListAvailableProvidersRequest{}, &resp); err != nil {

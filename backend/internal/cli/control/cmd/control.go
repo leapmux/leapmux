@@ -363,6 +363,10 @@ func addTargetWorkspaceFlag(fs *pflag.FlagSet) {
 	fs.String("workspace", "", `narrow target lookup to this workspace (an id, a prefix, "title:<title>" or "self")`)
 }
 
+// childrenTarget selects all direct child subagents of the calling agent on
+// multi-agent commands.
+const childrenTarget = "children"
+
 // resolveChildAgents resolves the "children" relational selector to all direct
 // child subagents of parentID on workerID.
 func (s *session) resolveChildAgents(parentID, workerID string) ([]tabTarget, error) {
@@ -390,6 +394,139 @@ func (s *session) resolveChildAgents(parentID, workerID string) ([]tabTarget, er
 		return nil, cli.Newf(cli.CodeNotFound, "agent %s has no child agents", parentID)
 	}
 	return out, nil
+}
+
+// resolveVariadicAgentTargets resolves a list of agent selectors in order,
+// deduplicating by tab ID while preserving first-seen order. "children"
+// (case-insensitive) expands to all direct child subagents of the calling
+// agent. Workspace scope, ListTabs, and TabTitles are memoized across inputs
+// so multi-target commands execute each discovery call at most once.
+func (s *session) resolveVariadicAgentTargets(inputs []string, need resolve.Need) ([]tabTarget, error) {
+	need.TabID = true
+	need.WorkerID = true
+
+	var workspaceIDs []string
+	if s.hasTargetWorkspaceScope() {
+		ws, err := s.resolveOne(resolve.KindWorkspace, stringFlag(s.inv, "workspace"))
+		if err != nil {
+			return nil, err
+		}
+		workspaceIDs = []string{ws.ID}
+	}
+
+	listing := s.listing()
+	var (
+		tabsLoaded     bool
+		cachedTabs     []*leapmuxv1.WorkspaceTab
+		titlesLoaded   bool
+		cachedTitles   map[string]string
+		childrenLoaded bool
+		cachedChildren []tabTarget
+	)
+	listing.Tabs = func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
+		if tabsLoaded {
+			return cachedTabs, nil
+		}
+		tabs, err := listTabsInWorkspaces(ctx, s.c, workspaceIDs)
+		if err != nil {
+			return nil, err
+		}
+		cachedTabs = tabs
+		tabsLoaded = true
+		return tabs, nil
+	}
+	rawTitles := listing.TabTitles
+	listing.TabTitles = func(ctx context.Context, tabs []*leapmuxv1.WorkspaceTab) map[string]string {
+		if titlesLoaded {
+			return cachedTitles
+		}
+		cachedTitles = rawTitles(ctx, tabs)
+		titlesLoaded = true
+		return cachedTitles
+	}
+
+	deps := s.deps()
+	envWorkerID := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
+	needsPlacement := need.WorkspaceID || need.TileID || need.Want.WorkspaceID || need.Want.TileID
+
+	seen := make(map[string]struct{}, len(inputs))
+	targets := make([]tabTarget, 0, len(inputs))
+	appendTarget := func(t tabTarget) {
+		if _, dup := seen[t.ID]; dup {
+			return
+		}
+		seen[t.ID] = struct{}{}
+		targets = append(targets, t)
+	}
+
+	for _, input := range inputs {
+		if strings.EqualFold(strings.TrimSpace(input), childrenTarget) {
+			if !childrenLoaded {
+				children, err := s.resolveChildAgents(listing.SelfTabID(resolve.KindAgent), envWorkerID)
+				if err != nil {
+					return nil, err
+				}
+				if needsPlacement {
+					resolvedChildren := make([]tabTarget, 0, len(children))
+					for _, child := range children {
+						got, err := resolve.Resolve(s.ctx, deps, need, resolve.Inputs{
+							TabID:         child.ID,
+							ExplicitTabID: false,
+							WorkerID:      child.WorkerID,
+							FixedTabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+						})
+						if err != nil {
+							return nil, err
+						}
+						resolvedChildren = append(resolvedChildren, tabTarget{
+							ID:          got.TabID,
+							Type:        got.TabType,
+							WorkerID:    got.WorkerID,
+							WorkspaceID: got.WorkspaceID,
+							TileID:      got.TileID,
+							Row:         got.Tab,
+						})
+					}
+					children = resolvedChildren
+				}
+				cachedChildren = children
+				childrenLoaded = true
+			}
+			for _, child := range cachedChildren {
+				appendTarget(child)
+			}
+			continue
+		}
+		if input == "" {
+			input = resolve.SelfTarget
+		}
+		t, err := resolve.Canonical(s.ctx, listing, resolve.KindAgent, input)
+		if err != nil {
+			return nil, err
+		}
+		if t.Tab != nil {
+			s.located[t.ID] = t.Tab
+		}
+		got, err := resolve.Resolve(s.ctx, deps, need, resolve.Inputs{
+			TabID:         t.ID,
+			ExplicitTabID: !t.Self && !t.Parent,
+			WorkerID:      envWorkerID,
+			FixedTabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+		})
+		if err != nil {
+			return nil, err
+		}
+		appendTarget(tabTarget{
+			ID:          got.TabID,
+			Type:        got.TabType,
+			WorkerID:    got.WorkerID,
+			WorkspaceID: got.WorkspaceID,
+			TileID:      got.TileID,
+			Self:        t.Self,
+			Row:         got.Tab,
+		})
+	}
+	return targets, nil
 }
 
 // resolveOne resolves a target of a kind that is not a tab: a tile, a

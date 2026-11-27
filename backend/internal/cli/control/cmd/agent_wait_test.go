@@ -5,16 +5,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 func TestParseWaitUntil(t *testing.T) {
@@ -360,8 +365,78 @@ func TestAwaitAgents_AsksTheQueueOnlyForIdleAndSettled(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, agentWaitHeld, outcome, until)
 	}
-	assert.True(t, waitUntil("idle").needsEmptyQueue())
-	assert.True(t, waitUntilSettled.needsEmptyQueue())
+	assert.True(t, waitUntil("idle").needsEmptyQueue("idle"))
+	assert.True(t, waitUntilSettled.needsEmptyQueue("idle"))
+	assert.False(t, waitUntilSettled.needsEmptyQueue("waiting_for_user"))
+}
+
+// SWEEP-1: an agent in waiting_for_user is blocked on a prompt and cannot drain
+// its input queue until the user answers, so --until settled must complete
+// without asking or blocking on queued messages.
+func TestAwaitAgents_SettledWaitingForUserDoesNotBlockOnQueuedMessages(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(level("a-1", waiting)),
+		func(context.Context, string, bool) (bool, error) {
+			t.Error("settled on waiting_for_user must not ask the queue")
+			return true, nil
+		},
+		agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{waitUntilSettled}})
+	require.NoError(t, err)
+	assert.Equal(t, agentWaitHeld, outcome)
+	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: "waiting_for_user", Reached: true}}, result.Agents)
+}
+
+// TRAPS-11: a completed queue probe result (either a non-cancellation error or
+// a settled answer) must not be discarded if the timeout expires right as the
+// probe finishes.
+func TestAwaitAgents_CompletedQueueProbeWinsOverTimeoutRace(t *testing.T) {
+	t.Run("non-cancellation probe error is returned even if timeout also expired", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		clock := testutil.NewQuartzMock(t)
+		refused := errors.New("worker permission denied")
+		probe := func(_ context.Context, _ string, _ bool) (bool, error) {
+			clock.Advance(time.Minute).MustWait(ctx)
+			return false, refused
+		}
+		_, _, err := awaitAgents(ctx, clock, feedEvents(level("a-1", idle)), probe,
+			agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{"idle"}, timeout: time.Minute})
+		assert.ErrorIs(t, err, refused)
+	})
+
+	t.Run("settled probe result completes wait even if timeout also expired", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		clock := testutil.NewQuartzMock(t)
+		probe := func(_ context.Context, _ string, _ bool) (bool, error) {
+			clock.Advance(time.Minute).MustWait(ctx)
+			return false, nil
+		}
+		result, outcome, err := awaitAgents(ctx, clock, feedEvents(level("a-1", idle)), probe,
+			agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{"idle"}, timeout: time.Minute})
+		require.NoError(t, err)
+		assert.Equal(t, agentWaitHeld, outcome)
+		assert.Equal(t, []agentWaitRow{{ID: "a-1", State: "idle", Reached: true}}, result.Agents)
+	})
+}
+
+func TestAwaitAgents_InvokesOnActivityCallback(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	var seen []activityEvent
+	events := feedEvents(
+		level("unwatched", working),
+		level("a-1", working),
+		change("a-1", idle),
+	)
+	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), events, noQueuedInput, agentWaitSpec{
+		agentIDs: []string{"a-1"},
+		until:    waitConditions{"idle"},
+		onActivity: func(ev activityEvent) {
+			seen = append(seen, ev)
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, agentWaitHeld, outcome)
+	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: "idle", Reached: true}}, result.Agents)
+	assert.Equal(t, []activityEvent{level("a-1", working), change("a-1", idle)}, seen)
 }
 
 func TestAwaitAgents_AlternativesAcrossAgents(t *testing.T) {
@@ -521,4 +596,179 @@ func TestAgentWaitEnded(t *testing.T) {
 			assert.Equal(t, tc.notice, errOut.String())
 		})
 	}
+
+	t.Run("impossible with multiple closed agents and multiple conditions", func(t *testing.T) {
+		multi := agentWaitResult{Agents: []agentWaitRow{
+			{ID: "a-1", State: "working"},
+			{ID: "a-2", State: agentStateClosed},
+			{ID: "a-3", State: "idle", Reached: true},
+			{ID: "a-4", State: agentStateClosed},
+		}}
+		var out, errOut bytes.Buffer
+		p := &cli.Printer{Out: &out, Err: &errOut, Format: cli.FormatJSON}
+		err := agentWaitEnded(p, multi, agentWaitImpossible, agentWaitSpec{until: waitConditions{"idle", "waiting_for_user"}})
+		var status *cli.ExitStatus
+		require.ErrorAs(t, err, &status)
+		assert.Equal(t, cli.ExitWaitEnded, status.Code)
+		assert.Equal(t, "the wait ended, because agents a-2, a-4 closed before reaching any of the states idle, waiting_for_user\n", errOut.String())
+	})
+}
+
+type queuePoolDispatcher struct {
+	mu      sync.Mutex
+	errCode codes.Code
+	errMsg  string
+	items   []*leapmuxv1.QueuedAgentInput
+}
+
+func (d *queuePoolDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	if req.GetMethod() != leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure {
+		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+		return
+	}
+	d.mu.Lock()
+	code, msg, items := d.errCode, d.errMsg, d.items
+	d.mu.Unlock()
+	if code != codes.OK {
+		_ = rw.SendError(int32(code), msg)
+		return
+	}
+	writeProtoResponse(rw, &leapmuxv1.ListAgentInputQueueResponse{
+		Snapshot: &leapmuxv1.AgentInputQueueSnapshot{Items: items},
+	})
+}
+
+func TestWorkerQueuePool_ReusesChannelReconnectsOnDropAndClosesCleanly(t *testing.T) {
+	id := fullTestID("ag-pool")
+	disp := &queuePoolDispatcher{
+		items: []*leapmuxv1.QueuedAgentInput{{Id: "in-1", State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}},
+	}
+	harness := startHubChannelHarness(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+	client, err := control.NewClient(harness.url)
+	require.NoError(t, err)
+
+	pool := newWorkerQueuePool(client)
+	defer pool.close()
+	ctx := testutil.DeadlineContext(t)
+
+	// Empty workerID fails locally before opening any channel.
+	_, err = pool.readQueue(ctx, "", id)
+	var coded *codedRPCError
+	require.ErrorAs(t, err, &coded)
+	assert.Equal(t, "invalid_request", coded.Code)
+	assert.Zero(t, harness.channelOpens())
+
+	// Repeated probes against the same worker share one E2EE channel.
+	for range 3 {
+		snap, readErr := pool.readQueue(ctx, "worker-A", id)
+		require.NoError(t, readErr)
+		require.Len(t, snap.GetItems(), 1)
+	}
+	assert.Equal(t, 1, harness.channelOpens(), "multiple queue probes must reuse one E2EE channel")
+
+	// In-band RPC errors (not rpc_failed) must not drop or reopen the cached channel.
+	disp.mu.Lock()
+	disp.errCode = codes.PermissionDenied
+	disp.errMsg = "forbidden"
+	disp.mu.Unlock()
+	_, err = pool.readQueue(ctx, "worker-A", id)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodePermissionDenied, cli.FromError(err).Code)
+	assert.Equal(t, 1, harness.channelOpens(), "in-band RPC error must not reopen the channel")
+
+	disp.mu.Lock()
+	disp.errCode = codes.OK
+	disp.errMsg = ""
+	disp.mu.Unlock()
+
+	// Dropping the relay triggers rpc_failed and a single transparent reconnect.
+	harness.mu.Lock()
+	for _, ws := range harness.relays {
+		_ = ws.CloseNow()
+	}
+	harness.mu.Unlock()
+	snap, err := pool.readQueue(ctx, "worker-A", id)
+	require.NoError(t, err)
+	require.Len(t, snap.GetItems(), 1)
+	assert.Equal(t, 2, harness.channelOpens(), "transport drop must trigger one reconnect")
+
+	// Closing the pool is idempotent and prevents further channel opens.
+	pool.close()
+	pool.close()
+	_, err = pool.readQueue(ctx, "worker-A", id)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 2, harness.channelOpens(), "closed pool must not open new channels")
+}
+
+type countingAgentsWorker struct {
+	mu        sync.Mutex
+	agents    []*leapmuxv1.AgentInfo
+	listCalls int
+}
+
+func (w *countingAgentsWorker) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+		w.mu.Lock()
+		w.listCalls++
+		agents := w.agents
+		w.mu.Unlock()
+		writeProtoResponse(rw, &leapmuxv1.ListAgentsResponse{Agents: agents})
+	default:
+		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+	}
+}
+
+func TestResolveWaitTargets_MemoizesDiscoveryAcrossMultipleTargets(t *testing.T) {
+	idA := fullTestID("aaaa")
+	idB := fullTestID("bbbb")
+	hub := &recordingHub{
+		workers: workerRows("worker-A"),
+		workspaces: []*leapmuxv1.Workspace{
+			{Id: "ws-1", CreatedBy: "u-spawn", Title: "Main"},
+		},
+		tabs: []*leapmuxv1.WorkspaceTab{
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: idA}, TileId: "tile-1", WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: idB}, TileId: "tile-1", WorkerId: "worker-A", WorkspaceId: "ws-1"},
+		},
+	}
+	w := &countingAgentsWorker{
+		agents: []*leapmuxv1.AgentInfo{
+			{Id: idA, Title: "Alpha Agent"},
+			{Id: idB, Title: "Beta Agent"},
+		},
+	}
+	startSpawnIPC(t, hub, w)
+
+	root := NewCommand()
+	waitCmd, _, err := root.Find([]string{"agent", "wait"})
+	require.NoError(t, err)
+	require.NoError(t, waitCmd.Flags().Set("workspace", "title:Main"))
+
+	inv := &cli.Invocation{Context: testutil.DeadlineContext(t), Command: waitCmd}
+	s, err := openStreamSession(inv)
+	require.NoError(t, err)
+	defer s.Close()
+
+	targets, err := resolveWaitTargets(s, []string{"title:Alpha Agent", "title:Beta Agent"})
+	require.NoError(t, err)
+	require.Len(t, targets, 2)
+	assert.Equal(t, idA, targets[0].ID)
+	assert.Equal(t, idB, targets[1].ID)
+
+	listTabsCount, listWorkspacesCount := 0, 0
+	for _, proc := range hub.called() {
+		switch proc {
+		case leapmuxv1connect.WorkspaceServiceListTabsProcedure:
+			listTabsCount++
+		case leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:
+			listWorkspacesCount++
+		}
+	}
+	assert.Equal(t, 1, listWorkspacesCount, "workspace scope should resolve once across targets")
+	assert.Equal(t, 1, listTabsCount, "ListTabs should run at most once across targets")
+	w.mu.Lock()
+	listCalls := w.listCalls
+	w.mu.Unlock()
+	assert.Equal(t, 1, listCalls, "TabTitles (ListAgents) should run at most once across targets")
 }

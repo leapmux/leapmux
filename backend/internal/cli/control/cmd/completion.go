@@ -152,15 +152,19 @@ func completeStoredHubs(_ *cobra.Command, _ cli.ArgSpec, word string) ([]string,
 	return matches, cobra.ShellCompDirectiveNoFileComp
 }
 
-// completeTargets completes a positional target with "self" and the ids of
-// the live objects of its kind. Each candidate carries its title as the
-// description that zsh and fish show.
+// completeTargets completes a positional target with "self", "children" (for
+// variadic agent targets inside an agent tab), and the ids of the live objects
+// of its kind. Each candidate carries its title as the description that zsh and
+// fish show.
 func completeTargets(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
 	kind, ok := targetArguments[spec.Name]
 	if !ok {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return completeTargetsOfKind(cmd, kind, toComplete, true)
+	return completeTargetsWithOptions(cmd, kind, toComplete, targetCompletionOptions{
+		allowSelf:     true,
+		allowChildren: kind == resolve.KindAgent && spec.Variadic,
+	})
 }
 
 func completeOtherAgents(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -175,7 +179,10 @@ func completeOtherAgents(cmd *cobra.Command, spec cli.ArgSpec, toComplete string
 	case "text":
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	default:
-		return completeTargetsOfKind(cmd, resolve.KindAgent, toComplete, false)
+		return completeTargetsWithOptions(cmd, resolve.KindAgent, toComplete, targetCompletionOptions{
+			allowSelf:     false,
+			allowChildren: spec.Variadic,
+		})
 	}
 }
 
@@ -548,25 +555,39 @@ func shortestUniquePrefixes(ids []string) map[string]string {
 	return out
 }
 
+type targetCompletionOptions struct {
+	allowSelf     bool
+	allowChildren bool
+}
+
 func completeTargetsOfKind(cmd *cobra.Command, kind resolve.Kind, toComplete string, allowSelf bool) ([]string, cobra.ShellCompDirective) {
+	return completeTargetsWithOptions(cmd, kind, toComplete, targetCompletionOptions{allowSelf: allowSelf})
+}
+
+func completeTargetsWithOptions(cmd *cobra.Command, kind resolve.Kind, toComplete string, opts targetCompletionOptions) ([]string, cobra.ShellCompDirective) {
 	// Cobra completes flags and arguments without running Args validation.
 	if blankTargetFlag(cmd, "hub") {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	self := completionSelfID(kind)
 	var candidates []string
-	if allowSelf && self != "" && strings.HasPrefix(resolve.SelfTarget, toComplete) {
+	if opts.allowSelf && self != "" && strings.HasPrefix(resolve.SelfTarget, toComplete) {
 		candidates = append(candidates, resolve.SelfTarget)
+	}
+	if opts.allowChildren && self != "" && strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)) != "" &&
+		strings.HasPrefix(childrenTarget, toComplete) {
+		candidates = append(candidates, childrenTarget)
 	}
 	c, err := control.NewClientFromEnv(explicitHub(cmd))
 	if err != nil {
+		slices.Sort(candidates)
 		return candidates, cobra.ShellCompDirectiveNoFileComp
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), completionTimeout)
 	defer cancel()
 	listing := targetListing(c, resolveDeps(c))
 	add := func(id, tok, title string) {
-		if (!strings.HasPrefix(id, toComplete) && !strings.HasPrefix(tok, toComplete)) || (!allowSelf && id == self) {
+		if (!strings.HasPrefix(id, toComplete) && !strings.HasPrefix(tok, toComplete)) || (!opts.allowSelf && id == self) {
 			return
 		}
 		cand := tok

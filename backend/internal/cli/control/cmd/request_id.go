@@ -3,6 +3,7 @@ package cmd
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,8 @@ const (
 	requestScopeAgentSend = "agent send"
 	// requestScopeAgentOpen derives the tab id of `agent open`.
 	requestScopeAgentOpen = "agent open"
+	// requestScopeAgentFork derives the tab id of `agent fork`.
+	requestScopeAgentFork = "agent fork"
 )
 
 // addRequestIDFlag registers --request-id.
@@ -43,19 +46,19 @@ func addRequestIDFlag(fs *pflag.FlagSet) {
 	fs.String(requestIDFlag, "", "an id of your choice that makes a retry safe: a second run with the same id and the same arguments creates nothing new")
 }
 
-// requestIDOf returns --request-id, or "" when the command line omits it. A
-// flag that the command line gives with no text fails, because an unset
-// variable in a script would otherwise turn the retry protection off.
-func requestIDOf(inv *cli.Invocation) (string, error) {
-	if !inv.Changed(requestIDFlag) {
-		return "", nil
-	}
-	value := stringFlag(inv, requestIDFlag)
-	if strings.TrimSpace(value) == "" {
-		return "", cli.Usagef("--%s is empty", requestIDFlag)
-	}
-	return value, nil
+// requestIDHintError attaches a --request-id collision hint without converting
+// the wrapped error into a *cli.Error, so addHubHints still inspects the
+// underlying error and cli.HintProvider hints are not attached twice.
+type requestIDHintError struct {
+	err  error
+	hint string
 }
+
+var _ cli.HintProvider = (*requestIDHintError)(nil)
+
+func (e *requestIDHintError) Error() string      { return e.err.Error() }
+func (e *requestIDHintError) Unwrap() error      { return e.err }
+func (e *requestIDHintError) CLIHints() []string { return []string{e.hint} }
 
 // withRequestIDHint adds the cause that a request id gives to a conflict: a
 // request id that an earlier request with other arguments already took. It
@@ -64,11 +67,13 @@ func withRequestIDHint(err error, requestID string) error {
 	if err == nil || requestID == "" {
 		return err
 	}
-	e := cli.FromError(err)
-	if e.Code != cli.CodeConflict {
+	if cli.FromError(err).Code != cli.CodeConflict {
 		return err
 	}
-	return e.WithHint("a retry repeats the command line of the first run; when --request-id %q belongs to a request with other arguments, give this request a new id", requestID)
+	return &requestIDHintError{
+		err:  err,
+		hint: fmt.Sprintf("a retry repeats the command line of the first run; when --request-id %q belongs to a request with other arguments, give this request a new id", requestID),
+	}
 }
 
 // requestScopedID derives the id of one object of a request: the request

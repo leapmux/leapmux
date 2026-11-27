@@ -8,6 +8,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/quartz"
@@ -18,6 +19,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/tunnel"
 )
 
 // The places of a message in the result of `agent send --wait`.
@@ -51,6 +53,19 @@ type agentReplyResult struct {
 	SchemaAttempts int `json:"schema_attempts,omitempty"`
 	// Receipt carries recovery metadata when a keyed wait ended without settling.
 	Receipt *cli.RetryReceipt `json:"receipt,omitempty"`
+	// statusRequestID overrides RequestID in agentReplyEnded when a corrective
+	// schema retry turn is the active input that request-status should inspect.
+	statusRequestID string
+}
+
+// formatSanitizedReplies sanitizes each reply for terminal output and joins
+// them with blank lines.
+func formatSanitizedReplies(replies []string) string {
+	sanitized := make([]string, len(replies))
+	for i, reply := range replies {
+		sanitized[i] = cli.SanitizeTerminalText(reply)
+	}
+	return strings.Join(sanitized, "\n\n")
 }
 
 // RenderText prints the validated JSON when --output-schema was used, or the
@@ -63,11 +78,7 @@ func (r agentReplyResult) RenderText(w io.Writer) error {
 	if len(r.Replies) == 0 {
 		return nil
 	}
-	sanitized := make([]string, len(r.Replies))
-	for i, reply := range r.Replies {
-		sanitized[i] = cli.SanitizeTerminalText(reply)
-	}
-	_, err := fmt.Fprintln(w, strings.Join(sanitized, "\n\n"))
+	_, err := fmt.Fprintln(w, formatSanitizedReplies(r.Replies))
 	return err
 }
 
@@ -122,14 +133,159 @@ type replyReader struct {
 	latestSeq func(ctx context.Context) (int64, error)
 }
 
+// persistentWorkerChannel holds one reusable E2EE channel to workerID (or a
+// direct local IPC client) across multiple RPCs, avoiding a fresh Noise_NK
+// handshake on every wake-up evaluation and transcript page.
+//
+// It opens lazily on first use, closes on Close, and reconnects once on a hub
+// E2EE transport error (never on an in-band RPC refusal or caller cancellation).
+type persistentWorkerChannel struct {
+	peer     control.Peer
+	workerID string
+
+	mu     sync.Mutex
+	w      *workerCall
+	closed bool
+}
+
+func newPersistentWorkerChannel(peer control.Peer, workerID string) *persistentWorkerChannel {
+	return &persistentWorkerChannel{peer: peer, workerID: workerID}
+}
+
+func (p *persistentWorkerChannel) open(ctx context.Context) (workerCall, error) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return workerCall{}, context.Canceled
+	}
+	if p.w != nil {
+		w := *p.w
+		p.mu.Unlock()
+		return w, nil
+	}
+	p.mu.Unlock()
+
+	var opened workerCall
+	switch c := p.peer.(type) {
+	case *control.WorkerIPCClient:
+		opened = workerCall{ipc: c, workerID: p.workerID}
+	case *control.HubClient:
+		if p.workerID == "" {
+			return workerCall{}, &codedRPCError{Code: "invalid_request", Cause: errors.New("worker_id is required")}
+		}
+		openCtx, cancel := rpcDeadline(ctx)
+		ch, err := c.OpenE2EEChannel(openCtx, context.WithoutCancel(openCtx), p.workerID)
+		cancel()
+		if err != nil {
+			return workerCall{}, withHubVersion(ctx, c, &codedRPCError{Code: "channel_open_failed", Cause: err})
+		}
+		opened = workerCall{hub: c, workerID: p.workerID, ch: ch}
+	default:
+		return workerCall{}, fmt.Errorf("unsupported control peer %T", p.peer)
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		if opened.ch != nil {
+			opened.ch.Close()
+		}
+		return workerCall{}, context.Canceled
+	}
+	if p.w != nil {
+		w := *p.w
+		p.mu.Unlock()
+		if opened.ch != nil {
+			opened.ch.Close()
+		}
+		return w, nil
+	}
+	p.w = &opened
+	p.mu.Unlock()
+	return opened, nil
+}
+
+func (p *persistentWorkerChannel) reset(failed *tunnel.Channel) {
+	p.mu.Lock()
+	if p.w == nil || p.w.ch == nil || p.w.ch != failed {
+		p.mu.Unlock()
+		return
+	}
+	ch := p.w.ch
+	p.w = nil
+	p.mu.Unlock()
+	ch.Close()
+}
+
+// Close closes any open hub E2EE channel held by p.
+func (p *persistentWorkerChannel) Close() {
+	p.mu.Lock()
+	p.closed = true
+	w := p.w
+	p.w = nil
+	p.mu.Unlock()
+	if w != nil && w.ch != nil {
+		w.ch.Close()
+	}
+}
+
+// Call invokes a read RPC over the shared channel, reconnecting once if a hub
+// E2EE channel drops at the transport layer.
+func (p *persistentWorkerChannel) Call(ctx context.Context, method string, in, out proto.Message) error {
+	return p.call(ctx, method, in, out, true)
+}
+
+// CallOnce invokes a mutating RPC over the shared channel without automatic
+// transport retry, so the caller retains ownership of retry disposition.
+func (p *persistentWorkerChannel) CallOnce(ctx context.Context, method string, in, out proto.Message) error {
+	return p.call(ctx, method, in, out, false)
+}
+
+func (p *persistentWorkerChannel) call(ctx context.Context, method string, in, out proto.Message, retryOnChannelErr bool) error {
+	for attempt := 0; ; attempt++ {
+		w, err := p.open(ctx)
+		if err != nil {
+			return err
+		}
+		callCtx, cancel := rpcDeadline(ctx)
+		err = w.Call(callCtx, method, in, out)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if w.ch == nil || ctx.Err() != nil || !isChannelTransportError(err) {
+			return err
+		}
+		p.reset(w.ch)
+		if !retryOnChannelErr || attempt > 0 {
+			return err
+		}
+	}
+}
+
+func isChannelTransportError(err error) bool {
+	var coded *codedRPCError
+	return errors.As(err, &coded) && coded.Code == "rpc_failed"
+}
+
 // workerReplyReader reads the queue and the transcript of agentID on
-// workerID through c.
+// workerID through c using one channel per call.
 func workerReplyReader(c control.Peer, workerID, agentID string) replyReader {
 	call := func(ctx context.Context, method string, in, out proto.Message) error {
 		ctx, cancel := rpcDeadline(ctx)
 		defer cancel()
 		return callInnerRPC(ctx, c, workerID, method, in, out)
 	}
+	return buildReplyReader(call, agentID)
+}
+
+// channelReplyReader reads the queue and the transcript of agentID over a
+// reusable persistentWorkerChannel.
+func channelReplyReader(ch *persistentWorkerChannel, agentID string) replyReader {
+	return buildReplyReader(ch.Call, agentID)
+}
+
+func buildReplyReader(call func(ctx context.Context, method string, in, out proto.Message) error, agentID string) replyReader {
 	return replyReader{
 		readQueue: func(ctx context.Context, inputID string) (*leapmuxv1.ListAgentInputQueueResponse, error) {
 			var resp leapmuxv1.ListAgentInputQueueResponse
@@ -324,6 +480,8 @@ type replyWaitSpec struct {
 	all         bool
 	// timeout ends the wait after this long. Zero waits without a limit.
 	timeout time.Duration
+	// onActivity, when non-nil, runs inside awaitReply for each activity event.
+	onActivity func(activityEvent)
 }
 
 // replyWaitOutcome is how a wait for a reply ended.
@@ -351,6 +509,14 @@ type replyEvaluator struct {
 	noticed leapmuxv1.AgentInputQueuePauseReason
 	// delivered records a receipt even if a later transcript read is canceled.
 	delivered bool
+	// exactAcceptedSeq records the Worker's exact accepted_seq when InputReply
+	// is observed so a timeout fetch can read exact partial replies once.
+	exactAcceptedSeq int64
+	// skippedReplies reports that the last pending evaluation intentionally
+	// skipped paging the transcript, so a timeout fetches partial replies once.
+	skippedReplies bool
+	// evalOverride, when non-nil, replaces evaluate in tests to inject synthetic verdicts.
+	evalOverride func(ctx context.Context, state leapmuxv1.AgentActivityState) (replyVerdict, error)
 }
 
 // evaluate reads the queue first, and the transcript only when the message
@@ -358,6 +524,9 @@ type replyEvaluator struct {
 // Worker accepted the message, and the queue after it: the message would
 // then be in neither.
 func (e *replyEvaluator) evaluate(ctx context.Context, state leapmuxv1.AgentActivityState) (replyVerdict, error) {
+	if e.evalOverride != nil {
+		return e.evalOverride(ctx, state)
+	}
 	observation, err := e.reader.readQueue(ctx, e.spec.inputID)
 	if err != nil {
 		return replyVerdict{}, err
@@ -367,6 +536,7 @@ func (e *replyEvaluator) evaluate(ctx context.Context, state leapmuxv1.AgentActi
 	}
 	queue := observation.GetSnapshot()
 	if i := slices.IndexFunc(queue.GetItems(), func(item *leapmuxv1.QueuedAgentInput) bool { return item.GetId() == e.spec.inputID }); i >= 0 {
+		e.skippedReplies = false
 		verdict, err := judgeQueued(state, queue, queue.GetItems()[i])
 		if err == nil && verdict.paused != e.noticed {
 			e.noticed = verdict.paused
@@ -376,11 +546,23 @@ func (e *replyEvaluator) evaluate(ctx context.Context, state leapmuxv1.AgentActi
 		}
 		return verdict, err
 	}
+	// Once delivery is confirmed in the transcript on the legacy path, skip
+	// re-paging all rows on intermediate wake-ups while the turn is still running.
+	if e.delivered && state != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER &&
+		(queue.GetActiveTurn() || state == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING) {
+		e.skippedReplies = true
+		return replyVerdict{step: replyPending, message: messageDelivered}, nil
+	}
+	e.skippedReplies = false
 	rows, err := e.reader.readRowsAfter(ctx, e.spec.baseline, "")
 	if err != nil {
 		return replyVerdict{}, err
 	}
-	return judgeDelivered(state, queue, rows, e.spec.inputID, e.spec.all)
+	verdict, err := judgeDelivered(state, queue, rows, e.spec.inputID, e.spec.all)
+	if err == nil {
+		e.delivered = true
+	}
+	return verdict, err
 }
 
 func (e *replyEvaluator) evaluateExact(ctx context.Context, reply *leapmuxv1.AgentInputTurnReply) (replyVerdict, error) {
@@ -388,13 +570,10 @@ func (e *replyEvaluator) evaluateExact(ctx context.Context, reply *leapmuxv1.Age
 		return replyVerdict{}, cli.Newf(cli.CodeInternal, "the Worker returned an invalid input sequence")
 	}
 	e.delivered = true
-	rows, err := e.reader.readRowsAfter(ctx, reply.GetAcceptedSeq(), e.spec.inputID)
-	if err != nil {
-		return replyVerdict{}, err
-	}
+	e.exactAcceptedSeq = reply.GetAcceptedSeq()
 	outcome := reply.GetOutcome()
 	verdict := replyVerdict{
-		step: replyPending, message: messageDelivered, replies: replyTexts(rows, e.spec.all), turnOutcome: outcome,
+		step: replyPending, message: messageDelivered, turnOutcome: outcome,
 	}
 	switch outcome {
 	case leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED:
@@ -412,15 +591,51 @@ func (e *replyEvaluator) evaluateExact(ctx context.Context, reply *leapmuxv1.Age
 	default:
 		return replyVerdict{}, cli.Newf(cli.CodeVersionMismatch, "the Worker returned an unknown input turn outcome")
 	}
+	if verdict.step == replyPending {
+		e.skippedReplies = true
+		return verdict, nil
+	}
+	e.skippedReplies = false
+	rows, err := e.reader.readRowsAfter(ctx, reply.GetAcceptedSeq(), e.spec.inputID)
+	if err != nil {
+		return replyVerdict{}, err
+	}
+	verdict.replies = replyTexts(rows, e.spec.all)
 	return verdict, nil
+}
+
+// fetchPartialReplies reads the latest partial replies once when a wait times
+// out after skipping transcript reads during pending wake-ups.
+func (e *replyEvaluator) fetchPartialReplies(parentCtx context.Context) []string {
+	if !e.skippedReplies || e.reader.readRowsAfter == nil {
+		return nil
+	}
+	fetchCtx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+	defer cancel()
+	if e.exactAcceptedSeq > 0 {
+		rows, err := e.reader.readRowsAfter(fetchCtx, e.exactAcceptedSeq, e.spec.inputID)
+		if err != nil {
+			return nil
+		}
+		return replyTexts(rows, e.spec.all)
+	}
+	rows, err := e.reader.readRowsAfter(fetchCtx, e.spec.baseline, "")
+	if err != nil {
+		return nil
+	}
+	at := slices.IndexFunc(rows, func(row *leapmuxv1.AgentChatMessage) bool { return row.GetId() == e.spec.inputID })
+	if at < 0 {
+		return nil
+	}
+	return repliesAfter(rows[at+1:], e.spec.all)
 }
 
 // awaitReply evaluates the message after each event of the agent until the
 // agent settles after it, waits for the user, or the timeout passes. state
 // is the agent's published state when the wait began.
-func awaitReply(ctx context.Context, clock quartz.Clock, events <-chan activityEvent, evaluator *replyEvaluator, state leapmuxv1.AgentActivityState) (agentReplyResult, replyWaitOutcome, error) {
+func awaitReply(parentCtx context.Context, clock quartz.Clock, events <-chan activityEvent, evaluator *replyEvaluator, state leapmuxv1.AgentActivityState) (agentReplyResult, replyWaitOutcome, error) {
 	spec := evaluator.spec
-	ctx, stop := agentWaitContext(ctx, clock, spec.timeout, replyWaitTimerTag)
+	waitCtx, stop := agentWaitContext(parentCtx, clock, spec.timeout, replyWaitTimerTag)
 	defer stop()
 	result := func(v replyVerdict) agentReplyResult {
 		replies := v.replies
@@ -438,12 +653,12 @@ func awaitReply(ctx context.Context, clock quartz.Clock, events <-chan activityE
 		evaluator.spec.baseline = spec.acceptedSeq - 1
 	}
 wait:
-	for ctx.Err() == nil {
-		verdict, err := evaluator.evaluate(ctx, state)
-		if ctx.Err() != nil {
-			break
-		}
+	for waitCtx.Err() == nil {
+		verdict, err := evaluator.evaluate(waitCtx, state)
 		if err != nil {
+			if waitCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errAgentWaitExpired)) {
+				break
+			}
 			return agentReplyResult{}, 0, err
 		}
 		last = verdict
@@ -462,13 +677,21 @@ wait:
 			return result(verdict), replyWaitUnproved, nil
 		case replyPending:
 			// The next event of the agent wakes the next evaluation.
+		default:
+			return agentReplyResult{}, 0, cli.Newf(cli.CodeInternal, "unexpected reply evaluation step %d", verdict.step)
+		}
+		if waitCtx.Err() != nil {
+			break
 		}
 		select {
-		case <-ctx.Done():
+		case <-waitCtx.Done():
 			break wait
 		case ev := <-events:
-			if ctx.Err() != nil {
+			if waitCtx.Err() != nil {
 				break wait
+			}
+			if spec.onActivity != nil {
+				spec.onActivity(ev)
 			}
 			switch ev.kind {
 			case activityFailed:
@@ -483,10 +706,13 @@ wait:
 			}
 		}
 	}
-	cause := context.Cause(ctx)
+	cause := context.Cause(waitCtx)
 	if errors.Is(cause, errAgentWaitExpired) {
 		if evaluator.delivered {
 			last.message = messageDelivered
+		}
+		if replies := evaluator.fetchPartialReplies(parentCtx); replies != nil {
+			last.replies = replies
 		}
 		return result(last), replyWaitTimedOut, nil
 	}
@@ -556,53 +782,109 @@ const (
 	sendDeliveryPreempt
 )
 
-func applySendDeliveryMode(ctx context.Context, c control.Peer, t tabTarget, inputID string, mode sendDeliveryMode) error {
+func applySendDeliveryModeOnChannel(ctx context.Context, ch *persistentWorkerChannel, agentID, inputID string, mode sendDeliveryMode) error {
 	switch mode {
 	case sendDeliverySteer:
-		rCtx, cancel := rpcDeadline(ctx)
-		defer cancel()
-		return callInnerRPC(rCtx, c, t.WorkerID, leapmuxv1connect.WorkerAgentInputServiceSteerQueuedAgentInputProcedure,
-			&leapmuxv1.SteerQueuedAgentInputRequest{AgentId: t.ID, InputId: inputID}, nil)
+		return ch.CallOnce(ctx, leapmuxv1connect.WorkerAgentInputServiceSteerQueuedAgentInputProcedure,
+			&leapmuxv1.SteerQueuedAgentInputRequest{AgentId: agentID, InputId: inputID}, nil)
 	case sendDeliveryPreempt:
-		rCtx, cancel := rpcDeadline(ctx)
-		defer cancel()
-		return callInnerRPC(rCtx, c, t.WorkerID, leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure,
-			&leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: t.ID, InputId: inputID}, nil)
+		return ch.CallOnce(ctx, leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure,
+			&leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: agentID, InputId: inputID}, nil)
 	default:
 		return nil
 	}
 }
 
-func sendAndWait(s *session, t tabTarget, message userMessage, inputID string, all bool, timeout time.Duration) (agentReplyResult, replyWaitOutcome, error) {
-	res, outcome, _, err := sendAndWaitWithDelivery(s, t, message, inputID, sendDeliveryNormal, all, timeout)
-	return res, outcome, err
+// replyWaitSession shares one activity feed and one persistent worker channel
+// across one or more send-and-wait rounds (including --output-schema retries).
+type replyWaitSession struct {
+	agentID  string
+	ctx      context.Context
+	cancel   context.CancelFunc
+	stopFeed func()
+	events   chan activityEvent
+	ch       *persistentWorkerChannel
+	reader   replyReader
+	state    leapmuxv1.AgentActivityState
 }
 
-func sendAndWaitWithDelivery(s *session, t tabTarget, message userMessage, inputID string, delivery sendDeliveryMode, all bool, timeout time.Duration) (agentReplyResult, replyWaitOutcome, retryStage, error) {
+func openReplyWaitSession(s *session, t tabTarget) (*replyWaitSession, error) {
 	if err := refuseSelfWait(t); err != nil {
-		return agentReplyResult{}, 0, retryStageBeforeSend, err
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
-	defer cancel()
 	events := make(chan activityEvent, 16)
-	startActivityFeed(ctx, workerActivitySource(s.c, t.WorkerID), []string{t.ID}, events)
+	stopFeed := startActivityFeed(ctx, workerActivitySource(s.c, t.WorkerID), []string{t.ID}, events)
 	state, err := awaitFirstLevel(ctx, events, t.ID)
 	if err != nil {
+		cancel()
+		stopFeed()
+		return nil, err
+	}
+	ch := newPersistentWorkerChannel(s.c, t.WorkerID)
+	return &replyWaitSession{
+		agentID:  t.ID,
+		ctx:      ctx,
+		cancel:   cancel,
+		stopFeed: stopFeed,
+		events:   events,
+		ch:       ch,
+		reader:   channelReplyReader(ch, t.ID),
+		state:    state,
+	}, nil
+}
+
+func (ws *replyWaitSession) Close() {
+	ws.cancel()
+	ws.stopFeed()
+	ws.ch.Close()
+}
+
+// drainEvents consumes any buffered activity events before starting a new turn,
+// keeping ws.state current and surfacing feed closure or failure early.
+func (ws *replyWaitSession) drainEvents() error {
+	for {
+		select {
+		case ev := <-ws.events:
+			switch ev.kind {
+			case activityFailed:
+				return ev.err
+			case activityClosed:
+				return cli.Newf(cli.CodeNotFound, "agent %s is closed", ws.agentID)
+			case activityLevel, activityChange:
+				ws.state = ev.state
+			case activityTurnEnd, activityStatusChange, activityInputChanged:
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+func (ws *replyWaitSession) sendAndWaitOne(
+	s *session,
+	t tabTarget,
+	message userMessage,
+	inputID string,
+	delivery sendDeliveryMode,
+	all bool,
+	timeout time.Duration,
+) (agentReplyResult, replyWaitOutcome, retryStage, error) {
+	if err := ws.drainEvents(); err != nil {
 		return agentReplyResult{}, 0, retryStageBeforeSend, err
 	}
-	waiting := state == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER
+	waiting := ws.state == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER
 	if waiting && !s.inv.Changed("request-id") {
 		return agentReplyResult{}, 0, retryStageBeforeSend, newInputWhileWaiting(t.ID)
 	}
-	reader := workerReplyReader(s.c, t.WorkerID, t.ID)
-	baseline, err := reader.latestSeq(ctx)
+	baseline, err := ws.reader.latestSeq(ws.ctx)
 	if err != nil {
 		return agentReplyResult{}, 0, retryStageBeforeSend, err
 	}
 	request := message.request(t.ID, inputID)
 	request.RequireExisting = waiting
-	ack, err := enqueueAgentInput(ctx, s.c, t, request)
-	if err != nil {
+	var ack leapmuxv1.EnqueueAgentInputResponse
+	if err := ws.ch.CallOnce(ws.ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, request, &ack); err != nil {
 		return agentReplyResult{}, 0, retryStageDuringSend, err
 	}
 	if ack.GetExistingInputMissing() {
@@ -614,44 +896,55 @@ func sendAndWaitWithDelivery(s *session, t tabTarget, message userMessage, input
 			WithExitCode(cli.ExitWaitEnded)
 	}
 	if delivery != sendDeliveryNormal && ack.GetAcceptedSeq() <= 0 {
-		if err := applySendDeliveryMode(ctx, s.c, t, inputID, delivery); err != nil {
+		if err := applySendDeliveryModeOnChannel(ws.ctx, ws.ch, t.ID, inputID, delivery); err != nil {
 			return agentReplyResult{}, 0, retryStageDuringWait, err
 		}
 	}
-	spin := cli.StartSpinner(s.inv.Printer, fmt.Sprintf("waiting for agent %s (%s)", cli.ShortID(t.ID), agentStateToken(state)))
+	spin := cli.StartSpinner(s.inv.Printer, fmt.Sprintf("waiting for agent %s (%s)", cli.ShortID(t.ID), agentStateToken(ws.state)))
 	defer spin.Stop()
-	spinnedEvents := make(chan activityEvent, 16)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ev := <-events:
-				if ev.kind == activityLevel || ev.kind == activityChange {
-					spin.Update(fmt.Sprintf("waiting for agent %s (%s)", cli.ShortID(t.ID), agentStateToken(ev.state)))
-				}
-				select {
-				case spinnedEvents <- ev:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
 	evaluator := &replyEvaluator{
-		reader: reader,
+		reader: ws.reader,
 		spec: replyWaitSpec{
 			agentID: t.ID, inputID: inputID, baseline: baseline, all: all, timeout: timeout,
 			acceptedSeq: ack.GetAcceptedSeq(),
+			onActivity: func(ev activityEvent) {
+				if ev.kind == activityLevel || ev.kind == activityChange {
+					ws.state = ev.state
+					spin.Update(fmt.Sprintf("waiting for agent %s (%s)", cli.ShortID(t.ID), agentStateToken(ev.state)))
+				}
+			},
 		},
 		notice: func(format string, args ...any) {
 			spin.Stop()
 			s.inv.Printer.Notice(format, args...)
 		},
 	}
-	res, outcome, err := awaitReply(ctx, quartz.NewReal(), spinnedEvents, evaluator, state)
+	res, outcome, err := awaitReply(ws.ctx, quartz.NewReal(), ws.events, evaluator, ws.state)
 	spin.Stop()
 	return res, outcome, retryStageDuringWait, err
+}
+
+type sendAndWaitRequest struct {
+	target    tabTarget
+	message   userMessage
+	requestID string
+	inputID   string
+	delivery  sendDeliveryMode
+	all       bool
+	timeout   time.Duration
+	schema    *outputSchemaSpec
+}
+
+func sendAndWait(s *session, req sendAndWaitRequest) (agentReplyResult, replyWaitOutcome, retryStage, error) {
+	if req.schema != nil {
+		return sendAndWaitWithSchema(s, req)
+	}
+	ws, err := openReplyWaitSession(s, req.target)
+	if err != nil {
+		return agentReplyResult{}, 0, retryStageBeforeSend, err
+	}
+	defer ws.Close()
+	return ws.sendAndWaitOne(s, req.target, req.message, req.inputID, req.delivery, req.all, req.timeout)
 }
 
 func newInputWhileWaiting(agentID string) error {
@@ -690,11 +983,15 @@ func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitO
 	case replyWaitUnproved:
 		disp = dispositionOutcomeUnknown
 	}
-	if result.RequestID != "" {
+	queryRequestID := result.RequestID
+	if result.statusRequestID != "" {
+		queryRequestID = result.statusRequestID
+	}
+	if queryRequestID != "" {
 		result.Receipt = &cli.RetryReceipt{
-			RequestID:    result.RequestID,
+			RequestID:    queryRequestID,
 			Disposition:  disp,
-			QueryCommand: buildAgentRequestStatusCmd(result.ID, result.RequestID),
+			QueryCommand: buildAgentRequestStatusCmd(result.ID, queryRequestID),
 		}
 	}
 	if err := p.Result(result); err != nil {
@@ -714,9 +1011,9 @@ func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitO
 	default:
 		p.Notice("the wait ended after %s. Agent %s received the message and the CLI did not observe it settle", timeout, result.ID)
 	}
-	if result.RequestID != "" {
-		p.Notice("disposition: %s (request_id: %s)", disp, result.RequestID)
-		p.Notice("check status: %s", buildAgentRequestStatusCmd(result.ID, result.RequestID))
+	if queryRequestID != "" {
+		p.Notice("disposition: %s (request_id: %s)", disp, queryRequestID)
+		p.Notice("check status: %s", buildAgentRequestStatusCmd(result.ID, queryRequestID))
 	}
 	return &cli.ExitStatus{Code: cli.ExitWaitEnded}
 }

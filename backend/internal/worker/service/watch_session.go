@@ -378,7 +378,12 @@ func (s *watchSession) resolveAgents(agents []*leapmuxv1.WatchAgentEntry) resolv
 			replay.windowTailSeq = a.GetWindowTailSeq()
 			replay.replayPageLimit = a.GetReplayPageLimit()
 		}
-		outEntries = append(outEntries, watchEntry{id: id, mode: mode, replay: replay})
+		outEntries = append(outEntries, watchEntry{
+			id:               id,
+			mode:             mode,
+			includeReplyText: modeIsFull(mode) && a.GetIncludeReplyText(),
+			replay:           replay,
+		})
 		outReqs = append(outReqs, a)
 		outRows = append(outRows, row)
 	}

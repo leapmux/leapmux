@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"maps"
 	"strings"
 
@@ -147,57 +148,77 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	bounded := s
+	timed := s
 	if wait {
-		bounded = s.bounded()
-		defer bounded.Close()
+		timed = s.bounded()
+		defer timed.Close()
 	}
 
-	srcTarget, err := bounded.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true, WorkspaceID: true, TileID: true})
-	if err != nil {
-		return nil, err
-	}
-	if err := maybePreflightWorker(bounded.ctx, s.c, srcTarget.WorkerID); err != nil {
-		return nil, err
-	}
-	srcInfo, err := bounded.agentInfo(srcTarget)
+	srcTarget, err := timed.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true, WorkspaceID: true, TileID: true})
 	if err != nil {
 		return nil, err
 	}
 
 	// Default placement lands beside the source agent in the same workspace/tile/worker
 	// unless overridden explicitly by placement flags.
-	p, err := bounded.placementForFork(srcTarget)
+	p, err := timed.placementForFork(srcTarget)
 	if err != nil {
 		return nil, err
 	}
 	if slug != "" {
-		if err := bounded.ensureUniqueAgentSlug(slug, requestScopedID(requestID, requestScopeAgentOpen, p.WorkerID)); err != nil {
+		if err := timed.ensureUniqueAgentSlug(slug, requestScopedID(requestID, requestScopeAgentFork, p.WorkerID)); err != nil {
+			return nil, err
+		}
+	}
+	if err := maybePreflightWorker(timed.ctx, s.c, srcTarget.WorkerID); err != nil {
+		return nil, err
+	}
+	if p.WorkerID != srcTarget.WorkerID {
+		if err := maybePreflightWorker(timed.ctx, s.c, p.WorkerID); err != nil {
 			return nil, err
 		}
 	}
 
-	if title == "" && srcInfo.GetTitle() != "" {
-		title = srcInfo.GetTitle() + " (fork)"
-	}
-
-	opts := clonedAgentOptions(srcInfo.GetOptionGroups())
-	maps.Copy(opts, overrideOpts)
-
-	dir := srcInfo.GetWorkingDir()
-	if inv.Changed("dir") {
-		dir = stringFlag(inv, "dir")
-	}
-	if selector := setup.GetUseWorktree(); selector != nil {
-		if inv.Changed("dir") {
-			dir = stringFlag(inv, "dir")
-		} else if selector.GetBranch() == "" {
-			dir = ""
+	resolveLaunchInputs := func(info *leapmuxv1.AgentInfo) (string, map[string]string, string, error) {
+		launchTitle := title
+		if launchTitle == "" && info.GetTitle() != "" {
+			launchTitle = info.GetTitle() + " (fork)"
 		}
+		opts := clonedAgentOptions(info.GetOptionGroups())
+		maps.Copy(opts, overrideOpts)
+
+		var dir string
+		if selector := setup.GetUseWorktree(); selector != nil {
+			if !inv.Changed("dir") && selector.GetBranch() != "" && p.WorkerID == srcTarget.WorkerID && strings.TrimSpace(info.GetWorkingDir()) != "" {
+				dir = info.GetWorkingDir()
+			} else {
+				var dirErr error
+				dir, dirErr = timed.worktreeRepoDir(p.WorkerID, selector)
+				if dirErr != nil {
+					return "", nil, "", dirErr
+				}
+			}
+		} else if inv.Changed("dir") {
+			dir = stringFlag(inv, "dir")
+		} else {
+			dir = info.GetWorkingDir()
+		}
+		return launchTitle, opts, dir, nil
 	}
 
+	var (
+		srcInfo     *leapmuxv1.AgentInfo
+		launchTitle string
+		opts        map[string]string
+		dir         string
+	)
 	if p.WorkerID != srcTarget.WorkerID {
-		if err := maybePreflightWorker(bounded.ctx, s.c, p.WorkerID); err != nil {
+		srcInfo, err = timed.agentInfo(srcTarget)
+		if err != nil {
+			return nil, err
+		}
+		launchTitle, opts, dir, err = resolveLaunchInputs(srcInfo)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -214,30 +235,68 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 	}
 
 	focus := shouldFocusNewTab(inv)
-	var result *openAgentResult
-	err = withWorkerChannel(bounded.ctx, s.c, p.WorkerID, func(w workerCall) error {
-		result, err = openAgentAndAddTab(bounded.ctx, s.c, w, openAgentArgs{
+	var (
+		result      *openAgentResult
+		startedOpen bool
+		opened      bool
+	)
+	err = withWorkerChannel(timed.ctx, s.c, p.WorkerID, func(w workerCall) error {
+		if srcInfo == nil {
+			var infoErr error
+			srcInfo, infoErr = agentInfoOnChannel(timed.ctx, w, srcTarget.ID)
+			if infoErr != nil {
+				return infoErr
+			}
+			var inputErr error
+			launchTitle, opts, dir, inputErr = resolveLaunchInputs(srcInfo)
+			if inputErr != nil {
+				return inputErr
+			}
+		}
+		startedOpen = true
+		var openErr error
+		result, openErr = openAgentAndAddTab(timed.ctx, s.c, w, openAgentArgs{
 			WorkspaceID:    p.WorkspaceID,
 			WorkerID:       p.WorkerID,
 			TileID:         p.TileID,
 			Provider:       srcInfo.GetAgentProvider(),
-			Title:          title,
+			Title:          launchTitle,
 			Options:        opts,
 			WorkingDir:     dir,
 			InitialMessage: atomicInitialMessage,
 			GitSetup:       setup,
 			Position:       p.Position,
 			RequestID:      requestID,
+			RequestScope:   requestScopeAgentFork,
 		})
-		if err != nil {
-			return err
+		if openErr != nil {
+			return openErr
 		}
+		opened = true
 		if focus {
-			_ = w.Call(bounded.ctx, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: result.Agent.GetId()}, nil)
+			_ = w.Call(timed.ctx, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: result.Agent.GetId()}, nil)
+		}
+		if postOpenMsg && !wait {
+			inputID := requestScopedID(requestID, requestScopeAgentSend, result.Agent.GetId())
+			if err := w.Call(timed.ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, msg.request(result.Agent.GetId(), inputID), nil); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 	if err != nil {
+		if !startedOpen {
+			return nil, err
+		}
+		if opened {
+			return nil, wrapRetryReceipt(err, retryStageDuringSend, retryReceipt{
+				RequestID:      requestID,
+				Explicit:       explicitRequestID,
+				CreatedAgentID: result.Agent.GetId(),
+				QueryCommand:   buildAgentRequestStatusCmd(result.Agent.GetId(), requestID),
+				RetryCommand:   buildAgentForkRetryCmd(inv, requestID),
+			})
+		}
 		return nil, wrapRetryReceipt(err, retryStageDuringSend, retryReceipt{
 			RequestID:    requestID,
 			Explicit:     explicitRequestID,
@@ -252,43 +311,33 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 		WorkspaceID: p.WorkspaceID,
 		TileID:      result.TileID,
 	}
-	if postOpenMsg {
+	if postOpenMsg && wait {
 		inputID := requestScopedID(requestID, requestScopeAgentSend, agentTarget.ID)
-		if !wait {
-			if _, err := enqueueAgentInput(bounded.ctx, s.c, agentTarget, msg.request(agentTarget.ID, inputID)); err != nil {
-				return nil, wrapRetryReceipt(err, retryStageDuringSend, retryReceipt{
-					RequestID:    requestID,
-					Explicit:     explicitRequestID,
-					QueryCommand: buildAgentRequestStatusCmd(agentTarget.ID, requestID),
-					RetryCommand: buildAgentForkRetryCmd(inv, requestID),
-				})
-			}
-		} else {
-			var (
-				replyRes agentReplyResult
-				outcome  replyWaitOutcome
-				wErr     error
-			)
-			if schemaSpec != nil {
-				replyRes, outcome, _, wErr = sendAndWaitWithSchema(inv, s, agentTarget, *msg, requestID, inputID, sendDeliveryNormal, boolFlag(inv, "all"), timeout, schemaSpec)
-			} else {
-				replyRes, outcome, wErr = sendAndWait(s, agentTarget, *msg, inputID, boolFlag(inv, "all"), timeout)
-			}
-			if wErr != nil {
-				return nil, wrapRetryReceipt(wErr, retryStageDuringWait, retryReceipt{
-					RequestID:    requestID,
-					Explicit:     explicitRequestID,
-					QueryCommand: buildAgentRequestStatusCmd(agentTarget.ID, requestID),
-					RetryCommand: buildAgentForkRetryCmd(inv, requestID),
-				})
-			}
-			replyRes.RequestID = requestID
-			if outcome == replyWaitSettled {
-				return replyRes, nil
-			}
-			return nil, agentReplyEnded(inv.Printer, replyRes, outcome, timeout)
+		replyRes, outcome, msgStage, wErr := sendAndWait(s, sendAndWaitRequest{
+			target:    agentTarget,
+			message:   *msg,
+			requestID: requestID,
+			inputID:   inputID,
+			delivery:  sendDeliveryNormal,
+			all:       boolFlag(inv, "all"),
+			timeout:   timeout,
+			schema:    schemaSpec,
+		})
+		if wErr != nil {
+			return nil, wrapRetryReceipt(wErr, msgStage, retryReceipt{
+				RequestID:      requestID,
+				Explicit:       explicitRequestID,
+				CreatedAgentID: agentTarget.ID,
+				QueryCommand:   buildAgentRequestStatusCmd(agentTarget.ID, requestID),
+				RetryCommand:   buildAgentForkRetryCmd(inv, requestID),
+			})
 		}
-	} else if wait {
+		replyRes.RequestID = requestID
+		if outcome == replyWaitSettled {
+			return replyRes, nil
+		}
+		return nil, agentReplyEnded(inv.Printer, replyRes, outcome, timeout)
+	} else if !postOpenMsg && wait {
 		return waitNewAgentSettled(inv, s, agentTarget, timeout, openedTab{
 			ID:          result.Agent.GetId(),
 			Type:        "agent",
@@ -311,6 +360,19 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 		Position:    result.Position,
 		RequestID:   requestID,
 	}, nil
+}
+
+func agentInfoOnChannel(ctx context.Context, w workerCall, agentID string) (*leapmuxv1.AgentInfo, error) {
+	var resp leapmuxv1.ListAgentsResponse
+	if err := w.Call(ctx, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, &resp); err != nil {
+		return nil, err
+	}
+	for _, a := range resp.GetAgents() {
+		if a.GetId() == agentID {
+			return a, nil
+		}
+	}
+	return nil, cli.Newf(cli.CodeNotFound, "the worker has no agent %s", agentID)
 }
 
 func (s *session) placementForFork(src tabTarget) (placement, error) {
@@ -337,14 +399,16 @@ func (s *session) placementForFork(src tabTarget) (placement, error) {
 		if err != nil {
 			return placement{}, err
 		}
-		p.TileID = t.ID
-		if !s.inv.Changed("workspace") {
-			got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, TileID: true}, resolve.Inputs{TileID: t.ID, ExplicitTileID: true})
-			if err != nil {
-				return placement{}, err
-			}
-			p.WorkspaceID = got.WorkspaceID
+		in := resolve.Inputs{TileID: t.ID, ExplicitTileID: true}
+		if s.inv.Changed("workspace") {
+			in.WorkspaceID, in.ExplicitWorkspaceID = p.WorkspaceID, true
 		}
+		got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, TileID: true}, in)
+		if err != nil {
+			return placement{}, err
+		}
+		p.WorkspaceID = got.WorkspaceID
+		p.TileID = got.TileID
 	}
 	if s.inv.Changed(workerFlag) {
 		k, err := s.workerScope()

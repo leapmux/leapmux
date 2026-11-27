@@ -31,10 +31,12 @@ type fakeWatchTransport struct {
 	done chan struct{}
 	// opened receives one value for each open that succeeded.
 	opened chan struct{}
+	// updated receives one value for each Update call on a handle.
+	updated chan struct{}
 }
 
 func newFakeWatchTransport() *fakeWatchTransport {
-	return &fakeWatchTransport{opened: make(chan struct{}, 8)}
+	return &fakeWatchTransport{opened: make(chan struct{}, 8), updated: make(chan struct{}, 8)}
 }
 
 func (t *fakeWatchTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
@@ -53,7 +55,7 @@ func (t *fakeWatchTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1
 		<-ctx.Done()
 		close(done)
 	}()
-	h := &fakeWatchHandle{cancel: cancel, done: done}
+	h := &fakeWatchHandle{transport: t, cancel: cancel, done: done}
 	t.requests = append(t.requests, req)
 	t.onFrame = onFrame
 	t.end = cancel
@@ -64,15 +66,28 @@ func (t *fakeWatchTransport) OpenWatchEvents(ctx context.Context, req *leapmuxv1
 }
 
 type fakeWatchHandle struct {
-	mu     sync.Mutex
-	endErr error
-	cancel context.CancelFunc
-	done   chan struct{}
+	transport *fakeWatchTransport
+	mu        sync.Mutex
+	endErr    error
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
-func (h *fakeWatchHandle) Update(*leapmuxv1.WatchEventsRequest) error { return nil }
-func (h *fakeWatchHandle) Cancel()                                    { h.cancel() }
-func (h *fakeWatchHandle) Done() <-chan struct{}                      { return h.done }
+func (h *fakeWatchHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
+	h.transport.mu.Lock()
+	h.transport.requests = append(h.transport.requests, req)
+	updated := h.transport.updated
+	h.transport.mu.Unlock()
+	if updated != nil {
+		select {
+		case updated <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+func (h *fakeWatchHandle) Cancel()               { h.cancel() }
+func (h *fakeWatchHandle) Done() <-chan struct{} { return h.done }
 func (h *fakeWatchHandle) EndErr() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -169,15 +184,17 @@ const (
 )
 
 // startTestFeed starts a feed over tr and reads, with clock for its
-// reconnects, and returns the channel of its events.
+// reconnects, and returns the channel of its events. Cleanup stops the feed
+// and waits for its goroutines.
 func startTestFeed(t *testing.T, ctx context.Context, tr *fakeWatchTransport, reads *levelReads, clock quartz.Clock, agentIDs ...string) <-chan activityEvent {
 	t.Helper()
 	out := make(chan activityEvent, 16)
-	startActivityFeed(ctx, activityFeedSource{
+	stop := startActivityFeed(ctx, activityFeedSource{
 		openTransport: func(context.Context) (streamevents.Transport, func(), error) { return tr, func() {}, nil },
 		readActivity:  reads.read,
 		clock:         clock,
 	}, agentIDs, out)
+	t.Cleanup(stop)
 	return out
 }
 
@@ -457,4 +474,173 @@ func TestActivityFeed_EndsOnPermanentStreamRefusal(t *testing.T) {
 	assert.Equal(t, cli.CodePermissionDenied, cli.FromError(ev.err).Code)
 	_, running := clock.Peek()
 	assert.False(t, running, "a permanent refusal must not arm a reconnect timer")
+}
+
+func TestFakeWatchHandle_UpdateRecordsRequestForAck(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	tr := newFakeWatchTransport()
+	var acks []*leapmuxv1.WatchUpdateAck
+	h, err := tr.OpenWatchEvents(ctx, &leapmuxv1.WatchEventsRequest{UpdateId: 1}, func(resp *leapmuxv1.WatchEventsResponse) {
+		if ack := resp.GetUpdateAck(); ack != nil {
+			acks = append(acks, ack)
+		}
+	})
+	require.NoError(t, err)
+	defer h.Cancel()
+
+	require.NoError(t, h.Update(&leapmuxv1.WatchEventsRequest{UpdateId: 7}))
+	assert.Equal(t, uint64(7), tr.lastRequest().GetUpdateId())
+
+	tr.ack()
+	require.Len(t, acks, 1)
+	assert.Equal(t, uint64(7), acks[0].GetUpdateId())
+}
+
+func TestActivityFeed_StopIsIdempotentAndCancelsInFlightRead(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	tr, reads := newFakeWatchTransport(), newLevelReads()
+	out := make(chan activityEvent, 16)
+	stop := startActivityFeed(ctx, activityFeedSource{
+		openTransport: func(context.Context) (streamevents.Transport, func(), error) { return tr, func() {}, nil },
+		readActivity:  reads.read,
+		clock:         testutil.NewQuartzMock(t),
+	}, []string{"a-1"}, out)
+
+	receive(t, ctx, tr.opened)
+	tr.ack()
+	receive(t, ctx, reads.started)
+
+	// Calling stop while readActivity is blocked cancels the feed's internal
+	// context and waits for all goroutines to exit. A second call is a no-op.
+	stop()
+	stop()
+}
+
+func TestActivityFeed_EarlyFailureCancelsInFlightReadAndConnect(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	tr, reads := newFakeWatchTransport(), newLevelReads()
+	out := make(chan activityEvent, 16)
+	stop := startActivityFeed(ctx, activityFeedSource{
+		openTransport: func(context.Context) (streamevents.Transport, func(), error) { return tr, func() {}, nil },
+		readActivity:  reads.read,
+		clock:         testutil.NewQuartzMock(t),
+	}, []string{"a-1"}, out)
+
+	receive(t, ctx, tr.opened)
+	tr.mu.Lock()
+	streamDone := tr.done
+	tr.mu.Unlock()
+
+	tr.ack()
+	receive(t, ctx, reads.started)
+	// Reject while the level read is still blocked on reads.answers.
+	tr.ack(&leapmuxv1.WatchRejection{EntityId: "a-1", Reason: leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_FORBIDDEN})
+
+	ev := receive(t, ctx, out)
+	assert.Equal(t, activityFailed, ev.kind)
+	// sequence cancels feedCtx on exit, stopping connect and the in-flight read.
+	receive(t, ctx, streamDone)
+	stop()
+}
+
+func TestActivityFeed_PassesClockToSubscription(t *testing.T) {
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	defer cancel()
+	clock := testutil.NewQuartzMock(t)
+	ackTimer := clock.Trap().NewTimer(activityAckTimerTag)
+	defer ackTimer.Close()
+	tr, reads := newFakeWatchTransport(), newLevelReads()
+	events := startTestFeed(t, ctx, tr, reads, clock, "a-1")
+
+	receive(t, ctx, tr.opened)
+	assert.Equal(t, watchAckTimeout, testutil.WaitForTimer(t, ctx, ackTimer))
+	ackTimer.Close()
+	firstUpdateID := tr.lastRequest().GetUpdateId()
+
+	// LOOKUP_FAILED asks streamevents.Subscription to retry using the injected clock.
+	retryTimer := clock.Trap().NewTimer()
+	defer retryTimer.Close()
+	tr.ack(&leapmuxv1.WatchRejection{EntityId: "a-1", Reason: leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED})
+	receive(t, ctx, reads.started)
+	reads.answer(map[string]leapmuxv1.AgentActivityState{"a-1": working})
+	assert.Equal(t, activityEvent{kind: activityLevel, agentID: "a-1", state: working}, receive(t, ctx, events))
+
+	delay := testutil.WaitForTimer(t, ctx, retryTimer)
+	clock.Advance(delay).MustWait(ctx)
+	receive(t, ctx, tr.updated)
+	assert.Greater(t, tr.lastRequest().GetUpdateId(), firstUpdateID, "advancing the mock clock must send a retried Update")
+}
+
+func TestActivityFeed_FailsWhenFirstSessionAckTimesOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	defer cancel()
+	clock := testutil.NewQuartzMock(t)
+	ackTimer := clock.Trap().NewTimer(activityAckTimerTag)
+	defer ackTimer.Close()
+	tr, reads := newFakeWatchTransport(), newLevelReads()
+	events := startTestFeed(t, ctx, tr, reads, clock, "a-1")
+
+	receive(t, ctx, tr.opened)
+	tr.mu.Lock()
+	streamDone := tr.done
+	tr.mu.Unlock()
+	assert.Equal(t, watchAckTimeout, testutil.WaitForTimer(t, ctx, ackTimer))
+
+	clock.Advance(watchAckTimeout).MustWait(ctx)
+
+	ev := receive(t, ctx, events)
+	assert.Equal(t, activityFailed, ev.kind)
+	assert.ErrorIs(t, ev.err, errNoWatchAck)
+	assert.Equal(t, cli.CodeUnavailable, cli.FromError(ev.err).Code)
+	receive(t, ctx, streamDone)
+	_, running := clock.Peek()
+	assert.False(t, running, "first-session ack timeout must fail fast without scheduling a reconnect")
+}
+
+func TestActivityFeed_ReconnectsWhenReconnectSessionAckTimesOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	defer cancel()
+	clock := testutil.NewQuartzMock(t)
+	ackTimer := clock.Trap().NewTimer(activityAckTimerTag)
+	defer ackTimer.Close()
+	reconnectTimer := clock.Trap().NewTimer(activityReconnectTimerTag)
+	defer reconnectTimer.Close()
+	tr, reads := newFakeWatchTransport(), newLevelReads()
+	events := startTestFeed(t, ctx, tr, reads, clock, "a-1")
+
+	// Session 1 acknowledges and delivers the initial level.
+	receive(t, ctx, tr.opened)
+	assert.Equal(t, watchAckTimeout, testutil.WaitForTimer(t, ctx, ackTimer))
+	tr.ack()
+	receive(t, ctx, reads.started)
+	reads.answer(map[string]leapmuxv1.AgentActivityState{"a-1": working})
+	assert.Equal(t, activityEvent{kind: activityLevel, agentID: "a-1", state: working}, receive(t, ctx, events))
+
+	// Session 1 drops; feed backs off and opens session 2.
+	tr.endStream()
+	firstBackoff := testutil.WaitForTimer(t, ctx, reconnectTimer)
+	assert.Equal(t, activityReconnectInitial, firstBackoff)
+	clock.Advance(firstBackoff).MustWait(ctx)
+
+	// Session 2 never acknowledges; ack timeout cancels it and triggers backoff reconnect.
+	receive(t, ctx, tr.opened)
+	tr.mu.Lock()
+	session2Done := tr.done
+	tr.mu.Unlock()
+	assert.Equal(t, watchAckTimeout, testutil.WaitForTimer(t, ctx, ackTimer))
+	clock.Advance(watchAckTimeout).MustWait(ctx)
+
+	receive(t, ctx, session2Done)
+	requireNoEvent(t, events)
+	secondBackoff := testutil.WaitForTimer(t, ctx, reconnectTimer)
+	assert.Equal(t, 2*activityReconnectInitial, secondBackoff, "an unacknowledged reconnect session grows the backoff")
+	clock.Advance(secondBackoff).MustWait(ctx)
+
+	// Session 3 acknowledges and delivers the updated level cleanly.
+	receive(t, ctx, tr.opened)
+	assert.Equal(t, watchAckTimeout, testutil.WaitForTimer(t, ctx, ackTimer))
+	tr.ack()
+	receive(t, ctx, reads.started)
+	reads.answer(map[string]leapmuxv1.AgentActivityState{"a-1": idle})
+	assert.Equal(t, activityEvent{kind: activityLevel, agentID: "a-1", state: idle}, receive(t, ctx, events))
 }

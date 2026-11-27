@@ -50,6 +50,12 @@ func (w *phase3aWorker) DispatchWith(_ context.Context, _ channel.Caller, req *l
 			Todos:           w.todos,
 			BackgroundTasks: w.tasks,
 		})
+	case leapmuxv1connect.WorkerAgentServiceGetAgentSnapshotProcedure:
+		writeProtoResponse(rw, &leapmuxv1.GetAgentSnapshotResponse{
+			Goal:            w.goal,
+			Todos:           w.todos,
+			BackgroundTasks: w.tasks,
+		})
 	case leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure:
 		writeProtoResponse(rw, &leapmuxv1.UpdateAgentGoalResponse{})
 	case leapmuxv1connect.WorkerAgentServiceGetAgentSessionInfoProcedure:
@@ -183,6 +189,12 @@ func TestPhase3A_AgentGoalTodosTasksUsageAndOps(t *testing.T) {
 	require.Len(t, tasksAll, 2)
 	tasksActive := runControl(t, "agent", "tasks", agID, "--active").Data(t)["tasks"].([]any)
 	require.Len(t, tasksActive, 1)
+
+	w.mu.Lock()
+	snapshotCalls := append([]string(nil), w.calls...)
+	w.mu.Unlock()
+	assert.Contains(t, snapshotCalls, leapmuxv1connect.WorkerAgentServiceGetAgentSnapshotProcedure)
+	assert.NotContains(t, snapshotCalls, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure)
 
 	// Usage (GetAgentSessionInfo).
 	usageOut := runControlText(t, "agent", "usage", agID)

@@ -21,7 +21,7 @@ This section lists every control command of `leapmux` with its arguments, flags,
 | Send a prompt and wait for the reply | `leapmux agent send <agent> "..." --wait` |
 | Request structured JSON from an agent | `leapmux agent send <agent> "..." --wait --output-schema schema.json` |
 | Wait for any of several agents to finish | `leapmux agent wait <a1> <a2> --any` |
-| Answer a pending permission or question prompt | `leapmux agent request answer <agent> <request-id> ...` |
+| Answer a pending permission or question prompt | `leapmux agent approve <agent> [request]` / `leapmux agent deny <agent> [request]` / `leapmux agent answer <agent> [request]` |
 | Run a command in a terminal and wait for exit | `leapmux terminal open --dir . --command "make test; exit" --wait --exit` |
 | Inspect git status and diffs on a Worker | `leapmux git status --dir .` |
 | Stream workspace and agent events with checkpoints | `leapmux events --checkpoint <name>` |

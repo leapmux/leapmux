@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -3247,5 +3248,92 @@ func TestManagerRecoverStateRunsBeforeRecoverAtomically(t *testing.T) {
 		var status bgtask.Status
 		require.NoError(t, database.QueryRowContext(ctx, `SELECT status FROM agent_background_tasks WHERE owner_agent_id = 'agent-1' AND row_key = 'task-1'`).Scan(&status))
 		assert.Equal(t, bgtask.StatusRunning, status)
+	})
+}
+
+func TestManagerStageInitialMessage_CustomIDAndFallback(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("stores trimmed caller-supplied input ID", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		tx, err := database.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		require.NoError(t, manager.StageInitialMessage(ctx, tx, "agent-1", "  custom-req-99  ", "Start the run", nil))
+		require.NoError(t, tx.Commit())
+
+		snapshot, err := manager.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		require.Len(t, snapshot.Items, 1)
+		assert.Equal(t, "custom-req-99", snapshot.Items[0].ID)
+		assert.Equal(t, "Start the run", snapshot.Items[0].TextPreview)
+	})
+
+	t.Run("falls back to generated ID when input ID is blank", func(t *testing.T) {
+		t.Parallel()
+		for _, blankID := range []string{"", "   ", "\t\n "} {
+			database, store := newStoreFixture(t)
+			manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+			t.Cleanup(manager.StopAndWait)
+
+			tx, err := database.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			require.NoError(t, manager.StageInitialMessage(ctx, tx, "agent-1", blankID, "Start the run", nil))
+			require.NoError(t, tx.Commit())
+
+			snapshot, err := manager.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			require.Len(t, snapshot.Items, 1)
+			gotID := snapshot.Items[0].ID
+			assert.NotEmpty(t, strings.TrimSpace(gotID), "blank input ID %q must generate a non-blank ID", blankID)
+			assert.Equal(t, strings.TrimSpace(gotID), gotID)
+		}
+	})
+
+	t.Run("accepts a custom input ID at the 256-byte limit", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		maxID := strings.Repeat("a", maxQueueIdentityByteCount)
+		tx, err := database.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		require.NoError(t, manager.StageInitialMessage(ctx, tx, "agent-1", maxID, "Start the run", nil))
+		require.NoError(t, tx.Commit())
+
+		snapshot, err := manager.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		require.Len(t, snapshot.Items, 1)
+		assert.Equal(t, maxID, snapshot.Items[0].ID)
+	})
+
+	t.Run("rejects invalid custom input ID", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name string
+			id   string
+		}{
+			{name: "embedded NUL byte", id: "bad\x00id"},
+			{name: "exceeds 256 bytes", id: strings.Repeat("a", maxQueueIdentityByteCount+1)},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				database, store := newStoreFixture(t)
+				manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+				t.Cleanup(manager.StopAndWait)
+
+				tx, err := database.BeginTx(ctx, nil)
+				require.NoError(t, err)
+				err = manager.StageInitialMessage(ctx, tx, "agent-1", tc.id, "Start the run", nil)
+				require.ErrorIs(t, err, ErrInvalidInput)
+				require.NoError(t, tx.Rollback())
+			})
+		}
 	})
 }

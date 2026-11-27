@@ -279,6 +279,9 @@ message WatchAgentEntry {
   // The transcript page size for this FULL lifetime. Zero uses the default.
   // The Worker clamps this size to the shared message page limit.
   optional uint32 replay_page_limit = 7;
+  // Fill AgentChatMessage.reply_text on replayed and live messages for this
+  // FULL subscription. The browser extracts text itself and leaves this unset.
+  bool include_reply_text = 8;
 }
 
 message WatchTerminalEntry {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -39,6 +40,8 @@ type openAgentArgs struct {
 	Position positionSpec
 	// RequestID derives the tab ID so the Worker can recognize a retry.
 	RequestID string
+	// RequestScope scopes RequestID derivation; empty defaults to requestScopeAgentOpen.
+	RequestScope string
 }
 
 // spawnOptions builds the OpenAgent initial option map from the CLI's --model / --effort /
@@ -130,7 +133,11 @@ func openAgentAndAddTab(ctx context.Context, c control.Peer, w workerCall, args 
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, cli.Usagef("an agent needs a workspace and a worker")
 	}
-	creation, err := resolveTabCreation(ctx, c, requestScopedID(args.RequestID, requestScopeAgentOpen, args.WorkerID), args.WorkspaceID, args.TileID, args.Position)
+	scope := args.RequestScope
+	if scope == "" {
+		scope = requestScopeAgentOpen
+	}
+	creation, err := resolveTabCreation(ctx, c, requestScopedID(args.RequestID, scope, args.WorkerID), args.WorkspaceID, args.TileID, args.Position)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +154,10 @@ func openAgentAndAddTab(ctx context.Context, c control.Peer, w workerCall, args 
 		AgentSessionId: args.SessionID,
 		GitSetup:       args.GitSetup,
 		InitialMessage: args.InitialMessage,
+	}
+	if args.InitialMessage != nil && strings.TrimSpace(args.RequestID) != "" {
+		initMsgID := requestScopedID(args.RequestID, requestScopeAgentSend, creation.GetTabId())
+		request.InitialMessageId = &initMsgID
 	}
 	var response leapmuxv1.OpenAgentResponse
 	if err := w.Call(ctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, &response); err != nil {

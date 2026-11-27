@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -482,10 +483,16 @@ func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) 
 
 // StageInitialMessage writes the first input for a root agent created in tx.
 // The new agent is private to tx, so the queue needs no coordinator lock or
-// publication. The caller wakes the queue after it records the startup outcome.
-func (m *Manager) StageInitialMessage(ctx context.Context, tx *sql.Tx, agentID, text string, sender *AgentSender) error {
+// publication. When inputID is blank, a fresh ID is generated; otherwise the
+// caller-supplied ID is validated and stored verbatim. The caller wakes the
+// queue after it records the startup outcome.
+func (m *Manager) StageInitialMessage(ctx context.Context, tx *sql.Tx, agentID, inputID, text string, sender *AgentSender) error {
+	itemID := strings.TrimSpace(inputID)
+	if itemID == "" {
+		itemID = id.Generate()
+	}
 	prepared, err := m.store.prepareNewItemForEnqueue(NewItem{
-		ID: id.Generate(), AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		ID: itemID, AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		Sender: sender, Text: text, ReclassifyOnEdit: true,
 	})
 	if err != nil {

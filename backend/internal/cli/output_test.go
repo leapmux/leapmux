@@ -628,3 +628,235 @@ func TestPrefixWriter_FailingAndShortWriter(t *testing.T) {
 		assert.Equal(t, 2, n)
 	})
 }
+
+type hiddenColRow struct {
+	ID     string `json:"id" table:"ID,short"`
+	Title  string `json:"title" table:"TITLE"`
+	Status string `json:"status" table:"STATUS,state"`
+	Age    string `json:"age" table:"AGE,dim"`
+}
+
+type valueHiderList struct {
+	Rows   []hiddenColRow `json:"rows"`
+	hidden []string
+}
+
+func (l valueHiderList) DefaultHiddenColumns() []string { return l.hidden }
+
+type ptrHiderList struct {
+	Rows   []hiddenColRow `json:"rows"`
+	hidden []string
+}
+
+func (l *ptrHiderList) DefaultHiddenColumns() []string { return l.hidden }
+
+type hiddenSlice []hiddenColRow
+
+func (hiddenSlice) DefaultHiddenColumns() []string { return []string{"status"} }
+
+type scalarHiderObject struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+func (scalarHiderObject) DefaultHiddenColumns() []string { return []string{"status"} }
+
+func TestDefaultColumnHider(t *testing.T) {
+	rows := []hiddenColRow{
+		{ID: "87a19d5f-4838-4e34-9f0f-56130f0a62b1", Title: "Alpha", Status: "active", Age: "5m"},
+		{ID: "4cbb3f34-1234-5678-9abc-def012345678", Title: "Beta", Status: "stopped", Age: "2h"},
+	}
+	classifier := func(v string) StateTone {
+		switch v {
+		case "active":
+			return StateToneGreen
+		case "stopped":
+			return StateToneRed
+		default:
+			return StateToneNone
+		}
+	}
+
+	t.Run("hides specified columns case-insensitively in default FormatText", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatText)
+		require.NoError(t, p.Result(valueHiderList{Rows: rows, hidden: []string{"STATUS", " Age "}}))
+		lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, []string{"ID", "TITLE"}, strings.Fields(lines[0]))
+		assert.Equal(t, []string{"87a19d5f", "Alpha"}, strings.Fields(lines[1]))
+		assert.Equal(t, []string{"4cbb3f34", "Beta"}, strings.Fields(lines[2]))
+		assert.NotContains(t, out.String(), "STATUS")
+		assert.NotContains(t, out.String(), "active")
+		assert.NotContains(t, out.String(), "AGE")
+	})
+
+	t.Run("works with value receiver via value or pointer and with pointer receiver", func(t *testing.T) {
+		for name, input := range map[string]any{
+			"value receiver passed by value":   valueHiderList{Rows: rows, hidden: []string{"status"}},
+			"value receiver passed by pointer": &valueHiderList{Rows: rows, hidden: []string{"status"}},
+			"pointer receiver":                 &ptrHiderList{Rows: rows, hidden: []string{"status"}},
+			"top-level slice":                  hiddenSlice(rows),
+		} {
+			t.Run(name, func(t *testing.T) {
+				p, out, _ := newTestPrinter(FormatText)
+				require.NoError(t, p.Result(input))
+				lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+				require.Len(t, lines, 3)
+				assert.Equal(t, []string{"ID", "TITLE", "AGE"}, strings.Fields(lines[0]))
+				assert.Equal(t, []string{"87a19d5f", "Alpha", "5m"}, strings.Fields(lines[1]))
+				assert.NotContains(t, out.String(), "STATUS")
+			})
+		}
+	})
+
+	t.Run("explicit --fields includes hidden columns and preserves ,state and ,dim TTY styling", func(t *testing.T) {
+		var out bytes.Buffer
+		p := &Printer{
+			Out:             &out,
+			Err:             &bytes.Buffer{},
+			Format:          FormatText,
+			Fields:          []string{"id", "status", "age"},
+			Color:           ColorAlways,
+			StateClassifier: classifier,
+		}
+		require.NoError(t, p.Result(valueHiderList{Rows: rows, hidden: []string{"status", "age"}}))
+		lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, []string{"ID", "STATUS", "AGE"}, strings.Fields(SanitizeTerminalText(lines[0])))
+
+		row1 := strings.Fields(lines[1])
+		require.Len(t, row1, 3)
+		assert.Equal(t, "87a19d5f", row1[0])
+		assert.Equal(t, ansiGreen+"active"+ansiReset, row1[1])
+		assert.Equal(t, ansiDim+"5m"+ansiReset, row1[2])
+
+		row2 := strings.Fields(lines[2])
+		require.Len(t, row2, 3)
+		assert.Equal(t, ansiRed+"stopped"+ansiReset, row2[1])
+		assert.Equal(t, ansiDim+"2h"+ansiReset, row2[2])
+	})
+
+	t.Run("FormatTSV ignores DefaultColumnHider and keeps stable column count and order", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatTSV)
+		require.NoError(t, p.Result(valueHiderList{Rows: rows, hidden: []string{"status", "age"}}))
+		assert.Equal(t, "ID\tTITLE\tSTATUS\tAGE\n87a19d5f\tAlpha\tactive\t5m\n4cbb3f34\tBeta\tstopped\t2h\n", out.String())
+
+		out.Reset()
+		p.NoHeader = true
+		require.NoError(t, p.Result(&ptrHiderList{Rows: rows, hidden: []string{"status"}}))
+		assert.Equal(t, "87a19d5f\tAlpha\tactive\t5m\n4cbb3f34\tBeta\tstopped\t2h\n", out.String())
+	})
+
+	t.Run("FormatJSON, FormatNDJSON, and FormatQuiet are unaffected", func(t *testing.T) {
+		pJSON, outJSON, _ := newTestPrinter(FormatJSON)
+		require.NoError(t, pJSON.Result(valueHiderList{Rows: rows, hidden: []string{"id", "status"}}))
+		var env struct {
+			Data struct {
+				Rows []hiddenColRow `json:"rows"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(outJSON.Bytes(), &env))
+		require.Len(t, env.Data.Rows, 2)
+		assert.Equal(t, "active", env.Data.Rows[0].Status)
+		assert.Equal(t, "stopped", env.Data.Rows[1].Status)
+
+		pND, outND, _ := newTestPrinter(FormatNDJSON)
+		require.NoError(t, pND.Result(valueHiderList{Rows: rows, hidden: []string{"id", "status"}}))
+		ndLines := strings.Split(strings.TrimRight(outND.String(), "\n"), "\n")
+		require.Len(t, ndLines, 2)
+		assert.Contains(t, ndLines[0], `"status":"active"`)
+		assert.Contains(t, ndLines[1], `"status":"stopped"`)
+
+		pQuiet, outQuiet, _ := newTestPrinter(FormatQuiet)
+		require.NoError(t, pQuiet.Result(valueHiderList{Rows: rows, hidden: []string{"id", "status"}}))
+		assert.Equal(t, "87a19d5f-4838-4e34-9f0f-56130f0a62b1\n4cbb3f34-1234-5678-9abc-def012345678\n", outQuiet.String())
+	})
+
+	t.Run("nil, empty, whitespace, and unknown hidden column names hide nothing", func(t *testing.T) {
+		for name, hidden := range map[string][]string{
+			"nil":        nil,
+			"empty":      {},
+			"whitespace": {"", "   "},
+			"unknown":    {"nonexistent", "other"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				p, out, _ := newTestPrinter(FormatText)
+				require.NoError(t, p.Result(valueHiderList{Rows: rows, hidden: hidden}))
+				lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+				require.Len(t, lines, 3)
+				assert.Equal(t, []string{"ID", "TITLE", "STATUS", "AGE"}, strings.Fields(lines[0]))
+			})
+		}
+	})
+
+	t.Run("hiding all columns renders empty output without panicking", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatText)
+		require.NoError(t, p.Result(valueHiderList{Rows: rows, hidden: []string{"id", "title", "status", "age"}}))
+		assert.Empty(t, out.String())
+	})
+
+	t.Run("empty list prints only non-hidden headers and does not mutate cached struct columns", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatText)
+		require.NoError(t, p.Result(valueHiderList{Rows: []hiddenColRow{}, hidden: []string{"status"}}))
+		assert.Equal(t, []string{"ID", "TITLE", "AGE"}, strings.Fields(out.String()))
+
+		// Subsequent render with no hidden columns still sees all four columns.
+		out.Reset()
+		require.NoError(t, p.Result(valueHiderList{Rows: rows, hidden: nil}))
+		lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, []string{"ID", "TITLE", "STATUS", "AGE"}, strings.Fields(lines[0]))
+	})
+
+	t.Run("WriteTableWithOptions honors DefaultColumnHider when fields is empty", func(t *testing.T) {
+		var out bytes.Buffer
+		require.NoError(t, WriteTableWithOptions(&out, hiddenSlice(rows), TableOptions{}))
+		lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, []string{"ID", "TITLE", "AGE"}, strings.Fields(lines[0]))
+
+		out.Reset()
+		require.NoError(t, WriteTableWithOptions(&out, hiddenSlice(rows), TableOptions{
+			opts: tableOptions{fields: []string{"id", "status"}},
+		}))
+		lines = strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, []string{"ID", "STATUS"}, strings.Fields(lines[0]))
+	})
+
+	t.Run("typed nil pointer receiver implementing DefaultColumnHider does not panic", func(t *testing.T) {
+		var nilHider *ptrHiderList
+
+		p, out, _ := newTestPrinter(FormatText)
+		require.NoError(t, p.Result(nilHider))
+		assert.Empty(t, out.String())
+
+		out.Reset()
+		require.NoError(t, renderTextOpts(out, nilHider, tableOptions{}))
+		assert.Empty(t, out.String())
+
+		out.Reset()
+		require.NoError(t, WriteTableWithOptions(out, nilHider, TableOptions{}))
+		assert.Empty(t, out.String())
+	})
+
+	t.Run("duplicate and mixed-case hidden column entries hide each column once", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatText)
+		require.NoError(t, p.Result(valueHiderList{
+			Rows:   rows,
+			hidden: []string{"StAtUs", "status", "STATUS", " Age ", "age"},
+		}))
+		lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, []string{"ID", "TITLE"}, strings.Fields(lines[0]))
+		assert.Equal(t, []string{"87a19d5f", "Alpha"}, strings.Fields(lines[1]))
+		assert.Equal(t, []string{"4cbb3f34", "Beta"}, strings.Fields(lines[2]))
+	})
+
+	t.Run("non-table struct implementing DefaultColumnHider keeps all key-value fields", func(t *testing.T) {
+		p, out, _ := newTestPrinter(FormatText)
+		require.NoError(t, p.Result(scalarHiderObject{ID: "a1", Title: "Alpha", Status: "active"}))
+		assert.Equal(t, "id:     a1\ntitle:  Alpha\nstatus: active\n", out.String())
+	})
+}

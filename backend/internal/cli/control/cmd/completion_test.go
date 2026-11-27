@@ -162,3 +162,45 @@ func TestControlCompletionResolvesParentTarget(t *testing.T) {
 	require.Equal(t, cli.ExitOK, queueOut.Code, queueOut.Stderr)
 	assert.Contains(t, queueOut.Stdout, "inp-parent-1\tfollow up\n")
 }
+
+func TestControlCompletionOffersChildrenForMultiAgentCommands(t *testing.T) {
+	startSelfRenameIPC(t)
+
+	for _, args := range [][]string{
+		{"agent", "wait", ""},
+		{"agent", "wait", "ch"},
+		{"agent", "requests", ""},
+		{"agent", "interrupt", ""},
+		{"agent", "close", ""},
+	} {
+		out := runTree(t, NewCommand(), "", append([]string{"__complete"}, args...)...)
+		require.Equal(t, cli.ExitOK, out.Code, "args=%v stderr=%s", args, out.Stderr)
+		assert.Contains(t, out.Stdout, "children\n", "args=%v", args)
+	}
+
+	// Single-agent and non-agent commands do not offer "children".
+	for _, args := range [][]string{
+		{"agent", "get", ""},
+		{"agent", "send", ""},
+		{"agent", "approve", ""},
+		{"tab", "close", ""},
+		{"terminal", "close", ""},
+	} {
+		out := runTree(t, NewCommand(), "", append([]string{"__complete"}, args...)...)
+		require.Equal(t, cli.ExitOK, out.Code, "args=%v stderr=%s", args, out.Stderr)
+		assert.NotContains(t, out.Stdout, "children\n", "args=%v", args)
+	}
+
+	// Outside an agent tab, multi-agent commands do not offer "children".
+	t.Setenv(controlenv.TabTypeVariable, "terminal")
+	out := runTree(t, NewCommand(), "", "__complete", "agent", "wait", "")
+	require.Equal(t, cli.ExitOK, out.Code, out.Stderr)
+	assert.NotContains(t, out.Stdout, "children\n")
+
+	// Inside an agent tab without a worker id, "children" is omitted.
+	t.Setenv(controlenv.TabTypeVariable, "agent")
+	t.Setenv(controlenv.WorkerIDVariable, "")
+	out = runTree(t, NewCommand(), "", "__complete", "agent", "wait", "")
+	require.Equal(t, cli.ExitOK, out.Code, out.Stderr)
+	assert.NotContains(t, out.Stdout, "children\n")
+}

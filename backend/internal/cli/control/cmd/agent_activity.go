@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -100,11 +101,17 @@ const (
 	activityReconnectMax     = 8 * time.Second
 )
 
-// activityReconnectTimerTag identifies the reconnect timer to a test clock.
-const activityReconnectTimerTag = "activity-feed-reconnect"
+// The timers of an activity feed, by their tags for a test clock.
+const (
+	activityReconnectTimerTag = "activity-feed-reconnect"
+	activityAckTimerTag       = "activity-feed-ack"
+)
 
 // startActivityFeed watches the published activity of agentIDs on one Worker
-// until ctx ends, and sends what it observes to out.
+// until ctx ends or the returned stop function is called, and sends what it
+// observes to out. The returned stop function cancels the feed's internal
+// context and waits for all feed goroutines to finish. Calling stop multiple
+// times is safe.
 //
 // A NOTIFY watch carries each change but never a level: CatchUpStart is
 // content-class, so only a FULL watch receives it. The feed therefore reads
@@ -118,7 +125,8 @@ const activityReconnectTimerTag = "activity-feed-reconnect"
 // of the new subscription covers the changes that the gap lost. When the
 // first subscription fails, the feed sends activityFailed and ends: the
 // Worker refused it, or cannot be reached at all.
-func startActivityFeed(ctx context.Context, source activityFeedSource, agentIDs []string, out chan<- activityEvent) {
+func startActivityFeed(ctx context.Context, source activityFeedSource, agentIDs []string, out chan<- activityEvent) func() {
+	feedCtx, feedCancel := context.WithCancel(ctx)
 	f := &activityFeed{
 		source:   source,
 		agentIDs: append([]string(nil), agentIDs...),
@@ -130,8 +138,20 @@ func startActivityFeed(ctx context.Context, source activityFeedSource, agentIDs 
 		Apply:    f.applyLevel,
 		Send:     f.send,
 	})
-	go f.sequence(ctx)
-	go f.connect(ctx)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		f.sequence(feedCtx, feedCancel)
+	}()
+	go func() {
+		defer wg.Done()
+		f.connect(feedCtx)
+	}()
+	return func() {
+		feedCancel()
+		wg.Wait()
+	}
 }
 
 // activityFeed is the state of one startActivityFeed.
@@ -159,8 +179,12 @@ type activityLevelRead struct {
 }
 
 // sequence orders what the feed sends, until ctx ends or the feed ends.
-func (f *activityFeed) sequence(ctx context.Context) {
+// Cancelling the feed context runs before f.seq.Wait so an in-flight level read
+// and the sibling connect goroutine stop promptly on early exit (such as
+// activityFailed).
+func (f *activityFeed) sequence(ctx context.Context, cancel context.CancelFunc) {
 	defer f.seq.Wait()
+	defer cancel()
 	for {
 		select {
 		case <-ctx.Done():
@@ -276,21 +300,25 @@ func (f *activityFeed) interest() *leapmuxv1.WatchEventsRequest {
 // connect keeps one subscription open until ctx ends.
 func (f *activityFeed) connect(ctx context.Context) {
 	backoff := newReconnectBackoff(activityReconnectInitial, activityReconnectMax)
-	// subscribed turns true once a subscription succeeded. From then on a
-	// failed subscription is a gap that the next one covers, not a reason to
-	// end the feed.
-	subscribed := false
+	clock := f.source.clock
+	if clock == nil {
+		clock = quartz.NewReal()
+	}
+	// subscribed turns true once a subscription received its first
+	// acknowledgement. From then on a failed or unacknowledged subscription is
+	// a gap that the next one covers, not a reason to end the feed.
+	var subscribed atomic.Bool
 	for {
 		var delivered atomic.Bool
-		err := f.subscribeOnce(ctx, &delivered, func() { subscribed = true })
+		err := f.subscribeOnce(ctx, clock, &delivered, func() { subscribed.Store(true) })
 		if ctx.Err() != nil {
 			return
 		}
-		if (err != nil && !subscribed) || refusedForGood(err) {
+		if (err != nil && !subscribed.Load()) || refusedForGood(err) {
 			f.seq.Push(ctx, activityInput{event: activityEvent{kind: activityFailed, err: err}})
 			return
 		}
-		timer := f.source.clock.NewTimer(backoff.afterSession(delivered.Load()), activityReconnectTimerTag)
+		timer := clock.NewTimer(backoff.afterSession(delivered.Load()), activityReconnectTimerTag)
 		select {
 		case <-ctx.Done():
 			timer.Stop(activityReconnectTimerTag)
@@ -300,10 +328,11 @@ func (f *activityFeed) connect(ctx context.Context) {
 	}
 }
 
-// subscribeOnce opens one subscription and returns when its stream ends.
-// onSubscribed runs once the Worker accepted the interest. delivered records
-// whether the stream carried anything.
-func (f *activityFeed) subscribeOnce(ctx context.Context, delivered *atomic.Bool, onSubscribed func()) error {
+// subscribeOnce opens one subscription and returns when its stream ends or when
+// the Worker does not acknowledge the initial watch within watchAckTimeout.
+// onSubscribed runs once the Worker acknowledges the interest. delivered
+// records whether the stream carried anything.
+func (f *activityFeed) subscribeOnce(ctx context.Context, clock quartz.Clock, delivered *atomic.Bool, onSubscribed func()) error {
 	transport, release, err := f.source.openTransport(ctx)
 	if err != nil {
 		return err
@@ -326,21 +355,59 @@ func (f *activityFeed) subscribeOnce(ctx context.Context, delivered *atomic.Bool
 		delivered.Store(true)
 		f.seq.Push(ctx, activityInput{event: ev})
 	}
+	acked := make(chan struct{})
+	var ackOnce sync.Once
 	onAck := func(ack *leapmuxv1.WatchUpdateAck) {
 		delivered.Store(true)
+		ackOnce.Do(func() {
+			onSubscribed()
+			close(acked)
+		})
 		f.seq.Push(ctx, activityInput{ack: ack})
 	}
 	sub := streamevents.NewSubscription(transport, streamevents.NewAgentCursor(), streamevents.NewTerminalCursor(),
-		onAgent, nil, nil, streamevents.WithUpdateAck(onAck))
+		onAgent, nil, nil, streamevents.WithUpdateAck(onAck), streamevents.WithClock(clock))
 	defer sub.Cancel()
 	if err := sub.Update(ctx, f.interest()); err != nil {
 		return err
 	}
-	onSubscribed()
+	var ackTimer *quartz.Timer
+	var ackC <-chan time.Time
 	select {
-	case <-ctx.Done():
-		return nil
-	case <-sub.Done():
-		return inBandError(sub.EndErr())
+	case <-acked:
+		acked = nil
+	default:
+		ackTimer = clock.NewTimer(watchAckTimeout, activityAckTimerTag)
+		defer func() {
+			if ackTimer != nil {
+				ackTimer.Stop(activityAckTimerTag)
+			}
+		}()
+		ackC = ackTimer.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-sub.Done():
+			return inBandError(sub.EndErr())
+		case <-acked:
+			if ackTimer != nil {
+				ackTimer.Stop(activityAckTimerTag)
+				ackTimer = nil
+				ackC = nil
+			}
+			acked = nil
+		case <-ackC:
+			// An acknowledgement that arrived concurrently with the timer wins.
+			select {
+			case <-acked:
+				ackTimer = nil
+				ackC = nil
+				acked = nil
+			default:
+				return errNoWatchAck
+			}
+		}
 	}
 }

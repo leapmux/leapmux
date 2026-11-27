@@ -1,6 +1,6 @@
 ---
 name: leapmux-handoff
-description: Transfer an in-progress task cleanly to another LeapMux agent — via conversation fork, fresh worktree agent, or another Worker — with complete decisions, file paths, and acceptance criteria. Use for one-way handoffs or switching providers/machines. Do not use for supervised parallel fan-out (use `leapmux-delegate`) or read-only second opinions (use `leapmux-review`).
+description: Transfer an in-progress task cleanly to another LeapMux agent — via a cloned-config fork, fresh worktree agent, or another Worker — with complete decisions, file paths, and acceptance criteria. Use for one-way handoffs or switching providers/machines. Do not use for supervised parallel fan-out (use `leapmux-delegate`) or read-only second opinions (use `leapmux-review`).
 user-invocable: true
 argument-hint: "[--provider <provider>] [--worker <worker>] [--worktree <branch>] [instructions]"
 ---
@@ -13,8 +13,8 @@ Read the **leapmux** skill first. Load [references/handoff-template.md](referenc
 
 ## 1. Choose the Right Handoff Mode
 
-- **Same provider, keep full conversation history** (branching an approach or moving onto a fresh git worktree): use `leapmux agent fork self`.
-- **Switch provider, reset noisy context, or move to another Worker** (handing off from Claude Code to Codex, or moving heavy builds to a remote Worker): use `leapmux agent open` with a structured briefing file.
+- **Same provider, model, and options** (branching an approach or moving onto a fresh git worktree): use `leapmux agent fork self` with a structured briefing file. It clones the provider, model, options, and working directory into a fresh session and does **not** copy prior conversation history.
+- **Switch provider or move to another Worker** (handing off from Claude Code to Codex, or moving heavy builds to a remote Worker): use `leapmux agent open` with a structured briefing file.
 
 Inspect `leapmux worker list`, `leapmux agent providers`, and `leapmux git status` before launching.
 
@@ -28,7 +28,7 @@ Write the briefing to a temporary file (for example `.tmp/handoff-brief.md`) usi
 
 ## 3. Launch the Receiving Agent
 
-**Option A — Fork with conversation context:**
+**Option A — Clone provider, model, and options into a fresh session:**
 
 ```sh
 leapmux agent fork self \

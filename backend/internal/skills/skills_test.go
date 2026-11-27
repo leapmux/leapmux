@@ -30,6 +30,12 @@ func TestBundledSkills_MatchRepoRoot(t *testing.T) {
 	ref2, ok := review.Reference("references/review-schemas.md")
 	require.True(t, ok)
 	assert.Equal(t, ref.ContentHash, ref2.ContentHash)
+
+	handoff, ok := Lookup("leapmux-handoff")
+	require.True(t, ok)
+	assert.NotContains(t, handoff.Content, "keep full conversation history")
+	assert.NotContains(t, handoff.Content, "conversation fork")
+	assert.NotContains(t, handoff.Content, "Fork with conversation context")
 }
 
 func TestInstallStatusDriftAndUninstall(t *testing.T) {

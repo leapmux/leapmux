@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -219,25 +221,10 @@ func (w *activityWorker) called() []string {
 	return slices.Clone(w.methods)
 }
 
-// startActivityWorker serves w as the Worker of the agent agentID, which the
-// hub places on it.
-func startActivityWorker(t *testing.T, w *activityWorker, agentID string) {
-	t.Helper()
-	startSpawnIPC(t, &recordingHub{
-		workers: workerRows("worker-A"),
-		locateTab: &leapmuxv1.WorkspaceTab{
-			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
-			TileId:      "root-1",
-			WorkerId:    "worker-A",
-			WorkspaceId: "ws-1",
-		},
-	}, w)
-}
-
 func TestAgentWaitOverIPC_AnIdleAgentEndsTheWaitAtOnce(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	data := runControl(t, "agent", "wait", id).Data(t)
 	assert.Equal(t, []any{map[string]any{"id": id, "state": "idle", "reached": true}}, data["agents"])
@@ -246,7 +233,7 @@ func TestAgentWaitOverIPC_AnIdleAgentEndsTheWaitAtOnce(t *testing.T) {
 func TestAgentWaitOverIPC_AcceptsAnEarlierUntilAlternative(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: working})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	data := runControl(t, "agent", "wait", id,
 		"--until", "working", "--until", "waiting_for_user", "--timeout", "5s").Data(t)
@@ -256,7 +243,7 @@ func TestAgentWaitOverIPC_AcceptsAnEarlierUntilAlternative(t *testing.T) {
 func TestAgentWaitOverIPC_RejectsAnInvalidEarlierUntilValue(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: working})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	out := runControl(t, "agent", "wait", id, "--until", "invalid", "--until", "working")
 	failure := out.requireFailure(t, cli.CodeUsage)
@@ -279,7 +266,7 @@ func TestAgentWaitOverIPC_WakesWhenOnlyTheQueueChanges(t *testing.T) {
 			id := fullTestID("ag-2")
 			w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
 			w.queue = tc.snapshot
-			startActivityWorker(t, w, id)
+			startAgentWorker(t, id, w)
 			ctx := testutil.DeadlineContext(t)
 			run := runControlLive(t, "agent", "wait", id, "--until", "idle", "--json")
 			receive(t, ctx, w.queueRead)
@@ -291,20 +278,43 @@ func TestAgentWaitOverIPC_WakesWhenOnlyTheQueueChanges(t *testing.T) {
 	}
 }
 
+func drainLineSink(s *lineSink) string {
+	var b strings.Builder
+	for {
+		select {
+		case line := <-s.lines:
+			b.WriteString(line)
+			b.WriteByte('\n')
+		default:
+			return b.String()
+		}
+	}
+}
+
+func finishLiveRun(t *testing.T, ctx context.Context, run *liveRun) cliOutcome {
+	t.Helper()
+	code := receive(t, ctx, run.code)
+	return cliOutcome{
+		Code:   code,
+		Stdout: drainLineSink(run.out),
+		Stderr: drainLineSink(run.errOut),
+	}
+}
+
 func TestAgentWaitOverIPC_WaitsForTheChange(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: working})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 	ctx := testutil.DeadlineContext(t)
-	go func() {
-		receive(t, ctx, w.watched)
-		// The level read may still run: a change during it reaches the CLI
-		// after the level, so the order of the two never matters here.
-		w.setState(id, waiting)
-	}()
+	run := runControlLive(t, "agent", "wait", id, "--until", "waiting_for_user", "--json")
+	receive(t, ctx, w.watched)
+	// The level read may still run: a change during it reaches the CLI
+	// after the level, so the order of the two never matters here.
+	w.setState(id, waiting)
 
-	data := runControl(t, "agent", "wait", id, "--until", "waiting_for_user").Data(t)
-	assert.Equal(t, []any{map[string]any{"id": id, "state": "waiting_for_user", "reached": true}}, data["agents"])
+	o := finishLiveRun(t, ctx, run)
+	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
+	assert.Equal(t, []any{map[string]any{"id": id, "state": "waiting_for_user", "reached": true}}, o.Data(t)["agents"])
 }
 
 // `agent open --message` enqueues the first message, and the starting agent
@@ -315,25 +325,52 @@ func TestAgentWaitOverIPC_WaitsForTheFirstMessageOfAStartingAgent(t *testing.T) 
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
 	w.queue = &leapmuxv1.AgentInputQueueSnapshot{Items: []*leapmuxv1.QueuedAgentInput{{Id: "first", State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}}}
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 	ctx := testutil.DeadlineContext(t)
-	go func() {
-		receive(t, ctx, w.queueRead)
-		w.setState(id, working)
-		w.deliver("first", true, replyRow(0, "May I run the migration?"))
-		w.setState(id, waiting)
-	}()
+	run := runControlLive(t, "agent", "wait", id, "--json")
+	receive(t, ctx, w.queueRead)
+	w.setState(id, working)
+	w.deliver("first", true, replyRow(0, "May I run the migration?"))
+	w.setState(id, waiting)
+
+	o := finishLiveRun(t, ctx, run)
+	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
+	assert.Equal(t, []any{map[string]any{"id": id, "state": "waiting_for_user", "reached": true}}, o.Data(t)["agents"])
+}
+
+func TestAgentWaitOverIPC_SettledWaitingForUserIgnoresQueuedInput(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: waiting})
+	w.queue = &leapmuxv1.AgentInputQueueSnapshot{Items: []*leapmuxv1.QueuedAgentInput{{Id: "queued-1", State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}}}
+	startAgentWorker(t, id, w)
 
 	data := runControl(t, "agent", "wait", id).Data(t)
 	assert.Equal(t, []any{map[string]any{"id": id, "state": "waiting_for_user", "reached": true}}, data["agents"])
+	assert.NotContains(t, w.called(), leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure)
 }
 
 func TestAgentWaitOverIPC_TimesOutWithExitSix(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: working})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
+	ctx := testutil.DeadlineContext(t)
 
-	o := runControlText(t, "agent", "wait", id, "--timeout", "100ms")
+	clock := testutil.NewQuartzMock(t)
+	newTimer := clock.Trap().AfterFunc(agentWaitTimerTag)
+	defer newTimer.Close()
+	observed := make(chan activityEvent, 4)
+	prevHooks := agentWaitHooks
+	agentWaitHooks.clock = clock
+	agentWaitHooks.onActivity = func(ev activityEvent) { observed <- ev }
+	t.Cleanup(func() { agentWaitHooks = prevHooks })
+
+	run := runControlLive(t, "agent", "wait", id, "--timeout", "100ms")
+	assert.Equal(t, 100*time.Millisecond, testutil.WaitForTimer(t, ctx, newTimer))
+	ev := receive(t, ctx, observed)
+	assert.Equal(t, working, ev.state)
+
+	clock.Advance(100 * time.Millisecond).MustWait(ctx)
+	o := finishLiveRun(t, ctx, run)
 	assert.Equal(t, cli.ExitWaitEnded, o.Code, "stderr: %s", o.Stderr)
 	assert.Contains(t, o.Stdout, "working", "the result prints whether the condition held or not")
 	assert.Contains(t, o.Stderr, "the wait ended after 100ms")
@@ -342,7 +379,7 @@ func TestAgentWaitOverIPC_TimesOutWithExitSix(t *testing.T) {
 func TestAgentWaitOverIPC_RefusesTheCallingAgent(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 	t.Setenv("LEAPMUX_CONTROL_TAB_ID", id)
 
 	o := runControl(t, "agent", "wait", id)
@@ -354,16 +391,17 @@ func TestAgentSendWaitOverIPC_PrintsTheReplyAfterTheAgentSettles(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
 	w.rows = []*leapmuxv1.AgentChatMessage{replyRow(1, "An answer to an earlier message.")}
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 	ctx := testutil.DeadlineContext(t)
-	go func() {
-		in := receive(t, ctx, w.enqueued)
-		w.setState(id, working)
-		w.deliver(in.GetInputId(), false, replyRow(0, "Let me check."), replyRow(0, "All 12 tests pass."))
-		w.setState(id, idle)
-	}()
+	run := runControlLive(t, "agent", "send", id, "Run the tests", "--wait", "--json")
+	in := receive(t, ctx, w.enqueued)
+	w.setState(id, working)
+	w.deliver(in.GetInputId(), false, replyRow(0, "Let me check."), replyRow(0, "All 12 tests pass."))
+	w.setState(id, idle)
 
-	data := runControl(t, "agent", "send", id, "Run the tests", "--wait").Data(t)
+	o := finishLiveRun(t, ctx, run)
+	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
+	data := o.Data(t)
 	assert.Equal(t, id, data["id"])
 	assert.NotEmpty(t, data["input_id"])
 	assert.Equal(t, "delivered", data["message"])
@@ -374,16 +412,15 @@ func TestAgentSendWaitOverIPC_PrintsTheReplyAfterTheAgentSettles(t *testing.T) {
 func TestAgentSendWaitOverIPC_PrintsEveryReplyWithAll(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 	ctx := testutil.DeadlineContext(t)
-	go func() {
-		in := receive(t, ctx, w.enqueued)
-		w.setState(id, working)
-		w.deliver(in.GetInputId(), false, replyRow(0, "Let me check."), replyRow(0, "All 12 tests pass."))
-		w.setState(id, idle)
-	}()
+	run := runControlLive(t, "agent", "send", id, "Run the tests", "--wait", "--all")
+	in := receive(t, ctx, w.enqueued)
+	w.setState(id, working)
+	w.deliver(in.GetInputId(), false, replyRow(0, "Let me check."), replyRow(0, "All 12 tests pass."))
+	w.setState(id, idle)
 
-	o := runControlText(t, "agent", "send", id, "Run the tests", "--wait", "--all")
+	o := finishLiveRun(t, ctx, run)
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
 	assert.Equal(t, "Let me check.\n\nAll 12 tests pass.\n", o.Stdout, "the text form prints the replies alone")
 }
@@ -391,7 +428,7 @@ func TestAgentSendWaitOverIPC_PrintsEveryReplyWithAll(t *testing.T) {
 func TestAgentSendWaitOverIPC_RefusesAnAgentThatWaitsForTheUser(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: waiting})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 
 	o := runControl(t, "agent", "send", id, "Run the tests", "--wait")
 	f := o.requireFailure(t, "agent_waiting")
@@ -403,16 +440,15 @@ func TestAgentSendWaitOverIPC_RefusesAnAgentThatWaitsForTheUser(t *testing.T) {
 func TestAgentSendWaitOverIPC_ExitsSixWhenTheAgentStopsAtAPrompt(t *testing.T) {
 	id := fullTestID("ag-2")
 	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
-	startActivityWorker(t, w, id)
+	startAgentWorker(t, id, w)
 	ctx := testutil.DeadlineContext(t)
-	go func() {
-		in := receive(t, ctx, w.enqueued)
-		w.setState(id, working)
-		w.deliver(in.GetInputId(), true, replyRow(0, "May I delete the build directory?"))
-		w.setState(id, waiting)
-	}()
+	run := runControlLive(t, "agent", "send", id, "Clean up", "--wait", "--json")
+	in := receive(t, ctx, w.enqueued)
+	w.setState(id, working)
+	w.deliver(in.GetInputId(), true, replyRow(0, "May I delete the build directory?"))
+	w.setState(id, waiting)
 
-	o := runControl(t, "agent", "send", id, "Clean up", "--wait")
+	o := finishLiveRun(t, ctx, run)
 	assert.Equal(t, cli.ExitWaitEnded, o.Code, "stderr: %s", o.Stderr)
 	lines := o.lines()
 	require.Len(t, lines, 1)
@@ -433,7 +469,7 @@ func TestAgentSendWaitOverIPC_WakesWhenItsQueuedInputEnds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			id := fullTestID("ag-2")
 			w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: idle})
-			startActivityWorker(t, w, id)
+			startAgentWorker(t, id, w)
 			ctx := testutil.DeadlineContext(t)
 			run := runControlLive(t, "agent", "send", id, "Run the tests", "--wait", "--json")
 			input := receive(t, ctx, w.enqueued)

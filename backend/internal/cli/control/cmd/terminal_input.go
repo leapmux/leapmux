@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"os"
+	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -228,6 +228,14 @@ func runTerminalRun(inv *cli.Invocation) (any, error) {
 	bounded.Close()
 	res, err := waitTerminalForTarget(inv, s, got, waitSpec)
 	if err != nil {
+		var exitStatus *cli.ExitStatus
+		if errors.As(err, &exitStatus) {
+			if requestID != "" {
+				inv.Printer.Notice("disposition: %s (request_id: %s)", dispositionInProgress, requestID)
+				inv.Printer.Notice("safe retry: %s", buildTerminalRunRetryCmd(inv, got.ID, command, true, requestID))
+			}
+			return nil, err
+		}
 		return nil, wrapRetryReceipt(err, retryStageDuringWait, retryReceipt{
 			RequestID:    requestID,
 			Explicit:     explicitRequestID,
@@ -245,19 +253,9 @@ func readRunCommand(inv *cli.Invocation) (string, error) {
 		if hasArg {
 			return "", cli.Usagef("give the command as an argument or with --file, not both")
 		}
-		path := stringFlag(inv, "file")
-		var data []byte
-		var err error
-		if path == "-" {
-			data, err = readStdinGuarded(inv.Stdin)
-			if err != nil {
-				return "", err
-			}
-		} else {
-			data, err = os.ReadFile(path)
-			if err != nil {
-				return "", cli.Wrap(cli.CodeUsage, err, "read --file")
-			}
+		data, err := readFileOrStdin(inv.Stdin, stringFlag(inv, "file"), "--file")
+		if err != nil {
+			return "", err
 		}
 		text := strings.TrimRight(string(data), "\r\n")
 		if strings.TrimSpace(text) == "" {
@@ -348,18 +346,10 @@ func optionalInputBytes(inv *cli.Invocation, argName string) ([]byte, bool, erro
 	case inv.Changed("file") && hasArg:
 		return nil, false, cli.Usagef("give the text as an argument or with --file, not both")
 	case inv.Changed("file"):
-		path := stringFlag(inv, "file")
 		var err error
-		if path == "-" {
-			data, err = readStdinGuarded(inv.Stdin)
-			if err != nil {
-				return nil, false, err
-			}
-		} else {
-			data, err = os.ReadFile(path)
-			if err != nil {
-				return nil, false, cli.Wrap(cli.CodeUsage, err, "read --file")
-			}
+		data, err = readFileOrStdin(inv.Stdin, stringFlag(inv, "file"), "--file")
+		if err != nil {
+			return nil, false, err
 		}
 	case !hasArg:
 		return nil, false, nil

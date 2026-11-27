@@ -33,6 +33,9 @@ type retryWorker struct {
 func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
 	switch req.GetMethod() {
 	case leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure:
+		w.mu.Lock()
+		w.methods = append(w.methods, req.GetMethod())
+		w.mu.Unlock()
 		var in leapmuxv1.EnqueueAgentInputRequest
 		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
 			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
@@ -62,21 +65,33 @@ func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, r
 	case leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure:
 		var in leapmuxv1.ListAgentInputQueueRequest
 		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			w.mu.Lock()
+			w.methods = append(w.methods, req.GetMethod())
+			w.mu.Unlock()
 			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
 			return
 		}
-		if w.exactReply == nil || in.GetReplyInputId() != w.exactInputID {
+		w.mu.Lock()
+		exactReply := w.exactReply
+		exactMatch := exactReply != nil && in.GetReplyInputId() == w.exactInputID
+		if !exactMatch {
+			w.mu.Unlock()
 			w.activityWorker.DispatchWith(ctx, caller, req, rw)
 			return
 		}
-		w.mu.Lock()
+		w.methods = append(w.methods, req.GetMethod())
 		snapshot := proto.CloneOf(w.queue)
 		w.mu.Unlock()
-		writeProtoResponse(rw, &leapmuxv1.ListAgentInputQueueResponse{Snapshot: snapshot, InputReply: w.exactReply})
+		writeProtoResponse(rw, &leapmuxv1.ListAgentInputQueueResponse{Snapshot: snapshot, InputReply: exactReply})
+		select {
+		case w.queueRead <- struct{}{}:
+		default:
+		}
 	case leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure:
 		var in leapmuxv1.ListAgentMessagesRequest
 		_ = proto.Unmarshal(req.GetPayload(), &in)
 		w.mu.Lock()
+		w.methods = append(w.methods, req.GetMethod())
 		w.transcriptRequests = append(w.transcriptRequests, &in)
 		rows := w.rows
 		if in.GetReplyInputId() != "" && in.GetReplyInputId() == w.exactInputID {
@@ -188,13 +203,20 @@ func TestAgentSendWaitOverIPC_ARetryWaitsForTheQueuedMessage(t *testing.T) {
 	w.queue = &leapmuxv1.AgentInputQueueSnapshot{ActiveTurn: true, Items: []*leapmuxv1.QueuedAgentInput{{Id: inputID, State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}}}
 	startAgentWorker(t, id, w)
 	ctx := testutil.DeadlineContext(t)
+	bgErr := make(chan error, 1)
 	go func() {
-		receive(t, ctx, w.queueRead)
-		w.deliver(inputID, false, replyRow(0, "All 12 tests pass."))
-		w.setState(id, idle)
+		select {
+		case <-w.queueRead:
+			w.deliver(inputID, false, replyRow(0, "All 12 tests pass."))
+			w.setState(id, idle)
+			bgErr <- nil
+		case <-ctx.Done():
+			bgErr <- ctx.Err()
+		}
 	}()
 
 	data := runControl(t, "agent", "send", id, "Run the tests", "--wait", "--request-id", "tests-1").Data(t)
+	require.NoError(t, receive(t, ctx, bgErr))
 	assert.Equal(t, inputID, data["input_id"])
 	assert.Equal(t, []any{"All 12 tests pass."}, data["replies"])
 	assert.Empty(t, w.enqueued, "the retry queued no second message")
@@ -251,6 +273,10 @@ func TestAgentSendWaitOverIPC_ARetryReturnsItsCompletedTurnDuringALaterPrompt(t 
 			return req.GetReplyInputId() == inputID && req.GetReplyCursor() == cursor && req.GetIncludeReplyText()
 		}), "the command must advance the exact reply cursor")
 	}
+	assert.Contains(t, w.methods, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure)
+	assert.Contains(t, w.methods, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure)
+	assert.Contains(t, w.methods, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure)
+	assert.NotEmpty(t, w.queueRead, "exact-reply ListAgentInputQueue must signal queueRead")
 }
 
 func TestAgentSendWaitOverIPC_AFreshKeyDoesNotQueueBehindAPrompt(t *testing.T) {

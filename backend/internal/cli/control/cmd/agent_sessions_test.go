@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -87,7 +88,7 @@ func TestAgentSessionsOverIPC_ListsTheSessionsThatResumeTakes(t *testing.T) {
 	requests, methods := w.recorded()
 	require.Len(t, requests, 1)
 	assert.True(t, proto.Equal(&leapmuxv1.ListAgentSessionsRequest{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, WorkingDir: "/src/app"}, requests[0]), "request: %v", requests[0])
-	assert.NotContains(t, methods, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, "a named provider needs no lookup")
+	assert.NotContains(t, methods, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, "a specified provider needs no lookup")
 
 	o := runControlText(t, "agent", "sessions", "--provider", "claude", "--dir", "/src/app")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
@@ -136,6 +137,44 @@ func TestAgentSessionsOverIPC_TakesTheDefaultsOfAgentOpen(t *testing.T) {
 		require.Len(t, requests, 1)
 		assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, requests[0].GetAgentProvider())
 		assert.Equal(t, "/src/flag", requests[0].GetWorkingDir())
+	})
+	t.Run("padded provider variable is trimmed", func(t *testing.T) {
+		w := &sessionsWorker{}
+		startSessionsWorker(t, w)
+		t.Setenv("LEAPMUX_CONTROL_AGENT_PROVIDER", "  codex  ")
+		t.Setenv("LEAPMUX_CONTROL_WORKING_DIR", "/src/tab")
+
+		runControl(t, "agent", "sessions").Data(t)
+		requests, methods := w.recorded()
+		require.Len(t, requests, 1)
+		assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, requests[0].GetAgentProvider())
+		assert.NotContains(t, methods, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure)
+	})
+	t.Run("whitespace-only provider variable falls back to the worker's sole provider", func(t *testing.T) {
+		w := &sessionsWorker{providers: []leapmuxv1.AgentProvider{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI}}
+		startSessionsWorker(t, w)
+		t.Setenv("LEAPMUX_CONTROL_AGENT_PROVIDER", "   ")
+		t.Setenv("LEAPMUX_CONTROL_WORKING_DIR", "/src/tab")
+
+		runControl(t, "agent", "sessions").Data(t)
+		requests, methods := w.recorded()
+		require.Len(t, requests, 1)
+		assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, requests[0].GetAgentProvider())
+		assert.Equal(t, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, methods[0])
+	})
+	t.Run("saved context provider is trimmed when flag and variable are unset", func(t *testing.T) {
+		w := &sessionsWorker{}
+		startSessionsWorker(t, w)
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_CONTROL_AGENT_PROVIDER", "")
+		t.Setenv("LEAPMUX_CONTROL_WORKING_DIR", "/src/tab")
+		require.NoError(t, control.SaveContext(control.ContextConfig{Provider: "  codex  "}))
+
+		runControl(t, "agent", "sessions").Data(t)
+		requests, methods := w.recorded()
+		require.Len(t, requests, 1)
+		assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, requests[0].GetAgentProvider())
+		assert.NotContains(t, methods, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure)
 	})
 }
 

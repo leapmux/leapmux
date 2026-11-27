@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -8,14 +9,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
-	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
-	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 func newAgentTreeCommand() *cobra.Command {
@@ -128,22 +128,31 @@ func runAgentTree(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var resp leapmuxv1.ListAgentsResponse
-	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
-		&leapmuxv1.ListAgentsRequest{TabIds: []string{got.ID}, IncludeDescendants: true}, &resp); err != nil {
+	var (
+		resp leapmuxv1.ListAgentsResponse
+		tabs []*leapmuxv1.WorkspaceTab
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		return callInnerRPC(gctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
+			&leapmuxv1.ListAgentsRequest{TabIds: []string{got.ID}, IncludeDescendants: true}, &resp)
+	})
+	g.Go(func() error {
+		var listErr error
+		tabs, listErr = listTabsInWorkspaces(gctx, s.c, nil)
+		return listErr
+	})
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 	if len(resp.GetAgents()) == 0 {
 		return nil, cli.Newf(cli.CodeNotFound, "the worker has no agent %s", got.ID)
 	}
 
-	// Best-effort check of which agent IDs currently have open workspace tabs.
 	openTabs := map[string]bool{}
-	if tabs, err := listTabsInWorkspaces(s.ctx, s.c, nil); err == nil {
-		for _, t := range tabs {
-			if t.GetTab().GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
-				openTabs[t.GetTab().GetTabId()] = true
-			}
+	for _, t := range tabs {
+		if t.GetTab().GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
+			openTabs[t.GetTab().GetTabId()] = true
 		}
 	}
 
@@ -243,7 +252,15 @@ func runAgentOpenTab(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, TileID: true}, resolve.Inputs{TileID: t.ID, ExplicitTileID: true})
+		in := resolve.Inputs{TileID: t.ID, ExplicitTileID: true}
+		if inv.Changed("workspace") {
+			ws, err := s.resolveOne(resolve.KindWorkspace, stringFlag(inv, "workspace"))
+			if err != nil {
+				return nil, err
+			}
+			in.WorkspaceID, in.ExplicitWorkspaceID = ws.ID, true
+		}
+		got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, TileID: true}, in)
 		if err != nil {
 			return nil, err
 		}
@@ -273,18 +290,22 @@ func runAgentOpenTab(inv *cli.Invocation) (any, error) {
 		if rec == nil {
 			return nil, cli.Newf(cli.CodeNotFound, "no such workspace: %s", wsID)
 		}
-		tileID = firstLeafOf(cc.bs.State, rec.GetRootNodeId())
+		tileID = firstLiveLeaf(cc.bs.State, rec.GetRootNodeId())
 		if tileID == "" {
 			return nil, cli.Newf(cli.CodeNotFound, "workspace %s has no leaf tile", wsID)
 		}
 	}
 
+	existing := cc.bs.State.GetTabs()[subagentID]
+	if existing != nil && existing.GetTabType() != leapmuxv1.TabType_TAB_TYPE_AGENT {
+		return nil, cli.Newf(cli.CodeInvalidArgument, "tab %s has type %s; expected %s",
+			subagentID, tabTypeName(existing.GetTabType()), tabTypeName(leapmuxv1.TabType_TAB_TYPE_AGENT))
+	}
+
 	// If workerID wasn't found via live descendant scan (e.g. tombstoned tab
 	// still present in CRDT), fall back to the existing CRDT record or --worker.
-	if workerID == "" {
-		if existing := cc.bs.State.GetTabs()[subagentID]; existing != nil {
-			workerID = existing.GetWorkerId().GetValue()
-		}
+	if workerID == "" && existing != nil {
+		workerID = existing.GetWorkerId().GetValue()
 	}
 	if workerID == "" {
 		if wk, werr := s.workerScope(); werr == nil {
@@ -298,7 +319,7 @@ func runAgentOpenTab(inv *cli.Invocation) (any, error) {
 
 	// Verify the subagent exists on workerID (or already exists in CRDT) before
 	// submitting ReviveTabOp so a nonexistent ID cannot materialize a ghost tab.
-	if !verified && cc.bs.State.GetTabs()[subagentID] == nil {
+	if !verified && existing == nil {
 		var checkResp leapmuxv1.ListAgentsResponse
 		if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
 			TabIds: []string{subagentID},
@@ -323,45 +344,11 @@ func runAgentOpenTab(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 
-	tabIdent := &leapmuxv1.TabIdent{TabId: subagentID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}
 	ops := []*leapmuxv1.CrdtOp{
-		{
-			OpId:      id.Generate(),
-			ClientHlc: cc.bs.Clock.Tick(nowMillis()),
-			Body: &leapmuxv1.CrdtOp_ReviveTab{
-				ReviveTab: &leapmuxv1.ReviveTabOp{Tab: tabIdent},
-			},
-		},
-		{
-			OpId:      id.Generate(),
-			ClientHlc: cc.bs.Clock.Tick(nowMillis()),
-			Body: &leapmuxv1.CrdtOp_SetTabRegister{
-				SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-					Tab:   tabIdent,
-					Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: resolvedTileID},
-				},
-			},
-		},
-		{
-			OpId:      id.Generate(),
-			ClientHlc: cc.bs.Clock.Tick(nowMillis()),
-			Body: &leapmuxv1.CrdtOp_SetTabRegister{
-				SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-					Tab:   tabIdent,
-					Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: workerID},
-				},
-			},
-		},
-		{
-			OpId:      id.Generate(),
-			ClientHlc: cc.bs.Clock.Tick(nowMillis()),
-			Body: &leapmuxv1.CrdtOp_SetTabRegister{
-				SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-					Tab:   tabIdent,
-					Field: &leapmuxv1.SetTabRegisterOp_Position{Position: resolvedPos},
-				},
-			},
-		},
+		opReviveTab(cc.bs, leapmuxv1.TabType_TAB_TYPE_AGENT, subagentID),
+		opSetTabTileID(cc.bs, leapmuxv1.TabType_TAB_TYPE_AGENT, subagentID, resolvedTileID),
+		opSetTabWorkerID(cc.bs, leapmuxv1.TabType_TAB_TYPE_AGENT, subagentID, workerID),
+		opSetTabPosition(cc.bs, leapmuxv1.TabType_TAB_TYPE_AGENT, subagentID, resolvedPos),
 	}
 	if err := cc.submitOps(ops); err != nil {
 		return nil, err
@@ -375,10 +362,25 @@ func runAgentOpenTab(inv *cli.Invocation) (any, error) {
 	}, nil
 }
 
+func opReviveTab(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) *leapmuxv1.CrdtOp {
+	op := envelope(bs)
+	op.Body = &leapmuxv1.CrdtOp_ReviveTab{
+		ReviveTab: &leapmuxv1.ReviveTabOp{Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}},
+	}
+	return op
+}
+
+func opSetTabWorkerID(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, workerID string) *leapmuxv1.CrdtOp {
+	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
+	inner.Field = &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: workerID}
+	return op
+}
+
 // resolveSubagentTarget resolves an exact ID, "id:<id>", or unique prefix of a
-// subagent across the scoped or all online Workers by querying live root agent
-// tabs with IncludeDescendants=true. The third return value reports whether the
-// subagent was confirmed on its hosting Worker.
+// subagent across all readable workspaces (never restricted by destination
+// --workspace) by querying live root agent tabs with IncludeDescendants=true.
+// The third return value reports whether the subagent was confirmed on its
+// hosting Worker.
 func resolveSubagentTarget(s *session, raw string) (string, string, bool, error) {
 	literal, isExplicit := strings.CutPrefix(raw, "id:")
 	if isExplicit {
@@ -387,14 +389,16 @@ func resolveSubagentTarget(s *session, raw string) (string, string, bool, error)
 			return "", "", false, cli.Usagef(`"id:" needs an id after the colon`)
 		}
 	}
-	tabs, err := s.listWorkspaceTabs(leapmuxv1.TabType_TAB_TYPE_AGENT)
+	isFullID := isExplicit || resolve.ExplicitID(resolve.KindAgent, raw) != ""
+	allTabs, err := listTabsInWorkspaces(s.ctx, s.c, nil)
 	if err != nil {
 		// Fall back to explicit full ID if listing fails and caller gave a full ID.
-		if isExplicit || len(raw) >= 36 {
+		if isFullID {
 			return raw, "", false, nil
 		}
 		return "", "", false, err
 	}
+	tabs := filterTabsByType(allTabs, leapmuxv1.TabType_TAB_TYPE_AGENT)
 	var explicitWorker string
 	if s.inv.Changed(workerFlag) {
 		wk, err := s.workerScope()
@@ -411,50 +415,26 @@ func resolveSubagentTarget(s *session, raw string) (string, string, bool, error)
 		}
 		byWorker[wk] = append(byWorker[wk], t.GetTab().GetTabId())
 	}
-	type subMatch struct {
-		id       string
-		workerID string
-		title    string
-	}
-	var matches []subMatch
-	seen := map[string]bool{}
-	for wk, rootIDs := range byWorker {
-		var resp leapmuxv1.ListAgentsResponse
-		if err := callInnerRPC(s.ctx, s.c, wk, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
-			TabIds:             rootIDs,
-			IncludeDescendants: true,
-		}, &resp); err != nil {
-			continue
-		}
-		for _, a := range resp.GetAgents() {
-			aid := a.GetId()
-			if seen[aid] {
-				continue
+	matchedID, matchedWorker, verified, err := resolveSubagentAcrossWorkers(
+		s.ctx, raw, isExplicit, byWorker,
+		func(ctx context.Context, wk string, rootIDs []string) ([]*leapmuxv1.AgentInfo, error) {
+			var resp leapmuxv1.ListAgentsResponse
+			if err := callInnerRPC(ctx, s.c, wk, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
+				TabIds:             rootIDs,
+				IncludeDescendants: true,
+			}, &resp); err != nil {
+				return nil, err
 			}
-			if aid == raw {
-				return aid, wk, true, nil
-			}
-			if !isExplicit && len(raw) >= resolve.MinPrefixLength && strings.HasPrefix(aid, raw) {
-				seen[aid] = true
-				matches = append(matches, subMatch{id: aid, workerID: wk, title: a.GetTitle()})
-			}
-		}
+			return resp.GetAgents(), nil
+		},
+	)
+	if err != nil {
+		return "", "", false, err
 	}
-	if len(matches) == 1 {
-		return matches[0].id, matches[0].workerID, true, nil
+	if verified {
+		return matchedID, matchedWorker, true, nil
 	}
-	if len(matches) > 1 {
-		cands := make([]cli.Candidate, 0, len(matches))
-		for _, m := range matches {
-			cands = append(cands, cli.Candidate{ID: m.id, Kind: "agent", Title: m.title})
-		}
-		sort.Slice(cands, func(i, j int) bool { return cands[i].ID < cands[j].ID })
-		e := cli.Newf(cli.CodeAmbiguousTarget, "%d subagents match prefix %q", len(matches), raw).
-			WithHint("type more characters of the subagent id, or the full id")
-		e.Candidates = cands
-		return "", "", false, e
-	}
-	if isExplicit || len(raw) >= 36 {
+	if isFullID {
 		return raw, explicitWorker, false, nil
 	}
 	if len(raw) < resolve.MinPrefixLength {
@@ -464,23 +444,87 @@ func resolveSubagentTarget(s *session, raw string) (string, string, bool, error)
 		WithHint(`run "leapmux agent tree" to list subagent ids`)
 }
 
-func firstLeafOf(state *leapmuxv1.UserMaterialized, nodeID string) string {
-	childrenByParent := crdt.LiveChildrenByParent(state)
-	var walk func(id string) string
-	walk = func(id string) string {
-		node := state.GetNodes()[id]
-		if node == nil || !crdt.HLCIsZero(node.GetTombstoneAt()) {
-			return ""
-		}
-		if node.GetKind().GetValue() == leapmuxv1.NodeKind_NODE_KIND_LEAF {
-			return id
-		}
-		for _, childID := range childrenByParent[id] {
-			if found := walk(childID); found != "" {
-				return found
+// resolveSubagentAcrossWorkers fans out descendant agent queries across
+// workers concurrently (capped at detailFanoutLimit) and selects an exact or
+// unique prefix match deterministically by worker ID and agent ID.
+func resolveSubagentAcrossWorkers(
+	ctx context.Context,
+	raw string,
+	isExplicit bool,
+	byWorker map[string][]string,
+	listWorkerAgents func(ctx context.Context, workerID string, tabIDs []string) ([]*leapmuxv1.AgentInfo, error),
+) (string, string, bool, error) {
+	workerIDs := make([]string, 0, len(byWorker))
+	for wk := range byWorker {
+		workerIDs = append(workerIDs, wk)
+	}
+	sort.Strings(workerIDs)
+
+	results := make([][]*leapmuxv1.AgentInfo, len(workerIDs))
+	var g errgroup.Group
+	g.SetLimit(detailFanoutLimit)
+	for i, wk := range workerIDs {
+		rootIDs := append([]string(nil), byWorker[wk]...)
+		sort.Strings(rootIDs)
+		g.Go(func() error {
+			agents, err := listWorkerAgents(ctx, wk, rootIDs)
+			if err != nil {
+				return nil
+			}
+			results[i] = agents
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	type subMatch struct {
+		id       string
+		workerID string
+		title    string
+	}
+	var exact []subMatch
+	var prefix []subMatch
+	seenExact := map[string]bool{}
+	seenPrefix := map[string]bool{}
+	for i, wk := range workerIDs {
+		agents := append([]*leapmuxv1.AgentInfo(nil), results[i]...)
+		sort.Slice(agents, func(a, b int) bool { return agents[a].GetId() < agents[b].GetId() })
+		for _, a := range agents {
+			aid := a.GetId()
+			if aid == raw {
+				if !seenExact[aid] {
+					seenExact[aid] = true
+					exact = append(exact, subMatch{id: aid, workerID: wk, title: a.GetTitle()})
+				}
+				continue
+			}
+			if !isExplicit && len(raw) >= resolve.MinPrefixLength && strings.HasPrefix(aid, raw) && !seenPrefix[aid] {
+				seenPrefix[aid] = true
+				prefix = append(prefix, subMatch{id: aid, workerID: wk, title: a.GetTitle()})
 			}
 		}
-		return ""
 	}
-	return walk(nodeID)
+	if len(exact) > 0 {
+		return exact[0].id, exact[0].workerID, true, nil
+	}
+	if len(prefix) == 1 {
+		return prefix[0].id, prefix[0].workerID, true, nil
+	}
+	if len(prefix) > 1 {
+		sort.Slice(prefix, func(i, j int) bool {
+			if prefix[i].id != prefix[j].id {
+				return prefix[i].id < prefix[j].id
+			}
+			return prefix[i].workerID < prefix[j].workerID
+		})
+		cands := make([]cli.Candidate, 0, len(prefix))
+		for _, m := range prefix {
+			cands = append(cands, cli.Candidate{ID: m.id, Kind: "agent", Title: m.title})
+		}
+		e := cli.Newf(cli.CodeAmbiguousTarget, "%d subagents match prefix %q", len(prefix), raw).
+			WithHint("type more characters of the subagent id, or the full id")
+		e.Candidates = cands
+		return "", "", false, e
+	}
+	return "", "", false, nil
 }

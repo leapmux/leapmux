@@ -15,16 +15,23 @@ const maxCellRunes = 60
 // tableOptions controls table/TSV rendering (width adaptation, headers, field
 // selection, and TTY-only ANSI styling).
 type tableOptions struct {
-	wide      bool
-	noHeader  bool
-	fields    []string
-	termWidth int
-	style     styler
+	wide          bool
+	noHeader      bool
+	fields        []string
+	hiddenColumns []string
+	termWidth     int
+	style         styler
 }
 
 // WriteTableWithOptions writes v as an aligned table honoring opts.
 func WriteTableWithOptions(w io.Writer, v any, opts TableOptions) error {
-	return writeTableOpts(w, toNode(reflect.ValueOf(v)), opts.opts)
+	tOpts := opts.opts
+	if len(tOpts.fields) == 0 && len(tOpts.hiddenColumns) == 0 && !isNil(v) {
+		if hider, ok := v.(DefaultColumnHider); ok {
+			tOpts.hiddenColumns = hider.DefaultHiddenColumns()
+		}
+	}
+	return writeTableOpts(w, toNode(reflect.ValueOf(v)), tOpts)
 }
 
 // selectColumns returns the columns of n filtered and ordered by fields when
@@ -83,10 +90,30 @@ func indexRowFields(dst map[string]node, row node) {
 	}
 }
 
+// filterHiddenColumns returns cols without any column whose key matches an
+// entry in hidden (case-insensitively, ignoring surrounding whitespace).
+// It allocates a new slice so cached struct descriptors stay untouched.
+func filterHiddenColumns(cols []column, hidden []string) []column {
+	hide := fieldSet(hidden)
+	if len(hide) == 0 {
+		return cols
+	}
+	out := make([]column, 0, len(cols))
+	for _, c := range cols {
+		if !hide[strings.ToLower(c.key)] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // writeTableOpts writes a list of objects as an aligned table with optional
 // header, field selection, terminal-width adaptation, and TTY-only styling.
 func writeTableOpts(w io.Writer, n node, opts tableOptions) error {
 	cols := selectColumns(n, opts.fields)
+	if len(opts.fields) == 0 && len(opts.hiddenColumns) > 0 {
+		cols = filterHiddenColumns(cols, opts.hiddenColumns)
+	}
 	if len(cols) == 0 {
 		return nil
 	}

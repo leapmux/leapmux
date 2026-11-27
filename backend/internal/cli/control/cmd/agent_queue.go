@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -432,15 +433,9 @@ func (q agentQueue) snapshot() (*leapmuxv1.AgentInputQueueSnapshot, error) {
 // findInput returns the input of the queue whose id is handle, or the one
 // input whose id starts with it.
 func (q agentQueue) findInput(items []*leapmuxv1.QueuedAgentInput, handle string) (*leapmuxv1.QueuedAgentInput, error) {
-	handle = strings.TrimSpace(handle)
-	if rest, ok := strings.CutPrefix(handle, "id:"); ok {
-		handle = strings.TrimSpace(rest)
-		if handle == "" {
-			return nil, cli.Usagef(`"id:" needs an input id after the colon`)
-		}
-	}
-	if handle == "" {
-		return nil, cli.Usagef("the input id is empty")
+	handle, err := normalizeIDHandle(handle, "input id")
+	if err != nil {
+		return nil, err
 	}
 	item, matches, found := lookupByIDPrefix(items, handle, (*leapmuxv1.QueuedAgentInput).GetId)
 	if found {
@@ -556,6 +551,30 @@ type queueRemoveBatchResult struct {
 
 func (r queueRemoveBatchResult) QuietLines() []string { return r.InputIDs }
 
+// deleteInputsBackToFront deletes targets in reverse queue order (tail to head).
+// The Worker's Manager.Delete calls mutateAndDrain, which invokes scheduleDrain
+// after every deletion. Deleting front-to-back would promote later queued inputs
+// to the head and let the Worker dispatch them before the CLI removes them.
+// Deleting strictly back-to-front guarantees every later target is removed before
+// any earlier target is deleted.
+func (q agentQueue) deleteInputsBackToFront(targets []*leapmuxv1.QueuedAgentInput) error {
+	removed := 0
+	for i := len(targets) - 1; i >= 0; i-- {
+		item := targets[i]
+		if err := q.call(leapmuxv1connect.WorkerAgentInputServiceDeleteQueuedAgentInputProcedure,
+			&leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: q.agent.ID, InputId: item.GetId()}, nil); err != nil {
+			if removed == 0 {
+				return err
+			}
+			e := cli.FromError(err)
+			return cli.Wrap(e.Code, e, fmt.Sprintf("removed %d of %d inputs before failing on %s", removed, len(targets), item.GetId())).
+				WithHint(`inspect remaining items with "leapmux agent queue list %s"`, q.agent.ID)
+		}
+		removed++
+	}
+	return nil
+}
+
 // runAgentQueueRemove removes one or more inputs from the queue.
 func runAgentQueueRemove(inv *cli.Invocation) (any, error) {
 	return runAgentQueue(inv, func(q agentQueue) (any, error) {
@@ -563,11 +582,16 @@ func runAgentQueueRemove(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		items := queue.GetItems()
+		queuePos := make(map[string]int, len(items))
+		for i, item := range items {
+			queuePos[item.GetId()] = i
+		}
 		handles := inv.Variadic("input")
 		resolved := make([]*leapmuxv1.QueuedAgentInput, 0, len(handles))
 		seen := map[string]bool{}
 		for _, handle := range handles {
-			item, err := q.findInput(queue.GetItems(), handle)
+			item, err := q.findInput(items, handle)
 			if err != nil {
 				return nil, err
 			}
@@ -580,13 +604,16 @@ func runAgentQueueRemove(inv *cli.Invocation) (any, error) {
 			seen[item.GetId()] = true
 			resolved = append(resolved, item)
 		}
-		removed := make([]string, 0, len(resolved))
-		for _, item := range resolved {
-			if err := q.call(leapmuxv1connect.WorkerAgentInputServiceDeleteQueuedAgentInputProcedure,
-				&leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: q.agent.ID, InputId: item.GetId()}, nil); err != nil {
-				return nil, err
-			}
-			removed = append(removed, item.GetId())
+		byQueueOrder := slices.Clone(resolved)
+		slices.SortFunc(byQueueOrder, func(a, b *leapmuxv1.QueuedAgentInput) int {
+			return cmp.Compare(queuePos[a.GetId()], queuePos[b.GetId()])
+		})
+		if err := q.deleteInputsBackToFront(byQueueOrder); err != nil {
+			return nil, err
+		}
+		removed := make([]string, len(resolved))
+		for i, item := range resolved {
+			removed[i] = item.GetId()
 		}
 		if len(removed) == 1 {
 			return agentResult{ID: q.agent.ID, InputID: removed[0]}, nil
@@ -598,8 +625,13 @@ func runAgentQueueRemove(inv *cli.Invocation) (any, error) {
 // runAgentQueueMove moves one input inside its reorder segment.
 func runAgentQueueMove(inv *cli.Invocation) (any, error) {
 	var places []string
-	for _, name := range []string{"before", "after", "first", "last"} {
+	for _, name := range []string{"before", "after"} {
 		if inv.Changed(name) {
+			places = append(places, "--"+name)
+		}
+	}
+	for _, name := range []string{"first", "last"} {
+		if boolFlag(inv, name) {
 			places = append(places, "--"+name)
 		}
 	}
@@ -636,28 +668,41 @@ func runAgentQueueMove(inv *cli.Invocation) (any, error) {
 	})
 }
 
+const reorderSegmentHint = "an input moves only among the inputs of its segment: an input that the agent reads as soon as it can never trades places with one that --at holds, and no input moves past one that the agent already reads"
+
+// resolveMoveTarget resolves the anchor input for --before or --after and
+// verifies that it is unlocked and in the same reorder segment as item.
+func (q agentQueue) resolveMoveTarget(items []*leapmuxv1.QueuedAgentInput, item *leapmuxv1.QueuedAgentInput, handle, relation string) (*leapmuxv1.QueuedAgentInput, error) {
+	target, err := q.findInput(items, handle)
+	if err != nil {
+		return nil, err
+	}
+	if err := q.requireUnlocked(target); err != nil {
+		return nil, err
+	}
+	if target.GetReorderSegment() != item.GetReorderSegment() {
+		return nil, cli.Newf(cli.CodeConflict, "input %s cannot move %s input %s, which is in another reorder segment", item.GetId(), relation, target.GetId()).
+			WithHint("%s", reorderSegmentHint)
+	}
+	return target, nil
+}
+
 // moveDestination returns the before_input_id of a move of item: the input
 // that --before gives, the item immediately after --after (or "" at the end of
 // the segment), the first input of the segment for --first, or "" for --last.
 func (q agentQueue) moveDestination(inv *cli.Invocation, items []*leapmuxv1.QueuedAgentInput, item *leapmuxv1.QueuedAgentInput) (string, error) {
 	switch {
-	case inv.Changed("last"):
+	case boolFlag(inv, "last"):
 		return "", nil
-	case inv.Changed("first"):
+	case boolFlag(inv, "first"):
 		i := slices.IndexFunc(items, func(other *leapmuxv1.QueuedAgentInput) bool {
 			return other.GetReorderSegment() == item.GetReorderSegment()
 		})
 		return items[i].GetId(), nil
 	case inv.Changed("after"):
-		after, err := q.findInput(items, stringFlag(inv, "after"))
+		after, err := q.resolveMoveTarget(items, item, stringFlag(inv, "after"), "after")
 		if err != nil {
 			return "", err
-		}
-		if err := q.requireUnlocked(after); err != nil {
-			return "", err
-		}
-		if after.GetReorderSegment() != item.GetReorderSegment() {
-			return "", cli.Newf(cli.CodeConflict, "input %s cannot move after input %s, which is in another reorder segment", item.GetId(), after.GetId())
 		}
 		idx := slices.IndexFunc(items, func(other *leapmuxv1.QueuedAgentInput) bool { return other.GetId() == after.GetId() })
 		for j := idx + 1; j < len(items); j++ {
@@ -671,16 +716,9 @@ func (q agentQueue) moveDestination(inv *cli.Invocation, items []*leapmuxv1.Queu
 		}
 		return "", nil
 	}
-	before, err := q.findInput(items, stringFlag(inv, "before"))
+	before, err := q.resolveMoveTarget(items, item, stringFlag(inv, "before"), "before")
 	if err != nil {
 		return "", err
-	}
-	if err := q.requireUnlocked(before); err != nil {
-		return "", err
-	}
-	if before.GetReorderSegment() != item.GetReorderSegment() {
-		return "", cli.Newf(cli.CodeConflict, "input %s cannot move before input %s, which is in another reorder segment", item.GetId(), before.GetId()).
-			WithHint("an input moves only among the inputs of its segment: an input that the agent reads as soon as it can never trades places with one that --at holds, and no input moves past one that the agent already reads")
 	}
 	return before.GetId(), nil
 }
@@ -736,15 +774,16 @@ func runAgentQueueEdit(inv *cli.Invocation) (any, error) {
 		scheduledAt = &empty
 	} else if hasAt {
 		now := time.Now()
-		at, absolute, parseErr := parseSendAt(stringFlag(inv, "at"), now)
+		sched, parseErr := parseSendAt(stringFlag(inv, "at"), now)
 		if parseErr != nil {
 			return nil, parseErr
 		}
-		if absolute && !at.After(now) {
-			return nil, cli.Usagef("--at %s is in the past", at.Format(time.RFC3339)).
-				WithHint("pass a future timestamp or relative offset like +5m")
+		if !sched.Relative {
+			if err := requireFutureSchedule(sched.At, now, "pass a future timestamp or relative offset such as +5m"); err != nil {
+				return nil, err
+			}
 		}
-		formatted := timefmt.Format(at.UTC())
+		formatted := timefmt.Format(sched.At)
 		scheduledAt = &formatted
 	}
 	takeover := boolFlag(inv, "takeover")
@@ -795,28 +834,34 @@ func runAgentQueueEdit(inv *cli.Invocation) (any, error) {
 	})
 }
 
+// selectInput resolves an explicit <input> argument, or returns the first
+// queued input matching match when <input> is omitted.
+func (q agentQueue) selectInput(
+	inv *cli.Invocation,
+	items []*leapmuxv1.QueuedAgentInput,
+	match func(*leapmuxv1.QueuedAgentInput) bool,
+	notFoundCode cli.Code,
+	notFoundMsg string,
+) (*leapmuxv1.QueuedAgentInput, error) {
+	if inv.HasArg("input") {
+		return q.findInput(items, inv.Arg("input"))
+	}
+	if i := slices.IndexFunc(items, match); i >= 0 {
+		return items[i], nil
+	}
+	return nil, cli.Newf(notFoundCode, "%s", notFoundMsg)
+}
+
 func runAgentQueueSteer(inv *cli.Invocation) (any, error) {
 	return runAgentQueue(inv, func(q agentQueue) (any, error) {
 		queue, err := q.snapshot()
 		if err != nil {
 			return nil, err
 		}
-		var target *leapmuxv1.QueuedAgentInput
-		if inv.HasArg("input") {
-			target, err = q.findInput(queue.GetItems(), inv.Arg("input"))
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			for _, item := range queue.GetItems() {
-				if item.GetCanSteer() {
-					target = item
-					break
-				}
-			}
-			if target == nil {
-				return nil, cli.Newf(cli.CodeConflict, "agent %s has no steerable queued input", q.agent.ID)
-			}
+		target, err := q.selectInput(inv, queue.GetItems(), (*leapmuxv1.QueuedAgentInput).GetCanSteer,
+			cli.CodeConflict, fmt.Sprintf("agent %s has no steerable queued input", q.agent.ID))
+		if err != nil {
+			return nil, err
 		}
 		if err := q.call(leapmuxv1connect.WorkerAgentInputServiceSteerQueuedAgentInputProcedure,
 			&leapmuxv1.SteerQueuedAgentInputRequest{AgentId: q.agent.ID, InputId: target.GetId()}, nil); err != nil {
@@ -832,22 +877,10 @@ func runAgentQueuePreempt(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		var target *leapmuxv1.QueuedAgentInput
-		if inv.HasArg("input") {
-			target, err = q.findInput(queue.GetItems(), inv.Arg("input"))
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			for _, item := range queue.GetItems() {
-				if item.GetCanPreempt() {
-					target = item
-					break
-				}
-			}
-			if target == nil {
-				return nil, cli.Newf(cli.CodeConflict, "agent %s has no preemptable queued input", q.agent.ID)
-			}
+		target, err := q.selectInput(inv, queue.GetItems(), (*leapmuxv1.QueuedAgentInput).GetCanPreempt,
+			cli.CodeConflict, fmt.Sprintf("agent %s has no preemptable queued input", q.agent.ID))
+		if err != nil {
+			return nil, err
 		}
 		if err := q.call(leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure,
 			&leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: q.agent.ID, InputId: target.GetId()}, nil); err != nil {
@@ -877,23 +910,12 @@ func runAgentQueueRetry(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		var target *leapmuxv1.QueuedAgentInput
-		if inv.HasArg("input") {
-			target, err = q.findInput(queue.GetItems(), inv.Arg("input"))
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			for _, item := range queue.GetItems() {
-				if item.GetState() == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED ||
-					item.GetState() == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN {
-					target = item
-					break
-				}
-			}
-			if target == nil {
-				return nil, cli.Newf(cli.CodeNotFound, "agent %s has no failed or delivery-uncertain input to retry", q.agent.ID)
-			}
+		target, err := q.selectInput(inv, queue.GetItems(), func(item *leapmuxv1.QueuedAgentInput) bool {
+			return item.GetState() == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED ||
+				item.GetState() == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN
+		}, cli.CodeNotFound, fmt.Sprintf("agent %s has no failed or delivery-uncertain input to retry", q.agent.ID))
+		if err != nil {
+			return nil, err
 		}
 		if err := q.call(leapmuxv1connect.WorkerAgentInputServiceRetryQueuedAgentInputProcedure,
 			&leapmuxv1.RetryQueuedAgentInputRequest{
@@ -913,16 +935,18 @@ func runAgentQueueClear(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		removed := make([]string, 0, len(queue.GetItems()))
+		unlocked := make([]*leapmuxv1.QueuedAgentInput, 0, len(queue.GetItems()))
 		for _, item := range queue.GetItems() {
-			if inputLocked(item) {
-				continue
+			if !inputLocked(item) {
+				unlocked = append(unlocked, item)
 			}
-			if err := q.call(leapmuxv1connect.WorkerAgentInputServiceDeleteQueuedAgentInputProcedure,
-				&leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: q.agent.ID, InputId: item.GetId()}, nil); err != nil {
-				return nil, err
-			}
-			removed = append(removed, item.GetId())
+		}
+		if err := q.deleteInputsBackToFront(unlocked); err != nil {
+			return nil, err
+		}
+		removed := make([]string, len(unlocked))
+		for i, item := range unlocked {
+			removed[i] = item.GetId()
 		}
 		return queueRemoveBatchResult{ID: q.agent.ID, InputIDs: removed}, nil
 	})

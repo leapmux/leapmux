@@ -6,6 +6,7 @@ import (
 
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 
 	"log/slog"
@@ -41,6 +42,9 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		if sendQueueError(sender, err) {
 			return
 		}
+	} else if strings.TrimSpace(r.GetInitialMessageId()) != "" {
+		sendInvalidArgument(sender, "initial_message_id requires initial_message")
+		return
 	}
 	// Through the PROVIDER, because a resume handle is not one shape.
 	// Claude, Codex and the ACP providers issue an opaque token, and
@@ -179,7 +183,7 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		if r.InitialMessage == nil {
 			return nil
 		}
-		return svc.InputQueue.StageInitialMessage(ctx, tx, agentID, r.GetInitialMessage(), initialSender)
+		return svc.InputQueue.StageInitialMessage(ctx, tx, agentID, r.GetInitialMessageId(), r.GetInitialMessage(), initialSender)
 	}); err != nil {
 		// The row does not exist, so no startup will ever run for it.
 		if errors.Is(err, errNativeSessionAlreadyOpen) {

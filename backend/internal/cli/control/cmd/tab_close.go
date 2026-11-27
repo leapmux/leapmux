@@ -118,17 +118,40 @@ func runTabCloseFor(inv *cli.Invocation, kind resolve.Kind, argName string) (any
 	targets := inv.Variadic(argName)
 	allowSelf := boolFlag(inv, allowSelfFlag)
 	allowBusy := boolFlag(inv, "allow-busy")
-	results := make([]*tabCloseResult, 0, len(targets))
+	var results []*tabCloseResult
 	discardFailed := false
-	for _, raw := range targets {
-		res, err := closeOneTab(s, kind, raw, wt, allowSelf, allowBusy)
+	if kind == resolve.KindAgent {
+		resolved, err := s.resolveVariadicAgentTargets(targets, resolve.Need{
+			WorkspaceID: true,
+			WorkerID:    true,
+			Want:        resolve.Wants{TabType: true},
+		})
 		if err != nil {
 			return nil, err
 		}
-		if res.worktreeDiscardFailed() {
-			discardFailed = true
+		results = make([]*tabCloseResult, 0, len(resolved))
+		for _, got := range resolved {
+			res, err := closeResolvedTab(s, got, wt, allowSelf, allowBusy)
+			if err != nil {
+				return nil, err
+			}
+			if res.worktreeDiscardFailed() {
+				discardFailed = true
+			}
+			results = append(results, res)
 		}
-		results = append(results, res)
+	} else {
+		results = make([]*tabCloseResult, 0, len(targets))
+		for _, raw := range targets {
+			res, err := closeOneTab(s, kind, raw, wt, allowSelf, allowBusy)
+			if err != nil {
+				return nil, err
+			}
+			if res.worktreeDiscardFailed() {
+				discardFailed = true
+			}
+			results = append(results, res)
+		}
 	}
 	var payload any = tabCloseBatchResult{Closed: results}
 	if len(results) == 1 {
@@ -148,6 +171,10 @@ func closeOneTab(s *session, kind resolve.Kind, raw string, wt tabCloseWorktree,
 	if err != nil {
 		return nil, err
 	}
+	return closeResolvedTab(s, got, wt, allowSelf, allowBusy)
+}
+
+func closeResolvedTab(s *session, got tabTarget, wt tabCloseWorktree, allowSelf, allowBusy bool) (*tabCloseResult, error) {
 	if err := guardTabClose(got.ID, allowSelf); err != nil {
 		return nil, err
 	}

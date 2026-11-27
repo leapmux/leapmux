@@ -39,6 +39,11 @@ type queueWorker struct {
 	// mutation answers instead of applying.
 	refuseCode    codes.Code
 	refuseMessage string
+	// failDeleteID, when set, causes DeleteQueuedAgentInput for that input ID
+	// to fail with failDeleteCode and failDeleteMsg.
+	failDeleteID   string
+	failDeleteCode codes.Code
+	failDeleteMsg  string
 }
 
 func newQueueWorker(items ...*leapmuxv1.QueuedAgentInput) *queueWorker {
@@ -61,6 +66,18 @@ func (w *queueWorker) DispatchWith(_ context.Context, _ channel.Caller, req *lea
 		in = &leapmuxv1.MoveQueuedAgentInputRequest{}
 	case leapmuxv1connect.WorkerAgentInputServiceSetAgentInputQueuePausedProcedure:
 		in = &leapmuxv1.SetAgentInputQueuePausedRequest{}
+	case leapmuxv1connect.WorkerAgentInputServiceBeginQueuedAgentInputEditProcedure:
+		in = &leapmuxv1.BeginQueuedAgentInputEditRequest{}
+	case leapmuxv1connect.WorkerAgentInputServiceUpdateQueuedAgentInputProcedure:
+		in = &leapmuxv1.UpdateQueuedAgentInputRequest{}
+	case leapmuxv1connect.WorkerAgentInputServiceCancelQueuedAgentInputEditProcedure:
+		in = &leapmuxv1.CancelQueuedAgentInputEditRequest{}
+	case leapmuxv1connect.WorkerAgentInputServiceSteerQueuedAgentInputProcedure:
+		in = &leapmuxv1.SteerQueuedAgentInputRequest{}
+	case leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure:
+		in = &leapmuxv1.PreemptQueuedAgentInputRequest{}
+	case leapmuxv1connect.WorkerAgentInputServiceRetryQueuedAgentInputProcedure:
+		in = &leapmuxv1.RetryQueuedAgentInputRequest{}
 	default:
 		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
 		return
@@ -79,6 +96,10 @@ func (w *queueWorker) DispatchWith(_ context.Context, _ channel.Caller, req *lea
 		w.enqueue(in)
 		writeProtoResponse(rw, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: proto.CloneOf(w.queue)})
 	case *leapmuxv1.DeleteQueuedAgentInputRequest:
+		if w.failDeleteID != "" && in.GetInputId() == w.failDeleteID {
+			_ = rw.SendError(int32(w.failDeleteCode), w.failDeleteMsg)
+			return
+		}
 		held := len(w.queue.Items)
 		w.queue.Items = slices.DeleteFunc(w.queue.Items, func(item *leapmuxv1.QueuedAgentInput) bool { return item.GetId() == in.GetInputId() })
 		if len(w.queue.Items) < held {
@@ -94,6 +115,25 @@ func (w *queueWorker) DispatchWith(_ context.Context, _ channel.Caller, req *lea
 			w.queue.PauseReason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL
 		}
 		writeProtoResponse(rw, &leapmuxv1.SetAgentInputQueuePausedResponse{Snapshot: proto.CloneOf(w.queue)})
+	case *leapmuxv1.BeginQueuedAgentInputEditRequest:
+		text := ""
+		for _, item := range w.queue.Items {
+			if item.GetId() == in.GetInputId() {
+				text = item.GetText()
+				break
+			}
+		}
+		writeProtoResponse(rw, &leapmuxv1.BeginQueuedAgentInputEditResponse{Snapshot: proto.CloneOf(w.queue), Text: text})
+	case *leapmuxv1.UpdateQueuedAgentInputRequest:
+		writeProtoResponse(rw, &leapmuxv1.UpdateQueuedAgentInputResponse{Snapshot: proto.CloneOf(w.queue)})
+	case *leapmuxv1.CancelQueuedAgentInputEditRequest:
+		writeProtoResponse(rw, &leapmuxv1.CancelQueuedAgentInputEditResponse{Snapshot: proto.CloneOf(w.queue)})
+	case *leapmuxv1.SteerQueuedAgentInputRequest:
+		writeProtoResponse(rw, &leapmuxv1.SteerQueuedAgentInputResponse{Snapshot: proto.CloneOf(w.queue)})
+	case *leapmuxv1.PreemptQueuedAgentInputRequest:
+		writeProtoResponse(rw, &leapmuxv1.PreemptQueuedAgentInputResponse{Snapshot: proto.CloneOf(w.queue)})
+	case *leapmuxv1.RetryQueuedAgentInputRequest:
+		writeProtoResponse(rw, &leapmuxv1.RetryQueuedAgentInputResponse{Snapshot: proto.CloneOf(w.queue)})
 	}
 }
 
@@ -314,6 +354,11 @@ func TestAgentQueueRemoveOverIPC_RemovesTheInputThatAPrefixGives(t *testing.T) {
 	assert.Equal(t, map[string]any{"id": id, "input_id": inputAlpha}, data)
 	requireRequests(t, w, &leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: id, InputId: inputAlpha})
 	assert.Equal(t, []string{inputBeta}, w.itemIDs())
+
+	// "id:" strips the qualifier and keeps prefix matching enabled.
+	data = runControl(t, "agent", "queue", "remove", id, "id:in-bet").Data(t)
+	assert.Equal(t, map[string]any{"id": id, "input_id": inputBeta}, data)
+	assert.Empty(t, w.itemIDs())
 }
 
 // Over the hub, a queue command opens one channel to the Worker for all its
@@ -359,6 +404,10 @@ func TestAgentQueueRemoveOverIPC_Refusals(t *testing.T) {
 	t.Run("an empty id", func(t *testing.T) {
 		runControl(t, "agent", "queue", "remove", id, " ").requireFailure(t, cli.CodeUsage)
 	})
+	t.Run("an empty id: qualifier", func(t *testing.T) {
+		f := runControl(t, "agent", "queue", "remove", id, "id: ").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, `missing input id after "id:"`)
+	})
 	t.Run("no input", func(t *testing.T) {
 		runControl(t, "agent", "queue", "remove", id).requireFailure(t, cli.CodeUsage)
 	})
@@ -403,6 +452,21 @@ func TestAgentQueueMoveOverIPC_MovesInsideTheSegment(t *testing.T) {
 			queue: []*leapmuxv1.QueuedAgentInput{queuedInput(inputAlpha, "Run", 1), queuedInput(inputBeta, "Fix", 1)},
 			args:  []string{inputBeta, "--before", inputBeta}, wantBefore: inputBeta,
 			wantOrder: []string{inputAlpha, inputBeta}, wantPlace: 2,
+		},
+		"after middle of segment": {
+			queue: []*leapmuxv1.QueuedAgentInput{queuedInput(inputAlpha, "Run", 1), queuedInput(inputBeta, "Fix", 1), queuedInput(inputBetaB, "Lint", 1)},
+			args:  []string{inputBetaB, "--after", "in-alp"}, wantBefore: inputBeta,
+			wantOrder: []string{inputAlpha, inputBetaB, inputBeta}, wantPlace: 2,
+		},
+		"after last item of segment stops before next segment": {
+			queue: []*leapmuxv1.QueuedAgentInput{queuedInput(inputAlpha, "Run", 1), queuedInput(inputBeta, "Fix", 1), scheduled()},
+			args:  []string{inputAlpha, "--after", inputBeta}, wantBefore: "",
+			wantOrder: []string{inputBeta, inputAlpha, inputGamma}, wantPlace: 2,
+		},
+		"after adjacent predecessor skips self": {
+			queue: []*leapmuxv1.QueuedAgentInput{queuedInput(inputAlpha, "Run", 1), queuedInput(inputBeta, "Fix", 1), queuedInput(inputBetaB, "Lint", 1)},
+			args:  []string{inputBeta, "--after", inputAlpha}, wantBefore: inputBetaB,
+			wantOrder: []string{inputAlpha, inputBeta, inputBetaB}, wantPlace: 2,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -470,8 +534,254 @@ func TestAgentQueuePauseAndResumeOverIPC(t *testing.T) {
 
 	for _, verb := range []string{"pause", "resume"} {
 		f := runControl(t, "agent", "queue", verb).requireFailure(t, cli.CodeUsage)
-		assert.Contains(t, f.Message, "missing argument <agent>", "a change of a queue names its agent")
+		assert.Contains(t, f.Message, "missing argument <agent>", "a change of a queue specifies its agent")
 	}
+}
+
+func TestAgentQueueEditOverIPC_ScheduleValidation(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := newQueueWorker(queuedInput(inputAlpha, "Run the tests", 1))
+	startAgentWorker(t, id, w)
+
+	t.Run("rejects a past RFC 3339 timestamp", func(t *testing.T) {
+		f := runControl(t, "agent", "queue", "edit", id, inputAlpha, "--at", "2001-01-01T00:00:00Z").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "is not after now")
+		assert.Empty(t, w.recorded(), "a past schedule must be rejected before contacting the Worker")
+	})
+	t.Run("rejects double-plus relative duration", func(t *testing.T) {
+		f := runControl(t, "agent", "queue", "edit", id, inputAlpha, "--at", "++10m").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "is not a duration")
+		assert.Empty(t, w.recorded())
+	})
+	t.Run("accepts a future RFC 3339 timestamp in UTC", func(t *testing.T) {
+		data := runControl(t, "agent", "queue", "edit", id, inputAlpha, "--at", "2099-01-02T12:00:00+09:00").Data(t)
+		assert.Equal(t, map[string]any{"id": id, "input_id": inputAlpha}, data)
+		reqs := w.recorded()
+		require.Len(t, reqs, 2)
+		upd, ok := reqs[1].(*leapmuxv1.UpdateQueuedAgentInputRequest)
+		require.True(t, ok)
+		require.NotNil(t, upd.ScheduledAt)
+		assert.Equal(t, "2099-01-02T03:00:00.000Z", upd.GetScheduledAt())
+	})
+}
+
+func TestAgentQueueMoveOverIPC_ExplicitFalseFlagsAndAfterHint(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := newQueueWorker(lockedInput(inputBetaB, "Running"), queuedInput(inputAlpha, "Run", 1), queuedInput(inputBeta, "Fix", 1), queuedInput(inputGamma, "Later", 2))
+	startAgentWorker(t, id, w)
+
+	t.Run("first=false alone specifies no destination", func(t *testing.T) {
+		f := runControl(t, "agent", "queue", "move", id, inputAlpha, "--first=false").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--before, --after, --first or --last")
+		assert.Empty(t, w.recorded())
+	})
+	t.Run("last=false alone specifies no destination", func(t *testing.T) {
+		f := runControl(t, "agent", "queue", "move", id, inputAlpha, "--last=false").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--before, --after, --first or --last")
+		assert.Empty(t, w.recorded())
+	})
+	t.Run("first=false and last=false together specify no destination", func(t *testing.T) {
+		f := runControl(t, "agent", "queue", "move", id, inputAlpha, "--first=false", "--last=false").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--before, --after, --first or --last")
+		assert.Empty(t, w.recorded())
+	})
+	t.Run("first=false with last moves to last without false conflict", func(t *testing.T) {
+		data := runControl(t, "agent", "queue", "move", id, inputAlpha, "--first=false", "--last").Data(t)
+		assert.Equal(t, map[string]any{"id": id, "input_id": inputAlpha, "position": float64(3)}, data)
+		assert.Equal(t, []string{inputBetaB, inputBeta, inputAlpha, inputGamma}, w.itemIDs())
+	})
+	t.Run("first with last=false moves to first without false conflict", func(t *testing.T) {
+		data := runControl(t, "agent", "queue", "move", id, inputAlpha, "--first", "--last=false").Data(t)
+		assert.Equal(t, map[string]any{"id": id, "input_id": inputAlpha, "position": float64(2)}, data)
+		assert.Equal(t, []string{inputBetaB, inputAlpha, inputBeta, inputGamma}, w.itemIDs())
+	})
+	t.Run("first=false with before moves without false exclusion", func(t *testing.T) {
+		data := runControl(t, "agent", "queue", "move", id, inputBeta, "--first=false", "--before", inputAlpha).Data(t)
+		assert.Equal(t, map[string]any{"id": id, "input_id": inputBeta, "position": float64(2)}, data)
+		assert.Equal(t, []string{inputBetaB, inputBeta, inputAlpha, inputGamma}, w.itemIDs())
+	})
+	t.Run("after a locked target fails with conflict", func(t *testing.T) {
+		before := len(w.recorded())
+		f := runControl(t, "agent", "queue", "move", id, inputAlpha, "--after", inputBetaB).requireFailure(t, cli.CodeConflict)
+		assert.Contains(t, f.Message, "already reads input "+inputBetaB)
+		assert.Len(t, w.recorded(), before, "refused move after locked target must not contact the Worker")
+	})
+	t.Run("after across reorder segments carries the segment hint", func(t *testing.T) {
+		f := runControl(t, "agent", "queue", "move", id, inputAlpha, "--after", inputGamma).requireFailure(t, cli.CodeConflict)
+		assert.Contains(t, f.Message, "cannot move after input "+inputGamma)
+		require.NotEmpty(t, f.Hints)
+		assert.Contains(t, f.Hints[0], "moves only among the inputs of its segment")
+	})
+}
+
+func TestAgentQueueClearAndRemoveOverIPC_DeletesBackToFrontAndReportsPartialProgress(t *testing.T) {
+	id := fullTestID("ag-2")
+
+	t.Run("clear deletes unlocked inputs strictly back-to-front", func(t *testing.T) {
+		w := newQueueWorker(
+			lockedInput(inputBetaB, "Running"),
+			queuedInput(inputAlpha, "First", 1),
+			queuedInput(inputBeta, "Second", 1),
+			queuedInput(inputGamma, "Third", 1),
+		)
+		startAgentWorker(t, id, w)
+
+		data := runControl(t, "agent", "queue", "clear", id).Data(t)
+		assert.Equal(t, []any{inputAlpha, inputBeta, inputGamma}, data["input_ids"])
+		requireRequests(t, w,
+			&leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: id, InputId: inputGamma},
+			&leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: id, InputId: inputBeta},
+			&leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: id, InputId: inputAlpha},
+		)
+		assert.Equal(t, []string{inputBetaB}, w.itemIDs())
+	})
+
+	t.Run("remove deletes explicitly specified inputs back-to-front in queue order", func(t *testing.T) {
+		w := newQueueWorker(
+			queuedInput(inputAlpha, "First", 1),
+			queuedInput(inputBeta, "Second", 1),
+			queuedInput(inputGamma, "Third", 1),
+		)
+		startAgentWorker(t, id, w)
+
+		data := runControl(t, "agent", "queue", "remove", id, inputAlpha, inputGamma).Data(t)
+		assert.Equal(t, []any{inputAlpha, inputGamma}, data["input_ids"])
+		requireRequests(t, w,
+			&leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: id, InputId: inputGamma},
+			&leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: id, InputId: inputAlpha},
+		)
+		assert.Equal(t, []string{inputBeta}, w.itemIDs())
+	})
+
+	t.Run("clear reports partial progress when a later deletion fails", func(t *testing.T) {
+		w := newQueueWorker(
+			queuedInput(inputAlpha, "First", 1),
+			queuedInput(inputBeta, "Second", 1),
+			queuedInput(inputGamma, "Third", 1),
+		)
+		w.failDeleteID = inputAlpha
+		w.failDeleteCode = codes.FailedPrecondition
+		w.failDeleteMsg = "input became locked"
+		startAgentWorker(t, id, w)
+
+		f := runControl(t, "agent", "queue", "clear", id).requireFailure(t, cli.CodeConflict)
+		assert.Contains(t, f.Message, "removed 2 of 3 inputs before failing on "+inputAlpha)
+		assert.Contains(t, f.Message, "input became locked")
+		require.NotEmpty(t, f.Hints)
+		assert.Contains(t, f.Hints[0], "agent queue list "+id)
+	})
+
+	t.Run("remove reports partial progress when a later deletion fails", func(t *testing.T) {
+		w := newQueueWorker(
+			queuedInput(inputAlpha, "First", 1),
+			queuedInput(inputBeta, "Second", 1),
+		)
+		w.failDeleteID = inputAlpha
+		w.failDeleteCode = codes.FailedPrecondition
+		w.failDeleteMsg = "input became locked"
+		startAgentWorker(t, id, w)
+
+		f := runControl(t, "agent", "queue", "remove", id, inputAlpha, inputBeta).requireFailure(t, cli.CodeConflict)
+		assert.Contains(t, f.Message, "removed 1 of 2 inputs before failing on "+inputAlpha)
+		assert.Contains(t, f.Message, "input became locked")
+	})
+
+	t.Run("clear when all items are locked removes nothing", func(t *testing.T) {
+		echoing := queuedInput(inputBeta, "Steered", 0)
+		echoing.State = leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO
+		w := newQueueWorker(lockedInput(inputAlpha, "Running"), echoing)
+		startAgentWorker(t, id, w)
+
+		data := runControl(t, "agent", "queue", "clear", id).Data(t)
+		assert.Equal(t, []any{}, data["input_ids"])
+		assert.Empty(t, w.recorded())
+		assert.Equal(t, []string{inputAlpha, inputBeta}, w.itemIDs())
+	})
+
+	t.Run("clear on an empty queue removes nothing", func(t *testing.T) {
+		w := newQueueWorker()
+		startAgentWorker(t, id, w)
+
+		data := runControl(t, "agent", "queue", "clear", id).Data(t)
+		assert.Equal(t, []any{}, data["input_ids"])
+		assert.Empty(t, w.recorded())
+	})
+
+	t.Run("partial failure preserves non-conflict error code and first-item failure avoids partial wrapper", func(t *testing.T) {
+		w := newQueueWorker(
+			queuedInput(inputAlpha, "First", 1),
+			queuedInput(inputBeta, "Second", 1),
+		)
+		w.failDeleteID = inputAlpha
+		w.failDeleteCode = codes.Unavailable
+		w.failDeleteMsg = "worker disconnected"
+		startAgentWorker(t, id, w)
+
+		f := runControl(t, "agent", "queue", "clear", id).requireFailure(t, cli.CodeUnavailable)
+		assert.Contains(t, f.Message, "removed 1 of 2 inputs before failing on "+inputAlpha)
+		assert.Contains(t, f.Message, "worker disconnected")
+
+		wFirst := newQueueWorker(
+			queuedInput(inputAlpha, "First", 1),
+			queuedInput(inputBeta, "Second", 1),
+		)
+		wFirst.failDeleteID = inputBeta
+		wFirst.failDeleteCode = codes.Unavailable
+		wFirst.failDeleteMsg = "worker disconnected"
+		startAgentWorker(t, id, wFirst)
+
+		f = runControl(t, "agent", "queue", "clear", id).requireFailure(t, cli.CodeUnavailable)
+		assert.Contains(t, f.Message, "worker disconnected")
+		assert.NotContains(t, f.Message, "removed 0 of")
+	})
+}
+
+func TestAgentQueueSelectInputOverIPC_SteerPreemptAndRetry(t *testing.T) {
+	id := fullTestID("ag-2")
+	steerable := queuedInput(inputAlpha, "Steer me", 1)
+	steerable.CanSteer = true
+	preemptable := queuedInput(inputBeta, "Preempt me", 1)
+	preemptable.CanPreempt = true
+	failed := queuedInput(inputGamma, "Retry me", 1)
+	failed.State = leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
+
+	t.Run("default selection chooses first matching input", func(t *testing.T) {
+		w := newQueueWorker(queuedInput(inputBetaB, "Plain", 1), steerable, preemptable, failed)
+		startAgentWorker(t, id, w)
+
+		assert.Equal(t, inputAlpha, runControl(t, "agent", "queue", "steer", id).Data(t)["input_id"])
+		assert.Equal(t, inputBeta, runControl(t, "agent", "queue", "preempt", id).Data(t)["input_id"])
+		assert.Equal(t, inputGamma, runControl(t, "agent", "queue", "retry", id).Data(t)["input_id"])
+		requireRequests(t, w,
+			&leapmuxv1.SteerQueuedAgentInputRequest{AgentId: id, InputId: inputAlpha},
+			&leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: id, InputId: inputBeta},
+			&leapmuxv1.RetryQueuedAgentInputRequest{AgentId: id, InputId: inputGamma},
+		)
+	})
+
+	t.Run("explicit prefix selects requested input", func(t *testing.T) {
+		w := newQueueWorker(queuedInput(inputBetaB, "Plain", 1), steerable)
+		startAgentWorker(t, id, w)
+
+		assert.Equal(t, inputAlpha, runControl(t, "agent", "queue", "steer", id, "in-alp").Data(t)["input_id"])
+		assert.Equal(t, inputBetaB, runControl(t, "agent", "queue", "preempt", id, "in-betb").Data(t)["input_id"])
+		assert.Equal(t, inputAlpha, runControl(t, "agent", "queue", "retry", id, "in-alp", "--confirm-uncertain").Data(t)["input_id"])
+		requireRequests(t, w,
+			&leapmuxv1.SteerQueuedAgentInputRequest{AgentId: id, InputId: inputAlpha},
+			&leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: id, InputId: inputBetaB},
+			&leapmuxv1.RetryQueuedAgentInputRequest{AgentId: id, InputId: inputAlpha, ConfirmDeliveryUncertain: true},
+		)
+	})
+
+	t.Run("absent matching input returns expected error codes", func(t *testing.T) {
+		w := newQueueWorker(queuedInput(inputAlpha, "Plain", 1))
+		startAgentWorker(t, id, w)
+
+		runControl(t, "agent", "queue", "steer", id).requireFailure(t, cli.CodeConflict)
+		runControl(t, "agent", "queue", "preempt", id).requireFailure(t, cli.CodeConflict)
+		runControl(t, "agent", "queue", "retry", id).requireFailure(t, cli.CodeNotFound)
+		assert.Empty(t, w.recorded())
+	})
 }
 
 // requireRequests asserts that the Worker received exactly want, in order.

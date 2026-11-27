@@ -17,11 +17,12 @@ import (
 // registration is one channel's live subscription to one entity.
 // The manager stores registrations by value. Each entity keeps its own generation even when several entities share a sender.
 type registration struct {
-	channelID string
-	sender    channel.ResponseWriter
-	mode      leapmuxv1.WatchMode
-	geometry  bool
-	replay    agentReplayTuple
+	channelID        string
+	sender           channel.ResponseWriter
+	mode             leapmuxv1.WatchMode
+	geometry         bool
+	includeReplyText bool
+	replay           agentReplayTuple
 
 	// gen identifies this registration. Each registration receives a new generation, including registrations for a previously removed channel.
 	// broadcast copies the sender and generation before it sends outside the lock.
@@ -41,10 +42,11 @@ type agentReplayTuple struct {
 
 // watchEntry states one entity's mode and its fixed replay request.
 type watchEntry struct {
-	id       string
-	mode     leapmuxv1.WatchMode
-	geometry bool
-	replay   agentReplayTuple
+	id               string
+	mode             leapmuxv1.WatchMode
+	geometry         bool
+	includeReplyText bool
+	replay           agentReplayTuple
 }
 
 // watcherRegistry stores entity ID -> channel ID -> registration for one entity kind.
@@ -94,12 +96,13 @@ func (r *watcherRegistry) replaceWatchesLocked(channelID string, entries []watch
 		}
 		r.nextGen++
 		byChannel[channelID] = registration{
-			channelID: channelID,
-			sender:    sender,
-			mode:      entry.mode,
-			geometry:  entry.geometry,
-			replay:    entry.replay,
-			gen:       r.nextGen,
+			channelID:        channelID,
+			sender:           sender,
+			mode:             entry.mode,
+			geometry:         entry.geometry,
+			includeReplyText: entry.includeReplyText,
+			replay:           entry.replay,
+			gen:              r.nextGen,
 		}
 	}
 }
@@ -108,7 +111,13 @@ func (r *watcherRegistry) entriesForChannelLocked(channelID string) map[string]w
 	entries := make(map[string]watchEntry)
 	for entityID, byChannel := range r.byEntity {
 		if registration, exists := byChannel[channelID]; exists {
-			entries[entityID] = watchEntry{id: entityID, mode: registration.mode, replay: registration.replay, geometry: registration.geometry}
+			entries[entityID] = watchEntry{
+				id:               entityID,
+				mode:             registration.mode,
+				replay:           registration.replay,
+				geometry:         registration.geometry,
+				includeReplyText: registration.includeReplyText,
+			}
 		}
 	}
 	return entries
@@ -295,8 +304,15 @@ func modeIsFull(mode leapmuxv1.WatchMode) bool {
 
 // broadcast sends resp to each subscription whose mode permits this event class.
 // Content events skip the snapshot and serialization when no FULL subscription exists.
-// Callers use this shared mode check. Serialization runs once, when the first eligible subscription needs the payload.
-func (r *watcherRegistry) broadcast(entityID string, resp *leapmuxv1.WatchEventsResponse, class eventClass) {
+// Callers use this shared mode check. Serialization runs lazily at most once per
+// variant (without reply_text and, when opted-in watchers exist, with reply_text on
+// a cloned message so resp is never mutated).
+func (r *watcherRegistry) broadcast(
+	entityID string,
+	resp *leapmuxv1.WatchEventsResponse,
+	class eventClass,
+	resolveReplyText func(*leapmuxv1.AgentChatMessage) *string,
+) {
 	if class != classNotify && !r.hasFullWatcher(entityID) {
 		return
 	}
@@ -306,22 +322,44 @@ func (r *watcherRegistry) broadcast(entityID string, resp *leapmuxv1.WatchEvents
 	}
 
 	var (
-		payload []byte
-		err     error
-		dead    []registration
+		payload          []byte
+		replyTextPayload []byte
+		replyTextChecked bool
+		err              error
+		dead             []registration
 	)
 	for _, w := range watchers {
 		if class != classNotify && !modeIsFull(w.mode) || class == classGeometry && !w.geometry {
 			continue
 		}
-		if payload == nil {
-			payload, err = marshalWatchEvent(resp, entityID)
-			if err != nil {
-				return
+		var wire []byte
+		if w.includeReplyText && resolveReplyText != nil {
+			if msg := resp.GetAgentEvent().GetAgentMessage(); msg != nil && msg.ReplyText == nil {
+				if !replyTextChecked {
+					replyTextChecked = true
+					if text := resolveReplyText(msg); text != nil {
+						cloned := proto.CloneOf(resp)
+						cloned.GetAgentEvent().GetAgentMessage().ReplyText = text
+						replyTextPayload, err = marshalWatchEvent(cloned, entityID)
+						if err != nil {
+							return
+						}
+					}
+				}
+				wire = replyTextPayload
 			}
 		}
+		if wire == nil {
+			if payload == nil {
+				payload, err = marshalWatchEvent(resp, entityID)
+				if err != nil {
+					return
+				}
+			}
+			wire = payload
+		}
 		sendErr := w.sender.SendStream(&leapmuxv1.InnerStreamMessage{
-			Payload: payload,
+			Payload: wire,
 		})
 		if sendErr == nil {
 			continue
@@ -354,8 +392,9 @@ type WatcherManager struct {
 	channelOwners map[string]uint64 // channelID -> sessionID
 	nextSession   uint64
 	// agentEvents queues immutable events. Its lock protects no agent activity.
-	agentEvents     publicationQueues[*leapmuxv1.AgentEvent]
-	recordAgentFact func(string, *leapmuxv1.AgentEvent)
+	agentEvents      publicationQueues[*leapmuxv1.AgentEvent]
+	recordAgentFact  func(string, *leapmuxv1.AgentEvent)
+	resolveReplyText func(*leapmuxv1.AgentChatMessage) *string
 	// terminalStatuses orders every status change and closed event of a terminal,
 	// live or replayed. Screen data and the other terminal events stay outside
 	// it: they go through BroadcastTerminalEvent.
@@ -507,7 +546,7 @@ func (m *WatcherManager) DrainAgentEvents(agentID string) {
 	m.agentEvents.drain(agentID, func(event *leapmuxv1.AgentEvent) {
 		m.agents.broadcast(agentID, &leapmuxv1.WatchEventsResponse{
 			Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: event},
-		}, agentEventClass(event))
+		}, agentEventClass(event), m.resolveReplyText)
 	})
 }
 
@@ -587,7 +626,7 @@ func (m *WatcherManager) drainTerminalStatuses(terminalID string) {
 			item.sink.send(resp)
 			return
 		}
-		m.terminals.broadcast(terminalID, resp, terminalEventClass(item.event))
+		m.terminals.broadcast(terminalID, resp, terminalEventClass(item.event), nil)
 	})
 }
 
@@ -603,5 +642,5 @@ func (m *WatcherManager) BroadcastTerminalEvent(terminalID string, event *leapmu
 		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
 			TerminalEvent: event,
 		},
-	}, class)
+	}, class, nil)
 }

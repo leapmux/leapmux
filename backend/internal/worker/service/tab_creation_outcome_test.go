@@ -307,6 +307,113 @@ func TestAgentCreationKeepsTheInitialMessageUnreservedDuringStartup(t *testing.T
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, queue.Items[0].State)
 }
 
+func TestAgentCreationUsesCustomInitialMessageIDAndFallsBackWhenBlank(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		customID  *string
+		wantExact string
+	}{
+		{name: "custom id", customID: new("req-custom-42"), wantExact: "req-custom-42"},
+		{name: "trimmed custom id", customID: new("  req-trimmed-7  "), wantExact: "req-trimmed-7"},
+		{name: "blank id falls back", customID: new("   ")},
+		{name: "nil id falls back", customID: nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, dispatcher, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+			defer drainAllInFlight(svc)
+			started := make(chan struct{})
+			release := make(chan struct{})
+			defer close(release)
+			svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+				close(started)
+				select {
+				case <-release:
+					return nil, errors.New("test provider startup released")
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+
+			const agentID = "initial-id-agent"
+			method, request := creationRequestForTest(t, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, t.TempDir())
+			openReq := request.(*leapmuxv1.OpenAgentRequest)
+			openReq.InitialMessage = new("Review the diff")
+			openReq.InitialMessageId = tc.customID
+
+			writer := newTestWriter()
+			dispatch(dispatcher, method, request, writer)
+			require.Empty(t, writer.rejections())
+
+			ctx := testutil.DeadlineContext(t)
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal("the provider did not enter startup")
+			}
+
+			queue, err := svc.InputQueue.Snapshot(ctx, agentID)
+			require.NoError(t, err)
+			require.Len(t, queue.Items, 1)
+			if tc.wantExact != "" {
+				assert.Equal(t, tc.wantExact, queue.Items[0].ID)
+			} else {
+				gotID := queue.Items[0].ID
+				assert.NotEmpty(t, strings.TrimSpace(gotID), "blank input ID must generate a non-blank ID")
+				assert.Equal(t, strings.TrimSpace(gotID), gotID)
+			}
+		})
+	}
+}
+
+func TestAgentCreationRejectsInvalidInitialMessageIDWithoutPublishing(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		msg  *string
+		id   *string
+	}{
+		{name: "embedded null", msg: new("Hello"), id: new("bad\x00id")},
+		{name: "oversized id", msg: new("Hello"), id: new(strings.Repeat("a", 300))},
+		{name: "id without initial message", msg: nil, id: new("orphan-id")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, dispatcher, _ := setupTestService(t)
+			starts := failCreationProcessStarts(svc)
+			var publications atomic.Int32
+			svc.PublishTab = func(ctx context.Context, request *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+				publications.Add(1)
+				return fixturePublishTab(ctx, request)
+			}
+
+			const agentID = "invalid-initial-id"
+			method, request := creationRequestForTest(t, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, t.TempDir())
+			openReq := request.(*leapmuxv1.OpenAgentRequest)
+			openReq.InitialMessage = tc.msg
+			openReq.InitialMessageId = tc.id
+
+			writer := newTestWriter()
+			dispatch(dispatcher, method, request, writer)
+			assert.Empty(t, writer.responsesSnapshot())
+			assert.Zero(t, publications.Load())
+			assert.Zero(t, starts.Load())
+			result := writer.rejections()
+			require.Len(t, result, 1)
+			assert.EqualValues(t, codes.InvalidArgument, result[0].code)
+			_, err := svc.Queries.GetAgentByID(t.Context(), agentID)
+			assert.ErrorIs(t, err, sql.ErrNoRows)
+		})
+	}
+}
+
 func TestAgentCreationWakesTheInitialMessageAfterIPCStartupFailure(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher, _ := setupTestService(t, withRemoteIPC(&noIdentityRemoteIPC{failFrom: 1}))

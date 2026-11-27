@@ -703,6 +703,7 @@ func New(cfg Config) *Service {
 	}
 	watchers.recordTerminalFact = svc.recordTerminalFact
 	watchers.recordAgentFact = svc.recordAgentFact
+	watchers.resolveReplyText = svc.replyTextOfMessage
 	// The seed is config data, so it is minted here -- the one place the raw
 	// string exists -- rather than inside the setter.
 	if seed, ok := userid.New(cfg.SeedRegisteredBy); ok {

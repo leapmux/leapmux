@@ -312,10 +312,11 @@ func TestPhase1A_SymmetricTypedVerbsAndVariadicTargets(t *testing.T) {
 	require.Len(t, agents, 2)
 	assert.Equal(t, []string{"ag-aaaa1111", "ag-bbbb2222"}, w.interrupted)
 
-	// Variadic agent queue remove.
+	// Variadic agent queue remove deletes back-to-front so removing the head
+	// never promotes a later queued input into dispatch before it is deleted.
 	removed := runControl(t, "agent", "queue", "remove", "ag-aaaa1111", "in-1111", "in-2222").Data(t)
 	assert.Equal(t, []any{"in-1111", "in-2222"}, removed["input_ids"])
-	assert.Equal(t, []string{"in-1111", "in-2222"}, w.removedInputs)
+	assert.Equal(t, []string{"in-2222", "in-1111"}, w.removedInputs)
 
 	// Variadic agent close.
 	closed := runControl(t, "agent", "close", "ag-aaaa1111", "ag-bbbb2222").Data(t)

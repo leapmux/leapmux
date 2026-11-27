@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,177 +19,117 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// fakeAgentMessagesTransport is an in-memory streamevents.Transport
-// for the agent messages tests. It records each WatchEventsRequest
-// the Subscription fires so tests can assert cursor preservation
-// across reconnects, and exposes a `pushFrame` hook that delivers
-// synthetic AgentEvent frames at the registered callback.
-type fakeAgentMessagesTransport struct {
-	mu      sync.Mutex
-	calls   []*leapmuxv1.WatchEventsRequest
-	onFrame func(*leapmuxv1.WatchEventsResponse)
-	cancel  context.CancelFunc
-	done    chan struct{}
-	opens   int32
+func staticDrain(fetch messagePager) func(context.Context, func(messagePager) error) error {
+	return func(_ context.Context, run func(messagePager) error) error {
+		return run(fetch)
+	}
 }
 
-func (t *fakeAgentMessagesTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
-	onFrame func(*leapmuxv1.WatchEventsResponse),
-) (streamevents.Handle, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	atomic.AddInt32(&t.opens, 1)
-	t.calls = append(t.calls, req)
-	t.onFrame = onFrame
-	ctx, cancel := context.WithCancel(parentCtx)
-	t.cancel = cancel
-	t.done = make(chan struct{})
-	done := t.done
-	go func() {
-		<-ctx.Done()
-		close(done)
-	}()
-	return &fakeAgentMessagesHandle{tr: t, cancel: cancel, done: t.done}, nil
+func noopDrain() func(context.Context, func(messagePager) error) error {
+	return staticDrain(func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
+		return nil, false, nil
+	})
 }
 
-type fakeAgentMessagesHandle struct {
-	tr     *fakeAgentMessagesTransport
+func messageFrame(agentID string, msg *leapmuxv1.AgentChatMessage) *leapmuxv1.WatchEventsResponse {
+	return agentFrame(agentID, &leapmuxv1.AgentEvent{
+		Event: &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: msg},
+	})
+}
+
+type followTailHarness struct {
+	out    *lineSink
+	errOut *lineSink
 	cancel context.CancelFunc
-	done   chan struct{}
+	errCh  chan error
 }
 
-func (h *fakeAgentMessagesHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
-	h.tr.mu.Lock()
-	h.tr.calls = append(h.tr.calls, req)
-	h.tr.mu.Unlock()
-	return nil
-}
-func (h *fakeAgentMessagesHandle) Cancel()               { h.cancel() }
-func (h *fakeAgentMessagesHandle) Done() <-chan struct{} { return h.done }
-func (h *fakeAgentMessagesHandle) EndErr() error         { return nil }
-
-func (t *fakeAgentMessagesTransport) push(seq int64) {
-	t.mu.Lock()
-	cb := t.onFrame
-	t.mu.Unlock()
-	if cb != nil {
-		cb(&leapmuxv1.WatchEventsResponse{
-			Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
-				AgentId: "a-1",
-				Event: &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{
-					Seq: seq,
-				}},
-			}},
-		})
+// startFollowTail runs the real tailAgentMessagesWith + lineEmitter + cli.Printer
+// pipeline against tr and clock so follow tests exercise production rendering
+// and cursor tracking end-to-end.
+func startFollowTail(t *testing.T, parentCtx context.Context, agentID string, startSeq int64,
+	format cli.Format, tr *fakeWatchTransport, clock quartz.Clock,
+) *followTailHarness {
+	t.Helper()
+	ctx, cancel := context.WithCancel(parentCtx)
+	out := newLineSink()
+	errOut := newLineSink()
+	em := &lineEmitter{printer: &cli.Printer{Format: format, Out: out, Err: errOut}}
+	openTransport := func(context.Context) (*workerWatchTransport, error) {
+		return &workerWatchTransport{transport: tr, close: func() {}}, nil
 	}
-}
-
-func (t *fakeAgentMessagesTransport) lastRequest() *leapmuxv1.WatchEventsRequest {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if len(t.calls) == 0 {
-		return nil
-	}
-	return t.calls[len(t.calls)-1]
-}
-
-// runAgentMessagesTail spins up the same machinery `tailAgentMessages`
-// uses but with our fake transport so we can drive frames + force
-// reconnects. This mirrors the production helper one-to-one — the
-// only thing we replace is the Transport implementation.
-func runAgentMessagesTail(ctx context.Context, agentID string, startSeq int64,
-	tr *fakeAgentMessagesTransport,
-) (*bytes.Buffer, *streamevents.Subscription, *streamevents.AgentCursor, *sync.Mutex) {
-	buf := &bytes.Buffer{}
-	enc := json.NewEncoder(buf)
-	mu := &sync.Mutex{}
-	cursor := streamevents.NewAgentCursor()
-	cursor.Track(agentID, startSeq)
-	terms := streamevents.NewTerminalCursor()
-
-	onAgent := func(ae *leapmuxv1.AgentEvent) {
-		msg := ae.GetAgentMessage()
-		if msg == nil {
-			return
+	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		errCh <- tailAgentMessagesWith(ctx, agentID, startSeq, openTransport, noopDrain(), em, clock)
+	}()
+	h := &followTailHarness{out: out, errOut: errOut, cancel: cancel, errCh: errCh}
+	t.Cleanup(func() {
+		cancel()
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			t.Error("tailAgentMessagesWith did not stop during cleanup")
 		}
-		mu.Lock()
-		_ = enc.Encode(msg)
-		mu.Unlock()
-	}
-	sub := streamevents.NewSubscription(tr, cursor, terms, onAgent, nil, nil)
-	require := func(err error) {
-		if err != nil {
-			panic(err)
-		}
-	}
-	require(sub.Update(ctx, &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{streamevents.AgentWatchEntry(agentID, startSeq)},
-	}))
-	return buf, sub, cursor, mu
+	})
+	return h
 }
 
 // TestAgentMessages_StreamingTail_EmitsMessagesInOrder confirms the
 // happy path of `agent messages --follow`: each frame surfaces as a
-// JSON line on stdout and the cursor advances. This pins the
-// "messages stream in seq order, no gaps" guarantee from the plan's
-// Phase 1a test surface.
+// JSON envelope line on stdout in sequence order.
 func TestAgentMessages_StreamingTail_EmitsMessagesInOrder(t *testing.T) {
-	tr := &fakeAgentMessagesTransport{}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx := testutil.DeadlineContext(t)
+	tr := newFakeWatchTransport()
+	h := startFollowTail(t, ctx, "a-1", 0, cli.FormatJSON, tr, testutil.NewQuartzMock(t))
 
-	buf, sub, cursor, _ := runAgentMessagesTail(ctx, "a-1", 0, tr)
-	t.Cleanup(sub.Cancel)
+	receive(t, ctx, tr.opened)
+	tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 1}))
+	tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 2}))
+	tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 3}))
 
-	tr.push(1)
-	tr.push(2)
-	tr.push(3)
-
-	require.Eventually(t, func() bool {
-		return cursor.Get("a-1") == 3
-	}, time.Second, 10*time.Millisecond, "cursor must advance to seq=3")
-
-	// Output must be three JSON lines, each carrying a seq.
-	lines := splitNonEmpty(buf.String())
-	require.Len(t, lines, 3)
-	for i, ln := range lines {
-		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(ln), &got))
-		assert.EqualValues(t, i+1, got["seq"])
+	for expected := int64(1); expected <= 3; expected++ {
+		line := receive(t, ctx, h.out.lines)
+		var env struct {
+			Data map[string]any `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &env))
+		assert.EqualValues(t, expected, env.Data["seq"])
 	}
 }
 
 // TestAgentMessages_ReconnectCarriesCursor exercises the resume-on-
-// reconnect contract: after the cursor advances to N, a fresh
-// Update (simulating reconnect after channel error) must resume
-// AFTER_CURSOR from cursor_seq=N in the new WatchEventsRequest.
+// reconnect contract: after a message at seq N is delivered, a reconnect
+// must resume AFTER_CURSOR from cursor_seq=N in the new WatchEventsRequest.
 func TestAgentMessages_ReconnectCarriesCursor(t *testing.T) {
-	tr := &fakeAgentMessagesTransport{}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
+	defer newTimer.Close()
 
-	_, sub, cursor, _ := runAgentMessagesTail(ctx, "a-1", 0, tr)
-	t.Cleanup(sub.Cancel)
+	tr := newFakeWatchTransport()
+	h := startFollowTail(t, ctx, "a-1", 0, cli.FormatJSON, tr, clock)
 
-	tr.push(5)
-	require.Eventually(t, func() bool { return cursor.Get("a-1") == 5 },
-		time.Second, 10*time.Millisecond)
-
+	receive(t, ctx, tr.opened)
 	first := tr.lastRequest()
 	require.NotNil(t, first)
 	require.Positive(t, first.GetAgents()[0].GetReplayId())
-	tr.mu.Lock()
-	stop, done := tr.cancel, tr.done
-	tr.mu.Unlock()
-	stop()
-	<-done
-	// A completed handle makes Update open a fresh stream from seq=5.
-	require.NoError(t, sub.Update(ctx, &leapmuxv1.WatchEventsRequest{
-		Agents: cursor.Snapshot(map[string]struct{}{"a-1": {}}),
-	}))
+	assert.True(t, first.GetAgents()[0].GetIncludeReplyText(), "watch request must enable IncludeReplyText")
+
+	tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 5}))
+	receive(t, ctx, h.out.lines)
+
+	tr.endStream()
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	clock.Advance(delay).MustWait(ctx)
+	receive(t, ctx, tr.opened)
 
 	last := tr.lastRequest()
 	require.NotNil(t, last)
@@ -196,137 +137,299 @@ func TestAgentMessages_ReconnectCarriesCursor(t *testing.T) {
 	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
 	assert.Equal(t, int64(5), last.GetAgents()[0].GetCursorSeq(),
 		"reconnect must carry the latest cursor forward")
-	assert.Greater(t, last.GetAgents()[0].GetReplayId(), first.GetAgents()[0].GetReplayId())
 	assert.Equal(t, last.GetUpdateId(), last.GetAgents()[0].GetReplayId())
+	assert.True(t, last.GetAgents()[0].GetIncludeReplyText(), "reconnect watch request must keep IncludeReplyText")
 }
 
-// TestAgentMessages_StartSeqIsHonored: when `RunAgentMessages
-// --follow` resumes from a non-zero `--anchor after --cursor-seq`, the streaming
+// TestAgentMessages_StartSeqIsHonored: when `agent messages --follow`
+// resumes from a non-zero `--anchor after --cursor-seq`, the streaming
 // subscription's first request must reflect that cursor. Otherwise a
 // caller resuming from an earlier checkpoint would re-receive
-// messages they've already processed.
+// messages they have already processed.
 func TestAgentMessages_StartSeqIsHonored(t *testing.T) {
-	tr := &fakeAgentMessagesTransport{}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx := testutil.DeadlineContext(t)
+	tr := newFakeWatchTransport()
+	startFollowTail(t, ctx, "a-1", 42, cli.FormatJSON, tr, testutil.NewQuartzMock(t))
 
-	_, sub, _, _ := runAgentMessagesTail(ctx, "a-1", 42, tr)
-	t.Cleanup(sub.Cancel)
-
+	receive(t, ctx, tr.opened)
 	last := tr.lastRequest()
 	require.NotNil(t, last)
 	require.Len(t, last.GetAgents(), 1)
 	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
 	assert.Equal(t, int64(42), last.GetAgents()[0].GetCursorSeq())
+	assert.True(t, last.GetAgents()[0].GetIncludeReplyText(), "initial resume watch request must set IncludeReplyText")
+}
+
+func TestDrainMessagesRequest_SetsIncludeReplyText(t *testing.T) {
+	oldest := drainMessagesRequest("a-1", 0)
+	assert.Equal(t, "a-1", oldest.GetAgentId())
+	assert.Equal(t, leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST, oldest.GetAnchor())
+	assert.Equal(t, int64(0), oldest.GetCursorSeq())
+	assert.True(t, oldest.GetIncludeReplyText())
+
+	after := drainMessagesRequest("a-1", 42)
+	assert.Equal(t, "a-1", after.GetAgentId())
+	assert.Equal(t, leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER, after.GetAnchor())
+	assert.Equal(t, int64(42), after.GetCursorSeq())
+	assert.True(t, after.GetIncludeReplyText())
 }
 
 // TestAgentMessages_OutOfOrderFramesDoNotRegressCursor: even if a
-// frame with a lower seq somehow arrives (e.g. across a reconnect
-// where the worker replayed older state), the cursor must not
-// regress. Otherwise the next reconnect would request already-seen
-// messages.
+// frame with a lower seq arrives, the subscription drops it and the
+// cursor must not regress on the next reconnect.
 func TestAgentMessages_OutOfOrderFramesDoNotRegressCursor(t *testing.T) {
-	tr := &fakeAgentMessagesTransport{}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
+	defer newTimer.Close()
 
-	_, sub, cursor, _ := runAgentMessagesTail(ctx, "a-1", 0, tr)
-	t.Cleanup(sub.Cancel)
+	tr := newFakeWatchTransport()
+	h := startFollowTail(t, ctx, "a-1", 0, cli.FormatJSON, tr, clock)
 
-	tr.push(10)
-	require.Eventually(t, func() bool { return cursor.Get("a-1") == 10 },
-		time.Second, 10*time.Millisecond)
-	tr.push(3)
-	// push returns after the synchronous frame handler completes.
-	assert.Equal(t, int64(10), cursor.Get("a-1"),
+	receive(t, ctx, tr.opened)
+	tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 10}))
+	receive(t, ctx, h.out.lines)
+	tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 3}))
+
+	tr.endStream()
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	clock.Advance(delay).MustWait(ctx)
+	receive(t, ctx, tr.opened)
+
+	last := tr.lastRequest()
+	require.NotNil(t, last)
+	assert.Equal(t, int64(10), last.GetAgents()[0].GetCursorSeq(),
 		"out-of-order seq=3 must not regress the cursor below 10")
+	assert.Empty(t, h.out.lines, "out-of-order seq=3 must not be emitted")
 }
 
 // TestAgentMessages_CtxCancelStopsSubscription: cancelling the
-// parent context (CTRL-C in production) must propagate through the
-// transport so its done channel fires and `tailAgentMessages` can
-// return cleanly. Without this, the CLI's exit would hang on the
-// in-flight subscription.
+// parent context (CTRL-C in production) must stop the subscription
+// and allow tailAgentMessagesWith to return cleanly.
 func TestAgentMessages_CtxCancelStopsSubscription(t *testing.T) {
-	tr := &fakeAgentMessagesTransport{}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := testutil.DeadlineContext(t)
+	tr := newFakeWatchTransport()
+	h := startFollowTail(t, ctx, "a-1", 0, cli.FormatJSON, tr, testutil.NewQuartzMock(t))
 
-	_, sub, _, _ := runAgentMessagesTail(ctx, "a-1", 0, tr)
-	t.Cleanup(sub.Cancel)
-
-	// Cancel parent ctx; the subscription's Done() should fire.
-	cancel()
-
-	select {
-	case <-sub.Done():
-	case <-time.After(time.Second):
-		t.Fatal("ctx cancellation did not propagate to subscription done channel")
-	}
-}
-
-// TestAgentMessages_OutputIsByteForByteCompatibleWithPolling pins the
-// "external scripts written against the old polling output keep
-// working byte-for-byte" guarantee from the plan. Each line must
-// JSON-marshal directly to an AgentChatMessage shape (not wrapped in
-// a `source` envelope, not a multi-line proto-pretty-print).
-func TestAgentMessages_OutputIsByteForByteCompatibleWithPolling(t *testing.T) {
-	tr := &fakeAgentMessagesTransport{}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	buf, sub, _, _ := runAgentMessagesTail(ctx, "a-1", 0, tr)
-	t.Cleanup(sub.Cancel)
-
-	tr.push(11)
-	require.Eventually(t, func() bool { return buf.Len() > 0 },
-		time.Second, 10*time.Millisecond)
-
-	// Each line must parse as an AgentChatMessage envelope with a
-	// `seq` key — and NOT carry the `source` key the events command
-	// adds to its lines (verifies we didn't accidentally unify the
-	// two output paths).
-	lines := splitNonEmpty(buf.String())
-	require.NotEmpty(t, lines)
-	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(lines[0]), &got))
-	assert.EqualValues(t, 11, got["seq"])
-	_, hasSource := got["source"]
-	assert.False(t, hasSource, "agent messages output must not carry the events `source` key")
-}
-
-// TestAgentMessages_TwoUpdatesShareCursor: the consumer that calls
-// runAgentMessagesTail twice in succession (mimicking the reconnect
-// loop in `tailAgentMessages`) must see the cursor preserved across
-// both Update calls. Without this, every reconnect would reset to a fresh
-// LATEST subscription and the user would see duplicate history.
-func TestAgentMessages_TwoUpdatesShareCursor(t *testing.T) {
-	tr := &fakeAgentMessagesTransport{}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	_, sub, cursor, _ := runAgentMessagesTail(ctx, "a-1", 0, tr)
-	t.Cleanup(sub.Cancel)
-	tr.push(8)
-	require.Eventually(t, func() bool { return cursor.Get("a-1") == 8 },
-		time.Second, 10*time.Millisecond)
-
-	first := tr.lastRequest()
-	require.NotNil(t, first)
+	receive(t, ctx, tr.opened)
 	tr.mu.Lock()
-	stop, done := tr.cancel, tr.done
+	done := tr.done
 	tr.mu.Unlock()
-	stop()
-	<-done
-	// Open the next stream from the same cursor after the first stream ends.
-	require.NoError(t, sub.Update(ctx, &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{streamevents.AgentWatchEntry("a-1", cursor.Get("a-1"))},
-	}))
-	last := tr.lastRequest()
-	require.NotNil(t, last)
-	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
-	assert.Equal(t, int64(8), last.GetAgents()[0].GetCursorSeq(),
-		"reconnect must resume from the cursor seq, not a fresh latest subscription")
-	assert.Greater(t, last.GetAgents()[0].GetReplayId(), first.GetAgents()[0].GetReplayId())
+
+	h.cancel()
+	receive(t, ctx, done)
+	require.NoError(t, receive(t, ctx, h.errCh))
+}
+
+// TestAgentMessages_OutputIsByteForByteCompatibleWithPolling exercises the real
+// tailAgentMessagesWith + lineEmitter + cli.Printer pipeline across JSON,
+// NDJSON, text, and quiet formats.
+func TestAgentMessages_OutputIsByteForByteCompatibleWithPolling(t *testing.T) {
+	compressed, kind := msgcodec.Compress([]byte(`{"text":"hi"}`))
+	reply := "hi"
+	sample := &leapmuxv1.AgentChatMessage{
+		Id:                 "m-11",
+		Seq:                11,
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		ReplyText:          &reply,
+		Content:            compressed,
+		ContentCompression: kind,
+	}
+
+	t.Run("json emits data envelope with decompressed message", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		tr := newFakeWatchTransport()
+		h := startFollowTail(t, ctx, "a-1", 0, cli.FormatJSON, tr, testutil.NewQuartzMock(t))
+
+		receive(t, ctx, tr.opened)
+		tr.push(messageFrame("a-1", sample))
+		line := receive(t, ctx, h.out.lines)
+		assert.JSONEq(t, `{"data":{"id":"m-11","seq":11,"source":"agent","reply_text":"hi","content":{"text":"hi"}}}`, line)
+	})
+
+	t.Run("ndjson emits unwrapped message object", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		tr := newFakeWatchTransport()
+		h := startFollowTail(t, ctx, "a-1", 0, cli.FormatNDJSON, tr, testutil.NewQuartzMock(t))
+
+		receive(t, ctx, tr.opened)
+		tr.push(messageFrame("a-1", sample))
+		line := receive(t, ctx, h.out.lines)
+		assert.JSONEq(t, `{"id":"m-11","seq":11,"source":"agent","reply_text":"hi","content":{"text":"hi"}}`, line)
+	})
+
+	t.Run("text emits rendered TextLine", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		tr := newFakeWatchTransport()
+		h := startFollowTail(t, ctx, "a-1", 0, cli.FormatText, tr, testutil.NewQuartzMock(t))
+
+		receive(t, ctx, tr.opened)
+		tr.push(messageFrame("a-1", sample))
+		assert.Equal(t, "#11 agent: hi", receive(t, ctx, h.out.lines))
+	})
+
+	t.Run("quiet emits integer sequence number matching paged -q", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		tr := newFakeWatchTransport()
+		h := startFollowTail(t, ctx, "a-1", 0, cli.FormatQuiet, tr, testutil.NewQuartzMock(t))
+
+		receive(t, ctx, tr.opened)
+		tr.push(messageFrame("a-1", sample))
+		assert.Equal(t, "11", receive(t, ctx, h.out.lines))
+	})
+}
+
+// TestAgentMessages_TwoUpdatesShareCursor verifies that cursor state survives
+// multiple consecutive reconnect cycles in tailAgentMessagesWith.
+func TestAgentMessages_TwoUpdatesShareCursor(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
+	defer newTimer.Close()
+
+	tr := newFakeWatchTransport()
+	h := startFollowTail(t, ctx, "a-1", 0, cli.FormatJSON, tr, clock)
+
+	receive(t, ctx, tr.opened)
+	tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 8}))
+	receive(t, ctx, h.out.lines)
+
+	tr.endStream()
+	clock.Advance(testutil.WaitForTimer(t, ctx, newTimer)).MustWait(ctx)
+	receive(t, ctx, tr.opened)
+	assert.Equal(t, int64(8), tr.lastRequest().GetAgents()[0].GetCursorSeq())
+
+	tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 15}))
+	receive(t, ctx, h.out.lines)
+
+	tr.endStream()
+	clock.Advance(testutil.WaitForTimer(t, ctx, newTimer)).MustWait(ctx)
+	receive(t, ctx, tr.opened)
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, tr.lastRequest().GetAgents()[0].GetReplay())
+	assert.Equal(t, int64(15), tr.lastRequest().GetAgents()[0].GetCursorSeq())
+}
+
+// TestTailAgentMessages_ReturnsLatchedWriteErrorOnCancel guards TRAPS-8:
+// a latched stdout write error must always surface as a non-nil error rather
+// than exiting 0 when waitBackoff or ErrSubscriptionClosed unwinds the loop.
+func TestTailAgentMessages_ReturnsLatchedWriteErrorOnCancel(t *testing.T) {
+	t.Run("live emit failure cancels loop and returns write error", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		errWrite := errors.New("broken pipe")
+		tr := newFakeWatchTransport()
+		openTransport := func(context.Context) (*workerWatchTransport, error) {
+			return &workerWatchTransport{transport: tr, close: func() {}}, nil
+		}
+		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: failingJSONLineWriter{err: errWrite}, Err: &bytes.Buffer{}}}
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, noopDrain(), em, testutil.NewQuartzMock(t))
+		}()
+
+		receive(t, ctx, tr.opened)
+		tr.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 1}))
+
+		require.ErrorIs(t, receive(t, ctx, errCh), errWrite)
+	})
+
+	t.Run("cancel during reconnect waitBackoff returns latched write error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+		defer cancel()
+		clock := testutil.NewQuartzMock(t)
+		newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
+		defer newTimer.Close()
+
+		errWrite := errors.New("stdout closed")
+		tr := newFakeWatchTransport()
+		openTransport := func(context.Context) (*workerWatchTransport, error) {
+			return &workerWatchTransport{transport: tr, close: func() {}}, nil
+		}
+		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: failingJSONLineWriter{err: errWrite}, Err: &bytes.Buffer{}}}
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, noopDrain(), em, clock)
+		}()
+
+		receive(t, ctx, tr.opened)
+		tr.endStream()
+		_ = testutil.WaitForTimer(t, ctx, newTimer)
+
+		// Latch a write error before cancelling during waitBackoff.
+		_ = em.emit(map[string]any{"seq": 99})
+		cancel()
+
+		require.ErrorIs(t, receive(t, testutil.DeadlineContext(t), errCh), errWrite)
+	})
+
+	t.Run("ErrSubscriptionClosed returns latched write error", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		errWrite := errors.New("stdout broken")
+		tr := newFakeWatchTransport()
+		tr.openErrs = []error{streamevents.ErrSubscriptionClosed}
+		var opens atomic.Int32
+		openTransport := func(context.Context) (*workerWatchTransport, error) {
+			opens.Add(1)
+			return &workerWatchTransport{transport: tr, close: func() {}}, nil
+		}
+		var errBuf bytes.Buffer
+		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: failingJSONLineWriter{err: errWrite}, Err: &errBuf}}
+		_ = em.emit(map[string]any{"seq": 1})
+
+		err := tailAgentMessagesWith(ctx, "a-1", 0, openTransport, noopDrain(), em, testutil.NewQuartzMock(t))
+		require.ErrorIs(t, err, errWrite)
+		assert.Equal(t, int32(1), opens.Load())
+		assert.Empty(t, errBuf.String(), "ErrSubscriptionClosed must not log a retry notice")
+	})
+
+	t.Run("ErrSubscriptionClosed without latched write error exits cleanly", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		tr := newFakeWatchTransport()
+		tr.openErrs = []error{streamevents.ErrSubscriptionClosed}
+		openTransport := func(context.Context) (*workerWatchTransport, error) {
+			return &workerWatchTransport{transport: tr, close: func() {}}, nil
+		}
+		var outBuf, errBuf bytes.Buffer
+		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: &outBuf, Err: &errBuf}}
+
+		err := tailAgentMessagesWith(ctx, "a-1", 0, openTransport, noopDrain(), em, testutil.NewQuartzMock(t))
+		require.NoError(t, err)
+		assert.Empty(t, errBuf.String())
+	})
+}
+
+func TestTailAgentMessages_DrainReusesSingleChannelScopePerBacklogRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	defer cancel()
+	tr := newFakeWatchTransport()
+	var drainScopes atomic.Int32
+	var pagesFetched atomic.Int32
+	fetch := pagingFetch(seqRange(120), contracts.MessagePageLimit)
+	withDrain := func(_ context.Context, run func(messagePager) error) error {
+		drainScopes.Add(1)
+		return run(func(ctx context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
+			pagesFetched.Add(1)
+			return fetch(ctx, afterSeq)
+		})
+	}
+	out := newLineSink()
+	em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatQuiet, Out: out, Err: &bytes.Buffer{}}}
+	openTransport := func(context.Context) (*workerWatchTransport, error) {
+		return &workerWatchTransport{transport: tr, close: func() {}}, nil
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, withDrain, em, testutil.NewQuartzMock(t))
+	}()
+
+	receive(t, ctx, tr.opened)
+	for range 120 {
+		receive(t, ctx, out.lines)
+	}
+	assert.Equal(t, int32(1), drainScopes.Load(), "all pages of one backlog drain share one channel scope")
+	assert.GreaterOrEqual(t, pagesFetched.Load(), int32(2), "backlog spans multiple pages")
+
+	cancel()
+	require.NoError(t, receive(t, testutil.DeadlineContext(t), errCh))
 }
 
 // TestReconnectBackoff_ResetsOnDelivery pins the activity-based reset: a session
@@ -525,6 +628,7 @@ func TestDrainBacklog_StopsOnFetchError(t *testing.T) {
 }
 
 func TestDrainBacklog_AdvanceBeforeEmitDedupsConcurrentFrame(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
 	cursor := streamevents.NewAgentCursor()
 	cursor.Track("a-1", 119)
 	fetch := func(_ context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
@@ -544,18 +648,14 @@ func TestDrainBacklog_AdvanceBeforeEmitDedupsConcurrentFrame(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		drained, err := drainBacklog(context.Background(), "a-1", cursor, fetch, emit)
+		drained, err := drainBacklog(ctx, "a-1", cursor, fetch, emit)
 		done <- result{drained: drained, err: err}
 	}()
 
-	select {
-	case <-emitStarted:
-	case <-time.After(time.Second):
-		t.Fatal("drain did not reach the emitter")
-	}
+	receive(t, ctx, emitStarted)
 	duplicateForwarded := cursor.Advance("a-1", 120)
 	close(releaseEmit)
-	got := <-done
+	got := receive(t, ctx, done)
 
 	require.NoError(t, got.err)
 	assert.True(t, got.drained)
@@ -599,7 +699,7 @@ func TestDrainBacklog_StopsOnCtxCancel(t *testing.T) {
 }
 
 // TestDrainBacklog_StopsWhenCursorDoesNotAdvance: a buggy server that returns a
-// hasMore=true page whose rows are at or below the bound must NOT spin forever --
+// hasMore=true page whose rows are at or below the cursor must NOT spin forever --
 // the no-advance guard breaks after one page.
 func TestDrainBacklog_StopsWhenCursorDoesNotAdvance(t *testing.T) {
 	cursor := streamevents.NewAgentCursor()
@@ -607,7 +707,7 @@ func TestDrainBacklog_StopsWhenCursorDoesNotAdvance(t *testing.T) {
 	calls := 0
 	fetch := func(_ context.Context, _ int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
 		calls++
-		return []*leapmuxv1.AgentChatMessage{{Seq: 5}}, true, nil // below the bound, claims more
+		return []*leapmuxv1.AgentChatMessage{{Seq: 5}}, true, nil // below the cursor, claims more
 	}
 	var emitted []int64
 	emit := func(m *leapmuxv1.AgentChatMessage) error {
@@ -621,21 +721,25 @@ func TestDrainBacklog_StopsWhenCursorDoesNotAdvance(t *testing.T) {
 
 	assert.Empty(t, emitted)
 	assert.Equal(t, 1, calls, "must stop after one non-advancing page, not spin")
-	assert.Equal(t, int64(10), cursor.Get("a-1"), "a below-bound row never lowers the cursor")
+	assert.Equal(t, int64(10), cursor.Get("a-1"), "a below-cursor row never lowers the cursor")
 }
 
 func TestDrainBacklog_PagesPastAnAlreadyRetractedRow(t *testing.T) {
-	tr := &fakeAgentMessagesTransport{}
-	_, sub, cursor, _ := runAgentMessagesTail(t.Context(), "a-1", 15, tr)
+	ctx := testutil.DeadlineContext(t)
+	tr := newFakeWatchTransport()
+	cursor := streamevents.NewAgentCursor()
+	cursor.Track("a-1", 15)
+	sub := streamevents.NewSubscription(tr, cursor, streamevents.NewTerminalCursor(), nil, nil, nil)
 	t.Cleanup(sub.Cancel)
-	tr.onFrame(&leapmuxv1.WatchEventsResponse{
-		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
-			AgentId: "a-1",
-			Event: &leapmuxv1.AgentEvent_MessagesRetracted{
-				MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{19}},
-			},
-		}},
-	})
+	require.NoError(t, sub.Update(ctx, &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{streamevents.AgentWatchEntry("a-1", 15)},
+	}))
+	tr.push(agentFrame("a-1", &leapmuxv1.AgentEvent{
+		Event: &leapmuxv1.AgentEvent_MessagesRetracted{
+			MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{19}},
+		},
+	}))
+
 	var fetchedAfter, emitted []int64
 	fetch := func(_ context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
 		fetchedAfter = append(fetchedAfter, afterSeq)
@@ -644,7 +748,7 @@ func TestDrainBacklog_PagesPastAnAlreadyRetractedRow(t *testing.T) {
 		}
 		return []*leapmuxv1.AgentChatMessage{{Seq: 20}}, false, nil
 	}
-	drained, err := drainBacklog(t.Context(), "a-1", cursor, fetch, func(m *leapmuxv1.AgentChatMessage) error {
+	drained, err := drainBacklog(ctx, "a-1", cursor, fetch, func(m *leapmuxv1.AgentChatMessage) error {
 		emitted = append(emitted, m.GetSeq())
 		return nil
 	})
@@ -656,97 +760,29 @@ func TestDrainBacklog_PagesPastAnAlreadyRetractedRow(t *testing.T) {
 	assert.Equal(t, int64(20), cursor.Get("a-1"))
 }
 
-// endingFollowTransport opens a handle whose stream ends with a scripted error.
-type endingFollowTransport struct {
-	mu      sync.Mutex
-	onFrame func(*leapmuxv1.WatchEventsResponse)
-	calls   []*leapmuxv1.WatchEventsRequest
-	handle  *endingFollowHandle
-	opened  chan struct{}
-}
-
-type endingFollowHandle struct {
-	mu     sync.Mutex
-	endErr error
-	cancel context.CancelFunc
-	done   chan struct{}
-}
-
-func (h *endingFollowHandle) Update(*leapmuxv1.WatchEventsRequest) error { return nil }
-func (h *endingFollowHandle) Cancel()                                    { h.cancel() }
-func (h *endingFollowHandle) Done() <-chan struct{}                      { return h.done }
-func (h *endingFollowHandle) EndErr() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.endErr
-}
-
-func (t *endingFollowTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
-	onFrame func(*leapmuxv1.WatchEventsResponse),
-) (streamevents.Handle, error) {
-	ctx, cancel := context.WithCancel(parentCtx)
-	done := make(chan struct{})
-	go func() {
-		<-ctx.Done()
-		close(done)
-	}()
-	h := &endingFollowHandle{cancel: cancel, done: done}
-	t.mu.Lock()
-	t.calls = append(t.calls, req)
-	t.onFrame = onFrame
-	t.handle = h
-	t.mu.Unlock()
-	select {
-	case t.opened <- struct{}{}:
-	default:
-	}
-	return h, nil
-}
-
-func (t *endingFollowTransport) endWith(err error) {
-	t.mu.Lock()
-	h := t.handle
-	t.mu.Unlock()
-	h.mu.Lock()
-	h.endErr = err
-	h.mu.Unlock()
-	h.cancel()
-}
-
 func TestTailAgentMessages_ReturnsImmediatelyOnPermanentRefusal(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	clock := testutil.NewQuartzMock(t)
-	tr := &endingFollowTransport{opened: make(chan struct{}, 2)}
+	tr := newFakeWatchTransport()
 	opens := 0
 	openTransport := func(context.Context) (*workerWatchTransport, error) {
 		opens++
 		return &workerWatchTransport{transport: tr, close: func() {}}, nil
-	}
-	drain := func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
-		return nil, false, nil
 	}
 	var stdout, stderr bytes.Buffer
 	em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: &stdout, Err: &stderr}}
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, drain, em, clock)
+		errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, noopDrain(), em, clock)
 	}()
 
-	select {
-	case <-tr.opened:
-	case <-ctx.Done():
-		t.Fatal("subscription did not open")
-	}
-	tr.endWith(&channelwire.RPCError{Code: 7, Message: "only the worker owner can watch events"})
+	receive(t, ctx, tr.opened)
+	tr.endStreamWithErr(&channelwire.RPCError{Code: 7, Message: "only the worker owner can watch events"})
 
-	select {
-	case err := <-errCh:
-		require.Error(t, err)
-		assert.Equal(t, cli.CodePermissionDenied, cli.FromError(err).Code)
-	case <-ctx.Done():
-		t.Fatal("tailAgentMessagesWith did not stop on permanent refusal")
-	}
+	err := receive(t, ctx, errCh)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodePermissionDenied, cli.FromError(err).Code)
 	assert.Equal(t, 1, opens, "a permanent refusal must not reopen the transport")
 	_, running := clock.Peek()
 	assert.False(t, running, "a permanent refusal must not arm a reconnect timer")
@@ -759,8 +795,8 @@ func TestTailAgentMessages_ReopensTransportAfterChannelEndAndResumesCursor(t *te
 	newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
 	defer newTimer.Close()
 
-	first := &endingFollowTransport{opened: make(chan struct{}, 1)}
-	second := &endingFollowTransport{opened: make(chan struct{}, 1)}
+	first := newFakeWatchTransport()
+	second := newFakeWatchTransport()
 	var closedFirst atomic.Bool
 	var opens atomic.Int32
 	openTransport := func(context.Context) (*workerWatchTransport, error) {
@@ -771,57 +807,31 @@ func TestTailAgentMessages_ReopensTransportAfterChannelEndAndResumesCursor(t *te
 			return &workerWatchTransport{transport: second, close: func() {}}, nil
 		}
 	}
-	drain := func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
-		return nil, false, nil
-	}
 	var stdout, stderr bytes.Buffer
 	em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: &stdout, Err: &stderr}}
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, drain, em, clock)
+		errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, noopDrain(), em, clock)
 	}()
 
-	select {
-	case <-first.opened:
-	case <-ctx.Done():
-		t.Fatal("first subscription did not open")
-	}
-	first.mu.Lock()
-	first.onFrame(&leapmuxv1.WatchEventsResponse{
-		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
-			AgentId: "a-1",
-			Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: 12}},
-		}},
-	})
-	first.mu.Unlock()
+	receive(t, ctx, first.opened)
+	first.push(messageFrame("a-1", &leapmuxv1.AgentChatMessage{Seq: 12}))
 	// Simulate the E2EE channel closing transiently.
-	first.endWith(errors.New("the channel to the worker closed"))
+	first.endStreamWithErr(errors.New("the channel to the worker closed"))
 
 	delay := testutil.WaitForTimer(t, ctx, newTimer)
 	assert.True(t, closedFirst.Load(), "the dead transport must be closed before reconnecting")
 	clock.Advance(delay).MustWait(ctx)
 
-	select {
-	case <-second.opened:
-	case <-ctx.Done():
-		t.Fatal("second subscription did not open on a fresh transport")
-	}
-	second.mu.Lock()
-	require.Len(t, second.calls, 1)
-	req := second.calls[0]
-	second.mu.Unlock()
+	receive(t, ctx, second.opened)
+	req := second.lastRequest()
 	require.Len(t, req.GetAgents(), 1)
 	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, req.GetAgents()[0].GetReplay())
 	assert.Equal(t, int64(12), req.GetAgents()[0].GetCursorSeq())
 
 	cancel()
-	select {
-	case err := <-errCh:
-		require.NoError(t, err)
-	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("tailAgentMessagesWith did not exit on cancel")
-	}
+	require.NoError(t, receive(t, testutil.DeadlineContext(t), errCh))
 }
 
 func TestTailAgentMessages_ReconnectOpenTransportFailureTransientAndPermanent(t *testing.T) {
@@ -832,8 +842,8 @@ func TestTailAgentMessages_ReconnectOpenTransportFailureTransientAndPermanent(t 
 		newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
 		defer newTimer.Close()
 
-		first := &endingFollowTransport{opened: make(chan struct{}, 1)}
-		third := &endingFollowTransport{opened: make(chan struct{}, 1)}
+		first := newFakeWatchTransport()
+		third := newFakeWatchTransport()
 		var opens atomic.Int32
 		openTransport := func(context.Context) (*workerWatchTransport, error) {
 			switch opens.Add(1) {
@@ -845,23 +855,16 @@ func TestTailAgentMessages_ReconnectOpenTransportFailureTransientAndPermanent(t 
 				return &workerWatchTransport{transport: third, close: func() {}}, nil
 			}
 		}
-		drain := func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
-			return nil, false, nil
-		}
-		var stdout, stderr bytes.Buffer
-		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatText, Out: &stdout, Err: &stderr}}
+		stderr := newLineSink()
+		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatText, Out: &bytes.Buffer{}, Err: stderr}}
 
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, drain, em, clock)
+			errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, noopDrain(), em, clock)
 		}()
 
-		select {
-		case <-first.opened:
-		case <-ctx.Done():
-			t.Fatal("first subscription did not open")
-		}
-		first.endWith(errors.New("channel closed"))
+		receive(t, ctx, first.opened)
+		first.endStreamWithErr(errors.New("channel closed"))
 
 		// First reconnect backoff after first stream ended.
 		d1 := testutil.WaitForTimer(t, ctx, newTimer)
@@ -871,21 +874,16 @@ func TestTailAgentMessages_ReconnectOpenTransportFailureTransientAndPermanent(t 
 		assert.Equal(t, 2*d1, d2)
 		clock.Advance(d2).MustWait(ctx)
 
-		select {
-		case <-third.opened:
-		case <-ctx.Done():
-			t.Fatal("third transport did not open after transient reconnect error")
-		}
+		receive(t, ctx, third.opened)
 		assert.Equal(t, int32(3), opens.Load())
-		assert.Contains(t, stderr.String(), "connecting to agent a-1 failed, retrying")
+		var notices []string
+		for len(stderr.lines) > 0 {
+			notices = append(notices, <-stderr.lines)
+		}
+		assert.Contains(t, strings.Join(notices, "\n"), "connecting to agent a-1 failed, retrying")
 
 		cancel()
-		select {
-		case err := <-errCh:
-			require.NoError(t, err)
-		case <-testutil.DeadlineContext(t).Done():
-			t.Fatal("tailAgentMessagesWith did not exit on cancel")
-		}
+		require.NoError(t, receive(t, testutil.DeadlineContext(t), errCh))
 	})
 
 	t.Run("permanent open error on reconnect stops without arming a timer", func(t *testing.T) {
@@ -894,7 +892,7 @@ func TestTailAgentMessages_ReconnectOpenTransportFailureTransientAndPermanent(t 
 		newTimer := clock.Trap().NewTimer(agentMessagesReconnectTimerTag)
 		defer newTimer.Close()
 
-		first := &endingFollowTransport{opened: make(chan struct{}, 1)}
+		first := newFakeWatchTransport()
 		var opens atomic.Int32
 		openTransport := func(context.Context) (*workerWatchTransport, error) {
 			if opens.Add(1) == 1 {
@@ -902,61 +900,25 @@ func TestTailAgentMessages_ReconnectOpenTransportFailureTransientAndPermanent(t 
 			}
 			return nil, &channelwire.RPCError{Code: 7, Message: "permission revoked"}
 		}
-		drain := func(context.Context, int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
-			return nil, false, nil
-		}
 		var stdout, stderr bytes.Buffer
 		em := &lineEmitter{printer: &cli.Printer{Format: cli.FormatJSON, Out: &stdout, Err: &stderr}}
 
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, drain, em, clock)
+			errCh <- tailAgentMessagesWith(ctx, "a-1", 0, openTransport, noopDrain(), em, clock)
 		}()
 
-		select {
-		case <-first.opened:
-		case <-ctx.Done():
-			t.Fatal("first subscription did not open")
-		}
-		first.endWith(errors.New("channel closed"))
+		receive(t, ctx, first.opened)
+		first.endStreamWithErr(errors.New("channel closed"))
 
 		d1 := testutil.WaitForTimer(t, ctx, newTimer)
 		clock.Advance(d1).MustWait(ctx)
 
-		select {
-		case err := <-errCh:
-			require.Error(t, err)
-			assert.Equal(t, cli.CodePermissionDenied, cli.FromError(err).Code)
-		case <-ctx.Done():
-			t.Fatal("tailAgentMessagesWith did not stop on permanent open error")
-		}
+		err := receive(t, ctx, errCh)
+		require.Error(t, err)
+		assert.Equal(t, cli.CodePermissionDenied, cli.FromError(err).Code)
 		assert.Equal(t, int32(2), opens.Load())
 		_, running := clock.Peek()
 		assert.False(t, running)
 	})
-}
-
-func splitNonEmpty(s string) []string {
-	out := []string{}
-	for _, line := range bytesSplitLines([]byte(s)) {
-		if len(line) > 0 {
-			out = append(out, string(line))
-		}
-	}
-	return out
-}
-
-func bytesSplitLines(b []byte) [][]byte {
-	out := [][]byte{}
-	start := 0
-	for i, c := range b {
-		if c == '\n' {
-			out = append(out, b[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(b) {
-		out = append(out, b[start:])
-	}
-	return out
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -220,26 +219,33 @@ func formatSchemaValidationError(err error) string {
 	return strings.Join(lines, "; ")
 }
 
+// schemaRetryRequestID derives a request ID for corrective --output-schema
+// attempt (1-based) so `agent request-status <agent> <retry-request-id>` maps
+// to the exact input ID of that retry turn.
+func schemaRetryRequestID(requestID string, attempt int) string {
+	if requestID == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:schema-retry:%d", requestID, attempt)
+}
+
 // sendAndWaitWithSchema sends an augmented prompt, waits for the reply,
-// validates it against spec, and performs up to spec.maxRetries corrective
-// follow-up turns within the shared timeout budget.
-func sendAndWaitWithSchema(
-	inv *cli.Invocation,
-	s *session,
-	t tabTarget,
-	message userMessage,
-	requestID, inputID string,
-	delivery sendDeliveryMode,
-	all bool,
-	timeout time.Duration,
-	spec *outputSchemaSpec,
-) (agentReplyResult, replyWaitOutcome, retryStage, error) {
+// validates it against req.schema, and performs up to req.schema.maxRetries
+// corrective follow-up turns within the shared timeout budget.
+func sendAndWaitWithSchema(s *session, req sendAndWaitRequest) (agentReplyResult, replyWaitOutcome, retryStage, error) {
+	spec := req.schema
+	ws, err := openReplyWaitSession(s, req.target)
+	if err != nil {
+		return agentReplyResult{}, 0, retryStageBeforeSend, err
+	}
+	defer ws.Close()
+
 	var deadline time.Time
-	if timeout > 0 {
-		deadline = time.Now().Add(timeout)
+	if req.timeout > 0 {
+		deadline = time.Now().Add(req.timeout)
 	}
 	remainingTimeout := func() (time.Duration, bool) {
-		if timeout <= 0 {
+		if req.timeout <= 0 {
 			return 0, true
 		}
 		rem := time.Until(deadline)
@@ -249,11 +255,12 @@ func sendAndWaitWithSchema(
 		return rem, true
 	}
 
-	firstMsg := message
-	firstMsg.text = augmentPromptWithSchema(message.text, spec)
+	firstMsg := req.message
+	firstMsg.text = augmentPromptWithSchema(req.message.text, spec)
 	curMsg := firstMsg
-	curInputID := inputID
-	curDelivery := delivery
+	curRequestID := req.requestID
+	curInputID := req.inputID
+	curDelivery := req.delivery
 
 	var lastResult agentReplyResult
 	var lastValidationErr error
@@ -263,12 +270,20 @@ func sendAndWaitWithSchema(
 			lastResult.SchemaAttempts = attempt
 			return lastResult, replyWaitTimedOut, retryStageDuringWait, nil
 		}
-		res, outcome, stage, err := sendAndWaitWithDelivery(s, t, curMsg, curInputID, curDelivery, all, rem)
+		res, outcome, stage, err := ws.sendAndWaitOne(s, req.target, curMsg, curInputID, curDelivery, req.all, rem)
 		if err != nil {
+			// Once attempt 0 has already run, never report disposition not_sent.
+			if attempt > 0 && (stage == retryStageBeforeSend || classifyRetryDisposition(err, stage) == dispositionNotSent) {
+				stage = retryStageDuringWait
+			}
+			if attempt > 0 && curRequestID != "" {
+				err = cli.FromError(err).WithHint("check active schema retry status: %s", buildAgentRequestStatusCmd(req.target.ID, curRequestID))
+			}
 			return res, outcome, stage, err
 		}
 		lastResult = res
 		lastResult.SchemaAttempts = attempt + 1
+		lastResult.statusRequestID = curRequestID
 		if outcome != replyWaitSettled {
 			return lastResult, outcome, retryStageDuringWait, nil
 		}
@@ -285,15 +300,18 @@ func sendAndWaitWithSchema(
 		if attempt == spec.maxRetries {
 			break
 		}
-		inv.Printer.Notice("reply failed --output-schema validation (attempt %d/%d); requesting correction", attempt+1, spec.maxRetries+1)
+		if s.inv != nil && s.inv.Printer != nil {
+			s.inv.Printer.Notice("reply failed --output-schema validation (attempt %d/%d); requesting correction", attempt+1, spec.maxRetries+1)
+		}
 		curMsg = userMessage{text: schemaCorrectionPrompt(valErr, spec)}
-		curInputID = requestScopedID(requestID, requestScopeAgentSend, t.ID, "schema-retry", strconv.Itoa(attempt+1))
+		curRequestID = schemaRetryRequestID(req.requestID, attempt+1)
+		curInputID = requestScopedID(curRequestID, requestScopeAgentSend, req.target.ID)
 		curDelivery = sendDeliveryNormal
 	}
 	return lastResult, 0, retryStageDuringWait, cli.Newf(
 		cli.CodeConflict,
 		"agent %s did not return output matching --%s after %d attempt(s): %v",
-		cli.ShortID(t.ID), outputSchemaFlag, spec.maxRetries+1, lastValidationErr,
-	).WithHint("inspect the transcript with `leapmux agent messages %s` or increase --%s", cli.ShortID(t.ID), schemaRetriesFlag).
+		cli.ShortID(req.target.ID), outputSchemaFlag, spec.maxRetries+1, lastValidationErr,
+	).WithHint("inspect the transcript with `leapmux agent messages %s` or increase --%s", cli.ShortID(req.target.ID), schemaRetriesFlag).
 		WithExitCode(cli.ExitWaitEnded)
 }

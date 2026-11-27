@@ -1,9 +1,8 @@
 package cmd
 
 import (
+	"io"
 	"strings"
-
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -30,34 +29,52 @@ type controlAnswerResult struct {
 	State string `json:"state"`
 }
 
-// controlDecider builds the decision of one command for prompt.
-type controlDecider func(prompt *leapmuxv1.ControlPrompt) (*leapmuxv1.ControlDecision, error)
+// controlAnswerRequest configures one control-answer command invocation.
+type controlAnswerRequest struct {
+	// extraTexts, when non-nil, carries raw answer texts for `agent answer`
+	// (from positional [text]... and --text flags) and allows a second
+	// positional arg to shift into texts when the first arg resolved as a
+	// global request handle. Any "-" entry is read lazily from stdin once the
+	// target request is confirmed answerable.
+	extraTexts []string
+	// allowQuestionTextShift permits an unrecognized [request] arg to shift
+	// into texts when the agent has a single pending question and no explicit
+	// --option, --field, or --text flag was given.
+	allowQuestionTextShift bool
+	// stdin lazily reads "-" at most once when an answer text consumes stdin.
+	stdin *lazyStdin
+	// decide builds the neutral decision for prompt and the final answer texts.
+	decide func(prompt *leapmuxv1.ControlPrompt, texts []string) (*leapmuxv1.ControlDecision, error)
+}
+
+// lazyStdin reads standard input at most once when an answer text uses "-".
+type lazyStdin struct {
+	r    io.Reader
+	used bool
+}
+
+func (l *lazyStdin) read() (string, error) {
+	if l.used {
+		return "", cli.Usagef(`only one text can be "-"`)
+	}
+	data, err := readStdinGuarded(l.r)
+	if err != nil {
+		return "", err
+	}
+	l.used = true
+	return string(data), nil
+}
 
 // runControlAnswer answers the request that the arguments give with the
-// decision that decide builds. It reuses one Noise_NK channel across
-// ListControlRequests and AnswerControl.
+// decision that req.decide builds. It reuses one Noise_NK channel across
+// ListControlRequests and AnswerControl when resolving through an agent.
 //
 // When [request] is omitted:
 //   - If <agent> resolves to an agent with exactly one pending request, that
 //     request is selected automatically (2+ fails with ambiguous_target).
-//   - When allowGlobalHandle is true and <agent> does not resolve to an agent,
-//     it searches pending requests across all agents for a globally unique
-//     handle or prefix.
-func runControlAnswer(inv *cli.Invocation, allowGlobalHandle bool, decide controlDecider) (any, error) {
-	return runControlAnswerWithTextFallback(inv, allowGlobalHandle, nil, false, false, nil, func(prompt *leapmuxv1.ControlPrompt, _ []string) (*leapmuxv1.ControlDecision, error) {
-		return decide(prompt)
-	})
-}
-
-func runControlAnswerWithTextFallback(
-	inv *cli.Invocation,
-	allowGlobalHandle bool,
-	extraTexts []string,
-	stdinAlreadyUsed bool,
-	allowQuestionTextShift bool,
-	preDrainedRequestText *string,
-	decide func(prompt *leapmuxv1.ControlPrompt, texts []string) (*leapmuxv1.ControlDecision, error),
-) (any, error) {
+//   - If <agent> does not resolve to an agent, it searches pending requests
+//     across all agents for a globally unique handle or prefix.
+func runControlAnswer(inv *cli.Invocation, req controlAnswerRequest) (any, error) {
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
@@ -69,14 +86,15 @@ func runControlAnswerWithTextFallback(
 	if hasRequestArg {
 		requestArg = inv.Arg("request")
 	}
-	texts := append([]string(nil), extraTexts...)
-	allowRequestAsText := extraTexts != nil
+	texts := append([]string(nil), req.extraTexts...)
+	allowRequestAsText := req.extraTexts != nil
+	var preMatchedRequest *leapmuxv1.AgentControlRequest
 	got, err := s.resolveTab(resolve.KindAgent, agentArg, resolve.Need{WorkerID: true})
 	if err != nil {
-		if allowGlobalHandle && (!hasRequestArg || allowRequestAsText) {
+		if !hasRequestArg || allowRequestAsText {
 			code := cli.FromError(err).Code
 			if code == cli.CodeNotFound || code == cli.CodeUsage {
-				matchedTarget, matchedHandle, gerr := s.resolveGlobalRequestHandle(agentArg)
+				matchedTarget, matchedReq, gerr := s.resolveGlobalRequestHandle(agentArg)
 				if gerr != nil {
 					if cli.FromError(gerr).Code == cli.CodeNotFound {
 						return nil, err
@@ -84,17 +102,12 @@ func runControlAnswerWithTextFallback(
 					return nil, gerr
 				}
 				got = matchedTarget
+				preMatchedRequest = matchedReq
 				if hasRequestArg && allowRequestAsText {
 					// When the first arg was a global request handle on `agent answer`,
 					// the second positional arg is the first answer text.
-					shifted, serr := resolveShiftedAnswerText(requestArg, preDrainedRequestText, stdinAlreadyUsed)
-					if serr != nil {
-						return nil, serr
-					}
-					texts = append([]string{shifted}, texts...)
+					texts = append([]string{requestArg}, texts...)
 				}
-				requestArg = matchedHandle
-				hasRequestArg = true
 				err = nil
 			}
 		}
@@ -104,6 +117,29 @@ func runControlAnswerWithTextFallback(
 	}
 	if err := refuseSelfAnswer(got); err != nil {
 		return nil, err
+	}
+	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
+		return nil, err
+	}
+	if preMatchedRequest != nil {
+		if err := requireAnswerable(got.ID, preMatchedRequest); err != nil {
+			return nil, err
+		}
+		resolvedTexts, err := readAnswerTexts(texts, req.stdin)
+		if err != nil {
+			return nil, err
+		}
+		decision, err := req.decide(preMatchedRequest.GetPrompt(), resolvedTexts)
+		if err != nil {
+			return nil, err
+		}
+		var answered leapmuxv1.AnswerControlResponse
+		if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure, &leapmuxv1.AnswerControlRequest{
+			AgentId: got.ID, RequestId: preMatchedRequest.GetRequestId(), ClaimToken: preMatchedRequest.GetClaimToken(), Decision: decision,
+		}, &answered); err != nil {
+			return nil, err
+		}
+		return controlAnswerResultOf(got.ID, preMatchedRequest.GetClaimToken(), &answered)
 	}
 	var result controlAnswerResult
 	err = withWorkerChannel(s.ctx, s.c, got.WorkerID, func(w workerCall) error {
@@ -116,16 +152,12 @@ func runControlAnswerWithTextFallback(
 			request, err = findSoleControlRequest(got.ID, listed.GetRequests())
 		} else {
 			request, err = findControlRequest(got.ID, listed.GetRequests(), requestArg)
-			if err != nil && allowQuestionTextShift && cli.FromError(err).Code == cli.CodeNotFound && len(listed.GetRequests()) == 1 &&
+			if err != nil && req.allowQuestionTextShift && cli.FromError(err).Code == cli.CodeNotFound && len(listed.GetRequests()) == 1 &&
 				listed.GetRequests()[0].GetPrompt().GetQuestion() != nil {
 				// Treat an unrecognized [request] arg on `agent answer` as the first
 				// positional <text> when the agent has a single pending question and
-				// no explicit --option/--field flags were given.
-				shifted, serr := resolveShiftedAnswerText(requestArg, preDrainedRequestText, stdinAlreadyUsed)
-				if serr != nil {
-					return serr
-				}
-				texts = append([]string{shifted}, texts...)
+				// no explicit --option, --field, or --text flag was given.
+				texts = append([]string{requestArg}, texts...)
 				request = listed.GetRequests()[0]
 				err = nil
 			}
@@ -136,7 +168,11 @@ func runControlAnswerWithTextFallback(
 		if err := requireAnswerable(got.ID, request); err != nil {
 			return err
 		}
-		decision, err := decide(request.GetPrompt(), texts)
+		resolvedTexts, err := readAnswerTexts(texts, req.stdin)
+		if err != nil {
+			return err
+		}
+		decision, err := req.decide(request.GetPrompt(), resolvedTexts)
 		if err != nil {
 			return err
 		}
@@ -156,17 +192,11 @@ func runControlAnswerWithTextFallback(
 	return result, nil
 }
 
-func resolveShiftedAnswerText(raw string, preDrained *string, stdinAlreadyUsed bool) (string, error) {
-	if raw != "-" {
+func resolveAnswerText(raw string, stdin *lazyStdin) (string, error) {
+	if raw != "-" || stdin == nil {
 		return raw, nil
 	}
-	if stdinAlreadyUsed {
-		return "", cli.Usagef(`only one text can be "-"`)
-	}
-	if preDrained != nil {
-		return *preDrained, nil
-	}
-	return raw, nil
+	return stdin.read()
 }
 
 // findSoleControlRequest picks the only pending request of agentID when the
@@ -188,76 +218,119 @@ func findSoleControlRequest(agentID string, requests []*leapmuxv1.AgentControlRe
 }
 
 // resolveGlobalRequestHandle scans all agents (scoped by --workspace if set)
-// for a single request whose claim token matches handle or starts with it.
-func (s *session) resolveGlobalRequestHandle(handle string) (tabTarget, string, error) {
-	handle = strings.TrimSpace(handle)
-	if handle == "" {
-		return tabTarget{}, "", cli.Newf(cli.CodeNotFound, "empty request handle")
+// for a single request whose claim token matches handle or starts with it,
+// returning the owning tabTarget and matched request proto directly.
+func (s *session) resolveGlobalRequestHandle(handle string) (tabTarget, *leapmuxv1.AgentControlRequest, error) {
+	if strings.TrimSpace(handle) == "" {
+		return tabTarget{}, nil, cli.Newf(cli.CodeNotFound, "empty request handle")
 	}
-	tabs, err := s.listWorkspaceTabs(leapmuxv1.TabType_TAB_TYPE_AGENT)
+	handle, err := normalizeIDHandle(handle, "request handle")
 	if err != nil {
-		return tabTarget{}, "", err
+		return tabTarget{}, nil, err
 	}
-	var targets []tabTarget
-	workerOf := map[string]string{}
-	for _, t := range tabs {
-		if t.GetWorkerId() != "" {
-			id := t.GetTab().GetTabId()
-			workerOf[id] = t.GetWorkerId()
-			targets = append(targets, tabTarget{ID: id, Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: t.GetWorkerId()})
-		}
+	targets, err := s.listWorkspaceAgentTargets()
+	if err != nil {
+		return tabTarget{}, nil, err
 	}
 	if len(targets) == 0 {
-		return tabTarget{}, "", cli.Newf(cli.CodeNotFound, "no pending request matches %q", handle)
+		return tabTarget{}, nil, cli.Newf(cli.CodeNotFound, "no pending request matches %q", handle)
 	}
-	groups, agentIDs := groupAgentsByWorker(targets)
-	listed := listControlRequests(s.ctx, func(workerID string, body func(call workerCaller) error) error {
-		return withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
-			return body(func(method string, in, out proto.Message) error { return w.Call(s.ctx, method, in, out) })
-		})
-	}, groups)
-	type match struct {
-		agentID string
-		row     controlRequestRow
+	listed, agentIDs := s.listAgentControlRequestProtos(targets)
+	return matchGlobalRequestHandle(handle, targets, agentIDs, listed)
+}
+
+type globalRequestMatch struct {
+	agentID string
+	req     *leapmuxv1.AgentControlRequest
+}
+
+// matchGlobalRequestHandle selects the globally unique request matching handle
+// from raw per-agent request listings. Exact full-ID matches succeed even when
+// another worker failed to answer, while short prefix matches require every
+// worker to answer so global uniqueness is guaranteed.
+func matchGlobalRequestHandle(
+	handle string,
+	targets []tabTarget,
+	agentIDs []string,
+	listed map[string]listedRequestProtos,
+) (tabTarget, *leapmuxv1.AgentControlRequest, error) {
+	workerOf := make(map[string]string, len(targets))
+	for _, t := range targets {
+		workerOf[t.ID] = t.WorkerID
 	}
-	var exact []match
-	var prefix []match
+	var exact []globalRequestMatch
+	var prefix []globalRequestMatch
+	var failedWorkers []string
+	failedWorkerSeen := map[string]bool{}
+	var firstErr error
 	allowPrefix := len(handle) >= minHandlePrefixLength
 	for _, agentID := range agentIDs {
 		got := listed[agentID]
 		if got.err != nil {
+			if firstErr == nil {
+				firstErr = got.err
+			}
+			wk := workerOf[agentID]
+			if wk != "" && !failedWorkerSeen[wk] {
+				failedWorkerSeen[wk] = true
+				failedWorkers = append(failedWorkers, cli.ShortID(wk))
+			}
 			continue
 		}
-		for _, r := range got.rows {
-			if r.ID == handle {
-				exact = append(exact, match{agentID: agentID, row: r})
-			} else if allowPrefix && strings.HasPrefix(r.ID, handle) {
-				prefix = append(prefix, match{agentID: agentID, row: r})
+		for _, r := range got.requests {
+			token := r.GetClaimToken()
+			if token == handle {
+				exact = append(exact, globalRequestMatch{agentID: agentID, req: r})
+			} else if allowPrefix && strings.HasPrefix(token, handle) {
+				prefix = append(prefix, globalRequestMatch{agentID: agentID, req: r})
 			}
 		}
 	}
-	matches := prefix
-	if len(exact) > 0 {
-		matches = exact
+	if len(exact) == 1 {
+		m := exact[0]
+		return tabTarget{ID: m.agentID, Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: workerOf[m.agentID]}, m.req, nil
 	}
-	switch len(matches) {
+	if len(exact) > 1 {
+		return tabTarget{}, nil, ambiguousGlobalRequestError(handle, exact)
+	}
+	switch len(prefix) {
 	case 0:
-		return tabTarget{}, "", cli.Newf(cli.CodeNotFound, "no pending request matches %q", handle)
-	case 1:
-		m := matches[0]
-		return tabTarget{ID: m.agentID, Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: workerOf[m.agentID]}, m.row.ID, nil
-	default:
-		e := cli.Newf(cli.CodeAmbiguousTarget, "%q matches %d pending requests across agents", handle, len(matches)).
-			WithHint(`specify both <agent> and <request>, or list requests with "leapmux agent requests"`)
-		for _, m := range matches {
-			e.Candidates = append(e.Candidates, cli.Candidate{
-				ID:    m.row.ID,
-				Kind:  m.row.Kind,
-				Title: "agent " + cli.ShortID(m.agentID),
-			})
+		if firstErr != nil {
+			return tabTarget{}, nil, firstErr
 		}
-		return tabTarget{}, "", e
+		return tabTarget{}, nil, cli.Newf(cli.CodeNotFound, "no pending request matches %q", handle)
+	case 1:
+		if firstErr != nil {
+			detail := cli.FromError(firstErr).Message
+			if len(failedWorkers) > 0 {
+				return tabTarget{}, nil, cli.Newf(cli.CodeUnavailable,
+					"cannot confirm that prefix %q is globally unique because worker %s could not be queried: %s",
+					handle, strings.Join(failedWorkers, ", "), detail).
+					WithHint(`specify both <agent> and <request>, or pass the full request handle`)
+			}
+			return tabTarget{}, nil, cli.Newf(cli.CodeUnavailable,
+				"cannot confirm that prefix %q is globally unique because another agent could not be queried: %s",
+				handle, detail).
+				WithHint(`specify both <agent> and <request>, or pass the full request handle`)
+		}
+		m := prefix[0]
+		return tabTarget{ID: m.agentID, Type: leapmuxv1.TabType_TAB_TYPE_AGENT, WorkerID: workerOf[m.agentID]}, m.req, nil
+	default:
+		return tabTarget{}, nil, ambiguousGlobalRequestError(handle, prefix)
 	}
+}
+
+func ambiguousGlobalRequestError(handle string, matches []globalRequestMatch) error {
+	e := cli.Newf(cli.CodeAmbiguousTarget, "%q matches %d pending requests across agents", handle, len(matches)).
+		WithHint(`specify both <agent> and <request>, or list requests with "leapmux agent requests"`)
+	for _, m := range matches {
+		e.Candidates = append(e.Candidates, cli.Candidate{
+			ID:    m.req.GetClaimToken(),
+			Kind:  controlPromptKind(m.req.GetPrompt()),
+			Title: "agent " + cli.ShortID(m.agentID),
+		})
+	}
+	return e
 }
 
 // refuseSelfAnswer refuses an answer to a request of the calling agent. The
@@ -274,15 +347,9 @@ func refuseSelfAnswer(t tabTarget) error {
 // findControlRequest returns the request of agentID whose handle is handle,
 // or the one request whose handle starts with it.
 func findControlRequest(agentID string, requests []*leapmuxv1.AgentControlRequest, handle string) (*leapmuxv1.AgentControlRequest, error) {
-	handle = strings.TrimSpace(handle)
-	if rest, ok := strings.CutPrefix(handle, "id:"); ok {
-		handle = strings.TrimSpace(rest)
-		if handle == "" {
-			return nil, cli.Usagef(`"id:" needs a request handle after the colon`)
-		}
-	}
-	if handle == "" {
-		return nil, cli.Usagef("the request handle is empty")
+	handle, err := normalizeIDHandle(handle, "request handle")
+	if err != nil {
+		return nil, err
 	}
 	request, matches, found := lookupByIDPrefix(requests, handle, (*leapmuxv1.AgentControlRequest).GetClaimToken)
 	if found {
@@ -323,93 +390,122 @@ func requireAnswerable(agentID string, r *leapmuxv1.AgentControlRequest) error {
 //     text: the agent replaced or withdrew the request, or another client
 //     answered it, and the Worker holds no answer of this client. A replaced
 //     request waits under a new handle, so the hint lists the requests again.
-//   - A failure that left the answer unsent can succeed on a retry.
-//   - A failure after the Worker saved the answer cannot, because the Worker
-//     never sends a second answer.
+//   - A failure that left the request ready (unsent) can succeed on a retry.
+//   - Only COMPLETED, DELIVERED, and PENDING with no error text confirm that
+//     the Worker accepted the answer; UNCERTAIN, UNSPECIFIED, or any response
+//     with error text fails without marking the answer retryable because the
+//     Worker never sends a second answer.
 func controlAnswerResultOf(agentID, handle string, r *leapmuxv1.AnswerControlResponse) (controlAnswerResult, error) {
-	result := controlAnswerResult{ID: handle, AgentID: agentID, State: controlResponseStateToken(r.GetState())}
-	switch {
-	case r.GetState() == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED:
+	state := r.GetState()
+	errText := r.GetError()
+	result := controlAnswerResult{ID: handle, AgentID: agentID, State: controlResponseStateToken(state)}
+	if state == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED {
 		return result, cli.Newf(cli.CodeConflict, "request %s is no longer pending: the agent replaced or withdrew it, or another client answered it", handle).
 			WithHint("list its requests again with \"leapmux agent requests %s\": a request that the agent replaced has a new handle", agentID)
-	case r.GetError() != "" && r.GetState() == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY:
-		return result, cli.Newf(cli.CodeUnavailable, "the answer to request %s was not sent: %s", handle, r.GetError())
-	case r.GetError() != "":
-		return result, cli.Newf(cli.CodeInternal, "the Worker holds the answer to request %s, but its delivery did not finish (%s): %s", handle, result.State, r.GetError()).
+	}
+	if state == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY {
+		if errText != "" {
+			return result, cli.Newf(cli.CodeUnavailable, "the answer to request %s was not sent: %s", handle, errText)
+		}
+		return result, cli.Newf(cli.CodeUnavailable, "the answer to request %s was not sent (request is still ready)", handle)
+	}
+	if errText != "" {
+		return result, cli.Newf(cli.CodeInternal, "the Worker holds the answer to request %s, but its delivery did not finish (%s): %s", handle, result.State, errText).
 			WithHint("check it with \"leapmux agent requests %s\"", agentID)
 	}
-	return result, nil
+	switch state {
+	case leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED,
+		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED,
+		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING:
+		return result, nil
+	case leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN:
+		return result, cli.Newf(cli.CodeInternal, "the Worker holds the answer to request %s, but its delivery is uncertain", handle).
+			WithHint("check it with \"leapmux agent requests %s\"", agentID)
+	default:
+		return result, cli.Newf(cli.CodeInternal, "the Worker returned an unconfirmed state (%s) for request %s", result.State, handle).
+			WithHint("check it with \"leapmux agent requests %s\"", agentID)
+	}
 }
 
 // requestArgHelp describes the <request> argument.
 const requestArgHelp = `The request's handle, as "agent requests" prints it, or a unique prefix of it.`
 
-// answerTexts reads the positional texts of `agent answer` into a fresh slice
-// without mutating inv.Args. A text "-" reads standard input once, before any
-// Hub or Worker connection is opened.
-func answerTexts(inv *cli.Invocation) (texts []string, stdinRead bool, preDrainedRequest *string, err error) {
-	rawTexts := inv.Variadic("text")
-	texts = make([]string, len(rawTexts))
-	copy(texts, rawTexts)
-	for i, text := range texts {
-		if text != "-" {
-			continue
+// checkAtMostOneStdinText refuses command lines that pass "-" more than once.
+func checkAtMostOneStdinText(rawTexts []string) error {
+	dashes := 0
+	for _, text := range rawTexts {
+		if text == "-" {
+			dashes++
 		}
-		if stdinRead {
-			return nil, false, nil, cli.Usagef(`only one text can be "-"`)
-		}
-		data, err := readStdinGuarded(inv.Stdin)
-		if err != nil {
-			return nil, false, nil, err
-		}
-		texts[i] = string(data)
-		stdinRead = true
 	}
-	if inv.HasArg("request") && inv.Arg("request") == "-" {
-		if stdinRead {
-			return nil, false, nil, cli.Usagef(`only one text can be "-"`)
-		}
-		data, err := readStdinGuarded(inv.Stdin)
-		if err != nil {
-			return nil, false, nil, err
-		}
-		val := string(data)
-		preDrainedRequest = &val
+	if dashes > 1 {
+		return cli.Usagef(`only one text can be "-"`)
 	}
-	return texts, stdinRead, preDrainedRequest, nil
+	return nil
+}
+
+// readAnswerTexts resolves answer texts into a fresh slice without mutating
+// the caller's slice. A text "-" reads stdin lazily at most once via stdin.
+func readAnswerTexts(rawTexts []string, stdin *lazyStdin) ([]string, error) {
+	if len(rawTexts) == 0 {
+		return nil, nil
+	}
+	if err := checkAtMostOneStdinText(rawTexts); err != nil {
+		return nil, err
+	}
+	texts := make([]string, len(rawTexts))
+	for i, text := range rawTexts {
+		resolved, err := resolveAnswerText(text, stdin)
+		if err != nil {
+			return nil, err
+		}
+		texts[i] = resolved
+	}
+	return texts, nil
 }
 
 func runAgentApprove(inv *cli.Invocation) (any, error) {
 	settings := planSettingsOf(inv)
-	return runControlAnswer(inv, true, func(prompt *leapmuxv1.ControlPrompt) (*leapmuxv1.ControlDecision, error) {
-		return approveDecision(prompt, settings)
+	return runControlAnswer(inv, controlAnswerRequest{
+		decide: func(prompt *leapmuxv1.ControlPrompt, _ []string) (*leapmuxv1.ControlDecision, error) {
+			return approveDecision(prompt, settings)
+		},
 	})
 }
 
 func runAgentDeny(inv *cli.Invocation) (any, error) {
 	message := stringFlag(inv, "message")
-	return runControlAnswer(inv, true, func(prompt *leapmuxv1.ControlPrompt) (*leapmuxv1.ControlDecision, error) {
-		return denyDecision(prompt, message)
+	return runControlAnswer(inv, controlAnswerRequest{
+		decide: func(prompt *leapmuxv1.ControlPrompt, _ []string) (*leapmuxv1.ControlDecision, error) {
+			return denyDecision(prompt, message)
+		},
 	})
 }
 
 func runAgentAnswer(inv *cli.Invocation) (any, error) {
-	texts, stdinUsed, preDrainedRequest, err := answerTexts(inv)
-	if err != nil {
+	posTexts := inv.Variadic("text")
+	flagTexts := inv.StringArray("text")
+	rawTexts := make([]string, 0, len(posTexts)+len(flagTexts))
+	rawTexts = append(rawTexts, posTexts...)
+	rawTexts = append(rawTexts, flagTexts...)
+	if err := checkAtMostOneStdinText(rawTexts); err != nil {
 		return nil, err
 	}
-	if texts == nil {
-		texts = []string{}
-	}
+	stdin := &lazyStdin{r: inv.Stdin}
 	options := inv.StringArray("option")
 	fields := inv.StringArray("field")
-	allowQuestionTextShift := len(options) == 0 && len(fields) == 0
+	allowQuestionTextShift := len(options) == 0 && len(fields) == 0 && len(flagTexts) == 0
 	// answerDecision refuses a command line that gives no answer, except for
 	// questions that allow an empty one, which only the prompt can tell.
 	base := answerSpec{options: options, fields: fields, message: stringFlag(inv, "message"), settings: planSettingsOf(inv)}
-	return runControlAnswerWithTextFallback(inv, true, texts, stdinUsed, allowQuestionTextShift, preDrainedRequest, func(prompt *leapmuxv1.ControlPrompt, finalTexts []string) (*leapmuxv1.ControlDecision, error) {
-		spec := base
-		spec.texts = finalTexts
-		return answerDecision(prompt, spec)
+	return runControlAnswer(inv, controlAnswerRequest{
+		extraTexts:             rawTexts,
+		allowQuestionTextShift: allowQuestionTextShift,
+		stdin:                  stdin,
+		decide: func(prompt *leapmuxv1.ControlPrompt, finalTexts []string) (*leapmuxv1.ControlDecision, error) {
+			spec := base
+			spec.texts = finalTexts
+			return answerDecision(prompt, spec)
+		},
 	})
 }

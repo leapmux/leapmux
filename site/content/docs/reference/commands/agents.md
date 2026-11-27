@@ -357,11 +357,11 @@ leapmux agent deny 87a19d5f 3kQ9xZ1b --message "Run the unit tests only"
 
 Answer a pending request with any answer that it offers. "agent requests" numbers the options of each request. When [request] is omitted and the agent has exactly one pending request, it answers that request automatically.
 
-- A question: --option chooses an option, and a text argument is a typed answer. A multiple-choice question takes both: the answer then holds the chosen options and the text. With several questions, write each value as "&lt;question&gt;:&lt;value&gt;", such as --option 2:1 or "1:Use the cache". A question that no --option answers keeps the options that the agent selected for it, which "agent requests" shows as its default. With no value at all, the command sends those defaults, which must answer every question that needs an answer.
+- A question: --option chooses an option, and --text (or a text argument) gives a typed answer. Use --text when omitting [request] so the typed text is never parsed as a request handle. A multiple-choice question takes both: the answer then holds the chosen options and the text. With several questions, write each value as "&lt;question&gt;:&lt;value&gt;", such as --option 2:1 or --text "1:Use the cache". A question that no --option answers keeps the options that the agent selected for it, which "agent requests" shows as its default. With no value at all, the command sends those defaults, which must answer every question that needs an answer.
 - A permission prompt: --option chooses any option, such as an approval for the session. --message gives the reason of a refusing option.
 - A plan: --option chooses one of its choices. --message gives what to change, and --permission-mode and --clear-context apply to an approval.
 - An MCP elicitation: --field fills the form, once for each field, or once for each value of a list field. A field that "agent requests" lists with a condition takes a value only when the condition holds, and a field that it does not list keeps its default. --option chooses an accept choice.
-- An input or editor dialog: the text.
+- An input or editor dialog: --text or a text argument.
 
 An agent cannot answer its own requests.
 
@@ -380,6 +380,7 @@ leapmux agent answer <agent> [request] [text]... [flags]
 | Flag | Description |
 |---|---|
 | `--option string` | an option by its number, or "&lt;question&gt;:&lt;number&gt;" with several questions; repeat it for more than one (repeatable) |
+| `--text string` | a typed answer (or "-" to read stdin); repeat for more than one (repeatable) |
 | `--field string` | a form field as &lt;name&gt;=&lt;value&gt;; repeat it for more than one (repeatable) |
 | `--message string` | the reason of a refusing option or choice, which the agent reads |
 | `--permission-mode string` | with a plan's approval, the permission mode to implement it in (default: the agent's own) |
@@ -389,6 +390,12 @@ leapmux agent answer <agent> [request] [text]... [flags]
 ```sh
 # Choose the second option of a question.
 leapmux agent answer 87a19d5f 3kQ9 --option 2
+
+# Choose an option and add typed text without specifying the sole request handle.
+leapmux agent answer 87a19d5f --option 1 --text "Also check metrics"
+
+# Answer an agent's sole pending question or input dialog with typed text.
+leapmux agent answer 87a19d5f --text "v2.4.0"
 
 # Choose two options of a multiple-choice question, and type one more answer.
 leapmux agent answer 87a19d5f 3kQ9 --option 1 --option 3 "Metrics"
@@ -1254,7 +1261,7 @@ leapmux agent span 87a19d5f toolu_01AbCd
 
 ### `leapmux agent marks`
 
-List transcript jump marks (user prompts, plans, errors) and sequence bounds (default: this agent).
+List transcript jump marks (user prompts, plans, errors) and sequence limits (default: this agent).
 
 ```text
 leapmux agent marks [agent] [flags]

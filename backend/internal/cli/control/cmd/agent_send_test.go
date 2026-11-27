@@ -36,10 +36,10 @@ func TestParseSendAt(t *testing.T) {
 		"2026-11-19T07:00:00Z":          {now, false},
 		"2025-11-19T09:00:00Z":          {time.Date(2025, 11, 19, 9, 0, 0, 0, time.UTC), false},
 	} {
-		at, relative, err := parseSendAt(raw, now)
+		sched, err := parseSendAt(raw, now)
 		require.NoError(t, err, raw)
-		assert.True(t, want.at.Equal(at), "%q: want %v, got %v", raw, want.at, at)
-		assert.Equal(t, want.relative, relative, raw)
+		assert.True(t, want.at.Equal(sched.At), "%q: want %v, got %v", raw, want.at, sched.At)
+		assert.Equal(t, want.relative, sched.Relative, raw)
 	}
 
 	for raw, message := range map[string]string{
@@ -50,11 +50,13 @@ func TestParseSendAt(t *testing.T) {
 		"2026-11-20 09:00:00+09:00": "neither an RFC 3339 time",
 		"tomorrow":                  "neither an RFC 3339 time",
 		"+":                         "is not a duration",
+		"++10m":                     "is not a duration",
+		"+++10m":                    "is not a duration",
 		"+ten minutes":              "is not a duration",
 		"+0s":                       "is not after now",
 		"+-5m":                      "is not after now",
 	} {
-		_, _, err := parseSendAt(raw, now)
+		_, err := parseSendAt(raw, now)
 		e := cli.FromError(err)
 		require.NotNil(t, e, raw)
 		assert.Equal(t, cli.CodeUsage, e.Code, raw)
@@ -160,6 +162,24 @@ func TestAgentSendOverIPC_SendsTheAttachmentsAndTheSchedule(t *testing.T) {
 		ScheduledAt:           "2099-01-02T03:04:05.678Z",
 		RequireFutureSchedule: true,
 	})
+}
+
+func TestAgentSendOverIPC_RelativeScheduleOmitsAutoRequestID(t *testing.T) {
+	id := fullTestID("ag-rel")
+	w := newQueueWorker()
+	startAgentWorker(t, id, w)
+
+	data := sendTo(t, id, "Check later", "--at", "+10m").Data(t)
+	assert.Equal(t, id, data["id"])
+	assert.NotEmpty(t, data["input_id"])
+	assert.NotEmpty(t, data["scheduled_at"])
+	_, hasRequestID := data["request_id"]
+	assert.False(t, hasRequestID, "relative --at cannot be idempotently retried with an auto-generated request_id")
+	got := w.recorded()
+	require.Len(t, got, 1)
+	req := got[0].(*leapmuxv1.EnqueueAgentInputRequest)
+	assert.True(t, req.GetRequireFutureSchedule())
+	assert.NotEmpty(t, req.GetScheduledAt())
 }
 
 func TestAgentSendOverIPC_SendsAttachmentsWithoutText(t *testing.T) {
@@ -365,6 +385,7 @@ func TestAgentSend_RefusesAMessageThatTheCLICanJudge(t *testing.T) {
 		"too many files":                          {append([]string{"hi"}, tooMany...), "at most 100 attachments"},
 		"a text over the limit":                   {[]string{strings.Repeat("x", contracts.MaxAgentInputItemBytes+1)}, "one message holds at most"},
 		"a time in the past":                      {[]string{"hi", "--at", "2001-01-01T00:00:00Z"}, "is not after now"},
+		"a double-plus duration":                  {[]string{"hi", "--at", "++10m"}, "is not a duration"},
 		"a time without an offset":                {[]string{"hi", "--at", "2099-01-01T00:00:00"}, "neither an RFC 3339 time"},
 		"a relative time with a request id":       {[]string{"hi", "--at", "+10m", "--request-id", "r1"}, "--request-id needs --at as an RFC 3339 time"},
 		"an empty request id with a scheduled at": {[]string{"hi", "--at", "2099-01-01T00:00:00Z", "--request-id", ""}, "--request-id is empty"},

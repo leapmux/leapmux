@@ -39,7 +39,7 @@ func TestAgentContextCommandsOverIPC_Refusals(t *testing.T) {
 
 	for _, verb := range []string{"clear", "compact"} {
 		f := runControl(t, "agent", verb).requireFailure(t, cli.CodeUsage)
-		assert.Contains(t, f.Message, "missing argument <agent>", "a context command names its agent")
+		assert.Contains(t, f.Message, "missing argument <agent>", "a context command specifies its agent")
 	}
 	assert.Empty(t, w.recorded())
 

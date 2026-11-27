@@ -100,7 +100,7 @@ func TestAgentAnswerOverIPC_OmittedRequestAndGlobalHandleWithText(t *testing.T) 
 
 	t.Run("omitted request treats positional text as answer", func(t *testing.T) {
 		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{agentID: {req}}}
-		startControlWorker(t, w, agentID)
+		startAgentWorker(t, agentID, w)
 
 		data := runControl(t, "agent", "answer", agentID, "Use Redis").Data(t)
 		assert.Equal(t, "claim-unique-1", data["id"])
@@ -113,7 +113,7 @@ func TestAgentAnswerOverIPC_OmittedRequestAndGlobalHandleWithText(t *testing.T) 
 
 	t.Run("global request handle shifts second positional as answer text", func(t *testing.T) {
 		w := &controlWorker{requests: map[string][]*leapmuxv1.AgentControlRequest{agentID: {req}}}
-		startControlWorker(t, w, agentID)
+		startAgentWorker(t, agentID, w)
 
 		data := runControl(t, "agent", "answer", "claim-unique-1", "Use Memcached").Data(t)
 		assert.Equal(t, "claim-unique-1", data["id"])
