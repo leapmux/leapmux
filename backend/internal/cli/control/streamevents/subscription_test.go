@@ -2486,3 +2486,78 @@ func TestSubscription_DispatchUpdateAckSingleLockStaleTerminalAndConcurrentRejec
 	assert.Equal(t, int32(1+workers), termRejectLogs.Load())
 	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 }
+
+func TestClipTerminalOutput_PreservesReplayCompleteOnPartialOverlap(t *testing.T) {
+	t.Parallel()
+
+	t.Run("partial overlap preserves ReplayComplete and geometry metadata", func(t *testing.T) {
+		t.Parallel()
+		event := &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:             []byte("abcdef"),
+				EndOffset:        16, // range [10..16)
+				ReplayComplete:   true,
+				ScreenEpoch:      "epoch-1",
+				GeometryRevision: 3,
+			}},
+		}
+
+		clipped := ClipTerminalOutput(event, 12)
+		require.NotNil(t, clipped)
+		data := clipped.GetData()
+		require.NotNil(t, data)
+		assert.Equal(t, "t-1", clipped.GetTerminalId())
+		assert.Equal(t, []byte("cdef"), data.GetData())
+		assert.Equal(t, int64(16), data.GetEndOffset())
+		assert.True(t, data.GetReplayComplete())
+		assert.False(t, data.GetIsSnapshot())
+		assert.Equal(t, "epoch-1", data.GetScreenEpoch())
+		assert.Equal(t, uint64(3), data.GetGeometryRevision())
+	})
+
+	t.Run("partial overlap keeps ReplayComplete false when unset", func(t *testing.T) {
+		t.Parallel()
+		event := &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:      []byte("abcdef"),
+				EndOffset: 16,
+			}},
+		}
+
+		clipped := ClipTerminalOutput(event, 13)
+		require.NotNil(t, clipped)
+		assert.Equal(t, []byte("def"), clipped.GetData().GetData())
+		assert.False(t, clipped.GetData().GetReplayComplete())
+	})
+
+	t.Run("fully covered delta returns nil", func(t *testing.T) {
+		t.Parallel()
+		event := &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:           []byte("abc"),
+				EndOffset:      13,
+				ReplayComplete: true,
+			}},
+		}
+		assert.Nil(t, ClipTerminalOutput(event, 13))
+		assert.Nil(t, ClipTerminalOutput(event, 20))
+	})
+
+	t.Run("snapshot passes through unchanged even when offset exceeds end", func(t *testing.T) {
+		t.Parallel()
+		event := &leapmuxv1.TerminalEvent{
+			TerminalId: "t-1",
+			Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
+				Data:           []byte("snap"),
+				EndOffset:      4,
+				IsSnapshot:     true,
+				ReplayComplete: true,
+			}},
+		}
+		got := ClipTerminalOutput(event, 100)
+		assert.Same(t, event, got)
+	})
+}

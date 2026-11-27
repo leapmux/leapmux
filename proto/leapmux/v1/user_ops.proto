@@ -240,10 +240,8 @@ message WatchUserRequest {
   //
   // Ids the caller cannot read are DROPPED SILENTLY, not rejected: the filter
   // is resolved through the per-user ACL, which keeps the readable subset and
-  // skips the rest. A request naming only unreadable ids therefore yields a
-  // successful subscription with an empty filter, never an error. The one
-  // up-front rejection is a delegation bearer naming a workspace outside its
-  // pinned scope.
+  // skips the rest. A request listing only unreadable ids therefore yields a
+  // successful subscription with an empty filter, never an error.
   repeated string workspace_ids = 1;
   repeated UserEventTopic topics = 2;
   bytes layout_after_cursor = 3;
@@ -267,7 +265,7 @@ message GetMaterializedResponse {
 
 message WatchUserEvent {
   oneof event {
-    UserMaterialized     initial             = 1;  // ALWAYS first
+    UserMaterialized     initial             = 1;  // first frame on a CRDT full bootstrap
     OpBatch              batch               = 2;  // canonical-HLC-tagged; whole batch as one event
     EntityMaterialized   entity_materialized = 3;  // visibility entry
     EntityRemoved        entity_removed      = 4;  // visibility exit
@@ -277,7 +275,7 @@ message WatchUserEvent {
     WorkspaceDeleted     deleted             = 8;
     // Sent instead of `initial` when a reconnect's resume cursor is still
     // within the hub's op-retention window (see ResumeDelta). Either
-    // `initial` or `delta` is the first frame; never both.
+    // `initial` or `delta` is the first frame on a CRDT subscription; never both.
     ResumeDelta          delta               = 9;
     // Terminates one committed batch's catch-up sequence. See BatchEnd.
     BatchEnd             batch_end           = 10;

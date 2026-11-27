@@ -92,28 +92,19 @@ func fetchMaterialized(ctx context.Context, c control.Peer, workspaceIDs []strin
 // streamWatchUserLocal opens a StreamInner of the hub's user-event stream
 // (hubrpc.WatchUserStream) against the agent's local-IPC peer and drives
 // `onEvent` for every decoded `WatchUserEvent`. `onEvent` returns
-// (stop=true, _) to terminate the
-// loop after the current event (e.g. once the initial frame lands)
-// or (_, err) to propagate an error. The stream is closed when
-// streamWatchUserLocal returns. Its callers stay open until ctx
-// cancellation: runLayoutWatchLocal, which `layout watch` runs on a local-IPC
-// client, and hubUserEvents, the hub source of `events`. The bootstrap path
-// uses the unary GetMaterialized instead.
+// (stop=true, _) to stop the loop after the current event, or (_, err) to
+// propagate an error. The stream closes when streamWatchUserLocal returns.
+// Callers such as hubUserEvents keep the stream open until ctx cancellation;
+// the bootstrap path uses the unary GetMaterialized RPC instead.
 func streamWatchUserLocal(
-	ctx context.Context,
-	c *control.WorkerIPCClient,
-	workspaceIDs []string,
-	onEvent func(*leapmuxv1.WatchUserEvent) (stop bool, err error),
-) error {
-	return streamWatchUserLocalWithOptions(ctx, c, channelwire.UserEventsOptions{WorkspaceIDs: workspaceIDs}, onEvent)
-}
-
-func streamWatchUserLocalWithOptions(
 	ctx context.Context,
 	c *control.WorkerIPCClient,
 	opts channelwire.UserEventsOptions,
 	onEvent func(*leapmuxv1.WatchUserEvent) (stop bool, err error),
 ) error {
+	if opts.ResumeCursor != nil || opts.ResumeEpoch != 0 {
+		return cli.Newf(cli.CodeInvalidArgument, "local IPC WatchUser does not support CRDT resume cursors")
+	}
 	req := &leapmuxv1.WatchUserRequest{
 		WorkspaceIds:      opts.WorkspaceIDs,
 		Topics:            opts.Topics,

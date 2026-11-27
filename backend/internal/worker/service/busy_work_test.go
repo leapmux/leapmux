@@ -68,7 +68,7 @@ func startLiveTestTerminal(t *testing.T, svc *Service, id, metaTitle string) {
 	require.NoError(t, err)
 	require.NoError(t, svc.Terminals.SendInput(id, terminput.Input{Data: []byte(command + testutil.TestShellEnter())}))
 	testutil.RequireEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 		return bytes.Contains(screen, []byte(marker))
 	}, "expected the shell to execute the readiness marker")
 }

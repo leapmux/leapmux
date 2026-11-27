@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -101,11 +102,11 @@ func NewUserEventsHandler(
 	concurrentBuilds := max(1, queuePool.Capacity()/
 		(int64(channelwire.UserEventsReadLimit)*crdt.ResidentFactor))
 	return &UserEventsHandler{
-		// workspace:read, because the stream IS the account's layout document
-		// and every change to it. An app granted account:read alone has no
-		// business reading which workspaces, tabs and agents its owner has.
+		// Door scopes are workspace:read and worker:read; ServeHTTP enforces
+		// per-topic scopes (workspace:read for crdt and layout_journal,
+		// worker:read for explicit workers) after authentication succeeds.
 		wsAuthenticator: newWSAuthenticator(st, sessionHasher, authContexts, soloUser, secureCookie,
-			leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+			leapmuxv1.Scope_SCOPE_WORKSPACE_READ, leapmuxv1.Scope_SCOPE_WORKER_READ),
 		registry:      registry,
 		queuePool:     queuePool,
 		bootstrapGate: make(chan struct{}, concurrentBuilds),
@@ -322,27 +323,11 @@ func (r userEventsRequest) requiredScopes() []leapmuxv1.Scope {
 	return scopes
 }
 
-// parseUserEventsRequest reads and validates the connect's query parameters.
-//
-// Extracted from ServeHTTP because it is the one part of a 300-line handler
-// that is a pure function of the request, and it carries rejections whose
-// reasoning matters more than their code. All failures are 400s the caller
-// reports identically.
-func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
-	// Tenancy is the authenticated user. No client-supplied user_id query
-	// parameter: channelwire.UserEventsURL encodes only workspace_ids and the
-	// resume cursor (resume_after_hlc / resume_epoch), and accepting a foreign
-	// id would let any authenticated user drive registry.Get (which performs no
-	// authorization) into bootstrapping an arbitrary tenant's CRDT Manager.
+// parseUserEventsTopics reads and validates the `topics` query parameter so
+// ServeHTTP can enforce topic-specific scopes before validating other query
+// parameters.
+func parseUserEventsTopics(q url.Values) (userEventsRequest, error) {
 	var req userEventsRequest
-	q := r.URL.Query()
-	if raw := q.Get(contracts.WSParamWorkspaceIDs); raw != "" {
-		for _, w := range strings.Split(raw, ",") {
-			if w = strings.TrimSpace(w); w != "" {
-				req.workspaceIDs = append(req.workspaceIDs, w)
-			}
-		}
-	}
 	topics, err := channelwire.ParseUserEventsTopicsFromQuery(q)
 	if err != nil {
 		return userEventsRequest{}, err
@@ -350,19 +335,41 @@ func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 	if len(topics) == 0 {
 		req.wantCRDT = true
 		req.wantWorkers = true
-	} else {
-		req.explicitTopics = true
-		for _, topic := range topics {
-			switch topic {
-			case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED:
-			case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT:
-				req.wantCRDT = true
-			case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS:
-				req.wantWorkers = true
-			case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL:
-				req.wantLayoutJournal = true
+		return req, nil
+	}
+	req.explicitTopics = true
+	for _, topic := range topics {
+		switch topic {
+		case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED:
+		case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_CRDT:
+			req.wantCRDT = true
+		case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS:
+			req.wantWorkers = true
+		case leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_LAYOUT_JOURNAL:
+			req.wantLayoutJournal = true
+		}
+	}
+	return req, nil
+}
+
+// parseUserEventsParams reads and validates the non-topic query parameters
+// after topic selection and scope authorization have succeeded.
+func parseUserEventsParams(q url.Values, req userEventsRequest) (userEventsRequest, error) {
+	// Tenancy is the authenticated user. No client-supplied user_id query
+	// parameter: channelwire.UserEventsURL encodes only topics, workspace_ids,
+	// layout parameters (layout_workspace_id / layout_after_cursor), and the
+	// resume cursor (resume_after_hlc / resume_epoch). Accepting a foreign id
+	// would let any authenticated user drive registry.Get (which performs no
+	// authorization) into bootstrapping an arbitrary tenant's CRDT Manager.
+	if raw := q.Get(contracts.WSParamWorkspaceIDs); raw != "" {
+		for _, w := range strings.Split(raw, ",") {
+			if w = strings.TrimSpace(w); w != "" {
+				req.workspaceIDs = append(req.workspaceIDs, w)
 			}
 		}
+	}
+	if !req.wantCRDT && len(req.workspaceIDs) > 0 {
+		return userEventsRequest{}, errors.New("workspace_ids requires the crdt topic")
 	}
 	req.layoutWorkspaceID = channelwire.ParseLayoutWorkspaceIDFromQuery(q)
 	layoutAfterCursor, err := channelwire.ParseLayoutCursorFromQuery(q)
@@ -403,7 +410,7 @@ func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 	// silently and lose ops with nothing server-side to say so.
 	//
 	// REJECTED rather than silently degraded to a snapshot, for the reason the
-	// malformed-cursor arm above gives: degradation masks the bug and lets a
+	// malformed-cursor branch above gives: degradation masks the bug and lets a
 	// broken client limp along forever. Nothing in tree sends this pairing --
 	// controlipc's hub_stream and the control CLI both pass their workspace ids
 	// with a nil cursor -- so this narrows the contract without breaking a
@@ -423,15 +430,31 @@ func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 	return req, nil
 }
 
+// parseUserEventsRequest reads and validates the connect's query parameters.
+//
+// Extracted from ServeHTTP because it is the one part of a 300-line handler
+// that is a pure function of the request, and it carries rejections whose
+// reasoning matters more than their code. All failures are 400s the caller
+// reports identically.
+func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
+	q := r.URL.Query()
+	req, err := parseUserEventsTopics(q)
+	if err != nil {
+		return userEventsRequest{}, err
+	}
+	return parseUserEventsParams(q, req)
+}
+
 func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	user, err := h.authenticateUser(r)
+	user, err := h.authenticate(r)
 	if err != nil {
 		writeHTTPAuthError(w, "user events", err)
 		return
 	}
 
 	userID := user.ID.String()
-	req, err := parseUserEventsRequest(r)
+	q := r.URL.Query()
+	req, err := parseUserEventsTopics(q)
 	if err != nil {
 		countConnectWithoutBootstrap()
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -439,6 +462,12 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := requireScopes(user, req.requiredScopes()...); err != nil {
 		writeHTTPAuthError(w, "user events", err)
+		return
+	}
+	req, err = parseUserEventsParams(q, req)
+	if err != nil {
+		countConnectWithoutBootstrap()
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -455,42 +484,24 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Per-message read limit so a malformed client can't blow our memory.
-	// WatchUserEvent payloads are bounded by the protobuf envelope. Named rather
-	// than repeated as a literal so this socket and the subscribers reading from
-	// it cannot drift apart: the two matching was previously only a claim in a
-	// comment.
-	wsConn, ok := acceptWebSocket(w, r, endpointUserEvents, contracts.WSSubprotocolUserEventsRelay, channelwire.UserEventsReadLimit, userSubject(user.ID.String()))
+	conn, ok := openUserEventsConn(w, r, h, userID, user)
 	if !ok {
-		countConnectWithoutBootstrap()
 		return
 	}
-
-	// Counted on every refusal, whichever reason: the connect series is a
-	// complete partition of authenticated connects, and a connection turned away
-	// at the cap is as much a connect outcome as one turned away for a revoked
-	// credential. bind has already closed the socket with the reason.
-	ctx, cleanupLease, outcome := h.authLease.bind(r.Context(), user, wsConn)
-	if outcome != auth.LeaseGranted {
-		countConnectWithoutBootstrap()
-		return
-	}
-	defer cleanupLease()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	defer conn.close()
 
 	// Derived ONCE, and used both to register and to log. Recomputing it per log
 	// site let a line name an identity the registered subscriber does not have
 	// if the derivation ever grew a condition.
 	clientID := presenceClientID(user)
-	sub, queue := newUserEventsSubscriber(ctx, cancel, user, clientID, req.requested, req.wantWorkers, h.queuePool)
-	// Registered BEFORE the unsub below, so LIFO runs it AFTER: a broadcast that
-	// snapshot the subscriber set before it was unregistered can still be inside
-	// Send when unsub returns, and closing first would race that frame's charge.
-	// Everything still queued is released here and the queue leaves the pool --
-	// the connection's whole share of the shared budget, returned on every exit
-	// path including the early ones below.
-	defer queue.Close()
+	sub, queue := newUserEventsSubscriber(conn.ctx, conn.cancel, user, clientID, req.requested, req.wantWorkers, h.queuePool)
+	// Registered BEFORE out.Unsub below, so LIFO close hooks run it AFTER: a
+	// broadcast that snapshot the subscriber set before it was unregistered can
+	// still be inside Send when unsub returns, and closing first would race that
+	// frame's charge. Everything still queued is released here and the queue
+	// leaves the pool -- the connection's whole share of the shared budget,
+	// returned on every exit path including the early ones below.
+	conn.addCloseHook(queue.Close)
 
 	// Take a build slot before anything starts materializing a snapshot, and
 	// give it back the moment the frame has been charged or refused -- NOT when
@@ -510,7 +521,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		countConnectWithoutBootstrap()
 		slog.Warn("userevents: too many bootstrap frames already being built, asking the client to retry the connect",
 			"user_id", user.ID, "client_id", clientID, "concurrent_builds", cap(h.bootstrapGate))
-		_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
+		conn.closeWith(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
 		return
 	}
 	// Deferred as well as called explicitly below: the explicit release is what
@@ -529,11 +540,11 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// this now-registered subscriber in its expand pass -- it can no longer leave
 	// the subscriber holding a stale filter that misses the new workspace until
 	// reconnect. The resolve reads the DB ACL under that lock; its failure closes
-	// the just-accepted socket. Only a delegation-scope PermissionDenied is a genuine
+	// the just-accepted socket. A PermissionDenied error is treated as an
 	// authorization failure (policy violation); anything else -- a transient store
 	// error -- closes with TryAgainLater so the client classifies it as a
 	// recoverable close and reconnects (see channelwire.isRecoverableCloseCode;
-	// StatusInternalError is terminal there and would surface as a fatal stream
+	// StatusInternalError is final there and would surface as a fatal stream
 	// error instead). Keying on the specific authz code keeps this robust if the
 	// callee's error coding changes.
 	// Resolve the workspace filter, register the subscriber, and emit the
@@ -545,10 +556,10 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// is therefore exactly one of `delta` or `initial`, never both. The same
 	// resolve callback and subscribeExpandMu serialization apply to both paths.
 	resolve := func() (map[string]bool, error) {
-		return resolveAllowedWorkspacesSetForUser(ctx, h.store, req.workspaceIDs, user)
+		return resolveAllowedWorkspacesSetForUser(conn.ctx, h.store, req.workspaceIDs, user)
 	}
 	subscribeStart := time.Now()
-	out, err := mgr.SubscribeWithACL(ctx, sub, req.resumeCursor, req.resumeEpoch, resolve)
+	out, err := mgr.SubscribeWithACL(conn.ctx, sub, req.resumeCursor, req.resumeEpoch, resolve)
 	elapsed := time.Since(subscribeStart)
 	// Labelled here rather than inside crdt: that package has no
 	// internal/metrics edge, and Reason() exists precisely so the service layer
@@ -562,10 +573,13 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// so it is labelled with the zero mode/reason, both of which already spell
 	// themselves "invalid".
 	//
-	// "Complete" means every AUTHENTICATED connect: the earlier returns above --
-	// a malformed cursor, a registry bootstrap failure, a refused upgrade, a
-	// superseded auth lease -- count too, through countConnectWithoutBootstrap.
-	// Without them the very failure this comment names was still invisible:
+	// "Complete" means every authorized connect after topic scope checks pass:
+	// pre-subscribe 403 authorization refusals return before counting, whereas
+	// query validation errors, registry bootstrap failures, refused upgrades,
+	// and refused auth leases count through countConnectWithoutBootstrap.
+	// Lightweight (non-CRDT) connects count under {lightweight, no_crdt} once
+	// established.
+	// Without them the very failure this comment identifies was still invisible:
 	// registry.Get is where the manager loads its state from the journal, so a
 	// hub whose user_state read starts failing returns before this line for
 	// every connect, and the series falls to zero with nothing to explain it.
@@ -574,10 +588,10 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	metrics.UserEventsSubscribeDuration.WithLabelValues(mode).Observe(elapsed.Seconds())
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodePermissionDenied {
-			_ = wsConn.Close(websocket.StatusPolicyViolation, contracts.CloseReasonForbidden)
+			conn.closeWith(websocket.StatusPolicyViolation, contracts.CloseReasonForbidden)
 		} else {
 			slog.Error("userevents: resume setup failed", "user_id", user.ID, "error", err)
-			_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
+			conn.closeWith(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
 		}
 		return
 	}
@@ -592,11 +606,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// resume as 0 -- and this line is the only place the number is
 		// attributable to a user_id and client_id.
 		"duration_us", elapsed.Microseconds())
-	defer out.Unsub()()
-
-	defer func() {
-		_ = wsConn.Close(websocket.StatusNormalClosure, "")
-	}()
+	conn.addCloseHook(out.Unsub())
 
 	// Send the first (and only bootstrap) frame. BOTH arms stamp
 	// subscriber_client_id: it is the frontend active-client gate's only source
@@ -663,7 +673,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Counted by AdmitBootstrap, from the same admission outcome that chose
 		// this arm. Re-deriving the label here was a second derivation of one
 		// event, which is the split refuseFrame exists to close.
-		_ = wsConn.Close(websocket.StatusPolicyViolation, contracts.CloseReasonSnapshotTooLarge)
+		conn.closeWith(websocket.StatusPolicyViolation, contracts.CloseReasonSnapshotTooLarge)
 		return
 	case bootstrapPoolFull:
 		slog.Warn("userevents: shared queue memory is full, asking the client to retry the connect",
@@ -674,11 +684,11 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"frame_charged_bytes", bootstrapEvt.Size(),
 			"frame_wire_bytes", bootstrapEvt.WireSize(),
 			"pool_used", h.queuePool.Used(), "pool_capacity", h.queuePool.Capacity())
-		_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
+		conn.closeWith(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
 		return
 	case bootstrapAdmitted:
 	}
-	writeErr := writeUserEvent(ctx, wsConn, bootstrapEvt)
+	writeErr := conn.writeFramed(bootstrapEvt)
 	// Refunded on both outcomes: a failed write stopped holding the frame too.
 	queue.BootstrapSent()
 	if writeErr != nil {
@@ -734,239 +744,337 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// armed up there could not see its answer: it would time out and cancel a
 	// perfectly healthy connection mid-bootstrap, which on a large account is
 	// exactly the reconnect storm this endpoint has to survive.
-	h.keepalive.StartDrainingReads(ctx, wskeepalive.Probe{Conn: wsConn, Cancel: cancel, Attrs: userSubject(userID).logAttrs(endpointUserEvents)})
+	conn.startKeepalive(h, userID)
 
-	var writeMu sync.Mutex
-	var layoutWG sync.WaitGroup
 	if req.wantLayoutJournal {
-		layoutWG.Add(1)
-		go func() {
-			defer layoutWG.Done()
-			if err := h.pumpLayoutJournal(ctx, wsConn, &writeMu, user, req); err != nil {
-				closeForLayoutError(wsConn, err)
-				cancel()
-			}
-		}()
+		conn.startLayoutPump(h, user, req)
 	}
-	defer layoutWG.Wait()
 
 	for {
-		evt, ok := queue.Next(ctx)
+		evt, ok := queue.Next(conn.ctx)
 		if !ok {
 			return
 		}
-		writeMu.Lock()
-		err := writeUserEvent(ctx, wsConn, evt)
-		writeMu.Unlock()
-		if err != nil {
+		if err := conn.writeFramed(evt); err != nil {
 			slog.Debug("userevents: write event failed", "user_id", user.ID, "error", err)
-			cancel()
+			conn.cancel()
 			return
 		}
 	}
+}
+
+const layoutEventRecheck = 2 * time.Second
+
+// userEventsConn owns the upgraded WebSocket lifecycle shared by the CRDT and
+// lightweight modes: auth lease binding, separate read and pump cancellation
+// contexts, mutex-serialized writes, topic pump tracking, and ordered teardown.
+type userEventsConn struct {
+	ws           *websocket.Conn
+	cleanupLease func()
+	readCtx      context.Context
+	cancelReads  context.CancelFunc
+	ctx          context.Context
+	cancel       context.CancelFunc
+
+	writeMu    sync.Mutex
+	wg         sync.WaitGroup
+	closeHooks []func()
+	closeOnce  sync.Once
+}
+
+// openUserEventsConn upgrades the request to a WebSocket, binds its auth lease,
+// and prepares the separate read and pump cancellation contexts. On upgrade or
+// lease refusal it records the failed connect metric and returns false.
+func openUserEventsConn(
+	w http.ResponseWriter,
+	r *http.Request,
+	h *UserEventsHandler,
+	userID string,
+	user *auth.UserInfo,
+) (*userEventsConn, bool) {
+	// Per-message read limit so a malformed client cannot exhaust memory.
+	// WatchUserEvent payloads stay within the protobuf envelope limit.
+	wsConn, ok := acceptWebSocket(
+		w, r, endpointUserEvents, contracts.WSSubprotocolUserEventsRelay,
+		channelwire.UserEventsReadLimit, userSubject(userID),
+	)
+	if !ok {
+		countConnectWithoutBootstrap()
+		return nil, false
+	}
+
+	// Counted on every refusal, whichever reason: the connect series is a
+	// complete partition of authenticated connects, and a connection turned away
+	// at the cap is as much a connect outcome as one turned away for a revoked
+	// credential. bind has already closed the socket with the reason.
+	leaseCtx, cleanupLease, outcome := h.authLease.bind(r.Context(), user, wsConn)
+	if outcome != auth.LeaseGranted {
+		countConnectWithoutBootstrap()
+		return nil, false
+	}
+
+	// Keep StartDrainingReads on a sibling context canceled AFTER wsConn.Close:
+	// coder/websocket aborts the socket with CloseNow when a Read context cancels,
+	// which would drop the connection before wsConn.Close or closeForLayoutError
+	// can send its close frame.
+	readCtx, cancelReads := context.WithCancel(leaseCtx)
+	ctx, cancel := context.WithCancel(leaseCtx)
+	return &userEventsConn{
+		ws:           wsConn,
+		cleanupLease: cleanupLease,
+		readCtx:      readCtx,
+		cancelReads:  cancelReads,
+		ctx:          ctx,
+		cancel:       cancel,
+	}, true
+}
+
+func (c *userEventsConn) startKeepalive(h *UserEventsHandler, userID string) {
+	h.keepalive.StartDrainingReads(c.readCtx, wskeepalive.Probe{
+		Conn:   c.ws,
+		Cancel: c.cancel,
+		Attrs:  userSubject(userID).logAttrs(endpointUserEvents),
+	})
+}
+
+func (c *userEventsConn) startWorkerPump(
+	h *UserEventsHandler,
+	user *auth.UserInfo,
+	workerWake <-chan struct{},
+	releaseWorkerWake func(),
+) {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		h.pumpWorkerWakes(c, user, workerWake, releaseWorkerWake)
+	}()
+}
+
+func (c *userEventsConn) startLayoutPump(h *UserEventsHandler, user *auth.UserInfo, req userEventsRequest) {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		if err := h.pumpLayoutJournal(c, user, req); err != nil {
+			c.cancel()
+			closeForLayoutError(c.ws, err)
+		}
+	}()
+}
+
+func (c *userEventsConn) waitPumps() {
+	c.wg.Wait()
+}
+
+func (c *userEventsConn) writeFramed(evt *crdt.MarshaledEvent) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return writeUserEvent(c.ctx, c.ws, evt)
+}
+
+func (c *userEventsConn) writeProto(evt *leapmuxv1.WatchUserEvent) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return writeProtoUserEvent(c.ctx, c.ws, evt)
+}
+
+func (c *userEventsConn) addCloseHook(fn func()) {
+	if fn != nil {
+		c.closeHooks = append(c.closeHooks, fn)
+	}
+}
+
+func (c *userEventsConn) closeWith(code websocket.StatusCode, reason string) {
+	_ = c.ws.Close(code, reason)
+}
+
+// close tears down the connection in strict order:
+//  1. cancel topic pumps so wg.Wait cannot deadlock on panic or return
+//  2. wait for pumps (including any closeForLayoutError) before normal close
+//  3. close the socket with StatusNormalClosure (no-op if already closed)
+//  4. run registered close hooks in LIFO order (out.Unsub before queue.Close)
+//  5. stop StartDrainingReads after ws.Close so CloseNow does not race the close handshake
+//  6. release the authenticated lease
+func (c *userEventsConn) close() {
+	c.closeOnce.Do(func() {
+		defer c.cleanupLease()
+		defer c.cancelReads()
+		for _, hook := range c.closeHooks {
+			defer hook()
+		}
+		c.cancel()
+		c.wg.Wait()
+		_ = c.ws.Close(websocket.StatusNormalClosure, "")
+	})
 }
 
 func (h *UserEventsHandler) serveLightweightWebSocket(w http.ResponseWriter, r *http.Request, user *auth.UserInfo, req userEventsRequest) {
 	userID := user.ID.String()
-	wsConn, ok := acceptWebSocket(w, r, endpointUserEvents, contracts.WSSubprotocolUserEventsRelay, channelwire.UserEventsReadLimit, userSubject(userID))
+	var initialWorkerWake <-chan struct{}
+	releaseInitialWorkerWake := func() {}
+	if req.wantWorkers && h.registry != nil {
+		// Capture the wake channel before accepting the WebSocket so a
+		// BroadcastWorkersChanged firing right after HTTP 101 cannot be missed.
+		initialWorkerWake, releaseInitialWorkerWake = h.registry.WorkerInventoryWake(userID)
+		defer releaseInitialWorkerWake()
+	}
+
+	conn, ok := openUserEventsConn(w, r, h, userID, user)
 	if !ok {
 		return
 	}
-	ctx, cleanupLease, outcome := h.authLease.bind(r.Context(), user, wsConn)
-	if outcome != auth.LeaseGranted {
+	defer conn.close()
+	metrics.UserEventsSubscribeTotal.WithLabelValues("lightweight", "no_crdt").Inc()
+
+	conn.startKeepalive(h, userID)
+
+	if req.wantWorkers {
+		conn.startWorkerPump(h, user, initialWorkerWake, releaseInitialWorkerWake)
+	}
+	if req.wantLayoutJournal {
+		conn.startLayoutPump(h, user, req)
+	}
+	conn.waitPumps()
+}
+
+func (h *UserEventsHandler) pumpWorkerWakes(
+	conn *userEventsConn,
+	user *auth.UserInfo,
+	workerWake <-chan struct{},
+	releaseWorkerWake func(),
+) {
+	if h.registry == nil {
+		<-conn.ctx.Done()
 		return
 	}
-	defer cleanupLease()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	defer func() {
-		_ = wsConn.Close(websocket.StatusNormalClosure, "")
-	}()
-
-	h.keepalive.StartDrainingReads(ctx, wskeepalive.Probe{Conn: wsConn, Cancel: cancel, Attrs: userSubject(userID).logAttrs(endpointUserEvents)})
-	h.serveLightweightTopics(ctx, wsConn, user, req)
-}
-
-func (h *UserEventsHandler) serveLightweightTopics(ctx context.Context, wsConn *websocket.Conn, user *auth.UserInfo, req userEventsRequest) {
 	userID := user.ID.String()
-	var workerWake <-chan struct{}
-	if req.wantWorkers && h.registry != nil {
-		workerWake = h.registry.WorkerInventoryWake(userID)
-	}
-
-	layoutCursor := req.layoutAfterCursor
-	layoutDone := !req.wantLayoutJournal
-	layoutNeedsRead := req.wantLayoutJournal
-	layoutDrainTried := h.registry == nil
-	var layoutLifecycleErr error
-	var layoutWake <-chan struct{}
+	defer func() { releaseWorkerWake() }()
 
 	for {
-		if ctx.Err() != nil {
+		if workerWake == nil {
 			return
 		}
-		if layoutNeedsRead && !layoutDone {
-			if len(layoutCursor) == 0 {
-				initial, err := readInitialLayoutCursor(ctx, h.store, user, req.layoutWorkspaceID)
-				if err != nil {
-					closeForLayoutError(wsConn, err)
-					return
-				}
-				if err := writeProtoUserEvent(ctx, wsConn, layoutEventsWatchEvent(initial)); err != nil {
-					slog.Debug("userevents: write initial layout cursor failed", "user_id", user.ID, "error", err)
-					return
-				}
-				layoutCursor = initial.GetCursor()
-				continue
-			}
-			if h.registry != nil {
-				layoutWake = h.registry.LayoutEventWake(userID)
-			}
-			after, ok := layoutCursorPosition(layoutCursor)
-			if !ok {
-				closeForLayoutError(wsConn, invalidLayoutCursor())
-				return
-			}
-			page, ownerLifecyclePending, err := readLayoutEventPage(ctx, h.store.LayoutEvents(), user.ID, req.layoutWorkspaceID, layoutCursor, after)
-			if err != nil {
-				closeForLayoutError(wsConn, err)
-				return
-			}
-			if page.GetEnd() != nil {
-				if err := writeProtoUserEvent(ctx, wsConn, layoutEventsWatchEvent(page)); err != nil {
-					slog.Debug("userevents: write layout end failed", "user_id", user.ID, "error", err)
-					return
-				}
-				layoutDone = true
-				layoutNeedsRead = false
-				layoutWake = nil
-				if !req.wantWorkers {
-					return
-				}
-				continue
-			}
-			gap := page.GetGap() != nil
-			progress := gap || page.GetScannedSequence() > after
-			if !layoutDrainTried && ownerLifecyclePending && h.registry != nil {
-				layoutDrainTried = true
-				drained := h.registry.StartLifecycleDrain(userID)
-				if !progress {
-					for draining := true; draining; {
-						select {
-						case <-ctx.Done():
-							return
-						case <-drained.Done():
-							layoutLifecycleErr = drained.Err()
-							draining = false
-						case <-workerWake:
-							workerWake = h.registry.WorkerInventoryWake(userID)
-							if err := writeProtoUserEvent(ctx, wsConn, workersChangedWatchEvent()); err != nil {
-								slog.Debug("userevents: write workers_changed failed", "user_id", user.ID, "error", err)
-								return
-							}
-						}
-					}
-					continue
-				}
-			}
-			if progress {
-				layoutLifecycleErr = nil
-				if err := writeProtoUserEvent(ctx, wsConn, layoutEventsWatchEvent(page)); err != nil {
-					slog.Debug("userevents: write layout events failed", "user_id", user.ID, "error", err)
-					return
-				}
-				if gap {
-					layoutCursor = page.GetGap().GetCursor()
-				} else {
-					layoutCursor = page.GetScannedCursor()
-				}
-				continue
-			}
-			if layoutLifecycleErr != nil {
-				_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
-				return
-			}
-			layoutNeedsRead = false
-		}
-
 		select {
-		case <-ctx.Done():
+		case <-conn.ctx.Done():
 			return
 		case <-workerWake:
-			workerWake = h.registry.WorkerInventoryWake(userID)
-			if err := writeProtoUserEvent(ctx, wsConn, workersChangedWatchEvent()); err != nil {
-				slog.Debug("userevents: write workers_changed failed", "user_id", user.ID, "error", err)
-				return
-			}
-		case <-layoutWake:
-			layoutWake = nil
-			layoutNeedsRead = true
-			layoutDrainTried = false
+		}
+		releaseWorkerWake()
+		if conn.ctx.Err() != nil {
+			return
+		}
+		workerWake, releaseWorkerWake = h.registry.WorkerInventoryWake(userID)
+		if workerWake == nil {
+			return
+		}
+		if err := conn.writeProto(workersChangedWatchEvent()); err != nil {
+			slog.Debug("userevents: write workers_changed failed", "user_id", user.ID, "error", err)
+			conn.cancel()
+			return
 		}
 	}
 }
 
-func (h *UserEventsHandler) pumpLayoutJournal(ctx context.Context, wsConn *websocket.Conn, writeMu *sync.Mutex, user *auth.UserInfo, req userEventsRequest) error {
+func (h *UserEventsHandler) pumpLayoutJournal(
+	conn *userEventsConn,
+	user *auth.UserInfo,
+	req userEventsRequest,
+) error {
 	userID := user.ID.String()
 	layoutCursor := req.layoutAfterCursor
-	layoutDrainTried := h.registry == nil
-	var layoutLifecycleErr error
 
-	writeEvent := func(evt *leapmuxv1.WatchUserEvent) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return writeProtoUserEvent(ctx, wsConn, evt)
+	var recheckC <-chan time.Time
+	if h.registry == nil {
+		recheckTicker := time.NewTicker(layoutEventRecheck)
+		defer recheckTicker.Stop()
+		recheckC = recheckTicker.C
+	}
+
+	var layoutWake <-chan struct{}
+	releaseLayoutWake := func() {}
+	defer func() { releaseLayoutWake() }()
+
+	clearWake := func() {
+		releaseLayoutWake()
+		layoutWake = nil
+		releaseLayoutWake = func() {}
+	}
+	subscribeWake := func() bool {
+		clearWake()
+		if h.registry == nil {
+			return true
+		}
+		layoutWake, releaseLayoutWake = h.registry.LayoutEventWake(userID)
+		return layoutWake != nil
+	}
+	waitForWake := func() bool {
+		defer clearWake()
+		if h.registry != nil && layoutWake == nil {
+			return false
+		}
+		select {
+		case <-conn.ctx.Done():
+			return false
+		case <-layoutWake:
+			return true
+		case <-recheckC:
+			return true
+		}
 	}
 
 	for {
-		if ctx.Err() != nil {
+		if conn.ctx.Err() != nil {
 			return nil
 		}
 		if len(layoutCursor) == 0 {
-			initial, err := readInitialLayoutCursor(ctx, h.store, user, req.layoutWorkspaceID)
+			if !subscribeWake() {
+				return nil
+			}
+			initial, err := readInitialLayoutCursor(conn.ctx, h.store, user, req.layoutWorkspaceID)
 			if err != nil {
+				if conn.ctx.Err() != nil {
+					return nil
+				}
 				return err
 			}
-			if err := writeEvent(layoutEventsWatchEvent(initial)); err != nil {
+			if err := conn.writeProto(layoutEventsWatchEvent(initial)); err != nil {
+				slog.Debug("userevents: write initial layout cursor failed", "user_id", user.ID, "error", err)
+				conn.cancel()
 				return nil
 			}
 			layoutCursor = initial.GetCursor()
+			if !waitForWake() {
+				return nil
+			}
 			continue
 		}
-		var layoutWake <-chan struct{}
-		if h.registry != nil {
-			layoutWake = h.registry.LayoutEventWake(userID)
+
+		if !subscribeWake() {
+			return nil
 		}
 		after, ok := layoutCursorPosition(layoutCursor)
 		if !ok {
 			return invalidLayoutCursor()
 		}
-		page, ownerLifecyclePending, err := readLayoutEventPage(ctx, h.store.LayoutEvents(), user.ID, req.layoutWorkspaceID, layoutCursor, after)
+		page, caughtUp, err := readLayoutEventPageWithDrain(conn.ctx, h.store.LayoutEvents(), h.registry, user.ID, req.layoutWorkspaceID, layoutCursor, after)
 		if err != nil {
+			if conn.ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 		if page.GetEnd() != nil {
-			_ = writeEvent(layoutEventsWatchEvent(page))
+			if err := conn.writeProto(layoutEventsWatchEvent(page)); err != nil {
+				slog.Debug("userevents: write layout end failed", "user_id", user.ID, "error", err)
+				conn.cancel()
+			}
 			return nil
 		}
 		gap := page.GetGap() != nil
 		progress := gap || page.GetScannedSequence() > after
-		if !layoutDrainTried && ownerLifecyclePending && h.registry != nil {
-			layoutDrainTried = true
-			drained := h.registry.StartLifecycleDrain(userID)
-			if !progress {
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-drained.Done():
-					layoutLifecycleErr = drained.Err()
-				}
-				continue
-			}
-		}
 		if progress {
-			layoutLifecycleErr = nil
-			if err := writeEvent(layoutEventsWatchEvent(page)); err != nil {
+			if err := conn.writeProto(layoutEventsWatchEvent(page)); err != nil {
+				slog.Debug("userevents: write layout events failed", "user_id", user.ID, "error", err)
+				conn.cancel()
 				return nil
 			}
 			if gap {
@@ -974,16 +1082,13 @@ func (h *UserEventsHandler) pumpLayoutJournal(ctx context.Context, wsConn *webso
 			} else {
 				layoutCursor = page.GetScannedCursor()
 			}
-			continue
+			if !caughtUp {
+				clearWake()
+				continue
+			}
 		}
-		if layoutLifecycleErr != nil {
-			return wrappedConnectError(connect.CodeUnavailable, layoutLifecycleErr)
-		}
-		select {
-		case <-ctx.Done():
+		if !waitForWake() {
 			return nil
-		case <-layoutWake:
-			layoutDrainTried = false
 		}
 	}
 }
@@ -1005,17 +1110,15 @@ func layoutEventsWatchEvent(page *leapmuxv1.ReadLayoutEventsResponse) *leapmuxv1
 }
 
 func closeForLayoutError(wsConn *websocket.Conn, err error) {
-	switch connect.CodeOf(err) {
+	code := connect.CodeOf(err)
+	switch code {
 	case connect.CodeNotFound, connect.CodeFailedPrecondition, connect.CodeInvalidArgument, connect.CodePermissionDenied:
 		reason := err.Error()
 		var ce *connect.Error
 		if errors.As(err, &ce) {
 			reason = ce.Message()
 		}
-		if len(reason) > 123 {
-			reason = reason[:123]
-		}
-		_ = wsConn.Close(websocket.StatusPolicyViolation, reason)
+		_ = wsConn.Close(websocket.StatusPolicyViolation, channelwire.FormatUserEventsPolicyCloseReason(code.String(), reason))
 	default:
 		_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
 	}

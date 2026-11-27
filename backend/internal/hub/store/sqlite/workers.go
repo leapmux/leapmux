@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
@@ -113,21 +112,13 @@ func (s *workerStore) InventorySnapshot(ctx context.Context, owner userid.UserID
 	if !ok {
 		return store.WorkerInventorySnapshot{}, store.ErrNotFound
 	}
-	var snap store.WorkerInventorySnapshot
-	err := s.conn.withTransaction(ctx, func(tx *sqliteConn) error {
-		rev, err := tx.q.GetWorkerEnrollmentRevision(ctx, userID)
-		if err != nil {
-			return tx.queryError(err)
-		}
-		ids, err := tx.q.ListActiveWorkerIDsByUserID(ctx, userID)
-		if err != nil {
-			return tx.queryError(err)
-		}
-		slices.Sort(ids)
-		snap = store.WorkerInventorySnapshot{Revision: rev, WorkerIDs: ids}
-		return nil
-	})
-	return snap, err
+	rows, err := s.conn.q.GetWorkerInventorySnapshot(ctx, userID)
+	if err != nil {
+		return store.WorkerInventorySnapshot{}, s.conn.queryError(err)
+	}
+	return store.AssembleWorkerInventorySnapshot(rows, func(r gendb.GetWorkerInventorySnapshotRow) (int64, string) {
+		return r.Revision, r.WorkerID
+	}), nil
 }
 
 func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) (store.Page[store.WorkerWithOwner], error) {

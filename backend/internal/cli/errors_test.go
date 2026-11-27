@@ -285,6 +285,17 @@ func TestError_StringAndWithReceipt(t *testing.T) {
 	assert.Same(t, receipt, e.Receipt)
 }
 
+func TestError_WithCausePreservesMessageAndMatchesTarget(t *testing.T) {
+	cause := &url.Error{Op: "Get", URL: "https://hub.example", Err: errors.New("connection refused")}
+	e := Newf(CodeUnavailable, "the Hub rejected the connection").WithCause(cause)
+	assert.Equal(t, "the Hub rejected the connection", e.Message)
+	assert.Equal(t, "unavailable: the Hub rejected the connection", e.Error())
+	assert.ErrorIs(t, e, cause)
+	var target *url.Error
+	require.ErrorAs(t, e, &target)
+	assert.Same(t, cause, target)
+}
+
 func TestWrapKeepsTheCauseAndPrefixesTheMessage(t *testing.T) {
 	cause := errors.New("boom")
 	got := Wrap(CodeConflict, cause, "submit batch")

@@ -67,9 +67,10 @@ type sendInputReceiptEntry struct {
 }
 
 type terminalSendInputReceipts struct {
-	mu        sync.Mutex
-	entries   map[string]*sendInputReceiptEntry
-	completed list.List // FIFO of completed *sendInputReceiptEntry; in-flight entries are never evicted
+	mu              sync.Mutex
+	entries         map[string]*sendInputReceiptEntry
+	completed       list.List // FIFO of completed *sendInputReceiptEntry; in-flight entries are never evicted
+	onDuplicateWait func()    // optional test hook invoked right before waiting on an in-flight duplicate
 }
 
 type sendInputReceiptOutcome int
@@ -81,6 +82,23 @@ const (
 )
 
 var errSendInputPanicked = errors.New("terminal send input panicked")
+
+// lookupCompleted checks whether (terminalID, requestID) already has a
+// completed receipt. It returns ok=false when the key is absent or still in
+// flight so callers only short-circuit settled outcomes before WaitForStartup.
+func (c *terminalSendInputReceipts) lookupCompleted(terminalID, requestID string, fp [sha256.Size]byte) (sendInputReceiptOutcome, bool) {
+	key := terminalID + "\x00" + requestID
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev, ok := c.entries[key]
+	if !ok || prev.done != nil {
+		return sendInputNew, false
+	}
+	if prev.fp != fp {
+		return sendInputConflict, true
+	}
+	return sendInputDuplicate, true
+}
 
 // execute atomically deduplicates (terminalID, requestID), running fn at most
 // once per succeeded key. In-flight entries stay out of the completed FIFO so
@@ -105,9 +123,13 @@ func (c *terminalSendInputReceipts) execute(ctx context.Context, terminalID, req
 			return sendInputConflict, nil
 		}
 		done := prev.done
+		onDuplicateWait := c.onDuplicateWait
 		c.mu.Unlock()
 		if done == nil {
 			return sendInputDuplicate, nil
+		}
+		if onDuplicateWait != nil {
+			onDuplicateWait()
 		}
 		select {
 		case <-done:
@@ -358,7 +380,13 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// A close can finish between the initial row read and this
 			// startup claim. After the claim, a concurrent close joins it.
 			live, open := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalForRestart)
-			if !open || refuseArchivedWrite(sender, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, live.WorkspaceArchived, "terminal") {
+			if !open {
+				svc.TerminalStartup.retireInterrupted(terminalID, startupHandle, true, false)
+				svc.TerminalStartup.abandon(startupHandle)
+				return
+			}
+			if refuseArchivedWrite(sender, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, live.WorkspaceArchived, "terminal") {
+				svc.TerminalStartup.retireInterrupted(terminalID, startupHandle, false, true)
 				svc.TerminalStartup.abandon(startupHandle)
 				return
 			}
@@ -427,6 +455,20 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 
+			reqID := strings.TrimSpace(r.GetRequestId())
+			var fp [sha256.Size]byte
+			if reqID != "" {
+				fp = terminalSendInputFingerprint(r)
+				if outcome, settled := svc.sendInputReceipts.lookupCompleted(terminalID, reqID, fp); settled {
+					if outcome == sendInputConflict {
+						sendFailedPrecondition(sender, fmt.Sprintf("request_id %q was already used for a different terminal input payload", reqID))
+					} else {
+						sendProtoResponse(sender, &leapmuxv1.SendInputResponse{})
+					}
+					return
+				}
+			}
+
 			// Wait for any in-flight PTY startup before reserving an idempotency
 			// receipt so a caller whose ctx expires during startup wait does not
 			// leave an in-flight receipt blocking its own retry with the same
@@ -458,8 +500,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 
 			var sendErr error
-			if reqID := strings.TrimSpace(r.GetRequestId()); reqID != "" {
-				fp := terminalSendInputFingerprint(r)
+			if reqID != "" {
 				outcome, err := svc.sendInputReceipts.execute(ctx, terminalID, reqID, fp, deliver)
 				switch outcome {
 				case sendInputConflict:
@@ -467,6 +508,15 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 					return
 				case sendInputDuplicate:
 					if err != nil {
+						switch {
+						case errors.Is(err, context.Canceled):
+							_ = sender.SendError(int32(codes.Canceled), err.Error())
+						case errors.Is(err, context.DeadlineExceeded):
+							_ = sender.SendError(int32(codes.DeadlineExceeded), err.Error())
+						default:
+							slog.Error("failed waiting on duplicate send input", "terminal_id", terminalID, "error", err)
+							sendInternalError(sender, fmt.Sprintf("send input: %v", err))
+						}
 						return
 					}
 					sendProtoResponse(sender, &leapmuxv1.SendInputResponse{})
@@ -478,6 +528,14 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendErr = deliver()
 			}
 			if sendErr != nil {
+				if errors.Is(sendErr, terminal.ErrTerminalNotFound) || !svc.Terminals.IsRunning(terminalID) {
+					if row, getErr := svc.terminalCatalog().get(ctx, terminalID); getErr == nil && row.StartupError != "" {
+						sendFailedPrecondition(sender, fmt.Sprintf("terminal startup failed: %s", row.StartupError))
+						return
+					}
+					sendFailedPrecondition(sender, "terminal is not running")
+					return
+				}
 				slog.Error("failed to send input", "terminal_id", terminalID, "error", sendErr)
 				sendInternalError(sender, fmt.Sprintf("send input: %v", sendErr))
 				return
@@ -982,6 +1040,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
 		}
+		svc.TerminalStartup.retireInterrupted(terminalID, h, true, false)
 		svc.finishStartupAfterClose(&svc.TerminalStartup.startupCore, h, terminalID, gm)
 		return
 	case interruptionArchived:
@@ -989,11 +1048,11 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 			svc.Terminals.StopTerminal(terminalID)
 			svc.Terminals.WaitForExit(terminalID)
 		}
-		// succeed, not fail: see the matching branch in runAgentStartup.
+		// retireInterrupted, not fail: see the matching branch in runAgentStartup.
 		if startErr != nil {
 			slog.Warn("terminal startup stopped by workspace archival", "terminal_id", terminalID, "error", startErr)
 		}
-		svc.TerminalStartup.succeed(terminalID, h)
+		svc.TerminalStartup.retireInterrupted(terminalID, h, false, true)
 		return
 	case interruptionNone:
 	}
@@ -1107,18 +1166,18 @@ func (svc *Service) runTerminalRestart(
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
 		}
-		svc.TerminalStartup.succeed(terminalID, h)
+		svc.TerminalStartup.retireInterrupted(terminalID, h, true, false)
 		return
 	case interruptionArchived:
 		if startErr == nil {
 			svc.Terminals.StopTerminal(terminalID)
 			svc.Terminals.WaitForExit(terminalID)
 		}
-		// succeed, not fail: see the matching branch in runAgentStartup.
+		// retireInterrupted, not fail: see the matching branch in runAgentStartup.
 		if startErr != nil {
 			slog.Warn("terminal restart stopped by workspace archival", "terminal_id", terminalID, "error", startErr)
 		}
-		svc.TerminalStartup.succeed(terminalID, h)
+		svc.TerminalStartup.retireInterrupted(terminalID, h, false, true)
 		return
 	case interruptionNone:
 	}
@@ -1328,17 +1387,13 @@ func (svc *Service) derivedTerminalStatusEvent(t *terminalRecord, reportExit boo
 			TerminalId: t.ID, Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{ExitCode: state.exitCode}},
 		}
 	}
-	var exitCode *int32
-	if state.status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED {
-		exitCode = state.exitCode
-	}
 	return &leapmuxv1.TerminalEvent{
 		TerminalId: t.ID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{
 			Status:         state.status,
 			StartupError:   state.startupError,
 			StartupMessage: state.startupMessage,
-			ExitCode:       exitCode,
+			ExitCode:       state.exitCode,
 		}},
 	}
 }

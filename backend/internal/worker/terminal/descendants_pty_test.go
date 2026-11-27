@@ -41,7 +41,7 @@ func startShellPastInit(t *testing.T, m *Manager, id string) string {
 	require.NoError(t, err)
 	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte(command + testutil.TestShellEnter())}))
 	testutil.RequireEventually(t, func() bool {
-		screen, _, _ := m.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := m.ScreenSnapshotSince(id, 0)
 		return bytes.Contains(screen, []byte(marker))
 	}, "expected the shell to execute the marker command")
 	return workingDir
@@ -233,7 +233,7 @@ func TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups(t *testing.T) {
 		if !t.Failed() {
 			return
 		}
-		screen, _, _ := m.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := m.ScreenSnapshotSince(id, 0)
 		t.Logf("shell PID %d group %d, child PID %d, screen %q", shellPID, shellGroup, childPID, screen)
 		if childPID > 0 {
 			group, result := processGroupOf(childPID)

@@ -200,49 +200,56 @@ func (svc *Service) replayTerminalCatchUp(
 	row terminalRecord,
 ) {
 	termID := interest.GetTerminalId()
-	// The subscriber's after_offset tells us how far it has already
-	// processed; ScreenSnapshotSince returns an incremental delta when the
-	// offset is inside the retained ring, or a full-state snapshot (with
+	// The subscriber's after_offset tells us how far it has already processed.
+	// ScreenReplaySince (for ScreenGeometry=true) and ScreenSnapshotSince (for
+	// ScreenGeometry=false) return an incremental delta when the offset is
+	// inside the retained ring, or a full-state snapshot (with
 	// is_snapshot=true) when the subscriber has fallen behind or is
-	// cold-subscribing. When ScreenGeometry is false, we still send one
-	// catch-up TerminalData frame with replay_complete=true even when data
-	// is empty so non-emulator subscribers can order catch-up before live
-	// chunks.
+	// cold-subscribing. Every WatchEvents catch-up frame sets
+	// replay_complete=true even when data is empty so subscribers can order
+	// catch-up before live chunks.
 	var screen *leapmuxv1.TerminalData
 	if interest.GetScreenGeometry() {
-		replay, ok := svc.Terminals.ScreenReplaySince(termID, interest.GetScreenEpoch(), interest.GetAfterOffset(), interest.GetAfterGeometryRevision())
-		if ok {
+		if replay, ok := svc.Terminals.ScreenReplaySince(
+			termID,
+			interest.GetScreenEpoch(),
+			interest.GetAfterOffset(),
+			interest.GetAfterGeometryRevision(),
+		); ok {
 			screen = &leapmuxv1.TerminalData{
-				Data: replay.Data, EndOffset: replay.EndOffset, IsSnapshot: replay.Snapshot,
+				Data:           replay.Data,
+				EndOffset:      replay.EndOffset,
+				IsSnapshot:     replay.Snapshot,
 				ScreenTimeline: terminalScreenTimelineProto(&replay.Timeline),
 			}
-		} else {
-			// The stored screen predates this live buffer. Its replay header
-			// carries no native geometry cursor.
-			screen = &leapmuxv1.TerminalData{Data: row.Screen, EndOffset: int64(len(row.Screen)), IsSnapshot: true,
-				ScreenTimeline: &leapmuxv1.TerminalScreenTimeline{}}
 		}
-	} else {
-		data, endOffset, isSnapshot := svc.Terminals.ScreenSnapshotSince(termID, interest.GetAfterOffset())
-		if len(data) == 0 && endOffset == 0 && !isSnapshot && !svc.Terminals.HasTerminal(termID) {
-			storedEnd := int64(len(row.Screen))
-			if interest.GetAfterOffset() == storedEnd {
-				data = nil
-				endOffset = storedEnd
-				isSnapshot = false
-			} else {
-				data = row.Screen
-				endOffset = storedEnd
-				isSnapshot = true
-			}
-		}
+	} else if data, endOffset, isSnapshot, ok := svc.Terminals.ScreenSnapshotSince(termID, interest.GetAfterOffset()); ok {
 		screen = &leapmuxv1.TerminalData{
-			Data:           data,
-			EndOffset:      endOffset,
-			IsSnapshot:     isSnapshot,
-			ReplayComplete: true,
+			Data:       data,
+			EndOffset:  endOffset,
+			IsSnapshot: isSnapshot,
 		}
 	}
+	if screen == nil {
+		screen = &leapmuxv1.TerminalData{}
+		afterOffset := interest.GetAfterOffset()
+		if afterOffset <= 0 && len(row.Screen) > 0 {
+			screen.Data = row.Screen
+			screen.EndOffset = int64(len(row.Screen))
+			screen.IsSnapshot = true
+		} else if afterOffset > 0 {
+			// The client already holds output up to after_offset for this
+			// DB-only exited terminal. Sending row.Screen as a snapshot
+			// would reset the terminal buffer and wipe scrollback.
+			screen.EndOffset = afterOffset
+		}
+		if interest.GetScreenGeometry() {
+			// The stored screen predates this live buffer. Its replay header
+			// carries no native geometry cursor.
+			screen.ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{}
+		}
+	}
+	screen.ReplayComplete = true
 	sink.send(&leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
 			TerminalEvent: &leapmuxv1.TerminalEvent{

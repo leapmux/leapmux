@@ -16,7 +16,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -414,45 +413,26 @@ func (c *HubClient) WorkerManagementService() leapmuxv1connect.WorkerManagementS
 
 // UserEventsStream is a read-only WebSocket subscription to the hub's
 // `/ws/userevents` endpoint. Each `Recv` returns the next decoded
-// `WatchUserEvent` proto (the first call always returns an `Initial`
-// event). Close cancels the stream and tears down the underlying WS.
+// `WatchUserEvent` proto; the first event depends on the subscribed topics and
+// resume cursor (for example, `Initial`, `Delta`, `LayoutEvents`, or
+// `WorkersChanged`). Close cancels the stream and tears down the underlying
+// WebSocket.
 type UserEventsStream struct {
 	ws     *websocket.Conn
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-// tooManyConnectionsError wraps a WebSocket close error whose reason is
-// contracts.CloseReasonTooManyConnections so cli.FromError classifies it as
-// CodeUnavailable (retryable) while keeping the underlying CloseError reachable
-// through errors.As.
-type tooManyConnectionsError struct {
-	err error
-}
-
-func (e *tooManyConnectionsError) Error() string { return e.err.Error() }
-
-func (e *tooManyConnectionsError) Unwrap() error { return e.err }
-
-func (e *tooManyConnectionsError) CLIError() *cli.Error {
-	return cli.Newf(cli.CodeUnavailable, "the Hub rejected the connection: too many open connections")
-}
-
-var _ cli.Classifier = (*tooManyConnectionsError)(nil)
-
 func wrapHubConnectionError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var closeErr websocket.CloseError
-	if errors.As(err, &closeErr) && closeErr.Reason == contracts.CloseReasonTooManyConnections {
-		return &tooManyConnectionsError{err: err}
+	if mapped, ok := channelwire.ConnectErrorFromWebSocket(err); ok {
+		return mapped
 	}
 	return err
 }
 
-// Recv reads the next event from the stream. Returns io.EOF when the
-// peer closes cleanly, and returns any other transport error verbatim.
+// Recv reads the next event from the stream. Returns io.EOF when the peer
+// closes cleanly, and wraps classified Hub close errors while keeping the
+// underlying error reachable through Unwrap.
 func (s *UserEventsStream) Recv() (*leapmuxv1.WatchUserEvent, error) {
 	if s == nil || s.ws == nil {
 		return nil, io.EOF
@@ -487,17 +467,11 @@ func (s *UserEventsStream) Close() error {
 	return nil
 }
 
-// OpenUserEvents opens a `/ws/userevents` WebSocket subscription against
-// this hub. The Authorization header carries the bearer; the bearer
-// implies the user, so the request sends no user_id. The returned stream's first
-// event is always `UserMaterialized` (the bootstrap snapshot).
-func (c *HubClient) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*UserEventsStream, error) {
-	return c.OpenUserEventsWithOptions(ctx, channelwire.UserEventsOptions{WorkspaceIDs: workspaceIDs})
-}
-
-// OpenUserEventsWithOptions opens a `/ws/userevents` WebSocket subscription
-// with explicit topic, workspace, and cursor options.
-func (c *HubClient) OpenUserEventsWithOptions(ctx context.Context, opts channelwire.UserEventsOptions) (*UserEventsStream, error) {
+// OpenUserEvents opens a `/ws/userevents` WebSocket subscription against this
+// hub with explicit topic, workspace, and cursor options. The Authorization
+// header carries the bearer; the bearer implies the user, so the request sends
+// no user_id.
+func (c *HubClient) OpenUserEvents(ctx context.Context, opts channelwire.UserEventsOptions) (*UserEventsStream, error) {
 	// A long-lived subscription must not open on a token that is about to
 	// lapse: the WebSocket carries no retry, so it would simply close. The
 	// renewal and the read are ONE call, so a later caller cannot do the
@@ -507,7 +481,7 @@ func (c *HubClient) OpenUserEventsWithOptions(ctx context.Context, opts channelw
 		return nil, err
 	}
 	dialCtx, dialCancel := context.WithCancel(ctx)
-	ws, err := channelwire.OpenUserEventsWSWithOptions(dialCtx, c.WSClient, c.connectURL, bearer, opts)
+	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.connectURL, bearer, opts)
 	if err != nil {
 		dialCancel()
 		return nil, wrapHubConnectionError(err)

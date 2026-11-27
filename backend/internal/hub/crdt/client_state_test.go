@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -23,7 +24,7 @@ func TestStateFromMaterialized(t *testing.T) {
 		assert.EqualValues(t, 1, state.GetCurrentEpoch())
 	})
 
-	t.Run("copies all maps, max HLC, and epoch without aliasing map headers", func(t *testing.T) {
+	t.Run("deep-clones all maps, records, max HLC, and epoch", func(t *testing.T) {
 		src := &leapmuxv1.UserMaterialized{
 			UserId: "user-1",
 			Nodes: map[string]*leapmuxv1.NodeRecord{
@@ -44,11 +45,16 @@ func TestStateFromMaterialized(t *testing.T) {
 
 		state := crdt.StateFromMaterialized(src)
 		assert.Equal(t, "user-1", state.GetUserId())
-		assert.Equal(t, src.Nodes["root-1"], state.Nodes["root-1"])
-		assert.Equal(t, src.Tabs["tab-1"], state.Tabs["tab-1"])
-		assert.Equal(t, src.FloatingWindows["win-1"], state.FloatingWindows["win-1"])
-		assert.Equal(t, src.Workspaces["ws-1"], state.Workspaces["ws-1"])
-		assert.Equal(t, src.MaxHlc, state.GetMaxHlc())
+		assert.True(t, proto.Equal(src.Nodes["root-1"], state.Nodes["root-1"]))
+		assert.NotSame(t, src.Nodes["root-1"], state.Nodes["root-1"])
+		assert.True(t, proto.Equal(src.Tabs["tab-1"], state.Tabs["tab-1"]))
+		assert.NotSame(t, src.Tabs["tab-1"], state.Tabs["tab-1"])
+		assert.True(t, proto.Equal(src.FloatingWindows["win-1"], state.FloatingWindows["win-1"]))
+		assert.NotSame(t, src.FloatingWindows["win-1"], state.FloatingWindows["win-1"])
+		assert.True(t, proto.Equal(src.Workspaces["ws-1"], state.Workspaces["ws-1"]))
+		assert.NotSame(t, src.Workspaces["ws-1"], state.Workspaces["ws-1"])
+		assert.True(t, proto.Equal(src.MaxHlc, state.GetMaxHlc()))
+		assert.NotSame(t, src.MaxHlc, state.GetMaxHlc())
 		assert.EqualValues(t, 7, state.GetCurrentEpoch())
 
 		// Deleting from the returned state must not mutate the source snapshot's maps.
@@ -65,6 +71,149 @@ func TestStateFromMaterialized(t *testing.T) {
 		assert.True(t, crdt.HLCIsZero(state.GetMaxHlc()))
 		assert.EqualValues(t, 3, state.GetCurrentEpoch())
 	})
+
+	t.Run("skips nil record entries without panicking", func(t *testing.T) {
+		src := &leapmuxv1.UserMaterialized{
+			UserId: "user-3",
+			Nodes: map[string]*leapmuxv1.NodeRecord{
+				"nil-node": nil,
+				"node-1":   {NodeId: "node-1"},
+			},
+			Tabs: map[string]*leapmuxv1.TabRecord{
+				"nil-tab": nil,
+				"tab-1":   {TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			},
+			FloatingWindows: map[string]*leapmuxv1.FloatingWindowRecord{
+				"nil-win": nil,
+				"win-1":   {WindowId: "win-1"},
+			},
+			Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{
+				"nil-ws": nil,
+				"ws-1":   {WorkspaceId: "ws-1"},
+			},
+		}
+
+		var state *leapmuxv1.UserCrdtState
+		require.NotPanics(t, func() {
+			state = crdt.StateFromMaterialized(src)
+		})
+		assert.NotContains(t, state.Nodes, "nil-node")
+		assert.Contains(t, state.Nodes, "node-1")
+		assert.NotSame(t, src.Nodes["node-1"], state.Nodes["node-1"])
+		assert.NotContains(t, state.Tabs, "nil-tab")
+		assert.Contains(t, state.Tabs, "tab-1")
+		assert.NotSame(t, src.Tabs["tab-1"], state.Tabs["tab-1"])
+		assert.NotContains(t, state.FloatingWindows, "nil-win")
+		assert.Contains(t, state.FloatingWindows, "win-1")
+		assert.NotSame(t, src.FloatingWindows["win-1"], state.FloatingWindows["win-1"])
+		assert.NotContains(t, state.Workspaces, "nil-ws")
+		assert.Contains(t, state.Workspaces, "ws-1")
+		assert.NotSame(t, src.Workspaces["ws-1"], state.Workspaces["ws-1"])
+	})
+
+	t.Run("crdt.Apply does not mutate source UserMaterialized", func(t *testing.T) {
+		hlc := func(p int64) *leapmuxv1.HLC { return &leapmuxv1.HLC{Physical: p, Logical: 1, ClientId: "hub"} }
+		src := &leapmuxv1.UserMaterialized{
+			UserId: "user-1",
+			Nodes: map[string]*leapmuxv1.NodeRecord{
+				"node-1": {
+					NodeId:   "node-1",
+					Kind:     &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF, Hlc: hlc(10)},
+					Position: &leapmuxv1.LWWString{Value: "a0", Hlc: hlc(10)},
+				},
+			},
+			Tabs: map[string]*leapmuxv1.TabRecord{
+				"tab-1": {
+					TabId:    "tab-1",
+					TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+					TileId:   &leapmuxv1.LWWString{Value: "node-1", Hlc: hlc(10)},
+					WorkerId: &leapmuxv1.LWWString{Value: "w-1", Hlc: hlc(10)},
+				},
+			},
+			FloatingWindows: map[string]*leapmuxv1.FloatingWindowRecord{
+				"win-1": {
+					WindowId:    "win-1",
+					WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1", Hlc: hlc(10)},
+					X:           &leapmuxv1.LWWDouble{Value: 10, Hlc: hlc(10)},
+				},
+			},
+			Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{
+				"ws-1": {WorkspaceId: "ws-1"},
+			},
+			MaxHlc:       hlc(10),
+			CurrentEpoch: 4,
+		}
+		want := proto.Clone(src).(*leapmuxv1.UserMaterialized)
+
+		state := crdt.StateFromMaterialized(src)
+
+		// Mutate MaxHlc in place before applying ops to confirm MaxHlc itself is unaliased.
+		state.MaxHlc.Physical = 15
+		assert.EqualValues(t, 10, src.GetMaxHlc().GetPhysical())
+
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(20),
+			Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+				NodeId: "node-1",
+				Field:  &leapmuxv1.SetNodeRegisterOp_ParentId{ParentId: "root-1"},
+			}},
+		})
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(21),
+			Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+				NodeId: "node-1",
+				Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "b1"},
+			}},
+		})
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(22),
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
+				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "node-2"},
+			}},
+		})
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(23),
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
+				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w-2"},
+			}},
+		})
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(24),
+			Body: &leapmuxv1.CrdtOp_SetFloatingWindowRegister{SetFloatingWindowRegister: &leapmuxv1.SetFloatingWindowRegisterOp{
+				WindowId: "win-1",
+				Field:    &leapmuxv1.SetFloatingWindowRegisterOp_RootNodeId{RootNodeId: "froot-1"},
+			}},
+		})
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(25),
+			Body: &leapmuxv1.CrdtOp_SetFloatingWindowRegister{SetFloatingWindowRegister: &leapmuxv1.SetFloatingWindowRegisterOp{
+				WindowId: "win-1",
+				Field:    &leapmuxv1.SetFloatingWindowRegisterOp_X{X: 250},
+			}},
+		})
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(26),
+			Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
+				WorkspaceId: "ws-1",
+				RootNodeId:  "root-1",
+			}},
+		})
+
+		// Confirm every op actually modified the derived state.
+		assert.EqualValues(t, 26, state.GetMaxHlc().GetPhysical())
+		assert.Equal(t, "root-1", state.Nodes["node-1"].GetParentId())
+		assert.Equal(t, "b1", state.Nodes["node-1"].GetPosition().GetValue())
+		assert.Equal(t, "node-2", state.Tabs["tab-1"].GetTileId().GetValue())
+		assert.Equal(t, "w-2", state.Tabs["tab-1"].GetWorkerId().GetValue())
+		assert.Equal(t, "froot-1", state.FloatingWindows["win-1"].GetRootNodeId())
+		assert.Equal(t, float64(250), state.FloatingWindows["win-1"].GetX().GetValue())
+		assert.Equal(t, "root-1", state.Workspaces["ws-1"].GetRootNodeId())
+
+		// Confirm the caller-owned UserMaterialized proto is untouched.
+		assert.True(t, proto.Equal(want, src))
+	})
 }
 
 func TestApplyEntityMaterialized(t *testing.T) {
@@ -73,10 +222,19 @@ func TestApplyEntityMaterialized(t *testing.T) {
 			crdt.ApplyEntityMaterialized(nil, &leapmuxv1.EntityMaterialized{})
 			crdt.ApplyEntityMaterialized(crdt.NewState("u"), nil)
 			crdt.ApplyEntityMaterialized(crdt.NewState("u"), &leapmuxv1.EntityMaterialized{})
+			crdt.ApplyEntityMaterialized(crdt.NewState("u"), &leapmuxv1.EntityMaterialized{
+				Entity: &leapmuxv1.EntityMaterialized_Tab{Tab: nil},
+			})
+			crdt.ApplyEntityMaterialized(crdt.NewState("u"), &leapmuxv1.EntityMaterialized{
+				Entity: &leapmuxv1.EntityMaterialized_Node{Node: nil},
+			})
+			crdt.ApplyEntityMaterialized(crdt.NewState("u"), &leapmuxv1.EntityMaterialized{
+				Entity: &leapmuxv1.EntityMaterialized_FloatingWindow{FloatingWindow: nil},
+			})
 		})
 	})
 
-	t.Run("inserts and replaces every entity kind and ignores blank ids", func(t *testing.T) {
+	t.Run("deep-clones, inserts, and replaces every entity kind and ignores blank ids", func(t *testing.T) {
 		// Start from a bare struct with nil maps to verify lazy map allocation.
 		state := &leapmuxv1.UserCrdtState{UserId: "u"}
 
@@ -85,11 +243,13 @@ func TestApplyEntityMaterialized(t *testing.T) {
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_Tab{Tab: tab1},
 		})
-		assert.Same(t, tab1, state.Tabs["tab-1"])
+		assert.True(t, proto.Equal(tab1, state.Tabs["tab-1"]))
+		assert.NotSame(t, tab1, state.Tabs["tab-1"])
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_Tab{Tab: tab1Updated},
 		})
-		assert.Same(t, tab1Updated, state.Tabs["tab-1"])
+		assert.True(t, proto.Equal(tab1Updated, state.Tabs["tab-1"]))
+		assert.NotSame(t, tab1Updated, state.Tabs["tab-1"])
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_Tab{Tab: &leapmuxv1.TabRecord{}},
 		})
@@ -100,11 +260,13 @@ func TestApplyEntityMaterialized(t *testing.T) {
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_Node{Node: node1},
 		})
-		assert.Same(t, node1, state.Nodes["node-1"])
+		assert.True(t, proto.Equal(node1, state.Nodes["node-1"]))
+		assert.NotSame(t, node1, state.Nodes["node-1"])
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_Node{Node: node1Updated},
 		})
-		assert.Same(t, node1Updated, state.Nodes["node-1"])
+		assert.True(t, proto.Equal(node1Updated, state.Nodes["node-1"]))
+		assert.NotSame(t, node1Updated, state.Nodes["node-1"])
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_Node{Node: &leapmuxv1.NodeRecord{}},
 		})
@@ -115,15 +277,91 @@ func TestApplyEntityMaterialized(t *testing.T) {
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_FloatingWindow{FloatingWindow: win1},
 		})
-		assert.Same(t, win1, state.FloatingWindows["win-1"])
+		assert.True(t, proto.Equal(win1, state.FloatingWindows["win-1"]))
+		assert.NotSame(t, win1, state.FloatingWindows["win-1"])
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_FloatingWindow{FloatingWindow: win1Updated},
 		})
-		assert.Same(t, win1Updated, state.FloatingWindows["win-1"])
+		assert.True(t, proto.Equal(win1Updated, state.FloatingWindows["win-1"]))
+		assert.NotSame(t, win1Updated, state.FloatingWindows["win-1"])
 		crdt.ApplyEntityMaterialized(state, &leapmuxv1.EntityMaterialized{
 			Entity: &leapmuxv1.EntityMaterialized_FloatingWindow{FloatingWindow: &leapmuxv1.FloatingWindowRecord{}},
 		})
 		assert.Len(t, state.FloatingWindows, 1)
+	})
+
+	t.Run("crdt.Apply does not mutate source EntityMaterialized messages", func(t *testing.T) {
+		hlc := func(p int64) *leapmuxv1.HLC { return &leapmuxv1.HLC{Physical: p, ClientId: "hub"} }
+		state := crdt.NewState("u")
+
+		tabMsg := &leapmuxv1.EntityMaterialized{
+			Entity: &leapmuxv1.EntityMaterialized_Tab{
+				Tab: &leapmuxv1.TabRecord{
+					TabId:    "tab-1",
+					TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
+					TileId:   &leapmuxv1.LWWString{Value: "node-1", Hlc: hlc(1)},
+					WorkerId: &leapmuxv1.LWWString{Value: "w-1", Hlc: hlc(1)},
+				},
+			},
+		}
+		nodeMsg := &leapmuxv1.EntityMaterialized{
+			Entity: &leapmuxv1.EntityMaterialized_Node{
+				Node: &leapmuxv1.NodeRecord{
+					NodeId:   "node-1",
+					Kind:     &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF, Hlc: hlc(1)},
+					Position: &leapmuxv1.LWWString{Value: "a0", Hlc: hlc(1)},
+				},
+			},
+		}
+		winMsg := &leapmuxv1.EntityMaterialized{
+			Entity: &leapmuxv1.EntityMaterialized_FloatingWindow{
+				FloatingWindow: &leapmuxv1.FloatingWindowRecord{
+					WindowId:    "win-1",
+					WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1", Hlc: hlc(1)},
+					Width:       &leapmuxv1.LWWDouble{Value: 400, Hlc: hlc(1)},
+				},
+			},
+		}
+
+		wantTab := proto.Clone(tabMsg).(*leapmuxv1.EntityMaterialized)
+		wantNode := proto.Clone(nodeMsg).(*leapmuxv1.EntityMaterialized)
+		wantWin := proto.Clone(winMsg).(*leapmuxv1.EntityMaterialized)
+
+		crdt.ApplyEntityMaterialized(state, tabMsg)
+		crdt.ApplyEntityMaterialized(state, nodeMsg)
+		crdt.ApplyEntityMaterialized(state, winMsg)
+
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(10),
+			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
+				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "node-9"},
+			}},
+		})
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(11),
+			Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+				NodeId: "node-1",
+				Field:  &leapmuxv1.SetNodeRegisterOp_ParentId{ParentId: "root-9"},
+			}},
+		})
+		crdt.Apply(state, &leapmuxv1.CrdtOp{
+			CanonicalHlc: hlc(12),
+			Body: &leapmuxv1.CrdtOp_SetFloatingWindowRegister{SetFloatingWindowRegister: &leapmuxv1.SetFloatingWindowRegisterOp{
+				WindowId: "win-1",
+				Field:    &leapmuxv1.SetFloatingWindowRegisterOp_Width{Width: 800},
+			}},
+		})
+
+		// Confirm mutations applied to state.
+		assert.Equal(t, "node-9", state.Tabs["tab-1"].GetTileId().GetValue())
+		assert.Equal(t, "root-9", state.Nodes["node-1"].GetParentId())
+		assert.Equal(t, float64(800), state.FloatingWindows["win-1"].GetWidth().GetValue())
+
+		// Confirm caller-owned EntityMaterialized messages are untouched.
+		assert.True(t, proto.Equal(wantTab, tabMsg))
+		assert.True(t, proto.Equal(wantNode, nodeMsg))
+		assert.True(t, proto.Equal(wantWin, winMsg))
 	})
 }
 
@@ -434,12 +672,12 @@ func TestDiffOwnedTabs(t *testing.T) {
 		}}, got)
 	})
 
-	t.Run("removed tab absent from state during live batch reports moved out of scope", func(t *testing.T) {
+	t.Run("removed tab absent from state during live batch reports left scope", func(t *testing.T) {
 		state := crdt.NewState("u-1")
 		prev := map[string]crdt.OwnedTab{"t-1": tab("t-1", "ws-1", "w-1", "leaf-1")}
 		got := crdt.DiffOwnedTabs(state, prev, nil, false)
 		assert.Equal(t, []crdt.TabTransition{{
-			Kind:       crdt.TabTransitionMoved,
+			Kind:       crdt.TabTransitionLeftScope,
 			TabID:      "t-1",
 			Previous:   prev["t-1"],
 			Current:    crdt.OwnedTab{},
@@ -479,7 +717,7 @@ func TestDiffOwnedTabs(t *testing.T) {
 		state := crdt.NewState("u-1")
 		state.Tabs["tab-b"] = &leapmuxv1.TabRecord{TabId: "tab-b", TombstoneAt: &leapmuxv1.HLC{Physical: 50}}
 		prev := map[string]crdt.OwnedTab{
-			"tab-d": tab("tab-d", "ws-1", "w-1", "leaf-1"), // moved out of scope (not in state.Tabs)
+			"tab-d": tab("tab-d", "ws-1", "w-1", "leaf-1"), // left scope (not in state.Tabs)
 			"tab-b": tab("tab-b", "ws-1", "w-1", "leaf-1"), // closed (tombstone in state.Tabs)
 			"tab-c": tab("tab-c", "ws-1", "w-1", "leaf-1"), // moved within scope
 			"tab-e": tab("tab-e", "ws-1", "w-1", "leaf-1"), // unchanged
@@ -498,8 +736,44 @@ func TestDiffOwnedTabs(t *testing.T) {
 		assert.Equal(t, crdt.TabTransitionClosed, got[1].Kind)
 		assert.Equal(t, crdt.TabTransitionMoved, got[2].Kind)
 		assert.Equal(t, "ws-2", got[2].Current.WorkspaceID)
-		assert.Equal(t, crdt.TabTransitionMoved, got[3].Kind)
+		assert.Equal(t, crdt.TabTransitionLeftScope, got[3].Kind)
 		assert.Empty(t, got[3].Current.WorkspaceID)
+	})
+
+	t.Run("zero-change diff returns nil with zero allocations and single-change diff is deterministic", func(t *testing.T) {
+		state := crdt.NewState("u-1")
+		prev := map[string]crdt.OwnedTab{
+			"tab-1": tab("tab-1", "ws-1", "w-1", "leaf-1"),
+			"tab-2": tab("tab-2", "ws-1", "w-1", "leaf-2"),
+			"tab-3": tab("tab-3", "ws-2", "w-2", "leaf-3"),
+		}
+		same := map[string]crdt.OwnedTab{
+			"tab-1": tab("tab-1", "ws-1", "w-1", "leaf-1"),
+			"tab-2": tab("tab-2", "ws-1", "w-1", "leaf-2"),
+			"tab-3": tab("tab-3", "ws-2", "w-2", "leaf-3"),
+		}
+		assert.Nil(t, crdt.DiffOwnedTabs(state, prev, same, false))
+		allocs := testing.AllocsPerRun(50, func() {
+			if got := crdt.DiffOwnedTabs(state, prev, same, false); got != nil {
+				t.Fatalf("expected nil diff, got %v", got)
+			}
+		})
+		assert.Zero(t, allocs, "zero-change diff must not allocate")
+
+		singleChange := map[string]crdt.OwnedTab{
+			"tab-1": tab("tab-1", "ws-1", "w-1", "leaf-1"),
+			"tab-2": tab("tab-2", "ws-2", "w-1", "leaf-9"),
+			"tab-3": tab("tab-3", "ws-2", "w-2", "leaf-3"),
+		}
+		want := []crdt.TabTransition{{
+			Kind:     crdt.TabTransitionMoved,
+			TabID:    "tab-2",
+			Previous: prev["tab-2"],
+			Current:  singleChange["tab-2"],
+		}}
+		for range 10 {
+			assert.Equal(t, want, crdt.DiffOwnedTabs(state, prev, singleChange, false))
+		}
 	})
 }
 
@@ -592,14 +866,14 @@ func TestClientStateLifecycleProjectionAndDiff(t *testing.T) {
 	assert.Equal(t, "tab-1", transitions[0].TabID)
 	prev = next
 
-	// 4. EntityRemoved removes tab-2 from scope -> TabTransitionMoved with empty Current.
+	// 4. EntityRemoved removes tab-2 from scope -> TabTransitionLeftScope with empty Current.
 	crdt.ApplyEntityRemoved(state, &leapmuxv1.EntityRemoved{
 		Entity: &leapmuxv1.EntityRemoved_Tab{Tab: &leapmuxv1.TabIdent{TabId: "tab-2"}},
 	})
 	next = projectOwned(state)
 	transitions = crdt.DiffOwnedTabs(state, prev, next, false)
 	require.Len(t, transitions, 1)
-	assert.Equal(t, crdt.TabTransitionMoved, transitions[0].Kind)
+	assert.Equal(t, crdt.TabTransitionLeftScope, transitions[0].Kind)
 	assert.Equal(t, "tab-2", transitions[0].TabID)
 	assert.Equal(t, "ws-1", transitions[0].Previous.WorkspaceID)
 	assert.Empty(t, transitions[0].Current.WorkspaceID)
@@ -609,5 +883,6 @@ func TestTabTransitionKindString(t *testing.T) {
 	assert.Equal(t, "opened", crdt.TabTransitionOpened.String())
 	assert.Equal(t, "closed", crdt.TabTransitionClosed.String())
 	assert.Equal(t, "moved", crdt.TabTransitionMoved.String())
+	assert.Equal(t, "left_scope", crdt.TabTransitionLeftScope.String())
 	assert.Equal(t, "TabTransitionKind(0)", crdt.TabTransitionKind(0).String())
 }

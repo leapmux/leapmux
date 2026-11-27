@@ -139,7 +139,7 @@ func TestTerminalOutput_SnapshotReplayNeverBroadcastsBell(t *testing.T) {
 	require.NoError(t, err)
 	svc.replayTerminalCatchUp(sink, &leapmuxv1.WatchTerminalEntry{TerminalId: terminalID}, row)
 
-	data, _, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
+	data, _, _, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
 	require.NotEmpty(t, data, "snapshot must include the BEL byte in terminal data")
 
 	assert.Equal(t, 0, countTerminalEvents(w, terminalID, func(te *leapmuxv1.TerminalEvent) bool {

@@ -859,7 +859,7 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 		// Snapshot the way the service's exit handler does: this is the only
 		// persist a natural exit performs, so what is on the screen HERE is
 		// what the tab keeps.
-		screen, _, _ := m.ScreenSnapshotSince(tid, 0)
+		screen, _, _, _ := m.ScreenSnapshotSince(tid, 0)
 		exited <- exitReport{code: code, screen: screen}
 	}))
 	t.Cleanup(func() { m.RemoveTerminal(id) })
@@ -870,7 +870,7 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, m.SendInput(id, terminput.Input{Data: []byte(command + testutil.TestShellEnter())}))
 	testutil.AssertEventually(t, func() bool {
-		screen, _, _ := m.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := m.ScreenSnapshotSince(id, 0)
 		return bytes.Contains(screen, []byte(marker))
 	}, "expected the shell to execute the marker command")
 
@@ -1022,7 +1022,8 @@ func TestManager_ScreenSnapshotSince(t *testing.T) {
 	// and a matching offset. The shell stays live, so assert only what a
 	// single atomic read of the buffer states — a second read could see
 	// more bytes.
-	snap, offset, isSnap := m.ScreenSnapshotSince("tm-snap", 0)
+	snap, offset, isSnap, ok := m.ScreenSnapshotSince("tm-snap", 0)
+	assert.True(t, ok, "expected ok = true for tracked terminal")
 	assert.NotEmpty(t, snap, "expected non-empty screen snapshot")
 	assert.Contains(t, string(snap), "snapshot_test", "snapshot should contain the echoed text")
 	assert.True(t, isSnap, "afterOffset 0 is a forced resync, not an incremental delta")
@@ -1048,10 +1049,27 @@ func TestManager_ScreenSnapshotSince(t *testing.T) {
 
 func TestManager_ScreenSnapshotSince_UnknownTerminal(t *testing.T) {
 	m := NewManager()
-	snap, offset, isSnap := m.ScreenSnapshotSince("nonexistent", 0)
+	snap, offset, isSnap, ok := m.ScreenSnapshotSince("nonexistent", 0)
 	assert.Nil(t, snap, "expected nil snapshot for unknown terminal")
 	assert.Zero(t, offset, "expected zero offset for unknown terminal")
 	assert.False(t, isSnap)
+	assert.False(t, ok, "expected ok = false for unknown terminal")
+}
+
+func TestManager_ScreenSnapshotSince_TrackedWithZeroBufferedBytes(t *testing.T) {
+	t.Parallel()
+	m := NewManager()
+	const id = "tm-empty-live"
+	term := newDrainTestTerminal(id, testutil.NewQuartzMock(t))
+	m.mu.Lock()
+	m.current[id] = &terminalRegistration{id: id, terminal: term, done: make(chan struct{})}
+	m.mu.Unlock()
+
+	data, endOffset, isSnapshot, ok := m.ScreenSnapshotSince(id, 0)
+	assert.Nil(t, data)
+	assert.Zero(t, endOffset)
+	assert.False(t, isSnapshot)
+	assert.True(t, ok, "a tracked terminal with zero buffered bytes must report ok=true")
 }
 
 // TestManager_SnapshotAfterExit: after the shell exits, the Terminal
@@ -1103,7 +1121,8 @@ func TestManager_SnapshotAfterExit(t *testing.T) {
 
 	// Snapshot must still work between exit and RemoveTerminal; this is
 	// the window where a reconnecting client asks for the final screen.
-	snap, offset, _ := m.ScreenSnapshotSince("tm-exit", 0)
+	snap, offset, _, ok := m.ScreenSnapshotSince("tm-exit", 0)
+	require.True(t, ok)
 	assert.NotEmpty(t, snap, "post-exit snapshot must be retained until RemoveTerminal")
 	assert.Contains(t, string(snap), "before_exit")
 	require.Less(t, offset, int64(screenBufferSize), "test output must stay inside the ring")
@@ -1119,17 +1138,20 @@ func TestManager_SnapshotAfterExit(t *testing.T) {
 		"the injected mode bytes must produce a restore prefix on top of the counted bytes")
 
 	// SnapshotSince(offset) must also return empty (caught up) even after exit.
-	data, endOffset, isSnap := m.ScreenSnapshotSince("tm-exit", offset)
+	data, endOffset, isSnap, ok := m.ScreenSnapshotSince("tm-exit", offset)
+	assert.True(t, ok)
 	assert.Empty(t, data)
 	assert.Equal(t, offset, endOffset)
 	assert.False(t, isSnap)
 
 	m.RemoveTerminal("tm-exit")
 
-	// After removal, the entry is gone and snapshots return zero-value.
-	gone, goneOffset, _ := m.ScreenSnapshotSince("tm-exit", 0)
+	// After removal, the entry is gone and snapshots return zero-value with ok=false.
+	gone, goneOffset, goneSnap, goneOK := m.ScreenSnapshotSince("tm-exit", 0)
 	assert.Nil(t, gone)
 	assert.Zero(t, goneOffset)
+	assert.False(t, goneSnap)
+	assert.False(t, goneOK)
 }
 
 // TestManager_AppendOutput_AdvancesOffset: synthetic output injected via
@@ -1163,12 +1185,12 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 	// shell only writes again in response to stdin we never send.
 	var baseline int64
 	testutil.AssertEventually(t, func() bool {
-		_, off1, _ := m.ScreenSnapshotSince("tm-append", 0)
+		_, off1, _, _ := m.ScreenSnapshotSince("tm-append", 0)
 		if off1 == 0 {
 			return false
 		}
 		time.Sleep(50 * time.Millisecond)
-		_, off2, _ := m.ScreenSnapshotSince("tm-append", 0)
+		_, off2, _, _ := m.ScreenSnapshotSince("tm-append", 0)
 		if off1 != off2 {
 			return false
 		}
@@ -1179,14 +1201,15 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 	notice := []byte("\r\n[terminal disconnected]\r\n")
 	require.True(t, m.AppendOutput("tm-append", notice))
 
-	_, afterAppend, _ := m.ScreenSnapshotSince("tm-append", 0)
+	_, afterAppend, _, _ := m.ScreenSnapshotSince("tm-append", 0)
 	assert.Equal(t, baseline+int64(len(notice)), afterAppend,
 		"AppendOutput must advance the cumulative byte counter by len(data)")
 
 	// A subscriber at `baseline` must receive exactly the appended bytes
 	// as an incremental delta — the catch-up contract for the disconnect
 	// notice.
-	data, endOffset, isSnap := m.ScreenSnapshotSince("tm-append", baseline)
+	data, endOffset, isSnap, ok := m.ScreenSnapshotSince("tm-append", baseline)
+	assert.True(t, ok)
 	assert.Equal(t, notice, data)
 	assert.Equal(t, afterAppend, endOffset)
 	assert.False(t, isSnap)
@@ -1207,7 +1230,8 @@ func TestManager_ScreenSnapshotSince_ModePrefixOnFallenBehind(t *testing.T) {
 	})
 	pushAltScreenPastRing(t, m, "tm-prefix")
 
-	data, _, isSnap := m.ScreenSnapshotSince("tm-prefix", 0)
+	data, _, isSnap, ok := m.ScreenSnapshotSince("tm-prefix", 0)
+	require.True(t, ok)
 	require.True(t, isSnap, "fallen-behind subscriber must get a snapshot")
 	require.GreaterOrEqual(t, len(data), len("\x1b[?1049h"))
 	assert.Equal(t, []byte("\x1b[?1049h"), data[:len("\x1b[?1049h")],
@@ -1655,7 +1679,7 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 	m.StopTerminal(id)
 	testutil.AssertEventually(t, func() bool { return m.IsExited(id) }, "exit")
 	preTerm, _ := m.currentTerminalLocked(id)
-	_, preTotal, _ := m.ScreenSnapshotSince(id, 0)
+	_, preTotal, _, _ := m.ScreenSnapshotSince(id, 0)
 	require.Greater(t, preTotal, int64(0), "should have written some bytes pre-restart")
 
 	require.NoError(t, m.RestartTerminal(context.Background(), opts, 0, func(Output) {}, nil), "RestartTerminal")
@@ -1674,7 +1698,7 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 	// restart, and the retained bytes from the prior session remain
 	// visible. Together these prove the ScreenBuffer was carried over —
 	// without relying on a private accessor.
-	postScreen, postTotal, _ := m.ScreenSnapshotSince(id, 0)
+	postScreen, postTotal, _, _ := m.ScreenSnapshotSince(id, 0)
 	assert.GreaterOrEqual(t, postTotal, preTotal,
 		"cumulative byte counter must not regress across restart")
 	assert.Contains(t, string(postScreen), "first",
@@ -1702,7 +1726,7 @@ func TestRestart_NewBufferWithFallbackOffset(t *testing.T) {
 
 	newTerm, _ := m.currentTerminalLocked(id)
 	require.NotNil(t, newTerm, "manager should have a *Terminal after restart")
-	_, total, _ := m.ScreenSnapshotSince(id, 0)
+	_, total, _, _ := m.ScreenSnapshotSince(id, 0)
 	assert.GreaterOrEqual(t, total, fallback,
 		"new screen buffer must start at >= fallback offset")
 }

@@ -30,7 +30,23 @@ func (s *WorkspaceService) ReadLayoutEvents(ctx context.Context, req *leapmuxv1.
 	if !ok {
 		return nil, invalidLayoutCursor()
 	}
-	return readLayoutEventPageWithDrain(ctx, s.store.LayoutEvents(), s.registry, user.ID, workspaceID, cursor, after)
+	resp, _, err := readLayoutEventPageWithDrain(ctx, s.store.LayoutEvents(), s.registry, user.ID, workspaceID, cursor, after)
+	return resp, err
+}
+
+type layoutEventPageResult struct {
+	response              *leapmuxv1.ReadLayoutEventsResponse
+	ownerLifecyclePending bool
+	workspaceLive         bool
+}
+
+func (r layoutEventPageResult) caughtUp(workspaceID string) bool {
+	return r.response != nil &&
+		r.response.GetGap() == nil &&
+		r.response.GetEnd() == nil &&
+		!r.ownerLifecyclePending &&
+		r.response.GetScannedSequence() >= r.response.GetHighWaterSequence() &&
+		(workspaceID == "" || r.workspaceLive)
 }
 
 func readLayoutEventPageWithDrain(
@@ -41,40 +57,40 @@ func readLayoutEventPageWithDrain(
 	workspaceID string,
 	cursor []byte,
 	after int64,
-) (*leapmuxv1.ReadLayoutEventsResponse, error) {
-	response, ownerLifecyclePending, err := readLayoutEventPage(ctx, events, owner, workspaceID, cursor, after)
-	if err != nil || response.GetEnd() != nil {
-		return response, err
+) (*leapmuxv1.ReadLayoutEventsResponse, bool, error) {
+	page, err := readLayoutEventPage(ctx, events, owner, workspaceID, cursor, after)
+	if err != nil || page.response.GetEnd() != nil {
+		return page.response, false, err
 	}
-	progress := response.GetGap() != nil || response.GetScannedSequence() > after
-	if registry == nil || !ownerLifecyclePending {
-		return response, nil
+	progress := page.response.GetGap() != nil || page.response.GetScannedSequence() > after
+	if registry == nil || !page.ownerLifecyclePending {
+		return page.response, page.caughtUp(workspaceID), nil
 	}
 	drained := registry.StartLifecycleDrain(owner.String())
 	// Committed pages can return while lifecycle recovery runs. A busy account
 	// must still recover pending lifecycle mutations.
 	if progress {
-		return response, nil
+		return page.response, false, nil
 	}
 	select {
 	case <-drained.Done():
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	}
 	lifecycleErr := drained.Err()
 	// A failed outbox entry cannot hide an already committed page. Read again
 	// because the drain can commit before it reports a fault.
-	response, _, err = readLayoutEventPage(ctx, events, owner, workspaceID, cursor, after)
-	if err != nil || response.GetEnd() != nil {
-		return response, err
+	page, err = readLayoutEventPage(ctx, events, owner, workspaceID, cursor, after)
+	if err != nil || page.response.GetEnd() != nil {
+		return page.response, false, err
 	}
-	if response.GetGap() != nil || response.GetScannedSequence() > after {
-		return response, nil
+	if page.response.GetGap() != nil || page.response.GetScannedSequence() > after {
+		return page.response, page.caughtUp(workspaceID), nil
 	}
 	if lifecycleErr != nil {
-		return nil, wrappedConnectError(connect.CodeUnavailable, lifecycleErr)
+		return nil, false, wrappedConnectError(connect.CodeUnavailable, lifecycleErr)
 	}
-	return response, nil
+	return page.response, page.caughtUp(workspaceID), nil
 }
 
 func readInitialLayoutCursor(ctx context.Context, st store.Store, user *auth.UserInfo, workspaceID string) (*leapmuxv1.ReadLayoutEventsResponse, error) {
@@ -100,13 +116,13 @@ func readInitialLayoutCursor(ctx context.Context, st store.Store, user *auth.Use
 	return layoutPageStart(state.Head, user.ID, workspaceID, state.Head.HighSequence), nil
 }
 
-func readLayoutEventPage(ctx context.Context, events store.LayoutEventStore, owner userid.UserID, workspaceID string, cursor []byte, after int64) (*leapmuxv1.ReadLayoutEventsResponse, bool, error) {
+func readLayoutEventPage(ctx context.Context, events store.LayoutEventStore, owner userid.UserID, workspaceID string, cursor []byte, after int64) (layoutEventPageResult, error) {
 	page, err := events.ReadPage(ctx, owner, workspaceID, after, layoutEventPageLimit)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, false, invalidLayoutCursor()
+		return layoutEventPageResult{}, invalidLayoutCursor()
 	}
 	if err != nil {
-		return nil, false, wrappedConnectError(connect.CodeUnavailable, err)
+		return layoutEventPageResult{}, wrappedConnectError(connect.CodeUnavailable, err)
 	}
 	head := page.Head
 	if final := page.WorkspaceFinalSequence; final != nil {
@@ -115,28 +131,36 @@ func readLayoutEventPage(ctx context.Context, events store.LayoutEventStore, own
 	signer := newLayoutCursorSigner(head, owner, workspaceID)
 	verifiedAfter, ok := signer.Verify(cursor)
 	if !ok || verifiedAfter != after || after > head.HighSequence {
-		return nil, false, invalidLayoutCursor()
+		return layoutEventPageResult{}, invalidLayoutCursor()
 	}
 	response := layoutPageStartWithCursor(head, after, cursor)
 	if final := page.WorkspaceFinalSequence; final != nil && after == *final {
 		response.End = &leapmuxv1.LayoutEventEnd{FinalSequence: *final}
-		return response, page.OwnerLifecyclePending, nil
+		return layoutEventPageResult{
+			response:              response,
+			ownerLifecyclePending: page.OwnerLifecyclePending,
+			workspaceLive:         page.WorkspaceLive,
+		}, nil
 	}
 	if after == head.HighSequence && workspaceID != "" && !page.WorkspaceLive && !page.OwnerLifecyclePending {
-		return nil, false, connect.NewError(connect.CodeFailedPrecondition, "the Hub cannot establish the final layout position for the deleted workspace")
+		return layoutEventPageResult{}, connect.NewError(connect.CodeFailedPrecondition, "the Hub cannot establish the final layout position for the deleted workspace")
 	}
 	if after < head.FloorSequence {
 		resume := min(head.FloorSequence, head.HighSequence)
 		response.Gap = &leapmuxv1.LayoutEventGap{
 			ResumeAfterSequence: resume, Cursor: signer.Sign(resume),
 		}
-		return response, page.OwnerLifecyclePending, nil
+		return layoutEventPageResult{
+			response:              response,
+			ownerLifecyclePending: page.OwnerLifecyclePending,
+			workspaceLive:         page.WorkspaceLive,
+		}, nil
 	}
 	for _, row := range page.Rows {
 		var fact leapmuxv1.LayoutEventFact
 		if row.Sequence-1 != response.ScannedSequence ||
 			proto.Unmarshal(row.Fact, &fact) != nil || fact.GetEvent() == nil {
-			return nil, false, connect.NewError(connect.CodeInternal, "the Hub stored an inconsistent layout event page")
+			return layoutEventPageResult{}, connect.NewError(connect.CodeInternal, "the Hub stored an inconsistent layout event page")
 		}
 		response.ScannedSequence = row.Sequence
 		if scoped := layoutFactForWorkspace(&fact, workspaceID); scoped != nil {
@@ -147,7 +171,7 @@ func readLayoutEventPage(ctx context.Context, events store.LayoutEventStore, own
 		}
 	}
 	if len(page.Rows) == 0 && after < head.HighSequence {
-		return nil, false, connect.NewError(connect.CodeInternal, "the Hub lost a committed layout event")
+		return layoutEventPageResult{}, connect.NewError(connect.CodeInternal, "the Hub lost a committed layout event")
 	}
 	switch {
 	case response.ScannedSequence == after:
@@ -157,7 +181,11 @@ func readLayoutEventPage(ctx context.Context, events store.LayoutEventStore, own
 	default:
 		response.ScannedCursor = signer.Sign(response.ScannedSequence)
 	}
-	return response, page.OwnerLifecyclePending, nil
+	return layoutEventPageResult{
+		response:              response,
+		ownerLifecyclePending: page.OwnerLifecyclePending,
+		workspaceLive:         page.WorkspaceLive,
+	}, nil
 }
 
 func layoutPageStart(head store.LayoutEventHead, owner userid.UserID, workspaceID string, after int64) *leapmuxv1.ReadLayoutEventsResponse {

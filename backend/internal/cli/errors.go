@@ -179,6 +179,13 @@ func (e *Error) WithReceipt(r *RetryReceipt) *Error {
 	return e
 }
 
+// WithCause attaches cause to e without changing its message, so errors.Is and
+// errors.As still match cause.
+func (e *Error) WithCause(cause error) *Error {
+	e.cause = cause
+	return e
+}
+
 // Newf builds an error with code and a formatted message.
 func Newf(code Code, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}

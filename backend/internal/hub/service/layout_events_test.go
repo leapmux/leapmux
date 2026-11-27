@@ -480,3 +480,122 @@ func TestConsumeLifecycleOutboxWithLayoutFactRejectsNilFact(t *testing.T) {
 	}, time.Now(), nil)
 	require.ErrorContains(t, err, "layout event fact is required")
 }
+
+func TestRequireScopesFailsClosedOnEmptyScopes(t *testing.T) {
+	t.Parallel()
+	unscopedUser := &auth.UserInfo{ID: userid.MustNew("user-unscoped")}
+	err := requireScopes(unscopedUser)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, auth.ErrHTTPForbidden)
+	assert.ErrorContains(t, err, "no required scopes declared")
+}
+
+func TestLayoutEventPageResultCaughtUp(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		result      layoutEventPageResult
+		workspaceID string
+		want        bool
+	}{
+		{
+			name:        "nil response",
+			result:      layoutEventPageResult{workspaceLive: true},
+			workspaceID: "",
+			want:        false,
+		},
+		{
+			name: "non-nil gap",
+			result: layoutEventPageResult{
+				response: &leapmuxv1.ReadLayoutEventsResponse{
+					ScannedSequence:   5,
+					HighWaterSequence: 5,
+					Gap:               &leapmuxv1.LayoutEventGap{ResumeAfterSequence: 5},
+				},
+				workspaceLive: true,
+			},
+			workspaceID: "ws-1",
+			want:        false,
+		},
+		{
+			name: "non-nil end",
+			result: layoutEventPageResult{
+				response: &leapmuxv1.ReadLayoutEventsResponse{
+					ScannedSequence:   5,
+					HighWaterSequence: 5,
+					End:               &leapmuxv1.LayoutEventEnd{FinalSequence: 5},
+				},
+				workspaceLive: true,
+			},
+			workspaceID: "ws-1",
+			want:        false,
+		},
+		{
+			name: "owner lifecycle pending",
+			result: layoutEventPageResult{
+				response: &leapmuxv1.ReadLayoutEventsResponse{
+					ScannedSequence:   5,
+					HighWaterSequence: 5,
+				},
+				ownerLifecyclePending: true,
+				workspaceLive:         true,
+			},
+			workspaceID: "ws-1",
+			want:        false,
+		},
+		{
+			name: "scanned sequence below high water",
+			result: layoutEventPageResult{
+				response: &leapmuxv1.ReadLayoutEventsResponse{
+					ScannedSequence:   4,
+					HighWaterSequence: 5,
+				},
+				workspaceLive: true,
+			},
+			workspaceID: "ws-1",
+			want:        false,
+		},
+		{
+			name: "account scope does not require workspaceLive",
+			result: layoutEventPageResult{
+				response: &leapmuxv1.ReadLayoutEventsResponse{
+					ScannedSequence:   5,
+					HighWaterSequence: 5,
+				},
+				workspaceLive: false,
+			},
+			workspaceID: "",
+			want:        true,
+		},
+		{
+			name: "workspace scope requires workspaceLive",
+			result: layoutEventPageResult{
+				response: &leapmuxv1.ReadLayoutEventsResponse{
+					ScannedSequence:   5,
+					HighWaterSequence: 5,
+				},
+				workspaceLive: false,
+			},
+			workspaceID: "ws-1",
+			want:        false,
+		},
+		{
+			name: "caught-up live workspace page",
+			result: layoutEventPageResult{
+				response: &leapmuxv1.ReadLayoutEventsResponse{
+					ScannedSequence:   5,
+					HighWaterSequence: 5,
+				},
+				workspaceLive: true,
+			},
+			workspaceID: "ws-1",
+			want:        true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.result.caughtUp(tc.workspaceID))
+		})
+	}
+}

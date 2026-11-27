@@ -9,7 +9,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { WatchEventsResponseSchema } from '~/generated/proto/leapmux/v1/watch_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { MAX_PENDING_TERMINAL_FRAMES, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -371,6 +371,67 @@ describe('useWorkspaceConnection shell exit', () => {
       {
         kind: 'snapshot',
         data: [7, 8],
+      },
+    ])
+    s.dispose()
+  })
+
+  it('skips empty non-snapshot frames before the xterm instance mounts', async () => {
+    const s = await mount()
+    deliverWatchEvent(snapshotFrame(TERMINAL_TAB, [7, 8]))
+
+    for (let i = 0; i < MAX_PENDING_TERMINAL_FRAMES + 10; i++) {
+      deliverWatchEvent(terminalEvent(TERMINAL_TAB, {
+        case: 'data',
+        value: {
+          data: new Uint8Array(),
+          isSnapshot: false,
+          endOffset: 2n,
+          replayComplete: true,
+        },
+      }))
+    }
+
+    expect(s.metadata.get(TERMINAL_TAB)?.needsResync).not.toBe(true)
+    mountInstance(TERMINAL_TAB)
+
+    expect(written).toEqual([
+      {
+        kind: 'snapshot',
+        data: [7, 8],
+      },
+    ])
+    s.dispose()
+  })
+
+  it('writes nothing when only empty non-snapshot frames arrive before mount', async () => {
+    const s = await mount()
+    deliverWatchEvent(terminalEvent(TERMINAL_TAB, {
+      case: 'data',
+      value: {
+        data: new Uint8Array(),
+        isSnapshot: false,
+        endOffset: 10n,
+        replayComplete: true,
+      },
+    }))
+
+    expect(s.metadata.get(TERMINAL_TAB)?.needsResync).not.toBe(true)
+    mountInstance(TERMINAL_TAB)
+
+    expect(written).toEqual([])
+    s.dispose()
+  })
+
+  it('still queues an empty snapshot frame before the xterm instance mounts', async () => {
+    const s = await mount()
+    deliverWatchEvent(snapshotFrame(TERMINAL_TAB, []))
+    mountInstance(TERMINAL_TAB)
+
+    expect(written).toEqual([
+      {
+        kind: 'snapshot',
+        data: [],
       },
     ])
     s.dispose()

@@ -317,7 +317,7 @@ func (p *HubProxy) resolvedBase() (*url.URL, error) {
 
 // requireWSClient fails closed when the proxy has no pinned WebSocket client,
 // returning label ("channel relay" / "userevents relay") in the message so the
-// failing dial names itself. websocket.Dial and OpenUserEventsWSWithHeader both
+// failing dial names itself. websocket.Dial and OpenUserEventsWS both
 // fall back to http.DefaultClient when the client is nil, and that client carries
 // neither the cookie jar nor pinRedirectsToOrigin -- so a hub-side off-origin 3xx
 // on /ws/channel or /ws/userevents would lead the CORS-free desktop process

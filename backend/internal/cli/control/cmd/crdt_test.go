@@ -321,7 +321,7 @@ func TestStreamWatchUserLocal_DeliversEventsUntilOnEventStops(t *testing.T) {
 	c := startScriptedIPC(t, ipc)
 
 	var got []*leapmuxv1.WatchUserEvent
-	err := streamWatchUserLocal(testutil.DeadlineContext(t), c, []string{"ws-1"}, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
+	err := streamWatchUserLocal(testutil.DeadlineContext(t), c, channelwire.UserEventsOptions{WorkspaceIDs: []string{"ws-1"}}, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
 		got = append(got, evt)
 		return true, nil
 	})
@@ -348,7 +348,7 @@ func TestStreamWatchUserLocal_KeepsTheCodeOfAnInBandError(t *testing.T) {
 	c := startScriptedIPC(t, ipc)
 
 	delivered := 0
-	err := streamWatchUserLocal(testutil.DeadlineContext(t), c, nil, func(*leapmuxv1.WatchUserEvent) (bool, error) {
+	err := streamWatchUserLocal(testutil.DeadlineContext(t), c, channelwire.UserEventsOptions{}, func(*leapmuxv1.WatchUserEvent) (bool, error) {
 		delivered++
 		return false, nil
 	})
@@ -357,4 +357,39 @@ func TestStreamWatchUserLocal_KeepsTheCodeOfAnInBandError(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "this bearer cannot watch the user")
 	assert.Zero(t, delivered, "an error frame carries no event")
+}
+
+func TestStreamWatchUserLocal_RejectsCRDTResumeCursor(t *testing.T) {
+	ipc := &scriptedIPC{}
+	c := startScriptedIPC(t, ipc)
+
+	cases := []struct {
+		name string
+		opts channelwire.UserEventsOptions
+	}{
+		{
+			name: "non-nil ResumeCursor",
+			opts: channelwire.UserEventsOptions{
+				ResumeCursor: &leapmuxv1.HLC{Physical: 100, Logical: 1, ClientId: "cli"},
+			},
+		},
+		{
+			name: "non-zero ResumeEpoch",
+			opts: channelwire.UserEventsOptions{
+				ResumeEpoch: 2,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := streamWatchUserLocal(testutil.DeadlineContext(t), c, tc.opts, func(*leapmuxv1.WatchUserEvent) (bool, error) {
+				t.Error("rejected stream must not deliver events")
+				return false, nil
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "resume cursors")
+			assert.Empty(t, ipc.streamRequests(), "must fail closed before opening a local IPC stream")
+		})
+	}
 }

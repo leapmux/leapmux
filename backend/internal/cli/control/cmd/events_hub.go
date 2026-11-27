@@ -35,13 +35,13 @@ func hubUserEventsWithOptions(p control.Peer, opts channelwire.UserEventsOptions
 	switch c := p.(type) {
 	case *control.WorkerIPCClient:
 		return func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserEvent) error) error {
-			return streamWatchUserLocalWithOptions(ctx, c, opts, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
+			return streamWatchUserLocal(ctx, c, opts, func(evt *leapmuxv1.WatchUserEvent) (bool, error) {
 				return false, onEvent(evt)
 			})
 		}
 	case *control.HubClient:
 		return func(ctx context.Context, onEvent func(*leapmuxv1.WatchUserEvent) error) error {
-			stream, err := c.OpenUserEventsWithOptions(ctx, opts)
+			stream, err := c.OpenUserEvents(ctx, opts)
 			if err != nil {
 				return err
 			}

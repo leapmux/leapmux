@@ -18,7 +18,8 @@ type terminalReplayForwarder interface {
 }
 
 // screenReplayForwarder holds live output while the Worker captures replay.
-// It clips that overlap only after the replay has established both cursors.
+// It uses TerminalData.ReplayComplete as the replay barrier and clips overlap
+// only after the replay has established both cursors.
 type screenReplayForwarder struct {
 	feed         *screenFeed
 	position     terminalScreenPosition
@@ -36,11 +37,11 @@ func (f *screenReplayForwarder) receive(ctx context.Context, frame screenFeedIte
 		return f.feed.send(ctx, frame)
 	}
 	data := frame.event.GetData()
-	if timeline := data.GetScreenTimeline(); timeline != nil {
+	if data != nil && data.GetReplayComplete() {
 		if !f.feed.send(ctx, frame) {
 			return false
 		}
-		f.position = terminalScreenPositionFromTimeline(timeline, data.GetEndOffset())
+		f.position = terminalScreenPositionFromTimeline(data.GetScreenTimeline(), data.GetEndOffset())
 		f.replayed = true
 		for _, pending := range f.pending {
 			epoch := pending.event.GetData().GetScreenEpoch()
@@ -143,7 +144,6 @@ func (f *outputReplayForwarder) receive(ctx context.Context, frame screenFeedIte
 		case len(data.GetData()) > 0:
 			clipped := streamevents.ClipTerminalOutput(frame.event, f.offset)
 			if clipped != nil {
-				clipped.GetData().ReplayComplete = true
 				if !f.feed.send(ctx, screenFeedItem{event: clipped}) {
 					return false
 				}

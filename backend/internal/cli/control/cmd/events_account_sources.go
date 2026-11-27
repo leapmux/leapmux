@@ -9,11 +9,9 @@ import (
 	"sync/atomic"
 
 	"connectrpc.com/connect/v2"
-	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
@@ -105,8 +103,7 @@ func isSlotContentionError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var closeErr websocket.CloseError
-	if errors.As(err, &closeErr) && closeErr.Reason == contracts.CloseReasonTooManyConnections {
+	if channelwire.IsTooManyConnectionsError(err) {
 		return true
 	}
 	return strings.Contains(err.Error(), "connection slot is busy")

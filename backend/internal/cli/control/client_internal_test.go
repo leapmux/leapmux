@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -295,8 +296,8 @@ func TestAuthInterceptor_RepairFailureAttachesHintAndUnwrapsBoth(t *testing.T) {
 	})
 }
 
-func TestWrapHubConnectionError_ClassifiesTooManyConnections(t *testing.T) {
-	t.Run("wraps CloseReasonTooManyConnections as retryable CodeUnavailable", func(t *testing.T) {
+func TestWrapHubConnectionError_ClassifiesCloseReasons(t *testing.T) {
+	t.Run("wraps CloseReasonTooManyConnections as retryable CodeUnavailable and preserves CloseError through FromError", func(t *testing.T) {
 		raw := websocket.CloseError{
 			Code:   websocket.StatusPolicyViolation,
 			Reason: contracts.CloseReasonTooManyConnections,
@@ -312,12 +313,128 @@ func TestWrapHubConnectionError_ClassifiesTooManyConnections(t *testing.T) {
 		assert.Equal(t, cli.CodeUnavailable, cliErr.Code)
 		assert.True(t, cliErr.Retryable())
 		assert.Equal(t, "the Hub rejected the connection: too many open connections", cliErr.Message)
+
+		var fromCloseErr websocket.CloseError
+		require.ErrorAs(t, cliErr, &fromCloseErr, "cli.FromError must keep the underlying CloseError reachable via errors.As")
+		assert.Equal(t, contracts.CloseReasonTooManyConnections, fromCloseErr.Reason)
 	})
 
-	t.Run("leaves other close reasons untouched", func(t *testing.T) {
+	t.Run("classifies policy-violation codes, forbidden, and try-again-later", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			closeErr  websocket.CloseError
+			wantCode  cli.Code
+			wantMsg   string
+			retryable bool
+		}{
+			{
+				name:      "not_found policy close",
+				closeErr:  websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.FormatUserEventsPolicyCloseReason("not_found", "workspace ws-1 not found")},
+				wantCode:  cli.CodeNotFound,
+				wantMsg:   "workspace ws-1 not found",
+				retryable: false,
+			},
+			{
+				name:      "failed_precondition policy close",
+				closeErr:  websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.FormatUserEventsPolicyCloseReason("failed_precondition", "layout cursor expired")},
+				wantCode:  cli.CodeConflict,
+				wantMsg:   "layout cursor expired",
+				retryable: false,
+			},
+			{
+				name:      "invalid_argument policy close",
+				closeErr:  websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.FormatUserEventsPolicyCloseReason("invalid_argument", "malformed layout cursor")},
+				wantCode:  cli.CodeInvalidArgument,
+				wantMsg:   "malformed layout cursor",
+				retryable: false,
+			},
+			{
+				name:      "permission_denied policy close",
+				closeErr:  websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.FormatUserEventsPolicyCloseReason("permission_denied", "missing scope")},
+				wantCode:  cli.CodePermissionDenied,
+				wantMsg:   "missing scope",
+				retryable: false,
+			},
+			{
+				name:      "forbidden close token",
+				closeErr:  websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: contracts.CloseReasonForbidden},
+				wantCode:  cli.CodePermissionDenied,
+				wantMsg:   "the Hub rejected the connection: permission denied",
+				retryable: false,
+			},
+			{
+				name:      "try-again-later close status",
+				closeErr:  websocket.CloseError{Code: websocket.StatusTryAgainLater, Reason: "temporarily unavailable, retry"},
+				wantCode:  cli.CodeUnavailable,
+				wantMsg:   "temporarily unavailable, retry",
+				retryable: true,
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				wrapped := wrapHubConnectionError(tc.closeErr)
+				cliErr := cli.FromError(wrapped)
+				assert.Equal(t, tc.wantCode, cliErr.Code)
+				assert.Equal(t, tc.wantMsg, cliErr.Message)
+				assert.Equal(t, tc.retryable, cliErr.Retryable())
+
+				var gotClose websocket.CloseError
+				require.ErrorAs(t, cliErr, &gotClose)
+				assert.Equal(t, tc.closeErr, gotClose)
+			})
+		}
+	})
+
+	t.Run("classifies HandshakeError statuses and preserves HandshakeError through FromError", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			status    int
+			body      string
+			wantCode  cli.Code
+			retryable bool
+		}{
+			{name: "HTTP 400", status: http.StatusBadRequest, body: "unknown topic", wantCode: cli.CodeInvalidArgument, retryable: false},
+			{name: "HTTP 401", status: http.StatusUnauthorized, body: "invalid bearer", wantCode: cli.CodeNotLoggedIn, retryable: false},
+			{name: "HTTP 403", status: http.StatusForbidden, body: "missing scope", wantCode: cli.CodePermissionDenied, retryable: false},
+			{name: "HTTP 404", status: http.StatusNotFound, body: "workspace missing", wantCode: cli.CodeNotFound, retryable: false},
+			{name: "HTTP 429", status: http.StatusTooManyRequests, body: "rate limited", wantCode: cli.CodeUnavailable, retryable: true},
+			{name: "HTTP 503", status: http.StatusServiceUnavailable, body: "restarting", wantCode: cli.CodeUnavailable, retryable: true},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				raw := &channelwire.HandshakeError{
+					StatusCode: tc.status,
+					Body:       tc.body,
+					Err:        errors.New("handshake rejected"),
+				}
+				wrapped := wrapHubConnectionError(raw)
+				cliErr := cli.FromError(wrapped)
+				assert.Equal(t, tc.wantCode, cliErr.Code)
+				assert.Equal(t, tc.body, cliErr.Message)
+				assert.Equal(t, tc.retryable, cliErr.Retryable())
+
+				var gotHS *channelwire.HandshakeError
+				require.ErrorAs(t, cliErr, &gotHS, "cli.FromError must keep *HandshakeError reachable via errors.As")
+				assert.Same(t, raw, gotHS)
+			})
+		}
+	})
+
+	t.Run("classifies ErrInvalidUserEventTopic as CodeInvalidArgument", func(t *testing.T) {
+		raw := fmt.Errorf("%w: %v", channelwire.ErrInvalidUserEventTopic, leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_UNSPECIFIED)
+		wrapped := wrapHubConnectionError(raw)
+		cliErr := cli.FromError(wrapped)
+		assert.Equal(t, cli.CodeInvalidArgument, cliErr.Code)
+		assert.False(t, cliErr.Retryable())
+		assert.ErrorIs(t, cliErr, channelwire.ErrInvalidUserEventTopic)
+	})
+
+	t.Run("leaves unclassified close reasons untouched", func(t *testing.T) {
 		raw := websocket.CloseError{
 			Code:   websocket.StatusPolicyViolation,
-			Reason: contracts.CloseReasonForbidden,
+			Reason: contracts.CloseReasonSnapshotTooLarge,
 		}
 		wrapped := wrapHubConnectionError(raw)
 		assert.Equal(t, raw, wrapped)
@@ -348,7 +465,7 @@ func TestWrapHubConnectionError_ClassifiesTooManyConnections(t *testing.T) {
 			bearer:          "test-token",
 			accessExpiresAt: time.Now().Add(time.Hour),
 		}
-		stream, err := c.OpenUserEventsWithOptions(t.Context(), channelwire.UserEventsOptions{
+		stream, err := c.OpenUserEvents(t.Context(), channelwire.UserEventsOptions{
 			Topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS},
 		})
 		require.NoError(t, err)

@@ -760,18 +760,18 @@ func (m *Manager) UpdateTitle(terminalID, title string) bool {
 
 // ScreenSnapshotSince returns the bytes a subscriber needs to advance
 // from afterOffset to the current head of the terminal's screen buffer,
-// for the watch-event catch-up path. Returns (nil, 0, false) if the
-// terminal is unknown. See Terminal.ScreenSnapshotSince for the
-// isSnapshot contract.
-func (m *Manager) ScreenSnapshotSince(terminalID string, afterOffset int64) (data []byte, endOffset int64, isSnapshot bool) {
+// for the watch-event catch-up path. Reports ok=false if the terminal is
+// unknown. See Terminal.ScreenSnapshotSince for the isSnapshot contract.
+func (m *Manager) ScreenSnapshotSince(terminalID string, afterOffset int64) (data []byte, endOffset int64, isSnapshot bool, ok bool) {
 	m.mu.RLock()
 	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
 
 	if !ok {
-		return nil, 0, false
+		return nil, 0, false, false
 	}
-	return t.ScreenSnapshotSince(afterOffset)
+	data, endOffset, isSnapshot = t.ScreenSnapshotSince(afterOffset)
+	return data, endOffset, isSnapshot, true
 }
 
 // ScreenReplaySince reads retained bytes and geometry from one screen buffer.

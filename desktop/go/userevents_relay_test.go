@@ -167,7 +167,7 @@ func TestApp_OpenUserEventsRelay_StaleOpenLeavesTheNewerRelayInstalled(t *testin
 }
 
 // dialUserEvents must fail loudly when the proxy has no pinned WebSocket client.
-// A nil wsClient would otherwise let channelwire.OpenUserEventsWSWithHeader fall
+// A nil wsClient would otherwise let channelwire.OpenUserEventsWS fall
 // back to http.DefaultClient -- no cookie jar, no origin-redirect pin -- reopening
 // the hub-side off-origin 3xx redirect-escape the pin closes. Both production
 // constructors set wsClient, so this only fires for a future one that forgets it;

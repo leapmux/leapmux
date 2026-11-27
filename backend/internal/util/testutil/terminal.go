@@ -16,7 +16,7 @@ type TerminalFreezer interface {
 	StopTerminal(id string)
 	WaitForExit(id string)
 	WaitForReadDrained(id string) bool
-	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool)
+	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool, bool)
 }
 
 // FreezeTerminalOutput ends the terminal's PTY, waits for the shell to be
@@ -40,7 +40,8 @@ func FreezeTerminalOutput(t *testing.T, mgr TerminalFreezer, id string) int64 {
 	mgr.StopTerminal(id)
 	mgr.WaitForExit(id)
 	require.True(t, mgr.WaitForReadDrained(id), "terminal %s is not in the manager", id)
-	_, offset, _ := mgr.ScreenSnapshotSince(id, 0)
+	_, offset, _, ok := mgr.ScreenSnapshotSince(id, 0)
+	require.True(t, ok, "terminal %s is not in the manager", id)
 	return offset
 }
 
@@ -78,7 +79,7 @@ func RegisterTerminalCleanup(t *testing.T, mgr TerminalCleaner, id string) {
 // background job to a test shell and observe whether job-control setup failed.
 type TerminalJobRunner interface {
 	SendInput(id string, input terminput.Input) error
-	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool)
+	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool, bool)
 }
 
 // jobGroupFailure is the text that bash prints when a job did not get a process
@@ -98,7 +99,7 @@ func SendShellJobUntil(t *testing.T, mgr TerminalJobRunner, id, line string, don
 		if done() {
 			return true
 		}
-		screen, _, _ := mgr.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := mgr.ScreenSnapshotSince(id, 0)
 		if bytes.Count(screen, []byte(jobGroupFailure)) >= sent {
 			send()
 			sent++

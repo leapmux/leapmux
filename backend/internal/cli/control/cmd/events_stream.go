@@ -530,16 +530,14 @@ func (s *eventStream) tabEvents(prev, next map[string]scopedTab, reconciled bool
 			ev.Summary, ev.Reconciled = tabTypeName(tr.Previous.TabType)+" tab", tr.Reconciled
 			out = append(out, ev)
 		case crdt.TabTransitionMoved:
-			if tr.Current.TabID == "" {
-				ev := tabStreamEvent(kindTabMoved, scopedTabFromOwned(tr.Previous))
-				ev.WorkspaceID, ev.FromWorkspaceID = "", tr.Previous.WorkspaceID
-				ev.Summary = tabTypeName(tr.Previous.TabType) + " tab left the watched workspace"
-				out = append(out, ev)
-				continue
-			}
 			ev := tabStreamEvent(kindTabMoved, scopedTabFromOwned(tr.Current))
 			ev.FromWorkspaceID, ev.Reconciled = tr.Previous.WorkspaceID, tr.Reconciled
 			ev.Summary = fmt.Sprintf("%s tab from workspace %s", tabTypeName(tr.Current.TabType), cli.ShortID(tr.Previous.WorkspaceID))
+			out = append(out, ev)
+		case crdt.TabTransitionLeftScope:
+			ev := tabStreamEvent(kindTabMoved, scopedTabFromOwned(tr.Previous))
+			ev.WorkspaceID, ev.FromWorkspaceID = "", tr.Previous.WorkspaceID
+			ev.Summary = tabTypeName(tr.Previous.TabType) + " tab left the watched workspace"
 			out = append(out, ev)
 		}
 	}

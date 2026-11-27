@@ -780,6 +780,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           break
         const instance = getTerminalInstance(terminalId)
         if (!instance) {
+          // Skip empty non-snapshot frames (such as caught-up replay-complete barriers);
+          // they carry no terminal bytes for a late-mounting xterm instance and must not
+          // consume pending-frame slots or trigger eviction.
+          if (!isSnapshot && data.length === 0)
+            break
           // Advance lastOffset only after a live instance receives the bytes.
           // An earlier advance would skip catch-up and leave a late instance blank.
           // Request a full snapshot if the frame limit removes bytes that incremental catch-up cannot restore.

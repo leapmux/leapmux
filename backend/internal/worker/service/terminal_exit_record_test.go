@@ -211,6 +211,73 @@ func TestDerivedTerminalStatusEvent_PopulatesExitCodeWhenKnown(t *testing.T) {
 	assert.Nil(t, sc.ExitCode)
 }
 
+// derivedTerminalStatusEvent with reportExit=false omits ExitCode when an
+// exited shell remains held in svc.Terminals while a restart is STARTING or
+// STARTUP_FAILED (either in memory or persisted on the row).
+func TestDerivedTerminalStatusEvent_OmitsExitCodeDuringRestartAndFailure(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, d, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+
+	const id = "tm-status-exit-suppressed"
+	dir := t.TempDir()
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: id, WorkingDir: dir, Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
+		ID: id, Shell: testutil.TestShell(), WorkingDir: dir, Cols: 80, Rows: 24,
+	}, svc.makeTerminalOutputFn(id), svc.makeTerminalExitFn()))
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
+	exitTerminalAndWait(t, svc, d, id, " 7")
+
+	code, ok := svc.Terminals.ExitCode(id)
+	require.True(t, ok, "precondition: exited shell remains held in the manager")
+	require.Equal(t, 7, code)
+
+	row, err := svc.terminalCatalog().get(ctx, id)
+	require.NoError(t, err)
+
+	// In-flight restart: STARTING must leave ExitCode nil.
+	h := svc.TerminalStartup.begin(id, func() {})
+	require.NotNil(t, h)
+	defer func() {
+		svc.TerminalStartup.cancelAndClear(id, keepWorktreeOnClose)
+		svc.TerminalStartup.finishEntry(h)
+	}()
+	svc.TerminalStartup.setMessage(id, "Restarting shell…")
+	ev := svc.derivedTerminalStatusEvent(&row, false)
+	sc := ev.GetStatusChange()
+	require.NotNil(t, sc)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
+	assert.Equal(t, "Restarting shell…", sc.GetStartupMessage())
+	assert.Nil(t, sc.ExitCode, "STARTING must omit the previous shell's exit code")
+
+	// In-memory registry failure: STARTUP_FAILED must leave ExitCode nil.
+	svc.TerminalStartup.fail(h, "restart spawn failed")
+	ev = svc.derivedTerminalStatusEvent(&row, false)
+	sc = ev.GetStatusChange()
+	require.NotNil(t, sc)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, sc.GetStatus())
+	assert.Equal(t, "restart spawn failed", sc.GetStartupError())
+	assert.Nil(t, sc.ExitCode, "in-memory STARTUP_FAILED must omit the previous shell's exit code")
+
+	// Persisted StartupError after registry clear: STARTUP_FAILED must leave ExitCode nil.
+	svc.TerminalStartup.cancelAndClear(id, keepWorktreeOnClose)
+	rowWithErr := row
+	rowWithErr.StartupError = "persisted restart failure"
+	ev = svc.derivedTerminalStatusEvent(&rowWithErr, false)
+	sc = ev.GetStatusChange()
+	require.NotNil(t, sc)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, sc.GetStatus())
+	assert.Equal(t, "persisted restart failure", sc.GetStartupError())
+	assert.Nil(t, sc.ExitCode, "persisted STARTUP_FAILED must omit the previous shell's exit code")
+
+	code, ok = svc.Terminals.ExitCode(id)
+	assert.True(t, ok, "the exited shell remained held in the manager throughout")
+	assert.Equal(t, 7, code)
+}
+
 // broadcastTerminalStatusAfterStartup delivers TerminalStatusChange.ExitCode
 // when the shell already exited and is held by the manager, and leaves it nil
 // when the terminal is not held by the manager.
@@ -235,13 +302,7 @@ func TestBroadcastTerminalStatusAfterStartup_PopulatesExitCodeWhenKnown(t *testi
 	watchTerminal(svc, heldID, wHeld)
 	svc.broadcastTerminalStatusAfterStartup(heldID)
 
-	var heldChange *leapmuxv1.TerminalStatusChange
-	for _, frame := range wHeld.streamsSnapshot() {
-		var resp leapmuxv1.WatchEventsResponse
-		if proto.Unmarshal(frame.GetPayload(), &resp) == nil && resp.GetTerminalEvent().GetStatusChange() != nil {
-			heldChange = resp.GetTerminalEvent().GetStatusChange()
-		}
-	}
+	heldChange := lastTerminalStatusChange(wHeld)
 	require.NotNil(t, heldChange)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, heldChange.GetStatus())
 	require.NotNil(t, heldChange.ExitCode)
@@ -252,14 +313,19 @@ func TestBroadcastTerminalStatusAfterStartup_PopulatesExitCodeWhenKnown(t *testi
 	watchTerminal(svc, unknownID, wUnknown)
 	svc.broadcastTerminalStatusAfterStartup(unknownID)
 
-	var unknownChange *leapmuxv1.TerminalStatusChange
-	for _, frame := range wUnknown.streamsSnapshot() {
-		var resp leapmuxv1.WatchEventsResponse
-		if proto.Unmarshal(frame.GetPayload(), &resp) == nil && resp.GetTerminalEvent().GetStatusChange() != nil {
-			unknownChange = resp.GetTerminalEvent().GetStatusChange()
-		}
-	}
+	unknownChange := lastTerminalStatusChange(wUnknown)
 	require.NotNil(t, unknownChange)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, unknownChange.GetStatus())
 	assert.Nil(t, unknownChange.ExitCode)
+}
+
+func lastTerminalStatusChange(w *testResponseWriter) *leapmuxv1.TerminalStatusChange {
+	var last *leapmuxv1.TerminalStatusChange
+	for _, frame := range w.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if proto.Unmarshal(frame.GetPayload(), &resp) == nil && resp.GetTerminalEvent().GetStatusChange() != nil {
+			last = resp.GetTerminalEvent().GetStatusChange()
+		}
+	}
+	return last
 }

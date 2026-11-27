@@ -243,9 +243,8 @@ message TerminalData {
   // Live bytes carry the geometry in effect when the Worker observed them.
   string screen_epoch = 5;
   uint64 geometry_revision = 6;
-  // True on the single catch-up frame sent when ScreenGeometry is false so
-  // non-emulator subscribers can order catch-up before live chunks even when
-  // data is empty.
+  // True on every WatchEvents catch-up frame (regardless of screen_geometry) so
+  // subscribers can order catch-up before live chunks even when data is empty.
   bool replay_complete = 7;
 }
 

@@ -77,7 +77,7 @@ var recordedByte = regexp.MustCompile(`<B>([0-9a-f]{2})</B>`)
 // marker.
 func recordedInput(t *testing.T, svc *Service, terminalID, marker string) (string, bool) {
 	t.Helper()
-	screen, _, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
+	screen, _, _, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
 	i := strings.LastIndex(string(screen), marker)
 	if i < 0 {
 		return "", false
@@ -152,11 +152,11 @@ func TestOpenTerminalRunsOneInitialCommandWithADurableClaim(t *testing.T) {
 			const marker = "WORKER_INITIAL_COMMAND"
 			id := openTerminalRunning(t, svc, d, shell, "printf '%s\\n' WORKER_INITIAL_''COMMAND")
 			testutil.RequireEventually(t, func() bool {
-				screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+				screen, _, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 				return strings.Contains(string(screen), marker)
 			}, "the original shell should produce the startup receipt")
 			sendInteractiveTerminalReceipt(t, svc, d, id, "WORKER_AFTER_INITIAL")
-			screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+			screen, _, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 			assert.Equal(t, 1, strings.Count(string(screen), marker))
 			row, err := svc.Queries.GetTabCreation(t.Context(), db.GetTabCreationParams{
 				UserID: svc.RegisteredBy().String(), WorkerID: svc.WorkerID, TabID: id,
@@ -182,7 +182,7 @@ func TestOpenTerminalRunsNushellInitialCommandWithADurableClaim(t *testing.T) {
 	defer drainAllInFlight(svc)
 	id := openTerminalRunning(t, svc, d, shell, "'WORKER_NUSHELL' + '_INITIAL_COMMAND'")
 	testutil.RequireEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 		return strings.Contains(string(screen), "WORKER_NUSHELL_INITIAL_COMMAND")
 	}, "the Worker should expose the startup command's output")
 	row, err := svc.Queries.GetTabCreation(t.Context(), db.GetTabCreationParams{
@@ -215,7 +215,7 @@ func sendInteractiveTerminalReceipt(t *testing.T, svc *Service, d testRPCDispatc
 	}, writer)
 	require.Empty(t, writer.errors)
 	testutil.RequireEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		screen, _, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 		return strings.Contains(string(screen), marker)
 	}, "the interactive shell should produce its receipt")
 }
@@ -269,7 +269,7 @@ func TestRestartTerminal_DoesNotRunTheInitialCommandAgain(t *testing.T) {
 	const marker = "WORKER_RESTART_INITIAL"
 	id := openTerminalRunning(t, svc, d, testutil.TestShell(), "printf '%s\\n' WORKER_RESTART_''INITIAL; exit")
 	waitForTerminalExit(t, svc.Terminals, id)
-	screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+	screen, _, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 	require.Equal(t, 1, strings.Count(string(screen), marker))
 
 	writer := newTestWriter()
@@ -277,7 +277,7 @@ func TestRestartTerminal_DoesNotRunTheInitialCommandAgain(t *testing.T) {
 	require.Empty(t, writer.errors)
 	testutil.RequireEventually(t, func() bool { return svc.Terminals.IsRunning(id) }, "the restarted terminal should have a live shell")
 	sendInteractiveTerminalReceipt(t, svc, d, id, "WORKER_RESTART_INTERACTIVE")
-	screen, _, _ = svc.Terminals.ScreenSnapshotSince(id, 0)
+	screen, _, _, _ = svc.Terminals.ScreenSnapshotSince(id, 0)
 	assert.Equal(t, 1, strings.Count(string(screen), marker))
 }
 

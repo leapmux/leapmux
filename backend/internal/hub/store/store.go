@@ -272,7 +272,7 @@ type WorkerStore interface {
 	// ListByUserID pages the user's ACTIVE workers only.
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)
 	// InventorySnapshot reads the enrollment revision and sorted active worker
-	// IDs atomically inside one read transaction.
+	// IDs atomically in one read.
 	InventorySnapshot(ctx context.Context, owner userid.UserID) (WorkerInventorySnapshot, error)
 	ListAdmin(ctx context.Context, p ListWorkersAdminParams) (Page[WorkerWithOwner], error)
 	// GetAdmin is the single-row form of ListAdmin: the worker plus the

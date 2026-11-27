@@ -395,7 +395,7 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 	// wiping the existing xterm buffer).
 	persistedLen := int64(len(persistedScreen))
 	testutil.AssertEventually(t, func() bool {
-		_, endOffset, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		_, endOffset, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 		return endOffset >= persistedLen
 	}, "cumulative offset must start at >= persisted screen length")
 }

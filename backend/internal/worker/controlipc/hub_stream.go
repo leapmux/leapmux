@@ -79,17 +79,29 @@ func (s *HubEventStreamer) watchUser(ctx context.Context, userID userid.UserID, 
 		return fmt.Errorf("delegation bearer: %w", err)
 	}
 
-	ws, err := channelwire.OpenUserEventsWSWithOptions(ctx, s.HTTPClient, s.ConnectURL, bearer, channelwire.UserEventsOptions{
+	ws, err := channelwire.OpenUserEventsWS(ctx, s.HTTPClient, s.ConnectURL, bearer, channelwire.UserEventsOptions{
 		WorkspaceIDs:      req.GetWorkspaceIds(),
 		Topics:            req.GetTopics(),
 		LayoutWorkspaceID: req.GetLayoutWorkspaceId(),
 		LayoutAfterCursor: req.GetLayoutAfterCursor(),
 	})
 	if err != nil {
+		if mapped, ok := channelwire.ConnectErrorFromWebSocket(err); ok {
+			return mapped
+		}
 		return err
 	}
 	defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 	// Strip the 4-byte length prefix so the IPC consumer receives the
-	// WatchUserEvent proto bytes directly.
-	return channelwire.RunUserEventsReadLoop(ctx, ws, true, onPayload)
+	// WatchUserEvent proto bytes directly. Use ReadUserEventsFrames rather than
+	// RunUserEventsReadLoop so StatusTryAgainLater maps to CodeUnavailable
+	// instead of collapsing to a silent EOF.
+	err = channelwire.ReadUserEventsFrames(ctx, ws, true, onPayload)
+	if mapped, ok := channelwire.ConnectErrorFromWebSocket(err); ok {
+		return mapped
+	}
+	if channelwire.IsUserEventsCloseError(err) {
+		return nil
+	}
+	return err
 }

@@ -45,6 +45,79 @@ func (d *LifecycleDrain) Done() <-chan struct{} { return d.done }
 // Err returns the drain error after Done closes.
 func (d *LifecycleDrain) Err() error { return d.err }
 
+// wakeEntry tracks one per-user broadcast wake channel and its active waiter count.
+type wakeEntry struct {
+	ch      chan struct{}
+	waiters int
+}
+
+// wakeChannels manages per-user one-shot wake channels with waiter reference
+// counting and a shutdown latch so disconnecting waiters clean up map entries
+// and closed registries never re-insert dead channels.
+type wakeChannels struct {
+	mu      sync.Mutex
+	entries map[string]*wakeEntry
+	closed  bool
+}
+
+func (w *wakeChannels) subscribe(userID string) (<-chan struct{}, func(), bool) {
+	if userID == "" {
+		return nil, func() {}, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil, func() {}, false
+	}
+	if w.entries == nil {
+		w.entries = make(map[string]*wakeEntry)
+	}
+	entry := w.entries[userID]
+	if entry == nil {
+		entry = &wakeEntry{ch: make(chan struct{})}
+		w.entries[userID] = entry
+	}
+	entry.waiters++
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			if w.entries[userID] != entry {
+				return
+			}
+			entry.waiters--
+			if entry.waiters == 0 {
+				delete(w.entries, userID)
+			}
+		})
+	}
+	return entry.ch, release, true
+}
+
+func (w *wakeChannels) signal(userID string) {
+	if userID == "" {
+		return
+	}
+	w.mu.Lock()
+	entry := w.entries[userID]
+	if entry != nil {
+		delete(w.entries, userID)
+		close(entry.ch)
+	}
+	w.mu.Unlock()
+}
+
+func (w *wakeChannels) closeAll() {
+	w.mu.Lock()
+	w.closed = true
+	for userID, entry := range w.entries {
+		close(entry.ch)
+		delete(w.entries, userID)
+	}
+	w.mu.Unlock()
+}
+
 // Registry hands out per-user managers, lazy-loading on first
 // reference. The registry is single-instance: this hub deployment
 // owns every user's manager, and there is no leader election.
@@ -55,8 +128,8 @@ func (d *LifecycleDrain) Err() error { return d.err }
 type Registry struct {
 	mu           sync.Mutex
 	managers     map[string]*Manager
-	layoutWakes  map[string]chan struct{}
-	workerWakes  map[string]chan struct{}
+	layoutWakes  wakeChannels
+	workerWakes  wakeChannels
 	drains       map[string]*LifecycleDrain
 	factory      ManagerFactory
 	outbox       LifecycleOutboxReader
@@ -101,8 +174,6 @@ func NewRegistry(factory ManagerFactory, logger *slog.Logger, opts ...RegistryOp
 	drainCtx, cancelDrains := context.WithCancel(context.Background())
 	r := &Registry{
 		managers:     map[string]*Manager{},
-		layoutWakes:  map[string]chan struct{}{},
-		workerWakes:  map[string]chan struct{}{},
 		drains:       map[string]*LifecycleDrain{},
 		factory:      factory,
 		drainTimeout: defaultLifecycleDrainTimeout,
@@ -260,50 +331,39 @@ func (r *Registry) BroadcastWorkersChanged(userID string) {
 	}
 	r.mu.Lock()
 	m := r.managers[userID]
-	if ch := r.workerWakes[userID]; ch != nil {
-		delete(r.workerWakes, userID)
-		close(ch)
-	}
 	r.mu.Unlock()
+	r.workerWakes.signal(userID)
 	if m != nil {
 		m.BroadcastWorkersChanged()
 	}
 }
 
 // WorkerInventoryWake returns a channel that closes when
-// BroadcastWorkersChanged runs for userID. Capture the channel before reading
-// worker inventory so a concurrent change cannot be missed, even before a
-// Manager is loaded or across idle eviction.
-func (r *Registry) WorkerInventoryWake(userID string) <-chan struct{} {
-	if r == nil || userID == "" {
-		return nil
+// BroadcastWorkersChanged runs for userID, along with an idempotent release
+// function that cleans up the registration when the caller stops waiting.
+// Capture the channel before reading worker inventory so a concurrent change
+// cannot be missed, even before a Manager is loaded or across idle eviction.
+// Returns (nil, noop) when r is nil, userID is blank, or Shutdown has begun.
+func (r *Registry) WorkerInventoryWake(userID string) (<-chan struct{}, func()) {
+	if r == nil {
+		return nil, func() {}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ch := r.workerWakes[userID]
-	if ch == nil {
-		ch = make(chan struct{})
-		r.workerWakes[userID] = ch
-	}
-	return ch
+	ch, release, _ := r.workerWakes.subscribe(userID)
+	return ch, release
 }
 
 // LayoutEventWake returns a channel that closes when layout facts or pending
-// lifecycle mutations are signaled for userID. Capture the channel before
-// reading the layout log so a concurrent commit cannot be missed, even before
-// a Manager is loaded or across idle eviction.
-func (r *Registry) LayoutEventWake(userID string) <-chan struct{} {
-	if r == nil || userID == "" {
-		return nil
+// lifecycle mutations are signaled for userID, along with an idempotent release
+// function that cleans up the registration when the caller stops waiting.
+// Capture the channel before reading the layout log so a concurrent commit
+// cannot be missed, even before a Manager is loaded or across idle eviction.
+// Returns (nil, noop) when r is nil, userID is blank, or Shutdown has begun.
+func (r *Registry) LayoutEventWake(userID string) (<-chan struct{}, func()) {
+	if r == nil {
+		return nil, func() {}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ch := r.layoutWakes[userID]
-	if ch == nil {
-		ch = make(chan struct{})
-		r.layoutWakes[userID] = ch
-	}
-	return ch
+	ch, release, _ := r.layoutWakes.subscribe(userID)
+	return ch, release
 }
 
 // SignalLayoutEvents wakes every waiter watching userID's layout history.
@@ -311,13 +371,7 @@ func (r *Registry) SignalLayoutEvents(userID string) {
 	if r == nil || userID == "" {
 		return
 	}
-	r.mu.Lock()
-	ch := r.layoutWakes[userID]
-	if ch != nil {
-		delete(r.layoutWakes, userID)
-		close(ch)
-	}
-	r.mu.Unlock()
+	r.layoutWakes.signal(userID)
 }
 
 // StartLifecycleDrain starts or joins the single in-flight multi-page
@@ -428,14 +482,8 @@ func (r *Registry) Shutdown(timeout time.Duration) {
 		managers = append(managers, m)
 	}
 	r.managers = map[string]*Manager{}
-	for userID, ch := range r.layoutWakes {
-		close(ch)
-		delete(r.layoutWakes, userID)
-	}
-	for userID, ch := range r.workerWakes {
-		close(ch)
-		delete(r.workerWakes, userID)
-	}
+	r.layoutWakes.closeAll()
+	r.workerWakes.closeAll()
 	r.mu.Unlock()
 
 	deadline := time.Now().Add(timeout)

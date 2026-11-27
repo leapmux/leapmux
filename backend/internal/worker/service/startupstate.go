@@ -231,6 +231,19 @@ type startupCore struct {
 	// pending startup prompts (or when closeClaims runs) so a late setPrompt
 	// cannot park on a dialog after shutdown started draining.
 	promptsClosed bool
+	// entityName labels this registry in wait error messages ("agent" or
+	// "terminal"). Empty defaults to "entity".
+	entityName string
+	// onWaitEnter is an optional test hook invoked right before WaitForStartup
+	// blocks on an in-flight entry's done channel.
+	onWaitEnter func(id string)
+}
+
+func (r *startupCore) entityLabel() string {
+	if r.entityName != "" {
+		return r.entityName
+	}
+	return "entity"
 }
 
 func newStartupCore(clock quartz.Clock) startupCore {
@@ -797,6 +810,33 @@ func (r *startupCore) succeed(id string, handle *startupEntry) {
 	entry.stopEviction()
 }
 
+// retireInterrupted stamps a DB-detected close or archive onto h before
+// removing h from r.entries and closing h.done. Callers use it instead of
+// succeed when a startup ends due to a close or archive that did not arrive
+// through cancelAndClear or cancelForArchive, so WaitForStartup callers
+// observe the interruption rather than a clean completion.
+func (r *startupCore) retireInterrupted(id string, h *startupEntry, closed, archived bool) {
+	if h == nil {
+		return
+	}
+	r.mu.Lock()
+	if closed {
+		h.closeRaced = true
+	}
+	if archived && !h.closeRaced {
+		h.archiveStopped = true
+	}
+	entry := r.entries[id]
+	if entry == h {
+		delete(r.entries, id)
+		entry.release()
+	} else {
+		entry = nil
+	}
+	r.mu.Unlock()
+	entry.stopEviction()
+}
+
 // fail retains the entry with the error string for later observation and
 // schedules its eviction after failedEntryTTL so a failed tab the user
 // never closes eventually drops out of the in-memory map. Status queries
@@ -834,6 +874,8 @@ func (r *startupCore) fail(h *startupEntry, startupError string) {
 		}
 		h.creationResult = creationStartupOutcome{kind: creationStartupFailed, message: message}
 	}
+	h.failed = true
+	h.startupError = startupError
 	// Release the startup this failure replaces: an awaited startup that FAILS
 	// has stopped being in flight just as surely as one that succeeded.
 	prev.release()
@@ -1159,13 +1201,15 @@ type startupRegistry[S ~int32] struct {
 	failedStatus      S
 }
 
-func newStartupRegistry[S ~int32](clock quartz.Clock, unspec, starting, failed S) *startupRegistry[S] {
-	return &startupRegistry[S]{
+func newStartupRegistry[S ~int32](clock quartz.Clock, entityName string, unspec, starting, failed S) *startupRegistry[S] {
+	r := &startupRegistry[S]{
 		startupCore:       newStartupCore(clock),
 		unspecifiedStatus: unspec,
 		startingStatus:    starting,
 		failedStatus:      failed,
 	}
+	r.entityName = entityName
+	return r
 }
 
 // startupState is one atomic snapshot of a tracked entry in startupRegistry.
@@ -1203,7 +1247,9 @@ func (r *startupRegistry[S]) readSnapshot(id string) (startupState[S], bool) {
 // status returns the status override, startup_error, and the current
 // phase message for an id, if one is currently tracked. ok=false means
 // the id is not in the registry and the caller should derive status
-// from the runtime Manager (agents) or default to READY (terminals).
+// from the runtime Manager and persisted startup_error (agents default
+// to INACTIVE and terminals default to EXITED when no process runs and
+// no startup_error is persisted).
 func (r *startupRegistry[S]) status(id string) (status S, startupError, startupMessage string, ok bool) {
 	snap, found := r.readSnapshot(id)
 	if !found {
@@ -1212,16 +1258,10 @@ func (r *startupRegistry[S]) status(id string) (status S, startupError, startupM
 	return snap.status, snap.startupError, snap.startupMessage, true
 }
 
-// WaitForStartup blocks while a startup for id is in flight and returns nil
-// once startup succeeds or when no startup is tracked. It fails if startup
-// fails, is interrupted by close/archive/shutdown, or ctx ends.
-func (r *startupRegistry[S]) WaitForStartup(ctx context.Context, id string) error {
-	return r.waitForStartup(ctx, id)
-}
-
 func newAgentStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.AgentStatus] {
 	return newStartupRegistry(
 		clock,
+		"agent",
 		leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
 		leapmuxv1.AgentStatus_AGENT_STATUS_STARTING,
 		leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED,
@@ -1231,6 +1271,7 @@ func newAgentStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.Agen
 func newTerminalStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.TerminalStatus] {
 	return newStartupRegistry(
 		clock,
+		"terminal",
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED,
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,
@@ -1240,68 +1281,75 @@ func newTerminalStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.T
 var (
 	errStartupEntryChanged = errors.New("terminal startup changed during resize")
 	errStartupClaimsClosed = errors.New("terminal resize refused during shutdown")
-	errStartupFailed       = errors.New("terminal startup failed")
-	errStartupWaitShutdown = errors.New("terminal startup interrupted by shutdown")
-	errStartupWaitClosed   = errors.New("terminal closed during startup")
-	errStartupWaitArchived = errors.New("terminal archived during startup")
+	errStartupFailed       = errors.New("startup failed")
+	errStartupWaitShutdown = errors.New("startup interrupted by shutdown")
+	errStartupWaitClosed   = errors.New("closed during startup")
+	errStartupWaitArchived = errors.New("archived during startup")
 )
 
-func startupFailedError(msg string) error {
-	if msg == "" {
-		return errStartupFailed
-	}
-	return fmt.Errorf("%w: %s", errStartupFailed, msg)
-}
-
-// waitForStartup blocks while a startup entry for id is in flight. It returns
-// nil once no startup holds id (either it already finished or none was active),
-// returns ctx.Err() if ctx ends while waiting, and returns a descriptive error
+// WaitForStartup blocks while a startup entry for id is in flight. It returns
+// nil once that startup succeeds or when no startup is tracked for id, returns
+// ctx.Err() if ctx ends while waiting, and returns a wrapped sentinel error
 // when startup fails or is stopped by close, archive, or worker shutdown.
-func (r *startupCore) waitForStartup(ctx context.Context, id string) error {
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		r.mu.Lock()
-		if r.claimsClosed {
-			r.mu.Unlock()
-			return errStartupWaitShutdown
-		}
-		h := r.entries[id]
-		if h == nil {
-			r.mu.Unlock()
-			return nil
-		}
-		if h.failed {
-			msg := h.startupError
-			r.mu.Unlock()
-			return startupFailedError(msg)
-		}
-		done := h.done
+func (r *startupCore) WaitForStartup(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	h := r.entries[id]
+	if h == nil {
 		r.mu.Unlock()
-		if done == nil {
-			return nil
-		}
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-r.claimsClosedCh:
-			return errStartupWaitShutdown
-		}
-		r.mu.Lock()
-		closed := h.closeRaced
-		archived := h.archiveStopped
-		shutdown := h.shutdownStopped || r.claimsClosed
+		return nil
+	}
+	if h.failed {
+		msg := h.startupError
 		r.mu.Unlock()
-		switch {
-		case shutdown:
-			return errStartupWaitShutdown
-		case closed:
-			return errStartupWaitClosed
-		case archived:
-			return errStartupWaitArchived
+		if msg == "" {
+			return fmt.Errorf("%s %w", r.entityLabel(), errStartupFailed)
 		}
+		return fmt.Errorf("%s %w: %s", r.entityLabel(), errStartupFailed, msg)
+	}
+	if r.claimsClosed {
+		r.mu.Unlock()
+		return fmt.Errorf("%s %w", r.entityLabel(), errStartupWaitShutdown)
+	}
+	done := h.done
+	onWaitEnter := r.onWaitEnter
+	r.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	if onWaitEnter != nil {
+		onWaitEnter(id)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.claimsClosedCh:
+		return fmt.Errorf("%s %w", r.entityLabel(), errStartupWaitShutdown)
+	}
+	r.mu.Lock()
+	failed := h.failed
+	errMsg := h.startupError
+	closed := h.closeRaced
+	archived := h.archiveStopped
+	shutdown := h.shutdownStopped
+	r.mu.Unlock()
+	switch {
+	case shutdown:
+		return fmt.Errorf("%s %w", r.entityLabel(), errStartupWaitShutdown)
+	case closed:
+		return fmt.Errorf("%s %w", r.entityLabel(), errStartupWaitClosed)
+	case archived:
+		return fmt.Errorf("%s %w", r.entityLabel(), errStartupWaitArchived)
+	case failed:
+		if errMsg == "" {
+			return fmt.Errorf("%s %w", r.entityLabel(), errStartupFailed)
+		}
+		return fmt.Errorf("%s %w: %s", r.entityLabel(), errStartupFailed, errMsg)
+	default:
+		return nil
 	}
 }
 

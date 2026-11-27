@@ -2,8 +2,10 @@ package crdt
 
 import (
 	"fmt"
-	"maps"
 	"slices"
+	"strings"
+
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -19,8 +21,11 @@ const (
 	// closed, orphaned, or missing from a post-gap snapshot.
 	TabTransitionClosed
 	// TabTransitionMoved reports a tab that changed workspace inside the
-	// watched scope, or left the watched scope via EntityRemoved.
+	// watched scope.
 	TabTransitionMoved
+	// TabTransitionLeftScope reports a tab that left the watched scope via
+	// EntityRemoved.
+	TabTransitionLeftScope
 )
 
 // String returns a readable label for k.
@@ -32,6 +37,8 @@ func (k TabTransitionKind) String() string {
 		return "closed"
 	case TabTransitionMoved:
 		return "moved"
+	case TabTransitionLeftScope:
+		return "left_scope"
 	default:
 		return fmt.Sprintf("TabTransitionKind(%d)", k)
 	}
@@ -42,9 +49,8 @@ func (k TabTransitionKind) String() string {
 //
 // For TabTransitionOpened, Current holds the new tab and Previous is zero.
 // For TabTransitionClosed, Previous holds the removed tab and Current is zero.
-// For TabTransitionMoved within scope, Previous and Current both hold the tab.
-// For TabTransitionMoved out of scope (via EntityRemoved), Previous holds the
-// tab and Current is zero.
+// For TabTransitionMoved, Previous and Current both hold the tab.
+// For TabTransitionLeftScope, Previous holds the tab and Current is zero.
 type TabTransition struct {
 	Kind       TabTransitionKind
 	TabID      string
@@ -55,26 +61,55 @@ type TabTransition struct {
 
 // StateFromMaterialized builds a client-side UserCrdtState from a materialized
 // snapshot so subsequent op batches apply to it as the hub applies them. It
-// copies map entries into fresh maps on the returned state while sharing the
-// underlying record pointers from m.
+// deep-clones MaxHlc and every record into fresh maps so subsequent crdt.Apply
+// calls cannot mutate caller-owned proto messages. It skips nil record entries.
 func StateFromMaterialized(m *leapmuxv1.UserMaterialized) *leapmuxv1.UserCrdtState {
-	state := NewState(m.GetUserId())
 	if m == nil {
-		return state
+		return NewState("")
 	}
-	maps.Copy(state.Nodes, m.GetNodes())
-	maps.Copy(state.Tabs, m.GetTabs())
-	maps.Copy(state.FloatingWindows, m.GetFloatingWindows())
-	maps.Copy(state.Workspaces, m.GetWorkspaces())
-	if m.GetMaxHlc() != nil {
-		state.MaxHlc = m.GetMaxHlc()
+	maxHlc := HLCClone(m.GetMaxHlc())
+	if maxHlc == nil {
+		maxHlc = &leapmuxv1.HLC{}
 	}
-	state.CurrentEpoch = m.GetCurrentEpoch()
+	state := &leapmuxv1.UserCrdtState{
+		UserId:          m.GetUserId(),
+		Nodes:           make(map[string]*leapmuxv1.NodeRecord, len(m.GetNodes())),
+		Tabs:            make(map[string]*leapmuxv1.TabRecord, len(m.GetTabs())),
+		FloatingWindows: make(map[string]*leapmuxv1.FloatingWindowRecord, len(m.GetFloatingWindows())),
+		Workspaces:      make(map[string]*leapmuxv1.WorkspaceContentsRecord, len(m.GetWorkspaces())),
+		MaxHlc:          maxHlc,
+		CurrentEpoch:    m.GetCurrentEpoch(),
+	}
+	for id, node := range m.GetNodes() {
+		if node == nil {
+			continue
+		}
+		state.Nodes[id] = cloneNode(node)
+	}
+	for id, tab := range m.GetTabs() {
+		if tab == nil {
+			continue
+		}
+		state.Tabs[id] = cloneTab(tab)
+	}
+	for id, fw := range m.GetFloatingWindows() {
+		if fw == nil {
+			continue
+		}
+		state.FloatingWindows[id] = cloneFloatingWindow(fw)
+	}
+	for id, ws := range m.GetWorkspaces() {
+		if ws == nil {
+			continue
+		}
+		state.Workspaces[id] = proto.Clone(ws).(*leapmuxv1.WorkspaceContentsRecord)
+	}
 	return state
 }
 
-// ApplyEntityMaterialized replaces or inserts the record of an entity that
-// entered the subscriber's scope.
+// ApplyEntityMaterialized replaces or inserts a deep clone of the record for an
+// entity that entered the subscriber's scope. Deep-cloning prevents subsequent
+// crdt.Apply calls from mutating caller-owned proto messages.
 func ApplyEntityMaterialized(state *leapmuxv1.UserCrdtState, m *leapmuxv1.EntityMaterialized) {
 	if state == nil || m == nil {
 		return
@@ -85,21 +120,21 @@ func ApplyEntityMaterialized(state *leapmuxv1.UserCrdtState, m *leapmuxv1.Entity
 			if state.Tabs == nil {
 				state.Tabs = map[string]*leapmuxv1.TabRecord{}
 			}
-			state.Tabs[id] = e.Tab
+			state.Tabs[id] = cloneTab(e.Tab)
 		}
 	case *leapmuxv1.EntityMaterialized_Node:
 		if id := e.Node.GetNodeId(); id != "" {
 			if state.Nodes == nil {
 				state.Nodes = map[string]*leapmuxv1.NodeRecord{}
 			}
-			state.Nodes[id] = e.Node
+			state.Nodes[id] = cloneNode(e.Node)
 		}
 	case *leapmuxv1.EntityMaterialized_FloatingWindow:
 		if id := e.FloatingWindow.GetWindowId(); id != "" {
 			if state.FloatingWindows == nil {
 				state.FloatingWindows = map[string]*leapmuxv1.FloatingWindowRecord{}
 			}
-			state.FloatingWindows[id] = e.FloatingWindow
+			state.FloatingWindows[id] = cloneFloatingWindow(e.FloatingWindow)
 		}
 	}
 }
@@ -158,39 +193,19 @@ func OpAffectsTabProjection(op *leapmuxv1.CrdtOp) bool {
 //
 // A tab that left the projection closed when state still holds its record: a
 // close tombstones the record, and a tab whose tile went away keeps it. A tab
-// whose record left state moved out of the watched scope, which only
-// EntityRemoved does. A snapshot after a gap holds no record of a closed tab,
+// whose record left state reports TabTransitionLeftScope, which only
+// EntityRemoved causes. A snapshot after a gap holds no record of a closed tab,
 // so when reconciled is true any tab that left reports TabTransitionClosed: the
 // snapshot does not distinguish a close from a move to an unwatched workspace.
 func DiffOwnedTabs(state *leapmuxv1.UserCrdtState, prev, next map[string]OwnedTab, reconciled bool) []TabTransition {
 	if len(prev) == 0 && len(next) == 0 {
 		return nil
 	}
-	ids := make([]string, 0, len(prev)+len(next))
-	for id := range prev {
-		ids = append(ids, id)
-	}
-	for id := range next {
-		if _, held := prev[id]; !held {
-			ids = append(ids, id)
-		}
-	}
-	slices.Sort(ids)
-
 	var out []TabTransition
 	tabs := state.GetTabs()
-	for _, id := range ids {
-		before, wasIn := prev[id]
+	for id, before := range prev {
 		after, isIn := next[id]
-		switch {
-		case !wasIn:
-			out = append(out, TabTransition{
-				Kind:       TabTransitionOpened,
-				TabID:      id,
-				Current:    after,
-				Reconciled: reconciled,
-			})
-		case !isIn:
+		if !isIn {
 			_, recorded := tabs[id]
 			if reconciled || recorded {
 				out = append(out, TabTransition{
@@ -202,11 +217,13 @@ func DiffOwnedTabs(state *leapmuxv1.UserCrdtState, prev, next map[string]OwnedTa
 				continue
 			}
 			out = append(out, TabTransition{
-				Kind:     TabTransitionMoved,
+				Kind:     TabTransitionLeftScope,
 				TabID:    id,
 				Previous: before,
 			})
-		case before.WorkspaceID != after.WorkspaceID:
+			continue
+		}
+		if before.WorkspaceID != after.WorkspaceID {
 			out = append(out, TabTransition{
 				Kind:       TabTransitionMoved,
 				TabID:      id,
@@ -215,6 +232,21 @@ func DiffOwnedTabs(state *leapmuxv1.UserCrdtState, prev, next map[string]OwnedTa
 				Reconciled: reconciled,
 			})
 		}
+	}
+	for id, after := range next {
+		if _, wasIn := prev[id]; !wasIn {
+			out = append(out, TabTransition{
+				Kind:       TabTransitionOpened,
+				TabID:      id,
+				Current:    after,
+				Reconciled: reconciled,
+			})
+		}
+	}
+	if len(out) > 1 {
+		slices.SortFunc(out, func(a, b TabTransition) int {
+			return strings.Compare(a.TabID, b.TabID)
+		})
 	}
 	return out
 }

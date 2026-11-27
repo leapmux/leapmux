@@ -232,15 +232,17 @@ FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.id = ?;
 
--- name: GetWorkerEnrollmentRevision :one
-SELECT CAST(COALESCE((SELECT revision FROM worker_enrollment_revisions WHERE user_id = sqlc.arg(user_id)), 0) AS SIGNED) AS revision;
-
--- name: ListActiveWorkerIDsByUserID :many
-SELECT id FROM workers USE INDEX (idx_workers_registered_by_state_created)
-WHERE registered_by = sqlc.arg(registered_by)
-  AND (deleted_at IS NOT NULL) = FALSE
-  AND (deleted_at IS NULL AND deregistering_at IS NOT NULL) = FALSE
-ORDER BY id ASC;
+-- name: GetWorkerInventorySnapshot :many
+-- Reads the enrollment revision and active worker IDs in one statement so a
+-- single InnoDB read view covers both tables even under READ COMMITTED.
+SELECT
+    CAST(COALESCE((SELECT revision FROM worker_enrollment_revisions WHERE user_id = sqlc.arg(user_id)), 0) AS SIGNED) AS revision,
+    COALESCE(w.id, '') AS worker_id
+FROM (SELECT 1 AS anchor) AS anchor
+LEFT JOIN workers w USE INDEX (idx_workers_registered_by_state_created)
+  ON w.registered_by = sqlc.arg(user_id)
+ AND (w.deleted_at IS NOT NULL) = FALSE
+ AND (w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL) = FALSE;
 
 -- name: AdvanceWorkerEnrollment :exec
 INSERT INTO worker_enrollment_revisions (user_id, revision)

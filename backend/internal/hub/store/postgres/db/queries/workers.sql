@@ -229,13 +229,17 @@ FROM workers w
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
 WHERE w.id = $1;
 
--- name: GetWorkerEnrollmentRevision :one
-SELECT CAST(COALESCE((SELECT revision FROM worker_enrollment_revisions WHERE user_id = sqlc.arg(user_id)), 0) AS BIGINT) AS revision;
-
--- name: ListActiveWorkerIDsByUserID :many
-SELECT id FROM workers
-WHERE registered_by = sqlc.arg(registered_by) AND deleted_at IS NULL AND deregistering_at IS NULL
-ORDER BY id ASC;
+-- name: GetWorkerInventorySnapshot :many
+-- Reads the enrollment revision and active worker IDs in one statement so a
+-- single MVCC snapshot covers both tables, including inside READ COMMITTED.
+SELECT
+    CAST(COALESCE((SELECT revision FROM worker_enrollment_revisions WHERE user_id = sqlc.arg(user_id)), 0) AS BIGINT) AS revision,
+    CAST(COALESCE(w.id, '') AS TEXT) AS worker_id
+FROM (SELECT 1 AS anchor) AS anchor
+LEFT JOIN workers w
+  ON w.registered_by = sqlc.arg(user_id)
+ AND w.deleted_at IS NULL
+ AND w.deregistering_at IS NULL;
 
 -- name: AdvanceWorkerEnrollment :exec
 INSERT INTO worker_enrollment_revisions (user_id, revision)

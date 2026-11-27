@@ -70,6 +70,7 @@ func requireTerminalEntry(t *testing.T, req *leapmuxv1.WatchEventsRequest, after
 func replayDataEvent(output string, endOffset int64, snapshot bool) *leapmuxv1.TerminalEvent {
 	event := dataEvent(output, endOffset, snapshot)
 	event.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{}
+	event.GetData().ReplayComplete = true
 	return event
 }
 
@@ -328,6 +329,7 @@ func TestScreenFeedReplaysBeforeClippingLiveOutputAndResumesGeometry(t *testing.
 	}))
 	replay := dataEvent("abc", 13, true)
 	replay.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{Base: base, StartOffset: 10}
+	replay.GetData().ReplayComplete = true
 	tr.push(terminalFrame("t-1", replay))
 	assert.Equal(t, "abc", string(receive(t, ctx, items).event.GetData().GetData()))
 	assert.Equal(t, "def", string(receive(t, ctx, items).event.GetData().GetData()))
@@ -353,6 +355,7 @@ func TestScreenFeedReplaysAgainWhenLiveOutputSkippedAResize(t *testing.T) {
 	base := &leapmuxv1.TerminalScreenGeometry{Epoch: "screen", Revision: 1, Cols: 6, Rows: 2}
 	replay := dataEvent("abc", 3, true)
 	replay.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{Base: base}
+	replay.GetData().ReplayComplete = true
 	tr.push(terminalFrame("t-1", replay))
 	require.NotNil(t, receive(t, ctx, items).event.GetData().GetScreenTimeline())
 	missed := dataEvent("def", 6, false)
@@ -600,6 +603,37 @@ func TestOutputReplayForwarder_ClippedReplayAndNegativeOffset(t *testing.T) {
 		assert.Empty(t, out)
 	})
 
+	t.Run("partially overlapping non-snapshot replay clips prefix and drains buffered live chunk", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		out := make(chan screenFeedItem, 4)
+		forward := outputReplayForwarder{
+			feed:   &screenFeed{terminalID: "t-1", out: out},
+			offset: 12,
+		}
+
+		// Live chunk past offset 16 arrives before replay completes and must buffer.
+		require.True(t, forward.receive(ctx, eventItem(dataEvent("ghij", 20, false))))
+		assert.Empty(t, out)
+
+		// Non-snapshot ReplayComplete=true chunk covering [10..16) overlaps offset=12.
+		require.True(t, forward.receive(ctx, eventItem(outputReplayDataEvent("abcdef", 16, false))))
+		assert.True(t, forward.replayed)
+		assert.Equal(t, int64(20), forward.offset)
+		require.Len(t, out, 2)
+
+		replay := (<-out).event.GetData()
+		require.NotNil(t, replay)
+		assert.Equal(t, "cdef", string(replay.GetData()))
+		assert.Equal(t, int64(16), replay.GetEndOffset())
+		assert.True(t, replay.GetReplayComplete())
+		assert.False(t, replay.GetIsSnapshot())
+
+		live := (<-out).event.GetData()
+		require.NotNil(t, live)
+		assert.Equal(t, "ghij", string(live.GetData()))
+		assert.Equal(t, int64(20), live.GetEndOffset())
+	})
+
 	t.Run("negative EndOffset returns early without marking replayed", func(t *testing.T) {
 		ctx := testutil.DeadlineContext(t)
 		out := make(chan screenFeedItem, 4)
@@ -614,5 +648,76 @@ func TestOutputReplayForwarder_ClippedReplayAndNegativeOffset(t *testing.T) {
 		assert.Equal(t, int64(10), forward.offset)
 		assert.Empty(t, out)
 		assert.Len(t, forward.pending, 1)
+	})
+}
+
+func TestScreenReplayForwarder_RequiresReplayCompleteBarrier(t *testing.T) {
+	t.Run("buffers live frames with ReplayComplete=false even with ScreenTimeline until ReplayComplete=true arrives", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		out := make(chan screenFeedItem, 4)
+		forward := screenReplayForwarder{feed: &screenFeed{terminalID: "t-1", out: out}}
+		base := &leapmuxv1.TerminalScreenGeometry{Epoch: "ep-1", Revision: 1, Cols: 80, Rows: 24}
+
+		liveWithTimeline := dataEvent("abcdef", 16, false)
+		liveWithTimeline.GetData().ScreenEpoch = "ep-1"
+		liveWithTimeline.GetData().GeometryRevision = 1
+		liveWithTimeline.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{Base: base, StartOffset: 10}
+		require.True(t, forward.receive(ctx, eventItem(liveWithTimeline)))
+		assert.False(t, forward.replayed)
+		assert.Empty(t, out)
+
+		liveNext := dataEvent("ghi", 19, false)
+		liveNext.GetData().ScreenEpoch = "ep-1"
+		liveNext.GetData().GeometryRevision = 1
+		require.True(t, forward.receive(ctx, eventItem(liveNext)))
+		assert.False(t, forward.replayed)
+		assert.Empty(t, out)
+
+		replay := dataEvent("abc", 13, true)
+		replay.GetData().ScreenTimeline = &leapmuxv1.TerminalScreenTimeline{Base: base, StartOffset: 10}
+		replay.GetData().ReplayComplete = true
+		require.True(t, forward.receive(ctx, eventItem(replay)))
+		assert.True(t, forward.replayed)
+		require.Len(t, out, 3)
+
+		first := (<-out).event.GetData()
+		assert.Equal(t, "abc", string(first.GetData()))
+		assert.Equal(t, int64(13), first.GetEndOffset())
+		assert.True(t, first.GetReplayComplete())
+
+		second := (<-out).event.GetData()
+		assert.Equal(t, "def", string(second.GetData()))
+		assert.Equal(t, int64(16), second.GetEndOffset())
+
+		third := (<-out).event.GetData()
+		assert.Equal(t, "ghi", string(third.GetData()))
+		assert.Equal(t, int64(19), third.GetEndOffset())
+
+		assert.Equal(t, terminalScreenPosition{epoch: "ep-1", offset: 19, revision: 1}, forward.nextPosition())
+	})
+
+	t.Run("handles ReplayComplete=true with nil ScreenTimeline without panicking", func(t *testing.T) {
+		ctx := testutil.DeadlineContext(t)
+		out := make(chan screenFeedItem, 4)
+		forward := screenReplayForwarder{feed: &screenFeed{terminalID: "t-1", out: out}}
+
+		require.True(t, forward.receive(ctx, eventItem(dataEvent("xyz", 13, false))))
+		assert.False(t, forward.replayed)
+		assert.Empty(t, out)
+
+		require.True(t, forward.receive(ctx, eventItem(outputReplayDataEvent("", 10, false))))
+		assert.True(t, forward.replayed)
+		require.Len(t, out, 2)
+
+		first := (<-out).event.GetData()
+		assert.True(t, first.GetReplayComplete())
+		assert.Nil(t, first.GetScreenTimeline())
+		assert.Equal(t, int64(10), first.GetEndOffset())
+
+		second := (<-out).event.GetData()
+		assert.Equal(t, "xyz", string(second.GetData()))
+		assert.Equal(t, int64(13), second.GetEndOffset())
+
+		assert.Equal(t, terminalScreenPosition{offset: 13}, forward.nextPosition())
 	})
 }

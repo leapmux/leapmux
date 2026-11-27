@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -71,7 +72,7 @@ func TestOpenUserEvents_SupportsLocalSocketHub(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	stream, err := c.OpenUserEvents(ctx, nil)
+	stream, err := c.OpenUserEvents(ctx, channelwire.UserEventsOptions{})
 	require.NoError(t, err, "OpenUserEvents must work over a unix:/npipe: hub socket")
 	defer func() { _ = stream.Close() }()
 

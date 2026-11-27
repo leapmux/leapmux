@@ -561,16 +561,27 @@ func drainAllInFlight(svc *Service) {
 // dispatch is a helper that marshals a request proto and dispatches it as the
 // worker's own owner ("user-1", the identity setupTestService seeds).
 func dispatch(d testRPCDispatcher, method string, req proto.Message, w *testResponseWriter) {
-	dispatchAs(d, userid.MustNew("user-1"), method, req, w)
+	dispatchAsWithContext(d, context.Background(), userid.MustNew("user-1"), method, req, w)
+}
+
+// dispatchWithContext is dispatch with an explicit request context.
+func dispatchWithContext(d testRPCDispatcher, ctx context.Context, method string, req proto.Message, w *testResponseWriter) {
+	dispatchAsWithContext(d, ctx, userid.MustNew("user-1"), method, req, w)
 }
 
 // dispatchAs is dispatch with an explicit caller, for the access-control probes
 // that need someone OTHER than the worker's owner.
+func dispatchAs(d testRPCDispatcher, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
+	dispatchAsWithContext(d, context.Background(), caller, method, req, w)
+}
+
+// dispatchAsWithContext marshals req and dispatches it with an explicit context
+// and caller.
 //
 // It panics, and so fails the calling test, when the dispatcher holds no
 // handler for the method: the dispatcher would answer Unimplemented, and a test
 // asserting a refusal would then pass for the wrong reason.
-func dispatchAs(d testRPCDispatcher, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
+func dispatchAsWithContext(d testRPCDispatcher, ctx context.Context, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
 	if !slices.Contains(d.Methods(), method) {
 		panic("dispatch: no handler is registered for " + method)
 	}
@@ -578,7 +589,7 @@ func dispatchAs(d testRPCDispatcher, caller userid.UserID, method string, req pr
 	if err != nil {
 		panic(err)
 	}
-	dispatchTestRequest(d, context.Background(), channel.LocalAgentCaller(caller), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, w)
+	dispatchTestRequest(d, ctx, channel.LocalAgentCaller(caller), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, w)
 }
 
 func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
@@ -991,7 +1002,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	// Wait until the echo output appears in the screen buffer; otherwise
 	// Shutdown can race ahead of the shell processing the input.
 	testutil.AssertEventually(t, func() bool {
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince("term-1", 0)
+		screen, _, _, _ := svc.Terminals.ScreenSnapshotSince("term-1", 0)
 		return bytes.Contains(screen, []byte("shutdown_test"))
 	}, "expected terminal screen to contain 'shutdown_test'")
 

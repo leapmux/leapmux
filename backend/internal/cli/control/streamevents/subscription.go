@@ -807,8 +807,11 @@ func ClipTerminalOutput(event *leapmuxv1.TerminalEvent, previous int64) *leapmux
 	return &leapmuxv1.TerminalEvent{
 		TerminalId: event.GetTerminalId(),
 		Event: &leapmuxv1.TerminalEvent_Data{Data: &leapmuxv1.TerminalData{
-			Data: data.GetData()[previous-start:], EndOffset: end,
-			ScreenEpoch: data.GetScreenEpoch(), GeometryRevision: data.GetGeometryRevision(),
+			Data:             data.GetData()[previous-start:],
+			EndOffset:        end,
+			ReplayComplete:   data.GetReplayComplete(),
+			ScreenEpoch:      data.GetScreenEpoch(),
+			GeometryRevision: data.GetGeometryRevision(),
 		}},
 	}
 }
