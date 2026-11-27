@@ -101,7 +101,8 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *leapmuxv1.ListMy
 		return nil, err
 	}
 	page, err := s.store.APITokens().ListByUser(ctx, store.ListAPITokensByUserParams{
-		UserID: userInfo.ID,
+		UserID:   userInfo.ID,
+		IDPrefix: req.GetIdPrefix(),
 		// Through pageParams like every other paginated handler: an
 		// omitted limit is the proto3 zero, and the queries read zero as
 		// "return no rows", so a caller that simply left it out would get an

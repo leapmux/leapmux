@@ -31,7 +31,9 @@ func TestPhase4_AgentSearchAndFileSearchGlob(t *testing.T) {
 			switch method {
 			case leapmuxv1connect.WorkerAgentServiceSearchAgentMessagesProcedure:
 				var req leapmuxv1.SearchAgentMessagesRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.Equal(t, "timeout", req.GetQuery())
 				assert.True(t, req.GetRegex())
 				return &leapmuxv1.SearchAgentMessagesResponse{
@@ -47,7 +49,9 @@ func TestPhase4_AgentSearchAndFileSearchGlob(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerFileServiceSearchFilesProcedure:
 				var req leapmuxv1.SearchFilesRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.Equal(t, "NewLeaf", req.GetPattern())
 				assert.True(t, req.GetIgnoreCase())
 				assert.Equal(t, "**/*.go", req.GetGlob())
@@ -56,7 +60,9 @@ func TestPhase4_AgentSearchAndFileSearchGlob(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerFileServiceGlobFilesProcedure:
 				var req leapmuxv1.GlobFilesRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.Equal(t, "**/*.proto", req.GetPattern())
 				return &leapmuxv1.GlobFilesResponse{Paths: []string{"leapmux/v1/agent.proto", "leapmux/v1/git.proto"}}, nil
 			default:
@@ -95,14 +101,18 @@ func TestPhase4_GitDiffLogCommitAndWorktreeOps(t *testing.T) {
 			switch method {
 			case leapmuxv1connect.WorkerGitServiceGetGitDiffProcedure:
 				var req leapmuxv1.GetGitDiffRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.True(t, req.GetStaged())
 				assert.Equal(t, "main", req.GetBaseRef())
 				assert.Equal(t, []string{"README.md"}, req.GetFilePaths())
 				return &leapmuxv1.GetGitDiffResponse{Diff: "+hello\n", TotalSize: 7}, nil
 			case leapmuxv1connect.WorkerGitServiceGetGitLogProcedure:
 				var req leapmuxv1.GetGitLogRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.Equal(t, int32(5), req.GetLimit())
 				return &leapmuxv1.GetGitLogResponse{
 					Commits: []*leapmuxv1.GitCommitEntry{{
@@ -115,18 +125,24 @@ func TestPhase4_GitDiffLogCommitAndWorktreeOps(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerGitServiceGitCommitProcedure:
 				var req leapmuxv1.GitCommitRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.Equal(t, "Ship it", req.GetMessage())
 				assert.True(t, req.GetStageAll())
 				return &leapmuxv1.GitCommitResponse{Hash: "1234567890abcdef", Subject: "Ship it"}, nil
 			case leapmuxv1connect.WorkerGitServiceCreateGitWorktreeProcedure:
 				var req leapmuxv1.CreateGitWorktreeRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.Equal(t, "feat-x", req.GetBranch())
 				return &leapmuxv1.CreateGitWorktreeResponse{WorktreePath: "/wt/feat-x", Branch: "feat-x", RepoRoot: "/repo"}, nil
 			case leapmuxv1connect.WorkerGitServiceRemoveGitWorktreeProcedure:
 				var req leapmuxv1.RemoveGitWorktreeRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.Equal(t, "/wt/feat-x", req.GetPath())
 				assert.True(t, req.GetForce())
 				return &leapmuxv1.RemoveGitWorktreeResponse{}, nil
@@ -276,7 +292,9 @@ func TestPhase4_WorkspaceExportAndApply(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
 				var req leapmuxv1.OpenAgentRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				openedAgents++
 				return &leapmuxv1.OpenAgentResponse{
 					Agent: &leapmuxv1.AgentInfo{Id: req.GetCreation().GetTabId(), WorkerId: "worker-A", Title: req.GetTitle()},
@@ -289,7 +307,9 @@ func TestPhase4_WorkspaceExportAndApply(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure:
 				var req leapmuxv1.OpenTerminalRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				openedTerms++
 				return &leapmuxv1.OpenTerminalResponse{
 					TerminalId: req.GetCreation().GetTabId(),
@@ -303,7 +323,9 @@ func TestPhase4_WorkspaceExportAndApply(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:
 				var req leapmuxv1.RegisterTabPayloadRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				openedFiles++
 				return &leapmuxv1.RegisterTabPayloadResponse{
 					Publication: &leapmuxv1.PublishedTab{
@@ -385,7 +407,9 @@ func TestPhase4_AgentForkClonesSettingsAndOptions(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
 				var req leapmuxv1.OpenAgentRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				capturedOpen = &req
 				return &leapmuxv1.OpenAgentResponse{
 					Agent: &leapmuxv1.AgentInfo{Id: req.GetCreation().GetTabId(), WorkerId: "worker-A", Title: req.GetTitle()},
@@ -459,7 +483,9 @@ func TestPhase4_RetryReceiptsAndAgentRequestStatus(t *testing.T) {
 			switch method {
 			case leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure:
 				var req leapmuxv1.ListAgentInputQueueRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				assert.Equal(t, inputID, req.GetReplyInputId())
 				return &leapmuxv1.ListAgentInputQueueResponse{
 					Snapshot: &leapmuxv1.AgentInputQueueSnapshot{},

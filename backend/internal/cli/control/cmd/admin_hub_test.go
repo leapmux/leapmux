@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -147,8 +148,12 @@ func (h *fakeAdminHub) ListUsers(
 	_ context.Context, req *leapmuxv1.ListUsersRequest,
 ) (*leapmuxv1.ListUsersResponse, error) {
 	h.recordList(req)
+	users := []*leapmuxv1.AdminUser{{Id: "u-1", Username: "amy"}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(users[0].GetId(), prefix) {
+		users = nil
+	}
 	return &leapmuxv1.ListUsersResponse{
-		Users: []*leapmuxv1.AdminUser{{Id: "u-1", Username: "amy"}},
+		Users: users,
 		Page:  h.listPage,
 	}, nil
 }
@@ -157,8 +162,12 @@ func (h *fakeAdminHub) ListAPITokens(
 	_ context.Context, req *leapmuxv1.ListAPITokensRequest,
 ) (*leapmuxv1.ListAPITokensResponse, error) {
 	h.recordList(req)
+	tokens := []*leapmuxv1.AdminAPIToken{{Id: "t-1", UserId: "u-1"}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(tokens[0].GetId(), prefix) {
+		tokens = nil
+	}
 	return &leapmuxv1.ListAPITokensResponse{
-		Tokens: []*leapmuxv1.AdminAPIToken{{Id: "t-1", UserId: "u-1"}},
+		Tokens: tokens,
 		Page:   h.listPage,
 	}, nil
 }
@@ -167,8 +176,12 @@ func (h *fakeAdminHub) ListDelegationTokens(
 	_ context.Context, req *leapmuxv1.ListDelegationTokensRequest,
 ) (*leapmuxv1.ListDelegationTokensResponse, error) {
 	h.recordList(req)
+	tokens := []*leapmuxv1.AdminDelegationToken{{Id: "d-1", UserId: "u-1"}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(tokens[0].GetId(), prefix) {
+		tokens = nil
+	}
 	return &leapmuxv1.ListDelegationTokensResponse{
-		Tokens: []*leapmuxv1.AdminDelegationToken{{Id: "d-1", UserId: "u-1"}},
+		Tokens: tokens,
 		Page:   h.listPage,
 	}, nil
 }
@@ -177,17 +190,26 @@ func (h *fakeAdminHub) ListWorkers(
 	_ context.Context, req *leapmuxv1.AdminWorkerServiceListWorkersRequest,
 ) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
 	h.recordList(req)
+	workers := []*leapmuxv1.AdminWorker{{Id: "w-1", RegisteredBy: "u-1"}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(workers[0].GetId(), prefix) {
+		workers = nil
+	}
 	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{
-		Workers: []*leapmuxv1.AdminWorker{{Id: "w-1", RegisteredBy: "u-1"}},
+		Workers: workers,
 		Page:    h.listPage,
 	}, nil
 }
 
 func (h *fakeAdminHub) ListOAuthProviders(
-	context.Context, *leapmuxv1.ListOAuthProvidersRequest,
+	_ context.Context, req *leapmuxv1.ListOAuthProvidersRequest,
 ) (*leapmuxv1.ListOAuthProvidersResponse, error) {
+	h.recordList(req)
+	providers := []*leapmuxv1.AdminOAuthProvider{{Id: "prov-1", ProviderType: "github", Enabled: true}}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(providers[0].GetId(), prefix) {
+		providers = nil
+	}
 	return &leapmuxv1.ListOAuthProvidersResponse{
-		Providers: []*leapmuxv1.AdminOAuthProvider{{Id: "prov-1", ProviderType: "github", Enabled: true}},
+		Providers: providers,
 	}, nil
 }
 
@@ -1319,26 +1341,48 @@ func TestAdminCaptchaReset_AltchaSkipsStateRead(t *testing.T) {
 	assert.Zero(t, hub.listCallCount(), "resetting altcha needs no ListSettings read")
 }
 
+type adminPrefixQuery struct {
+	idPrefix string
+	limit    int32
+}
+
 type adminPrefixTestHub struct {
 	leapmuxv1connect.UnimplementedAdminUserServiceHandler
 	leapmuxv1connect.UnimplementedAdminWorkerServiceHandler
+	leapmuxv1connect.UnimplementedAppServiceHandler
+	leapmuxv1connect.UnimplementedAdminIdPServiceHandler
 
 	mu                 sync.Mutex
 	usersPages         map[string]*leapmuxv1.ListUsersResponse
 	listUsersErr       error
 	listUsersLimits    []int32
+	listUsersQueries   []adminPrefixQuery
 	getUserErr         error
+	sessions           []*leapmuxv1.AdminSession
+	sessionQueries     []adminPrefixQuery
+	revokedSession     string
 	workers            []*leapmuxv1.AdminWorker
+	workerQueries      []adminPrefixQuery
 	getWorkerCalls     int
 	apiTokensLive      []*leapmuxv1.AdminAPIToken
 	apiTokensAll       []*leapmuxv1.AdminAPIToken
 	apiTokenListReqs   []bool
+	apiTokenQueries    []adminPrefixQuery
 	delegationLive     []*leapmuxv1.AdminDelegationToken
 	delegationAll      []*leapmuxv1.AdminDelegationToken
 	delegationListReqs []bool
+	delegationQueries  []adminPrefixQuery
 	regKeysLive        []*leapmuxv1.AdminRegistrationKey
 	regKeysAll         []*leapmuxv1.AdminRegistrationKey
 	regKeyListReqs     []bool
+	regKeyQueries      []adminPrefixQuery
+	apps               []*leapmuxv1.App
+	appQueries         []adminPrefixQuery
+	revokedApp         string
+	providers          []*leapmuxv1.AdminOAuthProvider
+	providerQueries    []string
+	removedProvider    string
+	nextCursorOnLists  string
 	revokedAPIToken    string
 	revokedDelegation  string
 	revokedRegKey      string
@@ -1364,25 +1408,57 @@ func (h *adminPrefixTestHub) ListUsers(_ context.Context, req *leapmuxv1.ListUse
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.listUsersLimits = append(h.listUsersLimits, req.GetPage().GetLimit())
+	h.listUsersQueries = append(h.listUsersQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
 	if h.listUsersErr != nil {
 		return nil, h.listUsersErr
 	}
 	if resp, ok := h.usersPages[req.GetPage().GetCursor()]; ok {
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			var filtered []*leapmuxv1.AdminUser
+			for _, u := range resp.GetUsers() {
+				if strings.HasPrefix(u.GetId(), prefix) {
+					filtered = append(filtered, u)
+				}
+			}
+			return &leapmuxv1.ListUsersResponse{Users: filtered, Page: resp.GetPage()}, nil
+		}
 		return resp, nil
 	}
 	return &leapmuxv1.ListUsersResponse{}, nil
 }
 
-func (h *adminPrefixTestHub) ListWorkers(_ context.Context, _ *leapmuxv1.AdminWorkerServiceListWorkersRequest) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
+func (h *adminPrefixTestHub) ListSessions(_ context.Context, req *leapmuxv1.ListSessionsRequest) (*leapmuxv1.ListSessionsResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: h.workers}, nil
+	h.sessionQueries = append(h.sessionQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	out := filterByPrefix(h.sessions, req.GetIdPrefix(), (*leapmuxv1.AdminSession).GetId)
+	return &leapmuxv1.ListSessionsResponse{Sessions: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
 }
 
-func (h *adminPrefixTestHub) GetWorker(_ context.Context, _ *leapmuxv1.AdminWorkerServiceGetWorkerRequest) (*leapmuxv1.AdminWorkerServiceGetWorkerResponse, error) {
+func (h *adminPrefixTestHub) RevokeSession(_ context.Context, req *leapmuxv1.RevokeSessionRequest) (*leapmuxv1.RevokeSessionResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedSession = req.GetId()
+	return &leapmuxv1.RevokeSessionResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListWorkers(_ context.Context, req *leapmuxv1.AdminWorkerServiceListWorkersRequest) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.workerQueries = append(h.workerQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	out := filterByPrefix(h.workers, req.GetIdPrefix(), (*leapmuxv1.AdminWorker).GetId)
+	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
+}
+
+func (h *adminPrefixTestHub) GetWorker(_ context.Context, req *leapmuxv1.AdminWorkerServiceGetWorkerRequest) (*leapmuxv1.AdminWorkerServiceGetWorkerResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.getWorkerCalls++
+	for _, w := range h.workers {
+		if w.GetId() == req.GetId() {
+			return &leapmuxv1.AdminWorkerServiceGetWorkerResponse{Worker: w}, nil
+		}
+	}
 	return nil, connect.NewError(connect.CodeInternal, "unexpected GetWorker RPC after prefix listing")
 }
 
@@ -1390,10 +1466,13 @@ func (h *adminPrefixTestHub) ListAPITokens(_ context.Context, req *leapmuxv1.Lis
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.apiTokenListReqs = append(h.apiTokenListReqs, req.GetIncludeRevoked())
+	h.apiTokenQueries = append(h.apiTokenQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	src := h.apiTokensLive
 	if req.GetIncludeRevoked() {
-		return &leapmuxv1.ListAPITokensResponse{Tokens: h.apiTokensAll}, nil
+		src = h.apiTokensAll
 	}
-	return &leapmuxv1.ListAPITokensResponse{Tokens: h.apiTokensLive}, nil
+	out := filterByPrefix(src, req.GetIdPrefix(), (*leapmuxv1.AdminAPIToken).GetId)
+	return &leapmuxv1.ListAPITokensResponse{Tokens: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
 }
 
 func (h *adminPrefixTestHub) RevokeAPIToken(_ context.Context, req *leapmuxv1.RevokeAPITokenRequest) (*leapmuxv1.RevokeAPITokenResponse, error) {
@@ -1407,10 +1486,13 @@ func (h *adminPrefixTestHub) ListDelegationTokens(_ context.Context, req *leapmu
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.delegationListReqs = append(h.delegationListReqs, req.GetIncludeRevoked())
+	h.delegationQueries = append(h.delegationQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	src := h.delegationLive
 	if req.GetIncludeRevoked() {
-		return &leapmuxv1.ListDelegationTokensResponse{Tokens: h.delegationAll}, nil
+		src = h.delegationAll
 	}
-	return &leapmuxv1.ListDelegationTokensResponse{Tokens: h.delegationLive}, nil
+	out := filterByPrefix(src, req.GetIdPrefix(), (*leapmuxv1.AdminDelegationToken).GetId)
+	return &leapmuxv1.ListDelegationTokensResponse{Tokens: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
 }
 
 func (h *adminPrefixTestHub) RevokeDelegationToken(_ context.Context, req *leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest) (*leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse, error) {
@@ -1424,10 +1506,13 @@ func (h *adminPrefixTestHub) ListRegistrationKeys(_ context.Context, req *leapmu
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.regKeyListReqs = append(h.regKeyListReqs, req.GetIncludeExpired())
+	h.regKeyQueries = append(h.regKeyQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	src := h.regKeysLive
 	if req.GetIncludeExpired() {
-		return &leapmuxv1.ListRegistrationKeysResponse{Keys: h.regKeysAll}, nil
+		src = h.regKeysAll
 	}
-	return &leapmuxv1.ListRegistrationKeysResponse{Keys: h.regKeysLive}, nil
+	out := filterByPrefix(src, req.GetIdPrefix(), (*leapmuxv1.AdminRegistrationKey).GetId)
+	return &leapmuxv1.ListRegistrationKeysResponse{Keys: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
 }
 
 func (h *adminPrefixTestHub) RevokeRegistrationKey(_ context.Context, req *leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest) (*leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse, error) {
@@ -1437,6 +1522,49 @@ func (h *adminPrefixTestHub) RevokeRegistrationKey(_ context.Context, req *leapm
 	return &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse{}, nil
 }
 
+func (h *adminPrefixTestHub) ListApps(_ context.Context, req *leapmuxv1.ListAppsRequest) (*leapmuxv1.ListAppsResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.appQueries = append(h.appQueries, adminPrefixQuery{idPrefix: req.GetIdPrefix(), limit: req.GetPage().GetLimit()})
+	out := filterByPrefix(h.apps, req.GetIdPrefix(), (*leapmuxv1.App).GetClientId)
+	return &leapmuxv1.ListAppsResponse{Apps: out, Page: &leapmuxv1.PageResponse{NextCursor: h.nextCursorOnLists}}, nil
+}
+
+func (h *adminPrefixTestHub) RevokeApp(_ context.Context, req *leapmuxv1.RevokeAppRequest) (*leapmuxv1.RevokeAppResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.revokedApp = req.GetClientId()
+	return &leapmuxv1.RevokeAppResponse{}, nil
+}
+
+func (h *adminPrefixTestHub) ListOAuthProviders(_ context.Context, req *leapmuxv1.ListOAuthProvidersRequest) (*leapmuxv1.ListOAuthProvidersResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.providerQueries = append(h.providerQueries, req.GetIdPrefix())
+	out := filterByPrefix(h.providers, req.GetIdPrefix(), (*leapmuxv1.AdminOAuthProvider).GetId)
+	return &leapmuxv1.ListOAuthProvidersResponse{Providers: out}, nil
+}
+
+func (h *adminPrefixTestHub) RemoveOAuthProvider(_ context.Context, req *leapmuxv1.RemoveOAuthProviderRequest) (*leapmuxv1.RemoveOAuthProviderResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.removedProvider = req.GetId()
+	return &leapmuxv1.RemoveOAuthProviderResponse{}, nil
+}
+
+func filterByPrefix[T any](items []T, prefix string, idOf func(T) string) []T {
+	if prefix == "" {
+		return items
+	}
+	var out []T
+	for _, item := range items {
+		if strings.HasPrefix(idOf(item), prefix) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func startAdminPrefixTestHub(t *testing.T, hub *adminPrefixTestHub) string {
 	t.Helper()
 	isolateCLIEnv(t)
@@ -1444,6 +1572,8 @@ func startAdminPrefixTestHub(t *testing.T, hub *adminPrefixTestHub) string {
 	server := connect.NewServer()
 	leapmuxv1connect.RegisterAdminUserServiceHandler(server, hub)
 	leapmuxv1connect.RegisterAdminWorkerServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAppServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAdminIdPServiceHandler(server, hub)
 	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
@@ -1527,9 +1657,9 @@ func TestAdminRevokeResolvers_QueryLiveFirstThenFallBackToHistorical(t *testing.
 	assert.Equal(t, []bool{false}, hub.regKeyListReqs)
 }
 
-func TestMatchAdminUserIDPrefix_UsesMaxPageLimitDeduplicatesAndPropagatesErrors(t *testing.T) {
+func TestMatchAdminUserIDPrefix_UsesServerSideIDPrefixSinglePageAndPropagatesErrors(t *testing.T) {
 	userID := fullTestID("usr-dup1")
-	t.Run("deduplicates across pages and uses MaxPageLimit", func(t *testing.T) {
+	t.Run("queries a single page with id_prefix and prefixResolutionLimit", func(t *testing.T) {
 		hub := &adminPrefixTestHub{
 			usersPages: map[string]*leapmuxv1.ListUsersResponse{
 				"": {
@@ -1537,8 +1667,7 @@ func TestMatchAdminUserIDPrefix_UsesMaxPageLimitDeduplicatesAndPropagatesErrors(
 					Page:  &leapmuxv1.PageResponse{NextCursor: "p2"},
 				},
 				"p2": {
-					// Same user repeated across keyset boundary must not cause false ambiguity.
-					Users: []*leapmuxv1.AdminUser{{Id: userID, Username: "alice"}},
+					Users: []*leapmuxv1.AdminUser{{Id: fullTestID("usr-other"), Username: "bob"}},
 				},
 			},
 		}
@@ -1546,9 +1675,8 @@ func TestMatchAdminUserIDPrefix_UsesMaxPageLimitDeduplicatesAndPropagatesErrors(
 
 		data := envelopeData(t, runControl(t, "admin", "user", "get", userID[:8], "--hub", url).ok(t))
 		assert.Equal(t, userID, data["id"])
-		require.Len(t, hub.listUsersLimits, 2)
-		assert.EqualValues(t, contracts.MaxPageLimit, hub.listUsersLimits[0])
-		assert.EqualValues(t, contracts.MaxPageLimit, hub.listUsersLimits[1])
+		require.Equal(t, []adminPrefixQuery{{idPrefix: userID[:8], limit: prefixResolutionLimit}}, hub.listUsersQueries,
+			"prefix lookup must send one server-side id_prefix page with prefixResolutionLimit")
 	})
 
 	t.Run("propagates ListUsers errors instead of swallowing as not found", func(t *testing.T) {
@@ -1560,4 +1688,111 @@ func TestMatchAdminUserIDPrefix_UsesMaxPageLimitDeduplicatesAndPropagatesErrors(
 		f := runControl(t, "admin", "user", "get", "usr-pref", "--hub", url).requireFailure(t, cli.CodePermissionDenied)
 		assert.Contains(t, f.Message, "missing admin:read")
 	})
+}
+
+func TestAdminResolvers_SendServerSideIDPrefixInOnePage(t *testing.T) {
+	userID := fullTestID("usr-one1")
+	sessID := fullTestID("ses-one1")
+	apiID := fullTestID("api-one1")
+	delID := fullTestID("del-one1")
+	wrkID := fullTestID("wrk-one1")
+	keyID := fullTestID("key-one1")
+	appID := fullTestID("app-one1")
+	idpID := fullTestID("idp-one1")
+
+	hub := &adminPrefixTestHub{
+		usersPages: map[string]*leapmuxv1.ListUsersResponse{
+			"": {
+				Users: []*leapmuxv1.AdminUser{{Id: userID, Username: "alice"}},
+				Page:  &leapmuxv1.PageResponse{NextCursor: "p2"},
+			},
+		},
+		sessions:          []*leapmuxv1.AdminSession{{Id: sessID, Username: "alice"}},
+		apiTokensLive:     []*leapmuxv1.AdminAPIToken{{Id: apiID, InstallationName: "CI Runner"}},
+		apiTokensAll:      []*leapmuxv1.AdminAPIToken{{Id: apiID, InstallationName: "CI Runner"}},
+		delegationLive:    []*leapmuxv1.AdminDelegationToken{{Id: delID, Username: "alice"}},
+		delegationAll:     []*leapmuxv1.AdminDelegationToken{{Id: delID, Username: "alice"}},
+		workers:           []*leapmuxv1.AdminWorker{{Id: wrkID, OwnerUsername: "alice", Status: leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE}},
+		regKeysLive:       []*leapmuxv1.AdminRegistrationKey{{Id: keyID, CreatorUsername: "alice"}},
+		regKeysAll:        []*leapmuxv1.AdminRegistrationKey{{Id: keyID, CreatorUsername: "alice"}},
+		apps:              []*leapmuxv1.App{{ClientId: appID, ClientName: "Deploy Bot"}},
+		providers:         []*leapmuxv1.AdminOAuthProvider{{Id: idpID, ProviderType: "github", Name: "GitHub SSO"}},
+		nextCursorOnLists: "page-2-must-not-be-fetched",
+	}
+	url := startAdminPrefixTestHub(t, hub)
+
+	// Prefix resolution sends IdPrefix + Limit=prefixResolutionLimit in 1 RPC per resource.
+	runControl(t, "admin", "user", "get", userID[:8], "--hub", url).ok(t)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: userID[:8], limit: prefixResolutionLimit}}, hub.listUsersQueries)
+
+	runControl(t, "admin", "session", "revoke", sessID[:8], "--hub", url).ok(t)
+	assert.Equal(t, sessID, hub.revokedSession)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: sessID[:8], limit: prefixResolutionLimit}}, hub.sessionQueries)
+
+	runControl(t, "admin", "api-token", "revoke", apiID[:8], "--hub", url).ok(t)
+	assert.Equal(t, apiID, hub.revokedAPIToken)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: apiID[:8], limit: prefixResolutionLimit}}, hub.apiTokenQueries)
+
+	runControl(t, "admin", "delegation-token", "revoke", delID[:8], "--hub", url).ok(t)
+	assert.Equal(t, delID, hub.revokedDelegation)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: delID[:8], limit: prefixResolutionLimit}}, hub.delegationQueries)
+
+	runControl(t, "admin", "worker", "get", wrkID[:8], "--hub", url).ok(t)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: wrkID[:8], limit: prefixResolutionLimit}}, hub.workerQueries)
+
+	runControl(t, "admin", "worker", "reg-key", "revoke", keyID[:8], "--hub", url).ok(t)
+	assert.Equal(t, keyID, hub.revokedRegKey)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: keyID[:8], limit: prefixResolutionLimit}}, hub.regKeyQueries)
+
+	runControl(t, "admin", "app", "revoke", appID[:8], "--hub", url).ok(t)
+	assert.Equal(t, appID, hub.revokedApp)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: appID[:8], limit: prefixResolutionLimit}}, hub.appQueries)
+
+	runControl(t, "admin", "idp", "remove", idpID[:8], "--hub", url).ok(t)
+	assert.Equal(t, idpID, hub.removedProvider)
+	assert.Equal(t, []string{idpID[:8]}, hub.providerQueries)
+
+	// Full 48-char generated IDs skip listing completely.
+	hub.listUsersQueries = nil
+	hub.sessionQueries = nil
+	hub.apiTokenQueries = nil
+	hub.delegationQueries = nil
+	hub.workerQueries = nil
+	hub.regKeyQueries = nil
+	hub.appQueries = nil
+	hub.providerQueries = nil
+
+	runControl(t, "admin", "user", "get", userID, "--hub", url).ok(t)
+	runControl(t, "admin", "session", "revoke", sessID, "--hub", url).ok(t)
+	runControl(t, "admin", "api-token", "revoke", apiID, "--hub", url).ok(t)
+	runControl(t, "admin", "delegation-token", "revoke", delID, "--hub", url).ok(t)
+	runControl(t, "admin", "worker", "get", wrkID, "--hub", url).ok(t)
+	runControl(t, "admin", "worker", "reg-key", "revoke", keyID, "--hub", url).ok(t)
+	runControl(t, "admin", "app", "revoke", appID, "--hub", url).ok(t)
+	runControl(t, "admin", "idp", "remove", idpID, "--hub", url).ok(t)
+
+	assert.Empty(t, hub.listUsersQueries)
+	assert.Empty(t, hub.sessionQueries)
+	assert.Empty(t, hub.apiTokenQueries)
+	assert.Empty(t, hub.delegationQueries)
+	assert.Empty(t, hub.workerQueries)
+	assert.Empty(t, hub.regKeyQueries)
+	assert.Empty(t, hub.appQueries)
+	assert.Empty(t, hub.providerQueries)
+	assert.Equal(t, 1, hub.getWorkerCalls, "full worker ID calls GetWorker directly")
+
+	// Bare title fallback still works cleanly when id_prefix returns 0 rows.
+	hub.nextCursorOnLists = ""
+	hub.appQueries = nil
+	hub.revokedApp = ""
+	runControl(t, "admin", "app", "revoke", "Deploy Bot", "--hub", url).ok(t)
+	assert.Equal(t, appID, hub.revokedApp)
+	assert.Equal(t, []adminPrefixQuery{{idPrefix: "", limit: listPageSize}}, hub.appQueries,
+		"multi-word bare title skips id_prefix query and goes straight to full listing")
+
+	hub.providerQueries = nil
+	hub.removedProvider = ""
+	runControl(t, "admin", "idp", "remove", "GitHub SSO", "--hub", url).ok(t)
+	assert.Equal(t, idpID, hub.removedProvider)
+	assert.Equal(t, []string{""}, hub.providerQueries)
 }

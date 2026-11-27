@@ -139,3 +139,43 @@ LEFT JOIN workspace_sections ws
   ON ws.id = wsi.section_id AND ws.user_id = wto.user_id
 WHERE wto.user_id = sqlc.arg(user_id) AND wto.worker_id = sqlc.arg(worker_id)
 AND wto.tab_id = sqlc.arg(tab_id);
+
+-- name: ListRenderedTabsByIDExact :many
+SELECT t.* FROM workspace_tab_owned t
+JOIN workspaces w ON w.id = t.workspace_id
+WHERE t.user_id = sqlc.arg(user_id)
+  AND t.tab_id = sqlc.arg(tab_id)::text
+  AND t.rendered
+  AND w.deleted_at IS NULL
+ORDER BY t.tab_id ASC;
+
+-- name: ListRenderedTabsByIDPrefix :many
+SELECT t.* FROM workspace_tab_owned t
+JOIN workspaces w ON w.id = t.workspace_id
+WHERE t.user_id = sqlc.arg(user_id)
+  AND t.tab_id >= sqlc.arg(id_lo)::text
+  AND t.tab_id < sqlc.arg(id_hi)::text
+  AND t.rendered
+  AND w.deleted_at IS NULL
+ORDER BY t.tab_id ASC;
+
+-- name: ListRenderedTabsByWorkspaceIDsAndIDExact :many
+SELECT t.* FROM workspace_tab_owned t
+JOIN workspaces w ON w.id = t.workspace_id
+WHERE t.user_id = sqlc.arg(user_id)
+  AND t.workspace_id = ANY(sqlc.arg(workspace_ids)::text[])
+  AND t.tab_id = sqlc.arg(tab_id)::text
+  AND t.rendered
+  AND w.deleted_at IS NULL
+ORDER BY t.tab_id ASC;
+
+-- name: ListRenderedTabsByWorkspaceIDsAndIDPrefix :many
+SELECT t.* FROM workspace_tab_owned t
+JOIN workspaces w ON w.id = t.workspace_id
+WHERE t.user_id = sqlc.arg(user_id)
+  AND t.workspace_id = ANY(sqlc.arg(workspace_ids)::text[])
+  AND t.tab_id >= sqlc.arg(id_lo)::text
+  AND t.tab_id < sqlc.arg(id_hi)::text
+  AND t.rendered
+  AND w.deleted_at IS NULL
+ORDER BY t.tab_id ASC;

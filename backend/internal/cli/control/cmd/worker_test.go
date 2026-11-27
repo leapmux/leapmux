@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
@@ -190,7 +192,7 @@ func TestRunWorkerGetPrintsTheWorkerRow(t *testing.T) {
 		"online":          false,
 		"registered_by":   "u-1",
 		"auto_registered": false,
-		"created_at":      created.Format(timeFormat),
+		"created_at":      timefmt.Format(created),
 	}, env.Data)
 	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called(),
 		"an offline worker is not asked for its name")
@@ -215,12 +217,12 @@ func TestWorkerRowOfPrintsInstantsAsStrings(t *testing.T) {
 		"online":          true,
 		"registered_by":   "u-1",
 		"auto_registered": true,
-		"created_at":      created.Format(timeFormat),
+		"created_at":      timefmt.Format(created),
 	}, row)
 
 	seen := created.Add(time.Minute)
 	row = jsonMap(t, workerRowOf(&leapmuxv1.Worker{Id: "worker-B", CreatedAt: timestamppb.New(created), LastSeenAt: timestamppb.New(seen)}, ""))
-	assert.Equal(t, seen.Format(timeFormat), row["last_seen_at"])
+	assert.Equal(t, timefmt.Format(seen), row["last_seen_at"])
 	assert.Equal(t, false, row["online"], "an offline worker still prints its online flag")
 	assert.NotContains(t, row, "name", "a worker that reported no name prints none")
 }
@@ -513,9 +515,13 @@ func (h *localSoloWorkerHub) emailRequests() []*leapmuxv1.EmailRegistrationInstr
 	return append([]*leapmuxv1.EmailRegistrationInstructionsRequest(nil), h.emailReqs...)
 }
 
-func (*localSoloWorkerHub) ListWorkers(context.Context, *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
+func (*localSoloWorkerHub) ListWorkers(_ context.Context, req *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
+	w := &leapmuxv1.Worker{Id: fullTestID("worker-solo"), Online: true}
+	if prefix := req.GetIdPrefix(); prefix != "" && !strings.HasPrefix(w.GetId(), prefix) {
+		return &leapmuxv1.ListWorkersResponse{}, nil
+	}
 	return &leapmuxv1.ListWorkersResponse{
-		Workers: []*leapmuxv1.Worker{{Id: fullTestID("worker-solo"), Online: true}},
+		Workers: []*leapmuxv1.Worker{w},
 	}, nil
 }
 
@@ -565,10 +571,19 @@ type recordingDirectWorkerHub struct {
 	listCalls      int
 }
 
-func (h *recordingDirectWorkerHub) ListWorkers(context.Context, *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
+func (h *recordingDirectWorkerHub) ListWorkers(_ context.Context, req *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
 	h.mu.Lock()
 	h.listCalls++
 	h.mu.Unlock()
+	if prefix := req.GetIdPrefix(); prefix != "" {
+		var out []*leapmuxv1.Worker
+		for _, w := range h.workers {
+			if strings.HasPrefix(w.GetId(), prefix) {
+				out = append(out, w)
+			}
+		}
+		return &leapmuxv1.ListWorkersResponse{Workers: out}, nil
+	}
 	return &leapmuxv1.ListWorkersResponse{Workers: h.workers}, nil
 }
 
@@ -687,15 +702,17 @@ func TestRunWorkerGet_ReusesResolvedWorkerAndName(t *testing.T) {
 	})
 }
 
-func TestFindPin_IDPrefixRequiresExactMatch(t *testing.T) {
+func TestFindPin_SupportsExactAndPrefixMatchingWithIDQualifier(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 	const hub = "http://127.0.0.1:4327"
 	pins, err := control.NewPinStore(hub)
 	require.NoError(t, err)
 
-	commit, err := pins.Resolve(t.Context(), "worker-alpha-1234", []byte{1}, []byte{2}, []byte{3})
-	require.NoError(t, err)
-	require.NoError(t, commit(t.Context()))
+	for _, wid := range []string{"worker-alpha-1234", "w1"} {
+		commit, err := pins.Resolve(t.Context(), wid, []byte{1}, []byte{2}, []byte{3})
+		require.NoError(t, err)
+		require.NoError(t, commit(t.Context()))
+	}
 
 	got, err := findPin(t.Context(), pins, "worker-alpha")
 	require.NoError(t, err)
@@ -705,7 +722,15 @@ func TestFindPin_IDPrefixRequiresExactMatch(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
 
-	_, err = findPin(t.Context(), pins, "id:worker-alpha")
+	gotPrefix, err := findPin(t.Context(), pins, "id:worker-alpha")
+	require.NoError(t, err)
+	assert.Equal(t, "worker-alpha-1234", gotPrefix.WorkerID)
+
+	gotShortExact, err := findPin(t.Context(), pins, "id:w1")
+	require.NoError(t, err)
+	assert.Equal(t, "w1", gotShortExact.WorkerID)
+
+	_, err = findPin(t.Context(), pins, "id:wor")
 	require.Error(t, err)
 	assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
 
@@ -721,14 +746,28 @@ func TestFindPin_IDPrefixRequiresExactMatch(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, commit2(t.Context()))
 
-	_, err = findPin(t.Context(), pins, "worker-alpha")
-	require.Error(t, err)
-	ambiguousErr := cli.FromError(err)
-	assert.Equal(t, cli.CodeAmbiguousTarget, ambiguousErr.Code)
-	assert.Equal(t, []cli.Candidate{
-		{ID: "worker-alpha-1234", Kind: "worker"},
-		{ID: "worker-alpha-5678", Kind: "worker"},
-	}, ambiguousErr.Candidates)
+	for _, selector := range []string{"worker-alpha", "id:worker-alpha"} {
+		_, err = findPin(t.Context(), pins, selector)
+		require.Error(t, err)
+		ambiguousErr := cli.FromError(err)
+		assert.Equal(t, cli.CodeAmbiguousTarget, ambiguousErr.Code, selector)
+		assert.Equal(t, []cli.Candidate{
+			{ID: "worker-alpha-1234", Kind: "worker"},
+			{ID: "worker-alpha-5678", Kind: "worker"},
+		}, ambiguousErr.Candidates, selector)
+	}
+}
+
+func TestRunWorkerList_WkAliasRoutesToWorkerList(t *testing.T) {
+	hub := &recordingHub{listWorkerPages: [][]string{{"worker-A", "worker-B"}}}
+	startSpawnIPC(t, hub, nil)
+
+	data := runControl(t, "wk", "list").Data(t)
+	workers, ok := data["workers"].([]any)
+	require.True(t, ok)
+	require.Len(t, workers, 2)
+	assert.Equal(t, "worker-A", workers[0].(map[string]any)["id"])
+	assert.Equal(t, "worker-B", workers[1].(map[string]any)["id"])
 }
 
 func TestRunWorkerKeyCommands_RejectEmptyKeyBeforeDialing(t *testing.T) {

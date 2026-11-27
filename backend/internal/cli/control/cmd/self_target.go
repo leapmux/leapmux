@@ -26,8 +26,8 @@ import (
 // workspace / tile at call time.
 //
 // Each guard pairs with the command's --allow-self flag, which states the
-// hazard it overrides. The refusal names the flag, as tab_busy_refused names
-// --allow-busy.
+// hazard it overrides. The refusal specifies the flag, as tab_busy_refused
+// specifies --allow-busy.
 
 // callingTabID returns the LEAPMUX_CONTROL_TAB_ID spawn anchor, or ""
 // when the CLI was not invoked from inside a remote tab. Trimming
@@ -70,7 +70,7 @@ func errSelfTargetRefused(detail string) error {
 
 // guardWorkspaceDelete blocks `workspace delete` when the calling
 // tab lives inside the target workspace and --allow-self was not passed.
-// Returns nil to proceed, or an emitted error envelope to abort.
+// Returns nil to proceed, or an error to abort.
 func guardWorkspaceDelete(ctx context.Context, c control.Peer, targetWorkspaceID string, allowSelf bool) error {
 	if allowSelf || targetWorkspaceID == "" {
 		return nil
@@ -78,8 +78,10 @@ func guardWorkspaceDelete(ctx context.Context, c control.Peer, targetWorkspaceID
 	selfWS, err := callingWorkspace(ctx, c)
 	if err != nil {
 		cause := fmt.Errorf("check the calling tab before deleting workspace %s: %w", targetWorkspaceID, err)
-		return cli.FromError(withHubHint(nil, cause)).
-			WithHint("pass --%s to delete the workspace even if the command cannot verify the calling tab's location", allowSelfFlag)
+		return &hubHintError{
+			cause: withHubHintForPeer(c, cause),
+			hints: []string{fmt.Sprintf("pass --%s to delete the workspace even if the command cannot verify the calling tab's location", allowSelfFlag)},
+		}
 	}
 	return rejectIfSelfWorkspace(selfWS, targetWorkspaceID)
 }

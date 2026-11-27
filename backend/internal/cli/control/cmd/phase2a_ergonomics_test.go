@@ -20,6 +20,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/util/agentenv"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
@@ -111,6 +112,40 @@ func TestShouldFocusNewTab_AgentAwareDefaults(t *testing.T) {
 	err = validateFocusFlags(&cli.Invocation{Command: openCmd3, Stdin: bytes.NewBuffer(nil)})
 	require.Error(t, err)
 	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+}
+
+func TestIsAgentEnvironment_DetectsOpenCodeMarkers(t *testing.T) {
+	t.Setenv(controlenv.TabTypeVariable, "")
+	t.Setenv("CI", "")
+	for _, key := range agentenv.HarnessDetectionMarkers {
+		t.Setenv(key, "")
+	}
+	assert.False(t, isAgentEnvironment())
+
+	for _, tc := range []struct {
+		key   string
+		value string
+	}{
+		{key: controlenv.TabTypeVariable, value: "agent"},
+		{key: "CI", value: "true"},
+		{key: "OPENCODE_CLIENT", value: "cli"},
+		{key: "OPENCODE_RUN_ID", value: "run-123"},
+		{key: "KILO_CLIENT", value: "acp"},
+		{key: "MIMOCODE_CLIENT", value: "leapmux"},
+		{key: "QWEN_CODE", value: "1"},
+		{key: "GOOSE_TERMINAL", value: "1"},
+	} {
+		t.Setenv(tc.key, tc.value)
+		assert.Truef(t, isAgentEnvironment(), "%s=%q must be detected as an agent environment", tc.key, tc.value)
+		t.Setenv(tc.key, "")
+	}
+
+	// Generic trace and ambient keys must not suppress focus in ordinary shells.
+	for _, key := range []string{"TRACEPARENT", "TRACESTATE", "CONVERSATION_ID", "MEMORY_DIR", "TRANSCRIPT_PATH", "AGENT_ID"} {
+		t.Setenv(key, "ambient-value")
+		assert.Falsef(t, isAgentEnvironment(), "%s must not trigger agent environment detection", key)
+		t.Setenv(key, "")
+	}
 }
 
 func TestAgentApprove_SolePendingDefaultAndAmbiguity(t *testing.T) {
@@ -211,16 +246,26 @@ func TestEventsStream_SnapshotAndTimeout(t *testing.T) {
 				return nil
 			},
 		})
-		done := make(chan error, 1)
-		go func() { done <- s.run(context.Background()) }()
+		runCtx, cancelRun := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		var runErr error
+		go func() {
+			defer close(done)
+			runErr = s.run(runCtx)
+		}()
+		t.Cleanup(func() {
+			cancelRun()
+			<-done
+		})
 
-		call, err := timerWait.Wait(context.Background())
+		call, err := timerWait.Wait(t.Context())
 		require.NoError(t, err)
-		require.NoError(t, call.Release(context.Background()))
+		require.NoError(t, call.Release(t.Context()))
 		<-ready
-		clk.Advance(5 * time.Second).MustWait(context.Background())
+		clk.Advance(5 * time.Second).MustWait(t.Context())
 
-		require.NoError(t, <-done)
+		<-done
+		require.NoError(t, runErr)
 		assert.Contains(t, out.String(), `"kind":"stream.ready"`)
 	})
 

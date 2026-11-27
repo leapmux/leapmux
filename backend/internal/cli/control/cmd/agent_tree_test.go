@@ -395,7 +395,6 @@ func TestResolveSubagentAcrossWorkers_ConcurrentAndDeterministic(t *testing.T) {
 		id, wk, verified, err := resolveSubagentAcrossWorkers(
 			context.Background(),
 			"sub-unique",
-			false,
 			byWorker,
 			func(_ context.Context, workerID string, _ []string) ([]*leapmuxv1.AgentInfo, error) {
 				entered <- workerID
@@ -421,7 +420,6 @@ func TestResolveSubagentAcrossWorkers_ConcurrentAndDeterministic(t *testing.T) {
 		id, wk, verified, err := resolveSubagentAcrossWorkers(
 			context.Background(),
 			"sub-exact",
-			true,
 			byWorker,
 			func(_ context.Context, workerID string, _ []string) ([]*leapmuxv1.AgentInfo, error) {
 				if workerID == "worker-a" {
@@ -444,7 +442,6 @@ func TestResolveSubagentAcrossWorkers_ConcurrentAndDeterministic(t *testing.T) {
 		_, _, verified, err := resolveSubagentAcrossWorkers(
 			context.Background(),
 			"sub-",
-			false,
 			byWorker,
 			func(_ context.Context, workerID string, _ []string) ([]*leapmuxv1.AgentInfo, error) {
 				if workerID == "worker-b" {
@@ -470,7 +467,6 @@ func TestResolveSubagentAcrossWorkers_ConcurrentAndDeterministic(t *testing.T) {
 		id, wk, verified, err := resolveSubagentAcrossWorkers(
 			context.Background(),
 			"sub-unique",
-			false,
 			byWorker,
 			func(_ context.Context, workerID string, _ []string) ([]*leapmuxv1.AgentInfo, error) {
 				return nil, errors.New(workerID + " offline")
@@ -486,7 +482,6 @@ func TestResolveSubagentAcrossWorkers_ConcurrentAndDeterministic(t *testing.T) {
 		id, wk, verified, err := resolveSubagentAcrossWorkers(
 			context.Background(),
 			"sub-unique",
-			false,
 			nil,
 			func(_ context.Context, _ string, _ []string) ([]*leapmuxv1.AgentInfo, error) {
 				t.Fatal("callback must not run for an empty worker map")
@@ -499,17 +494,22 @@ func TestResolveSubagentAcrossWorkers_ConcurrentAndDeterministic(t *testing.T) {
 		assert.Empty(t, wk)
 	})
 
-	t.Run("explicit id suppresses prefix matching", func(t *testing.T) {
+	t.Run("exact short id matches while short non-exact prefix does not", func(t *testing.T) {
 		byWorker := map[string][]string{"worker-a": {"root-a"}}
-		id, wk, verified, err := resolveSubagentAcrossWorkers(
-			context.Background(),
-			"sub-unique",
-			true,
-			byWorker,
-			func(_ context.Context, _ string, _ []string) ([]*leapmuxv1.AgentInfo, error) {
-				return []*leapmuxv1.AgentInfo{{Id: "sub-unique-1234", Title: "Child"}}, nil
-			},
-		)
+		list := func(_ context.Context, _ string, _ []string) ([]*leapmuxv1.AgentInfo, error) {
+			return []*leapmuxv1.AgentInfo{
+				{Id: "sub-unique-1234", Title: "Child"},
+				{Id: "s1", Title: "Short"},
+			}, nil
+		}
+
+		id, wk, verified, err := resolveSubagentAcrossWorkers(context.Background(), "s1", byWorker, list)
+		require.NoError(t, err)
+		assert.True(t, verified)
+		assert.Equal(t, "s1", id)
+		assert.Equal(t, "worker-a", wk)
+
+		id, wk, verified, err = resolveSubagentAcrossWorkers(context.Background(), "sub", byWorker, list)
 		require.NoError(t, err)
 		assert.False(t, verified)
 		assert.Empty(t, id)
@@ -646,5 +646,50 @@ func TestAgentOpenTabOverIPC_UnverifiedFullIDChecksWorkerAndValidatesInput(t *te
 
 		f = runControl(t, "agent", "open-tab", "ab", "--workspace", "id:ws-1").requireFailure(t, cli.CodeUsage)
 		assert.Contains(t, f.Message, "too short for a subagent id prefix")
+
+		f = runControl(t, "agent", "open-tab", "id:ab", "--workspace", "id:ws-1").requireFailure(t, cli.CodeNotFound)
+		assert.Contains(t, f.Message, "no subagent matches")
+	})
+
+	t.Run("id: prefix matches unique subagent prefix and never matches title", func(t *testing.T) {
+		parentID := fullTestID("ag-parent")
+		targetID := fullTestID("7f8e9d0c-sub")
+		hub := &recordingHub{
+			workers:    workerRows("worker-A"),
+			workspaces: []*leapmuxv1.Workspace{{Id: "ws-1", Title: "One"}},
+			tabs: []*leapmuxv1.WorkspaceTab{
+				{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: parentID}, TileId: "tile-1", WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			},
+			materialized: state,
+		}
+		disp := &treeAgentDispatcher{
+			agents: []*leapmuxv1.AgentInfo{
+				{Id: parentID, Title: "Parent", WorkerId: "worker-A"},
+				{Id: targetID, Title: "SubTitle", ParentAgentId: parentID, WorkerId: "worker-A"},
+			},
+		}
+		startSpawnIPC(t, hub, disp, func(r *controlipc.Router) {
+			base := r.Hub
+			r.Hub = &interceptHub{
+				base: base,
+				handler: func(_ context.Context, _ userid.UserID, procedure string, payload []byte) ([]byte, error, bool) {
+					if procedure == leapmuxv1connect.UserCRDTSubmitOpsProcedure {
+						var req leapmuxv1.SubmitOpsRequest
+						require.NoError(t, proto.Unmarshal(payload, &req))
+						b, err := proto.Marshal(&leapmuxv1.SubmitOpsResponse{
+							Results: []*leapmuxv1.BatchResult{{BatchId: req.GetBatches()[0].GetBatchId()}},
+						})
+						return b, err, true
+					}
+					return nil, nil, false
+				},
+			}
+		})
+
+		data := runControl(t, "agent", "open-tab", "id:7f8e9d0c", "--workspace", "id:ws-1").Data(t)
+		assert.Equal(t, targetID, data["id"])
+
+		f := runControl(t, "agent", "open-tab", "id:SubTitle", "--workspace", "id:ws-1").requireFailure(t, cli.CodeNotFound)
+		assert.Contains(t, f.Message, "no subagent matches")
 	})
 }

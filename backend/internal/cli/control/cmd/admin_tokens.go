@@ -97,9 +97,10 @@ func (r adminDelegationTokenListResult) QuietLines() []string {
 
 func resolveAdminAPITokenID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveLiveThenAllPagedAdminID(ctx, "API token", raw, true,
-		func(ctx context.Context, includeRevoked bool, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminAPIToken, *leapmuxv1.PageResponse, error) {
+		func(ctx context.Context, includeRevoked bool, idPrefix string, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminAPIToken, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminUserService().ListAPITokens(ctx, &leapmuxv1.ListAPITokensRequest{
 				IncludeRevoked: includeRevoked,
+				IdPrefix:       idPrefix,
 				Page:           page,
 			})
 			return resp.GetTokens(), resp.GetPage(), err
@@ -113,9 +114,10 @@ func resolveAdminAPITokenID(ctx context.Context, c *control.HubClient, raw strin
 
 func resolveAdminDelegationTokenID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveLiveThenAllPagedAdminID(ctx, "delegation token", raw, false,
-		func(ctx context.Context, includeRevoked bool, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminDelegationToken, *leapmuxv1.PageResponse, error) {
+		func(ctx context.Context, includeRevoked bool, idPrefix string, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminDelegationToken, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminUserService().ListDelegationTokens(ctx, &leapmuxv1.ListDelegationTokensRequest{
 				IncludeRevoked: includeRevoked,
+				IdPrefix:       idPrefix,
 				Page:           page,
 			})
 			return resp.GetTokens(), resp.GetPage(), err

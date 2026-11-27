@@ -3,68 +3,82 @@ package cmd
 import (
 	"context"
 	"errors"
-	"os"
+	"fmt"
 	"time"
 
 	"connectrpc.com/connect/v2"
-	"github.com/spf13/cobra"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/version"
 )
 
 const versionDiagnosticTimeout = 2 * time.Second
 
-// addHubHints makes every leaf under root add the next step of a control
-// command to a call that the hub refused: sign in again after a refused
-// credential, and compare the versions after a call that the hub does not
-// implement.
-//
-// The hints belong to this tree and not to cli.FromError, which classifies
-// the failures of every command: `leapmux worker register` reaches the hub
-// with a registration key, and "auth login" cannot fix a refused key.
-func addHubHints(root *cobra.Command) {
-	if root.Runnable() && !root.HasSubCommands() {
-		run := root.RunE
-		root.RunE = func(cmd *cobra.Command, args []string) error {
-			err := run(cmd, args)
-			if needsVersionDiagnostic(err) && usesDirectHub(cmd) {
-				return withPeerVersion(cmd.Context(), err, "Hub", func(ctx context.Context) string {
-					hub, lookupErr := hubURLFor(cmd)
-					if lookupErr != nil {
-						return ""
-					}
-					return httpHubBuild(ctx, hub)
-				})
-			}
-			return withHubHint(cmd, err)
-		}
-	}
-	for _, child := range root.Commands() {
-		addHubHints(child)
-	}
+// hubHintError attaches CLI hints to an error chain without eagerly converting
+// it into a *cli.Error, so cli.FromError classifies the underlying error once
+// and preserves wrappers such as *codedRPCError and *retryReceiptError.
+type hubHintError struct {
+	cause error
+	hints []string
 }
 
-// usesDirectHub covers the command groups that use typed Hub clients in
-// place of hubCallUnary. That call already knows the transport of its peer.
-func usesDirectHub(cmd *cobra.Command) bool {
-	for parent := cmd.Parent(); parent != nil; parent = cmd.Parent() {
-		if parent.Parent() == nil {
-			return cmd.Name() == "admin" || cmd.Name() == "auth" || cmd.Name() == "settings" || cmd.Name() == "worker"
-		}
-		cmd = parent
+var _ cli.HintProvider = (*hubHintError)(nil)
+
+func (e *hubHintError) Error() string      { return e.cause.Error() }
+func (e *hubHintError) Unwrap() error      { return e.cause }
+func (e *hubHintError) CLIHints() []string { return e.hints }
+
+// stripHubHintError removes any transport-added *hubHintError in err's chain
+// (including one wrapped by Connect's client stream) so a caller that builds
+// its own *cli.Error with a command-specific hint does not duplicate the
+// generic transport hint.
+func stripHubHintError(err error) error {
+	var hinted *hubHintError
+	if errors.As(err, &hinted) {
+		return hinted.cause
 	}
-	return false
+	return err
+}
+
+// decoratePeerError attaches transport-owned version diagnostics and Hub hints
+// to ConnectRPC and WebSocket errors returned by p.
+//
+// For *control.HubClient, CodeUnimplemented triggers a Hub /version diagnostic
+// probe and CodeUnauthenticated attaches a Hub-scoped login hint.
+//
+// For *control.WorkerIPCClient, CodeUnimplemented is left for the RPC-layer
+// wrappers (withHubVersion / workerCall.withVersion) so they can distinguish a
+// local Worker IPC refusal from an in-band Hub or Worker refusal without
+// recursing into GetWorkerSystemInfo. CodeUnauthenticated still receives the
+// local login hint immediately.
+func decoratePeerError(ctx context.Context, p control.Peer, err error) error {
+	if err == nil {
+		return nil
+	}
+	switch p.(type) {
+	case *control.HubClient:
+		if needsVersionDiagnostic(err) {
+			return withHubVersion(ctx, p, err)
+		}
+		return withHubHintForPeer(p, err)
+	case *control.WorkerIPCClient:
+		if connect.CodeOf(err) == connect.CodeUnauthenticated {
+			return withHubHintForPeer(p, err)
+		}
+		return err
+	default:
+		return withHubHintForPeer(p, err)
+	}
 }
 
 func needsVersionDiagnostic(err error) bool {
 	var classified *cli.Error
-	return connect.CodeOf(err) == connect.CodeUnimplemented && !errors.As(err, &classified)
+	var hinted *hubHintError
+	return connect.CodeOf(err) == connect.CodeUnimplemented && !errors.As(err, &classified) && !errors.As(err, &hinted)
 }
 
 // withPeerVersion keeps the RPC failure as the result. The build lookup has
@@ -73,7 +87,6 @@ func withPeerVersion(ctx context.Context, err error, peer string, lookup func(co
 	if !needsVersionDiagnostic(err) {
 		return err
 	}
-	out := cli.FromError(err).WithHint("CLI build %s", version.Format())
 	build := ""
 	if lookup != nil && ctx.Err() == nil {
 		probeCtx, cancel := context.WithTimeout(ctx, versionDiagnosticTimeout)
@@ -83,8 +96,14 @@ func withPeerVersion(ctx context.Context, err error, peer string, lookup func(co
 	if build == "" {
 		build = "unavailable"
 	}
-	return out.WithHint("%s build %s", peer, build).
-		WithHint("upgrade the CLI or the %s to a build that supports this command", peer)
+	return &hubHintError{
+		cause: err,
+		hints: []string{
+			fmt.Sprintf("CLI build %s", version.Format()),
+			fmt.Sprintf("%s build %s", peer, build),
+			fmt.Sprintf("upgrade the CLI or the %s to a build that supports this command", peer),
+		},
+	}
 }
 
 func httpHubBuild(ctx context.Context, hub string) string {
@@ -99,6 +118,9 @@ func httpHubBuild(ctx context.Context, hub string) string {
 }
 
 func withHubVersion(ctx context.Context, p control.Peer, err error) error {
+	if !needsVersionDiagnostic(err) {
+		return withHubHintForPeer(p, err)
+	}
 	var ipcError *codedRPCError
 	if ipc, ok := p.(*control.WorkerIPCClient); ok && errors.As(err, &ipcError) && ipcError.Code == "rpc_failed" {
 		return (workerCall{ipc: ipc}).withVersion(ctx, "", err)
@@ -119,41 +141,50 @@ func withHubVersion(ctx context.Context, p control.Peer, err error) error {
 	})
 }
 
-// withHubHint returns err with the next step that a control command takes
-// after a refused call, substituting the active hub URL when known. An error
-// that a command classified itself keeps its own hints.
-func withHubHint(cmd *cobra.Command, err error) error {
+func needsHubHint(err error) bool {
 	var classified *cli.Error
+	var hinted *hubHintError
 	var connectErr *connect.Error
-	if err == nil || errors.As(err, &classified) || !errors.As(err, &connectErr) {
+	if err == nil || errors.As(err, &classified) || errors.As(err, &hinted) || !errors.As(err, &connectErr) {
+		return false
+	}
+	code := cli.FromError(err).Code
+	return code == cli.CodeNotLoggedIn || code == cli.CodeVersionMismatch
+}
+
+func attachHubHint(err error, hub string, isLocal bool) error {
+	switch cli.FromError(err).Code {
+	case cli.CodeNotLoggedIn:
+		if isLocal {
+			return &hubHintError{cause: err, hints: []string{`run "leapmux auth login --hub <url>" to sign in again`}}
+		}
+		return &hubHintError{cause: err, hints: []string{fmt.Sprintf(`run "leapmux auth login --hub %s" to sign in again`, hub)}}
+	case cli.CodeVersionMismatch:
+		if isLocal && hub == "<url>" {
+			return &hubHintError{cause: err, hints: []string{`run "leapmux version" to compare the CLI with the hub, and upgrade the older one`}}
+		}
+		return &hubHintError{cause: err, hints: []string{fmt.Sprintf(`run "leapmux version --hub %s" to compare the CLI with the hub, and upgrade the older one`, hub)}}
+	default:
+		return err
+	}
+}
+
+// withHubHintForPeer attaches Hub login or version hints using the peer that
+// executed the call, avoiding command-flag or environment re-derivation.
+func withHubHintForPeer(p control.Peer, err error) error {
+	if !needsHubHint(err) {
 		return err
 	}
 	hub := "<url>"
 	isLocal := false
-	if cmd != nil {
-		if explicit := explicitHub(cmd); explicit != "" {
-			hub = explicit
-			isLocal = locallisten.IsLocal(explicit)
-		} else if os.Getenv(controlenv.SocketVariable) != "" {
-			isLocal = true
-		} else if resolved, lookupErr := hubURLFor(cmd); lookupErr == nil && resolved != "" {
-			hub = resolved
-			isLocal = locallisten.IsLocal(resolved)
+	switch c := p.(type) {
+	case *control.HubClient:
+		if c != nil && c.HubURL != "" {
+			hub = c.HubURL
+			isLocal = locallisten.IsLocal(c.HubURL)
 		}
+	case *control.WorkerIPCClient:
+		isLocal = true
 	}
-	out := cli.FromError(err)
-	switch out.Code {
-	case cli.CodeNotLoggedIn:
-		if isLocal {
-			return out.WithHint(`run "leapmux auth login --hub <url>" to sign in again`)
-		}
-		return out.WithHint(`run "leapmux auth login --hub %s" to sign in again`, hub)
-	case cli.CodeVersionMismatch:
-		if isLocal && hub == "<url>" {
-			return out.WithHint(`run "leapmux version" to compare the CLI with the hub, and upgrade the older one`)
-		}
-		return out.WithHint(`run "leapmux version --hub %s" to compare the CLI with the hub, and upgrade the older one`, hub)
-	default:
-		return out
-	}
+	return attachHubHint(err, hub, isLocal)
 }

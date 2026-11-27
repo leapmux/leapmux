@@ -409,7 +409,7 @@ func runFileSet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	if got.Type != leapmuxv1.TabType_TAB_TYPE_FILE {
-		return nil, cli.Usagef("tab %s is a %s tab, not a file tab", got.ID, tabTypeName(got.Type))
+		return nil, cli.Usagef("tab %s is a %s tab, not a file tab", got.ID, resolve.TabTypeWireName(got.Type))
 	}
 	cc, err := s.openCRDT(got.WorkspaceID)
 	if err != nil {

@@ -98,12 +98,42 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.Worker]{}, nil
 	}
-	return store.QueryPage(ctx, p.Limit,
-		func() (gendb.ListWorkersByUserIDParams, error) {
-			return listWorkersByUserIDParams(owner, p.Cursor, p.Limit)
-		},
-		s.conn.q.ListWorkersByUserID,
-		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) }, s.conn.queryError)
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.Worker]{}, err
+	}
+	if !hasPrefix {
+		return store.QueryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersByUserIDParams, error) {
+				return listWorkersByUserIDParams(owner, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListWorkersByUserID,
+			func(r gendb.Worker) store.Worker { return *fromDBWorker(r) }, s.conn.queryError)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.Worker]{}, err
+	}
+	var rows []gendb.Worker
+	if filter.Exact {
+		rows, err = s.conn.q.ListWorkersByUserIDAndExactID(ctx, gendb.ListWorkersByUserIDAndExactIDParams{
+			RegisteredBy: owner,
+			ID:           filter.Lower,
+		})
+	} else {
+		rows, err = s.conn.q.ListWorkersByUserIDAndIDPrefix(ctx, gendb.ListWorkersByUserIDAndIDPrefixParams{
+			RegisteredBy: owner,
+			IDLo:         filter.Lower,
+			IDHi:         filter.Upper,
+			IDGt:         idGt,
+			Limit:        fetchLimit,
+		})
+	}
+	if err != nil {
+		return store.Page[store.Worker]{}, s.conn.queryError(err)
+	}
+	mapped := store.MapSlice(rows, func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
+	return store.NewPage(mapped, p.Limit), nil
 }
 
 func (s *workerStore) InventorySnapshot(ctx context.Context, owner userid.UserID) (store.WorkerInventorySnapshot, error) {
@@ -124,6 +154,66 @@ func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminPar
 	status, err := store.WorkerAdminListStatusOf(p.Status)
 	if err != nil {
 		return store.Page[store.WorkerWithOwner]{}, err
+	}
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.WorkerWithOwner]{}, err
+	}
+	if hasPrefix {
+		idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+		if err != nil || empty {
+			return store.Page[store.WorkerWithOwner]{}, err
+		}
+		var userID string
+		if p.UserID != nil {
+			uid, ok := userid.New(*p.UserID)
+			if !ok {
+				return store.Page[store.WorkerWithOwner]{}, nil
+			}
+			userID = uid.String()
+		}
+		var statusFilter int64
+		switch status {
+		case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:
+			statusFilter = 0
+		case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
+			statusFilter = 1
+		case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
+			statusFilter = 2
+		case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
+			statusFilter = 3
+		default:
+			return store.Page[store.WorkerWithOwner]{}, store.ErrInvalidArgument
+		}
+		if filter.Exact {
+			return store.QueryPage(ctx, p.Limit,
+				func() (gendb.ListWorkersAdminByExactIDParams, error) {
+					return gendb.ListWorkersAdminByExactIDParams{
+						ID:           filter.Lower,
+						UserID:       userID,
+						StatusFilter: statusFilter,
+					}, nil
+				},
+				s.conn.q.ListWorkersAdminByExactID,
+				func(r gendb.ListWorkersAdminByExactIDRow) store.WorkerWithOwner {
+					return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+				}, s.conn.queryError)
+		}
+		return store.QueryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminByIDPrefixParams, error) {
+				return gendb.ListWorkersAdminByIDPrefixParams{
+					IDLo:         filter.Lower,
+					IDHi:         filter.Upper,
+					IDGt:         idGt,
+					UserID:       userID,
+					StatusFilter: statusFilter,
+					Limit:        fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListWorkersAdminByIDPrefix,
+			func(r gendb.ListWorkersAdminByIDPrefixRow) store.WorkerWithOwner {
+				return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+			}, s.conn.queryError)
 	}
 	switch status {
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:

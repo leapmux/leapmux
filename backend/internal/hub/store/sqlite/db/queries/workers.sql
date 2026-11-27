@@ -246,3 +246,51 @@ LEFT JOIN workers w
 INSERT INTO worker_enrollment_revisions (user_id, revision)
 VALUES (sqlc.arg(user_id), 1)
 ON CONFLICT (user_id) DO UPDATE SET revision = worker_enrollment_revisions.revision + 1;
+
+-- name: ListWorkersByUserIDExact :many
+SELECT * FROM workers
+WHERE id = sqlc.arg(id)
+  AND registered_by = sqlc.arg(registered_by)
+  AND deleted_at IS NULL
+  AND deregistering_at IS NULL;
+
+-- name: ListWorkersByUserIDPrefix :many
+SELECT * FROM workers
+WHERE id >= sqlc.arg(id_lo)
+  AND id < sqlc.arg(id_hi)
+  AND id > sqlc.arg(id_gt)
+  AND registered_by = sqlc.arg(registered_by)
+  AND deleted_at IS NULL
+  AND deregistering_at IS NULL
+ORDER BY id ASC
+LIMIT sqlc.arg(limit);
+
+-- name: ListWorkersAdminByIDExact :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id = sqlc.arg(id)
+  AND (w.registered_by = sqlc.arg(user_id) OR CAST(sqlc.arg(user_id) AS TEXT) = '')
+  AND (
+      (CAST(sqlc.arg(status_filter) AS INTEGER) = 0 AND w.deleted_at IS NULL)
+      OR (CAST(sqlc.arg(status_filter) AS INTEGER) = 1 AND w.deleted_at IS NULL AND w.deregistering_at IS NULL)
+      OR (CAST(sqlc.arg(status_filter) AS INTEGER) = 2 AND w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL)
+      OR (CAST(sqlc.arg(status_filter) AS INTEGER) = 3 AND w.deleted_at IS NOT NULL)
+  );
+
+-- name: ListWorkersAdminByIDPrefix :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id >= sqlc.arg(id_lo)
+  AND w.id < sqlc.arg(id_hi)
+  AND w.id > sqlc.arg(id_gt)
+  AND (w.registered_by = sqlc.arg(user_id) OR CAST(sqlc.arg(user_id) AS TEXT) = '')
+  AND (
+      (CAST(sqlc.arg(status_filter) AS INTEGER) = 0 AND w.deleted_at IS NULL)
+      OR (CAST(sqlc.arg(status_filter) AS INTEGER) = 1 AND w.deleted_at IS NULL AND w.deregistering_at IS NULL)
+      OR (CAST(sqlc.arg(status_filter) AS INTEGER) = 2 AND w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL)
+      OR (CAST(sqlc.arg(status_filter) AS INTEGER) = 3 AND w.deleted_at IS NOT NULL)
+  )
+ORDER BY w.id ASC
+LIMIT sqlc.arg(limit);

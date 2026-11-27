@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,9 +26,20 @@ func TestResolveAdminIDPrefix_SupportsNameTitleAndBareFallback(t *testing.T) {
 		{ID: idC, Kind: "app", Title: "duplicate"},
 	}
 	listCalls := 0
-	list := func(_ context.Context) ([]cli.Candidate, error) {
+	var listPrefixes []string
+	list := func(_ context.Context, idPrefix string) ([]cli.Candidate, error) {
 		listCalls++
-		return candidates, nil
+		listPrefixes = append(listPrefixes, idPrefix)
+		if idPrefix == "" {
+			return candidates, nil
+		}
+		var out []cli.Candidate
+		for _, c := range candidates {
+			if strings.HasPrefix(c.ID, idPrefix) {
+				out = append(out, c)
+			}
+		}
+		return out, nil
 	}
 
 	// Full ID skips listing entirely.
@@ -36,11 +48,16 @@ func TestResolveAdminIDPrefix_SupportsNameTitleAndBareFallback(t *testing.T) {
 	assert.Equal(t, idA, got)
 	assert.Equal(t, 0, listCalls)
 
-	// Explicit id: bypasses listing; empty id: fails usage.
-	got, err = resolveAdminIDPrefix(context.Background(), "id:literal-1", "app", list)
+	// Explicit id: with a full ID bypasses listing; a unique prefix passes idPrefix and resolves; empty id: fails usage.
+	got, err = resolveAdminIDPrefix(context.Background(), "id:"+idA, "app", list)
 	require.NoError(t, err)
-	assert.Equal(t, "literal-1", got)
+	assert.Equal(t, idA, got)
 	assert.Equal(t, 0, listCalls)
+	got, err = resolveAdminIDPrefix(context.Background(), "id:"+idA[:8], "app", list)
+	require.NoError(t, err)
+	assert.Equal(t, idA, got)
+	assert.Equal(t, 1, listCalls)
+	assert.Equal(t, []string{idA[:8]}, listPrefixes)
 	_, err = resolveAdminIDPrefix(context.Background(), "id:  ", "app", list)
 	require.Error(t, err)
 	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
@@ -63,14 +80,20 @@ func TestResolveAdminIDPrefix_SupportsNameTitleAndBareFallback(t *testing.T) {
 	assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
 
 	// Bare case-insensitive title fallback works when unique and fails ambiguous when duplicated.
+	// Multi-word bare title skips id_prefix query and goes straight to full listing.
+	listPrefixes = nil
 	got, err = resolveAdminIDPrefix(context.Background(), "deploy bot", "app", list)
 	require.NoError(t, err)
 	assert.Equal(t, idA, got)
+	assert.Equal(t, []string{""}, listPrefixes)
 
+	// Single-word bare title tries id_prefix first, gets 0 matches, and falls back to full listing.
+	listPrefixes = nil
 	_, err = resolveAdminIDPrefix(context.Background(), "duplicate", "app", list)
 	require.Error(t, err)
 	assert.Equal(t, cli.CodeAmbiguousTarget, cli.FromError(err).Code)
 	assert.Len(t, cli.FromError(err).Candidates, 2)
+	assert.Equal(t, []string{"duplicate", ""}, listPrefixes)
 
 	// A 48-character title with spaces does not match resolve.IsGeneratedID, so it resolves via listing.
 	const title48 = "Deploy Bot With Spaces Exactly 48 Chars Long Now"
@@ -163,10 +186,33 @@ func TestTileResizeAndSwapOverIPC(t *testing.T) {
 	swapped := runControl(t, "tile", "swap", tileA, tileB).Data(t)
 	assert.Equal(t, tileA, swapped["tile_a"])
 	assert.Equal(t, tileB, swapped["tile_b"])
+	assert.Equal(t, false, swapped["reissued_ids"])
 	assert.Equal(t, 2, submittedCount)
 
 	selfErr := runControl(t, "tile", "swap", tileA, tileA).Failure(t)
 	assert.Equal(t, cli.CodeUsage, selfErr.Code)
+
+	// EFFICIENCY-15: swapping by tile prefixes resolves both tiles from one
+	// GetMaterialized snapshot with zero LocateTile RPCs.
+	prefixHub := &recordingHub{
+		workers:      workerRows("worker-A"),
+		materialized: b.st,
+		onSubmitOps: func(_ context.Context) ([]byte, error) {
+			return proto.Marshal(&leapmuxv1.SubmitOpsResponse{Results: []*leapmuxv1.BatchResult{{}}})
+		},
+	}
+	startSpawnIPC(t, prefixHub, nil)
+	swappedPrefix := runControl(t, "tile", "swap", tileA[:8], tileB[:8]).Data(t)
+	assert.Equal(t, tileA, swappedPrefix["tile_a"])
+	assert.Equal(t, tileB, swappedPrefix["tile_b"])
+	getMat := 0
+	for _, proc := range prefixHub.called() {
+		if proc == leapmuxv1connect.UserCRDTGetMaterializedProcedure {
+			getMat++
+		}
+		assert.NotEqual(t, leapmuxv1connect.WorkspaceServiceLocateTileProcedure, proc)
+	}
+	assert.Equal(t, 1, getMat, "prefix tile swap should bootstrap GetMaterialized once")
 }
 
 type dirtyWorktreeWorker struct {
@@ -185,14 +231,20 @@ func (w *dirtyWorktreeWorker) DispatchWith(_ context.Context, _ channel.Caller, 
 				},
 			},
 		})
-	case leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure:
-		writeProtoResponse(rw, &leapmuxv1.InspectLastTabCloseResponse{
-			ShouldPrompt: true,
-			BranchName:   "feature/wip",
-			WorktreePath: "/repo/wt-wip",
-			GitState: &leapmuxv1.BranchGitState{
-				HasUncommittedChanges: w.uncommitted,
-				UnpushedCommitCount:   2,
+	case leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure:
+		writeProtoResponse(rw, &leapmuxv1.InspectTabsCloseResponse{
+			Items: []*leapmuxv1.TabCloseInspection{
+				{
+					Tab:          &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: w.tabID},
+					ShouldPrompt: true,
+					IsWorktree:   true,
+					BranchName:   "feature/wip",
+					WorktreePath: "/repo/wt-wip",
+					GitState: &leapmuxv1.BranchGitState{
+						HasUncommittedChanges: w.uncommitted,
+						UnpushedCommitCount:   2,
+					},
+				},
 			},
 		})
 	default:

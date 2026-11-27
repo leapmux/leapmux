@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -88,7 +89,8 @@ func TestTunnelSpecParsingAndBridging(t *testing.T) {
 	// Exercise serveTunnelForward end-to-end with an echo server over net.Pipe.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { _ = ln.Close() }()
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -107,6 +109,7 @@ func TestTunnelSpecParsingAndBridging(t *testing.T) {
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
 	_, err = conn.Write([]byte("ping-tunnel"))
 	require.NoError(t, err)
 	buf := make([]byte, len("ping-tunnel"))
@@ -119,14 +122,24 @@ func TestTunnelSpecParsingAndBridging(t *testing.T) {
 
 	// Exercise bridgeStdioToConn.
 	c1, c2 := net.Pipe()
+	defer func() { _ = c1.Close() }()
+	defer func() { _ = c2.Close() }()
+	c2Done := make(chan struct{})
 	go func() {
+		defer close(c2Done)
 		defer func() { _ = c2.Close() }()
 		b := make([]byte, 5)
 		_, _ = io.ReadFull(c2, b)
 		_, _ = c2.Write([]byte("reply:" + string(b)))
 	}()
+	t.Cleanup(func() {
+		_ = c1.Close()
+		_ = c2.Close()
+		<-c2Done
+	})
 	var out bytes.Buffer
-	require.NoError(t, bridgeStdioToConn(context.Background(), bytes.NewBufferString("hello"), &out, c1))
+	require.NoError(t, bridgeStdioToConn(t.Context(), bytes.NewBufferString("hello"), &out, c1))
+	<-c2Done
 	assert.Equal(t, "reply:hello", out.String())
 }
 
@@ -152,24 +165,32 @@ func TestSectionAndWorkspaceArchiveMove(t *testing.T) {
 			return &leapmuxv1.ListSectionsResponse{Sections: sections, Items: items}, nil
 		case leapmuxv1connect.SectionServiceCreateSectionProcedure:
 			var req leapmuxv1.CreateSectionRequest
-			require.NoError(t, proto.Unmarshal(body, &req))
+			if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+				return nil, err
+			}
 			lastCreated = &req
 			return &leapmuxv1.CreateSectionResponse{
 				Section: &leapmuxv1.Section{Id: "sec-new", Name: req.GetName(), Sidebar: req.GetSidebar(), Position: "n", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM},
 			}, nil
 		case leapmuxv1connect.SectionServiceRenameSectionProcedure:
 			var req leapmuxv1.RenameSectionRequest
-			require.NoError(t, proto.Unmarshal(body, &req))
+			if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+				return nil, err
+			}
 			lastRenamed = &req
 			return &leapmuxv1.RenameSectionResponse{}, nil
 		case leapmuxv1connect.SectionServiceMoveSectionProcedure:
 			var req leapmuxv1.MoveSectionRequest
-			require.NoError(t, proto.Unmarshal(body, &req))
+			if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+				return nil, err
+			}
 			lastMovedSec = &req
 			return &leapmuxv1.MoveSectionResponse{}, nil
 		case leapmuxv1connect.SectionServiceDeleteSectionProcedure:
 			var req leapmuxv1.DeleteSectionRequest
-			require.NoError(t, proto.Unmarshal(body, &req))
+			if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+				return nil, err
+			}
 			lastDeleted = &req
 			return &leapmuxv1.DeleteSectionResponse{}, nil
 		case leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:
@@ -178,12 +199,14 @@ func TestSectionAndWorkspaceArchiveMove(t *testing.T) {
 			}, nil
 		case leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure:
 			var req leapmuxv1.MoveWorkspaceRequest
-			require.NoError(t, proto.Unmarshal(body, &req))
+			if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+				return nil, err
+			}
 			lastMove = &req
 			return &leapmuxv1.MoveWorkspaceResponse{}, nil
 		default:
-			t.Fatalf("unexpected hub method: %s", method)
-			return nil, nil
+			t.Errorf("unexpected hub method: %s", method)
+			return nil, fmt.Errorf("unexpected hub method: %s", method)
 		}
 	}, nil)
 
@@ -289,15 +312,17 @@ func TestWindowLifecycleAndFileSet(t *testing.T) {
 			return &leapmuxv1.GetMaterializedResponse{State: mat}, nil
 		case leapmuxv1connect.UserCRDTSubmitOpsProcedure:
 			var req leapmuxv1.SubmitOpsRequest
-			require.NoError(t, proto.Unmarshal(body, &req))
+			if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+				return nil, err
+			}
 			submitted = nil
 			for _, b := range req.GetBatches() {
 				submitted = append(submitted, b.GetOps()...)
 			}
 			return &leapmuxv1.SubmitOpsResponse{Results: []*leapmuxv1.BatchResult{{}}}, nil
 		default:
-			t.Fatalf("unexpected hub method: %s", method)
-			return nil, nil
+			t.Errorf("unexpected hub method: %s", method)
+			return nil, fmt.Errorf("unexpected hub method: %s", method)
 		}
 	}, nil)
 
@@ -371,7 +396,9 @@ func TestSettingsWorkerPingQuakePSAndGitStatus(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkspaceServiceLocateTabProcedure:
 				var req leapmuxv1.LocateTabRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				return &leapmuxv1.LocateTabResponse{
 					Tab: &leapmuxv1.WorkspaceTab{
 						Tab:         &leapmuxv1.TabIdent{TabType: req.GetTabType(), TabId: req.GetTabId()},
@@ -390,8 +417,8 @@ func TestSettingsWorkerPingQuakePSAndGitStatus(t *testing.T) {
 					},
 				}, nil
 			default:
-				t.Fatalf("unexpected hub method: %s", method)
-				return nil, nil
+				t.Errorf("unexpected hub method: %s", method)
+				return nil, fmt.Errorf("unexpected hub method: %s", method)
 			}
 		},
 		func(method string, body []byte) (proto.Message, error) {
@@ -425,7 +452,9 @@ func TestSettingsWorkerPingQuakePSAndGitStatus(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerTerminalServiceSendInputProcedure:
 				var req leapmuxv1.SendInputRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				sentInput = &req
 				return &leapmuxv1.SendInputResponse{}, nil
 			case leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure:
@@ -449,7 +478,9 @@ func TestSettingsWorkerPingQuakePSAndGitStatus(t *testing.T) {
 				}, nil
 			case leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:
 				var req leapmuxv1.RegisterTabPayloadRequest
-				require.NoError(t, proto.Unmarshal(body, &req))
+				if err := proto.Unmarshal(body, &req); !assert.NoError(t, err) {
+					return nil, err
+				}
 				imgPayload = &req
 				return &leapmuxv1.RegisterTabPayloadResponse{
 					Publication: &leapmuxv1.PublishedTab{
@@ -460,8 +491,8 @@ func TestSettingsWorkerPingQuakePSAndGitStatus(t *testing.T) {
 					},
 				}, nil
 			default:
-				t.Fatalf("unexpected worker method: %s", method)
-				return nil, nil
+				t.Errorf("unexpected worker method: %s", method)
+				return nil, fmt.Errorf("unexpected worker method: %s", method)
 			}
 		},
 	)

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"time"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -18,7 +20,7 @@ func envelope(bs *CRDTBootstrap) *leapmuxv1.CrdtOp {
 	return &leapmuxv1.CrdtOp{
 		OpId:           id.Generate(),
 		OriginClientId: bs.OriginClient,
-		ClientHlc:      bs.Clock.Tick(nowMillis()),
+		ClientHlc:      bs.Clock.Tick(time.Now().UnixMilli()),
 	}
 }
 

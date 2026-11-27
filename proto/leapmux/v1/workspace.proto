@@ -158,7 +158,10 @@ message CreateWorkspaceResponse {
   string workspace_id = 1;
 }
 
-message ListWorkspacesRequest {}
+message ListWorkspacesRequest {
+  // Narrow to workspaces whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 1;
+}
 
 message ListWorkspacesResponse {
   repeated Workspace workspaces = 1;
@@ -245,6 +248,8 @@ message ListTabsRequest {
   // the caller can read. Unknown / inaccessible IDs are silently
   // dropped so stale sidebar state doesn't produce errors.
   repeated string workspace_ids = 1;
+  // Narrow to tabs whose tab_id starts with this prefix (exact match when a full id).
+  string id_prefix = 2;
 }
 
 message ListTabsResponse {

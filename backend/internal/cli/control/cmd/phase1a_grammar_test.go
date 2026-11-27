@@ -182,6 +182,72 @@ func (w *phase1aWorker) DispatchWith(_ context.Context, _ channel.Caller, req *l
 	}
 }
 
+func (w *phase1aWorker) getSentNotifications() []*leapmuxv1.NotifyRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*leapmuxv1.NotifyRequest(nil), w.sentNotifications...)
+}
+
+func (w *phase1aWorker) getClearedNotifications() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.clearedNotifications...)
+}
+
+func (w *phase1aWorker) resetClearedNotifications() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.clearedNotifications = nil
+}
+
+func (w *phase1aWorker) getClearedStatuses() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.clearedStatuses...)
+}
+
+func (w *phase1aWorker) resetClearedStatuses() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.clearedStatuses = nil
+}
+
+func (w *phase1aWorker) getInterrupted() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.interrupted...)
+}
+
+func (w *phase1aWorker) getRemovedInputs() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.removedInputs...)
+}
+
+func (w *phase1aWorker) getInspectedBranches() []*leapmuxv1.InspectBranchDeletionRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*leapmuxv1.InspectBranchDeletionRequest(nil), w.inspectedBranches...)
+}
+
+func (w *phase1aWorker) getListedDirs() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.listedDirs...)
+}
+
+func (w *phase1aWorker) getWorktreeGetReqs() []*leapmuxv1.GetGitWorktreeRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*leapmuxv1.GetGitWorktreeRequest(nil), w.worktreeGetReqs...)
+}
+
+func (w *phase1aWorker) getClosedTabs() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.closedTabs...)
+}
+
 func TestPhase1A_NotificationSendAndVariadicClear(t *testing.T) {
 	w := &phase1aWorker{
 		listedNotifications: []*leapmuxv1.UserNotification{
@@ -194,8 +260,9 @@ func TestPhase1A_NotificationSendAndVariadicClear(t *testing.T) {
 
 	sent := runControl(t, "notification", "send", "Build done", "--body", "green").Data(t)
 	assert.Equal(t, "notif-1", sent["id"])
-	require.Len(t, w.sentNotifications, 1)
-	assert.Equal(t, "Build done", w.sentNotifications[0].GetTitle())
+	sentNotifs := w.getSentNotifications()
+	require.Len(t, sentNotifs, 1)
+	assert.Equal(t, "Build done", sentNotifs[0].GetTitle())
 
 	// Mutual exclusion and empty errors before any RPC.
 	runControl(t, "notification", "clear").requireFailure(t, cli.CodeUsage)
@@ -204,13 +271,13 @@ func TestPhase1A_NotificationSendAndVariadicClear(t *testing.T) {
 	// Variadic clear of two IDs.
 	batch := runControl(t, "notification", "clear", "n-1", "n-2").Data(t)
 	assert.Equal(t, []any{"n-1", "n-2"}, batch["cleared"])
-	assert.ElementsMatch(t, []string{"n-1", "n-2"}, w.clearedNotifications)
+	assert.ElementsMatch(t, []string{"n-1", "n-2"}, w.getClearedNotifications())
 
 	// Clear --all enumerates and clears every notification.
-	w.clearedNotifications = nil
+	w.resetClearedNotifications()
 	all := runControl(t, "notification", "clear", "--all").Data(t)
 	assert.Equal(t, []any{"n-1", "n-2"}, all["cleared"])
-	assert.ElementsMatch(t, []string{"n-1", "n-2"}, w.clearedNotifications)
+	assert.ElementsMatch(t, []string{"n-1", "n-2"}, w.getClearedNotifications())
 }
 
 func TestPhase1A_GitBranchInspectAndWorktreeDefaultSelf(t *testing.T) {
@@ -223,14 +290,16 @@ func TestPhase1A_GitBranchInspectAndWorktreeDefaultSelf(t *testing.T) {
 	assert.Equal(t, "feat/x", data["branch_name"])
 	assert.Equal(t, float64(2), data["unpushed_commits"])
 	assert.Equal(t, true, data["can_push"])
-	require.Len(t, w.inspectedBranches, 1)
-	assert.Equal(t, "/repo", w.inspectedBranches[0].GetPath())
+	inspected := w.getInspectedBranches()
+	require.Len(t, inspected, 1)
+	assert.Equal(t, "/repo", inspected[0].GetPath())
 
 	wt := runControl(t, "worktree", "get").Data(t)
 	assert.Equal(t, "/repo", wt["path"])
 	assert.Equal(t, "main", wt["branch"])
-	require.Len(t, w.worktreeGetReqs, 1)
-	assert.True(t, w.worktreeGetReqs[0].GetSelf())
+	wtReqs := w.getWorktreeGetReqs()
+	require.Len(t, wtReqs, 1)
+	assert.True(t, wtReqs[0].GetSelf())
 }
 
 func TestPhase1A_ReadOnlyDefaultsToSelfAndWorkingDir(t *testing.T) {
@@ -263,9 +332,9 @@ func TestPhase1A_ReadOnlyDefaultsToSelfAndWorkingDir(t *testing.T) {
 
 	cleared := runControl(t, "tab", "status", "clear", "self", "build", "lint").Data(t)
 	assert.Equal(t, []any{"build", "lint"}, cleared["cleared"])
-	assert.Equal(t, []string{"build", "lint"}, w.clearedStatuses)
+	assert.ElementsMatch(t, []string{"build", "lint"}, w.getClearedStatuses())
 
-	w.clearedStatuses = nil
+	w.resetClearedStatuses()
 	clearedAll := runControl(t, "tab", "status", "clear", "self", "--all").Data(t)
 	assert.Equal(t, []any{"build", "lint"}, clearedAll["cleared"])
 
@@ -274,7 +343,7 @@ func TestPhase1A_ReadOnlyDefaultsToSelfAndWorkingDir(t *testing.T) {
 	listings, ok := files["listings"].([]any)
 	require.True(t, ok)
 	require.Len(t, listings, 1)
-	assert.Equal(t, []string{"/work/project"}, w.listedDirs)
+	assert.Equal(t, []string{"/work/project"}, w.getListedDirs())
 }
 
 func TestPhase1A_SymmetricTypedVerbsAndVariadicTargets(t *testing.T) {
@@ -314,20 +383,20 @@ func TestPhase1A_SymmetricTypedVerbsAndVariadicTargets(t *testing.T) {
 	agents, ok := interrupted["agents"].([]any)
 	require.True(t, ok)
 	require.Len(t, agents, 2)
-	assert.Equal(t, []string{"ag-aaaa1111", "ag-bbbb2222"}, w.interrupted)
+	assert.Equal(t, []string{"ag-aaaa1111", "ag-bbbb2222"}, w.getInterrupted())
 
 	// Variadic agent queue remove deletes back-to-front so removing the head
 	// never promotes a later queued input into dispatch before it is deleted.
 	removed := runControl(t, "agent", "queue", "remove", "ag-aaaa1111", "in-1111", "in-2222").Data(t)
 	assert.Equal(t, []any{"in-1111", "in-2222"}, removed["input_ids"])
-	assert.Equal(t, []string{"in-2222", "in-1111"}, w.removedInputs)
+	assert.Equal(t, []string{"in-2222", "in-1111"}, w.getRemovedInputs())
 
 	// Variadic agent close.
 	closed := runControl(t, "agent", "close", "ag-aaaa1111", "ag-bbbb2222").Data(t)
 	closedRows, ok := closed["closed"].([]any)
 	require.True(t, ok)
 	require.Len(t, closedRows, 2)
-	assert.Equal(t, []string{"ag-aaaa1111", "ag-bbbb2222"}, w.closedTabs)
+	assert.Equal(t, []string{"ag-aaaa1111", "ag-bbbb2222"}, w.getClosedTabs())
 }
 
 func TestPhase1A_VersionTextRendering(t *testing.T) {

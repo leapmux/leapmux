@@ -465,33 +465,43 @@ func TestTable_StateAndDimTagsWithStateClassifier(t *testing.T) {
 		assert.Equal(t, "muted", strings.Fields(lines[6])[3])
 	})
 
-	t.Run("falls back to SetDefaultStateClassifier when Printer.StateClassifier is nil", func(t *testing.T) {
-		prev := getDefaultStateClassifier()
-		t.Cleanup(func() { SetDefaultStateClassifier(prev) })
-		SetDefaultStateClassifier(classifier)
+	t.Run("SetStateClassifier scopes classification to the command tree without global state", func(t *testing.T) {
+		root := Group("leapmux", "Root",
+			NewLeaf(Leaf{
+				Use:   "list",
+				Short: "List rows",
+				Run: func(*Invocation) (any, error) {
+					return rows[:1], nil
+				},
+			}),
+			Group("sub", "Sub",
+				NewLeaf(Leaf{
+					Use:   "list",
+					Short: "List rows with override",
+					Run: func(*Invocation) (any, error) {
+						return rows[:1], nil
+					},
+				}),
+			),
+		)
+		AddOutputFlags(root)
+		SetStateClassifier(root, classifier)
 
+		// Root classifier applies to descendant commands.
 		var out bytes.Buffer
-		p := &Printer{Out: &out, Err: &bytes.Buffer{}, Format: FormatText, Color: ColorAlways}
-		require.NoError(t, p.Result(rows[:1]))
+		require.NoError(t, Run(context.Background(), root, []string{"list", "--color", "always"}, strings.NewReader(""), &out, &bytes.Buffer{}))
 		assert.Contains(t, out.String(), ansiGreen+"ready"+ansiReset)
 
-		// Printer.StateClassifier overrides SetDefaultStateClassifier.
+		// A subcommand tree can override the root classifier.
+		subCmd, _, err := root.Find([]string{"sub"})
+		require.NoError(t, err)
+		SetStateClassifier(subCmd, func(string) StateTone { return StateToneRed })
 		out.Reset()
-		pOverride := &Printer{
-			Out:    &out,
-			Err:    &bytes.Buffer{},
-			Format: FormatText,
-			Color:  ColorAlways,
-			StateClassifier: func(string) StateTone {
-				return StateToneRed
-			},
-		}
-		require.NoError(t, pOverride.Result(rows[:1]))
+		require.NoError(t, Run(context.Background(), root, []string{"sub", "list", "--color", "always"}, strings.NewReader(""), &out, &bytes.Buffer{}))
 		assert.Contains(t, out.String(), ansiRed+"ready"+ansiReset)
 		assert.NotContains(t, out.String(), ansiGreen)
 
-		// Nil default classifier and nil Printer.StateClassifier leave ,state plain.
-		SetDefaultStateClassifier(nil)
+		// Direct Printer with nil StateClassifier does not inherit any command tree's classifier.
 		out.Reset()
 		pNone := &Printer{Out: &out, Err: &bytes.Buffer{}, Format: FormatText, Color: ColorAlways}
 		require.NoError(t, pNone.Result(rows[:1]))

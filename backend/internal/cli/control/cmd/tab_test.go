@@ -464,10 +464,8 @@ func TestResolvePositionSpec_LastExcludesMovingTab(t *testing.T) {
 	assert.Less(t, pos, "x", "moving tab's own position must not influence the new rank")
 }
 
-// TestParseTabCloseWorktree_KnownValues pins keep / push / discard /
-// remove as the accepted --worktree values for `tab close`. "remove"
-// is an alias for "discard" so scripts that already used "remove" for
-// the WorktreeAction enum keep working without modification.
+// TestParseTabCloseWorktree_KnownValues pins keep / push / discard as the
+// accepted --worktree values for `tab close`.
 func TestParseTabCloseWorktree_KnownValues(t *testing.T) {
 	for _, c := range []struct {
 		in   string
@@ -477,7 +475,6 @@ func TestParseTabCloseWorktree_KnownValues(t *testing.T) {
 		{"keep", closeWorktreeKeep},
 		{"push", closeWorktreePush},
 		{"discard", closeWorktreeDiscard},
-		{"remove", closeWorktreeDiscard},
 	} {
 		got, err := parseTabCloseWorktree(c.in)
 		require.NoErrorf(t, err, "parseTabCloseWorktree(%q)", c.in)
@@ -490,7 +487,7 @@ func TestParseTabCloseWorktree_KnownValues(t *testing.T) {
 // the unspecified default — silent defaulting would defeat the
 // forced-choice gate at the last-tab decision point.
 func TestParseTabCloseWorktree_RejectsUnknown(t *testing.T) {
-	for _, in := range []string{"force", "delete", "yes", "KEEP"} {
+	for _, in := range []string{"force", "delete", "remove", "yes", "KEEP"} {
 		_, err := parseTabCloseWorktree(in)
 		require.Errorf(t, err, "parseTabCloseWorktree(%q) should error", in)
 	}
@@ -626,6 +623,8 @@ func (d *closeDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req 
 	switch req.GetMethod() {
 	case leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure:
 		reply = d.inspect
+	case leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure:
+		reply = &leapmuxv1.InspectTabsCloseResponse{}
 	case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
 		var input leapmuxv1.ListAgentsRequest
 		if err := proto.Unmarshal(req.GetPayload(), &input); err != nil {
@@ -1400,4 +1399,45 @@ func TestRunTabGet_PrintsTheLocatedTab(t *testing.T) {
 	assert.Equal(t, "worker-A", data["worker_id"])
 	assert.Equal(t, []string{leapmuxv1connect.WorkspaceServiceLocateTabProcedure}, hub.called(),
 		"a full id costs one lookup and no list call")
+}
+
+// SCAN-17: findWorkerForWorkspaceInState picks a deterministic worker across
+// map iteration orders by sorting tab IDs lexicographically.
+func TestFindWorkerForWorkspaceInState_DeterministicOrder(t *testing.T) {
+	state := newStateBuilder().
+		workspace("ws-1", "root-1").
+		leafNode("root-1", "", "m").
+		workspace("ws-2", "root-2").
+		leafNode("root-2", "", "m").
+		tabOnWorker("tab-z", "root-1", "worker-Z", leapmuxv1.TabType_TAB_TYPE_AGENT).
+		tabOnWorker("tab-a", "root-1", "worker-A", leapmuxv1.TabType_TAB_TYPE_AGENT).
+		tabOnWorker("tab-m", "root-1", "worker-M", leapmuxv1.TabType_TAB_TYPE_AGENT).
+		tabOnWorker("tab-0", "root-2", "worker-OTHER", leapmuxv1.TabType_TAB_TYPE_AGENT).
+		tombstonedTab("tab-00", "root-1", leapmuxv1.TabType_TAB_TYPE_AGENT).
+		st
+	state.Tabs["tab-00"].WorkerId = &leapmuxv1.LWWString{Value: "worker-DEAD"}
+
+	for range 20 {
+		assert.Equal(t, "worker-A", findWorkerForWorkspaceInState(state, "ws-1"))
+	}
+	assert.Equal(t, "worker-OTHER", findWorkerForWorkspaceInState(state, "ws-2"))
+	assert.Empty(t, findWorkerForWorkspaceInState(state, "ws-missing"))
+}
+
+// REMOVALS-7: `tab list --json` on an empty workspace must encode `"tabs": []`
+// rather than JSON null.
+func TestRunTabList_EmptyWorkspaceEncodesEmptyJSONArray(t *testing.T) {
+	hub := &recordingHub{
+		tabs: []*leapmuxv1.WorkspaceTab{},
+	}
+	startSpawnIPC(t, hub, nil)
+
+	o := runControl(t, "tab", "list")
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.Contains(t, o.Stdout, `"tabs":[]`)
+	assert.NotContains(t, o.Stdout, `"tabs":null`)
+	data := o.Data(t)
+	tabs, ok := data["tabs"].([]any)
+	require.True(t, ok, "tabs must decode as a JSON array, not null")
+	assert.Empty(t, tabs)
 }

@@ -18,38 +18,94 @@ type TabRef struct {
 	TabID   string
 }
 
-// FindRootWorkspace walks nodeID's parent_id chain to a registered
-// workspace root and returns the workspace_id, or "" when the chain
-// doesn't terminate at a known root (orphan, cycle, or workspace the
-// caller can't see). Works against both `UserCrdtState` and
-// `UserMaterialized` because both protos store their workspaces and
-// nodes as `map<string, WorkspaceContentsRecord>` / `map<string,
-// NodeRecord>` with identical shapes.
+// FindNodeRoot walks nodeID's parent_id chain to a registered workspace root
+// or live floating-window root and returns the owning workspace ID, the
+// matched root node ID, and whether that root belongs to a floating window.
+// Returns ("", "", false) when the chain does not end at a known root (orphan,
+// cycle, tombstoned floating window, or workspace the caller cannot see).
+// Works against both `UserCrdtState` and `UserMaterialized` because both
+// protos store their workspaces, floating windows, and nodes with identical
+// shapes.
 //
-// A visited set guards against malformed parent cycles; projection
-// repair already breaks cycles before they reach here, but defense in
-// depth is cheap.
+// A visited set guards against malformed parent cycles; projection repair
+// already breaks cycles before they reach here, but defense in depth is cheap.
+func FindNodeRoot(
+	nodes map[string]*leapmuxv1.NodeRecord,
+	workspaces map[string]*leapmuxv1.WorkspaceContentsRecord,
+	floatingWindows map[string]*leapmuxv1.FloatingWindowRecord,
+	nodeID string,
+) (workspaceID, rootNodeID string, isFloating bool) {
+	if nodeID == "" {
+		return "", "", false
+	}
+	type rootEntry struct {
+		workspaceID string
+		isFloating  bool
+	}
+	roots := make(map[string]rootEntry, len(workspaces)+len(floatingWindows))
+	// Workspace roots are indexed first so a workspace root takes precedence
+	// over a floating-window root on collision, matching project.go.
+	wsIDs := make([]string, 0, len(workspaces))
+	for wsID := range workspaces {
+		wsIDs = append(wsIDs, wsID)
+	}
+	sort.Strings(wsIDs)
+	for _, wsID := range wsIDs {
+		if rid := workspaces[wsID].GetRootNodeId(); rid != "" {
+			if _, taken := roots[rid]; !taken {
+				roots[rid] = rootEntry{workspaceID: wsID}
+			}
+		}
+	}
+	fwIDs := make([]string, 0, len(floatingWindows))
+	for fwID := range floatingWindows {
+		fwIDs = append(fwIDs, fwID)
+	}
+	sort.Strings(fwIDs)
+	for _, fwID := range fwIDs {
+		fw := floatingWindows[fwID]
+		if fw == nil || !HLCIsZero(fw.GetTombstoneAt()) {
+			continue
+		}
+		rid := fw.GetRootNodeId()
+		wsID := fw.GetWorkspaceId().GetValue()
+		if rid == "" || wsID == "" {
+			continue
+		}
+		if _, taken := roots[rid]; !taken {
+			roots[rid] = rootEntry{workspaceID: wsID, isFloating: true}
+		}
+	}
+	visited := map[string]bool{}
+	cur := nodeID
+	for cur != "" {
+		if visited[cur] {
+			return "", "", false
+		}
+		visited[cur] = true
+		if entry, ok := roots[cur]; ok {
+			return entry.workspaceID, cur, entry.isFloating
+		}
+		rec, ok := nodes[cur]
+		if !ok || rec == nil {
+			return "", "", false
+		}
+		cur = rec.GetParentId()
+	}
+	return "", "", false
+}
+
+// FindRootWorkspace walks nodeID's parent_id chain to a registered workspace
+// root or live floating-window root and returns the workspace_id, or "" when
+// the chain does not end at a known root.
 func FindRootWorkspace(
 	nodes map[string]*leapmuxv1.NodeRecord,
 	workspaces map[string]*leapmuxv1.WorkspaceContentsRecord,
+	floatingWindows map[string]*leapmuxv1.FloatingWindowRecord,
 	nodeID string,
 ) string {
-	if nodeID == "" {
-		return ""
-	}
-	rootToWS := make(map[string]string, len(workspaces))
-	for wsID, ws := range workspaces {
-		if rid := ws.GetRootNodeId(); rid != "" {
-			rootToWS[rid] = wsID
-		}
-	}
-	return resolveParentChain(rootToWS, nodeID, func(id string) (string, bool) {
-		rec, ok := nodes[id]
-		if !ok || rec == nil {
-			return "", false
-		}
-		return rec.GetParentId(), true
-	})
+	wsID, _, _ := FindNodeRoot(nodes, workspaces, floatingWindows, nodeID)
+	return wsID
 }
 
 // resolveParentChain walks startID through `parentOf` until it hits a

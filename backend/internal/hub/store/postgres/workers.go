@@ -98,12 +98,43 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.Worker]{}, nil
 	}
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.Worker]{}, err
+	}
+	mapWorker := func(r gendb.Worker) store.Worker { return *fromDBWorker(r) }
+	if !hasPrefix {
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersByUserIDParams, error) {
+				return listWorkersByUserIDParams(owner, p.Cursor, p.Limit)
+			},
+			s.conn.q.ListWorkersByUserID, mapWorker)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.Worker]{}, err
+	}
+	if filter.Exact {
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersByUserIDExactParams, error) {
+				return gendb.ListWorkersByUserIDExactParams{
+					RegisteredBy: owner,
+					ID:           filter.Lower,
+				}, nil
+			},
+			s.conn.q.ListWorkersByUserIDExact, mapWorker)
+	}
 	return queryPage(ctx, p.Limit,
-		func() (gendb.ListWorkersByUserIDParams, error) {
-			return listWorkersByUserIDParams(owner, p.Cursor, p.Limit)
+		func() (gendb.ListWorkersByUserIDPrefixParams, error) {
+			return gendb.ListWorkersByUserIDPrefixParams{
+				RegisteredBy: owner,
+				IDLo:         filter.Lower,
+				IDHi:         filter.Upper,
+				IDGt:         idGt,
+				Limit:        fetchLimit,
+			}, nil
 		},
-		s.conn.q.ListWorkersByUserID,
-		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
+		s.conn.q.ListWorkersByUserIDPrefix, mapWorker)
 }
 
 func (s *workerStore) InventorySnapshot(ctx context.Context, owner userid.UserID) (store.WorkerInventorySnapshot, error) {
@@ -124,6 +155,52 @@ func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminPar
 	status, err := store.WorkerAdminListStatusOf(p.Status)
 	if err != nil {
 		return store.Page[store.WorkerWithOwner]{}, err
+	}
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.WorkerWithOwner]{}, err
+	}
+	if hasPrefix {
+		idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+		if err != nil || empty {
+			return store.Page[store.WorkerWithOwner]{}, err
+		}
+		userID := ""
+		if p.UserID != nil {
+			if *p.UserID == "" {
+				return store.Page[store.WorkerWithOwner]{}, nil
+			}
+			userID = *p.UserID
+		}
+		if filter.Exact {
+			return queryPage(ctx, p.Limit,
+				func() (gendb.ListWorkersAdminByIDExactParams, error) {
+					return gendb.ListWorkersAdminByIDExactParams{
+						ID:           filter.Lower,
+						UserID:       userID,
+						StatusFilter: int32(status),
+					}, nil
+				},
+				s.conn.q.ListWorkersAdminByIDExact,
+				func(r gendb.ListWorkersAdminByIDExactRow) store.WorkerWithOwner {
+					return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+				})
+		}
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminByIDPrefixParams, error) {
+				return gendb.ListWorkersAdminByIDPrefixParams{
+					IDLo:         filter.Lower,
+					IDHi:         filter.Upper,
+					IDGt:         idGt,
+					UserID:       userID,
+					StatusFilter: int32(status),
+					Limit:        fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListWorkersAdminByIDPrefix,
+			func(r gendb.ListWorkersAdminByIDPrefixRow) store.WorkerWithOwner {
+				return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+			})
 	}
 	switch status {
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:

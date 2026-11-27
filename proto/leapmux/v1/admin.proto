@@ -270,6 +270,8 @@ message AdminUser {
 message ListUsersRequest {
   PageRequest page = 1;
   string query = 2;
+  // Narrow to users whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 3;
 }
 
 message ListUsersResponse {
@@ -380,6 +382,8 @@ message AdminSession {
 message ListUserSessionsRequest {
   PageRequest page = 1;
   UserSelector user = 2;
+  // Narrow to sessions whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 3;
 }
 
 message ListUserSessionsResponse {
@@ -389,6 +393,8 @@ message ListUserSessionsResponse {
 
 message ListSessionsRequest {
   PageRequest page = 1;
+  // Narrow to sessions whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 2;
 }
 
 message ListSessionsResponse {
@@ -448,6 +454,8 @@ message ListAPITokensRequest {
   // Narrow to ONE app; empty lists every app.
   string client_id = 3;
   bool include_revoked = 4;
+  // Narrow to tokens whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 5;
 }
 
 message ListAPITokensResponse {
@@ -531,6 +539,8 @@ message ListDelegationTokensRequest {
   // Narrow to one owner; absent lists every owner, as on ListAPITokensRequest.
   UserSelector user = 2;
   bool include_revoked = 3;
+  // Narrow to tokens whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 4;
 }
 
 message ListDelegationTokensResponse {
@@ -591,6 +601,8 @@ message AdminWorkerServiceListWorkersRequest {
   UserSelector user = 2;
   // WORKER_STATUS_UNSPECIFIED = all statuses.
   WorkerStatus status = 3;
+  // Narrow to workers whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 4;
 }
 
 message AdminWorkerServiceListWorkersResponse {
@@ -624,6 +636,8 @@ message AdminRegistrationKey {
 message ListRegistrationKeysRequest {
   PageRequest page = 1;
   bool include_expired = 2;
+  // Narrow to registration keys whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 3;
 }
 
 message ListRegistrationKeysResponse {
@@ -707,7 +721,10 @@ message AddOAuthProviderResponse {
   AdminOAuthProvider provider = 1;
 }
 
-message ListOAuthProvidersRequest {}
+message ListOAuthProvidersRequest {
+  // Narrow to providers whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 1;
+}
 
 message ListOAuthProvidersResponse {
   repeated AdminOAuthProvider providers = 1;

@@ -595,6 +595,18 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, resp)
 	})
 
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure, dispatchTracked, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectTabsCloseRequest, sender channel.ResponseWriter) {
+		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		resp, err := svc.inspectTabsClose(ctx, r.GetTabs(), caller.UserID.String())
+		if err != nil {
+			slog.Error("inspect tabs close failed", "tab_count", len(r.GetTabs()), "error", err)
+			sendInternalError(sender, err.Error())
+			return
+		}
+		sendProtoResponse(sender, resp)
+	})
+
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServicePushBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.PushBranchRequest, sender channel.ResponseWriter) {
 		// Tracked (dispatchTracked above): Shutdown.Wait
 		// drains the git add/commit/push chain. A half-applied push is
@@ -1002,6 +1014,277 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	}
 
 	return resp, nil
+}
+
+type tabTypeIDKey struct {
+	tabType leapmuxv1.TabType
+	tabID   string
+}
+
+type closeSnapshotKey struct {
+	commitDir string
+	branch    string
+}
+
+type cachedCloseSnapshot struct {
+	snap    branchSnapshot
+	pushErr error
+	err     error
+}
+
+type branchSiblingKey struct {
+	repoGitDir string
+	branch     string
+}
+
+type worktreeSiblingResult struct {
+	hasOther bool
+	err      error
+}
+
+// inspectTabsClose inspects a batch of tabs that are closing together. Every
+// tab in the request is excluded from sibling checks, so closing all tabs on a
+// shared worktree or branch still runs the git snapshot once per canonical
+// checkout and surfaces uncommitted changes, unpushed commits, or an unpushed
+// local branch.
+func (svc *Service) inspectTabsClose(ctx context.Context, tabs []*leapmuxv1.TabIdent, userID string) (*leapmuxv1.InspectTabsCloseResponse, error) {
+	if len(tabs) == 0 {
+		return &leapmuxv1.InspectTabsCloseResponse{}, nil
+	}
+
+	closingWorktreeKeys := make(map[ownedTabKey]struct{}, len(tabs))
+	closingBranchKeys := make(map[tabTypeIDKey]struct{}, len(tabs))
+	for _, tab := range tabs {
+		if tab == nil || tab.GetTabId() == "" || tab.GetTabType() == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+			continue
+		}
+		closingWorktreeKeys[newOwnedTabKey(tab.GetTabType(), tab.GetTabId(), userID)] = struct{}{}
+		closingBranchKeys[tabTypeIDKey{tabType: tab.GetTabType(), tabID: tab.GetTabId()}] = struct{}{}
+	}
+
+	var (
+		liveWTLoaded bool
+		liveWT       []liveWorktreeTab
+		liveWTErr    error
+
+		branchDirsLoaded bool
+		branchDirs       []string
+		branchDirsErr    error
+
+		pathProbe            = newBranchInfoProbe(branchProbeConcurrency)
+		pathErrCache         = make(map[string]error)
+		snapshotCache        = make(map[closeSnapshotKey]cachedCloseSnapshot)
+		branchSiblingCache   = make(map[branchSiblingKey]bool)
+		worktreeSiblingCache = make(map[string]worktreeSiblingResult)
+	)
+
+	lookupPathInfo := func(dir string) (*gitPathInfo, error) {
+		if cachedErr, failed := pathErrCache[dir]; failed {
+			return nil, cachedErr
+		}
+		info, err := pathProbe.lookup(ctx, dir)
+		if err != nil {
+			pathErrCache[dir] = err
+			return nil, err
+		}
+		return info, nil
+	}
+
+	loadLiveWorktrees := func() ([]liveWorktreeTab, error) {
+		if !liveWTLoaded {
+			liveWT, liveWTErr = svc.liveWorktreeTabs(ctx)
+			liveWTLoaded = true
+		}
+		return liveWT, liveWTErr
+	}
+
+	loadSurvivingBranchDirs := func() ([]string, error) {
+		if !branchDirsLoaded {
+			branchDirsLoaded = true
+			owner, ok := userid.New(userID)
+			if !ok {
+				branchDirsErr = errors.New("branch sibling scan: owner required to scope the payload-backed scan")
+			} else {
+				branchDirs, branchDirsErr = svc.collectTabDirsExcluding(ctx, `
+					SELECT tab_type, tab_id, working_dir
+					FROM tab_locations
+					WHERE working_dir <> '' AND (user_id = '' OR user_id = ?)`,
+					[]any{owner.String()}, closingBranchKeys)
+			}
+		}
+		return branchDirs, branchDirsErr
+	}
+
+	items := make([]*leapmuxv1.TabCloseInspection, 0, len(tabs))
+	for _, tab := range tabs {
+		item := &leapmuxv1.TabCloseInspection{Tab: tab}
+		items = append(items, item)
+
+		if tab == nil || tab.GetTabId() == "" || tab.GetTabType() == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+			continue
+		}
+
+		workingDir, err := svc.getTabWorkingDir(ctx, tab.GetTabType(), tab.GetTabId(), userID)
+		if err != nil {
+			if errors.Is(err, errNoTabWorkingDir) || errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			item.ErrorHint = "working directory could not be resolved" + truncateGitHint(err.Error(), maxDegradedHintDetail)
+			continue
+		}
+		item.WorkingDir = workingDir
+
+		info, err := lookupPathInfo(workingDir)
+		if err != nil {
+			if errors.Is(err, errNotGitRepo) {
+				continue
+			}
+			item.ErrorHint = "working directory is not readable as a git repository; uncommitted or unpushed changes were not verified" +
+				truncateGitHint(err.Error(), maxDegradedHintDetail)
+			continue
+		}
+		item.BranchName = branchOrShortSHA(info)
+
+		if !isGitTopLevel(workingDir, info) {
+			continue
+		}
+
+		if info.IsWorktree {
+			item.IsWorktree = true
+			item.WorktreePath = info.TopLevel
+			sibRes, cached := worktreeSiblingCache[info.TopLevel]
+			if !cached {
+				wtTabs, wtErr := loadLiveWorktrees()
+				if wtErr != nil {
+					sibRes = worktreeSiblingResult{err: wtErr}
+				} else {
+					other, checkErr := hasOtherLiveWorktreeTabExcluding(info.TopLevel, wtTabs, closingWorktreeKeys)
+					sibRes = worktreeSiblingResult{hasOther: other, err: checkErr}
+				}
+				worktreeSiblingCache[info.TopLevel] = sibRes
+			}
+			if sibRes.err != nil {
+				item.ErrorHint = "could not check live worktree references" + truncateGitHint(sibRes.err.Error(), maxDegradedHintDetail)
+				continue
+			}
+			if sibRes.hasOther {
+				continue
+			}
+		} else {
+			dirs, dirErr := loadSurvivingBranchDirs()
+			if dirErr != nil {
+				slog.Warn("inspectTabsClose: sibling-count scan failed; falling through to snapshot",
+					"tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(), "repo_root", info.RepoRoot, "branch", info.BranchName, "error", dirErr)
+			} else if len(dirs) > 0 {
+				bkey := branchSiblingKey{repoGitDir: pathutil.Canonicalize(info.CommonDir), branch: info.BranchName}
+				hasOther, cached := branchSiblingCache[bkey]
+				if !cached {
+					hasOther = hasOtherNonWorktreeTabInDirs(ctx, dirs, pathProbe, info.CommonDir, info.BranchName)
+					branchSiblingCache[bkey] = hasOther
+				}
+				if hasOther {
+					continue
+				}
+			}
+		}
+
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			slog.Warn("inspectTabsClose: ctx cancelled before snapshot",
+				"tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(), "error", ctxErr)
+			item.ErrorHint = "close request was cancelled; uncommitted or unpushed changes were not verified"
+			continue
+		}
+
+		commitDir := info.TopLevel
+		if commitDir == "" {
+			commitDir = workingDir
+		}
+		skey := closeSnapshotKey{commitDir: pathutil.Canonicalize(commitDir), branch: info.BranchName}
+		snapRes, cached := snapshotCache[skey]
+		if !cached {
+			snap, pushErr, snapErr := gatherCloseSnapshot(ctx, commitDir, info.BranchName)
+			snapRes = cachedCloseSnapshot{snap: snap, pushErr: pushErr, err: snapErr}
+			snapshotCache[skey] = snapRes
+		}
+		if snapRes.err != nil {
+			slog.Warn("inspectTabsClose: git snapshot failed",
+				"tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(),
+				"commit_dir", commitDir, "branch", info.BranchName, "error", snapRes.err)
+			item.ErrorHint = "git state unavailable; uncommitted or unpushed changes were not verified" +
+				truncateGitHint(snapRes.err.Error(), maxDegradedHintDetail)
+			continue
+		}
+		if snapRes.pushErr != nil {
+			slog.Warn("inspectTabsClose: push-status probe failed; keeping diff-driven snapshot",
+				"tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(),
+				"commit_dir", commitDir, "branch", info.BranchName, "error", snapRes.pushErr)
+		}
+		item.GitState = snapRes.snap.toProto(info.BranchName)
+		if snapRes.snap.hasChanges || snapRes.snap.push.Unpushed > 0 || snapRes.snap.push.RemoteMissing {
+			item.ShouldPrompt = true
+		}
+	}
+
+	return &leapmuxv1.InspectTabsCloseResponse{Items: items}, nil
+}
+
+// hasOtherLiveWorktreeTabExcluding reports whether any live tab outside
+// closing holds target open.
+func hasOtherLiveWorktreeTabExcluding(target string, tabs []liveWorktreeTab, closing map[ownedTabKey]struct{}) (bool, error) {
+	top, err := canonicalGitDirectory(target)
+	if err != nil {
+		return false, err
+	}
+	var dirs []string
+	for _, tab := range tabs {
+		if _, isClosing := closing[tab.key]; isClosing {
+			continue
+		}
+		if tab.err != nil {
+			return false, tab.err
+		}
+		dirs = append(dirs, tab.workingDir, tab.linkDir)
+	}
+	seen := make(map[string]struct{}, len(dirs))
+	for _, dir := range dirs {
+		if _, duplicate := seen[dir]; duplicate {
+			continue
+		}
+		seen[dir] = struct{}{}
+		canonical, err := worktreeDirectoryCandidate(dir, top)
+		if err != nil || canonical != "" {
+			return canonical != "", err
+		}
+	}
+	return false, nil
+}
+
+// hasOtherNonWorktreeTabInDirs reports whether any working directory in dirs
+// belongs to a non-worktree checkout of repoGitDir on branchName.
+func hasOtherNonWorktreeTabInDirs(ctx context.Context, dirs []string, probe *branchInfoProbe, repoGitDir, branchName string) bool {
+	gctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	probeG, probeCtx := errgroup.WithContext(gctx)
+	probeG.SetLimit(branchProbeConcurrency)
+	var hit atomic.Bool
+	for _, dir := range dirs {
+		if hit.Load() {
+			break
+		}
+		probeG.Go(func() error {
+			if hit.Load() {
+				return nil
+			}
+			matches, err := probe.matches(probeCtx, dir, repoGitDir, branchName)
+			if err == nil && matches {
+				hit.Store(true)
+				cancel()
+			}
+			return nil
+		})
+	}
+	_ = probeG.Wait()
+	return hit.Load()
 }
 
 // inspectBranchDeletion gathers the git state needed to render the Delete
@@ -2174,6 +2457,12 @@ func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 // could drop a DIFFERENT tab that happens to share the string -- counting one
 // fewer sibling and prompting to delete a branch someone is still on.
 func (svc *Service) collectTabDirs(ctx context.Context, query string, args []any, selfType leapmuxv1.TabType, selfID string) ([]string, error) {
+	return svc.collectTabDirsExcluding(ctx, query, args, map[tabTypeIDKey]struct{}{
+		{tabType: selfType, tabID: selfID}: {},
+	})
+}
+
+func (svc *Service) collectTabDirsExcluding(ctx context.Context, query string, args []any, closing map[tabTypeIDKey]struct{}) ([]string, error) {
 	rows, err := svc.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -2193,7 +2482,7 @@ func (svc *Service) collectTabDirs(ctx context.Context, query string, args []any
 		if err := rows.Scan(&tabType, &id, &workingDir); err != nil {
 			return nil, err
 		}
-		if leapmuxv1.TabType(tabType) == selfType && id == selfID {
+		if _, isClosing := closing[tabTypeIDKey{tabType: leapmuxv1.TabType(tabType), tabID: id}]; isClosing {
 			continue
 		}
 		dirs = append(dirs, workingDir)

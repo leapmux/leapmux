@@ -18,6 +18,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
 func TestAgentRequestStatusResult_RenderTextFormatting(t *testing.T) {
@@ -44,7 +45,9 @@ func TestAgentRequestStatusResult_RenderTextFormatting(t *testing.T) {
 }
 
 func TestWrapRetryReceipt_PreservesHubHintsAndAvoidsDuplicateHints(t *testing.T) {
-	t.Run("does not block withHubHint on Connect unauthenticated error", func(t *testing.T) {
+	peer := &control.HubClient{HubURL: "https://hub.example.test"}
+
+	t.Run("does not block withHubHintForPeer on Connect unauthenticated error", func(t *testing.T) {
 		unauth := connect.NewError(connect.CodeUnauthenticated, "token expired")
 		wrapped := wrapRetryReceipt(unauth, retryStageDuringSend, retryReceipt{
 			RequestID:    "req-auth",
@@ -54,11 +57,7 @@ func TestWrapRetryReceipt_PreservesHubHintsAndAvoidsDuplicateHints(t *testing.T)
 		var eager *cli.Error
 		assert.False(t, errors.As(wrapped, &eager), "wrapRetryReceipt must not eagerly convert to *cli.Error")
 
-		cmd := &cobra.Command{Use: "send"}
-		cmd.Flags().String("hub", "https://hub.example.test", "")
-		require.NoError(t, cmd.Flags().Set("hub", "https://hub.example.test"))
-
-		withHint := withHubHint(cmd, wrapped)
+		withHint := withHubHintForPeer(peer, wrapped)
 		e := cli.FromError(withHint)
 		assert.Equal(t, cli.CodeNotLoggedIn, e.Code)
 		require.NotNil(t, e.Receipt)
@@ -68,18 +67,14 @@ func TestWrapRetryReceipt_PreservesHubHintsAndAvoidsDuplicateHints(t *testing.T)
 		assert.Contains(t, strings.Join(e.Hints, "\n"), "disposition: not_sent (request_id: req-auth)")
 	})
 
-	t.Run("does not block withHubHint on Connect version mismatch error", func(t *testing.T) {
+	t.Run("does not block withHubHintForPeer on Connect version mismatch error", func(t *testing.T) {
 		unimpl := connect.NewError(connect.CodeUnimplemented, "method unknown")
 		wrapped := wrapRetryReceipt(unimpl, retryStageDuringSend, retryReceipt{
 			RequestID: "req-ver",
 		})
 		assert.True(t, needsVersionDiagnostic(wrapped))
 
-		cmd := &cobra.Command{Use: "send"}
-		cmd.Flags().String("hub", "https://hub.example.test", "")
-		require.NoError(t, cmd.Flags().Set("hub", "https://hub.example.test"))
-
-		e := cli.FromError(withHubHint(cmd, wrapped))
+		e := cli.FromError(withHubHintForPeer(peer, wrapped))
 		assert.Equal(t, cli.CodeVersionMismatch, e.Code)
 		require.NotNil(t, e.Receipt)
 		assert.Contains(t, strings.Join(e.Hints, "\n"), `leapmux version --hub https://hub.example.test`)

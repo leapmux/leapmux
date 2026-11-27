@@ -390,3 +390,56 @@ func TestRevokedTokenSweepsAreSargable(t *testing.T) {
 			"%s sweep must carry the UPPER limit into the index seek (the datetime() wrap loses it and scans every revoked row)", tc.table)
 	}
 }
+
+// TestIDPrefixQueriesAreSargable pins that every server-side ID-prefix query
+// (both full-ID exact lookup and short-prefix half-open range scan) seeks an
+// index without a table scan, and that every global or composite-(user_id,id)
+// prefix query rides primary-key order with no temporary sort.
+func TestIDPrefixQueriesAreSargable(t *testing.T) {
+	_, db := newSessionTestStore(t)
+	cases := []struct {
+		file          string
+		query         string
+		allowUserSort bool // single-user equality queries may seek user_id=? and sort the user's matching rows
+	}{
+		{"users.sql", "ListUsersByIDExact", false},
+		{"users.sql", "ListUsersByIDPrefix", false},
+		{"user_sessions.sql", "ListUserSessionsByUserIDExact", false},
+		{"user_sessions.sql", "ListUserSessionsByUserIDPrefix", true},
+		{"user_sessions.sql", "ListAllActiveSessionsByIDExact", false},
+		{"user_sessions.sql", "ListAllActiveSessionsByIDPrefix", false},
+		{"api_tokens.sql", "ListAPITokensByUserIDExact", false},
+		{"api_tokens.sql", "ListAPITokensByUserIDPrefix", true},
+		{"api_tokens.sql", "ListAllAPITokensByIDExact", false},
+		{"api_tokens.sql", "ListAllAPITokensByIDPrefix", false},
+		{"delegation_tokens.sql", "ListAllDelegationTokensByIDExact", false},
+		{"delegation_tokens.sql", "ListAllDelegationTokensByIDPrefix", false},
+		{"oauth_clients.sql", "ListOAuthClientsByIDExact", false},
+		{"oauth_clients.sql", "ListOAuthClientsByIDPrefix", false},
+		{"workers.sql", "ListWorkersByUserIDExact", false},
+		{"workers.sql", "ListWorkersByUserIDPrefix", true},
+		{"workers.sql", "ListWorkersAdminByIDExact", false},
+		{"workers.sql", "ListWorkersAdminByIDPrefix", false},
+		{"worker_registration_keys.sql", "ListRegistrationKeysAdminByIDExact", false},
+		{"worker_registration_keys.sql", "ListRegistrationKeysAdminByIDPrefix", false},
+		{"workspaces.sql", "ListAccessibleWorkspacesByIDExact", false},
+		{"workspaces.sql", "ListAccessibleWorkspacesByIDPrefix", true},
+		{"workspace_tab_owned.sql", "ListRenderedTabsByIDExact", false},
+		{"workspace_tab_owned.sql", "ListRenderedTabsByIDPrefix", false},
+		{"workspace_sections.sql", "ListWorkspaceSectionsByIDExact", false},
+		{"workspace_sections.sql", "ListWorkspaceSectionsByIDPrefix", true},
+		{"oauth_providers.sql", "ListOAuthProvidersByIDExact", false},
+		{"oauth_providers.sql", "ListOAuthProvidersByIDPrefix", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			plan := explainPlan(t, db, loadQuerySQL(t, tc.file, tc.query))
+			joined := strings.Join(plan, "\n")
+			assert.NotContains(t, joined, "SCAN ", "%s must not table-scan; plan:\n%s", tc.query, joined)
+			if !tc.allowUserSort {
+				assert.NotContains(t, joined, "TEMP B-TREE FOR ORDER BY", "%s must ride primary-key order without sorting; plan:\n%s", tc.query, joined)
+			}
+			assert.Contains(t, joined, "SEARCH ", "%s must perform an indexed SEARCH; plan:\n%s", tc.query, joined)
+		})
+	}
+}

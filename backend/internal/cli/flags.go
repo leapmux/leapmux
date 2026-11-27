@@ -135,7 +135,12 @@ func validateRequiredFlags(cmd *cobra.Command) error {
 }
 
 func printerForValidated(cmd *cobra.Command) (*Printer, error) {
-	p := &Printer{Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr(), oneLineResult: IsMutating(cmd)}
+	p := &Printer{
+		Out:             cmd.OutOrStdout(),
+		Err:             cmd.ErrOrStderr(),
+		StateClassifier: stateClassifierOf(cmd),
+		oneLineResult:   IsMutating(cmd),
+	}
 	jsonFlag := cmd.Flags().Lookup("json")
 	jsonSet := jsonFlag != nil && jsonFlag.Value.String() == "true"
 	if f := cmd.Flags().Lookup("format"); f != nil && f.Changed {

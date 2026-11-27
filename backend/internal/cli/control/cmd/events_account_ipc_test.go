@@ -22,6 +22,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -524,7 +525,7 @@ func TestAccountCheckpointStaysConnectedWithoutReopeningWhenUncontended(t *testi
 				if err := send(&leapmuxv1.WatchWorkerSemanticEventsResponse{
 					Event: &leapmuxv1.WatchWorkerSemanticEventsResponse_Ready{
 						Ready: &leapmuxv1.SemanticWorkerWatchReady{
-							WorkerId: "worker-A", TabType: in.GetTabType(), JournalId: "j-" + tabTypeName(in.GetTabType()),
+							WorkerId: "worker-A", TabType: in.GetTabType(), JournalId: "j-" + resolve.TabTypeWireName(in.GetTabType()),
 							AfterSequence: 0, HighWaterSequence: 0, Cursor: []byte("c0"),
 						},
 					},
@@ -548,7 +549,7 @@ func TestAccountCheckpointStaysConnectedWithoutReopeningWhenUncontended(t *testi
 							Event: &leapmuxv1.WatchWorkerSemanticEventsResponse_Record{
 								Record: &leapmuxv1.SemanticWorkerWatchRecord{
 									Sequence: seq, Cursor: []byte{byte('0' + seq)},
-									Tab:  &leapmuxv1.TabIdent{TabType: in.GetTabType(), TabId: "tab-" + tabTypeName(in.GetTabType())},
+									Tab:  &leapmuxv1.TabIdent{TabType: in.GetTabType(), TabId: "tab-" + resolve.TabTypeWireName(in.GetTabType())},
 									Fact: fact,
 								},
 							},

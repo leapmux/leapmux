@@ -248,3 +248,51 @@ LEFT JOIN workers w USE INDEX (idx_workers_registered_by_state_created)
 INSERT INTO worker_enrollment_revisions (user_id, revision)
 VALUES (sqlc.arg(user_id), 1)
 ON DUPLICATE KEY UPDATE revision = revision + 1;
+
+-- name: ListWorkersByUserIDAndExactID :many
+SELECT * FROM workers
+WHERE registered_by = sqlc.arg(registered_by)
+  AND deleted_at IS NULL
+  AND deregistering_at IS NULL
+  AND id = sqlc.arg(id);
+
+-- name: ListWorkersByUserIDAndIDPrefix :many
+SELECT * FROM workers
+WHERE registered_by = sqlc.arg(registered_by)
+  AND deleted_at IS NULL
+  AND deregistering_at IS NULL
+  AND id >= sqlc.arg(id_lo)
+  AND id < sqlc.arg(id_hi)
+  AND id > sqlc.arg(id_gt)
+ORDER BY id ASC
+LIMIT ?;
+
+-- name: ListWorkersAdminByExactID :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id = sqlc.arg(id)
+  AND (sqlc.arg(user_id) = '' OR w.registered_by = sqlc.arg(user_id))
+  AND (
+      (CAST(sqlc.arg(status_filter) AS SIGNED) = 0 AND w.deleted_at IS NULL)
+      OR (CAST(sqlc.arg(status_filter) AS SIGNED) = 1 AND w.deleted_at IS NULL AND w.deregistering_at IS NULL)
+      OR (CAST(sqlc.arg(status_filter) AS SIGNED) = 2 AND w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL)
+      OR (CAST(sqlc.arg(status_filter) AS SIGNED) = 3 AND w.deleted_at IS NOT NULL)
+  );
+
+-- name: ListWorkersAdminByIDPrefix :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id >= sqlc.arg(id_lo)
+  AND w.id < sqlc.arg(id_hi)
+  AND w.id > sqlc.arg(id_gt)
+  AND (sqlc.arg(user_id) = '' OR w.registered_by = sqlc.arg(user_id))
+  AND (
+      (CAST(sqlc.arg(status_filter) AS SIGNED) = 0 AND w.deleted_at IS NULL)
+      OR (CAST(sqlc.arg(status_filter) AS SIGNED) = 1 AND w.deleted_at IS NULL AND w.deregistering_at IS NULL)
+      OR (CAST(sqlc.arg(status_filter) AS SIGNED) = 2 AND w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL)
+      OR (CAST(sqlc.arg(status_filter) AS SIGNED) = 3 AND w.deleted_at IS NOT NULL)
+  )
+ORDER BY w.id ASC
+LIMIT ?;

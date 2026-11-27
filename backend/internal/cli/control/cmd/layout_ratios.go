@@ -7,11 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
@@ -35,11 +32,6 @@ func (r gridRatiosResult) QuietLines() []string { return []string{r.GridTileID} 
 // does. The handler rejects a target that is not a SPLIT explicitly —
 // `set-grid-ratios` is the GRID-node counterpart.
 func runTileSetRatios(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
 	ratiosCSV := stringFlag(inv, "ratios")
 	if ratiosCSV == "" {
 		return nil, cli.Usagef("--ratios is required")
@@ -48,6 +40,11 @@ func runTileSetRatios(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
 	cc, _, splitID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
 		return nil, err
@@ -70,11 +67,6 @@ func runTileSetRatios(inv *cli.Invocation) (any, error) {
 // axis). The <tile> argument takes every target form, as every other
 // tile command's does.
 func runTileSetGridRatios(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
 	rowRatiosCSV := stringFlag(inv, "row-ratios")
 	colRatiosCSV := stringFlag(inv, "col-ratios")
 	if rowRatiosCSV == "" && colRatiosCSV == "" {
@@ -95,6 +87,11 @@ func runTileSetGridRatios(inv *cli.Invocation) (any, error) {
 		}
 		colRatios = c
 	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
 	cc, _, gridID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
 		return nil, err
@@ -119,13 +116,14 @@ func runTileSetGridRatios(inv *cli.Invocation) (any, error) {
 }
 
 // runTileResize adjusts one tile's ratio inside its parent SPLIT node, scaling
-// its siblings proportionally so all ratios remain positive and sum to 1.
+// its siblings proportionally so all ratios remain finite, non-negative, and
+// sum to 1.
 func runTileResize(inv *cli.Invocation) (any, error) {
 	ratio, err := floatFlag(inv, "ratio")
 	if err != nil {
 		return nil, err
 	}
-	if ratio <= 0 || ratio >= 1 {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 || ratio >= 1 {
 		return nil, cli.Usagef("--ratio must be strictly between 0 and 1; got %v", ratio)
 	}
 	s, err := openSession(inv)
@@ -153,123 +151,67 @@ func runTileResize(inv *cli.Invocation) (any, error) {
 	if idx < 0 || len(children) < 2 {
 		return nil, cli.Newf(cli.CodeConflict, "parent split %s has fewer than 2 live children", parentID)
 	}
-	cur := parent.GetRatios().GetValue().GetValues()
-	ratios := make([]float64, len(children))
-	if len(cur) == len(children) {
-		copy(ratios, cur)
-	} else {
-		eq := 1.0 / float64(len(children))
-		for i := range ratios {
-			ratios[i] = eq
-		}
-	}
-	otherSum := 0.0
-	for i, v := range ratios {
-		if i != idx && v > 0 {
-			otherSum += v
-		}
-	}
-	rem := 1.0 - ratio
-	ratios[idx] = ratio
-	if otherSum <= 0 {
-		share := rem / float64(len(ratios)-1)
-		for i := range ratios {
-			if i != idx {
-				ratios[i] = share
-			}
-		}
-	} else {
-		for i := range ratios {
-			if i != idx {
-				ratios[i] = ratios[i] * (rem / otherSum)
-			}
-		}
-	}
+	ratios := computeResizedRatios(parent.GetRatios().GetValue().GetValues(), len(children), idx, ratio)
 	if err := cc.submitOps([]*leapmuxv1.CrdtOp{opSetNodeRatios(cc.bs, parentID, ratios)}); err != nil {
 		return nil, err
 	}
 	return splitRatiosResult{SplitTileID: parentID, Ratios: ratios}, nil
 }
 
-type tileSwapResult struct {
-	TileA       string `json:"tile_a"`
-	TileB       string `json:"tile_b"`
-	WorkspaceID string `json:"workspace_id"`
-}
-
-func (r tileSwapResult) QuietLines() []string { return []string{r.TileA, r.TileB} }
-
-// runTileSwap swaps the positions (and parents when different) of two tiles
-// in the same workspace in one atomic CRDT batch.
-func runTileSwap(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
+// computeResizedRatios sets ratios[idx] to target (0 < target < 1) and scales
+// the remaining siblings proportionally to fill 1 - target. When the current
+// sibling weights are non-positive, overflow, or produce a non-finite scale,
+// it falls back to equal shares of the remainder so emitted ratios stay finite
+// and sum to 1.
+func computeResizedRatios(cur []float64, childCount, idx int, target float64) []float64 {
+	var ratios []float64
+	if len(cur) == childCount {
+		ratios = slices.Clone(cur)
+	} else {
+		ratios = crdt.EqualRatios(childCount)
 	}
-	defer s.Close()
-	cc, wsA, tileA, err := s.openTile(inv.Arg("tile-a"))
-	if err != nil {
-		return nil, err
-	}
-	targetB, err := s.resolveOne(resolve.KindTile, inv.Arg("tile-b"))
-	if err != nil {
-		return nil, err
-	}
-	tileB := targetB.ID
-	if tileA == tileB {
-		return nil, cli.Usagef("cannot swap tile %s with itself", tileA)
-	}
-	if err := preflightTile(cc.bs.State, wsA, tileB); err != nil {
-		return nil, err
-	}
-	nodeA := cc.bs.State.GetNodes()[tileA]
-	nodeB := cc.bs.State.GetNodes()[tileB]
-	parentA := nodeA.GetParentId()
-	parentB := nodeB.GetParentId()
-	if parentA == "" || parentB == "" {
-		return nil, cli.Newf(cli.CodeConflict, "cannot swap a workspace root tile")
-	}
-	if isTileAncestor(cc.bs.State, tileA, tileB) || isTileAncestor(cc.bs.State, tileB, tileA) {
-		return nil, cli.Newf(cli.CodeConflict, "cannot swap a tile with one of its descendants")
-	}
-	posA := nodeA.GetPosition().GetValue()
-	posB := nodeB.GetPosition().GetValue()
-	ops := []*leapmuxv1.CrdtOp{
-		opSetNodePosition(cc.bs, tileA, posB),
-		opSetNodePosition(cc.bs, tileB, posA),
-	}
-	if parentA != parentB {
-		ops = append(ops,
-			opSetNodeParentID(cc.bs, tileA, parentB),
-			opSetNodeParentID(cc.bs, tileB, parentA),
-		)
-	}
-	if err := cc.submitOps(ops); err != nil {
-		return nil, err
-	}
-	return tileSwapResult{TileA: tileA, TileB: tileB, WorkspaceID: wsA}, nil
-}
-
-func isTileAncestor(state *leapmuxv1.UserMaterialized, ancestor, descendant string) bool {
-	seen := map[string]bool{}
-	cur := descendant
-	for cur != "" && !seen[cur] {
-		seen[cur] = true
-		n := state.GetNodes()[cur]
-		if n == nil {
-			return false
+	otherSum := 0.0
+	for i, v := range ratios {
+		if i == idx {
+			continue
 		}
-		p := n.GetParentId()
-		if p == ancestor {
-			return true
+		if v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) {
+			otherSum += v
+		} else {
+			ratios[i] = 0
 		}
-		cur = p
 	}
-	return false
-}
+	rem := 1.0 - target
+	ratios[idx] = target
 
-func completeSwapTiles(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
-	return completeTargetsOfKind(cmd, resolve.KindTile, toComplete, true)
+	fillEqualRemainder := func() []float64 {
+		share := rem / float64(childCount-1)
+		for i := range ratios {
+			if i != idx {
+				ratios[i] = share
+			}
+		}
+		return ratios
+	}
+
+	if otherSum <= 0 || math.IsNaN(otherSum) || math.IsInf(otherSum, 0) {
+		return fillEqualRemainder()
+	}
+
+	for i := range ratios {
+		if i == idx {
+			continue
+		}
+		scaled := (ratios[i] / otherSum) * rem
+		if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled < 0 {
+			return fillEqualRemainder()
+		}
+		if scaled == 0 {
+			scaled = 0 // normalize -0.0 to +0.0
+		}
+		ratios[i] = scaled
+	}
+	return ratios
 }
 
 // parseRatiosCSV parses a comma-separated float list and normalizes
@@ -278,8 +220,8 @@ func completeSwapTiles(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]
 // input: users can pass any positive weights ("1,2,1" -> [0.25, 0.5,
 // 0.25]) or already-normalized values ("0.5, 0.5" -> [0.5, 0.5]).
 // Rejects empty lists, malformed numbers, negative weights, NaN/Inf,
-// and all-zero inputs — every one of those would either drop on the
-// wire as a value-domain rejection or produce a meaningless layout.
+// overflow, and all-zero inputs — every one of those would either drop
+// on the wire as a value-domain rejection or produce a meaningless layout.
 func parseRatiosCSV(s string) ([]float64, error) {
 	if strings.TrimSpace(s) == "" {
 		return nil, fmt.Errorf("ratios cannot be empty")
@@ -300,9 +242,11 @@ func parseRatiosCSV(s string) ([]float64, error) {
 // slice sums to exactly 1.0. Returns an error when:
 //   - the slice is empty,
 //   - any value is NaN, +/-Inf, or negative,
+//   - the sum overflows to a non-finite float,
 //   - every value is zero (no positive weight to normalize against).
 //
-// The output is always a fresh slice — the input is not mutated.
+// The output is always a fresh slice — the input is not mutated — and any
+// negative zero is normalized to +0.0.
 func normalizeRatios(values []float64) ([]float64, error) {
 	if len(values) == 0 {
 		return nil, fmt.Errorf("ratios cannot be empty")
@@ -317,12 +261,19 @@ func normalizeRatios(values []float64) ([]float64, error) {
 		}
 		sum += v
 	}
+	if math.IsInf(sum, 0) || math.IsNaN(sum) {
+		return nil, fmt.Errorf("ratios sum overflows to a non-finite value")
+	}
 	if sum <= 0 {
 		return nil, fmt.Errorf("ratios must include at least one positive value")
 	}
 	out := make([]float64, len(values))
 	for i, v := range values {
-		out[i] = v / sum
+		r := v / sum
+		if r == 0 {
+			r = 0 // normalize -0.0 to +0.0
+		}
+		out[i] = r
 	}
 	return out, nil
 }

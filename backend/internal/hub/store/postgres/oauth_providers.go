@@ -111,6 +111,38 @@ func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProvider
 	return store.MapSliceErr(rows, s.conn.fromDBListAllOAuthProvidersRow)
 }
 
+func (s *oauthProviderStore) ListByIDPrefix(ctx context.Context, idPrefix string) ([]store.OAuthProviderSummary, error) {
+	filter, hasPrefix, err := store.ParseIDPrefix(idPrefix)
+	if err != nil {
+		return nil, err
+	}
+	if !hasPrefix {
+		return s.ListAll(ctx)
+	}
+	if !filter.Exact && !filter.HasUpper {
+		return nil, nil
+	}
+	if filter.Exact {
+		rows, err := s.conn.q.ListOAuthProvidersByIDExact(ctx, filter.Lower)
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		return store.MapSliceErr(rows, func(r gendb.ListOAuthProvidersByIDExactRow) (store.OAuthProviderSummary, error) {
+			return s.conn.fromDBListEnabledOAuthProvidersRow(gendb.ListEnabledOAuthProvidersRow(r))
+		})
+	}
+	rows, err := s.conn.q.ListOAuthProvidersByIDPrefix(ctx, gendb.ListOAuthProvidersByIDPrefixParams{
+		IDLo: filter.Lower,
+		IDHi: filter.Upper,
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return store.MapSliceErr(rows, func(r gendb.ListOAuthProvidersByIDPrefixRow) (store.OAuthProviderSummary, error) {
+		return s.conn.fromDBListEnabledOAuthProvidersRow(gendb.ListEnabledOAuthProvidersRow(r))
+	})
+}
+
 func (s *oauthProviderStore) UpdateEnabled(ctx context.Context, p store.UpdateOAuthProviderEnabledParams) error {
 	return mapErr(s.conn.q.UpdateOAuthProviderEnabled(ctx, gendb.UpdateOAuthProviderEnabledParams{
 		Enabled: p.Enabled,

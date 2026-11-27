@@ -299,7 +299,7 @@ func runAgentOpenTab(inv *cli.Invocation) (any, error) {
 	existing := cc.bs.State.GetTabs()[subagentID]
 	if existing != nil && existing.GetTabType() != leapmuxv1.TabType_TAB_TYPE_AGENT {
 		return nil, cli.Newf(cli.CodeInvalidArgument, "tab %s has type %s; expected %s",
-			subagentID, tabTypeName(existing.GetTabType()), tabTypeName(leapmuxv1.TabType_TAB_TYPE_AGENT))
+			subagentID, resolve.TabTypeWireName(existing.GetTabType()), resolve.TabTypeWireName(leapmuxv1.TabType_TAB_TYPE_AGENT))
 	}
 
 	// If workerID wasn't found via live descendant scan (e.g. tombstoned tab
@@ -376,11 +376,11 @@ func opSetTabWorkerID(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, worke
 	return op
 }
 
-// resolveSubagentTarget resolves an exact ID, "id:<id>", or unique prefix of a
-// subagent across all readable workspaces (never restricted by destination
-// --workspace) by querying live root agent tabs with IncludeDescendants=true.
-// The third return value reports whether the subagent was confirmed on its
-// hosting Worker.
+// resolveSubagentTarget resolves an exact ID, "id:<id>" (exact ID or unique
+// prefix, never matching titles), or bare unique prefix of a subagent across
+// all readable workspaces (never restricted by destination --workspace) by
+// querying live root agent tabs with IncludeDescendants=true. The third return
+// value reports whether the subagent was confirmed on its hosting Worker.
 func resolveSubagentTarget(s *session, raw string) (string, string, bool, error) {
 	literal, isExplicit := strings.CutPrefix(raw, "id:")
 	if isExplicit {
@@ -389,10 +389,10 @@ func resolveSubagentTarget(s *session, raw string) (string, string, bool, error)
 			return "", "", false, cli.Usagef(`"id:" needs an id after the colon`)
 		}
 	}
-	isFullID := isExplicit || resolve.ExplicitID(resolve.KindAgent, raw) != ""
+	isFullID := resolve.ExplicitID(resolve.KindAgent, raw) != ""
 	allTabs, err := listTabsInWorkspaces(s.ctx, s.c, nil)
 	if err != nil {
-		// Fall back to explicit full ID if listing fails and caller gave a full ID.
+		// Fall back to full ID if listing fails and caller gave a complete ID.
 		if isFullID {
 			return raw, "", false, nil
 		}
@@ -416,7 +416,7 @@ func resolveSubagentTarget(s *session, raw string) (string, string, bool, error)
 		byWorker[wk] = append(byWorker[wk], t.GetTab().GetTabId())
 	}
 	matchedID, matchedWorker, verified, err := resolveSubagentAcrossWorkers(
-		s.ctx, raw, isExplicit, byWorker,
+		s.ctx, raw, byWorker,
 		func(ctx context.Context, wk string, rootIDs []string) ([]*leapmuxv1.AgentInfo, error) {
 			var resp leapmuxv1.ListAgentsResponse
 			if err := callInnerRPC(ctx, s.c, wk, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
@@ -437,7 +437,7 @@ func resolveSubagentTarget(s *session, raw string) (string, string, bool, error)
 	if isFullID {
 		return raw, explicitWorker, false, nil
 	}
-	if len(raw) < resolve.MinPrefixLength {
+	if !isExplicit && len(raw) < resolve.MinPrefixLength {
 		return "", "", false, cli.Usagef("%q is too short for a subagent id prefix; type at least %d characters or use id:<id>", raw, resolve.MinPrefixLength)
 	}
 	return "", "", false, cli.Newf(cli.CodeNotFound, "no subagent matches %q", raw).
@@ -445,12 +445,12 @@ func resolveSubagentTarget(s *session, raw string) (string, string, bool, error)
 }
 
 // resolveSubagentAcrossWorkers fans out descendant agent queries across
-// workers concurrently (capped at detailFanoutLimit) and selects an exact or
-// unique prefix match deterministically by worker ID and agent ID.
+// workers concurrently (capped at detailFanoutLimit) and selects an exact ID
+// (at any length) or unique prefix match (>= resolve.MinPrefixLength)
+// deterministically by worker ID and agent ID.
 func resolveSubagentAcrossWorkers(
 	ctx context.Context,
 	raw string,
-	isExplicit bool,
 	byWorker map[string][]string,
 	listWorkerAgents func(ctx context.Context, workerID string, tabIDs []string) ([]*leapmuxv1.AgentInfo, error),
 ) (string, string, bool, error) {
@@ -498,7 +498,7 @@ func resolveSubagentAcrossWorkers(
 				}
 				continue
 			}
-			if !isExplicit && len(raw) >= resolve.MinPrefixLength && strings.HasPrefix(aid, raw) && !seenPrefix[aid] {
+			if len(raw) >= resolve.MinPrefixLength && strings.HasPrefix(aid, raw) && !seenPrefix[aid] {
 				seenPrefix[aid] = true
 				prefix = append(prefix, subMatch{id: aid, workerID: wk, title: a.GetTitle()})
 			}

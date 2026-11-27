@@ -28,19 +28,28 @@ import (
 // workspace id, so the CRDT op is the entire move -- which is also why it lands
 // with the tab's Worker offline.
 func runTabMove(inv *cli.Invocation) (any, error) {
+	rawSpec, err := parsePositionSpec(
+		boolFlag(inv, "first"),
+		boolFlag(inv, "last"),
+		stringFlag(inv, "before"),
+		stringFlag(inv, "after"),
+	)
+	if err != nil {
+		return nil, cli.Usagef("%s", err.Error())
+	}
+	specUsesRefTab := rawSpec.kind == positionBefore || rawSpec.kind == positionAfter
+	hasPlacement := inv.Changed("first") || inv.Changed("last") || specUsesRefTab
+	if !inv.Changed("tile") && !inv.Changed("workspace") && !hasPlacement {
+		return nil, cli.Usagef("give the destination: --tile, --workspace, --first, --last, --before or --after")
+	}
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	spec, err := s.positionSpec()
+	spec, err := s.resolvePositionRef(rawSpec)
 	if err != nil {
 		return nil, err
-	}
-	specReferencesTile := spec.kind == positionBefore || spec.kind == positionAfter
-	hasPlacement := inv.Changed("first") || inv.Changed("last") || specReferencesTile
-	if !inv.Changed("tile") && !inv.Changed("workspace") && !hasPlacement {
-		return nil, cli.Usagef("give the destination: --tile, --workspace, --first, --last, --before or --after")
 	}
 	var destTileID, destWorkspaceID string
 	if inv.Changed("tile") {
@@ -61,7 +70,7 @@ func runTabMove(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if destTileID == "" && destWorkspaceID == "" && !specReferencesTile {
+	if destTileID == "" && destWorkspaceID == "" && !specUsesRefTab {
 		destTileID = got.TileID
 	}
 	tt := got.Type
@@ -69,21 +78,21 @@ func runTabMove(inv *cli.Invocation) (any, error) {
 		return nil, cli.Newf(cli.CodeNotFound, "the hub reports no type for tab %s", got.ID)
 	}
 	workspaceIDs := []string{destWorkspaceID}
-	if destTileID != "" {
+	if destTileID != "" && destTileID != got.TileID {
 		tileWorkspaceID, err := s.deps().LocateTile(s.ctx, destTileID)
 		if err != nil {
 			return nil, err
 		}
 		workspaceIDs = append(workspaceIDs, tileWorkspaceID)
 	}
-	if specReferencesTile {
+	if specUsesRefTab {
 		ref, err := s.resolveTab(resolve.KindTab, spec.refID, resolve.Need{WorkspaceID: true})
 		if err != nil {
 			return nil, err
 		}
 		workspaceIDs = append(workspaceIDs, ref.WorkspaceID)
 	}
-	cc, err := s.openCRDT(got.WorkspaceID, workspaceIDs...)
+	cc, err := s.openCRDT(append([]string{got.WorkspaceID}, workspaceIDs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +102,7 @@ func runTabMove(inv *cli.Invocation) (any, error) {
 	// Derive the destination tile from --workspace when the caller only
 	// specified a workspace and the placement spec doesn't itself carry a
 	// tile (--before / --after).
-	if destTileID == "" && destWorkspaceID != "" && !specReferencesTile {
+	if destTileID == "" && destWorkspaceID != "" && !specUsesRefTab {
 		ws, ok := cc.bs.State.GetWorkspaces()[destWorkspaceID]
 		if !ok || ws == nil {
 			return nil, cli.Newf(cli.CodeNotFound, "no such workspace: %s", destWorkspaceID)
@@ -131,15 +140,13 @@ func runTabMove(inv *cli.Invocation) (any, error) {
 	if err := cc.submitOps(ops); err != nil {
 		return nil, err
 	}
-	return tabPlacement{ID: got.ID, Type: tabTypeName(tt), TileID: resolvedTileID, Position: resolvedPos}, nil
+	return tabPlacement{ID: got.ID, Type: resolve.TabTypeWireName(tt), TileID: resolvedTileID, Position: resolvedPos}, nil
 }
 
 // tabPlacement is where a command put a tab.
 type tabPlacement struct {
-	ID          string `json:"id"`
-	Type        string `json:"type"`
-	WorkspaceID string `json:"workspace_id,omitempty"`
-	WorkerID    string `json:"worker_id,omitempty"`
-	TileID      string `json:"tile_id"`
-	Position    string `json:"position"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	TileID   string `json:"tile_id"`
+	Position string `json:"position"`
 }

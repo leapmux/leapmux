@@ -193,11 +193,55 @@ func (s *oauthClientStore) List(ctx context.Context, p store.ListOAuthClientsPar
 		// "what may THIS user see", and there is no such user.
 		return store.Page[store.OAuthClient]{}, nil
 	}
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.OAuthClient]{}, err
+	}
+	if !hasPrefix {
+		return queryPageErr(ctx, p.Limit,
+			func() (gendb.ListOAuthClientsParams, error) {
+				return listOAuthClientsParams(owner, p)
+			},
+			s.conn.q.ListOAuthClients, s.conn.fromListRow)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.OAuthClient]{}, err
+	}
+	ownerText := pgtype.Text{String: owner, Valid: true}
+	if filter.Exact {
+		return queryPageErr(ctx, p.Limit,
+			func() (gendb.ListOAuthClientsByIDExactParams, error) {
+				return gendb.ListOAuthClientsByIDExactParams{
+					IncludeRevoked: p.IncludeRevoked,
+					HubWideOnly:    p.HubWideOnly,
+					UserID:         ownerText,
+					IncludeHubWide: p.IncludeHubWide,
+					ID:             filter.Lower,
+				}, nil
+			},
+			s.conn.q.ListOAuthClientsByIDExact,
+			func(r gendb.ListOAuthClientsByIDExactRow) (store.OAuthClient, error) {
+				return s.conn.fromGetOAuthClientRow(gendb.GetOAuthClientRow(r))
+			})
+	}
 	return queryPageErr(ctx, p.Limit,
-		func() (gendb.ListOAuthClientsParams, error) {
-			return listOAuthClientsParams(owner, p)
+		func() (gendb.ListOAuthClientsByIDPrefixParams, error) {
+			return gendb.ListOAuthClientsByIDPrefixParams{
+				IncludeRevoked: p.IncludeRevoked,
+				HubWideOnly:    p.HubWideOnly,
+				UserID:         ownerText,
+				IncludeHubWide: p.IncludeHubWide,
+				IDLo:           filter.Lower,
+				IDHi:           filter.Upper,
+				IDGt:           idGt,
+				Limit:          fetchLimit,
+			}, nil
 		},
-		s.conn.q.ListOAuthClients, s.conn.fromListRow)
+		s.conn.q.ListOAuthClientsByIDPrefix,
+		func(r gendb.ListOAuthClientsByIDPrefixRow) (store.OAuthClient, error) {
+			return s.conn.fromGetOAuthClientRow(gendb.GetOAuthClientRow(r))
+		})
 }
 
 func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClientParams) (int64, error) {

@@ -46,10 +46,11 @@ func Execute(ctx context.Context, root *cobra.Command, args []string, stdin io.R
 		return status.Code
 	}
 	printer := &Printer{
-		Out:    stdout,
-		Err:    stderr,
-		Format: opts.resolvedFormat(),
-		Color:  opts.color,
+		Out:             stdout,
+		Err:             stderr,
+		Format:          opts.resolvedFormat(),
+		Color:           opts.color,
+		StateClassifier: stateClassifierOf(root),
 	}
 	e := FromError(err)
 	printer.Failure(e)

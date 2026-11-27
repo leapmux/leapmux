@@ -7,7 +7,6 @@ import (
 	"io"
 	"slices"
 	"sync"
-	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -174,7 +173,6 @@ func crdtSubmitBatch(
 	ctx context.Context,
 	c control.Peer,
 	bs *CRDTBootstrap,
-	workspaceID string,
 	batch *leapmuxv1.OpBatch,
 ) (*leapmuxv1.BatchResult, error) {
 	if bs == nil {
@@ -200,70 +198,55 @@ func crdtSubmitBatch(
 }
 
 // crdtCall bundles every value a CRDT-mutation subcommand needs after
-// the standard preamble: the session's context and client, the workspace's
-// bootstrap snapshot (epoch + initial state), and the workspace id used for
-// transport routing.
+// the standard preamble: the session's context and client, and the
+// bootstrap snapshot (epoch + initial state).
 type crdtCall struct {
-	ctx         context.Context
-	c           control.Peer
-	bs          *CRDTBootstrap
-	workspaceID string
+	ctx context.Context
+	c   control.Peer
+	bs  *CRDTBootstrap
 }
 
-// openCRDT bootstraps the CRDT for a mutation. Include other affected
-// workspaces when an operation crosses workspace boundaries.
+// openCRDT bootstraps the CRDT for a mutation. Pass workspace IDs to scope the
+// snapshot, or pass none to bootstrap every readable workspace.
 //
-// This preamble does NOT validate workspaceID, and the bootstrap does not
+// This preamble does NOT validate workspaceIDs, and the bootstrap does not
 // double as a check. GetMaterialized resolves through
 // `auth.WorkspacesReadableByUser`, which silently skips an id with no row
-// rather than erroring, so an unknown workspace bootstraps "successfully"
+// rather than failing, so an unknown workspace bootstraps "successfully"
 // against an empty projection and every subsequent op is emitted into
 // nothing. Any command that must REJECT a bogus workspace id has to check
 // existence itself, before or after this call.
-func (s *session) openCRDT(workspaceID string, otherWorkspaceIDs ...string) (*crdtCall, error) {
-	return openCRDTCallOn(s.ctx, s.c, workspaceID, otherWorkspaceIDs...)
-}
-
-// openCRDTCallOn is openCRDT for a caller that holds a client and a context
-// without a session.
-func openCRDTCallOn(ctx context.Context, c control.Peer, workspaceID string, otherWorkspaceIDs ...string) (*crdtCall, error) {
-	workspaceIDs := []string{workspaceID}
-	for _, otherWorkspaceID := range otherWorkspaceIDs {
-		if otherWorkspaceID != "" && !slices.Contains(workspaceIDs, otherWorkspaceID) {
-			workspaceIDs = append(workspaceIDs, otherWorkspaceID)
+func (s *session) openCRDT(workspaceIDs ...string) (*crdtCall, error) {
+	var deduped []string
+	for _, wsID := range workspaceIDs {
+		if wsID != "" && !slices.Contains(deduped, wsID) {
+			deduped = append(deduped, wsID)
 		}
 	}
-	bs, err := crdtBootstrap(ctx, c, workspaceIDs)
+	bs, err := crdtBootstrap(s.ctx, s.c, deduped)
 	if err != nil {
 		return nil, err
 	}
-	return &crdtCall{ctx: ctx, c: c, bs: bs, workspaceID: workspaceID}, nil
+	return &crdtCall{ctx: s.ctx, c: s.c, bs: bs}, nil
 }
 
 // submitOps wraps ops in a fresh OpBatch, submits via the appropriate
 // transport, and reports a rejected batch as a conflict. Returns nil on
 // commit.
 func (cc *crdtCall) submitOps(ops []*leapmuxv1.CrdtOp) error {
-	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, cc.workspaceID, crdtNewBatch(ops))
-	if err != nil {
-		return err
-	}
-	if err := crdtBatchError(res); err != nil {
-		return cli.Wrap(cli.CodeConflict, err, "")
-	}
-	return nil
+	_, _, err := cc.trySubmitOps(ops)
+	return err
 }
 
-// trySubmitOps is the variant of submitOps that reports the reason. Returns
-// (committed, rejection-reason, err). When committed=true, reason is
-// UNSPECIFIED and err is nil. When committed=false, err is non-nil
-// and reason carries the hub's BatchRejectionReason (or UNSPECIFIED
-// for transport-level errors). Callers that want to branch on the
-// rejection reason -- e.g. `layout set` retrying TAB_PLACEMENT_INVALID
-// after re-bootstrapping the snapshot -- use this instead of
-// submitOps.
+// trySubmitOps is the variant of submitOps that reports the rejection reason.
+// Returns (committed, rejection-reason, err). When committed=true, reason is
+// UNSPECIFIED and err is nil. When committed=false, err is non-nil: batch
+// rejections are wrapped as cli.CodeConflict, while transport-level errors are
+// returned unwrapped with reason UNSPECIFIED. Callers that want to branch on
+// the rejection reason — such as `layout set` retrying TAB_PLACEMENT_INVALID
+// after re-bootstrapping the snapshot — use this instead of submitOps.
 func (cc *crdtCall) trySubmitOps(ops []*leapmuxv1.CrdtOp) (bool, leapmuxv1.BatchRejectionReason, error) {
-	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, cc.workspaceID, crdtNewBatch(ops))
+	res, err := crdtSubmitBatch(cc.ctx, cc.c, cc.bs, crdtNewBatch(ops))
 	if err != nil {
 		return false, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, err
 	}
@@ -272,7 +255,7 @@ func (cc *crdtCall) trySubmitOps(ops []*leapmuxv1.CrdtOp) (bool, leapmuxv1.Batch
 		if rej := res.GetRejected(); rej != nil {
 			reason = rej.GetReason()
 		}
-		return false, reason, batchErr
+		return false, reason, cli.Wrap(cli.CodeConflict, batchErr, "")
 	}
 	return true, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, nil
 }
@@ -298,16 +281,11 @@ func crdtNewBatch(ops []*leapmuxv1.CrdtOp) *leapmuxv1.OpBatch {
 	return &leapmuxv1.OpBatch{BatchId: id.Generate(), Ops: ops}
 }
 
-// nowMillis is the wall-clock helper Clock.Tick takes.
-func nowMillis() int64 {
-	return time.Now().UnixMilli()
-}
-
 // op-builder helpers — each returns a single-register-write CrdtOp
 // stamped with a fresh advisory client_hlc from `bs.Clock`. The hub
 // reassigns canonical HLCs on commit; client_hlc is just a hint.
 //
-// The Node-side counterparts live in layout.go. The proto generator
+// The Node-side counterparts live in layout_ops.go. The proto generator
 // makes the oneof `Field` interface package-private, so per-register
 // helpers can't share a single "set field" parameter type. Instead
 // they share the envelope-allocation core via newSetTabRegisterOp

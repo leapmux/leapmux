@@ -11,6 +11,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
@@ -162,7 +163,7 @@ func preflightTab(state *leapmuxv1.UserMaterialized, workspaceID, tabID string, 
 	}
 	if tabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED && rec.GetTabType() != tabType {
 		return cli.Usagef("tab %s has type %s; expected %s",
-			tabID, tabTypeName(rec.GetTabType()), tabTypeName(tabType))
+			tabID, resolve.TabTypeWireName(rec.GetTabType()), resolve.TabTypeWireName(tabType))
 	}
 	if workspaceID != "" {
 		tileID := rec.GetTileId().GetValue()
@@ -173,21 +174,20 @@ func preflightTab(state *leapmuxv1.UserMaterialized, workspaceID, tabID string, 
 	return nil
 }
 
-// nodeWorkspaceFromState walks node parents until a workspace root
-// matches (workspaces.root_node_id). Returns "" when the chain
-// doesn't terminate at a known workspace — usually means the node is
-// orphaned or belongs to a workspace the caller can't see.
-func nodeWorkspaceFromState(state *leapmuxv1.UserMaterialized, nodeID string) string {
-	return crdt.FindRootWorkspace(state.GetNodes(), state.GetWorkspaces(), nodeID)
+// nodeRootFromState walks node parents until a workspace root or live
+// floating-window root matches. Returns ("", "", false) when the chain does
+// not end at a known root.
+func nodeRootFromState(state *leapmuxv1.UserMaterialized, nodeID string) (workspaceID, rootNodeID string, isFloating bool) {
+	return crdt.FindNodeRoot(state.GetNodes(), state.GetWorkspaces(), state.GetFloatingWindows(), nodeID)
 }
 
-// isNotFoundOrForbidden returns true for connect errors that the hub
-// uses to mean "the entity is absent from the caller's view". The hub
-// deliberately conflates NotFound and PermissionDenied so an
-// unauthorised caller can't probe for existence by status code.
-func isNotFoundOrForbidden(err error) bool {
-	code := connect.CodeOf(err)
-	return code == connect.CodeNotFound || code == connect.CodePermissionDenied
+// nodeWorkspaceFromState walks node parents until a workspace root or live
+// floating-window root matches. Returns "" when the chain does not end at a
+// known workspace — usually means the node is orphaned or belongs to a
+// workspace the caller cannot see.
+func nodeWorkspaceFromState(state *leapmuxv1.UserMaterialized, nodeID string) string {
+	wsID, _, _ := nodeRootFromState(state, nodeID)
+	return wsID
 }
 
 // isWorkerUnreachable reports whether err describes a worker that

@@ -38,7 +38,7 @@ across every online worker in parallel.`,
 			fs.String("agent", "", `search only this agent (id, prefix, title, or "self")`)
 			fs.String("provider", "", "search only agents using this provider (such as claude, codex)")
 			fs.String("since", "", "include only messages at or after this RFC 3339 time or lookback duration (such as 24h, 30m)")
-			fs.String("workspace", "", "search only agents belonging to this workspace")
+			addTargetWorkspaceFlagWithUsage(fs, "search only agents belonging to this workspace")
 			addWorkerFlag(fs)
 			for _, name := range []string{"agent", "provider", "since", "workspace", "worker"} {
 				cli.SetFlagGroup(fs, name, "Filter")

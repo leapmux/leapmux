@@ -58,7 +58,8 @@ type Printer struct {
 	// Color controls ANSI styling on interactive TTYs.
 	Color ColorMode
 	// StateClassifier maps values in `,state` table columns to a StateTone.
-	// When nil, Printer falls back to SetDefaultStateClassifier.
+	// Commands inherit the classifier registered on their tree with
+	// SetStateClassifier; when nil, `,state` cells render without state color.
 	StateClassifier StateClassifier
 	// oneLineResult is the default text form for an ordinary mutation.
 	oneLineResult bool

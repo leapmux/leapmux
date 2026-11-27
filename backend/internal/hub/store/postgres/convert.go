@@ -76,6 +76,23 @@ func withCursor[T any](cursor string, limit int64, fill func(cursorTime pgtime.N
 	return fill(cursorTime, cursorID, int32(store.FetchLimit(limit))), nil
 }
 
+// prepareIDPrefixPage parses the opaque cursor and computes the strict lower
+// limit and fetch limit for an ID-prefix paginated listing. empty is true when
+// the cursor already passed the matching range, the prefix has no upper limit,
+// or the clamped page limit is zero.
+func prepareIDPrefixPage(filter store.IDPrefixFilter, cursor string, limit int64) (idGt string, fetchLimit int32, empty bool, err error) {
+	c, err := store.ParseCursor(cursor)
+	if err != nil {
+		return "", 0, false, err
+	}
+	idGt, cursorEmpty := filter.CursorAfter(c)
+	fl := int32(store.FetchLimit(limit))
+	if cursorEmpty || (!filter.Exact && !filter.HasUpper) || fl == 0 {
+		return "", 0, true, nil
+	}
+	return idGt, fl, false, nil
+}
+
 // queryPage forwards to store.QueryPage with this dialect's mapErr bound:
 // every listing in the package routes through it, so the shared
 // build -> query -> NewPage skeleton (and its error wrapping and probe-row

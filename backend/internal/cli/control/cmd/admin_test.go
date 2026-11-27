@@ -33,6 +33,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
 // adminRun runs `leapmux admin <args...> --json` against a hub that
@@ -945,7 +946,7 @@ func expectedPrintedValue(t *testing.T, m proto.Message, f protoreflect.FieldDes
 			"field %s is a message this expectation has no rule for", f.Name())
 		ts, ok := v.Message().Interface().(*timestamppb.Timestamp)
 		require.Truef(t, ok, "field %s does not hold a Timestamp", f.Name())
-		return ts.AsTime().UTC().Format(timeFormat)
+		return timefmt.Format(ts.AsTime())
 	default:
 		t.Fatalf("field %s has kind %v, which this expectation does not render", f.Name(), f.Kind())
 		return nil
@@ -1244,11 +1245,12 @@ func TestAdminUserPasswordCommands_CheckClientBeforePrompting(t *testing.T) {
 func TestResolveAdminTarget_IDOnlyEntitiesDoNotMatchOwnerUsername(t *testing.T) {
 	id1 := fullTestID("wrk-aaaa")
 	id2 := fullTestID("wrk-aaab")
-	list := func(_ context.Context) ([]cli.Candidate, error) {
-		return []cli.Candidate{
-			{ID: id1, Kind: "worker", Title: "alice"},
-			{ID: id2, Kind: "worker", Title: "bob"},
-		}, nil
+	all := []cli.Candidate{
+		{ID: id1, Kind: "worker", Title: "alice"},
+		{ID: id2, Kind: "worker", Title: "bob"},
+	}
+	list := func(_ context.Context, idPrefix string) ([]cli.Candidate, error) {
+		return filterByPrefix(all, idPrefix, func(c cli.Candidate) string { return c.ID }), nil
 	}
 
 	// Bare username must NOT resolve to a worker owned by alice.
@@ -1272,6 +1274,66 @@ func TestResolveAdminTarget_IDOnlyEntitiesDoNotMatchOwnerUsername(t *testing.T) 
 	assert.Equal(t, cli.CodeAmbiguousTarget, ce.Code)
 	require.Len(t, ce.Candidates, 2)
 	assert.Equal(t, "alice", ce.Candidates[0].Title)
+}
+
+func TestResolveAdminTarget_IDQualifierMatchesExactOrPrefixNeverTitle(t *testing.T) {
+	idA := fullTestID("app-alpha")
+	idB := fullTestID("app-beta1")
+	idC := fullTestID("app-beta2")
+	candidates := []cli.Candidate{
+		{ID: idA, Kind: "app", Title: "Deploy Bot"},
+		{ID: idB, Kind: "app", Title: "Beta One"},
+		{ID: idC, Kind: "app", Title: "Beta Two"},
+		{ID: "a1", Kind: "app", Title: "Short"},
+	}
+	listCalls := 0
+	var listPrefixes []string
+	list := func(_ context.Context, idPrefix string) ([]cli.Candidate, error) {
+		listCalls++
+		listPrefixes = append(listPrefixes, idPrefix)
+		return filterByPrefix(candidates, idPrefix, func(c cli.Candidate) string { return c.ID }), nil
+	}
+
+	// Complete generated ID after "id:" skips listing.
+	got, err := resolveAdminTarget(t.Context(), "id:"+idA, "app", true, list)
+	require.NoError(t, err)
+	assert.Equal(t, idA, got)
+	assert.Equal(t, 0, listCalls)
+
+	// Exact short ID matches at any length.
+	got, err = resolveAdminTarget(t.Context(), "id:a1", "app", true, list)
+	require.NoError(t, err)
+	assert.Equal(t, "a1", got)
+	assert.Equal(t, 1, listCalls)
+	assert.Equal(t, []string{"a1"}, listPrefixes)
+
+	// Unique ID prefix (>= 4 chars) resolves to full ID.
+	got, err = resolveAdminTarget(t.Context(), "id:app-alpha", "app", true, list)
+	require.NoError(t, err)
+	assert.Equal(t, idA, got)
+
+	// Ambiguous ID prefix returns sorted candidates.
+	_, err = resolveAdminTarget(t.Context(), "id:app-beta", "app", true, list)
+	require.Error(t, err)
+	ce := cli.FromError(err)
+	assert.Equal(t, cli.CodeAmbiguousTarget, ce.Code)
+	require.Len(t, ce.Candidates, 2)
+	assert.Equal(t, idB, ce.Candidates[0].ID)
+	assert.Equal(t, idC, ce.Candidates[1].ID)
+
+	// "id:" never matches by title even when allowTitleMatch is true.
+	listPrefixes = nil
+	got, err = resolveAdminTarget(t.Context(), "id:Deploy Bot", "app", true, list)
+	require.NoError(t, err)
+	assert.Equal(t, "Deploy Bot", got)
+	assert.Equal(t, []string{"Deploy Bot"}, listPrefixes, "id: must not fall back to a full listing")
+
+	// Empty "id:" fails with usage before listing.
+	callsBefore := listCalls
+	_, err = resolveAdminTarget(t.Context(), "id:   ", "app", true, list)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	assert.Equal(t, callsBefore, listCalls)
 }
 
 func TestCaptchaTuningSpecs_SortedByFlagName(t *testing.T) {

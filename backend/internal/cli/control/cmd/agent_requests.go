@@ -502,7 +502,7 @@ func (s *session) listAgentControlRequestProtos(targets []tabTarget) (map[string
 // "children" expands to all direct child subagents of the calling agent.
 func requestTargets(s *session, inputs []string) ([]tabTarget, error) {
 	if len(inputs) > 0 {
-		return s.resolveVariadicAgentTargets(inputs, resolve.Need{WorkerID: true})
+		return s.resolveVariadicTabs(resolve.KindAgent, inputs, resolve.Need{WorkerID: true})
 	}
 	return s.listWorkspaceAgentTargets()
 }

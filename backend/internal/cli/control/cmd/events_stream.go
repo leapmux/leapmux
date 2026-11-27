@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
@@ -523,21 +524,21 @@ func (s *eventStream) tabEvents(prev, next map[string]scopedTab, reconciled bool
 		switch tr.Kind {
 		case crdt.TabTransitionOpened:
 			ev := tabStreamEvent(kindTabOpened, scopedTabFromOwned(tr.Current))
-			ev.Summary, ev.Reconciled = tabTypeName(tr.Current.TabType)+" tab", tr.Reconciled
+			ev.Summary, ev.Reconciled = resolve.TabTypeWireName(tr.Current.TabType)+" tab", tr.Reconciled
 			out = append(out, ev)
 		case crdt.TabTransitionClosed:
 			ev := tabStreamEvent(kindTabClosed, scopedTabFromOwned(tr.Previous))
-			ev.Summary, ev.Reconciled = tabTypeName(tr.Previous.TabType)+" tab", tr.Reconciled
+			ev.Summary, ev.Reconciled = resolve.TabTypeWireName(tr.Previous.TabType)+" tab", tr.Reconciled
 			out = append(out, ev)
 		case crdt.TabTransitionMoved:
 			ev := tabStreamEvent(kindTabMoved, scopedTabFromOwned(tr.Current))
 			ev.FromWorkspaceID, ev.Reconciled = tr.Previous.WorkspaceID, tr.Reconciled
-			ev.Summary = fmt.Sprintf("%s tab from workspace %s", tabTypeName(tr.Current.TabType), cli.ShortID(tr.Previous.WorkspaceID))
+			ev.Summary = fmt.Sprintf("%s tab from workspace %s", resolve.TabTypeWireName(tr.Current.TabType), cli.ShortID(tr.Previous.WorkspaceID))
 			out = append(out, ev)
 		case crdt.TabTransitionLeftScope:
 			ev := tabStreamEvent(kindTabMoved, scopedTabFromOwned(tr.Previous))
 			ev.WorkspaceID, ev.FromWorkspaceID = "", tr.Previous.WorkspaceID
-			ev.Summary = tabTypeName(tr.Previous.TabType) + " tab left the watched workspace"
+			ev.Summary = resolve.TabTypeWireName(tr.Previous.TabType) + " tab left the watched workspace"
 			out = append(out, ev)
 		}
 	}
@@ -550,7 +551,7 @@ func tabStreamEvent(kind string, tab scopedTab) streamEvent {
 		Kind:        kind,
 		WorkspaceID: tab.WorkspaceID,
 		TabID:       tab.ID,
-		TabType:     tabTypeName(tab.Type),
+		TabType:     resolve.TabTypeWireName(tab.Type),
 		WorkerID:    tab.WorkerID,
 	}
 }

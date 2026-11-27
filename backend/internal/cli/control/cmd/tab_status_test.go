@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 // requireOneSetTabStatus returns the one SetTabStatus request that the fake
@@ -246,5 +247,75 @@ func TestTabStatusTone_TokensRoundTrip(t *testing.T) {
 	for _, bad := range []string{"", "unspecified", "danger"} {
 		_, err := parseTabStatusTone(bad)
 		assert.Error(t, err, "%q is no tone", bad)
+	}
+}
+
+func TestTabStatusClear_SingleChannelOnAll(t *testing.T) {
+	w := &privateCommandWorker{answers: map[string]proto.Message{
+		leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure: &leapmuxv1.ListTabStatusesResponse{
+			Statuses: []*leapmuxv1.TabStatusEntry{
+				{Key: "build", Status: &leapmuxv1.TabStatus{Text: "Running"}},
+				{Key: "lint", Status: &leapmuxv1.TabStatus{Text: "OK"}},
+			},
+		},
+	}}
+	hub := &recordingHub{workers: workerRows("worker-A"), locateTab: agentTab()}
+	h := startHubChannelHarness(t, hub, w)
+	h.dispatcher.Handle(leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, channel.Registration{}, w.DispatchWith)
+	h.dispatcher.Handle(leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, channel.Registration{}, w.DispatchWith)
+
+	data := runControl(t, "tab", "status", "clear", "agent-2", "--all", "--hub", h.url).Data(t)
+	assert.Equal(t, "agent-2", data["id"])
+	assert.Equal(t, []any{"build", "lint"}, data["cleared"])
+	assert.Equal(t, 1, h.channelOpens(), "ListTabStatuses and SetTabStatus clears must share one E2EE channel")
+}
+
+func TestTabStatusClear_QuietPrintsClearedKeysConsistently(t *testing.T) {
+	w := &privateCommandWorker{answers: map[string]proto.Message{
+		leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure: &leapmuxv1.ListTabStatusesResponse{
+			Statuses: []*leapmuxv1.TabStatusEntry{
+				{Key: "build", Status: &leapmuxv1.TabStatus{Text: "Running"}},
+				{Key: "lint", Status: &leapmuxv1.TabStatus{Text: "OK"}},
+			},
+		},
+	}}
+	startTabWorker(t, w, agentTab())
+
+	// `tab status set -q` keeps printing the tab ID.
+	setQuiet := runControlText(t, "tab", "status", "set", "agent-2", "Working", "-q")
+	require.Equal(t, cli.ExitOK, setQuiet.Code, setQuiet.Stderr)
+	assert.Equal(t, "agent-2\n", setQuiet.Stdout)
+
+	// Every `tab status clear -q` form prints cleared status key names.
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"default key", []string{"tab", "status", "clear", "agent-2", "-q"}, "default\n"},
+		{"flag key", []string{"tab", "status", "clear", "agent-2", "--key", "tests", "-q"}, "tests\n"},
+		{"single positional key", []string{"tab", "status", "clear", "agent-2", "build", "-q"}, "build\n"},
+		{"multiple positional keys", []string{"tab", "status", "clear", "agent-2", "build", "lint", "-q"}, "build\nlint\n"},
+		{"all keys", []string{"tab", "status", "clear", "agent-2", "--all", "-q"}, "build\nlint\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := runControlText(t, tc.args...)
+			require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+			assert.Equal(t, tc.want, o.Stdout)
+		})
+	}
+}
+
+func TestTabStatusClear_RejectsEmptyKeysBeforeRPC(t *testing.T) {
+	for _, args := range [][]string{
+		{"tab", "status", "clear", "agent-2", "--key", "   "},
+		{"tab", "status", "clear", "agent-2", "   "},
+	} {
+		w := &privateCommandWorker{}
+		startTabWorker(t, w, agentTab())
+
+		runControl(t, args...).requireFailure(t, cli.CodeUsage)
+		assert.Empty(t, w.recorded(), "empty status key must fail before calling the Worker")
 	}
 }

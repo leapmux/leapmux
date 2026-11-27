@@ -201,9 +201,9 @@ func newTerminalCommand() *cobra.Command {
 			newQuakeRunLeaf(),
 			newQuakeSendLeaf(),
 		),
-		newTabCloseLeafFor(resolve.KindTerminal, "terminal"),
-		newTabRenameLeafFor(resolve.KindTerminal, "terminal"),
-		newTabRevealLeafFor(resolve.KindTerminal, "terminal"),
+		newTabCloseLeafFor(resolve.KindTerminal),
+		newTabRenameLeafFor(resolve.KindTerminal),
+		newTabRevealLeafFor(resolve.KindTerminal),
 	), "term")
 }
 
@@ -264,13 +264,7 @@ func runTerminalList(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		filtered := make([]*leapmuxv1.WorkspaceTab, 0, len(tabs))
-		for _, t := range tabs {
-			if t.GetWorkerId() == w.ID {
-				filtered = append(filtered, t)
-			}
-		}
-		tabs = filtered
+		tabs = filterTabsByWorker(tabs, w.ID)
 	}
 	details, names := fetchTabDetailsAndWorkers(s.ctx, s.c, tabs, true)
 	rows := make([]terminalListRow, 0, len(tabs))

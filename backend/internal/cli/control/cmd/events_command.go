@@ -288,7 +288,7 @@ func resolveEventScope(s *session, opts eventsOptions) (workspaceID, tabID strin
 	if opts.workspace == "" && opts.tab == "" {
 		return "", "", nil
 	}
-	callSession := s.bounded()
+	callSession := s.timed()
 	defer callSession.Close()
 	if opts.workspace != "" {
 		workspace, err := callSession.resolveOne(resolve.KindWorkspace, opts.workspace)
@@ -302,6 +302,9 @@ func resolveEventScope(s *session, opts eventsOptions) (workspaceID, tabID strin
 		if workspaceID != "" {
 			listing.Tabs = func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
 				return listTabsInWorkspaces(ctx, s.c, []string{workspaceID})
+			}
+			listing.TabsByIDPrefix = func(ctx context.Context, idPrefix string) ([]*leapmuxv1.WorkspaceTab, error) {
+				return callSession.listTabsByIDPrefix(ctx, []string{workspaceID}, idPrefix)
 			}
 		}
 		tab, err := resolve.Canonical(callSession.ctx, listing, resolve.KindTab, opts.tab)

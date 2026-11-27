@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -131,12 +132,27 @@ func tabStatusToneToken(tone leapmuxv1.TabStatusTone) string {
 	return enumToken(tone)
 }
 
-// tabStatusResult is the result of `tab status set` and `tab status clear`.
-// Status is null after a clear.
+// tabStatusResult is the result of `tab status set`.
 type tabStatusResult struct {
 	ID     string        `json:"id"`
 	Key    string        `json:"key"`
 	Status *tabStatusRow `json:"status"`
+}
+
+// tabStatusClearResult is the result of clearing a single status entry.
+// Status stays null in JSON, and QuietLines prints the cleared status key so
+// single-key, multi-key, and --all clears produce consistent -q output.
+type tabStatusClearResult struct {
+	ID     string        `json:"id"`
+	Key    string        `json:"key"`
+	Status *tabStatusRow `json:"status"`
+}
+
+func (r tabStatusClearResult) QuietLines() []string {
+	if r.Key == "" {
+		return nil
+	}
+	return []string{r.Key}
 }
 
 // tabStatusRow is a tab's status in a result.
@@ -188,7 +204,20 @@ func runTabStatusSet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	status.Tone = tone
-	return setTabStatus(inv, status)
+	s, got, err := openTabStatusSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	req := &leapmuxv1.SetTabStatusRequest{TabId: got.ID, Status: status}
+	if inv.Changed("key") {
+		req.Key = new(stringFlag(inv, "key"))
+	}
+	var resp leapmuxv1.SetTabStatusResponse
+	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, req, &resp); err != nil {
+		return nil, err
+	}
+	return tabStatusResult{ID: got.ID, Key: resp.GetKey(), Status: tabStatusRowOf(resp.GetStatus())}, nil
 }
 
 type tabStatusClearBatchResult struct {
@@ -198,85 +227,98 @@ type tabStatusClearBatchResult struct {
 
 func (r tabStatusClearBatchResult) QuietLines() []string { return r.Cleared }
 
-// runTabStatusClear clears one key, multiple positional keys, or --all keys.
+// runTabStatusClear clears one key, multiple positional keys, or --all keys
+// over a single E2EE channel to the tab's Worker.
 func runTabStatusClear(inv *cli.Invocation) (any, error) {
 	all := boolFlag(inv, "all")
-	keys := inv.Variadic("key")
+	rawKeys := inv.Variadic("key")
 	hasKeyFlag := inv.Changed("key")
-	if all && (hasKeyFlag || len(keys) > 0) {
+	if all && (hasKeyFlag || len(rawKeys) > 0) {
 		return nil, cli.Usagef("--all cannot be combined with --key or positional keys")
 	}
-	if hasKeyFlag && len(keys) > 0 {
+	if hasKeyFlag && len(rawKeys) > 0 {
 		return nil, cli.Usagef("pass --key or positional keys, not both")
 	}
-	if !all && len(keys) == 0 {
-		return setTabStatus(inv, nil)
+
+	var keyPtrs []*string
+	if !all {
+		switch {
+		case len(rawKeys) > 0:
+			keyPtrs = make([]*string, 0, len(rawKeys))
+			for _, k := range rawKeys {
+				k = strings.TrimSpace(k)
+				if k == "" {
+					return nil, cli.Usagef("status key is empty")
+				}
+				keyPtrs = append(keyPtrs, new(k))
+			}
+		case hasKeyFlag:
+			k := strings.TrimSpace(stringFlag(inv, "key"))
+			if k == "" {
+				return nil, cli.Usagef("status key is empty")
+			}
+			keyPtrs = []*string{new(k)}
+		default:
+			// An unset Key clears the default status entry.
+			keyPtrs = []*string{nil}
+		}
 	}
+
 	s, got, err := openTabStatusSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	if all {
-		var listResp leapmuxv1.ListTabStatusesResponse
-		if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, &leapmuxv1.ListTabStatusesRequest{TabId: got.ID}, &listResp); err != nil {
-			return nil, err
-		}
-		for _, entry := range listResp.GetStatuses() {
-			if k := entry.GetKey(); k != "" {
-				keys = append(keys, k)
-			}
-		}
-		if len(keys) == 0 {
-			return tabStatusClearBatchResult{ID: got.ID, Cleared: []string{}}, nil
-		}
-	}
-	trimmedKeys := make([]string, 0, len(keys))
-	for _, k := range keys {
-		k = strings.TrimSpace(k)
-		if k == "" {
-			return nil, cli.Usagef("status key is empty")
-		}
-		trimmedKeys = append(trimmedKeys, k)
-	}
-	cleared := make([]string, 0, len(trimmedKeys))
+
+	var cleared []string
 	err = withWorkerChannel(s.ctx, s.c, got.WorkerID, func(w workerCall) error {
-		for _, k := range trimmedKeys {
-			var resp leapmuxv1.SetTabStatusResponse
-			if err := w.Call(s.ctx, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, &leapmuxv1.SetTabStatusRequest{TabId: got.ID, Key: new(k)}, &resp); err != nil {
+		if all {
+			var listResp leapmuxv1.ListTabStatusesResponse
+			if err := w.Call(s.ctx, leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, &leapmuxv1.ListTabStatusesRequest{TabId: got.ID}, &listResp); err != nil {
 				return err
 			}
-			cleared = append(cleared, resp.GetKey())
+			for _, entry := range listResp.GetStatuses() {
+				if k := strings.TrimSpace(entry.GetKey()); k != "" {
+					keyPtrs = append(keyPtrs, new(k))
+				}
+			}
+			if len(keyPtrs) == 0 {
+				cleared = []string{}
+				return nil
+			}
 		}
-		return nil
+
+		cleared = make([]string, len(keyPtrs))
+		if len(keyPtrs) == 1 {
+			var resp leapmuxv1.SetTabStatusResponse
+			if err := w.Call(s.ctx, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, &leapmuxv1.SetTabStatusRequest{TabId: got.ID, Key: keyPtrs[0]}, &resp); err != nil {
+				return err
+			}
+			cleared[0] = resp.GetKey()
+			return nil
+		}
+
+		g, gctx := errgroup.WithContext(s.ctx)
+		g.SetLimit(detailFanoutLimit)
+		for i, keyPtr := range keyPtrs {
+			g.Go(func() error {
+				var resp leapmuxv1.SetTabStatusResponse
+				if err := w.Call(gctx, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, &leapmuxv1.SetTabStatusRequest{TabId: got.ID, Key: keyPtr}, &resp); err != nil {
+					return err
+				}
+				cleared[i] = resp.GetKey()
+				return nil
+			})
+		}
+		return g.Wait()
 	})
 	if err != nil {
 		return nil, err
 	}
 	if !all && len(cleared) == 1 {
-		return tabStatusResult{ID: got.ID, Key: cleared[0]}, nil
+		return tabStatusClearResult{ID: got.ID, Key: cleared[0]}, nil
 	}
 	return tabStatusClearBatchResult{ID: got.ID, Cleared: cleared}, nil
-}
-
-// setTabStatus resolves the <tab> argument, sends SetTabStatus to the Worker
-// that hosts the tab, and returns the result: the tab and the status that the
-// Worker stored. A nil status clears it, and the result then states no status.
-func setTabStatus(inv *cli.Invocation, status *leapmuxv1.TabStatus) (tabStatusResult, error) {
-	s, got, err := openTabStatusSession(inv)
-	if err != nil {
-		return tabStatusResult{}, err
-	}
-	defer s.Close()
-	req := &leapmuxv1.SetTabStatusRequest{TabId: got.ID, Status: status}
-	if inv.Changed("key") {
-		req.Key = new(stringFlag(inv, "key"))
-	}
-	var resp leapmuxv1.SetTabStatusResponse
-	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, req, &resp); err != nil {
-		return tabStatusResult{}, err
-	}
-	return tabStatusResult{ID: got.ID, Key: resp.GetKey(), Status: tabStatusRowOf(resp.GetStatus())}, nil
 }
 
 func runTabStatusList(inv *cli.Invocation) (any, error) {

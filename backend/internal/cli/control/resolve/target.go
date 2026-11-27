@@ -155,7 +155,7 @@ func (k Kind) forms() []string {
 	forms := []string{
 		fmt.Sprintf("%s %s id", spec.article, spec.noun),
 		fmt.Sprintf("a unique prefix of %d or more characters of one", MinPrefixLength),
-		`"id:<id>" for a literal id`,
+		`"id:<id>" for an id or id prefix`,
 	}
 	return append(forms, spec.extraForms...)
 }
@@ -176,7 +176,8 @@ const (
 	SelfTarget = "self"
 	// ParentTarget selects the calling agent's parent agent on the same Worker.
 	ParentTarget = "parent"
-	// literalIDPrefix selects a full id, including one that spells a reserved word.
+	// literalIDPrefix selects an exact id (any length) or unique id prefix,
+	// without matching titles or names.
 	literalIDPrefix = "id:"
 	// titlePrefix selects a tab or a workspace by its exact title.
 	titlePrefix = "title:"
@@ -218,20 +219,27 @@ type Target struct {
 }
 
 // Listing holds what a short form needs to find its object. Each function
-// lists everything of one kind that the caller can see.
+// lists everything of one kind that the caller can see, or (for the optional
+// *ByIDPrefix callbacks) only rows whose id starts with idPrefix.
 type Listing struct {
 	// Tabs lists every tab of every workspace.
 	Tabs func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error)
+	// TabsByIDPrefix optionally lists tabs matching idPrefix on the server.
+	TabsByIDPrefix func(ctx context.Context, idPrefix string) ([]*leapmuxv1.WorkspaceTab, error)
 	// TabTitles returns known titles keyed by tab id. An absent key means
 	// the caller could not read that title.
 	TabTitles func(ctx context.Context, tabs []*leapmuxv1.WorkspaceTab) map[string]string
 	// Workspaces lists every workspace.
 	Workspaces func(ctx context.Context) ([]*leapmuxv1.Workspace, error)
+	// WorkspacesByIDPrefix optionally lists workspaces matching idPrefix on the server.
+	WorkspacesByIDPrefix func(ctx context.Context, idPrefix string) ([]*leapmuxv1.Workspace, error)
 	// Tiles lists every live tile, keyed by id, with the kind of the tile
 	// ("leaf", "split", "grid") as the value.
 	Tiles func(ctx context.Context) (map[string]string, error)
 	// Workers lists every Worker.
 	Workers func(ctx context.Context) ([]*leapmuxv1.Worker, error)
+	// WorkersByIDPrefix optionally lists Workers matching idPrefix on the server.
+	WorkersByIDPrefix func(ctx context.Context, idPrefix string) ([]*leapmuxv1.Worker, error)
 	// WorkerNames returns known names keyed by id. An absent key for an
 	// online Worker means the caller could not read that name; offline
 	// Workers cannot be queried for a live name.
@@ -307,7 +315,9 @@ func matchesTabKind(kind Kind, tabType leapmuxv1.TabType) bool {
 //   - A full id. It costs no call; the command that uses it reports an id
 //     that does not exist.
 //   - A unique prefix of an id, of at least MinPrefixLength characters.
-//   - "id:<id>" for a literal id that may be short or spell a reserved word.
+//   - "id:<id>" for an exact id (any length, including reserved words) or a
+//     unique id prefix of at least MinPrefixLength characters, never matching
+//     titles or names.
 //   - "title:<exact title>" for a tab or a workspace.
 //   - "name:<exact name>" for a Worker or an agent.
 //   - "parent" for the calling agent's parent (when kind accepts an agent).
@@ -330,7 +340,11 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 	case strings.EqualFold(input, ParentTarget) && (kind == KindAgent || kind == KindTab):
 		return l.parent(ctx)
 	case strings.HasPrefix(input, literalIDPrefix):
-		return Target{}, cli.Usagef(`"id:" needs an id after the colon`)
+		literal := strings.TrimSpace(strings.TrimPrefix(input, literalIDPrefix))
+		if literal == "" {
+			return Target{}, cli.Usagef(`"id:" needs an id after the colon`)
+		}
+		return l.byIDOnly(ctx, kind, literal)
 	case strings.HasPrefix(selector, titlePrefix):
 		return l.byTitle(ctx, kind, strings.TrimPrefix(selector, titlePrefix))
 	case strings.HasPrefix(selector, namePrefix):
@@ -343,11 +357,11 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 				return got, err
 			}
 			return Target{}, cli.Newf(cli.CodeNotFound, "no %s matches %q (and it is shorter than the %d-character id prefix minimum)", kind, input, MinPrefixLength).
-				WithHint(`use "id:<id>" to select a literal id`).
+				WithHint(`use "id:<id>" to select by id`).
 				WithHint(`use "self" for your own %s, or %q`, kind, named)
 		}
 		return Target{}, cli.Usagef("%q is too short for a %s id prefix; type at least %d characters", input, kind, MinPrefixLength).
-			WithHint(`use "id:<id>" to select a literal id`).
+			WithHint(`use "id:<id>" to select by id`).
 			WithHint(`use "self" for your own %s`, kind)
 	}
 	return l.byPrefix(ctx, kind, input)
@@ -442,11 +456,18 @@ func (l Listing) byShortBareName(ctx context.Context, kind Kind, input string) (
 	}
 }
 
-// ExplicitID returns an ID supplied in full or with the literal ID prefix.
+// ExplicitID returns the id when selector already identifies a complete target
+// id (either directly or after the "id:" prefix) and needs no listing round
+// trip. Short or partial "id:<prefix>" selectors return "" so Canonical
+// resolves them against the listing.
 func ExplicitID(kind Kind, selector string) string {
 	input := strings.TrimSpace(selector)
 	if literal, ok := strings.CutPrefix(input, literalIDPrefix); ok {
-		return strings.TrimSpace(literal)
+		literal = strings.TrimSpace(literal)
+		if isCompleteTargetID(kind, literal) {
+			return literal
+		}
+		return ""
 	}
 	if strings.HasPrefix(input, titlePrefix) || strings.HasPrefix(input, namePrefix) {
 		return ""
@@ -461,6 +482,21 @@ func ExplicitID(kind Kind, selector string) string {
 // generated LeapMux id.
 func IsGeneratedID(s string) bool {
 	return len(s) == id.GeneratedLength && isGeneratedIDAlphabet(s)
+}
+
+// IsBareIDPrefixCandidate reports whether input could be an ID prefix worth
+// querying on the server. Generated and synthetic IDs contain no whitespace,
+// so a bare multi-word title skips the server-side id_prefix round trip.
+func IsBareIDPrefixCandidate(input string) bool {
+	if input == "" {
+		return false
+	}
+	for _, r := range input {
+		if unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // isCompleteTargetID recognizes the direct forms. A UUID-shaped tab id is
@@ -587,55 +623,70 @@ func notInsideTab(kind Kind) error {
 }
 
 func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target, error) {
+	return l.byID(ctx, kind, prefix, true, true)
+}
+
+func (l Listing) byIDOnly(ctx context.Context, kind Kind, literal string) (Target, error) {
+	return l.byID(ctx, kind, literal, len(literal) >= MinPrefixLength, false)
+}
+
+func idLookupDescription(prefix string, allowPrefix, allowBareName bool, bareNoun string) string {
+	if allowBareName {
+		return "id prefix or " + bareNoun + " " + prefix
+	}
+	if allowPrefix {
+		return "id prefix " + prefix
+	}
+	return fmt.Sprintf("id %q", prefix)
+}
+
+func matchTabsByID(tabs []*leapmuxv1.WorkspaceTab, prefix string, allowPrefix bool) (exact *leapmuxv1.WorkspaceTab, matches []*leapmuxv1.WorkspaceTab) {
+	for _, t := range tabs {
+		if t.GetTab().GetTabId() == prefix {
+			return t, nil
+		}
+		if allowPrefix && strings.HasPrefix(t.GetTab().GetTabId(), prefix) {
+			matches = append(matches, t)
+		}
+	}
+	return nil, matches
+}
+
+func matchWorkspacesByID(workspaces []*leapmuxv1.Workspace, prefix string, allowPrefix bool) (exact bool, matches []cli.Candidate) {
+	for _, w := range workspaces {
+		if w.GetId() == prefix {
+			return true, nil
+		}
+		if allowPrefix && strings.HasPrefix(w.GetId(), prefix) {
+			matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "workspace", Title: w.GetTitle()})
+		}
+	}
+	return false, matches
+}
+
+func matchWorkersByID(workers []*leapmuxv1.Worker, prefix string, allowPrefix bool) (exact bool, matches []cli.Candidate, matchedWorkers []*leapmuxv1.Worker) {
+	for _, w := range workers {
+		if w.GetId() == prefix {
+			return true, nil, nil
+		}
+		if allowPrefix && strings.HasPrefix(w.GetId(), prefix) {
+			matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "worker"})
+			matchedWorkers = append(matchedWorkers, w)
+		}
+	}
+	return false, matches, matchedWorkers
+}
+
+func (l Listing) byID(ctx context.Context, kind Kind, prefix string, allowPrefix, allowBareName bool) (Target, error) {
 	switch {
 	case kind.IsTab():
-		tabs, err := l.tabsOf(ctx, kind)
-		if err != nil {
-			return Target{}, err
-		}
-		var matches []*leapmuxv1.WorkspaceTab
-		for _, t := range tabs {
-			if t.GetTab().GetTabId() == prefix {
-				return Target{ID: prefix, Tab: t}, nil
-			}
-			if strings.HasPrefix(t.GetTab().GetTabId(), prefix) {
-				matches = append(matches, t)
-			}
-		}
-		if len(matches) == 1 {
-			return Target{ID: matches[0].GetTab().GetTabId(), Tab: matches[0]}, nil
-		}
-		if len(matches) == 0 && l.TabTitles != nil {
-			if got, handled, err := l.bareTabTitleMatch(ctx, kind, tabs, prefix); handled {
-				return got, err
-			}
-		}
-		var titles map[string]string
-		if len(matches) > 1 {
-			titles = l.tabTitles(ctx, matches)
-		}
-		return Target{}, tabMatchErrorWithTitles(kind, "id prefix or title "+prefix, matches, titles)
+		return l.byTabID(ctx, kind, prefix, allowPrefix, allowBareName)
 	case kind == KindWorkspace:
-		workspaces, err := l.Workspaces(ctx)
-		if err != nil {
-			return Target{}, err
-		}
-		var matches []cli.Candidate
-		for _, w := range workspaces {
-			if w.GetId() == prefix {
-				return Target{ID: prefix}, nil
-			}
-			if strings.HasPrefix(w.GetId(), prefix) {
-				matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "workspace", Title: w.GetTitle()})
-			}
-		}
-		if len(matches) == 0 {
-			if got, handled, err := bareWorkspaceTitleMatch(workspaces, prefix); handled {
-				return got, err
-			}
-		}
-		return pick(kind, "id prefix or title "+prefix, matches)
+		return l.byWorkspaceID(ctx, kind, prefix, allowPrefix, allowBareName)
 	case kind == KindTile:
+		if !allowBareName && l.Tiles == nil {
+			return Target{ID: prefix}, nil
+		}
 		tiles, err := l.Tiles(ctx)
 		if err != nil {
 			return Target{}, err
@@ -644,32 +695,193 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 			return Target{ID: prefix}, nil
 		}
 		var matches []cli.Candidate
-		for id, nodeKind := range tiles {
-			if strings.HasPrefix(id, prefix) {
-				matches = append(matches, cli.Candidate{ID: id, Kind: nodeKind})
+		if allowPrefix {
+			for id, nodeKind := range tiles {
+				if strings.HasPrefix(id, prefix) {
+					matches = append(matches, cli.Candidate{ID: id, Kind: nodeKind})
+				}
 			}
 		}
-		return pick(kind, "id prefix "+prefix, matches)
+		what := fmt.Sprintf("id %q", prefix)
+		if allowPrefix {
+			what = "id prefix " + prefix
+		}
+		return pick(kind, what, matches)
 	default:
-		workers, err := l.Workers(ctx)
+		return l.byWorkerID(ctx, kind, prefix, allowPrefix, allowBareName)
+	}
+}
+
+func (l Listing) byTabID(ctx context.Context, kind Kind, prefix string, allowPrefix, allowBareName bool) (Target, error) {
+	if !allowBareName {
+		if l.TabsByIDPrefix == nil && l.Tabs == nil {
+			return Target{ID: prefix}, nil
+		}
+		var (
+			tabs []*leapmuxv1.WorkspaceTab
+			err  error
+		)
+		if l.TabsByIDPrefix != nil {
+			tabs, err = l.tabsByIDPrefixOf(ctx, kind, prefix)
+		} else {
+			tabs, err = l.tabsOf(ctx, kind)
+		}
 		if err != nil {
 			return Target{}, err
 		}
-		var matches []cli.Candidate
-		var matchedWorkers []*leapmuxv1.Worker
-		for _, w := range workers {
-			if w.GetId() == prefix {
-				return Target{ID: prefix}, nil
+		exact, matches := matchTabsByID(tabs, prefix, allowPrefix)
+		if exact != nil {
+			return Target{ID: prefix, Tab: exact}, nil
+		}
+		if len(matches) == 1 {
+			return Target{ID: matches[0].GetTab().GetTabId(), Tab: matches[0]}, nil
+		}
+		var titles map[string]string
+		if len(matches) > 1 {
+			titles = l.tabTitles(ctx, matches)
+		}
+		return Target{}, tabMatchErrorWithTitles(kind, idLookupDescription(prefix, allowPrefix, false, "title"), matches, titles)
+	}
+
+	if l.TabsByIDPrefix != nil {
+		if IsBareIDPrefixCandidate(prefix) {
+			tabs, err := l.tabsByIDPrefixOf(ctx, kind, prefix)
+			if err != nil {
+				return Target{}, err
 			}
-			if strings.HasPrefix(w.GetId(), prefix) {
-				matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "worker"})
-				matchedWorkers = append(matchedWorkers, w)
+			exact, matches := matchTabsByID(tabs, prefix, allowPrefix)
+			if exact != nil {
+				return Target{ID: prefix, Tab: exact}, nil
+			}
+			if len(matches) == 1 {
+				return Target{ID: matches[0].GetTab().GetTabId(), Tab: matches[0]}, nil
+			}
+			if len(matches) > 1 {
+				titles := l.tabTitles(ctx, matches)
+				return Target{}, tabMatchErrorWithTitles(kind, idLookupDescription(prefix, allowPrefix, true, "title"), matches, titles)
 			}
 		}
-		if len(matches) == 0 && l.WorkerNames != nil {
-			if got, handled, err := l.bareWorkerNameMatch(ctx, workers, prefix); handled {
+		if l.TabTitles != nil && l.Tabs != nil {
+			allTabs, err := l.tabsOf(ctx, kind)
+			if err != nil {
+				return Target{}, err
+			}
+			if got, handled, err := l.bareTabTitleMatch(ctx, kind, allTabs, prefix); handled {
 				return got, err
 			}
+		}
+		return Target{}, tabMatchErrorWithTitles(kind, idLookupDescription(prefix, allowPrefix, true, "title"), nil, nil)
+	}
+
+	tabs, err := l.tabsOf(ctx, kind)
+	if err != nil {
+		return Target{}, err
+	}
+	exact, matches := matchTabsByID(tabs, prefix, allowPrefix)
+	if exact != nil {
+		return Target{ID: prefix, Tab: exact}, nil
+	}
+	if len(matches) == 1 {
+		return Target{ID: matches[0].GetTab().GetTabId(), Tab: matches[0]}, nil
+	}
+	if len(matches) == 0 && l.TabTitles != nil {
+		if got, handled, err := l.bareTabTitleMatch(ctx, kind, tabs, prefix); handled {
+			return got, err
+		}
+	}
+	var titles map[string]string
+	if len(matches) > 1 {
+		titles = l.tabTitles(ctx, matches)
+	}
+	return Target{}, tabMatchErrorWithTitles(kind, idLookupDescription(prefix, allowPrefix, true, "title"), matches, titles)
+}
+
+func (l Listing) byWorkspaceID(ctx context.Context, kind Kind, prefix string, allowPrefix, allowBareName bool) (Target, error) {
+	if !allowBareName {
+		if l.WorkspacesByIDPrefix == nil && l.Workspaces == nil {
+			return Target{ID: prefix}, nil
+		}
+		var (
+			workspaces []*leapmuxv1.Workspace
+			err        error
+		)
+		if l.WorkspacesByIDPrefix != nil {
+			workspaces, err = l.WorkspacesByIDPrefix(ctx, prefix)
+		} else {
+			workspaces, err = l.Workspaces(ctx)
+		}
+		if err != nil {
+			return Target{}, err
+		}
+		exact, matches := matchWorkspacesByID(workspaces, prefix, allowPrefix)
+		if exact {
+			return Target{ID: prefix}, nil
+		}
+		return pick(kind, idLookupDescription(prefix, allowPrefix, false, "title"), matches)
+	}
+
+	if l.WorkspacesByIDPrefix != nil {
+		if IsBareIDPrefixCandidate(prefix) {
+			workspaces, err := l.WorkspacesByIDPrefix(ctx, prefix)
+			if err != nil {
+				return Target{}, err
+			}
+			exact, matches := matchWorkspacesByID(workspaces, prefix, allowPrefix)
+			if exact {
+				return Target{ID: prefix}, nil
+			}
+			if len(matches) > 0 {
+				return pick(kind, idLookupDescription(prefix, allowPrefix, true, "title"), matches)
+			}
+		}
+		if l.Workspaces != nil {
+			allWorkspaces, err := l.Workspaces(ctx)
+			if err != nil {
+				return Target{}, err
+			}
+			if got, handled, err := bareWorkspaceTitleMatch(allWorkspaces, prefix); handled {
+				return got, err
+			}
+		}
+		return pick(kind, idLookupDescription(prefix, allowPrefix, true, "title"), nil)
+	}
+
+	workspaces, err := l.Workspaces(ctx)
+	if err != nil {
+		return Target{}, err
+	}
+	exact, matches := matchWorkspacesByID(workspaces, prefix, allowPrefix)
+	if exact {
+		return Target{ID: prefix}, nil
+	}
+	if len(matches) == 0 {
+		if got, handled, err := bareWorkspaceTitleMatch(workspaces, prefix); handled {
+			return got, err
+		}
+	}
+	return pick(kind, idLookupDescription(prefix, allowPrefix, true, "title"), matches)
+}
+
+func (l Listing) byWorkerID(ctx context.Context, kind Kind, prefix string, allowPrefix, allowBareName bool) (Target, error) {
+	if !allowBareName {
+		if l.WorkersByIDPrefix == nil && l.Workers == nil {
+			return Target{ID: prefix}, nil
+		}
+		var (
+			workers []*leapmuxv1.Worker
+			err     error
+		)
+		if l.WorkersByIDPrefix != nil {
+			workers, err = l.WorkersByIDPrefix(ctx, prefix)
+		} else {
+			workers, err = l.Workers(ctx)
+		}
+		if err != nil {
+			return Target{}, err
+		}
+		exact, matches, matchedWorkers := matchWorkersByID(workers, prefix, allowPrefix)
+		if exact {
+			return Target{ID: prefix}, nil
 		}
 		if len(matches) > 1 && l.WorkerNames != nil {
 			names := l.workerNames(ctx, matchedWorkers)
@@ -677,8 +889,61 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 				matches[i].Title = names[matches[i].ID]
 			}
 		}
-		return pick(kind, "id prefix or name "+prefix, matches)
+		return pick(kind, idLookupDescription(prefix, allowPrefix, false, "name"), matches)
 	}
+
+	if l.WorkersByIDPrefix != nil {
+		if IsBareIDPrefixCandidate(prefix) {
+			workers, err := l.WorkersByIDPrefix(ctx, prefix)
+			if err != nil {
+				return Target{}, err
+			}
+			exact, matches, matchedWorkers := matchWorkersByID(workers, prefix, allowPrefix)
+			if exact {
+				return Target{ID: prefix}, nil
+			}
+			if len(matches) > 0 {
+				if len(matches) > 1 && l.WorkerNames != nil {
+					names := l.workerNames(ctx, matchedWorkers)
+					for i := range matches {
+						matches[i].Title = names[matches[i].ID]
+					}
+				}
+				return pick(kind, idLookupDescription(prefix, allowPrefix, true, "name"), matches)
+			}
+		}
+		if l.WorkerNames != nil && l.Workers != nil {
+			allWorkers, err := l.Workers(ctx)
+			if err != nil {
+				return Target{}, err
+			}
+			if got, handled, err := l.bareWorkerNameMatch(ctx, allWorkers, prefix); handled {
+				return got, err
+			}
+		}
+		return pick(kind, idLookupDescription(prefix, allowPrefix, true, "name"), nil)
+	}
+
+	workers, err := l.Workers(ctx)
+	if err != nil {
+		return Target{}, err
+	}
+	exact, matches, matchedWorkers := matchWorkersByID(workers, prefix, allowPrefix)
+	if exact {
+		return Target{ID: prefix}, nil
+	}
+	if len(matches) == 0 && l.WorkerNames != nil {
+		if got, handled, err := l.bareWorkerNameMatch(ctx, workers, prefix); handled {
+			return got, err
+		}
+	}
+	if len(matches) > 1 && l.WorkerNames != nil {
+		names := l.workerNames(ctx, matchedWorkers)
+		for i := range matches {
+			matches[i].Title = names[matches[i].ID]
+		}
+	}
+	return pick(kind, idLookupDescription(prefix, allowPrefix, true, "name"), matches)
 }
 
 func bareWorkspaceTitleMatch(workspaces []*leapmuxv1.Workspace, input string) (Target, bool, error) {
@@ -855,9 +1120,23 @@ func (l Listing) tabsOf(ctx context.Context, kind Kind) ([]*leapmuxv1.WorkspaceT
 	if err != nil {
 		return nil, err
 	}
+	return filterTabsByKind(tabs, kind), nil
+}
+
+// tabsByIDPrefixOf queries server-side tabs matching idPrefix and filters them
+// to the tab type that kind accepts.
+func (l Listing) tabsByIDPrefixOf(ctx context.Context, kind Kind, idPrefix string) ([]*leapmuxv1.WorkspaceTab, error) {
+	tabs, err := l.TabsByIDPrefix(ctx, idPrefix)
+	if err != nil {
+		return nil, err
+	}
+	return filterTabsByKind(tabs, kind), nil
+}
+
+func filterTabsByKind(tabs []*leapmuxv1.WorkspaceTab, kind Kind) []*leapmuxv1.WorkspaceTab {
 	want := kind.TabType()
 	if want == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
-		return tabs, nil
+		return tabs
 	}
 	out := tabs[:0:0]
 	for _, t := range tabs {
@@ -865,7 +1144,7 @@ func (l Listing) tabsOf(ctx context.Context, kind Kind) ([]*leapmuxv1.WorkspaceT
 			out = append(out, t)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func tabMatchErrorWithTitles(kind Kind, what string, matches []*leapmuxv1.WorkspaceTab, titles map[string]string) error {

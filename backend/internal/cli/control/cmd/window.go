@@ -205,83 +205,96 @@ func opTombstoneWindow(bs *CRDTBootstrap, windowID string) *leapmuxv1.CrdtOp {
 	return op
 }
 
-func floatingWindowNodes(state *leapmuxv1.UserMaterialized, rootNodeID string) map[string]bool {
-	nodes := map[string]bool{}
-	if rootNodeID == "" {
-		return nodes
-	}
-	children := crdt.LiveChildrenByParent(state)
-	var walk func(nodeID string)
-	walk = func(nodeID string) {
-		n := state.GetNodes()[nodeID]
-		if n == nil || !crdt.HLCIsZero(n.GetTombstoneAt()) {
-			return
-		}
-		nodes[nodeID] = true
-		for _, childID := range children[nodeID] {
-			walk(childID)
-		}
-	}
-	walk(rootNodeID)
-	return nodes
+// appendCreateFloatingWindowOps appends the seven SetFloatingWindowRegister
+// ops that initialize windowID in workspaceID with rootNodeID and geometry.
+// Callers emit rootNodeID's node shape ops separately.
+func appendCreateFloatingWindowOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, windowID, workspaceID, rootNodeID string, x, y, width, height, opacity float64) []*leapmuxv1.CrdtOp {
+	return append(ops,
+		opSetWindowRootNodeID(bs, windowID, rootNodeID),
+		opSetWindowWorkspaceID(bs, windowID, workspaceID),
+		opSetWindowX(bs, windowID, x),
+		opSetWindowY(bs, windowID, y),
+		opSetWindowWidth(bs, windowID, width),
+		opSetWindowHeight(bs, windowID, height),
+		opSetWindowOpacity(bs, windowID, opacity),
+	)
 }
 
 func resolveFloatingWindow(state *leapmuxv1.UserMaterialized, raw string) (*leapmuxv1.FloatingWindowRecord, error) {
-	q := strings.TrimSpace(raw)
-	if q == "" {
-		return nil, cli.Usagef("window id is empty")
+	handle, err := normalizeIDHandle(raw, "window id")
+	if err != nil {
+		return nil, err
 	}
-	if rest, ok := strings.CutPrefix(q, "id:"); ok {
-		q = strings.TrimSpace(rest)
-		if q == "" {
-			return nil, cli.Usagef(`"id:" needs a window id after the colon`)
-		}
-	}
-	var live []*leapmuxv1.FloatingWindowRecord
+	live := make([]*leapmuxv1.FloatingWindowRecord, 0, len(state.GetFloatingWindows()))
 	for _, fw := range state.GetFloatingWindows() {
 		if fw == nil || !crdt.HLCIsZero(fw.GetTombstoneAt()) {
 			continue
 		}
-		if fw.GetWindowId() == q {
-			return fw, nil
-		}
 		live = append(live, fw)
 	}
-	if len(q) >= resolve.MinPrefixLength {
-		var matches []*leapmuxv1.FloatingWindowRecord
-		for _, fw := range live {
-			if strings.HasPrefix(fw.GetWindowId(), q) {
-				matches = append(matches, fw)
-			}
+	slices.SortFunc(live, func(a, b *leapmuxv1.FloatingWindowRecord) int {
+		return strings.Compare(a.GetWindowId(), b.GetWindowId())
+	})
+	if matched, ambiguous, ok := lookupByIDPrefixMin(live, handle, resolve.MinPrefixLength, (*leapmuxv1.FloatingWindowRecord).GetWindowId); ok {
+		return matched, nil
+	} else if len(ambiguous) > 0 {
+		cands := make([]cli.Candidate, 0, len(ambiguous))
+		for _, m := range ambiguous {
+			cands = append(cands, cli.Candidate{ID: m.GetWindowId(), Kind: "window"})
 		}
-		switch len(matches) {
-		case 1:
-			return matches[0], nil
-		case 0:
-		default:
-			cands := make([]cli.Candidate, 0, len(matches))
-			for _, m := range matches {
-				cands = append(cands, cli.Candidate{ID: m.GetWindowId(), Kind: "window"})
-			}
-			err := cli.Newf(cli.CodeAmbiguousTarget, "%d floating windows match %q", len(matches), q)
-			err.Candidates = cands
-			return nil, err
-		}
+		err := cli.Newf(cli.CodeAmbiguousTarget, "%d floating windows match %q", len(ambiguous), handle)
+		err.Candidates = cands
+		return nil, err
 	}
 	return nil, cli.Newf(cli.CodeNotFound, "no floating window matches %q", raw).
 		WithHint(`list floating windows with "leapmux window list"`)
 }
 
-func openCRDTForWorkspaces(s *session, wsIDs []string) (*crdtCall, error) {
-	bs, err := crdtBootstrap(s.ctx, s.c, wsIDs)
+// openFloatingWindow opens a session, bootstraps the user CRDT, and resolves
+// the positional <window> argument to a live floating window. On error it
+// closes any opened session before returning.
+func openFloatingWindow(inv *cli.Invocation) (*session, *crdtCall, *leapmuxv1.FloatingWindowRecord, error) {
+	s, err := openSession(inv)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	ws := ""
-	if len(wsIDs) > 0 {
-		ws = wsIDs[0]
+	cc, err := s.openCRDT()
+	if err != nil {
+		s.Close()
+		return nil, nil, nil, err
 	}
-	return &crdtCall{ctx: s.ctx, c: s.c, bs: bs, workspaceID: ws}, nil
+	fw, err := resolveFloatingWindow(cc.bs.State, inv.Arg("window"))
+	if err != nil {
+		s.Close()
+		return nil, nil, nil, err
+	}
+	return s, cc, fw, nil
+}
+
+func countSubtreeTabs(state *leapmuxv1.UserMaterialized, children map[string][]string, tabCountByTile map[string]int, rootNodeID string) int {
+	if rootNodeID == "" {
+		return 0
+	}
+	nodes := state.GetNodes()
+	visited := map[string]bool{}
+	total := 0
+	var walk func(nodeID string)
+	walk = func(nodeID string) {
+		if nodeID == "" || visited[nodeID] {
+			return
+		}
+		n := nodes[nodeID]
+		if n == nil || !crdt.HLCIsZero(n.GetTombstoneAt()) {
+			return
+		}
+		visited[nodeID] = true
+		total += tabCountByTile[nodeID]
+		for _, childID := range children[nodeID] {
+			walk(childID)
+		}
+	}
+	walk(rootNodeID)
+	return total
 }
 
 func runWindowList(inv *cli.Invocation) (any, error) {
@@ -291,32 +304,38 @@ func runWindowList(inv *cli.Invocation) (any, error) {
 	}
 	defer s.Close()
 	var wsIDs []string
+	var filterWS string
 	if inv.HasArg("workspace") {
-		ws, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+		ws, err := s.resolveExistingWorkspace(inv.Arg("workspace"))
 		if err != nil {
 			return nil, err
 		}
 		wsIDs = []string{ws.ID}
+		filterWS = ws.ID
 	}
-	cc, err := openCRDTForWorkspaces(s, wsIDs)
+	cc, err := s.openCRDT(wsIDs...)
 	if err != nil {
 		return nil, err
+	}
+	children := crdt.LiveChildrenByParent(cc.bs.State)
+	tabCountByTile := make(map[string]int, len(cc.bs.State.GetTabs()))
+	for _, t := range cc.bs.State.GetTabs() {
+		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
+			continue
+		}
+		if tileID := t.GetTileId().GetValue(); tileID != "" {
+			tabCountByTile[tileID]++
+		}
 	}
 	rows := make([]windowRow, 0, len(cc.bs.State.GetFloatingWindows()))
 	for _, fw := range cc.bs.State.GetFloatingWindows() {
 		if fw == nil || !crdt.HLCIsZero(fw.GetTombstoneAt()) {
 			continue
 		}
-		nodeSet := floatingWindowNodes(cc.bs.State, fw.GetRootNodeId())
-		tabs := 0
-		for _, t := range cc.bs.State.GetTabs() {
-			if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
-				continue
-			}
-			if nodeSet[t.GetTileId().GetValue()] {
-				tabs++
-			}
+		if filterWS != "" && fw.GetWorkspaceId().GetValue() != filterWS {
+			continue
 		}
+		tabs := countSubtreeTabs(cc.bs.State, children, tabCountByTile, fw.GetRootNodeId())
 		rows = append(rows, windowRowOf(fw, tabs))
 	}
 	slices.SortFunc(rows, func(a, b windowRow) int {
@@ -326,17 +345,6 @@ func runWindowList(inv *cli.Invocation) (any, error) {
 		return strings.Compare(a.ID, b.ID)
 	})
 	return windowListResult{Windows: rows}, nil
-}
-
-func floatFlag(inv *cli.Invocation, name string) (float64, error) {
-	v, err := inv.Command.Flags().GetFloat64(name)
-	if err != nil {
-		return 0, cli.Wrap(cli.CodeUsage, err, "read --"+name)
-	}
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0, cli.Usagef("--%s must be a finite number", name)
-	}
-	return v, nil
 }
 
 func runWindowCreate(inv *cli.Invocation) (any, error) {
@@ -375,7 +383,7 @@ func runWindowCreate(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	ws, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+	ws, err := s.resolveExistingWorkspace(inv.Arg("workspace"))
 	if err != nil {
 		return nil, err
 	}
@@ -388,14 +396,8 @@ func runWindowCreate(inv *cli.Invocation) (any, error) {
 	rootNodeID := id.Generate()
 	ops := []*leapmuxv1.CrdtOp{
 		opSetNodeKind(cc.bs, rootNodeID, leapmuxv1.NodeKind_NODE_KIND_LEAF),
-		opSetWindowRootNodeID(cc.bs, windowID, rootNodeID),
-		opSetWindowWorkspaceID(cc.bs, windowID, wsID),
-		opSetWindowX(cc.bs, windowID, x),
-		opSetWindowY(cc.bs, windowID, y),
-		opSetWindowWidth(cc.bs, windowID, width),
-		opSetWindowHeight(cc.bs, windowID, height),
-		opSetWindowOpacity(cc.bs, windowID, opacity),
 	}
+	ops = appendCreateFloatingWindowOps(ops, cc.bs, windowID, wsID, rootNodeID, x, y, width, height, opacity)
 	if err := cc.submitOps(ops); err != nil {
 		return nil, err
 	}
@@ -427,29 +429,22 @@ func runWindowMove(inv *cli.Invocation) (any, error) {
 			return nil, err
 		}
 	}
-	s, err := openSession(inv)
+	s, cc, fw, err := openFloatingWindow(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
 	var destWS string
 	if inv.Changed("workspace") {
-		ws, err := s.resolveOne(resolve.KindWorkspace, stringFlag(inv, "workspace"))
+		ws, err := s.resolveExistingWorkspace(stringFlag(inv, "workspace"))
 		if err != nil {
 			return nil, err
 		}
 		destWS = ws.ID
 	}
-	cc, err := openCRDTForWorkspaces(s, nil)
-	if err != nil {
-		return nil, err
-	}
-	fw, err := resolveFloatingWindow(cc.bs.State, inv.Arg("window"))
-	if err != nil {
-		return nil, err
-	}
 	var ops []*leapmuxv1.CrdtOp
-	row := windowRowOf(fw, 0)
+	tabCount := len(crdt.LiveTabsInSubtree(cc.bs.State, fw.GetRootNodeId()))
+	row := windowRowOf(fw, tabCount)
 	if inv.Changed("x") {
 		ops = append(ops, opSetWindowX(cc.bs, fw.GetWindowId(), x))
 		row.X = x
@@ -490,21 +485,14 @@ func runWindowResize(inv *cli.Invocation) (any, error) {
 			return nil, cli.Usagef("--height must be greater than 0")
 		}
 	}
-	s, err := openSession(inv)
+	s, cc, fw, err := openFloatingWindow(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	cc, err := openCRDTForWorkspaces(s, nil)
-	if err != nil {
-		return nil, err
-	}
-	fw, err := resolveFloatingWindow(cc.bs.State, inv.Arg("window"))
-	if err != nil {
-		return nil, err
-	}
 	var ops []*leapmuxv1.CrdtOp
-	row := windowRowOf(fw, 0)
+	tabCount := len(crdt.LiveTabsInSubtree(cc.bs.State, fw.GetRootNodeId()))
+	row := windowRowOf(fw, tabCount)
 	if inv.Changed("width") {
 		ops = append(ops, opSetWindowWidth(cc.bs, fw.GetWindowId(), width))
 		row.Width = width
@@ -524,70 +512,39 @@ func runWindowSetOpacity(inv *cli.Invocation) (any, error) {
 	if err != nil || math.IsNaN(opacity) || math.IsInf(opacity, 0) || opacity < 0 || opacity > 1 {
 		return nil, cli.Usagef("<opacity> must be a number from 0.0 to 1.0; got %q", inv.Arg("opacity"))
 	}
-	s, err := openSession(inv)
+	s, cc, fw, err := openFloatingWindow(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	cc, err := openCRDTForWorkspaces(s, nil)
-	if err != nil {
-		return nil, err
-	}
-	fw, err := resolveFloatingWindow(cc.bs.State, inv.Arg("window"))
-	if err != nil {
-		return nil, err
-	}
 	if err := cc.submitOps([]*leapmuxv1.CrdtOp{opSetWindowOpacity(cc.bs, fw.GetWindowId(), opacity)}); err != nil {
 		return nil, err
 	}
-	row := windowRowOf(fw, 0)
+	tabCount := len(crdt.LiveTabsInSubtree(cc.bs.State, fw.GetRootNodeId()))
+	row := windowRowOf(fw, tabCount)
 	row.Opacity = opacity
 	return row, nil
 }
 
 func runWindowClose(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
+	s, cc, fw, err := openFloatingWindow(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	cc, err := openCRDTForWorkspaces(s, nil)
-	if err != nil {
+	tabs := crdt.LiveTabsInSubtree(cc.bs.State, fw.GetRootNodeId())
+	slices.SortFunc(tabs, func(a, b crdt.TabRef) int {
+		return strings.Compare(a.TabID, b.TabID)
+	})
+	if err := guardLayoutClose("floating window "+fw.GetWindowId(), tabs, boolFlag(inv, allowSelfFlag)); err != nil {
 		return nil, err
 	}
-	fw, err := resolveFloatingWindow(cc.bs.State, inv.Arg("window"))
-	if err != nil {
+	if err := guardBulkCloseTabs(cc, tabs, boolFlag(inv, "allow-busy")); err != nil {
 		return nil, err
-	}
-	nodeSet := floatingWindowNodes(cc.bs.State, fw.GetRootNodeId())
-	var tabs []crdt.TabRef
-	for _, t := range cc.bs.State.GetTabs() {
-		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
-			continue
-		}
-		if nodeSet[t.GetTileId().GetValue()] {
-			if t.GetTabId() == callingTabID() && !boolFlag(inv, allowSelfFlag) {
-				return nil, errSelfTargetRefused("refusing to close floating window " + fw.GetWindowId() + " because this tab lives inside it")
-			}
-			tabs = append(tabs, crdt.TabRef{TabID: t.GetTabId(), TabType: t.GetTabType()})
-		}
-	}
-	if len(tabs) > 0 && !boolFlag(inv, "allow-busy") {
-		if err := guardTabsBusy(cc, tabs, false); err != nil {
-			return nil, err
-		}
 	}
 	var ops []*leapmuxv1.CrdtOp
-	for _, tref := range tabs {
-		ops = append(ops, opTombstoneTab(cc.bs, tref.TabType, tref.TabID))
-	}
-	// Tombstone descendant nodes deterministically leaves-first, then the root
-	// node, then the floating window.
 	if fw.GetRootNodeId() != "" {
-		for _, nodeID := range crdt.DescendantsLeavesFirst(cc.bs.State, fw.GetRootNodeId()) {
-			ops = append(ops, opTombstoneNode(cc.bs, nodeID))
-		}
-		ops = append(ops, opTombstoneNode(cc.bs, fw.GetRootNodeId()))
+		ops = append(ops, buildCloseSubtreeOps(cc.bs, fw.GetRootNodeId(), "", false)...)
 	}
 	ops = append(ops, opTombstoneWindow(cc.bs, fw.GetWindowId()))
 	if err := cc.submitOps(ops); err != nil {

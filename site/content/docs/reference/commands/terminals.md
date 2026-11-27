@@ -17,7 +17,7 @@ These selectors and flags repeat across commands on this page.
 
 | Selector / Flag | Description |
 |---|---|
-| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the terminal that runs this command. |
+| `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the terminal that runs this command. |
 | `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
 | `--exit` | wait until the shell of the terminal ends, and print its exit code |
 | `--regex string` | wait until a line of the terminal matches this regular expression, in RE2 syntax |

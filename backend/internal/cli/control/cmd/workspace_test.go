@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -15,8 +16,13 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
 )
 
 // TestRunWorkspaceCleanupFanout_AllSuccess verifies the happy-path
@@ -294,7 +300,8 @@ func TestRunWorkspaceList_InsideWorkerSpawn(t *testing.T) {
 	// The whole row, so a field that the struct drops or renames fails
 	// here. The stub sends no created_at, and an absent instant is omitted.
 	assert.Equal(t, map[string]any{"id": "ws-1", "created_by": "u-spawn", "title": "First"}, rows[0])
-	assert.Equal(t, []string{
+	// ListWorkspaces and ListSections run concurrently, so check set equality.
+	assert.ElementsMatch(t, []string{
 		leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 		leapmuxv1connect.SectionServiceListSectionsProcedure,
 	}, hub.called(),
@@ -323,7 +330,7 @@ func TestWorkspaceRowOf_PrintsCreatedAtAsAString(t *testing.T) {
 		"id":         "ws-1",
 		"created_by": "u-1",
 		"title":      "First",
-		"created_at": created.Format(timeFormat),
+		"created_at": timefmt.Format(created),
 	}, row)
 
 	row = jsonMap(t, workspaceRowOf(&leapmuxv1.Workspace{Id: "ws-2"}))
@@ -346,5 +353,242 @@ func TestWorkspaceRowOf_CarriesEveryFieldOfWorkspace(t *testing.T) {
 			"title":      "title",
 			"created_at": "created_at",
 		},
+	})
+}
+
+func TestLiveTabsOfWorkspace_SortedDeterministicallyAndIncludesFloatingWindows(t *testing.T) {
+	rootID := fullTestID("root-ws")
+	fwRootID := fullTestID("fw-root")
+	b := newStateBuilder().
+		workspace("ws-1", rootID).
+		leafNode(rootID, "", "a0").
+		leafNode(fwRootID, "", "a0").
+		tab("tab-z", rootID, leapmuxv1.TabType_TAB_TYPE_AGENT).
+		tab("tab-a", fwRootID, leapmuxv1.TabType_TAB_TYPE_TERMINAL).
+		tab("tab-m", rootID, leapmuxv1.TabType_TAB_TYPE_FILE).
+		tombstonedTab("tab-dead", rootID, leapmuxv1.TabType_TAB_TYPE_AGENT)
+	b.st.FloatingWindows = map[string]*leapmuxv1.FloatingWindowRecord{
+		"fw-1": {
+			WindowId:    "fw-1",
+			WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+			RootNodeId:  fwRootID,
+		},
+	}
+
+	got := liveTabsOfWorkspace(b.st, "ws-1")
+	require.Len(t, got, 3)
+	assert.Equal(t, []string{"tab-a", "tab-m", "tab-z"}, []string{got[0].TabID, got[1].TabID, got[2].TabID})
+}
+
+type funcHubClient func(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error)
+
+func (f funcHubClient) CallInner(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error) {
+	return f(ctx, userID, procedure, payload)
+}
+
+func TestWorkspaceUnarchive_NonexistentExplicitIDReturnsNotFound(t *testing.T) {
+	missingID := fullTestID("missing-ws")
+	customHub := funcHubClient(func(_ context.Context, _ userid.UserID, procedure string, payload []byte) ([]byte, error) {
+		switch procedure {
+		case leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:
+			return nil, connect.NewError(connect.CodeNotFound, "workspace not found")
+		case leapmuxv1connect.SectionServiceListSectionsProcedure:
+			return proto.Marshal(&leapmuxv1.ListSectionsResponse{
+				Sections: []*leapmuxv1.Section{
+					{Id: "sec-prog", Name: "In progress", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS},
+					{Id: "sec-arch", Name: "Archived", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED},
+				},
+			})
+		default:
+			return nil, connect.NewError(connect.CodePermissionDenied, "unexpected procedure: "+procedure)
+		}
+	})
+	startSpawnIPC(t, &recordingHub{}, nil, func(r *controlipc.Router) {
+		r.Hub = customHub
+	})
+
+	o := runControl(t, "workspace", "unarchive", "id:"+missingID)
+	o.requireFailure(t, cli.CodeNotFound)
+}
+
+func TestWorkspaceGet_ExplicitIDCallsGetWorkspaceOnce(t *testing.T) {
+	wsID := fullTestID("ws-1")
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	customHub := funcHubClient(func(_ context.Context, _ userid.UserID, procedure string, _ []byte) ([]byte, error) {
+		mu.Lock()
+		calls = append(calls, procedure)
+		mu.Unlock()
+		if procedure == leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure {
+			return proto.Marshal(&leapmuxv1.GetWorkspaceResponse{
+				Workspace: &leapmuxv1.Workspace{Id: wsID, Title: "Alpha"},
+			})
+		}
+		return nil, connect.NewError(connect.CodePermissionDenied, "unexpected procedure: "+procedure)
+	})
+	startSpawnIPC(t, &recordingHub{}, nil, func(r *controlipc.Router) {
+		r.Hub = customHub
+	})
+
+	data := runControl(t, "workspace", "get", "id:"+wsID).Data(t)
+	assert.Equal(t, wsID, data["id"])
+	assert.Equal(t, "Alpha", data["title"])
+	assert.Equal(t, []string{leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure}, calls)
+}
+
+func TestWorkspaceMove_ValidatesPositionFlagsBeforeDialing(t *testing.T) {
+	hub := &recordingHub{}
+	startSpawnIPC(t, hub, nil)
+
+	o := runControl(t, "workspace", "move", "ws-1", "--section", "In progress", "--first", "--last")
+	o.requireFailure(t, cli.CodeUsage)
+	assert.Empty(t, hub.called())
+
+	o = runControl(t, "workspace", "move", "ws-1", "--section", "In progress", "--before", "   ")
+	o.requireFailure(t, cli.CodeUsage)
+	assert.Empty(t, hub.called())
+}
+
+type deleteGuardDispatcher struct {
+	mu                sync.Mutex
+	inspectErrCode    codes.Code
+	inspectErrorHint  string
+	workingAgent      bool
+	dirtyWorktree     bool
+	sharedPath        string
+	inspectCloseCalls int
+}
+
+func (d *deleteGuardDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+		var in leapmuxv1.ListAgentsRequest
+		_ = proto.Unmarshal(req.GetPayload(), &in)
+		state := leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
+		if d.workingAgent {
+			state = leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING
+		}
+		agents := make([]*leapmuxv1.AgentInfo, 0, len(in.GetTabIds()))
+		for _, id := range in.GetTabIds() {
+			agents = append(agents, &leapmuxv1.AgentInfo{Id: id, ActivityState: state})
+		}
+		writeProtoResponse(rw, &leapmuxv1.ListAgentsResponse{Agents: agents})
+	case leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure:
+		d.inspectCloseCalls++
+		if d.inspectErrCode != codes.OK {
+			_ = rw.SendError(int32(d.inspectErrCode), "git inspect failed")
+			return
+		}
+		var in leapmuxv1.InspectTabsCloseRequest
+		_ = proto.Unmarshal(req.GetPayload(), &in)
+		items := make([]*leapmuxv1.TabCloseInspection, 0, len(in.GetTabs()))
+		for _, tab := range in.GetTabs() {
+			item := &leapmuxv1.TabCloseInspection{Tab: tab}
+			switch {
+			case d.inspectErrorHint != "":
+				item.ErrorHint = d.inspectErrorHint
+			case d.dirtyWorktree:
+				item.ShouldPrompt = true
+				item.IsWorktree = true
+				item.BranchName = "feature/wip"
+				item.WorktreePath = d.sharedPath
+				item.GitState = &leapmuxv1.BranchGitState{HasUncommittedChanges: true}
+			default:
+				item.GitState = &leapmuxv1.BranchGitState{}
+			}
+			items = append(items, item)
+		}
+		writeProtoResponse(rw, &leapmuxv1.InspectTabsCloseResponse{Items: items})
+	default:
+		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+	}
+}
+
+func TestWorkspaceDeleteGuard_FailsClosedAndPrioritizesBusyTabs(t *testing.T) {
+	rootID := fullTestID("root-ws")
+	tabID := fullTestID("ag-guard")
+
+	buildState := func() *leapmuxv1.UserMaterialized {
+		b := newStateBuilder().
+			workspace("ws-1", rootID).
+			leafNode(rootID, "", "a0").
+			tab(tabID, rootID, leapmuxv1.TabType_TAB_TYPE_AGENT)
+		b.st.Tabs[tabID].WorkerId = &leapmuxv1.LWWString{Value: "worker-A"}
+		return b.st
+	}
+
+	t.Run("fails closed on non-unavailable InspectTabsClose error", func(t *testing.T) {
+		disp := &deleteGuardDispatcher{inspectErrCode: codes.Internal}
+		hub := &recordingHub{workers: workerRows("worker-A"), materialized: buildState()}
+		startSpawnIPC(t, hub, disp)
+
+		o := runControl(t, "workspace", "delete", "ws-1")
+		f := o.Failure(t)
+		assert.Equal(t, cli.CodeInternal, f.Code)
+		assert.Contains(t, f.Message, "git inspect failed")
+		assert.NotContains(t, hub.called(), leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure)
+	})
+
+	t.Run("fails closed on non-empty error_hint from InspectTabsClose", func(t *testing.T) {
+		disp := &deleteGuardDispatcher{
+			inspectErrorHint: "git state unavailable: dubious ownership",
+		}
+		hub := &recordingHub{workers: workerRows("worker-A"), materialized: buildState()}
+		startSpawnIPC(t, hub, disp)
+
+		o := runControl(t, "workspace", "delete", "ws-1")
+		f := o.requireFailure(t, cli.CodeUnavailable)
+		assert.Contains(t, f.Message, "dubious ownership")
+		assert.Equal(t, 1, disp.inspectCloseCalls)
+		assert.NotContains(t, hub.called(), leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure)
+	})
+
+	t.Run("busy tab takes priority over dirty worktree", func(t *testing.T) {
+		disp := &deleteGuardDispatcher{
+			workingAgent:  true,
+			dirtyWorktree: true,
+			sharedPath:    "/repo/wip",
+		}
+		hub := &recordingHub{workers: workerRows("worker-A"), materialized: buildState()}
+		startSpawnIPC(t, hub, disp)
+
+		o := runControl(t, "workspace", "delete", "ws-1")
+		f := o.requireFailure(t, cli.CodeTabBusyRefused)
+		assert.Contains(t, f.Message, "agent turn is in progress")
+		assert.NotContains(t, hub.called(), leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure)
+	})
+
+	t.Run("seenPath deduplicates per Worker while independent Workers inspect identical paths", func(t *testing.T) {
+		disp := &deleteGuardDispatcher{
+			dirtyWorktree: true,
+			sharedPath:    "/repo/same-path",
+		}
+		startSpawnIPC(t, &recordingHub{}, disp)
+		c, err := control.NewClientFromEnv("")
+		require.NoError(t, err)
+		ipcClient, ok := c.(*control.WorkerIPCClient)
+		require.True(t, ok)
+
+		// Within one Worker, two sibling tabs sharing /repo/same-path issue one
+		// InspectTabsClose call and report one deduplicated dirty reason.
+		refs := []crdt.TabRef{
+			{TabID: tabID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			{TabID: fullTestID("ag-sib"), TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		}
+		w := workerCall{ipc: ipcClient, workerID: "worker-A"}
+		dirtyA, errA := inspectTabsCloseDirtyOnChannel(t.Context(), w, refs)
+		require.NoError(t, errA)
+		require.Len(t, dirtyA, 1)
+		assert.Equal(t, 1, disp.inspectCloseCalls, "sibling tabs on the same Worker should share one InspectTabsClose RPC")
+
+		// A separate Worker invocation maintains its own seenPath map and inspects /repo/same-path again.
+		dirtyB, errB := inspectTabsCloseDirtyOnChannel(t.Context(), w, refs[:1])
+		require.NoError(t, errB)
+		require.Len(t, dirtyB, 1)
+		assert.Equal(t, 2, disp.inspectCloseCalls, "each Worker must inspect /repo/same-path independently")
 	})
 }

@@ -1695,10 +1695,10 @@ func (m *Manager) WithStateRLock(fn func(state *leapmuxv1.UserCrdtState)) {
 }
 
 // LocateTileWorkspace walks the live state from `tileID` up through
-// parent_id links and returns the workspace_id of the matching root,
-// or "" when the chain doesn't terminate at a registered workspace
-// root. Runs under m.mu.RLock so the lookup is a single synchronous
-// pass — callers don't pay a full-state clone per RPC.
+// parent_id links and returns the workspace_id of the matching workspace or
+// live floating-window root, or "" when the chain does not end at a registered
+// root. Runs under m.mu.RLock so the lookup is a single synchronous pass —
+// callers do not pay a full-state clone per RPC.
 func (m *Manager) LocateTileWorkspace(tileID string) string {
 	if tileID == "" {
 		return ""
@@ -1708,7 +1708,7 @@ func (m *Manager) LocateTileWorkspace(tileID string) string {
 	if m.state == nil {
 		return ""
 	}
-	return FindRootWorkspace(m.state.GetNodes(), m.state.GetWorkspaces(), tileID)
+	return FindRootWorkspace(m.state.GetNodes(), m.state.GetWorkspaces(), m.state.GetFloatingWindows(), tileID)
 }
 
 // SeedStateForTest runs fn against a CLONE of m.state as the sole writer and

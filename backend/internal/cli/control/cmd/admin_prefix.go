@@ -15,6 +15,12 @@ import (
 	hubservice "github.com/leapmux/leapmux/internal/hub/service"
 )
 
+// prefixResolutionLimit caps a single-page server-side id_prefix lookup. The
+// server orders prefix results by id ASC, so 21 rows suffice to see an exact
+// match at row 0, a unique match, or up to 20 ambiguous candidates without
+// multi-page scans.
+const prefixResolutionLimit = 21
+
 // isCompleteAdminID reports whether s already has the shape of a full generated
 // identifier or a standard 36-character UUID, so prefix listing can be skipped.
 func isCompleteAdminID(s string) bool {
@@ -23,195 +29,235 @@ func isCompleteAdminID(s string) bool {
 
 // resolveAdminIDPrefix resolves an admin entity target that supports title
 // matching (such as apps, API tokens, and sign-in providers).
-func resolveAdminIDPrefix(ctx context.Context, raw, kind string, list func(context.Context) ([]cli.Candidate, error)) (string, error) {
+func resolveAdminIDPrefix(ctx context.Context, raw, kind string, list func(ctx context.Context, idPrefix string) ([]cli.Candidate, error)) (string, error) {
 	return resolveAdminTarget(ctx, raw, kind, true, list)
 }
 
 // resolveAdminTarget resolves an admin entity target that may be a full ID,
-// an explicit "id:<literal>" value, a unique ID prefix of at least
-// resolve.MinPrefixLength characters, or (when allowTitleMatch is true) a
-// "name:<name>"/"title:<title>" selector or bare case-insensitive title match.
-// Full IDs and literal "id:" values skip listing completely so exact lookups
-// cost no extra round trip.
+// an explicit "id:<id>" selector (exact ID at any length or unique ID prefix
+// of at least resolve.MinPrefixLength characters, never matching titles), a
+// bare unique ID prefix of at least resolve.MinPrefixLength characters, or
+// (when allowTitleMatch is true) a "name:<name>"/"title:<title>" selector or
+// bare case-insensitive title match. Complete IDs skip listing completely so
+// exact lookups cost no extra round trip.
 func resolveAdminTarget(
 	ctx context.Context,
 	raw, kind string,
 	allowTitleMatch bool,
-	list func(context.Context) ([]cli.Candidate, error),
+	list func(ctx context.Context, idPrefix string) ([]cli.Candidate, error),
 ) (string, error) {
-	id, matched, err := matchAdminTarget(ctx, raw, kind, allowTitleMatch, list)
-	if err != nil {
-		return "", err
-	}
-	if !matched {
-		trimmed := strings.TrimSpace(raw)
-		if name, ok := strings.CutPrefix(trimmed, "name:"); ok {
-			return "", cli.Newf(cli.CodeNotFound, "no %s matches %q", kind, strings.TrimSpace(name))
-		}
-		if title, ok := strings.CutPrefix(trimmed, "title:"); ok {
-			return "", cli.Newf(cli.CodeNotFound, "no %s matches %q", kind, strings.TrimSpace(title))
-		}
-	}
-	return id, nil
+	return resolveAdminTargetAcrossPasses(ctx, raw, kind, allowTitleMatch, []func(context.Context, string) ([]cli.Candidate, error){list})
 }
 
-// matchAdminTarget resolves raw against list and reports whether a candidate
-// (or a complete/explicit ID) matched. Callers that query live entries before
-// falling back to historical rows use matched=false to trigger the second pass.
-func matchAdminTarget(
+func resolveAdminTargetAcrossPasses(
 	ctx context.Context,
 	raw, kind string,
 	allowTitleMatch bool,
-	list func(context.Context) ([]cli.Candidate, error),
-) (string, bool, error) {
+	passes []func(ctx context.Context, idPrefix string) ([]cli.Candidate, error),
+) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if literal, ok := strings.CutPrefix(trimmed, "id:"); ok {
 		literal = strings.TrimSpace(literal)
 		if literal == "" {
-			return "", false, cli.Usagef(`"id:" needs an id after the colon`)
+			return "", cli.Usagef(`"id:" needs an id after the colon`)
 		}
-		return literal, true, nil
+		if isCompleteAdminID(literal) {
+			return literal, nil
+		}
+		for _, list := range passes {
+			candidates, err := list(ctx, literal)
+			if err != nil {
+				return "", err
+			}
+			id, matched, err := pickAdminIDPrefixMatch(candidates, literal, kind)
+			if err != nil || matched {
+				return id, err
+			}
+		}
+		// Let the direct RPC produce the hub's canonical not_found error.
+		return literal, nil
 	}
 	if name, ok := strings.CutPrefix(trimmed, "name:"); ok {
 		if !allowTitleMatch {
-			return "", false, cli.Usagef(`%s targets do not support "name:" selectors; specify an id or unique id prefix`, kind)
+			return "", cli.Usagef(`%s targets do not support "name:" selectors; specify an id or unique id prefix`, kind)
 		}
-		return matchAdminByTitle(ctx, name, "name:", kind, list)
+		return resolveAdminByTitleAcrossPasses(ctx, name, "name:", kind, passes)
 	}
 	if title, ok := strings.CutPrefix(trimmed, "title:"); ok {
 		if !allowTitleMatch {
-			return "", false, cli.Usagef(`%s targets do not support "title:" selectors; specify an id or unique id prefix`, kind)
+			return "", cli.Usagef(`%s targets do not support "title:" selectors; specify an id or unique id prefix`, kind)
 		}
-		return matchAdminByTitle(ctx, title, "title:", kind, list)
+		return resolveAdminByTitleAcrossPasses(ctx, title, "title:", kind, passes)
 	}
 	if isCompleteAdminID(trimmed) || trimmed == "" {
-		return trimmed, true, nil
+		return trimmed, nil
 	}
-	candidates, err := list(ctx)
-	if err != nil {
-		return "", false, err
-	}
-	var idMatches []cli.Candidate
-	var titleMatches []cli.Candidate
-	for _, c := range candidates {
-		if c.ID == trimmed {
-			return c.ID, true, nil
+
+	// Query server-side id_prefix first when trimmed can be an ID prefix.
+	// Across live-then-all passes, check live id_prefix then historical
+	// id_prefix before falling back to full-table scans for title matching.
+	if len(trimmed) >= resolve.MinPrefixLength && resolve.IsBareIDPrefixCandidate(trimmed) {
+		for _, list := range passes {
+			candidates, err := list(ctx, trimmed)
+			if err != nil {
+				return "", err
+			}
+			id, matched, err := pickAdminIDPrefixMatch(candidates, trimmed, kind)
+			if err != nil || matched {
+				return id, err
+			}
 		}
-		if len(trimmed) >= resolve.MinPrefixLength && strings.HasPrefix(c.ID, trimmed) {
-			idMatches = append(idMatches, c)
+	}
+
+	if !allowTitleMatch {
+		// Fall through to the direct RPC so the hub produces its canonical
+		// not_found error (and synthetic test IDs still reach the server).
+		return trimmed, nil
+	}
+
+	for _, list := range passes {
+		candidates, err := list(ctx, "")
+		if err != nil {
+			return "", err
 		}
-		if allowTitleMatch && c.Title != "" && strings.EqualFold(c.Title, trimmed) {
-			titleMatches = append(titleMatches, c)
+		var titleMatches []cli.Candidate
+		for _, c := range candidates {
+			if c.ID == trimmed {
+				return c.ID, nil
+			}
+			if c.Title != "" && strings.EqualFold(c.Title, trimmed) {
+				titleMatches = append(titleMatches, c)
+			}
 		}
-	}
-	if len(idMatches) == 1 {
-		return idMatches[0].ID, true, nil
-	}
-	if len(idMatches) > 1 {
-		sort.Slice(idMatches, func(i, j int) bool { return idMatches[i].ID < idMatches[j].ID })
-		e := cli.Newf(cli.CodeAmbiguousTarget, "%d %ss match the id prefix %s", len(idMatches), kind, trimmed).
-			WithHint("type more characters of the id, or the full id")
-		e.Candidates = idMatches
-		return "", false, e
-	}
-	if allowTitleMatch {
 		if len(titleMatches) == 1 {
-			return titleMatches[0].ID, true, nil
+			return titleMatches[0].ID, nil
 		}
 		if len(titleMatches) > 1 {
 			sort.Slice(titleMatches, func(i, j int) bool { return titleMatches[i].ID < titleMatches[j].ID })
 			e := cli.Newf(cli.CodeAmbiguousTarget, "%d %ss match %q", len(titleMatches), kind, trimmed).
 				WithHint("specify an id or unique prefix instead")
 			e.Candidates = titleMatches
-			return "", false, e
+			return "", e
 		}
 	}
 	// Fall through to the direct RPC so the hub produces its canonical
 	// not_found error (and synthetic test IDs still reach the server).
-	return trimmed, false, nil
+	return trimmed, nil
 }
 
-func matchAdminByTitle(
-	ctx context.Context,
-	raw, prefix, kind string,
-	list func(context.Context) ([]cli.Candidate, error),
-) (string, bool, error) {
-	want := strings.TrimSpace(raw)
-	if want == "" {
-		return "", false, cli.Usagef(`%q needs a value after the colon`, prefix)
+func pickAdminIDPrefixMatch(candidates []cli.Candidate, prefix, kind string) (string, bool, error) {
+	match, ambiguous, ok := lookupByIDPrefixMin(candidates, prefix, resolve.MinPrefixLength, func(c cli.Candidate) string {
+		return c.ID
+	})
+	if ok {
+		return match.ID, true, nil
 	}
-	candidates, err := list(ctx)
-	if err != nil {
-		return "", false, err
-	}
-	var matches []cli.Candidate
-	for _, c := range candidates {
-		if c.Title != "" && strings.EqualFold(c.Title, want) {
-			matches = append(matches, c)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return "", false, nil
-	case 1:
-		return matches[0].ID, true, nil
-	default:
-		sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
-		e := cli.Newf(cli.CodeAmbiguousTarget, "%d %ss match %q", len(matches), kind, want).
-			WithHint("specify an id or unique prefix instead")
-		e.Candidates = matches
+	if len(ambiguous) > 1 {
+		sort.Slice(ambiguous, func(i, j int) bool { return ambiguous[i].ID < ambiguous[j].ID })
+		e := cli.Newf(cli.CodeAmbiguousTarget, "%d %ss match the id prefix %s", len(ambiguous), kind, prefix).
+			WithHint("type more characters of the id, or the full id")
+		e.Candidates = ambiguous
 		return "", false, e
 	}
+	return "", false, nil
 }
 
-// resolvePagedAdminID resolves raw against a keyset-paginated admin listing.
+func resolveAdminByTitleAcrossPasses(
+	ctx context.Context,
+	raw, prefix, kind string,
+	passes []func(ctx context.Context, idPrefix string) ([]cli.Candidate, error),
+) (string, error) {
+	want := strings.TrimSpace(raw)
+	if want == "" {
+		return "", cli.Usagef(`%q needs a value after the colon`, prefix)
+	}
+	for _, list := range passes {
+		candidates, err := list(ctx, "")
+		if err != nil {
+			return "", err
+		}
+		var matches []cli.Candidate
+		for _, c := range candidates {
+			if c.Title != "" && strings.EqualFold(c.Title, want) {
+				matches = append(matches, c)
+			}
+		}
+		switch len(matches) {
+		case 0:
+			continue
+		case 1:
+			return matches[0].ID, nil
+		default:
+			sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
+			e := cli.Newf(cli.CodeAmbiguousTarget, "%d %ss match %q", len(matches), kind, want).
+				WithHint("specify an id or unique prefix instead")
+			e.Candidates = matches
+			return "", e
+		}
+	}
+	return "", cli.Newf(cli.CodeNotFound, "no %s matches %q", kind, want)
+}
+
+// resolvePagedAdminID resolves raw against a keyset-paginated admin listing,
+// issuing a single capped page request when a server-side id_prefix query
+// applies and scanning all pages only for title fallbacks.
 func resolvePagedAdminID[T any](
 	ctx context.Context,
 	noun, raw string,
 	allowTitleMatch bool,
-	fetchPage func(ctx context.Context, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error),
+	fetchPage func(ctx context.Context, idPrefix string, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error),
 	keyOf func(T) string,
 	toCandidate func(T) cli.Candidate,
 ) (string, error) {
-	return resolveAdminTarget(ctx, raw, noun, allowTitleMatch, func(ctx context.Context) ([]cli.Candidate, error) {
-		return fetchPagedAdminCandidates(ctx, fetchPage, keyOf, toCandidate)
+	return resolveAdminTarget(ctx, raw, noun, allowTitleMatch, func(ctx context.Context, idPrefix string) ([]cli.Candidate, error) {
+		return fetchPagedAdminCandidates(ctx, idPrefix, fetchPage, keyOf, toCandidate)
 	})
 }
 
-// resolveLiveThenAllPagedAdminID queries live entries first and scans
-// historical rows only when no live entry matched, avoiding full scans of
-// revoked or expired rows and preventing dead rows from colliding with a live
-// prefix.
+// resolveLiveThenAllPagedAdminID queries live entries first and falls back to
+// historical rows only when no live entry matched, avoiding scans of revoked
+// or expired rows and preventing dead rows from colliding with a live prefix.
 func resolveLiveThenAllPagedAdminID[T any](
 	ctx context.Context,
 	noun, raw string,
 	allowTitleMatch bool,
-	fetchPage func(ctx context.Context, includeHistorical bool, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error),
+	fetchPage func(ctx context.Context, includeHistorical bool, idPrefix string, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error),
 	keyOf func(T) string,
 	toCandidate func(T) cli.Candidate,
 ) (string, error) {
-	id, matched, err := matchAdminTarget(ctx, raw, noun, allowTitleMatch, func(ctx context.Context) ([]cli.Candidate, error) {
-		return fetchPagedAdminCandidates(ctx, func(ctx context.Context, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error) {
-			return fetchPage(ctx, false, page)
-		}, keyOf, toCandidate)
-	})
-	if err != nil || matched {
-		return id, err
+	passes := []func(context.Context, string) ([]cli.Candidate, error){
+		func(ctx context.Context, idPrefix string) ([]cli.Candidate, error) {
+			return fetchPagedAdminCandidates(ctx, idPrefix, func(ctx context.Context, prefix string, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error) {
+				return fetchPage(ctx, false, prefix, page)
+			}, keyOf, toCandidate)
+		},
+		func(ctx context.Context, idPrefix string) ([]cli.Candidate, error) {
+			return fetchPagedAdminCandidates(ctx, idPrefix, func(ctx context.Context, prefix string, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error) {
+				return fetchPage(ctx, true, prefix, page)
+			}, keyOf, toCandidate)
+		},
 	}
-	return resolvePagedAdminID(ctx, noun, raw, allowTitleMatch, func(ctx context.Context, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error) {
-		return fetchPage(ctx, true, page)
-	}, keyOf, toCandidate)
+	return resolveAdminTargetAcrossPasses(ctx, raw, noun, allowTitleMatch, passes)
 }
 
 func fetchPagedAdminCandidates[T any](
 	ctx context.Context,
-	fetchPage func(ctx context.Context, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error),
+	idPrefix string,
+	fetchPage func(ctx context.Context, idPrefix string, page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error),
 	keyOf func(T) string,
 	toCandidate func(T) cli.Candidate,
 ) ([]cli.Candidate, error) {
-	rows, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error) {
-		return fetchPage(ctx, page)
-	}, keyOf)
+	var (
+		rows []T
+		err  error
+	)
+	if idPrefix != "" {
+		rows, _, err = fetchPage(ctx, idPrefix, &leapmuxv1.PageRequest{Limit: prefixResolutionLimit})
+	} else {
+		rows, err = readAllPages(func(page *leapmuxv1.PageRequest) ([]T, *leapmuxv1.PageResponse, error) {
+			return fetchPage(ctx, "", page)
+		}, keyOf)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +300,7 @@ func parseAdminUserTarget(raw string) (adminUserTarget, error) {
 	if isCompleteAdminID(trimmed) {
 		return adminUserTarget{selector: hubservice.SelectUserByID(trimmed)}, nil
 	}
-	if len(trimmed) >= resolve.MinPrefixLength {
+	if len(trimmed) >= resolve.MinPrefixLength && resolve.IsBareIDPrefixCandidate(trimmed) {
 		return adminUserTarget{selector: sel, prefix: trimmed}, nil
 	}
 	return adminUserTarget{selector: sel}, nil
@@ -273,8 +319,8 @@ func isAdminUserNotFound(err error) bool {
 // callWithAdminUserTarget invokes call with the parsed user selector first,
 // costing zero extra RPCs for exact usernames and exact IDs. When target is
 // unset, it invokes call(nil) directly. When the Hub reports NotFound and
-// target carries an ID prefix, it scans AdminUserService.ListUsers and retries
-// with the resolved full ID.
+// target carries an ID prefix, it queries AdminUserService.ListUsers with
+// id_prefix and retries with the resolved full ID.
 func callWithAdminUserTarget[T any](
 	ctx context.Context,
 	c *control.HubClient,
@@ -303,14 +349,14 @@ func matchAdminUserIDPrefix(ctx context.Context, c *control.HubClient, prefix st
 	if c == nil {
 		return "", nil
 	}
-	users, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminUser, *leapmuxv1.PageResponse, error) {
-		resp, err := c.AdminUserService().ListUsers(ctx, &leapmuxv1.ListUsersRequest{Page: page})
-		return resp.GetUsers(), resp.GetPage(), err
-	}, (*leapmuxv1.AdminUser).GetId)
+	resp, err := c.AdminUserService().ListUsers(ctx, &leapmuxv1.ListUsersRequest{
+		IdPrefix: prefix,
+		Page:     &leapmuxv1.PageRequest{Limit: prefixResolutionLimit},
+	})
 	if err != nil {
 		return "", err
 	}
-	matched, ambiguous, ok := lookupByIDPrefixMin(users, prefix, resolve.MinPrefixLength, (*leapmuxv1.AdminUser).GetId)
+	matched, ambiguous, ok := lookupByIDPrefixMin(resp.GetUsers(), prefix, resolve.MinPrefixLength, (*leapmuxv1.AdminUser).GetId)
 	if ok {
 		return matched.GetId(), nil
 	}

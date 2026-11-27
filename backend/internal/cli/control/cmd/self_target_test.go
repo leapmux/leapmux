@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -148,4 +149,23 @@ func TestGuardLayoutClose(t *testing.T) {
 			assert.Contains(t, reported.Error["hints"], "--allow-self")
 		})
 	}
+}
+
+func TestGuardWorkspaceDelete_UsesHubClientURLInAuthHint(t *testing.T) {
+	hub := &recordingHub{
+		locateTabErr: connect.NewError(connect.CodeUnauthenticated, "expired session"),
+	}
+	h := startHubChannelHarness(t, hub, &closeDispatcher{})
+	t.Setenv("LEAPMUX_CONTROL_TAB_ID", "agent-1")
+
+	client, err := control.NewClientForHub(h.url)
+	require.NoError(t, err)
+	client.SetErrorDecorator(decoratePeerError)
+	err = guardWorkspaceDelete(t.Context(), client, "ws-1", false)
+	require.Error(t, err)
+	ce := cli.FromError(err)
+	assert.Equal(t, cli.CodeNotLoggedIn, ce.Code)
+	wantHint := fmt.Sprintf(`run "leapmux auth login --hub %s" to sign in again`, client.HubURL)
+	assert.Equal(t, 1, countStrings(ce.Hints, wantHint), "auth login hint must appear once without duplication")
+	assert.Contains(t, ce.Hints, "pass --allow-self to delete the workspace even if the command cannot verify the calling tab's location")
 }

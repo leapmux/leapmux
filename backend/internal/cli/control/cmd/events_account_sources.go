@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
 func (r *accountReplay) startWorker(key workerHistoryKey, previouslyWatching bool) {
@@ -36,7 +37,7 @@ func (r *accountReplay) startWorker(key workerHistoryKey, previouslyWatching boo
 }
 
 func (r *accountReplay) workerPosition(key workerHistoryKey) *eventHistoryPosition {
-	return r.state.Account.Workers[key.id][tabTypeName(key.tabType)]
+	return r.state.Account.Workers[key.id][resolve.TabTypeWireName(key.tabType)]
 }
 
 const accountWorkerScanFrames = 128
@@ -302,7 +303,7 @@ func (r *accountReplay) workerFailed(watch *accountWorkerWatch, failure *cli.Err
 
 func (r *accountReplay) workerNotice(watch *accountWorkerWatch, kind, summary string) streamEvent {
 	event := r.notice(kind, summary)
-	event.Source, event.WorkerID, event.TabType = "worker", watch.key.id, tabTypeName(watch.key.tabType)
+	event.Source, event.WorkerID, event.TabType = "worker", watch.key.id, resolve.TabTypeWireName(watch.key.tabType)
 	return event
 }
 
@@ -322,7 +323,7 @@ func (r *accountReplay) acceptWorkerFrame(watch *accountWorkerWatch, frame *leap
 		return false, err
 	}
 	if !isGap && !r.opts.filter.selects(event.Kind) {
-		r.state.Account.Workers[watch.key.id][tabTypeName(watch.key.tabType)] = next
+		r.state.Account.Workers[watch.key.id][resolve.TabTypeWireName(watch.key.tabType)] = next
 		r.dirty = true
 		return false, nil
 	}
@@ -406,7 +407,7 @@ func (r *accountReplay) workerEvent(watch *accountWorkerWatch, position *eventHi
 }
 
 func (r *accountReplay) saveWorkerPosition(key workerHistoryKey, position *eventHistoryPosition) error {
-	r.state.Account.Workers[key.id][tabTypeName(key.tabType)] = position
+	r.state.Account.Workers[key.id][resolve.TabTypeWireName(key.tabType)] = position
 	return r.saveStateNow()
 }
 

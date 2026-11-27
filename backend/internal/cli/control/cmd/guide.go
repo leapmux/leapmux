@@ -2,6 +2,7 @@ package cmd
 
 import (
 	_ "embed"
+	"encoding/json"
 	"io"
 	"regexp"
 	"strings"
@@ -126,5 +127,5 @@ func (g guideText) RenderText(w io.Writer) error {
 // MarshalJSON encodes the guide as {"guide": "<markdown>"}, so the result is
 // an object like every other result.
 func (g guideText) MarshalJSON() ([]byte, error) {
-	return jsonObject("guide", string(g))
+	return json.Marshal(map[string]string{"guide": string(g)})
 }

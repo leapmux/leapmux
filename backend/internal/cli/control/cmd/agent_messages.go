@@ -76,7 +76,7 @@ func runAgentMessages(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	timed := s.bounded()
+	timed := s.timed()
 	defer timed.Close()
 	got, err := timed.resolveTab(resolve.KindAgent, agentArg, resolve.Need{WorkerID: true})
 	if err != nil {

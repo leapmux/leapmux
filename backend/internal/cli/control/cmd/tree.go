@@ -4,11 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"slices"
 	"sort"
 	"strings"
-	"sync"
 
+	"connectrpc.com/connect/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"golang.org/x/sync/errgroup"
@@ -16,7 +15,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
@@ -129,13 +127,7 @@ func (r treeResult) RenderText(w io.Writer) error {
 			}
 		}
 		for wIdx, ws := range sec.Workspaces {
-			wsLast := wIdx == len(sec.Workspaces)-1
-			wsConn := "├─ "
-			wsPrefix := "│  "
-			if wsLast {
-				wsConn = "└─ "
-				wsPrefix = "   "
-			}
+			wsConn, wsPrefix := treeBranch("", wIdx == len(sec.Workspaces)-1)
 			header := fmt.Sprintf("%sworkspace %s  %q", wsConn, cli.ShortID(ws.ID), cli.SanitizeSingleLine(ws.Title))
 			if ws.Archived {
 				header += " [archived]"
@@ -147,13 +139,7 @@ func (r treeResult) RenderText(w io.Writer) error {
 				return err
 			}
 			for tIdx, tile := range ws.Tiles {
-				tileLast := tIdx == len(ws.Tiles)-1
-				tileConn := "├─ "
-				tilePrefix := wsPrefix + "│  "
-				if tileLast {
-					tileConn = "└─ "
-					tilePrefix = wsPrefix + "   "
-				}
+				tileConn, tilePrefix := treeBranch(wsPrefix, tIdx == len(ws.Tiles)-1)
 				kind := "tile"
 				if tile.Floating {
 					kind = "floating tile"
@@ -168,29 +154,16 @@ func (r treeResult) RenderText(w io.Writer) error {
 		}
 	}
 	if r.ArchivedWorkspaces > 0 {
-		if _, err := fmt.Fprintf(w, "Archived (%d %s; pass --archived to show)\n", r.ArchivedWorkspaces, pluralizeWord(r.ArchivedWorkspaces, "workspace", "workspaces")); err != nil {
+		if _, err := fmt.Fprintf(w, "Archived (%s; pass --archived to show)\n", pluralize(r.ArchivedWorkspaces, "workspace")); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func pluralizeWord(n int, singular, plural string) string {
-	if n == 1 {
-		return singular
-	}
-	return plural
-}
-
 func renderTreeTabs(w io.Writer, tabs []treeTab, prefix string) error {
 	for i, tab := range tabs {
-		last := i == len(tabs)-1
-		conn := "├─ "
-		childPrefix := prefix + "│  "
-		if last {
-			conn = "└─ "
-			childPrefix = prefix + "   "
-		}
+		conn, childPrefix := treeBranch(prefix, i == len(tabs)-1)
 		line := prefix + conn + formatTreeTabLine(tab)
 		if _, err := fmt.Fprintln(w, line); err != nil {
 			return err
@@ -238,6 +211,27 @@ func formatTreeTabLine(tab treeTab) string {
 	return strings.Join(parts, "  ")
 }
 
+type treeTileKey struct {
+	wsID, tileID string
+}
+
+type treeSnapshot struct {
+	workspaces     []*leapmuxv1.Workspace
+	sections       []*leapmuxv1.Section
+	sectionIdx     *sectionIndex
+	tabs           []*leapmuxv1.WorkspaceTab
+	wdata          workerTabData
+	floatingTiles  map[string]bool
+	workerFilterID string
+	archivedHidden int
+}
+
+type assembledTreeTabs struct {
+	flatRows      []treeTab
+	tabsByTile    map[treeTileKey][]treeTab
+	tileOrderByWS map[string][]string
+}
+
 func runFleetTree(inv *cli.Invocation) (any, error) {
 	s, err := openSession(inv)
 	if err != nil {
@@ -245,43 +239,88 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 	}
 	defer s.Close()
 
+	flat := boolFlag(inv, "flat")
+	snap, err := fetchTreeSnapshot(s, inv, flat)
+	if err != nil {
+		return nil, err
+	}
+	assembled := assembleTreeTabs(snap.tabs, snap.wdata, callingTabID())
+	if flat {
+		return struct {
+			Tabs []treeTab `json:"tabs"`
+		}{Tabs: assembled.flatRows}, nil
+	}
+	return groupTreeSections(
+		snap.workspaces,
+		snap.sections,
+		snap.sectionIdx,
+		assembled,
+		snap.floatingTiles,
+		snap.workerFilterID != "",
+		snap.archivedHidden,
+	), nil
+}
+
+// fetchTreeSnapshot gathers the Hub workspace/section lists, optional worker
+// filter resolution, visible tabs, Worker-side details, and (in hierarchy
+// mode) floating-window tiles with independent RPCs overlapped.
+func fetchTreeSnapshot(s *session, inv *cli.Invocation, flat bool) (treeSnapshot, error) {
+	var (
+		wsResp         leapmuxv1.ListWorkspacesResponse
+		secResp        leapmuxv1.ListSectionsResponse
+		workerFilterID string
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		return hubCallUnary(gctx, s.c, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, &leapmuxv1.ListWorkspacesRequest{}, &wsResp)
+	})
+	g.Go(func() error {
+		err := hubCallUnary(gctx, s.c, leapmuxv1connect.SectionServiceListSectionsProcedure, &leapmuxv1.ListSectionsRequest{}, &secResp)
+		// Match loadArchivedSectionIndex: tolerate PermissionDenied from a
+		// narrow delegation bearer that cannot read sidebar sections, while
+		// propagating every other Hub or transport failure.
+		if err != nil && connect.CodeOf(err) != connect.CodePermissionDenied {
+			return err
+		}
+		return nil
+	})
+	if inv.Changed("worker") {
+		workerInput := stringFlag(inv, "worker")
+		if workerInput == "" {
+			workerInput = resolve.SelfTarget
+		}
+		g.Go(func() error {
+			w, err := resolve.Canonical(gctx, s.listing(), resolve.KindWorker, workerInput)
+			if err != nil {
+				return err
+			}
+			workerFilterID = w.ID
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return treeSnapshot{}, err
+	}
+
 	var wsFilterID string
 	if inv.Changed("workspace") {
-		ws, err := s.resolveOne(resolve.KindWorkspace, stringFlag(inv, "workspace"))
+		listing := s.listing()
+		listing.Workspaces = func(context.Context) ([]*leapmuxv1.Workspace, error) {
+			return wsResp.GetWorkspaces(), nil
+		}
+		listing.WorkspacesByIDPrefix = nil
+		wsInput := stringFlag(inv, "workspace")
+		if wsInput == "" {
+			wsInput = resolve.SelfTarget
+		}
+		ws, err := resolve.Canonical(s.ctx, listing, resolve.KindWorkspace, wsInput)
 		if err != nil {
-			return nil, err
+			return treeSnapshot{}, err
 		}
 		wsFilterID = ws.ID
 	}
-	var workerFilterID string
-	if inv.Changed("worker") {
-		w, err := s.resolveOne(resolve.KindWorker, stringFlag(inv, "worker"))
-		if err != nil {
-			return nil, err
-		}
-		workerFilterID = w.ID
-	}
 
-	var wsResp leapmuxv1.ListWorkspacesResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, &leapmuxv1.ListWorkspacesRequest{}, &wsResp); err != nil {
-		return nil, err
-	}
-
-	// Best-effort sidebar sections for grouping, ordering, and archive detection.
-	var secResp leapmuxv1.ListSectionsResponse
-	_ = hubCallUnary(s.ctx, s.c, leapmuxv1connect.SectionServiceListSectionsProcedure, &leapmuxv1.ListSectionsRequest{}, &secResp)
-
-	sectionByID := map[string]*leapmuxv1.Section{}
-	for _, sec := range secResp.GetSections() {
-		sectionByID[sec.GetId()] = sec
-	}
-	wsSection := map[string]*leapmuxv1.Section{}
-	for _, item := range secResp.GetItems() {
-		if sec, ok := sectionByID[item.GetSectionId()]; ok {
-			wsSection[item.GetWorkspaceId()] = sec
-		}
-	}
-
+	secIdx := indexSections(&secResp)
 	includeArchived := boolFlag(inv, "archived")
 	var workspaces []*leapmuxv1.Workspace
 	archivedHidden := 0
@@ -289,9 +328,7 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 		if wsFilterID != "" && ws.GetId() != wsFilterID {
 			continue
 		}
-		sec := wsSection[ws.GetId()]
-		isArchived := sec != nil && sec.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
-		if isArchived && !includeArchived && wsFilterID == "" {
+		if secIdx.isArchived(ws.GetId()) && !includeArchived && wsFilterID == "" {
 			archivedHidden++
 			continue
 		}
@@ -302,59 +339,108 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 	for _, ws := range workspaces {
 		wsIDs = append(wsIDs, ws.GetId())
 	}
-	var tabs []*leapmuxv1.WorkspaceTab
+
+	var (
+		tabs          []*leapmuxv1.WorkspaceTab
+		wdata         workerTabData
+		floatingTiles map[string]bool
+	)
 	if len(wsIDs) > 0 {
-		tabs, err = listTabsInWorkspaces(s.ctx, s.c, wsIDs)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if workerFilterID != "" {
-		filtered := make([]*leapmuxv1.WorkspaceTab, 0, len(tabs))
-		for _, t := range tabs {
-			if t.GetWorkerId() == workerFilterID {
-				filtered = append(filtered, t)
+		g2, g2ctx := errgroup.WithContext(s.ctx)
+		g2.Go(func() error {
+			var err error
+			tabs, err = listTabsInWorkspaces(g2ctx, s.c, wsIDs)
+			if err != nil {
+				return err
 			}
-		}
-		tabs = filtered
-	}
-
-	// Best-effort CRDT bootstrap to identify floating-window tiles accurately.
-	floatingTiles := map[string]bool{}
-	if len(wsIDs) > 0 {
-		if bs, berr := crdtBootstrap(s.ctx, s.c, wsIDs); berr == nil && bs != nil && bs.State != nil {
-			for _, fw := range bs.State.GetFloatingWindows() {
-				if fw == nil || !crdt.HLCIsZero(fw.GetTombstoneAt()) {
-					continue
-				}
-				rootID := fw.GetRootNodeId()
-				if rootID == "" {
-					continue
-				}
-				floatingTiles[rootID] = true
-				for _, nid := range crdt.DescendantsLeavesFirst(bs.State, rootID) {
-					floatingTiles[nid] = true
-				}
+			if workerFilterID != "" {
+				tabs = filterTabsByWorker(tabs, workerFilterID)
 			}
+			wdata = fetchWorkerTabData(g2ctx, s.c, tabs, workerTabDataOptions{
+				IncludeDescendants:       true,
+				IncludeTerminalProcesses: true,
+				IncludeControlRequests:   true,
+				IncludeWorkerNames:       true,
+			})
+			return nil
+		})
+		if !flat {
+			g2.Go(func() error {
+				// Best-effort CRDT bootstrap to identify floating-window tiles accurately.
+				if bs, berr := crdtBootstrap(g2ctx, s.c, wsIDs); berr == nil && bs != nil && bs.State != nil {
+					floatingTiles = collectFloatingTiles(bs.State)
+				}
+				return nil
+			})
+		}
+		if err := g2.Wait(); err != nil {
+			return treeSnapshot{}, err
 		}
 	}
 
-	// Fetch all Worker-side data (agents + descendants, terminals, processes,
-	// viewer titles, worker names, and pending control requests) over ONE
-	// Noise_NK channel per Worker.
-	wdata := fetchTreeWorkerData(s.ctx, s.c, tabs)
-	selfTab := callingTabID()
+	return treeSnapshot{
+		workspaces:     workspaces,
+		sections:       secResp.GetSections(),
+		sectionIdx:     secIdx,
+		tabs:           tabs,
+		wdata:          wdata,
+		floatingTiles:  floatingTiles,
+		workerFilterID: workerFilterID,
+		archivedHidden: archivedHidden,
+	}, nil
+}
 
+// collectFloatingTiles returns every live tile node ID belonging to a live
+// floating window, building the parent-to-children index once.
+func collectFloatingTiles(state *leapmuxv1.UserMaterialized) map[string]bool {
+	floating := map[string]bool{}
+	fws := state.GetFloatingWindows()
+	if len(fws) == 0 {
+		return floating
+	}
+	children := crdt.LiveChildrenByParent(state)
+	nodes := state.GetNodes()
+	for _, fw := range fws {
+		if fw == nil || !crdt.HLCIsZero(fw.GetTombstoneAt()) {
+			continue
+		}
+		rootID := fw.GetRootNodeId()
+		if rootID == "" {
+			continue
+		}
+		floating[rootID] = true
+		root := nodes[rootID]
+		if root == nil || !crdt.HLCIsZero(root.GetTombstoneAt()) {
+			continue
+		}
+		stack := append([]string(nil), children[rootID]...)
+		for len(stack) > 0 {
+			nid := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if floating[nid] {
+				continue
+			}
+			floating[nid] = true
+			stack = append(stack, children[nid]...)
+		}
+	}
+	return floating
+}
+
+// assembleTreeTabs joins Hub tab placements with Worker-side details, links
+// opened and unopened subagent chains across arbitrary depth, and returns both
+// the flat row list and the per-tile hierarchical trees.
+func assembleTreeTabs(tabs []*leapmuxv1.WorkspaceTab, wdata workerTabData, selfTab string) assembledTreeTabs {
 	tabByID := make(map[string]*treeTab, len(tabs))
 	tabWorkspace := make(map[string]string, len(tabs))
-	flatRows := make([]treeTab, 0, len(tabs))
+	openedOrder := make([]string, 0, len(tabs))
 
 	for _, t := range tabs {
 		id := t.GetTab().GetTabId()
 		d := wdata.details[id]
 		row := treeTab{
 			ID:              id,
-			Type:            tabTypeName(t.GetTab().GetTabType()),
+			Type:            resolve.TabTypeWireName(t.GetTab().GetTabType()),
 			Title:           d.Title,
 			State:           d.State,
 			Worker:          wdata.workerNames[t.GetWorkerId()],
@@ -383,24 +469,57 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 		rowCopy := row
 		tabByID[id] = &rowCopy
 		tabWorkspace[id] = t.GetWorkspaceId()
-		flatRows = append(flatRows, row)
+		openedOrder = append(openedOrder, id)
 	}
 
-	// Include unopened descendant subagents returned by IncludeDescendants=true.
+	// Resolve workspace IDs transitively along ParentAgentId so 3+-level chains
+	// with unopened intermediates (A -> B (unopened) -> C) inherit A's workspace
+	// regardless of Go map iteration order.
+	resolvedWS := make(map[string]string, len(wdata.details))
+	resolving := map[string]bool{}
+	var resolveWorkspace func(id string) string
+	resolveWorkspace = func(id string) string {
+		if ws, ok := tabWorkspace[id]; ok {
+			return ws
+		}
+		if ws, ok := resolvedWS[id]; ok {
+			return ws
+		}
+		if resolving[id] {
+			return ""
+		}
+		det, ok := wdata.details[id]
+		if !ok || det.Agent == nil {
+			return ""
+		}
+		parentID := det.Agent.GetParentAgentId()
+		if parentID == "" || parentID == id {
+			return ""
+		}
+		resolving[id] = true
+		ws := resolveWorkspace(parentID)
+		delete(resolving, id)
+		resolvedWS[id] = ws
+		return ws
+	}
+
+	// Include unopened descendant subagents returned by IncludeDescendants=true
+	// and mark opened subagents before materializing flatRows.
 	childIDsByParent := map[string][]string{}
 	nestedChild := map[string]bool{}
-	var unopenedFlat []treeTab
+	var unopenedIDs []string
 	for aid, det := range wdata.details {
 		if det.Agent == nil {
 			continue
 		}
 		parentID := det.Agent.GetParentAgentId()
-		if parentID == "" {
+		if parentID == "" || parentID == aid {
 			continue
 		}
 		if _, hasParent := wdata.details[parentID]; !hasParent {
 			continue
 		}
+		parentWS := resolveWorkspace(parentID)
 		if _, exists := tabByID[aid]; !exists {
 			wkID := wdata.agentWorker[aid]
 			wkName := wdata.workerNames[wkID]
@@ -415,14 +534,18 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 				State:           det.State,
 				Worker:          wkName,
 				WorkerID:        wkID,
-				WorkspaceID:     tabWorkspace[parentID],
+				WorkspaceID:     parentWS,
 				Here:            selfTab != "" && aid == selfTab,
 				PendingRequests: wdata.pendingReqs[aid],
 			}
+			if g := det.Agent.GetGitStatus(); g != nil {
+				row.Branch = g.GetBranch()
+				row.Dirty = gitRepoIsDirty(g)
+			}
 			tabByID[aid] = row
-			unopenedFlat = append(unopenedFlat, *row)
+			unopenedIDs = append(unopenedIDs, aid)
 		} else {
-			if tabWorkspace[parentID] != tabWorkspace[aid] {
+			if parentWS != tabWorkspace[aid] {
 				continue
 			}
 			tabByID[aid].Type = "subagent"
@@ -433,13 +556,14 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 	for pid := range childIDsByParent {
 		sort.Strings(childIDsByParent[pid])
 	}
+	sort.Strings(unopenedIDs)
 
-	if boolFlag(inv, "flat") {
-		sort.Slice(unopenedFlat, func(i, j int) bool { return unopenedFlat[i].ID < unopenedFlat[j].ID })
-		flatRows = append(flatRows, unopenedFlat...)
-		return struct {
-			Tabs []treeTab `json:"tabs"`
-		}{Tabs: flatRows}, nil
+	flatRows := make([]treeTab, 0, len(openedOrder)+len(unopenedIDs))
+	for _, id := range openedOrder {
+		flatRows = append(flatRows, *tabByID[id])
+	}
+	for _, id := range unopenedIDs {
+		flatRows = append(flatRows, *tabByID[id])
 	}
 
 	// Recursively materialize nested subagents so 3+-level chains (A -> B -> C) stay intact.
@@ -459,9 +583,7 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 		return node
 	}
 
-	// Group top-level tabs by workspace -> tile.
-	type tileKey struct{ wsID, tileID string }
-	tabsByTile := map[tileKey][]treeTab{}
+	tabsByTile := map[treeTileKey][]treeTab{}
 	tileOrderByWS := map[string][]string{}
 	tileSeenByWS := map[string]map[string]bool{}
 	for _, t := range tabs {
@@ -475,7 +597,7 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 			tileID = "default"
 		}
 		row := buildTreeTab(id, map[string]bool{})
-		key := tileKey{wsID: wsID, tileID: tileID}
+		key := treeTileKey{wsID: wsID, tileID: tileID}
 		tabsByTile[key] = append(tabsByTile[key], row)
 		if tileSeenByWS[wsID] == nil {
 			tileSeenByWS[wsID] = map[string]bool{}
@@ -486,14 +608,30 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 		}
 	}
 
-	// Group workspaces into sections keyed by section ID, preserving the Hub's
-	// sidebar section order from secResp.GetSections().
+	return assembledTreeTabs{
+		flatRows:      flatRows,
+		tabsByTile:    tabsByTile,
+		tileOrderByWS: tileOrderByWS,
+	}
+}
+
+// groupTreeSections places workspaces and their tiles into sidebar sections,
+// preserving the Hub's sidebar section order from sections.
+func groupTreeSections(
+	workspaces []*leapmuxv1.Workspace,
+	sectionOrder []*leapmuxv1.Section,
+	secIdx *sectionIndex,
+	assembled assembledTreeTabs,
+	floatingTiles map[string]bool,
+	workerFiltered bool,
+	archivedHidden int,
+) treeResult {
 	sectionMap := map[string]*treeSection{}
 	for _, ws := range workspaces {
 		secKey := ""
 		secName := "Workspaces"
 		secArchived := false
-		if sec := wsSection[ws.GetId()]; sec != nil {
+		if sec := secIdx.sectionOf(ws.GetId()); sec != nil {
 			secKey = sec.GetId()
 			if sec.GetName() != "" {
 				secName = sec.GetName()
@@ -501,14 +639,14 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 			secArchived = sec.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
 		}
 		var tiles []treeTile
-		for _, tileID := range tileOrderByWS[ws.GetId()] {
+		for _, tileID := range assembled.tileOrderByWS[ws.GetId()] {
 			tiles = append(tiles, treeTile{
 				ID:       tileID,
 				Floating: floatingTiles[tileID],
-				Tabs:     tabsByTile[tileKey{wsID: ws.GetId(), tileID: tileID}],
+				Tabs:     assembled.tabsByTile[treeTileKey{wsID: ws.GetId(), tileID: tileID}],
 			})
 		}
-		if workerFilterID != "" && len(tiles) == 0 {
+		if workerFiltered && len(tiles) == 0 {
 			continue
 		}
 		ts, ok := sectionMap[secKey]
@@ -526,7 +664,7 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 	}
 	sections := make([]treeSection, 0, len(sectionMap))
 	emitted := map[string]bool{}
-	for _, sec := range secResp.GetSections() {
+	for _, sec := range sectionOrder {
 		if ts, ok := sectionMap[sec.GetId()]; ok {
 			sections = append(sections, *ts)
 			emitted[sec.GetId()] = true
@@ -535,174 +673,9 @@ func runFleetTree(inv *cli.Invocation) (any, error) {
 	if ts, ok := sectionMap[""]; ok && !emitted[""] {
 		sections = append(sections, *ts)
 	}
-	return treeResult{Sections: sections, ArchivedWorkspaces: archivedHidden}, nil
+	return treeResult{Sections: sections, ArchivedWorkspaces: archivedHidden}
 }
 
 func gitRepoIsDirty(g *leapmuxv1.GitRepoStatus) bool {
 	return g.GetModified() || g.GetAdded() || g.GetDeleted() || g.GetRenamed() || g.GetTypeChanged() || g.GetUntracked() || g.GetConflicted()
-}
-
-type treeWorkerData struct {
-	details     map[string]tabDetail
-	workerNames map[string]string
-	agentWorker map[string]string
-	termProcs   map[string][]string
-	pendingReqs map[string][]string
-}
-
-// fetchTreeWorkerData opens ONE Noise_NK E2EE channel per Worker and gathers
-// agent info (with descendants), terminal info, running processes, viewer
-// titles, worker names, and pending control request handles concurrently.
-func fetchTreeWorkerData(ctx context.Context, c control.Peer, tabs []*leapmuxv1.WorkspaceTab) treeWorkerData {
-	type workerTabs struct {
-		agents, terminals []string
-		viewers           []*leapmuxv1.TabIdent
-	}
-	byWorker := map[string]*workerTabs{}
-	for _, t := range tabs {
-		wk := t.GetWorkerId()
-		if wk == "" {
-			continue
-		}
-		wt := byWorker[wk]
-		if wt == nil {
-			wt = &workerTabs{}
-			byWorker[wk] = wt
-		}
-		switch t.GetTab().GetTabType() {
-		case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
-			// Ignore unspecified tab types.
-		case leapmuxv1.TabType_TAB_TYPE_AGENT:
-			wt.agents = append(wt.agents, t.GetTab().GetTabId())
-		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-			wt.terminals = append(wt.terminals, t.GetTab().GetTabId())
-		case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
-			wt.viewers = append(wt.viewers, t.GetTab())
-		}
-	}
-	res := treeWorkerData{
-		details:     map[string]tabDetail{},
-		workerNames: map[string]string{},
-		agentWorker: map[string]string{},
-		termProcs:   map[string][]string{},
-		pendingReqs: map[string][]string{},
-	}
-	var mu sync.Mutex
-	var g errgroup.Group
-	g.SetLimit(detailFanoutLimit)
-	for workerID, wt := range byWorker {
-		workerID, wt := workerID, wt
-		g.Go(func() error {
-			_ = withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
-				var inner errgroup.Group
-				inner.SetLimit(detailFanoutLimit)
-				var waitingAgents []string
-				if len(wt.agents) > 0 {
-					inner.Go(func() error {
-						var resp leapmuxv1.ListAgentsResponse
-						if w.Call(ctx, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
-							TabIds:             wt.agents,
-							IncludeDescendants: true,
-						}, &resp) == nil {
-							mu.Lock()
-							for _, a := range resp.GetAgents() {
-								res.details[a.GetId()] = tabDetail{Title: a.GetTitle(), State: enumToken(a.GetActivityState()), Agent: a}
-								res.agentWorker[a.GetId()] = workerID
-								if a.GetActivityState() == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER {
-									waitingAgents = append(waitingAgents, a.GetId())
-								}
-							}
-							mu.Unlock()
-						}
-						return nil
-					})
-				}
-				if len(wt.terminals) > 0 {
-					inner.Go(func() error {
-						var resp leapmuxv1.ListTerminalsResponse
-						if w.Call(ctx, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: wt.terminals}, &resp) == nil {
-							mu.Lock()
-							for _, t := range resp.GetTerminals() {
-								res.details[t.GetTerminalId()] = tabDetail{Title: t.GetTitle(), State: enumToken(t.GetStatus()), Terminal: t}
-							}
-							mu.Unlock()
-						}
-						return nil
-					})
-					inner.Go(func() error {
-						var resp leapmuxv1.InspectTerminalProcessesResponse
-						if w.Call(ctx, leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: wt.terminals}, &resp) == nil {
-							mu.Lock()
-							for _, tp := range resp.GetTerminals() {
-								var names []string
-								for _, proc := range tp.GetProcesses() {
-									n := strings.TrimSpace(proc.GetName())
-									if n == "" {
-										n = fmt.Sprintf("pid:%d", proc.GetPid())
-									}
-									if !slices.Contains(names, n) {
-										names = append(names, n)
-									}
-								}
-								if len(names) > 0 {
-									sort.Strings(names)
-									res.termProcs[tp.GetTerminalId()] = names
-								}
-							}
-							mu.Unlock()
-						}
-						return nil
-					})
-				}
-				for _, viewer := range wt.viewers {
-					viewer := viewer
-					inner.Go(func() error {
-						var resp leapmuxv1.GetTabPayloadResponse
-						id := viewer.GetTabId()
-						if w.Call(ctx, leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure, &leapmuxv1.GetTabPayloadRequest{TabId: id}, &resp) != nil {
-							return nil
-						}
-						if title, known := viewerTabTitle(viewer.GetTabType(), resp.GetPayload()); known {
-							mu.Lock()
-							res.details[id] = tabDetail{Title: title}
-							mu.Unlock()
-						}
-						return nil
-					})
-				}
-				inner.Go(func() error {
-					var resp leapmuxv1.GetWorkerSystemInfoResponse
-					if w.Call(ctx, leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &resp) == nil {
-						mu.Lock()
-						res.workerNames[workerID] = resp.GetName()
-						mu.Unlock()
-					}
-					return nil
-				})
-				_ = inner.Wait()
-
-				// Reuse the same channel for any agent waiting on a control request.
-				for _, aid := range waitingAgents {
-					var reqResp leapmuxv1.ListControlRequestsResponse
-					if w.Call(ctx, leapmuxv1connect.WorkerAgentServiceListControlRequestsProcedure, &leapmuxv1.ListControlRequestsRequest{AgentId: aid}, &reqResp) == nil {
-						var handles []string
-						for _, cr := range reqResp.GetRequests() {
-							if h := cr.GetClaimToken(); h != "" {
-								handles = append(handles, cli.ShortID(h))
-							}
-						}
-						if len(handles) > 0 {
-							mu.Lock()
-							res.pendingReqs[aid] = handles
-							mu.Unlock()
-						}
-					}
-				}
-				return nil
-			})
-			return nil
-		})
-	}
-	_ = g.Wait()
-	return res
 }

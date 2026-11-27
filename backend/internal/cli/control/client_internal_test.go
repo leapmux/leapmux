@@ -5,9 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -478,5 +482,242 @@ func TestWrapHubConnectionError_ClassifiesCloseReasons(t *testing.T) {
 		assert.True(t, cliErr.Retryable())
 		assert.Equal(t, "the Hub rejected the connection: too many open connections", cliErr.Message)
 		assert.Equal(t, []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS}, <-gotTopics)
+	})
+}
+
+func TestNewClientFromEnv_SetsHubSourceProvenance(t *testing.T) {
+	t.Run("explicit flag sets HubSourceFlag", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+		t.Setenv("LEAPMUX_HUB", "https://env.example")
+		require.NoError(t, SaveCredentials("https://flag.example", CredentialFile{
+			HubURL:      "https://flag.example",
+			AccessToken: "lmx_flag",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}))
+		p, err := NewClientFromEnv("https://flag.example")
+		require.NoError(t, err)
+		hc, ok := p.(*HubClient)
+		require.True(t, ok)
+		assert.Equal(t, HubSourceFlag, hc.Source)
+	})
+
+	t.Run("env sets HubSourceEnv", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+		t.Setenv("LEAPMUX_HUB", "https://env.example")
+		require.NoError(t, SaveCredentials("https://env.example", CredentialFile{
+			HubURL:      "https://env.example",
+			AccessToken: "lmx_env",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}))
+		p, err := NewClientFromEnv("")
+		require.NoError(t, err)
+		hc, ok := p.(*HubClient)
+		require.True(t, ok)
+		assert.Equal(t, HubSourceEnv, hc.Source)
+	})
+
+	t.Run("context sets HubSourceContext", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+		t.Setenv("LEAPMUX_HUB", "")
+		require.NoError(t, SaveContext(ContextConfig{Hub: "https://ctx.example"}))
+		require.NoError(t, SaveCredentials("https://ctx.example", CredentialFile{
+			HubURL:      "https://ctx.example",
+			AccessToken: "lmx_ctx",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}))
+		p, err := NewClientFromEnv("")
+		require.NoError(t, err)
+		hc, ok := p.(*HubClient)
+		require.True(t, ok)
+		assert.Equal(t, HubSourceContext, hc.Source)
+	})
+
+	t.Run("sole credential sets HubSourceSingleCredential", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+		t.Setenv("LEAPMUX_HUB", "")
+		require.NoError(t, SaveCredentials("https://sole.example", CredentialFile{
+			HubURL:      "https://sole.example",
+			AccessToken: "lmx_sole",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}))
+		p, err := NewClientFromEnv("")
+		require.NoError(t, err)
+		hc, ok := p.(*HubClient)
+		require.True(t, ok)
+		assert.Equal(t, HubSourceSingleCredential, hc.Source)
+	})
+
+	t.Run("discovered local socket sets HubSourceDiscovered", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix socket discovery applies only to non-Windows hosts")
+		}
+		root, err := os.MkdirTemp("", "lmxenvsrc-*")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+		cfgDir := filepath.Join(root, "control")
+		soloDir := filepath.Join(root, "solo", "hub")
+		require.NoError(t, os.MkdirAll(cfgDir, 0o700))
+		require.NoError(t, os.MkdirAll(soloDir, 0o700))
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+		t.Setenv("LEAPMUX_CONTROL_SOCK", "")
+		t.Setenv("LEAPMUX_HUB", "")
+
+		sockPath := filepath.Join(soloDir, "hub.sock")
+		ln, err := net.Listen("unix", sockPath)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			for {
+				c, acceptErr := ln.Accept()
+				if acceptErr != nil {
+					return
+				}
+				_ = c.Close()
+			}
+		}()
+
+		p, err := NewClientFromEnv("")
+		require.NoError(t, err)
+		hc, ok := p.(*HubClient)
+		require.True(t, ok)
+		assert.Equal(t, "unix:"+sockPath, hc.HubURL)
+		assert.Equal(t, HubSourceDiscovered, hc.Source)
+	})
+}
+
+func TestPeerErrorDecorator_ConnectAndWebSocketErrors(t *testing.T) {
+	sentinel := errors.New("decorated")
+
+	t.Run("HubClient decorates ConnectRPC unary errors", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":"unauthenticated","message":"expired"}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		c := &HubClient{
+			HubURL:          srv.URL,
+			HTTPClient:      srv.Client(),
+			connectURL:      srv.URL,
+			bearer:          "tok",
+			accessExpiresAt: time.Now().Add(time.Hour),
+		}
+		var gotPeer Peer
+		c.SetErrorDecorator(func(_ context.Context, p Peer, err error) error {
+			gotPeer = p
+			return fmt.Errorf("%w: %w", sentinel, err)
+		})
+
+		_, err := c.WorkspaceService().ListWorkspaces(t.Context(), &leapmuxv1.ListWorkspacesRequest{})
+		require.Error(t, err)
+		assert.Same(t, c, gotPeer)
+		assert.ErrorIs(t, err, sentinel)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	})
+
+	t.Run("HubClient decorates OpenUserEvents handshake and Recv close errors", func(t *testing.T) {
+		srv := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "invalid bearer", http.StatusUnauthorized)
+		}))
+		t.Cleanup(srv.Close)
+
+		c := &HubClient{
+			HubURL:          srv.URL,
+			WSClient:        srv.Client(),
+			connectURL:      srv.URL,
+			bearer:          "tok",
+			accessExpiresAt: time.Now().Add(time.Hour),
+		}
+		c.SetErrorDecorator(func(_ context.Context, _ Peer, err error) error {
+			return fmt.Errorf("%w: %w", sentinel, err)
+		})
+
+		_, err := c.OpenUserEvents(t.Context(), channelwire.UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, sentinel)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+
+		// Recv error path also passes through the decorator.
+		closeSrv := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+				Subprotocols: []string{contracts.WSSubprotocolUserEventsRelay},
+			})
+			if err != nil {
+				return
+			}
+			_ = ws.Close(websocket.StatusPolicyViolation, contracts.CloseReasonTooManyConnections)
+		}))
+		t.Cleanup(closeSrv.Close)
+
+		c2 := &HubClient{
+			HubURL:          closeSrv.URL,
+			WSClient:        closeSrv.Client(),
+			connectURL:      closeSrv.URL,
+			bearer:          "tok",
+			accessExpiresAt: time.Now().Add(time.Hour),
+		}
+		c2.SetErrorDecorator(func(_ context.Context, _ Peer, err error) error {
+			return fmt.Errorf("%w: %w", sentinel, err)
+		})
+		stream, err := c2.OpenUserEvents(t.Context(), channelwire.UserEventsOptions{
+			Topics: []leapmuxv1.UserEventTopic{leapmuxv1.UserEventTopic_USER_EVENT_TOPIC_WORKERS},
+		})
+		require.NoError(t, err)
+		defer func() { _ = stream.Close() }()
+
+		_, err = stream.Recv()
+		require.Error(t, err)
+		assert.ErrorIs(t, err, sentinel)
+		assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+	})
+
+	t.Run("WorkerIPCClient decorates ConnectRPC errors and ignores io.EOF", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":"unauthenticated","message":"bad ipc token"}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		ipc := &WorkerIPCClient{
+			SocketURL:  "unix:/tmp/tab.sock",
+			token:      "tok",
+			HTTPClient: srv.Client(),
+			connectURL: srv.URL,
+		}
+		var gotPeer Peer
+		ipc.SetErrorDecorator(func(_ context.Context, p Peer, err error) error {
+			gotPeer = p
+			return fmt.Errorf("%w: %w", sentinel, err)
+		})
+
+		client, err := ipc.ControlIPCService()
+		require.NoError(t, err)
+		_, err = client.Whoami(t.Context(), &leapmuxv1.WhoamiRequest{})
+		require.Error(t, err)
+		assert.Same(t, ipc, gotPeer)
+		assert.ErrorIs(t, err, sentinel)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+
+		// errorDecoratingStream must never pass io.EOF through the decorator.
+		called := false
+		s := &errorDecoratingStream{
+			ClientStream: &stubReplayClientStream{receive: func(any) error { return io.EOF }},
+			ctx:          t.Context(),
+			decorate: func(_ context.Context, err error) error {
+				called = true
+				return err
+			},
+		}
+		assert.ErrorIs(t, s.Receive(&leapmuxv1.WhoamiResponse{}), io.EOF)
+		assert.False(t, called)
 	})
 }

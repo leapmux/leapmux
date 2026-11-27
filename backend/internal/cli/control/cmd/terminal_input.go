@@ -178,20 +178,15 @@ func runTerminalRun(inv *cli.Invocation) (any, error) {
 			RetryCommand: buildTerminalRunRetryCmd(inv, targetID, command, wait, requestID),
 		}
 	}
-	open := openSession
-	if wait {
-		open = openStreamSession
-	}
-	s, err := open(inv)
+	s, callSession, closeAll, err := openWaitableSession(inv, wait)
 	if err != nil {
 		return nil, wrapRetryReceipt(err, retryStageBeforeSend, receiptFor(inv.Arg("terminal")))
 	}
-	defer s.Close()
-	callSession := s
-	closeCall := func() {}
-	if wait {
-		callSession = s.bounded()
-		closeCall = callSession.Close
+	defer closeAll()
+	closeCall := func() {
+		if wait {
+			callSession.Close()
+		}
 	}
 	got, err := callSession.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -135,6 +136,32 @@ type recordingHub struct {
 	// workerPageLimits records the page limit of each ListWorkers request
 	// that listWorkerPages answers.
 	workerPageLimits []int32
+	// listRequests records id_prefix, limit, and workspace_ids for List* RPCs.
+	listRequests []recordedListCall
+}
+
+type recordedListCall struct {
+	procedure    string
+	idPrefix     string
+	limit        int32
+	workspaceIDs []string
+}
+
+func (h *recordingHub) recordListCall(procedure, idPrefix string, limit int32, workspaceIDs []string) {
+	h.mu.Lock()
+	h.listRequests = append(h.listRequests, recordedListCall{
+		procedure:    procedure,
+		idPrefix:     idPrefix,
+		limit:        limit,
+		workspaceIDs: append([]string(nil), workspaceIDs...),
+	})
+	h.mu.Unlock()
+}
+
+func (h *recordingHub) recordedListCalls() []recordedListCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]recordedListCall(nil), h.listRequests...)
 }
 
 func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure string, payload []byte) ([]byte, error) {
@@ -168,11 +195,47 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 	case procedure == leapmuxv1connect.SystemServiceGetSystemInfoProcedure && h.systemBuild != nil:
 		return proto.Marshal(&leapmuxv1.GetSystemInfoResponse{Build: h.systemBuild})
 	case procedure == leapmuxv1connect.SectionServiceListSectionsProcedure && h.sections != nil:
-		return proto.Marshal(h.sections)
+		var req leapmuxv1.ListSectionsRequest
+		if len(payload) > 0 {
+			if err := proto.Unmarshal(payload, &req); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+			}
+		}
+		h.recordListCall(procedure, req.GetIdPrefix(), 0, nil)
+		sections := h.sections.GetSections()
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			filtered := make([]*leapmuxv1.Section, 0, len(sections))
+			for _, sec := range sections {
+				if strings.HasPrefix(sec.GetId(), prefix) {
+					filtered = append(filtered, sec)
+				}
+			}
+			sections = filtered
+		}
+		return proto.Marshal(&leapmuxv1.ListSectionsResponse{
+			Sections: sections,
+			Items:    h.sections.GetItems(),
+		})
 	case procedure == leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:
+		var req leapmuxv1.ListWorkspacesRequest
+		if len(payload) > 0 {
+			if err := proto.Unmarshal(payload, &req); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+			}
+		}
+		h.recordListCall(procedure, req.GetIdPrefix(), 0, nil)
 		ws := h.workspaces
 		if ws == nil {
 			ws = []*leapmuxv1.Workspace{{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"}}
+		}
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			filtered := make([]*leapmuxv1.Workspace, 0, len(ws))
+			for _, w := range ws {
+				if strings.HasPrefix(w.GetId(), prefix) {
+					filtered = append(filtered, w)
+				}
+			}
+			ws = filtered
 		}
 		return proto.Marshal(&leapmuxv1.ListWorkspacesResponse{
 			Workspaces: ws,
@@ -228,12 +291,46 @@ func (h *recordingHub) CallInner(ctx context.Context, _ userid.UserID, procedure
 	// rows that the lookups above serve, so a test that gives a short id
 	// resolves it the way the CLI resolves a prefix.
 	case procedure == leapmuxv1connect.WorkerManagementServiceListWorkersProcedure && h.workers != nil:
-		return proto.Marshal(&leapmuxv1.ListWorkersResponse{Workers: h.workers, Page: &leapmuxv1.PageResponse{}})
-	case procedure == leapmuxv1connect.WorkspaceServiceListTabsProcedure && (h.tabs != nil || h.locateTab != nil || h.materialized != nil):
-		if h.tabs != nil {
-			return proto.Marshal(&leapmuxv1.ListTabsResponse{Tabs: h.tabs})
+		var req leapmuxv1.ListWorkersRequest
+		if len(payload) > 0 {
+			if err := proto.Unmarshal(payload, &req); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+			}
 		}
-		return proto.Marshal(&leapmuxv1.ListTabsResponse{Tabs: h.listedTabs()})
+		h.recordListCall(procedure, req.GetIdPrefix(), req.GetPage().GetLimit(), nil)
+		workers := h.workers
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			filtered := make([]*leapmuxv1.Worker, 0, len(workers))
+			for _, w := range workers {
+				if strings.HasPrefix(w.GetId(), prefix) {
+					filtered = append(filtered, w)
+				}
+			}
+			workers = filtered
+		}
+		return proto.Marshal(&leapmuxv1.ListWorkersResponse{Workers: workers, Page: &leapmuxv1.PageResponse{}})
+	case procedure == leapmuxv1connect.WorkspaceServiceListTabsProcedure && (h.tabs != nil || h.locateTab != nil || h.materialized != nil):
+		var req leapmuxv1.ListTabsRequest
+		if len(payload) > 0 {
+			if err := proto.Unmarshal(payload, &req); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+			}
+		}
+		h.recordListCall(procedure, req.GetIdPrefix(), 0, req.GetWorkspaceIds())
+		tabs := h.tabs
+		if tabs == nil {
+			tabs = h.listedTabs()
+		}
+		if prefix := req.GetIdPrefix(); prefix != "" {
+			filtered := make([]*leapmuxv1.WorkspaceTab, 0, len(tabs))
+			for _, tab := range tabs {
+				if strings.HasPrefix(tab.GetTab().GetTabId(), prefix) {
+					filtered = append(filtered, tab)
+				}
+			}
+			tabs = filtered
+		}
+		return proto.Marshal(&leapmuxv1.ListTabsResponse{Tabs: tabs})
 	default:
 		return nil, connect.NewError(connect.CodePermissionDenied, "delegation token cannot call this procedure: "+procedure)
 	}
@@ -248,7 +345,14 @@ func (h *recordingHub) listedTabs() []*leapmuxv1.WorkspaceTab {
 		out = append(out, h.locateTab)
 		seen[h.locateTab.GetTab().GetTabId()] = true
 	}
-	for id, rec := range h.materialized.GetTabs() {
+	tabMap := h.materialized.GetTabs()
+	ids := make([]string, 0, len(tabMap))
+	for id := range tabMap {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		rec := tabMap[id]
 		if seen[id] || rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
 			continue
 		}
@@ -300,9 +404,27 @@ func (h *recordingHub) answerWorkerPage(payload []byte) ([]byte, error) {
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
+	h.recordListCall(leapmuxv1connect.WorkerManagementServiceListWorkersProcedure, req.GetIdPrefix(), req.GetPage().GetLimit(), nil)
 	h.mu.Lock()
 	h.workerPageLimits = append(h.workerPageLimits, req.GetPage().GetLimit())
 	h.mu.Unlock()
+	if prefix := req.GetIdPrefix(); prefix != "" {
+		var matched []*leapmuxv1.Worker
+		for _, pageIDs := range h.listWorkerPages {
+			for _, id := range pageIDs {
+				if strings.HasPrefix(id, prefix) {
+					matched = append(matched, &leapmuxv1.Worker{Id: id})
+				}
+			}
+		}
+		sort.Slice(matched, func(i, j int) bool { return matched[i].GetId() < matched[j].GetId() })
+		next := ""
+		if limit := int(req.GetPage().GetLimit()); limit > 0 && len(matched) > limit {
+			matched = matched[:limit]
+			next = "page-prefix-next"
+		}
+		return proto.Marshal(&leapmuxv1.ListWorkersResponse{Workers: matched, Page: &leapmuxv1.PageResponse{NextCursor: next}})
+	}
 	index := 0
 	if cursor := req.GetPage().GetCursor(); cursor != "" {
 		n, err := strconv.Atoi(strings.TrimPrefix(cursor, "page-"))

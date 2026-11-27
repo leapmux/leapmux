@@ -24,7 +24,14 @@ import (
 //
 // Hub clients require workerID. The caller resolves it from the target first.
 func callInnerRPC(ctx context.Context, c control.Peer, workerID, method string, in proto.Message, out proto.Message) error {
-	return callInnerRPCBest(ctx, c, workerID, method, in, out)
+	// Validate serialization once before a malformed request can start a Noise_NK handshake.
+	payload, err := proto.Marshal(in)
+	if err != nil {
+		return &codedRPCError{Code: "marshal_failed", Cause: err}
+	}
+	return withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
+		return w.callPayloadWithVersion(ctx, method, payload, out)
+	})
 }
 
 // codedRPCError records which stage of an inner call failed: the channel
@@ -38,18 +45,35 @@ type codedRPCError struct {
 }
 
 // CLIError reports the failure in the error envelope. A channel that does
-// not open means the Worker is offline, unless the hub refused the caller.
-// A refusal that the Worker answered keeps the Worker's code.
+// not open means the Worker is offline, unless the hub refused the caller or
+// a local cancellation, timeout, auth, or classified CLI error aborted the
+// open. Returning nil lets cli.FromError classify Cause directly and attach
+// any HintProvider hints once without duplication.
 func (e *codedRPCError) CLIError() *cli.Error {
 	switch e.Code {
 	case "channel_open_failed":
-		var refusal *connect.Error
-		if errors.As(e.Cause, &refusal) {
-			switch refusal.Code() {
-			case connect.CodeUnavailable, connect.CodeDeadlineExceeded:
-				// The channel could not reach the requested Worker.
-			default:
-				return cli.FromError(e.Cause)
+		if e.Cause != nil {
+			if errors.Is(e.Cause, context.Canceled) ||
+				errors.Is(e.Cause, context.DeadlineExceeded) ||
+				errors.Is(e.Cause, cli.ErrNotLoggedIn) {
+				return nil
+			}
+			var cliErr *cli.Error
+			if errors.As(e.Cause, &cliErr) {
+				return nil
+			}
+			var cls cli.Classifier
+			if errors.As(e.Cause, &cls) {
+				return nil
+			}
+			var refusal *connect.Error
+			if errors.As(e.Cause, &refusal) {
+				switch refusal.Code() {
+				case connect.CodeUnavailable, connect.CodeDeadlineExceeded:
+					// The channel could not reach the requested Worker.
+				default:
+					return nil
+				}
 			}
 		}
 		return cli.Wrap(cli.CodeWorkerOffline, e, "the worker cannot be reached").
@@ -62,7 +86,7 @@ func (e *codedRPCError) CLIError() *cli.Error {
 	if e.Cause == nil {
 		return cli.Newf(cli.CodeInternal, "%s", e.Code)
 	}
-	return cli.FromError(e.Cause)
+	return nil
 }
 
 func (e *codedRPCError) Error() string {
@@ -73,18 +97,6 @@ func (e *codedRPCError) Error() string {
 }
 
 func (e *codedRPCError) Unwrap() error { return e.Cause }
-
-// callInnerRPCBest selects the same transport as callInnerRPC and returns errors without emitting them.
-// Workspace deletion combines failures before producing one result envelope.
-func callInnerRPCBest(ctx context.Context, c control.Peer, workerID, method string, in proto.Message, out proto.Message) error {
-	// Validate serialization before a malformed request can start a Noise_NK handshake.
-	if _, err := proto.Marshal(in); err != nil {
-		return &codedRPCError{Code: "marshal_failed", Cause: err}
-	}
-	return withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
-		return w.Call(ctx, method, in, out)
-	})
-}
 
 // workerCall binds the client and transport to one worker.
 // Callers supply only the method and its messages.
@@ -97,16 +109,30 @@ type workerCall struct {
 	hub      *control.HubClient
 	ipc      *control.WorkerIPCClient
 	workerID string
-	// ch holds the shared channel. A nil channel selects local IPC or the per-call fallback for a hub client.
+	// ch holds the shared channel. A nil channel selects local IPC or reports openErr.
 	ch *tunnel.Channel
-	// perCallChannel selects a new channel for each call after a hub client fails to open a shared channel.
-	// It prevents a missing shared channel from selecting local IPC incorrectly.
-	perCallChannel bool
+	// openErr records a channel-open failure in best-effort mode so each Call
+	// returns it immediately without re-dialing the Hub.
+	openErr error
 }
 
 // Call invokes method and returns errors with their original codes for callers that combine operation results.
 func (w workerCall) Call(ctx context.Context, method string, in, out proto.Message) error {
-	return w.withVersion(ctx, method, w.call(ctx, method, in, out))
+	if w.openErr != nil {
+		return w.openErr
+	}
+	payload, err := proto.Marshal(in)
+	if err != nil {
+		return &codedRPCError{Code: "marshal_failed", Cause: err}
+	}
+	return w.callPayloadWithVersion(ctx, method, payload, out)
+}
+
+func (w workerCall) callPayloadWithVersion(ctx context.Context, method string, payload []byte, out proto.Message) error {
+	if w.openErr != nil {
+		return w.openErr
+	}
+	return w.withVersion(ctx, method, w.callPayload(ctx, method, payload, out))
 }
 
 func (w workerCall) withVersion(ctx context.Context, method string, err error) error {
@@ -128,20 +154,20 @@ func (w workerCall) withVersion(ctx context.Context, method string, err error) e
 	}
 	return withPeerVersion(ctx, err, peer, func(ctx context.Context) string {
 		var response leapmuxv1.GetWorkerSystemInfoResponse
-		if err := w.call(ctx, leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &response); err != nil {
+		payload, err := proto.Marshal(&leapmuxv1.GetWorkerSystemInfoRequest{})
+		if err != nil {
+			return ""
+		}
+		if err := w.callPayload(ctx, leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, payload, &response); err != nil {
 			return ""
 		}
 		return version.FormatBuild(response.GetBuild())
 	})
 }
 
-func (w workerCall) call(ctx context.Context, method string, in, out proto.Message) error {
-	if w.ch == nil && w.perCallChannel {
-		return callInnerRPCBest(ctx, w.hub, w.workerID, method, in, out)
-	}
-	payload, err := proto.Marshal(in)
-	if err != nil {
-		return &codedRPCError{Code: "marshal_failed", Cause: err}
+func (w workerCall) callPayload(ctx context.Context, method string, payload []byte, out proto.Message) error {
+	if w.openErr != nil {
+		return w.openErr
 	}
 	if w.ipc != nil {
 		return localIPCCallInnerBest(ctx, w.ipc, w.workerID, method, payload, out)
@@ -202,42 +228,39 @@ func openHubE2EEChannel(openCtx, lifeCtx context.Context, hub *control.HubClient
 // The channel lives until body returns, not until ctx ends. Each call in body takes its own context.
 // The body can finish related cleanup with a separate context after ctx ends.
 func withWorkerChannel(ctx context.Context, p control.Peer, workerID string, body func(w workerCall) error) error {
-	switch c := p.(type) {
-	case *control.WorkerIPCClient:
-		return body(workerCall{ipc: c, workerID: workerID})
-	case *control.HubClient:
-		ch, err := openHubE2EEChannel(ctx, context.WithoutCancel(ctx), c, workerID)
-		if err != nil {
-			return err
-		}
-		defer ch.Close()
-		return body(workerCall{hub: c, workerID: workerID, ch: ch})
-	default:
-		return fmt.Errorf("unsupported control peer %T", p)
-	}
+	return withWorkerChannelMode(ctx, p, workerID, false, body)
 }
 
 // withBestEffortWorkerChannel is withWorkerChannel for sequences that must run
 // even when the worker is unreachable.
 //
 // The tab close command must delete a tab even when its worker is unreachable.
-// A failed shared channel therefore selects a new channel for each call.
-// This preserves the channel_open_failed code that isWorkerUnreachable checks.
-// That code permits the fallback that deletes the tab through the conflict-free replicated data type (CRDT) only.
+// When opening the shared channel fails, withBestEffortWorkerChannel records
+// that error on workerCall so every Call returns it immediately without
+// re-dialing. This preserves the channel_open_failed code that
+// isWorkerUnreachable checks so the CRDT-only fallback can proceed.
 //
 // The channel closes when body returns, so every call of the sequence must run inside body.
 // Unlike withWorkerChannel, the end of ctx also ends the channel, because no caller runs a rollback after ctx ended.
 func withBestEffortWorkerChannel(ctx context.Context, p control.Peer, workerID string, body func(w workerCall) error) error {
+	return withWorkerChannelMode(ctx, p, workerID, true, body)
+}
+
+func withWorkerChannelMode(ctx context.Context, p control.Peer, workerID string, bestEffort bool, body func(w workerCall) error) error {
 	switch c := p.(type) {
 	case *control.WorkerIPCClient:
 		return body(workerCall{ipc: c, workerID: workerID})
 	case *control.HubClient:
-		if workerID == "" {
-			return body(workerCall{hub: c, workerID: workerID, perCallChannel: true})
+		lifeCtx := context.WithoutCancel(ctx)
+		if bestEffort {
+			lifeCtx = ctx
 		}
-		ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)
+		ch, err := openHubE2EEChannel(ctx, lifeCtx, c, workerID)
 		if err != nil {
-			return body(workerCall{hub: c, workerID: workerID, perCallChannel: true})
+			if bestEffort {
+				return body(workerCall{hub: c, workerID: workerID, openErr: err})
+			}
+			return err
 		}
 		defer ch.Close()
 		return body(workerCall{hub: c, workerID: workerID, ch: ch})

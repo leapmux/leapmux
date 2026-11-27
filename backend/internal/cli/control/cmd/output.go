@@ -1,10 +1,12 @@
 package cmd
 
 import (
-	"encoding/json"
+	"fmt"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
 // The CLI envelope's timestamp helpers. They live here, outside the admin
@@ -13,19 +15,13 @@ import (
 // print the hub's -- one spelling of "a timestamp in a JSON envelope", so
 // every row a script reads parses by one rule.
 
-// timeFormat is the envelope's one timestamp layout: UTC, millisecond
-// precision, always ending in Z. A timestamp that carries a writer's offset
-// sorts wrongly beside the hub's own Z-ending ones, and a script reading
-// both cannot compare them without parsing zones first.
-const timeFormat = "2006-01-02T15:04:05.000Z07:00"
-
-// formatTime renders an optional timestamp in timeFormat, or "" when the hub
-// sent none, so `omitempty` drops it from the result.
+// formatTime renders an optional timestamp via timefmt.Format, or "" when the
+// hub sent none, so `omitempty` drops it from the result.
 func formatTime(ts *timestamppb.Timestamp) string {
 	if ts == nil {
 		return ""
 	}
-	return ts.AsTime().UTC().Format(timeFormat)
+	return timefmt.Format(ts.AsTime())
 }
 
 // formatWallTime is formatTime for a wall-clock time.Time.
@@ -33,10 +29,18 @@ func formatWallTime(ts time.Time) string {
 	if ts.IsZero() {
 		return ""
 	}
-	return ts.UTC().Format(timeFormat)
+	return timefmt.Format(ts)
 }
 
-// jsonObject encodes {key: value}.
-func jsonObject(key string, value any) ([]byte, error) {
-	return json.Marshal(map[string]any{key: value})
+// pluralize formats a count with its noun. Mirrors the frontend helper of the
+// same name so the two surfaces word the same fact identically.
+func pluralize(count int, singular string, plural ...string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	word := singular + "s"
+	if len(plural) > 0 {
+		word = plural[0]
+	}
+	return fmt.Sprintf("%d %s", count, word)
 }

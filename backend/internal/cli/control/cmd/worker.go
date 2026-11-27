@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"math"
 	"strings"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 const pinOpTimeout = 10 * time.Second
 
 func newWorkerCommand() *cobra.Command {
-	return cli.Group("worker", "List workers, read what they report, and register new ones",
+	return cli.SetAliases(cli.Group("worker", "List workers, read what they report, and register new ones",
 		cli.NewLeaf(cli.Leaf{
 			Use:     "list",
 			Aliases: []string{"ls"},
@@ -150,7 +149,7 @@ func newWorkerCommand() *cobra.Command {
 				Run:      runWorkerPinsRemove,
 			}),
 		),
-	)
+	), "wk")
 }
 
 // workerRow is one worker in a result.
@@ -251,6 +250,15 @@ func (s *session) resolveWorkerForGet(arg string) (workerID string, worker *leap
 			listedWorkers = workers
 		}
 		return workers, listErr
+	}
+	if rawWorkersByIDPrefix := listing.WorkersByIDPrefix; rawWorkersByIDPrefix != nil {
+		listing.WorkersByIDPrefix = func(ctx context.Context, idPrefix string) ([]*leapmuxv1.Worker, error) {
+			workers, listErr := rawWorkersByIDPrefix(ctx, idPrefix)
+			if listErr == nil {
+				listedWorkers = workers
+			}
+			return workers, listErr
+		}
 	}
 	rawNames := listing.WorkerNames
 	listing.WorkerNames = func(ctx context.Context, workers []*leapmuxv1.Worker) map[string]string {
@@ -566,25 +574,24 @@ func runWorkerPinsList(inv *cli.Invocation) (any, error) {
 // pinnedWorkerArgHelp describes the <worker> argument of the pin commands.
 // A pin belongs to the local credential store, not to the hub, so these
 // commands match only the ids that the store holds.
-const pinnedWorkerArgHelp = `A worker id, or a unique prefix of 4 or more characters of one, as "leapmux worker pins list" prints it.`
+const pinnedWorkerArgHelp = `A worker id, a unique prefix of 4 or more characters of one, or "id:<id>", as "leapmux worker pins list" prints it.`
 
-// findPin returns the pin matching input by exact worker ID, or by unique
-// prefix when input does not use "id:".
+// findPin returns the pin matching input by exact worker ID (any length) or
+// unique ID prefix of at least resolve.MinPrefixLength characters, with or
+// without the "id:" qualifier.
 func findPin(ctx context.Context, pins *control.PinStore, input string) (control.PinListEntry, error) {
 	input = strings.TrimSpace(input)
-	minLen := resolve.MinPrefixLength
 	if rest, ok := strings.CutPrefix(input, "id:"); ok {
 		input = strings.TrimSpace(rest)
 		if input == "" {
 			return control.PinListEntry{}, cli.Usagef(`"id:" needs a worker id after the colon`)
 		}
-		minLen = math.MaxInt
 	}
 	entries, err := pins.List(ctx)
 	if err != nil {
 		return control.PinListEntry{}, err
 	}
-	found, ambiguous, ok := lookupByIDPrefixMin(entries, input, minLen, func(p control.PinListEntry) string {
+	found, ambiguous, ok := lookupByIDPrefixMin(entries, input, resolve.MinPrefixLength, func(p control.PinListEntry) string {
 		return p.WorkerID
 	})
 	if ok {

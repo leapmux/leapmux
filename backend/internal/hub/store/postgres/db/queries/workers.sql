@@ -245,3 +245,51 @@ LEFT JOIN workers w
 INSERT INTO worker_enrollment_revisions (user_id, revision)
 VALUES (sqlc.arg(user_id), 1)
 ON CONFLICT (user_id) DO UPDATE SET revision = worker_enrollment_revisions.revision + 1;
+
+-- name: ListWorkersByUserIDExact :many
+SELECT * FROM workers
+WHERE registered_by = sqlc.arg(registered_by)
+  AND deleted_at IS NULL
+  AND deregistering_at IS NULL
+  AND id = sqlc.arg(id)::text;
+
+-- name: ListWorkersByUserIDPrefix :many
+SELECT * FROM workers
+WHERE registered_by = sqlc.arg(registered_by)
+  AND deleted_at IS NULL
+  AND deregistering_at IS NULL
+  AND id >= sqlc.arg(id_lo)::text
+  AND id < sqlc.arg(id_hi)::text
+  AND id > sqlc.arg(id_gt)::text
+ORDER BY id ASC
+LIMIT sqlc.arg('limit');
+
+-- name: ListWorkersAdminByIDExact :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id = sqlc.arg(id)::text
+  AND (sqlc.arg(user_id)::text = '' OR w.registered_by = sqlc.arg(user_id)::text)
+  AND (
+    (sqlc.arg(status_filter)::int = 0 AND w.deleted_at IS NULL)
+    OR (sqlc.arg(status_filter)::int = 1 AND w.deleted_at IS NULL AND w.deregistering_at IS NULL)
+    OR (sqlc.arg(status_filter)::int = 2 AND w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL)
+    OR (sqlc.arg(status_filter)::int = 3 AND w.deleted_at IS NOT NULL)
+  );
+
+-- name: ListWorkersAdminByIDPrefix :many
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id >= sqlc.arg(id_lo)::text
+  AND w.id < sqlc.arg(id_hi)::text
+  AND w.id > sqlc.arg(id_gt)::text
+  AND (sqlc.arg(user_id)::text = '' OR w.registered_by = sqlc.arg(user_id)::text)
+  AND (
+    (sqlc.arg(status_filter)::int = 0 AND w.deleted_at IS NULL)
+    OR (sqlc.arg(status_filter)::int = 1 AND w.deleted_at IS NULL AND w.deregistering_at IS NULL)
+    OR (sqlc.arg(status_filter)::int = 2 AND w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL)
+    OR (sqlc.arg(status_filter)::int = 3 AND w.deleted_at IS NOT NULL)
+  )
+ORDER BY w.id ASC
+LIMIT sqlc.arg('limit');

@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
 const accountRotationInterval = 2 * time.Second
@@ -336,7 +337,7 @@ func (r *accountReplay) allSourcesStopped() *cli.Error {
 		if c := cmp.Compare(a.id, b.id); c != 0 {
 			return c
 		}
-		return cmp.Compare(tabTypeName(a.tabType), tabTypeName(b.tabType))
+		return cmp.Compare(resolve.TabTypeWireName(a.tabType), resolve.TabTypeWireName(b.tabType))
 	})
 	for _, key := range keys {
 		watch := r.workers[key]

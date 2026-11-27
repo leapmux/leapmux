@@ -6,19 +6,21 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/coder/quartz"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/util/agentenv"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
@@ -52,6 +54,21 @@ func validateFocusFlags(inv *cli.Invocation) error {
 	return nil
 }
 
+// validatePositionFlags checks mutual exclusion among --first, --last,
+// --before, and --after before any network session is opened.
+func validatePositionFlags(inv *cli.Invocation) error {
+	_, err := parsePositionSpec(
+		boolFlag(inv, "first"),
+		boolFlag(inv, "last"),
+		stringFlag(inv, "before"),
+		stringFlag(inv, "after"),
+	)
+	if err != nil {
+		return cli.Usagef("%s", err.Error())
+	}
+	return nil
+}
+
 // shouldFocusNewTab decides whether a newly opened tab should be revealed in
 // open LeapMux windows: explicit --focus / --no-focus wins, then
 // $LEAPMUX_FOCUS_NEW, then automatic TTY + non-agent environment detection.
@@ -68,7 +85,7 @@ func shouldFocusNewTab(inv *cli.Invocation) bool {
 	case "0", "false", "no":
 		return false
 	}
-	if !isTerminalReader(inv.Stdin) || !isTerminalWriter(inv.Command.OutOrStdout()) {
+	if !isTerminalIO(inv.Stdin) || !isTerminalIO(inv.Command.OutOrStdout()) {
 		return false
 	}
 	return !isAgentEnvironment()
@@ -80,16 +97,10 @@ func isAgentEnvironment() bool {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv(controlenv.TabTypeVariable)), "agent") {
 		return true
 	}
-	for _, key := range []string{
-		"CLAUDECODE",
-		"CODEX_THREAD_ID",
-		"CURSOR_AGENT",
-		"AIDER",
-		"OPENCODE",
-		"GEMINI_CLI",
-		"ANTIGRAVITY_AGENT",
-		"CI",
-	} {
+	if strings.TrimSpace(os.Getenv("CI")) != "" {
+		return true
+	}
+	for _, key := range agentenv.HarnessDetectionMarkers {
 		if strings.TrimSpace(os.Getenv(key)) != "" {
 			return true
 		}
@@ -105,16 +116,46 @@ func validateAgentSlug(slug string) error {
 		return cli.Usagef("--name %q must start with a lowercase letter and hold 1 to 32 lowercase letters, digits, hyphens, or underscores", slug)
 	}
 	switch slug {
-	case resolve.SelfTarget, "parent", "children":
+	case resolve.SelfTarget, resolve.ParentTarget, childrenTarget:
 		return cli.Usagef("--name %q is a reserved target keyword", slug)
 	}
 	return nil
 }
 
+func parseAgentSlugFlag(inv *cli.Invocation) (string, error) {
+	slug := strings.TrimSpace(stringFlag(inv, "name"))
+	if err := validateAgentSlug(slug); err != nil {
+		return "", err
+	}
+	return slug, nil
+}
+
+// parseAgentTitleAndSlug parses the mutually exclusive --title and --name
+// flags shared by `agent open` and `agent fork`.
+func parseAgentTitleAndSlug(inv *cli.Invocation) (title, slug string, err error) {
+	title = stringFlag(inv, "title")
+	if !inv.Changed("name") {
+		return title, "", nil
+	}
+	if inv.Changed("title") {
+		return "", "", cli.Usagef("give --name or --title, not both")
+	}
+	slug, err = parseAgentSlugFlag(inv)
+	if err != nil {
+		return "", "", err
+	}
+	return slug, slug, nil
+}
+
 // ensureUniqueAgentSlug verifies that no other live agent on the account
-// already uses slug (case-insensitively).
+// already uses slug (case-insensitively), reusing any tab listing and Worker
+// details already cached on the session.
 func (s *session) ensureUniqueAgentSlug(slug, excludeAgentID string) error {
-	tabs, err := listTabsInWorkspaces(s.ctx, s.c, nil)
+	return s.ensureUniqueAgentSlugContext(s.ctx, slug, excludeAgentID)
+}
+
+func (s *session) ensureUniqueAgentSlugContext(ctx context.Context, slug, excludeAgentID string) error {
+	tabs, err := s.listAllTabs(ctx)
 	if err != nil {
 		return err
 	}
@@ -122,7 +163,7 @@ func (s *session) ensureUniqueAgentSlug(slug, excludeAgentID string) error {
 	if len(agents) == 0 {
 		return nil
 	}
-	details := fetchTabDetails(s.ctx, s.c, agents)
+	details := s.fetchTabDetailsCached(ctx, agents)
 	for _, t := range agents {
 		id := t.GetTab().GetTabId()
 		if id == excludeAgentID {
@@ -161,15 +202,34 @@ type placement struct {
 	Position positionSpec
 }
 
+// placementDefaults supplies fallback placement fields when explicit flags and
+// ambient context leave them empty (for example, `tab open-image` falling back
+// to the source agent's placement without running Worker discovery).
+type placementDefaults struct {
+	WorkspaceID string
+	TileID      string
+	WorkerID    string
+}
+
 // placement resolves the placement flags of a creation command.
 //
 // Without --workspace and --tile, the new tab lands beside the tab that
 // runs the command: the resolver derives that tab's workspace and tile from
-// $LEAPMUX_CONTROL_TAB_ID. With either flag, the anchor is not used for the
-// tile, so `--workspace W` puts the tab on W's first tile instead of on a
-// tile of another workspace. The Worker is --worker, else the Worker of the
-// tab that runs the command.
+// the calling tab. When --before or --after is set without --workspace or
+// --tile, the new tab follows the reference tab's workspace and tile instead.
+// With --workspace or --tile, the ambient anchor is not used for the tile, so
+// `--workspace W` puts the tab on W's first tile instead of on a tile of
+// another workspace. The Worker is --worker, else the Worker of the tab that
+// runs the command.
 func (s *session) placement() (placement, error) {
+	return s.placementWithDefaults(placementDefaults{})
+}
+
+func (s *session) placementWithDefaults(defaults placementDefaults) (placement, error) {
+	spec, err := s.positionSpec()
+	if err != nil {
+		return placement{}, err
+	}
 	in := resolve.Inputs{}
 	if s.inv.Changed("tile") {
 		t, err := s.resolveOne(resolve.KindTile, stringFlag(s.inv, "tile"))
@@ -191,22 +251,44 @@ func (s *session) placement() (placement, error) {
 			return placement{}, err
 		}
 		in.WorkerID, in.ExplicitWorkerID = k, true
+	} else if envWorker := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)); envWorker != "" {
+		in.WorkerID = envWorker
+	} else if defaults.WorkerID != "" {
+		in.WorkerID = defaults.WorkerID
 	} else {
-		in.WorkerID = strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
-		if in.WorkerID == "" {
-			// Best-effort zero-config default outside a LeapMux tab: context
-			// worker or sole online worker. Leaves WorkerID empty if ambiguous
-			// so `file open` can still infer the worker from the workspace,
-			// while `agent open` / `terminal open` report the full error via
-			// requireWorker.
-			if k, err := s.workerScope(); err == nil {
-				in.WorkerID = k
-			}
+		// Best-effort zero-config default outside a LeapMux tab: context
+		// worker or sole online worker. Leaves WorkerID empty if ambiguous
+		// so `file open` can still infer the worker from the workspace,
+		// while `agent open` / `terminal open` report the full error via
+		// requireWorker.
+		if k, err := s.workerScope(); err == nil {
+			in.WorkerID = k
 		}
 	}
 	if in.TileID == "" && in.WorkspaceID == "" {
-		in.TabID = strings.TrimSpace(os.Getenv(controlenv.TabIDVariable))
-		if in.TabID == "" {
+		if spec.kind == positionBefore || spec.kind == positionAfter {
+			// Relative placement without explicit --tile or --workspace follows
+			// the reference tab's workspace and tile instead of pinning to the
+			// caller's own ambient tab.
+			refGot, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{
+				TabID:       true,
+				WorkspaceID: true,
+				TileID:      true,
+			}, resolve.Inputs{
+				TabID:         spec.refID,
+				ExplicitTabID: true,
+			})
+			if err != nil {
+				return placement{}, err
+			}
+			in.WorkspaceID = refGot.WorkspaceID
+			in.TileID = refGot.TileID
+		} else if selfID := s.selfTabID(); selfID != "" {
+			in.TabID = selfID
+		} else if defaults.WorkspaceID != "" || defaults.TileID != "" {
+			in.WorkspaceID = defaults.WorkspaceID
+			in.TileID = defaults.TileID
+		} else {
 			defWS, err := s.defaultWorkspaceID()
 			if err != nil {
 				return placement{}, err
@@ -216,11 +298,15 @@ func (s *session) placement() (placement, error) {
 			}
 		}
 	}
-	spec, err := s.positionSpec()
-	if err != nil {
-		return placement{}, err
-	}
 	got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, Want: resolve.Wants{TileID: true, WorkerID: true}}, in)
+	if err != nil && in.TabID != "" && (defaults.WorkspaceID != "" || defaults.TileID != "") {
+		// Ambient tab could not supply a workspace (for example, a quake
+		// terminal); fall back to the caller-supplied defaults.
+		in.TabID = ""
+		in.WorkspaceID = defaults.WorkspaceID
+		in.TileID = defaults.TileID
+		got, err = resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, Want: resolve.Wants{TileID: true, WorkerID: true}}, in)
+	}
 	if err != nil {
 		return placement{}, err
 	}
@@ -378,9 +464,32 @@ func readAgentOpenMessage(inv *cli.Invocation) (*userMessage, error) {
 	return &userMessage{text: text, attachments: attachments}, nil
 }
 
-// runAgentOpen starts a new agent in a new tab with an optional first message.
-func runAgentOpen(inv *cli.Invocation) (any, error) {
+// agentLaunchFlags holds the pre-validated CLI flags shared by `agent open`
+// and `agent fork`.
+type agentLaunchFlags struct {
+	wait              bool
+	all               bool
+	timeout           time.Duration
+	title             string
+	slug              string
+	opts              map[string]string
+	msg               *userMessage
+	schemaSpec        *outputSchemaSpec
+	setup             *leapmuxv1.GitSetup
+	requestID         string
+	explicitRequestID bool
+	atomicInitialMsg  *string
+	postOpenMsg       bool
+	focus             bool
+}
+
+// parseAgentLaunchFlags validates every flag shared by `agent open` and
+// `agent fork` before any network connection is opened.
+func parseAgentLaunchFlags(inv *cli.Invocation) (*agentLaunchFlags, error) {
 	if err := validateFocusFlags(inv); err != nil {
+		return nil, err
+	}
+	if err := validatePositionFlags(inv); err != nil {
 		return nil, err
 	}
 	wait := boolFlag(inv, "wait")
@@ -395,17 +504,9 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	title := stringFlag(inv, "title")
-	slug := ""
-	if inv.Changed("name") {
-		if inv.Changed("title") {
-			return nil, cli.Usagef("give --name or --title, not both")
-		}
-		slug = strings.TrimSpace(stringFlag(inv, "name"))
-		if err := validateAgentSlug(slug); err != nil {
-			return nil, err
-		}
-		title = slug
+	title, slug, err := parseAgentTitleAndSlug(inv)
+	if err != nil {
+		return nil, err
 	}
 	opts, err := buildAgentSetOptions(
 		stringFlag(inv, "model"),
@@ -420,7 +521,8 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if wait && boolFlag(inv, "all") && msg == nil {
+	all := boolFlag(inv, "all")
+	if wait && all && msg == nil {
 		return nil, cli.Usagef("--all needs --message, --file, or --attach with --wait")
 	}
 	promptUsedStdin := (inv.Changed("message") && stringFlag(inv, "message") == "-") || (inv.Changed("file") && stringFlag(inv, "file") == "-")
@@ -436,164 +538,215 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	open := openSession
-	if wait {
-		open = openStreamSession
-	}
-	s, err := open(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-	bounded := s
-	if wait {
-		bounded = s.bounded()
-		defer bounded.Close()
-	}
-	p, err := bounded.placement()
-	if err != nil {
-		return nil, err
-	}
-	if err := bounded.requireWorker(p); err != nil {
-		return nil, err
-	}
-	if slug != "" {
-		if err := bounded.ensureUniqueAgentSlug(slug, requestScopedID(requestID, requestScopeAgentOpen, p.WorkerID)); err != nil {
-			return nil, err
-		}
-	}
-	dir := workingDir(inv)
-	if selector := setup.GetUseWorktree(); selector != nil {
-		dir, err = bounded.worktreeRepoDir(p.WorkerID, selector)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if err := maybePreflightWorker(bounded.ctx, s.c, p.WorkerID); err != nil {
-		return nil, err
-	}
-	provider := defaultProviderInput(inv)
 	// Pass initial_message atomically in OpenAgent when there are no attachments
 	// and --wait is not requested. When --attach or --wait is used, send via
 	// EnqueueAgentInput so attachments and exact reply tracking work uniformly.
-	var atomicInitialMessage *string
+	var atomicInitialMsg *string
 	postOpenMsg := false
 	if msg != nil {
 		if len(msg.attachments) == 0 && !wait {
 			text := msg.text
-			atomicInitialMessage = &text
+			atomicInitialMsg = &text
 		} else {
 			postOpenMsg = true
 		}
 	}
-	focus := shouldFocusNewTab(inv)
-	var result *openAgentResult
-	stage := retryStageBeforeSend
-	err = withWorkerChannel(bounded.ctx, s.c, p.WorkerID, func(w workerCall) error {
-		resolvedProvider, err := resolveProvider(bounded.ctx, provider, w.Call)
-		if err != nil {
-			return err
-		}
-		stage = retryStageDuringSend
-		result, err = openAgentAndAddTab(bounded.ctx, s.c, w, openAgentArgs{
-			WorkspaceID:    p.WorkspaceID,
-			WorkerID:       p.WorkerID,
-			TileID:         p.TileID,
-			Provider:       resolvedProvider,
-			Model:          stringFlag(inv, "model"),
-			Effort:         stringFlag(inv, "effort"),
-			Title:          title,
-			PermissionMode: stringFlag(inv, "permission-mode"),
-			Options:        opts,
-			WorkingDir:     dir,
-			InitialMessage: atomicInitialMessage,
-			SessionID:      stringFlag(inv, "resume"),
-			GitSetup:       setup,
-			Position:       p.Position,
-			RequestID:      requestID,
-		})
-		if err != nil {
-			return err
-		}
-		if focus {
-			_ = w.Call(bounded.ctx, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: result.Agent.GetId()}, nil)
-		}
-		return nil
-	})
+	return &agentLaunchFlags{
+		wait:              wait,
+		all:               all,
+		timeout:           timeout,
+		title:             title,
+		slug:              slug,
+		opts:              opts,
+		msg:               msg,
+		schemaSpec:        schemaSpec,
+		setup:             setup,
+		requestID:         requestID,
+		explicitRequestID: explicitRequestID,
+		atomicInitialMsg:  atomicInitialMsg,
+		postOpenMsg:       postOpenMsg,
+		focus:             shouldFocusNewTab(inv),
+	}, nil
+}
+
+// prepareSpawnSession opens the session pair, resolves placement and Worker,
+// and resolves the working directory (including --use-worktree lookup) for
+// `agent open` and `terminal open`.
+func prepareSpawnSession(inv *cli.Invocation, wait bool, setup *leapmuxv1.GitSetup) (stream, callSession *session, closeAll func(), p placement, dir string, err error) {
+	stream, callSession, closeAll, err = openWaitableSession(inv, wait)
 	if err != nil {
-		return nil, wrapRetryReceipt(err, stage, retryReceipt{
-			RequestID:    requestID,
-			Explicit:     explicitRequestID,
-			RetryCommand: buildAgentOpenRetryCmd(inv, requestID),
-		})
+		return nil, nil, nil, placement{}, "", err
 	}
-	agentTarget := tabTarget{
-		ID:          result.Agent.GetId(),
-		Type:        leapmuxv1.TabType_TAB_TYPE_AGENT,
-		WorkerID:    p.WorkerID,
-		WorkspaceID: p.WorkspaceID,
-		TileID:      result.TileID,
+	p, err = callSession.placement()
+	if err != nil {
+		closeAll()
+		return nil, nil, nil, placement{}, "", err
 	}
-	if postOpenMsg {
-		inputID := requestScopedID(requestID, requestScopeAgentSend, agentTarget.ID)
-		if !wait {
-			if _, err := enqueueAgentInput(bounded.ctx, s.c, agentTarget, msg.request(agentTarget.ID, inputID)); err != nil {
-				return nil, wrapRetryReceipt(err, retryStageDuringSend, retryReceipt{
-					RequestID:      requestID,
-					Explicit:       explicitRequestID,
-					CreatedAgentID: agentTarget.ID,
-					QueryCommand:   buildAgentRequestStatusCmd(agentTarget.ID, requestID),
-					RetryCommand:   buildAgentOpenRetryCmd(inv, requestID),
-				})
-			}
-		} else {
-			replyRes, outcome, msgStage, wErr := sendAndWait(s, sendAndWaitRequest{
-				target:    agentTarget,
-				message:   *msg,
-				requestID: requestID,
-				inputID:   inputID,
-				delivery:  sendDeliveryNormal,
-				all:       boolFlag(inv, "all"),
-				timeout:   timeout,
-				schema:    schemaSpec,
-			})
-			if wErr != nil {
-				return nil, wrapRetryReceipt(wErr, msgStage, retryReceipt{
-					RequestID:      requestID,
-					Explicit:       explicitRequestID,
-					CreatedAgentID: agentTarget.ID,
-					QueryCommand:   buildAgentRequestStatusCmd(agentTarget.ID, requestID),
-					RetryCommand:   buildAgentOpenRetryCmd(inv, requestID),
-				})
-			}
-			replyRes.RequestID = requestID
-			if outcome == replyWaitSettled {
-				return replyRes, nil
-			}
-			return nil, agentReplyEnded(inv.Printer, replyRes, outcome, timeout)
+	if err = callSession.requireWorker(p); err != nil {
+		closeAll()
+		return nil, nil, nil, placement{}, "", err
+	}
+	dir = workingDir(inv)
+	if selector := setup.GetUseWorktree(); selector != nil {
+		dir, err = callSession.worktreeRepoDir(p.WorkerID, selector)
+		if err != nil {
+			closeAll()
+			return nil, nil, nil, placement{}, "", err
 		}
-	} else if wait {
-		return waitNewAgentSettled(inv, s, agentTarget, timeout, openedTab{
-			ID:          result.Agent.GetId(),
-			Type:        tabTypeName(leapmuxv1.TabType_TAB_TYPE_AGENT),
-			Title:       result.Agent.GetTitle(),
-			WorkspaceID: p.WorkspaceID,
-			WorkerID:    p.WorkerID,
-			TileID:      result.TileID,
-			Position:    result.Position,
-			RequestID:   requestID,
-		})
 	}
-	return openedTab{
+	return stream, callSession, closeAll, p, dir, nil
+}
+
+// revealTabBestEffort asks the Worker to focus tabID in open frontends when
+// focus is true. Reveal is a transient UI hint, so errors are ignored.
+func revealTabBestEffort(ctx context.Context, w workerCall, focus bool, tabID string) {
+	if !focus || tabID == "" {
+		return
+	}
+	_ = w.Call(ctx, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: tabID}, nil)
+}
+
+// finishAgentLaunch completes `agent open` or `agent fork` after the agent tab
+// has been created: running sendAndWait for a waited message, waiting for the
+// agent to settle when --wait has no message, or returning the openedTab.
+func finishAgentLaunch(
+	inv *cli.Invocation,
+	s *session,
+	p placement,
+	result *openAgentResult,
+	flags *agentLaunchFlags,
+	buildRetryCmd func(*cli.Invocation, string) string,
+) (any, error) {
+	tab := openedTab{
 		ID:          result.Agent.GetId(),
-		Type:        tabTypeName(leapmuxv1.TabType_TAB_TYPE_AGENT),
+		Type:        resolve.TabTypeWireName(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		Title:       result.Agent.GetTitle(),
 		WorkspaceID: p.WorkspaceID,
 		WorkerID:    p.WorkerID,
 		TileID:      result.TileID,
 		Position:    result.Position,
-		RequestID:   requestID,
-	}, nil
+		RequestID:   flags.requestID,
+	}
+	agentTarget := tabTarget{
+		ID:          tab.ID,
+		Type:        leapmuxv1.TabType_TAB_TYPE_AGENT,
+		WorkerID:    p.WorkerID,
+		WorkspaceID: p.WorkspaceID,
+		TileID:      result.TileID,
+	}
+	if flags.postOpenMsg && flags.wait {
+		inputID := requestScopedID(flags.requestID, requestScopeAgentSend, agentTarget.ID)
+		replyRes, outcome, msgStage, wErr := sendAndWait(s, sendAndWaitRequest{
+			target:    agentTarget,
+			message:   *flags.msg,
+			requestID: flags.requestID,
+			inputID:   inputID,
+			delivery:  sendDeliveryNormal,
+			all:       flags.all,
+			timeout:   flags.timeout,
+			schema:    flags.schemaSpec,
+		})
+		if wErr != nil {
+			return nil, wrapRetryReceipt(wErr, msgStage, retryReceipt{
+				RequestID:      flags.requestID,
+				Explicit:       flags.explicitRequestID,
+				CreatedAgentID: agentTarget.ID,
+				QueryCommand:   buildAgentRequestStatusCmd(agentTarget.ID, flags.requestID),
+				RetryCommand:   buildRetryCmd(inv, flags.requestID),
+			})
+		}
+		replyRes.RequestID = flags.requestID
+		if outcome == replyWaitSettled {
+			return replyRes, nil
+		}
+		return nil, agentReplyEnded(inv.Printer, replyRes, outcome, flags.timeout)
+	}
+	if flags.wait {
+		return waitNewAgentSettled(inv, s, agentTarget, flags.timeout, tab)
+	}
+	return tab, nil
+}
+
+// runAgentOpen starts a new agent in a new tab with an optional first message.
+func runAgentOpen(inv *cli.Invocation) (any, error) {
+	flags, err := parseAgentLaunchFlags(inv)
+	if err != nil {
+		return nil, err
+	}
+	s, callSession, closeAll, p, dir, err := prepareSpawnSession(inv, flags.wait, flags.setup)
+	if err != nil {
+		return nil, err
+	}
+	defer closeAll()
+
+	if flags.slug != "" {
+		excludeID := requestScopedID(flags.requestID, requestScopeAgentOpen, p.WorkerID)
+		g, gctx := errgroup.WithContext(callSession.ctx)
+		g.Go(func() error {
+			return callSession.ensureUniqueAgentSlugContext(gctx, flags.slug, excludeID)
+		})
+		g.Go(func() error {
+			return maybePreflightWorker(gctx, s.c, p.WorkerID)
+		})
+		if err := g.Wait(); err != nil {
+			return nil, err
+		}
+	} else if err := maybePreflightWorker(callSession.ctx, s.c, p.WorkerID); err != nil {
+		return nil, err
+	}
+
+	provider := defaultProviderInput(inv)
+	var (
+		result *openAgentResult
+		opened bool
+	)
+	stage := retryStageBeforeSend
+	err = withWorkerChannel(callSession.ctx, s.c, p.WorkerID, func(w workerCall) error {
+		resolvedProvider, err := resolveProvider(callSession.ctx, provider, w.Call)
+		if err != nil {
+			return err
+		}
+		stage = retryStageDuringSend
+		result, err = openAgentAndAddTab(callSession.ctx, s.c, w, openAgentArgs{
+			WorkspaceID:    p.WorkspaceID,
+			WorkerID:       p.WorkerID,
+			TileID:         p.TileID,
+			Provider:       resolvedProvider,
+			Title:          flags.title,
+			Options:        flags.opts,
+			WorkingDir:     dir,
+			InitialMessage: flags.atomicInitialMsg,
+			SessionID:      stringFlag(inv, "resume"),
+			GitSetup:       flags.setup,
+			Position:       p.Position,
+			RequestID:      flags.requestID,
+		})
+		if err != nil {
+			return err
+		}
+		opened = true
+		revealTabBestEffort(callSession.ctx, w, flags.focus, result.Agent.GetId())
+		if flags.postOpenMsg && !flags.wait {
+			inputID := requestScopedID(flags.requestID, requestScopeAgentSend, result.Agent.GetId())
+			if err := w.Call(callSession.ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, flags.msg.request(result.Agent.GetId(), inputID), nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		receipt := retryReceipt{
+			RequestID:    flags.requestID,
+			Explicit:     flags.explicitRequestID,
+			RetryCommand: buildAgentOpenRetryCmd(inv, flags.requestID),
+		}
+		if opened {
+			receipt.CreatedAgentID = result.Agent.GetId()
+			receipt.QueryCommand = buildAgentRequestStatusCmd(result.Agent.GetId(), flags.requestID)
+		}
+		return nil, wrapRetryReceipt(err, stage, receipt)
+	}
+	return finishAgentLaunch(inv, s, p, result, flags, buildAgentOpenRetryCmd)
 }
 
 func waitNewAgentSettled(inv *cli.Invocation, s *session, agentTarget tabTarget, timeout time.Duration, tab openedTab) (any, error) {
@@ -607,9 +760,11 @@ func waitNewAgentSettled(inv *cli.Invocation, s *session, agentTarget tabTarget,
 	stopFeed := startActivityFeed(waitCtx, workerActivitySource(s.c, agentTarget.WorkerID), []string{agentTarget.ID}, events)
 	defer stopFeed()
 	defer waitCancel()
+	ch := newPersistentWorkerChannel(s.c, agentTarget.WorkerID)
+	defer ch.Close()
 	queues := &queueWatch{
 		read: func(ctx context.Context, agentID string) (*leapmuxv1.AgentInputQueueSnapshot, error) {
-			response, err := workerReplyReader(s.c, agentTarget.WorkerID, agentID).readQueue(ctx, "")
+			response, err := channelReplyReader(ch, agentID).readQueue(ctx, "")
 			return response.GetSnapshot(), err
 		},
 		notice: func(format string, args ...any) {
@@ -633,6 +788,9 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 	if err := validateFocusFlags(inv); err != nil {
 		return nil, err
 	}
+	if err := validatePositionFlags(inv); err != nil {
+		return nil, err
+	}
 	wait, waitSpec, err := optionalTerminalWaitSpec(inv, false)
 	if err != nil {
 		return nil, err
@@ -646,34 +804,11 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	open := openSession
-	if wait {
-		open = openStreamSession
-	}
-	s, err := open(inv)
+	s, callSession, closeAll, p, dir, err := prepareSpawnSession(inv, wait, setup)
 	if err != nil {
 		return nil, err
 	}
-	defer s.Close()
-	callSession := s
-	if wait {
-		callSession = s.bounded()
-		defer callSession.Close()
-	}
-	p, err := callSession.placement()
-	if err != nil {
-		return nil, err
-	}
-	if err := callSession.requireWorker(p); err != nil {
-		return nil, err
-	}
-	dir := workingDir(inv)
-	if selector := setup.GetUseWorktree(); selector != nil {
-		dir, err = callSession.worktreeRepoDir(p.WorkerID, selector)
-		if err != nil {
-			return nil, err
-		}
-	}
+	defer closeAll()
 	if err := maybePreflightWorker(callSession.ctx, s.c, p.WorkerID); err != nil {
 		return nil, err
 	}
@@ -696,9 +831,7 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return err
 		}
-		if focus {
-			_ = w.Call(callSession.ctx, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: result.TerminalID}, nil)
-		}
+		revealTabBestEffort(callSession.ctx, w, focus, result.TerminalID)
 		return nil
 	})
 	if err != nil {
@@ -716,7 +849,7 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 	}
 	return openedTab{
 		ID:          result.TerminalID,
-		Type:        tabTypeName(leapmuxv1.TabType_TAB_TYPE_TERMINAL),
+		Type:        resolve.TabTypeWireName(leapmuxv1.TabType_TAB_TYPE_TERMINAL),
 		Title:       result.Title,
 		WorkspaceID: p.WorkspaceID,
 		WorkerID:    p.WorkerID,
@@ -725,31 +858,92 @@ func runTerminalOpen(inv *cli.Invocation) (any, error) {
 	}, nil
 }
 
+// parseTabPresentation validates and builds a TabPresentation from CLI flag
+// values. Empty displayMode or viewMode leaves that register unset;
+// hasDiffBase distinguishes an explicit --diff-base from an omitted flag.
+func parseTabPresentation(displayMode, viewMode, diffBase string, hasDiffBase bool) (*leapmuxv1.TabPresentation, error) {
+	presentation := &leapmuxv1.TabPresentation{}
+	if displayMode != "" {
+		n, ok := parseEnumToken(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED, displayMode)
+		if !ok {
+			return nil, cli.Usagef("--display-mode must be one of %s; got %q", strings.Join(enumTokens(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED), ", "), displayMode)
+		}
+		presentation.DisplayMode = leapmuxv1.TabDisplayMode(n).Enum()
+	}
+	if viewMode != "" {
+		n, ok := parseEnumToken(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED, viewMode)
+		if !ok {
+			return nil, cli.Usagef("--view-mode must be one of %s; got %q", strings.Join(enumTokens(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED), ", "), viewMode)
+		}
+		presentation.FileViewMode = leapmuxv1.TabFileViewMode(n).Enum()
+	}
+	if hasDiffBase {
+		presentation.FileDiffBase = &diffBase
+	}
+	return presentation, nil
+}
+
+// resolvePlacementTile resolves p's destination tile against state and runs
+// preflightTile to confirm the tile exists in p.WorkspaceID.
+func resolvePlacementTile(state *leapmuxv1.UserMaterialized, p placement) (string, error) {
+	// --first and --last need a tile to be first or last on: the placement's
+	// tile, else the first tile of the workspace. Relative insertion derives
+	// the tile from the reference tab instead.
+	tileID := p.TileID
+	if tileID == "" && (p.Position.kind == positionFirst || p.Position.kind == positionLast) {
+		ws, ok := state.GetWorkspaces()[p.WorkspaceID]
+		if !ok || ws == nil {
+			return "", cli.Newf(cli.CodeNotFound, "no such workspace: %s", p.WorkspaceID)
+		}
+		tileID = firstLiveLeaf(state, ws.GetRootNodeId())
+	}
+	resolvedTileID, _, err := resolvePositionSpec(state, tileID, "", p.Position)
+	if err != nil {
+		return "", err
+	}
+	if err := preflightTile(state, p.WorkspaceID, resolvedTileID); err != nil {
+		return "", err
+	}
+	return resolvedTileID, nil
+}
+
+// registerTabPayload registers an encrypted FILE or IMAGE tab payload on w,
+// validates the returned publication receipt, and optionally reveals the tab
+// over the same Worker channel.
+func registerTabPayload(ctx context.Context, w workerCall, tabType leapmuxv1.TabType, creation *leapmuxv1.TabCreation, payload *leapmuxv1.TabPayload, focus bool) (*leapmuxv1.RegisterTabPayloadResponse, error) {
+	req := &leapmuxv1.RegisterTabPayloadRequest{Creation: creation, Payload: payload}
+	var resp leapmuxv1.RegisterTabPayloadResponse
+	if err := w.Call(ctx, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, req, &resp); err != nil {
+		return nil, err
+	}
+	if err := validateTabPublication(creation, tabType, resp.GetPublication()); err != nil {
+		return nil, err
+	}
+	revealTabBestEffort(ctx, w, focus, creation.GetTabId())
+	return &resp, nil
+}
+
 // runFileOpen opens a file in a new viewer tab. The path travels to the
 // Worker over the encrypted channel; the hub stores only the tab.
 func runFileOpen(inv *cli.Invocation) (any, error) {
 	if err := validateFocusFlags(inv); err != nil {
 		return nil, err
 	}
-	filePath := inv.Arg("path")
-	presentation := &leapmuxv1.TabPresentation{}
-	if raw := stringFlag(inv, "display-mode"); raw != "" {
-		n, ok := parseEnumToken(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED, raw)
-		if !ok {
-			return nil, cli.Usagef("--display-mode must be one of %s; got %q", strings.Join(enumTokens(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED), ", "), raw)
-		}
-		presentation.DisplayMode = leapmuxv1.TabDisplayMode(n).Enum()
+	if err := validatePositionFlags(inv); err != nil {
+		return nil, err
 	}
-	if raw := stringFlag(inv, "view-mode"); raw != "" {
-		n, ok := parseEnumToken(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED, raw)
-		if !ok {
-			return nil, cli.Usagef("--view-mode must be one of %s; got %q", strings.Join(enumTokens(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED), ", "), raw)
-		}
-		presentation.FileViewMode = leapmuxv1.TabFileViewMode(n).Enum()
+	filePath, err := requireNonEmptyArg(inv, "path")
+	if err != nil {
+		return nil, err
 	}
-	if inv.Changed("diff-base") {
-		diffBase := stringFlag(inv, "diff-base")
-		presentation.FileDiffBase = &diffBase
+	presentation, err := parseTabPresentation(
+		stringFlag(inv, "display-mode"),
+		stringFlag(inv, "view-mode"),
+		stringFlag(inv, "diff-base"),
+		inv.Changed("diff-base"),
+	)
+	if err != nil {
+		return nil, err
 	}
 	s, err := openSession(inv)
 	if err != nil {
@@ -764,25 +958,8 @@ func runFileOpen(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// --first and --last need a tile to be first or last on: the placement's
-	// tile, else the first tile of the workspace. Relative insertion derives
-	// the tile from the reference tab instead.
-	tileID := p.TileID
-	if tileID == "" && (p.Position.kind == positionFirst || p.Position.kind == positionLast) {
-		ws, ok := cc.bs.State.GetWorkspaces()[p.WorkspaceID]
-		if !ok || ws == nil {
-			return nil, cli.Newf(cli.CodeNotFound, "no such workspace: %s", p.WorkspaceID)
-		}
-		tileID = firstLiveLeaf(cc.bs.State, ws.GetRootNodeId())
-	}
-	resolvedTileID, _, err := resolvePositionSpec(cc.bs.State, tileID, "", p.Position)
+	resolvedTileID, err := resolvePlacementTile(cc.bs.State, p)
 	if err != nil {
-		return nil, err
-	}
-	if err := preflightTile(cc.bs.State, p.WorkspaceID, resolvedTileID); err != nil {
-		return nil, err
-	}
-	if err := maybePreflightWorker(cc.ctx, cc.c, p.WorkerID); err != nil {
 		return nil, err
 	}
 	workerID := p.WorkerID
@@ -792,6 +969,9 @@ func runFileOpen(inv *cli.Invocation) (any, error) {
 			return nil, cli.Usagef("no worker hosts a tab of this workspace yet").
 				WithHint("pass --worker <worker>")
 		}
+	}
+	if err := maybePreflightWorker(cc.ctx, cc.c, workerID); err != nil {
+		return nil, err
 	}
 	// --dir defaults to $LEAPMUX_CONTROL_WORKING_DIR, so a `file open` run
 	// from inside an agent or terminal forwards THAT tab's dir -- the same
@@ -803,16 +983,25 @@ func runFileOpen(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	creation.Presentation = presentation
-	publication, err := registerFileTabPayload(cc.ctx, cc.c, workerID, creation, filePath, workingDir(inv))
+	focus := shouldFocusNewTab(inv)
+	var regResp *leapmuxv1.RegisterTabPayloadResponse
+	err = withWorkerChannel(cc.ctx, cc.c, workerID, func(w workerCall) error {
+		var regErr error
+		regResp, regErr = registerTabPayload(cc.ctx, w, leapmuxv1.TabType_TAB_TYPE_FILE, creation, &leapmuxv1.TabPayload{
+			WorkingDir: workingDir(inv),
+			Kind: &leapmuxv1.TabPayload_File{
+				File: &leapmuxv1.FileTabPayload{FilePath: filePath},
+			},
+		}, focus)
+		return regErr
+	})
 	if err != nil {
 		return nil, err
 	}
-	if shouldFocusNewTab(inv) {
-		_ = callInnerRPCBest(cc.ctx, cc.c, workerID, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: creation.GetTabId()}, nil)
-	}
+	publication := regResp.GetPublication()
 	return openedTab{
 		ID:          creation.GetTabId(),
-		Type:        tabTypeName(leapmuxv1.TabType_TAB_TYPE_FILE),
+		Type:        resolve.TabTypeWireName(leapmuxv1.TabType_TAB_TYPE_FILE),
 		WorkspaceID: p.WorkspaceID,
 		WorkerID:    workerID,
 		TileID:      publication.GetTileId(),
@@ -821,27 +1010,24 @@ func runFileOpen(inv *cli.Invocation) (any, error) {
 	}, nil
 }
 
-// registerFileTabPayload keeps the path encrypted and returns the committed tab.
-func registerFileTabPayload(ctx context.Context, c control.Peer, workerID string, creation *leapmuxv1.TabCreation, filePath, workingDir string) (*leapmuxv1.PublishedTab, error) {
-	request := &leapmuxv1.RegisterTabPayloadRequest{Creation: creation, Payload: &leapmuxv1.TabPayload{WorkingDir: workingDir, Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: filePath}}}}
-	var response leapmuxv1.RegisterTabPayloadResponse
-	if err := callInnerRPCBest(ctx, c, workerID, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, request, &response); err != nil {
-		return nil, err
-	}
-	if err := validateTabPublication(creation, leapmuxv1.TabType_TAB_TYPE_FILE, response.GetPublication()); err != nil {
-		return nil, err
-	}
-	return response.GetPublication(), nil
-}
-
-// findWorkerForWorkspaceInState returns the first worker_id hosting a
-// live tab in the given workspace, reading from the already-bootstrapped
-// UserMaterialized state. Used by `file open` when neither --worker nor the
-// tab that runs the command selects a worker — a workspace that has at least
-// one live tab tells us which worker owns its filesystem context.
-// Returns "" when no live worker is on file.
+// findWorkerForWorkspaceInState returns the worker_id hosting the live tab
+// with the lexicographically smallest tab_id in the given workspace, reading
+// from the already-bootstrapped UserMaterialized state. Used by `file open`
+// when neither --worker nor the tab that runs the command selects a worker —
+// a workspace that has at least one live tab tells us which worker owns its
+// filesystem context. Returns "" when no live worker is on file.
 func findWorkerForWorkspaceInState(state *leapmuxv1.UserMaterialized, workspaceID string) string {
-	for _, t := range state.GetTabs() {
+	tabs := state.GetTabs()
+	if len(tabs) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(tabs))
+	for tabID := range tabs {
+		ids = append(ids, tabID)
+	}
+	sort.Strings(ids)
+	for _, tabID := range ids {
+		t := tabs[tabID]
 		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
 			continue
 		}
@@ -849,8 +1035,7 @@ func findWorkerForWorkspaceInState(state *leapmuxv1.UserMaterialized, workspaceI
 		if w == "" {
 			continue
 		}
-		ws := crdt.FindRootWorkspace(state.GetNodes(), state.GetWorkspaces(), t.GetTileId().GetValue())
-		if ws == workspaceID {
+		if nodeWorkspaceFromState(state, t.GetTileId().GetValue()) == workspaceID {
 			return w
 		}
 	}

@@ -296,6 +296,8 @@ message EmailRegistrationInstructionsResponse {}
 
 message ListWorkersRequest {
   PageRequest page = 1;
+  // Narrow to workers whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 2;
 }
 
 message ListWorkersResponse {

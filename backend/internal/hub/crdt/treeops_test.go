@@ -67,3 +67,100 @@ func TestGridChildIDsOrderTieBreakAndValidation(t *testing.T) {
 	assert.Nil(t, gridChildIDs(nodes, children, MaxGridDimension+1, 1))
 	assert.Empty(t, gridChildIDs(nodes, children, 0, 3))
 }
+
+func TestLocateTileWorkspace_ResolvesLiveFloatingWindowTilesAndRejectsTombstoned(t *testing.T) {
+	t.Parallel()
+
+	mgr := &Manager{
+		state: &leapmuxv1.UserCrdtState{
+			Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{
+				"ws-1": {WorkspaceId: "ws-1", RootNodeId: "ws-root"},
+			},
+			FloatingWindows: map[string]*leapmuxv1.FloatingWindowRecord{
+				"fw-live": {
+					WindowId:    "fw-live",
+					WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+					RootNodeId:  "fw-root",
+				},
+				"fw-dead": {
+					WindowId:    "fw-dead",
+					WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+					RootNodeId:  "dead-root",
+					TombstoneAt: &leapmuxv1.HLC{Physical: 10, Logical: 0, ClientId: "c1"},
+				},
+			},
+			Nodes: map[string]*leapmuxv1.NodeRecord{
+				"ws-root":   {NodeId: "ws-root"},
+				"ws-leaf":   {NodeId: "ws-leaf", ParentId: "ws-root"},
+				"fw-root":   {NodeId: "fw-root"},
+				"fw-split":  {NodeId: "fw-split", ParentId: "fw-root"},
+				"fw-leaf":   {NodeId: "fw-leaf", ParentId: "fw-split"},
+				"dead-root": {NodeId: "dead-root"},
+				"dead-leaf": {NodeId: "dead-leaf", ParentId: "dead-root"},
+			},
+		},
+	}
+
+	assert.Equal(t, "ws-1", mgr.LocateTileWorkspace("ws-leaf"))
+	assert.Equal(t, "ws-1", mgr.LocateTileWorkspace("fw-root"), "live floating window root must resolve to its workspace")
+	assert.Equal(t, "ws-1", mgr.LocateTileWorkspace("fw-leaf"), "nested descendant inside a live floating window must resolve to its workspace")
+	assert.Empty(t, mgr.LocateTileWorkspace("dead-root"), "tombstoned floating window root must not resolve")
+	assert.Empty(t, mgr.LocateTileWorkspace("dead-leaf"), "descendant of tombstoned floating window must not resolve")
+}
+
+func TestFindNodeRootAndFindRootWorkspace(t *testing.T) {
+	t.Parallel()
+
+	workspaces := map[string]*leapmuxv1.WorkspaceContentsRecord{
+		"ws-1": {WorkspaceId: "ws-1", RootNodeId: "ws-root"},
+	}
+	floating := map[string]*leapmuxv1.FloatingWindowRecord{
+		"fw-live": {
+			WindowId:    "fw-live",
+			WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+			RootNodeId:  "fw-root",
+		},
+		"fw-collide": {
+			WindowId:    "fw-collide",
+			WorkspaceId: &leapmuxv1.LWWString{Value: "ws-other"},
+			RootNodeId:  "ws-root",
+		},
+		"fw-dead": {
+			WindowId:    "fw-dead",
+			WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+			RootNodeId:  "dead-root",
+			TombstoneAt: &leapmuxv1.HLC{Physical: 5, Logical: 0, ClientId: "c1"},
+		},
+	}
+	nodes := map[string]*leapmuxv1.NodeRecord{
+		"ws-root":   {NodeId: "ws-root"},
+		"ws-leaf":   {NodeId: "ws-leaf", ParentId: "ws-root"},
+		"fw-root":   {NodeId: "fw-root"},
+		"fw-grid":   {NodeId: "fw-grid", ParentId: "fw-root"},
+		"fw-cell":   {NodeId: "fw-cell", ParentId: "fw-grid"},
+		"dead-root": {NodeId: "dead-root"},
+		"dead-leaf": {NodeId: "dead-leaf", ParentId: "dead-root"},
+		"orphan":    {NodeId: "orphan", ParentId: "missing"},
+		"cyc-a":     {NodeId: "cyc-a", ParentId: "cyc-b"},
+		"cyc-b":     {NodeId: "cyc-b", ParentId: "cyc-a"},
+	}
+
+	ws, root, isFloat := FindNodeRoot(nodes, workspaces, floating, "ws-leaf")
+	assert.Equal(t, "ws-1", ws)
+	assert.Equal(t, "ws-root", root)
+	assert.False(t, isFloat, "workspace root must outrank colliding floating window root")
+
+	ws, root, isFloat = FindNodeRoot(nodes, workspaces, floating, "fw-cell")
+	assert.Equal(t, "ws-1", ws)
+	assert.Equal(t, "fw-root", root)
+	assert.True(t, isFloat)
+	assert.Equal(t, "ws-1", FindRootWorkspace(nodes, workspaces, floating, "fw-cell"))
+
+	for _, id := range []string{"", "dead-root", "dead-leaf", "orphan", "cyc-a", "missing"} {
+		ws, root, isFloat = FindNodeRoot(nodes, workspaces, floating, id)
+		assert.Empty(t, ws, "node %q", id)
+		assert.Empty(t, root, "node %q", id)
+		assert.False(t, isFloat, "node %q", id)
+		assert.Empty(t, FindRootWorkspace(nodes, workspaces, floating, id), "node %q", id)
+	}
+}

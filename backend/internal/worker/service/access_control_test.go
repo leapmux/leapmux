@@ -479,6 +479,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, func() proto.Message {
 			return &leapmuxv1.InspectLastTabCloseRequest{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure, leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure, func() proto.Message {
+			return &leapmuxv1.InspectTabsCloseRequest{Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}}}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGetGitDiffProcedure, leapmuxv1connect.WorkerGitServiceGetGitDiffProcedure, func() proto.Message {
 			return &leapmuxv1.GetGitDiffRequest{Path: "/tmp"}
 		}},

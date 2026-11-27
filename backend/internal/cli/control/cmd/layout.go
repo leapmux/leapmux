@@ -32,7 +32,7 @@ import (
 // the same plan-aligned op shape.
 
 func newTileCommand() *cobra.Command {
-	withTabsUsage := `what happens to the tabs on the tile: "close" closes them; "move" moves them to the neighbouring tile; required when the tile has tabs`
+	withTabsUsage := `what happens to the tabs on the tile: "close" closes them, or "move" moves them to the neighbouring tile (required when the tile has tabs)`
 	return cli.Group("tile", "Split, close and arrange the tiles of a workspace",
 		cli.NewLeaf(cli.Leaf{
 			Use:     "split <tile>",
@@ -94,7 +94,7 @@ func newTileCommand() *cobra.Command {
 				{Comment: "Turn a grid back into one tile that keeps its tabs.", Command: "leapmux tile remove-grid ab12cd34 --with-tabs move"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				fs.String("with-tabs", "", `what happens to the tabs in the grid: "close" closes them; "move" turns the grid into one tile that holds them; required when the grid has tabs`)
+				fs.String("with-tabs", "", `what happens to the tabs in the grid: "close" closes them, or "move" turns the grid into one tile that holds them (required when the grid has tabs)`)
 				cli.SetEnum(fs, "with-tabs", "close", "move")
 				fs.Bool("allow-busy", false, allowBusyFlagHelp)
 				fs.Bool(allowSelfFlag, false, "remove the grid even when this tab sits in it, which ends this command's own process")
@@ -146,8 +146,12 @@ func newTileCommand() *cobra.Command {
 			Run:      runTileResize,
 		}),
 		cli.NewLeaf(cli.Leaf{
-			Use:     "swap <tile-a> <tile-b>",
-			Short:   "Swap the positions of two tiles in the same workspace",
+			Use:   "swap <tile-a> <tile-b>",
+			Short: "Swap the positions of two tiles in the same workspace",
+			Long: `Swap two tiles in the same workspace. Sibling tiles swap positions in place
+(reissued_ids: false). Tiles with different parents are cloned into each
+other's slots with fresh tile IDs (reissued_ids: true), and their tabs move to
+the cloned tiles.`,
 			Mutates: true,
 			Args: map[string]string{
 				"tile-a": resolve.KindTile.Help(),
@@ -172,9 +176,7 @@ func newLayoutCommand() *cobra.Command {
 				{Comment: "Save a layout, and restore it later.", Command: "leapmux layout get --json > layout.json"},
 			},
 			Complete: completeTargets,
-			Run: func(inv *cli.Invocation) (any, error) {
-				return runLayoutTree(inv, true)
-			},
+			Run:      runLayoutTree,
 		}),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "set <workspace> [file]",
@@ -211,23 +213,109 @@ every workspace.`,
 // openTile resolves the tile target input, bootstraps the CRDT of its
 // workspace, and checks that the tile is live there. It returns the open
 // CRDT call, the workspace id and the tile id.
+//
+// For a bare tile id prefix, openTile bootstraps the materialized snapshot
+// once and resolves both the tile id and its workspace from that snapshot
+// instead of issuing separate GetMaterialized, LocateTile, and GetMaterialized
+// calls.
 func (s *session) openTile(input string) (cc *crdtCall, workspaceID, tileID string, err error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed != "" &&
+		trimmed != resolve.SelfTarget &&
+		resolve.ExplicitID(resolve.KindTile, trimmed) == "" &&
+		!strings.HasPrefix(trimmed, "id:") &&
+		!strings.HasPrefix(trimmed, "title:") &&
+		!strings.HasPrefix(trimmed, "name:") &&
+		len(trimmed) >= resolve.MinPrefixLength {
+		cc, err = s.openCRDT()
+		if err != nil {
+			return nil, "", "", err
+		}
+		var ok bool
+		tileID, ok, err = lookupTileInState(cc.bs.State, "", trimmed)
+		if err != nil {
+			return nil, "", "", err
+		}
+		if !ok {
+			return nil, "", "", cli.Newf(cli.CodeNotFound, "no tile matches id prefix %s", trimmed).
+				WithHint(`list tiles with "leapmux layout get"`)
+		}
+		workspaceID = nodeWorkspaceFromState(cc.bs.State, tileID)
+		if workspaceID == "" {
+			return nil, "", "", cli.Newf(cli.CodeNotFound, "tile %s does not belong to any workspace", tileID)
+		}
+		if err := preflightTile(cc.bs.State, workspaceID, tileID); err != nil {
+			return nil, "", "", err
+		}
+		return cc, workspaceID, tileID, nil
+	}
+
 	target, err := s.resolveOne(resolve.KindTile, input)
 	if err != nil {
 		return nil, "", "", err
 	}
-	got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, TileID: true}, resolve.Inputs{TileID: target.ID, ExplicitTileID: true})
+	tileID = target.ID
+	if target.Self {
+		if selfID := s.selfTabID(); selfID != "" {
+			if row, ok := s.lookupLocatedTab(leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, selfID); ok {
+				workspaceID = row.GetWorkspaceId()
+			}
+		}
+	}
+	if workspaceID == "" {
+		got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, TileID: true}, resolve.Inputs{TileID: tileID, ExplicitTileID: true})
+		if err != nil {
+			return nil, "", "", err
+		}
+		workspaceID = got.WorkspaceID
+		tileID = got.TileID
+	}
+	cc, err = s.openCRDT(workspaceID)
 	if err != nil {
 		return nil, "", "", err
 	}
-	cc, err = s.openCRDT(got.WorkspaceID)
-	if err != nil {
+	if err := preflightTile(cc.bs.State, workspaceID, tileID); err != nil {
 		return nil, "", "", err
 	}
-	if err := preflightTile(cc.bs.State, got.WorkspaceID, got.TileID); err != nil {
-		return nil, "", "", err
+	return cc, workspaceID, tileID, nil
+}
+
+// lookupTileInState matches handle against live nodes in state by exact ID or
+// unique prefix of at least resolve.MinPrefixLength characters. When wsID is
+// non-empty, only live nodes belonging to wsID are considered. Returns
+// (tileID, true, nil) on a unique match, ("", false, nil) when no node matches,
+// or ("", false, err) when multiple nodes share the prefix.
+func lookupTileInState(state *leapmuxv1.UserMaterialized, wsID, handle string) (string, bool, error) {
+	nodes := state.GetNodes()
+	liveIDs := make([]string, 0, len(nodes))
+	for nodeID, node := range nodes {
+		if node == nil || !crdt.HLCIsZero(node.GetTombstoneAt()) {
+			continue
+		}
+		if wsID != "" && nodeWorkspaceFromState(state, nodeID) != wsID {
+			continue
+		}
+		liveIDs = append(liveIDs, nodeID)
 	}
-	return cc, got.WorkspaceID, got.TileID, nil
+	sort.Strings(liveIDs)
+	matched, ambiguous, ok := lookupByIDPrefixMin(liveIDs, handle, resolve.MinPrefixLength, func(id string) string { return id })
+	if ok {
+		return matched, true, nil
+	}
+	if len(ambiguous) > 0 {
+		cands := make([]cli.Candidate, 0, len(ambiguous))
+		for _, nodeID := range ambiguous {
+			cands = append(cands, cli.Candidate{
+				ID:   nodeID,
+				Kind: kindLabel(nodes[nodeID].GetKind().GetValue()),
+			})
+		}
+		err := cli.Newf(cli.CodeAmbiguousTarget, "%d tiles match id prefix %s", len(cands), handle).
+			WithHint("type more characters of the id, or the full id")
+		err.Candidates = cands
+		return "", false, err
+	}
+	return "", false, nil
 }
 
 // parseSplitDirection maps the user-facing direction string to the
@@ -250,7 +338,10 @@ func parseSplitDirection(s string) (leapmuxv1.SplitDirection, bool) {
 // layoutNode is one node of a layout read or submitted to the CLI.
 type layoutNode struct {
 	// NodeID identifies the source node. layout set retains the workspace root ID.
-	NodeID    string        `json:"node_id,omitempty"`
+	NodeID string `json:"node_id,omitempty"`
+	// TileRef is internal template metadata that maps a synthesized leaf back
+	// to its template tile_ref. It is omitted from layout JSON.
+	TileRef   string        `json:"-"`
 	Kind      string        `json:"kind"`
 	Direction string        `json:"direction,omitempty"`
 	Ratios    []float64     `json:"ratios,omitempty"`
@@ -268,7 +359,7 @@ type layoutFloatingWindow struct {
 	Tree       *layoutNode `json:"tree"`
 }
 
-// layoutTree is the result of `tile list` and `layout get`.
+// layoutTree is the result of `layout get`.
 type layoutTree struct {
 	WorkspaceID string      `json:"workspace_id"`
 	RootNodeID  string      `json:"root_node_id"`
@@ -276,8 +367,7 @@ type layoutTree struct {
 	// FloatingWindows holds live floating windows anchored in this workspace.
 	FloatingWindows []layoutFloatingWindow `json:"floating_windows,omitempty"`
 	// TabsByTile maps each live leaf tile in this workspace to its ordered live tabs.
-	// Only `layout get` prints it.
-	TabsByTile map[string][]layoutTab `json:"tabs_by_tile,omitempty"`
+	TabsByTile map[string][]layoutTab `json:"tabs_by_tile"`
 }
 
 // QuietLines prints the live leaf tile IDs of the workspace.
@@ -302,6 +392,15 @@ func (l layoutTree) QuietLines() []string {
 	return ids
 }
 
+// treeBranch returns the box-drawing connector for a tree entry and the
+// continuation prefix for its children.
+func treeBranch(prefix string, last bool) (connector, nextPrefix string) {
+	if last {
+		return "└─ ", prefix + "   "
+	}
+	return "├─ ", prefix + "│  "
+}
+
 // RenderText prints the tree with Unicode box-drawing connectors, percentage
 // split ratios, live tabs under each leaf, and any floating windows.
 func (l layoutTree) RenderText(w io.Writer) error {
@@ -313,13 +412,7 @@ func (l layoutTree) RenderText(w io.Writer) error {
 		return err
 	}
 	for i, fw := range l.FloatingWindows {
-		lastFW := i == len(l.FloatingWindows)-1
-		connector := "├─ "
-		childPrefix := "│  "
-		if lastFW {
-			connector = "└─ "
-			childPrefix = "   "
-		}
+		connector, childPrefix := treeBranch("", i == len(l.FloatingWindows)-1)
 		if _, err := fmt.Fprintf(w, "%sfloating-window %s\n", connector, cli.ShortID(fw.ID)); err != nil {
 			return err
 		}
@@ -345,12 +438,7 @@ func (l layoutTree) renderNode(w io.Writer, node *layoutNode, prefix string, las
 	if node == nil {
 		return nil
 	}
-	connector := "├─ "
-	nextPrefix := prefix + "│  "
-	if last {
-		connector = "└─ "
-		nextPrefix = prefix + "   "
-	}
+	connector, nextPrefix := treeBranch(prefix, last)
 	line := prefix + connector + node.Kind
 	if node.NodeID != "" {
 		line += " " + cli.ShortID(node.NodeID)
@@ -374,10 +462,7 @@ func (l layoutTree) renderNode(w io.Writer, node *layoutNode, prefix string, las
 	}
 	totalChildren := len(tabs) + len(node.Children)
 	for i, tab := range tabs {
-		tabConn := "├─ "
-		if i == totalChildren-1 {
-			tabConn = "└─ "
-		}
+		tabConn, _ := treeBranch(nextPrefix, i == totalChildren-1)
 		tabLine := fmt.Sprintf("[%s %s]", tab.Type, cli.ShortID(tab.ID))
 		if tab.Title != "" {
 			tabLine += fmt.Sprintf(" %q", cli.SanitizeSingleLine(tab.Title))
@@ -408,15 +493,16 @@ type layoutTab struct {
 }
 
 // buildLayoutTreeForWorkspace projects one workspace's main tile tree, its
-// live floating windows, and (when includeTabs is true) only the live tabs
-// placed on nodes belonging to that workspace, ordered by LexoRank position.
-func buildLayoutTreeForWorkspace(state *leapmuxv1.UserMaterialized, wsID string, includeTabs bool) layoutTree {
+// live floating windows, and the live tabs placed on nodes belonging to that
+// workspace, ordered by LexoRank position.
+func buildLayoutTreeForWorkspace(state *leapmuxv1.UserMaterialized, wsID string) layoutTree {
 	rec := state.GetWorkspaces()[wsID]
 	childrenByParent := crdt.LiveChildrenByParent(state)
 	out := layoutTree{
 		WorkspaceID: wsID,
 		RootNodeID:  rec.GetRootNodeId(),
 		Tree:        projectLayoutNode(state, childrenByParent, rec.GetRootNodeId()),
+		TabsByTile:  map[string][]layoutTab{},
 	}
 
 	wsNodes := map[string]bool{}
@@ -456,53 +542,42 @@ func buildLayoutTreeForWorkspace(state *leapmuxv1.UserMaterialized, wsID string,
 		})
 	}
 
-	if includeTabs {
-		out.TabsByTile = map[string][]layoutTab{}
-		for _, t := range state.GetTabs() {
-			if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
-				continue
-			}
-			tile := t.GetTileId().GetValue()
-			if tile == "" || !wsNodes[tile] {
-				continue
-			}
-			out.TabsByTile[tile] = append(out.TabsByTile[tile], layoutTab{
-				ID:       t.GetTabId(),
-				Type:     tabTypeName(t.GetTabType()),
-				Position: t.GetPosition().GetValue(),
-			})
+	for _, t := range state.GetTabs() {
+		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
+			continue
 		}
-		for tile := range out.TabsByTile {
-			tabs := out.TabsByTile[tile]
-			sort.Slice(tabs, func(i, j int) bool {
-				if tabs[i].Position != tabs[j].Position {
-					return tabs[i].Position < tabs[j].Position
-				}
-				return tabs[i].ID < tabs[j].ID
-			})
-			out.TabsByTile[tile] = tabs
+		tile := t.GetTileId().GetValue()
+		if tile == "" || !wsNodes[tile] {
+			continue
 		}
+		out.TabsByTile[tile] = append(out.TabsByTile[tile], layoutTab{
+			ID:       t.GetTabId(),
+			Type:     resolve.TabTypeWireName(t.GetTabType()),
+			Position: t.GetPosition().GetValue(),
+		})
+	}
+	for tile := range out.TabsByTile {
+		tabs := out.TabsByTile[tile]
+		sort.Slice(tabs, func(i, j int) bool {
+			if tabs[i].Position != tabs[j].Position {
+				return tabs[i].Position < tabs[j].Position
+			}
+			return tabs[i].ID < tabs[j].ID
+		})
+		out.TabsByTile[tile] = tabs
 	}
 	return out
 }
 
-// runLayoutTree prints the projected tile tree of a workspace, and with
-// includeTabs the live tabs of each tile.
-func runLayoutTree(inv *cli.Invocation, includeTabs bool) (any, error) {
+// runLayoutTree prints the projected tile tree of a workspace with the live
+// tabs of each tile.
+func runLayoutTree(inv *cli.Invocation) (any, error) {
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	wsInput := inv.Arg("workspace")
-	if wsInput == "" && callingTabID() == "" {
-		if def, derr := s.defaultWorkspaceID(); derr != nil {
-			return nil, derr
-		} else if def != "" {
-			wsInput = def
-		}
-	}
-	ws, err := s.resolveOne(resolve.KindWorkspace, wsInput)
+	ws, err := s.resolveWorkspaceOrDefault(inv.Arg("workspace"))
 	if err != nil {
 		return nil, err
 	}
@@ -513,8 +588,8 @@ func runLayoutTree(inv *cli.Invocation, includeTabs bool) (any, error) {
 	if rec := cc.bs.State.GetWorkspaces()[ws.ID]; rec == nil {
 		return nil, cli.Newf(cli.CodeNotFound, "no such workspace: %s", ws.ID)
 	}
-	tree := buildLayoutTreeForWorkspace(cc.bs.State, ws.ID, includeTabs)
-	if includeTabs && len(tree.TabsByTile) > 0 {
+	tree := buildLayoutTreeForWorkspace(cc.bs.State, ws.ID)
+	if len(tree.TabsByTile) > 0 {
 		var wsTabs []*leapmuxv1.WorkspaceTab
 		for _, t := range cc.bs.State.GetTabs() {
 			if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
@@ -537,12 +612,7 @@ func runLayoutTree(inv *cli.Invocation, includeTabs bool) (any, error) {
 				for i, lt := range tabs {
 					d := details[lt.ID]
 					tabs[i].Title = d.Title
-					switch {
-					case d.Agent != nil:
-						tabs[i].State = enumToken(d.Agent.GetActivityState())
-					case d.Terminal != nil:
-						tabs[i].State = enumToken(d.Terminal.GetStatus())
-					}
+					tabs[i].State = d.State
 				}
 				tree.TabsByTile[tile] = tabs
 			}

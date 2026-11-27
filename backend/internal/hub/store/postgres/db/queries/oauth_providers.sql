@@ -21,3 +21,16 @@ UPDATE oauth_providers SET client_secret = $1 WHERE id = $2;
 
 -- name: DeleteOAuthProvider :exec
 DELETE FROM oauth_providers WHERE id = $1;
+
+-- name: ListOAuthProvidersByIDExact :many
+SELECT id, provider_type, name, issuer_url, client_id, scopes, trust_email, response_mode, enabled, created_at
+FROM oauth_providers
+WHERE id = sqlc.arg(id)::text
+ORDER BY id ASC;
+
+-- name: ListOAuthProvidersByIDPrefix :many
+SELECT id, provider_type, name, issuer_url, client_id, scopes, trust_email, response_mode, enabled, created_at
+FROM oauth_providers
+WHERE id >= sqlc.arg(id_lo)::text
+  AND id < sqlc.arg(id_hi)::text
+ORDER BY id ASC;

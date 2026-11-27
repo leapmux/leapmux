@@ -1,19 +1,26 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func TestProjectLayoutNode_OrdersSplitAndGridChildren(t *testing.T) {
@@ -160,7 +167,11 @@ func TestLayoutSetReadsTheLayoutGetEnvelopeFromStdin(t *testing.T) {
 	grid.Rows, grid.Cols = &leapmuxv1.LWWUint32{Value: 2}, &leapmuxv1.LWWUint32{Value: 2}
 	grid.RowRatios = &leapmuxv1.LWWDoubles{Value: &leapmuxv1.DoubleList{Values: []float64{0.4, 0.6}}}
 	grid.ColRatios = &leapmuxv1.LWWDoubles{Value: &leapmuxv1.DoubleList{Values: []float64{0.5, 0.5}}}
-	hub := &recordingHub{materialized: state, onSubmitOps: tabCloseHub().onSubmitOps}
+	hub := &recordingHub{
+		workspaces:   []*leapmuxv1.Workspace{{Id: workspaceID, Title: "Round Trip"}},
+		materialized: state,
+		onSubmitOps:  tabCloseHub().onSubmitOps,
+	}
 	startSpawnIPC(t, hub, nil)
 
 	saved := runControl(t, "layout", "get", "id:"+workspaceID)
@@ -318,4 +329,198 @@ func TestBuildLayoutSetOps_PreservesFloatingWindowTabs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// REMOVALS-5: layoutTree.TabsByTile must always serialize in JSON even when
+// the workspace has zero live tabs.
+func TestLayoutTree_JSONIncludesEmptyTabsByTile(t *testing.T) {
+	state := newStateBuilder().workspace("ws-1", "root").leafNode("root", "", "").st
+	tree := buildLayoutTreeForWorkspace(state, "ws-1")
+	raw, err := json.Marshal(tree)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"tabs_by_tile":{}`)
+}
+
+// DUPLICATION-14: treeBranch returns matching connectors and continuation
+// prefixes for middle and final tree entries.
+func TestTreeBranch(t *testing.T) {
+	conn, next := treeBranch("", false)
+	assert.Equal(t, "├─ ", conn)
+	assert.Equal(t, "│  ", next)
+
+	conn, next = treeBranch("", true)
+	assert.Equal(t, "└─ ", conn)
+	assert.Equal(t, "   ", next)
+
+	conn, next = treeBranch("│  ", false)
+	assert.Equal(t, "├─ ", conn)
+	assert.Equal(t, "│  │  ", next)
+
+	conn, next = treeBranch("│  ", true)
+	assert.Equal(t, "└─ ", conn)
+	assert.Equal(t, "│     ", next)
+}
+
+// REMOVALS-2: layout set must validate explicit workspace IDs via GetWorkspace
+// and fail with CodeNotFound when the workspace does not exist.
+func TestLayoutSet_RejectsMissingExplicitWorkspace(t *testing.T) {
+	hub := &strictWorkspaceHub{
+		recordingHub: &recordingHub{
+			materialized: newStateBuilder().workspace("ws-1", "root").leafNode("root", "", "").st,
+		},
+		existingWorkspaces: map[string]bool{"ws-1": true},
+	}
+	startCustomSpawnIPC(t, hub, nil)
+
+	out := runControlIn(t, `{"kind":"leaf"}`, "layout", "set", "id:missing-ws", "-", "--json")
+	out.requireFailure(t, cli.CodeNotFound)
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+}
+
+// strictWorkspaceHub returns CodeNotFound from GetWorkspace when the requested
+// workspace_id is not in existingWorkspaces.
+type strictWorkspaceHub struct {
+	*recordingHub
+	existingWorkspaces map[string]bool
+	submitMu           sync.Mutex
+	submitted          [][]*leapmuxv1.CrdtOp
+}
+
+func (h *strictWorkspaceHub) CallInner(ctx context.Context, uid userid.UserID, procedure string, payload []byte) ([]byte, error) {
+	if procedure == leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure {
+		var req leapmuxv1.GetWorkspaceRequest
+		if err := proto.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
+		h.procedures = append(h.procedures, procedure)
+		h.mu.Unlock()
+		if !h.existingWorkspaces[req.GetWorkspaceId()] {
+			return nil, connect.NewError(connect.CodeNotFound, "workspace not found")
+		}
+		return proto.Marshal(&leapmuxv1.GetWorkspaceResponse{
+			Workspace: &leapmuxv1.Workspace{Id: req.GetWorkspaceId(), Title: req.GetWorkspaceId()},
+		})
+	}
+	if procedure == leapmuxv1connect.UserCRDTSubmitOpsProcedure {
+		var req leapmuxv1.SubmitOpsRequest
+		if err := proto.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		h.submitMu.Lock()
+		for _, batch := range req.GetBatches() {
+			h.submitted = append(h.submitted, batch.GetOps())
+		}
+		h.submitMu.Unlock()
+	}
+	return h.recordingHub.CallInner(ctx, uid, procedure, payload)
+}
+
+// RIPPLE-8: runLayoutSet must preserve *cli.Error returned by readTargetTree
+// (for example CodeInternal on a stdin read failure) instead of downgrading it
+// to CodeUsage.
+func TestLayoutSet_PreservesCLIErrorFromReadTargetTree(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := cli.Execute(
+		context.Background(),
+		NewCommand(),
+		[]string{"layout", "set", "ws-1", "-", "--json"},
+		failingReader{err: errors.New("broken pipe")},
+		&out,
+		&errOut,
+	)
+	res := cliOutcome{Stdout: out.String(), Stderr: errOut.String(), Code: code}
+	res.requireFailure(t, cli.CodeInternal)
+}
+
+// EFFICIENCY-15: openTile resolves a bare tile prefix using a single
+// GetMaterialized call and zero LocateTile calls.
+func TestOpenTile_PrefixUsesSingleGetMaterialized(t *testing.T) {
+	tileID := fullTestID("tile-fast")
+	state := newStateBuilder().
+		workspace("ws-1", tileID).
+		leafNode(tileID, "", "").
+		st
+	hub := &recordingHub{
+		materialized: state,
+		onSubmitOps:  tabCloseHub().onSubmitOps,
+	}
+	startSpawnIPC(t, hub, nil)
+
+	out := runControl(t, "tile", "split", tileID[:8])
+	require.Equal(t, cli.ExitOK, out.Code, out.Stderr)
+
+	getMatCalls := 0
+	locateTileCalls := 0
+	for _, proc := range hub.called() {
+		switch proc {
+		case leapmuxv1connect.UserCRDTGetMaterializedProcedure:
+			getMatCalls++
+		case leapmuxv1connect.WorkspaceServiceLocateTileProcedure:
+			locateTileCalls++
+		}
+	}
+	assert.Equal(t, 1, getMatCalls, "prefix lookup must bootstrap GetMaterialized only once")
+	assert.Equal(t, 0, locateTileCalls, "prefix lookup must not issue LocateTile")
+}
+
+// submitLayoutRewriteWithRetry retries once on TAB_PLACEMENT_INVALID, re-runs
+// the extra callback with the fresh snapshot and new firstLeaf/tileMap, and
+// returns the final tileMap and firstLeaf.
+func TestSubmitLayoutRewriteWithRetry_RetriesAndInvokesExtra(t *testing.T) {
+	state := newStateBuilder().
+		workspace("ws-1", "root").
+		leafNode("root", "", "").
+		st
+	submitAttempt := 0
+	hub := &recordingHub{
+		materialized: state,
+		onSubmitOps: func(_ context.Context) ([]byte, error) {
+			submitAttempt++
+			if submitAttempt == 1 {
+				return proto.Marshal(&leapmuxv1.SubmitOpsResponse{
+					Results: []*leapmuxv1.BatchResult{{
+						Outcome: &leapmuxv1.BatchResult_Rejected{
+							Rejected: &leapmuxv1.BatchRejection{
+								Reason: leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID,
+							},
+						},
+					}},
+				})
+			}
+			return proto.Marshal(&leapmuxv1.SubmitOpsResponse{Results: []*leapmuxv1.BatchResult{{}}})
+		},
+	}
+	startSpawnIPC(t, hub, nil)
+
+	cmd := NewCommand()
+	inv := &cli.Invocation{Command: cmd, Context: t.Context()}
+	s, err := openSession(inv)
+	require.NoError(t, err)
+	defer s.Close()
+	cc, err := s.openCRDT("ws-1")
+	require.NoError(t, err)
+
+	target := &layoutNode{
+		Kind:      "split",
+		Direction: "vertical",
+		Children: []*layoutNode{
+			{Kind: "leaf", TileRef: "main-left"},
+			{Kind: "leaf", TileRef: "main-right"},
+		},
+	}
+	extraCalls := 0
+	tileMap, firstLeaf, err := submitLayoutRewriteWithRetry(cc, "ws-1", target, func(bs *CRDTBootstrap, fl string, tm map[string]string) []*leapmuxv1.CrdtOp {
+		extraCalls++
+		assert.NotNil(t, bs)
+		assert.NotEmpty(t, fl)
+		tm["extra-ref"] = fl
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, submitAttempt)
+	assert.Equal(t, 2, extraCalls)
+	assert.Equal(t, firstLeaf, tileMap["main-left"])
+	assert.Equal(t, firstLeaf, tileMap["extra-ref"])
+	assert.NotEmpty(t, tileMap["main-right"])
 }

@@ -40,6 +40,10 @@ type Peer interface {
 	controlPeer()
 }
 
+// ErrorDecorator transforms transport errors returned by a Peer before callers
+// see them (for example, attaching CLI hints or version diagnostics).
+type ErrorDecorator func(ctx context.Context, p Peer, err error) error
+
 // HubClient is the CLI's direct connection to a hub, over http(s) or the hub's
 // own unix:/npipe: IPC listener. It holds the credential (Bearer token), HTTP
 // and WebSocket clients, TOFU pin store, and ConnectRPC service clients for
@@ -52,6 +56,9 @@ type Peer interface {
 // custom dialer dials the real socket.
 type HubClient struct {
 	HubURL string
+	// Source identifies how HubURL was selected when constructed through
+	// hub-address resolution.
+	Source HubSource
 	// bearer is the access token presented on every call.
 	//
 	// UNEXPORTED, and that is the mechanism rather than a style choice: a
@@ -69,15 +76,17 @@ type HubClient struct {
 	HTTPClient      *http.Client
 	WSClient        *http.Client // HTTP/1.1 client for the /ws/channel and /ws/userevents upgrades
 	// pins is the per-hub TOFU pin store, opened on first use by pinStore.
-	pins          *PinStore
-	pinsOnce      sync.Once
-	pinsErr       error
-	UserID        string
-	Username      string
-	connectURL    string
-	errOutMu      sync.RWMutex
-	errOut        io.Writer
-	promptAllowed bool
+	pins             *PinStore
+	pinsOnce         sync.Once
+	pinsErr          error
+	UserID           string
+	Username         string
+	connectURL       string
+	errOutMu         sync.RWMutex
+	errOut           io.Writer
+	errorDecoratorMu sync.RWMutex
+	errorDecorator   ErrorDecorator
+	promptAllowed    bool
 }
 
 func (*HubClient) controlPeer() {}
@@ -95,6 +104,8 @@ type WorkerIPCClient struct {
 	// than on a WebSocket.
 	StreamHTTPClient *http.Client
 	connectURL       string
+	errorDecoratorMu sync.RWMutex
+	errorDecorator   ErrorDecorator
 }
 
 func (*WorkerIPCClient) controlPeer() {}
@@ -143,6 +154,90 @@ func (c *HubClient) SetErrOut(w io.Writer) {
 	c.errOutMu.Lock()
 	c.errOut = w
 	c.errOutMu.Unlock()
+}
+
+// SetErrorDecorator registers a transport-level error decorator invoked on
+// ConnectRPC and WebSocket errors returned by c. Passing nil clears it.
+func (c *HubClient) SetErrorDecorator(fn ErrorDecorator) {
+	c.errorDecoratorMu.Lock()
+	c.errorDecorator = fn
+	c.errorDecoratorMu.Unlock()
+}
+
+func (c *HubClient) decorateError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	c.errorDecoratorMu.RLock()
+	fn := c.errorDecorator
+	c.errorDecoratorMu.RUnlock()
+	if fn == nil {
+		return err
+	}
+	return fn(ctx, c, err)
+}
+
+// SetErrorDecorator registers a transport-level error decorator invoked on
+// ConnectRPC errors returned by c. Passing nil clears it.
+func (c *WorkerIPCClient) SetErrorDecorator(fn ErrorDecorator) {
+	c.errorDecoratorMu.Lock()
+	c.errorDecorator = fn
+	c.errorDecoratorMu.Unlock()
+}
+
+func (c *WorkerIPCClient) decorateError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	c.errorDecoratorMu.RLock()
+	fn := c.errorDecorator
+	c.errorDecoratorMu.RUnlock()
+	if fn == nil {
+		return err
+	}
+	return fn(ctx, c, err)
+}
+
+func newErrorDecoratorInterceptor(decorate func(context.Context, error) error) connect.ClientInterceptor {
+	return func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			stream, err := next(ctx, spec)
+			if err != nil {
+				return nil, decorate(ctx, err)
+			}
+			return &errorDecoratingStream{
+				ClientStream: stream,
+				ctx:          ctx,
+				decorate:     decorate,
+			}, nil
+		}
+	}
+}
+
+type errorDecoratingStream struct {
+	connect.ClientStream
+	ctx      context.Context
+	decorate func(context.Context, error) error
+}
+
+func (s *errorDecoratingStream) SendHeaders() error {
+	return s.decorate(s.ctx, s.ClientStream.SendHeaders())
+}
+
+func (s *errorDecoratingStream) Send(msg any) error {
+	return s.decorate(s.ctx, s.ClientStream.Send(msg))
+}
+
+func (s *errorDecoratingStream) CloseSend() error {
+	return s.decorate(s.ctx, s.ClientStream.CloseSend())
+}
+
+func (s *errorDecoratingStream) Receive(msg any) error {
+	err := s.ClientStream.Receive(msg)
+	if err == nil || errors.Is(err, io.EOF) {
+		return err
+	}
+	return s.decorate(s.ctx, err)
 }
 
 // errWriter returns the configured error writer, defaulting to os.Stderr.
@@ -265,19 +360,31 @@ func NewClientForHub(hubURL string) (*HubClient, error) {
 // The returned Peer is either a *HubClient or a *WorkerIPCClient.
 func NewClientFromEnv(explicitHub string) (Peer, error) {
 	if explicitHub != "" {
-		return NewClientForHub(explicitHub)
+		c, err := NewClientForHub(explicitHub)
+		if err != nil {
+			return nil, err
+		}
+		c.Source = HubSourceFlag
+		return c, nil
 	}
 	if sock := os.Getenv(controlenv.SocketVariable); sock != "" {
 		return NewLocalClient(sock, os.Getenv(controlenv.TokenVariable))
 	}
-	hub, creds, err := resolveDefaultHub(true)
+	hub, source, creds, err := resolveDefaultHub(true)
 	if err != nil {
 		return nil, err
 	}
+	var c *HubClient
 	if creds != nil {
-		return newHubClient(hub, creds)
+		c, err = newHubClient(hub, creds)
+	} else {
+		c, err = NewClientForHub(hub)
 	}
-	return NewClientForHub(hub)
+	if err != nil {
+		return nil, err
+	}
+	c.Source = source
+	return c, nil
 }
 
 // NewLocalClient targets a per-agent local IPC socket. The token is
@@ -321,7 +428,7 @@ func (c *WorkerIPCClient) ApplyAuth(headers http.Header) {
 
 func (c *WorkerIPCClient) newConnectClient(httpClient *http.Client) *connect.Client {
 	return connect.NewClient(connecthttp.NewTransport(httpClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0)), c.AuthInterceptor())
+		connecthttp.WithReadMaxBytes(0)), newErrorDecoratorInterceptor(c.decorateError), c.AuthInterceptor())
 }
 
 // ControlIPCService returns a ConnectRPC client for unary calls to the
@@ -394,10 +501,11 @@ func (c *HubClient) bearerNeedsRenewal() bool {
 	return c.accessExpiresAt.IsZero() || time.Until(c.accessExpiresAt) <= refreshSkew
 }
 
-// newConnectClient applies the shared authentication and response-size policy.
+// newConnectClient applies the shared error-decoration, authentication, and
+// response-size policy.
 func (c *HubClient) newConnectClient(httpClient *http.Client) *connect.Client {
 	return connect.NewClient(connecthttp.NewTransport(httpClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0)), c.AuthInterceptor())
+		connecthttp.WithReadMaxBytes(0)), newErrorDecoratorInterceptor(c.decorateError), c.AuthInterceptor())
 }
 
 // ConnectClient returns a ConnectRPC client using c.HTTPClient with the shared
@@ -424,9 +532,10 @@ func (c *HubClient) WorkerManagementService() leapmuxv1connect.WorkerManagementS
 // `WorkersChanged`). Close cancels the stream and tears down the underlying
 // WebSocket.
 type UserEventsStream struct {
-	ws     *websocket.Conn
-	ctx    context.Context
-	cancel context.CancelFunc
+	ws       *websocket.Conn
+	ctx      context.Context
+	cancel   context.CancelFunc
+	decorate func(context.Context, error) error
 }
 
 func wrapHubConnectionError(err error) error {
@@ -450,7 +559,11 @@ func (s *UserEventsStream) Recv() (*leapmuxv1.WatchUserEvent, error) {
 		if channelwire.IsUserEventsCloseError(err) {
 			return nil, io.EOF
 		}
-		return nil, wrapHubConnectionError(err)
+		err = wrapHubConnectionError(err)
+		if s.decorate != nil {
+			err = s.decorate(s.ctx, err)
+		}
+		return nil, err
 	}
 	var evt leapmuxv1.WatchUserEvent
 	if err := proto.Unmarshal(payload, &evt); err != nil {
@@ -484,15 +597,15 @@ func (c *HubClient) OpenUserEvents(ctx context.Context, opts channelwire.UserEve
 	// second without the first.
 	bearer, err := c.freshBearer(ctx)
 	if err != nil {
-		return nil, err
+		return nil, c.decorateError(ctx, err)
 	}
 	dialCtx, dialCancel := context.WithCancel(ctx)
 	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.connectURL, bearer, opts)
 	if err != nil {
 		dialCancel()
-		return nil, wrapHubConnectionError(err)
+		return nil, c.decorateError(ctx, wrapHubConnectionError(err))
 	}
-	return &UserEventsStream{ws: ws, ctx: dialCtx, cancel: dialCancel}, nil
+	return &UserEventsStream{ws: ws, ctx: dialCtx, cancel: dialCancel, decorate: c.decorateError}, nil
 }
 
 // OpenE2EEChannel opens a Noise_NK E2EE channel to the named worker
@@ -512,7 +625,7 @@ func (c *HubClient) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, w
 	// upgrade carries the bearer exactly once.
 	bearer, err := c.freshBearer(operationCtx)
 	if err != nil {
-		return nil, err
+		return nil, c.decorateError(operationCtx, err)
 	}
 	ch, err := tunnel.OpenChannel(operationCtx, c.connectURL, workerID, &tunnel.OpenChannelOptions{
 		HTTPClient:          c.HTTPClient,
@@ -529,7 +642,7 @@ func (c *HubClient) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, w
 		KeyPin:         pins,
 	})
 	if err != nil {
-		return nil, wrapHubConnectionError(err)
+		return nil, c.decorateError(operationCtx, wrapHubConnectionError(err))
 	}
 	return ch, nil
 }

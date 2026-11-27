@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 )
@@ -181,7 +182,7 @@ func TestOpTargetSummary_PrintsTheCLITabTypeToken(t *testing.T) {
 			removed := removedEntitySummary(&leapmuxv1.EntityRemoved{Entity: &leapmuxv1.EntityRemoved_Tab{Tab: tc.tab}})
 			assert.Equal(t, map[string]any{
 				"tab_id":   tc.tab.GetTabId(),
-				"tab_type": tabTypeName(tc.tab.GetTabType()),
+				"tab_type": resolve.TabTypeWireName(tc.tab.GetTabType()),
 				"type":     tc.kind,
 			}, got)
 			assert.Equal(t, removed["tab_type"], got["tab_type"], "the op line and the removal line must state the tab type alike")

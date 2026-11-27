@@ -312,19 +312,38 @@ func (e *NoHubError) CLIError() *cli.Error {
 		WithHint(`run "leapmux auth login --hub <url>" to store a credential`)
 }
 
-// defaultHubFile is the legacy file in ConfigDir that previously held the hub
-// `auth use` chose. SetDefaultHub now stores the selection in context.json and
-// removes this file; readDefaultHub still honors it if present on disk.
-const defaultHubFile = "default-hub"
+// HubSource identifies how the CLI chose a Hub address.
+type HubSource int
+
+const (
+	// HubSourceUnspecified means the client was constructed directly without
+	// hub-address resolution.
+	HubSourceUnspecified HubSource = iota
+	// HubSourceFlag means an explicit --hub flag selected the Hub.
+	HubSourceFlag
+	// HubSourceEnv means LEAPMUX_HUB selected the Hub.
+	HubSourceEnv
+	// HubSourceContext means context.json selected the Hub.
+	HubSourceContext
+	// HubSourceSingleCredential means the sole stored credential file selected the Hub.
+	HubSourceSingleCredential
+	// HubSourceDiscovered means local solo/dev socket discovery found the Hub.
+	HubSourceDiscovered
+)
 
 // DefaultHub returns the hub that a command addresses when neither --hub
 // nor a tab's socket selects one: LEAPMUX_HUB, else context.json's hub, else
-// any legacy default-hub file, else the hub of the only stored credential,
-// else a live local solo/dev Hub IPC socket. It returns a *NoHubError when
-// none of them selects a hub.
+// the hub of the only stored credential, else a live local solo/dev Hub IPC
+// socket. It returns a *NoHubError when none of them selects a hub.
 func DefaultHub() (string, error) {
-	hub, _, err := resolveDefaultHub(true)
+	hub, _, _, err := resolveDefaultHub(true)
 	return hub, err
+}
+
+// DefaultHubWithSource is DefaultHub plus the HubSource that selected the hub.
+func DefaultHubWithSource() (string, HubSource, error) {
+	hub, source, _, err := resolveDefaultHub(true)
+	return hub, source, err
 }
 
 // ConfiguredDefaultHub is DefaultHub without local solo/dev socket discovery.
@@ -332,64 +351,49 @@ func DefaultHub() (string, error) {
 // so an auto-discovered local IPC socket does not masquerade as a browser login
 // target.
 func ConfiguredDefaultHub() (string, error) {
-	hub, _, err := resolveDefaultHub(false)
+	hub, _, _, err := resolveDefaultHub(false)
 	return hub, err
 }
 
-// resolveDefaultHub resolves the default hub and returns the already-loaded
-// CredentialFile when the hub came from the sole stored credential file, so
-// callers avoid reading and unmarshaling that file a second time.
-func resolveDefaultHub(allowDiscover bool) (string, *CredentialFile, error) {
+// resolveDefaultHub resolves the default hub, its HubSource provenance, and
+// the already-loaded CredentialFile when the hub came from the sole stored
+// credential file, so callers avoid reading and unmarshaling that file a second
+// time.
+func resolveDefaultHub(allowDiscover bool) (string, HubSource, *CredentialFile, error) {
 	if hub := strings.TrimSpace(os.Getenv("LEAPMUX_HUB")); hub != "" {
-		return hub, nil, nil
+		return hub, HubSourceEnv, nil, nil
 	}
 	ctxCfg, err := LoadContext()
 	if err != nil {
-		return "", nil, err
+		return "", HubSourceUnspecified, nil, err
 	}
 	if ctxCfg.Hub != "" {
-		return ctxCfg.Hub, nil, nil
-	}
-	chosen, err := readDefaultHub()
-	if err != nil {
-		return "", nil, err
-	}
-	if chosen != "" {
-		return chosen, nil, nil
+		return ctxCfg.Hub, HubSourceContext, nil, nil
 	}
 	files, err := ListCredentialFiles()
 	if err != nil {
-		return "", nil, err
+		return "", HubSourceUnspecified, nil, err
 	}
 	if len(files) == 1 {
-		return files[0].HubURL, &files[0], nil
+		return files[0].HubURL, HubSourceSingleCredential, &files[0], nil
 	}
 	if allowDiscover && len(files) == 0 {
 		if local := DiscoverLocalHub(); local != "" {
-			return local, nil, nil
+			return local, HubSourceDiscovered, nil, nil
 		}
 	}
-	return "", nil, &NoHubError{Stored: len(files)}
+	return "", HubSourceUnspecified, nil, &NoHubError{Stored: len(files)}
 }
 
 // SetDefaultHub records hub in context.json as the default hub, keeping any
-// other saved context defaults. An empty hub clears the saved hub. It also
-// removes any legacy default-hub file so context.json stays the single source
-// of truth.
+// other saved context defaults. An empty hub clears the saved hub.
 func SetDefaultHub(hub string) error {
 	cfg, err := LoadContext()
 	if err != nil {
 		return err
 	}
 	cfg.Hub = CanonicalHubURL(hub)
-	if err := SaveContext(cfg); err != nil {
-		return err
-	}
-	dir, err := ConfigDir()
-	if err != nil {
-		return err
-	}
-	return removeAtomicFile(filepath.Join(dir, defaultHubFile))
+	return SaveContext(cfg)
 }
 
 // ClearDefaultHubIf clears the saved default hub when it matches hub, keeping
@@ -405,38 +409,7 @@ func ClearDefaultHubIf(hub string) error {
 	}
 	if SameHubURL(cfg.Hub, hub) {
 		cfg.Hub = ""
-		if err := SaveContext(cfg); err != nil {
-			return err
-		}
-	}
-	chosen, err := readDefaultHub()
-	if err != nil {
-		return err
-	}
-	if SameHubURL(chosen, hub) {
-		dir, err := ConfigDir()
-		if err != nil {
-			return err
-		}
-		if err := removeAtomicFile(filepath.Join(dir, defaultHubFile)); err != nil {
-			return err
-		}
+		return SaveContext(cfg)
 	}
 	return nil
-}
-
-// readDefaultHub returns the hub recorded in the legacy default-hub file, or "".
-func readDefaultHub() (string, error) {
-	dir, err := ConfigDir()
-	if err != nil {
-		return "", err
-	}
-	data, err := os.ReadFile(filepath.Join(dir, defaultHubFile))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
 }

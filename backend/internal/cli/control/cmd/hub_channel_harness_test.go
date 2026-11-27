@@ -47,6 +47,7 @@ type hubChannelHarness struct {
 	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
 	leapmuxv1connect.UnimplementedUserCRDTHandler
 	leapmuxv1connect.UnimplementedWorkerManagementServiceHandler
+	leapmuxv1connect.UnimplementedSectionServiceHandler
 
 	url string
 
@@ -103,6 +104,7 @@ func startHubChannelHarnessWithMode(t *testing.T, hub *recordingHub, disp contro
 	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, h)
 	leapmuxv1connect.RegisterUserCRDTHandler(connectServer, h)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, h)
+	leapmuxv1connect.RegisterSectionServiceHandler(connectServer, h)
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	mux.HandleFunc(contracts.WSRouteChannel, h.relayFrames)
@@ -132,6 +134,7 @@ var harnessWorkerProcedures = []string{
 	leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure,
 	leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure,
 	leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure,
+	leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure,
 	leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
 	leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure,
 	leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
@@ -320,6 +323,10 @@ func (h *hubChannelHarness) ListTabs(ctx context.Context, req *leapmuxv1.ListTab
 
 func (h *hubChannelHarness) ListWorkers(ctx context.Context, req *leapmuxv1.ListWorkersRequest) (*leapmuxv1.ListWorkersResponse, error) {
 	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkerManagementServiceListWorkersProcedure, req, &leapmuxv1.ListWorkersResponse{})
+}
+
+func (h *hubChannelHarness) ListSections(ctx context.Context, req *leapmuxv1.ListSectionsRequest) (*leapmuxv1.ListSectionsResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.SectionServiceListSectionsProcedure, req, &leapmuxv1.ListSectionsResponse{})
 }
 
 // answerFromRecordingHub answers one typed hub RPC through hub, the stub that

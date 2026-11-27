@@ -256,7 +256,7 @@ func TestNotificationClear_DeduplicatesResolvedIDsInOrder(t *testing.T) {
 	}}
 	startNotifyWorker(t, w)
 
-	data := runControl(t, "notification", "clear", "aaaa", "aaaa1111", "bbbb", "id:aaaa1111").Data(t)
+	data := runControl(t, "notification", "clear", "aaaa", "aaaa1111", "id:bbbb", "id:aaaa1111").Data(t)
 	assert.Equal(t, map[string]any{
 		"worker_id": "worker-A",
 		"cleared":   []any{"aaaa1111", "bbbb2222"},
@@ -295,12 +295,13 @@ func (d *clearBatchDispatcher) DispatchWith(ctx context.Context, _ channel.Calle
 }
 
 func TestNotificationClear_ReportsPartialClearsOnMidBatchFailure(t *testing.T) {
-	// Submit detailFanoutLimit+1 IDs so errgroup's limit guarantees at least
-	// one successful ClearNotification completes before the failing ID starts.
-	failID := fmt.Sprintf("notif-fail-%02d", detailFanoutLimit+1)
+	// Submit detailFanoutLimit+1 full IDs so errgroup's limit guarantees at
+	// least one successful ClearNotification completes before the failing ID
+	// starts, while bypassing ListNotifications on the full-ID fast path.
+	failID := fullTestID(fmt.Sprintf("notif-fail-%02d", detailFanoutLimit+1))
 	args := []string{"notification", "clear"}
 	for i := 1; i <= detailFanoutLimit; i++ {
-		args = append(args, fmt.Sprintf("id:notif-ok-%02d", i))
+		args = append(args, "id:"+fullTestID(fmt.Sprintf("notif-ok-%02d", i)))
 	}
 	args = append(args, "id:"+failID)
 
@@ -351,41 +352,65 @@ func TestNotificationClear_DispatchesConcurrentlyAndPreservesOrder(t *testing.T)
 	startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 	t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
 
-	data := runControl(t, "notification", "clear", "id:n-01", "id:n-02", "id:n-03", "id:n-04").Data(t)
+	id1, id2, id3, id4 := fullTestID("n-01"), fullTestID("n-02"), fullTestID("n-03"), fullTestID("n-04")
+	data := runControl(t, "notification", "clear", "id:"+id1, "id:"+id2, "id:"+id3, "id:"+id4).Data(t)
 	assert.Equal(t, map[string]any{
 		"worker_id": "worker-A",
-		"cleared":   []any{"n-01", "n-02", "n-03", "n-04"},
+		"cleared":   []any{id1, id2, id3, id4},
 	}, data)
 }
 
 func TestNotificationSelector_GeneratedIDAlphabetAndSortedAmbiguity(t *testing.T) {
 	validFull := fullTestID("notif-1")
-	val, literal, err := parseNotificationSelector(validFull)
+	val, fullID, err := parseNotificationSelector(validFull)
 	require.NoError(t, err)
 	assert.Equal(t, validFull, val)
-	assert.True(t, literal)
+	assert.True(t, fullID)
+
+	val, fullID, err = parseNotificationSelector("id:" + validFull)
+	require.NoError(t, err)
+	assert.Equal(t, validFull, val)
+	assert.True(t, fullID)
+
+	val, fullID, err = parseNotificationSelector("id:abcd")
+	require.NoError(t, err)
+	assert.Equal(t, "abcd", val)
+	assert.False(t, fullID, "a short id: prefix must use ListNotifications prefix resolution")
 
 	invalidAlphabet := strings.Repeat("a", id.GeneratedLength-1) + "!"
-	val, literal, err = parseNotificationSelector(invalidAlphabet)
+	val, fullID, err = parseNotificationSelector(invalidAlphabet)
 	require.NoError(t, err)
 	assert.Equal(t, invalidAlphabet, val)
-	assert.False(t, literal, "a 48-byte string with non-ID characters must not skip prefix/list resolution")
+	assert.False(t, fullID, "a 48-byte string with non-ID characters must not skip prefix/list resolution")
 
 	items := []*leapmuxv1.UserNotification{
 		{Id: "abcd-z", Title: "Z"},
 		{Id: "abcd-a", Title: "A"},
 		{Id: "abcd-m", Title: "M"},
+		{Id: "uniq-1", Title: "Unique"},
+		{Id: "n1", Title: "Short"},
 	}
-	_, err = resolveNotificationID(items, "abcd")
-	require.Error(t, err)
-	cliErr := cli.FromError(err)
-	require.Equal(t, cli.CodeAmbiguousTarget, cliErr.Code)
-	require.Len(t, cliErr.Candidates, 3)
-	assert.Equal(t, []cli.Candidate{
-		{ID: "abcd-a", Kind: "notification", Title: "A"},
-		{ID: "abcd-m", Kind: "notification", Title: "M"},
-		{ID: "abcd-z", Kind: "notification", Title: "Z"},
-	}, cliErr.Candidates)
+
+	got, err := resolveNotificationID(items, "id:uniq")
+	require.NoError(t, err)
+	assert.Equal(t, "uniq-1", got)
+
+	got, err = resolveNotificationID(items, "id:n1")
+	require.NoError(t, err)
+	assert.Equal(t, "n1", got)
+
+	for _, raw := range []string{"abcd", "id:abcd"} {
+		_, err = resolveNotificationID(items, raw)
+		require.Error(t, err, raw)
+		cliErr := cli.FromError(err)
+		require.Equal(t, cli.CodeAmbiguousTarget, cliErr.Code, raw)
+		require.Len(t, cliErr.Candidates, 3, raw)
+		assert.Equal(t, []cli.Candidate{
+			{ID: "abcd-a", Kind: "notification", Title: "A"},
+			{ID: "abcd-m", Kind: "notification", Title: "M"},
+			{ID: "abcd-z", Kind: "notification", Title: "Z"},
+		}, cliErr.Candidates, raw)
+	}
 }
 
 func TestResolveNotificationID_NotFoundAndShortPrefix(t *testing.T) {
@@ -399,6 +424,8 @@ func TestResolveNotificationID_NotFoundAndShortPrefix(t *testing.T) {
 	}{
 		{name: "missing ID", raw: "zzzz-9"},
 		{name: "three-character non-exact prefix", raw: "abc"},
+		{name: "three-character non-exact id: prefix", raw: "id:abc"},
+		{name: "title after id: does not match", raw: "id:One"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := resolveNotificationID(items, tc.raw)
@@ -412,15 +439,16 @@ func TestResolveNotificationID_NotFoundAndShortPrefix(t *testing.T) {
 }
 
 func TestNotificationClear_EdgeCases(t *testing.T) {
-	t.Run("single literal id returning Cleared false skips ListNotifications", func(t *testing.T) {
+	t.Run("single full id returning Cleared false skips ListNotifications", func(t *testing.T) {
 		w := &privateCommandWorker{answers: map[string]proto.Message{
 			leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure: &leapmuxv1.ClearNotificationResponse{Cleared: false},
 		}}
 		startNotifyWorker(t, w)
 
-		data := runControl(t, "notification", "clear", "id:missing-1").Data(t)
+		missingID := fullTestID("missing-1")
+		data := runControl(t, "notification", "clear", "id:"+missingID).Data(t)
 		assert.Equal(t, map[string]any{
-			"id":        "missing-1",
+			"id":        missingID,
 			"worker_id": "worker-A",
 			"cleared":   false,
 		}, data)
@@ -428,29 +456,31 @@ func TestNotificationClear_EdgeCases(t *testing.T) {
 		calls := w.recorded()
 		require.Len(t, calls, 1)
 		assert.Equal(t, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, calls[0].method)
-		assert.True(t, proto.Equal(&leapmuxv1.ClearNotificationRequest{Id: "missing-1"}, calls[0].request))
+		assert.True(t, proto.Equal(&leapmuxv1.ClearNotificationRequest{Id: missingID}, calls[0].request))
 	})
 
 	t.Run("batch with mixed Cleared true and false reports only cleared IDs", func(t *testing.T) {
+		id1, id2, id3 := fullTestID("n-01"), fullTestID("n-02"), fullTestID("n-03")
 		disp := &clearBatchDispatcher{
 			onClear: func(_ context.Context, noticeID string) (*leapmuxv1.ClearNotificationResponse, *privateCommandRefusal) {
-				return &leapmuxv1.ClearNotificationResponse{Cleared: noticeID != "n-02"}, nil
+				return &leapmuxv1.ClearNotificationResponse{Cleared: noticeID != id2}, nil
 			},
 		}
 		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 		t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
 
-		data := runControl(t, "notification", "clear", "id:n-01", "id:n-02", "id:n-03").Data(t)
+		data := runControl(t, "notification", "clear", "id:"+id1, "id:"+id2, "id:"+id3).Data(t)
 		assert.Equal(t, map[string]any{
 			"worker_id": "worker-A",
-			"cleared":   []any{"n-01", "n-03"},
+			"cleared":   []any{id1, id3},
 		}, data)
 	})
 
 	t.Run("failing batch with zero cleared notifications omits already cleared hint", func(t *testing.T) {
+		id1, id2 := fullTestID("n-01"), fullTestID("n-02")
 		disp := &clearBatchDispatcher{
 			onClear: func(_ context.Context, noticeID string) (*leapmuxv1.ClearNotificationResponse, *privateCommandRefusal) {
-				if noticeID == "n-01" {
+				if noticeID == id1 {
 					return &leapmuxv1.ClearNotificationResponse{Cleared: false}, nil
 				}
 				return nil, &privateCommandRefusal{code: codes.Internal, message: "worker storage error"}
@@ -459,7 +489,7 @@ func TestNotificationClear_EdgeCases(t *testing.T) {
 		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 		t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
 
-		f := runControl(t, "notification", "clear", "id:n-01", "id:n-02").requireFailure(t, cli.CodeInternal)
+		f := runControl(t, "notification", "clear", "id:"+id1, "id:"+id2).requireFailure(t, cli.CodeInternal)
 		assert.Contains(t, f.Message, "worker storage error")
 		for _, hint := range f.Hints {
 			assert.False(t, strings.HasPrefix(hint, "already cleared:"), "unexpected partial-clear hint: %v", f.Hints)

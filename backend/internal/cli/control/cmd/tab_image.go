@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -68,81 +68,70 @@ func runTabOpenImage(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.placement()
+	p, err := s.placementWithDefaults(placementDefaults{
+		WorkspaceID: agentTarget.WorkspaceID,
+		TileID:      agentTarget.TileID,
+		WorkerID:    agentTarget.WorkerID,
+	})
 	if err != nil {
-		if agentTarget.WorkspaceID == "" {
-			return nil, err
-		}
-		spec, specErr := s.positionSpec()
-		if specErr != nil {
-			return nil, specErr
-		}
-		p = placement{
-			WorkspaceID: agentTarget.WorkspaceID,
-			TileID:      agentTarget.TileID,
-			WorkerID:    agentTarget.WorkerID,
-			Position:    spec,
-		}
+		return nil, err
 	}
-	// ImageTabPayload references an agent transcript stored on agentTarget's
+	// ImageTabPayload refers to an agent transcript stored on agentTarget's
 	// Worker, so the payload must always be registered on that Worker.
 	workerID := agentTarget.WorkerID
 	if workerID == "" {
 		workerID = p.WorkerID
 	}
-	cc, err := s.openCRDT(p.WorkspaceID)
-	if err != nil {
+
+	var cc *crdtCall
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		var crdtErr error
+		cc, crdtErr = s.openCRDT(p.WorkspaceID)
+		return crdtErr
+	})
+	g.Go(func() error {
+		return maybePreflightWorker(gctx, s.c, workerID)
+	})
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	tileID := p.TileID
-	if tileID == "" && (p.Position.kind == positionFirst || p.Position.kind == positionLast) {
-		ws, ok := cc.bs.State.GetWorkspaces()[p.WorkspaceID]
-		if !ok || ws == nil {
-			return nil, cli.Newf(cli.CodeNotFound, "no such workspace: %s", p.WorkspaceID)
-		}
-		tileID = firstLiveLeaf(cc.bs.State, ws.GetRootNodeId())
-	}
-	resolvedTileID, _, err := resolvePositionSpec(cc.bs.State, tileID, "", p.Position)
+
+	resolvedTileID, err := resolvePlacementTile(cc.bs.State, p)
 	if err != nil {
 		return nil, err
 	}
 	if err := preflightTile(cc.bs.State, p.WorkspaceID, resolvedTileID); err != nil {
 		return nil, err
 	}
-	if err := maybePreflightWorker(cc.ctx, cc.c, workerID); err != nil {
-		return nil, err
-	}
 	creation, err := resolveTabCreation(cc.ctx, cc.c, id.Generate(), p.WorkspaceID, resolvedTileID, p.Position)
 	if err != nil {
 		return nil, err
 	}
-	req := &leapmuxv1.RegisterTabPayloadRequest{
-		Creation: creation,
-		Payload: &leapmuxv1.TabPayload{
-			WorkingDir: workingDir(inv),
-			Kind: &leapmuxv1.TabPayload_Image{
-				Image: &leapmuxv1.ImageTabPayload{
-					AgentId:    agentTarget.ID,
-					Seq:        seq,
-					ImageIndex: imgIdx,
-					Title:      title,
-				},
+	payload := &leapmuxv1.TabPayload{
+		WorkingDir: workingDir(inv),
+		Kind: &leapmuxv1.TabPayload_Image{
+			Image: &leapmuxv1.ImageTabPayload{
+				AgentId:    agentTarget.ID,
+				Seq:        seq,
+				ImageIndex: imgIdx,
+				Title:      title,
 			},
 		},
 	}
-	var resp leapmuxv1.RegisterTabPayloadResponse
-	if err := callInnerRPCBest(cc.ctx, cc.c, workerID, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, req, &resp); err != nil {
+	focus := shouldFocusNewTab(inv)
+	var resp *leapmuxv1.RegisterTabPayloadResponse
+	err = withWorkerChannel(cc.ctx, cc.c, workerID, func(w workerCall) error {
+		var regErr error
+		resp, regErr = registerTabPayload(cc.ctx, w, leapmuxv1.TabType_TAB_TYPE_IMAGE, creation, payload, focus)
+		return regErr
+	})
+	if err != nil {
 		return nil, err
-	}
-	if err := validateTabPublication(creation, leapmuxv1.TabType_TAB_TYPE_IMAGE, resp.GetPublication()); err != nil {
-		return nil, err
-	}
-	if shouldFocusNewTab(inv) {
-		_ = callInnerRPCBest(cc.ctx, cc.c, workerID, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: creation.GetTabId()}, nil)
 	}
 	return openedTab{
 		ID:          creation.GetTabId(),
-		Type:        tabTypeName(leapmuxv1.TabType_TAB_TYPE_IMAGE),
+		Type:        resolve.TabTypeWireName(leapmuxv1.TabType_TAB_TYPE_IMAGE),
 		Title:       title,
 		WorkspaceID: p.WorkspaceID,
 		WorkerID:    workerID,

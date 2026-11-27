@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/agentenv"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
@@ -88,11 +89,11 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 	// subset, so EVERY scrub key is exercised and a newly-added key (or a typo
 	// in an oddly-shaped one like "_EXTENSION_OPENCODE_PORT") is automatically
 	// covered.
-	identity := agentIdentityEnvScrubKeys
+	identity := agentenv.IdentityScrubKeys
 	// Must survive: per-provider rc markers / entrypoint re-added BEFORE
 	// FinalizeAgentEnv, plus auth tokens, provider-selection, and config dirs.
 	mustSurvive := []string{
-		"CLAUDECODE", "CODEX_CI", "OPENCODE_CLIENT", "KILO_CLIENT", "CLAUDE_CODE_ENTRYPOINT",
+		"CLAUDECODE", "CODEX_CI", "OPENCODE_CLIENT", "KILO_CLIENT", "MIMOCODE_CLIENT", "CLAUDE_CODE_ENTRYPOINT",
 		"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
 		"CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
 		"CLAUDE_CODE_USE_BEDROCK", "CODEX_HOME", "GOOSE_MODEL", "PI_CODING_AGENT_DIR", "GROK_HOME",
@@ -106,7 +107,7 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 			env = append(env, k+"=leaked")
 		}
 		env = append(env,
-			"CLAUDECODE=1", "CODEX_CI=1", "OPENCODE_CLIENT=1", "KILO_CLIENT=1",
+			"CLAUDECODE=1", "CODEX_CI=1", "OPENCODE_CLIENT=1", "KILO_CLIENT=1", "MIMOCODE_CLIENT=1",
 			"CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1",
 			"CLAUDE_CODE_OAUTH_TOKEN=tok", "OPENAI_API_KEY=sk-test", "CODEX_API_KEY=sk-codex",
 			"CLAUDE_CODE_USE_BEDROCK=1", "CODEX_HOME=/home/u/.codex", "GOOSE_MODEL=gpt-x",

@@ -463,7 +463,7 @@ func runTerminalWait(inv *cli.Invocation) (any, error) {
 // waitTerminalForTarget reads the terminal's current info on a time-limited
 // call and runs the wait condition against it (used by `terminal open --wait`).
 func waitTerminalForTarget(inv *cli.Invocation, s *session, t tabTarget, spec terminalWaitSpec) (any, error) {
-	callSession := s.bounded()
+	callSession := s.timed()
 	info, err := callSession.terminalInfo(t)
 	callSession.Close()
 	if err != nil {
@@ -523,7 +523,7 @@ func waitTerminalWithInfo(inv *cli.Invocation, s *session, t tabTarget, info *le
 // the exit of the calling terminal is refused: the wait runs in that shell,
 // so the shell cannot end while it runs.
 func terminalWaitTarget(s *session, input string, spec terminalWaitSpec) (tabTarget, *leapmuxv1.TerminalInfo, error) {
-	callSession := s.bounded()
+	callSession := s.timed()
 	defer callSession.Close()
 	t, err := callSession.resolveTab(resolve.KindTerminal, input, resolve.Need{WorkerID: true})
 	if err != nil {

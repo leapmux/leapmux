@@ -162,7 +162,7 @@ func TestLayoutTree_IsolatesWorkspaceTabsSortsAndRendersTabs(t *testing.T) {
 		tabOtherWS: {TabId: tabOtherWS, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TileId: &leapmuxv1.LWWString{Value: tileB}, Position: &leapmuxv1.LWWString{Value: "a0"}},
 	}
 
-	tree := buildLayoutTreeForWorkspace(state, wsA, true)
+	tree := buildLayoutTreeForWorkspace(state, wsA)
 	require.NotContains(t, tree.TabsByTile, tileB, "tabs from another workspace must not leak into layout get")
 	require.Len(t, tree.TabsByTile[tileA], 2)
 	assert.Equal(t, tabA1, tree.TabsByTile[tileA][0].ID, "tabs must be ordered by LexoRank position")
@@ -464,8 +464,18 @@ type adminPrefixFakeHub struct {
 	workers []*leapmuxv1.AdminWorker
 }
 
-func (h *adminPrefixFakeHub) ListWorkers(_ context.Context, _ *leapmuxv1.AdminWorkerServiceListWorkersRequest) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
-	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: h.workers}, nil
+func (h *adminPrefixFakeHub) ListWorkers(_ context.Context, req *leapmuxv1.AdminWorkerServiceListWorkersRequest) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
+	prefix := req.GetIdPrefix()
+	if prefix == "" {
+		return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: h.workers}, nil
+	}
+	var out []*leapmuxv1.AdminWorker
+	for _, w := range h.workers {
+		if strings.HasPrefix(w.GetId(), prefix) {
+			out = append(out, w)
+		}
+	}
+	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: out}, nil
 }
 
 func (h *adminPrefixFakeHub) GetWorker(_ context.Context, req *leapmuxv1.AdminWorkerServiceGetWorkerRequest) (*leapmuxv1.AdminWorkerServiceGetWorkerResponse, error) {

@@ -12,8 +12,9 @@ import (
 const minHandlePrefixLength = 3
 
 // normalizeIDHandle trims whitespace and strips an optional leading "id:"
-// qualifier from a per-agent handle (such as a control request claim token or
-// a queued input id). Prefix matching remains enabled on the returned handle.
+// qualifier from an ID-only handle (such as a control request claim token, a
+// queued input id, or a floating window id). Exact matches remain valid at any
+// length and prefix matching remains enabled on the returned handle.
 func normalizeIDHandle(raw, noun string) (string, error) {
 	handle := strings.TrimSpace(raw)
 	if rest, ok := strings.CutPrefix(handle, "id:"); ok {

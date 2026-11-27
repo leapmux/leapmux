@@ -6,6 +6,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
 // The vocabulary of `leapmux events`. Each kind is "<family>.<event>",
@@ -402,7 +403,7 @@ func incompatibleCheckpointSelection(noun, token, scope string, tabType leapmuxv
 		return cli.Usagef("event %s %q is unavailable in a layout checkpoint", noun, token).
 			WithHint("use an account checkpoint (without --workspace) or pass --tab for Worker events")
 	case "tab":
-		err := cli.Usagef("event %s %q is unavailable in a %s tab checkpoint", noun, token, tabTypeName(tabType))
+		err := cli.Usagef("event %s %q is unavailable in a %s tab checkpoint", noun, token, resolve.TabTypeWireName(tabType))
 		if journal == replayHubLayout {
 			return err.WithHint("use a layout or account checkpoint for Hub events")
 		}

@@ -33,7 +33,7 @@ func runLayoutWatch(inv *cli.Invocation) (any, error) {
 	defer s.Close()
 	var workspaceIDs []string
 	if inv.HasArg("workspace") {
-		callSession := s.bounded()
+		callSession := s.timed()
 		ws, err := callSession.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
 		if err == nil {
 			var resp leapmuxv1.GetWorkspaceResponse
@@ -340,7 +340,7 @@ func opTargetSummary(op *leapmuxv1.CrdtOp) map[string]any {
 	if target.Kind == crdt.EntityKindTab {
 		// The token removedEntitySummary and entityKindSummary print, so one
 		// tab reads the same in every event of the stream.
-		out["tab_type"] = tabTypeName(target.TabType)
+		out["tab_type"] = resolve.TabTypeWireName(target.TabType)
 	}
 	out["type"] = opKindName(op)
 	return out
@@ -381,7 +381,7 @@ func entityKindSummary(em *leapmuxv1.EntityMaterialized) map[string]any {
 		return map[string]any{
 			"type":     "tab",
 			"tab_id":   e.Tab.GetTabId(),
-			"tab_type": tabTypeName(e.Tab.GetTabType()),
+			"tab_type": resolve.TabTypeWireName(e.Tab.GetTabType()),
 		}
 	case *leapmuxv1.EntityMaterialized_FloatingWindow:
 		return map[string]any{"type": "floating_window", "window_id": e.FloatingWindow.GetWindowId()}
@@ -397,7 +397,7 @@ func removedEntitySummary(em *leapmuxv1.EntityRemoved) map[string]any {
 		return map[string]any{
 			"type":     "tab",
 			"tab_id":   e.Tab.GetTabId(),
-			"tab_type": tabTypeName(e.Tab.GetTabType()),
+			"tab_type": resolve.TabTypeWireName(e.Tab.GetTabType()),
 		}
 	case *leapmuxv1.EntityRemoved_WindowId:
 		return map[string]any{"type": "floating_window", "window_id": e.WindowId}

@@ -2,14 +2,13 @@ package cmd
 
 import (
 	"context"
-	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -169,15 +168,28 @@ func runWorkspaceList(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	var resp leapmuxv1.ListWorkspacesResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, &leapmuxv1.ListWorkspacesRequest{}, &resp); err != nil {
+	var (
+		resp     leapmuxv1.ListWorkspacesResponse
+		sections *sectionIndex
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		return hubCallUnary(gctx, s.c, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, &leapmuxv1.ListWorkspacesRequest{}, &resp)
+	})
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var serr error
+		sections, serr = gs.loadArchivedSectionIndex()
+		return serr
+	})
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	archived := archivedWorkspaceIDs(s.ctx, s.c)
 	includeArchived := boolFlag(inv, "archived")
 	rows := make([]workspaceRow, 0, len(resp.GetWorkspaces()))
 	for _, ws := range resp.GetWorkspaces() {
-		isArchived := archived[ws.GetId()]
+		isArchived := sections.isArchived(ws.GetId())
 		if isArchived && !includeArchived {
 			continue
 		}
@@ -197,19 +209,16 @@ func runWorkspaceGet(inv *cli.Invocation) (any, error) {
 	}
 	defer s.Close()
 	wsInput := inv.Arg("workspace")
-	if wsInput == "" && callingTabID() == "" {
-		if def, derr := s.defaultWorkspaceID(); derr != nil {
-			return nil, derr
-		} else if def != "" {
-			wsInput = def
+	wsID := resolve.ExplicitID(resolve.KindWorkspace, wsInput)
+	if wsID == "" {
+		target, err := s.resolveWorkspaceOrDefault(wsInput)
+		if err != nil {
+			return nil, err
 		}
-	}
-	target, err := s.resolveOne(resolve.KindWorkspace, wsInput)
-	if err != nil {
-		return nil, err
+		wsID = target.ID
 	}
 	var resp leapmuxv1.GetWorkspaceResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: target.ID}, &resp); err != nil {
+	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: wsID}, &resp); err != nil {
 		return nil, err
 	}
 	return workspaceRowOf(resp.GetWorkspace()), nil
@@ -263,21 +272,6 @@ type workspaceMoveResult struct {
 	Archived    bool   `json:"archived"`
 }
 
-func currentWorkspaceArchiveState(list *leapmuxv1.ListSectionsResponse, wsID string) leapmuxv1.WorkspaceArchiveState {
-	archivedSections := map[string]bool{}
-	for _, sec := range list.GetSections() {
-		if sec.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED {
-			archivedSections[sec.GetId()] = true
-		}
-	}
-	for _, item := range list.GetItems() {
-		if item.GetWorkspaceId() == wsID && archivedSections[item.GetSectionId()] {
-			return leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED
-		}
-	}
-	return leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE
-}
-
 func findSectionByType(sections []*leapmuxv1.Section, want leapmuxv1.SectionType) *leapmuxv1.Section {
 	for _, sec := range sections {
 		if sec.GetSectionType() == want {
@@ -287,17 +281,62 @@ func findSectionByType(sections []*leapmuxv1.Section, want leapmuxv1.SectionType
 	return nil
 }
 
+func (s *session) resolveWorkspaceAndSections(input string, verifyExists bool) (resolve.Target, *leapmuxv1.ListSectionsResponse, error) {
+	var (
+		target resolve.Target
+		list   *leapmuxv1.ListSectionsResponse
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var err error
+		if verifyExists {
+			target, err = gs.resolveExistingWorkspace(input)
+		} else {
+			target, err = gs.resolveOne(resolve.KindWorkspace, input)
+		}
+		return err
+	})
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var err error
+		list, err = gs.listSections()
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		return resolve.Target{}, nil, err
+	}
+	return target, list, nil
+}
+
+func (s *session) moveWorkspace(wsID string, destSec *leapmuxv1.Section, pos string, curState leapmuxv1.WorkspaceArchiveState) (workspaceMoveResult, error) {
+	var resp leapmuxv1.MoveWorkspaceResponse
+	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure, &leapmuxv1.MoveWorkspaceRequest{
+		WorkspaceId:          wsID,
+		SectionId:            destSec.GetId(),
+		Position:             pos,
+		ExpectedArchiveState: curState,
+	}, &resp); err != nil {
+		return workspaceMoveResult{}, err
+	}
+	return workspaceMoveResult{
+		ID:          wsID,
+		SectionID:   destSec.GetId(),
+		SectionName: destSec.GetName(),
+		Position:    pos,
+		Archived:    destSec.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+	}, nil
+}
+
 func runWorkspaceArchive(inv *cli.Invocation) (any, error) {
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	target, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
-	if err != nil {
-		return nil, err
-	}
-	list, err := s.listSections()
+	target, list, err := s.resolveWorkspaceAndSections(inv.Arg("workspace"), false)
 	if err != nil {
 		return nil, err
 	}
@@ -305,19 +344,12 @@ func runWorkspaceArchive(inv *cli.Invocation) (any, error) {
 	if archivedSec == nil {
 		return nil, cli.Newf(cli.CodeNotFound, "no Archived sidebar section exists for this account")
 	}
-	curState := currentWorkspaceArchiveState(list, target.ID)
+	secIdx := indexSections(list)
+	curState := secIdx.archiveState(target.ID)
 	if curState == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
 		return workspaceMoveResult{ID: target.ID, SectionID: archivedSec.GetId(), SectionName: archivedSec.GetName(), Archived: true}, nil
 	}
-	var resp leapmuxv1.MoveWorkspaceResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId:          target.ID,
-		SectionId:            archivedSec.GetId(),
-		ExpectedArchiveState: curState,
-	}, &resp); err != nil {
-		return nil, err
-	}
-	return workspaceMoveResult{ID: target.ID, SectionID: archivedSec.GetId(), SectionName: archivedSec.GetName(), Archived: true}, nil
+	return s.moveWorkspace(target.ID, archivedSec, "", curState)
 }
 
 func runWorkspaceUnarchive(inv *cli.Invocation) (any, error) {
@@ -326,11 +358,7 @@ func runWorkspaceUnarchive(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	target, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
-	if err != nil {
-		return nil, err
-	}
-	list, err := s.listSections()
+	target, list, err := s.resolveWorkspaceAndSections(inv.Arg("workspace"), true)
 	if err != nil {
 		return nil, err
 	}
@@ -349,23 +377,15 @@ func runWorkspaceUnarchive(inv *cli.Invocation) (any, error) {
 			return nil, cli.Newf(cli.CodeNotFound, "no In progress sidebar section exists for this account")
 		}
 	}
-	curState := currentWorkspaceArchiveState(list, target.ID)
+	secIdx := indexSections(list)
+	curState := secIdx.archiveState(target.ID)
 	if curState == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE && !inv.Changed("section") {
-		curSec := currentWorkspaceSection(list, target.ID)
-		if curSec != nil {
+		if curSec := secIdx.sectionOf(target.ID); curSec != nil {
 			destSec = curSec
 		}
 		return workspaceMoveResult{ID: target.ID, SectionID: destSec.GetId(), SectionName: destSec.GetName(), Archived: false}, nil
 	}
-	var resp leapmuxv1.MoveWorkspaceResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId:          target.ID,
-		SectionId:            destSec.GetId(),
-		ExpectedArchiveState: curState,
-	}, &resp); err != nil {
-		return nil, err
-	}
-	return workspaceMoveResult{ID: target.ID, SectionID: destSec.GetId(), SectionName: destSec.GetName(), Archived: false}, nil
+	return s.moveWorkspace(target.ID, destSec, "", curState)
 }
 
 func runWorkspaceMove(inv *cli.Invocation) (any, error) {
@@ -373,76 +393,79 @@ func runWorkspaceMove(inv *cli.Invocation) (any, error) {
 	last := boolFlag(inv, "last")
 	beforeRaw := strings.TrimSpace(stringFlag(inv, "before"))
 	afterRaw := strings.TrimSpace(stringFlag(inv, "after"))
-	placeCount := 0
-	for _, set := range []bool{first, last, inv.Changed("before"), inv.Changed("after")} {
-		if set {
-			placeCount++
-		}
+	if inv.Changed("before") && beforeRaw == "" {
+		return nil, cli.Usagef("--before must not be empty")
 	}
-	if placeCount > 1 {
-		return nil, cli.Usagef("--first, --last, --before, and --after exclude each other")
+	if inv.Changed("after") && afterRaw == "" {
+		return nil, cli.Usagef("--after must not be empty")
 	}
+	hasPosition := first || last || beforeRaw != "" || afterRaw != ""
+	spec, err := parsePositionSpec(first, last, beforeRaw, afterRaw)
+	if err != nil {
+		return nil, cli.Usagef("%s", err.Error())
+	}
+
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	target, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
-	if err != nil {
-		return nil, err
+
+	var (
+		target resolve.Target
+		list   *leapmuxv1.ListSectionsResponse
+		refWS  resolve.Target
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var rerr error
+		target, rerr = gs.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+		return rerr
+	})
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var lerr error
+		list, lerr = gs.listSections()
+		return lerr
+	})
+	if spec.refID != "" {
+		refInput := spec.refID
+		g.Go(func() error {
+			gs := *s
+			gs.ctx = gctx
+			var rerr error
+			refWS, rerr = gs.resolveOne(resolve.KindWorkspace, refInput)
+			return rerr
+		})
 	}
-	list, err := s.listSections()
-	if err != nil {
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 	destSec, err := resolveSection(list.GetSections(), stringFlag(inv, "section"))
 	if err != nil {
 		return nil, err
 	}
-	var refID string
-	if inv.Changed("before") {
-		ref, err := s.resolveOne(resolve.KindWorkspace, beforeRaw)
-		if err != nil {
-			return nil, err
-		}
-		refID = ref.ID
-	} else if inv.Changed("after") {
-		ref, err := s.resolveOne(resolve.KindWorkspace, afterRaw)
-		if err != nil {
-			return nil, err
-		}
-		refID = ref.ID
-	}
-	var peers []rankedItem
-	for _, item := range list.GetItems() {
-		if item.GetSectionId() == destSec.GetId() && item.GetWorkspaceId() != target.ID {
-			peers = append(peers, rankedItem{ID: item.GetWorkspaceId(), Position: item.GetPosition()})
-		}
+	if spec.refID != "" {
+		spec.refID = refWS.ID
 	}
 	pos := ""
-	if placeCount > 0 {
-		pos, err = computeLexoRankPosition(peers, first, last, inv.Changed("before"), inv.Changed("after"), refID, "")
+	if hasPosition {
+		var peers []rankedItem
+		for _, item := range list.GetItems() {
+			if item.GetSectionId() == destSec.GetId() && item.GetWorkspaceId() != target.ID {
+				peers = append(peers, rankedItem{ID: item.GetWorkspaceId(), Position: item.GetPosition()})
+			}
+		}
+		pos, err = computeRankedPosition(peers, target.ID, spec, "workspace")
 		if err != nil {
 			return nil, err
 		}
 	}
-	curState := currentWorkspaceArchiveState(list, target.ID)
-	var resp leapmuxv1.MoveWorkspaceResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId:          target.ID,
-		SectionId:            destSec.GetId(),
-		Position:             pos,
-		ExpectedArchiveState: curState,
-	}, &resp); err != nil {
-		return nil, err
-	}
-	return workspaceMoveResult{
-		ID:          target.ID,
-		SectionID:   destSec.GetId(),
-		SectionName: destSec.GetName(),
-		Position:    pos,
-		Archived:    destSec.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
-	}, nil
+	secIdx := indexSections(list)
+	return s.moveWorkspace(target.ID, destSec, pos, secIdx.archiveState(target.ID))
 }
 
 // workspaceDeleteResult is the result of `workspace delete`.
@@ -489,10 +512,7 @@ func runWorkspaceDelete(inv *cli.Invocation) (any, error) {
 			return nil, err
 		}
 		wsTabs := liveTabsOfWorkspace(cc.bs.State, target.ID)
-		if err := guardTabsBusy(cc, wsTabs, false); err != nil {
-			return nil, err
-		}
-		if err := guardWorkspaceDirtyWorktrees(cc, wsTabs); err != nil {
+		if err := guardBulkCloseTabs(cc, wsTabs, false); err != nil {
 			return nil, err
 		}
 	}
@@ -533,157 +553,15 @@ func cliCleanupCaller(c control.Peer) cleanupCaller {
 	return func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		req := &leapmuxv1.CleanupWorkspaceRequest{Tabs: tabs}
 		var resp leapmuxv1.CleanupWorkspaceResponse
-		if err := callInnerRPCBest(ctx, c, workerID, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, req, &resp); err != nil {
+		if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, req, &resp); err != nil {
 			return nil, err
 		}
 		return &resp, nil
 	}
 }
 
-// guardWorkspaceDirtyWorktrees inspects each live tab's git checkout via
-// InspectLastTabClose (and GetGitFileStatus when sibling tabs in the same
-// workspace trigger InspectLastTabClose's sibling fast path) on one E2EE
-// channel per Worker and refuses workspace deletion when any worktree or branch
-// holds uncommitted changes, unpushed commits, or an unpushed local branch,
-// unless the caller passed --allow-busy.
-func guardWorkspaceDirtyWorktrees(cc *crdtCall, tabs []crdt.TabRef) error {
-	if len(tabs) == 0 {
-		return nil
-	}
-	var order []string
-	byWorker := map[string][]crdt.TabRef{}
-	for _, t := range tabs {
-		workerID := cc.bs.State.GetTabs()[t.TabID].GetWorkerId().GetValue()
-		if workerID == "" {
-			continue
-		}
-		if _, seen := byWorker[workerID]; !seen {
-			order = append(order, workerID)
-		}
-		byWorker[workerID] = append(byWorker[workerID], t)
-	}
-	var dirty []tabBusyReason
-	seenPath := map[string]bool{}
-	for _, workerID := range order {
-		refs := byWorker[workerID]
-		chanErr := withBestEffortWorkerChannel(cc.ctx, cc.c, workerID, func(w workerCall) error {
-			callWorker := func(method string, in, out proto.Message) error {
-				return w.Call(cc.ctx, method, in, out)
-			}
-			for _, ref := range refs {
-				inspected, err := inspectLastTabCloseBest(callWorker, ref.TabType, ref.TabID)
-				if err != nil {
-					if cli.FromError(err).Code == cli.CodeUnavailable || cli.FromError(err).Code == cli.CodeWorkerOffline {
-						dirty = append(dirty, tabBusyReason{
-							tabID:  ref.TabID,
-							detail: "worker unreachable; cannot verify uncommitted git changes",
-						})
-					}
-					continue
-				}
-				if inspected == nil {
-					continue
-				}
-				pathKey := inspected.GetWorktreePath()
-				if pathKey == "" {
-					pathKey = inspected.GetWorkingDir()
-				}
-				if pathKey != "" && seenPath[pathKey] {
-					continue
-				}
-				if inspected.GetShouldPrompt() {
-					gs := inspected.GetGitState()
-					var parts []string
-					if gs.GetHasUncommittedChanges() {
-						parts = append(parts, "uncommitted changes")
-					}
-					if n := gs.GetUnpushedCommitCount(); n > 0 {
-						parts = append(parts, pluralize(int(n), "unpushed commit"))
-					}
-					if gs.GetRemoteBranchMissing() && gs.GetUnpushedCommitCount() == 0 {
-						parts = append(parts, "unpushed local branch")
-					}
-					if len(parts) == 0 {
-						continue
-					}
-					if pathKey != "" {
-						seenPath[pathKey] = true
-					}
-					dirty = append(dirty, tabBusyReason{
-						tabID:  ref.TabID,
-						detail: formatDirtyCheckoutDetail(inspected.GetBranchName(), pathKey, parts),
-					})
-					continue
-				}
-				// Sibling fast path: when 2+ live tabs share a worktree or branch
-				// inside the workspace being deleted, InspectLastTabClose returns
-				// ShouldPrompt=false and GitState=nil while still populating
-				// WorkingDir/WorktreePath. Inspect that checkout directly so
-				// deleting the whole workspace cannot silently drop dirty state.
-				if inspected.GetGitState() == nil && pathKey != "" {
-					seenPath[pathKey] = true
-					var statusResp leapmuxv1.GetGitFileStatusResponse
-					if err := callWorker(leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{Path: pathKey}, &statusResp); err != nil {
-						continue
-					}
-					var parts []string
-					if len(statusResp.GetFiles()) > 0 || statusResp.GetStatus().GetConflicted() {
-						parts = append(parts, "uncommitted changes")
-					}
-					if ahead := statusResp.GetStatus().GetAhead(); ahead > 0 {
-						parts = append(parts, pluralize(int(ahead), "unpushed commit"))
-					}
-					if len(parts) > 0 {
-						dirty = append(dirty, tabBusyReason{
-							tabID:  ref.TabID,
-							detail: formatDirtyCheckoutDetail(inspected.GetBranchName(), pathKey, parts),
-						})
-					}
-				}
-			}
-			return nil
-		})
-		if chanErr != nil {
-			dirty = append(dirty, tabBusyReason{
-				tabID:  refs[0].TabID,
-				detail: fmt.Sprintf("worker %s unreachable; cannot verify uncommitted git changes", cli.ShortID(workerID)),
-			})
-		}
-	}
-	if len(dirty) == 0 {
-		return nil
-	}
-	return errTabBusyRefused(dirty)
-}
-
-func formatDirtyCheckoutDetail(branch, pathKey string, parts []string) string {
-	label := "git checkout"
-	if branch != "" {
-		label = "branch " + branch
-	}
-	if pathKey != "" {
-		label += " at " + pathKey
-	}
-	return label + " has " + strings.Join(parts, " and ")
-}
-
-func currentWorkspaceSection(list *leapmuxv1.ListSectionsResponse, wsID string) *leapmuxv1.Section {
-	secByID := map[string]*leapmuxv1.Section{}
-	for _, sec := range list.GetSections() {
-		secByID[sec.GetId()] = sec
-	}
-	for _, item := range list.GetItems() {
-		if item.GetWorkspaceId() == wsID {
-			if sec := secByID[item.GetSectionId()]; sec != nil {
-				return sec
-			}
-		}
-	}
-	return nil
-}
-
 // liveTabsOfWorkspace collects every live tab placed in wsID (both its main
-// tile tree and any live floating windows anchored in wsID).
+// tile tree and any live floating windows anchored in wsID), sorted by TabID.
 func liveTabsOfWorkspace(state *leapmuxv1.UserMaterialized, wsID string) []crdt.TabRef {
 	var out []crdt.TabRef
 	for _, t := range state.GetTabs() {
@@ -698,6 +576,9 @@ func liveTabsOfWorkspace(state *leapmuxv1.UserMaterialized, wsID string) []crdt.
 			out = append(out, crdt.TabRef{TabID: t.GetTabId(), TabType: t.GetTabType()})
 		}
 	}
+	slices.SortFunc(out, func(a, b crdt.TabRef) int {
+		return strings.Compare(a.TabID, b.TabID)
+	})
 	return out
 }
 

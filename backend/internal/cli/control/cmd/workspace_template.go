@@ -1,15 +1,21 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"go.yaml.in/yaml/v4"
+	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -79,7 +85,8 @@ type workspaceTemplate struct {
 	Tabs            []templateTab            `json:"tabs,omitempty" yaml:"tabs,omitempty"`
 
 	// style selects RenderText serialization ("yaml" or "json"); omitted from wire output.
-	style string
+	style      string
+	parsedTree *layoutNode
 }
 
 type templateLayoutNode struct {
@@ -99,8 +106,17 @@ type templateFloatingWindow struct {
 	Y       float64             `json:"y" yaml:"y"`
 	Width   float64             `json:"width" yaml:"width"`
 	Height  float64             `json:"height" yaml:"height"`
-	Opacity float64             `json:"opacity,omitempty" yaml:"opacity,omitempty"`
+	Opacity *float64            `json:"opacity,omitempty" yaml:"opacity,omitempty"`
 	Tree    *templateLayoutNode `json:"tree" yaml:"tree"`
+
+	parsedTree *layoutNode
+}
+
+func (fw templateFloatingWindow) effectiveOpacity() float64 {
+	if fw.Opacity == nil {
+		return 1.0
+	}
+	return *fw.Opacity
 }
 
 type templateTab struct {
@@ -123,6 +139,8 @@ type templateTab struct {
 	DisplayMode    string            `json:"display_mode,omitempty" yaml:"display_mode,omitempty"`
 	ViewMode       string            `json:"view_mode,omitempty" yaml:"view_mode,omitempty"`
 	DiffBase       string            `json:"diff_base,omitempty" yaml:"diff_base,omitempty"`
+
+	presentation *leapmuxv1.TabPresentation
 }
 
 func (t workspaceTemplate) marshalStyled() ([]byte, error) {
@@ -165,26 +183,33 @@ func runWorkspaceExport(inv *cli.Invocation) (any, error) {
 	defer s.Close()
 
 	wsInput := inv.Arg("workspace")
-	if wsInput == "" && callingTabID() == "" {
-		if def, derr := s.defaultWorkspaceID(); derr != nil {
-			return nil, derr
-		} else if def != "" {
-			wsInput = def
+	wsID := resolve.ExplicitID(resolve.KindWorkspace, wsInput)
+	if wsID == "" {
+		wsTarget, err := s.resolveWorkspaceOrDefault(wsInput)
+		if err != nil {
+			return nil, err
 		}
+		wsID = wsTarget.ID
 	}
-	wsTarget, err := s.resolveOne(resolve.KindWorkspace, wsInput)
-	if err != nil {
+	var (
+		wsResp leapmuxv1.GetWorkspaceResponse
+		cc     *crdtCall
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		return hubCallUnary(gctx, s.c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: wsID}, &wsResp)
+	})
+	g.Go(func() error {
+		gs := *s
+		gs.ctx = gctx
+		var cerr error
+		cc, cerr = gs.openCRDT(wsID)
+		return cerr
+	})
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	var wsResp leapmuxv1.GetWorkspaceResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: wsTarget.ID}, &wsResp); err != nil {
-		return nil, err
-	}
-	cc, err := s.openCRDT(wsTarget.ID)
-	if err != nil {
-		return nil, err
-	}
-	lt := buildLayoutTreeForWorkspace(cc.bs.State, wsTarget.ID, true)
+	lt := buildLayoutTreeForWorkspace(cc.bs.State, wsID)
 
 	// Assign stable human-readable tile_ref labels ("t1", "t2", ...) in traversal order.
 	tileRefByID := map[string]string{}
@@ -226,59 +251,50 @@ func runWorkspaceExport(inv *cli.Invocation) (any, error) {
 
 	for _, fw := range lt.FloatingWindows {
 		rec := cc.bs.State.GetFloatingWindows()[fw.ID]
+		var opacity *float64
+		if rec.GetOpacity() != nil {
+			v := rec.GetOpacity().GetValue()
+			opacity = &v
+		}
 		tmpl.FloatingWindows = append(tmpl.FloatingWindows, templateFloatingWindow{
 			X:       rec.GetX().GetValue(),
 			Y:       rec.GetY().GetValue(),
 			Width:   rec.GetWidth().GetValue(),
 			Height:  rec.GetHeight().GetValue(),
-			Opacity: rec.GetOpacity().GetValue(),
+			Opacity: opacity,
 			Tree:    convertNode(fw.Tree),
 		})
 	}
 
-	// Collect all live workspace tabs and hydrate from Workers.
-	wsTabs, err := listTabsInWorkspaces(s.ctx, s.c, []string{wsTarget.ID})
-	if err != nil {
-		return nil, err
+	// Build the workspace tab list directly from the CRDT snapshot (sorted by
+	// TabID) and hydrate agents, terminals, and file payloads in one Worker pass.
+	var wsTabs []*leapmuxv1.WorkspaceTab
+	for _, t := range cc.bs.State.GetTabs() {
+		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
+			continue
+		}
+		tileID := t.GetTileId().GetValue()
+		if tileID == "" || tileRefByID[tileID] == "" {
+			continue
+		}
+		wsTabs = append(wsTabs, &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabId: t.GetTabId(), TabType: t.GetTabType()},
+			WorkspaceId: wsID,
+			TileId:      tileID,
+			WorkerId:    t.GetWorkerId().GetValue(),
+		})
 	}
+	slices.SortFunc(wsTabs, func(a, b *leapmuxv1.WorkspaceTab) int {
+		return strings.Compare(a.GetTab().GetTabId(), b.GetTab().GetTabId())
+	})
 	details := fetchTabDetails(s.ctx, s.c, wsTabs)
-	wsTabByID := map[string]*leapmuxv1.WorkspaceTab{}
-	fileTabsByWorker := map[string][]string{}
-	for _, t := range wsTabs {
-		tid := t.GetTab().GetTabId()
-		wsTabByID[tid] = t
-		if t.GetTab().GetTabType() == leapmuxv1.TabType_TAB_TYPE_FILE && t.GetWorkerId() != "" {
-			fileTabsByWorker[t.GetWorkerId()] = append(fileTabsByWorker[t.GetWorkerId()], tid)
-		}
-	}
-
-	// Batch file payload reads over ONE E2EE channel per Worker so paths are
-	// preserved without N handshakes, and fail clearly if a file path cannot be hydrated.
-	filePayloads := map[string]*leapmuxv1.TabPayload{}
-	for wkID, tabIDs := range fileTabsByWorker {
-		if err := withWorkerChannel(s.ctx, s.c, wkID, func(w workerCall) error {
-			for _, tid := range tabIDs {
-				var resp leapmuxv1.GetTabPayloadResponse
-				if err := w.Call(s.ctx, leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure, &leapmuxv1.GetTabPayloadRequest{TabId: tid}, &resp); err != nil {
-					return fmt.Errorf("read file tab %s payload on worker %s: %w", cli.ShortID(tid), cli.ShortID(wkID), err)
-				}
-				filePayloads[tid] = resp.GetPayload()
-			}
-			return nil
-		}); err != nil {
-			return nil, err
-		}
-	}
 
 	// Emit tabs ordered by numeric leaf traversal order then LexoRank position.
 	for _, tid := range tileOrder {
 		for _, ltTab := range lt.TabsByTile[tid] {
 			rec := cc.bs.State.GetTabs()[ltTab.ID]
-			wt := wsTabByID[ltTab.ID]
 			workerID := ""
-			if wt != nil {
-				workerID = wt.GetWorkerId()
-			} else if rec != nil {
+			if rec != nil {
 				workerID = rec.GetWorkerId().GetValue()
 			}
 			det := details[ltTab.ID]
@@ -314,9 +330,9 @@ func runWorkspaceExport(inv *cli.Invocation) (any, error) {
 					tabDef.WorkingDir = det.Terminal.GetWorkingDir()
 				}
 			case "file":
-				if payload := filePayloads[ltTab.ID]; payload != nil {
-					tabDef.WorkingDir = payload.GetWorkingDir()
-					tabDef.Path = payload.GetFile().GetFilePath()
+				if det.Payload != nil {
+					tabDef.WorkingDir = det.Payload.GetWorkingDir()
+					tabDef.Path = det.Payload.GetFile().GetFilePath()
 				}
 				if tabDef.Path == "" {
 					return nil, cli.Newf(cli.CodeUnavailable, "file tab %s has no readable path on its worker; cannot export a valid template", cli.ShortID(ltTab.ID))
@@ -333,7 +349,7 @@ func runWorkspaceExport(inv *cli.Invocation) (any, error) {
 					}
 				}
 			default:
-				// Skip image tabs that reference transient message seqs.
+				// Skip image tabs that refer to transient message seqs.
 				continue
 			}
 			tmpl.Tabs = append(tmpl.Tabs, tabDef)
@@ -349,7 +365,7 @@ func runWorkspaceExport(inv *cli.Invocation) (any, error) {
 			return nil, cli.Wrap(cli.CodeInternal, err, "write exported workspace template")
 		}
 		return workspaceExportFileResult{
-			WorkspaceID: wsTarget.ID,
+			WorkspaceID: wsID,
 			Title:       tmpl.Title,
 			Output:      outPath,
 			Style:       style,
@@ -383,6 +399,9 @@ func collectTemplateTileRefs(n *templateLayoutNode, seen map[string]bool) error 
 		return nil
 	}
 	if n.TileRef != "" {
+		if !(&layoutNode{Kind: n.Kind}).isLeaf() {
+			return fmt.Errorf("tile_ref %q is only allowed on leaf nodes, not %q", n.TileRef, n.Kind)
+		}
 		if seen[n.TileRef] {
 			return fmt.Errorf("duplicate tile_ref %q", n.TileRef)
 		}
@@ -396,12 +415,19 @@ func collectTemplateTileRefs(n *templateLayoutNode, seen map[string]bool) error 
 	return nil
 }
 
+func validateFiniteFloat(v float64, field string) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return cli.Usagef("%s must be a finite number", field)
+	}
+	return nil
+}
+
 func (n *templateLayoutNode) toLayoutNode() *layoutNode {
 	if n == nil {
 		return nil
 	}
 	out := &layoutNode{
-		NodeID:    n.TileRef,
+		TileRef:   n.TileRef,
 		Kind:      n.Kind,
 		Direction: n.Direction,
 		Ratios:    n.Ratios,
@@ -421,7 +447,12 @@ func parseWorkspaceTemplate(data []byte) (*workspaceTemplate, error) {
 		return nil, cli.Usagef("template input is empty")
 	}
 	var tmpl workspaceTemplate
-	if err := yaml.Unmarshal(data, &tmpl); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&tmpl); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, cli.Usagef("template input is empty")
+		}
 		return nil, cli.Wrap(cli.CodeUsage, err, "parse workspace template")
 	}
 	if tmpl.Version != 0 && tmpl.Version != 1 {
@@ -430,28 +461,54 @@ func parseWorkspaceTemplate(data []byte) (*workspaceTemplate, error) {
 	if tmpl.Tree == nil {
 		tmpl.Tree = &templateLayoutNode{Kind: "leaf", TileRef: "t1"}
 	}
-	if err := validateAndNormalizeTree(tmpl.Tree.toLayoutNode(), "tree"); err != nil {
+	mainTree := tmpl.Tree.toLayoutNode()
+	if err := validateAndNormalizeTree(mainTree, "tree"); err != nil {
 		return nil, cli.Usagef("%v", err)
 	}
+	tmpl.parsedTree = mainTree
 	tileRefs := map[string]bool{}
 	if err := collectTemplateTileRefs(tmpl.Tree, tileRefs); err != nil {
 		return nil, cli.Usagef("%v", err)
 	}
-	for i, fw := range tmpl.FloatingWindows {
+	for i := range tmpl.FloatingWindows {
+		fw := &tmpl.FloatingWindows[i]
+		if err := validateFiniteFloat(fw.X, fmt.Sprintf("floating_windows[%d].x", i)); err != nil {
+			return nil, err
+		}
+		if err := validateFiniteFloat(fw.Y, fmt.Sprintf("floating_windows[%d].y", i)); err != nil {
+			return nil, err
+		}
+		if err := validateFiniteFloat(fw.Width, fmt.Sprintf("floating_windows[%d].width", i)); err != nil {
+			return nil, err
+		}
+		if err := validateFiniteFloat(fw.Height, fmt.Sprintf("floating_windows[%d].height", i)); err != nil {
+			return nil, err
+		}
 		if fw.Width <= 0 || fw.Height <= 0 {
 			return nil, cli.Usagef("floating_windows[%d]: width and height must be > 0", i)
 		}
-		if fw.Tree == nil {
-			tmpl.FloatingWindows[i].Tree = &templateLayoutNode{Kind: "leaf"}
+		if fw.Opacity != nil {
+			if err := validateFiniteFloat(*fw.Opacity, fmt.Sprintf("floating_windows[%d].opacity", i)); err != nil {
+				return nil, err
+			}
+			if *fw.Opacity < 0 || *fw.Opacity > 1 {
+				return nil, cli.Usagef("floating_windows[%d]: opacity must be between 0.0 and 1.0; got %v", i, *fw.Opacity)
+			}
 		}
-		if err := validateAndNormalizeTree(tmpl.FloatingWindows[i].Tree.toLayoutNode(), fmt.Sprintf("floating_windows[%d].tree", i)); err != nil {
+		if fw.Tree == nil {
+			fw.Tree = &templateLayoutNode{Kind: "leaf"}
+		}
+		fwTree := fw.Tree.toLayoutNode()
+		if err := validateAndNormalizeTree(fwTree, fmt.Sprintf("floating_windows[%d].tree", i)); err != nil {
 			return nil, cli.Usagef("%v", err)
 		}
-		if err := collectTemplateTileRefs(tmpl.FloatingWindows[i].Tree, tileRefs); err != nil {
+		fw.parsedTree = fwTree
+		if err := collectTemplateTileRefs(fw.Tree, tileRefs); err != nil {
 			return nil, cli.Usagef("floating_windows[%d]: %v", i, err)
 		}
 	}
-	for i, tab := range tmpl.Tabs {
+	for i := range tmpl.Tabs {
+		tab := &tmpl.Tabs[i]
 		if tab.TileRef != "" && !tileRefs[tab.TileRef] {
 			return nil, cli.Usagef("tabs[%d]: unknown tile_ref %q (not declared in tree or floating_windows)", i, tab.TileRef)
 		}
@@ -467,16 +524,11 @@ func parseWorkspaceTemplate(data []byte) (*workspaceTemplate, error) {
 			if strings.TrimSpace(tab.Path) == "" {
 				return nil, cli.Usagef("tabs[%d]: file tab requires path", i)
 			}
-			if dm := strings.TrimSpace(tab.DisplayMode); dm != "" {
-				if _, ok := parseEnumToken(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED, dm); !ok {
-					return nil, cli.Usagef("tabs[%d]: invalid display_mode %q", i, dm)
-				}
+			pres, err := parseTabPresentation(tab.DisplayMode, tab.ViewMode, tab.DiffBase, tab.DiffBase != "")
+			if err != nil {
+				return nil, cli.Usagef("tabs[%d]: %s", i, cli.FromError(err).Message)
 			}
-			if vm := strings.TrimSpace(tab.ViewMode); vm != "" {
-				if _, ok := parseEnumToken(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED, vm); !ok {
-					return nil, cli.Usagef("tabs[%d]: invalid view_mode %q", i, vm)
-				}
-			}
+			tab.presentation = pres
 		default:
 			return nil, cli.Usagef("tabs[%d]: unsupported tab type %q (want agent, terminal, or file)", i, tab.Type)
 		}
@@ -484,57 +536,55 @@ func parseWorkspaceTemplate(data []byte) (*workspaceTemplate, error) {
 	return &tmpl, nil
 }
 
-// synthesizeTemplateSubtree mirrors synthesizeSubtree while capturing the
-// mapping from template tile_ref labels to generated CRDT node IDs.
-func synthesizeTemplateSubtree(bs *CRDTBootstrap, parentID string, parent *layoutNode, tileMap map[string]string) (ops []*leapmuxv1.CrdtOp, firstLeaf string) {
-	rank := lexorank.First()
-	grid := parent.parsedKind() == leapmuxv1.NodeKind_NODE_KIND_GRID
-	for index, child := range parent.Children {
-		position := rank
-		if grid {
-			cols := int(parent.Cols)
-			position = crdt.GridCellPosition(index/cols, index%cols)
-		} else {
-			rank = lexorank.After(rank)
+// postOrderLiveSubtree lists every live node in rootID's subtree leaves-first,
+// using a precomputed LiveChildrenByParent map to avoid repeated scans.
+func postOrderLiveSubtree(state *leapmuxv1.UserMaterialized, children map[string][]string, rootID string) []string {
+	var out []string
+	visited := map[string]bool{}
+	var walk func(nodeID string)
+	walk = func(nodeID string) {
+		if nodeID == "" || visited[nodeID] {
+			return
 		}
-		childID := id.Generate()
-		ops = append(ops,
-			opSetNodeKind(bs, childID, child.parsedKind()),
-			opSetNodeParentID(bs, childID, parentID),
-			opSetNodePosition(bs, childID, position),
-		)
-		ops = appendNodeShapeOps(ops, bs, childID, child)
-		if child.isLeaf() {
-			if firstLeaf == "" {
-				firstLeaf = childID
-			}
-			if child.NodeID != "" {
-				tileMap[child.NodeID] = childID
-			}
+		rec := state.GetNodes()[nodeID]
+		if rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
+			return
 		}
-		grandOps, deeperFirst := synthesizeTemplateSubtree(bs, childID, child, tileMap)
-		ops = append(ops, grandOps...)
-		if firstLeaf == "" && deeperFirst != "" {
-			firstLeaf = deeperFirst
+		visited[nodeID] = true
+		kids := slices.Clone(children[nodeID])
+		slices.Sort(kids)
+		for _, childID := range kids {
+			walk(childID)
 		}
+		out = append(out, nodeID)
 	}
-	return ops, firstLeaf
+	walk(rootID)
+	return out
+}
+
+// workspaceApplyPartialError wraps a tab-opening failure after the layout was
+// committed while preserving the cause's CLI code, hints, candidates, retry
+// receipt, and custom exit code.
+func workspaceApplyPartialError(wsID string, openedCount, totalTabs, tabIdx int, cause error) error {
+	base := cli.FromError(cause)
+	prefix := fmt.Sprintf("workspace %s applied layout and opened %d/%d tab(s), but tabs[%d] failed", wsID, openedCount, totalTabs, tabIdx)
+	out := cli.Wrap(base.Code, cause, prefix)
+	if base.Message != "" {
+		out.Message = prefix + ": " + base.Message
+	}
+	out.Hints = append([]string(nil), base.Hints...)
+	out.Candidates = append([]cli.Candidate(nil), base.Candidates...)
+	out.Receipt = base.Receipt
+	if code := base.ExitCode(); code != cli.ExitCode(base.Code) {
+		out = out.WithExitCode(code)
+	}
+	return out.WithHint(`inspect workspace with "leapmux tab list --workspace %s"`, wsID)
 }
 
 func runWorkspaceApply(inv *cli.Invocation) (any, error) {
-	path := inv.Arg("file")
-	var data []byte
-	var err error
-	if path == "-" {
-		data, err = readStdinGuarded(inv.Stdin)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		data, err = os.ReadFile(path)
-		if err != nil {
-			return nil, cli.Wrap(cli.CodeUsage, err, "read template file")
-		}
+	data, err := readFileOrStdin(inv.Stdin, inv.Arg("file"), "template file")
+	if err != nil {
+		return nil, err
 	}
 	tmpl, err := parseWorkspaceTemplate(data)
 	if err != nil {
@@ -543,6 +593,9 @@ func runWorkspaceApply(inv *cli.Invocation) (any, error) {
 	title := strings.TrimSpace(tmpl.Title)
 	if inv.Changed("title") {
 		title = strings.TrimSpace(stringFlag(inv, "title"))
+		if title == "" {
+			return nil, cli.Usagef("--title must not be empty")
+		}
 	}
 	if title == "" {
 		title = "Workspace"
@@ -590,8 +643,8 @@ func runWorkspaceApply(inv *cli.Invocation) (any, error) {
 		resolvedTabWorkers[i] = wid
 	}
 
-	// Preflight every target Worker before creating or mutating Hub workspace
-	// state so an offline Worker never leaves behind a half-applied workspace.
+	// Verify that each target Worker exists on the Hub before creating or
+	// mutating workspace state (online reachability is checked when channels open).
 	preflighted := map[string]bool{}
 	for _, wid := range resolvedTabWorkers {
 		if preflighted[wid] {
@@ -630,100 +683,87 @@ func runWorkspaceApply(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	rec := cc.bs.State.GetWorkspaces()[wsID]
-	if rec == nil || rec.GetRootNodeId() == "" {
-		return nil, cli.Newf(cli.CodeConflict, "workspace %s has no root node", wsID)
-	}
-	rootID := rec.GetRootNodeId()
 
-	mainTree := tmpl.Tree.toLayoutNode()
-	_ = validateAndNormalizeTree(mainTree, "tree")
+	tileMap, firstLeaf, err := submitLayoutRewriteWithRetry(cc, wsID, tmpl.parsedTree, func(bs *CRDTBootstrap, firstLeaf string, tileMap map[string]string) []*leapmuxv1.CrdtOp {
+		var ops []*leapmuxv1.CrdtOp
+		children := crdt.LiveChildrenByParent(bs.State)
 
-	tileMap := map[string]string{}
-	ops := []*leapmuxv1.CrdtOp{}
-	ops = appendNodeShapeOps(ops, cc.bs, rootID, mainTree)
-
-	tombstones := crdt.DescendantsLeavesFirst(cc.bs.State, rootID)
-	replacedNodes := map[string]bool{rootID: true}
-	for _, nid := range tombstones {
-		replacedNodes[nid] = true
-		if nid == rootID {
-			continue
+		// Replace existing floating windows on --workspace <existing> so
+		// applying twice does not duplicate them.
+		var existingWinIDs []string
+		for winID, fw := range bs.State.GetFloatingWindows() {
+			if fw == nil || !crdt.HLCIsZero(fw.GetTombstoneAt()) || fw.GetWorkspaceId().GetValue() != wsID {
+				continue
+			}
+			existingWinIDs = append(existingWinIDs, winID)
 		}
-		ops = append(ops, opTombstoneNode(cc.bs, nid))
-	}
+		slices.Sort(existingWinIDs)
 
-	// Replace existing floating windows on --workspace <existing> so applying twice does not duplicate them.
-	for winID, fw := range cc.bs.State.GetFloatingWindows() {
-		if fw == nil || !crdt.HLCIsZero(fw.GetTombstoneAt()) || fw.GetWorkspaceId().GetValue() != wsID {
-			continue
+		tombstonedFWNodes := map[string]bool{}
+		for _, winID := range existingWinIDs {
+			fw := bs.State.GetFloatingWindows()[winID]
+			if fwRoot := fw.GetRootNodeId(); fwRoot != "" {
+				for _, nid := range postOrderLiveSubtree(bs.State, children, fwRoot) {
+					tombstonedFWNodes[nid] = true
+					ops = append(ops, opTombstoneNode(bs, nid))
+				}
+			}
+			ops = append(ops, opTombstoneWindow(bs, winID))
 		}
-		fwRoot := fw.GetRootNodeId()
-		if fwRoot != "" {
-			for _, nid := range crdt.DescendantsLeavesFirst(cc.bs.State, fwRoot) {
-				replacedNodes[nid] = true
-				ops = append(ops, opTombstoneNode(cc.bs, nid))
+		if len(tombstonedFWNodes) > 0 {
+			var migratedTabs []*leapmuxv1.TabRecord
+			for _, t := range bs.State.GetTabs() {
+				if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
+					continue
+				}
+				if tombstonedFWNodes[t.GetTileId().GetValue()] {
+					migratedTabs = append(migratedTabs, t)
+				}
+			}
+			slices.SortFunc(migratedTabs, func(a, b *leapmuxv1.TabRecord) int {
+				return strings.Compare(a.GetTabId(), b.GetTabId())
+			})
+			for _, t := range migratedTabs {
+				ops = append(ops, opSetTabTileID(bs, t.GetTabType(), t.GetTabId(), firstLeaf))
 			}
 		}
-		ops = append(ops, opTombstoneWindow(cc.bs, winID))
-	}
 
-	firstLeaf := rootID
-	if !mainTree.isLeaf() {
-		subOps, fl := synthesizeTemplateSubtree(cc.bs, rootID, mainTree, tileMap)
-		ops = append(ops, subOps...)
-		firstLeaf = fl
-	} else if mainTree.NodeID != "" {
-		tileMap[mainTree.NodeID] = rootID
-	}
-
-	for _, t := range cc.bs.State.GetTabs() {
-		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
-			continue
-		}
-		if replacedNodes[t.GetTileId().GetValue()] {
-			ops = append(ops, opSetTabTileID(cc.bs, t.GetTabType(), t.GetTabId(), firstLeaf))
-		}
-	}
-
-	for _, fw := range tmpl.FloatingWindows {
-		winID := id.Generate()
-		fwRootID := id.Generate()
-		fwTree := fw.Tree.toLayoutNode()
-		_ = validateAndNormalizeTree(fwTree, "floating_window.tree")
-		opacity := fw.Opacity
-		if opacity <= 0 || opacity > 1 {
-			opacity = 1.0
-		}
-		ops = append(ops,
-			opSetNodeKind(cc.bs, fwRootID, fwTree.parsedKind()),
-			opSetWindowWorkspaceID(cc.bs, winID, wsID),
-			opSetWindowRootNodeID(cc.bs, winID, fwRootID),
-			opSetWindowX(cc.bs, winID, fw.X),
-			opSetWindowY(cc.bs, winID, fw.Y),
-			opSetWindowWidth(cc.bs, winID, fw.Width),
-			opSetWindowHeight(cc.bs, winID, fw.Height),
-			opSetWindowOpacity(cc.bs, winID, opacity),
-		)
-		ops = appendNodeShapeOps(ops, cc.bs, fwRootID, fwTree)
-		if fwTree.isLeaf() {
-			if fwTree.NodeID != "" {
-				tileMap[fwTree.NodeID] = fwRootID
+		for _, fw := range tmpl.FloatingWindows {
+			winID := id.Generate()
+			fwRootID := id.Generate()
+			fwTree := fw.parsedTree
+			ops = appendNodeShapeOps(ops, bs, fwRootID, fwTree)
+			if fwTree.isLeaf() {
+				if fwTree.TileRef != "" {
+					tileMap[fwTree.TileRef] = fwRootID
+				}
+			} else {
+				rank := lexorank.First()
+				grid := fwTree.parsedKind() == leapmuxv1.NodeKind_NODE_KIND_GRID
+				for index, child := range fwTree.Children {
+					pos := rank
+					if grid {
+						cols := int(fwTree.Cols)
+						pos = crdt.GridCellPosition(index/cols, index%cols)
+					} else {
+						rank = lexorank.After(rank)
+					}
+					subOps, _ := synthesizeSubtree(bs, child, fwRootID, pos, tileMap)
+					ops = append(ops, subOps...)
+				}
 			}
-		} else {
-			subOps, _ := synthesizeTemplateSubtree(cc.bs, fwRootID, fwTree, tileMap)
-			ops = append(ops, subOps...)
+			ops = appendCreateFloatingWindowOps(ops, bs, winID, wsID, fwRootID, fw.X, fw.Y, fw.Width, fw.Height, fw.effectiveOpacity())
 		}
-	}
-
-	if err := cc.submitOps(ops); err != nil {
+		return ops
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	// Group tab indices by Worker so we reuse ONE E2EE channel per Worker,
-	// while still preserving template tab ordering in the result slice.
+	// Group tab indices by Worker so each Worker opens ONE E2EE channel, run
+	// distinct Workers concurrently, and preserve template tab ordering in the
+	// result slice.
 	opened := make([]openedTab, len(tmpl.Tabs))
-	openedCount := 0
 	type indexedTab struct {
 		index int
 		tab   templateTab
@@ -738,160 +778,170 @@ func runWorkspaceApply(inv *cli.Invocation) (any, error) {
 		tabsByWorker[wid] = append(tabsByWorker[wid], indexedTab{index: i, tab: tab})
 	}
 
-	partialApplyErr := func(tabIdx int, cause error) error {
-		e := cli.FromError(cause)
-		return cli.Wrap(e.Code, cause, fmt.Sprintf("workspace %s applied layout and opened %d/%d tab(s), but tabs[%d] failed", wsID, openedCount, len(tmpl.Tabs), tabIdx)).
-			WithHint(`inspect workspace with "leapmux tab list --workspace %s"`, wsID)
+	type workerFailure struct {
+		tabIdx int
+		err    error
 	}
-
-	for _, workerID := range workerOrder {
-		if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-			return nil, partialApplyErr(tabsByWorker[workerID][0].index, err)
-		}
-		var failedIdx int
-		err := withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
-			for _, item := range tabsByWorker[workerID] {
-				tab := item.tab
-				tileID := firstLeaf
-				if tab.TileRef != "" {
-					tileID = tileMap[tab.TileRef]
-				}
-				var gitSetup *leapmuxv1.GitSetup
-				if tab.Worktree != "" {
-					gitSetup = &leapmuxv1.GitSetup{
-						Mode: &leapmuxv1.GitSetup_CreateWorktree{
-							CreateWorktree: &leapmuxv1.GitCreateWorktree{
-								Branch:     tab.Worktree,
-								BaseBranch: tab.BaseBranch,
+	failures := make([]workerFailure, len(workerOrder))
+	var openedCount atomic.Int64
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.SetLimit(detailFanoutLimit)
+	for wi, workerID := range workerOrder {
+		items := tabsByWorker[workerID]
+		g.Go(func() error {
+			failedIdx := items[0].index
+			var (
+				defaultProviderLoaded bool
+				defaultProvider       leapmuxv1.AgentProvider
+			)
+			err := withWorkerChannel(gctx, s.c, workerID, func(w workerCall) error {
+				for _, item := range items {
+					tab := item.tab
+					tileID := firstLeaf
+					if tab.TileRef != "" {
+						tileID = tileMap[tab.TileRef]
+					}
+					var gitSetup *leapmuxv1.GitSetup
+					if tab.Worktree != "" {
+						gitSetup = &leapmuxv1.GitSetup{
+							Mode: &leapmuxv1.GitSetup_CreateWorktree{
+								CreateWorktree: &leapmuxv1.GitCreateWorktree{
+									Branch:     tab.Worktree,
+									BaseBranch: tab.BaseBranch,
+								},
 							},
-						},
-					}
-				}
-				switch strings.ToLower(strings.TrimSpace(tab.Type)) {
-				case "agent":
-					provider, perr := resolveProvider(s.ctx, tab.Provider, w.Call)
-					if perr != nil {
-						failedIdx = item.index
-						return perr
-					}
-					opts := spawnOptions(tab.Model, tab.Effort, tab.PermissionMode)
-					for k, v := range tab.Options {
-						opts[k] = v
-					}
-					var initMsg *string
-					if tab.InitialMessage != "" {
-						m := tab.InitialMessage
-						initMsg = &m
-					}
-					res, perr := openAgentAndAddTab(s.ctx, s.c, w, openAgentArgs{
-						WorkspaceID:    wsID,
-						WorkerID:       workerID,
-						TileID:         tileID,
-						Provider:       provider,
-						Title:          tab.Title,
-						Options:        opts,
-						WorkingDir:     tab.WorkingDir,
-						InitialMessage: initMsg,
-						GitSetup:       gitSetup,
-						Position:       positionSpec{kind: positionLast},
-					})
-					if perr != nil {
-						failedIdx = item.index
-						return perr
-					}
-					opened[item.index] = openedTab{
-						ID:          res.Agent.GetId(),
-						Type:        "agent",
-						Title:       res.Agent.GetTitle(),
-						WorkspaceID: wsID,
-						WorkerID:    workerID,
-						TileID:      res.TileID,
-						Position:    res.Position,
-					}
-					openedCount++
-				case "terminal":
-					res, terr := openTerminalAndAddTab(s.ctx, s.c, w, openTerminalArgs{
-						WorkspaceID:    wsID,
-						WorkerID:       workerID,
-						TileID:         tileID,
-						WorkingDir:     tab.WorkingDir,
-						Shell:          tab.Shell,
-						Title:          tab.Title,
-						GitSetup:       gitSetup,
-						InitialCommand: tab.InitialCommand,
-						Position:       positionSpec{kind: positionLast},
-					})
-					if terr != nil {
-						failedIdx = item.index
-						return terr
-					}
-					opened[item.index] = openedTab{
-						ID:          res.TerminalID,
-						Type:        "terminal",
-						Title:       res.Title,
-						WorkspaceID: wsID,
-						WorkerID:    workerID,
-						TileID:      res.TileID,
-						Position:    res.Position,
-					}
-					openedCount++
-				case "file":
-					creation, cerr := resolveTabCreation(s.ctx, s.c, id.Generate(), wsID, tileID, positionSpec{kind: positionLast})
-					if cerr != nil {
-						failedIdx = item.index
-						return cerr
-					}
-					pres := &leapmuxv1.TabPresentation{}
-					if tab.DisplayMode != "" {
-						if n, ok := parseEnumToken(leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_UNSPECIFIED, tab.DisplayMode); ok {
-							pres.DisplayMode = leapmuxv1.TabDisplayMode(n).Enum()
 						}
 					}
-					if tab.ViewMode != "" {
-						if n, ok := parseEnumToken(leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNSPECIFIED, tab.ViewMode); ok {
-							pres.FileViewMode = leapmuxv1.TabFileViewMode(n).Enum()
+					switch strings.ToLower(strings.TrimSpace(tab.Type)) {
+					case "agent":
+						var provider leapmuxv1.AgentProvider
+						var perr error
+						if strings.TrimSpace(tab.Provider) == "" {
+							if !defaultProviderLoaded {
+								defaultProvider, perr = resolveProvider(gctx, "", w.Call)
+								if perr != nil {
+									failedIdx = item.index
+									return perr
+								}
+								defaultProviderLoaded = true
+							}
+							provider = defaultProvider
+						} else {
+							provider, perr = resolveProvider(gctx, tab.Provider, w.Call)
+							if perr != nil {
+								failedIdx = item.index
+								return perr
+							}
 						}
-					}
-					if tab.DiffBase != "" {
-						db := tab.DiffBase
-						pres.FileDiffBase = &db
-					}
-					creation.Presentation = pres
-					var regResp leapmuxv1.RegisterTabPayloadResponse
-					if ferr := w.Call(s.ctx, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, &leapmuxv1.RegisterTabPayloadRequest{
-						Creation: creation,
-						Payload: &leapmuxv1.TabPayload{
+						opts := spawnOptions(tab.Model, tab.Effort, tab.PermissionMode)
+						for k, v := range tab.Options {
+							opts[k] = v
+						}
+						var initMsg *string
+						if tab.InitialMessage != "" {
+							m := tab.InitialMessage
+							initMsg = &m
+						}
+						res, perr := openAgentAndAddTab(gctx, s.c, w, openAgentArgs{
+							WorkspaceID:    wsID,
+							WorkerID:       workerID,
+							TileID:         tileID,
+							Provider:       provider,
+							Title:          tab.Title,
+							Options:        opts,
+							WorkingDir:     tab.WorkingDir,
+							InitialMessage: initMsg,
+							GitSetup:       gitSetup,
+							Position:       positionSpec{kind: positionLast},
+						})
+						if perr != nil {
+							failedIdx = item.index
+							return perr
+						}
+						opened[item.index] = openedTab{
+							ID:          res.Agent.GetId(),
+							Type:        "agent",
+							Title:       res.Agent.GetTitle(),
+							WorkspaceID: wsID,
+							WorkerID:    workerID,
+							TileID:      res.TileID,
+							Position:    res.Position,
+						}
+						openedCount.Add(1)
+					case "terminal":
+						res, terr := openTerminalAndAddTab(gctx, s.c, w, openTerminalArgs{
+							WorkspaceID:    wsID,
+							WorkerID:       workerID,
+							TileID:         tileID,
+							WorkingDir:     tab.WorkingDir,
+							Shell:          tab.Shell,
+							Title:          tab.Title,
+							GitSetup:       gitSetup,
+							InitialCommand: tab.InitialCommand,
+							Position:       positionSpec{kind: positionLast},
+						})
+						if terr != nil {
+							failedIdx = item.index
+							return terr
+						}
+						opened[item.index] = openedTab{
+							ID:          res.TerminalID,
+							Type:        "terminal",
+							Title:       res.Title,
+							WorkspaceID: wsID,
+							WorkerID:    workerID,
+							TileID:      res.TileID,
+							Position:    res.Position,
+						}
+						openedCount.Add(1)
+					case "file":
+						creation, cerr := resolveTabCreation(gctx, s.c, id.Generate(), wsID, tileID, positionSpec{kind: positionLast})
+						if cerr != nil {
+							failedIdx = item.index
+							return cerr
+						}
+						creation.Presentation = tab.presentation
+						regResp, ferr := registerTabPayload(gctx, w, leapmuxv1.TabType_TAB_TYPE_FILE, creation, &leapmuxv1.TabPayload{
 							WorkingDir: tab.WorkingDir,
 							Kind: &leapmuxv1.TabPayload_File{
 								File: &leapmuxv1.FileTabPayload{FilePath: tab.Path},
 							},
-						},
-					}, &regResp); ferr != nil {
-						failedIdx = item.index
-						return ferr
+						}, false)
+						if ferr != nil {
+							failedIdx = item.index
+							return ferr
+						}
+						pub := regResp.GetPublication()
+						opened[item.index] = openedTab{
+							ID:          creation.GetTabId(),
+							Type:        "file",
+							WorkspaceID: wsID,
+							WorkerID:    workerID,
+							TileID:      pub.GetTileId(),
+							Position:    pub.GetPosition(),
+							Path:        tab.Path,
+						}
+						openedCount.Add(1)
 					}
-					if verr := validateTabPublication(creation, leapmuxv1.TabType_TAB_TYPE_FILE, regResp.GetPublication()); verr != nil {
-						failedIdx = item.index
-						return verr
-					}
-					pub := regResp.GetPublication()
-					opened[item.index] = openedTab{
-						ID:          creation.GetTabId(),
-						Type:        "file",
-						WorkspaceID: wsID,
-						WorkerID:    workerID,
-						TileID:      pub.GetTileId(),
-						Position:    pub.GetPosition(),
-						Path:        tab.Path,
-					}
-					openedCount++
 				}
+				return nil
+			})
+			if err != nil {
+				failures[wi] = workerFailure{tabIdx: failedIdx, err: err}
+				return err
 			}
 			return nil
 		})
-		if err != nil {
-			return nil, partialApplyErr(failedIdx, err)
+	}
+	if err := g.Wait(); err != nil {
+		failedIdx := 0
+		for _, f := range failures {
+			if f.err == err {
+				failedIdx = f.tabIdx
+				break
+			}
 		}
+		return nil, workspaceApplyPartialError(wsID, int(openedCount.Load()), len(tmpl.Tabs), failedIdx, err)
 	}
 
 	return workspaceApplyResult{
@@ -902,6 +952,3 @@ func runWorkspaceApply(inv *cli.Invocation) (any, error) {
 		Tabs:            opened,
 	}, nil
 }
-
-// Keep agentlabels import available if provider validation is added.
-var _ = agentlabels.DisplayName

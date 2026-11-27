@@ -585,9 +585,9 @@ func waitTimeoutFlag(inv *cli.Invocation) (time.Duration, error) {
 // agent is refused: its own turn runs the wait, so the agent cannot settle
 // while the wait runs.
 func resolveWaitTargets(s *session, inputs []string) ([]tabTarget, error) {
-	timed := s.bounded()
+	timed := s.timed()
 	defer timed.Close()
-	targets, err := timed.resolveVariadicAgentTargets(inputs, resolve.Need{})
+	targets, err := timed.resolveVariadicTabs(resolve.KindAgent, inputs, resolve.Need{WorkerID: true})
 	if err != nil {
 		return nil, err
 	}

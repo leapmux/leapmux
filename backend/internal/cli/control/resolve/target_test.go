@@ -165,19 +165,110 @@ func TestCanonical_ExactCustomIDWinsOverALongerMatch(t *testing.T) {
 	assert.Zero(t, f.titleCalls)
 }
 
-func TestCanonical_LiteralIDCanDisambiguateReservedWords(t *testing.T) {
-	for _, literal := range []string{"a", "self"} {
+func TestCanonical_IDQualifierMatchesExactOrPrefixNeverTitleOrName(t *testing.T) {
+	t.Run("complete generated id and tab uuid skip listing", func(t *testing.T) {
 		f := sampleListing()
-		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "id:"+literal)
+		genID := strings.Repeat("a", 48)
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorkspace, "id:"+genID)
 		require.NoError(t, err)
-		assert.Equal(t, literal, got.ID)
-		assert.False(t, got.Self)
+		assert.Equal(t, genID, got.ID)
 		assert.Zero(t, f.calls)
-	}
-	f := sampleListing()
-	_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "id:")
-	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
-	assert.Zero(t, f.calls)
+		assert.Equal(t, genID, resolve.ExplicitID(resolve.KindWorkspace, "id:"+genID))
+
+		tabUUID := "87a19d5f-4838-4e34-9f0f-56130f0a62b1"
+		got, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "id: "+tabUUID+" ")
+		require.NoError(t, err)
+		assert.Equal(t, tabUUID, got.ID)
+		assert.Zero(t, f.calls)
+		assert.Equal(t, tabUUID, resolve.ExplicitID(resolve.KindAgent, "id:"+tabUUID))
+		assert.Empty(t, resolve.ExplicitID(resolve.KindAgent, "id:87a1"))
+	})
+
+	t.Run("exact short id and reserved word match at any length", func(t *testing.T) {
+		for _, literal := range []string{"a", "self"} {
+			f := sampleListing()
+			f.tabs = append(f.tabs, tab(literal, leapmuxv1.TabType_TAB_TYPE_AGENT))
+			got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "id:"+literal)
+			require.NoError(t, err)
+			assert.Equal(t, literal, got.ID)
+			assert.False(t, got.Self)
+			assert.Equal(t, 1, f.calls)
+		}
+	})
+
+	t.Run("unique prefix of 4 or more characters resolves across kinds", func(t *testing.T) {
+		f := sampleListing()
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTab, "id:4cbb")
+		require.NoError(t, err)
+		assert.Equal(t, "4cbb3f34-cccc", got.ID)
+		require.NotNil(t, got.Tab)
+
+		got, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindWorkspace, "id:1aszUbNs")
+		require.NoError(t, err)
+		assert.Equal(t, "1aszUbNsWorkspaceOne", got.ID)
+
+		got, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindTile, "id:z4sx")
+		require.NoError(t, err)
+		assert.Equal(t, "z4sx7DCAtile", got.ID)
+
+		got, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "id:hQrS3iDt")
+		require.NoError(t, err)
+		assert.Equal(t, "hQrS3iDtWorkerOne", got.ID)
+	})
+
+	t.Run("ambiguous prefix returns candidates", func(t *testing.T) {
+		f := sampleListing()
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTab, "id:87a1")
+		e := cli.FromError(err)
+		require.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		require.Len(t, e.Candidates, 2)
+
+		_, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindWorkspace, "id:1asz")
+		e = cli.FromError(err)
+		require.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		require.Len(t, e.Candidates, 2)
+
+		_, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "id:hQrS")
+		e = cli.FromError(err)
+		require.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		require.Len(t, e.Candidates, 2)
+		assert.Equal(t, "build-box", e.Candidates[0].Title)
+	})
+
+	t.Run("never falls back to title or worker name", func(t *testing.T) {
+		f := sampleListing()
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTerminal, "id:Build")
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+		assert.Zero(t, f.titleCalls)
+
+		_, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindWorkspace, "id:Release")
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+
+		_, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "id:build-box")
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+	})
+
+	t.Run("short non-exact id fails not_found and empty id: fails usage", func(t *testing.T) {
+		f := sampleListing()
+		_, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindTab, "id:4cb")
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+
+		_, err = resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "id:foo")
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+
+		fEmpty := sampleListing()
+		_, err = resolve.Canonical(t.Context(), fEmpty.listing(), resolve.KindAgent, "id:")
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+		assert.Zero(t, fEmpty.calls)
+	})
+
+	t.Run("nil listing hook falls back to literal id without panicking", func(t *testing.T) {
+		for _, kind := range []resolve.Kind{resolve.KindTab, resolve.KindWorkspace, resolve.KindTile, resolve.KindWorker} {
+			got, err := resolve.Canonical(t.Context(), resolve.Listing{}, kind, "id:custom-1")
+			require.NoError(t, err, kind.String())
+			assert.Equal(t, "custom-1", got.ID, kind.String())
+		}
+	})
 }
 
 func TestCanonical_AUniquePrefixResolvesWithItsRow(t *testing.T) {
@@ -261,10 +352,10 @@ func TestKind_OutOfRangeFallsBackToDefaultSpec(t *testing.T) {
 		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, kind.TabType())
 		assert.False(t, kind.IsTab())
 		assert.Equal(t,
-			`A tab id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, or "self" for the tab of the tab that runs this command.`,
+			`A tab id, a unique prefix of 4 or more characters of one, "id:<id>" for an id or id prefix, or "self" for the tab of the tab that runs this command.`,
 			kind.Help())
 		assert.Equal(t,
-			`A tab id, a unique prefix of 4 or more characters of one, or "id:<id>" for a literal id.`,
+			`A tab id, a unique prefix of 4 or more characters of one, or "id:<id>" for an id or id prefix.`,
 			kind.HelpWithoutSelf())
 		_, err := resolve.Canonical(t.Context(), sampleListing().listing(), kind, "self")
 		require.ErrorContains(t, err, `no "self" for kind`)
@@ -292,7 +383,7 @@ func TestCanonical_AShortPrefixHintsTheFormsOfItsKind(t *testing.T) {
 		e := cli.FromError(err)
 		assert.Equal(t, tc.wantCode, e.Code, "%s", tc.kind)
 		assert.Equal(t, tc.wantExit, e.ExitCode(), "%s", tc.kind)
-		assert.Equal(t, []string{`use "id:<id>" to select a literal id`, tc.wantHint}, e.Hints, "%s", tc.kind)
+		assert.Equal(t, []string{`use "id:<id>" to select by id`, tc.wantHint}, e.Hints, "%s", tc.kind)
 	}
 }
 
@@ -324,26 +415,26 @@ func TestIsGeneratedID(t *testing.T) {
 // Kind.Help states exactly the forms that Canonical reads, for the help of a
 // target argument.
 func TestKind_HelpStatesTheFormsThatCanonicalReads(t *testing.T) {
-	assert.Equal(t, `A tab id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>" or a bare case-insensitive title, or "self" for the tab that runs this command.`,
+	assert.Equal(t, `A tab id, a unique prefix of 4 or more characters of one, "id:<id>" for an id or id prefix, "title:<title>" or a bare case-insensitive title, or "self" for the tab that runs this command.`,
 		resolve.KindTab.Help())
-	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>" or a bare case-insensitive title or --name slug, "parent" for the calling agent's parent, or "self" for the agent tab that runs this command.`,
+	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, "id:<id>" for an id or id prefix, "title:<title>" or a bare case-insensitive title or --name slug, "parent" for the calling agent's parent, or "self" for the agent tab that runs this command.`,
 		resolve.KindAgent.Help())
-	assert.Equal(t, `A terminal id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>" or a bare case-insensitive title, or "self" for the terminal that runs this command.`,
+	assert.Equal(t, `A terminal id, a unique prefix of 4 or more characters of one, "id:<id>" for an id or id prefix, "title:<title>" or a bare case-insensitive title, or "self" for the terminal that runs this command.`,
 		resolve.KindTerminal.Help())
-	assert.Equal(t, `A workspace id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command.`,
+	assert.Equal(t, `A workspace id, a unique prefix of 4 or more characters of one, "id:<id>" for an id or id prefix, "title:<title>" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command.`,
 		resolve.KindWorkspace.Help())
-	assert.Equal(t, `A tile id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, or "self" for the tile of the tab that runs this command.`,
+	assert.Equal(t, `A tile id, a unique prefix of 4 or more characters of one, "id:<id>" for an id or id prefix, or "self" for the tile of the tab that runs this command.`,
 		resolve.KindTile.Help(), "a tile has no title, so its help offers none")
-	assert.Equal(t, `A worker id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "name:<name>" or a bare case-insensitive worker name, or "self" for the worker of the tab that runs this command.`,
+	assert.Equal(t, `A worker id, a unique prefix of 4 or more characters of one, "id:<id>" for an id or id prefix, "name:<name>" or a bare case-insensitive worker name, or "self" for the worker of the tab that runs this command.`,
 		resolve.KindWorker.Help())
 }
 
 // Kind.HelpWithoutSelf states the same forms as Help except "self", for a
 // command that refuses the caller's own object.
 func TestKind_HelpWithoutSelfOffersNoSelf(t *testing.T) {
-	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, "id:<id>" for a literal id, "title:<title>" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent.`,
+	assert.Equal(t, `An agent id, a unique prefix of 4 or more characters of one, "id:<id>" for an id or id prefix, "title:<title>" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent.`,
 		resolve.KindAgent.HelpWithoutSelf())
-	assert.Equal(t, `A tile id, a unique prefix of 4 or more characters of one, or "id:<id>" for a literal id.`,
+	assert.Equal(t, `A tile id, a unique prefix of 4 or more characters of one, or "id:<id>" for an id or id prefix.`,
 		resolve.KindTile.HelpWithoutSelf())
 }
 
@@ -1047,5 +1138,175 @@ func TestCanonical_SelfIdentity(t *testing.T) {
 		_, err = resolve.Canonical(t.Context(), termListing, resolve.KindAgent, "parent")
 		require.Error(t, err)
 		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	})
+}
+
+func TestCanonical_ServerSideByIDPrefixCallbacks(t *testing.T) {
+	newPrefixListing := func(f *fakeListing) (resolve.Listing, *[]string) {
+		var queriedPrefixes []string
+		l := f.listing()
+		l.TabsByIDPrefix = func(_ context.Context, idPrefix string) ([]*leapmuxv1.WorkspaceTab, error) {
+			queriedPrefixes = append(queriedPrefixes, "tabs:"+idPrefix)
+			if f.listErr != nil {
+				return nil, f.listErr
+			}
+			var out []*leapmuxv1.WorkspaceTab
+			for _, tab := range f.tabs {
+				if strings.HasPrefix(tab.GetTab().GetTabId(), idPrefix) {
+					out = append(out, tab)
+				}
+			}
+			return out, nil
+		}
+		l.WorkspacesByIDPrefix = func(_ context.Context, idPrefix string) ([]*leapmuxv1.Workspace, error) {
+			queriedPrefixes = append(queriedPrefixes, "ws:"+idPrefix)
+			if f.listErr != nil {
+				return nil, f.listErr
+			}
+			var out []*leapmuxv1.Workspace
+			for _, w := range f.workspaces {
+				if strings.HasPrefix(w.GetId(), idPrefix) {
+					out = append(out, w)
+				}
+			}
+			return out, nil
+		}
+		l.WorkersByIDPrefix = func(_ context.Context, idPrefix string) ([]*leapmuxv1.Worker, error) {
+			queriedPrefixes = append(queriedPrefixes, "workers:"+idPrefix)
+			if f.listErr != nil {
+				return nil, f.listErr
+			}
+			var out []*leapmuxv1.Worker
+			for _, w := range f.workers {
+				if strings.HasPrefix(w.GetId(), idPrefix) {
+					out = append(out, w)
+				}
+			}
+			return out, nil
+		}
+		return l, &queriedPrefixes
+	}
+
+	t.Run("full 48-char generated id and tab uuid skip prefix and full listings", func(t *testing.T) {
+		f := sampleListing()
+		l, prefixes := newPrefixListing(f)
+
+		genID := strings.Repeat("a", 48)
+		got, err := resolve.Canonical(t.Context(), l, resolve.KindWorkspace, genID)
+		require.NoError(t, err)
+		assert.Equal(t, genID, got.ID)
+
+		tabUUID := "87a19d5f-4838-4e34-9f0f-56130f0a62b1"
+		got, err = resolve.Canonical(t.Context(), l, resolve.KindAgent, tabUUID)
+		require.NoError(t, err)
+		assert.Equal(t, tabUUID, got.ID)
+
+		assert.Zero(t, f.calls)
+		assert.Empty(t, *prefixes)
+	})
+
+	t.Run("id: qualifier uses ByIDPrefix and never falls back to full list or titles", func(t *testing.T) {
+		f := sampleListing()
+		l, prefixes := newPrefixListing(f)
+
+		got, err := resolve.Canonical(t.Context(), l, resolve.KindTab, "id:4cbb")
+		require.NoError(t, err)
+		assert.Equal(t, "4cbb3f34-cccc", got.ID)
+		require.NotNil(t, got.Tab)
+
+		got, err = resolve.Canonical(t.Context(), l, resolve.KindWorkspace, "id:1aszUbNs")
+		require.NoError(t, err)
+		assert.Equal(t, "1aszUbNsWorkspaceOne", got.ID)
+
+		got, err = resolve.Canonical(t.Context(), l, resolve.KindWorker, "id:hQrS3iDt")
+		require.NoError(t, err)
+		assert.Equal(t, "hQrS3iDtWorkerOne", got.ID)
+
+		// Miss with id: does not fall back to full list.
+		_, err = resolve.Canonical(t.Context(), l, resolve.KindWorkspace, "id:Release")
+		assert.Equal(t, cli.CodeNotFound, cli.FromError(err).Code)
+
+		assert.Zero(t, f.calls, "full-list callbacks must not run for id: lookups")
+		assert.Zero(t, f.titleCalls)
+		assert.Equal(t, []string{"tabs:4cbb", "ws:1aszUbNs", "workers:hQrS3iDt", "ws:Release"}, *prefixes)
+	})
+
+	t.Run("bare prefix match returns immediately without full list or titles", func(t *testing.T) {
+		f := sampleListing()
+		l, prefixes := newPrefixListing(f)
+
+		// KindAgent filters the TabsByIDPrefix rows to agents only ("87a1" is unique among agents).
+		got, err := resolve.Canonical(t.Context(), l, resolve.KindAgent, "87a1")
+		require.NoError(t, err)
+		assert.Equal(t, "87a19d5f-aaaa", got.ID)
+		require.NotNil(t, got.Tab)
+
+		got, err = resolve.Canonical(t.Context(), l, resolve.KindWorkspace, "1aszUbNs")
+		require.NoError(t, err)
+		assert.Equal(t, "1aszUbNsWorkspaceOne", got.ID)
+
+		got, err = resolve.Canonical(t.Context(), l, resolve.KindWorker, "hQrS3iDt")
+		require.NoError(t, err)
+		assert.Equal(t, "hQrS3iDtWorkerOne", got.ID)
+
+		assert.Zero(t, f.calls, "unique prefix matches must not fall back to full listing")
+		assert.Zero(t, f.titleCalls)
+		assert.Equal(t, []string{"tabs:87a1", "ws:1aszUbNs", "workers:hQrS3iDt"}, *prefixes)
+	})
+
+	t.Run("ambiguous bare prefix fails immediately without full list", func(t *testing.T) {
+		f := sampleListing()
+		l, prefixes := newPrefixListing(f)
+
+		_, err := resolve.Canonical(t.Context(), l, resolve.KindTab, "87a1")
+		e := cli.FromError(err)
+		require.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		require.Len(t, e.Candidates, 2)
+		assert.Equal(t, "CLI Design", e.Candidates[0].Title)
+
+		_, err = resolve.Canonical(t.Context(), l, resolve.KindWorkspace, "1asz")
+		e = cli.FromError(err)
+		require.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		require.Len(t, e.Candidates, 2)
+
+		_, err = resolve.Canonical(t.Context(), l, resolve.KindWorker, "hQrS")
+		e = cli.FromError(err)
+		require.Equal(t, cli.CodeAmbiguousTarget, e.Code)
+		require.Len(t, e.Candidates, 2)
+		assert.Equal(t, "build-box", e.Candidates[0].Title)
+
+		assert.Zero(t, f.calls, "ambiguous prefix matches must not fall back to full listing")
+		assert.Equal(t, []string{"tabs:87a1", "ws:1asz", "workers:hQrS"}, *prefixes)
+	})
+
+	t.Run("bare titles and names fall back cleanly when ByIDPrefix returns no rows", func(t *testing.T) {
+		f := sampleListing()
+		l, prefixes := newPrefixListing(f)
+
+		// Single-word bare title tries ByIDPrefix first, gets 0 rows, then falls back to full list.
+		got, err := resolve.Canonical(t.Context(), l, resolve.KindTerminal, "build")
+		require.NoError(t, err)
+		assert.Equal(t, "87a1ffff-bbbb", got.ID)
+
+		got, err = resolve.Canonical(t.Context(), l, resolve.KindWorkspace, "release")
+		require.NoError(t, err)
+		assert.Equal(t, "1aszUbNsWorkspaceOne", got.ID)
+
+		got, err = resolve.Canonical(t.Context(), l, resolve.KindWorker, "build-box")
+		require.NoError(t, err)
+		assert.Equal(t, "hQrS3iDtWorkerOne", got.ID)
+
+		assert.Equal(t, 3, f.calls)
+		assert.Equal(t, []string{"tabs:build", "ws:release", "workers:build-box"}, *prefixes)
+
+		// Multi-word bare title contains whitespace and skips ByIDPrefix completely.
+		*prefixes = nil
+		f.calls = 0
+		f.tabs = []*leapmuxv1.WorkspaceTab{tab("87a19d5f-aaaa", leapmuxv1.TabType_TAB_TYPE_AGENT)}
+		got, err = resolve.Canonical(t.Context(), l, resolve.KindAgent, "CLI Design")
+		require.NoError(t, err)
+		assert.Equal(t, "87a19d5f-aaaa", got.ID)
+		assert.Empty(t, *prefixes, "whitespace title must skip ByIDPrefix")
+		assert.Equal(t, 1, f.calls)
 	})
 }

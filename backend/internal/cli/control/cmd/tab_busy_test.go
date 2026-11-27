@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -276,9 +277,14 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 func TestInspectTabsBusy_ReportsFailedChecks(t *testing.T) {
 	t.Parallel()
 
-	var asked []string
+	var (
+		mu    sync.Mutex
+		asked []string
+	)
 	call := func(method string, _, _ proto.Message) error {
+		mu.Lock()
 		asked = append(asked, method)
+		mu.Unlock()
 		return errors.New("worker unreachable")
 	}
 
@@ -352,7 +358,7 @@ func TestInspectTabsBusy_SkipsViewerTabs(t *testing.T) {
 // up front about every busy tab -- and this pair pins that it asks in the same
 // place, before any op is submitted.
 
-// tabOnWorker is `tab` plus the worker id. guardTabsBusy groups its questions
+// tabOnWorker is `tab` plus the worker id. guardBulkCloseTabs groups its questions
 // per worker and skips a tab whose worker is unknown, so a tile-close test must
 // state it; the plain helper leaves it nil, which is right for the preflight
 // tests that never ask a worker anything.
@@ -426,4 +432,45 @@ func TestRunTileClose_MoveSkipsTheBusyGate(t *testing.T) {
 
 	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"a move interrupts nothing, so the guard must not even ask")
+}
+
+// SWEEP-4: a tab whose CRDT record carries no worker_id must not short-circuit
+// guardBulkCloseTabs before inspecting remaining tabs, so any confirmed busy tab
+// takes precedence over the probe failure.
+func TestGuardTabsBusy_ConfirmedBusyWinsOverWorkerlessTab(t *testing.T) {
+	makeHub := func() *recordingHub {
+		st := newStateBuilder().
+			workspace("ws-1", "root-1").
+			splitNode("root-1", "", "m").
+			leafNode("leaf-1", "root-1", "h").
+			leafNode("leaf-2", "root-1", "s").
+			tabOnWorker("agent-1", "leaf-1", "worker-A", leapmuxv1.TabType_TAB_TYPE_AGENT).
+			tabAt("agent-noworker", "leaf-2", "a", leapmuxv1.TabType_TAB_TYPE_AGENT).
+			tabAt("term-2", "leaf-2", "z", leapmuxv1.TabType_TAB_TYPE_TERMINAL).
+			st
+		st.Tabs["term-2"].WorkerId = &leapmuxv1.LWWString{Value: "worker-A"}
+		return &recordingHub{workers: workerRows("worker-A"), materialized: st}
+	}
+
+	t.Run("confirmed busy tab wins over workerless tab", func(t *testing.T) {
+		disp := &closeDispatcher{
+			terminals: []*leapmuxv1.TerminalProcesses{busyTerminal("term-2", &leapmuxv1.TerminalProcess{Pid: 99, Name: "vite"})},
+		}
+		hub := makeHub()
+		o := runBusyTileClose(t, disp, hub)
+		f := o.requireFailure(t, cli.CodeTabBusyRefused)
+		assert.Contains(t, f.Message, "term-2")
+		assert.Contains(t, f.Message, "vite pid 99")
+		assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+	})
+
+	t.Run("workerless tab still refuses as unavailable when remaining tabs are idle", func(t *testing.T) {
+		disp := &closeDispatcher{}
+		hub := makeHub()
+		o := runBusyTileClose(t, disp, hub)
+		f := o.requireFailure(t, cli.CodeUnavailable)
+		assert.Contains(t, f.Message, "agent-noworker")
+		assert.Contains(t, strings.Join(f.Hints, "\n"), "--allow-busy")
+		assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+	})
 }

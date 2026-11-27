@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -784,4 +785,150 @@ func TestValidateGridRatiosShape_NilSlicesSkipChecks(t *testing.T) {
 	assert.NoError(t, validateGridRatiosShape(state, "G", nil, nil))
 	assert.NoError(t, validateGridRatiosShape(state, "G", []float64{0.5, 0.5}, nil))
 	assert.NoError(t, validateGridRatiosShape(state, "G", nil, []float64{0.5, 0.5}))
+}
+
+// TRAPS-4: normalizeRatios rejects float64 sum overflow and normalizes -0.0 to
+// +0.0 so emitted ratios remain finite and free of negative zero.
+func TestNormalizeRatios_RejectsSumOverflowAndNormalizesNegativeZero(t *testing.T) {
+	_, err := normalizeRatios([]float64{1e308, 1e308})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finite")
+
+	negZero := math.Copysign(0, -1)
+	require.True(t, math.Signbit(negZero))
+	out, err := normalizeRatios([]float64{negZero, 1.0})
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, 0.0, out[0])
+	assert.False(t, math.Signbit(out[0]), "-0.0 must be normalized to +0.0")
+	assert.Equal(t, 1.0, out[1])
+}
+
+// TRAPS-5: computeResizedRatios must never produce +Inf or NaN even when
+// existing sibling ratios contain subnormal, overflowing, or non-positive
+// values.
+func TestComputeResizedRatios_HandlesSubnormalAndOverflowWeights(t *testing.T) {
+	cases := []struct {
+		name       string
+		cur        []float64
+		childCount int
+		idx        int
+		target     float64
+		want       []float64
+	}{
+		{
+			name:       "subnormal sibling after target",
+			cur:        []float64{1.0, 1e-320},
+			childCount: 2,
+			idx:        0,
+			target:     0.7,
+			want:       []float64{0.7, 0.3},
+		},
+		{
+			name:       "subnormal sibling before target",
+			cur:        []float64{1e-320, 1.0},
+			childCount: 2,
+			idx:        1,
+			target:     0.6,
+			want:       []float64{0.4, 0.6},
+		},
+		{
+			name:       "overflowing sibling sum falls back to equal remainder",
+			cur:        []float64{0.5, 1e308, 1e308},
+			childCount: 3,
+			idx:        0,
+			target:     0.4,
+			want:       []float64{0.4, 0.3, 0.3},
+		},
+		{
+			name:       "non-positive sibling weights fall back to equal remainder",
+			cur:        []float64{0.5, 0, -1},
+			childCount: 3,
+			idx:        0,
+			target:     0.4,
+			want:       []float64{0.4, 0.3, 0.3},
+		},
+		{
+			name:       "mismatched ratio slice uses EqualRatios baseline",
+			cur:        []float64{1.0},
+			childCount: 3,
+			idx:        1,
+			target:     0.5,
+			want:       []float64{0.25, 0.5, 0.25},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeResizedRatios(tc.cur, tc.childCount, tc.idx, tc.target)
+			require.Len(t, got, tc.childCount)
+			sum := 0.0
+			for i, v := range got {
+				assert.False(t, math.IsNaN(v) || math.IsInf(v, 0), "ratio[%d]=%v must be finite", i, v)
+				assert.False(t, math.Signbit(v), "ratio[%d]=%v must not be negative zero", i, v)
+				assert.InDelta(t, tc.want[i], v, 1e-12)
+				sum += v
+			}
+			assert.InDelta(t, 1.0, sum, 1e-9)
+		})
+	}
+}
+
+// EFFICIENCY-26 + TileRef: synthesizeSubtree emits exactly one SetNodeKind op
+// per synthesized node, records leaf TileRef mappings in tileMap, and omits
+// TileRef from layout JSON.
+func TestSynthesizeSubtree_SingleKindOpAndTileRefMap(t *testing.T) {
+	target := &layoutNode{
+		Kind:      "split",
+		Direction: "vertical",
+		Children: []*layoutNode{
+			{Kind: "leaf", TileRef: "left-pane"},
+			{Kind: "leaf", TileRef: "right-pane"},
+		},
+	}
+	raw, err := json.Marshal(target)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "left-pane", "TileRef must not serialize in layout JSON")
+
+	state := newStateBuilder().workspace("ws-1", "R").leafNode("R", "", "").st
+	tileMap := map[string]string{}
+	ops, firstLeaf := synthesizeSubtree(testBootstrap(state), target, "R", "n", tileMap)
+	require.NotEmpty(t, firstLeaf)
+	assert.Equal(t, firstLeaf, tileMap["left-pane"])
+	assert.NotEmpty(t, tileMap["right-pane"])
+	assert.NotEqual(t, tileMap["left-pane"], tileMap["right-pane"])
+
+	kindCount := map[string]int{}
+	for _, op := range ops {
+		set := op.GetSetNodeRegister()
+		if set == nil {
+			continue
+		}
+		if _, ok := set.GetField().(*leapmuxv1.SetNodeRegisterOp_Kind); ok {
+			kindCount[set.GetNodeId()]++
+		}
+	}
+	require.Len(t, kindCount, 3, "split + 2 leaves should each get a kind op")
+	for nodeID, count := range kindCount {
+		assert.Equal(t, 1, count, "node %s must receive exactly one SetNodeKind op", nodeID)
+	}
+}
+
+func TestDecodeTargetTree_RejectsLegacyProtoAndUppercaseEnums(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"proto leaf kind", `{"kind":"NODE_KIND_LEAF"}`},
+		{"uppercase leaf kind", `{"kind":"LEAF"}`},
+		{"proto split kind", `{"kind":"NODE_KIND_SPLIT","direction":"vertical","children":[{"kind":"leaf"},{"kind":"leaf"}]}`},
+		{"proto vertical direction", `{"kind":"split","direction":"SPLIT_DIRECTION_VERTICAL","children":[{"kind":"leaf"},{"kind":"leaf"}]}`},
+		{"proto horizontal direction", `{"kind":"split","direction":"SPLIT_DIRECTION_HORIZONTAL","children":[{"kind":"leaf"},{"kind":"leaf"}]}`},
+		{"proto grid kind", `{"kind":"NODE_KIND_GRID","rows":1,"cols":1,"children":[{"kind":"leaf"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := decodeTargetTree(strings.NewReader(tc.raw))
+			require.Error(t, err)
+		})
+	}
 }

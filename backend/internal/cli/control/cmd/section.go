@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -11,7 +10,6 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
-	"github.com/leapmux/leapmux/internal/util/lexorank"
 )
 
 func newSectionCommand() *cobra.Command {
@@ -122,55 +120,61 @@ func sectionRowOf(sec *leapmuxv1.Section, count int) sectionRow {
 }
 
 func parseSidebarFlag(raw string) (leapmuxv1.Sidebar, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "left":
-		return leapmuxv1.Sidebar_SIDEBAR_LEFT, nil
-	case "right":
-		return leapmuxv1.Sidebar_SIDEBAR_RIGHT, nil
-	default:
-		return leapmuxv1.Sidebar_SIDEBAR_UNSPECIFIED, cli.Usagef(`--sidebar must be "left" or "right"; got %q`, raw)
+	if n, ok := parseEnumToken(leapmuxv1.Sidebar_SIDEBAR_UNSPECIFIED, strings.TrimSpace(raw)); ok {
+		return leapmuxv1.Sidebar(n), nil
 	}
+	return leapmuxv1.Sidebar_SIDEBAR_UNSPECIFIED, cli.Usagef(
+		"--sidebar must be one of %s; got %q",
+		strings.Join(enumTokens(leapmuxv1.Sidebar_SIDEBAR_UNSPECIFIED), ", "),
+		raw,
+	)
 }
 
 // resolveSection finds one section by exact ID, unique ID prefix (>= 4 chars),
-// or case-insensitive name.
+// "id:<id>" (exact ID or unique ID prefix, never matching names), or
+// case-insensitive name.
 func resolveSection(sections []*leapmuxv1.Section, raw string) (*leapmuxv1.Section, error) {
 	q := strings.TrimSpace(raw)
 	if q == "" {
 		return nil, cli.Usagef("section target is empty")
 	}
-	if strings.HasPrefix(q, "id:") {
-		want := strings.TrimPrefix(q, "id:")
-		for _, sec := range sections {
-			if sec.GetId() == want {
-				return sec, nil
-			}
+	if rest, ok := strings.CutPrefix(q, "id:"); ok {
+		want := strings.TrimSpace(rest)
+		if want == "" {
+			return nil, cli.Usagef(`"id:" needs a section id after the colon`)
+		}
+		match, ambiguous, ok := lookupByIDPrefixMin(sections, want, resolve.MinPrefixLength, (*leapmuxv1.Section).GetId)
+		if ok {
+			return match, nil
+		}
+		if len(ambiguous) > 1 {
+			return nil, ambiguousSectionsError(want, ambiguous)
 		}
 		return nil, cli.Newf(cli.CodeNotFound, "no section with id %q", want).
 			WithHint(`list sections with "leapmux section list"`)
 	}
-	if strings.HasPrefix(q, "name:") || strings.HasPrefix(q, "title:") {
-		want := q[strings.IndexByte(q, ':')+1:]
+	if rest, ok := strings.CutPrefix(q, "name:"); ok {
+		want := strings.TrimSpace(rest)
+		if want == "" {
+			return nil, cli.Usagef(`"name:" needs a section name after the colon`)
+		}
 		return matchSectionByName(sections, want)
 	}
-	for _, sec := range sections {
-		if sec.GetId() == q {
-			return sec, nil
+	if rest, ok := strings.CutPrefix(q, "title:"); ok {
+		want := strings.TrimSpace(rest)
+		if want == "" {
+			return nil, cli.Usagef(`"title:" needs a section name after the colon`)
 		}
+		return matchSectionByName(sections, want)
 	}
-	if len(q) >= resolve.MinPrefixLength {
-		var matches []*leapmuxv1.Section
-		for _, sec := range sections {
-			if strings.HasPrefix(sec.GetId(), q) {
-				matches = append(matches, sec)
-			}
-		}
-		if len(matches) == 1 {
-			return matches[0], nil
-		}
-		if len(matches) > 1 {
-			return nil, ambiguousSectionsError(q, matches)
-		}
+	match, ambiguous, ok := lookupByIDPrefixMin(sections, q, resolve.MinPrefixLength, func(sec *leapmuxv1.Section) string {
+		return sec.GetId()
+	})
+	if ok {
+		return match, nil
+	}
+	if len(ambiguous) > 1 {
+		return nil, ambiguousSectionsError(q, ambiguous)
 	}
 	return matchSectionByName(sections, q)
 }
@@ -204,11 +208,89 @@ func ambiguousSectionsError(q string, matches []*leapmuxv1.Section) error {
 }
 
 func (s *session) listSections() (*leapmuxv1.ListSectionsResponse, error) {
+	return s.listSectionsWithPrefix("")
+}
+
+func (s *session) listSectionsWithPrefix(idPrefix string) (*leapmuxv1.ListSectionsResponse, error) {
 	var resp leapmuxv1.ListSectionsResponse
-	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.SectionServiceListSectionsProcedure, &leapmuxv1.ListSectionsRequest{}, &resp); err != nil {
+	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.SectionServiceListSectionsProcedure, &leapmuxv1.ListSectionsRequest{
+		IdPrefix: idPrefix,
+	}, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// resolveSectionFromHub resolves raw against the Hub using a server-side
+// id_prefix query for "id:" selectors and bare ID-prefix candidates, falling
+// back to a full ListSections call only when name matching is needed.
+func (s *session) resolveSectionFromHub(raw string) (*leapmuxv1.ListSectionsResponse, *leapmuxv1.Section, error) {
+	q := strings.TrimSpace(raw)
+	if q == "" {
+		return nil, nil, cli.Usagef("section target is empty")
+	}
+	if rest, ok := strings.CutPrefix(q, "id:"); ok {
+		want := strings.TrimSpace(rest)
+		if want == "" {
+			return nil, nil, cli.Usagef(`"id:" needs a section id after the colon`)
+		}
+		list, err := s.listSectionsWithPrefix(want)
+		if err != nil {
+			return nil, nil, err
+		}
+		match, ambiguous, ok := lookupByIDPrefixMin(list.GetSections(), want, resolve.MinPrefixLength, (*leapmuxv1.Section).GetId)
+		if ok {
+			return list, match, nil
+		}
+		if len(ambiguous) > 1 {
+			return nil, nil, ambiguousSectionsError(want, ambiguous)
+		}
+		return nil, nil, cli.Newf(cli.CodeNotFound, "no section with id %q", want).
+			WithHint(`list sections with "leapmux section list"`)
+	}
+	if rest, ok := strings.CutPrefix(q, "name:"); ok {
+		want := strings.TrimSpace(rest)
+		if want == "" {
+			return nil, nil, cli.Usagef(`"name:" needs a section name after the colon`)
+		}
+		list, err := s.listSections()
+		if err != nil {
+			return nil, nil, err
+		}
+		sec, err := matchSectionByName(list.GetSections(), want)
+		return list, sec, err
+	}
+	if rest, ok := strings.CutPrefix(q, "title:"); ok {
+		want := strings.TrimSpace(rest)
+		if want == "" {
+			return nil, nil, cli.Usagef(`"title:" needs a section name after the colon`)
+		}
+		list, err := s.listSections()
+		if err != nil {
+			return nil, nil, err
+		}
+		sec, err := matchSectionByName(list.GetSections(), want)
+		return list, sec, err
+	}
+	if len(q) >= resolve.MinPrefixLength && resolve.IsBareIDPrefixCandidate(q) {
+		list, err := s.listSectionsWithPrefix(q)
+		if err != nil {
+			return nil, nil, err
+		}
+		match, ambiguous, ok := lookupByIDPrefixMin(list.GetSections(), q, resolve.MinPrefixLength, (*leapmuxv1.Section).GetId)
+		if ok {
+			return list, match, nil
+		}
+		if len(ambiguous) > 1 {
+			return nil, nil, ambiguousSectionsError(q, ambiguous)
+		}
+	}
+	list, err := s.listSections()
+	if err != nil {
+		return nil, nil, err
+	}
+	sec, err := resolveSection(list.GetSections(), q)
+	return list, sec, err
 }
 
 func runSectionList(inv *cli.Invocation) (any, error) {
@@ -266,24 +348,53 @@ func sectionWorkspaceCount(items []*leapmuxv1.SectionItem, sectionID string) int
 	return n
 }
 
+// openSectionSession opens a CLI session and resolves the target section using
+// server-side id_prefix queries when possible. It closes the session on error.
+func openSectionSession(inv *cli.Invocation) (*session, *leapmuxv1.ListSectionsResponse, *leapmuxv1.Section, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	list, sec, err := s.resolveSectionFromHub(inv.Arg("section"))
+	if err != nil {
+		s.Close()
+		return nil, nil, nil, err
+	}
+	return s, list, sec, nil
+}
+
+// openFullSectionSession opens a CLI session, loads every sidebar section (for
+// commands such as `section move` that need peer sections in the target
+// sidebar), and resolves the target section argument. It closes the session on
+// error.
+func openFullSectionSession(inv *cli.Invocation) (*session, *leapmuxv1.ListSectionsResponse, *leapmuxv1.Section, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	list, err := s.listSections()
+	if err != nil {
+		s.Close()
+		return nil, nil, nil, err
+	}
+	sec, err := resolveSection(list.GetSections(), inv.Arg("section"))
+	if err != nil {
+		s.Close()
+		return nil, nil, nil, err
+	}
+	return s, list, sec, nil
+}
+
 func runSectionRename(inv *cli.Invocation) (any, error) {
 	name := strings.TrimSpace(inv.Arg("name"))
 	if name == "" {
 		return nil, cli.Usagef("section name is empty")
 	}
-	s, err := openSession(inv)
+	s, list, sec, err := openSectionSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	list, err := s.listSections()
-	if err != nil {
-		return nil, err
-	}
-	sec, err := resolveSection(list.GetSections(), inv.Arg("section"))
-	if err != nil {
-		return nil, err
-	}
 	var resp leapmuxv1.RenameSectionResponse
 	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.SectionServiceRenameSectionProcedure, &leapmuxv1.RenameSectionRequest{
 		SectionId: sec.GetId(),
@@ -297,19 +408,11 @@ func runSectionRename(inv *cli.Invocation) (any, error) {
 }
 
 func runSectionDelete(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
+	s, _, sec, err := openSectionSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	list, err := s.listSections()
-	if err != nil {
-		return nil, err
-	}
-	sec, err := resolveSection(list.GetSections(), inv.Arg("section"))
-	if err != nil {
-		return nil, err
-	}
 	var resp leapmuxv1.DeleteSectionResponse
 	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.SectionServiceDeleteSectionProcedure, &leapmuxv1.DeleteSectionRequest{
 		SectionId: sec.GetId(),
@@ -328,64 +431,57 @@ func runSectionMove(inv *cli.Invocation) (any, error) {
 	last := boolFlag(inv, "last")
 	beforeRaw := strings.TrimSpace(stringFlag(inv, "before"))
 	afterRaw := strings.TrimSpace(stringFlag(inv, "after"))
-	placeCount := 0
-	for _, set := range []bool{first, last, inv.Changed("before"), inv.Changed("after")} {
-		if set {
-			placeCount++
-		}
+	if inv.Changed("before") && beforeRaw == "" {
+		return nil, cli.Usagef("--before must not be empty")
 	}
-	if placeCount > 1 {
-		return nil, cli.Usagef("--first, --last, --before, and --after exclude each other")
+	if inv.Changed("after") && afterRaw == "" {
+		return nil, cli.Usagef("--after must not be empty")
 	}
-	if !inv.Changed("sidebar") && placeCount == 0 {
+	hasPosition := first || last || beforeRaw != "" || afterRaw != ""
+	spec, err := parsePositionSpec(first, last, beforeRaw, afterRaw)
+	if err != nil {
+		return nil, cli.Usagef("%s", err.Error())
+	}
+	if !inv.Changed("sidebar") && !hasPosition {
 		return nil, cli.Usagef("give --sidebar, --first, --last, --before, or --after")
 	}
-	s, err := openSession(inv)
+	var explicitSidebar leapmuxv1.Sidebar
+	if inv.Changed("sidebar") {
+		explicitSidebar, err = parseSidebarFlag(stringFlag(inv, "sidebar"))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	s, list, sec, err := openFullSectionSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	list, err := s.listSections()
-	if err != nil {
-		return nil, err
-	}
-	sec, err := resolveSection(list.GetSections(), inv.Arg("section"))
-	if err != nil {
-		return nil, err
-	}
+
 	sidebar := sec.GetSidebar()
 	if inv.Changed("sidebar") {
-		sidebar, err = parseSidebarFlag(stringFlag(inv, "sidebar"))
+		sidebar = explicitSidebar
+	}
+	pos := sec.GetPosition()
+	if hasPosition || sidebar != sec.GetSidebar() {
+		if spec.refID != "" {
+			ref, err := resolveSection(list.GetSections(), spec.refID)
+			if err != nil {
+				return nil, err
+			}
+			spec.refID = ref.GetId()
+		}
+		peers := make([]rankedItem, 0, len(list.GetSections()))
+		for _, other := range list.GetSections() {
+			if other.GetSidebar() == sidebar && other.GetId() != sec.GetId() {
+				peers = append(peers, rankedItem{ID: other.GetId(), Position: other.GetPosition()})
+			}
+		}
+		pos, err = computeRankedPosition(peers, sec.GetId(), spec, "section")
 		if err != nil {
 			return nil, err
 		}
-	}
-	peers := make([]rankedItem, 0, len(list.GetSections()))
-	for _, other := range list.GetSections() {
-		if other.GetSidebar() == sidebar && other.GetId() != sec.GetId() {
-			peers = append(peers, rankedItem{ID: other.GetId(), Position: other.GetPosition()})
-		}
-	}
-	var refID string
-	if inv.Changed("before") {
-		ref, err := resolveSection(list.GetSections(), beforeRaw)
-		if err != nil {
-			return nil, err
-		}
-		refID = ref.GetId()
-	} else if inv.Changed("after") {
-		ref, err := resolveSection(list.GetSections(), afterRaw)
-		if err != nil {
-			return nil, err
-		}
-		refID = ref.GetId()
-	}
-	if sidebar != sec.GetSidebar() && !first && !last && !inv.Changed("before") && !inv.Changed("after") {
-		last = true
-	}
-	pos, err := computeLexoRankPosition(peers, first, last, inv.Changed("before"), inv.Changed("after"), refID, sec.GetPosition())
-	if err != nil {
-		return nil, err
 	}
 	var resp leapmuxv1.MoveSectionResponse
 	if err := hubCallUnary(s.ctx, s.c, leapmuxv1connect.SectionServiceMoveSectionProcedure, &leapmuxv1.MoveSectionRequest{
@@ -399,56 +495,6 @@ func runSectionMove(inv *cli.Invocation) (any, error) {
 	row.Sidebar = enumToken(sidebar)
 	row.Position = pos
 	return row, nil
-}
-
-type rankedItem struct {
-	ID       string
-	Position string
-}
-
-// computeLexoRankPosition calculates the destination LexoRank for an ordered
-// list of peers given mutually exclusive first/last/before/after selectors.
-func computeLexoRankPosition(peers []rankedItem, first, last, before, after bool, refID, fallback string) (string, error) {
-	slices.SortFunc(peers, func(a, b rankedItem) int {
-		if a.Position != b.Position {
-			return strings.Compare(a.Position, b.Position)
-		}
-		return strings.Compare(a.ID, b.ID)
-	})
-	switch {
-	case first:
-		if len(peers) == 0 {
-			return lexorank.First(), nil
-		}
-		return lexorank.Mid("", peers[0].Position), nil
-	case last:
-		if len(peers) == 0 {
-			return lexorank.First(), nil
-		}
-		return lexorank.After(peers[len(peers)-1].Position), nil
-	case before:
-		idx := slices.IndexFunc(peers, func(r rankedItem) bool { return r.ID == refID })
-		if idx < 0 {
-			return "", cli.Newf(cli.CodeNotFound, "reference item %s is not in the destination container", refID)
-		}
-		prev := ""
-		if idx > 0 {
-			prev = peers[idx-1].Position
-		}
-		return lexorank.Mid(prev, peers[idx].Position), nil
-	case after:
-		idx := slices.IndexFunc(peers, func(r rankedItem) bool { return r.ID == refID })
-		if idx < 0 {
-			return "", cli.Newf(cli.CodeNotFound, "reference item %s is not in the destination container", refID)
-		}
-		next := ""
-		if idx+1 < len(peers) {
-			next = peers[idx+1].Position
-		}
-		return lexorank.Mid(peers[idx].Position, next), nil
-	default:
-		return fallback, nil
-	}
 }
 
 func completeSections(cmd *cobra.Command, spec cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {

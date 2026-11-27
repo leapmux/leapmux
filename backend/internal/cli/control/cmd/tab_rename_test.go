@@ -193,11 +193,11 @@ func TestRunTabRename_ReportsTheUnchangedTitleWhenTheRequestCleansToNothing(t *t
 	assert.Equal(t, []string{emptyingTitle}, disp.sentTitles())
 }
 
-// A tab type that neither arm renames is refused as a usage error, and the
+// A tab type that neither branch renames is refused as a usage error, and the
 // refusal must reach the worker with nothing. `tab rename` binds no
 // FixedTabType, so
 // LocateTab can answer with any type the tab namespace holds -- a file tab
-// today, another kind later -- and the default arm is the only thing that
+// today, another kind later -- and the default branch is the only thing that
 // keeps such a tab from falling through to a silent success.
 func TestRunTabRename_RefusesATabTypeNeitherArmRenames(t *testing.T) {
 	disp := &renameDispatcher{stored: "unreachable"}
@@ -210,7 +210,7 @@ func TestRunTabRename_RefusesATabTypeNeitherArmRenames(t *testing.T) {
 
 	f := runControl(t, "tab", "rename", "file-2", "notes").requireFailure(t, "usage")
 	assert.Contains(t, f.Message, "a file tab has no title")
-	assert.Empty(t, disp.called(), "a tab neither arm renames must reach the worker with nothing")
+	assert.Empty(t, disp.called(), "a tab neither branch renames must reach the worker with nothing")
 }
 
 func TestControlRejectsExplicitBlankTargetsBeforeCalling(t *testing.T) {

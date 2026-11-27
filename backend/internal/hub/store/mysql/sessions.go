@@ -202,19 +202,97 @@ func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSession
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.UserSession]{}, nil
 	}
-	return store.QueryPageErr(ctx, p.Limit,
-		func() (gendb.ListUserSessionsByUserIDParams, error) {
-			return listUserSessionsParams(owner, p.Cursor, p.Limit, now)
-		},
-		s.conn.q.ListUserSessionsByUserID, s.conn.fromDBSession, s.conn.queryError)
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.UserSession]{}, err
+	}
+	if !hasPrefix {
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListUserSessionsByUserIDParams, error) {
+				return listUserSessionsParams(owner, p.Cursor, p.Limit, now)
+			},
+			s.conn.q.ListUserSessionsByUserID, s.conn.fromDBSession, s.conn.queryError)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.UserSession]{}, err
+	}
+	var rows []gendb.UserSession
+	if filter.Exact {
+		rows, err = s.conn.q.ListUserSessionsByUserIDAndExactID(ctx, gendb.ListUserSessionsByUserIDAndExactIDParams{
+			UserID: owner,
+			Now:    sqltime.NewMySQLTime(now),
+			ID:     filter.Lower,
+		})
+	} else {
+		rows, err = s.conn.q.ListUserSessionsByUserIDAndIDPrefix(ctx, gendb.ListUserSessionsByUserIDAndIDPrefixParams{
+			UserID: owner,
+			Now:    sqltime.NewMySQLTime(now),
+			IDLo:   filter.Lower,
+			IDHi:   filter.Upper,
+			IDGt:   idGt,
+			Limit:  fetchLimit,
+		})
+	}
+	if err != nil {
+		return store.Page[store.UserSession]{}, s.conn.queryError(err)
+	}
+	mapped, err := store.MapSliceErr(rows, s.conn.fromDBSession)
+	if err != nil {
+		return store.Page[store.UserSession]{}, err
+	}
+	return store.NewPage(mapped, p.Limit), nil
 }
 
 func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams, now time.Time) (store.Page[store.ActiveSession], error) {
-	return store.QueryPageErr(ctx, p.Limit,
-		func() (gendb.ListAllActiveSessionsParams, error) {
-			return listAllActiveSessionsParams(p.Cursor, p.Limit, now)
-		},
-		s.conn.q.ListAllActiveSessions, s.conn.fromDBActiveSessionRow, s.conn.queryError)
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.ActiveSession]{}, err
+	}
+	if !hasPrefix {
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllActiveSessionsParams, error) {
+				return listAllActiveSessionsParams(p.Cursor, p.Limit, now)
+			},
+			s.conn.q.ListAllActiveSessions, s.conn.fromDBActiveSessionRow, s.conn.queryError)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.ActiveSession]{}, err
+	}
+	if filter.Exact {
+		rows, err := s.conn.q.ListAllActiveSessionsByExactID(ctx, gendb.ListAllActiveSessionsByExactIDParams{
+			Now: sqltime.NewMySQLTime(now),
+			ID:  filter.Lower,
+		})
+		if err != nil {
+			return store.Page[store.ActiveSession]{}, s.conn.queryError(err)
+		}
+		mapped, err := store.MapSliceErr(rows, func(r gendb.ListAllActiveSessionsByExactIDRow) (store.ActiveSession, error) {
+			return s.conn.fromDBActiveSessionRow(gendb.ListAllActiveSessionsRow(r))
+		})
+		if err != nil {
+			return store.Page[store.ActiveSession]{}, err
+		}
+		return store.NewPage(mapped, p.Limit), nil
+	}
+	rows, err := s.conn.q.ListAllActiveSessionsByIDPrefix(ctx, gendb.ListAllActiveSessionsByIDPrefixParams{
+		Now:   sqltime.NewMySQLTime(now),
+		IDLo:  filter.Lower,
+		IDHi:  filter.Upper,
+		IDGt:  idGt,
+		Limit: fetchLimit,
+	})
+	if err != nil {
+		return store.Page[store.ActiveSession]{}, s.conn.queryError(err)
+	}
+	mapped, err := store.MapSliceErr(rows, func(r gendb.ListAllActiveSessionsByIDPrefixRow) (store.ActiveSession, error) {
+		return s.conn.fromDBActiveSessionRow(gendb.ListAllActiveSessionsRow(r))
+	})
+	if err != nil {
+		return store.Page[store.ActiveSession]{}, err
+	}
+	return store.NewPage(mapped, p.Limit), nil
 }
 
 func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time.Time) (*store.SessionWithUser, error) {

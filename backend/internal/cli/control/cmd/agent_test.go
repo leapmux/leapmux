@@ -599,6 +599,10 @@ func TestRunAgentList_ParentFilterCrossWorkspaceFallback(t *testing.T) {
 						{Id: wsChild, Title: "Child WS"},
 					},
 				}, nil
+			case leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:
+				var req leapmuxv1.GetWorkspaceRequest
+				require.NoError(t, proto.Unmarshal(body, &req))
+				return &leapmuxv1.GetWorkspaceResponse{Workspace: &leapmuxv1.Workspace{Id: req.GetWorkspaceId()}}, nil
 			case leapmuxv1connect.WorkspaceServiceListTabsProcedure:
 				var req leapmuxv1.ListTabsRequest
 				require.NoError(t, proto.Unmarshal(body, &req))

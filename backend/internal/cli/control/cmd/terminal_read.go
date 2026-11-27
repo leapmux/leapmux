@@ -94,7 +94,7 @@ func executeTerminalRead(inv *cli.Invocation, resolveTarget func(*session) (tabT
 			return nil, err
 		}
 		defer s.Close()
-		callSession := s.bounded()
+		callSession := s.timed()
 		got, info, err := resolveTarget(callSession)
 		callSession.Close()
 		if err != nil {

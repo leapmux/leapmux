@@ -129,7 +129,7 @@ func newAuthCommand() *cobra.Command {
 // outlive the 30-second RPC deadline; each unary HTTP call still carries
 // hubtransport.DefaultUnaryTimeout.
 func openDirectHubSession(inv *cli.Invocation) (*session, *control.HubClient, error) {
-	hub, err := hubURLFor(inv.Command)
+	hub, source, err := hubURLWithSource(inv.Command)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -137,15 +137,16 @@ func openDirectHubSession(inv *cli.Invocation) (*session, *control.HubClient, er
 	if err != nil {
 		return nil, nil, err
 	}
-	attachErrOut(c, inv)
-	noticeDiscoveredLocalHub(inv, explicitHub(inv.Command), hub)
+	c.Source = source
+	configurePeer(c, inv)
+	noticeDiscoveredLocalHub(inv, c)
 	ctx, cancel := context.WithCancel(inv.Context)
 	return &session{
 		inv:     inv,
 		c:       c,
 		ctx:     ctx,
 		cancel:  cancel,
-		located: map[string]*leapmuxv1.WorkspaceTab{},
+		located: newLocatedTabCache(),
 	}, c, nil
 }
 
@@ -407,7 +408,7 @@ type authStatus struct {
 // deleted the file), and an unreachable hub keeps the local answer useful
 // with a warning that states exactly what was not verified.
 func runAuthStatus(inv *cli.Invocation) (any, error) {
-	hub, err := hubURLFor(inv.Command)
+	hub, source, err := hubURLWithSource(inv.Command)
 	if err != nil {
 		return nil, err
 	}
@@ -442,8 +443,9 @@ func runAuthStatus(inv *cli.Invocation) (any, error) {
 			RefreshExpires: formatWallTime(creds.RefreshExpiresAt),
 		}
 	}
-	attachErrOut(c, inv)
-	noticeDiscoveredLocalHub(inv, explicitHub(inv.Command), hub)
+	c.Source = source
+	configurePeer(c, inv)
+	noticeDiscoveredLocalHub(inv, c)
 
 	// Confirm what the hub actually does with this session:
 	//   - confirmed: use the hub's username and admin flag (the local file is
@@ -568,7 +570,7 @@ func checkHubSession(ctx context.Context, c *control.HubClient) (hubSessionCheck
 	case callErr == nil:
 		return hubSessionCheck{Report: me.GetSessionReport()}, nil
 	case hubRefusedCredential(callErr):
-		return hubSessionCheck{}, cli.Wrap(cli.CodeNotLoggedIn, callErr, "the hub refused this credential").
+		return hubSessionCheck{}, cli.Wrap(cli.CodeNotLoggedIn, stripHubHintError(callErr), "the hub refused this credential").
 			WithHint(`run "%s" to sign in again`, authLoginCommand(c.HubURL))
 	case connect.CodeOf(callErr) == connect.CodePermissionDenied:
 		return hubSessionCheck{

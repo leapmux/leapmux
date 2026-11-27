@@ -17,12 +17,14 @@ These selectors and flags repeat across commands on this page.
 
 | Selector / Flag | Description |
 |---|---|
-| `<worker>` | A worker id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "name:&lt;name&gt;" or a bare case-insensitive worker name, or "self" for the worker of the tab that runs this command. |
+| `<worker>` | A worker id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "name:&lt;name&gt;" or a bare case-insensitive worker name, or "self" for the worker of the tab that runs this command. |
 | `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
 
 ## `leapmux worker`
 
 List workers, read what they report, and register new ones.
+
+Aliases: `wk`.
 
 ### `leapmux worker list`
 
@@ -199,7 +201,7 @@ leapmux worker pins get <worker> [flags]
 
 | Argument | Description |
 |---|---|
-| `<worker>` | A worker id, or a unique prefix of 4 or more characters of one, as "leapmux worker pins list" prints it. |
+| `<worker>` | A worker id, a unique prefix of 4 or more characters of one, or "id:&lt;id&gt;", as "leapmux worker pins list" prints it. |
 
 ```sh
 leapmux worker pins get 5f2c9a1d
@@ -217,7 +219,7 @@ leapmux worker pins remove <worker> [flags]
 
 | Argument | Description |
 |---|---|
-| `<worker>` | A worker id, or a unique prefix of 4 or more characters of one, as "leapmux worker pins list" prints it. |
+| `<worker>` | A worker id, a unique prefix of 4 or more characters of one, or "id:&lt;id&gt;", as "leapmux worker pins list" prints it. |
 
 ```sh
 # Forget the key of a worker that was reinstalled.

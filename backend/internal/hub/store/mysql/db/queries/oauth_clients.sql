@@ -323,3 +323,37 @@ ON DUPLICATE KEY UPDATE
     scopes = VALUES(scopes),
     grant_types = VALUES(grant_types),
     registration_source = VALUES(registration_source);
+
+-- name: ListOAuthClientsByExactID :many
+SELECT client_id, owner_user_id, secret_hash, client_name,
+       COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
+       scopes, grant_types, elevation_allowed, registration_source,
+       verified_at, verified_by_user_id, created_at, updated_at, revoked_at
+FROM oauth_clients
+WHERE client_id = sqlc.arg(id)
+  AND (revoked_at IS NULL OR CAST(sqlc.arg(include_revoked) AS SIGNED) != 0)
+  AND (
+      (CAST(sqlc.arg(hub_wide_only) AS SIGNED) != 0 AND owner_user_id IS NULL)
+      OR (CAST(sqlc.arg(hub_wide_only) AS SIGNED) = 0
+          AND (owner_user_id = sqlc.arg(user_id)
+               OR (owner_user_id IS NULL AND CAST(sqlc.arg(include_hub_wide) AS SIGNED) != 0)))
+  );
+
+-- name: ListOAuthClientsByIDPrefix :many
+SELECT client_id, owner_user_id, secret_hash, client_name,
+       COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
+       scopes, grant_types, elevation_allowed, registration_source,
+       verified_at, verified_by_user_id, created_at, updated_at, revoked_at
+FROM oauth_clients
+WHERE client_id >= sqlc.arg(id_lo)
+  AND client_id < sqlc.arg(id_hi)
+  AND client_id > sqlc.arg(id_gt)
+  AND (revoked_at IS NULL OR CAST(sqlc.arg(include_revoked) AS SIGNED) != 0)
+  AND (
+      (CAST(sqlc.arg(hub_wide_only) AS SIGNED) != 0 AND owner_user_id IS NULL)
+      OR (CAST(sqlc.arg(hub_wide_only) AS SIGNED) = 0
+          AND (owner_user_id = sqlc.arg(user_id)
+               OR (owner_user_id IS NULL AND CAST(sqlc.arg(include_hub_wide) AS SIGNED) != 0)))
+  )
+ORDER BY client_id ASC
+LIMIT ?;

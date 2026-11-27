@@ -699,7 +699,8 @@ type SearchUsersParams struct {
 }
 
 type ListAllUsersParams struct {
-	PageParams // Keyset on (created_at DESC, id DESC).
+	IDPrefix   string // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
+	PageParams        // Keyset on (created_at DESC, id DESC), or id ASC when IDPrefix is set.
 }
 
 // ElevationMaxTotal caps the total life of ONE elevation, measured from the
@@ -853,14 +854,16 @@ type RefreshSessionAuthGenerationParams struct {
 }
 
 type ListAllActiveSessionsParams struct {
-	PageParams // Keyset on (last_active_at DESC, id DESC).
+	IDPrefix   string // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
+	PageParams        // Keyset on (last_active_at DESC, id DESC), or id ASC when IDPrefix is set.
 }
 
 // ListUserSessionsParams pages a per-user session listing (ListByUserID),
-// ordered by (last_active_at DESC, id DESC).
+// ordered by (last_active_at DESC, id DESC), or id ASC when IDPrefix is set.
 type ListUserSessionsParams struct {
 	UserID     userid.UserID
-	PageParams // Keyset on (last_active_at DESC, id DESC).
+	IDPrefix   string
+	PageParams // Keyset on (last_active_at DESC, id DESC), or id ASC when IDPrefix is set.
 }
 
 type CreateWorkerParams struct {
@@ -943,7 +946,8 @@ type DeregisterWorkerParams struct {
 
 type ListWorkersByUserIDParams struct {
 	RegisteredBy userid.UserID
-	PageParams   // Keyset on (created_at DESC, id DESC).
+	IDPrefix     string // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
+	PageParams          // Keyset on (created_at DESC, id DESC), or id ASC when IDPrefix is set.
 }
 
 type GetOwnedWorkerParams struct {
@@ -956,7 +960,8 @@ type ListWorkersAdminParams struct {
 	// Status narrows the listing to one derived state; nil lists every live
 	// (ACTIVE or DEREGISTERING) worker. See WorkerAdminListStatusOf.
 	Status     *leapmuxv1.WorkerStatus
-	PageParams // Keyset on (created_at DESC, id DESC).
+	IDPrefix   string // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
+	PageParams        // Keyset on (created_at DESC, id DESC), or id ASC when IDPrefix is set.
 }
 
 // WorkerAdminListStatusOf validates the optional state filter once for every
@@ -1003,8 +1008,9 @@ type SoftDeleteRegistrationKeyParams struct {
 }
 
 type ListRegistrationKeysAdminParams struct {
-	PageParams          // Keyset on (created_at DESC, id DESC).
-	IncludeExpired bool // true to surface revoked/expired rows for forensics
+	PageParams            // Keyset on (created_at DESC, id DESC), or id ASC when IDPrefix is set.
+	IncludeExpired bool   // true to surface revoked/expired rows for forensics
+	IDPrefix       string // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
 }
 
 type CreateWorkspaceParams struct {
@@ -1014,7 +1020,8 @@ type CreateWorkspaceParams struct {
 }
 
 type ListAccessibleWorkspacesParams struct {
-	UserID userid.UserID
+	UserID   userid.UserID
+	IDPrefix string // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
 }
 
 type RenameWorkspaceParams struct {
@@ -1060,6 +1067,12 @@ type UpsertTabParams struct {
 type ListRenderedTabsByWorkspaceIDsParams struct {
 	UserID       userid.UserID
 	WorkspaceIDs []string
+}
+
+type ListRenderedTabsByIDPrefixParams struct {
+	UserID       userid.UserID
+	WorkspaceIDs []string // Optional: empty searches all non-deleted workspaces owned by UserID.
+	IDPrefix     string
 }
 
 // GetOwnedTabParams identifies a single owned-tab row by its PRIMARY KEY.
@@ -1739,6 +1752,7 @@ type ListOAuthClientsParams struct {
 	// retired" listing asks for. The default keeps the live-only shape every
 	// authorize surface reads.
 	IncludeRevoked bool
+	IDPrefix       string // When non-empty, matches client_id by exact id (full length) or primary-key prefix range ordered by client_id ASC.
 	PageParams
 }
 
@@ -1977,7 +1991,8 @@ type ListAPITokensByUserParams struct {
 	UserID userid.UserID
 	// ClientID narrows the listing to ONE app; empty lists every app.
 	ClientID   string
-	PageParams // Keyset on (created_at DESC, id DESC).
+	IDPrefix   string // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
+	PageParams        // Keyset on (created_at DESC, id DESC), or id ASC when IDPrefix is set.
 }
 
 // RevokeOwnedAPITokenParams revokes one of the caller's own tokens. The owner
@@ -2015,17 +2030,20 @@ type RefreshAPITokenAuthGenerationParams struct {
 type ListAllAPITokensParams struct {
 	UserID     *string // nil = all users; non-nil dispatches to the ByUser query twin
 	ClientID   string  // empty = all apps
-	PageParams         // Keyset on (created_at DESC, id DESC).
+	IDPrefix   string  // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
+	PageParams         // Keyset on (created_at DESC, id DESC), or id ASC when IDPrefix is set.
 	// IncludeRevoked adds revoked rows to the listing (forensics); the default
 	// lists live tokens only and rides the partial keyset indexes.
 	IncludeRevoked bool
 }
 
 // ListAllDelegationTokensParams pages the admin delegation-token listing
-// (ListAllDelegationTokens), ordered by (created_at DESC, id DESC).
+// (ListAllDelegationTokens), ordered by (created_at DESC, id DESC), or id ASC
+// when IDPrefix is set.
 type ListAllDelegationTokensParams struct {
 	UserID     *string // nil = all users; non-nil dispatches to the ByUser query twin
-	PageParams         // Keyset on (created_at DESC, id DESC).
+	IDPrefix   string  // When non-empty, matches by exact id (full length) or primary-key prefix range ordered by id ASC.
+	PageParams         // Keyset on (created_at DESC, id DESC), or id ASC when IDPrefix is set.
 	// IncludeRevoked adds revoked rows to the listing (forensics); the default
 	// lists live tokens only and rides the partial keyset indexes.
 	IncludeRevoked bool

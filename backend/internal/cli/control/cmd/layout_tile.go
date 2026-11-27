@@ -1,29 +1,39 @@
 package cmd
 
 import (
+	"sort"
+	"strings"
+
+	"github.com/spf13/cobra"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
 )
 
-// RunTileSplit emits the 9-op SplitTile batch (T flips LEAF -> SPLIT,
-// two new leaf children created, tabs on T migrate to childA).
+// runTileSplit emits the SplitTile batch (T flips LEAF -> SPLIT, two new leaf
+// children created, tabs on T migrate to childA).
 func runTileSplit(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
 	direction := stringFlag(inv, "direction")
 	dirEnum, ok := parseSplitDirection(direction)
 	if !ok {
 		return nil, cli.Usagef("--direction must be horizontal|vertical")
 	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
 	cc, _, tileID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
 		return nil, err
+	}
+	kind := cc.bs.State.GetNodes()[tileID].GetKind().GetValue()
+	if kind != leapmuxv1.NodeKind_NODE_KIND_LEAF && kind != leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED {
+		return nil, cli.Usagef("tile %s is a %s node; only leaf tiles can be split", tileID, kindLabel(kind))
 	}
 	childA := id.Generate()
 	childB := id.Generate()
@@ -48,17 +58,17 @@ func runTileSplit(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	// Output names reflect what the user gets back from the split:
-	//   split_tile_id          — the original tile, now a SPLIT
-	//                                   parent node (no longer renders
-	//                                   as a leaf).
+	//   split_tile_id                   — the original tile, now a SPLIT
+	//                                     parent node (no longer renders
+	//                                     as a leaf).
 	//   leaf_tile_with_existing_tabs_id — the new leaf that holds the
-	//                                   original tabs (positioned
-	//                                   first: left for a vertical
-	//                                   divider, top for a horizontal).
-	//   leaf_tile_with_empty_tabs_id  — the new empty leaf (positioned
-	//                                   second: right for a vertical
-	//                                   divider, bottom for a
-	//                                   horizontal).
+	//                                     original tabs (positioned
+	//                                     first: left for a vertical
+	//                                     divider, top for a horizontal).
+	//   leaf_tile_with_empty_tabs_id    — the new empty leaf (positioned
+	//                                     second: right for a vertical
+	//                                     divider, bottom for a
+	//                                     horizontal).
 	return tileSplitResult{
 		SplitTileID:                tileID,
 		LeafTileWithExistingTabsID: childA,
@@ -82,8 +92,8 @@ func (r tileSplitResult) QuietLines() []string {
 	return []string{r.LeafTileWithEmptyTabsID}
 }
 
-// RunTileClose closes a tile. Behaviour depends on the target kind
-// and the user's policy choice:
+// runTileClose closes a tile. Behaviour depends on the target kind and the
+// user's policy choice:
 //
 //	leaf, no tabs        → close (no flag needed).
 //	leaf, has tabs       → require --with-tabs <close|move>.
@@ -100,14 +110,9 @@ func (r tileSplitResult) QuietLines() []string {
 //	                       leaf-by-leaf path (or `tile remove-grid`
 //	                       for grids).
 //
-// Tombstoning the calling tab's tile kills its PTY, so
-// `guardTileClose` rejects that case unless --allow-self is supplied.
+// Tombstoning the calling tab's tile kills its PTY, so `guardLayoutClose`
+// rejects that case unless --allow-self is supplied.
 func runTileClose(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
 	allowSelf := boolFlag(inv, allowSelfFlag)
 	allowBusy := boolFlag(inv, "allow-busy")
 	withTabs := stringFlag(inv, "with-tabs")
@@ -116,7 +121,12 @@ func runTileClose(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	cc, workspaceID, tileID, err := s.openTile(inv.Arg("tile"))
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	cc, _, tileID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +168,7 @@ func runTileClose(inv *cli.Invocation) (any, error) {
 			WithHint(`close the tabs on the cell with "leapmux tab close", or remove the whole grid with "leapmux tile remove-grid %s"`, parentID)
 	}
 
-	rootNodeID := cc.bs.State.GetWorkspaces()[workspaceID].GetRootNodeId()
+	_, enclosingRootID, _ := nodeRootFromState(cc.bs.State, tileID)
 
 	var tabsAffected []crdt.TabRef
 	if recursive {
@@ -186,10 +196,10 @@ func runTileClose(inv *cli.Invocation) (any, error) {
 		if err := guardLayoutClose("tile "+tileID, tabsAffected, allowSelf); err != nil {
 			return nil, err
 		}
-		// Running work, for the same reason and in the same place. Skipped for
-		// --with-tabs=move as well: migrating a tab keeps its agent and its PTY
-		// alive, so there is nothing to interrupt.
-		if err := guardTabsBusy(cc, tabsAffected, allowBusy); err != nil {
+		// Running work and dirty git checkouts, for the same reason and in the
+		// same place. Skipped for --with-tabs=move as well: migrating a tab
+		// keeps its agent, PTY, and worktree tabs alive.
+		if err := guardBulkCloseTabs(cc, tabsAffected, allowBusy); err != nil {
 			return nil, err
 		}
 	}
@@ -198,44 +208,43 @@ func runTileClose(inv *cli.Invocation) (any, error) {
 	heirID := ""
 	switch {
 	case recursive:
-		// Cascade: tombstone (or migrate-and-tombstone) the whole
-		// subtree. The root passed to buildCloseSubtreeOps is the
-		// SPLIT/GRID tile itself.
+		// Cascade: tombstone (or migrate-and-tombstone) the whole subtree.
+		// Workspace and floating-window roots are protected by
+		// root_node_protected, so closing an enclosing root flips it back to
+		// LEAF instead of tombstoning it.
+		keepRoot := tileID == enclosingRootID
 		if policy == withTabsMove && len(tabsAffected) > 0 {
-			heirID = crdt.FindHeirTileID(cc.bs.State, tileID, rootNodeID)
-			if heirID == "" {
-				return nil, cli.Usagef("no heir tile available for the tabs on %s; pass --with-tabs=close instead", tileID)
+			if keepRoot {
+				heirID = tileID
+			} else {
+				heirID = crdt.FindHeirTileID(cc.bs.State, tileID, enclosingRootID)
+				if heirID == "" {
+					return nil, cli.Usagef("no heir tile available for the tabs on %s; pass --with-tabs=close instead", tileID)
+				}
 			}
 		}
-		ops = buildCloseSubtreeOps(cc.bs, tileID, heirID, false)
-
-	case policy == withTabsClose:
-		// Leaf, close all tabs first, then run the standard close
-		// (which folds the inverse-split when applicable).
-		for _, t := range tabsAffected {
-			ops = append(ops, opTombstoneTab(cc.bs, t.TabType, t.TabID))
+		ops = buildCloseSubtreeOps(cc.bs, tileID, heirID, keepRoot)
+		if keepRoot {
+			ops = append(ops, opSetNodeKind(cc.bs, tileID, leapmuxv1.NodeKind_NODE_KIND_LEAF))
 		}
-		ops = append(ops, buildCloseTileOps(cc.bs, tileID)...)
 
-	case policy == withTabsMove:
-		// Leaf with tabs to migrate. The heir is computed against the
-		// pre-close projection so the user can predict where tabs
-		// land without running the command first.
-		heirID = crdt.FindHeirTileID(cc.bs.State, tileID, rootNodeID)
+	case policy == withTabsMove && len(tabsAffected) > 0:
+		// Leaf with tabs to migrate. When the parent 2-child SPLIT collapses
+		// into an ancestor leaf, buildCloseTileOpsWithHeir redirects tabs onto
+		// that surviving ancestor instead of the tombstoned sibling.
+		heirID = crdt.FindHeirTileID(cc.bs.State, tileID, enclosingRootID)
 		if heirID == "" {
 			return nil, cli.Usagef("no heir tile available for tabs on %s; pass --with-tabs=close instead", tileID)
 		}
-		heirPos := lexorank.First()
-		for _, t := range tabsAffected {
-			ops = append(ops, opSetTabTileID(cc.bs, t.TabType, t.TabID, heirID))
-			ops = append(ops, opSetTabPosition(cc.bs, t.TabType, t.TabID, heirPos))
-			heirPos = lexorank.After(heirPos)
+		ops = buildCloseTileOpsWithHeir(cc.bs, tileID, heirID)
+		if collapse, ok := findInverseSplitCollapse(cc.bs.State, crdt.LiveChildrenByParent(cc.bs.State), tileID); ok && heirID == collapse.siblingID {
+			heirID = collapse.destID
 		}
-		ops = append(ops, buildCloseTileOps(cc.bs, tileID)...)
 
 	default:
-		// Leaf with no tabs and no --with-tabs choice — plain close.
-		ops = buildCloseTileOps(cc.bs, tileID)
+		// Leaf with tabs to close (withTabsClose) or no tabs: close the tile
+		// and tombstone any tabs on it once inside buildCloseTileOpsWithHeir.
+		ops = buildCloseTileOpsWithHeir(cc.bs, tileID, "")
 	}
 
 	if err := cc.submitOps(ops); err != nil {
@@ -252,7 +261,7 @@ func runTileClose(inv *cli.Invocation) (any, error) {
 		out.HeirTileID = heirID
 	default:
 		// withTabsUnspecified means the flag was absent, which handlers reject
-		// before reaching here, so the zero counts above stand.
+		// when tabs exist, so the zero counts above stand.
 	}
 	return out, nil
 }
@@ -322,9 +331,9 @@ func parseWithTabsPolicy(s string) (withTabsPolicy, error) {
 	return v, nil
 }
 
-// isGridCell reports whether nodeID names a live leaf whose parent
+// isGridCell reports whether nodeID specifies a live leaf whose parent
 // is a live GRID. Returns the parent grid's id when true so the
-// caller can name it in the error message. Used by `tile close` to
+// caller can identify it in the error message. Used by `tile close` to
 // refuse closing a single grid cell (which would leave an unusable
 // placeholder in the grid).
 func isGridCell(state *leapmuxv1.UserMaterialized, nodeID string) (gridID string, ok bool) {
@@ -350,109 +359,133 @@ func isGridCell(state *leapmuxv1.UserMaterialized, nodeID string) (gridID string
 	return parentID, true
 }
 
-// buildCloseTileOps produces the ops to close one tile, mirroring the
-// frontend's `tileOps.ts:buildCloseTileOps`. The undo-split logic is
-// the load-bearing part: when the closing tile's parent is a SPLIT
-// with exactly two live children, leaving the parent with one live
-// child leaves a SPLIT that exists only to wrap a single leaf. The
-// renderer collapses it visually, rendering the survivor under its
-// OWN node id, so nothing orphans — but the CRDT tree keeps a
-// redundant interior node that every later split/close has to walk
-// around. So this migrates the sibling's tabs to the parent,
-// tombstones the sibling, and flips the parent back to LEAF in one
-// batch: structural hygiene, not a rendering fix.
-//
-// Callers must guarantee tileID is not a registered workspace /
-// floating-window root — the validator rejects root tombstones with
-// `root_node_protected` and would roll the whole batch back. The
-// inverse-split itself never tombstones the parent, only flips its
-// kind, so a SPLIT root that lands in the collapse path is safe.
-func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.CrdtOp {
-	state := bs.State
-	ops := []*leapmuxv1.CrdtOp{}
-	for _, t := range crdt.TabsOnTile(state, tileID) {
-		ops = append(ops, opTombstoneTab(bs, t.TabType, t.TabID))
+// appendMigrateTabs appends SetTabTileId and SetTabPosition ops to move each
+// tab onto destTileID starting at startPos, returning the updated slice and
+// the next available LexoRank position.
+func appendMigrateTabs(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, tabs []crdt.TabRef, destTileID, startPos string) ([]*leapmuxv1.CrdtOp, string) {
+	pos := startPos
+	for _, t := range tabs {
+		ops = append(ops,
+			opSetTabTileID(bs, t.TabType, t.TabID, destTileID),
+			opSetTabPosition(bs, t.TabType, t.TabID, pos),
+		)
+		pos = lexorank.After(pos)
 	}
-	ops = append(ops, opTombstoneNode(bs, tileID))
+	return ops, pos
+}
 
+// nextPositionOnTile returns the LexoRank position strictly after the last
+// live tab on tileID, or lexorank.First() when tileID has no live tabs with
+// a non-empty position.
+func nextPositionOnTile(state *leapmuxv1.UserMaterialized, tileID string) string {
+	maxPos := ""
+	for _, t := range state.GetTabs() {
+		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
+			continue
+		}
+		if t.GetTileId().GetValue() != tileID {
+			continue
+		}
+		if p := t.GetPosition().GetValue(); p > maxPos {
+			maxPos = p
+		}
+	}
+	if maxPos == "" {
+		return lexorank.First()
+	}
+	return lexorank.After(maxPos)
+}
+
+// liveTabsByTile groups all live tabs in state by tile_id in a single O(T)
+// pass, sorting each tile's tabs by LexoRank position with tab_id as tiebreak.
+func liveTabsByTile(state *leapmuxv1.UserMaterialized) map[string][]crdt.TabRef {
+	type tabEntry struct {
+		ref crdt.TabRef
+		pos string
+	}
+	grouped := map[string][]tabEntry{}
+	for _, t := range state.GetTabs() {
+		if t == nil || !crdt.HLCIsZero(t.GetTombstoneAt()) {
+			continue
+		}
+		tileID := t.GetTileId().GetValue()
+		if tileID == "" {
+			continue
+		}
+		grouped[tileID] = append(grouped[tileID], tabEntry{
+			ref: crdt.TabRef{TabType: t.GetTabType(), TabID: t.GetTabId()},
+			pos: t.GetPosition().GetValue(),
+		})
+	}
+	out := make(map[string][]crdt.TabRef, len(grouped))
+	for tileID, entries := range grouped {
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].pos != entries[j].pos {
+				return entries[i].pos < entries[j].pos
+			}
+			return entries[i].ref.TabID < entries[j].ref.TabID
+		})
+		refs := make([]crdt.TabRef, len(entries))
+		for i, e := range entries {
+			refs[i] = e.ref
+		}
+		out[tileID] = refs
+	}
+	return out
+}
+
+// inverseSplitCollapse describes the ancestor chain that collapses into destID
+// when closing a leaf child of a 2-child SPLIT whose surviving sibling is also
+// a leaf.
+type inverseSplitCollapse struct {
+	siblingID     string
+	destID        string
+	intermediates []string
+}
+
+// findInverseSplitCollapse inspects tileID's parent SPLIT chain using the
+// prebuilt live-children adjacency and reports whether closing tileID collapses
+// its parent SPLIT (and any single-child ancestor SPLITs) back into a LEAF.
+func findInverseSplitCollapse(state *leapmuxv1.UserMaterialized, children map[string][]string, tileID string) (inverseSplitCollapse, bool) {
 	closing := state.GetNodes()[tileID]
 	if closing == nil {
-		return ops
+		return inverseSplitCollapse{}, false
 	}
 	parentID := closing.GetParentId()
 	if parentID == "" {
-		return ops
+		return inverseSplitCollapse{}, false
 	}
 	parent := state.GetNodes()[parentID]
 	if parent == nil || parent.GetKind().GetValue() != leapmuxv1.NodeKind_NODE_KIND_SPLIT || !crdt.HLCIsZero(parent.GetTombstoneAt()) {
-		return ops
+		return inverseSplitCollapse{}, false
 	}
-	// Live children of the parent, including tileID itself (the
-	// caller hasn't applied the tombstone yet — we're still building
-	// ops). The inverse-split only fires when the SPLIT has exactly
-	// two live children and the closing tile is one of them, so after
-	// the batch lands the parent would otherwise be left with one
-	// live child.
-	liveChildren := make([]string, 0, 2)
-	for _, n := range state.GetNodes() {
-		if n.GetParentId() != parentID {
-			continue
-		}
-		if !crdt.HLCIsZero(n.GetTombstoneAt()) {
-			continue
-		}
-		liveChildren = append(liveChildren, n.GetNodeId())
-	}
+	liveChildren := children[parentID]
 	if len(liveChildren) != 2 {
-		return ops
+		return inverseSplitCollapse{}, false
 	}
 	var siblingID string
-	for _, id := range liveChildren {
-		if id != tileID {
-			siblingID = id
+	for _, childID := range liveChildren {
+		if childID != tileID {
+			siblingID = childID
 		}
 	}
 	if siblingID == "" {
-		return ops
+		return inverseSplitCollapse{}, false
 	}
-	// Inverse-split only fires when the sibling is itself a leaf. If
-	// the sibling is a SPLIT or GRID, tombstoning it would orphan
-	// every descendant + every tab under those descendants — the
-	// validator then rejects the batch with
-	// BATCH_REJECTION_TAB_PLACEMENT_INVALID because the surviving
-	// tabs reference a now-dead tile chain.
-	//
-	// For the non-leaf-sibling case we rely on `project.ts:buildTree`
-	// (the hub has no render tree of its own): a SPLIT with a single
-	// live child collapses in the rendered tree, and the surviving
-	// sub-tree renders under its OWN node id. Tabs on its leaves keep
-	// their own tile_id and render correctly, so no rewiring is
-	// needed in the op batch.
+	// Inverse-split only fires when the sibling is itself a leaf. If the
+	// sibling is a SPLIT or GRID, tombstoning it would orphan every descendant
+	// and tab under it.
 	sibling := state.GetNodes()[siblingID]
 	sibKind := sibling.GetKind().GetValue()
 	if sibKind != leapmuxv1.NodeKind_NODE_KIND_LEAF && sibKind != leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED {
-		return ops
+		return inverseSplitCollapse{}, false
 	}
 
-	// The "natural" undo-split target is parentID — flip it to LEAF
-	// and migrate the sibling's tabs there. Walking further up when
-	// parentID is itself the only live child of an enclosing SPLIT is
-	// structural hygiene: it collapses the whole redundant chain in
-	// one batch instead of leaving a stack of single-child SPLITs for
-	// the next close to unwind. Placement stays correct either way,
-	// since every leaf renders under its own node id.
-	//
-	// Walk upward to find the topmost SPLIT in the single-child chain
-	// and collapse the whole chain in one batch: tabs go to that
-	// ancestor, every intermediate SPLIT is tombstoned, and the
-	// topmost ancestor flips to LEAF. The walk terminates at any
-	// non-SPLIT, tombstoned, or multi-child ancestor — those don't
-	// collapse in projection so the rendered leaf would already match
-	// the migration destination there. Workspace / floating-window
-	// roots are safe targets for the kind flip (set-once root_node_id,
-	// but kind is a normal LWW register).
+	// Walk upward to collapse any chain of single-child ancestor SPLITs in the
+	// same batch. Workspace and floating-window roots are safe targets for the
+	// kind flip (root_node_id is set-once, while kind is a normal LWW register).
 	destID := parentID
-	intermediates := []string{}
+	var intermediates []string
 	curNode := parent
 	for {
 		upID := curNode.GetParentId()
@@ -463,16 +496,7 @@ func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.CrdtOp {
 		if up == nil || up.GetKind().GetValue() != leapmuxv1.NodeKind_NODE_KIND_SPLIT || !crdt.HLCIsZero(up.GetTombstoneAt()) {
 			break
 		}
-		upLive := make([]string, 0, 2)
-		for _, n := range state.GetNodes() {
-			if n.GetParentId() != upID {
-				continue
-			}
-			if !crdt.HLCIsZero(n.GetTombstoneAt()) {
-				continue
-			}
-			upLive = append(upLive, n.GetNodeId())
-		}
+		upLive := children[upID]
 		if len(upLive) != 1 || upLive[0] != destID {
 			break
 		}
@@ -481,18 +505,66 @@ func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.CrdtOp {
 		curNode = up
 	}
 
-	sibTabs := crdt.TabsOnTile(state, siblingID)
-	sibPos := lexorank.First()
-	for _, t := range sibTabs {
-		ops = append(ops, opSetTabTileID(bs, t.TabType, t.TabID, destID))
-		ops = append(ops, opSetTabPosition(bs, t.TabType, t.TabID, sibPos))
-		sibPos = lexorank.After(sibPos)
+	return inverseSplitCollapse{
+		siblingID:     siblingID,
+		destID:        destID,
+		intermediates: intermediates,
+	}, true
+}
+
+// buildCloseTileOps produces the ops to close one tile and tombstone its tabs,
+// collapsing a redundant 2-child SPLIT parent when applicable.
+func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.CrdtOp {
+	return buildCloseTileOpsWithHeir(bs, tileID, "")
+}
+
+// buildCloseTileOpsWithHeir produces the ops to close one tile, mirroring the
+// frontend's `tileOps.ts:buildCloseTileOps`. When heirID is empty, live tabs
+// on tileID are tombstoned once. When heirID is non-empty, live tabs on tileID
+// migrate onto heirID (or onto the surviving collapsed ancestor destID when
+// inverse-split tombstones heirID == siblingID), appended strictly after any
+// existing tabs on the destination tile.
+//
+// Callers must guarantee tileID is not a registered workspace or
+// floating-window root — the validator rejects root tombstones with
+// `root_node_protected`. The inverse-split itself never tombstones the parent,
+// only flips its kind, so a SPLIT root that lands in the collapse path is safe.
+func buildCloseTileOpsWithHeir(bs *CRDTBootstrap, tileID, heirID string) []*leapmuxv1.CrdtOp {
+	state := bs.State
+	children := crdt.LiveChildrenByParent(state)
+	collapse, hasCollapse := findInverseSplitCollapse(state, children, tileID)
+	tileTabs := crdt.TabsOnTile(state, tileID)
+
+	ops := []*leapmuxv1.CrdtOp{}
+	switch {
+	case heirID == "":
+		for _, t := range tileTabs {
+			ops = append(ops, opTombstoneTab(bs, t.TabType, t.TabID))
+		}
+	case hasCollapse && heirID == collapse.siblingID:
+		// Both siblingID's tabs and tileID's tabs migrate onto the surviving
+		// collapsed ancestor destID; emit them together below so sibling tabs
+		// keep the front positions and tileID's tabs append strictly after.
+	default:
+		ops, _ = appendMigrateTabs(ops, bs, tileTabs, heirID, nextPositionOnTile(state, heirID))
 	}
-	ops = append(ops, opTombstoneNode(bs, siblingID))
-	for _, id := range intermediates {
-		ops = append(ops, opTombstoneNode(bs, id))
+	ops = append(ops, opTombstoneNode(bs, tileID))
+
+	if !hasCollapse {
+		return ops
 	}
-	ops = append(ops, opSetNodeKind(bs, destID, leapmuxv1.NodeKind_NODE_KIND_LEAF))
+
+	sibTabs := crdt.TabsOnTile(state, collapse.siblingID)
+	var nextPos string
+	ops, nextPos = appendMigrateTabs(ops, bs, sibTabs, collapse.destID, lexorank.First())
+	if heirID == collapse.siblingID && len(tileTabs) > 0 {
+		ops, _ = appendMigrateTabs(ops, bs, tileTabs, collapse.destID, nextPos)
+	}
+	ops = append(ops, opTombstoneNode(bs, collapse.siblingID))
+	for _, mid := range collapse.intermediates {
+		ops = append(ops, opTombstoneNode(bs, mid))
+	}
+	ops = append(ops, opSetNodeKind(bs, collapse.destID, leapmuxv1.NodeKind_NODE_KIND_LEAF))
 	return ops
 }
 
@@ -508,34 +580,36 @@ func buildCloseTileOps(bs *CRDTBootstrap, tileID string) []*leapmuxv1.CrdtOp {
 func buildCloseSubtreeOps(bs *CRDTBootstrap, tileID, migrateTo string, keepRoot bool) []*leapmuxv1.CrdtOp {
 	state := bs.State
 	descendants := crdt.DescendantsLeavesFirst(state, tileID)
+	tabsByTile := liveTabsByTile(state)
 	ops := []*leapmuxv1.CrdtOp{}
 	migratedPos := lexorank.First()
+	if migrateTo != "" {
+		migratedPos = nextPositionOnTile(state, migrateTo)
+	}
 	emitTabOps := func(tabs []crdt.TabRef) {
+		if migrateTo != "" {
+			ops, migratedPos = appendMigrateTabs(ops, bs, tabs, migrateTo, migratedPos)
+			return
+		}
 		for _, t := range tabs {
-			if migrateTo != "" {
-				ops = append(ops, opSetTabTileID(bs, t.TabType, t.TabID, migrateTo))
-				ops = append(ops, opSetTabPosition(bs, t.TabType, t.TabID, migratedPos))
-				migratedPos = lexorank.After(migratedPos)
-			} else {
-				ops = append(ops, opTombstoneTab(bs, t.TabType, t.TabID))
-			}
+			ops = append(ops, opTombstoneTab(bs, t.TabType, t.TabID))
 		}
 	}
-	for _, id := range descendants {
-		if id == tileID {
+	for _, nid := range descendants {
+		if nid == tileID {
 			continue
 		}
-		emitTabOps(crdt.TabsOnTile(state, id))
-		ops = append(ops, opTombstoneNode(bs, id))
+		emitTabOps(tabsByTile[nid])
+		ops = append(ops, opTombstoneNode(bs, nid))
 	}
-	emitTabOps(crdt.TabsOnTile(state, tileID))
+	emitTabOps(tabsByTile[tileID])
 	if !keepRoot {
 		ops = append(ops, opTombstoneNode(bs, tileID))
 	}
 	return ops
 }
 
-// RunTileMakeGrid converts a leaf tile into a rows*cols grid. Tabs
+// runTileMakeGrid converts a leaf tile into a rows*cols grid. Tabs
 // on the leaf are migrated to cell[0,0] (the top-left cell) so the
 // user never loses work to a layout restructure. This mirrors the
 // frontend, which silently migrates without prompting — there's no
@@ -549,11 +623,6 @@ func buildCloseSubtreeOps(bs *CRDTBootstrap, tileID, migrateTo string, keepRoot 
 // `tile remove-grid` (for grids) first if the user wants to start
 // fresh.
 func runTileMakeGrid(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
 	maxDim := int(crdt.MaxGridDimension)
 	rows, err := inv.Command.Flags().GetInt("rows")
 	if err != nil {
@@ -566,6 +635,11 @@ func runTileMakeGrid(inv *cli.Invocation) (any, error) {
 	if rows < 1 || rows > maxDim || cols < 1 || cols > maxDim {
 		return nil, cli.Usagef("--rows and --cols must be in [1, %d]", maxDim)
 	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
 	cc, _, tileID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
 		return nil, err
@@ -599,12 +673,7 @@ func runTileMakeGrid(inv *cli.Invocation) (any, error) {
 		}
 	}
 	dest := cellTileIDs[0]
-	destPos := lexorank.First()
-	for _, t := range tabsOnLeaf {
-		ops = append(ops, opSetTabTileID(cc.bs, t.TabType, t.TabID, dest))
-		ops = append(ops, opSetTabPosition(cc.bs, t.TabType, t.TabID, destPos))
-		destPos = lexorank.After(destPos)
-	}
+	ops, _ = appendMigrateTabs(ops, cc.bs, tabsOnLeaf, dest, lexorank.First())
 
 	if err := cc.submitOps(ops); err != nil {
 		return nil, err
@@ -620,8 +689,7 @@ func runTileMakeGrid(inv *cli.Invocation) (any, error) {
 	}, nil
 }
 
-// RunTileRemoveGrid removes a grid. The behaviour depends on
-// --with-tabs:
+// runTileRemoveGrid removes a grid. The behaviour depends on --with-tabs:
 //
 //	close (default when no tabs in the subtree)
 //	     Tombstone every descendant + the grid node. For a root grid
@@ -631,24 +699,19 @@ func runTileMakeGrid(inv *cli.Invocation) (any, error) {
 //
 //	move
 //	     Mirror the frontend's `replaceGridWithLeaf`: tombstone every
-//	     cell + every tab in the subtree, but migrate the tabs onto a
-//	     fresh leaf created in the grid's slot (inheriting its
-//	     parent_id + position). The grid node itself is tombstoned.
+//	     cell in the subtree and migrate every tab onto a fresh leaf
+//	     created in the grid's slot (inheriting its parent_id +
+//	     position). The grid node itself is tombstoned.
 //	     Root grid: flip the root's kind back to LEAF in place and
 //	     migrate every tab onto it.
 //
 // Required when the grid's subtree has at least one live tab, so we
 // never silently destroy or relocate tabs.
 //
-// Tombstoning a descendant tile kills the PTYs on it, so
-// `guardTileRemoveGrid` rejects the operation when the calling tab
-// sits anywhere inside the doomed subtree unless --allow-self is supplied.
+// Tombstoning a descendant tile kills the PTYs on it, so `guardLayoutClose`
+// rejects the operation when the calling tab sits anywhere inside the doomed
+// subtree unless --allow-self is supplied.
 func runTileRemoveGrid(inv *cli.Invocation) (any, error) {
-	s, err := openSession(inv)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
 	allowSelf := boolFlag(inv, allowSelfFlag)
 	allowBusy := boolFlag(inv, "allow-busy")
 	withTabs := stringFlag(inv, "with-tabs")
@@ -656,6 +719,11 @@ func runTileRemoveGrid(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
 	cc, _, gridID, err := s.openTile(inv.Arg("tile"))
 	if err != nil {
 		return nil, err
@@ -686,7 +754,7 @@ func runTileRemoveGrid(inv *cli.Invocation) (any, error) {
 		if err := guardLayoutClose("grid "+gridID, tabsInSubtree, allowSelf); err != nil {
 			return nil, err
 		}
-		if err := guardTabsBusy(cc, tabsInSubtree, allowBusy); err != nil {
+		if err := guardBulkCloseTabs(cc, tabsInSubtree, allowBusy); err != nil {
 			return nil, err
 		}
 	}
@@ -740,4 +808,250 @@ func runTileRemoveGrid(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+type tileSwapResult struct {
+	TileA       string `json:"tile_a"`
+	TileB       string `json:"tile_b"`
+	WorkspaceID string `json:"workspace_id"`
+	ReissuedIDs bool   `json:"reissued_ids"`
+}
+
+func (r tileSwapResult) QuietLines() []string { return []string{r.TileA, r.TileB} }
+
+// runTileSwap swaps two tiles in the same workspace in one atomic CRDT batch.
+// Sibling tiles swap Position registers in place (ReissuedIDs=false). Tiles
+// under different parents cannot rewrite parent_id (set-once in Hub CRDT), so
+// each live subtree is cloned into the other's slot with fresh node IDs, live
+// tabs migrate onto the cloned leaves preserving their existing positions, and
+// the old subtrees are tombstoned leaves-first (ReissuedIDs=true).
+func runTileSwap(inv *cli.Invocation) (any, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	cc, wsA, tileA, err := s.openTile(inv.Arg("tile-a"))
+	if err != nil {
+		return nil, err
+	}
+	tileB, err := s.resolveSecondTile(cc.bs.State, wsA, inv.Arg("tile-b"))
+	if err != nil {
+		return nil, err
+	}
+	if tileA == tileB {
+		return nil, cli.Usagef("cannot swap tile %s with itself", tileA)
+	}
+
+	var lastErr error
+	for attempt := range layoutSetMaxAttempts {
+		if attempt > 0 {
+			bs, berr := crdtBootstrap(cc.ctx, cc.c, []string{wsA})
+			if berr != nil {
+				return nil, berr
+			}
+			cc.bs = bs
+		}
+		if err := preflightTile(cc.bs.State, wsA, tileA); err != nil {
+			return nil, err
+		}
+		if err := preflightTile(cc.bs.State, wsA, tileB); err != nil {
+			return nil, err
+		}
+		nodeA := cc.bs.State.GetNodes()[tileA]
+		nodeB := cc.bs.State.GetNodes()[tileB]
+		parentA := nodeA.GetParentId()
+		parentB := nodeB.GetParentId()
+		if parentA == "" || parentB == "" {
+			return nil, cli.Newf(cli.CodeConflict, "cannot swap a workspace root tile")
+		}
+		if isTileAncestor(cc.bs.State, tileA, tileB) || isTileAncestor(cc.bs.State, tileB, tileA) {
+			return nil, cli.Newf(cli.CodeConflict, "cannot swap a tile with one of its descendants")
+		}
+		posA := nodeA.GetPosition().GetValue()
+		posB := nodeB.GetPosition().GetValue()
+		if parentA == parentB {
+			ops := []*leapmuxv1.CrdtOp{
+				opSetNodePosition(cc.bs, tileA, posB),
+				opSetNodePosition(cc.bs, tileB, posA),
+			}
+			if err := cc.submitOps(ops); err != nil {
+				return nil, err
+			}
+			return tileSwapResult{
+				TileA:       tileA,
+				TileB:       tileB,
+				WorkspaceID: wsA,
+				ReissuedIDs: false,
+			}, nil
+		}
+
+		ops, newTileA, newTileB := buildCrossParentTileSwapOps(cc.bs, tileA, tileB, parentA, posA, parentB, posB)
+		committed, reason, submitErr := cc.trySubmitOps(ops)
+		if committed {
+			return tileSwapResult{
+				TileA:       newTileA,
+				TileB:       newTileB,
+				WorkspaceID: wsA,
+				ReissuedIDs: true,
+			}, nil
+		}
+		lastErr = submitErr
+		if reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID {
+			return nil, submitErr
+		}
+	}
+	return nil, cli.Newf(cli.CodeConflict, "another client changed the layout during each of %d attempts (last hub error: %v)", layoutSetMaxAttempts, lastErr).
+		WithHint("run the same tile swap again")
+}
+
+// buildCrossParentTileSwapOps builds one atomic CRDT batch that clones tileA
+// into (parentB, posB), clones tileB into (parentA, posA), migrates every live
+// tab on cloned leaves while preserving each tab's existing position, and
+// tombstones both old subtrees leaves-first.
+func buildCrossParentTileSwapOps(
+	bs *CRDTBootstrap,
+	tileA, tileB, parentA, posA, parentB, posB string,
+) (ops []*leapmuxv1.CrdtOp, newTileA, newTileB string) {
+	childrenByParent := crdt.LiveChildrenByParent(bs.State)
+	tabsByTile := liveTabsByTile(bs.State)
+
+	newTileA, opsA := cloneLiveSubtreeOps(bs, tileA, parentB, posB, childrenByParent, tabsByTile)
+	newTileB, opsB := cloneLiveSubtreeOps(bs, tileB, parentA, posA, childrenByParent, tabsByTile)
+	ops = make([]*leapmuxv1.CrdtOp, 0, len(opsA)+len(opsB)+2)
+	ops = append(ops, opsA...)
+	ops = append(ops, opsB...)
+
+	for _, nid := range crdt.DescendantsLeavesFirst(bs.State, tileA) {
+		ops = append(ops, opTombstoneNode(bs, nid))
+	}
+	for _, nid := range crdt.DescendantsLeavesFirst(bs.State, tileB) {
+		ops = append(ops, opTombstoneNode(bs, nid))
+	}
+	return ops, newTileA, newTileB
+}
+
+// cloneLiveSubtreeOps copies the raw live CRDT subtree rooted at srcID under
+// newParentID at newPos with fresh node IDs, preserving exact container
+// registers and child positions verbatim, and migrates every live tab on cloned
+// leaves via SetTabRegister(tile_id) without overwriting tab positions.
+func cloneLiveSubtreeOps(
+	bs *CRDTBootstrap,
+	srcID, newParentID, newPos string,
+	childrenByParent map[string][]string,
+	tabsByTile map[string][]crdt.TabRef,
+) (newID string, ops []*leapmuxv1.CrdtOp) {
+	rec := bs.State.GetNodes()[srcID]
+	newID = id.Generate()
+	kind := rec.GetKind().GetValue()
+	if kind == leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED {
+		kind = leapmuxv1.NodeKind_NODE_KIND_LEAF
+	}
+
+	ops = append(ops,
+		opSetNodeKind(bs, newID, kind),
+		opSetNodeParentID(bs, newID, newParentID),
+	)
+	if newPos != "" {
+		ops = append(ops, opSetNodePosition(bs, newID, newPos))
+	}
+
+	switch kind {
+	case leapmuxv1.NodeKind_NODE_KIND_SPLIT:
+		if dir := rec.GetDirection().GetValue(); dir != leapmuxv1.SplitDirection_SPLIT_DIRECTION_UNSPECIFIED {
+			ops = append(ops, opSetNodeDirection(bs, newID, dir))
+		}
+		if ratios := rec.GetRatios().GetValue().GetValues(); len(ratios) > 0 {
+			ops = append(ops, opSetNodeRatios(bs, newID, append([]float64(nil), ratios...)))
+		}
+	case leapmuxv1.NodeKind_NODE_KIND_GRID:
+		if rows := rec.GetRows().GetValue(); rows > 0 {
+			ops = append(ops, opSetNodeRows(bs, newID, rows))
+		}
+		if cols := rec.GetCols().GetValue(); cols > 0 {
+			ops = append(ops, opSetNodeCols(bs, newID, cols))
+		}
+		if rowRatios := rec.GetRowRatios().GetValue().GetValues(); len(rowRatios) > 0 {
+			ops = append(ops, opSetNodeRowRatios(bs, newID, append([]float64(nil), rowRatios...)))
+		}
+		if colRatios := rec.GetColRatios().GetValue().GetValues(); len(colRatios) > 0 {
+			ops = append(ops, opSetNodeColRatios(bs, newID, append([]float64(nil), colRatios...)))
+		}
+	case leapmuxv1.NodeKind_NODE_KIND_LEAF:
+		for _, t := range tabsByTile[srcID] {
+			ops = append(ops, opSetTabTileID(bs, t.TabType, t.TabID, newID))
+		}
+	case leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED:
+		// Normalized to NODE_KIND_LEAF above.
+	}
+
+	childIDs := append([]string(nil), childrenByParent[srcID]...)
+	sort.SliceStable(childIDs, func(i, j int) bool {
+		posI := bs.State.GetNodes()[childIDs[i]].GetPosition().GetValue()
+		posJ := bs.State.GetNodes()[childIDs[j]].GetPosition().GetValue()
+		if posI != posJ {
+			return posI < posJ
+		}
+		return childIDs[i] < childIDs[j]
+	})
+	for _, childID := range childIDs {
+		childRec := bs.State.GetNodes()[childID]
+		if childRec == nil || !crdt.HLCIsZero(childRec.GetTombstoneAt()) {
+			continue
+		}
+		_, childOps := cloneLiveSubtreeOps(bs, childID, newID, childRec.GetPosition().GetValue(), childrenByParent, tabsByTile)
+		ops = append(ops, childOps...)
+	}
+	return newID, ops
+}
+
+// resolveSecondTile resolves raw against the already-bootstrapped workspace
+// state when raw is an explicit ID or a tile prefix in wsID, falling back to
+// s.resolveOne for "self", cross-workspace IDs, or short/invalid inputs.
+func (s *session) resolveSecondTile(state *leapmuxv1.UserMaterialized, wsID, raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if exact := resolve.ExplicitID(resolve.KindTile, trimmed); exact != "" {
+		return exact, nil
+	}
+	if trimmed != "" &&
+		trimmed != resolve.SelfTarget &&
+		!strings.HasPrefix(trimmed, "id:") &&
+		!strings.HasPrefix(trimmed, "title:") &&
+		!strings.HasPrefix(trimmed, "name:") &&
+		len(trimmed) >= resolve.MinPrefixLength {
+		tileID, ok, err := lookupTileInState(state, wsID, trimmed)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return tileID, nil
+		}
+	}
+	target, err := s.resolveOne(resolve.KindTile, raw)
+	if err != nil {
+		return "", err
+	}
+	return target.ID, nil
+}
+
+func isTileAncestor(state *leapmuxv1.UserMaterialized, ancestor, descendant string) bool {
+	seen := map[string]bool{}
+	cur := descendant
+	for cur != "" && !seen[cur] {
+		seen[cur] = true
+		n := state.GetNodes()[cur]
+		if n == nil {
+			return false
+		}
+		p := n.GetParentId()
+		if p == ancestor {
+			return true
+		}
+		cur = p
+	}
+	return false
+}
+
+func completeSwapTiles(cmd *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
+	return completeTargetsOfKind(cmd, resolve.KindTile, toComplete, true)
 }

@@ -278,7 +278,7 @@ takes. --json prints each prompt as data.`,
 				{Comment: "List the requests of one agent, as JSON.", Command: "leapmux agent requests 87a19d5f --json"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				fs.String("workspace", "", `scope listing or target lookup to this workspace (an id, a prefix, "title:<title>" or "self")`)
+				addTargetWorkspaceFlagWithUsage(fs, `scope listing or target lookup to this workspace (an id, a prefix, "title:<title>" or "self")`)
 			},
 			Complete: completeTargets,
 			Run:      runAgentRequests,
@@ -506,9 +506,9 @@ A message that another agent sent prints its sender after its source, and
 			Run:   runAgentProviders,
 		}),
 		newAgentSessionsCommand(),
-		newTabCloseLeafFor(resolve.KindAgent, "agent"),
-		newTabRenameLeafFor(resolve.KindAgent, "agent"),
-		newTabRevealLeafFor(resolve.KindAgent, "agent"),
+		newTabCloseLeafFor(resolve.KindAgent),
+		newTabRenameLeafFor(resolve.KindAgent),
+		newTabRevealLeafFor(resolve.KindAgent),
 	), "ag")
 }
 
@@ -636,17 +636,11 @@ func runAgentSend(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	// A wait runs until the agent settles, so only each call has a deadline.
-	open := openSession
-	if wait {
-		open = openStreamSession
-	}
-	s, err := open(inv)
+	s, reqSession, closeAll, err := openWaitableSession(inv, wait)
 	if err != nil {
 		return nil, err
 	}
-	defer s.Close()
-	reqSession := s.bounded()
-	defer reqSession.Close()
+	defer closeAll()
 	got, err := reqSession.resolveTab(resolve.KindAgent, inv.Arg("agent"), resolve.Need{WorkerID: true})
 	if err != nil {
 		return nil, err
@@ -735,7 +729,7 @@ func runAgentInterrupt(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	targets, err := s.resolveVariadicAgentTargets(inv.Variadic("agent"), resolve.Need{WorkerID: true})
+	targets, err := s.resolveVariadicTabs(resolve.KindAgent, inv.Variadic("agent"), resolve.Need{WorkerID: true})
 	if err != nil {
 		return nil, err
 	}
@@ -868,13 +862,7 @@ func runAgentList(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		filtered := make([]*leapmuxv1.WorkspaceTab, 0, len(tabs))
-		for _, t := range tabs {
-			if t.GetWorkerId() == w.ID {
-				filtered = append(filtered, t)
-			}
-		}
-		tabs = filtered
+		tabs = filterTabsByWorker(tabs, w.ID)
 	}
 	details, workerNames := fetchTabDetailsAndWorkers(s.ctx, s.c, tabs, true)
 	parentID := ""

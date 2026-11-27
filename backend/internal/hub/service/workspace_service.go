@@ -244,10 +244,11 @@ func (s *WorkspaceService) ListWorkspaces(
 	// and the axis that still bounds it is which WORKER it may reach, not which
 	// workspace it may read.
 	workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
-		UserID: user.ID,
+		UserID:   user.ID,
+		IDPrefix: req.GetIdPrefix(),
 	})
 	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list workspaces: %w", err))
+		return nil, storeConnectError(err, "list workspaces")
 	}
 	return &leapmuxv1.ListWorkspacesResponse{
 		Workspaces: workspacesToProto(workspaces),

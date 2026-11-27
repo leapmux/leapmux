@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
 // startTabWorker serves w as the Worker of tab, which the hub's LocateTab
@@ -22,13 +23,13 @@ func startTabWorker(t *testing.T, w *privateCommandWorker, tab *leapmuxv1.Worksp
 
 func TestTabRevealOverIPC_SendsTheTabToItsWorker(t *testing.T) {
 	for _, tab := range []*leapmuxv1.WorkspaceTab{agentTab(), terminalTab()} {
-		t.Run(tabTypeName(tab.GetTab().GetTabType()), func(t *testing.T) {
+		t.Run(resolve.TabTypeWireName(tab.GetTab().GetTabType()), func(t *testing.T) {
 			w := &privateCommandWorker{}
 			startTabWorker(t, w, tab)
 			id := tab.GetTab().GetTabId()
 
 			data := runControl(t, "tab", "reveal", id).Data(t)
-			assert.Equal(t, map[string]any{"id": id, "type": tabTypeName(tab.GetTab().GetTabType()), "workspace_id": "ws-1"}, data)
+			assert.Equal(t, map[string]any{"id": id, "type": resolve.TabTypeWireName(tab.GetTab().GetTabType()), "workspace_id": "ws-1"}, data)
 
 			calls := w.recorded()
 			require.Len(t, calls, 1)
@@ -71,4 +72,28 @@ func TestTabRevealOverIPC_ReportsATabThatTheWorkerDoesNotHost(t *testing.T) {
 
 	f := runControl(t, "tab", "reveal", agentTab().GetTab().GetTabId()).requireFailure(t, cli.CodeNotFound)
 	assert.Contains(t, f.Message, "tab not found on this worker")
+}
+
+func TestTabRevealOverIPC_AgentAndTerminalSubcommandsDeriveKindNoun(t *testing.T) {
+	cases := []struct {
+		noun string
+		tab  *leapmuxv1.WorkspaceTab
+	}{
+		{"agent", agentTab()},
+		{"terminal", terminalTab()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.noun, func(t *testing.T) {
+			w := &privateCommandWorker{}
+			startTabWorker(t, w, tc.tab)
+			id := tc.tab.GetTab().GetTabId()
+
+			data := runControl(t, tc.noun, "reveal", id).Data(t)
+			assert.Equal(t, id, data["id"])
+			assert.Equal(t, tc.noun, data["type"])
+			calls := w.recorded()
+			require.Len(t, calls, 1)
+			assert.Equal(t, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, calls[0].method)
+		})
+	}
 }

@@ -203,6 +203,39 @@ func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSession
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.UserSession]{}, nil
 	}
+	filter, idGt, fetchLimit, active, empty, err := parseIDPrefixPage(p.IDPrefix, p.Cursor, p.Limit)
+	if err != nil {
+		return store.Page[store.UserSession]{}, err
+	}
+	if active {
+		if empty {
+			return store.Page[store.UserSession]{}, nil
+		}
+		nt := sqltime.NewSQLiteTime(now)
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (gendb.ListUserSessionsByUserIDExactParams, error) {
+					return gendb.ListUserSessionsByUserIDExactParams{
+						ID:     filter.Lower,
+						UserID: owner,
+						Now:    nt,
+					}, nil
+				},
+				s.conn.q.ListUserSessionsByUserIDExact, s.conn.fromDBSession, s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListUserSessionsByUserIDPrefixParams, error) {
+				return gendb.ListUserSessionsByUserIDPrefixParams{
+					IDLo:   filter.Lower,
+					IDHi:   filter.Upper,
+					IDGt:   idGt,
+					UserID: owner,
+					Now:    nt,
+					Limit:  fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListUserSessionsByUserIDPrefix, s.conn.fromDBSession, s.conn.queryError)
+	}
 	return store.QueryPageErr(ctx, p.Limit,
 		func() (gendb.ListUserSessionsByUserIDParams, error) {
 			return listUserSessionsParams(owner, p.Cursor, p.Limit, now)
@@ -211,6 +244,45 @@ func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSession
 }
 
 func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams, now time.Time) (store.Page[store.ActiveSession], error) {
+	filter, idGt, fetchLimit, active, empty, err := parseIDPrefixPage(p.IDPrefix, p.Cursor, p.Limit)
+	if err != nil {
+		return store.Page[store.ActiveSession]{}, err
+	}
+	if active {
+		if empty {
+			return store.Page[store.ActiveSession]{}, nil
+		}
+		nt := sqltime.NewSQLiteTime(now)
+		if filter.Exact {
+			return store.QueryPageErr(ctx, p.Limit,
+				func() (gendb.ListAllActiveSessionsByIDExactParams, error) {
+					return gendb.ListAllActiveSessionsByIDExactParams{
+						ID:  filter.Lower,
+						Now: nt,
+					}, nil
+				},
+				s.conn.q.ListAllActiveSessionsByIDExact,
+				func(r gendb.ListAllActiveSessionsByIDExactRow) (store.ActiveSession, error) {
+					return s.conn.fromDBActiveSessionRow(gendb.ListAllActiveSessionsRow(r))
+				},
+				s.conn.queryError)
+		}
+		return store.QueryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllActiveSessionsByIDPrefixParams, error) {
+				return gendb.ListAllActiveSessionsByIDPrefixParams{
+					IDLo:  filter.Lower,
+					IDHi:  filter.Upper,
+					IDGt:  idGt,
+					Now:   nt,
+					Limit: fetchLimit,
+				}, nil
+			},
+			s.conn.q.ListAllActiveSessionsByIDPrefix,
+			func(r gendb.ListAllActiveSessionsByIDPrefixRow) (store.ActiveSession, error) {
+				return s.conn.fromDBActiveSessionRow(gendb.ListAllActiveSessionsRow(r))
+			},
+			s.conn.queryError)
+	}
 	return store.QueryPageErr(ctx, p.Limit,
 		func() (gendb.ListAllActiveSessionsParams, error) {
 			return listAllActiveSessionsParams(p.Cursor, p.Limit, now)

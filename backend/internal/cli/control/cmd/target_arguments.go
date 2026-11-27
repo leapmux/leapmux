@@ -20,7 +20,46 @@ var targetArguments = map[string]resolve.Kind{
 	"worker":    resolve.KindWorker,
 }
 
-var scopeTargetFlags = []string{"hub", "workspace", "worker", "tile", "tab", "before", "after"}
+// extraTargetArguments lists positional target arguments that do not share a
+// canonical resolve.Kind name in targetArguments but must still reject blank
+// values locally before dialing.
+var extraTargetArguments = map[string]struct{}{
+	"input":   {},
+	"tile-a":  {},
+	"tile-b":  {},
+	"window":  {},
+	"section": {},
+}
+
+func isTargetArgument(name string) bool {
+	if _, ok := targetArguments[name]; ok {
+		return true
+	}
+	_, ok := extraTargetArguments[name]
+	return ok
+}
+
+type scopeTargetFlag struct {
+	name    string
+	kind    resolve.Kind
+	hasKind bool
+}
+
+// scopeTargetFlags lists every flag that selects a target object.
+// rejectBlankTargets rejects an explicit blank value for every entry, and
+// registerScopeCompletions registers target completion for each entry that has
+// a resolve.Kind.
+var scopeTargetFlags = []scopeTargetFlag{
+	{name: "hub"},
+	{name: "workspace", kind: resolve.KindWorkspace, hasKind: true},
+	{name: "worker", kind: resolve.KindWorker, hasKind: true},
+	{name: "tile", kind: resolve.KindTile, hasKind: true},
+	{name: "tab", kind: resolve.KindTab, hasKind: true},
+	{name: "parent", kind: resolve.KindAgent, hasKind: true},
+	{name: "section"},
+	{name: "before"},
+	{name: "after"},
+}
 
 func configureTargetArguments(root *cobra.Command) {
 	help := map[string]string{"text": `The text, or "-" to read it from standard input.`}
@@ -57,13 +96,13 @@ func rejectBlankTargets(cmd *cobra.Command, specs []cli.ArgSpec, args []string) 
 		// The argument count was validated. Extra values belong to the last
 		// argument, which is variadic in that case.
 		spec := specs[min(i, len(specs)-1)]
-		if _, isTarget := targetArguments[spec.Name]; (isTarget || spec.Name == "input") && strings.TrimSpace(value) == "" {
+		if isTargetArgument(spec.Name) && strings.TrimSpace(value) == "" {
 			return cli.Usagef("the %s is empty", spec.Name)
 		}
 	}
-	for _, name := range scopeTargetFlags {
-		if blankTargetFlag(cmd, name) {
-			return cli.Usagef("--%s is empty", name)
+	for _, entry := range scopeTargetFlags {
+		if blankTargetFlag(cmd, entry.name) {
+			return cli.Usagef("--%s is empty", entry.name)
 		}
 	}
 	return nil

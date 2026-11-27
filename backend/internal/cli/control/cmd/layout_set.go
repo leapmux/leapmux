@@ -2,13 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
-	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
@@ -40,13 +39,13 @@ import (
 // retry loop re-bootstraps the snapshot (which picks up the racing
 // tab) and rebuilds the op batch so the second attempt includes a
 // tile_id update for it. After `layoutSetMaxAttempts` retries, the
-// command gives up and emits `concurrent_modification` instead of
-// the opaque batch-rejected envelope.
+// command gives up and emits `conflict` instead of the opaque
+// batch-rejected envelope.
 //
 // Input JSON shape (matches `layout get`'s output):
 //
-//	{ "kind": "NODE_KIND_LEAF" | "NODE_KIND_SPLIT" | "NODE_KIND_GRID",
-//	  "direction": "SPLIT_DIRECTION_HORIZONTAL" | "..._VERTICAL",
+//	{ "kind": "leaf" | "split" | "grid",
+//	  "direction": "horizontal" | "vertical",
 //	  "ratios": [0.5, 0.5],
 //	  "rows": 2, "cols": 2,
 //	  "row_ratios": [0.5, 0.5], "col_ratios": [0.5, 0.5],
@@ -54,6 +53,10 @@ import (
 func runLayoutSet(inv *cli.Invocation) (any, error) {
 	target, err := readTargetTree(inv.Arg("file"), inv.Stdin)
 	if err != nil {
+		var cliErr *cli.Error
+		if errors.As(err, &cliErr) {
+			return nil, err
+		}
 		return nil, cli.Wrap(cli.CodeUsage, err, "")
 	}
 	s, err := openSession(inv)
@@ -61,7 +64,7 @@ func runLayoutSet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	ws, err := s.resolveOne(resolve.KindWorkspace, inv.Arg("workspace"))
+	ws, err := s.resolveExistingWorkspace(inv.Arg("workspace"))
 	if err != nil {
 		return nil, err
 	}
@@ -91,26 +94,58 @@ func (r *layoutSetResult) QuietLines() []string {
 // that we surface it to the user rather than looping further.
 const layoutSetMaxAttempts = 2
 
-// submitLayoutSetWithRetry runs the bootstrap -> build -> submit
-// cycle up to layoutSetMaxAttempts times. The retry trigger is the
-// concurrent-modification rejection (TAB_PLACEMENT_INVALID): a tab
-// that raced in between bootstrap and submit appears in the next
-// snapshot, so the rebuilt batch includes a tile_id update for it.
-// Every other error is fatal on the first attempt.
+// submitLayoutSetWithRetry opens a CRDT call for workspaceID and submits a
+// main-tree rewrite with retry on TAB_PLACEMENT_INVALID.
 func (s *session) submitLayoutSetWithRetry(workspaceID string, target *layoutNode) (*layoutSetResult, error) {
+	cc, err := s.openCRDT(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	_, res, err := submitLayoutRewrite(cc, workspaceID, target, nil)
+	return res, err
+}
+
+// submitLayoutRewriteWithRetry rewrites workspaceID's main layout to target
+// (appending any extra ops produced for the current snapshot) and retries up to
+// layoutSetMaxAttempts times on BATCH_REJECTION_TAB_PLACEMENT_INVALID.
+func submitLayoutRewriteWithRetry(
+	cc *crdtCall,
+	workspaceID string,
+	target *layoutNode,
+	extra func(bs *CRDTBootstrap, firstLeaf string, tileMap map[string]string) []*leapmuxv1.CrdtOp,
+) (tileMap map[string]string, firstLeaf string, err error) {
+	tileMap, res, err := submitLayoutRewrite(cc, workspaceID, target, extra)
+	if err != nil {
+		return nil, "", err
+	}
+	return tileMap, res.NewFirstLeafID, nil
+}
+
+func submitLayoutRewrite(
+	cc *crdtCall,
+	workspaceID string,
+	target *layoutNode,
+	extra func(bs *CRDTBootstrap, firstLeaf string, tileMap map[string]string) []*leapmuxv1.CrdtOp,
+) (map[string]string, *layoutSetResult, error) {
 	var lastErr error
-	for attempt := 0; attempt < layoutSetMaxAttempts; attempt++ {
-		cc, err := s.openCRDT(workspaceID)
-		if err != nil {
-			return nil, err
+	for attempt := range layoutSetMaxAttempts {
+		if attempt > 0 || cc.bs == nil {
+			bs, err := crdtBootstrap(cc.ctx, cc.c, []string{workspaceID})
+			if err != nil {
+				return nil, nil, err
+			}
+			cc.bs = bs
 		}
-		ops, rootID, firstLeaf, berr := buildLayoutSetOps(cc.bs, workspaceID, target)
+		ops, rootID, firstLeaf, tileMap, berr := buildLayoutSetOpsWithMap(cc.bs, workspaceID, target)
 		if berr != nil {
-			return nil, berr
+			return nil, nil, berr
+		}
+		if extra != nil {
+			ops = append(ops, extra(cc.bs, firstLeaf, tileMap)...)
 		}
 		committed, reason, submitErr := cc.trySubmitOps(ops)
 		if committed {
-			return &layoutSetResult{
+			return tileMap, &layoutSetResult{
 				WorkspaceID:    workspaceID,
 				RootNodeID:     rootID,
 				NewFirstLeafID: firstLeaf,
@@ -120,32 +155,38 @@ func (s *session) submitLayoutSetWithRetry(workspaceID string, target *layoutNod
 		}
 		lastErr = submitErr
 		if reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID {
-			// Not a race -- a malformed batch / value-domain / auth
-			// failure won't fix itself on retry. Surface immediately.
-			return nil, cli.Wrap(cli.CodeConflict, submitErr, "")
+			// Not a race -- a malformed batch, value-domain, or auth failure
+			// will not fix itself on retry. Surface it immediately.
+			return nil, nil, submitErr
 		}
-		// TAB_PLACEMENT_INVALID under a layout-set batch means another
-		// client added a tab between our snapshot and the commit. Loop
-		// and re-bootstrap.
+		// TAB_PLACEMENT_INVALID under a layout-rewrite batch means another
+		// client added a tab between our snapshot and the commit. Loop and
+		// re-bootstrap.
 	}
-	return nil, cli.Newf(cli.CodeConflict, "another client changed the layout during each of %d attempts (last hub error: %v)", layoutSetMaxAttempts, lastErr).
+	return nil, nil, cli.Newf(cli.CodeConflict, "another client changed the layout during each of %d attempts (last hub error: %v)", layoutSetMaxAttempts, lastErr).
 		WithHint("run the same layout set again")
 }
 
-// buildLayoutSetOps assembles the full 4-step rewrite batch against
-// `bs`. Returns the ops, the (unchanged) workspace root id, the first
-// leaf of the new tree (where live main-tree tabs land), and an error.
-// Tabs anchored in live floating windows stay untouched.
-// Extracted from runLayoutSet so the retry loop can rebuild the batch
-// against a fresh snapshot without duplicating the step logic.
+// buildLayoutSetOps assembles the full 4-step rewrite batch against `bs`.
+// Returns the ops, the (unchanged) workspace root id, the first leaf of the
+// new tree (where live main-tree tabs land), and an error. Tabs anchored in
+// live floating windows stay untouched.
 func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *layoutNode) ([]*leapmuxv1.CrdtOp, string, string, error) {
+	ops, rootID, firstLeaf, _, err := buildLayoutSetOpsWithMap(bs, workspaceID, target)
+	return ops, rootID, firstLeaf, err
+}
+
+// buildLayoutSetOpsWithMap is the tile-map-preserving variant of
+// buildLayoutSetOps. It maps each leaf node's internal TileRef (when set) to
+// the newly synthesized (or kept root) CRDT node ID.
+func buildLayoutSetOpsWithMap(bs *CRDTBootstrap, workspaceID string, target *layoutNode) (ops []*leapmuxv1.CrdtOp, rootID, firstLeaf string, tileMap map[string]string, err error) {
 	rec := bs.State.GetWorkspaces()[workspaceID]
 	if rec == nil || rec.GetRootNodeId() == "" {
-		return nil, "", "", cli.Newf(cli.CodeConflict, "workspace has no root node yet")
+		return nil, "", "", nil, cli.Newf(cli.CodeConflict, "workspace has no root node yet")
 	}
-	rootID := rec.GetRootNodeId()
-
-	ops := []*leapmuxv1.CrdtOp{}
+	rootID = rec.GetRootNodeId()
+	tileMap = map[string]string{}
+	ops = []*leapmuxv1.CrdtOp{}
 
 	// Step 1: mutate the existing root to match the target's root.
 	ops = appendNodeShapeOps(ops, bs, rootID, target)
@@ -169,13 +210,15 @@ func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *layoutNode
 
 	// Step 3: create new nodes mirroring the target's children under
 	// the (kept) root.
-	firstLeaf := ""
 	if !target.isLeaf() {
 		var creationOps []*leapmuxv1.CrdtOp
-		creationOps, firstLeaf = synthesizeSubtree(bs, rootID, target)
+		creationOps, firstLeaf = synthesizeChildren(bs, rootID, target, tileMap)
 		ops = append(ops, creationOps...)
 	} else {
 		firstLeaf = rootID
+		if target.TileRef != "" {
+			tileMap[target.TileRef] = rootID
+		}
 	}
 
 	// Step 4: migrate live tabs anchored in the replaced main tree to
@@ -193,7 +236,7 @@ func buildLayoutSetOps(bs *CRDTBootstrap, workspaceID string, target *layoutNode
 		}
 		ops = append(ops, opSetTabTileID(bs, t.GetTabType(), t.GetTabId(), firstLeaf))
 	}
-	return ops, rootID, firstLeaf, nil
+	return ops, rootID, firstLeaf, tileMap, nil
 }
 
 func (t *layoutNode) isLeaf() bool {
@@ -205,42 +248,35 @@ func (t *layoutNode) parsedKind() leapmuxv1.NodeKind {
 		return leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED
 	}
 	switch t.Kind {
-	case "NODE_KIND_LEAF", "leaf", "LEAF":
+	case "leaf":
 		return leapmuxv1.NodeKind_NODE_KIND_LEAF
-	case "NODE_KIND_SPLIT", "split", "SPLIT":
+	case "split":
 		return leapmuxv1.NodeKind_NODE_KIND_SPLIT
-	case "NODE_KIND_GRID", "grid", "GRID":
+	case "grid":
 		return leapmuxv1.NodeKind_NODE_KIND_GRID
 	}
 	return leapmuxv1.NodeKind_NODE_KIND_UNSPECIFIED
 }
 
 func (t *layoutNode) parsedDirection() leapmuxv1.SplitDirection {
-	switch t.Direction {
-	case "SPLIT_DIRECTION_HORIZONTAL", "horizontal", "h":
-		return leapmuxv1.SplitDirection_SPLIT_DIRECTION_HORIZONTAL
-	case "SPLIT_DIRECTION_VERTICAL", "vertical", "v":
-		return leapmuxv1.SplitDirection_SPLIT_DIRECTION_VERTICAL
+	if t == nil {
+		return leapmuxv1.SplitDirection_SPLIT_DIRECTION_UNSPECIFIED
 	}
-	return leapmuxv1.SplitDirection_SPLIT_DIRECTION_UNSPECIFIED
+	dir, _ := parseSplitDirection(t.Direction)
+	return dir
 }
 
 // readTargetTree reads the tree from path, or from stdin when path is "" or
 // "-", then validates and normalizes it.
 func readTargetTree(path string, stdin io.Reader) (*layoutNode, error) {
-	if path == "" || path == "-" {
-		data, err := readStdinGuarded(stdin)
-		if err != nil {
-			return nil, err
-		}
-		return decodeTargetTreeBytes(data)
+	if path == "" {
+		path = "-"
 	}
-	f, err := os.Open(path)
+	data, err := readFileOrStdin(stdin, path, "tree file")
 	if err != nil {
-		return nil, fmt.Errorf("read tree file: %w", err)
+		return nil, err
 	}
-	defer func() { _ = f.Close() }()
-	return decodeTargetTree(f)
+	return decodeTargetTreeBytes(data)
 }
 
 // decodeTargetTree decodes JSON from r into a layoutNode, then runs
@@ -305,6 +341,23 @@ func unwrapLayoutTree(data []byte) ([]byte, error) {
 	return data, nil
 }
 
+// validateOptionalRatios checks and normalizes an optional ratio slice in
+// place when non-empty.
+func validateOptionalRatios(ratios *[]float64, expected int, path, label, countPhrase string) error {
+	if len(*ratios) == 0 {
+		return nil
+	}
+	if len(*ratios) != expected {
+		return fmt.Errorf("%s: %s length %d %s %d", path, label, len(*ratios), countPhrase, expected)
+	}
+	normalized, err := normalizeRatios(*ratios)
+	if err != nil {
+		return fmt.Errorf("%s: %s: %w", path, label, err)
+	}
+	*ratios = normalized
+	return nil
+}
+
 // validateAndNormalizeTree walks the parsed tree and rejects anything
 // the CRDT validator would later reject as a batch (with a far less
 // helpful generic BATCH_REJECTION_* error). Validates kind, structural
@@ -356,15 +409,8 @@ func validateAndNormalizeTree(t *layoutNode, path string) error {
 		}
 		// The writer uses equal weights when the input omits ratios.
 		// Explicit ratios must have one value per child.
-		if len(t.Ratios) > 0 {
-			if len(t.Ratios) != len(t.Children) {
-				return fmt.Errorf("%s: SPLIT ratios length %d must match children count %d", path, len(t.Ratios), len(t.Children))
-			}
-			normalized, err := normalizeRatios(t.Ratios)
-			if err != nil {
-				return fmt.Errorf("%s: SPLIT ratios: %w", path, err)
-			}
-			t.Ratios = normalized
+		if err := validateOptionalRatios(&t.Ratios, len(t.Children), path, "SPLIT ratios", "must match children count"); err != nil {
+			return err
 		}
 	case leapmuxv1.NodeKind_NODE_KIND_GRID:
 		if t.Rows == 0 || t.Cols == 0 {
@@ -383,25 +429,11 @@ func validateAndNormalizeTree(t *layoutNode, path string) error {
 		if len(t.Children) != expected {
 			return fmt.Errorf("%s: GRID with rows=%d cols=%d requires %d cells (got %d)", path, t.Rows, t.Cols, expected, len(t.Children))
 		}
-		if len(t.RowRatios) > 0 {
-			if uint32(len(t.RowRatios)) != t.Rows {
-				return fmt.Errorf("%s: GRID row_ratios length %d must equal rows %d", path, len(t.RowRatios), t.Rows)
-			}
-			normalized, err := normalizeRatios(t.RowRatios)
-			if err != nil {
-				return fmt.Errorf("%s: GRID row_ratios: %w", path, err)
-			}
-			t.RowRatios = normalized
+		if err := validateOptionalRatios(&t.RowRatios, int(t.Rows), path, "GRID row_ratios", "must equal rows"); err != nil {
+			return err
 		}
-		if len(t.ColRatios) > 0 {
-			if uint32(len(t.ColRatios)) != t.Cols {
-				return fmt.Errorf("%s: GRID col_ratios length %d must equal cols %d", path, len(t.ColRatios), t.Cols)
-			}
-			normalized, err := normalizeRatios(t.ColRatios)
-			if err != nil {
-				return fmt.Errorf("%s: GRID col_ratios: %w", path, err)
-			}
-			t.ColRatios = normalized
+		if err := validateOptionalRatios(&t.ColRatios, int(t.Cols), path, "GRID col_ratios", "must equal cols"); err != nil {
+			return err
 		}
 	default:
 		// UNSPECIFIED is rejected by the guard above this switch, so no other
@@ -435,18 +467,43 @@ func appendNodeShapeOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, nodeID strin
 			opSetNodeColRatios(bs, nodeID, ratiosForLayoutSize(target.ColRatios, int(target.Cols))),
 		)
 	default:
-		// LEAF has no shape registers to set, and validateTargetNode already
-		// rejected UNSPECIFIED, so the kind op appended above is the whole shape.
+		// LEAF has no shape registers to set, and validateAndNormalizeTree
+		// already rejected UNSPECIFIED, so the kind op appended above is the
+		// whole shape.
 	}
 	return ops
 }
 
-// synthesizeSubtree creates the children of the validated parent under
-// parentID. Returns the emitted ops plus the id of the first leaf
-// encountered (depth-first, left-to-right) — that's where tabs are
-// migrated to so they pass the "tile_id resolves to a live leaf"
-// validator rule.
-func synthesizeSubtree(bs *CRDTBootstrap, parentID string, parent *layoutNode) (ops []*leapmuxv1.CrdtOp, firstLeaf string) {
+// synthesizeSubtree creates a new CRDT node for target under parentID at pos,
+// recursively synthesizes target's children, and returns the emitted ops plus
+// the ID of the first leaf encountered in depth-first display order. When
+// tileMap is non-nil and target is a leaf with a non-empty TileRef, it records
+// tileMap[target.TileRef] = nodeID.
+func synthesizeSubtree(bs *CRDTBootstrap, target *layoutNode, parentID, pos string, tileMap map[string]string) ([]*leapmuxv1.CrdtOp, string) {
+	nodeID := id.Generate()
+	ops := make([]*leapmuxv1.CrdtOp, 0, 4)
+	if parentID != "" {
+		ops = append(ops, opSetNodeParentID(bs, nodeID, parentID))
+	}
+	if pos != "" {
+		ops = append(ops, opSetNodePosition(bs, nodeID, pos))
+	}
+	ops = appendNodeShapeOps(ops, bs, nodeID, target)
+	if target.isLeaf() {
+		if tileMap != nil && target.TileRef != "" {
+			tileMap[target.TileRef] = nodeID
+		}
+		return ops, nodeID
+	}
+	childOps, firstLeaf := synthesizeChildren(bs, nodeID, target, tileMap)
+	ops = append(ops, childOps...)
+	return ops, firstLeaf
+}
+
+// synthesizeChildren synthesizes each child of parent under parentID in
+// display order (grid coordinates for GRID, LexoRank for SPLIT) and returns
+// the emitted ops plus the first leaf encountered.
+func synthesizeChildren(bs *CRDTBootstrap, parentID string, parent *layoutNode, tileMap map[string]string) (ops []*leapmuxv1.CrdtOp, firstLeaf string) {
 	rank := lexorank.First()
 	grid := parent.parsedKind() == leapmuxv1.NodeKind_NODE_KIND_GRID
 	for index, child := range parent.Children {
@@ -457,20 +514,10 @@ func synthesizeSubtree(bs *CRDTBootstrap, parentID string, parent *layoutNode) (
 		} else {
 			rank = lexorank.After(rank)
 		}
-		childID := id.Generate()
-		ops = append(ops,
-			opSetNodeKind(bs, childID, child.parsedKind()),
-			opSetNodeParentID(bs, childID, parentID),
-			opSetNodePosition(bs, childID, position),
-		)
-		ops = appendNodeShapeOps(ops, bs, childID, child)
-		if child.isLeaf() && firstLeaf == "" {
-			firstLeaf = childID
-		}
-		grandOps, deeperFirst := synthesizeSubtree(bs, childID, child)
-		ops = append(ops, grandOps...)
-		if firstLeaf == "" && deeperFirst != "" {
-			firstLeaf = deeperFirst
+		childOps, childFirst := synthesizeSubtree(bs, child, parentID, position, tileMap)
+		ops = append(ops, childOps...)
+		if firstLeaf == "" && childFirst != "" {
+			firstLeaf = childFirst
 		}
 	}
 	return ops, firstLeaf

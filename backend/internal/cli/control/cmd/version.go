@@ -129,7 +129,7 @@ func runVersionWithOverride(inv *cli.Invocation, override func() string) (any, e
 			defer wg.Done()
 			workerCtx, cancel := context.WithTimeout(inv.Context, hubVersionTimeout)
 			defer cancel()
-			workerErr = callInnerRPCBest(workerCtx, c, "", leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &workerResp)
+			workerErr = callInnerRPC(workerCtx, c, "", leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, &workerResp)
 		}()
 		wg.Wait()
 		if sysErr != nil {

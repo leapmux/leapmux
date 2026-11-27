@@ -22,7 +22,8 @@ window that does not know the tab yet ignores the command.`
 // which asks every open frontend of the user to show one tab. The tab's Worker
 // relays the request on its private-event stream, as `terminal quake` relays a
 // panel command.
-func newTabRevealLeafFor(kind resolve.Kind, noun string) *cobra.Command {
+func newTabRevealLeafFor(kind resolve.Kind) *cobra.Command {
+	noun := kind.String()
 	return cli.NewLeaf(cli.Leaf{
 		Use:     "reveal <" + noun + ">",
 		Short:   "Show a " + noun + " in every LeapMux window that you have open",
@@ -35,7 +36,7 @@ func newTabRevealLeafFor(kind resolve.Kind, noun string) *cobra.Command {
 		Flags:    addTargetWorkspaceFlag,
 		Complete: completeTargets,
 		Run: func(inv *cli.Invocation) (any, error) {
-			return runTabRevealFor(inv, kind, noun)
+			return runTabRevealFor(inv, kind)
 		},
 	})
 }
@@ -48,13 +49,13 @@ type tabRevealResult struct {
 }
 
 // runTabRevealFor sends RevealTab to the Worker that hosts the tab.
-func runTabRevealFor(inv *cli.Invocation, kind resolve.Kind, argName string) (any, error) {
+func runTabRevealFor(inv *cli.Invocation, kind resolve.Kind) (any, error) {
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	got, err := s.resolveTab(kind, inv.Arg(argName), resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true, WorkspaceID: true}})
+	got, err := s.resolveTab(kind, inv.Arg(kind.String()), resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true, WorkspaceID: true}})
 	if err != nil {
 		return nil, err
 	}
@@ -65,5 +66,5 @@ func runTabRevealFor(inv *cli.Invocation, kind resolve.Kind, argName string) (an
 	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, req, nil); err != nil {
 		return nil, err
 	}
-	return tabRevealResult{ID: got.ID, Type: tabTypeName(got.Type), WorkspaceID: got.WorkspaceID}, nil
+	return tabRevealResult{ID: got.ID, Type: resolve.TabTypeWireName(got.Type), WorkspaceID: got.WorkspaceID}, nil
 }

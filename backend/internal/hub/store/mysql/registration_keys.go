@@ -143,20 +143,61 @@ func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (
 }
 
 func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegistrationKeysAdminParams) (store.Page[store.WorkerRegistrationKeyWithCreator], error) {
-	// now is the expiry probe: a real instant when active-only (IncludeExpired=false)
-	// so the `(narg(now) IS NULL OR expires_at > narg(now))` predicate's second
-	// branch filters live rows; a zero (invalid) NullTime when IncludeExpired=true
-	// so the IS NULL branch surfaces every row.
-	var now sqltime.MySQLNullTime
-	if !p.IncludeExpired {
-		now = sqltime.MySQLNullTimeOf(time.Now())
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.WorkerRegistrationKeyWithCreator]{}, err
 	}
-	return store.QueryPage(ctx, p.Limit,
-		func() (gendb.ListRegistrationKeysAdminParams, error) {
-			return listRegistrationKeysAdminParams(p.Cursor, p.Limit, now)
-		},
-		s.conn.q.ListRegistrationKeysAdmin,
-		fromDBListRegistrationKeysAdminRow, s.conn.queryError)
+	if !hasPrefix {
+		// now is the expiry probe: a real instant when active-only (IncludeExpired=false)
+		// so the `(narg(now) IS NULL OR expires_at > narg(now))` predicate's second
+		// branch filters live rows; a zero (invalid) NullTime when IncludeExpired=true
+		// so the IS NULL branch surfaces every row.
+		var now sqltime.MySQLNullTime
+		if !p.IncludeExpired {
+			now = sqltime.MySQLNullTimeOf(time.Now())
+		}
+		return store.QueryPage(ctx, p.Limit,
+			func() (gendb.ListRegistrationKeysAdminParams, error) {
+				return listRegistrationKeysAdminParams(p.Cursor, p.Limit, now)
+			},
+			s.conn.q.ListRegistrationKeysAdmin,
+			fromDBListRegistrationKeysAdminRow, s.conn.queryError)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.WorkerRegistrationKeyWithCreator]{}, err
+	}
+	now := sqltime.NewMySQLTime(time.Now())
+	includeExpired := boolToInt64(p.IncludeExpired)
+	if filter.Exact {
+		rows, err := s.conn.q.ListRegistrationKeysAdminByExactID(ctx, gendb.ListRegistrationKeysAdminByExactIDParams{
+			ID:             filter.Lower,
+			IncludeExpired: includeExpired,
+			Now:            now,
+		})
+		if err != nil {
+			return store.Page[store.WorkerRegistrationKeyWithCreator]{}, s.conn.queryError(err)
+		}
+		mapped := store.MapSlice(rows, func(r gendb.ListRegistrationKeysAdminByExactIDRow) store.WorkerRegistrationKeyWithCreator {
+			return fromDBListRegistrationKeysAdminRow(gendb.ListRegistrationKeysAdminRow(r))
+		})
+		return store.NewPage(mapped, p.Limit), nil
+	}
+	rows, err := s.conn.q.ListRegistrationKeysAdminByIDPrefix(ctx, gendb.ListRegistrationKeysAdminByIDPrefixParams{
+		IDLo:           filter.Lower,
+		IDHi:           filter.Upper,
+		IDGt:           idGt,
+		IncludeExpired: includeExpired,
+		Now:            now,
+		Limit:          fetchLimit,
+	})
+	if err != nil {
+		return store.Page[store.WorkerRegistrationKeyWithCreator]{}, s.conn.queryError(err)
+	}
+	mapped := store.MapSlice(rows, func(r gendb.ListRegistrationKeysAdminByIDPrefixRow) store.WorkerRegistrationKeyWithCreator {
+		return fromDBListRegistrationKeysAdminRow(gendb.ListRegistrationKeysAdminRow(r))
+	})
+	return store.NewPage(mapped, p.Limit), nil
 }
 
 func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) store.WorkerRegistrationKeyWithCreator {

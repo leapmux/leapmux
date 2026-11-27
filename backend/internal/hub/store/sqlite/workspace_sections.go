@@ -74,6 +74,40 @@ func (s *workspaceSectionStore) ListByUserID(ctx context.Context, userID userid.
 	return store.MapSliceErr(rows, s.conn.fromDBWorkspaceSection)
 }
 
+func (s *workspaceSectionStore) ListByIDPrefix(ctx context.Context, userID userid.UserID, idPrefix string) ([]store.WorkspaceSection, error) {
+	owner, ok := userid.OwnerFilter(userID)
+	if !ok {
+		return nil, nil
+	}
+	filter, hasPrefix, err := store.ParseIDPrefix(idPrefix)
+	if err != nil {
+		return nil, err
+	}
+	if !hasPrefix {
+		return s.ListByUserID(ctx, userID)
+	}
+	if !filter.Exact && !filter.HasUpper {
+		return nil, nil
+	}
+	var rows []gendb.WorkspaceSection
+	if filter.Exact {
+		rows, err = s.conn.q.ListWorkspaceSectionsByIDExact(ctx, gendb.ListWorkspaceSectionsByIDExactParams{
+			ID:     filter.Lower,
+			UserID: owner,
+		})
+	} else {
+		rows, err = s.conn.q.ListWorkspaceSectionsByIDPrefix(ctx, gendb.ListWorkspaceSectionsByIDPrefixParams{
+			IDLo:   filter.Lower,
+			IDHi:   filter.Upper,
+			UserID: owner,
+		})
+	}
+	if err != nil {
+		return nil, s.conn.queryError(err)
+	}
+	return store.MapSliceErr(rows, s.conn.fromDBWorkspaceSection)
+}
+
 func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorkspaceSectionParams) (int64, error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {

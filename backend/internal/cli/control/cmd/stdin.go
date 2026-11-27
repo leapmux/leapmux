@@ -4,34 +4,21 @@ import (
 	"io"
 	"os"
 
-	"golang.org/x/term"
-
 	"github.com/leapmux/leapmux/internal/cli"
 )
 
-// isTerminalReader reports whether r is a character device / interactive TTY.
-func isTerminalReader(r io.Reader) bool {
-	f, ok := r.(*os.File)
-	if !ok || f == nil {
-		return false
-	}
-	return term.IsTerminal(int(f.Fd()))
-}
-
-// isTerminalWriter reports whether w is a character device / interactive TTY.
-func isTerminalWriter(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok || f == nil {
-		return false
-	}
-	return term.IsTerminal(int(f.Fd()))
+// isTerminalIO reports whether v is an *os.File attached to an interactive
+// terminal.
+func isTerminalIO(v any) bool {
+	f, ok := v.(*os.File)
+	return ok && cli.IsTerminalFile(f)
 }
 
 // readStdinGuarded drains r before opening any network connection and fails
 // fast when stdin is an interactive TTY instead of hanging silently waiting
 // for EOF.
 func readStdinGuarded(r io.Reader) ([]byte, error) {
-	if isTerminalReader(r) {
+	if isTerminalIO(r) {
 		return nil, cli.Usagef("refusing to read from an interactive terminal on stdin").
 			WithHint("pipe input into the command, pass text directly, or use --file <path>")
 	}

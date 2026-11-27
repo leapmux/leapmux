@@ -59,10 +59,10 @@ func requireAdminClient(inv *cli.Invocation) (*control.HubClient, error) {
 		return nil, cli.Usagef("admin commands do not run inside a LeapMux tab").
 			WithHint("run the command in a shell outside LeapMux, or unset " + controlenv.SocketVariable + " in this shell first")
 	}
-	// An empty address is not a hub. hubURLFor reports a *NoHubError, whose
-	// hints state the flag and the variable that supply one; building a
+	// An empty address is not a hub. hubURLWithSource reports a *NoHubError,
+	// whose hints state the flag and the variable that supply one; building a
 	// client for the empty URL answered `hub url missing hostname` instead.
-	hub, err := hubURLFor(inv.Command)
+	hub, source, err := hubURLWithSource(inv.Command)
 	if err != nil {
 		return nil, err
 	}
@@ -83,8 +83,10 @@ func requireAdminClient(inv *cli.Invocation) (*control.HubClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	noticeDiscoveredLocalHub(inv, explicitHub(inv.Command), hub)
-	return attachErrOut(c, inv), nil
+	c.Source = source
+	configurePeer(c, inv)
+	noticeDiscoveredLocalHub(inv, c)
+	return c, nil
 }
 
 // nonNilStrings returns an empty non-nil slice when s is nil so JSON output

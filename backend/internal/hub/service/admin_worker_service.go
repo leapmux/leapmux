@@ -64,6 +64,7 @@ func (s *AdminWorkerService) ListWorkers(ctx context.Context, req *leapmuxv1.Adm
 	}
 	params := store.ListWorkersAdminParams{
 		UserID:     userFilter,
+		IDPrefix:   req.GetIdPrefix(),
 		PageParams: pageParams(req.GetPage()),
 	}
 	if st := req.GetStatus(); st != leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED {
@@ -134,6 +135,7 @@ func (s *AdminWorkerService) ListRegistrationKeys(ctx context.Context, req *leap
 	page, err := s.store.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
 		PageParams:     pageParams(req.GetPage()),
 		IncludeExpired: req.GetIncludeExpired(),
+		IDPrefix:       req.GetIdPrefix(),
 	})
 	if err != nil {
 		return nil, storeConnectError(err, "list registration keys")

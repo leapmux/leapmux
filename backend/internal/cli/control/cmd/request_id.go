@@ -47,7 +47,7 @@ func addRequestIDFlag(fs *pflag.FlagSet) {
 }
 
 // requestIDHintError attaches a --request-id collision hint without converting
-// the wrapped error into a *cli.Error, so addHubHints still inspects the
+// the wrapped error into a *cli.Error, so callers can still inspect the
 // underlying error and cli.HintProvider hints are not attached twice.
 type requestIDHintError struct {
 	err  error

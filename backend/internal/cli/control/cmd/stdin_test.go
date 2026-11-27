@@ -97,10 +97,13 @@ func TestReadFileOrStdin(t *testing.T) {
 
 func TestIsTerminalIO_NonFileAndNil(t *testing.T) {
 	var nilFile *os.File
-	assert.False(t, isTerminalReader(nil))
-	assert.False(t, isTerminalReader(nilFile))
-	assert.False(t, isTerminalReader(strings.NewReader("hi")))
-	assert.False(t, isTerminalWriter(nil))
-	assert.False(t, isTerminalWriter(nilFile))
-	assert.False(t, isTerminalWriter(&bytes.Buffer{}))
+	assert.False(t, isTerminalIO(nil))
+	assert.False(t, isTerminalIO(nilFile))
+	assert.False(t, isTerminalIO(strings.NewReader("hi")))
+	assert.False(t, isTerminalIO(&bytes.Buffer{}))
+
+	regular, err := os.CreateTemp(t.TempDir(), "not-a-tty-*")
+	require.NoError(t, err)
+	defer func() { _ = regular.Close() }()
+	assert.False(t, isTerminalIO(regular))
 }

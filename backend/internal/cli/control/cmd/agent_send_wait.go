@@ -265,17 +265,6 @@ func isChannelTransportError(err error) bool {
 	return errors.As(err, &coded) && coded.Code == "rpc_failed"
 }
 
-// workerReplyReader reads the queue and the transcript of agentID on
-// workerID through c using one channel per call.
-func workerReplyReader(c control.Peer, workerID, agentID string) replyReader {
-	call := func(ctx context.Context, method string, in, out proto.Message) error {
-		ctx, cancel := rpcDeadline(ctx)
-		defer cancel()
-		return callInnerRPC(ctx, c, workerID, method, in, out)
-	}
-	return buildReplyReader(call, agentID)
-}
-
 // channelReplyReader reads the queue and the transcript of agentID over a
 // reusable persistentWorkerChannel.
 func channelReplyReader(ch *persistentWorkerChannel, agentID string) replyReader {

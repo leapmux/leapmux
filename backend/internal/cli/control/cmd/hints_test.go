@@ -17,44 +17,29 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	"github.com/leapmux/leapmux/util/version"
 )
 
-// runHinted runs a leaf that fails with err under a tree that addHubHints
-// decorated, and returns the error of the command.
-func runHinted(t *testing.T, err error) error {
-	t.Helper()
-	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
-	t.Setenv("LEAPMUX_HUB", "")
-	root := cli.Group("control", "Control",
-		cli.NewLeaf(cli.Leaf{
-			Use:   "probe",
-			Short: "Probe",
-			Run:   func(*cli.Invocation) (any, error) { return nil, err },
-		}))
-	addHubHints(root)
-	return cli.Run(context.Background(), root, []string{"probe"}, strings.NewReader(""), io.Discard, io.Discard)
-}
-
-func TestAddHubHints(t *testing.T) {
+func TestDecoratePeerError(t *testing.T) {
 	t.Run("hints the login after a refused credential", func(t *testing.T) {
-		got := cli.FromError(runHinted(t, fmt.Errorf("list tabs: %w", connect.NewError(connect.CodeUnauthenticated, "expired"))))
+		got := cli.FromError(decoratePeerError(t.Context(), nil, fmt.Errorf("list tabs: %w", connect.NewError(connect.CodeUnauthenticated, "expired"))))
 		assert.Equal(t, cli.CodeNotLoggedIn, got.Code)
 		assert.Equal(t, "list tabs: expired", got.Message)
 		assert.Equal(t, []string{`run "leapmux auth login --hub <url>" to sign in again`}, got.Hints)
 	})
 
-	t.Run("hints the version comparison after an unimplemented call", func(t *testing.T) {
-		got := cli.FromError(runHinted(t, connect.NewError(connect.CodeUnimplemented, "no such method")))
+	t.Run("hints the version comparison after an unimplemented call on nil peer", func(t *testing.T) {
+		got := cli.FromError(decoratePeerError(t.Context(), nil, connect.NewError(connect.CodeUnimplemented, "no such method")))
 		assert.Equal(t, cli.CodeVersionMismatch, got.Code)
 		require.Len(t, got.Hints, 1)
 		assert.Contains(t, got.Hints[0], "leapmux version")
 	})
 
 	t.Run("adds nothing to another refusal", func(t *testing.T) {
-		got := cli.FromError(runHinted(t, connect.NewError(connect.CodeNotFound, "no such tab")))
+		got := cli.FromError(decoratePeerError(t.Context(), nil, connect.NewError(connect.CodeNotFound, "no such tab")))
 		assert.Equal(t, cli.CodeNotFound, got.Code)
 		assert.Empty(t, got.Hints)
 	})
@@ -62,19 +47,19 @@ func TestAddHubHints(t *testing.T) {
 	t.Run("keeps the hints of an error that the command classified", func(t *testing.T) {
 		own := cli.Wrap(cli.CodeNotLoggedIn, connect.NewError(connect.CodeUnauthenticated, "refused"), "the hub refused this credential").
 			WithHint("its own hint")
-		got := cli.FromError(runHinted(t, own))
+		got := cli.FromError(decoratePeerError(t.Context(), nil, own))
 		assert.Equal(t, []string{"its own hint"}, got.Hints)
 	})
 
 	t.Run("passes an error that is not a refused call", func(t *testing.T) {
 		plain := errors.New("disk full")
-		err := runHinted(t, plain)
+		err := decoratePeerError(t.Context(), nil, plain)
 		require.ErrorIs(t, err, plain)
 		assert.Empty(t, cli.FromError(err).Hints)
 	})
 
 	t.Run("passes a success", func(t *testing.T) {
-		require.NoError(t, runHinted(t, nil))
+		require.NoError(t, decoratePeerError(t.Context(), nil, nil))
 	})
 }
 
@@ -87,13 +72,13 @@ func TestControlVersionMismatchKeepsTheRefusalWhenTheHubBuildIsUnavailable(t *te
 	assert.Contains(t, f.Hints, "CLI build "+version.Format())
 }
 
-func TestPeerVersionDiagnosticHasABoundedRead(t *testing.T) {
+func TestPeerVersionDiagnosticUsesReadDeadline(t *testing.T) {
 	refusal := connect.NewError(connect.CodeUnimplemented, "the primary request failed")
 	called := false
 	result := withPeerVersion(t.Context(), refusal, "Hub", func(ctx context.Context) string {
 		called = true
-		_, bounded := ctx.Deadline()
-		assert.True(t, bounded)
+		_, hasDeadline := ctx.Deadline()
+		assert.True(t, hasDeadline)
 		return ""
 	})
 	assert.True(t, called)
@@ -124,7 +109,10 @@ func TestControlVersionMismatchReportsTheRelayedHubBuild(t *testing.T) {
 	hints := strings.Join(f.Hints, "\n")
 	assert.Contains(t, hints, "CLI build "+version.Format())
 	assert.Contains(t, hints, "Hub build 3.4.5 · relay-hub")
-	assert.Equal(t, []string{leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, leapmuxv1connect.SystemServiceGetSystemInfoProcedure}, hub.called())
+	called := hub.called()
+	require.NotEmpty(t, called)
+	assert.Equal(t, leapmuxv1connect.SystemServiceGetSystemInfoProcedure, called[len(called)-1])
+	assert.Contains(t, called, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure)
 }
 
 type versionMismatchWorker struct{ build *leapmuxv1.BuildInfo }
@@ -170,44 +158,21 @@ func TestControlVersionMismatchReportsTheWorkerBuildOrItsAbsence(t *testing.T) {
 	}
 }
 
-// RIPPLE-11: hints must never suggest `leapmux auth login --hub unix:...` or
-// `npipe:...`, and `usesDirectHub` must include `worker` so direct-hub worker
-// subcommands get Hub version diagnostics on CodeUnimplemented.
-func TestAddHubHints_OmitsLocalSocketURLAndCoversWorkerDirectHub(t *testing.T) {
-	t.Run("explicit unix hub omits socket URL from auth login hint", func(t *testing.T) {
-		isolateCLIEnv(t)
-		root := cli.Group("control", "Control",
-			cli.NewLeaf(cli.Leaf{
-				Use:   "probe",
-				Short: "Probe",
-				Run: func(*cli.Invocation) (any, error) {
-					return nil, connect.NewError(connect.CodeUnauthenticated, "expired")
-				},
-			}))
-		root.PersistentFlags().String("hub", "", "hub")
-		addHubHints(root)
-
-		err := cli.Run(context.Background(), root, []string{"probe", "--hub", "unix:/tmp/solo.sock"}, strings.NewReader(""), io.Discard, io.Discard)
+// Hints must never suggest `leapmux auth login --hub unix:...` or `npipe:...`,
+// and direct-hub commands (including worker key subcommands) receive Hub
+// version diagnostics directly from the HubClient transport decorator.
+func TestDecoratePeerError_OmitsLocalSocketURLAndCoversWorkerDirectHub(t *testing.T) {
+	t.Run("local unix hub peer omits socket URL from auth login hint", func(t *testing.T) {
+		peer := &control.HubClient{HubURL: "unix:/tmp/solo.sock"}
+		err := decoratePeerError(t.Context(), peer, connect.NewError(connect.CodeUnauthenticated, "expired"))
 		got := cli.FromError(err)
 		assert.Equal(t, cli.CodeNotLoggedIn, got.Code)
 		assert.Equal(t, []string{`run "leapmux auth login --hub <url>" to sign in again`}, got.Hints)
 	})
 
-	t.Run("tab socket env omits socket URL from auth login hint", func(t *testing.T) {
-		isolateCLIEnv(t)
-		t.Setenv("LEAPMUX_CONTROL_SOCK", "unix:/tmp/tab.sock")
-		t.Setenv("LEAPMUX_HUB", "unix:/tmp/solo.sock")
-		root := cli.Group("control", "Control",
-			cli.NewLeaf(cli.Leaf{
-				Use:   "probe",
-				Short: "Probe",
-				Run: func(*cli.Invocation) (any, error) {
-					return nil, connect.NewError(connect.CodeUnauthenticated, "expired")
-				},
-			}))
-		addHubHints(root)
-
-		err := cli.Run(context.Background(), root, []string{"probe"}, strings.NewReader(""), io.Discard, io.Discard)
+	t.Run("worker IPC peer omits socket URL from auth login hint", func(t *testing.T) {
+		peer := &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"}
+		err := decoratePeerError(t.Context(), peer, connect.NewError(connect.CodeUnauthenticated, "expired"))
 		got := cli.FromError(err)
 		assert.Equal(t, cli.CodeNotLoggedIn, got.Code)
 		assert.Equal(t, []string{`run "leapmux auth login --hub <url>" to sign in again`}, got.Hints)
@@ -225,20 +190,9 @@ func TestAddHubHints_OmitsLocalSocketURLAndCoversWorkerDirectHub(t *testing.T) {
 		assert.Contains(t, hints, "Hub build 2.3.4 · hub-commit")
 	})
 
-	t.Run("tab socket env omits --hub from version mismatch hint", func(t *testing.T) {
-		isolateCLIEnv(t)
-		t.Setenv("LEAPMUX_CONTROL_SOCK", "unix:/tmp/tab.sock")
-		root := cli.Group("control", "Control",
-			cli.NewLeaf(cli.Leaf{
-				Use:   "probe",
-				Short: "Probe",
-				Run: func(*cli.Invocation) (any, error) {
-					return nil, connect.NewError(connect.CodeUnimplemented, "no such method")
-				},
-			}))
-		addHubHints(root)
-
-		err := cli.Run(context.Background(), root, []string{"probe"}, strings.NewReader(""), io.Discard, io.Discard)
+	t.Run("worker IPC peer omits --hub from version mismatch hint", func(t *testing.T) {
+		peer := &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"}
+		err := withHubHintForPeer(peer, connect.NewError(connect.CodeUnimplemented, "no such method"))
 		got := cli.FromError(err)
 		assert.Equal(t, cli.CodeVersionMismatch, got.Code)
 		assert.Equal(t, []string{`run "leapmux version" to compare the CLI with the hub, and upgrade the older one`}, got.Hints)
@@ -251,4 +205,123 @@ func TestAddHubHints_OmitsLocalSocketURLAndCoversWorkerDirectHub(t *testing.T) {
 		assert.Equal(t, cli.CodeVersionMismatch, ce.Code)
 		assert.Contains(t, ce.Hints, "Hub build unavailable")
 	})
+}
+
+func TestWithHubHint_PreservesWrappersAndAvoidsDuplicateHints(t *testing.T) {
+	t.Run("default path returns codedRPCError unchanged", func(t *testing.T) {
+		orig := &codedRPCError{
+			Code:  "rpc_error",
+			Cause: connect.NewError(connect.CodeNotFound, "no such tab"),
+		}
+		got := withHubHintForPeer(nil, orig)
+		assert.Same(t, orig, got)
+		var coded *codedRPCError
+		require.ErrorAs(t, got, &coded)
+		assert.Equal(t, "rpc_error", coded.Code)
+	})
+
+	t.Run("default path does not duplicate HintProvider hints", func(t *testing.T) {
+		inner := &stubHintedErr{
+			err:   connect.NewError(connect.CodeUnavailable, "worker unreachable"),
+			hints: []string{"check worker connectivity"},
+		}
+		got := withHubHintForPeer(nil, inner)
+		assert.Same(t, inner, got)
+		ce := cli.FromError(got)
+		assert.Equal(t, cli.CodeUnavailable, ce.Code)
+		assert.Equal(t, 1, countStrings(ce.Hints, "check worker connectivity"))
+	})
+
+	t.Run("auth refusal attaches hub hint without duplicating inner HintProvider hints", func(t *testing.T) {
+		inner := &stubHintedErr{
+			err: &codedRPCError{
+				Code:  "rpc_error",
+				Cause: connect.NewError(connect.CodeUnauthenticated, "expired"),
+			},
+			hints: []string{"refresh session token"},
+		}
+		got := withHubHintForPeer(nil, inner)
+		var coded *codedRPCError
+		require.ErrorAs(t, got, &coded)
+
+		ce := cli.FromError(got)
+		assert.Equal(t, cli.CodeNotLoggedIn, ce.Code)
+		assert.Equal(t, 1, countStrings(ce.Hints, "refresh session token"))
+		assert.Equal(t, 1, countStrings(ce.Hints, `run "leapmux auth login --hub <url>" to sign in again`))
+	})
+
+	t.Run("unimplemented refusal attaches version hint without duplicating inner HintProvider hints", func(t *testing.T) {
+		inner := &stubHintedErr{
+			err:   connect.NewError(connect.CodeUnimplemented, "missing method"),
+			hints: []string{"inner compatibility note"},
+		}
+		got := withHubHintForPeer(nil, inner)
+		ce := cli.FromError(got)
+		assert.Equal(t, cli.CodeVersionMismatch, ce.Code)
+		assert.Equal(t, 1, countStrings(ce.Hints, "inner compatibility note"))
+		assert.Equal(t, 1, countStrings(ce.Hints, `run "leapmux version --hub <url>" to compare the CLI with the hub, and upgrade the older one`))
+	})
+
+	t.Run("withPeerVersion preserves wrappers and avoids duplicating hints", func(t *testing.T) {
+		inner := &stubHintedErr{
+			err: &codedRPCError{
+				Code:  "rpc_error",
+				Cause: connect.NewError(connect.CodeUnimplemented, "missing worker method"),
+			},
+			hints: []string{"inner worker hint"},
+		}
+		got := withPeerVersion(t.Context(), inner, "Worker w-1", func(context.Context) string {
+			return "1.2.3"
+		})
+		var coded *codedRPCError
+		require.ErrorAs(t, got, &coded)
+		assert.False(t, needsVersionDiagnostic(got), "already-diagnosed error must not trigger a second version probe")
+		assert.Same(t, got, withHubHintForPeer(nil, got), "withHubHintForPeer must not append a duplicate hub version hint")
+
+		ce := cli.FromError(got)
+		assert.Equal(t, cli.CodeVersionMismatch, ce.Code)
+		assert.Equal(t, 1, countStrings(ce.Hints, "inner worker hint"))
+		assert.Equal(t, 1, countStrings(ce.Hints, "CLI build "+version.Format()))
+		assert.Equal(t, 1, countStrings(ce.Hints, "Worker w-1 build 1.2.3"))
+		assert.Equal(t, 1, countStrings(ce.Hints, "upgrade the CLI or the Worker w-1 to a build that supports this command"))
+	})
+}
+
+func TestWithHubHint_DirectHubAndWorkerIPCPeersSubstituteCorrectHint(t *testing.T) {
+	hubPeer := &control.HubClient{HubURL: "https://hub.example"}
+	gotHub := decoratePeerError(t.Context(), hubPeer, connect.NewError(connect.CodeUnauthenticated, "expired"))
+	assert.Equal(t,
+		[]string{`run "leapmux auth login --hub https://hub.example" to sign in again`},
+		cli.FromError(gotHub).Hints,
+	)
+
+	ipcPeer := &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"}
+	gotIPC := decoratePeerError(t.Context(), ipcPeer, connect.NewError(connect.CodeUnauthenticated, "expired"))
+	assert.Equal(t,
+		[]string{`run "leapmux auth login --hub <url>" to sign in again`},
+		cli.FromError(gotIPC).Hints,
+	)
+
+	// In-band Hub auth refusal relayed over local IPC still receives the local login hint.
+	gotRelayed := withHubVersion(t.Context(), ipcPeer, connect.NewError(connect.CodeUnauthenticated, "expired"))
+	assert.Equal(t,
+		[]string{`run "leapmux auth login --hub <url>" to sign in again`},
+		cli.FromError(gotRelayed).Hints,
+	)
+}
+
+func TestStripHubHintError_UnwrapsDirectAndWrappedHubHints(t *testing.T) {
+	cause := connect.NewError(connect.CodeUnauthenticated, "rejected")
+	hinted := &hubHintError{cause: cause, hints: []string{"generic login hint"}}
+
+	assert.Nil(t, stripHubHintError(nil))
+	assert.Same(t, cause, stripHubHintError(cause))
+	assert.Same(t, cause, stripHubHintError(hinted))
+
+	// Connect client streams can wrap interceptor errors inside another wrapper.
+	wrapped := fmt.Errorf("connect wrapper: %w", hinted)
+	stripped := stripHubHintError(wrapped)
+	assert.Same(t, cause, stripped)
+	ce := cli.Wrap(cli.CodeNotLoggedIn, stripped, "refused").WithHint("custom hint")
+	assert.Equal(t, []string{"custom hint"}, cli.FromError(ce).Hints)
 }

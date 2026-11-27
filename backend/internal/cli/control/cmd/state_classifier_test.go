@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -53,25 +55,46 @@ func TestLeapmuxStateClassifier_MapsAllKnownTokens(t *testing.T) {
 }
 
 func TestAttach_InstallsDefaultStateClassifier(t *testing.T) {
-	cli.SetDefaultStateClassifier(nil)
-	t.Cleanup(func() { cli.SetDefaultStateClassifier(leapmuxStateClassifier) })
-
-	root := &cobra.Command{Use: "leapmux"}
-	Attach(root, nil)
-
-	var buf bytes.Buffer
-	p := &cli.Printer{Out: &buf, Err: &bytes.Buffer{}, Color: cli.ColorAlways}
-	require.NoError(t, p.Result(struct {
+	result := struct {
 		Rows []queueItemRow `json:"items"`
 	}{
 		Rows: []queueItemRow{{ID: "q-1", Kind: "user_message", State: "failed", Text: "x"}},
+	}
+
+	root := &cobra.Command{Use: "leapmux"}
+	Attach(root, nil)
+	root.AddCommand(cli.NewLeaf(cli.Leaf{
+		Use:   "state-probe",
+		Short: "Probe state styling",
+		Run:   func(*cli.Invocation) (any, error) { return result, nil },
 	}))
+
+	var buf bytes.Buffer
+	err := cli.Run(context.Background(), root, []string{"state-probe", "--color", "always"}, strings.NewReader(""), &buf, &bytes.Buffer{})
+	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "\x1b[31mfailed\x1b[0m")
+
+	// A separate command tree without Attach does not inherit LeapMux's classifier.
+	plainRoot := cli.Group("other", "Other", cli.NewLeaf(cli.Leaf{
+		Use:   "state-probe",
+		Short: "Probe state styling",
+		Run:   func(*cli.Invocation) (any, error) { return result, nil },
+	}))
+	cli.AddOutputFlags(plainRoot)
+	var plainBuf bytes.Buffer
+	err = cli.Run(context.Background(), plainRoot, []string{"state-probe", "--color", "always"}, strings.NewReader(""), &plainBuf, &bytes.Buffer{})
+	require.NoError(t, err)
+	assert.NotContains(t, plainBuf.String(), "\x1b[31mfailed\x1b[0m")
 }
 
 func TestTableTags_StateAndDimStylingWithDefaultClassifier(t *testing.T) {
 	var buf bytes.Buffer
-	p := &cli.Printer{Out: &buf, Err: &bytes.Buffer{}, Color: cli.ColorAlways}
+	p := &cli.Printer{
+		Out:             &buf,
+		Err:             &bytes.Buffer{},
+		Color:           cli.ColorAlways,
+		StateClassifier: leapmuxStateClassifier,
+	}
 	err := p.Result(struct {
 		Rows []queueItemRow `json:"items"`
 	}{

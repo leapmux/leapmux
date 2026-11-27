@@ -53,8 +53,8 @@ func newTabCommand() *cobra.Command {
 			Complete: completeTargets,
 			Run:      runTabGet,
 		}),
-		newTabCloseLeafFor(resolve.KindTab, "tab"),
-		newTabRenameLeafFor(resolve.KindTab, "tab"),
+		newTabCloseLeafFor(resolve.KindTab),
+		newTabRenameLeafFor(resolve.KindTab),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "move <tab>",
 			Aliases: []string{"mv"},
@@ -73,7 +73,7 @@ func newTabCommand() *cobra.Command {
 			Complete:     completeTargets,
 			Run:          runTabMove,
 		}),
-		newTabRevealLeafFor(resolve.KindTab, "tab"),
+		newTabRevealLeafFor(resolve.KindTab),
 		newTabOpenImageLeaf(),
 		newTabStatusCommand(),
 	)
@@ -106,7 +106,7 @@ type tabRow struct {
 func tabRowOf(t *leapmuxv1.WorkspaceTab, d tabDetail, workerName string) tabRow {
 	return tabRow{
 		ID:          t.GetTab().GetTabId(),
-		Type:        tabTypeName(t.GetTab().GetTabType()),
+		Type:        resolve.TabTypeWireName(t.GetTab().GetTabType()),
 		Title:       d.Title,
 		Provider:    agentlabels.CLIAlias(d.Agent.GetAgentProvider()),
 		State:       d.State,
@@ -162,13 +162,7 @@ func runTabList(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		filtered := make([]*leapmuxv1.WorkspaceTab, 0, len(tabs))
-		for _, t := range tabs {
-			if t.GetWorkerId() == w.ID {
-				filtered = append(filtered, t)
-			}
-		}
-		tabs = filtered
+		tabs = filterTabsByWorker(tabs, w.ID)
 	}
 	rows := s.tabRows(tabs)
 	if state := strings.TrimSpace(stringFlag(inv, "state")); state != "" {
@@ -181,6 +175,18 @@ func runTabList(inv *cli.Invocation) (any, error) {
 		rows = filtered
 	}
 	return tabList{Tabs: rows}, nil
+}
+
+// filterTabsByWorker drops tabs whose worker_id does not match workerID,
+// allocating a fresh slice so callers never mutate the Hub response slice.
+func filterTabsByWorker(in []*leapmuxv1.WorkspaceTab, workerID string) []*leapmuxv1.WorkspaceTab {
+	out := make([]*leapmuxv1.WorkspaceTab, 0, len(in))
+	for _, t := range in {
+		if t.GetWorkerId() == workerID {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // filterTabsByType drops tabs whose type doesn't match wanted. A zero
@@ -231,7 +237,8 @@ type tabRenameResult struct {
 }
 
 // newTabRenameLeafFor builds `tab rename`, `agent rename`, or `terminal rename`.
-func newTabRenameLeafFor(kind resolve.Kind, noun string) *cobra.Command {
+func newTabRenameLeafFor(kind resolve.Kind) *cobra.Command {
+	noun := kind.String()
 	short := "Rename an agent or terminal tab"
 	use := "rename <" + noun + "> <title>"
 	examples := []cli.Example{
@@ -262,14 +269,14 @@ func newTabRenameLeafFor(kind resolve.Kind, noun string) *cobra.Command {
 		},
 		Complete: completeTargets,
 		Run: func(inv *cli.Invocation) (any, error) {
-			return runTabRenameFor(inv, kind, noun)
+			return runTabRenameFor(inv, kind)
 		},
 	})
 }
 
 // runTabRenameFor retitles an agent or terminal tab. LocateTab reports the
 // tab's type, and the command calls the Worker's rename for that type.
-func runTabRenameFor(inv *cli.Invocation, kind resolve.Kind, argName string) (any, error) {
+func runTabRenameFor(inv *cli.Invocation, kind resolve.Kind) (any, error) {
 	hasTitle := inv.HasArg("title")
 	hasSlug := kind == resolve.KindAgent && inv.Changed("name")
 	title := inv.Arg("title")
@@ -278,8 +285,9 @@ func runTabRenameFor(inv *cli.Invocation, kind resolve.Kind, argName string) (an
 	case hasSlug && hasTitle:
 		return nil, cli.Usagef("give a title or --name, not both")
 	case hasSlug:
-		slug = strings.TrimSpace(stringFlag(inv, "name"))
-		if err := validateAgentSlug(slug); err != nil {
+		var err error
+		slug, err = parseAgentSlugFlag(inv)
+		if err != nil {
 			return nil, err
 		}
 		title = slug
@@ -294,7 +302,7 @@ func runTabRenameFor(inv *cli.Invocation, kind resolve.Kind, argName string) (an
 		return nil, err
 	}
 	defer s.Close()
-	got, err := s.resolveTab(kind, inv.Arg(argName), resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true}})
+	got, err := s.resolveTab(kind, inv.Arg(kind.String()), resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true}})
 	if err != nil {
 		return nil, err
 	}
@@ -314,14 +322,14 @@ func runTabRenameFor(inv *cli.Invocation, kind resolve.Kind, argName string) (an
 		if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure, &leapmuxv1.RenameAgentRequest{AgentId: got.ID, Title: title}, &resp); err != nil {
 			return nil, err
 		}
-		return tabRenameResult{ID: got.ID, Type: tabTypeName(got.Type), Title: resp.GetTitle()}, nil
+		return tabRenameResult{ID: got.ID, Type: resolve.TabTypeWireName(got.Type), Title: resp.GetTitle()}, nil
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		var resp leapmuxv1.RenameTerminalResponse
 		if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{TerminalId: got.ID, Title: title}, &resp); err != nil {
 			return nil, err
 		}
-		return tabRenameResult{ID: got.ID, Type: tabTypeName(got.Type), Title: resp.GetTitle()}, nil
+		return tabRenameResult{ID: got.ID, Type: resolve.TabTypeWireName(got.Type), Title: resp.GetTitle()}, nil
 	default:
-		return nil, cli.Usagef("a %s tab has no title to rename; only agent and terminal tabs do", tabTypeName(got.Type))
+		return nil, cli.Usagef("a %s tab has no title to rename; only agent and terminal tabs do", resolve.TabTypeWireName(got.Type))
 	}
 }

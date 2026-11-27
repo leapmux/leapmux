@@ -1,12 +1,9 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -16,7 +13,6 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
-	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
 func newTerminalPSLeaf() *cobra.Command {
@@ -30,7 +26,7 @@ func newTerminalPSLeaf() *cobra.Command {
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.Bool("all", false, "inspect every open terminal instead of a single target")
-			fs.String("workspace", "", `inspect terminals in this workspace (implies --all when no targets are given)`)
+			addTargetWorkspaceFlagWithUsage(fs, `inspect terminals in this workspace (implies --all when no targets are given)`)
 		},
 		Complete: completeTargets,
 		Run:      runTerminalPS,
@@ -54,87 +50,6 @@ func (r terminalPSResult) QuietLines() []string {
 		out = append(out, fmt.Sprintf("%s\t%d\t%s", p.TerminalID, p.PID, p.Name))
 	}
 	return out
-}
-
-// resolveVariadicTerminalTargets resolves terminal selectors in order while
-// memoizing workspace scope, ListTabs, and TabTitles across inputs and
-// deduplicating by tab ID.
-func (s *session) resolveVariadicTerminalTargets(inputs []string) ([]tabTarget, error) {
-	var workspaceIDs []string
-	if s.hasTargetWorkspaceScope() {
-		ws, err := s.resolveOne(resolve.KindWorkspace, stringFlag(s.inv, "workspace"))
-		if err != nil {
-			return nil, err
-		}
-		workspaceIDs = []string{ws.ID}
-	}
-
-	listing := s.listing()
-	var (
-		tabsLoaded   bool
-		cachedTabs   []*leapmuxv1.WorkspaceTab
-		titlesLoaded bool
-		cachedTitles map[string]string
-	)
-	listing.Tabs = func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error) {
-		if tabsLoaded {
-			return cachedTabs, nil
-		}
-		tabs, err := listTabsInWorkspaces(ctx, s.c, workspaceIDs)
-		if err != nil {
-			return nil, err
-		}
-		cachedTabs = tabs
-		tabsLoaded = true
-		return tabs, nil
-	}
-	rawTitles := listing.TabTitles
-	listing.TabTitles = func(ctx context.Context, tabs []*leapmuxv1.WorkspaceTab) map[string]string {
-		if titlesLoaded {
-			return cachedTitles
-		}
-		cachedTitles = rawTitles(ctx, tabs)
-		titlesLoaded = true
-		return cachedTitles
-	}
-
-	deps := s.deps()
-	envWorkerID := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
-	seen := make(map[string]struct{}, len(inputs))
-	targets := make([]tabTarget, 0, len(inputs))
-	for _, input := range inputs {
-		if input == "" {
-			input = resolve.SelfTarget
-		}
-		t, err := resolve.Canonical(s.ctx, listing, resolve.KindTerminal, input)
-		if err != nil {
-			return nil, err
-		}
-		if t.Tab != nil {
-			s.located[t.ID] = t.Tab
-		}
-		got, err := resolve.Resolve(s.ctx, deps, resolve.Need{TabID: true, WorkerID: true}, resolve.Inputs{
-			TabID:         t.ID,
-			ExplicitTabID: !t.Self,
-			WorkerID:      envWorkerID,
-			FixedTabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if _, dup := seen[got.TabID]; dup {
-			continue
-		}
-		seen[got.TabID] = struct{}{}
-		targets = append(targets, tabTarget{
-			ID:       got.TabID,
-			Type:     got.TabType,
-			WorkerID: got.WorkerID,
-			Self:     t.Self,
-			Row:      got.Tab,
-		})
-	}
-	return targets, nil
 }
 
 func runTerminalPS(inv *cli.Invocation) (any, error) {
@@ -181,7 +96,7 @@ func runTerminalPS(inv *cli.Invocation) (any, error) {
 		if len(args) == 0 {
 			args = []string{""}
 		}
-		targets, err := s.resolveVariadicTerminalTargets(args)
+		targets, err := s.resolveVariadicTabs(resolve.KindTerminal, args, resolve.Need{WorkerID: true})
 		if err != nil {
 			return nil, err
 		}

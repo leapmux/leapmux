@@ -39,8 +39,8 @@ When you run a control command or `leapmux admin`, the CLI resolves which Hub to
 | 1 | `--hub <url>` flag | Explicit flag always wins, even inside a LeapMux tab. |
 | 2 | `LEAPMUX_CONTROL_SOCK` | Worker-injected local inter-process communication (IPC) socket inside a spawned tab (paired with `LEAPMUX_CONTROL_TOKEN`). |
 | 3 | `LEAPMUX_HUB` | Environment variable for external shells and scripts. |
-| 4 | `context.json` | Persistent default Hub set with `leapmux context use --hub <url>`. |
-| 5 | Stored credential default | Uses the sole stored credential when only one exists; otherwise uses the Hub recorded in `default-hub` (`leapmux auth use <url>`). |
+| 4 | `context.json` | Persistent default Hub set with `leapmux context use --hub <url>` or `leapmux auth use <url>`. |
+| 5 | Stored credential default | Uses the sole stored credential when only one exists. |
 | 6 | Local auto-discovery | Connects to a live local `solo` or `dev` Hub IPC socket when no stored credential file exists. |
 
 ## Top-level usage
@@ -481,7 +481,7 @@ Each mode reads an optional YAML config file matching the mode and skips missing
 | `hub` | `~/.config/leapmux/hub/hub.yaml` | `~/.config/leapmux/hub` |
 | `worker` | `~/.config/leapmux/worker/worker.yaml` | `~/.config/leapmux/worker` |
 | `dev` | `~/.config/leapmux/dev/dev.yaml` | `~/.config/leapmux/dev` (`hub/` and `worker/` subdirectories) |
-| `control` | `<ConfigDir>/<hub-key>.json` (credentials, mode `0600`), `default-hub`, `context.json`, `<hub-key>/pins.json` | — |
+| `control` | `<ConfigDir>/<hub-key>.json` (credentials, mode `0600`), `context.json`, `<hub-key>/pins.json` | — |
 
 ### Managed files inside a data directory
 

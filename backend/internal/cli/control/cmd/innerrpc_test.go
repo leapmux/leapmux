@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -15,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -110,6 +114,82 @@ func TestCodedRPCError_CLIError(t *testing.T) {
 	offline := cli.FromError(&codedRPCError{Code: "channel_open_failed", Cause: errors.New("x")})
 	assert.True(t, offline.Retryable(), "an offline worker can come back")
 	assert.NotEmpty(t, offline.Hints)
+}
+
+type staticHintErr struct {
+	cause error
+	hints []string
+}
+
+func (e *staticHintErr) Error() string      { return e.cause.Error() }
+func (e *staticHintErr) Unwrap() error      { return e.cause }
+func (e *staticHintErr) CLIHints() []string { return e.hints }
+
+func TestCodedRPCError_CLIError_NonConnectCausesAndNoDuplicateHints(t *testing.T) {
+	t.Run("context.Canceled is not misclassified as worker_offline", func(t *testing.T) {
+		got := cli.FromError(&codedRPCError{Code: "channel_open_failed", Cause: context.Canceled})
+		assert.Equal(t, cli.CodeInternal, got.Code)
+		assert.False(t, got.Retryable())
+	})
+
+	t.Run("context.DeadlineExceeded is unavailable not worker_offline", func(t *testing.T) {
+		got := cli.FromError(&codedRPCError{Code: "channel_open_failed", Cause: context.DeadlineExceeded})
+		assert.Equal(t, cli.CodeUnavailable, got.Code)
+	})
+
+	t.Run("ErrNotLoggedIn is not misclassified as worker_offline", func(t *testing.T) {
+		got := cli.FromError(&codedRPCError{Code: "channel_open_failed", Cause: fmt.Errorf("load creds: %w", cli.ErrNotLoggedIn)})
+		assert.Equal(t, cli.CodeNotLoggedIn, got.Code)
+		assert.False(t, got.Retryable())
+	})
+
+	t.Run("inner HintProvider hints are attached once", func(t *testing.T) {
+		cause := &staticHintErr{
+			cause: connect.NewError(connect.CodePermissionDenied, "denied"),
+			hints: []string{"check workspace access"},
+		}
+		got := cli.FromError(&codedRPCError{Code: "channel_open_failed", Cause: cause})
+		assert.Equal(t, cli.CodePermissionDenied, got.Code)
+		assert.Equal(t, []string{"check workspace access"}, got.Hints)
+	})
+}
+
+type countingRefuseChannelHub struct {
+	leapmuxv1connect.UnimplementedChannelServiceHandler
+	attempts atomic.Int32
+	err      error
+}
+
+func (h *countingRefuseChannelHub) GetWorkerHandshakeParams(context.Context, *leapmuxv1.GetWorkerHandshakeParamsRequest) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
+	h.attempts.Add(1)
+	return nil, h.err
+}
+
+func TestWithBestEffortWorkerChannel_OpensOnceOnFailure(t *testing.T) {
+	isolateCLIEnv(t)
+	chHub := &countingRefuseChannelHub{
+		err: connect.NewError(connect.CodeUnavailable, "worker offline"),
+	}
+	server := connect.NewServer()
+	leapmuxv1connect.RegisterChannelServiceHandler(server, chHub)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server)
+	srv := hubtransporttest.NewServer(t, mux)
+	c, err := control.NewClientOrAnonymous(srv.URL)
+	require.NoError(t, err)
+
+	var firstErr, secondErr error
+	err = withBestEffortWorkerChannel(t.Context(), c, "worker-A", func(w workerCall) error {
+		firstErr = w.Call(t.Context(), leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{}, nil)
+		secondErr = w.Call(t.Context(), leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{}, nil)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Error(t, firstErr)
+	require.Error(t, secondErr)
+	assert.True(t, isWorkerUnreachable(firstErr))
+	assert.True(t, isWorkerUnreachable(secondErr))
+	assert.EqualValues(t, 1, chHub.attempts.Load(), "failed channel open must not be retried per Call")
 }
 
 // inBandError reports an in-band error as a Connect error with the worker's
@@ -221,7 +301,7 @@ func TestLocalIPCCall_KeepsTheCodeOfAnInBandRefusal(t *testing.T) {
 	require.True(t, isIPC, "the spawn harness must select the local-IPC transport")
 
 	var resp leapmuxv1.ListAvailableShellsResponse
-	err = callInnerRPCBest(t.Context(), c, "worker-A",
+	err = callInnerRPC(t.Context(), c, "worker-A",
 		leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, &leapmuxv1.ListAvailableShellsRequest{}, &resp)
 	require.Error(t, err)
 
@@ -263,7 +343,7 @@ func TestWorkerRefusal_EmitsOneEnvelopeOnBothTransports(t *testing.T) {
 	_, isIPC := c.(*control.WorkerIPCClient)
 	require.True(t, isIPC, "the spawn harness must select the local-IPC transport")
 	var resp leapmuxv1.ListAvailableShellsResponse
-	ipcErr := callInnerRPCBest(t.Context(), c, "worker-A",
+	ipcErr := callInnerRPC(t.Context(), c, "worker-A",
 		leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, &leapmuxv1.ListAvailableShellsRequest{}, &resp)
 	require.Error(t, ipcErr)
 	overIPC := emitted(t, ipcErr)
@@ -372,7 +452,7 @@ func TestPeerDispatch_HubClientWorkerIPCAndUnsupportedPeer(t *testing.T) {
 		require.NoError(t, err)
 		var hubCallErr error
 		err = withBestEffortWorkerChannel(t.Context(), hubClient, "", func(w workerCall) error {
-			assert.True(t, w.perCallChannel)
+			assert.NotNil(t, w.openErr)
 			assert.Nil(t, w.ipc)
 			hubCallErr = w.Call(t.Context(), leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, &leapmuxv1.ListAvailableShellsRequest{}, nil)
 			return nil

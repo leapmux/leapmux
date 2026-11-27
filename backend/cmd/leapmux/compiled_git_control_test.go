@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
@@ -46,7 +47,8 @@ func (h compiledGitHub) CallInner(_ context.Context, owner userid.UserID, method
 
 func TestMainControlGitWritesSendExactRequestsToTheSelectedWorker(t *testing.T) {
 	t.Parallel()
-	const localWorker, targetWorker = "local-worker", "target-worker"
+	const localWorker = "local-worker"
+	targetWorker := id.Generate()
 	const dir = "/worker/src/literal repo "
 	owner := userid.MustNew("git-test-owner")
 	peer := compiledGitPeer{calls: make(chan compiledGitCall, 16)}

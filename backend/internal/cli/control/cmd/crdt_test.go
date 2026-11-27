@@ -20,6 +20,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hubrpc"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -31,7 +32,7 @@ func TestCRDTSubmitBatchPinsTheFirstSubmissionEpoch(t *testing.T) {
 	batch := &leapmuxv1.OpBatch{BatchId: "batch", Ops: []*leapmuxv1.CrdtOp{{OpId: "operation"}}}
 	for _, epoch := range []int64{7, 8} {
 		bootstrap.Epoch = epoch
-		_, err := crdtSubmitBatch(context.Background(), client, bootstrap, "workspace", batch)
+		_, err := crdtSubmitBatch(context.Background(), client, bootstrap, batch)
 		require.NoError(t, err)
 		sent := <-requests
 		require.Len(t, sent.GetBatches(), 1)
@@ -58,7 +59,7 @@ func TestCRDTSubmitBatchKeepsItsEpochAfterAnRPCFailure(t *testing.T) {
 	defer cancel()
 	bootstrap := &CRDTBootstrap{Epoch: 7}
 	batch := &leapmuxv1.OpBatch{BatchId: "retry", Ops: []*leapmuxv1.CrdtOp{{OpId: "operation"}}}
-	_, err := crdtSubmitBatch(ctx, client, bootstrap, "workspace", batch)
+	_, err := crdtSubmitBatch(ctx, client, bootstrap, batch)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 	require.EqualValues(t, 1, attempts.Load())
@@ -66,7 +67,7 @@ func TestCRDTSubmitBatchKeepsItsEpochAfterAnRPCFailure(t *testing.T) {
 	require.Len(t, first.GetBatches(), 1)
 	assert.EqualValues(t, 7, first.GetBatches()[0].GetEpoch())
 	bootstrap.Epoch = 8
-	_, err = crdtSubmitBatch(ctx, client, bootstrap, "workspace", batch)
+	_, err = crdtSubmitBatch(ctx, client, bootstrap, batch)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, attempts.Load())
 	second := <-requests
@@ -76,7 +77,7 @@ func TestCRDTSubmitBatchKeepsItsEpochAfterAnRPCFailure(t *testing.T) {
 
 func TestCRDTSubmitBatchPreservesAnAssignedEpoch(t *testing.T) {
 	client, requests := newCRDTSubmitTestClient(t, &leapmuxv1.SubmitOpsResponse{Results: []*leapmuxv1.BatchResult{{BatchId: "retry"}}})
-	_, err := crdtSubmitBatch(context.Background(), client, &CRDTBootstrap{Epoch: 9}, "workspace", &leapmuxv1.OpBatch{BatchId: "retry", Epoch: 3})
+	_, err := crdtSubmitBatch(context.Background(), client, &CRDTBootstrap{Epoch: 9}, &leapmuxv1.OpBatch{BatchId: "retry", Epoch: 3})
 	require.NoError(t, err)
 	assert.EqualValues(t, 3, (<-requests).GetBatches()[0].GetEpoch())
 }
@@ -92,7 +93,7 @@ func TestCRDTSubmitBatchRefusesMissingInputsBeforeTransport(t *testing.T) {
 		{name: "batch", bootstrap: &CRDTBootstrap{Epoch: 1}, message: "batch is nil"},
 	} {
 		t.Run(input.name, func(t *testing.T) {
-			_, err := crdtSubmitBatch(context.Background(), nil, input.bootstrap, "workspace", input.batch)
+			_, err := crdtSubmitBatch(context.Background(), nil, input.bootstrap, input.batch)
 			require.ErrorContains(t, err, input.message)
 		})
 	}
@@ -105,9 +106,43 @@ func TestCRDTSubmitBatchRefusesAnInvalidResultCount(t *testing.T) {
 			results[i] = &leapmuxv1.BatchResult{BatchId: "batch"}
 		}
 		client, _ := newCRDTSubmitTestClient(t, &leapmuxv1.SubmitOpsResponse{Results: results})
-		_, err := crdtSubmitBatch(context.Background(), client, &CRDTBootstrap{Epoch: 1}, "workspace", &leapmuxv1.OpBatch{BatchId: "batch"})
+		_, err := crdtSubmitBatch(context.Background(), client, &CRDTBootstrap{Epoch: 1}, &leapmuxv1.OpBatch{BatchId: "batch"})
 		assert.ErrorContains(t, err, "expected 1 result")
 	}
+}
+
+func TestCRDTCall_TrySubmitOpsAndSubmitOps(t *testing.T) {
+	t.Run("rejection wraps as CodeConflict and reports reason", func(t *testing.T) {
+		client, _ := newCRDTSubmitTestClient(t, &leapmuxv1.SubmitOpsResponse{
+			Results: []*leapmuxv1.BatchResult{{
+				BatchId: "b1",
+				Outcome: &leapmuxv1.BatchResult_Rejected{Rejected: &leapmuxv1.BatchRejection{
+					Reason:        leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID,
+					OffendingOpId: "op-1",
+				}},
+			}},
+		})
+		cc := &crdtCall{ctx: t.Context(), c: client, bs: &CRDTBootstrap{Epoch: 1}}
+		ok, reason, err := cc.trySubmitOps([]*leapmuxv1.CrdtOp{{OpId: "op-1"}})
+		assert.False(t, ok)
+		assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID, reason)
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeConflict, cli.FromError(err).Code)
+		assert.Contains(t, err.Error(), "op-1")
+	})
+
+	t.Run("transport error stays unwrapped with UNSPECIFIED reason", func(t *testing.T) {
+		client, _ := newCRDTSubmitTestClientWithResponder(t, func() (*leapmuxv1.SubmitOpsResponse, error) {
+			return nil, connect.NewError(connect.CodeUnavailable, "hub down")
+		})
+		cc := &crdtCall{ctx: t.Context(), c: client, bs: &CRDTBootstrap{Epoch: 1}}
+		ok, reason, err := cc.trySubmitOps([]*leapmuxv1.CrdtOp{{OpId: "op-1"}})
+		assert.False(t, ok)
+		assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, reason)
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(cc.submitOps([]*leapmuxv1.CrdtOp{{OpId: "op-1"}})).Code)
+	})
 }
 
 type crdtSubmitTestHub struct {

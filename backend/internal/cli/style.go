@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/mattn/go-isatty"
 	"golang.org/x/term"
@@ -102,26 +101,6 @@ const (
 // StateClassifier maps a `,state` table cell value to a StateTone.
 type StateClassifier func(value string) StateTone
 
-var (
-	defaultStateClassifierMu sync.RWMutex
-	defaultStateClassifier   StateClassifier
-)
-
-// SetDefaultStateClassifier registers the fallback StateClassifier used when a
-// Printer leaves StateClassifier nil.
-func SetDefaultStateClassifier(fn StateClassifier) {
-	defaultStateClassifierMu.Lock()
-	defaultStateClassifier = fn
-	defaultStateClassifierMu.Unlock()
-}
-
-func getDefaultStateClassifier() StateClassifier {
-	defaultStateClassifierMu.RLock()
-	fn := defaultStateClassifier
-	defaultStateClassifierMu.RUnlock()
-	return fn
-}
-
 const (
 	ansiReset       = "\x1b[0m"
 	ansiDim         = "\x1b[2m"
@@ -139,9 +118,6 @@ type styler struct {
 }
 
 func newStylerWithClassifier(w io.Writer, mode ColorMode, classifier StateClassifier) styler {
-	if classifier == nil {
-		classifier = getDefaultStateClassifier()
-	}
 	return styler{
 		enabled:    ColorEnabled(w, mode),
 		classifier: classifier,

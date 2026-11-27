@@ -437,6 +437,12 @@ type WorkspaceTabIndexStore interface {
 	// p.UserID: it is an ownership gate, so it must never bind a blank
 	// owner (see userid.OwnerFilter).
 	ListRenderedByWorkspaceIDs(ctx context.Context, p ListRenderedTabsByWorkspaceIDsParams) ([]WorkspaceTabRow, error)
+	// ListRenderedByIDPrefix returns p.UserID's rendered tabs whose tab_id
+	// matches p.IDPrefix (exact lookup for full generated IDs, primary-key
+	// range scan for shorter prefixes) across non-deleted workspaces owned by
+	// p.UserID. When p.WorkspaceIDs is non-empty, results are further scoped to
+	// those workspaces. Ordered by tab_id ASC.
+	ListRenderedByIDPrefix(ctx context.Context, p ListRenderedTabsByIDPrefixParams) ([]WorkspaceTabRow, error)
 	// LocateAccessibleRendered returns the rendered-tab row matching
 	// (tab_type, tab_id) across every workspace the user owns.
 	// Returns ErrNotFound when no owned workspace contains the tab.
@@ -854,6 +860,10 @@ type WorkspaceSectionStore interface {
 	Create(ctx context.Context, p CreateWorkspaceSectionParams) error
 	GetByID(ctx context.Context, id string) (*WorkspaceSection, error)
 	ListByUserID(ctx context.Context, userID userid.UserID) ([]WorkspaceSection, error)
+	// ListByIDPrefix returns userID's sections whose id matches idPrefix
+	// (exact lookup for full generated IDs, primary-key range scan for shorter
+	// prefixes), ordered by id ASC.
+	ListByIDPrefix(ctx context.Context, userID userid.UserID, idPrefix string) ([]WorkspaceSection, error)
 	Rename(ctx context.Context, p RenameWorkspaceSectionParams) (int64, error)
 	UpdatePosition(ctx context.Context, p UpdateWorkspaceSectionPositionParams) error
 	UpdateSidebarPosition(ctx context.Context, p UpdateWorkspaceSectionSidebarPositionParams) error
@@ -876,6 +886,10 @@ type OAuthProviderStore interface {
 	GetByID(ctx context.Context, id string) (*OAuthProvider, error)
 	ListEnabled(ctx context.Context) ([]OAuthProviderSummary, error)
 	ListAll(ctx context.Context) ([]OAuthProviderSummary, error)
+	// ListByIDPrefix returns OAuth providers whose id matches idPrefix (exact
+	// lookup for full generated IDs, primary-key range scan for shorter
+	// prefixes), ordered by id ASC.
+	ListByIDPrefix(ctx context.Context, idPrefix string) ([]OAuthProviderSummary, error)
 	UpdateEnabled(ctx context.Context, p UpdateOAuthProviderEnabledParams) error
 	UpdateClientSecret(ctx context.Context, p UpdateOAuthProviderClientSecretParams) error
 	Delete(ctx context.Context, id string) error

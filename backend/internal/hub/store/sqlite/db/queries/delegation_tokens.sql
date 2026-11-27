@@ -123,3 +123,23 @@ WHERE revoked_at IS NOT NULL AND revoked_at < sqlc.arg(cutoff);
 -- seeks just the expired live rows.
 DELETE FROM delegation_tokens
 WHERE expires_at < sqlc.arg(now) AND revoked_at IS NULL;
+
+-- name: ListAllDelegationTokensByIDExact :many
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM delegation_tokens t
+LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
+WHERE t.id = sqlc.arg(id)
+  AND (t.user_id = sqlc.arg(user_id) OR CAST(sqlc.arg(user_id) AS TEXT) = '')
+  AND (CAST(sqlc.arg(include_revoked) AS INTEGER) = 1 OR t.revoked_at IS NULL);
+
+-- name: ListAllDelegationTokensByIDPrefix :many
+SELECT sqlc.embed(t), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM delegation_tokens t
+LEFT JOIN users u ON t.user_id = u.id AND u.deleted_at IS NULL
+WHERE t.id >= sqlc.arg(id_lo)
+  AND t.id < sqlc.arg(id_hi)
+  AND t.id > sqlc.arg(id_gt)
+  AND (t.user_id = sqlc.arg(user_id) OR CAST(sqlc.arg(user_id) AS TEXT) = '')
+  AND (CAST(sqlc.arg(include_revoked) AS INTEGER) = 1 OR t.revoked_at IS NULL)
+ORDER BY t.id ASC
+LIMIT sqlc.arg(limit);

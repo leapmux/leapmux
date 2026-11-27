@@ -20,17 +20,17 @@ Worker's CLI, `$LEAPMUX_CONTROL_CLI`, so the command still matches the Worker.
   `window close`, `workspace delete`, and `terminal restart --replace` refuse to
   remove or replace the tab that runs the command. `--allow-self` overrides that.
 - `tab close` requires `--allow-busy` when work is in progress or the Worker
-  cannot check the tab's activity. The same rule applies when a tile, grid,
-  floating window, or workspace removal closes its tabs (and `workspace delete`
-  also guards dirty git worktrees or unpushed commits unless `--allow-busy` is
-  passed).
+  cannot check the tab's activity. The same rule — plus dirty git worktree and
+  unpushed commit checks — applies when a multi-tab `tab close`, `tile close`,
+  `tile remove-grid`, `window close`, or `workspace delete` closes its tabs.
 - Write a text that starts with `-` after `--`, so that a misspelled flag never
   reaches an agent as text: `leapmux agent send 87a19d5f -- "-v"`.
 - Use full command names or documented canonical aliases in scripts. Stable
   aliases (`lmx`, `ag`, `term`, `ws`, `wt`, `wk`, `win`, `ev`, `notif`, `ctx`,
-  `tun`, `pref`/`prefs`, `q`, `req`, `msg`, `fwd`, `nc`, `grep`, `find`,
-  `overview`, `ps`, `ls`, `rm`, `mv`, `cat`) are guaranteed; ad-hoc prefix
-  abbreviations such as `leapmux ag s` can become ambiguous in a later release.
+  `tun`, `pref`/`prefs`, `q`, `req`, `msg`, `skills`, `fwd`, `nc`, `grep`,
+  `find`, `overview`, `ps`, `ls`, `rm`, `mv`, `cat`) are guaranteed; ad-hoc
+  prefix abbreviations such as `leapmux ag s` can become ambiguous in a later
+  release.
 - `agent send`, `agent open`, `agent fork`, and `terminal run` automatically
   generate a `--request-id` ID when omitted. On transport or wait errors,
   inspect the reported `request_id` and disposition (`not_sent`, `in_progress`,
@@ -51,7 +51,8 @@ An argument such as `<agent>`, `<tab>`, `<workspace>`, or `<worker>` takes:
 
 - A full ID, or a unique ID prefix of at least 4 characters (tables print the
   first 8 characters).
-- `id:<id>` for a literal ID, including a short ID or the literal `self`.
+- `id:<id>` for an exact ID (any length, including a short ID or `self`) or a
+  unique ID prefix of at least 4 characters, without matching titles or names.
 - `title:<exact title>` for a tab or workspace, or `name:<name>` for a worker or
   an agent slug.
 - A bare case-insensitive title, unique agent `--name` slug, or worker name.
@@ -186,13 +187,13 @@ leapmux workspace export self --output team-dev.yaml
 leapmux workspace apply team-dev.yaml --title "Feature Sprint"
 ```
 
-Watch workspace or account events with checkpoints, snapshots, and bounded timeouts:
+Watch workspace or account events with checkpoints, snapshots, and capped timeouts:
 
 ```sh
 # Emit a one-shot snapshot of current workspace state and exit immediately:
 leapmux events --workspace self --kind agent --snapshot --json
 
-# Stream live agent events with a persistent account checkpoint file and bounded timeout:
+# Stream live agent events with a persistent account checkpoint file and capped timeout:
 leapmux events --kind agent --checkpoint /tmp/agent-events.json --timeout 5m --json
 ```
 

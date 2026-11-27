@@ -29,6 +29,7 @@ type commandMeta struct {
 	quietUnsupported bool
 	localOnly        bool
 	abbreviationNote string
+	stateClassifier  StateClassifier
 }
 
 var (
@@ -302,6 +303,25 @@ func abbreviationNoteOf(cmd *cobra.Command) string {
 		}
 	}
 	return defaultAbbreviationNote
+}
+
+// SetStateClassifier registers the StateClassifier that commands under root
+// inherit for `,state` table columns.
+func SetStateClassifier(root *cobra.Command, fn StateClassifier) {
+	editCommandMeta(root, func(m *commandMeta) {
+		m.stateClassifier = fn
+	})
+}
+
+func stateClassifierOf(cmd *cobra.Command) StateClassifier {
+	commandMetaMu.RLock()
+	defer commandMetaMu.RUnlock()
+	for c := cmd; c != nil; c = c.Parent() {
+		if m := commandMetaStore[weak.Make(c)]; m != nil && m.stateClassifier != nil {
+			return m.stateClassifier
+		}
+	}
+	return nil
 }
 
 // MarkLocalOnly marks cmd (and its descendants) as acting strictly on the local

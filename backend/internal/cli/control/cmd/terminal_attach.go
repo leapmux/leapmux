@@ -129,7 +129,7 @@ func runTerminalAttach(inv *cli.Invocation) (any, error) {
 	}
 	defer s.Close()
 
-	callSession := s.bounded()
+	callSession := s.timed()
 	got, err := callSession.resolveTab(resolve.KindTerminal, inv.Arg("terminal"), resolve.Need{WorkerID: true})
 	if err == nil {
 		err = maybePreflightWorker(callSession.ctx, s.c, got.WorkerID)

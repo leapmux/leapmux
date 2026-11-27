@@ -510,7 +510,7 @@ func retainedLayoutEvent(fact *leapmuxv1.LayoutEventFact, filter kindFilter) (st
 		return streamEvent{}, false
 	}
 	before, after := tab.GetBefore(), tab.GetAfter()
-	event := streamEvent{TabID: tab.GetTab().GetTabId(), TabType: tabTypeName(tab.GetTab().GetTabType())}
+	event := streamEvent{TabID: tab.GetTab().GetTabId(), TabType: resolve.TabTypeWireName(tab.GetTab().GetTabType())}
 	event.Summary = event.TabType + " tab"
 	switch tab.GetKind() {
 	case leapmuxv1.LayoutTabChangeKind_LAYOUT_TAB_CHANGE_KIND_OPENED:

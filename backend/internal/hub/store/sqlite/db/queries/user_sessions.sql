@@ -186,3 +186,37 @@ WHERE s.expires_at > sqlc.arg(now)
        OR (s.last_active_at = sqlc.narg(cursor_time) AND s.id < sqlc.narg(cursor_id)))
 ORDER BY s.last_active_at DESC, s.id DESC
 LIMIT sqlc.arg(limit);
+
+-- name: ListUserSessionsByUserIDExact :many
+SELECT * FROM user_sessions
+WHERE id = sqlc.arg(id)
+  AND user_id = sqlc.arg(user_id)
+  AND expires_at > sqlc.arg(now);
+
+-- name: ListUserSessionsByUserIDPrefix :many
+SELECT * FROM user_sessions
+WHERE id >= sqlc.arg(id_lo)
+  AND id < sqlc.arg(id_hi)
+  AND id > sqlc.arg(id_gt)
+  AND user_id = sqlc.arg(user_id)
+  AND expires_at > sqlc.arg(now)
+ORDER BY id ASC
+LIMIT sqlc.arg(limit);
+
+-- name: ListAllActiveSessionsByIDExact :many
+SELECT s.id, s.user_id, COALESCE(u.username, '') AS username, CAST(u.id IS NULL AS BOOLEAN) AS user_deleted, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent
+FROM user_sessions s
+LEFT JOIN users u ON s.user_id = u.id AND u.deleted_at IS NULL
+WHERE s.id = sqlc.arg(id)
+  AND s.expires_at > sqlc.arg(now);
+
+-- name: ListAllActiveSessionsByIDPrefix :many
+SELECT s.id, s.user_id, COALESCE(u.username, '') AS username, CAST(u.id IS NULL AS BOOLEAN) AS user_deleted, s.created_at, s.last_active_at, s.expires_at, s.ip_address, s.user_agent
+FROM user_sessions s
+LEFT JOIN users u ON s.user_id = u.id AND u.deleted_at IS NULL
+WHERE s.id >= sqlc.arg(id_lo)
+  AND s.id < sqlc.arg(id_hi)
+  AND s.id > sqlc.arg(id_gt)
+  AND s.expires_at > sqlc.arg(now)
+ORDER BY s.id ASC
+LIMIT sqlc.arg(limit);

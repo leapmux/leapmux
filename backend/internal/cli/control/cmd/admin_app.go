@@ -74,9 +74,10 @@ func (r adminAppListResult) QuietLines() []string {
 
 func resolveAdminAppID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolvePagedAdminID(ctx, "app", raw, true,
-		func(ctx context.Context, page *leapmuxv1.PageRequest) ([]*leapmuxv1.App, *leapmuxv1.PageResponse, error) {
+		func(ctx context.Context, idPrefix string, page *leapmuxv1.PageRequest) ([]*leapmuxv1.App, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AppService().ListApps(ctx, &leapmuxv1.ListAppsRequest{
 				IncludeRevoked: true,
+				IdPrefix:       idPrefix,
 				Page:           page,
 			})
 			return resp.GetApps(), resp.GetPage(), err

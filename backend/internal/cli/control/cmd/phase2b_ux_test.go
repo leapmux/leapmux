@@ -14,6 +14,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
@@ -218,18 +219,8 @@ func TestLayoutTree_BoxDrawingAndWatchTextLine(t *testing.T) {
 }
 
 func TestWithHubHint_SubstitutesRealHubURL(t *testing.T) {
-	root := cli.Group("leapmux", "Root",
-		cli.NewLeaf(cli.Leaf{
-			Use:   "probe",
-			Short: "Probe",
-			Run: func(*cli.Invocation) (any, error) {
-				return nil, fmt.Errorf("call: %w", connect.NewError(connect.CodeUnauthenticated, "expired"))
-			},
-		}))
-	root.PersistentFlags().String("hub", "", "hub")
-	addHubHints(root)
-
-	err := cli.Run(context.Background(), root, []string{"probe", "--hub", "https://my-hub.example.com"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	peer := &control.HubClient{HubURL: "https://my-hub.example.com"}
+	err := decoratePeerError(t.Context(), peer, fmt.Errorf("call: %w", connect.NewError(connect.CodeUnauthenticated, "expired")))
 	got := cli.FromError(err)
 	require.Equal(t, cli.CodeNotLoggedIn, got.Code)
 	assert.Equal(t, []string{`run "leapmux auth login --hub https://my-hub.example.com" to sign in again`}, got.Hints)

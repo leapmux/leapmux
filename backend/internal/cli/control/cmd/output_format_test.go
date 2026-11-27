@@ -3,14 +3,17 @@ package cmd
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
-	"google.golang.org/protobuf/proto"
+	"github.com/leapmux/leapmux/internal/util/timefmt"
 )
 
 func TestControlRejectsConflictingOutputFormatsBeforeRequests(t *testing.T) {
@@ -49,4 +52,16 @@ func TestWorkspaceCreatePrintsItsMutationResultOnOneLine(t *testing.T) {
 	require.Len(t, strings.Split(strings.TrimSuffix(out.Stdout, "\n"), "\n"), 1, out.Stdout)
 	assert.Contains(t, out.Stdout, "created-workspace")
 	assert.Contains(t, out.Stdout, `Nightly\nreview`)
+}
+
+func TestFormatTimeAndWallTime(t *testing.T) {
+	assert.Empty(t, formatTime(nil))
+	assert.Empty(t, formatWallTime(time.Time{}))
+
+	loc := time.FixedZone("KST", 9*3600)
+	ts := time.Date(2026, 11, 27, 20, 15, 30, 123000000, loc)
+	want := timefmt.Format(ts)
+	assert.Equal(t, "2026-11-27T11:15:30.123Z", want)
+	assert.Equal(t, want, formatWallTime(ts))
+	assert.Equal(t, want, formatTime(timestamppb.New(ts)))
 }

@@ -18,16 +18,13 @@ import (
 // fields are set by the caller after env-default + tile→workspace
 // derivation; the helper does not consult os.Getenv itself.
 type openAgentArgs struct {
-	WorkspaceID    string
-	WorkerID       string
-	TileID         string
-	Provider       leapmuxv1.AgentProvider
-	Model          string
-	Effort         string
-	Title          string
-	PermissionMode string
-	// Options overrides spawnOptions(Model, Effort, PermissionMode) when non-nil
-	// so `agent open --option key=value` passes provider-specific axes at launch.
+	WorkspaceID string
+	WorkerID    string
+	TileID      string
+	Provider    leapmuxv1.AgentProvider
+	Title       string
+	// Options holds the initial provider option map (model, effort,
+	// permission mode, and provider-specific axes) applied at launch.
 	Options        map[string]string
 	WorkingDir     string
 	InitialMessage *string
@@ -143,7 +140,7 @@ func openAgentAndAddTab(ctx context.Context, c control.Peer, w workerCall, args 
 	}
 	opts := args.Options
 	if opts == nil {
-		opts = spawnOptions(args.Model, args.Effort, args.PermissionMode)
+		opts = map[string]string{}
 	}
 	request := &leapmuxv1.OpenAgentRequest{
 		Creation:       creation,

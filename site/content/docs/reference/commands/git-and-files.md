@@ -493,7 +493,7 @@ leapmux file set <tab> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
 
 | Flag | Description |
 |---|---|

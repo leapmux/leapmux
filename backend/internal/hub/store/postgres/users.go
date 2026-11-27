@@ -246,9 +246,40 @@ func (c *pgConn) fromDBUserListRow(u gendb.ListAllUsersRow) (store.UserListItem,
 }
 
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) (store.Page[store.UserListItem], error) {
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return store.Page[store.UserListItem]{}, err
+	}
+	if !hasPrefix {
+		return queryPageErr(ctx, p.Limit,
+			func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
+			s.conn.q.ListAllUsers, s.conn.fromDBUserListRow)
+	}
+	idGt, fetchLimit, empty, err := prepareIDPrefixPage(filter, p.Cursor, p.Limit)
+	if err != nil || empty {
+		return store.Page[store.UserListItem]{}, err
+	}
+	if filter.Exact {
+		return queryPageErr(ctx, p.Limit,
+			func() (string, error) { return filter.Lower, nil },
+			s.conn.q.ListUsersByIDExact,
+			func(r gendb.ListUsersByIDExactRow) (store.UserListItem, error) {
+				return s.conn.fromDBUserListRow(gendb.ListAllUsersRow(r))
+			})
+	}
 	return queryPageErr(ctx, p.Limit,
-		func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
-		s.conn.q.ListAllUsers, s.conn.fromDBUserListRow)
+		func() (gendb.ListUsersByIDPrefixParams, error) {
+			return gendb.ListUsersByIDPrefixParams{
+				IDLo:  filter.Lower,
+				IDHi:  filter.Upper,
+				IDGt:  idGt,
+				Limit: fetchLimit,
+			}, nil
+		},
+		s.conn.q.ListUsersByIDPrefix,
+		func(r gendb.ListUsersByIDPrefixRow) (store.UserListItem, error) {
+			return s.conn.fromDBUserListRow(gendb.ListAllUsersRow(r))
+		})
 }
 
 func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (store.Page[store.UserListItem], error) {

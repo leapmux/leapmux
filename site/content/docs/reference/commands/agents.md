@@ -17,7 +17,7 @@ These selectors and flags repeat across commands on this page.
 
 | Selector / Flag | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, "parent" for the calling agent's parent, or "self" for the agent tab that runs this command. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, "parent" for the calling agent's parent, or "self" for the agent tab that runs this command. |
 | `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
 | `--request-id string` | an id of your choice that makes a retry safe: a second run with the same id and the same arguments creates nothing new |
 | `--timeout duration` | with --wait, stop waiting after this long, such as 90s or 30m; 0 waits without a limit (default: 0s) |
@@ -231,7 +231,7 @@ leapmux agent wait <agent>... [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>...` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent. |
+| `<agent>...` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent. |
 
 | Flag | Description |
 |---|---|
@@ -266,7 +266,7 @@ leapmux agent requests [agent]... [flags]
 
 | Argument | Description |
 |---|---|
-| `[agent]...` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, "parent" for the calling agent's parent, or "self" for the agent tab that runs this command. Without one, the command lists the requests of every agent. |
+| `[agent]...` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, "parent" for the calling agent's parent, or "self" for the agent tab that runs this command. Without one, the command lists the requests of every agent. |
 
 | Flag | Description |
 |---|---|
@@ -300,7 +300,7 @@ leapmux agent approve <agent> [request] [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent. |
 | `[request]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
@@ -341,7 +341,7 @@ leapmux agent deny <agent> [request] [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent. |
 | `[request]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
@@ -373,7 +373,7 @@ leapmux agent answer <agent> [request] [text]... [flags]
 
 | Argument | Description |
 |---|---|
-| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent. |
+| `<agent>` | An agent id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title or --name slug, or "parent" for the calling agent's parent. |
 | `[request]` | See [common arguments and flags](#common-arguments-and-flags). |
 | `[text]...` | A typed answer, or "-" to read it from standard input. With several questions, write "&lt;question&gt;:&lt;text&gt;". |
 

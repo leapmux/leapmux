@@ -191,7 +191,7 @@ func openTunnelChannel(s *session) (*tunnel.Channel, string, error) {
 		return nil, "", cli.Usagef("tunnel commands require a direct Hub connection and cannot run over a tab's local IPC socket").
 			WithHint("run from a shell outside LeapMux, or pass --hub <url>")
 	}
-	timed := s.bounded()
+	timed := s.timed()
 	defer timed.Close()
 	workerID, err := timed.workerScope()
 	if err != nil {

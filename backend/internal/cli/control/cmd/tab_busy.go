@@ -1,15 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
-	"google.golang.org/protobuf/proto"
 )
 
 // The busy-tab guard, shared by `tab close` and the `tile` verbs that tombstone
@@ -143,8 +146,8 @@ func terminalBusyDetail(t *leapmuxv1.TerminalProcesses) string {
 //
 // Two reads, because the two tab families answer from different places: an agent
 // carries activity on the row `ListAgents` already returns, and a terminal's
-// process tree is asked for once, at the moment of the close. Both are batched,
-// so a tile of eight tabs costs at most two round trips.
+// process tree is asked for once, at the moment of the close. Both are batched
+// and issued concurrently when a worker holds both families.
 func inspectTabsBusy(call workerCaller, tabs []tabRef) ([]tabBusyReason, error) {
 	var agentIDs, terminalIDs []string
 	for _, t := range tabs {
@@ -158,47 +161,86 @@ func inspectTabsBusy(call workerCaller, tabs []tabRef) ([]tabBusyReason, error) 
 		}
 	}
 
-	details := make(map[string]string)
-	var probeErrors []error
-	if len(agentIDs) > 0 {
+	var (
+		agentDetails map[string]string
+		agentErr     error
+		termDetails  map[string]string
+		termErr      error
+	)
+	inspectAgents := func() {
 		resp := &leapmuxv1.ListAgentsResponse{}
 		if err := call(leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: agentIDs}, resp); err != nil {
-			probeErrors = append(probeErrors, err)
-		} else {
-			known := map[string]bool{}
-			for _, a := range resp.GetAgents() {
-				known[a.GetId()] = a.GetParentAgentId() != "" || a.GetActivityState() != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED
-				if d := agentBusyDetail(a); d != "" {
-					details[a.GetId()] = d
-				}
+			agentErr = err
+			return
+		}
+		agentDetails = make(map[string]string)
+		known := map[string]bool{}
+		for _, a := range resp.GetAgents() {
+			known[a.GetId()] = a.GetParentAgentId() != "" || a.GetActivityState() != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED
+			if d := agentBusyDetail(a); d != "" {
+				agentDetails[a.GetId()] = d
 			}
-			for _, verdict := range resp.GetVerdicts() {
-				if verdict.GetStatus() == leapmuxv1.TabHydrationStatus_TAB_HYDRATION_STATUS_ABSENT {
-					known[verdict.GetTabId()] = true
-				}
+		}
+		for _, verdict := range resp.GetVerdicts() {
+			if verdict.GetStatus() == leapmuxv1.TabHydrationStatus_TAB_HYDRATION_STATUS_ABSENT {
+				known[verdict.GetTabId()] = true
 			}
-			var unknown []string
-			for _, id := range agentIDs {
-				if !known[id] {
-					unknown = append(unknown, id)
-				}
+		}
+		var unknown []string
+		for _, id := range agentIDs {
+			if !known[id] {
+				unknown = append(unknown, id)
 			}
-			if len(unknown) > 0 {
-				probeErrors = append(probeErrors, cli.Newf(cli.CodeUnavailable, "the Worker did not report activity for %s", strings.Join(unknown, ", ")))
+		}
+		if len(unknown) > 0 {
+			agentErr = cli.Newf(cli.CodeUnavailable, "the Worker did not report activity for %s", strings.Join(unknown, ", "))
+		}
+	}
+	inspectTerminals := func() {
+		resp := &leapmuxv1.InspectTerminalProcessesResponse{}
+		if err := call(leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: terminalIDs}, resp); err != nil {
+			termErr = err
+			return
+		}
+		termDetails = make(map[string]string)
+		for _, t := range resp.GetTerminals() {
+			if d := terminalBusyDetail(t); d != "" {
+				termDetails[t.GetTerminalId()] = d
 			}
 		}
 	}
-	if len(terminalIDs) > 0 {
-		resp := &leapmuxv1.InspectTerminalProcessesResponse{}
-		if err := call(leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: terminalIDs}, resp); err != nil {
-			probeErrors = append(probeErrors, err)
-		} else {
-			for _, t := range resp.GetTerminals() {
-				if d := terminalBusyDetail(t); d != "" {
-					details[t.GetTerminalId()] = d
-				}
-			}
-		}
+
+	switch {
+	case len(agentIDs) > 0 && len(terminalIDs) > 0:
+		var g errgroup.Group
+		g.Go(func() error {
+			inspectAgents()
+			return nil
+		})
+		g.Go(func() error {
+			inspectTerminals()
+			return nil
+		})
+		_ = g.Wait()
+	case len(agentIDs) > 0:
+		inspectAgents()
+	case len(terminalIDs) > 0:
+		inspectTerminals()
+	}
+
+	details := make(map[string]string, len(agentDetails)+len(termDetails))
+	for id, d := range agentDetails {
+		details[id] = d
+	}
+	for id, d := range termDetails {
+		details[id] = d
+	}
+	var probeErrors []error
+	if agentErr != nil {
+		probeErrors = append(probeErrors, agentErr)
+	}
+	if termErr != nil {
+		probeErrors = append(probeErrors, termErr)
 	}
 
 	// Report in the caller's tab order, so a refusal reads in the order the
@@ -210,6 +252,22 @@ func inspectTabsBusy(call workerCaller, tabs []tabRef) ([]tabBusyReason, error) 
 		}
 	}
 	return out, errors.Join(probeErrors...)
+}
+
+// inspectTabsBusyOnChannel runs the busy probe for tabs over an already-open
+// Worker channel w. ListAgents and InspectTerminalProcesses run concurrently
+// when tabs include both agents and terminals.
+func inspectTabsBusyOnChannel(ctx context.Context, w workerCall, tabs []crdt.TabRef) (busy []tabBusyReason, probeErr error) {
+	if len(tabs) == 0 {
+		return nil, nil
+	}
+	refs := make([]tabRef, 0, len(tabs))
+	for _, t := range tabs {
+		refs = append(refs, tabRef{tabType: t.TabType, tabID: t.TabID})
+	}
+	return inspectTabsBusy(func(method string, in, out proto.Message) error {
+		return w.Call(ctx, method, in, out)
+	}, refs)
 }
 
 func busyCloseRefusal(busy []tabBusyReason, probeErr error) error {
@@ -232,65 +290,22 @@ type tabRef struct {
 	tabID   string
 }
 
-// pluralize formats a count with its noun. Mirrors the frontend helper of the
-// same name so the two surfaces word the same fact identically.
-func pluralize(count int, singular string, plural ...string) string {
-	if count == 1 {
-		return fmt.Sprintf("1 %s", singular)
-	}
-	word := singular + "s"
-	if len(plural) > 0 {
-		word = plural[0]
-	}
-	return fmt.Sprintf("%d %s", count, word)
-}
-
-// guardTabsBusy refuses a bulk close that would interrupt running work.
-//
-// `tile close --with-tabs=close`, `tile close --recursive` and
-// `tile remove-grid --with-tabs=close` tombstone tabs in the CRDT WITHOUT
-// calling the worker, so nothing else on their path would ever notice. They are
-// the CLI's analogue of the browser's tile/grid/window close, which asks once,
-// up front, about every busy tab -- and this asks the same question in the same
-// place, before any op is submitted.
-//
-// One PROBE per worker -- at most two RPCs, ListAgents and
-// InspectTerminalProcesses, as inspectTabsBusy states -- and in first-seen tab
-// order, so the refusal reads in the order the close would have run. A
-// failed check requires an explicit override to close the tabs.
-func guardTabsBusy(cc *crdtCall, tabs []crdt.TabRef, allowBusy bool) error {
-	if allowBusy || len(tabs) == 0 {
-		return nil
-	}
-	var order []string
-	byWorker := map[string][]tabRef{}
+// groupTabsByWorker groups tabs by their hosting Worker in first-seen order.
+// Tabs whose CRDT record carries no worker_id are returned in workerless so
+// callers can record probe errors without aborting inspection of the rest.
+func groupTabsByWorker(tabs []crdt.TabRef, state *leapmuxv1.UserMaterialized) (byWorker map[string][]crdt.TabRef, order []string, workerless []crdt.TabRef) {
+	byWorker = make(map[string][]crdt.TabRef)
+	stateTabs := state.GetTabs()
 	for _, t := range tabs {
-		if !tabNeedsBusyProbe(t.TabType) {
-			continue
-		}
-		workerID := cc.bs.State.GetTabs()[t.TabID].GetWorkerId().GetValue()
+		workerID := stateTabs[t.TabID].GetWorkerId().GetValue()
 		if workerID == "" {
-			return busyCloseRefusal(nil, cli.Newf(cli.CodeUnavailable, "tab %s has no Worker to verify its activity", t.TabID))
+			workerless = append(workerless, t)
+			continue
 		}
 		if _, seen := byWorker[workerID]; !seen {
 			order = append(order, workerID)
 		}
-		byWorker[workerID] = append(byWorker[workerID], tabRef{tabType: t.TabType, tabID: t.TabID})
+		byWorker[workerID] = append(byWorker[workerID], t)
 	}
-
-	var busy []tabBusyReason
-	var probeErrors []error
-	for _, workerID := range order {
-		refs := byWorker[workerID]
-		if err := withBestEffortWorkerChannel(cc.ctx, cc.c, workerID, func(w workerCall) error {
-			reasons, err := inspectTabsBusy(func(method string, in, out proto.Message) error {
-				return w.Call(cc.ctx, method, in, out)
-			}, refs)
-			busy = append(busy, reasons...)
-			return err
-		}); err != nil {
-			probeErrors = append(probeErrors, err)
-		}
-	}
-	return busyCloseRefusal(busy, errors.Join(probeErrors...))
+	return byWorker, order, workerless
 }

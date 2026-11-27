@@ -51,7 +51,7 @@ Pass `--device-name` to label the machine in [Connected Apps](/docs/using/accoun
 
 Every command uses `leapmux <group> <command> [args] [flags]`. Place values starting with `-` after `--`.
 
-- **Canonical aliases:** `lmx`, `ag`, `term`, `ws`, `wt`, `win`, `ev`, `notif`, `ctx`, `tun`, `pref`/`prefs`, `q`, `req`, `msg`, `skills`, `overview`/`ps`, `grep`/`find`, `fwd`/`nc`, `ls`, `rm`, `mv`, `cat`. Use full names or canonical aliases in scripts rather than ad-hoc prefixes.
+- **Canonical aliases:** `lmx`, `ag`, `term`, `ws`, `wt`, `wk`, `win`, `ev`, `notif`, `ctx`, `tun`, `pref`/`prefs`, `q`, `req`, `msg`, `skills`, `overview`/`ps`, `grep`/`find`, `fwd`/`nc`, `ls`, `rm`, `mv`, `cat`. Use full names or canonical aliases in scripts rather than ad-hoc prefixes.
 - **Self-documentation:** Every command supports `--help`. Agents can inspect bundled guidance with `leapmux guide` and the machine-readable schema with `leapmux commands --json`.
 - **Shell completion:** Run `leapmux completion <bash|zsh|fish|powershell|elvish|nushell>` for command, flag, and live target ID completion.
 
@@ -62,7 +62,7 @@ Commands accept targets (`<agent>`, `<terminal>`, `<tab>`, `<workspace>`, `<work
 | Selector | Example | Matches |
 | --- | --- | --- |
 | Full ID or unique prefix (4+ chars) | `87a1` | Exact ID match (checked first) or single matching prefix. |
-| `id:<id>` | `id:self` | Literal ID, even if short or equal to a reserved keyword. |
+| `id:<id>` | `id:87a1`, `id:self` | Exact ID (any length) or unique ID prefix (4+ chars), never matching titles or names. |
 | `title:<title>` / `name:<name>` | `"title:Release"`, `name:build-box` | Exact tab/workspace title, Worker name, or agent `--name` slug. |
 | Bare title, slug, or Worker name | `reviewer` | Case-insensitive match across titles, slugs, and Worker names. |
 | `self` | `self` | The calling tab, tile, workspace, or Worker inside a managed tab. |

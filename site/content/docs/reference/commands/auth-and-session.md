@@ -486,6 +486,11 @@ The procedures are the methods of the services in proto/leapmux/v1. A procedure 
 
 Inside a LeapMux tab, the socket of the tab relays these hub procedures alone:
 
+- leapmux.v1.SectionService/CreateSection
+- leapmux.v1.SectionService/DeleteSection
+- leapmux.v1.SectionService/ListSections
+- leapmux.v1.SectionService/MoveSection
+- leapmux.v1.SectionService/RenameSection
 - leapmux.v1.SystemService/GetSystemInfo
 - leapmux.v1.UserCRDT/GetMaterialized
 - leapmux.v1.UserCRDT/SubmitOps
@@ -500,6 +505,7 @@ Inside a LeapMux tab, the socket of the tab relays these hub procedures alone:
 - leapmux.v1.WorkspaceService/ListWorkspaces
 - leapmux.v1.WorkspaceService/LocateTab
 - leapmux.v1.WorkspaceService/LocateTile
+- leapmux.v1.WorkspaceService/MoveWorkspace
 - leapmux.v1.WorkspaceService/ReadLayoutEvents
 - leapmux.v1.WorkspaceService/RenameWorkspace
 

@@ -41,6 +41,9 @@ service WorkerGitService {
   rpc InspectLastTabClose(InspectLastTabCloseRequest) returns (InspectLastTabCloseResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
+  rpc InspectTabsClose(InspectTabsCloseRequest) returns (InspectTabsCloseResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
   rpc PushBranch(PushBranchRequest) returns (PushBranchResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
   }
@@ -214,6 +217,28 @@ message InspectLastTabCloseResponse {
   // An asynchronous removal is what makes that necessary: once the tab
   // is gone, no client has a surface left to report a refusal.
   string worktree_removal_blocked_reason = 11;
+}
+
+message InspectTabsCloseRequest {
+  // All tabs in the closing set. The Worker excludes every tab in this set
+  // when checking whether another open tab remains on the same worktree or
+  // branch.
+  repeated TabIdent tabs = 1;
+}
+
+message TabCloseInspection {
+  TabIdent tab = 1;
+  bool should_prompt = 2;
+  bool is_worktree = 3;
+  string worktree_path = 4;
+  string working_dir = 5;
+  string branch_name = 6;
+  BranchGitState git_state = 7;
+  string error_hint = 8;
+}
+
+message InspectTabsCloseResponse {
+  repeated TabCloseInspection items = 1;
 }
 
 message PushBranchRequest {

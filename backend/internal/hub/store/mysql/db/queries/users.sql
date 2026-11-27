@@ -352,3 +352,23 @@ SET password_hash = sqlc.arg(password_hash),
     auth_generation = sqlc.arg(auth_generation),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token);
+
+-- name: GetAllUsersByExactID :many
+SELECT id, username, password_hash, display_name, email, email_verified,
+       pending_email, first_credential_exempt, is_admin, created_at, updated_at,
+       auth_generation, deleted_at
+FROM users
+WHERE deleted_at IS NULL
+  AND id = sqlc.arg(id);
+
+-- name: ListAllUsersByIDPrefix :many
+SELECT id, username, password_hash, display_name, email, email_verified,
+       pending_email, first_credential_exempt, is_admin, created_at, updated_at,
+       auth_generation, deleted_at
+FROM users
+WHERE deleted_at IS NULL
+  AND id >= sqlc.arg(id_lo)
+  AND id < sqlc.arg(id_hi)
+  AND id > sqlc.arg(id_gt)
+ORDER BY id ASC
+LIMIT ?;

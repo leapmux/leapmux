@@ -117,7 +117,7 @@ func (s *session) runCheckpointedEvents(ctx context.Context, clock quartz.Clock,
 		return err
 	}
 	if state != nil {
-		if target.ID != state.Tab.TabID || target.WorkerID != state.Tab.WorkerID || tabTypeName(target.Type) != state.Tab.TabType {
+		if target.ID != state.Tab.TabID || target.WorkerID != state.Tab.WorkerID || resolve.TabTypeWireName(target.Type) != state.Tab.TabType {
 			return cli.Newf(cli.CodeConflict, "the event checkpoint belongs to a different tab or Worker")
 		}
 		if err := verifyCheckpointFilter(state, kinds); err != nil {
@@ -223,7 +223,7 @@ func (r *checkpointedEvents) runAttempt(parentCtx context.Context, s *session) (
 		case <-heartbeat:
 			if ready {
 				event := r.notice(kindStreamHeartbeat)
-				event.Summary = "watching " + tabTypeName(r.tab.Type) + " event history"
+				event.Summary = "watching " + resolve.TabTypeWireName(r.tab.Type) + " event history"
 				if _, err := r.printer.printCheckpointed(event); err != nil {
 					return false, err
 				}
@@ -305,7 +305,7 @@ func (r *checkpointedEvents) acceptReady(ready *leapmuxv1.SemanticWatchReady) er
 		Tab: &tabEventCheckpoint{
 			WorkerID:    r.tab.WorkerID,
 			TabID:       r.tab.ID,
-			TabType:     tabTypeName(r.tab.Type),
+			TabType:     resolve.TabTypeWireName(r.tab.Type),
 			TabStreamID: ready.GetTabStreamId(),
 			Position: &eventHistoryPosition{
 				JournalID: ready.GetJournalId(),
@@ -327,7 +327,7 @@ func (r *checkpointedEvents) acceptReady(ready *leapmuxv1.SemanticWatchReady) er
 	}
 	event := r.notice(kindStreamReady)
 	event.JournalID, event.TabStreamID, event.Sequence = start.Tab.Position.JournalID, start.Tab.TabStreamID, &after
-	event.Summary = "watching " + tabTypeName(r.tab.Type) + " event history"
+	event.Summary = "watching " + resolve.TabTypeWireName(r.tab.Type) + " event history"
 	if _, err := r.printer.printCheckpointed(event); err != nil {
 		return err
 	}

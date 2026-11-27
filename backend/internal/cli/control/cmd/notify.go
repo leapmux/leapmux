@@ -249,7 +249,7 @@ type notificationClearBatchResult struct {
 
 func (r notificationClearBatchResult) QuietLines() []string { return r.Cleared }
 
-func parseNotificationSelector(raw string) (value string, literal bool, err error) {
+func parseNotificationSelector(raw string) (value string, fullID bool, err error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", false, cli.Usagef("the notification ID is empty")
@@ -259,17 +259,17 @@ func parseNotificationSelector(raw string) (value string, literal bool, err erro
 		if rest == "" {
 			return "", false, cli.Usagef(`"id:" needs a notification ID after the colon`)
 		}
-		return rest, true, nil
+		return rest, resolve.IsGeneratedID(rest), nil
 	}
 	return trimmed, resolve.IsGeneratedID(trimmed), nil
 }
 
 func resolveNotificationID(items []*leapmuxv1.UserNotification, raw string) (string, error) {
-	value, literal, err := parseNotificationSelector(raw)
+	value, fullID, err := parseNotificationSelector(raw)
 	if err != nil {
 		return "", err
 	}
-	if literal {
+	if fullID {
 		return value, nil
 	}
 	matched, ambiguous, ok := lookupByIDPrefixMin(items, value, resolve.MinPrefixLength, (*leapmuxv1.UserNotification).GetId)

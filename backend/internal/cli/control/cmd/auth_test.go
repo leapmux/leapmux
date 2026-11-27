@@ -2082,44 +2082,37 @@ func TestNoticeDiscoveredLocalHub(t *testing.T) {
 	localHub := "unix:/tmp/solo/hub/hub.sock"
 
 	t.Run("emits notice in text mode for auto-discovered local hub", func(t *testing.T) {
-		isolateCLIEnv(t)
 		var stderr bytes.Buffer
 		inv := &cli.Invocation{
 			Printer: &cli.Printer{Out: io.Discard, Err: &stderr, Format: cli.FormatText},
 		}
-		noticeDiscoveredLocalHub(inv, "", localHub)
+		noticeDiscoveredLocalHub(inv, &control.HubClient{
+			HubURL: localHub,
+			Source: control.HubSourceDiscovered,
+		})
 		assert.Contains(t, stderr.String(), "using discovered local Hub "+localHub+" (override with --hub or LEAPMUX_HUB)")
 	})
 
-	t.Run("skips notice in non-text mode, explicit hub, LEAPMUX_HUB, remote hub, or matching saved context", func(t *testing.T) {
+	t.Run("skips notice in non-text mode, non-discovered sources, or worker IPC peers", func(t *testing.T) {
 		cases := []struct {
-			name     string
-			format   cli.Format
-			explicit string
-			envHub   string
-			savedHub string
-			hubURL   string
+			name   string
+			format cli.Format
+			peer   control.Peer
 		}{
-			{name: "json format", format: cli.FormatJSON, hubURL: localHub},
-			{name: "explicit --hub", format: cli.FormatText, explicit: localHub, hubURL: localHub},
-			{name: "LEAPMUX_HUB set", format: cli.FormatText, envHub: localHub, hubURL: localHub},
-			{name: "remote hub", format: cli.FormatText, hubURL: "https://hub.example"},
-			{name: "saved context matches", format: cli.FormatText, savedHub: localHub, hubURL: localHub},
+			{name: "json format", format: cli.FormatJSON, peer: &control.HubClient{HubURL: localHub, Source: control.HubSourceDiscovered}},
+			{name: "explicit --hub", format: cli.FormatText, peer: &control.HubClient{HubURL: localHub, Source: control.HubSourceFlag}},
+			{name: "LEAPMUX_HUB set", format: cli.FormatText, peer: &control.HubClient{HubURL: localHub, Source: control.HubSourceEnv}},
+			{name: "saved context", format: cli.FormatText, peer: &control.HubClient{HubURL: localHub, Source: control.HubSourceContext}},
+			{name: "sole credential", format: cli.FormatText, peer: &control.HubClient{HubURL: "https://hub.example", Source: control.HubSourceSingleCredential}},
+			{name: "worker IPC peer", format: cli.FormatText, peer: &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"}},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				isolateCLIEnv(t)
-				if tc.envHub != "" {
-					t.Setenv("LEAPMUX_HUB", tc.envHub)
-				}
-				if tc.savedHub != "" {
-					require.NoError(t, control.SaveContext(control.ContextConfig{Hub: tc.savedHub}))
-				}
 				var stderr bytes.Buffer
 				inv := &cli.Invocation{
 					Printer: &cli.Printer{Out: io.Discard, Err: &stderr, Format: tc.format},
 				}
-				noticeDiscoveredLocalHub(inv, tc.explicit, tc.hubURL)
+				noticeDiscoveredLocalHub(inv, tc.peer)
 				assert.Empty(t, stderr.String())
 			})
 		}

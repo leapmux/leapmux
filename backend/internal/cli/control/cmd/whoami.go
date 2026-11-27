@@ -13,6 +13,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
@@ -90,7 +91,7 @@ func whoamiOverIPC(inv *cli.Invocation, c *control.WorkerIPCClient) (whoamiResul
 		Username: resp.GetUsername(),
 		WorkerID: resp.GetWorkerId(),
 		TabID:    resp.GetTabId(),
-		TabType:  tabTypeName(resp.GetTabType()),
+		TabType:  resolve.TabTypeWireName(resp.GetTabType()),
 	}
 	if out.HubURL == "" {
 		out.HubURL = strings.TrimSpace(os.Getenv("LEAPMUX_HUB"))

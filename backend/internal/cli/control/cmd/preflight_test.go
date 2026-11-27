@@ -293,6 +293,47 @@ func TestNodeWorkspaceFromState_BreaksCycleSafely(t *testing.T) {
 	assert.Empty(t, nodeWorkspaceFromState(state, "a"))
 }
 
+func TestNodeWorkspaceFromState_ResolvesLiveFloatingWindows(t *testing.T) {
+	state := newStateBuilder().
+		workspace("ws-1", "root-1").
+		node("root-1", "").
+		node("fw-root", "").
+		node("fw-split", "fw-root").
+		node("fw-leaf", "fw-split").
+		node("dead-fw-root", "").
+		node("dead-fw-leaf", "dead-fw-root").
+		tab("tab-in-fw", "fw-leaf", leapmuxv1.TabType_TAB_TYPE_AGENT).
+		st
+	state.FloatingWindows = map[string]*leapmuxv1.FloatingWindowRecord{
+		"fw-1": {
+			WindowId:    "fw-1",
+			WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+			RootNodeId:  "fw-root",
+		},
+		"fw-dead": {
+			WindowId:    "fw-dead",
+			WorkspaceId: &leapmuxv1.LWWString{Value: "ws-1"},
+			RootNodeId:  "dead-fw-root",
+			TombstoneAt: &leapmuxv1.HLC{Physical: 1, Logical: 0, ClientId: "x"},
+		},
+	}
+
+	assert.Equal(t, "ws-1", nodeWorkspaceFromState(state, "fw-root"))
+	assert.Equal(t, "ws-1", nodeWorkspaceFromState(state, "fw-leaf"))
+	wsID, rootID, isFloat := nodeRootFromState(state, "fw-leaf")
+	assert.Equal(t, "ws-1", wsID)
+	assert.Equal(t, "fw-root", rootID)
+	assert.True(t, isFloat)
+	wsID, rootID, isFloat = nodeRootFromState(state, "root-1")
+	assert.Equal(t, "ws-1", wsID)
+	assert.Equal(t, "root-1", rootID)
+	assert.False(t, isFloat)
+	assert.Empty(t, nodeWorkspaceFromState(state, "dead-fw-root"))
+	assert.Empty(t, nodeWorkspaceFromState(state, "dead-fw-leaf"))
+	assert.NoError(t, preflightTile(state, "ws-1", "fw-leaf"))
+	assert.NoError(t, preflightTab(state, "ws-1", "tab-in-fw", leapmuxv1.TabType_TAB_TYPE_AGENT))
+}
+
 // TestIsWorkerUnreachable_ExistenceAuthClass guards the close-path
 // fallback that lets `tab close` tombstone a
 // tab whose worker is gone. We MUST match the four existence/auth

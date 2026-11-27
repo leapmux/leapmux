@@ -17,9 +17,9 @@ These selectors and flags repeat across commands on this page.
 
 | Selector / Flag | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, or "self" for the tile of the tab that runs this command. |
 | `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
 
 ## `leapmux tile`
 
@@ -67,7 +67,7 @@ leapmux tile close <tile> [flags]
 
 | Flag | Description |
 |---|---|
-| `--with-tabs string` | what happens to the tabs on the tile: "close" closes them; "move" moves them to the neighbouring tile; required when the tile has tabs (one of: close, move) |
+| `--with-tabs string` | what happens to the tabs on the tile: "close" closes them, or "move" moves them to the neighbouring tile (required when the tile has tabs) (one of: close, move) |
 | `--recursive` | close a split or a grid with every tile in it |
 | `--allow-busy` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--allow-self` | close the tile even when this tab sits on it, which ends this command's own process |
@@ -118,7 +118,7 @@ leapmux tile remove-grid <tile> [flags]
 
 | Flag | Description |
 |---|---|
-| `--with-tabs string` | what happens to the tabs in the grid: "close" closes them; "move" turns the grid into one tile that holds them; required when the grid has tabs (one of: close, move) |
+| `--with-tabs string` | what happens to the tabs in the grid: "close" closes them, or "move" turns the grid into one tile that holds them (required when the grid has tabs) (one of: close, move) |
 | `--allow-busy` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--allow-self` | remove the grid even when this tab sits in it, which ends this command's own process |
 
@@ -197,7 +197,7 @@ leapmux tile resize ab12cd34 --ratio 0.3
 
 ### `leapmux tile swap`
 
-Swap the positions of two tiles in the same workspace.
+Swap two tiles in the same workspace. Sibling tiles swap positions in place (reissued_ids: false). Tiles with different parents are cloned into each other's slots with fresh tile IDs (reissued_ids: true), and their tabs move to the cloned tiles.
 
 _Mutates state._
 
@@ -207,8 +207,8 @@ leapmux tile swap <tile-a> <tile-b> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile-a>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
-| `<tile-b>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile-a>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, or "self" for the tile of the tab that runs this command. |
+| `<tile-b>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for an id or id prefix, or "self" for the tile of the tab that runs this command. |
 
 ```sh
 leapmux tile swap ab12cd34 ef56gh78

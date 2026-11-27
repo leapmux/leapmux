@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/cli"
 )
 
 func TestGuideTopicsMatchTheEmbeddedSections(t *testing.T) {
@@ -54,4 +58,41 @@ func TestGuideRejectsUnknownOrContradictoryTopicSelection(t *testing.T) {
 	assert.Contains(t, notFound.Hints, "run leapmux guide --topics to list topics")
 	runControl(t, "guide", "targets", "--topics").requireFailure(t, cli.CodeUsage)
 	runControl(t, "guide", "").requireFailure(t, cli.CodeUsage)
+}
+
+func TestGuideCanonicalAliasesResolveOnCommandTree(t *testing.T) {
+	full := runControl(t, "guide").Data(t)
+	guideText, ok := full["guide"].(string)
+	require.True(t, ok)
+
+	aliasSpanRe := regexp.MustCompile(`(?s)Stable\s+aliases\s+\(([^)]+)\)`)
+	span := aliasSpanRe.FindStringSubmatch(guideText)
+	require.Len(t, span, 2, "agent-guide.md must document Stable aliases (...)")
+
+	tokenRe := regexp.MustCompile("`([^`]+)`")
+	matches := tokenRe.FindAllStringSubmatch(span[1], -1)
+	require.NotEmpty(t, matches)
+
+	registered := map[string]bool{}
+	var walk func(*cobra.Command)
+	walk = func(c *cobra.Command) {
+		for _, alias := range c.Aliases {
+			registered[alias] = true
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(NewCommand())
+
+	checked := 0
+	for _, m := range matches {
+		alias := strings.TrimSpace(m[1])
+		if alias == "lmx" {
+			continue
+		}
+		checked++
+		assert.Truef(t, registered[alias], "canonical alias %q documented in agent-guide.md does not match any command or subcommand on NewCommand()", alias)
+	}
+	assert.GreaterOrEqual(t, checked, 20, "expected to verify every documented command alias")
 }

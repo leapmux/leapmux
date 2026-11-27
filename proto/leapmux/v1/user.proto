@@ -423,6 +423,8 @@ message MyAPIToken {
 
 message ListMyAPITokensRequest {
   PageRequest page = 1;
+  // Narrow to tokens whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 2;
 }
 
 message ListMyAPITokensResponse {

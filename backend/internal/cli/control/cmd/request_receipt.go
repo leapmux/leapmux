@@ -78,8 +78,8 @@ func classifyRetryDispositionForCode(code cli.Code, stage retryStage) string {
 }
 
 // retryReceiptError attaches a cli.RetryReceipt and recovery hints without
-// eagerly converting the wrapped error into a *cli.Error, so addHubHints still
-// sees the underlying Connect error and cli.HintProvider hints are not attached
+// eagerly converting the wrapped error into a *cli.Error, so callers still see
+// the underlying Connect error and cli.HintProvider hints are not attached
 // twice.
 type retryReceiptError struct {
 	err     error

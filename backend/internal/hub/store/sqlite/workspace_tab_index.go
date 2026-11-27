@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -130,6 +131,54 @@ func (s *workspaceTabIndexStore) ListRenderedByWorkspaceIDs(ctx context.Context,
 		UserID:       owner,
 		WorkspaceIds: p.WorkspaceIDs,
 	})
+	if err != nil {
+		return nil, s.conn.queryError(err)
+	}
+	return store.MapSlice(rows, tabRowFromDB), nil
+}
+
+func (s *workspaceTabIndexStore) ListRenderedByIDPrefix(ctx context.Context, p store.ListRenderedTabsByIDPrefixParams) ([]store.WorkspaceTabRow, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok {
+		return nil, nil
+	}
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return nil, err
+	}
+	if !hasPrefix {
+		return nil, fmt.Errorf("%w: id_prefix is required", store.ErrInvalidArgument)
+	}
+	if !filter.Exact && !filter.HasUpper {
+		return nil, nil
+	}
+	var rows []gendb.WorkspaceTabOwned
+	switch {
+	case len(p.WorkspaceIDs) == 0 && filter.Exact:
+		rows, err = s.conn.q.ListRenderedTabsByIDExact(ctx, gendb.ListRenderedTabsByIDExactParams{
+			UserID: owner,
+			TabID:  filter.Lower,
+		})
+	case len(p.WorkspaceIDs) == 0:
+		rows, err = s.conn.q.ListRenderedTabsByIDPrefix(ctx, gendb.ListRenderedTabsByIDPrefixParams{
+			UserID: owner,
+			IDLo:   filter.Lower,
+			IDHi:   filter.Upper,
+		})
+	case filter.Exact:
+		rows, err = s.conn.q.ListRenderedTabsByIDExactInWorkspaces(ctx, gendb.ListRenderedTabsByIDExactInWorkspacesParams{
+			UserID:       owner,
+			TabID:        filter.Lower,
+			WorkspaceIds: p.WorkspaceIDs,
+		})
+	default:
+		rows, err = s.conn.q.ListRenderedTabsByIDPrefixInWorkspaces(ctx, gendb.ListRenderedTabsByIDPrefixInWorkspacesParams{
+			UserID:       owner,
+			IDLo:         filter.Lower,
+			IDHi:         filter.Upper,
+			WorkspaceIds: p.WorkspaceIDs,
+		})
+	}
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}

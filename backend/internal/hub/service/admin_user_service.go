@@ -257,12 +257,19 @@ func adminSessionToProto(s store.ActiveSession) *leapmuxv1.AdminSession {
 }
 
 func (s *AdminUserService) ListUsers(ctx context.Context, req *leapmuxv1.ListUsersRequest) (*leapmuxv1.ListUsersResponse, error) {
+	query := strings.TrimSpace(req.GetQuery())
+	idPrefix := strings.TrimSpace(req.GetIdPrefix())
+	if query != "" && idPrefix != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "query and id_prefix cannot be combined")
+	}
 	params := store.ListAllUsersParams{
+		IDPrefix:   req.GetIdPrefix(),
 		PageParams: pageParams(req.GetPage()),
 	}
 	var page store.Page[store.UserListItem]
 	var err error
-	if q := req.GetQuery(); q != "" {
+	if idPrefix == "" && req.GetQuery() != "" {
+		q := req.GetQuery()
 		page, err = s.store.Users().Search(ctx, store.SearchUsersParams{
 			Query:      &q,
 			PageParams: params.PageParams,
@@ -860,6 +867,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *leapmuxv1.
 	}
 	page, err := s.store.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     uid,
+		IDPrefix:   req.GetIdPrefix(),
 		PageParams: pageParams(req.GetPage()),
 	}, s.now().UTC())
 	if err != nil {
@@ -883,6 +891,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *leapmuxv1.
 
 func (s *AdminUserService) ListSessions(ctx context.Context, req *leapmuxv1.ListSessionsRequest) (*leapmuxv1.ListSessionsResponse, error) {
 	page, err := s.store.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
+		IDPrefix:   req.GetIdPrefix(),
 		PageParams: pageParams(req.GetPage()),
 	}, s.now().UTC())
 	if err != nil {
@@ -950,6 +959,7 @@ func (s *AdminUserService) ListAPITokens(ctx context.Context, req *leapmuxv1.Lis
 	page, err := s.store.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
 		UserID:         userFilter,
 		ClientID:       req.GetClientId(),
+		IDPrefix:       req.GetIdPrefix(),
 		PageParams:     pageParams(req.GetPage()),
 		IncludeRevoked: req.GetIncludeRevoked(),
 	})
@@ -1165,6 +1175,7 @@ func (s *AdminUserService) ListDelegationTokens(ctx context.Context, req *leapmu
 	}
 	page, err := s.store.DelegationTokens().ListAll(ctx, store.ListAllDelegationTokensParams{
 		UserID:         userFilter,
+		IDPrefix:       req.GetIdPrefix(),
 		PageParams:     pageParams(req.GetPage()),
 		IncludeRevoked: req.GetIncludeRevoked(),
 	})

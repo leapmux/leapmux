@@ -64,14 +64,6 @@ func completionIDToken(id, shortestTok, toComplete string) string {
 	return shortestTok
 }
 
-func commandSubPath(cmd *cobra.Command) string {
-	path := strings.TrimSpace(cmd.CommandPath())
-	if idx := strings.IndexByte(path, ' '); idx >= 0 {
-		return strings.TrimSpace(path[idx+1:])
-	}
-	return path
-}
-
 func completeHubFlag(cmd *cobra.Command, _ []string, word string) ([]string, cobra.ShellCompDirective) {
 	return completeStoredHubs(cmd, cli.ArgSpec{}, word)
 }
@@ -169,18 +161,8 @@ func agentOptionFlagCompletions() map[string]cobra.CompletionFunc {
 }
 
 func registerScopeCompletions(cmd *cobra.Command) {
-	scopeKinds := []struct {
-		name string
-		kind resolve.Kind
-	}{
-		{name: "workspace", kind: resolve.KindWorkspace},
-		{name: "worker", kind: resolve.KindWorker},
-		{name: "tile", kind: resolve.KindTile},
-		{name: "tab", kind: resolve.KindTab},
-		{name: "parent", kind: resolve.KindAgent},
-	}
-	for _, entry := range scopeKinds {
-		if cmd.Flags().Lookup(entry.name) == nil {
+	for _, entry := range scopeTargetFlags {
+		if !entry.hasKind || cmd.Flags().Lookup(entry.name) == nil {
 			continue
 		}
 		k := entry.kind
@@ -374,6 +356,9 @@ func completionWorkerID(ctx context.Context, cmd *cobra.Command, c control.Peer)
 	if saved, err := control.LoadContext(); err == nil && strings.TrimSpace(saved.Worker) != "" {
 		listing := s.listing()
 		listing.Workers = loadWorkers
+		// completionWorkerID falls back to loadWorkers when saved.Worker is
+		// stale, so sharing loadWorkers avoids a second ListWorkers RPC.
+		listing.WorkersByIDPrefix = nil
 		if t, err := resolve.Canonical(ctx, listing, resolve.KindWorker, saved.Worker); err == nil {
 			return t.ID, nil
 		}

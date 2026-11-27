@@ -383,8 +383,11 @@ func (p adminSessionPage) QuietLines() []string {
 
 func resolveAdminSessionID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolvePagedAdminID(ctx, "session", raw, false,
-		func(ctx context.Context, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminSession, *leapmuxv1.PageResponse, error) {
-			resp, err := c.AdminUserService().ListSessions(ctx, &leapmuxv1.ListSessionsRequest{Page: page})
+		func(ctx context.Context, idPrefix string, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminSession, *leapmuxv1.PageResponse, error) {
+			resp, err := c.AdminUserService().ListSessions(ctx, &leapmuxv1.ListSessionsRequest{
+				IdPrefix: idPrefix,
+				Page:     page,
+			})
 			return resp.GetSessions(), resp.GetPage(), err
 		},
 		(*leapmuxv1.AdminSession).GetId,

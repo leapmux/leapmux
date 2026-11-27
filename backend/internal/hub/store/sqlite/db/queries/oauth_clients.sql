@@ -329,3 +329,35 @@ ON CONFLICT (client_id) DO UPDATE SET
     scopes = EXCLUDED.scopes,
     grant_types = EXCLUDED.grant_types,
     registration_source = EXCLUDED.registration_source;
+
+-- name: ListOAuthClientsByIDExact :many
+SELECT client_id, owner_user_id, secret_hash, client_name,
+       COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
+       scopes, grant_types, elevation_allowed, registration_source,
+       verified_at, verified_by_user_id, created_at, updated_at, revoked_at
+FROM oauth_clients
+WHERE client_id = sqlc.arg(client_id)
+  AND (revoked_at IS NULL OR CAST(sqlc.arg(include_revoked) AS INTEGER) = 1)
+  AND (CASE WHEN CAST(sqlc.arg(hub_wide_only) AS INTEGER) = 1
+       THEN owner_user_id IS NULL
+       ELSE (owner_user_id = sqlc.arg(user_id)
+             OR (owner_user_id IS NULL AND CAST(sqlc.arg(include_hub_wide) AS INTEGER) = 1))
+       END);
+
+-- name: ListOAuthClientsByIDPrefix :many
+SELECT client_id, owner_user_id, secret_hash, client_name,
+       COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
+       scopes, grant_types, elevation_allowed, registration_source,
+       verified_at, verified_by_user_id, created_at, updated_at, revoked_at
+FROM oauth_clients
+WHERE client_id >= sqlc.arg(id_lo)
+  AND client_id < sqlc.arg(id_hi)
+  AND client_id > sqlc.arg(id_gt)
+  AND (revoked_at IS NULL OR CAST(sqlc.arg(include_revoked) AS INTEGER) = 1)
+  AND (CASE WHEN CAST(sqlc.arg(hub_wide_only) AS INTEGER) = 1
+       THEN owner_user_id IS NULL
+       ELSE (owner_user_id = sqlc.arg(user_id)
+             OR (owner_user_id IS NULL AND CAST(sqlc.arg(include_hub_wide) AS INTEGER) = 1))
+       END)
+ORDER BY client_id ASC
+LIMIT sqlc.arg(limit);

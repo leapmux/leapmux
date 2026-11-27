@@ -296,6 +296,7 @@ func (s *WorkerManagementService) ListWorkers(
 	// returned the caller's whole worker row set in one response.
 	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
+		IDPrefix:     req.GetIdPrefix(),
 		PageParams:   pageParams(req.GetPage()),
 	})
 	if err != nil {

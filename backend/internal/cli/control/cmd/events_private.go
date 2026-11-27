@@ -14,6 +14,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
 // privateReconnectTimerTag identifies the private-event reconnect timer to a
@@ -308,7 +309,7 @@ func (s *eventStream) applyNotificationDestination(ev *streamEvent, dest *leapmu
 		if tab, ok := s.tabs[tabID]; ok {
 			ev.WorkspaceID = tab.WorkspaceID
 			ev.TabID = tab.ID
-			ev.TabType = tabTypeName(tab.Type)
+			ev.TabType = resolve.TabTypeWireName(tab.Type)
 			return true
 		}
 		if s.workspace != "" || s.tabID != "" {

@@ -219,3 +219,91 @@ func TestIsLocalIPCLive_InvalidAddrAndCanceledContext(t *testing.T) {
 	assert.False(t, isLocalIPCLive(canceledCtx, "unix:"+sockPath),
 		"an already-canceled context must fail the liveness probe")
 }
+
+func TestResolveDefaultHub_ReturnsSourceProvenance(t *testing.T) {
+	t.Run("env takes precedence", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_HUB", "https://env.example")
+		hub, source, creds, err := resolveDefaultHub(true)
+		require.NoError(t, err)
+		assert.Equal(t, "https://env.example", hub)
+		assert.Equal(t, HubSourceEnv, source)
+		assert.Nil(t, creds)
+	})
+
+	t.Run("context hub reports HubSourceContext", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_HUB", "")
+		require.NoError(t, SaveContext(ContextConfig{Hub: "https://ctx.example"}))
+		hub, source, creds, err := resolveDefaultHub(true)
+		require.NoError(t, err)
+		assert.Equal(t, "https://ctx.example", hub)
+		assert.Equal(t, HubSourceContext, source)
+		assert.Nil(t, creds)
+	})
+
+	t.Run("sole credential file reports HubSourceSingleCredential", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_HUB", "")
+		require.NoError(t, SaveCredentials("https://sole.example", CredentialFile{
+			HubURL:      "https://sole.example",
+			AccessToken: "lmx_sole",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}))
+		hub, source, creds, err := resolveDefaultHub(true)
+		require.NoError(t, err)
+		assert.Equal(t, "https://sole.example", hub)
+		assert.Equal(t, HubSourceSingleCredential, source)
+		require.NotNil(t, creds)
+		assert.Equal(t, "lmx_sole", creds.AccessToken)
+	})
+
+	t.Run("discovered local socket reports HubSourceDiscovered", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix socket discovery applies only to non-Windows hosts")
+		}
+		root, err := os.MkdirTemp("", "lmxsrc-*")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+		cfgDir := filepath.Join(root, "control")
+		soloDir := filepath.Join(root, "solo", "hub")
+		require.NoError(t, os.MkdirAll(cfgDir, 0o700))
+		require.NoError(t, os.MkdirAll(soloDir, 0o700))
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+		t.Setenv("LEAPMUX_HUB", "")
+
+		sockPath := filepath.Join(soloDir, "hub.sock")
+		ln, err := net.Listen("unix", sockPath)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			for {
+				c, acceptErr := ln.Accept()
+				if acceptErr != nil {
+					return
+				}
+				_ = c.Close()
+			}
+		}()
+
+		hub, source, err := DefaultHubWithSource()
+		require.NoError(t, err)
+		assert.Equal(t, "unix:"+sockPath, hub)
+		assert.Equal(t, HubSourceDiscovered, source)
+
+		// ConfiguredDefaultHub disables local discovery.
+		_, _, _, cfgErr := resolveDefaultHub(false)
+		require.Error(t, cfgErr)
+		var noHub *NoHubError
+		require.ErrorAs(t, cfgErr, &noHub)
+	})
+
+	t.Run("no hub returns HubSourceUnspecified", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		t.Setenv("LEAPMUX_HUB", "")
+		_, source, _, err := resolveDefaultHub(false)
+		require.Error(t, err)
+		assert.Equal(t, HubSourceUnspecified, source)
+	})
+}

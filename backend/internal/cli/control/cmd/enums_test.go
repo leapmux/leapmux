@@ -12,6 +12,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
@@ -34,7 +35,7 @@ func TestTabTypeName_AllValues(t *testing.T) {
 		leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED: "",
 	}
 	for in, want := range cases {
-		assert.Equal(t, want, tabTypeName(in), "tabTypeName(%v)", in)
+		assert.Equal(t, want, resolve.TabTypeWireName(in), "resolve.TabTypeWireName(%v)", in)
 	}
 }
 
@@ -84,7 +85,7 @@ func TestEnumToken(t *testing.T) {
 func TestEnumTokenMatchesTheTabTypeContract(t *testing.T) {
 	for value := range leapmuxv1.TabType_name {
 		tt := leapmuxv1.TabType(value)
-		assert.Equal(t, tabTypeName(tt), enumToken(tt), "%v", tt)
+		assert.Equal(t, resolve.TabTypeWireName(tt), enumToken(tt), "%v", tt)
 	}
 }
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -165,8 +166,16 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.A
 	}, nil
 }
 
-func (s *AdminIdPService) ListOAuthProviders(ctx context.Context, _ *leapmuxv1.ListOAuthProvidersRequest) (*leapmuxv1.ListOAuthProvidersResponse, error) {
-	providers, err := s.store.OAuthProviders().ListAll(ctx)
+func (s *AdminIdPService) ListOAuthProviders(ctx context.Context, req *leapmuxv1.ListOAuthProvidersRequest) (*leapmuxv1.ListOAuthProvidersResponse, error) {
+	var (
+		providers []store.OAuthProviderSummary
+		err       error
+	)
+	if strings.TrimSpace(req.GetIdPrefix()) != "" {
+		providers, err = s.store.OAuthProviders().ListByIDPrefix(ctx, req.GetIdPrefix())
+	} else {
+		providers, err = s.store.OAuthProviders().ListAll(ctx)
+	}
 	if err != nil {
 		return nil, storeConnectError(err, "list providers")
 	}

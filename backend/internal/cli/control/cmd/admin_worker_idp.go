@@ -90,10 +90,11 @@ func (r adminWorkerListResult) QuietLines() []string {
 func resolveAdminWorker(ctx context.Context, c *control.HubClient, raw string) (string, *leapmuxv1.AdminWorker, error) {
 	byID := map[string]*leapmuxv1.AdminWorker{}
 	resolved, err := resolvePagedAdminID(ctx, "worker", raw, false,
-		func(ctx context.Context, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminWorker, *leapmuxv1.PageResponse, error) {
+		func(ctx context.Context, idPrefix string, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminWorker, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminWorkerService().ListWorkers(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-				Status: leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED,
-				Page:   page,
+				Status:   leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED,
+				IdPrefix: idPrefix,
+				Page:     page,
 			})
 			return resp.GetWorkers(), resp.GetPage(), err
 		},
@@ -116,9 +117,10 @@ func resolveAdminWorkerID(ctx context.Context, c *control.HubClient, raw string)
 
 func resolveAdminRegKeyID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
 	return resolveLiveThenAllPagedAdminID(ctx, "registration key", raw, false,
-		func(ctx context.Context, includeExpired bool, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminRegistrationKey, *leapmuxv1.PageResponse, error) {
+		func(ctx context.Context, includeExpired bool, idPrefix string, page *leapmuxv1.PageRequest) ([]*leapmuxv1.AdminRegistrationKey, *leapmuxv1.PageResponse, error) {
 			resp, err := c.AdminWorkerService().ListRegistrationKeys(ctx, &leapmuxv1.ListRegistrationKeysRequest{
 				IncludeExpired: includeExpired,
+				IdPrefix:       idPrefix,
 				Page:           page,
 			})
 			return resp.GetKeys(), resp.GetPage(), err
@@ -131,8 +133,10 @@ func resolveAdminRegKeyID(ctx context.Context, c *control.HubClient, raw string)
 }
 
 func resolveAdminIdPID(ctx context.Context, c *control.HubClient, raw string) (string, error) {
-	return resolveAdminTarget(ctx, raw, "sign-in provider", true, func(ctx context.Context) ([]cli.Candidate, error) {
-		resp, err := c.AdminIdPService().ListOAuthProviders(ctx, &leapmuxv1.ListOAuthProvidersRequest{})
+	return resolveAdminTarget(ctx, raw, "sign-in provider", true, func(ctx context.Context, idPrefix string) ([]cli.Candidate, error) {
+		resp, err := c.AdminIdPService().ListOAuthProviders(ctx, &leapmuxv1.ListOAuthProvidersRequest{
+			IdPrefix: idPrefix,
+		})
 		if err != nil {
 			return nil, err
 		}

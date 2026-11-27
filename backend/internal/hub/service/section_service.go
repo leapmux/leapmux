@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"connectrpc.com/connect/v2"
 
@@ -35,9 +36,18 @@ func (s *SectionService) ListSections(
 		return nil, err
 	}
 
-	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
+	filterByPrefix := strings.TrimSpace(req.GetIdPrefix()) != ""
+	var sections []store.WorkspaceSection
+	if filterByPrefix {
+		sections, err = s.store.WorkspaceSections().ListByIDPrefix(ctx, user.ID, req.GetIdPrefix())
+	} else {
+		sections, err = s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
+	}
 	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, storeConnectError(err, "list sections")
+	}
+	if filterByPrefix && len(sections) == 0 {
+		return &leapmuxv1.ListSectionsResponse{}, nil
 	}
 
 	// ListSections is a pure READ. CreateUser seeds the default sections in the
@@ -53,18 +63,31 @@ func (s *SectionService) ListSections(
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
+	var matchedSectionIDs map[string]struct{}
+	if filterByPrefix {
+		matchedSectionIDs = make(map[string]struct{}, len(sections))
+		for _, sec := range sections {
+			matchedSectionIDs[sec.ID] = struct{}{}
+		}
+	}
+
 	protoSections := make([]*leapmuxv1.Section, len(sections))
 	for i, sec := range sections {
 		protoSections[i] = sectionToProto(sec)
 	}
 
-	protoItems := make([]*leapmuxv1.SectionItem, len(items))
-	for i, item := range items {
-		protoItems[i] = &leapmuxv1.SectionItem{
+	protoItems := make([]*leapmuxv1.SectionItem, 0, len(items))
+	for _, item := range items {
+		if matchedSectionIDs != nil {
+			if _, ok := matchedSectionIDs[item.SectionID]; !ok {
+				continue
+			}
+		}
+		protoItems = append(protoItems, &leapmuxv1.SectionItem{
 			WorkspaceId: item.WorkspaceID,
 			SectionId:   item.SectionID,
 			Position:    item.Position,
-		}
+		})
 	}
 
 	return &leapmuxv1.ListSectionsResponse{

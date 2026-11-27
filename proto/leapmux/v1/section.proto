@@ -67,6 +67,8 @@ message SectionItem {
 }
 
 message ListSectionsRequest {
+  // Narrow to sections whose id starts with this prefix (exact match when a full id).
+  string id_prefix = 1;
 }
 
 message ListSectionsResponse {

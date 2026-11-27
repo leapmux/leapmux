@@ -84,7 +84,7 @@ func TestDefaultHub_ReturnsErrorOnCorruptContextFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "parse context")
 }
 
-func TestSetDefaultHub_UnifiesWithContextAndRemovesLegacyFile(t *testing.T) {
+func TestSetDefaultHub_UnifiesWithContext(t *testing.T) {
 	cfgDir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
 	t.Setenv("LEAPMUX_HUB", "")
@@ -93,8 +93,6 @@ func TestSetDefaultHub_UnifiesWithContextAndRemovesLegacyFile(t *testing.T) {
 		Hub:    "https://a.example.com",
 		Worker: "build-box",
 	}))
-	legacyPath := filepath.Join(cfgDir, "default-hub")
-	require.NoError(t, os.WriteFile(legacyPath, []byte("https://legacy.example.com\n"), 0o600))
 
 	require.NoError(t, control.SetDefaultHub("https://b.example.com"))
 
@@ -106,9 +104,6 @@ func TestSetDefaultHub_UnifiesWithContextAndRemovesLegacyFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://b.example.com", cfg.Hub)
 	assert.Equal(t, "build-box", cfg.Worker, "updating the default hub must keep other saved context fields")
-
-	_, statErr := os.Stat(legacyPath)
-	assert.True(t, os.IsNotExist(statErr), "SetDefaultHub must remove any legacy default-hub file")
 }
 
 func TestDiscoverLocalHub_FindsLiveSoloSocketAndIgnoresStale(t *testing.T) {
@@ -155,8 +150,8 @@ func TestDiscoverLocalHub_FindsLiveSoloSocketAndIgnoresStale(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "unix:"+devSock, hub)
 
-	// When 2+ stored credentials exist with no default-hub, DefaultHub must NOT
-	// silently fall through to a local discovered Hub.
+	// When 2+ stored credentials exist with no saved default Hub in context.json,
+	// DefaultHub must NOT silently fall through to a local discovered Hub.
 	require.NoError(t, control.SaveCredentials("https://one.example.com", control.CredentialFile{
 		HubURL: "https://one.example.com", AccessToken: "tok1", ExpiresAt: time.Now().Add(time.Hour),
 	}))
@@ -308,17 +303,7 @@ func TestConfiguredDefaultHub_SkipsLocalDiscoveryAndHonorsPrecedence(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, "https://sole.example", hub)
 
-	// Legacy default-hub file beats the sole stored credential.
-	legacyPath := filepath.Join(cfgDir, "default-hub")
-	require.NoError(t, os.WriteFile(legacyPath, []byte("  https://legacy.example \n"), 0o600))
-	hub, err = control.ConfiguredDefaultHub()
-	require.NoError(t, err)
-	assert.Equal(t, "https://legacy.example", hub)
-	hub, err = control.DefaultHub()
-	require.NoError(t, err)
-	assert.Equal(t, "https://legacy.example", hub)
-
-	// context.json beats legacy default-hub.
+	// context.json beats the sole stored credential.
 	require.NoError(t, control.SaveContext(control.ContextConfig{Hub: "https://ctx.example"}))
 	hub, err = control.ConfiguredDefaultHub()
 	require.NoError(t, err)
@@ -331,13 +316,11 @@ func TestConfiguredDefaultHub_SkipsLocalDiscoveryAndHonorsPrecedence(t *testing.
 	assert.Equal(t, "https://env.example", hub)
 }
 
-func TestClearDefaultHubIf_MatchMismatchAndLegacy(t *testing.T) {
+func TestClearDefaultHubIf_MatchAndMismatch(t *testing.T) {
 	t.Run("empty and whitespace are no-ops", func(t *testing.T) {
 		cfgDir := t.TempDir()
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
 		require.NoError(t, control.SaveContext(control.ContextConfig{Hub: "https://keep.example", Worker: "w-1"}))
-		legacyPath := filepath.Join(cfgDir, "default-hub")
-		require.NoError(t, os.WriteFile(legacyPath, []byte("https://legacy.example\n"), 0o600))
 
 		require.NoError(t, control.ClearDefaultHubIf(""))
 		require.NoError(t, control.ClearDefaultHubIf("   \t\n"))
@@ -346,16 +329,12 @@ func TestClearDefaultHubIf_MatchMismatchAndLegacy(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "https://keep.example", cfg.Hub)
 		assert.Equal(t, "w-1", cfg.Worker)
-		_, statErr := os.Stat(legacyPath)
-		assert.NoError(t, statErr)
 	})
 
-	t.Run("mismatch preserves context and legacy file", func(t *testing.T) {
+	t.Run("mismatch preserves context", func(t *testing.T) {
 		cfgDir := t.TempDir()
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
 		require.NoError(t, control.SaveContext(control.ContextConfig{Hub: "https://a.example", Worker: "w-1"}))
-		legacyPath := filepath.Join(cfgDir, "default-hub")
-		require.NoError(t, os.WriteFile(legacyPath, []byte("https://a.example\n"), 0o600))
 
 		require.NoError(t, control.ClearDefaultHubIf("https://b.example"))
 
@@ -363,11 +342,9 @@ func TestClearDefaultHubIf_MatchMismatchAndLegacy(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "https://a.example", cfg.Hub)
 		assert.Equal(t, "w-1", cfg.Worker)
-		_, statErr := os.Stat(legacyPath)
-		assert.NoError(t, statErr)
 	})
 
-	t.Run("match clears hub while preserving other context fields and removes matching legacy file", func(t *testing.T) {
+	t.Run("match clears hub while preserving other context fields", func(t *testing.T) {
 		cfgDir := t.TempDir()
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
 		require.NoError(t, control.SaveContext(control.ContextConfig{
@@ -376,10 +353,6 @@ func TestClearDefaultHubIf_MatchMismatchAndLegacy(t *testing.T) {
 			Workspace: "ws-1",
 			Provider:  "claude",
 		}))
-		legacyPath := filepath.Join(cfgDir, "default-hub")
-		legacyTmp := legacyPath + ".tmp42"
-		require.NoError(t, os.WriteFile(legacyPath, []byte("https://a.example\n"), 0o600))
-		require.NoError(t, os.WriteFile(legacyTmp, []byte("https://a.example\n"), 0o600))
 
 		require.NoError(t, control.ClearDefaultHubIf("  https://a.example  "))
 
@@ -389,10 +362,6 @@ func TestClearDefaultHubIf_MatchMismatchAndLegacy(t *testing.T) {
 		assert.Equal(t, "w-1", cfg.Worker)
 		assert.Equal(t, "ws-1", cfg.Workspace)
 		assert.Equal(t, "claude", cfg.Provider)
-		_, statErr := os.Stat(legacyPath)
-		assert.True(t, os.IsNotExist(statErr), "matching legacy default-hub must be removed")
-		_, tmpErr := os.Stat(legacyTmp)
-		assert.True(t, os.IsNotExist(tmpErr), "matching legacy default-hub temp files must be swept")
 	})
 
 	t.Run("match deletes context.json when hub was the only field", func(t *testing.T) {
@@ -421,12 +390,10 @@ func TestClearDefaultHubIf_MatchMismatchAndLegacy(t *testing.T) {
 	})
 }
 
-func TestSetDefaultHub_EmptyClearsHubAndRemovesLegacyFile(t *testing.T) {
+func TestSetDefaultHub_EmptyClearsHub(t *testing.T) {
 	cfgDir := t.TempDir()
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
 	require.NoError(t, control.SaveContext(control.ContextConfig{Hub: "https://a.example", Worker: "w-1"}))
-	legacyPath := filepath.Join(cfgDir, "default-hub")
-	require.NoError(t, os.WriteFile(legacyPath, []byte("https://legacy.example\n"), 0o600))
 
 	require.NoError(t, control.SetDefaultHub("  "))
 
@@ -434,15 +401,13 @@ func TestSetDefaultHub_EmptyClearsHubAndRemovesLegacyFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, cfg.Hub)
 	assert.Equal(t, "w-1", cfg.Worker)
-	_, statErr := os.Stat(legacyPath)
-	assert.True(t, os.IsNotExist(statErr))
 
 	// When no other context fields remain, SetDefaultHub("") removes context.json.
 	require.NoError(t, control.SaveContext(control.ContextConfig{Hub: "https://only.example"}))
 	require.NoError(t, control.SetDefaultHub(""))
 	ctxPath, err := control.ContextPath()
 	require.NoError(t, err)
-	_, statErr = os.Stat(ctxPath)
+	_, statErr := os.Stat(ctxPath)
 	assert.True(t, os.IsNotExist(statErr))
 }
 
@@ -566,16 +531,14 @@ func TestSetDefaultHub_CanonicalizesStoredURL(t *testing.T) {
 	assert.Equal(t, "unix:/tmp/MyHub/hub.sock", cfg.Hub)
 }
 
-func TestClearDefaultHubIf_MatchesCanonicalDifferencesInContextAndLegacy(t *testing.T) {
-	t.Run("non-canonical input clears canonical context and legacy file", func(t *testing.T) {
+func TestClearDefaultHubIf_MatchesCanonicalDifferencesInContext(t *testing.T) {
+	t.Run("non-canonical input clears canonical context", func(t *testing.T) {
 		cfgDir := t.TempDir()
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
 		require.NoError(t, control.SaveContext(control.ContextConfig{
 			Hub:    "https://hub.example",
 			Worker: "w-1",
 		}))
-		legacyPath := filepath.Join(cfgDir, "default-hub")
-		require.NoError(t, os.WriteFile(legacyPath, []byte("https://hub.example\n"), 0o600))
 
 		require.NoError(t, control.ClearDefaultHubIf("HTTPS://HUB.EXAMPLE/"))
 
@@ -583,19 +546,15 @@ func TestClearDefaultHubIf_MatchesCanonicalDifferencesInContextAndLegacy(t *test
 		require.NoError(t, err)
 		assert.Empty(t, cfg.Hub)
 		assert.Equal(t, "w-1", cfg.Worker)
-		_, statErr := os.Stat(legacyPath)
-		assert.True(t, os.IsNotExist(statErr), "matching legacy default-hub must be removed")
 	})
 
-	t.Run("canonical input clears non-canonical context and legacy file", func(t *testing.T) {
+	t.Run("canonical input clears non-canonical context", func(t *testing.T) {
 		cfgDir := t.TempDir()
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
 		require.NoError(t, control.SaveContext(control.ContextConfig{
 			Hub:    "https://HUB.EXAMPLE/",
 			Worker: "w-1",
 		}))
-		legacyPath := filepath.Join(cfgDir, "default-hub")
-		require.NoError(t, os.WriteFile(legacyPath, []byte("HTTPS://HUB.EXAMPLE///\n"), 0o600))
 
 		require.NoError(t, control.ClearDefaultHubIf("https://hub.example"))
 
@@ -603,23 +562,17 @@ func TestClearDefaultHubIf_MatchesCanonicalDifferencesInContextAndLegacy(t *test
 		require.NoError(t, err)
 		assert.Empty(t, cfg.Hub)
 		assert.Equal(t, "w-1", cfg.Worker)
-		_, statErr := os.Stat(legacyPath)
-		assert.True(t, os.IsNotExist(statErr), "matching legacy default-hub must be removed")
 	})
 
-	t.Run("different scheme preserves context and legacy file", func(t *testing.T) {
+	t.Run("different scheme preserves context", func(t *testing.T) {
 		cfgDir := t.TempDir()
 		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
 		require.NoError(t, control.SaveContext(control.ContextConfig{Hub: "https://hub.example"}))
-		legacyPath := filepath.Join(cfgDir, "default-hub")
-		require.NoError(t, os.WriteFile(legacyPath, []byte("https://hub.example\n"), 0o600))
 
 		require.NoError(t, control.ClearDefaultHubIf("http://hub.example"))
 
 		cfg, err := control.LoadContext()
 		require.NoError(t, err)
 		assert.Equal(t, "https://hub.example", cfg.Hub)
-		_, statErr := os.Stat(legacyPath)
-		assert.NoError(t, statErr)
 	})
 }

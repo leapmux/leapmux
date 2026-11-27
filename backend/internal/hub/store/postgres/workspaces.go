@@ -83,7 +83,28 @@ func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessi
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil, nil
 	}
-	rows, err := s.conn.q.ListAccessibleWorkspaces(ctx, owner)
+	filter, hasPrefix, err := store.ParseIDPrefix(p.IDPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var rows []gendb.Workspace
+	switch {
+	case !hasPrefix:
+		rows, err = s.conn.q.ListAccessibleWorkspaces(ctx, owner)
+	case !filter.Exact && !filter.HasUpper:
+		return nil, nil
+	case filter.Exact:
+		rows, err = s.conn.q.ListAccessibleWorkspacesByIDExact(ctx, gendb.ListAccessibleWorkspacesByIDExactParams{
+			UserID: owner,
+			ID:     filter.Lower,
+		})
+	default:
+		rows, err = s.conn.q.ListAccessibleWorkspacesByIDPrefix(ctx, gendb.ListAccessibleWorkspacesByIDPrefixParams{
+			UserID: owner,
+			IDLo:   filter.Lower,
+			IDHi:   filter.Upper,
+		})
+	}
 	if err != nil {
 		return nil, mapErr(err)
 	}

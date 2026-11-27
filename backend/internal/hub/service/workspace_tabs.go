@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"connectrpc.com/connect/v2"
 
@@ -23,6 +24,33 @@ func (s *WorkspaceService) ListTabs(
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	if strings.TrimSpace(req.GetIdPrefix()) != "" {
+		var workspaceIDs []string
+		if len(req.GetWorkspaceIds()) > 0 {
+			workspaceIDs, err = resolveAllowedWorkspacesForUser(ctx, s.store, req.GetWorkspaceIds(), user)
+			if err != nil {
+				if connect.CodeOf(err) == connect.CodePermissionDenied {
+					return nil, err
+				}
+				return nil, wrappedConnectError(connect.CodeInternal, err)
+			}
+			if len(workspaceIDs) == 0 {
+				return &leapmuxv1.ListTabsResponse{}, nil
+			}
+		}
+		rows, err := s.store.WorkspaceTabIndex().ListRenderedByIDPrefix(ctx, store.ListRenderedTabsByIDPrefixParams{
+			UserID:       user.ID,
+			WorkspaceIDs: workspaceIDs,
+			IDPrefix:     req.GetIdPrefix(),
+		})
+		if err != nil {
+			return nil, storeConnectError(err, "list rendered tabs")
+		}
+		return &leapmuxv1.ListTabsResponse{
+			Tabs: workspaceTabsToProto(rows),
+		}, nil
 	}
 
 	workspaceIDs, err := resolveAllowedWorkspacesForUser(
@@ -53,10 +81,7 @@ func (s *WorkspaceService) ListTabs(
 		if err != nil {
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list rendered tabs: %w", err))
 		}
-		pbTabs = make([]*leapmuxv1.WorkspaceTab, 0, len(rows))
-		for _, t := range rows {
-			pbTabs = append(pbTabs, workspaceTabToProto(&t))
-		}
+		pbTabs = workspaceTabsToProto(rows)
 	}
 
 	return &leapmuxv1.ListTabsResponse{
@@ -155,6 +180,14 @@ func (s *WorkspaceService) LocateTile(
 	return &leapmuxv1.LocateTileResponse{
 		WorkspaceId: workspaceID,
 	}, nil
+}
+
+func workspaceTabsToProto(rows []store.WorkspaceTabRow) []*leapmuxv1.WorkspaceTab {
+	pbTabs := make([]*leapmuxv1.WorkspaceTab, 0, len(rows))
+	for i := range rows {
+		pbTabs = append(pbTabs, workspaceTabToProto(&rows[i]))
+	}
+	return pbTabs
 }
 
 func workspaceTabToProto(row *store.WorkspaceTabRow) *leapmuxv1.WorkspaceTab {

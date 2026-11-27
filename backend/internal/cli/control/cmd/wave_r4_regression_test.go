@@ -164,9 +164,9 @@ func TestTerminalChunkSanitizer_HandlesSplitSequences(t *testing.T) {
 	assert.Equal(t, "prepost", a+b+s2.Flush())
 }
 
-// siblingDirtyWorktreeWorker simulates InspectLastTabClose's sibling fast path
-// (ShouldPrompt=false, GitState=nil, WorkingDir populated) paired with a dirty
-// GetGitFileStatus response.
+// siblingDirtyWorktreeWorker simulates InspectTabsClose evaluating two sibling
+// tabs closing together on the same dirty worktree (no surviving sibling outside
+// the closing set).
 type siblingDirtyWorktreeWorker struct {
 	tabIDs []string
 	dir    string
@@ -183,18 +183,23 @@ func (w *siblingDirtyWorktreeWorker) DispatchWith(_ context.Context, _ channel.C
 			})
 		}
 		writeProtoResponse(rw, &leapmuxv1.ListAgentsResponse{Agents: agents})
-	case leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure:
-		writeProtoResponse(rw, &leapmuxv1.InspectLastTabCloseResponse{
-			ShouldPrompt: false,
-			BranchName:   "feature/shared",
-			WorkingDir:   w.dir,
-			WorktreePath: w.dir,
-		})
-	case leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure:
-		writeProtoResponse(rw, &leapmuxv1.GetGitFileStatusResponse{
-			Status: &leapmuxv1.GitRepoStatus{Ahead: 1},
-			Files:  []*leapmuxv1.GitFileStatusEntry{{Path: "dirty.go"}},
-		})
+	case leapmuxv1connect.WorkerGitServiceInspectTabsCloseProcedure:
+		items := make([]*leapmuxv1.TabCloseInspection, 0, len(w.tabIDs))
+		for _, id := range w.tabIDs {
+			items = append(items, &leapmuxv1.TabCloseInspection{
+				Tab:          &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: id},
+				ShouldPrompt: true,
+				IsWorktree:   true,
+				BranchName:   "feature/shared",
+				WorkingDir:   w.dir,
+				WorktreePath: w.dir,
+				GitState: &leapmuxv1.BranchGitState{
+					HasUncommittedChanges: true,
+					UnpushedCommitCount:   1,
+				},
+			})
+		}
+		writeProtoResponse(rw, &leapmuxv1.InspectTabsCloseResponse{Items: items})
 	default:
 		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
 	}
@@ -221,8 +226,8 @@ func TestWorkspaceDeleteDirtyWorktreeGuard_SiblingTabsFastPath(t *testing.T) {
 		dir:    "/work/shared-wt",
 	})
 
-	// Even when 2 tabs share the same dirty worktree and InspectLastTabClose
-	// takes its sibling fast path, workspace delete must still refuse.
+	// When 2 tabs share the same dirty worktree in the workspace being deleted,
+	// InspectTabsClose evaluates them together and workspace delete refuses.
 	o := runControl(t, "workspace", "delete", "ws-1")
 	assert.Equal(t, cli.ExitRefused, o.Code)
 	e := o.Failure(t)

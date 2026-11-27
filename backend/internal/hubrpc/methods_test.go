@@ -39,7 +39,14 @@ func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 		leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
 		leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
 		leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
+		leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure,
 		leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure,
+		// SectionService surface.
+		leapmuxv1connect.SectionServiceListSectionsProcedure,
+		leapmuxv1connect.SectionServiceCreateSectionProcedure,
+		leapmuxv1connect.SectionServiceRenameSectionProcedure,
+		leapmuxv1connect.SectionServiceDeleteSectionProcedure,
+		leapmuxv1connect.SectionServiceMoveSectionProcedure,
 		// UserCRDT surface.
 		leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		leapmuxv1connect.UserCRDTUpdatePresenceProcedure,
