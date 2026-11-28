@@ -430,6 +430,7 @@ async function main(): Promise<void> {
     cast.typeLine('leapmux agent messages "$A1" --json | \\', { baseCharMs: 24 })
     cast.typeLine('  jq -r \'.data.messages[] | select(.source=="agent") | .reply_text // empty\'', { baseCharMs: 22 })
     cast.pause(280)
+    cast.writeLine('')
     cast.writeOutputLines(clean(completedReply), 30)
 
     nextPrompt()
