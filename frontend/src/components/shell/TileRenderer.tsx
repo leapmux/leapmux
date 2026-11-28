@@ -915,9 +915,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
         ? t
         : null
     }
-    const activateTabSource = (getTab: () => Tab | null | undefined) => () => {
+    const activateTabSource = (current: Tab | null | undefined) => {
       activateTile(tileId)
-      const current = getTab()
       if (current)
         selection.setActive(current)
     }
@@ -932,7 +931,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       baseDir: () => terminalTab()?.workingDir ?? '',
       workingDir: () => terminalTab()?.workingDir ?? '',
       homeDir: () => workerInfoStore.getHomeDir(terminalTab()?.workerId ?? ''),
-      activateSource: activateTabSource(() => terminalTab()),
+      activateSource: () => activateTabSource(terminalTab()),
     })
     const fileTab = () => {
       const t = tab()
@@ -1185,7 +1184,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               baseDir: () => agent()?.workingDir ?? '',
               workingDir: () => agent()?.workingDir ?? '',
               homeDir: () => workerInfoStore.getHomeDir(agent()?.workerId ?? ''),
-              activateSource: activateTabSource(() => agent()),
+              activateSource: () => activateTabSource(agent()),
             })
             let releaseViewportReader: (() => void) | undefined
             onCleanup(() => {
@@ -1303,7 +1302,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               baseDir: flavor => parentDirectory(filePath(), flavor),
               workingDir: fileRootPath,
               homeDir: fileHomeDir,
-              activateSource: activateTabSource(() => ft()),
+              activateSource: () => activateTabSource(ft()),
             })
             // Single lookup shared by `gitFileStatus` and
             // `hasStagedAndUnstaged` so both props read from one memo
