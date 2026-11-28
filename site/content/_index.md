@@ -165,6 +165,18 @@ leapmux agent messages "$A1" --json | \
       <summary>What license does LeapMux use?</summary>
       <p>LeapMux is source-available under the Functional Source License, Version 1.1, Apache 2.0 Future License (FSL-1.1-ALv2), which converts to Apache 2.0 two years after each release. See <a href="/docs/reference/legal/">Legal</a> for full terms.</p>
     </details>
+    <details class="lm-home-faq-item">
+      <summary>Who built LeapMux?</summary>
+      <p>LeapMux is built by Trustin Lee, the founder of <a href="https://netty.io/">Netty</a>, <a href="https://armeria.dev/">Armeria</a>, and <a href="https://mina.apache.org/">Apache MINA</a>, who previously built core infrastructure and developer tools at LINE, Databricks, Twitter, and Red Hat. He works as a Member of Technical Staff at depthfirst and develops LeapMux in his free time.</p>
+      <div class="lm-home-faq-social">
+        <a class="lm-social-icon-link" href="https://github.com/trustin" aria-label="Trustin Lee on GitHub" title="GitHub" target="_blank" rel="noopener noreferrer">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M12 3C7.0275 3 3 7.12937 3 12.2276c0 4.0833 2.57625 7.5321 6.15374 8.7548.45.0807.61875-.1961.61875-.4383 0-.2192-.01124-.9459-.01124-1.7187-2.26125.4268-2.84625-.5652-3.02625-1.0842-.10125-.2653-.54001-1.0843-.9225-1.3034-.315-.1731-.765-.5998-.01126-.6114.70876-.0115 1.21501.669 1.38375.9459.81 1.3956 2.10376 1.0035 2.62126.7612.07875-.5998.31495-1.0035.57375-1.2342-2.0025-.2306-4.095-1.0265-4.095-4.5561 0-1.0035.34875-1.834.92249-2.47994-.08999-.23069-.40499-1.17652.09001-2.44532 0 0 .75375-.24223 2.47499.94583.72001-.20762 1.48501-.31143 2.25001-.31143.765 0 1.53.10381 2.25.31143 1.7212-1.19959 2.475-.94583 2.475-.94583.4949 1.2688.18 2.21463.09 2.44532.5738.64594.9225 1.46484.9225 2.47994 0 3.5411-2.1037 4.3255-4.1063 4.5561.3263.2884.6076.8421.6076 1.7072 0 1.2342-.0113 2.2261-.0113 2.5376 0 .2422.1688.5305.6188.4383 1.7866-.6184 3.3391-1.7958 4.439-3.3662C20.4077 16.0457 20.9995 14.1611 21 12.2276 21 7.12937 16.9725 3 12 3z"/></svg>
+        </a>
+        <a class="lm-social-icon-link" href="https://linkedin.com/in/trustin" aria-label="Trustin Lee on LinkedIn" title="LinkedIn" target="_blank" rel="noopener noreferrer">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/></svg>
+        </a>
+      </div>
+    </details>
   </div>
 </section>
 

@@ -37,10 +37,6 @@ export const actionSlot = style({
   justifyItems: 'center',
 })
 
-globalStyle(`${actionSlot} > *`, {
-  gridArea: 'slot',
-})
-
 // The trigger paints above the resting indicator whatever the source order, so
 // its whole hit area stays live while the indicator fades out over it.
 globalStyle(`${actionSlot} ${menuTrigger}`, {
@@ -64,6 +60,20 @@ export const actionSlotResting = style({
   // it gives up hit-testing at no cost.
   pointerEvents: 'none',
 })
+
+// Place every grid item inside the single `slot` cell. `<DropdownMenu>`
+// (`ot-dropdown`) and `<Tooltip>` use `display: contents`, so the trigger
+// `<button>` (or a disabled tooltip's `[data-tooltip-box]` wrapper) becomes a
+// grid item of `actionSlot` without matching `> *`. Targeting `actionSlotResting`,
+// `menuTrigger`, and `[data-tooltip-box]` alongside `> *` keeps the resting
+// indicator and trigger overlaid in one cell instead of stacking into two
+// implicit grid rows.
+globalStyle(
+  `${actionSlot} > *, ${actionSlot} ${actionSlotResting}, ${actionSlot} ${menuTrigger}, ${actionSlot} [data-tooltip-box]`,
+  {
+    gridArea: 'slot',
+  },
+)
 
 globalStyle(`:hover > ${sidebarActions} ${actionSlotResting}`, {
   opacity: 0,

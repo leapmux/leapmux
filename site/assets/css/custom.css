@@ -1811,6 +1811,43 @@
   color: var(--hx-color-gray-300);
 }
 
+.lm-home-faq-item > p:has(+ .lm-home-faq-social) {
+  padding-bottom: 0.625rem;
+}
+
+.lm-home-faq-social {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0 1.125rem 1rem;
+}
+
+.lm-home-faq-item .lm-social-icon-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--hx-radius-sm, 0.375rem);
+  color: var(--hx-color-gray-600);
+  text-decoration: none;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.lm-home-faq-item .lm-social-icon-link:hover {
+  color: var(--hx-color-gray-900);
+  background: var(--hx-color-gray-200);
+}
+
+.dark .lm-home-faq-item .lm-social-icon-link {
+  color: var(--hx-color-gray-300);
+}
+
+.dark .lm-home-faq-item .lm-social-icon-link:hover {
+  color: var(--hx-color-gray-100);
+  background: var(--hx-color-gray-800);
+}
+
 /*
   Interactive table filter (table-filter shortcode).
 */
