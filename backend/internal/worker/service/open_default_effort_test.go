@@ -109,9 +109,9 @@ func TestOpenAgentDoesNotApplySafePermissionDefaultsToResumedSessions(t *testing
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, opts := openAgentAndCapture(t, &leapmuxv1.OpenAgentRequest{
-				WorkingDir:     t.TempDir(),
-				AgentProvider:  tc.provider,
-				AgentSessionId: "resume-session",
+				WorkingDir:    t.TempDir(),
+				AgentProvider: tc.provider,
+				SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: "resume-session"},
 			})
 			assert.Equal(t, tc.wantResumed, opts.Get(tc.option))
 			assert.Equal(t, tc.wantDefaulted, opts.NewSessionDefaultOptionIDs[tc.option])

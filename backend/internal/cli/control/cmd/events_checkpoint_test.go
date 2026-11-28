@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +112,72 @@ func TestEventCheckpointCreatesMissingParentAndAutoExcludesLeapMuxTmp(t *testing
 	_, err = openEventCheckpoint(badPath)
 	require.Error(t, err)
 	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+}
+
+func TestEventCheckpointRejectsLockDirBeforeMkdirAndFoldsCase(t *testing.T) {
+	t.Run("rejected nested path under event-locks creates no subdirectory on disk", func(t *testing.T) {
+		cfgDir := t.TempDir()
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+
+		nestedDir := filepath.Join(cfgDir, eventCheckpointLockDirName, "sub")
+		badPath := filepath.Join(nestedDir, "x.ckpt")
+		_, err := openEventCheckpoint(badPath)
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+
+		_, statErr := os.Stat(nestedDir)
+		assert.ErrorIs(t, statErr, os.ErrNotExist, "rejected path inside event-locks must not create subdirectories")
+		if runtime.GOOS != "windows" {
+			fi, err := os.Stat(filepath.Join(cfgDir, eventCheckpointLockDirName))
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o700), fi.Mode().Perm(), "event-locks directory must keep 0700 permissions")
+		}
+	})
+
+	t.Run("case-variant EVENT-LOCKS path is rejected on darwin and windows", func(t *testing.T) {
+		if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+			t.Skip("case-folded lock directory rejection applies on darwin and windows")
+		}
+		cfgDir := t.TempDir()
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+
+		upperLockDir := filepath.Join(cfgDir, strings.ToUpper(eventCheckpointLockDirName))
+		nestedSub := filepath.Join(upperLockDir, "nested")
+		_, err := openEventCheckpoint(filepath.Join(nestedSub, "foo.ckpt"))
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+
+		_, statErr := os.Stat(filepath.Join(cfgDir, eventCheckpointLockDirName, "nested"))
+		assert.ErrorIs(t, statErr, os.ErrNotExist, "rejected case-variant path must not create subdirectories")
+	})
+
+	t.Run("case-variant checkpoint filenames share the same lock file on darwin and windows", func(t *testing.T) {
+		if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+			t.Skip("case-folded checkpoint lock hashing applies on darwin and windows")
+		}
+		cfgDir := t.TempDir()
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+		dir := t.TempDir()
+
+		upperPath := filepath.Join(dir, "Foo.ckpt")
+		lowerPath := filepath.Join(dir, "foo.ckpt")
+		assert.Equal(t, canonicalCheckpointKey(upperPath), canonicalCheckpointKey(lowerPath))
+
+		first, err := openEventCheckpoint(upperPath)
+		require.NoError(t, err)
+		t.Cleanup(first.close)
+
+		contender, err := openEventCheckpoint(lowerPath)
+		if contender != nil {
+			defer contender.close()
+		}
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeConflict, cli.FromError(err).Code)
+
+		lockEntries, err := os.ReadDir(filepath.Join(cfgDir, eventCheckpointLockDirName))
+		require.NoError(t, err)
+		assert.Len(t, lockEntries, 1, "Foo.ckpt and foo.ckpt must map to a single lock file")
+	})
 }
 
 func TestAccountCheckpointJSONOmitsFlatTabAndLayoutFields(t *testing.T) {

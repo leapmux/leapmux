@@ -152,13 +152,29 @@ func runAgentTree(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	workerChannels := map[string]*persistentWorkerChannel{}
+	defer func() {
+		for _, ch := range workerChannels {
+			ch.Close()
+		}
+	}()
+	channelFor := func(wk string) *persistentWorkerChannel {
+		ch, ok := workerChannels[wk]
+		if !ok {
+			ch = newPersistentWorkerChannel(s.c, wk)
+			workerChannels[wk] = ch
+		}
+		return ch
+	}
+
 	var (
 		resp leapmuxv1.ListAgentsResponse
 		tabs []*leapmuxv1.WorkspaceTab
 	)
+	rootCh := channelFor(got.WorkerID)
 	g, gctx := errgroup.WithContext(s.ctx)
 	g.Go(func() error {
-		return callInnerRPC(gctx, s.c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
+		return rootCh.Call(gctx, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
 			&leapmuxv1.ListAgentsRequest{TabIds: []string{got.ID}, IncludeDescendants: true}, &resp)
 	})
 	g.Go(func() error {
@@ -173,14 +189,11 @@ func runAgentTree(inv *cli.Invocation) (any, error) {
 		return nil, cli.Newf(cli.CodeNotFound, "the worker has no agent %s", got.ID)
 	}
 
-	openTabs := map[string]bool{}
-	tabWorker := map[string]string{}
+	openTabByID := map[string]*leapmuxv1.WorkspaceTab{}
 	agentTabs := filterTabsByType(tabs, leapmuxv1.TabType_TAB_TYPE_AGENT)
 	for _, t := range agentTabs {
-		tid := t.GetTab().GetTabId()
-		openTabs[tid] = true
-		if wk := t.GetWorkerId(); wk != "" {
-			tabWorker[tid] = wk
+		if tid := t.GetTab().GetTabId(); tid != "" {
+			openTabByID[tid] = t
 		}
 	}
 
@@ -198,12 +211,12 @@ func runAgentTree(inv *cli.Invocation) (any, error) {
 
 	queue := make([]string, 0, len(resp.GetAgents()))
 	enqueued := map[string]bool{}
-	enqueue := func(id string) {
+	enqueueInto := func(dst *[]string, id string) {
 		if id == "" || enqueued[id] {
 			return
 		}
 		enqueued[id] = true
-		queue = append(queue, id)
+		*dst = append(*dst, id)
 	}
 
 	for _, a := range resp.GetAgents() {
@@ -211,89 +224,132 @@ func runAgentTree(inv *cli.Invocation) (any, error) {
 		if a.GetParentAgentId() != "" && a.GetId() != got.ID {
 			rel = "subagent"
 		}
-		node := agentTreeNodeOf(a, openTabs[a.GetId()], rel)
+		_, openInTab := openTabByID[a.GetId()]
+		node := agentTreeNodeOf(a, openInTab, rel)
 		byID[node.ID] = node
 		if rel == "subagent" {
 			addEdge(node.ParentAgentID, node.ID)
 		}
-		enqueue(node.ID)
+		enqueueInto(&queue, node.ID)
 	}
 	if _, ok := byID[got.ID]; !ok {
 		return nil, cli.Newf(cli.CodeNotFound, "the worker has no agent %s", got.ID)
 	}
 
-	if len(agentTabs) > 0 {
-		details := s.fetchTabDetailsCached(s.ctx, agentTabs)
-		spawnedByParent := map[string][]*leapmuxv1.AgentInfo{}
-		for _, t := range agentTabs {
-			d := details[t.GetTab().GetTabId()]
-			if d.Agent == nil {
+	for len(queue) > 0 {
+		// Query only Workers that still host at least one open agent tab not
+		// yet discovered in byID, using SpawnedByAgentIds so unrelated open
+		// tabs are never hydrated.
+		candidateWorkerSet := map[string]struct{}{}
+		for tid, t := range openTabByID {
+			if byID[tid] != nil {
 				continue
 			}
-			if spawner := d.Agent.GetSpawnedByAgentId(); spawner != "" {
-				spawnedByParent[spawner] = append(spawnedByParent[spawner], d.Agent)
+			if wk := t.GetWorkerId(); wk != "" {
+				candidateWorkerSet[wk] = struct{}{}
 			}
+		}
+		if len(candidateWorkerSet) == 0 {
+			break
+		}
+		candidateWorkers := make([]string, 0, len(candidateWorkerSet))
+		for wk := range candidateWorkerSet {
+			candidateWorkers = append(candidateWorkers, wk)
+		}
+		sort.Strings(candidateWorkers)
+
+		waveIDs := append([]string(nil), queue...)
+		sort.Strings(waveIDs)
+		waveSet := make(map[string]bool, len(waveIDs))
+		for _, id := range waveIDs {
+			waveSet[id] = true
 		}
 
-		for len(queue) > 0 {
-			var nextQueue []string
-			spawnedByWorker := map[string][]string{}
-			for _, pid := range queue {
-				for _, child := range spawnedByParent[pid] {
-					cid := child.GetId()
-					if cid == "" || cid == got.ID {
-						continue
-					}
-					if _, exists := byID[cid]; exists {
-						continue
-					}
-					byID[cid] = agentTreeNodeOf(child, openTabs[cid], "spawned")
-					addEdge(pid, cid)
-					if !enqueued[cid] {
-						enqueued[cid] = true
-						nextQueue = append(nextQueue, cid)
-					}
-					if wk := tabWorker[cid]; wk != "" {
-						spawnedByWorker[wk] = append(spawnedByWorker[wk], cid)
-					}
+		var (
+			mu         sync.Mutex
+			waveAgents []*leapmuxv1.AgentInfo
+		)
+		waveGroup, waveCtx := errgroup.WithContext(s.ctx)
+		waveGroup.SetLimit(detailFanoutLimit)
+		for _, wk := range candidateWorkers {
+			ch := channelFor(wk)
+			waveGroup.Go(func() error {
+				var waveResp leapmuxv1.ListAgentsResponse
+				if err := ch.Call(waveCtx, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
+					&leapmuxv1.ListAgentsRequest{
+						SpawnedByAgentIds:  waveIDs,
+						IncludeDescendants: true,
+					}, &waveResp); err != nil {
+					return err
 				}
-			}
-			if len(spawnedByWorker) > 0 {
-				var mu sync.Mutex
-				var subGroup errgroup.Group
-				subGroup.SetLimit(detailFanoutLimit)
-				for wk, ids := range spawnedByWorker {
-					wk, ids := wk, ids
-					subGroup.Go(func() error {
-						var subResp leapmuxv1.ListAgentsResponse
-						if err := callInnerRPC(s.ctx, s.c, wk, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
-							&leapmuxv1.ListAgentsRequest{TabIds: ids, IncludeDescendants: true}, &subResp); err != nil {
-							return nil
-						}
-						mu.Lock()
-						for _, a := range subResp.GetAgents() {
-							aid := a.GetId()
-							if aid == "" || aid == got.ID || a.GetParentAgentId() == "" {
-								continue
-							}
-							if _, exists := byID[aid]; exists {
-								continue
-							}
-							byID[aid] = agentTreeNodeOf(a, openTabs[aid], "subagent")
-							addEdge(a.GetParentAgentId(), aid)
-							if !enqueued[aid] {
-								enqueued[aid] = true
-								nextQueue = append(nextQueue, aid)
-							}
-						}
-						mu.Unlock()
-						return nil
-					})
-				}
-				_ = subGroup.Wait()
-			}
-			queue = nextQueue
+				mu.Lock()
+				waveAgents = append(waveAgents, waveResp.GetAgents()...)
+				mu.Unlock()
+				return nil
+			})
 		}
+		if err := waveGroup.Wait(); err != nil {
+			return nil, err
+		}
+
+		var nextQueue []string
+		// Pass 1: attach open spawned peer agents matched by this BFS wave.
+		for _, a := range waveAgents {
+			if a.GetParentAgentId() != "" {
+				continue
+			}
+			spawner := a.GetSpawnedByAgentId()
+			aid := a.GetId()
+			if aid == "" || aid == got.ID || !waveSet[spawner] {
+				continue
+			}
+			if _, open := openTabByID[aid]; !open {
+				continue
+			}
+			if _, exists := byID[aid]; exists {
+				continue
+			}
+			byID[aid] = agentTreeNodeOf(a, true, "spawned")
+			addEdge(spawner, aid)
+			enqueueInto(&nextQueue, aid)
+		}
+
+		// Pass 2: attach virtual descendant subagents returned beneath those
+		// open spawned agents (resolving multi-level subagent chains cleanly).
+		pendingSubs := make([]*leapmuxv1.AgentInfo, 0)
+		for _, a := range waveAgents {
+			aid := a.GetId()
+			if aid == "" || aid == got.ID || a.GetParentAgentId() == "" {
+				continue
+			}
+			if _, exists := byID[aid]; exists {
+				continue
+			}
+			pendingSubs = append(pendingSubs, a)
+		}
+		for len(pendingSubs) > 0 {
+			progressed := false
+			remaining := pendingSubs[:0]
+			for _, a := range pendingSubs {
+				if byID[a.GetParentAgentId()] == nil {
+					remaining = append(remaining, a)
+					continue
+				}
+				aid := a.GetId()
+				if _, exists := byID[aid]; !exists {
+					_, openInTab := openTabByID[aid]
+					byID[aid] = agentTreeNodeOf(a, openInTab, "subagent")
+					addEdge(a.GetParentAgentId(), aid)
+					enqueueInto(&nextQueue, aid)
+				}
+				progressed = true
+			}
+			if !progressed {
+				break
+			}
+			pendingSubs = remaining
+		}
+		queue = nextQueue
 	}
 
 	visited := map[string]bool{}

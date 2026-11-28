@@ -304,7 +304,7 @@ type kiroWorkflowRunSummary struct {
 // run's id, which only Kiro knows. A new session has no run to find. It runs
 // on a goroutine of its own, so the start does not wait for two requests.
 func (a *Agent) recoverGoalRun(opts agent.Options) {
-	if opts.ResumeSessionID == "" {
+	if !opts.Session.IsResume() {
 		return
 	}
 	sessionID := a.CurrentSessionID()

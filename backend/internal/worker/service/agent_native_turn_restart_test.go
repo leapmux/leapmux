@@ -96,7 +96,7 @@ func prepareNativeRestartAgent(t *testing.T) (*Service, *nativeRestartProbeAgent
 	old := newNativeRestartProbeAgent(id)
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: id, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY,
-		WorkingDir: workingDir, Options: mode, ResumeSessionID: "native-session-1",
+		WorkingDir: workingDir, Options: mode, Session: agent.ResumeSession("native-session-1"),
 	}, newTestRootOutputSink(t, svc.Output, id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return old, nil })
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestNativeTurnRestartKeepsQueuedInputForOneResumedProcess(t *testing.T) {
 	case content := <-old.sent:
 		t.Fatalf("queued input reached the old process: %q", content)
 	case opts := <-started:
-		assert.Equal(t, "native-session-1", opts.ResumeSessionID)
+		assert.Equal(t, "native-session-1", opts.Session.ResumeID())
 		assert.Equal(t, "plan", opts.PermissionMode())
 	case <-ctx.Done():
 		t.Fatal("the native turn did not start a session-preserving restart")

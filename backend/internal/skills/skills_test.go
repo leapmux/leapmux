@@ -130,6 +130,9 @@ func TestBundledSkills_MatchRepoRoot(t *testing.T) {
 	assert.NotContains(t, handoff.Content(), "keep full conversation history")
 	assert.NotContains(t, handoff.Content(), "conversation fork")
 	assert.NotContains(t, handoff.Content(), "Fork with conversation context")
+	assert.Contains(t, handoff.Content(), "leapmux agent fork self --fresh")
+	assert.NotContains(t, handoff.Content(), "`leapmux agent fork self`.")
+	assert.NotContains(t, handoff.Content(), "leapmux agent fork self \\\n  --worktree")
 }
 
 func TestVerifyDirectoryMatchesCatalog_RejectsUnderscoreEntries(t *testing.T) {

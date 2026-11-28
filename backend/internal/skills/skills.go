@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -119,12 +120,17 @@ func standardTargetNames() string {
 // Domain error sentinels returned by skill resolution, validation, and disk
 // operations. Callers can inspect them with errors.Is.
 var (
-	ErrSkillModified  = errors.New("skill has local edits")
-	ErrSkillUnmanaged = errors.New("skill is not managed by LeapMux")
-	ErrUnsafeSymlink  = errors.New("symlink inside managed skill directory")
-	ErrUnknownSkill   = errors.New("unknown skill")
-	ErrInvalidTarget  = errors.New("invalid skill target")
+	ErrSkillModified       = errors.New("skill has local edits")
+	ErrSkillUnmanaged      = errors.New("skill is not managed by LeapMux")
+	ErrUnsafeSymlink       = errors.New("symlink inside managed skill directory")
+	ErrUnknownSkill        = errors.New("unknown skill")
+	ErrInvalidTarget       = errors.New("invalid skill target")
+	ErrManagedFileTooLarge = errors.New("skill file exceeds maximum size")
 )
+
+// maxManagedFileBytes caps the bytes read from one on-disk skill file so an
+// oversized local file cannot exhaust memory during inspection or diffing.
+const maxManagedFileBytes = 4 << 20 // 4 MiB
 
 // State describes the on-disk installation state of a bundled skill.
 type State string
@@ -646,7 +652,26 @@ func readSafeManagedInRoot(skillRoot *os.Root, rel string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return skillRoot.ReadFile(osRel)
+	f, err := skillRoot.Open(osRel)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() > maxManagedFileBytes {
+		return nil, fmt.Errorf("%w: %s (%d bytes > %d)", ErrManagedFileTooLarge, filepath.Join(skillRoot.Name(), osRel), fi.Size(), maxManagedFileBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxManagedFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxManagedFileBytes {
+		return nil, fmt.Errorf("%w: %s (> %d bytes)", ErrManagedFileTooLarge, filepath.Join(skillRoot.Name(), osRel), maxManagedFileBytes)
+	}
+	return data, nil
 }
 
 func readSkillMarkerInRoot(skillRoot *os.Root, wantName string) (*skillMarker, error) {
@@ -687,20 +712,30 @@ func defaultSkillStatus(targetDir string, s Skill) SkillStatus {
 	}
 }
 
+type skillInspection struct {
+	status    SkillStatus
+	marker    *skillMarker
+	diskBytes map[string][]byte
+}
+
 func inspectSkillRoot(skillRoot *os.Root, s Skill, st SkillStatus) SkillStatus {
+	return inspectSkillRootDetailed(skillRoot, s, st, false).status
+}
+
+func inspectSkillRootDetailed(skillRoot *os.Root, s Skill, st SkillStatus, retainBytes bool) skillInspection {
 	entries, readDirErr := fs.ReadDir(skillRoot.FS(), ".")
 	if readDirErr != nil {
 		st.State = StateUnmanaged
-		return st
+		return skillInspection{status: st}
 	}
 	if len(entries) == 0 {
-		return st
+		return skillInspection{status: st}
 	}
 
 	marker, markerErr := readSkillMarkerInRoot(skillRoot, s.Name)
 	if markerErr != nil {
 		st.State = StateUnmanaged
-		return st
+		return skillInspection{status: st}
 	}
 
 	tracked := make(map[string]bool, len(marker.Files))
@@ -715,18 +750,28 @@ func inspectSkillRoot(skillRoot *os.Root, s Skill, st SkillStatus) SkillStatus {
 	bundleMatches := true
 	newFileConflict := false
 	diskHashes := make(map[string]string, len(s.Files))
+	var diskBytes map[string][]byte
+	if retainBytes {
+		diskBytes = make(map[string][]byte, len(s.Files))
+	}
 	for _, f := range s.Files {
-		diskBytes, err := readSafeManagedInRoot(skillRoot, f.RelPath)
+		raw, err := readSafeManagedInRoot(skillRoot, f.RelPath)
 		if err != nil {
 			if errors.Is(err, ErrUnsafeSymlink) || errors.Is(err, ErrSkillUnmanaged) {
 				st.State = StateUnmanaged
-				return st
+				return skillInspection{status: st, marker: marker, diskBytes: diskBytes}
 			}
 			bundleMatches = false
+			if errors.Is(err, ErrManagedFileTooLarge) && !tracked[f.RelPath] {
+				newFileConflict = true
+			}
 			continue
 		}
-		h := sha256Hex(diskBytes)
+		h := sha256Hex(raw)
 		diskHashes[f.RelPath] = h
+		if retainBytes {
+			diskBytes[f.RelPath] = raw
+		}
 		if h != f.ContentHash {
 			bundleMatches = false
 			if !tracked[f.RelPath] {
@@ -738,7 +783,7 @@ func inspectSkillRoot(skillRoot *os.Root, s Skill, st SkillStatus) SkillStatus {
 	st.InstalledVersion = marker.Version
 	if bundleMatches {
 		st.State = StateUpToDate
-		return st
+		return skillInspection{status: st, marker: marker, diskBytes: diskBytes}
 	}
 
 	// Distinguish local edits from upstream bundle updates across every tracked
@@ -748,7 +793,7 @@ func inspectSkillRoot(skillRoot *os.Root, s Skill, st SkillStatus) SkillStatus {
 		cleanRel, cleanErr := cleanManagedRelPath(rel)
 		if cleanErr != nil {
 			st.State = StateUnmanaged
-			return st
+			return skillInspection{status: st, marker: marker, diskBytes: diskBytes}
 		}
 		if h, ok := diskHashes[cleanRel]; ok {
 			if h != wantHash {
@@ -756,25 +801,28 @@ func inspectSkillRoot(skillRoot *os.Root, s Skill, st SkillStatus) SkillStatus {
 			}
 			continue
 		}
-		diskBytes, err := readSafeManagedInRoot(skillRoot, cleanRel)
+		raw, err := readSafeManagedInRoot(skillRoot, cleanRel)
 		if err != nil {
 			if errors.Is(err, ErrUnsafeSymlink) || errors.Is(err, ErrSkillUnmanaged) {
 				st.State = StateUnmanaged
-				return st
+				return skillInspection{status: st, marker: marker, diskBytes: diskBytes}
 			}
 			modified = true
 			continue
 		}
-		if sha256Hex(diskBytes) != wantHash {
+		if retainBytes {
+			diskBytes[cleanRel] = raw
+		}
+		if sha256Hex(raw) != wantHash {
 			modified = true
 		}
 	}
 	if modified || newFileConflict {
 		st.State = StateModified
-		return st
+		return skillInspection{status: st, marker: marker, diskBytes: diskBytes}
 	}
 	st.State = StateOutdated
-	return st
+	return skillInspection{status: st, marker: marker, diskBytes: diskBytes}
 }
 
 func inspectInTargetRoot(targetRoot *os.Root, targetDir string, s Skill) SkillStatus {
@@ -960,39 +1008,55 @@ func Install(targetDir string, names []string, opts Options) ([]InstallOutcome, 
 	return executeInstall(targetDir, plans, anyWrite)
 }
 
-// InstallTargets installs the requested bundled skills across all dirs,
-// preflighting every target directory before mutating any directory on disk.
-// A conflict or safety error in a later target therefore leaves earlier targets
-// untouched. The returned slice aligns one-to-one with dirs.
-func InstallTargets(dirs []string, names []string, opts Options) ([][]InstallOutcome, error) {
+func applyTargets[P any](
+	dirs []string,
+	names []string,
+	plan func(dir string) (P, error),
+	exec func(dir string, p P) ([]InstallOutcome, error),
+) ([][]InstallOutcome, error) {
 	if _, err := resolveSkillList(names); err != nil {
 		return nil, err
 	}
 	if len(dirs) == 0 {
 		return nil, nil
 	}
-	type plannedTarget struct {
-		dir      string
-		plans    []installPlan
-		anyWrite bool
-	}
-	planned := make([]plannedTarget, len(dirs))
+	planned := make([]P, len(dirs))
 	for i, dir := range dirs {
-		plans, anyWrite, err := planInstall(dir, names, opts)
+		p, err := plan(dir)
 		if err != nil {
 			return nil, err
 		}
-		planned[i] = plannedTarget{dir: dir, plans: plans, anyWrite: anyWrite}
+		planned[i] = p
 	}
 	results := make([][]InstallOutcome, len(dirs))
-	for i, pt := range planned {
-		outcomes, err := executeInstall(pt.dir, pt.plans, pt.anyWrite)
+	for i, dir := range dirs {
+		outcomes, err := exec(dir, planned[i])
 		if err != nil {
 			return nil, err
 		}
 		results[i] = outcomes
 	}
 	return results, nil
+}
+
+// InstallTargets installs the requested bundled skills across all dirs,
+// preflighting every target directory before mutating any directory on disk.
+// A conflict or safety error in a later target therefore leaves earlier targets
+// untouched. The returned slice aligns one-to-one with dirs.
+func InstallTargets(dirs []string, names []string, opts Options) ([][]InstallOutcome, error) {
+	type installTargetPlan struct {
+		plans    []installPlan
+		anyWrite bool
+	}
+	return applyTargets(dirs, names,
+		func(dir string) (installTargetPlan, error) {
+			plans, anyWrite, err := planInstall(dir, names, opts)
+			return installTargetPlan{plans: plans, anyWrite: anyWrite}, err
+		},
+		func(dir string, p installTargetPlan) ([]InstallOutcome, error) {
+			return executeInstall(dir, p.plans, p.anyWrite)
+		},
+	)
 }
 
 type uninstallPlan struct {
@@ -1195,29 +1259,12 @@ func Uninstall(targetDir string, names []string, opts Options) ([]InstallOutcome
 // disk. A conflict or safety error in a later target therefore leaves earlier
 // targets untouched. The returned slice aligns one-to-one with dirs.
 func UninstallTargets(dirs []string, names []string, opts Options) ([][]InstallOutcome, error) {
-	if _, err := resolveSkillList(names); err != nil {
-		return nil, err
-	}
-	if len(dirs) == 0 {
-		return nil, nil
-	}
-	planned := make([][]uninstallPlan, len(dirs))
-	for i, dir := range dirs {
-		plans, err := planUninstall(dir, names, opts)
-		if err != nil {
-			return nil, err
-		}
-		planned[i] = plans
-	}
-	results := make([][]InstallOutcome, len(dirs))
-	for i, dir := range dirs {
-		outcomes, err := executeUninstall(dir, planned[i])
-		if err != nil {
-			return nil, err
-		}
-		results[i] = outcomes
-	}
-	return results, nil
+	return applyTargets(dirs, names,
+		func(dir string) ([]uninstallPlan, error) {
+			return planUninstall(dir, names, opts)
+		},
+		executeUninstall,
+	)
 }
 
 // SyncEnabled ensures every enabled skill is installed and up to date in
@@ -1330,7 +1377,7 @@ func writeSkillFiles(targetDir string, s Skill) error {
 	for i, f := range s.Files {
 		osRel := relPaths[i]
 		nextHashes[f.RelPath] = f.ContentHash
-		if existing, rErr := skillRoot.ReadFile(osRel); rErr == nil && sha256Hex(existing) == f.ContentHash {
+		if existing, rErr := readSafeManagedInRoot(skillRoot, f.RelPath); rErr == nil && sha256Hex(existing) == f.ContentHash {
 			continue
 		}
 		if parent := filepath.Dir(osRel); parent != "." {
@@ -1368,7 +1415,7 @@ func writeSkillFiles(targetDir string, s Skill) error {
 			if fErr != nil {
 				continue
 			}
-			diskBytes, rErr := skillRoot.ReadFile(osRel)
+			diskBytes, rErr := readSafeManagedInRoot(skillRoot, cleanRel)
 			if rErr != nil || sha256Hex(diskBytes) != prevHash {
 				continue
 			}

@@ -213,8 +213,8 @@ func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		AgentSessionId: "session\x00bad",
+		WorkingDir:    repoDir,
+		SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: "session\x00bad"},
 	}, w)
 
 	requireInvalidArgument(t, w)

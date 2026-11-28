@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -1089,24 +1090,37 @@ func TestAgentReplyResult_QuietLines(t *testing.T) {
 		assert.Equal(t, []string{"ag-1"}, res.QuietLines())
 	})
 
-	t.Run("quietAgentID returns created agent id even when input_id is set", func(t *testing.T) {
-		res := agentReplyResult{ID: "ag-created", InputID: "in-1", quietAgentID: true}
-		assert.Equal(t, []string{"ag-created"}, res.QuietLines())
+	t.Run("agentLaunchReplyResult returns created agent id in quiet mode and keeps JSON identical", func(t *testing.T) {
+		base := agentReplyResult{
+			ID:        "ag-created",
+			InputID:   "in-1",
+			RequestID: "req-1",
+			Message:   messageDelivered,
+			State:     "idle",
+			Replies:   []string{"done"},
+		}
+		wrapped := agentLaunchReplyResult{agentReplyResult: base}
+		assert.Equal(t, []string{"ag-created"}, wrapped.QuietLines())
+
+		baseJSON, err := json.Marshal(base)
+		require.NoError(t, err)
+		wrappedJSON, err := json.Marshal(wrapped)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(baseJSON), string(wrappedJSON))
 	})
 
-	t.Run("agentReplyEnded preserves quietAgentID in quiet mode", func(t *testing.T) {
+	t.Run("agentLaunchReplyEnded prints created agent id in quiet mode", func(t *testing.T) {
 		var out, errOut bytes.Buffer
 		p := &cli.Printer{Out: &out, Err: &errOut, Format: cli.FormatQuiet}
 		res := agentReplyResult{
-			ID:           "ag-created",
-			InputID:      "in-1",
-			RequestID:    "req-1",
-			Message:      messageDelivered,
-			State:        "waiting_for_user",
-			Replies:      []string{},
-			quietAgentID: true,
+			ID:        "ag-created",
+			InputID:   "in-1",
+			RequestID: "req-1",
+			Message:   messageDelivered,
+			State:     "waiting_for_user",
+			Replies:   []string{},
 		}
-		err := agentReplyEnded(p, res, replyWaitWaiting, time.Minute)
+		err := agentLaunchReplyEnded(p, res, replyWaitWaiting, time.Minute)
 		var status *cli.ExitStatus
 		require.ErrorAs(t, err, &status)
 		assert.Equal(t, cli.ExitWaitEnded, status.Code)

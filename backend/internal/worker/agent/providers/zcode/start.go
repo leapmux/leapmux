@@ -144,7 +144,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, a.FormatStartupError("provider configuration", err)
 	}
 
-	if err := a.openSession(opts.ResumeSessionID, timeout); err != nil {
+	if err := a.openSession(opts.Session.ResumeID(), timeout); err != nil {
 		cleanup()
 		return nil, a.FormatStartupError("session open", err)
 	}

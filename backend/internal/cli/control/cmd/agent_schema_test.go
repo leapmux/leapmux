@@ -88,10 +88,17 @@ func TestAgentSendWithSchemaOverIPC_Attempt1FailureNeverReportsNotSent(t *testin
 	go func() {
 		select {
 		case in0 := <-rw.enqueued:
-			rw.setState(id, working)
+			// Wait until attempt 0 completes its initial queue poll while in0
+			// is still queued, then populate the exact reply and transition
+			// straight to waiting_for_user without an intermediate working
+			// event so attempt 0 settles with ws.state == WAITING_FOR_USER.
+			select {
+			case <-rw.queueRead:
+			case <-ctx.Done():
+				bgErr <- ctx.Err()
+				return
+			}
 			rw.deliver(in0.GetInputId(), false, replyRow(0, "not json"))
-			// Transition straight to waiting_for_user after attempt 0 settles via exact reply,
-			// so attempt 1 sees WAITING_FOR_USER and fails with retryStageBeforeSend.
 			rw.mu.Lock()
 			rw.exactInputID = in0.GetInputId()
 			rw.exactReply = &leapmuxv1.AgentInputTurnReply{

@@ -864,7 +864,7 @@ sidebar:
 | Wait for any of several agents to finish | ` + "`leapmux agent wait <a1> <a2> --any`" + ` |
 | Answer a pending permission or question prompt | ` + "`leapmux agent approve <agent> [request]` / `leapmux agent deny <agent> [request]` / `leapmux agent answer <agent> [request]`" + ` |
 | Run a command in a terminal and wait for exit | ` + "`leapmux terminal open --dir . --command \"make test; exit\" --wait --exit`" + ` |
-| Inspect git status and diffs on a Worker | ` + "`leapmux git status --dir .`" + ` |
+| Inspect git status and diffs on a Worker | ` + "`leapmux git status`" + ` |
 | Stream workspace and agent events with checkpoints | ` + "`leapmux events --checkpoint <name>`" + ` |
 | Forward a TCP port to a remote Worker | ` + "`leapmux tunnel forward 8888:127.0.0.1:8888 --worker name:<worker>`" + ` |
 | Rotate an OAuth/OIDC provider client secret | ` + "`leapmux admin idp rotate-secret <idp> --client-secret <secret>`" + ` |

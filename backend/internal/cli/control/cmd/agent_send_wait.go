@@ -56,9 +56,20 @@ type agentReplyResult struct {
 	// statusRequestID overrides RequestID in agentReplyEnded when a corrective
 	// schema retry turn is the active input that request-status should inspect.
 	statusRequestID string
-	// quietAgentID makes QuietLines print the created agent ID instead of the
-	// input ID (used by `agent open/fork --message ... --wait -q`).
-	quietAgentID bool
+}
+
+// agentLaunchReplyResult wraps agentReplyResult for `agent open --wait` and
+// `agent fork --wait` so `-q` prints the created agent ID instead of the
+// initial message input ID while keeping the JSON and text shapes identical.
+type agentLaunchReplyResult struct {
+	agentReplyResult
+}
+
+func (r agentLaunchReplyResult) QuietLines() []string {
+	if r.ID != "" {
+		return []string{r.ID}
+	}
+	return r.agentReplyResult.QuietLines()
 }
 
 // formatSanitizedReplies sanitizes each reply for terminal output and joins
@@ -85,13 +96,9 @@ func (r agentReplyResult) RenderText(w io.Writer) error {
 	return err
 }
 
-// QuietLines returns the created agent ID for `agent open/fork --wait -q`, or
-// the input_id for `agent send --wait -q` (falling back to agent ID when no
-// input ID is set).
+// QuietLines returns the input_id for `agent send --wait -q` (falling back to
+// agent ID when no input ID is set).
 func (r agentReplyResult) QuietLines() []string {
-	if r.quietAgentID && r.ID != "" {
-		return []string{r.ID}
-	}
 	if r.InputID != "" {
 		return []string{r.InputID}
 	}
@@ -965,6 +972,25 @@ func queueHolds(queue *leapmuxv1.AgentInputQueueSnapshot, inputID string) bool {
 // agentReplyEnded reports a wait for a reply that did not end with a settled
 // agent: it prints the result, says why on stderr, and returns exit status 6.
 func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitOutcome, timeout time.Duration) error {
+	return renderAgentReplyEnded(p, result, outcome, timeout, func(r agentReplyResult) any { return r })
+}
+
+// agentLaunchReplyEnded is agentReplyEnded for `agent open/fork --wait`,
+// wrapping the printed result in agentLaunchReplyResult so `-q` outputs the
+// created agent ID while JSON and text stay identical.
+func agentLaunchReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitOutcome, timeout time.Duration) error {
+	return renderAgentReplyEnded(p, result, outcome, timeout, func(r agentReplyResult) any {
+		return agentLaunchReplyResult{agentReplyResult: r}
+	})
+}
+
+func renderAgentReplyEnded(
+	p *cli.Printer,
+	result agentReplyResult,
+	outcome replyWaitOutcome,
+	timeout time.Duration,
+	wrap func(agentReplyResult) any,
+) error {
 	disp := dispositionInProgress
 	switch outcome {
 	case replyWaitSettled, replyWaitWaiting, replyWaitTimedOut:
@@ -987,7 +1013,7 @@ func agentReplyEnded(p *cli.Printer, result agentReplyResult, outcome replyWaitO
 			QueryCommand: buildAgentRequestStatusCmd(result.ID, queryRequestID),
 		}
 	}
-	if err := p.Result(result); err != nil {
+	if err := p.Result(wrap(result)); err != nil {
 		return err
 	}
 	switch {

@@ -120,10 +120,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 func launchArgs(opts agent.Options, directory string) ([]string, error) {
 	args := []string{"--experimental", "--rpc", "--no-auto-update", "--skip-onboarding", "--mod", filepath.Join(directory, "bridge.mjs")}
-	if opts.ResumeSessionID != "" {
-		id, err := (commandcodeProvider{}).ResolveResumeHandle(opts.ResumeSessionID, opts.HomeDir)
+	if resumeID := opts.Session.ResumeID(); resumeID != "" {
+		id, err := (commandcodeProvider{}).ResolveResumeHandle(resumeID, opts.HomeDir)
 		if err != nil {
-			return nil, providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+			return nil, providerkit.ResumeFailedError(resumeID, err)
 		}
 		args = append(args, "--resume", id)
 	}

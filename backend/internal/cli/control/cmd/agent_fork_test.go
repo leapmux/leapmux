@@ -747,3 +747,311 @@ func TestAgentFork_SameWorkerWithAttachReusesSingleChannel(t *testing.T) {
 	assert.Equal(t, "spec.txt", enqueueReq.GetAttachments()[0].GetFilename())
 	assert.Equal(t, []byte("attachment body"), enqueueReq.GetAttachments()[0].GetData())
 }
+
+func TestAgentFork_NativePreconditionErrorAttachesFreshHint(t *testing.T) {
+	srcID := fullTestID("ag-fkpre")
+	wsID := fullTestID("ws-fkpre")
+	tileID := fullTestID("tl-fkpre")
+
+	startEnv := func(t *testing.T) {
+		t.Helper()
+		srcTab := &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabId: srcID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			WorkspaceId: wsID,
+			TileId:      tileID,
+			WorkerId:    "worker-A",
+		}
+		startForkIPC(t,
+			func(method string, _ []byte) (proto.Message, error) {
+				switch method {
+				case leapmuxv1connect.WorkspaceServiceLocateTabProcedure:
+					return &leapmuxv1.LocateTabResponse{Tab: srcTab}, nil
+				case leapmuxv1connect.WorkspaceServiceListTabsProcedure:
+					return &leapmuxv1.ListTabsResponse{Tabs: []*leapmuxv1.WorkspaceTab{srcTab}}, nil
+				default:
+					return &leapmuxv1.ListWorkspacesResponse{}, nil
+				}
+			},
+			func(method string, _ []byte) (proto.Message, error) {
+				switch method {
+				case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+					return &leapmuxv1.ListAgentsResponse{
+						Agents: []*leapmuxv1.AgentInfo{{
+							Id:            srcID,
+							Title:         "Source",
+							WorkerId:      "worker-A",
+							WorkingDir:    "/repo",
+							AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+						}},
+					}, nil
+				case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
+					return nil, connect.NewError(connect.CodeFailedPrecondition, "source agent is busy")
+				default:
+					return nil, assert.AnError
+				}
+			},
+		)
+	}
+
+	t.Run("native fork attaches actionable --fresh hint on FailedPrecondition", func(t *testing.T) {
+		startEnv(t)
+		f := runControl(t, "agent", "fork", srcID, "--no-focus").requireFailure(t, cli.CodeConflict)
+		assert.Contains(t, f.Message, "source agent is busy")
+		assert.Contains(t, f.Hints, "wait for the source agent to finish or pass --fresh to clone settings without history")
+	})
+
+	t.Run("--fresh fork does not attach native-fork hint on FailedPrecondition", func(t *testing.T) {
+		startEnv(t)
+		f := runControl(t, "agent", "fork", srcID, "--fresh", "--no-focus").requireFailure(t, cli.CodeConflict)
+		assert.Contains(t, f.Message, "source agent is busy")
+		assert.NotContains(t, f.Hints, "wait for the source agent to finish or pass --fresh to clone settings without history")
+	})
+}
+
+func TestAgentFork_PlacementOverridesAndAmbientIsolation(t *testing.T) {
+	srcID := fullTestID("ag-fkpl-s")
+	ambientID := fullTestID("ag-fkpl-a")
+	refID := fullTestID("ag-fkpl-r")
+	wsSrc := fullTestID("ws-fkpl-s")
+	wsOther := fullTestID("ws-fkpl-o")
+	wsRef := fullTestID("ws-fkpl-r")
+	tileSrc := fullTestID("tl-fkpl-s")
+	tileOther := fullTestID("tl-fkpl-o")
+	tileRef := fullTestID("tl-fkpl-r")
+
+	srcTab := &leapmuxv1.WorkspaceTab{
+		Tab:         &leapmuxv1.TabIdent{TabId: srcID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		WorkspaceId: wsSrc,
+		TileId:      tileSrc,
+		WorkerId:    "worker-A",
+	}
+	ambientTab := &leapmuxv1.WorkspaceTab{
+		Tab:         &leapmuxv1.TabIdent{TabId: ambientID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		WorkspaceId: wsOther,
+		TileId:      tileOther,
+		WorkerId:    "worker-B",
+	}
+	refTab := &leapmuxv1.WorkspaceTab{
+		Tab:         &leapmuxv1.TabIdent{TabId: refID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		WorkspaceId: wsRef,
+		TileId:      tileRef,
+		WorkerId:    "worker-A",
+	}
+
+	makeEnv := func(t *testing.T) (captured *[]*leapmuxv1.OpenAgentRequest, hubMethods *[]string) {
+		t.Helper()
+		var (
+			mu      sync.Mutex
+			reqs    []*leapmuxv1.OpenAgentRequest
+			methods []string
+		)
+		startForkIPC(t,
+			func(method string, body []byte) (proto.Message, error) {
+				mu.Lock()
+				methods = append(methods, method)
+				mu.Unlock()
+				switch method {
+				case leapmuxv1connect.WorkspaceServiceLocateTabProcedure:
+					var req leapmuxv1.LocateTabRequest
+					require.NoError(t, proto.Unmarshal(body, &req))
+					switch req.GetTabId() {
+					case refID:
+						return &leapmuxv1.LocateTabResponse{Tab: refTab}, nil
+					case ambientID:
+						return &leapmuxv1.LocateTabResponse{Tab: ambientTab}, nil
+					default:
+						return &leapmuxv1.LocateTabResponse{Tab: srcTab}, nil
+					}
+				case leapmuxv1connect.WorkspaceServiceLocateTileProcedure:
+					var req leapmuxv1.LocateTileRequest
+					require.NoError(t, proto.Unmarshal(body, &req))
+					switch req.GetTileId() {
+					case tileOther:
+						return &leapmuxv1.LocateTileResponse{WorkspaceId: wsOther}, nil
+					case tileRef:
+						return &leapmuxv1.LocateTileResponse{WorkspaceId: wsRef}, nil
+					default:
+						return &leapmuxv1.LocateTileResponse{WorkspaceId: wsSrc}, nil
+					}
+				case leapmuxv1connect.WorkspaceServiceListTabsProcedure:
+					return &leapmuxv1.ListTabsResponse{Tabs: []*leapmuxv1.WorkspaceTab{srcTab, ambientTab, refTab}}, nil
+				case leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:
+					return &leapmuxv1.ListWorkspacesResponse{
+						Workspaces: []*leapmuxv1.Workspace{
+							{Id: wsSrc, Title: "Src"},
+							{Id: wsOther, Title: "Other"},
+							{Id: wsRef, Title: "Ref"},
+						},
+					}, nil
+				case leapmuxv1connect.WorkerManagementServiceListWorkersProcedure:
+					return &leapmuxv1.ListWorkersResponse{
+						Workers: []*leapmuxv1.Worker{
+							{Id: "worker-A", Online: true},
+							{Id: "worker-B", Online: true},
+						},
+					}, nil
+				default:
+					return &leapmuxv1.ListWorkspacesResponse{}, nil
+				}
+			},
+			func(method string, body []byte) (proto.Message, error) {
+				switch method {
+				case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+					return &leapmuxv1.ListAgentsResponse{
+						Agents: []*leapmuxv1.AgentInfo{{
+							Id:            srcID,
+							Title:         "Source",
+							WorkerId:      "worker-A",
+							WorkingDir:    "/repo",
+							AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+						}},
+					}, nil
+				case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
+					var req leapmuxv1.OpenAgentRequest
+					require.NoError(t, proto.Unmarshal(body, &req))
+					mu.Lock()
+					reqs = append(reqs, &req)
+					mu.Unlock()
+					pubTile := req.GetCreation().GetPlacement().GetTileId()
+					if pubTile == "" {
+						pubTile = "first-leaf"
+					}
+					return &leapmuxv1.OpenAgentResponse{
+						Agent: &leapmuxv1.AgentInfo{Id: req.GetCreation().GetTabId(), WorkerId: "worker-A", Title: req.GetTitle()},
+						Publication: &leapmuxv1.PublishedTab{
+							Tab:         &leapmuxv1.TabIdent{TabId: req.GetCreation().GetTabId(), TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+							WorkspaceId: req.GetCreation().GetPlacement().GetWorkspaceId(),
+							TileId:      pubTile,
+							Position:    "a1",
+						},
+					}, nil
+				default:
+					return nil, assert.AnError
+				}
+			},
+		)
+		// Point ambient tab and worker env vars at a completely different
+		// tab/workspace/worker to ensure they never override src placement.
+		t.Setenv("LEAPMUX_CONTROL_TAB_ID", ambientID)
+		t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-B")
+		return &reqs, &methods
+	}
+
+	t.Run("bare fork keeps source placement despite ambient tab and worker env vars and makes no extra hub RPCs", func(t *testing.T) {
+		reqs, methods := makeEnv(t)
+		data := runControl(t, "agent", "fork", srcID, "--no-focus").Data(t)
+		assert.Equal(t, wsSrc, data["workspace_id"])
+		assert.Equal(t, tileSrc, data["tile_id"])
+		assert.Equal(t, "worker-A", data["worker_id"])
+		require.Len(t, *reqs, 1)
+		pl := (*reqs)[0].GetCreation().GetPlacement()
+		assert.Equal(t, wsSrc, pl.GetWorkspaceId())
+		assert.Equal(t, tileSrc, pl.GetTileId())
+		assert.Equal(t, []string{
+			leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
+			leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
+		}, *methods,
+			"bare agent fork must locate only the source tab and preflight its worker with zero extra placement RPCs")
+	})
+
+	t.Run("--before follows reference tab workspace and tile", func(t *testing.T) {
+		reqs, _ := makeEnv(t)
+		data := runControl(t, "agent", "fork", srcID, "--before", refID, "--no-focus").Data(t)
+		assert.Equal(t, wsRef, data["workspace_id"])
+		assert.Equal(t, tileRef, data["tile_id"])
+		assert.Equal(t, "worker-A", data["worker_id"])
+		require.Len(t, *reqs, 1)
+		pl := (*reqs)[0].GetCreation().GetPlacement()
+		assert.Equal(t, wsRef, pl.GetWorkspaceId())
+		assert.Equal(t, tileRef, pl.GetTileId())
+		assert.Equal(t, refID, pl.GetRelativeTabId())
+		assert.Equal(t, leapmuxv1.TabInsertion_TAB_INSERTION_BEFORE, pl.GetInsertion())
+	})
+
+	t.Run("--after follows reference tab workspace and tile", func(t *testing.T) {
+		reqs, _ := makeEnv(t)
+		data := runControl(t, "agent", "fork", srcID, "--after", refID, "--no-focus").Data(t)
+		assert.Equal(t, wsRef, data["workspace_id"])
+		assert.Equal(t, tileRef, data["tile_id"])
+		assert.Equal(t, "worker-A", data["worker_id"])
+		require.Len(t, *reqs, 1)
+		pl := (*reqs)[0].GetCreation().GetPlacement()
+		assert.Equal(t, wsRef, pl.GetWorkspaceId())
+		assert.Equal(t, tileRef, pl.GetTileId())
+		assert.Equal(t, refID, pl.GetRelativeTabId())
+		assert.Equal(t, leapmuxv1.TabInsertion_TAB_INSERTION_AFTER, pl.GetInsertion())
+	})
+
+	t.Run("--workspace alone clears source tile and uses FirstLeaf in target workspace", func(t *testing.T) {
+		reqs, _ := makeEnv(t)
+		data := runControl(t, "agent", "fork", srcID, "--workspace", wsOther, "--no-focus").Data(t)
+		assert.Equal(t, wsOther, data["workspace_id"])
+		assert.Equal(t, "worker-A", data["worker_id"])
+		require.Len(t, *reqs, 1)
+		pl := (*reqs)[0].GetCreation().GetPlacement()
+		assert.Equal(t, wsOther, pl.GetWorkspaceId())
+		assert.Empty(t, pl.GetTileId())
+		assert.NotNil(t, pl.GetFirstLeaf())
+	})
+
+	t.Run("--tile alone derives target workspace from the tile", func(t *testing.T) {
+		reqs, _ := makeEnv(t)
+		data := runControl(t, "agent", "fork", srcID, "--tile", tileOther, "--no-focus").Data(t)
+		assert.Equal(t, wsOther, data["workspace_id"])
+		assert.Equal(t, tileOther, data["tile_id"])
+		assert.Equal(t, "worker-A", data["worker_id"])
+		require.Len(t, *reqs, 1)
+		pl := (*reqs)[0].GetCreation().GetPlacement()
+		assert.Equal(t, wsOther, pl.GetWorkspaceId())
+		assert.Equal(t, tileOther, pl.GetTileId())
+	})
+
+	t.Run("--worker override with --fresh targets explicit worker while preserving source workspace and tile", func(t *testing.T) {
+		var openReq *leapmuxv1.OpenAgentRequest
+		disp := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
+			switch method {
+			case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+				return &leapmuxv1.ListAgentsResponse{
+					Agents: []*leapmuxv1.AgentInfo{{
+						Id:            srcID,
+						Title:         "Source",
+						WorkerId:      "worker-A",
+						WorkingDir:    "/repo",
+						AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+					}},
+				}, nil
+			case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
+				var req leapmuxv1.OpenAgentRequest
+				require.NoError(t, proto.Unmarshal(body, &req))
+				openReq = &req
+				return &leapmuxv1.OpenAgentResponse{
+					Agent: &leapmuxv1.AgentInfo{Id: req.GetCreation().GetTabId(), WorkerId: "worker-B", Title: req.GetTitle()},
+					Publication: &leapmuxv1.PublishedTab{
+						Tab:         &leapmuxv1.TabIdent{TabId: req.GetCreation().GetTabId(), TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+						WorkspaceId: req.GetCreation().GetPlacement().GetWorkspaceId(),
+						TileId:      req.GetCreation().GetPlacement().GetTileId(),
+						Position:    "a1",
+					},
+				}, nil
+			default:
+				return nil, assert.AnError
+			}
+		}}
+		hub := &recordingHub{
+			workers:   workerRows("worker-A", "worker-B"),
+			locateTab: srcTab,
+		}
+		h := startHubChannelHarness(t, hub, disp)
+		h.managerForWorker("worker-B").SetDispatcher(harnessDispatcher(disp))
+		t.Setenv("LEAPMUX_CONTROL_TAB_ID", ambientID)
+		t.Setenv("LEAPMUX_CONTROL_WORKER_ID", "worker-A")
+
+		data := runControl(t, "agent", "fork", srcID, "--fresh", "--worker", "worker-B", "--no-focus", "--hub", h.url).Data(t)
+		assert.Equal(t, wsSrc, data["workspace_id"])
+		assert.Equal(t, tileSrc, data["tile_id"])
+		assert.Equal(t, "worker-B", data["worker_id"])
+		require.NotNil(t, openReq)
+		assert.Equal(t, wsSrc, openReq.GetCreation().GetPlacement().GetWorkspaceId())
+		assert.Equal(t, tileSrc, openReq.GetCreation().GetPlacement().GetTileId())
+	})
+}

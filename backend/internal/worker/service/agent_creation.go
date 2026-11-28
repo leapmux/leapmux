@@ -20,7 +20,74 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-var errForkSourceNotFound = errors.New("source agent not found")
+type preparedForkSource struct {
+	source     db.Agent
+	sessionID  string
+	workingDir string
+	unlock     func()
+}
+
+// prepareForkSource acquires the source root's transcript mutation lock
+// unconditionally, reads and validates the source agent once under that lock,
+// and returns a consistent snapshot for both SQLite cloning and launch runtime
+// encoding. Callers must invoke unlock once persistence completes or fails.
+func (svc *Service) prepareForkSource(
+	ctx context.Context,
+	sourceAgentID string,
+	agentProvider leapmuxv1.AgentProvider,
+	sender channel.ResponseWriter,
+) (*preparedForkSource, bool) {
+	mutation := svc.Output.transcriptMutationMutex(sourceAgentID)
+	mutation.Lock()
+	unlock := sync.OnceFunc(mutation.Unlock)
+	ok := false
+	defer func() {
+		if !ok {
+			unlock()
+		}
+	}()
+
+	src, err := svc.getAgentByID(ctx, sourceAgentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		sendNotFoundError(sender, "source agent not found")
+		return nil, false
+	}
+	if err != nil {
+		slog.Error("failed to read fork source agent", "source_agent_id", sourceAgentID, "error", err)
+		sendInternalError(sender, "failed to read fork source agent")
+		return nil, false
+	}
+	if src.ParentAgentID.Valid {
+		sendFailedPrecondition(sender, "cannot fork a virtual child subagent transcript")
+		return nil, false
+	}
+	if src.AgentProvider != agentProvider {
+		sendInvalidArgument(sender, fmt.Sprintf("fork provider %s does not match source agent provider %s",
+			agentlabels.CLIAlias(agentProvider), agentlabels.CLIAlias(src.AgentProvider)))
+		return nil, false
+	}
+	if svc.isAgentBusyForFork(&src) {
+		sendFailedPrecondition(sender, fmt.Sprintf("agent %s is busy; wait for the current turn to finish before forking", src.ID))
+		return nil, false
+	}
+	sourceSessionID := storedSessionID(src)
+	if sourceSessionID == "" {
+		sendFailedPrecondition(sender, fmt.Sprintf("agent %s has no native session to fork yet", src.ID))
+		return nil, false
+	}
+	if !svc.providerSupportsFork(src.ID, agentProvider) {
+		sendFailedPrecondition(sender, fmt.Sprintf("provider %s does not support native conversation-history forking",
+			agentlabels.CLIAlias(agentProvider)))
+		return nil, false
+	}
+	ok = true
+	return &preparedForkSource{
+		source:     src,
+		sessionID:  sourceSessionID,
+		workingDir: src.WorkingDir,
+		unlock:     unlock,
+	}, true
+}
 
 func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter, op *creationOperation) {
 	if svc.refuseIfShuttingDown(sender) {
@@ -60,63 +127,30 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 	// session column stays empty until the provider reports its identity.
 	agentProvider := agent.ProviderOrDefault(r.GetAgentProvider())
 	var (
-		resumeSessionID      string
-		forkSource           *db.Agent
-		forkFromSessionID    string
-		forkSourceWorkingDir string
+		resumeSessionID   string
+		forkSourceAgentID string
 	)
-	if forkReq := r.GetForkSource(); forkReq != nil {
-		if strings.TrimSpace(r.GetAgentSessionId()) != "" {
-			sendInvalidArgument(sender, "fork_source and agent_session_id exclude each other")
-			return
-		}
-		sourceAgentID := strings.TrimSpace(forkReq.GetSourceAgentId())
-		if sourceAgentID == "" {
+	switch src := r.GetSessionSource().(type) {
+	case *leapmuxv1.OpenAgentRequest_ForkSource:
+		forkSourceAgentID = strings.TrimSpace(src.ForkSource.GetSourceAgentId())
+		if forkSourceAgentID == "" {
 			sendInvalidArgument(sender, "fork_source.source_agent_id is required")
 			return
 		}
-		src, srcErr := svc.getAgentByID(ctx, sourceAgentID)
-		if errors.Is(srcErr, sql.ErrNoRows) {
-			sendNotFoundError(sender, "source agent not found")
+	case *leapmuxv1.OpenAgentRequest_ResumeSessionId:
+		if strings.TrimSpace(src.ResumeSessionId) == "" {
+			sendInvalidArgument(sender, "resume_session_id is required")
 			return
 		}
-		if srcErr != nil {
-			slog.Error("failed to read fork source agent", "source_agent_id", sourceAgentID, "error", srcErr)
-			sendInternalError(sender, "failed to read fork source agent")
-			return
-		}
-		if src.ParentAgentID.Valid {
-			sendFailedPrecondition(sender, "cannot fork a virtual child subagent transcript")
-			return
-		}
-		if src.AgentProvider != agentProvider {
-			sendInvalidArgument(sender, fmt.Sprintf("fork provider %s does not match source agent provider %s",
-				agentlabels.CLIAlias(agentProvider), agentlabels.CLIAlias(src.AgentProvider)))
-			return
-		}
-		if svc.isAgentBusyForFork(&src) {
-			sendFailedPrecondition(sender, fmt.Sprintf("agent %s is busy; wait for the current turn to finish before forking, or pass --fresh", src.ID))
-			return
-		}
-		sourceSessionID := storedSessionID(src)
-		if sourceSessionID == "" {
-			sendFailedPrecondition(sender, "source agent has no native session to fork yet")
-			return
-		}
-		if !svc.providerSupportsFork(src.ID, agentProvider) {
-			sendFailedPrecondition(sender, fmt.Sprintf("provider %s does not support native conversation-history forking; pass --fresh to clone settings without history",
-				agentlabels.CLIAlias(agentProvider)))
-			return
-		}
-		forkSource = &src
-		forkFromSessionID = sourceSessionID
-		forkSourceWorkingDir = src.WorkingDir
-	} else {
 		var resolveErr error
 		resumeSessionID, resolveErr = svc.Agents.Registry().Plugin(agentProvider).
-			ResolveResumeHandle(r.GetAgentSessionId(), svc.HomeDir)
+			ResolveResumeHandle(src.ResumeSessionId, svc.HomeDir)
 		if resolveErr != nil {
 			sendInvalidArgument(sender, resolveErr.Error())
+			return
+		}
+		if resumeSessionID == "" {
+			sendInvalidArgument(sender, "resume_session_id is required")
 			return
 		}
 	}
@@ -174,7 +208,7 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 	// (model/effort/permissionMode/provider options), filled with provider
 	// defaults for any missing well-known and provider-specific ids.
 	requested := mergeOptions(nil, r.GetOptions())
-	hasExistingSession := resumeSessionID != "" || forkSource != nil
+	hasExistingSession := resumeSessionID != "" || forkSourceAgentID != ""
 	launch := resolveLaunchOptions(svc.Agents.Registry(), requested, agentProvider, hasExistingSession)
 	options := launch.Options
 	// Reject a spawn whose EXPLICITLY-requested permission mode isn't valid for the provider, so a
@@ -229,29 +263,32 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		sendFailedPrecondition(sender, intentErr.Error())
 		return
 	}
-	runtime := &agentCreationRuntime{
-		Startup:              intent,
-		ResumeSessionID:      resumeSessionID,
-		ForkFromSessionID:    forkFromSessionID,
-		ForkSourceWorkingDir: forkSourceWorkingDir,
-		Options:              options,
-		DefaultedIDs:         launch.DefaultedIDs,
-	}
-
-	// Hold the source root's transcript mutation lock across the snapshot
-	// transaction (acquired before op.persist opens its SQLite transaction to
-	// preserve the transcriptMutationMutex -> SQLite lock order) so no live
-	// message or child write lands mid-clone.
-	var unlockSourceTranscript func()
-	if forkSource != nil && !forkSource.ClosedAt.Valid {
-		mutation := svc.Output.transcriptMutationMutex(forkSource.ID)
-		mutation.Lock()
-		unlockSourceTranscript = sync.OnceFunc(mutation.Unlock)
-		defer unlockSourceTranscript()
-		if svc.isAgentBusyForFork(forkSource) {
-			sendFailedPrecondition(sender, fmt.Sprintf("agent %s is busy; wait for the current turn to finish before forking, or pass --fresh", forkSource.ID))
+	// Hold the source root's transcript mutation lock across validation, runtime
+	// encoding, and the snapshot transaction (acquired before op.persist opens
+	// its SQLite transaction to preserve the transcriptMutationMutex -> SQLite
+	// lock order) so no live message, session update, or child write lands
+	// mid-clone and both runtime and SQLite derive from the same locked snapshot.
+	var forkPrep *preparedForkSource
+	if forkSourceAgentID != "" {
+		var ok bool
+		forkPrep, ok = svc.prepareForkSource(ctx, forkSourceAgentID, agentProvider, sender)
+		if !ok {
 			return
 		}
+		defer forkPrep.unlock()
+	}
+
+	var sessionInit agent.SessionInit
+	if forkPrep != nil {
+		sessionInit = agent.ForkSession(forkPrep.sessionID, forkPrep.workingDir)
+	} else if resumeSessionID != "" {
+		sessionInit = agent.ResumeSession(resumeSessionID)
+	}
+	runtime := &agentCreationRuntime{
+		Startup:      intent,
+		Session:      sessionInit,
+		Options:      options,
+		DefaultedIDs: launch.DefaultedIDs,
 	}
 
 	if err := op.persist(runtime, func(ctx context.Context, q *db.Queries, tx *sql.Tx) error {
@@ -265,15 +302,8 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 			Resumed:            resumed,
 			SpawnedByAgentID:   spawnedByAgentID,
 		}
-		if forkSource != nil {
-			latestSrc, err := q.GetAgentByID(ctx, forkSource.ID)
-			if errors.Is(err, sql.ErrNoRows) {
-				return errForkSourceNotFound
-			}
-			if err != nil {
-				return fmt.Errorf("read fork source agent: %w", err)
-			}
-			if err := svc.createAgentRecordForForkUsing(ctx, q, params, latestSrc); err != nil {
+		if forkPrep != nil {
+			if err := svc.createAgentRecordForForkUsing(ctx, q, params, forkPrep.source); err != nil {
 				return err
 			}
 		} else {
@@ -287,10 +317,6 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		return svc.InputQueue.StageInitialMessage(ctx, tx, agentID, r.GetInitialMessageId(), r.GetInitialMessage(), initialSender)
 	}); err != nil {
 		// The row does not exist, so no startup will ever run for it.
-		if errors.Is(err, errForkSourceNotFound) {
-			sendNotFoundError(sender, err.Error())
-			return
-		}
 		if errors.Is(err, errNativeSessionAlreadyOpen) {
 			sendFailedPrecondition(sender, err.Error())
 			return
@@ -303,8 +329,8 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 		sendInternalError(sender, "failed to create agent")
 		return
 	}
-	if unlockSourceTranscript != nil {
-		unlockSourceTranscript()
+	if forkPrep != nil {
+		forkPrep.unlock()
 	}
 
 	// The row is durable, so a reap can now find it -- but its cleanup is
@@ -327,12 +353,10 @@ func (svc *Service) prepareAgentCreation(ctx context.Context, caller channel.Cal
 
 // agentCreationRuntime contains resolved launch intent while publication is pending.
 type agentCreationRuntime struct {
-	Startup              creationStartupIntent
-	ResumeSessionID      string
-	ForkFromSessionID    string
-	ForkSourceWorkingDir string
-	Options              OptionMap
-	DefaultedIDs         map[string]bool
+	Startup      creationStartupIntent
+	Session      agent.SessionInit
+	Options      OptionMap
+	DefaultedIDs map[string]bool
 }
 
 func (svc *Service) handleOpenAgent(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
@@ -369,11 +393,13 @@ func (svc *Service) restoreAgentCreation(op *creationOperation, sender channel.R
 	// The row owns the current selection, including a pending or cleared ID.
 	// The saved runtime contains the original launch intent. When a fork already
 	// confirmed a new session ID on the row, resume that confirmed ID instead of
-	// forking the source session a second time.
-	runtime.ResumeSessionID = storedSessionID(row)
-	if runtime.ResumeSessionID != "" {
-		runtime.ForkFromSessionID = ""
-		runtime.ForkSourceWorkingDir = ""
+	// forking the source session a second time. When the row has no stored
+	// session yet, preserve an unconfirmed fork intent and clear any stale
+	// resume intent.
+	if confirmedID := storedSessionID(row); confirmedID != "" {
+		runtime.Session = agent.ResumeSession(confirmedID)
+	} else if !runtime.Session.IsFork() {
+		runtime.Session = agent.FreshSession()
 	}
 	ctx, handle, claimErr := op.acquireStartupAdmission(&svc.AgentStartup.startupCore, "")
 	if claimErr != nil {
@@ -429,9 +455,7 @@ func (svc *Service) finishAgentCreation(op *creationOperation, sender channel.Re
 		return
 	}
 	opts := svc.baseAgentOptions(row.ID, runtime.Startup.Plan.PlannedWorkingDir, row.AgentProvider)
-	opts.ResumeSessionID = runtime.ResumeSessionID
-	opts.ForkFromSessionID = runtime.ForkFromSessionID
-	opts.ForkSourceWorkingDir = runtime.ForkSourceWorkingDir
+	opts.Session = runtime.Session
 	opts.Options = runtime.Options
 	opts.NewSessionDefaultOptionIDs = runtime.DefaultedIDs
 	opts.ExtraEnv = remoteEnvs

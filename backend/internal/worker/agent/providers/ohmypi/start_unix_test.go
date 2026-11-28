@@ -362,7 +362,7 @@ func TestStartLaunchesWithTheOptionsAndTheResumeHandle(t *testing.T) {
 		agent.OptionIDPermissionMode: "always-ask",
 	}
 	file := filepath.Join(opts.HomeDir, ".omp", "agent", "sessions", "-p", "2026-09-23T18-11-57-284Z_01a0cf77.jsonl")
-	opts.ResumeSessionID = file
+	opts.Session = agent.ResumeSession(file)
 
 	a, _ := startFakeOmp(t, opts)
 
@@ -381,7 +381,7 @@ func TestStartLaunchesWithTheOptionsAndTheResumeHandle(t *testing.T) {
 func TestStartRefusesAnInvalidResumeHandle(t *testing.T) {
 	recordDir := installFakeOmp(t, ompScenarioServe)
 	opts := ompStartOptions(t)
-	opts.ResumeSessionID = "relative/a.jsonl"
+	opts.Session = agent.ResumeSession("relative/a.jsonl")
 
 	_, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.Error(t, err)
@@ -458,4 +458,80 @@ func TestOmpStartupKeepsCandidateExhaustionAfterReadinessFails(t *testing.T) {
 	var status *exec.ExitError
 	require.ErrorAs(t, err, &status)
 	assert.Equal(t, 127, status.ExitCode())
+}
+
+func TestStartForkCleansUpAndRespectsExtraEnv(t *testing.T) {
+	t.Run("does not write forked session file when AgentDirs is nil", func(t *testing.T) {
+		_ = installFakeOmp(t, ompScenarioServe)
+		opts := ompStartOptions(t)
+		opts.AgentDirs = nil
+		srcDir := existingDir(t, filepath.Join(opts.HomeDir, "src"))
+		targetDir := existingDir(t, filepath.Join(opts.HomeDir, "dst"))
+		opts.WorkingDir = targetDir
+		q := sessionQuery(targetDir, opts.HomeDir, nil)
+		srcPath := writeSession(t, sessionDir(q, srcDir), "omp-src-nil-dirs", time.Now(),
+			`{"type":"title","v":1,"title":"Test","pad":""}`,
+			sessionHeader("omp-src-nil-dirs", srcDir),
+			userMessage("hello"),
+		)
+		opts.Session = agent.ForkSession(srcPath, srcDir)
+
+		_, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "private agent directories")
+
+		entries, readErr := os.ReadDir(sessionDir(q, targetDir))
+		if !os.IsNotExist(readErr) {
+			require.NoError(t, readErr)
+			assert.Empty(t, entries, "nil AgentDirs must fail before writing any forked session file")
+		}
+	})
+
+	t.Run("removes forked session file when startup fails", func(t *testing.T) {
+		_ = installFakeOmp(t, ompScenarioExitBeforeReady)
+		opts := ompStartOptions(t)
+		srcDir := existingDir(t, filepath.Join(opts.HomeDir, "src"))
+		targetDir := existingDir(t, filepath.Join(opts.HomeDir, "dst"))
+		opts.WorkingDir = targetDir
+		q := sessionQuery(targetDir, opts.HomeDir, nil)
+		srcPath := writeSession(t, sessionDir(q, srcDir), "omp-src-fail", time.Now(),
+			`{"type":"title","v":1,"title":"Test","pad":""}`,
+			sessionHeader("omp-src-fail", srcDir),
+			userMessage("hello"),
+		)
+		opts.Session = agent.ForkSession(srcPath, srcDir)
+
+		_, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+		require.Error(t, err)
+
+		entries, readErr := os.ReadDir(sessionDir(q, targetDir))
+		if !os.IsNotExist(readErr) {
+			require.NoError(t, readErr)
+			assert.Empty(t, entries, "failed startup must remove the orphaned forked .jsonl file")
+		}
+	})
+
+	t.Run("respects ExtraEnv session store override when forking by bare session ID", func(t *testing.T) {
+		recordDir := installFakeOmp(t, ompScenarioServe)
+		opts := ompStartOptions(t)
+		customSessionDir := filepath.Join(t.TempDir(), "custom-omp-sessions")
+		srcDir := existingDir(t, filepath.Join(opts.HomeDir, "src"))
+		targetDir := existingDir(t, filepath.Join(opts.HomeDir, "dst"))
+		opts.WorkingDir = targetDir
+		opts.ExtraEnv = []string{envSessionDir + "=" + customSessionDir}
+		opts.Session = agent.ForkSession("omp-extra-env-id", srcDir)
+
+		writeSession(t, customSessionDir, "omp-extra-env-id", time.Now(),
+			`{"type":"title","v":1,"title":"Custom","pad":""}`,
+			sessionHeader("omp-extra-env-id", srcDir),
+			userMessage("from extra env"),
+		)
+
+		_, _ = startFakeOmp(t, opts)
+		args := readOmpRecord(t, recordDir).Args
+		resumeIdx := slices.Index(args, "--resume")
+		require.GreaterOrEqual(t, resumeIdx, 0)
+		require.Greater(t, len(args), resumeIdx+1)
+		assert.Equal(t, customSessionDir, filepath.Dir(args[resumeIdx+1]))
+	})
 }

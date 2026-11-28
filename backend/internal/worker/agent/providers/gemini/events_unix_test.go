@@ -109,7 +109,7 @@ func TestGeminiIdleReplayContentIsNotRendered(t *testing.T) {
 	})
 	sink := &agenttest.Sink{}
 	started, err := Start(t.Context(), agent.Options{
-		AgentID: "gemini-load-replay", HomeDir: home, WorkingDir: work, ResumeSessionID: geminiReplaySessionID,
+		AgentID: "gemini-load-replay", HomeDir: home, WorkingDir: work, Session: agent.ResumeSession(geminiReplaySessionID),
 		// A plain shell keeps the private PATH instead of loading a user's zsh startup configuration.
 		Shell: "/bin/sh", StartupTimeout: 30 * time.Second,
 		Options: optionmap.Map{agent.OptionIDModel: "gemini-2.5-pro", agent.OptionIDPermissionMode: "default"},

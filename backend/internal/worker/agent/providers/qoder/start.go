@@ -51,7 +51,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 
-	sessionArgs, err := qoderSessionArgs(opts.ResumeSessionID)
+	sessionArgs, err := qoderSessionArgs(opts.Session.ResumeID())
 	if err != nil {
 		cancel()
 		return nil, err

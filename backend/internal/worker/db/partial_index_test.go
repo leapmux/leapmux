@@ -63,10 +63,11 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 	covered := map[string]struct{}{}
 
 	for _, c := range []struct {
-		name  string
-		index string
-		seek  string
-		run   func(t *testing.T)
+		name   string
+		index  string
+		seek   string
+		forbid string
+		run    func(t *testing.T)
 	}{
 		{
 			name:  "HasMessageByIdempotencyKey",
@@ -244,8 +245,10 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			},
 		},
 		{
-			name:  "ListAgentsBySpawnedBy",
-			index: "idx_agents_spawned_by",
+			name:   "ListAgentsBySpawnedBy",
+			index:  "idx_agents_spawned_by",
+			seek:   "SEARCH agents USING INDEX idx_agents_spawned_by",
+			forbid: "USE TEMP B-TREE FOR ORDER BY",
 			run: func(t *testing.T) {
 				spawned, err := q.ListAgentsBySpawnedBy(t.Context(), "spawner")
 				require.NoError(t, err)
@@ -261,6 +264,10 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			if c.seek != "" {
 				assert.Containsf(t, plan, c.seek,
 					"%s must use the index for the root agent row; plan:\n%s\nquery:\n%s", c.name, plan, recorder.query)
+			}
+			if c.forbid != "" {
+				assert.NotContainsf(t, plan, c.forbid,
+					"%s must not require %q; plan:\n%s\nquery:\n%s", c.name, c.forbid, plan, recorder.query)
 			}
 		})
 		covered[c.index] = struct{}{}

@@ -170,6 +170,18 @@ func (r openCodeRPC) forkSession(ctx context.Context, id string) (openCodeSessio
 	return session, nil
 }
 
+// moveSession enqueues a move of session id to directory via POST /api/session/<id>/move.
+// OpenCode returns 204 No Content once the move is enqueued; callers must wait for the
+// session's reported location to reflect directory before running turns.
+func (r openCodeRPC) moveSession(ctx context.Context, id, directory string) error {
+	if strings.TrimSpace(directory) == "" {
+		return errors.New("an OpenCode session move requires a target directory")
+	}
+	return r.sessionCall(ctx, http.MethodPost, id, "/move", struct {
+		Directory string `json:"directory"`
+	}{Directory: directory}, nil)
+}
+
 func (r openCodeRPC) prompt(ctx context.Context, id string, request openCodePrompt) (openCodeInboxReceipt, error) {
 	if request.ID != "" {
 		if !strings.HasPrefix(request.ID, "msg_") {

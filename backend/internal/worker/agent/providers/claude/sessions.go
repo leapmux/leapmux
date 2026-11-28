@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
-	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // Claude Code writes one JSONL transcript per session at
@@ -478,23 +478,24 @@ func (c *claudeTitleCandidates) take(rec claudeTranscriptRecord) {
 // When the forked session launches in a different working directory or git
 // worktree, copying the source JSONL into the target project folder lets
 // `claude --resume <id> --fork-session --session-id <new-id>` locate it
-// immediately. The operation is best-effort: if the source file is absent from
-// the standard project folder, or if the target file already exists, it returns
-// nil without modifying anything.
-func stageClaudeForkTranscript(q agent.StoredSessionQuery, srcWorkingDir, targetWorkingDir, forkSessionID string) error {
+// immediately. Whenever sourcePath differs from targetPath, targetPath is
+// refreshed atomically from sourcePath so a subsequent fork sees later turns
+// written to the source session. It returns the staged target path when a file
+// was written, or empty string when staging was skipped.
+func stageClaudeForkTranscript(q agent.StoredSessionQuery, srcWorkingDir, targetWorkingDir, forkSessionID string) (string, error) {
 	srcWorkingDir = strings.TrimSpace(srcWorkingDir)
 	targetWorkingDir = strings.TrimSpace(targetWorkingDir)
 	if srcWorkingDir == "" || targetWorkingDir == "" || forkSessionID == "" {
-		return nil
+		return "", nil
 	}
 	// Reject path separators or dot segments so a token accepted by
 	// ValidateSessionID cannot escape the project directory.
 	if strings.ContainsAny(forkSessionID, `/\`) || forkSessionID == "." || forkSessionID == ".." {
-		return nil
+		return "", nil
 	}
 	configDir := claudeConfigDir(q)
 	if configDir == "" {
-		return nil
+		return "", nil
 	}
 
 	srcClean := filepath.Clean(srcWorkingDir)
@@ -502,7 +503,7 @@ func stageClaudeForkTranscript(q agent.StoredSessionQuery, srcWorkingDir, target
 	srcMangled := mangleClaudePath(srcClean)
 	targetMangled := mangleClaudePath(targetClean)
 	if srcMangled == targetMangled {
-		return nil
+		return "", nil
 	}
 
 	var targetProjectDir string
@@ -513,26 +514,27 @@ func stageClaudeForkTranscript(q agent.StoredSessionQuery, srcWorkingDir, target
 		// synthesize for a brand-new directory; only stage when a single matching
 		// directory already exists.
 		existing, err := claudeProjectDirs(q, targetClean)
-		if err != nil || len(existing) != 1 {
-			return nil
+		if err != nil {
+			if errors.Is(err, sessionstore.ErrAbsent) {
+				return "", fmt.Errorf("cannot stage Claude fork transcript for target working directory %q: mangled path length %d exceeds %d bytes and no existing project directory matches its prefix", targetClean, len(targetMangled), claudeMangleMaxLength)
+			}
+			return "", fmt.Errorf("resolve target Claude project directory for %q: %w", targetClean, err)
+		}
+		if len(existing) != 1 {
+			return "", fmt.Errorf("cannot stage Claude fork transcript for target working directory %q: mangled path length %d exceeds %d bytes and found %d matching project directories (expected 1)", targetClean, len(targetMangled), claudeMangleMaxLength, len(existing))
 		}
 		targetProjectDir = existing[0]
 	}
 
 	fileName := forkSessionID + ".jsonl"
 	targetPath := filepath.Join(targetProjectDir, fileName)
-	if _, err := os.Stat(targetPath); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat target Claude transcript %q: %w", targetPath, err)
-	}
 
 	srcDirs, err := claudeProjectDirs(q, srcClean)
 	if err != nil {
 		if errors.Is(err, sessionstore.ErrAbsent) {
-			return nil
+			return "", nil
 		}
-		return err
+		return "", err
 	}
 
 	var srcPath string
@@ -544,21 +546,14 @@ func stageClaudeForkTranscript(q agent.StoredSessionQuery, srcWorkingDir, target
 			break
 		}
 	}
-	if srcPath == "" {
-		return nil
+	if srcPath == "" || filepath.Clean(srcPath) == filepath.Clean(targetPath) {
+		return "", nil
 	}
 
-	data, err := os.ReadFile(srcPath)
-	if err != nil {
-		return fmt.Errorf("read source Claude transcript %q: %w", srcPath, err)
+	if err := providerkit.StreamCopyRegularFile(srcPath, targetPath, 0o600); err != nil {
+		return "", fmt.Errorf("stage Claude transcript from %q to %q: %w", srcPath, targetPath, err)
 	}
-	if err := os.MkdirAll(targetProjectDir, 0o700); err != nil {
-		return fmt.Errorf("create target Claude project directory %q: %w", targetProjectDir, err)
-	}
-	if err := atomicfile.WriteFile(targetPath, data, 0o600); err != nil {
-		return fmt.Errorf("write staged Claude transcript %q: %w", targetPath, err)
-	}
-	return nil
+	return targetPath, nil
 }
 
 // best states the title precedence: the title the user set, then the title the

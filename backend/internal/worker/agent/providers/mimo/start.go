@@ -116,10 +116,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cleanup()
 		return nil, a.FormatStartupError("model catalog", err)
 	}
-	session, err := a.openSession(ctx, opts.ResumeSessionID)
+	resumeID := opts.Session.ResumeID()
+	session, err := a.openSession(ctx, resumeID)
 	if err != nil {
 		cleanup()
-		if opts.ResumeSessionID != "" {
+		if resumeID != "" {
 			return nil, err
 		}
 		return nil, a.FormatStartupError("session", err)
@@ -127,7 +128,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.Mu.Lock()
 	a.sessionID = session.ID
 	a.Mu.Unlock()
-	if opts.ResumeSessionID != "" {
+	if resumeID != "" {
 		a.restoreResumedSession(ctx, session.ID)
 	}
 	a.applyStartupSettings(ctx, opts)

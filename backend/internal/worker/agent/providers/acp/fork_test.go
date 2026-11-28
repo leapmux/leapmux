@@ -13,26 +13,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAdvertisesSessionFork(t *testing.T) {
+func TestReadSessionCapabilities(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		response string
-		want     bool
+		response  string
+		wantClose bool
+		wantFork  bool
 	}{
-		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":{}}}}`, want: true},
-		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":true}}}`, want: true},
-		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"list":{},"delete":{},"fork":{}}}}`, want: true},
-		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":null}}}`, want: false},
-		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":false}}}`, want: false},
-		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":{}}}}`, want: false},
-		{response: `{"protocolVersion":1,"agentCapabilities":{}}`, want: false},
-		{response: `{"protocolVersion":1}`, want: false},
-		{response: `not json`, want: false},
+		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":{}}}}`, wantClose: false, wantFork: true},
+		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":true}}}`, wantClose: false, wantFork: true},
+		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"list":{},"delete":{},"fork":{}}}}`, wantClose: false, wantFork: true},
+		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":{},"fork":{}}}}`, wantClose: true, wantFork: true},
+		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":null}}}`, wantClose: false, wantFork: false},
+		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":false}}}`, wantClose: false, wantFork: false},
+		{response: `{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":{}}}}`, wantClose: true, wantFork: false},
+		{response: `{"protocolVersion":1,"agentCapabilities":{}}`, wantClose: false, wantFork: false},
+		{response: `{"protocolVersion":1}`, wantClose: false, wantFork: false},
+		{response: `not json`, wantClose: false, wantFork: false},
 	}
 
 	for _, tc := range cases {
-		assert.Equal(t, tc.want, advertisesSessionFork(json.RawMessage(tc.response)), tc.response)
+		gotClose, gotFork := readSessionCapabilities([]byte(tc.response))
+		assert.Equal(t, tc.wantClose, gotClose, tc.response)
+		assert.Equal(t, tc.wantFork, gotFork, tc.response)
 	}
 }
 
@@ -62,7 +66,7 @@ func TestStartACPHandshake_SupportsNativeForkAndForksSession(t *testing.T) {
 		t,
 		peer,
 		hooks,
-		agent.Options{WorkingDir: "/work/tree", ForkFromSessionID: "source-1"},
+		agent.Options{WorkingDir: "/work/tree", Session: agent.ForkSession("source-1", "")},
 		acpDefaultSessionConfig,
 		func(method string) json.RawMessage {
 			switch method {
@@ -114,7 +118,7 @@ func TestStartACPHandshake_ForkRequiresLoadLoadsSourceBeforeForking(t *testing.T
 		t,
 		peer,
 		Hooks{},
-		agent.Options{WorkingDir: "/work/tree", ForkFromSessionID: "source-1"},
+		agent.Options{WorkingDir: "/work/tree", Session: agent.ForkSession("source-1", "")},
 		cfg,
 		func(method string) json.RawMessage {
 			switch method {
@@ -165,7 +169,7 @@ func TestStartACPHandshake_ForkRequiresLoadAbortsOnLoadError(t *testing.T) {
 		}
 	})
 
-	session, err := rig.handshake(agent.Options{WorkingDir: "/work/tree", ForkFromSessionID: "source-1"}, cfg)
+	session, err := rig.handshake(agent.Options{WorkingDir: "/work/tree", Session: agent.ForkSession("source-1", "")}, cfg)
 	require.Nil(t, session)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "source session load failed")
@@ -222,9 +226,9 @@ func TestStartACPHandshake_ForkRequiresLoadDropsHistoryReplayedBeforeLoadReply(t
 		}
 	})
 
-	session, err := rig.handshake(agent.Options{WorkingDir: "/work/tree", ForkFromSessionID: "source-1"}, cfg)
+	session, err := rig.handshake(agent.Options{WorkingDir: "/work/tree", Session: agent.ForkSession("source-1", "")}, cfg)
 	require.NoError(t, err)
-	assert.Equal(t, 2, cutoffBeforeFork, "loadObserve must record replay cutoff upon session/load reply before session/fork is sent")
+	assert.Equal(t, -1, cutoffBeforeFork, "pre-fork session/load must not lock replayCutoff before session/fork completes")
 
 	b, sink := rig.base, rig.sink
 	b.finishSessionUpdates()
@@ -235,6 +239,103 @@ func TestStartACPHandshake_ForkRequiresLoadDropsHistoryReplayedBeforeLoadReply(t
 	require.NoError(t, agenttest.SendInput(b, "NEXT", nil))
 	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
 	assert.Equal(t, []string{"text:LIVE_AFTER_LOAD_FORK"}, assembledTexts(t, sink.Messages()))
+}
+
+func TestStartACPHandshake_ForkRequiresLoadDropsHistoryReplayedDuringFork(t *testing.T) {
+	t.Parallel()
+
+	peer := &handshakePeer{
+		linesBefore: map[string][]string{
+			MethodSessionLoad: {
+				string(acptest.Chunk("source-1", contracts.ACPUpdateUserMessageChunk, "REPLAYED_LOAD_PROMPT")),
+				string(acptest.Chunk("source-1", contracts.ACPUpdateAgentMessageChunk, "REPLAYED_LOAD_HISTORY")),
+			},
+			MethodSessionFork: {
+				string(acptest.Chunk("forked-5", contracts.ACPUpdateUserMessageChunk, "REPLAYED_FORK_PROMPT")),
+				string(acptest.Chunk("forked-5", contracts.ACPUpdateAgentMessageChunk, "REPLAYED_FORK_HISTORY")),
+			},
+			MethodSessionPrompt: {
+				string(acptest.Chunk("forked-5", contracts.ACPUpdateAgentMessageChunk, "LIVE_AFTER_LOAD_AND_FORK")),
+			},
+		},
+	}
+	cfg := SessionConfig{
+		NewMethod:        MethodSessionNew,
+		ResumeMethod:     MethodSessionLoad,
+		ForkRequiresLoad: true,
+	}
+	b, sink, session := runHandshakeForTest(
+		t,
+		peer,
+		Hooks{},
+		agent.Options{WorkingDir: "/work/tree", Session: agent.ForkSession("source-1", "")},
+		cfg,
+		func(method string) json.RawMessage {
+			switch method {
+			case MethodInitialize:
+				return json.RawMessage(`{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":{}}}}`)
+			case MethodSessionLoad:
+				return json.RawMessage(`{"sessionId":"source-1"}`)
+			case MethodSessionPrompt:
+				return json.RawMessage(`{"stopReason":"end_turn"}`)
+			default:
+				return json.RawMessage(`{"sessionId":"forked-5"}`)
+			}
+		},
+	)
+	b.finishSessionUpdates()
+
+	assert.Equal(t, "forked-5", session.SessionID)
+	assert.Empty(t, sink.Messages(), "history replayed during both session/load and session/fork must be dropped")
+
+	require.NoError(t, agenttest.SendInput(b, "NEXT", nil))
+	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+	assert.Equal(t, []string{"text:LIVE_AFTER_LOAD_AND_FORK"}, assembledTexts(t, sink.Messages()))
+}
+
+func TestStartACPHandshake_ForkRequiresLoadUsesForkSourceWorkingDirForLoad(t *testing.T) {
+	t.Parallel()
+
+	for _, resumeMethod := range []string{MethodSessionResume, MethodSessionLoad} {
+		t.Run(resumeMethod, func(t *testing.T) {
+			t.Parallel()
+			peer := &handshakePeer{}
+			cfg := SessionConfig{
+				NewMethod:        MethodSessionNew,
+				ResumeMethod:     resumeMethod,
+				ForkRequiresLoad: true,
+			}
+			b, _, session := runHandshakeForTest(
+				t,
+				peer,
+				Hooks{},
+				agent.Options{
+					WorkingDir: "/work/tree",
+					Session:    agent.ForkSession("source-1", "/source/repo"),
+				},
+				cfg,
+				func(method string) json.RawMessage {
+					switch method {
+					case MethodInitialize:
+						return json.RawMessage(`{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":{}}}}`)
+					case resumeMethod:
+						return json.RawMessage(`{"sessionId":"source-1"}`)
+					default:
+						return json.RawMessage(`{"sessionId":"forked-6"}`)
+					}
+				},
+			)
+			b.finishSessionUpdates()
+
+			assert.Equal(t, "forked-6", session.SessionID)
+			requests := peer.recorded()
+			require.Len(t, requests, 3)
+			assert.Equal(t, resumeMethod, requests[1].Method)
+			assert.Equal(t, "/source/repo", requests[1].Params["cwd"], "pre-fork load must use ForkSourceWorkingDir")
+			assert.Equal(t, MethodSessionFork, requests[2].Method)
+			assert.Equal(t, "/work/tree", requests[2].Params["cwd"], "session/fork must use target WorkingDir")
+		})
+	}
 }
 
 func TestStartACPHandshake_SupportsNativeForkIsFalseWhenNotAdvertised(t *testing.T) {
@@ -268,7 +369,7 @@ func TestStartACPHandshake_ForkFailsWhenCapabilityNotAdvertised(t *testing.T) {
 		return json.RawMessage(`{"sessionId":"unexpected"}`)
 	})
 
-	session, err := rig.handshake(agent.Options{WorkingDir: "/work", ForkFromSessionID: "source-1"}, acpDefaultSessionConfig)
+	session, err := rig.handshake(agent.Options{WorkingDir: "/work", Session: agent.ForkSession("source-1", "")}, acpDefaultSessionConfig)
 	require.Nil(t, session)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "does not advertise ACP session/fork capability")
@@ -295,21 +396,28 @@ func TestStartACPHandshake_ForkRejectsSameOrEmptySessionID(t *testing.T) {
 				}
 				return json.RawMessage(reply)
 			})
-			session, err := rig.handshake(agent.Options{WorkingDir: "/work", ForkFromSessionID: "source-1"}, acpDefaultSessionConfig)
+			session, err := rig.handshake(agent.Options{WorkingDir: "/work", Session: agent.ForkSession("source-1", "")}, acpDefaultSessionConfig)
 			require.Nil(t, session)
 			require.Error(t, err)
 		})
 	}
 }
 
-func TestStartACPHandshake_RejectsSimultaneousResumeAndFork(t *testing.T) {
+func TestStartACPHandshake_RejectsInvalidSessionInit(t *testing.T) {
 	t.Parallel()
 
 	peer := &handshakePeer{}
 	rig := newHandshakeRig(t, peer, Hooks{}, nil, func(string) json.RawMessage {
 		return json.RawMessage(`{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"fork":{}}}}`)
 	})
-	session, err := rig.handshake(agent.Options{WorkingDir: "/work", ResumeSessionID: "s1", ForkFromSessionID: "s2"}, acpDefaultSessionConfig)
+	session, err := rig.handshake(agent.Options{
+		WorkingDir: "/work",
+		Session: agent.SessionInit{
+			Kind:             agent.SessionInitResume,
+			SessionID:        "s1",
+			SourceWorkingDir: "/source",
+		},
+	}, acpDefaultSessionConfig)
 	require.Nil(t, session)
 	require.Error(t, err)
 	require.Len(t, peer.recorded(), 1)

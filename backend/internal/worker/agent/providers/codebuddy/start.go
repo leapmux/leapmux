@@ -100,7 +100,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		return nil, err
 	}
 
-	sessionArgs, sessionID, err := codebuddySessionArgs(opts.ResumeSessionID)
+	sessionArgs, sessionID, err := codebuddySessionArgs(opts.Session.ResumeID())
 	if err != nil {
 		cancel()
 		return nil, err
@@ -165,7 +165,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 	var resumeState *codebuddyResumeState
-	if opts.ResumeSessionID != "" {
+	if opts.Session.IsResume() {
 		resumeState = &codebuddyResumeState{done: make(chan error, 1)}
 	}
 

@@ -307,3 +307,98 @@ func TestResolveDefaultHub_ReturnsSourceProvenance(t *testing.T) {
 		assert.Equal(t, HubSourceUnspecified, source)
 	})
 }
+
+func TestCredentialFile_ExpiryState(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	t.Run("nil receiver returns zero state", func(t *testing.T) {
+		var c *CredentialFile
+		assert.Equal(t, CredentialExpiryState{}, c.ExpiryState(now))
+	})
+
+	t.Run("zero times are not expired and respect refresh token presence", func(t *testing.T) {
+		noRefresh := (&CredentialFile{}).ExpiryState(now)
+		assert.False(t, noRefresh.HasAccessExpiry)
+		assert.False(t, noRefresh.AccessExpired)
+		assert.Zero(t, noRefresh.AccessRemaining)
+		assert.False(t, noRefresh.HasRefreshExpiry)
+		assert.False(t, noRefresh.RefreshExpired)
+		assert.Zero(t, noRefresh.RefreshRemaining)
+		assert.False(t, noRefresh.CanRefresh)
+
+		whitespaceRefresh := (&CredentialFile{RefreshToken: "  \t "}).ExpiryState(now)
+		assert.False(t, whitespaceRefresh.CanRefresh)
+
+		withRefresh := (&CredentialFile{RefreshToken: "rt-1"}).ExpiryState(now)
+		assert.False(t, withRefresh.AccessExpired)
+		assert.False(t, withRefresh.RefreshExpired)
+		assert.True(t, withRefresh.CanRefresh)
+	})
+
+	t.Run("valid access and refresh tokens report remaining durations", func(t *testing.T) {
+		c := &CredentialFile{
+			RefreshToken:     "rt-1",
+			ExpiresAt:        now.Add(45 * time.Minute),
+			RefreshExpiresAt: now.Add(48 * time.Hour),
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.HasAccessExpiry)
+		assert.False(t, st.AccessExpired)
+		assert.Equal(t, 45*time.Minute, st.AccessRemaining)
+		assert.True(t, st.HasRefreshExpiry)
+		assert.False(t, st.RefreshExpired)
+		assert.Equal(t, 48*time.Hour, st.RefreshRemaining)
+		assert.True(t, st.CanRefresh)
+	})
+
+	t.Run("exact expiry boundary counts as expired", func(t *testing.T) {
+		c := &CredentialFile{
+			RefreshToken:     "rt-1",
+			ExpiresAt:        now,
+			RefreshExpiresAt: now,
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.AccessExpired)
+		assert.Zero(t, st.AccessRemaining)
+		assert.True(t, st.RefreshExpired)
+		assert.Zero(t, st.RefreshRemaining)
+		assert.False(t, st.CanRefresh)
+	})
+
+	t.Run("expired access token with valid refresh token can refresh", func(t *testing.T) {
+		c := &CredentialFile{
+			RefreshToken:     "rt-1",
+			ExpiresAt:        now.Add(-10 * time.Minute),
+			RefreshExpiresAt: now.Add(12 * time.Hour),
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.AccessExpired)
+		assert.Equal(t, -10*time.Minute, st.AccessRemaining)
+		assert.False(t, st.RefreshExpired)
+		assert.Equal(t, 12*time.Hour, st.RefreshRemaining)
+		assert.True(t, st.CanRefresh)
+	})
+
+	t.Run("expired access token without refresh token cannot refresh", func(t *testing.T) {
+		c := &CredentialFile{
+			ExpiresAt: now.Add(-10 * time.Minute),
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.AccessExpired)
+		assert.False(t, st.RefreshExpired)
+		assert.False(t, st.CanRefresh)
+	})
+
+	t.Run("expired refresh token cannot refresh even when RefreshToken is non-empty", func(t *testing.T) {
+		c := &CredentialFile{
+			RefreshToken:     "rt-1",
+			ExpiresAt:        now.Add(-2 * time.Hour),
+			RefreshExpiresAt: now.Add(-time.Hour),
+		}
+		st := c.ExpiryState(now)
+		assert.True(t, st.AccessExpired)
+		assert.True(t, st.RefreshExpired)
+		assert.Equal(t, -time.Hour, st.RefreshRemaining)
+		assert.False(t, st.CanRefresh)
+	})
+}

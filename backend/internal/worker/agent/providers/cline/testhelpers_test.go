@@ -93,7 +93,7 @@ func newRig(t *testing.T, configure ...func(*rigConfig)) *rig {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	sessionID, err := a.openSession(ctx, a.settings, cfg.opts.ResumeSessionID)
+	sessionID, err := a.openSession(ctx, a.settings, cfg.opts.Session.ResumeID())
 	require.NoError(t, err)
 	r.waitSubscribed(t, sessionID)
 	return r

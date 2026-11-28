@@ -171,6 +171,11 @@ type loadSessionParams struct {
 	SessionID string `json:"sessionId"`
 }
 
+// changeWorkingDirectoryParams are the droid.change_working_directory params.
+type changeWorkingDirectoryParams struct {
+	WorkingDirectory string `json:"workingDirectory"`
+}
+
 // addUserMessageParams are the droid.add_user_message params. The prompt
 // argument is forbidden with a streaming --input-format, so every turn goes
 // over this method. `text` is a plain string; a probe proved a `content` array

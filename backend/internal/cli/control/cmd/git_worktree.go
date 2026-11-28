@@ -29,7 +29,6 @@ func newWorktreeCommand() *cobra.Command {
 			Short:   "List the worktrees of a repository",
 			Examples: []cli.Example{
 				{Command: "leapmux worktree list"},
-				{Command: "leapmux worktree list --dir ~/src/app"},
 			},
 			Flags: workingDirFlags,
 			Run:   runGitWorktrees,
@@ -44,7 +43,7 @@ explicit path can select its own repository. Use self to find the calling local
 tab's checkout.`,
 			Examples: []cli.Example{
 				{Command: "leapmux worktree get"},
-				{Command: "leapmux worktree get branch:feature/login --dir ~/src/app"},
+				{Command: "leapmux worktree get branch:feature/login"},
 				{Command: "leapmux worktree get /path/to/worktree"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
@@ -59,7 +58,7 @@ tab's checkout.`,
 			Mutates: true,
 			Examples: []cli.Example{
 				{Command: "leapmux worktree create feat/cli-v2"},
-				{Command: "leapmux worktree create feat/cli-v2 --base main --path ~/wt/cli-v2 --dir ~/src/app"},
+				{Command: "leapmux worktree create feat/cli-v2 --base main --path ~/wt/cli-v2"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
 				addWorkingDirFlag(fs, "repository directory on the worker")
@@ -180,14 +179,8 @@ func (s *session) worktreeRepoDir(workerID string, selector *leapmuxv1.GitWorktr
 	if selector.GetBranch() == "" {
 		return "", nil
 	}
-	explicitWorker := s.inv.Changed(workerFlag)
-	if dir := tabWorkingDirForWorker(workerID, explicitWorker); dir != "" {
+	if dir := s.defaultWorkerDir(workerID); dir != "" {
 		return dir, nil
-	}
-	if s.canUseLocalCwdFallback(s.inv, isTabEnvWorker(workerID, explicitWorker)) {
-		if cwd, err := os.Getwd(); err == nil && cwd != "" {
-			return cwd, nil
-		}
 	}
 	return "", cli.Usagef("branch selection requires --dir on the selected worker")
 }

@@ -225,65 +225,91 @@ func (s *session) placement() (placement, error) {
 	return s.placementWithDefaults(placementDefaults{})
 }
 
-func (s *session) placementWithDefaults(defaults placementDefaults) (placement, error) {
+// explicitPlacement holds the placement flags explicitly specified by the
+// caller, plus the reference tab's workspace and tile when --before or --after
+// was passed without explicit --workspace or --tile.
+type explicitPlacement struct {
+	Position     positionSpec
+	Inputs       resolve.Inputs
+	HasRefTarget bool
+}
+
+// resolveExplicitPlacement parses the position spec, explicit --tile,
+// --workspace, and --worker flags, and (when neither --workspace nor --tile is
+// set) resolves the reference tab's workspace and tile for --before / --after.
+func (s *session) resolveExplicitPlacement() (explicitPlacement, error) {
 	spec, err := s.positionSpec()
 	if err != nil {
-		return placement{}, err
+		return explicitPlacement{}, err
 	}
-	in := resolve.Inputs{}
+	out := explicitPlacement{Position: spec}
 	if s.inv.Changed("tile") {
 		t, err := s.resolveOne(resolve.KindTile, stringFlag(s.inv, "tile"))
 		if err != nil {
-			return placement{}, err
+			return explicitPlacement{}, err
 		}
-		in.TileID, in.ExplicitTileID = t.ID, true
+		out.Inputs.TileID, out.Inputs.ExplicitTileID = t.ID, true
 	}
 	if s.inv.Changed("workspace") {
 		w, err := s.resolveOne(resolve.KindWorkspace, stringFlag(s.inv, "workspace"))
 		if err != nil {
-			return placement{}, err
+			return explicitPlacement{}, err
 		}
-		in.WorkspaceID, in.ExplicitWorkspaceID = w.ID, true
+		out.Inputs.WorkspaceID, out.Inputs.ExplicitWorkspaceID = w.ID, true
 	}
 	if s.inv.Changed(workerFlag) {
 		k, err := s.workerScope()
 		if err != nil {
-			return placement{}, err
+			return explicitPlacement{}, err
 		}
-		in.WorkerID, in.ExplicitWorkerID = k, true
-	} else if envWorker := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)); envWorker != "" {
-		in.WorkerID = envWorker
-	} else if defaults.WorkerID != "" {
-		in.WorkerID = defaults.WorkerID
-	} else {
-		// Best-effort zero-config default outside a LeapMux tab: context
-		// worker or sole online worker. Leaves WorkerID empty if ambiguous
-		// so `file open` can still infer the worker from the workspace,
-		// while `agent open` / `terminal open` report the full error via
-		// requireWorker.
-		if k, err := s.workerScope(); err == nil {
-			in.WorkerID = k
+		out.Inputs.WorkerID, out.Inputs.ExplicitWorkerID = k, true
+	}
+	if !out.Inputs.ExplicitTileID && !out.Inputs.ExplicitWorkspaceID && (spec.kind == positionBefore || spec.kind == positionAfter) {
+		// Relative placement without explicit --tile or --workspace follows
+		// the reference tab's workspace and tile instead of pinning to the
+		// caller's own ambient tab or source agent.
+		refGot, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{
+			TabID:       true,
+			WorkspaceID: true,
+			TileID:      true,
+		}, resolve.Inputs{
+			TabID:         spec.refID,
+			ExplicitTabID: true,
+		})
+		if err != nil {
+			return explicitPlacement{}, err
+		}
+		out.Inputs.WorkspaceID = refGot.WorkspaceID
+		out.Inputs.TileID = refGot.TileID
+		out.HasRefTarget = true
+	}
+	return out, nil
+}
+
+func (s *session) placementWithDefaults(defaults placementDefaults) (placement, error) {
+	exp, err := s.resolveExplicitPlacement()
+	if err != nil {
+		return placement{}, err
+	}
+	in := exp.Inputs
+	if !in.ExplicitWorkerID {
+		if envWorker := strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable)); envWorker != "" {
+			in.WorkerID = envWorker
+		} else if defaults.WorkerID != "" {
+			in.WorkerID = defaults.WorkerID
+		} else {
+			// Best-effort zero-config default outside a LeapMux tab: context
+			// worker or sole online worker. Leaves WorkerID empty if ambiguous
+			// so `file open` can still infer the worker from the workspace,
+			// while `agent open` / `terminal open` report the full error via
+			// requireWorker.
+			if k, err := s.workerScope(); err == nil {
+				in.WorkerID = k
+			}
 		}
 	}
 	if in.TileID == "" && in.WorkspaceID == "" {
-		if spec.kind == positionBefore || spec.kind == positionAfter {
-			// Relative placement without explicit --tile or --workspace follows
-			// the reference tab's workspace and tile instead of pinning to the
-			// caller's own ambient tab.
-			refGot, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{
-				TabID:       true,
-				WorkspaceID: true,
-				TileID:      true,
-			}, resolve.Inputs{
-				TabID:         spec.refID,
-				ExplicitTabID: true,
-			})
-			if err != nil {
-				return placement{}, err
-			}
-			in.WorkspaceID = refGot.WorkspaceID
-			in.TileID = refGot.TileID
-		} else if selfID := s.selfTabID(); selfID != "" {
+		if selfID := s.selfTabID(); selfID != "" {
 			in.TabID = selfID
 		} else if defaults.WorkspaceID != "" || defaults.TileID != "" {
 			in.WorkspaceID = defaults.WorkspaceID
@@ -310,7 +336,7 @@ func (s *session) placementWithDefaults(defaults placementDefaults) (placement, 
 	if err != nil {
 		return placement{}, err
 	}
-	return placement{WorkspaceID: got.WorkspaceID, TileID: got.TileID, WorkerID: got.WorkerID, Position: spec}, nil
+	return placement{WorkspaceID: got.WorkspaceID, TileID: got.TileID, WorkerID: got.WorkerID, Position: exp.Position}, nil
 }
 
 // requireWorker refuses a placement without a Worker, for a tab that runs
@@ -417,6 +443,20 @@ func (o openedTab) RenderText(w io.Writer) error {
 // readAgentOpenMessage reads an optional positional [prompt] (supporting "-"),
 // --message/-m (supporting "-"), or --file, plus repeatable --attach files,
 // before any network connection is opened.
+func readInlineOrStdin(stdin io.Reader, raw, label string) (string, error) {
+	if raw == "-" {
+		data, err := readStdinGuarded(stdin)
+		if err != nil {
+			return "", err
+		}
+		raw = string(data)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return "", cli.Usagef("%s is empty", label)
+	}
+	return raw, nil
+}
+
 func readAgentOpenMessage(inv *cli.Invocation) (*userMessage, error) {
 	hasPrompt := len(inv.Args) > 0 && inv.HasArg("prompt")
 	hasMsg := inv.Changed("message")
@@ -446,31 +486,17 @@ func readAgentOpenMessage(inv *cli.Invocation) (*userMessage, error) {
 			return nil, cli.Usagef("--file is empty")
 		}
 	case hasMsg:
-		raw := stringFlag(inv, "message")
-		if raw == "-" {
-			data, err := readStdinGuarded(inv.Stdin)
-			if err != nil {
-				return nil, err
-			}
-			raw = string(data)
+		var err error
+		text, err = readInlineOrStdin(inv.Stdin, stringFlag(inv, "message"), "--message")
+		if err != nil {
+			return nil, err
 		}
-		if strings.TrimSpace(raw) == "" {
-			return nil, cli.Usagef("--message is empty")
-		}
-		text = raw
 	case hasPrompt:
-		raw := inv.Arg("prompt")
-		if raw == "-" {
-			data, err := readStdinGuarded(inv.Stdin)
-			if err != nil {
-				return nil, err
-			}
-			raw = string(data)
+		var err error
+		text, err = readInlineOrStdin(inv.Stdin, inv.Arg("prompt"), "prompt")
+		if err != nil {
+			return nil, err
 		}
-		if strings.TrimSpace(raw) == "" {
-			return nil, cli.Usagef("prompt is empty")
-		}
-		text = raw
 	}
 	if len(text) > contracts.MaxAgentInputItemBytes {
 		return nil, cli.Usagef("the message holds %d bytes; one message holds at most %d bytes", len(text), contracts.MaxAgentInputItemBytes)
@@ -626,6 +652,11 @@ func revealTabBestEffort(ctx context.Context, w workerCall, focus bool, tabID st
 	_ = w.Call(ctx, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, &leapmuxv1.RevealTabRequest{TabId: tabID}, nil)
 }
 
+type agentLaunchMeta struct {
+	verb          string
+	buildRetryCmd func(*cli.Invocation, string) string
+}
+
 // finishAgentLaunch completes `agent open` or `agent fork` after the agent tab
 // has been created: running sendAndWait for a waited message, waiting for the
 // agent to settle when --wait has no message, or returning the openedTab.
@@ -635,7 +666,7 @@ func finishAgentLaunch(
 	p placement,
 	result *openAgentResult,
 	flags *agentLaunchFlags,
-	buildRetryCmd func(*cli.Invocation, string) string,
+	meta agentLaunchMeta,
 ) (any, error) {
 	tab := openedTab{
 		ID:          result.Agent.GetId(),
@@ -672,22 +703,21 @@ func finishAgentLaunch(
 				Explicit:       flags.explicitRequestID,
 				CreatedAgentID: agentTarget.ID,
 				QueryCommand:   buildAgentRequestStatusCmd(agentTarget.ID, flags.requestID),
-				RetryCommand:   buildRetryCmd(inv, flags.requestID),
+				RetryCommand:   meta.buildRetryCmd(inv, flags.requestID),
 			})
 		}
 		replyRes.RequestID = flags.requestID
-		replyRes.quietAgentID = true
 		if inv != nil && inv.Printer != nil && inv.Printer.Format == cli.FormatText {
-			verb := "opened"
-			if inv.Command != nil && inv.Command.Name() == "fork" {
-				verb = "forked"
+			verb := meta.verb
+			if verb == "" {
+				verb = "opened"
 			}
 			_ = inv.Printer.Notice("%s agent %s", verb, cli.ShortID(result.Agent.GetId()))
 		}
 		if outcome == replyWaitSettled {
-			return replyRes, nil
+			return agentLaunchReplyResult{agentReplyResult: replyRes}, nil
 		}
-		return nil, agentReplyEnded(inv.Printer, replyRes, outcome, flags.timeout)
+		return nil, agentLaunchReplyEnded(inv.Printer, replyRes, outcome, flags.timeout)
 	}
 	if flags.wait {
 		return waitNewAgentSettled(inv, s, agentTarget, flags.timeout, tab)
@@ -774,7 +804,10 @@ func runAgentOpen(inv *cli.Invocation) (any, error) {
 		}
 		return nil, wrapRetryReceipt(err, stage, receipt)
 	}
-	return finishAgentLaunch(inv, s, p, result, flags, buildAgentOpenRetryCmd)
+	return finishAgentLaunch(inv, s, p, result, flags, agentLaunchMeta{
+		verb:          "opened",
+		buildRetryCmd: buildAgentOpenRetryCmd,
+	})
 }
 
 func waitNewAgentSettled(inv *cli.Invocation, s *session, agentTarget tabTarget, timeout time.Duration, tab openedTab) (any, error) {

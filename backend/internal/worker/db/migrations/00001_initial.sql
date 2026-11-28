@@ -106,7 +106,7 @@ CREATE TABLE agents (
 );
 CREATE INDEX idx_agents_closed_at ON agents(closed_at) WHERE closed_at IS NOT NULL;
 CREATE INDEX idx_agents_parent ON agents(parent_agent_id) WHERE parent_agent_id IS NOT NULL;
-CREATE INDEX idx_agents_spawned_by ON agents(spawned_by_agent_id) WHERE spawned_by_agent_id <> '';
+CREATE INDEX idx_agents_spawned_by ON agents(spawned_by_agent_id, created_at, id) WHERE spawned_by_agent_id <> '' AND closed_at IS NULL;
 -- Serves ListSessionsForResume, the resume picker's read. It filters an exact
 -- (provider, working directory) pair, which no other index covers, and it runs
 -- on the path of a dialog that opens on every "New agent" click.

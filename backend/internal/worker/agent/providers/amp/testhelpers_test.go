@@ -48,7 +48,7 @@ type harness struct {
 type harnessOption func(*agent.Options)
 
 func withResume(threadID string) harnessOption {
-	return func(o *agent.Options) { o.ResumeSessionID = threadID }
+	return func(o *agent.Options) { o.Session = agent.ResumeSession(threadID) }
 }
 
 func withOptions(options optionmap.Map) harnessOption {

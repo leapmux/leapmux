@@ -64,6 +64,48 @@ func (c *CredentialFile) ClientIDOrBuiltIn() string {
 	return c.ClientID
 }
 
+// CredentialExpiryState summarizes access-token and refresh-token expiry for a
+// CredentialFile at a given instant.
+type CredentialExpiryState struct {
+	// HasAccessExpiry reports whether ExpiresAt is non-zero.
+	HasAccessExpiry bool
+	// AccessExpired reports whether ExpiresAt is non-zero and at or before now.
+	AccessExpired bool
+	// AccessRemaining is ExpiresAt - now when HasAccessExpiry is true.
+	AccessRemaining time.Duration
+	// HasRefreshExpiry reports whether RefreshExpiresAt is non-zero.
+	HasRefreshExpiry bool
+	// RefreshExpired reports whether RefreshExpiresAt is non-zero and at or
+	// before now.
+	RefreshExpired bool
+	// RefreshRemaining is RefreshExpiresAt - now when HasRefreshExpiry is true.
+	RefreshRemaining time.Duration
+	// CanRefresh reports whether a non-empty RefreshToken is present and the
+	// refresh token has not expired.
+	CanRefresh bool
+}
+
+// ExpiryState evaluates access-token and refresh-token expiry at now.
+// A nil receiver returns the zero CredentialExpiryState.
+func (c *CredentialFile) ExpiryState(now time.Time) CredentialExpiryState {
+	if c == nil {
+		return CredentialExpiryState{}
+	}
+	var st CredentialExpiryState
+	if !c.ExpiresAt.IsZero() {
+		st.HasAccessExpiry = true
+		st.AccessRemaining = c.ExpiresAt.Sub(now)
+		st.AccessExpired = !now.Before(c.ExpiresAt)
+	}
+	if !c.RefreshExpiresAt.IsZero() {
+		st.HasRefreshExpiry = true
+		st.RefreshRemaining = c.RefreshExpiresAt.Sub(now)
+		st.RefreshExpired = !now.Before(c.RefreshExpiresAt)
+	}
+	st.CanRefresh = strings.TrimSpace(c.RefreshToken) != "" && !st.RefreshExpired
+	return st
+}
+
 // CanonicalHubURL returns the normalized form of raw for storage and display.
 // Surrounding whitespace is trimmed. Local IPC URLs (unix:/npipe:) are returned
 // verbatim after trimming because socket paths are case- and slash-sensitive.

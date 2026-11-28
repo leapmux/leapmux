@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -247,14 +246,8 @@ func (s *session) resolveFileDirArg(inv *cli.Invocation, workerID string) (strin
 		}
 		return p, nil
 	}
-	explicitWorker := inv.Changed(workerFlag)
-	if wd := tabWorkingDirForWorker(workerID, explicitWorker); wd != "" {
+	if wd := s.defaultWorkerDir(workerID); wd != "" {
 		return wd, nil
-	}
-	if s.canUseLocalCwdFallback(inv, isTabEnvWorker(workerID, explicitWorker)) {
-		if cwd, err := os.Getwd(); err == nil && cwd != "" {
-			return cwd, nil
-		}
 	}
 	return "", cli.Usagef("<path> is required (pass a directory path or run inside a tab)")
 }
@@ -267,7 +260,8 @@ func (s *session) canUseLocalCwdFallback(inv *cli.Invocation, sameEnvWorker bool
 		if !locallisten.IsLocal(c.HubURL) || inv.Changed(workerFlag) || !sameEnvWorker {
 			return false
 		}
-		if ctxCfg, err := control.LoadContext(); err == nil && strings.TrimSpace(ctxCfg.Worker) != "" {
+		ctxCfg, err := control.LoadContext()
+		if err != nil || strings.TrimSpace(ctxCfg.Worker) != "" {
 			return false
 		}
 		return true

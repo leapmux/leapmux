@@ -127,7 +127,7 @@ func TestCursorBypassResumeStartup(t *testing.T) {
 			}
 			argsFile := filepath.Join(t.TempDir(), "argv")
 			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{Binary: "cursor-agent", HelperRun: "TestHelperProcessCursorCLI", WantEnv: "GO_WANT_HELPER_PROCESS_CURSOR", Env: []string{"LEAPMUX_CURSOR_TEST_SCENARIO=load"}, ArgsFile: argsFile, ForwardArgs: true})
-			started, err := Start(t.Context(), agent.Options{AgentID: "cursor-resumed", HomeDir: home, WorkingDir: t.TempDir(), ResumeSessionID: "cursor-resume", Shell: testutil.TestShell(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, Options: map[string]string{"bypassPermissions": tc.requested}}, agent.NewProviderServices(&agenttest.Sink{}))
+			started, err := Start(t.Context(), agent.Options{AgentID: "cursor-resumed", HomeDir: home, WorkingDir: t.TempDir(), Session: agent.ResumeSession("cursor-resume"), Shell: testutil.TestShell(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, Options: map[string]string{"bypassPermissions": tc.requested}}, agent.NewProviderServices(&agenttest.Sink{}))
 			if started != nil {
 				t.Cleanup(func() { started.Stop(); _ = started.Wait() })
 			}

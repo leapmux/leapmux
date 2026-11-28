@@ -5,6 +5,7 @@ import (
 	"maps"
 	"strings"
 
+	"connectrpc.com/connect/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"golang.org/x/sync/errgroup"
@@ -14,6 +15,17 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
+
+type forkHintError struct {
+	err  error
+	hint string
+}
+
+var _ cli.HintProvider = (*forkHintError)(nil)
+
+func (e *forkHintError) Error() string      { return e.err.Error() }
+func (e *forkHintError) Unwrap() error      { return e.err }
+func (e *forkHintError) CLIHints() []string { return []string{e.hint} }
 
 func newAgentForkCommand() *cobra.Command {
 	return cli.NewLeaf(cli.Leaf{
@@ -228,6 +240,12 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 			RequestScope:   requestScopeAgentFork,
 		})
 		if openErr != nil {
+			if !fresh && connect.CodeOf(openErr) == connect.CodeFailedPrecondition {
+				return &forkHintError{
+					err:  openErr,
+					hint: "wait for the source agent to finish or pass --fresh to clone settings without history",
+				}
+			}
 			return openErr
 		}
 		opened = true
@@ -256,7 +274,10 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 		return nil, wrapRetryReceipt(err, retryStageDuringSend, receipt)
 	}
 
-	return finishAgentLaunch(inv, s, p, result, flags, buildAgentForkRetryCmd)
+	return finishAgentLaunch(inv, s, p, result, flags, agentLaunchMeta{
+		verb:          "forked",
+		buildRetryCmd: buildAgentForkRetryCmd,
+	})
 }
 
 func agentInfoOnChannel(ctx context.Context, w workerCall, agentID string) (*leapmuxv1.AgentInfo, error) {
@@ -273,7 +294,7 @@ func agentInfoOnChannel(ctx context.Context, w workerCall, agentID string) (*lea
 }
 
 func (s *session) placementForFork(src tabTarget) (placement, error) {
-	spec, err := s.positionSpec()
+	exp, err := s.resolveExplicitPlacement()
 	if err != nil {
 		return placement{}, err
 	}
@@ -281,55 +302,32 @@ func (s *session) placementForFork(src tabTarget) (placement, error) {
 		WorkspaceID: src.WorkspaceID,
 		TileID:      src.TileID,
 		WorkerID:    src.WorkerID,
-		Position:    spec,
+		Position:    exp.Position,
 	}
-	hasExplicitWS := s.inv.Changed("workspace")
-	hasExplicitTile := s.inv.Changed("tile")
-	if !hasExplicitWS && !hasExplicitTile && (spec.kind == positionBefore || spec.kind == positionAfter) {
-		refGot, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{
-			TabID:       true,
-			WorkspaceID: true,
-			TileID:      true,
-		}, resolve.Inputs{
-			TabID:         spec.refID,
-			ExplicitTabID: true,
+	if exp.Inputs.ExplicitWorkerID {
+		p.WorkerID = exp.Inputs.WorkerID
+	}
+	switch {
+	case exp.HasRefTarget:
+		p.WorkspaceID = exp.Inputs.WorkspaceID
+		p.TileID = exp.Inputs.TileID
+	case exp.Inputs.ExplicitTileID:
+		// Validate --tile against --workspace when both are set and derive the
+		// workspace when only --tile is set.
+		got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, TileID: true}, resolve.Inputs{
+			WorkspaceID:         exp.Inputs.WorkspaceID,
+			ExplicitWorkspaceID: exp.Inputs.ExplicitWorkspaceID,
+			TileID:              exp.Inputs.TileID,
+			ExplicitTileID:      true,
 		})
-		if err != nil {
-			return placement{}, err
-		}
-		p.WorkspaceID = refGot.WorkspaceID
-		p.TileID = refGot.TileID
-	}
-	if hasExplicitWS {
-		w, err := s.resolveOne(resolve.KindWorkspace, stringFlag(s.inv, "workspace"))
-		if err != nil {
-			return placement{}, err
-		}
-		p.WorkspaceID = w.ID
-		p.TileID = ""
-	}
-	if hasExplicitTile {
-		t, err := s.resolveOne(resolve.KindTile, stringFlag(s.inv, "tile"))
-		if err != nil {
-			return placement{}, err
-		}
-		in := resolve.Inputs{TileID: t.ID, ExplicitTileID: true}
-		if hasExplicitWS {
-			in.WorkspaceID, in.ExplicitWorkspaceID = p.WorkspaceID, true
-		}
-		got, err := resolve.Resolve(s.ctx, s.deps(), resolve.Need{WorkspaceID: true, TileID: true}, in)
 		if err != nil {
 			return placement{}, err
 		}
 		p.WorkspaceID = got.WorkspaceID
 		p.TileID = got.TileID
-	}
-	if s.inv.Changed(workerFlag) {
-		k, err := s.workerScope()
-		if err != nil {
-			return placement{}, err
-		}
-		p.WorkerID = k
+	case exp.Inputs.ExplicitWorkspaceID:
+		p.WorkspaceID = exp.Inputs.WorkspaceID
+		p.TileID = ""
 	}
 	return p, nil
 }

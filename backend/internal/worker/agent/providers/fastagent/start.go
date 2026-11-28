@@ -60,7 +60,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		// requested model is pushed last and best-effort (fast-agent fixes its
 		// model at session creation and rejects a live write).
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {
-			if err := a.initializeRootArchive(opts.ResumeSessionID != ""); err != nil {
+			if err := a.initializeRootArchive(opts.Session.IsResume()); err != nil {
 				return err
 			}
 			if err := a.ApplyPermissionModeStartup(handshake, opts, contracts.FastagentDefaultMode, opts.Model()); err != nil {

@@ -111,7 +111,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	case <-startup.Done():
 		return fail("Remote stream", startup.Err())
 	}
-	sessionID, err := a.createSession(startup, opts.ResumeSessionID)
+	sessionID, err := a.createSession(startup, opts.Session.ResumeID())
 	if err != nil {
 		return fail("Session", err)
 	}

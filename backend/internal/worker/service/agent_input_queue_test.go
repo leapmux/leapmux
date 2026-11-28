@@ -1065,7 +1065,7 @@ func TestQueuedClearDropsTheClearedSession(t *testing.T) {
 	var launchesMu sync.Mutex
 	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 		launchesMu.Lock()
-		launches = append(launches, opts.ResumeSessionID)
+		launches = append(launches, opts.Session.ResumeID())
 		launchesMu.Unlock()
 		return svc.Agents.StartAgentWith(ctx, opts, sink, claudetest.StartSilent)
 	}
@@ -1145,7 +1145,7 @@ func TestQueuedInputResumesTheSessionThatTheRowHoldsAfterTheJoin(t *testing.T) {
 	releaseFirst := make(chan struct{})
 	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		launchMu.Lock()
-		resumeIDs = append(resumeIDs, opts.ResumeSessionID)
+		resumeIDs = append(resumeIDs, opts.Session.ResumeID())
 		first := len(resumeIDs) == 1
 		launchMu.Unlock()
 		if !first {
@@ -1793,7 +1793,7 @@ func TestInterruptAgentEscalatesWhenTheProviderProvesItsStopIgnored(t *testing.T
 
 	require.Empty(t, writer.rejections(), "the escalated press is a successful stop")
 	require.Len(t, restartOpts, 1, "the press replaced the process once")
-	assert.Equal(t, "sess-stored", restartOpts[0].ResumeSessionID,
+	assert.Equal(t, "sess-stored", restartOpts[0].Session.ResumeID(),
 		"the replacement resumes the session the row holds")
 	assert.True(t, svc.Agents.HasAgent(agentID), "a completed escalation leaves a running agent")
 

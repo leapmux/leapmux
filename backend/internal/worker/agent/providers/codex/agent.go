@@ -289,6 +289,20 @@ type codexThreadResponse struct {
 	ActivePermissionProfile json.RawMessage `json:"activePermissionProfile"`
 }
 
+func (a *Agent) sendThreadRequest(
+	method string, params map[string]interface{}, timeout time.Duration,
+) (codexThreadResult, error) {
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return codexThreadResult{}, fmt.Errorf("marshal %s params: %w", method, err)
+	}
+	resp, err := a.SendRequest(method, paramsJSON, timeout)
+	if err != nil {
+		return codexThreadResult{}, err
+	}
+	return parseCodexThreadResponse(method, resp)
+}
+
 // resumeThread sends `thread/resume` and returns the thread ID and effective
 // model that Codex reported. An RPC error, a response that does not parse, and
 // a response that carries no required field all fail: none of the three
@@ -296,15 +310,7 @@ type codexThreadResponse struct {
 func (a *Agent) resumeThread(
 	threadParams map[string]interface{}, resumeSessionID string, timeout time.Duration,
 ) (codexThreadResult, error) {
-	paramsJSON, err := json.Marshal(threadParams)
-	if err != nil {
-		return codexThreadResult{}, providerkit.ResumeFailedError(resumeSessionID, fmt.Errorf("marshal thread/resume params: %w", err))
-	}
-	resp, err := a.SendRequest("thread/resume", paramsJSON, timeout)
-	if err != nil {
-		return codexThreadResult{}, providerkit.ResumeFailedError(resumeSessionID, err)
-	}
-	threadResult, err := parseCodexThreadResponse("thread/resume", resp)
+	threadResult, err := a.sendThreadRequest("thread/resume", threadParams, timeout)
 	if err != nil {
 		return codexThreadResult{}, providerkit.ResumeFailedError(resumeSessionID, err)
 	}
@@ -323,15 +329,7 @@ func (a *Agent) forkThread(
 		params = make(map[string]interface{})
 	}
 	params["threadId"] = forkSessionID
-	paramsJSON, err := json.Marshal(params)
-	if err != nil {
-		return codexThreadResult{}, fmt.Errorf("marshal thread/fork params: %w", err)
-	}
-	resp, err := a.SendRequest("thread/fork", paramsJSON, timeout)
-	if err != nil {
-		return codexThreadResult{}, fmt.Errorf("fork codex thread %q: %w", forkSessionID, err)
-	}
-	threadResult, err := parseCodexThreadResponse("thread/fork", resp)
+	threadResult, err := a.sendThreadRequest("thread/fork", params, timeout)
 	if err != nil {
 		return codexThreadResult{}, fmt.Errorf("fork codex thread %q: %w", forkSessionID, err)
 	}
@@ -348,15 +346,7 @@ func (a *Agent) startThread(threadParams map[string]interface{}, timeout time.Du
 		params = make(map[string]interface{})
 	}
 	params["historyMode"], params["ephemeral"], params["experimentalRawEvents"] = "paginated", false, true
-	paramsJSON, err := json.Marshal(params)
-	if err != nil {
-		return codexThreadResult{}, fmt.Errorf("marshal thread/start params: %w", err)
-	}
-	resp, err := a.SendRequest("thread/start", paramsJSON, timeout)
-	if err != nil {
-		return codexThreadResult{}, err
-	}
-	return parseCodexThreadResponse("thread/start", resp)
+	return a.sendThreadRequest("thread/start", params, timeout)
 }
 
 func parseCodexThreadResponse(method string, raw json.RawMessage) (codexThreadResult, error) {

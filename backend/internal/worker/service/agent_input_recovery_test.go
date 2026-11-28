@@ -164,7 +164,7 @@ type recoveryStarts struct {
 func (s *recoveryStarts) start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	s.mu.Lock()
 	launch := len(s.agents) + 1
-	resume := opts.ResumeSessionID
+	resume := opts.Session.ResumeID()
 	script := s.prepareFor(launch)
 	s.mu.Unlock()
 	fake := &recoveryAgent{agentID: opts.AgentID, stopped: make(chan struct{}), prepareScript: script, turnSink: sink}

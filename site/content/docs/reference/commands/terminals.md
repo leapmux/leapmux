@@ -525,7 +525,7 @@ leapmux terminal quake read [flags]
 
 ```sh
 leapmux terminal quake read
-leapmux terminal quake read --dir ~/src/app --lines 50
+leapmux terminal quake read --lines 50
 ```
 
 #### `leapmux terminal quake run`

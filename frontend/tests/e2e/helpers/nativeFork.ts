@@ -3,29 +3,30 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
-import { OPTION_ID_MODEL } from '../../../src/components/chat/settingsGroups'
-import { AgentStatus, MessageSource, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { TabInsertion } from '../../../src/generated/proto/leapmux/v1/tab_creation_pb'
+import { AgentStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { getTestChannel } from './api'
+import { openAgentViaAPI } from './api'
 import { countChatBubbles } from './chatBubbleCount'
-import { getUserEventsSubscription } from './crdt'
-import { isStoredMessageSeq, nativeMessagesHoldingText, readNativeMessageSnapshot } from './nativeMessages'
+import { isStoredMessageSeq, nativeMessagesHoldingText, readAllAgentMessages, readNativeMessageSnapshot } from './nativeMessages'
 import { expectNativeResumeContext, expectUnmergedAnswerBubbles, nativeResumeTexts, readOriginalConversationRows } from './nativeResume'
 import { currentNativeAgent, nativeAgentById, nativeModelConversationTurns, nativeTextStep } from './nativeScenario'
+import { deliberateWorkingDir } from './providerWorkingDir'
 import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
-import { sendMessage, tabById, waitForAgentIdle } from './ui'
+import { assistantBubbles, sendMessage, tabById, userBubbles, waitForAgentIdle } from './ui'
 
-/** Build the OpenAgent options map for a provider's E2E fixture defaults. */
-function defaultForkOptions(provider: AgentInfo['agentProvider']): Record<string, string> {
-  const openOpts = agentOpenOptions(provider)
-  return {
-    ...openOpts.optionValues,
-    ...(openOpts.model === undefined
-      ? {}
-      : { [OPTION_ID_MODEL]: openOpts.model }),
-  }
+/** Queue one scripted assistant answer, send the user prompt, and wait for the turn to settle. */
+async function sendScriptedTurn(
+  context: ManagedNativeScenarioContext,
+  prompt: string,
+  answer: string,
+): Promise<number> {
+  const { page, modelScript } = context
+  const step = await modelScript.queue(nativeTextStep(context, answer))
+  await sendMessage(page, modelScript.prompt(prompt))
+  await modelScript.waitForSteps(step + 1)
+  await waitForAgentIdle(page)
+  return step
 }
 
 /** Wait until the source native agent is active and has confirmed a non-empty native session ID. */
@@ -62,10 +63,7 @@ export async function exerciseNativeFork(context: ManagedNativeScenarioContext):
   const sourceId = initialAgent.id
 
   // Turn 1 on the source agent.
-  const firstStep = await modelScript.queue(nativeTextStep(context, texts.originalAnswer))
-  await sendMessage(page, modelScript.prompt(texts.originalPrompt))
-  await modelScript.waitForSteps(firstStep + 1)
-  await waitForAgentIdle(page)
+  await sendScriptedTurn(context, texts.originalPrompt, texts.originalAnswer)
 
   const source = await waitForActiveNativeSession(context, sourceId)
   expect(source.supportsFork, 'A supported provider must report supportsFork = true once a native session exists.').toBe(true)
@@ -78,30 +76,19 @@ export async function exerciseNativeFork(context: ManagedNativeScenarioContext):
   expect(originalAnswerBubbles, 'The source tab draws the original answer.').toBeGreaterThan(0)
 
   // Fork the idle source session into a new agent tab in the same workspace.
-  const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
   const forkedTabId = randomUUID()
-  const forkResp = await channel.callWorker(
-    leapmuxServer.workerId,
-    WorkerAgentService.method.openAgent,
+  const openedForkId = await openAgentViaAPI(
+    leapmuxServer,
+    context.workspaceId,
+    deliberateWorkingDir(source.workingDir, 'Fork opens in the directory where the Worker holds the source session.'),
     {
-      creation: {
-        tabId: forkedTabId,
-        placement: {
-          workspaceId: context.workspaceId,
-          destination: { case: 'firstLeaf', value: {} },
-          insertion: TabInsertion.LAST,
-        },
-      },
-      workingDir: source.workingDir,
-      agentProvider: source.agentProvider,
+      ...agentOpenOptions(source.agentProvider),
+      tabId: forkedTabId,
       title: 'Forked',
-      options: defaultForkOptions(source.agentProvider),
       forkSource: { sourceAgentId: source.id },
     },
   )
-  expect(forkResp.agent?.id).toBe(forkedTabId)
-  const userEvents = await getUserEventsSubscription(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-  await userEvents.awaitRootNodeId(context.workspaceId)
+  expect(openedForkId).toBe(forkedTabId)
 
   const forked = await retryUntilPass(async () => {
     const agent = await nativeAgentById(context, forkedTabId)
@@ -113,28 +100,60 @@ export async function exerciseNativeFork(context: ManagedNativeScenarioContext):
   expect(forked.status, `Fork startup failed: ${forked.startupError}`).toBe(AgentStatus.ACTIVE)
   expect(forked.agentProvider).toBe(source.agentProvider)
   expect(forked.forkedFromAgentId).toBe(source.id)
-  expect(forked.supportsFork).toBe(true)
-  expect(forked.agentSessionId, 'The forked agent must confirm a native session ID.').not.toBe('')
-  expect(forked.agentSessionId, 'The forked agent must receive its own native session ID distinct from the source.').not.toBe(source.agentSessionId)
+  if (forked.agentSessionId !== '') {
+    expect(forked.supportsFork).toBe(true)
+    expect(forked.agentSessionId, 'The forked agent must receive its own native session ID distinct from the source.').not.toBe(source.agentSessionId)
+  }
 
-  // Switch to the forked tab and verify the cloned conversation renders before sending turn 2.
+  const clonedBeforeTurn2 = await retryUntilPass(async () => {
+    // Providers like Claude Code defer native session materialization until turn 1,
+    // so read cloned Worker rows directly without requiring a non-empty agentSessionId yet.
+    const messages = await readAllAgentMessages(context, forked.id)
+    const clonedUsers = nativeMessagesHoldingText(messages, texts.originalPrompt)
+      .filter(message => message.source === MessageSource.USER)
+    if (clonedUsers.length !== 1 || !isStoredMessageSeq(clonedUsers[0]!.seq)) {
+      throw new Error(`Expected exactly one cloned original prompt row with positive sequence, got ${clonedUsers.length}.`)
+    }
+    const allowedSessionIDs = ['', source.agentSessionId, forked.agentSessionId]
+    if (!allowedSessionIDs.includes(clonedUsers[0]!.agentSessionId)) {
+      throw new Error(`Unexpected cloned user row session ID ${clonedUsers[0]!.agentSessionId}.`)
+    }
+    return { userSequence: clonedUsers[0]!.seq }
+  })
+
+  // Switch to the forked tab and wait for tab activation and cloned transcript hydration before sending turn 2.
   const forkedTab = tabById(page, forked.id)
   await expect(forkedTab).toBeVisible()
   await forkedTab.click()
-  expect(await countChatBubbles(page, 'user', texts.originalPrompt, userSequence)).toBe(1)
-  expect(await countChatBubbles(page, 'agent', texts.originalAnswer, userSequence)).toBe(originalAnswerBubbles)
+  await expect(forkedTab).toHaveAttribute('aria-selected', 'true')
+  await expect(userBubbles(page).filter({ hasText: texts.originalPrompt }).first()).toBeVisible()
+  await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer }).first()).toBeVisible()
+  await expect.poll(
+    () => countChatBubbles(page, 'user', texts.originalPrompt, clonedBeforeTurn2.userSequence),
+    { message: 'The forked tab draws the cloned original prompt once.' },
+  ).toBe(1)
+  await expect.poll(
+    () => countChatBubbles(page, 'agent', texts.originalAnswer, clonedBeforeTurn2.userSequence),
+    { message: 'The forked tab draws the cloned original answer.' },
+  ).toBe(originalAnswerBubbles)
 
   // Turn 2 on the forked agent: must carry prior context in order.
-  const forkedStep = await modelScript.queue(nativeTextStep(context, texts.resumedAnswer))
-  await sendMessage(page, modelScript.prompt(texts.resumedPrompt))
-  await modelScript.waitForSteps(forkedStep + 1)
-  await waitForAgentIdle(page)
+  const forkedStep = await sendScriptedTurn(context, texts.resumedPrompt, texts.resumedAnswer)
 
   const forkedRequest = await modelScript.requestAt(forkedStep)
   expect(JSON.stringify(forkedRequest.body)).toContain(texts.originalAnswer)
   const readTurns = context.readConversationTurns ?? nativeModelConversationTurns
   expectNativeResumeContext(readTurns(forkedRequest), texts)
-  expect(await countChatBubbles(page, 'agent', texts.resumedAnswer, userSequence)).toBe(originalAnswerBubbles)
+
+  // Verify the forked agent confirmed its own distinct native session ID (providers like Claude Code materialize it on turn 1).
+  const forkedAfterTurn2 = await retryUntilPass(async () => {
+    const agent = await nativeAgentById(context, forked.id)
+    if (!agent || agent.agentSessionId === '')
+      throw new Error(`The forked agent ${forked.id} has not confirmed a native session ID yet.`)
+    return agent
+  })
+  expect(forkedAfterTurn2.supportsFork).toBe(true)
+  expect(forkedAfterTurn2.agentSessionId, 'The forked agent must receive its own native session ID distinct from the source.').not.toBe(source.agentSessionId)
 
   // Verify the forked transcript kept the cloned source rows without duplicating or merging them.
   await expectUnmergedAnswerBubbles(page, texts)
@@ -143,22 +162,36 @@ export async function exerciseNativeFork(context: ManagedNativeScenarioContext):
     .filter(message => message.source === MessageSource.USER)
   expect(clonedUsers, 'The forked transcript must hold exactly one cloned original prompt row.').toHaveLength(1)
   expect(isStoredMessageSeq(clonedUsers[0]!.seq)).toBe(true)
-  expect(['', source.agentSessionId, forked.agentSessionId]).toContain(clonedUsers[0]!.agentSessionId)
+  expect(['', source.agentSessionId, forkedAfterTurn2.agentSessionId]).toContain(clonedUsers[0]!.agentSessionId)
   const clonedAnswers = nativeMessagesHoldingText(forkedSnapshot.messages, texts.originalAnswer)
   expect(clonedAnswers.length, 'Forking must not duplicate original answer rows.').toBe(originalAnswerRows)
   const forkedAnswerRows = nativeMessagesHoldingText(forkedSnapshot.messages, texts.resumedAnswer)
   expect(forkedAnswerRows.length, 'The forked agent must store a Worker row for the forked turn answer.').toBeGreaterThan(0)
   expect(nativeMessagesHoldingText(forkedAnswerRows, texts.originalAnswer).map(row => row.id)).toEqual([])
-  expect(await countChatBubbles(page, 'user', texts.originalPrompt, clonedUsers[0]!.seq)).toBe(1)
-  expect(await countChatBubbles(page, 'agent', texts.originalAnswer, clonedUsers[0]!.seq)).toBe(originalAnswerBubbles)
+  const forkedTurnSequence = forkedAnswerRows[0]!.seq
+  expect(isStoredMessageSeq(forkedTurnSequence)).toBe(true)
+  await expect.poll(
+    () => countChatBubbles(page, 'agent', texts.resumedAnswer, forkedTurnSequence),
+    { message: 'The forked tab draws the turn 2 answer.' },
+  ).toBeGreaterThanOrEqual(1)
+  await expect.poll(
+    () => countChatBubbles(page, 'user', texts.originalPrompt, clonedUsers[0]!.seq),
+    { message: 'The forked tab keeps the cloned original prompt once.' },
+  ).toBe(1)
+  await expect.poll(
+    () => countChatBubbles(page, 'agent', texts.originalAnswer, clonedUsers[0]!.seq),
+    { message: 'The forked tab keeps the cloned original answer.' },
+  ).toBe(originalAnswerBubbles)
 
   // Turn 3 on the original source agent: must remain isolated from turn 2 on the fork.
   const sourceTab = tabById(page, source.id)
+  await expect(sourceTab).toBeVisible()
   await sourceTab.click()
-  const sourceStep = await modelScript.queue(nativeTextStep(context, sourceFollowUpAnswer))
-  await sendMessage(page, modelScript.prompt(sourceFollowUpPrompt))
-  await modelScript.waitForSteps(sourceStep + 1)
-  await waitForAgentIdle(page)
+  await expect(sourceTab).toHaveAttribute('aria-selected', 'true')
+  await expect(userBubbles(page).filter({ hasText: texts.originalPrompt }).first()).toBeVisible()
+  await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer }).first()).toBeVisible()
+  await expect(assistantBubbles(page).filter({ hasText: texts.resumedAnswer })).toHaveCount(0)
+  const sourceStep = await sendScriptedTurn(context, sourceFollowUpPrompt, sourceFollowUpAnswer)
 
   const sourceFollowUpRequest = await modelScript.requestAt(sourceStep)
   const sourceFollowUpBody = JSON.stringify(sourceFollowUpRequest.body)
@@ -176,7 +209,7 @@ export async function exerciseNativeFork(context: ManagedNativeScenarioContext):
  * after a real native turn and refuses `OpenAgent` with `forkSource` cleanly without creating a tab.
  */
 export async function expectUnsupportedFork(context: ManagedNativeScenarioContext): Promise<void> {
-  const { page, modelScript, leapmuxServer } = context
+  const { leapmuxServer } = context
   const marker = uniqueMarker()
   const prompt = `Keep FORKREFUSAL${marker} for the active session.`
   const answer = `FORKREFUSALANSWER${marker}`
@@ -184,32 +217,20 @@ export async function expectUnsupportedFork(context: ManagedNativeScenarioContex
   const initialAgent = await currentNativeAgent(context)
   const sourceId = initialAgent.id
 
-  const firstStep = await modelScript.queue(nativeTextStep(context, answer))
-  await sendMessage(page, modelScript.prompt(prompt))
-  await modelScript.waitForSteps(firstStep + 1)
-  await waitForAgentIdle(page)
+  await sendScriptedTurn(context, prompt, answer)
 
   const source = await waitForActiveNativeSession(context, sourceId)
   expect(source.supportsFork, 'An unsupported provider must report supportsFork = false.').toBe(false)
 
-  const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
   const attemptedTabId = randomUUID()
-  await expect(channel.callWorker(
-    leapmuxServer.workerId,
-    WorkerAgentService.method.openAgent,
+  await expect(openAgentViaAPI(
+    leapmuxServer,
+    context.workspaceId,
+    deliberateWorkingDir(source.workingDir, 'Fork refusal targets the directory where the Worker holds the source session.'),
     {
-      creation: {
-        tabId: attemptedTabId,
-        placement: {
-          workspaceId: context.workspaceId,
-          destination: { case: 'firstLeaf', value: {} },
-          insertion: TabInsertion.LAST,
-        },
-      },
-      workingDir: source.workingDir,
-      agentProvider: source.agentProvider,
+      ...agentOpenOptions(source.agentProvider),
+      tabId: attemptedTabId,
       title: 'Refused Fork',
-      options: defaultForkOptions(source.agentProvider),
       forkSource: { sourceAgentId: source.id },
     },
   )).rejects.toMatchObject({

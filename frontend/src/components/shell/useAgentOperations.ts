@@ -100,7 +100,12 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         workingDir,
         ...openAgentRequestOptions(agentProvider),
         ...(sessionId
-          ? { agentSessionId: sessionId }
+          ? {
+              sessionSource: {
+                case: 'resumeSessionId' as const,
+                value: sessionId,
+              },
+            }
           : {}),
       },
       onCommitted: () => touchMruProvider(agentProvider),

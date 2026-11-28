@@ -593,7 +593,8 @@ func TestACPAdvertisesSessionClose(t *testing.T) {
 		`{}`:                       false,
 		`not json`:                 false,
 	} {
-		assert.Equal(t, want, advertisesSessionClose([]byte(response)), response)
+		gotClose, _ := readSessionCapabilities([]byte(response))
+		assert.Equal(t, want, gotClose, response)
 	}
 }
 

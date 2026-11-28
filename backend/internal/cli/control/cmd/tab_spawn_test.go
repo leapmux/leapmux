@@ -459,3 +459,70 @@ func TestRelativePlacementFollowsTargetTabAcrossWorkspaces(t *testing.T) {
 		assert.Equal(t, leapmuxv1.TabInsertion_TAB_INSERTION_AFTER, pl.GetInsertion())
 	})
 }
+
+func TestOpenAgentAndAddTab_SessionSourceOneof(t *testing.T) {
+	t.Run("resume sets OpenAgentRequest_ResumeSessionId", func(t *testing.T) {
+		dispatcher, hub := &creationPublicationDispatcher{}, &recordingHub{}
+		client, err := control.NewClientFromEnv(tabOpenTransports[0].start(t, hub, dispatcher))
+		require.NoError(t, err)
+		err = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
+			_, err := openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{
+				WorkspaceID: "ws-1",
+				WorkerID:    "worker-A",
+				TileID:      "root-1",
+				SessionID:   "sess-resume-42",
+			})
+			return err
+		})
+		require.NoError(t, err)
+		calls := dispatcher.recorded()
+		require.Len(t, calls, 1)
+		req := calls[0].in.(*leapmuxv1.OpenAgentRequest)
+		_, isResume := req.GetSessionSource().(*leapmuxv1.OpenAgentRequest_ResumeSessionId)
+		assert.True(t, isResume)
+		assert.Equal(t, "sess-resume-42", req.GetResumeSessionId())
+		assert.Nil(t, req.GetForkSource())
+	})
+
+	t.Run("fork sets OpenAgentRequest_ForkSource", func(t *testing.T) {
+		dispatcher, hub := &creationPublicationDispatcher{}, &recordingHub{}
+		client, err := control.NewClientFromEnv(tabOpenTransports[0].start(t, hub, dispatcher))
+		require.NoError(t, err)
+		err = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
+			_, err := openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{
+				WorkspaceID: "ws-1",
+				WorkerID:    "worker-A",
+				TileID:      "root-1",
+				ForkSource:  &leapmuxv1.AgentForkSource{SourceAgentId: "ag-src-1"},
+			})
+			return err
+		})
+		require.NoError(t, err)
+		calls := dispatcher.recorded()
+		require.Len(t, calls, 1)
+		req := calls[0].in.(*leapmuxv1.OpenAgentRequest)
+		_, isFork := req.GetSessionSource().(*leapmuxv1.OpenAgentRequest_ForkSource)
+		assert.True(t, isFork)
+		assert.Equal(t, "ag-src-1", req.GetForkSource().GetSourceAgentId())
+		assert.Empty(t, req.GetResumeSessionId())
+	})
+
+	t.Run("rejects setting both SessionID and ForkSource", func(t *testing.T) {
+		dispatcher, hub := &creationPublicationDispatcher{}, &recordingHub{}
+		client, err := control.NewClientFromEnv(tabOpenTransports[0].start(t, hub, dispatcher))
+		require.NoError(t, err)
+		err = withWorkerChannel(t.Context(), client, "worker-A", func(worker workerCall) error {
+			_, err := openAgentAndAddTab(t.Context(), client, worker, openAgentArgs{
+				WorkspaceID: "ws-1",
+				WorkerID:    "worker-A",
+				TileID:      "root-1",
+				SessionID:   "sess-1",
+				ForkSource:  &leapmuxv1.AgentForkSource{SourceAgentId: "ag-src-1"},
+			})
+			return err
+		})
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+		assert.Empty(t, dispatcher.recorded())
+	})
+}

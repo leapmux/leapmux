@@ -5,6 +5,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { generateSlug } from 'random-word-slugs'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerGit } from '~/api/workerRpc'
+import { RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ListGitBranchesResponseSchema, ListGitWorktreesResponseSchema } from '~/generated/proto/leapmux/v1/git_pb'
 import { GitMode } from '~/hooks/useGitModeState'
@@ -57,6 +58,7 @@ vi.mock('~/stores/workerInfo.store', () => ({
 vi.mock('~/api/workerRpc', () => ({
   workerAgent: {
     openAgent: vi.fn(),
+    listAgentSessions: vi.fn(async () => ({ sessions: [] })),
     listAvailableProviders: vi.fn(async () => ({
       providers: [AgentProvider.CLAUDE_CODE],
     })),
@@ -250,6 +252,27 @@ describe('NewWorkspaceDialog', () => {
       request: { agentProvider: AgentProvider.CLAUDE_CODE, workingDir: WORKING_DIR },
       onCommitted: expect.any(Function),
       onError: expect.any(Function),
+    })
+  })
+
+  it('sends a trimmed resume session ID in sessionSource.resumeSessionId', async () => {
+    renderDialog()
+
+    const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
+    fireEvent.click(await screen.findByTestId('pick-dir'))
+    const sessionInput = await screen.findByLabelText(RESUME_SESSION_LABEL)
+    fireEvent.input(sessionInput, {
+      target: { value: '  ws-sess-9  ' },
+    })
+    await waitFor(() => expect(createButton.disabled).toBe(false))
+    fireEvent.click(createButton)
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+    expect(mockCreate.mock.calls[0]?.[0].request).toMatchObject({
+      sessionSource: {
+        case: 'resumeSessionId',
+        value: 'ws-sess-9',
+      },
     })
   })
 

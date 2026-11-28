@@ -218,7 +218,6 @@ func (op *creationOperation) recoverCreationGit(ctx context.Context, intent *cre
 		if err := (gitutil.Repository{GitDir: plan.RepoGitDir}).Run(ctx, "worktree", "add", plan.WorktreePath, plan.BranchName); err != nil {
 			return gitModeResult{}, false, err
 		}
-		ensureWorktreeTmpExcluded(plan.WorktreePath)
 		worktreeID, err := svc.ensureTrackedWorktreeWith(ctx, plan.WorktreePath, plan.RepoRoot, plan.RepoGitDir, plan.BranchName)
 		return gitModeResult{WorkingDir: plan.WorktreePath, WorktreeID: worktreeID, RepoRoot: plan.RepoRoot, RepoGitDir: plan.RepoGitDir}, true, err
 	case gitModeCreateBranch, gitModeCheckoutBranch:

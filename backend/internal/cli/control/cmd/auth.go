@@ -23,6 +23,30 @@ import (
 )
 
 func newAuthCommand() *cobra.Command {
+	listCmd := cli.NewLeaf(cli.Leaf{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List the hubs that this machine holds a credential for",
+		Examples: []cli.Example{
+			{Command: "leapmux auth list"},
+		},
+		Run: runAuthList,
+	})
+	cli.MarkLocalOnly(listCmd)
+
+	useCmd := cli.NewLeaf(cli.Leaf{
+		Use:              "use <hub>",
+		Mutates:          true,
+		QuietUnsupported: true,
+		Short:            "Choose the hub that a command uses without --hub",
+		Examples: []cli.Example{
+			{Command: "leapmux auth use https://hub.example.com"},
+		},
+		Complete: completeStoredHubs,
+		Run:      runAuthUse,
+	})
+	cli.MarkLocalOnly(useCmd)
+
 	return cli.Group("auth", "Sign this CLI in to a hub, and manage its credentials",
 		cli.NewLeaf(cli.Leaf{
 			Use:              "login",
@@ -71,26 +95,8 @@ func newAuthCommand() *cobra.Command {
 			},
 			Run: runAuthLogout,
 		}),
-		cli.NewLeaf(cli.Leaf{
-			Use:     "list",
-			Aliases: []string{"ls"},
-			Short:   "List the hubs that this machine holds a credential for",
-			Examples: []cli.Example{
-				{Command: "leapmux auth list"},
-			},
-			Run: runAuthList,
-		}),
-		cli.NewLeaf(cli.Leaf{
-			Use:              "use <hub>",
-			Mutates:          true,
-			QuietUnsupported: true,
-			Short:            "Choose the hub that a command uses without --hub",
-			Examples: []cli.Example{
-				{Command: "leapmux auth use https://hub.example.com"},
-			},
-			Complete: completeStoredHubs,
-			Run:      runAuthUse,
-		}),
+		listCmd,
+		useCmd,
 		cli.NewLeaf(cli.Leaf{
 			Use:              "status",
 			QuietUnsupported: true,
@@ -455,12 +461,13 @@ func runAuthStatus(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		exp := creds.ExpiryState(time.Now())
 		status = authStatus{
 			HubURL:         creds.HubURL,
 			UserID:         creds.UserID,
 			Scope:          creds.Scope,
 			TokenID:        creds.TokenID,
-			Expired:        time.Now().After(creds.ExpiresAt),
+			Expired:        exp.AccessExpired,
 			Expires:        formatWallTime(creds.ExpiresAt),
 			RefreshExpires: formatWallTime(creds.RefreshExpiresAt),
 		}

@@ -81,12 +81,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	a.DrainStderr(pipes.Stderr())
 	go a.ReadOutputLoop(a.NewOutputScanner(pipes.Stdout()), a.RefuseUnsupportedRequest)
+	resumeID := opts.Session.ResumeID()
 	cleanup := func(stage string, cause error) (agent.Agent, error) {
 		logTail := lastLogLines(logPath, 20)
 		a.Stop()
 		_ = a.Wait()
 		cause = a.FinalizeStartupCause(cause)
-		if opts.ResumeSessionID != "" && !errors.Is(cause, errAntigravitySignIn) {
+		if resumeID != "" && !errors.Is(cause, errAntigravitySignIn) {
 			return nil, cause
 		}
 		if logTail != "" {
@@ -106,7 +107,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if err := a.loadCatalog(); err != nil {
 		return cleanup("model catalog", err)
 	}
-	sessionID := opts.ResumeSessionID
+	sessionID := resumeID
 	if sessionID == "" {
 		sessionID, err = a.rpc.startCascade(ctx, a.workingDir)
 		if err != nil {
@@ -114,11 +115,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		}
 	}
 	a.Mu.Lock()
-	root := a.installRoot(sessionID, opts.ResumeSessionID != "")
+	root := a.installRoot(sessionID, resumeID != "")
 	a.Mu.Unlock()
-	if opts.ResumeSessionID != "" {
+	if resumeID != "" {
 		if err := a.seedStepCount(ctx, root); err != nil {
-			return cleanup("resume step count", providerkit.ResumeFailedError(opts.ResumeSessionID, err))
+			return cleanup("resume step count", providerkit.ResumeFailedError(resumeID, err))
 		}
 	}
 	a.loadSlashCommands()

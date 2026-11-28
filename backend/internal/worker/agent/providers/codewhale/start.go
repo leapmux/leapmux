@@ -40,22 +40,23 @@ func startWith(ctx context.Context, opts agent.Options, sink agent.ProviderServi
 	}
 	root := codewhaleStoresRoot(agent.StoredSessionQuery{HomeDir: opts.HomeDir})
 
+	resumeID := opts.Session.ResumeID()
 	var store codewhaleStore
-	fresh := opts.ResumeSessionID == ""
+	fresh := resumeID == ""
 	if fresh {
 		if store, err = newCodewhaleStore(root); err != nil {
 			return nil, err
 		}
 	} else {
-		threadID, err := (codewhaleProvider{}).ResolveResumeHandle(opts.ResumeSessionID, opts.HomeDir)
+		threadID, err := (codewhaleProvider{}).ResolveResumeHandle(resumeID, opts.HomeDir)
 		if err != nil {
-			return nil, providerkit.ResumeFailedError(opts.ResumeSessionID, fmt.Errorf("the stored Codewhale thread id is not valid: %w", err))
+			return nil, providerkit.ResumeFailedError(resumeID, fmt.Errorf("the stored Codewhale thread id is not valid: %w", err))
 		}
 		if store, err = findCodewhaleStore(root, threadID); err != nil {
-			return nil, providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+			return nil, providerkit.ResumeFailedError(resumeID, err)
 		}
 		if err := reclaimStore(ctx, store, clock); err != nil {
-			return nil, providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+			return nil, providerkit.ResumeFailedError(resumeID, err)
 		}
 	}
 
@@ -83,7 +84,7 @@ func startWith(ctx context.Context, opts agent.Options, sink agent.ProviderServi
 			discardFreshStore(fresh, store)
 			return nil, a.FormatStartupError("thread open", err)
 		}
-		return nil, providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+		return nil, providerkit.ResumeFailedError(resumeID, err)
 	}
 	detail, err := a.readThread(thread.ID)
 	if err != nil {
@@ -151,7 +152,8 @@ func (a *Agent) openThread(opts agent.Options) (threadRecord, error) {
 	if !postureIsKnown(posture) {
 		posture = ""
 	}
-	if opts.ResumeSessionID == "" {
+	resumeID := opts.Session.ResumeID()
+	if resumeID == "" {
 		request := createThreadRequest{
 			Workspace:         opts.WorkingDir,
 			Mode:              mode,
@@ -163,7 +165,7 @@ func (a *Agent) openThread(opts agent.Options) (threadRecord, error) {
 		}
 		return a.createThread(request)
 	}
-	thread, err := a.resumeThread(opts.ResumeSessionID)
+	thread, err := a.resumeThread(resumeID)
 	if err != nil {
 		return threadRecord{}, err
 	}

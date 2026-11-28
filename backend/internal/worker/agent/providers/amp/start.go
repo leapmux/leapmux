@@ -89,8 +89,9 @@ func startWithThreadExporter(ctx context.Context, opts agent.Options, sink agent
 	}, bridge, dir, clock)
 
 	a.exportFn = exporter
-	if opts.ResumeSessionID != "" {
-		if err := a.refreshThreadSettings(ctx, opts.ResumeSessionID); err != nil {
+	resumeID := opts.Session.ResumeID()
+	if resumeID != "" {
+		if err := a.refreshThreadSettings(ctx, resumeID); err != nil {
 			slog.Warn("could not read the Amp thread settings", "agent_id", opts.AgentID, "error", err)
 		}
 		if err := ctx.Err(); err != nil {
@@ -98,9 +99,9 @@ func startWithThreadExporter(ctx context.Context, opts agent.Options, sink agent
 			return nil, err
 		}
 		a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
-		a.sink.UpdateSessionID(opts.ResumeSessionID)
+		a.sink.UpdateSessionID(resumeID)
 	}
-	a.sink.BroadcastStatusActive(opts.ResumeSessionID)
+	a.sink.BroadcastStatusActive(resumeID)
 	return a, nil
 }
 
@@ -122,6 +123,7 @@ func shellEnvOf(opts agent.Options) func(ctx context.Context, names []string) (m
 func newAgent(opts agent.Options, sink agent.ProviderServices, config launchConfig, bridge *permissionBridge, dir *agentdir.Dir, clock quartz.Clock) *Agent {
 	ctx, cancel := context.WithCancel(context.Background())
 	config.stateDir = dir.Path()
+	resumeID := opts.Session.ResumeID()
 	a := &Agent{
 		agentID:        opts.AgentID,
 		sink:           sink,
@@ -131,16 +133,16 @@ func newAgent(opts agent.Options, sink agent.ProviderServices, config launchConf
 		clock:          clock,
 		ctx:            ctx,
 		cancel:         cancel,
-		threadID:       opts.ResumeSessionID,
+		threadID:       resumeID,
 		agentMode:      launchAgentMode(opts),
 		fastMode:       launchFastMode(opts),
-		modeLocked:     opts.ResumeSessionID != "",
+		modeLocked:     resumeID != "",
 		permissionMode: launchPermissionMode(opts),
 		tools:          make(map[string]*openTool),
 		shells:         make(map[int]trackedShell),
 		done:           make(chan struct{}),
 	}
-	if opts.ResumeSessionID != "" {
+	if resumeID != "" {
 		// Stored launch options cannot establish a native thread's immutable choices.
 		a.agentMode, a.fastMode = "", ""
 	}

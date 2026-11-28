@@ -57,7 +57,7 @@ func (a *Agent) childConnection(childKey, childAgentID string) (*Agent, error) {
 
 	childOpts := a.launchOpts
 	childOpts.AgentID = childAgentID
-	childOpts.ResumeSessionID = childKey
+	childOpts.Session = agent.ResumeSession(childKey)
 	childSink := a.sink.ChildSink(childAgentID)
 	childLaunch := a.launch
 	childLaunch.onTurnEnd = func(status bgtask.Status) {

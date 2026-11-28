@@ -325,12 +325,12 @@ type Provider interface {
 	// into the runtime's own answer. A decision that does not answer the
 	// prompt fails with ErrInvalidControlDecision.
 	AnswerControlRequest(input ControlAnswerInput) (ControlAnswer, error)
-	// SupportsFork reports whether this provider supports native
-	// conversation-history forking statically. A provider whose fork support is
-	// discovered at runtime (such as an ACP provider advertising
-	// sessionCapabilities.fork during initialize) returns false here and
-	// implements ForkCapable on its live Agent instead. Defaults to false on
-	// ProviderDefaults.
+	// SupportsFork reports the provider's baseline native conversation-history
+	// fork support for inactive or unloaded tabs that have no running Agent.
+	// ACP providers whose upstream CLI advertises sessionCapabilities.fork
+	// return true here so unloaded tabs report fork support consistently, while
+	// a running Agent implementing ForkCapable overrides this baseline with its
+	// runtime capability. Defaults to false on ProviderDefaults.
 	SupportsFork() bool
 }
 

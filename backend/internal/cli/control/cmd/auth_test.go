@@ -494,6 +494,20 @@ func TestRunAuthStatus_ReportsExpired(t *testing.T) {
 	assert.Equal(t, true, data["expired"])
 }
 
+func TestRunAuthStatus_ZeroExpiresAtReportsNotExpired(t *testing.T) {
+	isolateCLIEnv(t)
+
+	require.NoError(t, control.SaveCredentials("https://hub.example", control.CredentialFile{
+		HubURL:   "https://hub.example",
+		Username: "carol",
+		UserID:   "u-zero",
+	}))
+
+	out := runControl(t, "auth", "status", "--hub", "https://hub.example").ok(t)
+	data := envelopeData(t, out)
+	assert.Equal(t, false, data["expired"], "a zero ExpiresAt must not report as expired")
+}
+
 // TestRunAuthStatus_NotLoggedInWhenMissing covers the negative
 // branch: status against a hub the user never logged into surfaces
 // `not_logged_in` rather than crashing or silently succeeding.

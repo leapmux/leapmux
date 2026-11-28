@@ -1,11 +1,11 @@
 import type { DescMethod, JsonValue } from '@bufbuild/protobuf'
 import type { ChannelTransport } from '../../../src/lib/channel'
-import { fromJson } from '@bufbuild/protobuf'
+import { create, fromJson } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ELEVATION_REQUIRED_HEADER } from '~/generated/contracts/headers'
 import { MAX_PAGE_LIMIT } from '~/generated/contracts/pagination'
 import { AdminSettingsService } from '~/generated/proto/leapmux/v1/admin_pb'
-import { AgentProvider, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, OpenAgentRequestSchema, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
 import { AuthService } from '~/generated/proto/leapmux/v1/auth_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { SystemService } from '~/generated/proto/leapmux/v1/system_pb'
@@ -144,15 +144,54 @@ describe('openAgentViaAPI', () => {
     expect(callWorker).not.toHaveBeenCalled()
   })
 
-  it('sends the requested native session ID through the actual Worker request', async () => {
+  it('sends the requested native session ID through sessionSource.resumeSessionId', async () => {
     const stopped = stopWorkerRequest()
     await expect(openAgentViaAPI(server(), 'workspace', '/project', { agentSessionId: 'native-conversation-42' })).rejects.toBe(stopped)
     expect(callWorker).toHaveBeenCalledTimes(1)
     expect(callWorker.mock.calls[0]?.[0]).toBe('worker-a')
     expect(callWorker.mock.calls[0]?.[1]).toBe(WorkerAgentService.method.openAgent)
-    expect(callWorker.mock.calls[0]?.[2]).toMatchObject({ workingDir: '/project', agentSessionId: 'native-conversation-42' })
+    const requestInit = callWorker.mock.calls[0]?.[2] as Parameters<typeof create<typeof OpenAgentRequestSchema>>[1]
+    expect(requestInit).toMatchObject({
+      workingDir: '/project',
+      sessionSource: {
+        case: 'resumeSessionId',
+        value: 'native-conversation-42',
+      },
+    })
+    const decoded = create(OpenAgentRequestSchema, requestInit)
+    expect(decoded.sessionSource).toEqual({
+      case: 'resumeSessionId',
+      value: 'native-conversation-42',
+    })
     // The routing argument specifies the Worker; the request body does not repeat it.
-    expect(callWorker.mock.calls[0]?.[2]).not.toHaveProperty('workerId')
+    expect(requestInit).not.toHaveProperty('workerId')
+  })
+
+  it('sends forkSource through sessionSource.forkSource and propagates an explicit tabId', async () => {
+    const stopped = stopWorkerRequest()
+    await expect(openAgentViaAPI(server(), 'workspace', unitWorkingDir('/project'), {
+      agentProvider: AgentProvider.CODEX,
+      tabId: 'explicit-fork-tab',
+      title: 'Forked',
+      forkSource: { sourceAgentId: 'source-agent-9' },
+    })).rejects.toBe(stopped)
+    expect(callWorker).toHaveBeenCalledTimes(1)
+    const requestInit = callWorker.mock.calls[0]?.[2] as Parameters<typeof create<typeof OpenAgentRequestSchema>>[1]
+    expect(requestInit).toMatchObject({
+      creation: { tabId: 'explicit-fork-tab' },
+      workingDir: '/project',
+      agentProvider: AgentProvider.CODEX,
+      title: 'Forked',
+      sessionSource: {
+        case: 'forkSource',
+        value: { sourceAgentId: 'source-agent-9' },
+      },
+    })
+    const decoded = create(OpenAgentRequestSchema, requestInit)
+    expect(decoded.creation?.tabId).toBe('explicit-fork-tab')
+    expect(decoded.sessionSource.case).toBe('forkSource')
+    if (decoded.sessionSource.case === 'forkSource')
+      expect(decoded.sessionSource.value.sourceAgentId).toBe('source-agent-9')
   })
 
   it('sends the stated git setup unchanged', async () => {
@@ -173,10 +212,10 @@ describe('openAgentViaAPI', () => {
     expect(callWorker.mock.calls[0]?.[2]).not.toHaveProperty('gitSetup')
   })
 
-  it('keeps session creation when no native session ID is supplied', async () => {
+  it('keeps session creation when no session source is supplied', async () => {
     const stopped = stopWorkerRequest()
     await expect(openAgentViaAPI(server(), 'workspace', '/project')).rejects.toBe(stopped)
-    expect(callWorker.mock.calls[0]?.[2]).not.toHaveProperty('agentSessionId')
+    expect(callWorker.mock.calls[0]?.[2]).not.toHaveProperty('sessionSource')
   })
 
   it('sends the model in the options map beside the option values, and the provider', async () => {
@@ -204,6 +243,42 @@ describe('openAgentViaAPI', () => {
   })
 
   it.each([
+    {
+      label: 'simultaneous agentSessionId and forkSource',
+      options: {
+        agentSessionId: 'native-conversation-42',
+        forkSource: { sourceAgentId: 'source-agent-9' },
+      },
+      message: 'agentSessionId and forkSource are mutually exclusive',
+    },
+    {
+      label: 'an empty forkSource.sourceAgentId',
+      options: {
+        forkSource: { sourceAgentId: '' },
+      },
+      message: 'forkSource.sourceAgentId must be nonempty',
+    },
+    {
+      label: 'a blank forkSource.sourceAgentId',
+      options: {
+        forkSource: { sourceAgentId: '   ' },
+      },
+      message: 'forkSource.sourceAgentId must be nonempty',
+    },
+    {
+      label: 'an empty tabId',
+      options: {
+        tabId: '',
+      },
+      message: 'tabId must be nonempty',
+    },
+    {
+      label: 'a blank tabId',
+      options: {
+        tabId: '  \t ',
+      },
+      message: 'tabId must be nonempty',
+    },
     {
       label: 'a model given as an option value',
       options: {

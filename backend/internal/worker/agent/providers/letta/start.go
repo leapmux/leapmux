@@ -157,7 +157,7 @@ func (a *Agent) openConversation(opts agent.Options) error {
 	a.Mu.Unlock()
 
 	cmd := newLettaCommand("runtime_start", "rs-1")
-	if resume := strings.TrimSpace(opts.ResumeSessionID); resume != "" {
+	if resume := strings.TrimSpace(opts.Session.ResumeID()); resume != "" {
 		// A resume identifies an existing conversation. runtime_start takes
 		// `conversation_id` + `agent_id` in place of the create_* fields: each
 		// pair is mutually exclusive on the wire. The agent id comes from the

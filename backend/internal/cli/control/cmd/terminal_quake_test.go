@@ -127,101 +127,128 @@ func TestQuakeCommands_OptionalDirResolution(t *testing.T) {
 	})
 }
 
-func TestQuakeDirOf_AndCanUseLocalCwdWithoutSession(t *testing.T) {
+func TestQuakePanelVerbs_DirResolutionAndSessionGuards(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 
-	parseQuakeOpenInv := func(t *testing.T, flags ...string) *cli.Invocation {
-		t.Helper()
-		root := NewCommand()
-		cmd, _, err := root.Find([]string{"terminal", "quake", "open"})
-		require.NoError(t, err)
-		require.NoError(t, cmd.ParseFlags(flags))
-		return &cli.Invocation{Command: cmd}
-	}
-
 	t.Run("local CWD fallback works over tab IPC socket", func(t *testing.T) {
-		isolateCLIEnv(t)
 		disp := &quakeTestDispatcher{}
 		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
 		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
 		t.Setenv(controlenv.WorkingDirVariable, "")
 		require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
 
-		inv := parseQuakeOpenInv(t)
-		assert.True(t, canUseLocalCwdWithoutSession(inv))
-		got, err := dirOf(inv)
-		require.NoError(t, err)
-		assert.Equal(t, cwd, got)
-
 		data := runControl(t, "terminal", "quake", "open").Data(t)
 		assert.Equal(t, cwd, data["working_dir"])
 		assert.Equal(t, []string{cwd}, disp.panelDirs)
 	})
 
+	t.Run("--worker self without --dir works on open, close, and toggle", func(t *testing.T) {
+		for _, verb := range []string{"open", "close", "toggle"} {
+			t.Run(verb+" with tab working dir", func(t *testing.T) {
+				disp := &quakeTestDispatcher{}
+				startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+				t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+				t.Setenv(controlenv.WorkingDirVariable, "/tab/dir")
+
+				data := runControl(t, "terminal", "quake", verb, "--worker", "self").Data(t)
+				assert.Equal(t, "/tab/dir", data["working_dir"])
+				assert.Equal(t, verb, data["action"])
+				assert.Equal(t, []string{"/tab/dir"}, disp.panelDirs)
+			})
+
+			t.Run(verb+" with local CWD fallback over IPC", func(t *testing.T) {
+				disp := &quakeTestDispatcher{}
+				startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+				t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+				t.Setenv(controlenv.WorkingDirVariable, "")
+				require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
+
+				data := runControl(t, "terminal", "quake", verb, "--worker", "self").Data(t)
+				assert.Equal(t, cwd, data["working_dir"])
+				assert.Equal(t, verb, data["action"])
+				assert.Equal(t, []string{cwd}, disp.panelDirs)
+			})
+		}
+	})
+
 	t.Run("local CWD fallback works over explicit and default local Hub, and is refused over remote Hub", func(t *testing.T) {
-		isolateCLIEnv(t)
+		disp := &quakeTestDispatcher{}
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{{Id: "local-box", Online: true}}}
+		h := startLocalHubChannelHarness(t, hub, disp)
+		h.dispatcher.Handle(leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, channel.Registration{}, disp.DispatchWith)
 		t.Setenv(controlenv.WorkingDirVariable, "")
 		require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
 
-		explicitLocal := parseQuakeOpenInv(t, "--hub", "unix:/tmp/local-hub.sock")
-		assert.True(t, canUseLocalCwdWithoutSession(explicitLocal))
-		got, err := dirOf(explicitLocal)
-		require.NoError(t, err)
-		assert.Equal(t, cwd, got)
+		data := runControl(t, "terminal", "quake", "open", "--hub", h.url).Data(t)
+		assert.Equal(t, cwd, data["working_dir"])
 
-		t.Setenv("LEAPMUX_HUB", "unix:/tmp/local-hub.sock")
-		defaultLocal := parseQuakeOpenInv(t)
-		assert.True(t, canUseLocalCwdWithoutSession(defaultLocal))
-		got, err = dirOf(defaultLocal)
-		require.NoError(t, err)
-		assert.Equal(t, cwd, got)
+		t.Setenv("LEAPMUX_HUB", h.url)
+		data = runControl(t, "terminal", "quake", "toggle").Data(t)
+		assert.Equal(t, cwd, data["working_dir"])
+		assert.Equal(t, []string{cwd, cwd}, disp.panelDirs)
 
-		remoteInv := parseQuakeOpenInv(t, "--hub", "https://hub.example.test")
-		assert.False(t, canUseLocalCwdWithoutSession(remoteInv))
-		_, err = dirOf(remoteInv)
-		require.Error(t, err)
-		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
-		assert.Contains(t, err.Error(), "--dir is required")
+		remoteDisp := &quakeTestDispatcher{}
+		remoteHub := &recordingHub{workers: []*leapmuxv1.Worker{{Id: "remote-box", Online: true}}}
+		rh := startHubChannelHarness(t, remoteHub, remoteDisp)
+		rh.dispatcher.Handle(leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, channel.Registration{}, remoteDisp.DispatchWith)
+		t.Setenv(controlenv.WorkingDirVariable, "")
+		require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
+
+		f := runControl(t, "terminal", "quake", "open", "--hub", rh.url).requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--dir is required")
+		assert.Empty(t, remoteHub.called(), "remote hub without --dir must fail before dialing")
+		assert.Empty(t, remoteDisp.panelDirs)
 	})
 
 	t.Run("local CWD fallback is blocked when context.json saves a Worker", func(t *testing.T) {
-		isolateCLIEnv(t)
+		disp := &quakeTestDispatcher{}
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{{Id: "worker-remote", Online: true}}}
+		h := startLocalHubChannelHarness(t, hub, disp)
+		h.dispatcher.Handle(leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, channel.Registration{}, disp.DispatchWith)
 		t.Setenv(controlenv.WorkingDirVariable, "")
 		require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
 		require.NoError(t, control.SaveContext(control.ContextConfig{Worker: "worker-remote"}))
 
-		explicitLocal := parseQuakeOpenInv(t, "--hub", "unix:/tmp/local-hub.sock")
-		assert.False(t, canUseLocalCwdWithoutSession(explicitLocal))
-		_, err := dirOf(explicitLocal)
-		require.Error(t, err)
-		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+		f := runControl(t, "terminal", "quake", "open", "--hub", h.url).requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--dir is required")
+		assert.Equal(t, 0, h.channelOpens())
+		assert.Empty(t, disp.panelDirs)
 
-		t.Setenv("LEAPMUX_HUB", "unix:/tmp/local-hub.sock")
-		defaultLocal := parseQuakeOpenInv(t)
-		assert.False(t, canUseLocalCwdWithoutSession(defaultLocal))
-		_, err = dirOf(defaultLocal)
-		require.Error(t, err)
-		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+		t.Setenv("LEAPMUX_HUB", h.url)
+		f = runControl(t, "terminal", "quake", "close").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--dir is required")
+		assert.Equal(t, 0, h.channelOpens())
+		assert.Empty(t, disp.panelDirs)
 	})
 
-	t.Run("explicit --worker without --dir returns CodeUsage before dialing", func(t *testing.T) {
+	t.Run("corrupt context.json fails closed instead of falling back to local CWD", func(t *testing.T) {
+		disp := &quakeTestDispatcher{}
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{{Id: "local-box", Online: true}}}
+		h := startLocalHubChannelHarness(t, hub, disp)
+		h.dispatcher.Handle(leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, channel.Registration{}, disp.DispatchWith)
+		t.Setenv(controlenv.WorkingDirVariable, "")
+		require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
+
+		ctxPath, err := control.ContextPath()
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(ctxPath, []byte("{corrupt-json"), 0o600))
+
+		f := runControl(t, "terminal", "quake", "open", "--hub", h.url).requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--dir is required")
+		assert.Equal(t, 0, h.channelOpens())
+		assert.Empty(t, disp.panelDirs)
+	})
+
+	t.Run("explicit --worker targeting another worker without --dir returns CodeUsage", func(t *testing.T) {
 		disp := &quakeTestDispatcher{}
 		hub := &recordingHub{workers: workerRows("worker-A", "worker-B")}
 		startSpawnIPC(t, hub, disp)
 		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
 		t.Setenv(controlenv.WorkingDirVariable, "/tab/dir")
 
-		inv := parseQuakeOpenInv(t, "--worker", "worker-B")
-		assert.False(t, canUseLocalCwdWithoutSession(inv))
-		_, err := dirOf(inv)
-		require.Error(t, err)
-		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
-		assert.Contains(t, err.Error(), "--dir is required when targeting another worker")
-
 		f := runControl(t, "terminal", "quake", "open", "--worker", "worker-B").requireFailure(t, cli.CodeUsage)
 		assert.Contains(t, f.Message, "--dir is required when targeting another worker")
-		assert.Empty(t, hub.called())
 		assert.Empty(t, disp.panelDirs)
 	})
 

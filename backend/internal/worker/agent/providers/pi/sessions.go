@@ -1,12 +1,12 @@
 package pi
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
-	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/leapmux/leapmux/util/pathutil"
 )
 
@@ -227,23 +227,10 @@ func forkPiSessionFile(q agent.StoredSessionQuery, forkFromHandle, srcWorkingDir
 		return "", err
 	}
 
-	raw, err := os.ReadFile(srcPath)
-	if err != nil {
-		return "", fmt.Errorf("read Pi source session %q: %w", srcPath, err)
+	root := piSessionsRoot(q)
+	if root == "" {
+		return "", errors.New("cannot resolve Pi sessions root directory")
 	}
-	firstLine, rest := splitFirstJSONLLine(raw)
-	if len(firstLine) == 0 {
-		return "", fmt.Errorf("source Pi session %q is empty", srcPath)
-	}
-
-	var header map[string]any
-	if err := json.Unmarshal(firstLine, &header); err != nil {
-		return "", fmt.Errorf("parse Pi session header in %q: %w", srcPath, err)
-	}
-	if typ, _ := header["type"].(string); typ != "session" {
-		return "", fmt.Errorf("source Pi session %q does not start with a session header", srcPath)
-	}
-
 	newUUID, err := uuid.NewRandom()
 	if err != nil {
 		return "", fmt.Errorf("create forked Pi session ID: %w", err)
@@ -251,33 +238,39 @@ func forkPiSessionFile(q agent.StoredSessionQuery, forkFromHandle, srcWorkingDir
 	newID := newUUID.String()
 	now := time.Now().UTC()
 
-	header["id"] = newID
-	header["timestamp"] = now.Format(piSessionTimestampLayout)
-	header["cwd"] = filepath.Clean(targetWorkingDir)
-	header["parentSession"] = srcPath
-
-	encodedHeader, err := json.Marshal(header)
-	if err != nil {
-		return "", fmt.Errorf("encode forked Pi session header: %w", err)
-	}
-
-	var out bytes.Buffer
-	out.Grow(len(encodedHeader) + 1 + len(rest))
-	out.Write(encodedHeader)
-	out.WriteByte('\n')
-	out.Write(rest)
-
-	root := piSessionsRoot(q)
-	if root == "" {
-		return "", errors.New("cannot resolve Pi sessions root directory")
-	}
 	targetDir := filepath.Join(root, manglePiPath(filepath.Clean(targetWorkingDir)))
-	if err := os.MkdirAll(targetDir, 0o700); err != nil {
-		return "", fmt.Errorf("create Pi session directory %q: %w", targetDir, err)
-	}
 	dstPath := filepath.Join(targetDir, now.Format(piSessionFileTimestampLayout)+"_"+newID+".jsonl")
-	if err := atomicfile.WriteFile(dstPath, out.Bytes(), 0o600); err != nil {
-		return "", fmt.Errorf("write forked Pi session %q: %w", dstPath, err)
+
+	err = providerkit.StreamForkJSONL(srcPath, dstPath, 0o600, func(lr *providerkit.JSONLLineReader) ([][]byte, error) {
+		firstLine, readErr := lr.ReadLine()
+		if errors.Is(readErr, io.EOF) || (readErr == nil && len(firstLine) == 0) {
+			return nil, fmt.Errorf("source Pi session %q is empty", srcPath)
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read Pi source session %q: %w", srcPath, readErr)
+		}
+
+		var header map[string]any
+		if err := json.Unmarshal(firstLine, &header); err != nil {
+			return nil, fmt.Errorf("parse Pi session header in %q: %w", srcPath, err)
+		}
+		if typ, _ := header["type"].(string); typ != "session" {
+			return nil, fmt.Errorf("source Pi session %q does not start with a session header", srcPath)
+		}
+
+		header["id"] = newID
+		header["timestamp"] = now.Format(piSessionTimestampLayout)
+		header["cwd"] = filepath.Clean(targetWorkingDir)
+		header["parentSession"] = srcPath
+
+		encodedHeader, err := json.Marshal(header)
+		if err != nil {
+			return nil, fmt.Errorf("encode forked Pi session header: %w", err)
+		}
+		return [][]byte{encodedHeader}, nil
+	})
+	if err != nil {
+		return "", err
 	}
 	return dstPath, nil
 }
@@ -317,15 +310,24 @@ func findPiSessionByID(dir, sessionID string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	for _, entry := range entries {
+	// Pass 1: zero-I/O filename match (newest-first by timestamp prefix).
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if !isPiTranscript(entry) {
+			continue
+		}
+		if piSessionIDFromFileName(entry.Name()) == sessionID {
+			return filepath.Join(dir, entry.Name()), true
+		}
+	}
+	// Pass 2: header scan newest-first for files whose name does not embed the ID.
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
 		if !isPiTranscript(entry) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		if piSessionIDFromFileName(entry.Name()) == sessionID {
-			return path, true
-		}
-		head, _, err := sessionstore.JSONLHead(path, 4096)
+		head, _, err := sessionstore.JSONLHead(path, sessionstore.JSONLProbeBytes)
 		if err != nil || len(head) == 0 {
 			continue
 		}
@@ -335,13 +337,4 @@ func findPiSessionByID(dir, sessionID string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// splitFirstJSONLLine separates the first line (without line endings) from the
-// remaining bytes of a JSONL file.
-func splitFirstJSONLLine(data []byte) (line, rest []byte) {
-	if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
-		return bytes.TrimSuffix(data[:idx], []byte{'\r'}), data[idx+1:]
-	}
-	return bytes.TrimSuffix(data, []byte{'\r'}), nil
 }

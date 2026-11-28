@@ -229,7 +229,7 @@ func TestNativeCopilotAsksForAssistedApprovalWhenItOpensASession(t *testing.T) {
 				Options:    optionmap.Map{agent.OptionIDPermissionMode: "assisted"},
 			}
 			if resume {
-				opts.ResumeSessionID = "stored-session"
+				opts.Session = agent.ResumeSession("stored-session")
 			}
 			sink := &agenttest.Sink{}
 			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(sink))
@@ -581,7 +581,7 @@ func TestNativeCopilotFallsBackToManualWhenTheRuntimeRefusesTheDefaultPermission
 				"LEAPMUX_TEST_COPILOT_REFUSAL="+tc.refusal)
 			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true)
 			if tc.resume {
-				opts.ResumeSessionID = "stored-session"
+				opts.Session = agent.ResumeSession("stored-session")
 			}
 			sink := &agenttest.Sink{}
 			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(sink))
@@ -679,7 +679,7 @@ func TestNativeCopilotStillFailsStartupWhenTheRuntimeRefusesAPermissionModeThatT
 			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, false)
 			opts.NewSessionDefaultOptionIDs = tc.defaulted
 			if tc.resume {
-				opts.ResumeSessionID = "stored-session"
+				opts.Session = agent.ResumeSession("stored-session")
 			}
 			_, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 			require.ErrorContains(t, err, "the Copilot runtime did not confirm the requested permissionMode setting")
@@ -745,7 +745,7 @@ func TestNativeCopilotDoesNotFallBackWhenTheRuntimeAcceptsTheDefaultPermissionMo
 			requestsPath := installCopilotThatRefusesAMode(t, "", 1, "LEAPMUX_TEST_COPILOT_REQUIRE_APPROVAL_FLAG=1")
 			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true)
 			if resume {
-				opts.ResumeSessionID = "stored-session"
+				opts.Session = agent.ResumeSession("stored-session")
 			}
 			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 			require.NoError(t, err)

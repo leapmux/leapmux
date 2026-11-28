@@ -270,8 +270,8 @@ func TestCodebuddyStartupHandshake(t *testing.T) {
 				options[OptionSwarmMode] = "true"
 			}
 			started, err := Start(t.Context(), agent.Options{
-				Options:         options,
-				ResumeSessionID: tc.resume, AgentID: "native-startup-test", WorkingDir: t.TempDir(), HomeDir: home,
+				Options: options,
+				Session: agent.ResumeSession(tc.resume), AgentID: "native-startup-test", WorkingDir: t.TempDir(), HomeDir: home,
 				Shell: terminal.ResolveDefaultShell(), ExtraEnv: []string{"HOME=" + home, "USERPROFILE=" + home, "ZDOTDIR=" + home},
 				AgentDirs: dirs,
 			}, agent.NewProviderServices(sink))

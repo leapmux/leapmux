@@ -352,36 +352,21 @@ func hasSessionCapability(raw json.RawMessage) bool {
 	}
 }
 
-// advertisesSessionClose reports whether an initialize response advertises
-// session/close, as `agentCapabilities.sessionCapabilities.close`. The
-// capability is an object, so an absent member, `null` and `false` all mean no.
-func advertisesSessionClose(initializeResponse []byte) bool {
+// readSessionCapabilities reports whether an initialize response advertises
+// session/close and session/fork under `agentCapabilities.sessionCapabilities`.
+// Each capability is an object, so an absent member, `null`, and `false` all mean no.
+func readSessionCapabilities(initializeResponse []byte) (closeSupported, forkSupported bool) {
 	var response struct {
 		AgentCapabilities struct {
 			SessionCapabilities struct {
 				Close json.RawMessage `json:"close"`
+				Fork  json.RawMessage `json:"fork"`
 			} `json:"sessionCapabilities"`
 		} `json:"agentCapabilities"`
 	}
 	if json.Unmarshal(initializeResponse, &response) != nil {
-		return false
+		return false, false
 	}
-	return hasSessionCapability(response.AgentCapabilities.SessionCapabilities.Close)
-}
-
-// advertisesSessionFork reports whether an initialize response advertises
-// session/fork, as `agentCapabilities.sessionCapabilities.fork`. The
-// capability is an object, so an absent member, `null` and `false` all mean no.
-func advertisesSessionFork(initializeResponse json.RawMessage) bool {
-	var response struct {
-		AgentCapabilities struct {
-			SessionCapabilities struct {
-				Fork json.RawMessage `json:"fork"`
-			} `json:"sessionCapabilities"`
-		} `json:"agentCapabilities"`
-	}
-	if json.Unmarshal(initializeResponse, &response) != nil {
-		return false
-	}
-	return hasSessionCapability(response.AgentCapabilities.SessionCapabilities.Fork)
+	caps := response.AgentCapabilities.SessionCapabilities
+	return hasSessionCapability(caps.Close), hasSessionCapability(caps.Fork)
 }

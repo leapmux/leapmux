@@ -84,7 +84,7 @@ func newWorkspaceCommand() *cobra.Command {
 			Mutates: true,
 			Examples: []cli.Example{
 				{Command: "leapmux workspace unarchive 9f3kQ2aB"},
-				{Command: `leapmux workspace unarchive 9f3kQ2aB --section "In progress"`},
+				{Command: `leapmux workspace unarchive 9f3kQ2aB --section "Client Work"`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
 				fs.String("section", "", `destination active section (default: "In progress")`)

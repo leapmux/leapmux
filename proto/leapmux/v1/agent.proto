@@ -270,14 +270,13 @@ message OpenAgentRequest {
   // Agent configuration.
   AgentProvider agent_provider = 2; // Coding agent provider (default: CLAUDE_CODE)
   string title = 3;
-  string agent_session_id = 4;  // If set, resume from this session ID
   // Initial option selections keyed by option-group id (e.g. "model", "effort",
   // "permissionMode", and provider-specific axes). Missing well-known ids are
   // filled with provider defaults server-side.
-  map<string, string> options = 5;
+  map<string, string> options = 4;
 
   // How to prepare the working directory. Absent = use it as it is.
-  GitSetup git_setup = 6;
+  GitSetup git_setup = 5;
 
   // True when `title` is the suggestion this client PRE-FILLED and the user
   // left alone, so nobody chose it. The worker records it, and plan mode then
@@ -293,18 +292,22 @@ message OpenAgentRequest {
   // (the CLI, and any client that sends a title it did not generate) keeps the
   // title it sent. An empty `title` is auto-generated regardless -- the worker
   // picked that one itself.
-  bool title_auto_generated = 7;
-  TabCreation creation = 8;
+  bool title_auto_generated = 6;
+  TabCreation creation = 7;
   // If present, queue this message in the same transaction as the new agent.
-  optional string initial_message = 9;
+  optional string initial_message = 8;
   // Optional client-chosen input ID for initial_message. Requires initial_message
   // when non-blank. When absent or blank, the Worker generates an ID.
-  optional string initial_message_id = 10;
-  // When set, the Worker clones the source agent's transcript and performs a
-  // native conversation-history fork on the provider so the new agent starts
-  // with an independent copy of that conversation. Mutually exclusive with
-  // agent_session_id.
-  AgentForkSource fork_source = 11;
+  optional string initial_message_id = 9;
+  // Mutually exclusive session-origin options. Absent starts a fresh session.
+  oneof session_source {
+    // If set, resume an existing native provider session by session ID.
+    string resume_session_id = 10;
+    // When set, the Worker clones the source agent's transcript and performs a
+    // native conversation-history fork on the provider so the new agent starts
+    // with an independent copy of that conversation.
+    AgentForkSource fork_source = 11;
+  }
 }
 
 message OpenAgentResponse {
@@ -315,8 +318,11 @@ message OpenAgentResponse {
 message ListAgentsRequest {
   repeated string tab_ids = 1;
   // When true, include all descendant subagent rows (even those without an open
-  // workspace tab) rooted beneath the requested tab_ids.
+  // workspace tab) rooted beneath the requested tab_ids or spawned_by_agent_ids.
   bool include_descendants = 2;
+  // When non-empty, return open agents whose spawned_by_agent_id is in this
+  // list. When tab_ids is also set, returns the union.
+  repeated string spawned_by_agent_ids = 3;
 }
 
 message ListAgentsResponse {

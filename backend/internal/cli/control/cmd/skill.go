@@ -19,13 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
-type skillTargetMode int
-
-const (
-	skillTargetModeInspect skillTargetMode = iota
-	skillTargetModeMutate
-)
-
 const (
 	localSkillTargetUsage = "local target directory: auto (default; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:<path>; repeat for multiple"
 	skillTargetUsage      = "target directory: auto (default locally; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:<path> (local only); repeat for multiple"
@@ -50,6 +43,7 @@ func newSkillCommand() *cobra.Command {
 		Run:      runSkillShow,
 	})
 	cli.DisallowInheritedFlags(showCmd, "hub")
+	cli.MarkLocalOnly(showCmd)
 
 	diffCmd := cli.NewLeaf(cli.Leaf{
 		Use:   "diff [skill]...",
@@ -68,8 +62,9 @@ func newSkillCommand() *cobra.Command {
 		Run:      runSkillDiff,
 	})
 	cli.DisallowInheritedFlags(diffCmd, "hub")
+	cli.MarkLocalOnly(diffCmd)
 
-	return cli.SetAliases(cli.Group("skill", "Inspect and install LeapMux agent skills locally or on a Worker",
+	cmd := cli.SetAliases(cli.Group("skill", "Inspect and install LeapMux agent skills locally or on a Worker",
 		cli.NewLeaf(cli.Leaf{
 			Use:     "list",
 			Aliases: []string{"ls"},
@@ -80,7 +75,7 @@ func newSkillCommand() *cobra.Command {
 				{Comment: "Inspect project-scoped skills in the current repository.", Command: "leapmux skill list --scope project"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				addSkillScopeFlags(fs, skillTargetModeInspect)
+				addSkillScopeFlags(fs, localSkillTargetUsage)
 			},
 			Run: runSkillList,
 		}),
@@ -93,7 +88,7 @@ func newSkillCommand() *cobra.Command {
 				{Command: "leapmux skill status --worker name:build-box --json"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				addSkillScopeFlags(fs, skillTargetModeInspect)
+				addSkillScopeFlags(fs, localSkillTargetUsage)
 			},
 			Run: runSkillStatus,
 		}),
@@ -129,7 +124,7 @@ is passed.`,
 				{Comment: "Enable and auto-sync all skills on a remote Worker.", Command: "leapmux skill install --all --worker name:build-box --auto-sync"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				addSkillScopeFlags(fs, skillTargetModeMutate)
+				addSkillScopeFlags(fs, skillTargetUsage)
 				fs.Bool("all", false, "select every bundled skill")
 				fs.Bool("force", false, "overwrite locally modified or unmanaged skill files")
 				fs.Bool("auto-sync", false, "with --worker, keep enabled skills refreshed automatically on Worker startup")
@@ -151,7 +146,7 @@ is passed.`,
 				{Comment: "Remove a target directory from a remote Worker.", Command: "leapmux skill uninstall --worker name:build-box --target claude"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				addSkillScopeFlags(fs, skillTargetModeMutate)
+				addSkillScopeFlags(fs, skillTargetUsage)
 				fs.Bool("all", false, "select every bundled skill")
 				fs.Bool("force", false, "also remove locally modified or unmanaged skill files")
 				fs.Bool("no-auto-sync", false, "with --worker, disable automatic skill refresh on Worker startup")
@@ -160,6 +155,8 @@ is passed.`,
 			Run:      runSkillUninstall,
 		}),
 	), "skills")
+	cli.MarkLocalUnlessFlags(cmd, workerFlag)
+	return cmd
 }
 
 func addLocalSkillScopeFlags(fs *pflag.FlagSet, targetUsage string) {
@@ -168,12 +165,8 @@ func addLocalSkillScopeFlags(fs *pflag.FlagSet, targetUsage string) {
 	cli.SetEnum(fs, "scope", "user", "project")
 }
 
-func addSkillScopeFlags(fs *pflag.FlagSet, mode skillTargetMode) {
-	usage := skillTargetUsage
-	if mode == skillTargetModeInspect {
-		usage = localSkillTargetUsage
-	}
-	addLocalSkillScopeFlags(fs, usage)
+func addSkillScopeFlags(fs *pflag.FlagSet, targetUsage string) {
+	addLocalSkillScopeFlags(fs, targetUsage)
 	// Register --worker without an environment default so commands inside a
 	// LeapMux tab default to the local machine unless the caller passes --worker.
 	fs.String(workerFlag, "", `the Worker to inspect or manage skills on: an id, a unique id prefix, "name:<name>" or "self"; omit for local machine`)
@@ -464,10 +457,11 @@ func (r skillDiffResult) RenderText(w io.Writer) error {
 		}
 		for _, f := range d.Files {
 			if f.Diff != "" {
-				if _, err := io.WriteString(w, f.Diff); err != nil {
+				clean := cli.SanitizeTerminalText(f.Diff)
+				if _, err := io.WriteString(w, clean); err != nil {
 					return err
 				}
-				if !strings.HasSuffix(f.Diff, "\n") {
+				if !strings.HasSuffix(clean, "\n") {
 					if _, err := fmt.Fprintln(w); err != nil {
 						return err
 					}
@@ -747,7 +741,9 @@ func runSkillDiff(inv *cli.Invocation) (any, error) {
 	}
 	diffs := make([]skills.SkillDiff, 0)
 	for i, dir := range dirs {
-		dirDiffs, err := skills.DiffAll(dir, names)
+		dirDiffs, err := skills.DiffAll(dir, names, skills.DiffOptions{
+			SkipNotInstalled: !explicit,
+		})
 		if err != nil {
 			return nil, mapSkillDiskError(err, "")
 		}
@@ -936,6 +932,21 @@ func mutateWorkerSkills(
 	return skillMutationResultFromProto(workerID, &resp), nil
 }
 
+func normalizeRemoteSkillTargets(inv *cli.Invocation) ([]string, error) {
+	if !inv.Changed("target") {
+		return nil, nil
+	}
+	normTargets, err := skills.NormalizeTargets(inv.StringArray("target"))
+	if err != nil {
+		return nil, cli.Usagef("%v", err)
+	}
+	out := make([]string, len(normTargets))
+	for i, t := range normTargets {
+		out[i] = string(t)
+	}
+	return out, nil
+}
+
 func runSkillInstall(inv *cli.Invocation) (any, error) {
 	autoChanged := inv.Changed("auto-sync")
 	noAutoChanged := inv.Changed("no-auto-sync")
@@ -966,28 +977,20 @@ func runSkillInstall(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		targetChanged := inv.Changed("target")
-		if !all && len(rawNames) == 0 && autoSyncPtr == nil && !targetChanged {
+		addTargets, err := normalizeRemoteSkillTargets(inv)
+		if err != nil {
+			return nil, err
+		}
+		if !all && len(rawNames) == 0 && autoSyncPtr == nil && len(addTargets) == 0 {
 			return nil, cli.Usagef("specify one or more skill names, or pass --all").
 				WithHint("run `leapmux skill list` to see bundled skills")
-		}
-		var addTargets []string
-		if targetChanged {
-			normTargets, tErr := skills.NormalizeTargets(inv.StringArray("target"))
-			if tErr != nil {
-				return nil, cli.Usagef("%v", tErr)
-			}
-			addTargets = make([]string, len(normTargets))
-			for i, t := range normTargets {
-				addTargets[i] = string(t)
-			}
 		}
 
 		req := &leapmuxv1.UpdateWorkerSkillsRequest{
 			AutoSync:        autoSyncPtr,
 			AddAllSkills:    all,
 			AddTargets:      addTargets,
-			SyncNow:         all || len(rawNames) > 0 || targetChanged,
+			SyncNow:         all || len(rawNames) > 0 || len(addTargets) > 0,
 			Force:           force,
 			StrictConflicts: !force,
 		}
@@ -1027,16 +1030,13 @@ func runSkillUninstall(inv *cli.Invocation) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		var removeTargets []string
-		if inv.Changed("target") {
-			normTargets, tErr := skills.NormalizeTargets(inv.StringArray("target"))
-			if tErr != nil {
-				return nil, cli.Usagef("%v", tErr)
-			}
-			removeTargets = make([]string, len(normTargets))
-			for i, t := range normTargets {
-				removeTargets[i] = string(t)
-			}
+		removeTargets, err := normalizeRemoteSkillTargets(inv)
+		if err != nil {
+			return nil, err
+		}
+		if len(removeTargets) > 0 && (all || len(rawNames) > 0) {
+			return nil, cli.Usagef("cannot combine skill names or --all with --target on a Worker").
+				WithHint("omit --target to uninstall skills from all configured targets, or omit skill names to remove a target directory")
 		}
 		if !all && len(rawNames) == 0 && len(removeTargets) == 0 && autoSyncPtr == nil {
 			return nil, cli.Usagef("specify one or more skill names, --all, --target, or --no-auto-sync").

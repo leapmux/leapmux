@@ -140,7 +140,8 @@ func TestOpenAgent_ReleasesTheStartupWhenTheNativeSessionIsAlreadyOpen(t *testin
 
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir: workingDir, AgentProvider: provider, AgentSessionId: "session-a1",
+		WorkingDir: workingDir, AgentProvider: provider,
+		SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: "session-a1"},
 	}, w)
 
 	require.Len(t, w.errors, 1)

@@ -121,3 +121,46 @@ func TestForkPiSessionFile(t *testing.T) {
 		assert.Contains(t, err.Error(), "session header")
 	})
 }
+
+func TestFindPiSessionByID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matches headers larger than 4 KiB", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		sessionID := "large-header-session"
+		padding := strings.Repeat("x", 6000)
+		header := `{"type":"session","version":3,"id":"` + sessionID + `","padding":"` + padding + `","cwd":"/work"}`
+		path := filepath.Join(dir, "2026-09-01T12-00-00-000Z_renamed-file.jsonl")
+		require.NoError(t, os.WriteFile(path, []byte(header+"\n"), 0o600))
+
+		got, ok := findPiSessionByID(dir, sessionID)
+		require.True(t, ok)
+		assert.Equal(t, path, got)
+	})
+
+	t.Run("prefers filename match over opening unrelated files and scans headers newest-first", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		// A filename match sorted after an earlier file with the same header ID
+		// must win in the zero-I/O filename pass without opening earlier files.
+		earlyByHeader := filepath.Join(dir, "2026-09-01T10-00-00-000Z_other-name.jsonl")
+		require.NoError(t, os.WriteFile(earlyByHeader, []byte(`{"type":"session","version":3,"id":"target-id","cwd":"/work"}`+"\n"), 0o600))
+		lateByName := filepath.Join(dir, "2026-09-01T12-00-00-000Z_target-id.jsonl")
+		require.NoError(t, os.WriteFile(lateByName, []byte(`{"type":"session","version":3,"id":"target-id","cwd":"/work"}`+"\n"), 0o600))
+
+		got, ok := findPiSessionByID(dir, "target-id")
+		require.True(t, ok)
+		assert.Equal(t, lateByName, got)
+
+		// When no filename embeds the ID, newest-first header scan selects the newer file.
+		older := filepath.Join(dir, "2026-09-01T11-00-00-000Z_custom-a.jsonl")
+		newer := filepath.Join(dir, "2026-09-01T13-00-00-000Z_custom-b.jsonl")
+		require.NoError(t, os.WriteFile(older, []byte(`{"type":"session","version":3,"id":"header-only-id","cwd":"/work"}`+"\n"), 0o600))
+		require.NoError(t, os.WriteFile(newer, []byte(`{"type":"session","version":3,"id":"header-only-id","cwd":"/work"}`+"\n"), 0o600))
+
+		got, ok = findPiSessionByID(dir, "header-only-id")
+		require.True(t, ok)
+		assert.Equal(t, newer, got)
+	})
+}

@@ -5,16 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"regexp"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
-const openCodeDisableAutoUpdateEnv = "OPENCODE_DISABLE_AUTOUPDATE"
+const (
+	openCodeDisableAutoUpdateEnv = "OPENCODE_DISABLE_AUTOUPDATE"
+	openCodeMovePollTag          = "opencode-session-move-poll"
+	openCodeMoveInitialBackoff   = 50 * time.Millisecond
+	openCodeMoveMaxBackoff       = 500 * time.Millisecond
+)
 
 var openCodeListenPattern = regexp.MustCompile(`^\s*\{\s*"url"\s*:\s*"([^"\s]+)"\s*\}\s*$`)
 var openCodeServeArgs = []string{"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"}
@@ -108,7 +116,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if err := a.stream.awaitConnected(ctx, opts.EffectiveStartupTimeout()); err != nil {
 		return nil, a.FormatStartupError("event stream", err)
 	}
-	catalog, err := awaitOpenCodeCatalog(ctx, a.rpc, a.Clock(), opts.EffectiveStartupTimeout())
+	requestedModel := ""
+	if !opts.NewSessionDefaultOptionIDs[agent.OptionIDModel] {
+		requestedModel = opts.Model()
+	}
+	catalog, err := awaitOpenCodeCatalogWithModel(ctx, a.rpc, a.Clock(), opts.EffectiveStartupTimeout(), requestedModel)
 	if err != nil {
 		return nil, a.FormatStartupError("model catalog", err)
 	}
@@ -127,7 +139,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		a.root = run
 		a.runs[info.ID] = run
 		a.Mu.Unlock()
-		if opts.ResumeSessionID != "" || opts.ForkFromSessionID != "" {
+		if opts.Session.IsResume() || opts.Session.IsFork() {
 			current := run.SettingsSnapshot().SurfacedOptions
 			changes := make(optionmap.Map)
 			for _, key := range []string{agent.OptionIDModel, agent.OptionIDEffort, agent.OptionIDPrimaryAgent} {
@@ -139,11 +151,15 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				err = errors.New("OpenCode could not apply the requested settings to the session")
 			}
 		}
-		// Skip historical transcript replay on fork startup: the Worker already
-		// cloned the SQLite transcript, and a forked OpenCode session assigns new
-		// message IDs that would duplicate every pre-fork row.
-		if err == nil && opts.ForkFromSessionID == "" {
-			err = a.restoreRunLocked(ctx, run)
+		// On fork startup, seed pre-fork baseline message IDs and sync session
+		// metadata/usage/controls without re-persisting pre-fork transcript rows
+		// that the Worker already cloned into SQLite.
+		if err == nil {
+			if opts.Session.IsFork() {
+				err = a.restoreForkBaselineLocked(ctx, run)
+			} else {
+				err = a.restoreRunLocked(ctx, run)
+			}
 		}
 	}
 	a.dispatch.Unlock()
@@ -156,24 +172,77 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	return a, nil
 }
 
-func (a *Agent) openRootSession(ctx context.Context, opts agent.Options) (openCodeSessionInfo, error) {
-	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
-		return openCodeSessionInfo{}, fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID)
+func openCodeSameDirectory(a, b string) bool {
+	if a == "" || b == "" {
+		return false
 	}
-	if opts.ForkFromSessionID != "" {
-		info, err := a.rpc.forkSession(ctx, opts.ForkFromSessionID)
+	return pathutil.SamePath(pathutil.Canonicalize(a), pathutil.Canonicalize(b))
+}
+
+func (a *Agent) moveForkedSession(ctx context.Context, sessionID, targetDir string, timeout time.Duration) (openCodeSessionInfo, error) {
+	if err := a.rpc.moveSession(ctx, sessionID, targetDir); err != nil {
+		return openCodeSessionInfo{}, err
+	}
+	clock := a.Clock()
+	deadline := clock.Now().Add(timeout)
+	delay := openCodeMoveInitialBackoff
+	for {
+		info, err := a.rpc.session(ctx, sessionID)
 		if err != nil {
-			return info, fmt.Errorf("fork OpenCode session %q: %w", opts.ForkFromSessionID, err)
+			return openCodeSessionInfo{}, err
+		}
+		if openCodeSameDirectory(info.Location.Directory, targetDir) {
+			active, err := a.rpc.activeSessions(ctx)
+			if err != nil {
+				return openCodeSessionInfo{}, err
+			}
+			if !active[sessionID] {
+				return info, nil
+			}
+		}
+		remaining := deadline.Sub(clock.Now())
+		if remaining <= 0 {
+			return openCodeSessionInfo{}, fmt.Errorf("timed out waiting for OpenCode session %q to move to %q (current directory: %q)", sessionID, targetDir, info.Location.Directory)
+		}
+		timer := clock.NewTimer(min(delay, remaining), openCodeMovePollTag)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return openCodeSessionInfo{}, ctx.Err()
+		case <-a.ProcessDone():
+			timer.Stop()
+			return openCodeSessionInfo{}, errors.New("OpenCode exited while moving the forked session")
+		case <-timer.C:
+		}
+		delay = min(delay*2, openCodeMoveMaxBackoff)
+	}
+}
+
+func (a *Agent) openRootSession(ctx context.Context, opts agent.Options) (openCodeSessionInfo, error) {
+	if err := opts.ValidateSessionSource(); err != nil {
+		return openCodeSessionInfo{}, err
+	}
+	if forkID := opts.Session.ForkID(); forkID != "" {
+		info, err := a.rpc.forkSession(ctx, forkID)
+		if err != nil {
+			return info, fmt.Errorf("fork OpenCode session %q: %w", forkID, err)
+		}
+		if opts.WorkingDir != "" && !openCodeSameDirectory(info.Location.Directory, opts.WorkingDir) {
+			targetDir := filepath.Clean(opts.WorkingDir)
+			info, err = a.moveForkedSession(ctx, info.ID, targetDir, opts.EffectiveStartupTimeout())
+			if err != nil {
+				return info, fmt.Errorf("move forked OpenCode session %q to %q: %w", info.ID, targetDir, err)
+			}
 		}
 		return info, nil
 	}
-	if opts.ResumeSessionID != "" {
-		info, err := a.rpc.session(ctx, opts.ResumeSessionID)
+	if resumeID := opts.Session.ResumeID(); resumeID != "" {
+		info, err := a.rpc.session(ctx, resumeID)
 		if err != nil {
-			return info, providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+			return info, providerkit.ResumeFailedError(resumeID, err)
 		}
 		if info.ParentID != "" {
-			return info, providerkit.ResumeFailedError(opts.ResumeSessionID, errors.New("a native subagent must be opened through its owning conversation"))
+			return info, providerkit.ResumeFailedError(resumeID, errors.New("a native subagent must be opened through its owning conversation"))
 		}
 		return info, nil
 	}

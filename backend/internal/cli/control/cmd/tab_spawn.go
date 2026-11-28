@@ -140,6 +140,9 @@ func openAgentAndAddTab(ctx context.Context, c control.Peer, w workerCall, args 
 	if err != nil {
 		return nil, err
 	}
+	if args.SessionID != "" && args.ForkSource != nil {
+		return nil, cli.Usagef("cannot both resume a session and fork from an agent")
+	}
 	opts := args.Options
 	if opts == nil {
 		opts = map[string]string{}
@@ -150,10 +153,14 @@ func openAgentAndAddTab(ctx context.Context, c control.Peer, w workerCall, args 
 		Options:        opts,
 		Title:          args.Title,
 		WorkingDir:     args.WorkingDir,
-		AgentSessionId: args.SessionID,
-		ForkSource:     args.ForkSource,
 		GitSetup:       args.GitSetup,
 		InitialMessage: args.InitialMessage,
+	}
+	switch {
+	case args.ForkSource != nil:
+		request.SessionSource = &leapmuxv1.OpenAgentRequest_ForkSource{ForkSource: args.ForkSource}
+	case args.SessionID != "":
+		request.SessionSource = &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: args.SessionID}
 	}
 	if args.InitialMessage != nil && strings.TrimSpace(args.RequestID) != "" {
 		initMsgID := requestScopedID(args.RequestID, requestScopeAgentSend, creation.GetTabId())

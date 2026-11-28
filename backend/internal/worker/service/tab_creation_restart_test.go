@@ -327,7 +327,7 @@ func TestCreationRestart_RestoresTheCurrentAgentSessionAndSettings(t *testing.T)
 				defer oldService.Shutdown()
 				intent := hub.intent("current-agent")
 				_, request := recoveryCreationRequest(t, leapmuxv1.TabType_TAB_TYPE_AGENT, intent, directory)
-				runtime := &agentCreationRuntime{Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}}, ResumeSessionID: "stale-runtime-session", Options: OptionMap{agent.OptionIDModel: "stale-model"}, DefaultedIDs: map[string]bool{agent.OptionIDModel: true, "retired-axis": true}}
+				runtime := &agentCreationRuntime{Startup: creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}}, Session: agent.ResumeSession("stale-runtime-session"), Options: OptionMap{agent.OptionIDModel: "stale-model"}, DefaultedIDs: map[string]bool{agent.OptionIDModel: true, "retired-axis": true}}
 				seedRecoveryCreation(t, oldService, recoveryCreationSeed{request: request, publication: &leapmuxv1.TabPublication{Creation: intent, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, runtime: runtime, state: state,
 					write: func(ctx context.Context, q *db.Queries, _ *sql.Tx) error {
 						return q.CreateAgent(ctx, db.CreateAgentParams{ID: intent.TabId, WorkingDir: directory, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Options: marshalOptions(runtime.Options), Resumed: 1, PendingResumeSessionID: "stale-runtime-session"})
@@ -362,7 +362,7 @@ func TestCreationRestart_RestoresTheCurrentAgentSessionAndSettings(t *testing.T)
 					t.Fatal("recovery did not start the agent")
 				}
 				fresh.AgentStartup.WaitForInFlight()
-				assert.Equal(t, session.expected, opts.ResumeSessionID)
+				assert.Equal(t, session.expected, opts.Session.ResumeID())
 				assert.Equal(t, current[agent.OptionIDModel], opts.Options[agent.OptionIDModel])
 				assert.Equal(t, current[agent.OptionIDPermissionMode], opts.Options[agent.OptionIDPermissionMode])
 				assert.False(t, opts.NewSessionDefaultOptionIDs[agent.OptionIDModel], "an explicit current model must not retain the old default marker")

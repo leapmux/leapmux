@@ -99,8 +99,8 @@ Never merge based on an agent's summary alone. Review each worktree's changes in
 {{< screenshot src="file-browser-diff" alt="LeapMux file browser with Changed git filter and inline syntax-highlighted unified diff viewer" caption="Inspect each worktree's changed files and inline diffs in the Files sidebar before merging." width="722" height="504" >}}
 
 ```sh
-leapmux worktree list --dir .
-WT=$(leapmux worktree get branch:feat/backend-api --dir . -q)
+leapmux worktree list
+WT=$(leapmux worktree get branch:feat/backend-api -q)
 leapmux git diff --base main --dir "$WT"
 leapmux worktree inspect "$WT"
 ```

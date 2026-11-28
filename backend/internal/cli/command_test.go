@@ -322,6 +322,7 @@ func TestMarkLocalOnly_AndDefensiveMetadataCopies(t *testing.T) {
 	assert.Nil(t, NextOf(nil))
 	assert.NotPanics(t, func() {
 		MarkLocalOnly(nil)
+		MarkLocalUnlessFlags(nil, "worker")
 		SetFooter(nil, "ignored")
 		SetAbbreviationNote(nil, "ignored")
 		SetCommandGroup(nil, "ignored")
@@ -329,6 +330,30 @@ func TestMarkLocalOnly_AndDefensiveMetadataCopies(t *testing.T) {
 		DescribeArgs(nil, map[string]string{"id": "ignored"})
 		DescribeArgs(root, nil)
 	})
+	assert.Nil(t, LocalUnlessFlags(nil))
+}
+
+func TestMarkLocalUnlessFlags_NormalizationDedupAndDefensiveCopy(t *testing.T) {
+	cmd := Group("skill", "Skills")
+	child := NewLeaf(Leaf{Use: "list", Short: "List", Run: func(*Invocation) (any, error) { return nil, nil }})
+	cmd.AddCommand(child)
+
+	assert.Nil(t, LocalUnlessFlags(cmd))
+
+	// Empty and whitespace-only values are ignored.
+	MarkLocalUnlessFlags(cmd)
+	MarkLocalUnlessFlags(cmd, "", "   ", "--")
+	assert.Nil(t, LocalUnlessFlags(cmd))
+
+	// Trims whitespace and leading dashes, and deduplicates.
+	MarkLocalUnlessFlags(cmd, " --worker ", "worker", "-hub")
+	assert.Equal(t, []string{"worker", "hub"}, LocalUnlessFlags(cmd))
+	assert.Nil(t, LocalUnlessFlags(child), "LocalUnlessFlags reports only flags registered on cmd itself")
+
+	// Mutating the returned slice does not affect stored metadata.
+	got := LocalUnlessFlags(cmd)
+	got[0] = "mutated"
+	assert.Equal(t, []string{"worker", "hub"}, LocalUnlessFlags(cmd))
 }
 
 func TestCommandMeta_CleanupAndConcurrentAccess(t *testing.T) {

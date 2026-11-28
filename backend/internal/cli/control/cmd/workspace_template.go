@@ -371,9 +371,7 @@ func runWorkspaceExport(inv *cli.Invocation) (any, error) {
 		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "create directory for exported workspace template")
 		}
-		if toplevel, ok := repopaths.IsInsideLeapMuxTmp(outPath); ok {
-			_ = repopaths.EnsureTmpExcluded(toplevel)
-		}
+		_ = repopaths.EnsureTmpExcludedIfInside(outPath)
 		if err := atomicfile.WriteFile(outPath, raw, 0o600); err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "write exported workspace template")
 		}

@@ -31,7 +31,7 @@ func TestAntigravityResumePreservesTheMissingProviderCause(t *testing.T) {
 	home := t.TempDir()
 	opts := agent.Options{
 		AgentID: "missing-antigravity", WorkingDir: home, HomeDir: home, Shell: "/bin/sh",
-		ResumeSessionID: "saved-session", StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
+		Session: agent.ResumeSession("saved-session"), StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
 		AgentDirs: agentdirtest.NewDirs(t, []agentdir.Spec{{Prefix: "antigravity"}}),
 	}
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
@@ -94,7 +94,7 @@ func TestAntigravityResumeKeepsSignInDiagnosticsAfterNativeExit(t *testing.T) {
 	t.Setenv("PATH", dir)
 	opts := agent.Options{
 		AgentID: "resume-authentication", WorkingDir: dir, HomeDir: dir, Shell: "/bin/sh",
-		ResumeSessionID: "saved-session", StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
+		Session: agent.ResumeSession("saved-session"), StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
 		AgentDirs: agentdirtest.NewDirs(t, []agentdir.Spec{{Prefix: "antigravity"}}),
 	}
 	started, err := Start(testutil.DeadlineContext(t), opts, agent.NewProviderServices(&agenttest.Sink{}))
@@ -120,7 +120,7 @@ func TestAntigravityBootstrapFailureDoesNotSuggestClearingSavedSession(t *testin
 	t.Setenv("PATH", dir)
 	opts := agent.Options{
 		AgentID: "resume-with-list-error", WorkingDir: dir, HomeDir: dir, Shell: "/bin/sh",
-		ResumeSessionID: "saved-session", StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
+		Session: agent.ResumeSession("saved-session"), StartupTimeout: 30 * time.Second, APITimeout: 30 * time.Second,
 		AgentDirs: agentdirtest.NewDirs(t, []agentdir.Spec{{Prefix: "antigravity"}}),
 	}
 	started, err := Start(testutil.DeadlineContext(t), opts, agent.NewProviderServices(&agenttest.Sink{}))

@@ -48,7 +48,7 @@ func (svc *Service) agentLoginShell() bool {
 // baseAgentOptions builds an agent.Options pre-filled with the per-agent identity
 // (agentID, workingDir, provider) and the shared launch-environment block -- timeouts,
 // shell, and home dir -- that every launch / restart / clear-context / relaunch path
-// repeats verbatim. Callers overlay the per-site fields (ResumeSessionID, Options,
+// repeats verbatim. Callers overlay the per-site fields (Session, Options,
 // ExtraEnv) on the returned value, so a new launch-environment field or a renamed
 // timeout accessor is a one-line change here instead of five parallel edits that one
 // path would eventually drift on.
@@ -63,6 +63,23 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 		LoginShell:     svc.agentLoginShell(),
 		HomeDir:        svc.HomeDir,
 	}
+}
+
+// deduplicateNonEmpty returns the unique non-empty strings in order of first appearance.
+func deduplicateNonEmpty(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, value := range ids {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // registerAgentHandlers registers all agent-related inner RPC handlers.
@@ -136,49 +153,81 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// BatchGetGitStatus.
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, dispatchPlain, func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListAgentsRequest, sender channel.ResponseWriter) {
 		tabIDs := r.GetTabIds()
-		if len(tabIDs) == 0 {
+		spawnerIDs := deduplicateNonEmpty(r.GetSpawnedByAgentIds())
+		if len(tabIDs) == 0 && len(spawnerIDs) == 0 {
 			sendProtoResponse(sender, &leapmuxv1.ListAgentsResponse{})
 			return
 		}
 
-		queryIDs := tabIDs
-		if r.GetIncludeDescendants() {
-			seen := make(map[string]bool, len(tabIDs))
-			expanded := make([]string, 0, len(tabIDs))
-			parentIDs := make([]sql.NullString, 0, len(tabIDs))
-			for _, tid := range tabIDs {
-				if seen[tid] {
-					continue
-				}
-				seen[tid] = true
-				expanded = append(expanded, tid)
-				parentIDs = append(parentIDs, sql.NullString{String: tid, Valid: true})
-			}
-			descIDs, descErr := svc.Queries.ListDescendantAgentIDsByParentIDs(ctx, parentIDs)
-			if descErr != nil {
-				slog.Error("failed to list descendant agents", "tab_ids", tabIDs, "error", descErr)
-				sendInternalError(sender, "failed to list descendant agents")
+		var agents []db.Agent
+		found := make(map[string]bool, len(tabIDs))
+		for _, spawnerID := range spawnerIDs {
+			spawned, err := svc.Queries.ListAgentsBySpawnedBy(ctx, spawnerID)
+			if err != nil {
+				slog.Error("failed to list agents by spawner", "spawned_by_agent_id", spawnerID, "error", err)
+				sendInternalError(sender, "failed to list agents")
 				return
 			}
-			for _, did := range descIDs {
-				if !seen[did] {
-					seen[did] = true
-					expanded = append(expanded, did)
+			for i := range spawned {
+				if !found[spawned[i].ID] {
+					found[spawned[i].ID] = true
+					agents = append(agents, spawned[i])
 				}
 			}
-			queryIDs = expanded
 		}
 
-		agents, err := svc.Queries.ListAgentsByIDs(ctx, queryIDs)
-		if err != nil {
-			slog.Error("failed to list agents", "tab_ids", tabIDs, "error", err)
-			sendInternalError(sender, "failed to list agents")
-			return
+		extraSeen := make(map[string]bool, len(tabIDs))
+		var extraIDs []string
+		for _, tid := range tabIDs {
+			if !found[tid] && !extraSeen[tid] {
+				extraSeen[tid] = true
+				extraIDs = append(extraIDs, tid)
+			}
+		}
+		if r.GetIncludeDescendants() {
+			parentSeen := make(map[string]bool, len(tabIDs)+len(agents))
+			parentIDs := make([]sql.NullString, 0, len(tabIDs)+len(agents))
+			for _, tid := range tabIDs {
+				if !parentSeen[tid] {
+					parentSeen[tid] = true
+					parentIDs = append(parentIDs, sql.NullString{String: tid, Valid: true})
+				}
+			}
+			for i := range agents {
+				if !parentSeen[agents[i].ID] {
+					parentSeen[agents[i].ID] = true
+					parentIDs = append(parentIDs, sql.NullString{String: agents[i].ID, Valid: true})
+				}
+			}
+			if len(parentIDs) > 0 {
+				descIDs, descErr := svc.Queries.ListDescendantAgentIDsByParentIDs(ctx, parentIDs)
+				if descErr != nil {
+					slog.Error("failed to list descendant agents", "tab_ids", tabIDs, "spawned_by_agent_ids", spawnerIDs, "error", descErr)
+					sendInternalError(sender, "failed to list descendant agents")
+					return
+				}
+				for _, did := range descIDs {
+					if !found[did] && !extraSeen[did] {
+						extraSeen[did] = true
+						extraIDs = append(extraIDs, did)
+					}
+				}
+			}
 		}
 
-		found := make(map[string]bool, len(agents))
-		for i := range agents {
-			found[agents[i].ID] = true
+		if len(extraIDs) > 0 {
+			extraAgents, err := svc.Queries.ListAgentsByIDs(ctx, extraIDs)
+			if err != nil {
+				slog.Error("failed to list agents", "tab_ids", tabIDs, "spawned_by_agent_ids", spawnerIDs, "error", err)
+				sendInternalError(sender, "failed to list agents")
+				return
+			}
+			for i := range extraAgents {
+				if !found[extraAgents[i].ID] {
+					found[extraAgents[i].ID] = true
+					agents = append(agents, extraAgents[i])
+				}
+			}
 		}
 
 		// Run git FIRST. It is the one slow step of this call: a large working
@@ -1989,11 +2038,19 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 		opts.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, hold.handle)
 		// If the initial launch already forked and confirmed its new session ID,
 		// resume that session on relaunch instead of forking the source again.
-		if opts.ForkFromSessionID != "" {
-			if confirmedID := storedSessionID(fallback); confirmedID != "" {
-				opts.ResumeSessionID = confirmedID
-				opts.ForkFromSessionID = ""
-				opts.ForkSourceWorkingDir = ""
+		// Re-read under LockAgent rather than relying on the pre-handoff
+		// fallback snapshot, which can miss a session ID confirmed after
+		// releaseHandoff.
+		if opts.Session.IsFork() {
+			current := fallback
+			if latest, readErr := svc.getAgentByID(bgCtx(), agentID); readErr == nil {
+				current = latest
+			} else {
+				slog.Warn("agent startup: failed to refresh agent row before fork relaunch; using fallback snapshot",
+					"agent_id", agentID, "error", readErr)
+			}
+			if confirmedID := storedSessionID(current); confirmedID != "" {
+				opts.Session = agent.ResumeSession(confirmedID)
 			}
 		}
 		sink, sourceErr := svc.Output.NewRootSink(agentID, provider)
@@ -2966,7 +3023,7 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		resumeSessionID = svc.resolveResumeSessionIDForAgent(agentID, current)
 		options := optionsFor(current)
 		agentOpts := svc.baseAgentOptions(agentID, current.WorkingDir, current.AgentProvider)
-		agentOpts.ResumeSessionID = resumeSessionID
+		agentOpts.Session = agent.ResumeSession(resumeSessionID)
 		agentOpts.Options = options
 		agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(svc.Agents.Registry(), options, current.AgentProvider)
 		agentOpts.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, hold.handle)
@@ -3574,7 +3631,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// mintAndLaunch keeps the mint failure and the start failure on one exit, so
 	// the STARTING state this function entered is cleared by one piece of code.
 	//
-	// The launch never resumes: launchOptions carries no ResumeSessionID. That
+	// The launch never resumes: launchOptions carries a fresh Session. That
 	// is what makes a clear the recovery from a refused native resume, which a
 	// repeated resume could damage further.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
@@ -3962,7 +4019,7 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 	// worker process, after a restart). Without this the auto-started agent
 	// comes up with no `leapmux control` at all.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
-	launchOptions.ResumeSessionID = resumeSessionID
+	launchOptions.Session = agent.ResumeSession(resumeSessionID)
 	if priority != backgroundStart {
 		launchOptions.ConfirmStartupPrompt = svc.startupPromptConfirmer(agentID, handle, nil)
 	}

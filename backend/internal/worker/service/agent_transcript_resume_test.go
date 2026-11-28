@@ -62,7 +62,8 @@ func TestOpenAgentCopiesThePriorWorkerTranscript(t *testing.T) {
 	require.NoError(t, err)
 
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir: workingDir, AgentProvider: provider, AgentSessionId: sessionID,
+		WorkingDir: workingDir, AgentProvider: provider,
+		SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: sessionID},
 	}, writer)
 	require.Empty(t, writer.errors)
 	require.Len(t, writer.responses, 1)
@@ -107,7 +108,8 @@ func openTranscriptResumeAgent(t *testing.T, dispatcher testRPCDispatcher, worki
 	t.Helper()
 	writer := newTestWriter()
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir: workingDir, AgentProvider: provider, AgentSessionId: sessionID,
+		WorkingDir: workingDir, AgentProvider: provider,
+		SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: sessionID},
 	}, writer)
 	require.Empty(t, writer.errors)
 	require.Len(t, writer.responses, 1)
@@ -191,7 +193,8 @@ func TestOpenAgentRejectsAnOpenNativeSession(t *testing.T) {
 			}
 			writer := newTestWriter()
 			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-				WorkingDir: requestedDir, AgentProvider: provider, AgentSessionId: "session-a1",
+				WorkingDir: requestedDir, AgentProvider: provider,
+				SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: "session-a1"},
 			}, writer)
 			if len(writer.responses) != 0 {
 				t.Fatalf("OpenAgent returned %d responses for an open native session", len(writer.responses))
@@ -218,9 +221,9 @@ func TestConcurrentManualResumesClaimOneNativeSession(t *testing.T) {
 	}
 	workingDir := t.TempDir()
 	request := &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     workingDir,
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
-		AgentSessionId: "session-a1",
+		WorkingDir:    workingDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
+		SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: "session-a1"},
 	}
 	first := newTestWriter()
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, first)

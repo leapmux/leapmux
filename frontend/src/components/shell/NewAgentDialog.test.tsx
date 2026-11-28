@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerAgent, workerGit } from '~/api/workerRpc'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
+import { RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -61,6 +62,7 @@ vi.mock('~/api/workerRpc', () => ({
   },
   workerAgent: {
     openAgent: vi.fn(async () => ({})),
+    listAgentSessions: vi.fn(async () => ({ sessions: [] })),
     listAvailableProviders: vi.fn(async (workerId: string) => ({
       providers: [
         workerId === 'w-1'
@@ -355,5 +357,31 @@ describe('NewAgentDialog git setup', () => {
     expect(workerId).toBe('w-1')
     expect(req.workingDir).toBe('/tmp')
     expect(req.gitSetup).toBeUndefined()
+  })
+})
+
+describe('NewAgentDialog resume session', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('sends a trimmed session ID in sessionSource.resumeSessionId', async () => {
+    renderDialog()
+
+    const sessionInput = await screen.findByLabelText(RESUME_SESSION_LABEL)
+    fireEvent.input(sessionInput, {
+      target: { value: '  sess-resume-1  ' },
+    })
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.click(createButton)
+
+    await waitFor(() => expect(openAgentMock).toHaveBeenCalledOnce())
+    expect(openAgentMock.mock.calls[0]?.[1]).toMatchObject({
+      sessionSource: {
+        case: 'resumeSessionId',
+        value: 'sess-resume-1',
+      },
+    })
   })
 })

@@ -45,7 +45,7 @@ func TestQueuedInputDoesNotRelaunchARefusedNativeResume(t *testing.T) {
 	t.Cleanup(release)
 	svc.startAgentFn = func(startCtx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		launchMu.Lock()
-		launchedResumeIDs = append(launchedResumeIDs, opts.ResumeSessionID)
+		launchedResumeIDs = append(launchedResumeIDs, opts.Session.ResumeID())
 		first := len(launchedResumeIDs) == 1
 		launchMu.Unlock()
 		if first {
@@ -192,7 +192,7 @@ type resumeLaunches struct {
 
 func (l *resumeLaunches) start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 	l.mu.Lock()
-	l.resumeIDs = append(l.resumeIDs, opts.ResumeSessionID)
+	l.resumeIDs = append(l.resumeIDs, opts.Session.ResumeID())
 	first := len(l.resumeIDs) == 1
 	after := l.after
 	l.mu.Unlock()

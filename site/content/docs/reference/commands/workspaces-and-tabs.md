@@ -139,7 +139,7 @@ leapmux workspace unarchive <workspace> [flags]
 
 ```sh
 leapmux workspace unarchive 9f3kQ2aB
-leapmux workspace unarchive 9f3kQ2aB --section "In progress"
+leapmux workspace unarchive 9f3kQ2aB --section "Client Work"
 ```
 
 ### `leapmux workspace move`

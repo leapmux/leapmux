@@ -296,7 +296,7 @@ func requestRoutes(lines []string) []string {
 func TestStartResumesAStoredSession(t *testing.T) {
 	recordDir := installFakeMiMo(t, scenarioServe)
 	opts := startOptions(t)
-	opts.ResumeSessionID = "ses_stored"
+	opts.Session = agent.ResumeSession("ses_stored")
 
 	a, sink := startFake(t, opts)
 	assert.Equal(t, "ses_stored", a.sessionID)
@@ -310,7 +310,7 @@ func TestStartResumesAStoredSession(t *testing.T) {
 func TestStartFailsForAMissingSession(t *testing.T) {
 	installFakeMiMo(t, scenarioResumeMissing)
 	opts := startOptions(t)
-	opts.ResumeSessionID = "ses_missing"
+	opts.Session = agent.ResumeSession("ses_missing")
 
 	_, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.Error(t, err)

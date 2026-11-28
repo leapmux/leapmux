@@ -322,6 +322,11 @@ func TestRetryCommandBuilders_IncludeAllSchemaWorkspaceAndTerminalWaitFlags(t *t
 		assert.True(t, strings.HasSuffix(forkCmd, `'continue plan'`), "got: %s", forkCmd)
 	})
 
+	t.Run("nil invocation does not panic for open or fork retry builders", func(t *testing.T) {
+		assert.Equal(t, "leapmux agent open --request-id req-open", buildAgentOpenRetryCmd(nil, "req-open"))
+		assert.Equal(t, "leapmux agent fork --request-id req-fork", buildAgentForkRetryCmd(nil, "req-fork"))
+	})
+
 	t.Run("terminal run includes change and after-offset", func(t *testing.T) {
 		inv := captureTestInvocation(t, "run <terminal> [command]", func(fs *pflag.FlagSet) {
 			addTerminalWaitConditionFlags(fs, true)

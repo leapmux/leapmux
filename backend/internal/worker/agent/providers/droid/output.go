@@ -1,6 +1,7 @@
 package droid
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,9 @@ func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) func() {
 	switch env.Type {
 	case droidTypeNotification:
 		if env.Method == droidMethodSessionNotif {
+			if a.isSuppressingForkReplay() {
+				return nil
+			}
 			return a.handleNotification(env)
 		}
 	case droidTypeRequest:
@@ -67,6 +71,9 @@ func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) func() {
 	case droidTypeResponse:
 		// The startup response settles initialize_session or load_session.
 		if env.ID == droidInitRequestID {
+			a.Mu.Lock()
+			a.suppressForkReplay = false
+			a.Mu.Unlock()
 			if env.Error != nil {
 				a.settleStartup(env.Error)
 			} else {
@@ -1055,6 +1062,13 @@ func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 	}
 }
 
+func (a *Agent) isSuppressingForkReplay() bool {
+	a.Mu.Lock()
+	suppress := a.suppressForkReplay
+	a.Mu.Unlock()
+	return suppress
+}
+
 // settleStartup sends the result of the one native startup request to Start.
 func (a *Agent) settleStartup(err error) {
 	a.Mu.Lock()
@@ -1081,10 +1095,7 @@ func (a *Agent) adoptSessionID(env *droidEnvelope) error {
 	if err := json.Unmarshal(env.Result, &result); err != nil {
 		return fmt.Errorf("read droid startup result: %w", err)
 	}
-	reportedID := result.SessionID
-	if reportedID == "" {
-		reportedID = result.Session.ID
-	}
+	reportedID := cmp.Or(result.SessionID, result.Session.ID)
 	models := make([]droidModel, 0, len(result.AvailableModels))
 	for _, m := range result.AvailableModels {
 		models = append(models, droidModelFromNative(m))

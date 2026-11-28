@@ -56,7 +56,7 @@ func startWithClock(ctx context.Context, opts agent.Options, sink agent.Provider
 			ResumeMethod: acp.MethodSessionLoad,
 		},
 		NewAgent: func() *Agent {
-			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir}), resumedSession: opts.ResumeSessionID}
+			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir}), resumedSession: opts.Session.ResumeID()}
 		},
 		Base: func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, _ agent.ProviderServices) acp.Hooks {

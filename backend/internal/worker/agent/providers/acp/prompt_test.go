@@ -297,7 +297,7 @@ func TestResumeReplayBeforeTheLoadReplyIsDropped(t *testing.T) {
 		MethodSessionPrompt: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "NEW"))},
 	}}
 	b, sink, session := runHandshakeForTest(t, peer, Hooks{},
-		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionLoad},
 		func(method string) json.RawMessage {
 			switch method {
@@ -337,7 +337,7 @@ func TestLiveTextAfterTheLoadReplyIsKept(t *testing.T) {
 		MethodSessionPrompt: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "NEW"))},
 	}}
 	b, sink, session := runHandshakeForTest(t, peer, Hooks{},
-		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionLoad},
 		func(method string) json.RawMessage {
 			switch method {
@@ -413,7 +413,7 @@ func TestLiveTextRightAfterTheLoadReplyIsKept(t *testing.T) {
 			handshook := make(chan handshakeResult, 1)
 			go func() {
 				session, err := rig.handshake(
-					agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+					agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 					SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionLoad})
 				handshook <- handshakeResult{session, err}
 			}()
@@ -456,7 +456,7 @@ func TestUpdatesBeforeTheResumeReplyAreLiveOutput(t *testing.T) {
 		MethodSessionPrompt: {string(acptest.Chunk("stored-1", contracts.ACPUpdateAgentMessageChunk, "NEW"))},
 	}}
 	b, sink, session := runHandshakeForTest(t, peer, Hooks{},
-		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionResume},
 		func(method string) json.RawMessage {
 			switch method {

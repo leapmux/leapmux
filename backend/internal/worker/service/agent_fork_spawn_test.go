@@ -311,7 +311,9 @@ func TestOpenAgentForkSourceClonesTranscriptTodosAndChildren(t *testing.T) {
 		WorkingDir:    targetDir,
 		AgentProvider: provider,
 		Title:         "Forked Tab",
-		ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: sourceID},
+		SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+			ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: sourceID},
+		},
 	}))
 	forkID := resp.GetAgent().GetId()
 	require.NotEmpty(t, forkID)
@@ -320,14 +322,15 @@ func TestOpenAgentForkSourceClonesTranscriptTodosAndChildren(t *testing.T) {
 	assert.Equal(t, spawnerID, resp.GetAgent().GetSpawnedByAgentId())
 	assert.False(t, resp.GetAgent().GetSupportsFork(), "no confirmed native session yet before startup completes")
 
-	// Startup receives fork options without ResumeSessionID.
+	// Startup receives fork options without a resume session ID.
 	select {
 	case opts := <-capturedCh:
-		assert.Equal(t, sourceSessionID, opts.ForkFromSessionID)
-		assert.Equal(t, sourceDir, opts.ForkSourceWorkingDir)
-		assert.Empty(t, opts.ResumeSessionID)
+		assert.Equal(t, agent.ForkSession(sourceSessionID, sourceDir), opts.Session)
+		assert.Equal(t, sourceSessionID, opts.Session.ForkID())
+		assert.Equal(t, sourceDir, opts.Session.ForkSourceWorkingDir())
+		assert.Empty(t, opts.Session.ResumeID())
 		assert.Equal(t, targetDir, opts.WorkingDir)
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("startAgentFn was not invoked for forked agent")
 	}
 	drainAllInFlight(svc)
@@ -470,22 +473,33 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 		wantMsgContains string
 	}{
 		{
-			name: "mutually exclusive with agent_session_id",
+			name: "empty resume_session_id",
 			req: &leapmuxv1.OpenAgentRequest{
-				WorkingDir:     workingDir,
-				AgentProvider:  forkableProvider,
-				AgentSessionId: "sess-ok",
-				ForkSource:     &leapmuxv1.AgentForkSource{SourceAgentId: "src-ok"},
+				WorkingDir:    workingDir,
+				AgentProvider: forkableProvider,
+				SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: ""},
 			},
 			wantCode:        codes.InvalidArgument,
-			wantMsgContains: "exclude each other",
+			wantMsgContains: "resume_session_id",
+		},
+		{
+			name: "whitespace resume_session_id",
+			req: &leapmuxv1.OpenAgentRequest{
+				WorkingDir:    workingDir,
+				AgentProvider: forkableProvider,
+				SessionSource: &leapmuxv1.OpenAgentRequest_ResumeSessionId{ResumeSessionId: "   "},
+			},
+			wantCode:        codes.InvalidArgument,
+			wantMsgContains: "resume_session_id",
 		},
 		{
 			name: "empty source_agent_id",
 			req: &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    workingDir,
 				AgentProvider: forkableProvider,
-				ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "   "},
+				SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+					ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "   "},
+				},
 			},
 			wantCode:        codes.InvalidArgument,
 			wantMsgContains: "source_agent_id",
@@ -495,7 +509,9 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 			req: &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    workingDir,
 				AgentProvider: forkableProvider,
-				ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "does-not-exist"},
+				SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+					ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "does-not-exist"},
+				},
 			},
 			wantCode:        codes.NotFound,
 			wantMsgContains: "not found",
@@ -505,7 +521,9 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 			req: &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    workingDir,
 				AgentProvider: forkableProvider,
-				ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "src-child"},
+				SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+					ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "src-child"},
+				},
 			},
 			wantCode:        codes.FailedPrecondition,
 			wantMsgContains: "virtual child",
@@ -515,7 +533,9 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 			req: &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    workingDir,
 				AgentProvider: unsupportedProvider,
-				ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "src-ok"},
+				SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+					ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "src-ok"},
+				},
 			},
 			wantCode:        codes.InvalidArgument,
 			wantMsgContains: "does not match",
@@ -525,7 +545,9 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 			req: &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    workingDir,
 				AgentProvider: forkableProvider,
-				ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "src-working"},
+				SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+					ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "src-working"},
+				},
 			},
 			wantCode:        codes.FailedPrecondition,
 			wantMsgContains: "is busy",
@@ -535,7 +557,9 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 			req: &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    workingDir,
 				AgentProvider: forkableProvider,
-				ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "src-waiting"},
+				SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+					ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "src-waiting"},
+				},
 			},
 			wantCode:        codes.FailedPrecondition,
 			wantMsgContains: "is busy",
@@ -545,7 +569,9 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 			req: &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    workingDir,
 				AgentProvider: forkableProvider,
-				ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "src-no-session"},
+				SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+					ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "src-no-session"},
+				},
 			},
 			wantCode:        codes.FailedPrecondition,
 			wantMsgContains: "no native session",
@@ -555,7 +581,9 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 			req: &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    workingDir,
 				AgentProvider: unsupportedProvider,
-				ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "src-unsupported"},
+				SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+					ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "src-unsupported"},
+				},
 			},
 			wantCode:        codes.FailedPrecondition,
 			wantMsgContains: "does not support native conversation-history forking",
@@ -570,6 +598,7 @@ func TestOpenAgentForkSourceRejectsInvalidAndBusyStates(t *testing.T) {
 			require.Len(t, w.errors, 1)
 			assert.Equal(t, int32(tc.wantCode), w.errors[0].code)
 			assert.Contains(t, w.errors[0].message, tc.wantMsgContains)
+			assert.NotContains(t, w.errors[0].message, "--fresh", "worker RPC errors must stay surface-agnostic")
 		})
 	}
 }
@@ -600,7 +629,9 @@ func TestAgentSupportsForkStaticAndDynamicCapability(t *testing.T) {
 	resp := decodeOpenAgentResponse(t, openAgentAs(t, dispatcher, caller, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    workingDir,
 		AgentProvider: staticFalse,
-		ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "dyn-true"},
+		SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+			ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "dyn-true"},
+		},
 	}))
 	assert.Equal(t, "dyn-true", resp.GetAgent().GetForkedFromAgentId())
 
@@ -613,7 +644,9 @@ func TestAgentSupportsForkStaticAndDynamicCapability(t *testing.T) {
 	wRefused := openAgentAs(t, dispatcher, caller, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    workingDir,
 		AgentProvider: staticTrue,
-		ForkSource:    &leapmuxv1.AgentForkSource{SourceAgentId: "dyn-false"},
+		SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+			ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: "dyn-false"},
+		},
 	})
 	require.Len(t, wRefused.errors, 1)
 	assert.Equal(t, int32(codes.FailedPrecondition), wRefused.errors[0].code)
@@ -666,10 +699,9 @@ func TestRestoreAgentCreationForFork(t *testing.T) {
 				Startup: creationStartupIntent{
 					Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: targetDir, PlannedWorkingDir: targetDir},
 				},
-				ForkFromSessionID:    "source-session-id",
-				ForkSourceWorkingDir: sourceDir,
-				Options:              OptionMap{},
-				DefaultedIDs:         map[string]bool{},
+				Session:      agent.ForkSession("source-session-id", sourceDir),
+				Options:      OptionMap{},
+				DefaultedIDs: map[string]bool{},
 			}
 			runtimeBytes, err := json.Marshal(savedRuntime)
 			require.NoError(t, err)
@@ -720,15 +752,11 @@ func TestRestoreAgentCreationForFork(t *testing.T) {
 			select {
 			case opts := <-capturedCh:
 				if confirmed {
-					assert.Equal(t, "confirmed-fork-session", opts.ResumeSessionID)
-					assert.Empty(t, opts.ForkFromSessionID)
-					assert.Empty(t, opts.ForkSourceWorkingDir)
+					assert.Equal(t, agent.ResumeSession("confirmed-fork-session"), opts.Session)
 				} else {
-					assert.Empty(t, opts.ResumeSessionID)
-					assert.Equal(t, "source-session-id", opts.ForkFromSessionID)
-					assert.Equal(t, sourceDir, opts.ForkSourceWorkingDir)
+					assert.Equal(t, agent.ForkSession("source-session-id", sourceDir), opts.Session)
 				}
-			case <-time.After(10 * time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("startAgentFn was not invoked by restoreAgentCreation")
 			}
 			drainAllInFlight(svc)
@@ -779,22 +807,145 @@ func TestRelaunchForStartupSettingsChange_ForkSessionHandling(t *testing.T) {
 			t.Cleanup(func() { svc.Agents.StopAgent(agentID) })
 
 			relaunchOpts := svc.baseAgentOptions(agentID, workingDir, provider)
-			relaunchOpts.ForkFromSessionID = "source-session-id"
-			relaunchOpts.ForkSourceWorkingDir = sourceDir
+			relaunchOpts.Session = agent.ForkSession("source-session-id", sourceDir)
 
 			_, running := svc.relaunchForStartupSettingsChange(agentID, provider, relaunchOpts, fallback)
 			require.True(t, running)
 			require.Equal(t, 1, restartCalls)
 
 			if confirmed {
-				assert.Equal(t, "confirmed-fork-session", restarted.ResumeSessionID)
-				assert.Empty(t, restarted.ForkFromSessionID)
-				assert.Empty(t, restarted.ForkSourceWorkingDir)
+				assert.Equal(t, agent.ResumeSession("confirmed-fork-session"), restarted.Session)
 			} else {
-				assert.Empty(t, restarted.ResumeSessionID)
-				assert.Equal(t, "source-session-id", restarted.ForkFromSessionID)
-				assert.Equal(t, sourceDir, restarted.ForkSourceWorkingDir)
+				assert.Equal(t, agent.ForkSession("source-session-id", sourceDir), restarted.Session)
 			}
+		})
+	}
+
+	t.Run("stale fallback without session ID re-reads confirmed session under LockAgent", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		svc, _, _ := setupTestService(t)
+		t.Cleanup(func() { drainAllInFlight(svc) })
+
+		provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
+		workingDir := t.TempDir()
+		sourceDir := t.TempDir()
+		const agentID = "fork-relaunch-stale-fallback"
+
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID:                agentID,
+			WorkingDir:        workingDir,
+			Title:             "Fork Relaunch Stale",
+			AgentProvider:     provider,
+			Resumed:           1,
+			ForkedFromAgentID: "orig-agent",
+		}))
+		// Capture fallback before session ID confirmation lands.
+		staleFallback, err := svc.Queries.GetAgentByID(ctx, agentID)
+		require.NoError(t, err)
+		require.Empty(t, staleFallback.AgentSessionID)
+
+		// Simulate UpdateSessionID landing after releaseHandoff and before LockAgent.
+		require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+			ID: agentID, AgentSessionID: "confirmed-after-handoff",
+		}))
+
+		restartCalls := 0
+		var restarted agent.Options
+		svc.startAgentFn = mockAgentStarter(t, svc, func(opts agent.Options) {
+			restartCalls++
+			restarted = opts
+		})
+		t.Cleanup(func() { svc.Agents.StopAgent(agentID) })
+
+		relaunchOpts := svc.baseAgentOptions(agentID, workingDir, provider)
+		relaunchOpts.Session = agent.ForkSession("source-session-id", sourceDir)
+
+		_, running := svc.relaunchForStartupSettingsChange(agentID, provider, relaunchOpts, staleFallback)
+		require.True(t, running)
+		require.Equal(t, 1, restartCalls)
+		assert.Equal(t, agent.ResumeSession("confirmed-after-handoff"), restarted.Session)
+	})
+}
+
+func TestOpenAgentForkSourceReadsSnapshotUnderTranscriptMutex(t *testing.T) {
+	t.Parallel()
+
+	for _, closed := range []bool{false, true} {
+		name := "open source"
+		if closed {
+			name = "closed source"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
+			reg := registryWithPlugin(t, provider, forkCapabilityPlugin{
+				Provider:     testRegistry.Plugin(provider),
+				supportsFork: true,
+			})
+			svc, dispatcher, _ := setupTestService(t, withRegistry(reg))
+			t.Cleanup(func() { drainAllInFlight(svc) })
+
+			capturedCh := make(chan agent.Options, 1)
+			svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+				capturedCh <- opts
+				return nil, nil
+			}
+
+			sourceDir := t.TempDir()
+			targetDir := t.TempDir()
+			const sourceID = "fork-locked-source"
+			seedTranscriptSource(t, svc, sourceID, sourceDir, "sess-before-lock", provider, closed)
+
+			// Hold the source's transcript mutation mutex while OpenAgent begins.
+			// Update the source's native session ID under the lock before releasing
+			// it; fork preparation must acquire the lock unconditionally (even for a
+			// closed source) and read the post-lock session ID.
+			mutation := svc.Output.transcriptMutationMutex(sourceID)
+			mutation.Lock()
+
+			caller := channel.NewCaller(svc.RegisteredBy(), authscope.UnscopedGrant())
+			writerCh := make(chan *testResponseWriter, 1)
+			go func() {
+				writerCh <- openAgentAs(t, dispatcher, caller, &leapmuxv1.OpenAgentRequest{
+					WorkingDir:    targetDir,
+					AgentProvider: provider,
+					Title:         "Locked Fork",
+					SessionSource: &leapmuxv1.OpenAgentRequest_ForkSource{
+						ForkSource: &leapmuxv1.AgentForkSource{SourceAgentId: sourceID},
+					},
+				})
+			}()
+
+			// Wait briefly for the OpenAgent goroutine to enter, then update the DB
+			// row while still holding the transcript mutation mutex.
+			require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+				ID: sourceID, AgentSessionID: "sess-after-lock",
+			}))
+			select {
+			case <-writerCh:
+				mutation.Unlock()
+				t.Fatal("OpenAgent completed without waiting for the source transcript mutation mutex")
+			default:
+			}
+			mutation.Unlock()
+
+			var writer *testResponseWriter
+			select {
+			case writer = <-writerCh:
+			case <-time.After(30 * time.Second):
+				t.Fatal("OpenAgent did not complete after releasing transcript mutex")
+			}
+			_ = decodeOpenAgentResponse(t, writer)
+
+			select {
+			case opts := <-capturedCh:
+				assert.Equal(t, agent.ForkSession("sess-after-lock", sourceDir), opts.Session)
+			case <-time.After(30 * time.Second):
+				t.Fatal("startAgentFn was not invoked for forked agent")
+			}
+			drainAllInFlight(svc)
 		})
 	}
 }
@@ -855,5 +1006,176 @@ func TestWorktreeCreationAutoExcludesLeapMuxTmp(t *testing.T) {
 		raw, err := os.ReadFile(excludePath)
 		require.NoError(t, err)
 		assert.Contains(t, string(raw), ".leapmux/tmp/")
+	})
+
+	t.Run("executeUseWorktree adopts externally created worktree", func(t *testing.T) {
+		t.Parallel()
+		svc, _, _ := setupTestService(t)
+		repo := testutil.NewGitRepo(t)
+		wtDir := filepath.Join(t.TempDir(), "wt-adopted")
+		require.NoError(t, gitutil.Run(ctx, repo, "worktree", "add", "-b", "feat-adopted-exclude", wtDir))
+
+		excludePath, ok := repopaths.GitInfoExcludePath(wtDir)
+		require.True(t, ok)
+		if rawBefore, err := os.ReadFile(excludePath); err == nil {
+			assert.NotContains(t, string(rawBefore), ".leapmux/tmp/")
+		}
+
+		plan, err := svc.validateUseWorktree(ctx, repo, &leapmuxv1.GitWorktreeSelector{
+			Selector: &leapmuxv1.GitWorktreeSelector_Path{Path: wtDir},
+		})
+		require.NoError(t, err)
+
+		res, err := svc.executeGitMode(ctx, plan)
+		require.NoError(t, err)
+		assert.NotEmpty(t, res.WorktreeID)
+
+		raw, err := os.ReadFile(excludePath)
+		require.NoError(t, err)
+		assert.Contains(t, string(raw), ".leapmux/tmp/")
+	})
+
+	t.Run("ensureTrackedWorktreeWith crash-recovered existing worktree", func(t *testing.T) {
+		t.Parallel()
+		svc, _, _ := setupTestService(t)
+		repo := testutil.NewGitRepo(t)
+		wtDir := filepath.Join(t.TempDir(), "wt-recovered")
+		require.NoError(t, gitutil.Run(ctx, repo, "worktree", "add", "-b", "feat-recovered-exclude", wtDir))
+
+		info, err := queryGitPathInfo(ctx, wtDir)
+		require.NoError(t, err)
+		wtID, err := svc.ensureTrackedWorktreeWith(ctx, wtDir, info.RepoRoot, info.CommonDir, info.BranchName)
+		require.NoError(t, err)
+		assert.NotEmpty(t, wtID)
+
+		excludePath, ok := repopaths.GitInfoExcludePath(wtDir)
+		require.True(t, ok)
+		raw, err := os.ReadFile(excludePath)
+		require.NoError(t, err)
+		assert.Contains(t, string(raw), ".leapmux/tmp/")
+	})
+}
+
+func TestListAgents_SpawnedByAgentIds(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	svc, d, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
+
+	createRoot := func(id, spawnedBy string) {
+		t.Helper()
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID:               id,
+			WorkingDir:       workingDir,
+			Title:            id,
+			AgentProvider:    provider,
+			SpawnedByAgentID: spawnedBy,
+		}))
+	}
+	createChild := func(id, parentID string) {
+		t.Helper()
+		require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
+			ID:            id,
+			ParentAgentID: sql.NullString{String: parentID, Valid: true},
+			SpawnSpanID:   "span-" + id,
+			WorkingDir:    workingDir,
+			Title:         id,
+			AgentProvider: provider,
+		}))
+	}
+
+	createRoot("spawner-a", "")
+	createRoot("spawner-b", "")
+	createRoot("unrelated", "")
+	createRoot("spawned-a1", "spawner-a")
+	createRoot("spawned-a2", "spawner-a")
+	createRoot("spawned-a-closed", "spawner-a")
+	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "spawned-a-closed")))
+	createRoot("spawned-b1", "spawner-b")
+
+	createChild("child-of-a1", "spawned-a1")
+	createChild("grandchild-of-a1", "child-of-a1")
+	createChild("closed-child-of-a1", "spawned-a1")
+	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "closed-child-of-a1")))
+
+	listAgents := func(req *leapmuxv1.ListAgentsRequest) *leapmuxv1.ListAgentsResponse {
+		t.Helper()
+		w := newTestWriter()
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, req, w)
+		require.Empty(t, w.errors, "unexpected ListAgents errors: %+v", w.errors)
+		require.Len(t, w.responses, 1)
+		var resp leapmuxv1.ListAgentsResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		return &resp
+	}
+	agentIDs := func(resp *leapmuxv1.ListAgentsResponse) []string {
+		ids := make([]string, 0, len(resp.GetAgents()))
+		for _, a := range resp.GetAgents() {
+			ids = append(ids, a.GetId())
+		}
+		return ids
+	}
+
+	t.Run("single spawner returns only its open spawned agents with empty verdicts", func(t *testing.T) {
+		resp := listAgents(&leapmuxv1.ListAgentsRequest{
+			SpawnedByAgentIds: []string{"spawner-a"},
+		})
+		assert.ElementsMatch(t, []string{"spawned-a1", "spawned-a2"}, agentIDs(resp))
+		assert.Empty(t, resp.GetVerdicts())
+	})
+
+	t.Run("multiple spawners deduplicates repeated and ignores empty IDs", func(t *testing.T) {
+		resp := listAgents(&leapmuxv1.ListAgentsRequest{
+			SpawnedByAgentIds: []string{"", "spawner-a", "spawner-b", "spawner-a", ""},
+		})
+		ids := agentIDs(resp)
+		require.Len(t, ids, 3)
+		assert.ElementsMatch(t, []string{"spawned-a1", "spawned-a2", "spawned-b1"}, ids)
+		assert.Empty(t, resp.GetVerdicts())
+	})
+
+	t.Run("include_descendants includes open virtual subagents beneath matched spawned agents", func(t *testing.T) {
+		resp := listAgents(&leapmuxv1.ListAgentsRequest{
+			SpawnedByAgentIds:  []string{"spawner-a"},
+			IncludeDescendants: true,
+		})
+		assert.ElementsMatch(t, []string{"spawned-a1", "spawned-a2", "child-of-a1", "grandchild-of-a1"}, agentIDs(resp))
+		assert.Empty(t, resp.GetVerdicts())
+	})
+
+	t.Run("combines tab_ids and spawned_by_agent_ids as deduplicated union with verdicts for tab_ids", func(t *testing.T) {
+		resp := listAgents(&leapmuxv1.ListAgentsRequest{
+			TabIds:            []string{"unrelated", "spawned-a1", "missing-tab"},
+			SpawnedByAgentIds: []string{"spawner-a"},
+		})
+		ids := agentIDs(resp)
+		require.Len(t, ids, 3)
+		assert.ElementsMatch(t, []string{"unrelated", "spawned-a1", "spawned-a2"}, ids)
+
+		require.Len(t, resp.GetVerdicts(), 3)
+		assert.Equal(t, "unrelated", resp.GetVerdicts()[0].GetTabId())
+		assert.Equal(t, leapmuxv1.TabHydrationStatus_TAB_HYDRATION_STATUS_FOUND, resp.GetVerdicts()[0].GetStatus())
+		assert.Equal(t, "spawned-a1", resp.GetVerdicts()[1].GetTabId())
+		assert.Equal(t, leapmuxv1.TabHydrationStatus_TAB_HYDRATION_STATUS_FOUND, resp.GetVerdicts()[1].GetStatus())
+		assert.Equal(t, "missing-tab", resp.GetVerdicts()[2].GetTabId())
+		assert.Equal(t, leapmuxv1.TabHydrationStatus_TAB_HYDRATION_STATUS_ABSENT, resp.GetVerdicts()[2].GetStatus())
+	})
+
+	t.Run("empty-only spawned_by_agent_ids without tab_ids returns empty", func(t *testing.T) {
+		resp := listAgents(&leapmuxv1.ListAgentsRequest{
+			SpawnedByAgentIds: []string{"", ""},
+		})
+		assert.Empty(t, resp.GetAgents())
+		assert.Empty(t, resp.GetVerdicts())
+	})
+
+	t.Run("unknown spawner with include_descendants returns empty", func(t *testing.T) {
+		resp := listAgents(&leapmuxv1.ListAgentsRequest{
+			SpawnedByAgentIds:  []string{"no-such-spawner"},
+			IncludeDescendants: true,
+		})
+		assert.Empty(t, resp.GetAgents())
+		assert.Empty(t, resp.GetVerdicts())
 	})
 }

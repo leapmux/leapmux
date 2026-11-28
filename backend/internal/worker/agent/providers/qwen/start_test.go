@@ -185,7 +185,7 @@ func TestStartQwenLaunchesInTheStoredMode(t *testing.T) {
 }
 
 func TestStartQwenResumesWithoutAReplay(t *testing.T) {
-	_, requests, _, _ := startFakeQwen(t, agent.Options{ResumeSessionID: "70dab2cd-62c7-4f76-b53e-50a950df1520"})
+	_, requests, _, _ := startFakeQwen(t, agent.Options{Session: agent.ResumeSession("70dab2cd-62c7-4f76-b53e-50a950df1520")})
 
 	assert.Empty(t, requestsFor(requests(), acp.MethodSessionLoad), "a load would replay the conversation")
 	resumes := requestsFor(requests(), acp.MethodSessionResume)

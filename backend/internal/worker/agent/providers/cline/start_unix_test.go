@@ -207,7 +207,7 @@ func TestClineStartTriesAnotherPortWhenOneIsTaken(t *testing.T) {
 // and the start leaves no daemon and no directory.
 func TestClineStartReportsAFailedResume(t *testing.T) {
 	dump := installFakeCline(t)
-	_, _, dir, err := startClineForTest(t, agent.Options{ResumeSessionID: "missing_1"})
+	_, _, dir, err := startClineForTest(t, agent.Options{Session: agent.ResumeSession("missing_1")})
 	require.Error(t, err)
 	assert.Equal(t, "the Cline session missing_1 is not in Cline's session store", err.Error())
 	assertStartLeftNothing(t, dump, dir)

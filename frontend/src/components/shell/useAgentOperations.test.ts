@@ -630,6 +630,65 @@ describe('useAgentOperations', () => {
     })
   })
 
+  describe('openAgentInWorkspace', () => {
+    it('sends a requested session ID in sessionSource.resumeSessionId', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockOpenAgent.mockReset()
+          mockOpenAgent.mockResolvedValueOnce({
+            agent: create(AgentInfoSchema, {
+              id: 'unused',
+              workerId: 'w-1',
+              workingDir: '/tmp',
+              agentProvider: AgentProvider.CODEX,
+            }),
+          })
+          const { ops } = setup()
+
+          await expect(ops.openAgentInWorkspace('ws-1', 'w-1', '/tmp', 'sess-42', AgentProvider.CODEX)).resolves.toBe(true)
+
+          expect(mockOpenAgent).toHaveBeenCalledOnce()
+          expect(mockOpenAgent.mock.calls[0]?.[1]).toMatchObject({
+            agentProvider: AgentProvider.CODEX,
+            workingDir: '/tmp',
+            sessionSource: {
+              case: 'resumeSessionId',
+              value: 'sess-42',
+            },
+          })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('leaves sessionSource unset when no session ID is requested', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockOpenAgent.mockReset()
+          mockOpenAgent.mockResolvedValueOnce({
+            agent: create(AgentInfoSchema, {
+              id: 'unused',
+              workerId: 'w-1',
+              workingDir: '/tmp',
+              agentProvider: AgentProvider.CODEX,
+            }),
+          })
+          const { ops } = setup()
+
+          await expect(ops.openAgentInWorkspace('ws-1', 'w-1', '/tmp', undefined, AgentProvider.CODEX)).resolves.toBe(true)
+
+          expect(mockOpenAgent).toHaveBeenCalledOnce()
+          expect(mockOpenAgent.mock.calls[0]?.[1].sessionSource).toEqual({ case: undefined })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
   describe('handleInterrupt', () => {
     it('leaves live state to the authoritative completion event', async () => {
       await createRoot(async (dispose) => {

@@ -20,7 +20,7 @@ import (
 func TestHandshakeLoadsAnExistingSession(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := newSteerAgent(t)
-	options := agent.Options{ResumeSessionID: "saved-session", WorkingDir: "/work"}
+	options := agent.Options{Session: agent.ResumeSession("saved-session"), WorkingDir: "/work"}
 	returned := make(chan error, 1)
 	go func() { returned <- a.handshake(options) }()
 	select {
@@ -55,7 +55,7 @@ func TestHandshakeReportsNativeLoadError(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := newSteerAgent(t)
 	returned := make(chan error, 1)
-	go func() { returned <- a.handshake(agent.Options{ResumeSessionID: "missing-session"}) }()
+	go func() { returned <- a.handshake(agent.Options{Session: agent.ResumeSession("missing-session")}) }()
 	select {
 	case <-stdin.written:
 	case <-time.After(30 * time.Second):

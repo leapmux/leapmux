@@ -31,7 +31,7 @@ func testFreshLaunchClearsGoal(t *testing.T, planRestart, withGoal bool) {
 		assert.Empty(t, row.GoalObjective, "the old goal must leave before the launch")
 		assert.Zero(t, row.GoalStatus)
 		assert.False(t, row.GoalCreatedAt.Valid)
-		assert.Empty(t, opts.ResumeSessionID)
+		assert.Equal(t, agent.FreshSession(), opts.Session)
 		return svc.Agents.StartAgentWith(ctx, opts, sink,
 			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 				return newNativeRestartProbeAgent(agentID), nil

@@ -269,10 +269,10 @@ func TestDeliverControlAnswer_CodexPlanModePromptDenyFeedbackIsMarked(t *testing
 	})
 
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
-		ResumeSessionID: "plan-session",
-		AgentID:         "agent-1",
-		Options:         map[string]string{agent.OptionIDModel: "opus"},
-		WorkingDir:      t.TempDir(),
+		Session:    agent.ResumeSession("plan-session"),
+		AgentID:    "agent-1",
+		Options:    map[string]string{agent.OptionIDModel: "opus"},
+		WorkingDir: t.TempDir(),
 	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
@@ -367,10 +367,10 @@ func TestDeliverControlAnswer_CodexPlanModePromptAllowPersistsMarkedApproval(t *
 	})
 
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
-		ResumeSessionID: "plan-session",
-		AgentID:         "agent-1",
-		Options:         map[string]string{agent.OptionIDModel: "opus"},
-		WorkingDir:      t.TempDir(),
+		Session:    agent.ResumeSession("plan-session"),
+		AgentID:    "agent-1",
+		Options:    map[string]string{agent.OptionIDModel: "opus"},
+		WorkingDir: t.TempDir(),
 	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
@@ -463,8 +463,8 @@ func TestDeliverControlAnswer_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *t
 	}
 	storeRequest()
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
-		ResumeSessionID: "plan-session",
-		AgentID:         "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
+		Session: agent.ResumeSession("plan-session"),
+		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
@@ -1043,8 +1043,8 @@ func TestDeliverControlAnswer_DuplicateDoesNotForward(t *testing.T) {
 		Payload: []byte(`{"type":"control_request","request_id":"plan-1","request":{"tool_name":"CodexPlanModePrompt"}}`),
 	})
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
-		ResumeSessionID: "plan-session",
-		AgentID:         "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
+		Session: agent.ResumeSession("plan-session"),
+		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
 	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
 	require.NoError(t, err)
 

@@ -28,6 +28,7 @@ type commandMeta struct {
 	destructive      bool
 	quietUnsupported bool
 	localOnly        bool
+	localUnlessFlags []string
 	abbreviationNote string
 	stateClassifier  StateClassifier
 }
@@ -343,6 +344,34 @@ func IsLocalOnly(cmd *cobra.Command) bool {
 		}
 	}
 	return false
+}
+
+// MarkLocalUnlessFlags marks cmd as acting on the local machine unless one of
+// the specified flags is passed (and the resolved subcommand is not marked
+// local-only via MarkLocalOnly).
+func MarkLocalUnlessFlags(cmd *cobra.Command, flags ...string) {
+	if cmd == nil || len(flags) == 0 {
+		return
+	}
+	editCommandMeta(cmd, func(m *commandMeta) {
+		for _, f := range flags {
+			f = strings.TrimLeft(strings.TrimSpace(f), "-")
+			if f != "" && !slices.Contains(m.localUnlessFlags, f) {
+				m.localUnlessFlags = append(m.localUnlessFlags, f)
+			}
+		}
+	})
+}
+
+// LocalUnlessFlags returns a copy of the flag names registered on cmd via
+// MarkLocalUnlessFlags, or nil when none were registered.
+func LocalUnlessFlags(cmd *cobra.Command) []string {
+	return readCommandMeta(cmd, func(m *commandMeta) []string {
+		if len(m.localUnlessFlags) == 0 {
+			return nil
+		}
+		return slices.Clone(m.localUnlessFlags)
+	})
 }
 
 // DisallowInheritedFlags marks the specified persistent flags as inapplicable to

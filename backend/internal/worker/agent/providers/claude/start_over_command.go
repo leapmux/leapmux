@@ -34,7 +34,7 @@ func StartOverCommand(ctx context.Context, cancel context.CancelFunc, cmd *exec.
 		// in the normalized alias space" invariant (e.g. a stored "opus" becomes
 		// "opus[1m]") that the real launch path establishes.
 		model:      normalizeClaudeCodeModel(opts.Model()),
-		sessionID:  opts.ResumeSessionID,
+		sessionID:  opts.Session.ResumeID(),
 		workingDir: opts.WorkingDir,
 		homeDir:    opts.HomeDir,
 		sink:       sink,

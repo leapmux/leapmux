@@ -127,6 +127,7 @@ type targetOpStep struct {
 type workerStatePlan struct {
 	next           WorkerState
 	toUninstall    []string
+	removedTargets []Target
 	uninstallSteps []targetOpStep
 	syncSteps      []targetOpStep
 }
@@ -292,15 +293,35 @@ func planWorkerStateUpdate(prev WorkerState, homeDir string, req WorkerStateUpda
 		next.Enabled = nextEnabled
 	}
 
+	var removedTargets []Target
+	for _, t := range prev.Targets {
+		if !slices.Contains(next.Targets, t) {
+			removedTargets = appendUnique(removedTargets, t)
+		}
+	}
+
 	var uninstallSteps []targetOpStep
-	if len(toUninstall) > 0 {
+	if len(toUninstall) > 0 || len(removedTargets) > 0 {
 		uninstallTargets := mergeUnique(prev.Targets, next.Targets)
 		uninstallOpts := Options{
 			Force:         req.Force,
 			SkipProtected: !req.Force && !req.StrictConflicts,
 		}
+		removedTargetSkills := mergeUnique(prev.Enabled, toUninstall)
 		uninstallSteps = make([]targetOpStep, 0, len(uninstallTargets))
 		for _, t := range uninstallTargets {
+			var stepSkills []string
+			if slices.Contains(removedTargets, t) {
+				// Worker enabled skills apply across all configured targets, so
+				// dropping a target removes every previously enabled skill
+				// (plus any explicitly requested removals) from that target.
+				stepSkills = removedTargetSkills
+			} else {
+				stepSkills = toUninstall
+			}
+			if len(stepSkills) == 0 {
+				continue
+			}
 			dir, err := ResolveStandardTargetDir(homeDir, t)
 			if err != nil {
 				return workerStatePlan{}, fmt.Errorf("%w: %w", ErrInvalidWorkerStateUpdate, err)
@@ -308,7 +329,7 @@ func planWorkerStateUpdate(prev WorkerState, homeDir string, req WorkerStateUpda
 			uninstallSteps = append(uninstallSteps, targetOpStep{
 				target: t,
 				dir:    dir,
-				skills: toUninstall,
+				skills: stepSkills,
 				opts:   uninstallOpts,
 			})
 		}
@@ -389,15 +410,16 @@ func planWorkerStateUpdate(prev WorkerState, homeDir string, req WorkerStateUpda
 	return workerStatePlan{
 		next:           next,
 		toUninstall:    toUninstall,
+		removedTargets: removedTargets,
 		uninstallSteps: uninstallSteps,
 		syncSteps:      syncSteps,
 	}, nil
 }
 
 // ApplyWorkerStateUpdate validates req, preflights all target operations,
-// removes disabled or explicitly uninstalled skills, syncs affected skills and
-// targets, and persists the updated WorkerState only after disk operations
-// succeed.
+// removes disabled or explicitly uninstalled skills (and all previously enabled
+// skills from any removed targets), syncs affected skills and targets, and
+// persists the updated WorkerState only after disk operations succeed.
 func ApplyWorkerStateUpdate(dataDir, homeDir string, req WorkerStateUpdate) (WorkerState, []TargetOutcome, error) {
 	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(homeDir) == "" {
 		return WorkerState{}, nil, errors.New("worker home or data directory is not configured")
@@ -473,6 +495,17 @@ func ApplyWorkerStateUpdate(dataDir, homeDir string, req WorkerStateUpdate) (Wor
 				}
 				partial := prev
 				partial.Enabled = remaining
+				if len(plan.removedTargets) > 0 {
+					remainingTargets := make([]Target, 0, len(prev.Targets))
+					for _, t := range prev.Targets {
+						if !slices.Contains(plan.removedTargets, t) {
+							remainingTargets = append(remainingTargets, t)
+						}
+					}
+					if len(remainingTargets) > 0 {
+						partial.Targets = remainingTargets
+					}
+				}
 				_ = saveWorkerState(dataDir, partial)
 			}
 			return WorkerState{}, nil, sErr

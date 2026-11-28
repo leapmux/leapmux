@@ -178,19 +178,30 @@ func (h controlHandoff) actsOnControl(args []string) bool {
 	start, end := 0, len(args)
 	if len(args) > 0 && (args[0] == cobra.ShellCompRequestCmd || args[0] == cobra.ShellCompNoDescRequestCmd) {
 		start, end = 1, len(args)-1
+		if start >= end {
+			return false
+		}
 	}
+	return walkControlHandoff(root, args[start:end], true, false)
+}
 
-	flagsOf := root
-	inHelp := false
-	for i := start; i < end; i++ {
+// walkControlHandoff walks cmd along args using declarative command metadata
+// (cli.IsLocalOnly and cli.LocalUnlessFlags) at any command depth.
+func walkControlHandoff(cmd *cobra.Command, args []string, isRoot, inHelp bool) bool {
+	flagsOf := cmd
+	sawHelpFlag := false
+	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
-			return false
+			return !isRoot
 		}
 		if strings.HasPrefix(a, "-") && a != "-" {
 			consumesNext, known := scanRootFlag(flagsOf, a)
 			if !known {
 				return true
+			}
+			if isHelpFlagToken(flagsOf, a) {
+				sawHelpFlag = true
 			}
 			if consumesNext {
 				i++
@@ -200,9 +211,9 @@ func (h controlHandoff) actsOnControl(args []string) bool {
 		if a == "" {
 			return false
 		}
-		matched, matches := matchSubcommands(root, a)
+		matched, matches := matchSubcommands(cmd, a)
 		if matched != nil {
-			if !inHelp && matched.Name() == "help" {
+			if isRoot && !inHelp && matched.Name() == "help" {
 				inHelp = true
 				flagsOf = matched
 				continue
@@ -210,15 +221,14 @@ func (h controlHandoff) actsOnControl(args []string) bool {
 			if cli.IsLocalOnly(matched) {
 				return false
 			}
-			rest := args[i+1 : end]
-			switch matched.Name() {
-			case "skill":
+			if condFlags := cli.LocalUnlessFlags(matched); len(condFlags) > 0 {
 				if inHelp {
 					return false
 				}
-				return skillCommandActsOnRemoteWorker(matched, rest)
-			case "auth":
-				return authCommandActsOnControl(matched, rest)
+				return walkConditionalHandoff(matched, args[i+1:], condFlags)
+			}
+			if hasSubtreeHandoffRules(matched) {
+				return walkControlHandoff(matched, args[i+1:], false, inHelp)
 			}
 			return true
 		}
@@ -226,72 +236,47 @@ func (h controlHandoff) actsOnControl(args []string) bool {
 			return true
 		}
 		for _, m := range matches {
-			if cli.IsLocalOnly(m) {
+			if cli.IsLocalOnly(m) || len(cli.LocalUnlessFlags(m)) > 0 {
 				return false
 			}
 		}
 		return true
 	}
+	if isRoot || sawHelpFlag || inHelp {
+		return false
+	}
+	return true
+}
+
+// hasSubtreeHandoffRules reports whether any descendant of cmd declares
+// local-only or conditional-handoff metadata.
+func hasSubtreeHandoffRules(cmd *cobra.Command) bool {
+	for _, child := range cmd.Commands() {
+		if cli.IsLocalOnly(child) || len(cli.LocalUnlessFlags(child)) > 0 || hasSubtreeHandoffRules(child) {
+			return true
+		}
+	}
 	return false
 }
 
-// skillCommandActsOnRemoteWorker reports whether a `skill` invocation targets
-// a remote Worker (`--worker` or `--worker=...` before `--`). Local `skill`
-// commands, `skill show`, and `skill diff` always stay with the invoked binary
-// so they read its own bundled catalog.
-func skillCommandActsOnRemoteWorker(skillCmd *cobra.Command, rest []string) bool {
-	var (
-		sub       *cobra.Command
-		seenSub   bool
-		hasWorker bool
-	)
-	flagOwner := skillCmd
+// walkConditionalHandoff resolves a command marked with
+// cli.MarkLocalUnlessFlags. The invocation stays local unless one of
+// unlessFlags appears before "--" and the resolved (or ambiguous) subcommand is
+// not marked local-only via cli.MarkLocalOnly.
+func walkConditionalHandoff(cmd *cobra.Command, rest []string, unlessFlags []string) bool {
+	cur := cmd
+	canDescend := cur.HasSubCommands()
+	activeUnless := unlessFlags
+	matchedUnless := false
 	for i := 0; i < len(rest); i++ {
 		tok := rest[i]
 		if tok == "--" {
 			break
 		}
-		if tok == "--worker" || strings.HasPrefix(tok, "--worker=") {
-			hasWorker = true
-			if tok == "--worker" {
-				i++
-			}
-			continue
-		}
 		if strings.HasPrefix(tok, "-") && tok != "-" {
-			consumesNext, _ := scanRootFlag(flagOwner, tok)
-			if consumesNext {
-				i++
-			}
-			continue
-		}
-		if !seenSub {
-			seenSub = true
-			if matched, _ := matchSubcommands(skillCmd, tok); matched != nil {
-				sub = matched
-				flagOwner = sub
-			}
-		}
-	}
-	if sub != nil && (sub.Name() == "show" || sub.Name() == "diff") {
-		return false
-	}
-	return hasWorker
-}
-
-// authCommandActsOnControl reports whether an `auth` invocation needs the
-// Worker's CLI. `auth list` (`ls`) and `auth use` read or write local
-// credential and context files only, so they stay with the invoked binary.
-func authCommandActsOnControl(authCmd *cobra.Command, rest []string) bool {
-	for i := 0; i < len(rest); i++ {
-		tok := rest[i]
-		if tok == "--" {
-			return true
-		}
-		if strings.HasPrefix(tok, "-") && tok != "-" {
-			consumesNext, known := scanRootFlag(authCmd, tok)
-			if !known {
-				return true
+			consumesNext, hitUnless := scanConditionalFlag(cur, tok, activeUnless)
+			if hitUnless {
+				matchedUnless = true
 			}
 			if consumesNext {
 				i++
@@ -301,21 +286,122 @@ func authCommandActsOnControl(authCmd *cobra.Command, rest []string) bool {
 		if tok == "" {
 			return false
 		}
-		matched, matches := matchSubcommands(authCmd, tok)
+		if !canDescend {
+			continue
+		}
+		matched, matches := matchSubcommands(cur, tok)
 		if matched != nil {
-			return matched.Name() != "list" && matched.Name() != "use"
-		}
-		if len(matches) == 0 {
-			return true
-		}
-		for _, m := range matches {
-			if m.Name() == "list" || m.Name() == "use" {
+			if cli.IsLocalOnly(matched) {
 				return false
 			}
+			if extra := cli.LocalUnlessFlags(matched); len(extra) > 0 {
+				activeUnless = append(slices.Clone(activeUnless), extra...)
+			}
+			cur = matched
+			canDescend = cur.HasSubCommands()
+			continue
 		}
-		return true
+		if slices.ContainsFunc(matches, cli.IsLocalOnly) {
+			return false
+		}
+		canDescend = false
 	}
-	return true
+	return matchedUnless
+}
+
+// scanConditionalFlag checks whether tok consumes the next argument as its
+// value and whether tok sets any flag listed in unlessFlags. When cur still has
+// subcommands, it inspects cur and its descendants so value-bearing subcommand
+// flags placed before the subcommand consume their values instead of shifting
+// subcommand detection or flag scanning.
+func scanConditionalFlag(cur *cobra.Command, tok string, unlessFlags []string) (consumesNext, hitUnless bool) {
+	if long, ok := strings.CutPrefix(tok, "--"); ok {
+		name, _, hasValue := strings.Cut(long, "=")
+		hitUnless = slices.Contains(unlessFlags, name)
+		consumes, known := scanSubtreeFlag(cur, tok)
+		if known {
+			return consumes, hitUnless
+		}
+		return hitUnless && !hasValue, hitUnless
+	}
+	cluster := strings.TrimPrefix(tok, "-")
+	for i, r := range cluster {
+		if r == '=' {
+			return false, hitUnless
+		}
+		f := lookupSubtreeFlag(cur, func(fs *pflag.FlagSet) *pflag.Flag { return fs.ShorthandLookup(string(r)) })
+		if f == nil {
+			return false, hitUnless
+		}
+		if slices.Contains(unlessFlags, f.Name) {
+			hitUnless = true
+		}
+		if f.NoOptDefVal == "" {
+			return i+utf8.RuneLen(r) == len(cluster), hitUnless
+		}
+	}
+	return false, hitUnless
+}
+
+// scanSubtreeFlag reports whether flag token tok consumes the next argument as
+// its value on cmd or (when cmd is a group) any of its descendants.
+func scanSubtreeFlag(cmd *cobra.Command, tok string) (consumesNext, known bool) {
+	if consumesNext, known = scanRootFlag(cmd, tok); known {
+		return consumesNext, true
+	}
+	if !cmd.HasSubCommands() {
+		return false, false
+	}
+	for _, child := range cmd.Commands() {
+		if c, ok := scanSubtreeFlag(child, tok); ok {
+			if c {
+				return true, true
+			}
+			known = true
+		}
+	}
+	return false, known
+}
+
+func lookupSubtreeFlag(cmd *cobra.Command, lookup func(*pflag.FlagSet) *pflag.Flag) *pflag.Flag {
+	cmd.InitDefaultHelpFlag()
+	if f := lookupCommandFlag(cmd, lookup); f != nil {
+		return f
+	}
+	if !cmd.HasSubCommands() {
+		return nil
+	}
+	for _, child := range cmd.Commands() {
+		if f := lookupSubtreeFlag(child, lookup); f != nil {
+			return f
+		}
+	}
+	return nil
+}
+
+// isHelpFlagToken reports whether a known flag token invokes Cobra's help flag.
+func isHelpFlagToken(cmd *cobra.Command, tok string) bool {
+	if long, ok := strings.CutPrefix(tok, "--"); ok {
+		name, _, _ := strings.Cut(long, "=")
+		return name == "help"
+	}
+	cluster := strings.TrimPrefix(tok, "-")
+	for _, r := range cluster {
+		if r == '=' {
+			return false
+		}
+		f := lookupCommandFlag(cmd, func(fs *pflag.FlagSet) *pflag.Flag { return fs.ShorthandLookup(string(r)) })
+		if f == nil {
+			return false
+		}
+		if f.Name == "help" {
+			return true
+		}
+		if f.NoOptDefVal == "" {
+			return false
+		}
+	}
+	return false
 }
 
 // matchSubcommands resolves token against parent's children using the same

@@ -104,7 +104,7 @@ func TestMuseStartPreservesNativeRefusalAndOwnedCleanupFailures(t *testing.T) {
 			closed := filepath.Join(t.TempDir(), "owned-host-close.txt")
 			t.Setenv("LEAPMUX_MUSE_NATIVE_CLOSE_RECORD", closed)
 			sink := &agenttest.Sink{}
-			started, err := Start(testutil.DeadlineContext(t), agent.Options{AgentID: "native-refusal", WorkingDir: t.TempDir(), Shell: "/bin/sh", ResumeSessionID: tc.resume}, agent.NewProviderServices(sink))
+			started, err := Start(testutil.DeadlineContext(t), agent.Options{AgentID: "native-refusal", WorkingDir: t.TempDir(), Shell: "/bin/sh", Session: agent.ResumeSession(tc.resume)}, agent.NewProviderServices(sink))
 			require.Nil(t, started)
 			require.ErrorContains(t, err, tc.cause)
 			var refusal *providerkit.JSONRPCResponseError

@@ -108,3 +108,14 @@ func FinalizeAgentEnv(env []string, opts agent.Options) []string {
 	env = envutil.PinEnv(env, "LEAPMUX_WORKER=1", gitutil.GitOptionalLocksOff)
 	return controlenv.Apply(env, opts.ExtraEnv)
 }
+
+// StoredSessionQueryForLaunch builds a StoredSessionQuery from a launch's home
+// directory and finalized process environment so session-staging and fork
+// helpers resolve provider stores with the same env overrides the launched
+// process will see.
+func StoredSessionQueryForLaunch(homeDir string, env []string) agent.StoredSessionQuery {
+	return agent.StoredSessionQuery{
+		HomeDir:    homeDir,
+		EnvEntries: env,
+	}
+}

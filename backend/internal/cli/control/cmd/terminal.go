@@ -547,22 +547,11 @@ func newQuakeLeaf(verb, short string, action leapmuxv1.QuakePanelAction) *cobra.
 			addWorkerFlag(fs)
 		},
 		Run: func(inv *cli.Invocation) (any, error) {
-			dir, err := dirOf(inv)
-			if err != nil {
-				return nil, err
-			}
-			s, err := openSession(inv)
+			s, workerID, dir, err := openWorkerSessionWithDir(inv)
 			if err != nil {
 				return nil, err
 			}
 			defer s.Close()
-			workerID, err := s.workerScope()
-			if err != nil {
-				return nil, err
-			}
-			if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-				return nil, err
-			}
 			req := &leapmuxv1.SetQuakePanelRequest{WorkingDir: dir, Action: action}
 			if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, req, nil); err != nil {
 				return nil, err

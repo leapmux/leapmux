@@ -128,3 +128,83 @@ func TestOhMyPiForkRejectsEmptyTargetDir(t *testing.T) {
 	_, err := forkOhMyPiSessionFile(agent.StoredSessionQuery{HomeDir: t.TempDir()}, "01a0cf77", "/src", "   ")
 	require.Error(t, err)
 }
+
+func TestFindOhMyPiSessionByID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("finds title-less session header by ID", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "2026-09-01T12-00-00-000Z_renamed.jsonl")
+		require.NoError(t, os.WriteFile(path, []byte(`{"type":"session","version":3,"id":"titleless-id","cwd":"/work"}`+"\n"), 0o600))
+
+		got, ok := findSessionByID(dir, "titleless-id")
+		require.True(t, ok)
+		assert.Equal(t, path, got)
+	})
+
+	t.Run("finds non-v3 session header by ID with or without title slot", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		v2Titled := filepath.Join(dir, "2026-09-01T12-00-00-000Z_renamed-v2-titled.jsonl")
+		require.NoError(t, os.WriteFile(v2Titled, []byte(
+			`{"type":"title","v":1,"title":"Legacy","pad":""}`+"\n"+
+				`{"type":"session","version":2,"id":"legacy-v2-titled","cwd":"/work"}`+"\n",
+		), 0o600))
+		v2Plain := filepath.Join(dir, "2026-09-01T12-00-01-000Z_renamed-v2-plain.jsonl")
+		require.NoError(t, os.WriteFile(v2Plain, []byte(
+			`{"type":"session","version":2,"id":"legacy-v2-plain","cwd":"/work"}`+"\n",
+		), 0o600))
+
+		got, ok := findSessionByID(dir, "legacy-v2-titled")
+		require.True(t, ok)
+		assert.Equal(t, v2Titled, got)
+
+		got, ok = findSessionByID(dir, "legacy-v2-plain")
+		require.True(t, ok)
+		assert.Equal(t, v2Plain, got)
+	})
+
+	t.Run("finds session header larger than 4 KiB", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		padding := strings.Repeat("x", 6000)
+		path := filepath.Join(dir, "2026-09-01T12-00-00-000Z_large-hdr.jsonl")
+		require.NoError(t, os.WriteFile(path, []byte(
+			`{"type":"title","v":1,"title":"Big","pad":"`+padding+`"}`+"\n"+
+				`{"type":"session","version":3,"id":"large-hdr-id","cwd":"/work"}`+"\n",
+		), 0o600))
+
+		got, ok := findSessionByID(dir, "large-hdr-id")
+		require.True(t, ok)
+		assert.Equal(t, path, got)
+	})
+
+	t.Run("prefers filename match over earlier header matches and scans headers newest-first", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		earlyByHeader := filepath.Join(dir, "2026-09-01T10-00-00-000Z_other-name.jsonl")
+		require.NoError(t, os.WriteFile(earlyByHeader, []byte(
+			`{"type":"title","v":1,"title":"Early","pad":""}`+"\n"+
+				`{"type":"session","version":3,"id":"target-id","cwd":"/work"}`+"\n",
+		), 0o600))
+		lateByName := filepath.Join(dir, "2026-09-01T12-00-00-000Z_target-id.jsonl")
+		require.NoError(t, os.WriteFile(lateByName, []byte(
+			`{"type":"title","v":1,"title":"Late","pad":""}`+"\n"+
+				`{"type":"session","version":3,"id":"target-id","cwd":"/work"}`+"\n",
+		), 0o600))
+
+		got, ok := findSessionByID(dir, "target-id")
+		require.True(t, ok)
+		assert.Equal(t, lateByName, got)
+
+		older := filepath.Join(dir, "2026-09-01T11-00-00-000Z_custom-a.jsonl")
+		newer := filepath.Join(dir, "2026-09-01T13-00-00-000Z_custom-b.jsonl")
+		require.NoError(t, os.WriteFile(older, []byte(`{"type":"session","version":3,"id":"header-only-id","cwd":"/work"}`+"\n"), 0o600))
+		require.NoError(t, os.WriteFile(newer, []byte(`{"type":"session","version":3,"id":"header-only-id","cwd":"/work"}`+"\n"), 0o600))
+
+		got, ok = findSessionByID(dir, "header-only-id")
+		require.True(t, ok)
+		assert.Equal(t, newer, got)
+	})
+}

@@ -328,13 +328,13 @@ func TestStartReasonix_LoadSessionUsesResumeID(t *testing.T) {
 	installFakeReasonixCLI(t, argsFile)
 
 	provider, err := Start(context.Background(), agent.Options{
-		AgentID:         "reasonix-load",
-		Options:         map[string]string{agent.OptionIDModel: "deepseek-pro"},
-		WorkingDir:      t.TempDir(),
-		ResumeSessionID: "reasonix-resume",
-		Shell:           testutil.TestShell(),
-		LoginShell:      false,
-		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		AgentID:       "reasonix-load",
+		Options:       map[string]string{agent.OptionIDModel: "deepseek-pro"},
+		WorkingDir:    t.TempDir(),
+		Session:       agent.ResumeSession("reasonix-resume"),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 

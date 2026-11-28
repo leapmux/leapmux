@@ -61,6 +61,9 @@ type Agent struct {
 	// startupReply settles the native initialize or load request before Start
 	// exposes this agent to a caller that can send a prompt.
 	startupReply chan error
+	// suppressForkReplay drops replayed session notifications emitted during
+	// the multi-step fork handshake before the final load_session reply arrives.
+	suppressForkReplay bool
 
 	// settingsApplyMu serializes native updates so one readback cannot confirm
 	// another caller's choice. rpcMu guards request identities, inboxes, and context reads.

@@ -34,7 +34,7 @@ func newQuakeReadLeaf() *cobra.Command {
 		Short:   "Print what the quake terminal of a directory shows",
 		Examples: []cli.Example{
 			{Command: "leapmux terminal quake read"},
-			{Command: "leapmux terminal quake read --dir ~/src/app --lines 50"},
+			{Command: "leapmux terminal quake read --lines 50"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			addTerminalReadFlags(fs)

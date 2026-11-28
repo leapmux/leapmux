@@ -206,7 +206,7 @@ func TestStartRestoresOutputStyleOnTheSameThread(t *testing.T) {
 		}
 		originalStyle := options.Get(OptionOutputStyle)
 		opts := startOptions(t, home, options)
-		opts.ResumeSessionID = threadID
+		opts.Session = agent.ResumeSession(threadID)
 		a, sink := startAgent(t, opts)
 		launches := readLaunchRecords(t, record)
 		require.GreaterOrEqual(t, len(launches)-previousAttempts, start.minAttempts, "launch attempts for %q", style)
@@ -248,7 +248,7 @@ func TestStartResumesTheStoredThread(t *testing.T) {
 	_ = fresh.Wait()
 
 	resume := startOptions(t, home, optionmap.Map{agent.OptionIDModel: "deepseek-pro", "codewhale_mode": "plan"})
-	resume.ResumeSessionID = threadID
+	resume.Session = agent.ResumeSession(threadID)
 	a, _ := startAgent(t, resume)
 	assert.Equal(t, threadID, a.threadID)
 	assert.Equal(t, store, a.store.dir, "a resume runs on the store that holds its thread")
@@ -283,7 +283,7 @@ func TestStartRefusesAResumeOfAThreadNoStoreHolds(t *testing.T) {
 	installFakeCodewhale(t, "")
 	home := startHome(t)
 	opts := startOptions(t, home, optionmap.Map{})
-	opts.ResumeSessionID = "thr_missing"
+	opts.Session = agent.ResumeSession("thr_missing")
 	_, err := startWith(t.Context(), opts, agent.NewProviderServices(&agenttest.ControlSink{}), quartz.NewReal())
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errThreadNotStored), err)
@@ -291,7 +291,7 @@ func TestStartRefusesAResumeOfAThreadNoStoreHolds(t *testing.T) {
 	assert.Contains(t, err.Error(), "send /clear", "a failed resume is fatal and states the way out")
 
 	// A handle the token rule refuses never reaches a path.
-	opts.ResumeSessionID = "--dangerously-skip-permissions"
+	opts.Session = agent.ResumeSession("--dangerously-skip-permissions")
 	_, err = startWith(t.Context(), opts, agent.NewProviderServices(&agenttest.ControlSink{}), quartz.NewReal())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not valid")

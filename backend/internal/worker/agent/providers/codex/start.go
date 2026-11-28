@@ -92,6 +92,10 @@ func codexInitializeParams() map[string]interface{} {
 // Start starts a Codex agent process and performs the JSON-RPC handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	if err := opts.ValidateSessionSource(); err != nil {
+		cancel()
+		return nil, err
+	}
 
 	// Codex doesn't have third-party provider detection or model/effort
 	// conditional args, so we pass empty modelEffortArgs for a simple command.
@@ -188,19 +192,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	permissions := a.discoverPermissions(opts.WorkingDir, timeout)
 
 	// 4. Send "thread/start", "thread/resume", or "thread/fork" request.
-	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
-		cleanup()
-		<-modelCatalog
-		return nil, a.FormatStartupError("thread/fork", fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID))
-	}
 	threadParams := codexThreadParams(opts.Model(), opts.WorkingDir, permissions, a.serviceTier)
 
 	// The method is the label that FormatStartupError prefixes the failure with.
 	threadMethod := "thread/start"
 	switch {
-	case opts.ForkFromSessionID != "":
+	case opts.Session.IsFork():
 		threadMethod = "thread/fork"
-	case opts.ResumeSessionID != "":
+	case opts.Session.IsResume():
 		threadMethod = "thread/resume"
 	}
 
@@ -213,9 +212,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	//
 	// Do NOT pre-assign threadID for thread/fork: Codex allocates a new thread ID
 	// in its response, which we adopt below.
-	if opts.ResumeSessionID != "" {
+	if resumeID := opts.Session.ResumeID(); resumeID != "" {
 		a.Mu.Lock()
-		a.threadID = opts.ResumeSessionID
+		a.threadID = resumeID
 		a.Mu.Unlock()
 		// Mark the handshake, so the unsolicited reports it triggers are read as
 		// restatements rather than as events the user just caused.
@@ -223,10 +222,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 
 	var thread codexThreadResult
-	if opts.ForkFromSessionID != "" {
-		thread, err = a.forkThread(threadParams, opts.ForkFromSessionID, timeout)
+	if opts.Session.IsFork() {
+		thread, err = a.forkThread(threadParams, opts.Session.ForkID(), timeout)
 	} else {
-		thread, err = a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
+		thread, err = a.startOrResumeThread(threadParams, opts.Session.ResumeID(), timeout)
 	}
 	if err != nil {
 		// Clear on BOTH exits, and not with a defer. A defer here is

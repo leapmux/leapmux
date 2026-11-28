@@ -84,7 +84,7 @@ func TestCodebuddySwarmLaunchArguments(t *testing.T) {
 	} {
 		runs := agenttest.RunLaunch(t, agenttest.LaunchProbe{Binary: "codebuddy", Start: func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 			opts.Options = map[string]string{"swarmMode": tc.value}
-			opts.ResumeSessionID = tc.resume
+			opts.Session = agent.ResumeSession(tc.resume)
 			return Start(ctx, opts, sink)
 		}})
 		require.Len(t, runs, 1)

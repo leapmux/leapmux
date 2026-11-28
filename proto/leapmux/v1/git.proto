@@ -493,14 +493,19 @@ message CreateBranchRequest {
 
 message CreateBranchResponse {}
 
-// DeleteBranch deletes a non-worktree branch. It first checks out
-// switch_to_branch in the working directory and then runs
-// `git branch -D <branch_to_delete>`. If checkout succeeds but deletion fails,
-// the worker keeps the requested checkout and returns the deletion error.
+// DeleteBranch deletes a non-worktree branch. When switch_to_branch is set,
+// the worker checks it out first and then runs `git branch -D <branch_to_delete>`.
+// When switch_to_branch is empty and branch_to_delete is not currently checked out
+// in path, the worker deletes branch_to_delete directly without changing HEAD.
+// When switch_to_branch is empty and branch_to_delete is currently checked out,
+// the worker switches to a local fallback branch (main, master, or the sole
+// remaining local branch) before deleting it, or returns InvalidArgument if none
+// can be chosen unambiguously. If checkout succeeds but deletion fails, the
+// worker keeps the checkout and returns the deletion error.
 message DeleteBranchRequest {
   string path = 1;
   string branch_to_delete = 2;
-  string switch_to_branch = 3;
+  string switch_to_branch = 3; // Optional; see DeleteBranchRequest comment.
 }
 
 message DeleteBranchResponse {}

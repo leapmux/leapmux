@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -82,16 +83,25 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cancel()
 		return nil, err
 	}
-	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
+	if err := opts.ValidateSessionSource(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID)
+		return nil, err
 	}
-	var resumeArgs []string
-	if opts.ForkFromSessionID != "" {
-		forkedPath, forkErr := forkPiSessionFile(
-			agent.StoredSessionQuery{HomeDir: opts.HomeDir},
-			opts.ForkFromSessionID,
-			opts.ForkSourceWorkingDir,
+	if opts.AgentDirs == nil {
+		cancel()
+		return nil, fmt.Errorf("the Pi provider requires the Worker's private agent directories")
+	}
+	var (
+		resumeArgs []string
+		forkedPath string
+	)
+	if opts.Session.IsFork() {
+		launchEnv := providerkit.FinalizeAgentEnv(os.Environ(), opts)
+		var forkErr error
+		forkedPath, forkErr = forkPiSessionFile(
+			providerkit.StoredSessionQueryForLaunch(opts.HomeDir, launchEnv),
+			opts.Session.ForkID(),
+			opts.Session.ForkSourceWorkingDir(),
 			opts.WorkingDir,
 		)
 		if forkErr != nil {
@@ -100,23 +110,26 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		}
 		resumeArgs = []string{"--session", forkedPath}
 	} else {
-		resumeArgs, err = piResumeArgs(opts.ResumeSessionID, opts.HomeDir)
+		resumeArgs, err = piResumeArgs(opts.Session.ResumeID(), opts.HomeDir)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
 	}
-	if opts.AgentDirs == nil {
-		cancel()
-		return nil, fmt.Errorf("the Pi provider requires the Worker's private agent directories")
+	removeForkedSession := func() {
+		if forkedPath != "" {
+			_ = os.Remove(forkedPath)
+		}
 	}
 	directory, err := opts.AgentDirs.New(ctx, *registration.AgentDir)
 	if err != nil {
 		cancel()
+		removeForkedSession()
 		return nil, err
 	}
 	failLaunch := func(err error) (agent.Agent, error) {
 		cancel()
+		removeForkedSession()
 		return nil, errors.Join(err, directory.Close())
 	}
 	extensionPath, steerBridge, err := writePiSteerBridge(directory.Path())
@@ -169,6 +182,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	cleanup := func() {
 		a.Stop()
 		_ = a.Wait()
+		removeForkedSession()
 	}
 
 	timeout := opts.EffectiveStartupTimeout()

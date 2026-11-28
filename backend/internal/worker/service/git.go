@@ -792,8 +792,8 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// One index-lock hold spans the whole switch-then-delete: releasing
 			// between them would let another command interleave into the window
 			// where HEAD has moved off the doomed branch but it is not yet gone.
-			return svc.withRepoIndexLockForDir(ctx, dirPath, func(_ *gitPathInfo) error {
-				return deleteBranchInDir(ctx, dirPath, r.GetBranchToDelete(), r.GetSwitchToBranch())
+			return svc.withRepoIndexLockForDir(ctx, dirPath, func(current *gitPathInfo) error {
+				return deleteBranchInDirWithInfo(ctx, dirPath, current, r.GetBranchToDelete(), r.GetSwitchToBranch())
 			})
 		})
 	})
@@ -1995,12 +1995,16 @@ func switchToResolvesTo(parent context.Context, workingDir, switchTo, target str
 	return found[remoteRef] && found[localRef], nil
 }
 
-// deleteBranchInDir checks out switchTo in workingDir and then force-deletes
-// branchToDelete. If checkout succeeds but deletion fails, it keeps the
-// requested checkout and returns the deletion error. It rejects invalid
-// argument combinations before touching git. Invalid-argument returns wrap
-// gitutil.ErrInvalidArgument so runBranchMutation surfaces them as
-// InvalidArgument.
+// deleteBranchInDir force-deletes branchToDelete in workingDir. When switchTo
+// is non-empty, it checks out switchTo first. When switchTo is empty and
+// workingDir is not currently on branchToDelete (including detached HEAD), it
+// deletes branchToDelete directly without changing HEAD. When switchTo is empty
+// and workingDir is currently on branchToDelete, it switches to a local fallback
+// branch (main, master, or the sole remaining local branch) before deleting.
+//
+// If checkout succeeds but deletion fails, it keeps the checkout and returns
+// the deletion error. Invalid-argument returns wrap gitutil.ErrInvalidArgument
+// so runBranchMutation surfaces them as InvalidArgument.
 //
 // `parent` is expected to be a generous outer ctx (e.g. 2*branchMutationTimeout)
 // rather than a single branchMutationTimeout-limited ctx: each phase
@@ -2008,37 +2012,63 @@ func switchToResolvesTo(parent context.Context, workingDir, switchTo, target str
 // across checkout + delete would let a slow first phase starve the
 // second.
 func deleteBranchInDir(parent context.Context, workingDir, branchToDelete, switchTo string) error {
+	return deleteBranchInDirWithInfo(parent, workingDir, nil, branchToDelete, switchTo)
+}
+
+func deleteBranchInDirWithInfo(parent context.Context, workingDir string, current *gitPathInfo, branchToDelete, switchTo string) error {
 	branchToDelete = strings.TrimSpace(branchToDelete)
 	switchTo = strings.TrimSpace(switchTo)
 	if err := gitutil.ValidateBranchName(branchToDelete); err != nil {
 		return err
 	}
+
 	if switchTo == "" {
-		return fmt.Errorf("switch_to_branch is required: %w", gitutil.ErrInvalidArgument)
-	}
-	// Plain string equality is insufficient: checkoutBranchInDir
-	// transparently resolves a remote ref like `origin/main` to the
-	// local `main` when both refs exist, so picking `origin/main` while
-	// on `main` would slip past the guard, the checkout below would be
-	// a no-op, and `git branch -D main` would then fail with "cannot
-	// delete branch checked out at ...". Reject the resolved-collision
-	// case up front with the same InvalidArgument shape so the dialog
-	// surfaces a clear message instead of a downstream git error.
-	//
-	// Fail-CLOSED on probe error: a transient `git show-ref` failure
-	// (index.lock contention, slow disk, dubious-ownership) must NOT
-	// silently let the destructive op proceed. Returning the probe
-	// error here parks HEAD on its current branch and lets the user
-	// retry once the underlying issue clears.
-	if branchToDelete == switchTo {
-		return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
-	}
-	collides, probeErr := switchToResolvesTo(parent, workingDir, switchTo, branchToDelete)
-	if probeErr != nil {
-		return fmt.Errorf("failed to validate switch_to_branch: %w", probeErr)
-	}
-	if collides {
-		return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
+		if current == nil {
+			probeCtx, cancel := context.WithTimeout(parent, gitReadTimeout)
+			info, err := queryGitPathInfo(probeCtx, workingDir)
+			cancel()
+			if err != nil {
+				return err
+			}
+			current = info
+		}
+		if current.BranchName != branchToDelete {
+			deleteCtx, cancelDelete := context.WithTimeout(parent, branchMutationTimeout)
+			defer cancelDelete()
+			return gitutil.DeleteBranch(deleteCtx, workingDir, branchToDelete)
+		}
+		probeCtx, cancel := context.WithTimeout(parent, gitReadTimeout)
+		chosen, err := pickDefaultSwitchBranch(probeCtx, gitutil.Repository{GitDir: current.CommonDir}, branchToDelete)
+		cancel()
+		if err != nil {
+			return err
+		}
+		switchTo = chosen
+	} else {
+		// Plain string equality is insufficient: checkoutBranchInDir
+		// transparently resolves a remote ref like `origin/main` to the
+		// local `main` when both refs exist, so picking `origin/main` while
+		// on `main` would slip past the guard, the checkout below would be
+		// a no-op, and `git branch -D main` would then fail with "cannot
+		// delete branch checked out at ...". Reject the resolved-collision
+		// case up front with the same InvalidArgument shape so the dialog
+		// surfaces a clear message instead of a downstream git error.
+		//
+		// Fail-CLOSED on probe error: a transient `git show-ref` failure
+		// (index.lock contention, slow disk, dubious-ownership) must NOT
+		// silently let the destructive op proceed. Returning the probe
+		// error here parks HEAD on its current branch and lets the user
+		// retry once the underlying issue clears.
+		if branchToDelete == switchTo {
+			return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
+		}
+		collides, probeErr := switchToResolvesTo(parent, workingDir, switchTo, branchToDelete)
+		if probeErr != nil {
+			return fmt.Errorf("failed to validate switch_to_branch: %w", probeErr)
+		}
+		if collides {
+			return fmt.Errorf("switch_to_branch must differ from branch_to_delete: %w", gitutil.ErrInvalidArgument)
+		}
 	}
 
 	checkoutCtx, cancelCheckout := context.WithTimeout(parent, branchMutationTimeout)
@@ -2051,19 +2081,58 @@ func deleteBranchInDir(parent context.Context, workingDir, branchToDelete, switc
 	defer cancelDelete()
 	if delErr := gitutil.DeleteBranch(deleteCtx, workingDir, branchToDelete); delErr != nil {
 		// Do NOT roll back the checkout: the user explicitly picked
-		// `switch_to` as their destination, so leaving HEAD on it is
-		// the least-surprising outcome on partial failure. An earlier
-		// revision tried to restore HEAD to `branchToDelete`, but that
-		// assumed the user was originally on `branchToDelete` — which
-		// only holds when DeleteBranch was invoked from a current-
-		// branch context. From the sidebar context menu the user can
-		// pick any branch, so restoring to `branchToDelete` parks
-		// them on a branch they may have never been on. Surface the
-		// delete error verbatim and let the dialog tell the user the
-		// switch succeeded but the delete didn't.
+		// `switch_to` (or a fallback branch) as their destination, so
+		// leaving HEAD on it is the least-surprising outcome on partial
+		// failure. An earlier revision tried to restore HEAD to
+		// `branchToDelete`, but that assumed the user was originally on
+		// `branchToDelete` — which only holds when DeleteBranch was
+		// invoked from a current-branch context. From the sidebar context
+		// menu the user can pick any branch, so restoring to
+		// `branchToDelete` parks them on a branch they may have never been
+		// on. Surface the delete error verbatim and let the dialog tell the
+		// user the switch succeeded but the delete didn't.
 		return delErr
 	}
 	return nil
+}
+
+// pickDefaultSwitchBranch chooses a local fallback branch to check out before
+// deleting the currently checked-out branch when switch_to_branch is omitted:
+// prefer main, else master, else the sole remaining local branch.
+func pickDefaultSwitchBranch(ctx context.Context, repository gitutil.Repository, branchToDelete string) (string, error) {
+	out, err := repository.Output(ctx, "for-each-ref", "--format=%(refname)", "refs/heads")
+	if err != nil {
+		return "", fmt.Errorf("failed to list local branches: %w", err)
+	}
+	const headsPrefix = "refs/heads/"
+	var (
+		hasMain     bool
+		hasMaster   bool
+		otherLocals []string
+	)
+	for _, ref := range gitutil.ParseLines(out) {
+		name, ok := strings.CutPrefix(ref, headsPrefix)
+		if !ok || name == "" || name == branchToDelete {
+			continue
+		}
+		switch name {
+		case "main":
+			hasMain = true
+		case "master":
+			hasMaster = true
+		}
+		otherLocals = append(otherLocals, name)
+	}
+	switch {
+	case hasMain:
+		return "main", nil
+	case hasMaster:
+		return "master", nil
+	case len(otherLocals) == 1:
+		return otherLocals[0], nil
+	default:
+		return "", fmt.Errorf("cannot choose a branch to switch to before deleting current branch %q; specify switch_to_branch: %w", branchToDelete, gitutil.ErrInvalidArgument)
+	}
 }
 
 // createBranchInDir runs `git checkout -b <newBranch> [<baseBranch>]` in

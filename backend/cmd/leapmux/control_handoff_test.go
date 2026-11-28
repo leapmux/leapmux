@@ -424,6 +424,21 @@ func TestLocalOnlyCommandsExistInRootTree(t *testing.T) {
 		}
 	}
 	assert.Equal(t, wantLocal, seenLocal)
+
+	// Subcommand-level declarative metadata drives handoff without hardcoded names.
+	skillCmd, _, err := root.Find([]string{"skill"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"worker"}, cli.LocalUnlessFlags(skillCmd))
+	for _, subName := range []string{"show", "diff"} {
+		sub, _, findErr := root.Find([]string{"skill", subName})
+		require.NoError(t, findErr)
+		assert.True(t, cli.IsLocalOnly(sub), "skill %s must be marked local-only", subName)
+	}
+	for _, subName := range []string{"list", "use"} {
+		sub, _, findErr := root.Find([]string{"auth", subName})
+		require.NoError(t, findErr)
+		assert.True(t, cli.IsLocalOnly(sub), "auth %s must be marked local-only", subName)
+	}
 }
 
 // The marker served the process that a hand-off started. A process that it
@@ -539,6 +554,12 @@ func TestControlHandoffOptOutAndSubcommandAwareLocalOnly(t *testing.T) {
 			{"skill", "--worker", "self", "show", "leapmux"},
 			{"skill", "diff"},
 			{"skill", "diff", "--worker", "self"},
+			{"skill", "--target", "agents", "diff", "--worker", "self"},
+			{"skill", "--scope", "project", "show", "leapmux", "--worker", "self"},
+			{"skill", "--target", "--worker", "list"},
+			{"skill", "s", "--worker", "self"},
+			{"skill", "sh", "--worker", "self"},
+			{"skill", "d", "--worker", "self"},
 			{"skill", "install", "--", "--worker", "self"},
 			{"skill", "install", "--target", "--worker"},
 			{"help", "skill"},
@@ -550,6 +571,9 @@ func TestControlHandoffOptOutAndSubcommandAwareLocalOnly(t *testing.T) {
 			{"auth", "--json", "list"},
 			{"auth", "--hub", "https://hub.example", "list"},
 			{"auth", "l"},
+			{"auth", "--help"},
+			{"auth", "-h"},
+			{"help", "auth"},
 			{"help", "auth", "list"},
 			{"help", "auth", "use"},
 			{"__complete", "auth", "list", ""},
@@ -575,7 +599,9 @@ func TestControlHandoffOptOutAndSubcommandAwareLocalOnly(t *testing.T) {
 			{"skill", "install", "--all", "--worker=name:build-box"},
 			{"skills", "install", "--all", "--worker", "self"},
 			{"skill", "list", "--worker", "self"},
+			{"skill", "--target", "agents", "list", "--worker", "self"},
 			{"skill", "status", "--worker", "self"},
+			{"skill", "st", "--worker", "self"},
 			{"skill", "uninstall", "--all", "--worker", "self"},
 			{"auth"},
 			{"auth", "status"},
@@ -599,5 +625,31 @@ func TestControlHandoffOptOutAndSubcommandAwareLocalOnly(t *testing.T) {
 				assert.Empty(t, h.stderr.String())
 			})
 		}
+	})
+
+	t.Run("recursive walker honors declarative metadata at arbitrary command depth", func(t *testing.T) {
+		t.Parallel()
+		buildTree := func() *cobra.Command {
+			deepLocal := &cobra.Command{Use: "inspect"}
+			cli.MarkLocalOnly(deepLocal)
+			deepRemote := &cobra.Command{Use: "sync"}
+			deepRemote.Flags().String("target", "", "")
+			deepRemote.Flags().String("remote", "", "")
+			mid := &cobra.Command{Use: "catalog"}
+			cli.MarkLocalUnlessFlags(mid, "remote")
+			mid.AddCommand(deepLocal, deepRemote)
+			top := &cobra.Command{Use: "plugin"}
+			top.AddCommand(mid)
+			root := &cobra.Command{Use: "leapmux"}
+			root.AddCommand(top)
+			return root
+		}
+		ho := controlHandoff{root: buildTree}
+		assert.False(t, ho.actsOnControl([]string{"plugin", "catalog", "sync"}))
+		assert.True(t, ho.actsOnControl([]string{"plugin", "catalog", "sync", "--remote", "w1"}))
+		assert.False(t, ho.actsOnControl([]string{"plugin", "catalog", "inspect", "--remote", "w1"}))
+		assert.False(t, ho.actsOnControl([]string{"plugin", "catalog", "--target", "--remote", "sync"}))
+		assert.False(t, ho.actsOnControl([]string{"plugin", "--help"}))
+		assert.False(t, ho.actsOnControl([]string{"help", "plugin", "catalog", "sync", "--remote", "w1"}))
 	})
 }

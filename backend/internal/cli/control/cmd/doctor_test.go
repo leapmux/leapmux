@@ -663,6 +663,28 @@ func TestDoctor_InsideTabReportsDirectHubAuth(t *testing.T) {
 		assert.Empty(t, chk["fix"])
 	})
 
+	t.Run("expired access token without refresh token warns with login fix", func(t *testing.T) {
+		isolateCLIEnv(t)
+		const hubURL = "https://expired-no-refresh.example.test"
+		require.NoError(t, control.SaveCredentials(hubURL, control.CredentialFile{
+			HubURL:      hubURL,
+			AccessToken: "tok",
+			UserID:      "u-1",
+			Username:    "alice",
+			ExpiresAt:   time.Now().Add(-time.Hour),
+		}))
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "warn", chk["status"])
+		assert.Contains(t, chk["detail"], "access token expired")
+		assert.NotContains(t, chk["detail"], "will refresh")
+		assert.Contains(t, chk["fix"], "leapmux auth login --hub "+hubURL)
+	})
+
 	t.Run("local IPC hub without stored credentials reports ok", func(t *testing.T) {
 		isolateCLIEnv(t)
 		const localHub = "unix:/tmp/leapmux-local-hub.sock"
@@ -695,5 +717,48 @@ func TestDoctor_InsideTabReportsDirectHubAuth(t *testing.T) {
 		assert.Equal(t, "warn", chk["status"])
 		assert.Contains(t, chk["detail"], "stored credential unreadable")
 		assert.Contains(t, chk["fix"], "leapmux auth login --hub "+hubURL)
+	})
+}
+
+func TestDoctor_DirectAuthUsesCredentialExpiryState(t *testing.T) {
+	t.Run("expired access token without refresh token warns without claiming will refresh", func(t *testing.T) {
+		isolateCLIEnv(t)
+		h := &doctorTestHub{isAdmin: false}
+		srv := startDoctorHubServer(t, h)
+		require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+			HubURL:      srv.URL,
+			AccessToken: "lmx_a_expired_no_refresh",
+			Username:    "alice",
+			UserID:      "u-1",
+			ExpiresAt:   time.Now().Add(-time.Hour),
+		}))
+
+		data := runControl(t, "doctor", "--hub", srv.URL).Data(t)
+		chk := doctorCheckByName(t, data, "auth")
+		assert.Equal(t, "warn", chk["status"])
+		assert.Contains(t, chk["detail"], "access token expired")
+		assert.NotContains(t, chk["detail"], "will refresh")
+		assert.Contains(t, chk["fix"], "leapmux auth login --hub "+srv.URL)
+	})
+
+	t.Run("expired refresh token warns with login fix", func(t *testing.T) {
+		isolateCLIEnv(t)
+		h := &doctorTestHub{isAdmin: false}
+		srv := startDoctorHubServer(t, h)
+		require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+			HubURL:           srv.URL,
+			AccessToken:      "lmx_a_valid",
+			RefreshToken:     "lmx_r_expired",
+			Username:         "alice",
+			UserID:           "u-1",
+			ExpiresAt:        time.Now().Add(time.Hour),
+			RefreshExpiresAt: time.Now().Add(-time.Hour),
+		}))
+
+		data := runControl(t, "doctor", "--hub", srv.URL).Data(t)
+		chk := doctorCheckByName(t, data, "auth")
+		assert.Equal(t, "warn", chk["status"])
+		assert.Contains(t, chk["detail"], "refresh token expired")
+		assert.Contains(t, chk["fix"], "leapmux auth login --hub "+srv.URL)
 	})
 }

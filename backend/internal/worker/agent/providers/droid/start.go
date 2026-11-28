@@ -1,6 +1,7 @@
 package droid
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -61,8 +62,8 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	if opts.Effort() != "" {
 		args = append(args, "--reasoning-effort", opts.Effort())
 	}
-	if opts.WorkingDir != "" {
-		args = append(args, "--cwd", opts.WorkingDir)
+	if initialCwd := droidInitialCwd(opts); initialCwd != "" {
+		args = append(args, "--cwd", initialCwd)
 	}
 
 	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
@@ -117,7 +118,7 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	if err := a.handshake(opts); err != nil {
 		cleanup()
 		phase := "initialize_session"
-		if strings.TrimSpace(opts.ForkFromSessionID) != "" {
+		if strings.TrimSpace(opts.Session.ForkID()) != "" {
 			phase = "fork_session"
 		}
 		return nil, a.FormatStartupError(phase, err)
@@ -125,21 +126,42 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 	return a, nil
 }
 
+// droidInitialCwd returns the --cwd passed when starting Droid. A cross-directory
+// fork starts in ForkSourceWorkingDir so load_session finds the cwd-keyed source
+// session before switching to WorkingDir via droid.change_working_directory.
+func droidInitialCwd(opts agent.Options) string {
+	if strings.TrimSpace(opts.Session.ForkID()) != "" && strings.TrimSpace(opts.Session.ForkSourceWorkingDir()) != "" {
+		return opts.Session.ForkSourceWorkingDir()
+	}
+	return opts.WorkingDir
+}
+
 // handshake initializes a new session, loads a saved session, or forks an
 // existing session, then waits for the native reply before a caller can send
 // input.
 func (a *Agent) handshake(opts agent.Options) error {
-	resumeID := strings.TrimSpace(opts.ResumeSessionID)
-	forkID := strings.TrimSpace(opts.ForkFromSessionID)
-	if resumeID != "" && forkID != "" {
-		return fmt.Errorf("cannot both resume session %q and fork from session %q", resumeID, forkID)
+	if err := opts.ValidateSessionSource(); err != nil {
+		return err
 	}
+	resumeID := strings.TrimSpace(opts.Session.ResumeID())
+	forkID := strings.TrimSpace(opts.Session.ForkID())
 	var (
 		method string
 		params any
 	)
 	switch {
 	case forkID != "":
+		// Suppress replayed notifications across all three fork-handshake steps
+		// (source load, fork, and forked-session load); dispatchFrame clears the
+		// flag on the final leapmux-init reply before live notifications arrive.
+		a.Mu.Lock()
+		a.suppressForkReplay = true
+		a.Mu.Unlock()
+		defer func() {
+			a.Mu.Lock()
+			a.suppressForkReplay = false
+			a.Mu.Unlock()
+		}()
 		forkedID, err := a.forkSessionDuringHandshake(opts, forkID)
 		if err != nil {
 			return err
@@ -193,19 +215,35 @@ func (a *Agent) handshake(opts agent.Options) error {
 	}
 	ctx, cancel := context.WithTimeout(a.Context(), opts.EffectiveStartupTimeout())
 	defer cancel()
+	var initErr error
 	select {
-	case err := <-reply:
-		return err
+	case initErr = <-reply:
 	case <-a.ProcessDone():
 		select {
-		case err := <-reply:
-			return err
+		case initErr = <-reply:
 		default:
+			initErr = errAgentStopped
 		}
-		return errAgentStopped
 	case <-ctx.Done():
-		return ctx.Err()
+		initErr = ctx.Err()
 	}
+	if initErr != nil {
+		return initErr
+	}
+	forkSourceDir := opts.Session.ForkSourceWorkingDir()
+	if forkID != "" &&
+		strings.TrimSpace(forkSourceDir) != "" &&
+		opts.WorkingDir != "" &&
+		forkSourceDir != opts.WorkingDir {
+		if _, err := a.callStartupRPC(
+			droidMethodChangeWorkingDirectory,
+			changeWorkingDirectoryParams{WorkingDirectory: opts.WorkingDir},
+			opts.EffectiveStartupTimeout(),
+		); err != nil {
+			return fmt.Errorf("change working directory to %q after fork: %w", opts.WorkingDir, err)
+		}
+	}
+	return nil
 }
 
 // forkSessionDuringHandshake loads the source session into Droid (required
@@ -231,13 +269,11 @@ func (a *Agent) forkSessionDuringHandshake(opts agent.Options, sourceSessionID s
 	if err := json.Unmarshal(forkResp.Result, &result); err != nil {
 		return "", fmt.Errorf("read droid fork_session result: %w", err)
 	}
-	newID := strings.TrimSpace(result.NewSessionID)
-	if newID == "" {
-		newID = strings.TrimSpace(result.SessionID)
-	}
-	if newID == "" {
-		newID = strings.TrimSpace(result.Session.ID)
-	}
+	newID := cmp.Or(
+		strings.TrimSpace(result.NewSessionID),
+		strings.TrimSpace(result.SessionID),
+		strings.TrimSpace(result.Session.ID),
+	)
 	if newID == "" {
 		return "", errors.New("droid fork_session returned no new session id")
 	}

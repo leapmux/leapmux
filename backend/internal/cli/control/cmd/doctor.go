@@ -288,7 +288,8 @@ func checkDoctorTabDirectHubAuth() doctorCheck {
 		if userLabel == "" {
 			userLabel = cli.ShortID(creds.UserID)
 		}
-		if !creds.RefreshExpiresAt.IsZero() && !time.Now().Before(creds.RefreshExpiresAt) {
+		exp := creds.ExpiryState(time.Now())
+		if exp.RefreshExpired {
 			return doctorCheck{
 				Name:   "direct_hub_auth",
 				Status: "warn",
@@ -296,11 +297,19 @@ func checkDoctorTabDirectHubAuth() doctorCheck {
 				Fix:    fmt.Sprintf(`run "%s"`, authLoginCommand(hub)),
 			}
 		}
-		if !creds.ExpiresAt.IsZero() && !time.Now().Before(creds.ExpiresAt) {
+		if exp.AccessExpired {
+			if exp.CanRefresh {
+				return doctorCheck{
+					Name:   "direct_hub_auth",
+					Status: "ok",
+					Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s (access token expired; will refresh)%s", hub, sourceLabel, userLabel, precedenceNote),
+				}
+			}
 			return doctorCheck{
 				Name:   "direct_hub_auth",
-				Status: "ok",
-				Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s (access token expired; will refresh)%s", hub, sourceLabel, userLabel, precedenceNote),
+				Status: "warn",
+				Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s access token expired%s", hub, sourceLabel, userLabel, precedenceNote),
+				Fix:    fmt.Sprintf(`run "%s"`, authLoginCommand(hub)),
 			}
 		}
 		return doctorCheck{
@@ -373,18 +382,32 @@ func checkDoctorAuth(ctx context.Context, hc *control.HubClient) (doctorCheck, b
 		if creds.Scope != "" {
 			detail += fmt.Sprintf(", scopes=%s", creds.Scope)
 		}
-		if !creds.ExpiresAt.IsZero() {
-			rem := time.Until(creds.ExpiresAt).Round(time.Second)
-			if rem <= 0 {
+		exp := creds.ExpiryState(time.Now())
+		if exp.HasAccessExpiry {
+			if exp.AccessExpired {
 				status = "warn"
-				detail += " (access token expired; will refresh)"
+				if exp.CanRefresh {
+					detail += " (access token expired; will refresh)"
+				} else {
+					detail += " (access token expired)"
+					fix = fmt.Sprintf(`run "%s"`, authLoginCommand(hc.HubURL))
+				}
 			} else {
+				rem := exp.AccessRemaining.Round(time.Second)
 				detail += fmt.Sprintf(", token expires in %s", rem)
 			}
 		}
-		if !creds.RefreshExpiresAt.IsZero() && time.Until(creds.RefreshExpiresAt) <= 24*time.Hour {
-			status = "warn"
-			fix = fmt.Sprintf(`refresh soon with "%s"`, authLoginCommand(hc.HubURL))
+		if exp.HasRefreshExpiry {
+			if exp.RefreshExpired {
+				status = "warn"
+				detail += " (refresh token expired)"
+				fix = fmt.Sprintf(`run "%s"`, authLoginCommand(hc.HubURL))
+			} else if exp.RefreshRemaining <= 24*time.Hour {
+				status = "warn"
+				if fix == "" {
+					fix = fmt.Sprintf(`refresh soon with "%s"`, authLoginCommand(hc.HubURL))
+				}
+			}
 		}
 	}
 	return doctorCheck{

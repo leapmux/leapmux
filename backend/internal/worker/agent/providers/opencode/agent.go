@@ -39,18 +39,19 @@ type Agent struct {
 
 type openCodeRun struct {
 	*openCodeSessionRuntime
-	cancel          context.CancelFunc
-	text            *openCodeTextStreams
-	tools           *openCodeToolStreams
-	lastSeq         int64
-	stepModels      map[string]openCodeModelRef
-	childAgentID    string
-	spawnSpanID     string
-	childLease      *agent.ChildSinkLease
-	ended           map[string]bool
-	lastToolCount   int
-	restoring       bool
-	retryResolution providerkit.RetryResolution
+	cancel                context.CancelFunc
+	text                  *openCodeTextStreams
+	tools                 *openCodeToolStreams
+	lastSeq               int64
+	stepModels            map[string]openCodeModelRef
+	childAgentID          string
+	spawnSpanID           string
+	childLease            *agent.ChildSinkLease
+	ended                 map[string]bool
+	suppressedBaselineIDs map[string]struct{}
+	lastToolCount         int
+	restoring             bool
+	retryResolution       providerkit.RetryResolution
 }
 
 var (

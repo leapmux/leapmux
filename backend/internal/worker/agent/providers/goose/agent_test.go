@@ -265,12 +265,12 @@ func TestStartGooseCLI_LoadSessionUsesResumeID(t *testing.T) {
 	installFakeGooseCLI(t, "load")
 
 	provider, err := Start(context.Background(), agent.Options{
-		AgentID:         "goose-load",
-		WorkingDir:      t.TempDir(),
-		ResumeSessionID: "goose-resume",
-		Shell:           testutil.TestShell(),
-		LoginShell:      false,
-		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+		AgentID:       "goose-load",
+		WorkingDir:    t.TempDir(),
+		Session:       agent.ResumeSession("goose-resume"),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 
@@ -293,12 +293,12 @@ func TestStartGooseCLI_RefusedResumeFailsTheStart(t *testing.T) {
 	installFakeGooseCLI(t, "load-refused")
 
 	provider, err := Start(context.Background(), agent.Options{
-		AgentID:         "goose-load-refused",
-		WorkingDir:      t.TempDir(),
-		ResumeSessionID: "goose-resume",
-		Shell:           testutil.TestShell(),
-		LoginShell:      false,
-		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+		AgentID:       "goose-load-refused",
+		WorkingDir:    t.TempDir(),
+		Session:       agent.ResumeSession("goose-resume"),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.Error(t, err)
 	assert.Nil(t, provider, "a start that fails hands back no agent to talk to")

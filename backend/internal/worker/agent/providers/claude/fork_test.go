@@ -25,7 +25,7 @@ func TestClaudeSessionArgsFork(t *testing.T) {
 
 	t.Run("builds fork argv with fresh session ID", func(t *testing.T) {
 		srcID := "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f"
-		args, activeID, err := claudeSessionArgs("", srcID)
+		args, activeID, err := claudeSessionArgs(agent.ForkSession(srcID, ""))
 		require.NoError(t, err)
 		require.Len(t, args, 5)
 		assert.Equal(t, "--resume", args[0])
@@ -47,18 +47,26 @@ func TestClaudeSessionArgsFork(t *testing.T) {
 			" leading-space",
 			strings.Repeat("a", 129),
 		} {
-			args, activeID, err := claudeSessionArgs("", id)
+			args, activeID, err := claudeSessionArgs(agent.ForkSession(id, ""))
 			require.Errorf(t, err, "%q must be rejected before reaching argv", id)
 			assert.Nil(t, args)
 			assert.Empty(t, activeID)
 		}
 	})
 
-	t.Run("rejects simultaneous resume and fork", func(t *testing.T) {
-		args, activeID, err := claudeSessionArgs("sess-a", "sess-b")
-		require.Error(t, err)
-		assert.Nil(t, args)
-		assert.Empty(t, activeID)
+	t.Run("rejects invalid SessionInit states", func(t *testing.T) {
+		for _, bad := range []agent.SessionInit{
+			{Kind: agent.SessionInitFresh, SessionID: "unexpected"},
+			{Kind: agent.SessionInitResume},
+			{Kind: agent.SessionInitResume, SessionID: "sess-a", SourceWorkingDir: "/src"},
+			{Kind: agent.SessionInitFork},
+			{Kind: agent.SessionInitKind(99), SessionID: "sess-a"},
+		} {
+			args, activeID, err := claudeSessionArgs(bad)
+			require.Error(t, err)
+			assert.Nil(t, args)
+			assert.Empty(t, activeID)
+		}
 	})
 }
 
@@ -77,15 +85,17 @@ func TestStageClaudeForkTranscript(t *testing.T) {
 		writeClaudeTranscript(t, srcProjectDir, sessionID, time.Now(), strings.TrimSuffix(content, "\n"))
 
 		q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}
-		require.NoError(t, stageClaudeForkTranscript(q, srcDir, worktreeDir, sessionID))
+		stagedPath, err := stageClaudeForkTranscript(q, srcDir, worktreeDir, sessionID)
+		require.NoError(t, err)
 
 		targetPath := filepath.Join(home, ".claude", "projects", mangleClaudePath(worktreeDir), sessionID+".jsonl")
+		assert.Equal(t, targetPath, stagedPath)
 		got, err := os.ReadFile(targetPath)
 		require.NoError(t, err)
 		assert.Equal(t, content, string(got))
 	})
 
-	t.Run("preserves existing target transcript without overwriting", func(t *testing.T) {
+	t.Run("refreshes existing target transcript atomically when source updates", func(t *testing.T) {
 		home := t.TempDir()
 		srcDir := testutil.NativeAbsPath("/Users/dev/repo")
 		worktreeDir := testutil.NativeAbsPath("/Users/dev/repo-worktrees/feat-y")
@@ -93,15 +103,18 @@ func TestStageClaudeForkTranscript(t *testing.T) {
 
 		srcProjectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(srcDir))
 		targetProjectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(worktreeDir))
-		writeClaudeTranscript(t, srcProjectDir, sessionID, time.Now(), claudeUserRecord(srcDir, sessionID, "source version"))
-		writeClaudeTranscript(t, targetProjectDir, sessionID, time.Now(), claudeUserRecord(worktreeDir, sessionID, "target version"))
+		writeClaudeTranscript(t, srcProjectDir, sessionID, time.Now(), claudeUserRecord(srcDir, sessionID, "updated source version"))
+		writeClaudeTranscript(t, targetProjectDir, sessionID, time.Now(), claudeUserRecord(worktreeDir, sessionID, "stale target version"))
 
 		q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}
-		require.NoError(t, stageClaudeForkTranscript(q, srcDir, worktreeDir, sessionID))
+		stagedPath, err := stageClaudeForkTranscript(q, srcDir, worktreeDir, sessionID)
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(targetProjectDir, sessionID+".jsonl"), stagedPath)
 
 		got, err := os.ReadFile(filepath.Join(targetProjectDir, sessionID+".jsonl"))
 		require.NoError(t, err)
-		assert.Contains(t, string(got), "target version")
+		assert.Contains(t, string(got), "updated source version")
+		assert.NotContains(t, string(got), "stale target version")
 	})
 
 	t.Run("no-ops cleanly when source transcript is missing", func(t *testing.T) {
@@ -110,8 +123,10 @@ func TestStageClaudeForkTranscript(t *testing.T) {
 		worktreeDir := testutil.NativeAbsPath("/Users/dev/repo-worktrees/missing")
 		q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}
 
-		require.NoError(t, stageClaudeForkTranscript(q, srcDir, worktreeDir, "sess-absent"))
-		_, err := os.Stat(filepath.Join(home, ".claude", "projects", mangleClaudePath(worktreeDir), "sess-absent.jsonl"))
+		stagedPath, err := stageClaudeForkTranscript(q, srcDir, worktreeDir, "sess-absent")
+		require.NoError(t, err)
+		assert.Empty(t, stagedPath)
+		_, err = os.Stat(filepath.Join(home, ".claude", "projects", mangleClaudePath(worktreeDir), "sess-absent.jsonl"))
 		assert.ErrorIs(t, err, os.ErrNotExist)
 	})
 
@@ -119,7 +134,9 @@ func TestStageClaudeForkTranscript(t *testing.T) {
 		home := t.TempDir()
 		dir := testutil.NativeAbsPath("/Users/dev/repo")
 		q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}
-		require.NoError(t, stageClaudeForkTranscript(q, dir, dir, "sess-same"))
+		stagedPath, err := stageClaudeForkTranscript(q, dir, dir, "sess-same")
+		require.NoError(t, err)
+		assert.Empty(t, stagedPath)
 	})
 
 	t.Run("skips session IDs containing path separators", func(t *testing.T) {
@@ -128,8 +145,10 @@ func TestStageClaudeForkTranscript(t *testing.T) {
 		worktreeDir := testutil.NativeAbsPath("/Users/dev/repo-worktrees/traversal")
 		q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}
 
-		require.NoError(t, stageClaudeForkTranscript(q, srcDir, worktreeDir, "../escape"))
-		_, err := os.Stat(filepath.Join(home, ".claude", "projects", "escape.jsonl"))
+		stagedPath, err := stageClaudeForkTranscript(q, srcDir, worktreeDir, "../escape")
+		require.NoError(t, err)
+		assert.Empty(t, stagedPath)
+		_, err = os.Stat(filepath.Join(home, ".claude", "projects", "escape.jsonl"))
 		assert.ErrorIs(t, err, os.ErrNotExist)
 	})
 
@@ -147,10 +166,56 @@ func TestStageClaudeForkTranscript(t *testing.T) {
 			HomeDir: home,
 			Getenv:  agenttest.FixtureEnv(map[string]string{"CLAUDE_CONFIG_DIR": "~/custom-claude"}),
 		}
-		require.NoError(t, stageClaudeForkTranscript(q, srcDir, worktreeDir, sessionID))
+		stagedPath, err := stageClaudeForkTranscript(q, srcDir, worktreeDir, sessionID)
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(alt, "projects", mangleClaudePath(worktreeDir), sessionID+".jsonl"), stagedPath)
 
 		got, err := os.ReadFile(filepath.Join(alt, "projects", mangleClaudePath(worktreeDir), sessionID+".jsonl"))
 		require.NoError(t, err)
 		assert.Contains(t, string(got), "custom config")
+	})
+
+	t.Run("returns an explicit error for >200-byte mangled target dir without a unique existing directory", func(t *testing.T) {
+		home := t.TempDir()
+		srcDir := testutil.NativeAbsPath("/Users/dev/repo")
+		longTarget := testutil.NativeAbsPath("/Users/dev/" + strings.Repeat("worktree-segment/", 15) + "leaf")
+		require.Greater(t, len(mangleClaudePath(longTarget)), claudeMangleMaxLength)
+		sessionID := "sess-long-target"
+
+		srcProjectDir := filepath.Join(home, ".claude", "projects", mangleClaudePath(srcDir))
+		writeClaudeTranscript(t, srcProjectDir, sessionID, time.Now(),
+			claudeUserRecord(srcDir, sessionID, "long target test"))
+
+		q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}
+
+		// Case 1: no existing project directory matches the 200-byte prefix.
+		stagedPath, err := stageClaudeForkTranscript(q, srcDir, longTarget, sessionID)
+		require.Error(t, err)
+		assert.Empty(t, stagedPath)
+		assert.Contains(t, err.Error(), "exceeds 200 bytes")
+		assert.Contains(t, err.Error(), "no existing project directory")
+
+		// Case 2: two existing project directories share the 200-byte prefix (ambiguous).
+		prefix := mangleClaudePath(longTarget)[:claudeMangleMaxLength]
+		projectsRoot := filepath.Join(home, ".claude", "projects")
+		dirA := filepath.Join(projectsRoot, prefix+"-aaaa")
+		dirB := filepath.Join(projectsRoot, prefix+"-bbbb")
+		require.NoError(t, os.MkdirAll(dirA, 0o700))
+		require.NoError(t, os.MkdirAll(dirB, 0o700))
+
+		stagedPath, err = stageClaudeForkTranscript(q, srcDir, longTarget, sessionID)
+		require.Error(t, err)
+		assert.Empty(t, stagedPath)
+		assert.Contains(t, err.Error(), "exceeds 200 bytes")
+		assert.Contains(t, err.Error(), "found 2 matching project directories")
+
+		// Case 3: exactly one existing project directory matches -> succeeds.
+		require.NoError(t, os.Remove(dirB))
+		stagedPath, err = stageClaudeForkTranscript(q, srcDir, longTarget, sessionID)
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(dirA, sessionID+".jsonl"), stagedPath)
+		got, readErr := os.ReadFile(stagedPath)
+		require.NoError(t, readErr)
+		assert.Contains(t, string(got), "long target test")
 	})
 }

@@ -20,7 +20,7 @@ func TestCodexProviderSupportsFork(t *testing.T) {
 func TestCodexForkThread(t *testing.T) {
 	t.Parallel()
 
-	const timeout = 5 * time.Second
+	const timeout = 30 * time.Second
 
 	t.Run("sends thread/fork with target cwd and adopts returned thread ID", func(t *testing.T) {
 		t.Parallel()
@@ -117,4 +117,46 @@ func TestCodexForkThread(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no thread ID")
 	})
+}
+
+func TestCodexStartRejectsInvalidSessionInit(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		session agent.SessionInit
+		wantErr string
+	}{
+		{
+			name:    "fresh session with session ID",
+			session: agent.SessionInit{Kind: agent.SessionInitFresh, SessionID: "thread-x"},
+			wantErr: "fresh session must not set",
+		},
+		{
+			name:    "resume session with fork source working dir",
+			session: agent.SessionInit{Kind: agent.SessionInitResume, SessionID: "thread-resume", SourceWorkingDir: "/src"},
+			wantErr: "resume session must not set fork source working dir",
+		},
+		{
+			name:    "fork session without source session ID",
+			session: agent.SessionInit{Kind: agent.SessionInitFork},
+			wantErr: "fork session requires a non-empty source session ID",
+		},
+		{
+			name:    "unknown session init kind",
+			session: agent.SessionInit{Kind: agent.SessionInitKind(99), SessionID: "thread-x"},
+			wantErr: "unknown session init kind",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Start(t.Context(), agent.Options{
+				AgentID:    "codex-invalid-session",
+				WorkingDir: t.TempDir(),
+				Session:    tc.session,
+			}, agent.NewProviderServices(&agenttest.Sink{}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
 }

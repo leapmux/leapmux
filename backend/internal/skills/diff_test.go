@@ -2,10 +2,12 @@ package skills
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,9 +19,11 @@ func TestDiffOne_States(t *testing.T) {
 	review, ok := Lookup("leapmux-review")
 	require.True(t, ok)
 
-	t.Run("unknown skill returns ErrUnknownSkill", func(t *testing.T) {
+	t.Run("unknown or empty skill returns ErrUnknownSkill", func(t *testing.T) {
 		t.Parallel()
 		_, err := DiffOne(t.TempDir(), "does-not-exist")
+		require.ErrorIs(t, err, ErrUnknownSkill)
+		_, err = DiffOne(t.TempDir(), "   ")
 		require.ErrorIs(t, err, ErrUnknownSkill)
 	})
 
@@ -301,7 +305,7 @@ func TestDiffAll(t *testing.T) {
 	require.NoError(t, err)
 
 	// Empty names diffs all bundled skills.
-	allDiffs, err := DiffAll(dir, nil)
+	allDiffs, err := DiffAll(dir, nil, DiffOptions{})
 	require.NoError(t, err)
 	require.Len(t, allDiffs, len(Catalog()))
 	assert.Equal(t, "leapmux", allDiffs[0].Name)
@@ -310,8 +314,20 @@ func TestDiffAll(t *testing.T) {
 	assert.Equal(t, StateNotInstalled, allDiffs[1].State)
 	assert.NotEmpty(t, allDiffs[1].Files)
 
+	// SkipNotInstalled omits uninstalled skills without synthesizing /dev/null diffs.
+	installedOnly, err := DiffAll(dir, nil, DiffOptions{SkipNotInstalled: true})
+	require.NoError(t, err)
+	require.Len(t, installedOnly, 1)
+	assert.Equal(t, "leapmux", installedOnly[0].Name)
+	assert.Equal(t, StateUpToDate, installedOnly[0].State)
+
+	// SkipNotInstalled on a missing targetDir returns empty slice without error.
+	missingOnly, err := DiffAll(filepath.Join(t.TempDir(), "missing"), nil, DiffOptions{SkipNotInstalled: true})
+	require.NoError(t, err)
+	assert.Empty(t, missingOnly)
+
 	// Explicit subset diffs only requested skills in order.
-	sub, err := DiffAll(dir, []string{"leapmux-review", "leapmux"})
+	sub, err := DiffAll(dir, []string{"leapmux-review", "leapmux"}, DiffOptions{})
 	require.NoError(t, err)
 	require.Len(t, sub, 2)
 	assert.Equal(t, "leapmux-review", sub[0].Name)
@@ -320,13 +336,13 @@ func TestDiffAll(t *testing.T) {
 	assert.Equal(t, StateUpToDate, sub[1].State)
 
 	// Unknown skill returns ErrUnknownSkill.
-	_, err = DiffAll(dir, []string{"leapmux", "bogus-skill"})
+	_, err = DiffAll(dir, []string{"leapmux", "bogus-skill"}, DiffOptions{})
 	require.ErrorIs(t, err, ErrUnknownSkill)
 
 	// targetDir as regular file returns an error.
 	filePath := filepath.Join(t.TempDir(), "not-a-dir")
 	require.NoError(t, os.WriteFile(filePath, []byte("plain file\n"), 0o644))
-	_, err = DiffAll(filePath, nil)
+	_, err = DiffAll(filePath, nil, DiffOptions{})
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "open skills directory")
 }
@@ -348,4 +364,70 @@ func TestUnifiedDiff_EdgeCases(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(multi, "@@ -"), "distant edits should emit two separate hunks:\n%s", multi)
 	assert.Contains(t, multi, "-1\n+1-edit\n")
 	assert.Contains(t, multi, "-12\n+12-edit\n")
+}
+
+func TestDiffOne_OversizedManagedFileHandledGracefully(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	review, ok := Lookup("leapmux-review")
+	require.True(t, ok)
+	_, err := Install(dir, []string{review.Name}, Options{})
+	require.NoError(t, err)
+
+	// Write a >4 MiB SKILL.md that exceeds maxManagedFileBytes.
+	oversized := strings.Repeat("a", 4<<20+64) + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, review.Name, "SKILL.md"), []byte(oversized), 0o644))
+
+	d, err := DiffOne(dir, review.Name)
+	require.NoError(t, err)
+	assert.Equal(t, StateModified, d.State)
+	require.Len(t, d.Files, 1)
+	assert.Equal(t, "SKILL.md", d.Files[0].RelPath)
+	assert.Equal(t, FileDiffModified, d.Files[0].Status)
+	assert.Contains(t, d.Files[0].Diff, "diff limit")
+	assert.NotContains(t, d.Files[0].Diff, oversized)
+}
+
+func TestDiffOne_UpToDateWithUntrackedFileStillReportsUntracked(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	review, ok := Lookup("leapmux-review")
+	require.True(t, ok)
+	_, err := Install(dir, []string{review.Name}, Options{})
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, review.Name, "notes.md"), []byte("user note\n"), 0o644))
+
+	d, err := DiffOne(dir, review.Name)
+	require.NoError(t, err)
+	assert.Equal(t, StateUpToDate, d.State)
+	require.Len(t, d.Files, 1)
+	assert.Equal(t, "notes.md", d.Files[0].RelPath)
+	assert.Equal(t, FileDiffUntracked, d.Files[0].Status)
+}
+
+func TestUnifiedDiff_LargeDivergedFileUsesCappedFallbackFast(t *testing.T) {
+	t.Parallel()
+
+	const changedLines = 5000
+	var oldBuf, newBuf strings.Builder
+	oldBuf.WriteString("common-header\n")
+	newBuf.WriteString("common-header\n")
+	for i := range changedLines {
+		fmt.Fprintf(&oldBuf, "old-line-%d\n", i)
+		fmt.Fprintf(&newBuf, "new-line-%d\n", i)
+	}
+	oldBuf.WriteString("common-footer\n")
+	newBuf.WriteString("common-footer\n")
+
+	start := time.Now()
+	got := unifiedDiff("a/big.md", "b/big.md", oldBuf.String(), newBuf.String())
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 5*time.Second, "large diverged diff must complete quickly via fallback")
+	assert.Contains(t, got, "--- a/big.md\n+++ b/big.md\n")
+	assert.Contains(t, got, " common-header\n")
+	assert.Contains(t, got, "-old-line-0\n")
+	assert.Contains(t, got, "+new-line-0\n")
+	assert.Contains(t, got, " common-footer\n")
 }

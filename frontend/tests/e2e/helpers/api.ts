@@ -10,10 +10,10 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { fromJson } from '@bufbuild/protobuf'
+import { create, fromJson } from '@bufbuild/protobuf'
 import { OPTION_ID_MODEL } from '../../../src/components/chat/settingsGroups'
 import { MAX_PAGE_LIMIT } from '../../../src/generated/contracts/pagination'
-import { AgentProvider, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentForkSourceSchema, AgentProvider, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
 import { TabInsertion } from '../../../src/generated/proto/leapmux/v1/tab_creation_pb'
 import {
@@ -761,6 +761,10 @@ export interface OpenAgentOptions {
   model?: string
   /** Reopen this exact native session rather than create a new session. */
   agentSessionId?: string
+  /** Fork conversation history from this source agent tab rather than create a new session. */
+  forkSource?: { sourceAgentId: string }
+  /** Explicit tab ID for the new agent. Omit it to generate a random UUID. */
+  tabId?: string
   /** Initial values for any provider option group. A model here fails: give it as `model`. */
   optionValues?: Record<string, string>
   /** The git setup that the Worker applies before the agent starts. Absent uses the directory as it is. */
@@ -779,8 +783,14 @@ export interface OpenAgentOptions {
  * A top-level model and a model option once both reached the request, and the later spread won with no message.
  */
 function assertOpenAgentOptions(options: OpenAgentOptions): void {
+  if (options.agentSessionId !== undefined && options.forkSource !== undefined)
+    throw new Error('openAgentViaAPI: agentSessionId and forkSource are mutually exclusive.')
   if (options.agentSessionId !== undefined && options.agentSessionId.trim() === '')
     throw new Error('The native session ID must be nonempty when a resume is requested.')
+  if (options.forkSource !== undefined && options.forkSource.sourceAgentId.trim() === '')
+    throw new Error('openAgentViaAPI: forkSource.sourceAgentId must be nonempty when a fork is requested.')
+  if (options.tabId !== undefined && options.tabId.trim() === '')
+    throw new Error('openAgentViaAPI: tabId must be nonempty when specified.')
   if (options.model !== undefined && options.model.trim() === '')
     throw new Error('openAgentViaAPI: a model needs a model ID. Omit `model` for the Worker default.')
   if (options.optionValues && Object.hasOwn(options.optionValues, OPTION_ID_MODEL))
@@ -820,6 +830,14 @@ export async function openAgentViaAPI(
       ? {}
       : { [OPTION_ID_MODEL]: options.model }),
   }
+  const sessionSource = options.agentSessionId !== undefined
+    ? { case: 'resumeSessionId' as const, value: options.agentSessionId }
+    : options.forkSource !== undefined
+      ? {
+          case: 'forkSource' as const,
+          value: create(AgentForkSourceSchema, { sourceAgentId: options.forkSource.sourceAgentId }),
+        }
+      : undefined
 
   // Channels hold no workspace set. A workspace created after the handshake needs no announcement before a worker serves its tabs.
   const resp = await channel.callWorker(
@@ -827,7 +845,7 @@ export async function openAgentViaAPI(
     WorkerAgentService.method.openAgent,
     {
       creation: {
-        tabId: randomUUID(),
+        tabId: options.tabId ?? randomUUID(),
         placement: {
           workspaceId,
           destination: { case: 'firstLeaf', value: {} },
@@ -835,8 +853,8 @@ export async function openAgentViaAPI(
         },
       },
       workingDir: workingDir ?? '',
-      ...(options.agentSessionId !== undefined
-        ? { agentSessionId: options.agentSessionId }
+      ...(sessionSource !== undefined
+        ? { sessionSource }
         : {}),
       ...(options.title
         ? { title: options.title }

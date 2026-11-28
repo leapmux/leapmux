@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 
@@ -15,8 +16,10 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlenv"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 )
 
@@ -111,7 +114,9 @@ func TestAgentTreeOverIPC_DiscoversSpawnedAgentsAndRelations(t *testing.T) {
 	rootID := fullTestID("ag-root")
 	subID := fullTestID("ag-sub")
 	spawnedID := fullTestID("ag-spawn1")
+	spawnedSubID := fullTestID("ag-sp1sub")
 	grandSpawnedID := fullTestID("ag-spawn2")
+	unrelatedID := fullTestID("ag-unrel")
 
 	hub := &recordingHub{
 		workers: workerRows("worker-A"),
@@ -125,6 +130,7 @@ func TestAgentTreeOverIPC_DiscoversSpawnedAgentsAndRelations(t *testing.T) {
 			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
 			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: spawnedID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
 			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: grandSpawnedID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: unrelatedID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
 		},
 	}
 	allAgents := map[string]*leapmuxv1.AgentInfo{
@@ -150,6 +156,14 @@ func TestAgentTreeOverIPC_DiscoversSpawnedAgentsAndRelations(t *testing.T) {
 			AgentProvider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 			ActivityState:     leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
 		},
+		spawnedSubID: {
+			Id:            spawnedSubID,
+			Title:         "Spawned Virtual Sub",
+			ParentAgentId: spawnedID,
+			RootAgentId:   spawnedID,
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		},
 		grandSpawnedID: {
 			Id:               grandSpawnedID,
 			Title:            "Nested Spawned",
@@ -157,27 +171,27 @@ func TestAgentTreeOverIPC_DiscoversSpawnedAgentsAndRelations(t *testing.T) {
 			AgentProvider:    leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 			ActivityState:    leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
 		},
+		unrelatedID: {
+			Id:            unrelatedID,
+			Title:         "Unrelated Agent",
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		},
 	}
+	var (
+		mu       sync.Mutex
+		requests []*leapmuxv1.ListAgentsRequest
+	)
 	disp := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
 		if method != leapmuxv1connect.WorkerAgentServiceListAgentsProcedure {
 			return nil, connect.NewError(connect.CodeUnimplemented, "unexpected method: "+method)
 		}
 		var req leapmuxv1.ListAgentsRequest
 		require.NoError(t, proto.Unmarshal(body, &req))
-		var out []*leapmuxv1.AgentInfo
-		for _, id := range req.GetTabIds() {
-			if a, ok := allAgents[id]; ok {
-				out = append(out, a)
-			}
-			if req.GetIncludeDescendants() {
-				for _, cand := range allAgents {
-					if cand.GetParentAgentId() == id {
-						out = append(out, cand)
-					}
-				}
-			}
-		}
-		return &leapmuxv1.ListAgentsResponse{Agents: out}, nil
+		mu.Lock()
+		requests = append(requests, &req)
+		mu.Unlock()
+		return &leapmuxv1.ListAgentsResponse{Agents: matchMockListAgents(allAgents, &req)}, nil
 	}}
 	startSpawnIPC(t, hub, disp)
 
@@ -206,17 +220,73 @@ func TestAgentTreeOverIPC_DiscoversSpawnedAgentsAndRelations(t *testing.T) {
 	assert.Equal(t, true, byID[spawnedID]["open_in_tab"])
 
 	grandChildren := byID[spawnedID]["children"].([]any)
-	require.Len(t, grandChildren, 1)
-	gc := grandChildren[0].(map[string]any)
-	assert.Equal(t, grandSpawnedID, gc["id"])
-	assert.Equal(t, "spawned", gc["relation"])
-	assert.Equal(t, spawnedID, gc["spawned_by_agent_id"])
+	require.Len(t, grandChildren, 2)
+	gcByID := map[string]map[string]any{}
+	for _, raw := range grandChildren {
+		m := raw.(map[string]any)
+		gcByID[m["id"].(string)] = m
+	}
+	require.Contains(t, gcByID, grandSpawnedID)
+	assert.Equal(t, "spawned", gcByID[grandSpawnedID]["relation"])
+	assert.Equal(t, spawnedID, gcByID[grandSpawnedID]["spawned_by_agent_id"])
+	require.Contains(t, gcByID, spawnedSubID)
+	assert.Equal(t, "subagent", gcByID[spawnedSubID]["relation"])
+	assert.Equal(t, false, gcByID[spawnedSubID]["open_in_tab"])
+
+	mu.Lock()
+	for _, req := range requests {
+		assert.NotContains(t, req.GetTabIds(), unrelatedID, "unrelated open tabs must never be hydrated via TabIds")
+		assert.NotContains(t, req.GetTabIds(), spawnedID, "spawned discovery must use SpawnedByAgentIds rather than hydrating open tabs via TabIds")
+	}
+	mu.Unlock()
 
 	text := runControlText(t, "agent", "tree", rootID)
 	require.Equal(t, cli.ExitOK, text.Code, text.Stderr)
 	assert.Contains(t, text.Stdout, "[subagent]")
 	assert.Contains(t, text.Stdout, "[spawned]")
 	assert.Contains(t, text.Stdout, "(unopened)")
+}
+
+func matchMockListAgents(allAgents map[string]*leapmuxv1.AgentInfo, req *leapmuxv1.ListAgentsRequest) []*leapmuxv1.AgentInfo {
+	seen := map[string]bool{}
+	var out []*leapmuxv1.AgentInfo
+	add := func(a *leapmuxv1.AgentInfo) {
+		if a == nil || seen[a.GetId()] {
+			return
+		}
+		seen[a.GetId()] = true
+		out = append(out, a)
+	}
+	var roots []string
+	for _, id := range req.GetTabIds() {
+		if a, ok := allAgents[id]; ok {
+			add(a)
+			roots = append(roots, id)
+		}
+	}
+	for _, spawnerID := range req.GetSpawnedByAgentIds() {
+		for _, cand := range allAgents {
+			if cand.GetSpawnedByAgentId() == spawnerID {
+				add(cand)
+				roots = append(roots, cand.GetId())
+			}
+		}
+	}
+	if req.GetIncludeDescendants() {
+		for len(roots) > 0 {
+			var next []string
+			for _, pid := range roots {
+				for _, cand := range allAgents {
+					if cand.GetParentAgentId() == pid && !seen[cand.GetId()] {
+						add(cand)
+						next = append(next, cand.GetId())
+					}
+				}
+			}
+			roots = next
+		}
+	}
+	return out
 }
 
 func TestAgentTreeOverIPC_PropagatesListTabsError(t *testing.T) {
@@ -806,4 +876,267 @@ func TestAgentOpenTabOverIPC_UnverifiedFullIDChecksWorkerAndValidatesInput(t *te
 		f := runControl(t, "agent", "open-tab", "id:SubTitle", "--workspace", "id:ws-1").requireFailure(t, cli.CodeNotFound)
 		assert.Contains(t, f.Message, "no subagent matches")
 	})
+}
+
+func TestAgentTreeOverIPC_PropagatesSpawnedChildExpansionError(t *testing.T) {
+	rootID := fullTestID("ag-tr-root")
+	spawnedID := fullTestID("ag-tr-sp1")
+	unrelatedID := fullTestID("ag-tr-unr")
+
+	hub := &recordingHub{
+		workers: workerRows("worker-A"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID},
+			TileId:      "tile-1",
+			WorkerId:    "worker-A",
+			WorkspaceId: "ws-1",
+		},
+		tabs: []*leapmuxv1.WorkspaceTab{
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: spawnedID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: unrelatedID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+		},
+	}
+
+	var (
+		mu       sync.Mutex
+		requests []*leapmuxv1.ListAgentsRequest
+	)
+	disp := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
+		if method != leapmuxv1connect.WorkerAgentServiceListAgentsProcedure {
+			return nil, connect.NewError(connect.CodeUnimplemented, "unexpected method: "+method)
+		}
+		var req leapmuxv1.ListAgentsRequest
+		require.NoError(t, proto.Unmarshal(body, &req))
+		mu.Lock()
+		requests = append(requests, &req)
+		mu.Unlock()
+
+		// Initial root query with IncludeDescendants=true succeeds.
+		if req.GetIncludeDescendants() && slices.Contains(req.GetTabIds(), rootID) {
+			return &leapmuxv1.ListAgentsResponse{
+				Agents: []*leapmuxv1.AgentInfo{{
+					Id:    rootID,
+					Title: "Root",
+				}},
+			}, nil
+		}
+		// Wave 1 (SpawnedByAgentIds=[rootID]) discovers the spawned peer.
+		if req.GetIncludeDescendants() && slices.Contains(req.GetSpawnedByAgentIds(), rootID) {
+			return &leapmuxv1.ListAgentsResponse{
+				Agents: []*leapmuxv1.AgentInfo{{
+					Id:               spawnedID,
+					Title:            "Spawned Peer",
+					SpawnedByAgentId: rootID,
+				}},
+			}, nil
+		}
+		// Wave 2 (SpawnedByAgentIds=[spawnedID]) fails with Unavailable.
+		if req.GetIncludeDescendants() && slices.Contains(req.GetSpawnedByAgentIds(), spawnedID) {
+			return nil, connect.NewError(connect.CodeUnavailable, "worker subtree query failed")
+		}
+		return &leapmuxv1.ListAgentsResponse{}, nil
+	}}
+	startSpawnIPC(t, hub, disp)
+
+	f := runControl(t, "agent", "tree", rootID).requireFailure(t, cli.CodeUnavailable)
+	assert.Contains(t, f.Message, "worker subtree query failed")
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, req := range requests {
+		assert.NotContains(t, req.GetTabIds(), unrelatedID, "unrelated open tabs must never be queried via TabIds")
+		assert.NotContains(t, req.GetTabIds(), spawnedID, "spawned waves must use SpawnedByAgentIds, not TabIds")
+	}
+}
+
+func TestResolveChildAgents_WorkspaceScopeFiltersSpawnedChildren(t *testing.T) {
+	parentID := fullTestID("ag-ch-par")
+	virtualChildID := fullTestID("ag-ch-vrt")
+	spawnedWS1ID := fullTestID("ag-ch-ws1")
+	spawnedWS2ID := fullTestID("ag-ch-ws2")
+	unrelatedWS1ID := fullTestID("ag-ch-unr")
+
+	ws1 := fullTestID("ws-ch-a")
+	ws2 := fullTestID("ws-ch-b")
+
+	allTabs := []*leapmuxv1.WorkspaceTab{
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: parentID}, TileId: "tile-1", WorkerId: "worker-A", WorkspaceId: ws1},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: virtualChildID}, TileId: "tile-1", WorkerId: "worker-A", WorkspaceId: ws1},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: spawnedWS1ID}, TileId: "tile-1", WorkerId: "worker-A", WorkspaceId: ws1},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: spawnedWS2ID}, TileId: "tile-2", WorkerId: "worker-A", WorkspaceId: ws2},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: unrelatedWS1ID}, TileId: "tile-1", WorkerId: "worker-A", WorkspaceId: ws1},
+	}
+
+	allAgents := map[string]*leapmuxv1.AgentInfo{
+		parentID:       {Id: parentID, Title: "Parent"},
+		virtualChildID: {Id: virtualChildID, Title: "Virtual Child", ParentAgentId: parentID},
+		spawnedWS1ID:   {Id: spawnedWS1ID, Title: "Spawned WS1", SpawnedByAgentId: parentID},
+		spawnedWS2ID:   {Id: spawnedWS2ID, Title: "Spawned WS2", SpawnedByAgentId: parentID},
+		unrelatedWS1ID: {Id: unrelatedWS1ID, Title: "Unrelated WS1"},
+	}
+
+	var (
+		mu             sync.Mutex
+		agentReqs      []*leapmuxv1.ListAgentsRequest
+		listTabsScopes [][]string
+	)
+	hub := &recordingHub{
+		workers: workerRows("worker-A"),
+		workspaces: []*leapmuxv1.Workspace{
+			{Id: ws1, Title: "WS A"},
+			{Id: ws2, Title: "WS B"},
+		},
+		tabs: allTabs,
+	}
+	disp := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
+		if method != leapmuxv1connect.WorkerAgentServiceListAgentsProcedure {
+			return nil, connect.NewError(connect.CodeUnimplemented, "unexpected method: "+method)
+		}
+		var req leapmuxv1.ListAgentsRequest
+		require.NoError(t, proto.Unmarshal(body, &req))
+		mu.Lock()
+		agentReqs = append(agentReqs, &req)
+		mu.Unlock()
+		return &leapmuxv1.ListAgentsResponse{Agents: matchMockListAgents(allAgents, &req)}, nil
+	}}
+
+	startSpawnIPC(t, hub, disp, func(r *controlipc.Router) {
+		base := r.Hub
+		r.Hub = &interceptHub{
+			base: base,
+			handler: func(_ context.Context, _ userid.UserID, procedure string, payload []byte) ([]byte, error, bool) {
+				switch procedure {
+				case leapmuxv1connect.WorkspaceServiceListTabsProcedure:
+					var req leapmuxv1.ListTabsRequest
+					require.NoError(t, proto.Unmarshal(payload, &req))
+					mu.Lock()
+					listTabsScopes = append(listTabsScopes, append([]string(nil), req.GetWorkspaceIds()...))
+					mu.Unlock()
+					var filtered []*leapmuxv1.WorkspaceTab
+					for _, tab := range allTabs {
+						if len(req.GetWorkspaceIds()) == 0 || slices.Contains(req.GetWorkspaceIds(), tab.GetWorkspaceId()) {
+							filtered = append(filtered, tab)
+						}
+					}
+					b, err := proto.Marshal(&leapmuxv1.ListTabsResponse{Tabs: filtered})
+					return b, err, true
+				case leapmuxv1connect.WorkspaceServiceLocateTabProcedure:
+					var req leapmuxv1.LocateTabRequest
+					require.NoError(t, proto.Unmarshal(payload, &req))
+					for _, tab := range allTabs {
+						if tab.GetTab().GetTabId() == req.GetTabId() {
+							b, err := proto.Marshal(&leapmuxv1.LocateTabResponse{Tab: tab})
+							return b, err, true
+						}
+					}
+					return nil, connect.NewError(connect.CodeNotFound, "tab not found"), true
+				case leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:
+					var req leapmuxv1.GetWorkspaceRequest
+					require.NoError(t, proto.Unmarshal(payload, &req))
+					b, err := proto.Marshal(&leapmuxv1.GetWorkspaceResponse{Workspace: &leapmuxv1.Workspace{Id: req.GetWorkspaceId()}})
+					return b, err, true
+				default:
+					return nil, nil, false
+				}
+			},
+		}
+	})
+	t.Setenv(controlenv.TabIDVariable, parentID)
+	t.Setenv(controlenv.TabTypeVariable, "agent")
+	t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+	inv := captureTestInvocation(t, "wait [agent...]", addTargetWorkspaceFlag, "--workspace", ws1)
+	inv.Context = t.Context()
+	s, err := openSession(inv)
+	require.NoError(t, err)
+	defer s.Close()
+
+	targets, err := s.resolveVariadicTabs(resolve.KindAgent, []string{"children"}, resolve.Need{WorkerID: true})
+	require.NoError(t, err)
+
+	gotIDs := make([]string, 0, len(targets))
+	for _, tgt := range targets {
+		gotIDs = append(gotIDs, tgt.ID)
+	}
+	assert.Equal(t, []string{virtualChildID, spawnedWS1ID}, gotIDs, "workspace-scoped children must include only ws1 children and exclude ws2 spawned children")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, listTabsScopes)
+	assert.Equal(t, []string{ws1}, listTabsScopes[0], "resolveChildAgents must use the workspace-scoped listing.Tabs")
+	require.Len(t, agentReqs, 1, "same-worker children resolution must combine TabIds and SpawnedByAgentIds in one RPC")
+	assert.Equal(t, []string{parentID}, agentReqs[0].GetTabIds())
+	assert.True(t, agentReqs[0].GetIncludeDescendants())
+	assert.Equal(t, []string{parentID}, agentReqs[0].GetSpawnedByAgentIds())
+	assert.NotContains(t, agentReqs[0].GetTabIds(), unrelatedWS1ID, "unrelated open tabs must never be queried via TabIds")
+}
+
+func TestResolveChildAgents_CrossWorkerUsesSpawnedByAgentIdsWithoutHydratingUnrelatedTabs(t *testing.T) {
+	parentID := fullTestID("ag-xw-par")
+	spawnedOnBID := fullTestID("ag-xw-spb")
+	unrelatedOnBID := fullTestID("ag-xw-unb")
+	ws1 := fullTestID("ws-xw-1")
+
+	allTabs := []*leapmuxv1.WorkspaceTab{
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: parentID}, TileId: "tile-1", WorkerId: "worker-A", WorkspaceId: ws1},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: spawnedOnBID}, TileId: "tile-1", WorkerId: "worker-B", WorkspaceId: ws1},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: unrelatedOnBID}, TileId: "tile-1", WorkerId: "worker-B", WorkspaceId: ws1},
+	}
+	agentsA := map[string]*leapmuxv1.AgentInfo{
+		parentID: {Id: parentID, Title: "Parent"},
+	}
+	agentsB := map[string]*leapmuxv1.AgentInfo{
+		spawnedOnBID:   {Id: spawnedOnBID, Title: "Remote Spawned", SpawnedByAgentId: parentID},
+		unrelatedOnBID: {Id: unrelatedOnBID, Title: "Remote Unrelated"},
+	}
+
+	var (
+		mu    sync.Mutex
+		reqsB []*leapmuxv1.ListAgentsRequest
+	)
+	dispA := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
+		var req leapmuxv1.ListAgentsRequest
+		require.NoError(t, proto.Unmarshal(body, &req))
+		return &leapmuxv1.ListAgentsResponse{Agents: matchMockListAgents(agentsA, &req)}, nil
+	}}
+	dispB := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
+		var req leapmuxv1.ListAgentsRequest
+		require.NoError(t, proto.Unmarshal(body, &req))
+		mu.Lock()
+		reqsB = append(reqsB, &req)
+		mu.Unlock()
+		return &leapmuxv1.ListAgentsResponse{Agents: matchMockListAgents(agentsB, &req)}, nil
+	}}
+
+	hub := &recordingHub{
+		workers: workerRows("worker-A", "worker-B"),
+		tabs:    allTabs,
+	}
+	h := startHubChannelHarness(t, hub, dispA)
+	h.managerForWorker("worker-B").SetDispatcher(harnessDispatcher(dispB))
+
+	t.Setenv(controlenv.TabIDVariable, parentID)
+	t.Setenv(controlenv.TabTypeVariable, "agent")
+	t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+	inv := captureTestInvocation(t, "wait [agent...]", addTargetWorkspaceFlag)
+	inv.Command.Root().PersistentFlags().String("hub", h.url, "")
+	require.NoError(t, inv.Command.Root().PersistentFlags().Set("hub", h.url))
+	inv.Context = t.Context()
+	s, err := openSession(inv)
+	require.NoError(t, err)
+	defer s.Close()
+
+	targets, err := s.resolveVariadicTabs(resolve.KindAgent, []string{"children"}, resolve.Need{WorkerID: true})
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.Equal(t, spawnedOnBID, targets[0].ID)
+	assert.Equal(t, "worker-B", targets[0].WorkerID)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, reqsB, 1)
+	assert.Empty(t, reqsB[0].GetTabIds(), "remote worker query must use SpawnedByAgentIds only, never TabIds")
+	assert.Equal(t, []string{parentID}, reqsB[0].GetSpawnedByAgentIds())
 }

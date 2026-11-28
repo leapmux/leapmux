@@ -17,7 +17,7 @@ func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
-		AgentID: "agent-1", WorkingDir: row.WorkingDir, ResumeSessionID: "original",
+		AgentID: "agent-1", WorkingDir: row.WorkingDir, Session: agent.ResumeSession("original"),
 	}, newTestRootOutputSink(t, svc.Output, "agent-1", row.AgentProvider), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
@@ -30,8 +30,8 @@ func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 	starts := 0
 	svc.startAgentFn = func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 		starts++
-		options.ResumeSessionID = "prepared-session"
-		sink.UpdateSessionID(options.ResumeSessionID)
+		options.Session = agent.ResumeSession("prepared-session")
+		sink.UpdateSessionID(options.Session.ResumeID())
 		return svc.Agents.StartAgentWith(ctx, options, sink, claudetest.StartEcho)
 	}
 	settingsCalls := 0
@@ -91,7 +91,7 @@ func TestPlanExecutionResumesThePreparedSessionAfterTheProcessExits(t *testing.T
 	require.NoError(t, err)
 	var resumeIDs []string
 	svc.startAgentFn = func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (map[string]string, error) {
-		resumeIDs = append(resumeIDs, options.ResumeSessionID)
+		resumeIDs = append(resumeIDs, options.Session.ResumeID())
 		if len(resumeIDs) == 1 {
 			// The replacement's process reports the prepared session and exits
 			// before the plan reaches it: it never stays in the manager.
@@ -99,7 +99,7 @@ func TestPlanExecutionResumesThePreparedSessionAfterTheProcessExits(t *testing.T
 			return map[string]string{}, nil
 		}
 		// A resumed provider reports the session that it resumed.
-		sink.UpdateSessionID(options.ResumeSessionID)
+		sink.UpdateSessionID(options.Session.ResumeID())
 		return svc.Agents.StartAgentWith(ctx, options, sink, claudetest.StartEcho)
 	}
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })

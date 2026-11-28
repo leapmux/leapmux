@@ -120,7 +120,10 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         gitSetup: gitMode.toGitSetup(),
         ...(sessionId.trimmed()
           ? {
-              agentSessionId: sessionId.trimmed(),
+              sessionSource: {
+                case: 'resumeSessionId' as const,
+                value: sessionId.trimmed(),
+              },
             }
           : {}),
       },

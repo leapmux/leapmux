@@ -2,6 +2,7 @@ package acp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -1340,26 +1341,9 @@ func acpStandardInitParams(hooks *Hooks) (json.RawMessage, error) {
 	return encoded, nil
 }
 
-// buildACPSessionForkRequest builds a session/fork JSON-RPC request.
-// When present, adjust changes the params before encoding. See Hooks.SessionParams.
-func buildACPSessionForkRequest(forkFromSessionID, workingDir string, adjust func(method string, params map[string]any)) []byte {
-	p := map[string]any{
-		"sessionId":  forkFromSessionID,
-		"cwd":        workingDir,
-		"mcpServers": []any{},
-	}
-	if adjust != nil {
-		adjust(MethodSessionFork, p)
-	}
-	params, err := json.Marshal(p)
-	if err != nil {
-		slog.Warn("acp session fork request marshal failed", "error", err)
-	}
-	return params
-}
-
-// buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.
-// When present, adjust changes the params before encoding. See Hooks.SessionParams.
+// buildACPSessionRequest builds a session/new, session/load, session/resume, or
+// session/fork JSON-RPC request. When present, adjust changes the params before
+// encoding. See Hooks.SessionParams.
 func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod string, adjust func(method string, params map[string]any)) (method string, params []byte) {
 	p := map[string]any{
 		"cwd":        workingDir,
@@ -2053,17 +2037,16 @@ func (b *Base) startACPHandshake(
 	if b.hooks.InitializeResponse != nil {
 		b.hooks.InitializeResponse(initResp)
 	}
-	closesSessions := advertisesSessionClose(initResp)
-	forksSessions := advertisesSessionFork(initResp)
+	closesSessions, forksSessions := readSessionCapabilities(initResp)
 	b.Mu.Lock()
 	b.steerMethod = steerMethod
 	b.closesSessions = closesSessions
 	b.forksSessions = forksSessions
 	b.Mu.Unlock()
 
-	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
+	if err := opts.ValidateSessionSource(); err != nil {
 		cleanup()
-		return nil, b.FormatStartupError(MethodSessionFork, fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID))
+		return nil, b.FormatStartupError(MethodSessionFork, err)
 	}
 
 	// 2. Send session request (fork, resume, or new).
@@ -2072,29 +2055,31 @@ func (b *Base) startACPHandshake(
 		sessionParams []byte
 		observeReply  func(json.RawMessage, error)
 	)
-	if opts.ForkFromSessionID != "" {
+	forkID := opts.Session.ForkID()
+	resumeID := opts.Session.ResumeID()
+	if forkID != "" {
 		if !forksSessions {
 			cleanup()
 			return nil, b.FormatStartupError(MethodSessionFork, errors.New("provider does not advertise ACP session/fork capability"))
 		}
 		if sessionCfg.ForkRequiresLoad {
-			loadMethod, loadParams := buildACPSessionRequest(opts.ForkFromSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
-			var loadObserve func(json.RawMessage, error)
-			if loadMethod == MethodSessionLoad {
-				loadObserve = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
-			}
-			if _, err := b.SendRequestObserved(loadMethod, json.RawMessage(loadParams), timeout, loadObserve); err != nil {
+			loadDir := cmp.Or(opts.Session.ForkSourceWorkingDir(), opts.WorkingDir)
+			loadMethod, loadParams := buildACPSessionRequest(forkID, loadDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
+			// Do not record replayCutoff on the pre-fork load: markSessionReplayCutoff
+			// only records the first cutoff, so marking early would leave replay
+			// notifications emitted during session/fork above the cutoff.
+			if _, err := b.SendRequestObserved(loadMethod, json.RawMessage(loadParams), timeout, nil); err != nil {
 				cleanup()
 				return nil, b.FormatStartupError(loadMethod, err)
 			}
 		}
-		sessionMethod = MethodSessionFork
-		sessionParams = buildACPSessionForkRequest(opts.ForkFromSessionID, opts.WorkingDir, b.hooks.SessionParams)
+		sessionMethod, sessionParams = buildACPSessionRequest(forkID, opts.WorkingDir, sessionCfg.NewMethod, MethodSessionFork, b.hooks.SessionParams)
 		// Drop any conversation history replayed before the session/fork reply
-		// because the Worker already cloned the SQLite transcript.
+		// (including any replay emitted during a pre-fork load) because the
+		// Worker already cloned the SQLite transcript.
 		observeReply = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
 	} else {
-		sessionMethod, sessionParams = buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
+		sessionMethod, sessionParams = buildACPSessionRequest(resumeID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
 		// The session/load reply separates replayed history from live output.
 		// The Worker already stores the history sent before that reply, so the startup drain drops it. See acpSessionUpdates.
 		// The reader records the boundary while routing the reply and immediately buffers each later line.
@@ -2102,15 +2087,15 @@ func (b *Base) startACPHandshake(
 		//
 		// session/resume sends no replay, so every update before its reply is live output.
 		// OpenCode and Kilo forward output from each session client, and that output can arrive during this interval.
-		if opts.ResumeSessionID != "" && sessionMethod == MethodSessionLoad {
+		if resumeID != "" && sessionMethod == MethodSessionLoad {
 			observeReply = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
 		}
 	}
 	sessionResp, err := b.SendRequestObserved(sessionMethod, json.RawMessage(sessionParams), timeout, observeReply)
 	if err != nil {
 		cleanup()
-		if opts.ResumeSessionID != "" {
-			return nil, b.FormatStartupError(sessionMethod, providerkit.ResumeFailedError(opts.ResumeSessionID, err))
+		if resumeID != "" {
+			return nil, b.FormatStartupError(sessionMethod, providerkit.ResumeFailedError(resumeID, err))
 		}
 		return nil, b.FormatStartupError(sessionMethod, err)
 	}
@@ -2121,16 +2106,16 @@ func (b *Base) startACPHandshake(
 		cleanup()
 		return nil, b.FormatStartupError("session parse", err)
 	}
-	if session.SessionID == "" && opts.ResumeSessionID != "" && sessionMethod == sessionCfg.ResumeMethod {
-		session.SessionID = opts.ResumeSessionID
+	if session.SessionID == "" && resumeID != "" && sessionMethod == sessionCfg.ResumeMethod {
+		session.SessionID = resumeID
 	}
 	if session.SessionID == "" {
 		cleanup()
 		return nil, b.FormatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
 	}
-	if opts.ForkFromSessionID != "" && session.SessionID == opts.ForkFromSessionID {
+	if forkID != "" && session.SessionID == forkID {
 		cleanup()
-		return nil, b.FormatStartupError(sessionMethod, fmt.Errorf("response returned the source session ID %q", opts.ForkFromSessionID))
+		return nil, b.FormatStartupError(sessionMethod, fmt.Errorf("response returned the source session ID %q", forkID))
 	}
 
 	// The reader starts before initialization completes.

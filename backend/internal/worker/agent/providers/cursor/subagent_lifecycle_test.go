@@ -301,13 +301,13 @@ func TestCursorSessionLoadSkipsReplayedSubagentLifecycleUpdates(t *testing.T) {
 
 	sink := &agenttest.Sink{}
 	provider, err := Start(context.Background(), agent.Options{
-		AgentID:         "cursor-load-replay",
-		HomeDir:         home,
-		WorkingDir:      t.TempDir(),
-		ResumeSessionID: "cursor-resume",
-		Shell:           testutil.TestShell(),
-		LoginShell:      false,
-		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		AgentID:       "cursor-load-replay",
+		HomeDir:       home,
+		WorkingDir:    t.TempDir(),
+		Session:       agent.ResumeSession("cursor-resume"),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	a := provider.(*Agent)

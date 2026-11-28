@@ -258,6 +258,27 @@ func TestChildSendLoadsItsOwnStreamSession(t *testing.T) {
 	assert.NotEqual(t, rootPID, childPID)
 }
 
+func TestChildSendSucceedsOnForkedRootAgent(t *testing.T) {
+	fixture := newDroidProcessFixture(t, "")
+	a, logPath := fixture.root, fixture.logPath
+	// Simulate a root agent launched via fork so childConnection inherits Fork* options.
+	a.launchOpts.Session = agent.ForkSession("source-session-id", filepath.Join(fixture.home, "source-work"))
+
+	require.NoError(t, agenttest.SendChildInput(a, droidChildConnectionSessionID, agent.ChildInput{Content: "follow up"}))
+	require.Eventually(t, func() bool {
+		for _, call := range readDroidProcessCalls(logPath) {
+			if call.method == droidMethodAddUserMessage {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 10*time.Millisecond, "a native add_user_message request must reach the child process")
+	calls := readDroidProcessCalls(logPath)
+	assert.Zero(t, countDroidProcessCalls(calls, droidMethodForkSession), "a bound child must load its session, not fork")
+	assert.Equal(t, 1, countDroidProcessCalls(calls, droidMethodLoadSession))
+	assert.Equal(t, 1, countDroidProcessCalls(calls, droidMethodAddUserMessage))
+}
+
 func TestChildProcessSinkWritesDirectlyWithoutArchiveDrop(t *testing.T) {
 	t.Parallel()
 	recorder := &agenttest.Sink{}

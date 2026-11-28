@@ -233,7 +233,7 @@ func TestStartACPHandshake_AResumeCarriesTheSessionParams(t *testing.T) {
 	}
 	peer := &handshakePeer{}
 	b, _, session := runHandshakeForTest(t, peer, hooks,
-		agent.Options{WorkingDir: "/work", ResumeSessionID: "stored-1"},
+		agent.Options{WorkingDir: "/work", Session: agent.ResumeSession("stored-1")},
 		SessionConfig{NewMethod: MethodSessionNew, ResumeMethod: MethodSessionResume},
 		func(method string) json.RawMessage {
 			if method == MethodInitialize {

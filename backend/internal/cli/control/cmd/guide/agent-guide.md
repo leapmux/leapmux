@@ -178,7 +178,7 @@ leapmux terminal wait "$T" --change --timeout 30s
 leapmux terminal read "$T" --lines 40
 leapmux terminal read "$T" --follow
 leapmux terminal ps "$T"
-leapmux terminal quake run 'git status' --dir ~/src/app
+leapmux terminal quake run 'git status'
 leapmux terminal restart "$T" --replace
 leapmux terminal attach "$T"
 ```
@@ -212,8 +212,8 @@ Inspect git state, diffs, history, worktrees, floating windows, and raw RPCs:
 leapmux git status
 leapmux git diff --staged
 leapmux git log -n 10
-leapmux git commit -a -m "Checkpoint" --dir ~/src/app
-leapmux worktree create feat/cli --dir ~/src/app
+leapmux git commit -a -m "Checkpoint"
+leapmux worktree create feat/cli
 leapmux worktree inspect ~/wt/feat-cli
 leapmux worktree remove ~/wt/feat-cli
 leapmux window list

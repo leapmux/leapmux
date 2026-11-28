@@ -113,16 +113,25 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		cancel()
 		return nil, err
 	}
-	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
+	if err := opts.ValidateSessionSource(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID)
+		return nil, err
 	}
-	var resume []string
-	if opts.ForkFromSessionID != "" {
-		forkedPath, forkErr := forkOhMyPiSessionFile(
-			agent.StoredSessionQuery{HomeDir: opts.HomeDir},
-			opts.ForkFromSessionID,
-			opts.ForkSourceWorkingDir,
+	if opts.AgentDirs == nil {
+		cancel()
+		return nil, fmt.Errorf("the Oh My Pi provider requires the Worker's private agent directories")
+	}
+	var (
+		resume     []string
+		forkedPath string
+	)
+	if opts.Session.IsFork() {
+		launchEnv := providerkit.FinalizeAgentEnv(os.Environ(), opts)
+		var forkErr error
+		forkedPath, forkErr = forkOhMyPiSessionFile(
+			providerkit.StoredSessionQueryForLaunch(opts.HomeDir, launchEnv),
+			opts.Session.ForkID(),
+			opts.Session.ForkSourceWorkingDir(),
 			opts.WorkingDir,
 		)
 		if forkErr != nil {
@@ -131,20 +140,27 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		}
 		resume = []string{"--resume", forkedPath}
 	} else {
-		resume, err = resumeArgs(opts.ResumeSessionID, opts.HomeDir)
+		resume, err = resumeArgs(opts.Session.ResumeID(), opts.HomeDir)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
 	}
-	if opts.AgentDirs == nil {
-		cancel()
-		return nil, fmt.Errorf("the Oh My Pi provider requires the Worker's private agent directories")
+	removeForkedSession := func() {
+		if forkedPath != "" {
+			_ = os.Remove(forkedPath)
+		}
 	}
 	directory, err := opts.AgentDirs.New(ctx, *registration.AgentDir)
 	if err != nil {
 		cancel()
+		removeForkedSession()
 		return nil, err
+	}
+	failLaunch := func(err error) (agent.Agent, error) {
+		cancel()
+		removeForkedSession()
+		return nil, errors.Join(err, directory.Close())
 	}
 	// Native goals otherwise continue only in interactive mode. This overlay changes
 	// this process alone and leaves the user's persistent configuration untouched.
@@ -155,17 +171,14 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 	}
 	configBytes, err := json.Marshal(configuration)
 	if err != nil {
-		cancel()
-		return nil, errors.Join(fmt.Errorf("encode the Oh My Pi runtime configuration: %w", err), directory.Close())
+		return failLaunch(fmt.Errorf("encode the Oh My Pi runtime configuration: %w", err))
 	}
 	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
-		cancel()
-		return nil, errors.Join(fmt.Errorf("write the Oh My Pi runtime configuration: %w", err), directory.Close())
+		return failLaunch(fmt.Errorf("write the Oh My Pi runtime configuration: %w", err))
 	}
 	steerExtension, steerBridge, err := writeOMPSteerBridge(directory.Path())
 	if err != nil {
-		cancel()
-		return nil, errors.Join(err, directory.Close())
+		return failLaunch(err)
 	}
 	prepared, err := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
@@ -176,8 +189,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		WorkingDir:   opts.WorkingDir,
 	})
 	if err != nil {
-		cancel()
-		return nil, errors.Join(err, directory.Close())
+		return failLaunch(err)
 	}
 	cmd := prepared.Cmd
 
@@ -185,7 +197,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 
 	pipes, err := providerkit.SetupLaunchPipes(prepared, cancel)
 	if err != nil {
-		return nil, errors.Join(err, directory.Close())
+		return failLaunch(err)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
@@ -204,7 +216,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 	a.startupSnapshot.Store(true)
 
 	if err := a.StartCmd(); err != nil {
-		return nil, errors.Join(err, directory.Close())
+		return failLaunch(err)
 	}
 	a.DrainStderr(stderrPipe)
 	go a.ReadOutput(a.NewOutputScanner(stdout), a.interceptFrame, a.handleFrame)
@@ -212,6 +224,7 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 	cleanup := func() {
 		a.Stop()
 		_ = a.Wait()
+		removeForkedSession()
 	}
 	a.sessionMu.Lock()
 	err = a.handshake(opts.EffectiveStartupTimeout())

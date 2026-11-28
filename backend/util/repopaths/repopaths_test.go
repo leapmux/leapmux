@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,18 +48,13 @@ func TestGitToplevelAndExclude_RegularRepoAndSubdir(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, wantExclude, gotExclude)
 
-	assert.Equal(t, filepath.Join(repo, ".leapmux", "conf"), CategoryDir(sub, "conf"))
-
-	tmpDir, err := EnsureTmpDir(sub)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(repo, ".leapmux", "tmp"), tmpDir)
-	assert.DirExists(t, tmpDir)
+	require.NoError(t, EnsureTmpExcluded(sub))
 
 	// git check-ignore confirms Git actually ignores files under .leapmux/tmp/.
 	runGit(t, repo, "check-ignore", "-q", ".leapmux/tmp/foo")
 }
 
-func TestGitInfoExcludePathAndEnsureTmpDir_LinkedWorktree(t *testing.T) {
+func TestGitInfoExcludePathAndEnsureTmpExcluded_LinkedWorktree(t *testing.T) {
 	t.Parallel()
 
 	mainRepo := testutil.NewGitRepo(t)
@@ -86,10 +82,7 @@ func TestGitInfoExcludePathAndEnsureTmpDir_LinkedWorktree(t *testing.T) {
 	}
 	assert.Equal(t, filepath.Clean(wantExclude), filepath.Clean(gotExcludeEval))
 
-	tmpDir, err := EnsureTmpDir(wtSub)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(wtDir, ".leapmux", "tmp"), tmpDir)
-	assert.DirExists(t, tmpDir)
+	require.NoError(t, EnsureTmpExcluded(wtSub))
 
 	// Both the main checkout and the linked worktree must ignore .leapmux/tmp/foo.
 	runGit(t, mainRepo, "check-ignore", "-q", ".leapmux/tmp/foo")
@@ -139,17 +132,9 @@ func TestNonGitDir(t *testing.T) {
 	assert.False(t, ok)
 	assert.Empty(t, top)
 
-	// CategoryDir falls back to <dir>/.leapmux/<category>.
-	assert.Equal(t, filepath.Join(dir, ".leapmux", "tmp"), CategoryDir(dir, "tmp"))
-
-	// EnsureTmpExcluded is a no-op outside a git repo.
+	// EnsureTmpExcluded and EnsureTmpExcludedIfInside are no-ops outside a git repo.
 	require.NoError(t, EnsureTmpExcluded(dir))
-
-	// EnsureTmpDir still creates <dir>/.leapmux/tmp without error.
-	tmpDir, err := EnsureTmpDir(dir)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dir, ".leapmux", "tmp"), tmpDir)
-	assert.DirExists(t, tmpDir)
+	require.NoError(t, EnsureTmpExcludedIfInside(filepath.Join(dir, ".leapmux", "tmp", "file.json")))
 }
 
 func TestEnsureTmpExcluded_IdempotencyAndEdgeCases(t *testing.T) {
@@ -228,7 +213,7 @@ func TestEnsureTmpExcluded_IdempotencyAndEdgeCases(t *testing.T) {
 		assert.Equal(t, ".leapmux/tmp/\n", string(got))
 	})
 
-	t.Run("exclude path as directory returns error from EnsureTmpExcluded and EnsureTmpDir", func(t *testing.T) {
+	t.Run("exclude path as directory returns error from EnsureTmpExcluded", func(t *testing.T) {
 		t.Parallel()
 		repo := testutil.NewGitRepo(t)
 		excludePath := filepath.Join(repo, ".git", "info", "exclude")
@@ -238,11 +223,97 @@ func TestEnsureTmpExcluded_IdempotencyAndEdgeCases(t *testing.T) {
 		err := EnsureTmpExcluded(repo)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "is a directory")
+	})
 
-		tmpDir, err := EnsureTmpDir(repo)
-		require.Error(t, err)
-		assert.ErrorContains(t, err, "is a directory")
-		assert.Equal(t, filepath.Join(repo, ".leapmux", "tmp"), tmpDir)
+	t.Run("symlinked info/exclude preserves symlink and updates resolved target", func(t *testing.T) {
+		t.Parallel()
+		repo := testutil.NewGitRepo(t)
+		excludePath := filepath.Join(repo, ".git", "info", "exclude")
+		targetDir := t.TempDir()
+		targetPath := filepath.Join(targetDir, "shared-exclude")
+		require.NoError(t, os.WriteFile(targetPath, []byte("*.bak\n"), 0o600))
+		require.NoError(t, os.Remove(excludePath))
+		if err := os.Symlink(targetPath, excludePath); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("symlink creation unavailable on Windows: %v", err)
+			}
+			require.NoError(t, err)
+		}
+
+		require.NoError(t, EnsureTmpExcluded(repo))
+
+		lfi, err := os.Lstat(excludePath)
+		require.NoError(t, err)
+		assert.NotZero(t, lfi.Mode()&os.ModeSymlink, "info/exclude must remain a symlink")
+
+		gotTarget, err := os.ReadFile(targetPath)
+		require.NoError(t, err)
+		assert.Equal(t, "*.bak\n.leapmux/tmp/\n", string(gotTarget))
+
+		runGit(t, repo, "check-ignore", "-q", ".leapmux/tmp/foo")
+	})
+
+	t.Run("concurrent EnsureTmpExcluded writes entry once with lock file", func(t *testing.T) {
+		t.Parallel()
+		repo := testutil.NewGitRepo(t)
+		excludePath := filepath.Join(repo, ".git", "info", "exclude")
+		require.NoError(t, os.WriteFile(excludePath, []byte("*.tmp\n"), 0o644))
+
+		const workers = 8
+		var wg sync.WaitGroup
+		errs := make([]error, workers)
+		for i := range workers {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				errs[idx] = EnsureTmpExcluded(repo)
+			}(i)
+		}
+		wg.Wait()
+		for _, err := range errs {
+			require.NoError(t, err)
+		}
+
+		got, err := os.ReadFile(excludePath)
+		require.NoError(t, err)
+		assert.Equal(t, 1, strings.Count(string(got), ".leapmux/tmp/"))
+		assert.FileExists(t, excludePath+".lock")
+	})
+}
+
+func TestEnsureTmpExcludedIfInside(t *testing.T) {
+	t.Parallel()
+
+	t.Run("excludes when path is inside repo .leapmux/tmp", func(t *testing.T) {
+		t.Parallel()
+		repo := testutil.NewGitRepo(t)
+		excludePath := filepath.Join(repo, ".git", "info", "exclude")
+
+		require.NoError(t, EnsureTmpExcludedIfInside(filepath.Join(repo, ".leapmux", "tmp", "exports", "out.md")))
+		raw, err := os.ReadFile(excludePath)
+		require.NoError(t, err)
+		assert.Contains(t, string(raw), ".leapmux/tmp/")
+	})
+
+	t.Run("does not modify exclude for paths outside .leapmux/tmp", func(t *testing.T) {
+		t.Parallel()
+		repo := testutil.NewGitRepo(t)
+		excludePath := filepath.Join(repo, ".git", "info", "exclude")
+		before, err := os.ReadFile(excludePath)
+		require.NoError(t, err)
+
+		for _, p := range []string{
+			filepath.Join(repo, "transcript.md"),
+			filepath.Join(repo, ".leapmux", "conf", "workspace.yaml"),
+			filepath.Join(repo, ".leapmux", "tmp2", "file.json"),
+			filepath.Join(repo, "sub", ".leapmux", "tmp", "nested.json"),
+		} {
+			require.NoError(t, EnsureTmpExcludedIfInside(p))
+		}
+
+		after, err := os.ReadFile(excludePath)
+		require.NoError(t, err)
+		assert.Equal(t, string(before), string(after))
 	})
 }
 

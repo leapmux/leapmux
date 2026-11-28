@@ -908,8 +908,8 @@ func (s *session) resolveSelfAgentIdentity(listing resolve.Listing) (tabID, work
 
 // resolveChildAgents resolves the "children" relational selector to the
 // deduplicated union of direct virtual child subagents (parent_agent_id) on
-// the calling Worker and open spawned peer agents (spawned_by_agent_id) across
-// online Workers.
+// the calling Worker and open spawned peer agents (spawned_by_agent_id) in
+// listing.Tabs (scoped to --workspace when set, otherwise across all workspaces).
 func (s *session) resolveChildAgents(listing resolve.Listing) ([]tabTarget, error) {
 	parentID, workerID, err := s.resolveSelfAgentIdentity(listing)
 	if err != nil {
@@ -918,13 +918,42 @@ func (s *session) resolveChildAgents(listing resolve.Listing) ([]tabTarget, erro
 	if parentID == "" || workerID == "" {
 		return nil, cli.Usagef(`"children" selects subagents of the calling agent, and this shell does not run inside a LeapMux agent tab`)
 	}
-	var resp leapmuxv1.ListAgentsResponse
-	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
-		TabIds:             []string{parentID},
-		IncludeDescendants: true,
-	}, &resp); err != nil {
+
+	listTabs := listing.Tabs
+	if listTabs == nil {
+		listTabs = s.listAllTabs
+	}
+
+	var (
+		resp    leapmuxv1.ListAgentsResponse
+		tabs    []*leapmuxv1.WorkspaceTab
+		tabsErr error
+	)
+	g, gctx := errgroup.WithContext(s.ctx)
+	g.Go(func() error {
+		return callInnerRPC(gctx, s.c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
+			TabIds:             []string{parentID},
+			IncludeDescendants: true,
+			SpawnedByAgentIds:  []string{parentID},
+		}, &resp)
+	})
+	g.Go(func() error {
+		listed, err := listTabs(gctx)
+		if err != nil {
+			code := connect.CodeOf(err)
+			if code == connect.CodePermissionDenied || code == connect.CodeUnimplemented {
+				tabsErr = err
+				return nil
+			}
+			return err
+		}
+		tabs = listed
+		return nil
+	})
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+
 	seen := map[string]bool{}
 	var out []tabTarget
 	for _, a := range resp.GetAgents() {
@@ -938,37 +967,83 @@ func (s *session) resolveChildAgents(listing resolve.Listing) ([]tabTarget, erro
 		}
 	}
 
-	tabs, tabsErr := s.listAllTabs(s.ctx)
-	if tabsErr != nil {
-		code := connect.CodeOf(tabsErr)
-		if code != connect.CodePermissionDenied && code != connect.CodeUnimplemented {
-			return nil, tabsErr
-		}
-	} else {
-		agentTabs := filterTabsByType(tabs, leapmuxv1.TabType_TAB_TYPE_AGENT)
-		details := s.fetchTabDetailsCached(s.ctx, agentTabs)
-		var spawned []tabTarget
-		for _, t := range agentTabs {
-			id := t.GetTab().GetTabId()
-			if id == "" || id == parentID || seen[id] {
+	if tabsErr == nil {
+		openTabByID := map[string]*leapmuxv1.WorkspaceTab{}
+		otherWorkerSet := map[string]struct{}{}
+		for _, t := range filterTabsByType(tabs, leapmuxv1.TabType_TAB_TYPE_AGENT) {
+			tid := t.GetTab().GetTabId()
+			if tid == "" || tid == parentID || seen[tid] {
 				continue
 			}
-			if d := details[id]; d.Agent != nil && d.Agent.GetSpawnedByAgentId() == parentID {
-				seen[id] = true
-				spawned = append(spawned, tabTarget{
-					ID:          id,
-					Type:        leapmuxv1.TabType_TAB_TYPE_AGENT,
-					WorkerID:    t.GetWorkerId(),
-					WorkspaceID: t.GetWorkspaceId(),
-					TileID:      t.GetTileId(),
-					Row:         t,
-				})
+			openTabByID[tid] = t
+			if wk := t.GetWorkerId(); wk != "" && wk != workerID {
+				otherWorkerSet[wk] = struct{}{}
 			}
 		}
-		slices.SortFunc(spawned, func(a, b tabTarget) int {
-			return strings.Compare(a.ID, b.ID)
-		})
-		out = append(out, spawned...)
+
+		if len(openTabByID) > 0 {
+			var spawned []tabTarget
+			appendSpawned := func(agents []*leapmuxv1.AgentInfo) {
+				for _, a := range agents {
+					if a.GetParentAgentId() != "" || a.GetSpawnedByAgentId() != parentID {
+						continue
+					}
+					aid := a.GetId()
+					if aid == "" || aid == parentID || seen[aid] {
+						continue
+					}
+					t, open := openTabByID[aid]
+					if !open {
+						continue
+					}
+					seen[aid] = true
+					spawned = append(spawned, tabTarget{
+						ID:          aid,
+						Type:        leapmuxv1.TabType_TAB_TYPE_AGENT,
+						WorkerID:    t.GetWorkerId(),
+						WorkspaceID: t.GetWorkspaceId(),
+						TileID:      t.GetTileId(),
+						Row:         t,
+					})
+				}
+			}
+
+			// The calling Worker was already queried with SpawnedByAgentIds above.
+			appendSpawned(resp.GetAgents())
+
+			if len(otherWorkerSet) > 0 {
+				otherWorkers := make([]string, 0, len(otherWorkerSet))
+				for wk := range otherWorkerSet {
+					otherWorkers = append(otherWorkers, wk)
+				}
+				slices.Sort(otherWorkers)
+
+				otherResults := make([][]*leapmuxv1.AgentInfo, len(otherWorkers))
+				var otherGroup errgroup.Group
+				otherGroup.SetLimit(detailFanoutLimit)
+				for i, wk := range otherWorkers {
+					otherGroup.Go(func() error {
+						var wkResp leapmuxv1.ListAgentsResponse
+						if err := callInnerRPC(s.ctx, s.c, wk, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
+							SpawnedByAgentIds: []string{parentID},
+						}, &wkResp); err != nil {
+							return nil
+						}
+						otherResults[i] = wkResp.GetAgents()
+						return nil
+					})
+				}
+				_ = otherGroup.Wait()
+				for _, agents := range otherResults {
+					appendSpawned(agents)
+				}
+			}
+
+			slices.SortFunc(spawned, func(a, b tabTarget) int {
+				return strings.Compare(a.ID, b.ID)
+			})
+			out = append(out, spawned...)
+		}
 	}
 
 	if len(out) == 0 {

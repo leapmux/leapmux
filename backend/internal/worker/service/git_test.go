@@ -3802,19 +3802,141 @@ func TestDeleteBranch_RemotePrefixCollisionRequiresBothRefs(t *testing.T) {
 	assert.Equal(t, "main", strings.TrimSpace(branch))
 }
 
-func TestDeleteBranch_RejectsEmptySwitchTo(t *testing.T) {
+func TestDeleteBranch_OptionalSwitchTo_NonCurrentKeepsCurrentWithoutCheckout(t *testing.T) {
 	t.Parallel()
 
 	repoDir := initRepo(t)
-	run(t, repoDir, "git", "checkout", "-b", "doomed")
+	run(t, repoDir, "git", "branch", "feature/old")
+	run(t, repoDir, "git", "checkout", "-b", "feature/current")
+	// Leave an uncommitted edit on feature/current to confirm deleting another
+	// branch does not invoke git checkout.
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("wip\n"), 0o600))
 
-	err := deleteBranchInDir(context.Background(), repoDir, "doomed", "")
-	require.ErrorIs(t, err, gitutil.ErrInvalidArgument)
-	// Exact-match for the same reason as TestDeleteBranch_SwitchEqualsDelete.
-	assert.Equal(t,
-		"switch_to_branch is required: invalid argument",
-		err.Error(),
-	)
+	require.NoError(t, deleteBranchInDir(context.Background(), repoDir, "feature/old", ""))
+
+	branch, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, "feature/current", strings.TrimSpace(branch))
+
+	_, err = gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/feature/old")
+	assert.Error(t, err, "deleted branch must be removed")
+
+	content, err := os.ReadFile(filepath.Join(repoDir, "dirty.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "wip\n", string(content))
+}
+
+func TestDeleteBranch_OptionalSwitchTo_DetachedHeadStaysDetached(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "branch", "doomed")
+	run(t, repoDir, "git", "checkout", "--detach", "HEAD")
+	headBefore, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+
+	require.NoError(t, deleteBranchInDir(context.Background(), repoDir, "doomed", ""))
+
+	headAfter, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(headBefore), strings.TrimSpace(headAfter))
+
+	_, symErr := gitutil.Output(context.Background(), repoDir, "symbolic-ref", "--quiet", "HEAD")
+	assert.Error(t, symErr, "HEAD must remain detached")
+
+	_, refErr := gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/doomed")
+	assert.Error(t, refErr, "doomed branch must be deleted")
+}
+
+func TestDeleteBranch_OptionalSwitchTo_CurrentBranchSwitchesToFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("prefers main over master", func(t *testing.T) {
+		t.Parallel()
+		repoDir := initRepo(t)
+		run(t, repoDir, "git", "branch", "master")
+		run(t, repoDir, "git", "checkout", "-b", "topic")
+
+		require.NoError(t, deleteBranchInDir(context.Background(), repoDir, "topic", ""))
+
+		branch, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+		require.NoError(t, err)
+		assert.Equal(t, "main", strings.TrimSpace(branch))
+		_, err = gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/topic")
+		assert.Error(t, err)
+	})
+
+	t.Run("falls back to master when main is absent", func(t *testing.T) {
+		t.Parallel()
+		repoDir := initRepo(t)
+		run(t, repoDir, "git", "branch", "-m", "main", "master")
+		run(t, repoDir, "git", "branch", "dev")
+		run(t, repoDir, "git", "checkout", "-b", "topic")
+
+		require.NoError(t, deleteBranchInDir(context.Background(), repoDir, "topic", ""))
+
+		branch, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+		require.NoError(t, err)
+		assert.Equal(t, "master", strings.TrimSpace(branch))
+		_, err = gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/topic")
+		assert.Error(t, err)
+	})
+
+	t.Run("uses sole remaining local branch and ignores remote refs", func(t *testing.T) {
+		t.Parallel()
+		repoDir := initRepo(t)
+		headSHA, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
+		require.NoError(t, err)
+		run(t, repoDir, "git", "update-ref", "refs/remotes/origin/main", strings.TrimSpace(headSHA))
+		run(t, repoDir, "git", "branch", "-m", "main", "release")
+		run(t, repoDir, "git", "checkout", "-b", "topic")
+
+		require.NoError(t, deleteBranchInDir(context.Background(), repoDir, "topic", ""))
+
+		branch, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+		require.NoError(t, err)
+		assert.Equal(t, "release", strings.TrimSpace(branch))
+		_, err = gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/topic")
+		assert.Error(t, err)
+	})
+}
+
+func TestDeleteBranch_OptionalSwitchTo_CurrentBranchAmbiguousOrSoleFails(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ambiguous non-default local branches return InvalidArgument", func(t *testing.T) {
+		t.Parallel()
+		repoDir := initRepo(t)
+		run(t, repoDir, "git", "branch", "-m", "main", "topic")
+		run(t, repoDir, "git", "branch", "dev")
+		run(t, repoDir, "git", "branch", "staging")
+
+		err := deleteBranchInDir(context.Background(), repoDir, "topic", "")
+		require.ErrorIs(t, err, gitutil.ErrInvalidArgument)
+		assert.Contains(t, err.Error(), `cannot choose a branch to switch to before deleting current branch "topic"`)
+
+		branch, gitErr := gitutil.Output(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+		require.NoError(t, gitErr)
+		assert.Equal(t, "topic", strings.TrimSpace(branch))
+		_, gitErr = gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", "refs/heads/topic")
+		require.NoError(t, gitErr)
+	})
+
+	t.Run("sole local branch returns InvalidArgument even when remote refs exist", func(t *testing.T) {
+		t.Parallel()
+		repoDir := initRepo(t)
+		headSHA, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
+		require.NoError(t, err)
+		run(t, repoDir, "git", "update-ref", "refs/remotes/origin/main", strings.TrimSpace(headSHA))
+		run(t, repoDir, "git", "branch", "-m", "main", "only")
+
+		err = deleteBranchInDir(context.Background(), repoDir, "only", "")
+		require.ErrorIs(t, err, gitutil.ErrInvalidArgument)
+
+		branch, gitErr := gitutil.Output(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+		require.NoError(t, gitErr)
+		assert.Equal(t, "only", strings.TrimSpace(branch))
+	})
 }
 
 // runBranchMutation's whole job is mapping fn's error category to the

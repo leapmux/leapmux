@@ -4,13 +4,17 @@
 package repopaths
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/leapmux/leapmux/util/pathutil"
 )
@@ -20,6 +24,7 @@ const (
 	tmpCategory      = "tmp"
 	tmpExcludeEntry  = ".leapmux/tmp/"
 	tmpExcludeNoSlsh = ".leapmux/tmp"
+	excludeLockWait  = 10 * time.Second
 )
 
 var excludeMu sync.Mutex
@@ -102,6 +107,10 @@ func GitInfoExcludePath(dir string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	return gitInfoExcludePathForLocation(loc)
+}
+
+func gitInfoExcludePathForLocation(loc gitLocation) (string, bool) {
 	excludeRoot := loc.gitDir
 	commonDirFile := filepath.Join(loc.gitDir, "commondir")
 	raw, err := os.ReadFile(commonDirFile)
@@ -119,15 +128,6 @@ func GitInfoExcludePath(dir string) (string, bool) {
 	return filepath.Join(excludeRoot, "info", "exclude"), true
 }
 
-// CategoryDir returns <git-toplevel>/.leapmux/<category> when dir is inside a
-// Git repository, or <dir>/.leapmux/<category> otherwise.
-func CategoryDir(dir, category string) string {
-	if toplevel, ok := GitToplevel(dir); ok {
-		return filepath.Join(toplevel, leapmuxDirName, category)
-	}
-	return filepath.Join(dir, leapmuxDirName, category)
-}
-
 // EnsureTmpExcluded ensures the repository's local Git info/exclude file lists
 // .leapmux/tmp/. It returns nil when dir is not inside a Git repository, and is
 // idempotent when .leapmux/tmp or .leapmux/tmp/ is already present.
@@ -136,7 +136,10 @@ func EnsureTmpExcluded(dir string) error {
 	if !ok {
 		return nil
 	}
+	return ensureTmpExcludedAt(excludePath)
+}
 
+func ensureTmpExcludedAt(excludePath string) error {
 	excludeMu.Lock()
 	defer excludeMu.Unlock()
 
@@ -144,23 +147,51 @@ func EnsureTmpExcluded(dir string) error {
 		return fmt.Errorf("create git info directory %s: %w", filepath.Dir(excludePath), err)
 	}
 
+	lockPath := excludePath + ".lock"
+	lockFile, err := filelock.Open(lockPath, false)
+	if err != nil {
+		return fmt.Errorf("open git exclude lock %s: %w", lockPath, err)
+	}
+	defer func() { _ = lockFile.Close() }()
+
+	lockCtx, cancel := context.WithTimeout(context.Background(), excludeLockWait)
+	defer cancel()
+	if err := filelock.Lock(lockCtx, lockFile); err != nil {
+		return fmt.Errorf("lock git exclude file %s: %w", excludePath, err)
+	}
+	defer func() { _ = filelock.Unlock(lockFile) }()
+
+	// Preserve a symlinked info/exclude file by resolving its target before
+	// atomic replacement so the symlink itself is never replaced with a regular
+	// file.
+	targetPath := excludePath
+	if lfi, lstatErr := os.Lstat(excludePath); lstatErr == nil && lfi.Mode()&os.ModeSymlink != 0 {
+		resolved, evalErr := filepath.EvalSymlinks(excludePath)
+		if evalErr != nil {
+			return fmt.Errorf("resolve git exclude symlink %s: %w", excludePath, evalErr)
+		}
+		targetPath = resolved
+	} else if lstatErr != nil && !errors.Is(lstatErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect git exclude file %s: %w", excludePath, lstatErr)
+	}
+
 	mode := os.FileMode(0o644)
 	var existing []byte
-	fi, statErr := os.Stat(excludePath)
+	fi, statErr := os.Stat(targetPath)
 	if statErr == nil {
 		if fi.IsDir() {
-			return fmt.Errorf("git exclude path %s is a directory", excludePath)
+			return fmt.Errorf("git exclude path %s is a directory", targetPath)
 		}
 		if perm := fi.Mode().Perm(); perm != 0 {
 			mode = perm
 		}
 		var readErr error
-		existing, readErr = os.ReadFile(excludePath)
+		existing, readErr = os.ReadFile(targetPath)
 		if readErr != nil {
-			return fmt.Errorf("read git exclude file %s: %w", excludePath, readErr)
+			return fmt.Errorf("read git exclude file %s: %w", targetPath, readErr)
 		}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("inspect git exclude file %s: %w", excludePath, statErr)
+		return fmt.Errorf("inspect git exclude file %s: %w", targetPath, statErr)
 	}
 
 	if hasTmpExcludeEntry(existing) {
@@ -176,8 +207,8 @@ func EnsureTmpExcluded(dir string) error {
 	b.WriteString(tmpExcludeEntry)
 	b.WriteByte('\n')
 
-	if err := atomicfile.WriteFile(excludePath, []byte(b.String()), mode); err != nil {
-		return fmt.Errorf("write git exclude file %s: %w", excludePath, err)
+	if err := atomicfile.WriteFile(targetPath, []byte(b.String()), mode); err != nil {
+		return fmt.Errorf("write git exclude file %s: %w", targetPath, err)
 	}
 	return nil
 }
@@ -195,38 +226,70 @@ func hasTmpExcludeEntry(raw []byte) bool {
 	return false
 }
 
-// EnsureTmpDir creates <base>/.leapmux/tmp (resolved via CategoryDir) and
-// excludes .leapmux/tmp/ in the repository's local Git exclude file when inside
-// a Git repository.
-func EnsureTmpDir(dir string) (string, error) {
-	tmpDir := CategoryDir(dir, tmpCategory)
-	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return "", fmt.Errorf("create leapmux tmp directory %s: %w", tmpDir, err)
+func containsLeapMuxTmpSegments(abs string) bool {
+	parts := strings.Split(filepath.ToSlash(abs), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if pathSegmentEqual(parts[i], leapmuxDirName) && pathSegmentEqual(parts[i+1], tmpCategory) {
+			return true
+		}
 	}
-	if err := EnsureTmpExcluded(dir); err != nil {
-		return tmpDir, err
+	return false
+}
+
+func pathSegmentEqual(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
 	}
-	return tmpDir, nil
+	return a == b
+}
+
+func resolveInsideLeapMuxTmp(path string) (gitLocation, bool) {
+	if strings.TrimSpace(path) == "" {
+		return gitLocation{}, false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return gitLocation{}, false
+	}
+	abs = filepath.Clean(abs)
+	// Fast path: skip walking parent directories for .git unless the cleaned
+	// path actually contains the ".leapmux" and "tmp" segments in sequence.
+	if !containsLeapMuxTmpSegments(abs) {
+		return gitLocation{}, false
+	}
+	loc, ok := findGitLocation(abs)
+	if !ok {
+		return gitLocation{}, false
+	}
+	tmpDir := filepath.Join(loc.toplevel, leapmuxDirName, tmpCategory)
+	if !pathutil.HasPathPrefix(abs, tmpDir) {
+		return gitLocation{}, false
+	}
+	return loc, true
 }
 
 // IsInsideLeapMuxTmp reports whether path lies at or inside
 // <git-toplevel>/.leapmux/tmp for the Git repository enclosing path.
 func IsInsideLeapMuxTmp(path string) (toplevel string, ok bool) {
-	if strings.TrimSpace(path) == "" {
-		return "", false
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", false
-	}
-	abs = filepath.Clean(abs)
-	toplevel, ok = GitToplevel(abs)
+	loc, ok := resolveInsideLeapMuxTmp(path)
 	if !ok {
 		return "", false
 	}
-	tmpDir := filepath.Join(toplevel, leapmuxDirName, tmpCategory)
-	if !pathutil.HasPathPrefix(abs, tmpDir) {
-		return "", false
+	return loc.toplevel, true
+}
+
+// EnsureTmpExcludedIfInside ensures the repository's local Git info/exclude
+// file lists .leapmux/tmp/ when path lies at or inside
+// <git-toplevel>/.leapmux/tmp. It inspects path segments in memory before
+// walking the filesystem for .git, and resolves the Git location at most once.
+func EnsureTmpExcludedIfInside(path string) error {
+	loc, ok := resolveInsideLeapMuxTmp(path)
+	if !ok {
+		return nil
 	}
-	return toplevel, true
+	excludePath, ok := gitInfoExcludePathForLocation(loc)
+	if !ok {
+		return nil
+	}
+	return ensureTmpExcludedAt(excludePath)
 }

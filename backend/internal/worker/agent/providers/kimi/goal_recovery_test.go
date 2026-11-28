@@ -14,7 +14,7 @@ func TestKimiNativeGoalFeedPreservesRESTMetadata(t *testing.T) {
 	t.Parallel()
 	fake, server := newFakeKap(t)
 	fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Permission: "manual", Goal: goalSnapshot("active")})
-	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored"})
+	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{Session: agent.ResumeSession("session_stored")})
 	waitFor(t, func() bool {
 		goal, present := rig.sink.LastGoal()
 		return present && goal.NativeID == "goal_1"
@@ -68,7 +68,7 @@ func testKimiGoalMetadataOrdering(t *testing.T, clear bool) {
 			}
 		},
 	})
-	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored"})
+	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{Session: agent.ResumeSession("session_stored")})
 	defer releaseResponse()
 	select {
 	case <-entered:

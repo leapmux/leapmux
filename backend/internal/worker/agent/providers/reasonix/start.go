@@ -79,9 +79,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			// The CLI already selects a new session's model. Its reply gives the canonical
 			// selector value, which can differ from the launch alias. A loaded session
 			// still needs the requested model applied after it restores its saved selection.
-			if opts.ResumeSessionID == "" && handshake.CurrentModelID != "" {
+			if !opts.Session.IsResume() && handshake.CurrentModelID != "" {
 				requestedModel = handshake.CurrentModelID
-			} else if opts.ResumeSessionID != "" && !slices.ContainsFunc(handshake.Models, func(info acp.ModelInfo) bool { return info.ModelID == model }) {
+			} else if opts.Session.IsResume() && !slices.ContainsFunc(handshake.Models, func(info acp.ModelInfo) bool { return info.ModelID == model }) {
 				var err error
 				handshake, err = a.resumeReasonixModel(handshake, model, opts.WorkingDir)
 				if err != nil {

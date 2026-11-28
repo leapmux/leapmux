@@ -616,7 +616,6 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 		return gitModeResult{}, fmt.Errorf("failed to create worktree: %w", addErr)
 	}
 	slog.Info("worktree created", "worktree_path", plan.WorktreePath, "branch_name", plan.BranchName)
-	ensureWorktreeTmpExcluded(plan.WorktreePath)
 
 	if err := ctx.Err(); err != nil {
 		return result, err
@@ -635,8 +634,8 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 }
 
 // ensureWorktreeTmpExcluded ensures the repository's local Git info/exclude
-// ignores .leapmux/tmp/ after a linked worktree is created. Best-effort: an
-// exclude error is logged and never fails worktree creation.
+// ignores .leapmux/tmp/ for every tracked linked worktree (created, recovered,
+// or adopted). Best-effort: an exclude error is logged and never fails tracking.
 func ensureWorktreeTmpExcluded(worktreePath string) {
 	if err := repopaths.EnsureTmpExcluded(worktreePath); err != nil {
 		slog.Warn("failed to exclude .leapmux/tmp/ in git info/exclude",
@@ -900,6 +899,7 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 
 	existing, err := svc.Queries.GetWorktreeByPath(ctx, canonicalPath)
 	if err == nil {
+		ensureWorktreeTmpExcluded(canonicalPath)
 		return existing.ID, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -938,13 +938,18 @@ func (svc *Service) storeTrackedWorktree(ctx context.Context, canonicalPath, rep
 	// -- opening two agents on one worktree ("use existing worktree") starts
 	// two async startups that both miss, and both insert -- so the insert
 	// completing is NOT proof that our minted id is the stored one.
-	return svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
+	stored, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
 		ID:           id.Generate(),
 		WorktreePath: canonicalPath,
 		RepoRoot:     repoRoot,
 		RepoGitDir:   repoGitDir,
 		BranchName:   branchName,
 	})
+	if err != nil {
+		return db.Worktree{}, err
+	}
+	ensureWorktreeTmpExcluded(canonicalPath)
+	return stored, nil
 }
 
 // worktreeRemoveArgs builds the argv for `git worktree remove`. It is the one

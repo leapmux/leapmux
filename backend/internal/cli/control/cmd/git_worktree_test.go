@@ -398,3 +398,31 @@ func TestWorktreeCreate_OptionalDirUsesTabOrLocalCwdAndRefusesOtherWorker(t *tes
 		assert.Empty(t, disp.createReqs)
 	})
 }
+
+func TestGitWorktreeBranch_RemoteHubNeverLeaksTabWorkingDir(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "worktree get", args: []string{"worktree", "get", "branch:feat"}},
+		{name: "worktree remove", args: []string{"worktree", "remove", "branch:feat"}},
+		{name: "worktree inspect", args: []string{"worktree", "inspect", "branch:feat"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			disp := &worktreeTestDispatcher{}
+			hub := &recordingHub{workers: []*leapmuxv1.Worker{{Id: "worker-A", Online: true}}}
+			h := startHubChannelHarness(t, hub, disp)
+			h.dispatcher.Handle(leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure, channel.Registration{}, disp.DispatchWith)
+			t.Setenv(controlenv.SocketVariable, "unix:/tmp/tab-sock")
+			t.Setenv(controlenv.TokenVariable, "tok")
+			t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+			t.Setenv(controlenv.WorkingDirVariable, "/local/tab")
+
+			args := append(append([]string(nil), tc.args...), "--hub", h.url, "--worker", "worker-A")
+			f := runControl(t, args...).requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, "branch selection requires --dir on the selected worker")
+			assert.Equal(t, 0, h.channelOpens())
+			assert.Empty(t, disp.calledMethods())
+		})
+	}
+}

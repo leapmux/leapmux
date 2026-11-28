@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,6 +18,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/leapmux/leapmux/util/repopaths"
 )
 
@@ -327,36 +329,17 @@ func runAgentExport(inv *cli.Invocation) (any, error) {
 	}
 
 	var (
-		tmpFile        *os.File
-		tmpPath        string
-		cleanupTmp     bool
-		closeAttempted bool
-		streamWriter   *exportStreamWriter
-		projectedRows  []agentMessage
-		emitRow        func(agentMessage) error
+		exportBuf     bytes.Buffer
+		streamWriter  *exportStreamWriter
+		projectedRows []agentMessage
+		emitRow       func(agentMessage) error
 	)
 	if outPath != "" {
 		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "create directory for --output")
 		}
-		if toplevel, ok := repopaths.IsInsideLeapMuxTmp(outPath); ok {
-			_ = repopaths.EnsureTmpExcluded(toplevel)
-		}
-		tmpFile, err = os.CreateTemp(filepath.Dir(outPath), ".leapmux-export-*")
-		if err != nil {
-			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
-		}
-		tmpPath = tmpFile.Name()
-		cleanupTmp = true
-		defer func() {
-			if cleanupTmp {
-				if !closeAttempted {
-					_ = tmpFile.Close()
-				}
-				_ = os.Remove(tmpPath)
-			}
-		}()
-		streamWriter = &exportStreamWriter{bw: bufio.NewWriter(tmpFile), style: style}
+		_ = repopaths.EnsureTmpExcludedIfInside(outPath)
+		streamWriter = &exportStreamWriter{bw: bufio.NewWriter(&exportBuf), style: style}
 		emitRow = func(msg agentMessage) error {
 			if err := streamWriter.writeRow(msg); err != nil {
 				return cli.Wrap(cli.CodeInternal, err, "write --output")
@@ -423,17 +406,9 @@ func runAgentExport(inv *cli.Invocation) (any, error) {
 		if err := streamWriter.finish(); err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
 		}
-		if err := tmpFile.Sync(); err != nil {
+		if err := atomicfile.WriteFile(outPath, exportBuf.Bytes(), 0o600); err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
 		}
-		closeAttempted = true
-		if err := tmpFile.Close(); err != nil {
-			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
-		}
-		if err := os.Rename(tmpPath, outPath); err != nil {
-			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
-		}
-		cleanupTmp = false
 		return agentExportResult{AgentID: got.ID, Messages: streamWriter.count, Output: outPath}, nil
 	}
 	if projectedRows != nil {

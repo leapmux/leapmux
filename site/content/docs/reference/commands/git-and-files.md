@@ -84,7 +84,7 @@ leapmux git checkout <branch> [flags]
 leapmux git checkout main
 
 # Check out a remote branch.
-leapmux git checkout origin/feature --dir ~/src/app
+leapmux git checkout origin/feature
 ```
 
 ### `leapmux git branch`
@@ -128,7 +128,6 @@ leapmux git branch create <name> [flags]
 
 ```sh
 leapmux git branch create fix-login --base main
-leapmux git branch create fix-login --base main --dir ~/src/app
 ```
 
 #### `leapmux git branch delete`
@@ -145,11 +144,13 @@ leapmux git branch delete <name> [flags]
 |---|---|
 | `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--switch-to string` | the branch to check out before deleting the current branch (default: current branch if deleting another branch, else main/master) |
+| `--switch-to string` | the branch to check out before deleting the current branch (default: keep HEAD if deleting another branch, else main/master) |
 
 ```sh
 leapmux git branch delete fix-login
-leapmux git branch delete fix-login --switch-to main --dir ~/src/app
+
+# Delete the current branch and switch to develop.
+leapmux git branch delete fix-login --switch-to develop
 ```
 
 #### `leapmux git branch inspect`
@@ -169,7 +170,7 @@ leapmux git branch inspect [branch] [flags]
 
 ```sh
 leapmux git branch inspect
-leapmux git branch inspect fix-login --dir ~/src/app
+leapmux git branch inspect fix-login
 ```
 
 ### `leapmux git push`
@@ -189,7 +190,6 @@ leapmux git push [flags]
 
 ```sh
 leapmux git push
-leapmux git push --dir ~/src/app
 ```
 
 ### `leapmux git diff`
@@ -212,7 +212,7 @@ leapmux git diff [path]... [flags]
 
 ```sh
 leapmux git diff
-leapmux git diff --staged --dir ~/src/app
+leapmux git diff --staged
 leapmux git diff --base main backend/cmd/leapmux
 ```
 
@@ -233,7 +233,7 @@ leapmux git log [flags]
 
 ```sh
 leapmux git log
-leapmux git log -n 10 --ref main --dir ~/src/app
+leapmux git log -n 10 --ref main
 ```
 
 ### `leapmux git commit`
@@ -255,7 +255,7 @@ leapmux git commit [flags]
 
 ```sh
 leapmux git commit -m "Fix timeout handling"
-leapmux git commit -a -m "Checkpoint changes" --dir ~/src/app
+leapmux git commit -a -m "Checkpoint changes"
 ```
 
 ## `leapmux worktree`
@@ -281,7 +281,6 @@ leapmux worktree list [flags]
 
 ```sh
 leapmux worktree list
-leapmux worktree list --dir ~/src/app
 ```
 
 ### `leapmux worktree get`
@@ -299,7 +298,7 @@ leapmux worktree get [selector] [flags]
 
 ```sh
 leapmux worktree get
-leapmux worktree get branch:feature/login --dir ~/src/app
+leapmux worktree get branch:feature/login
 leapmux worktree get /path/to/worktree
 ```
 
@@ -322,7 +321,7 @@ leapmux worktree create <branch> [flags]
 
 ```sh
 leapmux worktree create feat/cli-v2
-leapmux worktree create feat/cli-v2 --base main --path ~/wt/cli-v2 --dir ~/src/app
+leapmux worktree create feat/cli-v2 --base main --path ~/wt/cli-v2
 ```
 
 ### `leapmux worktree remove`

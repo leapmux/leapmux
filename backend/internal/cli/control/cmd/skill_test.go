@@ -328,6 +328,8 @@ func TestSkillCLI_LocalFlagGuards(t *testing.T) {
 		{"skill", "uninstall", "   ", "--worker", "worker-A"},
 		{"skill", "uninstall", "leapmux", "--worker", "worker-A", "--target", customTarget},
 		{"skill", "uninstall", "leapmux", "--worker", "worker-A", "--target", "auto"},
+		{"skill", "uninstall", "leapmux", "--worker", "worker-A", "--target", "claude"},
+		{"skill", "uninstall", "--all", "--worker", "worker-A", "--target", "claude"},
 		{"skill", "uninstall", "leapmux", "--worker", "worker-A", "--scope", "project"},
 		{"skill", "diff", "--hub", "https://hub.example"},
 		{"skill", "diff", "--all", "leapmux"},
@@ -1099,4 +1101,25 @@ func TestSkillCLI_Diff(t *testing.T) {
 		f := o.requireFailure(t, cli.CodeConflict)
 		assert.Empty(t, f.Hints)
 	}
+}
+
+func TestSkillCLI_DiffSanitizesTerminalEscapes(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "escape-diff")
+	targetFlag := "dir:" + targetDir
+
+	o := runControl(t, "skill", "install", "leapmux", "--target", targetFlag)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+
+	skillMD := filepath.Join(targetDir, "leapmux", "SKILL.md")
+	orig, err := os.ReadFile(skillMD)
+	require.NoError(t, err)
+	injected := "\n# \x1b]0;pwned-title\x07\x1b]52;c;cHdu\x1b\\\x1b[31mred-alert\x1b[0m\n"
+	require.NoError(t, os.WriteFile(skillMD, append(orig, []byte(injected)...), 0o644))
+
+	o = runControlText(t, "skill", "diff", "--target", targetFlag)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.NotContains(t, o.Stdout, "\x1b", "CSI and OSC escape sequences must be stripped from skill diff output")
+	assert.NotContains(t, o.Stdout, "\x07", "BEL terminator must be stripped from skill diff output")
+	assert.NotContains(t, o.Stdout, "pwned-title")
+	assert.Contains(t, o.Stdout, "red-alert")
 }

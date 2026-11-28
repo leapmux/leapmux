@@ -174,7 +174,7 @@ func TestKimiWaitEndsTheEventStreamOfAServerThatDied(t *testing.T) {
 
 func TestKimiStartResumesAStoredSession(t *testing.T) {
 	installFakeKimi(t, kimiHelperScenarioEnv+"=stored")
-	_, sink, err := startKimiForTest(t, agent.Options{ResumeSessionID: "session_stored"})
+	_, sink, err := startKimiForTest(t, agent.Options{Session: agent.ResumeSession("session_stored")})
 	require.NoError(t, err)
 	assert.Equal(t, "session_stored", sink.LastSessionID())
 	assert.Equal(t, "kimi-text", sink.LastSettingsRefresh().Model, "the stored session keeps its model")
@@ -182,7 +182,7 @@ func TestKimiStartResumesAStoredSession(t *testing.T) {
 
 func TestKimiStartReportsAFailedResume(t *testing.T) {
 	installFakeKimi(t)
-	_, _, err := startKimiForTest(t, agent.Options{ResumeSessionID: "session_missing"})
+	_, _, err := startKimiForTest(t, agent.Options{Session: agent.ResumeSession("session_missing")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "session_missing")
 }

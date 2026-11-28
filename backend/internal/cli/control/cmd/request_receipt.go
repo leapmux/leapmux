@@ -227,6 +227,9 @@ func buildAgentSendRetryCmd(inv *cli.Invocation, agentID, text string, wait bool
 }
 
 func appendSharedOpenRetryFlags(inv *cli.Invocation, parts []string, stringFlags []string) []string {
+	if inv == nil {
+		return parts
+	}
 	for _, flagName := range stringFlags {
 		if inv.Changed(flagName) {
 			parts = append(parts, "--"+flagName, shellquote.POSIX.Arg(stringFlag(inv, flagName)))
@@ -255,6 +258,20 @@ func appendSharedOpenRetryFlags(inv *cli.Invocation, parts []string, stringFlags
 	return parts
 }
 
+func appendRetryPositionalPrompt(inv *cli.Invocation, parts []string) []string {
+	if inv == nil || !inv.HasArg("prompt") {
+		return parts
+	}
+	prompt := inv.Arg("prompt")
+	if prompt == "" {
+		return parts
+	}
+	if strings.HasPrefix(prompt, "-") {
+		parts = append(parts, "--")
+	}
+	return append(parts, shellquote.POSIX.Arg(prompt))
+}
+
 func buildAgentOpenRetryCmd(inv *cli.Invocation, requestID string) string {
 	parts := []string{"leapmux", "agent", "open"}
 	parts = appendSharedOpenRetryFlags(inv, parts, []string{
@@ -264,37 +281,28 @@ func buildAgentOpenRetryCmd(inv *cli.Invocation, requestID string) string {
 		"before", "after",
 	})
 	parts = append(parts, "--request-id", shellquote.POSIX.Arg(requestID))
-	if inv != nil && inv.HasArg("prompt") {
-		if prompt := inv.Arg("prompt"); prompt != "" {
-			if strings.HasPrefix(prompt, "-") {
-				parts = append(parts, "--")
-			}
-			parts = append(parts, shellquote.POSIX.Arg(prompt))
-		}
-	}
+	parts = appendRetryPositionalPrompt(inv, parts)
 	return strings.Join(parts, " ")
 }
 
 func buildAgentForkRetryCmd(inv *cli.Invocation, requestID string) string {
-	parts := []string{"leapmux", "agent", "fork", shellquote.POSIX.Arg(inv.Arg("agent"))}
-	parts = appendSharedOpenRetryFlags(inv, parts, []string{
-		"model", "effort", "permission-mode", "title", "name",
-		"message", "file", "dir", "worktree", "use-worktree",
-		"checkout", "new-branch", "base", "workspace", "tile", "worker",
-		"before", "after",
-	})
-	if inv != nil && inv.Changed("fresh") && boolFlag(inv, "fresh") {
-		parts = append(parts, "--fresh")
-	}
-	parts = append(parts, "--request-id", shellquote.POSIX.Arg(requestID))
-	if inv != nil && inv.HasArg("prompt") {
-		if prompt := inv.Arg("prompt"); prompt != "" {
-			if strings.HasPrefix(prompt, "-") {
-				parts = append(parts, "--")
-			}
-			parts = append(parts, shellquote.POSIX.Arg(prompt))
+	parts := []string{"leapmux", "agent", "fork"}
+	if inv != nil {
+		if agent := inv.Arg("agent"); agent != "" {
+			parts = append(parts, shellquote.POSIX.Arg(agent))
+		}
+		parts = appendSharedOpenRetryFlags(inv, parts, []string{
+			"model", "effort", "permission-mode", "title", "name",
+			"message", "file", "dir", "worktree", "use-worktree",
+			"checkout", "new-branch", "base", "workspace", "tile", "worker",
+			"before", "after",
+		})
+		if inv.Changed("fresh") && boolFlag(inv, "fresh") {
+			parts = append(parts, "--fresh")
 		}
 	}
+	parts = append(parts, "--request-id", shellquote.POSIX.Arg(requestID))
+	parts = appendRetryPositionalPrompt(inv, parts)
 	return strings.Join(parts, " ")
 }
 
