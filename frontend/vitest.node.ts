@@ -559,6 +559,7 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/binaryOnPath.test.ts',
   'tests/e2e/helpers/captcha.test.ts',
   'tests/e2e/helpers/cleanup.test.ts',
+  'tests/e2e/helpers/cliCoverage.test.ts',
   'tests/e2e/helpers/compaction.test.ts',
   'tests/e2e/helpers/commandCodeEnvironment.test.ts',
   'tests/e2e/helpers/contextUsage.test.ts',
