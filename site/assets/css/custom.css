@@ -1050,13 +1050,17 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 1.75rem;
-  align-items: center;
+  align-items: start;
 }
 
 .lm-showcase-copy,
 .lm-showcase-media {
   min-width: 0;
   max-width: 100%;
+}
+
+.lm-showcase-media .doc-screenshot {
+  margin-block: 0;
 }
 
 .lm-showcase-media pre,
