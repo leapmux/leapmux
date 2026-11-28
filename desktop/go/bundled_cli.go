@@ -112,12 +112,6 @@ func parentN(path string, n int) string {
 	return path
 }
 
-// isRegularExecutable reports whether path is an executable regular file on the
-// host OS.
-func isRegularExecutable(path string) bool {
-	return isRegularExecutableFor(runtime.GOOS, path)
-}
-
 // isRegularExecutableFor reports whether path is a regular file, after
 // following symlinks, that goos can run: one with an exec bit set on Unix, or
 // any regular file on Windows, which has no exec bits. Directories named

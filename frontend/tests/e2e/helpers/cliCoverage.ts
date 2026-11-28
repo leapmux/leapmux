@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import process from 'node:process'
 import ts from 'typescript'
@@ -36,26 +36,17 @@ const WRAPPER_COMMANDS: Record<string, string> = {
 }
 
 /**
- * Load all runnable leaf CLI command paths by invoking `leapmux commands --json`
- * (using the built root binary when present, or `go run ./cmd/leapmux`).
+ * Load all runnable leaf command paths from `leapmux commands --json`.
+ * The frontend test targets build the binary before the audit runs.
  */
 export function loadRunnableLeafCommands(repoRoot: string): string[] {
   const binName = process.platform === 'win32'
     ? 'leapmux.exe'
     : 'leapmux'
-  const builtBinary = join(repoRoot, binName)
-  const raw = existsSync(builtBinary)
-    ? execFileSync(builtBinary, ['commands', '--json'], { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 })
-    : execFileSync('go', [
-        'run',
-        './cmd/leapmux',
-        'commands',
-        '--json',
-      ], {
-        cwd: join(repoRoot, 'backend'),
-        encoding: 'utf8',
-        maxBuffer: 10 * 1024 * 1024,
-      })
+  const raw = execFileSync(join(repoRoot, binName), ['commands', '--json'], {
+    encoding: 'utf8',
+    maxBuffer: 10 * 1024 * 1024,
+  })
 
   const parsed = JSON.parse(raw) as { data?: { commands?: CLICommandNode[] }, commands?: CLICommandNode[] }
   const nodes = parsed.data?.commands ?? parsed.commands ?? []

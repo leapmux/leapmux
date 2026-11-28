@@ -36,7 +36,7 @@ func findOnPath(pathEnv string) string {
 			continue
 		}
 		candidate := filepath.Join(dir, cliBinaryName)
-		if isRegularExecutable(candidate) {
+		if isRegularExecutableFor("darwin", candidate) {
 			return candidate
 		}
 	}

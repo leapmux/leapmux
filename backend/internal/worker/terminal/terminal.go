@@ -488,6 +488,7 @@ func spawnEnv(environ, extraEnv []string) []string {
 	// Strip any inherited initial-command bootstrap variables too so a Worker
 	// started inside another terminal cannot pass stale handoff paths down.
 	cleaned := envutil.StripByPrefix(envutil.FilterEnv(environ, contracts.EnvAgentHelper), initialCommandEnvPrefix)
+	cleaned = envutil.StripByPrefix(cleaned, cshInitialCommandEnvPrefix)
 	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(cleaned,
 		"TERM=xterm-256color",
 		gitutil.GitOptionalLocksOff,

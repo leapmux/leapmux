@@ -1595,10 +1595,18 @@ type gatedOutbox struct {
 	release chan struct{}
 }
 
-func (o *gatedOutbox) ListPendingLifecycleOutbox(context.Context, string) ([]crdt.LifecycleOutboxRow, error) {
-	o.entered <- struct{}{}
-	<-o.release
-	return nil, nil
+func (o *gatedOutbox) ListPendingLifecycleOutbox(ctx context.Context, _ string) ([]crdt.LifecycleOutboxRow, error) {
+	select {
+	case o.entered <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-o.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (o *gatedOutbox) MarkLifecycleOutboxConsumed(context.Context, int64, time.Time) error {

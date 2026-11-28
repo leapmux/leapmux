@@ -68,6 +68,14 @@ describe('native CI validation', () => {
     ])
   })
 
+  it.each(['test-frontend', 'test-frontend-native'])('builds the CLI before %s runs its command coverage test', (name) => {
+    const run = commands(readYaml('Taskfile.yaml').tasks, name)
+    const build = run.findIndex(cmd => cmd.startsWith('cd backend && go build ') && cmd.endsWith(' ./cmd/leapmux'))
+    const tests = run.findIndex(cmd => cmd.startsWith('cd frontend && bun run test '))
+    expect(build).toBeGreaterThanOrEqual(0)
+    expect(tests).toBeGreaterThan(build)
+  })
+
   it('keeps cross-platform Go vet in lint instead of repeating it during tests', () => {
     const tasks = readYaml('Taskfile.yaml').tasks
     for (const name of ['test-backend', 'test-backend-no-docker-run', 'test-desktop-run']) {

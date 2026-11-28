@@ -1245,8 +1245,9 @@ tasks:
 
   test-frontend:
     desc: Run frontend tests
+    # The CLI command coverage test reads the command tree from this binary.
+    deps: [build-backend]
     cmds:
-      - task: prepare-frontend
       - task: lint-frontend
       - cd frontend && bun run test {{.CLI_ARGS}}
 
@@ -1342,7 +1343,7 @@ tasks:
 
   test-frontend-native:
     desc: Test frontend scripts and helpers with native process and filesystem behavior
-    deps: [prepare-frontend]
+    deps: [build-backend]
     cmds:
       # Native process tests live in both Vitest projects. Select their source
       # directories so a test's environment cannot remove native coverage.

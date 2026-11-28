@@ -435,6 +435,53 @@ export function verifyCodingAgentSite(html, features, checklist) {
   return errors
 }
 
+/** Check that the built CSS shows one provider icon per slot in both themes. */
+function providerIconThemeErrors(html, publicDir) {
+  const { window } = new JSDOM(html)
+  try {
+    const { document } = window
+    const stylesheets = document.querySelectorAll('link[rel~="stylesheet"][href^="/"]:not([href^="//"])')
+    if (stylesheets.length === 0)
+      return ['the supported-agents page has no local stylesheet']
+    for (const link of stylesheets) {
+      const style = document.createElement('style')
+      style.textContent = readFileSync(join(publicDir, link.getAttribute('href')), 'utf8')
+      link.replaceWith(style)
+    }
+
+    const iconSlots = [
+      ['logo grid', '.provider-logos > .provider-link'],
+      ['matrix header', '.feature-matrix thead .provider-link'],
+      ['feature group header', '.feature-group-logo .provider-link'],
+    ]
+    const errors = new Set()
+    for (const theme of ['light', 'dark']) {
+      document.documentElement.classList.toggle('dark', theme === 'dark')
+      for (const [label, selector] of iconSlots) {
+        const slots = document.querySelectorAll(selector)
+        if (slots.length === 0)
+          errors.add(`the ${label} contains no provider icons`)
+        for (const slot of slots) {
+          const lightIcon = slot.querySelector('img:not(.lm-theme-dark)')
+          const darkIcon = slot.querySelector('img.lm-theme-dark')
+          const expected = theme === 'dark'
+            ? darkIcon ?? lightIcon
+            : lightIcon
+          const visible = Array.from(slot.querySelectorAll('img')).filter(icon => window.getComputedStyle(icon).display !== 'none')
+          if (visible.length !== 1 || visible[0] !== expected) {
+            const provider = slot.querySelector('.provider-hover-label')?.textContent ?? slot.outerHTML
+            errors.add(`${label} icon for ${provider} must show only its ${theme} theme variant`)
+          }
+        }
+      }
+    }
+    return [...errors]
+  }
+  finally {
+    window.close()
+  }
+}
+
 /** Walk a directory tree and return all files ending with the given extension. */
 function walkFilesByExtension(dir, extension) {
   const out = []
@@ -1017,6 +1064,7 @@ if (import.meta.main) {
   const publicDir = resolve(ROOT, 'site/public')
   const html = readFileSync(resolve(publicDir, 'docs/reference/supported-agents/index.html'), 'utf8')
   const errors = verifyCodingAgentSite(html, features, checklist)
+  errors.push(...providerIconThemeErrors(html, publicDir))
   const providerCountPages = [
     'getting-started/introduction',
     'using/coding-agents',
@@ -1040,6 +1088,6 @@ if (import.meta.main) {
   }
   else {
     const dimensions = codingAgentMatrixDimensions(features, checklist)
-    console.log(`Verified ${dimensions.features} rendered features, ${dimensions.cells} matrix cells, Markdown endpoints, and Pagefind index.`)
+    console.log(`Verified ${dimensions.features} rendered features, ${dimensions.cells} matrix cells, themed provider icons, Markdown endpoints, and Pagefind index.`)
   }
 }

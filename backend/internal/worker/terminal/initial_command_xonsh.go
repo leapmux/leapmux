@@ -15,10 +15,14 @@ def __leapmux_install_startup():
     prefix = "LEAPMUX_INITIAL_COMMAND_"
     launch = {key: os.environ[prefix + key] for key in ("FILE", "READY", "ACK", "NONCE", "PID")}
 
-    # LoadEvent calls later registrations first. Register before loading
-    # profiles so their pre-cmdloop hooks can prepare the command's context.
-    @events.on_pre_cmdloop
-    def execute_startup_command(**_):
+    # Run every pre-cmdloop hook before the command. Xonsh 0.14.4 stores the
+    # handlers in a set, so registration order cannot enforce this.
+    pre_cmdloop = events.on_pre_cmdloop
+    fire_pre_cmdloop = pre_cmdloop.fire
+
+    def execute_startup_command(**kwargs):
+        pre_cmdloop.fire = fire_pre_cmdloop
+        fire_pre_cmdloop(**kwargs)
         try:
             pid = str(os.getpid())
             if pid != launch["PID"]:
@@ -43,6 +47,8 @@ def __leapmux_install_startup():
             launch.clear()
         XSH.execer.exec(payload, mode="exec", glbs=XSH.ctx, locs=XSH.ctx, filename="<LeapMux startup command>")
 
+    pre_cmdloop.fire = execute_startup_command
+
     # Cache the user's files as usual. Only the private, per-launch file
     # needs --no-script-cache because that file is removed after handoff.
     XSH.execer.scriptcache = True
@@ -57,9 +63,15 @@ def __leapmux_install_startup():
 
     # The outer loader reports this bootstrap. Restore the real list before
     # the profiles' on_post_rc handlers observe it.
-    @events.on_post_rc
-    def restore_loaded_profiles(**_):
+    post_rc = events.on_post_rc
+    fire_post_rc = post_rc.fire
+
+    def restore_loaded_profiles(**kwargs):
+        post_rc.fire = fire_post_rc
         XSH.rc_files = loaded
+        return fire_post_rc(**kwargs)
+
+    post_rc.fire = restore_loaded_profiles
 
 __leapmux_install_startup()
 `

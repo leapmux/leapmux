@@ -186,7 +186,7 @@
 }
 
 /*
-  Provider logo grid (the Coding Agents page). Hextra's prose CSS puts each
+  Provider logo grid (the Supported Agents page). Hextra's prose CSS puts each
   image on its own line, so the container owns the layout: a wrapping grid of
   fixed 64px cells, left-aligned.
 */
@@ -414,24 +414,26 @@
   height: auto;
 }
 
-.doc-screenshot-light,
-.lm-theme-light {
+.doc-screenshot-light {
   display: block;
 }
 
-.doc-screenshot-dark,
-.lm-theme-dark {
+.doc-screenshot-dark {
   display: none;
 }
 
-.dark .doc-screenshot-light,
-.dark .lm-theme-light {
+.dark .doc-screenshot-light {
   display: none;
 }
 
-.dark .doc-screenshot-dark,
-.dark .lm-theme-dark {
+.dark .doc-screenshot-dark {
   display: block;
+}
+
+/* The theme selectors have higher specificity than the icon layout selectors. */
+:root:not(.dark) .lm-theme-dark,
+:root.dark .lm-theme-light {
+  display: none;
 }
 
 .doc-screenshot-caption {

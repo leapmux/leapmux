@@ -60,7 +60,7 @@ history >! "$LM_TEST_HISTORY"
 			term, err := Start(t.Context(), Options{
 				ID: "csh-initial", Shell: shell, WorkingDir: root, InitialCommandDir: worker,
 				ExtraEnv: []string{"HOME=" + home, "LM_TEST_FIRST=" + first, "LM_TEST_NEXT=" + next, "LM_TEST_HISTORY=" + history},
-				InitialCommand: `if ( $?LEAPMUX_INITIAL_COMMAND_CSH_STARTUP || $?LEAPMUX_INITIAL_COMMAND_CSH_HOME_ENV || $?LEAPMUX_INITIAL_COMMAND_FILE ) exit 89
+				InitialCommand: `if ( $?LEAPMUX_INIT_CSH_STARTUP || $?LEAPMUX_INIT_CSH_HOME_ENV || $?LEAPMUX_INIT_FILE ) exit 89
 set retained_value = "initial command state"
 alias retained_alias 'echo retained-alias'
 echo "$$|$profile_kind|$login_value|$home|$HOME|$cwd" >! "$LM_TEST_FIRST"

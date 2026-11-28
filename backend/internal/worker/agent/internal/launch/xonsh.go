@@ -74,10 +74,12 @@ def __leapmux_lookup(name, native_only=False):
 // xonshDialect.buildCommand writes the setup into every launch, because the control
 // CLI step runs in every launch.
 const xonshEnvironmentSetup = `
-from xonsh.environ import EnvPath as __lm_EnvPath
+from xonsh.environ import Env as __lm_Env
 from xonsh.tools import env_path_to_str as __lm_env_path_to_str
 
-class __LeapmuxExactPath(__lm_EnvPath):
+# The converter returns the EnvPath class used by this Xonsh version.
+__lm_convert_path = __lm_Env({}).get_converter("PATH")
+class __LeapmuxExactPath(__lm_builtins.type(__lm_convert_path([]))):
     def __getitem__(self, item):
         return self._l[item]
 
@@ -86,7 +88,7 @@ def __leapmux_pin(target, source):
     value = env.pop(source)
     detype = env.get_detyper(target)
     if detype is __lm_env_path_to_str:
-        value = __LeapmuxExactPath(value)
+        value = __LeapmuxExactPath(value.split(__lm_os.pathsep))
     elif detype is None or not env.get_validator(target)(value) or detype(value) != value:
         env.register(target, type="str")
     env[target] = value
@@ -171,6 +173,7 @@ func (d xonshDialect) buildCommand(spec shellLaunchSpec, prepared *PreparedLaunc
 	var script strings.Builder
 	script.WriteString(xonshLookupSetup)
 	script.WriteString(xonshEnvironmentSetup)
+	script.WriteString("import subprocess as __lm_subprocess\n")
 	script.WriteString("$XONSH_INTERACTIVE = False\n")
 	// The step reads __lm_os from xonshLookupSetup and __LeapmuxExactPath from
 	// xonshEnvironmentSetup. It runs before StripEnvKeys and the pins, so a
@@ -201,12 +204,18 @@ func (d xonshDialect) buildCommand(spec shellLaunchSpec, prepared *PreparedLaunc
 	if len(prepared.environmentProbe) == 0 {
 		script.WriteString(d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	} else {
-		script.WriteString("import subprocess as __lm_subprocess\n__lm_observed = False\nif __lm_selected[0] == 'external':\n    __lm_sys.stdout.flush()\n    try:\n")
+		script.WriteString("__lm_observed = False\nif __lm_selected[0] == 'external':\n    __lm_sys.stdout.flush()\n    try:\n")
 		fmt.Fprintf(&script, "        __lm_observed = (__lm_subprocess.call(%s, env=__xonsh__.env.detype()) == 0)\n", pythonArguments(prepared.environmentProbe))
 		script.WriteString("    except __lm_builtins.OSError:\n        pass\n")
 		fmt.Fprintf(&script, "if __lm_observed:\n    %selse:\n    %s",
 			d.protocolLine(prepared.Delimiter, false), d.protocolLine(prepared.Delimiter, spec.EnvGated == nil))
 	}
-	script.WriteString("raise __lm_builtins.SystemExit(![@([__lm_selected[1]] + __lm_args)].returncode)\n")
+	// Xonsh 0.14.4 interprets argv entries such as ">" as redirections even
+	// inside an interpolated list. Pass the external program its argv directly.
+	script.WriteString(`__lm_argv = [__lm_selected[1]] + __lm_args
+if __lm_selected[0] == 'external':
+    raise __lm_builtins.SystemExit(__lm_subprocess.call(__lm_argv, env=__xonsh__.env.detype()))
+raise __lm_builtins.SystemExit(![@(__lm_argv)].returncode)
+`)
 	return script.String(), nil
 }

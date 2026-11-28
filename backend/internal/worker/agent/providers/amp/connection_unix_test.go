@@ -29,6 +29,7 @@ const fakeAmpThreadID = "T-00000000-0000-4000-8000-000000000001"
 // and answers each stdin line:
 //
 //   - `threads new` records its arguments and prints the thread URL;
+//   - `threads export` returns an empty transcript for the requested thread;
 //   - a line that holds "hang" waits until SIGINT, which prints Amp's own
 //     cancellation result and exits, as Amp does;
 //   - a line that holds "crash" writes an error to stderr and exits 3;
@@ -41,6 +42,10 @@ const fakeAmpScript = `#!/bin/sh
 if [ "$1" = "threads" ] && [ "$2" = "new" ]; then
   printf '%s\n' "$@" > '{{create_args}}'
   echo "https://ampcode.com/threads/` + fakeAmpThreadID + `"
+  exit 0
+fi
+if [ "$1" = "threads" ] && [ "$2" = "export" ]; then
+  printf '{"id":"%s","messages":[]}\n' "$3"
   exit 0
 fi
 printf '%s\n' "$@" > '{{args}}'
@@ -204,7 +209,11 @@ func TestProcessInterruptEndsTheTurnAndTheNextMessageResumes(t *testing.T) {
 	require.NoError(t, agenttest.SendInput(h.agent, "ping", nil))
 	ends = h.awaitTurnEnds(2)
 	assert.Equal(t, agentapi.MessageCompletionComplete, ends[1].Completion)
+	// Transcript recovery can export the thread after the resumed turn ends.
+	_, err := h.agent.exportThread(t.Context(), fakeAmpThreadID)
+	require.NoError(t, err)
 	args := h.lines(h.argsFile)
+	require.GreaterOrEqual(t, len(args), 3)
 	assert.Equal(t, []string{"threads", "continue", fakeAmpThreadID}, args[:3])
 	assert.NotContains(t, args, "--no-archive-after-execute")
 }

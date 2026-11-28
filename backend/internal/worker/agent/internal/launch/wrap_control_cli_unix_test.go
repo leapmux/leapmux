@@ -331,11 +331,18 @@ func TestWrapRunsThePosixStepPastProfileFunctions(t *testing.T) {
 			shell := requireProfileShell(t, name, name)
 			fixture := newControlCLIFixture(t)
 			home := t.TempDir()
-			writeShellProfiles(t, home, shellProfiles{posix: "set -a\n" +
+			profile := ".profile"
+			if name == "zsh" {
+				// Debian's system zshrc calls unset and break. Define the
+				// functions after the system profiles to test the launcher.
+				profile = ".zlogin"
+			}
+			source := "set -a\n" +
 				"unset() { /usr/bin/printf 'profile-unset\\n'; }\n" +
 				"export() { /usr/bin/printf 'profile-export\\n'; }\n" +
 				"builtin() { /usr/bin/printf 'profile-builtin\\n'; }\n" +
-				"break() { /usr/bin/printf 'profile-break\\n'; }\n"})
+				"break() { /usr/bin/printf 'profile-break\\n'; }\n"
+			require.NoError(t, os.WriteFile(filepath.Join(home, profile), []byte(source), 0o600))
 
 			got := runWrappedWithControlCLI(t, WrapSpec{
 				Shell: shell, LoginShell: true, Launch: Spec{Program: "/usr/bin/env"}, WorkingDir: home,

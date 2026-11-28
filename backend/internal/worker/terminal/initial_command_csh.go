@@ -5,6 +5,9 @@ import (
 	"strings"
 )
 
+// BSD csh limits variable names to 30 bytes.
+const cshInitialCommandEnvPrefix = "LEAPMUX_INIT_"
+
 func (b *initialCommandBootstrap) cshStartup(env []string) ([]string, error) {
 	home, err := startupHomeDirectory(env)
 	if err != nil {
@@ -29,29 +32,29 @@ func (b *initialCommandBootstrap) cshStartup(env []string) ([]string, error) {
 	// System profiles run before the bootstrap restores the real home.
 	return append(env,
 		"HOME="+b.dir,
-		initialCommandEnvCshStartup+"="+b.dir,
-		initialCommandEnvCshHome+"="+home,
-		initialCommandEnvCshHomeEnv+"="+home,
+		cshInitialCommandEnvPrefix+"CSH_STARTUP="+b.dir,
+		cshInitialCommandEnvPrefix+"CSH_HOME="+home,
+		cshInitialCommandEnvPrefix+"CSH_HOME_ENV="+home,
 	), nil
 }
 
 // BSD csh keeps its shell home variable independent of setenv HOME.
-const restoreCshHome = `if ( 1 ) set home = "$LEAPMUX_INITIAL_COMMAND_CSH_HOME"
-if ( $?LEAPMUX_INITIAL_COMMAND_CSH_HOME_ENV ) then
-    if ( 1 ) setenv HOME "$LEAPMUX_INITIAL_COMMAND_CSH_HOME_ENV"
+const restoreCshHome = `if ( 1 ) set home = "$LEAPMUX_INIT_CSH_HOME"
+if ( $?LEAPMUX_INIT_CSH_HOME_ENV ) then
+    if ( 1 ) setenv HOME "$LEAPMUX_INIT_CSH_HOME_ENV"
 else
     if ( 1 ) unsetenv HOME
 endif
 `
 
-const saveCshHome = `if ( 1 ) setenv LEAPMUX_INITIAL_COMMAND_CSH_HOME "$home"
+const saveCshHome = `if ( 1 ) setenv LEAPMUX_INIT_CSH_HOME "$home"
 if ( $?HOME ) then
-    if ( 1 ) setenv LEAPMUX_INITIAL_COMMAND_CSH_HOME_ENV "$HOME"
+    if ( 1 ) setenv LEAPMUX_INIT_CSH_HOME_ENV "$HOME"
 else
-    if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_CSH_HOME_ENV
+    if ( 1 ) unsetenv LEAPMUX_INIT_CSH_HOME_ENV
 endif
-if ( 1 ) set home = "$LEAPMUX_INITIAL_COMMAND_CSH_STARTUP"
-if ( 1 ) setenv HOME "$LEAPMUX_INITIAL_COMMAND_CSH_STARTUP"
+if ( 1 ) set home = "$LEAPMUX_INIT_CSH_STARTUP"
+if ( 1 ) setenv HOME "$LEAPMUX_INIT_CSH_STARTUP"
 `
 
 // After this file restores home, tcsh reads history, .login, and the saved
@@ -62,7 +65,7 @@ const tcshStartup = restoreCshHome + `if ( -f "$home/.tcshrc" && -r "$home/.tcsh
 else if ( -f "$home/.cshrc" && -r "$home/.cshrc" ) then
     if ( 1 ) source "$home/.cshrc"
 endif
-if ( 1 ) alias LEAPMUX_SCHEDULED_ALIAS 'if ( 1 ) source "$LEAPMUX_INITIAL_COMMAND_CSH_STARTUP/handoff.csh"'
+if ( 1 ) alias LEAPMUX_SCHEDULED_ALIAS 'if ( 1 ) source "$LEAPMUX_INIT_CSH_STARTUP/handoff.csh"'
 if ( 1 ) sched +0:00 LEAPMUX_SCHEDULED_ALIAS
 `
 
@@ -71,7 +74,7 @@ if ( 1 ) sched +0:00 LEAPMUX_SCHEDULED_ALIAS
 const classicCshStartup = restoreCshHome + `if ( -f "$home/.cshrc" && -r "$home/.cshrc" ) then
     if ( 1 ) source "$home/.cshrc"
 endif
-if ( ! $?histfile && -f "$home/.history" ) \ln -s "$home/.history" "$LEAPMUX_INITIAL_COMMAND_CSH_STARTUP/.history"
+if ( ! $?histfile && -f "$home/.history" ) \ln -s "$home/.history" "$LEAPMUX_INIT_CSH_STARTUP/.history"
 ` + saveCshHome
 
 // A tcsh built with LOGINFIRST reads the private .login before its rc file.
@@ -81,7 +84,7 @@ const cshLoginStartup = restoreCshHome + `if ( -f "$home/.login" && -r "$home/.l
 endif
 if ( $?tcsh ) then
 ` + saveCshHome + `else
-    if ( 1 ) source "$LEAPMUX_INITIAL_COMMAND_CSH_STARTUP/handoff.csh"
+    if ( 1 ) source "$LEAPMUX_INIT_CSH_STARTUP/handoff.csh"
 endif
 `
 
@@ -89,32 +92,32 @@ endif
 // The Worker publishes the full source file by rename after it records readiness.
 // Native source semantics apply. An exit ends the sourced input, and an exec
 // replaces the original shell process.
-const cshHandoff = `if ( "$$" == "$LEAPMUX_INITIAL_COMMAND_PID" ) then
+const cshHandoff = `if ( "$$" == "$LEAPMUX_INIT_PID" ) then
     if ( 1 ) unalias LEAPMUX_SCHEDULED_ALIAS
-    if ( 1 ) echo "$$ $LEAPMUX_INITIAL_COMMAND_NONCE" >! "$LEAPMUX_INITIAL_COMMAND_READY"
+    if ( 1 ) echo "$$ $LEAPMUX_INIT_NONCE" >! "$LEAPMUX_INIT_READY"
     if ( $status == 0 ) then
         if ( 1 ) set lm_initial_polls = 0
-        while ( ! -f "$LEAPMUX_INITIAL_COMMAND_FILE" && -f "$LEAPMUX_INITIAL_COMMAND_READY" && $lm_initial_polls < 1500 )
+        while ( ! -f "$LEAPMUX_INIT_FILE" && -f "$LEAPMUX_INIT_READY" && $lm_initial_polls < 1500 )
             \sleep 0.02
             if ( $status != 0 ) break
             @ lm_initial_polls++
         end
         if ( 1 ) unset lm_initial_polls
-        if ( -f "$LEAPMUX_INITIAL_COMMAND_FILE" ) source "$LEAPMUX_INITIAL_COMMAND_FILE"
+        if ( -f "$LEAPMUX_INIT_FILE" ) source "$LEAPMUX_INIT_FILE"
     endif
 endif
 `
 
 // The shell acknowledges after source opens the file. Its descriptor remains
 // readable when the Worker removes the directory.
-const cshCommandPrelude = `if ( 1 ) echo "$$ $LEAPMUX_INITIAL_COMMAND_NONCE" >! "$LEAPMUX_INITIAL_COMMAND_ACK"
+const cshCommandPrelude = `if ( 1 ) echo "$$ $LEAPMUX_INIT_NONCE" >! "$LEAPMUX_INIT_ACK"
 if ( $status != 0 ) exit $status
-if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_FILE
-if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_ACK
-if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_READY
-if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_NONCE
-if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_PID
-if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_CSH_STARTUP
-if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_CSH_HOME
-if ( 1 ) unsetenv LEAPMUX_INITIAL_COMMAND_CSH_HOME_ENV
+if ( 1 ) unsetenv LEAPMUX_INIT_FILE
+if ( 1 ) unsetenv LEAPMUX_INIT_ACK
+if ( 1 ) unsetenv LEAPMUX_INIT_READY
+if ( 1 ) unsetenv LEAPMUX_INIT_NONCE
+if ( 1 ) unsetenv LEAPMUX_INIT_PID
+if ( 1 ) unsetenv LEAPMUX_INIT_CSH_STARTUP
+if ( 1 ) unsetenv LEAPMUX_INIT_CSH_HOME
+if ( 1 ) unsetenv LEAPMUX_INIT_CSH_HOME_ENV
 `

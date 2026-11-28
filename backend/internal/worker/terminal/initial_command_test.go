@@ -162,13 +162,14 @@ func TestSpawnEnvStripsInheritedInitialCommandVariables(t *testing.T) {
 	t.Parallel()
 	env := spawnEnv([]string{
 		"PATH=/usr/bin",
-		initialCommandEnvFile + "=/tmp/stale",
-		initialCommandEnvCshStartup + "=/tmp/csh",
+		initialCommandEnvPrefix + "FILE=/tmp/stale",
+		cshInitialCommandEnvPrefix + "CSH_STARTUP=/tmp/csh",
 		initialCommandEnvKshLogin + "=/tmp/ksh",
 		"KEEP_ME=1",
 	}, nil)
 	for _, entry := range env {
 		assert.NotContains(t, entry, initialCommandEnvPrefix)
+		assert.NotContains(t, entry, cshInitialCommandEnvPrefix)
 	}
 	assert.Contains(t, env, "KEEP_ME=1")
 }

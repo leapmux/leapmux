@@ -35,10 +35,6 @@ const (
 	initialCommandLaunchPrefix = "launch-"
 
 	initialCommandEnvPrefix         = "LEAPMUX_INITIAL_COMMAND_"
-	initialCommandEnvFile           = initialCommandEnvPrefix + "FILE"
-	initialCommandEnvAck            = initialCommandEnvPrefix + "ACK"
-	initialCommandEnvReady          = initialCommandEnvPrefix + "READY"
-	initialCommandEnvNonce          = initialCommandEnvPrefix + "NONCE"
 	initialCommandEnvParent         = initialCommandEnvPrefix + "PARENT"
 	initialCommandEnvEnvFile        = initialCommandEnvPrefix + "ENV_FILE"
 	initialCommandEnvOriginalEnv    = initialCommandEnvPrefix + "ORIGINAL_ENV"
@@ -48,9 +44,6 @@ const (
 	initialCommandEnvManagedZdot    = initialCommandEnvPrefix + "MANAGED_ZDOTDIR"
 	initialCommandEnvKshLogin       = initialCommandEnvPrefix + "KSH_LOGIN"
 	initialCommandEnvKshInteractive = initialCommandEnvPrefix + "KSH_INTERACTIVE"
-	initialCommandEnvCshStartup     = initialCommandEnvPrefix + "CSH_STARTUP"
-	initialCommandEnvCshHome        = initialCommandEnvPrefix + "CSH_HOME"
-	initialCommandEnvCshHomeEnv     = initialCommandEnvPrefix + "CSH_HOME_ENV"
 	initialCommandEnvPoshHome       = initialCommandEnvPrefix + "POSH_HOME"
 )
 
@@ -181,11 +174,15 @@ func (b *initialCommandBootstrap) writeFile(name, content, label string) (string
 
 func (b *initialCommandBootstrap) launch(ctx context.Context, shell, workingDir string, args, env []string) (string, []string, []string, error) {
 	dialect := initialCommandDialect(shell)
+	envPrefix := initialCommandEnvPrefix
+	if dialect == "csh" {
+		envPrefix = cshInitialCommandEnvPrefix
+	}
 	env = append(env,
-		initialCommandEnvFile+"="+b.commandPath(),
-		initialCommandEnvAck+"="+b.ackPath(),
-		initialCommandEnvReady+"="+b.requestPath(),
-		initialCommandEnvNonce+"="+b.nonce,
+		envPrefix+"FILE="+b.commandPath(),
+		envPrefix+"ACK="+b.ackPath(),
+		envPrefix+"READY="+b.requestPath(),
+		envPrefix+"NONCE="+b.nonce,
 	)
 	if dialect == "powershell" {
 		return shell, append(args, "-NoExit", "-Command", powerShellInitialCommand), env, nil
@@ -196,7 +193,8 @@ func (b *initialCommandBootstrap) launch(ctx context.Context, shell, workingDir 
 	}
 	// The launcher uses exec, so the native shell retains the exact root
 	// process identity that the PTY owner observes.
-	launcher := []string{"-c", `LEAPMUX_INITIAL_COMMAND_PID=$$; export LEAPMUX_INITIAL_COMMAND_PID; exec "$@"`, "leapmux-terminal-start", shell}
+	pidVariable := envPrefix + "PID"
+	launcher := []string{"-c", pidVariable + `=$$; export ` + pidVariable + `; exec "$@"`, "leapmux-terminal-start", shell}
 	return "/bin/sh", append(launcher, args...), env, nil
 }
 

@@ -807,7 +807,6 @@ func TestRegistryLifecycleDrainEdgeCases(t *testing.T) {
 	// flight finishes for another waiter.
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	var enteredOnce sync.Once
 	releaseOnce := sync.OnceFunc(func() { close(release) })
 	outbox := &gatedOutbox{entered: entered, release: release}
 	reg := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
@@ -823,24 +822,30 @@ func TestRegistryLifecycleDrainEdgeCases(t *testing.T) {
 	<-dBlank.Done()
 	assert.NoError(t, dBlank.Err())
 
-	cancelCtx, cancel := context.WithCancel(t.Context())
+	ctx := testutil.DeadlineContext(t)
+	cancelCtx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
 	cancelDone := make(chan error, 1)
 	go func() {
 		cancelDone <- reg.DrainLifecycle(cancelCtx, userID.String())
 	}()
-	<-entered
-	enteredOnce.Do(func() {})
-
-	secondDone := make(chan error, 1)
-	go func() {
-		secondDone <- reg.DrainLifecycle(t.Context(), userID.String())
-	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the lifecycle drain did not reach the outbox")
+	}
+	sharedDrain := reg.StartLifecycleDrain(userID.String())
 
 	cancel()
 	require.ErrorIs(t, <-cancelDone, context.Canceled)
 
 	releaseOnce()
-	require.NoError(t, <-secondDone)
+	select {
+	case <-sharedDrain.Done():
+		require.NoError(t, sharedDrain.Err())
+	case <-ctx.Done():
+		t.Fatal("the shared lifecycle drain did not finish")
+	}
 
 	// 3. Shutdown makes subsequent StartLifecycleDrain return ErrRegistryClosed.
 	reg.Shutdown(5 * time.Second)

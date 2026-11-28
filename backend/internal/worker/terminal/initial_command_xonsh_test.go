@@ -78,7 +78,7 @@ func TestXonshInitialCommandCanExitTheShell(t *testing.T) {
 	assertInitialCommandExits(t, Options{
 		ID: "xonsh-exit", Shell: shell, WorkingDir: dir, InitialCommandDir: dir,
 		ExtraEnv:       xonshStartupTestEnv(dir, filepath.Join(dir, "no-rc"), filepath.Join(dir, "no-rc-dir")),
-		InitialCommand: "exit 19",
+		InitialCommand: "raise SystemExit(19)",
 	}, 19, "Xonsh")
 }
 
