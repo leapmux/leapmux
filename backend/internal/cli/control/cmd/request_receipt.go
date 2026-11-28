@@ -264,6 +264,14 @@ func buildAgentOpenRetryCmd(inv *cli.Invocation, requestID string) string {
 		"before", "after",
 	})
 	parts = append(parts, "--request-id", shellquote.POSIX.Arg(requestID))
+	if inv != nil && inv.HasArg("prompt") {
+		if prompt := inv.Arg("prompt"); prompt != "" {
+			if strings.HasPrefix(prompt, "-") {
+				parts = append(parts, "--")
+			}
+			parts = append(parts, shellquote.POSIX.Arg(prompt))
+		}
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -275,7 +283,18 @@ func buildAgentForkRetryCmd(inv *cli.Invocation, requestID string) string {
 		"checkout", "new-branch", "base", "workspace", "tile", "worker",
 		"before", "after",
 	})
+	if inv != nil && inv.Changed("fresh") && boolFlag(inv, "fresh") {
+		parts = append(parts, "--fresh")
+	}
 	parts = append(parts, "--request-id", shellquote.POSIX.Arg(requestID))
+	if inv != nil && inv.HasArg("prompt") {
+		if prompt := inv.Arg("prompt"); prompt != "" {
+			if strings.HasPrefix(prompt, "-") {
+				parts = append(parts, "--")
+			}
+			parts = append(parts, shellquote.POSIX.Arg(prompt))
+		}
+	}
 	return strings.Join(parts, " ")
 }
 

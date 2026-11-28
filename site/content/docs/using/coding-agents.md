@@ -7,7 +7,7 @@ weight: 2
 
 Coding agents are the core of LeapMux. Each agent tab runs a real coding-assistant CLI on a Worker and streams its conversation, tool calls, diffs, and approval prompts into your browser or desktop app over an end-to-end encrypted (E2EE) channel.
 
-For provider-by-provider capabilities — including approvals, native context resume, inline images, goals, and plan mode — see **[Supported Agents & Feature Matrix](/docs/reference/supported-agents/)**. For workspace placement and tiling, see [Tabs & Layout](/docs/using/tabs-and-layout/); for git branch isolation, see [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+For provider-by-provider capabilities — including approvals, native context resume, session fork, inline images, goals, and plan mode — see **[Supported Agents & Feature Matrix](/docs/reference/supported-agents/)**. For workspace placement and tiling, see [Tabs & Layout](/docs/using/tabs-and-layout/); for git branch isolation, see [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 ## Supported providers
 

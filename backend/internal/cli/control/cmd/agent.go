@@ -24,8 +24,8 @@ import (
 )
 
 func newAgentCommand() *cobra.Command {
-	return cli.SetAliases(cli.Group("agent", "Start, message, watch and configure coding agents",
-		cli.NewLeaf(cli.Leaf{
+	cmd := cli.SetAliases(cli.Group("agent", "Start, message, watch and configure coding agents",
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "list",
 			Aliases: []string{"ls"},
 			Short:   "List your agents with their states",
@@ -39,15 +39,15 @@ func newAgentCommand() *cobra.Command {
 				fs.String("state", "", "list only the agents in this activity state")
 				cli.SetEnum(fs, "state", enumTokens(leapmuxv1.AgentActivityState(0))...)
 				fs.String("provider", "", `list only the agents of this provider (such as claude, codex)`)
-				fs.String("parent", "", `list only the direct child subagents of this parent agent (an id, prefix, title, or "self")`)
+				fs.String("parent", "", `list only direct child subagents or spawned agents of this parent agent (an id, prefix, title, or "self")`)
 				fs.Bool("all", false, "include inactive or non-active agent process statuses in the table")
 			},
 			FlagComplete: map[string]cobra.CompletionFunc{
 				"provider": completeProviderFlag,
 			},
 			Run: runAgentList,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Core"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:   "get [agent]",
 			Short: "Show an agent's state and settings (default: this agent)",
 			Examples: []cli.Example{
@@ -60,11 +60,14 @@ func newAgentCommand() *cobra.Command {
 			},
 			Complete: completeTargets,
 			Run:      runAgentGet,
-		}),
-		cli.NewLeaf(cli.Leaf{
-			Use:     "open",
+		}), "Core"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
+			Use:     "open [prompt]",
 			Mutates: true,
 			Short:   "Start a new agent in a new tab",
+			Args: map[string]string{
+				"prompt": `Optional first message to send to the new agent ("-" reads stdin). Mutually exclusive with --message and --file.`,
+			},
 			Next: []string{
 				`leapmux agent send <id> "Run the tests" --wait`,
 				`leapmux agent wait <id>`,
@@ -82,6 +85,7 @@ run opened, and it queues the --message no second time. A run with the same
 request id and other arguments fails with conflict.`,
 			Examples: []cli.Example{
 				{Comment: "Start an agent beside this tab and keep its id.", Command: `A=$(leapmux agent open --provider claude --message "Run the tests" -q)`},
+				{Comment: "Start an agent with a positional prompt.", Command: `leapmux agent open --provider claude "Review the diff"`},
 				{Comment: "Start an agent in a new git worktree.", Command: "leapmux agent open --worktree fix-flaky-spec --base main"},
 				{Comment: "Continue an earlier session that \"agent sessions\" lists.", Command: "leapmux agent open --provider claude --resume 4f6c1e0a-9b7d-4c2e-8f3a-2d5b6c7e8f90"},
 				{Comment: "Open an agent that a retry of the same command does not open twice.", Command: `leapmux agent open --provider codex --message "Review the diff" --request-id nightly-review-2026-11-19`},
@@ -98,7 +102,7 @@ request id and other arguments fails with conflict.`,
 				for _, name := range []string{"provider", "model", "effort", "permission-mode", "option", "title", "name"} {
 					cli.SetFlagGroup(fs, name, "Agent")
 				}
-				fs.String("message", "", `queue a first message with the agent creation ("-" reads stdin)`)
+				fs.StringP("message", "m", "", `queue a first message with the agent creation ("-" reads stdin)`)
 				fs.String("file", "", `read the first message from this file ("-" reads stdin)`)
 				fs.StringArray("attach", nil, "attach this file to the first message; repeat it for more than one")
 				fs.String("resume", "", `resume this earlier session of the provider; "agent sessions" lists them`)
@@ -126,8 +130,8 @@ request id and other arguments fails with conflict.`,
 				tabPositionFlagCompletions(),
 			),
 			Run: runAgentOpen,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Core"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "send <agent> [text]",
 			Short:   "Send a message to an agent, and optionally wait for its reply",
 			Mutates: true,
@@ -218,8 +222,8 @@ The timeout counts from the Worker's enqueue acknowledgment.`, contracts.MaxAgen
 			},
 			Complete: completeTargets,
 			Run:      runAgentSend,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Core"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:   "wait <agent>...",
 			Short: "Wait until agents settle, or until they reach another state",
 			// The calling agent cannot settle while it waits, so the wait
@@ -252,8 +256,8 @@ It prints the state of each agent in both cases.`,
 			},
 			Complete: completeOtherAgents,
 			Run:      runAgentWait,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Core"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "requests [agent]...",
 			Aliases: []string{"req"},
 			Short:   "List the permission prompts, plans and questions that agents wait on (default: every agent)",
@@ -282,8 +286,8 @@ takes. --json prints each prompt as data.`,
 			},
 			Complete: completeTargets,
 			Run:      runAgentRequests,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Prompts & Control"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "approve <agent> [request]",
 			Short:   "Approve a permission prompt or a plan, or confirm a dialog",
 			Mutates: true,
@@ -317,8 +321,8 @@ An agent cannot answer its own requests.`,
 			},
 			Complete: completeOtherAgents,
 			Run:      runAgentApprove,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Prompts & Control"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "deny <agent> [request]",
 			Short:   "Refuse a permission prompt, a plan, a question or a dialog",
 			Mutates: true,
@@ -345,8 +349,8 @@ An agent cannot answer its own requests.`,
 			},
 			Complete: completeOtherAgents,
 			Run:      runAgentDeny,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Prompts & Control"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "answer <agent> [request] [text]...",
 			Short:   "Answer a question, fill a form, or choose any offered option",
 			Mutates: true,
@@ -402,8 +406,8 @@ An agent cannot answer its own requests.`,
 			},
 			Complete: completeOtherAgents,
 			Run:      runAgentAnswer,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Prompts & Control"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "interrupt <agent>...",
 			Short:   "Stop the current turn of one or more agents",
 			Mutates: true,
@@ -416,10 +420,10 @@ An agent cannot answer its own requests.`,
 			},
 			Complete: completeTargets,
 			Run:      runAgentInterrupt,
-		}),
-		newAgentClearCommand(),
-		newAgentCompactCommand(),
-		cli.NewLeaf(cli.Leaf{
+		}), "Prompts & Control"),
+		cli.SetCommandGroup(newAgentClearCommand(), "Prompts & Control"),
+		cli.SetCommandGroup(newAgentCompactCommand(), "Prompts & Control"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "set <agent>",
 			Short:   "Change an agent's model, effort, permission mode or another option",
 			Mutates: true,
@@ -437,8 +441,8 @@ An agent cannot answer its own requests.`,
 			FlagComplete: agentOptionFlagCompletions(),
 			Complete:     completeTargets,
 			Run:          runAgentSet,
-		}),
-		cli.NewLeaf(cli.Leaf{
+		}), "Prompts & Control"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:     "messages [agent]",
 			Aliases: []string{"msg"},
 			Short:   "Print an agent's messages, or follow new ones (default: this agent)",
@@ -458,8 +462,8 @@ A message that another agent sent prints its sender after its source, and
 				fs.String("anchor", "latest", "page to print")
 				cli.SetEnum(fs, "anchor", "latest", "oldest", "before", "after")
 				fs.Int64("cursor-seq", 0, "the seq that --anchor before or after starts from; the page excludes it")
-				fs.Int("limit", contracts.MessagePageLimit, "messages per page")
-				fs.Bool("follow", false, "print new messages as they arrive, until interrupted")
+				fs.IntP("limit", "n", contracts.MessagePageLimit, "messages per page")
+				fs.BoolP("follow", "f", false, "print new messages as they arrive, until interrupted")
 				for _, name := range []string{"anchor", "cursor-seq", "limit", "follow"} {
 					cli.SetFlagGroup(fs, name, "Pagination")
 				}
@@ -475,27 +479,27 @@ A message that another agent sent prints its sender after its source, and
 			},
 			Complete: completeTargets,
 			Run:      runAgentMessages,
-		}),
-		newAgentQueueCommand(),
-		newAgentGoalCommand(),
-		newAgentTodosCommand(),
-		newAgentTasksCommand(),
-		newAgentUsageCommand(),
-		newAgentTreeCommand(),
-		newAgentOpenTabCommand(),
-		newAgentStartupCommand(),
-		newAgentRetryTurnCommand(),
-		newAgentApproveReviewCommand(),
-		newAgentMessageCommand(),
-		newAgentSpanCommand(),
-		newAgentMarksCommand(),
-		newAgentExportCommand(),
-		newAgentRecoveriesCommand(),
-		newAgentRecoverCommand(),
-		newAgentSearchCommand(),
-		newAgentForkCommand(),
-		newAgentRequestStatusCommand(),
-		cli.NewLeaf(cli.Leaf{
+		}), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentQueueCommand(), "Queue & Goals"),
+		cli.SetCommandGroup(newAgentGoalCommand(), "Queue & Goals"),
+		cli.SetCommandGroup(newAgentTodosCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentTasksCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentUsageCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentTreeCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentOpenTabCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentStartupCommand(), "Prompts & Control"),
+		cli.SetCommandGroup(newAgentRetryTurnCommand(), "Prompts & Control"),
+		cli.SetCommandGroup(newAgentApproveReviewCommand(), "Prompts & Control"),
+		cli.SetCommandGroup(newAgentMessageCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentSpanCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentMarksCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentExportCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentRecoveriesCommand(), "Prompts & Control"),
+		cli.SetCommandGroup(newAgentRecoverCommand(), "Prompts & Control"),
+		cli.SetCommandGroup(newAgentSearchCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(newAgentForkCommand(), "Core"),
+		cli.SetCommandGroup(newAgentRequestStatusCommand(), "Transcript & Inspection"),
+		cli.SetCommandGroup(cli.NewLeaf(cli.Leaf{
 			Use:   "providers",
 			Short: "List the agent providers that a worker offers",
 			Examples: []cli.Example{
@@ -504,12 +508,13 @@ A message that another agent sent prints its sender after its source, and
 			},
 			Flags: addWorkerFlag,
 			Run:   runAgentProviders,
-		}),
-		newAgentSessionsCommand(),
-		newTabCloseLeafFor(resolve.KindAgent),
-		newTabRenameLeafFor(resolve.KindAgent),
-		newTabRevealLeafFor(resolve.KindAgent),
+		}), "Discovery"),
+		cli.SetCommandGroup(newAgentSessionsCommand(), "Discovery"),
+		cli.SetCommandGroup(newTabCloseLeafFor(resolve.KindAgent), "Core"),
+		cli.SetCommandGroup(newTabRenameLeafFor(resolve.KindAgent), "Core"),
+		cli.SetCommandGroup(newTabRevealLeafFor(resolve.KindAgent), "Core"),
 	), "ag")
+	return cmd
 }
 
 // inputText reads the text of a message: the positional argument argName,
@@ -882,7 +887,7 @@ func runAgentList(inv *cli.Invocation) (any, error) {
 			},
 			ParentAgent: func(ctx context.Context, workerID, selfAgentID string) (string, error) {
 				if d := details[selfAgentID]; d.Agent != nil {
-					return d.Agent.GetParentAgentId(), nil
+					return parentOrSpawnerAgentID(d.Agent), nil
 				}
 				return base.ParentAgent(ctx, workerID, selfAgentID)
 			},
@@ -925,7 +930,7 @@ func runAgentList(inv *cli.Invocation) (any, error) {
 		if stateFilter != "" && !strings.EqualFold(row.State, stateFilter) {
 			continue
 		}
-		if parentID != "" && row.ParentAgentID != parentID {
+		if parentID != "" && row.ParentAgentID != parentID && row.SpawnedByAgentID != parentID {
 			continue
 		}
 		rows = append(rows, row)

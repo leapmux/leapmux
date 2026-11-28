@@ -195,6 +195,10 @@ func codexMCPElicitationMeta(requestPayload json.RawMessage, persist string) boo
 	})
 }
 
+// SupportsFork reports that Codex supports native conversation-history forking
+// via the app-server thread/fork JSON-RPC request.
+func (codexProvider) SupportsFork() bool { return true }
+
 // ChildCapabilities states the native child operations that this provider supports.
 func (codexProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
 	return agent.ChildCapabilities{AcceptsMessages: false, AcceptsInterrupt: true}

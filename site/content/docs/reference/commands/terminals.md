@@ -234,7 +234,7 @@ leapmux terminal read [terminal] [flags]
 
 | Flag | Description |
 |---|---|
-| `--lines int` | print only the last N lines |
+| `-n, --lines int` | print only the last N lines |
 | `--scrollback` | also print the lines above the screen |
 | `--raw` | print the retained bytes as they are, with their escape sequences |
 | `-f, --follow` | stream live output until Ctrl-C or shell exit |
@@ -516,7 +516,7 @@ leapmux terminal quake read [flags]
 
 | Flag | Description |
 |---|---|
-| `--lines int` | print only the last N lines |
+| `-n, --lines int` | print only the last N lines |
 | `--scrollback` | also print the lines above the screen |
 | `--raw` | print the retained bytes as they are, with their escape sequences |
 | `-f, --follow` | stream live output until Ctrl-C or shell exit |

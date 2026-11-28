@@ -119,6 +119,8 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 		// The paired cancelled turn/completed states the outcome.
 	case methodTurnForegroundCompleted:
 		// The foreground ended, but the native turn still owns work.
+	case methodTurnModelAttemptStarted:
+		// Model attempt bookkeeping changes no transcript row.
 	case methodSkillChanged, methodAccountChanged, methodAccountLoginCompleted, methodMcpOAuthLoginCompleted, methodSessionListChanged:
 		// LeapMux starts none of these native operations.
 	case methodTurnUnqueued:

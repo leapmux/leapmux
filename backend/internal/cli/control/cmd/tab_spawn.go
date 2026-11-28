@@ -30,6 +30,8 @@ type openAgentArgs struct {
 	InitialMessage *string
 	// SessionID resumes the agent's earlier session (`--resume`).
 	SessionID string
+	// ForkSource identifies the source agent whose conversation history is forked.
+	ForkSource *leapmuxv1.AgentForkSource
 	// GitSetup prepares the working directory; nil uses it as it is.
 	GitSetup *leapmuxv1.GitSetup
 	// Position spec captures the caller's --first / --last /
@@ -149,6 +151,7 @@ func openAgentAndAddTab(ctx context.Context, c control.Peer, w workerCall, args 
 		Title:          args.Title,
 		WorkingDir:     args.WorkingDir,
 		AgentSessionId: args.SessionID,
+		ForkSource:     args.ForkSource,
 		GitSetup:       args.GitSetup,
 		InitialMessage: args.InitialMessage,
 	}

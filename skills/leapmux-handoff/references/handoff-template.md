@@ -1,6 +1,6 @@
 # Structured Handoff Briefing Template
 
-Write this template to a temporary file (for example `.tmp/handoff-brief.md`) and pass it to `leapmux agent open --file .tmp/handoff-brief.md` or `leapmux agent fork self --file .tmp/handoff-brief.md`.
+Write this template under `.leapmux/tmp/` (for example `.leapmux/tmp/handoff-brief.md`) and pass it to `leapmux agent open --file .leapmux/tmp/handoff-brief.md` or `leapmux agent fork self --fresh --file .leapmux/tmp/handoff-brief.md`.
 
 ```markdown
 ## 1. Goal & Scope

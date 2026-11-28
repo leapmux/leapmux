@@ -53,6 +53,7 @@ type whoamiResult struct {
 	WorkingDir         string `json:"working_dir,omitempty"`
 	GitBranch          string `json:"git_branch,omitempty"`
 	ParentAgentID      string `json:"parent_agent_id,omitempty"`
+	SpawnedByAgentID   string `json:"spawned_by_agent_id,omitempty"`
 	Warning            string `json:"warning,omitempty"`
 }
 
@@ -183,6 +184,7 @@ func enrichWhoamiTab(ctx context.Context, c *control.WorkerIPCClient, resp *leap
 			out.Provider = agentlabels.CLIAlias(d.Agent.GetAgentProvider())
 			out.WorkingDir = d.Agent.GetWorkingDir()
 			out.ParentAgentID = d.Agent.GetParentAgentId()
+			out.SpawnedByAgentID = d.Agent.GetSpawnedByAgentId()
 			if g := d.Agent.GetGitStatus(); g != nil {
 				out.GitBranch = g.GetBranch()
 			}

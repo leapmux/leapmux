@@ -61,6 +61,10 @@ func (droidProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessi
 	return droidStoredSessions(ctx, q)
 }
 
+// SupportsFork reports that Factory Droid supports native conversation-history
+// forking via the droid.fork_session stream-jsonrpc request.
+func (droidProvider) SupportsFork() bool { return true }
+
 // ChildCapabilities states the native child operations that this provider supports.
 // Messages use a separate process loaded with the child session; the root
 // stream RPC process ignores params.sessionId when choosing where to execute.

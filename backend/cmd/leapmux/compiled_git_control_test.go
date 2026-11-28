@@ -108,9 +108,9 @@ func TestMainControlGitWritesSendExactRequestsToTheSelectedWorker(t *testing.T) 
 		name string
 		args []string
 	}{
-		{"missing directory", []string{"checkout", "main"}},
+		{"missing directory on remote worker", []string{"checkout", "main", "--worker", "id:" + targetWorker}},
 		{"blank directory", []string{"push", "--dir", "  "}},
-		{"missing switch target", []string{"branch", "delete", "topic", "--dir", dir}},
+		{"blank switch target", []string{"branch", "delete", "topic", "--dir", dir, "--switch-to", "  "}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			args := append([]string{"--json", "git"}, test.args...)

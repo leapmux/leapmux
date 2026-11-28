@@ -75,7 +75,12 @@ func awaitOpenCodeCatalog(ctx context.Context, rpc openCodeRPC, clock quartz.Clo
 	}
 }
 
+var errOpenCodeDefaultModelPending = errors.New("default model not ready yet")
+
 func openCodePluginActivationPending(err error) bool {
+	if errors.Is(err, errOpenCodeDefaultModelPending) {
+		return true
+	}
 	var status *providerkit.HTTPStatusError
 	if !errors.As(err, &status) || status.StatusCode != http.StatusServiceUnavailable {
 		return false
@@ -93,8 +98,12 @@ func openCodePluginActivationPending(err error) bool {
 func loadOpenCodeCatalog(ctx context.Context, rpc openCodeRPC) (openCodeCatalog, error) {
 	var catalog openCodeCatalog
 	// Model endpoints wait for plugin activation; the agent endpoint reads immediately.
+	// OpenCode v2.4+ can also return 200 {"data": null} briefly before models finish loading.
 	model, err := openCodeData[openCodeModelInfo](ctx, rpc, http.MethodGet, "/api/model/default", nil)
 	if err != nil {
+		if errors.Is(err, errOpenCodeNoData) {
+			return openCodeCatalog{}, fmt.Errorf("read the OpenCode default model: %w: %w", errOpenCodeDefaultModelPending, err)
+		}
 		return openCodeCatalog{}, fmt.Errorf("read the OpenCode default model: %w", err)
 	}
 	catalog.defaultModel = openCodeModelRef{ProviderID: model.ProviderID, ID: model.ID}

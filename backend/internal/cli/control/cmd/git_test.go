@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"sync"
@@ -132,6 +133,11 @@ func TestGitCommands_ValidateArgumentsBeforeDialing(t *testing.T) {
 		{name: "git branch delete blank name", args: []string{"git", "branch", "delete", " ", "--switch-to", "main", "--dir", "/repo"}},
 		{name: "git branch delete blank switch-to", args: []string{"git", "branch", "delete", "foo", "--switch-to", " ", "--dir", "/repo"}},
 		{name: "git push blank dir", args: []string{"git", "push", "--dir", " "}},
+		{name: "git diff negative limit", args: []string{"git", "diff", "--limit", "-1", "--dir", "/repo"}},
+		{name: "git log zero limit", args: []string{"git", "log", "--limit", "0", "--dir", "/repo"}},
+		{name: "git log limit above max", args: []string{"git", "log", "--limit", "201", "--dir", "/repo"}},
+		{name: "git commit blank message", args: []string{"git", "commit", "-m", "   ", "--dir", "/repo"}},
+		{name: "git commit blank dir", args: []string{"git", "commit", "-m", "checkpoint", "--dir", "   "}},
 	}
 
 	for _, tc := range cases {
@@ -146,12 +152,31 @@ func TestGitCommands_ValidateArgumentsBeforeDialing(t *testing.T) {
 			assert.Empty(t, disp.calledMethods(), "local validation must fail before dialing the worker")
 		})
 	}
+
+	t.Run("git commit whitespace LEAPMUX_CONTROL_WORKING_DIR fails before dialing", func(t *testing.T) {
+		hub := &recordingHub{workers: workerRows("worker-A")}
+		disp := &gitTestDispatcher{}
+		startSpawnIPC(t, hub, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "   \t  ")
+
+		f := runControl(t, "git", "commit", "-m", "checkpoint").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--dir is empty")
+		assert.Empty(t, hub.called(), "local validation must fail before dialing the hub")
+		assert.Empty(t, disp.calledMethods(), "local validation must fail before dialing the worker")
+	})
 }
 
 type gitTestDispatcher struct {
 	mu           sync.Mutex
 	methods      []string
 	checkoutReqs []*leapmuxv1.CheckoutBranchRequest
+	deleteReqs   []*leapmuxv1.DeleteBranchRequest
+	pushReqs     []*leapmuxv1.PushBranchRequest
+	commitReqs   []*leapmuxv1.GitCommitRequest
+	statusPaths  []string
+	currentBr    string
+	branches     []*leapmuxv1.GitBranchEntry
 	infoArrived  chan struct{}
 	filesArrived chan struct{}
 }
@@ -178,6 +203,48 @@ func (d *gitTestDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, 
 		d.checkoutReqs = append(d.checkoutReqs, &in)
 		d.mu.Unlock()
 		writeProtoResponse(w, &leapmuxv1.CheckoutBranchResponse{})
+	case leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure:
+		d.mu.Lock()
+		cur := d.currentBr
+		if cur == "" {
+			cur = "main"
+		}
+		brs := d.branches
+		d.mu.Unlock()
+		writeProtoResponse(w, &leapmuxv1.ListGitBranchesResponse{
+			CurrentBranch: cur,
+			Branches:      brs,
+		})
+	case leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure:
+		var in leapmuxv1.DeleteBranchRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		d.mu.Lock()
+		d.deleteReqs = append(d.deleteReqs, &in)
+		d.mu.Unlock()
+		writeProtoResponse(w, &leapmuxv1.DeleteBranchResponse{})
+	case leapmuxv1connect.WorkerGitServicePushBranchProcedure:
+		var in leapmuxv1.PushBranchRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		d.mu.Lock()
+		d.pushReqs = append(d.pushReqs, &in)
+		d.mu.Unlock()
+		writeProtoResponse(w, &leapmuxv1.PushBranchResponse{})
+	case leapmuxv1connect.WorkerGitServiceGitCommitProcedure:
+		var in leapmuxv1.GitCommitRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		d.mu.Lock()
+		d.commitReqs = append(d.commitReqs, &in)
+		d.mu.Unlock()
+		writeProtoResponse(w, &leapmuxv1.GitCommitResponse{Hash: "abc1234", Subject: in.GetMessage()})
 	case leapmuxv1connect.WorkerGitServiceGetGitDiffProcedure:
 		writeProtoResponse(w, &leapmuxv1.GetGitDiffResponse{
 			Diff:      "+line\n",
@@ -185,6 +252,11 @@ func (d *gitTestDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, 
 			TotalSize: 6,
 		})
 	case leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure:
+		var in leapmuxv1.GetGitInfoRequest
+		_ = proto.Unmarshal(req.GetPayload(), &in)
+		d.mu.Lock()
+		d.statusPaths = append(d.statusPaths, in.GetPath())
+		d.mu.Unlock()
 		if d.infoArrived != nil && d.filesArrived != nil {
 			close(d.infoArrived)
 			select {
@@ -342,19 +414,294 @@ func TestGitReadCommands_CheckGitDirInputBeforeDialing(t *testing.T) {
 				assert.Empty(t, disp.calledMethods())
 			})
 
-			t.Run("unset env with no --dir", func(t *testing.T) {
-				hub := &recordingHub{workers: workerRows("worker-A")}
+			t.Run("unset env with no --dir over remote hub fails with usage", func(t *testing.T) {
 				disp := &gitTestDispatcher{}
-				startSpawnIPC(t, hub, disp)
-				t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+				hub := &recordingHub{workers: []*leapmuxv1.Worker{{Id: "worker-A", Online: true}}}
+				h := startHubChannelHarness(t, hub, disp)
 				t.Setenv(controlenv.WorkingDirVariable, "")
 				require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
 
-				failure := runControl(t, cmdCase.args...).requireFailure(t, cli.CodeUsage)
-				assert.Contains(t, failure.Message, "--dir is required, because $LEAPMUX_CONTROL_WORKING_DIR is not set")
-				assert.Empty(t, hub.called())
+				args := append(append([]string(nil), cmdCase.args...), "--hub", h.url, "--worker", "worker-A")
+				failure := runControl(t, args...).requireFailure(t, cli.CodeUsage)
+				assert.Contains(t, failure.Message, "--dir is required")
 				assert.Empty(t, disp.calledMethods())
 			})
 		})
 	}
+}
+
+func TestGitCommands_OptionalDirLocalCwdAndWriteCommands(t *testing.T) {
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+
+	t.Run("git status falls back to local CWD over IPC when env var is unset", func(t *testing.T) {
+		disp := &gitTestDispatcher{}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "")
+		require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
+
+		data := runControl(t, "git", "status").Data(t)
+		assert.Equal(t, "main", data["branch"])
+		assert.Equal(t, []string{cwd}, disp.statusPaths)
+	})
+
+	t.Run("git write commands default --dir to tab working dir or local CWD", func(t *testing.T) {
+		disp := &gitTestDispatcher{}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "/tab/repo")
+
+		out := runControl(t, "git", "checkout", "main").Data(t)
+		assert.Equal(t, "/tab/repo", out["dir"])
+		require.Len(t, disp.checkoutReqs, 1)
+		assert.Equal(t, "/tab/repo", disp.checkoutReqs[0].GetPath())
+
+		out = runControl(t, "git", "push").Data(t)
+		assert.Equal(t, "/tab/repo", out["dir"])
+		require.Len(t, disp.pushReqs, 1)
+		assert.Equal(t, "/tab/repo", disp.pushReqs[0].GetWorkingDir())
+
+		t.Setenv(controlenv.WorkingDirVariable, "")
+		require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
+		commitData := runControl(t, "git", "commit", "-m", "checkpoint").Data(t)
+		assert.Equal(t, "abc1234", commitData["hash"])
+		require.Len(t, disp.commitReqs, 1)
+		assert.Equal(t, cwd, disp.commitReqs[0].GetPath())
+	})
+
+	t.Run("git write commands refuse omitted --dir when targeting another worker", func(t *testing.T) {
+		disp := &gitTestDispatcher{}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A", "worker-B")}, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "/tab/repo")
+
+		for _, args := range [][]string{
+			{"git", "checkout", "main", "--worker", "worker-B"},
+			{"git", "push", "--worker", "worker-B"},
+			{"git", "commit", "-m", "msg", "--worker", "worker-B"},
+			{"git", "branch", "delete", "feat", "--worker", "worker-B"},
+		} {
+			f := runControl(t, args...).requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, "--dir is required when targeting another worker")
+		}
+		assert.Empty(t, disp.calledMethods())
+	})
+}
+
+func TestGitBranchDelete_OptionalSwitchTo(t *testing.T) {
+	t.Run("deleting non-current branch keeps current branch on one channel", func(t *testing.T) {
+		disp := &gitTestDispatcher{
+			currentBr: "feature/current",
+			branches: []*leapmuxv1.GitBranchEntry{
+				{Name: "main"},
+				{Name: "feature/current"},
+				{Name: "feature/old"},
+			},
+		}
+		hub := &recordingHub{workers: []*leapmuxv1.Worker{{Id: "worker-A", Online: true}}}
+		h := startHubChannelHarness(t, hub, disp)
+		h.dispatcher.Handle(leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure, channel.Registration{}, disp.DispatchWith)
+		h.dispatcher.Handle(leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure, channel.Registration{}, disp.DispatchWith)
+
+		data := runControl(t, "git", "branch", "delete", "feature/old", "--hub", h.url, "--worker", "worker-A", "--dir", "/repo").Data(t)
+		assert.Equal(t, true, data["ok"])
+		assert.Equal(t, 1, h.channelOpens(), "branch lookup and deletion must share one E2EE channel")
+		require.Len(t, disp.deleteReqs, 1)
+		assert.Equal(t, "feature/old", disp.deleteReqs[0].GetBranchToDelete())
+		assert.Equal(t, "feature/current", disp.deleteReqs[0].GetSwitchToBranch())
+	})
+
+	t.Run("deleting current branch falls back to main then master then sole local branch", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			branches   []*leapmuxv1.GitBranchEntry
+			wantSwitch string
+		}{
+			{
+				name: "prefers main over master",
+				branches: []*leapmuxv1.GitBranchEntry{
+					{Name: "topic"},
+					{Name: "master"},
+					{Name: "main"},
+				},
+				wantSwitch: "main",
+			},
+			{
+				name: "falls back to master when main is absent",
+				branches: []*leapmuxv1.GitBranchEntry{
+					{Name: "topic"},
+					{Name: "master"},
+					{Name: "dev"},
+				},
+				wantSwitch: "master",
+			},
+			{
+				name: "uses sole remaining local branch ignoring remotes",
+				branches: []*leapmuxv1.GitBranchEntry{
+					{Name: "topic"},
+					{Name: "release"},
+					{Name: "origin/main", IsRemote: true},
+				},
+				wantSwitch: "release",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				disp := &gitTestDispatcher{currentBr: "topic", branches: tc.branches}
+				startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+				t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+				t.Setenv(controlenv.WorkingDirVariable, "/repo")
+
+				data := runControl(t, "git", "branch", "delete", "topic").Data(t)
+				assert.Equal(t, true, data["ok"])
+				require.Len(t, disp.deleteReqs, 1)
+				assert.Equal(t, "topic", disp.deleteReqs[0].GetBranchToDelete())
+				assert.Equal(t, tc.wantSwitch, disp.deleteReqs[0].GetSwitchToBranch())
+			})
+		}
+	})
+
+	t.Run("deleting current branch when ambiguous fails with usage error", func(t *testing.T) {
+		disp := &gitTestDispatcher{
+			currentBr: "topic",
+			branches: []*leapmuxv1.GitBranchEntry{
+				{Name: "topic"},
+				{Name: "dev"},
+				{Name: "staging"},
+			},
+		}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "/repo")
+
+		f := runControl(t, "git", "branch", "delete", "topic").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, `cannot choose a branch to switch to before deleting current branch "topic"`)
+		assert.Contains(t, f.Message, "--switch-to")
+		assert.Empty(t, disp.deleteReqs)
+	})
+
+	t.Run("explicit --switch-to skips ListGitBranches", func(t *testing.T) {
+		disp := &gitTestDispatcher{}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "/repo")
+
+		data := runControl(t, "git", "branch", "delete", "feature/old", "--switch-to", "main").Data(t)
+		assert.Equal(t, true, data["ok"])
+		assert.Equal(t, []string{leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure}, disp.calledMethods(),
+			"explicit --switch-to must not issue ListGitBranches")
+		require.Len(t, disp.deleteReqs, 1)
+		assert.Equal(t, "feature/old", disp.deleteReqs[0].GetBranchToDelete())
+		assert.Equal(t, "main", disp.deleteReqs[0].GetSwitchToBranch())
+	})
+}
+
+func TestDefaultDeleteSwitchBranch_EdgeCases(t *testing.T) {
+	t.Run("detached HEAD falls back to main, master, sole local, or usage error", func(t *testing.T) {
+		got, err := defaultDeleteSwitchBranch("topic", &leapmuxv1.ListGitBranchesResponse{
+			CurrentBranch: "",
+			Branches: []*leapmuxv1.GitBranchEntry{
+				{Name: "topic"},
+				{Name: "master"},
+				{Name: "main"},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "main", got)
+
+		got, err = defaultDeleteSwitchBranch("topic", &leapmuxv1.ListGitBranchesResponse{
+			CurrentBranch: "",
+			Branches: []*leapmuxv1.GitBranchEntry{
+				{Name: "topic"},
+				{Name: "release"},
+				{Name: "origin/main", IsRemote: true},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "release", got)
+
+		_, err = defaultDeleteSwitchBranch("topic", &leapmuxv1.ListGitBranchesResponse{
+			CurrentBranch: "",
+			Branches: []*leapmuxv1.GitBranchEntry{
+				{Name: "topic"},
+				{Name: "dev"},
+				{Name: "staging"},
+			},
+		})
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+	})
+
+	t.Run("deleting sole local branch fails with CodeUsage even when remote branches exist", func(t *testing.T) {
+		for name, branches := range map[string][]*leapmuxv1.GitBranchEntry{
+			"no other branches": {
+				{Name: "only"},
+			},
+			"only remote branches left": {
+				{Name: "only"},
+				{Name: "origin/main", IsRemote: true},
+				{Name: "origin/master", IsRemote: true},
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, err := defaultDeleteSwitchBranch("only", &leapmuxv1.ListGitBranchesResponse{
+					CurrentBranch: "only",
+					Branches:      branches,
+				})
+				require.Error(t, err)
+				assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
+				assert.Contains(t, err.Error(), "--switch-to")
+			})
+		}
+	})
+
+	t.Run("deleting main while on main falls back to master or sole remaining local branch", func(t *testing.T) {
+		got, err := defaultDeleteSwitchBranch("main", &leapmuxv1.ListGitBranchesResponse{
+			CurrentBranch: "main",
+			Branches: []*leapmuxv1.GitBranchEntry{
+				{Name: "main"},
+				{Name: "master"},
+				{Name: "develop"},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "master", got)
+
+		got, err = defaultDeleteSwitchBranch("main", &leapmuxv1.ListGitBranchesResponse{
+			CurrentBranch: "main",
+			Branches: []*leapmuxv1.GitBranchEntry{
+				{Name: "main"},
+				{Name: "develop"},
+				{Name: "origin/main", IsRemote: true},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "develop", got)
+	})
+}
+
+func TestGitDiffResult_RenderText(t *testing.T) {
+	t.Run("truncated diff appends truncation notice after ensuring newline", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := (gitDiffResult{
+			Diff:      "+line",
+			Truncated: true,
+			TotalSize: 120,
+		}).RenderText(&buf)
+		require.NoError(t, err)
+		assert.Equal(t, "+line\n\n(diff truncated at 5 of 120 bytes; pass --limit to show more)\n", buf.String())
+	})
+
+	t.Run("non-truncated diff omits truncation notice", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := (gitDiffResult{
+			Diff:      "+line\n",
+			Truncated: false,
+			TotalSize: 6,
+		}).RenderText(&buf)
+		require.NoError(t, err)
+		assert.Equal(t, "+line\n", buf.String())
+	})
 }

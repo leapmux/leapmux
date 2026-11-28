@@ -113,10 +113,29 @@ func start(ctx context.Context, opts agent.Options, sink agent.ProviderServices,
 		cancel()
 		return nil, err
 	}
-	resume, err := resumeArgs(opts.ResumeSessionID, opts.HomeDir)
-	if err != nil {
+	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
 		cancel()
-		return nil, err
+		return nil, fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID)
+	}
+	var resume []string
+	if opts.ForkFromSessionID != "" {
+		forkedPath, forkErr := forkOhMyPiSessionFile(
+			agent.StoredSessionQuery{HomeDir: opts.HomeDir},
+			opts.ForkFromSessionID,
+			opts.ForkSourceWorkingDir,
+			opts.WorkingDir,
+		)
+		if forkErr != nil {
+			cancel()
+			return nil, forkErr
+		}
+		resume = []string{"--resume", forkedPath}
+	} else {
+		resume, err = resumeArgs(opts.ResumeSessionID, opts.HomeDir)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
 	}
 	if opts.AgentDirs == nil {
 		cancel()

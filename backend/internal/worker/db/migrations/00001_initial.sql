@@ -51,6 +51,12 @@ CREATE TABLE agents (
     parent_agent_id  TEXT REFERENCES agents(id) ON DELETE CASCADE,
     spawn_span_id    TEXT NOT NULL DEFAULT '',
     provider_child_key TEXT NOT NULL DEFAULT '',
+    -- Cross-agent provenance for independent root agents opened or forked by
+    -- another agent tab. Deliberately carries no foreign key and no ON DELETE
+    -- CASCADE so cross-Worker spawns work and purging the origin never deletes
+    -- the spawned or forked agent.
+    spawned_by_agent_id  TEXT NOT NULL DEFAULT '',
+    forked_from_agent_id TEXT NOT NULL DEFAULT '',
     session_start_seq INTEGER NOT NULL DEFAULT 0,
     -- Per-agent monotonic message-seq high-water mark. Message seqs are allocated as
     -- (message_seq_hwm + 1) rather than (MAX(live seq) + 1), so a deleted tail seq is
@@ -100,6 +106,7 @@ CREATE TABLE agents (
 );
 CREATE INDEX idx_agents_closed_at ON agents(closed_at) WHERE closed_at IS NOT NULL;
 CREATE INDEX idx_agents_parent ON agents(parent_agent_id) WHERE parent_agent_id IS NOT NULL;
+CREATE INDEX idx_agents_spawned_by ON agents(spawned_by_agent_id) WHERE spawned_by_agent_id <> '';
 -- Serves ListSessionsForResume, the resume picker's read. It filters an exact
 -- (provider, working directory) pair, which no other index covers, and it runs
 -- on the path of a dialog that opens on every "New agent" click.
@@ -968,6 +975,7 @@ DROP VIEW IF EXISTS tab_locations;
 DROP TABLE IF EXISTS agent_background_tasks;
 DROP INDEX IF EXISTS idx_agents_spawn_span;
 DROP INDEX IF EXISTS idx_agents_provisional_spawn;
+DROP INDEX IF EXISTS idx_agents_spawned_by;
 DROP INDEX IF EXISTS idx_agents_parent;
 DROP TABLE IF EXISTS agent_todos;
 DROP TABLE IF EXISTS worker_tab_payloads;

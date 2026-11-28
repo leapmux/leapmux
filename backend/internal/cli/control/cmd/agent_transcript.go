@@ -17,6 +17,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/util/repopaths"
 )
 
 func newAgentMessageCommand() *cobra.Command {
@@ -312,6 +313,9 @@ func runAgentExport(inv *cli.Invocation) (any, error) {
 		return nil, cli.Usagef("--style must be one of markdown, text, json; got %q", style)
 	}
 	outPath := strings.TrimSpace(stringFlag(inv, "output"))
+	if inv.Changed("output") && outPath == "" {
+		return nil, cli.Usagef("--output is empty")
+	}
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
@@ -323,14 +327,21 @@ func runAgentExport(inv *cli.Invocation) (any, error) {
 	}
 
 	var (
-		tmpFile       *os.File
-		tmpPath       string
-		cleanupTmp    bool
-		streamWriter  *exportStreamWriter
-		projectedRows []agentMessage
-		emitRow       func(agentMessage) error
+		tmpFile        *os.File
+		tmpPath        string
+		cleanupTmp     bool
+		closeAttempted bool
+		streamWriter   *exportStreamWriter
+		projectedRows  []agentMessage
+		emitRow        func(agentMessage) error
 	)
 	if outPath != "" {
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return nil, cli.Wrap(cli.CodeInternal, err, "create directory for --output")
+		}
+		if toplevel, ok := repopaths.IsInsideLeapMuxTmp(outPath); ok {
+			_ = repopaths.EnsureTmpExcluded(toplevel)
+		}
 		tmpFile, err = os.CreateTemp(filepath.Dir(outPath), ".leapmux-export-*")
 		if err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
@@ -339,7 +350,9 @@ func runAgentExport(inv *cli.Invocation) (any, error) {
 		cleanupTmp = true
 		defer func() {
 			if cleanupTmp {
-				_ = tmpFile.Close()
+				if !closeAttempted {
+					_ = tmpFile.Close()
+				}
 				_ = os.Remove(tmpPath)
 			}
 		}()
@@ -410,6 +423,10 @@ func runAgentExport(inv *cli.Invocation) (any, error) {
 		if err := streamWriter.finish(); err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
 		}
+		if err := tmpFile.Sync(); err != nil {
+			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
+		}
+		closeAttempted = true
 		if err := tmpFile.Close(); err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "write --output")
 		}

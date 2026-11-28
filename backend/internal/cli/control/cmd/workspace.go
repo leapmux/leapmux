@@ -102,11 +102,10 @@ func newWorkspaceCommand() *cobra.Command {
 			Mutates: true,
 			Examples: []cli.Example{
 				{Command: `leapmux workspace move 9f3kQ2aB --section "Client Work" --last`},
-				{Command: `leapmux workspace move 9f3kQ2aB --section "In progress" --first`},
+				{Command: `leapmux workspace move 9f3kQ2aB --first`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				fs.String("section", "", "destination sidebar section (id, prefix, or name)")
-				cli.MarkRequired(fs, "section")
+				fs.String("section", "", "destination sidebar section (id, prefix, or name; default: current section)")
 				fs.Bool("first", false, "put the workspace first in the section")
 				fs.Bool("last", false, "put the workspace last in the section")
 				fs.String("before", "", "put the workspace before this workspace in the section")
@@ -404,6 +403,9 @@ func runWorkspaceMove(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, cli.Usagef("%s", err.Error())
 	}
+	if !inv.Changed("section") && !hasPosition {
+		return nil, cli.Usagef("specify --section or a position flag (--first, --last, --before, --after)")
+	}
 
 	s, err := openSession(inv)
 	if err != nil {
@@ -444,9 +446,21 @@ func runWorkspaceMove(inv *cli.Invocation) (any, error) {
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	destSec, err := resolveSection(list.GetSections(), stringFlag(inv, "section"))
-	if err != nil {
-		return nil, err
+	secIdx := indexSections(list)
+	var destSec *leapmuxv1.Section
+	if inv.Changed("section") {
+		destSec, err = resolveSection(list.GetSections(), stringFlag(inv, "section"))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		destSec = secIdx.sectionOf(target.ID)
+		if destSec == nil {
+			destSec = findSectionByType(list.GetSections(), leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
+		}
+		if destSec == nil {
+			return nil, cli.Newf(cli.CodeNotFound, "workspace %s is not assigned to a sidebar section; pass --section <section>", cli.ShortID(target.ID))
+		}
 	}
 	if spec.refID != "" {
 		spec.refID = refWS.ID
@@ -464,7 +478,6 @@ func runWorkspaceMove(inv *cli.Invocation) (any, error) {
 			return nil, err
 		}
 	}
-	secIdx := indexSections(list)
 	return s.moveWorkspace(target.ID, destSec, pos, secIdx.archiveState(target.ID))
 }
 

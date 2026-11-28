@@ -30,6 +30,9 @@ type kiroProvider struct {
 	acp.Provider
 }
 
+// SupportsFork reports that Kiro advertises ACP sessionCapabilities.fork.
+func (kiroProvider) SupportsFork() bool { return true }
+
 // ListStoredSessions reads Kiro's own session store. See sessions.go.
 func (kiroProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return kiroStoredSessions(ctx, q)

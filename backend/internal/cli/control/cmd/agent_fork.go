@@ -17,11 +17,19 @@ import (
 
 func newAgentForkCommand() *cobra.Command {
 	return cli.NewLeaf(cli.Leaf{
-		Use:     "fork <agent>",
-		Short:   "Clone an agent's provider, model, options, and working directory into a new agent tab",
+		Use:     "fork <agent> [prompt]",
+		Short:   "Fork an agent's conversation history and settings into a new agent tab",
 		Mutates: true,
-		Long: `Clone an existing agent's provider, model, effort, permission mode, provider
-options, and working directory into a new agent tab.
+		Args: map[string]string{
+			"prompt": `Optional first message to send to the forked agent ("-" reads stdin). Mutually exclusive with --message and --file.`,
+		},
+		Long: `Fork an existing agent into a new agent tab, cloning its provider session
+history and Worker transcript while preserving the provider prompt cache.
+
+Pass --fresh to clone only the agent's settings (provider, model, effort,
+permission mode, provider options, and working directory) into a fresh empty
+session without copying conversation history. --fresh also allows launching
+the clone on another Worker with --worker.
 
 Pass --worktree <branch> to fork the agent directly into a fresh git worktree,
 or override individual settings (--model, --effort, --permission-mode, --option,
@@ -32,8 +40,8 @@ or override individual settings (--model, --effort, --permission-mode, --option,
 		},
 		Examples: []cli.Example{
 			{Command: "leapmux agent fork 87a19d5f"},
-			{Command: `leapmux agent fork 87a19d5f --worktree alt-approach --base main --message "Try an alternative implementation"`},
-			{Command: `leapmux agent fork self --model opus --name reviewer`},
+			{Command: `leapmux agent fork 87a19d5f "Try an alternative implementation" --worktree alt-approach --base main`},
+			{Command: `leapmux agent fork self --fresh --model opus --name reviewer`},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.String("model", "", "override model id")
@@ -45,11 +53,12 @@ or override individual settings (--model, --effort, --permission-mode, --option,
 			for _, name := range []string{"model", "effort", "permission-mode", "option", "title", "name"} {
 				cli.SetFlagGroup(fs, name, "Agent")
 			}
-			fs.String("message", "", `queue a first message on the forked agent ("-" reads stdin)`)
+			fs.Bool("fresh", false, "clone settings into a fresh empty session without copying conversation history")
+			fs.StringP("message", "m", "", `queue a first message on the forked agent ("-" reads stdin)`)
 			fs.String("file", "", `read the first message from this file ("-" reads stdin)`)
 			fs.StringArray("attach", nil, "attach this file to the first message; repeat for more than one")
 			addRequestIDFlag(fs)
-			for _, name := range []string{"message", "file", "attach", "request-id"} {
+			for _, name := range []string{"fresh", "message", "file", "attach", "request-id"} {
 				cli.SetFlagGroup(fs, name, "Session & Input")
 			}
 			fs.Bool("wait", false, "wait until the forked agent settles (and print its reply when a message was sent)")
@@ -109,6 +118,11 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 	p, err := timed.placementForFork(srcTarget)
 	if err != nil {
 		return nil, err
+	}
+
+	fresh := boolFlag(inv, "fresh")
+	if !fresh && p.WorkerID != srcTarget.WorkerID {
+		return nil, cli.Usagef("cannot fork native conversation history across Workers (pass --fresh to clone settings on another Worker)")
 	}
 
 	g, gctx := errgroup.WithContext(timed.ctx)
@@ -193,6 +207,10 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 			}
 		}
 		startedOpen = true
+		var forkSource *leapmuxv1.AgentForkSource
+		if !fresh {
+			forkSource = &leapmuxv1.AgentForkSource{SourceAgentId: srcTarget.ID}
+		}
 		var openErr error
 		result, openErr = openAgentAndAddTab(timed.ctx, s.c, w, openAgentArgs{
 			WorkspaceID:    p.WorkspaceID,
@@ -203,6 +221,7 @@ func runAgentFork(inv *cli.Invocation) (any, error) {
 			Options:        opts,
 			WorkingDir:     dir,
 			InitialMessage: flags.atomicInitialMsg,
+			ForkSource:     forkSource,
 			GitSetup:       flags.setup,
 			Position:       p.Position,
 			RequestID:      flags.requestID,

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/lifecycle"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -165,11 +167,16 @@ func runDoctor(inv *cli.Invocation) (any, error) {
 	)
 	switch peer := c.(type) {
 	case *control.WorkerIPCClient:
+		connDetail := "connected through local tab IPC socket"
+		if envHub := strings.TrimSpace(os.Getenv("LEAPMUX_HUB")); envHub != "" {
+			connDetail += fmt.Sprintf(" ($LEAPMUX_HUB=%s ignored; $LEAPMUX_CONTROL_SOCK takes precedence)", envHub)
+		}
 		addCheck(doctorCheck{
 			Name:   "connection",
 			Status: "ok",
-			Detail: "connected through local tab IPC socket",
+			Detail: connDetail,
 		})
+		addCheck(checkDoctorTabDirectHubAuth())
 	case *control.HubClient:
 		hc = peer
 		addCheck(doctorCheck{
@@ -240,6 +247,104 @@ func finishDoctorReport(inv *cli.Invocation, report doctorReport) (any, error) {
 		return nil, &cli.ExitStatus{Code: cli.ExitFailure}
 	}
 	return report, nil
+}
+
+func checkDoctorTabDirectHubAuth() doctorCheck {
+	hub, source, err := control.DefaultHubWithSource()
+	if err != nil {
+		var noHub *control.NoHubError
+		if errors.As(err, &noHub) {
+			if noHub.Stored > 1 {
+				return doctorCheck{
+					Name:   "direct_hub_auth",
+					Status: "warn",
+					Detail: fmt.Sprintf("no default hub selected for direct CLI use (%d stored credentials)", noHub.Stored),
+					Fix:    `run "leapmux auth use <hub>" to select a default hub`,
+				}
+			}
+			return doctorCheck{
+				Name:   "direct_hub_auth",
+				Status: "info",
+				Detail: "no direct hub configured for outside-tab CLI use (tab IPC handles in-tab commands)",
+			}
+		}
+		return doctorCheck{
+			Name:   "direct_hub_auth",
+			Status: "warn",
+			Detail: fmt.Sprintf("could not read direct hub config: %v", err),
+		}
+	}
+
+	sourceLabel := doctorHubSourceLabel(source)
+	precedenceNote := ""
+	if source == control.HubSourceEnv {
+		precedenceNote = "; $LEAPMUX_CONTROL_SOCK takes precedence inside this tab"
+	}
+
+	creds, loadErr := control.LoadCredentials(hub)
+	switch {
+	case loadErr == nil && creds != nil:
+		userLabel := creds.Username
+		if userLabel == "" {
+			userLabel = cli.ShortID(creds.UserID)
+		}
+		if !creds.RefreshExpiresAt.IsZero() && !time.Now().Before(creds.RefreshExpiresAt) {
+			return doctorCheck{
+				Name:   "direct_hub_auth",
+				Status: "warn",
+				Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s refresh token expired%s", hub, sourceLabel, userLabel, precedenceNote),
+				Fix:    fmt.Sprintf(`run "%s"`, authLoginCommand(hub)),
+			}
+		}
+		if !creds.ExpiresAt.IsZero() && !time.Now().Before(creds.ExpiresAt) {
+			return doctorCheck{
+				Name:   "direct_hub_auth",
+				Status: "ok",
+				Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s (access token expired; will refresh)%s", hub, sourceLabel, userLabel, precedenceNote),
+			}
+		}
+		return doctorCheck{
+			Name:   "direct_hub_auth",
+			Status: "ok",
+			Detail: fmt.Sprintf("direct hub %s (%s): stored credential for %s%s", hub, sourceLabel, userLabel, precedenceNote),
+		}
+	case errors.Is(loadErr, control.ErrNotLoggedIn):
+		if locallisten.IsLocal(hub) {
+			return doctorCheck{
+				Name:   "direct_hub_auth",
+				Status: "ok",
+				Detail: fmt.Sprintf("direct hub %s (%s): local IPC hub (no stored credential required)%s", hub, sourceLabel, precedenceNote),
+			}
+		}
+		return doctorCheck{
+			Name:   "direct_hub_auth",
+			Status: "warn",
+			Detail: fmt.Sprintf("direct hub %s (%s): no stored credential%s", hub, sourceLabel, precedenceNote),
+			Fix:    fmt.Sprintf(`run "%s"`, authLoginCommand(hub)),
+		}
+	default:
+		return doctorCheck{
+			Name:   "direct_hub_auth",
+			Status: "warn",
+			Detail: fmt.Sprintf("direct hub %s (%s): stored credential unreadable (%v)%s", hub, sourceLabel, loadErr, precedenceNote),
+			Fix:    fmt.Sprintf(`run "%s" to replace it`, authLoginCommand(hub)),
+		}
+	}
+}
+
+func doctorHubSourceLabel(source control.HubSource) string {
+	switch source {
+	case control.HubSourceEnv:
+		return "$LEAPMUX_HUB"
+	case control.HubSourceContext:
+		return "context.json"
+	case control.HubSourceSingleCredential:
+		return "stored credential"
+	case control.HubSourceDiscovered:
+		return "local hub discovery"
+	default:
+		return "configured hub"
+	}
 }
 
 func checkDoctorAuth(ctx context.Context, hc *control.HubClient) (doctorCheck, bool) {

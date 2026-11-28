@@ -1,6 +1,6 @@
 ---
 name: leapmux-handoff
-description: Transfer an in-progress task cleanly to another LeapMux agent — via a cloned-config fork, fresh worktree agent, or another Worker — with complete decisions, file paths, and acceptance criteria. Use for one-way handoffs or switching providers/machines. Do not use for supervised parallel fan-out (use `leapmux-delegate`) or read-only second opinions (use `leapmux-review`).
+description: Transfer an in-progress task cleanly to another LeapMux agent — via a native conversation-history fork, a fresh cloned-config fork (`--fresh`), a fresh worktree agent, or another Worker — with complete decisions, file paths, and acceptance criteria. Use for one-way handoffs or switching providers/machines. Do not use for supervised parallel fan-out (use `leapmux-delegate`) or read-only second opinions (use `leapmux-review`).
 user-invocable: true
 argument-hint: "[--provider <provider>] [--worker <worker>] [--worktree <branch>] [instructions]"
 ---
@@ -13,14 +13,15 @@ Read the **leapmux** skill first. Load [references/handoff-template.md](referenc
 
 ## 1. Choose the Right Handoff Mode
 
-- **Same provider, model, and options** (branching an approach or moving onto a fresh git worktree): use `leapmux agent fork self` with a structured briefing file. It clones the provider, model, options, and working directory into a fresh session and does **not** copy prior conversation history.
+- **Same provider with conversation history** (branching an approach or moving onto a new git worktree while keeping context): use `leapmux agent fork self`. When the provider supports native session forking, it clones the provider session history and the Worker transcript so the forked agent keeps prior context and prompt cache.
+- **Same provider, model, and options in a clean empty session** (resetting noisy context without changing provider or settings): use `leapmux agent fork self --fresh` with a structured briefing file. It clones provider, model, options, and working directory without copying conversation history.
 - **Switch provider or move to another Worker** (handing off from Claude Code to Codex, or moving heavy builds to a remote Worker): use `leapmux agent open` with a structured briefing file.
 
 Inspect `leapmux worker list`, `leapmux agent providers`, and `leapmux git status` before launching.
 
 ## 2. Prepare an Accurate Briefing
 
-Write the briefing to a temporary file (for example `.tmp/handoff-brief.md`) using the 7-section template in [references/handoff-template.md](references/handoff-template.md):
+For clean-session handoffs (`agent fork --fresh` or `agent open`), write the briefing under `.leapmux/tmp/` (for example `.leapmux/tmp/handoff-brief.md`) using the 7-section template in [references/handoff-template.md](references/handoff-template.md):
 
 - **Preserve exact task scope.** Never turn an *investigate-only* or *plan-only* task into an *implement* task (or vice versa).
 - **Never fabricate verification.** Do not claim a build, lint, or test passed unless that command ran and succeeded in the current worktree; list unverified checks explicitly under Remaining Work.
@@ -28,13 +29,21 @@ Write the briefing to a temporary file (for example `.tmp/handoff-brief.md`) usi
 
 ## 3. Launch the Receiving Agent
 
-**Option A — Clone provider, model, and options into a fresh session:**
+**Option A — Fork the current agent (keeps conversation history and prompt cache by default; add `--fresh` for a clean empty session):**
 
 ```sh
+# Native conversation-history fork onto a new worktree:
 leapmux agent fork self \
   --worktree feat/next-phase \
   --name handoff-impl \
-  --file .tmp/handoff-brief.md
+  --message "Continue with phase 2 using the settled design."
+
+# Clean empty session with cloned provider, model, and options:
+leapmux agent fork self \
+  --fresh \
+  --worktree feat/next-phase \
+  --name handoff-impl \
+  --file .leapmux/tmp/handoff-brief.md
 ```
 
 **Option B — Clean-context handoff (optionally switching provider or Worker):**
@@ -48,7 +57,7 @@ leapmux agent open \
   --provider codex \
   --worktree feat/next-phase \
   --name handoff-build \
-  --file .tmp/handoff-brief.md
+  --file .leapmux/tmp/handoff-brief.md
 ```
 
 ## 4. Confirm and Stop (Fire-and-Forget)

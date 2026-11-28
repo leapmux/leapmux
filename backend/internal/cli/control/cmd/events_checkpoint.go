@@ -2,28 +2,32 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/util/atomicfile"
+	"github.com/leapmux/leapmux/util/pathutil"
+	"github.com/leapmux/leapmux/util/repopaths"
 )
 
 const (
-	eventCheckpointVersion       = 1
-	maxEventCheckpointBytes      = contracts.MaxMessageSize
-	eventCheckpointLockDirectory = ".leapmux-event-locks"
-	tabCheckpointScope           = "tab"
-	layoutCheckpointScope        = "layout"
-	accountCheckpointScope       = "account"
+	eventCheckpointVersion     = 1
+	maxEventCheckpointBytes    = contracts.MaxMessageSize
+	eventCheckpointLockDirName = "event-locks"
+	tabCheckpointScope         = "tab"
+	layoutCheckpointScope      = "layout"
+	accountCheckpointScope     = "account"
 )
 
 type eventCheckpoint struct {
@@ -106,6 +110,9 @@ func openEventCheckpoint(path string) (*eventCheckpointFile, error) {
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "resolve checkpoint path")
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, cli.Wrap(cli.CodeUsage, err, "create checkpoint directory")
+	}
 	// Resolve the parent so two paths through different directory symlinks
 	// contend for the same lock. The checkpoint itself must be a regular file.
 	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
@@ -113,12 +120,15 @@ func openEventCheckpoint(path string) (*eventCheckpointFile, error) {
 		return nil, cli.Wrap(cli.CodeUsage, err, "resolve checkpoint directory")
 	}
 	path = filepath.Join(dir, filepath.Base(path))
-	if strings.EqualFold(filepath.Base(dir), eventCheckpointLockDirectory) ||
-		strings.EqualFold(filepath.Base(path), eventCheckpointLockDirectory) {
-		return nil, cli.Usagef("choose a checkpoint path outside the event lock directory")
+	if toplevel, ok := repopaths.IsInsideLeapMuxTmp(path); ok {
+		_ = repopaths.EnsureTmpExcluded(toplevel)
 	}
-	lockDir := filepath.Join(dir, eventCheckpointLockDirectory)
-	if err := os.Mkdir(lockDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+	cfgDir, err := control.ConfigDir()
+	if err != nil {
+		return nil, cli.Wrap(cli.CodeInternal, err, "resolve control config directory")
+	}
+	lockDir := filepath.Join(cfgDir, eventCheckpointLockDirName)
+	if err := os.MkdirAll(lockDir, 0o700); err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "create checkpoint lock directory")
 	}
 	lockInfo, err := os.Lstat(lockDir)
@@ -128,7 +138,16 @@ func openEventCheckpoint(path string) (*eventCheckpointFile, error) {
 	if !lockInfo.IsDir() {
 		return nil, cli.Usagef("the event lock path must be a directory")
 	}
-	lock, err := filelock.Open(filepath.Join(lockDir, filepath.Base(path)), false)
+	resolvedLockDir := lockDir
+	if evalLockDir, err := filepath.EvalSymlinks(lockDir); err == nil {
+		resolvedLockDir = evalLockDir
+	}
+	if pathutil.HasPathPrefix(path, resolvedLockDir) {
+		return nil, cli.Usagef("choose a checkpoint path outside the event lock directory")
+	}
+	sum := sha256.Sum256([]byte(path))
+	lockPath := filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock")
+	lock, err := filelock.Open(lockPath, false)
 	if err != nil {
 		return nil, cli.Wrap(cli.CodeUsage, err, "open checkpoint lock")
 	}

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"os"
 	"sync"
 	"testing"
 
@@ -49,6 +50,8 @@ type worktreeTestDispatcher struct {
 	mu             sync.Mutex
 	methods        []string
 	getResp        *leapmuxv1.GetGitWorktreeResponse
+	getReqs        []*leapmuxv1.GetGitWorktreeRequest
+	createReqs     []*leapmuxv1.CreateGitWorktreeRequest
 	removedPaths   []string
 	inspectedPaths []string
 	removalArrived chan struct{}
@@ -64,6 +67,11 @@ func (d *worktreeTestDispatcher) DispatchWith(ctx context.Context, _ channel.Cal
 
 	switch req.GetMethod() {
 	case leapmuxv1connect.WorkerGitServiceGetGitWorktreeProcedure:
+		var in leapmuxv1.GetGitWorktreeRequest
+		_ = proto.Unmarshal(req.GetPayload(), &in)
+		d.mu.Lock()
+		d.getReqs = append(d.getReqs, &in)
+		d.mu.Unlock()
 		resp := d.getResp
 		if resp == nil {
 			resp = &leapmuxv1.GetGitWorktreeResponse{
@@ -72,6 +80,20 @@ func (d *worktreeTestDispatcher) DispatchWith(ctx context.Context, _ channel.Cal
 			}
 		}
 		writeProtoResponse(w, resp)
+	case leapmuxv1connect.WorkerGitServiceCreateGitWorktreeProcedure:
+		var in leapmuxv1.CreateGitWorktreeRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		d.mu.Lock()
+		d.createReqs = append(d.createReqs, &in)
+		d.mu.Unlock()
+		writeProtoResponse(w, &leapmuxv1.CreateGitWorktreeResponse{
+			WorktreePath: "/wt/" + in.GetBranch(),
+			Branch:       in.GetBranch(),
+			RepoRoot:     in.GetPath(),
+		})
 	case leapmuxv1connect.WorkerGitServiceRemoveGitWorktreeProcedure:
 		var in leapmuxv1.RemoveGitWorktreeRequest
 		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
@@ -329,4 +351,50 @@ func TestRunGitWorktreeInspect_OmittedPathUsesDirFlag(t *testing.T) {
 	assert.Equal(t, "worktree is locked", data["removal_blocked_reason"])
 	assert.Equal(t, float64(1), data["unpushed_commits"])
 	assert.Equal(t, []string{"/wt/feat"}, disp.inspectedPaths)
+}
+
+func TestWorktreeCreate_OptionalDirUsesTabOrLocalCwdAndRefusesOtherWorker(t *testing.T) {
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+
+	t.Run("defaults --dir to tab working dir", func(t *testing.T) {
+		disp := &worktreeTestDispatcher{}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "/tab/repo")
+
+		data := runControl(t, "worktree", "create", "feat/x").Data(t)
+		assert.Equal(t, "/wt/feat/x", data["path"])
+		require.Len(t, disp.createReqs, 1)
+		assert.Equal(t, "/tab/repo", disp.createReqs[0].GetPath())
+	})
+
+	t.Run("falls back to local CWD over IPC when tab working dir is unset", func(t *testing.T) {
+		disp := &worktreeTestDispatcher{}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A")}, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "")
+		require.NoError(t, os.Unsetenv(controlenv.WorkingDirVariable))
+
+		data := runControl(t, "worktree", "create", "feat/y").Data(t)
+		assert.Equal(t, "/wt/feat/y", data["path"])
+		require.Len(t, disp.createReqs, 1)
+		assert.Equal(t, cwd, disp.createReqs[0].GetPath())
+
+		getData := runControl(t, "worktree", "get", "branch:feat").Data(t)
+		assert.Equal(t, "/wt/feat", getData["path"])
+		require.Len(t, disp.getReqs, 1)
+		assert.Equal(t, cwd, disp.getReqs[0].GetRepoDir())
+	})
+
+	t.Run("refuses omitted --dir when targeting another worker", func(t *testing.T) {
+		disp := &worktreeTestDispatcher{}
+		startSpawnIPC(t, &recordingHub{workers: workerRows("worker-A", "worker-B")}, disp)
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+		t.Setenv(controlenv.WorkingDirVariable, "/tab/repo")
+
+		f := runControl(t, "worktree", "create", "feat/z", "--worker", "worker-B").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--dir is required when targeting another worker")
+		assert.Empty(t, disp.createReqs)
+	})
 }

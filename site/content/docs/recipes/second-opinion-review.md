@@ -10,14 +10,10 @@ A coding agent that just wrote a patch often repeats the same blind spots when r
 ## Prerequisites
 
 - At least two coding-agent providers available on your Worker (`leapmux agent providers`).
-- Optional: install the `leapmux-review` skill. By default skills install to `~/.agents/skills`; Claude Code users pass `--target claude`:
+- Optional: install the `leapmux-review` skill. Local installs default to `--target auto`, which writes to `~/.agents/skills` and automatically includes `~/.claude/skills` when `~/.claude` exists:
 
 ```sh
-# Default (~/.agents/skills):
 leapmux skill install leapmux leapmux-review
-
-# Claude Code (~/.claude/skills):
-leapmux skill install leapmux leapmux-review --target claude
 ```
 
 ## Prompt your agent with `/leapmux-review`
@@ -34,11 +30,11 @@ The `leapmux-review` skill checks available providers, writes a self-contained r
 
 For scripts, CI checks, or coordinator pipelines, pair `--wait` with `--output-schema` and `--schema-retries`. The command validates the reviewer's final reply against your JSON Schema and sends corrective follow-up turns automatically (up to `--schema-retries`, default `2`) if validation fails.
 
-Create `.tmp/` and write a minimal JSON Schema to `.tmp/review-schema.json`:
+Create `.leapmux/tmp/` and write a minimal JSON Schema to `.leapmux/tmp/review-schema.json`:
 
 ```sh
-mkdir -p .tmp
-cat <<'EOF' > .tmp/review-schema.json
+mkdir -p .leapmux/tmp
+cat <<'EOF' > .leapmux/tmp/review-schema.json
 {
   "type": "object",
   "required": ["verdict", "findings"],
@@ -62,7 +58,7 @@ cat <<'EOF' > .tmp/review-schema.json
 EOF
 ```
 
-Next, write a read-only brief to `.tmp/review-brief.md` specifying the branch, scope, and a strict no-edits rule (`Read-only review. Do NOT edit, create, or delete files, and do NOT run mutating commands.`). Then launch and wait:
+Next, write a read-only brief to `.leapmux/tmp/review-brief.md` specifying the branch, scope, and a strict no-edits rule (`Read-only review. Do NOT edit, create, or delete files, and do NOT run mutating commands.`). Then launch and wait:
 
 ```sh
 leapmux agent open \
@@ -72,9 +68,9 @@ leapmux agent open \
   --no-focus \
   --wait \
   --timeout 15m \
-  --output-schema .tmp/review-schema.json \
+  --output-schema .leapmux/tmp/review-schema.json \
   --schema-retries 2 \
-  --file .tmp/review-brief.md
+  --file .leapmux/tmp/review-brief.md
 ```
 
 LeapMux prints the validated JSON reply to stdout and exits `0`. If `--timeout` passes, the reviewer stops at a permission prompt, or `--schema-retries` runs out, the command exits `6`. Inspect what happened before retrying:

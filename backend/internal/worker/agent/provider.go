@@ -325,6 +325,13 @@ type Provider interface {
 	// into the runtime's own answer. A decision that does not answer the
 	// prompt fails with ErrInvalidControlDecision.
 	AnswerControlRequest(input ControlAnswerInput) (ControlAnswer, error)
+	// SupportsFork reports whether this provider supports native
+	// conversation-history forking statically. A provider whose fork support is
+	// discovered at runtime (such as an ACP provider advertising
+	// sessionCapabilities.fork during initialize) returns false here and
+	// implements ForkCapable on its live Agent instead. Defaults to false on
+	// ProviderDefaults.
+	SupportsFork() bool
 }
 
 // PlanExitModeDeferrer is a RUNNING provider that cannot apply the permission
@@ -345,6 +352,19 @@ type PlanExitModeDeferrer interface {
 	// other than the plan value, and the provider owns applying it at its own
 	// moment.
 	DeferPlanExitMode(mode string)
+}
+
+// ForkCapable is an optional interface for a RUNNING agent whose provider
+// discovers native conversation-history fork support dynamically (for example,
+// an ACP provider advertising sessionCapabilities.fork during initialize).
+//
+// The service type-asserts this on the live Agent before falling back to
+// Provider.SupportsFork(). A provider whose fork capability is purely static
+// does not need to implement this interface.
+type ForkCapable interface {
+	// SupportsNativeFork reports whether this running agent currently supports
+	// native conversation-history forking.
+	SupportsNativeFork() bool
 }
 
 type ProviderDefaults struct{}
@@ -444,6 +464,10 @@ func (ProviderDefaults) ChildCapabilities(optionmap.Map) ChildCapabilities {
 // concrete model ids only must keep the default badge on the entry its own
 // catalog designates, even when one of those ids happens to be "default".
 func (ProviderDefaults) ReportsDefaultModelSentinel() bool { return false }
+
+// SupportsFork defaults to false: a provider opts in by overriding this method
+// or by implementing ForkCapable on its live Agent.
+func (ProviderDefaults) SupportsFork() bool { return false }
 
 // DefaultTurnEndToolUses reads a top-level "num_tool_uses" number. Every
 // provider shipped today puts it there, but the decision stays behind the

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -329,6 +330,28 @@ func (b *Base) sendSessionClose(sessionID string) {
 	}
 }
 
+var _ agentapi.ForkCapable = (*Base)(nil)
+
+// SupportsNativeFork reports whether the ACP server advertised
+// agentCapabilities.sessionCapabilities.fork during initialize.
+func (b *Base) SupportsNativeFork() bool {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	return b.forksSessions
+}
+
+// hasSessionCapability reports whether a JSON capability value from
+// agentCapabilities.sessionCapabilities is enabled. The capability is an
+// object, so an absent member, `null`, and `false` all mean no.
+func hasSessionCapability(raw json.RawMessage) bool {
+	switch string(raw) {
+	case "", "null", "false":
+		return false
+	default:
+		return true
+	}
+}
+
 // advertisesSessionClose reports whether an initialize response advertises
 // session/close, as `agentCapabilities.sessionCapabilities.close`. The
 // capability is an object, so an absent member, `null` and `false` all mean no.
@@ -343,10 +366,22 @@ func advertisesSessionClose(initializeResponse []byte) bool {
 	if json.Unmarshal(initializeResponse, &response) != nil {
 		return false
 	}
-	switch capability := string(response.AgentCapabilities.SessionCapabilities.Close); capability {
-	case "", "null", "false":
-		return false
-	default:
-		return true
+	return hasSessionCapability(response.AgentCapabilities.SessionCapabilities.Close)
+}
+
+// advertisesSessionFork reports whether an initialize response advertises
+// session/fork, as `agentCapabilities.sessionCapabilities.fork`. The
+// capability is an object, so an absent member, `null` and `false` all mean no.
+func advertisesSessionFork(initializeResponse json.RawMessage) bool {
+	var response struct {
+		AgentCapabilities struct {
+			SessionCapabilities struct {
+				Fork json.RawMessage `json:"fork"`
+			} `json:"sessionCapabilities"`
+		} `json:"agentCapabilities"`
 	}
+	if json.Unmarshal(initializeResponse, &response) != nil {
+		return false
+	}
+	return hasSessionCapability(response.AgentCapabilities.SessionCapabilities.Fork)
 }

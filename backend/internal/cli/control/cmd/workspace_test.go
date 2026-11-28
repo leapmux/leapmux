@@ -442,13 +442,67 @@ func TestWorkspaceMove_ValidatesPositionFlagsBeforeDialing(t *testing.T) {
 	hub := &recordingHub{}
 	startSpawnIPC(t, hub, nil)
 
-	o := runControl(t, "workspace", "move", "ws-1", "--section", "In progress", "--first", "--last")
+	o := runControl(t, "workspace", "move", "ws-1")
+	f := o.requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, f.Message, "specify --section or a position flag")
+	assert.Empty(t, hub.called())
+
+	o = runControl(t, "workspace", "move", "ws-1", "--section", "In progress", "--first", "--last")
 	o.requireFailure(t, cli.CodeUsage)
 	assert.Empty(t, hub.called())
 
 	o = runControl(t, "workspace", "move", "ws-1", "--section", "In progress", "--before", "   ")
 	o.requireFailure(t, cli.CodeUsage)
 	assert.Empty(t, hub.called())
+}
+
+func TestWorkspaceMove_OptionalSectionReordersWithinCurrentSection(t *testing.T) {
+	ws1 := fullTestID("ws-move-1")
+	ws2 := fullTestID("ws-move-2")
+	var (
+		mu       sync.Mutex
+		moveReqs []*leapmuxv1.MoveWorkspaceRequest
+	)
+	customHub := funcHubClient(func(_ context.Context, _ userid.UserID, procedure string, payload []byte) ([]byte, error) {
+		switch procedure {
+		case leapmuxv1connect.SectionServiceListSectionsProcedure:
+			return proto.Marshal(&leapmuxv1.ListSectionsResponse{
+				Sections: []*leapmuxv1.Section{
+					{Id: "sec-prog", Name: "In progress", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS},
+					{Id: "sec-client", Name: "Client Work", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM},
+				},
+				Items: []*leapmuxv1.SectionItem{
+					{SectionId: "sec-client", WorkspaceId: ws2, Position: "m"},
+					{SectionId: "sec-client", WorkspaceId: ws1, Position: "n"},
+				},
+			})
+		case leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure:
+			var in leapmuxv1.MoveWorkspaceRequest
+			if err := proto.Unmarshal(payload, &in); err != nil {
+				return nil, err
+			}
+			mu.Lock()
+			moveReqs = append(moveReqs, &in)
+			mu.Unlock()
+			return proto.Marshal(&leapmuxv1.MoveWorkspaceResponse{})
+		default:
+			return nil, connect.NewError(connect.CodeUnimplemented, "unexpected procedure: "+procedure)
+		}
+	})
+	startSpawnIPC(t, &recordingHub{}, nil, func(r *controlipc.Router) {
+		r.Hub = customHub
+	})
+
+	data := runControl(t, "workspace", "move", "id:"+ws1, "--first").Data(t)
+	assert.Equal(t, ws1, data["id"])
+	assert.Equal(t, "sec-client", data["section_id"])
+	assert.Equal(t, "Client Work", data["section_name"])
+	assert.NotEmpty(t, data["position"])
+
+	require.Len(t, moveReqs, 1)
+	assert.Equal(t, ws1, moveReqs[0].GetWorkspaceId())
+	assert.Equal(t, "sec-client", moveReqs[0].GetSectionId())
+	assert.Less(t, moveReqs[0].GetPosition(), "m", "--first must rank before the existing first workspace in the same section")
 }
 
 type deleteGuardDispatcher struct {

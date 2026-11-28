@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -538,4 +540,160 @@ func TestDoctor_PostAuthChecksGetFreshDeadlinesAndRunConcurrently(t *testing.T) 
 	assert.True(t, sysDeadline.After(authDeadline), "hub version must derive a fresh deadline after auth (%v vs %v)", sysDeadline, authDeadline)
 	assert.True(t, workersDeadline.After(authDeadline), "workers must derive a fresh deadline after auth (%v vs %v)", workersDeadline, authDeadline)
 	assert.True(t, strings.Contains(doctorCheckByName(t, data, "admin-network")["detail"].(string), "127.0.0.1:4327"))
+}
+
+func TestDoctor_InsideTabReportsDirectHubAuth(t *testing.T) {
+	t.Run("no direct hub configured reports info and stays healthy", func(t *testing.T) {
+		isolateCLIEnv(t)
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "info", chk["status"])
+		assert.Contains(t, chk["detail"], "no direct hub configured")
+	})
+
+	t.Run("stored credential for configured default hub reports ok", func(t *testing.T) {
+		isolateCLIEnv(t)
+		const hubURL = "https://hub.example.test"
+		require.NoError(t, control.SaveCredentials(hubURL, control.CredentialFile{
+			HubURL:      hubURL,
+			AccessToken: "tok",
+			UserID:      "u-1",
+			Username:    "alice",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}))
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "ok", chk["status"])
+		assert.Contains(t, chk["detail"], hubURL)
+		assert.Contains(t, chk["detail"], "alice")
+	})
+
+	t.Run("LEAPMUX_HUB without stored credential warns and explains socket precedence without failing doctor", func(t *testing.T) {
+		isolateCLIEnv(t)
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+		t.Setenv("LEAPMUX_HUB", "https://unauthed.example.test")
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		conn := doctorCheckByName(t, data, "connection")
+		assert.Contains(t, conn["detail"], "$LEAPMUX_HUB=https://unauthed.example.test")
+		assert.Contains(t, conn["detail"], "$LEAPMUX_CONTROL_SOCK")
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "warn", chk["status"])
+		assert.Contains(t, chk["detail"], "no stored credential")
+		assert.Contains(t, chk["detail"], "$LEAPMUX_CONTROL_SOCK takes precedence")
+		assert.Contains(t, chk["fix"], "leapmux auth login --hub https://unauthed.example.test")
+	})
+
+	t.Run("multiple stored credentials with no default hub warns and suggests auth use", func(t *testing.T) {
+		isolateCLIEnv(t)
+		for _, hubURL := range []string{"https://hub-a.example.test", "https://hub-b.example.test"} {
+			require.NoError(t, control.SaveCredentials(hubURL, control.CredentialFile{
+				HubURL:      hubURL,
+				AccessToken: "tok",
+				UserID:      "u-1",
+				Username:    "alice",
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}))
+		}
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "warn", chk["status"])
+		assert.Contains(t, chk["detail"], "2 stored credentials")
+		assert.Contains(t, chk["fix"], "leapmux auth use <hub>")
+	})
+
+	t.Run("expired refresh token warns with login fix", func(t *testing.T) {
+		isolateCLIEnv(t)
+		const hubURL = "https://expired-refresh.example.test"
+		require.NoError(t, control.SaveCredentials(hubURL, control.CredentialFile{
+			HubURL:           hubURL,
+			AccessToken:      "tok",
+			RefreshToken:     "ref",
+			UserID:           "u-1",
+			Username:         "alice",
+			ExpiresAt:        time.Now().Add(-2 * time.Hour),
+			RefreshExpiresAt: time.Now().Add(-time.Hour),
+		}))
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "warn", chk["status"])
+		assert.Contains(t, chk["detail"], "refresh token expired")
+		assert.Contains(t, chk["detail"], "alice")
+		assert.Contains(t, chk["fix"], "leapmux auth login --hub "+hubURL)
+	})
+
+	t.Run("expired access token with valid refresh token reports ok and notes refresh", func(t *testing.T) {
+		isolateCLIEnv(t)
+		const hubURL = "https://expired-access.example.test"
+		require.NoError(t, control.SaveCredentials(hubURL, control.CredentialFile{
+			HubURL:           hubURL,
+			AccessToken:      "tok",
+			RefreshToken:     "ref",
+			UserID:           "u-1",
+			Username:         "alice",
+			ExpiresAt:        time.Now().Add(-time.Hour),
+			RefreshExpiresAt: time.Now().Add(24 * time.Hour),
+		}))
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "ok", chk["status"])
+		assert.Contains(t, chk["detail"], "access token expired; will refresh")
+		assert.Empty(t, chk["fix"])
+	})
+
+	t.Run("local IPC hub without stored credentials reports ok", func(t *testing.T) {
+		isolateCLIEnv(t)
+		const localHub = "unix:/tmp/leapmux-local-hub.sock"
+		require.NoError(t, control.SetDefaultHub(localHub))
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "ok", chk["status"])
+		assert.Contains(t, chk["detail"], "no stored credential required")
+		assert.Empty(t, chk["fix"])
+	})
+
+	t.Run("corrupt credential file warns with login fix", func(t *testing.T) {
+		isolateCLIEnv(t)
+		const hubURL = "https://corrupt.example.test"
+		require.NoError(t, control.SetDefaultHub(hubURL))
+		credPath, err := control.CredentialsPath(hubURL)
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(credPath), 0o700))
+		require.NoError(t, os.WriteFile(credPath, []byte("{corrupt-json"), 0o600))
+		hub := &recordingHub{systemBuild: version.BuildInfoProto()}
+		startSpawnIPC(t, hub, nil)
+
+		data := runControl(t, "doctor").Data(t)
+		assert.Equal(t, true, data["healthy"])
+		chk := doctorCheckByName(t, data, "direct_hub_auth")
+		assert.Equal(t, "warn", chk["status"])
+		assert.Contains(t, chk["detail"], "stored credential unreadable")
+		assert.Contains(t, chk["fix"], "leapmux auth login --hub "+hubURL)
+	})
 }

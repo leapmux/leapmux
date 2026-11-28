@@ -17,6 +17,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -253,6 +254,40 @@ func TestRunAgentExport_RejectsEmptyStyle(t *testing.T) {
 			requireFailure(t, cli.CodeUsage)
 		assert.Contains(t, f.Message, "--style must be one of markdown, text, json")
 	}
+
+	for _, blankOut := range []string{"", "   "} {
+		f := runControl(t, "agent", "export", agID, "--output", blankOut, "--hub", "https://stub.invalid").
+			requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--output is empty")
+	}
+}
+
+func TestRunAgentExport_CreatesMissingParentDirAndAutoExcludesLeapMuxTmp(t *testing.T) {
+	agID := fullTestID("ag-exp-tmp")
+	reply := "Exported reply"
+	startAgentWorker(t, agID, &agentOpsDispatcher{
+		pages: map[int64]*leapmuxv1.ListAgentMessagesResponse{
+			0: {
+				Messages: []*leapmuxv1.AgentChatMessage{
+					{Id: "m-1", Seq: 1, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, ReplyText: &reply},
+				},
+			},
+		},
+	})
+	repo := testutil.NewGitRepo(t)
+	outPath := filepath.Join(repo, ".leapmux", "tmp", "exports", "transcript.md")
+
+	data := runControl(t, "agent", "export", agID, "--style", "markdown", "--output", outPath).Data(t)
+	assert.Equal(t, outPath, data["output"])
+	assert.Equal(t, float64(1), data["messages"])
+
+	raw, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "Exported reply")
+
+	excludeBytes, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+	require.NoError(t, err)
+	assert.Contains(t, string(excludeBytes), ".leapmux/tmp/")
 }
 
 func TestRunAgentExport_StreamsDeduplicatesAndWritesAtomically(t *testing.T) {

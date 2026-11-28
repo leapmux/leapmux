@@ -343,7 +343,7 @@ leapmux events [flags]
 | `--workspace string` | watch only this workspace: an id, a prefix, "title:&lt;title&gt;" or "self" (default: every workspace) |
 | `--tab string` | watch only this tab: an id, a prefix, "id:&lt;id&gt;", "title:&lt;title&gt;" or "self" |
 | `--kind string` | print only this kind of event, or every kind of this family, such as "agent"; repeat it, or separate the values with commas (default: every kind) (one of: workspace, tab, agent, terminal, notification, stream, workspace.created, workspace.renamed, workspace.deleted, tab.opened, tab.closed, tab.moved, tab.renamed, tab.status, agent.activity, agent.status, agent.turn_end, agent.request, agent.request_ended, agent.todos, agent.background_tasks, agent.goal, agent.queue, terminal.status, terminal.title, terminal.bell, terminal.notification, terminal.progress, terminal.exit, notification.created, notification.cleared, stream.ready, stream.unavailable, stream.gap, stream.heartbeat, stream.retired; repeatable) |
-| `--limit int` | end the stream after this many events; 0 runs without a limit |
+| `-n, --limit int` | end the stream after this many events; 0 runs without a limit |
 | `--timeout duration` | stop the stream cleanly after this long, such as 30s or 5m; 0 runs without a limit (default: 0s) |
 | `--snapshot` | emit stream.ready (after any checkpointed backlog) and exit cleanly |
 | `--heartbeat duration` | print a stream.heartbeat event at this interval, such as 30s; 0 prints none (default: 0s) |

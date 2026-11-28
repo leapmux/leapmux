@@ -311,6 +311,36 @@ func (a *Agent) resumeThread(
 	return threadResult, nil
 }
 
+// forkThread sends `thread/fork` for forkSessionID with the target cwd and
+// settings from threadParams, and returns the newly forked thread identity and
+// effective settings. It rejects a response whose thread ID is empty or matches
+// the source thread ID.
+func (a *Agent) forkThread(
+	threadParams map[string]interface{}, forkSessionID string, timeout time.Duration,
+) (codexThreadResult, error) {
+	params := maps.Clone(threadParams)
+	if params == nil {
+		params = make(map[string]interface{})
+	}
+	params["threadId"] = forkSessionID
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return codexThreadResult{}, fmt.Errorf("marshal thread/fork params: %w", err)
+	}
+	resp, err := a.SendRequest("thread/fork", paramsJSON, timeout)
+	if err != nil {
+		return codexThreadResult{}, fmt.Errorf("fork codex thread %q: %w", forkSessionID, err)
+	}
+	threadResult, err := parseCodexThreadResponse("thread/fork", resp)
+	if err != nil {
+		return codexThreadResult{}, fmt.Errorf("fork codex thread %q: %w", forkSessionID, err)
+	}
+	if threadResult.ID == forkSessionID {
+		return codexThreadResult{}, fmt.Errorf("codex thread/fork: response returned the source thread ID %q", forkSessionID)
+	}
+	return threadResult, nil
+}
+
 // startThread sends `thread/start` and returns the new thread's effective model.
 func (a *Agent) startThread(threadParams map[string]interface{}, timeout time.Duration) (codexThreadResult, error) {
 	params := maps.Clone(threadParams)

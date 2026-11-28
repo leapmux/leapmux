@@ -10,7 +10,7 @@ Use this protocol only when Round 1 council members disagree on root cause or ar
 
 ## Round 2 Prompt Template
 
-Write `.tmp/council-r2-a.md` (for `C1`, showing `Member B`'s summary) and `.tmp/council-r2-b.md` (for `C2`, showing `Member A`'s summary):
+Write `.leapmux/tmp/council-r2-a.md` (for `C1`, showing `Member B`'s summary) and `.leapmux/tmp/council-r2-b.md` (for `C2`, showing `Member A`'s summary):
 
 ```markdown
 Below is an independent analysis from another council member (Member B):
@@ -28,8 +28,8 @@ Analysis only. Do NOT edit, create, or delete files, and do NOT run mutating com
 Send both in parallel and wait once:
 
 ```sh
-leapmux agent send "$C1" --file .tmp/council-r2-a.md
-leapmux agent send "$C2" --file .tmp/council-r2-b.md
+leapmux agent send "$C1" --file .leapmux/tmp/council-r2-a.md
+leapmux agent send "$C2" --file .leapmux/tmp/council-r2-b.md
 leapmux agent wait "$C1" "$C2" --timeout 15m
 leapmux agent messages "$C1" --limit 2 --markdown
 leapmux agent messages "$C2" --limit 2 --markdown

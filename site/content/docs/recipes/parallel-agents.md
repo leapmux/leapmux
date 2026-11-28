@@ -28,14 +28,10 @@ flowchart LR
 ## Prerequisites
 
 - LeapMux running in solo or distributed mode with a git repository on your Worker.
-- Optional: install the bundled `leapmux-delegate` skill so your coordinator agent knows this playbook natively. By default skills install to `~/.agents/skills`; Claude Code users pass `--target claude`:
+- Optional: install the bundled `leapmux-delegate` skill so your coordinator agent knows this playbook natively. Local installs default to `--target auto`, which writes to `~/.agents/skills` and automatically includes `~/.claude/skills` when `~/.claude` exists:
 
 ```sh
-# Default (~/.agents/skills):
 leapmux skill install leapmux leapmux-delegate
-
-# Claude Code (~/.claude/skills):
-leapmux skill install leapmux leapmux-delegate --target claude
 ```
 
 ## Prompt your coordinator agent
@@ -54,20 +50,20 @@ Wait without polling, inspect each diff, verify tests pass, and summarize what i
 
 ## Run the same workflow from the CLI
 
-You can also drive all three agents from a shell or script inside your repository root. First create `.tmp/` and write each assignment to a file so multiline briefs never break shell quoting:
+You can also drive all three agents from a shell or script inside your repository root. First create `.leapmux/tmp/` and write each assignment to a file so multiline briefs never break shell quoting (LeapMux adds `.leapmux/tmp/` to `.git/info/exclude` automatically when creating worktrees):
 
 ```sh
-mkdir -p .tmp
+mkdir -p .leapmux/tmp
 
-cat <<'EOF' > .tmp/brief-api.md
+cat <<'EOF' > .leapmux/tmp/brief-api.md
 Implement token-bucket rate-limiter middleware under src/api/ and add unit tests.
 EOF
 
-cat <<'EOF' > .tmp/brief-cli.md
+cat <<'EOF' > .leapmux/tmp/brief-cli.md
 Add the --rate-limit flag under src/cli/ and cover flag parsing with tests.
 EOF
 
-cat <<'EOF' > .tmp/brief-docs.md
+cat <<'EOF' > .leapmux/tmp/brief-docs.md
 Document the rate-limit configuration and examples in docs/config.md.
 EOF
 ```
@@ -76,14 +72,14 @@ Launch three agents in isolated git worktrees branched off `main`:
 
 ```sh
 A1=$(leapmux agent open --dir . --provider claude --worktree feat/backend-api --base main \
-  --name backend-api --no-focus --file .tmp/brief-api.md -q)
+  --name backend-api --no-focus --file .leapmux/tmp/brief-api.md -q)
 A2=$(leapmux agent open --dir . --provider codex --worktree feat/cli-flags --base main \
-  --name cli-flags --no-focus --file .tmp/brief-cli.md -q)
+  --name cli-flags --no-focus --file .leapmux/tmp/brief-cli.md -q)
 A3=$(leapmux agent open --dir . --provider gemini --worktree feat/docs-update --base main \
-  --name docs-update --no-focus --file .tmp/brief-docs.md -q)
+  --name docs-update --no-focus --file .leapmux/tmp/brief-docs.md -q)
 ```
 
-Block until the first agent finishes or asks for permission — no sleep loop needed:
+Block until the first agent finishes or asks for permission — no sleep loop needed (inside a coordinator agent tab, you can pass `children` instead of listing explicit IDs):
 
 ```sh
 leapmux agent wait "$A1" "$A2" "$A3" --any --timeout 20m

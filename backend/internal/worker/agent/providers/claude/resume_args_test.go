@@ -19,16 +19,18 @@ func TestClaudeSessionArgs(t *testing.T) {
 	t.Parallel()
 
 	t.Run("passes an ordinary session ID", func(t *testing.T) {
-		args, err := claudeSessionArgs("3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f")
+		args, sessionID, err := claudeSessionArgs("3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f", "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{"--resume", "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f"}, args)
+		assert.Equal(t, "3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f", sessionID)
 	})
 
 	t.Run("assigns a valid identity before a fresh session starts", func(t *testing.T) {
-		args, err := claudeSessionArgs("")
+		args, sessionID, err := claudeSessionArgs("", "")
 		require.NoError(t, err)
 		require.Len(t, args, 2)
 		assert.Equal(t, "--session-id", args[0])
+		assert.Equal(t, args[1], sessionID)
 		_, err = uuid.Parse(args[1])
 		require.NoError(t, err)
 	})
@@ -45,9 +47,10 @@ func TestClaudeSessionArgs(t *testing.T) {
 			"-",
 			"--",
 		} {
-			args, err := claudeSessionArgs(id)
+			args, sessionID, err := claudeSessionArgs(id, "")
 			require.Errorf(t, err, "%q must not reach argv: it parses as a flag, not as the value of --resume", id)
 			assert.Nil(t, args)
+			assert.Empty(t, sessionID)
 		}
 	})
 
@@ -65,9 +68,10 @@ func TestClaudeSessionArgs(t *testing.T) {
 			"has\xffinvalid-utf8",
 			strings.Repeat("a", 129),
 		} {
-			args, err := claudeSessionArgs(id)
+			args, sessionID, err := claudeSessionArgs(id, "")
 			require.Errorf(t, err, "%q must not reach argv", id)
 			assert.Nil(t, args)
+			assert.Empty(t, sessionID)
 		}
 	})
 
@@ -76,7 +80,7 @@ func TestClaudeSessionArgs(t *testing.T) {
 	// the conversation with no report of why. The message states the handle and
 	// the command that replaces it.
 	t.Run("reports the refused handle and how to recover the tab", func(t *testing.T) {
-		_, err := claudeSessionArgs("--dangerously-skip-permissions")
+		_, _, err := claudeSessionArgs("--dangerously-skip-permissions", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "--dangerously-skip-permissions")
 		assert.Contains(t, err.Error(), "/clear")
@@ -93,9 +97,10 @@ func TestClaudeSessionArgs(t *testing.T) {
 			"a--b",
 			"abc-123-",
 		} {
-			got, err := claudeSessionArgs(id)
+			got, sessionID, err := claudeSessionArgs(id, "")
 			require.NoErrorf(t, err, "%q is a legitimate identifier and must still resume", id)
 			assert.Equal(t, []string{"--resume", id}, got)
+			assert.Equal(t, id, sessionID)
 		}
 	})
 }

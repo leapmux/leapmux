@@ -77,11 +77,11 @@ leapmux git checkout <branch> [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | a directory inside the git working tree (required) |
+| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
-leapmux git checkout main --dir ~/src/app
+leapmux git checkout main
 
 # Check out a remote branch.
 leapmux git checkout origin/feature --dir ~/src/app
@@ -122,11 +122,12 @@ leapmux git branch create <name> [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | a directory inside the git working tree (required) |
+| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--base string` | the branch to start from (default: the current branch) |
 
 ```sh
+leapmux git branch create fix-login --base main
 leapmux git branch create fix-login --base main --dir ~/src/app
 ```
 
@@ -142,11 +143,12 @@ leapmux git branch delete <name> [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | a directory inside the git working tree (required) |
+| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
-| `--switch-to string` | the branch to check out before the deletion (required) |
+| `--switch-to string` | the branch to check out before deleting the current branch (default: current branch if deleting another branch, else main/master) |
 
 ```sh
+leapmux git branch delete fix-login
 leapmux git branch delete fix-login --switch-to main --dir ~/src/app
 ```
 
@@ -182,10 +184,11 @@ leapmux git push [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | a directory inside the git working tree (required) |
+| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
+leapmux git push
 leapmux git push --dir ~/src/app
 ```
 
@@ -245,13 +248,13 @@ leapmux git commit [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | a directory inside the git working tree (required) |
+| `--dir string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `-m, --message string` | commit message (required) |
 | `-a, --all` | stage all modified and untracked files (git add -A) before committing |
 
 ```sh
-leapmux git commit -m "Fix timeout handling" --dir ~/src/app
+leapmux git commit -m "Fix timeout handling"
 leapmux git commit -a -m "Checkpoint changes" --dir ~/src/app
 ```
 
@@ -312,13 +315,13 @@ leapmux worktree create <branch> [flags]
 
 | Flag | Description |
 |---|---|
-| `--dir string` | repository directory on the worker (required) |
+| `--dir string` | repository directory on the worker (default: $LEAPMUX_CONTROL_WORKING_DIR) |
 | `--base string` | base branch or commit to branch from (default: current branch) |
 | `--path string` | explicit filesystem path for the new worktree (default: worker managed location) |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
-leapmux worktree create feat/cli-v2 --dir ~/src/app
+leapmux worktree create feat/cli-v2
 leapmux worktree create feat/cli-v2 --base main --path ~/wt/cli-v2 --dir ~/src/app
 ```
 
@@ -336,7 +339,7 @@ leapmux worktree remove <path> [flags]
 |---|---|
 | `--force` | remove even if the worktree contains modified or untracked files |
 | `--delete-branch` | also delete the local branch checked out in the removed worktree |
-| `--dir string` | repository directory when resolving a branch:&lt;branch&gt; selector |
+| `--dir string` | repository directory when resolving a branch:&lt;branch&gt; selector (default: $LEAPMUX_CONTROL_WORKING_DIR) |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
@@ -522,7 +525,7 @@ leapmux file search <pattern> [path] [flags]
 | `--glob string` | restrict matches to paths matching this glob (such as "**/*.go") |
 | `--regex` | treat &lt;pattern&gt; as an RE2 regular expression |
 | `-i, --ignore-case` | match case-insensitively |
-| `--limit int` | maximum number of matching lines to return (max 1000) (default: 100) |
+| `-n, --limit int` | maximum number of matching lines to return (max 1000) (default: 100) |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
@@ -542,7 +545,7 @@ leapmux file glob <pattern> [path] [flags]
 
 | Flag | Description |
 |---|---|
-| `--limit int` | maximum number of paths to return (max 2000) (default: 200) |
+| `-n, --limit int` | maximum number of paths to return (max 2000) (default: 200) |
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh

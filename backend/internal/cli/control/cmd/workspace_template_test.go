@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -365,4 +368,43 @@ func TestWorkspaceExport_UsesCRDTSnapshotAndSingleWorkerPass(t *testing.T) {
 	require.Len(t, fws, 1)
 	fwMap := fws[0].(map[string]any)
 	assert.Equal(t, float64(0), fwMap["opacity"], "explicit 0.0 floating window opacity must be preserved")
+}
+
+func TestWorkspaceExport_RejectsBlankOutputAndAutoExcludesLeapMuxTmp(t *testing.T) {
+	t.Run("rejects blank --output before dialing", func(t *testing.T) {
+		hub := &recordingHub{}
+		startSpawnIPC(t, hub, nil)
+
+		for _, blank := range []string{"", "   "} {
+			f := runControl(t, "workspace", "export", "id:ws-1", "--output", blank).requireFailure(t, cli.CodeUsage)
+			assert.Contains(t, f.Message, "--output is empty")
+		}
+		assert.Empty(t, hub.called())
+	})
+
+	t.Run("creates missing parent dir and excludes .leapmux/tmp", func(t *testing.T) {
+		rootID := fullTestID("root-exp-tmp")
+		b := newStateBuilder().
+			workspace("ws-1", rootID).
+			leafNode(rootID, "", "a0")
+		hub := &recordingHub{
+			workers:      workerRows("worker-A"),
+			materialized: b.st,
+		}
+		startSpawnIPC(t, hub, nil)
+
+		repo := testutil.NewGitRepo(t)
+		outPath := filepath.Join(repo, ".leapmux", "tmp", "templates", "ws.yaml")
+
+		data := runControl(t, "workspace", "export", "id:ws-1", "--output", outPath).Data(t)
+		assert.Equal(t, outPath, data["output"])
+
+		raw, err := os.ReadFile(outPath)
+		require.NoError(t, err)
+		assert.Contains(t, string(raw), "title: First")
+
+		excludeBytes, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+		require.NoError(t, err)
+		assert.Contains(t, string(excludeBytes), ".leapmux/tmp/")
+	})
 }

@@ -190,6 +190,22 @@ func noticeDiscoveredLocalHub(inv *cli.Invocation, c control.Peer) {
 	_ = inv.Printer.Notice("using discovered local Hub %s (override with --hub or LEAPMUX_HUB)", hub.HubURL)
 }
 
+// noticeIgnoredHubEnv writes a one-line stderr notice in text mode when the
+// CLI runs inside a LeapMux tab and connects via LEAPMUX_CONTROL_SOCK while
+// LEAPMUX_HUB is also set in the environment.
+func noticeIgnoredHubEnv(inv *cli.Invocation, c control.Peer) {
+	if inv == nil || inv.Printer == nil || inv.Printer.Format != cli.FormatText {
+		return
+	}
+	if _, ok := c.(*control.WorkerIPCClient); !ok {
+		return
+	}
+	if strings.TrimSpace(os.Getenv("LEAPMUX_HUB")) == "" {
+		return
+	}
+	_ = inv.Printer.Notice("connected via tab socket (ignoring LEAPMUX_HUB; pass --hub to override)")
+}
+
 // newClient builds the client of an invocation, with the precedence that
 // control.NewClientFromEnv states. When connecting outside a tab by
 // auto-discovering a local solo/dev Hub, it prints a one-line stderr notice
@@ -202,6 +218,7 @@ func newClient(inv *cli.Invocation) (control.Peer, error) {
 	}
 	configurePeer(c, inv)
 	noticeDiscoveredLocalHub(inv, c)
+	noticeIgnoredHubEnv(inv, c)
 	return c, nil
 }
 
@@ -730,12 +747,29 @@ func verifyTabInWorkspace(tabID, actualWS, scopedWS string) error {
 	return cli.Newf(cli.CodeNotFound, "tab %s is in workspace %s, not %s", tabID, actualWS, scopedWS)
 }
 
+// resolveTabInputs resolves inputs through resolve.Resolve. When parent is
+// true, the calling Worker is not pinned up front so Hub LocateTab can locate
+// a cross-Worker spawner (spawned_by_agent_id); if the Hub holds no placement
+// (an unopened virtual subagent on the calling Worker), it retries with
+// fallbackWorkerID.
+func resolveTabInputs(ctx context.Context, deps resolve.Deps, need resolve.Need, in resolve.Inputs, parent bool, fallbackWorkerID string) (resolve.Resolved, error) {
+	if parent {
+		in.WorkerID = ""
+	}
+	got, err := resolve.Resolve(ctx, deps, need, in)
+	if err != nil && parent && fallbackWorkerID != "" && errors.Is(err, resolve.ErrTabNotLocatable) {
+		in.WorkerID = fallbackWorkerID
+		return resolve.Resolve(ctx, deps, need, in)
+	}
+	return got, err
+}
+
 // resolveTab resolves the tab target input of kind and derives what need
 // asks for. An empty input selects the caller's own tab. The command parser
 // rejects explicit blank targets, so empty input here means an omitted target.
 //
 // When kind accepts an agent and input is "parent", it resolves the calling
-// agent's parent_agent_id on the calling Worker.
+// agent's parent_agent_id or spawned_by_agent_id.
 //
 // When the command declares a scoping --workspace flag (not a destination
 // flag like `tab move --workspace`), tab listings are narrowed to that
@@ -784,13 +818,13 @@ func (s *session) resolveTab(kind resolve.Kind, input string, need resolve.Need)
 	if workerID == "" {
 		workerID = strings.TrimSpace(os.Getenv(controlenv.WorkerIDVariable))
 	}
-	got, err := resolve.Resolve(s.ctx, s.deps(), need, resolve.Inputs{
+	got, err := resolveTabInputs(s.ctx, s.deps(), need, resolve.Inputs{
 		TabID:         t.ID,
 		ExplicitTabID: !t.Self && !t.Parent,
 		WorkerID:      workerID,
 		FixedTabType:  fixedType,
 		TabType:       t.TabType,
-	})
+	}, t.Parent, workerID)
 	if err != nil {
 		return tabTarget{}, err
 	}
@@ -872,8 +906,10 @@ func (s *session) resolveSelfAgentIdentity(listing resolve.Listing) (tabID, work
 	return tabID, workerID, nil
 }
 
-// resolveChildAgents resolves the "children" relational selector to all direct
-// child subagents of the calling agent.
+// resolveChildAgents resolves the "children" relational selector to the
+// deduplicated union of direct virtual child subagents (parent_agent_id) on
+// the calling Worker and open spawned peer agents (spawned_by_agent_id) across
+// online Workers.
 func (s *session) resolveChildAgents(listing resolve.Listing) ([]tabTarget, error) {
 	parentID, workerID, err := s.resolveSelfAgentIdentity(listing)
 	if err != nil {
@@ -889,9 +925,11 @@ func (s *session) resolveChildAgents(listing resolve.Listing) ([]tabTarget, erro
 	}, &resp); err != nil {
 		return nil, err
 	}
+	seen := map[string]bool{}
 	var out []tabTarget
 	for _, a := range resp.GetAgents() {
-		if a.GetParentAgentId() == parentID {
+		if a.GetParentAgentId() == parentID && !seen[a.GetId()] {
+			seen[a.GetId()] = true
 			out = append(out, tabTarget{
 				ID:       a.GetId(),
 				Type:     leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -899,6 +937,40 @@ func (s *session) resolveChildAgents(listing resolve.Listing) ([]tabTarget, erro
 			})
 		}
 	}
+
+	tabs, tabsErr := s.listAllTabs(s.ctx)
+	if tabsErr != nil {
+		code := connect.CodeOf(tabsErr)
+		if code != connect.CodePermissionDenied && code != connect.CodeUnimplemented {
+			return nil, tabsErr
+		}
+	} else {
+		agentTabs := filterTabsByType(tabs, leapmuxv1.TabType_TAB_TYPE_AGENT)
+		details := s.fetchTabDetailsCached(s.ctx, agentTabs)
+		var spawned []tabTarget
+		for _, t := range agentTabs {
+			id := t.GetTab().GetTabId()
+			if id == "" || id == parentID || seen[id] {
+				continue
+			}
+			if d := details[id]; d.Agent != nil && d.Agent.GetSpawnedByAgentId() == parentID {
+				seen[id] = true
+				spawned = append(spawned, tabTarget{
+					ID:          id,
+					Type:        leapmuxv1.TabType_TAB_TYPE_AGENT,
+					WorkerID:    t.GetWorkerId(),
+					WorkspaceID: t.GetWorkspaceId(),
+					TileID:      t.GetTileId(),
+					Row:         t,
+				})
+			}
+		}
+		slices.SortFunc(spawned, func(a, b tabTarget) int {
+			return strings.Compare(a.ID, b.ID)
+		})
+		out = append(out, spawned...)
+	}
+
 	if len(out) == 0 {
 		return nil, cli.Newf(cli.CodeNotFound, "agent %s has no child agents", parentID)
 	}
@@ -965,11 +1037,21 @@ func (s *session) resolveVariadicTabsWithOptions(kind resolve.Kind, inputs []str
 		if tabsLoaded {
 			return cachedTabs, nil
 		}
-		tabs, err := listTabsInWorkspaces(ctx, s.c, workspaceIDs)
+		var (
+			tabs []*leapmuxv1.WorkspaceTab
+			err  error
+		)
+		if len(workspaceIDs) == 0 {
+			tabs, err = s.listAllTabs(ctx)
+		} else {
+			tabs, err = listTabsInWorkspaces(ctx, s.c, workspaceIDs)
+			if err == nil {
+				s.cacheLocatedTabs(tabs)
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
-		s.cacheLocatedTabs(tabs)
 		cachedTabs = tabs
 		tabsLoaded = true
 		return tabs, nil
@@ -1014,6 +1096,7 @@ func (s *session) resolveVariadicTabsWithOptions(kind resolve.Kind, inputs []str
 		fixedTabType  leapmuxv1.TabType
 		tabType       leapmuxv1.TabType
 		self          bool
+		parent        bool
 		fromChildren  bool
 	}
 
@@ -1075,6 +1158,7 @@ func (s *session) resolveVariadicTabsWithOptions(kind resolve.Kind, inputs []str
 			fixedTabType:  fixedType,
 			tabType:       t.TabType,
 			self:          t.Self,
+			parent:        t.Parent,
 		})
 	}
 
@@ -1085,13 +1169,13 @@ func (s *session) resolveVariadicTabsWithOptions(kind resolve.Kind, inputs []str
 	g.SetLimit(detailFanoutLimit)
 	for i, p := range pending {
 		g.Go(func() error {
-			got, err := resolve.Resolve(gctx, deps, need, resolve.Inputs{
+			got, err := resolveTabInputs(gctx, deps, need, resolve.Inputs{
 				TabID:         p.tabID,
 				ExplicitTabID: p.explicitTabID,
 				WorkerID:      p.workerID,
 				FixedTabType:  p.fixedTabType,
 				TabType:       p.tabType,
-			})
+			}, p.parent, p.workerID)
 			if err != nil {
 				if p.fromChildren && opts.SkipUnopenedChildren && errors.Is(err, resolve.ErrTabNotLocatable) {
 					skipped[i] = true

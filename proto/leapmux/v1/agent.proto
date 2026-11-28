@@ -257,6 +257,11 @@ enum ContentCompression {
 
 // --- Agent CRUD ---
 
+// AgentForkSource identifies the source agent tab to fork conversation history from.
+message AgentForkSource {
+  string source_agent_id = 1;
+}
+
 message OpenAgentRequest {
   // The channel identifies the Worker. Creation carries public placement intent;
   // the Worker persists the resource and asks the Hub to publish its tab.
@@ -295,6 +300,11 @@ message OpenAgentRequest {
   // Optional client-chosen input ID for initial_message. Requires initial_message
   // when non-blank. When absent or blank, the Worker generates an ID.
   optional string initial_message_id = 10;
+  // When set, the Worker clones the source agent's transcript and performs a
+  // native conversation-history fork on the provider so the new agent starts
+  // with an independent copy of that conversation. Mutually exclusive with
+  // agent_session_id.
+  AgentForkSource fork_source = 11;
 }
 
 message OpenAgentResponse {
@@ -444,6 +454,14 @@ message AgentInfo {
   // Populated while status=AGENT_STATUS_STARTING and the provider waits for
   // user confirmation before continuing startup.
   AgentStartupPrompt startup_prompt = 24;
+  // Server-stamped provenance of the calling agent tab that opened or forked
+  // this agent. Unlike parent_agent_id (virtual subagent child transcripts),
+  // a spawned agent has an independent root lifecycle and its own process.
+  string spawned_by_agent_id = 25;
+  // Source agent ID when this agent was created via conversation-history fork.
+  string forked_from_agent_id = 26;
+  // Whether this agent currently supports native conversation-history forking.
+  bool supports_fork = 27;
 }
 
 // AgentStartupPrompt describes a one-time user confirmation that a provider

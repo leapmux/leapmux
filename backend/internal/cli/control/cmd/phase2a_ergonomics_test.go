@@ -19,6 +19,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentenv"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -27,6 +28,7 @@ import (
 
 func TestContextCommands_ShowUseClear(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, control.SaveCredentials("https://hub.example.com", control.CredentialFile{AccessToken: "tok"}))
 
 	data := runControl(t, "context", "show").Data(t)
 	assert.Empty(t, data["hub"])

@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -21,7 +22,7 @@ import (
 func newAgentTreeCommand() *cobra.Command {
 	return cli.NewLeaf(cli.Leaf{
 		Use:   "tree [agent]",
-		Short: "Show an agent and all its descendant subagents, including unopened ones (default: this agent)",
+		Short: "Show an agent and its descendant subagents and spawned agents (default: this agent)",
 		Examples: []cli.Example{
 			{Command: "leapmux agent tree"},
 			{Command: "leapmux agent tree 87a19d5f"},
@@ -33,16 +34,19 @@ func newAgentTreeCommand() *cobra.Command {
 }
 
 type agentTreeNode struct {
-	ID            string          `json:"id"`
-	Title         string          `json:"title,omitempty"`
-	Provider      string          `json:"provider,omitempty"`
-	State         string          `json:"state,omitempty"`
-	Status        string          `json:"status,omitempty"`
-	ParentAgentID string          `json:"parent_agent_id,omitempty"`
-	RootAgentID   string          `json:"root_agent_id,omitempty"`
-	SpawnSpanID   string          `json:"spawn_span_id,omitempty"`
-	OpenInTab     bool            `json:"open_in_tab"`
-	Children      []agentTreeNode `json:"children,omitempty"`
+	ID                string          `json:"id"`
+	Title             string          `json:"title,omitempty"`
+	Provider          string          `json:"provider,omitempty"`
+	State             string          `json:"state,omitempty"`
+	Status            string          `json:"status,omitempty"`
+	ParentAgentID     string          `json:"parent_agent_id,omitempty"`
+	RootAgentID       string          `json:"root_agent_id,omitempty"`
+	SpawnSpanID       string          `json:"spawn_span_id,omitempty"`
+	SpawnedByAgentID  string          `json:"spawned_by_agent_id,omitempty"`
+	ForkedFromAgentID string          `json:"forked_from_agent_id,omitempty"`
+	Relation          string          `json:"relation,omitempty"`
+	OpenInTab         bool            `json:"open_in_tab"`
+	Children          []agentTreeNode `json:"children,omitempty"`
 }
 
 type agentTreeResult struct {
@@ -112,10 +116,30 @@ func formatAgentTreeNode(n agentTreeNode) string {
 	if n.Title != "" {
 		parts = append(parts, fmt.Sprintf("%q", cli.SanitizeSingleLine(n.Title)))
 	}
+	if n.Relation != "" {
+		parts = append(parts, "["+n.Relation+"]")
+	}
 	if !n.OpenInTab {
 		parts = append(parts, "(unopened)")
 	}
 	return strings.Join(parts, "  ")
+}
+
+func agentTreeNodeOf(a *leapmuxv1.AgentInfo, openInTab bool, relation string) *agentTreeNode {
+	return &agentTreeNode{
+		ID:                a.GetId(),
+		Title:             a.GetTitle(),
+		Provider:          agentlabels.CLIAlias(a.GetAgentProvider()),
+		State:             enumToken(a.GetActivityState()),
+		Status:            enumToken(a.GetStatus()),
+		ParentAgentID:     a.GetParentAgentId(),
+		RootAgentID:       a.GetRootAgentId(),
+		SpawnSpanID:       a.GetSpawnSpanId(),
+		SpawnedByAgentID:  a.GetSpawnedByAgentId(),
+		ForkedFromAgentID: a.GetForkedFromAgentId(),
+		Relation:          relation,
+		OpenInTab:         openInTab,
+	}
 }
 
 func runAgentTree(inv *cli.Invocation) (any, error) {
@@ -139,7 +163,7 @@ func runAgentTree(inv *cli.Invocation) (any, error) {
 	})
 	g.Go(func() error {
 		var listErr error
-		tabs, listErr = listTabsInWorkspaces(gctx, s.c, nil)
+		tabs, listErr = s.listAllTabs(gctx)
 		return listErr
 	})
 	if err := g.Wait(); err != nil {
@@ -150,31 +174,128 @@ func runAgentTree(inv *cli.Invocation) (any, error) {
 	}
 
 	openTabs := map[string]bool{}
-	for _, t := range tabs {
-		if t.GetTab().GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
-			openTabs[t.GetTab().GetTabId()] = true
+	tabWorker := map[string]string{}
+	agentTabs := filterTabsByType(tabs, leapmuxv1.TabType_TAB_TYPE_AGENT)
+	for _, t := range agentTabs {
+		tid := t.GetTab().GetTabId()
+		openTabs[tid] = true
+		if wk := t.GetWorkerId(); wk != "" {
+			tabWorker[tid] = wk
 		}
 	}
 
 	byID := map[string]*agentTreeNode{}
 	childrenByParent := map[string][]string{}
-	for _, a := range resp.GetAgents() {
-		node := &agentTreeNode{
-			ID:            a.GetId(),
-			Title:         a.GetTitle(),
-			Provider:      agentlabels.CLIAlias(a.GetAgentProvider()),
-			State:         enumToken(a.GetActivityState()),
-			Status:        enumToken(a.GetStatus()),
-			ParentAgentID: a.GetParentAgentId(),
-			RootAgentID:   a.GetRootAgentId(),
-			SpawnSpanID:   a.GetSpawnSpanId(),
-			OpenInTab:     openTabs[a.GetId()],
+	seenEdge := map[string]bool{}
+	addEdge := func(parentID, childID string) {
+		key := parentID + "\x00" + childID
+		if seenEdge[key] {
+			return
 		}
+		seenEdge[key] = true
+		childrenByParent[parentID] = append(childrenByParent[parentID], childID)
+	}
+
+	queue := make([]string, 0, len(resp.GetAgents()))
+	enqueued := map[string]bool{}
+	enqueue := func(id string) {
+		if id == "" || enqueued[id] {
+			return
+		}
+		enqueued[id] = true
+		queue = append(queue, id)
+	}
+
+	for _, a := range resp.GetAgents() {
+		rel := ""
+		if a.GetParentAgentId() != "" && a.GetId() != got.ID {
+			rel = "subagent"
+		}
+		node := agentTreeNodeOf(a, openTabs[a.GetId()], rel)
 		byID[node.ID] = node
-		if node.ParentAgentID != "" && node.ID != got.ID {
-			childrenByParent[node.ParentAgentID] = append(childrenByParent[node.ParentAgentID], node.ID)
+		if rel == "subagent" {
+			addEdge(node.ParentAgentID, node.ID)
+		}
+		enqueue(node.ID)
+	}
+	if _, ok := byID[got.ID]; !ok {
+		return nil, cli.Newf(cli.CodeNotFound, "the worker has no agent %s", got.ID)
+	}
+
+	if len(agentTabs) > 0 {
+		details := s.fetchTabDetailsCached(s.ctx, agentTabs)
+		spawnedByParent := map[string][]*leapmuxv1.AgentInfo{}
+		for _, t := range agentTabs {
+			d := details[t.GetTab().GetTabId()]
+			if d.Agent == nil {
+				continue
+			}
+			if spawner := d.Agent.GetSpawnedByAgentId(); spawner != "" {
+				spawnedByParent[spawner] = append(spawnedByParent[spawner], d.Agent)
+			}
+		}
+
+		for len(queue) > 0 {
+			var nextQueue []string
+			spawnedByWorker := map[string][]string{}
+			for _, pid := range queue {
+				for _, child := range spawnedByParent[pid] {
+					cid := child.GetId()
+					if cid == "" || cid == got.ID {
+						continue
+					}
+					if _, exists := byID[cid]; exists {
+						continue
+					}
+					byID[cid] = agentTreeNodeOf(child, openTabs[cid], "spawned")
+					addEdge(pid, cid)
+					if !enqueued[cid] {
+						enqueued[cid] = true
+						nextQueue = append(nextQueue, cid)
+					}
+					if wk := tabWorker[cid]; wk != "" {
+						spawnedByWorker[wk] = append(spawnedByWorker[wk], cid)
+					}
+				}
+			}
+			if len(spawnedByWorker) > 0 {
+				var mu sync.Mutex
+				var subGroup errgroup.Group
+				subGroup.SetLimit(detailFanoutLimit)
+				for wk, ids := range spawnedByWorker {
+					wk, ids := wk, ids
+					subGroup.Go(func() error {
+						var subResp leapmuxv1.ListAgentsResponse
+						if err := callInnerRPC(s.ctx, s.c, wk, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
+							&leapmuxv1.ListAgentsRequest{TabIds: ids, IncludeDescendants: true}, &subResp); err != nil {
+							return nil
+						}
+						mu.Lock()
+						for _, a := range subResp.GetAgents() {
+							aid := a.GetId()
+							if aid == "" || aid == got.ID || a.GetParentAgentId() == "" {
+								continue
+							}
+							if _, exists := byID[aid]; exists {
+								continue
+							}
+							byID[aid] = agentTreeNodeOf(a, openTabs[aid], "subagent")
+							addEdge(a.GetParentAgentId(), aid)
+							if !enqueued[aid] {
+								enqueued[aid] = true
+								nextQueue = append(nextQueue, aid)
+							}
+						}
+						mu.Unlock()
+						return nil
+					})
+				}
+				_ = subGroup.Wait()
+			}
+			queue = nextQueue
 		}
 	}
+
 	visited := map[string]bool{}
 	var build func(id string) agentTreeNode
 	build = func(id string) agentTreeNode {
@@ -192,9 +313,6 @@ func runAgentTree(inv *cli.Invocation) (any, error) {
 			node.Children = append(node.Children, build(cid))
 		}
 		return node
-	}
-	if _, ok := byID[got.ID]; !ok {
-		return nil, cli.Newf(cli.CodeNotFound, "the worker has no agent %s", got.ID)
 	}
 	return agentTreeResult{Root: build(got.ID)}, nil
 }

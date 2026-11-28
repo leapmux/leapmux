@@ -236,6 +236,92 @@ func TestOpenCodeCatalogWaitsWhenPluginActivationIsStillPending(t *testing.T) {
 	assert.EqualValues(t, 2, defaultReads.Load())
 }
 
+func TestOpenCodeCatalogWaitsWhenDefaultModelDataIsNull(t *testing.T) {
+	t.Parallel()
+	var defaultReads atomic.Int32
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/model/default":
+			if defaultReads.Add(1) == 1 {
+				_, _ = fmt.Fprint(w, `{"data":null}`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"id":"model","providerID":"provider"}}`)
+		case "/api/model":
+			_, _ = fmt.Fprintf(w, `{"data":%s}`, openCodeCatalogModelsFixture)
+		case "/api/agent":
+			_, _ = fmt.Fprintf(w, `{"data":%s}`, openCodeCatalogAgentsFixture)
+		default:
+			t.Errorf("unexpected catalog route: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	trap := clock.Trap().NewTimer(openCodeCatalogActivationPollTag)
+	t.Cleanup(trap.Close)
+	type readResult struct {
+		catalog openCodeCatalog
+		err     error
+	}
+	finished := make(chan readResult, 1)
+	go func() {
+		catalog, err := awaitOpenCodeCatalog(ctx, rpc, clock, time.Minute)
+		finished <- readResult{catalog, err}
+	}()
+	delay := testutil.WaitForTimer(t, ctx, trap)
+	assert.EqualValues(t, 1, defaultReads.Load())
+	clock.Advance(delay).MustWait(ctx)
+	select {
+	case result := <-finished:
+		require.NoError(t, result.err)
+		assert.Equal(t, openCodeModelRef{ProviderID: "provider", ID: "model"}, result.catalog.defaultModel)
+	case <-ctx.Done():
+		t.Fatal("the catalog read did not finish after default model became available")
+	}
+	assert.EqualValues(t, 2, defaultReads.Load())
+}
+
+func TestOpenCodeCatalogFailsImmediatelyWhenModelOrAgentDataIsNull(t *testing.T) {
+	t.Parallel()
+	for _, nullPath := range []string{"/api/model", "/api/agent"} {
+		t.Run(nullPath, func(t *testing.T) {
+			t.Parallel()
+			var defaultReads, targetReads atomic.Int32
+			rpc := openCodeTestRPC(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/model/default":
+					defaultReads.Add(1)
+					_, _ = fmt.Fprint(w, `{"data":{"id":"model","providerID":"provider"}}`)
+				case "/api/model":
+					if nullPath == "/api/model" {
+						targetReads.Add(1)
+						_, _ = fmt.Fprint(w, `{"data":null}`)
+						return
+					}
+					_, _ = fmt.Fprintf(w, `{"data":%s}`, openCodeCatalogModelsFixture)
+				case "/api/agent":
+					if nullPath == "/api/agent" {
+						targetReads.Add(1)
+						_, _ = fmt.Fprint(w, `{"data":null}`)
+						return
+					}
+					_, _ = fmt.Fprintf(w, `{"data":%s}`, openCodeCatalogAgentsFixture)
+				default:
+					t.Errorf("unexpected catalog route: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			// Passing an un-advanced mock clock proves no activation poll timer is waited on.
+			_, err := awaitOpenCodeCatalog(testutil.DeadlineContext(t), rpc, testutil.NewQuartzMock(t), time.Minute)
+			require.ErrorIs(t, err, errOpenCodeNoData)
+			assert.NotErrorIs(t, err, errOpenCodeDefaultModelPending)
+			assert.EqualValues(t, 1, defaultReads.Load())
+			assert.EqualValues(t, 1, targetReads.Load())
+		})
+	}
+}
+
 func TestOpenCodeCatalogStopsWaitingWhenStartupIsCanceled(t *testing.T) {
 	t.Parallel()
 	var reads atomic.Int32

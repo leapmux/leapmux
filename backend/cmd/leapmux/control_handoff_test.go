@@ -409,6 +409,8 @@ func TestLocalOnlyCommandsExistInRootTree(t *testing.T) {
 		"up":         true,
 		"down":       true,
 		"recover":    true,
+		"context":    true,
+		"guide":      true,
 		"version":    true,
 		"commands":   true,
 		"completion": true,
@@ -466,6 +468,7 @@ func TestControlHandoffSkipsTreeBuildWhenTargetIsSelf(t *testing.T) {
 		for name, env := range map[string][]string{
 			"no tab env": nil,
 			"marker set": tabEnv(h.target, controlHandoffMarker+"=1"),
+			"opt-out":    tabEnv(h.target, controlHandoffOptOutEnv+"=1"),
 		} {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
@@ -486,6 +489,114 @@ func TestControlHandoffSkipsTreeBuildWhenTargetIsSelf(t *testing.T) {
 				_, ok := ho.run([]string{"tab", "list"})
 				assert.False(t, ok)
 				assert.Zero(t, builds)
+			})
+		}
+	})
+}
+
+func TestControlHandoffOptOutAndSubcommandAwareLocalOnly(t *testing.T) {
+	t.Parallel()
+
+	t.Run("LEAPMUX_NO_CONTROL_HANDOFF disables handoff", func(t *testing.T) {
+		t.Parallel()
+		h := newHandoffHarness(t)
+
+		_, handled := h.run(tabEnv(h.target, controlHandoffOptOutEnv+"=1"), "tab", "list")
+		assert.False(t, handled)
+		assert.Empty(t, h.calls)
+		assert.Empty(t, h.stderr.String())
+	})
+
+	t.Run("empty LEAPMUX_NO_CONTROL_HANDOFF still performs handoff", func(t *testing.T) {
+		t.Parallel()
+		h := newHandoffHarness(t)
+
+		code, handled := h.run(tabEnv(h.target, controlHandoffOptOutEnv+"="), "tab", "list")
+		assert.True(t, handled)
+		assert.Equal(t, 7, code)
+		require.Len(t, h.calls, 1)
+		assert.Empty(t, h.stderr.String())
+	})
+
+	t.Run("local context, guide, skill, and auth subcommands do not hand off", func(t *testing.T) {
+		t.Parallel()
+		for _, args := range [][]string{
+			{"context", "show"},
+			{"ctx", "use", "--worker", "box"},
+			{"help", "context"},
+			{"guide"},
+			{"gu"},
+			{"help", "guide"},
+			{"skill"},
+			{"skill", "list"},
+			{"skill", "ls"},
+			{"skill", "status"},
+			{"skill", "install", "--all"},
+			{"skills", "install", "--all"},
+			{"skill", "uninstall", "--all"},
+			{"skill", "show", "leapmux"},
+			{"skill", "show", "leapmux", "--worker", "self"},
+			{"skill", "--worker", "self", "show", "leapmux"},
+			{"skill", "diff"},
+			{"skill", "diff", "--worker", "self"},
+			{"skill", "install", "--", "--worker", "self"},
+			{"skill", "install", "--target", "--worker"},
+			{"help", "skill"},
+			{"help", "skill", "install"},
+			{"help", "skill", "install", "--worker", "self"},
+			{"auth", "list"},
+			{"auth", "ls"},
+			{"auth", "use", "https://hub.example"},
+			{"auth", "--json", "list"},
+			{"auth", "--hub", "https://hub.example", "list"},
+			{"auth", "l"},
+			{"help", "auth", "list"},
+			{"help", "auth", "use"},
+			{"__complete", "auth", "list", ""},
+			{"__complete", "auth", "use", ""},
+		} {
+			t.Run(strings.Join(args, " "), func(t *testing.T) {
+				t.Parallel()
+				h := newHandoffHarness(t)
+
+				_, handled := h.run(tabEnv(filepath.Join(t.TempDir(), "missing", "leapmux")), args...)
+				assert.False(t, handled)
+				assert.Empty(t, h.calls)
+				assert.Empty(t, h.stderr.String())
+			})
+		}
+	})
+
+	t.Run("remote skill --worker and hub-backed auth subcommands hand off", func(t *testing.T) {
+		t.Parallel()
+		for _, args := range [][]string{
+			{"skill", "install", "--all", "--worker", "self"},
+			{"skill", "--worker", "self", "install", "--all"},
+			{"skill", "install", "--all", "--worker=name:build-box"},
+			{"skills", "install", "--all", "--worker", "self"},
+			{"skill", "list", "--worker", "self"},
+			{"skill", "status", "--worker", "self"},
+			{"skill", "uninstall", "--all", "--worker", "self"},
+			{"auth"},
+			{"auth", "status"},
+			{"auth", "--hub", "https://hub.example", "status"},
+			{"auth", "lo"},
+			{"auth", "--", "list"},
+			{"auth", "--unknown", "list"},
+			{"auth", "new-sub"},
+			{"auth", "login", "--hub", "https://hub.example"},
+			{"auth", "logout"},
+			{"auth", "credentials"},
+		} {
+			t.Run(strings.Join(args, " "), func(t *testing.T) {
+				t.Parallel()
+				h := newHandoffHarness(t)
+
+				code, handled := h.run(tabEnv(h.target), args...)
+				assert.True(t, handled)
+				assert.Equal(t, 7, code)
+				require.Len(t, h.calls, 1)
+				assert.Empty(t, h.stderr.String())
 			})
 		}
 	})

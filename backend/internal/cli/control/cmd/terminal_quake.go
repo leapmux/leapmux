@@ -101,10 +101,14 @@ func lookupQuakeTerminalOn(ctx context.Context, w workerCall, dir string) (*leap
 	return nil, nil
 }
 
-// resolveQuakeTerminal resolves the Worker and looks up the existing quake
-// terminal for dir without creating one.
-func (s *session) resolveQuakeTerminal(dir string) (string, *leapmuxv1.TerminalInfo, error) {
+// resolveQuakeTerminal resolves the Worker and working directory, then looks up
+// the existing quake terminal for that directory without creating one.
+func (s *session) resolveQuakeTerminal() (string, *leapmuxv1.TerminalInfo, error) {
 	workerID, err := s.workerScope()
+	if err != nil {
+		return "", nil, err
+	}
+	dir, err := s.resolveGitDir(workerID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -157,8 +161,7 @@ func ensureQuakeTerminalOn(ctx context.Context, w workerCall, dir, initialCmd st
 }
 
 func runQuakeGet(inv *cli.Invocation) (any, error) {
-	dir, err := dirOf(inv)
-	if err != nil {
+	if err := checkGitDirInput(inv); err != nil {
 		return nil, err
 	}
 	s, err := openSession(inv)
@@ -166,7 +169,7 @@ func runQuakeGet(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	_, info, err := s.resolveQuakeTerminal(dir)
+	_, info, err := s.resolveQuakeTerminal()
 	if err != nil {
 		return nil, err
 	}
@@ -174,12 +177,11 @@ func runQuakeGet(inv *cli.Invocation) (any, error) {
 }
 
 func runQuakeRead(inv *cli.Invocation) (any, error) {
-	dir, err := dirOf(inv)
-	if err != nil {
+	if err := checkGitDirInput(inv); err != nil {
 		return nil, err
 	}
 	return executeTerminalRead(inv, func(s *session) (tabTarget, *leapmuxv1.TerminalInfo, error) {
-		workerID, info, err := s.resolveQuakeTerminal(dir)
+		workerID, info, err := s.resolveQuakeTerminal()
 		if err != nil {
 			return tabTarget{}, nil, err
 		}
@@ -189,26 +191,18 @@ func runQuakeRead(inv *cli.Invocation) (any, error) {
 }
 
 func runQuakeRun(inv *cli.Invocation) (any, error) {
-	dir, err := dirOf(inv)
-	if err != nil {
+	if err := checkGitDirInput(inv); err != nil {
 		return nil, err
 	}
 	command, err := readRunCommand(inv)
 	if err != nil {
 		return nil, err
 	}
-	s, err := openSession(inv)
+	s, workerID, dir, err := openWorkerSessionWithDir(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, err := s.workerScope()
-	if err != nil {
-		return nil, err
-	}
-	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-		return nil, err
-	}
 	var terminalID string
 	if err := withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
 		info, created, err := ensureQuakeTerminalOn(s.ctx, w, dir, command)
@@ -234,26 +228,18 @@ func runQuakeRun(inv *cli.Invocation) (any, error) {
 }
 
 func runQuakeSend(inv *cli.Invocation) (any, error) {
-	dir, err := dirOf(inv)
-	if err != nil {
+	if err := checkGitDirInput(inv); err != nil {
 		return nil, err
 	}
 	text, keys, paste, err := terminalSendPayload(inv)
 	if err != nil {
 		return nil, err
 	}
-	s, err := openSession(inv)
+	s, workerID, dir, err := openWorkerSessionWithDir(inv)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, err := s.workerScope()
-	if err != nil {
-		return nil, err
-	}
-	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-		return nil, err
-	}
 	var terminalID string
 	if err := withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
 		info, _, err := ensureQuakeTerminalOn(s.ctx, w, dir, "")

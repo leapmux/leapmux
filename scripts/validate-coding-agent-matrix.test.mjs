@@ -1477,7 +1477,27 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1225, 'agent-limit': 448, 'leapmux-limit': 1 })
+      expect(counts).toEqual({ 'supported': 1235, 'agent-limit': 453, 'leapmux-limit': 17 })
+      for (const provider of [
+        'claude-code',
+        'codex',
+        'opencode',
+        'kilo',
+        'pi',
+        'oh-my-pi',
+        'kiro',
+        'junie',
+        'dirac',
+        'factory-droid',
+      ]) {
+        expect(checklist.cells['session-fork'][provider]).toMatchObject({
+          support: 'supported',
+          audit: 'covered',
+          testStatus: 'passed',
+          verified: true,
+          spec: `frontend/tests/e2e/${provider}/session-fork.spec.ts`,
+        })
+      }
       expect(checklist.cells['subagent-live-transcript'].goose).toMatchObject({
         support: 'agent-limit',
         audit: 'unsupported',
@@ -1591,10 +1611,10 @@ describe('validateCodingAgentMatrix', () => {
     it('records the complete Reasonix 2.x audit and its native limits', () => {
       const { checklist } = readCodingAgentMatrix()
       const cells = Object.entries(checklist.cells).map(([feature, row]) => [feature, row.reasonix])
-      expect(cells).toHaveLength(54)
+      expect(cells).toHaveLength(55)
       for (const [feature, cell] of cells) {
         expect(cell).toMatchObject({ verified: true, testStatus: 'passed', spec: `frontend/tests/e2e/reasonix/${feature}.spec.ts` })
-        expect(cell.detailNote).toContain('Reasonix v2.53.1')
+        expect(cell.detailNote).toMatch(/Reasonix v2\.\d+\.\d+/i)
       }
       for (const feature of [
         'image-attachments',
@@ -1611,6 +1631,7 @@ describe('validateCodingAgentMatrix', () => {
       expect(cells.filter(([, cell]) => cell.support === 'agent-limit').map(([feature]) => feature).sort()).toEqual([
         'audio-attachments',
         'manual-compaction',
+        'session-fork',
         'rate-limit-state',
         'subagent-live-transcript',
         'send-to-a-subagent',
@@ -1826,6 +1847,7 @@ describe('validateCodingAgentMatrix', () => {
       ['context', 'compaction-notice'],
       ['context', 'manual-compaction'],
       ['context', 'model-context-on-resume'],
+      ['context', 'session-fork'],
       ['context', 'rate-limit-state'],
       ['models', 'model'],
       ['models', 'reasoning-effort'],

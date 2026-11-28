@@ -37,8 +37,8 @@ leapmux agent providers
 Any command accepting `<agent>`, `<tab>`, `<terminal>`, `<workspace>`, or `<worker>` resolves:
 
 - `self` — the calling tab, tile, workspace, or Worker (read-only commands default to `self`)
-- `parent` — the spawning parent of the calling agent (on `agent` or `tab` commands)
-- `children` — all direct child subagents of the calling agent (on multi-agent commands: `agent wait`, `agent requests`, `agent interrupt`, and `agent close`)
+- `parent` — the spawning parent of the calling agent (on `agent` or `tab` commands), whether a provider subagent parent or the tab that opened or forked this agent (`spawned_by_agent_id`)
+- `children` — all direct child agents of the calling agent, including both provider subagents and agents opened or forked by this tab (`spawned_by_agent_id`), on multi-agent commands (`agent wait`, `agent requests`, `agent interrupt`, and `agent close`)
 - Full ID or a unique ID prefix of at least 4 characters (3+ characters for request/queue handles)
 - `name:<slug>` — unique agent slug set with `--name`, or Worker name
 - `title:<title>` — tab or workspace title (bare case-insensitive title/name also works when unique)
@@ -65,12 +65,12 @@ leapmux terminal wait "$T" --change --timeout 30s
 leapmux agent list --workspace self --json
 
 # Drain retained account agent events since the last checkpoint and exit
-leapmux events --kind agent --snapshot --checkpoint .tmp/events.ckpt --json
+leapmux events --kind agent --snapshot --checkpoint .leapmux/tmp/events.ckpt --json
 ```
 
 ## 4. Multiline Payloads, Schemas, and Safe Retries
 
-- For multiline prompts, briefings, or scripts, write the text to a temporary file and pass `--file <path>` (or pass `-` on stdin) instead of complex shell quoting or heredocs.
+- Store repo-local scratch files (multiline briefs, JSON schemas, and event checkpoints) under `<git toplevel>/.leapmux/tmp/` (part of the `.leapmux/<category>` layout, with `.leapmux/conf` reserved for future repository settings). LeapMux adds `.leapmux/tmp/` to `.git/info/exclude` automatically when creating worktrees or writing checkpoints and exports. Pass `--file <path>` (or `-` on stdin) instead of complex shell quoting or heredocs.
 - Pass `--json` for stable `{"data": ...}` / `{"error": ...}` envelopes, `-q` for bare IDs, and `--fields` for compact output.
 - Pass `--output-schema <file|json>` with `--wait` (and optional `--schema-retries <n>`) on `agent send`, `agent open`, or `agent fork` when you need a schema-validated JSON reply.
 - Put `--` before text starting with `-`: `leapmux agent send "$A" -- "-v"`.

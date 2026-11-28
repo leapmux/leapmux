@@ -13,21 +13,18 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // The `git` group reads and changes the git state of a directory on a
-// Worker. A read defaults --dir to the directory of the tab that runs the
-// command. A command that changes the state requires --dir, so that it
-// never acts on the caller's own directory by default.
+// Worker. Commands default --dir to the tab's working directory on the same
+// worker, or to the local current working directory when targeting a local Hub
+// or tab without $LEAPMUX_CONTROL_WORKING_DIR.
 func newGitCommand() *cobra.Command {
-	readFlags := func(fs *pflag.FlagSet) {
+	workingDirFlags := func(fs *pflag.FlagSet) {
 		addWorkingDirFlag(fs, "a directory inside the git working tree")
-		addWorkerFlag(fs)
-	}
-	writeFlags := func(fs *pflag.FlagSet) {
-		fs.String("dir", "", "a directory inside the git working tree")
-		cli.MarkRequired(fs, "dir")
 		addWorkerFlag(fs)
 	}
 	return cli.Group("git", "Read and change the git state of a directory on a worker",
@@ -39,7 +36,7 @@ func newGitCommand() *cobra.Command {
 				{Command: "leapmux git status"},
 				{Command: "leapmux git status --dir ~/src/app --worker name:build-box"},
 			},
-			Flags: readFlags,
+			Flags: workingDirFlags,
 			Run:   runGitStatus,
 		}),
 		cli.NewLeaf(cli.Leaf{
@@ -67,10 +64,10 @@ absolute path on the worker; the worker finds its repository.`,
 			Mutates:          true,
 			QuietUnsupported: true,
 			Examples: []cli.Example{
-				{Command: "leapmux git checkout main --dir ~/src/app"},
+				{Command: "leapmux git checkout main"},
 				{Comment: "Check out a remote branch.", Command: "leapmux git checkout origin/feature --dir ~/src/app"},
 			},
-			Flags: writeFlags,
+			Flags: workingDirFlags,
 			Run: func(inv *cli.Invocation) (any, error) {
 				branch, err := requireNonEmptyArg(inv, "branch")
 				if err != nil {
@@ -89,7 +86,7 @@ absolute path on the worker; the worker finds its repository.`,
 				Examples: []cli.Example{
 					{Command: "leapmux git branch list"},
 				},
-				Flags: readFlags,
+				Flags: workingDirFlags,
 				Run:   runGitBranches,
 			}),
 			cli.NewLeaf(cli.Leaf{
@@ -98,10 +95,11 @@ absolute path on the worker; the worker finds its repository.`,
 				Mutates:          true,
 				QuietUnsupported: true,
 				Examples: []cli.Example{
+					{Command: "leapmux git branch create fix-login --base main"},
 					{Command: "leapmux git branch create fix-login --base main --dir ~/src/app"},
 				},
 				Flags: func(fs *pflag.FlagSet) {
-					writeFlags(fs)
+					workingDirFlags(fs)
 					fs.String("base", "", "the branch to start from (default: the current branch)")
 				},
 				FlagComplete: map[string]cobra.CompletionFunc{
@@ -129,26 +127,17 @@ absolute path on the worker; the worker finds its repository.`,
 				Destructive:      true,
 				QuietUnsupported: true,
 				Examples: []cli.Example{
+					{Command: "leapmux git branch delete fix-login"},
 					{Command: "leapmux git branch delete fix-login --switch-to main --dir ~/src/app"},
 				},
 				Flags: func(fs *pflag.FlagSet) {
-					writeFlags(fs)
-					fs.String("switch-to", "", "the branch to check out before the deletion")
-					cli.MarkRequired(fs, "switch-to")
+					workingDirFlags(fs)
+					fs.String("switch-to", "", "the branch to check out before deleting the current branch (default: current branch if deleting another branch, else main/master)")
 				},
-				Run: func(inv *cli.Invocation) (any, error) {
-					name, err := requireNonEmptyArg(inv, "name")
-					if err != nil {
-						return nil, err
-					}
-					switchTo := strings.TrimSpace(stringFlag(inv, "switch-to"))
-					if switchTo == "" {
-						return nil, cli.Usagef("--switch-to is empty")
-					}
-					return runGitWrite(inv, leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure, func(dir string) proto.Message {
-						return &leapmuxv1.DeleteBranchRequest{Path: dir, BranchToDelete: name, SwitchToBranch: switchTo}
-					}, &leapmuxv1.DeleteBranchResponse{})
+				FlagComplete: map[string]cobra.CompletionFunc{
+					"switch-to": completeGitBranchFlag,
 				},
+				Run: runGitBranchDelete,
 			}),
 			cli.NewLeaf(cli.Leaf{
 				Use:              "inspect [branch]",
@@ -158,7 +147,7 @@ absolute path on the worker; the worker finds its repository.`,
 					{Command: "leapmux git branch inspect"},
 					{Command: "leapmux git branch inspect fix-login --dir ~/src/app"},
 				},
-				Flags: readFlags,
+				Flags: workingDirFlags,
 				Run:   runGitBranchInspect,
 			}),
 		),
@@ -168,9 +157,10 @@ absolute path on the worker; the worker finds its repository.`,
 			Mutates:          true,
 			QuietUnsupported: true,
 			Examples: []cli.Example{
+				{Command: "leapmux git push"},
 				{Command: "leapmux git push --dir ~/src/app"},
 			},
-			Flags: writeFlags,
+			Flags: workingDirFlags,
 			Run: func(inv *cli.Invocation) (any, error) {
 				return runGitWrite(inv, leapmuxv1connect.WorkerGitServicePushBranchProcedure, func(dir string) proto.Message {
 					return &leapmuxv1.PushBranchRequest{WorkingDir: dir}
@@ -187,7 +177,7 @@ absolute path on the worker; the worker finds its repository.`,
 				{Command: "leapmux git diff --base main backend/cmd/leapmux"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				readFlags(fs)
+				workingDirFlags(fs)
 				fs.Bool("staged", false, "show staged changes (--cached)")
 				fs.String("base", "", "diff against this base ref (such as main or HEAD~1)")
 				fs.Int64("limit", 0, readLimitUsage)
@@ -205,7 +195,7 @@ absolute path on the worker; the worker finds its repository.`,
 				{Command: "leapmux git log -n 10 --ref main --dir ~/src/app"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				readFlags(fs)
+				workingDirFlags(fs)
 				fs.IntP("limit", "n", 20, "maximum number of commits to show (max 200)")
 				fs.String("ref", "", "starting ref (default: HEAD)")
 			},
@@ -216,11 +206,11 @@ absolute path on the worker; the worker finds its repository.`,
 			Short:   "Create a git commit in a working tree",
 			Mutates: true,
 			Examples: []cli.Example{
-				{Command: `leapmux git commit -m "Fix timeout handling" --dir ~/src/app`},
+				{Command: `leapmux git commit -m "Fix timeout handling"`},
 				{Command: `leapmux git commit -a -m "Checkpoint changes" --dir ~/src/app`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				writeFlags(fs)
+				workingDirFlags(fs)
 				fs.StringP("message", "m", "", "commit message")
 				cli.MarkRequired(fs, "message")
 				fs.BoolP("all", "a", false, "stage all modified and untracked files (git add -A) before committing")
@@ -258,9 +248,11 @@ func tabWorkingDirForWorker(workerID string, explicitWorker bool) string {
 	return strings.TrimSpace(workingDirEnv())
 }
 
-// checkGitDirInput validates --dir before opening a session. When --dir is
-// omitted and $LEAPMUX_CONTROL_WORKING_DIR is unset or blank, no worker can
-// supply a default directory, so validation fails before dialing.
+// checkGitDirInput validates --dir before opening a session. An explicit blank
+// --dir or a whitespace-only $LEAPMUX_CONTROL_WORKING_DIR fails before dialing;
+// an omitted --dir with an unset environment variable resolves after opening
+// the session (falling back to the local working directory when targeting a
+// local Hub or tab).
 func checkGitDirInput(inv *cli.Invocation) error {
 	if inv.Changed("dir") {
 		if strings.TrimSpace(stringFlag(inv, "dir")) == "" {
@@ -269,22 +261,22 @@ func checkGitDirInput(inv *cli.Invocation) error {
 		return nil
 	}
 	rawEnv := workingDirEnv()
-	if strings.TrimSpace(rawEnv) == "" {
-		if rawEnv != "" {
-			return cli.Usagef("--dir is empty")
-		}
-		return cli.Usagef("--dir is required, because $%s is not set", controlenv.WorkingDirVariable)
+	if rawEnv != "" && strings.TrimSpace(rawEnv) == "" {
+		return cli.Usagef("--dir is empty")
 	}
 	return nil
 }
 
-// resolveGitDir resolves the directory of a git read on workerID: an explicit
-// --dir flag, or $LEAPMUX_CONTROL_WORKING_DIR only when workerID matches the
-// calling tab's worker.
+// resolveGitDir resolves the directory of a git or quake command on workerID:
+//  1. Explicit --dir (rejecting blank values while preserving literal spaces).
+//  2. $LEAPMUX_CONTROL_WORKING_DIR when workerID matches the calling tab's worker.
+//  3. The local current working directory when targeting the local IPC worker
+//     or a local Hub without an explicit or saved remote worker.
+//  4. Otherwise fails cleanly with a usage error.
 func (s *session) resolveGitDir(workerID string) (string, error) {
 	if s.inv.Changed("dir") {
-		dir := strings.TrimSpace(stringFlag(s.inv, "dir"))
-		if dir == "" {
+		dir := stringFlag(s.inv, "dir")
+		if strings.TrimSpace(dir) == "" {
 			return "", cli.Usagef("--dir is empty")
 		}
 		return dir, nil
@@ -293,13 +285,19 @@ func (s *session) resolveGitDir(workerID string) (string, error) {
 	if dir := tabWorkingDirForWorker(workerID, explicitWorker); dir != "" {
 		return dir, nil
 	}
-	if !isTabEnvWorker(workerID, explicitWorker) {
+	sameEnvWorker := isTabEnvWorker(workerID, explicitWorker)
+	if !sameEnvWorker {
 		return "", cli.Usagef("--dir is required when targeting another worker")
 	}
 	if workingDirEnv() != "" {
 		return "", cli.Usagef("--dir is empty")
 	}
-	return "", cli.Usagef("--dir is required, because $%s is not set", controlenv.WorkingDirVariable)
+	if s.canUseLocalCwdFallback(s.inv, sameEnvWorker) {
+		if cwd, err := os.Getwd(); err == nil && cwd != "" {
+			return cwd, nil
+		}
+	}
+	return "", cli.Usagef("--dir is required (pass --dir <path> or run inside a tab)")
 }
 
 // gitBranchInspectResult is the result of `git branch inspect`.
@@ -355,21 +353,62 @@ func runGitBranchInspect(inv *cli.Invocation) (any, error) {
 	}, nil
 }
 
-// dirOf returns the directory of a git read: --dir, or the directory of
-// the tab that runs the command.
-//
-// It distinguishes "no flag and no env var" from "an explicit empty flag", so
-// a user who passes `--dir=` inside a tab is not told that
-// $LEAPMUX_CONTROL_WORKING_DIR is unset.
+// dirOf returns the directory of a command that resolves --dir before opening
+// a session: explicit --dir, else $LEAPMUX_CONTROL_WORKING_DIR on the same
+// worker, else the local current working directory when targeting the tab IPC
+// socket or a local Hub without an explicit or saved remote worker.
 func dirOf(inv *cli.Invocation) (string, error) {
-	dir := strings.TrimSpace(workingDir(inv))
-	if dir == "" {
-		if inv.Changed("dir") || workingDirEnv() != "" {
+	if inv.Changed("dir") {
+		dir := stringFlag(inv, "dir")
+		if strings.TrimSpace(dir) == "" {
 			return "", cli.Usagef("--dir is empty")
 		}
-		return "", cli.Usagef("--dir is required, because $%s is not set", controlenv.WorkingDirVariable)
+		return dir, nil
 	}
-	return dir, nil
+	explicitWorker := inv.Changed(workerFlag)
+	rawEnv := workingDirEnv()
+	if !explicitWorker {
+		if trimmed := strings.TrimSpace(rawEnv); trimmed != "" {
+			return trimmed, nil
+		}
+		if rawEnv != "" {
+			return "", cli.Usagef("--dir is empty")
+		}
+	} else {
+		return "", cli.Usagef("--dir is required when targeting another worker")
+	}
+	if canUseLocalCwdWithoutSession(inv) {
+		if cwd, err := os.Getwd(); err == nil && cwd != "" {
+			return cwd, nil
+		}
+	}
+	return "", cli.Usagef("--dir is required (pass --dir <path> or run inside a tab)")
+}
+
+func canUseLocalCwdWithoutSession(inv *cli.Invocation) bool {
+	if inv.Changed(workerFlag) {
+		return false
+	}
+	if hub := explicitHub(inv.Command); hub != "" {
+		if !locallisten.IsLocal(hub) {
+			return false
+		}
+		if ctxCfg, err := control.LoadContext(); err == nil && strings.TrimSpace(ctxCfg.Worker) != "" {
+			return false
+		}
+		return true
+	}
+	if os.Getenv(controlenv.SocketVariable) != "" {
+		return true
+	}
+	hub, _, err := control.DefaultHubWithSource()
+	if err != nil || !locallisten.IsLocal(hub) {
+		return false
+	}
+	if ctxCfg, err := control.LoadContext(); err == nil && strings.TrimSpace(ctxCfg.Worker) != "" {
+		return false
+	}
+	return true
 }
 
 // gitStatusResult is the result of `git status`.
@@ -625,16 +664,101 @@ type gitWriteResult struct {
 	OK  bool   `json:"ok"`
 }
 
-// runGitWrite makes one git write on the worker of --worker. It rejects a
-// whitespace-only --dir while preserving literal path spaces (for example,
-// a directory whose name ends with a space).
+// runGitWrite makes one git write on the target worker. It resolves --dir via
+// openWorkerSessionWithDir, preserving literal spaces in explicit --dir values.
 func runGitWrite(inv *cli.Invocation, method string, build func(dir string) proto.Message, resp proto.Message) (any, error) {
-	dir := stringFlag(inv, "dir")
-	if strings.TrimSpace(dir) == "" {
-		return nil, cli.Usagef("--dir is empty")
+	s, workerID, dir, err := openWorkerSessionWithDir(inv)
+	if err != nil {
+		return nil, err
 	}
-	if err := callOnWorker(inv, method, build(dir), resp); err != nil {
+	defer s.Close()
+	if err := callInnerRPC(s.ctx, s.c, workerID, method, build(dir), resp); err != nil {
 		return nil, err
 	}
 	return gitWriteResult{Dir: dir, OK: true}, nil
+}
+
+// runGitBranchDelete deletes <name>, choosing a default --switch-to branch on
+// the same open worker channel when --switch-to is omitted.
+func runGitBranchDelete(inv *cli.Invocation) (any, error) {
+	name, err := requireNonEmptyArg(inv, "name")
+	if err != nil {
+		return nil, err
+	}
+	var switchTo string
+	if inv.Changed("switch-to") {
+		switchTo = strings.TrimSpace(stringFlag(inv, "switch-to"))
+		if switchTo == "" {
+			return nil, cli.Usagef("--switch-to is empty")
+		}
+	}
+	s, workerID, dir, err := openWorkerSessionWithDir(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	if err := withWorkerChannel(s.ctx, s.c, workerID, func(w workerCall) error {
+		if switchTo == "" {
+			var listResp leapmuxv1.ListGitBranchesResponse
+			if err := w.Call(s.ctx, leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure, &leapmuxv1.ListGitBranchesRequest{Path: dir}, &listResp); err != nil {
+				return err
+			}
+			chosen, err := defaultDeleteSwitchBranch(name, &listResp)
+			if err != nil {
+				return err
+			}
+			switchTo = chosen
+		}
+		var resp leapmuxv1.DeleteBranchResponse
+		return w.Call(s.ctx, leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure, &leapmuxv1.DeleteBranchRequest{
+			Path:           dir,
+			BranchToDelete: name,
+			SwitchToBranch: switchTo,
+		}, &resp)
+	}); err != nil {
+		return nil, err
+	}
+	return gitWriteResult{Dir: dir, OK: true}, nil
+}
+
+// defaultDeleteSwitchBranch chooses the branch to check out before deleting
+// name when --switch-to is omitted: stay on the current branch when deleting
+// another branch; otherwise prefer main, then master, then a sole remaining
+// local branch.
+func defaultDeleteSwitchBranch(name string, list *leapmuxv1.ListGitBranchesResponse) (string, error) {
+	current := strings.TrimSpace(list.GetCurrentBranch())
+	if current != "" && current != name {
+		return current, nil
+	}
+	var (
+		hasMain     bool
+		hasMaster   bool
+		otherLocals []string
+	)
+	for _, b := range list.GetBranches() {
+		if b.GetIsRemote() {
+			continue
+		}
+		bn := strings.TrimSpace(b.GetName())
+		if bn == "" || bn == name {
+			continue
+		}
+		switch bn {
+		case "main":
+			hasMain = true
+		case "master":
+			hasMaster = true
+		}
+		otherLocals = append(otherLocals, bn)
+	}
+	switch {
+	case hasMain:
+		return "main", nil
+	case hasMaster:
+		return "master", nil
+	case len(otherLocals) == 1:
+		return otherLocals[0], nil
+	default:
+		return "", cli.Usagef("cannot choose a branch to switch to before deleting current branch %q; pass --switch-to <branch>", name)
+	}
 }

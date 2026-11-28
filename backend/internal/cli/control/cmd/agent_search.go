@@ -45,7 +45,7 @@ across every online worker in parallel.`,
 			}
 			fs.Bool("regex", false, "treat <query> as an RE2 regular expression")
 			fs.Bool("case-sensitive", false, "match case-sensitively (default is case-insensitive)")
-			fs.Int("limit", 50, "maximum number of hits to return (max 200)")
+			fs.IntP("limit", "n", 50, "maximum number of hits to return (max 200)")
 			for _, name := range []string{"regex", "case-sensitive", "limit"} {
 				cli.SetFlagGroup(fs, name, "Match")
 			}

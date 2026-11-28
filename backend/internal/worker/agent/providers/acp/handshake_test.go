@@ -36,6 +36,9 @@ type handshakePeer struct {
 	// after its answer to that method: what an agent sends once it handled the
 	// request. The peer only reads it.
 	linesAfter map[string][]string
+	// errors holds, for each method, a JSON-RPC error payload to return instead
+	// of calling respond. The peer only reads it.
+	errors map[string]any
 }
 
 // recorded returns the requests that the peer read so far, in order.
@@ -106,7 +109,15 @@ func newHandshakeRig(t *testing.T, peer *handshakePeer, hooks Hooks, clock quart
 					return
 				}
 			}
-			reply, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": respond(request.Method)})
+			var (
+				reply []byte
+				err   error
+			)
+			if rpcErr, hasErr := peer.errors[request.Method]; hasErr {
+				reply, err = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": rpcErr})
+			} else {
+				reply, err = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": respond(request.Method)})
+			}
 			if err != nil {
 				return
 			}

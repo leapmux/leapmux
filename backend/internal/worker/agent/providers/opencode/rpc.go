@@ -95,6 +95,8 @@ func (r openCodeRPC) callQuery(ctx context.Context, method, path string, query u
 	return r.endpoint.DoQuery(ctx, method, path, query, body, out)
 }
 
+var errOpenCodeNoData = errors.New("the OpenCode reply has no data")
+
 func openCodeData[T any](ctx context.Context, r openCodeRPC, method, path string, body any) (T, error) {
 	var response struct {
 		Data *T `json:"data"`
@@ -105,7 +107,7 @@ func openCodeData[T any](ctx context.Context, r openCodeRPC, method, path string
 	}
 	if response.Data == nil {
 		var zero T
-		return zero, fmt.Errorf("%s %s: the OpenCode reply has no data", method, path)
+		return zero, fmt.Errorf("%s %s: %w", method, path, errOpenCodeNoData)
 	}
 	return *response.Data, nil
 }
@@ -148,6 +150,24 @@ func (r openCodeRPC) session(ctx context.Context, id string) (openCodeSessionInf
 		err = errors.New("the OpenCode reply belongs to another session")
 	}
 	return session, err
+}
+
+func (r openCodeRPC) forkSession(ctx context.Context, id string) (openCodeSessionInfo, error) {
+	path, err := openCodeSessionRoute(id, "/fork")
+	if err != nil {
+		return openCodeSessionInfo{}, err
+	}
+	session, err := openCodeData[openCodeSessionInfo](ctx, r, http.MethodPost, path, struct{}{})
+	if err != nil {
+		return openCodeSessionInfo{}, err
+	}
+	if err := openCodeRouteID(session.ID); err != nil {
+		return openCodeSessionInfo{}, err
+	}
+	if session.ID == id {
+		return openCodeSessionInfo{}, errors.New("the OpenCode fork reply returned the source session ID")
+	}
+	return session, nil
 }
 
 func (r openCodeRPC) prompt(ctx context.Context, id string, request openCodePrompt) (openCodeInboxReceipt, error) {

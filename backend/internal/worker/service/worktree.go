@@ -15,6 +15,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/pathutil"
+	"github.com/leapmux/leapmux/util/repopaths"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -615,6 +616,7 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 		return gitModeResult{}, fmt.Errorf("failed to create worktree: %w", addErr)
 	}
 	slog.Info("worktree created", "worktree_path", plan.WorktreePath, "branch_name", plan.BranchName)
+	ensureWorktreeTmpExcluded(plan.WorktreePath)
 
 	if err := ctx.Err(); err != nil {
 		return result, err
@@ -630,6 +632,16 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 	rollback.WorktreeID = wtID
 	result.WorktreeID = wtID
 	return result, nil
+}
+
+// ensureWorktreeTmpExcluded ensures the repository's local Git info/exclude
+// ignores .leapmux/tmp/ after a linked worktree is created. Best-effort: an
+// exclude error is logged and never fails worktree creation.
+func ensureWorktreeTmpExcluded(worktreePath string) {
+	if err := repopaths.EnsureTmpExcluded(worktreePath); err != nil {
+		slog.Warn("failed to exclude .leapmux/tmp/ in git info/exclude",
+			"worktree_path", worktreePath, "error", err)
+	}
 }
 
 func (svc *Service) executeUseWorktree(ctx context.Context, plan gitModePlan) (gitModeResult, error) {

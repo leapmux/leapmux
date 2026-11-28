@@ -1567,6 +1567,9 @@ func (svc *Service) agentToProto(a *db.Agent, live agentLiveness, gs *leapmuxv1.
 		StartupMessage:    derived.startupMessage,
 		StartupPrompt:     derived.startupPrompt,
 		QueueHeadDispatch: svc.queueHeadDispatch(a, isRunning),
+		SpawnedByAgentId:  a.SpawnedByAgentID,
+		ForkedFromAgentId: a.ForkedFromAgentID,
+		SupportsFork:      svc.agentSupportsFork(a),
 	}
 
 	// Subagent linkage. parent_agent_id is set only for virtual child agents.
@@ -1614,6 +1617,34 @@ func (svc *Service) agentToProto(a *db.Agent, live agentLiveness, gs *leapmuxv1.
 	}
 
 	return info
+}
+
+// providerSupportsFork reports whether the provider supports native
+// conversation-history forking for agentID. A running agent implementing
+// agent.ForkCapable takes precedence over the provider's static capability.
+func (svc *Service) providerSupportsFork(agentID string, provider leapmuxv1.AgentProvider) bool {
+	if live := svc.Agents.RunningAgent(agentID); live != nil {
+		if fc, ok := live.(agent.ForkCapable); ok {
+			return fc.SupportsNativeFork()
+		}
+	}
+	return svc.Agents.Registry().Plugin(provider).SupportsFork()
+}
+
+// agentSupportsFork reports whether a can serve as the source of a native
+// conversation-history fork.
+func (svc *Service) agentSupportsFork(a *db.Agent) bool {
+	if a.ParentAgentID.Valid || storedSessionID(*a) == "" {
+		return false
+	}
+	return svc.providerSupportsFork(a.ID, a.AgentProvider)
+}
+
+// isAgentBusyForFork reports whether a root agent is actively working or
+// waiting for user input, in which case forking must wait for the turn to
+// settle so the transcript snapshot and native session stay consistent.
+func (svc *Service) isAgentBusyForFork(a *db.Agent) bool {
+	return svc.Output.AgentActivitySnapshot(a.ID, a.ID).InterruptsWork()
 }
 
 // rootAgentIDFor resolves the ROOT main agent id for the given agent. A root
@@ -1956,6 +1987,15 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 		defer hold.release()
 		// Overwrite runAgentStartup's retired confirmer (even when hold.handle is nil).
 		opts.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, hold.handle)
+		// If the initial launch already forked and confirmed its new session ID,
+		// resume that session on relaunch instead of forking the source again.
+		if opts.ForkFromSessionID != "" {
+			if confirmedID := storedSessionID(fallback); confirmedID != "" {
+				opts.ResumeSessionID = confirmedID
+				opts.ForkFromSessionID = ""
+				opts.ForkSourceWorkingDir = ""
+			}
+		}
 		sink, sourceErr := svc.Output.NewRootSink(agentID, provider)
 		if sourceErr != nil {
 			return nil, false, sourceErr

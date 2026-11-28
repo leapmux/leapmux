@@ -414,19 +414,24 @@ func (o openedTab) RenderText(w io.Writer) error {
 	return err
 }
 
-// readAgentOpenMessage reads --message (supporting "-") or --file, plus
-// repeatable --attach files, before any network connection is opened.
+// readAgentOpenMessage reads an optional positional [prompt] (supporting "-"),
+// --message/-m (supporting "-"), or --file, plus repeatable --attach files,
+// before any network connection is opened.
 func readAgentOpenMessage(inv *cli.Invocation) (*userMessage, error) {
+	hasPrompt := len(inv.Args) > 0 && inv.HasArg("prompt")
 	hasMsg := inv.Changed("message")
 	hasFile := inv.Changed("file")
 	attachPaths := inv.StringArray("attach")
+	if hasPrompt && (hasMsg || hasFile) {
+		return nil, cli.Usagef("give [prompt], --message, or --file, not more than one")
+	}
 	if hasMsg && hasFile {
 		return nil, cli.Usagef("give --message or --file, not both")
 	}
 	if len(attachPaths) > contracts.MaxAgentInputAttachmentsPerItem {
 		return nil, cli.Usagef("a message holds at most %d attachments; --attach gives %d", contracts.MaxAgentInputAttachmentsPerItem, len(attachPaths))
 	}
-	if !hasMsg && !hasFile && len(attachPaths) == 0 {
+	if !hasPrompt && !hasMsg && !hasFile && len(attachPaths) == 0 {
 		return nil, nil
 	}
 	var text string
@@ -451,6 +456,19 @@ func readAgentOpenMessage(inv *cli.Invocation) (*userMessage, error) {
 		}
 		if strings.TrimSpace(raw) == "" {
 			return nil, cli.Usagef("--message is empty")
+		}
+		text = raw
+	case hasPrompt:
+		raw := inv.Arg("prompt")
+		if raw == "-" {
+			data, err := readStdinGuarded(inv.Stdin)
+			if err != nil {
+				return nil, err
+			}
+			raw = string(data)
+		}
+		if strings.TrimSpace(raw) == "" {
+			return nil, cli.Usagef("prompt is empty")
 		}
 		text = raw
 	}
@@ -523,9 +541,11 @@ func parseAgentLaunchFlags(inv *cli.Invocation) (*agentLaunchFlags, error) {
 	}
 	all := boolFlag(inv, "all")
 	if wait && all && msg == nil {
-		return nil, cli.Usagef("--all needs --message, --file, or --attach with --wait")
+		return nil, cli.Usagef("--all needs [prompt], --message, --file, or --attach with --wait")
 	}
-	promptUsedStdin := (inv.Changed("message") && stringFlag(inv, "message") == "-") || (inv.Changed("file") && stringFlag(inv, "file") == "-")
+	promptUsedStdin := (inv.HasArg("prompt") && inv.Arg("prompt") == "-") ||
+		(inv.Changed("message") && stringFlag(inv, "message") == "-") ||
+		(inv.Changed("file") && stringFlag(inv, "file") == "-")
 	schemaSpec, err := readOutputSchemaSpec(inv, wait, msg != nil, promptUsedStdin)
 	if err != nil {
 		return nil, err
@@ -656,6 +676,14 @@ func finishAgentLaunch(
 			})
 		}
 		replyRes.RequestID = flags.requestID
+		replyRes.quietAgentID = true
+		if inv != nil && inv.Printer != nil && inv.Printer.Format == cli.FormatText {
+			verb := "opened"
+			if inv.Command != nil && inv.Command.Name() == "fork" {
+				verb = "forked"
+			}
+			_ = inv.Printer.Notice("%s agent %s", verb, cli.ShortID(result.Agent.GetId()))
+		}
 		if outcome == replyWaitSettled {
 			return replyRes, nil
 		}

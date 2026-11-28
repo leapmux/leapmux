@@ -19,7 +19,7 @@ Read the **leapmux** skill first. Load [references/review-schemas.md](references
 
 ## 2. Build a Self-Contained Read-Only Brief
 
-Write the brief to a temporary file and pass `--file` when it spans multiple lines. Include:
+Write the brief under `.leapmux/tmp/` and pass `--file` when it spans multiple lines. Include:
 
 - The exact question, plan, or diff scope (branch/commits or explicit file paths to read — do not paste large files)
 - Key constraints, invariants, and alternatives already ruled out
@@ -36,8 +36,8 @@ leapmux agent open \
   --no-focus \
   --wait \
   --timeout 15m \
-  --output-schema .tmp/review-schema.json \
-  --file .tmp/review-brief.md
+  --output-schema .leapmux/tmp/review-schema.json \
+  --file .leapmux/tmp/review-brief.md
 ```
 
 For prose analysis, omit `--output-schema` and inspect the settled reply directly.

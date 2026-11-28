@@ -268,8 +268,8 @@ func TestRetryCommandBuilders_IncludeAllSchemaWorkspaceAndTerminalWaitFlags(t *t
 		)
 	})
 
-	t.Run("agent open and fork include output-schema, schema-retries, and workspace", func(t *testing.T) {
-		openInv := captureTestInvocation(t, "open", func(fs *pflag.FlagSet) {
+	t.Run("agent open and fork include output-schema, schema-retries, workspace, fresh, and prompt", func(t *testing.T) {
+		openInv := captureTestInvocation(t, "open [prompt]", func(fs *pflag.FlagSet) {
 			for _, name := range []string{
 				"provider", "model", "effort", "permission-mode", "title", "name",
 				"message", "file", "resume", "dir", "worktree", "use-worktree",
@@ -285,15 +285,16 @@ func TestRetryCommandBuilders_IncludeAllSchemaWorkspaceAndTerminalWaitFlags(t *t
 			}
 			fs.Duration("timeout", 0, "")
 			addOutputSchemaFlags(fs)
-		}, "--workspace", "ws-1", "--message", "hi", "--wait", "--output-schema", `{"type":"object"}`, "--schema-retries", "3")
+		}, "--workspace", "ws-1", "--wait", "--output-schema", `{"type":"object"}`, "--schema-retries", "3", "--", "-audit this")
 
 		openCmd := buildAgentOpenRetryCmd(openInv, "req-open")
 		assert.Contains(t, openCmd, "--workspace ws-1")
 		assert.Contains(t, openCmd, `--output-schema '{"type":"object"}'`)
 		assert.Contains(t, openCmd, "--schema-retries 3")
 		assert.Contains(t, openCmd, "--request-id req-open")
+		assert.True(t, strings.HasSuffix(openCmd, `-- '-audit this'`), "got: %s", openCmd)
 
-		forkInv := captureTestInvocation(t, "fork <agent>", func(fs *pflag.FlagSet) {
+		forkInv := captureTestInvocation(t, "fork <agent> [prompt]", func(fs *pflag.FlagSet) {
 			for _, name := range []string{
 				"model", "effort", "permission-mode", "title", "name",
 				"message", "file", "dir", "worktree", "use-worktree",
@@ -304,19 +305,21 @@ func TestRetryCommandBuilders_IncludeAllSchemaWorkspaceAndTerminalWaitFlags(t *t
 			}
 			fs.StringArray("option", nil, "")
 			fs.StringArray("attach", nil, "")
-			for _, name := range []string{"first", "last", "focus", "no-focus", "wait", "all"} {
+			for _, name := range []string{"first", "last", "focus", "no-focus", "wait", "all", "fresh"} {
 				fs.Bool(name, false, "")
 			}
 			fs.Duration("timeout", 0, "")
 			addOutputSchemaFlags(fs)
-		}, "ag-src", "--workspace", "ws-2", "--wait", "--output-schema", "schema.json", "--schema-retries", "1")
+		}, "ag-src", "continue plan", "--workspace", "ws-2", "--fresh", "--wait", "--output-schema", "schema.json", "--schema-retries", "1")
 
 		forkCmd := buildAgentForkRetryCmd(forkInv, "req-fork")
 		assert.Contains(t, forkCmd, "leapmux agent fork ag-src")
 		assert.Contains(t, forkCmd, "--workspace ws-2")
+		assert.Contains(t, forkCmd, "--fresh")
 		assert.Contains(t, forkCmd, "--output-schema schema.json")
 		assert.Contains(t, forkCmd, "--schema-retries 1")
 		assert.Contains(t, forkCmd, "--request-id req-fork")
+		assert.True(t, strings.HasSuffix(forkCmd, `'continue plan'`), "got: %s", forkCmd)
 	})
 
 	t.Run("terminal run includes change and after-offset", func(t *testing.T) {

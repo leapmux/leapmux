@@ -54,6 +54,7 @@ const (
 	//   - Qwen Code.
 	// A session/load replay would draw the entire conversation in the transcript again.
 	MethodSessionResume   = "session/resume"
+	MethodSessionFork     = "session/fork"
 	MethodSessionPrompt   = "session/prompt"
 	MethodSessionSetModel = "session/set_model"
 	MethodSessionSetMode  = "session/set_mode"
@@ -134,6 +135,9 @@ type Base struct {
 	// session/close, which a context clear sends for the session that it
 	// replaced. Guarded by b.Mu.
 	closesSessions bool
+	// forksSessions records that the initialize response advertised
+	// session/fork during initialize. Guarded by b.Mu.
+	forksSessions bool
 	// openRows holds the registry rows that this agent opened and did not close
 	// yet, which a context clear closes. See session_retirement.go.
 	openRows acpOpenRows
@@ -1336,6 +1340,24 @@ func acpStandardInitParams(hooks *Hooks) (json.RawMessage, error) {
 	return encoded, nil
 }
 
+// buildACPSessionForkRequest builds a session/fork JSON-RPC request.
+// When present, adjust changes the params before encoding. See Hooks.SessionParams.
+func buildACPSessionForkRequest(forkFromSessionID, workingDir string, adjust func(method string, params map[string]any)) []byte {
+	p := map[string]any{
+		"sessionId":  forkFromSessionID,
+		"cwd":        workingDir,
+		"mcpServers": []any{},
+	}
+	if adjust != nil {
+		adjust(MethodSessionFork, p)
+	}
+	params, err := json.Marshal(p)
+	if err != nil {
+		slog.Warn("acp session fork request marshal failed", "error", err)
+	}
+	return params
+}
+
 // buildACPSessionRequest builds a newSession or loadSession JSON-RPC request.
 // When present, adjust changes the params before encoding. See Hooks.SessionParams.
 func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod string, adjust func(method string, params map[string]any)) (method string, params []byte) {
@@ -1967,6 +1989,10 @@ func (b *Base) handleUsageUpdate(update json.RawMessage) {
 type SessionConfig struct {
 	NewMethod    string // e.g. "session/new"
 	ResumeMethod string // e.g. "session/load" or "session/resume"
+	// ForkRequiresLoad loads the source session via ResumeMethod in the fresh
+	// ACP process before invoking session/fork (required by providers such as
+	// Junie that only fork a session already loaded in the current process).
+	ForkRequiresLoad bool
 }
 
 // acpDefaultSessionConfig is the standard ACP session config used by most providers.
@@ -2028,23 +2054,57 @@ func (b *Base) startACPHandshake(
 		b.hooks.InitializeResponse(initResp)
 	}
 	closesSessions := advertisesSessionClose(initResp)
+	forksSessions := advertisesSessionFork(initResp)
 	b.Mu.Lock()
 	b.steerMethod = steerMethod
 	b.closesSessions = closesSessions
+	b.forksSessions = forksSessions
 	b.Mu.Unlock()
 
-	// 2. Send session request (resume or new).
-	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
-	// The session/load reply separates replayed history from live output.
-	// The Worker already stores the history sent before that reply, so the startup drain drops it. See acpSessionUpdates.
-	// The reader records the boundary while routing the reply and immediately buffers each later line.
-	// This goroutine wakes afterwards and cannot itself distinguish a live line from replayed history.
-	//
-	// session/resume sends no replay, so every update before its reply is live output.
-	// OpenCode and Kilo forward output from each session client, and that output can arrive during this interval.
-	var observeReply func(json.RawMessage, error)
-	if opts.ResumeSessionID != "" && sessionMethod == MethodSessionLoad {
+	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
+		cleanup()
+		return nil, b.FormatStartupError(MethodSessionFork, fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID))
+	}
+
+	// 2. Send session request (fork, resume, or new).
+	var (
+		sessionMethod string
+		sessionParams []byte
+		observeReply  func(json.RawMessage, error)
+	)
+	if opts.ForkFromSessionID != "" {
+		if !forksSessions {
+			cleanup()
+			return nil, b.FormatStartupError(MethodSessionFork, errors.New("provider does not advertise ACP session/fork capability"))
+		}
+		if sessionCfg.ForkRequiresLoad {
+			loadMethod, loadParams := buildACPSessionRequest(opts.ForkFromSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
+			var loadObserve func(json.RawMessage, error)
+			if loadMethod == MethodSessionLoad {
+				loadObserve = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
+			}
+			if _, err := b.SendRequestObserved(loadMethod, json.RawMessage(loadParams), timeout, loadObserve); err != nil {
+				cleanup()
+				return nil, b.FormatStartupError(loadMethod, err)
+			}
+		}
+		sessionMethod = MethodSessionFork
+		sessionParams = buildACPSessionForkRequest(opts.ForkFromSessionID, opts.WorkingDir, b.hooks.SessionParams)
+		// Drop any conversation history replayed before the session/fork reply
+		// because the Worker already cloned the SQLite transcript.
 		observeReply = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
+	} else {
+		sessionMethod, sessionParams = buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.NewMethod, sessionCfg.ResumeMethod, b.hooks.SessionParams)
+		// The session/load reply separates replayed history from live output.
+		// The Worker already stores the history sent before that reply, so the startup drain drops it. See acpSessionUpdates.
+		// The reader records the boundary while routing the reply and immediately buffers each later line.
+		// This goroutine wakes afterwards and cannot itself distinguish a live line from replayed history.
+		//
+		// session/resume sends no replay, so every update before its reply is live output.
+		// OpenCode and Kilo forward output from each session client, and that output can arrive during this interval.
+		if opts.ResumeSessionID != "" && sessionMethod == MethodSessionLoad {
+			observeReply = func(json.RawMessage, error) { b.markSessionReplayCutoff() }
+		}
 	}
 	sessionResp, err := b.SendRequestObserved(sessionMethod, json.RawMessage(sessionParams), timeout, observeReply)
 	if err != nil {
@@ -2067,6 +2127,10 @@ func (b *Base) startACPHandshake(
 	if session.SessionID == "" {
 		cleanup()
 		return nil, b.FormatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
+	}
+	if opts.ForkFromSessionID != "" && session.SessionID == opts.ForkFromSessionID {
+		cleanup()
+		return nil, b.FormatStartupError(sessionMethod, fmt.Errorf("response returned the source session ID %q", opts.ForkFromSessionID))
 	}
 
 	// The reader starts before initialization completes.

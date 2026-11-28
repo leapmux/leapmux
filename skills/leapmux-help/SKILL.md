@@ -16,8 +16,9 @@ Load [references/diagnostics-checklist.md](references/diagnostics-checklist.md) 
 Never answer LeapMux feature, config, or CLI questions from stale memory:
 
 1. Fetch `https://leapmux.dev/llms.txt` to discover the current documentation index and per-page Markdown endpoints (`/docs/.../index.md`).
-2. Fetch the specific `/docs/.../index.md` page(s) matching the user's question (or inspect `leapmux guide` / `leapmux <group> --help` when answering CLI syntax questions locally).
-3. Answer the user directly with concrete steps or commands — do not deflect by telling them to go read the docs.
+2. Fetch the specific `/docs/.../index.md` page(s) matching the user's question.
+3. **Offline fallback:** If `https://leapmux.dev/llms.txt` is unreachable (air-gapped host or no-network sandbox), fall back immediately to `leapmux guide`, `leapmux commands --compact --json`, and `leapmux <group> --help` bundled in the CLI binary.
+4. Answer the user directly with concrete steps or commands — do not deflect by telling them to go read the docs.
 
 ## 2. Establish Topology Before Diagnosing
 

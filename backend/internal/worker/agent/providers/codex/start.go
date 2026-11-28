@@ -187,14 +187,20 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// values against them before thread/start sends them.
 	permissions := a.discoverPermissions(opts.WorkingDir, timeout)
 
-	// 4. Send "thread/start" or "thread/resume" request.
+	// 4. Send "thread/start", "thread/resume", or "thread/fork" request.
+	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
+		cleanup()
+		<-modelCatalog
+		return nil, a.FormatStartupError("thread/fork", fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID))
+	}
 	threadParams := codexThreadParams(opts.Model(), opts.WorkingDir, permissions, a.serviceTier)
 
 	// The method is the label that FormatStartupError prefixes the failure with.
-	// startOrResumeThread makes the same choice from the same field, so the two
-	// cannot disagree about what ran.
 	threadMethod := "thread/start"
-	if opts.ResumeSessionID != "" {
+	switch {
+	case opts.ForkFromSessionID != "":
+		threadMethod = "thread/fork"
+	case opts.ResumeSessionID != "":
 		threadMethod = "thread/resume"
 	}
 
@@ -204,6 +210,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// of the response. Assigning threadID only after startOrResumeThread
 	// returned meant every one of those arrived while a.threadID was still "",
 	// so isMainThreadID rejected them and the resumed goal was dropped.
+	//
+	// Do NOT pre-assign threadID for thread/fork: Codex allocates a new thread ID
+	// in its response, which we adopt below.
 	if opts.ResumeSessionID != "" {
 		a.Mu.Lock()
 		a.threadID = opts.ResumeSessionID
@@ -213,7 +222,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		a.resumingThread.Store(true)
 	}
 
-	thread, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
+	var thread codexThreadResult
+	if opts.ForkFromSessionID != "" {
+		thread, err = a.forkThread(threadParams, opts.ForkFromSessionID, timeout)
+	} else {
+		thread, err = a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
+	}
 	if err != nil {
 		// Clear on BOTH exits, and not with a defer. A defer here is
 		// function-scoped, not block-scoped, so the flag would stay set through

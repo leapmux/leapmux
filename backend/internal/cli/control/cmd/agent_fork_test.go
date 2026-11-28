@@ -145,9 +145,183 @@ func TestAgentFork_UseWorktreeDirectoryValidation(t *testing.T) {
 	t.Run("use-worktree branch across workers without --dir fails with usage error", func(t *testing.T) {
 		var captured []*leapmuxv1.OpenAgentRequest
 		makeEnv(t, &captured)
-		f := runControl(t, "agent", "fork", srcID, "--worker", "worker-B", "--use-worktree", "branch:feat-1", "--no-focus").requireFailure(t, cli.CodeUsage)
+		f := runControl(t, "agent", "fork", srcID, "--fresh", "--worker", "worker-B", "--use-worktree", "branch:feat-1", "--no-focus").requireFailure(t, cli.CodeUsage)
 		assert.Contains(t, f.Message, "branch selection requires --dir on the selected worker")
 		assert.Empty(t, captured)
+	})
+}
+
+func TestAgentFork_HistoryForkFreshAndPositionalPrompt(t *testing.T) {
+	srcID := fullTestID("ag-fkhist")
+	wsID := fullTestID("ws-fkhist")
+	tileID := fullTestID("tl-fkhist")
+
+	makeEnv := func(t *testing.T, captured *[]*leapmuxv1.OpenAgentRequest) {
+		t.Helper()
+		tab := &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabId: srcID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			WorkspaceId: wsID,
+			TileId:      tileID,
+			WorkerId:    "worker-A",
+		}
+		startForkIPC(t,
+			func(method string, _ []byte) (proto.Message, error) {
+				switch method {
+				case leapmuxv1connect.WorkspaceServiceLocateTabProcedure:
+					return &leapmuxv1.LocateTabResponse{Tab: tab}, nil
+				case leapmuxv1connect.WorkspaceServiceListTabsProcedure:
+					return &leapmuxv1.ListTabsResponse{Tabs: []*leapmuxv1.WorkspaceTab{tab}}, nil
+				case leapmuxv1connect.WorkerManagementServiceListWorkersProcedure:
+					return &leapmuxv1.ListWorkersResponse{
+						Workers: []*leapmuxv1.Worker{
+							{Id: "worker-A", Online: true},
+							{Id: "worker-B", Online: true},
+						},
+					}, nil
+				default:
+					return &leapmuxv1.ListWorkspacesResponse{}, nil
+				}
+			},
+			func(method string, body []byte) (proto.Message, error) {
+				switch method {
+				case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+					return &leapmuxv1.ListAgentsResponse{
+						Agents: []*leapmuxv1.AgentInfo{{
+							Id:            srcID,
+							Title:         "Source",
+							WorkerId:      "worker-A",
+							WorkingDir:    "/repo/source",
+							AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+						}},
+					}, nil
+				case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
+					var req leapmuxv1.OpenAgentRequest
+					require.NoError(t, proto.Unmarshal(body, &req))
+					*captured = append(*captured, &req)
+					return &leapmuxv1.OpenAgentResponse{
+						Agent: &leapmuxv1.AgentInfo{Id: req.GetCreation().GetTabId(), WorkerId: "worker-A", Title: req.GetTitle()},
+						Publication: &leapmuxv1.PublishedTab{
+							Tab:         &leapmuxv1.TabIdent{TabId: req.GetCreation().GetTabId(), TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+							WorkspaceId: wsID,
+							TileId:      tileID,
+							Position:    "a1",
+						},
+					}, nil
+				default:
+					return nil, assert.AnError
+				}
+			},
+		)
+	}
+
+	t.Run("default fork populates ForkSource with source agent ID", func(t *testing.T) {
+		var captured []*leapmuxv1.OpenAgentRequest
+		makeEnv(t, &captured)
+		_ = runControl(t, "agent", "fork", srcID, "--no-focus").Data(t)
+		require.Len(t, captured, 1)
+		require.NotNil(t, captured[0].GetForkSource())
+		assert.Equal(t, srcID, captured[0].GetForkSource().GetSourceAgentId())
+	})
+
+	t.Run("default cross-worker fork fails with usage error pointing at --fresh", func(t *testing.T) {
+		var captured []*leapmuxv1.OpenAgentRequest
+		makeEnv(t, &captured)
+		f := runControl(t, "agent", "fork", srcID, "--worker", "worker-B", "--no-focus").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "cannot fork native conversation history across Workers")
+		assert.Contains(t, f.Message, "--fresh")
+		assert.Empty(t, captured)
+	})
+
+	t.Run("--fresh omits ForkSource and allows cross-worker clone", func(t *testing.T) {
+		var openReq *leapmuxv1.OpenAgentRequest
+		tab := &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabId: srcID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			WorkspaceId: wsID,
+			TileId:      tileID,
+			WorkerId:    "worker-A",
+		}
+		disp := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
+			switch method {
+			case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+				return &leapmuxv1.ListAgentsResponse{
+					Agents: []*leapmuxv1.AgentInfo{{
+						Id:            srcID,
+						Title:         "Source",
+						WorkerId:      "worker-A",
+						WorkingDir:    "/repo/source",
+						AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+					}},
+				}, nil
+			case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
+				var req leapmuxv1.OpenAgentRequest
+				require.NoError(t, proto.Unmarshal(body, &req))
+				openReq = &req
+				return &leapmuxv1.OpenAgentResponse{
+					Agent: &leapmuxv1.AgentInfo{Id: req.GetCreation().GetTabId(), WorkerId: "worker-B", Title: req.GetTitle()},
+					Publication: &leapmuxv1.PublishedTab{
+						Tab:         &leapmuxv1.TabIdent{TabId: req.GetCreation().GetTabId(), TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+						WorkspaceId: wsID,
+						TileId:      tileID,
+						Position:    "a1",
+					},
+				}, nil
+			default:
+				return nil, assert.AnError
+			}
+		}}
+		hub := &recordingHub{
+			workers:   workerRows("worker-A", "worker-B"),
+			locateTab: tab,
+		}
+		h := startHubChannelHarness(t, hub, disp)
+		dB := harnessDispatcher(disp)
+		h.managerForWorker("worker-B").SetDispatcher(dB)
+
+		data := runControl(t, "agent", "fork", srcID, "--fresh", "--worker", "worker-B", "--no-focus", "--hub", h.url).Data(t)
+		assert.Equal(t, "worker-B", data["worker_id"])
+		require.NotNil(t, openReq)
+		assert.Nil(t, openReq.GetForkSource())
+	})
+
+	t.Run("accepts positional prompt and -m shorthand, and rejects conflicting inputs", func(t *testing.T) {
+		var captured []*leapmuxv1.OpenAgentRequest
+		makeEnv(t, &captured)
+
+		_ = runControl(t, "agent", "fork", srcID, "Try positional prompt", "--no-focus").Data(t)
+		require.Len(t, captured, 1)
+		assert.Equal(t, "Try positional prompt", captured[0].GetInitialMessage())
+		assert.Equal(t, srcID, captured[0].GetForkSource().GetSourceAgentId())
+
+		_ = runControl(t, "agent", "fork", srcID, "-m", "Try short flag", "--no-focus").Data(t)
+		require.Len(t, captured, 2)
+		assert.Equal(t, "Try short flag", captured[1].GetInitialMessage())
+
+		f := runControl(t, "agent", "fork", srcID, "Positional", "-m", "Flag", "--no-focus").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "not more than one")
+
+		f = runControl(t, "agent", "fork", srcID, "Positional", "--file", "prompt.md", "--no-focus").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "not more than one")
+
+		f = runControl(t, "agent", "fork", srcID, "   ", "--no-focus").requireFailure(t, cli.CodeUsage)
+		assert.Equal(t, "prompt is empty", f.Message)
+		assert.Len(t, captured, 2)
+	})
+
+	t.Run("positional dash reads stdin, rejects whitespace-only stdin, and guards shared stdin with --output-schema -", func(t *testing.T) {
+		var captured []*leapmuxv1.OpenAgentRequest
+		makeEnv(t, &captured)
+
+		_ = runControlIn(t, "Fork prompt from stdin\n", "agent", "fork", srcID, "-", "--no-focus", "--json").Data(t)
+		require.Len(t, captured, 1)
+		assert.Equal(t, "Fork prompt from stdin\n", captured[0].GetInitialMessage())
+		assert.Equal(t, srcID, captured[0].GetForkSource().GetSourceAgentId())
+
+		f := runControlIn(t, "  \t\n ", "agent", "fork", srcID, "-", "--no-focus", "--json").requireFailure(t, cli.CodeUsage)
+		assert.Equal(t, "prompt is empty", f.Message)
+
+		f = runControlIn(t, "Fork prompt\n", "agent", "fork", srcID, "-", "--wait", "--output-schema", "-", "--no-focus", "--json").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--output-schema cannot read stdin because the prompt already reads stdin")
+		assert.Len(t, captured, 1, "failed stdin validations must not open a forked agent")
 	})
 }
 

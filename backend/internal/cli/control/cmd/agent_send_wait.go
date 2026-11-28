@@ -56,6 +56,9 @@ type agentReplyResult struct {
 	// statusRequestID overrides RequestID in agentReplyEnded when a corrective
 	// schema retry turn is the active input that request-status should inspect.
 	statusRequestID string
+	// quietAgentID makes QuietLines print the created agent ID instead of the
+	// input ID (used by `agent open/fork --message ... --wait -q`).
+	quietAgentID bool
 }
 
 // formatSanitizedReplies sanitizes each reply for terminal output and joins
@@ -82,9 +85,13 @@ func (r agentReplyResult) RenderText(w io.Writer) error {
 	return err
 }
 
-// QuietLines returns the input_id for `agent send --wait -q` (falling back to
-// agent ID when no input ID is set).
+// QuietLines returns the created agent ID for `agent open/fork --wait -q`, or
+// the input_id for `agent send --wait -q` (falling back to agent ID when no
+// input ID is set).
 func (r agentReplyResult) QuietLines() []string {
+	if r.quietAgentID && r.ID != "" {
+		return []string{r.ID}
+	}
 	if r.InputID != "" {
 		return []string{r.InputID}
 	}

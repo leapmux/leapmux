@@ -24,6 +24,7 @@ func TestContextUse_RejectsEmptyFlagsAndClearRemovesFields(t *testing.T) {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 	t.Setenv("LEAPMUX_CONTROL_TOKEN", "")
 	t.Setenv("LEAPMUX_HUB", "")
+	require.NoError(t, control.SaveCredentials("https://hub.example.com", control.CredentialFile{AccessToken: "tok"}))
 
 	// Save all four defaults first (including canonicalizing trailing slash on --hub).
 	o := runControl(t, "context", "use",

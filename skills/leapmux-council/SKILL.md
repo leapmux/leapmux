@@ -18,7 +18,7 @@ Read the **leapmux** skill first. Load [references/cross-examination.md](referen
 
 ## 2. Launch Blind Round 1 in Parallel
 
-Write one sharp, unbiased problem brief to a temporary file — avoid steering members toward a conclusion you already suspect. Always include:
+Write one sharp, unbiased problem brief under `.leapmux/tmp/` — avoid steering members toward a conclusion you already suspect. Always include:
 
 - Observed symptoms, constraints, and relevant entry-point file paths
 - Explicit ask: root-cause hypotheses or architectural options, trade-offs, load-bearing assumptions, and concrete evidence from the code
@@ -29,28 +29,29 @@ C1=$(leapmux agent open \
   --provider claude \
   --name council-1 \
   --no-focus \
-  --file .tmp/council-brief.md \
+  --file .leapmux/tmp/council-brief.md \
   -q)
 
 C2=$(leapmux agent open \
   --provider codex \
   --name council-2 \
   --no-focus \
-  --file .tmp/council-brief.md \
+  --file .leapmux/tmp/council-brief.md \
   -q)
 ```
 
 ## 3. Wait Once and Handle Stalls
 
-Wait for all council members in one blocking call — do not poll or hurry them:
+Wait for all council members in one blocking call — do not poll or hurry them. Use `children` for all agents spawned by this tab, or pass explicit `"$C1" "$C2"` IDs when scoping a subset:
 
 ```sh
-leapmux agent wait "$C1" "$C2" --timeout 20m
+leapmux agent wait children --timeout 20m
+leapmux agent tree
 leapmux agent messages "$C1" --limit 3 --markdown
 leapmux agent messages "$C2" --limit 3 --markdown
 ```
 
-- If a member hits `waiting_for_user` or exit code `6`, inspect `leapmux agent requests <id>` and `leapmux agent list` (or `leapmux agent get <id>`):
+- If a member hits `waiting_for_user` or exit code `6`, inspect `leapmux agent requests children` (or `leapmux agent requests <id>`) and `leapmux agent tree` (or `leapmux agent get <id>`):
   - Answer read-only clarifying questions.
   - Replace a member with a fallback provider if launch fails.
   - Never approve mutating permission requests.
@@ -61,4 +62,4 @@ leapmux agent messages "$C2" --limit 3 --markdown
 1. Compare where members agree and where they diverge.
 2. If major disagreements remain, run one **anonymous cross-examination round** (`Member A` / `Member B` without revealing provider or model names so members do not defer to brand reputation), requiring each member to cite new code evidence for any changed position (see [references/cross-examination.md](references/cross-examination.md)).
 3. Synthesize one clear recommendation or plan for the user, calling out rejected alternatives and verified evidence.
-4. **Warm checkpoint vs. cleanup:** If the user wants to ask follow-up questions against the same panel, keep `"$C1"` and `"$C2"` open so their context stays warm; otherwise close them once done (`leapmux agent close "$C1" "$C2"`).
+4. **Warm checkpoint vs. cleanup:** If the user wants to ask follow-up questions against the same panel, keep `"$C1"` and `"$C2"` open so their context stays warm; otherwise close them once done (`leapmux agent close children`, or `leapmux agent close "$C1" "$C2"` for a subset).

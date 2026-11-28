@@ -1326,3 +1326,139 @@ func TestApplyWorkerStateUpdate_DeltaBoundariesAndNarrowAddNewTarget(t *testing.
 		assert.Equal(t, "# custom claude leapmux\n", string(got))
 	})
 }
+
+func TestDetectInstalledTargetsAndAutoResolution(t *testing.T) {
+	t.Parallel()
+
+	t.Run("fresh baseDir detects only agents", func(t *testing.T) {
+		t.Parallel()
+		baseDir := t.TempDir()
+		assert.Equal(t, []Target{TargetAgents}, DetectInstalledTargets(baseDir))
+		assert.Equal(t, []Target{TargetAgents}, DetectInstalledTargets(""))
+
+		dirs, labels, err := ResolveLocalTargetDirs(baseDir, []string{"auto"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{filepath.Join(baseDir, ".agents", "skills")}, dirs)
+		assert.Equal(t, []string{"agents"}, labels)
+	})
+
+	t.Run("claude directory without skills subdir is detected, while others require skills subdir", func(t *testing.T) {
+		t.Parallel()
+		baseDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(baseDir, ".claude"), 0o755))
+		// .codex without skills/ must NOT trigger detection.
+		require.NoError(t, os.MkdirAll(filepath.Join(baseDir, ".codex"), 0o755))
+		// .cursor/skills and .gemini/skills DO trigger detection.
+		require.NoError(t, os.MkdirAll(filepath.Join(baseDir, ".cursor", "skills"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(baseDir, ".gemini", "skills"), 0o755))
+
+		assert.Equal(t, []Target{TargetAgents, TargetClaude, TargetCursor, TargetGemini}, DetectInstalledTargets(baseDir))
+
+		// Case-insensitive AUTO deduplicates with explicit targets and custom dir: paths in first-seen order.
+		dirs, labels, err := ResolveLocalTargetDirs(baseDir, []string{
+			"claude",
+			"AUTO",
+			"dir:" + filepath.Join(baseDir, ".cursor", "skills"),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			filepath.Join(baseDir, ".claude", "skills"),
+			filepath.Join(baseDir, ".agents", "skills"),
+			filepath.Join(baseDir, ".cursor", "skills"),
+			filepath.Join(baseDir, ".gemini", "skills"),
+		}, dirs)
+		assert.Equal(t, []string{"claude", "agents", "cursor", "gemini"}, labels)
+	})
+
+	t.Run("file named .claude does not trigger TargetClaude", func(t *testing.T) {
+		t.Parallel()
+		baseDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(baseDir, ".claude"), []byte("not a dir"), 0o644))
+		assert.Equal(t, []Target{TargetAgents}, DetectInstalledTargets(baseDir))
+	})
+
+	t.Run("auto fails when baseDir is empty", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := ResolveLocalTargetDirs("   ", []string{"auto"})
+		require.Error(t, err)
+	})
+}
+
+func TestInstallTargetsAndUninstallTargets_CrossTargetAtomicPreflight(t *testing.T) {
+	t.Parallel()
+
+	t.Run("InstallTargets leaves target 1 untouched when target 2 has conflict", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		dir1 := filepath.Join(base, ".agents", "skills")
+		dir2 := filepath.Join(base, ".claude", "skills")
+
+		// Seed target 2 with an unmanaged leapmux skill.
+		require.NoError(t, os.MkdirAll(filepath.Join(dir2, "leapmux"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir2, "leapmux", "SKILL.md"), []byte("# unmanaged\n"), 0o644))
+
+		_, err := InstallTargets([]string{dir1, dir2}, []string{"leapmux"}, Options{})
+		require.ErrorIs(t, err, ErrSkillUnmanaged)
+		assert.NoDirExists(t, dir1, "target 1 must not be created or mutated when target 2 fails preflight")
+	})
+
+	t.Run("InstallTargets installs cleanly across all targets when preflight passes", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		dir1 := filepath.Join(base, ".agents", "skills")
+		dir2 := filepath.Join(base, ".claude", "skills")
+
+		results, err := InstallTargets([]string{dir1, dir2}, []string{"leapmux", "leapmux-review"}, Options{})
+		require.NoError(t, err)
+		require.Len(t, results, 2)
+		require.Len(t, results[0], 2)
+		require.Len(t, results[1], 2)
+		assert.Equal(t, ActionInstalled, results[0][0].Action)
+		assert.Equal(t, ActionInstalled, results[1][1].Action)
+		assert.FileExists(t, filepath.Join(dir1, "leapmux", "SKILL.md"))
+		assert.FileExists(t, filepath.Join(dir2, "leapmux-review", "SKILL.md"))
+	})
+
+	t.Run("UninstallTargets leaves target 1 untouched when target 2 has local edits", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		dir1 := filepath.Join(base, ".agents", "skills")
+		dir2 := filepath.Join(base, ".claude", "skills")
+
+		_, err := InstallTargets([]string{dir1, dir2}, []string{"leapmux"}, Options{})
+		require.NoError(t, err)
+
+		// Modify target 2 copy locally.
+		require.NoError(t, os.WriteFile(filepath.Join(dir2, "leapmux", "SKILL.md"), []byte("# local edit\n"), 0o644))
+
+		_, err = UninstallTargets([]string{dir1, dir2}, []string{"leapmux"}, Options{})
+		require.ErrorIs(t, err, ErrSkillModified)
+		assert.FileExists(t, filepath.Join(dir1, "leapmux", "SKILL.md"), "target 1 must not be removed when target 2 fails preflight")
+
+		// Force removes both targets cleanly.
+		results, err := UninstallTargets([]string{dir1, dir2}, []string{"leapmux"}, Options{Force: true})
+		require.NoError(t, err)
+		require.Len(t, results, 2)
+		assert.Equal(t, ActionRemoved, results[0][0].Action)
+		assert.Equal(t, ActionRemoved, results[1][0].Action)
+		assert.NoDirExists(t, filepath.Join(dir1, "leapmux"))
+		assert.NoDirExists(t, filepath.Join(dir2, "leapmux"))
+	})
+
+	t.Run("empty dirs still validates skill names", func(t *testing.T) {
+		t.Parallel()
+		_, err := InstallTargets(nil, []string{"no-such-skill"}, Options{})
+		require.ErrorIs(t, err, ErrUnknownSkill)
+
+		res, err := InstallTargets(nil, []string{"leapmux"}, Options{})
+		require.NoError(t, err)
+		assert.Nil(t, res)
+
+		_, err = UninstallTargets(nil, []string{"no-such-skill"}, Options{})
+		require.ErrorIs(t, err, ErrUnknownSkill)
+
+		res, err = UninstallTargets(nil, []string{"leapmux"}, Options{})
+		require.NoError(t, err)
+		assert.Nil(t, res)
+	})
+}

@@ -45,7 +45,7 @@ const maxRenderedCells = 4 << 20
 // addTerminalReadFlags registers the flags shared by `terminal read` and
 // `terminal quake read`.
 func addTerminalReadFlags(fs *pflag.FlagSet) {
-	fs.Int("lines", 0, "print only the last N lines")
+	fs.IntP("lines", "n", 0, "print only the last N lines")
 	fs.Bool("scrollback", false, "also print the lines above the screen")
 	fs.Bool("raw", false, "print the retained bytes as they are, with their escape sequences")
 	fs.BoolP("follow", "f", false, "stream live output until Ctrl-C or shell exit")

@@ -66,7 +66,7 @@ Commands accept targets (`<agent>`, `<terminal>`, `<tab>`, `<workspace>`, `<work
 | `title:<title>` / `name:<name>` | `"title:Release"`, `name:build-box` | Exact tab/workspace title, Worker name, or agent `--name` slug. |
 | Bare title, slug, or Worker name | `reviewer` | Case-insensitive match across titles, slugs, and Worker names. |
 | `self` | `self` | The calling tab, tile, workspace, or Worker inside a managed tab. |
-| `parent` / `children` | `parent`, `children` | Inside an agent tab: parent agent or direct child subagents (`agent wait`, `agent requests`). |
+| `parent` / `children` | `parent`, `children` | Inside an agent tab: the spawning parent agent (`parent`) or all direct child agents (`children`) — both provider subagents and agents opened or forked by this tab (`spawned_by_agent_id`) — on `agent wait`, `agent requests`, `agent interrupt`, and `agent close`. |
 
 Read-only commands default to `self` inside a tab; mutating commands require an explicit target. Tab-opening commands (`agent open`, `terminal open`, `file open`) default `--workspace`, `--tile`, `--worker`, and `--dir` to the calling tab's context. Pass `--workspace <ws>` to narrow ambiguous tab lookups.
 
@@ -118,6 +118,8 @@ leapmux agent send "$A" "Review the diff and report findings" \
 - **Turn correlation:** Providers that emit native turn IDs correlate `agent send --wait` replies directly to the submitted input; other providers correlate by turn boundaries. Unmet waits print current state and exit `6`.
 - **JSON Schema (`--output-schema`):** Accepts a file path, inline JSON, or `-` (stdin) alongside `--wait`. If a reply fails validation, the CLI automatically asks the agent to fix the schema errors up to `--schema-retries` times (default `2`, max `10`).
 - **Idempotent retries (`--request-id`):** Supported by `agent send`, `agent open`, `agent fork`, and `terminal run`. Repeating the same request ID with identical arguments returns the original result instead of duplicating work (and fails with `conflict` if arguments change). Inspect status with `leapmux agent request-status <agent> <request-id>`. With scheduled `--at`, use an absolute RFC 3339 timestamp with `--request-id` rather than a relative offset like `+10m`.
+- **Forking agents (`agent fork`):** By default, `leapmux agent fork <agent>` performs a native conversation-history fork when the provider supports it, cloning both the provider session history and the Worker transcript so the forked tab preserves context and prompt cache. Pass `--fresh` to clone only provider, model, options, and working directory into a clean empty session without copying history.
+- **Repo-local scratch files (`.leapmux/tmp`):** Store repository-local briefs, JSON schemas, and event checkpoints under `<git toplevel>/.leapmux/tmp/` (part of the `.leapmux/<category>` layout, with `.leapmux/conf` reserved for future repository settings). LeapMux adds `.leapmux/tmp/` to `.git/info/exclude` automatically when creating worktrees or writing checkpoints and exports.
 - **Answering prompts:** Inspect pending permissions, plans, questions, and forms with `leapmux agent requests` and respond with `agent approve`, `agent deny --message`, or `agent answer --option / --field`. An agent cannot answer its own prompts (`usage`).
 
 ### Terminal waits

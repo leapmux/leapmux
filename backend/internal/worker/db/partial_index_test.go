@@ -243,6 +243,15 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 				require.Empty(t, children)
 			},
 		},
+		{
+			name:  "ListAgentsBySpawnedBy",
+			index: "idx_agents_spawned_by",
+			run: func(t *testing.T) {
+				spawned, err := q.ListAgentsBySpawnedBy(t.Context(), "spawner")
+				require.NoError(t, err)
+				require.Empty(t, spawned)
+			},
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			c.run(t)

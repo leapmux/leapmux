@@ -158,7 +158,7 @@ leapmux workspace move <workspace> [flags]
 
 | Flag | Description |
 |---|---|
-| `--section string` | destination sidebar section (id, prefix, or name) (required) |
+| `--section string` | destination sidebar section (id, prefix, or name; default: current section) |
 | `--first` | put the workspace first in the section |
 | `--last` | put the workspace last in the section |
 | `--before string` | put the workspace before this workspace in the section |
@@ -166,7 +166,7 @@ leapmux workspace move <workspace> [flags]
 
 ```sh
 leapmux workspace move 9f3kQ2aB --section "Client Work" --last
-leapmux workspace move 9f3kQ2aB --section "In progress" --first
+leapmux workspace move 9f3kQ2aB --first
 ```
 
 ### `leapmux workspace delete`

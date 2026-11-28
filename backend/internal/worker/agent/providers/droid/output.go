@@ -1068,28 +1068,35 @@ func (a *Agent) settleStartup(err error) {
 	}
 }
 
-// adoptSessionID records the new or loaded session identity and settings.
+// adoptSessionID records the new, loaded, or forked session identity and settings.
 func (a *Agent) adoptSessionID(env *droidEnvelope) error {
 	var result struct {
-		SessionID       string              `json:"sessionId"`
+		SessionID string `json:"sessionId"`
+		Session   struct {
+			ID string `json:"id"`
+		} `json:"session"`
 		Settings        droidNativeSettings `json:"settings"`
 		AvailableModels []droidCatalogModel `json:"availableModels"`
 	}
 	if err := json.Unmarshal(env.Result, &result); err != nil {
 		return fmt.Errorf("read droid startup result: %w", err)
 	}
+	reportedID := result.SessionID
+	if reportedID == "" {
+		reportedID = result.Session.ID
+	}
 	models := make([]droidModel, 0, len(result.AvailableModels))
 	for _, m := range result.AvailableModels {
 		models = append(models, droidModelFromNative(m))
 	}
 	a.Mu.Lock()
-	if a.sessionID != "" && result.SessionID != "" && a.sessionID != result.SessionID {
+	if a.sessionID != "" && reportedID != "" && a.sessionID != reportedID {
 		expected := a.sessionID
 		a.Mu.Unlock()
-		return fmt.Errorf("droid startup returned session %q instead of %q", result.SessionID, expected)
+		return fmt.Errorf("droid startup returned session %q instead of %q", reportedID, expected)
 	}
 	if a.sessionID == "" {
-		a.sessionID = result.SessionID
+		a.sessionID = reportedID
 	}
 	sessionID := a.sessionID
 	if sessionID == "" {

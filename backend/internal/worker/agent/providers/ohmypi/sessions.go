@@ -1,17 +1,24 @@
 package ohmypi
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // omp writes one JSONL file per session:
@@ -454,4 +461,175 @@ func parseSessionHead(lines [][]byte) (sessionHead, bool) {
 	}
 	head.title = strings.TrimSpace(*slot.Title)
 	return head, true
+}
+
+const (
+	ompSessionTimestampLayout     = "2006-01-02T15:04:05.000Z"
+	ompSessionFileTimestampLayout = "2006-01-02T15-04-05-000Z"
+)
+
+// forkOhMyPiSessionFile atomically clones an Oh My Pi JSONL session file into
+// the target working directory's session directory with a fresh UUID,
+// timestamp, canonical target cwd, and parentSession pointer while preserving
+// the fixed-size title slot (line 1) and all subsequent JSONL entry lines
+// verbatim. It returns the absolute path of the newly written session file.
+func forkOhMyPiSessionFile(q agent.StoredSessionQuery, forkFromHandle, srcWorkingDir, targetWorkingDir string) (string, error) {
+	resolved, err := (ompProvider{}).ResolveResumeHandle(forkFromHandle, q.Home())
+	if err != nil {
+		return "", fmt.Errorf("cannot fork Oh My Pi session %q: invalid session handle: %w", forkFromHandle, err)
+	}
+	targetWorkingDir = strings.TrimSpace(targetWorkingDir)
+	if targetWorkingDir == "" {
+		return "", errors.New("cannot fork Oh My Pi session: target working directory is empty")
+	}
+
+	srcPath, err := locateSessionFile(q, resolved, cmp.Or(strings.TrimSpace(srcWorkingDir), targetWorkingDir), targetWorkingDir)
+	if err != nil {
+		return "", err
+	}
+
+	raw, err := os.ReadFile(srcPath)
+	if err != nil {
+		return "", fmt.Errorf("read Oh My Pi source session %q: %w", srcPath, err)
+	}
+
+	firstLine, afterFirst := splitFirstLine(raw)
+	if len(firstLine) == 0 {
+		return "", fmt.Errorf("source Oh My Pi session %q is empty", srcPath)
+	}
+	var firstObj map[string]any
+	if err := json.Unmarshal(firstLine, &firstObj); err != nil {
+		return "", fmt.Errorf("parse Oh My Pi session record in %q: %w", srcPath, err)
+	}
+
+	var (
+		titleLine []byte
+		header    map[string]any
+		rest      []byte
+	)
+	switch typ, _ := firstObj["type"].(string); typ {
+	case "title":
+		titleLine = firstLine
+		secondLine, afterSecond := splitFirstLine(afterFirst)
+		if len(secondLine) == 0 {
+			return "", fmt.Errorf("source Oh My Pi session %q has no session header after title slot", srcPath)
+		}
+		if err := json.Unmarshal(secondLine, &header); err != nil {
+			return "", fmt.Errorf("parse Oh My Pi session header in %q: %w", srcPath, err)
+		}
+		if hType, _ := header["type"].(string); hType != "session" {
+			return "", fmt.Errorf("source Oh My Pi session %q line 2 is not a session header", srcPath)
+		}
+		rest = afterSecond
+	case "session":
+		header = firstObj
+		rest = afterFirst
+	default:
+		return "", fmt.Errorf("source Oh My Pi session %q does not start with a title slot or session header", srcPath)
+	}
+
+	newUUID, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("create forked Oh My Pi session ID: %w", err)
+	}
+	newID := newUUID.String()
+	now := time.Now().UTC()
+
+	header["id"] = newID
+	header["timestamp"] = now.Format(ompSessionTimestampLayout)
+	header["cwd"] = canonicalPath(targetWorkingDir)
+	header["parentSession"] = srcPath
+
+	encodedHeader, err := json.Marshal(header)
+	if err != nil {
+		return "", fmt.Errorf("encode forked Oh My Pi session header: %w", err)
+	}
+
+	var out bytes.Buffer
+	out.Grow(len(titleLine) + 1 + len(encodedHeader) + 1 + len(rest))
+	if len(titleLine) > 0 {
+		out.Write(titleLine)
+		out.WriteByte('\n')
+	}
+	out.Write(encodedHeader)
+	out.WriteByte('\n')
+	out.Write(rest)
+
+	targetDir := sessionDir(q, targetWorkingDir)
+	if targetDir == "" {
+		return "", errors.New("cannot resolve Oh My Pi target session directory")
+	}
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		return "", fmt.Errorf("create Oh My Pi session directory %q: %w", targetDir, err)
+	}
+	dstPath := filepath.Join(targetDir, now.Format(ompSessionFileTimestampLayout)+"_"+newID+".jsonl")
+	if err := atomicfile.WriteFile(dstPath, out.Bytes(), 0o600); err != nil {
+		return "", fmt.Errorf("write forked Oh My Pi session %q: %w", dstPath, err)
+	}
+	return dstPath, nil
+}
+
+func locateSessionFile(q agent.StoredSessionQuery, resolved, srcWorkingDir, targetWorkingDir string) (string, error) {
+	if filepath.IsAbs(resolved) || strings.HasSuffix(resolved, ".jsonl") || strings.ContainsAny(resolved, `/\`) {
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return "", fmt.Errorf("stat source Oh My Pi session file %q: %w", resolved, err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("source Oh My Pi session %q is not a regular file", resolved)
+		}
+		return resolved, nil
+	}
+
+	var dirs []string
+	if srcDir := sessionDir(q, srcWorkingDir); srcDir != "" {
+		dirs = append(dirs, srcDir)
+	}
+	if targetDir := sessionDir(q, targetWorkingDir); targetDir != "" && (len(dirs) == 0 || targetDir != dirs[0]) {
+		dirs = append(dirs, targetDir)
+	}
+	if len(dirs) == 0 {
+		return "", errors.New("cannot resolve Oh My Pi session directory")
+	}
+	for _, dir := range dirs {
+		if path, ok := findSessionByID(dir, resolved); ok {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("source Oh My Pi session %q not found", resolved)
+}
+
+func findSessionByID(dir, sessionID string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	for _, entry := range entries {
+		if !isSessionFile(entry) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		stem := strings.TrimSuffix(entry.Name(), ".jsonl")
+		if stem == sessionID {
+			return path, true
+		}
+		if idx := strings.LastIndex(stem, "_"); idx >= 0 && stem[idx+1:] == sessionID {
+			return path, true
+		}
+		lines, _, err := sessionstore.JSONLHead(path, 4096)
+		if err != nil || len(lines) == 0 {
+			continue
+		}
+		if head, ok := parseSessionHead(lines); ok && strings.TrimSpace(head.header.ID) == sessionID {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+func splitFirstLine(data []byte) (line, rest []byte) {
+	if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+		return bytes.TrimSuffix(data[:idx], []byte{'\r'}), data[idx+1:]
+	}
+	return bytes.TrimSuffix(data, []byte{'\r'}), nil
 }

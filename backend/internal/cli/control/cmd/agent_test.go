@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
@@ -671,4 +675,534 @@ func TestAgentAnswerCommand_RegistersTextFlag(t *testing.T) {
 	require.NotNil(t, textFlag, "agent answer must register --text")
 	assert.Equal(t, "stringArray", textFlag.Value.Type())
 	assert.Contains(t, cmd.Long, "--text")
+}
+
+// launchWaitDispatcher answers OpenAgent, WatchEvents, ListAgents,
+// EnqueueAgentInput, ListAgentInputQueue, and ListAgentMessages so `agent open`
+// and `agent fork` with `--message ... --wait` run end to end over IPC.
+type launchWaitDispatcher struct {
+	mu      sync.Mutex
+	agents  map[string]*leapmuxv1.AgentInfo
+	reply   string
+	wsID    string
+	tileID  string
+	lastReq *leapmuxv1.OpenAgentRequest
+}
+
+func (d *launchWaitDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, rw channel.ResponseWriter) {
+	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure:
+		var watchReq leapmuxv1.WatchEventsRequest
+		_ = proto.Unmarshal(req.GetPayload(), &watchReq)
+		ack, _ := proto.Marshal(&leapmuxv1.WatchEventsResponse{
+			Event: &leapmuxv1.WatchEventsResponse_UpdateAck{
+				UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: watchReq.GetUpdateId()},
+			},
+		})
+		_ = rw.SendStream(&leapmuxv1.InnerStreamMessage{Payload: ack})
+		<-ctx.Done()
+	case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
+		var in leapmuxv1.OpenAgentRequest
+		_ = proto.Unmarshal(req.GetPayload(), &in)
+		tabID := in.GetCreation().GetTabId()
+		info := &leapmuxv1.AgentInfo{
+			Id:                     tabID,
+			WorkerId:               "worker-A",
+			Title:                  in.GetTitle(),
+			AgentProvider:          in.GetAgentProvider(),
+			ActivityState:          leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+			PublishedActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		}
+		d.mu.Lock()
+		d.lastReq = &in
+		if d.agents == nil {
+			d.agents = map[string]*leapmuxv1.AgentInfo{}
+		}
+		d.agents[tabID] = info
+		d.mu.Unlock()
+		writeProtoResponse(rw, &leapmuxv1.OpenAgentResponse{
+			Agent: info,
+			Publication: &leapmuxv1.PublishedTab{
+				Tab:         &leapmuxv1.TabIdent{TabId: tabID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+				WorkspaceId: d.wsID,
+				TileId:      d.tileID,
+				Position:    "a1",
+			},
+		})
+	case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
+		var in leapmuxv1.ListAgentsRequest
+		_ = proto.Unmarshal(req.GetPayload(), &in)
+		d.mu.Lock()
+		var out []*leapmuxv1.AgentInfo
+		for _, id := range in.GetTabIds() {
+			if a, ok := d.agents[id]; ok {
+				out = append(out, a)
+			}
+		}
+		d.mu.Unlock()
+		writeProtoResponse(rw, &leapmuxv1.ListAgentsResponse{Agents: out})
+	case leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure:
+		writeProtoResponse(rw, &leapmuxv1.EnqueueAgentInputResponse{AcceptedSeq: 1})
+	case leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure:
+		writeProtoResponse(rw, &leapmuxv1.ListAgentInputQueueResponse{
+			Snapshot: &leapmuxv1.AgentInputQueueSnapshot{},
+			InputReply: &leapmuxv1.AgentInputTurnReply{
+				AcceptedSeq: 1,
+				Outcome:     leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+			},
+		})
+	case leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure:
+		replyText := d.reply
+		writeProtoResponse(rw, &leapmuxv1.ListAgentMessagesResponse{
+			Messages: []*leapmuxv1.AgentChatMessage{
+				{
+					Seq:       2,
+					Id:        "reply-2",
+					Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+					ReplyText: &replyText,
+				},
+			},
+		})
+	default:
+		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+	}
+}
+
+func TestAgentOpenAndFork_WaitQuietPrintsAgentIDAndTextEmitsNotice(t *testing.T) {
+	const wsID = "ws-1"
+	tileID := fullTestID("tl-wait")
+	srcID := fullTestID("ag-srcw")
+
+	newEnv := func(t *testing.T) *launchWaitDispatcher {
+		t.Helper()
+		srcTab := &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabId: srcID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			WorkspaceId: wsID,
+			TileId:      tileID,
+			WorkerId:    "worker-A",
+		}
+		hub := &recordingHub{
+			workers:      workerRows("worker-A"),
+			locateTab:    srcTab,
+			tabs:         []*leapmuxv1.WorkspaceTab{srcTab},
+			materialized: newStateBuilder().workspace(wsID, tileID).leafNode(tileID, "", "m").st,
+		}
+		disp := &launchWaitDispatcher{
+			wsID:   wsID,
+			tileID: tileID,
+			reply:  "All green.",
+			agents: map[string]*leapmuxv1.AgentInfo{
+				srcID: {
+					Id:                     srcID,
+					Title:                  "Source",
+					WorkerId:               "worker-A",
+					WorkingDir:             "/repo",
+					AgentProvider:          leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+					ActivityState:          leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+					PublishedActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+				},
+			},
+		}
+		startSpawnIPC(t, hub, disp)
+		return disp
+	}
+
+	t.Run("agent open --message --wait -q prints created agent ID", func(t *testing.T) {
+		newEnv(t)
+		const reqID = "open-wait-q"
+		wantID := requestScopedID(reqID, requestScopeAgentOpen, "worker-A")
+		inputID := requestScopedID(reqID, requestScopeAgentSend, wantID)
+
+		o := runControlText(t, "agent", "open", "--provider", "claude", "--workspace", wsID, "--tile", tileID,
+			"--worker", "worker-A", "--message", "Run tests", "--wait", "--request-id", reqID, "--no-focus", "-q")
+		require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+		assert.Equal(t, wantID+"\n", o.Stdout)
+		assert.NotContains(t, o.Stdout, inputID)
+		assert.Empty(t, o.Stderr)
+	})
+
+	t.Run("agent open --message --wait text mode emits opened agent notice on stderr", func(t *testing.T) {
+		newEnv(t)
+		const reqID = "open-wait-text"
+		wantID := requestScopedID(reqID, requestScopeAgentOpen, "worker-A")
+
+		o := runControlText(t, "agent", "open", "--provider", "claude", "--workspace", wsID, "--tile", tileID,
+			"--worker", "worker-A", "--message", "Run tests", "--wait", "--request-id", reqID, "--no-focus")
+		require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+		assert.Equal(t, "All green.\n", o.Stdout)
+		assert.Contains(t, o.Stderr, "opened agent "+cli.ShortID(wantID))
+	})
+
+	t.Run("agent fork --message --wait -q and text mode emit forked agent ID", func(t *testing.T) {
+		newEnv(t)
+		const reqID = "fork-wait-q"
+		wantID := requestScopedID(reqID, requestScopeAgentFork, "worker-A")
+
+		quiet := runControlText(t, "agent", "fork", srcID, "--message", "Check diff", "--wait", "--request-id", reqID, "--no-focus", "-q")
+		require.Equal(t, cli.ExitOK, quiet.Code, quiet.Stderr)
+		assert.Equal(t, wantID+"\n", quiet.Stdout)
+		assert.Empty(t, quiet.Stderr)
+
+		text := runControlText(t, "agent", "fork", srcID, "--message", "Check diff", "--wait", "--request-id", "fork-wait-text", "--no-focus")
+		require.Equal(t, cli.ExitOK, text.Code, text.Stderr)
+		assert.Equal(t, "All green.\n", text.Stdout)
+		wantTextID := requestScopedID("fork-wait-text", requestScopeAgentFork, "worker-A")
+		assert.Contains(t, text.Stderr, "forked agent "+cli.ShortID(wantTextID))
+	})
+}
+
+func TestAgentOpen_PositionalPromptAndShortMessageFlag(t *testing.T) {
+	state := newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st
+
+	t.Run("positional prompt and -m populate InitialMessage", func(t *testing.T) {
+		hub, disp := &recordingHub{workers: workerRows("worker-A"), materialized: state}, &creationPublicationDispatcher{}
+		startSpawnIPC(t, hub, disp)
+
+		_ = runControl(t, "agent", "open", "--provider", "claude", "--workspace", "ws-1", "--tile", "root-1",
+			"--worker", "worker-A", "Review the diff").Data(t)
+		_ = runControl(t, "agent", "open", "--provider", "claude", "--workspace", "ws-1", "--tile", "root-1",
+			"--worker", "worker-A", "-m", "Run tests").Data(t)
+
+		calls := disp.recorded()
+		require.Len(t, calls, 2)
+		assert.Equal(t, "Review the diff", calls[0].in.(*leapmuxv1.OpenAgentRequest).GetInitialMessage())
+		assert.Equal(t, "Run tests", calls[1].in.(*leapmuxv1.OpenAgentRequest).GetInitialMessage())
+	})
+
+	t.Run("rejects blank positional prompt and conflicting prompt sources", func(t *testing.T) {
+		hub, disp := &recordingHub{workers: workerRows("worker-A"), materialized: state}, &creationPublicationDispatcher{}
+		startSpawnIPC(t, hub, disp)
+
+		f := runControl(t, "agent", "open", "--provider", "claude", "   ").requireFailure(t, cli.CodeUsage)
+		assert.Equal(t, "prompt is empty", f.Message)
+
+		f = runControl(t, "agent", "open", "--provider", "claude", "Positional", "-m", "Flag").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "not more than one")
+
+		f = runControl(t, "agent", "open", "--provider", "claude", "Positional", "--file", "prompt.md").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "not more than one")
+		assert.Empty(t, disp.recorded())
+	})
+
+	t.Run("positional dash reads stdin, rejects whitespace-only stdin, and guards shared stdin with --output-schema -", func(t *testing.T) {
+		hub, disp := &recordingHub{workers: workerRows("worker-A"), materialized: state}, &creationPublicationDispatcher{}
+		startSpawnIPC(t, hub, disp)
+
+		_ = runControlIn(t, "Prompt from stdin\n", "agent", "open", "--provider", "claude", "--workspace", "ws-1", "--tile", "root-1",
+			"--worker", "worker-A", "-", "--json").Data(t)
+		calls := disp.recorded()
+		require.Len(t, calls, 1)
+		assert.Equal(t, "Prompt from stdin\n", calls[0].in.(*leapmuxv1.OpenAgentRequest).GetInitialMessage())
+
+		f := runControlIn(t, "   \n\t ", "agent", "open", "--provider", "claude", "-", "--json").requireFailure(t, cli.CodeUsage)
+		assert.Equal(t, "prompt is empty", f.Message)
+
+		f = runControlIn(t, "Prompt text\n", "agent", "open", "--provider", "claude", "-", "--wait", "--output-schema", "-", "--json").requireFailure(t, cli.CodeUsage)
+		assert.Contains(t, f.Message, "--output-schema cannot read stdin because the prompt already reads stdin")
+		assert.Len(t, disp.recorded(), 1, "failed stdin validations must not open an agent")
+	})
+}
+
+func TestSpawnedAgentLineage_ParentChildrenAndList(t *testing.T) {
+	t.Run("agentRowOf exposes spawned_by_agent_id, forked_from_agent_id, and supports_fork", func(t *testing.T) {
+		row := agentRowOf(&leapmuxv1.AgentInfo{
+			Id:                "ag-child",
+			SpawnedByAgentId:  "ag-spawner",
+			ForkedFromAgentId: "ag-source",
+			SupportsFork:      true,
+		}, false)
+		assert.Equal(t, "ag-spawner", row.SpawnedByAgentID)
+		assert.Equal(t, "ag-source", row.ForkedFromAgentID)
+		assert.True(t, row.SupportsFork)
+	})
+
+	t.Run("agent list --parent matches both parent_agent_id and spawned_by_agent_id", func(t *testing.T) {
+		leadID := fullTestID("ag-lead")
+		subID := fullTestID("ag-sub")
+		spawnID := fullTestID("ag-spawn")
+		otherID := fullTestID("ag-other")
+
+		hub := &recordingHub{
+			tabs: []*leapmuxv1.WorkspaceTab{
+				{Tab: &leapmuxv1.TabIdent{TabId: leadID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+				{Tab: &leapmuxv1.TabIdent{TabId: subID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+				{Tab: &leapmuxv1.TabIdent{TabId: spawnID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+				{Tab: &leapmuxv1.TabIdent{TabId: otherID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			},
+		}
+		disp := &tabMetadataDispatcher{
+			agents: []*leapmuxv1.AgentInfo{
+				{Id: leadID, Title: "Lead", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE},
+				{Id: subID, Title: "Sub", ParentAgentId: leadID, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE},
+				{Id: spawnID, Title: "Spawned", SpawnedByAgentId: leadID, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE},
+				{Id: otherID, Title: "Other", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE},
+			},
+		}
+		startSpawnIPC(t, hub, disp)
+
+		data := runControl(t, "agent", "list", "--parent", "Lead").Data(t)
+		agents := data["agents"].([]any)
+		require.Len(t, agents, 2)
+		gotIDs := []string{agents[0].(map[string]any)["id"].(string), agents[1].(map[string]any)["id"].(string)}
+		assert.ElementsMatch(t, []string{subID, spawnID}, gotIDs)
+	})
+
+	t.Run("parent selector resolves cross-worker spawned_by_agent_id via Hub LocateTab", func(t *testing.T) {
+		spawnerID := fullTestID("ag-spawner")
+		childID := fullTestID("ag-spawned")
+
+		dispA := &codedWorkerDispatcher{fn: func(method string, _ []byte) (proto.Message, error) {
+			if method == leapmuxv1connect.WorkerAgentServiceListAgentsProcedure {
+				return &leapmuxv1.ListAgentsResponse{
+					Agents: []*leapmuxv1.AgentInfo{{
+						Id:               childID,
+						WorkerId:         "worker-A",
+						SpawnedByAgentId: spawnerID,
+					}},
+				}, nil
+			}
+			return nil, connect.NewError(connect.CodeUnimplemented, method)
+		}}
+		hub := &recordingHub{
+			workers: workerRows("worker-A", "worker-B"),
+			locateTab: &leapmuxv1.WorkspaceTab{
+				Tab:         &leapmuxv1.TabIdent{TabId: spawnerID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+				WorkspaceId: "ws-remote",
+				TileId:      "tile-remote",
+				WorkerId:    "worker-B",
+			},
+		}
+		startSpawnIPC(t, hub, dispA)
+		t.Setenv(controlenv.TabIDVariable, childID)
+		t.Setenv(controlenv.TabTypeVariable, "agent")
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+		s, err := openSession(&cli.Invocation{Context: t.Context(), Command: NewCommand()})
+		require.NoError(t, err)
+		defer s.Close()
+
+		got, err := s.resolveTab(resolve.KindAgent, "parent", resolve.Need{WorkerID: true, WorkspaceID: true})
+		require.NoError(t, err)
+		assert.Equal(t, spawnerID, got.ID)
+		assert.Equal(t, "worker-B", got.WorkerID)
+		assert.Equal(t, "ws-remote", got.WorkspaceID)
+	})
+
+	t.Run("parent selector falls back to calling worker for unopened virtual subagent parent", func(t *testing.T) {
+		parentID := fullTestID("ag-unopen-par")
+		childID := fullTestID("ag-sub-child")
+
+		dispA := &codedWorkerDispatcher{fn: func(method string, _ []byte) (proto.Message, error) {
+			if method == leapmuxv1connect.WorkerAgentServiceListAgentsProcedure {
+				return &leapmuxv1.ListAgentsResponse{
+					Agents: []*leapmuxv1.AgentInfo{{
+						Id:            childID,
+						WorkerId:      "worker-A",
+						ParentAgentId: parentID,
+					}},
+				}, nil
+			}
+			return nil, connect.NewError(connect.CodeUnimplemented, method)
+		}}
+		hub := &recordingHub{workers: workerRows("worker-A")}
+		startSpawnIPC(t, hub, dispA)
+		t.Setenv(controlenv.TabIDVariable, childID)
+		t.Setenv(controlenv.TabTypeVariable, "agent")
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+		s, err := openSession(&cli.Invocation{Context: t.Context(), Command: NewCommand()})
+		require.NoError(t, err)
+		defer s.Close()
+
+		got, err := s.resolveTab(resolve.KindAgent, "parent", resolve.Need{WorkerID: true})
+		require.NoError(t, err)
+		assert.Equal(t, parentID, got.ID)
+		assert.Equal(t, "worker-A", got.WorkerID)
+	})
+
+	t.Run("children selector returns deduplicated union of virtual subagents and spawned peer agents", func(t *testing.T) {
+		parentID := fullTestID("ag-par")
+		virtualID := fullTestID("ag-virt")
+		spawnedID := fullTestID("ag-peer")
+
+		hub := &recordingHub{
+			workers: workerRows("worker-A"),
+			tabs: []*leapmuxv1.WorkspaceTab{
+				{Tab: &leapmuxv1.TabIdent{TabId: parentID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+				{Tab: &leapmuxv1.TabIdent{TabId: virtualID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+				{Tab: &leapmuxv1.TabIdent{TabId: spawnedID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			},
+		}
+		disp := &interruptTestDispatcher{
+			agents: []*leapmuxv1.AgentInfo{
+				{Id: parentID, WorkerId: "worker-A"},
+				{Id: virtualID, ParentAgentId: parentID, WorkerId: "worker-A"},
+				{Id: spawnedID, SpawnedByAgentId: parentID, WorkerId: "worker-A"},
+			},
+		}
+		startSpawnIPC(t, hub, disp)
+		t.Setenv(controlenv.TabIDVariable, parentID)
+		t.Setenv(controlenv.TabTypeVariable, "agent")
+		t.Setenv(controlenv.WorkerIDVariable, "worker-A")
+
+		data := runControl(t, "agent", "interrupt", "children").Data(t)
+		agents := data["agents"].([]any)
+		require.Len(t, agents, 2)
+		assert.Equal(t, virtualID, agents[0].(map[string]any)["id"])
+		assert.Equal(t, spawnedID, agents[1].(map[string]any)["id"])
+	})
+}
+
+func TestAgentCommand_HelpGroupsAndConsistentShortFlags(t *testing.T) {
+	root := NewCommand()
+
+	t.Run("every agent subcommand is assigned to a command group with no Other bucket", func(t *testing.T) {
+		agentCmd, _, err := root.Find([]string{"agent"})
+		require.NoError(t, err)
+		for _, child := range agentCmd.Commands() {
+			if !child.IsAvailableCommand() {
+				continue
+			}
+			assert.NotEmptyf(t, cli.CommandGroupOf(child), "agent subcommand %q must belong to a command group", child.Name())
+		}
+		helpOut := runControlText(t, "agent", "--help")
+		require.Equal(t, cli.ExitOK, helpOut.Code, helpOut.Stderr)
+		helpText := helpOut.Stdout
+		assert.Contains(t, helpText, "Core:")
+		assert.Contains(t, helpText, "Prompts & Control:")
+		assert.Contains(t, helpText, "Transcript & Inspection:")
+		assert.Contains(t, helpText, "Queue & Goals:")
+		assert.Contains(t, helpText, "Discovery:")
+		assert.NotContains(t, helpText, "\nOther:\n")
+	})
+
+	t.Run("consistent shorthand flags are registered across commands", func(t *testing.T) {
+		checks := []struct {
+			path      []string
+			flagName  string
+			shorthand string
+		}{
+			{[]string{"agent", "open"}, "message", "m"},
+			{[]string{"agent", "fork"}, "message", "m"},
+			{[]string{"agent", "messages"}, "follow", "f"},
+			{[]string{"agent", "messages"}, "limit", "n"},
+			{[]string{"agent", "search"}, "limit", "n"},
+			{[]string{"file", "search"}, "limit", "n"},
+			{[]string{"file", "glob"}, "limit", "n"},
+			{[]string{"events"}, "limit", "n"},
+			{[]string{"terminal", "read"}, "lines", "n"},
+			{[]string{"terminal", "read"}, "follow", "f"},
+			{[]string{"terminal", "quake", "read"}, "lines", "n"},
+			{[]string{"terminal", "quake", "read"}, "follow", "f"},
+		}
+		for _, tc := range checks {
+			cmd, _, err := root.Find(tc.path)
+			require.NoErrorf(t, err, "find %v", tc.path)
+			f := cmd.Flags().Lookup(tc.flagName)
+			require.NotNilf(t, f, "%v missing --%s", tc.path, tc.flagName)
+			assert.Equalf(t, tc.shorthand, f.Shorthand, "%v --%s shorthand", tc.path, tc.flagName)
+		}
+	})
+
+	t.Run("runtime parsing of -n and -f shorthands across commands", func(t *testing.T) {
+		var searchLimit int32
+		disp := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
+			if method == leapmuxv1connect.WorkerAgentServiceSearchAgentMessagesProcedure {
+				var req leapmuxv1.SearchAgentMessagesRequest
+				require.NoError(t, proto.Unmarshal(body, &req))
+				searchLimit = req.GetLimit()
+				return &leapmuxv1.SearchAgentMessagesResponse{}, nil
+			}
+			return nil, connect.NewError(connect.CodeUnimplemented, method)
+		}}
+		startSpawnIPC(t, &recordingHub{workers: []*leapmuxv1.Worker{{Id: "worker-A", Online: true}}}, disp)
+		_ = runControl(t, "agent", "search", "needle", "-n", "5").Data(t)
+		assert.Equal(t, int32(5), searchLimit)
+
+		evOpts, err := eventsOptionsFor(t, "-n", "5")
+		require.NoError(t, err)
+		assert.Equal(t, 5, evOpts.limit)
+
+		for _, path := range [][]string{
+			{"terminal", "read"},
+			{"terminal", "quake", "read"},
+		} {
+			cmd, _, err := NewCommand().Find(path)
+			require.NoError(t, err)
+			require.NoError(t, cmd.ParseFlags([]string{"-n", "5", "-f"}))
+			inv := &cli.Invocation{Command: cmd}
+			readOpts, err := screenReadOptionsOf(inv)
+			require.NoError(t, err)
+			assert.Equal(t, 5, readOpts.lines, "path %v", path)
+			assert.True(t, boolFlag(inv, "follow"), "path %v", path)
+		}
+	})
+}
+
+func TestNoticeIgnoredHubEnv(t *testing.T) {
+	t.Run("emits notice in text mode on WorkerIPCClient when LEAPMUX_HUB is set", func(t *testing.T) {
+		t.Setenv("LEAPMUX_HUB", "https://hub.example")
+		var stderr bytes.Buffer
+		inv := &cli.Invocation{
+			Printer: &cli.Printer{Out: io.Discard, Err: &stderr, Format: cli.FormatText},
+		}
+		noticeIgnoredHubEnv(inv, &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"})
+		assert.Contains(t, stderr.String(), "connected via tab socket (ignoring LEAPMUX_HUB; pass --hub to override)")
+	})
+
+	t.Run("stays silent in quiet, json, or ndjson mode, for empty/whitespace LEAPMUX_HUB, on HubClient, or with explicit --hub", func(t *testing.T) {
+		t.Setenv("LEAPMUX_HUB", "https://hub.example")
+		for _, tc := range []struct {
+			name   string
+			format cli.Format
+			peer   control.Peer
+		}{
+			{"json", cli.FormatJSON, &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"}},
+			{"ndjson", cli.FormatNDJSON, &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"}},
+			{"quiet", cli.FormatQuiet, &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"}},
+			{"hub client", cli.FormatText, &control.HubClient{HubURL: "https://hub.example"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var stderr bytes.Buffer
+				inv := &cli.Invocation{
+					Printer: &cli.Printer{Out: io.Discard, Err: &stderr, Format: tc.format},
+				}
+				noticeIgnoredHubEnv(inv, tc.peer)
+				assert.Empty(t, stderr.String())
+			})
+		}
+
+		for name, envVal := range map[string]string{
+			"empty LEAPMUX_HUB":      "",
+			"whitespace LEAPMUX_HUB": "   \t ",
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Setenv("LEAPMUX_HUB", envVal)
+				var stderr bytes.Buffer
+				inv := &cli.Invocation{
+					Printer: &cli.Printer{Out: io.Discard, Err: &stderr, Format: cli.FormatText},
+				}
+				noticeIgnoredHubEnv(inv, &control.WorkerIPCClient{SocketURL: "unix:/tmp/tab.sock"})
+				assert.Empty(t, stderr.String())
+			})
+		}
+
+		t.Run("explicit --hub connects via HubClient and emits no ignored-hub notice", func(t *testing.T) {
+			hub := &recordingHub{workers: workerRows("worker-A")}
+			disp := &codedWorkerDispatcher{fn: func(method string, _ []byte) (proto.Message, error) {
+				return nil, connect.NewError(connect.CodeUnimplemented, method)
+			}}
+			h := startHubChannelHarness(t, hub, disp)
+			startSpawnIPC(t, hub, disp)
+			t.Setenv("LEAPMUX_HUB", "https://ignored.example.test")
+
+			viaTab := runControlText(t, "worker", "list")
+			require.Equal(t, cli.ExitOK, viaTab.Code, viaTab.Stderr)
+			assert.Contains(t, viaTab.Stderr, "ignoring LEAPMUX_HUB")
+
+			viaHub := runControlText(t, "worker", "list", "--hub", h.url)
+			require.Equal(t, cli.ExitOK, viaHub.Code, viaHub.Stderr)
+			assert.NotContains(t, viaHub.Stderr, "ignoring LEAPMUX_HUB")
+		})
+	})
 }

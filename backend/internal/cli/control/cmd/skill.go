@@ -23,8 +23,12 @@ type skillTargetMode int
 
 const (
 	skillTargetModeInspect skillTargetMode = iota
-	skillTargetModeInstall
-	skillTargetModeUninstall
+	skillTargetModeMutate
+)
+
+const (
+	localSkillTargetUsage = "local target directory: auto (default; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:<path>; repeat for multiple"
+	skillTargetUsage      = "target directory: auto (default locally; detects installed targets: agents, plus claude, codex, cursor, gemini when present), agents, claude, codex, cursor, gemini, or dir:<path> (local only); repeat for multiple"
 )
 
 func newSkillCommand() *cobra.Command {
@@ -46,6 +50,24 @@ func newSkillCommand() *cobra.Command {
 		Run:      runSkillShow,
 	})
 	cli.DisallowInheritedFlags(showCmd, "hub")
+
+	diffCmd := cli.NewLeaf(cli.Leaf{
+		Use:   "diff [skill]...",
+		Short: "Show unified diffs between installed skills and the bundled catalog",
+		Args:  map[string]string{"skill": "bundled skill names to diff (omit to diff installed skills)"},
+		Examples: []cli.Example{
+			{Comment: "Show local edits or outdated files for installed skills.", Command: "leapmux skill diff"},
+			{Comment: "Diff one bundled skill across auto-detected targets.", Command: "leapmux skill diff leapmux"},
+			{Comment: "Diff every bundled skill in the current repository.", Command: "leapmux skill diff --all --scope project"},
+		},
+		Flags: func(fs *pflag.FlagSet) {
+			addLocalSkillScopeFlags(fs, localSkillTargetUsage)
+			fs.Bool("all", false, "include every bundled skill, including uninstalled skills")
+		},
+		Complete: completeSkillNames,
+		Run:      runSkillDiff,
+	})
+	cli.DisallowInheritedFlags(diffCmd, "hub")
 
 	return cli.SetAliases(cli.Group("skill", "Inspect and install LeapMux agent skills locally or on a Worker",
 		cli.NewLeaf(cli.Leaf{
@@ -75,6 +97,7 @@ func newSkillCommand() *cobra.Command {
 			},
 			Run: runSkillStatus,
 		}),
+		diffCmd,
 		cli.NewLeaf(cli.Leaf{
 			Use:     "install [skill]...",
 			Aliases: []string{"add"},
@@ -85,12 +108,14 @@ Codex metadata) into standard coding-agent skill directories so agents (Claude
 Code, Codex, OpenCode, Gemini CLI, Antigravity, Cursor, and others) can invoke
 them directly.
 
-By default, installs into ~/.agents/skills (universal user scope discovered by
-Codex, OpenCode, Gemini CLI, Antigravity, and Cursor). Pass --target
-claude|codex|cursor|gemini|dir:<path> or --scope project to target another
-location (dir:<path> applies to local installation only). Pass --worker <worker>
-to enable and sync skills on a remote Worker over E2EE (with optional
---auto-sync to keep them updated on Worker startup).
+By default, local installs use --target auto, which targets ~/.agents/skills
+(universal user scope discovered by Codex, OpenCode, Gemini CLI, Antigravity,
+and Cursor) plus ~/.claude/skills when ~/.claude exists and any existing
+tool-specific skills directories (codex, cursor, gemini). Pass --target
+auto|agents|claude|codex|cursor|gemini|dir:<path> or --scope project to target
+another location (auto and dir:<path> apply to local installation only). Pass
+--worker <worker> to enable and sync skills on a remote Worker over E2EE (with
+optional --auto-sync to keep them updated on Worker startup).
 
 Installing via the leapmux CLI always matches the installed binary offline;
 installing via "npx skills add leapmux/leapmux" tracks the main branch.
@@ -99,12 +124,12 @@ Locally edited or unmanaged skill files are never overwritten unless --force
 is passed.`,
 			Args: map[string]string{"skill": "bundled skill names to install (or pass --all)"},
 			Examples: []cli.Example{
-				{Comment: "Install all bundled skills into ~/.agents/skills.", Command: "leapmux skill install --all"},
+				{Comment: "Install all bundled skills into auto-detected targets.", Command: "leapmux skill install --all"},
 				{Comment: "Install specific skills into the current repo.", Command: "leapmux skill install leapmux leapmux-review --scope project"},
 				{Comment: "Enable and auto-sync all skills on a remote Worker.", Command: "leapmux skill install --all --worker name:build-box --auto-sync"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				addSkillScopeFlags(fs, skillTargetModeInstall)
+				addSkillScopeFlags(fs, skillTargetModeMutate)
 				fs.Bool("all", false, "select every bundled skill")
 				fs.Bool("force", false, "overwrite locally modified or unmanaged skill files")
 				fs.Bool("auto-sync", false, "with --worker, keep enabled skills refreshed automatically on Worker startup")
@@ -123,9 +148,10 @@ is passed.`,
 			Examples: []cli.Example{
 				{Command: "leapmux skill uninstall leapmux-council"},
 				{Command: "leapmux skill uninstall --all --worker name:build-box"},
+				{Comment: "Remove a target directory from a remote Worker.", Command: "leapmux skill uninstall --worker name:build-box --target claude"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				addSkillScopeFlags(fs, skillTargetModeUninstall)
+				addSkillScopeFlags(fs, skillTargetModeMutate)
 				fs.Bool("all", false, "select every bundled skill")
 				fs.Bool("force", false, "also remove locally modified or unmanaged skill files")
 				fs.Bool("no-auto-sync", false, "with --worker, disable automatic skill refresh on Worker startup")
@@ -136,17 +162,18 @@ is passed.`,
 	), "skills")
 }
 
-func addSkillScopeFlags(fs *pflag.FlagSet, mode skillTargetMode) {
-	switch mode {
-	case skillTargetModeInspect:
-		fs.String("target", string(skills.TargetAgents), `local target directory: agents (~/.agents/skills), claude, codex, cursor, gemini, or dir:<path>`)
-	case skillTargetModeInstall:
-		fs.StringArray("target", nil, `target directory: agents (default, ~/.agents/skills), claude, codex, cursor, gemini, or dir:<path> (local only); repeat for multiple`)
-	case skillTargetModeUninstall:
-		fs.StringArray("target", nil, `local target directory: agents (default, ~/.agents/skills), claude, codex, cursor, gemini, or dir:<path>; repeat for multiple (omit with --worker)`)
-	}
+func addLocalSkillScopeFlags(fs *pflag.FlagSet, targetUsage string) {
+	fs.StringArray("target", nil, targetUsage)
 	fs.String("scope", "user", "local install scope: user (home directory) or project (current working directory)")
 	cli.SetEnum(fs, "scope", "user", "project")
+}
+
+func addSkillScopeFlags(fs *pflag.FlagSet, mode skillTargetMode) {
+	usage := skillTargetUsage
+	if mode == skillTargetModeInspect {
+		usage = localSkillTargetUsage
+	}
+	addLocalSkillScopeFlags(fs, usage)
 	// Register --worker without an environment default so commands inside a
 	// LeapMux tab default to the local machine unless the caller passes --worker.
 	fs.String(workerFlag, "", `the Worker to inspect or manage skills on: an id, a unique id prefix, "name:<name>" or "self"; omit for local machine`)
@@ -169,24 +196,41 @@ type skillTargetStatusRow struct {
 	Path             string `json:"path,omitempty"`
 }
 
+type skillTargetStatusRows []skillTargetStatusRow
+
+func (rows skillTargetStatusRows) TextValue() string {
+	if len(rows) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		parts = append(parts, cli.SanitizeSingleLine(row.Target)+":"+cli.SanitizeSingleLine(row.State))
+	}
+	return strings.Join(parts, ", ")
+}
+
 type skillRow struct {
-	Name             string                 `json:"name" table:"SKILL"`
-	State            string                 `json:"state" table:"STATE,state"`
-	Enabled          *bool                  `json:"enabled,omitempty" table:"ENABLED"`
-	InstalledVersion string                 `json:"installed_version,omitempty" table:"INSTALLED"`
-	BundledVersion   string                 `json:"bundled_version" table:"BUNDLED"`
-	Description      string                 `json:"description" table:"DESCRIPTION"`
-	Path             string                 `json:"path,omitempty"`
-	References       []string               `json:"references,omitempty"`
-	Targets          []skillTargetStatusRow `json:"targets,omitempty"`
+	Name             string                `json:"name" table:"SKILL"`
+	State            string                `json:"state" table:"STATE,state"`
+	Targets          skillTargetStatusRows `json:"targets,omitempty" table:"TARGETS"`
+	Enabled          *bool                 `json:"enabled,omitempty" table:"ENABLED"`
+	InstalledVersion string                `json:"installed_version,omitempty" table:"INSTALLED"`
+	BundledVersion   string                `json:"bundled_version" table:"BUNDLED"`
+	Description      string                `json:"description" table:"DESCRIPTION"`
+	Path             string                `json:"path,omitempty"`
+	References       []string              `json:"references,omitempty"`
 }
 
 type skillRows []skillRow
 
 func (rows skillRows) DefaultHiddenColumns() []string {
+	hasTargets := false
 	hasEnabled := false
 	hasInstalled := false
 	for _, row := range rows {
+		if len(row.Targets) > 1 {
+			hasTargets = true
+		}
 		if row.Enabled != nil {
 			hasEnabled = true
 		}
@@ -195,6 +239,9 @@ func (rows skillRows) DefaultHiddenColumns() []string {
 		}
 	}
 	var hidden []string
+	if !hasTargets {
+		hidden = append(hidden, "targets")
+	}
 	if !hasEnabled {
 		hidden = append(hidden, "enabled")
 	}
@@ -374,6 +421,84 @@ func (r skillMutationResult) QuietLines() []string {
 	return out
 }
 
+type skillDiffResult struct {
+	Scope   string             `json:"scope"`
+	Targets []string           `json:"targets"`
+	Diffs   []skills.SkillDiff `json:"diffs"`
+}
+
+func (r skillDiffResult) RenderText(w io.Writer) error {
+	printed := 0
+	for _, d := range r.Diffs {
+		if d.State == skills.StateUpToDate && len(d.Files) == 0 {
+			continue
+		}
+		if printed > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		printed++
+		target := d.Target
+		if target == "" && len(r.Targets) > 0 {
+			target = r.Targets[0]
+		}
+		if _, err := fmt.Fprintf(w, "=== %s (%s, %s) ===\n",
+			cli.SanitizeSingleLine(d.Name),
+			cli.SanitizeSingleLine(target),
+			cli.SanitizeSingleLine(string(d.State)),
+		); err != nil {
+			return err
+		}
+		if d.State == skills.StateNotInstalled {
+			if _, err := fmt.Fprintf(w, "not installed (%s)\n", cli.SanitizeSingleLine(d.Path)); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(d.Files) == 0 {
+			if _, err := fmt.Fprintf(w, "status: %s\n", cli.SanitizeSingleLine(string(d.State))); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, f := range d.Files {
+			if f.Diff != "" {
+				if _, err := io.WriteString(w, f.Diff); err != nil {
+					return err
+				}
+				if !strings.HasSuffix(f.Diff, "\n") {
+					if _, err := fmt.Fprintln(w); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "%s: %s\n", cli.SanitizeSingleLine(f.Status), cli.SanitizeSingleLine(f.RelPath)); err != nil {
+				return err
+			}
+		}
+	}
+	if printed == 0 {
+		_, err := fmt.Fprintln(w, "All installed skills match the bundled catalog.")
+		return err
+	}
+	return nil
+}
+
+func (r skillDiffResult) QuietLines() []string {
+	out := make([]string, 0, len(r.Diffs))
+	for _, d := range r.Diffs {
+		if d.State == skills.StateUpToDate && len(d.Files) == 0 {
+			continue
+		}
+		if !slices.Contains(out, d.Name) {
+			out = append(out, d.Name)
+		}
+	}
+	return out
+}
+
 func resolveLocalSkillBaseDir(scope string) (baseDir string, normScope string, err error) {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case "", "user":
@@ -395,7 +520,7 @@ func resolveLocalSkillBaseDir(scope string) (baseDir string, normScope string, e
 
 func resolveLocalSkillTargets(inv *cli.Invocation, targets []string, forceVerb string) (scope string, dirs []string, labels []string, err error) {
 	if len(targets) == 0 {
-		targets = []string{string(skills.TargetAgents)}
+		targets = []string{string(skills.TargetAuto)}
 	}
 	hasCustom := false
 	hasStandard := false
@@ -430,7 +555,11 @@ func resolveLocalSkillTargets(inv *cli.Invocation, targets []string, forceVerb s
 func mapSkillDiskError(err error, forceVerb string) error {
 	switch {
 	case errors.Is(err, skills.ErrSkillModified), errors.Is(err, skills.ErrSkillUnmanaged):
-		return cli.Newf(cli.CodeConflict, "%v", err).WithHint("pass --force to %s", forceVerb)
+		cErr := cli.Newf(cli.CodeConflict, "%v", err)
+		if forceVerb != "" {
+			cErr = cErr.WithHint("pass --force to %s", forceVerb)
+		}
+		return cErr
 	case errors.Is(err, skills.ErrUnsafeSymlink):
 		return cli.Newf(cli.CodeConflict, "%v", err)
 	case errors.Is(err, skills.ErrInvalidTarget):
@@ -532,29 +661,54 @@ func fetchSkillList(inv *cli.Invocation) (skillListResult, error) {
 	if inv.Changed("hub") {
 		return skillListResult{}, cli.Usagef("--hub requires --worker")
 	}
-	target := stringFlag(inv, "target")
-	scope, dirs, normTargets, err := resolveLocalSkillTargets(inv, []string{target}, "")
+	targets := inv.StringArray("target")
+	scope, dirs, normTargets, err := resolveLocalSkillTargets(inv, targets, "")
 	if err != nil {
 		return skillListResult{}, err
 	}
-	dir := dirs[0]
-	statuses := skills.InspectAll(dir)
-	rows := make([]skillRow, 0, len(statuses))
-	for _, st := range statuses {
+	byTarget := make([][]skills.SkillStatus, len(dirs))
+	for i, dir := range dirs {
+		byTarget[i] = skills.InspectAll(dir)
+	}
+	primary := byTarget[0]
+	rows := make([]skillRow, 0, len(primary))
+	for i, st := range primary {
+		states := make([]skills.State, len(dirs))
+		targetRows := make(skillTargetStatusRows, len(dirs))
+		for tIdx := range dirs {
+			ts := byTarget[tIdx][i]
+			states[tIdx] = ts.State
+			targetRows[tIdx] = skillTargetStatusRow{
+				Target:           normTargets[tIdx],
+				State:            string(ts.State),
+				InstalledVersion: ts.InstalledVersion,
+				Path:             ts.Path,
+			}
+		}
+		installedVer := st.InstalledVersion
+		if installedVer == "" {
+			for _, tr := range targetRows {
+				if tr.InstalledVersion != "" {
+					installedVer = tr.InstalledVersion
+					break
+				}
+			}
+		}
 		rows = append(rows, skillRow{
 			Name:             st.Name,
-			State:            string(st.State),
-			InstalledVersion: st.InstalledVersion,
+			State:            string(skills.AggregateState(states)),
+			InstalledVersion: installedVer,
 			BundledVersion:   st.BundledVersion,
 			Description:      st.Description,
 			Path:             st.Path,
 			References:       st.References,
+			Targets:          targetRows,
 		})
 	}
 	return skillListResult{
 		Scope:            scope,
 		Targets:          normTargets,
-		PrimarySkillsDir: dir,
+		PrimarySkillsDir: dirs[0],
 		Skills:           rows,
 	}, nil
 }
@@ -569,6 +723,47 @@ func runSkillStatus(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	return skillStatusResult{skillListResult: res}, nil
+}
+
+func runSkillDiff(inv *cli.Invocation) (any, error) {
+	all := boolFlag(inv, "all")
+	args := inv.Variadic("skill")
+	if all && len(args) > 0 {
+		return nil, cli.Usagef("pass skill names or --all, not both")
+	}
+	explicit := all || len(args) > 0
+	var names []string
+	if len(args) > 0 {
+		var err error
+		names, err = resolveCanonicalSkillNames(args)
+		if err != nil {
+			return nil, err
+		}
+	}
+	targets := inv.StringArray("target")
+	scope, dirs, normTargets, err := resolveLocalSkillTargets(inv, targets, "")
+	if err != nil {
+		return nil, err
+	}
+	diffs := make([]skills.SkillDiff, 0)
+	for i, dir := range dirs {
+		dirDiffs, err := skills.DiffAll(dir, names)
+		if err != nil {
+			return nil, mapSkillDiskError(err, "")
+		}
+		for _, d := range dirDiffs {
+			d.Target = normTargets[i]
+			if !explicit && (d.State == skills.StateNotInstalled || (d.State == skills.StateUpToDate && len(d.Files) == 0)) {
+				continue
+			}
+			diffs = append(diffs, d)
+		}
+	}
+	return skillDiffResult{
+		Scope:   scope,
+		Targets: normTargets,
+		Diffs:   diffs,
+	}, nil
 }
 
 func skillListResultFromProto(workerID string, resp *leapmuxv1.GetWorkerSkillsResponse) skillListResult {
@@ -634,6 +829,21 @@ func skillMutationResultFromProto(workerID string, resp *leapmuxv1.UpdateWorkerS
 	}
 }
 
+func resolveCanonicalSkillNames(args []string) ([]string, error) {
+	canonical := make([]string, 0, len(args))
+	for _, name := range args {
+		s, ok := skills.Lookup(name)
+		if !ok {
+			return nil, cli.Newf(cli.CodeNotFound, "unknown skill %q", name).
+				WithHint("available skills: %s", strings.Join(skills.Names(), ", "))
+		}
+		if !slices.Contains(canonical, s.Name) {
+			canonical = append(canonical, s.Name)
+		}
+	}
+	return canonical, nil
+}
+
 func selectedSkillNames(inv *cli.Invocation) ([]string, error) {
 	all := boolFlag(inv, "all")
 	args := inv.Variadic("skill")
@@ -647,18 +857,7 @@ func selectedSkillNames(inv *cli.Invocation) ([]string, error) {
 		return nil, cli.Usagef("specify one or more skill names, or pass --all").
 			WithHint("run `leapmux skill list` to see bundled skills")
 	}
-	canonical := make([]string, 0, len(args))
-	for _, name := range args {
-		s, ok := skills.Lookup(name)
-		if !ok {
-			return nil, cli.Newf(cli.CodeNotFound, "unknown skill %q", name).
-				WithHint("available skills: %s", strings.Join(skills.Names(), ", "))
-		}
-		if !slices.Contains(canonical, s.Name) {
-			canonical = append(canonical, s.Name)
-		}
-	}
-	return canonical, nil
+	return resolveCanonicalSkillNames(args)
 }
 
 func parseRemoteSkillNames(inv *cli.Invocation) (all bool, names []string, err error) {
@@ -689,18 +888,18 @@ func runLocalSkillMutation(
 	targets []string,
 	force bool,
 	forceVerb string,
-	apply func(dir string, names []string, opts skills.Options) ([]skills.InstallOutcome, error),
+	apply func(dirs []string, names []string, opts skills.Options) ([][]skills.InstallOutcome, error),
 ) (skillMutationResult, error) {
 	scope, dirs, normTargets, err := resolveLocalSkillTargets(inv, targets, forceVerb)
 	if err != nil {
 		return skillMutationResult{}, err
 	}
+	perTarget, err := apply(dirs, names, skills.Options{Force: force})
+	if err != nil {
+		return skillMutationResult{}, mapSkillDiskError(err, forceVerb)
+	}
 	rows := make([]skillMutationRow, 0, len(dirs)*len(names))
-	for i, dir := range dirs {
-		outcomes, err := apply(dir, names, skills.Options{Force: force})
-		if err != nil {
-			return skillMutationResult{}, mapSkillDiskError(err, forceVerb)
-		}
+	for i, outcomes := range perTarget {
 		for _, o := range outcomes {
 			rows = append(rows, skillMutationRow{
 				Name:   o.Name,
@@ -802,11 +1001,7 @@ func runSkillInstall(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	targets := inv.StringArray("target")
-	if len(targets) == 0 {
-		targets = []string{string(skills.TargetAgents)}
-	}
-	return runLocalSkillMutation(inv, names, targets, force, "overwrite", skills.Install)
+	return runLocalSkillMutation(inv, names, inv.StringArray("target"), force, "overwrite", skills.InstallTargets)
 }
 
 func runSkillUninstall(inv *cli.Invocation) (any, error) {
@@ -825,19 +1020,31 @@ func runSkillUninstall(inv *cli.Invocation) (any, error) {
 	force := boolFlag(inv, "force")
 
 	if workerMode {
-		if inv.Changed("scope") || inv.Changed("target") {
-			return nil, cli.Usagef("--scope and --target apply only to local uninstallation (omit them with --worker)")
+		if inv.Changed("scope") {
+			return nil, cli.Usagef("--scope applies only to local uninstallation (omit it with --worker)")
 		}
 		all, rawNames, err := parseRemoteSkillNames(inv)
 		if err != nil {
 			return nil, err
 		}
-		if !all && len(rawNames) == 0 {
-			return nil, cli.Usagef("specify one or more skill names, or pass --all").
+		var removeTargets []string
+		if inv.Changed("target") {
+			normTargets, tErr := skills.NormalizeTargets(inv.StringArray("target"))
+			if tErr != nil {
+				return nil, cli.Usagef("%v", tErr)
+			}
+			removeTargets = make([]string, len(normTargets))
+			for i, t := range normTargets {
+				removeTargets[i] = string(t)
+			}
+		}
+		if !all && len(rawNames) == 0 && len(removeTargets) == 0 && autoSyncPtr == nil {
+			return nil, cli.Usagef("specify one or more skill names, --all, --target, or --no-auto-sync").
 				WithHint("run `leapmux skill list` to see bundled skills")
 		}
 		req := &leapmuxv1.UpdateWorkerSkillsRequest{
 			RemoveAllSkills: all,
+			RemoveTargets:   removeTargets,
 			AutoSync:        autoSyncPtr,
 			Force:           force,
 			StrictConflicts: !force,
@@ -852,9 +1059,5 @@ func runSkillUninstall(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	targets := inv.StringArray("target")
-	if len(targets) == 0 {
-		targets = []string{string(skills.TargetAgents)}
-	}
-	return runLocalSkillMutation(inv, names, targets, force, "remove", skills.Uninstall)
+	return runLocalSkillMutation(inv, names, inv.StringArray("target"), force, "remove", skills.UninstallTargets)
 }

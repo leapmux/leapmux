@@ -9,7 +9,7 @@ LeapMux integrates {{< agent-provider-count >}} coding-agent providers. Every pr
 
 {{< agent-logos >}}
 
-For day-to-day usage — opening agents, input queueing, steering, permission prompts, mid-session settings, and resuming sessions — see [Coding Agents](/docs/using/coding-agents/). If an installed provider does not appear in the picker, see [Agents & Terminals Troubleshooting](/docs/reference/troubleshooting/agents-and-terminals/).
+For day-to-day usage — opening agents, input queueing, steering, permission prompts, mid-session settings, forking, and resuming sessions — see [Coding Agents](/docs/using/coding-agents/). If an installed provider does not appear in the picker, see [Agents & Terminals Troubleshooting](/docs/reference/troubleshooting/agents-and-terminals/).
 
 ## How this matrix is built
 

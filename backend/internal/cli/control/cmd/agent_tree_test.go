@@ -103,6 +103,120 @@ func TestAgentTreeOverIPC_RendersOpenAndUnopenedDescendants(t *testing.T) {
 	}
 	assert.Equal(t, true, byID[childOpenID]["open_in_tab"])
 	assert.Equal(t, false, byID[childClosedID]["open_in_tab"])
+	assert.Equal(t, "subagent", byID[childOpenID]["relation"])
+	assert.Equal(t, "subagent", byID[childClosedID]["relation"])
+}
+
+func TestAgentTreeOverIPC_DiscoversSpawnedAgentsAndRelations(t *testing.T) {
+	rootID := fullTestID("ag-root")
+	subID := fullTestID("ag-sub")
+	spawnedID := fullTestID("ag-spawn1")
+	grandSpawnedID := fullTestID("ag-spawn2")
+
+	hub := &recordingHub{
+		workers: workerRows("worker-A"),
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID},
+			TileId:      "tile-1",
+			WorkerId:    "worker-A",
+			WorkspaceId: "ws-1",
+		},
+		tabs: []*leapmuxv1.WorkspaceTab{
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: spawnedID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: grandSpawnedID}, WorkerId: "worker-A", WorkspaceId: "ws-1"},
+		},
+	}
+	allAgents := map[string]*leapmuxv1.AgentInfo{
+		rootID: {
+			Id:            rootID,
+			Title:         "Coordinator",
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		},
+		subID: {
+			Id:            subID,
+			Title:         "Virtual Sub",
+			ParentAgentId: rootID,
+			RootAgentId:   rootID,
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		},
+		spawnedID: {
+			Id:                spawnedID,
+			Title:             "Spawned Peer",
+			SpawnedByAgentId:  rootID,
+			ForkedFromAgentId: rootID,
+			AgentProvider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			ActivityState:     leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		},
+		grandSpawnedID: {
+			Id:               grandSpawnedID,
+			Title:            "Nested Spawned",
+			SpawnedByAgentId: spawnedID,
+			AgentProvider:    leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			ActivityState:    leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		},
+	}
+	disp := &codedWorkerDispatcher{fn: func(method string, body []byte) (proto.Message, error) {
+		if method != leapmuxv1connect.WorkerAgentServiceListAgentsProcedure {
+			return nil, connect.NewError(connect.CodeUnimplemented, "unexpected method: "+method)
+		}
+		var req leapmuxv1.ListAgentsRequest
+		require.NoError(t, proto.Unmarshal(body, &req))
+		var out []*leapmuxv1.AgentInfo
+		for _, id := range req.GetTabIds() {
+			if a, ok := allAgents[id]; ok {
+				out = append(out, a)
+			}
+			if req.GetIncludeDescendants() {
+				for _, cand := range allAgents {
+					if cand.GetParentAgentId() == id {
+						out = append(out, cand)
+					}
+				}
+			}
+		}
+		return &leapmuxv1.ListAgentsResponse{Agents: out}, nil
+	}}
+	startSpawnIPC(t, hub, disp)
+
+	data := runControl(t, "agent", "tree", rootID).Data(t)
+	root := data["root"].(map[string]any)
+	assert.Equal(t, rootID, root["id"])
+	_, hasRootRelation := root["relation"]
+	assert.False(t, hasRootRelation)
+
+	children := root["children"].([]any)
+	require.Len(t, children, 2)
+	byID := map[string]map[string]any{}
+	for _, c := range children {
+		m := c.(map[string]any)
+		byID[m["id"].(string)] = m
+	}
+
+	require.Contains(t, byID, subID)
+	assert.Equal(t, "subagent", byID[subID]["relation"])
+	assert.Equal(t, false, byID[subID]["open_in_tab"])
+
+	require.Contains(t, byID, spawnedID)
+	assert.Equal(t, "spawned", byID[spawnedID]["relation"])
+	assert.Equal(t, rootID, byID[spawnedID]["spawned_by_agent_id"])
+	assert.Equal(t, rootID, byID[spawnedID]["forked_from_agent_id"])
+	assert.Equal(t, true, byID[spawnedID]["open_in_tab"])
+
+	grandChildren := byID[spawnedID]["children"].([]any)
+	require.Len(t, grandChildren, 1)
+	gc := grandChildren[0].(map[string]any)
+	assert.Equal(t, grandSpawnedID, gc["id"])
+	assert.Equal(t, "spawned", gc["relation"])
+	assert.Equal(t, spawnedID, gc["spawned_by_agent_id"])
+
+	text := runControlText(t, "agent", "tree", rootID)
+	require.Equal(t, cli.ExitOK, text.Code, text.Stderr)
+	assert.Contains(t, text.Stdout, "[subagent]")
+	assert.Contains(t, text.Stdout, "[spawned]")
+	assert.Contains(t, text.Stdout, "(unopened)")
 }
 
 func TestAgentTreeOverIPC_PropagatesListTabsError(t *testing.T) {

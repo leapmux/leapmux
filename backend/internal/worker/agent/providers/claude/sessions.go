@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // Claude Code writes one JSONL transcript per session at
@@ -466,6 +468,97 @@ func (c *claudeTitleCandidates) take(rec claudeTranscriptRecord) {
 	if rec.LastPrompt != "" {
 		c.lastPrompt = rec.LastPrompt
 	}
+}
+
+// stageClaudeForkTranscript copies the source Claude JSONL transcript into the
+// target working directory's project folder before launching a cross-directory
+// or cross-worktree fork.
+//
+// Claude looks up --resume <id> under `<config dir>/projects/<mangled cwd>/`.
+// When the forked session launches in a different working directory or git
+// worktree, copying the source JSONL into the target project folder lets
+// `claude --resume <id> --fork-session --session-id <new-id>` locate it
+// immediately. The operation is best-effort: if the source file is absent from
+// the standard project folder, or if the target file already exists, it returns
+// nil without modifying anything.
+func stageClaudeForkTranscript(q agent.StoredSessionQuery, srcWorkingDir, targetWorkingDir, forkSessionID string) error {
+	srcWorkingDir = strings.TrimSpace(srcWorkingDir)
+	targetWorkingDir = strings.TrimSpace(targetWorkingDir)
+	if srcWorkingDir == "" || targetWorkingDir == "" || forkSessionID == "" {
+		return nil
+	}
+	// Reject path separators or dot segments so a token accepted by
+	// ValidateSessionID cannot escape the project directory.
+	if strings.ContainsAny(forkSessionID, `/\`) || forkSessionID == "." || forkSessionID == ".." {
+		return nil
+	}
+	configDir := claudeConfigDir(q)
+	if configDir == "" {
+		return nil
+	}
+
+	srcClean := filepath.Clean(srcWorkingDir)
+	targetClean := filepath.Clean(targetWorkingDir)
+	srcMangled := mangleClaudePath(srcClean)
+	targetMangled := mangleClaudePath(targetClean)
+	if srcMangled == targetMangled {
+		return nil
+	}
+
+	var targetProjectDir string
+	if len(targetMangled) <= claudeMangleMaxLength {
+		targetProjectDir = filepath.Join(configDir, claudeProjectsDirName, targetMangled)
+	} else {
+		// Long mangled paths include a CLI-specific hash suffix that we cannot
+		// synthesize for a brand-new directory; only stage when a single matching
+		// directory already exists.
+		existing, err := claudeProjectDirs(q, targetClean)
+		if err != nil || len(existing) != 1 {
+			return nil
+		}
+		targetProjectDir = existing[0]
+	}
+
+	fileName := forkSessionID + ".jsonl"
+	targetPath := filepath.Join(targetProjectDir, fileName)
+	if _, err := os.Stat(targetPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat target Claude transcript %q: %w", targetPath, err)
+	}
+
+	srcDirs, err := claudeProjectDirs(q, srcClean)
+	if err != nil {
+		if errors.Is(err, sessionstore.ErrAbsent) {
+			return nil
+		}
+		return err
+	}
+
+	var srcPath string
+	for _, dir := range srcDirs {
+		candidate := filepath.Join(dir, fileName)
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && info.Mode().IsRegular() {
+			srcPath = candidate
+			break
+		}
+	}
+	if srcPath == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return fmt.Errorf("read source Claude transcript %q: %w", srcPath, err)
+	}
+	if err := os.MkdirAll(targetProjectDir, 0o700); err != nil {
+		return fmt.Errorf("create target Claude project directory %q: %w", targetProjectDir, err)
+	}
+	if err := atomicfile.WriteFile(targetPath, data, 0o600); err != nil {
+		return fmt.Errorf("write staged Claude transcript %q: %w", targetPath, err)
+	}
+	return nil
 }
 
 // best states the title precedence: the title the user set, then the title the

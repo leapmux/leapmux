@@ -15,7 +15,7 @@ weight: 7
 | `leapmux-delegate` | Split an engineering task across parallel agents in isolated git worktrees, wait for completion, triage permission prompts or stalls, review diffs, and clean up. | [`skills/leapmux-delegate/SKILL.md`](/skills/leapmux-delegate/SKILL.md) | [`worker-brief-template.md`](/skills/leapmux-delegate/references/worker-brief-template.md) |
 | `leapmux-review` | Launch a read-only reviewer from a contrasting provider family with structured JSON Schema findings and source verification. | [`skills/leapmux-review/SKILL.md`](/skills/leapmux-review/SKILL.md) | [`review-schemas.md`](/skills/leapmux-review/references/review-schemas.md) |
 | `leapmux-council` | Run two or more high-reasoning agents in parallel for root-cause analysis or architecture planning, with optional anonymous cross-examination. | [`skills/leapmux-council/SKILL.md`](/skills/leapmux-council/SKILL.md) | [`cross-examination.md`](/skills/leapmux-council/references/cross-examination.md) |
-| `leapmux-handoff` | Transfer an active task via `agent fork` (cloning provider, model, options, and working directory into a fresh session) or a fresh `agent open` (switching provider, resetting context, or moving Workers) with a structured briefing. | [`skills/leapmux-handoff/SKILL.md`](/skills/leapmux-handoff/SKILL.md) | [`handoff-template.md`](/skills/leapmux-handoff/references/handoff-template.md) |
+| `leapmux-handoff` | Transfer an active task via `agent fork` (cloning provider session history and Worker transcript, or passing `--fresh` for a clean empty session) or a fresh `agent open` (switching provider or moving Workers) with a structured briefing. | [`skills/leapmux-handoff/SKILL.md`](/skills/leapmux-handoff/SKILL.md) | [`handoff-template.md`](/skills/leapmux-handoff/references/handoff-template.md) |
 | `leapmux-help` | Answer LeapMux setup and troubleshooting questions using live `/llms.txt` documentation and read-only diagnostics with secret redaction. | [`skills/leapmux-help/SKILL.md`](/skills/leapmux-help/SKILL.md) | [`diagnostics-checklist.md`](/skills/leapmux-help/references/diagnostics-checklist.md) |
 
 ## Installing skills
@@ -26,26 +26,27 @@ Choose whichever method fits your workflow — all three install the same bundle
 
 {{< tab name="LeapMux CLI" selected=true >}}
 
-The `leapmux` binary bundles all six skills offline so installed playbooks always match your CLI version:
+The `leapmux` binary bundles all six skills offline so installed playbooks always match your CLI version. Local commands default to `--target auto`, which always manages `~/.agents/skills` and automatically includes `~/.claude/skills` when `~/.claude` exists (plus `~/.codex/skills`, `~/.cursor/skills`, and `~/.gemini/skills` when those directories already exist):
 
 ```sh
-# Install all skills into the universal user directory (~/.agents/skills)
+# Install all skills into auto-detected targets (~/.agents/skills, plus ~/.claude/skills when present)
 leapmux skill install --all
 
-# Install for Claude Code (~/.claude/skills)
-leapmux skill install --all --target claude
+# Target one or more explicit directories: agents, claude, codex, cursor, gemini, or dir:<path>
+leapmux skill install --all --target agents --target gemini
 
-# Other built-in targets: codex, cursor, gemini, or dir:<path>
-leapmux skill install --all --target gemini
-
-# Install specific skills into the current repository (.agents/skills)
+# Install specific skills into the current repository (.agents/skills, plus .claude/skills if present)
 leapmux skill install leapmux leapmux-delegate --scope project
 
 # Install and enable startup auto-sync on a remote Worker
 leapmux skill install --all --worker name:build-box --auto-sync
 
-# Inspect installed status, view a skill, or remove one
+# Stop syncing skills to one target directory on a remote Worker
+leapmux skill uninstall --worker name:build-box --target claude
+
+# Inspect installed status, diff local changes, view a skill, or remove one
 leapmux skill status
+leapmux skill diff
 leapmux skill show leapmux-review
 leapmux skill uninstall leapmux-council
 ```
@@ -91,7 +92,7 @@ Use `leapmux skill install --all` or Preferences auto-sync when you want skills 
 LeapMux tracks installed skill versions and file checksums so updates stay safe:
 
 - **Unmodified managed skills** refresh cleanly on `leapmux skill install` or Worker startup auto-sync while keeping any extra files you added.
-- **Locally edited or pre-existing unmanaged skills** are never overwritten or deleted unless you pass `--force`.
+- **Locally edited or pre-existing unmanaged skills** are never overwritten or deleted unless you pass `--force`. Run `leapmux skill diff` to inspect file-level unified diffs against the bundled catalog before overwriting local edits.
 - **Symlinked skill paths** are refused for writes and removals to prevent modifying files outside the target directory.
 
 ## Machine-readable documentation

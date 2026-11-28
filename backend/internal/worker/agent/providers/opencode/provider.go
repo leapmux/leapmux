@@ -106,6 +106,10 @@ func (opencodeProvider) Classify(raw json.RawMessage) agent.NotificationClassifi
 	return agent.NotificationClassification{}
 }
 
+// SupportsFork reports that OpenCode supports native conversation-history
+// forking via POST /api/session/<id>/fork.
+func (opencodeProvider) SupportsFork() bool { return true }
+
 // ListStoredSessions reads OpenCode's own session store; see sessions.go.
 func (opencodeProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	return opencodeStoredSessions(ctx, q)

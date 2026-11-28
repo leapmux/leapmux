@@ -18,7 +18,7 @@ import (
 )
 
 func newWorktreeCommand() *cobra.Command {
-	readFlags := func(fs *pflag.FlagSet) {
+	workingDirFlags := func(fs *pflag.FlagSet) {
 		addWorkingDirFlag(fs, "a directory inside the git working tree")
 		addWorkerFlag(fs)
 	}
@@ -31,7 +31,7 @@ func newWorktreeCommand() *cobra.Command {
 				{Command: "leapmux worktree list"},
 				{Command: "leapmux worktree list --dir ~/src/app"},
 			},
-			Flags: readFlags,
+			Flags: workingDirFlags,
 			Run:   runGitWorktrees,
 		}),
 		cli.NewLeaf(cli.Leaf{
@@ -58,12 +58,11 @@ tab's checkout.`,
 			Short:   "Create a new linked git worktree on a new branch",
 			Mutates: true,
 			Examples: []cli.Example{
-				{Command: "leapmux worktree create feat/cli-v2 --dir ~/src/app"},
+				{Command: "leapmux worktree create feat/cli-v2"},
 				{Command: "leapmux worktree create feat/cli-v2 --base main --path ~/wt/cli-v2 --dir ~/src/app"},
 			},
 			Flags: func(fs *pflag.FlagSet) {
-				fs.String("dir", "", "repository directory on the worker")
-				cli.MarkRequired(fs, "dir")
+				addWorkingDirFlag(fs, "repository directory on the worker")
 				fs.String("base", "", "base branch or commit to branch from (default: current branch)")
 				fs.String("path", "", "explicit filesystem path for the new worktree (default: worker managed location)")
 				addWorkerFlag(fs)
@@ -86,7 +85,7 @@ tab's checkout.`,
 			Flags: func(fs *pflag.FlagSet) {
 				fs.Bool("force", false, "remove even if the worktree contains modified or untracked files")
 				fs.Bool("delete-branch", false, "also delete the local branch checked out in the removed worktree")
-				fs.String("dir", "", "repository directory when resolving a branch:<branch> selector")
+				addWorkingDirFlag(fs, "repository directory when resolving a branch:<branch> selector")
 				addWorkerFlag(fs)
 			},
 			Run: runGitWorktreeRemove,
@@ -99,7 +98,7 @@ tab's checkout.`,
 				{Command: "leapmux worktree inspect"},
 				{Command: "leapmux worktree inspect ~/wt/cli-v2"},
 			},
-			Flags: readFlags,
+			Flags: workingDirFlags,
 			Run:   runGitWorktreeInspect,
 		})), "wt")
 }
@@ -172,8 +171,8 @@ func ambiguousWorktreeError(raw string, paths []string) error {
 
 func (s *session) worktreeRepoDir(workerID string, selector *leapmuxv1.GitWorktreeSelector) (string, error) {
 	if s.inv.Changed("dir") {
-		dir := strings.TrimSpace(stringFlag(s.inv, "dir"))
-		if dir == "" {
+		dir := stringFlag(s.inv, "dir")
+		if strings.TrimSpace(dir) == "" {
 			return "", cli.Usagef("--dir is empty")
 		}
 		return dir, nil
@@ -181,9 +180,13 @@ func (s *session) worktreeRepoDir(workerID string, selector *leapmuxv1.GitWorktr
 	if selector.GetBranch() == "" {
 		return "", nil
 	}
-	if _, isIPC := s.c.(*control.WorkerIPCClient); isIPC {
-		if dir := tabWorkingDirForWorker(workerID, s.inv.Changed(workerFlag)); dir != "" {
-			return dir, nil
+	explicitWorker := s.inv.Changed(workerFlag)
+	if dir := tabWorkingDirForWorker(workerID, explicitWorker); dir != "" {
+		return dir, nil
+	}
+	if s.canUseLocalCwdFallback(s.inv, isTabEnvWorker(workerID, explicitWorker)) {
+		if cwd, err := os.Getwd(); err == nil && cwd != "" {
+			return cwd, nil
 		}
 	}
 	return "", cli.Usagef("branch selection requires --dir on the selected worker")
@@ -268,20 +271,21 @@ func (r worktreeCreateResult) QuietLines() []string {
 }
 
 func runGitWorktreeCreate(inv *cli.Invocation) (any, error) {
-	dir := strings.TrimSpace(stringFlag(inv, "dir"))
-	if dir == "" {
-		return nil, cli.Usagef("--dir is empty")
+	if err := checkGitDirInput(inv); err != nil {
+		return nil, err
 	}
 	branch := strings.TrimSpace(inv.Arg("branch"))
 	if branch == "" {
 		return nil, cli.Usagef("branch is empty")
 	}
 	var resp leapmuxv1.CreateGitWorktreeResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerGitServiceCreateGitWorktreeProcedure, &leapmuxv1.CreateGitWorktreeRequest{
-		Path:         dir,
-		Branch:       branch,
-		BaseBranch:   stringFlag(inv, "base"),
-		WorktreePath: stringFlag(inv, "path"),
+	if err := callOnWorkerWithDir(inv, leapmuxv1connect.WorkerGitServiceCreateGitWorktreeProcedure, func(dir string) proto.Message {
+		return &leapmuxv1.CreateGitWorktreeRequest{
+			Path:         dir,
+			Branch:       branch,
+			BaseBranch:   stringFlag(inv, "base"),
+			WorktreePath: stringFlag(inv, "path"),
+		}
 	}, &resp); err != nil {
 		return nil, err
 	}

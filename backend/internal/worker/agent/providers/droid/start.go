@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/coder/quartz"
 
@@ -113,18 +116,41 @@ func startProcess(ctx context.Context, opts agent.Options, sink agent.ProviderSe
 
 	if err := a.handshake(opts); err != nil {
 		cleanup()
-		return nil, a.FormatStartupError("initialize_session", err)
+		phase := "initialize_session"
+		if strings.TrimSpace(opts.ForkFromSessionID) != "" {
+			phase = "fork_session"
+		}
+		return nil, a.FormatStartupError(phase, err)
 	}
 	return a, nil
 }
 
-// handshake initializes a new session or loads a saved session, then waits for
-// the native reply before a caller can send input.
+// handshake initializes a new session, loads a saved session, or forks an
+// existing session, then waits for the native reply before a caller can send
+// input.
 func (a *Agent) handshake(opts agent.Options) error {
 	resumeID := strings.TrimSpace(opts.ResumeSessionID)
-	method := droidMethodLoadSession
-	var params any = loadSessionParams{SessionID: resumeID}
-	if resumeID == "" {
+	forkID := strings.TrimSpace(opts.ForkFromSessionID)
+	if resumeID != "" && forkID != "" {
+		return fmt.Errorf("cannot both resume session %q and fork from session %q", resumeID, forkID)
+	}
+	var (
+		method string
+		params any
+	)
+	switch {
+	case forkID != "":
+		forkedID, err := a.forkSessionDuringHandshake(opts, forkID)
+		if err != nil {
+			return err
+		}
+		resumeID = forkedID
+		method = droidMethodLoadSession
+		params = loadSessionParams{SessionID: forkedID}
+	case resumeID != "":
+		method = droidMethodLoadSession
+		params = loadSessionParams{SessionID: resumeID}
+	default:
 		machineID, err := droidMachineID()
 		if err != nil {
 			return err
@@ -180,6 +206,63 @@ func (a *Agent) handshake(opts agent.Options) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// forkSessionDuringHandshake loads the source session into Droid (required
+// because droid.fork_session operates on the active session) and invokes
+// droid.fork_session, returning the newly created session ID without emitting
+// the source session ID to the Worker.
+func (a *Agent) forkSessionDuringHandshake(opts agent.Options, sourceSessionID string) (string, error) {
+	timeout := opts.EffectiveStartupTimeout()
+	if _, err := a.callStartupRPC(droidMethodLoadSession, loadSessionParams{SessionID: sourceSessionID}, timeout); err != nil {
+		return "", fmt.Errorf("load source session %q before fork: %w", sourceSessionID, err)
+	}
+	forkResp, err := a.callStartupRPC(droidMethodForkSession, struct{}{}, timeout)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		NewSessionID string `json:"newSessionId"`
+		SessionID    string `json:"sessionId"`
+		Session      struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(forkResp.Result, &result); err != nil {
+		return "", fmt.Errorf("read droid fork_session result: %w", err)
+	}
+	newID := strings.TrimSpace(result.NewSessionID)
+	if newID == "" {
+		newID = strings.TrimSpace(result.SessionID)
+	}
+	if newID == "" {
+		newID = strings.TrimSpace(result.Session.ID)
+	}
+	if newID == "" {
+		return "", errors.New("droid fork_session returned no new session id")
+	}
+	if newID == sourceSessionID {
+		return "", fmt.Errorf("droid fork_session returned the source session ID %q", sourceSessionID)
+	}
+	return newID, nil
+}
+
+// callStartupRPC sends one JSON-RPC request during startup and awaits its reply.
+func (a *Agent) callStartupRPC(method string, params any, timeout time.Duration) (droidEnvelope, error) {
+	id := a.nextRequestID()
+	reply := a.registerReply(id)
+	defer a.unregisterReply(id)
+	if err := a.writeRequest(id, method, params); err != nil {
+		return droidEnvelope{}, err
+	}
+	resp, err := providerkit.AwaitReply(&a.Process, a.Context(), reply, method, timeout)
+	if err != nil {
+		return droidEnvelope{}, err
+	}
+	if resp.Error != nil {
+		return droidEnvelope{}, resp.Error
+	}
+	return resp, nil
 }
 
 // droidMachineID returns a stable machine identifier. The CLI requires it on

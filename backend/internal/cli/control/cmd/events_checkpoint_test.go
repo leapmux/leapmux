@@ -52,14 +52,23 @@ func checkpointBell(sequence int64) *leapmuxv1.WatchSemanticEventsResponse {
 }
 
 func TestEventCheckpointLocksAndRoundTripsItsPosition(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "position.json")
+	cfgDir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "position.json")
 	first, err := openEventCheckpoint(path)
 	require.NoError(t, err)
 	t.Cleanup(first.close)
 	state, err := first.read()
 	require.NoError(t, err)
 	require.Nil(t, state)
+
+	// Lock files live under <configDir>/event-locks, never beside the checkpoint.
+	_, legacyErr := os.Stat(filepath.Join(dir, ".leapmux-event-locks"))
+	assert.ErrorIs(t, legacyErr, os.ErrNotExist)
+	lockEntries, err := os.ReadDir(filepath.Join(cfgDir, eventCheckpointLockDirName))
+	require.NoError(t, err)
+	assert.Len(t, lockEntries, 1)
 
 	contender, err := openEventCheckpoint(path)
 	require.Error(t, err)
@@ -74,6 +83,33 @@ func TestEventCheckpointLocksAndRoundTripsItsPosition(t *testing.T) {
 	got, err := next.read()
 	require.NoError(t, err)
 	assert.Equal(t, validCheckpoint(), got)
+}
+
+func TestEventCheckpointCreatesMissingParentAndAutoExcludesLeapMuxTmp(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", cfgDir)
+	repo := testutil.NewGitRepo(t)
+
+	path := filepath.Join(repo, ".leapmux", "tmp", "nested", "events.ckpt")
+	f, err := openEventCheckpoint(path)
+	require.NoError(t, err)
+	defer f.close()
+	require.NoError(t, f.save(validCheckpoint()))
+
+	// No lock directory is created inside the repository.
+	_, legacyErr := os.Stat(filepath.Join(filepath.Dir(path), ".leapmux-event-locks"))
+	assert.ErrorIs(t, legacyErr, os.ErrNotExist)
+
+	// .leapmux/tmp/ is automatically excluded in .git/info/exclude.
+	excludeBytes, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+	require.NoError(t, err)
+	assert.Contains(t, string(excludeBytes), ".leapmux/tmp/")
+
+	// Checkpoint paths inside the lock directory are refused.
+	badPath := filepath.Join(cfgDir, eventCheckpointLockDirName, "bad.ckpt")
+	_, err = openEventCheckpoint(badPath)
+	require.Error(t, err)
+	assert.Equal(t, cli.CodeUsage, cli.FromError(err).Code)
 }
 
 func TestAccountCheckpointJSONOmitsFlatTabAndLayoutFields(t *testing.T) {
@@ -100,7 +136,7 @@ func TestAccountCheckpointJSONOmitsFlatTabAndLayoutFields(t *testing.T) {
 }
 
 func TestEventCheckpointDataCannotReplaceAnotherCheckpointLock(t *testing.T) {
-	t.Parallel()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 	path := filepath.Join(t.TempDir(), "position")
 	other, err := openEventCheckpoint(path + ".lock")
 	require.NoError(t, err)
@@ -120,7 +156,7 @@ func TestEventCheckpointDataCannotReplaceAnotherCheckpointLock(t *testing.T) {
 }
 
 func TestEventCheckpointRejectsInvalidFilesAndLeavesThemIntact(t *testing.T) {
-	t.Parallel()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 	for name, content := range map[string][]byte{
 		"empty":             nil,
 		"null":              []byte("null"),
@@ -316,7 +352,7 @@ func TestCheckpointedEventsDefersSaveForFilteredRecordsUntilFlush(t *testing.T) 
 }
 
 func TestOpenCheckedEventCheckpointReportsExactSavedScopeOnMismatch(t *testing.T) {
-	t.Parallel()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
 	cases := []struct {
 		name      string
 		saved     *eventCheckpoint

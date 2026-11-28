@@ -13,11 +13,11 @@ Use `leapmux agent send --wait` to send a prompt, wait for the turn to settle, a
 
 ```sh
 RESULT=$(leapmux agent send name:ci-triage \
-  --file .tmp/triage-prompt.md \
+  --file .leapmux/tmp/triage-prompt.md \
   --request-id "ci-run-${BUILD_ID}" \
   --wait \
   --timeout 10m \
-  --output-schema .tmp/triage-schema.json \
+  --output-schema .leapmux/tmp/triage-schema.json \
   --schema-retries 2)
 ```
 
@@ -74,11 +74,11 @@ Stream structured events across a workspace or your entire account with `leapmux
 # Notify or log whenever any agent finishes a turn or requests permission
 leapmux events \
   --kind agent.turn_end,agent.request \
-  --checkpoint .tmp/agent-events.cursor.json \
+  --checkpoint .leapmux/tmp/agent-events.cursor.json \
   --json
 ```
 
-Passing `--checkpoint` saves the stream cursor to disk after each printed event. When your script restarts, the next run resumes from that position and replays retained Worker events without missing requests that arrived while the script was down.
+Passing `--checkpoint` saves the stream cursor to disk after each printed event (and adds `.leapmux/tmp/` to `.git/info/exclude` when writing inside a git repository). When your script restarts, the next run resumes from that position and replays retained Worker events without missing requests that arrived while the script was down.
 
 ## Prompt an agent to build a script for you
 

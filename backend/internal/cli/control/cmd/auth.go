@@ -284,18 +284,40 @@ func runAuthList(*cli.Invocation) (any, error) {
 	return credentialList{Credentials: rows}, nil
 }
 
+// validateDefaultHub normalizes raw and verifies that non-local remote hubs
+// have stored credentials on this machine before saving them as the default.
+func validateDefaultHub(raw string) (string, error) {
+	canonical := control.CanonicalHubURL(raw)
+	if canonical == "" {
+		return "", cli.Usagef("hub URL is empty")
+	}
+	if locallisten.IsLocal(canonical) {
+		return canonical, nil
+	}
+	if _, err := control.HubHost(canonical); err != nil {
+		return "", cli.Usagef("invalid hub URL %q: %v", raw, err)
+	}
+	creds, err := control.LoadCredentials(canonical)
+	if err != nil {
+		if errors.Is(err, control.ErrNotLoggedIn) {
+			return "", cli.Wrap(cli.CodeNotLoggedIn, err, "").
+				WithHint(`run "%s" to sign in first`, authLoginCommand(canonical))
+		}
+		return "", err
+	}
+	if creds.HubURL != "" {
+		return control.CanonicalHubURL(creds.HubURL), nil
+	}
+	return canonical, nil
+}
+
 // runAuthUse records the hub that a command uses when nothing else selects
-// one. It refuses a hub that this machine holds no credential for, so a
+// one. It refuses a remote hub that this machine holds no credential for, so a
 // typo cannot become the default.
 func runAuthUse(inv *cli.Invocation) (any, error) {
-	hub := inv.Arg("hub")
-	creds, err := control.LoadCredentials(hub)
+	canonicalHub, err := validateDefaultHub(inv.Arg("hub"))
 	if err != nil {
 		return nil, err
-	}
-	canonicalHub := creds.HubURL
-	if canonicalHub == "" {
-		canonicalHub = hub
 	}
 	if err := control.SetDefaultHub(canonicalHub); err != nil {
 		return nil, err

@@ -44,7 +44,7 @@ func newEventsCommand() *cobra.Command {
 			for _, name := range []string{"workspace", "tab", "kind"} {
 				cli.SetFlagGroup(fs, name, "Scope")
 			}
-			fs.Int("limit", 0, "end the stream after this many events; 0 runs without a limit")
+			fs.IntP("limit", "n", 0, "end the stream after this many events; 0 runs without a limit")
 			fs.Duration("timeout", 0, "stop the stream cleanly after this long, such as 30s or 5m; 0 runs without a limit")
 			fs.Bool("snapshot", false, "emit stream.ready (after any checkpointed backlog) and exit cleanly")
 			fs.Duration("heartbeat", 0, "print a stream.heartbeat event at this interval, such as 30s; 0 prints none")

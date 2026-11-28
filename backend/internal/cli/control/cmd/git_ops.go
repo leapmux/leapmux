@@ -137,19 +137,20 @@ func (r gitCommitResult) QuietLines() []string {
 }
 
 func runGitCommit(inv *cli.Invocation) (any, error) {
-	dir := strings.TrimSpace(stringFlag(inv, "dir"))
-	if dir == "" {
-		return nil, cli.Usagef("--dir is empty")
+	if err := checkGitDirInput(inv); err != nil {
+		return nil, err
 	}
 	msg := strings.TrimSpace(stringFlag(inv, "message"))
 	if msg == "" {
 		return nil, cli.Usagef("--message is empty")
 	}
 	var resp leapmuxv1.GitCommitResponse
-	if err := callOnWorker(inv, leapmuxv1connect.WorkerGitServiceGitCommitProcedure, &leapmuxv1.GitCommitRequest{
-		Path:     dir,
-		Message:  msg,
-		StageAll: boolFlag(inv, "all"),
+	if err := callOnWorkerWithDir(inv, leapmuxv1connect.WorkerGitServiceGitCommitProcedure, func(dir string) proto.Message {
+		return &leapmuxv1.GitCommitRequest{
+			Path:     dir,
+			Message:  msg,
+			StageAll: boolFlag(inv, "all"),
+		}
 	}, &resp); err != nil {
 		return nil, err
 	}

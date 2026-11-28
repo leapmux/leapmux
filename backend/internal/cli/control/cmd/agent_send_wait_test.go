@@ -1077,3 +1077,39 @@ func TestAwaitReply_RejectsUnexpectedReplyStep(t *testing.T) {
 	assert.Equal(t, cli.CodeInternal, ce.Code)
 	assert.Contains(t, ce.Message, "unexpected reply evaluation step 99")
 }
+
+func TestAgentReplyResult_QuietLines(t *testing.T) {
+	t.Run("default returns input_id for agent send --wait -q", func(t *testing.T) {
+		res := agentReplyResult{ID: "ag-1", InputID: "in-1"}
+		assert.Equal(t, []string{"in-1"}, res.QuietLines())
+	})
+
+	t.Run("falls back to agent id when input_id is empty", func(t *testing.T) {
+		res := agentReplyResult{ID: "ag-1"}
+		assert.Equal(t, []string{"ag-1"}, res.QuietLines())
+	})
+
+	t.Run("quietAgentID returns created agent id even when input_id is set", func(t *testing.T) {
+		res := agentReplyResult{ID: "ag-created", InputID: "in-1", quietAgentID: true}
+		assert.Equal(t, []string{"ag-created"}, res.QuietLines())
+	})
+
+	t.Run("agentReplyEnded preserves quietAgentID in quiet mode", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		p := &cli.Printer{Out: &out, Err: &errOut, Format: cli.FormatQuiet}
+		res := agentReplyResult{
+			ID:           "ag-created",
+			InputID:      "in-1",
+			RequestID:    "req-1",
+			Message:      messageDelivered,
+			State:        "waiting_for_user",
+			Replies:      []string{},
+			quietAgentID: true,
+		}
+		err := agentReplyEnded(p, res, replyWaitWaiting, time.Minute)
+		var status *cli.ExitStatus
+		require.ErrorAs(t, err, &status)
+		assert.Equal(t, cli.ExitWaitEnded, status.Code)
+		assert.Equal(t, "ag-created\n", out.String())
+	})
+}

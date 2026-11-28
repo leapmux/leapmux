@@ -28,7 +28,7 @@ skipped automatically.`,
 			fs.String("glob", "", `restrict matches to paths matching this glob (such as "**/*.go")`)
 			fs.Bool("regex", false, "treat <pattern> as an RE2 regular expression")
 			fs.BoolP("ignore-case", "i", false, "match case-insensitively")
-			fs.Int("limit", 100, "maximum number of matching lines to return (max 1000)")
+			fs.IntP("limit", "n", 100, "maximum number of matching lines to return (max 1000)")
 			addWorkerFlag(fs)
 		},
 		Run: runFileSearch,
@@ -47,7 +47,7 @@ tab) matching <pattern> (supports *, ?, [...], and ** multi-directory globs).`,
 			{Command: `leapmux file glob "*.proto" /path/to/repo/proto/leapmux/v1`},
 		},
 		Flags: func(fs *pflag.FlagSet) {
-			fs.Int("limit", 200, "maximum number of paths to return (max 2000)")
+			fs.IntP("limit", "n", 200, "maximum number of paths to return (max 2000)")
 			addWorkerFlag(fs)
 		},
 		Run: runFileGlob,

@@ -36,7 +36,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		ProviderName:  "junie",
 		BaseArgs:      args,
 		PinnedEnv:     []string{junieSkipUpdateEnv, junieShareStatisticsEnv},
-		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume},
+		SessionConfig: acp.SessionConfig{NewMethod: acp.MethodSessionNew, ResumeMethod: acp.MethodSessionResume, ForkRequiresLoad: true},
 		NewAgent:      func() *Agent { return &Agent{} },
 		Base:          func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, sink agent.ProviderServices) acp.Hooks {

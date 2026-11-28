@@ -215,6 +215,10 @@ func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) 
 // and this provider implements ChildInterrupter alone. See InterruptChild in
 // subagent.go.
 
+// SupportsFork reports that Claude Code supports native conversation-history
+// forking via --resume <id> --fork-session --session-id <new-id>.
+func (claudeProvider) SupportsFork() bool { return true }
+
 // ChildCapabilities states the native child operations that this provider supports.
 func (claudeProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
 	return agent.ChildCapabilities{AcceptsMessages: false, AcceptsInterrupt: true}

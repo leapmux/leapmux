@@ -146,12 +146,21 @@ func targetListing(c control.Peer, deps resolve.Deps) resolve.Listing {
 			}
 			for _, a := range resp.GetAgents() {
 				if a.GetId() == selfAgentID {
-					return a.GetParentAgentId(), nil
+					return parentOrSpawnerAgentID(a), nil
 				}
 			}
 			return "", nil
 		},
 	}
+}
+
+// parentOrSpawnerAgentID returns the virtual parent subagent ID when set, or
+// the peer agent ID that spawned this agent otherwise.
+func parentOrSpawnerAgentID(a *leapmuxv1.AgentInfo) string {
+	if id := a.GetParentAgentId(); id != "" {
+		return id
+	}
+	return a.GetSpawnedByAgentId()
 }
 
 // listWorkspacesWithPrefix lists readable workspaces, optionally narrowed by a

@@ -49,7 +49,7 @@ leapmux agent list [flags]
 | `--worker string` | list only the agents hosted by this worker (an id, a prefix, "name:&lt;name&gt;" or "self") |
 | `--state string` | list only the agents in this activity state (one of: idle, working, waiting_for_user) |
 | `--provider string` | list only the agents of this provider (such as claude, codex) |
-| `--parent string` | list only the direct child subagents of this parent agent (an id, prefix, title, or "self") |
+| `--parent string` | list only direct child subagents or spawned agents of this parent agent (an id, prefix, title, or "self") |
 | `--all` | include inactive or non-active agent process statuses in the table |
 
 ```sh
@@ -94,8 +94,12 @@ Start a new agent in a new tab.
 _Mutates state._
 
 ```text
-leapmux agent open [flags]
+leapmux agent open [prompt] [flags]
 ```
+
+| Argument | Description |
+|---|---|
+| `[prompt]` | Optional first message to send to the new agent ("-" reads stdin). Mutually exclusive with --message and --file. |
 
 | Flag | Description |
 |---|---|
@@ -106,7 +110,7 @@ leapmux agent open [flags]
 | `--option string` | provider option as key=value; repeat it for more than one; "agent get --options" lists them (repeatable) |
 | `--title string` | tab title (default: the worker picks one) |
 | `--name string` | unique short agent slug (lowercase letters, digits, hyphens, underscores) |
-| `--message string` | queue a first message with the agent creation ("-" reads stdin) |
+| `-m, --message string` | queue a first message with the agent creation ("-" reads stdin) |
 | `--file string` | read the first message from this file ("-" reads stdin) |
 | `--attach string` | attach this file to the first message; repeat it for more than one (repeatable) |
 | `--resume string` | resume this earlier session of the provider; "agent sessions" lists them |
@@ -135,6 +139,9 @@ leapmux agent open [flags]
 ```sh
 # Start an agent beside this tab and keep its id.
 A=$(leapmux agent open --provider claude --message "Run the tests" -q)
+
+# Start an agent with a positional prompt.
+leapmux agent open --provider claude "Review the diff"
 
 # Start an agent in a new git worktree.
 leapmux agent open --worktree fix-flaky-spec --base main
@@ -537,8 +544,8 @@ leapmux agent messages [agent] [flags]
 |---|---|
 | `--anchor string` | page to print (one of: latest, oldest, before, after; default: latest) |
 | `--cursor-seq int` | the seq that --anchor before or after starts from; the page excludes it |
-| `--limit int` | messages per page (default: 50) |
-| `--follow` | print new messages as they arrive, until interrupted |
+| `-n, --limit int` | messages per page (default: 50) |
+| `-f, --follow` | print new messages as they arrive, until interrupted |
 | `--raw` | print raw provider JSON payloads in text mode |
 | `--full` | do not truncate long message lines in text mode |
 | `--markdown` | render messages as Markdown sections |
@@ -1066,7 +1073,7 @@ leapmux agent usage 87a19d5f --json
 
 ### `leapmux agent tree`
 
-Show an agent and all its descendant subagents, including unopened ones (default: this agent).
+Show an agent and its descendant subagents and spawned agents (default: this agent).
 
 ```text
 leapmux agent tree [agent] [flags]
@@ -1364,7 +1371,7 @@ leapmux agent search <query> [flags]
 | `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--regex` | treat &lt;query&gt; as an RE2 regular expression |
 | `--case-sensitive` | match case-sensitively (default is case-insensitive) |
-| `--limit int` | maximum number of hits to return (max 200) (default: 50) |
+| `-n, --limit int` | maximum number of hits to return (max 200) (default: 50) |
 
 ```sh
 leapmux agent search "race condition"
@@ -1374,19 +1381,22 @@ leapmux agent search "timeout" --agent 87a19d5f --limit 20
 
 ### `leapmux agent fork`
 
-Clone an existing agent's provider, model, effort, permission mode, provider options, and working directory into a new agent tab.
+Fork an existing agent into a new agent tab, cloning its provider session history and Worker transcript while preserving the provider prompt cache.
+
+Pass --fresh to clone only the agent's settings (provider, model, effort, permission mode, provider options, and working directory) into a fresh empty session without copying conversation history. --fresh also allows launching the clone on another Worker with --worker.
 
 Pass --worktree &lt;branch&gt; to fork the agent directly into a fresh git worktree, or override individual settings (--model, --effort, --permission-mode, --option, --dir, --title, --name).
 
 _Mutates state._
 
 ```text
-leapmux agent fork <agent> [flags]
+leapmux agent fork <agent> [prompt] [flags]
 ```
 
 | Argument | Description |
 |---|---|
 | `<agent>` | See [common arguments and flags](#common-arguments-and-flags). |
+| `[prompt]` | Optional first message to send to the forked agent ("-" reads stdin). Mutually exclusive with --message and --file. |
 
 | Flag | Description |
 |---|---|
@@ -1396,7 +1406,8 @@ leapmux agent fork <agent> [flags]
 | `--option string` | override provider option as key=value; repeat for more than one (repeatable) |
 | `--title string` | tab title (default: "&lt;source title&gt; (fork)") |
 | `--name string` | unique short agent slug (lowercase letters, digits, hyphens, underscores) |
-| `--message string` | queue a first message on the forked agent ("-" reads stdin) |
+| `--fresh` | clone settings into a fresh empty session without copying conversation history |
+| `-m, --message string` | queue a first message on the forked agent ("-" reads stdin) |
 | `--file string` | read the first message from this file ("-" reads stdin) |
 | `--attach string` | attach this file to the first message; repeat for more than one (repeatable) |
 | `--request-id string` | See [common arguments and flags](#common-arguments-and-flags). |
@@ -1423,8 +1434,8 @@ leapmux agent fork <agent> [flags]
 
 ```sh
 leapmux agent fork 87a19d5f
-leapmux agent fork 87a19d5f --worktree alt-approach --base main --message "Try an alternative implementation"
-leapmux agent fork self --model opus --name reviewer
+leapmux agent fork 87a19d5f "Try an alternative implementation" --worktree alt-approach --base main
+leapmux agent fork self --fresh --model opus --name reviewer
 ```
 
 ### `leapmux agent request-status`

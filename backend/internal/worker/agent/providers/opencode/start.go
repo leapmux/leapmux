@@ -127,7 +127,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		a.root = run
 		a.runs[info.ID] = run
 		a.Mu.Unlock()
-		if opts.ResumeSessionID != "" {
+		if opts.ResumeSessionID != "" || opts.ForkFromSessionID != "" {
 			current := run.SettingsSnapshot().SurfacedOptions
 			changes := make(optionmap.Map)
 			for _, key := range []string{agent.OptionIDModel, agent.OptionIDEffort, agent.OptionIDPrimaryAgent} {
@@ -136,10 +136,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				}
 			}
 			if len(changes) > 0 && !run.UpdateSettings(changes).AppliedLive {
-				err = errors.New("OpenCode could not apply the requested settings to the resumed session")
+				err = errors.New("OpenCode could not apply the requested settings to the session")
 			}
 		}
-		if err == nil {
+		// Skip historical transcript replay on fork startup: the Worker already
+		// cloned the SQLite transcript, and a forked OpenCode session assigns new
+		// message IDs that would duplicate every pre-fork row.
+		if err == nil && opts.ForkFromSessionID == "" {
 			err = a.restoreRunLocked(ctx, run)
 		}
 	}
@@ -154,6 +157,16 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 }
 
 func (a *Agent) openRootSession(ctx context.Context, opts agent.Options) (openCodeSessionInfo, error) {
+	if opts.ResumeSessionID != "" && opts.ForkFromSessionID != "" {
+		return openCodeSessionInfo{}, fmt.Errorf("cannot both resume session %q and fork from session %q", opts.ResumeSessionID, opts.ForkFromSessionID)
+	}
+	if opts.ForkFromSessionID != "" {
+		info, err := a.rpc.forkSession(ctx, opts.ForkFromSessionID)
+		if err != nil {
+			return info, fmt.Errorf("fork OpenCode session %q: %w", opts.ForkFromSessionID, err)
+		}
+		return info, nil
+	}
 	if opts.ResumeSessionID != "" {
 		info, err := a.rpc.session(ctx, opts.ResumeSessionID)
 		if err != nil {

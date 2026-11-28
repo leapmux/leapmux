@@ -27,6 +27,10 @@ import (
 // controlenv.Apply strip the marker from each process that a Worker spawns.
 const controlHandoffMarker = controlenv.VariablePrefix + "CLI_HANDOFF"
 
+// controlHandoffOptOutEnv disables handing off control commands to the
+// Worker's CLI when set to any non-empty value.
+const controlHandoffOptOutEnv = "LEAPMUX_NO_CONTROL_HANDOFF"
+
 // controlHandoff hands a control command that runs inside a LeapMux tab to the
 // CLI of the Worker that started the tab.
 //
@@ -89,7 +93,7 @@ func handOffControlCommand(args []string, root func() *cobra.Command) (int, bool
 // first, then compares the target against this executable, so a command
 // outside a tab or already running the Worker's own CLI builds no command tree.
 func (h controlHandoff) run(args []string) (int, bool) {
-	if h.getenv(controlHandoffMarker) != "" || h.getenv(controlenv.SocketVariable) == "" || h.getenv(controlenv.TokenVariable) == "" {
+	if h.getenv(controlHandoffOptOutEnv) != "" || h.getenv(controlHandoffMarker) != "" || h.getenv(controlenv.SocketVariable) == "" || h.getenv(controlenv.TokenVariable) == "" {
 		return 0, false
 	}
 	target := h.getenv(controlenv.CLIVariable)
@@ -196,14 +200,27 @@ func (h controlHandoff) actsOnControl(args []string) bool {
 		if a == "" {
 			return false
 		}
-		matched, matches := matchTopLevelCommands(root, a)
+		matched, matches := matchSubcommands(root, a)
 		if matched != nil {
 			if !inHelp && matched.Name() == "help" {
 				inHelp = true
 				flagsOf = matched
 				continue
 			}
-			return !cli.IsLocalOnly(matched)
+			if cli.IsLocalOnly(matched) {
+				return false
+			}
+			rest := args[i+1 : end]
+			switch matched.Name() {
+			case "skill":
+				if inHelp {
+					return false
+				}
+				return skillCommandActsOnRemoteWorker(matched, rest)
+			case "auth":
+				return authCommandActsOnControl(matched, rest)
+			}
+			return true
 		}
 		if len(matches) == 0 {
 			return true
@@ -218,17 +235,100 @@ func (h controlHandoff) actsOnControl(args []string) bool {
 	return false
 }
 
-// matchTopLevelCommands resolves token against root's children using the same
+// skillCommandActsOnRemoteWorker reports whether a `skill` invocation targets
+// a remote Worker (`--worker` or `--worker=...` before `--`). Local `skill`
+// commands, `skill show`, and `skill diff` always stay with the invoked binary
+// so they read its own bundled catalog.
+func skillCommandActsOnRemoteWorker(skillCmd *cobra.Command, rest []string) bool {
+	var (
+		sub       *cobra.Command
+		seenSub   bool
+		hasWorker bool
+	)
+	flagOwner := skillCmd
+	for i := 0; i < len(rest); i++ {
+		tok := rest[i]
+		if tok == "--" {
+			break
+		}
+		if tok == "--worker" || strings.HasPrefix(tok, "--worker=") {
+			hasWorker = true
+			if tok == "--worker" {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(tok, "-") && tok != "-" {
+			consumesNext, _ := scanRootFlag(flagOwner, tok)
+			if consumesNext {
+				i++
+			}
+			continue
+		}
+		if !seenSub {
+			seenSub = true
+			if matched, _ := matchSubcommands(skillCmd, tok); matched != nil {
+				sub = matched
+				flagOwner = sub
+			}
+		}
+	}
+	if sub != nil && (sub.Name() == "show" || sub.Name() == "diff") {
+		return false
+	}
+	return hasWorker
+}
+
+// authCommandActsOnControl reports whether an `auth` invocation needs the
+// Worker's CLI. `auth list` (`ls`) and `auth use` read or write local
+// credential and context files only, so they stay with the invoked binary.
+func authCommandActsOnControl(authCmd *cobra.Command, rest []string) bool {
+	for i := 0; i < len(rest); i++ {
+		tok := rest[i]
+		if tok == "--" {
+			return true
+		}
+		if strings.HasPrefix(tok, "-") && tok != "-" {
+			consumesNext, known := scanRootFlag(authCmd, tok)
+			if !known {
+				return true
+			}
+			if consumesNext {
+				i++
+			}
+			continue
+		}
+		if tok == "" {
+			return false
+		}
+		matched, matches := matchSubcommands(authCmd, tok)
+		if matched != nil {
+			return matched.Name() != "list" && matched.Name() != "use"
+		}
+		if len(matches) == 0 {
+			return true
+		}
+		for _, m := range matches {
+			if m.Name() == "list" || m.Name() == "use" {
+				return false
+			}
+		}
+		return true
+	}
+	return true
+}
+
+// matchSubcommands resolves token against parent's children using the same
 // exact-then-prefix rule as cli.Execute. It returns a single matched command
 // or all prefix candidates when zero or more than one command matched.
-func matchTopLevelCommands(root *cobra.Command, token string) (*cobra.Command, []*cobra.Command) {
-	for _, sub := range root.Commands() {
+func matchSubcommands(parent *cobra.Command, token string) (*cobra.Command, []*cobra.Command) {
+	for _, sub := range parent.Commands() {
 		if sub.Name() == token || sub.HasAlias(token) {
 			return sub, nil
 		}
 	}
 	var matches []*cobra.Command
-	for _, sub := range root.Commands() {
+	for _, sub := range parent.Commands() {
 		if !sub.IsAvailableCommand() {
 			continue
 		}

@@ -306,6 +306,7 @@ func TestSkillCLI_LocalFlagGuards(t *testing.T) {
 		{"skill", "list", "--scope", "project", "--target", customTarget},
 		{"skill", "list", "--scope", "user", "--target", customTarget},
 		{"skill", "status", "--scope", "project", "--target", customTarget},
+		{"skill", "diff", "--scope", "project", "--target", customTarget},
 		{"skill", "install", "leapmux", "--scope", "project", "--target", customTarget},
 		{"skill", "install", "leapmux", "--scope", "project", "--target", "agents", "--target", customTarget},
 		{"skill", "uninstall", "leapmux", "--scope", "project", "--target", customTarget},
@@ -316,16 +317,20 @@ func TestSkillCLI_LocalFlagGuards(t *testing.T) {
 		assert.Contains(t, f.Message, "--scope cannot be combined with dir:<path> targets", "args=%v", args)
 	}
 
-	// Remote --worker flag guards (invalid target, --all + args, empty skill name, --scope).
+	// Remote --worker flag guards (invalid target, auto target, --all + args, empty skill name, --scope).
 	for _, args := range [][]string{
 		{"skill", "install", "leapmux", "--worker", "worker-A", "--target", customTarget},
+		{"skill", "install", "leapmux", "--worker", "worker-A", "--target", "auto"},
 		{"skill", "install", "--all", "leapmux", "--worker", "worker-A"},
 		{"skill", "install", "   ", "--worker", "worker-A"},
 		{"skill", "install", "leapmux", "--worker", "worker-A", "--scope", "project"},
 		{"skill", "uninstall", "--all", "leapmux", "--worker", "worker-A"},
 		{"skill", "uninstall", "   ", "--worker", "worker-A"},
-		{"skill", "uninstall", "leapmux", "--worker", "worker-A", "--target", "agents"},
+		{"skill", "uninstall", "leapmux", "--worker", "worker-A", "--target", customTarget},
+		{"skill", "uninstall", "leapmux", "--worker", "worker-A", "--target", "auto"},
 		{"skill", "uninstall", "leapmux", "--worker", "worker-A", "--scope", "project"},
+		{"skill", "diff", "--hub", "https://hub.example"},
+		{"skill", "diff", "--all", "leapmux"},
 	} {
 		o = runControl(t, args...)
 		o.requireFailure(t, cli.CodeUsage)
@@ -354,10 +359,11 @@ type skillWorkerDispatcher struct {
 	methods []string
 	updates []*leapmuxv1.UpdateWorkerSkillsRequest
 
-	autoSync bool
-	targets  []string
-	enabled  []string
-	catalog  []fakeWorkerSkill
+	autoSync       bool
+	targets        []string
+	enabled        []string
+	catalog        []fakeWorkerSkill
+	targetOverride map[string]map[string]string // skill -> target -> state
 
 	nextErrCode codes.Code
 	nextErrMsg  string
@@ -409,13 +415,25 @@ func (d *skillWorkerDispatcher) stateLocked() *leapmuxv1.GetWorkerSkillsResponse
 			installedVer = skills.BundledVersion()
 		}
 		targetStatuses := make([]*leapmuxv1.WorkerSkillTargetStatus, 0, len(d.targets))
+		targetStates := make([]skills.State, 0, len(d.targets))
 		for _, t := range d.targets {
+			tState := state
+			if byTarget, ok := d.targetOverride[s.name]; ok {
+				if ov, ok := byTarget[t]; ok {
+					tState = ov
+				}
+			}
+			targetStates = append(targetStates, skills.State(tState))
 			targetStatuses = append(targetStatuses, &leapmuxv1.WorkerSkillTargetStatus{
 				Target:           t,
-				State:            state,
+				State:            tState,
 				InstalledVersion: installedVer,
 				Path:             d.targetDir(t, s.name),
 			})
+		}
+		aggState := state
+		if len(targetStates) > 0 {
+			aggState = string(skills.AggregateState(targetStates))
 		}
 		primaryTarget := "agents"
 		if len(d.targets) > 0 {
@@ -424,7 +442,7 @@ func (d *skillWorkerDispatcher) stateLocked() *leapmuxv1.GetWorkerSkillsResponse
 		rows = append(rows, &leapmuxv1.WorkerSkillStatus{
 			Name:             s.name,
 			Description:      s.description,
-			State:            state,
+			State:            aggState,
 			Enabled:          enabledSet[s.name],
 			InstalledVersion: installedVer,
 			BundledVersion:   skills.BundledVersion(),
@@ -469,6 +487,15 @@ func (d *skillWorkerDispatcher) DispatchWith(_ context.Context, _ channel.Caller
 			if !slices.Contains(d.targets, t) {
 				d.targets = append(d.targets, t)
 			}
+		}
+		if len(in.GetRemoveTargets()) > 0 {
+			filtered := make([]string, 0, len(d.targets))
+			for _, t := range d.targets {
+				if !slices.Contains(in.GetRemoveTargets(), t) {
+					filtered = append(filtered, t)
+				}
+			}
+			d.targets = filtered
 		}
 		var outcomes []*leapmuxv1.WorkerSkillOutcome
 		if in.GetAddAllSkills() {
@@ -745,6 +772,46 @@ func TestSkillCLI_WorkerRemoteLifecycle(t *testing.T) {
 	require.NotNil(t, updates[0].AutoSync)
 	assert.False(t, updates[0].GetAutoSync())
 	assert.True(t, updates[0].GetStrictConflicts())
+
+	// 8. Multi-target Worker status displays TARGETS column with per-target drift.
+	disp.mu.Lock()
+	disp.targets = []string{"agents", "claude"}
+	disp.enabled = []string{"leapmux"}
+	disp.targetOverride = map[string]map[string]string{
+		"leapmux": {"claude": string(skills.StateOutdated)},
+	}
+	disp.mu.Unlock()
+	o = runControlText(t, "skill", "status", "--worker", "worker-A")
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.Contains(t, o.Stdout, "Targets: agents, claude\n")
+	assert.Contains(t, o.Stdout, "TARGETS")
+	assert.Contains(t, o.Stdout, "agents:up_to_date, claude:outdated")
+
+	// 9. Standalone target removal on Worker uninstall sends RemoveTargets without requiring skill names.
+	disp.resetCalls()
+	o = runControl(t, "skill", "uninstall", "--worker", "worker-A", "--target", "claude", "--target", "claude")
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	methods, updates = disp.recorded()
+	assert.Equal(t, []string{leapmuxv1connect.WorkerSystemServiceUpdateWorkerSkillsProcedure}, methods)
+	require.Len(t, updates, 1)
+	assert.Equal(t, []string{"claude"}, updates[0].GetRemoveTargets())
+	assert.Empty(t, updates[0].GetRemoveSkills())
+	assert.False(t, updates[0].GetRemoveAllSkills())
+	assert.Nil(t, updates[0].AutoSync)
+	require.NoError(t, json.Unmarshal([]byte(o.Stdout), &mutEnv))
+	assert.Equal(t, []string{"agents"}, mutEnv.Data.Targets)
+
+	// 10. Standalone --no-auto-sync on Worker uninstall succeeds without skill names or targets.
+	disp.resetCalls()
+	o = runControl(t, "skill", "uninstall", "--worker", "worker-A", "--no-auto-sync")
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	methods, updates = disp.recorded()
+	assert.Equal(t, []string{leapmuxv1connect.WorkerSystemServiceUpdateWorkerSkillsProcedure}, methods)
+	require.Len(t, updates, 1)
+	assert.Empty(t, updates[0].GetRemoveSkills())
+	assert.Empty(t, updates[0].GetRemoveTargets())
+	require.NotNil(t, updates[0].AutoSync)
+	assert.False(t, updates[0].GetAutoSync())
 }
 
 func TestSkillCLI_WorkerRemoteErrorMapping(t *testing.T) {
@@ -819,20 +886,217 @@ func TestSkillCLI_FlagHelpAndWorkerEnvDefault(t *testing.T) {
 	for _, tc := range []struct {
 		path     []string
 		contains string
+		hasWork  bool
 	}{
-		{[]string{"skill", "list"}, "local target directory:"},
-		{[]string{"skill", "status"}, "local target directory:"},
-		{[]string{"skill", "install"}, "(local only); repeat for multiple"},
-		{[]string{"skill", "uninstall"}, "omit with --worker"},
+		{[]string{"skill", "list"}, "local target directory: auto", true},
+		{[]string{"skill", "status"}, "local target directory: auto", true},
+		{[]string{"skill", "diff"}, "local target directory: auto", false},
+		{[]string{"skill", "install"}, "target directory: auto", true},
+		{[]string{"skill", "uninstall"}, "target directory: auto", true},
 	} {
 		cmd, _, err := root.Find(tc.path)
 		require.NoError(t, err)
 		targetFlag := cmd.Flags().Lookup("target")
 		require.NotNil(t, targetFlag)
 		assert.Contains(t, targetFlag.Usage, tc.contains, "path=%v", tc.path)
+		assert.Equal(t, "stringArray", targetFlag.Value.Type(), "path=%v --target must be repeatable", tc.path)
 
 		wFlag := cmd.Flags().Lookup(workerFlag)
-		require.NotNil(t, wFlag)
-		assert.Empty(t, wFlag.Annotations["leapmux_env_default"], "skill %v --worker must not bind env default", tc.path)
+		if tc.hasWork {
+			require.NotNil(t, wFlag)
+			assert.Empty(t, wFlag.Annotations["leapmux_env_default"], "skill %v --worker must not bind env default", tc.path)
+		} else {
+			assert.Nil(t, wFlag, "local-only skill %v must not declare --worker", tc.path)
+		}
+	}
+}
+
+func TestSkillCLI_AutoTargetDetectionAndMultiTargetStatus(t *testing.T) {
+	t.Run("clean home defaults to agents only", func(t *testing.T) {
+		fakeHome := t.TempDir()
+		t.Setenv("HOME", fakeHome)
+		t.Setenv("USERPROFILE", fakeHome)
+
+		o := runControl(t, "skill", "install", "leapmux")
+		require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+		var mutEnv struct {
+			Data skillMutationResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(o.Stdout), &mutEnv))
+		assert.Equal(t, "user", mutEnv.Data.Scope)
+		assert.Equal(t, []string{"agents"}, mutEnv.Data.Targets)
+		assert.FileExists(t, filepath.Join(fakeHome, ".agents", "skills", "leapmux", "SKILL.md"))
+		_, claudeErr := os.Stat(filepath.Join(fakeHome, ".claude", "skills", "leapmux", "SKILL.md"))
+		assert.ErrorIs(t, claudeErr, os.ErrNotExist)
+
+		// Single-target status keeps TARGETS column hidden in text output.
+		o = runControlText(t, "skill", "status")
+		require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+		assert.Contains(t, o.Stdout, "Targets: agents\n")
+		assert.NotContains(t, o.Stdout, "TARGETS")
+	})
+
+	t.Run("home with .claude and .codex/skills auto-detects and surfaces per-target drift", func(t *testing.T) {
+		fakeHome := t.TempDir()
+		t.Setenv("HOME", fakeHome)
+		t.Setenv("USERPROFILE", fakeHome)
+		require.NoError(t, os.MkdirAll(filepath.Join(fakeHome, ".claude"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(fakeHome, ".codex", "skills"), 0o755))
+
+		// Default install hits agents, claude, and codex.
+		o := runControl(t, "skill", "install", "leapmux")
+		require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+		var mutEnv struct {
+			Data skillMutationResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(o.Stdout), &mutEnv))
+		assert.Equal(t, []string{"agents", "claude", "codex"}, mutEnv.Data.Targets)
+		assert.FileExists(t, filepath.Join(fakeHome, ".agents", "skills", "leapmux", "SKILL.md"))
+		assert.FileExists(t, filepath.Join(fakeHome, ".claude", "skills", "leapmux", "SKILL.md"))
+		assert.FileExists(t, filepath.Join(fakeHome, ".codex", "skills", "leapmux", "SKILL.md"))
+
+		// Introduce local edit only in claude target to verify worst-case aggregation and TARGETS column.
+		claudeSkill := filepath.Join(fakeHome, ".claude", "skills", "leapmux", "SKILL.md")
+		require.NoError(t, os.WriteFile(claudeSkill, []byte("# local claude edit\n"), 0o644))
+
+		// JSON list populates per-target rows and aggregates worst-case state.
+		o = runControl(t, "skill", "list")
+		require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+		var listEnv struct {
+			Data skillListResult `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(o.Stdout), &listEnv))
+		assert.Equal(t, []string{"agents", "claude", "codex"}, listEnv.Data.Targets)
+		require.NotEmpty(t, listEnv.Data.Skills)
+		assert.Equal(t, "leapmux", listEnv.Data.Skills[0].Name)
+		assert.Equal(t, "modified", listEnv.Data.Skills[0].State)
+		require.Len(t, listEnv.Data.Skills[0].Targets, 3)
+		assert.Equal(t, "up_to_date", listEnv.Data.Skills[0].Targets[0].State)
+		assert.Equal(t, "modified", listEnv.Data.Skills[0].Targets[1].State)
+		assert.Equal(t, "up_to_date", listEnv.Data.Skills[0].Targets[2].State)
+
+		// Text status and list show TARGETS column with per-target drift.
+		o = runControlText(t, "skill", "status")
+		require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+		assert.Contains(t, o.Stdout, "Targets: agents, claude, codex\n")
+		assert.Contains(t, o.Stdout, "TARGETS")
+		assert.Contains(t, o.Stdout, "agents:up_to_date, claude:modified, codex:up_to_date")
+
+		o = runControlText(t, "skill", "list", "--target", "agents", "--target", "claude")
+		require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+		assert.Contains(t, o.Stdout, "TARGETS")
+		assert.Contains(t, o.Stdout, "agents:up_to_date, claude:modified")
+	})
+}
+
+func TestSkillCLI_CrossTargetAtomicPreflight(t *testing.T) {
+	dir1 := filepath.Join(t.TempDir(), "target-1")
+	dir2 := filepath.Join(t.TempDir(), "target-2")
+	t1 := "dir:" + dir1
+	t2 := "dir:" + dir2
+
+	// Create an unmanaged conflict in target #2 before installing across both targets.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir2, "leapmux"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir2, "leapmux", "SKILL.md"), []byte("# unmanaged\n"), 0o644))
+
+	o := runControl(t, "skill", "install", "leapmux", "--target", t1, "--target", t2)
+	o.requireFailure(t, cli.CodeConflict)
+	_, err := os.Stat(filepath.Join(dir1, "leapmux"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "conflict in target #2 must leave target #1 untouched on install")
+
+	// Install cleanly into both targets (with --force to replace unmanaged in target #2),
+	// then locally modify target #2 and verify uninstall preflight leaves target #1 intact.
+	o = runControl(t, "skill", "install", "leapmux", "--target", t1, "--target", t2, "--force")
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	require.NoError(t, os.WriteFile(filepath.Join(dir2, "leapmux", "SKILL.md"), []byte("# edited\n"), 0o644))
+
+	o = runControl(t, "skill", "uninstall", "leapmux", "--target", t1, "--target", t2)
+	o.requireFailure(t, cli.CodeConflict)
+	assert.FileExists(t, filepath.Join(dir1, "leapmux", "SKILL.md"), "conflict in target #2 must leave target #1 untouched on uninstall")
+}
+
+func TestSkillCLI_Diff(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "diff-skills")
+	targetFlag := "dir:" + targetDir
+
+	// Install one skill cleanly; default diff reports clean even when other bundled skills are uninstalled.
+	o := runControl(t, "skill", "install", "leapmux", "--target", targetFlag)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+
+	o = runControlText(t, "skill", "diff", "--target", targetFlag)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.Equal(t, "All installed skills match the bundled catalog.\n", o.Stdout)
+
+	o = runControl(t, "skill", "diff", "--target", targetFlag)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	var diffEnv struct {
+		Data skillDiffResult `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(o.Stdout), &diffEnv))
+	assert.Equal(t, "custom", diffEnv.Data.Scope)
+	assert.Equal(t, []string{targetFlag}, diffEnv.Data.Targets)
+	assert.Empty(t, diffEnv.Data.Diffs)
+
+	// Locally edit SKILL.md and add an untracked file.
+	skillMD := filepath.Join(targetDir, "leapmux", "SKILL.md")
+	orig, err := os.ReadFile(skillMD)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(skillMD, append(orig, []byte("\n# local note\n")...), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "leapmux", "notes.md"), []byte("extra\n"), 0o644))
+
+	// Text diff prints header, unified diff, and untracked file entry.
+	o = runControlText(t, "skill", "diff", "--target", targetFlag)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.Contains(t, o.Stdout, "=== leapmux ("+targetFlag+", modified) ===\n")
+	assert.Contains(t, o.Stdout, "--- a/SKILL.md\n+++ b/SKILL.md\n")
+	assert.Contains(t, o.Stdout, "-# local note\n")
+	assert.Contains(t, o.Stdout, "untracked: notes.md\n")
+
+	// Quiet mode lists differing skill names.
+	o = runControlText(t, "skill", "diff", "--target", targetFlag, "-q")
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.Equal(t, "leapmux\n", o.Stdout)
+
+	// Explicit uninstalled skill shows concise not_installed status in text and full details in JSON.
+	o = runControlText(t, "skill", "diff", "leapmux-council", "--target", targetFlag)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.Contains(t, o.Stdout, "=== leapmux-council ("+targetFlag+", not_installed) ===\n")
+	assert.Contains(t, o.Stdout, "not installed (")
+
+	// --all includes every bundled skill in JSON.
+	o = runControl(t, "skill", "diff", "--all", "--target", targetFlag)
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	require.NoError(t, json.Unmarshal([]byte(o.Stdout), &diffEnv))
+	assert.Len(t, diffEnv.Data.Diffs, len(skills.Catalog()))
+
+	// Unknown skill returns CodeNotFound.
+	o = runControl(t, "skill", "diff", "no-such-skill", "--target", targetFlag)
+	o.requireFailure(t, cli.CodeNotFound)
+
+	// Auto-detected multi-target diff reports only the target that drifted.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
+	require.NoError(t, os.MkdirAll(filepath.Join(fakeHome, ".claude"), 0o755))
+
+	o = runControl(t, "skill", "install", "leapmux")
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	require.NoError(t, os.WriteFile(filepath.Join(fakeHome, ".claude", "skills", "leapmux", "SKILL.md"), []byte("# claude edit\n"), 0o644))
+
+	o = runControlText(t, "skill", "diff")
+	require.Equal(t, cli.ExitOK, o.Code, o.Stderr)
+	assert.Contains(t, o.Stdout, "=== leapmux (claude, modified) ===\n")
+	assert.NotContains(t, o.Stdout, "=== leapmux (agents,")
+
+	// Unsafe symlink fails with CodeConflict and no --force hint.
+	if runtime.GOOS != "windows" {
+		symDir := filepath.Join(t.TempDir(), "sym-diff")
+		outside := t.TempDir()
+		require.NoError(t, os.MkdirAll(symDir, 0o755))
+		require.NoError(t, os.Symlink(outside, filepath.Join(symDir, "leapmux")))
+
+		o = runControl(t, "skill", "diff", "leapmux", "--target", "dir:"+symDir)
+		f := o.requireFailure(t, cli.CodeConflict)
+		assert.Empty(t, f.Hints)
 	}
 }

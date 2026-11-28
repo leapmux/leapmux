@@ -44,6 +44,11 @@ Worker's CLI, `$LEAPMUX_CONTROL_CLI`, so the command still matches the Worker.
   `--references` / `--reference <ref>`) to read curated multi-agent playbooks
   and troubleshooting guides (`leapmux`, `leapmux-delegate`, `leapmux-review`,
   `leapmux-council`, `leapmux-handoff`, `leapmux-help`).
+- Store repo-local scratch files (briefs, JSON schemas, and event checkpoints)
+  under `<git toplevel>/.leapmux/tmp/` (part of the `.leapmux/<category>`
+  layout, with `.leapmux/conf` reserved for future repository settings). LeapMux
+  adds `.leapmux/tmp/` to `.git/info/exclude` automatically when creating
+  worktrees or writing checkpoints and exports.
 
 ## How a command finds its object <!-- topic: targets -->
 
@@ -59,9 +64,11 @@ An argument such as `<agent>`, `<tab>`, `<workspace>`, or `<worker>` takes:
   Ambiguous matches fail closed with `ambiguous_target` and list candidates.
   Pass `--workspace <ws>` on tab/agent/terminal commands to disambiguate.
 - `self` for the tab, tile, workspace, or worker running the command.
-- `parent` (in an agent tab, on `agent` or `tab` commands) for the parent agent;
-  `children` (on multi-agent commands: `agent wait`, `agent requests`,
-  `agent interrupt`, and `agent close`) for all direct child subagents.
+- `parent` (in an agent tab, on `agent` or `tab` commands) for the spawning
+  parent agent; `children` (on multi-agent commands: `agent wait`,
+  `agent requests`, `agent interrupt`, and `agent close`) for all direct child
+  agents, both provider subagents and agents opened or forked by this tab
+  (`spawned_by_agent_id`).
 
 A command that only reads defaults to `self` inside a tab: `leapmux agent get`
 shows your own agent. Outside a tab, `leapmux context use --hub ... --worker ...
@@ -147,7 +154,9 @@ leapmux agent queue preempt "$A"
 leapmux agent queue retry "$A"
 leapmux agent send "$A" "Use the new helper" --steer
 leapmux agent send "$A" "Stop and pivot" --preempt
+# Fork with cloned provider session history and transcript (pass --fresh for an empty session):
 leapmux agent fork "$A" --worktree alt-fix --base main
+leapmux agent fork "$A" --fresh --worktree alt-fix --base main
 leapmux agent request-status "$A" <request-id>
 ```
 
@@ -194,7 +203,7 @@ Watch workspace or account events with checkpoints, snapshots, and capped timeou
 leapmux events --workspace self --kind agent --snapshot --json
 
 # Stream live agent events with a persistent account checkpoint file and capped timeout:
-leapmux events --kind agent --checkpoint /tmp/agent-events.json --timeout 5m --json
+leapmux events --kind agent --checkpoint .leapmux/tmp/agent-events.json --timeout 5m --json
 ```
 
 Inspect git state, diffs, history, worktrees, floating windows, and raw RPCs:

@@ -765,7 +765,7 @@ func TestSendIdentifiedSteerLockedPaths(t *testing.T) {
 		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 		assert.ErrorContains(t, err, "within 10s")
 
-		cmds := r.commandsOfType(CommandPrompt)
+		cmds := r.waitForCommand(CommandPrompt, 1)
 		require.Len(t, cmds, 1)
 		r.agent.Mu.Lock()
 		_, kept := r.agent.identifiedSteers[cmds[0].ID]
@@ -827,7 +827,7 @@ func TestSendIdentifiedSteerLockedPaths(t *testing.T) {
 		})
 		require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 
-		cmds := r.commandsOfType(CommandPrompt)
+		cmds := r.waitForCommand(CommandPrompt, 1)
 		require.Len(t, cmds, 1)
 		r.agent.Mu.Lock()
 		_, kept := r.agent.identifiedSteers[cmds[0].ID]
@@ -868,7 +868,7 @@ func TestSendIdentifiedSteerLockedPaths(t *testing.T) {
 			Content: "Handled by local hook.", InputID: "steer-local", AttemptID: "att-local",
 		}))
 
-		cmds := r.commandsOfType(CommandPrompt)
+		cmds := r.waitForCommand(CommandPrompt, 1)
 		require.Len(t, cmds, 1)
 		expectedReceipt := agent.NativeInputReceipt{
 			SessionID: r.agent.sessionFile,

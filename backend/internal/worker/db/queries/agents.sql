@@ -2,7 +2,7 @@
 -- title_auto_generated column. The caller answers it from the request, because
 -- only the client knows whether the user kept the suggestion it pre-filled.
 -- name: CreateAgent :exec
-INSERT INTO agents (id, working_dir, title, title_auto_generated, options, agent_provider, resumed, pending_resume_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, working_dir, title, title_auto_generated, options, agent_provider, resumed, pending_resume_session_id, spawned_by_agent_id, forked_from_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- HasOpenAgentForNativeSession enforces the picker's open-handle exclusion for
 -- manually entered IDs too. It matches across working directories.
@@ -541,3 +541,13 @@ WITH RECURSIVE descendants AS (
     SELECT a.id AS id FROM agents a JOIN descendants ON a.parent_agent_id = descendants.id
 )
 SELECT descendants.id FROM descendants;
+
+-- ListAgentsBySpawnedBy returns all open agents opened or forked by the given
+-- calling agent tab. Repeating spawned_by_agent_id <> '' lets SQLite use
+-- idx_agents_spawned_by.
+-- name: ListAgentsBySpawnedBy :many
+SELECT * FROM agents
+WHERE spawned_by_agent_id = ?
+  AND spawned_by_agent_id <> ''
+  AND closed_at IS NULL
+ORDER BY created_at ASC, id ASC;

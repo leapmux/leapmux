@@ -34,6 +34,7 @@ const MarkerFileName = ".leapmux-skill.json"
 type Target string
 
 const (
+	TargetAuto   Target = "auto"
 	TargetAgents Target = "agents"
 	TargetClaude Target = "claude"
 	TargetCodex  Target = "codex"
@@ -61,6 +62,41 @@ func StandardTargets() []Target {
 		out[i] = spec.target
 	}
 	return out
+}
+
+// DetectInstalledTargets returns the local standard skill targets detected
+// under baseDir in display order. TargetAgents is always included first.
+// TargetClaude is included whenever <baseDir>/.claude exists as a directory,
+// because Claude Code reads ~/.claude/skills rather than ~/.agents/skills.
+// TargetCodex, TargetCursor, and TargetGemini are included when their
+// respective <baseDir>/.<name>/skills directory already exists so existing
+// installs stay in sync without creating unused dot-directories on fresh
+// machines.
+func DetectInstalledTargets(baseDir string) []Target {
+	out := []Target{TargetAgents}
+	if strings.TrimSpace(baseDir) == "" {
+		return out
+	}
+	if isExistingDir(filepath.Join(baseDir, ".claude")) {
+		out = append(out, TargetClaude)
+	}
+	for _, spec := range targetSpecs {
+		if spec.target == TargetAgents || spec.target == TargetClaude {
+			continue
+		}
+		parts := make([]string, 0, 1+len(spec.relDirs))
+		parts = append(parts, baseDir)
+		parts = append(parts, spec.relDirs...)
+		if isExistingDir(filepath.Join(parts...)) {
+			out = append(out, spec.target)
+		}
+	}
+	return out
+}
+
+func isExistingDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 func lookupTargetSpec(target Target) (targetSpec, bool) {
@@ -484,29 +520,38 @@ func ResolveLocalTargetDir(baseDir, raw string) (dir string, label string, err e
 	return dir, string(norm), nil
 }
 
-// ResolveLocalTargetDirs validates every local target in raw upfront, resolves
-// each directory path, and deduplicates resolved paths using pathutil.SamePath
-// while preserving first-seen order.
+// ResolveLocalTargetDirs validates every local target in raw upfront, expands
+// TargetAuto ("auto") via DetectInstalledTargets(baseDir), resolves each
+// directory path, and deduplicates resolved paths using pathutil.SamePath while
+// preserving first-seen order.
 func ResolveLocalTargetDirs(baseDir string, raw []string) (dirs []string, labels []string, err error) {
 	dirs = make([]string, 0, len(raw))
 	labels = make([]string, 0, len(raw))
+	appendResolved := func(dir, label string) {
+		for _, existing := range dirs {
+			if pathutil.SamePath(existing, dir) {
+				return
+			}
+		}
+		dirs = append(dirs, dir)
+		labels = append(labels, label)
+	}
 	for _, item := range raw {
+		if strings.EqualFold(strings.TrimSpace(item), string(TargetAuto)) {
+			for _, detected := range DetectInstalledTargets(baseDir) {
+				dir, rErr := ResolveStandardTargetDir(baseDir, detected)
+				if rErr != nil {
+					return nil, nil, rErr
+				}
+				appendResolved(dir, string(detected))
+			}
+			continue
+		}
 		dir, label, rErr := ResolveLocalTargetDir(baseDir, item)
 		if rErr != nil {
 			return nil, nil, rErr
 		}
-		duplicate := false
-		for _, existing := range dirs {
-			if pathutil.SamePath(existing, dir) {
-				duplicate = true
-				break
-			}
-		}
-		if duplicate {
-			continue
-		}
-		dirs = append(dirs, dir)
-		labels = append(labels, label)
+		appendResolved(dir, label)
 	}
 	return dirs, labels, nil
 }
@@ -915,6 +960,41 @@ func Install(targetDir string, names []string, opts Options) ([]InstallOutcome, 
 	return executeInstall(targetDir, plans, anyWrite)
 }
 
+// InstallTargets installs the requested bundled skills across all dirs,
+// preflighting every target directory before mutating any directory on disk.
+// A conflict or safety error in a later target therefore leaves earlier targets
+// untouched. The returned slice aligns one-to-one with dirs.
+func InstallTargets(dirs []string, names []string, opts Options) ([][]InstallOutcome, error) {
+	if _, err := resolveSkillList(names); err != nil {
+		return nil, err
+	}
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+	type plannedTarget struct {
+		dir      string
+		plans    []installPlan
+		anyWrite bool
+	}
+	planned := make([]plannedTarget, len(dirs))
+	for i, dir := range dirs {
+		plans, anyWrite, err := planInstall(dir, names, opts)
+		if err != nil {
+			return nil, err
+		}
+		planned[i] = plannedTarget{dir: dir, plans: plans, anyWrite: anyWrite}
+	}
+	results := make([][]InstallOutcome, len(dirs))
+	for i, pt := range planned {
+		outcomes, err := executeInstall(pt.dir, pt.plans, pt.anyWrite)
+		if err != nil {
+			return nil, err
+		}
+		results[i] = outcomes
+	}
+	return results, nil
+}
+
 type uninstallPlan struct {
 	skill       Skill
 	action      Action
@@ -1108,6 +1188,36 @@ func Uninstall(targetDir string, names []string, opts Options) ([]InstallOutcome
 		return nil, err
 	}
 	return executeUninstall(targetDir, plans)
+}
+
+// UninstallTargets removes the requested LeapMux-managed skills across all
+// dirs, preflighting every target directory before mutating any directory on
+// disk. A conflict or safety error in a later target therefore leaves earlier
+// targets untouched. The returned slice aligns one-to-one with dirs.
+func UninstallTargets(dirs []string, names []string, opts Options) ([][]InstallOutcome, error) {
+	if _, err := resolveSkillList(names); err != nil {
+		return nil, err
+	}
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+	planned := make([][]uninstallPlan, len(dirs))
+	for i, dir := range dirs {
+		plans, err := planUninstall(dir, names, opts)
+		if err != nil {
+			return nil, err
+		}
+		planned[i] = plans
+	}
+	results := make([][]InstallOutcome, len(dirs))
+	for i, dir := range dirs {
+		outcomes, err := executeUninstall(dir, planned[i])
+		if err != nil {
+			return nil, err
+		}
+		results[i] = outcomes
+	}
+	return results, nil
 }
 
 // SyncEnabled ensures every enabled skill is installed and up to date in

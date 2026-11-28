@@ -46,7 +46,8 @@ Drive workspaces, agents, terminals, files, and layouts directly with
 	root.AddCommand(localCmds...)
 	assignRootCommandGroups(root)
 	for _, child := range root.Commands() {
-		if child.Name() == "version" || child.Name() == "help" {
+		switch child.Name() {
+		case "version", "help", "context", "guide":
 			cli.MarkLocalOnly(child)
 		}
 	}

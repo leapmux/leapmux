@@ -43,6 +43,15 @@ type Options struct {
 	AgentID         string
 	WorkingDir      string
 	ResumeSessionID string // If set, uses --resume to resume a previous session
+	// ForkFromSessionID, when non-empty, forks conversation history from this
+	// native provider session ID into a new independent session. Mutually
+	// exclusive with ResumeSessionID.
+	ForkFromSessionID string
+	// ForkSourceWorkingDir is the source agent's working directory when forking.
+	// Providers whose session store is keyed by working directory read the source
+	// transcript from this directory when the forked agent runs in a different
+	// directory or git worktree.
+	ForkSourceWorkingDir string
 	// Options is the COMPLETE resolved option set keyed by option-group id
 	// (model, effort, permissionMode, primaryAgent, and every provider option).
 	// It is the single source of truth -- there are no shadow scalar fields. Read

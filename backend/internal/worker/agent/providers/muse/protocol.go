@@ -79,6 +79,7 @@ const (
 	methodTurnRetracted                   = "turn/retracted"
 	methodTurnUnqueued                    = "turn/unqueued"
 	methodTurnForegroundCompleted         = "turn/foregroundCompleted"
+	methodTurnModelAttemptStarted         = "turn/modelAttemptStarted"
 	methodSkillChanged                    = "skill/changed"
 	methodAccountChanged                  = "account/changed"
 	methodAccountLoginCompleted           = "account/loginCompleted"

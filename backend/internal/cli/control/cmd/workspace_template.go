@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -26,6 +27,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/lexorank"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/util/atomicfile"
+	"github.com/leapmux/leapmux/util/repopaths"
 )
 
 func newWorkspaceExportCommand() *cobra.Command {
@@ -175,6 +178,10 @@ func runWorkspaceExport(inv *cli.Invocation) (any, error) {
 	style := strings.ToLower(strings.TrimSpace(stringFlag(inv, "style")))
 	if style != "yaml" && style != "json" {
 		return nil, cli.Usagef("--style must be yaml or json; got %q", style)
+	}
+	outPath := strings.TrimSpace(stringFlag(inv, "output"))
+	if inv.Changed("output") && outPath == "" {
+		return nil, cli.Usagef("--output is empty")
 	}
 	s, err := openSession(inv)
 	if err != nil {
@@ -356,12 +363,18 @@ func runWorkspaceExport(inv *cli.Invocation) (any, error) {
 		}
 	}
 
-	if outPath := strings.TrimSpace(stringFlag(inv, "output")); outPath != "" {
+	if outPath != "" {
 		raw, err := tmpl.marshalStyled()
 		if err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(outPath, raw, 0o600); err != nil {
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return nil, cli.Wrap(cli.CodeInternal, err, "create directory for exported workspace template")
+		}
+		if toplevel, ok := repopaths.IsInsideLeapMuxTmp(outPath); ok {
+			_ = repopaths.EnsureTmpExcluded(toplevel)
+		}
+		if err := atomicfile.WriteFile(outPath, raw, 0o600); err != nil {
 			return nil, cli.Wrap(cli.CodeInternal, err, "write exported workspace template")
 		}
 		return workspaceExportFileResult{
