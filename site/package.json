@@ -3,6 +3,7 @@
   "private": true,
   "description": "The locked tools that publish the LeapMux site",
   "devDependencies": {
+    "asciinema-player": "3.18.1",
     "pagefind": "1.6.0",
     "wrangler": "4.165.0"
   }

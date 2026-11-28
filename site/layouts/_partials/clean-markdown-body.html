@@ -158,6 +158,8 @@
 {{- $body = replaceRE `\{\{%\s*video-clip(?:\s+(?:[^%]|%[^}])*\s|\s+)caption="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n*[Demo clip: $1]*\n\n" $body -}}
 {{- $body = replaceRE `\{\{<\s*video-clip(?:\s+[^>]*\s|\s+)alt="([^"]+)"[^>]*>\}\}` "\n\n*[Demo clip: $1]*\n\n" $body -}}
 {{- $body = replaceRE `\{\{%\s*video-clip(?:\s+(?:[^%]|%[^}])*\s|\s+)alt="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n*[Demo clip: $1]*\n\n" $body -}}
+{{- $body = replaceRE `\{\{<\s*cli-cast(?:\s+[^>]*\s|\s+)caption="([^"]+)"[^>]*>\}\}` "\n\n*[CLI replay: $1]*\n\n" $body -}}
+{{- $body = replaceRE `\{\{%\s*cli-cast(?:\s+(?:[^%]|%[^}])*\s|\s+)caption="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n*[CLI replay: $1]*\n\n" $body -}}
 {{- $body = replaceRE `\{\{<\s*copy-prompt(?:\s+[^>]*\s|\s+)label="([^"]+)"[^>]*>\}\}\s*` "\n\n**$1**\n\n```text\n" $body -}}
 {{- $body = replaceRE `\{\{%\s*copy-prompt(?:\s+(?:[^%]|%[^}])*\s|\s+)label="([^"]+)"(?:[^%]|%[^}])*%\}\}\s*` "\n\n**$1**\n\n```text\n" $body -}}
 {{- $body = replaceRE `\{\{<\s*copy-prompt(?:\s+[^>]*)?\s*>\}\}\s*` "\n\n**Prompt for your coding agent**\n\n```text\n" $body -}}
@@ -185,8 +187,8 @@
   {{- $body = replaceRE `(?s)(?:(?:^|\n)#{2,6}[ \t]+[^\n]+\n+)?\{\{%\s*cards(?:\s+(?:[^%]|%[^}])*)?\s*%\}\}.*?\{\{%\s*/cards\s*%\}\}` "\n" $body -}}
 {{- end -}}
 {{- /* Strip remaining layout shortcode wrappers so plain Markdown stays clean. */ -}}
-{{- $body = replaceRE `\{\{<\s*/?(?:cards|steps|tabs|tab|details|agent-ticker|screenshot|video-clip|table-filter|changelog-strip|changelog-list|hero-showcase)(?:\s+[^>]*)?\s*>\}\}` "" $body -}}
-{{- $body = replaceRE `\{\{%\s*/?(?:cards|steps|tabs|tab|details|agent-ticker|screenshot|video-clip|table-filter|changelog-strip|changelog-list|hero-showcase)(?:\s+(?:[^%]|%[^}])*)?\s*%\}\}` "" $body -}}
+{{- $body = replaceRE `\{\{<\s*/?(?:cards|steps|tabs|tab|details|agent-ticker|screenshot|video-clip|cli-cast|table-filter|changelog-strip|changelog-list|hero-showcase)(?:\s+[^>]*)?\s*>\}\}` "" $body -}}
+{{- $body = replaceRE `\{\{%\s*/?(?:cards|steps|tabs|tab|details|agent-ticker|screenshot|video-clip|cli-cast|table-filter|changelog-strip|changelog-list|hero-showcase)(?:\s+(?:[^%]|%[^}])*)?\s*%\}\}` "" $body -}}
 {{- /* Convert any remaining standalone card shortcodes to Markdown links. */ -}}
 {{- $body = replaceRE `\{\{<\s*card(?:\s+[^>]*\s|\s+)title="([^"]+)"[^>]*\s+link="([^"]+)"[^>]*>\}\}` "- [$1]($2)" $body -}}
 {{- $body = replaceRE `\{\{%\s*card(?:\s+(?:[^%]|%[^}])*\s|\s+)title="([^"]+)"(?:[^%]|%[^}])*\s+link="([^"]+)"(?:[^%]|%[^}])*%\}\}` "- [$1]($2)" $body -}}

@@ -127,6 +127,14 @@ jobs:
         working-directory: site
         run: ./node_modules/.bin/pagefind --site public --output-subdir pagefind --exclude-selectors 'nav,aside,.hextra-toc,.hextra-sidebar-container,.hextra-footer,script,style'
 
+      - name: Copy locked asciinema-player bundle assets
+        working-directory: site
+        run: |
+          mkdir -p public/vendor/asciinema-player
+          cp node_modules/asciinema-player/dist/bundle/asciinema-player.min.js \
+            node_modules/asciinema-player/dist/bundle/asciinema-player.css \
+            public/vendor/asciinema-player/
+
       - name: Deploy to Cloudflare Workers
         # Run wrangler in site/ so it picks up site/wrangler.jsonc, whose ./public assets
         # dir resolves relative to that file. This is a Workers Static Assets deploy, so the

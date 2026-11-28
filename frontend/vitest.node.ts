@@ -326,6 +326,7 @@ export const NODE_TEST_FILES = [
   'eslint/chatPipelinePlugin.test.ts',
   'eslint/providerWireTokens.test.ts',
   'playwright.config.test.ts',
+  'scripts/cliCastWriter.test.ts',
   'scripts/e2eCommand.test.ts',
   'scripts/e2eCommandProcess.test.ts',
   'scripts/e2eLastRunReporter.test.ts',

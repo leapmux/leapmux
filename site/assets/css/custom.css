@@ -1357,8 +1357,31 @@
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
 }
 
-.lm-hero-panel[hidden] {
-  display: none;
+.lm-hero-stage {
+  display: grid;
+}
+
+.lm-hero-stage > .lm-hero-panel {
+  grid-area: 1 / 1;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 320ms ease, visibility 0s linear 320ms;
+}
+
+.lm-hero-stage > .lm-hero-panel.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 1;
+  transition: opacity 320ms ease, visibility 0s linear 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lm-hero-stage > .lm-hero-panel,
+  .lm-hero-stage > .lm-hero-panel.is-active {
+    transition: none;
+  }
 }
 
 .lm-hero-panel .doc-screenshot {
@@ -1370,6 +1393,161 @@
   height: auto;
   margin: 0;
   border-radius: 0;
+}
+
+/*
+  Interactive CLI asciicast replay (cli-cast shortcode) using LeapMux's Default
+  (Dimidium) light and dark terminal palettes from contracts/theme-default.json
+  and frontend/src/styles/themes/default.ts.
+*/
+.lm-cli-cast-figure {
+  margin-block: 0;
+}
+
+.lm-cli-cast-frame {
+  overflow: hidden;
+  border: 1px solid rgb(221 217 211);
+  border-radius: var(--hx-radius-lg);
+  background: rgb(255 254 252);
+  box-shadow: 0 12px 32px rgb(34 32 30 / 0.08), 0 2px 6px rgb(34 32 30 / 0.04);
+}
+
+.dark .lm-cli-cast-frame {
+  border-color: rgb(61 58 54);
+  background: rgb(26 25 23);
+  box-shadow: 0 14px 36px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.3);
+}
+
+.lm-cli-cast-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.875rem;
+  border-bottom: 1px solid rgb(221 217 211);
+  background: rgb(247 245 242);
+  color: rgb(120 117 111);
+  font-family: var(--hx-font-mono);
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
+.dark .lm-cli-cast-chrome {
+  border-bottom-color: rgb(61 58 54);
+  background: rgb(42 40 38);
+  color: rgb(138 134 128);
+}
+
+.lm-cli-cast-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.lm-cli-cast-dot {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 9999px;
+  background: rgb(213 209 203);
+}
+
+.dark .lm-cli-cast-dot {
+  background: rgb(74 71 66);
+}
+
+.lm-cli-cast-title {
+  font-weight: 600;
+  color: rgb(46 43 40);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dark .lm-cli-cast-title {
+  color: rgb(224 221 216);
+}
+
+.lm-cli-cast-badge {
+  padding: 0.125rem 0.45rem;
+  border-radius: 9999px;
+  background: rgb(222 235 225);
+  color: rgb(13 148 136);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dark .lm-cli-cast-badge {
+  background: rgb(45 62 50);
+  color: rgb(20 184 166);
+}
+
+.lm-cli-cast-mount {
+  width: 100%;
+}
+
+.lm-cli-cast-mount .ap-wrapper,
+.lm-cli-cast-mount .ap-player {
+  display: block;
+  width: 100%;
+  border-radius: 0;
+}
+
+.lm-cli-cast-noscript {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: rgb(34 32 30);
+  background: rgb(255 254 252);
+}
+
+.dark .lm-cli-cast-noscript {
+  color: rgb(232 230 225);
+  background: rgb(26 25 23);
+}
+
+.lm-cli-cast-mount .ap-player.asciinema-player-theme-leapmux {
+  --term-color-foreground: rgb(34 32 30);
+  --term-color-background: rgb(255 254 252);
+  --term-color-0: #000000;
+  --term-color-1: #b83d41;
+  --term-color-2: #4d9833;
+  --term-color-3: #ba8300;
+  --term-color-4: #0464ba;
+  --term-color-5: #9c50bd;
+  --term-color-6: #019a9f;
+  --term-color-7: #9c9998;
+  --term-color-8: #737575;
+  --term-color-9: #e0532e;
+  --term-color-10: #1fbd62;
+  --term-color-11: #d0a803;
+  --term-color-12: #4a74ed;
+  --term-color-13: #d05dce;
+  --term-color-14: #19b8d0;
+  --term-color-15: #b8bdbe;
+}
+
+.dark .lm-cli-cast-mount .ap-player.asciinema-player-theme-leapmux {
+  --term-color-foreground: rgb(232 230 225);
+  --term-color-background: rgb(26 25 23);
+  --term-color-0: #000000;
+  --term-color-1: #cf494c;
+  --term-color-2: #60b442;
+  --term-color-3: #db9c11;
+  --term-color-4: #0575d8;
+  --term-color-5: #af5ed2;
+  --term-color-6: #1db6bb;
+  --term-color-7: #bab7b6;
+  --term-color-8: #817e7e;
+  --term-color-9: #ff643b;
+  --term-color-10: #37e57b;
+  --term-color-11: #fccd1a;
+  --term-color-12: #688dfd;
+  --term-color-13: #ed6fe9;
+  --term-color-14: #32e0fb;
+  --term-color-15: #dee3e4;
 }
 
 /*

@@ -47,163 +47,168 @@
     >Input Queue &amp; Steering</button>
   </div>
 
-  <div
-    class="lm-hero-panel"
-    id="lm-hero-panel-overview"
-    role="tabpanel"
-    aria-labelledby="lm-hero-tab-overview"
-  >
-    <figure class="doc-screenshot">
-      <div class="doc-screenshot-frame">
-        <img
-          class="doc-screenshot-light"
-          src="{{ "/images/docs/hero-workspace-light.png" | relURL }}"
-          alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees"
-          width="1440"
-          height="900"
-          loading="eager"
-          fetchpriority="high"
-          decoding="async"
-        >
-        <img
-          class="doc-screenshot-dark"
-          src="{{ "/images/docs/hero-workspace-dark.png" | relURL }}"
-          alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees"
-          width="1440"
-          height="900"
-          loading="eager"
-          fetchpriority="high"
-          decoding="async"
-        >
-      </div>
-      <figcaption class="doc-screenshot-caption">Claude Code, Antigravity, Codex, a syntax-highlighted diff viewer, and a live PTY terminal running side by side in isolated git worktrees.</figcaption>
-    </figure>
-  </div>
+  <div class="lm-hero-stage">
+    <div
+      class="lm-hero-panel is-active"
+      id="lm-hero-panel-overview"
+      role="tabpanel"
+      aria-labelledby="lm-hero-tab-overview"
+    >
+      <figure class="doc-screenshot">
+        <div class="doc-screenshot-frame">
+          <img
+            class="doc-screenshot-light"
+            src="{{ "/images/docs/hero-workspace-light.png" | relURL }}"
+            alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees"
+            width="1440"
+            height="900"
+            loading="eager"
+            fetchpriority="high"
+            decoding="async"
+          >
+          <img
+            class="doc-screenshot-dark"
+            src="{{ "/images/docs/hero-workspace-dark.png" | relURL }}"
+            alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees"
+            width="1440"
+            height="900"
+            loading="eager"
+            fetchpriority="high"
+            decoding="async"
+          >
+        </div>
+        <figcaption class="doc-screenshot-caption">Claude Code, Antigravity, Codex, a syntax-highlighted diff viewer, and a live PTY terminal running side by side in isolated git worktrees.</figcaption>
+      </figure>
+    </div>
 
-  <div
-    class="lm-hero-panel"
-    id="lm-hero-panel-worktrees"
-    role="tabpanel"
-    aria-labelledby="lm-hero-tab-worktrees"
-    hidden
-  >
-    <figure class="doc-screenshot">
-      <div class="doc-screenshot-frame">
-        <video
-          class="doc-screenshot-light lm-hero-video"
-          data-theme-variant="light"
-          loop
-          muted
-          playsinline
-          preload="metadata"
-          width="1280"
-          height="800"
-          poster="{{ "/images/docs/tabs-tiling-layout-light.png" | relURL }}"
-          aria-label="Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal"
-        >
-          <source src="{{ "/videos/docs/parallel-worktrees-light.mp4" | relURL }}" type="video/mp4" />
-        </video>
-        <video
-          class="doc-screenshot-dark lm-hero-video"
-          data-theme-variant="dark"
-          loop
-          muted
-          playsinline
-          preload="metadata"
-          width="1280"
-          height="800"
-          poster="{{ "/images/docs/tabs-tiling-layout-dark.png" | relURL }}"
-          aria-label="Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal"
-        >
-          <source src="{{ "/videos/docs/parallel-worktrees-dark.mp4" | relURL }}" type="video/mp4" />
-        </video>
-      </div>
-      <figcaption class="doc-screenshot-caption">Switch between isolated worktrees, toggle split diffs, and pop down a Quake terminal without losing focus.</figcaption>
-    </figure>
-  </div>
+    <div
+      class="lm-hero-panel"
+      id="lm-hero-panel-worktrees"
+      role="tabpanel"
+      aria-labelledby="lm-hero-tab-worktrees"
+      aria-hidden="true"
+      inert
+    >
+      <figure class="doc-screenshot">
+        <div class="doc-screenshot-frame">
+          <video
+            class="doc-screenshot-light lm-hero-video"
+            data-theme-variant="light"
+            loop
+            muted
+            playsinline
+            preload="metadata"
+            width="1280"
+            height="800"
+            poster="{{ "/images/docs/tabs-tiling-layout-light.png" | relURL }}"
+            aria-label="Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal"
+          >
+            <source src="{{ "/videos/docs/parallel-worktrees-light.mp4" | relURL }}" type="video/mp4" />
+          </video>
+          <video
+            class="doc-screenshot-dark lm-hero-video"
+            data-theme-variant="dark"
+            loop
+            muted
+            playsinline
+            preload="metadata"
+            width="1280"
+            height="800"
+            poster="{{ "/images/docs/tabs-tiling-layout-dark.png" | relURL }}"
+            aria-label="Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal"
+          >
+            <source src="{{ "/videos/docs/parallel-worktrees-dark.mp4" | relURL }}" type="video/mp4" />
+          </video>
+        </div>
+        <figcaption class="doc-screenshot-caption">Switch between isolated worktrees, toggle split diffs, and pop down a Quake terminal without losing focus.</figcaption>
+      </figure>
+    </div>
 
-  <div
-    class="lm-hero-panel"
-    id="lm-hero-panel-tiling"
-    role="tabpanel"
-    aria-labelledby="lm-hero-tab-tiling"
-    hidden
-  >
-    <figure class="doc-screenshot">
-      <div class="doc-screenshot-frame">
-        <video
-          class="doc-screenshot-light lm-hero-video"
-          data-theme-variant="light"
-          loop
-          muted
-          playsinline
-          preload="metadata"
-          width="1280"
-          height="800"
-          poster="{{ "/images/docs/floating-window-light.png" | relURL }}"
-          aria-label="Animated walkthrough of splitting a single tile side by side, turning the right tile into a 2 by 2 grid, and popping the agent tab out into a semi-transparent floating window"
-        >
-          <source src="{{ "/videos/docs/tiling-floating-layout-light.mp4" | relURL }}" type="video/mp4" />
-        </video>
-        <video
-          class="doc-screenshot-dark lm-hero-video"
-          data-theme-variant="dark"
-          loop
-          muted
-          playsinline
-          preload="metadata"
-          width="1280"
-          height="800"
-          poster="{{ "/images/docs/floating-window-dark.png" | relURL }}"
-          aria-label="Animated walkthrough of splitting a single tile side by side, turning the right tile into a 2 by 2 grid, and popping the agent tab out into a semi-transparent floating window"
-        >
-          <source src="{{ "/videos/docs/tiling-floating-layout-dark.mp4" | relURL }}" type="video/mp4" />
-        </video>
-      </div>
-      <figcaption class="doc-screenshot-caption">Split a pane side by side, create a 2×2 tile grid, and pop an agent tab out into a translucent floating window.</figcaption>
-    </figure>
-  </div>
+    <div
+      class="lm-hero-panel"
+      id="lm-hero-panel-tiling"
+      role="tabpanel"
+      aria-labelledby="lm-hero-tab-tiling"
+      aria-hidden="true"
+      inert
+    >
+      <figure class="doc-screenshot">
+        <div class="doc-screenshot-frame">
+          <video
+            class="doc-screenshot-light lm-hero-video"
+            data-theme-variant="light"
+            loop
+            muted
+            playsinline
+            preload="metadata"
+            width="1280"
+            height="800"
+            poster="{{ "/images/docs/floating-window-light.png" | relURL }}"
+            aria-label="Animated walkthrough of splitting a single tile side by side, turning the right tile into a 2 by 2 grid, popping the agent tab out into a translucent floating window, and dragging it back into the grid"
+          >
+            <source src="{{ "/videos/docs/tiling-floating-layout-light.mp4" | relURL }}" type="video/mp4" />
+          </video>
+          <video
+            class="doc-screenshot-dark lm-hero-video"
+            data-theme-variant="dark"
+            loop
+            muted
+            playsinline
+            preload="metadata"
+            width="1280"
+            height="800"
+            poster="{{ "/images/docs/floating-window-dark.png" | relURL }}"
+            aria-label="Animated walkthrough of splitting a single tile side by side, turning the right tile into a 2 by 2 grid, popping the agent tab out into a translucent floating window, and dragging it back into the grid"
+          >
+            <source src="{{ "/videos/docs/tiling-floating-layout-dark.mp4" | relURL }}" type="video/mp4" />
+          </video>
+        </div>
+        <figcaption class="doc-screenshot-caption">Split panes side by side, create a 2×2 tile grid, pop an agent tab into a translucent floating window, and drag it right back into the grid.</figcaption>
+      </figure>
+    </div>
 
-  <div
-    class="lm-hero-panel"
-    id="lm-hero-panel-queue"
-    role="tabpanel"
-    aria-labelledby="lm-hero-tab-queue"
-    hidden
-  >
-    <figure class="doc-screenshot">
-      <div class="doc-screenshot-frame">
-        <video
-          class="doc-screenshot-light lm-hero-video"
-          data-theme-variant="light"
-          loop
-          muted
-          playsinline
-          preload="metadata"
-          width="1280"
-          height="800"
-          poster="{{ "/images/docs/input-queue-light.png" | relURL }}"
-          aria-label="Animated walkthrough of queueing follow-up prompts and steering a running coding agent mid-turn"
-        >
-          <source src="{{ "/videos/docs/input-queue-steering-light.mp4" | relURL }}" type="video/mp4" />
-        </video>
-        <video
-          class="doc-screenshot-dark lm-hero-video"
-          data-theme-variant="dark"
-          loop
-          muted
-          playsinline
-          preload="metadata"
-          width="1280"
-          height="800"
-          poster="{{ "/images/docs/input-queue-dark.png" | relURL }}"
-          aria-label="Animated walkthrough of queueing follow-up prompts and steering a running coding agent mid-turn"
-        >
-          <source src="{{ "/videos/docs/input-queue-steering-dark.mp4" | relURL }}" type="video/mp4" />
-        </video>
-      </div>
-      <figcaption class="doc-screenshot-caption">Queue follow-up prompts, steer active turns mid-flight, or preempt long-running work from the Worker-backed input queue.</figcaption>
-    </figure>
+    <div
+      class="lm-hero-panel"
+      id="lm-hero-panel-queue"
+      role="tabpanel"
+      aria-labelledby="lm-hero-tab-queue"
+      aria-hidden="true"
+      inert
+    >
+      <figure class="doc-screenshot">
+        <div class="doc-screenshot-frame">
+          <video
+            class="doc-screenshot-light lm-hero-video"
+            data-theme-variant="light"
+            loop
+            muted
+            playsinline
+            preload="metadata"
+            width="1280"
+            height="800"
+            poster="{{ "/images/docs/input-queue-light.png" | relURL }}"
+            aria-label="Animated walkthrough of queueing follow-up prompts and steering a running coding agent mid-turn"
+          >
+            <source src="{{ "/videos/docs/input-queue-steering-light.mp4" | relURL }}" type="video/mp4" />
+          </video>
+          <video
+            class="doc-screenshot-dark lm-hero-video"
+            data-theme-variant="dark"
+            loop
+            muted
+            playsinline
+            preload="metadata"
+            width="1280"
+            height="800"
+            poster="{{ "/images/docs/input-queue-dark.png" | relURL }}"
+            aria-label="Animated walkthrough of queueing follow-up prompts and steering a running coding agent mid-turn"
+          >
+            <source src="{{ "/videos/docs/input-queue-steering-dark.mp4" | relURL }}" type="video/mp4" />
+          </video>
+        </div>
+        <figcaption class="doc-screenshot-caption">Queue follow-up prompts, steer active turns mid-flight, or preempt long-running work from the Worker-backed input queue.</figcaption>
+      </figure>
+    </div>
   </div>
 </div>
 <script>
@@ -215,16 +220,39 @@
   const tabs = Array.from(root.querySelectorAll('[role="tab"]'));
   const panels = Array.from(root.querySelectorAll('[role="tabpanel"]'));
   const mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  const pauseTimers = new WeakMap();
+  const FADE_MS = 340;
 
-  const syncVideos = () => {
+  const clearPauseTimer = (video) => {
+    const timer = pauseTimers.get(video);
+    if (timer) {
+      clearTimeout(timer);
+      pauseTimers.delete(video);
+    }
+  };
+
+  const syncVideos = (restartActive) => {
     const isDark = document.documentElement.classList.contains('dark');
     const reduced = Boolean(mq && mq.matches);
     panels.forEach((panel) => {
-      const visible = !panel.hidden;
+      const visible = panel.classList.contains('is-active');
       panel.querySelectorAll('video.lm-hero-video').forEach((video) => {
         const matchesTheme = (video.dataset.themeVariant === 'dark') === isDark;
+        clearPauseTimer(video);
         if (visible && matchesTheme && !reduced) {
+          if (restartActive && video.readyState >= 1) {
+            try { video.currentTime = 0; } catch {}
+          }
           video.play().catch(() => {});
+        } else if (!reduced && !video.paused) {
+          // Keep the outgoing video moving while it crossfades out, then pause it.
+          const timer = setTimeout(() => {
+            pauseTimers.delete(video);
+            if (!panel.classList.contains('is-active') || (video.dataset.themeVariant === 'dark') !== document.documentElement.classList.contains('dark')) {
+              video.pause();
+            }
+          }, FADE_MS);
+          pauseTimers.set(video, timer);
         } else {
           video.pause();
         }
@@ -240,10 +268,18 @@
       tab.tabIndex = active ? 0 : -1;
     });
     panels.forEach((panel) => {
-      panel.hidden = panel.id !== targetId;
+      const active = panel.id === targetId;
+      panel.classList.toggle('is-active', active);
+      if (active) {
+        panel.removeAttribute('aria-hidden');
+        panel.removeAttribute('inert');
+      } else {
+        panel.setAttribute('aria-hidden', 'true');
+        panel.setAttribute('inert', '');
+      }
     });
     if (focusTab) nextTab.focus();
-    syncVideos();
+    syncVideos(true);
   };
 
   tabs.forEach((tab, index) => {
@@ -261,14 +297,14 @@
   });
 
   if (mq && mq.addEventListener) {
-    mq.addEventListener('change', syncVideos);
+    mq.addEventListener('change', () => syncVideos(false));
   }
   if (typeof MutationObserver !== 'undefined') {
-    new MutationObserver(syncVideos).observe(document.documentElement, {
+    new MutationObserver(() => syncVideos(false)).observe(document.documentElement, {
       attributes: true,
       attributeFilter: ['class'],
     });
   }
-  syncVideos();
+  syncVideos(false);
 })();
 </script>

@@ -1953,16 +1953,24 @@ tasks:
       - bun scripts/generate-config-reference.mjs
       - cd site && ./node_modules/.bin/pagefind --site public --output-subdir pagefind --exclude-selectors 'nav,aside,.hextra-toc,.hextra-sidebar-container,.hextra-footer,script,style'
       - rm -f site/public/pagefind/pagefind-ui.js site/public/pagefind/pagefind-ui.css site/public/pagefind/pagefind-component-ui.js site/public/pagefind/pagefind-component-ui.css site/public/pagefind/pagefind-modular-ui.js site/public/pagefind/pagefind-modular-ui.css site/public/pagefind/pagefind-highlight.js
+      - mkdir -p site/public/vendor/asciinema-player
+      - cp site/node_modules/asciinema-player/dist/bundle/asciinema-player.min.js site/node_modules/asciinema-player/dist/bundle/asciinema-player.css site/public/vendor/asciinema-player/
       - bun scripts/verify-coding-agent-site.mjs
       - *record_artifacts
 
   generate-site-screenshots:
-    desc: Regenerate deterministic light and dark documentation screenshots from the real frontend (deliberate; committed under site/static/images/docs/)
+    desc: Regenerate deterministic light and dark documentation screenshots and clips from the real frontend (deliberate; committed under site/static/)
     deps: [build-backend, install-frontend-deps]
     cmds:
       # Run explicitly when the UI or screenshot fixtures change. Do not attach
       # to `task site`, so CI and Cloudflare deploys stay fast and Chromium-free.
       - bun frontend/scripts/generate-site-screenshots.ts
+
+  generate-site-cli-cast:
+    desc: Regenerate the deterministic CLI asciicast v2 replay from real leapmux commands (committed under site/static/casts/)
+    deps: [build-backend, install-frontend-deps]
+    cmds:
+      - bun frontend/scripts/generate-site-cli-cast.ts
 
   # --- Clean ---
 

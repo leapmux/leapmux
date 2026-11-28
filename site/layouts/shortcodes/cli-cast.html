@@ -1,0 +1,113 @@
+{{- /*
+  cli-cast embeds an interactive asciinema-player replay of a real leapmux CLI
+  recording (.cast in site/static/casts/) styled with LeapMux's exact Default
+  (Dimidium) light and dark terminal palettes.
+
+      {{< cli-cast src="cli-fleet-demo" title="zsh — payments-api" cols="86" rows="23" caption="..." >}}
+*/ -}}
+{{- $src := .Get "src" -}}
+{{- $title := .Get "title" | default "zsh" -}}
+{{- $cols := .Get "cols" | default "86" -}}
+{{- $rows := .Get "rows" | default "23" -}}
+{{- $caption := .Get "caption" | default "" -}}
+{{- $castURL := printf "/casts/%s.cast" $src | relURL -}}
+{{- $playerCSS := "/vendor/asciinema-player/asciinema-player.css" | relURL -}}
+{{- $playerJS := "/vendor/asciinema-player/asciinema-player.min.js" | relURL -}}
+{{- $id := printf "lm-cli-cast-%s-%d" ($src | urlize) .Ordinal -}}
+{{- if not (.Page.Scratch.Get "lmAsciinemaAssetsLoaded") -}}
+  {{- .Page.Scratch.Set "lmAsciinemaAssetsLoaded" true -}}
+<link rel="stylesheet" href="{{ $playerCSS }}" />
+<script defer src="{{ $playerJS }}"></script>
+{{- end -}}
+<figure class="doc-screenshot lm-cli-cast-figure">
+  <div class="lm-cli-cast-frame">
+    <div class="lm-cli-cast-chrome" aria-hidden="true">
+      <span class="lm-cli-cast-dots">
+        <span class="lm-cli-cast-dot"></span>
+        <span class="lm-cli-cast-dot"></span>
+        <span class="lm-cli-cast-dot"></span>
+      </span>
+      <span class="lm-cli-cast-title">{{ $title }}</span>
+      <span class="lm-cli-cast-badge">live CLI capture</span>
+    </div>
+    <div
+      id="{{ $id }}"
+      class="lm-cli-cast-mount"
+      data-cast-src="{{ $castURL }}"
+      data-cast-cols="{{ $cols }}"
+      data-cast-rows="{{ $rows }}"
+      role="region"
+      aria-label="{{ $caption | default "Recorded LeapMux CLI session replay" }}"
+    ></div>
+    <noscript>
+      <pre class="lm-cli-cast-noscript"><code>A1=$(leapmux agent open --provider claude --worktree feat/api --base main -q)
+A2=$(leapmux agent open --provider codex  --worktree feat/cli --base main -q)
+leapmux agent list
+leapmux agent send "$A1" "Implement the /health endpoint with tests."
+leapmux agent send "$A2" "Add the health subcommand and JSON output."
+leapmux agent wait "$A1" "$A2" --any --json
+leapmux agent messages "$A1" --json | jq -r '.data.messages[] | select(.source=="agent") | .reply_text // empty'</code></pre>
+    </noscript>
+  </div>
+  {{- if $caption }}
+  <figcaption class="doc-screenshot-caption">{{ $caption }}</figcaption>
+  {{- end }}
+</figure>
+<script>
+(() => {
+  if (window.__lmCliCastWired) return;
+  window.__lmCliCastWired = true;
+
+  const initAll = () => {
+    if (!window.AsciinemaPlayer) return;
+    const mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    const reduced = Boolean(mq && mq.matches);
+
+    document.querySelectorAll('.lm-cli-cast-mount').forEach((mount) => {
+      if (mount.dataset.initialized === 'true') return;
+      mount.dataset.initialized = 'true';
+
+      const src = mount.dataset.castSrc;
+      const cols = Number.parseInt(mount.dataset.castCols || '86', 10);
+      const rows = Number.parseInt(mount.dataset.castRows || '23', 10);
+      const player = window.AsciinemaPlayer.create(src, mount, {
+        theme: 'leapmux',
+        cols,
+        rows,
+        fit: 'width',
+        autoPlay: !reduced,
+        loop: true,
+        controls: 'auto',
+        poster: reduced ? 'npt:0:20' : undefined,
+        terminalFontFamily: '"Hack NF", "Hack", "SF Mono", Consolas, ui-monospace, Menlo, Monaco, monospace',
+      });
+
+      if (typeof IntersectionObserver !== 'undefined' && !reduced) {
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              player.play();
+            } else {
+              player.pause();
+            }
+          });
+        }, { threshold: 0.2 });
+        observer.observe(mount);
+      }
+
+      if (mq && mq.addEventListener) {
+        mq.addEventListener('change', () => {
+          if (mq.matches) player.pause();
+          else player.play();
+        });
+      }
+    });
+  };
+
+  if (document.readyState === 'complete') {
+    initAll();
+  } else {
+    window.addEventListener('load', initAll, { once: true });
+  }
+})();
+</script>

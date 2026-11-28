@@ -2061,22 +2061,21 @@ async function captureTilingFloatingClip(
       const splitBtnBox = await requireBox(splitVerticalBtn, 'split-vertical button')
       await recorder.zoomToRect(
         {
-          x: Math.max(0, splitBtnBox.x - 160),
-          y: Math.max(0, splitBtnBox.y - 24),
-          width: 280,
-          height: 180,
+          x: Math.max(0, splitBtnBox.x - 180),
+          y: Math.max(0, splitBtnBox.y - 20),
+          width: 300,
+          height: 240,
         },
-        { padding: 48, maxZoom: 1.75, transitionMs: 450 },
+        { padding: 40, maxZoom: 1.75, transitionMs: 450 },
       )
       const splitSaved = waitForLayoutSaved(p)
       await recorder.clickLocator(splitVerticalBtn)
       await waitFor('2 side-by-side tiles visible', async () => (await p.locator('[data-testid="tile"]').count()) === 2, 10_000)
       await splitSaved
-      await recorder.wait(300)
-      await recorder.zoomOut({ transitionMs: 450 })
-      await recorder.wait(850)
+      await recorder.wait(350)
 
-      // Step 2: Zoom to the right tile's Make grid button, pick 2x2, and click to create the grid.
+      // Step 2: Stay zoomed in, pan smoothly to the right tile's Make grid button,
+      // pick 2x2, and click to create the real 2x2 grid before zooming out.
       const rightTile = p.locator('[data-testid="tile"]').nth(1)
       const makeGridBtn = rightTile.locator('[data-testid="make-grid"]:visible').first()
       await makeGridBtn.waitFor({ state: 'visible', timeout: 10_000 })
@@ -2088,18 +2087,18 @@ async function captureTilingFloatingClip(
           width: 300,
           height: 280,
         },
-        { padding: 40, maxZoom: 1.75, transitionMs: 450 },
+        { padding: 40, maxZoom: 1.75, transitionMs: 320 },
       )
       await recorder.clickLocator(makeGridBtn)
       const gridPopover = p.locator('[data-testid="grid-size-popover"]:visible').first()
       await gridPopover.waitFor({ state: 'visible', timeout: 8_000 })
-      await recorder.hoverLocator(gridPopover.locator('[data-testid="grid-size-cell-0-0"]'), 160)
-      await recorder.wait(180)
-      await recorder.hoverLocator(gridPopover.locator('[data-testid="grid-size-cell-0-1"]'), 160)
-      await recorder.wait(180)
+      await recorder.hoverLocator(gridPopover.locator('[data-testid="grid-size-cell-0-0"]'), 150)
+      await recorder.wait(160)
+      await recorder.hoverLocator(gridPopover.locator('[data-testid="grid-size-cell-0-1"]'), 150)
+      await recorder.wait(160)
       const cell2x2 = gridPopover.locator('[data-testid="grid-size-cell-1-1"]')
-      await recorder.hoverLocator(cell2x2, 180)
-      await recorder.wait(500)
+      await recorder.hoverLocator(cell2x2, 170)
+      await recorder.wait(450)
 
       const gridSaved = waitForLayoutSaved(p)
       await recorder.clickLocator(cell2x2, 100)
@@ -2108,7 +2107,7 @@ async function captureTilingFloatingClip(
       await gridSaved
       await recorder.wait(300)
       await recorder.zoomOut({ transitionMs: 480 })
-      await recorder.wait(950)
+      await recorder.wait(900)
 
       // Step 3: Zoom to the left agent tile's Pop out button and pop the agent tab out.
       const agentTile = p.locator('[data-testid="tile"]').filter({
@@ -2133,32 +2132,99 @@ async function captureTilingFloatingClip(
       await popSaved
       await recorder.wait(250)
       await recorder.zoomOut({ transitionMs: 450 })
-      await recorder.wait(450)
+      await recorder.wait(350)
 
-      // Drag the floating agent window slightly over the 2x2 grid and lower its
-      // opacity via titlebar wheel scroll so the grid remains visible behind it.
+      // Drag the floating agent window slightly toward the left-center so the
+      // right column of the 2x2 grid stays clearly visible, then lower its
+      // opacity via titlebar wheel scroll.
       const titleBar = floatWin.locator('[data-testid="floating-window-titlebar"]').first()
       const titleBox = await requireBox(titleBar, 'floating agent titlebar')
       const moveSaved = waitForLayoutSaved(p)
       await recorder.drag(
         titleBox.x + titleBox.width / 2,
         titleBox.y + titleBox.height / 2,
-        Math.min(clipViewport.width - 180, titleBox.x + titleBox.width / 2 + 130),
-        Math.min(clipViewport.height - 160, titleBox.y + titleBox.height / 2 + 65),
-        420,
+        Math.max(360, titleBox.x + titleBox.width / 2 - 40),
+        Math.min(clipViewport.height - 200, titleBox.y + titleBox.height / 2 + 55),
+        380,
       )
       await moveSaved
-      await recorder.wait(300)
+      await recorder.wait(250)
 
       const movedTitleBox = await requireBox(titleBar, 'moved floating agent titlebar')
-      await recorder.movePointer(movedTitleBox.x + movedTitleBox.width / 2, movedTitleBox.y + movedTitleBox.height / 2, 8, 150)
+      await recorder.movePointer(movedTitleBox.x + movedTitleBox.width / 2, movedTitleBox.y + movedTitleBox.height / 2, 8, 140)
       const opacitySaved = waitForLayoutSaved(p)
       for (let i = 0; i < 3; i++) {
         await p.mouse.wheel(0, 120)
-        await recorder.wait(160)
+        await recorder.wait(140)
       }
       await opacitySaved
-      await recorder.wait(1100)
+      await recorder.wait(850)
+
+      // Step 4: Drag the agent tab out of the floating window into the top-right
+      // cell of the 2x2 grid so it docks cleanly into the main area and the
+      // empty floating window closes automatically.
+      const floatingTab = floatWin.locator(`[data-testid="tab"][data-tab-id="${agentTabId}"]:visible`).first()
+      await floatingTab.waitFor({ state: 'visible', timeout: 10_000 })
+      const floatingTabBox = await requireBox(floatingTab, 'floating agent tab')
+
+      // Pick the rightmost top-row main tile (outside the floating window) as the
+      // drop destination so the tab lands visibly inside the 2x2 grid.
+      const mainTiles = p.locator('[data-testid="tile"]')
+      const tileCount = await mainTiles.count()
+      let targetTabBarBox: ClipRect | null = null
+      let bestScore = Number.NEGATIVE_INFINITY
+      for (let i = 0; i < tileCount; i++) {
+        const candidate = mainTiles.nth(i)
+        const inFloat = await candidate.evaluate(el => Boolean(el.closest('[data-testid="floating-window"]'))).catch(() => true)
+        if (inFloat)
+          continue
+        const bar = candidate.locator('[data-testid="tab-bar"]:visible').first()
+        const barBox = await bar.boundingBox().catch(() => null)
+        if (!barBox || barBox.width <= 0 || barBox.height <= 0)
+          continue
+        // Favor the top-right grid cell (high X, low Y).
+        const score = barBox.x - barBox.y * 2
+        if (score > bestScore) {
+          bestScore = score
+          targetTabBarBox = barBox
+        }
+      }
+      if (!targetTabBarBox)
+        throw new Error('Could not locate a 2x2 grid tile tab-bar drop target')
+
+      const dragStartX = floatingTabBox.x + floatingTabBox.width / 2
+      const dragStartY = floatingTabBox.y + floatingTabBox.height / 2
+      const dropX = targetTabBarBox.x + Math.min(80, targetTabBarBox.width / 2)
+      const dropY = targetTabBarBox.y + targetTabBarBox.height / 2
+
+      const dockSaved = waitForLayoutSaved(p)
+      await recorder.movePointer(dragStartX, dragStartY, 10, 180)
+      await recorder.wait(80)
+      await p.mouse.down()
+      // Move past GuardedPointerSensor's 10px activation distance first, then glide
+      // smoothly to the top-right grid tile's tab bar.
+      await recorder.movePointer(dragStartX + 18, dragStartY - 8, 6, 120)
+      await recorder.movePointer(dropX, dropY, 20, 480)
+      await recorder.wait(220)
+      await p.mouse.up()
+      await dockSaved
+
+      // Confirm the empty floating window closed automatically; close it as a
+      // defensive fallback if it remains open.
+      const closedAutomatically = await floatWin.waitFor({ state: 'hidden', timeout: 5_000 }).then(() => true, () => false)
+      if (!closedAutomatically) {
+        const closeFloatBtn = floatWin.locator('[data-testid="floating-window-close"]:visible').first()
+        if (await closeFloatBtn.isVisible().catch(() => false)) {
+          await recorder.clickLocator(closeFloatBtn)
+          await floatWin.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+        }
+      }
+      await waitFor('agent tab docked inside main 2x2 grid', async () => {
+        const docked = p.locator(`[data-testid="tab"][data-tab-id="${agentTabId}"]:visible`).first()
+        const inFloat = await docked.evaluate(el => Boolean(el.closest('[data-testid="floating-window"]'))).catch(() => true)
+        return !inFloat
+      }, 10_000)
+      await recorder.wait(950)
 
       const outPath = join(VIDEOS_OUT_DIR, `tiling-floating-layout-${theme}.mp4`)
       await recorder.finish(outPath)
@@ -2223,12 +2289,23 @@ async function captureRemoteWorkersClip(
       await p.keyboard.press('Escape')
       await recorder.wait(400)
 
-      // Open the Register worker dialog and smoothly reframe onto the dialog.
+      // Open the Register worker dialog and zoom in tightly on the title,
+      // POSIX/PowerShell toggle, and registration commands (cropping the bottom
+      // button row so the commands are large and legible).
       await recorder.clickLocator(p.locator('[data-testid="sidebar-register-worker"]:visible').first())
       const regDialog = p.getByRole('dialog', { name: 'Register worker' })
       await regDialog.waitFor({ state: 'visible', timeout: 10_000 })
       await regDialog.getByTestId('registration-command').waitFor({ state: 'visible', timeout: 10_000 })
-      await recorder.zoomToLocator(regDialog, { padding: 56, maxZoom: 1.45, transitionMs: 480 })
+      const regDialogBox = await requireBox(regDialog, 'register worker dialog')
+      await recorder.zoomToRect(
+        {
+          x: regDialogBox.x + 12,
+          y: regDialogBox.y + 8,
+          width: regDialogBox.width - 24,
+          height: Math.round(regDialogBox.height * 0.68),
+        },
+        { padding: 20, maxZoom: 1.65, transitionMs: 480 },
+      )
       await recorder.wait(900)
 
       const psTab = regDialog.getByRole('radio', { name: 'PowerShell' })

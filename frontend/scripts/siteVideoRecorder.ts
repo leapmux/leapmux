@@ -67,6 +67,12 @@ export interface RecorderOptions {
   crf?: number
   /** x264 preset (default: 'slow'). */
   preset?: string
+  /**
+   * Duration in milliseconds of the smooth crossfade appended at the end of the
+   * clip back to frame 0 so HTML `<video loop>` loops seamlessly (default: 1000;
+   * pass 0 to disable).
+   */
+  loopCrossfadeMs?: number
   /** Inject the crisp vector demo cursor and click/wheel pulse overlay (default: true). */
   showCursor?: boolean
 }
@@ -80,6 +86,15 @@ export interface ZoompanExpressions {
   z: string
   x: string
   y: string
+}
+
+export interface VideoFilterGraphOptions {
+  fps: number
+  width: number
+  height: number
+  durationSec: number
+  loopCrossfadeSec: number
+  zoompan: ZoompanExpressions
 }
 
 const EPSILON = 1e-4
@@ -300,6 +315,51 @@ export function buildConcatManifest(
   return `${lines.join('\n')}\n`
 }
 
+/**
+ * Build the ffmpeg filtergraph for 2x RGB pan/zoom plus an optional smooth
+ * crossfade from the held final frame back to frame 0 for seamless looping.
+ */
+export function buildVideoFilterGraph(options: VideoFilterGraphOptions): {
+  filterComplex: string
+  outputMap: string
+  totalOutputSec: number
+} {
+  const { fps, width, height, durationSec, loopCrossfadeSec, zoompan } = options
+  const mainDuration = Math.max(0.1, durationSec)
+  const crossfade = Math.max(0, loopCrossfadeSec)
+  const zoompanFilter = `zoompan=z='${zoompan.z}':x='${zoompan.x}':y='${zoompan.y}':d=1:fps=${fps}:s=${width}x${height}`
+
+  if (crossfade <= 0) {
+    return {
+      filterComplex: [
+        `[0:v]fps=${fps}`,
+        'format=gbrp',
+        zoompanFilter,
+        `trim=duration=${mainDuration.toFixed(3)}`,
+        'setpts=PTS-STARTPTS',
+        'scale=out_color_matrix=bt709:flags=lanczos',
+        'format=yuv420p[v]',
+      ].join(','),
+      outputMap: '[v]',
+      totalOutputSec: mainDuration,
+    }
+  }
+
+  const fadeStr = crossfade.toFixed(3)
+  const mainStr = mainDuration.toFixed(3)
+  const filterComplex = [
+    `[0:v]fps=${fps},format=gbrp,${zoompanFilter},trim=duration=${mainStr},setpts=PTS-STARTPTS,format=rgb24,tpad=stop_mode=clone:stop_duration=${fadeStr}[main]`,
+    `[1:v]format=rgb24,scale=${width}:${height}:flags=lanczos,fps=${fps},trim=duration=${fadeStr},setpts=PTS-STARTPTS[first]`,
+    `[main][first]xfade=transition=fade:duration=${fadeStr}:offset=${mainStr},scale=out_color_matrix=bt709:flags=lanczos,format=yuv420p[v]`,
+  ].join(';')
+
+  return {
+    filterComplex,
+    outputMap: '[v]',
+    totalOutputSec: mainDuration + crossfade,
+  }
+}
+
 async function installDemoCursor(page: Page): Promise<void> {
   await page.evaluate(() => {
     const existing = document.getElementById('__lm_demo_cursor_root')
@@ -428,6 +488,7 @@ export class SiteVideoRecorder {
   private readonly fps: number
   private readonly crf: number
   private readonly preset: string
+  private readonly loopCrossfadeMs: number
   private readonly expectedWidth: number
   private readonly expectedHeight: number
   private readonly startPerfMs: number
@@ -442,7 +503,7 @@ export class SiteVideoRecorder {
   private constructor(
     page: Page,
     cdp: CDPSession,
-    options: Required<Pick<RecorderOptions, 'workDir' | 'viewport' | 'scaleFactor' | 'fps' | 'crf' | 'preset'>>,
+    options: Required<Pick<RecorderOptions, 'workDir' | 'viewport' | 'scaleFactor' | 'fps' | 'crf' | 'preset' | 'loopCrossfadeMs'>>,
     startPerfMs: number,
   ) {
     this.page = page
@@ -453,6 +514,7 @@ export class SiteVideoRecorder {
     this.fps = options.fps
     this.crf = options.crf
     this.preset = options.preset
+    this.loopCrossfadeMs = options.loopCrossfadeMs
     this.expectedWidth = Math.round(options.viewport.width * options.scaleFactor)
     this.expectedHeight = Math.round(options.viewport.height * options.scaleFactor)
     this.startPerfMs = startPerfMs
@@ -471,6 +533,7 @@ export class SiteVideoRecorder {
     const fps = options.fps ?? 30
     const crf = options.crf ?? 17
     const preset = options.preset ?? 'slow'
+    const loopCrossfadeMs = Math.max(0, options.loopCrossfadeMs ?? 1000)
     const showCursor = options.showCursor ?? true
 
     mkdirSync(options.workDir, { recursive: true })
@@ -493,6 +556,7 @@ export class SiteVideoRecorder {
         fps,
         crf,
         preset,
+        loopCrossfadeMs,
       },
       startPerfMs,
     )
@@ -641,7 +705,7 @@ export class SiteVideoRecorder {
     const manifestPath = join(this.workDir, 'concat.txt')
     writeFileSync(manifestPath, buildConcatManifest(this.frames, totalMs), 'utf8')
 
-    const { z, x, y } = buildZoompanExpressions(
+    const zoompan = buildZoompanExpressions(
       this.keyframes,
       this.viewport,
       this.scaleFactor,
@@ -650,16 +714,18 @@ export class SiteVideoRecorder {
 
     const outWidth = this.expectedWidth
     const outHeight = this.expectedHeight
-    const filterGraph = [
-      `fps=${this.fps}`,
-      'format=gbrp',
-      `zoompan=z='${z}':x='${x}':y='${y}':d=1:fps=${this.fps}:s=${outWidth}x${outHeight}`,
-      'scale=out_color_matrix=bt709:flags=lanczos',
-      'format=yuv420p',
-    ].join(',')
+    const durationSec = totalMs / 1000
+    const loopCrossfadeSec = this.loopCrossfadeMs / 1000
+    const { filterComplex, outputMap, totalOutputSec } = buildVideoFilterGraph({
+      fps: this.fps,
+      width: outWidth,
+      height: outHeight,
+      durationSec,
+      loopCrossfadeSec,
+      zoompan,
+    })
 
-    mkdirSync(dirname(outMp4Path), { recursive: true })
-    await execFileAsync('ffmpeg', [
+    const ffmpegArgs: string[] = [
       '-y',
       '-f',
       'concat',
@@ -667,10 +733,27 @@ export class SiteVideoRecorder {
       '0',
       '-i',
       manifestPath,
-      '-vf',
-      filterGraph,
+    ]
+    if (loopCrossfadeSec > 0) {
+      const firstFramePath = this.frames[0]!.path
+      ffmpegArgs.push(
+        '-loop',
+        '1',
+        '-t',
+        loopCrossfadeSec.toFixed(3),
+        '-framerate',
+        String(this.fps),
+        '-i',
+        firstFramePath,
+      )
+    }
+    ffmpegArgs.push(
+      '-filter_complex',
+      filterComplex,
+      '-map',
+      outputMap,
       '-t',
-      (totalMs / 1000).toFixed(3),
+      totalOutputSec.toFixed(3),
       '-c:v',
       'libx264',
       '-preset',
@@ -689,7 +772,10 @@ export class SiteVideoRecorder {
       '+faststart',
       '-an',
       outMp4Path,
-    ])
+    )
+
+    mkdirSync(dirname(outMp4Path), { recursive: true })
+    await execFileAsync('ffmpeg', ffmpegArgs)
   }
 
   private pushCameraTransition(nextFrame: CameraFrame, transitionMs: number): void {

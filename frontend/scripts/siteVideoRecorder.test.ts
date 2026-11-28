@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildConcatManifest,
+  buildVideoFilterGraph,
   buildZoompanExpressions,
   computeTargetCameraFrame,
   evaluateCameraAt,
@@ -173,5 +174,37 @@ describe('buildConcatManifest', () => {
 
   it('rejects an empty frame list', () => {
     expect(() => buildConcatManifest([], 1000)).toThrow(/without captured frames/i)
+  })
+})
+
+describe('buildVideoFilterGraph', () => {
+  it('appends a 1-second xfade to frame 0 when loopCrossfadeSec is positive', () => {
+    const graph = buildVideoFilterGraph({
+      fps: 30,
+      width: 2560,
+      height: 1600,
+      durationSec: 9.5,
+      loopCrossfadeSec: 1,
+      zoompan: { z: '1', x: '0', y: '0' },
+    })
+    expect(graph.outputMap).toBe('[v]')
+    expect(graph.totalOutputSec).toBeCloseTo(10.5, 5)
+    expect(graph.filterComplex).toContain('tpad=stop_mode=clone:stop_duration=1.000[main]')
+    expect(graph.filterComplex).toContain('[main][first]xfade=transition=fade:duration=1.000:offset=9.500')
+    expect(graph.filterComplex).toContain('scale=out_color_matrix=bt709:flags=lanczos,format=yuv420p[v]')
+  })
+
+  it('omits the xfade branch when loopCrossfadeSec is zero', () => {
+    const graph = buildVideoFilterGraph({
+      fps: 30,
+      width: 2560,
+      height: 1600,
+      durationSec: 8,
+      loopCrossfadeSec: 0,
+      zoompan: { z: '1', x: '0', y: '0' },
+    })
+    expect(graph.totalOutputSec).toBeCloseTo(8, 5)
+    expect(graph.filterComplex).not.toContain('xfade')
+    expect(graph.filterComplex).toContain('scale=out_color_matrix=bt709:flags=lanczos,format=yuv420p[v]')
   })
 })
