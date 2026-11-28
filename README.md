@@ -140,7 +140,7 @@ It refuses to serve when another live Hub owns that lease.
 A replacement can take over after the owner releases the lease or the lease expires.
 Administrative CLI processes can access the database while the Hub runs.
 
-For the full architecture, deployment modes, and threat model, see the **[Concepts](https://leapmux.dev/docs/getting-started/concepts/)** and **[Security & Threat Model](https://leapmux.dev/docs/admin/security/)** chapters at [leapmux.dev](https://leapmux.dev).
+For the full architecture, deployment modes, and threat model, see the **[Concepts](https://leapmux.dev/docs/getting-started/concepts/)** and **[Security & Authentication](https://leapmux.dev/docs/admin/security-and-auth/)** chapters at [leapmux.dev](https://leapmux.dev).
 
 ## Prerequisites
 

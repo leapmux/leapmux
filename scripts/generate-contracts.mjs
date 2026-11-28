@@ -1741,6 +1741,26 @@ export function pageTokenSource(t, renames) {
   return renames[t] ?? t
 }
 
+/** The 16 ANSI terminal color keys in index order (0..15). */
+export const TERMINAL_ANSI_KEYS = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'brightBlack',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan',
+  'brightWhite',
+]
+
 export function checkTheme(t) {
   for (const variant of ['light', 'dark']) {
     for (const token of t.oauthPage.tokens) {
@@ -1752,6 +1772,15 @@ export function checkTheme(t) {
     mustBe(t.oauthPage.tokens.includes(page), 'theme-default.json', `rename key ${page} is not in oauthPage.tokens -- a rename for an unlisted token is dead data: the page never defines that CSS variable`)
     mustBe(t.light[palette] != null && t.dark[palette] != null, 'theme-default.json', `rename target ${palette} (page token ${page}) is missing from a palette`)
   }
+  mustBe(t.terminal != null, 'theme-default.json', 'terminal ANSI palettes are missing')
+  for (const variant of ['light', 'dark']) {
+    const ansi = t.terminal[variant]
+    mustBe(ansi != null, 'theme-default.json', `terminal.${variant} palette is missing`)
+    for (const key of TERMINAL_ANSI_KEYS) {
+      const value = ansi[key]
+      mustBe(typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value), 'theme-default.json', `terminal.${variant}.${key} must be a 6-digit hex color`)
+    }
+  }
   return {}
 }
 
@@ -1762,13 +1791,19 @@ export function emitTsTheme(t) {
       .join('\n')
     return `export const ${name} = {\n${entries}\n} as const\n`
   }
+  const ansi = (variant, exportName) => {
+    const entries = TERMINAL_ANSI_KEYS
+      .map(key => `  ${key}: ${jsonString(t.terminal[variant][key])},`)
+      .join('\n')
+    return `export const ${exportName} = {\n${entries}\n} as const\n`
+  }
   return `${TS_HEADER('theme-default.json')}
-// The default palette's full token maps, generated from
+// The default palette's full token maps and Dimidium ANSI colors, generated from
 // contracts/theme-default.json. PLAIN DATA with no imports: the themes
 // directory imports this by relative path (see styles/themes/types.ts for
 // why plain data matters -- generate-notice.mjs resolves the chain under
 // bare bun, with no Vite and no alias).
-${palette('light')}\n${palette('dark')}`
+${palette('light')}\n${palette('dark')}\n${ansi('light', 'lightAnsi')}\n${ansi('dark', 'darkAnsi')}`
 }
 
 export function emitGoTheme(t) {

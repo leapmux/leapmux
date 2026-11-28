@@ -1,8 +1,9 @@
 {{- /*
   JSON-LD structured data (overrides whatever the theme resolves `partial
-  "schema.html"` to). Home gets WebSite + Organization; every other page gets a
-  TechArticle + a BreadcrumbList built from its ancestor chain. Keywords come
-  from keywords.html. jsonify escapes <,>,& to \uXXXX, so the output is safe to
+  "schema.html"` to). Home gets WebSite + Organization; regular pages get a
+  TechArticle and section pages get a CollectionPage, each paired with a
+  BreadcrumbList built from its ancestor chain. Keywords come from
+  keywords.html. jsonify escapes <,>,& to \uXXXX, so the output is safe to
   embed in <script> (safeJS just stops html/template re-escaping it).
 */ -}}
 {{- $iso8601 := "2006-01-02T15:04:05-07:00" -}}
@@ -27,37 +28,28 @@
   {{- $orgHome := merge $org (dict "sameAs" (slice "https://github.com/leapmux/leapmux")) -}}
   {{- $graph = slice $website $orgHome -}}
 {{- else -}}
-  {{- /* Section label for articleSection. */ -}}
-  {{- $trimmed := strings.TrimPrefix "/" .RelPermalink -}}
-  {{- if hasPrefix .RelPermalink "/docs/" -}}
-    {{- $trimmed = strings.TrimPrefix "/docs/" .RelPermalink -}}
-  {{- end -}}
-  {{- $seg := index (split $trimmed "/") 0 -}}
-  {{- $labels := dict
-        "getting-started" "Getting Started"
-        "recipes" "Workflow Recipes"
-        "using" "Using LeapMux"
-        "admin" "Administration"
-        "reference" "Reference"
-        "download" "Downloads"
-        "changelog" "Changelog" -}}
-  {{- $section := index $labels $seg | default "Documentation" -}}
+  {{- $section := partial "section-label.html" . | default "Documentation" -}}
+  {{- $pageType := cond .IsSection "CollectionPage" "TechArticle" -}}
+  {{- $headline := .Title | default .Site.Title -}}
 
-  {{- $article := dict
-        "@type" "TechArticle"
-        "headline" .Title
+  {{- $entity := dict
+        "@type" $pageType
+        "headline" $headline
+        "name" $headline
         "description" $desc
         "url" .Permalink
         "mainEntityOfPage" (dict "@type" "WebPage" "@id" .Permalink)
         "inLanguage" site.Language.Locale
         "image" (partial "og-image.html" .)
-        "articleSection" $section
         "keywords" (partial "keywords.html" .)
         "author" $org
         "publisher" $org
         "isPartOf" (dict "@type" "WebSite" "name" .Site.Title "url" .Site.Home.Permalink) -}}
-  {{- with .Lastmod }}{{ if not .IsZero }}{{ $article = merge $article (dict "dateModified" (.Format $iso8601)) }}{{ end }}{{ end -}}
-  {{- with .PublishDate }}{{ if not .IsZero }}{{ $article = merge $article (dict "datePublished" (.Format $iso8601)) }}{{ end }}{{ end -}}
+  {{- if not .IsSection -}}
+    {{- $entity = merge $entity (dict "articleSection" $section) -}}
+  {{- end -}}
+  {{- with .Lastmod }}{{ if not .IsZero }}{{ $entity = merge $entity (dict "dateModified" (.Format $iso8601)) }}{{ end }}{{ end -}}
+  {{- with .PublishDate }}{{ if not .IsZero }}{{ $entity = merge $entity (dict "datePublished" (.Format $iso8601)) }}{{ end }}{{ end -}}
 
   {{- /* Breadcrumb: ancestor chain (home -> ... -> parent) then this page. */ -}}
   {{- $items := slice -}}
@@ -67,7 +59,7 @@
   {{- $items = $items | append (dict "@type" "ListItem" "position" (add (len .Ancestors) 1) "name" (.LinkTitle | default .Title) "item" .Permalink) -}}
   {{- $breadcrumb := dict "@type" "BreadcrumbList" "itemListElement" $items -}}
 
-  {{- $graph = slice $article $breadcrumb -}}
+  {{- $graph = slice $entity $breadcrumb -}}
 {{- end -}}
 
 <script type="application/ld+json">{{ (dict "@context" "https://schema.org" "@graph" $graph) | jsonify | safeJS }}</script>

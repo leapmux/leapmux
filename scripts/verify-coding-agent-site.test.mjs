@@ -1,8 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 import { codingAgentMatrixDimensions, findOrphanH2Headings, verifyBuiltSiteArtifacts, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker } from './verify-coding-agent-site.mjs'
+
+const require = createRequire(new URL('../frontend/package.json', import.meta.url))
+const { JSDOM } = require('jsdom')
 
 const SUPPORT_STATES = [
   { id: 'supported', symbol: '✅', label: 'Supported' },
@@ -724,15 +728,20 @@ describe('verifyBuiltSiteArtifacts', () => {
     const dir = mkdtempSync(join(tmpdir(), 'leapmux-site-artifacts-'))
     const dirs = [
       'docs/getting-started/quick-start',
+      'docs/getting-started/concepts',
       'docs/admin/configuration',
       'docs/admin/encryption-and-data',
+      'docs/admin/recover',
       'docs/admin/reverse-proxy',
       'docs/admin/starting-and-stopping',
       'docs/recipes/parallel-agents',
       'docs/reference/faq',
       'docs/reference/supported-agents',
       'docs/reference/commands',
+      'download',
+      'changelog',
       'pagefind',
+      'vendor/asciinema-player',
     ]
     for (const relDir of dirs)
       mkdirSync(join(dir, relDir), { recursive: true })
@@ -768,7 +777,23 @@ describe('verifyBuiltSiteArtifacts', () => {
       '### Register Workers against the external HTTPS URL',
       '### Verify HTTPS, HTTP/2, and `/metrics` protection',
       '### Register and start a Worker through the proxy',
+      '',
+      '```nginx',
+      'proxy_set_header Upgrade $http_upgrade;',
+      'proxy_set_header Host $host;',
+      'return 301 https://$host$request_uri;',
+      'proxy_set_header X-Forwarded-Proto $scheme;',
+      '```',
     ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/recover/index.md'), [
+      '# Recovery',
+      '',
+      '> **Warning:** First paragraph.',
+      '>',
+      '> Passing the top-level directory creates an orphan database.',
+    ].join('\n'))
+    writeFileSync(join(dir, 'download/index.md'), '# Download LeapMux\n\nClean markdown.\n')
+    writeFileSync(join(dir, 'changelog/index.md'), '# Changelog\n\n## 2026-11-01 — Release\n')
     writeFileSync(join(dir, 'docs/admin/starting-and-stopping/index.md'), [
       '# Starting and Stopping',
       '',
@@ -779,7 +804,8 @@ describe('verifyBuiltSiteArtifacts', () => {
     writeFileSync(join(dir, 'docs/reference/faq/index.md'), '# FAQ\n\nSupported: Pi\n')
     writeFileSync(join(dir, 'docs/reference/supported-agents/index.md'), '# Supported Agents\n\n### Coding agent feature matrix\n')
     writeFileSync(join(dir, 'docs/reference/commands/index.md'), '# Commands\n\nUse <workspace>.\n')
-    writeFileSync(join(dir, 'llms.txt'), '# LeapMux\n- [Command Reference](https://leapmux.dev/docs/reference/commands/index.md)\n')
+    writeFileSync(join(dir, 'llms.txt'), '# LeapMux\n- [Command Reference](https://leapmux.dev/docs/reference/commands/index.md)\n- [Changelog (Overview)](https://leapmux.dev/changelog/index.md)\n')
+    writeFileSync(join(dir, 'llms-small.txt'), '# LeapMux (Core Index)\n- [Concepts & Topologies](https://leapmux.dev/docs/getting-started/concepts/index.md)\n')
     writeFileSync(join(dir, 'llms-full.txt'), [
       '# LeapMux — Full Documentation Guides',
       '# Quick Start',
@@ -787,12 +813,24 @@ describe('verifyBuiltSiteArtifacts', () => {
       '# Configuration Reference',
       '# Security & Authentication',
       '# Troubleshooting',
+      'proxy_set_header Upgrade $http_upgrade;',
     ].join('\n\n'))
     writeFileSync(join(dir, 'config-reference.json'), JSON.stringify(createMockConfigReference()))
-    writeFileSync(join(dir, 'index.html'), '<meta property="og:image:alt" content="LeapMux">')
+    writeFileSync(join(dir, 'index.html'), [
+      '<meta property="og:image:alt" content="LeapMux">',
+      '<meta property="og:locale" content="en_US">',
+      '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css" integrity="sha384-test" crossorigin="anonymous">',
+      '<style>.lm-cli-cast-mount .ap-player.asciinema-player-theme-leapmux{--term-color-foreground:rgb(34 32 30);--term-color-15:#b8bdbe;}</style>',
+      '<video muted loop playsinline preload="none"></video>',
+    ].join('\n'))
+    writeFileSync(join(dir, 'docs/admin/index.html'), '<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"CollectionPage"},{"@type":"BreadcrumbList"}]}</script>')
+    writeFileSync(join(dir, 'docs/getting-started/concepts/index.html'), '<script src="https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js" integrity="sha384-test" crossorigin="anonymous"></script>')
+    writeFileSync(join(dir, '_headers'), '/*.txt\n  Content-Type: text/plain; charset=utf-8\n\n/*.md\n  Content-Type: text/markdown; charset=utf-8\n')
     writeFileSync(join(dir, 'docs/admin/configuration/index.html'), '<meta property="article:section" content="Administration">')
     writeFileSync(join(dir, 'docs/recipes/parallel-agents/index.html'), '<meta property="article:section" content="Workflow Recipes">')
     writeFileSync(join(dir, 'pagefind/pagefind.js'), '// pagefind')
+    writeFileSync(join(dir, 'vendor/asciinema-player/asciinema-player.min.js'), '// asciinema')
+    writeFileSync(join(dir, 'vendor/asciinema-player/asciinema-player.css'), '/* asciinema */')
     return dir
   }
 
@@ -856,6 +894,185 @@ describe('verifyBuiltSiteArtifacts', () => {
     }
     finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects mangled nginx variables, broken callouts, raw HTML in Markdown, escaped entities in llms.txt, overlapping _headers, missing SRI, autoplay video, and wrong section JSON-LD', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'docs/admin/reverse-proxy/index.md'), '# Reverse Proxy\n\n### Bind the Hub to loopback\n### Set the public URL, secure cookies, and trusted proxies\n### Register Workers against the external HTTPS URL\n### Verify HTTPS, HTTP/2, and `/metrics` protection\n### Register and start a Worker through the proxy\n\nproxy_set_header Upgrade ;\n')
+      writeFileSync(join(dir, 'docs/admin/recover/index.md'), '# Recovery\n\n> **Warning:** First paragraph.\n\nPassing the top-level directory.\n')
+      writeFileSync(join(dir, 'download/index.md'), '# Download\n<div class="hero"><script>alert(1)</script></div>\n')
+      writeFileSync(join(dir, 'llms.txt'), '# LeapMux\n- [Concepts &amp; Topologies](https://leapmux.dev/docs/reference/commands/index.md)\n')
+      writeFileSync(join(dir, 'llms-small.txt'), '# Core\n- [It&#39;s escaped](https://leapmux.dev/)\n')
+      writeFileSync(join(dir, 'llms-full.txt'), '# Quick Start\n# Control Command Reference\n')
+      writeFileSync(join(dir, 'index.html'), [
+        '<meta property="og:image:alt" content="LeapMux">',
+        '<meta property="og:locale" content="en">',
+        '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css">',
+        '<video autoplay muted loop playsinline></video>',
+      ].join('\n'))
+      writeFileSync(join(dir, 'docs/admin/index.html'), '<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"TechArticle"},{"@type":"BreadcrumbList"}]}</script>')
+      writeFileSync(join(dir, 'docs/getting-started/concepts/index.html'), '<script src="https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js"></script>')
+      writeFileSync(join(dir, '_headers'), '/*.md\n  Content-Type: text/markdown\n  Vary: Accept\n\n/skills/*\n  Content-Type: text/markdown\n')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('docs/admin/reverse-proxy/index.md: missing nginx variable $http_upgrade')
+      expect(errors).toContain('docs/admin/recover/index.md: multi-paragraph callout lost blockquote prefix on continuation paragraph')
+      expect(errors).toContain('download/index.md: leaks raw <script> tag')
+      expect(errors).toContain('download/index.md: leaks raw <div> tag')
+      expect(errors).toContain('llms.txt: missing /changelog/index.md entry')
+      expect(errors).toContain('llms.txt: contains HTML-escaped entities')
+      expect(errors).toContain('llms-small.txt: contains HTML-escaped entities')
+      expect(errors).toContain('llms-full.txt: must exclude Control Command Reference (llms_full: false)')
+      expect(errors).toContain('index.html: og:locale is "en", expected "en_US"')
+      expect(errors).toContain('index.html: contains <video autoplay> attribute; video playback must be gated by JS')
+      expect(errors).toContain('index.html: missing generated asciinema-player terminal theme from contracts/theme-default.json')
+      expect(errors).toContain('index.html: external CDN asset https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css lacks sha384 integrity')
+      expect(errors).toContain('docs/admin/index.html: JSON-LD @type is "TechArticle", expected "CollectionPage"')
+      expect(errors).toContain('docs/getting-started/concepts/index.html: external CDN asset https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js lacks sha384 integrity')
+      expect(errors).toContain('_headers: must define disjoint /*.txt and /*.md rules')
+      expect(errors).toContain('_headers: contains overlapping /skills/* or /agent-guide.md rule that duplicates Content-Type on Cloudflare')
+      expect(errors).toContain('_headers: must not emit Vary: Accept for static assets without content negotiation')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('uses CSS subgrid instead of display: contents on the hero h1', () => {
+    const customCss = readFileSync(resolve(import.meta.dirname, '../site/assets/css/custom.css'), 'utf8')
+    expect(customCss).not.toMatch(/\.hero-headline-with-ticker\s+h1\s*\{[^}]*display\s*:\s*contents\b/)
+    expect(customCss).toMatch(/\.hero-headline-with-ticker\s+h1\s*\{[^}]*grid-template-columns\s*:\s*subgrid\b[^}]+grid-template-rows\s*:\s*subgrid\b/)
+    expect(customCss).not.toContain('--term-color-')
+  })
+
+  it('rejects weak SRI hashes, missing crossorigin, malformed JSON-LD, missing nginx vars in llms-full.txt, and missing asciinema vendor assets', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'index.html'), [
+        '<meta property="og:image:alt" content="LeapMux">',
+        '<meta property="og:locale" content="en_US">',
+        '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css" integrity="sha256-weak">',
+        '<style>.lm-cli-cast-mount .ap-player.asciinema-player-theme-leapmux{--term-color-15:#b8bdbe;}</style>',
+      ].join('\n'))
+      writeFileSync(join(dir, 'docs/admin/index.html'), '<script type="application/ld+json">{broken json</script>')
+      writeFileSync(join(dir, 'llms-full.txt'), '# Quick Start\n# Configuration Guide\n# Configuration Reference\n# Security & Authentication\n# Troubleshooting\n')
+      rmSync(join(dir, 'vendor/asciinema-player/asciinema-player.min.js'))
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('index.html: external CDN asset https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css lacks sha384 integrity')
+      expect(errors).toContain('index.html: external CDN asset https://cdn.jsdelivr.net/npm/hack-font@3.3.0/build/web/hack.css lacks crossorigin="anonymous"')
+      expect(errors).toContain('docs/admin/index.html: JSON-LD @type is null, expected "CollectionPage"')
+      expect(errors).toContain('llms-full.txt: missing nginx variable $http_upgrade')
+      expect(errors).toContain('site/public/vendor/asciinema-player/asciinema-player.min.js: missing locked asciinema-player bundle asset')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('table-filter.js behavior', () => {
+  const tableFilterSource = readFileSync(resolve(import.meta.dirname, '../site/assets/js/table-filter.js'), 'utf8')
+
+  function mountTableFilter(bodyHtml, url = 'https://leapmux.dev/docs/test/') {
+    const dom = new JSDOM(`<!doctype html><html><body>${bodyHtml}</body></html>`, {
+      url,
+      runScripts: 'dangerously',
+    })
+    dom.window.history.replaceState({ kept: 42 }, '', url)
+    dom.window.eval(tableFilterSource)
+    return dom
+  }
+
+  function widgetMarkup(attrs = '') {
+    return `<div class="lm-table-filter" data-table-filter ${attrs}>
+      <div class="lm-table-filter-bar">
+        <input class="lm-table-filter-input" type="search">
+        <button class="lm-table-filter-clear" type="button" hidden>Clear</button>
+        <span class="lm-table-filter-count"></span>
+      </div>
+      <div class="lm-table-filter-pills"></div>
+      <div class="lm-table-filter-empty" hidden>No matches</div>
+    </div>`
+  }
+
+  it('filters rows, toggles category pills, preserves sibling prose wrappers, and keeps history.state on reset', () => {
+    const dom = mountTableFilter(`
+      <main class="content">
+        ${widgetMarkup()}
+        <h2>Hub</h2>
+        <div class="prose-and-table">
+          <p class="keep-prose">Important note beside table.</p>
+          <table><tbody>
+            <tr><td>listen</td><td>127.0.0.1:4327</td></tr>
+            <tr><td>storage</td><td>sqlite</td></tr>
+          </tbody></table>
+        </div>
+        <h2>Worker</h2>
+        <div class="table-only">
+          <table><tbody>
+            <tr><td>hub_url</td><td>https://hub.example</td></tr>
+          </tbody></table>
+        </div>
+      </main>
+    `)
+    try {
+      const { document, Event, window } = dom.window
+      const input = document.querySelector('.lm-table-filter-input')
+      const clearBtn = document.querySelector('.lm-table-filter-clear')
+      const countEl = document.querySelector('.lm-table-filter-count')
+      const emptyEl = document.querySelector('.lm-table-filter-empty')
+      const pills = Array.from(document.querySelectorAll('.lm-table-filter-pill'))
+
+      expect(countEl.textContent).toBe('Showing 3 of 3 entries')
+      expect(pills.map(p => p.textContent)).toEqual(['All', 'Hub', 'Worker'])
+
+      // Filter to a row in Worker: Hub's wrapper with sibling prose must not be hidden.
+      input.value = 'hub_url'
+      input.dispatchEvent(new Event('input'))
+      expect(countEl.textContent).toBe('Showing 1 of 3 entries')
+      expect(emptyEl.hidden).toBe(true)
+      expect(document.querySelector('.prose-and-table').hidden).toBe(false)
+
+      // Zero matches shows the empty state.
+      input.value = 'nonexistent-key'
+      input.dispatchEvent(new Event('input'))
+      expect(countEl.textContent).toBe('Showing 0 of 3 entries')
+      expect(emptyEl.hidden).toBe(false)
+
+      // Clear resets rows immediately and preserves history.state.
+      clearBtn.click()
+      expect(countEl.textContent).toBe('Showing 3 of 3 entries')
+      expect(window.history.state).toEqual({ kept: 42 })
+
+      // Clicking a category pill filters to that section and toggles aria-pressed.
+      pills[1].click()
+      expect(pills[1].getAttribute('aria-pressed')).toBe('true')
+      expect(countEl.textContent).toBe('Showing 2 of 3 entries')
+    }
+    finally {
+      dom.window.close()
+    }
+  })
+
+  it('hides widgets with an invalid scope selector without breaking sibling widgets and isolates URL params', () => {
+    const dom = mountTableFilter(`
+      <main class="content">
+        ${widgetMarkup('data-table-filter-scope="[invalid"')}
+        ${widgetMarkup('id="w2"')}
+        <table><tbody><tr><td>alpha</td></tr><tr><td>beta</td></tr></tbody></table>
+      </main>
+    `, 'https://leapmux.dev/docs/test/?q2=alpha')
+    try {
+      const { document } = dom.window
+      const [badWidget, goodWidget] = document.querySelectorAll('[data-table-filter]')
+      expect(badWidget.hidden).toBe(true)
+      expect(goodWidget.hidden).toBe(false)
+      expect(goodWidget.querySelector('.lm-table-filter-input').value).toBe('alpha')
+      expect(goodWidget.querySelector('.lm-table-filter-count').textContent).toBe('Showing 1 of 2 entries')
+    }
+    finally {
+      dom.window.close()
     }
   })
 })

@@ -129,7 +129,11 @@ function fixture(platform = hostPlatform) {
   delete config.dotenv
   const outputs = {
     'install-frontend-deps': ['frontend/node_modules/package/index.js'],
-    'install-site-deps': ['site/node_modules/.bin/pagefind', 'site/node_modules/.bin/wrangler'],
+    'install-site-deps': [
+      'site/node_modules/.bin/pagefind',
+      'site/node_modules/.bin/wrangler',
+      'site/node_modules/asciinema-player/dist/bundle/asciinema-player.min.js',
+    ],
     'generate-proto': ['backend/generated/proto/agent.pb.go', 'frontend/src/generated/proto/agent_pb.ts'],
     'generate-contracts': ['backend/generated/contracts/wire.go', 'frontend/src/generated/contracts/wire.ts', 'desktop/rust/src/generated/contracts.rs'],
     'fetch-spinners': ['spinner-cache/spinners/default.json'],

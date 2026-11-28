@@ -579,7 +579,7 @@ func refuseIfActingAuthorityMovedFrom(ctx context.Context, st store.Store, locke
 // was. The most consequential action the gate protects was the one action
 // that did not count as use, so a user who elevated at 11:58 and consented at
 // 11:59 met the prompt again at 12:01. "Each sensitive action slides that
-// window forward" is the rule the design and site/content/docs/admin/security.md both
+// window forward" is the rule the design and site/content/docs/admin/security-and-auth.md both
 // state; this is what makes it true of every surface rather than of one.
 //
 // now is a parameter so each surface passes its own clock seam, exactly as

@@ -1,203 +1,232 @@
 {{- /*
   Convert a page's raw Markdown into clean, self-contained GitHub Flavored
   Markdown with LeapMux shortcodes resolved and layout wrappers stripped.
-  Shared by page.markdown.md, section.markdown.md, and llms-full.txt so there
-  is a single source of truth for shortcode-to-Markdown conversion.
+  Shared by page.markdown.md, section.markdown.md, llms.txt, and llms-full.txt
+  via partialCached so there is a single cached source of truth.
 
   Single top-level return -- Hugo returning partials reject nested returns.
 */ -}}
 {{- $body := .RawContent -}}
-{{- /* Resolve duration shortcodes from site.Params.durations. */ -}}
-{{- range $k, $v := site.Params.durations -}}
-  {{- $body = replace $body (printf "{{< duration %s digits >}}" $k) $v.digits -}}
-  {{- $body = replace $body (printf "{{< duration %s words >}}" $k) $v.words -}}
-  {{- $body = replace $body (printf "{{< duration %s >}}" $k) $v.words -}}
-{{- end -}}
-{{- /* Resolve agent-provider-count and agent-logos shortcodes from feature_matrix checklist. */ -}}
-{{- $checklist := index hugo.Data "feature_matrix" "checklist" -}}
-{{- $count := 0 -}}
-{{- $providerLabels := slice -}}
-{{- range $group := $checklist.providerGroups -}}
-  {{- $count = add $count (len $group) -}}
-  {{- range $p := $group -}}
-    {{- $providerLabels = $providerLabels | append $p.label -}}
-  {{- end -}}
-{{- end -}}
-{{- $body = replace $body "{{< agent-provider-count >}}" (printf "%d" $count) -}}
-{{- $body = replace $body "{{% agent-provider-count %}}" (printf "%d" $count) -}}
-{{- $body = replaceRE `\{\{<\s*agent-logos\s*>\}\}` (delimit $providerLabels ", ") $body -}}
-{{- $body = replaceRE `\{\{%\s*agent-logos\s*%\}\}` (delimit $providerLabels ", ") $body -}}
-{{- /* Resolve config-file shortcodes from page bundle resources. */ -}}
-{{- range .Resources -}}
-  {{- $res := . -}}
-  {{- $lines := split (strings.TrimRight "\n" $res.Content) "\n" -}}
-  {{- $first := index $lines 0 -}}
-  {{- if hasPrefix $first "# /" -}}
-    {{- $path := strings.TrimPrefix "# " $first -}}
-    {{- $cfgBody := strings.TrimLeft "\n" (delimit (after 1 $lines) "\n") -}}
-    {{- $escapedName := replace $res.Name "." `\.` -}}
-    {{- $pat := printf `\{\{<\s*config-file\s+file="%s"\s+lang="([^"]+)"\s*>\}\}` $escapedName -}}
-    {{- $rep := printf "**%s**\n\n```$1\n%s\n```" $path $cfgBody -}}
-    {{- $body = replaceRE $pat $rep $body -}}
-  {{- end -}}
-{{- end -}}
-{{- /* Expand changelog-list shortcode into plain Markdown for /changelog/index.md. */ -}}
-{{- $body = replaceRE `\{\{<\s*changelog-list\s*>\}\}` "{{< changelog-list >}}" $body -}}
-{{- $body = replaceRE `\{\{%\s*changelog-list\s*%\}\}` "{{< changelog-list >}}" $body -}}
-{{- if strings.Contains $body "{{< changelog-list >}}" -}}
-  {{- $clLines := slice -}}
-  {{- range hugo.Data.changelog.entries -}}
-    {{- $clLines = $clLines | append (printf "## %s — %s" .date .title) "" .summary "" -}}
-    {{- range .highlights -}}
-      {{- $clLines = $clLines | append (printf "- %s" .) -}}
+{{- if strings.Contains $body "{{" -}}
+  {{- /* Resolve duration shortcodes from site.Params.durations. */ -}}
+  {{- if strings.Contains $body "duration" -}}
+    {{- range $k, $v := site.Params.durations -}}
+      {{- $body = replace $body (printf "{{< duration %s digits >}}" $k) $v.digits -}}
+      {{- $body = replace $body (printf "{{< duration %s words >}}" $k) $v.words -}}
+      {{- $body = replace $body (printf "{{< duration %s >}}" $k) $v.words -}}
     {{- end -}}
-    {{- $clLines = $clLines | append "" -}}
   {{- end -}}
-  {{- $body = replace $body "{{< changelog-list >}}" (delimit $clLines "\n") -}}
-{{- end -}}
-{{- /* Render the coding-agent feature matrix as GitHub Flavored Markdown. */ -}}
-{{- $body = replaceRE `\{\{<\s*matrix\s*>\}\}` "{{< matrix >}}" $body -}}
-{{- $body = replaceRE `\{\{%\s*matrix\s*%\}\}` "{{< matrix >}}" $body -}}
-{{- if strings.Contains $body "{{< matrix >}}" -}}
-  {{- $data := index hugo.Data "feature_matrix" -}}
-  {{- $featureGroups := (index $data "features").groups -}}
-  {{- $features := where (index $data "features").features "showInMatrix" true -}}
-  {{- $states := $checklist.supportStates -}}
-  {{- $lines := slice "Legend:" "" -}}
-  {{- range $state := $states -}}
-    {{- $lines = $lines | append (printf "- %s %s" $state.symbol $state.label) -}}
-  {{- end -}}
-  {{- $groupCount := len $checklist.providerGroups -}}
-  {{- range $groupIndex, $group := $checklist.providerGroups -}}
-    {{- $lines = $lines | append "" (printf "### Coding agent feature matrix (part %d of %d)" (add $groupIndex 1) $groupCount) "" -}}
-    {{- $headerCells := slice "Feature" -}}
-    {{- $sepCells := slice "---" -}}
-    {{- range $provider := $group -}}
-      {{- $label := $provider.label -}}
-      {{- if $provider.userNote -}}
-        {{- $label = printf "%s†" $label -}}
+  {{- /* Resolve agent-provider-count and agent-logos from cached provider list. */ -}}
+  {{- if or (strings.Contains $body "agent-provider-count") (strings.Contains $body "agent-logos") -}}
+    {{- $providers := partialCached "agent-providers.html" . -}}
+    {{- $count := len $providers -}}
+    {{- $body = replace $body "{{< agent-provider-count >}}" (printf "%d" $count) -}}
+    {{- $body = replace $body "{{% agent-provider-count %}}" (printf "%d" $count) -}}
+    {{- if strings.Contains $body "agent-logos" -}}
+      {{- $providerLabels := slice -}}
+      {{- range $providers -}}
+        {{- $providerLabels = $providerLabels | append .label -}}
       {{- end -}}
-      {{- $headerCells = $headerCells | append $label -}}
-      {{- $sepCells = $sepCells | append "---" -}}
+      {{- $joinedLabels := delimit $providerLabels ", " -}}
+      {{- range findRE `\{\{[<%]\s*agent-logos\s*[>%]\}\}` $body -}}
+        {{- $body = replace $body . $joinedLabels -}}
+      {{- end -}}
     {{- end -}}
-    {{- $lines = $lines | append (printf "| %s |" (delimit $headerCells " | ")) -}}
-    {{- $lines = $lines | append (printf "| %s |" (delimit $sepCells " | ")) -}}
-    {{- range $featureGroup := $featureGroups -}}
-      {{- $groupFeatures := where $features "group" $featureGroup.id -}}
-      {{- if $groupFeatures -}}
-        {{- $groupRow := slice (printf "**%s**" $featureGroup.label) -}}
-        {{- range $group -}}
-          {{- $groupRow = $groupRow | append "" -}}
-        {{- end -}}
-        {{- $lines = $lines | append (printf "| %s |" (delimit $groupRow " | ")) -}}
-        {{- range $feature := $groupFeatures -}}
-          {{- $row := index $checklist.cells $feature.id -}}
-          {{- $rowCells := slice $feature.label -}}
-          {{- range $provider := $group -}}
-            {{- $cell := index $row $provider.id -}}
-            {{- $state := index (where $states "id" $cell.support) 0 -}}
-            {{- $sym := $state.symbol -}}
-            {{- if $cell.userNote -}}
-              {{- $sym = printf "%s†" $sym -}}
-            {{- end -}}
-            {{- $rowCells = $rowCells | append $sym -}}
+  {{- end -}}
+  {{- /* Resolve config-file shortcodes from page bundle resources (escape $ to $$ for replaceRE). */ -}}
+  {{- if strings.Contains $body "config-file" -}}
+    {{- range .Resources -}}
+      {{- $res := . -}}
+      {{- with partial "parse-config-file.html" $res -}}
+        {{- $path := replace .path "$" "$$" -}}
+        {{- $cfgBody := replace .body "$" "$$" -}}
+        {{- $escapedName := replaceRE `([.+*?^$()\[\]{}|\\])` `\$1` $res.Name -}}
+        {{- $pat1 := printf `\{\{[<%%]\s*config-file\s+file="%s"\s+lang="([^"]+)"\s*[>%%]\}\}` $escapedName -}}
+        {{- $pat2 := printf `\{\{[<%%]\s*config-file\s+lang="([^"]+)"\s+file="%s"\s*[>%%]\}\}` $escapedName -}}
+        {{- $rep := printf "**%s**\n\n```$1\n%s\n```" $path $cfgBody -}}
+        {{- $body = replaceRE $pat1 $rep $body -}}
+        {{- $body = replaceRE $pat2 $rep $body -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- /* Expand changelog-list shortcode into plain Markdown for /changelog/index.md. */ -}}
+  {{- if strings.Contains $body "changelog-list" -}}
+    {{- $clLines := slice -}}
+    {{- with hugo.Data.changelog -}}
+      {{- with .entries -}}
+        {{- range . -}}
+          {{- $clLines = $clLines | append (printf "## %s — %s" .date .title) "" -}}
+          {{- with .summary -}}
+            {{- $clLines = $clLines | append . "" -}}
           {{- end -}}
-          {{- $lines = $lines | append (printf "| %s |" (delimit $rowCells " | ")) -}}
+          {{- range .highlights -}}
+            {{- $clLines = $clLines | append (printf "- %s" .) -}}
+          {{- end -}}
+          {{- $clLines = $clLines | append "" -}}
         {{- end -}}
       {{- end -}}
     {{- end -}}
-  {{- end -}}
-  {{- $lines = $lines | append "" "### Feature definitions" "" -}}
-  {{- range $feature := $features -}}
-    {{- $lines = $lines | append (printf "- **%s**: %s" $feature.label $feature.description) -}}
-  {{- end -}}
-  {{- /* Emit userNote only; never emit detailNote (maintainer-only evidence). */ -}}
-  {{- $noteLines := slice -}}
-  {{- range $group := $checklist.providerGroups -}}
-    {{- range $provider := $group -}}
-      {{- with $provider.userNote -}}
-        {{- $note := replaceRE `\r?\n+` " " (strings.TrimSpace .) -}}
-        {{- $noteLines = $noteLines | append (printf "- **%s**: %s" $provider.label $note) -}}
-      {{- end -}}
+    {{- $clMd := delimit $clLines "\n" -}}
+    {{- range findRE `\{\{[<%]\s*changelog-list\s*[>%]\}\}` $body -}}
+      {{- $body = replace $body . $clMd -}}
     {{- end -}}
   {{- end -}}
-  {{- range $feature := $features -}}
-    {{- $row := index $checklist.cells $feature.id -}}
-    {{- range $group := $checklist.providerGroups -}}
-      {{- range $provider := $group -}}
-        {{- $cell := index $row $provider.id -}}
-        {{- with $cell.userNote -}}
-          {{- $state := index (where $states "id" $cell.support) 0 -}}
-          {{- $note := replaceRE `\r?\n+` " " (strings.TrimSpace .) -}}
-          {{- $noteLines = $noteLines | append (printf "- **%s %s — %s**: %s" $state.symbol $provider.label $feature.label $note) -}}
+  {{- /* Render the coding-agent feature matrix using the shared cached view model. */ -}}
+  {{- if strings.Contains $body "matrix" -}}
+    {{- $matrixTags := findRE `\{\{[<%]\s*matrix\s*[>%]\}\}` $body -}}
+    {{- if $matrixTags -}}
+      {{- $m := partialCached "feature-matrix-model.html" . -}}
+      {{- $lines := slice "Legend:" "" -}}
+      {{- range $state := $m.states -}}
+        {{- $lines = $lines | append (printf "- %s %s" $state.symbol $state.label) -}}
+      {{- end -}}
+      {{- $groupCount := len $m.providerGroups -}}
+      {{- range $groupIndex, $group := $m.providerGroups -}}
+        {{- $lines = $lines | append "" (printf "### Coding agent feature matrix (part %d of %d)" (add $groupIndex 1) $groupCount) "" -}}
+        {{- $headerCells := slice "Feature" -}}
+        {{- $sepCells := slice "---" -}}
+        {{- range $provider := $group -}}
+          {{- $label := $provider.label -}}
+          {{- if $provider.userNote -}}
+            {{- $label = printf "%s†" $label -}}
+          {{- end -}}
+          {{- $headerCells = $headerCells | append $label -}}
+          {{- $sepCells = $sepCells | append "---" -}}
+        {{- end -}}
+        {{- $lines = $lines | append (printf "| %s |" (delimit $headerCells " | ")) -}}
+        {{- $lines = $lines | append (printf "| %s |" (delimit $sepCells " | ")) -}}
+        {{- range $gf := $m.groupedFeatures -}}
+          {{- $groupRow := slice (printf "**%s**" $gf.group.label) -}}
+          {{- range $group -}}
+            {{- $groupRow = $groupRow | append "" -}}
+          {{- end -}}
+          {{- $lines = $lines | append (printf "| %s |" (delimit $groupRow " | ")) -}}
+          {{- range $feature := $gf.features -}}
+            {{- $row := index $m.cells $feature.id -}}
+            {{- $rowCells := slice $feature.label -}}
+            {{- range $provider := $group -}}
+              {{- $cell := index $row $provider.id -}}
+              {{- $state := index $m.stateByID $cell.support -}}
+              {{- $sym := $state.symbol -}}
+              {{- if $cell.userNote -}}
+                {{- $sym = printf "%s†" $sym -}}
+              {{- end -}}
+              {{- $rowCells = $rowCells | append $sym -}}
+            {{- end -}}
+            {{- $lines = $lines | append (printf "| %s |" (delimit $rowCells " | ")) -}}
+          {{- end -}}
         {{- end -}}
       {{- end -}}
+      {{- $lines = $lines | append "" "### Feature definitions" "" -}}
+      {{- range $feature := $m.features -}}
+        {{- $lines = $lines | append (printf "- **%s**: %s" $feature.label $feature.description) -}}
+      {{- end -}}
+      {{- $noteLines := slice -}}
+      {{- range $pn := $m.providerNotes -}}
+        {{- $note := replaceRE `\r?\n+` " " (strings.TrimSpace $pn.note) -}}
+        {{- $noteLines = $noteLines | append (printf "- **%s**: %s" $pn.provider.label $note) -}}
+      {{- end -}}
+      {{- range $cn := $m.cellNotes -}}
+        {{- $note := replaceRE `\r?\n+` " " (strings.TrimSpace $cn.note) -}}
+        {{- $noteLines = $noteLines | append (printf "- **%s %s — %s**: %s" $cn.state.symbol $cn.provider.label $cn.feature.label $note) -}}
+      {{- end -}}
+      {{- if $noteLines -}}
+        {{- $lines = $lines | append "" "### Notes" "" -}}
+        {{- range $noteLines -}}
+          {{- $lines = $lines | append . -}}
+        {{- end -}}
+      {{- end -}}
+      {{- $matrixMd := delimit $lines "\n" -}}
+      {{- range $matrixTags -}}
+        {{- $body = replace $body . $matrixMd -}}
+      {{- end -}}
     {{- end -}}
   {{- end -}}
-  {{- if $noteLines -}}
-    {{- $lines = $lines | append "" "### Notes" "" -}}
-    {{- range $noteLines -}}
-      {{- $lines = $lines | append . -}}
+  {{- /* Preserve multi-line callouts as complete Markdown blockquotes (quoting every line). */ -}}
+  {{- if strings.Contains $body "callout" -}}
+    {{- $calloutLabels := dict "warning" "Warning" "error" "Danger" "important" "Important" "info" "Info" -}}
+    {{- range findRESubmatch `(?s)\{\{[<%]\s*callout((?:\s+(?:"[^"]*"|'[^']*'|[^>"'%])*)?)\s*[>%]\}\}(.*?)\{\{[<%]\s*/callout\s*[>%]\}\}` $body -}}
+      {{- $full := index . 0 -}}
+      {{- $attrs := index . 1 -}}
+      {{- $inner := strings.TrimSpace (index . 2) -}}
+      {{- $label := "Note" -}}
+      {{- range findRESubmatch `type="([^"]+)"` $attrs -}}
+        {{- $label = index $calloutLabels (index . 1) | default "Note" -}}
+      {{- end -}}
+      {{- $rawLines := split $inner "\n" -}}
+      {{- $quoted := slice -}}
+      {{- range $idx, $ln := $rawLines -}}
+        {{- $trimmed := strings.TrimRight "\r" $ln -}}
+        {{- if eq $idx 0 -}}
+          {{- $quoted = $quoted | append (printf "> **%s:** %s" $label $trimmed) -}}
+        {{- else if eq (strings.TrimSpace $trimmed) "" -}}
+          {{- $quoted = $quoted | append ">" -}}
+        {{- else -}}
+          {{- $quoted = $quoted | append (printf "> %s" $trimmed) -}}
+        {{- end -}}
+      {{- end -}}
+      {{- $body = replace $body $full (printf "\n\n%s\n\n" (delimit $quoted "\n")) -}}
     {{- end -}}
   {{- end -}}
-  {{- $matrixMd := delimit $lines "\n" -}}
-  {{- $body = replace $body "{{< matrix >}}" $matrixMd -}}
+  {{- /* Convert interactive shortcodes cleanly across both {{< ... >}} and {{% ... %}} delimiters. */ -}}
+  {{- $delims := slice
+    (dict "open" `\{\{<` "close" `>\}\}` "attr" `(?:"[^"]*"|'[^']*'|[^>"'])*`)
+    (dict "open" `\{\{%` "close" `%\}\}` "attr" `(?:"[^"]*"|'[^']*'|[^%"']|%[^}])*`)
+  -}}
+  {{- $attrTransforms := slice
+    (dict "tag" "tab" "attr" "name" "fmt" "\n\n#### $1\n\n")
+    (dict "tag" "details" "attr" "title" "fmt" "\n\n**$1**\n\n")
+    (dict "tag" "screenshot" "attr" "caption" "fmt" "\n\n*[Screenshot: $1]*\n\n")
+    (dict "tag" "screenshot" "attr" "alt" "fmt" "\n\n*[Screenshot: $1]*\n\n")
+    (dict "tag" "video-clip" "attr" "caption" "fmt" "\n\n*[Demo clip: $1]*\n\n")
+    (dict "tag" "video-clip" "attr" "alt" "fmt" "\n\n*[Demo clip: $1]*\n\n")
+    (dict "tag" "cli-cast" "attr" "caption" "fmt" "\n\n*[CLI replay: $1]*\n\n")
+  -}}
+  {{- range $d := $delims -}}
+    {{- range $t := $attrTransforms -}}
+      {{- $pat := printf `%s\s*%s(?:\s+%s\s|\s+)%s="([^"]+)"%s%s` $d.open $t.tag $d.attr $t.attr $d.attr $d.close -}}
+      {{- $body = replaceRE $pat $t.fmt $body -}}
+    {{- end -}}
+    {{- $body = replaceRE (printf `%s\s*copy-prompt(?:\s+%s\s|\s+)label="([^"]+)"%s%s\s*` $d.open $d.attr $d.attr $d.close) "\n\n**$1**\n\n```text\n" $body -}}
+    {{- $body = replaceRE (printf `%s\s*copy-prompt(?:\s+%s)?\s*%s\s*` $d.open $d.attr $d.close) "\n\n**Prompt for your coding agent**\n\n```text\n" $body -}}
+    {{- $body = replaceRE (printf `\s*%s\s*/copy-prompt\s*%s` $d.open $d.close) "\n```\n\n" $body -}}
+    {{- if $.IsSection -}}
+      {{- $body = replaceRE (printf `(?s)(?:(?:^|\n)#{2,6}[ \t]+[^\n]+\n+)?%s\s*cards(?:\s+%s)?\s*%s.*?%s\s*/cards\s*%s` $d.open $d.attr $d.close $d.open $d.close) "\n" $body -}}
+    {{- end -}}
+    {{- $body = replaceRE (printf `%s\s*/?(?:cards|steps|tabs|tab|details|agent-ticker|screenshot|video-clip|cli-cast|table-filter|changelog-strip|hero-showcase)(?:\s+%s)?\s*%s` $d.open $d.attr $d.close) "" $body -}}
+    {{- $body = replaceRE (printf `%s\s*card(?:\s+%s\s|\s+)title="([^"]+)"%s\s+link="([^"]+)"%s%s` $d.open $d.attr $d.attr $d.attr $d.close) "- [$1]($2)" $body -}}
+    {{- $body = replaceRE (printf `%s\s*card(?:\s+%s\s|\s+)link="([^"]+)"%s\s+title="([^"]+)"%s%s` $d.open $d.attr $d.attr $d.attr $d.close) "- [$2]($1)" $body -}}
+  {{- end -}}
 {{- end -}}
-{{- /* Preserve useful structure when converting interactive shortcodes to Markdown.
-       Match {{< ... >}} and {{% ... %}} separately so [^>]* never consumes across
-       newlines inside {{% ... %}} shortcodes such as {{% steps %}}. */ -}}
-{{- $body = replaceRE `\{\{<\s*tab(?:\s+[^>]*\s|\s+)name="([^"]+)"[^>]*>\}\}` "\n\n#### $1\n\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*tab(?:\s+(?:[^%]|%[^}])*\s|\s+)name="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n#### $1\n\n" $body -}}
-{{- $body = replaceRE `\{\{<\s*details(?:\s+[^>]*\s|\s+)title="([^"]+)"[^>]*>\}\}` "\n\n**$1**\n\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*details(?:\s+(?:[^%]|%[^}])*\s|\s+)title="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n**$1**\n\n" $body -}}
-{{- $body = replaceRE `\{\{<\s*screenshot(?:\s+[^>]*\s|\s+)caption="([^"]+)"[^>]*>\}\}` "\n\n*[Screenshot: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*screenshot(?:\s+(?:[^%]|%[^}])*\s|\s+)caption="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n*[Screenshot: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{<\s*screenshot(?:\s+[^>]*\s|\s+)alt="([^"]+)"[^>]*>\}\}` "\n\n*[Screenshot: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*screenshot(?:\s+(?:[^%]|%[^}])*\s|\s+)alt="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n*[Screenshot: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{<\s*video-clip(?:\s+[^>]*\s|\s+)caption="([^"]+)"[^>]*>\}\}` "\n\n*[Demo clip: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*video-clip(?:\s+(?:[^%]|%[^}])*\s|\s+)caption="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n*[Demo clip: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{<\s*video-clip(?:\s+[^>]*\s|\s+)alt="([^"]+)"[^>]*>\}\}` "\n\n*[Demo clip: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*video-clip(?:\s+(?:[^%]|%[^}])*\s|\s+)alt="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n*[Demo clip: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{<\s*cli-cast(?:\s+[^>]*\s|\s+)caption="([^"]+)"[^>]*>\}\}` "\n\n*[CLI replay: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*cli-cast(?:\s+(?:[^%]|%[^}])*\s|\s+)caption="([^"]+)"(?:[^%]|%[^}])*%\}\}` "\n\n*[CLI replay: $1]*\n\n" $body -}}
-{{- $body = replaceRE `\{\{<\s*copy-prompt(?:\s+[^>]*\s|\s+)label="([^"]+)"[^>]*>\}\}\s*` "\n\n**$1**\n\n```text\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*copy-prompt(?:\s+(?:[^%]|%[^}])*\s|\s+)label="([^"]+)"(?:[^%]|%[^}])*%\}\}\s*` "\n\n**$1**\n\n```text\n" $body -}}
-{{- $body = replaceRE `\{\{<\s*copy-prompt(?:\s+[^>]*)?\s*>\}\}\s*` "\n\n**Prompt for your coding agent**\n\n```text\n" $body -}}
-{{- $body = replaceRE `\{\{%\s*copy-prompt(?:\s+(?:[^%]|%[^}])*)?\s*%\}\}\s*` "\n\n**Prompt for your coding agent**\n\n```text\n" $body -}}
-{{- $body = replaceRE `\s*\{\{<\s*/copy-prompt\s*>\}\}` "\n```\n\n" $body -}}
-{{- $body = replaceRE `\s*\{\{%\s*/copy-prompt\s*%\}\}` "\n```\n\n" $body -}}
-{{- /* Preserve callout severity labels as Markdown blockquotes instead of silently stripping them. */ -}}
-{{- $body = replaceRE `\{\{<\s*callout(?:\s+[^>]*\s|\s+)type="warning"[^>]*>\}\}\s*` "\n\n> **Warning:** " $body -}}
-{{- $body = replaceRE `\{\{%\s*callout(?:\s+(?:[^%]|%[^}])*\s|\s+)type="warning"(?:[^%]|%[^}])*%\}\}\s*` "\n\n> **Warning:** " $body -}}
-{{- $body = replaceRE `\{\{<\s*callout(?:\s+[^>]*\s|\s+)type="error"[^>]*>\}\}\s*` "\n\n> **Danger:** " $body -}}
-{{- $body = replaceRE `\{\{%\s*callout(?:\s+(?:[^%]|%[^}])*\s|\s+)type="error"(?:[^%]|%[^}])*%\}\}\s*` "\n\n> **Danger:** " $body -}}
-{{- $body = replaceRE `\{\{<\s*callout(?:\s+[^>]*\s|\s+)type="important"[^>]*>\}\}\s*` "\n\n> **Important:** " $body -}}
-{{- $body = replaceRE `\{\{%\s*callout(?:\s+(?:[^%]|%[^}])*\s|\s+)type="important"(?:[^%]|%[^}])*%\}\}\s*` "\n\n> **Important:** " $body -}}
-{{- $body = replaceRE `\{\{<\s*callout(?:\s+[^>]*\s|\s+)type="info"[^>]*>\}\}\s*` "\n\n> **Info:** " $body -}}
-{{- $body = replaceRE `\{\{%\s*callout(?:\s+(?:[^%]|%[^}])*\s|\s+)type="info"(?:[^%]|%[^}])*%\}\}\s*` "\n\n> **Info:** " $body -}}
-{{- $body = replaceRE `\{\{<\s*callout(?:\s+[^>]*)?\s*>\}\}\s*` "\n\n> **Note:** " $body -}}
-{{- $body = replaceRE `\{\{%\s*callout(?:\s+(?:[^%]|%[^}])*)?\s*%\}\}\s*` "\n\n> **Note:** " $body -}}
-{{- $body = replaceRE `\s*\{\{<\s*/callout\s*>\}\}` "\n\n" $body -}}
-{{- $body = replaceRE `\s*\{\{%\s*/callout\s*%\}\}` "\n\n" $body -}}
-{{- /* On section index pages, drop Hextra {{< cards >}} navigation grids along with any
-       immediately preceding heading that only introduces the card grid, because section
-       pages emit canonical ## Pages / ## Sections lists with .md links. */ -}}
-{{- if .IsSection -}}
-  {{- $body = replaceRE `(?s)(?:(?:^|\n)#{2,6}[ \t]+[^\n]+\n+)?\{\{<\s*cards(?:\s+[^>]*)?\s*>\}\}.*?\{\{<\s*/cards\s*>\}\}` "\n" $body -}}
-  {{- $body = replaceRE `(?s)(?:(?:^|\n)#{2,6}[ \t]+[^\n]+\n+)?\{\{%\s*cards(?:\s+(?:[^%]|%[^}])*)?\s*%\}\}.*?\{\{%\s*/cards\s*%\}\}` "\n" $body -}}
+{{- /* Protect fenced code blocks before stripping comments/raw HTML and unescaping entities. */ -}}
+{{- $fences := slice -}}
+{{- range $idx, $fence := findRE "(?m)^```[^\\n]*\\n[\\s\\S]*?^```[ \\t]*$" $body -}}
+  {{- $tok := printf "@@LM_CODE_FENCE_%d@@" $idx -}}
+  {{- $fences = $fences | append (dict "tok" $tok "code" $fence) -}}
+  {{- $body = replace $body $fence $tok -}}
 {{- end -}}
-{{- /* Strip remaining layout shortcode wrappers so plain Markdown stays clean. */ -}}
-{{- $body = replaceRE `\{\{<\s*/?(?:cards|steps|tabs|tab|details|agent-ticker|screenshot|video-clip|cli-cast|table-filter|changelog-strip|changelog-list|hero-showcase)(?:\s+[^>]*)?\s*>\}\}` "" $body -}}
-{{- $body = replaceRE `\{\{%\s*/?(?:cards|steps|tabs|tab|details|agent-ticker|screenshot|video-clip|cli-cast|table-filter|changelog-strip|changelog-list|hero-showcase)(?:\s+(?:[^%]|%[^}])*)?\s*%\}\}` "" $body -}}
-{{- /* Convert any remaining standalone card shortcodes to Markdown links. */ -}}
-{{- $body = replaceRE `\{\{<\s*card(?:\s+[^>]*\s|\s+)title="([^"]+)"[^>]*\s+link="([^"]+)"[^>]*>\}\}` "- [$1]($2)" $body -}}
-{{- $body = replaceRE `\{\{%\s*card(?:\s+(?:[^%]|%[^}])*\s|\s+)title="([^"]+)"(?:[^%]|%[^}])*\s+link="([^"]+)"(?:[^%]|%[^}])*%\}\}` "- [$1]($2)" $body -}}
-{{- $body = replaceRE `\{\{<\s*card(?:\s+[^>]*\s|\s+)link="([^"]+)"[^>]*\s+title="([^"]+)"[^>]*>\}\}` "- [$2]($1)" $body -}}
-{{- $body = replaceRE `\{\{%\s*card(?:\s+(?:[^%]|%[^}])*\s|\s+)link="([^"]+)"(?:[^%]|%[^}])*\s+title="([^"]+)"(?:[^%]|%[^}])*%\}\}` "- [$2]($1)" $body -}}
-{{- /* Strip internal HTML comments (e.g. generated-file headers) and unescape Goldmark angle-bracket entities. */ -}}
+{{- /* Strip inline scripts, HTML comments, and layout wrapper chrome from prose only. */ -}}
+{{- $body = replaceRE `(?is)<script\b[^>]*>.*?</script>` "" $body -}}
 {{- $body = replaceRE `(?s)<!--.*?-->` "" $body -}}
+{{- if strings.Contains $body "<" -}}
+  {{- $body = replaceRE `(?is)<h1\b[^>]*>(.*?)</h1>` "\n\n# $1\n\n" $body -}}
+  {{- $body = replaceRE `(?is)<h2\b[^>]*>(.*?)</h2>` "\n\n## $1\n\n" $body -}}
+  {{- $body = replaceRE `(?is)<h3\b[^>]*>(.*?)</h3>` "\n\n### $1\n\n" $body -}}
+  {{- $body = replaceRE `(?is)<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>` "[$2]($1)" $body -}}
+  {{- $body = replaceRE `(?is)<code\b[^>]*>(.*?)</code>` "`$1`" $body -}}
+  {{- $body = replaceRE `(?is)</?(?:div|section|p|span|header|footer|article|figure|figcaption|summary|details|ul|ol|li)\b[^>]*>` "\n" $body -}}
+  {{- $body = replaceRE `(?m)^[ \t]+$` "" $body -}}
+  {{- $body = replaceRE `(?m)^[ \t]+([^\-*+>\d \t])` "$1" $body -}}
+{{- end -}}
 {{- $body = replace $body "&lt;" "<" -}}
 {{- $body = replace $body "&gt;" ">" -}}
+{{- $body = replace $body "&rarr;" "→" -}}
+{{- $body = replace $body "&amp;" "&" -}}
+{{- /* Restore fenced code blocks untouched. */ -}}
+{{- range $fences -}}
+  {{- $body = replace $body .tok .code -}}
+{{- end -}}
+{{- /* Clean stray leading indentation left by unwrapped HTML blocks outside fences. */ -}}
 {{- $body = replaceRE `\n{3,}` "\n\n" $body -}}
 {{- $body = strings.TrimSpace $body -}}
 {{- return $body -}}

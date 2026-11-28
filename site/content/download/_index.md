@@ -19,7 +19,7 @@ layout: hextra-home
       Includes the native desktop workspace, local solo mode, and bundled CLI on macOS (`.dmg`), Debian/Ubuntu (`.deb`), and Windows (`.msi`).
     </p>
     <div class="lm-download-hero-actions">
-      <a class="lm-btn-primary" id="lm-download-primary" href="https://github.com/leapmux/leapmux/releases/latest">Download from GitHub Releases</a>
+      <a class="lm-btn-primary" id="lm-download-primary" href="https://github.com/leapmux/leapmux/releases">Download from GitHub Releases</a>
       <a class="lm-btn-secondary" href="/docs/getting-started/installation/">Full Installation Guide</a>
       <a class="lm-btn-secondary" href="/docs/getting-started/quick-start/">5-Minute Quick Start</a>
     </div>
@@ -82,7 +82,7 @@ Need a headless Hub, a remote Worker on a Linux/GPU devbox, or a browser-only so
 
 {{< tabs >}}
 {{< tab name="macOS / Linux Tarball" selected=true >}}
-Download the release archive for your OS and architecture from [GitHub Releases](https://github.com/leapmux/leapmux/releases/latest), extract it, and start solo mode:
+Download the release archive for your OS and architecture from [GitHub Releases](https://github.com/leapmux/leapmux/releases), extract it, and start solo mode:
 
 ```sh
 tar -xzf leapmux_<version>_<os>_<arch>.tar.gz
@@ -93,7 +93,7 @@ cd leapmux_<version>_<os>_<arch>
 macOS and Linux tarballs include both `leapmux` and its short `lmx` symlink. Open `http://127.0.0.1:4327` in your browser, and run `./leapmux down` to stop.
 {{< /tab >}}
 {{< tab name="Windows Zip" >}}
-Download `leapmux_<version>_windows_amd64.zip` from [GitHub Releases](https://github.com/leapmux/leapmux/releases/latest), extract it, and enter the extracted version folder:
+Download `leapmux_<version>_windows_amd64.zip` from [GitHub Releases](https://github.com/leapmux/leapmux/releases), extract it, and enter the extracted version folder:
 
 ```powershell
 Expand-Archive .\leapmux_<version>_windows_amd64.zip -DestinationPath .\leapmux

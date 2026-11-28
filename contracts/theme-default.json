@@ -1,5 +1,5 @@
 {
-  "_readme": "Single source of truth for the default palette (the theme every other theme is measured against) and for the OAuth pages' palette subset. The full light/dark token maps feed the TS theme module (styles/themes/default.ts keeps its ThemeDefinition shape but takes the palettes from the generated module) and scripts/generate-notice.mjs; the oauthPage subset -- a curated token list the server-rendered consent pages carry inline, because CSP default-src none forbids linking the SPA stylesheet -- is emitted as a Go CSS block with the documented --danger-subtle to --lm-danger-subtle rename (the page has no lm- namespace to keep).",
+  "_readme": "Single source of truth for the default palette (the theme every other theme is measured against), its Dimidium 16-color terminal ANSI palette, and the OAuth pages' palette subset. The full light/dark token maps and terminal ANSI palettes feed the TS theme module (styles/themes/default.ts), scripts/generate-notice.mjs, and the Hugo documentation site's cli-cast terminal theme via a data mount; the oauthPage subset -- a curated token list the server-rendered consent pages carry inline, because CSP default-src none forbids linking the SPA stylesheet -- is emitted as a Go CSS block with the documented --danger-subtle to --lm-danger-subtle rename (the page has no lm- namespace to keep).",
   "light": {
     "--background": "rgb(255 254 252)",
     "--foreground": "rgb(34 32 30)",
@@ -85,6 +85,44 @@
     ],
     "renames": {
       "--danger-subtle": "--lm-danger-subtle"
+    }
+  },
+  "terminal": {
+    "light": {
+      "black": "#000000",
+      "red": "#b83d41",
+      "green": "#4d9833",
+      "yellow": "#ba8300",
+      "blue": "#0464ba",
+      "magenta": "#9c50bd",
+      "cyan": "#019a9f",
+      "white": "#9c9998",
+      "brightBlack": "#737575",
+      "brightRed": "#e0532e",
+      "brightGreen": "#1fbd62",
+      "brightYellow": "#d0a803",
+      "brightBlue": "#4a74ed",
+      "brightMagenta": "#d05dce",
+      "brightCyan": "#19b8d0",
+      "brightWhite": "#b8bdbe"
+    },
+    "dark": {
+      "black": "#000000",
+      "red": "#cf494c",
+      "green": "#60b442",
+      "yellow": "#db9c11",
+      "blue": "#0575d8",
+      "magenta": "#af5ed2",
+      "cyan": "#1db6bb",
+      "white": "#bab7b6",
+      "brightBlack": "#817e7e",
+      "brightRed": "#ff643b",
+      "brightGreen": "#37e57b",
+      "brightYellow": "#fccd1a",
+      "brightBlue": "#688dfd",
+      "brightMagenta": "#ed6fe9",
+      "brightCyan": "#32e0fb",
+      "brightWhite": "#dee3e4"
     }
   }
 }

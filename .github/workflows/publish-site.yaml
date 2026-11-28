@@ -17,6 +17,8 @@ on:
       - "icons/agents/**"
       - "skills/**"
       - "frontend/tests/e2e/feature-matrix/**"
+      - "contracts/theme-default.json"
+      - "scripts/generate-config-reference.mjs"
       - "versions.env"
       - ".github/actions/load-versions/action.yaml"
       - ".github/workflows/publish-site.yaml"
@@ -123,9 +125,14 @@ jobs:
         working-directory: site
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Generate machine-readable config reference
+        run: bun scripts/generate-config-reference.mjs
+
       - name: Build Pagefind search index
         working-directory: site
-        run: ./node_modules/.bin/pagefind --site public --output-subdir pagefind --exclude-selectors 'nav,aside,.hextra-toc,.hextra-sidebar-container,.hextra-footer,script,style'
+        run: |
+          ./node_modules/.bin/pagefind --site public --output-subdir pagefind --exclude-selectors 'nav,aside,.hextra-toc,.hextra-sidebar-container,.hextra-footer,script,style'
+          rm -f public/pagefind/pagefind-ui.js public/pagefind/pagefind-ui.css public/pagefind/pagefind-component-ui.js public/pagefind/pagefind-component-ui.css public/pagefind/pagefind-modular-ui.js public/pagefind/pagefind-modular-ui.css public/pagefind/pagefind-highlight.js
 
       - name: Copy locked asciinema-player bundle assets
         working-directory: site

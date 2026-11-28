@@ -331,7 +331,7 @@ func (h *IdPHandler) handleReauth(w http.ResponseWriter, r *http.Request, provid
 // ONE rule: an account with NO password and NO passkey is signed in BY the
 // provider, so the elevation is exactly as strong as the sign-in it stands
 // on. Any linked provider qualifies, GitHub included --
-// site/content/docs/admin/security.md states that limit plainly. This refuses anything
+// site/content/docs/admin/security-and-auth.md states that limit plainly. This refuses anything
 // else, because the account holds a factor it can present directly and "the
 // browser can still reach the provider session" is a weaker claim than the
 // one that factor makes.

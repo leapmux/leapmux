@@ -53,7 +53,7 @@ func NewGitHubProvider(clientID, clientSecret, redirectURL string, scopes []stri
 // signed-in user. So a step-up through GitHub proves that the browser can
 // still reach a GitHub session for the linked account and that a human
 // clicked through the chooser -- not that they re-entered a credential.
-// site/content/docs/admin/security.md states this limit. An operator who needs
+// site/content/docs/admin/security-and-auth.md states this limit. An operator who needs
 // a real second factor should require a password or a passkey on the account.
 func (p *GitHubProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions) string {
 	options := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(codeVerifier)}

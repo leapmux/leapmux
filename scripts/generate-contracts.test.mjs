@@ -82,6 +82,7 @@ import {
   emitTsRetry,
   emitTsSessionInfo,
   emitTsTerminal,
+  emitTsTheme,
   emitTsTrustedProxies,
   emitTsValidate,
   emitTsWire,
@@ -2943,6 +2944,32 @@ describe('checkScopes / checkTheme / checkValidate', () => {
       },
     }
     expectContractError(() => checkTheme(theme), '--lm-danger-subtle')
+  })
+
+  it('rejects missing or invalid terminal ANSI colors in theme-default', () => {
+    const shipped = readContract('theme-default')
+    const withoutTerminal = { ...shipped, terminal: undefined }
+    expectContractError(() => checkTheme(withoutTerminal), 'terminal ANSI palettes are missing')
+    const withoutLight = structuredClone(shipped)
+    withoutLight.terminal.light = undefined
+    expectContractError(() => checkTheme(withoutLight), 'terminal.light palette is missing')
+    const missingKey = structuredClone(shipped)
+    delete missingKey.terminal.light.black
+    expectContractError(() => checkTheme(missingKey), 'terminal.light.black must be a 6-digit hex color')
+    const shortHex = structuredClone(shipped)
+    shortHex.terminal.light.white = '#fff'
+    expectContractError(() => checkTheme(shortHex), 'terminal.light.white must be a 6-digit hex color')
+    const badHex = structuredClone(shipped)
+    badHex.terminal.dark.brightCyan = 'cyan'
+    expectContractError(() => checkTheme(badHex), 'terminal.dark.brightCyan must be a 6-digit hex color')
+  })
+
+  it('emits lightAnsi and darkAnsi terminal palettes in emitTsTheme', () => {
+    const ts = emitTsTheme(readContract('theme-default'))
+    expect(ts).toContain('export const lightAnsi = {')
+    expect(ts).toContain('  brightCyan: "#19b8d0",')
+    expect(ts).toContain('export const darkAnsi = {')
+    expect(ts).toContain('  brightWhite: "#dee3e4",')
   })
 
   it('rejects an impliedBy cycle', () => {

@@ -3,31 +3,15 @@
   (JSON-LD `keywords`) and opengraph.html (the <meta name="keywords"> tag).
 
   An explicit front-matter `keywords` list overrides derivation. Otherwise we
-  derive from brand terms + the page title + its section. (We deliberately do not
-  scrape H2 headings: .Fragments is unreliable in the <head> context before the
-  content is rendered, and the on-page anchored headings + the BreadcrumbList in
-  schema.html are what actually make a page's structure discoverable to search.)
+  derive from brand terms + the page title + its section via section-label.html.
   Single top-level return (Hugo returning partials reject nested returns).
 */ -}}
 {{- $kw := .Params.keywords -}}
 {{- if not $kw -}}
   {{- $kw = slice "LeapMux" "coding agents" -}}
   {{- if not .IsHome -}}
-    {{- $kw = $kw | append .Title -}}
-    {{- $trimmed := strings.TrimPrefix "/" .RelPermalink -}}
-    {{- if hasPrefix $trimmed "docs/" -}}
-      {{- $trimmed = strings.TrimPrefix "docs/" $trimmed -}}
-    {{- end -}}
-    {{- $seg := index (split $trimmed "/") 0 -}}
-    {{- $labels := dict
-          "getting-started" "Getting Started"
-          "recipes" "Workflow Recipes"
-          "using" "Using LeapMux"
-          "admin" "Administration"
-          "reference" "Reference"
-          "download" "Downloads"
-          "changelog" "Changelog" -}}
-    {{- with index $labels $seg -}}{{- $kw = $kw | append . -}}{{- end -}}
+    {{- with .Title -}}{{- $kw = $kw | append . -}}{{- end -}}
+    {{- with partial "section-label.html" . -}}{{- $kw = $kw | append . -}}{{- end -}}
   {{- end -}}
   {{- $kw = $kw | uniq -}}
 {{- end -}}

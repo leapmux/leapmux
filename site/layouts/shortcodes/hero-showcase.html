@@ -1,310 +1,110 @@
 {{- /*
   hero-showcase renders an interactive 4-tab media showcase for the landing page hero:
-    1. Workspace Overview (light/dark eager PNG)
-    2. Parallel Worktrees & Diffs (light/dark looping MP4, played on demand)
-    3. Tiling & Floating (light/dark looping MP4, played on demand)
-    4. Input Queue & Steering (light/dark looping MP4, played on demand)
+    1. Workspace Overview (light/dark active-theme eager PNG)
+    2. Parallel Worktrees & Diffs (light/dark looping MP4, loaded and played on demand)
+    3. Tiling & Floating (light/dark looping MP4, loaded and played on demand)
+    4. Input Queue & Steering (light/dark looping MP4, loaded and played on demand)
 
-  Videos play only when their tab is active and prefers-reduced-motion is not set.
+  Videos hydrate and play only when their tab is active, in viewport, and
+  prefers-reduced-motion is unset (controlled by assets/js/site-media.js).
 */ -}}
-<div class="lm-hero-showcase" id="lm-hero-showcase">
+{{- $prefix := printf "lm-hero-%d" .Ordinal -}}
+{{- $tabs := slice
+  (dict
+    "key" "overview"
+    "label" "Workspace Overview"
+    "kind" "image"
+    "src" "hero-workspace"
+    "width" "1440"
+    "height" "900"
+    "alt" "LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated pseudo-terminal (PTY) across isolated git worktrees"
+    "caption" "Claude Code, Antigravity, Codex, a syntax-highlighted diff viewer, and a live pseudo-terminal (PTY) running side by side in isolated git worktrees."
+  )
+  (dict
+    "key" "worktrees"
+    "label" "Parallel Worktrees & Diffs"
+    "kind" "video"
+    "src" "parallel-worktrees"
+    "poster" "tabs-tiling-layout"
+    "width" "1280"
+    "height" "800"
+    "alt" "Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal"
+    "caption" "Switch between isolated worktrees, toggle split diffs, and pop down a Quake terminal without losing focus."
+  )
+  (dict
+    "key" "tiling"
+    "label" "Tiling & Floating"
+    "kind" "video"
+    "src" "tiling-floating-layout"
+    "poster" "floating-window"
+    "width" "1280"
+    "height" "800"
+    "alt" "Animated walkthrough of splitting a single tile side by side, turning the right tile into a 2 by 2 grid, popping the agent tab out into a translucent floating window, and dragging it back into the grid"
+    "caption" "Split panes side by side, create a 2×2 tile grid, pop an agent tab into a translucent floating window, and drag it right back into the grid."
+  )
+  (dict
+    "key" "queue"
+    "label" "Input Queue & Steering"
+    "kind" "video"
+    "src" "input-queue-steering"
+    "poster" "input-queue"
+    "width" "1280"
+    "height" "800"
+    "alt" "Animated walkthrough of queueing follow-up prompts and steering a running coding agent mid-turn"
+    "caption" "Queue follow-up prompts, steer active turns mid-flight, or preempt long-running work from the Worker-backed input queue."
+  )
+-}}
+<div class="lm-hero-showcase" id="{{ $prefix }}-showcase">
   <div class="lm-hero-tabs" role="tablist" aria-label="LeapMux workspace previews">
+    {{- range $idx, $tab := $tabs -}}
+    {{- $active := eq $idx 0 -}}
     <button
       type="button"
       class="lm-hero-tab"
-      id="lm-hero-tab-overview"
+      id="{{ $prefix }}-tab-{{ $tab.key }}"
       role="tab"
-      aria-selected="true"
-      aria-controls="lm-hero-panel-overview"
-      tabindex="0"
-    >Workspace Overview</button>
-    <button
-      type="button"
-      class="lm-hero-tab"
-      id="lm-hero-tab-worktrees"
-      role="tab"
-      aria-selected="false"
-      aria-controls="lm-hero-panel-worktrees"
-      tabindex="-1"
-    >Parallel Worktrees &amp; Diffs</button>
-    <button
-      type="button"
-      class="lm-hero-tab"
-      id="lm-hero-tab-tiling"
-      role="tab"
-      aria-selected="false"
-      aria-controls="lm-hero-panel-tiling"
-      tabindex="-1"
-    >Tiling &amp; Floating</button>
-    <button
-      type="button"
-      class="lm-hero-tab"
-      id="lm-hero-tab-queue"
-      role="tab"
-      aria-selected="false"
-      aria-controls="lm-hero-panel-queue"
-      tabindex="-1"
-    >Input Queue &amp; Steering</button>
+      aria-selected="{{ cond $active "true" "false" }}"
+      aria-controls="{{ $prefix }}-panel-{{ $tab.key }}"
+      tabindex="{{ cond $active "0" "-1" }}"
+    >{{ $tab.label }}</button>
+    {{- end -}}
   </div>
 
   <div class="lm-hero-stage">
+    {{- range $idx, $tab := $tabs -}}
+    {{- $active := eq $idx 0 -}}
     <div
-      class="lm-hero-panel is-active"
-      id="lm-hero-panel-overview"
+      class="lm-hero-panel{{ if $active }} is-active{{ end }}"
+      id="{{ $prefix }}-panel-{{ $tab.key }}"
       role="tabpanel"
-      aria-labelledby="lm-hero-tab-overview"
+      aria-labelledby="{{ $prefix }}-tab-{{ $tab.key }}"
+      {{- if not $active }} aria-hidden="true" inert{{ end }}
     >
-      <figure class="doc-screenshot">
-        <div class="doc-screenshot-frame">
-          <img
-            class="doc-screenshot-light"
-            src="{{ "/images/docs/hero-workspace-light.png" | relURL }}"
-            alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees"
-            width="1440"
-            height="900"
-            loading="eager"
-            fetchpriority="high"
-            decoding="async"
-          >
-          <img
-            class="doc-screenshot-dark"
-            src="{{ "/images/docs/hero-workspace-dark.png" | relURL }}"
-            alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees"
-            width="1440"
-            height="900"
-            loading="eager"
-            fetchpriority="high"
-            decoding="async"
-          >
-        </div>
-        <figcaption class="doc-screenshot-caption">Claude Code, Antigravity, Codex, a syntax-highlighted diff viewer, and a live PTY terminal running side by side in isolated git worktrees.</figcaption>
-      </figure>
+      {{- if eq $tab.kind "image" -}}
+        {{- partial "theme-screenshot.html" (dict
+          "page" $.Page
+          "src" $tab.src
+          "alt" $tab.alt
+          "caption" $tab.caption
+          "width" $tab.width
+          "height" $tab.height
+          "eager" true
+          "pos" $.Position
+        ) -}}
+      {{- else -}}
+        {{- partial "theme-video.html" (dict
+          "page" $.Page
+          "src" $tab.src
+          "poster" $tab.poster
+          "alt" $tab.alt
+          "caption" $tab.caption
+          "width" $tab.width
+          "height" $tab.height
+          "role" "hero"
+          "pos" $.Position
+        ) -}}
+      {{- end -}}
     </div>
-
-    <div
-      class="lm-hero-panel"
-      id="lm-hero-panel-worktrees"
-      role="tabpanel"
-      aria-labelledby="lm-hero-tab-worktrees"
-      aria-hidden="true"
-      inert
-    >
-      <figure class="doc-screenshot">
-        <div class="doc-screenshot-frame">
-          <video
-            class="doc-screenshot-light lm-hero-video"
-            data-theme-variant="light"
-            loop
-            muted
-            playsinline
-            preload="metadata"
-            width="1280"
-            height="800"
-            poster="{{ "/images/docs/tabs-tiling-layout-light.png" | relURL }}"
-            aria-label="Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal"
-          >
-            <source src="{{ "/videos/docs/parallel-worktrees-light.mp4" | relURL }}" type="video/mp4" />
-          </video>
-          <video
-            class="doc-screenshot-dark lm-hero-video"
-            data-theme-variant="dark"
-            loop
-            muted
-            playsinline
-            preload="metadata"
-            width="1280"
-            height="800"
-            poster="{{ "/images/docs/tabs-tiling-layout-dark.png" | relURL }}"
-            aria-label="Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal"
-          >
-            <source src="{{ "/videos/docs/parallel-worktrees-dark.mp4" | relURL }}" type="video/mp4" />
-          </video>
-        </div>
-        <figcaption class="doc-screenshot-caption">Switch between isolated worktrees, toggle split diffs, and pop down a Quake terminal without losing focus.</figcaption>
-      </figure>
-    </div>
-
-    <div
-      class="lm-hero-panel"
-      id="lm-hero-panel-tiling"
-      role="tabpanel"
-      aria-labelledby="lm-hero-tab-tiling"
-      aria-hidden="true"
-      inert
-    >
-      <figure class="doc-screenshot">
-        <div class="doc-screenshot-frame">
-          <video
-            class="doc-screenshot-light lm-hero-video"
-            data-theme-variant="light"
-            loop
-            muted
-            playsinline
-            preload="metadata"
-            width="1280"
-            height="800"
-            poster="{{ "/images/docs/floating-window-light.png" | relURL }}"
-            aria-label="Animated walkthrough of splitting a single tile side by side, turning the right tile into a 2 by 2 grid, popping the agent tab out into a translucent floating window, and dragging it back into the grid"
-          >
-            <source src="{{ "/videos/docs/tiling-floating-layout-light.mp4" | relURL }}" type="video/mp4" />
-          </video>
-          <video
-            class="doc-screenshot-dark lm-hero-video"
-            data-theme-variant="dark"
-            loop
-            muted
-            playsinline
-            preload="metadata"
-            width="1280"
-            height="800"
-            poster="{{ "/images/docs/floating-window-dark.png" | relURL }}"
-            aria-label="Animated walkthrough of splitting a single tile side by side, turning the right tile into a 2 by 2 grid, popping the agent tab out into a translucent floating window, and dragging it back into the grid"
-          >
-            <source src="{{ "/videos/docs/tiling-floating-layout-dark.mp4" | relURL }}" type="video/mp4" />
-          </video>
-        </div>
-        <figcaption class="doc-screenshot-caption">Split panes side by side, create a 2×2 tile grid, pop an agent tab into a translucent floating window, and drag it right back into the grid.</figcaption>
-      </figure>
-    </div>
-
-    <div
-      class="lm-hero-panel"
-      id="lm-hero-panel-queue"
-      role="tabpanel"
-      aria-labelledby="lm-hero-tab-queue"
-      aria-hidden="true"
-      inert
-    >
-      <figure class="doc-screenshot">
-        <div class="doc-screenshot-frame">
-          <video
-            class="doc-screenshot-light lm-hero-video"
-            data-theme-variant="light"
-            loop
-            muted
-            playsinline
-            preload="metadata"
-            width="1280"
-            height="800"
-            poster="{{ "/images/docs/input-queue-light.png" | relURL }}"
-            aria-label="Animated walkthrough of queueing follow-up prompts and steering a running coding agent mid-turn"
-          >
-            <source src="{{ "/videos/docs/input-queue-steering-light.mp4" | relURL }}" type="video/mp4" />
-          </video>
-          <video
-            class="doc-screenshot-dark lm-hero-video"
-            data-theme-variant="dark"
-            loop
-            muted
-            playsinline
-            preload="metadata"
-            width="1280"
-            height="800"
-            poster="{{ "/images/docs/input-queue-dark.png" | relURL }}"
-            aria-label="Animated walkthrough of queueing follow-up prompts and steering a running coding agent mid-turn"
-          >
-            <source src="{{ "/videos/docs/input-queue-steering-dark.mp4" | relURL }}" type="video/mp4" />
-          </video>
-        </div>
-        <figcaption class="doc-screenshot-caption">Queue follow-up prompts, steer active turns mid-flight, or preempt long-running work from the Worker-backed input queue.</figcaption>
-      </figure>
-    </div>
+    {{- end -}}
   </div>
 </div>
-<script>
-(() => {
-  const root = document.getElementById('lm-hero-showcase');
-  if (!root || root.dataset.wired === 'true') return;
-  root.dataset.wired = 'true';
-
-  const tabs = Array.from(root.querySelectorAll('[role="tab"]'));
-  const panels = Array.from(root.querySelectorAll('[role="tabpanel"]'));
-  const mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
-  const pauseTimers = new WeakMap();
-  const FADE_MS = 340;
-
-  const clearPauseTimer = (video) => {
-    const timer = pauseTimers.get(video);
-    if (timer) {
-      clearTimeout(timer);
-      pauseTimers.delete(video);
-    }
-  };
-
-  const syncVideos = (restartActive) => {
-    const isDark = document.documentElement.classList.contains('dark');
-    const reduced = Boolean(mq && mq.matches);
-    panels.forEach((panel) => {
-      const visible = panel.classList.contains('is-active');
-      panel.querySelectorAll('video.lm-hero-video').forEach((video) => {
-        const matchesTheme = (video.dataset.themeVariant === 'dark') === isDark;
-        clearPauseTimer(video);
-        if (visible && matchesTheme && !reduced) {
-          if (restartActive && video.readyState >= 1) {
-            try { video.currentTime = 0; } catch {}
-          }
-          video.play().catch(() => {});
-        } else if (!reduced && !video.paused) {
-          // Keep the outgoing video moving while it crossfades out, then pause it.
-          const timer = setTimeout(() => {
-            pauseTimers.delete(video);
-            if (!panel.classList.contains('is-active') || (video.dataset.themeVariant === 'dark') !== document.documentElement.classList.contains('dark')) {
-              video.pause();
-            }
-          }, FADE_MS);
-          pauseTimers.set(video, timer);
-        } else {
-          video.pause();
-        }
-      });
-    });
-  };
-
-  const activate = (nextTab, focusTab) => {
-    const targetId = nextTab.getAttribute('aria-controls');
-    tabs.forEach((tab) => {
-      const active = tab === nextTab;
-      tab.setAttribute('aria-selected', active ? 'true' : 'false');
-      tab.tabIndex = active ? 0 : -1;
-    });
-    panels.forEach((panel) => {
-      const active = panel.id === targetId;
-      panel.classList.toggle('is-active', active);
-      if (active) {
-        panel.removeAttribute('aria-hidden');
-        panel.removeAttribute('inert');
-      } else {
-        panel.setAttribute('aria-hidden', 'true');
-        panel.setAttribute('inert', '');
-      }
-    });
-    if (focusTab) nextTab.focus();
-    syncVideos(true);
-  };
-
-  tabs.forEach((tab, index) => {
-    tab.addEventListener('click', () => activate(tab, false));
-    tab.addEventListener('keydown', (event) => {
-      let nextIndex = null;
-      if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
-      else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
-      else if (event.key === 'Home') nextIndex = 0;
-      else if (event.key === 'End') nextIndex = tabs.length - 1;
-      if (nextIndex === null) return;
-      event.preventDefault();
-      activate(tabs[nextIndex], true);
-    });
-  });
-
-  if (mq && mq.addEventListener) {
-    mq.addEventListener('change', () => syncVideos(false));
-  }
-  if (typeof MutationObserver !== 'undefined') {
-    new MutationObserver(() => syncVideos(false)).observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
-  }
-  syncVideos(false);
-})();
-</script>

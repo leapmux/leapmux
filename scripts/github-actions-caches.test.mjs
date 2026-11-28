@@ -576,8 +576,12 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     const install = steps[index('Install the locked site tools')]
     const deploy = steps[index('Deploy to Cloudflare Workers')]
     expect(index('Install the locked site tools')).toBeGreaterThan(index('Build site'))
-    expect(index('Deploy to Cloudflare Workers')).toBeGreaterThan(index('Install the locked site tools'))
+    expect(index('Generate machine-readable config reference')).toBeGreaterThan(index('Install the locked site tools'))
+    expect(index('Build Pagefind search index')).toBeGreaterThan(index('Generate machine-readable config reference'))
+    expect(index('Deploy to Cloudflare Workers')).toBeGreaterThan(index('Build Pagefind search index'))
     expect(install).toMatchObject({ 'working-directory': 'site', 'run': 'bun install --frozen-lockfile --ignore-scripts' })
+    expect(steps[index('Generate machine-readable config reference')]).toMatchObject({ run: 'bun scripts/generate-config-reference.mjs' })
+    expect(steps[index('Build Pagefind search index')].run).toContain('rm -f public/pagefind/pagefind-ui.js')
     expect(deploy).toMatchObject({ 'working-directory': 'site', 'run': './node_modules/.bin/wrangler deploy' })
     // The site snapshots replace setup-go's combined cache: downloads and
     // build outputs restore separately, a writer builds from an empty build
@@ -632,9 +636,14 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     for (const mount of yaml('site/hugo.yaml').module.mounts) {
       if (!mount.source.startsWith('../'))
         continue
-      expect(matches(`${mount.source.slice(3)}/changed.json`)).toBe(true)
+      const target = mount.source.slice(3)
+      const probe = statSync(resolve(root, target)).isDirectory()
+        ? `${target}/changed.json`
+        : target
+      expect(matches(probe), target).toBe(true)
     }
     expect(matches('versions.env')).toBe(true)
+    expect(matches('scripts/generate-config-reference.mjs')).toBe(true)
     expect(matches('site/content/docs/using/coding-agents.md')).toBe(true)
     expect(matches('backend/cmd/leapmux/main.go')).toBe(false)
   })
@@ -1446,6 +1455,8 @@ describe('renovate workflow and protection', () => {
         'bun install --frozen-lockfile --ignore-scripts',
         './node_modules/.bin/wrangler --version',
         './node_modules/.bin/pagefind --version',
+        'test -f node_modules/asciinema-player/dist/bundle/asciinema-player.min.js',
+        'test -f node_modules/asciinema-player/dist/bundle/asciinema-player.css',
       ],
     })
     for (const file of ['Taskfile.yaml', ...workflowFiles])

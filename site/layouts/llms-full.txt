@@ -28,19 +28,19 @@ Site: {{ .Site.BaseURL }}
 {{- "\n" -}}
 
 {{- define "llms-full-section" -}}
-  {{- if or (eq .Params.llms false) (eq .RelPermalink "/docs/reference/commands/") -}}
+  {{- if or (eq .Params.llms false) (eq .Params.llms_full false) -}}
     {{- /* Excluded from the guide-focused bundle. */ -}}
   {{- else -}}
-    {{- $sectionBody := partial "clean-markdown-body.html" . -}}
+    {{- $sectionBody := partialCached "clean-markdown-body.html" . .RelPermalink -}}
     {{- if or (strings.Contains $sectionBody "\n## ") (hasPrefix $sectionBody "## ") -}}
       {{- template "llms-full-entry" (dict "page" . "body" $sectionBody) -}}
     {{- end -}}
     {{- range .Pages.ByWeight -}}
-      {{- if ne .Params.llms false -}}
+      {{- if and (ne .Params.llms false) (ne .Params.llms_full false) -}}
         {{- if .IsSection -}}
           {{- template "llms-full-section" . -}}
         {{- else -}}
-          {{- template "llms-full-entry" (dict "page" . "body" (partial "clean-markdown-body.html" .)) -}}
+          {{- template "llms-full-entry" (dict "page" . "body" (partialCached "clean-markdown-body.html" . .RelPermalink)) -}}
         {{- end -}}
       {{- end -}}
     {{- end -}}
@@ -50,7 +50,7 @@ Site: {{ .Site.BaseURL }}
 {{- define "llms-full-entry" -}}
 {{- $page := .page -}}
 {{- $body := .body -}}
-{{- $url := $page.Permalink -}}{{- with $page.OutputFormats.Get "markdown" -}}{{- $url = .Permalink -}}{{- end }}
+{{- $url := partial "markdown-permalink.html" $page }}
 
 ---
 

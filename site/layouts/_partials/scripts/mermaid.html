@@ -1,133 +1,149 @@
 {{- /*
   LeapMux override of Hextra's scripts/mermaid.html.
 
-  Hextra's default partial calls resources.GetRemote on mermaid@latest at Hugo
-  build time, which breaks offline builds and makes builds non-deterministic.
-  Load a pinned Mermaid release in the browser instead (matching how
-  head-end.html loads hack-font@3.3.0) and style diagrams with LeapMux's warm
-  sand/charcoal/teal palette in both light and dark modes.
+  Loads a pinned Mermaid release with SRI (honoring site.Params.mermaid.{base,js}
+  when configured for self-hosting), derives neutral themeVariables from
+  custom.css's --hx-color-* hex tokens, serializes theme-toggle resets through
+  the render queue, and unobserves rendered diagrams until the theme changes.
 */ -}}
-<script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js"></script>
+{{- $mermaidSrc := "https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js" -}}
+{{- $mermaidIntegrity := "sha384-1ggI9FC3CkghppRD/XCR4aD+jp4DxwXlJIW0wxhyTLNKuiZEW3c4BwcjKXl0iVAJ" -}}
+{{- $customJS := site.Params.mermaid.js | default "" -}}
+{{- $customBase := site.Params.mermaid.base | default "" -}}
+{{- if $customJS -}}
+  {{- if hasPrefix $customJS "http" -}}
+    {{- $mermaidSrc = $customJS -}}
+    {{- $mermaidIntegrity = "" -}}
+  {{- else -}}
+    {{- with resources.Get (strings.TrimPrefix "/" $customJS) -}}
+      {{- $res := . -}}
+      {{- if hugo.IsProduction -}}{{- $res = $res | fingerprint -}}{{- end -}}
+      {{- $mermaidSrc = $res.RelPermalink -}}
+      {{- $mermaidIntegrity = $res.Data.Integrity -}}
+    {{- else -}}
+      {{- errorf "scripts/mermaid.html: params.mermaid.js resource %q not found" $customJS -}}
+    {{- end -}}
+  {{- end -}}
+{{- else if $customBase -}}
+  {{- $mermaidSrc = printf "%s/mermaid.min.js" (strings.TrimSuffix "/" $customBase) -}}
+  {{- $mermaidIntegrity = "" -}}
+{{- end -}}
+<script defer src="{{ $mermaidSrc }}"{{ with $mermaidIntegrity }} integrity="{{ . }}"{{ end }} crossorigin="anonymous"></script>
 <script>
   document.addEventListener("DOMContentLoaded", () => {
     if (typeof mermaid === "undefined") return;
 
-    const diagrams = () => Array.from(document.querySelectorAll(".mermaid"));
-    diagrams().forEach((el) => {
+    const diagrams = Array.from(document.querySelectorAll(".mermaid"));
+    if (!diagrams.length) return;
+    diagrams.forEach((el) => {
       el.dataset.original = el.innerHTML;
     });
 
     const getThemeConfig = (isDark) => {
+      const rootStyle = getComputedStyle(document.documentElement);
+      const token = (name, fallback) => rootStyle.getPropertyValue(name).trim() || fallback;
       const fontFamily = getComputedStyle(document.body).fontFamily || "ui-sans-serif, system-ui, sans-serif";
-      if (isDark) {
-        return {
-          startOnLoad: false,
-          theme: "base",
-          themeVariables: {
-            darkMode: true,
-            background: "#1a1917",
-            fontFamily,
-            primaryColor: "#2a2826",
-            primaryTextColor: "#f1efea",
-            primaryBorderColor: "#14b8a6",
-            secondaryColor: "#221f1d",
-            secondaryTextColor: "#f1efea",
-            secondaryBorderColor: "#47433e",
-            tertiaryColor: "#1a1917",
-            tertiaryTextColor: "#f1efea",
-            tertiaryBorderColor: "#47433e",
-            lineColor: "#aaa69e",
-            textColor: "#f1efea",
-            mainBkg: "#2a2826",
-            nodeBorder: "#14b8a6",
-            clusterBkg: "#221f1d",
-            clusterBorder: "#47433e",
-            defaultLinkColor: "#aaa69e",
-            titleColor: "#f1efea",
-            edgeLabelBackground: "#1a1917",
-            actorBkg: "#2a2826",
-            actorBorder: "#14b8a6",
-            actorTextColor: "#f1efea",
-            actorLineColor: "#5f5b55",
-            signalColor: "#aaa69e",
-            signalTextColor: "#f1efea",
-            labelBoxBkgColor: "#312e2a",
-            labelBoxBorderColor: "#47433e",
-            labelTextColor: "#f1efea",
-            noteBkgColor: "#173330",
-            noteBorderColor: "#14b8a6",
-            noteTextColor: "#f1efea",
-          },
-        };
-      }
+      const p = isDark
+        ? {
+            bg: token("--hx-color-dark", "#1a1917"),
+            surface: "#2a2826",
+            secondary: token("--hx-color-gray-900", "#221f1d"),
+            labelBg: token("--hx-color-gray-800", "#312e2a"),
+            text: token("--hx-color-gray-100", "#f1efea"),
+            accent: "#14b8a6",
+            border: token("--hx-color-gray-700", "#47433e"),
+            line: token("--hx-color-gray-400", "#aaa69e"),
+            actorLine: token("--hx-color-gray-600", "#5f5b55"),
+            noteBg: "#173330",
+          }
+        : {
+            bg: token("--hx-color-white", "#fffefc"),
+            surface: token("--hx-color-gray-50", "#f7f5f2"),
+            secondary: token("--hx-color-gray-50", "#f7f5f2"),
+            labelBg: token("--hx-color-gray-100", "#f1efea"),
+            text: token("--hx-color-gray-900", "#221f1d"),
+            accent: "#0d9488",
+            border: token("--hx-color-gray-200", "#d7d2cb"),
+            line: token("--hx-color-gray-600", "#5f5b55"),
+            actorLine: token("--hx-color-gray-400", "#aaa69e"),
+            noteBg: "#e6f7f5",
+          };
       return {
         startOnLoad: false,
         theme: "base",
         themeVariables: {
-          darkMode: false,
-          background: "#fffefc",
+          darkMode: isDark,
+          background: p.bg,
           fontFamily,
-          primaryColor: "#f1efea",
-          primaryTextColor: "#221f1d",
-          primaryBorderColor: "#0d9488",
-          secondaryColor: "#f7f5f2",
-          secondaryTextColor: "#221f1d",
-          secondaryBorderColor: "#d7d2cb",
-          tertiaryColor: "#fffefc",
-          tertiaryTextColor: "#221f1d",
-          tertiaryBorderColor: "#d7d2cb",
-          lineColor: "#5f5b55",
-          textColor: "#221f1d",
-          mainBkg: "#f7f5f2",
-          nodeBorder: "#0d9488",
-          clusterBkg: "#f7f5f2",
-          clusterBorder: "#d7d2cb",
-          defaultLinkColor: "#5f5b55",
-          titleColor: "#221f1d",
-          edgeLabelBackground: "#fffefc",
-          actorBkg: "#f7f5f2",
-          actorBorder: "#0d9488",
-          actorTextColor: "#221f1d",
-          actorLineColor: "#aaa69e",
-          signalColor: "#5f5b55",
-          signalTextColor: "#221f1d",
-          labelBoxBkgColor: "#f1efea",
-          labelBoxBorderColor: "#d7d2cb",
-          labelTextColor: "#221f1d",
-          noteBkgColor: "#e6f7f5",
-          noteBorderColor: "#0d9488",
-          noteTextColor: "#221f1d",
+          primaryColor: isDark ? p.surface : p.labelBg,
+          primaryTextColor: p.text,
+          primaryBorderColor: p.accent,
+          secondaryColor: p.secondary,
+          secondaryTextColor: p.text,
+          secondaryBorderColor: p.border,
+          tertiaryColor: p.bg,
+          tertiaryTextColor: p.text,
+          tertiaryBorderColor: p.border,
+          lineColor: p.line,
+          textColor: p.text,
+          mainBkg: p.surface,
+          nodeBorder: p.accent,
+          clusterBkg: p.secondary,
+          clusterBorder: p.border,
+          defaultLinkColor: p.line,
+          titleColor: p.text,
+          edgeLabelBackground: p.bg,
+          actorBkg: p.surface,
+          actorBorder: p.accent,
+          actorTextColor: p.text,
+          actorLineColor: p.actorLine,
+          signalColor: p.line,
+          signalTextColor: p.text,
+          labelBoxBkgColor: p.labelBg,
+          labelBoxBorderColor: p.border,
+          labelTextColor: p.text,
+          noteBkgColor: p.noteBg,
+          noteBorderColor: p.accent,
+          noteTextColor: p.text,
         },
       };
     };
 
     let currentIsDark = document.documentElement.classList.contains("dark");
-    mermaid.initialize(getThemeConfig(currentIsDark));
+    let initializedIsDark = null;
 
     // Render only visible diagrams; hidden ones (tabs, collapsed details) render truncated.
     let queue = Promise.resolve();
-    const renderVisible = () => {
-      queue = queue.then(() => {
-        const isDark = document.documentElement.classList.contains("dark");
-        mermaid.initialize(getThemeConfig(isDark));
-        const nodes = Array.from(document.querySelectorAll(".mermaid:not([data-processed])")).filter(
-          (el) => el.offsetParent !== null
-        );
-        if (nodes.length) return mermaid.run({ nodes }).catch(console.error);
-      });
-    };
-
-    renderVisible();
-
-    // Render diagrams when revealed (for example on tab switch or details toggle).
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting && !e.target.dataset.processed)) {
         renderVisible();
       }
     });
-    diagrams().forEach((el) => observer.observe(el));
 
-    // Re-render diagrams when the site toggles between light and dark mode.
+    const renderVisible = () => {
+      queue = queue.then(() => {
+        const nodes = diagrams.filter((el) => !el.dataset.processed && el.offsetParent !== null);
+        if (!nodes.length) return;
+        const isDark = document.documentElement.classList.contains("dark");
+        if (initializedIsDark !== isDark) {
+          mermaid.initialize(getThemeConfig(isDark));
+          initializedIsDark = isDark;
+        }
+        return mermaid
+          .run({ nodes })
+          .then(() => {
+            nodes.forEach((el) => {
+              if (el.dataset.processed) observer.unobserve(el);
+            });
+          })
+          .catch(console.error);
+      });
+    };
+
+    diagrams.forEach((el) => observer.observe(el));
+    renderVisible();
+
+    // Re-render diagrams inside the serialized queue when light/dark mode toggles.
     let timeout;
     new MutationObserver(() => {
       const nextIsDark = document.documentElement.classList.contains("dark");
@@ -135,9 +151,13 @@
       currentIsDark = nextIsDark;
       clearTimeout(timeout);
       timeout = setTimeout(() => {
-        document.querySelectorAll(".mermaid[data-processed]").forEach((el) => {
-          el.innerHTML = el.dataset.original;
-          el.removeAttribute("data-processed");
+        queue = queue.then(() => {
+          diagrams.forEach((el) => {
+            el.innerHTML = el.dataset.original;
+            el.removeAttribute("data-processed");
+            observer.observe(el);
+          });
+          initializedIsDark = null;
         });
         renderVisible();
       }, 150);

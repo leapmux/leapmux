@@ -85,6 +85,8 @@ module:
       target: static/skills
     - source: ../frontend/tests/e2e/feature-matrix
       target: data/feature_matrix
+    - source: ../contracts/theme-default.json
+      target: data/theme_default.json
 
 markup:
   goldmark:

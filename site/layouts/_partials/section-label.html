@@ -1,0 +1,57 @@
+{{- /*
+  Canonical section slug-to-label map and page section label resolver.
+  Shared by keywords.html, opengraph.html, schema.html, and pagefind-search.js
+  so SEO metadata and search breadcrumbs never drift.
+
+  Input:
+    - dict "mode" "map" -> returns the canonical slug->label dict (derived from
+      Hugo sections where present, with concise fallbacks).
+    - Page -> returns the display label for the page's documentation section,
+      or "" if none applies.
+*/ -}}
+{{- $labels := dict
+  "docs" "Documentation"
+  "getting-started" "Getting Started"
+  "recipes" "Workflow Recipes"
+  "using" "Using LeapMux"
+  "admin" "Administration"
+  "reference" "Reference"
+  "commands" "CLI Reference"
+  "troubleshooting" "Troubleshooting"
+  "download" "Download"
+  "changelog" "Changelog"
+-}}
+{{- $result := "" -}}
+{{- if reflect.IsMap . -}}
+  {{- if eq .mode "map" -}}
+    {{- $result = $labels -}}
+  {{- end -}}
+{{- else -}}
+  {{- $page := . -}}
+  {{- $sec := $page.CurrentSection -}}
+  {{- if and $page.IsPage $sec -}}
+    {{- $slug := path.Base (strings.TrimSuffix "/" $sec.RelPermalink) -}}
+    {{- with index $labels $slug -}}
+      {{- $result = . -}}
+    {{- else -}}
+      {{- /* Walk up to the top docs subsection if nested under a deeper section. */ -}}
+      {{- range $page.Ancestors -}}
+        {{- if not $result -}}
+          {{- $ancSlug := path.Base (strings.TrimSuffix "/" .RelPermalink) -}}
+          {{- if and (ne $ancSlug "") (ne $ancSlug "docs") -}}
+            {{- with index $labels $ancSlug -}}
+              {{- $result = . -}}
+            {{- end -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+      {{- if not $result -}}
+        {{- $result = $sec.LinkTitle | default $sec.Title -}}
+      {{- end -}}
+    {{- end -}}
+  {{- else if $page.IsSection -}}
+    {{- $slug := path.Base (strings.TrimSuffix "/" $page.RelPermalink) -}}
+    {{- $result = index $labels $slug | default ($page.LinkTitle | default $page.Title) -}}
+  {{- end -}}
+{{- end -}}
+{{- return $result -}}

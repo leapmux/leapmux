@@ -13,15 +13,12 @@
 {{- $name := .Get "file" -}}
 {{- $lang := .Get "lang" -}}
 {{- with .Page.Resources.Get $name -}}
-  {{- $lines := split (strings.TrimRight "\n" .Content) "\n" -}}
-  {{- $first := index $lines 0 -}}
-  {{- if not (hasPrefix $first "# /") -}}
+  {{- $parsed := partial "parse-config-file.html" . -}}
+  {{- if not $parsed -}}
     {{- errorf "config-file: %s must start with a comment line that states its install path (%s)" $name $.Position -}}
   {{- end -}}
-  {{- $path := strings.TrimPrefix "# " $first -}}
-  {{- $body := strings.TrimLeft "\n" (delimit (after 1 $lines) "\n") -}}
   {{- $fence := "```" -}}
-  {{- $.Page.RenderString (dict "display" "block") (printf "%s%s {filename=%q}\n%s\n%s" $fence $lang $path $body $fence) -}}
+  {{- $.Page.RenderString (dict "display" "block") (printf "%s%s {filename=%q}\n%s\n%s" $fence $lang $parsed.path $parsed.body $fence) -}}
 {{- else -}}
   {{- errorf "config-file: the page has no file %q (%s)" $name $.Position -}}
 {{- end -}}

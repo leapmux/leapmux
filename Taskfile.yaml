@@ -79,18 +79,19 @@ tasks:
         if: '[ "{{OS}}" != "windows" ]'
 
   install-site-deps:
-    desc: Install locked site build tools (pagefind, wrangler)
+    desc: Install locked site build tools (pagefind, wrangler, asciinema-player)
     sources:
       - site/package.json
       - site/bun.lock
     generates:
       - site/node_modules/.bin/pagefind
       - site/node_modules/.bin/wrangler
+      - site/node_modules/asciinema-player/dist/bundle/asciinema-player.min.js
     cmds:
       - cd site && bun install --frozen-lockfile --ignore-scripts
 
   validate-site-tools:
-    desc: Install the locked site tools as the site workflow does, and validate wrangler and pagefind
+    desc: Install the locked site tools as the site workflow does, and validate wrangler, pagefind, and asciinema-player
     dir: site
     env:
       CI: 'true'
@@ -99,6 +100,8 @@ tasks:
       - bun install --frozen-lockfile --ignore-scripts
       - ./node_modules/.bin/wrangler --version
       - ./node_modules/.bin/pagefind --version
+      - test -f node_modules/asciinema-player/dist/bundle/asciinema-player.min.js
+      - test -f node_modules/asciinema-player/dist/bundle/asciinema-player.css
 
   lint-renovate:
     desc: Validate Renovate configuration with the pinned CLI
@@ -1709,11 +1712,14 @@ tasks:
   dev-site:
     desc: Start the documentation site dev server with live reload (http://localhost:1313)
     cmds:
-      - task: validate-json
+      # Build once first so Pagefind, /vendor/asciinema-player/*, and
+      # /config-reference.json exist in site/public/ when hugo server serves
+      # them with --renderToDisk.
+      - task: site
       # Live-reloading Hugo server via the go tool dependency (see site/go.mod).
       # GOWORK=off isolates the site module from the root go.work, and hugo
       # server overrides baseURL with the local address so links work locally.
-      - cd site && GOWORK=off go tool hugo server --buildDrafts
+      - cd site && GOWORK=off go tool hugo server --buildDrafts --renderToDisk
 
   build-desktop-sidecar:
     desc: Build desktop sidecar binary
@@ -1926,6 +1932,7 @@ tasks:
       - skills/**/*
       - frontend/tests/e2e/feature-matrix/**/*
       - contracts/providers.json
+      - contracts/theme-default.json
       - scripts/validate-json.mjs
       - scripts/validate-coding-agent-matrix.mjs
       - scripts/generate-config-reference.mjs

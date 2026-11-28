@@ -2,14 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "theme-default.schema.json",
   "title": "default palette contract",
-  "description": "The default theme's full light/dark token maps plus the OAuth pages' curated subset. The generator checks that every oauthPage token (after renames) exists in BOTH variants, and emits a plain-data TS module (the theme dir imports it by relative path) and the Go pageCSS palette block.",
+  "description": "The default theme's full light/dark token maps, 16-color Dimidium terminal ANSI palettes, and OAuth pages' curated subset. The generator checks that every oauthPage token (after renames) exists in BOTH variants and that both terminal palettes supply all 16 hex ANSI colors, emitting a plain-data TS module and the Go pageCSS palette block. Hugo mounts this JSON directly for the docs site's cli-cast terminal theme.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "light", "dark", "oauthPage"],
+  "required": ["_readme", "light", "dark", "oauthPage", "terminal"],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
     "light": { "$ref": "#/$defs/palette" },
     "dark": { "$ref": "#/$defs/palette" },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["light", "dark"],
+      "properties": {
+        "light": { "$ref": "#/$defs/terminalAnsi" },
+        "dark": { "$ref": "#/$defs/terminalAnsi" }
+      }
+    },
     "oauthPage": {
       "type": "object",
       "additionalProperties": false,
@@ -35,6 +44,50 @@
       "minProperties": 1,
       "propertyNames": { "pattern": "^--[a-z][a-z0-9-]*$" },
       "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "terminalAnsi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "magenta",
+        "cyan",
+        "white",
+        "brightBlack",
+        "brightRed",
+        "brightGreen",
+        "brightYellow",
+        "brightBlue",
+        "brightMagenta",
+        "brightCyan",
+        "brightWhite"
+      ],
+      "properties": {
+        "black": { "$ref": "#/$defs/hexColor" },
+        "red": { "$ref": "#/$defs/hexColor" },
+        "green": { "$ref": "#/$defs/hexColor" },
+        "yellow": { "$ref": "#/$defs/hexColor" },
+        "blue": { "$ref": "#/$defs/hexColor" },
+        "magenta": { "$ref": "#/$defs/hexColor" },
+        "cyan": { "$ref": "#/$defs/hexColor" },
+        "white": { "$ref": "#/$defs/hexColor" },
+        "brightBlack": { "$ref": "#/$defs/hexColor" },
+        "brightRed": { "$ref": "#/$defs/hexColor" },
+        "brightGreen": { "$ref": "#/$defs/hexColor" },
+        "brightYellow": { "$ref": "#/$defs/hexColor" },
+        "brightBlue": { "$ref": "#/$defs/hexColor" },
+        "brightMagenta": { "$ref": "#/$defs/hexColor" },
+        "brightCyan": { "$ref": "#/$defs/hexColor" },
+        "brightWhite": { "$ref": "#/$defs/hexColor" }
+      }
+    },
+    "hexColor": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$"
     }
   }
 }

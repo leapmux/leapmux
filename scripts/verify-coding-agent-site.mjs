@@ -389,7 +389,7 @@ export function verifyCodingAgentSite(html, features, checklist) {
     }
   }
 
-  const logos = Array.from(document.querySelectorAll('.provider-logos img'))
+  const logos = Array.from(document.querySelectorAll('.provider-logos img:not(.lm-theme-dark)'))
   if (logos.length !== providers.length)
     errors.push(`expected ${providers.length} provider logos, found ${logos.length}`)
   for (const [index, provider] of providers.entries()) {
@@ -562,10 +562,63 @@ export function findOrphanH2Headings(markdown) {
   return orphans
 }
 
+const REQUIRED_NGINX_VARS = [
+  '$http_upgrade',
+  '$host',
+  '$request_uri',
+  '$scheme',
+]
+
 function readMetaProperty(html, property) {
   const dom = new JSDOM(html)
   try {
     return dom.window.document.querySelector(`meta[property="${property}"]`)?.getAttribute('content') ?? null
+  }
+  finally {
+    dom.window.close()
+  }
+}
+
+function externalCdnIntegrityErrors(html, file) {
+  const dom = new JSDOM(html)
+  const errors = []
+  try {
+    const doc = dom.window.document
+    for (const el of doc.querySelectorAll('link[href^="https://cdn.jsdelivr.net/"], script[src^="https://cdn.jsdelivr.net/"]')) {
+      const url = el.getAttribute('href') ?? el.getAttribute('src') ?? ''
+      const integrity = el.getAttribute('integrity') ?? ''
+      const crossorigin = el.getAttribute('crossorigin') ?? ''
+      if (!integrity.startsWith('sha384-'))
+        errors.push(`${file}: external CDN asset ${url} lacks sha384 integrity`)
+      if (crossorigin !== 'anonymous')
+        errors.push(`${file}: external CDN asset ${url} lacks crossorigin="anonymous"`)
+    }
+  }
+  finally {
+    dom.window.close()
+  }
+  return errors
+}
+
+function readJsonLdType(html) {
+  const dom = new JSDOM(html)
+  try {
+    for (const script of dom.window.document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const data = JSON.parse(script.textContent ?? '')
+        const entries = Array.isArray(data?.['@graph'])
+          ? data['@graph']
+          : [data]
+        for (const entry of entries) {
+          if (entry?.['@type'] && entry['@type'] !== 'BreadcrumbList')
+            return entry['@type']
+        }
+      }
+      catch {
+        return null
+      }
+    }
+    return null
   }
   finally {
     dom.window.close()
@@ -606,6 +659,30 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
     }
   }
 
+  const reverseProxyMd = readFileSync(resolve(publicDir, 'docs/admin/reverse-proxy/index.md'), 'utf8')
+  for (const nginxVar of REQUIRED_NGINX_VARS) {
+    if (!reverseProxyMd.includes(nginxVar))
+      errors.push(`docs/admin/reverse-proxy/index.md: missing nginx variable ${nginxVar}`)
+  }
+
+  const recoverPath = resolve(publicDir, 'docs/admin/recover/index.md')
+  if (existsSync(recoverPath)) {
+    const recoverMd = readFileSync(recoverPath, 'utf8')
+    if (recoverMd.includes('> **Warning:**') && !recoverMd.includes('> Passing the top-level'))
+      errors.push('docs/admin/recover/index.md: multi-paragraph callout lost blockquote prefix on continuation paragraph')
+  }
+
+  for (const rel of ['download/index.md', 'changelog/index.md']) {
+    const fullPath = resolve(publicDir, rel)
+    if (!existsSync(fullPath))
+      continue
+    const text = readFileSync(fullPath, 'utf8')
+    if (/<script\b/i.test(text))
+      errors.push(`${rel}: leaks raw <script> tag`)
+    if (/<div\b/i.test(text))
+      errors.push(`${rel}: leaks raw <div> tag`)
+  }
+
   const faqMd = readFileSync(resolve(publicDir, 'docs/reference/faq/index.md'), 'utf8')
   const firstProvider = checklist.providerGroups.flat()[0]
   if (firstProvider && !faqMd.includes(firstProvider.label))
@@ -618,6 +695,17 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
   const llmsTxt = readFileSync(resolve(publicDir, 'llms.txt'), 'utf8')
   if (!llmsTxt.includes('/docs/reference/commands/index.md'))
     errors.push('llms.txt: missing /docs/reference/commands/index.md overview entry')
+  if (!llmsTxt.includes('/changelog/index.md'))
+    errors.push('llms.txt: missing /changelog/index.md entry')
+  if (/&amp;|&#39;|&#43;/.test(llmsTxt))
+    errors.push('llms.txt: contains HTML-escaped entities')
+
+  const llmsSmallPath = resolve(publicDir, 'llms-small.txt')
+  if (existsSync(llmsSmallPath)) {
+    const llmsSmall = readFileSync(llmsSmallPath, 'utf8')
+    if (/&amp;|&#39;|&#43;/.test(llmsSmall))
+      errors.push('llms-small.txt: contains HTML-escaped entities')
+  }
 
   const llmsFullPath = resolve(publicDir, 'llms-full.txt')
   if (!existsSync(llmsFullPath)) {
@@ -627,6 +715,10 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
     const llmsFull = readFileSync(llmsFullPath, 'utf8')
     if (llmsFull.includes('{{<') || llmsFull.includes('{{%'))
       errors.push('llms-full.txt: contains unexpanded Hugo shortcode')
+    if (!llmsFull.includes('$http_upgrade'))
+      errors.push('llms-full.txt: missing nginx variable $http_upgrade')
+    if (llmsFull.includes('# Control Command Reference'))
+      errors.push('llms-full.txt: must exclude Control Command Reference (llms_full: false)')
     for (const heading of REQUIRED_LLMS_FULL_HEADINGS) {
       if (!llmsFull.includes(heading))
         errors.push(`llms-full.txt: missing core guide heading ${JSON.stringify(heading)}`)
@@ -671,6 +763,36 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
   const homeHTML = readFileSync(resolve(publicDir, 'index.html'), 'utf8')
   if (homeHTML.includes('og:image:alt" content="LeapMux — LeapMux"'))
     errors.push('index.html: og:image:alt duplicates site title')
+  const ogLocale = readMetaProperty(homeHTML, 'og:locale')
+  if (ogLocale !== 'en_US')
+    errors.push(`index.html: og:locale is ${JSON.stringify(ogLocale)}, expected "en_US"`)
+  if (/<video\b[^>]+\bautoplay\b/i.test(homeHTML))
+    errors.push('index.html: contains <video autoplay> attribute; video playback must be gated by JS')
+  if (!homeHTML.includes('asciinema-player-theme-leapmux') || !homeHTML.includes('--term-color-15:'))
+    errors.push('index.html: missing generated asciinema-player terminal theme from contracts/theme-default.json')
+  errors.push(...externalCdnIntegrityErrors(homeHTML, 'index.html'))
+
+  const adminSectionPath = resolve(publicDir, 'docs/admin/index.html')
+  if (existsSync(adminSectionPath)) {
+    const schemaType = readJsonLdType(readFileSync(adminSectionPath, 'utf8'))
+    if (schemaType !== 'CollectionPage')
+      errors.push(`docs/admin/index.html: JSON-LD @type is ${JSON.stringify(schemaType)}, expected "CollectionPage"`)
+  }
+
+  const conceptsPath = resolve(publicDir, 'docs/getting-started/concepts/index.html')
+  if (existsSync(conceptsPath))
+    errors.push(...externalCdnIntegrityErrors(readFileSync(conceptsPath, 'utf8'), 'docs/getting-started/concepts/index.html'))
+
+  const headersPath = resolve(publicDir, '_headers')
+  if (existsSync(headersPath)) {
+    const headers = readFileSync(headersPath, 'utf8')
+    if (!/^\/\*\.txt$/m.test(headers) || !/^\/\*\.md$/m.test(headers))
+      errors.push('_headers: must define disjoint /*.txt and /*.md rules')
+    if (/^\/skills\/\*$/m.test(headers) || /^\/agent-guide\.md$/m.test(headers))
+      errors.push('_headers: contains overlapping /skills/* or /agent-guide.md rule that duplicates Content-Type on Cloudflare')
+    if (/^\s*Vary:\s*Accept\b/im.test(headers))
+      errors.push('_headers: must not emit Vary: Accept for static assets without content negotiation')
+  }
 
   for (const { file, expected } of EXPECTED_ARTICLE_SECTIONS) {
     const fullPath = resolve(publicDir, file)
@@ -685,6 +807,10 @@ export function verifyBuiltSiteArtifacts(publicDir, checklist) {
 
   if (!existsSync(resolve(publicDir, 'pagefind/pagefind.js')))
     errors.push('site/public/pagefind/pagefind.js: missing Pagefind search index')
+  for (const vendorAsset of ['vendor/asciinema-player/asciinema-player.min.js', 'vendor/asciinema-player/asciinema-player.css']) {
+    if (!existsSync(resolve(publicDir, vendorAsset)))
+      errors.push(`site/public/${vendorAsset}: missing locked asciinema-player bundle asset`)
+  }
   for (const asset of PRUNED_PAGEFIND_ASSETS) {
     if (existsSync(resolve(publicDir, asset)))
       errors.push(`site/public/${asset}: unused Pagefind stock UI asset should be pruned`)

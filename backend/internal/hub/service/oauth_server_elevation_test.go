@@ -154,7 +154,7 @@ func TestCLIConsent_UnelevatedPostIsRefusedNotRedirected(t *testing.T) {
 // regression for the one surface the sliding rule missed.
 //
 // "Each sensitive action slides that window forward" is the rule the design
-// and site/content/docs/admin/security.md both state, and the consent legs enforced the
+// and site/content/docs/admin/security-and-auth.md both state, and the consent legs enforced the
 // window without extending it: slideElevation was a *UserService method, so
 // only UserService procedures could reach it. Authorizing a command-line
 // credential -- the most consequential thing a session can do -- was the one

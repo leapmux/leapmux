@@ -11,12 +11,7 @@
 <div class="copy-prompt not-prose">
   <div class="copy-prompt-header">
     <span class="copy-prompt-label">{{ $label }}</span>
-    <button
-      type="button"
-      class="copy-prompt-btn"
-      data-copied-label="Copied"
-      onclick="(function(btn){var card=btn.closest('.copy-prompt');var el=card&&card.querySelector('.copy-prompt-body code');if(!el)return;var text=el.textContent;var done=function(){var orig=btn.dataset.origLabel||btn.textContent;btn.dataset.origLabel=orig;btn.textContent=btn.dataset.copiedLabel||'Copied';btn.classList.add('is-copied');clearTimeout(btn._t);btn._t=setTimeout(function(){btn.textContent=orig;btn.classList.remove('is-copied');},1800);};var fallback=function(){var ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();try{if(document.execCommand('copy'))done();}catch(e){}document.body.removeChild(ta);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,fallback);}else{fallback();}})(this)"
-    >Copy prompt</button>
+    <button type="button" class="copy-prompt-btn" data-copied-label="Copied">Copy prompt</button>
   </div>
   <pre class="copy-prompt-body"><code>{{ $prompt }}</code></pre>
 </div>

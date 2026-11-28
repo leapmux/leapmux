@@ -119,7 +119,16 @@ Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux set
       <a class="lm-showcase-link" href="/docs/using/cli-guide/">Explore the CLI guide &rarr;</a>
     </div>
     <div class="lm-showcase-media">
-      {{< cli-cast src="cli-fleet-demo" title="zsh — payments-api" cols="100" rows="18" caption="Live leapmux CLI capture: open Claude Code and Codex on isolated git worktrees, list active agents, dispatch tasks in parallel, wait for the first completion, and read its reply." >}}
+      {{< cli-cast src="cli-fleet-demo" title="zsh — payments-api" poster="npt:0:20" caption="Live leapmux CLI capture: open Claude Code and Codex on isolated git worktrees, list active agents, dispatch tasks in parallel, wait for the first completion, and read its reply." >}}
+A1=$(leapmux agent open --provider claude --worktree feat/api --base main -q)
+A2=$(leapmux agent open --provider codex  --worktree feat/cli --base main -q)
+leapmux agent list
+leapmux agent send "$A1" "Implement the /health endpoint with tests."
+leapmux agent send "$A2" "Add the health subcommand and JSON output."
+leapmux agent wait "$A1" "$A2" --any --json
+leapmux agent messages "$A1" --json | \
+  jq -r '.data.messages[] | select(.source=="agent") | .reply_text // empty'
+      {{< /cli-cast >}}
     </div>
   </section>
 </div>

@@ -29,7 +29,7 @@ Ask the user where their repositories live and whether other people or devices n
 | --- | --- | --- | --- |
 | **Solo Desktop** | One developer on macOS, Linux, or Windows | Bundled Hub + Worker over local inter-process communication (IPC) | No login on local IPC; no TCP port opened by default |
 | **Solo Daemon** | One developer using a browser, CLI, or persistent local service | `leapmux up` (`leapmux daemon solo start`) / `leapmux down` | Listens on `127.0.0.1:4327`; first browser visit sets the `solo` password |
-| **Distributed (Hub + Workers)** | Remote devboxes behind firewalls/NAT, or multiple users | `leapmux daemon hub start` (or Docker `LEAPMUX_MODE=hub`) plus `leapmux daemon worker` on each repo host | Full authentication on Hub; Workers dial out using a registration key |
+| **Distributed (Hub + Workers)** | Remote devboxes behind firewalls or network address translation (NAT), or multiple users | `leapmux daemon hub start` (or Docker `LEAPMUX_MODE=hub`) plus `leapmux daemon worker` on each repo host | Full authentication on Hub; Workers dial out using a registration key |
 
 For an all-in-one container reachable over the network, use `LEAPMUX_MODE=dev` rather than `solo`, because `solo` listens on `127.0.0.1:4327` by default. Place an HTTPS reverse proxy in front of any network-reachable Hub.
 

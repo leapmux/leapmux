@@ -1,0 +1,12 @@
+{{- /*
+  Format one Markdown bullet entry for /llms.txt and /llms-small.txt.
+  Params (dict): page (Page), suffix (optional string appended to title, e.g. " (Overview)")
+*/ -}}
+{{- $page := .page -}}
+{{- $suffix := .suffix | default "" -}}
+{{- $url := partial "markdown-permalink.html" $page -}}
+{{- $desc := $page.Description -}}
+{{- if not $desc -}}
+  {{- $desc = $page.Summary | plainify | truncate 200 | strings.TrimSpace -}}
+{{- end -}}
+{{- return (printf "- [%s%s](%s): %s" $page.Title $suffix $url $desc) -}}

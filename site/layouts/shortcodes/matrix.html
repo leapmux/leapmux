@@ -1,25 +1,21 @@
 {{- $page := .Page -}}
-{{- $data := index hugo.Data "feature_matrix" -}}
-{{- $checklist := index $data "checklist" -}}
-{{- $featureGroups := (index $data "features").groups -}}
-{{- $features := where (index $data "features").features "showInMatrix" true -}}
-{{- $states := $checklist.supportStates -}}
+{{- $m := partialCached "feature-matrix-model.html" . -}}
 {{- /* list-style none makes Safari drop the implicit list role, so the role is explicit. */ -}}
 <ul class="feature-matrix-legend" role="list" aria-label="Legend">
-  {{- range $state := $states -}}
+  {{- range $state := $m.states -}}
     <li><span aria-hidden="true">{{ $state.symbol }}</span> {{ $state.label }}</li>
   {{- end -}}
 </ul>
 <div class="feature-matrix">
-  {{- range $groupIndex, $group := $checklist.providerGroups -}}
-    <table style="--matrix-provider-cols: {{ len $group }};" aria-label="Coding agent feature matrix, part {{ add $groupIndex 1 }} of {{ len $checklist.providerGroups }}">
+  {{- range $groupIndex, $group := $m.providerGroups -}}
+    <table style="--matrix-provider-cols: {{ len $group }};" aria-label="Coding agent feature matrix, part {{ add $groupIndex 1 }} of {{ len $m.providerGroups }}">
       <thead>
         <tr>
           <th>Feature</th>
           {{- range $provider := $group -}}
             <th>
               <a class="provider-link" href="{{ $provider.url }}">
-                <img src="{{ $provider.icon }}" width="24" height="24" alt="{{ $provider.label }}">
+                {{- partial "provider-icon.html" (dict "provider" $provider "size" 24 "alt" $provider.label) -}}
                 <span class="provider-hover-label" aria-hidden="true">{{ $provider.label }}</span>
               </a>
               {{- with $provider.userNote -}}
@@ -34,41 +30,36 @@
         first group, so that group header shows only the name. Each later group header repeats
         the logos as decoration, so a reader far down the table still sees each column.
       */ -}}
-      {{- $renderedGroups := 0 -}}
-      {{- range $featureGroup := $featureGroups -}}
-        {{- $groupFeatures := where $features "group" $featureGroup.id -}}
-        {{- if $groupFeatures -}}
-          <tbody>
-            <tr class="feature-group-header">
-              {{- if eq $renderedGroups 0 -}}
-                <th scope="rowgroup" colspan="{{ add (len $group) 1 }}">{{ $featureGroup.label }}</th>
-              {{- else -}}
-                <th scope="rowgroup">{{ $featureGroup.label }}</th>
-                {{- range $provider := $group -}}
-                  <td class="feature-group-logo" aria-hidden="true"><span class="provider-link"><img src="{{ $provider.icon }}" width="20" height="20" alt=""><span class="provider-hover-label">{{ $provider.label }}</span></span></td>
-                {{- end -}}
+      {{- range $renderedIdx, $gf := $m.groupedFeatures -}}
+        <tbody>
+          <tr class="feature-group-header">
+            {{- if eq $renderedIdx 0 -}}
+              <th scope="rowgroup" colspan="{{ add (len $group) 1 }}">{{ $gf.group.label }}</th>
+            {{- else -}}
+              <th scope="rowgroup">{{ $gf.group.label }}</th>
+              {{- range $provider := $group -}}
+                <td class="feature-group-logo" aria-hidden="true"><span class="provider-link">{{- partial "provider-icon.html" (dict "provider" $provider "size" 20 "alt" "") -}}<span class="provider-hover-label">{{ $provider.label }}</span></span></td>
+              {{- end -}}
+            {{- end -}}
+          </tr>
+          {{- range $feature := $gf.features -}}
+            {{- $row := index $m.cells $feature.id -}}
+            <tr>
+              <th scope="row"><a href="#feature-{{ $feature.id }}">{{ $feature.label }}</a></th>
+              {{- range $provider := $group -}}
+                {{- $cell := index $row $provider.id -}}
+                {{- $state := index $m.stateByID $cell.support -}}
+                <td>
+                  {{- /* The label describes the state for a screen reader. The legend explains the symbols. */ -}}
+                  <span role="img" aria-label="{{ $state.label }}">{{ $state.symbol }}</span>
+                  {{- with $cell.userNote -}}
+                    <a href="#note-{{ $provider.id }}-{{ $feature.id }}" aria-label="Note about {{ $provider.label }} {{ $feature.label }}"><sup>†</sup></a>
+                  {{- end -}}
+                </td>
               {{- end -}}
             </tr>
-            {{- $renderedGroups = add $renderedGroups 1 -}}
-            {{- range $feature := $groupFeatures -}}
-              {{- $row := index $checklist.cells $feature.id -}}
-              <tr>
-                <th scope="row"><a href="#feature-{{ $feature.id }}">{{ $feature.label }}</a></th>
-                {{- range $provider := $group -}}
-                  {{- $cell := index $row $provider.id -}}
-                  {{- $state := index (where $states "id" $cell.support) 0 -}}
-                  <td>
-                    {{- /* The label names the state for a screen reader. The legend explains the symbols. */ -}}
-                    <span role="img" aria-label="{{ $state.label }}">{{ $state.symbol }}</span>
-                    {{- with $cell.userNote -}}
-                      <a href="#note-{{ $provider.id }}-{{ $feature.id }}" aria-label="Note about {{ $provider.label }} {{ $feature.label }}"><sup>†</sup></a>
-                    {{- end -}}
-                  </td>
-                {{- end -}}
-              </tr>
-            {{- end -}}
-          </tbody>
-        {{- end -}}
+          {{- end -}}
+        </tbody>
       {{- end -}}
     </table>
   {{- end -}}
@@ -77,7 +68,7 @@
 <section class="feature-matrix-definitions" aria-labelledby="feature-matrix-definitions-heading">
   <h3 id="feature-matrix-definitions-heading">Feature definitions</h3>
   <dl>
-    {{- range $feature := $features -}}
+    {{- range $feature := $m.features -}}
       <dt id="feature-{{ $feature.id }}">{{ $feature.label }}</dt>
       <dd>{{ $feature.description }}</dd>
     {{- end -}}
@@ -87,26 +78,13 @@
 {{- /* The site shows the user note only. The detail note is evidence for the maintainers. */ -}}
 <section class="feature-matrix-notes" aria-labelledby="feature-matrix-notes-heading">
   <h3 id="feature-matrix-notes-heading">Notes</h3>
-  {{- range $group := $checklist.providerGroups -}}
-    {{- range $provider := $group -}}
-      {{- with $provider.userNote -}}
-        <div id="note-provider-{{ $provider.id }}"><strong>{{ $provider.label }}:</strong> {{ $page.RenderString (dict "display" "block") . }}</div>
-      {{- end -}}
-    {{- end -}}
+  {{- range $pn := $m.providerNotes -}}
+    <div id="note-provider-{{ $pn.provider.id }}"><strong>{{ $pn.provider.label }}:</strong> {{ $page.RenderString (dict "display" "block") $pn.note }}</div>
   {{- end -}}
-  {{- range $feature := $features -}}
-    {{- $row := index $checklist.cells $feature.id -}}
-    {{- range $group := $checklist.providerGroups -}}
-      {{- range $provider := $group -}}
-        {{- $cell := index $row $provider.id -}}
-        {{- with $cell.userNote -}}
-          {{- $state := index (where $states "id" $cell.support) 0 -}}
-          <div id="note-{{ $provider.id }}-{{ $feature.id }}">
-            <strong><span aria-hidden="true">{{ $state.symbol }}</span> {{ $provider.label }} — {{ $feature.label }}:</strong>
-            {{ $page.RenderString (dict "display" "block") . }}
-          </div>
-        {{- end -}}
-      {{- end -}}
-    {{- end -}}
+  {{- range $cn := $m.cellNotes -}}
+    <div id="note-{{ $cn.provider.id }}-{{ $cn.feature.id }}">
+      <strong><span aria-hidden="true">{{ $cn.state.symbol }}</span> {{ $cn.provider.label }} — {{ $cn.feature.label }}:</strong>
+      {{ $page.RenderString (dict "display" "block") $cn.note }}
+    </div>
   {{- end -}}
 </section>

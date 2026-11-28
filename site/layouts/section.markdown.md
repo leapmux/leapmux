@@ -1,4 +1,6 @@
-{{- $body := partial "clean-markdown-body.html" . -}}
+{{- $body := partialCached "clean-markdown-body.html" . .RelPermalink -}}
+{{- $pages := where .RegularPages "Params.llms" "ne" false -}}
+{{- $sections := where .Sections "Params.llms" "ne" false -}}
 # {{ .Title }}
 {{ with .Description }}
 > {{ . }}
@@ -7,19 +9,19 @@ Canonical URL: {{ .Permalink }}
 {{ if $body }}
 {{ $body }}
 {{ end }}
-{{- if .RegularPages }}
+{{- if $pages }}
 
 ## Pages
-{{- range .RegularPages }}
-{{- $url := .Permalink }}{{- with .OutputFormats.Get "markdown" }}{{- $url = .Permalink }}{{- end }}
+{{- range $pages }}
+{{- $url := partial "markdown-permalink.html" . }}
 - [{{ .Title }}]({{ $url }}){{ with .Description }}: {{ . }}{{ end }}
 {{- end }}
 {{- end }}
-{{- if .Sections }}
+{{- if $sections }}
 
 ## Sections
-{{- range .Sections }}
-{{- $url := .Permalink }}{{- with .OutputFormats.Get "markdown" }}{{- $url = .Permalink }}{{- end }}
+{{- range $sections }}
+{{- $url := partial "markdown-permalink.html" . }}
 - [{{ .Title }}]({{ $url }}){{ with .Description }}: {{ . }}{{ end }}
 {{- end }}
 {{- end }}

@@ -1,0 +1,71 @@
+{{- /*
+  Shared dual-theme screenshot partial (light/dark PNG pair swapped via CSS .dark).
+  Validates src, asset existence, and numeric dimensions at build time.
+
+  Params (dict):
+    page:    Page context (for RenderString on caption)
+    src:     base filename without -light.png / -dark.png
+    alt:     img alt text (falls back to caption)
+    caption: optional Markdown caption
+    width:   optional positive integer string
+    height:  optional positive integer string
+    eager:   bool (default false; activates eager+high priority only on active theme)
+    pos:     caller Position string for errorf
+*/ -}}
+{{- $src := .src -}}
+{{- $pos := .pos | default "" -}}
+{{- if not $src -}}
+  {{- errorf "theme-screenshot: missing required 'src' parameter (%s)" $pos -}}
+{{- end -}}
+{{- $lightStatic := printf "static/images/docs/%s-light.png" $src -}}
+{{- $darkStatic := printf "static/images/docs/%s-dark.png" $src -}}
+{{- if not (fileExists $lightStatic) -}}
+  {{- errorf "theme-screenshot: missing asset %s (%s)" $lightStatic $pos -}}
+{{- end -}}
+{{- if not (fileExists $darkStatic) -}}
+  {{- errorf "theme-screenshot: missing asset %s (%s)" $darkStatic $pos -}}
+{{- end -}}
+{{- $caption := .caption | default "" -}}
+{{- $alt := .alt | default $caption -}}
+{{- $width := printf "%v" (.width | default "") -}}
+{{- $height := printf "%v" (.height | default "") -}}
+{{- if and (ne $width "") (not (findRE `^[1-9][0-9]*$` $width)) -}}
+  {{- errorf "theme-screenshot: width must be a positive integer, got %q (%s)" $width $pos -}}
+{{- end -}}
+{{- if and (ne $height "") (not (findRE `^[1-9][0-9]*$` $height)) -}}
+  {{- errorf "theme-screenshot: height must be a positive integer, got %q (%s)" $height $pos -}}
+{{- end -}}
+{{- $sized := and (ne $width "") (ne $height "") -}}
+{{- $eager := eq .eager true -}}
+{{- $lightURL := printf "images/docs/%s-light.png" $src | relURL -}}
+{{- $darkURL := printf "images/docs/%s-dark.png" $src | relURL -}}
+<figure class="doc-screenshot{{ if $sized }} doc-screenshot--sized{{ end }}"{{ if $sized }} style="{{ printf "--doc-screenshot-w: %s; --doc-screenshot-h: %s;" $width $height | safeCSS }}"{{ end }}>
+  <div class="doc-screenshot-frame">
+    <img
+      class="doc-screenshot-light"
+      src="{{ $lightURL }}"
+      alt="{{ $alt }}"
+      {{- with $width }} width="{{ . }}"{{ end -}}
+      {{- with $height }} height="{{ . }}"{{ end }}
+      loading="lazy"
+      decoding="async"
+      {{- if $eager }} data-lm-eager-variant="light"{{ end }}
+    >
+    <img
+      class="doc-screenshot-dark"
+      src="{{ $darkURL }}"
+      alt="{{ $alt }}"
+      {{- with $width }} width="{{ . }}"{{ end -}}
+      {{- with $height }} height="{{ . }}"{{ end }}
+      loading="lazy"
+      decoding="async"
+      {{- if $eager }} data-lm-eager-variant="dark"{{ end }}
+    >
+  </div>
+  {{- if $eager -}}
+  <script>(function(){var f=document.currentScript&&document.currentScript.previousElementSibling;if(!f)return;var v=document.documentElement.classList.contains('dark')?'dark':'light';var img=f.querySelector('img[data-lm-eager-variant="'+v+'"]');if(img){img.loading='eager';img.fetchPriority='high';}})();</script>
+  {{- end -}}
+  {{- with $caption }}
+  <figcaption class="doc-screenshot-caption">{{ . | $.page.RenderString (dict "display" "inline") }}</figcaption>
+  {{- end }}
+</figure>

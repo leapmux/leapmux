@@ -14,26 +14,32 @@
   {{- $entries = first $count $data.entries -}}
 {{- end -}}
 {{- if gt (len $entries) 0 -}}
-<section class="lm-changelog-strip" aria-labelledby="lm-changelog-strip-heading">
+{{- $headingID := printf "lm-changelog-strip-heading-%d" .Ordinal -}}
+{{- $changelogURL := "changelog/" | relURL -}}
+{{- $seenDates := dict -}}
+<section class="lm-changelog-strip" aria-labelledby="{{ $headingID }}">
   <div class="lm-changelog-strip-header">
     <div>
       <div class="lm-showcase-eyebrow">Recent Milestones</div>
-      <h2 id="lm-changelog-strip-heading" class="lm-changelog-strip-title">Latest updates</h2>
+      <h2 id="{{ $headingID }}" class="lm-changelog-strip-title">Latest updates</h2>
     </div>
     <div class="lm-changelog-strip-links">
-      <a class="lm-showcase-link" href="/changelog/">View full changelog &rarr;</a>
+      <a class="lm-showcase-link" href="{{ $changelogURL }}">View full changelog &rarr;</a>
       <a class="lm-showcase-link" href="https://github.com/leapmux/leapmux/releases">GitHub Releases</a>
     </div>
   </div>
   <div class="lm-changelog-strip-grid">
     {{- range $entries -}}
+    {{- $seen := add (index $seenDates .date | default 0) 1 -}}
+    {{- $seenDates = merge $seenDates (dict .date $seen) -}}
+    {{- $anchor := cond (eq $seen 1) (printf "release-%s" .date) (printf "release-%s-%d" .date $seen) -}}
     <article class="lm-changelog-card">
       <time class="lm-changelog-date" datetime="{{ .date }}">{{ .label | default .date }}</time>
       <h3 class="lm-changelog-card-title">
-        <a href="/changelog/#release-{{ .date }}">{{ .title }}</a>
+        <a href="{{ $changelogURL }}#{{ $anchor }}">{{ .title }}</a>
       </h3>
       {{- with .summary -}}
-      <p class="lm-changelog-card-summary">{{ . | $.Page.RenderString }}</p>
+      <p class="lm-changelog-card-summary">{{ . | $.Page.RenderString (dict "display" "inline") }}</p>
       {{- end -}}
     </article>
     {{- end -}}

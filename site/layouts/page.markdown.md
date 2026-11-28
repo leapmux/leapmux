@@ -1,4 +1,4 @@
-{{- $body := partial "clean-markdown-body.html" . -}}
+{{- $body := partialCached "clean-markdown-body.html" . .RelPermalink -}}
 # {{ .Title }}
 {{ with .Description }}
 > {{ . }}

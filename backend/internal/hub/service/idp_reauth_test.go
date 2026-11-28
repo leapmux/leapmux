@@ -535,7 +535,7 @@ func countOAuthStates(t *testing.T, states *service.MemoryOAuthStateStore) int {
 // registration must ask for. A sole-credential account on either got a 403
 // on the only option its step-up screen offered, every time.
 //
-// site/content/docs/admin/security.md states the resulting exposure plainly: the path
+// site/content/docs/admin/security-and-auth.md states the resulting exposure plainly: the path
 // proves "this browser still holds a live provider session for the linked
 // account", not "the provider re-authenticated this person just now". For an
 // account whose only credential IS that provider, somebody holding both
