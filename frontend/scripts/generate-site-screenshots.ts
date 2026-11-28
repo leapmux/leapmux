@@ -1937,10 +1937,10 @@ async function captureParallelWorktreesClip(
         await recorder.wait(950)
         await recorder.clickLocator(diffToolbar.getByText('Unified', { exact: true }))
         await recorder.wait(550)
-        await recorder.zoomOut({ transitionMs: 420 })
       }
 
-      // Zoom onto the left sidebar worktree tree and switch between isolated worktree tabs.
+      // Pan smoothly across at the same zoom level to the left sidebar worktree
+      // tree and switch between isolated worktree tabs.
       const wsChildren = p.locator(`[data-testid="workspace-children-${wsMain}"]:visible`).first()
       const wsHeaderBox = await mainRow.boundingBox()
       const wsChildrenBox = await wsChildren.boundingBox()
@@ -1953,7 +1953,7 @@ async function captureParallelWorktreesClip(
             width: Math.min(clipViewport.width, treeFocus.width + 260),
             height: treeFocus.height + 120,
           },
-          { padding: 32, maxZoom: 1.65, transitionMs: 450 },
+          { padding: 32, maxZoom: 1.65, transitionMs: 650 },
         )
       }
       for (const label of ['Token refresh', 'Webhook HMAC', 'Retry jitter']) {
@@ -2950,27 +2950,40 @@ async function main(): Promise<void> {
       }
 
       if (process.env.DOCS_CLIPS_ONLY === '1') {
-        console.log('DOCS_CLIPS_ONLY=1: capturing all 4 workflow clips (light & dark) at 2x Retina ...')
-        await captureParallelWorktreesClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
-        await captureTilingFloatingClip(videoBrowser, state.hubUrl, state.adminToken, state.workerId, repos.wtRetryJitter, runDir)
-        await captureRemoteWorkersClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
-        await prepareActiveInputQueue(page)
-        const scheduleTrigger = page.locator('[data-testid="schedule-send-trigger"]:visible').first()
-        await scheduleTrigger.click()
-        const schedulePopover = page.locator('[data-testid="schedule-send-popover"]:visible').first()
-        await schedulePopover.waitFor({ state: 'visible', timeout: 10_000 })
-        await schedulePopover.locator('[data-testid="schedule-send-field"]').fill(futureLocalDateTime())
-        await schedulePopover.locator('[data-testid="schedule-send-apply"]').click()
-        await schedulePopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
-        await typeComposerAndSend(
-          page,
-          'Run the full integration test suite before opening the pull request.',
-        )
-        await waitFor('scheduled item visible in input queue', async () => {
-          const text = await page.locator('[data-testid="agent-input-queue"]:visible').first().textContent()
-          return Boolean(text && text.includes('Scheduled for'))
-        }, 15_000)
-        await captureInputQueueClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, claudeId, runDir)
+        const filter = (process.env.DOCS_CLIPS_FILTER ?? '')
+          .split(',')
+          .map(s => s.trim().toLowerCase())
+          .filter(Boolean)
+        const want = (name: string) => filter.length === 0 || filter.includes(name)
+        const label = filter.length > 0
+          ? filter.join(', ')
+          : 'all 4'
+        console.log(`DOCS_CLIPS_ONLY=1: capturing workflow clips (${label}, light & dark) at 2x Retina ...`)
+        if (want('parallel'))
+          await captureParallelWorktreesClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
+        if (want('tiling'))
+          await captureTilingFloatingClip(videoBrowser, state.hubUrl, state.adminToken, state.workerId, repos.wtRetryJitter, runDir)
+        if (want('workers'))
+          await captureRemoteWorkersClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, runDir)
+        if (want('queue')) {
+          await prepareActiveInputQueue(page)
+          const scheduleTrigger = page.locator('[data-testid="schedule-send-trigger"]:visible').first()
+          await scheduleTrigger.click()
+          const schedulePopover = page.locator('[data-testid="schedule-send-popover"]:visible').first()
+          await schedulePopover.waitFor({ state: 'visible', timeout: 10_000 })
+          await schedulePopover.locator('[data-testid="schedule-send-field"]').fill(futureLocalDateTime())
+          await schedulePopover.locator('[data-testid="schedule-send-apply"]').click()
+          await schedulePopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+          await typeComposerAndSend(
+            page,
+            'Run the full integration test suite before opening the pull request.',
+          )
+          await waitFor('scheduled item visible in input queue', async () => {
+            const text = await page.locator('[data-testid="agent-input-queue"]:visible').first().textContent()
+            return Boolean(text && text.includes('Scheduled for'))
+          }, 15_000)
+          await captureInputQueueClip(videoBrowser, state.hubUrl, state.adminToken, wsMain, claudeId, runDir)
+        }
         await context.close()
         return
       }
